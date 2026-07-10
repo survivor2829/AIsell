@@ -24,6 +24,7 @@ function createWindow() {
     title: `小玺AI员工 ${editionLabel}`,
     webPreferences: {
       preload: path.join(__dirname, preloadFile),
+      sandbox: false,
       contextIsolation: true,
       nodeIntegration: false
     }

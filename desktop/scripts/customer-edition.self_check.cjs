@@ -16,8 +16,17 @@ function assertNoBlockedContent(file) {
   assert.equal(content.includes("sendReal"), false, `${file} must not expose sendReal`);
 }
 
+function assertPreloadCompatibility(windowFile) {
+  const source = read(windowFile);
+  const preload = read(path.join(desktopDir, "src", "main", "preload.cjs"));
+  const loadsLocalModule = /require\(["']\.\//.test(preload);
+  assert.equal(!loadsLocalModule || /sandbox:\s*false/.test(source), true, `${windowFile} must not sandbox a preload that loads local modules`);
+}
+
 assertNoBlockedContent(path.join(desktopDir, "src", "main", "preload.cjs"));
 assertNoBlockedContent(path.join(desktopDir, "src", "main", "active-touch-ipc.cjs"));
+assertPreloadCompatibility(path.join(desktopDir, "src", "main", "main.cjs"));
+assertPreloadCompatibility(path.join(desktopDir, "src", "main", "touch-task-ipc.cjs"));
 assert.equal(read(path.join(desktopDir, "src", "main", "main.cjs")).includes("active-touch-dev-ipc.cjs"), true);
 assert.equal(read(path.join(desktopDir, "package.json")).includes("build:customer"), true);
 assert.equal(read(path.join(desktopDir, "package.json")).includes("build:development"), true);

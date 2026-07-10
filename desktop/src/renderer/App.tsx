@@ -13,10 +13,12 @@ import {
   Pause,
   Play,
   RefreshCw,
+  Save,
   Scissors,
   Send,
   Square,
   ThumbsUp,
+  Trash2,
   UserRound,
   UserX,
   UsersRound,
@@ -703,40 +705,78 @@ function DeepSeekApiSettings() {
   const [apiKey, setApiKey] = useState("");
   const [maskedKey, setMaskedKey] = useState("");
   const [status, setStatus] = useState("正在读取已保存的设置…");
+  const [statusTone, setStatusTone] = useState<"neutral" | "success" | "error">("neutral");
   const [busy, setBusy] = useState(false);
   const refresh = () => {
-    if (!window.xiaoxiDeepSeekApi) return setStatus("当前环境未连接 DeepSeek 设置。");
+    if (!window.xiaoxiDeepSeekApi) {
+      setStatusTone("error");
+      return setStatus("当前环境未连接 DeepSeek 设置。");
+    }
     void window.xiaoxiDeepSeekApi.status().then((result) => {
       setMaskedKey(result.ok && result.data?.configured ? result.data.maskedKey || "" : "");
+      setStatusTone(result.ok ? "neutral" : "error");
       setStatus(result.ok && result.data?.configured ? "已保存，可测试连接。" : result.error || "尚未保存 API Key。");
-    }).catch(() => setStatus("读取 DeepSeek 设置失败。"));
+    }).catch(() => {
+      setStatusTone("error");
+      setStatus("读取 DeepSeek 设置失败。");
+    });
   };
   useEffect(refresh, []);
 
   const run = (operation: () => Promise<DeepSeekApiResult>, success: string, clearInput = false) => {
     setBusy(true);
     void operation().then((result) => {
-      if (!result.ok) return setStatus(result.error || "操作失败，请稍后重试。");
+      if (!result.ok) {
+        setStatusTone("error");
+        return setStatus(result.error || "操作失败，请稍后重试。");
+      }
       if (clearInput) setApiKey("");
+      setStatusTone("success");
       setStatus(success);
       if (typeof result.data?.configured === "boolean") setMaskedKey(result.data.configured ? result.data.maskedKey || "" : "");
-    }).catch(() => setStatus("操作失败，请稍后重试。")).finally(() => setBusy(false));
+    }).catch(() => {
+      setStatusTone("error");
+      setStatus("操作失败，请稍后重试。");
+    }).finally(() => setBusy(false));
   };
 
   return (
     <div className="table-panel deepseek-settings">
-      <div className="panel-title">DeepSeek API</div>
-      <p>只需填写您自己的 API Key。保存后仅由本机 Electron 主进程使用，并按当前 Windows 用户加密保存。</p>
-      <label className="field">
-        <span>{maskedKey ? `当前 Key：${maskedKey}` : "DeepSeek API Key"}</span>
-        <input type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={maskedKey ? "填写新 Key 以替换" : "请输入您的 DeepSeek API Key"} />
-      </label>
-      <div className="actions deepseek-actions">
-        <button className="secondary-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.test(apiKey.trim() ? { apiKey: apiKey.trim() } : undefined), "DeepSeek 连接正常。") } disabled={busy || (!apiKey.trim() && !maskedKey)}>测试连接</button>
-        <button className="primary-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.save({ apiKey }), "已安全保存，请测试连接确认可用。", true)} disabled={busy || !apiKey.trim()}>保存{maskedKey ? "并替换" : ""}</button>
-        <button className="danger-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.remove(), "已删除 DeepSeek API Key，AI 文案调用已停止。", true)} disabled={busy || !maskedKey}>删除</button>
+      <div className="deepseek-settings-head">
+        <div>
+          <div className="deepseek-title">DeepSeek API</div>
+          <p>密钥仅在当前 Windows 用户下加密保存。</p>
+        </div>
+        <span className={`deepseek-config-state ${maskedKey ? "is-configured" : ""}`}>
+          <span className="deepseek-state-dot" />
+          {maskedKey ? "已配置" : "未配置"}
+        </span>
       </div>
-      <div className="touch-notice">{status}</div>
+      <div className="deepseek-settings-body">
+        <label className="field deepseek-key-field">
+          <span>{maskedKey ? `当前 Key：${maskedKey}` : "DeepSeek API Key"}</span>
+          <div className="deepseek-key-row">
+            <input type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={maskedKey ? "填写新 Key 以替换" : "请输入您的 DeepSeek API Key"} />
+            <button className="primary-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.save({ apiKey }), "已安全保存，请测试连接确认可用。", true)} disabled={busy || !apiKey.trim()}>
+              <Save size={16} />
+              保存{maskedKey ? "并替换" : ""}
+            </button>
+          </div>
+        </label>
+        <div className="deepseek-settings-footer">
+          <div className={`deepseek-status is-${statusTone}`} aria-live="polite">{status}</div>
+          <div className="actions deepseek-actions">
+            <button className="secondary-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.test(apiKey.trim() ? { apiKey: apiKey.trim() } : undefined), "DeepSeek 连接正常。") } disabled={busy || (!apiKey.trim() && !maskedKey)}>
+              <RefreshCw size={16} />
+              测试连接
+            </button>
+            <button className="danger-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.remove(), "已删除 DeepSeek API Key，AI 文案调用已停止。", true)} disabled={busy || !maskedKey}>
+              <Trash2 size={16} />
+              删除
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

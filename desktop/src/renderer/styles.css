@@ -304,18 +304,123 @@ button:focus-visible {
 }
 
 .deepseek-settings {
-  max-width: 680px;
-  padding: 24px;
+  width: min(900px, 100%);
 }
 
-.deepseek-settings > p {
-  margin: 0 0 18px;
+.deepseek-settings-head {
+  min-height: 84px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 18px 24px;
+  border-bottom: 1px solid #eef0f4;
+}
+
+.deepseek-title {
+  margin-bottom: 6px;
+  color: #111827;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.deepseek-settings-head p {
+  margin: 0;
   color: #667085;
+  font-size: 13px;
+}
+
+.deepseek-config-state {
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 0 12px;
+  border-radius: 6px;
+  background: #f3f4f6;
+  color: #667085;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.deepseek-state-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #9ca3af;
+}
+
+.deepseek-config-state.is-configured {
+  background: #ecfdf3;
+  color: #067647;
+}
+
+.deepseek-config-state.is-configured .deepseek-state-dot {
+  background: #12b76a;
+}
+
+.deepseek-settings-body {
+  display: grid;
+  gap: 20px;
+  padding: 22px 24px 24px;
+}
+
+.deepseek-key-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+}
+
+.deepseek-key-row .primary-button {
+  height: 42px;
+  min-width: 128px;
+  border-radius: 8px;
+}
+
+.deepseek-settings-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.deepseek-status {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  padding: 8px 12px;
+  border: 1px solid #dbe4f0;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #475467;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.deepseek-status.is-success {
+  border-color: #abefc6;
+  background: #ecfdf3;
+  color: #067647;
+}
+
+.deepseek-status.is-error {
+  border-color: #fed7aa;
+  background: #fff7ed;
+  color: #9a3412;
 }
 
 .deepseek-actions {
+  flex: 0 0 auto;
   justify-content: flex-start;
-  padding-top: 12px;
+  gap: 10px;
+  padding-top: 0;
+}
+
+.deepseek-actions .secondary-button,
+.deepseek-actions .danger-button {
+  border-radius: 8px;
 }
 
 .platform-panel {
@@ -1186,5 +1291,22 @@ td .text-button {
   .platform-panel {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .deepseek-key-row {
+    grid-template-columns: 1fr;
+  }
+
+  .deepseek-key-row .primary-button {
+    width: 100%;
+  }
+
+  .deepseek-settings-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .deepseek-actions {
+    justify-content: flex-end;
   }
 }

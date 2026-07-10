@@ -99,6 +99,7 @@ function createFloatingWindow() {
     backgroundColor: "#ffffff",
     webPreferences: {
       preload: path.join(__dirname, preloadFile),
+      sandbox: false,
       contextIsolation: true,
       nodeIntegration: false
     }
