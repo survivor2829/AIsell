@@ -1,0 +1,38 @@
+# Dependencies and build output
+**/node_modules/
+**/dist/
+**/dist-development/
+desktop/.vite/
+
+# Local secrets, certificates and temporary plaintext
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.tmp
+*.bak
+*.log
+*.pid
+*.cache
+**/*decrypt*/
+**/*decrypted*/
+**/*plaintext*/
+
+# Local runtime data
+**/deepseek-api-key.bin
+**/__pycache__/
+**/run_logs.jsonl
+**/state.json
+**/touch_task.json
+**/touch_task.json.bak
+**/contacts.json
+**/*.db
+**/*.db-*
+**/*.sqlite
+**/*.sqlite-*
+**/xiaoxi-contact-*
+
+# Generated portable app and its runtime data
+release/

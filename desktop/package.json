@@ -1,0 +1,30 @@
+{
+  "name": "xiaoxi-active-touch-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/main/main.cjs",
+  "scripts": {
+    "prebuild": "npm run check:clean-runtime && npm run check:customer-edition && npm run check:deepseek-api",
+    "check:clean-runtime": "node scripts/check-clean-runtime.cjs",
+    "check:customer-edition": "node scripts/customer-edition.self_check.cjs",
+    "check:deepseek-api": "node src/main/deepseek-api.self_check.cjs",
+    "dev": "vite --host 127.0.0.1",
+    "desktop": "node scripts/dev-electron.cjs",
+    "build": "npm run build:customer",
+    "build:customer": "node scripts/build-renderer.cjs customer",
+    "build:development": "node scripts/build-renderer.cjs development",
+    "release:customer": "npm run build && node scripts/sync-customer-release.cjs && node scripts/check-clean-runtime.cjs --release && node scripts/customer-edition.self_check.cjs --release",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^32.3.3",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.4.11"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

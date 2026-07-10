@@ -1,0 +1,40 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const desktopDir = path.resolve(__dirname, "..");
+const releaseAppDir = path.resolve(desktopDir, "..", "release", "小玺AI员工-客户版", "resources", "app");
+const blockedChannels = ["active-touch:send-real", "active-touch:set-real-send-arm", "active-touch:fail-conversation"];
+
+function read(file) {
+  return fs.readFileSync(file, "utf8");
+}
+
+function assertNoBlockedContent(file) {
+  const content = read(file);
+  for (const value of blockedChannels) assert.equal(content.includes(value), false, `${file} must not contain ${value}`);
+  assert.equal(content.includes("sendReal"), false, `${file} must not expose sendReal`);
+}
+
+assertNoBlockedContent(path.join(desktopDir, "src", "main", "preload.cjs"));
+assertNoBlockedContent(path.join(desktopDir, "src", "main", "active-touch-ipc.cjs"));
+assert.equal(read(path.join(desktopDir, "src", "main", "main.cjs")).includes("active-touch-dev-ipc.cjs"), true);
+assert.equal(read(path.join(desktopDir, "package.json")).includes("build:customer"), true);
+assert.equal(read(path.join(desktopDir, "package.json")).includes("build:development"), true);
+
+if (process.argv.includes("--release")) {
+  assert.equal(fs.existsSync(releaseAppDir), true, "customer release app must exist");
+  assert.equal(fs.existsSync(path.join(releaseAppDir, "src", "main", "active-touch-dev-ipc.cjs")), false, "customer release must exclude the real-send IPC module");
+  assert.equal(fs.existsSync(path.join(releaseAppDir, "src", "main", "preload.dev.cjs")), false, "customer release must exclude the development preload");
+  assert.equal(fs.existsSync(path.join(releaseAppDir, "rpa", "active_touch", "state_machine.dev.cjs")), false, "customer release must exclude the real-send state module");
+  assert.equal(fs.existsSync(path.join(releaseAppDir, "rpa", "active_touch", "active_touch_cli.dev.cjs")), false, "customer release must exclude the development executor");
+  assert.equal(read(path.join(releaseAppDir, "src", "main", "edition.cjs")).includes("preload.dev.cjs"), true, "customer must fall back to the safe preload when the dev preload is absent");
+  assertNoBlockedContent(path.join(releaseAppDir, "src", "main", "preload.cjs"));
+  assertNoBlockedContent(path.join(releaseAppDir, "src", "main", "active-touch-ipc.cjs"));
+  const assetsDir = path.join(releaseAppDir, "dist", "assets");
+  const renderer = fs.readdirSync(assetsDir).filter((file) => file.endsWith(".js")).map((file) => read(path.join(assetsDir, file))).join("\n");
+  for (const value of [...blockedChannels, "开发验收", "武装真发开关", "模拟会话不匹配"]) assert.equal(renderer.includes(value), false, `customer renderer must not contain ${value}`);
+  assert.equal(read(path.join(releaseAppDir, "dist", "build-edition.json")).includes("customer"), true);
+}
+
+console.log("customer edition self-check passed");
