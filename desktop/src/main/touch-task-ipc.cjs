@@ -361,7 +361,7 @@ function buildRunnableTask(script) {
   return { ok: true, task: createTask(script, contacts) };
 }
 
-function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekClient: client } = {}) {
+function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekClient: client, onPause } = {}) {
   getMainWindowRef = getMainWindow;
   runtimeDataDir = String(dataDir || "");
   runtimeCoordinator = coordinator;
@@ -400,6 +400,7 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
   ipcMain.handle("touch-task:status", () => publicTaskState(loadTaskState(activeTouchDir())));
 
   ipcMain.handle("touch-task:pause", () => {
+    onPause?.();
     pauseRequested = true;
     if (runnerOwner) runtimeCoordinator?.transition(runnerOwner, "paused", "pause_requested");
     updateCurrentTask((task) => {
@@ -447,6 +448,7 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
   });
 
   ipcMain.handle("touch-task:stop", () => {
+    onPause?.();
     stopRequested = true;
     if (runnerOwner) runtimeCoordinator?.transition(runnerOwner, "stopping", "stop_requested");
     updateCurrentTask((task) => {
@@ -464,6 +466,7 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
   });
 
   ipcMain.handle("touch-task:close-floating", () => {
+    onPause?.();
     showMainWindow();
     if (floatingWindow && !floatingWindow.isDestroyed()) floatingWindow.close();
     return publicTaskState(loadTaskState(activeTouchDir()));

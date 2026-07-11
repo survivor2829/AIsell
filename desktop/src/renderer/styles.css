@@ -684,9 +684,7 @@ td {
 }
 
 .simple-touch-panel {
-  display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.75fr);
-  gap: 18px;
+  display: block;
   align-items: stretch;
   margin-bottom: 16px;
 }
@@ -707,7 +705,7 @@ td {
 
 .script-field textarea {
   width: 100%;
-  min-height: 180px;
+  min-height: 112px;
   padding: 14px 16px;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
@@ -780,6 +778,85 @@ td {
   border: 1px solid #eef0f4;
   border-radius: 8px;
   background: #fff;
+}
+
+.dev-acceptance {
+  margin: 4px 0 16px;
+  border: 1px solid #e8eaf0;
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.dev-acceptance-head,
+.dev-control-row,
+.dev-contact-summary,
+.dev-status {
+  padding: 12px 16px;
+}
+
+.dev-acceptance-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid #eef0f4;
+  color: #27364d;
+}
+
+.dev-acceptance-head span {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #fff2f3;
+  color: #c2415b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.dev-control-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.dev-control-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #4b5563;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.dev-control-row select {
+  min-width: 210px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid #d9dee8;
+  border-radius: 8px;
+  background: #fff;
+  color: #1f2937;
+  font: inherit;
+}
+
+.dev-contact-summary {
+  border-top: 1px solid #f1f2f5;
+  color: #7c3f27;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.dev-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border-top: 1px solid #f1f2f5;
+  color: #536071;
+  font-size: 13px;
+}
+
+.dev-status.is-blocked {
+  color: #b42318;
 }
 
 .debug-panel summary {

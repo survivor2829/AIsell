@@ -87,6 +87,8 @@ type ContactRow = {
   remark?: string;
   nickname?: string;
   wechatId?: string;
+  wxid?: string;
+  wechatAccountId?: string;
   source?: string;
   syncedAt?: string;
 };
@@ -153,7 +155,7 @@ declare global {
       calibrate: () => Promise<ActiveTouchResult>;
       clearCustomer: () => Promise<ActiveTouchResult>;
       sendDryRun: (payload: { message: string }) => Promise<ActiveTouchResult>;
-      sendReal: (payload: { message: string }) => Promise<ActiveTouchResult>;
+      sendSelectedContact: (payload: { contactId: string; message: string }) => Promise<ActiveTouchResult>;
       selectCustomer: (payload: { id: string }) => Promise<ActiveTouchResult>;
       verifyConversation: (payload: { title: string }) => Promise<ActiveTouchResult>;
       locateConversation: () => Promise<ActiveTouchResult>;
@@ -163,6 +165,7 @@ declare global {
       inputMessageDryRun: (payload: { message: string }) => Promise<ActiveTouchResult>;
       queueDryRun: (payload: { ids: string[]; message: string }) => Promise<ActiveTouchResult>;
       setRealSendArm: (payload: { enabled: boolean }) => Promise<ActiveTouchResult>;
+      verifyRealSendSession: () => Promise<ActiveTouchResult>;
       verifyMessageBubble: () => Promise<ActiveTouchResult>;
       verifyWindowTitle: () => Promise<ActiveTouchResult>;
       failConversation: () => Promise<ActiveTouchResult>;
@@ -194,6 +197,7 @@ declare global {
 const USER_STORAGE_KEY = "xiaoxi-user-profile";
 const DEFAULT_USER_PROFILE: UserProfile = { name: "2829347524", avatar: "2" };
 const DEFAULT_ACTIVE_MODULE: ModuleKey = "reply";
+const DEFAULT_TOUCH_MESSAGE = "{称呼}，您好，我们这边有清洁设备短租和会员特惠方案，想了解一下您近期是否需要降本增效？";
 const DEVELOPMENT_EDITION = import.meta.env.VITE_XIAOXI_EDITION === "development";
 const DevelopmentAcceptance = DEVELOPMENT_EDITION ? lazy(() => import("./DevelopmentAcceptance")) : null;
 
@@ -323,8 +327,16 @@ export default function App() {
   const [contactSyncError, setContactSyncError] = useState("");
   const [touchTask, setTouchTask] = useState<TouchTaskState>(() => emptyTouchTask());
   const [touchTaskError, setTouchTaskError] = useState("");
-  const [messageDraft, setMessageDraft] = useState("");
+  const [messageDraft, setMessageDraft] = useState(DEFAULT_TOUCH_MESSAGE);
   const addLog = (_action: string, _result: string) => undefined;
+
+  useEffect(() => {
+    setMessageDraft((current) => current || DEFAULT_TOUCH_MESSAGE);
+  }, []);
+
+  useEffect(() => {
+    document.title = DEVELOPMENT_EDITION ? "小玺AI员工 开发版" : "小玺AI员工 客户版";
+  }, []);
 
   const activeTitle = useMemo(() => navItems.find((item) => item.key === active)?.label ?? "自动回复", [active]);
 
@@ -439,7 +451,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (user && active === "contact-sync") refreshContactSync();
+    if (user && (active === "contact-sync" || active === "touch")) refreshContactSync();
   }, [user, active]);
 
   useEffect(() => {
@@ -796,7 +808,6 @@ function ActiveTouch({
 }) {
   const allowedContacts = contacts.filter((contact) => contact.allowed);
   const previewTarget = allowedContacts[0] ?? null;
-  const previewText = messageDraft.trim() ? fillTouchTemplate(messageDraft, previewTarget) : "填写后会自动把 {称呼} 替换成客户备注或昵称";
   const completedCount = touchTask.results.filter((result) => result.status === "draft_ready").length;
   const skippedCount = touchTask.results.filter((result) => result.status === "skipped").length;
   const processedCount = completedCount + skippedCount;
@@ -824,18 +835,13 @@ function ActiveTouch({
 
       <div className="simple-touch-panel">
         <label className="script-field">
-          <span>触达话术</span>
+          <span>触达话术（已填默认文案，可直接修改）</span>
           <textarea
             value={messageDraft}
             onChange={(event) => onMessageDraftChange(event.target.value)}
-            placeholder="{称呼}，您好，我们这边有清洁设备短租和会员特惠方案，想了解一下您近期是否需要降本增效？"
+            placeholder={DEFAULT_TOUCH_MESSAGE}
           />
         </label>
-        <div className="script-preview">
-          <span>示例预览</span>
-          <strong>{previewText}</strong>
-          <p>称呼优先使用备注，没有备注时使用昵称。启动后会按同步联系人逐个生成草稿。</p>
-        </div>
       </div>
 
       {touchTask.results.length > 0 && (

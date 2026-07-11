@@ -10,6 +10,10 @@ const { registerDeepSeekApiIpc } = require("./deepseek-api-ipc.cjs");
 const { developmentEdition, editionLabel, preloadFile } = require("./edition.cjs");
 
 let mainWindow = null;
+let disarmDevelopmentRealSend = null;
+
+// ponytail: development needs a separate Electron profile so it can run beside the customer edition.
+if (developmentEdition) app.setPath("userData", path.join(app.getPath("appData"), "xiaoxi-active-touch-development"));
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -31,6 +35,15 @@ function createWindow() {
   });
 
   mainWindow.setMenu(null);
+  mainWindow.on("close", () => {
+    disarmDevelopmentRealSend?.();
+  });
+  mainWindow.on("blur", () => {
+    disarmDevelopmentRealSend?.();
+  });
+  mainWindow.on("minimize", () => {
+    disarmDevelopmentRealSend?.();
+  });
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
@@ -66,10 +79,12 @@ if (!gotSingleInstanceLock) {
     const deepSeekClient = createDeepSeekClient({ keyStore: deepSeekKeyStore });
     coordinator.initialize();
     registerActiveTouchIpc({ dataDir: runtime.activeTouchDir, coordinator });
-    if (developmentEdition) require("./active-touch-dev-ipc.cjs").registerActiveTouchDevIpc();
+    const developmentRealSend = developmentEdition ? require("./active-touch-dev-ipc.cjs") : null;
+    if (developmentRealSend) developmentRealSend.registerActiveTouchDevIpc({ dataDir: runtime.activeTouchDir, getMainWindow: () => mainWindow });
+    if (developmentRealSend) disarmDevelopmentRealSend = () => developmentRealSend.disarmRealSend(runtime.activeTouchDir);
     registerContactSyncIpc({ dataDir: runtime.contactSyncDir, activeTouchDir: runtime.activeTouchDir, coordinator });
     registerDeepSeekApiIpc({ keyStore: deepSeekKeyStore, client: deepSeekClient });
-    registerTouchTaskIpc({ getMainWindow: () => mainWindow, dataDir: runtime.activeTouchDir, coordinator, deepSeekClient });
+    registerTouchTaskIpc({ getMainWindow: () => mainWindow, dataDir: runtime.activeTouchDir, coordinator, deepSeekClient, onPause: developmentRealSend ? () => developmentRealSend.disarmRealSend(runtime.activeTouchDir) : undefined });
     createWindow();
 
     app.on("activate", () => {
