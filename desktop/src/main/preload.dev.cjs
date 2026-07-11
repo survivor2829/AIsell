@@ -1,18 +1,8 @@
 const { contextBridge, ipcRenderer } = require("electron");
-const { randomUUID } = require("node:crypto");
-const { createPreloadApis } = require("./preload-api.cjs");
+const { createPreloadApis, createTrustedClickGate } = require("./preload-api.cjs");
 
 const apis = createPreloadApis(ipcRenderer);
-let trustedRealSendClick = "";
-
-window.addEventListener("click", (event) => {
-  if (!event.isTrusted || !event.target?.closest?.("[data-xiaoxi-real-send]")) return;
-  const token = randomUUID();
-  trustedRealSendClick = token;
-  setTimeout(() => {
-    if (trustedRealSendClick === token) trustedRealSendClick = "";
-  }, 1000);
-}, true);
+const consumeRealSendClick = createTrustedClickGate("[data-xiaoxi-real-send]");
 
 Object.assign(apis.activeTouch, {
   calibrate: () => ipcRenderer.invoke("active-touch:dev-calibrate"),
@@ -21,12 +11,10 @@ Object.assign(apis.activeTouch, {
   inputMessageDryRun: (payload) => ipcRenderer.invoke("active-touch:dev-input-message", payload),
   sendDryRun: (payload) => ipcRenderer.invoke("active-touch:dev-send-dry-run", payload),
   sendSelectedContact: (payload) => {
-    const clickToken = trustedRealSendClick;
-    trustedRealSendClick = "";
     return ipcRenderer.invoke("active-touch:send-selected-contact", {
       contactId: String(payload?.contactId ?? ""),
       message: String(payload?.message ?? ""),
-      clickToken
+      clickToken: consumeRealSendClick()
     });
   },
   setRealSendArm: (payload) => ipcRenderer.invoke("active-touch:set-real-send-arm", payload),

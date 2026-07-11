@@ -9,6 +9,12 @@ const releaseDir = path.join(projectDir, "release");
 const electronDir = path.join(desktopDir, "node_modules", "electron", "dist");
 const helper = path.join(desktopDir, ".build", "xiaoxi-contact-helper.exe");
 const runtimeFiles = new Set(["contacts.json", "touch_task.json", "touch_task.json.bak", "run_logs.jsonl", "state.json", "deepseek-api-key.bin"]);
+const databaseFilePattern = /\.(?:db(?:-wal|-shm)?|sqlite3?)$/i;
+
+function isBlockedRuntimeFile(name) {
+  const lower = String(name).toLowerCase();
+  return runtimeFiles.has(lower) || databaseFilePattern.test(lower);
+}
 
 function insideRelease(target) {
   const resolved = path.resolve(target);
@@ -23,7 +29,8 @@ function removeGenerated(target) {
 function sourceAllowed(source, edition) {
   const relative = path.relative(desktopDir, source).replaceAll("\\", "/");
   const name = path.basename(source);
-  if (runtimeFiles.has(name) || name.endsWith(".py") || name.endsWith(".pyc") || name.includes("self_check")) return false;
+  const lower = name.toLowerCase();
+  if (isBlockedRuntimeFile(name) || lower.endsWith(".py") || lower.endsWith(".pyc") || lower.includes("self_check")) return false;
   if (relative.includes("/__pycache__/") || relative.includes("/libs/") || /(?:dump_data|wechat-dump|wx_key\.dll)/i.test(name)) return false;
   if (relative.startsWith("src/main/") && ["active-touch-dev-ipc.cjs", "preload.dev.cjs"].includes(name)) return false;
   if (name.endsWith(".dev.cjs")) {
@@ -66,7 +73,7 @@ function scanRelease(target) {
       if (entry.isDirectory()) visit(file);
       else {
         const lower = entry.name.toLowerCase();
-        if (runtimeFiles.has(entry.name) || lower === "python.exe" || lower.endsWith(".py") || lower === "wx_key.dll" || lower.includes("dump_data") || lower.includes("wechat-dump") || lower.includes("dt-ai-helper")) blocked.push(file);
+        if (isBlockedRuntimeFile(entry.name) || lower === "python.exe" || lower.endsWith(".py") || lower === "wx_key.dll" || lower.includes("dump_data") || lower.includes("wechat-dump") || lower.includes("dt-ai-helper")) blocked.push(file);
         if (entry.isFile() && fs.statSync(file).size <= 5 * 1024 * 1024) {
           const content = fs.readFileSync(file, "utf8");
           if (/\bsk-[A-Za-z0-9_-]{12,}\b/.test(content)) blocked.push(file);

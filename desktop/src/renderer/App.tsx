@@ -136,8 +136,6 @@ type TouchTaskPreview = {
   eligible: ContactRow[];
   excluded: TouchTaskExcludedContact[];
   total?: number;
-  eligible_total?: number;
-  excluded_total?: number;
 };
 type TouchTaskState = {
   id: string;
@@ -482,35 +480,40 @@ export default function App() {
       return;
     }
 
-    const eligibleContactCount = PILOT_EDITION && touchTaskPreview ? touchTaskPreview.eligible.length : contactRows.filter((contact) => contact.allowed).length;
-    if (!eligibleContactCount) {
-      const message = contactRows.length ? "没有符合触达条件的联系人" : "请先同步当前微信联系人";
-      setTouchTaskError(message);
-      addLog("启动程序", message);
-      return;
-    }
-
-    if (!messageDraft.trim()) {
-      setTouchTaskError("请先填写触达话术");
-      addLog("启动程序", "请先填写触达话术");
-      return;
-    }
-
     if (!window.xiaoxiTouchTask) {
       setTouchTaskError("当前环境未连接任务执行器");
       addLog("启动程序", "当前环境未连接任务执行器");
       return;
     }
 
+    const continuingBatch = PILOT_EDITION && touchTask.status === "paused" && touchTask.phase === "awaiting_batch_continue";
+
+    if (!continuingBatch) {
+      const eligibleContactCount = PILOT_EDITION && touchTaskPreview ? touchTaskPreview.eligible.length : contactRows.filter((contact) => contact.allowed).length;
+      if (!eligibleContactCount) {
+        const message = contactRows.length ? "没有符合触达条件的联系人" : "请先同步当前微信联系人";
+        setTouchTaskError(message);
+        addLog("启动程序", message);
+        return;
+      }
+
+      if (!messageDraft.trim()) {
+        setTouchTaskError("请先填写触达话术");
+        addLog("启动程序", "请先填写触达话术");
+        return;
+      }
+    }
+
     setTouchTaskError("");
     setTouchTaskBusy(true);
-    void window.xiaoxiTouchTask
-      .start({ script: messageDraft })
+    const action = continuingBatch ? "继续下一批" : "启动程序";
+    const request = continuingBatch ? window.xiaoxiTouchTask.resume() : window.xiaoxiTouchTask.start({ script: messageDraft });
+    void request
       .then(applyTouchTaskResult)
       .catch((error) => {
         const message = error instanceof Error ? error.message : "启动失败";
         setTouchTaskError(message);
-        addLog("启动程序", message);
+        addLog(action, message);
       })
       .finally(() => setTouchTaskBusy(false));
   };
@@ -540,10 +543,13 @@ export default function App() {
 
   const allowedContactCount = contactRows.filter((contact) => contact.allowed).length;
   const launchContactCount = PILOT_EDITION && touchTaskPreview ? touchTaskPreview.eligible.length : allowedContactCount;
-  const canLaunchTouch = active === "touch" && launchContactCount > 0 && Boolean(messageDraft.trim()) && !touchTaskBusy && touchTask.status !== "running";
+  const awaitingBatchContinue = PILOT_EDITION && touchTask.status === "paused" && touchTask.phase === "awaiting_batch_continue";
+  const canLaunchTouch = active === "touch" && !touchTaskBusy && touchTask.status !== "running" && (awaitingBatchContinue || (launchContactCount > 0 && Boolean(messageDraft.trim())));
   const launchTitle =
     active !== "touch"
       ? "请先进入主动触达"
+      : awaitingBatchContinue
+        ? "继续下一批触达"
       : launchContactCount === 0
         ? "请先同步当前微信联系人"
         : !messageDraft.trim()
@@ -642,8 +648,8 @@ export default function App() {
           {active !== "contact-sync" && active !== "accounts" && active !== "touch" && <Placeholder title={activeTitle} />}
         </div>
 
-        <button data-xiaoxi-batch-authorize={PILOT_EDITION ? "start" : undefined} className={`launch-button ${canLaunchTouch ? "" : "disabled"}`} onClick={startTouchTask} disabled={!canLaunchTouch} title={launchTitle}>
-          {touchTaskBusy ? "启动中" : <><span>启动</span><br /><span>程序</span></>}
+        <button data-xiaoxi-batch-authorize={PILOT_EDITION ? (awaitingBatchContinue ? "continue" : "start") : undefined} className={`launch-button ${canLaunchTouch ? "" : "disabled"}`} onClick={startTouchTask} disabled={!canLaunchTouch} title={launchTitle}>
+          {touchTaskBusy ? "启动中" : awaitingBatchContinue ? <><span>继续</span><br /><span>下一批</span></> : <><span>启动</span><br /><span>程序</span></>}
         </button>
       </section>
     </main>
@@ -893,8 +899,8 @@ function ActiveTouch({
     .map((contact) => ({ contact, reason: "联系人已停用或禁止触达" }));
   const eligibleContacts = hasFrozenSnapshot ? touchTask.results.map((result) => result.contact) : liveEligibleContacts;
   const excludedContacts = hasFrozenSnapshot ? touchTask.excluded_contacts ?? [] : liveExcludedContacts;
-  const eligibleCount = hasFrozenSnapshot ? touchTask.eligible_total ?? eligibleContacts.length : touchTaskPreview?.eligible_total ?? eligibleContacts.length;
-  const excludedCount = hasFrozenSnapshot ? touchTask.excluded_total ?? excludedContacts.length : touchTaskPreview?.excluded_total ?? excludedContacts.length;
+  const eligibleCount = hasFrozenSnapshot ? touchTask.eligible_total ?? eligibleContacts.length : eligibleContacts.length;
+  const excludedCount = hasFrozenSnapshot ? touchTask.excluded_total ?? excludedContacts.length : excludedContacts.length;
   const totalCount = hasFrozenSnapshot ? eligibleCount + excludedCount : touchTaskPreview?.total ?? eligibleCount + excludedCount;
   const batchSize = touchTask.batch_size || 50;
   const batchCount = eligibleCount ? Math.ceil(eligibleCount / batchSize) : 0;

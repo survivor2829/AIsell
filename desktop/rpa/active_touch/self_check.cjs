@@ -129,6 +129,7 @@ try {
   assert.ok(batchTask.snapshot_hash);
   assert.equal(isBatchAuthorized(batchTask), true);
   assert.equal(isBatchAuthorized({ ...batchTask, snapshot_hash: "changed" }), false);
+  assert.equal(isBatchAuthorized({ ...batchTask, current_index: batchTask.batch_end_index }), false);
   const pausedGenerated = createTask("pause", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
   pausedGenerated.status = "paused";
   pausedGenerated.phase = "paused";
@@ -154,6 +155,14 @@ try {
   saveTaskState(dir, legacyTask);
   assert.equal(loadTaskState(dir).version, 2);
   assert.notEqual(loadTaskState(dir).execution_mode, "real_send");
+
+  const futureTask = { ...createTask("future", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" }), version: 4 };
+  saveTaskState(dir, futureTask);
+  const blockedFutureTask = loadTaskState(dir);
+  assert.equal(blockedFutureTask.version, 4);
+  assert.equal(blockedFutureTask.status, "blocked");
+  assert.equal(blockedFutureTask.integrity_error, "unsupported_task_version");
+  assert.equal(recoverInterruptedTask(dir).integrity_error, "unsupported_task_version");
 
   const preparedCrash = createTask("prepared", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
   preparedCrash.results[0].status = "sending";
@@ -182,6 +191,55 @@ try {
   assert.equal(verifiedRecovered.results[0].status, "sent_verified");
   assert.equal(verifiedRecovered.current_index, 1);
   assert.equal(verifiedRecovered.status, "completed");
+
+  const boundaryContacts = Array.from({ length: 101 }, (_, index) => ({
+    id: `wxid_boundary_${index + 1}`,
+    name: `边界客户${index + 1}`,
+    remark: `边界客户${index + 1}`,
+    nickname: `边界昵称${index + 1}`,
+    wxid: `wxid_boundary_${index + 1}`,
+    wechatId: `boundary-${index + 1}`,
+    wechatAccountId: "account-boundary",
+    allowed: true
+  }));
+  const firstBatchCrash = createTask("first-boundary", boundaryContacts, "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  firstBatchCrash.current_index = 49;
+  firstBatchCrash.phase = "sending_batch";
+  firstBatchCrash.results[49].status = "sending";
+  saveTaskState(dir, firstBatchCrash);
+  fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify({
+    task_context: { task_id: firstBatchCrash.id, contact_id: firstBatchCrash.results[49].id, current_index: 49 },
+    real_send_status: "sent_verified",
+    real_send_attempt_key: "first-boundary-key",
+    real_send_attempts: { "first-boundary-key": "sent_verified" }
+  }), "utf8");
+  const firstBoundaryRecoveryStarted = Date.now();
+  const firstBatchRecovered = recoverInterruptedTask(dir);
+  const firstBoundaryDelay = Date.parse(firstBatchRecovered.next_send_not_before) - firstBoundaryRecoveryStarted;
+  assert.equal(firstBatchRecovered.current_index, 50);
+  assert.equal(firstBatchRecovered.status, "paused");
+  assert.equal(firstBatchRecovered.phase, "awaiting_batch_continue");
+  assert.ok(firstBoundaryDelay >= 8000 && firstBoundaryDelay <= 15100);
+
+  let secondBatchCrash = createTask("second-boundary", boundaryContacts, "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  secondBatchCrash.current_index = 50;
+  secondBatchCrash.status = "paused";
+  secondBatchCrash.phase = "awaiting_batch_continue";
+  secondBatchCrash = authorizeNextBatch(secondBatchCrash, "2026-07-11T00:01:00.000Z");
+  secondBatchCrash.current_index = 99;
+  secondBatchCrash.phase = "sending_batch";
+  secondBatchCrash.results[99].status = "sending";
+  saveTaskState(dir, secondBatchCrash);
+  fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify({
+    task_context: { task_id: secondBatchCrash.id, contact_id: secondBatchCrash.results[99].id, current_index: 99 },
+    real_send_status: "sent_verified",
+    real_send_attempt_key: "second-boundary-key",
+    real_send_attempts: { "second-boundary-key": "sent_verified" }
+  }), "utf8");
+  const secondBatchRecovered = recoverInterruptedTask(dir);
+  assert.equal(secondBatchRecovered.current_index, 100);
+  assert.equal(secondBatchRecovered.status, "paused");
+  assert.equal(secondBatchRecovered.phase, "awaiting_batch_continue");
 
   const taskOnlyPrepared = createTask("task-only-prepared", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
   taskOnlyPrepared.results[0].status = "prepared";
@@ -236,6 +294,37 @@ try {
   assert.deepEqual(sharedSteps, ["select-customer", "calibrate", "focus-wechat-window", "click-search-result-dry-run", "input-message-dry-run", "send"]);
   assert.deepEqual(sharedTransitions, ["prepared", "clicked", "sent_verified"]);
   assert.equal(sharedClicks, 1);
+
+  saveState(sharedDir, {
+    ...loadState(sharedDir),
+    real_send_status: "not_sent",
+    real_send_attempts: {},
+    real_send_attempt_key: "",
+    real_send_armed: false
+  });
+  const cancelledSteps = [];
+  let cancellationChecks = 0;
+  let cancelledClicks = 0;
+  const cancelledResult = await executeVerifiedContactSend({
+    baseDir: sharedDir,
+    contactId: sharedContact.id,
+    message: "共享事务消息",
+    frozenContact: sharedContact,
+    authorized: true,
+    shouldContinue: () => ++cancellationChecks < 3,
+    runStep: async (command) => {
+      cancelledSteps.push(command);
+      return { ok: true, state: { selected_customer: sharedContact } };
+    },
+    sessionDriver: () => ({ ok: true, pid: 81, hWnd: "91", processName: "Weixin", title: sharedContact.name, accountId: "account-a", accountVerified: true }),
+    sendDriver: () => { cancelledClicks += 1; return { ok: true }; },
+    bubbleVerifier: () => ({ ok: true, snapshot: "before" })
+  });
+  assert.equal(cancelledResult.action, "task_paused");
+  assert.equal(cancelledResult.blocked_reason, "batch_cancelled");
+  assert.deepEqual(cancelledSteps, ["select-customer"]);
+  assert.equal(cancelledClicks, 0);
+  assert.equal(loadState(sharedDir).real_send_armed, false);
 
   saveState(sharedDir, {
     ...loadState(sharedDir),

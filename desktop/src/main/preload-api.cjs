@@ -1,22 +1,26 @@
 const { randomUUID } = require("node:crypto");
 
-function createPreloadApis(ipcRenderer) {
-  let trustedBatchClick = "";
+function createTrustedClickGate(selector) {
+  let trustedClick = "";
   if (typeof window !== "undefined") {
     window.addEventListener("click", (event) => {
-      if (!event.isTrusted || !event.target?.closest?.("[data-xiaoxi-batch-authorize]")) return;
+      if (!event.isTrusted || !event.target?.closest?.(selector)) return;
       const token = randomUUID();
-      trustedBatchClick = token;
+      trustedClick = token;
       setTimeout(() => {
-        if (trustedBatchClick === token) trustedBatchClick = "";
+        if (trustedClick === token) trustedClick = "";
       }, 1000);
     }, true);
   }
-  const consumeBatchClick = () => {
-    const token = trustedBatchClick;
-    trustedBatchClick = "";
+  return () => {
+    const token = trustedClick;
+    trustedClick = "";
     return token;
   };
+}
+
+function createPreloadApis(ipcRenderer) {
+  const consumeBatchClick = createTrustedClickGate("[data-xiaoxi-batch-authorize]");
   return {
     activeTouch: {
       status: () => ipcRenderer.invoke("active-touch:status"),
@@ -63,4 +67,4 @@ function createPreloadApis(ipcRenderer) {
   };
 }
 
-module.exports = { createPreloadApis };
+module.exports = { createPreloadApis, createTrustedClickGate };

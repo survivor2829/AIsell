@@ -8,6 +8,7 @@
     "check:clean-runtime": "node scripts/check-clean-runtime.cjs",
     "check:customer-edition": "node scripts/customer-edition.self_check.cjs",
     "check:deepseek-api": "node src/main/deepseek-api.self_check.cjs",
+    "check:self": "node scripts/run-self-checks.cjs",
     "dev": "vite --host 127.0.0.1",
     "desktop": "node scripts/dev-electron.cjs",
     "build": "npm run build:customer",
@@ -15,8 +16,8 @@
     "build:development": "node scripts/build-renderer.cjs development",
     "build:pilot": "node scripts/build-renderer.cjs pilot",
     "build:helper": "node scripts/build-contact-helper.cjs",
-    "release:customer": "npm run build && npm run build:helper && node scripts/build-portable-release.cjs customer && node scripts/check-clean-runtime.cjs --release && node scripts/customer-edition.self_check.cjs --release && node scripts/portable-release.self_check.cjs customer",
-    "release:pilot": "npm run build:pilot && npm run build:helper && node scripts/build-portable-release.cjs pilot && node scripts/check-clean-runtime.cjs --release && node scripts/portable-release.self_check.cjs pilot",
+    "release:customer": "npm run check:self && npm run build && npm run build:helper && node scripts/build-portable-release.cjs customer && node scripts/check-clean-runtime.cjs --release && node scripts/customer-edition.self_check.cjs --release && node scripts/portable-release.self_check.cjs customer",
+    "release:pilot": "npm run check:self && npm run build:pilot && npm run build:helper && node scripts/build-portable-release.cjs pilot && node scripts/check-clean-runtime.cjs --release && node scripts/portable-release.self_check.cjs pilot",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

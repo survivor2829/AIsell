@@ -31,7 +31,9 @@ let executionMode = "draft_only";
 let realSendExecutor = null;
 let waitForDelay = null;
 let randomSource = Math.random;
+let requestPauseRef = null;
 const consumedBatchTokens = new Set();
+const DRAFT_GENERATION_CONCURRENCY = 3;
 
 function consumeBatchAuthorization(payload = {}) {
   if (executionMode !== "real_send") return true;
@@ -126,7 +128,8 @@ function createFloatingWindow() {
   floatingWindow.setMenu(null);
   const { workArea } = screen.getPrimaryDisplay();
   floatingWindow.setPosition(workArea.x + workArea.width - 314, workArea.y + Math.round((workArea.height - 286) / 2));
-  floatingWindow.on("close", () => {
+  floatingWindow.once("close", () => {
+    requestPauseRef?.("进度窗口已关闭，任务已暂停");
     showMainWindow();
   });
   floatingWindow.on("closed", () => {
@@ -167,11 +170,11 @@ function contactPreview(task = loadTaskState(activeTouchDir())) {
 }
 
 function taskPayload(task = loadTaskState(activeTouchDir())) {
-  return { ...publicTaskState(task), preview: contactPreview(task), execution_mode: executionMode };
+  return { ...publicTaskState(task), preview: contactPreview(task) };
 }
 
-function emitTaskUpdate() {
-  const payload = taskPayload();
+function emitTaskUpdate(task) {
+  const payload = taskPayload(task);
   BrowserWindow.getAllWindows().forEach((window) => {
     if (!window.isDestroyed()) window.webContents.send("touch-task:update", payload);
   });
@@ -187,7 +190,7 @@ function pauseTask(task, reason, resultIndex = task.current_index) {
     result.updated_at = new Date().toISOString();
   }
   const saved = saveTaskState(activeTouchDir(), nextTask);
-  emitTaskUpdate();
+  emitTaskUpdate(saved);
   return saved;
 }
 
@@ -195,7 +198,7 @@ function updateCurrentTask(mutator) {
   const task = loadTaskState(activeTouchDir());
   mutator(task);
   const saved = saveTaskState(activeTouchDir(), task);
-  emitTaskUpdate();
+  emitTaskUpdate(saved);
   return saved;
 }
 
@@ -225,15 +228,6 @@ function shouldSkipBlockedContact(result) {
 function shouldContinueRunning() {
   if (pauseRequested || stopRequested) return false;
   return loadTaskState(activeTouchDir()).status === "running";
-}
-
-async function focusWechatBeforeTask(task) {
-  const current = task.results[task.current_index];
-  if (!current) return false;
-  const step = await runStep(task, current, "focus-wechat-window", [], "微信窗口没有切到前台");
-  if (step.ok) return true;
-  pauseTask(loadTaskState(activeTouchDir()), step.reason);
-  return false;
 }
 
 function isIdentitySkip(result) {
@@ -269,37 +263,50 @@ async function prepareCurrentBatch() {
   let task = loadTaskState(activeTouchDir());
   if (task.execution_mode !== "real_send") return task;
   task.phase = "preparing_batch";
-  saveTaskState(activeTouchDir(), task);
-  emitTaskUpdate();
+  task = saveTaskState(activeTouchDir(), task);
+  emitTaskUpdate(task);
 
-  for (let index = task.current_index; index < task.batch_end_index; index += 1) {
+  for (let start = task.current_index; start < task.batch_end_index; start += DRAFT_GENERATION_CONCURRENCY) {
     if (!shouldContinueRunning()) break;
     task = loadTaskState(activeTouchDir());
-    const result = task.results[index];
-    if (!result || ["generated", "ai_failed_skipped", "identity_skipped", "sent_verified"].includes(result.status)) continue;
-    try {
-      const draft = await draftMessageForContact(task, result);
-      result.status = "generated";
-      result.reason = "文案已准备";
-      result.message = draft.message;
-      result.ai_status = draft.usedAi ? "generated" : "fallback";
-      result.ai_reason = draft.reason;
-    } catch (error) {
-      result.status = "ai_failed_skipped";
-      result.reason = String(error?.message || "DeepSeek 文案生成失败，已跳过该联系人");
-      result.ai_status = "failed";
-      result.ai_reason = result.reason;
+    const pending = task.results
+      .slice(start, Math.min(start + DRAFT_GENERATION_CONCURRENCY, task.batch_end_index))
+      .filter((result) => result && !["generated", "ai_failed_skipped", "identity_skipped", "sent_verified"].includes(result.status));
+    const generated = await Promise.all(pending.map(async (result) => {
+      try {
+        return { id: result.id, draft: await draftMessageForContact(task, result) };
+      } catch (error) {
+        return { id: result.id, error };
+      }
+    }));
+
+    task = loadTaskState(activeTouchDir());
+    for (const generatedResult of generated) {
+      const result = task.results.find((item) => item.id === generatedResult.id);
+      if (!result || ["generated", "ai_failed_skipped", "identity_skipped", "sent_verified"].includes(result.status)) continue;
+      if (generatedResult.error) {
+        result.status = "ai_failed_skipped";
+        result.reason = String(generatedResult.error?.message || "DeepSeek 文案生成失败，已跳过该联系人");
+        result.ai_status = "failed";
+        result.ai_reason = result.reason;
+      } else {
+        result.status = "generated";
+        result.reason = "文案已准备";
+        result.message = generatedResult.draft.message;
+        result.ai_status = generatedResult.draft.usedAi ? "generated" : "fallback";
+        result.ai_reason = generatedResult.draft.reason;
+      }
+      result.updated_at = new Date().toISOString();
     }
-    result.updated_at = new Date().toISOString();
-    saveTaskState(activeTouchDir(), task);
-    emitTaskUpdate();
+    task = saveTaskState(activeTouchDir(), task);
+    emitTaskUpdate(task);
   }
 
   task = loadTaskState(activeTouchDir());
   if (task.status === "running") {
     task.phase = "sending_batch";
-    saveTaskState(activeTouchDir(), task);
-    emitTaskUpdate();
+    task = saveTaskState(activeTouchDir(), task);
+    emitTaskUpdate(task);
   }
   return task;
 }
@@ -311,8 +318,9 @@ async function waitUntilSendAllowed() {
     await waitForDelay(task.next_send_not_before);
     return shouldContinueRunning();
   }
-  while (shouldContinueRunning()) {
-    const remaining = Date.parse(loadTaskState(activeTouchDir()).next_send_not_before || "") - Date.now();
+  const deadline = Date.parse(task.next_send_not_before);
+  while (!pauseRequested && !stopRequested) {
+    const remaining = deadline - Date.now();
     if (!Number.isFinite(remaining) || remaining <= 0) return true;
     await new Promise((resolve) => setTimeout(resolve, Math.min(250, remaining)));
   }
@@ -323,11 +331,15 @@ function persistRealSendTransition(index, status, executionState = {}) {
   const task = loadTaskState(activeTouchDir());
   const result = task.results[index];
   if (!result || task.current_index !== index) throw new Error("task_contact_changed_before_send_transition");
+  const alreadyVerified = result.status === "sent_verified";
   result.status = status;
   result.attempt_key = String(executionState.real_send_attempt_key || result.attempt_key || "");
   result.retry_blocked = ["prepared", "clicked", "sent_verified", "outcome_unknown"].includes(status);
   result.reason = status === "sent_verified" ? "发送成功并已验证最新消息气泡" : status === "outcome_unknown" ? "发送结果无法确认，已暂停且绝不自动重试" : "";
   result.updated_at = new Date().toISOString();
+  if (status === "sent_verified" && !alreadyVerified) {
+    task.next_send_not_before = new Date(Date.now() + sendDelayMs(randomSource)).toISOString();
+  }
   if (status === "outcome_unknown") {
     task.status = "paused";
     task.phase = "paused";
@@ -348,6 +360,16 @@ async function runRealContact(task, current, index) {
   }
   if (!(await waitUntilSendAllowed())) return false;
 
+  const isExecutionAllowed = () => {
+    const latest = loadTaskState(activeTouchDir());
+    return !pauseRequested
+      && !stopRequested
+      && latest.status === "running"
+      && latest.current_index === index
+      && isBatchAuthorized(latest);
+  };
+  if (!isExecutionAllowed()) return false;
+
   task = loadTaskState(activeTouchDir());
   const sending = task.results[index];
   sending.status = "sending";
@@ -362,6 +384,7 @@ async function runRealContact(task, current, index) {
     message: current.message,
     frozenContact: current.contact,
     authorized: true,
+    isExecutionAllowed,
     runStep: async (command, args = []) => {
       const latest = loadTaskState(activeTouchDir());
       const latestResult = latest.results[index];
@@ -379,7 +402,6 @@ async function runRealContact(task, current, index) {
     result.retry_blocked = true;
     result.attempt_key = String(response.state.real_send_attempt_key || result.attempt_key || "");
     result.updated_at = new Date().toISOString();
-    task.next_send_not_before = new Date(Date.now() + sendDelayMs(randomSource)).toISOString();
     advanceTask(task, index);
     emitTaskUpdate();
     return true;
@@ -553,14 +575,12 @@ async function runTaskLoop() {
 }
 
 function buildRunnableTask(script) {
-  const contacts = readContacts();
-  const available = executionMode === "real_send" ? classifyContacts(contacts).eligible : contacts.filter((contact) => contact?.allowed !== false);
-  if (!available.length) {
-    return { ok: false, error: "请先同步当前微信联系人" };
-  }
-
   const existing = loadTaskState(activeTouchDir());
   if (existing.integrity_error) return { ok: false, error: existing.pause_reason };
+  const existingCurrent = existing.results[existing.current_index];
+  if (existing.current_index < existing.total && (existingCurrent?.retry_blocked || ["prepared", "clicked", "outcome_unknown", "retry_blocked"].includes(existingCurrent?.status))) {
+    return { ok: false, blocked_reason: "outcome_unknown", error: "当前联系人可能已经执行发送，任务不会自动重试" };
+  }
   if (existing.status === "running" && existing.current_index < existing.total && existing.execution_mode === executionMode) {
     return { ok: true, task: existing };
   }
@@ -572,10 +592,9 @@ function buildRunnableTask(script) {
   if (hasUnfinishedPausedTask(existing, script)) {
     if (existing.execution_mode !== executionMode) return { ok: false, blocked_reason: "task_execution_mode_changed", error: "未完成任务的执行模式不同，请先停止旧任务" };
     const current = existing.results[existing.current_index];
-    if (current?.retry_blocked || ["prepared", "clicked", "outcome_unknown"].includes(current?.status)) {
-      return { ok: false, blocked_reason: "outcome_unknown", error: "当前联系人可能已经执行发送，任务不会自动重试" };
+    if (existing.phase === "awaiting_batch_continue") {
+      return { ok: false, blocked_reason: "batch_continue_required", error: "当前批次已完成，请点击继续下一批" };
     }
-    if (existing.phase === "awaiting_batch_continue") return { ok: true, task: authorizeNextBatch(existing) };
     existing.status = "running";
     existing.pause_reason = "";
     if (current && (current.status === "blocked" || current.status === "processing")) {
@@ -585,7 +604,13 @@ function buildRunnableTask(script) {
     return { ok: true, task: existing };
   }
 
-  return { ok: true, task: createTask(script, contacts, new Date().toISOString(), { executionMode }) };
+  const contacts = readContacts();
+  const classification = executionMode === "real_send" ? classifyContacts(contacts) : null;
+  const available = classification ? classification.eligible : contacts.filter((contact) => contact?.allowed !== false);
+  if (!available.length) {
+    return { ok: false, error: "请先同步当前微信联系人" };
+  }
+  return { ok: true, task: createTask(script, contacts, new Date().toISOString(), { executionMode, classification }) };
 }
 
 function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekClient: client, onPause, executionMode: mode, realSendExecutor: executor, waitForDelay: wait, random } = {}) {
@@ -613,6 +638,7 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     });
     return taskPayload();
   }
+  requestPauseRef = requestPause;
 
   ipcMain.handle("touch-task:start", async (_event, payload = {}) => {
     const script = String(payload.script ?? "").trim();
@@ -694,8 +720,6 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
   });
 
   ipcMain.handle("touch-task:close-floating", () => {
-    requestPause("进度窗口已关闭，任务已暂停");
-    showMainWindow();
     if (floatingWindow && !floatingWindow.isDestroyed()) floatingWindow.close();
     return taskPayload();
   });

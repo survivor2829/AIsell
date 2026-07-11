@@ -52,6 +52,29 @@ function notifyTransition(callback, status, state) {
   if (typeof callback === "function") callback(status, state);
 }
 
+async function executionMayContinue(options) {
+  for (const callback of [options.isExecutionAllowed, options.shouldContinue]) {
+    if (typeof callback !== "function") continue;
+    try {
+      if ((await callback()) !== true) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function cancelVerifiedContactSend(baseDir) {
+  const disarmed = setRealSendArm(baseDir, false);
+  return {
+    ok: false,
+    action: "task_paused",
+    blocked_reason: "batch_cancelled",
+    error: "任务已暂停，本次发送已取消",
+    state: disarmed.state
+  };
+}
+
 function persistOutcomeUnknown(baseDir, state, reason, onTransition) {
   const attemptKey = String(state.real_send_attempt_key ?? "");
   const nextState = {
@@ -211,7 +234,9 @@ async function executeVerifiedContactSend(options = {}) {
     ["click-search-result-dry-run", []]
   ];
   for (const [command, args] of steps) {
+    if (!(await executionMayContinue(options))) return cancelVerifiedContactSend(baseDir);
     const result = await options.runStep(command, args);
+    if (!(await executionMayContinue(options))) return cancelVerifiedContactSend(baseDir);
     if (!result?.ok) return result;
     if (command === "select-customer" && options.frozenContact) {
       const selected = result.state?.selected_customer;
@@ -222,16 +247,22 @@ async function executeVerifiedContactSend(options = {}) {
     }
   }
 
+  if (!(await executionMayContinue(options))) return cancelVerifiedContactSend(baseDir);
   const session = verifyRealSendSession(baseDir, options.sessionDriver || verifyWechatCurrentConversation);
+  if (!(await executionMayContinue(options))) return cancelVerifiedContactSend(baseDir);
   if (!session.ok) return session;
   for (const [command, args] of [
     ["input-message-dry-run", ["--message", message]],
     ["send", ["--dry-run", "--message", message]]
   ]) {
+    if (!(await executionMayContinue(options))) return cancelVerifiedContactSend(baseDir);
     const result = await options.runStep(command, args);
+    if (!(await executionMayContinue(options))) return cancelVerifiedContactSend(baseDir);
     if (!result?.ok) return result;
   }
+  if (!(await executionMayContinue(options))) return cancelVerifiedContactSend(baseDir);
   const armed = setRealSendArm(baseDir, true);
+  if (!(await executionMayContinue(options))) return cancelVerifiedContactSend(baseDir);
   if (!armed.ok) return armed;
   return sendReal(baseDir, {
     allowRealSend: true,

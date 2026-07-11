@@ -79,7 +79,22 @@ function taskSnapshotHash(task) {
   })).digest("hex");
 }
 
-function contactIdentityError(contacts, contact) {
+function contactIdentityIndex(contacts) {
+  const activeRows = contacts.filter((row) => row?.allowed !== false && row?.disabled !== true && row?.active !== false);
+  const counts = (valueOf) => activeRows.reduce((result, row) => {
+    const value = valueOf(row);
+    result.set(value, (result.get(value) || 0) + 1);
+    return result;
+  }, new Map());
+  return {
+    names: counts(contactName),
+    wechatIds: counts((row) => String(row?.wechatId ?? "").trim()),
+    ids: counts((row) => String(row?.id ?? "").trim()),
+    accounts: new Set(activeRows.map((row) => String(row?.wechatAccountId ?? "").trim()).filter(Boolean))
+  };
+}
+
+function contactIdentityError(contacts, contact, index = contactIdentityIndex(contacts)) {
   const name = contactName(contact);
   const wechatId = String(contact?.wechatId ?? "").trim();
   const accountId = String(contact?.wechatAccountId ?? "").trim();
@@ -87,12 +102,10 @@ function contactIdentityError(contacts, contact) {
   if (!String(contact?.id ?? "").trim() || !touchSearchName(contact)) return "contact_identity_missing";
   if (!wechatId) return "wechat_id_missing";
   if (!accountId) return "wechat_account_identity_missing";
-  const activeRows = contacts.filter((row) => row?.allowed !== false && row?.disabled !== true && row?.active !== false);
-  if (activeRows.filter((row) => contactName(row) === name).length !== 1) return "contact_name_not_unique";
-  if (activeRows.filter((row) => String(row?.wechatId ?? "").trim() === wechatId).length !== 1) return "contact_identity_not_unique";
-  if (activeRows.filter((row) => String(row?.id ?? "").trim() === String(contact?.id ?? "").trim()).length !== 1) return "contact_identity_not_unique";
-  const accounts = new Set(activeRows.map((row) => String(row?.wechatAccountId ?? "").trim()).filter(Boolean));
-  if (accounts.size !== 1 || !accounts.has(accountId)) return "wechat_account_ambiguous";
+  if (index.names.get(name) !== 1) return "contact_name_not_unique";
+  if (index.wechatIds.get(wechatId) !== 1) return "contact_identity_not_unique";
+  if (index.ids.get(String(contact?.id ?? "").trim()) !== 1) return "contact_identity_not_unique";
+  if (index.accounts.size !== 1 || !index.accounts.has(accountId)) return "wechat_account_ambiguous";
   return "";
 }
 
@@ -109,8 +122,9 @@ function classifyContacts(contacts = []) {
     contact_identity_not_unique: "联系人微信号或身份不唯一",
     wechat_account_ambiguous: "联系人来自多个或无法确认的微信账号"
   };
+  const identityIndex = contactIdentityIndex(rows);
   for (const contact of rows) {
-    const reasonCode = contactIdentityError(rows, contact);
+    const reasonCode = contactIdentityError(rows, contact, identityIndex);
     if (!reasonCode) eligible.push(contact);
     else excluded.push({ contact: publicContact(contact), reason_code: reasonCode, reason: labels[reasonCode] || reasonCode });
   }
@@ -135,13 +149,16 @@ function batchAuthorization(task, at = nowIso()) {
 function isBatchAuthorized(task) {
   if (task?.execution_mode !== "real_send" || !task?.batch_authorization) return false;
   return task.batch_authorization.batch === task.current_batch
-    && task.batch_authorization.id === batchAuthorization(task, task.batch_authorization.authorized_at).id;
+    && task.batch_authorization.id === batchAuthorization(task, task.batch_authorization.authorized_at).id
+    && Number.isInteger(task.current_index)
+    && task.current_index >= task.batch_start_index
+    && task.current_index < task.batch_end_index;
 }
 
 function createTask(script, contacts, startedAt = nowIso(), options = {}) {
   const executionMode = options.executionMode === "real_send" ? "real_send" : "draft_only";
   const classification = executionMode === "real_send"
-    ? classifyContacts(contacts)
+    ? options.classification || classifyContacts(contacts)
     : { eligible: contacts.filter((contact) => contact?.allowed !== false && touchSearchName(contact)), excluded: [], accountId: "" };
   const allowedContacts = classification.eligible;
   const results = allowedContacts.map((contact, contactIndex) => ({
@@ -238,8 +255,8 @@ function normalizeTask(raw) {
     contact_index: Number.isInteger(result?.contact_index) ? result.contact_index : index
   }));
   const rawVersion = Number(raw.version || 1);
-  const version = rawVersion >= 3 ? 3 : 2;
-  return {
+  const version = rawVersion >= 3 ? rawVersion : 2;
+  const normalized = {
     ...emptyTask(),
     ...withoutGatewayFields,
     total,
@@ -254,6 +271,14 @@ function normalizeTask(raw) {
     excluded_contacts: Array.isArray(raw.excluded_contacts) ? raw.excluded_contacts : [],
     results: normalizedResults
   };
+  if (rawVersion > 3) {
+    normalized.status = "blocked";
+    normalized.phase = "paused";
+    normalized.batch_authorization = null;
+    normalized.pause_reason = "任务版本高于当前程序支持范围，已阻断执行";
+    normalized.integrity_error = "unsupported_task_version";
+  }
+  return normalized;
 }
 
 function readExecutionState(baseDir) {
@@ -265,7 +290,7 @@ function readExecutionState(baseDir) {
 }
 
 function reconcileRealSendAttempt(task, executionState) {
-  if (task.version < 3 || task.execution_mode !== "real_send") return task;
+  if (task.version !== 3 || task.execution_mode !== "real_send") return task;
   const current = task.results[task.current_index];
   const context = executionState?.task_context;
   if (!current || !context || context.task_id !== task.id || String(context.contact_id) !== String(current.id) || Number(context.current_index) !== task.current_index) return task;
@@ -278,11 +303,16 @@ function reconcileRealSendAttempt(task, executionState) {
     current.retry_blocked = true;
     current.updated_at = nowIso();
     task.current_index += 1;
+    task.next_send_not_before ||= new Date(Date.now() + sendDelayMs()).toISOString();
     if (task.current_index >= task.total) {
       task.status = "completed";
       task.phase = "completed";
       task.completed_at = task.completed_at || nowIso();
       task.pause_reason = "";
+    } else if (task.current_index >= task.batch_end_index) {
+      task.status = "paused";
+      task.phase = "awaiting_batch_continue";
+      task.pause_reason = `第 ${task.current_batch} 批已完成，点击继续下一批`;
     }
     return task;
   }
@@ -301,7 +331,7 @@ function reconcileRealSendAttempt(task, executionState) {
 
 function readTaskFile(file) {
   const task = normalizeTask(JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")));
-  if (task.version >= 3 && task.execution_mode === "real_send" && task.snapshot_hash && taskSnapshotHash(task) !== task.snapshot_hash) {
+  if (!task.integrity_error && task.version === 3 && task.execution_mode === "real_send" && task.snapshot_hash && taskSnapshotHash(task) !== task.snapshot_hash) {
     task.status = "blocked";
     task.phase = "paused";
     task.pause_reason = "任务联系人冻结快照校验失败，已阻断执行";
@@ -354,7 +384,8 @@ function saveTaskState(baseDir = __dirname, task) {
 
 function recoverInterruptedTask(baseDir = __dirname) {
   const task = loadTaskState(baseDir);
-  if (task.version >= 3 && task.execution_mode === "real_send") {
+  if (task.integrity_error === "unsupported_task_version") return task;
+  if (task.version === 3 && task.execution_mode === "real_send") {
     const beforeIndex = task.current_index;
     reconcileRealSendAttempt(task, readExecutionState(baseDir));
     const unresolved = task.results[task.current_index];
