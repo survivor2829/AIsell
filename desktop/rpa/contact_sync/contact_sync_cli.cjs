@@ -349,7 +349,7 @@ function findAccount(wechatRoot) {
   };
 }
 
-function normalizeContact(row, index, syncedAt, source = "wechat-silent-sync") {
+function normalizeContact(row, index, syncedAt, source = "wechat-silent-sync", wechatAccountId = "") {
   const remark = String(row.remark ?? "").trim();
   const nickname = String(row.nickname ?? row.nick_name ?? "").trim();
   const username = String(row.username ?? row.user_name ?? row.wxid ?? "").trim();
@@ -381,6 +381,7 @@ function normalizeContact(row, index, syncedAt, source = "wechat-silent-sync") {
     nickname,
     wxid: username,
     wechatId,
+    wechatAccountId,
     tag: String(row.tag ?? row.label ?? "微信同步"),
     lastTouch: String(row.lastTouch ?? row.last_touch ?? ""),
     allowed: row.allowed !== false,
@@ -389,11 +390,11 @@ function normalizeContact(row, index, syncedAt, source = "wechat-silent-sync") {
   };
 }
 
-function normalizeContacts(rawContacts, syncedAt = new Date().toISOString(), source = "wechat-silent-sync") {
+function normalizeContacts(rawContacts, syncedAt = new Date().toISOString(), source = "wechat-silent-sync", wechatAccountId = "") {
   const rows = Array.isArray(rawContacts) ? rawContacts : Array.isArray(rawContacts.contacts) ? rawContacts.contacts : [];
   const seen = new Set();
   return rows
-    .map((row, index) => normalizeContact(row, index, syncedAt, source))
+    .map((row, index) => normalizeContact(row, index, syncedAt, source, wechatAccountId))
     .filter(Boolean)
     .filter((row) => {
       if (seen.has(row.id)) return false;
@@ -708,7 +709,8 @@ function capture(baseDir = __dirname, options = {}) {
     if (!rawContacts) return null;
 
     const syncedAt = new Date().toISOString();
-    const contacts = normalizeContacts(rawContacts, syncedAt);
+    const accountName = account.accountName ?? "";
+    const contacts = normalizeContacts(rawContacts, syncedAt, "wechat-silent-sync", accountName);
     writeJson(contactsPath(baseDir, options), contacts);
     const state = {
       ...loadState(baseDir),
@@ -717,7 +719,7 @@ function capture(baseDir = __dirname, options = {}) {
       last_synced_at: syncedAt,
       last_error: "",
       last_stage: "captured_and_synced",
-      account_name: account.accountName ?? "",
+      account_name: accountName,
       helper_configured: helper.helperConfigured
     };
     saveState(baseDir, state);
@@ -856,7 +858,8 @@ function sync(baseDir = __dirname, options = {}) {
   }
 
   const syncedAt = new Date().toISOString();
-  const contacts = normalizeContacts(readJson(tempOut, []), syncedAt);
+  const accountName = account.accountName ?? path.basename(account.accountDir);
+  const contacts = normalizeContacts(readJson(tempOut, []), syncedAt, "wechat-silent-sync", accountName);
   try {
     fs.rmSync(tempOut, { force: true });
   } catch {
@@ -871,7 +874,7 @@ function sync(baseDir = __dirname, options = {}) {
     last_synced_at: syncedAt,
     last_error: "",
     last_stage: "synced",
-    account_name: account.accountName ?? path.basename(account.accountDir),
+    account_name: accountName,
     helper_configured: true
   };
   saveState(baseDir, state);
@@ -879,10 +882,16 @@ function sync(baseDir = __dirname, options = {}) {
 }
 
 function status(baseDir = __dirname, options = {}) {
-  const contacts = readContacts(baseDir, options);
+  const storedState = loadState(baseDir);
+  const accountName = String(storedState.account_name ?? "").trim();
+  let contacts = readContacts(baseDir, options);
+  if (accountName && contacts.some((contact) => !String(contact.wechatAccountId ?? "").trim())) {
+    contacts = contacts.map((contact) => ({ ...contact, wechatAccountId: String(contact.wechatAccountId ?? "").trim() || accountName }));
+    writeJson(contactsPath(baseDir, options), contacts);
+  }
   const helper = resolveHelper(baseDir, options);
   const state = {
-    ...loadState(baseDir),
+    ...storedState,
     contact_count: contacts.length,
     helper_configured: helper.helperConfigured
   };

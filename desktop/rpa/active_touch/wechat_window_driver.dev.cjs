@@ -1,0 +1,307 @@
+const {
+  runPowerShell,
+  verifyWechatCurrentConversation: verifyWechatCurrentConversationSafe
+} = require("./wechat_window_driver.cjs");
+
+const SEND_MESSAGE_SCRIPT = `
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class Win32WechatSendMessage {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr extraData);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+}
+"@
+$sendKey = [Environment]::GetEnvironmentVariable("XIAOXI_SEND_KEY")
+if ([string]::IsNullOrWhiteSpace($sendKey)) { $sendKey = "{ENTER}" }
+$expectedPid = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")
+$expectedHandle = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND")
+  $processNames = @("Weixin", "WeChat")
+$matched = $null
+$callback = [Win32WechatSendMessage+EnumWindowsProc]{
+  param([IntPtr]$hWnd, [IntPtr]$lParam)
+  if ($matched -ne $null) { return $true }
+  if ([Win32WechatSendMessage]::IsWindowVisible($hWnd)) {
+    $text = New-Object System.Text.StringBuilder 512
+    [void][Win32WechatSendMessage]::GetWindowText($hWnd, $text, $text.Capacity)
+    $title = $text.ToString().Trim()
+    $rect = New-Object Win32WechatSendMessage+RECT
+    [void][Win32WechatSendMessage]::GetWindowRect($hWnd, [ref]$rect)
+    $w = $rect.Right - $rect.Left
+    $h = $rect.Bottom - $rect.Top
+    [uint32]$windowProcessId = 0
+    [void][Win32WechatSendMessage]::GetWindowThreadProcessId($hWnd, [ref]$windowProcessId)
+    $proc = Get-Process -Id $windowProcessId -ErrorAction SilentlyContinue
+    $matchesExpected = ([string]::IsNullOrWhiteSpace($expectedPid) -or [string]$windowProcessId -eq $expectedPid) -and ([string]::IsNullOrWhiteSpace($expectedHandle) -or [string]$hWnd.ToInt64() -eq $expectedHandle)
+    if ($proc -and $matchesExpected -and [int64]$proc.MainWindowHandle -eq $hWnd.ToInt64() -and $processNames -contains $proc.ProcessName -and $title -eq "微信" -and $w -ge 400 -and $h -ge 300 -and $rect.Left -gt -1000 -and $rect.Top -gt -1000) {
+      [void][Win32WechatSendMessage]::ShowWindowAsync($hWnd, 9)
+      $focused = [Win32WechatSendMessage]::SetForegroundWindow($hWnd)
+      if (-not $focused) { try { $focused = (New-Object -ComObject WScript.Shell).AppActivate([int]$windowProcessId) } catch {} }
+      Start-Sleep -Milliseconds 200
+      $focused = $focused -or ([Win32WechatSendMessage]::GetForegroundWindow() -eq $hWnd)
+      $script:matched = @{ title = $title; focused = $focused; processName = $proc.ProcessName; pid = $windowProcessId; hWnd = $hWnd.ToInt64() }
+    }
+  }
+  return $true
+}
+[void][Win32WechatSendMessage]::EnumWindows($callback, [IntPtr]::Zero)
+if ($matched -eq $null) {
+  @{ ok = $false } | ConvertTo-Json -Compress
+  exit
+}
+if (-not $matched.focused) {
+  @{ ok = $false; reason = "wechat_focus_failed"; title = $matched.title; processName = $matched.processName } | ConvertTo-Json -Compress
+  exit
+}
+Start-Sleep -Milliseconds 150
+[System.Windows.Forms.SendKeys]::SendWait($sendKey)
+Start-Sleep -Milliseconds 300
+@{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; sendKey = $sendKey } | ConvertTo-Json -Compress
+`;
+
+function clickWechatSendButton(sendKey = "{ENTER}", context = {}) {
+  return runPowerShell(SEND_MESSAGE_SCRIPT, { XIAOXI_SEND_KEY: String(sendKey || "{ENTER}"), XIAOXI_EXPECTED_PID: String(context.pid ?? ""), XIAOXI_EXPECTED_HWND: String(context.hWnd ?? "") });
+}
+
+const DETECT_ACTIVE_ACCOUNT_SCRIPT = `
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$expectedPid = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")
+if ([string]::IsNullOrWhiteSpace($expectedPid)) {
+  @{ ok = $false; reason = "wechat_pid_missing" } | ConvertTo-Json -Compress
+  exit
+}
+$process = Get-Process -Id ([int]$expectedPid) -ErrorAction SilentlyContinue
+if ($process -eq $null -or @("Weixin", "WeChat") -notcontains $process.ProcessName) {
+  @{ ok = $false; reason = "personal_wechat_process_missing" } | ConvertTo-Json -Compress
+  exit
+}
+$exePath = $process.Path
+if ([string]::IsNullOrWhiteSpace($exePath)) {
+  try { $exePath = (Get-CimInstance Win32_Process -Filter "ProcessId = $expectedPid").ExecutablePath } catch {}
+}
+if ([string]::IsNullOrWhiteSpace($exePath)) {
+  @{ ok = $false; reason = "wechat_executable_path_missing" } | ConvertTo-Json -Compress
+  exit
+}
+$exeDir = Split-Path $exePath -Parent
+$installRoot = Split-Path $exeDir -Parent
+$roots = @(
+  (Join-Path $installRoot "xwechat_files"),
+  (Join-Path $exeDir "xwechat_files")
+) | Select-Object -Unique
+$accounts = @()
+foreach ($root in $roots) {
+  if (Test-Path -LiteralPath $root -PathType Container) {
+    foreach ($account in (Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "^wxid_[A-Za-z0-9_]+$" })) {
+      $latestWal = Get-ChildItem -LiteralPath (Join-Path $account.FullName "db_storage") -Recurse -File -Filter "*.db-wal" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1
+      $accounts += [pscustomobject]@{
+        account = $account
+        activityPath = $(if ($latestWal) { $latestWal.FullName } else { $account.FullName })
+        activityTimeUtc = $(if ($latestWal) { $latestWal.LastWriteTimeUtc } else { $account.LastWriteTimeUtc })
+      }
+    }
+  }
+}
+$active = $accounts | Sort-Object activityTimeUtc -Descending | Select-Object -First 1
+if ($active -eq $null) {
+  @{ ok = $false; reason = "wechat_account_directory_missing" } | ConvertTo-Json -Compress
+  exit
+}
+@{
+  ok = $true
+  accountId = $active.account.Name
+  accountPath = $active.account.FullName
+  activityPath = $active.activityPath
+  lastActivityTimeUtc = $active.activityTimeUtc.ToString("o")
+} | ConvertTo-Json -Compress
+`;
+
+function detectActiveWechatAccount(context = {}) {
+  if (!context.pid) return { ok: false, reason: "wechat_pid_missing" };
+  return runPowerShell(DETECT_ACTIVE_ACCOUNT_SCRIPT, { XIAOXI_EXPECTED_PID: String(context.pid) });
+}
+
+function verifyWechatCurrentConversation(expectedTitle) {
+  const result = verifyWechatCurrentConversationSafe(expectedTitle);
+  if (!result.ok) return result;
+  const account = detectActiveWechatAccount({ pid: result.pid });
+  return {
+    ...result,
+    accountId: account.ok ? String(account.accountId ?? "") : "",
+    accountVerified: account.ok === true,
+    accountReason: account.ok ? "" : String(account.reason ?? "wechat_account_not_verified")
+  };
+}
+
+const MESSAGE_BUBBLE_PROOF_SCRIPT = `
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient
+$message = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_MESSAGE")
+$phase = [Environment]::GetEnvironmentVariable("XIAOXI_VERIFY_PHASE")
+$expectedPid = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")
+$expectedHandle = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND")
+$beforeJson = [Environment]::GetEnvironmentVariable("XIAOXI_BEFORE_SNAPSHOT")
+if ([string]::IsNullOrWhiteSpace($message) -or [string]::IsNullOrWhiteSpace($expectedPid) -or [string]::IsNullOrWhiteSpace($expectedHandle)) {
+  @{ ok = $false; reason = "window_or_message_missing" } | ConvertTo-Json -Compress
+  exit
+}
+$process = Get-Process -Id ([int]$expectedPid) -ErrorAction SilentlyContinue
+if (
+  $process -eq $null -or
+  @("Weixin", "WeChat") -notcontains $process.ProcessName -or
+  [string]$process.MainWindowHandle -ne [string]$expectedHandle -or
+  $process.MainWindowTitle -ne "微信"
+) {
+  @{ ok = $false; reason = "real_send_session_changed" } | ConvertTo-Json -Compress
+  exit
+}
+$root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr][int64]$expectedHandle)
+if ($root -eq $null) {
+  @{ ok = $false; reason = "automation_root_missing" } | ConvertTo-Json -Compress
+  exit
+}
+Start-Sleep -Milliseconds 350
+$windowRect = $root.Current.BoundingRectangle
+$windowWidth = $windowRect.Width
+$windowHeight = $windowRect.Height
+$chatLeft = $windowRect.Left + ($windowWidth * 0.25)
+$chatTop = $windowRect.Top + 45
+$chatBottom = $windowRect.Bottom - 125
+$outgoingEdge = $windowRect.Left + ($windowWidth * 0.80)
+
+function Get-ElementText([System.Windows.Automation.AutomationElement]$element) {
+  $name = $element.Current.Name
+  if (-not [string]::IsNullOrWhiteSpace($name)) { return [string]$name }
+  try {
+    $valuePattern = $element.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+    if ($valuePattern -and -not [string]::IsNullOrWhiteSpace($valuePattern.Current.Value)) {
+      return [string]$valuePattern.Current.Value
+    }
+  } catch {}
+  return ""
+}
+
+function Get-ElementKey([System.Windows.Automation.AutomationElement]$element, $rect, [string]$text) {
+  try {
+    $runtimeId = $element.GetRuntimeId()
+    if ($runtimeId -and $runtimeId.Count -gt 0) { return [string]($runtimeId -join ".") }
+  } catch {}
+  return [string]("rect:{0}:{1}:{2}:{3}:{4}" -f [int]$rect.Left, [int]$rect.Top, [int]$rect.Right, [int]$rect.Bottom, $text)
+}
+
+$all = $root.FindAll(
+  [System.Windows.Automation.TreeScope]::Descendants,
+  [System.Windows.Automation.Condition]::TrueCondition
+)
+$candidates = New-Object System.Collections.Generic.List[object]
+for ($index = 0; $index -lt $all.Count; $index++) {
+  $element = $all.Item($index)
+  $text = Get-ElementText $element
+  if ([string]::IsNullOrWhiteSpace($text)) { continue }
+  try { $rect = $element.Current.BoundingRectangle } catch { continue }
+  if (
+    $rect.Width -le 0 -or
+    $rect.Height -le 0 -or
+    $rect.Height -gt [Math]::Max(240, $windowHeight * 0.35) -or
+    $rect.Right -lt $chatLeft -or
+    $rect.Top -lt $chatTop -or
+    $rect.Bottom -gt $chatBottom
+  ) { continue }
+  $key = Get-ElementKey $element $rect $text
+  [void]$candidates.Add([pscustomobject]@{
+    text = [string]$text
+    key = [string]$key
+    left = [double]$rect.Left
+    top = [double]$rect.Top
+    right = [double]$rect.Right
+    bottom = [double]$rect.Bottom
+    outgoing = ([double]$rect.Right -ge $outgoingEdge -and (($rect.Left + $rect.Right) / 2) -ge ($windowRect.Left + ($windowWidth * 0.55)))
+  })
+}
+$exactCandidates = @($candidates | Where-Object { $_.text -ceq $message })
+$outgoingExactBefore = @($exactCandidates | Where-Object { $_.outgoing })
+$snapshot = @{
+  runtimeIds = @($exactCandidates | ForEach-Object { $_.key } | Select-Object -Unique)
+  exactCount = $outgoingExactBefore.Count
+  capturedAtUtc = [DateTime]::UtcNow.ToString("o")
+}
+if ($phase -eq "before") {
+  @{
+    ok = $true
+    snapshot = $snapshot
+  } | ConvertTo-Json -Compress -Depth 5
+  exit
+}
+if ($phase -ne "after") {
+  @{ ok = $false; reason = "message_verify_phase_invalid" } | ConvertTo-Json -Compress
+  exit
+}
+$beforeKeys = @()
+$beforeExactCount = 0
+try {
+  if (-not [string]::IsNullOrWhiteSpace($beforeJson)) {
+    $beforeSnapshot = $beforeJson | ConvertFrom-Json
+    $beforeKeys = @($beforeSnapshot.runtimeIds)
+    $beforeExactCount = [int]$beforeSnapshot.exactCount
+  }
+} catch {
+  @{ ok = $false; reason = "message_snapshot_invalid" } | ConvertTo-Json -Compress
+  exit
+}
+$outgoingExact = @($exactCandidates | Where-Object { $_.outgoing })
+$newOutgoingExact = @($outgoingExact | Where-Object { $beforeKeys -notcontains $_.key })
+$selected = $newOutgoingExact | Sort-Object bottom -Descending | Select-Object -First 1
+if ($selected -eq $null) {
+  $selected = $outgoingExact | Sort-Object bottom -Descending | Select-Object -First 1
+}
+$latestOutgoing = $candidates | Where-Object { $_.outgoing } | Sort-Object bottom -Descending | Select-Object -First 1
+$exactMatch = $selected -ne $null -and $selected.text -ceq $message
+$outgoing = $selected -ne $null -and $selected.outgoing -eq $true
+$countIncreased = $outgoingExact.Count -gt $beforeExactCount
+$isNew = $selected -ne $null -and $beforeKeys -notcontains $selected.key -and $countIncreased
+$isLatest = $selected -ne $null -and $latestOutgoing -ne $null -and $selected.bottom -ge ($latestOutgoing.bottom - 2)
+@{
+  ok = ($selected -ne $null)
+  messageText = $(if ($selected -ne $null) { [string]$selected.text } else { "" })
+  exactMatch = $exactMatch
+  outgoing = $outgoing
+  isLatest = $isLatest
+  isNew = $isNew
+  title = $process.MainWindowTitle
+  processName = $process.ProcessName
+  pid = $process.Id
+  hWnd = [int64]$process.MainWindowHandle
+} | ConvertTo-Json -Compress
+`;
+
+function verifyWechatMessageBubble(message, context = {}) {
+  if (!String(message ?? "").trim()) return { ok: false, reason: "message_missing" };
+  const phase = context.phase === "after" ? "after" : "before";
+  return runPowerShell(MESSAGE_BUBBLE_PROOF_SCRIPT, {
+    XIAOXI_EXPECTED_MESSAGE: String(message),
+    XIAOXI_EXPECTED_PID: String(context.pid ?? ""),
+    XIAOXI_EXPECTED_HWND: String(context.hWnd ?? ""),
+    XIAOXI_VERIFY_PHASE: phase,
+    XIAOXI_BEFORE_SNAPSHOT: JSON.stringify(context.beforeSnapshot ?? null)
+  });
+}
+
+module.exports = {
+  clickWechatSendButton,
+  detectActiveWechatAccount,
+  verifyWechatCurrentConversation,
+  verifyWechatMessageBubble
+};

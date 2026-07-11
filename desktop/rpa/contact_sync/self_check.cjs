@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
-const { capture, decryptSqlcipher4Raw, prepareWechatLogin, resolveHelper, sync } = require("./contact_sync_cli.cjs");
+const { capture, decryptSqlcipher4Raw, prepareWechatLogin, resolveHelper, status, sync } = require("./contact_sync_cli.cjs");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-contact-sync-"));
 const syncDir = path.join(root, "contact_sync");
@@ -127,6 +127,11 @@ fs.writeFileSync(out, JSON.stringify([{ username: "wxid_x", remark: "新版目�
   assert.equal(xwechatOk.contacts.length, 1);
   assert.equal(xwechatOk.contacts[0].name, "新版目录客户");
   assert.equal(xwechatOk.state.account_name, "wxid_latest_abcd");
+  assert.equal(xwechatOk.contacts[0].wechatAccountId, "wxid_latest_abcd");
+
+  fs.writeFileSync(path.join(activeTouchDir, "contacts.json"), JSON.stringify(xwechatOk.contacts.map(({ wechatAccountId, ...contact }) => contact)), "utf8");
+  const hydrated = status(syncDir, { activeTouchDir });
+  assert.equal(hydrated.contacts[0].wechatAccountId, "wxid_latest_abcd");
 
   const builtIn = resolveHelper(__dirname);
   if (builtIn.helperConfigured) {

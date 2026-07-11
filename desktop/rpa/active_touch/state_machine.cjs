@@ -6,8 +6,7 @@ const {
   inputWechatMessageDraft,
   inputWechatSearchQuery,
   openWechatSearchResult,
-  verifyWechatCurrentConversation,
-  verifyWechatVisibleText
+  verifyWechatCurrentConversation
 } = require("./wechat_window_driver.cjs");
 
 const DEFAULT_STATE = {
@@ -39,6 +38,11 @@ const DEFAULT_STATE = {
   message_bubble_verified: false,
   message_bubble_status: "not_checked",
   message_bubble_reason: "",
+  wechat_account_id: "",
+  window_pid: 0,
+  window_handle: "",
+  window_process_name: "",
+  real_send_attempts: {},
   queue_dry_run_count: 0,
   queue_dry_run_passed: false,
   queue_dry_run_results: [],
@@ -67,12 +71,21 @@ function readJson(filePath) {
 }
 
 function loadState(baseDir = __dirname) {
-  return { ...DEFAULT_STATE, ...readJson(statePath(baseDir)) };
+  const filePath = statePath(baseDir);
+  if (!fs.existsSync(filePath)) return { ...DEFAULT_STATE };
+  return { ...DEFAULT_STATE, ...JSON.parse(fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, "")) };
 }
 
 function saveState(baseDir, state) {
   fs.mkdirSync(baseDir, { recursive: true });
-  fs.writeFileSync(statePath(baseDir), JSON.stringify(state, null, 2), "utf8");
+  const filePath = statePath(baseDir);
+  const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    fs.writeFileSync(tempPath, JSON.stringify(state, null, 2), "utf8");
+    fs.renameSync(tempPath, filePath);
+  } finally {
+    if (fs.existsSync(tempPath)) fs.rmSync(tempPath, { force: true });
+  }
 }
 
 function readLogs(baseDir = __dirname, limit = 50) {
@@ -109,6 +122,7 @@ function readContacts(baseDir = __dirname) {
         nickname,
         wxid,
         wechatId,
+        wechatAccountId: String(row.wechatAccountId ?? row.wechat_account_id ?? "").trim(),
         tag: String(row.tag ?? row.label ?? ""),
         lastTouch: String(row.lastTouch ?? row.last_touch ?? ""),
         allowed: row.allowed !== false,
@@ -369,6 +383,10 @@ function selectCustomer(baseDir = __dirname, customerId = "") {
     message_bubble_verified: false,
     message_bubble_status: "not_checked",
     message_bubble_reason: "",
+    wechat_account_id: customer.wechatAccountId,
+    window_pid: 0,
+    window_handle: "",
+    window_process_name: "",
     last_result: "customer_selected",
     blocked_reason: ""
   };
@@ -382,6 +400,7 @@ function clearCustomer(baseDir = __dirname) {
   const nextState = {
     ...DEFAULT_STATE,
     calibrated: state.calibrated,
+    real_send_attempts: state.real_send_attempts ?? {},
     dry_run: true,
     last_result: "customer_cleared",
     blocked_reason: ""
@@ -888,6 +907,7 @@ module.exports = {
   loadState,
   openConversationDryRun,
   queueDryRun,
+  readContacts,
   readLogs,
   searchConversationDryRun,
   selectCustomer,

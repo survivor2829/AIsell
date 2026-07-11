@@ -9,6 +9,7 @@ const {
   clearCustomer,
   focusWechatWindowDryRun,
   inputMessageDryRun,
+  loadState,
   locateConversation,
   openConversationDryRun,
   queueDryRun,
@@ -21,7 +22,7 @@ const {
   verifySendResultDryRun,
   verifyWindowTitle
 } = require("./state_machine.cjs");
-const { sendReal, setRealSendArm, verifyMessageBubble } = require("./state_machine.dev.cjs");
+const { sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession } = require("./state_machine.dev.cjs");
 const {
   createTask,
   cleanupTaskCache,
@@ -126,7 +127,7 @@ try {
   assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: true, title: "企业微信", processName: "WXWork" })).state.last_result, "wechat_window_focused");
   assert.equal(send(dir, { dryRun: true, message: "hello" }).blocked_reason, "no_whitelist_customer");
 
-  fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_internal", name: "测试客户", wxid: "wxid_internal", allowed: true }]), "utf8");
+  fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_internal", name: "测试客户", wxid: "wxid_internal", wechatId: "internal-test-001", wechatAccountId: "internal-account", allowed: true }]), "utf8");
   assert.equal(status(dir).contacts.length, 1);
   assert.equal(verifyConversation(dir, "测试客户").blocked_reason, "no_whitelist_customer");
   assert.equal(selectCustomer(dir, "wxid_internal").state.selected_customer.name, "测试客户");
@@ -150,7 +151,7 @@ try {
     searchQuery = query;
     return { ok: true, title: "企业微信" };
   }, () => ["企业微信"]);
-  assert.equal(searchQuery, "测试客户");
+  assert.equal(searchQuery, "internal-test-001");
   const searchOnly = searchConversationDryRun(dir, () => ({ ok: true, title: "企业微信" }), () => ["企业微信"]);
   assert.equal(searchOnly.state.search_input_done, true);
   assert.equal(searchOnly.state.conversation_verified, false);
@@ -194,20 +195,124 @@ try {
   assert.equal(verifySendResultDryRun(dir, () => ["测试客户 - 企业微信"]).state.post_send_verified, true);
   assert.equal(sendReal(dir, { message: "hello" }).blocked_reason, "real_send_not_armed");
   assert.equal(send(dir, { dryRun: true, message: "hello" }).state.send_gate_status, "dry_run_passed");
+  assert.equal(setRealSendArm(dir, true).blocked_reason, "real_send_session_not_verified");
+  saveState(dir, { ...loadState(dir), wechat_account_id: "" });
+  assert.equal(verifyRealSendSession(dir, () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "", accountVerified: false })).blocked_reason, "wechat_account_not_verified");
+  assert.equal(verifyRealSendSession(dir, () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "other-account", accountVerified: true })).blocked_reason, "wechat_account_changed");
+  assert.equal(verifyRealSendSession(dir, () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true })).ok, true);
+  assert.equal(send(dir, { dryRun: true, message: "hello" }).state.send_gate_status, "dry_run_passed");
   assert.equal(setRealSendArm(dir, true).state.real_send_armed, true);
   assert.equal(sendReal(dir, { message: "hello" }).blocked_reason, "real_send_explicit_allow_missing");
   assert.equal(verifyMessageBubble(dir, () => ({ ok: true })).blocked_reason, "real_send_not_clicked");
   assert.equal(send(dir, { dryRun: true, message: "hello" }).state.send_gate_status, "dry_run_passed");
-  assert.equal(setRealSendArm(dir, true).state.real_send_armed, true);
-  assert.equal(sendReal(dir, { message: "hello", allowRealSend: true }, () => ({ ok: false })).blocked_reason, "real_send_failed");
+  assert.equal(verifyRealSendSession(dir, () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true })).ok, true);
   assert.equal(send(dir, { dryRun: true, message: "hello" }).state.send_gate_status, "dry_run_passed");
   assert.equal(setRealSendArm(dir, true).state.real_send_armed, true);
-  assert.equal(sendReal(dir, { message: "hello", allowRealSend: true }, () => ({ ok: true, title: "测试客户 - 企业微信" })).state.real_send_clicked, true);
-  assert.equal(verifyMessageBubble(dir, () => ({ ok: false })).blocked_reason, "message_bubble_not_found");
-  assert.equal(verifyMessageBubble(dir, () => ({ ok: true, title: "测试客户 - 企业微信" })).state.message_bubble_verified, true);
+  assert.equal(sendReal(dir, { message: "hello", allowRealSend: true }).blocked_reason, "real_send_final_confirmation_missing");
+  send(dir, { dryRun: true, message: "hello" });
+  verifyRealSendSession(dir, () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }));
+  setRealSendArm(dir, true);
+  let legacySendCalls = 0;
+  const legacyBubbleResult = sendReal(
+    dir,
+    { message: "hello", allowRealSend: true, userConfirmed: true },
+    () => { legacySendCalls += 1; return { ok: true }; },
+    () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }),
+    () => ({ ok: true })
+  );
+  assert.equal(legacyBubbleResult.blocked_reason, "message_snapshot_unavailable");
+  assert.equal(legacySendCalls, 0);
+  send(dir, { dryRun: true, message: "hello" });
+  verifyRealSendSession(dir, () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }));
+  setRealSendArm(dir, true);
+  const bubblePhases = [];
+  const sent = sendReal(
+    dir,
+    { message: "hello", allowRealSend: true, userConfirmed: true },
+    () => {
+      assert.equal(loadState(dir).real_send_status, "prepared");
+      assert.deepEqual(loadState(dir).message_bubble_snapshot_before, { lastMessageId: "before-1" });
+      return { ok: true, title: "测试客户 - 微信" };
+    },
+    () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }),
+    (message, context) => {
+      bubblePhases.push(context.phase);
+      if (context.phase === "before") return { ok: true, snapshot: { lastMessageId: "before-1" } };
+      assert.equal(message, "hello");
+      assert.deepEqual(context.beforeSnapshot, { lastMessageId: "before-1" });
+      return { ok: true, title: "测试客户 - 微信", messageText: "hello", exactMatch: true, outgoing: true, isLatest: true, isNew: true };
+    }
+  );
+  assert.deepEqual(bubblePhases, ["before", "after"]);
+  assert.equal(sent.state.real_send_status, "sent_verified");
+  assert.equal(setRealSendArm(dir, true).blocked_reason, "real_send_already_attempted");
+  assert.equal(setRealSendArm(dir, false).state.real_send_status, "sent_verified");
+  clearCustomer(dir);
+  fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_unknown", name: "未知结果客户", wxid: "wxid_unknown", wechatId: "internal-test-002", wechatAccountId: "internal-account", allowed: true }]), "utf8");
+  selectCustomer(dir, "wxid_unknown");
+  verifyConversation(dir, "未知结果客户");
+  inputMessageDryRun(dir, "second", () => ({ ok: true }));
+  send(dir, { dryRun: true, message: "second" });
+  verifyRealSendSession(dir, () => ({ ok: true, pid: 12, hWnd: "23", processName: "Weixin", title: "未知结果客户", accountId: "internal-account", accountVerified: true }));
+  setRealSendArm(dir, true);
+  assert.equal(sendReal(
+    dir,
+    { message: "second", allowRealSend: true, userConfirmed: true },
+    () => ({ ok: true }),
+    () => ({ ok: true, pid: 12, hWnd: "23", processName: "Weixin", title: "未知结果客户", accountId: "internal-account", accountVerified: true }),
+    (_message, context) => context.phase === "before"
+      ? { ok: true, snapshot: { lastMessageId: "history-1" } }
+      : { ok: true, messageText: "second", exactMatch: true, outgoing: true, isLatest: true, isNew: false }
+  ).state.real_send_status, "outcome_unknown");
+  assert.equal(setRealSendArm(dir, false).state.real_send_status, "outcome_unknown");
+  assert.equal(verifyMessageBubble(dir, () => ({ ok: true, messageText: "second!", exactMatch: true, outgoing: true, isLatest: true, isNew: true })).state.real_send_status, "outcome_unknown");
+  assert.equal(setRealSendArm(dir, true).blocked_reason, "real_send_already_attempted");
+  const unknownAttemptKey = loadState(dir).real_send_attempt_key;
+  const clearedUnknown = clearCustomer(dir);
+  assert.equal(clearedUnknown.state.real_send_attempts[unknownAttemptKey], "outcome_unknown");
+  fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_window", name: "窗口变化客户", wxid: "wxid_window", wechatId: "internal-test-005", wechatAccountId: "internal-account", allowed: true }]), "utf8");
+  selectCustomer(dir, "wxid_window");
+  verifyConversation(dir, "窗口变化客户");
+  inputMessageDryRun(dir, "window", () => ({ ok: true }));
+  send(dir, { dryRun: true, message: "window" });
+  verifyRealSendSession(dir, () => ({ ok: true, pid: 13, hWnd: "24", processName: "Weixin", title: "窗口变化客户", accountId: "internal-account", accountVerified: true }));
+  setRealSendArm(dir, true);
+  assert.equal(sendReal(dir, { message: "window", allowRealSend: true, userConfirmed: true }, () => ({ ok: true }), () => ({ ok: true, pid: 14, hWnd: "25", processName: "Weixin", title: "窗口变化客户", accountId: "internal-account", accountVerified: true })).blocked_reason, "real_send_session_changed");
+  clearCustomer(dir);
+  fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_exception", name: "验证异常客户", wechatId: "internal-test-006", wechatAccountId: "internal-account", allowed: true }]), "utf8");
+  selectCustomer(dir, "wxid_exception");
+  verifyConversation(dir, "验证异常客户");
+  inputMessageDryRun(dir, "exception", () => ({ ok: true }));
+  send(dir, { dryRun: true, message: "exception" });
+  verifyRealSendSession(dir, () => ({ ok: true, pid: 15, hWnd: "26", processName: "Weixin", title: "验证异常客户", accountId: "internal-account", accountVerified: true }));
+  setRealSendArm(dir, true);
+  assert.equal(sendReal(
+    dir,
+    { message: "exception", allowRealSend: true, userConfirmed: true },
+    () => ({ ok: true }),
+    () => ({ ok: true, pid: 15, hWnd: "26", processName: "Weixin", title: "验证异常客户", accountId: "internal-account", accountVerified: true }),
+    (_message, context) => {
+      if (context.phase === "before") return { ok: true, snapshot: { lastMessageId: "before-exception" } };
+      throw new Error("bubble verifier failed");
+    }
+  ).state.real_send_status, "outcome_unknown");
+  clearCustomer(dir);
+  fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([
+    { id: "dup-a", name: "同名客户", wechatId: "internal-test-003", wechatAccountId: "internal-account", allowed: true },
+    { id: "dup-b", name: "同名客户", wechatId: "internal-test-004", wechatAccountId: "internal-account", allowed: true }
+  ]), "utf8");
+  selectCustomer(dir, "dup-a");
+  verifyConversation(dir, "同名客户");
+  inputMessageDryRun(dir, "duplicate", () => ({ ok: true }));
+  send(dir, { dryRun: true, message: "duplicate" });
+  verifyRealSendSession(dir, () => ({ ok: true, pid: 13, hWnd: "24", processName: "Weixin", title: "同名客户", accountId: "internal-account", accountVerified: true }));
+  assert.equal(setRealSendArm(dir, true).blocked_reason, "contact_name_not_unique");
+  saveState(dir, { ...loadState(dir), real_send_armed: false, real_send_status: "prepared", real_send_attempts: { crash_attempt: "prepared" } });
+  assert.equal(setRealSendArm(dir, true).blocked_reason, "real_send_already_attempted");
   assert.equal(setRealSendArm(dir, false).state.real_send_armed, false);
   const cleared = clearCustomer(dir);
   assert.equal(cleared.state.calibrated, true);
+  assert.equal(cleared.state.real_send_attempts.crash_attempt, "prepared");
   assert.equal(cleared.state.target_selected, false);
   assert.equal(cleared.state.selected_customer, null);
   assert.equal(cleared.state.conversation_located, false);
@@ -255,11 +360,67 @@ try {
   assert.equal(queueResult.state.real_send_clicked, false);
 
   const driverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.cjs"), "utf8");
-  assert.ok(driverSource.includes('$processNames = @("Weixin", "WeChat", "WXWork")'));
-  assert.equal(driverSource.includes('$processNames = @("Weixin", "WeChat")'), false);
+  const developmentDriverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.dev.cjs"), "utf8");
+  assert.equal(driverSource.includes("clickWechatSendButton"), false);
+  assert.equal(driverSource.includes("SEND_MESSAGE_SCRIPT"), false);
+  assert.equal(driverSource.includes("XIAOXI_SEND_KEY"), false);
+  assert.equal(driverSource.includes("verifyWechatMessageBubble"), false);
+  assert.match(developmentDriverSource, /function clickWechatSendButton/);
+  assert.match(developmentDriverSource, /context\.phase === "after" \? "after" : "before"/);
+  assert.match(developmentDriverSource, /beforeSnapshot/);
+  assert.match(developmentDriverSource, /exactMatch/);
+  assert.match(developmentDriverSource, /outgoing/);
+  assert.match(developmentDriverSource, /isLatest/);
+  assert.match(developmentDriverSource, /isNew/);
+  assert.match(developmentDriverSource, /function detectActiveWechatAccount/);
+  assert.match(developmentDriverSource, /\*\.db-wal/);
+  assert.match(developmentDriverSource, /\$outgoingExact\.Count -gt \$beforeExactCount/);
+  assert.ok(driverSource.includes('$processNames = @("Weixin", "WeChat")'));
+  assert.equal(driverSource.includes("WXWork"), false);
   assert.equal(driverSource.includes("WeChatAppEx"), false);
+  assert.doesNotMatch(driverSource, /\$pf86\\\\Tencent\\\\WeChat\\\\WeChat\.exe",\s*\n\s*\)\)/);
+  assert.match(driverSource, /const SIMPLE_ENSURE_WECHAT_WINDOW_SCRIPT/);
+  assert.match(driverSource, /Buffer\.from\(SIMPLE_ENSURE_WECHAT_WINDOW_SCRIPT/);
+  assert.equal(driverSource.includes("if (!ensureResult.ok) return ensureResult;"), false);
+  assert.match(driverSource, /if \(Test-VisiblePersonalWechat\) \{ \[void\]\(Focus-PersonalWechatMainWindowByAutomation\) \}/);
+  assert.equal(driverSource.includes("XIAOXI_EXPECTED_ACCOUNT"), false);
   const taskIpcSource = fs.readFileSync(path.join(__dirname, "../../src/main/touch-task-ipc.cjs"), "utf8");
   assert.match(taskIpcSource, /function shouldSkipBlockedContact\([^)]*\)[\s\S]*contact_unavailable/);
+  const developmentPreloadSource = fs.readFileSync(path.join(__dirname, "../../src/main/preload.dev.cjs"), "utf8");
+  assert.match(developmentPreloadSource, /active-touch:dev-select-customer/);
+  assert.match(developmentPreloadSource, /active-touch:dev-calibrate/);
+  assert.match(developmentPreloadSource, /active-touch:dev-click-search-result/);
+  assert.match(developmentPreloadSource, /active-touch:dev-input-message/);
+  assert.match(developmentPreloadSource, /active-touch:dev-send-dry-run/);
+  assert.match(developmentPreloadSource, /active-touch:send-selected-contact/);
+  assert.equal(developmentPreloadSource.includes("active-touch:send-real"), false);
+  assert.equal(developmentPreloadSource.includes("sendReal:"), false);
+  assert.equal(developmentPreloadSource.includes("real-send-hold"), false);
+  const developmentCliSource = fs.readFileSync(path.join(__dirname, "active_touch_cli.dev.cjs"), "utf8");
+  assert.equal(developmentCliSource.includes('args.includes("--real")'), false);
+  assert.equal(developmentCliSource.includes("--user-confirmed"), false);
+  const developmentIpcSource = fs.readFileSync(path.join(__dirname, "../../src/main/active-touch-dev-ipc.cjs"), "utf8");
+  assert.match(developmentIpcSource, /clickToken/);
+  assert.match(developmentIpcSource, /select-customer[\s\S]*calibrate[\s\S]*click-search-result-dry-run[\s\S]*verify-real-send-session[\s\S]*input-message-dry-run[\s\S]*send[\s\S]*dry-run/);
+  assert.match(developmentIpcSource, /setRealSendArm\(runtimeDataDir, true\)[\s\S]*sendReal\(runtimeDataDir/);
+  assert.equal(developmentIpcSource.includes("real-send-hold"), false);
+  const developmentUiSource = fs.readFileSync(path.join(__dirname, "../../src/renderer/DevelopmentAcceptance.tsx"), "utf8");
+  assert.match(developmentUiSource, /sendSelectedContact/);
+  assert.match(developmentUiSource, /data-xiaoxi-real-send/);
+  assert.match(developmentUiSource, /replaceAll\("\{称呼\}"/);
+  assert.match(developmentUiSource, /setStatus\("开发执行器未连接"\)/);
+  assert.match(developmentUiSource, /<Send size=\{17\} \/>直接发送<\/button>/);
+  assert.equal(developmentUiSource.includes("按住3秒"), false);
+  assert.equal(developmentUiSource.includes("beginRealSendHold"), false);
+  assert.equal(fs.existsSync(path.join(__dirname, "../../src/main/real-send-hold.dev.cjs")), false);
+  assert.equal(fs.existsSync(path.join(__dirname, "../../src/main/real-send-hold.self_check.cjs")), false);
+  assert.match(driverSource, /\$proc\.MainWindowHandle -eq \$hWnd/);
+  assert.match(driverSource, /\$title -eq "微信"/);
+
+  saveState(dir, { ...loadState(dir), self_check_marker: true });
+  assert.equal(fs.readdirSync(dir).some((name) => name.includes("state.json.tmp")), false);
+  fs.writeFileSync(path.join(dir, "state.json"), "{", "utf8");
+  assert.throws(() => loadState(dir));
 
   console.log("active-touch self-check passed");
 } finally {

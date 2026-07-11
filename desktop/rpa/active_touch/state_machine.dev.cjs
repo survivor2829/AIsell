@@ -1,34 +1,189 @@
-const { clickWechatSendButton, verifyWechatMessageBubble } = require("./wechat_window_driver.cjs");
-const { appendLog, block, blockMessageBubble, blockSendGate, loadState, output, saveState } = require("./state_machine.cjs");
+const crypto = require("node:crypto");
+const { clickWechatSendButton, verifyWechatCurrentConversation, verifyWechatMessageBubble } = require("./wechat_window_driver.dev.cjs");
+const { appendLog, block, blockMessageBubble, blockSendGate, loadState, output, readContacts, saveState } = require("./state_machine.cjs");
+
+function attemptKey(state, message) {
+  const taskId = String(state.task_context?.task_id ?? "single-contact");
+  const contactId = String(state.selected_customer?.id ?? "");
+  return crypto.createHash("sha256").update(`${taskId}\n${contactId}\n${message}`).digest("hex");
+}
+
+function singleContactIdentityError(state, baseDir) {
+  const customer = state.selected_customer;
+  const contacts = readContacts(baseDir);
+  if (!String(customer?.wechatId ?? "").trim()) return "wechat_id_missing";
+  if (contacts.filter((row) => row.name === customer.name).length !== 1) return "contact_name_not_unique";
+  if (contacts.filter((row) => row.wechatId === customer.wechatId).length !== 1) return "contact_identity_not_unique";
+  return "";
+}
+
+function sessionCheck(state, driver = verifyWechatCurrentConversation) {
+  const customer = state.selected_customer;
+  if (!customer?.name) return { ok: false, reason: "conversation_not_verified" };
+  const result = driver(customer.name);
+  if (!result.ok) return result;
+  if (!result.pid || !result.hWnd || !["Weixin", "WeChat"].includes(result.processName)) return { ok: false, reason: "personal_wechat_main_window_not_found" };
+  const expectedAccountId = String(customer.wechatAccountId ?? state.wechat_account_id ?? "").trim();
+  if (!expectedAccountId) return { ok: false, reason: "wechat_account_identity_missing" };
+  if (result.accountVerified !== true || !String(result.accountId ?? "").trim()) return { ok: false, reason: result.accountReason || "wechat_account_not_verified" };
+  if (String(result.accountId).trim() !== expectedAccountId) return { ok: false, reason: "wechat_account_changed" };
+  return result;
+}
+
+function hasMessageSnapshot(result) {
+  return result?.ok === true && result.snapshot !== undefined && result.snapshot !== null;
+}
+
+function isVerifiedNewMessage(result, message) {
+  return result?.ok === true
+    && result.exactMatch === true
+    && result.outgoing === true
+    && result.isLatest === true
+    && result.isNew === true
+    && String(result.messageText ?? "") === message;
+}
+
+function rejectRepeatedAttempt(baseDir, state, action = "send") {
+  const nextState = { ...state, real_send_armed: false, real_send_enabled: false };
+  saveState(baseDir, nextState);
+  appendLog(baseDir, "真实发送", "已阻断：同一联系人、任务和文案已有发送尝试");
+  return output(false, action, nextState, { baseDir, blocked_reason: "real_send_already_attempted" });
+}
+
+function persistOutcomeUnknown(baseDir, state, reason) {
+  const attemptKey = String(state.real_send_attempt_key ?? "");
+  const nextState = {
+    ...state,
+    real_send_armed: false,
+    real_send_enabled: false,
+    real_send_status: "outcome_unknown",
+    real_send_reason: reason,
+    post_send_verified: false,
+    post_send_status: "outcome_unknown",
+    post_send_reason: reason,
+    message_bubble_verified: false,
+    message_bubble_status: "outcome_unknown",
+    message_bubble_reason: reason,
+    real_send_attempts: attemptKey ? { ...(state.real_send_attempts ?? {}), [attemptKey]: "outcome_unknown" } : state.real_send_attempts,
+    last_result: "outcome_unknown",
+    blocked_reason: "outcome_unknown"
+  };
+  saveState(baseDir, nextState);
+  appendLog(baseDir, "真实发送", `发送结果无法确认：${reason}；已暂停且绝不自动重试`);
+  return output(false, "send", nextState, { baseDir, blocked_reason: "outcome_unknown" });
+}
+
+function verifyRealSendSession(baseDir = __dirname, driver = verifyWechatCurrentConversation) {
+  const state = loadState(baseDir);
+  const result = sessionCheck(state, driver);
+  if (!result.ok) return blockSendGate(baseDir, state, result.reason || "session_not_verified", "已阻断：微信账号、主窗口或当前会话未重新验证");
+  const nextState = {
+    ...state,
+    wechat_account_id: String(result.accountId),
+    window_pid: Number(result.pid),
+    window_handle: String(result.hWnd),
+    window_process_name: result.processName,
+    conversation_title: result.title ?? state.conversation_title,
+    located_window_title: result.windowTitle ?? state.located_window_title,
+    last_result: "real_send_session_verified",
+    blocked_reason: ""
+  };
+  saveState(baseDir, nextState);
+  appendLog(baseDir, "真实发送会话验证", "已验证个人微信进程、PID、窗口句柄和当前会话");
+  return output(true, "verify-real-send-session", nextState, { baseDir });
+}
 
 function setRealSendArm(baseDir = __dirname, enabled = false) {
   const state = loadState(baseDir);
   if (!enabled) {
-    const nextState = { ...state, real_send_armed: false, real_send_enabled: false, real_send_status: "not_sent", real_send_reason: "", last_result: "real_send_disarmed", blocked_reason: "" };
+    if (!state.real_send_armed && !state.real_send_enabled) {
+      return output(true, "set-real-send-arm", state, { baseDir });
+    }
+    const terminal = ["prepared", "clicked", "sent_verified", "outcome_unknown"].includes(state.real_send_status);
+    const nextState = {
+      ...state,
+      real_send_armed: false,
+      real_send_enabled: false,
+      real_send_status: terminal ? state.real_send_status : "not_sent",
+      real_send_reason: terminal ? state.real_send_reason : "",
+      last_result: terminal ? state.last_result : "real_send_disarmed",
+      blocked_reason: terminal ? state.blocked_reason : ""
+    };
     saveState(baseDir, nextState);
     return output(true, "set-real-send-arm", nextState, { baseDir });
   }
+  if (["prepared", "clicked", "sent_verified", "outcome_unknown"].includes(state.real_send_status)) {
+    return rejectRepeatedAttempt(baseDir, state, "set-real-send-arm");
+  }
   if (state.send_gate_status !== "dry_run_passed") {
     return block(baseDir, "真发开关 dry-run", { ...state, real_send_armed: false, real_send_enabled: false, real_send_status: "blocked", real_send_reason: "send_gate_not_passed" }, "send_gate_not_passed", "已阻断：发送门禁 dry-run 未通过");
+  }
+  const identityError = singleContactIdentityError(state, baseDir);
+  if (identityError) return blockSendGate(baseDir, state, identityError, "已阻断：联系人姓名或微信号无法唯一确认");
+  if (!state.window_pid || !state.window_handle) {
+    return blockSendGate(baseDir, state, "real_send_session_not_verified", "已阻断：请重新验证微信窗口和当前会话");
   }
   const nextState = { ...state, real_send_armed: true, real_send_enabled: false, real_send_clicked: false, real_send_status: "armed", real_send_reason: "", last_result: "real_send_armed_dry_run", blocked_reason: "" };
   saveState(baseDir, nextState);
   return output(true, "set-real-send-arm", nextState, { baseDir });
 }
 
-function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWechatSendButton) {
+function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWechatSendButton, sessionDriver = verifyWechatCurrentConversation, bubbleVerifier = verifyWechatMessageBubble) {
   const state = loadState(baseDir);
   const message = String(options.message ?? state.message_draft ?? "").trim();
   if (!state.real_send_armed) return blockSendGate(baseDir, state, "real_send_not_armed", "已阻断：单人真发开关未武装");
   if (options.allowRealSend !== true) return blockSendGate(baseDir, state, "real_send_explicit_allow_missing", "已阻断：缺少显式真发允许参数");
+  if (options.userConfirmed !== true) return blockSendGate(baseDir, state, "real_send_final_confirmation_missing", "已阻断：最终发送必须由用户亲自确认");
   if (!state.calibrated || !state.target_selected || !state.conversation_verified || !state.message_input_done || !message || String(state.message_draft ?? "").trim() !== message) {
     return blockSendGate(baseDir, state, "real_send_gate_failed", "已阻断：真实发送前置检查未通过");
   }
-  const sendResult = sendDriver(options.sendKey ?? "{ENTER}");
-  if (!sendResult.ok) return blockSendGate(baseDir, state, "real_send_failed", "已阻断：发送按键执行失败");
-  const nextState = { ...state, dry_run: false, real_send_armed: false, real_send_enabled: false, real_send_clicked: true, real_send_status: "clicked", real_send_reason: "", post_send_verified: false, post_send_status: "pending", post_send_reason: "", message_bubble_verified: false, message_bubble_status: "pending", message_bubble_reason: "", located_window_title: sendResult.title ?? state.located_window_title, last_result: "real_send_clicked", blocked_reason: "" };
+  const key = attemptKey(state, message);
+  if (state.real_send_attempts?.[key] || ["prepared", "clicked", "sent_verified", "outcome_unknown"].includes(state.real_send_status)) {
+    return rejectRepeatedAttempt(baseDir, state);
+  }
+  const session = sessionCheck(state, sessionDriver);
+  if (!session.ok || Number(session.pid) !== Number(state.window_pid) || String(session.hWnd) !== String(state.window_handle)) {
+    return blockSendGate(baseDir, state, "real_send_session_changed", "已阻断：微信账号、PID、窗口句柄或当前会话发生变化");
+  }
+  const windowContext = { pid: state.window_pid, hWnd: state.window_handle };
+  const before = bubbleVerifier(message, { ...windowContext, phase: "before" });
+  if (!hasMessageSnapshot(before)) {
+    return blockSendGate(baseDir, state, "message_snapshot_unavailable", "已阻断：无法读取发送前消息列表快照");
+  }
+  const prepared = {
+    ...state,
+    dry_run: false,
+    real_send_armed: false,
+    real_send_enabled: false,
+    real_send_status: "prepared",
+    real_send_reason: "",
+    real_send_attempt_key: key,
+    real_send_attempts: { ...(state.real_send_attempts ?? {}), [key]: "prepared" },
+    message_bubble_snapshot_before: before.snapshot,
+    last_result: "real_send_prepared",
+    blocked_reason: ""
+  };
+  saveState(baseDir, prepared);
+  appendLog(baseDir, "真实发送", "已持久化 prepared 状态，等待用户最终点击结果");
+  let sendResult;
+  try {
+    sendResult = sendDriver(options.sendKey ?? "{ENTER}", windowContext);
+  } catch {
+    return persistOutcomeUnknown(baseDir, prepared, "send_driver_exception");
+  }
+  if (!sendResult.ok) return persistOutcomeUnknown(baseDir, prepared, "send_click_failed");
+  const clicked = { ...prepared, real_send_clicked: true, real_send_status: "clicked", real_send_attempts: { ...prepared.real_send_attempts, [key]: "clicked" }, located_window_title: sendResult.title ?? prepared.located_window_title, last_result: "real_send_clicked" };
+  saveState(baseDir, clicked);
+  let verified;
+  try {
+    verified = bubbleVerifier(message, { ...windowContext, phase: "after", beforeSnapshot: before.snapshot });
+  } catch {
+    return persistOutcomeUnknown(baseDir, clicked, "message_bubble_verifier_failed");
+  }
+  if (!isVerifiedNewMessage(verified, message)) return persistOutcomeUnknown(baseDir, clicked, "message_bubble_not_new_latest_exact");
+  const nextState = { ...clicked, real_send_status: "sent_verified", real_send_attempts: { ...clicked.real_send_attempts, [key]: "sent_verified" }, message_bubble_verified: true, message_bubble_status: "verified", message_bubble_reason: "", post_send_verified: true, post_send_status: "bubble_verified", post_send_reason: "", located_window_title: verified.title ?? clicked.located_window_title, last_result: "sent_verified", blocked_reason: "" };
   saveState(baseDir, nextState);
-  appendLog(baseDir, "真实发送", "已点击发送键，等待消息气泡验证");
+  appendLog(baseDir, "真实发送", "消息气泡与完整文案已自动验证");
   return output(true, "send", nextState, { baseDir });
 }
 
@@ -43,11 +198,14 @@ function verifyMessageBubble(baseDir = __dirname, verifier = verifyWechatMessage
   const message = String(state.message_draft ?? "").trim();
   if (!state.real_send_clicked) return blockMessageBubble(baseDir, state, "real_send_not_clicked", "已阻断：尚未执行真实发送点击");
   if (!message) return blockMessageBubble(baseDir, state, "empty_message", "已阻断：待验证消息为空");
-  const verifyResult = verifier(message);
-  if (!verifyResult.ok) return blockMessageBubble(baseDir, state, "message_bubble_not_found", "已阻断：未在当前会话读取到消息气泡");
+  if (state.message_bubble_snapshot_before === undefined || state.message_bubble_snapshot_before === null) {
+    return persistOutcomeUnknown(baseDir, state, "message_snapshot_unavailable");
+  }
+  const verifyResult = verifier(message, { pid: state.window_pid, hWnd: state.window_handle, phase: "after", beforeSnapshot: state.message_bubble_snapshot_before });
+  if (!isVerifiedNewMessage(verifyResult, message)) return persistOutcomeUnknown(baseDir, state, "message_bubble_not_new_latest_exact");
   const nextState = { ...state, message_bubble_verified: true, message_bubble_status: "verified", message_bubble_reason: "", post_send_verified: true, post_send_status: "bubble_verified", post_send_reason: "", located_window_title: verifyResult.title ?? state.located_window_title, last_result: "message_bubble_verified", blocked_reason: "" };
   saveState(baseDir, nextState);
   return output(true, "verify-message-bubble", nextState, { baseDir });
 }
 
-module.exports = { failConversation, sendReal, setRealSendArm, verifyMessageBubble };
+module.exports = { failConversation, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession };
