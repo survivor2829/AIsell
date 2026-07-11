@@ -135,6 +135,9 @@ fs.writeFileSync(out, JSON.stringify([{ username: "wxid_x", remark: "新版目�
 
   const builtIn = resolveHelper(__dirname);
   if (builtIn.helperConfigured) {
+    const helperSelfCheck = spawnSync(builtIn.pythonPath, [builtIn.helperPath, "self-check"], { encoding: "utf8", windowsHide: true });
+    assert.equal(helperSelfCheck.status, 0, helperSelfCheck.stderr);
+    assert.equal(JSON.parse(helperSelfCheck.stdout).ok, true);
     const contactDb = path.join(accountDir, "contact.db");
     fs.rmSync(contactDb, { force: true });
     const createDb = spawnSync(
@@ -175,12 +178,34 @@ con.close()
     assert.equal(viaBuiltIn.contacts[0].wechatId, "alias_3");
 
     const rawKeyHex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    const plainContactDb = path.join(root, "plain-contact.db");
+    fs.copyFileSync(contactDb, plainContactDb);
     const encryptedDb = path.join(root, "encrypted-contact.db");
     const decryptedDb = path.join(root, "decrypted-contact.db");
     encryptSqlcipher4Like(contactDb, encryptedDb, rawKeyHex);
     assert.equal(decryptSqlcipher4Raw(encryptedDb, decryptedDb, rawKeyHex), true);
     assert.equal(fs.readFileSync(decryptedDb).subarray(0, 16).toString("binary"), "SQLite format 3\0");
     assert.equal(fs.statSync(decryptedDb).size % 4096, 0);
+    fs.copyFileSync(encryptedDb, contactDb);
+    const copiedDecryptedDb = path.join(root, "copied-decrypted-contact.db");
+    assert.equal(decryptSqlcipher4Raw(contactDb, copiedDecryptedDb, rawKeyHex), true);
+
+    const capturedWithoutExternalDump = capture(syncDir, {
+      wechatRoot,
+      activeTouchDir,
+      keyToolPath: path.join(root, "missing-key-tool.exe"),
+      dumpToolPath: path.join(root, "missing-dump-tool.exe"),
+      wxKeyProbePath: path.join(root, "missing-wx-key-probe.py"),
+      pythonPath: builtIn.pythonPath,
+      timeoutMs: 1000,
+      pollIntervalMs: 10,
+      processProvider: () => [],
+      keyInfoReader: () => ({ keyHex: rawKeyHex, observed: true }),
+      decryptedContactReader: () => [{ username: "wxid_3", alias: "alias_3", remark: "赵总", nick_name: "老赵", local_type: 1 }]
+    });
+    assert.equal(capturedWithoutExternalDump.ok, true, JSON.stringify(capturedWithoutExternalDump));
+    assert.equal(capturedWithoutExternalDump.contacts.length, 1);
+    fs.copyFileSync(plainContactDb, contactDb);
 
     fs.writeFileSync(
       keyToolPath,

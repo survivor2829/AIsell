@@ -41,9 +41,10 @@ assertPreloadCompatibility(path.join(desktopDir, "src", "main", "main.cjs"));
 assertPreloadCompatibility(path.join(desktopDir, "src", "main", "touch-task-ipc.cjs"));
 assert.equal(read(path.join(desktopDir, "src", "main", "main.cjs")).includes("active-touch-dev-ipc.cjs"), true);
 assert.equal(read(path.join(desktopDir, "rpa", "active_touch", "state_machine.dev.cjs")).includes("wechat_window_driver.dev.cjs"), true);
-assert.match(read(path.join(desktopDir, "scripts", "sync-customer-release.cjs")), /endsWith\("\.dev\.cjs"\)/);
+assert.match(read(path.join(desktopDir, "scripts", "build-portable-release.cjs")), /name\.endsWith\("\.dev\.cjs"\)/);
 assert.equal(read(path.join(desktopDir, "package.json")).includes("build:customer"), true);
 assert.equal(read(path.join(desktopDir, "package.json")).includes("build:development"), true);
+assert.equal(read(path.join(desktopDir, "package.json")).includes("build:pilot"), true);
 
 if (process.argv.includes("--release")) {
   assert.equal(fs.existsSync(releaseAppDir), true, "customer release app must exist");

@@ -33,6 +33,10 @@ function bundledHelperPath(baseDir = __dirname) {
   return path.join(baseDir, "wechat_contact_helper.py");
 }
 
+function bundledHelperExePath(baseDir = __dirname) {
+  return path.join(baseDir, "xiaoxi-contact-helper.exe");
+}
+
 function bundledKeyInfoProbePath(baseDir = __dirname) {
   return path.join(baseDir, "key_info_probe.py");
 }
@@ -47,23 +51,6 @@ function bundledWxKeyProbePath(baseDir = __dirname) {
 
 function bundledWxKeyDllPath(baseDir = __dirname) {
   return path.join(baseDir, "libs", "wx_key.dll");
-}
-
-function installedWxKeyDllPath() {
-  return path.join(
-    os.homedir(),
-    "AppData",
-    "Local",
-    "Programs",
-    "dt-ai-helper",
-    "resources",
-    "app.asar.unpacked",
-    "resources",
-    "_internal",
-    "resources",
-    "libs",
-    "wx_key.dll"
-  );
 }
 
 function bundledPythonPath(baseDir = __dirname) {
@@ -81,7 +68,9 @@ function resolveHelper(baseDir = __dirname, options = {}) {
     options.helperPath ??
     process.env.XIAOXI_WECHAT_DECRYPT_HELPER ??
     process.env.WECHAT_DECRYPT_HELPER ??
-    (fs.existsSync(bundledHelperPath(codeDir)) ? bundledHelperPath(codeDir) : "");
+    (fs.existsSync(bundledHelperExePath(codeDir))
+      ? bundledHelperExePath(codeDir)
+      : fs.existsSync(bundledHelperPath(codeDir)) ? bundledHelperPath(codeDir) : "");
   const pythonPath = options.pythonPath ?? process.env.XIAOXI_CONTACT_SYNC_PYTHON ?? bundledPythonPath(codeDir);
   return {
     helperPath,
@@ -91,9 +80,9 @@ function resolveHelper(baseDir = __dirname, options = {}) {
 }
 
 function resolveCaptureTools(options = {}) {
-  const dbKeyDir = path.join(os.homedir(), "Documents", "dt-ai-helper", "bin", "DbKey");
-  const keyToolPath = options.keyToolPath ?? process.env.XIAOXI_WECHAT_KEY_TOOL ?? path.join(dbKeyDir, "dump_data.exe");
-  const dumpToolPath = options.dumpToolPath ?? process.env.XIAOXI_WECHAT_DUMP_TOOL ?? path.join(dbKeyDir, "wechat-dump-rs.exe");
+  const keyToolPath = options.keyToolPath ?? process.env.XIAOXI_WECHAT_KEY_TOOL ?? "";
+  const dumpToolPath = options.dumpToolPath ?? process.env.XIAOXI_WECHAT_DUMP_TOOL ?? "";
+  const selfContainedHelperPath = options.contactHelperPath ?? process.env.XIAOXI_CONTACT_HELPER ?? bundledHelperExePath(__dirname);
   const keyInfoProbePath =
     options.keyInfoProbePath ?? process.env.XIAOXI_KEY_INFO_PROBE ?? bundledKeyInfoProbePath(__dirname);
   const memoryKeyProbePath =
@@ -103,14 +92,14 @@ function resolveCaptureTools(options = {}) {
   const wxKeyDllCandidates = [
     options.wxKeyDllPath,
     process.env.XIAOXI_WX_KEY_DLL,
-    bundledWxKeyDllPath(__dirname),
-    installedWxKeyDllPath()
+    bundledWxKeyDllPath(__dirname)
   ].filter(Boolean);
   const wxKeyDllPath = wxKeyDllCandidates.find((candidate) => fs.existsSync(candidate)) ?? "";
   const pythonPath = options.pythonPath ?? process.env.XIAOXI_CONTACT_SYNC_PYTHON ?? bundledPythonPath(__dirname);
   return {
     keyToolPath: fs.existsSync(keyToolPath) ? keyToolPath : "",
     dumpToolPath: fs.existsSync(dumpToolPath) ? dumpToolPath : "",
+    selfContainedHelperPath: fs.existsSync(selfContainedHelperPath) ? selfContainedHelperPath : "",
     keyInfoProbePath: fs.existsSync(keyInfoProbePath) ? keyInfoProbePath : "",
     memoryKeyProbePath: fs.existsSync(memoryKeyProbePath) ? memoryKeyProbePath : "",
     wxKeyProbePath: fs.existsSync(wxKeyProbePath) ? wxKeyProbePath : "",
@@ -454,15 +443,13 @@ function captureKeyFromKeyInfo(keyInfoDb, tools, options = {}) {
     if (typeof result === "string") return { keyHex: result, observed: Boolean(result) };
     return { keyHex: result?.keyHex ?? "", observed: Boolean(result?.observed) };
   }
-  if (!keyInfoDb || !fs.existsSync(keyInfoDb) || !tools.keyInfoProbePath || !tools.pythonPath) {
+  if (!keyInfoDb || !fs.existsSync(keyInfoDb) || (!tools.selfContainedHelperPath && (!tools.keyInfoProbePath || !tools.pythonPath))) {
     return { keyHex: "", observed: false };
   }
 
-  const result = spawnSync(
-    tools.pythonPath,
-    [tools.keyInfoProbePath, "--key-info", keyInfoDb],
-    { encoding: "utf8", windowsHide: true, timeout: 5000 }
-  );
+  const result = tools.selfContainedHelperPath
+    ? runTool(tools.selfContainedHelperPath, ["key-info", "--key-info", keyInfoDb])
+    : spawnSync(tools.pythonPath, [tools.keyInfoProbePath, "--key-info", keyInfoDb], { encoding: "utf8", windowsHide: true, timeout: 5000 });
   if (result.status !== 0) return { keyHex: "", observed: false };
 
   const parsed = readJsonFromString(result.stdout, {});
@@ -478,13 +465,11 @@ function captureKeyFromMemory(contactDb, tools, options = {}, processes = []) {
     const result = options.memoryKeyReader(contactDb);
     return typeof result === "string" ? result : result?.keyHex ?? "";
   }
-  if (!contactDb || !fs.existsSync(contactDb) || !tools.memoryKeyProbePath || !tools.pythonPath) return "";
+  if (!contactDb || !fs.existsSync(contactDb) || (!tools.selfContainedHelperPath && (!tools.memoryKeyProbePath || !tools.pythonPath))) return "";
   const pidArgs = processes.flatMap((processInfo) => ["--pid", String(processInfo.id)]);
-  const result = spawnSync(
-    tools.pythonPath,
-    [tools.memoryKeyProbePath, "--contact-db", contactDb, ...pidArgs],
-    { encoding: "utf8", windowsHide: true, timeout: 60000 }
-  );
+  const result = tools.selfContainedHelperPath
+    ? spawnSync(tools.selfContainedHelperPath, ["memory-key", "--contact-db", contactDb, ...pidArgs], { encoding: "utf8", windowsHide: true, timeout: 60000 })
+    : spawnSync(tools.pythonPath, [tools.memoryKeyProbePath, "--contact-db", contactDb, ...pidArgs], { encoding: "utf8", windowsHide: true, timeout: 60000 });
   if (result.status !== 0) return "";
   const parsed = readJsonFromString(result.stdout, {});
   const keyHex = String(parsed.key ?? "");
@@ -526,6 +511,7 @@ function readJsonFromString(value, fallback = {}) {
 
 function decryptContactDb(dumpToolPath, keyHex, contactDbPath, outputDbPath) {
   if (decryptSqlcipher4Raw(contactDbPath, outputDbPath, keyHex)) return true;
+  if (!dumpToolPath || !fs.existsSync(dumpToolPath)) return false;
   for (const version of ["4", "3"]) {
     const result = runTool(dumpToolPath, ["-k", keyHex, "-f", contactDbPath, "-o", outputDbPath, "--vv", version]);
     if (result.status === 0 && fs.existsSync(outputDbPath)) return true;
@@ -573,11 +559,8 @@ function decryptSqlcipher4Raw(inputPath, outputPath, keyHex) {
 }
 
 function readDecryptedContacts(baseDir, dbPath, options = {}) {
-  const helper = {
-    helperPath: bundledHelperPath(__dirname),
-    pythonPath: options.pythonPath ?? process.env.XIAOXI_CONTACT_SYNC_PYTHON ?? bundledPythonPath(__dirname)
-  };
-  if (!fs.existsSync(helper.helperPath) || !helper.pythonPath) return null;
+  const helper = resolveHelper(baseDir, options);
+  if (!helper.helperConfigured) return null;
 
   const tempOut = path.join(os.tmpdir(), `xiaoxi-contact-capture-${process.pid}-${Date.now()}.json`);
   const result = runHelper(helper, { contactDb: dbPath, keyInfoDb: "" }, tempOut);
@@ -600,11 +583,8 @@ function readDecryptedContacts(baseDir, dbPath, options = {}) {
 }
 
 function inspectDecryptedContacts(baseDir, dbPath, options = {}) {
-  const helper = {
-    helperPath: bundledHelperPath(__dirname),
-    pythonPath: options.pythonPath ?? process.env.XIAOXI_CONTACT_SYNC_PYTHON ?? bundledPythonPath(__dirname)
-  };
-  if (!fs.existsSync(helper.helperPath) || !helper.pythonPath) return null;
+  const helper = resolveHelper(baseDir, options);
+  if (!helper.helperConfigured) return null;
 
   const tempOut = path.join(os.tmpdir(), `xiaoxi-contact-inspect-${process.pid}-${Date.now()}.json`);
   const result = runHelper(helper, { contactDb: dbPath, keyInfoDb: "" }, tempOut, ["--inspect"]);
@@ -632,8 +612,8 @@ function capture(baseDir = __dirname, options = {}) {
   const deadline = Date.now() + timeoutMs;
   const helper = resolveHelper(baseDir, options);
   const tools = resolveCaptureTools(options);
-  const hasKeyInfoReader = Boolean(options.keyInfoReader || (tools.keyInfoProbePath && tools.pythonPath));
-  const hasMemoryKeyReader = Boolean(options.memoryKeyReader || (tools.memoryKeyProbePath && tools.pythonPath));
+  const hasKeyInfoReader = Boolean(options.keyInfoReader || tools.selfContainedHelperPath || (tools.keyInfoProbePath && tools.pythonPath));
+  const hasMemoryKeyReader = Boolean(options.memoryKeyReader || tools.selfContainedHelperPath || (tools.memoryKeyProbePath && tools.pythonPath));
   const hasWxKeyReader = Boolean(options.wxKeyReader || (tools.wxKeyProbePath && tools.wxKeyDllPath && tools.pythonPath));
   let keyInfoObserved = false;
   let memoryScanAttempted = false;
@@ -650,10 +630,6 @@ function capture(baseDir = __dirname, options = {}) {
   if (!tools.keyToolPath && !hasKeyInfoReader && !hasMemoryKeyReader && !hasWxKeyReader) {
     return block(baseDir, "key_tool_missing", "未找到微信 key 捕获工具", { helperConfigured: helper.helperConfigured, activeTouchDir: options.activeTouchDir });
   }
-  if (!tools.dumpToolPath) {
-    return block(baseDir, "dump_tool_missing", "未找到微信数据库解密工具", { helperConfigured: helper.helperConfigured, activeTouchDir: options.activeTouchDir });
-  }
-
   if (options.restartWechat) {
     saveState(baseDir, { ...loadState(baseDir), status: "capturing", last_stage: "restarting_wechat", last_error: "" });
     const loginFlow = prepareWechatLogin(options);
@@ -700,7 +676,7 @@ function capture(baseDir = __dirname, options = {}) {
       return { ok: true, action: "capture-inspect", state, inspection };
     }
 
-    const rawContacts = readDecryptedContacts(baseDir, decryptedDb, options);
+    const rawContacts = options.decryptedContactReader ? options.decryptedContactReader(decryptedDb) : readDecryptedContacts(baseDir, decryptedDb, options);
     try {
       fs.rmSync(decryptedDb, { force: true });
     } catch {
@@ -746,6 +722,19 @@ function capture(baseDir = __dirname, options = {}) {
       if (result) return result;
     }
 
+    if (account.contactDb && processes.length && hasMemoryKeyReader) {
+      memoryScanAttempted = true;
+      saveState(baseDir, {
+        ...loadState(baseDir),
+        status: "capturing",
+        last_stage: "capturing_memory_key",
+        account_name: account.accountName ?? "",
+        helper_configured: helper.helperConfigured
+      });
+      const result = tryKey(account, captureKeyFromMemory(account.contactDb, tools, options, processes));
+      if (result) return result;
+    }
+
     if (account.contactDb && processes.length && hasWxKeyReader) {
       wxHookAttempted = true;
       saveState(baseDir, {
@@ -757,19 +746,6 @@ function capture(baseDir = __dirname, options = {}) {
       });
       const remainingMs = Math.max(1000, deadline - Date.now());
       const result = tryKey(account, captureKeyFromWxKeyDll(tools, options, processes, remainingMs));
-      if (result) return result;
-    }
-
-    if (account.contactDb && processes.length && hasMemoryKeyReader) {
-      memoryScanAttempted = true;
-      saveState(baseDir, {
-        ...loadState(baseDir),
-        status: "capturing",
-        last_stage: "capturing_memory_key",
-        account_name: account.accountName ?? "",
-        helper_configured: helper.helperConfigured
-      });
-      const result = tryKey(account, captureKeyFromMemory(account.contactDb, tools, options, processes));
       if (result) return result;
     }
 

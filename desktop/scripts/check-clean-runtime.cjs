@@ -4,7 +4,10 @@ const path = require("node:path");
 const desktopDir = path.resolve(__dirname, "..");
 const releaseDir = path.resolve(desktopDir, "..", "release");
 const isPackagedApp = path.basename(desktopDir).toLowerCase() === "app" && path.basename(path.dirname(desktopDir)).toLowerCase() === "resources";
-const releaseAppDir = isPackagedApp ? desktopDir : path.resolve(desktopDir, "..", "release", "小玺AI员工-客户版", "resources", "app");
+const releaseAppDirs = isPackagedApp ? [desktopDir] : [
+  path.resolve(desktopDir, "..", "release", "小玺AI员工-客户版", "resources", "app"),
+  path.resolve(desktopDir, "..", "release", "小玺AI员工-受控试用版", "resources", "app")
+];
 const relativeRuntimeFiles = [
   path.join("rpa", "active_touch", "contacts.json"),
   path.join("rpa", "active_touch", "touch_task.json"),
@@ -14,9 +17,8 @@ const relativeRuntimeFiles = [
 ];
 const forbidden = [
   ...relativeRuntimeFiles.map((file) => path.join(desktopDir, file)),
-  ...relativeRuntimeFiles.map((file) => path.join(releaseAppDir, file)),
-  path.join(releaseAppDir, ".env.ai.local"),
-  path.join(releaseAppDir, "data", "deepseek-api-key.bin"),
+  ...releaseAppDirs.flatMap((root) => relativeRuntimeFiles.map((file) => path.join(root, file))),
+  ...releaseAppDirs.flatMap((root) => [path.join(root, ".env.ai.local"), path.join(root, "data", "deepseek-api-key.bin")]),
   ...(isPackagedApp ? [path.join(desktopDir, ".env.ai.local")] : [])
 ].filter((file) => fs.existsSync(file));
 

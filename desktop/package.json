@@ -14,7 +14,9 @@
     "build:customer": "node scripts/build-renderer.cjs customer",
     "build:development": "node scripts/build-renderer.cjs development",
     "build:pilot": "node scripts/build-renderer.cjs pilot",
-    "release:customer": "npm run build && node scripts/sync-customer-release.cjs && node scripts/check-clean-runtime.cjs --release && node scripts/customer-edition.self_check.cjs --release",
+    "build:helper": "node scripts/build-contact-helper.cjs",
+    "release:customer": "npm run build && npm run build:helper && node scripts/build-portable-release.cjs customer && node scripts/check-clean-runtime.cjs --release && node scripts/customer-edition.self_check.cjs --release && node scripts/portable-release.self_check.cjs customer",
+    "release:pilot": "npm run build:pilot && npm run build:helper && node scripts/build-portable-release.cjs pilot && node scripts/check-clean-runtime.cjs --release && node scripts/portable-release.self_check.cjs pilot",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

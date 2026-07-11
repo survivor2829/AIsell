@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
+import tempfile
 
 
 CONTACT_FIELDS = {
@@ -223,13 +224,81 @@ def inspect_contacts(db_path):
         connection.close()
 
 
-def main():
+def run_key_info(argv):
+    from key_info_probe import read_candidates
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--key-info", required=True)
+    args = parser.parse_args(argv)
+    if not os.path.exists(args.key_info):
+        print(json.dumps({"ok": False, "rows_seen": 0, "candidates": []}))
+        return 2
+    try:
+        result = read_candidates(args.key_info)
+    except Exception:
+        print(json.dumps({"ok": False, "rows_seen": 0, "candidates": []}))
+        return 3
+    print(json.dumps({"ok": True, **result}))
+    return 0
+
+
+def run_memory_key(argv):
+    from memory_key_probe import scan_process, weixin_pids, PAGE_SIZE, SALT_SIZE
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--contact-db", required=True)
+    parser.add_argument("--pid", action="append", type=int, default=[])
+    args = parser.parse_args(argv)
+    if sys.platform != "win32" or not os.path.exists(args.contact_db):
+        print(json.dumps({"ok": False, "key": ""}))
+        return 2
+    with open(args.contact_db, "rb") as file:
+        page1 = file.read(PAGE_SIZE)
+    if len(page1) < PAGE_SIZE:
+        print(json.dumps({"ok": False, "key": ""}))
+        return 3
+    salt_hex = page1[:SALT_SIZE].hex()
+    for pid in args.pid or weixin_pids():
+        key = scan_process(pid, salt_hex, page1)
+        if key:
+            print(json.dumps({"ok": True, "key": key}))
+            return 0
+    print(json.dumps({"ok": False, "key": ""}))
+    return 1
+
+
+def run_self_check():
+    from key_info_probe import read_candidates
+
+    with tempfile.TemporaryDirectory(prefix="xiaoxi-contact-helper-") as directory:
+        contact_db = os.path.join(directory, "contact.db")
+        connection = sqlite3.connect(contact_db)
+        connection.execute("CREATE TABLE contact (username TEXT, alias TEXT, remark TEXT, nick_name TEXT, local_type INTEGER, verify_flag INTEGER, chat_room_type INTEGER, delete_flag INTEGER)")
+        connection.execute("INSERT INTO contact VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ("wxid_self_check", "helper-self-check", "测试联系人", "测试昵称", 1, 0, 0, 0))
+        connection.commit()
+        connection.close()
+        contacts = read_contacts(contact_db)
+
+        key_info = os.path.join(directory, "key_info.db")
+        connection = sqlite3.connect(key_info)
+        connection.execute("CREATE TABLE keys (value TEXT)")
+        connection.execute("INSERT INTO keys VALUES (?)", ("a" * 64,))
+        connection.commit()
+        connection.close()
+        candidates = read_candidates(key_info)
+
+        ok = len(contacts) == 1 and contacts[0]["username"] == "wxid_self_check" and len(candidates["candidates"]) == 1
+        print(json.dumps({"ok": ok, "contacts": len(contacts), "key_candidates": len(candidates["candidates"])}))
+        return 0 if ok else 1
+
+
+def run_contacts(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument("--contact-db", required=True)
     parser.add_argument("--key-info")
     parser.add_argument("--out", required=True)
     parser.add_argument("--inspect", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if not os.path.exists(args.contact_db):
         print("contact_db_missing", file=sys.stderr)
@@ -249,6 +318,17 @@ def main():
     with open(args.out, "w", encoding="utf-8") as file:
         json.dump(payload, file, ensure_ascii=False)
     return 0
+
+
+def main():
+    command = sys.argv[1] if len(sys.argv) > 1 else ""
+    if command == "key-info":
+        return run_key_info(sys.argv[2:])
+    if command == "memory-key":
+        return run_memory_key(sys.argv[2:])
+    if command == "self-check":
+        return run_self_check()
+    return run_contacts(sys.argv[1:])
 
 
 if __name__ == "__main__":

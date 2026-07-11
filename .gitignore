@@ -3,6 +3,7 @@
 **/dist/
 **/dist-development/
 **/dist-pilot/
+desktop/.build/
 desktop/.vite/
 
 # Local secrets, certificates and temporary plaintext
