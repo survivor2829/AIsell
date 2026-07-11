@@ -6,7 +6,7 @@ Electron 桌面端，当前主线是客户版主动触达 V1：
 同步微信联系人 -> 填写触达话术 -> 启动程序 -> 悬浮窗显示进度 -> 微信逐个写入草稿
 ```
 
-V1 安全边界：只打开会话、写入草稿并做预检，不自动真实发送。
+客户版安全边界：只打开会话、写入草稿并做预检，不自动真实发送。内部开发版另有单联系人真实发送验收入口，不进入客户构建。
 
 ## 启动
 
@@ -30,7 +30,7 @@ node rpa\active_touch\self_check.cjs
 当前 portable 包：
 
 ```text
-release\小玺AI员工\小玺AI员工.exe
+release\小玺AI员工-客户版\小玺AI员工-客户版.exe
 ```
 
 ## 当前能力
@@ -40,7 +40,8 @@ release\小玺AI员工\小玺AI员工.exe
 - `主动触达` 只保留客户主流程：话术输入、本次触达人数、任务状态和联系人预览。
 - 在“账号管理 > DeepSeek API”保存用户自己的 API Key 后，主动触达会生成个性化草稿；缺少、无效、余额不足或超时时会明确暂停，不会回退固定模板。
 - 右下角 `启动程序` 创建触达任务，主窗口隐藏，右侧悬浮窗显示当前联系人、下一位、进度和暂停原因。
-- 微信窗口驱动兼容 `Weixin`、`WeChat`、`WeChatAppEx`。
+- 微信窗口驱动只绑定个人微信主进程 `Weixin`、`WeChat`。
+- 内部开发版可由用户明确选择一个测试联系人完成真实发送；账号、窗口、会话或身份无法唯一确认时会阻断，未知结果不会自动重试。
 - 任务状态持久化到 `rpa/active_touch/touch_task.json`，暂停后可继续。
 
 ## 关键目录
@@ -50,7 +51,7 @@ desktop/src/main/             Electron 主进程和 IPC
 desktop/src/renderer/         React UI
 desktop/rpa/contact_sync/     微信联系人同步执行器
 desktop/rpa/active_touch/     主动触达状态机和窗口驱动
-release/小玺AI员工/           当前 portable 包
+release/小玺AI员工-客户版/    当前客户 portable 包
 ```
 
 ## 数据文件
