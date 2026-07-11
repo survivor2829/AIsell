@@ -2,6 +2,7 @@
 **/node_modules/
 **/dist/
 **/dist-development/
+**/dist-pilot/
 desktop/.vite/
 
 # Local secrets, certificates and temporary plaintext

@@ -22,20 +22,25 @@ const {
   verifySendResultDryRun,
   verifyWindowTitle
 } = require("./state_machine.cjs");
-const { sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession } = require("./state_machine.dev.cjs");
+const { executeVerifiedContactSend, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession } = require("./state_machine.dev.cjs");
 const {
+  authorizeNextBatch,
+  classifyContacts,
   createTask,
   cleanupTaskCache,
   fillTouchTemplate,
   hasUnfinishedPausedTask,
+  isBatchAuthorized,
   loadTaskState,
   publicTaskState,
   recoverInterruptedTask,
   saveTaskState,
+  sendDelayMs,
   taskBackupPath
 } = require("./touch_task_state.cjs");
 const { main: runActiveTouchCli } = require("./active_touch_cli.cjs");
 
+(async () => {
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-active-touch-"));
 
 try {
@@ -91,6 +96,169 @@ try {
   const recoveredTask = recoverInterruptedTask(dir);
   assert.equal(recoveredTask.status, "paused");
   assert.equal(recoveredTask.results[1].status, "pending");
+
+  const validContacts = Array.from({ length: 51 }, (_, index) => ({
+    id: `wxid_batch_${index + 1}`,
+    name: `批次客户${index + 1}`,
+    remark: `批次客户${index + 1}`,
+    nickname: `昵称${index + 1}`,
+    wxid: `wxid_batch_${index + 1}`,
+    wechatId: `batch-${index + 1}`,
+    wechatAccountId: "account-a",
+    syncedAt: "2026-07-11T00:00:00.000Z",
+    allowed: true
+  }));
+  const classified = classifyContacts([
+    ...validContacts,
+    { ...validContacts[0], id: "duplicate-name", wxid: "duplicate-name", wechatId: "duplicate-name" },
+    { ...validContacts[1], id: "missing-wechat", wxid: "missing-wechat", name: "空微信号", remark: "空微信号", wechatId: "" },
+    { ...validContacts[2], id: "disabled", wxid: "disabled", name: "已停用", remark: "已停用", wechatId: "disabled", allowed: false }
+  ]);
+  assert.equal(classified.eligible.length, 50);
+  assert.equal(classified.excluded.filter((row) => row.reason_code === "contact_name_not_unique").length, 2);
+  assert.equal(classified.excluded.some((row) => row.reason_code === "wechat_id_missing"), true);
+  assert.equal(classified.excluded.some((row) => row.reason_code === "contact_disabled"), true);
+
+  const batchTask = createTask("批量测试", validContacts, "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  assert.equal(batchTask.version, 3);
+  assert.equal(batchTask.execution_mode, "real_send");
+  assert.equal(batchTask.total, 51);
+  assert.equal(batchTask.batch_size, 50);
+  assert.equal(batchTask.batch_end_index, 50);
+  assert.equal(batchTask.results[0].contact.wxid, "wxid_batch_1");
+  assert.ok(batchTask.snapshot_hash);
+  assert.equal(isBatchAuthorized(batchTask), true);
+  assert.equal(isBatchAuthorized({ ...batchTask, snapshot_hash: "changed" }), false);
+  const pausedGenerated = createTask("pause", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  pausedGenerated.status = "paused";
+  pausedGenerated.phase = "paused";
+  pausedGenerated.results[0].status = "generated";
+  assert.equal(hasUnfinishedPausedTask(pausedGenerated), true);
+  pausedGenerated.results[0].status = "prepared";
+  pausedGenerated.results[0].retry_blocked = true;
+  assert.equal(hasUnfinishedPausedTask(pausedGenerated), false);
+  batchTask.status = "paused";
+  batchTask.phase = "awaiting_batch_continue";
+  batchTask.current_index = 50;
+  const secondBatch = authorizeNextBatch(batchTask, "2026-07-11T00:01:00.000Z");
+  assert.equal(secondBatch.status, "running");
+  assert.equal(secondBatch.current_batch, 2);
+  assert.equal(secondBatch.batch_start_index, 50);
+  assert.equal(secondBatch.batch_end_index, 51);
+  assert.ok(secondBatch.batch_authorization?.id);
+  assert.equal(sendDelayMs(() => 0), 8000);
+  assert.equal(sendDelayMs(() => 1), 15000);
+
+  const legacyTask = { ...batchTask, version: 2 };
+  delete legacyTask.execution_mode;
+  saveTaskState(dir, legacyTask);
+  assert.equal(loadTaskState(dir).version, 2);
+  assert.notEqual(loadTaskState(dir).execution_mode, "real_send");
+
+  const preparedCrash = createTask("prepared", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  preparedCrash.results[0].status = "sending";
+  saveTaskState(dir, preparedCrash);
+  fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify({
+    task_context: { task_id: preparedCrash.id, contact_id: preparedCrash.results[0].id, current_index: 0 },
+    real_send_status: "prepared",
+    real_send_attempt_key: "prepared-key",
+    real_send_attempts: { "prepared-key": "prepared" }
+  }), "utf8");
+  const preparedRecovered = recoverInterruptedTask(dir);
+  assert.equal(preparedRecovered.status, "paused");
+  assert.equal(preparedRecovered.results[0].status, "prepared");
+  assert.equal(preparedRecovered.results[0].retry_blocked, true);
+
+  const verifiedCrash = createTask("verified", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  verifiedCrash.results[0].status = "sending";
+  saveTaskState(dir, verifiedCrash);
+  fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify({
+    task_context: { task_id: verifiedCrash.id, contact_id: verifiedCrash.results[0].id, current_index: 0 },
+    real_send_status: "sent_verified",
+    real_send_attempt_key: "verified-key",
+    real_send_attempts: { "verified-key": "sent_verified" }
+  }), "utf8");
+  const verifiedRecovered = recoverInterruptedTask(dir);
+  assert.equal(verifiedRecovered.results[0].status, "sent_verified");
+  assert.equal(verifiedRecovered.current_index, 1);
+  assert.equal(verifiedRecovered.status, "completed");
+
+  const taskOnlyPrepared = createTask("task-only-prepared", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  taskOnlyPrepared.results[0].status = "prepared";
+  saveTaskState(dir, taskOnlyPrepared);
+  fs.rmSync(path.join(dir, "state.json"), { force: true });
+  const taskOnlyRecovered = recoverInterruptedTask(dir);
+  assert.equal(taskOnlyRecovered.status, "paused");
+  assert.equal(taskOnlyRecovered.results[0].status, "prepared");
+  assert.equal(taskOnlyRecovered.results[0].retry_blocked, true);
+
+  const tamperedSnapshot = createTask("snapshot", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  tamperedSnapshot.results[0].contact.name = "被替换的联系人";
+  saveTaskState(dir, tamperedSnapshot);
+  assert.equal(loadTaskState(dir).integrity_error, "task_snapshot_changed");
+
+  const sharedDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-shared-send-"));
+  const sharedContact = validContacts[0];
+  fs.writeFileSync(path.join(sharedDir, "contacts.json"), JSON.stringify([sharedContact]), "utf8");
+  saveState(sharedDir, {
+    calibrated: true,
+    target_selected: true,
+    conversation_verified: true,
+    message_input_done: true,
+    message_draft: "共享事务消息",
+    selected_customer: sharedContact,
+    send_gate_status: "dry_run_passed",
+    real_send_status: "not_sent",
+    real_send_attempts: {},
+    task_context: { task_id: "shared-task", contact_id: sharedContact.id, current_index: 0 }
+  });
+  const sharedSteps = [];
+  const sharedTransitions = [];
+  let sharedClicks = 0;
+  const sharedResult = await executeVerifiedContactSend({
+    baseDir: sharedDir,
+    contactId: sharedContact.id,
+    message: "共享事务消息",
+    frozenContact: sharedContact,
+    authorized: true,
+    runStep: async (command) => {
+      sharedSteps.push(command);
+      return { ok: true, state: { selected_customer: sharedContact } };
+    },
+    sessionDriver: () => ({ ok: true, pid: 81, hWnd: "91", processName: "Weixin", title: sharedContact.name, accountId: "account-a", accountVerified: true }),
+    sendDriver: () => { sharedClicks += 1; return { ok: true }; },
+    bubbleVerifier: (_message, context) => context.phase === "before"
+      ? { ok: true, snapshot: "before" }
+      : { ok: true, exactMatch: true, outgoing: true, isLatest: true, isNew: true, messageText: "共享事务消息" },
+    onTransition: (status) => sharedTransitions.push(status)
+  });
+  assert.equal(sharedResult.ok, true);
+  assert.deepEqual(sharedSteps, ["select-customer", "calibrate", "focus-wechat-window", "click-search-result-dry-run", "input-message-dry-run", "send"]);
+  assert.deepEqual(sharedTransitions, ["prepared", "clicked", "sent_verified"]);
+  assert.equal(sharedClicks, 1);
+
+  saveState(sharedDir, {
+    ...loadState(sharedDir),
+    real_send_status: "not_sent",
+    real_send_attempts: {},
+    real_send_attempt_key: "",
+    real_send_armed: false
+  });
+  const persistFailure = await executeVerifiedContactSend({
+    baseDir: sharedDir,
+    contactId: sharedContact.id,
+    message: "共享事务消息",
+    frozenContact: sharedContact,
+    authorized: true,
+    runStep: async () => ({ ok: true, state: { selected_customer: sharedContact } }),
+    sessionDriver: () => ({ ok: true, pid: 81, hWnd: "91", processName: "Weixin", title: sharedContact.name, accountId: "account-a", accountVerified: true }),
+    sendDriver: () => { sharedClicks += 1; return { ok: true }; },
+    bubbleVerifier: () => ({ ok: true, snapshot: "before" }),
+    onTransition: (status) => { if (status === "prepared") throw new Error("task-save-failed"); }
+  });
+  assert.equal(persistFailure.blocked_reason, "prepared_task_persist_failed");
+  assert.equal(sharedClicks, 1);
+  fs.rmSync(sharedDir, { recursive: true, force: true });
 
   const contextTask = createTask("测试", [{ id: "context-a", name: "A" }, { id: "context-b", name: "B" }]);
   saveTaskState(dir, contextTask);
@@ -374,8 +542,11 @@ try {
   assert.match(developmentDriverSource, /isNew/);
   assert.match(developmentDriverSource, /function detectActiveWechatAccount/);
   assert.match(developmentDriverSource, /\*\.db-wal/);
+  assert.match(developmentDriverSource, /wechat_account_ambiguous/);
   assert.match(developmentDriverSource, /\$outgoingExact\.Count -gt \$beforeExactCount/);
   assert.ok(driverSource.includes('$processNames = @("Weixin", "WeChat")'));
+  assert.equal(driverSource.includes("$name.Contains($expected)"), false);
+  assert.match(driverSource, /\$name\.Trim\(\) -ne \$expected\.Trim\(\)/);
   assert.equal(driverSource.includes("WXWork"), false);
   assert.equal(driverSource.includes("WeChatAppEx"), false);
   assert.doesNotMatch(driverSource, /\$pf86\\\\Tencent\\\\WeChat\\\\WeChat\.exe",\s*\n\s*\)\)/);
@@ -401,8 +572,11 @@ try {
   assert.equal(developmentCliSource.includes("--user-confirmed"), false);
   const developmentIpcSource = fs.readFileSync(path.join(__dirname, "../../src/main/active-touch-dev-ipc.cjs"), "utf8");
   assert.match(developmentIpcSource, /clickToken/);
-  assert.match(developmentIpcSource, /select-customer[\s\S]*calibrate[\s\S]*click-search-result-dry-run[\s\S]*verify-real-send-session[\s\S]*input-message-dry-run[\s\S]*send[\s\S]*dry-run/);
-  assert.match(developmentIpcSource, /setRealSendArm\(runtimeDataDir, true\)[\s\S]*sendReal\(runtimeDataDir/);
+  assert.match(developmentIpcSource, /executeVerifiedContactSend/);
+  assert.equal(developmentIpcSource.includes("setRealSendArm(runtimeDataDir, true)"), false);
+  const sharedTransactionSource = fs.readFileSync(path.join(__dirname, "state_machine.dev.cjs"), "utf8");
+  assert.match(sharedTransactionSource, /async function executeVerifiedContactSend/);
+  assert.match(sharedTransactionSource, /select-customer[\s\S]*calibrate[\s\S]*focus-wechat-window[\s\S]*click-search-result-dry-run[\s\S]*verifyRealSendSession[\s\S]*input-message-dry-run[\s\S]*send[\s\S]*dry-run[\s\S]*sendReal/);
   assert.equal(developmentIpcSource.includes("real-send-hold"), false);
   const developmentUiSource = fs.readFileSync(path.join(__dirname, "../../src/renderer/DevelopmentAcceptance.tsx"), "utf8");
   assert.match(developmentUiSource, /sendSelectedContact/);
@@ -426,3 +600,7 @@ try {
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });
 }
+})().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

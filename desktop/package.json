@@ -13,6 +13,7 @@
     "build": "npm run build:customer",
     "build:customer": "node scripts/build-renderer.cjs customer",
     "build:development": "node scripts/build-renderer.cjs development",
+    "build:pilot": "node scripts/build-renderer.cjs pilot",
     "release:customer": "npm run build && node scripts/sync-customer-release.cjs && node scripts/check-clean-runtime.cjs --release && node scripts/customer-edition.self_check.cjs --release",
     "preview": "vite preview --host 127.0.0.1"
   },

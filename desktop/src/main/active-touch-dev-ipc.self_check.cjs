@@ -5,10 +5,14 @@ const path = require("node:path");
 const handlers = new Map();
 const stepCalls = [];
 const armCalls = [];
-const sendCalls = [];
+const executeCalls = [];
 let runBehavior = async (args) => {
   stepCalls.push(args);
   return { ok: true, action: args[0] };
+};
+let executeBehavior = async (options) => {
+  executeCalls.push(options);
+  return { ok: true, action: "send", state: { real_send_status: "sent_verified" } };
 };
 
 const originalLoad = Module._load;
@@ -17,13 +21,10 @@ Module._load = function load(request, parent, isMain) {
   if (request === "./active-touch-ipc.cjs") return { runActiveTouchDev: (args) => runBehavior(args) };
   if (request === "../../rpa/active_touch/state_machine.dev.cjs") {
     return {
+      executeVerifiedContactSend: (options) => executeBehavior(options),
       setRealSendArm: (dataDir, enabled) => {
         armCalls.push([dataDir, enabled]);
         return { ok: true, action: "set-real-send-arm" };
-      },
-      sendReal: (dataDir, options) => {
-        sendCalls.push([dataDir, options]);
-        return { ok: true, action: "send", state: { real_send_status: "sent_verified" } };
       }
     };
   }
@@ -50,41 +51,36 @@ const sendSelected = handlers.get("active-touch:send-selected-contact");
 
   const result = await sendSelected({ sender: webContents }, { clickToken: "click-3", contactId: "c1", message: " hello " });
   assert.equal(result.ok, true);
-  assert.deepEqual(stepCalls, [
-    ["select-customer", "--id", "c1"],
-    ["calibrate"],
-    ["click-search-result-dry-run"],
-    ["verify-real-send-session"],
-    ["input-message-dry-run", "--message", "hello"],
-    ["send", "--dry-run", "--message", "hello"]
-  ]);
-  assert.deepEqual(armCalls, [["test-data", true]]);
-  assert.deepEqual(sendCalls, [["test-data", { allowRealSend: true, userConfirmed: true, message: "hello" }]]);
+  assert.equal(executeCalls.length, 1);
+  assert.equal(executeCalls[0].baseDir, "test-data");
+  assert.equal(executeCalls[0].contactId, "c1");
+  assert.equal(executeCalls[0].message, "hello");
+  assert.equal(executeCalls[0].authorized, true);
+  assert.equal(typeof executeCalls[0].runStep, "function");
+  await executeCalls[0].runStep("calibrate", []);
+  assert.deepEqual(stepCalls, [["calibrate"]]);
+  assert.equal(armCalls.length, 0);
 
   stepCalls.length = 0;
   armCalls.length = 0;
-  sendCalls.length = 0;
-  runBehavior = async (args) => {
-    stepCalls.push(args);
-    return args[0] === "verify-real-send-session" ? { ok: false, blocked_reason: "session_changed" } : { ok: true };
+  executeCalls.length = 0;
+  executeBehavior = async (options) => {
+    executeCalls.push(options);
+    return { ok: false, blocked_reason: "session_changed" };
   };
   assert.equal((await sendSelected({ sender: webContents }, { clickToken: "click-4", contactId: "c1", message: "hello" })).blocked_reason, "session_changed");
   assert.equal(armCalls.length, 0);
-  assert.equal(sendCalls.length, 0);
+  assert.equal(executeCalls.length, 1);
 
-  let releaseStep;
-  runBehavior = (args) => {
-    stepCalls.push(args);
-    return new Promise((resolve) => { releaseStep = () => resolve({ ok: true }); });
+  let releaseSend;
+  executeBehavior = (options) => {
+    executeCalls.push(options);
+    return new Promise((resolve) => { releaseSend = () => resolve({ ok: true }); });
   };
   const first = sendSelected({ sender: webContents }, { clickToken: "click-5", contactId: "c1", message: "hello" });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal((await sendSelected({ sender: webContents }, { clickToken: "click-6", contactId: "c1", message: "hello" })).blocked_reason, "real_send_in_flight");
-  releaseStep();
-  runBehavior = async (args) => {
-    stepCalls.push(args);
-    return { ok: true };
-  };
+  releaseSend();
   await first;
 
   console.log("active-touch-dev-ipc self-check passed");

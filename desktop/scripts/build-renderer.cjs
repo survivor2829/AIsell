@@ -2,7 +2,8 @@ const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const edition = process.argv[2] === "development" ? "development" : "customer";
+const requested = process.argv[2];
+const edition = requested === "development" || requested === "pilot" ? requested : "customer";
 const viteCli = path.join(path.dirname(require.resolve("vite")), "bin", "vite.js");
 const result = spawnSync(process.execPath, [viteCli, "build"], {
   stdio: "inherit",
@@ -11,6 +12,6 @@ const result = spawnSync(process.execPath, [viteCli, "build"], {
 
 if (result.status) process.exit(result.status);
 
-const outputDir = path.join(__dirname, "..", edition === "development" ? "dist-development" : "dist");
+const outputDir = path.join(__dirname, "..", edition === "development" ? "dist-development" : edition === "pilot" ? "dist-pilot" : "dist");
 fs.writeFileSync(path.join(outputDir, "build-edition.json"), `${JSON.stringify({ edition }, null, 2)}\n`);
 console.log(`${edition} renderer build completed`);

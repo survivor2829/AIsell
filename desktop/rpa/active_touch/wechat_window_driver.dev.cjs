@@ -115,11 +115,16 @@ foreach ($root in $roots) {
     }
   }
 }
-$active = $accounts | Sort-Object activityTimeUtc -Descending | Select-Object -First 1
-if ($active -eq $null) {
+$uniqueAccounts = @($accounts | Group-Object { $_.account.Name } | ForEach-Object { $_.Group | Sort-Object activityTimeUtc -Descending | Select-Object -First 1 })
+if ($uniqueAccounts.Count -eq 0) {
   @{ ok = $false; reason = "wechat_account_directory_missing" } | ConvertTo-Json -Compress
   exit
 }
+if ($uniqueAccounts.Count -ne 1) {
+  @{ ok = $false; reason = "wechat_account_ambiguous"; accountCount = $uniqueAccounts.Count } | ConvertTo-Json -Compress
+  exit
+}
+$active = $uniqueAccounts[0]
 @{
   ok = $true
   accountId = $active.account.Name

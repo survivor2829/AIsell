@@ -1,6 +1,6 @@
 const { ipcMain } = require("electron");
 const { runActiveTouchDev } = require("./active-touch-ipc.cjs");
-const { sendReal, setRealSendArm } = require("../../rpa/active_touch/state_machine.dev.cjs");
+const { executeVerifiedContactSend, setRealSendArm } = require("../../rpa/active_touch/state_machine.dev.cjs");
 
 let realSendInFlight = false;
 let runtimeDataDir = "";
@@ -35,21 +35,13 @@ function registerActiveTouchDevIpc(options = {}) {
     if (!contactId || !message) return { ok: false, action: "send", blocked_reason: "contact_or_message_missing", error: "已阻断：请选择联系人并填写发送文案" };
     realSendInFlight = true;
     try {
-      const steps = [
-        ["select-customer", "--id", contactId],
-        ["calibrate"],
-        ["click-search-result-dry-run"],
-        ["verify-real-send-session"],
-        ["input-message-dry-run", "--message", message],
-        ["send", "--dry-run", "--message", message]
-      ];
-      for (const args of steps) {
-        const result = await runActiveTouchDev(args);
-        if (!result.ok) return result;
-      }
-      const armed = setRealSendArm(runtimeDataDir, true);
-      if (!armed.ok) return armed;
-      return sendReal(runtimeDataDir, { allowRealSend: true, userConfirmed: true, message });
+      return await executeVerifiedContactSend({
+        baseDir: runtimeDataDir,
+        contactId,
+        message,
+        authorized: true,
+        runStep: (command, args = []) => runActiveTouchDev([command, ...args])
+      });
     } catch (error) {
       setRealSendArm(runtimeDataDir, false);
       return { ok: false, action: "send", blocked_reason: "real_send_failed", error: error instanceof Error ? error.message : "真实发送执行失败" };

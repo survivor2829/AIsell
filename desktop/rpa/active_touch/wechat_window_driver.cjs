@@ -462,7 +462,7 @@ for ($i = 0; $i -lt $all.Count; $i++) {
     $unavailable = $name.Trim()
     break
   }
-  if (-not $name.Contains($expected)) { continue }
+  if ($name.Trim() -ne $expected.Trim()) { continue }
   if ($inRightHeader) {
     $found = $name
     break

@@ -7,13 +7,15 @@ const { registerTouchTaskIpc } = require("./touch-task-ipc.cjs");
 const { createRuntimeCoordinator } = require("./runtime-coordinator.cjs");
 const { createDeepSeekClient, createDeepSeekKeyStore } = require("./deepseek-api.cjs");
 const { registerDeepSeekApiIpc } = require("./deepseek-api-ipc.cjs");
-const { developmentEdition, editionLabel, preloadFile } = require("./edition.cjs");
+const { developmentEdition, pilotEdition, editionLabel, preloadFile, rendererDir } = require("./edition.cjs");
 
 let mainWindow = null;
-let disarmDevelopmentRealSend = null;
+let disarmRealSend = null;
+let touchTaskController = null;
 
 // ponytail: development needs a separate Electron profile so it can run beside the customer edition.
 if (developmentEdition) app.setPath("userData", path.join(app.getPath("appData"), "xiaoxi-active-touch-development"));
+if (pilotEdition) app.setPath("userData", path.join(app.getPath("appData"), "xiaoxi-active-touch-controlled-pilot"));
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -36,13 +38,14 @@ function createWindow() {
 
   mainWindow.setMenu(null);
   mainWindow.on("close", () => {
-    disarmDevelopmentRealSend?.();
+    touchTaskController?.pause("应用窗口已关闭，任务已暂停");
+    disarmRealSend?.();
   });
   mainWindow.on("blur", () => {
-    disarmDevelopmentRealSend?.();
+    if (developmentEdition) disarmRealSend?.();
   });
   mainWindow.on("minimize", () => {
-    disarmDevelopmentRealSend?.();
+    if (developmentEdition) disarmRealSend?.();
   });
   mainWindow.on("closed", () => {
     mainWindow = null;
@@ -51,7 +54,7 @@ function createWindow() {
   if (process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    mainWindow.loadFile(path.join(__dirname, "../../dist/index.html"));
+    mainWindow.loadFile(path.join(__dirname, `../../${rendererDir}/index.html`));
   }
 }
 
@@ -79,12 +82,21 @@ if (!gotSingleInstanceLock) {
     const deepSeekClient = createDeepSeekClient({ keyStore: deepSeekKeyStore });
     coordinator.initialize();
     registerActiveTouchIpc({ dataDir: runtime.activeTouchDir, coordinator });
+    const internalRealSend = developmentEdition || pilotEdition ? require("../../rpa/active_touch/state_machine.dev.cjs") : null;
     const developmentRealSend = developmentEdition ? require("./active-touch-dev-ipc.cjs") : null;
     if (developmentRealSend) developmentRealSend.registerActiveTouchDevIpc({ dataDir: runtime.activeTouchDir, getMainWindow: () => mainWindow });
-    if (developmentRealSend) disarmDevelopmentRealSend = () => developmentRealSend.disarmRealSend(runtime.activeTouchDir);
+    if (internalRealSend) disarmRealSend = () => internalRealSend.setRealSendArm(runtime.activeTouchDir, false);
     registerContactSyncIpc({ dataDir: runtime.contactSyncDir, activeTouchDir: runtime.activeTouchDir, coordinator });
     registerDeepSeekApiIpc({ keyStore: deepSeekKeyStore, client: deepSeekClient });
-    registerTouchTaskIpc({ getMainWindow: () => mainWindow, dataDir: runtime.activeTouchDir, coordinator, deepSeekClient, onPause: developmentRealSend ? () => developmentRealSend.disarmRealSend(runtime.activeTouchDir) : undefined });
+    touchTaskController = registerTouchTaskIpc({
+      getMainWindow: () => mainWindow,
+      dataDir: runtime.activeTouchDir,
+      coordinator,
+      deepSeekClient,
+      executionMode: pilotEdition ? "real_send" : "draft_only",
+      realSendExecutor: pilotEdition ? internalRealSend.executeVerifiedContactSend : null,
+      onPause: disarmRealSend || undefined
+    });
     createWindow();
 
     app.on("activate", () => {

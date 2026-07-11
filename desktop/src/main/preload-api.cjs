@@ -1,4 +1,22 @@
+const { randomUUID } = require("node:crypto");
+
 function createPreloadApis(ipcRenderer) {
+  let trustedBatchClick = "";
+  if (typeof window !== "undefined") {
+    window.addEventListener("click", (event) => {
+      if (!event.isTrusted || !event.target?.closest?.("[data-xiaoxi-batch-authorize]")) return;
+      const token = randomUUID();
+      trustedBatchClick = token;
+      setTimeout(() => {
+        if (trustedBatchClick === token) trustedBatchClick = "";
+      }, 1000);
+    }, true);
+  }
+  const consumeBatchClick = () => {
+    const token = trustedBatchClick;
+    trustedBatchClick = "";
+    return token;
+  };
   return {
     activeTouch: {
       status: () => ipcRenderer.invoke("active-touch:status"),
@@ -29,10 +47,10 @@ function createPreloadApis(ipcRenderer) {
       remove: () => ipcRenderer.invoke("deepseek-api:delete")
     },
     touchTask: {
-      start: (payload) => ipcRenderer.invoke("touch-task:start", payload),
+      start: (payload) => ipcRenderer.invoke("touch-task:start", { ...payload, clickToken: consumeBatchClick() }),
       status: () => ipcRenderer.invoke("touch-task:status"),
       pause: () => ipcRenderer.invoke("touch-task:pause"),
-      resume: () => ipcRenderer.invoke("touch-task:resume"),
+      resume: () => ipcRenderer.invoke("touch-task:resume", { clickToken: consumeBatchClick() }),
       stop: () => ipcRenderer.invoke("touch-task:stop"),
       showMain: () => ipcRenderer.invoke("touch-task:show-main"),
       closeFloating: () => ipcRenderer.invoke("touch-task:close-floating"),
