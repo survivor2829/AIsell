@@ -767,6 +767,60 @@ td {
   margin-bottom: 16px;
 }
 
+.contact-table-scroll {
+  max-height: 420px;
+  overflow: auto;
+}
+
+.contact-table-scroll th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+}
+
+.touch-contact-table {
+  min-width: 1320px;
+}
+
+.touch-contact-table th:nth-child(1),
+.touch-contact-table th:nth-child(2),
+.touch-contact-table th:nth-child(3) {
+  width: 130px;
+}
+
+.touch-contact-table th:nth-child(4) {
+  width: 150px;
+}
+
+.touch-contact-table th:nth-child(5) {
+  width: 90px;
+}
+
+.touch-contact-table th:nth-child(6) {
+  width: 130px;
+}
+
+.touch-contact-table th:nth-child(7) {
+  width: 380px;
+}
+
+.touch-contact-table th:nth-child(8) {
+  width: 180px;
+}
+
+.touch-contact-table td {
+  padding-top: 12px;
+  padding-bottom: 12px;
+  vertical-align: top;
+}
+
+.touch-message-cell,
+.touch-reason-cell {
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .flat-table-panel {
   margin: 0 14px 14px;
   box-shadow: none;
