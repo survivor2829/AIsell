@@ -56,6 +56,32 @@ try {
   assert.equal(fs.existsSync(foreignContacts), true);
   assert.equal(fs.readFileSync(path.join(paths.activeTouchDir, "contacts.json"), "utf8"), '[{"id":"test-contact"}]');
 
+  const appDataDir = path.join(userHome, "AppData", "Roaming");
+  const latestProfile = path.join(appDataDir, "xiaoxi-active-touch-desktop");
+  const otherAccountProfile = path.join(appDataDir, "xiaoxi-active-touch-development");
+  const testProfile = path.join(appDataDir, "xiaoxi-active-touch-test");
+  const latestContacts = path.join(latestProfile, "data", "active_touch", "contacts.json");
+  const otherAccountContacts = path.join(otherAccountProfile, "data", "active_touch", "contacts.json");
+  fs.mkdirSync(path.dirname(latestContacts), { recursive: true });
+  fs.mkdirSync(path.dirname(otherAccountContacts), { recursive: true });
+  fs.mkdirSync(path.join(latestProfile, "data", "contact_sync"), { recursive: true });
+  fs.mkdirSync(path.join(otherAccountProfile, "data", "contact_sync"), { recursive: true });
+  fs.mkdirSync(path.join(testProfile, "data", "contact_sync"), { recursive: true });
+  fs.writeFileSync(latestContacts, '[{"id":"latest-contact"}]', "utf8");
+  fs.writeFileSync(otherAccountContacts, '[{"id":"other-account-contact"}]', "utf8");
+  fs.writeFileSync(path.join(latestProfile, "data", "contact_sync", "state.json"), '{"status":"synced","contact_count":1,"account_name":"wxid_current"}', "utf8");
+  fs.writeFileSync(path.join(otherAccountProfile, "data", "contact_sync", "state.json"), '{"status":"synced","contact_count":1,"account_name":"wxid_other"}', "utf8");
+  fs.writeFileSync(path.join(testProfile, "data", "contact_sync", "state.json"), '{"status":"blocked","account_name":"wxid_current"}', "utf8");
+  fs.writeFileSync(path.join(latestProfile, "data", "active_touch", "touch_task.json"), '{"status":"paused"}', "utf8");
+  fs.utimesSync(latestContacts, new Date("2026-07-13"), new Date("2026-07-13"));
+  fs.utimesSync(otherAccountContacts, new Date("2026-07-14"), new Date("2026-07-14"));
+
+  migrateLegacyRuntimeData({ appPath, userDataDir: testProfile, userHome });
+  const testPaths = resolveRuntimePaths(testProfile);
+  assert.equal(fs.readFileSync(path.join(testPaths.activeTouchDir, "contacts.json"), "utf8"), '[{"id":"latest-contact"}]');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(testPaths.contactSyncDir, "state.json"), "utf8")).status, "synced");
+  assert.equal(fs.existsSync(path.join(testPaths.activeTouchDir, "touch_task.json")), false);
+
   console.log("runtime-data self-check passed");
 } finally {
   fs.rmSync(root, { recursive: true, force: true });

@@ -42,7 +42,10 @@ function createPreloadApis(ipcRenderer) {
     contactSync: {
       status: () => ipcRenderer.invoke("contact-sync:status"),
       sync: () => ipcRenderer.invoke("contact-sync:sync"),
-      capture: () => ipcRenderer.invoke("contact-sync:capture")
+      capture: () => ipcRenderer.invoke("contact-sync:capture"),
+      chooseWechatExe: () => ipcRenderer.invoke("contact-sync:choose-wechat-exe"),
+      chooseWechatRoot: () => ipcRenderer.invoke("contact-sync:choose-wechat-root"),
+      autoDetectPaths: () => ipcRenderer.invoke("contact-sync:auto-detect-paths")
     },
     deepSeekApi: {
       status: () => ipcRenderer.invoke("deepseek-api:status"),

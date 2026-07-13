@@ -10,7 +10,7 @@ function packagedEdition() {
   }
 }
 
-const requestedEdition = String(process.env.XIAOXI_EDITION || packagedEdition() || "customer");
+const requestedEdition = String(process.env.XIAOXI_EDITION || packagedEdition() || "pilot");
 const developmentEdition = requestedEdition === "development" && fs.existsSync(path.join(__dirname, "preload.dev.cjs"));
 const pilotEdition = requestedEdition === "pilot"
   && fs.existsSync(path.join(__dirname, "../../rpa/active_touch/state_machine.dev.cjs"))
@@ -22,7 +22,7 @@ const rendererDir = process.env.XIAOXI_EDITION === "development"
 module.exports = {
   developmentEdition,
   pilotEdition,
-  editionLabel: developmentEdition ? "开发版" : pilotEdition ? "受控试用版" : "客户版",
+  editionLabel: developmentEdition ? "测试版" : "交付版",
   preloadFile: developmentEdition ? "preload.dev.cjs" : "preload.cjs",
   rendererDir
 };

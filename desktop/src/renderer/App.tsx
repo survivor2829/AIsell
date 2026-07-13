@@ -25,7 +25,7 @@ import {
   Video,
   X
 } from "lucide-react";
-import { lazy, Suspense, type ComponentType, type FormEvent, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, type ComponentType, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type ModuleKey =
   | "agent"
@@ -108,6 +108,8 @@ type ContactSyncState = {
   last_stage: string;
   account_name: string;
   helper_configured: boolean;
+  wechat_exe_path: string;
+  wechat_root: string;
 };
 type ContactSyncResult = {
   ok: boolean;
@@ -197,6 +199,9 @@ declare global {
       status: () => Promise<ContactSyncResult>;
       sync: () => Promise<ContactSyncResult>;
       capture: () => Promise<ContactSyncResult>;
+      chooseWechatExe: () => Promise<ContactSyncResult>;
+      chooseWechatRoot: () => Promise<ContactSyncResult>;
+      autoDetectPaths: () => Promise<ContactSyncResult>;
     };
     xiaoxiTouchTask?: {
       start: (payload: { script: string }) => Promise<TouchTaskResult>;
@@ -224,7 +229,8 @@ const DEFAULT_TOUCH_MESSAGE = "{称呼}，您好，我们这边有清洁设备�
 const XIAOXI_EDITION = import.meta.env.VITE_XIAOXI_EDITION;
 const DEVELOPMENT_EDITION = XIAOXI_EDITION === "development";
 const PILOT_EDITION = XIAOXI_EDITION === "pilot";
-const EDITION_LABEL = DEVELOPMENT_EDITION ? "开发版" : PILOT_EDITION ? "受控试用版" : "客户版";
+const REAL_SEND_EDITION = DEVELOPMENT_EDITION || PILOT_EDITION;
+const EDITION_LABEL = DEVELOPMENT_EDITION ? "测试版" : "交付版";
 const DevelopmentAcceptance = DEVELOPMENT_EDITION ? lazy(() => import("./DevelopmentAcceptance")) : null;
 
 const agentChildren: NavItem[] = [
@@ -373,6 +379,7 @@ export default function App() {
   const [openGroups, setOpenGroups] = useState<Record<GroupKey, boolean>>({ agent: true, "video-leads": true });
   const [contactRows, setContactRows] = useState<ContactRow[]>([]);
   const [contactSyncBusy, setContactSyncBusy] = useState(false);
+  const contactSyncInFlight = useRef(false);
   const [contactSyncState, setContactSyncState] = useState<ContactSyncState>({
     status: "idle",
     contact_count: 0,
@@ -380,7 +387,9 @@ export default function App() {
     last_error: "",
     last_stage: "idle",
     account_name: "",
-    helper_configured: false
+    helper_configured: false,
+    wechat_exe_path: "",
+    wechat_root: ""
   });
   const [contactSyncError, setContactSyncError] = useState("");
   const [touchTask, setTouchTask] = useState<TouchTaskState>(() => emptyTouchTask());
@@ -420,6 +429,13 @@ export default function App() {
   const applyContactSyncResult = (result: ContactSyncResult) => {
     if (result.state) {
       setContactSyncState((current) => ({ ...current, ...result.state }));
+    } else if (result.error) {
+      setContactSyncState((current) => ({
+        ...current,
+        status: "blocked",
+        last_error: result.error,
+        last_stage: result.blocked_reason || "blocked"
+      }));
     }
     if (result.contacts) setContactRows(result.contacts);
     setContactSyncError(result.error ?? "");
@@ -438,20 +454,22 @@ export default function App() {
   };
 
   const callContactSync = async (action: string, run: () => Promise<ContactSyncResult>) => {
+    if (contactSyncInFlight.current) return;
+
     if (!window.xiaoxiContactSync) {
-      setContactSyncError("当前环境未连接联系人同步执行器");
-      addLog(action, "当前环境未连接联系人同步执行器");
+      applyContactSyncResult({ ok: false, action, error: "当前环境未连接联系人同步执行器" });
       return;
     }
 
+    contactSyncInFlight.current = true;
     setContactSyncBusy(true);
     try {
       applyContactSyncResult(await run());
     } catch (error) {
       const message = error instanceof Error ? error.message : "执行失败";
-      setContactSyncError(message);
-      addLog(action, message);
+      applyContactSyncResult({ ok: false, action, error: message });
     } finally {
+      contactSyncInFlight.current = false;
       setContactSyncBusy(false);
     }
   };
@@ -461,6 +479,8 @@ export default function App() {
   };
 
   const runContactSync = () => {
+    if (contactSyncInFlight.current) return;
+
     setContactSyncState((current) => ({
       ...current,
       status: "capturing",
@@ -469,6 +489,18 @@ export default function App() {
     }));
     setContactSyncError("");
     void callContactSync("同步微信联系人", () => window.xiaoxiContactSync!.capture());
+  };
+
+  const chooseWechatExe = () => {
+    void callContactSync("选择微信程序", () => window.xiaoxiContactSync!.chooseWechatExe());
+  };
+
+  const chooseWechatRoot = () => {
+    void callContactSync("选择微信数据目录", () => window.xiaoxiContactSync!.chooseWechatRoot());
+  };
+
+  const autoDetectWechatPaths = () => {
+    void callContactSync("自动识别微信路径", () => window.xiaoxiContactSync!.autoDetectPaths());
   };
 
   const startTouchTask = () => {
@@ -486,10 +518,10 @@ export default function App() {
       return;
     }
 
-    const continuingBatch = PILOT_EDITION && touchTask.status === "paused" && touchTask.phase === "awaiting_batch_continue";
+    const continuingBatch = REAL_SEND_EDITION && touchTask.status === "paused" && touchTask.phase === "awaiting_batch_continue";
 
     if (!continuingBatch) {
-      const eligibleContactCount = PILOT_EDITION && touchTaskPreview ? touchTaskPreview.eligible.length : contactRows.filter((contact) => contact.allowed).length;
+      const eligibleContactCount = REAL_SEND_EDITION && touchTaskPreview ? touchTaskPreview.eligible.length : contactRows.filter((contact) => contact.allowed).length;
       if (!eligibleContactCount) {
         const message = contactRows.length ? "没有符合触达条件的联系人" : "请先同步当前微信联系人";
         setTouchTaskError(message);
@@ -542,8 +574,8 @@ export default function App() {
   }, [contactRows]);
 
   const allowedContactCount = contactRows.filter((contact) => contact.allowed).length;
-  const launchContactCount = PILOT_EDITION && touchTaskPreview ? touchTaskPreview.eligible.length : allowedContactCount;
-  const awaitingBatchContinue = PILOT_EDITION && touchTask.status === "paused" && touchTask.phase === "awaiting_batch_continue";
+  const launchContactCount = REAL_SEND_EDITION && touchTaskPreview ? touchTaskPreview.eligible.length : allowedContactCount;
+  const awaitingBatchContinue = REAL_SEND_EDITION && touchTask.status === "paused" && touchTask.phase === "awaiting_batch_continue";
   const canLaunchTouch = active === "touch" && !touchTaskBusy && touchTask.status !== "running" && (awaitingBatchContinue || (launchContactCount > 0 && Boolean(messageDraft.trim())));
   const launchTitle =
     active !== "touch"
@@ -627,6 +659,9 @@ export default function App() {
               busy={contactSyncBusy}
               onRefresh={refreshContactSync}
               onSync={runContactSync}
+              onChooseWechatExe={chooseWechatExe}
+              onChooseWechatRoot={chooseWechatRoot}
+              onAutoDetectPaths={autoDetectWechatPaths}
             />
           )}
           {active === "accounts" && <AccountManagement />}
@@ -648,7 +683,7 @@ export default function App() {
           {active !== "contact-sync" && active !== "accounts" && active !== "touch" && <Placeholder title={activeTitle} />}
         </div>
 
-        <button data-xiaoxi-batch-authorize={PILOT_EDITION ? (awaitingBatchContinue ? "continue" : "start") : undefined} className={`launch-button ${canLaunchTouch ? "" : "disabled"}`} onClick={startTouchTask} disabled={!canLaunchTouch} title={launchTitle}>
+        <button data-xiaoxi-batch-authorize={REAL_SEND_EDITION ? (awaitingBatchContinue ? "continue" : "start") : undefined} className={`launch-button ${canLaunchTouch ? "" : "disabled"}`} onClick={startTouchTask} disabled={!canLaunchTouch} title={launchTitle}>
           {touchTaskBusy ? "启动中" : awaitingBatchContinue ? <><span>继续</span><br /><span>下一批</span></> : <><span>启动</span><br /><span>程序</span></>}
         </button>
       </section>
@@ -709,7 +744,10 @@ function ContactSyncPage({
   syncError,
   busy,
   onRefresh,
-  onSync
+  onSync,
+  onChooseWechatExe,
+  onChooseWechatRoot,
+  onAutoDetectPaths
 }: {
   contacts: ContactRow[];
   syncState: ContactSyncState;
@@ -717,6 +755,9 @@ function ContactSyncPage({
   busy: boolean;
   onRefresh: () => void;
   onSync: () => void;
+  onChooseWechatExe: () => void;
+  onChooseWechatRoot: () => void;
+  onAutoDetectPaths: () => void;
 }) {
   const statusLabel =
     syncState.status === "synced" ? "已同步" : syncState.status === "blocked" ? "同步失败" : syncState.status === "capturing" ? "同步中" : "待同步";
@@ -747,6 +788,29 @@ function ContactSyncPage({
         <StatusCard label="通讯录人数" value={`${contacts.length || syncState.contact_count}人`} good={(contacts.length || syncState.contact_count) > 0} />
         <StatusCard label="微信账号" value={syncState.account_name || "未识别"} good={Boolean(syncState.account_name)} />
         <StatusCard label="最近同步" value={lastSynced} good={Boolean(syncState.last_synced_at)} />
+      </div>
+      <div className="wechat-path-panel">
+        <div className="wechat-path-row">
+          <div>
+            <strong>微信程序位置</strong>
+            <span title={syncState.wechat_exe_path}>{syncState.wechat_exe_path || "未识别，请手动选择 Weixin.exe"}</span>
+          </div>
+          <button className="secondary-button" onClick={onChooseWechatExe} disabled={busy}>
+            <Folder size={16} />
+            选择程序
+          </button>
+        </div>
+        <div className="wechat-path-row">
+          <div>
+            <strong>微信数据目录</strong>
+            <span title={syncState.wechat_root}>{syncState.wechat_root || "未识别，请手动选择 xwechat_files"}</span>
+          </div>
+          <button className="secondary-button" onClick={onChooseWechatRoot} disabled={busy}>
+            <Folder size={16} />
+            选择目录
+          </button>
+        </div>
+        <button className="wechat-auto-detect" onClick={onAutoDetectPaths} disabled={busy}>恢复自动识别</button>
       </div>
       {error && <div className="touch-notice">{error}</div>}
 
@@ -920,14 +984,12 @@ function ActiveTouch({
       <div className="page-head">
         <div>
           <h1>主动触达</h1>
-          <p>{PILOT_EDITION
-            ? "同步联系人，按需修改默认话术，再点击右下角启动程序。受控试用版按每批50人执行真实发送。"
-            : "填写第一句话，点击右下角启动程序。小玺会逐个打开会话并写入草稿，只做预检，不会自动发送。"}</p>
+          <p>同步联系人，按需修改默认话术，再点击右下角启动程序。每批最多50人执行真实发送。</p>
         </div>
       </div>
 
       <div className="status-strip">
-        {PILOT_EDITION ? (
+        {REAL_SEND_EDITION ? (
           <>
             <StatusCard label="联系人总数" value={`${totalCount}人`} good={totalCount > 0} />
             <StatusCard label="合格联系人" value={`${eligibleCount}人`} good={eligibleCount > 0} />
@@ -1026,7 +1088,7 @@ function ActiveTouch({
                       <td>{contact.nickname || "-"}</td>
                       <td>{contact.wechatId || "-"}</td>
                       <td>第{Math.floor(index / batchSize) + 1}批</td>
-                      <td>{PILOT_EDITION ? "待AI生成" : "待写草稿"}</td>
+                      <td>待AI生成</td>
                       <td className="touch-message-cell">{fillTouchTemplate(messageDraft, contact)}</td>
                       <td className="touch-reason-cell">-</td>
                     </tr>
@@ -1142,7 +1204,7 @@ function FloatingTouchWindow() {
             暂停
           </button>
         ) : (
-          <button data-xiaoxi-batch-authorize={PILOT_EDITION ? "continue" : undefined} onClick={() => callTask(() => window.xiaoxiTouchTask!.resume())} disabled={busy || touchTask.status !== "paused"}>
+          <button data-xiaoxi-batch-authorize={REAL_SEND_EDITION ? "continue" : undefined} onClick={() => callTask(() => window.xiaoxiTouchTask!.resume())} disabled={busy || touchTask.status !== "paused"}>
             <Play size={15} />
             {touchTask.phase === "awaiting_batch_continue" ? "继续下一批" : "继续"}
           </button>

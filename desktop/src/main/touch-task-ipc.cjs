@@ -351,7 +351,7 @@ function persistRealSendTransition(index, status, executionState = {}) {
 
 async function runRealContact(task, current, index) {
   if (typeof realSendExecutor !== "function") {
-    pauseTask(task, "受控试用版真实发送执行器未包含", index);
+    pauseTask(task, "交付版真实发送执行器未包含", index);
     return false;
   }
   if (!isBatchAuthorized(task)) {

@@ -105,13 +105,14 @@ def capture_from_pid(dll, pid, deadline, poll_interval):
             pass
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--dll", required=True)
     parser.add_argument("--pid", action="append", type=int, default=[])
     parser.add_argument("--timeout", type=float, default=90)
     parser.add_argument("--poll-interval", type=float, default=0.25)
-    args = parser.parse_args()
+    parser.add_argument("--load-only", action="store_true")
+    args = parser.parse_args(argv)
 
     if sys.platform != "win32" or not os.path.exists(args.dll):
         print(json.dumps({"ok": False, "key": "", "stage": "dll_missing"}))
@@ -122,6 +123,10 @@ def main():
     except Exception:
         print(json.dumps({"ok": False, "key": "", "stage": "dll_load_failed"}))
         return 3
+
+    if args.load_only:
+        print(json.dumps({"ok": True, "key": "", "stage": "dll_loaded"}))
+        return 0
 
     deadline = time.time() + max(0.5, args.timeout)
     last_result = {"ok": False, "key": "", "stage": "no_weixin_process"}

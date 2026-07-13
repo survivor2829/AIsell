@@ -351,7 +351,7 @@ $callback = [Win32WechatWindowSearch+EnumWindowsProc]{
       if (-not $focused) { try { $focused = (New-Object -ComObject WScript.Shell).AppActivate([int]$windowProcessId) } catch {} }
       Start-Sleep -Milliseconds 200
       $focused = $focused -or ([Win32WechatWindowSearch]::GetForegroundWindow() -eq $hWnd)
-      $script:matched = @{ title = $title; focused = $focused; processName = $proc.ProcessName }
+      $script:matched = @{ title = $title; focused = $focused; processName = $proc.ProcessName; pid = [int]$windowProcessId; hWnd = $hWnd.ToInt64() }
     }
   }
   return $true
@@ -380,7 +380,7 @@ if ($pressEnter) {
   Start-Sleep -Milliseconds 500
 }
 try { Set-Clipboard -Value $oldClipboard } catch {}
-@{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName } | ConvertTo-Json -Compress
+@{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; exactSearchOpened = [bool]$pressEnter; searchQuery = $query } | ConvertTo-Json -Compress
 `;
 
 function inputWechatSearchQuery(query) {
@@ -483,7 +483,6 @@ function verifyWechatCurrentConversation(expectedTitle) {
 const MESSAGE_DRAFT_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName UIAutomationClient
 Add-Type @"
 using System;
 using System.Text;
@@ -543,51 +542,77 @@ if (-not $matched.focused) {
   exit
 }
 Start-Sleep -Milliseconds 300
-$rect = New-Object Win32WechatMessageDraft+RECT
-if ([Win32WechatMessageDraft]::GetWindowRect($matched.hWnd, [ref]$rect)) {
-  $x = [int]($rect.Left + (($rect.Right - $rect.Left) * 0.65))
-  $y = [int]($rect.Bottom - 105)
+$oldClipboard = ""
+try { $oldClipboard = Get-Clipboard -Raw -ErrorAction SilentlyContinue } catch {}
+$draftVerified = $false
+$draftCheck = "clipboard_roundtrip"
+$attemptUsed = 0
+$usedPoint = $null
+$inputPoints = @(
+  @{ xRatio = 0.65; yRatio = 0.84 },
+  @{ xRatio = 0.65; yRatio = 0.88 },
+  @{ xRatio = 0.65; yRatio = 0.92 }
+)
+for ($attempt = 1; $attempt -le $inputPoints.Count; $attempt++) {
+  $attemptUsed = $attempt
+  $point = $inputPoints[$attempt - 1]
+  [void][Win32WechatMessageDraft]::SetForegroundWindow($matched.hWnd)
+  Start-Sleep -Milliseconds (200 + (150 * $attempt))
+  if ([Win32WechatMessageDraft]::GetForegroundWindow() -ne $matched.hWnd) {
+    $draftCheck = "wechat_focus_lost_before_input"
+    continue
+  }
+  $rect = New-Object Win32WechatMessageDraft+RECT
+  if (-not [Win32WechatMessageDraft]::GetWindowRect($matched.hWnd, [ref]$rect)) {
+    $draftCheck = "message_input_rect_missing"
+    continue
+  }
+  $x = [int]($rect.Left + (($rect.Right - $rect.Left) * $point.xRatio))
+  $y = [int]($rect.Top + (($rect.Bottom - $rect.Top) * $point.yRatio))
   [void][Win32WechatMessageDraft]::SetCursorPos($x, $y)
   [Win32WechatMessageDraft]::mouse_event($MOUSEEVENTF_LEFTDOWN, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 50
   [Win32WechatMessageDraft]::mouse_event($MOUSEEVENTF_LEFTUP, 0, 0, 0, [UIntPtr]::Zero)
-  Start-Sleep -Milliseconds 120
-}
-$oldClipboard = ""
-try { $oldClipboard = Get-Clipboard -Raw -ErrorAction SilentlyContinue } catch {}
-Set-Clipboard -Value $message
-[System.Windows.Forms.SendKeys]::SendWait("^v")
-Start-Sleep -Milliseconds 250
-$draftVerified = $null
-$draftCheck = "not_inspectable"
-try {
-  $focusedElement = [System.Windows.Automation.AutomationElement]::FocusedElement
-  if ($focusedElement -ne $null) {
-    $texts = New-Object System.Collections.Generic.List[string]
-    $name = $focusedElement.Current.Name
-    if ($name) { [void]$texts.Add($name) }
-    try {
-      $valuePattern = $focusedElement.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-      if ($valuePattern -and $valuePattern.Current.Value) { [void]$texts.Add($valuePattern.Current.Value) }
-    } catch {}
-    try {
-      $textPattern = $focusedElement.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
-      if ($textPattern) {
-        $focusedText = $textPattern.DocumentRange.GetText(-1)
-        if ($focusedText) { [void]$texts.Add($focusedText) }
-      }
-    } catch {}
-    if ($texts.Count -gt 0) {
-      $draftCheck = "focused_element"
-      $draftVerified = $false
-      foreach ($item in $texts) {
-        if ($item.Contains($message)) { $draftVerified = $true; break }
-      }
-    }
+  Start-Sleep -Milliseconds (200 + (150 * $attempt))
+  try {
+    [System.Windows.Forms.SendKeys]::SendWait("^a")
+    Start-Sleep -Milliseconds 100
+    Set-Clipboard -Value $message
+    Start-Sleep -Milliseconds 100
+    [System.Windows.Forms.SendKeys]::SendWait("^v")
+  } catch {
+    $draftCheck = "clipboard_write_or_paste_failed"
+    continue
   }
-} catch {}
+  Start-Sleep -Milliseconds (350 + (250 * $attempt))
+  if ([Win32WechatMessageDraft]::GetForegroundWindow() -ne $matched.hWnd) {
+    $draftCheck = "wechat_focus_lost_after_paste"
+    continue
+  }
+  try {
+    $probe = "__XIAOXI_DRAFT_PROBE_" + [Guid]::NewGuid().ToString("N")
+    Set-Clipboard -Value $probe
+    [System.Windows.Forms.SendKeys]::SendWait("^a")
+    Start-Sleep -Milliseconds 100
+    [System.Windows.Forms.SendKeys]::SendWait("^c")
+    Start-Sleep -Milliseconds (250 + (150 * $attempt))
+    $copiedDraft = [string](Get-Clipboard -Raw -ErrorAction Stop)
+    if ($copiedDraft -ceq [string]$message) {
+      $draftVerified = $true
+      $draftCheck = "clipboard_roundtrip"
+    } elseif ($copiedDraft -ceq $probe) {
+      $draftCheck = "message_input_empty_or_copy_blocked"
+    } else {
+      $draftCheck = "message_input_content_mismatch"
+    }
+  } catch { $draftCheck = "clipboard_roundtrip_failed" }
+  if ($draftVerified) {
+    $usedPoint = $point
+    break
+  }
+}
 try { Set-Clipboard -Value $oldClipboard } catch {}
-@{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; draftVerified = $draftVerified; draftCheck = $draftCheck } | ConvertTo-Json -Compress
+@{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; draftVerified = $draftVerified; draftCheck = $draftCheck; draftAttempts = $attemptUsed; draftPoint = $usedPoint } | ConvertTo-Json -Compress
 `;
 
 function inputWechatMessageDraft(message) {

@@ -49,7 +49,7 @@ export default function DevelopmentAcceptance({ contacts, message }: { contacts:
 
   return (
     <section className="dev-acceptance">
-      <div className="dev-acceptance-head"><strong>开发验收 · 单联系人真实发送</strong><span>仅开发版</span></div>
+      <div className="dev-acceptance-head"><strong>内部测试 · 单联系人真实发送</strong><span>仅测试版</span></div>
       <div className="dev-control-row">
         <label>测试联系人<select value={selectedId} onChange={(event) => select(event.target.value)} disabled={busy}><option value="">请选择</option>{eligibleContacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.remark || contact.nickname || contact.name}</option>)}</select></label>
         <button className="danger-button" data-xiaoxi-real-send onClick={sendSelectedContact} disabled={busy || !identityReady || !resolvedMessage.trim()}><Send size={17} />直接发送</button>

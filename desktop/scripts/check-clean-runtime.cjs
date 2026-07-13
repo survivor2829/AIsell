@@ -5,8 +5,8 @@ const desktopDir = path.resolve(__dirname, "..");
 const releaseDir = path.resolve(desktopDir, "..", "release");
 const isPackagedApp = path.basename(desktopDir).toLowerCase() === "app" && path.basename(path.dirname(desktopDir)).toLowerCase() === "resources";
 const releaseAppDirs = isPackagedApp ? [desktopDir] : [
-  path.resolve(desktopDir, "..", "release", "小玺AI员工-客户版", "resources", "app"),
-  path.resolve(desktopDir, "..", "release", "小玺AI员工-受控试用版", "resources", "app")
+  path.resolve(desktopDir, "..", "release", "小玺AI员工-测试版", "resources", "app"),
+  path.resolve(desktopDir, "..", "release", "小玺AI员工-交付版", "resources", "app")
 ];
 const relativeRuntimeFiles = [
   path.join("rpa", "active_touch", "contacts.json"),

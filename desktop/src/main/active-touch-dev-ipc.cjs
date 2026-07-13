@@ -25,7 +25,7 @@ function registerActiveTouchDevIpc(options = {}) {
     const mainWindow = getMainWindow();
     const clickToken = String(payload.clickToken ?? "");
     if (!clickToken || consumedClickTokens.has(clickToken) || !mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || !mainWindow.isFocused()) {
-      return { ok: false, action: "send", blocked_reason: "trusted_user_click_required", error: "已阻断：请在开发版窗口本人点击发送" };
+      return { ok: false, action: "send", blocked_reason: "trusted_user_click_required", error: "已阻断：请在测试版窗口本人点击发送" };
     }
     consumedClickTokens.add(clickToken);
     if (consumedClickTokens.size > 100) consumedClickTokens.delete(consumedClickTokens.values().next().value);

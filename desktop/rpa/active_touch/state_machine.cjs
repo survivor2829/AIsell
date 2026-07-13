@@ -19,6 +19,7 @@ const DEFAULT_STATE = {
   selected_customer: null,
   task_context: null,
   conversation_title: "",
+  conversation_verification_mode: "",
   located_window_title: "",
   search_input_done: false,
   search_result_clicked: false,
@@ -135,7 +136,7 @@ function readContacts(baseDir = __dirname) {
 }
 
 function customerSearchQuery(customer) {
-  return String(customer?.remark || customer?.nickname || customer?.wechatId || customer?.name || "").trim();
+  return String(customer?.wechatId || customer?.remark || customer?.nickname || customer?.name || "").trim();
 }
 
 function appendLog(baseDir, action, result) {
@@ -257,6 +258,7 @@ function clearConversationState(state, reason, extra = {}) {
     conversation_located: false,
     conversation_verified: false,
     conversation_title: "",
+    conversation_verification_mode: "",
     located_window_title: "",
     message_input_done: false,
     message_draft: "",
@@ -626,7 +628,27 @@ function clickSearchResultDryRun(
 
   const titles = [inputResult.title, ...titleReader()].filter(Boolean);
   const matchedTitle = titles.find((item) => item.includes(customerName));
-  const verifiedConversation = matchedTitle ? { ok: true, title: matchedTitle } : conversationVerifier(customerName);
+  let verifiedConversation = matchedTitle ? { ok: true, title: matchedTitle } : conversationVerifier(customerName);
+  const wechatId = String(state.selected_customer?.wechatId ?? "").trim();
+  const exactWechatIdSearch = !verifiedConversation.ok
+    && verifiedConversation.reason !== "contact_unavailable"
+    && Boolean(wechatId)
+    && searchQuery === wechatId
+    && inputResult.exactSearchOpened === true
+    && inputResult.searchQuery === searchQuery
+    && ["Weixin", "WeChat"].includes(inputResult.processName)
+    && Boolean(inputResult.pid)
+    && Boolean(inputResult.hWnd);
+  if (exactWechatIdSearch) {
+    verifiedConversation = {
+      ok: true,
+      title: customerName,
+      processName: inputResult.processName,
+      pid: inputResult.pid,
+      hWnd: inputResult.hWnd,
+      verificationMode: "exact_wechat_id_search"
+    };
+  }
   if (!verifiedConversation.ok) {
     const reason = verifiedConversation.reason === "contact_unavailable" ? "contact_unavailable" : "search_result_not_opened";
     const nextState = clearConversationState(state, reason, {
@@ -653,7 +675,11 @@ function clickSearchResultDryRun(
     conversation_located: true,
     conversation_verified: true,
     conversation_title: title,
+    conversation_verification_mode: verifiedConversation.verificationMode || "conversation_title",
     located_window_title: title,
+    window_pid: Number(verifiedConversation.pid ?? inputResult.pid ?? 0),
+    window_handle: String(verifiedConversation.hWnd ?? inputResult.hWnd ?? ""),
+    window_process_name: String(verifiedConversation.processName ?? inputResult.processName ?? ""),
     send_gate_status: "pending",
     send_gate_reason: "",
     real_send_armed: false,
@@ -692,14 +718,26 @@ function inputMessageDryRun(baseDir = __dirname, message = "", inputDriver = inp
   }
 
   const inputResult = inputDriver(draft);
-  if (!inputResult.ok || inputResult.draftVerified === false) {
-    return block(baseDir, "消息输入 dry-run", state, "message_input_failed", "已阻断：未能定位微信输入框");
+  if (!inputResult.ok || inputResult.draftVerified !== true) {
+    const diagnostic = String(inputResult.draftCheck || inputResult.reason || "").trim();
+    const safeDiagnostic = /^[a-z0-9_]+$/.test(diagnostic) ? diagnostic : "";
+    const attempts = Number(inputResult.draftAttempts);
+    const reason = safeDiagnostic
+      ? `message_input_failed_${safeDiagnostic}${Number.isInteger(attempts) && attempts > 0 ? `_attempts_${attempts}` : ""}`
+      : "message_input_failed";
+    return block(baseDir, "消息输入 dry-run", state, reason, "已阻断：未能定位微信输入框");
   }
+  const pointX = Number(inputResult.draftPoint?.xRatio);
+  const pointY = Number(inputResult.draftPoint?.yRatio);
+  const messageInputPoint = Number.isFinite(pointX) && Number.isFinite(pointY) && pointX > 0 && pointX < 1 && pointY > 0 && pointY < 1
+    ? { xRatio: pointX, yRatio: pointY }
+    : null;
 
   const nextState = {
     ...state,
     message_input_done: true,
     message_draft: draft,
+    message_input_point: messageInputPoint,
     located_window_title: inputResult.title ?? state.located_window_title,
     send_gate_status: "pending",
     send_gate_reason: "",
@@ -802,7 +840,7 @@ function queueDryRun(
     }
 
     const inputResult = inputDriver(draft);
-    if (!inputResult.ok || inputResult.draftVerified === false) {
+    if (!inputResult.ok || inputResult.draftVerified !== true) {
       const blockedState = {
         ...nextState,
         selected_customer: customer,

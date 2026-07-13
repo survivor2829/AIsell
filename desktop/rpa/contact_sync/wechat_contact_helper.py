@@ -269,6 +269,7 @@ def run_memory_key(argv):
 
 def run_self_check():
     from key_info_probe import read_candidates
+    from memory_key_probe import matching_key_candidates
 
     with tempfile.TemporaryDirectory(prefix="xiaoxi-contact-helper-") as directory:
         contact_db = os.path.join(directory, "contact.db")
@@ -287,8 +288,24 @@ def run_self_check():
         connection.close()
         candidates = read_candidates(key_info)
 
-        ok = len(contacts) == 1 and contacts[0]["username"] == "wxid_self_check" and len(candidates["candidates"]) == 1
-        print(json.dumps({"ok": ok, "contacts": len(contacts), "key_candidates": len(candidates["candidates"])}))
+        raw_key = "a" * 64
+        salt = "b" * 32
+        memory_key_patterns = list(matching_key_candidates(
+            f"x'{raw_key}' x'{raw_key}{salt}' x'{raw_key}{'c' * 32}'".encode("ascii"),
+            salt,
+        ))
+        ok = (
+            len(contacts) == 1
+            and contacts[0]["username"] == "wxid_self_check"
+            and len(candidates["candidates"]) == 1
+            and memory_key_patterns == [raw_key, raw_key]
+        )
+        print(json.dumps({
+            "ok": ok,
+            "contacts": len(contacts),
+            "key_candidates": len(candidates["candidates"]),
+            "memory_key_patterns": len(memory_key_patterns),
+        }))
         return 0 if ok else 1
 
 
@@ -326,6 +343,10 @@ def main():
         return run_key_info(sys.argv[2:])
     if command == "memory-key":
         return run_memory_key(sys.argv[2:])
+    if command == "wx-key":
+        from wx_key_probe import main as run_wx_key
+
+        return run_wx_key(sys.argv[2:])
     if command == "self-check":
         return run_self_check()
     return run_contacts(sys.argv[1:])

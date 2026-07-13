@@ -20,6 +20,7 @@ PROCESS_VM_READ = 0x0010
 PROCESS_QUERY_INFORMATION = 0x0400
 MEM_COMMIT = 0x1000
 READABLE = {0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80}
+HEX_KEY_PATTERN = re.compile(rb"x'([0-9a-fA-F]{64,192})'")
 
 
 kernel32 = ctypes.windll.kernel32
@@ -108,11 +109,19 @@ def find_key_near_raw_salt(block, salt_raw, page1):
         start = pos + 1
 
 
+def matching_key_candidates(block, salt_hex):
+    for match in HEX_KEY_PATTERN.finditer(block):
+        value = match.group(1).decode("ascii").lower()
+        if len(value) == 64:
+            yield value
+        elif len(value) >= 96 and value[-32:] == salt_hex:
+            yield value[:64]
+
+
 def scan_process(pid, salt_hex, page1):
     handle = kernel32.OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, False, pid)
     if not handle:
         return ""
-    pattern = re.compile(rb"x'([0-9a-fA-F]{96,192})'")
     salt_raw = bytes.fromhex(salt_hex)
     try:
         for base, size in regions(handle):
@@ -123,11 +132,7 @@ def scan_process(pid, salt_hex, page1):
                 data = read_memory(handle, base + offset, chunk_size)
                 if data:
                     block = carry + data
-                    for match in pattern.finditer(block):
-                        value = match.group(1).decode("ascii")
-                        if value[-32:].lower() != salt_hex:
-                            continue
-                        key_hex = value[:64].lower()
+                    for key_hex in matching_key_candidates(block, salt_hex):
                         if verify_key(bytes.fromhex(key_hex), page1):
                             return key_hex
                     key_near_salt = find_key_near_raw_salt(block, salt_raw, page1)

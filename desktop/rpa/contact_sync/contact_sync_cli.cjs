@@ -14,7 +14,11 @@ const DEFAULT_STATE = {
   last_error: "",
   last_stage: "idle",
   account_name: "",
-  helper_configured: false
+  helper_configured: false,
+  wechat_exe_path: "",
+  wechat_root: "",
+  wx_hook_stage: "",
+  wx_hook_error: ""
 };
 
 function statePath(baseDir) {
@@ -53,6 +57,10 @@ function bundledWxKeyDllPath(baseDir = __dirname) {
   return path.join(baseDir, "libs", "wx_key.dll");
 }
 
+function bundledDumpToolPath(baseDir = __dirname) {
+  return path.join(baseDir, "libs", "xiaoxi-db-decrypt.exe");
+}
+
 function bundledPythonPath(baseDir = __dirname) {
   const candidates = [
     path.join(baseDir, "python", "python.exe"),
@@ -81,7 +89,7 @@ function resolveHelper(baseDir = __dirname, options = {}) {
 
 function resolveCaptureTools(options = {}) {
   const keyToolPath = options.keyToolPath ?? process.env.XIAOXI_WECHAT_KEY_TOOL ?? "";
-  const dumpToolPath = options.dumpToolPath ?? process.env.XIAOXI_WECHAT_DUMP_TOOL ?? "";
+  const dumpToolPath = options.dumpToolPath ?? process.env.XIAOXI_WECHAT_DUMP_TOOL ?? bundledDumpToolPath(__dirname);
   const selfContainedHelperPath = options.contactHelperPath ?? process.env.XIAOXI_CONTACT_HELPER ?? bundledHelperExePath(__dirname);
   const keyInfoProbePath =
     options.keyInfoProbePath ?? process.env.XIAOXI_KEY_INFO_PROBE ?? bundledKeyInfoProbePath(__dirname);
@@ -162,28 +170,51 @@ function runningWeixinDataRoots() {
 }
 
 function runningWeixinProcesses(options = {}) {
-  if (options.processProvider) return options.processProvider();
+  const selectMainProcesses = (rows) => {
+    const processes = (Array.isArray(rows) ? rows : [rows])
+      .map((row) => ({
+        id: Number(row.id ?? row.Id),
+        path: String(row.path ?? row.Path ?? ""),
+        commandLine: String(row.commandLine ?? row.CommandLine ?? ""),
+        mainWindowHandle: Number(row.mainWindowHandle ?? row.MainWindowHandle ?? 0)
+      }))
+      .filter((row) => row.id);
+    const visibleMainProcesses = processes.filter((row) => row.mainWindowHandle);
+    if (visibleMainProcesses.length) return visibleMainProcesses;
+    const nonChildProcesses = processes.filter((row) => row.commandLine && !/--type=/i.test(row.commandLine));
+    return nonChildProcesses.length ? nonChildProcesses : processes;
+  };
+
+  if (options.processProvider) return selectMainProcesses(options.processProvider());
   if (process.platform !== "win32") return [];
   const result = spawnSync(
     "powershell.exe",
     [
       "-NoProfile",
       "-Command",
-      "Get-CimInstance Win32_Process -Filter \"Name='Weixin.exe'\" -ErrorAction SilentlyContinue | Select-Object @{Name='Id';Expression={$_.ProcessId}},@{Name='Path';Expression={$_.ExecutablePath}},CommandLine | ConvertTo-Json -Compress"
+      "Get-Process Weixin -ErrorAction SilentlyContinue | Select-Object Id,Path,MainWindowHandle | ConvertTo-Json -Compress"
     ],
     { encoding: "utf8", windowsHide: true, timeout: 3000 }
   );
   if (result.status !== 0 || !result.stdout.trim()) return [];
   try {
-    const parsed = JSON.parse(result.stdout);
-    const processes = (Array.isArray(parsed) ? parsed : [parsed])
-      .map((row) => ({ id: Number(row.Id), path: String(row.Path ?? ""), commandLine: String(row.CommandLine ?? "") }))
-      .filter((row) => row.id);
-    const mainProcesses = processes.filter((row) => !/--type=/i.test(row.commandLine));
-    return mainProcesses.length ? mainProcesses : processes;
+    return selectMainProcesses(JSON.parse(result.stdout));
   } catch {
     return [];
   }
+}
+
+function findWechatExecutable(options = {}) {
+  const explicit = options.wechatExePath ?? process.env.XIAOXI_WECHAT_EXE ?? "";
+  const running = runningWeixinProcesses(options).map((processInfo) => processInfo.path).filter(Boolean);
+  const candidates = [
+    explicit,
+    ...running,
+    path.join(process.env.ProgramFiles ?? "C:\\Program Files", "Tencent", "Weixin", "Weixin.exe"),
+    path.join(process.env.LOCALAPPDATA ?? "", "Tencent", "Weixin", "Weixin.exe"),
+    "D:\\微信\\Weixin\\Weixin.exe"
+  ].filter(Boolean);
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? "";
 }
 
 const PREPARE_WECHAT_LOGIN_SCRIPT = `
@@ -193,6 +224,7 @@ $main = $running | Where-Object { $_.CommandLine -notmatch "--type=" } | Select-
 $paths = New-Object System.Collections.Generic.List[string]
 if ($main -and $main.ExecutablePath) { [void]$paths.Add($main.ExecutablePath) }
 foreach ($path in @(
+  "$env:XIAOXI_WECHAT_EXE",
   "D:\\微信\\Weixin\\Weixin.exe",
   "$env:LOCALAPPDATA\\Tencent\\Weixin\\Weixin.exe",
   "$env:ProgramFiles\\Tencent\\Weixin\\Weixin.exe"
@@ -220,21 +252,30 @@ if ($restarted) {
   }
 }
 try {
+  if ($env:XIAOXI_STOP_ONLY -eq "1") {
+    @{ ok = $true; restarted = $restarted; wechatExePath = $exe } | ConvertTo-Json -Compress
+    exit
+  }
   Start-Process -FilePath $exe | Out-Null
-  @{ ok = $true; restarted = $restarted } | ConvertTo-Json -Compress
+  @{ ok = $true; restarted = $restarted; wechatExePath = $exe } | ConvertTo-Json -Compress
 } catch {
   @{ ok = $false; reason = "wechat_start_failed" } | ConvertTo-Json -Compress
 }
 `;
 
 function prepareWechatLogin(options = {}) {
-  if (options.loginFlowDriver) return options.loginFlowDriver();
+  if (options.loginFlowDriver) return options.loginFlowDriver(options);
   if (process.platform !== "win32") return { ok: false, reason: "unsupported_platform" };
   const encoded = Buffer.from(PREPARE_WECHAT_LOGIN_SCRIPT, "utf16le").toString("base64");
   const result = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], {
     encoding: "utf8",
     windowsHide: true,
-    timeout: 15000
+    timeout: 15000,
+    env: {
+      ...process.env,
+      XIAOXI_WECHAT_EXE: options.wechatExePath ?? process.env.XIAOXI_WECHAT_EXE ?? "",
+      XIAOXI_STOP_ONLY: options.stopOnly ? "1" : ""
+    }
   });
   if (result.error || result.status !== 0) return { ok: false, reason: "wechat_start_failed" };
   return readJsonFromString(result.stdout, { ok: false, reason: "wechat_start_failed" });
@@ -254,6 +295,7 @@ function candidateWechatRoots(options = {}) {
       : [];
   return [
     explicit,
+    path.join(os.homedir(), "xwechat_files"),
     defaultWechatRoot(),
     path.join(os.homedir(), "Documents", "WeChat Files"),
     ...runningWeixinDataRoots(),
@@ -423,11 +465,11 @@ function runHelper(helper, account, tempOut, extraArgs = []) {
   return { ok: true };
 }
 
-function runTool(toolPath, args) {
+function runTool(toolPath, args, timeout = 20000) {
   const ext = path.extname(toolPath).toLowerCase();
   const command = ext === ".js" || ext === ".cjs" ? process.execPath : toolPath;
   const finalArgs = command === process.execPath ? [toolPath, ...args] : args;
-  return spawnSync(command, finalArgs, { encoding: "utf8", windowsHide: true, timeout: 20000 });
+  return spawnSync(command, finalArgs, { encoding: "utf8", windowsHide: true, timeout });
 }
 
 function captureKey(keyToolPath, pid) {
@@ -460,16 +502,17 @@ function captureKeyFromKeyInfo(keyInfoDb, tools, options = {}) {
   };
 }
 
-function captureKeyFromMemory(contactDb, tools, options = {}, processes = []) {
+function captureKeyFromMemory(contactDb, tools, options = {}, processes = [], timeoutMs = 60000) {
   if (options.memoryKeyReader) {
     const result = options.memoryKeyReader(contactDb);
     return typeof result === "string" ? result : result?.keyHex ?? "";
   }
   if (!contactDb || !fs.existsSync(contactDb) || (!tools.selfContainedHelperPath && (!tools.memoryKeyProbePath || !tools.pythonPath))) return "";
   const pidArgs = processes.flatMap((processInfo) => ["--pid", String(processInfo.id)]);
+  const processTimeoutMs = Math.max(1000, timeoutMs);
   const result = tools.selfContainedHelperPath
-    ? spawnSync(tools.selfContainedHelperPath, ["memory-key", "--contact-db", contactDb, ...pidArgs], { encoding: "utf8", windowsHide: true, timeout: 60000 })
-    : spawnSync(tools.pythonPath, [tools.memoryKeyProbePath, "--contact-db", contactDb, ...pidArgs], { encoding: "utf8", windowsHide: true, timeout: 60000 });
+    ? spawnSync(tools.selfContainedHelperPath, ["memory-key", "--contact-db", contactDb, ...pidArgs], { encoding: "utf8", windowsHide: true, timeout: processTimeoutMs })
+    : spawnSync(tools.pythonPath, [tools.memoryKeyProbePath, "--contact-db", contactDb, ...pidArgs], { encoding: "utf8", windowsHide: true, timeout: processTimeoutMs });
   if (result.status !== 0) return "";
   const parsed = readJsonFromString(result.stdout, {});
   const keyHex = String(parsed.key ?? "");
@@ -481,22 +524,25 @@ function captureKeyFromWxKeyDll(tools, options = {}, processes = [], timeoutMs =
     const result = options.wxKeyReader();
     return typeof result === "string" ? result : result?.keyHex ?? "";
   }
-  if (!tools.wxKeyProbePath || !tools.wxKeyDllPath || !tools.pythonPath) return "";
-  const pidArgs = processes.flatMap((processInfo) => ["--pid", String(processInfo.id)]);
-  const result = spawnSync(
-    tools.pythonPath,
-    [
-      tools.wxKeyProbePath,
-      "--dll",
-      tools.wxKeyDllPath,
-      "--timeout",
-      String(Math.max(1, Math.ceil(timeoutMs / 1000))),
-      ...pidArgs
-    ],
-    { encoding: "utf8", windowsHide: true, timeout: timeoutMs + 5000 }
-  );
-  if (result.status !== 0) return "";
+  if (!tools.wxKeyDllPath || (!tools.selfContainedHelperPath && (!tools.wxKeyProbePath || !tools.pythonPath))) return "";
+  const targetArgs = processes.flatMap((processInfo) => ["--pid", String(processInfo.id)]);
+  const args = [
+    "--dll",
+    tools.wxKeyDllPath,
+    "--timeout",
+    String(Math.max(1, Math.ceil(timeoutMs / 1000))),
+    ...targetArgs
+  ];
+  const result = tools.selfContainedHelperPath
+    ? runTool(tools.selfContainedHelperPath, ["wx-key", ...args], timeoutMs + 5000)
+    : spawnSync(tools.pythonPath, [tools.wxKeyProbePath, ...args], { encoding: "utf8", windowsHide: true, timeout: timeoutMs + 5000 });
   const parsed = readJsonFromString(result.stdout, {});
+  options.onWxKeyResult?.({
+    status: result.status,
+    stage: String(parsed.stage ?? ""),
+    error: String(parsed.error ?? result.error?.message ?? result.stderr ?? "").trim()
+  });
+  if (result.status !== 0) return "";
   const keyHex = String(parsed.key ?? "");
   return /^[a-fA-F0-9]{64}$/.test(keyHex) ? keyHex : "";
 }
@@ -614,7 +660,7 @@ function capture(baseDir = __dirname, options = {}) {
   const tools = resolveCaptureTools(options);
   const hasKeyInfoReader = Boolean(options.keyInfoReader || tools.selfContainedHelperPath || (tools.keyInfoProbePath && tools.pythonPath));
   const hasMemoryKeyReader = Boolean(options.memoryKeyReader || tools.selfContainedHelperPath || (tools.memoryKeyProbePath && tools.pythonPath));
-  const hasWxKeyReader = Boolean(options.wxKeyReader || (tools.wxKeyProbePath && tools.wxKeyDllPath && tools.pythonPath));
+  const hasWxKeyReader = Boolean(options.wxKeyReader || (tools.wxKeyDllPath && (tools.selfContainedHelperPath || (tools.wxKeyProbePath && tools.pythonPath))));
   let keyInfoObserved = false;
   let memoryScanAttempted = false;
   let wxHookAttempted = false;
@@ -624,7 +670,9 @@ function capture(baseDir = __dirname, options = {}) {
     status: "capturing",
     last_error: "",
     last_stage: "waiting_login_window",
-    helper_configured: helper.helperConfigured
+    helper_configured: helper.helperConfigured,
+    wx_hook_stage: "",
+    wx_hook_error: ""
   });
 
   if (!tools.keyToolPath && !hasKeyInfoReader && !hasMemoryKeyReader && !hasWxKeyReader) {
@@ -703,26 +751,31 @@ function capture(baseDir = __dirname, options = {}) {
   };
 
   while (Date.now() < deadline) {
+    const processes = runningWeixinProcesses(options);
+
     const wechatRoot = findWechatRoot(options);
     const account = wechatRoot && fs.existsSync(wechatRoot) ? findAccount(wechatRoot) : {};
-    const processes = runningWeixinProcesses(options);
+    const wechatExePath = processes[0]?.path || findWechatExecutable(options);
 
     saveState(baseDir, {
       ...loadState(baseDir),
       status: "capturing",
       last_stage: account.keyInfoDb ? "capturing_key_info" : processes.length ? "capturing_key" : "waiting_weixin_process",
       account_name: account.accountName ?? "",
-      helper_configured: helper.helperConfigured
+      helper_configured: helper.helperConfigured,
+      wechat_exe_path: wechatExePath,
+      wechat_root: wechatRoot ?? ""
     });
 
-    if (account.contactDb && account.keyInfoDb) {
+    const captureFromKeyInfo = () => {
+      if (!account.contactDb || !account.keyInfoDb) return null;
       const keyInfoResult = captureKeyFromKeyInfo(account.keyInfoDb, tools, options);
       keyInfoObserved = keyInfoObserved || Boolean(keyInfoResult.observed);
-      const result = tryKey(account, keyInfoResult.keyHex);
-      if (result) return result;
-    }
+      return tryKey(account, keyInfoResult.keyHex);
+    };
 
-    if (account.contactDb && processes.length && hasMemoryKeyReader) {
+    const captureFromMemory = () => {
+      if (!account.contactDb || !processes.length || !hasMemoryKeyReader || Date.now() >= deadline) return null;
       memoryScanAttempted = true;
       saveState(baseDir, {
         ...loadState(baseDir),
@@ -731,21 +784,48 @@ function capture(baseDir = __dirname, options = {}) {
         account_name: account.accountName ?? "",
         helper_configured: helper.helperConfigured
       });
-      const result = tryKey(account, captureKeyFromMemory(account.contactDb, tools, options, processes));
-      if (result) return result;
-    }
+      const remainingMs = Math.max(1000, deadline - Date.now());
+      const hookReserveMs = !options.restartWechat && hasWxKeyReader ? Math.min(30000, Math.max(1000, Math.floor(remainingMs / 4))) : 0;
+      return tryKey(account, captureKeyFromMemory(account.contactDb, tools, options, processes, Math.max(1000, remainingMs - hookReserveMs)));
+    };
 
-    if (account.contactDb && processes.length && hasWxKeyReader) {
+    const captureFromWxHook = () => {
+      if (
+        !account.contactDb ||
+        !processes.length ||
+        !hasWxKeyReader ||
+        (options.restartWechat && wxHookAttempted) ||
+        Date.now() >= deadline
+      ) return null;
       wxHookAttempted = true;
       saveState(baseDir, {
         ...loadState(baseDir),
         status: "capturing",
         last_stage: "capturing_wx_key_hook",
-        account_name: account.accountName ?? "",
-        helper_configured: helper.helperConfigured
+        helper_configured: helper.helperConfigured,
+        wechat_exe_path: processes[0]?.path || ""
       });
       const remainingMs = Math.max(1000, deadline - Date.now());
-      const result = tryKey(account, captureKeyFromWxKeyDll(tools, options, processes, remainingMs));
+      const memoryReserveMs = options.restartWechat && hasMemoryKeyReader ? Math.min(30000, Math.max(1000, Math.floor(remainingMs / 4))) : 0;
+      const wxKeyHex = captureKeyFromWxKeyDll(tools, {
+        ...options,
+        onWxKeyResult: (result) => {
+          options.onWxKeyResult?.(result);
+          saveState(baseDir, {
+            ...loadState(baseDir),
+            wx_hook_stage: result.stage,
+            wx_hook_error: result.error
+          });
+        }
+      }, processes, Math.max(1000, remainingMs - memoryReserveMs));
+      return tryKey(account, wxKeyHex);
+    };
+
+    const captureAttempts = options.restartWechat
+      ? [captureFromWxHook, captureFromKeyInfo, captureFromMemory]
+      : [captureFromKeyInfo, captureFromMemory, captureFromWxHook];
+    for (const attempt of captureAttempts) {
+      const result = attempt();
       if (result) return result;
     }
 
@@ -869,7 +949,9 @@ function status(baseDir = __dirname, options = {}) {
   const state = {
     ...storedState,
     contact_count: contacts.length,
-    helper_configured: helper.helperConfigured
+    helper_configured: helper.helperConfigured,
+    wechat_exe_path: findWechatExecutable(options),
+    wechat_root: findWechatRoot(options)
   };
   return { ok: true, action: "status", state, contacts };
 }
@@ -885,6 +967,7 @@ function main(argv) {
   const options = {
     dataDir: valueAfter(args, "--data-dir") || undefined,
     wechatRoot: valueAfter(args, "--wechat-root") || undefined,
+    wechatExePath: valueAfter(args, "--wechat-exe") || undefined,
     helperPath: valueAfter(args, "--helper") || undefined,
     pythonPath: valueAfter(args, "--python") || undefined,
     activeTouchDir: valueAfter(args, "--active-touch-dir") || undefined,
@@ -907,8 +990,11 @@ if (require.main === module) {
 }
 
 module.exports = {
+  candidateWechatRoots,
+  runningWeixinProcesses,
   normalizeContacts,
   findAccount,
+  findWechatExecutable,
   findWechatRoot,
   capture,
   captureKeyFromWxKeyDll,

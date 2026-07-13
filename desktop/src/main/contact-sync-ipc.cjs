@@ -1,5 +1,6 @@
-const { app, ipcMain } = require("electron");
+const { app, dialog, ipcMain } = require("electron");
 const { spawn } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
 
 let runtimeDataDir = "";
@@ -10,12 +11,36 @@ function cliPath() {
   return path.join(app.getAppPath(), "rpa", "contact_sync", "contact_sync_cli.cjs");
 }
 
+function settingsPath() {
+  return path.join(runtimeDataDir, "wechat-paths.json");
+}
+
+function readPathSettings() {
+  try {
+    const value = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
+    return {
+      wechatExePath: String(value.wechatExePath || ""),
+      wechatRoot: String(value.wechatRoot || "")
+    };
+  } catch {
+    return { wechatExePath: "", wechatRoot: "" };
+  }
+}
+
+function writePathSettings(settings) {
+  fs.mkdirSync(runtimeDataDir, { recursive: true });
+  fs.writeFileSync(settingsPath(), `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+}
+
 function executeContactSync(args) {
   return new Promise((resolve) => {
+    const settings = readPathSettings();
     const runtimeArgs = [
       ...args,
       ...(runtimeDataDir ? ["--data-dir", runtimeDataDir] : []),
-      ...(activeTouchRuntimeDir ? ["--active-touch-dir", activeTouchRuntimeDir] : [])
+      ...(activeTouchRuntimeDir ? ["--active-touch-dir", activeTouchRuntimeDir] : []),
+      ...(settings.wechatExePath ? ["--wechat-exe", settings.wechatExePath] : []),
+      ...(settings.wechatRoot ? ["--wechat-root", settings.wechatRoot] : [])
     ];
     const child = spawn(process.execPath, [cliPath(), ...runtimeArgs], {
       cwd: path.dirname(cliPath()),
@@ -49,6 +74,25 @@ function executeContactSync(args) {
   });
 }
 
+async function chooseWechatPath(kind) {
+  const settings = readPathSettings();
+  const selectingExe = kind === "wechatExePath";
+  const result = await dialog.showOpenDialog({
+    title: selectingExe ? "选择微信程序 Weixin.exe" : "选择微信数据目录 xwechat_files",
+    defaultPath: settings[kind] || undefined,
+    properties: [selectingExe ? "openFile" : "openDirectory"],
+    ...(selectingExe ? { filters: [{ name: "微信程序", extensions: ["exe"] }] } : {})
+  });
+  if (result.canceled || !result.filePaths[0]) return runContactSync(["status"]);
+  const selected = result.filePaths[0];
+  const stat = fs.statSync(selected);
+  if ((selectingExe && (!stat.isFile() || path.extname(selected).toLowerCase() !== ".exe")) || (!selectingExe && !stat.isDirectory())) {
+    return { ok: false, action: "paths", error: selectingExe ? "请选择 Weixin.exe" : "请选择 xwechat_files 数据目录" };
+  }
+  writePathSettings({ ...settings, [kind]: selected });
+  return runContactSync(["status"]);
+}
+
 async function runContactSync(args) {
   const command = args[0] ?? "status";
   if (command === "status") return executeContactSync(args);
@@ -68,6 +112,12 @@ function registerContactSyncIpc({ dataDir, activeTouchDir, coordinator } = {}) {
   ipcMain.handle("contact-sync:status", () => runContactSync(["status"]));
   ipcMain.handle("contact-sync:sync", () => runContactSync(["sync"]));
   ipcMain.handle("contact-sync:capture", () => runContactSync(["capture", "--restart-wechat", "--timeout", "120"]));
+  ipcMain.handle("contact-sync:choose-wechat-exe", () => chooseWechatPath("wechatExePath"));
+  ipcMain.handle("contact-sync:choose-wechat-root", () => chooseWechatPath("wechatRoot"));
+  ipcMain.handle("contact-sync:auto-detect-paths", () => {
+    writePathSettings({ wechatExePath: "", wechatRoot: "" });
+    return runContactSync(["status"]);
+  });
 }
 
 module.exports = { registerContactSyncIpc };

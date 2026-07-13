@@ -1,4 +1,6 @@
 const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
 const { clickWechatSendButton, verifyWechatCurrentConversation, verifyWechatMessageBubble } = require("./wechat_window_driver.dev.cjs");
 const { appendLog, block, blockMessageBubble, blockSendGate, loadState, output, readContacts, saveState } = require("./state_machine.cjs");
 const { contactIdentityError, identityKey } = require("./touch_task_state.cjs");
@@ -15,13 +17,34 @@ function singleContactIdentityError(state, baseDir) {
   return contactIdentityError(contacts, customer);
 }
 
-function sessionCheck(state, driver = verifyWechatCurrentConversation) {
+function syncedWechatRoot(baseDir) {
+  try {
+    const state = JSON.parse(fs.readFileSync(path.resolve(baseDir, "..", "contact_sync", "state.json"), "utf8"));
+    return String(state.wechat_root ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function sessionCheck(state, driver = verifyWechatCurrentConversation, baseDir = __dirname) {
   const customer = state.selected_customer;
   if (!customer?.name) return { ok: false, reason: "conversation_not_verified" };
-  const result = driver(customer.name);
+  const expectedAccountId = String(customer.wechatAccountId ?? state.wechat_account_id ?? "").trim();
+  const expectedWechatId = String(customer.wechatId ?? "").trim();
+  const allowExactSearchFallback = state.conversation_verification_mode === "exact_wechat_id_search"
+    && Boolean(expectedWechatId)
+    && state.search_query === expectedWechatId
+    && Boolean(state.window_pid)
+    && Boolean(state.window_handle);
+  const result = driver(customer.name, {
+    wechatRoot: syncedWechatRoot(baseDir),
+    expectedAccountId,
+    expectedPid: state.window_pid,
+    expectedHWnd: state.window_handle,
+    allowExactSearchFallback
+  });
   if (!result.ok) return result;
   if (!result.pid || !result.hWnd || !["Weixin", "WeChat"].includes(result.processName)) return { ok: false, reason: "personal_wechat_main_window_not_found" };
-  const expectedAccountId = String(customer.wechatAccountId ?? state.wechat_account_id ?? "").trim();
   if (!expectedAccountId) return { ok: false, reason: "wechat_account_identity_missing" };
   if (result.accountVerified !== true || !String(result.accountId ?? "").trim()) return { ok: false, reason: result.accountReason || "wechat_account_not_verified" };
   if (String(result.accountId).trim() !== expectedAccountId) return { ok: false, reason: "wechat_account_changed" };
@@ -32,13 +55,19 @@ function hasMessageSnapshot(result) {
   return result?.ok === true && result.snapshot !== undefined && result.snapshot !== null;
 }
 
-function isVerifiedNewMessage(result, message) {
-  return result?.ok === true
+function isVerifiedNewMessage(result, message, beforeSnapshot) {
+  const bubbleVerified = result?.ok === true
     && result.exactMatch === true
     && result.outgoing === true
     && result.isLatest === true
     && result.isNew === true
     && String(result.messageText ?? "") === message;
+  if (bubbleVerified) return true;
+  return result?.ok === true
+    && result.verificationMode === "draft_consumed"
+    && result.draftConsumed === true
+    && result.sameWindow === true
+    && beforeSnapshot?.draftExact === true;
 }
 
 function rejectRepeatedAttempt(baseDir, state, action = "send") {
@@ -101,7 +130,7 @@ function persistOutcomeUnknown(baseDir, state, reason, onTransition) {
 
 function verifyRealSendSession(baseDir = __dirname, driver = verifyWechatCurrentConversation) {
   const state = loadState(baseDir);
-  const result = sessionCheck(state, driver);
+  const result = sessionCheck(state, driver, baseDir);
   if (!result.ok) return blockSendGate(baseDir, state, result.reason || "session_not_verified", "已阻断：微信账号、主窗口或当前会话未重新验证");
   const nextState = {
     ...state,
@@ -167,11 +196,11 @@ function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWechatSen
   if (state.real_send_attempts?.[key] || ["prepared", "clicked", "sent_verified", "outcome_unknown"].includes(state.real_send_status)) {
     return rejectRepeatedAttempt(baseDir, state);
   }
-  const session = sessionCheck(state, sessionDriver);
+  const session = sessionCheck(state, sessionDriver, baseDir);
   if (!session.ok || Number(session.pid) !== Number(state.window_pid) || String(session.hWnd) !== String(state.window_handle)) {
     return blockSendGate(baseDir, state, "real_send_session_changed", "已阻断：微信账号、PID、窗口句柄或当前会话发生变化");
   }
-  const windowContext = { pid: state.window_pid, hWnd: state.window_handle };
+  const windowContext = { pid: state.window_pid, hWnd: state.window_handle, inputPoint: state.message_input_point };
   const before = bubbleVerifier(message, { ...windowContext, phase: "before" });
   if (!hasMessageSnapshot(before)) {
     return blockSendGate(baseDir, state, "message_snapshot_unavailable", "已阻断：无法读取发送前消息列表快照");
@@ -212,11 +241,12 @@ function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWechatSen
   } catch {
     return persistOutcomeUnknown(baseDir, clicked, "message_bubble_verifier_failed", options.onTransition);
   }
-  if (!isVerifiedNewMessage(verified, message)) return persistOutcomeUnknown(baseDir, clicked, "message_bubble_not_new_latest_exact", options.onTransition);
-  const nextState = { ...clicked, real_send_status: "sent_verified", real_send_attempts: { ...clicked.real_send_attempts, [key]: "sent_verified" }, message_bubble_verified: true, message_bubble_status: "verified", message_bubble_reason: "", post_send_verified: true, post_send_status: "bubble_verified", post_send_reason: "", located_window_title: verified.title ?? clicked.located_window_title, last_result: "sent_verified", blocked_reason: "" };
+  if (!isVerifiedNewMessage(verified, message, before.snapshot)) return persistOutcomeUnknown(baseDir, clicked, "message_bubble_not_new_latest_exact", options.onTransition);
+  const draftConsumed = verified.verificationMode === "draft_consumed";
+  const nextState = { ...clicked, real_send_status: "sent_verified", real_send_attempts: { ...clicked.real_send_attempts, [key]: "sent_verified" }, message_bubble_verified: !draftConsumed, message_bubble_status: draftConsumed ? "not_exposed" : "verified", message_bubble_reason: draftConsumed ? "uia_message_bubble_unavailable" : "", post_send_verified: true, post_send_status: draftConsumed ? "draft_consumed_verified" : "bubble_verified", post_send_reason: "", post_send_verification_mode: draftConsumed ? "draft_consumed" : "message_bubble", located_window_title: verified.title ?? clicked.located_window_title, last_result: "sent_verified", blocked_reason: "" };
   saveState(baseDir, nextState);
   try { notifyTransition(options.onTransition, "sent_verified", nextState); } catch {}
-  appendLog(baseDir, "真实发送", "消息气泡与完整文案已自动验证");
+  appendLog(baseDir, "真实发送", draftConsumed ? "已验证发送前精确文案与发送后输入框清空" : "消息气泡与完整文案已自动验证");
   return output(true, "send", nextState, { baseDir });
 }
 
@@ -286,9 +316,10 @@ function verifyMessageBubble(baseDir = __dirname, verifier = verifyWechatMessage
   if (state.message_bubble_snapshot_before === undefined || state.message_bubble_snapshot_before === null) {
     return persistOutcomeUnknown(baseDir, state, "message_snapshot_unavailable");
   }
-  const verifyResult = verifier(message, { pid: state.window_pid, hWnd: state.window_handle, phase: "after", beforeSnapshot: state.message_bubble_snapshot_before });
-  if (!isVerifiedNewMessage(verifyResult, message)) return persistOutcomeUnknown(baseDir, state, "message_bubble_not_new_latest_exact");
-  const nextState = { ...state, message_bubble_verified: true, message_bubble_status: "verified", message_bubble_reason: "", post_send_verified: true, post_send_status: "bubble_verified", post_send_reason: "", located_window_title: verifyResult.title ?? state.located_window_title, last_result: "message_bubble_verified", blocked_reason: "" };
+  const verifyResult = verifier(message, { pid: state.window_pid, hWnd: state.window_handle, inputPoint: state.message_input_point, phase: "after", beforeSnapshot: state.message_bubble_snapshot_before });
+  if (!isVerifiedNewMessage(verifyResult, message, state.message_bubble_snapshot_before)) return persistOutcomeUnknown(baseDir, state, "message_bubble_not_new_latest_exact");
+  const draftConsumed = verifyResult.verificationMode === "draft_consumed";
+  const nextState = { ...state, real_send_status: "sent_verified", real_send_attempts: state.real_send_attempt_key ? { ...(state.real_send_attempts ?? {}), [state.real_send_attempt_key]: "sent_verified" } : state.real_send_attempts, message_bubble_verified: !draftConsumed, message_bubble_status: draftConsumed ? "not_exposed" : "verified", message_bubble_reason: draftConsumed ? "uia_message_bubble_unavailable" : "", post_send_verified: true, post_send_status: draftConsumed ? "draft_consumed_verified" : "bubble_verified", post_send_reason: "", post_send_verification_mode: draftConsumed ? "draft_consumed" : "message_bubble", located_window_title: verifyResult.title ?? state.located_window_title, last_result: draftConsumed ? "sent_verified" : "message_bubble_verified", blocked_reason: "" };
   saveState(baseDir, nextState);
   return output(true, "verify-message-bubble", nextState, { baseDir });
 }

@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
-const { capture, decryptSqlcipher4Raw, prepareWechatLogin, resolveHelper, status, sync } = require("./contact_sync_cli.cjs");
+const { candidateWechatRoots, capture, captureKeyFromWxKeyDll, decryptSqlcipher4Raw, prepareWechatLogin, resolveHelper, runningWeixinProcesses, status, sync } = require("./contact_sync_cli.cjs");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-contact-sync-"));
 const syncDir = path.join(root, "contact_sync");
@@ -47,12 +47,49 @@ function encryptSqlcipher4Like(inputPath, outputPath, keyHex) {
   fs.writeFileSync(outputPath, Buffer.concat(output));
 }
 
+function runBuiltInHelper(helper, args) {
+  const isPython = path.extname(helper.helperPath).toLowerCase() === ".py";
+  return spawnSync(isPython ? helper.pythonPath : helper.helperPath, isPython ? [helper.helperPath, ...args] : args, {
+    encoding: "utf8",
+    windowsHide: true
+  });
+}
+
 try {
+  assert.equal(candidateWechatRoots().includes(path.join(os.homedir(), "xwechat_files")), true, "new WeChat default data root must be auto-detected");
+  assert.deepEqual(
+    runningWeixinProcesses({ processProvider: () => [{ id: 21, commandLine: "--type=renderer" }, { id: 42, mainWindowHandle: 1 }] }).map((row) => row.id),
+    [42],
+    "wx_key capture must target the visible Weixin main process instead of child processes"
+  );
   assert.deepEqual(prepareWechatLogin({ loginFlowDriver: () => ({ ok: true, restarted: true }) }), { ok: true, restarted: true });
   assert.deepEqual(prepareWechatLogin({ loginFlowDriver: () => ({ ok: false, reason: "wechat_start_failed" }) }), {
     ok: false,
     reason: "wechat_start_failed"
   });
+
+  const wxKeyHex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+  const fakeWxKeyHelper = path.join(root, "fake-wx-key-helper.cjs");
+  const fakeWxKeyDll = path.join(root, "fake-wx-key.dll");
+  fs.writeFileSync(fakeWxKeyDll, "contract-only", "utf8");
+  fs.writeFileSync(fakeWxKeyHelper, `const assert = require("node:assert"); assert.equal(process.argv[2], "wx-key"); console.log(JSON.stringify({ ok: true, key: "${wxKeyHex}" }));`, "utf8");
+  assert.equal(captureKeyFromWxKeyDll({
+    selfContainedHelperPath: fakeWxKeyHelper,
+    wxKeyDllPath: fakeWxKeyDll,
+    wxKeyProbePath: "",
+    pythonPath: ""
+  }, {}, [{ id: 123 }], 1000), wxKeyHex, "self-contained helper must not require Python");
+
+  const fakeFailingWxKeyHelper = path.join(root, "fake-failing-wx-key-helper.cjs");
+  fs.writeFileSync(fakeFailingWxKeyHelper, `console.log(JSON.stringify({ ok: false, stage: "dll_load_failed", error: "missing native dependency" })); process.exitCode = 2;`, "utf8");
+  let failedWxKeyResult;
+  assert.equal(captureKeyFromWxKeyDll({
+    selfContainedHelperPath: fakeFailingWxKeyHelper,
+    wxKeyDllPath: fakeWxKeyDll,
+    wxKeyProbePath: "",
+    pythonPath: ""
+  }, { onWxKeyResult: (result) => { failedWxKeyResult = result; } }, [{ id: 123 }], 1000), "");
+  assert.deepEqual(failedWxKeyResult, { status: 2, stage: "dll_load_failed", error: "missing native dependency" }, "wx-key helper failure must remain visible in state diagnostics");
 
   assert.equal(sync(syncDir, { wechatRoot: path.join(root, "missing"), activeTouchDir }).blocked_reason, "wechat_root_not_found");
 
@@ -135,9 +172,17 @@ fs.writeFileSync(out, JSON.stringify([{ username: "wxid_x", remark: "新版目�
 
   const builtIn = resolveHelper(__dirname);
   if (builtIn.helperConfigured) {
-    const helperSelfCheck = spawnSync(builtIn.pythonPath, [builtIn.helperPath, "self-check"], { encoding: "utf8", windowsHide: true });
+    const helperSelfCheck = runBuiltInHelper(builtIn, ["self-check"]);
     assert.equal(helperSelfCheck.status, 0, helperSelfCheck.stderr);
-    assert.equal(JSON.parse(helperSelfCheck.stdout).ok, true);
+    const helperSelfCheckPayload = JSON.parse(helperSelfCheck.stdout);
+    assert.equal(helperSelfCheckPayload.ok, true);
+    assert.equal(helperSelfCheckPayload.memory_key_patterns, 2, "helper must recognize standalone and salt-suffixed WeChat 4.x memory keys");
+    const wxKeyHelp = runBuiltInHelper(builtIn, ["wx-key", "--help"]);
+    assert.equal(wxKeyHelp.status, 0, wxKeyHelp.stderr);
+    assert.equal(wxKeyHelp.stdout.includes("--exe"), false, "wx-key helper must only attach to a running Weixin main process");
+    const wxKeyContract = runBuiltInHelper(builtIn, ["wx-key", "--dll", path.join(root, "missing-wx-key.dll"), "--pid", "123", "--timeout", "1"]);
+    assert.equal(wxKeyContract.status, 2);
+    assert.equal(JSON.parse(wxKeyContract.stdout).stage, "dll_missing", "helper must dispatch the packaged wx-key command");
     const contactDb = path.join(accountDir, "contact.db");
     fs.rmSync(contactDb, { force: true });
     const createDb = spawnSync(
@@ -199,7 +244,7 @@ con.close()
       pythonPath: builtIn.pythonPath,
       timeoutMs: 1000,
       pollIntervalMs: 10,
-      processProvider: () => [],
+      processProvider: () => [{ id: 123, path: "C:\\Weixin.exe" }],
       keyInfoReader: () => ({ keyHex: rawKeyHex, observed: true }),
       decryptedContactReader: () => [{ username: "wxid_3", alias: "alias_3", remark: "赵总", nick_name: "老赵", local_type: 1 }]
     });
@@ -248,7 +293,8 @@ fs.copyFileSync(input, output);
     assert.equal(capturedFromKeyInfo.state.last_stage, "captured_and_synced");
     assert.equal(capturedFromKeyInfo.contacts.length, 1);
 
-    const capturedFromWxKey = capture(syncDir, {
+    const captureOrder = [];
+    const capturedFromMemory = capture(syncDir, {
       wechatRoot,
       activeTouchDir,
       keyToolPath: path.join(root, "missing-key-tool.exe"),
@@ -257,11 +303,82 @@ fs.copyFileSync(input, output);
       timeoutMs: 1000,
       pollIntervalMs: 10,
       processProvider: () => [{ id: 123, path: "Weixin.exe" }],
-      wxKeyReader: () => rawKeyHex
+      keyInfoReader: () => {
+        captureOrder.push("key-info");
+        return { observed: true, keyHex: "" };
+      },
+      memoryKeyReader: () => {
+        captureOrder.push("memory");
+        return rawKeyHex;
+      },
+      wxKeyReader: () => {
+        captureOrder.push("wx-key");
+        return rawKeyHex;
+      }
     });
-    assert.equal(capturedFromWxKey.ok, true);
-    assert.equal(capturedFromWxKey.state.last_stage, "captured_and_synced");
-    assert.equal(capturedFromWxKey.contacts.length, 1);
+    assert.equal(capturedFromMemory.ok, true);
+    assert.deepEqual(captureOrder, ["key-info", "memory"]);
+    assert.equal(capturedFromMemory.state.last_stage, "captured_and_synced");
+    assert.equal(capturedFromMemory.contacts.length, 1);
+
+    const fallbackOrder = [];
+    const capturedFromWxKeyFallback = capture(syncDir, {
+      wechatRoot,
+      activeTouchDir,
+      keyToolPath: path.join(root, "missing-key-tool.exe"),
+      dumpToolPath,
+      pythonPath: builtIn.pythonPath,
+      timeoutMs: 1000,
+      pollIntervalMs: 10,
+      processProvider: () => [{ id: 123, path: "Weixin.exe" }],
+      keyInfoReader: () => {
+        fallbackOrder.push("key-info");
+        return { observed: true, keyHex: "" };
+      },
+      memoryKeyReader: () => {
+        fallbackOrder.push("memory");
+        return "";
+      },
+      wxKeyReader: () => {
+        fallbackOrder.push("wx-key");
+        return rawKeyHex;
+      }
+    });
+    assert.equal(capturedFromWxKeyFallback.ok, true);
+    assert.deepEqual(fallbackOrder, ["key-info", "memory", "wx-key"]);
+
+    const restartCaptureOrder = [];
+    let restartPreparation;
+    const capturedDuringRestart = capture(syncDir, {
+      wechatRoot,
+      activeTouchDir,
+      keyToolPath: path.join(root, "missing-key-tool.exe"),
+      dumpToolPath,
+      pythonPath: builtIn.pythonPath,
+      timeoutMs: 1000,
+      pollIntervalMs: 10,
+      restartWechat: true,
+      loginFlowDriver: (options) => {
+        restartPreparation = options;
+        return { ok: true, restarted: true, wechatExePath: "C:\\Weixin.exe" };
+      },
+      processProvider: () => [{ id: 123, path: "C:\\Weixin.exe" }],
+      keyInfoReader: () => {
+        restartCaptureOrder.push("key-info");
+        return { observed: true, keyHex: "" };
+      },
+      memoryKeyReader: () => {
+        restartCaptureOrder.push("memory");
+        return "";
+      },
+      wxKeyReader: () => {
+        restartCaptureOrder.push("wx-key");
+        return rawKeyHex;
+      }
+    });
+    assert.equal(capturedDuringRestart.ok, true);
+    assert.deepEqual(restartCaptureOrder, ["wx-key"]);
+    assert.equal(Boolean(restartPreparation.stopOnly), false, "restart capture must launch WeChat through the proven login flow");
 
     const captured = capture(syncDir, {
       wechatRoot,

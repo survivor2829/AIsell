@@ -586,6 +586,57 @@ td {
   margin-bottom: 20px;
 }
 
+.wechat-path-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 16px 18px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.wechat-path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+}
+
+.wechat-path-row > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.wechat-path-row strong {
+  color: #344054;
+  font-size: 13px;
+}
+
+.wechat-path-row span {
+  overflow: hidden;
+  color: #667085;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wechat-auto-detect {
+  justify-self: start;
+  border: 0;
+  background: transparent;
+  color: #175cd3;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.wechat-auto-detect:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .touch-notice {
   margin: -4px 0 16px;
   padding: 10px 14px;

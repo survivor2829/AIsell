@@ -13,9 +13,9 @@ let mainWindow = null;
 let disarmRealSend = null;
 let touchTaskController = null;
 
-// ponytail: development needs a separate Electron profile so it can run beside the customer edition.
-if (developmentEdition) app.setPath("userData", path.join(app.getPath("appData"), "xiaoxi-active-touch-development"));
-if (pilotEdition) app.setPath("userData", path.join(app.getPath("appData"), "xiaoxi-active-touch-controlled-pilot"));
+// ponytail: keep test data separate from the delivery profile.
+if (developmentEdition) app.setPath("userData", path.join(app.getPath("appData"), "xiaoxi-active-touch-test"));
+if (pilotEdition) app.setPath("userData", path.join(app.getPath("appData"), "xiaoxi-active-touch-delivery"));
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -93,8 +93,8 @@ if (!gotSingleInstanceLock) {
       dataDir: runtime.activeTouchDir,
       coordinator,
       deepSeekClient,
-      executionMode: pilotEdition ? "real_send" : "draft_only",
-      realSendExecutor: pilotEdition ? internalRealSend.executeVerifiedContactSend : null,
+      executionMode: "real_send",
+      realSendExecutor: internalRealSend.executeVerifiedContactSend,
       onPause: disarmRealSend || undefined
     });
     createWindow();

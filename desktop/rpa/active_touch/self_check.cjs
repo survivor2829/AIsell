@@ -255,13 +255,23 @@ try {
   saveTaskState(dir, tamperedSnapshot);
   assert.equal(loadTaskState(dir).integrity_error, "task_snapshot_changed");
 
-  const sharedDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-shared-send-"));
+  const sharedRuntimeDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-shared-send-"));
+  const sharedDir = path.join(sharedRuntimeDir, "active_touch");
+  const sharedContactSyncDir = path.join(sharedRuntimeDir, "contact_sync");
+  fs.mkdirSync(sharedDir, { recursive: true });
+  fs.mkdirSync(sharedContactSyncDir, { recursive: true });
+  fs.writeFileSync(path.join(sharedContactSyncDir, "state.json"), JSON.stringify({ status: "synced", account_name: "account-a", wechat_root: "D:\\wechat-data\\xwechat_files" }), "utf8");
   const sharedContact = validContacts[0];
   fs.writeFileSync(path.join(sharedDir, "contacts.json"), JSON.stringify([sharedContact]), "utf8");
   saveState(sharedDir, {
     calibrated: true,
     target_selected: true,
     conversation_verified: true,
+    conversation_verification_mode: "exact_wechat_id_search",
+    search_query: sharedContact.wechatId,
+    window_pid: 81,
+    window_handle: "91",
+    window_process_name: "Weixin",
     message_input_done: true,
     message_draft: "共享事务消息",
     selected_customer: sharedContact,
@@ -272,6 +282,7 @@ try {
   });
   const sharedSteps = [];
   const sharedTransitions = [];
+  const sharedSessionContexts = [];
   let sharedClicks = 0;
   const sharedResult = await executeVerifiedContactSend({
     baseDir: sharedDir,
@@ -283,7 +294,10 @@ try {
       sharedSteps.push(command);
       return { ok: true, state: { selected_customer: sharedContact } };
     },
-    sessionDriver: () => ({ ok: true, pid: 81, hWnd: "91", processName: "Weixin", title: sharedContact.name, accountId: "account-a", accountVerified: true }),
+    sessionDriver: (_title, context) => {
+      sharedSessionContexts.push(context);
+      return { ok: true, pid: 81, hWnd: "91", processName: "Weixin", title: sharedContact.name, accountId: "account-a", accountVerified: true };
+    },
     sendDriver: () => { sharedClicks += 1; return { ok: true }; },
     bubbleVerifier: (_message, context) => context.phase === "before"
       ? { ok: true, snapshot: "before" }
@@ -293,6 +307,11 @@ try {
   assert.equal(sharedResult.ok, true);
   assert.deepEqual(sharedSteps, ["select-customer", "calibrate", "focus-wechat-window", "click-search-result-dry-run", "input-message-dry-run", "send"]);
   assert.deepEqual(sharedTransitions, ["prepared", "clicked", "sent_verified"]);
+  assert.deepEqual(sharedSessionContexts.map((context) => context?.wechatRoot), ["D:\\wechat-data\\xwechat_files", "D:\\wechat-data\\xwechat_files"], "real-send account verification must reuse the successful contact-sync root before input and before send");
+  assert.deepEqual(sharedSessionContexts.map((context) => context?.expectedAccountId), ["account-a", "account-a"]);
+  assert.deepEqual(sharedSessionContexts.map((context) => context?.expectedPid), [81, 81]);
+  assert.deepEqual(sharedSessionContexts.map((context) => context?.expectedHWnd), ["91", "91"]);
+  assert.deepEqual(sharedSessionContexts.map((context) => context?.allowExactSearchFallback), [true, true]);
   assert.equal(sharedClicks, 1);
 
   saveState(sharedDir, {
@@ -422,6 +441,24 @@ try {
   const clickMismatch = clickSearchResultDryRun(dir, () => ({ ok: true, title: "企业微信" }), () => ["企业微信"], () => ({ ok: false }));
   assert.equal(clickMismatch.blocked_reason, "search_result_not_opened");
   assert.equal(clickMismatch.state.conversation_located, false);
+  const clickExactWechatIdFallback = clickSearchResultDryRun(
+    dir,
+    () => ({
+      ok: true,
+      title: "微信",
+      processName: "Weixin",
+      pid: 11,
+      hWnd: "22",
+      exactSearchOpened: true,
+      searchQuery: "internal-test-001"
+    }),
+    () => ["微信"],
+    () => ({ ok: false })
+  );
+  assert.equal(clickExactWechatIdFallback.ok, true);
+  assert.equal(clickExactWechatIdFallback.state.conversation_verification_mode, "exact_wechat_id_search");
+  assert.equal(clickExactWechatIdFallback.state.window_pid, 11);
+  assert.equal(clickExactWechatIdFallback.state.window_handle, "22");
   const unavailableContact = clickSearchResultDryRun(
     dir,
     () => ({ ok: true, title: "微信" }),
@@ -443,7 +480,14 @@ try {
   assert.equal(inputMessageDryRun(dir, "", () => ({ ok: true })).blocked_reason, "empty_message");
   assert.equal(inputMessageDryRun(dir, "hello", () => ({ ok: false })).blocked_reason, "message_input_failed");
   assert.equal(inputMessageDryRun(dir, "hello", () => ({ ok: true, draftVerified: false })).blocked_reason, "message_input_failed");
-  assert.equal(inputMessageDryRun(dir, "hello", () => ({ ok: true, title: "测试客户 - 企业微信" })).state.message_input_done, true);
+  assert.equal(inputMessageDryRun(dir, "hello", () => ({ ok: true })).blocked_reason, "message_input_failed");
+  assert.equal(
+    inputMessageDryRun(dir, "hello", () => ({ ok: true, draftVerified: false, draftCheck: "wechat_focus_lost_after_paste", draftAttempts: 2 })).blocked_reason,
+    "message_input_failed_wechat_focus_lost_after_paste_attempts_2"
+  );
+  const inputWithAdaptivePoint = inputMessageDryRun(dir, "hello", () => ({ ok: true, title: "测试客户 - 企业微信", draftVerified: true, draftPoint: { xRatio: 0.65, yRatio: 0.84 } }));
+  assert.equal(inputWithAdaptivePoint.state.message_input_done, true);
+  assert.deepEqual(inputWithAdaptivePoint.state.message_input_point, { xRatio: 0.65, yRatio: 0.84 });
   assert.equal(send(dir, { dryRun: true, message: "changed" }).blocked_reason, "message_draft_changed");
   assert.equal(verifySendResultDryRun(dir, () => ["测试客户 - 企业微信"]).blocked_reason, "send_gate_not_passed");
   assert.equal(setRealSendArm(dir, true).blocked_reason, "send_gate_not_passed");
@@ -505,10 +549,30 @@ try {
   assert.equal(setRealSendArm(dir, true).blocked_reason, "real_send_already_attempted");
   assert.equal(setRealSendArm(dir, false).state.real_send_status, "sent_verified");
   clearCustomer(dir);
+  fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_draft_consumed", name: "Draft fallback", wxid: "wxid_draft_consumed", wechatId: "internal-test-007", wechatAccountId: "internal-account", allowed: true }]), "utf8");
+  selectCustomer(dir, "wxid_draft_consumed");
+  verifyConversation(dir, "Draft fallback");
+  inputMessageDryRun(dir, "third", () => ({ ok: true, draftVerified: true }));
+  send(dir, { dryRun: true, message: "third" });
+  verifyRealSendSession(dir, () => ({ ok: true, pid: 17, hWnd: "28", processName: "Weixin", title: "Draft fallback", accountId: "internal-account", accountVerified: true }));
+  setRealSendArm(dir, true);
+  const draftConsumed = sendReal(
+    dir,
+    { message: "third", allowRealSend: true, userConfirmed: true },
+    () => ({ ok: true, title: "微信" }),
+    () => ({ ok: true, pid: 17, hWnd: "28", processName: "Weixin", title: "Draft fallback", accountId: "internal-account", accountVerified: true }),
+    (_message, context) => context.phase === "before"
+      ? { ok: true, snapshot: { runtimeIds: [], exactCount: 0, draftExact: true } }
+      : { ok: true, title: "微信", verificationMode: "draft_consumed", draftConsumed: true, sameWindow: true }
+  );
+  assert.equal(draftConsumed.state.real_send_status, "sent_verified");
+  assert.equal(draftConsumed.state.post_send_status, "draft_consumed_verified");
+  assert.equal(draftConsumed.state.message_bubble_verified, false);
+  clearCustomer(dir);
   fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_unknown", name: "未知结果客户", wxid: "wxid_unknown", wechatId: "internal-test-002", wechatAccountId: "internal-account", allowed: true }]), "utf8");
   selectCustomer(dir, "wxid_unknown");
   verifyConversation(dir, "未知结果客户");
-  inputMessageDryRun(dir, "second", () => ({ ok: true }));
+  inputMessageDryRun(dir, "second", () => ({ ok: true, draftVerified: true }));
   send(dir, { dryRun: true, message: "second" });
   verifyRealSendSession(dir, () => ({ ok: true, pid: 12, hWnd: "23", processName: "Weixin", title: "未知结果客户", accountId: "internal-account", accountVerified: true }));
   setRealSendArm(dir, true);
@@ -530,7 +594,7 @@ try {
   fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_window", name: "窗口变化客户", wxid: "wxid_window", wechatId: "internal-test-005", wechatAccountId: "internal-account", allowed: true }]), "utf8");
   selectCustomer(dir, "wxid_window");
   verifyConversation(dir, "窗口变化客户");
-  inputMessageDryRun(dir, "window", () => ({ ok: true }));
+  inputMessageDryRun(dir, "window", () => ({ ok: true, draftVerified: true }));
   send(dir, { dryRun: true, message: "window" });
   verifyRealSendSession(dir, () => ({ ok: true, pid: 13, hWnd: "24", processName: "Weixin", title: "窗口变化客户", accountId: "internal-account", accountVerified: true }));
   setRealSendArm(dir, true);
@@ -539,7 +603,7 @@ try {
   fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_exception", name: "验证异常客户", wechatId: "internal-test-006", wechatAccountId: "internal-account", allowed: true }]), "utf8");
   selectCustomer(dir, "wxid_exception");
   verifyConversation(dir, "验证异常客户");
-  inputMessageDryRun(dir, "exception", () => ({ ok: true }));
+  inputMessageDryRun(dir, "exception", () => ({ ok: true, draftVerified: true }));
   send(dir, { dryRun: true, message: "exception" });
   verifyRealSendSession(dir, () => ({ ok: true, pid: 15, hWnd: "26", processName: "Weixin", title: "验证异常客户", accountId: "internal-account", accountVerified: true }));
   setRealSendArm(dir, true);
@@ -560,7 +624,7 @@ try {
   ]), "utf8");
   selectCustomer(dir, "dup-a");
   verifyConversation(dir, "同名客户");
-  inputMessageDryRun(dir, "duplicate", () => ({ ok: true }));
+  inputMessageDryRun(dir, "duplicate", () => ({ ok: true, draftVerified: true }));
   send(dir, { dryRun: true, message: "duplicate" });
   verifyRealSendSession(dir, () => ({ ok: true, pid: 13, hWnd: "24", processName: "Weixin", title: "同名客户", accountId: "internal-account", accountVerified: true }));
   assert.equal(setRealSendArm(dir, true).blocked_reason, "contact_name_not_unique");
@@ -606,7 +670,7 @@ try {
     ["q1", "q2"],
     "hello",
     () => ({ ok: true, title: "微信" }),
-    () => ({ ok: true, title: "微信" }),
+    () => ({ ok: true, title: "微信", draftVerified: true }),
     () => ["Queue A - 微信", "Queue B - 微信"],
     () => ({ ok: true })
   );
@@ -617,11 +681,21 @@ try {
   assert.equal(queueResult.state.real_send_clicked, false);
 
   const driverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.cjs"), "utf8");
+  const messageDraftSource = driverSource.split("const MESSAGE_DRAFT_SCRIPT = `")[1].split("`;")[0];
   const developmentDriverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.dev.cjs"), "utf8");
   assert.equal(driverSource.includes("clickWechatSendButton"), false);
   assert.equal(driverSource.includes("SEND_MESSAGE_SCRIPT"), false);
   assert.equal(driverSource.includes("XIAOXI_SEND_KEY"), false);
   assert.equal(driverSource.includes("verifyWechatMessageBubble"), false);
+  assert.match(messageDraftSource, /SendWait\("\^a"\)[\s\S]*Set-Clipboard -Value \$message[\s\S]*SendWait\("\^v"\)/);
+  assert.match(messageDraftSource, /SendWait\("\^c"\)/);
+  assert.match(messageDraftSource, /draftCheck = "clipboard_roundtrip"/);
+  assert.match(messageDraftSource, /\$inputPoints = @\([\s\S]*yRatio = 0\.84[\s\S]*yRatio = 0\.88[\s\S]*yRatio = 0\.92/);
+  assert.match(messageDraftSource, /for \(\$attempt = 1; \$attempt -le \$inputPoints\.Count; \$attempt\+\+\)[\s\S]*SendWait\("\^a"\)[\s\S]*SendWait\("\^v"\)[\s\S]*if \(\$draftVerified\) \{[\s\S]*break/);
+  assert.match(messageDraftSource, /draftPoint = \$usedPoint/);
+  assert.match(messageDraftSource, /wechat_focus_lost_after_paste/);
+  assert.match(messageDraftSource, /message_input_empty_or_copy_blocked/);
+  assert.match(messageDraftSource, /message_input_content_mismatch/);
   assert.match(developmentDriverSource, /function clickWechatSendButton/);
   assert.match(developmentDriverSource, /context\.phase === "after" \? "after" : "before"/);
   assert.match(developmentDriverSource, /beforeSnapshot/);
@@ -630,9 +704,17 @@ try {
   assert.match(developmentDriverSource, /isLatest/);
   assert.match(developmentDriverSource, /isNew/);
   assert.match(developmentDriverSource, /function detectActiveWechatAccount/);
+  assert.match(developmentDriverSource, /XIAOXI_WECHAT_ROOT/);
+  assert.match(developmentDriverSource, /XIAOXI_EXPECTED_ACCOUNT_ID/);
+  assert.match(developmentDriverSource, /allowExactSearchFallback/);
   assert.match(developmentDriverSource, /\*\.db-wal/);
   assert.match(developmentDriverSource, /wechat_account_ambiguous/);
   assert.match(developmentDriverSource, /\$outgoingExact\.Count -gt \$beforeExactCount/);
+  assert.match(developmentDriverSource, /draftExact/);
+  assert.match(developmentDriverSource, /draftConsumed/);
+  assert.match(developmentDriverSource, /elseif \(\$draftConsumed\) \{ "draft_consumed" \}/);
+  assert.match(developmentDriverSource, /XIAOXI_INPUT_X_RATIO/);
+  assert.match(developmentDriverSource, /XIAOXI_INPUT_Y_RATIO/);
   assert.ok(driverSource.includes('$processNames = @("Weixin", "WeChat")'));
   assert.equal(driverSource.includes("$name.Contains($expected)"), false);
   assert.match(driverSource, /\$name\.Trim\(\) -ne \$expected\.Trim\(\)/);
@@ -665,6 +747,7 @@ try {
   assert.equal(developmentIpcSource.includes("setRealSendArm(runtimeDataDir, true)"), false);
   const sharedTransactionSource = fs.readFileSync(path.join(__dirname, "state_machine.dev.cjs"), "utf8");
   assert.match(sharedTransactionSource, /async function executeVerifiedContactSend/);
+  assert.match(sharedTransactionSource, /inputPoint: state\.message_input_point/);
   assert.match(sharedTransactionSource, /select-customer[\s\S]*calibrate[\s\S]*focus-wechat-window[\s\S]*click-search-result-dry-run[\s\S]*verifyRealSendSession[\s\S]*input-message-dry-run[\s\S]*send[\s\S]*dry-run[\s\S]*sendReal/);
   assert.equal(developmentIpcSource.includes("real-send-hold"), false);
   const developmentUiSource = fs.readFileSync(path.join(__dirname, "../../src/renderer/DevelopmentAcceptance.tsx"), "utf8");
