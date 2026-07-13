@@ -22,23 +22,6 @@ function createTrustedClickGate(selector) {
 function createPreloadApis(ipcRenderer) {
   const consumeBatchClick = createTrustedClickGate("[data-xiaoxi-batch-authorize]");
   return {
-    activeTouch: {
-      status: () => ipcRenderer.invoke("active-touch:status"),
-      calibrate: () => ipcRenderer.invoke("active-touch:calibrate"),
-      clearCustomer: () => ipcRenderer.invoke("active-touch:clear-customer"),
-      sendDryRun: (payload) => ipcRenderer.invoke("active-touch:send-dry-run", payload),
-      selectCustomer: (payload) => ipcRenderer.invoke("active-touch:select-customer", payload),
-      verifyConversation: (payload) => ipcRenderer.invoke("active-touch:verify-conversation", payload),
-      locateConversation: () => ipcRenderer.invoke("active-touch:locate-conversation"),
-      openConversationDryRun: () => ipcRenderer.invoke("active-touch:open-conversation-dry-run"),
-      searchConversationDryRun: () => ipcRenderer.invoke("active-touch:search-conversation-dry-run"),
-      clickSearchResultDryRun: () => ipcRenderer.invoke("active-touch:click-search-result-dry-run"),
-      inputMessageDryRun: (payload) => ipcRenderer.invoke("active-touch:input-message-dry-run", payload),
-      queueDryRun: (payload) => ipcRenderer.invoke("active-touch:queue-dry-run", payload),
-      verifySendResultDryRun: () => ipcRenderer.invoke("active-touch:verify-send-result-dry-run"),
-      verifyMessageBubble: () => ipcRenderer.invoke("active-touch:verify-message-bubble"),
-      verifyWindowTitle: () => ipcRenderer.invoke("active-touch:verify-window-title")
-    },
     contactSync: {
       status: () => ipcRenderer.invoke("contact-sync:status"),
       sync: () => ipcRenderer.invoke("contact-sync:sync"),
@@ -59,6 +42,7 @@ function createPreloadApis(ipcRenderer) {
       pause: () => ipcRenderer.invoke("touch-task:pause"),
       resume: () => ipcRenderer.invoke("touch-task:resume", { clickToken: consumeBatchClick() }),
       stop: () => ipcRenderer.invoke("touch-task:stop"),
+      resolveUnknown: (payload) => ipcRenderer.invoke("touch-task:resolve-unknown", payload),
       showMain: () => ipcRenderer.invoke("touch-task:show-main"),
       closeFloating: () => ipcRenderer.invoke("touch-task:close-floating"),
       onUpdate: (callback) => {

@@ -1,4 +1,4 @@
-const { app, ipcMain } = require("electron");
+const { app } = require("electron");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 
@@ -69,32 +69,9 @@ function runActiveTouchDev(args) {
   return runActiveTouch(args, { development: true });
 }
 
-function registerActiveTouchIpc({ dataDir, coordinator } = {}) {
+function configureActiveTouchRuntime({ dataDir, coordinator } = {}) {
   runtimeDataDir = String(dataDir || "");
   runtimeCoordinator = coordinator;
-  ipcMain.handle("active-touch:status", () => runActiveTouch(["status"]));
-  ipcMain.handle("active-touch:calibrate", () => runActiveTouch(["calibrate"]));
-  ipcMain.handle("active-touch:clear-customer", () => runActiveTouch(["clear-customer"]));
-  ipcMain.handle("active-touch:send-dry-run", (_event, payload = {}) =>
-    runActiveTouch(["send", "--dry-run", "--message", String(payload.message ?? "")])
-  );
-  ipcMain.handle("active-touch:select-customer", (_event, payload = {}) => runActiveTouch(["select-customer", "--id", String(payload.id ?? "")]));
-  ipcMain.handle("active-touch:verify-conversation", (_event, payload = {}) =>
-    runActiveTouch(["verify-conversation", "--title", String(payload.title ?? "")])
-  );
-  ipcMain.handle("active-touch:locate-conversation", () => runActiveTouch(["locate-conversation"]));
-  ipcMain.handle("active-touch:open-conversation-dry-run", () => runActiveTouch(["open-conversation-dry-run"]));
-  ipcMain.handle("active-touch:search-conversation-dry-run", () => runActiveTouch(["search-conversation-dry-run"]));
-  ipcMain.handle("active-touch:click-search-result-dry-run", () => runActiveTouch(["click-search-result-dry-run"]));
-  ipcMain.handle("active-touch:input-message-dry-run", (_event, payload = {}) =>
-    runActiveTouch(["input-message-dry-run", "--message", String(payload.message ?? "")])
-  );
-  ipcMain.handle("active-touch:queue-dry-run", (_event, payload = {}) =>
-    runActiveTouch(["queue-dry-run", "--ids", Array.isArray(payload.ids) ? payload.ids.join(",") : "", "--message", String(payload.message ?? "")])
-  );
-  ipcMain.handle("active-touch:verify-send-result-dry-run", () => runActiveTouch(["verify-send-result-dry-run"]));
-  ipcMain.handle("active-touch:verify-message-bubble", () => runActiveTouch(["verify-message-bubble"]));
-  ipcMain.handle("active-touch:verify-window-title", () => runActiveTouch(["verify-window-title"]));
 }
 
-module.exports = { registerActiveTouchIpc, runActiveTouch, runActiveTouchDev };
+module.exports = { configureActiveTouchRuntime, runActiveTouch, runActiveTouchDev };

@@ -146,6 +146,24 @@ button:focus-visible {
   text-align: left;
 }
 
+.sub-nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-stage-badge {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .sub-nav-item.active,
 .sub-nav-item:hover {
   background: rgba(255, 255, 255, 0.17);
@@ -305,6 +323,10 @@ button:focus-visible {
 
 .deepseek-settings {
   width: min(900px, 100%);
+}
+
+.touch-setup-grid .deepseek-settings {
+  width: 100%;
 }
 
 .deepseek-settings-head {
@@ -586,6 +608,29 @@ td {
   margin-bottom: 20px;
 }
 
+.deepseek-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.deepseek-toggle {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid #d0d5dd;
+  border-radius: 6px;
+  background: #fff;
+  color: #344054;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.deepseek-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .wechat-path-panel {
   display: grid;
   gap: 10px;
@@ -646,6 +691,7 @@ td {
   color: #9a3412;
   font-size: 14px;
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .flow-steps {
@@ -830,7 +876,7 @@ td {
 }
 
 .touch-contact-table {
-  min-width: 1320px;
+  min-width: 1080px;
 }
 
 .touch-contact-table th:nth-child(1),
@@ -844,18 +890,14 @@ td {
 }
 
 .touch-contact-table th:nth-child(5) {
-  width: 90px;
-}
-
-.touch-contact-table th:nth-child(6) {
   width: 130px;
 }
 
-.touch-contact-table th:nth-child(7) {
+.touch-contact-table th:nth-child(6) {
   width: 380px;
 }
 
-.touch-contact-table th:nth-child(8) {
+.touch-contact-table th:nth-child(7) {
   width: 180px;
 }
 
@@ -1448,6 +1490,161 @@ td .text-button {
   margin-top: 2px;
 }
 
+.touch-setup-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(420px, 1.4fr);
+  align-items: start;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.touch-sync-card {
+  min-height: 84px;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: stretch;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+}
+
+.touch-sync-card > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.touch-sync-card strong {
+  color: #111827;
+  font-size: 16px;
+}
+
+.touch-sync-card span,
+.touch-sync-card small {
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.touch-sync-card span {
+  color: #667085;
+}
+
+.touch-sync-card small {
+  color: #9a3412;
+}
+
+.touch-sync-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.touch-sync-actions .primary-button {
+  white-space: nowrap;
+}
+
+.touch-frozen-notice {
+  margin: -4px 0 16px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.touch-frozen-notice .danger-button {
+  flex: 0 0 auto;
+  height: 30px;
+}
+
+.script-field textarea:disabled {
+  cursor: not-allowed;
+  background: #f3f4f6;
+  color: #667085;
+}
+
+.contact-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 0 14px 12px;
+}
+
+.contact-list-toolbar input {
+  width: min(420px, 100%);
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  color: #111827;
+  font: inherit;
+}
+
+.contact-list-toolbar input:focus {
+  border-color: #2f5bea;
+  box-shadow: 0 0 0 3px rgba(47, 91, 234, 0.12);
+  outline: none;
+}
+
+.contact-list-toolbar span {
+  flex: 0 0 auto;
+  color: #475467;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.touch-row-actions {
+  white-space: normal;
+}
+
+.touch-row-actions .text-button {
+  margin: 0 8px 4px 0;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.danger-text-button {
+  color: #b42318;
+}
+
+.placeholder-stage {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.floating-resolution {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.floating-resolution button {
+  min-height: 28px;
+  border: 1px solid #fdba74;
+  border-radius: 999px;
+  background: #fff7ed;
+  color: #9a3412;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 @media (max-width: 1180px) {
   .app-shell {
     grid-template-columns: 216px 1fr;
@@ -1465,8 +1662,9 @@ td .text-button {
   .touch-grid,
   .touch-flow,
   .flow-steps,
-  .simple-touch-panel,
-  .advanced-grid {
+    .simple-touch-panel,
+    .touch-setup-grid,
+    .advanced-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1490,5 +1688,15 @@ td .text-button {
 
   .deepseek-actions {
     justify-content: flex-end;
+  }
+
+  .touch-sync-card,
+  .contact-list-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .touch-sync-actions {
+    justify-content: flex-start;
   }
 }

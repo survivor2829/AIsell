@@ -4,7 +4,7 @@ const { createPreloadApis, createTrustedClickGate } = require("./preload-api.cjs
 const apis = createPreloadApis(ipcRenderer);
 const consumeRealSendClick = createTrustedClickGate("[data-xiaoxi-real-send]");
 
-Object.assign(apis.activeTouch, {
+const activeTouch = {
   calibrate: () => ipcRenderer.invoke("active-touch:dev-calibrate"),
   selectCustomer: (payload) => ipcRenderer.invoke("active-touch:dev-select-customer", payload),
   clickSearchResultDryRun: () => ipcRenderer.invoke("active-touch:dev-click-search-result"),
@@ -20,9 +20,9 @@ Object.assign(apis.activeTouch, {
   setRealSendArm: (payload) => ipcRenderer.invoke("active-touch:set-real-send-arm", payload),
   verifyRealSendSession: () => ipcRenderer.invoke("active-touch:verify-real-send-session"),
   failConversation: () => ipcRenderer.invoke("active-touch:fail-conversation")
-});
+};
 
-contextBridge.exposeInMainWorld("xiaoxiActiveTouch", apis.activeTouch);
+contextBridge.exposeInMainWorld("xiaoxiActiveTouch", activeTouch);
 contextBridge.exposeInMainWorld("xiaoxiContactSync", apis.contactSync);
 contextBridge.exposeInMainWorld("xiaoxiDeepSeekApi", apis.deepSeekApi);
 contextBridge.exposeInMainWorld("xiaoxiTouchTask", apis.touchTask);

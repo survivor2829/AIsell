@@ -2,14 +2,6 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const CONTACT_PROFILE_NAMES = [
-  "xiaoxi-active-touch-desktop",
-  "xiaoxi-active-touch-development",
-  "xiaoxi-active-touch-controlled-pilot",
-  "xiaoxi-active-touch-test",
-  "xiaoxi-active-touch-delivery"
-];
-
 function resolveRuntimePaths(userDataDir) {
   const rootDir = path.join(userDataDir, "data");
   return {
@@ -50,74 +42,11 @@ function copyVerifiedFile(source, destination) {
   }
 }
 
-function migrateLatestProfileContacts(paths, userDataDir, result) {
-  const destination = path.join(paths.activeTouchDir, "contacts.json");
-  try {
-    if (JSON.parse(fs.readFileSync(destination, "utf8")).length) return;
-  } catch {
-    // An empty new profile may reuse the last successful contact snapshot.
-  }
-
-  let targetAccount = "";
-  try {
-    targetAccount = String(JSON.parse(fs.readFileSync(path.join(paths.contactSyncDir, "state.json"), "utf8")).account_name || "");
-  } catch {
-    // A brand-new profile has no account hint, so the newest valid snapshot wins.
-  }
-  const currentProfile = path.resolve(userDataDir).toLowerCase();
-  const candidates = CONTACT_PROFILE_NAMES
-    .map((name) => path.join(path.dirname(userDataDir), name))
-    .filter((profile) => path.resolve(profile).toLowerCase() !== currentProfile)
-    .map((profile) => {
-      const sourcePaths = resolveRuntimePaths(profile);
-      const contactsFile = path.join(sourcePaths.activeTouchDir, "contacts.json");
-      try {
-        return { profile, sourcePaths, contactsFile, mtimeMs: fs.statSync(contactsFile).mtimeMs };
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean)
-    .sort((left, right) => right.mtimeMs - left.mtimeMs);
-  let source = null;
-  for (const candidate of candidates) {
-    let state = {};
-    try {
-      state = JSON.parse(fs.readFileSync(path.join(candidate.sourcePaths.contactSyncDir, "state.json"), "utf8"));
-    } catch {
-      // A snapshot without state is eligible only when the current account is unknown.
-    }
-    if (targetAccount && String(state.account_name || "") !== targetAccount) continue;
-    try {
-      const contacts = JSON.parse(fs.readFileSync(candidate.contactsFile, "utf8"));
-      if (Array.isArray(contacts) && contacts.length) {
-        source = { ...candidate, contacts, state };
-        break;
-      }
-    } catch {
-      // Try the next valid snapshot.
-    }
-  }
-  if (!source) return;
-
-  const destinationState = path.join(paths.contactSyncDir, "state.json");
-  copyVerifiedFile(source.contactsFile, destination);
-  fs.writeFileSync(destinationState, `${JSON.stringify({
-    ...source.state,
-    status: "synced",
-    contact_count: source.contacts.length,
-    last_error: "",
-    last_stage: source.state.last_stage || "synced"
-  }, null, 2)}\n`, "utf8");
-  result.migrated.push(destination, destinationState);
-}
-
 function migrateLegacyRuntimeData({ appPath, userDataDir, userHome = os.homedir() }) {
   const paths = resolveRuntimePaths(userDataDir);
   fs.mkdirSync(paths.activeTouchDir, { recursive: true });
   fs.mkdirSync(paths.contactSyncDir, { recursive: true });
   const result = { ...paths, migrated: [], keptExisting: [], skippedForeignInstall: false };
-  migrateLatestProfileContacts(paths, userDataDir, result);
   if (!isInside(userHome, appPath)) {
     result.skippedForeignInstall = true;
     return result;

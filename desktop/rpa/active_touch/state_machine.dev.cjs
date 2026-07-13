@@ -132,7 +132,14 @@ function verifyRealSendSession(baseDir = __dirname, driver = verifyWechatCurrent
   const state = loadState(baseDir);
   const result = sessionCheck(state, driver, baseDir);
   if (!result.ok) return blockSendGate(baseDir, state, result.reason || "session_not_verified", "已阻断：微信账号、主窗口或当前会话未重新验证");
-  const nextState = {
+  const nextState = refreshedSessionState(state, result);
+  saveState(baseDir, nextState);
+  appendLog(baseDir, "真实发送会话验证", "已验证个人微信进程、PID、窗口句柄和当前会话");
+  return output(true, "verify-real-send-session", nextState, { baseDir });
+}
+
+function refreshedSessionState(state, result) {
+  return {
     ...state,
     wechat_account_id: String(result.accountId),
     window_pid: Number(result.pid),
@@ -143,9 +150,15 @@ function verifyRealSendSession(baseDir = __dirname, driver = verifyWechatCurrent
     last_result: "real_send_session_verified",
     blocked_reason: ""
   };
+}
+
+function refreshRealSendSession(baseDir = __dirname, driver = verifyWechatCurrentConversation) {
+  const state = loadState(baseDir);
+  const result = sessionCheck(state, driver, baseDir);
+  if (!result.ok) return result;
+  const nextState = refreshedSessionState(state, result);
   saveState(baseDir, nextState);
-  appendLog(baseDir, "真实发送会话验证", "已验证个人微信进程、PID、窗口句柄和当前会话");
-  return output(true, "verify-real-send-session", nextState, { baseDir });
+  return { ...result, state: nextState };
 }
 
 function setRealSendArm(baseDir = __dirname, enabled = false) {
@@ -324,4 +337,4 @@ function verifyMessageBubble(baseDir = __dirname, verifier = verifyWechatMessage
   return output(true, "verify-message-bubble", nextState, { baseDir });
 }
 
-module.exports = { executeVerifiedContactSend, failConversation, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession };
+module.exports = { executeVerifiedContactSend, failConversation, refreshRealSendSession, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession };

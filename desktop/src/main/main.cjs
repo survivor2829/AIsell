@@ -1,6 +1,6 @@
 const { app, BrowserWindow, dialog, safeStorage } = require("electron");
 const path = require("node:path");
-const { registerActiveTouchIpc } = require("./active-touch-ipc.cjs");
+const { configureActiveTouchRuntime } = require("./active-touch-ipc.cjs");
 const { registerContactSyncIpc } = require("./contact-sync-ipc.cjs");
 const { migrateLegacyRuntimeData } = require("./runtime-data.cjs");
 const { registerTouchTaskIpc } = require("./touch-task-ipc.cjs");
@@ -81,7 +81,7 @@ if (!gotSingleInstanceLock) {
     const deepSeekKeyStore = createDeepSeekKeyStore({ rootDir: runtime.rootDir, safeStorage });
     const deepSeekClient = createDeepSeekClient({ keyStore: deepSeekKeyStore });
     coordinator.initialize();
-    registerActiveTouchIpc({ dataDir: runtime.activeTouchDir, coordinator });
+    configureActiveTouchRuntime({ dataDir: runtime.activeTouchDir, coordinator });
     const internalRealSend = developmentEdition || pilotEdition ? require("../../rpa/active_touch/state_machine.dev.cjs") : null;
     const developmentRealSend = developmentEdition ? require("./active-touch-dev-ipc.cjs") : null;
     if (developmentRealSend) developmentRealSend.registerActiveTouchDevIpc({ dataDir: runtime.activeTouchDir, getMainWindow: () => mainWindow });
@@ -95,6 +95,8 @@ if (!gotSingleInstanceLock) {
       deepSeekClient,
       executionMode: "real_send",
       realSendExecutor: internalRealSend.executeVerifiedContactSend,
+      verifyRealSendSession: internalRealSend.refreshRealSendSession,
+      verifyMessageBubble: internalRealSend.verifyMessageBubble,
       onPause: disarmRealSend || undefined
     });
     createWindow();

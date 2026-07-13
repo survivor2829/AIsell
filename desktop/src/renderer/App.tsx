@@ -128,6 +128,8 @@ type TouchTaskItem = {
   reason: string;
   message: string;
   updated_at: string;
+  outcome_unknown_retry_count?: number;
+  awaiting_resolution?: boolean;
 };
 type TouchTaskExcludedContact = {
   contact: ContactRow;
@@ -204,11 +206,12 @@ declare global {
       autoDetectPaths: () => Promise<ContactSyncResult>;
     };
     xiaoxiTouchTask?: {
-      start: (payload: { script: string }) => Promise<TouchTaskResult>;
+      start: (payload: { script: string; excludedContactIds: string[] }) => Promise<TouchTaskResult>;
       status: () => Promise<TouchTaskResult>;
       pause: () => Promise<TouchTaskResult>;
       resume: () => Promise<TouchTaskResult>;
       stop: () => Promise<TouchTaskResult>;
+      resolveUnknown: (payload: { taskId: string; contactId: string; resolution: "sent" | "skip" }) => Promise<TouchTaskResult>;
       showMain: () => Promise<TouchTaskResult>;
       closeFloating: () => Promise<TouchTaskResult>;
       onUpdate: (callback: (payload: TouchTaskResult) => void) => () => void;
@@ -224,12 +227,12 @@ declare global {
 
 const USER_STORAGE_KEY = "xiaoxi-user-profile";
 const DEFAULT_USER_PROFILE: UserProfile = { name: "2829347524", avatar: "2" };
-const DEFAULT_ACTIVE_MODULE: ModuleKey = "reply";
 const DEFAULT_TOUCH_MESSAGE = "{称呼}，您好，我们这边有清洁设备短租和会员特惠方案，想了解一下您近期是否需要降本增效？";
 const XIAOXI_EDITION = import.meta.env.VITE_XIAOXI_EDITION;
 const DEVELOPMENT_EDITION = XIAOXI_EDITION === "development";
 const PILOT_EDITION = XIAOXI_EDITION === "pilot";
 const REAL_SEND_EDITION = DEVELOPMENT_EDITION || PILOT_EDITION;
+const DEFAULT_ACTIVE_MODULE: ModuleKey = PILOT_EDITION ? "touch" : "reply";
 const EDITION_LABEL = DEVELOPMENT_EDITION ? "测试版" : "交付版";
 const DevelopmentAcceptance = DEVELOPMENT_EDITION ? lazy(() => import("./DevelopmentAcceptance")) : null;
 
@@ -302,7 +305,7 @@ function emptyTouchTask(): TouchTaskState {
   return {
     id: "",
     status: "idle",
-    version: 3,
+    version: 4,
     execution_mode: "draft_only",
     phase: "idle",
     script: "",
@@ -339,11 +342,21 @@ function taskStatusLabel(status: string) {
   return labels[status] ?? status;
 }
 
+function taskHasUnfinishedSnapshot(task: TouchTaskState) {
+  return Boolean(task.id) && !["idle", "completed", "stopped"].includes(task.status) && task.current_index < task.total;
+}
+
+function moduleIsAvailable(key: ModuleKey) {
+  return ["contact-sync", "touch", "accounts"].includes(key);
+}
+
 function touchTaskStatusLabel(task: TouchTaskState) {
+  if (["idle", "completed", "stopped"].includes(task.status)) return taskStatusLabel(task.status);
+  if (task.status === "paused" && task.phase !== "awaiting_unknown_resolution") return taskStatusLabel(task.status);
   const phaseLabels: Record<string, string> = {
-    preparing_batch: "准备本批文案",
-    sending_batch: "本批发送中",
-    awaiting_batch_continue: "等待继续下一批"
+    preparing_batch: "准备触达文案",
+    sending_batch: "发送中",
+    awaiting_unknown_resolution: "等待确认发送结果"
   };
   return phaseLabels[task.phase ?? ""] ?? taskStatusLabel(task.status);
 }
@@ -357,9 +370,11 @@ function taskResultLabel(status: string) {
     prepared: "发送已准备",
     clicked: "已点击，待核验",
     sent_verified: "发送已核验",
+    ai_failed: "AI暂时不可用，已暂停",
     ai_failed_skipped: "AI失败，已跳过",
     identity_skipped: "身份不唯一，已跳过",
     outcome_unknown: "结果未知，已暂停",
+    outcome_unknown_skipped: "结果未知，已跳过",
     blocked: "已阻断",
     skipped: "已跳过"
   };
@@ -367,7 +382,7 @@ function taskResultLabel(status: string) {
 }
 
 function processedTouchResult(status: string) {
-  return ["draft_ready", "sent_verified", "skipped", "ai_failed_skipped", "identity_skipped"].includes(status);
+  return ["draft_ready", "sent_verified", "skipped", "ai_failed_skipped", "identity_skipped", "outcome_unknown_skipped"].includes(status);
 }
 
 export default function App() {
@@ -397,6 +412,8 @@ export default function App() {
   const [touchTaskError, setTouchTaskError] = useState("");
   const [touchTaskBusy, setTouchTaskBusy] = useState(false);
   const [messageDraft, setMessageDraft] = useState(DEFAULT_TOUCH_MESSAGE);
+  const [excludedContactIds, setExcludedContactIds] = useState<string[]>([]);
+  const [deepSeekConfigured, setDeepSeekConfigured] = useState(false);
   const addLog = (_action: string, _result: string) => undefined;
 
   useEffect(() => {
@@ -437,7 +454,11 @@ export default function App() {
         last_stage: result.blocked_reason || "blocked"
       }));
     }
-    if (result.contacts) setContactRows(result.contacts);
+    if (result.contacts) {
+      setContactRows(result.contacts);
+      const currentIds = new Set(result.contacts.map((contact) => contact.id));
+      setExcludedContactIds((current) => current.filter((id) => currentIds.has(id)));
+    }
     setContactSyncError(result.error ?? "");
     if (result.error) addLog("同步微信联系人", result.error);
   };
@@ -480,6 +501,10 @@ export default function App() {
 
   const runContactSync = () => {
     if (contactSyncInFlight.current) return;
+    if (taskHasUnfinishedSnapshot(touchTask)) {
+      setContactSyncError("当前任务名单已经冻结，请完成或结束本次任务后再同步。");
+      return;
+    }
 
     setContactSyncState((current) => ({
       ...current,
@@ -518,12 +543,14 @@ export default function App() {
       return;
     }
 
-    const continuingBatch = REAL_SEND_EDITION && touchTask.status === "paused" && touchTask.phase === "awaiting_batch_continue";
+    const resumingTask = touchTask.status === "paused" && taskHasUnfinishedSnapshot(touchTask);
 
-    if (!continuingBatch) {
-      const eligibleContactCount = REAL_SEND_EDITION && touchTaskPreview ? touchTaskPreview.eligible.length : contactRows.filter((contact) => contact.allowed).length;
+    if (!resumingTask) {
+      const excludedIds = new Set(excludedContactIds);
+      const eligibleContacts = REAL_SEND_EDITION && touchTaskPreview ? touchTaskPreview.eligible : contactRows.filter((contact) => contact.allowed);
+      const eligibleContactCount = eligibleContacts.filter((contact) => !excludedIds.has(contact.id)).length;
       if (!eligibleContactCount) {
-        const message = contactRows.length ? "没有符合触达条件的联系人" : "请先同步当前微信联系人";
+        const message = contactRows.length ? "本次没有可触达联系人，请恢复至少一位联系人" : "请先同步当前微信联系人";
         setTouchTaskError(message);
         addLog("启动程序", message);
         return;
@@ -534,12 +561,19 @@ export default function App() {
         addLog("启动程序", "请先填写触达话术");
         return;
       }
+
+      if (!deepSeekConfigured) {
+        setTouchTaskError("请先配置并保存 DeepSeek API Key");
+        return;
+      }
     }
 
     setTouchTaskError("");
     setTouchTaskBusy(true);
-    const action = continuingBatch ? "继续下一批" : "启动程序";
-    const request = continuingBatch ? window.xiaoxiTouchTask.resume() : window.xiaoxiTouchTask.start({ script: messageDraft });
+    const action = resumingTask ? "继续上次任务" : "启动程序";
+    const request = resumingTask
+      ? window.xiaoxiTouchTask.resume()
+      : window.xiaoxiTouchTask.start({ script: messageDraft, excludedContactIds });
     void request
       .then(applyTouchTaskResult)
       .catch((error) => {
@@ -573,26 +607,59 @@ export default function App() {
     void window.xiaoxiTouchTask.status().then(applyTouchTaskResult).catch(() => undefined);
   }, [contactRows]);
 
-  const allowedContactCount = contactRows.filter((contact) => contact.allowed).length;
-  const launchContactCount = REAL_SEND_EDITION && touchTaskPreview ? touchTaskPreview.eligible.length : allowedContactCount;
-  const awaitingBatchContinue = REAL_SEND_EDITION && touchTask.status === "paused" && touchTask.phase === "awaiting_batch_continue";
-  const canLaunchTouch = active === "touch" && !touchTaskBusy && touchTask.status !== "running" && (awaitingBatchContinue || (launchContactCount > 0 && Boolean(messageDraft.trim())));
+  useEffect(() => {
+    if (touchTask.id && ["completed", "stopped"].includes(touchTask.status)) setExcludedContactIds([]);
+  }, [touchTask.id, touchTask.status]);
+
+  const resolveUnknown = (contactId: string, resolution: "sent" | "skip") => {
+    if (touchTaskBusy || !window.xiaoxiTouchTask || !touchTask.id) return;
+    setTouchTaskBusy(true);
+    setTouchTaskError("");
+    void window.xiaoxiTouchTask.resolveUnknown({ taskId: touchTask.id, contactId, resolution })
+      .then(applyTouchTaskResult)
+      .catch((error) => setTouchTaskError(error instanceof Error ? error.message : "处理发送结果失败"))
+      .finally(() => setTouchTaskBusy(false));
+  };
+
+  const endTouchTask = () => {
+    if (touchTaskBusy || !window.xiaoxiTouchTask || !touchTask.id) return;
+    if (!window.confirm("确定结束本次任务吗？结束后不能恢复当前进度。")) return;
+    setTouchTaskBusy(true);
+    setTouchTaskError("");
+    void window.xiaoxiTouchTask.stop()
+      .then(applyTouchTaskResult)
+      .catch((error) => setTouchTaskError(error instanceof Error ? error.message : "结束任务失败"))
+      .finally(() => setTouchTaskBusy(false));
+  };
+
+  const excludedIdSet = new Set(excludedContactIds);
+  const launchContacts = REAL_SEND_EDITION && touchTaskPreview ? touchTaskPreview.eligible : contactRows.filter((contact) => contact.allowed);
+  const launchContactCount = launchContacts.filter((contact) => !excludedIdSet.has(contact.id)).length;
+  const resumingTask = touchTask.status === "paused" && taskHasUnfinishedSnapshot(touchTask);
+  const requiresUnknownResolution = resumingTask && touchTask.phase === "awaiting_unknown_resolution";
+  const touchTaskLocked = taskHasUnfinishedSnapshot(touchTask);
+  const canLaunchTouch = active === "touch" && !touchTaskBusy && touchTask.status !== "running" && !requiresUnknownResolution && (resumingTask || (launchContactCount > 0 && Boolean(messageDraft.trim()) && deepSeekConfigured));
   const launchTitle =
     active !== "touch"
       ? "请先进入主动触达"
-      : awaitingBatchContinue
-        ? "继续下一批触达"
+      : requiresUnknownResolution
+        ? "请先确认当前联系人的发送结果"
+      : resumingTask
+        ? "继续上次未完成的任务"
       : launchContactCount === 0
-        ? "请先同步当前微信联系人"
+        ? contactRows.length ? "请恢复至少一位本次触达联系人" : "请先同步当前微信联系人"
         : !messageDraft.trim()
           ? "请先填写触达话术"
+          : !deepSeekConfigured
+            ? "请先配置 DeepSeek API Key"
           : touchTaskBusy
             ? "正在启动主动触达任务"
             : touchTask.status === "running"
               ? "主动触达任务正在执行"
               : "启动主动触达任务";
 
-  if (!user) return <LoginScreen onLogin={login} />;
+  if (!user && !PILOT_EDITION) return <LoginScreen onLogin={login} />;
+  const currentUser = user ?? DEFAULT_USER_PROFILE;
 
   return (
     <main className="app-shell">
@@ -624,8 +691,9 @@ export default function App() {
                           className={`sub-nav-item ${active === item.key ? "active" : ""}`}
                           onClick={() => selectChild(group.key, item.key)}
                         >
-                          <ChildIcon size={17} strokeWidth={2.5} />
-                          <span>{item.label}</span>
+                           <ChildIcon size={17} strokeWidth={2.5} />
+                           <span className="sub-nav-label">{item.label}</span>
+                           {!moduleIsAvailable(item.key) && <span className="nav-stage-badge">下一阶段</span>}
                         </button>
                       );
                     })}
@@ -645,8 +713,8 @@ export default function App() {
               <CircleHelp size={14} />
               新手引导
             </button>
-            <div className="avatar">{user.avatar}</div>
-            <button className="account-name">{user.name}</button>
+            <div className="avatar">{currentUser.avatar}</div>
+            <button className="account-name">{currentUser.name}</button>
           </div>
         </header>
 
@@ -660,9 +728,10 @@ export default function App() {
               onRefresh={refreshContactSync}
               onSync={runContactSync}
               onChooseWechatExe={chooseWechatExe}
-              onChooseWechatRoot={chooseWechatRoot}
-              onAutoDetectPaths={autoDetectWechatPaths}
-            />
+               onChooseWechatRoot={chooseWechatRoot}
+               onAutoDetectPaths={autoDetectWechatPaths}
+               locked={touchTaskLocked}
+             />
           )}
           {active === "accounts" && <AccountManagement />}
           {active === "touch" && (
@@ -671,9 +740,21 @@ export default function App() {
               messageDraft={messageDraft}
               touchTask={touchTask}
               touchTaskPreview={touchTaskPreview}
-              touchTaskError={touchTaskError}
-              onMessageDraftChange={updateMessageDraft}
-            />
+               touchTaskError={touchTaskError}
+               contactSyncState={contactSyncState}
+               contactSyncError={contactSyncError}
+               contactSyncBusy={contactSyncBusy}
+               excludedContactIds={excludedContactIds}
+               locked={touchTaskLocked}
+               onMessageDraftChange={updateMessageDraft}
+               onSync={runContactSync}
+               onOpenSync={() => setActive("contact-sync")}
+               onExclude={(contactId) => setExcludedContactIds((current) => current.includes(contactId) ? current : [...current, contactId])}
+               onRestore={(contactId) => setExcludedContactIds((current) => current.filter((id) => id !== contactId))}
+               onDeepSeekConfiguredChange={setDeepSeekConfigured}
+               onResolveUnknown={resolveUnknown}
+               onEndTask={endTouchTask}
+             />
           )}
           {active === "touch" && DevelopmentAcceptance && (
             <Suspense fallback={null}>
@@ -683,8 +764,8 @@ export default function App() {
           {active !== "contact-sync" && active !== "accounts" && active !== "touch" && <Placeholder title={activeTitle} />}
         </div>
 
-        <button data-xiaoxi-batch-authorize={REAL_SEND_EDITION ? (awaitingBatchContinue ? "continue" : "start") : undefined} className={`launch-button ${canLaunchTouch ? "" : "disabled"}`} onClick={startTouchTask} disabled={!canLaunchTouch} title={launchTitle}>
-          {touchTaskBusy ? "启动中" : awaitingBatchContinue ? <><span>继续</span><br /><span>下一批</span></> : <><span>启动</span><br /><span>程序</span></>}
+        <button data-xiaoxi-batch-authorize={REAL_SEND_EDITION ? (resumingTask ? "continue" : "start") : undefined} className={`launch-button ${canLaunchTouch ? "" : "disabled"}`} onClick={startTouchTask} disabled={!canLaunchTouch} title={launchTitle}>
+          {touchTaskBusy ? "处理中" : resumingTask ? <><span>继续</span><br /><span>任务</span></> : <><span>启动</span><br /><span>程序</span></>}
         </button>
       </section>
     </main>
@@ -747,7 +828,8 @@ function ContactSyncPage({
   onSync,
   onChooseWechatExe,
   onChooseWechatRoot,
-  onAutoDetectPaths
+  onAutoDetectPaths,
+  locked
 }: {
   contacts: ContactRow[];
   syncState: ContactSyncState;
@@ -758,6 +840,7 @@ function ContactSyncPage({
   onChooseWechatExe: () => void;
   onChooseWechatRoot: () => void;
   onAutoDetectPaths: () => void;
+  locked: boolean;
 }) {
   const statusLabel =
     syncState.status === "synced" ? "已同步" : syncState.status === "blocked" ? "同步失败" : syncState.status === "capturing" ? "同步中" : "待同步";
@@ -776,7 +859,7 @@ function ContactSyncPage({
             <RefreshCw size={17} />
             刷新状态
           </button>
-          <button className="primary-button" onClick={onSync} disabled={busy}>
+          <button className="primary-button" onClick={onSync} disabled={busy || locked}>
             <UsersRound size={17} />
             {busy ? "同步中" : "同步当前微信联系人"}
           </button>
@@ -789,13 +872,14 @@ function ContactSyncPage({
         <StatusCard label="微信账号" value={syncState.account_name || "未识别"} good={Boolean(syncState.account_name)} />
         <StatusCard label="最近同步" value={lastSynced} good={Boolean(syncState.last_synced_at)} />
       </div>
+      {locked && <div className="touch-notice">当前任务名单已经冻结。请先完成或结束本次任务，再重新同步联系人。</div>}
       <div className="wechat-path-panel">
         <div className="wechat-path-row">
           <div>
             <strong>微信程序位置</strong>
             <span title={syncState.wechat_exe_path}>{syncState.wechat_exe_path || "未识别，请手动选择 Weixin.exe"}</span>
           </div>
-          <button className="secondary-button" onClick={onChooseWechatExe} disabled={busy}>
+          <button className="secondary-button" onClick={onChooseWechatExe} disabled={busy || locked}>
             <Folder size={16} />
             选择程序
           </button>
@@ -805,12 +889,12 @@ function ContactSyncPage({
             <strong>微信数据目录</strong>
             <span title={syncState.wechat_root}>{syncState.wechat_root || "未识别，请手动选择 xwechat_files"}</span>
           </div>
-          <button className="secondary-button" onClick={onChooseWechatRoot} disabled={busy}>
+          <button className="secondary-button" onClick={onChooseWechatRoot} disabled={busy || locked}>
             <Folder size={16} />
             选择目录
           </button>
         </div>
-        <button className="wechat-auto-detect" onClick={onAutoDetectPaths} disabled={busy}>恢复自动识别</button>
+        <button className="wechat-auto-detect" onClick={onAutoDetectPaths} disabled={busy || locked}>恢复自动识别</button>
       </div>
       {error && <div className="touch-notice">{error}</div>}
 
@@ -861,23 +945,37 @@ function AccountManagement() {
   );
 }
 
-function DeepSeekApiSettings() {
+function DeepSeekApiSettings({
+  compact = false,
+  locked = false,
+  onConfiguredChange
+}: {
+  compact?: boolean;
+  locked?: boolean;
+  onConfiguredChange?: (configured: boolean) => void;
+} = {}) {
   const [apiKey, setApiKey] = useState("");
   const [maskedKey, setMaskedKey] = useState("");
   const [status, setStatus] = useState("正在读取已保存的设置…");
   const [statusTone, setStatusTone] = useState<"neutral" | "success" | "error">("neutral");
   const [busy, setBusy] = useState(false);
+  const [expanded, setExpanded] = useState(true);
   const refresh = () => {
     if (!window.xiaoxiDeepSeekApi) {
       setStatusTone("error");
+      onConfiguredChange?.(false);
       return setStatus("当前环境未连接 DeepSeek 设置。");
     }
     void window.xiaoxiDeepSeekApi.status().then((result) => {
-      setMaskedKey(result.ok && result.data?.configured ? result.data.maskedKey || "" : "");
+      const configured = Boolean(result.ok && result.data?.configured);
+      setMaskedKey(configured ? result.data?.maskedKey || "" : "");
+      onConfiguredChange?.(configured);
+      if (compact) setExpanded(!configured);
       setStatusTone(result.ok ? "neutral" : "error");
-      setStatus(result.ok && result.data?.configured ? "已保存，可测试连接。" : result.error || "尚未保存 API Key。");
+      setStatus(configured ? "已保存，可测试连接。" : result.error || "尚未保存 API Key。");
     }).catch(() => {
       setStatusTone("error");
+      onConfiguredChange?.(false);
       setStatus("读取 DeepSeek 设置失败。");
     });
   };
@@ -893,7 +991,12 @@ function DeepSeekApiSettings() {
       if (clearInput) setApiKey("");
       setStatusTone("success");
       setStatus(success);
-      if (typeof result.data?.configured === "boolean") setMaskedKey(result.data.configured ? result.data.maskedKey || "" : "");
+      if (typeof result.data?.configured === "boolean") {
+        const configured = result.data.configured;
+        setMaskedKey(configured ? result.data.maskedKey || "" : "");
+        onConfiguredChange?.(configured);
+        if (compact) setExpanded(!configured);
+      }
     }).catch(() => {
       setStatusTone("error");
       setStatus("操作失败，请稍后重试。");
@@ -905,19 +1008,27 @@ function DeepSeekApiSettings() {
       <div className="deepseek-settings-head">
         <div>
           <div className="deepseek-title">DeepSeek API</div>
-          <p>密钥仅在当前 Windows 用户下加密保存。</p>
+          <p>{maskedKey && compact ? `已配置 ${maskedKey}` : "密钥仅在当前 Windows 用户下加密保存。"}</p>
         </div>
-        <span className={`deepseek-config-state ${maskedKey ? "is-configured" : ""}`}>
-          <span className="deepseek-state-dot" />
-          {maskedKey ? "已配置" : "未配置"}
-        </span>
+        <div className="deepseek-head-actions">
+          <span className={`deepseek-config-state ${maskedKey ? "is-configured" : ""}`}>
+            <span className="deepseek-state-dot" />
+            {maskedKey ? "已配置" : "未配置"}
+          </span>
+          {compact && (
+            <button className="deepseek-toggle" onClick={() => setExpanded((current) => !current)} disabled={locked}>
+              {expanded ? "收起" : "设置"}
+            </button>
+          )}
+        </div>
       </div>
-      <div className="deepseek-settings-body">
+      {(!compact || expanded) && (
+        <div className="deepseek-settings-body">
         <label className="field deepseek-key-field">
           <span>{maskedKey ? `当前 Key：${maskedKey}` : "DeepSeek API Key"}</span>
           <div className="deepseek-key-row">
-            <input type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={maskedKey ? "填写新 Key 以替换" : "请输入您的 DeepSeek API Key"} />
-            <button className="primary-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.save({ apiKey }), "已安全保存，请测试连接确认可用。", true)} disabled={busy || !apiKey.trim()}>
+            <input type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={maskedKey ? "填写新 Key 以替换" : "请输入您的 DeepSeek API Key"} disabled={locked} />
+            <button className="primary-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.save({ apiKey }), "已安全保存，请测试连接确认可用。", true)} disabled={locked || busy || !apiKey.trim()}>
               <Save size={16} />
               保存{maskedKey ? "并替换" : ""}
             </button>
@@ -926,17 +1037,18 @@ function DeepSeekApiSettings() {
         <div className="deepseek-settings-footer">
           <div className={`deepseek-status is-${statusTone}`} aria-live="polite">{status}</div>
           <div className="actions deepseek-actions">
-            <button className="secondary-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.test(apiKey.trim() ? { apiKey: apiKey.trim() } : undefined), "DeepSeek 连接正常。") } disabled={busy || (!apiKey.trim() && !maskedKey)}>
+            <button className="secondary-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.test(apiKey.trim() ? { apiKey: apiKey.trim() } : undefined), "DeepSeek 连接正常。") } disabled={locked || busy || (!apiKey.trim() && !maskedKey)}>
               <RefreshCw size={16} />
               测试连接
             </button>
-            <button className="danger-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.remove(), "已删除 DeepSeek API Key，AI 文案调用已停止。", true)} disabled={busy || !maskedKey}>
+            <button className="danger-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.remove(), "已删除 DeepSeek API Key，AI 文案调用已停止。", true)} disabled={locked || busy || !maskedKey}>
               <Trash2 size={16} />
               删除
             </button>
           </div>
         </div>
-      </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -947,69 +1059,117 @@ function ActiveTouch({
   touchTask,
   touchTaskPreview,
   touchTaskError,
-  onMessageDraftChange
+  contactSyncState,
+  contactSyncError,
+  contactSyncBusy,
+  excludedContactIds,
+  locked,
+  onMessageDraftChange,
+  onSync,
+  onOpenSync,
+  onExclude,
+  onRestore,
+  onDeepSeekConfiguredChange,
+  onResolveUnknown,
+  onEndTask
 }: {
   contacts: ContactRow[];
   messageDraft: string;
   touchTask: TouchTaskState;
   touchTaskPreview: TouchTaskPreview | null;
   touchTaskError: string;
+  contactSyncState: ContactSyncState;
+  contactSyncError: string;
+  contactSyncBusy: boolean;
+  excludedContactIds: string[];
+  locked: boolean;
   onMessageDraftChange: (message: string) => void;
+  onSync: () => void;
+  onOpenSync: () => void;
+  onExclude: (contactId: string) => void;
+  onRestore: (contactId: string) => void;
+  onDeepSeekConfiguredChange: (configured: boolean) => void;
+  onResolveUnknown: (contactId: string, resolution: "sent" | "skip") => void;
+  onEndTask: () => void;
 }) {
-  const hasFrozenSnapshot = Boolean(touchTask.id) && !["idle", "completed", "stopped"].includes(touchTask.status);
+  const [searchQuery, setSearchQuery] = useState("");
+  const hasFrozenSnapshot = taskHasUnfinishedSnapshot(touchTask);
+  const excludedIdSet = new Set(excludedContactIds);
   const liveEligibleContacts = touchTaskPreview?.eligible ?? contacts.filter((contact) => contact.allowed);
-  const liveExcludedContacts = touchTaskPreview?.excluded ?? contacts
+  const systemExcludedContacts = touchTaskPreview?.excluded ?? contacts
     .filter((contact) => !contact.allowed)
     .map((contact) => ({ contact, reason: "联系人已停用或禁止触达" }));
-  const eligibleContacts = hasFrozenSnapshot ? touchTask.results.map((result) => result.contact) : liveEligibleContacts;
-  const excludedContacts = hasFrozenSnapshot ? touchTask.excluded_contacts ?? [] : liveExcludedContacts;
+  const userExcludedContacts = hasFrozenSnapshot ? [] : liveEligibleContacts.filter((contact) => excludedIdSet.has(contact.id));
+  const eligibleContacts = hasFrozenSnapshot
+    ? touchTask.results.map((result) => result.contact)
+    : liveEligibleContacts.filter((contact) => !excludedIdSet.has(contact.id));
+  const excludedContacts = hasFrozenSnapshot ? touchTask.excluded_contacts ?? [] : systemExcludedContacts;
   const eligibleCount = hasFrozenSnapshot ? touchTask.eligible_total ?? eligibleContacts.length : eligibleContacts.length;
-  const excludedCount = hasFrozenSnapshot ? touchTask.excluded_total ?? excludedContacts.length : excludedContacts.length;
-  const totalCount = hasFrozenSnapshot ? eligibleCount + excludedCount : touchTaskPreview?.total ?? eligibleCount + excludedCount;
-  const batchSize = touchTask.batch_size || 50;
-  const batchCount = eligibleCount ? Math.ceil(eligibleCount / batchSize) : 0;
-  const currentBatch = touchTask.current_batch || 1;
-  const batchLabel = hasFrozenSnapshot && eligibleCount
-    ? `第${currentBatch}批 · ${(touchTask.batch_start_index ?? 0) + 1}-${touchTask.batch_end_index || Math.min(batchSize, eligibleCount)}/${eligibleCount}`
-    : batchCount
-      ? `共${batchCount}批 · 每批${batchSize}人`
-      : "暂无";
+  const excludedCount = hasFrozenSnapshot ? touchTask.excluded_total ?? excludedContacts.length : excludedContacts.length + userExcludedContacts.length;
+  const totalCount = hasFrozenSnapshot ? eligibleCount + excludedCount : liveEligibleContacts.length + excludedContacts.length;
   const completedCount = touchTask.results.filter((result) => result.status === "draft_ready" || result.status === "sent_verified").length;
-  const skippedCount = touchTask.results.filter((result) => ["skipped", "ai_failed_skipped", "identity_skipped"].includes(result.status)).length;
+  const skippedCount = touchTask.results.filter((result) => ["skipped", "ai_failed_skipped", "identity_skipped", "outcome_unknown_skipped"].includes(result.status)).length;
   const processedCount = Math.max(touchTask.current_index, touchTask.results.filter((result) => processedTouchResult(result.status)).length);
   const blockedCount = touchTask.results.filter((result) => result.status === "blocked" || result.status === "outcome_unknown").length;
+  const query = searchQuery.trim().toLocaleLowerCase();
+  const matchesSearch = (contact: ContactRow) => !query || [contactName(contact), contact.remark, contact.nickname, contact.wechatId, contact.wxid]
+    .some((value) => value?.toLocaleLowerCase().includes(query));
+  const visibleResults = hasFrozenSnapshot ? (query ? touchTask.results.filter((result) => matchesSearch(result.contact)) : touchTask.results) : [];
+  const visibleEligible = hasFrozenSnapshot ? [] : (query ? eligibleContacts.filter(matchesSearch) : eligibleContacts);
+  const visibleUserExcluded = hasFrozenSnapshot ? [] : (query ? userExcludedContacts.filter(matchesSearch) : userExcludedContacts);
+  const visibleExcluded = query ? excludedContacts.filter((item) => matchesSearch(item.contact)) : excludedContacts;
+  const syncStatusLabel = contactSyncState.status === "synced"
+    ? `已同步 ${contacts.length || contactSyncState.contact_count} 人`
+    : contactSyncState.status === "capturing"
+      ? "正在同步"
+      : contactSyncState.status === "blocked"
+        ? "同步失败"
+        : "尚未同步";
 
   return (
     <section className="page touch-page">
       <div className="page-head">
         <div>
           <h1>主动触达</h1>
-          <p>同步联系人，按需修改默认话术，再点击右下角启动程序。每批最多50人执行真实发送。</p>
+          <p>同步联系人，设置话术并移出本次不触达的人，然后点击右下角启动程序。</p>
         </div>
       </div>
 
       <div className="status-strip">
-        {REAL_SEND_EDITION ? (
-          <>
-            <StatusCard label="联系人总数" value={`${totalCount}人`} good={totalCount > 0} />
-            <StatusCard label="合格联系人" value={`${eligibleCount}人`} good={eligibleCount > 0} />
-            <StatusCard label="排除联系人" value={`${excludedCount}人`} good={excludedCount === 0} />
-            <StatusCard label="批次" value={batchLabel} good={eligibleCount > 0} />
-            <StatusCard label="任务状态" value={touchTaskStatusLabel(touchTask)} good={touchTask.status === "running" || touchTask.status === "completed"} />
-          </>
-        ) : (
-          <>
-            <StatusCard label="本次触达" value={`${eligibleCount}人`} good={eligibleCount > 0} />
-            <StatusCard label="任务状态" value={taskStatusLabel(touchTask.status)} good={touchTask.status === "running" || touchTask.status === "completed"} />
-            <StatusCard label="已处理" value={`${processedCount}/${touchTask.total || eligibleCount}`} good={processedCount > 0 || touchTask.status === "completed"} />
-            <StatusCard label="安全边界" value="只写草稿" good />
-          </>
-        )}
+        <StatusCard label="联系人总数" value={`${totalCount}人`} good={totalCount > 0} />
+        <StatusCard label="本次触达" value={`${eligibleCount}人`} good={eligibleCount > 0} />
+        <StatusCard label="本次排除" value={`${excludedCount}人`} good={excludedCount === 0} />
+        <StatusCard label="任务状态" value={touchTaskStatusLabel(touchTask)} good={touchTask.status === "running" || touchTask.status === "completed"} />
+        <StatusCard label="已处理" value={`${processedCount}/${touchTask.total || eligibleCount}`} good={processedCount > 0 || touchTask.status === "completed"} />
       </div>
 
-      {!eligibleContacts.length && <div className="touch-notice">请先在“同步联系人”里同步当前微信通讯录，或处理被排除的联系人。</div>}
+      <div className="touch-setup-grid">
+        <div className="table-panel touch-sync-card">
+          <div>
+            <strong>微信联系人</strong>
+            <span>{syncStatusLabel}{contactSyncState.account_name ? ` · ${contactSyncState.account_name}` : ""}</span>
+            {(contactSyncError || contactSyncState.last_error) && <small>{contactSyncError || contactSyncState.last_error}</small>}
+          </div>
+          <div className="touch-sync-actions">
+            <button className="primary-button" onClick={onSync} disabled={locked || contactSyncBusy}>
+              <UsersRound size={16} />
+              {contactSyncBusy ? "同步中" : contacts.length ? "重新同步" : "同步联系人"}
+            </button>
+            <button className="text-button inline-text-button" onClick={onOpenSync}>高级排查</button>
+          </div>
+        </div>
+        <DeepSeekApiSettings compact locked={locked} onConfiguredChange={onDeepSeekConfiguredChange} />
+      </div>
+
+      {!eligibleContacts.length && <div className="touch-notice">本次暂无可触达联系人，请先同步或恢复至少一位联系人。</div>}
       {touchTaskError && <div className="touch-notice">{touchTaskError}</div>}
       {touchTask.pause_reason && touchTask.status === "paused" && <div className="touch-notice">{touchTask.pause_reason}</div>}
+      {locked && (
+        <div className="touch-frozen-notice">
+          <span>任务名单和话术已冻结；暂停或退出程序后，可继续上次进度。</span>
+          <button className="danger-button" onClick={onEndTask}>结束本次任务</button>
+        </div>
+      )}
 
       <div className="simple-touch-panel">
         <label className="script-field">
@@ -1018,6 +1178,7 @@ function ActiveTouch({
             value={messageDraft}
             onChange={(event) => onMessageDraftChange(event.target.value)}
             placeholder={DEFAULT_TOUCH_MESSAGE}
+            disabled={locked}
           />
         </label>
       </div>
@@ -1034,6 +1195,10 @@ function ActiveTouch({
 
       <details className="debug-panel contact-preview-panel" open>
         <summary>联系人预览 · {hasFrozenSnapshot ? "任务冻结快照" : "同步预检"}</summary>
+        <div className="contact-list-toolbar">
+          <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索称呼、备注、昵称或微信号" />
+          <span>{hasFrozenSnapshot ? "名单已冻结" : `本次将触达 ${eligibleCount} 人`}</span>
+        </div>
         <div className="table-panel flat-table-panel contact-table-scroll">
           <table className="touch-contact-table">
             <thead>
@@ -1042,72 +1207,86 @@ function ActiveTouch({
                 <th>备注</th>
                 <th>昵称</th>
                 <th>微信号</th>
-                <th>批次</th>
                 <th>状态</th>
-                <th>完整文案</th>
-                <th>排除/执行原因</th>
+                <th>文案 / 原因</th>
+                <th>本次操作</th>
               </tr>
             </thead>
             <tbody>
               {hasFrozenSnapshot ? (
                 <>
-                  {touchTask.results.map((result, index) => {
-                    const contactIndex = result.contact_index ?? index;
-                    return (
-                      <tr key={result.id}>
-                        <td>{contactName(result.contact)}</td>
-                        <td>{result.contact.remark || "-"}</td>
-                        <td>{result.contact.nickname || "-"}</td>
-                        <td>{result.contact.wechatId || "-"}</td>
-                        <td>第{Math.floor(contactIndex / batchSize) + 1}批</td>
-                        <td>{taskResultLabel(result.status)}</td>
-                        <td className="touch-message-cell">{result.message || fillTouchTemplate(touchTask.script, result.contact)}</td>
-                        <td className="touch-reason-cell">{result.reason || "-"}</td>
-                      </tr>
-                    );
-                  })}
-                  {excludedContacts.map((item, index) => (
+                  {visibleResults.map((result) => (
+                    <tr key={result.id}>
+                      <td>{contactName(result.contact)}</td>
+                      <td>{result.contact.remark || "-"}</td>
+                      <td>{result.contact.nickname || "-"}</td>
+                      <td>{result.contact.wechatId || "-"}</td>
+                      <td>{taskResultLabel(result.status)}</td>
+                      <td className="touch-message-cell">{result.reason || result.message || fillTouchTemplate(touchTask.script, result.contact)}</td>
+                      <td className="touch-row-actions">
+                        {touchTask.phase === "awaiting_unknown_resolution" && touchTask.current_result?.id === result.id && result.awaiting_resolution ? (
+                          <>
+                            <button className="text-button" onClick={() => onResolveUnknown(result.contact.id, "sent")}>视为已发送</button>
+                            <button className="text-button danger-text-button" onClick={() => onResolveUnknown(result.contact.id, "skip")}>跳过</button>
+                          </>
+                        ) : "-"}
+                      </td>
+                    </tr>
+                  ))}
+                  {visibleExcluded.map((item, index) => (
                     <tr key={`excluded-${item.contact.id || index}`}>
                       <td>{contactName(item.contact)}</td>
                       <td>{item.contact.remark || "-"}</td>
                       <td>{item.contact.nickname || "-"}</td>
                       <td>{item.contact.wechatId || "-"}</td>
-                      <td>-</td>
-                      <td>已排除</td>
-                      <td className="touch-message-cell">-</td>
+                      <td>{item.reason_code === "user_excluded" ? "已移出本次" : "系统排除"}</td>
                       <td className="touch-reason-cell">{item.reason || item.reason_code || "身份不符合触达条件"}</td>
+                      <td>-</td>
                     </tr>
                   ))}
                 </>
-              ) : eligibleContacts.length || excludedContacts.length ? (
+              ) : eligibleContacts.length || userExcludedContacts.length || excludedContacts.length ? (
                 <>
-                  {eligibleContacts.map((contact, index) => (
+                  {visibleEligible.map((contact) => (
                     <tr key={contact.id}>
                       <td>{contactName(contact)}</td>
                       <td>{contact.remark || "-"}</td>
                       <td>{contact.nickname || "-"}</td>
                       <td>{contact.wechatId || "-"}</td>
-                      <td>第{Math.floor(index / batchSize) + 1}批</td>
                       <td>待AI生成</td>
                       <td className="touch-message-cell">{fillTouchTemplate(messageDraft, contact)}</td>
-                      <td className="touch-reason-cell">-</td>
+                      <td className="touch-row-actions"><button className="text-button" onClick={() => onExclude(contact.id)}>移出本次触达</button></td>
                     </tr>
                   ))}
-                  {excludedContacts.map((item, index) => (
+                  {visibleUserExcluded.map((contact) => (
+                    <tr key={`user-excluded-${contact.id}`}>
+                      <td>{contactName(contact)}</td>
+                      <td>{contact.remark || "-"}</td>
+                      <td>{contact.nickname || "-"}</td>
+                      <td>{contact.wechatId || "-"}</td>
+                      <td>已移出本次</td>
+                      <td className="touch-reason-cell">用户移出本次触达</td>
+                      <td className="touch-row-actions"><button className="text-button" onClick={() => onRestore(contact.id)}>恢复</button></td>
+                    </tr>
+                  ))}
+                  {visibleExcluded.map((item, index) => (
                     <tr key={`excluded-${item.contact.id || index}`}>
                       <td>{contactName(item.contact)}</td>
                       <td>{item.contact.remark || "-"}</td>
                       <td>{item.contact.nickname || "-"}</td>
                       <td>{item.contact.wechatId || "-"}</td>
-                      <td>-</td>
-                      <td>已排除</td>
-                      <td className="touch-message-cell">-</td>
+                      <td>系统排除</td>
                       <td className="touch-reason-cell">{item.reason || item.reason_code || "身份不符合触达条件"}</td>
+                      <td>-</td>
                     </tr>
                   ))}
                 </>
               ) : (
-                <EmptyTableRow colSpan={8} message="暂无同步联系人" />
+                <EmptyTableRow colSpan={7} message="暂无同步联系人" />
+              )}
+              {(touchTask.results.length + eligibleContacts.length + userExcludedContacts.length + excludedContacts.length > 0)
+                && (visibleResults.length + visibleEligible.length + visibleUserExcluded.length + visibleExcluded.length === 0) && query && (
+                <EmptyTableRow colSpan={7} message="没有找到匹配联系人" />
               )}
             </tbody>
           </table>
@@ -1158,6 +1337,13 @@ function FloatingTouchWindow() {
   const nextName = touchTask.next_contact ? contactName(touchTask.next_contact) : "暂无";
   const currentResult = touchTask.current_result;
   const statusText = currentResult?.reason || touchTask.pause_reason || touchTaskStatusLabel(touchTask);
+  const unknownResult = touchTask.phase === "awaiting_unknown_resolution" && currentResult?.status === "outcome_unknown" && currentResult.awaiting_resolution
+    ? currentResult
+    : null;
+  const endTask = () => {
+    if (!window.confirm("确定结束本次任务吗？结束后不能恢复当前进度。")) return;
+    callTask(() => window.xiaoxiTouchTask!.stop());
+  };
 
   return (
     <main className="floating-shell">
@@ -1196,6 +1382,12 @@ function FloatingTouchWindow() {
       </div>
 
       {(touchTask.pause_reason || error) && <div className="floating-alert">{error || touchTask.pause_reason}</div>}
+      {unknownResult && (
+        <div className="floating-resolution">
+          <button onClick={() => callTask(() => window.xiaoxiTouchTask!.resolveUnknown({ taskId: touchTask.id, contactId: unknownResult.contact.id, resolution: "sent" }))} disabled={busy}>视为已发送</button>
+          <button onClick={() => callTask(() => window.xiaoxiTouchTask!.resolveUnknown({ taskId: touchTask.id, contactId: unknownResult.contact.id, resolution: "skip" }))} disabled={busy}>跳过此人</button>
+        </div>
+      )}
 
       <div className="floating-actions">
         {touchTask.status === "running" ? (
@@ -1204,14 +1396,14 @@ function FloatingTouchWindow() {
             暂停
           </button>
         ) : (
-          <button data-xiaoxi-batch-authorize={REAL_SEND_EDITION ? "continue" : undefined} onClick={() => callTask(() => window.xiaoxiTouchTask!.resume())} disabled={busy || touchTask.status !== "paused"}>
+          <button data-xiaoxi-batch-authorize={REAL_SEND_EDITION ? "continue" : undefined} onClick={() => callTask(() => window.xiaoxiTouchTask!.resume())} disabled={busy || touchTask.status !== "paused" || Boolean(unknownResult)}>
             <Play size={15} />
-            {touchTask.phase === "awaiting_batch_continue" ? "继续下一批" : "继续"}
+            继续任务
           </button>
         )}
-        <button onClick={() => callTask(() => window.xiaoxiTouchTask!.stop())} disabled={busy || touchTask.status === "stopped" || touchTask.status === "completed"}>
+        <button onClick={endTask} disabled={busy || touchTask.status === "stopped" || touchTask.status === "completed"}>
           <Square size={14} />
-          停止
+          结束
         </button>
         <button onClick={() => callTask(() => window.xiaoxiTouchTask!.closeFloating())} disabled={busy}>主页面</button>
       </div>
@@ -1243,7 +1435,8 @@ function Placeholder({ title }: { title: string }) {
     <section className="placeholder">
       <Bot size={36} />
       <h1>{title}</h1>
-      <p>该模块正在接入中，当前可先使用同步联系人和主动触达。</p>
+      <span className="placeholder-stage">下一阶段开放</span>
+      <p>当前阶段可先使用同步联系人和主动触达。</p>
     </section>
   );
 }

@@ -2,6 +2,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 const {
   calibrate,
@@ -22,7 +23,7 @@ const {
   verifySendResultDryRun,
   verifyWindowTitle
 } = require("./state_machine.cjs");
-const { executeVerifiedContactSend, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession } = require("./state_machine.dev.cjs");
+const { executeVerifiedContactSend, refreshRealSendSession, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession } = require("./state_machine.dev.cjs");
 const {
   authorizeNextBatch,
   classifyContacts,
@@ -120,7 +121,7 @@ try {
   assert.equal(classified.excluded.some((row) => row.reason_code === "contact_disabled"), true);
 
   const batchTask = createTask("批量测试", validContacts, "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
-  assert.equal(batchTask.version, 3);
+  assert.equal(batchTask.version, 4);
   assert.equal(batchTask.execution_mode, "real_send");
   assert.equal(batchTask.total, 51);
   assert.equal(batchTask.batch_size, 50);
@@ -129,7 +130,7 @@ try {
   assert.ok(batchTask.snapshot_hash);
   assert.equal(isBatchAuthorized(batchTask), true);
   assert.equal(isBatchAuthorized({ ...batchTask, snapshot_hash: "changed" }), false);
-  assert.equal(isBatchAuthorized({ ...batchTask, current_index: batchTask.batch_end_index }), false);
+  assert.equal(isBatchAuthorized({ ...batchTask, current_index: batchTask.batch_end_index }), true);
   const pausedGenerated = createTask("pause", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
   pausedGenerated.status = "paused";
   pausedGenerated.phase = "paused";
@@ -156,10 +157,29 @@ try {
   assert.equal(loadTaskState(dir).version, 2);
   assert.notEqual(loadTaskState(dir).execution_mode, "real_send");
 
-  const futureTask = { ...createTask("future", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" }), version: 4 };
+  const compatibleV3 = createTask("兼容旧任务", validContacts.slice(0, 2), "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  compatibleV3.version = 3;
+  compatibleV3.snapshot_hash_version = 1;
+  compatibleV3.status = "paused";
+  compatibleV3.phase = "awaiting_batch_continue";
+  compatibleV3.current_index = 1;
+  compatibleV3.results[0].status = "sent_verified";
+  compatibleV3.snapshot_hash = crypto.createHash("sha256").update(JSON.stringify({
+    script: compatibleV3.script,
+    accountId: compatibleV3.wechat_account_id,
+    contacts: compatibleV3.results.map((result) => ({ identity_hash: result.identity_hash, contact: result.contact }))
+  })).digest("hex");
+  fs.writeFileSync(path.join(dir, "touch_task.json"), JSON.stringify(compatibleV3), "utf8");
+  const loadedV3 = loadTaskState(dir);
+  assert.equal(loadedV3.version, 4);
+  assert.equal(loadedV3.current_index, 1);
+  assert.equal(loadedV3.results[0].status, "sent_verified");
+  assert.equal(loadedV3.phase, "paused");
+
+  const futureTask = { ...createTask("future", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" }), version: 5 };
   saveTaskState(dir, futureTask);
   const blockedFutureTask = loadTaskState(dir);
-  assert.equal(blockedFutureTask.version, 4);
+  assert.equal(blockedFutureTask.version, 5);
   assert.equal(blockedFutureTask.status, "blocked");
   assert.equal(blockedFutureTask.integrity_error, "unsupported_task_version");
   assert.equal(recoverInterruptedTask(dir).integrity_error, "unsupported_task_version");
@@ -192,6 +212,32 @@ try {
   assert.equal(verifiedRecovered.current_index, 1);
   assert.equal(verifiedRecovered.status, "completed");
 
+  const unknownAfterRetry = createTask("unknown-restart", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  unknownAfterRetry.status = "paused";
+  unknownAfterRetry.phase = "awaiting_unknown_resolution";
+  unknownAfterRetry.results[0].status = "outcome_unknown";
+  unknownAfterRetry.results[0].outcome_unknown_retry_count = 1;
+  unknownAfterRetry.results[0].outcome_unknown_attempt_keys = ["unknown-retry-key"];
+  unknownAfterRetry.results[0].attempt_key = "unknown-retry-key";
+  unknownAfterRetry.results[0].awaiting_resolution = true;
+  saveTaskState(dir, unknownAfterRetry);
+  fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify({
+    task_context: { task_id: unknownAfterRetry.id, contact_id: unknownAfterRetry.results[0].id, current_index: 0 },
+    real_send_status: "outcome_unknown",
+    real_send_attempt_key: "unknown-retry-key",
+    real_send_attempts: { "unknown-retry-key": "outcome_unknown" }
+  }), "utf8");
+  const unknownRecovered = recoverInterruptedTask(dir);
+  assert.equal(unknownRecovered.status, "paused");
+  assert.equal(unknownRecovered.phase, "awaiting_unknown_resolution");
+  assert.equal(unknownRecovered.results[0].outcome_unknown_retry_count, 1);
+  assert.equal(recoverInterruptedTask(dir).results[0].outcome_unknown_retry_count, 1);
+  unknownRecovered.status = "stopped";
+  saveTaskState(dir, unknownRecovered);
+  const stoppedRecovered = recoverInterruptedTask(dir);
+  assert.equal(stoppedRecovered.status, "stopped");
+  assert.equal(stoppedRecovered.phase, "awaiting_unknown_resolution");
+
   const boundaryContacts = Array.from({ length: 101 }, (_, index) => ({
     id: `wxid_boundary_${index + 1}`,
     name: `边界客户${index + 1}`,
@@ -218,7 +264,7 @@ try {
   const firstBoundaryDelay = Date.parse(firstBatchRecovered.next_send_not_before) - firstBoundaryRecoveryStarted;
   assert.equal(firstBatchRecovered.current_index, 50);
   assert.equal(firstBatchRecovered.status, "paused");
-  assert.equal(firstBatchRecovered.phase, "awaiting_batch_continue");
+  assert.equal(firstBatchRecovered.phase, "preparing_batch");
   assert.ok(firstBoundaryDelay >= 8000 && firstBoundaryDelay <= 15100);
 
   let secondBatchCrash = createTask("second-boundary", boundaryContacts, "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
@@ -239,7 +285,7 @@ try {
   const secondBatchRecovered = recoverInterruptedTask(dir);
   assert.equal(secondBatchRecovered.current_index, 100);
   assert.equal(secondBatchRecovered.status, "paused");
-  assert.equal(secondBatchRecovered.phase, "awaiting_batch_continue");
+  assert.equal(secondBatchRecovered.phase, "preparing_batch");
 
   const taskOnlyPrepared = createTask("task-only-prepared", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
   taskOnlyPrepared.results[0].status = "prepared";
@@ -501,6 +547,22 @@ try {
   assert.equal(verifyRealSendSession(dir, () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "", accountVerified: false })).blocked_reason, "wechat_account_not_verified");
   assert.equal(verifyRealSendSession(dir, () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "other-account", accountVerified: true })).blocked_reason, "wechat_account_changed");
   assert.equal(verifyRealSendSession(dir, () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true })).ok, true);
+  saveState(dir, {
+    ...loadState(dir),
+    real_send_clicked: true,
+    real_send_status: "outcome_unknown",
+    real_send_attempt_key: "refresh-session-key",
+    real_send_attempts: { "refresh-session-key": "outcome_unknown" },
+    window_pid: 11,
+    window_handle: "22"
+  });
+  const refreshedUnknownSession = refreshRealSendSession(dir, () => ({ ok: true, pid: 21, hWnd: "32", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }));
+  assert.equal(refreshedUnknownSession.ok, true);
+  assert.equal(loadState(dir).window_pid, 21);
+  assert.equal(loadState(dir).window_handle, "32");
+  assert.equal(loadState(dir).real_send_status, "outcome_unknown");
+  assert.equal(loadState(dir).real_send_clicked, true);
+  assert.equal(loadState(dir).real_send_attempts["refresh-session-key"], "outcome_unknown");
   assert.equal(send(dir, { dryRun: true, message: "hello" }).state.send_gate_status, "dry_run_passed");
   assert.equal(setRealSendArm(dir, true).state.real_send_armed, true);
   assert.equal(sendReal(dir, { message: "hello" }).blocked_reason, "real_send_explicit_allow_missing");

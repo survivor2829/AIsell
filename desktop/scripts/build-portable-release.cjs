@@ -7,8 +7,9 @@ const desktopDir = path.resolve(__dirname, "..");
 const projectDir = path.resolve(desktopDir, "..");
 const releaseDir = path.join(projectDir, "release");
 const electronDir = path.join(desktopDir, "node_modules", "electron", "dist");
-const helper = path.join(desktopDir, ".build", "xiaoxi-contact-helper.exe");
 const nativeLibDir = path.join(desktopDir, "rpa", "contact_sync", "libs");
+const helper = path.join(nativeLibDir, "xiaoxi-contact-helper.exe");
+const CONTACT_HELPER_SHA256 = "d08eeaef4db75cb8943164ca78ecb84818ac8e94213f7b404e51f5eceb75d05a";
 const DATABASE_DECRYPTOR_NAME = "xiaoxi-db-decrypt.exe";
 const DATABASE_DECRYPTOR_SHA256 = "2e6d190f3a0f33112cd4b7baeadea9947cb70688a94f3787a6be236287dc1815";
 const NATIVE_LIBRARY_SHA256 = Object.freeze({
@@ -65,6 +66,7 @@ function copyAppSource(appDir, edition) {
   }
   const helperTarget = path.join(appDir, "rpa", "contact_sync", "xiaoxi-contact-helper.exe");
   fs.copyFileSync(helper, helperTarget);
+  if (sha256(helperTarget) !== CONTACT_HELPER_SHA256) throw new Error("Packaged contact helper hash mismatch");
   const nativeLibTarget = path.join(appDir, "rpa", "contact_sync", "libs");
   fs.mkdirSync(nativeLibTarget, { recursive: true });
   for (const [name, expectedHash] of Object.entries(NATIVE_LIBRARY_SHA256)) {
@@ -83,7 +85,8 @@ function sha256(file) {
 
 function gitText(args) {
   const result = spawnSync("git", args, { cwd: projectDir, encoding: "utf8", windowsHide: true });
-  return result.status === 0 ? result.stdout.trim() : "";
+  if (result.status !== 0) throw new Error(result.stderr || result.error?.message || `git ${args.join(" ")} failed`);
+  return result.stdout.trim();
 }
 
 function scanRelease(target) {
@@ -118,7 +121,7 @@ function removeLegacyProducts() {
 function buildPortable(edition = "delivery") {
   if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported edition: ${edition}`);
   if (!fs.existsSync(path.join(electronDir, "electron.exe"))) throw new Error("Electron portable runtime is missing; run npm ci first");
-  if (!fs.existsSync(helper)) throw new Error("Contact helper is missing; run npm run build:helper first");
+  if (!fs.existsSync(helper) || sha256(helper) !== CONTACT_HELPER_SHA256) throw new Error("Pinned contact helper is missing or has the wrong hash");
   for (const [name, expectedHash] of Object.entries(NATIVE_LIBRARY_SHA256)) {
     const file = path.join(nativeLibDir, name);
     if (!fs.existsSync(file) || sha256(file) !== expectedHash) throw new Error(`${name} is missing or has the wrong hash`);
@@ -127,6 +130,10 @@ function buildPortable(edition = "delivery") {
   if (!fs.existsSync(databaseDecryptor) || sha256(databaseDecryptor) !== DATABASE_DECRYPTOR_SHA256) {
     throw new Error(`${DATABASE_DECRYPTOR_NAME} is missing or has the wrong hash`);
   }
+
+  const commit = gitText(["rev-parse", "HEAD"]);
+  const dirty = Boolean(gitText(["status", "--porcelain"]));
+  if (dirty) throw new Error("Refusing to build a portable release from a dirty worktree");
 
   const productName = edition === "test" ? "小玺AI员工-测试版" : "小玺AI员工-交付版";
   const target = path.join(releaseDir, productName);
@@ -148,22 +155,24 @@ function buildPortable(edition = "delivery") {
     product: "小玺AI员工",
     edition,
     version: packageJson.version,
-    commit: gitText(["rev-parse", "HEAD"]),
-    dirty: Boolean(gitText(["status", "--porcelain"])),
+    commit,
+    dirty,
     architecture: process.arch,
     electron: electronPackage.version,
-    contactHelperSha256: sha256(helper),
+    contactHelperSha256: CONTACT_HELPER_SHA256,
     wxKeySha256: NATIVE_LIBRARY_SHA256["wx_key.dll"],
     databaseDecryptorSha256: DATABASE_DECRYPTOR_SHA256,
     nativeLibrarySha256: NATIVE_LIBRARY_SHA256,
     verifiedWeixin: "4.1.11.24",
+    releaseStage: "contact-sync-active-touch",
+    commercialReady: false,
     builtAt: new Date().toISOString(),
     signed: false
   };
   fs.writeFileSync(path.join(target, "版本清单.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   fs.writeFileSync(path.join(target, "版本标识.txt"), edition === "test"
-    ? "小玺AI员工 测试版\n包含单联系人验收入口和每批最多50人的真实发送流程。\n"
-    : "小玺AI员工 交付版\n同步联系人、编辑话术并按每批最多50人执行真实发送。\n", "utf8");
+    ? "小玺AI员工 测试版\n用于联系人同步与主动触达内部验收；自动回复等功能下一阶段开放。\n"
+    : "小玺AI员工 阶段交付版\n已完成联系人同步与主动触达；自动回复等功能下一阶段开放，本包不代表完整商品。\n", "utf8");
   scanRelease(target);
 
   const archive = spawnSync("tar.exe", ["-a", "-c", "-f", zip, "-C", releaseDir, productName], { encoding: "utf8", windowsHide: true });

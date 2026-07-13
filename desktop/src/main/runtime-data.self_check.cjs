@@ -78,8 +78,8 @@ try {
 
   migrateLegacyRuntimeData({ appPath, userDataDir: testProfile, userHome });
   const testPaths = resolveRuntimePaths(testProfile);
-  assert.equal(fs.readFileSync(path.join(testPaths.activeTouchDir, "contacts.json"), "utf8"), '[{"id":"latest-contact"}]');
-  assert.equal(JSON.parse(fs.readFileSync(path.join(testPaths.contactSyncDir, "state.json"), "utf8")).status, "synced");
+  assert.equal(fs.existsSync(path.join(testPaths.activeTouchDir, "contacts.json")), false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(testPaths.contactSyncDir, "state.json"), "utf8")).status, "blocked");
   assert.equal(fs.existsSync(path.join(testPaths.activeTouchDir, "touch_task.json")), false);
 
   console.log("runtime-data self-check passed");

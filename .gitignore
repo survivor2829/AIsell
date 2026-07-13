@@ -35,6 +35,7 @@ desktop/.vite/
 **/*.sqlite
 **/*.sqlite-*
 **/xiaoxi-contact-*
+!desktop/rpa/contact_sync/libs/xiaoxi-contact-helper.exe
 
 # Generated portable app and its runtime data
 release/
