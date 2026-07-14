@@ -25,7 +25,7 @@ function createDeepSeekKeyStore({ rootDir, safeStorage }) {
 
   function read() {
     if (!encryptionAvailable()) throw new DeepSeekApiError("SECURE_STORAGE_UNAVAILABLE", "无法启用 Windows 账户加密存储，请检查当前 Windows 用户后重试。");
-    if (!fs.existsSync(keyFile)) throw new DeepSeekApiError("API_KEY_MISSING", "请先在账号管理中保存 DeepSeek API Key。");
+    if (!fs.existsSync(keyFile)) throw new DeepSeekApiError("API_KEY_MISSING", "请先在 API密钥 中保存 DeepSeek API Key。");
     try {
       return safeStorage.decryptString(fs.readFileSync(keyFile)).trim();
     } catch {
@@ -74,23 +74,56 @@ function prompt({ salutation, script }) {
   ];
 }
 
-function replyPrompt({ incoming, instruction }) {
+function replyPrompt({ context, expert }) {
+  const messages = (Array.isArray(context) ? context : [])
+    .slice(-12)
+    .map((message) => ({
+      role: message?.role === "assistant" ? "assistant" : "user",
+      content: String(message?.content || "").trim()
+    }))
+    .filter((message) => message.content);
   return [
     {
       role: "system",
-      content: `你是微信一对一客服回复助手。只根据客户最新一条文字消息生成可直接发送的回复。
+      content: `你是微信一对一客服回复助手。只根据AI专家话术文件和最近对话生成可直接发送的回复，并判断是否需要人工跟进。
 要求：
-1. 回复自然、礼貌、简短，默认20到100个汉字。
-2. 不编造价格、承诺、活动、库存、身份或客户信息。
+1. 回复自然、礼貌、简短，不重复询问对话中已经回答过的信息。
+2. 不编造话术文件中没有的价格、政策、承诺、活动、库存或身份。
 3. 不索要验证码、密码、银行卡、身份证等敏感信息，不引导转账。
-4. 如果信息不足，先提出一个容易回答的澄清问题。
-5. 只输出最终回复，不解释、不编号、不加引号。`
+4. 按话术文件中的“意向判定”判断intent；有意向时intent和needsHuman都为true。
+5. 资料不足时needsHuman为true，并使用话术文件中的无法回答话术；文件未提供时回复“这个问题我帮您确认一下，稍后回复您。”。
+6. 只输出一个JSON对象，不加Markdown或解释，字段必须完整：
+{"reply":"发给客户的消息","intent":false,"intentReason":"","needsHuman":false,"handoffReason":""}`
     },
     {
-      role: "user",
-      content: `回复要求：${String(instruction || "礼貌简短").trim()}\n客户最新消息：${String(incoming || "").trim()}`
-    }
+      role: "system",
+      content: `AI专家话术文件：\n${String(expert || "").trim()}`
+    },
+    ...messages
   ];
+}
+
+function parseReplyDecision(value) {
+  const raw = String(value || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回有效的结构化回复，自动回复已暂停。"); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+    || typeof parsed.reply !== "string"
+    || typeof parsed.intent !== "boolean"
+    || typeof parsed.intentReason !== "string"
+    || typeof parsed.needsHuman !== "boolean"
+    || typeof parsed.handoffReason !== "string") {
+    throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回完整的结构化回复，自动回复已暂停。");
+  }
+  const reply = sanitizeAiMessage(parsed.reply);
+  if (!reply) throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回可用回复，自动回复已暂停。");
+  return {
+    reply,
+    intent: parsed.intent,
+    intentReason: parsed.intentReason.trim().slice(0, 200),
+    needsHuman: parsed.needsHuman || parsed.intent,
+    handoffReason: parsed.handoffReason.trim().slice(0, 200)
+  };
 }
 
 async function responseError(response) {
@@ -103,20 +136,26 @@ async function responseError(response) {
   return new DeepSeekApiError("AI_REQUEST_FAILED", "DeepSeek 服务暂时不可用，请稍后重试。");
 }
 
-function createDeepSeekClient({ keyStore, fetchImpl = global.fetch } = {}) {
-  async function request({ key, messages, maxTokens = 180 }) {
+function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+  async function request({ key, messages, maxTokens = 180, responseFormat }) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
     try {
       const response = await fetchImpl(`${DEEPSEEK_ORIGIN}/chat/completions`, {
         method: "POST",
         redirect: "error",
         signal: controller.signal,
         headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-        body: JSON.stringify({ model: DEEPSEEK_MODEL, messages, temperature: 0.4, max_tokens: maxTokens })
+        body: JSON.stringify({
+          model: DEEPSEEK_MODEL,
+          messages,
+          temperature: 0.4,
+          max_tokens: maxTokens,
+          ...(responseFormat ? { response_format: responseFormat, thinking: { type: "disabled" } } : {})
+        })
       });
       if (!response.ok) throw await responseError(response);
-      return response.json();
+      return await response.json();
     } catch (error) {
       if (error instanceof DeepSeekApiError) throw error;
       if (error?.name === "AbortError") throw new DeepSeekApiError("AI_REQUEST_TIMEOUT", "DeepSeek 请求超时，请检查网络后重试。");
@@ -144,18 +183,22 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch } = {}) {
       if (!draft) throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回可用文案，任务已暂停。");
       return { draft };
     },
-    async reply({ incoming, instruction }) {
+    async reply({ context, expert }) {
+      if (!String(expert || "").trim()) throw new DeepSeekApiError("AI_EXPERT_MISSING", "请先在 AI专家 中添加话术文件。");
+      const normalizedContext = (Array.isArray(context) ? context : []).filter((message) => String(message?.content || "").trim()).slice(-12);
+      if (!normalizedContext.length || normalizedContext.at(-1)?.role !== "user") {
+        throw new DeepSeekApiError("AI_CONTEXT_INVALID", "未读取到可靠的客户最新消息，自动回复已取消。");
+      }
       const key = keyStore.read();
       const payload = await request({
         key,
-        messages: replyPrompt({ incoming, instruction }),
-        maxTokens: 180
+        messages: replyPrompt({ context: normalizedContext, expert }),
+        maxTokens: 300,
+        responseFormat: { type: "json_object" }
       });
-      const reply = sanitizeAiMessage(payload.choices?.[0]?.message?.content || "");
-      if (!reply) throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回可用回复，自动回复已跳过。");
-      return { reply };
+      return parseReplyDecision(payload.choices?.[0]?.message?.content || "");
     }
   };
 }
 
-module.exports = { DEEPSEEK_MODEL, DeepSeekApiError, createDeepSeekClient, createDeepSeekKeyStore, maskApiKey, prompt, replyPrompt };
+module.exports = { DEEPSEEK_MODEL, DeepSeekApiError, createDeepSeekClient, createDeepSeekKeyStore, maskApiKey, parseReplyDecision, prompt, replyPrompt };

@@ -25,8 +25,13 @@ function createPreloadApis(ipcRenderer) {
   return {
     autoReply: {
       status: () => ipcRenderer.invoke("auto-reply:status"),
-      start: (payload) => ipcRenderer.invoke("auto-reply:start", { ...payload, clickToken: consumeAutoReplyClick() }),
+      start: () => ipcRenderer.invoke("auto-reply:start", { clickToken: consumeAutoReplyClick() }),
       pause: () => ipcRenderer.invoke("auto-reply:pause")
+    },
+    aiExpert: {
+      status: () => ipcRenderer.invoke("ai-expert:status"),
+      chooseAndImport: () => ipcRenderer.invoke("ai-expert:choose-and-import"),
+      remove: () => ipcRenderer.invoke("ai-expert:remove")
     },
     contactSync: {
       status: () => ipcRenderer.invoke("contact-sync:status"),

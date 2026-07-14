@@ -7,12 +7,14 @@ const {
 const SEND_MESSAGE_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName UIAutomationClient
 Add-Type @"
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
 public static class Win32WechatSendMessage {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
   public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr extraData);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
@@ -22,12 +24,37 @@ public static class Win32WechatSendMessage {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+  [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
 }
 "@
 $sendKey = [Environment]::GetEnvironmentVariable("XIAOXI_SEND_KEY")
 if ([string]::IsNullOrWhiteSpace($sendKey)) { $sendKey = "{ENTER}" }
 $expectedPid = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")
 $expectedHandle = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND")
+$expectedConversation = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_CONVERSATION")
+$expectedMessage = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_MESSAGE")
+$inputXText = [Environment]::GetEnvironmentVariable("XIAOXI_INPUT_X_RATIO")
+$inputYText = [Environment]::GetEnvironmentVariable("XIAOXI_INPUT_Y_RATIO")
+
+function Normalize-WechatDraftText([string]$value) {
+  $normalized = ([string]$value).Replace([Environment]::NewLine, [string][char]10)
+  $normalized = $normalized.Replace([string][char]13, [string][char]10)
+  return $normalized.TrimEnd([char[]]@([char]0xFFFC))
+}
+
+$normalizedExpectedMessage = Normalize-WechatDraftText $expectedMessage
+
+function Get-ElementText([System.Windows.Automation.AutomationElement]$element) {
+  try {
+    $name = [string]$element.Current.Name
+    if (-not [string]::IsNullOrWhiteSpace($name)) { return $name.Trim() }
+    $pattern = $element.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+    if ($pattern -and -not [string]::IsNullOrWhiteSpace($pattern.Current.Value)) { return ([string]$pattern.Current.Value).Trim() }
+  } catch {}
+  return ""
+}
   $processNames = @("Weixin", "WeChat")
 $matched = $null
 $callback = [Win32WechatSendMessage+EnumWindowsProc]{
@@ -65,14 +92,75 @@ if (-not $matched.focused) {
   @{ ok = $false; reason = "wechat_focus_failed"; title = $matched.title; processName = $matched.processName } | ConvertTo-Json -Compress
   exit
 }
-Start-Sleep -Milliseconds 150
-[System.Windows.Forms.SendKeys]::SendWait($sendKey)
+$root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr][int64]$matched.hWnd)
+if ($root -eq $null -or [string]::IsNullOrWhiteSpace($expectedConversation) -or [string]::IsNullOrWhiteSpace($expectedMessage)) {
+  @{ ok = $false; reason = "atomic_send_context_missing" } | ConvertTo-Json -Compress
+  exit
+}
+$windowRect = $root.Current.BoundingRectangle
+$headerLeft = $windowRect.Left + [Math]::Max(240, $windowRect.Width * 0.22)
+$conversationVerified = $false
+$all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+for ($index = 0; $index -lt $all.Count; $index++) {
+  $element = $all.Item($index)
+  if ((Get-ElementText $element) -cne $expectedConversation) { continue }
+  try { $elementRect = $element.Current.BoundingRectangle } catch { continue }
+  if ($elementRect.Left -ge $headerLeft -and $elementRect.Top -ge ($windowRect.Top + 25) -and $elementRect.Top -le ($windowRect.Top + 125)) {
+    $conversationVerified = $true
+    break
+  }
+}
+if (-not $conversationVerified) {
+  @{ ok = $false; reason = "atomic_conversation_changed" } | ConvertTo-Json -Compress
+  exit
+}
+
+$inputXRatio = 0.65
+$inputYRatio = 0.0
+$inputPointAvailable = [double]::TryParse($inputXText, [ref]$inputXRatio) -and [double]::TryParse($inputYText, [ref]$inputYRatio) -and $inputXRatio -gt 0 -and $inputXRatio -lt 1 -and $inputYRatio -gt 0 -and $inputYRatio -lt 1
+$oldPoint = New-Object Win32WechatSendMessage+POINT
+[void][Win32WechatSendMessage]::GetCursorPos([ref]$oldPoint)
+$oldClipboard = ""
+try { $oldClipboard = Get-Clipboard -Raw -ErrorAction SilentlyContinue } catch {}
+$draftVerified = $false
+try {
+  $inputX = [int]($windowRect.Left + ($windowRect.Width * $(if ($inputPointAvailable) { $inputXRatio } else { 0.65 })))
+  $inputY = $(if ($inputPointAvailable) { [int]($windowRect.Top + ($windowRect.Height * $inputYRatio)) } else { [int]($windowRect.Bottom - 105) })
+  [void][Win32WechatSendMessage]::SetCursorPos($inputX, $inputY)
+  [Win32WechatSendMessage]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 35
+  [Win32WechatSendMessage]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 60
+  $probe = "__XIAOXI_ATOMIC_SEND_" + [Guid]::NewGuid().ToString("N")
+  Set-Clipboard -Value $probe
+  [System.Windows.Forms.SendKeys]::SendWait("^a")
+  [System.Windows.Forms.SendKeys]::SendWait("^c")
+  Start-Sleep -Milliseconds 120
+  $copiedDraft = [string](Get-Clipboard -Raw -ErrorAction Stop)
+  $draftVerified = (Normalize-WechatDraftText $copiedDraft) -ceq $normalizedExpectedMessage
+  if (-not $draftVerified -or [Win32WechatSendMessage]::GetForegroundWindow().ToInt64() -ne [int64]$matched.hWnd) {
+    @{ ok = $false; reason = $(if ($draftVerified) { "atomic_wechat_focus_changed" } else { "atomic_draft_changed" }); conversationVerified = $conversationVerified; draftVerified = $draftVerified } | ConvertTo-Json -Compress
+    exit
+  }
+  [System.Windows.Forms.SendKeys]::SendWait($sendKey)
+} finally {
+  try { Set-Clipboard -Value $oldClipboard } catch {}
+  [void][Win32WechatSendMessage]::SetCursorPos($oldPoint.X, $oldPoint.Y)
+}
 Start-Sleep -Milliseconds 300
-@{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; sendKey = $sendKey } | ConvertTo-Json -Compress
+@{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; sendKey = $sendKey; conversationVerified = $conversationVerified; draftVerified = $draftVerified } | ConvertTo-Json -Compress
 `;
 
 function clickWechatSendButton(sendKey = "{ENTER}", context = {}) {
-  return runPowerShell(SEND_MESSAGE_SCRIPT, { XIAOXI_SEND_KEY: String(sendKey || "{ENTER}"), XIAOXI_EXPECTED_PID: String(context.pid ?? ""), XIAOXI_EXPECTED_HWND: String(context.hWnd ?? "") });
+  return runPowerShell(SEND_MESSAGE_SCRIPT, {
+    XIAOXI_SEND_KEY: String(sendKey || "{ENTER}"),
+    XIAOXI_EXPECTED_PID: String(context.pid ?? ""),
+    XIAOXI_EXPECTED_HWND: String(context.hWnd ?? ""),
+    XIAOXI_EXPECTED_CONVERSATION: String(context.expectedConversation ?? ""),
+    XIAOXI_EXPECTED_MESSAGE: String(context.expectedMessage ?? ""),
+    XIAOXI_INPUT_X_RATIO: String(context.inputPoint?.xRatio ?? ""),
+    XIAOXI_INPUT_Y_RATIO: String(context.inputPoint?.yRatio ?? "")
+  });
 }
 
 const DETECT_ACTIVE_ACCOUNT_SCRIPT = `

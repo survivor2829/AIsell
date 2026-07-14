@@ -2,6 +2,8 @@ const { app, BrowserWindow, dialog, safeStorage } = require("electron");
 const path = require("node:path");
 const { configureActiveTouchRuntime, runActiveTouch } = require("./active-touch-ipc.cjs");
 const { registerAutoReplyIpc } = require("./auto-reply-ipc.cjs");
+const { createAiExpertStore } = require("./ai-expert.cjs");
+const { registerAiExpertIpc } = require("./ai-expert-ipc.cjs");
 const { registerContactSyncIpc } = require("./contact-sync-ipc.cjs");
 const { migrateLegacyRuntimeData } = require("./runtime-data.cjs");
 const { registerTouchTaskIpc } = require("./touch-task-ipc.cjs");
@@ -83,6 +85,7 @@ if (!gotSingleInstanceLock) {
     const coordinator = createRuntimeCoordinator(runtime.rootDir);
     const deepSeekKeyStore = createDeepSeekKeyStore({ rootDir: runtime.rootDir, safeStorage });
     const deepSeekClient = createDeepSeekClient({ keyStore: deepSeekKeyStore });
+    const aiExpertStore = createAiExpertStore({ rootDir: runtime.rootDir });
     coordinator.initialize();
     configureActiveTouchRuntime({ dataDir: runtime.activeTouchDir, coordinator });
     const internalRealSend = developmentEdition || pilotEdition ? require("../../rpa/active_touch/state_machine.dev.cjs") : null;
@@ -91,6 +94,7 @@ if (!gotSingleInstanceLock) {
     if (internalRealSend) disarmRealSend = () => internalRealSend.setRealSendArm(runtime.activeTouchDir, false);
     registerContactSyncIpc({ dataDir: runtime.contactSyncDir, activeTouchDir: runtime.activeTouchDir, coordinator });
     registerDeepSeekApiIpc({ keyStore: deepSeekKeyStore, client: deepSeekClient });
+    registerAiExpertIpc({ store: aiExpertStore, isAutoReplyRunning: () => ["starting", "running"].includes(autoReplyController?.status().status) });
     if (internalRealSend) {
       autoReplyController = registerAutoReplyIpc({
         getMainWindow: () => mainWindow,
@@ -98,7 +102,9 @@ if (!gotSingleInstanceLock) {
         activeTouchDir: runtime.activeTouchDir,
         coordinator,
         deepSeekClient,
+        expertStore: aiExpertStore,
         send: internalRealSend.executeVerifiedContactSend,
+        sendHandoff: internalRealSend.executeVerifiedFileHelperSend,
         runStep: (command, args, owner) => runActiveTouch([command, ...args], { development: true, owner, phase: `auto-reply:${command}` })
       });
     }

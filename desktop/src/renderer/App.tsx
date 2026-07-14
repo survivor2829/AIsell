@@ -26,15 +26,18 @@ import {
   X
 } from "lucide-react";
 import { lazy, Suspense, type ComponentType, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { AiExpert } from "./AiExpert";
 import { AutoReply } from "./AutoReply";
 
 type ModuleKey =
   | "agent"
   | "reply"
+  | "expert"
   | "contact-sync"
   | "touch"
   | "moments"
-  | "video-leads"
+  | "production"
+  | "operations"
   | "accounts"
   | "materials"
   | "script"
@@ -42,9 +45,10 @@ type ModuleKey =
   | "ai-video"
   | "publish"
   | "leads"
-  | "data";
+  | "data"
+  | "api-key";
 
-type GroupKey = "agent" | "video-leads";
+type GroupKey = "agent" | "production" | "operations";
 type NavItem = { key: ModuleKey; label: string; icon: ComponentType<{ size?: number; strokeWidth?: number }> };
 type NavGroup = NavItem & { key: GroupKey; children: NavItem[] };
 type UserProfile = { name: string; avatar: string };
@@ -239,17 +243,21 @@ const DevelopmentAcceptance = DEVELOPMENT_EDITION ? lazy(() => import("./Develop
 
 const agentChildren: NavItem[] = [
   { key: "reply", label: "自动回复", icon: MessageCircle },
+  { key: "expert", label: "AI专家", icon: Bot },
   { key: "contact-sync", label: "同步联系人", icon: UsersRound },
   { key: "touch", label: "主动触达", icon: Send },
-  { key: "moments", label: "朋友圈点赞评论", icon: ThumbsUp }
+  { key: "moments", label: "朋友圈运营", icon: ThumbsUp }
 ];
 
-const videoChildren: NavItem[] = [
-  { key: "accounts", label: "账号管理", icon: UserRound },
+const productionChildren: NavItem[] = [
   { key: "materials", label: "素材仓库", icon: Folder },
   { key: "script", label: "AI脚本工厂", icon: BookOpen },
   { key: "cut", label: "自动剪辑工厂", icon: Scissors },
-  { key: "ai-video", label: "AI生成视频", icon: MonitorPlay },
+  { key: "ai-video", label: "AI生成视频", icon: MonitorPlay }
+];
+
+const operationsChildren: NavItem[] = [
+  { key: "accounts", label: "账号管理", icon: UserRound },
   { key: "publish", label: "发布工作台", icon: Clapperboard },
   { key: "leads", label: "线索回流", icon: RefreshCw },
   { key: "data", label: "数据复盘", icon: BarChart3 }
@@ -257,10 +265,12 @@ const videoChildren: NavItem[] = [
 
 const navGroups: NavGroup[] = [
   { key: "agent", label: "个微Agent", icon: UsersRound, children: agentChildren },
-  { key: "video-leads", label: "短视频获客", icon: Video, children: videoChildren }
+  { key: "production", label: "内容生产", icon: Video, children: productionChildren },
+  { key: "operations", label: "渠道运营", icon: BarChart3, children: operationsChildren }
 ];
 
-const navItems = [...navGroups, ...agentChildren, ...videoChildren];
+const apiKeyNavItem: NavItem = { key: "api-key", label: "API密钥", icon: Lock };
+const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), apiKeyNavItem];
 
 function nowTime() {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -348,7 +358,7 @@ function taskHasUnfinishedSnapshot(task: TouchTaskState) {
 }
 
 function moduleIsAvailable(key: ModuleKey) {
-  return ["reply", "contact-sync", "touch", "accounts"].includes(key);
+  return ["reply", "expert", "contact-sync", "touch", "moments", "accounts", "api-key"].includes(key);
 }
 
 function touchTaskStatusLabel(task: TouchTaskState) {
@@ -392,7 +402,7 @@ export default function App() {
 
   const [user, setUser] = useState<UserProfile | null>(() => readStoredUser());
   const [active, setActive] = useState<ModuleKey>(DEFAULT_ACTIVE_MODULE);
-  const [openGroups, setOpenGroups] = useState<Record<GroupKey, boolean>>({ agent: true, "video-leads": true });
+  const [openGroups, setOpenGroups] = useState<Record<GroupKey, boolean>>({ agent: true, production: true, operations: true });
   const [contactRows, setContactRows] = useState<ContactRow[]>([]);
   const [contactSyncBusy, setContactSyncBusy] = useState(false);
   const contactSyncInFlight = useRef(false);
@@ -598,6 +608,13 @@ export default function App() {
   }, [user]);
 
   useEffect(() => {
+    if (!window.xiaoxiDeepSeekApi) return;
+    void window.xiaoxiDeepSeekApi.status()
+      .then((result) => setDeepSeekConfigured(Boolean(result.ok && result.data?.configured)))
+      .catch(() => setDeepSeekConfigured(false));
+  }, []);
+
+  useEffect(() => {
     if (!window.xiaoxiTouchTask) return undefined;
     void window.xiaoxiTouchTask.status().then(applyTouchTaskResult).catch(() => undefined);
     return window.xiaoxiTouchTask.onUpdate(applyTouchTaskResult);
@@ -704,6 +721,10 @@ export default function App() {
             );
           })}
         </nav>
+        <button className={`nav-item sidebar-api-key ${active === apiKeyNavItem.key ? "active" : ""}`} onClick={() => setActive(apiKeyNavItem.key)}>
+          <apiKeyNavItem.icon size={20} strokeWidth={2.7} />
+          <span>{apiKeyNavItem.label}</span>
+        </button>
       </aside>
 
       <section className="workspace">
@@ -734,10 +755,11 @@ export default function App() {
                locked={touchTaskLocked}
              />
           )}
-          {active === "reply" && (
-            <AutoReply contacts={contactRows} onOpenSync={() => setActive("contact-sync")} onOpenAccounts={() => setActive("accounts")} />
-          )}
+          {active === "reply" && <AutoReply />}
+          {active === "expert" && <AiExpert />}
+          {active === "moments" && <MomentsOperations />}
           {active === "accounts" && <AccountManagement />}
+          {active === "api-key" && <ApiKeyPage onConfiguredChange={setDeepSeekConfigured} />}
           {active === "touch" && (
             <ActiveTouch
               contacts={contactRows}
@@ -755,7 +777,6 @@ export default function App() {
                onOpenSync={() => setActive("contact-sync")}
                onExclude={(contactId) => setExcludedContactIds((current) => current.includes(contactId) ? current : [...current, contactId])}
                onRestore={(contactId) => setExcludedContactIds((current) => current.filter((id) => id !== contactId))}
-               onDeepSeekConfiguredChange={setDeepSeekConfigured}
                onResolveUnknown={resolveUnknown}
                onEndTask={endTouchTask}
              />
@@ -765,7 +786,7 @@ export default function App() {
               <DevelopmentAcceptance contacts={contactRows} message={messageDraft} />
             </Suspense>
           )}
-          {active !== "reply" && active !== "contact-sync" && active !== "accounts" && active !== "touch" && <Placeholder title={activeTitle} />}
+          {!moduleIsAvailable(active) && <Placeholder title={activeTitle} />}
         </div>
 
         {active === "touch" && <button data-xiaoxi-batch-authorize={REAL_SEND_EDITION ? (resumingTask ? "continue" : "start") : undefined} className={`launch-button ${canLaunchTouch ? "" : "disabled"}`} onClick={startTouchTask} disabled={!canLaunchTouch} title={launchTitle}>
@@ -936,26 +957,82 @@ function ContactSyncPage({
 }
 
 function AccountManagement() {
+  const platforms = ["抖音", "小红书", "快手", "视频号"];
+
   return (
     <section className="page account-page">
       <div className="page-head">
         <div>
           <h1>账号管理</h1>
-          <p>配置您自己的 DeepSeek API Key 后，主动触达才会生成 AI 文案。</p>
+          <p>统一管理内容渠道账号。账号接入将在下一阶段开放。</p>
         </div>
       </div>
-      <DeepSeekApiSettings />
+      <div className="channel-account-grid">
+        {platforms.map((platform) => (
+          <article className="channel-account-card" key={platform}>
+            <div className="channel-account-icon"><UserRound size={22} /></div>
+            <div>
+              <strong>{platform}</strong>
+              <p>账号授权与发布能力</p>
+            </div>
+            <span>下一阶段</span>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function MomentsOperations() {
+  const features = [
+    { title: "朋友圈发布", description: "编辑并发布业务微信的朋友圈内容。", icon: Send },
+    { title: "点赞评论", description: "统一处理朋友圈点赞与评论互动。", icon: ThumbsUp }
+  ];
+
+  return (
+    <section className="page moments-page">
+      <div className="page-head">
+        <div>
+          <h1>朋友圈运营</h1>
+          <p>统一管理朋友圈内容发布和客户互动。</p>
+        </div>
+      </div>
+      <div className="channel-account-grid">
+        {features.map((feature) => {
+          const FeatureIcon = feature.icon;
+          return (
+            <article className="channel-account-card" key={feature.title}>
+              <div className="channel-account-icon"><FeatureIcon size={22} /></div>
+              <div>
+                <strong>{feature.title}</strong>
+                <p>{feature.description}</p>
+              </div>
+              <span>下一阶段</span>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function ApiKeyPage({ onConfiguredChange }: { onConfiguredChange: (configured: boolean) => void }) {
+  return (
+    <section className="page api-key-page">
+      <div className="page-head">
+        <div>
+          <h1>API密钥</h1>
+          <p>配置 AI 服务所需的 API Key，密钥仅在当前 Windows 用户下加密保存。</p>
+        </div>
+      </div>
+      <DeepSeekApiSettings onConfiguredChange={onConfiguredChange} />
     </section>
   );
 }
 
 function DeepSeekApiSettings({
-  compact = false,
-  locked = false,
   onConfiguredChange
 }: {
-  compact?: boolean;
-  locked?: boolean;
   onConfiguredChange?: (configured: boolean) => void;
 } = {}) {
   const [apiKey, setApiKey] = useState("");
@@ -963,7 +1040,6 @@ function DeepSeekApiSettings({
   const [status, setStatus] = useState("正在读取已保存的设置…");
   const [statusTone, setStatusTone] = useState<"neutral" | "success" | "error">("neutral");
   const [busy, setBusy] = useState(false);
-  const [expanded, setExpanded] = useState(true);
   const refresh = () => {
     if (!window.xiaoxiDeepSeekApi) {
       setStatusTone("error");
@@ -974,7 +1050,6 @@ function DeepSeekApiSettings({
       const configured = Boolean(result.ok && result.data?.configured);
       setMaskedKey(configured ? result.data?.maskedKey || "" : "");
       onConfiguredChange?.(configured);
-      if (compact) setExpanded(!configured);
       setStatusTone(result.ok ? "neutral" : "error");
       setStatus(configured ? "已保存，可测试连接。" : result.error || "尚未保存 API Key。");
     }).catch(() => {
@@ -999,7 +1074,6 @@ function DeepSeekApiSettings({
         const configured = result.data.configured;
         setMaskedKey(configured ? result.data.maskedKey || "" : "");
         onConfiguredChange?.(configured);
-        if (compact) setExpanded(!configured);
       }
     }).catch(() => {
       setStatusTone("error");
@@ -1012,27 +1086,21 @@ function DeepSeekApiSettings({
       <div className="deepseek-settings-head">
         <div>
           <div className="deepseek-title">DeepSeek API</div>
-          <p>{maskedKey && compact ? `已配置 ${maskedKey}` : "密钥仅在当前 Windows 用户下加密保存。"}</p>
+          <p>密钥仅在当前 Windows 用户下加密保存。</p>
         </div>
         <div className="deepseek-head-actions">
           <span className={`deepseek-config-state ${maskedKey ? "is-configured" : ""}`}>
             <span className="deepseek-state-dot" />
             {maskedKey ? "已配置" : "未配置"}
           </span>
-          {compact && (
-            <button className="deepseek-toggle" onClick={() => setExpanded((current) => !current)} disabled={locked}>
-              {expanded ? "收起" : "设置"}
-            </button>
-          )}
         </div>
       </div>
-      {(!compact || expanded) && (
-        <div className="deepseek-settings-body">
+      <div className="deepseek-settings-body">
         <label className="field deepseek-key-field">
           <span>{maskedKey ? `当前 Key：${maskedKey}` : "DeepSeek API Key"}</span>
           <div className="deepseek-key-row">
-            <input type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={maskedKey ? "填写新 Key 以替换" : "请输入您的 DeepSeek API Key"} disabled={locked} />
-            <button className="primary-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.save({ apiKey }), "已安全保存，请测试连接确认可用。", true)} disabled={locked || busy || !apiKey.trim()}>
+            <input type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={maskedKey ? "填写新 Key 以替换" : "请输入您的 DeepSeek API Key"} />
+            <button className="primary-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.save({ apiKey }), "已安全保存，请测试连接确认可用。", true)} disabled={busy || !apiKey.trim()}>
               <Save size={16} />
               保存{maskedKey ? "并替换" : ""}
             </button>
@@ -1041,18 +1109,17 @@ function DeepSeekApiSettings({
         <div className="deepseek-settings-footer">
           <div className={`deepseek-status is-${statusTone}`} aria-live="polite">{status}</div>
           <div className="actions deepseek-actions">
-            <button className="secondary-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.test(apiKey.trim() ? { apiKey: apiKey.trim() } : undefined), "DeepSeek 连接正常。") } disabled={locked || busy || (!apiKey.trim() && !maskedKey)}>
+            <button className="secondary-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.test(apiKey.trim() ? { apiKey: apiKey.trim() } : undefined), "DeepSeek 连接正常。") } disabled={busy || (!apiKey.trim() && !maskedKey)}>
               <RefreshCw size={16} />
               测试连接
             </button>
-            <button className="danger-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.remove(), "已删除 DeepSeek API Key，AI 文案调用已停止。", true)} disabled={locked || busy || !maskedKey}>
+            <button className="danger-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.remove(), "已删除 DeepSeek API Key，AI 文案调用已停止。", true)} disabled={busy || !maskedKey}>
               <Trash2 size={16} />
               删除
             </button>
           </div>
         </div>
-        </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -1073,7 +1140,6 @@ function ActiveTouch({
   onOpenSync,
   onExclude,
   onRestore,
-  onDeepSeekConfiguredChange,
   onResolveUnknown,
   onEndTask
 }: {
@@ -1092,7 +1158,6 @@ function ActiveTouch({
   onOpenSync: () => void;
   onExclude: (contactId: string) => void;
   onRestore: (contactId: string) => void;
-  onDeepSeekConfiguredChange: (configured: boolean) => void;
   onResolveUnknown: (contactId: string, resolution: "sent" | "skip") => void;
   onEndTask: () => void;
 }) {
@@ -1162,7 +1227,6 @@ function ActiveTouch({
             <button className="text-button inline-text-button" onClick={onOpenSync}>高级排查</button>
           </div>
         </div>
-        <DeepSeekApiSettings compact locked={locked} onConfiguredChange={onDeepSeekConfiguredChange} />
       </div>
 
       {!eligibleContacts.length && <div className="touch-notice">本次暂无可触达联系人，请先同步或恢复至少一位联系人。</div>}

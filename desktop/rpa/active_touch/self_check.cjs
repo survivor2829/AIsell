@@ -334,6 +334,7 @@ try {
     baseDir: sharedDir,
     contactId: sharedContact.id,
     message: "共享事务消息",
+    attemptId: "incoming-turn-1",
     frozenContact: sharedContact,
     authorized: true,
     runStep: async (command) => {
@@ -344,7 +345,12 @@ try {
       sharedSessionContexts.push(context);
       return { ok: true, pid: 81, hWnd: "91", processName: "Weixin", title: sharedContact.name, accountId: "account-a", accountVerified: true };
     },
-    sendDriver: () => { sharedClicks += 1; return { ok: true }; },
+    sendDriver: (_key, context) => {
+      sharedClicks += 1;
+      assert.equal(context.expectedConversation, sharedContact.name);
+      assert.equal(context.expectedMessage, "共享事务消息");
+      return { ok: true, conversationVerified: true, draftVerified: true };
+    },
     bubbleVerifier: (_message, context) => context.phase === "before"
       ? { ok: true, snapshot: "before" }
       : { ok: true, exactMatch: true, outgoing: true, isLatest: true, isNew: true, messageText: "共享事务消息" },
@@ -359,6 +365,52 @@ try {
   assert.deepEqual(sharedSessionContexts.map((context) => context?.expectedHWnd), ["91", "91"]);
   assert.deepEqual(sharedSessionContexts.map((context) => context?.allowExactSearchFallback), [true, true]);
   assert.equal(sharedClicks, 1);
+  const firstIncomingAttemptKey = crypto.createHash("sha256")
+    .update(`incoming-turn-1\n${sharedContact.id}\n共享事务消息`)
+    .digest("hex");
+  assert.equal(loadState(sharedDir).real_send_attempt_key, firstIncomingAttemptKey, "verified contact sends must scope idempotency to the incoming turn");
+
+  saveState(sharedDir, {
+    ...loadState(sharedDir),
+    real_send_status: "not_sent",
+    real_send_attempt_key: "",
+    real_send_armed: true
+  });
+  const repeatedIncomingTurn = sendReal(
+    sharedDir,
+    { message: "共享事务消息", attemptId: "incoming-turn-1", allowRealSend: true, userConfirmed: true },
+    () => { throw new Error("same incoming turn must not click send twice"); },
+    () => ({ ok: true, pid: 81, hWnd: "91", processName: "Weixin", title: sharedContact.name, accountId: "account-a", accountVerified: true }),
+    () => ({ ok: true, snapshot: "before-repeat" })
+  );
+  assert.equal(repeatedIncomingTurn.blocked_reason, "real_send_already_attempted");
+
+  saveState(sharedDir, { ...loadState(sharedDir), real_send_status: "not_sent", real_send_armed: true });
+  const nextIncomingTurn = sendReal(
+    sharedDir,
+    { message: "共享事务消息", attemptId: "incoming-turn-2", allowRealSend: true, userConfirmed: true },
+    () => ({ ok: true, conversationVerified: true, draftVerified: true }),
+    () => ({ ok: true, pid: 81, hWnd: "91", processName: "Weixin", title: sharedContact.name, accountId: "account-a", accountVerified: true }),
+    (_message, context) => context.phase === "before"
+      ? { ok: true, snapshot: "before-next-turn" }
+      : { ok: true, exactMatch: true, outgoing: true, isLatest: true, isNew: true, messageText: "共享事务消息" }
+  );
+  assert.equal(nextIncomingTurn.ok, true, "same reply text from a different incoming turn must be sendable");
+
+  saveState(sharedDir, { ...loadState(sharedDir), real_send_status: "not_sent", real_send_armed: true });
+  const taskScopedFallback = sendReal(
+    sharedDir,
+    { message: "共享事务消息", allowRealSend: true, userConfirmed: true },
+    () => ({ ok: true, conversationVerified: true, draftVerified: true }),
+    () => ({ ok: true, pid: 81, hWnd: "91", processName: "Weixin", title: sharedContact.name, accountId: "account-a", accountVerified: true }),
+    (_message, context) => context.phase === "before"
+      ? { ok: true, snapshot: "before-task-fallback" }
+      : { ok: true, exactMatch: true, outgoing: true, isLatest: true, isNew: true, messageText: "共享事务消息" }
+  );
+  const taskScopedAttemptKey = crypto.createHash("sha256")
+    .update(`shared-task\n${sharedContact.id}\n共享事务消息`)
+    .digest("hex");
+  assert.equal(taskScopedFallback.state.real_send_attempt_key, taskScopedAttemptKey, "existing active-touch sends must retain task-scoped idempotency");
 
   saveState(sharedDir, {
     ...loadState(sharedDir),
@@ -621,7 +673,7 @@ try {
     () => {
       assert.equal(loadState(dir).real_send_status, "prepared");
       assert.deepEqual(loadState(dir).message_bubble_snapshot_before, { lastMessageId: "before-1" });
-      return { ok: true, title: "测试客户 - 微信" };
+      return { ok: true, title: "测试客户 - 微信", conversationVerified: true, draftVerified: true };
     },
     () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }),
     (message, context) => {
@@ -647,7 +699,7 @@ try {
   const draftConsumed = sendReal(
     dir,
     { message: "third", allowRealSend: true, userConfirmed: true },
-    () => ({ ok: true, title: "微信" }),
+    () => ({ ok: true, title: "微信", conversationVerified: true, draftVerified: true }),
     () => ({ ok: true, pid: 17, hWnd: "28", processName: "Weixin", title: "Draft fallback", accountId: "internal-account", accountVerified: true }),
     (_message, context) => context.phase === "before"
       ? { ok: true, snapshot: { runtimeIds: [], exactCount: 0, draftExact: true } }
@@ -667,7 +719,7 @@ try {
   assert.equal(sendReal(
     dir,
     { message: "second", allowRealSend: true, userConfirmed: true },
-    () => ({ ok: true }),
+    () => ({ ok: true, conversationVerified: true, draftVerified: true }),
     () => ({ ok: true, pid: 12, hWnd: "23", processName: "Weixin", title: "未知结果客户", accountId: "internal-account", accountVerified: true }),
     (_message, context) => context.phase === "before"
       ? { ok: true, snapshot: { lastMessageId: "history-1" } }
@@ -698,7 +750,7 @@ try {
   assert.equal(sendReal(
     dir,
     { message: "exception", allowRealSend: true, userConfirmed: true },
-    () => ({ ok: true }),
+    () => ({ ok: true, conversationVerified: true, draftVerified: true }),
     () => ({ ok: true, pid: 15, hWnd: "26", processName: "Weixin", title: "验证异常客户", accountId: "internal-account", accountVerified: true }),
     (_message, context) => {
       if (context.phase === "before") return { ok: true, snapshot: { lastMessageId: "before-exception" } };
@@ -778,6 +830,11 @@ try {
   assert.match(messageDraftSource, /SendWait\("\^a"\)[\s\S]*Set-Clipboard -Value \$message[\s\S]*SendWait\("\^v"\)/);
   assert.match(messageDraftSource, /SendWait\("\^c"\)/);
   assert.match(messageDraftSource, /draftCheck = "clipboard_roundtrip"/);
+  assert.match(messageDraftSource, /function Normalize-WechatDraftText/);
+  assert.match(messageDraftSource, /Replace\(\[Environment\]::NewLine, \[string\]\[char\]10\)/);
+  assert.match(messageDraftSource, /Replace\(\[string\]\[char\]13, \[string\]\[char\]10\)/);
+  assert.match(messageDraftSource, /TrimEnd\(\[char\[\]\]@\(\[char\]0xFFFC\)\)/);
+  assert.match(messageDraftSource, /\$normalizedCopiedDraft -ceq \$normalizedMessage/);
   assert.match(messageDraftSource, /\$inputPoints = @\([\s\S]*yRatio = 0\.84[\s\S]*yRatio = 0\.88[\s\S]*yRatio = 0\.92/);
   assert.match(messageDraftSource, /for \(\$attempt = 1; \$attempt -le \$inputPoints\.Count; \$attempt\+\+\)[\s\S]*SendWait\("\^a"\)[\s\S]*SendWait\("\^v"\)[\s\S]*if \(\$draftVerified\) \{[\s\S]*break/);
   assert.match(messageDraftSource, /draftPoint = \$usedPoint/);
@@ -785,6 +842,10 @@ try {
   assert.match(messageDraftSource, /message_input_empty_or_copy_blocked/);
   assert.match(messageDraftSource, /message_input_content_mismatch/);
   assert.match(developmentDriverSource, /function clickWechatSendButton/);
+  assert.match(developmentDriverSource, /atomic_conversation_changed/);
+  assert.match(developmentDriverSource, /atomic_draft_changed/);
+  assert.match(developmentDriverSource, /function Normalize-WechatDraftText/);
+  assert.match(developmentDriverSource, /conversationVerified = \$true[\s\S]*draftVerified = \(Normalize-WechatDraftText \$copiedDraft\) -ceq \$normalizedExpectedMessage[\s\S]*SendWait\(\$sendKey\)/);
   assert.match(developmentDriverSource, /context\.phase === "after" \? "after" : "before"/);
   assert.match(developmentDriverSource, /beforeSnapshot/);
   assert.match(developmentDriverSource, /exactMatch/);
@@ -856,6 +917,13 @@ try {
   assert.equal(fs.readdirSync(dir).some((name) => name.includes("state.json.tmp")), false);
   fs.writeFileSync(path.join(dir, "state.json"), "{", "utf8");
   assert.throws(() => loadState(dir));
+
+  const handoffCheck = spawnSync(process.execPath, [path.join(__dirname, "file_helper_send.self_check.cjs")], {
+    cwd: path.resolve(__dirname, "../.."),
+    encoding: "utf8",
+    windowsHide: true
+  });
+  assert.equal(handoffCheck.status, 0, handoffCheck.stderr || handoffCheck.stdout || "file-helper send self-check failed");
 
   console.log("active-touch self-check passed");
 } finally {

@@ -43,6 +43,14 @@ function assertStageWorkflowContract() {
   const source = read(path.join(desktopDir, "src", "renderer", "App.tsx"));
   const preload = read(path.join(desktopDir, "src", "main", "preload-api.cjs"));
   assert.match(source, /DEFAULT_ACTIVE_MODULE: ModuleKey = PILOT_EDITION \? "touch" : "reply"/, "delivery must open on active touch");
+  const momentsNavEntries = source.match(/\{ key: "moments", label: "[^"]+", icon: [A-Za-z]+ \}/g) ?? [];
+  assert.equal(momentsNavEntries.length, 1, "moments publishing and engagement must share exactly one sidebar entry");
+  assert.equal(momentsNavEntries[0], "{ key: \"moments\", label: \"朋友圈运营\", icon: ThumbsUp }", "the unified moments entry must use the product name");
+  assert.match(source, /<MomentsOperations \/>/, "the unified moments entry must render its own page");
+  const moduleAvailability = source.match(/function moduleIsAvailable\(key: ModuleKey\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+  assert.match(moduleAvailability, /"moments"/, "moments operations must not render together with the placeholder page");
+  assert.match(source, /title: "朋友圈发布"/, "moments operations must expose publishing");
+  assert.match(source, /title: "点赞评论"/, "moments operations must retain engagement");
   assert.match(source, /xiaoxiTouchTask\.start\(\{ script: messageDraft, excludedContactIds \}\)/, "start must freeze the user exclusion list");
   assert.match(source, /下一阶段开放/, "future modules must stay visible as next-stage placeholders");
   assert.match(source, /结束本次任务/, "unfinished tasks must expose permanent end with confirmation");

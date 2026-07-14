@@ -7,6 +7,7 @@ const checks = [
   "rpa/active_touch/wechat_auto_reply_driver.self_check.cjs",
   "rpa/contact_sync/self_check.cjs",
   "src/main/contact-sync-ipc.self_check.cjs",
+  "src/main/ai-expert.self_check.cjs",
   "src/main/auto-reply-ipc.self_check.cjs",
   "src/main/ai-draft.self_check.cjs",
   "src/main/deepseek-api.self_check.cjs",
@@ -14,6 +15,7 @@ const checks = [
   "src/main/runtime-coordinator.self_check.cjs",
   "src/main/active-touch-dev-ipc.self_check.cjs",
   "src/main/touch-task-ipc.self_check.cjs",
+  "scripts/portable-runtime-dependencies.self_check.cjs",
   "scripts/customer-edition.self_check.cjs"
 ];
 

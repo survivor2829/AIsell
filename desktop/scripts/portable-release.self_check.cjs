@@ -21,7 +21,7 @@ const nativeLibraryNames = ["wx_key.dll", "msvcp140.dll", "vcruntime140.dll", "v
 const wxKeyDll = path.join(nativeLibDir, "wx_key.dll");
 const databaseDecryptor = path.join(nativeLibDir, "xiaoxi-db-decrypt.exe");
 const databaseFilePattern = /\.(?:db(?:-wal|-shm)?|sqlite3?)$/i;
-const blockedNames = new Set(["python.exe", "dump_data.exe", "wechat-dump-rs.exe", "contacts.json", "touch_task.json", "touch_task.json.bak", "run_logs.jsonl", "state.json", "deepseek-api-key.bin"]);
+const blockedNames = new Set(["python.exe", "dump_data.exe", "wechat-dump-rs.exe", "ai-expert.json", "auto-reply-state.json", "contacts.json", "touch_task.json", "touch_task.json.bak", "run_logs.jsonl", "state.json", "deepseek-api-key.bin"]);
 
 function assertNoBlockedFiles(names, label) {
   const normalized = names.map((name) => path.basename(String(name).replaceAll("/", path.sep)).toLowerCase()).filter(Boolean);
@@ -43,12 +43,12 @@ assert.equal(fs.existsSync(databaseDecryptor), true, "database decryptor must be
 const manifest = JSON.parse(fs.readFileSync(path.join(target, "版本清单.json"), "utf8"));
 assert.equal(manifest.edition, edition);
 assert.equal(manifest.architecture, "x64");
-assert.equal(manifest.releaseStage, "contact-sync-active-touch-auto-reply-mvp");
+assert.equal(manifest.releaseStage, "auto-reply-v2-ai-expert");
 assert.equal(manifest.commercialReady, false);
 assert.equal(manifest.dirty, false, "portable release must come from a clean worktree");
 assert.match(manifest.commit, /^[0-9a-f]{40}$/, "portable release must record a full git commit");
 const releaseLabel = fs.readFileSync(path.join(target, "版本标识.txt"), "utf8");
-assert.equal(releaseLabel.includes("白名单文字自动回复"), true);
+assert.equal(releaseLabel.includes("全私聊自动回复"), true);
 assert.equal(releaseLabel.includes("朋友圈等功能下一阶段开放"), true);
 assert.equal(edition !== "delivery" || releaseLabel.includes("本包不代表完整商品"), true);
 assert.equal(manifest.contactHelperSha256, CONTACT_HELPER_SHA256, "manifest must pin the approved contact helper");
@@ -122,6 +122,9 @@ try {
 }
 
 const mainDir = path.join(appDir, "src", "main");
+const packagedMammoth = path.join(appDir, "node_modules", "mammoth");
+assert.equal(fs.existsSync(path.join(packagedMammoth, "package.json")), true, "Mammoth must be packaged for .docx AI expert imports");
+assert.equal(typeof require(packagedMammoth).extractRawText, "function", "packaged Mammoth dependency tree must be loadable");
 assert.equal(fs.existsSync(path.join(mainDir, "active-touch-dev-ipc.cjs")), edition === "test");
 assert.equal(fs.existsSync(path.join(mainDir, "preload.dev.cjs")), edition === "test");
 assert.equal(fs.readFileSync(path.join(mainDir, "preload.cjs"), "utf8").includes("sendReal"), false);

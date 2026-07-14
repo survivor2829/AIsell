@@ -18,7 +18,7 @@ const NATIVE_LIBRARY_SHA256 = Object.freeze({
   "vcruntime140.dll": "d5e4d9a3e835fa679450145d6a7d94e36573a509317111904d9b3712c30d9066",
   "vcruntime140_1.dll": "1f2d41c4aa5db0bc33ebf7b66d72943a817d7ce6cbe880502a9403823633093f"
 });
-const runtimeFiles = new Set(["contacts.json", "touch_task.json", "touch_task.json.bak", "run_logs.jsonl", "state.json", "deepseek-api-key.bin"]);
+const runtimeFiles = new Set(["ai-expert.json", "auto-reply-state.json", "contacts.json", "touch_task.json", "touch_task.json.bak", "run_logs.jsonl", "state.json", "deepseek-api-key.bin"]);
 const databaseFilePattern = /\.(?:db(?:-wal|-shm)?|sqlite3?)$/i;
 
 function isBlockedRuntimeFile(name) {
@@ -51,6 +51,36 @@ function sourceAllowed(source, edition) {
   return true;
 }
 
+function resolveInstalledPackage(packageName, fromDir) {
+  const parts = packageName.split("/");
+  let current = path.resolve(fromDir);
+  while (true) {
+    const candidate = path.join(current, "node_modules", ...parts);
+    if (fs.existsSync(path.join(candidate, "package.json"))) return candidate;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  throw new Error(`Missing runtime package: ${packageName}`);
+}
+
+function copyRuntimePackageTree(packageName, appDir, fromDir = desktopDir, copied = new Map()) {
+  const source = resolveInstalledPackage(packageName, fromDir);
+  const existing = copied.get(packageName);
+  if (existing) {
+    if (existing !== source) throw new Error(`Conflicting runtime package versions: ${packageName}`);
+    return;
+  }
+  copied.set(packageName, source);
+  const target = path.join(appDir, "node_modules", ...packageName.split("/"));
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.cpSync(source, target, { recursive: true });
+  const packageJson = JSON.parse(fs.readFileSync(path.join(source, "package.json"), "utf8"));
+  for (const dependency of Object.keys(packageJson.dependencies || {})) {
+    copyRuntimePackageTree(dependency, appDir, source, copied);
+  }
+}
+
 function copyAppSource(appDir, edition) {
   fs.mkdirSync(appDir, { recursive: true });
   fs.copyFileSync(path.join(desktopDir, "package.json"), path.join(appDir, "package.json"));
@@ -64,6 +94,7 @@ function copyAppSource(appDir, edition) {
       filter: (sourcePath) => sourceAllowed(sourcePath, edition)
     });
   }
+  copyRuntimePackageTree("mammoth", appDir);
   const helperTarget = path.join(appDir, "rpa", "contact_sync", "xiaoxi-contact-helper.exe");
   fs.copyFileSync(helper, helperTarget);
   if (sha256(helperTarget) !== CONTACT_HELPER_SHA256) throw new Error("Packaged contact helper hash mismatch");
@@ -164,15 +195,15 @@ function buildPortable(edition = "delivery") {
     databaseDecryptorSha256: DATABASE_DECRYPTOR_SHA256,
     nativeLibrarySha256: NATIVE_LIBRARY_SHA256,
     verifiedWeixin: "4.1.11.24",
-    releaseStage: "contact-sync-active-touch-auto-reply-mvp",
+    releaseStage: "auto-reply-v2-ai-expert",
     commercialReady: false,
     builtAt: new Date().toISOString(),
     signed: false
   };
   fs.writeFileSync(path.join(target, "版本清单.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   fs.writeFileSync(path.join(target, "版本标识.txt"), edition === "test"
-    ? "小玺AI员工 测试版\n用于联系人同步、主动触达与白名单文字自动回复内部验收；朋友圈等功能下一阶段开放。\n"
-    : "小玺AI员工 阶段交付版\n已完成联系人同步、主动触达与白名单文字自动回复 MVP；朋友圈等功能下一阶段开放，本包不代表完整商品。\n", "utf8");
+    ? "小玺AI员工 测试版\n用于联系人同步、主动触达、AI专家话术与全私聊自动回复内部验收；朋友圈等功能下一阶段开放。\n"
+    : "小玺AI员工 阶段交付版\n已完成联系人同步、主动触达、AI专家话术与全私聊自动回复；朋友圈等功能下一阶段开放，本包不代表完整商品。\n", "utf8");
   scanRelease(target);
 
   const archive = spawnSync("tar.exe", ["-a", "-c", "-f", zip, "-C", releaseDir, productName], { encoding: "utf8", windowsHide: true });
@@ -183,4 +214,4 @@ function buildPortable(edition = "delivery") {
 
 if (require.main === module) buildPortable(process.argv[2] || "delivery");
 
-module.exports = { buildPortable };
+module.exports = { buildPortable, copyRuntimePackageTree };

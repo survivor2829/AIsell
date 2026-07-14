@@ -9,6 +9,8 @@ const releaseAppDirs = isPackagedApp ? [desktopDir] : [
   path.resolve(desktopDir, "..", "release", "小玺AI员工-交付版", "resources", "app")
 ];
 const relativeRuntimeFiles = [
+  path.join("ai-expert.json"),
+  path.join("auto-reply-state.json"),
   path.join("rpa", "active_touch", "contacts.json"),
   path.join("rpa", "active_touch", "touch_task.json"),
   path.join("rpa", "active_touch", "run_logs.jsonl"),
@@ -18,7 +20,12 @@ const relativeRuntimeFiles = [
 const forbidden = [
   ...relativeRuntimeFiles.map((file) => path.join(desktopDir, file)),
   ...releaseAppDirs.flatMap((root) => relativeRuntimeFiles.map((file) => path.join(root, file))),
-  ...releaseAppDirs.flatMap((root) => [path.join(root, ".env.ai.local"), path.join(root, "data", "deepseek-api-key.bin")]),
+  ...[desktopDir, ...releaseAppDirs].flatMap((root) => [
+    path.join(root, ".env.ai.local"),
+    path.join(root, "data", "ai-expert.json"),
+    path.join(root, "data", "auto_reply", "auto-reply-state.json"),
+    path.join(root, "data", "deepseek-api-key.bin")
+  ]),
   ...(isPackagedApp ? [path.join(desktopDir, ".env.ai.local")] : [])
 ].filter((file) => fs.existsSync(file));
 

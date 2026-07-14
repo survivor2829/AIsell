@@ -2,11 +2,16 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { clickWechatSendButton, verifyWechatCurrentConversation, verifyWechatMessageBubble } = require("./wechat_window_driver.dev.cjs");
+const {
+  inputWechatMessageDraft,
+  openWechatSearchResult,
+  verifyWechatCurrentConversation: verifyWechatConversationTitle
+} = require("./wechat_window_driver.cjs");
 const { appendLog, block, blockMessageBubble, blockSendGate, loadState, output, readContacts, saveState } = require("./state_machine.cjs");
 const { contactIdentityError, identityKey } = require("./touch_task_state.cjs");
 
-function attemptKey(state, message) {
-  const taskId = String(state.task_context?.task_id ?? "single-contact");
+function attemptKey(state, message, attemptId = "") {
+  const taskId = String(attemptId || state.task_context?.task_id || "single-contact");
   const contactId = String(state.selected_customer?.id ?? "");
   return crypto.createHash("sha256").update(`${taskId}\n${contactId}\n${message}`).digest("hex");
 }
@@ -205,7 +210,7 @@ function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWechatSen
   if (!state.calibrated || !state.target_selected || !state.conversation_verified || !state.message_input_done || !message || String(state.message_draft ?? "").trim() !== message) {
     return blockSendGate(baseDir, state, "real_send_gate_failed", "已阻断：真实发送前置检查未通过");
   }
-  const key = attemptKey(state, message);
+  const key = attemptKey(state, message, options.attemptId);
   if (state.real_send_attempts?.[key] || ["prepared", "clicked", "sent_verified", "outcome_unknown"].includes(state.real_send_status)) {
     return rejectRepeatedAttempt(baseDir, state);
   }
@@ -213,7 +218,13 @@ function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWechatSen
   if (!session.ok || Number(session.pid) !== Number(state.window_pid) || String(session.hWnd) !== String(state.window_handle)) {
     return blockSendGate(baseDir, state, "real_send_session_changed", "已阻断：微信账号、PID、窗口句柄或当前会话发生变化");
   }
-  const windowContext = { pid: state.window_pid, hWnd: state.window_handle, inputPoint: state.message_input_point };
+  const windowContext = {
+    pid: state.window_pid,
+    hWnd: state.window_handle,
+    inputPoint: state.message_input_point,
+    expectedConversation: state.selected_customer?.name,
+    expectedMessage: message
+  };
   const before = bubbleVerifier(message, { ...windowContext, phase: "before" });
   if (!hasMessageSnapshot(before)) {
     return blockSendGate(baseDir, state, "message_snapshot_unavailable", "已阻断：无法读取发送前消息列表快照");
@@ -244,7 +255,9 @@ function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWechatSen
   } catch {
     return persistOutcomeUnknown(baseDir, prepared, "send_driver_exception", options.onTransition);
   }
-  if (!sendResult.ok) return persistOutcomeUnknown(baseDir, prepared, "send_click_failed", options.onTransition);
+  if (!sendResult.ok || sendResult.conversationVerified !== true || sendResult.draftVerified !== true) {
+    return persistOutcomeUnknown(baseDir, prepared, sendResult?.reason || "atomic_send_not_verified", options.onTransition);
+  }
   const clicked = { ...prepared, real_send_clicked: true, real_send_status: "clicked", real_send_attempts: { ...prepared.real_send_attempts, [key]: "clicked" }, located_window_title: sendResult.title ?? prepared.located_window_title, last_result: "real_send_clicked" };
   saveState(baseDir, clicked);
   try { notifyTransition(options.onTransition, "clicked", clicked); } catch {}
@@ -321,8 +334,89 @@ async function executeVerifiedContactSend(options = {}) {
     allowRealSend: true,
     userConfirmed: true,
     message,
+    attemptId: options.attemptId,
     onTransition: options.onTransition
   }, options.sendDriver || clickWechatSendButton, options.sessionDriver || verifyWechatCurrentConversation, options.bubbleVerifier || verifyWechatMessageBubble);
+}
+
+function samePersonalWechatWindow(result, expectedPid, expectedHWnd) {
+  return result?.ok === true
+    && ["Weixin", "WeChat"].includes(result.processName)
+    && Number(result.pid) === Number(expectedPid)
+    && String(result.hWnd) === String(expectedHWnd);
+}
+
+async function executeVerifiedFileHelperSend(options = {}) {
+  const message = String(options.message || "").trim();
+  const expectedPid = Number(options.expectedPid);
+  const expectedHWnd = String(options.sourceWindowHandle || "").trim();
+  if (options.authorized !== true) {
+    return { ok: false, action: "handoff", blocked_reason: "handoff_authorization_missing", error: "缺少本次人工提醒发送授权" };
+  }
+  if (!message) return { ok: false, action: "handoff", blocked_reason: "handoff_message_missing", error: "人工提醒内容为空" };
+  if (!expectedPid || !expectedHWnd) {
+    return { ok: false, action: "handoff", blocked_reason: "handoff_source_window_missing", error: "无法绑定原客户会话所在的微信窗口" };
+  }
+
+  const openConversation = options.openConversation || openWechatSearchResult;
+  const verifyConversation = options.verifyConversation || verifyWechatConversationTitle;
+  const inputDraft = options.inputDraft || inputWechatMessageDraft;
+  const sendDriver = options.sendDriver || clickWechatSendButton;
+  const bubbleVerifier = options.bubbleVerifier || verifyWechatMessageBubble;
+  const target = "文件传输助手";
+  const query = target;
+
+  const windowContext = { pid: expectedPid, hWnd: expectedHWnd };
+  const opened = await Promise.resolve(openConversation(query, {
+    ...windowContext,
+    resultAutomationId: `search_item_function_${target}`
+  }));
+  if (!samePersonalWechatWindow(opened, expectedPid, expectedHWnd)) {
+    return {
+      ok: false,
+      action: "handoff",
+      blocked_reason: opened?.ok ? "handoff_source_window_changed" : "handoff_conversation_open_failed",
+      error: "文件传输助手未在原客户会话对应的微信窗口中打开"
+    };
+  }
+  const session = await Promise.resolve(verifyConversation(target, windowContext));
+  if (!samePersonalWechatWindow(session, expectedPid, expectedHWnd) || String(session.title || "").trim() !== target) {
+    return { ok: false, action: "handoff", blocked_reason: "handoff_conversation_not_verified", error: "文件传输助手会话未通过独立校验" };
+  }
+  const draft = await Promise.resolve(inputDraft(message, windowContext));
+  if (!draft?.ok || draft.draftVerified !== true || !draft.draftPoint) {
+    return { ok: false, action: "handoff", blocked_reason: "handoff_draft_not_verified", error: "人工提醒未能精确写入输入框" };
+  }
+  const sessionBeforeSend = await Promise.resolve(verifyConversation(target, windowContext));
+  if (!samePersonalWechatWindow(sessionBeforeSend, expectedPid, expectedHWnd) || String(sessionBeforeSend.title || "").trim() !== target) {
+    return { ok: false, action: "handoff", blocked_reason: "handoff_conversation_changed", error: "发送前文件传输助手会话发生变化" };
+  }
+  const context = {
+    pid: expectedPid,
+    hWnd: expectedHWnd,
+    inputPoint: draft.draftPoint,
+    expectedConversation: target,
+    expectedMessage: message
+  };
+  const before = await Promise.resolve(bubbleVerifier(message, { ...context, phase: "before" }));
+  if (!hasMessageSnapshot(before)) {
+    return { ok: false, action: "handoff", blocked_reason: "handoff_snapshot_unavailable", error: "无法读取人工提醒发送前快照" };
+  }
+
+  let clicked;
+  try {
+    clicked = await Promise.resolve(sendDriver("{ENTER}", context));
+  } catch {
+    return { ok: false, action: "handoff", blocked_reason: "handoff_outcome_unknown", error: "人工提醒发送结果无法确认" };
+  }
+  if (!clicked?.ok || clicked.conversationVerified !== true || clicked.draftVerified !== true) {
+    return { ok: false, action: "handoff", blocked_reason: "handoff_outcome_unknown", error: "人工提醒发送结果无法确认" };
+  }
+  const verified = await Promise.resolve(bubbleVerifier(message, { ...context, phase: "after", beforeSnapshot: before.snapshot }));
+  if (!isVerifiedNewMessage(verified, message, before.snapshot)) {
+    return { ok: false, action: "handoff", blocked_reason: "handoff_outcome_unknown", error: "人工提醒发送后未通过新消息校验" };
+  }
+  return { ok: true, action: "handoff", state: { real_send_status: "sent_verified" } };
 }
 
 function failConversation(baseDir = __dirname) {
@@ -347,4 +441,4 @@ function verifyMessageBubble(baseDir = __dirname, verifier = verifyWechatMessage
   return output(true, "verify-message-bubble", nextState, { baseDir });
 }
 
-module.exports = { executeVerifiedContactSend, failConversation, refreshRealSendSession, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession };
+module.exports = { executeVerifiedContactSend, executeVerifiedFileHelperSend, failConversation, refreshRealSendSession, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession };
