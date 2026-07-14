@@ -26,6 +26,7 @@ import {
   X
 } from "lucide-react";
 import { lazy, Suspense, type ComponentType, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { AutoReply } from "./AutoReply";
 
 type ModuleKey =
   | "agent"
@@ -347,7 +348,7 @@ function taskHasUnfinishedSnapshot(task: TouchTaskState) {
 }
 
 function moduleIsAvailable(key: ModuleKey) {
-  return ["contact-sync", "touch", "accounts"].includes(key);
+  return ["reply", "contact-sync", "touch", "accounts"].includes(key);
 }
 
 function touchTaskStatusLabel(task: TouchTaskState) {
@@ -589,7 +590,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (user && (active === "contact-sync" || active === "touch")) refreshContactSync();
+    if (user && (active === "reply" || active === "contact-sync" || active === "touch")) refreshContactSync();
   }, [user, active]);
 
   useEffect(() => {
@@ -733,6 +734,9 @@ export default function App() {
                locked={touchTaskLocked}
              />
           )}
+          {active === "reply" && (
+            <AutoReply contacts={contactRows} onOpenSync={() => setActive("contact-sync")} onOpenAccounts={() => setActive("accounts")} />
+          )}
           {active === "accounts" && <AccountManagement />}
           {active === "touch" && (
             <ActiveTouch
@@ -761,12 +765,12 @@ export default function App() {
               <DevelopmentAcceptance contacts={contactRows} message={messageDraft} />
             </Suspense>
           )}
-          {active !== "contact-sync" && active !== "accounts" && active !== "touch" && <Placeholder title={activeTitle} />}
+          {active !== "reply" && active !== "contact-sync" && active !== "accounts" && active !== "touch" && <Placeholder title={activeTitle} />}
         </div>
 
-        <button data-xiaoxi-batch-authorize={REAL_SEND_EDITION ? (resumingTask ? "continue" : "start") : undefined} className={`launch-button ${canLaunchTouch ? "" : "disabled"}`} onClick={startTouchTask} disabled={!canLaunchTouch} title={launchTitle}>
+        {active === "touch" && <button data-xiaoxi-batch-authorize={REAL_SEND_EDITION ? (resumingTask ? "continue" : "start") : undefined} className={`launch-button ${canLaunchTouch ? "" : "disabled"}`} onClick={startTouchTask} disabled={!canLaunchTouch} title={launchTitle}>
           {touchTaskBusy ? "处理中" : resumingTask ? <><span>继续</span><br /><span>任务</span></> : <><span>启动</span><br /><span>程序</span></>}
-        </button>
+        </button>}
       </section>
     </main>
   );

@@ -21,7 +21,13 @@ function createTrustedClickGate(selector) {
 
 function createPreloadApis(ipcRenderer) {
   const consumeBatchClick = createTrustedClickGate("[data-xiaoxi-batch-authorize]");
+  const consumeAutoReplyClick = createTrustedClickGate("[data-xiaoxi-auto-reply-start]");
   return {
+    autoReply: {
+      status: () => ipcRenderer.invoke("auto-reply:status"),
+      start: (payload) => ipcRenderer.invoke("auto-reply:start", { ...payload, clickToken: consumeAutoReplyClick() }),
+      pause: () => ipcRenderer.invoke("auto-reply:pause")
+    },
     contactSync: {
       status: () => ipcRenderer.invoke("contact-sync:status"),
       sync: () => ipcRenderer.invoke("contact-sync:sync"),

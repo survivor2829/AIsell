@@ -43,12 +43,13 @@ assert.equal(fs.existsSync(databaseDecryptor), true, "database decryptor must be
 const manifest = JSON.parse(fs.readFileSync(path.join(target, "版本清单.json"), "utf8"));
 assert.equal(manifest.edition, edition);
 assert.equal(manifest.architecture, "x64");
-assert.equal(manifest.releaseStage, "contact-sync-active-touch");
+assert.equal(manifest.releaseStage, "contact-sync-active-touch-auto-reply-mvp");
 assert.equal(manifest.commercialReady, false);
 assert.equal(manifest.dirty, false, "portable release must come from a clean worktree");
 assert.match(manifest.commit, /^[0-9a-f]{40}$/, "portable release must record a full git commit");
 const releaseLabel = fs.readFileSync(path.join(target, "版本标识.txt"), "utf8");
-assert.equal(releaseLabel.includes("自动回复等功能下一阶段开放"), true);
+assert.equal(releaseLabel.includes("白名单文字自动回复"), true);
+assert.equal(releaseLabel.includes("朋友圈等功能下一阶段开放"), true);
 assert.equal(edition !== "delivery" || releaseLabel.includes("本包不代表完整商品"), true);
 assert.equal(manifest.contactHelperSha256, CONTACT_HELPER_SHA256, "manifest must pin the approved contact helper");
 assert.equal(sha256(helper), CONTACT_HELPER_SHA256, "packaged helper must match the approved hash");

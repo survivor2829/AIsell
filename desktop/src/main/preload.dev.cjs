@@ -23,6 +23,7 @@ const activeTouch = {
 };
 
 contextBridge.exposeInMainWorld("xiaoxiActiveTouch", activeTouch);
+contextBridge.exposeInMainWorld("xiaoxiAutoReply", apis.autoReply);
 contextBridge.exposeInMainWorld("xiaoxiContactSync", apis.contactSync);
 contextBridge.exposeInMainWorld("xiaoxiDeepSeekApi", apis.deepSeekApi);
 contextBridge.exposeInMainWorld("xiaoxiTouchTask", apis.touchTask);

@@ -232,8 +232,8 @@ function ensureWechatWindowVisible() {
   }
 }
 
-function runPowerShell(script, env = {}) {
-  const ensureResult = ensureWechatWindowVisible();
+function runPowerShell(script, env = {}, options = {}) {
+  const ensureResult = options.ensure === false ? {} : ensureWechatWindowVisible();
   const encoded = Buffer.from(script, "utf16le").toString("base64");
   const result = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], {
     encoding: "utf8",

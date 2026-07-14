@@ -22,13 +22,17 @@ async function main() {
   assert.match(messages[0].content, /不得连续堆叠/);
   assert.equal(messages[1].content, "客户称呼：张总，您好\n基础话术：张总，您好，我们这边有清洁设备短租方案。");
   assert.equal(prompt({ salutation: "", script: "{称呼}，您好，欢迎了解。" })[1].content, "客户称呼：您好\n基础话术：您好，欢迎了解。");
+  const requests = [];
   const client = createDeepSeekClient({ keyStore: store, fetchImpl: async (_url, request) => {
     const body = JSON.parse(request.body);
+    requests.push(body);
     assert.equal(body.model, DEEPSEEK_MODEL);
     assert.match(request.headers.authorization, /^Bearer /);
     return { ok: true, json: async () => ({ choices: [{ message: { content: "您好，欢迎了解我们的服务。" } }] }) };
   } });
   assert.equal((await client.draft({ task: { script: "欢迎咨询" }, result: { request_id: "request", salutation: { type: "person", value: "张总" } } })).draft, "您好，欢迎了解我们的服务。");
+  assert.equal((await client.reply({ incoming: "请问怎么收费？", instruction: "礼貌简短" })).reply, "您好，欢迎了解我们的服务。");
+  assert.equal(JSON.stringify(requests.at(-1)).includes("张总"), false, "auto-reply request must not include the contact name");
   store.clear();
   await assert.rejects(() => client.test(), (error) => error.code === "API_KEY_MISSING");
   const preload = fs.readFileSync(path.join(__dirname, "preload-api.cjs"), "utf8");

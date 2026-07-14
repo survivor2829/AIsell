@@ -20,6 +20,10 @@ try {
   assert.equal(coordinator.transition(touch.lock.owner, "stopping", "stop_requested").lock.state, "stopping");
   assert.equal(coordinator.release(touch.lock.owner).ok, true);
 
+  const reply = coordinator.acquire({ state: "replying", taskId: "reply-1", account: "wx-a", phase: "scan-unread" });
+  assert.equal(reply.ok, true);
+  assert.equal(coordinator.release(reply.lock.owner).ok, true);
+
   fs.writeFileSync(coordinator.lockFile, JSON.stringify({ pid: 999999, owner: "crashed", state: "touching", task_id: "task-2", account: "wx-b", started_at: "2026-07-10T00:00:00.000Z", current_phase: "send" }));
   assert.equal(coordinator.initialize().recovered, true);
   assert.equal(fs.existsSync(coordinator.lockFile), false);

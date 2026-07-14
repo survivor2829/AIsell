@@ -74,6 +74,25 @@ function prompt({ salutation, script }) {
   ];
 }
 
+function replyPrompt({ incoming, instruction }) {
+  return [
+    {
+      role: "system",
+      content: `你是微信一对一客服回复助手。只根据客户最新一条文字消息生成可直接发送的回复。
+要求：
+1. 回复自然、礼貌、简短，默认20到100个汉字。
+2. 不编造价格、承诺、活动、库存、身份或客户信息。
+3. 不索要验证码、密码、银行卡、身份证等敏感信息，不引导转账。
+4. 如果信息不足，先提出一个容易回答的澄清问题。
+5. 只输出最终回复，不解释、不编号、不加引号。`
+    },
+    {
+      role: "user",
+      content: `回复要求：${String(instruction || "礼貌简短").trim()}\n客户最新消息：${String(incoming || "").trim()}`
+    }
+  ];
+}
+
 async function responseError(response) {
   if (response.status === 401 || response.status === 403) return new DeepSeekApiError("API_KEY_INVALID", "DeepSeek API Key 无效或已失效，请检查后重新填写。");
   if (response.status === 402) return new DeepSeekApiError("AI_BALANCE_INSUFFICIENT", "DeepSeek 账户余额不足，请充值后再试。");
@@ -124,8 +143,19 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch } = {}) {
       const draft = sanitizeAiMessage(payload.choices?.[0]?.message?.content || "");
       if (!draft) throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回可用文案，任务已暂停。");
       return { draft };
+    },
+    async reply({ incoming, instruction }) {
+      const key = keyStore.read();
+      const payload = await request({
+        key,
+        messages: replyPrompt({ incoming, instruction }),
+        maxTokens: 180
+      });
+      const reply = sanitizeAiMessage(payload.choices?.[0]?.message?.content || "");
+      if (!reply) throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回可用回复，自动回复已跳过。");
+      return { reply };
     }
   };
 }
 
-module.exports = { DEEPSEEK_MODEL, DeepSeekApiError, createDeepSeekClient, createDeepSeekKeyStore, maskApiKey, prompt };
+module.exports = { DEEPSEEK_MODEL, DeepSeekApiError, createDeepSeekClient, createDeepSeekKeyStore, maskApiKey, prompt, replyPrompt };

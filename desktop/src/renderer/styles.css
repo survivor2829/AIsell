@@ -694,6 +694,142 @@ td {
   overflow-wrap: anywhere;
 }
 
+.auto-reply-event {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: -4px 0 16px;
+  padding: 0 14px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.auto-reply-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.85fr) minmax(420px, 1.15fr);
+  gap: 16px;
+}
+
+.auto-reply-settings,
+.auto-reply-whitelist {
+  margin: 0;
+}
+
+.auto-reply-settings .script-field {
+  padding: 16px;
+}
+
+.auto-reply-settings .script-field textarea {
+  min-height: 110px;
+}
+
+.auto-reply-hours {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 0 16px 14px;
+}
+
+.auto-reply-hours label {
+  display: grid;
+  gap: 7px;
+  color: #4b5563;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.auto-reply-hours input {
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  background: #fff;
+  color: #111827;
+  font: inherit;
+}
+
+.auto-reply-help {
+  margin: 0;
+  padding: 0 16px 10px;
+  color: #667085;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.auto-reply-settings .inline-text-button {
+  margin: 0 16px 16px;
+  padding: 0;
+}
+
+.auto-reply-whitelist .panel-title {
+  gap: 8px;
+}
+
+.auto-reply-search {
+  width: calc(100% - 28px);
+  height: 38px;
+  margin: 10px 14px 0;
+  padding: 0 12px;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  background: #fff;
+  color: #111827;
+  font: inherit;
+}
+
+.auto-reply-contact-list {
+  max-height: 360px;
+  overflow: auto;
+  padding: 8px 14px 14px;
+}
+
+.auto-reply-contact {
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 6px;
+  border-bottom: 1px solid #f2f4f7;
+  cursor: pointer;
+}
+
+.auto-reply-contact > span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.auto-reply-contact strong,
+.auto-reply-contact small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auto-reply-contact strong {
+  color: #101828;
+  font-size: 14px;
+}
+
+.auto-reply-contact small {
+  color: #667085;
+  font-size: 12px;
+}
+
+.auto-reply-empty {
+  min-height: 220px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 14px;
+  color: #667085;
+}
+
 .flow-steps {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1659,6 +1795,7 @@ td .text-button {
   }
 
   .account-grid,
+  .auto-reply-grid,
   .touch-grid,
   .touch-flow,
   .flow-steps,

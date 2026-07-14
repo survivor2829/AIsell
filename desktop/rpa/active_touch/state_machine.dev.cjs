@@ -294,6 +294,16 @@ async function executeVerifiedContactSend(options = {}) {
   const session = verifyRealSendSession(baseDir, options.sessionDriver || verifyWechatCurrentConversation);
   if (!(await executionMayContinue(options))) return cancelVerifiedContactSend(baseDir);
   if (!session.ok) return session;
+  if (typeof options.beforeDraft === "function") {
+    let allowed = false;
+    try {
+      allowed = (await options.beforeDraft({ session })) === true;
+    } catch {}
+    if (!allowed) {
+      setRealSendArm(baseDir, false);
+      return { ok: false, action: "send", blocked_reason: "incoming_message_changed", error: "已取消：对方最新消息或当前会话已变化" };
+    }
+  }
   for (const [command, args] of [
     ["input-message-dry-run", ["--message", message]],
     ["send", ["--dry-run", "--message", message]]

@@ -164,15 +164,15 @@ function buildPortable(edition = "delivery") {
     databaseDecryptorSha256: DATABASE_DECRYPTOR_SHA256,
     nativeLibrarySha256: NATIVE_LIBRARY_SHA256,
     verifiedWeixin: "4.1.11.24",
-    releaseStage: "contact-sync-active-touch",
+    releaseStage: "contact-sync-active-touch-auto-reply-mvp",
     commercialReady: false,
     builtAt: new Date().toISOString(),
     signed: false
   };
   fs.writeFileSync(path.join(target, "版本清单.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   fs.writeFileSync(path.join(target, "版本标识.txt"), edition === "test"
-    ? "小玺AI员工 测试版\n用于联系人同步与主动触达内部验收；自动回复等功能下一阶段开放。\n"
-    : "小玺AI员工 阶段交付版\n已完成联系人同步与主动触达；自动回复等功能下一阶段开放，本包不代表完整商品。\n", "utf8");
+    ? "小玺AI员工 测试版\n用于联系人同步、主动触达与白名单文字自动回复内部验收；朋友圈等功能下一阶段开放。\n"
+    : "小玺AI员工 阶段交付版\n已完成联系人同步、主动触达与白名单文字自动回复 MVP；朋友圈等功能下一阶段开放，本包不代表完整商品。\n", "utf8");
   scanRelease(target);
 
   const archive = spawnSync("tar.exe", ["-a", "-c", "-f", zip, "-C", releaseDir, productName], { encoding: "utf8", windowsHide: true });

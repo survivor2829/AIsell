@@ -1,6 +1,7 @@
 const { app, BrowserWindow, dialog, safeStorage } = require("electron");
 const path = require("node:path");
-const { configureActiveTouchRuntime } = require("./active-touch-ipc.cjs");
+const { configureActiveTouchRuntime, runActiveTouch } = require("./active-touch-ipc.cjs");
+const { registerAutoReplyIpc } = require("./auto-reply-ipc.cjs");
 const { registerContactSyncIpc } = require("./contact-sync-ipc.cjs");
 const { migrateLegacyRuntimeData } = require("./runtime-data.cjs");
 const { registerTouchTaskIpc } = require("./touch-task-ipc.cjs");
@@ -12,6 +13,7 @@ const { developmentEdition, pilotEdition, editionLabel, preloadFile, rendererDir
 let mainWindow = null;
 let disarmRealSend = null;
 let touchTaskController = null;
+let autoReplyController = null;
 
 // ponytail: keep test data separate from the delivery profile.
 if (developmentEdition) app.setPath("userData", path.join(app.getPath("appData"), "xiaoxi-active-touch-test"));
@@ -38,6 +40,7 @@ function createWindow() {
 
   mainWindow.setMenu(null);
   mainWindow.on("close", () => {
+    autoReplyController?.pause("app_closed");
     touchTaskController?.pause("应用窗口已关闭，任务已暂停");
     disarmRealSend?.();
   });
@@ -88,6 +91,17 @@ if (!gotSingleInstanceLock) {
     if (internalRealSend) disarmRealSend = () => internalRealSend.setRealSendArm(runtime.activeTouchDir, false);
     registerContactSyncIpc({ dataDir: runtime.contactSyncDir, activeTouchDir: runtime.activeTouchDir, coordinator });
     registerDeepSeekApiIpc({ keyStore: deepSeekKeyStore, client: deepSeekClient });
+    if (internalRealSend) {
+      autoReplyController = registerAutoReplyIpc({
+        getMainWindow: () => mainWindow,
+        dataDir: runtime.autoReplyDir,
+        activeTouchDir: runtime.activeTouchDir,
+        coordinator,
+        deepSeekClient,
+        send: internalRealSend.executeVerifiedContactSend,
+        runStep: (command, args, owner) => runActiveTouch([command, ...args], { development: true, owner, phase: `auto-reply:${command}` })
+      });
+    }
     touchTaskController = registerTouchTaskIpc({
       getMainWindow: () => mainWindow,
       dataDir: runtime.activeTouchDir,

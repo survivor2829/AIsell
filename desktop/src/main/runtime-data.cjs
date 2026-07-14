@@ -7,6 +7,7 @@ function resolveRuntimePaths(userDataDir) {
   return {
     rootDir,
     activeTouchDir: path.join(rootDir, "active_touch"),
+    autoReplyDir: path.join(rootDir, "auto_reply"),
     contactSyncDir: path.join(rootDir, "contact_sync")
   };
 }
@@ -45,6 +46,7 @@ function copyVerifiedFile(source, destination) {
 function migrateLegacyRuntimeData({ appPath, userDataDir, userHome = os.homedir() }) {
   const paths = resolveRuntimePaths(userDataDir);
   fs.mkdirSync(paths.activeTouchDir, { recursive: true });
+  fs.mkdirSync(paths.autoReplyDir, { recursive: true });
   fs.mkdirSync(paths.contactSyncDir, { recursive: true });
   const result = { ...paths, migrated: [], keptExisting: [], skippedForeignInstall: false };
   if (!isInside(userHome, appPath)) {

@@ -1,7 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const STATES = new Set(["idle", "syncing_contacts", "preparing_campaign", "touching", "paused", "stopping"]);
+const STATES = new Set(["idle", "syncing_contacts", "preparing_campaign", "touching", "replying", "paused", "stopping"]);
 
 function nowIso() {
   return new Date().toISOString();

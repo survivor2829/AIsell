@@ -367,6 +367,32 @@ try {
     real_send_attempt_key: "",
     real_send_armed: false
   });
+  const guardedSteps = [];
+  const guardedSend = await executeVerifiedContactSend({
+    baseDir: sharedDir,
+    contactId: sharedContact.id,
+    message: "共享事务消息",
+    frozenContact: sharedContact,
+    authorized: true,
+    runStep: async (command) => {
+      guardedSteps.push(command);
+      return { ok: true, state: { selected_customer: sharedContact } };
+    },
+    sessionDriver: () => ({ ok: true, pid: 81, hWnd: "91", processName: "Weixin", title: sharedContact.name, accountId: "account-a", accountVerified: true }),
+    beforeDraft: () => false,
+    sendDriver: () => ({ ok: true }),
+    bubbleVerifier: () => ({ ok: true, snapshot: "before" })
+  });
+  assert.equal(guardedSend.blocked_reason, "incoming_message_changed");
+  assert.deepEqual(guardedSteps, ["select-customer", "calibrate", "focus-wechat-window", "click-search-result-dry-run"]);
+
+  saveState(sharedDir, {
+    ...loadState(sharedDir),
+    real_send_status: "not_sent",
+    real_send_attempts: {},
+    real_send_attempt_key: "",
+    real_send_armed: false
+  });
   const cancelledSteps = [];
   let cancellationChecks = 0;
   let cancelledClicks = 0;
@@ -809,6 +835,7 @@ try {
   assert.equal(developmentIpcSource.includes("setRealSendArm(runtimeDataDir, true)"), false);
   const sharedTransactionSource = fs.readFileSync(path.join(__dirname, "state_machine.dev.cjs"), "utf8");
   assert.match(sharedTransactionSource, /async function executeVerifiedContactSend/);
+  assert.match(sharedTransactionSource, /beforeDraft/);
   assert.match(sharedTransactionSource, /inputPoint: state\.message_input_point/);
   assert.match(sharedTransactionSource, /select-customer[\s\S]*calibrate[\s\S]*focus-wechat-window[\s\S]*click-search-result-dry-run[\s\S]*verifyRealSendSession[\s\S]*input-message-dry-run[\s\S]*send[\s\S]*dry-run[\s\S]*sendReal/);
   assert.equal(developmentIpcSource.includes("real-send-hold"), false);

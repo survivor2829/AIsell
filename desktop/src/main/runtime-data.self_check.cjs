@@ -38,6 +38,7 @@ try {
   assert.equal(JSON.parse(fs.readFileSync(path.join(paths.activeTouchDir, "touch_task.json"), "utf8")).current_index, 8);
   assert.equal(hasUnfinishedPausedTask(loadTaskState(paths.activeTouchDir)), true);
   assert.equal(fs.existsSync(path.join(paths.contactSyncDir, "state.json")), true);
+  assert.equal(fs.existsSync(paths.autoReplyDir), true);
   assert.equal(fs.existsSync(path.join(paths.rootDir, ".env.ai.local")), false);
   assert.equal(fs.existsSync(path.join(appPath, ".env.ai.local")), false);
   assert.equal(fs.existsSync(path.join(legacyActiveTouch, "contacts.json")), false);
