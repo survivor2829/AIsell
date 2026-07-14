@@ -15,7 +15,7 @@ const appDir = path.join(target, "resources", "app");
 const zip = path.join(projectDir, "release", `${productName}.zip`);
 const executable = path.join(target, `${productName}.exe`);
 const helper = path.join(appDir, "rpa", "contact_sync", "xiaoxi-contact-helper.exe");
-const CONTACT_HELPER_SHA256 = "d08eeaef4db75cb8943164ca78ecb84818ac8e94213f7b404e51f5eceb75d05a";
+const CONTACT_HELPER_SHA256 = "f9c90aec8589ac11a93db7acfbc9b3b92c0c9c2a3b9175642829fba2e0f12eeb";
 const nativeLibDir = path.join(appDir, "rpa", "contact_sync", "libs");
 const nativeLibraryNames = ["wx_key.dll", "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"];
 const wxKeyDll = path.join(nativeLibDir, "wx_key.dll");
@@ -82,10 +82,13 @@ assertNoBlockedFiles(archiveEntries, "portable ZIP");
 
 const helperCheck = spawnSync(helper, ["self-check"], { encoding: "utf8", windowsHide: true, timeout: 30000 });
 assert.equal(helperCheck.status, 0, helperCheck.stderr || helperCheck.stdout || "packaged helper self-check failed");
-assert.equal(JSON.parse(helperCheck.stdout.trim()).ok, true, "packaged helper self-check must return ok");
+const helperPayload = JSON.parse(helperCheck.stdout.trim());
+assert.equal(helperPayload.ok, true, "packaged helper self-check must return ok");
+assert.equal(helperPayload.wx_key_lifecycle, "hook-resume-poll-cleanup", "packaged helper must install the hook before WeChat login can continue");
 
 const wxKeyHelp = spawnSync(helper, ["wx-key", "--help"], { encoding: "utf8", windowsHide: true, timeout: 30000 });
 assert.equal(wxKeyHelp.status, 0, wxKeyHelp.stderr || wxKeyHelp.stdout || "packaged helper wx-key command failed");
+assert.equal(wxKeyHelp.stdout.includes("--exe"), true, "packaged helper must own WeChat launch before hook capture");
 
 const wxKeyLoad = spawnSync(helper, ["wx-key", "--dll", wxKeyDll, "--load-only"], { encoding: "utf8", windowsHide: true, timeout: 30000 });
 assert.equal(wxKeyLoad.status, 0, wxKeyLoad.stderr || wxKeyLoad.stdout || "packaged wx_key.dll failed to load");

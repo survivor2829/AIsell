@@ -270,6 +270,7 @@ def run_memory_key(argv):
 def run_self_check():
     from key_info_probe import read_candidates
     from memory_key_probe import matching_key_candidates
+    from wx_key_probe import lifecycle_self_check
 
     with tempfile.TemporaryDirectory(prefix="xiaoxi-contact-helper-") as directory:
         contact_db = os.path.join(directory, "contact.db")
@@ -299,12 +300,14 @@ def run_self_check():
             and contacts[0]["username"] == "wxid_self_check"
             and len(candidates["candidates"]) == 1
             and memory_key_patterns == [raw_key, raw_key]
+            and lifecycle_self_check()
         )
         print(json.dumps({
             "ok": ok,
             "contacts": len(contacts),
             "key_candidates": len(candidates["candidates"]),
             "memory_key_patterns": len(memory_key_patterns),
+            "wx_key_lifecycle": "hook-resume-poll-cleanup",
         }))
         return 0 if ok else 1
 

@@ -94,13 +94,19 @@ try {
   const fakeWxKeyHelper = path.join(root, "fake-wx-key-helper.cjs");
   const fakeWxKeyDll = path.join(root, "fake-wx-key.dll");
   fs.writeFileSync(fakeWxKeyDll, "contract-only", "utf8");
-  fs.writeFileSync(fakeWxKeyHelper, `const assert = require("node:assert"); assert.equal(process.argv[2], "wx-key"); console.log(JSON.stringify({ ok: true, key: "${wxKeyHex}" }));`, "utf8");
+  fs.writeFileSync(fakeWxKeyHelper, `const assert = require("node:assert"); assert.equal(process.argv[2], "wx-key"); if (process.argv.includes("--exe")) { assert.equal(process.argv[process.argv.indexOf("--exe") + 1], "C:\\\\Weixin.exe"); assert.equal(process.argv.includes("--pid"), false); } console.log(JSON.stringify({ ok: true, key: "${wxKeyHex}" }));`, "utf8");
   assert.equal(captureKeyFromWxKeyDll({
     selfContainedHelperPath: fakeWxKeyHelper,
     wxKeyDllPath: fakeWxKeyDll,
     wxKeyProbePath: "",
     pythonPath: ""
   }, {}, [{ id: 123 }], 1000), wxKeyHex, "self-contained helper must not require Python");
+  assert.equal(captureKeyFromWxKeyDll({
+    selfContainedHelperPath: fakeWxKeyHelper,
+    wxKeyDllPath: fakeWxKeyDll,
+    wxKeyProbePath: "",
+    pythonPath: ""
+  }, { launchWechatExe: "C:\\Weixin.exe" }, [{ id: 123 }], 1000), wxKeyHex, "helper-owned launch must use --exe without attaching to an already-running PID");
 
   const fakeFailingWxKeyHelper = path.join(root, "fake-failing-wx-key-helper.cjs");
   fs.writeFileSync(fakeFailingWxKeyHelper, `console.log(JSON.stringify({ ok: false, stage: "dll_load_failed", error: "missing native dependency" })); process.exitCode = 2;`, "utf8");
@@ -199,9 +205,10 @@ fs.writeFileSync(out, JSON.stringify([{ username: "wxid_x", remark: "新版目�
     const helperSelfCheckPayload = JSON.parse(helperSelfCheck.stdout);
     assert.equal(helperSelfCheckPayload.ok, true);
     assert.equal(helperSelfCheckPayload.memory_key_patterns, 2, "helper must recognize standalone and salt-suffixed WeChat 4.x memory keys");
+    assert.equal(helperSelfCheckPayload.wx_key_lifecycle, "hook-resume-poll-cleanup", "helper must install the hook before WeChat login can continue");
     const wxKeyHelp = runBuiltInHelper(builtIn, ["wx-key", "--help"]);
     assert.equal(wxKeyHelp.status, 0, wxKeyHelp.stderr);
-    assert.equal(wxKeyHelp.stdout.includes("--exe"), false, "wx-key helper must only attach to a running Weixin main process");
+    assert.equal(wxKeyHelp.stdout.includes("--exe"), true, "wx-key helper must own WeChat launch so login cannot beat hook setup");
     const wxKeyContract = runBuiltInHelper(builtIn, ["wx-key", "--dll", path.join(root, "missing-wx-key.dll"), "--pid", "123", "--timeout", "1"]);
     assert.equal(wxKeyContract.status, 2);
     assert.equal(JSON.parse(wxKeyContract.stdout).stage, "dll_missing", "helper must dispatch the packaged wx-key command");
@@ -449,6 +456,7 @@ fs.copyFileSync(input, output);
 
     const restartCaptureOrder = [];
     let restartPreparation;
+    let restartHookOptions;
     const capturedDuringRestart = capture(syncDir, {
       wechatRoot,
       activeTouchDir,
@@ -462,7 +470,7 @@ fs.copyFileSync(input, output);
         restartPreparation = options;
         return { ok: true, restarted: true, wechatExePath: "C:\\Weixin.exe" };
       },
-      processProvider: () => [{ id: 123, path: "C:\\Weixin.exe" }],
+      processProvider: () => [],
       keyInfoReader: () => {
         restartCaptureOrder.push("key-info");
         return { observed: true, keyHex: "" };
@@ -471,19 +479,21 @@ fs.copyFileSync(input, output);
         restartCaptureOrder.push("memory");
         return "";
       },
-      wxKeyReader: () => {
+      wxKeyReader: (hookOptions) => {
         restartCaptureOrder.push("wx-key");
+        restartHookOptions = hookOptions;
         return rawKeyHex;
       }
     });
     assert.equal(capturedDuringRestart.ok, true);
     assert.deepEqual(restartCaptureOrder, ["wx-key"]);
-    assert.equal(Boolean(restartPreparation.stopOnly), false, "restart capture must launch WeChat through the proven login flow");
+    assert.equal(Boolean(restartPreparation.stopOnly), true, "restart capture must stop WeChat without starting login before hook setup");
+    assert.equal(restartHookOptions.launchWechatExe, "C:\\Weixin.exe", "wx-key helper must launch WeChat and install hook before login continues");
 
     let processChecks = 0;
     let moduleHookCalls = 0;
     const moduleFallbackCalls = [];
-    const capturedAfterModuleReady = capture(syncDir, {
+    const capturedWithHelperOwnedModuleWait = capture(syncDir, {
       wechatRoot,
       activeTouchDir,
       keyToolPath: path.join(root, "missing-key-tool.exe"),
@@ -495,7 +505,7 @@ fs.copyFileSync(input, output);
       loginFlowDriver: () => ({ ok: true, restarted: true, wechatExePath: "D:\\微信\\Weixin\\Weixin.exe" }),
       processProvider: () => {
         processChecks += 1;
-        return [{ id: 123, path: "D:\\微信\\Weixin\\Weixin.exe", commandLine: "--scene=desktop", moduleReady: processChecks >= 3 }];
+        return [{ id: 123, path: "D:\\微信\\Weixin\\Weixin.exe", commandLine: "--scene=desktop", moduleReady: false }];
       },
       keyInfoReader: () => {
         moduleFallbackCalls.push("key-info");
@@ -505,16 +515,16 @@ fs.copyFileSync(input, output);
         moduleFallbackCalls.push("memory");
         return "";
       },
-      wxKeyReader: () => {
+      wxKeyReader: (hookOptions) => {
         moduleHookCalls += 1;
+        assert.equal(hookOptions.launchWechatExe, "D:\\微信\\Weixin\\Weixin.exe");
         return rawKeyHex;
       }
     });
-    assert.equal(capturedAfterModuleReady.ok, true);
-    assert.equal(processChecks, 3, "restart capture must wait until Weixin.dll is loaded");
+    assert.equal(capturedWithHelperOwnedModuleWait.ok, true);
+    assert.equal(processChecks, 1, "restart capture must delegate module waiting to the helper without a pre-hook polling delay");
     assert.equal(moduleHookCalls, 1);
-    assert.equal(moduleFallbackCalls.includes("memory"), false, "module waiting must preserve the hook window instead of starting a memory scan");
-    assert.equal(moduleFallbackCalls.every((call) => call === "key-info"), true, "key-info remains available while waiting for Weixin.dll");
+    assert.deepEqual(moduleFallbackCalls, [], "fallback readers must not run before the helper-owned hook attempt");
 
     let retryHookCalls = 0;
     const retryFallbackCalls = [];

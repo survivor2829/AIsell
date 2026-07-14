@@ -595,7 +595,7 @@ function captureKeyFromMemory(contactDb, tools, options = {}, processes = [], ti
 
 function captureKeyFromWxKeyDll(tools, options = {}, processes = [], timeoutMs = 90000) {
   if (options.wxKeyReader) {
-    const result = options.wxKeyReader();
+    const result = options.wxKeyReader(options);
     const keyHex = typeof result === "string" ? result : String(result?.keyHex ?? "");
     options.onWxKeyResult?.({
       status: typeof result === "string" ? (keyHex ? 0 : 1) : Number(result?.status ?? (keyHex ? 0 : 1)),
@@ -605,7 +605,9 @@ function captureKeyFromWxKeyDll(tools, options = {}, processes = [], timeoutMs =
     return /^[a-fA-F0-9]{64}$/.test(keyHex) ? keyHex : "";
   }
   if (!tools.wxKeyDllPath || (!tools.selfContainedHelperPath && (!tools.wxKeyProbePath || !tools.pythonPath))) return "";
-  const targetArgs = processes.flatMap((processInfo) => ["--pid", String(processInfo.id)]);
+  const targetArgs = options.launchWechatExe
+    ? ["--exe", options.launchWechatExe]
+    : processes.flatMap((processInfo) => ["--pid", String(processInfo.id)]);
   const args = [
     "--dll",
     tools.wxKeyDllPath,
@@ -750,6 +752,7 @@ function capture(baseDir = __dirname, options = {}) {
   let lastWxHookStage = "";
   let wxHookKeyCaptured = false;
   let pendingWxKeyHex = "";
+  let restartWechatExe = "";
   const pendingKeyAttempts = new Map();
 
   saveState(baseDir, {
@@ -767,12 +770,13 @@ function capture(baseDir = __dirname, options = {}) {
   }
   if (options.restartWechat) {
     saveState(baseDir, { ...loadState(baseDir), status: "capturing", last_stage: "restarting_wechat", last_error: "" });
-    const loginFlow = prepareWechatLogin(options);
+    const loginFlow = prepareWechatLogin({ ...options, stopOnly: hasWxKeyReader });
     if (!loginFlow.ok) {
       const reason = loginFlow.reason || "wechat_start_failed";
       const message = reason === "wechat_executable_not_found" ? "未找到微信程序，请先安装微信" : "微信未能自动重新启动";
       return block(baseDir, reason, message, { helperConfigured: helper.helperConfigured, activeTouchDir: options.activeTouchDir });
     }
+    restartWechatExe = hasWxKeyReader ? String(loginFlow.wechatExePath || findWechatExecutable(options)) : "";
     saveState(baseDir, { ...loadState(baseDir), status: "capturing", last_stage: "waiting_login_window", last_error: "" });
   }
 
@@ -885,7 +889,7 @@ function capture(baseDir = __dirname, options = {}) {
     const account = wechatRoot && fs.existsSync(wechatRoot) ? findAccount(wechatRoot) : {};
     const accounts = wechatRoot ? contactAccounts(wechatRoot) : [];
     const wechatExePath = processes[0]?.path || findWechatExecutable(discoveryOptions);
-    const waitingForModule = options.restartWechat && hasWxKeyReader && processes.length && !hookProcesses.length && Date.now() < hookWaitDeadline;
+    const waitingForModule = options.restartWechat && hasWxKeyReader && !restartWechatExe && processes.length && !hookProcesses.length && Date.now() < hookWaitDeadline;
 
     saveState(baseDir, {
       ...loadState(baseDir),
@@ -893,7 +897,7 @@ function capture(baseDir = __dirname, options = {}) {
       last_stage: waitingForModule ? "waiting_weixin_module" : account.keyInfoDb && fs.existsSync(account.keyInfoDb) ? "capturing_key_info" : processes.length ? "capturing_key" : "waiting_weixin_process",
       account_name: account.accountName ?? "",
       helper_configured: helper.helperConfigured,
-      wechat_exe_path: wechatExePath,
+      wechat_exe_path: wechatExePath || restartWechatExe,
       wechat_root: wechatRoot ?? ""
     });
 
@@ -943,24 +947,27 @@ function capture(baseDir = __dirname, options = {}) {
 
     const captureFromWxHook = () => {
       if (
-        !hookProcesses.length ||
+        (!hookProcesses.length && !restartWechatExe) ||
         !hasWxKeyReader ||
         pendingWxKeyHex ||
         (options.restartWechat && wxHookAttempts >= 3) ||
         Date.now() >= deadline
       ) return null;
       wxHookAttempts += 1;
+      const launchWechatExe = restartWechatExe;
+      restartWechatExe = "";
       saveState(baseDir, {
         ...loadState(baseDir),
         status: "capturing",
         last_stage: "capturing_wx_key_hook",
         helper_configured: helper.helperConfigured,
-        wechat_exe_path: processes[0]?.path || ""
+        wechat_exe_path: processes[0]?.path || launchWechatExe
       });
       const remainingMs = Math.max(1000, deadline - Date.now());
       const memoryReserveMs = options.restartWechat && hasMemoryKeyReader ? Math.min(30000, Math.max(1000, Math.floor(remainingMs / 4))) : 0;
       const wxKeyHex = captureKeyFromWxKeyDll(tools, {
         ...options,
+        launchWechatExe,
         onWxKeyResult: (result) => {
           options.onWxKeyResult?.(result);
           lastWxHookStage = result.stage;
