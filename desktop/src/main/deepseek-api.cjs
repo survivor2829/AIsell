@@ -56,9 +56,21 @@ function createDeepSeekKeyStore({ rootDir, safeStorage }) {
 
 function prompt({ salutation, script }) {
   const greeting = salutation ? `${salutation}，您好` : "您好";
+  const baseScript = String(script || "").replaceAll("{称呼}", salutation || "").replace(/^，/, "");
   return [
-    { role: "system", content: "你是微信私域触达文案助手。只输出一条中文首句，不解释、不编号、不含联系人隐私。" },
-    { role: "user", content: `基础话术：${script}\n称呼：${greeting}` }
+    {
+      role: "system",
+      content: `你是微信一对一客户触达文案助手。请根据提供的基础话术，改写成一条可以直接发送给客户的完整微信消息。
+要求：
+1. 使用提供的称呼自然开场；没有明确姓名时只使用“您好”，不得编造姓名。
+2. 保留基础话术中的核心业务、优惠信息和询问目的。
+3. 不得增加基础话术中没有提供的价格、承诺、活动或客户信息。
+4. 表达自然、简洁、有礼貌，不要像群发广告，不要过度营销。
+5. 控制在50至90个汉字，以一个容易回复的问题结尾。
+6. 自然加入2至3个与语义相关的Emoji，最少2个；优先放在问候后或业务亮点处，不得连续堆叠，不使用夸张、催促类表情。
+7. 只输出最终文案，不解释、不编号、不加引号，不得输出称呼以外的联系人隐私。`
+    },
+    { role: "user", content: `客户称呼：${greeting}\n基础话术：${baseScript}` }
   ];
 }
 
