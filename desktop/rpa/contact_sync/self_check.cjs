@@ -3,8 +3,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { spawnSync } = require("node:child_process");
-const { candidateWechatRoots, capture, captureKeyFromWxKeyDll, decryptSqlcipher4Raw, prepareWechatLogin, resolveHelper, runningWeixinProcesses, status, sync } = require("./contact_sync_cli.cjs");
+const { spawn, spawnSync } = require("node:child_process");
+const { candidateWechatRoots, capture, captureKeyFromWxKeyDll, decryptSqlcipher4Raw, findWechatRoot, prepareWechatLogin, resolveHelper, runningWeixinProcesses, status, sync } = require("./contact_sync_cli.cjs");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-contact-sync-"));
 const syncDir = path.join(root, "contact_sync");
@@ -57,11 +57,33 @@ function runBuiltInHelper(helper, args) {
 
 try {
   assert.equal(candidateWechatRoots().includes(path.join(os.homedir(), "xwechat_files")), true, "new WeChat default data root must be auto-detected");
+
+  const configuredBase = path.join(root, "自定义 微信数据");
+  const configuredRoot = path.join(configuredBase, "xwechat_files");
+  const configuredAccount = path.join(configuredRoot, "wxid_customer_demo");
+  const configuredAppData = path.join(root, "AppData", "Roaming");
+  fs.mkdirSync(path.join(configuredAccount, "db_storage", "contact"), { recursive: true });
+  fs.mkdirSync(path.join(configuredRoot, "all_users", "login", "wxid_customer"), { recursive: true });
+  fs.mkdirSync(path.join(configuredAppData, "Tencent", "xwechat", "config"), { recursive: true });
+  fs.writeFileSync(path.join(configuredAccount, "db_storage", "contact", "contact.db"), "encrypted", "utf8");
+  fs.writeFileSync(path.join(configuredRoot, "all_users", "login", "wxid_customer", "key_info.db"), "key-window", "utf8");
+  fs.writeFileSync(path.join(configuredAppData, "Tencent", "xwechat", "config", "customer.ini"), `${configuredBase}\n`, "utf8");
+  assert.equal(findWechatRoot({ appDataDir: configuredAppData, processProvider: () => [] }), configuredRoot, "WeChat's own config must locate a custom Chinese data directory");
+  assert.equal(findWechatRoot({ wechatRoot: path.join(root, "stale-missing-root"), appDataDir: configuredAppData, processProvider: () => [] }), configuredRoot, "a missing saved path must not hide WeChat's current configured data root");
+  assert.equal(findWechatRoot({ wechatRoot: configuredBase }), configuredRoot, "manual selection may point at the parent containing xwechat_files");
+  const emptyRoot = path.join(root, "empty-xwechat_files");
+  fs.mkdirSync(emptyRoot, { recursive: true });
+  assert.equal(findWechatRoot({ wechatRoot: emptyRoot }), "", "an existing but empty directory must not be treated as a valid WeChat root");
+
   assert.deepEqual(
-    runningWeixinProcesses({ processProvider: () => [{ id: 21, commandLine: "--type=renderer" }, { id: 42, mainWindowHandle: 1 }] }).map((row) => row.id),
+    runningWeixinProcesses({ processProvider: () => [
+      { id: 21, commandLine: "--type=wxocr", mainWindowHandle: 1, moduleReady: false },
+      { id: 42, path: "D:\\微信\\Weixin\\Weixin.exe", commandLine: "--scene=desktop", moduleReady: true }
+    ] }).map((row) => row.id),
     [42],
-    "wx_key capture must target the visible Weixin main process instead of child processes"
+    "wx_key capture must target the desktop main process even when a child process owns a visible window"
   );
+  assert.equal(runningWeixinProcesses({ processProvider: () => [{ id: 42, path: "D:\\微信\\Weixin\\Weixin.exe", commandLine: "--scene=desktop", moduleReady: true }] })[0].path, "D:\\微信\\Weixin\\Weixin.exe", "Chinese executable paths must remain intact");
   assert.deepEqual(prepareWechatLogin({ loginFlowDriver: () => ({ ok: true, restarted: true }) }), { ok: true, restarted: true });
   assert.deepEqual(prepareWechatLogin({ loginFlowDriver: () => ({ ok: false, reason: "wechat_start_failed" }) }), {
     ok: false,
@@ -91,7 +113,7 @@ try {
   }, { onWxKeyResult: (result) => { failedWxKeyResult = result; } }, [{ id: 123 }], 1000), "");
   assert.deepEqual(failedWxKeyResult, { status: 2, stage: "dll_load_failed", error: "missing native dependency" }, "wx-key helper failure must remain visible in state diagnostics");
 
-  assert.equal(sync(syncDir, { wechatRoot: path.join(root, "missing"), activeTouchDir }).blocked_reason, "wechat_root_not_found");
+  assert.equal(sync(syncDir, { wechatRoot: emptyRoot, activeTouchDir }).blocked_reason, "wechat_root_not_found");
 
   fs.mkdirSync(accountDir, { recursive: true });
   fs.writeFileSync(path.join(accountDir, "contact.db"), "encrypted", "utf8");
@@ -250,6 +272,84 @@ con.close()
     });
     assert.equal(capturedWithoutExternalDump.ok, true, JSON.stringify(capturedWithoutExternalDump));
     assert.equal(capturedWithoutExternalDump.contacts.length, 1);
+
+    const firstLoginRoot = path.join(root, "first-login", "xwechat_files");
+    const currentAccountDir = path.join(firstLoginRoot, "wxid_current_demo");
+    const otherAccountDir = path.join(firstLoginRoot, "wxid_other_demo");
+    const currentContactDir = path.join(currentAccountDir, "db_storage", "contact");
+    const otherContactDir = path.join(otherAccountDir, "db_storage", "contact");
+    const currentContactDb = path.join(currentContactDir, "contact.db");
+    const otherContactDb = path.join(otherContactDir, "contact.db");
+    const otherEncryptedDb = path.join(root, "other-encrypted-contact.db");
+    const otherKeyHex = "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100";
+    fs.mkdirSync(firstLoginRoot, { recursive: true });
+    encryptSqlcipher4Like(plainContactDb, otherEncryptedDb, otherKeyHex);
+    let firstLoginHookCalls = 0;
+    const capturedOnFirstLogin = capture(syncDir, {
+      wechatRoot: firstLoginRoot,
+      activeTouchDir,
+      keyToolPath: path.join(root, "missing-key-tool.exe"),
+      dumpToolPath: path.join(root, "missing-dump-tool.exe"),
+      timeoutMs: 1000,
+      pollIntervalMs: 10,
+      restartWechat: true,
+      loginFlowDriver: () => ({ ok: true, restarted: true, wechatExePath: "D:\\微信\\Weixin\\Weixin.exe" }),
+      processProvider: () => [{ id: 123, path: "D:\\微信\\Weixin\\Weixin.exe", commandLine: "--scene=desktop", moduleReady: true }],
+      wxKeyReader: () => {
+        firstLoginHookCalls += 1;
+        fs.mkdirSync(currentContactDir, { recursive: true });
+        fs.mkdirSync(otherContactDir, { recursive: true });
+        spawn(process.execPath, ["-e", `
+          const fs = require("node:fs");
+          setTimeout(() => {
+            fs.copyFileSync(process.env.XIAOXI_SOURCE_CURRENT, process.env.XIAOXI_TARGET_CURRENT);
+            fs.copyFileSync(process.env.XIAOXI_SOURCE_OTHER, process.env.XIAOXI_TARGET_OTHER);
+            const now = Date.now() / 1000;
+            fs.utimesSync(process.env.XIAOXI_TARGET_CURRENT, now - 10, now - 10);
+            fs.utimesSync(process.env.XIAOXI_TARGET_OTHER, now, now);
+          }, 75);
+        `], {
+          windowsHide: true,
+          stdio: "ignore",
+          env: {
+            ...process.env,
+            XIAOXI_SOURCE_CURRENT: encryptedDb,
+            XIAOXI_TARGET_CURRENT: currentContactDb,
+            XIAOXI_SOURCE_OTHER: otherEncryptedDb,
+            XIAOXI_TARGET_OTHER: otherContactDb
+          }
+        });
+        return rawKeyHex;
+      },
+      decryptedContactReader: () => [{ username: "wxid_first", remark: "首次登录客户", local_type: 1 }]
+    });
+    assert.equal(capturedOnFirstLogin.ok, true, JSON.stringify(capturedOnFirstLogin));
+    assert.equal(firstLoginHookCalls, 1, "the login hook must start before contact.db exists");
+    assert.equal(capturedOnFirstLogin.state.account_name, "wxid_current_demo", "the captured key must remain available until a new-format contact.db appears and be checked across every account");
+
+    const memoryAccountCalls = [];
+    const capturedFromNonLatestMemoryAccount = capture(syncDir, {
+      wechatRoot: firstLoginRoot,
+      activeTouchDir,
+      keyToolPath: path.join(root, "missing-key-tool.exe"),
+      dumpToolPath: path.join(root, "missing-dump-tool.exe"),
+      timeoutMs: 1000,
+      pollIntervalMs: 10,
+      restartWechat: true,
+      loginFlowDriver: () => ({ ok: true, restarted: true }),
+      processProvider: () => [{ id: 123, path: "D:\\微信\\Weixin\\Weixin.exe", commandLine: "--scene=desktop", moduleReady: true }],
+      keyInfoReader: () => ({ observed: false, keyHex: "" }),
+      wxKeyReader: () => ({ keyHex: "", stage: "hook_status_1", error: "missed", status: 1 }),
+      memoryKeyReader: (candidateDb) => {
+        memoryAccountCalls.push(candidateDb);
+        return candidateDb === currentContactDb ? rawKeyHex : "";
+      },
+      decryptedContactReader: () => [{ username: "wxid_memory", remark: "内存回退客户", local_type: 1 }]
+    });
+    assert.equal(capturedFromNonLatestMemoryAccount.ok, true, JSON.stringify(capturedFromNonLatestMemoryAccount));
+    assert.equal(memoryAccountCalls[0], otherContactDb, "the newer stale account must be tried first in this regression setup");
+    assert.equal(memoryAccountCalls.includes(currentContactDb), true, "memory fallback must try every account database");
+    assert.equal(capturedFromNonLatestMemoryAccount.state.account_name, "wxid_current_demo");
     fs.copyFileSync(plainContactDb, contactDb);
 
     fs.writeFileSync(
@@ -379,6 +479,105 @@ fs.copyFileSync(input, output);
     assert.equal(capturedDuringRestart.ok, true);
     assert.deepEqual(restartCaptureOrder, ["wx-key"]);
     assert.equal(Boolean(restartPreparation.stopOnly), false, "restart capture must launch WeChat through the proven login flow");
+
+    let processChecks = 0;
+    let moduleHookCalls = 0;
+    const moduleFallbackCalls = [];
+    const capturedAfterModuleReady = capture(syncDir, {
+      wechatRoot,
+      activeTouchDir,
+      keyToolPath: path.join(root, "missing-key-tool.exe"),
+      dumpToolPath,
+      pythonPath: builtIn.pythonPath,
+      timeoutMs: 500,
+      pollIntervalMs: 5,
+      restartWechat: true,
+      loginFlowDriver: () => ({ ok: true, restarted: true, wechatExePath: "D:\\微信\\Weixin\\Weixin.exe" }),
+      processProvider: () => {
+        processChecks += 1;
+        return [{ id: 123, path: "D:\\微信\\Weixin\\Weixin.exe", commandLine: "--scene=desktop", moduleReady: processChecks >= 3 }];
+      },
+      keyInfoReader: () => {
+        moduleFallbackCalls.push("key-info");
+        return { observed: true, keyHex: "" };
+      },
+      memoryKeyReader: () => {
+        moduleFallbackCalls.push("memory");
+        return "";
+      },
+      wxKeyReader: () => {
+        moduleHookCalls += 1;
+        return rawKeyHex;
+      }
+    });
+    assert.equal(capturedAfterModuleReady.ok, true);
+    assert.equal(processChecks, 3, "restart capture must wait until Weixin.dll is loaded");
+    assert.equal(moduleHookCalls, 1);
+    assert.equal(moduleFallbackCalls.includes("memory"), false, "module waiting must preserve the hook window instead of starting a memory scan");
+    assert.equal(moduleFallbackCalls.every((call) => call === "key-info"), true, "key-info remains available while waiting for Weixin.dll");
+
+    let retryHookCalls = 0;
+    const retryFallbackCalls = [];
+    const capturedAfterInitRetry = capture(syncDir, {
+      wechatRoot,
+      activeTouchDir,
+      keyToolPath: path.join(root, "missing-key-tool.exe"),
+      dumpToolPath,
+      pythonPath: builtIn.pythonPath,
+      timeoutMs: 500,
+      pollIntervalMs: 5,
+      restartWechat: true,
+      loginFlowDriver: () => ({ ok: true, restarted: true, wechatExePath: "D:\\微信\\Weixin\\Weixin.exe" }),
+      processProvider: () => [{ id: 123, path: "D:\\微信\\Weixin\\Weixin.exe", commandLine: "--scene=desktop", moduleReady: true }],
+      keyInfoReader: () => {
+        retryFallbackCalls.push("key-info");
+        return { observed: true, keyHex: "" };
+      },
+      memoryKeyReader: () => {
+        retryFallbackCalls.push("memory");
+        return "";
+      },
+      wxKeyReader: () => {
+        retryHookCalls += 1;
+        return retryHookCalls === 1
+          ? { keyHex: "", stage: "init_failed", error: "Weixin.dll not ready", status: 1 }
+          : { keyHex: rawKeyHex, stage: "captured", error: "", status: 0 };
+      }
+    });
+    assert.equal(capturedAfterInitRetry.ok, true);
+    assert.equal(retryHookCalls, 2, "a transient hook initialization failure must be retried");
+    assert.deepEqual(retryFallbackCalls, []);
+
+    const timeoutWithoutKeyInfo = capture(syncDir, {
+      wechatRoot,
+      activeTouchDir,
+      keyToolPath: path.join(root, "missing-key-tool.exe"),
+      dumpToolPath,
+      pythonPath: builtIn.pythonPath,
+      timeoutMs: 30,
+      pollIntervalMs: 5,
+      processProvider: () => [{ id: 123, path: "D:\\微信\\Weixin\\Weixin.exe", commandLine: "--scene=desktop", moduleReady: true }],
+      keyInfoReader: () => ({ observed: false, keyHex: "" }),
+      memoryKeyReader: () => "",
+      wxKeyReader: () => ({ keyHex: "", stage: "dll_missing", error: "", status: 2 })
+    });
+    assert.equal(timeoutWithoutKeyInfo.ok, false);
+    assert.equal(timeoutWithoutKeyInfo.error, "微信 hook 未捕获到密钥（dll_missing），内存回退也未匹配到可用密钥", "timeout diagnostics must preserve both hook and memory fallback failures");
+    assert.equal(timeoutWithoutKeyInfo.state.last_stage, "capture_timeout_wx_hook_then_memory");
+
+    const hookOnlyTimeout = capture(syncDir, {
+      wechatRoot,
+      activeTouchDir,
+      contactHelperPath: path.join(root, "missing-contact-helper.exe"),
+      memoryKeyProbePath: path.join(root, "missing-memory-probe.py"),
+      pythonPath: "",
+      keyInfoReader: () => ({ observed: false, keyHex: "" }),
+      wxKeyReader: () => ({ keyHex: "", stage: "hook_status_1", error: "waiting", status: 1 }),
+      timeoutMs: 30,
+      pollIntervalMs: 5,
+      processProvider: () => [{ id: 123, path: "D:\\微信\\Weixin\\Weixin.exe", commandLine: "--scene=desktop", moduleReady: true }]
+    });
+    assert.equal(hookOnlyTimeout.error, "已安装微信登录期 hook，但登录窗口期内未捕获到可用密钥");
 
     const captured = capture(syncDir, {
       wechatRoot,

@@ -89,8 +89,28 @@ async function chooseWechatPath(kind) {
   if ((selectingExe && (!stat.isFile() || path.extname(selected).toLowerCase() !== ".exe")) || (!selectingExe && !stat.isDirectory())) {
     return { ok: false, action: "paths", error: selectingExe ? "请选择 Weixin.exe" : "请选择 xwechat_files 数据目录" };
   }
-  writePathSettings({ ...settings, [kind]: selected });
-  return runContactSync(["status"]);
+  const nestedRoot = !selectingExe && path.basename(selected).toLowerCase() !== "xwechat_files" ? path.join(selected, "xwechat_files") : "";
+  const selectedValue = !selectingExe && nestedRoot && fs.existsSync(nestedRoot) ? nestedRoot : selected;
+  writePathSettings({ ...settings, [kind]: selectedValue });
+  const status = await runContactSync(["status"]);
+  if (!selectingExe && !status.ok) {
+    writePathSettings(settings);
+    return status;
+  }
+  if (!selectingExe) {
+    const canonicalRoot = status.state?.wechat_root || "";
+    if (!canonicalRoot) {
+      writePathSettings(settings);
+      return { ok: false, action: "paths", error: "请选择 xwechat_files，或选择包含该目录的上级目录", contacts: status.contacts ?? [] };
+    }
+    writePathSettings({
+      ...settings,
+      wechatExePath: String(status.state?.wechat_exe_path || settings.wechatExePath || ""),
+      wechatRoot: canonicalRoot
+    });
+    return { ...status, state: { ...status.state, wechat_root: canonicalRoot } };
+  }
+  return status;
 }
 
 async function runContactSync(args) {
@@ -114,9 +134,20 @@ function registerContactSyncIpc({ dataDir, activeTouchDir, coordinator } = {}) {
   ipcMain.handle("contact-sync:capture", () => runContactSync(["capture", "--restart-wechat", "--timeout", "120"]));
   ipcMain.handle("contact-sync:choose-wechat-exe", () => chooseWechatPath("wechatExePath"));
   ipcMain.handle("contact-sync:choose-wechat-root", () => chooseWechatPath("wechatRoot"));
-  ipcMain.handle("contact-sync:auto-detect-paths", () => {
+  ipcMain.handle("contact-sync:auto-detect-paths", async () => {
+    const settings = readPathSettings();
     writePathSettings({ wechatExePath: "", wechatRoot: "" });
-    return runContactSync(["status"]);
+    const result = await runContactSync(["status"]);
+    if (!result.ok || !result.state?.wechat_root) {
+      writePathSettings(settings);
+      if (!result.ok) return result;
+      return { ok: false, action: "paths", error: "未自动识别到微信数据目录，请先登录微信后重试，或手动选择 xwechat_files", contacts: result.contacts ?? [] };
+    }
+    writePathSettings({
+      wechatExePath: String(result.state?.wechat_exe_path || settings.wechatExePath || ""),
+      wechatRoot: String(result.state?.wechat_root || "")
+    });
+    return result;
   });
 }
 
