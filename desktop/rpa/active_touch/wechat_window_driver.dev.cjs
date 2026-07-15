@@ -83,7 +83,7 @@ $callback = [Win32WechatSendMessage+EnumWindowsProc]{
 }
 [void][Win32WechatSendMessage]::EnumWindows($callback, [IntPtr]::Zero)
 if ($matched -eq $null) {
-  @{ ok = $false } | ConvertTo-Json -Compress
+  @{ ok = $false; reason = "atomic_expected_window_not_found"; sendAttempted = $false } | ConvertTo-Json -Compress
   exit
 }
 if (-not $matched.focused) {
@@ -267,7 +267,7 @@ function clickWechatSendButton(_sendKey = "{ENTER}", context = {}) {
     XIAOXI_EXPECTED_MESSAGE: String(context.expectedMessage ?? ""),
     XIAOXI_INPUT_X_RATIO: String(context.inputPoint?.xRatio ?? ""),
     XIAOXI_INPUT_Y_RATIO: String(context.inputPoint?.yRatio ?? "")
-  });
+  }, { ensure: false });
 }
 
 const DETECT_ACTIVE_ACCOUNT_SCRIPT = `
@@ -588,7 +588,7 @@ function verifyWechatMessageBubble(message, context = {}) {
     XIAOXI_INPUT_Y_RATIO: String(context.inputPoint?.yRatio ?? ""),
     XIAOXI_VERIFY_PHASE: phase,
     XIAOXI_BEFORE_SNAPSHOT: JSON.stringify(context.beforeSnapshot ?? null)
-  });
+  }, { ensure: false });
 }
 
 module.exports = {

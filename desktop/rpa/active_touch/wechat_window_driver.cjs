@@ -242,14 +242,17 @@ function runPowerShell(script, env = {}, options = {}) {
     windowsHide: true
   });
 
-  if (result.error || result.status !== 0) return { ok: false };
+  if (result.error) {
+    return { ok: false, reason: result.error.code === "ETIMEDOUT" ? "powershell_timeout" : "powershell_failed" };
+  }
+  if (result.status !== 0) return { ok: false, reason: "powershell_failed" };
 
   try {
     const parsed = JSON.parse(result.stdout.trim() || "{\"ok\":false}");
     if (!parsed.ok && ensureResult?.reason && !parsed.reason) return { ...parsed, reason: ensureResult.reason };
     return parsed;
   } catch {
-    return ensureResult?.reason ? { ok: false, reason: ensureResult.reason } : { ok: false };
+    return { ok: false, reason: ensureResult?.reason || "powershell_output_invalid" };
   }
 }
 

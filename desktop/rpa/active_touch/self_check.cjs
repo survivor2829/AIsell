@@ -824,6 +824,8 @@ try {
   const messageDraftSource = driverSource.split("const MESSAGE_DRAFT_SCRIPT = `")[1].split("`;")[0];
   const developmentDriverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.dev.cjs"), "utf8");
   const sendMessageSource = developmentDriverSource.split("const SEND_MESSAGE_SCRIPT = `")[1].split("`;")[0];
+  const clickSendSource = developmentDriverSource.split("function clickWechatSendButton")[1].split("const DETECT_ACTIVE_ACCOUNT_SCRIPT")[0];
+  const bubbleVerifierSource = developmentDriverSource.split("function verifyWechatMessageBubble")[1].split("module.exports")[0];
   assert.equal(driverSource.includes("clickWechatSendButton"), false);
   assert.equal(driverSource.includes("SEND_MESSAGE_SCRIPT"), false);
   assert.equal(driverSource.includes("XIAOXI_SEND_KEY"), false);
@@ -848,6 +850,7 @@ try {
   assert.match(developmentDriverSource, /function Normalize-WechatDraftText/);
   assert.match(sendMessageSource, /conversationVerified = \$true[\s\S]*draftVerified = \(Normalize-WechatDraftText \$copiedDraft\) -ceq \$normalizedExpectedMessage/);
   assert.match(sendMessageSource, /wechat_send_button_not_found/);
+  assert.match(sendMessageSource, /atomic_expected_window_not_found/);
   assert.match(sendMessageSource, /\(Get-ElementText \$element\) -cne "发送"/);
   assert.match(sendMessageSource, /InvokePattern/);
   assert.match(sendMessageSource, /\$sendElements[\s\S]*\$copiedDraft =/);
@@ -857,6 +860,11 @@ try {
   assert.match(sendMessageSource, /SetCursorPos\(\$sendX, \$sendY\)[\s\S]*mouse_event\(0x0002[\s\S]*mouse_event\(0x0004/);
   assert.equal(sendMessageSource.includes("SendWait($sendKey)"), false);
   assert.equal(sendMessageSource.includes("XIAOXI_SEND_KEY"), false);
+  assert.match(clickSendSource, /\}, \{ ensure: false \}\);/);
+  assert.match(bubbleVerifierSource, /\}, \{ ensure: false \}\);/);
+  assert.match(driverSource, /"powershell_timeout"/);
+  assert.match(driverSource, /"powershell_failed"/);
+  assert.match(driverSource, /"powershell_output_invalid"/);
   assert.match(developmentDriverSource, /context\.phase === "after" \? "after" : "before"/);
   assert.match(developmentDriverSource, /beforeSnapshot/);
   assert.match(developmentDriverSource, /exactMatch/);
