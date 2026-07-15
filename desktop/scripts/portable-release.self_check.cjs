@@ -9,7 +9,7 @@ const desktopDir = path.resolve(__dirname, "..");
 const projectDir = path.resolve(desktopDir, "..");
 const edition = process.argv[2] || "delivery";
 if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported portable edition: ${edition}`);
-const productName = edition === "test" ? "小玺AI员工-测试版" : "小玺AI员工-交付版";
+const productName = edition === "test" ? "小玺AI员工-测试版" : "小玺AI员工";
 const target = path.join(projectDir, "release", productName);
 const appDir = path.join(target, "resources", "app");
 const zip = path.join(projectDir, "release", `${productName}.zip`);
@@ -95,7 +95,7 @@ const wxKeyLoad = spawnSync(helper, ["wx-key", "--dll", wxKeyDll, "--load-only"]
 assert.equal(wxKeyLoad.status, 0, wxKeyLoad.stderr || wxKeyLoad.stdout || "packaged wx_key.dll failed to load");
 assert.equal(JSON.parse(wxKeyLoad.stdout.trim()).stage, "dll_loaded", "packaged wx_key.dll load check must succeed");
 
-for (const legacyName of ["小玺AI员工", "小玺AI员工-客户版", "小玺AI员工-受控试用版"]) {
+for (const legacyName of [...(edition === "test" ? ["小玺AI员工"] : []), "小玺AI员工-客户版", "小玺AI员工-受控试用版", "小玺AI员工-交付版"]) {
   assert.equal(fs.existsSync(path.join(projectDir, "release", legacyName)), false, `legacy release directory must be absent: ${legacyName}`);
   assert.equal(fs.existsSync(path.join(projectDir, "release", `${legacyName}.zip`)), false, `legacy release ZIP must be absent: ${legacyName}`);
 }
@@ -137,5 +137,5 @@ assert.equal(fs.existsSync(path.join(activeDir, "wechat_window_driver.dev.cjs"))
 assert.equal(fs.existsSync(path.join(activeDir, "active_touch_cli.dev.cjs")), edition === "test");
 const renderer = fs.readdirSync(path.join(appDir, "dist", "assets")).filter((name) => name.endsWith(".js")).map((name) => fs.readFileSync(path.join(appDir, "dist", "assets", name), "utf8")).join("\n");
 assert.equal(renderer.includes("内部测试"), edition === "test");
-assert.equal(renderer.includes(edition === "test" ? "测试版" : "交付版"), true);
+assert.equal(renderer.includes(edition === "test" ? "测试版" : "交付版"), edition === "test");
 console.log(`${edition} portable release self-check passed`);

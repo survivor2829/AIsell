@@ -22,7 +22,7 @@ const rendererDir = process.env.XIAOXI_EDITION === "development"
 module.exports = {
   developmentEdition,
   pilotEdition,
-  editionLabel: developmentEdition ? "测试版" : "交付版",
+  editionLabel: developmentEdition ? "测试版" : "",
   preloadFile: developmentEdition ? "preload.dev.cjs" : "preload.cjs",
   rendererDir
 };

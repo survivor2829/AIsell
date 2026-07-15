@@ -166,7 +166,7 @@ function buildPortable(edition = "delivery") {
   const dirty = Boolean(gitText(["status", "--porcelain"]));
   if (dirty) throw new Error("Refusing to build a portable release from a dirty worktree");
 
-  const productName = edition === "test" ? "小玺AI员工-测试版" : "小玺AI员工-交付版";
+  const productName = edition === "test" ? "小玺AI员工-测试版" : "小玺AI员工";
   const target = path.join(releaseDir, productName);
   const zip = path.join(releaseDir, `${productName}.zip`);
   fs.mkdirSync(releaseDir, { recursive: true });
@@ -203,7 +203,7 @@ function buildPortable(edition = "delivery") {
   fs.writeFileSync(path.join(target, "版本清单.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   fs.writeFileSync(path.join(target, "版本标识.txt"), edition === "test"
     ? "小玺AI员工 测试版\n用于联系人同步、主动触达、AI专家话术与全私聊自动回复内部验收；朋友圈等功能下一阶段开放。\n"
-    : "小玺AI员工 阶段交付版\n已完成联系人同步、主动触达、AI专家话术与全私聊自动回复；朋友圈等功能下一阶段开放，本包不代表完整商品。\n", "utf8");
+    : "小玺AI员工\n已完成联系人同步、主动触达、AI专家话术与全私聊自动回复；朋友圈等功能下一阶段开放，本包不代表完整商品。\n", "utf8");
   scanRelease(target);
 
   const archive = spawnSync("tar.exe", ["-a", "-c", "-f", zip, "-C", releaseDir, productName], { encoding: "utf8", windowsHide: true });

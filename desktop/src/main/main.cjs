@@ -31,7 +31,7 @@ function createWindow() {
     minHeight: 760,
     autoHideMenuBar: true,
     backgroundColor: "#f8d9df",
-    title: `小玺AI员工 ${editionLabel}`,
+    title: ["小玺AI员工", editionLabel].filter(Boolean).join(" "),
     webPreferences: {
       preload: path.join(__dirname, preloadFile),
       sandbox: false,

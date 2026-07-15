@@ -238,7 +238,7 @@ const DEVELOPMENT_EDITION = XIAOXI_EDITION === "development";
 const PILOT_EDITION = XIAOXI_EDITION === "pilot";
 const REAL_SEND_EDITION = DEVELOPMENT_EDITION || PILOT_EDITION;
 const DEFAULT_ACTIVE_MODULE: ModuleKey = PILOT_EDITION ? "touch" : "reply";
-const EDITION_LABEL = DEVELOPMENT_EDITION ? "测试版" : "交付版";
+const EDITION_LABEL = DEVELOPMENT_EDITION ? "测试版" : "";
 const DevelopmentAcceptance = DEVELOPMENT_EDITION ? lazy(() => import("./DevelopmentAcceptance")) : null;
 
 const agentChildren: NavItem[] = [
@@ -432,7 +432,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    document.title = `小玺AI员工 ${EDITION_LABEL}`;
+    document.title = ["小玺AI员工", EDITION_LABEL].filter(Boolean).join(" ");
   }, []);
 
   const activeTitle = useMemo(() => navItems.find((item) => item.key === active)?.label ?? "自动回复", [active]);
@@ -684,7 +684,7 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">玺</div>
-          <span>小玺AI员工 · {EDITION_LABEL}</span>
+          <span>小玺AI员工{EDITION_LABEL ? ` · ${EDITION_LABEL}` : ""}</span>
         </div>
         <nav className="nav-list">
           {navGroups.map((group) => {
