@@ -107,17 +107,17 @@ function replyPrompt({ context, expert }) {
 function parseReplyDecision(value) {
   const raw = String(value || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   let parsed;
-  try { parsed = JSON.parse(raw); } catch { throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回有效的结构化回复，自动回复已暂停。"); }
+  try { parsed = JSON.parse(raw); } catch { throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回有效的结构化回复"); }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
     || typeof parsed.reply !== "string"
     || typeof parsed.intent !== "boolean"
     || typeof parsed.intentReason !== "string"
     || typeof parsed.needsHuman !== "boolean"
     || typeof parsed.handoffReason !== "string") {
-    throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回完整的结构化回复，自动回复已暂停。");
+    throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回完整的结构化回复");
   }
   const reply = sanitizeAiMessage(parsed.reply);
-  if (!reply) throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回可用回复，自动回复已暂停。");
+  if (!reply) throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回可用回复");
   return {
     reply,
     intent: parsed.intent,
@@ -125,6 +125,17 @@ function parseReplyDecision(value) {
     needsHuman: parsed.needsHuman,
     handoffReason: parsed.handoffReason.trim().slice(0, 200)
   };
+}
+
+function parseReplyPayload(payload) {
+  const choice = payload?.choices?.[0];
+  const finishReason = String(choice?.finish_reason || "");
+  const content = String(choice?.message?.content || "");
+  if (finishReason === "length") throw new DeepSeekApiError("AI_RESPONSE_TRUNCATED", "DeepSeek 返回的结构化回复被截断");
+  if (finishReason === "content_filter") throw new DeepSeekApiError("AI_CONTENT_FILTERED", "DeepSeek 本次回复被安全策略拦截，自动回复已暂停。");
+  if (finishReason && finishReason !== "stop") throw new DeepSeekApiError("AI_RESPONSE_INCOMPLETE", "DeepSeek 本次生成未完整结束");
+  if (!content.trim()) throw new DeepSeekApiError("AI_RESPONSE_EMPTY", "DeepSeek 返回空内容");
+  return parseReplyDecision(content);
 }
 
 async function responseError(response) {
@@ -191,13 +202,18 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
         throw new DeepSeekApiError("AI_CONTEXT_INVALID", "未读取到可靠的客户最新消息，自动回复已取消。");
       }
       const key = keyStore.read();
-      const payload = await request({
-        key,
-        messages: replyPrompt({ context: normalizedContext, expert }),
-        maxTokens: 300,
-        responseFormat: { type: "json_object" }
-      });
-      return parseReplyDecision(payload.choices?.[0]?.message?.content || "");
+      const messages = replyPrompt({ context: normalizedContext, expert });
+      let lastError;
+      for (const maxTokens of [300, 600]) {
+        const payload = await request({ key, messages, maxTokens, responseFormat: { type: "json_object" } });
+        try {
+          return parseReplyPayload(payload);
+        } catch (error) {
+          if (!(error instanceof DeepSeekApiError) || !String(error.code).startsWith("AI_RESPONSE_")) throw error;
+          lastError = error;
+        }
+      }
+      throw new DeepSeekApiError(lastError.code, `${lastError.message}，自动重试后仍未恢复，自动回复已暂停。`);
     }
   };
 }

@@ -40,11 +40,12 @@ async function main() {
     const content = isReply
       ? JSON.stringify({ reply: "收到，我把正式报价需求交给同事核实。", intent: true, intentReason: "客户准备下单", needsHuman: true, handoffReason: "需要正式报价" })
       : "您好，欢迎了解我们的服务。";
-    return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) };
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: "stop", message: { content } }] }) };
   } });
   assert.equal((await client.draft({ task: { script: "欢迎咨询" }, result: { request_id: "request", salutation: { type: "person", value: "张总" } } })).draft, "您好，欢迎了解我们的服务。");
   assert.equal(requests.at(-1).response_format, undefined, "plain-text draft must not enable JSON mode");
   assert.equal(requests.at(-1).thinking, undefined, "plain-text draft must keep the model default");
+  const requestsBeforeReply = requests.length;
   const decision = await client.reply({
     expert: "业务信息：设备短租。人工提醒：明确要求正式报价或下单时提醒人工。",
     context: [
@@ -61,6 +62,7 @@ async function main() {
   });
   assert.deepEqual(requests.at(-1).response_format, { type: "json_object" }, "auto-reply must use DeepSeek JSON mode");
   assert.deepEqual(requests.at(-1).thinking, { type: "disabled" }, "structured auto-reply must disable thinking mode");
+  assert.equal(requests.length, requestsBeforeReply + 1, "a valid structured response must not trigger a retry");
   assert.deepEqual(parseReplyDecision("```json\n{\"reply\":\"稍等，我帮您确认。\",\"intent\":false,\"intentReason\":\"\",\"needsHuman\":true,\"handoffReason\":\"资料未覆盖\"}\n```"), {
     reply: "稍等，我帮您确认。",
     intent: false,
@@ -70,11 +72,86 @@ async function main() {
   });
   assert.throws(() => parseReplyDecision("not-json"), (error) => error.code === "AI_RESPONSE_INVALID");
   assert.throws(() => parseReplyDecision(JSON.stringify({ reply: "收到", intent: false })), (error) => error.code === "AI_RESPONSE_INVALID");
+  assert.throws(() => parseReplyDecision(JSON.stringify({ reply: "收到", intent: "false", intentReason: "", needsHuman: false, handoffReason: "" })), (error) => error.code === "AI_RESPONSE_INVALID");
   assert.throws(() => parseReplyDecision(JSON.stringify({ reply: "   ", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })), (error) => error.code === "AI_RESPONSE_INVALID");
   assert.equal(parseReplyDecision(JSON.stringify({ reply: "收到", intent: true, intentReason: "有意向", needsHuman: false, handoffReason: "" })).needsHuman, false, "interest alone must not force a human handoff");
   assert.equal(JSON.stringify(requests.at(-1)).includes("张总"), false, "auto-reply request must not include the contact name");
   assert.equal(JSON.stringify(requests.at(-1)).includes("设备短租"), true);
   assert.equal(JSON.stringify(requests.at(-1)).includes("请给我正式报价"), true);
+  const retryInput = {
+    expert: "业务信息：工业清洁设备。",
+    context: [{ role: "user", content: "工厂粉尘多，想了解高压清洗机。" }]
+  };
+  const validRetryContent = JSON.stringify({ reply: "粉尘主要在开阔地面，还是设备周边和边角？", intent: true, intentReason: "客户正在选型", needsHuman: false, handoffReason: "" });
+  const emptyRetryBodies = [];
+  const emptyRetryPayloads = [
+    { choices: [{ finish_reason: "stop", message: { content: "" } }] },
+    { choices: [{ finish_reason: "stop", message: { content: validRetryContent } }] }
+  ];
+  const emptyRetryClient = createDeepSeekClient({ keyStore: store, fetchImpl: async (_url, request) => {
+    emptyRetryBodies.push(JSON.parse(request.body));
+    return { ok: true, json: async () => emptyRetryPayloads.shift() };
+  } });
+  assert.equal((await emptyRetryClient.reply(retryInput)).reply, "粉尘主要在开阔地面，还是设备周边和边角？");
+  assert.equal(emptyRetryBodies.length, 2, "an empty structured response must retry exactly once before sending");
+  assert.equal(emptyRetryBodies[0].max_tokens, 300);
+  assert.equal(emptyRetryBodies[1].max_tokens, 600, "the retry must allow a complete JSON response");
+  let truncatedCalls = 0;
+  const truncatedRetryClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => ({
+    ok: true,
+    json: async () => (++truncatedCalls === 1
+      ? { choices: [{ finish_reason: "length", message: { content: "{\"reply\":\"已截断" } }] }
+      : { choices: [{ finish_reason: "stop", message: { content: validRetryContent } }] })
+  }) });
+  assert.equal((await truncatedRetryClient.reply(retryInput)).needsHuman, false);
+  assert.equal(truncatedCalls, 2, "a truncated structured response must retry exactly once");
+  let invalidCalls = 0;
+  const invalidRetryClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => ({
+    ok: true,
+    json: async () => (++invalidCalls === 1
+      ? { choices: [{ finish_reason: "stop", message: { content: "not-json" } }] }
+      : { choices: [{ finish_reason: "stop", message: { content: validRetryContent } }] })
+  }) });
+  assert.equal((await invalidRetryClient.reply(retryInput)).intent, true);
+  assert.equal(invalidCalls, 2, "invalid JSON must retry exactly once");
+  let exhaustedCalls = 0;
+  const exhaustedClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => {
+    exhaustedCalls += 1;
+    return { ok: true, json: async () => exhaustedCalls === 1
+      ? { choices: [{ finish_reason: "length", message: { content: "{\"reply\":\"已截断" } }] }
+      : { choices: [{ finish_reason: "stop", message: { content: "" } }] } };
+  } });
+  await assert.rejects(
+    () => exhaustedClient.reply(retryInput),
+    (error) => error.code === "AI_RESPONSE_EMPTY" && /自动重试后仍未恢复/.test(error.message)
+  );
+  assert.equal(exhaustedCalls, 2, "two invalid responses must pause instead of retrying forever");
+  let incompleteCalls = 0;
+  const incompleteRetryClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => ({
+    ok: true,
+    json: async () => (++incompleteCalls === 1
+      ? { choices: [{ finish_reason: "insufficient_system_resource", message: { content: "" } }] }
+      : { choices: [{ finish_reason: "stop", message: { content: validRetryContent } }] })
+  }) });
+  assert.equal((await incompleteRetryClient.reply(retryInput)).intent, true);
+  assert.equal(incompleteCalls, 2, "an incomplete generation must retry exactly once");
+  let filteredCalls = 0;
+  const filteredClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => {
+    filteredCalls += 1;
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: "content_filter", message: { content: "" } }] }) };
+  } });
+  await assert.rejects(
+    () => filteredClient.reply(retryInput),
+    (error) => error.code === "AI_CONTENT_FILTERED" && /安全策略拦截/.test(error.message)
+  );
+  assert.equal(filteredCalls, 1, "content-filtered output must pause without retrying");
+  let networkCalls = 0;
+  const networkFailureClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => {
+    networkCalls += 1;
+    throw new Error("offline");
+  } });
+  await assert.rejects(() => networkFailureClient.reply(retryInput), (error) => error.code === "AI_NETWORK_ERROR");
+  assert.equal(networkCalls, 1, "transport failures must not use the structured-output retry");
   const stalledClient = createDeepSeekClient({
     keyStore: store,
     requestTimeoutMs: 5,
