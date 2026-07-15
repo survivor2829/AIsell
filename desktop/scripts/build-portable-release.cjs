@@ -141,7 +141,7 @@ function scanRelease(target) {
 }
 
 function removeLegacyProducts() {
-  for (const name of ["小玺AI员工", "小玺AI员工-客户版", "小玺AI员工-受控试用版"]) {
+  for (const name of ["小玺AI员工", "小玺AI员工-客户版", "小玺AI员工-受控试用版", "小玺AI员工-交付版"]) {
     const directory = path.join(releaseDir, name);
     if (fs.existsSync(directory)) removeGenerated(directory);
     const zip = path.join(releaseDir, `${name}.zip`);
