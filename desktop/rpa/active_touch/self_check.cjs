@@ -823,6 +823,7 @@ try {
   const driverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.cjs"), "utf8");
   const messageDraftSource = driverSource.split("const MESSAGE_DRAFT_SCRIPT = `")[1].split("`;")[0];
   const developmentDriverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.dev.cjs"), "utf8");
+  const sendMessageSource = developmentDriverSource.split("const SEND_MESSAGE_SCRIPT = `")[1].split("`;")[0];
   assert.equal(driverSource.includes("clickWechatSendButton"), false);
   assert.equal(driverSource.includes("SEND_MESSAGE_SCRIPT"), false);
   assert.equal(driverSource.includes("XIAOXI_SEND_KEY"), false);
@@ -845,7 +846,17 @@ try {
   assert.match(developmentDriverSource, /atomic_conversation_changed/);
   assert.match(developmentDriverSource, /atomic_draft_changed/);
   assert.match(developmentDriverSource, /function Normalize-WechatDraftText/);
-  assert.match(developmentDriverSource, /conversationVerified = \$true[\s\S]*draftVerified = \(Normalize-WechatDraftText \$copiedDraft\) -ceq \$normalizedExpectedMessage[\s\S]*SendWait\(\$sendKey\)/);
+  assert.match(sendMessageSource, /conversationVerified = \$true[\s\S]*draftVerified = \(Normalize-WechatDraftText \$copiedDraft\) -ceq \$normalizedExpectedMessage/);
+  assert.match(sendMessageSource, /wechat_send_button_not_found/);
+  assert.match(sendMessageSource, /\(Get-ElementText \$element\) -cne "发送"/);
+  assert.match(sendMessageSource, /InvokePattern/);
+  assert.match(sendMessageSource, /\$sendElements[\s\S]*\$copiedDraft =/);
+  assert.match(sendMessageSource, /\$conversationElement[\s\S]*atomic_conversation_changed/);
+  assert.match(sendMessageSource, /GetCursorPos\(\[ref\]\$sendPoint\)[\s\S]*wechat_send_cursor_mismatch/);
+  assert.match(sendMessageSource, /wechat_send_button_invoke_outcome_unknown[\s\S]*exit[\s\S]*\}\s*\} else \{/);
+  assert.match(sendMessageSource, /SetCursorPos\(\$sendX, \$sendY\)[\s\S]*mouse_event\(0x0002[\s\S]*mouse_event\(0x0004/);
+  assert.equal(sendMessageSource.includes("SendWait($sendKey)"), false);
+  assert.equal(sendMessageSource.includes("XIAOXI_SEND_KEY"), false);
   assert.match(developmentDriverSource, /context\.phase === "after" \? "after" : "before"/);
   assert.match(developmentDriverSource, /beforeSnapshot/);
   assert.match(developmentDriverSource, /exactMatch/);
