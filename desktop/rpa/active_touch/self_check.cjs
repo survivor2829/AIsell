@@ -40,11 +40,25 @@ const {
   taskBackupPath
 } = require("./touch_task_state.cjs");
 const { main: runActiveTouchCli } = require("./active_touch_cli.cjs");
+const { runPowerShell } = require("./wechat_window_driver.cjs");
 
 (async () => {
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-active-touch-"));
 
 try {
+  const longPowerShellProbe = `$OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8\n$padding = "${"x".repeat(16000)}"\n@{ ok = $true; length = $padding.Length; value = "微信发送" } | ConvertTo-Json -Compress`;
+  assert.deepEqual(
+    runPowerShell(longPowerShellProbe, {}, { ensure: false }),
+    { ok: true, length: 16000, value: "微信发送" }
+  );
+  const scriptScopeProbe = `$matched = $null\n$callback = { $script:matched = "bound" }\n& $callback\n@{ ok = $true; matched = $matched } | ConvertTo-Json -Compress`;
+  assert.deepEqual(runPowerShell(scriptScopeProbe, {}, { ensure: false }), { ok: true, matched: "bound" });
+  assert.deepEqual(
+    runPowerShell('@{ ok = $false; reason = "probe_reason" } | ConvertTo-Json -Compress\nexit', {}, { ensure: false }),
+    { ok: false, reason: "probe_reason" }
+  );
+  assert.deepEqual(runPowerShell("exit 7", {}, { ensure: false }), { ok: false, reason: "powershell_failed" });
+
   const task = createTask(
     "{称呼}，您好",
     [
@@ -849,14 +863,19 @@ try {
   assert.match(developmentDriverSource, /atomic_draft_changed/);
   assert.match(developmentDriverSource, /function Normalize-WechatDraftText/);
   assert.match(sendMessageSource, /conversationVerified = \$true[\s\S]*draftVerified = \(Normalize-WechatDraftText \$copiedDraft\) -ceq \$normalizedExpectedMessage/);
-  assert.match(sendMessageSource, /wechat_send_button_not_found/);
   assert.match(sendMessageSource, /atomic_expected_window_not_found/);
-  assert.match(sendMessageSource, /\(Get-ElementText \$element\) -cne "发送"/);
-  assert.match(sendMessageSource, /InvokePattern/);
-  assert.match(sendMessageSource, /\$sendElements[\s\S]*\$copiedDraft =/);
+  assert.doesNotMatch(sendMessageSource, /\(Get-ElementText \$element\) -cne "发送"/);
+  assert.doesNotMatch(sendMessageSource, /InvokePattern/);
+  assert.doesNotMatch(sendMessageSource, /\$sendCandidates/);
+  assert.match(sendMessageSource, /GetDpiForWindow/);
+  assert.match(sendMessageSource, /\$sendRightOffsetDip = 64/);
+  assert.match(sendMessageSource, /\$sendBottomOffsetDip = 42/);
+  assert.match(sendMessageSource, /\$clickRect = \$root\.Current\.BoundingRectangle/);
+  assert.doesNotMatch(sendMessageSource, /GetWindowRect\([^\r\n]*clickRect/);
+  assert.match(sendMessageSource, /wechat_send_point_invalid/);
+  assert.match(sendMessageSource, /WindowFromPoint\(\$sendPoint\)[\s\S]*GetAncestor\(\$pointWindow, 2\)[\s\S]*wechat_send_point_obscured[\s\S]*\$sendAttempted = \$true/);
   assert.match(sendMessageSource, /\$conversationElement[\s\S]*atomic_conversation_changed/);
   assert.match(sendMessageSource, /GetCursorPos\(\[ref\]\$sendPoint\)[\s\S]*wechat_send_cursor_mismatch/);
-  assert.match(sendMessageSource, /wechat_send_button_invoke_outcome_unknown[\s\S]*exit[\s\S]*\}\s*\} else \{/);
   assert.match(sendMessageSource, /SetCursorPos\(\$sendX, \$sendY\)[\s\S]*mouse_event\(0x0002[\s\S]*mouse_event\(0x0004/);
   assert.equal(sendMessageSource.includes("SendWait($sendKey)"), false);
   assert.equal(sendMessageSource.includes("XIAOXI_SEND_KEY"), false);
@@ -924,6 +943,7 @@ try {
   assert.match(developmentUiSource, /data-xiaoxi-real-send/);
   assert.match(developmentUiSource, /replaceAll\("\{称呼\}"/);
   assert.match(developmentUiSource, /setStatus\("开发执行器未连接"\)/);
+  assert.match(developmentUiSource, /const exactReason = result\.state\?\.real_send_reason;[\s\S]*`发送结果无法确认：\$\{exactReason\}`[\s\S]*result\.blocked_reason/);
   assert.match(developmentUiSource, /<Send size=\{17\} \/>直接发送<\/button>/);
   assert.equal(developmentUiSource.includes("按住3秒"), false);
   assert.equal(developmentUiSource.includes("beginRealSendHold"), false);

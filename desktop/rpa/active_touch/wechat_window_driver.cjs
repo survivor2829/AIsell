@@ -1,5 +1,10 @@
 const { spawn, spawnSync } = require("node:child_process");
 
+const POWERSHELL_STDIN_BOOTSTRAP = Buffer.from(
+  '$ProgressPreference="SilentlyContinue";$raw=[Console]::In.ReadToEnd();$text=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($raw));. ([ScriptBlock]::Create($text))',
+  "utf16le"
+).toString("base64");
+
 const ENSURE_WECHAT_WINDOW_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient
@@ -234,10 +239,11 @@ function ensureWechatWindowVisible() {
 
 function runPowerShell(script, env = {}, options = {}) {
   const ensureResult = options.ensure === false ? {} : ensureWechatWindowVisible();
-  const encoded = Buffer.from(script, "utf16le").toString("base64");
-  const result = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], {
+  const scriptInput = Buffer.from(script, "utf16le").toString("base64");
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", POWERSHELL_STDIN_BOOTSTRAP], {
     encoding: "utf8",
     env: { ...process.env, ...env },
+    input: scriptInput,
     timeout: 15000,
     windowsHide: true
   });

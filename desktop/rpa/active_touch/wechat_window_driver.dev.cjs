@@ -24,8 +24,11 @@ public static class Win32WechatSendMessage {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
+  [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
 }
 "@
@@ -133,49 +136,6 @@ try {
   Start-Sleep -Milliseconds 35
   [Win32WechatSendMessage]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 60
-  $sendCandidates = @()
-  $candidateKeys = @{}
-  $sendElements = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
-  for ($index = 0; $index -lt $sendElements.Count; $index++) {
-    $element = $sendElements.Item($index)
-    if ((Get-ElementText $element) -cne "发送") { continue }
-    $button = $element
-    for ($depth = 0; $depth -le 3; $depth++) {
-      try {
-        if ($button.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button) { break }
-        $button = [System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($button)
-      } catch {
-        $button = $null
-      }
-      if ($button -eq $null) { break }
-    }
-    if ($button -eq $null) { continue }
-    try {
-      if ($button.Current.ControlType -ne [System.Windows.Automation.ControlType]::Button -or $button.Current.IsOffscreen) { continue }
-      $buttonRect = $button.Current.BoundingRectangle
-      $insideSendArea = $buttonRect.Left -ge ($windowRect.Left + ($windowRect.Width * 0.70)) -and
-        $buttonRect.Top -ge ($windowRect.Top + ($windowRect.Height * 0.65)) -and
-        $buttonRect.Right -le ($windowRect.Right + 1) -and $buttonRect.Bottom -le ($windowRect.Bottom + 1) -and
-        $buttonRect.Width -ge 30 -and $buttonRect.Width -le 220 -and $buttonRect.Height -ge 18 -and $buttonRect.Height -le 90
-      if (-not $insideSendArea) { continue }
-      try { $candidateKey = [string]::Join(".", $button.GetRuntimeId()) } catch { $candidateKey = "$([int]$buttonRect.Left):$([int]$buttonRect.Top):$([int]$buttonRect.Width):$([int]$buttonRect.Height)" }
-      if (-not $candidateKeys.ContainsKey($candidateKey)) {
-        $candidateKeys[$candidateKey] = $true
-        $sendCandidates += @{ element = $button; label = $element }
-      }
-    } catch {}
-  }
-  if ($sendCandidates.Count -eq 0) {
-    @{ ok = $false; reason = "wechat_send_button_not_found"; conversationVerified = $conversationVerified; draftVerified = $draftVerified; sendAttempted = $false } | ConvertTo-Json -Compress
-    exit
-  }
-  if ($sendCandidates.Count -gt 1) {
-    @{ ok = $false; reason = "wechat_send_button_ambiguous"; conversationVerified = $conversationVerified; draftVerified = $draftVerified; sendAttempted = $false } | ConvertTo-Json -Compress
-    exit
-  }
-  $sendButton = $sendCandidates[0].element
-  $sendButtonLabel = $sendCandidates[0].label
-
   $probe = "__XIAOXI_ATOMIC_SEND_" + [Guid]::NewGuid().ToString("N")
   Set-Clipboard -Value $probe
   [System.Windows.Forms.SendKeys]::SendWait("^a")
@@ -200,57 +160,52 @@ try {
     exit
   }
 
-  $sendButtonValid = $false
-  $sendButtonEnabled = $false
-  try {
-    $sendButtonRect = $sendButton.Current.BoundingRectangle
-    $sendButtonEnabled = $sendButton.Current.IsEnabled
-    $sendButtonValid = -not $sendButton.Current.IsOffscreen -and
-      (Get-ElementText $sendButtonLabel) -ceq "发送" -and
-      $sendButtonRect.Left -ge ($windowRect.Left + ($windowRect.Width * 0.70)) -and
-      $sendButtonRect.Top -ge ($windowRect.Top + ($windowRect.Height * 0.65)) -and
-      $sendButtonRect.Right -le ($windowRect.Right + 1) -and $sendButtonRect.Bottom -le ($windowRect.Bottom + 1) -and
-      $sendButtonRect.Width -ge 30 -and $sendButtonRect.Width -le 220 -and $sendButtonRect.Height -ge 18 -and $sendButtonRect.Height -le 90
-  } catch {}
-  if (-not $sendButtonValid) {
-    @{ ok = $false; reason = "wechat_send_button_changed"; conversationVerified = $conversationVerified; draftVerified = $draftVerified; sendAttempted = $false } | ConvertTo-Json -Compress
-    exit
-  }
-  if (-not $sendButtonEnabled) {
-    @{ ok = $false; reason = "wechat_send_button_disabled"; conversationVerified = $conversationVerified; draftVerified = $draftVerified; sendAttempted = $false } | ConvertTo-Json -Compress
-    exit
-  }
   if ([Win32WechatSendMessage]::GetForegroundWindow().ToInt64() -ne [int64]$matched.hWnd) {
     @{ ok = $false; reason = "atomic_wechat_focus_changed"; conversationVerified = $conversationVerified; draftVerified = $draftVerified; sendAttempted = $false } | ConvertTo-Json -Compress
     exit
   }
 
-  $invokePattern = $null
-  if ($sendButton.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invokePattern) -and $invokePattern -ne $null) {
-    try {
-      $sendAttempted = $true
-      ([System.Windows.Automation.InvokePattern]$invokePattern).Invoke()
-      $sendAction = "uia_invoke"
-    } catch {
-      @{ ok = $false; reason = "wechat_send_button_invoke_outcome_unknown"; conversationVerified = $conversationVerified; draftVerified = $draftVerified; sendAttempted = $true } | ConvertTo-Json -Compress
-      exit
-    }
-  } else {
-    $sendX = [int]($sendButtonRect.Left + ($sendButtonRect.Width / 2))
-    $sendY = [int]($sendButtonRect.Top + ($sendButtonRect.Height / 2))
-    $cursorMoved = [Win32WechatSendMessage]::SetCursorPos($sendX, $sendY)
-    $sendPoint = New-Object Win32WechatSendMessage+POINT
-    $cursorVerified = $cursorMoved -and [Win32WechatSendMessage]::GetCursorPos([ref]$sendPoint) -and [Math]::Abs($sendPoint.X - $sendX) -le 1 -and [Math]::Abs($sendPoint.Y - $sendY) -le 1
-    if (-not $cursorVerified -or [Win32WechatSendMessage]::GetForegroundWindow().ToInt64() -ne [int64]$matched.hWnd) {
-      @{ ok = $false; reason = "wechat_send_cursor_mismatch"; conversationVerified = $conversationVerified; draftVerified = $draftVerified; sendAttempted = $false } | ConvertTo-Json -Compress
-      exit
-    }
-    $sendAttempted = $true
-    [Win32WechatSendMessage]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 35
-    [Win32WechatSendMessage]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-    $sendAction = "mouse_click"
+  try {
+    $clickRect = $root.Current.BoundingRectangle
+  } catch {
+    @{ ok = $false; reason = "wechat_send_point_invalid"; conversationVerified = $conversationVerified; draftVerified = $draftVerified; sendAttempted = $false } | ConvertTo-Json -Compress
+    exit
   }
+  $dpi = 96
+  try {
+    $windowDpi = [int][Win32WechatSendMessage]::GetDpiForWindow([IntPtr][int64]$matched.hWnd)
+    if ($windowDpi -gt 0) { $dpi = $windowDpi }
+  } catch {}
+  $dpiScale = [double]$dpi / 96.0
+  $sendRightOffsetDip = 64
+  $sendBottomOffsetDip = 42
+  $sendX = [int]($clickRect.Right - [Math]::Round($sendRightOffsetDip * $dpiScale))
+  $sendY = [int]($clickRect.Bottom - [Math]::Round($sendBottomOffsetDip * $dpiScale))
+  $clickWidth = $clickRect.Width
+  $clickHeight = $clickRect.Height
+  $sendPointValid = $sendX -ge ($clickRect.Left + ($clickWidth * 0.70)) -and $sendX -lt $clickRect.Right -and
+    $sendY -ge ($clickRect.Top + ($clickHeight * 0.65)) -and $sendY -lt $clickRect.Bottom
+  if (-not $sendPointValid) {
+    @{ ok = $false; reason = "wechat_send_point_invalid"; conversationVerified = $conversationVerified; draftVerified = $draftVerified; sendAttempted = $false } | ConvertTo-Json -Compress
+    exit
+  }
+  $cursorMoved = [Win32WechatSendMessage]::SetCursorPos($sendX, $sendY)
+  $sendPoint = New-Object Win32WechatSendMessage+POINT
+  $cursorVerified = $cursorMoved -and [Win32WechatSendMessage]::GetCursorPos([ref]$sendPoint) -and [Math]::Abs($sendPoint.X - $sendX) -le 1 -and [Math]::Abs($sendPoint.Y - $sendY) -le 1
+  if (-not $cursorVerified -or [Win32WechatSendMessage]::GetForegroundWindow().ToInt64() -ne [int64]$matched.hWnd) {
+    @{ ok = $false; reason = "wechat_send_cursor_mismatch"; conversationVerified = $conversationVerified; draftVerified = $draftVerified; sendAttempted = $false } | ConvertTo-Json -Compress
+    exit
+  }
+  $pointWindow = [Win32WechatSendMessage]::WindowFromPoint($sendPoint)
+  if ($pointWindow -eq [IntPtr]::Zero -or [Win32WechatSendMessage]::GetAncestor($pointWindow, 2).ToInt64() -ne [int64]$matched.hWnd) {
+    @{ ok = $false; reason = "wechat_send_point_obscured"; conversationVerified = $conversationVerified; draftVerified = $draftVerified; sendAttempted = $false } | ConvertTo-Json -Compress
+    exit
+  }
+  $sendAttempted = $true
+  [Win32WechatSendMessage]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 35
+  [Win32WechatSendMessage]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+  $sendAction = "mouse_click_relative_send_area"
 } finally {
   try { Set-Clipboard -Value $oldClipboard } catch {}
   [void][Win32WechatSendMessage]::SetCursorPos($oldPoint.X, $oldPoint.Y)

@@ -2,7 +2,7 @@ import { Send, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 
 type Contact = { id: string; name: string; remark?: string; nickname?: string; wechatId?: string; allowed: boolean };
-type Result = { ok: boolean; error?: string; blocked_reason?: string };
+type Result = { ok: boolean; error?: string; blocked_reason?: string; state?: { real_send_reason?: string } };
 
 export default function DevelopmentAcceptance({ contacts, message }: { contacts: Contact[]; message: string }) {
   const [selectedId, setSelectedId] = useState("");
@@ -21,7 +21,8 @@ export default function DevelopmentAcceptance({ contacts, message }: { contacts:
     setBusy(true);
     try {
       const result = await action();
-      setStatus(result.ok ? success : result.error || result.blocked_reason || "执行被阻断");
+      const exactReason = result.state?.real_send_reason;
+      setStatus(result.ok ? success : result.error || (exactReason ? `发送结果无法确认：${exactReason}` : "") || result.blocked_reason || "执行被阻断");
       return result;
     } catch (error) {
       const detail = error instanceof Error ? error.message : "执行失败";
