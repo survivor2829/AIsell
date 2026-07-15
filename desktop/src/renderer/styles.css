@@ -2,6 +2,16 @@
   box-sizing: border-box;
 }
 
+:root {
+  --brand-red: #e60000;
+  --brand-red-bright: #fb0001;
+  --brand-red-dark: #c91739;
+  --brand-rose: #ad2a55;
+  --brand-slate: #5c7ca5;
+  --brand-soft: #fff2f3;
+  --brand-ring: rgba(230, 0, 0, 0.16);
+}
+
 html,
 body,
 #root {
@@ -13,7 +23,7 @@ body,
 body {
   font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
   color: #1f2937;
-  background: #f7dce2;
+  background: var(--brand-soft);
   overflow: hidden;
 }
 
@@ -30,7 +40,7 @@ button:focus {
 }
 
 button:focus-visible {
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.16);
+  box-shadow: 0 0 0 2px var(--brand-ring);
 }
 
 .app-shell {
@@ -39,8 +49,8 @@ button:focus-visible {
   display: grid;
   grid-template-columns: 236px 1fr;
   background:
-    linear-gradient(90deg, rgba(255, 119, 149, 0.3), rgba(255, 255, 255, 0) 40%),
-    #f9dfe4;
+    linear-gradient(90deg, rgba(230, 0, 0, 0.12), rgba(255, 255, 255, 0) 40%),
+    var(--brand-soft);
 }
 
 .sidebar {
@@ -48,7 +58,7 @@ button:focus-visible {
   display: flex;
   flex-direction: column;
   padding: 12px 12px 20px 6px;
-  background: linear-gradient(188deg, #3189ff 0%, #9556ff 31%, #f625d1 58%, #ff238f 100%);
+  background: linear-gradient(188deg, var(--brand-red-bright) 0%, var(--brand-red) 43%, var(--brand-red-dark) 72%, var(--brand-slate) 100%);
   color: #fff;
   overflow: hidden;
 }
@@ -70,12 +80,12 @@ button:focus-visible {
   border-radius: 7px;
   display: grid;
   place-items: center;
-  background: #e60012;
-  color: #fff;
+  background: #fff;
+  color: var(--brand-red);
   font-weight: 900;
   font-size: 24px;
   line-height: 1;
-  box-shadow: 0 10px 20px rgba(79, 70, 229, 0.22);
+  box-shadow: 0 10px 20px rgba(118, 0, 15, 0.24);
 }
 
 .nav-list {
@@ -200,7 +210,7 @@ button:focus-visible {
   align-items: center;
   justify-content: space-between;
   padding: 0 22px 0 12px;
-  background: #f8dce1;
+  background: var(--brand-soft);
 }
 
 .top-actions {
@@ -220,7 +230,7 @@ button:focus-visible {
   border: 0;
   border-radius: 999px;
   background: #fff;
-  color: #ff5e97;
+  color: var(--brand-red);
   font-weight: 700;
 }
 
@@ -230,8 +240,8 @@ button:focus-visible {
   display: grid;
   place-items: center;
   border-radius: 50%;
-  color: #0d60b8;
-  background: linear-gradient(135deg, #bde6ff, #f2f7ff);
+  color: var(--brand-red-dark);
+  background: linear-gradient(135deg, #ffd9dc, #fff7f7);
   font-weight: 800;
 }
 
@@ -309,10 +319,10 @@ button:focus-visible {
 }
 
 .primary-button {
-  border: 1px solid #0d4de3;
-  background: #0645d9;
+  border: 1px solid var(--brand-red-dark);
+  background: var(--brand-red);
   color: #fff;
-  box-shadow: 0 5px 12px rgba(6, 69, 217, 0.17);
+  box-shadow: 0 5px 12px rgba(230, 0, 0, 0.17);
 }
 
 .danger-button {
@@ -361,8 +371,8 @@ button:focus-visible {
   display: grid;
   place-items: center;
   border-radius: 10px;
-  background: #edf5ff;
-  color: #1d4ed8;
+  background: var(--brand-soft);
+  color: var(--brand-red-dark);
 }
 
 .channel-account-card strong {
@@ -416,8 +426,8 @@ button:focus-visible {
   display: grid;
   place-items: center;
   border-radius: 12px;
-  background: #edf5ff;
-  color: #1d4ed8;
+  background: var(--brand-soft);
+  color: var(--brand-red-dark);
 }
 
 .ai-expert-file > div {
@@ -765,10 +775,10 @@ td {
 .page-num {
   min-width: 25px;
   height: 25px;
-  border: 1px solid #3958e8;
+  border: 1px solid var(--brand-red);
   border-radius: 7px;
   background: #fff;
-  color: #2e49d1;
+  color: var(--brand-red-dark);
   font-weight: 800;
 }
 
@@ -861,8 +871,8 @@ td {
   align-items: center;
   padding: 0 12px;
   border-radius: 8px;
-  background: #eff6ff;
-  color: #1d4ed8;
+  background: var(--brand-soft);
+  color: var(--brand-red-dark);
   font-size: 14px;
   font-weight: 800;
 }
@@ -913,8 +923,8 @@ td {
 
 .flow-field input:focus,
 .flow-field textarea:focus {
-  border-color: #2f5bea;
-  box-shadow: 0 0 0 3px rgba(47, 91, 234, 0.12);
+  border-color: var(--brand-red);
+  box-shadow: 0 0 0 3px var(--brand-ring);
   outline: none;
 }
 
@@ -1008,8 +1018,8 @@ td {
   align-items: center;
   padding: 0 12px;
   border-radius: 8px;
-  background: #eff6ff;
-  color: #1d4ed8;
+  background: var(--brand-soft);
+  color: var(--brand-red-dark);
   font-size: 14px;
   font-weight: 800;
 }
@@ -1246,14 +1256,14 @@ td {
 }
 
 .conversation-check input:focus {
-  border-color: #2f5bea;
-  box-shadow: 0 0 0 3px rgba(47, 91, 234, 0.12);
+  border-color: var(--brand-red);
+  box-shadow: 0 0 0 3px var(--brand-ring);
   outline: none;
 }
 
 .message-draft-row input:focus {
-  border-color: #2f5bea;
-  box-shadow: 0 0 0 3px rgba(47, 91, 234, 0.12);
+  border-color: var(--brand-red);
+  box-shadow: 0 0 0 3px var(--brand-ring);
   outline: none;
 }
 
@@ -1333,12 +1343,12 @@ td .text-button {
   height: 58px;
   border: 0;
   border-radius: 50%;
-  background: linear-gradient(180deg, #1359e8, #0c41b4);
+  background: linear-gradient(180deg, var(--brand-red-bright), var(--brand-red-dark));
   color: #fff;
   font-size: 13px;
   font-weight: 900;
   line-height: 1.25;
-  box-shadow: 0 11px 24px rgba(12, 65, 180, 0.35);
+  box-shadow: 0 11px 24px rgba(173, 42, 85, 0.35);
   cursor: pointer;
 }
 
@@ -1356,13 +1366,13 @@ td .text-button {
   flex-direction: column;
   gap: 7px;
   padding: 10px;
-  border: 1px solid rgba(49, 137, 255, 0.28);
+  border: 1px solid rgba(230, 0, 0, 0.28);
   border-radius: 18px;
   background:
-    linear-gradient(180deg, rgba(49, 137, 255, 0.12), rgba(246, 37, 209, 0.05) 45%, #fff 100%),
+    linear-gradient(180deg, rgba(230, 0, 0, 0.12), rgba(173, 42, 85, 0.05) 45%, #fff 100%),
     #fff;
   color: #111827;
-  box-shadow: 0 16px 34px rgba(12, 65, 180, 0.22);
+  box-shadow: 0 16px 34px rgba(173, 42, 85, 0.22);
   overflow: hidden;
 }
 
@@ -1390,8 +1400,8 @@ td .text-button {
   width: 11px;
   height: 11px;
   border-radius: 50%;
-  background: #0d4de3;
-  box-shadow: 0 0 0 0 rgba(13, 77, 227, 0.45);
+  background: var(--brand-red);
+  box-shadow: 0 0 0 0 rgba(230, 0, 0, 0.45);
   animation: floating-pulse 1.5s ease-out infinite;
 }
 
@@ -1409,10 +1419,10 @@ td .text-button {
 
 @keyframes floating-pulse {
   70% {
-    box-shadow: 0 0 0 9px rgba(13, 77, 227, 0);
+    box-shadow: 0 0 0 9px rgba(230, 0, 0, 0);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(13, 77, 227, 0);
+    box-shadow: 0 0 0 0 rgba(230, 0, 0, 0);
   }
 }
 
@@ -1430,8 +1440,8 @@ td .text-button {
 }
 
 .floating-close:hover {
-  background: #eef2ff;
-  color: #0d4de3;
+  background: var(--brand-soft);
+  color: var(--brand-red);
 }
 
 .floating-state span {
@@ -1440,8 +1450,8 @@ td .text-button {
   align-items: center;
   padding: 0 8px;
   border-radius: 999px;
-  background: #eff6ff;
-  color: #1d4ed8;
+  background: var(--brand-soft);
+  color: var(--brand-red-dark);
   font-size: 11px;
   font-weight: 800;
 }
@@ -1464,7 +1474,7 @@ td .text-button {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: #0d4de3;
+  background: var(--brand-red);
   transition: width 0.2s ease;
 }
 
@@ -1549,8 +1559,8 @@ td .text-button {
 }
 
 .floating-actions button:first-child {
-  border-color: #0d4de3;
-  background: #0645d9;
+  border-color: var(--brand-red-dark);
+  background: var(--brand-red);
   color: #fff;
 }
 
@@ -1565,8 +1575,8 @@ td .text-button {
   display: grid;
   place-items: center;
   background:
-    linear-gradient(188deg, rgba(49, 137, 255, 0.22) 0%, rgba(149, 86, 255, 0.16) 34%, rgba(246, 37, 209, 0.2) 68%),
-    #f8dce1;
+    linear-gradient(188deg, rgba(251, 0, 1, 0.22) 0%, rgba(230, 0, 0, 0.16) 40%, rgba(92, 124, 165, 0.2) 100%),
+    var(--brand-soft);
 }
 
 .login-card {
@@ -1626,8 +1636,8 @@ td .text-button {
 }
 
 .field input:focus {
-  border-color: #2f5bea;
-  box-shadow: 0 0 0 3px rgba(47, 91, 234, 0.12);
+  border-color: var(--brand-red);
+  box-shadow: 0 0 0 3px var(--brand-ring);
   outline: none;
 }
 
@@ -1709,10 +1719,10 @@ td .text-button {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border: 1px solid #bfdbfe;
+  border: 1px solid #ffc4ca;
   border-radius: 6px;
-  background: #eff6ff;
-  color: #1d4ed8;
+  background: var(--brand-soft);
+  color: var(--brand-red-dark);
   font-size: 14px;
   font-weight: 700;
 }
@@ -1747,8 +1757,8 @@ td .text-button {
 }
 
 .contact-list-toolbar input:focus {
-  border-color: #2f5bea;
-  box-shadow: 0 0 0 3px rgba(47, 91, 234, 0.12);
+  border-color: var(--brand-red);
+  box-shadow: 0 0 0 3px var(--brand-ring);
   outline: none;
 }
 
@@ -1776,8 +1786,8 @@ td .text-button {
 .placeholder-stage {
   padding: 4px 10px;
   border-radius: 999px;
-  background: #eff6ff;
-  color: #1d4ed8;
+  background: var(--brand-soft);
+  color: var(--brand-red-dark);
   font-size: 12px;
   font-weight: 800;
 }
