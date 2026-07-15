@@ -5,6 +5,9 @@ const { sanitizeAiMessage } = require("./ai-draft.cjs");
 const DEEPSEEK_ORIGIN = "https://api.deepseek.com";
 const DEEPSEEK_MODEL = "deepseek-v4-flash";
 const REQUEST_TIMEOUT_MS = 25_000;
+const AUTO_REPLY_FALLBACK = "这个问题我帮您确认一下，稍后回复您。";
+const TEMPORARY_REPLY_FAILURES = new Set(["AI_NETWORK_ERROR", "AI_REQUEST_TIMEOUT", "AI_RATE_LIMITED", "AI_REQUEST_FAILED"]);
+const PAUSING_REPLY_FAILURES = new Set(["API_KEY_MISSING", "API_KEY_INVALID", "SECURE_STORAGE_UNAVAILABLE", "AI_BALANCE_INSUFFICIENT", "AI_REQUEST_REJECTED"]);
 
 class DeepSeekApiError extends Error {
   constructor(code, message) {
@@ -74,7 +77,7 @@ function prompt({ salutation, script }) {
   ];
 }
 
-function replyPrompt({ context, expert }) {
+function replyPrompt({ context, expert, recovery = false }) {
   const messages = (Array.isArray(context) ? context : [])
     .slice(-12)
     .map((message) => ({
@@ -92,9 +95,9 @@ function replyPrompt({ context, expert }) {
 3. 不编造话术文件中没有的价格、政策、承诺、活动、库存或身份。
 4. 不索要验证码、密码、银行卡、身份证等敏感信息，不引导转账。
 5. 按话术文件中的“意向判定”判断intent；intent与needsHuman分别判断，一般咨询、初步询价或愿意留下需求可以intent为true但needsHuman为false。
-6. 可以通过一个关键问题继续判断时needsHuman为false；只有客户明确要求实时报价、下单、实时库存或必须人工承诺时needsHuman为true。话术文件明确规定必须核实的货期、合同、售后、预约等实时事实，客户主动要求人工，或话术资料确实无法可靠回答且继续澄清也不能解决时，也设为true并使用话术文件中的无法回答话术；文件未提供时回复“这个问题我帮您确认一下，稍后回复您。”。
+6. 可以通过一个关键问题继续判断时needsHuman为false；只有客户明确要求实时报价、下单、实时库存或必须人工承诺时needsHuman为true。话术文件明确规定必须核实的货期、合同、售后、预约等实时事实，客户主动要求人工，或话术资料确实无法可靠回答且继续澄清也不能解决时，也设为true并使用话术文件中的无法回答话术；文件未提供时回复“${AUTO_REPLY_FALLBACK}”。
 7. 只输出一个JSON对象，不加Markdown或解释，字段必须完整：
-{"reply":"发给客户的消息","intent":false,"intentReason":"","needsHuman":false,"handoffReason":""}`
+{"reply":"发给客户的消息","intent":false,"intentReason":"","needsHuman":false,"handoffReason":""}${recovery ? "\n8. 当前为结构化恢复请求：必须输出非空、完整且可被JSON.parse解析的JSON对象。" : ""}`
     },
     {
       role: "system",
@@ -132,24 +135,46 @@ function parseReplyPayload(payload) {
   const finishReason = String(choice?.finish_reason || "");
   const content = String(choice?.message?.content || "");
   if (finishReason === "length") throw new DeepSeekApiError("AI_RESPONSE_TRUNCATED", "DeepSeek 返回的结构化回复被截断");
-  if (finishReason === "content_filter") throw new DeepSeekApiError("AI_CONTENT_FILTERED", "DeepSeek 本次回复被安全策略拦截，自动回复已暂停。");
+  if (finishReason === "content_filter") throw new DeepSeekApiError("AI_CONTENT_FILTERED", "DeepSeek 本次回复被安全策略拦截");
   if (finishReason && finishReason !== "stop") throw new DeepSeekApiError("AI_RESPONSE_INCOMPLETE", "DeepSeek 本次生成未完整结束");
   if (!content.trim()) throw new DeepSeekApiError("AI_RESPONSE_EMPTY", "DeepSeek 返回空内容");
   return parseReplyDecision(content);
 }
 
+function replyFailureDiagnostic(payload, error, attempt) {
+  const choice = payload?.choices?.[0];
+  const usage = payload?.usage;
+  const numberOrZero = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+  return `${attempt}:${error.code},finish=${String(choice?.finish_reason || "missing").slice(0, 40)},content=${String(choice?.message?.content || "").length},reasoning=${String(choice?.message?.reasoning_content || "").length},tokens=${numberOrZero(usage?.completion_tokens)},reasoningTokens=${numberOrZero(usage?.completion_tokens_details?.reasoning_tokens)},id=${String(payload?.id || "missing").slice(0, 80)}`;
+}
+
+function fallbackReply(diagnostics, pauseReason = "") {
+  const reply = {
+    reply: AUTO_REPLY_FALLBACK,
+    intent: false,
+    intentReason: "",
+    needsHuman: true,
+    handoffReason: `DeepSeek(${DEEPSEEK_MODEL})未返回有效结构化回复，请人工跟进（${diagnostics.join("；")}）`
+  };
+  return pauseReason
+    ? { ...reply, pauseAfterHandoff: true, pauseReason: String(pauseReason).slice(0, 200) }
+    : reply;
+}
+
 async function responseError(response) {
   if (response.status === 401 || response.status === 403) return new DeepSeekApiError("API_KEY_INVALID", "DeepSeek API Key 无效或已失效，请检查后重新填写。");
   if (response.status === 402) return new DeepSeekApiError("AI_BALANCE_INSUFFICIENT", "DeepSeek 账户余额不足，请充值后再试。");
+  if (response.status === 408) return new DeepSeekApiError("AI_REQUEST_TIMEOUT", "DeepSeek 请求超时，请稍后重试。");
   if (response.status === 429) return new DeepSeekApiError("AI_RATE_LIMITED", "DeepSeek 请求过于频繁，请稍后再试。");
+  if (response.status >= 500) return new DeepSeekApiError("AI_REQUEST_FAILED", "DeepSeek 服务暂时不可用，请稍后重试。");
   let text = "";
   try { text = JSON.stringify(await response.json()).toLowerCase(); } catch {}
-  if (/insufficient_balance|余额不足|balance/.test(text)) return new DeepSeekApiError("AI_BALANCE_INSUFFICIENT", "DeepSeek 账户余额不足，请充值后再试。");
-  return new DeepSeekApiError("AI_REQUEST_FAILED", "DeepSeek 服务暂时不可用，请稍后重试。");
+  if (/insufficient_balance|余额不足/.test(text)) return new DeepSeekApiError("AI_BALANCE_INSUFFICIENT", "DeepSeek 账户余额不足，请充值后再试。");
+  return new DeepSeekApiError("AI_REQUEST_REJECTED", "DeepSeek 拒绝了本次请求，请检查模型和请求配置。");
 }
 
 function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeoutMs = REQUEST_TIMEOUT_MS } = {}) {
-  async function request({ key, messages, maxTokens = 180, responseFormat }) {
+  async function request({ key, messages, maxTokens = 180, responseFormat, disableThinking = false }) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
     try {
@@ -163,7 +188,8 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
           messages,
           temperature: 0.4,
           max_tokens: maxTokens,
-          ...(responseFormat ? { response_format: responseFormat, thinking: { type: "disabled" } } : {})
+          ...(responseFormat ? { response_format: responseFormat } : {}),
+          ...(disableThinking ? { thinking: { type: "disabled" } } : {})
         })
       });
       if (!response.ok) throw await responseError(response);
@@ -201,19 +227,38 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
       if (!normalizedContext.length || normalizedContext.at(-1)?.role !== "user") {
         throw new DeepSeekApiError("AI_CONTEXT_INVALID", "未读取到可靠的客户最新消息，自动回复已取消。");
       }
-      const key = keyStore.read();
-      const messages = replyPrompt({ context: normalizedContext, expert });
-      let lastError;
-      for (const maxTokens of [300, 600]) {
-        const payload = await request({ key, messages, maxTokens, responseFormat: { type: "json_object" } });
+      let key;
+      try {
+        key = keyStore.read();
+      } catch (error) {
+        const code = String(error?.code || "");
+        if (!PAUSING_REPLY_FAILURES.has(code)) throw error;
+        return fallbackReply([replyFailureDiagnostic(undefined, error, "0/config")], error.message);
+      }
+      const attempts = [
+        { name: "json", maxTokens: 300, responseFormat: { type: "json_object" } },
+        { name: "plain", maxTokens: 600, recovery: true }
+      ];
+      const diagnostics = [];
+      for (let index = 0; index < attempts.length; index += 1) {
+        const { name, recovery, ...options } = attempts[index];
+        const messages = replyPrompt({ context: normalizedContext, expert, recovery });
+        let payload;
         try {
+          payload = await request({ key, ...options, messages, disableThinking: true });
           return parseReplyPayload(payload);
         } catch (error) {
-          if (!(error instanceof DeepSeekApiError) || !String(error.code).startsWith("AI_RESPONSE_")) throw error;
-          lastError = error;
+          const code = String(error?.code || "");
+          const outputFailure = code.startsWith("AI_RESPONSE_") || code === "AI_CONTENT_FILTERED";
+          const temporaryFailure = TEMPORARY_REPLY_FAILURES.has(code);
+          const pausingFailure = PAUSING_REPLY_FAILURES.has(code);
+          if (!(error instanceof DeepSeekApiError) || (!outputFailure && !temporaryFailure && !pausingFailure)) throw error;
+          diagnostics.push(replyFailureDiagnostic(payload, error, `${index + 1}/${name}`));
+          if (pausingFailure) return fallbackReply(diagnostics, error.message);
+          if (code === "AI_CONTENT_FILTERED" || temporaryFailure) return fallbackReply(diagnostics);
         }
       }
-      throw new DeepSeekApiError(lastError.code, `${lastError.message}，自动重试后仍未恢复，自动回复已暂停。`);
+      return fallbackReply(diagnostics);
     }
   };
 }

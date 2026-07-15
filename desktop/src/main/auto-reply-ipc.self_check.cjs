@@ -425,8 +425,9 @@ async function main() {
     context: [{ role: "user", content: "请给我第二个方案的正式报价，我准备下单", key: "same-intent-context" }]
   }));
   let deduplicatedHandoffs = 0;
+  const handoffDataDir = path.join(root, "handoff_dedupe");
   const handoffController = createAutoReplyController({
-    dataDir: path.join(root, "handoff_dedupe"),
+    dataDir: handoffDataDir,
     activeTouchDir,
     coordinator,
     expertStore: { read: () => ({ text: "人工提醒：客户明确要求正式报价或下单时提醒人工。" }) },
@@ -452,7 +453,52 @@ async function main() {
   await handoffController.runOnce();
   assert.equal(handoffController.status().reply_count, 2);
   assert.equal(deduplicatedHandoffs, 1, "the same intent context must alert only once");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(handoffDataDir, "auto-reply-state.json"), "utf8")).pending_handoff, null, "a verified handoff must clear its pending identity");
   handoffController.pause();
+
+  const pauseDuringHandoffDir = path.join(root, "pause_during_handoff");
+  let resolvePendingHandoff;
+  let markHandoffStarted;
+  const handoffStarted = new Promise((resolve) => { markHandoffStarted = resolve; });
+  const pendingHandoffResult = new Promise((resolve) => { resolvePendingHandoff = resolve; });
+  const pauseDuringHandoffController = createAutoReplyController({
+    dataDir: pauseDuringHandoffDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "需要人工跟进。" }) },
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => ({ reply: "这个问题我帮您确认一下，稍后回复您。", intent: false, intentReason: "", needsHuman: true, handoffReason: "需要人工确认" })
+    },
+    scanIncoming: () => ({
+      ok: true,
+      conversation: "张总",
+      message: "请人工确认",
+      runtimeId: "pause-during-handoff-1",
+      pid: 81,
+      hWnd: "91",
+      context: [{ role: "user", content: "请人工确认", key: "pause-during-handoff-1" }]
+    }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => (await options.beforeDraft()) ? { ok: true } : { ok: false },
+    sendHandoff: async () => {
+      markHandoffStarted();
+      return pendingHandoffResult;
+    },
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await pauseDuringHandoffController.start()).ok, true);
+  const pendingRun = pauseDuringHandoffController.runOnce();
+  await handoffStarted;
+  pauseDuringHandoffController.pause();
+  const pausedHandoffState = JSON.parse(fs.readFileSync(path.join(pauseDuringHandoffDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(pausedHandoffState.last_event, "handoff_interrupted", "pausing during handoff must preserve the unknown reminder outcome");
+  assert.match(pausedHandoffState.last_error, /张总/);
+  resolvePendingHandoff({ ok: true });
+  await pendingRun;
 
   const unknownDataDir = path.join(root, "unknown_handoff");
   const unknownController = createAutoReplyController({
@@ -481,6 +527,7 @@ async function main() {
       assert.equal(persisted.reply_count, 1, "verified customer reply must be durable before handoff I/O");
       assert.equal(Object.values(persisted.processed).at(-1).status, "sent_verified");
       assert.equal(persisted.last_event, "handoff_pending");
+      assert.equal(persisted.pending_handoff.conversation, "李经理", "the pending handoff identity must be durable before handoff I/O");
       return { ok: false, blocked_reason: "handoff_outcome_unknown" };
     },
     runStep: async () => ({ ok: true }),
@@ -493,6 +540,59 @@ async function main() {
   assert.equal(unknownController.status().reply_count, 1, "safe placeholder is sent before handoff");
   assert.equal(unknownController.status().status, "paused");
   assert.equal(unknownController.status().last_event, "handoff_failed_paused");
+
+  const aiConfigFailureDir = path.join(root, "ai_configuration_failure");
+  let aiConfigFailureSends = 0;
+  let aiConfigFailureHandoffs = 0;
+  const aiConfigFailureController = createAutoReplyController({
+    dataDir: aiConfigFailureDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "业务信息：工业清洁设备。" }) },
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => ({
+        reply: "这个问题我帮您确认一下，稍后回复您。",
+        intent: false,
+        intentReason: "",
+        needsHuman: true,
+        handoffReason: "DeepSeek(API_KEY_INVALID)需要人工跟进",
+        pauseAfterHandoff: true,
+        pauseReason: "DeepSeek API Key 无效"
+      })
+    },
+    scanIncoming: () => ({
+      ok: true,
+      conversation: "张总",
+      message: "想了解清洁设备",
+      runtimeId: "ai-failure-retry-1",
+      pid: 81,
+      hWnd: "91",
+      context: [{ role: "user", content: "想了解清洁设备", key: "ai-failure-retry-1" }]
+    }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => {
+      aiConfigFailureSends += 1;
+      return (await options.beforeDraft()) ? { ok: true } : { ok: false };
+    },
+    sendHandoff: async ({ message }) => {
+      aiConfigFailureHandoffs += 1;
+      assert.match(message, /API_KEY_INVALID/);
+      return { ok: true };
+    },
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await aiConfigFailureController.start()).ok, true);
+  await aiConfigFailureController.runOnce();
+  assert.equal(aiConfigFailureSends, 1, "persistent AI failures must not lose the already-scanned incoming message");
+  assert.equal(aiConfigFailureHandoffs, 1, "persistent AI failures must alert a human before pausing");
+  assert.equal(aiConfigFailureController.status().reply_count, 1);
+  assert.equal(aiConfigFailureController.status().status, "paused");
+  assert.equal(aiConfigFailureController.status().last_event, "ai_configuration_paused");
+  assert.match(aiConfigFailureController.status().last_error, /API Key 无效/);
 
   const rateCases = [
     {
@@ -615,7 +715,18 @@ async function main() {
 
   const interruptedHandoffDir = path.join(root, "interrupted_handoff_recovery");
   fs.mkdirSync(interruptedHandoffDir, { recursive: true });
-  fs.writeFileSync(path.join(interruptedHandoffDir, "auto-reply-state.json"), JSON.stringify({ version: 2, status: "running", daily_date: "2026-07-14", reply_count: 1, last_event: "handoff_pending" }), "utf8");
+  fs.writeFileSync(path.join(interruptedHandoffDir, "auto-reply-state.json"), JSON.stringify({
+    version: 2,
+    status: "running",
+    daily_date: "2026-07-14",
+    reply_count: 1,
+    last_event: "handoff_pending",
+    pending_handoff: { contact_id: "c1", conversation: "张总", at: "2026-07-14T02:00:00.000Z" },
+    processed: {
+      pending: { status: "sent_verified", contact_id: "c1", conversation: "张总", at: "2026-07-14T02:00:00.000Z" },
+      newerUnrelated: { status: "sent_verified", contact_id: "c2", conversation: "李经理", at: "2026-07-14T03:00:00.000Z" }
+    }
+  }), "utf8");
   const interruptedHandoff = createAutoReplyController({
     dataDir: interruptedHandoffDir,
     activeTouchDir,
@@ -625,6 +736,8 @@ async function main() {
   assert.equal(interruptedHandoff.status().status, "paused");
   assert.equal(interruptedHandoff.status().last_event, "handoff_interrupted");
   assert.match(interruptedHandoff.status().last_error, /人工检查/);
+  assert.match(interruptedHandoff.status().last_error, /张总/, "an interrupted handoff must identify the customer without persisting message text");
+  assert.doesNotMatch(interruptedHandoff.status().last_error, /李经理/, "an interrupted handoff must not point at an older verified customer");
 
   const midnightDir = path.join(root, "midnight_auto_reply");
   fs.mkdirSync(midnightDir, { recursive: true });

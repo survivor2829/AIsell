@@ -60,6 +60,11 @@ function dayKey(date) {
   return `${year}-${month}-${day}`;
 }
 
+function handoffInterruptedMessage(pending) {
+  const conversation = normalizeText(pending?.conversation);
+  return `上次人工提醒发送结果未确认${conversation ? `（客户：${conversation}）` : ""}，请在文件传输助手中人工检查`;
+}
+
 function createDefaultState() {
   return {
     version: 2,
@@ -68,6 +73,7 @@ function createDefaultState() {
     daily_date: "",
     processed: {},
     handoff_notified: {},
+    pending_handoff: null,
     rate_events: [],
     last_event: "",
     last_error: "",
@@ -81,12 +87,13 @@ function migrateState(raw, current) {
     const next = { ...createDefaultState(), ...raw };
     next.processed = raw.processed && typeof raw.processed === "object" ? raw.processed : {};
     next.handoff_notified = raw.handoff_notified && typeof raw.handoff_notified === "object" ? raw.handoff_notified : {};
+    next.pending_handoff = raw.pending_handoff && typeof raw.pending_handoff === "object" ? raw.pending_handoff : null;
     next.rate_events = Array.isArray(raw.rate_events) ? raw.rate_events : [];
     if (next.status === "running" || next.status === "starting") {
       next.status = "paused";
       if (next.last_event === "handoff_pending") {
         next.last_event = "handoff_interrupted";
-        next.last_error = "上次人工提醒发送结果未确认，请在文件传输助手中人工检查";
+        next.last_error = handoffInterruptedMessage(next.pending_handoff);
       } else {
         next.last_event = "recovered_after_restart";
       }
@@ -268,7 +275,12 @@ function createAutoReplyController(options = {}) {
     if (timer) cancelSchedule(timer);
     timer = null;
     state.status = "paused";
-    state.last_event = reason;
+    if (state.last_event === "handoff_pending") {
+      state.last_event = "handoff_interrupted";
+      state.last_error = handoffInterruptedMessage(state.pending_handoff);
+    } else {
+      state.last_event = reason;
+    }
     save();
     return { ok: true, state: publicState() };
   }
@@ -493,36 +505,52 @@ function createAutoReplyController(options = {}) {
       state.rate_events.push({ contact_id: contact.id, at: sentAt.toISOString() });
       state.last_event = "reply_sent_verified";
       state.last_error = "";
-      save();
+      const pauseReason = generated?.pauseAfterHandoff === true
+        ? normalizeText(generated?.pauseReason) || "DeepSeek 配置需要人工处理"
+        : "";
 
+      let pendingHandoff;
       if (generated?.needsHuman === true) {
         const reason = normalizeText(generated?.handoffReason || generated?.intentReason) || "需要人工跟进";
         const handoffKey = crypto.createHash("sha256")
           .update(`${contact.id}\n${context.map((item) => `${item.role}:${item.key || item.content}`).join("\n")}`)
           .digest("hex");
         if (!state.handoff_notified?.[handoffKey]) {
-          if (!isCurrentRun()) return publicState();
-          const message = buildHandoffMessage({ conversation, reason, latest: incoming, at: sentAt });
           state.last_event = "handoff_pending";
-          save();
-          coordinator.update(lock.lock.owner, "send-handoff");
-          const handoffResult = await sendHandoff({
-            authorized: true,
-            message,
-            expectedPid: candidate.pid,
-            sourceWindowHandle: candidate.hWnd
-          });
-          if (!handoffResult?.ok) {
-            pauseWithError("handoff_failed_paused", handoffResult?.error || handoffResult?.blocked_reason || "人工提醒发送失败");
-            save();
-            return publicState();
-          }
-          state.handoff_notified ||= {};
-          state.handoff_notified[handoffKey] = { contact_id: contact.id, at: sentAt.toISOString() };
-          trimMap(state.handoff_notified);
-          state.last_event = generated.intent === true ? "intent_handoff_sent" : "human_handoff_sent";
+          state.pending_handoff = { contact_id: contact.id, conversation, at: sentAt.toISOString() };
+          pendingHandoff = {
+            key: handoffKey,
+            message: buildHandoffMessage({ conversation, reason, latest: incoming, at: sentAt })
+          };
         }
       }
+      save();
+      if (!pendingHandoff) {
+        if (pauseReason && isCurrentRun()) {
+          pauseWithError("ai_configuration_paused", pauseReason);
+          save();
+        }
+        return publicState();
+      }
+      if (!isCurrentRun()) return publicState();
+      coordinator.update(lock.lock.owner, "send-handoff");
+      const handoffResult = await sendHandoff({
+        authorized: true,
+        message: pendingHandoff.message,
+        expectedPid: candidate.pid,
+        sourceWindowHandle: candidate.hWnd
+      });
+      if (!handoffResult?.ok) {
+        pauseWithError("handoff_failed_paused", handoffResult?.error || handoffResult?.blocked_reason || "人工提醒发送失败");
+        save();
+        return publicState();
+      }
+      state.handoff_notified ||= {};
+      state.handoff_notified[pendingHandoff.key] = { contact_id: contact.id, at: sentAt.toISOString() };
+      state.pending_handoff = null;
+      trimMap(state.handoff_notified);
+      if (pauseReason) pauseWithError("ai_configuration_paused", pauseReason);
+      else state.last_event = generated.intent === true ? "intent_handoff_sent" : "human_handoff_sent";
       save();
       return publicState();
     } catch (error) {
