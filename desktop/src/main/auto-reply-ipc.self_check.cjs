@@ -37,32 +37,32 @@ async function main() {
     {
       ok: true,
       conversation: "张总",
-      message: "第二个方案多少钱？",
+      message: "第二个方案适合粉尘车间吗？",
       runtimeId: "message-1",
       pid: 81,
       hWnd: "91",
       context: [
         { role: "assistant", content: "我们有基础版和进阶版。", key: "a-1" },
-        { role: "user", content: "第二个方案多少钱？", key: "u-1" }
+        { role: "user", content: "第二个方案适合粉尘车间吗？", key: "u-1" }
       ]
     },
     {
       ok: true,
       conversation: "张总",
-      message: "第二个方案多少钱？",
+      message: "第二个方案适合粉尘车间吗？",
       runtimeId: "message-1",
       pid: 81,
       hWnd: "91",
-      context: [{ role: "user", content: "第二个方案多少钱？", key: "u-1" }]
+      context: [{ role: "user", content: "第二个方案适合粉尘车间吗？", key: "u-1" }]
     },
     {
       ok: true,
       conversation: "张总",
-      message: "第二个方案多少钱？",
+      message: "第二个方案适合粉尘车间吗？",
       runtimeId: "message-2",
       pid: 81,
       hWnd: "91",
-      context: [{ role: "user", content: "第二个方案多少钱？", key: "u-2" }]
+      context: [{ role: "user", content: "第二个方案适合粉尘车间吗？", key: "u-2" }]
     },
     {
       ok: true,
@@ -75,7 +75,7 @@ async function main() {
     }
   ];
   const decisions = [
-    { reply: "第二个方案需要结合数量报价，我帮您安排人工确认。", intent: true, intentReason: "客户询价", needsHuman: true, handoffReason: "需要人工报价" },
+    { reply: "我先根据场景继续帮您缩小范围。", intent: true, intentReason: "客户初步询价", needsHuman: false, handoffReason: "" },
     { reply: "收到，我继续帮您确认第二个方案。", intent: false, intentReason: "", needsHuman: false, handoffReason: "" },
     { reply: "我帮您确认一下，稍后回复您。", intent: false, intentReason: "", needsHuman: true, handoffReason: "资料未覆盖" }
   ];
@@ -95,7 +95,7 @@ async function main() {
     dataDir: path.join(root, "auto_reply"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "业务信息：设备短租。意向判定：询价。" }) },
+    expertStore: { read: () => ({ text: "业务信息：设备短租。意向判定：客户继续了解方案。" }) },
     deepSeekClient: {
       assertAvailable: () => true,
       reply: async ({ context, expert }) => {
@@ -128,8 +128,7 @@ async function main() {
   await controller.runOnce();
   assert.equal(controller.status().reply_count, 1);
   assert.match(sentAttemptIds[0], /^[a-f0-9]{64}$/, "each incoming turn must supply a stable real-send attempt id");
-  assert.equal(handoffs.length, 1);
-  assert.match(handoffs[0], /张总[\s\S]*客户询价/);
+  assert.equal(handoffs.length, 0, "interest that can continue through AI guidance must not alert a human");
   assert.deepEqual(scannedNames[0].sort(), ["张总", "李经理", "已停用"].sort(), "legacy whitelist flags must not narrow the synced private-contact scope");
 
   await controller.runOnce();
@@ -419,26 +418,30 @@ async function main() {
   const handoffCandidates = ["intent-1", "intent-2"].map((runtimeId) => ({
     ok: true,
     conversation: "张总",
-    message: "我想确认第二个方案",
+    message: "请给我第二个方案的正式报价，我准备下单",
     runtimeId,
     pid: 81,
     hWnd: "91",
-    context: [{ role: "user", content: "我想确认第二个方案", key: "same-intent-context" }]
+    context: [{ role: "user", content: "请给我第二个方案的正式报价，我准备下单", key: "same-intent-context" }]
   }));
   let deduplicatedHandoffs = 0;
   const handoffController = createAutoReplyController({
     dataDir: path.join(root, "handoff_dedupe"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "意向判定：客户明确要方案时提醒人工。" }) },
+    expertStore: { read: () => ({ text: "人工提醒：客户明确要求正式报价或下单时提醒人工。" }) },
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => ({ reply: "收到，我帮您继续确认。", intent: true, intentReason: "客户确认方案", needsHuman: true, handoffReason: "" })
+      reply: async () => ({ reply: "收到，我把正式报价需求交给同事确认。", intent: true, intentReason: "客户准备下单", needsHuman: true, handoffReason: "需要正式报价" })
     },
     scanIncoming: () => handoffCandidates.shift() || { ok: false, reason: "no_unread_message" },
     verifyIncoming: () => ({ ok: true }),
     send: async (options) => (await options.beforeDraft()) ? { ok: true } : { ok: false },
-    sendHandoff: async () => { deduplicatedHandoffs += 1; return { ok: true }; },
+    sendHandoff: async ({ message }) => {
+      assert.match(message, /原因：需要正式报价/);
+      deduplicatedHandoffs += 1;
+      return { ok: true };
+    },
     runStep: async () => ({ ok: true }),
     schedule: () => 1,
     cancelSchedule: () => undefined,

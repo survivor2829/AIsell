@@ -88,11 +88,12 @@ function replyPrompt({ context, expert }) {
       content: `你是微信一对一客服回复助手。只根据AI专家话术文件和最近对话生成可直接发送的回复，并判断是否需要人工跟进。
 要求：
 1. 回复自然、礼貌、简短，不重复询问对话中已经回答过的信息。
-2. 不编造话术文件中没有的价格、政策、承诺、活动、库存或身份。
-3. 不索要验证码、密码、银行卡、身份证等敏感信息，不引导转账。
-4. 按话术文件中的“意向判定”判断intent；有意向时intent和needsHuman都为true。
-5. 资料不足时needsHuman为true，并使用话术文件中的无法回答话术；文件未提供时回复“这个问题我帮您确认一下，稍后回复您。”。
-6. 只输出一个JSON对象，不加Markdown或解释，字段必须完整：
+2. 在话术允许范围内先做专业判断，给出最相关方向和简短理由；缺少的信息可以通过一个关键问题确认时，继续由AI沟通。
+3. 不编造话术文件中没有的价格、政策、承诺、活动、库存或身份。
+4. 不索要验证码、密码、银行卡、身份证等敏感信息，不引导转账。
+5. 按话术文件中的“意向判定”判断intent；intent与needsHuman分别判断，一般咨询、初步询价或愿意留下需求可以intent为true但needsHuman为false。
+6. 可以通过一个关键问题继续判断时needsHuman为false；只有客户明确要求实时报价、下单、实时库存或必须人工承诺时needsHuman为true。话术文件明确规定必须核实的货期、合同、售后、预约等实时事实，客户主动要求人工，或话术资料确实无法可靠回答且继续澄清也不能解决时，也设为true并使用话术文件中的无法回答话术；文件未提供时回复“这个问题我帮您确认一下，稍后回复您。”。
+7. 只输出一个JSON对象，不加Markdown或解释，字段必须完整：
 {"reply":"发给客户的消息","intent":false,"intentReason":"","needsHuman":false,"handoffReason":""}`
     },
     {
@@ -121,7 +122,7 @@ function parseReplyDecision(value) {
     reply,
     intent: parsed.intent,
     intentReason: parsed.intentReason.trim().slice(0, 200),
-    needsHuman: parsed.needsHuman || parsed.intent,
+    needsHuman: parsed.needsHuman,
     handoffReason: parsed.handoffReason.trim().slice(0, 200)
   };
 }

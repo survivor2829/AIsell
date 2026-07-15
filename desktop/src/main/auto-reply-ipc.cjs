@@ -495,10 +495,8 @@ function createAutoReplyController(options = {}) {
       state.last_error = "";
       save();
 
-      if (generated?.intent === true || generated?.needsHuman === true) {
-        const reason = normalizeText(generated?.intent === true
-          ? generated?.intentReason || generated?.handoffReason
-          : generated?.handoffReason || generated?.intentReason) || "需要人工跟进";
+      if (generated?.needsHuman === true) {
+        const reason = normalizeText(generated?.handoffReason || generated?.intentReason) || "需要人工跟进";
         const handoffKey = crypto.createHash("sha256")
           .update(`${contact.id}\n${context.map((item) => `${item.role}:${item.key || item.content}`).join("\n")}`)
           .digest("hex");
