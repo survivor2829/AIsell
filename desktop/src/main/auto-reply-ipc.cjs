@@ -62,7 +62,15 @@ function dayKey(date) {
 
 function handoffInterruptedMessage(pending) {
   const conversation = normalizeText(pending?.conversation);
-  return `上次人工提醒发送结果未确认${conversation ? `（客户：${conversation}）` : ""}，请在文件传输助手中人工检查`;
+  return `上次人工提醒发送结果未确认${conversation ? `（客户：${conversation}）` : ""}，请在文件传输助手人工检查，确认后点击确认按钮继续`;
+}
+
+function pendingHandoffKey(pending) {
+  const key = normalizeText(pending?.key);
+  if (key) return key;
+  return crypto.createHash("sha256")
+    .update([pending?.contact_id, pending?.conversation, pending?.at].map((value) => normalizeText(value)).join("\n"))
+    .digest("hex");
 }
 
 function createDefaultState() {
@@ -87,16 +95,17 @@ function migrateState(raw, current) {
     const next = { ...createDefaultState(), ...raw };
     next.processed = raw.processed && typeof raw.processed === "object" ? raw.processed : {};
     next.handoff_notified = raw.handoff_notified && typeof raw.handoff_notified === "object" ? raw.handoff_notified : {};
-    next.pending_handoff = raw.pending_handoff && typeof raw.pending_handoff === "object" ? raw.pending_handoff : null;
+    next.pending_handoff = raw.pending_handoff && typeof raw.pending_handoff === "object"
+      ? { ...raw.pending_handoff, key: pendingHandoffKey(raw.pending_handoff) }
+      : null;
     next.rate_events = Array.isArray(raw.rate_events) ? raw.rate_events : [];
-    if (next.status === "running" || next.status === "starting") {
+    if (next.pending_handoff) {
       next.status = "paused";
-      if (next.last_event === "handoff_pending") {
-        next.last_event = "handoff_interrupted";
-        next.last_error = handoffInterruptedMessage(next.pending_handoff);
-      } else {
-        next.last_event = "recovered_after_restart";
-      }
+      next.last_event = "handoff_confirmation_required";
+      next.last_error = handoffInterruptedMessage(next.pending_handoff);
+    } else if (next.status === "running" || next.status === "starting") {
+      next.status = "paused";
+      next.last_event = "recovered_after_restart";
     }
     if (next.daily_date !== dayKey(current)) {
       next.daily_date = dayKey(current);
@@ -212,6 +221,12 @@ function createAutoReplyController(options = {}) {
     || rawState.status === "starting"
     || rawState.daily_date !== state.daily_date
     || Number(rawState.reply_count) !== state.reply_count
+    || Boolean(rawState.pending_handoff) && (
+      rawState.status !== state.status
+      || rawState.last_event !== state.last_event
+      || rawState.last_error !== state.last_error
+      || rawState.pending_handoff?.key !== state.pending_handoff?.key
+    )
   )) {
     state.updated_at = now().toISOString();
     writeAtomic(stateFile, state);
@@ -254,8 +269,21 @@ function createAutoReplyController(options = {}) {
     if (timer || state.status !== "running") return;
     timer = schedule(async () => {
       timer = null;
-      await runOnce();
-      queueNext();
+      try {
+        await runOnce();
+      } catch (error) {
+        pauseForFailure("auto_reply_scheduler_error_paused", error?.message || error || "自动回复轮询失败");
+        saveBestEffort();
+      } finally {
+        if (state.status === "running") {
+          try {
+            queueNext();
+          } catch (error) {
+            pauseForFailure("auto_reply_scheduler_error_paused", error?.message || error || "自动回复轮询调度失败");
+            saveBestEffort();
+          }
+        }
+      }
     }, delay);
   }
 
@@ -270,15 +298,27 @@ function createAutoReplyController(options = {}) {
     trimMap(state.processed);
   }
 
+  function acknowledgePendingHandoff() {
+    if (!state.pending_handoff) return;
+    const pending = state.pending_handoff;
+    const key = pendingHandoffKey(pending);
+    state.handoff_notified ||= {};
+    state.handoff_notified[key] = {
+      contact_id: pending.contact_id,
+      at: now().toISOString(),
+      status: "manual_acknowledged"
+    };
+    state.pending_handoff = null;
+    trimMap(state.handoff_notified);
+  }
+
   function pause(reason = "paused_by_user") {
     runEpoch += 1;
     if (timer) cancelSchedule(timer);
     timer = null;
-    state.status = "paused";
-    if (state.last_event === "handoff_pending") {
-      state.last_event = "handoff_interrupted";
-      state.last_error = handoffInterruptedMessage(state.pending_handoff);
-    } else {
+    if (state.pending_handoff) pauseForFailure("handoff_confirmation_required", "");
+    else {
+      state.status = "paused";
       state.last_event = reason;
     }
     save();
@@ -304,6 +344,7 @@ function createAutoReplyController(options = {}) {
     if (typeof send !== "function" || typeof sendHandoff !== "function" || typeof runStep !== "function") {
       return { ok: false, error: "当前版本未启用经校验的自动回复执行器" };
     }
+    acknowledgePendingHandoff();
     starting = true;
     runEpoch += 1;
     const startEpoch = runEpoch;
@@ -350,28 +391,43 @@ function createAutoReplyController(options = {}) {
     state.last_error = String(error || "自动回复已暂停");
   }
 
+  function pauseForFailure(event, error) {
+    if (!state.pending_handoff) return pauseWithError(event, error);
+    state.status = "paused";
+    state.last_event = "handoff_confirmation_required";
+    const detail = normalizeText(error);
+    const confirmation = handoffInterruptedMessage(state.pending_handoff);
+    state.last_error = detail ? `${confirmation}（${detail}）` : confirmation;
+  }
+
+  function saveBestEffort() {
+    try {
+      save();
+    } catch {}
+  }
+
   async function runOnce() {
     if (scanActive || state.status !== "running") return publicState();
     scanActive = true;
     const activeEpoch = runEpoch;
     const isCurrentRun = () => state.status === "running" && runEpoch === activeEpoch;
-    const current = now();
-    resetDailyCounter(current);
-    const lock = coordinator?.acquire({
-      state: "replying",
-      taskId: `auto-reply-${current.getTime()}`,
-      account: "unknown",
-      phase: "scan-unread"
-    });
-    if (!lock?.ok) {
-      state.last_event = "wechat_operation_busy";
-      state.last_error = "";
-      save();
-      scanActive = false;
-      return publicState();
-    }
-
+    let lock;
     try {
+      const current = now();
+      resetDailyCounter(current);
+      lock = coordinator?.acquire({
+        state: "replying",
+        taskId: `auto-reply-${current.getTime()}`,
+        account: "unknown",
+        phase: "scan-unread"
+      });
+      if (!lock?.ok) {
+        state.last_event = "wechat_operation_busy";
+        state.last_error = "";
+        save();
+        return publicState();
+      }
+
       const contacts = eligibleContacts(activeTouchDir);
       const candidate = await Promise.resolve(scanIncoming(contacts.map((contact) => contact.name)));
       if (!isCurrentRun()) return publicState();
@@ -460,6 +516,8 @@ function createAutoReplyController(options = {}) {
         frozenContact: contact,
         message: reply,
         attemptId: fingerprint,
+        expectedIncomingMessage: candidate.message,
+        expectedIncomingRuntimeId: candidate.runtimeId,
         beforeDraft,
         shouldContinue,
         runStep: (command, args) => runStep(command, args, lock.lock.owner)
@@ -517,7 +575,7 @@ function createAutoReplyController(options = {}) {
           .digest("hex");
         if (!state.handoff_notified?.[handoffKey]) {
           state.last_event = "handoff_pending";
-          state.pending_handoff = { contact_id: contact.id, conversation, at: sentAt.toISOString() };
+          state.pending_handoff = { key: handoffKey, contact_id: contact.id, conversation, at: sentAt.toISOString() };
           pendingHandoff = {
             key: handoffKey,
             message: buildHandoffMessage({ conversation, reason, latest: incoming, at: sentAt })
@@ -541,7 +599,7 @@ function createAutoReplyController(options = {}) {
         sourceWindowHandle: candidate.hWnd
       });
       if (!handoffResult?.ok) {
-        pauseWithError("handoff_failed_paused", handoffResult?.error || handoffResult?.blocked_reason || "人工提醒发送失败");
+        pauseForFailure("handoff_confirmation_required", handoffResult?.error || handoffResult?.blocked_reason || "人工提醒发送失败");
         save();
         return publicState();
       }
@@ -550,17 +608,27 @@ function createAutoReplyController(options = {}) {
       state.pending_handoff = null;
       trimMap(state.handoff_notified);
       if (pauseReason) pauseWithError("ai_configuration_paused", pauseReason);
-      else state.last_event = generated.intent === true ? "intent_handoff_sent" : "human_handoff_sent";
+      else {
+        state.last_event = generated.intent === true ? "intent_handoff_sent" : "human_handoff_sent";
+        state.last_error = "";
+      }
       save();
       return publicState();
     } catch (error) {
-      if (!isCurrentRun()) return publicState();
-      pauseWithError("auto_reply_error_paused", error?.message || error || "自动回复失败");
-      save();
+      if (isCurrentRun()) {
+        pauseForFailure("auto_reply_error_paused", error?.message || error || "自动回复失败");
+        saveBestEffort();
+      }
       return publicState();
     } finally {
-      coordinator.release(lock.lock.owner);
-      scanActive = false;
+      try {
+        if (lock?.ok) coordinator.release(lock.lock.owner);
+      } catch (error) {
+        pauseForFailure("runtime_lock_release_failed_paused", error?.message || error || "微信运行锁释放失败");
+        saveBestEffort();
+      } finally {
+        scanActive = false;
+      }
     }
   }
 

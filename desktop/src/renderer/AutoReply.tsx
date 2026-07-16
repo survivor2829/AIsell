@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 type AutoReplyState = {
   status: string;
   reply_count: number;
+  last_event: string;
   last_error: string;
 };
 type AutoReplyResult = { ok: boolean; state?: Partial<AutoReplyState>; error?: string };
@@ -21,6 +22,7 @@ declare global {
 const EMPTY_STATE: AutoReplyState = {
   status: "stopped",
   reply_count: 0,
+  last_event: "",
   last_error: ""
 };
 
@@ -54,6 +56,7 @@ export function AutoReply() {
 
   const running = state.status === "running";
   const starting = state.status === "starting";
+  const confirmationRequired = state.last_event === "handoff_confirmation_required";
   const statusLabel = running ? "监听中" : starting ? "启动中" : state.status === "paused" ? "已暂停" : "未启动";
 
   return (
@@ -70,7 +73,7 @@ export function AutoReply() {
             </button>
           ) : (
             <button data-xiaoxi-auto-reply-start className="primary-button" onClick={() => window.xiaoxiAutoReply ? run(() => window.xiaoxiAutoReply!.start(), "启动自动回复失败") : setError("当前版本未连接自动回复执行器")} disabled={busy || starting}>
-              <Play size={17} />启动自动回复
+              <Play size={17} />{confirmationRequired ? "确认已检查并启动" : "启动自动回复"}
             </button>
           )}
         </div>

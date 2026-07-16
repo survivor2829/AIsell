@@ -1,7 +1,10 @@
 const {
   focusWechatWindow,
+  focusWechatWindowAsync,
   runPowerShell,
-  verifyWechatCurrentConversation: verifyWechatCurrentConversationSafe
+  runPowerShellAsync,
+  verifyWechatCurrentConversation: verifyWechatCurrentConversationSafe,
+  verifyWechatCurrentConversationAsync: verifyWechatCurrentConversationSafeAsync
 } = require("./wechat_window_driver.cjs");
 
 const SEND_MESSAGE_SCRIPT = `
@@ -36,6 +39,8 @@ $expectedPid = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")
 $expectedHandle = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND")
 $expectedConversation = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_CONVERSATION")
 $expectedMessage = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_MESSAGE")
+$expectedIncomingMessage = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_INCOMING_MESSAGE")
+$expectedIncomingRuntimeId = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_INCOMING_RUNTIME_ID")
 $inputXText = [Environment]::GetEnvironmentVariable("XIAOXI_INPUT_X_RATIO")
 $inputYText = [Environment]::GetEnvironmentVariable("XIAOXI_INPUT_Y_RATIO")
 
@@ -55,6 +60,14 @@ function Get-ElementText([System.Windows.Automation.AutomationElement]$element) 
     if ($pattern -and -not [string]::IsNullOrWhiteSpace($pattern.Current.Value)) { return ([string]$pattern.Current.Value).Trim() }
   } catch {}
   return ""
+}
+
+function Get-ElementKey([System.Windows.Automation.AutomationElement]$element, $rect, [string]$text) {
+  try {
+    $runtimeId = $element.GetRuntimeId()
+    if ($runtimeId -and $runtimeId.Count -gt 0) { return [string]($runtimeId -join ".") }
+  } catch {}
+  return [string]("rect:{0}:{1}:{2}:{3}:{4}" -f [int]$rect.Left, [int]$rect.Top, [int]$rect.Right, [int]$rect.Bottom, $text)
 }
   $processNames = @("Weixin", "WeChat")
 $matched = $null
@@ -201,6 +214,45 @@ try {
     @{ ok = $false; reason = "wechat_send_point_obscured"; conversationVerified = $conversationVerified; draftVerified = $draftVerified; sendAttempted = $false } | ConvertTo-Json -Compress
     exit
   }
+  if (-not [string]::IsNullOrWhiteSpace($expectedIncomingMessage) -and -not [string]::IsNullOrWhiteSpace($expectedIncomingRuntimeId)) {
+    $chatList = $null
+    $latestBubble = $null
+    $latestBubbleText = ""
+    $latestBubbleKey = ""
+    try {
+      $currentAll = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+      for ($index = 0; $index -lt $currentAll.Count; $index++) {
+        $element = $currentAll.Item($index)
+        if ([string]$element.Current.AutomationId -ceq "chat_message_list") { $chatList = $element; break }
+      }
+      if ($chatList -ne $null) {
+        $chatRect = $chatList.Current.BoundingRectangle
+        $bubbleElements = $chatList.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+        $latestBottom = [double]::MinValue
+        for ($index = 0; $index -lt $bubbleElements.Count; $index++) {
+          $element = $bubbleElements.Item($index)
+          if ($element.Current.ControlType -ne [System.Windows.Automation.ControlType]::ListItem) { continue }
+          if ([string]$element.Current.AutomationId -cne "chat_message_list.qt_scrollarea_viewport.chat_bubble_item_view") { continue }
+          if ($element.Current.IsOffscreen) { continue }
+          $text = Get-ElementText $element
+          if ([string]::IsNullOrWhiteSpace($text) -or $text.Length -gt 500) { continue }
+          $rect = $element.Current.BoundingRectangle
+          if ($rect.Width -le 0 -or $rect.Height -le 0) { continue }
+          if ($rect.Top -lt ($chatRect.Top - 1) -or $rect.Bottom -gt ($chatRect.Bottom + 1)) { continue }
+          if ([double]$rect.Bottom -ge $latestBottom) {
+            $latestBottom = [double]$rect.Bottom
+            $latestBubble = $element
+            $latestBubbleText = [string]$text
+            $latestBubbleKey = Get-ElementKey $element $rect $text
+          }
+        }
+      }
+    } catch {}
+    if ($latestBubble -eq $null -or $latestBubbleText -cne $expectedIncomingMessage -or $latestBubbleKey -cne $expectedIncomingRuntimeId) {
+      @{ ok = $false; reason = "incoming_message_changed"; conversationVerified = $conversationVerified; draftVerified = $draftVerified; sendAttempted = $false } | ConvertTo-Json -Compress
+      exit
+    }
+  }
   $sendAttempted = $true
   [Win32WechatSendMessage]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 35
@@ -214,15 +266,25 @@ Start-Sleep -Milliseconds 300
 @{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; sendAction = $sendAction; sendAttempted = $sendAttempted; conversationVerified = $conversationVerified; draftVerified = $draftVerified } | ConvertTo-Json -Compress
 `;
 
-function clickWechatSendButton(_sendKey = "{ENTER}", context = {}) {
-  return runPowerShell(SEND_MESSAGE_SCRIPT, {
+function sendMessageEnvironment(context = {}) {
+  return {
     XIAOXI_EXPECTED_PID: String(context.pid ?? ""),
     XIAOXI_EXPECTED_HWND: String(context.hWnd ?? ""),
     XIAOXI_EXPECTED_CONVERSATION: String(context.expectedConversation ?? ""),
     XIAOXI_EXPECTED_MESSAGE: String(context.expectedMessage ?? ""),
+    XIAOXI_EXPECTED_INCOMING_MESSAGE: String(context.expectedIncomingMessage ?? ""),
+    XIAOXI_EXPECTED_INCOMING_RUNTIME_ID: String(context.expectedIncomingRuntimeId ?? ""),
     XIAOXI_INPUT_X_RATIO: String(context.inputPoint?.xRatio ?? ""),
     XIAOXI_INPUT_Y_RATIO: String(context.inputPoint?.yRatio ?? "")
-  }, { ensure: false });
+  };
+}
+
+function clickWechatSendButton(_sendKey = "{ENTER}", context = {}) {
+  return runPowerShell(SEND_MESSAGE_SCRIPT, sendMessageEnvironment(context), { ensure: false });
+}
+
+function clickWechatSendButtonAsync(_sendKey = "{ENTER}", context = {}) {
+  return runPowerShellAsync(SEND_MESSAGE_SCRIPT, sendMessageEnvironment(context), { ensure: false });
 }
 
 const DETECT_ACTIVE_ACCOUNT_SCRIPT = `
@@ -303,6 +365,15 @@ function detectActiveWechatAccount(context = {}) {
   });
 }
 
+function detectActiveWechatAccountAsync(context = {}) {
+  if (!context.pid) return Promise.resolve({ ok: false, reason: "wechat_pid_missing" });
+  return runPowerShellAsync(DETECT_ACTIVE_ACCOUNT_SCRIPT, {
+    XIAOXI_EXPECTED_PID: String(context.pid),
+    XIAOXI_EXPECTED_ACCOUNT_ID: String(context.expectedAccountId ?? ""),
+    XIAOXI_WECHAT_ROOT: String(context.wechatRoot ?? "")
+  }, { ensure: false });
+}
+
 function verifyWechatCurrentConversation(expectedTitle, context = {}) {
   let result = verifyWechatCurrentConversationSafe(expectedTitle);
   if (!result.ok && context.allowExactSearchFallback === true) {
@@ -323,6 +394,38 @@ function verifyWechatCurrentConversation(expectedTitle, context = {}) {
   }
   if (!result.ok) return result;
   const account = detectActiveWechatAccount({
+    pid: result.pid,
+    expectedAccountId: context.expectedAccountId,
+    wechatRoot: context.wechatRoot
+  });
+  return {
+    ...result,
+    accountId: account.ok ? String(account.accountId ?? "") : "",
+    accountVerified: account.ok === true,
+    accountReason: account.ok ? "" : String(account.reason ?? "wechat_account_not_verified")
+  };
+}
+
+async function verifyWechatCurrentConversationAsync(expectedTitle, context = {}) {
+  let result = await verifyWechatCurrentConversationSafeAsync(expectedTitle);
+  if (!result.ok && context.allowExactSearchFallback === true) {
+    const currentWindow = await focusWechatWindowAsync();
+    const sameWindow = currentWindow.ok
+      && Number(currentWindow.pid) === Number(context.expectedPid)
+      && String(currentWindow.hWnd) === String(context.expectedHWnd)
+      && ["Weixin", "WeChat"].includes(currentWindow.processName);
+    if (sameWindow) {
+      result = {
+        ...currentWindow,
+        ok: true,
+        title: String(expectedTitle),
+        windowTitle: currentWindow.title,
+        verificationMode: "exact_wechat_id_search"
+      };
+    }
+  }
+  if (!result.ok) return result;
+  const account = await detectActiveWechatAccountAsync({
     pid: result.pid,
     expectedAccountId: context.expectedAccountId,
     wechatRoot: context.wechatRoot
@@ -554,9 +657,26 @@ function verifyWechatMessageBubble(message, context = {}) {
   }, { ensure: false });
 }
 
+function verifyWechatMessageBubbleAsync(message, context = {}) {
+  if (!String(message ?? "").trim()) return Promise.resolve({ ok: false, reason: "message_missing" });
+  const phase = context.phase === "after" ? "after" : "before";
+  return runPowerShellAsync(MESSAGE_BUBBLE_PROOF_SCRIPT, {
+    XIAOXI_EXPECTED_MESSAGE: String(message),
+    XIAOXI_EXPECTED_PID: String(context.pid ?? ""),
+    XIAOXI_EXPECTED_HWND: String(context.hWnd ?? ""),
+    XIAOXI_INPUT_X_RATIO: String(context.inputPoint?.xRatio ?? ""),
+    XIAOXI_INPUT_Y_RATIO: String(context.inputPoint?.yRatio ?? ""),
+    XIAOXI_VERIFY_PHASE: phase,
+    XIAOXI_BEFORE_SNAPSHOT: JSON.stringify(context.beforeSnapshot ?? null)
+  }, { ensure: false });
+}
+
 module.exports = {
   clickWechatSendButton,
+  clickWechatSendButtonAsync,
   detectActiveWechatAccount,
   verifyWechatCurrentConversation,
-  verifyWechatMessageBubble
+  verifyWechatCurrentConversationAsync,
+  verifyWechatMessageBubble,
+  verifyWechatMessageBubbleAsync
 };

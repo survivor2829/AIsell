@@ -24,6 +24,7 @@ const {
   verifyWindowTitle
 } = require("./state_machine.cjs");
 const { executeVerifiedContactSend, refreshRealSendSession, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession } = require("./state_machine.dev.cjs");
+const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
 const {
   authorizeNextBatch,
   classifyContacts,
@@ -349,6 +350,8 @@ try {
     contactId: sharedContact.id,
     message: "共享事务消息",
     attemptId: "incoming-turn-1",
+    expectedIncomingMessage: "客户最新问题",
+    expectedIncomingRuntimeId: "incoming-runtime-1",
     frozenContact: sharedContact,
     authorized: true,
     runStep: async (command) => {
@@ -363,6 +366,8 @@ try {
       sharedClicks += 1;
       assert.equal(context.expectedConversation, sharedContact.name);
       assert.equal(context.expectedMessage, "共享事务消息");
+      assert.equal(context.expectedIncomingMessage, "客户最新问题");
+      assert.equal(context.expectedIncomingRuntimeId, "incoming-runtime-1");
       return { ok: true, conversationVerified: true, draftVerified: true };
     },
     bubbleVerifier: (_message, context) => context.phase === "before"
@@ -390,7 +395,7 @@ try {
     real_send_attempt_key: "",
     real_send_armed: true
   });
-  const repeatedIncomingTurn = sendReal(
+  const repeatedIncomingTurn = await sendReal(
     sharedDir,
     { message: "共享事务消息", attemptId: "incoming-turn-1", allowRealSend: true, userConfirmed: true },
     () => { throw new Error("same incoming turn must not click send twice"); },
@@ -400,7 +405,7 @@ try {
   assert.equal(repeatedIncomingTurn.blocked_reason, "real_send_already_attempted");
 
   saveState(sharedDir, { ...loadState(sharedDir), real_send_status: "not_sent", real_send_armed: true });
-  const nextIncomingTurn = sendReal(
+  const nextIncomingTurn = await sendReal(
     sharedDir,
     { message: "共享事务消息", attemptId: "incoming-turn-2", allowRealSend: true, userConfirmed: true },
     () => ({ ok: true, conversationVerified: true, draftVerified: true }),
@@ -412,7 +417,7 @@ try {
   assert.equal(nextIncomingTurn.ok, true, "same reply text from a different incoming turn must be sendable");
 
   saveState(sharedDir, { ...loadState(sharedDir), real_send_status: "not_sent", real_send_armed: true });
-  const taskScopedFallback = sendReal(
+  const taskScopedFallback = await sendReal(
     sharedDir,
     { message: "共享事务消息", allowRealSend: true, userConfirmed: true },
     () => ({ ok: true, conversationVerified: true, draftVerified: true }),
@@ -632,7 +637,7 @@ try {
   assert.equal(send(dir, { dryRun: true, message: "hello" }).state.send_gate_status, "dry_run_passed");
   assert.equal(verifySendResultDryRun(dir, () => ["其他窗口"]).blocked_reason, "post_send_conversation_mismatch");
   assert.equal(verifySendResultDryRun(dir, () => ["测试客户 - 企业微信"]).state.post_send_verified, true);
-  assert.equal(sendReal(dir, { message: "hello" }).blocked_reason, "real_send_not_armed");
+  assert.equal((await sendReal(dir, { message: "hello" })).blocked_reason, "real_send_not_armed");
   assert.equal(send(dir, { dryRun: true, message: "hello" }).state.send_gate_status, "dry_run_passed");
   assert.equal(setRealSendArm(dir, true).blocked_reason, "real_send_session_not_verified");
   saveState(dir, { ...loadState(dir), wechat_account_id: "" });
@@ -657,18 +662,18 @@ try {
   assert.equal(loadState(dir).real_send_attempts["refresh-session-key"], "outcome_unknown");
   assert.equal(send(dir, { dryRun: true, message: "hello" }).state.send_gate_status, "dry_run_passed");
   assert.equal(setRealSendArm(dir, true).state.real_send_armed, true);
-  assert.equal(sendReal(dir, { message: "hello" }).blocked_reason, "real_send_explicit_allow_missing");
+  assert.equal((await sendReal(dir, { message: "hello" })).blocked_reason, "real_send_explicit_allow_missing");
   assert.equal(verifyMessageBubble(dir, () => ({ ok: true })).blocked_reason, "real_send_not_clicked");
   assert.equal(send(dir, { dryRun: true, message: "hello" }).state.send_gate_status, "dry_run_passed");
   assert.equal(verifyRealSendSession(dir, () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true })).ok, true);
   assert.equal(send(dir, { dryRun: true, message: "hello" }).state.send_gate_status, "dry_run_passed");
   assert.equal(setRealSendArm(dir, true).state.real_send_armed, true);
-  assert.equal(sendReal(dir, { message: "hello", allowRealSend: true }).blocked_reason, "real_send_final_confirmation_missing");
+  assert.equal((await sendReal(dir, { message: "hello", allowRealSend: true })).blocked_reason, "real_send_final_confirmation_missing");
   send(dir, { dryRun: true, message: "hello" });
   verifyRealSendSession(dir, () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }));
   setRealSendArm(dir, true);
   let legacySendCalls = 0;
-  const legacyBubbleResult = sendReal(
+  const legacyBubbleResult = await sendReal(
     dir,
     { message: "hello", allowRealSend: true, userConfirmed: true },
     () => { legacySendCalls += 1; return { ok: true }; },
@@ -681,7 +686,7 @@ try {
   verifyRealSendSession(dir, () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }));
   setRealSendArm(dir, true);
   const bubblePhases = [];
-  const sent = sendReal(
+  const sent = await sendReal(
     dir,
     { message: "hello", allowRealSend: true, userConfirmed: true },
     () => {
@@ -710,7 +715,7 @@ try {
   send(dir, { dryRun: true, message: "third" });
   verifyRealSendSession(dir, () => ({ ok: true, pid: 17, hWnd: "28", processName: "Weixin", title: "Draft fallback", accountId: "internal-account", accountVerified: true }));
   setRealSendArm(dir, true);
-  const draftConsumed = sendReal(
+  const draftConsumed = await sendReal(
     dir,
     { message: "third", allowRealSend: true, userConfirmed: true },
     () => ({ ok: true, title: "微信", conversationVerified: true, draftVerified: true }),
@@ -730,7 +735,7 @@ try {
   send(dir, { dryRun: true, message: "second" });
   verifyRealSendSession(dir, () => ({ ok: true, pid: 12, hWnd: "23", processName: "Weixin", title: "未知结果客户", accountId: "internal-account", accountVerified: true }));
   setRealSendArm(dir, true);
-  assert.equal(sendReal(
+  assert.equal((await sendReal(
     dir,
     { message: "second", allowRealSend: true, userConfirmed: true },
     () => ({ ok: true, conversationVerified: true, draftVerified: true }),
@@ -738,7 +743,7 @@ try {
     (_message, context) => context.phase === "before"
       ? { ok: true, snapshot: { lastMessageId: "history-1" } }
       : { ok: true, messageText: "second", exactMatch: true, outgoing: true, isLatest: true, isNew: false }
-  ).state.real_send_status, "outcome_unknown");
+  )).state.real_send_status, "outcome_unknown");
   assert.equal(setRealSendArm(dir, false).state.real_send_status, "outcome_unknown");
   assert.equal(verifyMessageBubble(dir, () => ({ ok: true, messageText: "second!", exactMatch: true, outgoing: true, isLatest: true, isNew: true })).state.real_send_status, "outcome_unknown");
   assert.equal(setRealSendArm(dir, true).blocked_reason, "real_send_already_attempted");
@@ -752,7 +757,7 @@ try {
   send(dir, { dryRun: true, message: "window" });
   verifyRealSendSession(dir, () => ({ ok: true, pid: 13, hWnd: "24", processName: "Weixin", title: "窗口变化客户", accountId: "internal-account", accountVerified: true }));
   setRealSendArm(dir, true);
-  assert.equal(sendReal(dir, { message: "window", allowRealSend: true, userConfirmed: true }, () => ({ ok: true }), () => ({ ok: true, pid: 14, hWnd: "25", processName: "Weixin", title: "窗口变化客户", accountId: "internal-account", accountVerified: true })).blocked_reason, "real_send_session_changed");
+  assert.equal((await sendReal(dir, { message: "window", allowRealSend: true, userConfirmed: true }, () => ({ ok: true }), () => ({ ok: true, pid: 14, hWnd: "25", processName: "Weixin", title: "窗口变化客户", accountId: "internal-account", accountVerified: true }))).blocked_reason, "real_send_session_changed");
   clearCustomer(dir);
   fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_exception", name: "验证异常客户", wechatId: "internal-test-006", wechatAccountId: "internal-account", allowed: true }]), "utf8");
   selectCustomer(dir, "wxid_exception");
@@ -761,7 +766,7 @@ try {
   send(dir, { dryRun: true, message: "exception" });
   verifyRealSendSession(dir, () => ({ ok: true, pid: 15, hWnd: "26", processName: "Weixin", title: "验证异常客户", accountId: "internal-account", accountVerified: true }));
   setRealSendArm(dir, true);
-  assert.equal(sendReal(
+  assert.equal((await sendReal(
     dir,
     { message: "exception", allowRealSend: true, userConfirmed: true },
     () => ({ ok: true, conversationVerified: true, draftVerified: true }),
@@ -770,7 +775,7 @@ try {
       if (context.phase === "before") return { ok: true, snapshot: { lastMessageId: "before-exception" } };
       throw new Error("bubble verifier failed");
     }
-  ).state.real_send_status, "outcome_unknown");
+  )).state.real_send_status, "outcome_unknown");
   clearCustomer(dir);
   fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([
     { id: "dup-a", name: "同名客户", wechatId: "internal-test-003", wechatAccountId: "internal-account", allowed: true },
@@ -874,12 +879,16 @@ try {
   assert.doesNotMatch(sendMessageSource, /GetWindowRect\([^\r\n]*clickRect/);
   assert.match(sendMessageSource, /wechat_send_point_invalid/);
   assert.match(sendMessageSource, /WindowFromPoint\(\$sendPoint\)[\s\S]*GetAncestor\(\$pointWindow, 2\)[\s\S]*wechat_send_point_obscured[\s\S]*\$sendAttempted = \$true/);
+  assert.match(sendMessageSource, /XIAOXI_EXPECTED_INCOMING_MESSAGE/);
+  assert.match(sendMessageSource, /XIAOXI_EXPECTED_INCOMING_RUNTIME_ID/);
+  assert.match(sendMessageSource, /function Get-ElementKey/);
+  assert.match(sendMessageSource, /chat_message_list[\s\S]*incoming_message_changed[\s\S]*\$sendAttempted = \$true/, "the atomic click script must revalidate the latest incoming bubble before the send attempt");
   assert.match(sendMessageSource, /\$conversationElement[\s\S]*atomic_conversation_changed/);
   assert.match(sendMessageSource, /GetCursorPos\(\[ref\]\$sendPoint\)[\s\S]*wechat_send_cursor_mismatch/);
   assert.match(sendMessageSource, /SetCursorPos\(\$sendX, \$sendY\)[\s\S]*mouse_event\(0x0002[\s\S]*mouse_event\(0x0004/);
   assert.equal(sendMessageSource.includes("SendWait($sendKey)"), false);
   assert.equal(sendMessageSource.includes("XIAOXI_SEND_KEY"), false);
-  assert.match(clickSendSource, /\}, \{ ensure: false \}\);/);
+  assert.match(clickSendSource, /runPowerShell\(SEND_MESSAGE_SCRIPT,[\s\S]*\{ ensure: false \}\);/);
   assert.match(bubbleVerifierSource, /\}, \{ ensure: false \}\);/);
   assert.match(driverSource, /"powershell_timeout"/);
   assert.match(driverSource, /"powershell_failed"/);
@@ -934,6 +943,10 @@ try {
   assert.equal(developmentIpcSource.includes("setRealSendArm(runtimeDataDir, true)"), false);
   const sharedTransactionSource = fs.readFileSync(path.join(__dirname, "state_machine.dev.cjs"), "utf8");
   assert.match(sharedTransactionSource, /async function executeVerifiedContactSend/);
+  assert.match(sharedTransactionSource, /async function sendReal[\s\S]*clickWechatSendButtonAsync[\s\S]*verifyWechatCurrentConversationAsync[\s\S]*verifyWechatMessageBubbleAsync/);
+  assert.match(sharedTransactionSource, /async function executeVerifiedFileHelperSend[\s\S]*openWechatSearchResultAsync[\s\S]*inputWechatMessageDraftAsync/);
+  assert.match(driverSource, /function openWechatSearchResultAsync[\s\S]*runPowerShellAsync/);
+  assert.match(developmentDriverSource, /function clickWechatSendButtonAsync[\s\S]*runPowerShellAsync/);
   assert.match(sharedTransactionSource, /beforeDraft/);
   assert.match(sharedTransactionSource, /inputPoint: state\.message_input_point/);
   assert.match(sharedTransactionSource, /select-customer[\s\S]*calibrate[\s\S]*focus-wechat-window[\s\S]*click-search-result-dry-run[\s\S]*verifyRealSendSession[\s\S]*input-message-dry-run[\s\S]*send[\s\S]*dry-run[\s\S]*sendReal/);
@@ -951,6 +964,13 @@ try {
   assert.equal(fs.existsSync(path.join(__dirname, "../../src/main/real-send-hold.self_check.cjs")), false);
   assert.match(driverSource, /\$proc\.MainWindowHandle -eq \$hWnd/);
   assert.match(driverSource, /\$title -eq "微信"/);
+
+  let asyncPowerShellYielded = false;
+  const asyncPowerShell = runPowerShellAsync(`$padding = "${"x".repeat(40_000)}"\nStart-Sleep -Milliseconds 50\n@{ ok = $true; length = $padding.Length } | ConvertTo-Json -Compress`, {}, { ensure: false, timeout: 5_000 });
+  await new Promise((resolve) => setTimeout(() => { asyncPowerShellYielded = true; resolve(); }, 0));
+  const asyncPowerShellResult = await asyncPowerShell;
+  assert.equal(asyncPowerShellYielded, true, "async PowerShell must yield the Electron event loop");
+  assert.deepEqual(asyncPowerShellResult, { ok: true, length: 40_000 }, "async PowerShell must stream large scripts over stdin instead of the Windows command line");
 
   saveState(dir, { ...loadState(dir), self_check_marker: true });
   assert.equal(fs.readdirSync(dir).some((name) => name.includes("state.json.tmp")), false);

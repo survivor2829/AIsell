@@ -1,11 +1,17 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const { clickWechatSendButton, verifyWechatCurrentConversation, verifyWechatMessageBubble } = require("./wechat_window_driver.dev.cjs");
 const {
-  inputWechatMessageDraft,
-  openWechatSearchResult,
-  verifyWechatCurrentConversation: verifyWechatConversationTitle
+  clickWechatSendButtonAsync,
+  verifyWechatCurrentConversation,
+  verifyWechatCurrentConversationAsync,
+  verifyWechatMessageBubble,
+  verifyWechatMessageBubbleAsync
+} = require("./wechat_window_driver.dev.cjs");
+const {
+  inputWechatMessageDraftAsync,
+  openWechatSearchResultAsync,
+  verifyWechatCurrentConversationAsync: verifyWechatConversationTitleAsync
 } = require("./wechat_window_driver.cjs");
 const { appendLog, block, blockMessageBubble, blockSendGate, loadState, output, readContacts, saveState } = require("./state_machine.cjs");
 const { contactIdentityError, identityKey } = require("./touch_task_state.cjs");
@@ -48,6 +54,31 @@ function sessionCheck(state, driver = verifyWechatCurrentConversation, baseDir =
     expectedHWnd: state.window_handle,
     allowExactSearchFallback
   });
+  if (!result.ok) return result;
+  if (!result.pid || !result.hWnd || !["Weixin", "WeChat"].includes(result.processName)) return { ok: false, reason: "personal_wechat_main_window_not_found" };
+  if (!expectedAccountId) return { ok: false, reason: "wechat_account_identity_missing" };
+  if (result.accountVerified !== true || !String(result.accountId ?? "").trim()) return { ok: false, reason: result.accountReason || "wechat_account_not_verified" };
+  if (String(result.accountId).trim() !== expectedAccountId) return { ok: false, reason: "wechat_account_changed" };
+  return result;
+}
+
+async function sessionCheckAsync(state, driver = verifyWechatCurrentConversationAsync, baseDir = __dirname) {
+  const customer = state.selected_customer;
+  if (!customer?.name) return { ok: false, reason: "conversation_not_verified" };
+  const expectedAccountId = String(customer.wechatAccountId ?? state.wechat_account_id ?? "").trim();
+  const expectedWechatId = String(customer.wechatId ?? "").trim();
+  const allowExactSearchFallback = state.conversation_verification_mode === "exact_wechat_id_search"
+    && Boolean(expectedWechatId)
+    && state.search_query === expectedWechatId
+    && Boolean(state.window_pid)
+    && Boolean(state.window_handle);
+  const result = await Promise.resolve(driver(customer.name, {
+    wechatRoot: syncedWechatRoot(baseDir),
+    expectedAccountId,
+    expectedPid: state.window_pid,
+    expectedHWnd: state.window_handle,
+    allowExactSearchFallback
+  }));
   if (!result.ok) return result;
   if (!result.pid || !result.hWnd || !["Weixin", "WeChat"].includes(result.processName)) return { ok: false, reason: "personal_wechat_main_window_not_found" };
   if (!expectedAccountId) return { ok: false, reason: "wechat_account_identity_missing" };
@@ -147,6 +178,16 @@ function verifyRealSendSession(baseDir = __dirname, driver = verifyWechatCurrent
   return output(true, "verify-real-send-session", nextState, { baseDir });
 }
 
+async function verifyRealSendSessionAsync(baseDir = __dirname, driver = verifyWechatCurrentConversationAsync) {
+  const state = loadState(baseDir);
+  const result = await sessionCheckAsync(state, driver, baseDir);
+  if (!result.ok) return blockSendGate(baseDir, state, result.reason || "session_not_verified", "已阻断：微信账号、主窗口或当前会话未重新验证");
+  const nextState = refreshedSessionState(state, result);
+  saveState(baseDir, nextState);
+  appendLog(baseDir, "真实发送会话验证", "已验证个人微信进程、PID、窗口句柄和当前会话");
+  return output(true, "verify-real-send-session", nextState, { baseDir });
+}
+
 function refreshedSessionState(state, result) {
   return {
     ...state,
@@ -205,7 +246,7 @@ function setRealSendArm(baseDir = __dirname, enabled = false) {
   return output(true, "set-real-send-arm", nextState, { baseDir });
 }
 
-function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWechatSendButton, sessionDriver = verifyWechatCurrentConversation, bubbleVerifier = verifyWechatMessageBubble) {
+async function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWechatSendButtonAsync, sessionDriver = verifyWechatCurrentConversationAsync, bubbleVerifier = verifyWechatMessageBubbleAsync) {
   const state = loadState(baseDir);
   const message = String(options.message ?? state.message_draft ?? "").trim();
   if (!state.real_send_armed) return blockSendGate(baseDir, state, "real_send_not_armed", "已阻断：单人真发开关未武装");
@@ -218,7 +259,7 @@ function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWechatSen
   if (state.real_send_attempts?.[key] || ["prepared", "clicked", "sent_verified", "outcome_unknown"].includes(state.real_send_status)) {
     return rejectRepeatedAttempt(baseDir, state);
   }
-  const session = sessionCheck(state, sessionDriver, baseDir);
+  const session = await sessionCheckAsync(state, sessionDriver, baseDir);
   if (!session.ok || Number(session.pid) !== Number(state.window_pid) || String(session.hWnd) !== String(state.window_handle)) {
     return blockSendGate(baseDir, state, "real_send_session_changed", "已阻断：微信账号、PID、窗口句柄或当前会话发生变化");
   }
@@ -227,9 +268,11 @@ function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWechatSen
     hWnd: state.window_handle,
     inputPoint: state.message_input_point,
     expectedConversation: state.selected_customer?.name,
-    expectedMessage: message
+    expectedMessage: message,
+    expectedIncomingMessage: String(options.expectedIncomingMessage || "").trim(),
+    expectedIncomingRuntimeId: String(options.expectedIncomingRuntimeId || "").trim()
   };
-  const before = bubbleVerifier(message, { ...windowContext, phase: "before" });
+  const before = await Promise.resolve(bubbleVerifier(message, { ...windowContext, phase: "before" }));
   if (!hasMessageSnapshot(before)) {
     return blockSendGate(baseDir, state, "message_snapshot_unavailable", "已阻断：无法读取发送前消息列表快照");
   }
@@ -255,7 +298,7 @@ function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWechatSen
   appendLog(baseDir, "真实发送", "已持久化 prepared 状态，等待用户最终点击结果");
   let sendResult;
   try {
-    sendResult = sendDriver(options.sendKey ?? "{ENTER}", windowContext);
+    sendResult = await Promise.resolve(sendDriver(options.sendKey ?? "{ENTER}", windowContext));
   } catch {
     return persistOutcomeUnknown(baseDir, prepared, "send_driver_exception", options.onTransition);
   }
@@ -267,7 +310,7 @@ function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWechatSen
   try { notifyTransition(options.onTransition, "clicked", clicked); } catch {}
   let verified;
   try {
-    verified = bubbleVerifier(message, { ...windowContext, phase: "after", beforeSnapshot: before.snapshot });
+    verified = await Promise.resolve(bubbleVerifier(message, { ...windowContext, phase: "after", beforeSnapshot: before.snapshot }));
   } catch {
     return persistOutcomeUnknown(baseDir, clicked, "message_bubble_verifier_failed", options.onTransition);
   }
@@ -308,7 +351,7 @@ async function executeVerifiedContactSend(options = {}) {
   }
 
   if (!(await executionMayContinue(options))) return cancelVerifiedContactSend(baseDir);
-  const session = verifyRealSendSession(baseDir, options.sessionDriver || verifyWechatCurrentConversation);
+  const session = await verifyRealSendSessionAsync(baseDir, options.sessionDriver || verifyWechatCurrentConversationAsync);
   if (!(await executionMayContinue(options))) return cancelVerifiedContactSend(baseDir);
   if (!session.ok) return session;
   if (typeof options.beforeDraft === "function") {
@@ -339,8 +382,10 @@ async function executeVerifiedContactSend(options = {}) {
     userConfirmed: true,
     message,
     attemptId: options.attemptId,
+    expectedIncomingMessage: options.expectedIncomingMessage,
+    expectedIncomingRuntimeId: options.expectedIncomingRuntimeId,
     onTransition: options.onTransition
-  }, options.sendDriver || clickWechatSendButton, options.sessionDriver || verifyWechatCurrentConversation, options.bubbleVerifier || verifyWechatMessageBubble);
+  }, options.sendDriver || clickWechatSendButtonAsync, options.sessionDriver || verifyWechatCurrentConversationAsync, options.bubbleVerifier || verifyWechatMessageBubbleAsync);
 }
 
 function samePersonalWechatWindow(result, expectedPid, expectedHWnd) {
@@ -362,11 +407,11 @@ async function executeVerifiedFileHelperSend(options = {}) {
     return { ok: false, action: "handoff", blocked_reason: "handoff_source_window_missing", error: "无法绑定原客户会话所在的微信窗口" };
   }
 
-  const openConversation = options.openConversation || openWechatSearchResult;
-  const verifyConversation = options.verifyConversation || verifyWechatConversationTitle;
-  const inputDraft = options.inputDraft || inputWechatMessageDraft;
-  const sendDriver = options.sendDriver || clickWechatSendButton;
-  const bubbleVerifier = options.bubbleVerifier || verifyWechatMessageBubble;
+  const openConversation = options.openConversation || openWechatSearchResultAsync;
+  const verifyConversation = options.verifyConversation || verifyWechatConversationTitleAsync;
+  const inputDraft = options.inputDraft || inputWechatMessageDraftAsync;
+  const sendDriver = options.sendDriver || clickWechatSendButtonAsync;
+  const bubbleVerifier = options.bubbleVerifier || verifyWechatMessageBubbleAsync;
   const target = "文件传输助手";
   const query = target;
 

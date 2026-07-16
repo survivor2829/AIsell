@@ -316,6 +316,10 @@ function focusWechatWindow() {
   return runPowerShell(FOCUS_SCRIPT);
 }
 
+function focusWechatWindowAsync() {
+  return runPowerShellAsync(FOCUS_SCRIPT, {}, { ensure: false });
+}
+
 const SEARCH_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
@@ -435,14 +439,14 @@ function inputWechatSearchQuery(query, context = {}) {
 
 function runPowerShellAsync(script, env = {}, options = {}) {
   const ensureResult = options.ensure === false ? {} : ensureWechatWindowVisible();
-  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  const scriptInput = Buffer.from(script, "utf16le").toString("base64");
   const timeout = Number(options.timeout) > 0 ? Number(options.timeout) : 15000;
 
   return new Promise((resolve) => {
-    const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], {
+    const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", POWERSHELL_STDIN_BOOTSTRAP], {
       env: { ...process.env, ...env },
       windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"]
     });
     let stdout = "";
     let settled = false;
@@ -470,6 +474,8 @@ function runPowerShellAsync(script, env = {}, options = {}) {
         return finish(ensureResult?.reason ? { ok: false, reason: ensureResult.reason } : { ok: false, reason: "powershell_output_invalid" });
       }
     });
+    child.stdin.on("error", () => undefined);
+    child.stdin.end(scriptInput);
   });
 }
 
@@ -482,6 +488,17 @@ function openWechatSearchResult(query, context = {}) {
     XIAOXI_EXPECTED_PID: String(context.pid ?? ""),
     XIAOXI_EXPECTED_HWND: String(context.hWnd ?? "")
   });
+}
+
+function openWechatSearchResultAsync(query, context = {}) {
+  if (!String(query ?? "").trim()) return Promise.resolve({ ok: false });
+  return runPowerShellAsync(SEARCH_SCRIPT, {
+    XIAOXI_SEARCH_QUERY: String(query),
+    XIAOXI_PRESS_ENTER: "1",
+    XIAOXI_SEARCH_RESULT_AUTOMATION_ID: String(context.resultAutomationId ?? ""),
+    XIAOXI_EXPECTED_PID: String(context.pid ?? ""),
+    XIAOXI_EXPECTED_HWND: String(context.hWnd ?? "")
+  }, { ensure: false });
 }
 
 const CONVERSATION_TITLE_SCRIPT = `
@@ -576,6 +593,15 @@ function verifyWechatCurrentConversation(expectedTitle, context = {}) {
     XIAOXI_EXPECTED_PID: String(context.pid ?? ""),
     XIAOXI_EXPECTED_HWND: String(context.hWnd ?? "")
   });
+}
+
+function verifyWechatCurrentConversationAsync(expectedTitle, context = {}) {
+  if (!String(expectedTitle ?? "").trim()) return Promise.resolve({ ok: false });
+  return runPowerShellAsync(CONVERSATION_TITLE_SCRIPT, {
+    XIAOXI_EXPECTED_CONVERSATION: String(expectedTitle),
+    XIAOXI_EXPECTED_PID: String(context.pid ?? ""),
+    XIAOXI_EXPECTED_HWND: String(context.hWnd ?? "")
+  }, { ensure: false });
 }
 
 const MESSAGE_DRAFT_SCRIPT = `
@@ -734,12 +760,25 @@ function inputWechatMessageDraft(message, context = {}) {
   });
 }
 
+function inputWechatMessageDraftAsync(message, context = {}) {
+  if (!String(message ?? "").trim()) return Promise.resolve({ ok: false });
+  return runPowerShellAsync(MESSAGE_DRAFT_SCRIPT, {
+    XIAOXI_MESSAGE_DRAFT: String(message),
+    XIAOXI_EXPECTED_PID: String(context.pid ?? ""),
+    XIAOXI_EXPECTED_HWND: String(context.hWnd ?? "")
+  }, { ensure: false });
+}
+
 module.exports = {
   focusWechatWindow,
+  focusWechatWindowAsync,
   inputWechatMessageDraft,
+  inputWechatMessageDraftAsync,
   inputWechatSearchQuery,
   openWechatSearchResult,
+  openWechatSearchResultAsync,
   runPowerShell,
   runPowerShellAsync,
-  verifyWechatCurrentConversation
+  verifyWechatCurrentConversation,
+  verifyWechatCurrentConversationAsync
 };

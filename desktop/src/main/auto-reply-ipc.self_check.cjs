@@ -495,7 +495,7 @@ async function main() {
   await handoffStarted;
   pauseDuringHandoffController.pause();
   const pausedHandoffState = JSON.parse(fs.readFileSync(path.join(pauseDuringHandoffDir, "auto-reply-state.json"), "utf8"));
-  assert.equal(pausedHandoffState.last_event, "handoff_interrupted", "pausing during handoff must preserve the unknown reminder outcome");
+  assert.equal(pausedHandoffState.last_event, "handoff_confirmation_required", "pausing during handoff must require an explicit manual check");
   assert.match(pausedHandoffState.last_error, /张总/);
   resolvePendingHandoff({ ok: true });
   await pendingRun;
@@ -528,6 +528,7 @@ async function main() {
       assert.equal(Object.values(persisted.processed).at(-1).status, "sent_verified");
       assert.equal(persisted.last_event, "handoff_pending");
       assert.equal(persisted.pending_handoff.conversation, "李经理", "the pending handoff identity must be durable before handoff I/O");
+      assert.match(persisted.pending_handoff.key, /^[a-f0-9]{64}$/, "the pending handoff must persist its dedupe key before handoff I/O");
       return { ok: false, blocked_reason: "handoff_outcome_unknown" };
     },
     runStep: async () => ({ ok: true }),
@@ -539,7 +540,48 @@ async function main() {
   await unknownController.runOnce();
   assert.equal(unknownController.status().reply_count, 1, "safe placeholder is sent before handoff");
   assert.equal(unknownController.status().status, "paused");
-  assert.equal(unknownController.status().last_event, "handoff_failed_paused");
+  assert.equal(unknownController.status().last_event, "handoff_confirmation_required");
+  assert.match(unknownController.status().last_error, /文件传输助手人工检查，确认后点击确认按钮继续/);
+
+  const pendingBeforeRestart = JSON.parse(fs.readFileSync(path.join(unknownDataDir, "auto-reply-state.json"), "utf8")).pending_handoff;
+  const blockedPendingController = createAutoReplyController({
+    dataDir: unknownDataDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "有效话术" }) },
+    deepSeekClient: { assertAvailable: () => { throw new Error("依赖预检失败"); } },
+    send: async () => ({ ok: true }),
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal(blockedPendingController.status().last_event, "handoff_confirmation_required", "a pending handoff must remain confirmation-required after controller reconstruction");
+  assert.equal((await blockedPendingController.start()).ok, false, "failed dependency preflight must not acknowledge a pending handoff");
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(unknownDataDir, "auto-reply-state.json"), "utf8")).pending_handoff, pendingBeforeRestart);
+
+  const confirmedPendingController = createAutoReplyController({
+    dataDir: unknownDataDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "有效话术" }) },
+    deepSeekClient: { assertAvailable: () => true },
+    send: async () => ({ ok: true }),
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal(confirmedPendingController.status().last_event, "handoff_confirmation_required");
+  assert.equal((await confirmedPendingController.start()).ok, true, "the trusted start action is the explicit manual acknowledgement");
+  const acknowledgedPendingState = JSON.parse(fs.readFileSync(path.join(unknownDataDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(acknowledgedPendingState.pending_handoff, null);
+  assert.equal(acknowledgedPendingState.handoff_notified[pendingBeforeRestart.key].status, "manual_acknowledged");
+  confirmedPendingController.pause();
 
   const aiConfigFailureDir = path.join(root, "ai_configuration_failure");
   let aiConfigFailureSends = 0;
@@ -641,6 +683,51 @@ async function main() {
     assert.equal(rateSendCalls, 0);
   }
 
+  for (const coordinatorFailure of [
+    {
+      name: "acquire",
+      expectedEvent: "auto_reply_error_paused",
+      coordinator: {
+        acquire: () => { throw new Error("runtime lock acquire failed"); },
+        update: () => ({ ok: true }),
+        release: () => ({ ok: true })
+      }
+    },
+    {
+      name: "release",
+      expectedEvent: "runtime_lock_release_failed_paused",
+      coordinator: {
+        acquire: () => ({ ok: true, lock: { owner: "throwing-release-owner" } }),
+        update: () => ({ ok: true }),
+        release: () => { throw new Error("runtime lock release failed"); }
+      }
+    }
+  ]) {
+    const scheduledCallbacks = [];
+    const failureController = createAutoReplyController({
+      dataDir: path.join(root, `coordinator_${coordinatorFailure.name}_failure`),
+      activeTouchDir,
+      coordinator: coordinatorFailure.coordinator,
+      expertStore: { read: () => ({ text: "有效话术" }) },
+      deepSeekClient: { assertAvailable: () => true },
+      send: async () => ({ ok: true }),
+      sendHandoff: async () => ({ ok: true }),
+      runStep: async () => ({ ok: true }),
+      scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
+      verifyIncoming: () => ({ ok: true }),
+      schedule: (callback) => { scheduledCallbacks.push(callback); return scheduledCallbacks.length; },
+      cancelSchedule: () => undefined,
+      now: () => new Date("2026-07-14T10:00:00+08:00")
+    });
+    assert.equal((await failureController.start()).ok, true);
+    assert.equal(scheduledCallbacks.length, 1);
+    await assert.doesNotReject(() => scheduledCallbacks[0](), `${coordinatorFailure.name} failure must not escape the scheduled callback`);
+    assert.equal(failureController.status().status, "paused");
+    assert.equal(failureController.status().last_event, coordinatorFailure.expectedEvent);
+    assert.match(failureController.status().last_error, new RegExp(`runtime lock ${coordinatorFailure.name} failed`));
+    assert.equal(scheduledCallbacks.length, 1, "a failed poll must not silently remain running or schedule another poll");
+  }
+
   const handlers = new Map();
   const webContents = {};
   registerAutoReplyIpc({
@@ -721,7 +808,7 @@ async function main() {
     daily_date: "2026-07-14",
     reply_count: 1,
     last_event: "handoff_pending",
-    pending_handoff: { contact_id: "c1", conversation: "张总", at: "2026-07-14T02:00:00.000Z" },
+    pending_handoff: { key: "pending-handoff-key", contact_id: "c1", conversation: "张总", at: "2026-07-14T02:00:00.000Z" },
     processed: {
       pending: { status: "sent_verified", contact_id: "c1", conversation: "张总", at: "2026-07-14T02:00:00.000Z" },
       newerUnrelated: { status: "sent_verified", contact_id: "c2", conversation: "李经理", at: "2026-07-14T03:00:00.000Z" }
@@ -734,7 +821,7 @@ async function main() {
     now: () => new Date("2026-07-14T10:00:00+08:00")
   });
   assert.equal(interruptedHandoff.status().status, "paused");
-  assert.equal(interruptedHandoff.status().last_event, "handoff_interrupted");
+  assert.equal(interruptedHandoff.status().last_event, "handoff_confirmation_required");
   assert.match(interruptedHandoff.status().last_error, /人工检查/);
   assert.match(interruptedHandoff.status().last_error, /张总/, "an interrupted handoff must identify the customer without persisting message text");
   assert.doesNotMatch(interruptedHandoff.status().last_error, /李经理/, "an interrupted handoff must not point at an older verified customer");
