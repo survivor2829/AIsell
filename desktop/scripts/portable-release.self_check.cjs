@@ -20,6 +20,7 @@ const nativeLibDir = path.join(appDir, "rpa", "contact_sync", "libs");
 const nativeLibraryNames = ["wx_key.dll", "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"];
 const wxKeyDll = path.join(nativeLibDir, "wx_key.dll");
 const databaseDecryptor = path.join(nativeLibDir, "xiaoxi-db-decrypt.exe");
+const internalAutoReplyCli = path.join(appDir, "rpa", "active_touch", "active_touch_cli.dev.cjs");
 const databaseFilePattern = /\.(?:db(?:-wal|-shm)?|sqlite3?)$/i;
 const blockedNames = new Set(["python.exe", "dump_data.exe", "wechat-dump-rs.exe", "ai-expert.json", "auto-reply-state.json", "contacts.json", "touch_task.json", "touch_task.json.bak", "run_logs.jsonl", "state.json", "deepseek-api-key.bin"]);
 
@@ -117,6 +118,17 @@ try {
   const payload = JSON.parse(status.stdout.trim());
   assert.equal(payload.ok, true);
   assert.equal(payload.state?.helper_configured, true, "packaged runtime must discover the bundled helper");
+
+  const activeTouchStatus = spawnSync(executable, [internalAutoReplyCli, "status", "--data-dir", activeTouchDir], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 30000,
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }
+  });
+  assert.equal(activeTouchStatus.status, 0, activeTouchStatus.stderr || activeTouchStatus.stdout || "packaged auto-reply executor status failed");
+  const activeTouchPayload = JSON.parse(activeTouchStatus.stdout.trim());
+  assert.equal(activeTouchPayload.ok, true, "packaged auto-reply executor must start successfully");
+  assert.equal(activeTouchPayload.action, "status", "packaged auto-reply executor must run the requested command");
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true });
 }
@@ -134,7 +146,6 @@ assert.equal(fs.readFileSync(path.join(mainDir, "active-touch-ipc.cjs"), "utf8")
 const activeDir = path.join(appDir, "rpa", "active_touch");
 assert.equal(fs.existsSync(path.join(activeDir, "state_machine.dev.cjs")), true);
 assert.equal(fs.existsSync(path.join(activeDir, "wechat_window_driver.dev.cjs")), true);
-assert.equal(fs.existsSync(path.join(activeDir, "active_touch_cli.dev.cjs")), edition === "test");
 const renderer = fs.readdirSync(path.join(appDir, "dist", "assets")).filter((name) => name.endsWith(".js")).map((name) => fs.readFileSync(path.join(appDir, "dist", "assets", name), "utf8")).join("\n");
 assert.equal(renderer.includes("内部测试"), edition === "test");
 assert.equal(renderer.includes(edition === "test" ? "测试版" : "交付版"), edition === "test");

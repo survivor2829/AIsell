@@ -44,8 +44,8 @@ function sourceAllowed(source, edition) {
   if (relative.includes("/__pycache__/") || relative.includes("/libs/") || /(?:dump_data|wechat-dump|wx_key\.dll)/i.test(name)) return false;
   if (edition !== "test" && relative.startsWith("src/main/") && ["active-touch-dev-ipc.cjs", "preload.dev.cjs"].includes(name)) return false;
   if (name.endsWith(".dev.cjs")) {
-    const allowed = ["state_machine.dev.cjs", "wechat_window_driver.dev.cjs"];
-    if (edition === "test") allowed.push("active_touch_cli.dev.cjs", "preload.dev.cjs");
+    const allowed = ["state_machine.dev.cjs", "wechat_window_driver.dev.cjs", "active_touch_cli.dev.cjs"];
+    if (edition === "test") allowed.push("preload.dev.cjs");
     return allowed.includes(name);
   }
   return true;

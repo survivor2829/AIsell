@@ -5,6 +5,36 @@ const path = require("node:path");
 let runtimeDataDir = "";
 let runtimeCoordinator = null;
 
+function executorFailure(action, blockedReason, error) {
+  return { ok: false, action, blocked_reason: blockedReason, error, logs: [] };
+}
+
+function parseExecutorOutput({ action = "status", status = 0, stdout = "", stderr = "", error } = {}) {
+  const stderrText = String(stderr || "").trim();
+  if (error) return executorFailure(action, "executor_spawn_failed", String(error.message || error));
+  const line = String(stdout || "").trim().split(/\r?\n/).filter(Boolean).pop();
+  if (!line) {
+    const detail = stderrText || (status === 0 ? "微信执行器未返回结果" : `微信执行器异常退出（代码 ${status}）`);
+    return executorFailure(action, "executor_no_result", detail);
+  }
+  let result;
+  try {
+    result = JSON.parse(line);
+  } catch {
+    return executorFailure(action, "executor_result_invalid", stderrText || "微信执行器返回了无效结果");
+  }
+  if (!result || Array.isArray(result) || typeof result !== "object" || typeof result.ok !== "boolean") {
+    return executorFailure(action, "executor_result_invalid", stderrText || "微信执行器返回结果缺少状态");
+  }
+  if (result.ok === false && !result.error && !result.blocked_reason) {
+    return executorFailure(action, "executor_result_invalid", stderrText || "微信执行器未说明失败原因");
+  }
+  if (status !== 0 && result.ok === true) {
+    return executorFailure(action, "executor_exit_failed", stderrText || `微信执行器异常退出（代码 ${status}）`);
+  }
+  return result;
+}
+
 function cliPath(development = false) {
   return path.join(app.getAppPath(), "rpa", "active_touch", development ? "active_touch_cli.dev.cjs" : "active_touch_cli.cjs");
 }
@@ -31,16 +61,11 @@ function executeActiveTouch(args, development = false) {
     });
 
     child.on("error", (error) => {
-      resolve({ ok: false, action: args[0] ?? "status", error: error.message, logs: [] });
+      resolve(parseExecutorOutput({ action: args[0] ?? "status", error }));
     });
 
-    child.on("close", () => {
-      try {
-        const line = stdout.trim().split(/\r?\n/).filter(Boolean).pop() ?? "{}";
-        resolve(JSON.parse(line));
-      } catch {
-        resolve({ ok: false, action: args[0] ?? "status", error: stderr || stdout || "active-touch executor failed", logs: [] });
-      }
+    child.on("close", (status) => {
+      resolve(parseExecutorOutput({ action: args[0] ?? "status", status, stdout, stderr }));
     });
   });
 }
@@ -74,4 +99,4 @@ function configureActiveTouchRuntime({ dataDir, coordinator } = {}) {
   runtimeCoordinator = coordinator;
 }
 
-module.exports = { configureActiveTouchRuntime, runActiveTouch, runActiveTouchDev };
+module.exports = { configureActiveTouchRuntime, parseExecutorOutput, runActiveTouch, runActiveTouchDev };
