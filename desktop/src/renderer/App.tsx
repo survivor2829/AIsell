@@ -99,6 +99,7 @@ type ContactRow = {
 };
 type ActiveTouchResult = {
   ok: boolean;
+  send_attempted?: boolean | null;
   action: string;
   state?: Partial<ActiveTouchState>;
   contacts?: ContactRow[];

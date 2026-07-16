@@ -43,11 +43,17 @@ registerActiveTouchDevIpc({ dataDir: "test-data", getMainWindow: () => mainWindo
 const sendSelected = handlers.get("active-touch:send-selected-contact");
 
 (async () => {
-  assert.equal((await sendSelected({ sender: webContents }, { clickToken: "", contactId: "c1", message: "hello" })).blocked_reason, "trusted_user_click_required");
+  const missingClick = await sendSelected({ sender: webContents }, { clickToken: "", contactId: "c1", message: "hello" });
+  assert.equal(missingClick.blocked_reason, "trusted_user_click_required");
+  assert.equal(missingClick.send_attempted, false);
   focused = false;
-  assert.equal((await sendSelected({ sender: webContents }, { clickToken: "click-1", contactId: "c1", message: "hello" })).blocked_reason, "trusted_user_click_required");
+  const unfocusedClick = await sendSelected({ sender: webContents }, { clickToken: "click-1", contactId: "c1", message: "hello" });
+  assert.equal(unfocusedClick.blocked_reason, "trusted_user_click_required");
+  assert.equal(unfocusedClick.send_attempted, false);
   focused = true;
-  assert.equal((await sendSelected({ sender: webContents }, { clickToken: "click-2", contactId: "", message: "hello" })).blocked_reason, "contact_or_message_missing");
+  const missingContact = await sendSelected({ sender: webContents }, { clickToken: "click-2", contactId: "", message: "hello" });
+  assert.equal(missingContact.blocked_reason, "contact_or_message_missing");
+  assert.equal(missingContact.send_attempted, false);
 
   const result = await sendSelected({ sender: webContents }, { clickToken: "click-3", contactId: "c1", message: " hello " });
   assert.equal(result.ok, true);
@@ -66,7 +72,7 @@ const sendSelected = handlers.get("active-touch:send-selected-contact");
   executeCalls.length = 0;
   executeBehavior = async (options) => {
     executeCalls.push(options);
-    return { ok: false, blocked_reason: "session_changed" };
+    return { ok: false, blocked_reason: "session_changed", send_attempted: false };
   };
   assert.equal((await sendSelected({ sender: webContents }, { clickToken: "click-4", contactId: "c1", message: "hello" })).blocked_reason, "session_changed");
   assert.equal(armCalls.length, 0);
@@ -79,9 +85,16 @@ const sendSelected = handlers.get("active-touch:send-selected-contact");
   };
   const first = sendSelected({ sender: webContents }, { clickToken: "click-5", contactId: "c1", message: "hello" });
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal((await sendSelected({ sender: webContents }, { clickToken: "click-6", contactId: "c1", message: "hello" })).blocked_reason, "real_send_in_flight");
+  const inFlight = await sendSelected({ sender: webContents }, { clickToken: "click-6", contactId: "c1", message: "hello" });
+  assert.equal(inFlight.blocked_reason, "real_send_in_flight");
+  assert.equal(inFlight.send_attempted, false);
   releaseSend();
   await first;
+
+  executeBehavior = async () => { throw new Error("driver crashed"); };
+  const crashed = await sendSelected({ sender: webContents }, { clickToken: "click-7", contactId: "c1", message: "hello" });
+  assert.equal(crashed.blocked_reason, "real_send_failed");
+  assert.equal(crashed.send_attempted, null);
 
   console.log("active-touch-dev-ipc self-check passed");
 })().catch((error) => {

@@ -2,7 +2,7 @@ import { Send, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 
 type Contact = { id: string; name: string; remark?: string; nickname?: string; wechatId?: string; allowed: boolean };
-type Result = { ok: boolean; error?: string; blocked_reason?: string; state?: { real_send_reason?: string } };
+type Result = { ok: boolean; error?: string; blocked_reason?: string; send_attempted?: boolean | null; state?: { real_send_reason?: string } };
 
 export default function DevelopmentAcceptance({ contacts, message }: { contacts: Contact[]; message: string }) {
   const [selectedId, setSelectedId] = useState("");

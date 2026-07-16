@@ -21,12 +21,13 @@ function createTrustedClickGate(selector) {
 
 function createPreloadApis(ipcRenderer) {
   const consumeBatchClick = createTrustedClickGate("[data-xiaoxi-batch-authorize]");
-  const consumeAutoReplyClick = createTrustedClickGate("[data-xiaoxi-auto-reply-start]");
+  const consumeAutoReplyClick = createTrustedClickGate("[data-xiaoxi-auto-reply-start], [data-xiaoxi-auto-reply-acknowledge]");
   return {
     autoReply: {
       status: () => ipcRenderer.invoke("auto-reply:status"),
       start: () => ipcRenderer.invoke("auto-reply:start", { clickToken: consumeAutoReplyClick() }),
-      pause: () => ipcRenderer.invoke("auto-reply:pause")
+      pause: () => ipcRenderer.invoke("auto-reply:pause"),
+      acknowledgeManualFollowup: () => ipcRenderer.invoke("auto-reply:acknowledge-manual-followup", { clickToken: consumeAutoReplyClick() })
     },
     aiExpert: {
       status: () => ipcRenderer.invoke("ai-expert:status"),

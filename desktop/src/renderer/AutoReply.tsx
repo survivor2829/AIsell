@@ -1,4 +1,4 @@
-import { Pause, Play } from "lucide-react";
+import { Check, Pause, Play } from "lucide-react";
 import { useEffect, useState } from "react";
 
 type AutoReplyState = {
@@ -15,6 +15,7 @@ declare global {
       status: () => Promise<AutoReplyResult>;
       start: () => Promise<AutoReplyResult>;
       pause: () => Promise<AutoReplyResult>;
+      acknowledgeManualFollowup: () => Promise<AutoReplyResult>;
     };
   }
 }
@@ -57,6 +58,7 @@ export function AutoReply() {
   const running = state.status === "running";
   const starting = state.status === "starting";
   const confirmationRequired = state.last_event === "handoff_confirmation_required";
+  const manualFollowupRequired = state.last_event === "handoff_manual_followup_required";
   const statusLabel = running ? "监听中" : starting ? "启动中" : state.status === "paused" ? "已暂停" : "未启动";
 
   return (
@@ -67,6 +69,11 @@ export function AutoReply() {
           <p>启动后监听新消息，并使用已导入的 AI 专家资料生成回复。</p>
         </div>
         <div className="actions">
+          {manualFollowupRequired && (
+            <button data-xiaoxi-auto-reply-acknowledge className="primary-button" onClick={() => window.xiaoxiAutoReply ? run(() => window.xiaoxiAutoReply!.acknowledgeManualFollowup(), "确认人工提醒失败") : setError("当前版本未连接自动回复执行器")} disabled={busy}>
+              <Check size={17} />确认当前已处理
+            </button>
+          )}
           {running ? (
             <button className="danger-button" onClick={() => window.xiaoxiAutoReply && run(() => window.xiaoxiAutoReply!.pause(), "暂停自动回复失败")} disabled={busy}>
               <Pause size={17} />暂停自动回复

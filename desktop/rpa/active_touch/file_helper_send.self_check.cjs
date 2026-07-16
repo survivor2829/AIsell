@@ -18,7 +18,7 @@ function drivers(overrides = {}) {
       bubbleVerifier: (_message, context) => context.phase === "before"
         ? { ok: true, snapshot: { lastMessageId: "before" }, draftExact: true }
         : { ok: true, messageText: "【需人工跟进】\n客户：张总\n请人工跟进", exactMatch: true, outgoing: true, isLatest: true, isNew: true },
-      sendDriver: (_key, context) => { calls.push(["send", context]); return { ok: true, conversationVerified: true, draftVerified: true }; },
+      sendDriver: (_key, context) => { calls.push(["send", context]); return { ok: true, conversationVerified: true, draftVerified: true, sendAttempted: true }; },
       ...overrides
     }
   };
@@ -56,23 +56,61 @@ async function main() {
   assert.equal((await executeVerifiedFileHelperSend(normalizedProof.options)).ok, true, "CRLF and trailing U+FFFC must still verify as the same sent message");
 
   const wrongWindow = drivers({ openConversation: () => ({ ok: true, pid: 82, hWnd: "92", processName: "Weixin" }) });
-  assert.equal((await executeVerifiedFileHelperSend(wrongWindow.options)).blocked_reason, "handoff_source_window_changed");
+  const wrongWindowResult = await executeVerifiedFileHelperSend(wrongWindow.options);
+  assert.equal(wrongWindowResult.blocked_reason, "handoff_source_window_changed");
+  assert.equal(wrongWindowResult.binding_valid, false);
+  assert.equal(wrongWindowResult.send_attempted, false);
   assert.equal(wrongWindow.calls.some(([name]) => name === "send"), false);
 
-  const changedDraft = drivers({
-    sendDriver: () => ({ ok: false, reason: "atomic_draft_changed", conversationVerified: true, draftVerified: false })
+  const temporarySearchFailure = drivers({
+    openConversation: () => ({ ok: false, reason: "search_result_not_found", pid: 81, hWnd: "91", processName: "Weixin" })
   });
-  assert.equal((await executeVerifiedFileHelperSend(changedDraft.options)).blocked_reason, "handoff_outcome_unknown", "a draft changed immediately before Enter must never be sent");
+  const temporarySearchResult = await executeVerifiedFileHelperSend(temporarySearchFailure.options);
+  assert.equal(temporarySearchResult.blocked_reason, "handoff_conversation_open_failed");
+  assert.equal(temporarySearchResult.binding_valid, true, "a temporary search failure must not be mislabeled as a changed WeChat window");
+  assert.equal(temporarySearchResult.send_attempted, false);
+
+  const unknownSearchBinding = drivers({
+    openConversation: () => ({ ok: false, reason: "uia_unavailable" })
+  });
+  const unknownSearchResult = await executeVerifiedFileHelperSend(unknownSearchBinding.options);
+  assert.equal(unknownSearchResult.binding_valid, undefined, "missing UIA identity is retryable before any send click, not proof that the window changed");
+  assert.equal(unknownSearchResult.send_attempted, false);
+
+  const changedDraft = drivers({
+    sendDriver: () => ({ ok: false, reason: "atomic_draft_changed", conversationVerified: true, draftVerified: false, sendAttempted: false })
+  });
+  const changedDraftResult = await executeVerifiedFileHelperSend(changedDraft.options);
+  assert.equal(changedDraftResult.blocked_reason, "atomic_draft_changed", "a draft changed before the click is safe to retry");
+  assert.equal(changedDraftResult.send_attempted, false);
 
   let clickCount = 0;
   const unknown = drivers({
-    sendDriver: () => { clickCount += 1; return { ok: true, conversationVerified: true, draftVerified: true }; },
+    sendDriver: () => { clickCount += 1; return { ok: true, conversationVerified: true, draftVerified: true, sendAttempted: true }; },
     bubbleVerifier: (_message, context) => context.phase === "before"
       ? { ok: true, snapshot: { lastMessageId: "before" }, draftExact: true }
       : { ok: false, reason: "not_verified" }
   });
-  assert.equal((await executeVerifiedFileHelperSend(unknown.options)).blocked_reason, "handoff_outcome_unknown");
+  const unknownResult = await executeVerifiedFileHelperSend(unknown.options);
+  assert.equal(unknownResult.blocked_reason, "handoff_outcome_unknown");
+  assert.equal(unknownResult.send_attempted, true);
   assert.equal(clickCount, 1, "handoff send must never retry blindly");
+
+  const missingAttemptMetadata = drivers({
+    sendDriver: () => ({ ok: false, reason: "powershell_timeout" })
+  });
+  const missingAttemptResult = await executeVerifiedFileHelperSend(missingAttemptMetadata.options);
+  assert.equal(missingAttemptResult.blocked_reason, "handoff_outcome_unknown");
+  assert.equal(missingAttemptResult.send_attempted, null);
+
+  let thrownCalls = 0;
+  const thrownDriver = drivers({
+    sendDriver: () => { thrownCalls += 1; throw new Error("driver crashed"); }
+  });
+  const thrownResult = await executeVerifiedFileHelperSend(thrownDriver.options);
+  assert.equal(thrownResult.blocked_reason, "handoff_outcome_unknown");
+  assert.equal(thrownResult.send_attempted, null);
+  assert.equal(thrownCalls, 1, "a throwing handoff driver must never be retried blindly");
   console.log("file-helper send self-check passed");
 }
 

@@ -103,12 +103,12 @@ if ($matched -eq $null) {
   exit
 }
 if (-not $matched.focused) {
-  @{ ok = $false; reason = "wechat_focus_failed"; title = $matched.title; processName = $matched.processName } | ConvertTo-Json -Compress
+  @{ ok = $false; reason = "wechat_focus_failed"; title = $matched.title; processName = $matched.processName; sendAttempted = $false } | ConvertTo-Json -Compress
   exit
 }
 $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr][int64]$matched.hWnd)
 if ($root -eq $null -or [string]::IsNullOrWhiteSpace($expectedConversation) -or [string]::IsNullOrWhiteSpace($expectedMessage)) {
-  @{ ok = $false; reason = "atomic_send_context_missing" } | ConvertTo-Json -Compress
+  @{ ok = $false; reason = "atomic_send_context_missing"; sendAttempted = $false } | ConvertTo-Json -Compress
   exit
 }
 $windowRect = $root.Current.BoundingRectangle
@@ -127,7 +127,7 @@ for ($index = 0; $index -lt $all.Count; $index++) {
   }
 }
 if (-not $conversationVerified) {
-  @{ ok = $false; reason = "atomic_conversation_changed" } | ConvertTo-Json -Compress
+  @{ ok = $false; reason = "atomic_conversation_changed"; sendAttempted = $false } | ConvertTo-Json -Compress
   exit
 }
 

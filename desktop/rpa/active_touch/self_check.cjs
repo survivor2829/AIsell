@@ -682,6 +682,65 @@ try {
   );
   assert.equal(legacyBubbleResult.blocked_reason, "message_snapshot_unavailable");
   assert.equal(legacySendCalls, 0);
+
+  const retryDir = path.join(dir, "pre-click-retry");
+  fs.mkdirSync(retryDir, { recursive: true });
+  fs.writeFileSync(path.join(retryDir, "contacts.json"), JSON.stringify([{ id: "wxid_retry", name: "发送前重试客户", wechatId: "internal-test-retry", wechatAccountId: "internal-account", allowed: true }]), "utf8");
+  calibrate(retryDir);
+  selectCustomer(retryDir, "wxid_retry");
+  verifyConversation(retryDir, "发送前重试客户");
+  inputMessageDryRun(retryDir, "retry", () => ({ ok: true, draftVerified: true }));
+  assert.equal(send(retryDir, { dryRun: true, message: "retry" }).state.send_gate_status, "dry_run_passed");
+  const retrySession = () => ({ ok: true, pid: 31, hWnd: "41", processName: "Weixin", title: "发送前重试客户", accountId: "internal-account", accountVerified: true });
+  verifyRealSendSession(retryDir, retrySession);
+  assert.equal(setRealSendArm(retryDir, true).state.real_send_armed, true);
+  let retryDriverCalls = 0;
+  const attemptsBeforeRetry = { ...loadState(retryDir).real_send_attempts };
+  const preClick = await sendReal(
+    retryDir,
+    { message: "retry", attemptId: "same-retry-attempt", allowRealSend: true, userConfirmed: true },
+    () => { retryDriverCalls += 1; return { ok: false, reason: "atomic_draft_changed", conversationVerified: true, draftVerified: false, sendAttempted: false }; },
+    retrySession,
+    (_message, context) => context.phase === "before" ? { ok: true, snapshot: { lastMessageId: "retry-before" } } : { ok: false }
+  );
+  assert.equal(preClick.blocked_reason, "atomic_draft_changed");
+  assert.equal(preClick.send_attempted, false);
+  assert.equal(preClick.state.real_send_attempt_key, "");
+  assert.deepEqual(preClick.state.real_send_attempts, attemptsBeforeRetry);
+  setRealSendArm(retryDir, true);
+  const unknownRetry = await sendReal(
+    retryDir,
+    { message: "retry", attemptId: "same-retry-attempt", allowRealSend: true, userConfirmed: true },
+    () => { retryDriverCalls += 1; return undefined; },
+    retrySession,
+    (_message, context) => context.phase === "before" ? { ok: true, snapshot: { lastMessageId: "retry-before" } } : { ok: false }
+  );
+  assert.equal(retryDriverCalls, 2, "sendAttempted=false must allow the same attempt to reach the driver again");
+  assert.equal(unknownRetry.blocked_reason, "outcome_unknown");
+  assert.equal(unknownRetry.send_attempted, null);
+  assert.equal(unknownRetry.state.real_send_attempts[unknownRetry.state.real_send_attempt_key], "outcome_unknown");
+  assert.equal(setRealSendArm(retryDir, true).blocked_reason, "real_send_already_attempted");
+  const repeatedUnknown = await executeVerifiedContactSend({
+    baseDir: retryDir,
+    contactId: "wxid_retry",
+    message: "retry",
+    frozenContact: loadState(retryDir).selected_customer,
+    authorized: true,
+    runStep: async () => ({ ok: true, state: { selected_customer: loadState(retryDir).selected_customer } }),
+    sessionDriver: retrySession
+  });
+  assert.equal(repeatedUnknown.blocked_reason, "real_send_already_attempted");
+  assert.equal(repeatedUnknown.send_attempted, null, "an existing unknown attempt must never be reclassified as safe to retry");
+  saveState(retryDir, { ...loadState(retryDir), real_send_status: "armed", real_send_armed: true, blocked_reason: "" });
+  const repeatedAfterStatusReset = await sendReal(retryDir, {
+    message: "retry",
+    attemptId: "same-retry-attempt",
+    allowRealSend: true,
+    userConfirmed: true
+  });
+  assert.equal(repeatedAfterStatusReset.blocked_reason, "real_send_already_attempted");
+  assert.equal(repeatedAfterStatusReset.send_attempted, null, "attempt history must remain fail-closed after contact setup resets the top-level status");
+
   send(dir, { dryRun: true, message: "hello" });
   verifyRealSendSession(dir, () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }));
   setRealSendArm(dir, true);
@@ -735,15 +794,17 @@ try {
   send(dir, { dryRun: true, message: "second" });
   verifyRealSendSession(dir, () => ({ ok: true, pid: 12, hWnd: "23", processName: "Weixin", title: "未知结果客户", accountId: "internal-account", accountVerified: true }));
   setRealSendArm(dir, true);
-  assert.equal((await sendReal(
+  const clickedUnknown = await sendReal(
     dir,
     { message: "second", allowRealSend: true, userConfirmed: true },
-    () => ({ ok: true, conversationVerified: true, draftVerified: true }),
+    () => ({ ok: true, conversationVerified: true, draftVerified: true, sendAttempted: true }),
     () => ({ ok: true, pid: 12, hWnd: "23", processName: "Weixin", title: "未知结果客户", accountId: "internal-account", accountVerified: true }),
     (_message, context) => context.phase === "before"
       ? { ok: true, snapshot: { lastMessageId: "history-1" } }
       : { ok: true, messageText: "second", exactMatch: true, outgoing: true, isLatest: true, isNew: false }
-  )).state.real_send_status, "outcome_unknown");
+  );
+  assert.equal(clickedUnknown.state.real_send_status, "outcome_unknown");
+  assert.equal(clickedUnknown.send_attempted, true);
   assert.equal(setRealSendArm(dir, false).state.real_send_status, "outcome_unknown");
   assert.equal(verifyMessageBubble(dir, () => ({ ok: true, messageText: "second!", exactMatch: true, outgoing: true, isLatest: true, isNew: true })).state.real_send_status, "outcome_unknown");
   assert.equal(setRealSendArm(dir, true).blocked_reason, "real_send_already_attempted");
@@ -869,6 +930,10 @@ try {
   assert.match(developmentDriverSource, /function Normalize-WechatDraftText/);
   assert.match(sendMessageSource, /conversationVerified = \$true[\s\S]*draftVerified = \(Normalize-WechatDraftText \$copiedDraft\) -ceq \$normalizedExpectedMessage/);
   assert.match(sendMessageSource, /atomic_expected_window_not_found/);
+  assert.match(sendMessageSource, /reason = "wechat_focus_failed";[^\r\n]*sendAttempted = \$false/);
+  assert.match(sendMessageSource, /reason = "atomic_send_context_missing";[^\r\n]*sendAttempted = \$false/);
+  assert.match(sendMessageSource, /reason = "atomic_conversation_changed"; sendAttempted = \$false/);
+  assert.equal((sendMessageSource.match(/\$sendAttempted = \$true/g) || []).length, 1);
   assert.doesNotMatch(sendMessageSource, /\(Get-ElementText \$element\) -cne "发送"/);
   assert.doesNotMatch(sendMessageSource, /InvokePattern/);
   assert.doesNotMatch(sendMessageSource, /\$sendCandidates/);

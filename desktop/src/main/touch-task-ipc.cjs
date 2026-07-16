@@ -521,15 +521,10 @@ async function runRealContact(task, current, index) {
     if (verification.blocked) return false;
     task = loadTaskState(activeTouchDir());
     const unknown = task.results[index];
-    if (Number(unknown?.outcome_unknown_retry_count || 0) < 1) {
-      const prepared = prepareSingleUnknownRetry(task, index);
-      if (!prepared.ok) return false;
-      return runRealContact(prepared.task, prepared.task.results[index], index);
-    }
     unknown.status = "outcome_unknown";
     unknown.awaiting_resolution = true;
     unknown.retry_blocked = true;
-    unknown.reason = "唯一一次补发后仍无法确认，请人工选择处理结果";
+    unknown.reason = "发送结果无法确认，请人工选择处理结果";
     unknown.updated_at = new Date().toISOString();
     task.phase = "awaiting_unknown_resolution";
     pauseTask(task, unknown.reason, index);

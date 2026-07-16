@@ -657,10 +657,20 @@ const AUTO_REPLY_RUN_SCRIPT = compressedPowerShell(AUTO_REPLY_SCAN_SCRIPT);
 
 function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
   const currentSessionBaselines = new Map();
+  const retryCandidates = [];
   let baselineEpoch = 0;
+  let retryAfterFresh = false;
 
   function allowedNames(names) {
     return [...new Set((Array.isArray(names) ? names : []).map((name) => String(name || "").trim()).filter(Boolean))];
+  }
+
+  function takeRetryCandidate(allowed) {
+    while (retryCandidates.length) {
+      const candidate = retryCandidates.shift();
+      if (allowed.includes(String(candidate.conversation || "").trim())) return candidate;
+    }
+    return null;
   }
 
   async function primeWechatSession(names) {
@@ -683,6 +693,11 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
   async function scanWechatIncoming(names) {
     const allowed = allowedNames(names);
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
+    if (retryAfterFresh) {
+      retryAfterFresh = false;
+      const retry = takeRetryCandidate(allowed);
+      if (retry) return retry;
+    }
     const activeBaselineEpoch = baselineEpoch;
     const result = await Promise.resolve(powerShellRunner(AUTO_REPLY_RUN_SCRIPT, {
       XIAOXI_AUTO_REPLY_MODE: "scan",
@@ -690,7 +705,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
       XIAOXI_CURRENT_BASELINES: JSON.stringify(Object.fromEntries(currentSessionBaselines))
     }, { ensure: false }));
     if (activeBaselineEpoch !== baselineEpoch) return { ok: false, reason: "baseline_epoch_changed" };
-    if (result?.ok !== true) return result;
+    if (result?.ok !== true) return takeRetryCandidate(allowed) || result;
     const conversation = String(result.conversation || "").trim();
     const runtimeId = String(result.runtimeId || "").trim();
     const sessionKey = `${result.pid || ""}:${result.hWnd || ""}:${conversation}`;
@@ -698,11 +713,15 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
     const previous = currentSessionBaselines.get(sessionKey);
     currentSessionBaselines.set(sessionKey, runtimeId);
     if (currentSessionBaselines.size > 1_000) currentSessionBaselines.delete(currentSessionBaselines.keys().next().value);
-    if (result.source === "current_probe") return { ok: false, reason: "current_session_baselined" };
-    if (result.source !== "current_open") return result;
-    if (!previous) return { ok: false, reason: "current_session_baselined" };
-    if (previous === runtimeId) return { ok: false, reason: "no_unread_message" };
-    if (result.latestRole !== "user") return { ok: false, reason: "latest_message_not_incoming" };
+    if (result.source === "current_probe") return takeRetryCandidate(allowed) || { ok: false, reason: "current_session_baselined" };
+    if (result.source !== "current_open") {
+      if (retryCandidates.length) retryAfterFresh = true;
+      return result;
+    }
+    if (!previous) return takeRetryCandidate(allowed) || { ok: false, reason: "current_session_baselined" };
+    if (previous === runtimeId) return takeRetryCandidate(allowed) || { ok: false, reason: "no_unread_message" };
+    if (result.latestRole !== "user") return takeRetryCandidate(allowed) || { ok: false, reason: "latest_message_not_incoming" };
+    if (retryCandidates.length) retryAfterFresh = true;
     return result;
   }
 
@@ -724,6 +743,14 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
   }
 
   scanWechatIncoming.primeBaselines = primeWechatSession;
+  scanWechatIncoming.requeue = (candidate) => {
+    if (candidate?.ok !== true) return false;
+    const key = [candidate.conversation, candidate.runtimeId, candidate.message].map(String).join("\n");
+    if (retryCandidates.some((item) => [item.conversation, item.runtimeId, item.message].map(String).join("\n") === key)) return true;
+    if (retryCandidates.length >= 1_000) return false;
+    retryCandidates.push(candidate);
+    return true;
+  };
   scanWechatIncoming.resetBaselines = () => {
     baselineEpoch += 1;
     currentSessionBaselines.clear();

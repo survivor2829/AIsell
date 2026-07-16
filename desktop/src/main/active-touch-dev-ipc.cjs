@@ -25,14 +25,14 @@ function registerActiveTouchDevIpc(options = {}) {
     const mainWindow = getMainWindow();
     const clickToken = String(payload.clickToken ?? "");
     if (!clickToken || consumedClickTokens.has(clickToken) || !mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || !mainWindow.isFocused()) {
-      return { ok: false, action: "send", blocked_reason: "trusted_user_click_required", error: "已阻断：请在测试版窗口本人点击发送" };
+      return { ok: false, action: "send", blocked_reason: "trusted_user_click_required", error: "已阻断：请在测试版窗口本人点击发送", send_attempted: false };
     }
     consumedClickTokens.add(clickToken);
     if (consumedClickTokens.size > 100) consumedClickTokens.delete(consumedClickTokens.values().next().value);
-    if (realSendInFlight) return { ok: false, action: "send", blocked_reason: "real_send_in_flight", error: "已阻断：真实发送正在确认中" };
+    if (realSendInFlight) return { ok: false, action: "send", blocked_reason: "real_send_in_flight", error: "已阻断：真实发送正在确认中", send_attempted: false };
     const contactId = String(payload.contactId ?? "").trim();
     const message = String(payload.message ?? "").trim();
-    if (!contactId || !message) return { ok: false, action: "send", blocked_reason: "contact_or_message_missing", error: "已阻断：请选择联系人并填写发送文案" };
+    if (!contactId || !message) return { ok: false, action: "send", blocked_reason: "contact_or_message_missing", error: "已阻断：请选择联系人并填写发送文案", send_attempted: false };
     realSendInFlight = true;
     try {
       return await executeVerifiedContactSend({
@@ -44,7 +44,7 @@ function registerActiveTouchDevIpc(options = {}) {
       });
     } catch (error) {
       setRealSendArm(runtimeDataDir, false);
-      return { ok: false, action: "send", blocked_reason: "real_send_failed", error: error instanceof Error ? error.message : "真实发送执行失败" };
+      return { ok: false, action: "send", blocked_reason: "real_send_failed", error: error instanceof Error ? error.message : "真实发送执行失败", send_attempted: null };
     } finally {
       realSendInFlight = false;
     }

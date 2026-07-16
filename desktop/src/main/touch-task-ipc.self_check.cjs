@@ -237,9 +237,9 @@ async function waitFor(read, predicate, timeoutMs = 3000) {
     const unknown = await waitFor(status, (value) => value.task?.results?.[0]?.status === "outcome_unknown");
     assert.equal(unknown.task.status, "paused");
     assert.equal(unknown.task.phase, "awaiting_unknown_resolution");
-    assert.equal(unknown.task.results[0].outcome_unknown_retry_count, 1);
-    assert.equal(unknownAttempt, 2);
-    assert.equal(waitedDeadlines.length, deadlinesBeforeUnknown + 1);
+    assert.equal(unknown.task.results[0].outcome_unknown_retry_count, 0);
+    assert.equal(unknownAttempt, 1, "an unknown send outcome must never trigger an automatic resend");
+    assert.equal(waitedDeadlines.length, deadlinesBeforeUnknown, "unknown outcomes must pause without scheduling an automatic resend");
     const sendsAfterUnknown = sends;
     await resume({}, { clickToken: "trusted-no-retry" });
     const blockedRestart = await start({}, { script: "未知结果测试", clickToken: "trusted-no-restart" });

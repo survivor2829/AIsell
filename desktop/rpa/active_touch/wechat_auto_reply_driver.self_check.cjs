@@ -125,6 +125,28 @@ const unreadThenOpenDriver = createWechatAutoReplyDriver(() => unreadThenOpen.sh
 assert.equal((await unreadThenOpenDriver.scanWechatIncoming(["李经理"])).runtimeId, "user-1");
 assert.equal((await unreadThenOpenDriver.scanWechatIncoming(["李经理"])).runtimeId, "user-2", "a rapid follow-up after an unread reply must not be swallowed as a new baseline");
 
+let retryScanCalls = 0;
+const retryCandidate = { ok: true, source: "unread", conversation: "李经理", message: "请再试一次", runtimeId: "retry-1", latestRole: "user", pid: 82, hWnd: 92, context: [{ role: "user", content: "请再试一次", key: "retry-1" }] };
+const freshCandidate = { ok: true, source: "unread", conversation: "李经理", message: "新的客户消息", runtimeId: "fresh-2", latestRole: "user", pid: 82, hWnd: 92, context: [{ role: "user", content: "新的客户消息", key: "fresh-2" }] };
+const retryResults = [retryCandidate, freshCandidate];
+const retryDriver = createWechatAutoReplyDriver(() => { retryScanCalls += 1; return retryResults.shift() || { ok: false, reason: "no_unread_message" }; });
+const firstRetryCandidate = await retryDriver.scanWechatIncoming(["李经理"]);
+assert.equal(retryDriver.scanWechatIncoming.requeue(firstRetryCandidate), true);
+assert.equal((await retryDriver.scanWechatIncoming(["李经理"])).runtimeId, "fresh-2", "a pending retry must not starve a newly arrived customer message");
+assert.equal((await retryDriver.scanWechatIncoming(["李经理"])).runtimeId, "retry-1", "the deferred retry must run after one fresh customer message");
+assert.equal(retryScanCalls, 2, "the deferred retry should not need another PowerShell scan");
+
+const pauseStartDriver = createWechatAutoReplyDriver(() => ({ ok: false, reason: "no_unread_message" }));
+assert.equal(pauseStartDriver.scanWechatIncoming.requeue(retryCandidate), true);
+pauseStartDriver.scanWechatIncoming.resetBaselines();
+assert.equal((await pauseStartDriver.scanWechatIncoming(["李经理"])).runtimeId, "retry-1", "resetting UIA baselines on pause-start must preserve proven-unsent retries");
+
+const boundedRetryDriver = createWechatAutoReplyDriver(() => ({ ok: false, reason: "no_unread_message" }));
+for (let index = 0; index < 1_000; index += 1) {
+  assert.equal(boundedRetryDriver.scanWechatIncoming.requeue({ ...retryCandidate, runtimeId: `bounded-${index}` }), true);
+}
+assert.equal(boundedRetryDriver.scanWechatIncoming.requeue({ ...retryCandidate, runtimeId: "bounded-overflow" }), false, "a full retry queue must fail visibly instead of dropping a customer turn silently");
+
 assert.equal((await driver.verifyWechatIncoming({ conversation: "张总", message: "你好", runtimeId: "42.81.7", pid: 81, hWnd: 91 })).ok, true);
 assert.equal(calls[1].env.XIAOXI_AUTO_REPLY_MODE, "verify");
 assert.equal(calls[1].env.XIAOXI_EXPECTED_CONVERSATION, "张总");

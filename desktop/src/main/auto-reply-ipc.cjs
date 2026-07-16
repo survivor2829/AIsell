@@ -28,13 +28,53 @@ function normalizeText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
+function containsSensitiveSecret(text) {
+  return /验证码(?:是|为|[:：]|\s)*[0-9０-９]{4,8}/u.test(text)
+    || /密码(?:是|为|[:：]|\s)+[^\s，。！？,!?]{4,32}/u.test(text)
+    || /密码(?=[^\s，。！？,!?]{4,32}(?=$|[\s，。！？,!?]))(?=[^\s，。！？,!?]*[A-Za-z0-9])[^\s，。！？,!?]{4,32}/u.test(text)
+    || /(?:银行卡|卡号)(?:号)?(?:是|为|[:：]|\s)*[0-9０-９][0-9０-９\s-]{11,24}/u.test(text)
+    || /身份证(?:号)?(?:是|为|[:：]|\s)*[0-9０-９][0-9０-９XxＸｘ\s-]{13,20}/u.test(text);
+}
+
+function requestsSensitiveSecret(text, strict = false) {
+  return text.split(/[，,。；;！？!?]/u).some((clause) => {
+    if (/(?:不要|无需|不必|切勿|请勿)(?:您|向任何人)?(?:发|发送|提供|告诉|填写|输入|提交|上传).{0,12}(?:验证码|密码|银行卡|身份证)/u.test(clause)
+      || /(?:不要|无需|不必|切勿|请勿)(?:把|将)?(?:验证码|密码|银行卡|身份证).{0,8}(?:发|发送|提供|告诉|填写|输入|提交|上传)/u.test(clause)) return false;
+    if (strict) {
+      return /(?:发|发送|提供|告诉|填写|输入|提交|上传).{0,12}(?:验证码|密码|银行卡|身份证)|(?:验证码|密码|银行卡|身份证).{0,12}(?:发|发送|提供|告诉|填写|输入|提交|上传)/u.test(clause);
+    }
+    return /(?:请|麻烦|需要).{0,16}(?:验证码|密码|银行卡|身份证).{0,12}(?:发|提供|告诉|填写|输入)/u.test(clause)
+      || /(?:请|麻烦|需要).{0,12}(?:发|提供|告诉|填写|输入).{0,12}(?:验证码|密码|银行卡|身份证)/u.test(clause);
+  });
+}
+
 function isReplyableText(value) {
   const text = normalizeText(value);
   if (!text || text.length > 500) return false;
   if (/^\[(图片|语音|文件|视频|表情|位置|小程序|链接|红包|转账)\]$/u.test(text)) return false;
   if (/(撤回了一条消息|以上是打招呼的内容|你已添加了|系统消息)/u.test(text)) return false;
-  if (/(验证码|密码|银行卡|身份证|转账|付款|退款|赔偿|报警|律师|合同|发票|投诉)/u.test(text)) return false;
+  if (containsSensitiveSecret(text) || requestsSensitiveSecret(text)) return false;
   return true;
+}
+
+function requestsPayment(text) {
+  return text.split(/[，,。；;！？!?]/u).some((clause) =>
+    /(?:请|请您|需要您|您可以|可以|先|直接|立即|马上|务必|建议您).{0,12}(?:支付|转账|汇款|打款|付(?:款|定金|订金))|(?:支付|转账|汇款|打款).{0,8}(?:到|至|给|进|以下|账户|收款码|链接)|(?:扫码|点击).{0,8}(?:支付|付款|转账|收款码|付款链接|支付链接)/u.test(clause)
+  );
+}
+
+function isSafeReplyText(value) {
+  const text = normalizeText(value);
+  if (!isReplyableText(text) || requestsSensitiveSecret(text, true)) return false;
+  return !requestsPayment(text);
+}
+
+function safeContextSuffix(context) {
+  let start = 0;
+  for (let index = 0; index < context.length; index += 1) {
+    if (!isReplyableText(context[index].content)) start = index + 1;
+  }
+  return context.slice(start);
 }
 
 function writeAtomic(file, value) {
@@ -64,6 +104,23 @@ function handoffInterruptedMessage(pending) {
   return `上次人工提醒发送结果未确认${conversation ? `（客户：${conversation}）` : ""}，请在文件传输助手人工检查，确认后点击确认按钮继续`;
 }
 
+function handoffDeliveryState(value) {
+  return ["queued", "not_attempted", "sending", "outcome_unknown", "manual_required"].includes(value)
+    ? value
+    : "outcome_unknown";
+}
+
+function handoffNeedsConfirmation(pending) {
+  return Boolean(pending) && ["sending", "outcome_unknown"].includes(handoffDeliveryState(pending.delivery_state));
+}
+
+function manualFollowupMessage(items) {
+  const pending = Array.isArray(items) ? items : [];
+  if (!pending.length) return "";
+  const conversation = normalizeText(pending[0]?.conversation);
+  return `有 ${pending.length} 条人工提醒尚未补发${conversation ? `，当前客户：${conversation}` : ""}。请人工处理后确认当前这一条`;
+}
+
 function pendingHandoffKey(pending) {
   const key = normalizeText(pending?.key);
   if (key) return key;
@@ -80,7 +137,9 @@ function createDefaultState() {
     daily_date: "",
     processed: {},
     handoff_notified: {},
+    manual_followups: [],
     pending_handoff: null,
+    pending_handoffs: [],
     rate_events: [],
     last_event: "",
     last_error: "",
@@ -94,11 +153,26 @@ function migrateState(raw, current) {
     const next = { ...createDefaultState(), ...raw };
     next.processed = raw.processed && typeof raw.processed === "object" ? raw.processed : {};
     next.handoff_notified = raw.handoff_notified && typeof raw.handoff_notified === "object" ? raw.handoff_notified : {};
-    next.pending_handoff = raw.pending_handoff && typeof raw.pending_handoff === "object"
-      ? { ...raw.pending_handoff, key: pendingHandoffKey(raw.pending_handoff) }
-      : null;
+    next.manual_followups = Array.isArray(raw.manual_followups)
+      ? raw.manual_followups
+        .filter((item) => item && typeof item === "object")
+        .slice(0, MAX_STATE_ENTRIES)
+        .map((item) => ({ ...item, key: pendingHandoffKey(item), delivery_state: "manual_required" }))
+      : [];
+    const pendingHandoffs = Array.isArray(raw.pending_handoffs) && raw.pending_handoffs.length
+      ? raw.pending_handoffs
+      : raw.pending_handoff && typeof raw.pending_handoff === "object" ? [raw.pending_handoff] : [];
+    next.pending_handoffs = pendingHandoffs
+      .filter((pending) => pending && typeof pending === "object")
+      .slice(0, MAX_STATE_ENTRIES)
+      .map((pending) => ({
+        ...pending,
+        key: pendingHandoffKey(pending),
+        delivery_state: handoffDeliveryState(pending.delivery_state)
+      }));
+    next.pending_handoff = next.pending_handoffs[0] || null;
     next.rate_events = Array.isArray(raw.rate_events) ? raw.rate_events : [];
-    if (next.pending_handoff) {
+    if (handoffNeedsConfirmation(next.pending_handoff)) {
       next.status = "paused";
       next.last_event = "handoff_confirmation_required";
       next.last_error = handoffInterruptedMessage(next.pending_handoff);
@@ -172,6 +246,14 @@ function fingerprintFor(contact, candidate) {
     .digest("hex");
 }
 
+function isTerminalProcessed(entry) {
+  return Boolean(entry) && !["generating", "retryable"].includes(normalizeText(entry.status));
+}
+
+function retryPolls(attempts) {
+  return Math.min(2 ** Math.max(0, Math.min(Number(attempts) - 1, 6)), 60);
+}
+
 function recentRateEvents(events, nowMs) {
   return (Array.isArray(events) ? events : []).filter((event) => {
     const at = new Date(event?.at || 0).getTime();
@@ -233,6 +315,9 @@ function createAutoReplyController(options = {}) {
   let scanActive = false;
   let runEpoch = 0;
   let starting = false;
+  const pendingHandoffQueue = [];
+  const retryGenerations = new Map();
+  let handoffConfirmationRequired = handoffNeedsConfirmation(state.pending_handoff);
 
   function save() {
     state.updated_at = now().toISOString();
@@ -240,11 +325,13 @@ function createAutoReplyController(options = {}) {
   }
 
   function publicState() {
+    const manualWarning = manualFollowupMessage(state.manual_followups);
+    const showManualWarning = Boolean(manualWarning) && !normalizeText(state.last_error);
     return {
       status: state.status,
       reply_count: state.reply_count,
-      last_event: state.last_event,
-      last_error: state.last_error,
+      last_event: showManualWarning ? "handoff_manual_followup_required" : state.last_event,
+      last_error: showManualWarning ? manualWarning : state.last_error,
       updated_at: state.updated_at
     };
   }
@@ -296,8 +383,40 @@ function createAutoReplyController(options = {}) {
     trimMap(state.processed);
   }
 
+  function syncPendingHandoffHead() {
+    state.pending_handoff = pendingHandoffQueue[0]?.metadata || state.pending_handoffs?.[0] || null;
+  }
+
+  function removePendingHandoff(key) {
+    const payloadIndex = pendingHandoffQueue.findIndex((item) => item.metadata.key === key);
+    if (payloadIndex >= 0) pendingHandoffQueue.splice(payloadIndex, 1);
+    state.pending_handoffs = (state.pending_handoffs || []).filter((item) => pendingHandoffKey(item) !== key);
+    syncPendingHandoffHead();
+  }
+
+  function movePendingHandoffToManual(key) {
+    const pending = (state.pending_handoffs || []).find((item) => pendingHandoffKey(item) === key)
+      || pendingHandoffQueue.find((item) => item.metadata.key === key)?.metadata;
+    if (!pending) return;
+    state.manual_followups ||= [];
+    if (!state.manual_followups.some((item) => pendingHandoffKey(item) === key)) {
+      state.manual_followups.push({ ...pending, key, delivery_state: "manual_required" });
+      if (state.manual_followups.length > MAX_STATE_ENTRIES) state.manual_followups.shift();
+    }
+    removePendingHandoff(key);
+  }
+
+  function updateHandoffDeliveryState(key, deliveryState) {
+    const normalized = handoffDeliveryState(deliveryState);
+    const persisted = (state.pending_handoffs || []).find((item) => pendingHandoffKey(item) === key);
+    const payload = pendingHandoffQueue.find((item) => item.metadata.key === key);
+    if (persisted) persisted.delivery_state = normalized;
+    if (payload) payload.metadata.delivery_state = normalized;
+    syncPendingHandoffHead();
+  }
+
   function acknowledgePendingHandoff() {
-    if (!state.pending_handoff) return;
+    if (!state.pending_handoff || state.last_event !== "handoff_confirmation_required") return;
     const pending = state.pending_handoff;
     const key = pendingHandoffKey(pending);
     state.handoff_notified ||= {};
@@ -306,15 +425,50 @@ function createAutoReplyController(options = {}) {
       at: now().toISOString(),
       status: "manual_acknowledged"
     };
-    state.pending_handoff = null;
+    removePendingHandoff(key);
+    handoffConfirmationRequired = false;
     trimMap(state.handoff_notified);
+  }
+
+  function recoverKnownUnsentHandoffs() {
+    if (pendingHandoffQueue.length) return "";
+    while (state.pending_handoff && !handoffNeedsConfirmation(state.pending_handoff)) {
+      const pending = state.pending_handoff;
+      const key = pendingHandoffKey(pending);
+      movePendingHandoffToManual(key);
+    }
+    return manualFollowupMessage(state.manual_followups);
+  }
+
+  function acknowledgeManualFollowup() {
+    const followups = Array.isArray(state.manual_followups) ? state.manual_followups : [];
+    if (!followups.length) return { ok: true, state: publicState() };
+    state.handoff_notified ||= {};
+    const pending = followups.shift();
+    const key = pendingHandoffKey(pending);
+    state.handoff_notified[key] = {
+      contact_id: pending.contact_id,
+      at: now().toISOString(),
+      status: "manual_followup_acknowledged"
+    };
+    state.manual_followups = followups;
+    if (state.manual_followups.length) {
+      state.last_event = "handoff_manual_followup_required";
+      state.last_error = manualFollowupMessage(state.manual_followups);
+    } else if (state.last_event === "handoff_manual_followup_required") {
+      state.last_event = state.status === "running" ? "manual_followup_acknowledged" : "paused_by_user";
+      state.last_error = "";
+    }
+    trimMap(state.handoff_notified);
+    save();
+    return { ok: true, state: publicState() };
   }
 
   function pause(reason = "paused_by_user") {
     runEpoch += 1;
     if (timer) cancelSchedule(timer);
     timer = null;
-    if (state.pending_handoff) pauseForFailure("handoff_confirmation_required", "");
+    if (state.pending_handoff && handoffConfirmationRequired) pauseForFailure("handoff_confirmation_required", "");
     else {
       state.status = "paused";
       state.last_event = reason;
@@ -343,6 +497,13 @@ function createAutoReplyController(options = {}) {
       return { ok: false, error: "当前版本未启用经校验的自动回复执行器" };
     }
     acknowledgePendingHandoff();
+    let recoveredHandoffWarning = "";
+    if (state.pending_handoff && !pendingHandoffQueue.length && handoffNeedsConfirmation(state.pending_handoff)) {
+      handoffConfirmationRequired = handoffNeedsConfirmation(state.pending_handoff);
+      pauseForFailure("handoff_confirmation_required", "还有未确认的人工提醒");
+      save();
+      return { ok: false, error: state.last_error, state: publicState() };
+    }
     starting = true;
     runEpoch += 1;
     const startEpoch = runEpoch;
@@ -365,8 +526,16 @@ function createAutoReplyController(options = {}) {
       deepSeekClient?.assertAvailable();
       const latestExpert = expertStore?.read();
       if (!normalizeText(latestExpert?.text)) throw new Error("请先在 AI专家 导入自动回复话术文件");
+      recoveredHandoffWarning = recoverKnownUnsentHandoffs();
+      if (handoffNeedsConfirmation(state.pending_handoff)) {
+        handoffConfirmationRequired = true;
+        pauseForFailure("handoff_confirmation_required", "还有发送结果未确认的人工提醒");
+        save();
+        return { ok: false, error: state.last_error, state: publicState() };
+      }
       state.status = "running";
-      state.last_event = "started";
+      state.last_event = recoveredHandoffWarning ? "handoff_manual_followup_required" : "started";
+      state.last_error = recoveredHandoffWarning;
       save();
       queueNext(0);
       return { ok: true, state: publicState() };
@@ -390,7 +559,7 @@ function createAutoReplyController(options = {}) {
   }
 
   function pauseForFailure(event, error) {
-    if (!state.pending_handoff) return pauseWithError(event, error);
+    if (!state.pending_handoff || !handoffConfirmationRequired) return pauseWithError(event, error);
     state.status = "paused";
     state.last_event = "handoff_confirmation_required";
     const detail = normalizeText(error);
@@ -402,6 +571,103 @@ function createAutoReplyController(options = {}) {
     try {
       save();
     } catch {}
+  }
+
+  function requeueCandidate(candidate) {
+    try {
+      return scanIncoming.requeue?.(candidate) !== false;
+    } catch {
+      return false;
+    }
+  }
+
+  function enqueueHandoff(metadata, payload) {
+    if (pendingHandoffQueue.some((item) => item.metadata.key === metadata.key)) return false;
+    if (pendingHandoffQueue.length >= MAX_STATE_ENTRIES) throw new Error("人工提醒待发送队列异常，请人工检查");
+    const queuedMetadata = { ...metadata, delivery_state: "queued" };
+    pendingHandoffQueue.push({ metadata: queuedMetadata, ...payload });
+    state.pending_handoffs ||= [];
+    if (!state.pending_handoffs.some((item) => pendingHandoffKey(item) === metadata.key)) state.pending_handoffs.push(queuedMetadata);
+    syncPendingHandoffHead();
+    return true;
+  }
+
+  async function deliverPendingHandoff(lock, isCurrentRun) {
+    const payload = pendingHandoffQueue[0];
+    if (!state.pending_handoff || !payload) return "none";
+    if (payload.pollsRemaining > 0) {
+      payload.pollsRemaining -= 1;
+      state.last_event = "handoff_retry_waiting";
+      state.last_error = "人工提醒尚未发出，正在退避后重试";
+      save();
+      return "deferred";
+    }
+    coordinator.update(lock.lock.owner, "send-handoff");
+    handoffConfirmationRequired = true;
+    updateHandoffDeliveryState(payload.metadata.key, "sending");
+    save();
+    const result = await sendHandoff({
+      authorized: true,
+      message: payload.message,
+      expectedPid: payload.expectedPid,
+      sourceWindowHandle: payload.sourceWindowHandle
+    });
+    const currentRun = isCurrentRun();
+    if (!result?.ok) {
+      if (result?.send_attempted === false) {
+        if (result?.binding_valid === false) {
+          movePendingHandoffToManual(payload.metadata.key);
+          handoffConfirmationRequired = false;
+          state.last_event = "handoff_manual_followup_required";
+          state.last_error = result?.error || manualFollowupMessage(state.manual_followups);
+          save();
+          return currentRun ? "manual" : "handled";
+        }
+        updateHandoffDeliveryState(payload.metadata.key, "not_attempted");
+        handoffConfirmationRequired = false;
+        payload.attempts = Number(payload.attempts || 0) + 1;
+        payload.pollsRemaining = retryPolls(payload.attempts);
+        if (currentRun) {
+          state.last_event = "handoff_retry_pending";
+          state.last_error = `人工提醒尚未发出，将自动重试：${normalizeText(result?.error || result?.blocked_reason) || "发送前校验未通过"}`;
+        } else if (state.last_event === "handoff_confirmation_required") {
+          state.last_event = "paused_by_user";
+          state.last_error = "";
+        }
+        save();
+        return currentRun ? "retryable" : "handled";
+      } else {
+        updateHandoffDeliveryState(payload.metadata.key, "outcome_unknown");
+        handoffConfirmationRequired = true;
+        pauseForFailure("handoff_confirmation_required", result?.error || result?.blocked_reason || "人工提醒发送失败");
+      }
+      save();
+      return "handled";
+    }
+    const pending = state.pending_handoff;
+    state.handoff_notified ||= {};
+    state.handoff_notified[pending.key] = {
+      contact_id: pending.contact_id,
+      at: pending.at
+    };
+    removePendingHandoff(pending.key);
+    handoffConfirmationRequired = false;
+    trimMap(state.handoff_notified);
+    if (payload.pauseReason) pauseWithError("ai_configuration_paused", payload.pauseReason);
+    else if (!currentRun && state.last_event === "handoff_confirmation_required") {
+      state.last_event = "paused_by_user";
+      state.last_error = "";
+    }
+    else if (state.pending_handoff) {
+      state.last_event = "handoff_pending";
+      state.last_error = "";
+    }
+    else {
+      state.last_event = payload.successEvent;
+      state.last_error = "";
+    }
+    save();
+    return currentRun && state.status === "running" ? "sent" : "handled";
   }
 
   async function runOnce() {
@@ -426,10 +692,15 @@ function createAutoReplyController(options = {}) {
         return publicState();
       }
 
+      const handoffDelivery = await deliverPendingHandoff(lock, isCurrentRun);
+      const handoffRetryError = ["retryable", "deferred"].includes(handoffDelivery) ? state.last_error : "";
+      if (handoffDelivery === "handled") return publicState();
+
       const contacts = eligibleContacts(activeTouchDir);
       const candidate = await Promise.resolve(scanIncoming(contacts.map((contact) => contact.name)));
       if (!isCurrentRun()) return publicState();
       if (!candidate?.ok) {
+        if (handoffDelivery !== "none") return publicState();
         state.last_event = candidate?.reason || "no_unread_message";
         state.last_error = "";
         save();
@@ -444,28 +715,29 @@ function createAutoReplyController(options = {}) {
         save();
         return publicState();
       }
-      const context = normalizedContext(candidate);
+      const rawContext = normalizedContext(candidate);
       const incoming = normalizeText(candidate.message);
       const fingerprint = fingerprintFor(contact, candidate);
-      if (!context.length || !fingerprint) {
+      if (!rawContext.length || !fingerprint) {
         state.last_event = "ambiguous_message_context";
         state.last_error = "";
         save();
         return publicState();
       }
-      if (state.processed?.[fingerprint]) {
+      if (isTerminalProcessed(state.processed?.[fingerprint])) {
         state.last_event = "duplicate_skipped";
         state.last_error = "";
         save();
         return publicState();
       }
-      if (context.some((item) => !isReplyableText(item.content))) {
+      if (!isReplyableText(incoming)) {
         remember(fingerprint, { status: "skipped", contact_id: contact.id, conversation, at: current.toISOString() });
         state.last_event = "unsupported_or_risky_message";
         state.last_error = "";
         save();
         return publicState();
       }
+      const context = safeContextSuffix(rawContext);
 
       state.rate_events = recentRateEvents(state.rate_events, current.getTime());
       if (exceedsRateLimit(state.rate_events, current.getTime())) {
@@ -474,21 +746,39 @@ function createAutoReplyController(options = {}) {
         return publicState();
       }
 
-      const expert = expertStore?.read();
-      if (!normalizeText(expert?.text)) throw new Error("AI专家话术文件不可用");
-      remember(fingerprint, { status: "processing", contact_id: contact.id, conversation, at: current.toISOString() });
+      const retryEntry = retryGenerations.get(fingerprint);
+      if (retryEntry?.pollsRemaining > 0) {
+        retryEntry.pollsRemaining -= 1;
+        retryGenerations.set(fingerprint, retryEntry);
+        remember(fingerprint, { status: "retryable", contact_id: contact.id, conversation, at: current.toISOString() });
+        if (requeueCandidate(candidate)) {
+          state.last_event = "send_retry_waiting";
+          state.last_error = "回复尚未发出，正在退避后重试";
+        } else {
+          pauseWithError("send_retry_queue_paused", "回复尚未发出，但安全重试队列不可用，请人工检查后再启动");
+        }
+        save();
+        return publicState();
+      }
+      remember(fingerprint, { status: "generating", contact_id: contact.id, conversation, at: current.toISOString() });
       state.last_event = "generating_reply";
       state.last_error = "";
       save();
-      coordinator.update(lock.lock.owner, "generate-reply");
-      const generated = await deepSeekClient.reply({ context, expert: expert.text });
+      let generated = retryEntry?.generated;
+      if (!generated) {
+        const expert = expertStore?.read();
+        if (!normalizeText(expert?.text)) throw new Error("AI专家话术文件不可用");
+        coordinator.update(lock.lock.owner, "generate-reply");
+        generated = await deepSeekClient.reply({ context, expert: expert.text });
+      }
       if (!isCurrentRun()) {
+        retryGenerations.delete(fingerprint);
         state.processed[fingerprint].status = "cancelled";
         save();
         return publicState();
       }
       const reply = normalizeText(generated?.reply);
-      if (!isReplyableText(reply)) throw new Error("DeepSeek 返回的回复未通过安全检查");
+      if (!isSafeReplyText(reply)) throw new Error("DeepSeek 返回的回复未通过安全检查");
 
       let incomingStillCurrent = true;
       let draftPhaseStarted = false;
@@ -506,6 +796,8 @@ function createAutoReplyController(options = {}) {
         return verifyCurrent();
       };
       const shouldContinue = () => draftPhaseStarted ? verifyCurrent() : isCurrentRun();
+      state.processed[fingerprint].status = "sending";
+      save();
       coordinator.update(lock.lock.owner, "send-reply");
       const result = await send({
         baseDir: activeTouchDir,
@@ -522,11 +814,13 @@ function createAutoReplyController(options = {}) {
       });
 
       if (!isCurrentRun() && result?.blocked_reason === "batch_cancelled") {
+        retryGenerations.delete(fingerprint);
         state.processed[fingerprint].status = "cancelled";
         save();
         return publicState();
       }
       if (!isCurrentRun()) {
+        retryGenerations.delete(fingerprint);
         if (result?.ok) {
           const staleSentAt = now();
           resetDailyCounter(staleSentAt);
@@ -541,6 +835,7 @@ function createAutoReplyController(options = {}) {
         return publicState();
       }
       if (!incomingStillCurrent || result?.blocked_reason === "incoming_message_changed") {
+        retryGenerations.delete(fingerprint);
         state.processed[fingerprint].status = "cancelled";
         state.last_event = "manual_reply_or_message_changed";
         state.last_error = "";
@@ -548,13 +843,29 @@ function createAutoReplyController(options = {}) {
         return publicState();
       }
       if (!result?.ok) {
-        state.processed[fingerprint].status = "failed";
-        pauseWithError("send_failed_paused", result?.error || result?.blocked_reason || "自动回复发送未通过校验");
+        if (result?.send_attempted === false) {
+          const attempts = Number(retryEntry?.attempts || 0) + 1;
+          retryGenerations.set(fingerprint, { generated, attempts, pollsRemaining: retryPolls(attempts) });
+          if (retryGenerations.size > MAX_STATE_ENTRIES) retryGenerations.delete(retryGenerations.keys().next().value);
+          state.processed[fingerprint].status = "retryable";
+          const retryQueued = requeueCandidate(candidate);
+          if (retryQueued) {
+            state.last_event = "send_retry_pending";
+            state.last_error = `本次回复尚未发出，将自动重试：${normalizeText(result?.error || result?.blocked_reason) || "发送前校验未通过"}`;
+          } else {
+            pauseWithError("send_retry_queue_paused", "回复尚未发出，但安全重试队列不可用，请人工检查后再启动");
+          }
+        } else {
+          retryGenerations.delete(fingerprint);
+          state.processed[fingerprint].status = "outcome_unknown";
+          pauseWithError("send_outcome_unknown_paused", result?.error || result?.blocked_reason || "自动回复发送结果无法确认");
+        }
         save();
         return publicState();
       }
 
       const sentAt = now();
+      retryGenerations.delete(fingerprint);
       resetDailyCounter(sentAt);
       state.processed[fingerprint].status = "sent_verified";
       state.reply_count += 1;
@@ -565,23 +876,34 @@ function createAutoReplyController(options = {}) {
         ? normalizeText(generated?.pauseReason) || "DeepSeek 配置需要人工处理"
         : "";
 
-      let pendingHandoff;
+      let handoffCreated = false;
       if (generated?.needsHuman === true) {
         const reason = normalizeText(generated?.handoffReason || generated?.intentReason) || "需要人工跟进";
         const handoffKey = crypto.createHash("sha256")
           .update(`${contact.id}\n${context.map((item) => `${item.role}:${item.key || item.content}`).join("\n")}`)
           .digest("hex");
-        if (!state.handoff_notified?.[handoffKey]) {
-          state.last_event = "handoff_pending";
-          state.pending_handoff = { key: handoffKey, contact_id: contact.id, conversation, at: sentAt.toISOString() };
-          pendingHandoff = {
-            key: handoffKey,
-            message: buildHandoffMessage({ conversation, reason, latest: incoming, at: sentAt })
-          };
+        if (!state.handoff_notified?.[handoffKey] && !state.manual_followups?.some((item) => pendingHandoffKey(item) === handoffKey)) {
+          const metadata = { key: handoffKey, contact_id: contact.id, conversation, at: sentAt.toISOString() };
+          handoffCreated = enqueueHandoff(metadata, {
+            message: buildHandoffMessage({ conversation, reason, latest: incoming, at: sentAt }),
+            expectedPid: candidate.pid,
+            sourceWindowHandle: candidate.hWnd,
+            successEvent: generated.intent === true ? "intent_handoff_sent" : "human_handoff_sent",
+            pauseReason,
+            attempts: 0,
+            pollsRemaining: 0
+          });
+          if (handoffCreated) state.last_event = "handoff_pending";
         }
       }
       save();
-      if (!pendingHandoff) {
+      if (!handoffCreated) {
+        if (["retryable", "deferred"].includes(handoffDelivery) && state.pending_handoff) {
+          state.last_event = handoffDelivery === "retryable" ? "handoff_retry_pending" : "handoff_retry_waiting";
+          state.last_error = handoffRetryError;
+          save();
+          return publicState();
+        }
         if (pauseReason && isCurrentRun()) {
           pauseWithError("ai_configuration_paused", pauseReason);
           save();
@@ -589,28 +911,8 @@ function createAutoReplyController(options = {}) {
         return publicState();
       }
       if (!isCurrentRun()) return publicState();
-      coordinator.update(lock.lock.owner, "send-handoff");
-      const handoffResult = await sendHandoff({
-        authorized: true,
-        message: pendingHandoff.message,
-        expectedPid: candidate.pid,
-        sourceWindowHandle: candidate.hWnd
-      });
-      if (!handoffResult?.ok) {
-        pauseForFailure("handoff_confirmation_required", handoffResult?.error || handoffResult?.blocked_reason || "人工提醒发送失败");
-        save();
-        return publicState();
-      }
-      state.handoff_notified ||= {};
-      state.handoff_notified[pendingHandoff.key] = { contact_id: contact.id, at: sentAt.toISOString() };
-      state.pending_handoff = null;
-      trimMap(state.handoff_notified);
-      if (pauseReason) pauseWithError("ai_configuration_paused", pauseReason);
-      else {
-        state.last_event = generated.intent === true ? "intent_handoff_sent" : "human_handoff_sent";
-        state.last_error = "";
-      }
-      save();
+      if (handoffDelivery !== "none") return publicState();
+      await deliverPendingHandoff(lock, isCurrentRun);
       return publicState();
     } catch (error) {
       if (isCurrentRun()) {
@@ -630,7 +932,7 @@ function createAutoReplyController(options = {}) {
     }
   }
 
-  return { pause, runOnce, start, status };
+  return { acknowledgeManualFollowup, pause, runOnce, start, status };
 }
 
 function registerAutoReplyIpc(options = {}) {
@@ -638,16 +940,25 @@ function registerAutoReplyIpc(options = {}) {
   const getMainWindow = options.getMainWindow;
   const controller = createAutoReplyController(options);
 
-  ipcMain.handle("auto-reply:status", () => ({ ok: true, state: controller.status() }));
-  ipcMain.handle("auto-reply:start", (event, payload = {}) => {
-    const token = String(payload.clickToken || "");
+  function consumeTrustedClick(event, payload) {
+    const token = String(payload?.clickToken || "");
     const mainWindow = getMainWindow?.();
-    if (!token || consumedClickTokens.has(token) || !mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || !mainWindow.isFocused()) {
-      return { ok: false, error: "请在主窗口中手动点击启动自动回复" };
-    }
+    if (!token || consumedClickTokens.has(token) || !mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || !mainWindow.isFocused()) return false;
     consumedClickTokens.add(token);
     if (consumedClickTokens.size > 200) consumedClickTokens.delete(consumedClickTokens.values().next().value);
+    return true;
+  }
+
+  ipcMain.handle("auto-reply:status", () => ({ ok: true, state: controller.status() }));
+  ipcMain.handle("auto-reply:start", (event, payload = {}) => {
+    if (!consumeTrustedClick(event, payload)) {
+      return { ok: false, error: "请在主窗口中手动点击启动自动回复" };
+    }
     return controller.start();
+  });
+  ipcMain.handle("auto-reply:acknowledge-manual-followup", (event, payload = {}) => {
+    if (!consumeTrustedClick(event, payload)) return { ok: false, error: "请在主窗口中手动确认人工提醒已处理" };
+    return controller.acknowledgeManualFollowup();
   });
   ipcMain.handle("auto-reply:pause", () => controller.pause());
   return controller;
@@ -658,5 +969,6 @@ module.exports = {
   createAutoReplyController,
   exceedsRateLimit,
   isReplyableText,
+  isSafeReplyText,
   registerAutoReplyIpc
 };
