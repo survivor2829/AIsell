@@ -5,7 +5,6 @@ const { readContacts } = require("../../rpa/active_touch/state_machine.cjs");
 
 const POLL_INTERVAL_MS = 5_000;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
-const CONTACT_RATE_LIMIT = 6;
 const GLOBAL_RATE_LIMIT = 30;
 const MAX_STATE_ENTRIES = 1_000;
 const consumedClickTokens = new Set();
@@ -180,10 +179,9 @@ function recentRateEvents(events, nowMs) {
   });
 }
 
-function exceedsRateLimit(events, contactId, nowMs = Date.now()) {
+function exceedsRateLimit(events, nowMs = Date.now()) {
   const recent = recentRateEvents(events, nowMs);
-  if (recent.length >= GLOBAL_RATE_LIMIT) return true;
-  return recent.filter((event) => String(event.contact_id) === String(contactId)).length >= CONTACT_RATE_LIMIT;
+  return recent.length >= GLOBAL_RATE_LIMIT;
 }
 
 function buildHandoffMessage({ conversation, reason, latest, at = new Date() }) {
@@ -470,7 +468,7 @@ function createAutoReplyController(options = {}) {
       }
 
       state.rate_events = recentRateEvents(state.rate_events, current.getTime());
-      if (exceedsRateLimit(state.rate_events, contact.id, current.getTime())) {
+      if (exceedsRateLimit(state.rate_events, current.getTime())) {
         pauseWithError("rate_limit_paused", "触发异常频率熔断，请人工检查后再启动");
         save();
         return publicState();

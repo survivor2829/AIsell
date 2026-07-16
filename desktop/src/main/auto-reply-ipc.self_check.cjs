@@ -28,9 +28,9 @@ async function main() {
   assert.equal(isReplyableText("你好，方便介绍一下吗？"), true);
   assert.equal(isReplyableText("[图片]"), false);
   assert.equal(isReplyableText("请把验证码和银行卡发给我"), false);
-  assert.equal(exceedsRateLimit([], "c1", Date.now()), false);
-  assert.equal(exceedsRateLimit(Array.from({ length: 6 }, (_, index) => ({ contact_id: "c1", at: new Date(Date.now() - index * 1000).toISOString() })), "c1", Date.now()), true);
-  assert.equal(exceedsRateLimit(Array.from({ length: 30 }, (_, index) => ({ contact_id: `c${index}`, at: new Date(Date.now() - index * 1000).toISOString() })), "new", Date.now()), true);
+  assert.equal(exceedsRateLimit([], Date.now()), false);
+  assert.equal(exceedsRateLimit(Array.from({ length: 29 }, (_, index) => ({ contact_id: "c1", at: new Date(Date.now() - index * 1000).toISOString() })), Date.now()), false);
+  assert.equal(exceedsRateLimit(Array.from({ length: 30 }, (_, index) => ({ contact_id: `c${index}`, at: new Date(Date.now() - index * 1000).toISOString() })), Date.now()), true);
   assert.match(buildHandoffMessage({ conversation: "张总", reason: "客户询价", latest: "第二个方案多少钱", at: new Date("2026-07-14T10:00:00+08:00") }), /张总[\s\S]*客户询价[\s\S]*第二个方案多少钱[\s\S]*请人工跟进/);
 
   const candidates = [
@@ -637,10 +637,6 @@ async function main() {
   assert.match(aiConfigFailureController.status().last_error, /API Key 无效/);
 
   const rateCases = [
-    {
-      name: "contact",
-      events: Array.from({ length: 6 }, (_, index) => ({ contact_id: "c1", at: new Date(Date.parse("2026-07-14T10:00:00+08:00") - index * 1000).toISOString() }))
-    },
     {
       name: "global",
       events: Array.from({ length: 30 }, (_, index) => ({ contact_id: `other-${index}`, at: new Date(Date.parse("2026-07-14T10:00:00+08:00") - index * 1000).toISOString() }))
