@@ -357,6 +357,12 @@ $expectedHandle = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND")
 $inputXText = [Environment]::GetEnvironmentVariable("XIAOXI_INPUT_X_RATIO")
 $inputYText = [Environment]::GetEnvironmentVariable("XIAOXI_INPUT_Y_RATIO")
 $beforeJson = [Environment]::GetEnvironmentVariable("XIAOXI_BEFORE_SNAPSHOT")
+function Normalize-WechatProofText([string]$value) {
+  $normalized = ([string]$value).Replace([Environment]::NewLine, [string][char]10)
+  $normalized = $normalized.Replace([string][char]13, [string][char]10)
+  return $normalized.TrimEnd([char[]]@([char]0xFFFC))
+}
+$normalizedMessage = Normalize-WechatProofText $message
 if ([string]::IsNullOrWhiteSpace($message) -or [string]::IsNullOrWhiteSpace($expectedPid) -or [string]::IsNullOrWhiteSpace($expectedHandle)) {
   @{ ok = $false; reason = "window_or_message_missing" } | ConvertTo-Json -Compress
   exit
@@ -452,14 +458,16 @@ for ($index = 0; $index -lt $all.Count; $index++) {
   if (
     $rect.Width -le 0 -or
     $rect.Height -le 0 -or
-    $rect.Height -gt [Math]::Max(240, $windowHeight * 0.35) -or
     $rect.Right -lt $chatLeft -or
     $rect.Top -lt $chatTop -or
     $rect.Bottom -gt $chatBottom
   ) { continue }
+  $normalizedText = Normalize-WechatProofText $text
+  $isExpectedText = $normalizedText -ceq $normalizedMessage
+  if ($rect.Height -gt [Math]::Max(240, $windowHeight * 0.35) -and -not $isExpectedText) { continue }
   $key = Get-ElementKey $element $rect $text
   [void]$candidates.Add([pscustomobject]@{
-    text = [string]$text
+    normalizedText = [string]$normalizedText
     key = [string]$key
     left = [double]$rect.Left
     top = [double]$rect.Top
@@ -468,7 +476,7 @@ for ($index = 0; $index -lt $all.Count; $index++) {
     outgoing = ([double]$rect.Right -ge $outgoingEdge -and (($rect.Left + $rect.Right) / 2) -ge ($windowRect.Left + ($windowWidth * 0.55)))
   })
 }
-$exactCandidates = @($candidates | Where-Object { $_.text -ceq $message })
+$exactCandidates = @($candidates | Where-Object { $_.normalizedText -ceq $normalizedMessage })
 $outgoingExactBefore = @($exactCandidates | Where-Object { $_.outgoing })
 $snapshot = @{
   runtimeIds = @($exactCandidates | ForEach-Object { $_.key } | Select-Object -Unique)
@@ -477,7 +485,7 @@ $snapshot = @{
 }
 if ($phase -eq "before") {
   $draftBefore = Read-InputDraft
-  $snapshot.draftExact = $draftBefore.ok -and -not $draftBefore.isEmpty -and $draftBefore.text -ceq $message
+  $snapshot.draftExact = $draftBefore.ok -and -not $draftBefore.isEmpty -and (Normalize-WechatProofText $draftBefore.text) -ceq $normalizedMessage
   @{
     ok = $true
     snapshot = $snapshot
@@ -507,7 +515,7 @@ if ($selected -eq $null) {
   $selected = $outgoingExact | Sort-Object bottom -Descending | Select-Object -First 1
 }
 $latestOutgoing = $candidates | Where-Object { $_.outgoing } | Sort-Object bottom -Descending | Select-Object -First 1
-$exactMatch = $selected -ne $null -and $selected.text -ceq $message
+$exactMatch = $selected -ne $null -and $selected.normalizedText -ceq $normalizedMessage
 $outgoing = $selected -ne $null -and $selected.outgoing -eq $true
 $countIncreased = $outgoingExact.Count -gt $beforeExactCount
 $isNew = $selected -ne $null -and $beforeKeys -notcontains $selected.key -and $countIncreased
@@ -517,7 +525,7 @@ $draftConsumed = $beforeSnapshot.draftExact -eq $true -and $draftAfter.ok -and $
 $verificationMode = $(if ($exactMatch -and $outgoing -and $isLatest -and $isNew) { "message_bubble" } elseif ($draftConsumed) { "draft_consumed" } else { "" })
 @{
   ok = (($selected -ne $null) -or $draftConsumed)
-  messageText = $(if ($selected -ne $null) { [string]$selected.text } else { "" })
+  messageText = $(if ($selected -ne $null) { [string]$selected.normalizedText } else { "" })
   exactMatch = $exactMatch
   outgoing = $outgoing
   isLatest = $isLatest

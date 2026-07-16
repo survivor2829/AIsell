@@ -118,6 +118,30 @@ async function main() {
   }) });
   assert.equal((await invalidRetryClient.reply(retryInput)).intent, true);
   assert.equal(invalidCalls, 2, "invalid JSON must retry exactly once");
+  let recoveredCalls = 0;
+  const finalRecoveryBodies = [];
+  const finalRecoveryClient = createDeepSeekClient({ keyStore: store, fetchImpl: async (_url, request) => {
+    finalRecoveryBodies.push(JSON.parse(request.body));
+    return {
+      ok: true,
+      json: async () => {
+        recoveredCalls += 1;
+        if (recoveredCalls === 1) return { choices: [{ finish_reason: "stop", message: { content: "" } }] };
+        if (recoveredCalls === 2) return { choices: [{ finish_reason: "stop", message: { content: "收到，我先了解一下您的使用面积。" } }] };
+        return { choices: [{ finish_reason: "stop", message: { content: validRetryContent } }] };
+      }
+    };
+  } });
+  assert.equal((await finalRecoveryClient.reply(retryInput)).needsHuman, false, "a recoverable format failure must not force human handoff");
+  assert.equal(recoveredCalls, 3, "two output-format failures must get one final structured recovery attempt");
+  assert.deepEqual(finalRecoveryBodies.map((body) => [body.max_tokens, body.response_format?.type || "plain"]), [
+    [300, "json_object"],
+    [600, "plain"],
+    [600, "json_object"]
+  ], "the final recovery must restore JSON mode without shrinking the completion budget");
+  assert.equal(finalRecoveryBodies.every((body) => body.thinking?.type === "disabled"), true, "every reply attempt must keep thinking disabled");
+  assert.notEqual(finalRecoveryBodies[0].messages[0].content, finalRecoveryBodies[1].messages[0].content, "recovery attempts must strengthen the reply contract");
+  assert.equal(finalRecoveryBodies[1].messages[0].content, finalRecoveryBodies[2].messages[0].content, "both recovery attempts must use the same strengthened prompt");
   const privateModelOutput = "RAW_PRIVATE_MODEL_OUTPUT";
   const privateReasoning = "RAW_PRIVATE_REASONING";
   let exhaustedCalls = 0;
@@ -130,18 +154,15 @@ async function main() {
   const exhausted = await exhaustedClient.reply(retryInput);
   assert.equal(exhausted.reply, "这个问题我帮您确认一下，稍后回复您。");
   assert.equal(exhausted.intent, false);
-  assert.equal(exhausted.needsHuman, true, "two invalid responses must use the existing human handoff path");
+  assert.equal(exhausted.needsHuman, true, "three invalid responses must use the existing human handoff path");
   assert.match(exhausted.handoffReason, /AI_RESPONSE_TRUNCATED/);
   assert.match(exhausted.handoffReason, /AI_RESPONSE_EMPTY/);
-  assert.match(exhausted.handoffReason, /req-length/);
-  assert.match(exhausted.handoffReason, /req-empty/);
-  assert.match(exhausted.handoffReason, new RegExp(`finish=length,content=${privateModelOutput.length},reasoning=${privateReasoning.length},tokens=300,reasoningTokens=123`));
-  assert.match(exhausted.handoffReason, new RegExp(`finish=stop,content=0,reasoning=${privateReasoning.length + 2},tokens=0,reasoningTokens=0`));
+  assert.doesNotMatch(exhausted.handoffReason, /finish=|content=|tokens=|id=/, "file-helper handoff must stay short and business-readable");
   assert.equal(exhausted.handoffReason.includes(privateModelOutput), false, "provider diagnostics must not expose raw model output");
   assert.equal(exhausted.handoffReason.includes(privateReasoning), false, "provider diagnostics must not expose raw model reasoning");
   assert.equal(exhausted.handoffReason.includes(retryInput.context[0].content), false, "provider diagnostics must not repeat customer messages");
   assert.equal(exhausted.handoffReason.includes("test-customer-key"), false, "provider diagnostics must not expose the API key");
-  assert.equal(exhaustedCalls, 2, "two invalid responses must fall back instead of retrying forever");
+  assert.equal(exhaustedCalls, 3, "three invalid responses must fall back instead of retrying forever");
   let incompleteCalls = 0;
   const incompleteRetryClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => ({
     ok: true,
@@ -159,7 +180,7 @@ async function main() {
   const filtered = await filteredClient.reply(retryInput);
   assert.equal(filtered.needsHuman, true);
   assert.match(filtered.handoffReason, /AI_CONTENT_FILTERED/);
-  assert.match(filtered.handoffReason, /req-filtered/);
+  assert.doesNotMatch(filtered.handoffReason, /req-filtered/, "operator reminders must not include provider request ids");
   assert.equal(filteredCalls, 1, "content-filtered output must hand off without retrying");
   let networkCalls = 0;
   const networkFailureClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => {

@@ -1,4 +1,6 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { executeVerifiedFileHelperSend } = require("./state_machine.dev.cjs");
 
 function drivers(overrides = {}) {
@@ -23,6 +25,10 @@ function drivers(overrides = {}) {
 }
 
 async function main() {
+  const windowDriverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.dev.cjs"), "utf8");
+  assert.equal(windowDriverSource.includes("function Normalize-WechatProofText"), true, "message proof must normalize multiline WeChat text");
+  assert.equal(windowDriverSource.includes("(Normalize-WechatProofText $draftBefore.text) -ceq $normalizedMessage"), true, "draft-consumed proof must ignore CRLF and trailing U+FFFC differences");
+
   assert.equal((await executeVerifiedFileHelperSend({})).blocked_reason, "handoff_authorization_missing");
 
   const success = drivers();
@@ -41,6 +47,13 @@ async function main() {
   assert.equal(success.calls.find(([name]) => name === "send").at(1).expectedConversation, "文件传输助手");
   assert.equal(success.calls.find(([name]) => name === "send").at(1).expectedMessage, success.options.message);
   assert.equal(success.calls.filter(([name]) => name === "send").length, 1);
+
+  const normalizedProof = drivers({
+    bubbleVerifier: (_message, context) => context.phase === "before"
+      ? { ok: true, snapshot: { draftExact: true } }
+      : { ok: true, messageText: "【需人工跟进】\r\n客户：张总\r\n请人工跟进\uFFFC", exactMatch: true, outgoing: true, isLatest: true, isNew: true }
+  });
+  assert.equal((await executeVerifiedFileHelperSend(normalizedProof.options)).ok, true, "CRLF and trailing U+FFFC must still verify as the same sent message");
 
   const wrongWindow = drivers({ openConversation: () => ({ ok: true, pid: 82, hWnd: "92", processName: "Weixin" }) });
   assert.equal((await executeVerifiedFileHelperSend(wrongWindow.options)).blocked_reason, "handoff_source_window_changed");

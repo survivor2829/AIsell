@@ -60,13 +60,17 @@ function hasMessageSnapshot(result) {
   return result?.ok === true && result.snapshot !== undefined && result.snapshot !== null;
 }
 
+function normalizeMessageProofText(value) {
+  return String(value ?? "").replace(/\r\n?/g, "\n").replace(/\uFFFC+$/u, "");
+}
+
 function isVerifiedNewMessage(result, message, beforeSnapshot) {
   const bubbleVerified = result?.ok === true
     && result.exactMatch === true
     && result.outgoing === true
     && result.isLatest === true
     && result.isNew === true
-    && String(result.messageText ?? "") === message;
+    && normalizeMessageProofText(result.messageText) === normalizeMessageProofText(message);
   if (bubbleVerified) return true;
   return result?.ok === true
     && result.verificationMode === "draft_consumed"

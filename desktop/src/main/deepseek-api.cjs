@@ -141,20 +141,18 @@ function parseReplyPayload(payload) {
   return parseReplyDecision(content);
 }
 
-function replyFailureDiagnostic(payload, error, attempt) {
-  const choice = payload?.choices?.[0];
-  const usage = payload?.usage;
-  const numberOrZero = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
-  return `${attempt}:${error.code},finish=${String(choice?.finish_reason || "missing").slice(0, 40)},content=${String(choice?.message?.content || "").length},reasoning=${String(choice?.message?.reasoning_content || "").length},tokens=${numberOrZero(usage?.completion_tokens)},reasoningTokens=${numberOrZero(usage?.completion_tokens_details?.reasoning_tokens)},id=${String(payload?.id || "missing").slice(0, 80)}`;
+function replyFailureDiagnostic(error, attempt) {
+  return `${attempt}:${error.code}`;
 }
 
 function fallbackReply(diagnostics, pauseReason = "") {
+  const failureSummary = diagnostics.filter(Boolean).join("、");
   const reply = {
     reply: AUTO_REPLY_FALLBACK,
     intent: false,
     intentReason: "",
     needsHuman: true,
-    handoffReason: `DeepSeek(${DEEPSEEK_MODEL})未返回有效结构化回复，请人工跟进（${diagnostics.join("；")}）`
+    handoffReason: `DeepSeek连续未生成可靠回复${failureSummary ? `（${failureSummary}）` : ""}，请查看客户需求`
   };
   return pauseReason
     ? { ...reply, pauseAfterHandoff: true, pauseReason: String(pauseReason).slice(0, 200) }
@@ -233,11 +231,12 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
       } catch (error) {
         const code = String(error?.code || "");
         if (!PAUSING_REPLY_FAILURES.has(code)) throw error;
-        return fallbackReply([replyFailureDiagnostic(undefined, error, "0/config")], error.message);
+        return fallbackReply([replyFailureDiagnostic(error, "0/config")], error.message);
       }
       const attempts = [
         { name: "json", maxTokens: 300, responseFormat: { type: "json_object" } },
-        { name: "plain", maxTokens: 600, recovery: true }
+        { name: "plain", maxTokens: 600, recovery: true },
+        { name: "json-recovery", maxTokens: 600, responseFormat: { type: "json_object" }, recovery: true }
       ];
       const diagnostics = [];
       for (let index = 0; index < attempts.length; index += 1) {
@@ -253,7 +252,7 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
           const temporaryFailure = TEMPORARY_REPLY_FAILURES.has(code);
           const pausingFailure = PAUSING_REPLY_FAILURES.has(code);
           if (!(error instanceof DeepSeekApiError) || (!outputFailure && !temporaryFailure && !pausingFailure)) throw error;
-          diagnostics.push(replyFailureDiagnostic(payload, error, `${index + 1}/${name}`));
+          diagnostics.push(replyFailureDiagnostic(error, `${index + 1}/${name}`));
           if (pausingFailure) return fallbackReply(diagnostics, error.message);
           if (code === "AI_CONTENT_FILTERED" || temporaryFailure) return fallbackReply(diagnostics);
         }
