@@ -1114,14 +1114,77 @@ assert.match(actionSource, /moments_comment_draft_close_unverified/u);
 assert.match(actionSource, /\$x - \$lastDark\) -gt \[Math\]::Max\(18\.0, \[double\]\$frame\.width \* 0\.05\)/u);
 assert.match(actionSource, /\$widthRatio -ge 0\.32[\s\S]*\$visualState = "赞"/u);
 assert.match(actionSource, /\$widthRatio -ge 0\.78[\s\S]*\$visualState = "取消"/u);
-assert.match(actionSource, /VISUAL_ACTION_TIMEOUT_CAP_MS = Object\.freeze\(\{[\s\S]*inspect: 20_000[\s\S]*comment_check: 85_000[\s\S]*comment: 55_000[\s\S]*comment_readback: 30_000/u);
+const visualActionTimeoutCapsSource = actionSource.match(
+  /VISUAL_ACTION_TIMEOUT_CAP_MS = Object\.freeze\(\{[\s\S]*?\}\);/u,
+)?.[0] ?? "";
+assert.ok(visualActionTimeoutCapsSource, "visual action timeout caps should be present");
+assert.match(visualActionTimeoutCapsSource, /inspect: 20_000[\s\S]*like: 30_000[\s\S]*comment_check: 85_000/u);
+assert.doesNotMatch(visualActionTimeoutCapsSource, /\bcomment:|\bcomment_readback:/u);
 assert.doesNotMatch(actionSource, /comment_check: 35_000/u);
 assert.match(actionSource, /const timeoutMs = Math\.min\(timeoutCapMs, Math\.max\(1_000, remainingMs \+ 2_500\)\)/u);
 assert.match(actionSource, /runPowerShell\(MOMENTS_VISUAL_ACTION_POWERSHELL, env,[\s\S]*sta: true,[\s\S]*timeout: timeoutMs,[\s\S]*diagnostics: true/u);
-assert.match(actionSource, /action === "comment_readback"[\s\S]*runPowerShellAsync\(MOMENTS_VISUAL_ACTION_POWERSHELL[\s\S]*sta: true,[\s\S]*timeout: false/u);
+const runVisualActionSource = actionSource.match(
+  /function runVisualAction\(action, context = \{\}\) \{[\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.ok(runVisualActionSource, "visual action runner should be present");
+assert.match(runVisualActionSource, /action === "comment" \|\| action === "comment_readback"[\s\S]*runPowerShellAsync\(MOMENTS_VISUAL_ACTION_POWERSHELL[\s\S]*sta: true,[\s\S]*timeout: false/u);
+assert.match(runVisualActionSource, /return runPowerShell\(MOMENTS_VISUAL_ACTION_POWERSHELL, env,[\s\S]*timeout: timeoutMs/u);
+const commentAdapterSource = actionSource.match(
+  /function comment\(context = \{\}\) \{[\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.ok(commentAdapterSource, "comment adapter should be present");
+assert.match(commentAdapterSource, /if \(!result\?\.ok\) return result[\s\S]*observationId: String\(context\.observationId \?\? ""\)[\s\S]*commentText/u);
+assert.match(commentAdapterSource, /runVisualAction\("comment", context\)[\s\S]*typeof result\?\.then === "function" \? result\.then\(normalizeResult\) : normalizeResult\(result\)/u);
 assert.match(actionSource, /function commentReadback[\s\S]*runVisualAction\("comment_readback", context\)[\s\S]*result\.then\(normalizeResult\)/u);
 assert.match(actionSource, /Test-VisualDeadlineMargin \(\[int64\]\$context\.deadlineMs\) 5000[\s\S]*Test-VisualDeadlineMargin \(\[int64\]\$context\.deadlineMs\) 10000/u);
 assert.match(windowDriverSource, /spawnOptions\.timeout = timeout/u);
 assert.match(windowDriverSource, /function runPowerShellAsync[\s\S]*options\.timeout === false \? null[\s\S]*options\.sta === true[\s\S]*timeout === null \? null : setTimeout/u);
+
+const commentPromiseHarnessSource = `
+const assert = require("node:assert/strict");
+const commentSource = Buffer.from(${JSON.stringify(Buffer.from(commentAdapterSource, "utf8").toString("base64"))}, "base64").toString("utf8");
+const queue = [];
+const comment = new Function("exactCommentText", "blocked", "runVisualAction", commentSource + "; return comment;")(
+  (value) => String(value ?? ""),
+  (reason) => ({ ok: false, status: "blocked", reason, actionAttempted: false }),
+  (action) => {
+    assert.equal(action, "comment");
+    assert.ok(queue.length > 0);
+    return queue.shift();
+  },
+);
+(async () => {
+  const context = { observationId: "observation-final", commentText: "exact-comment" };
+  const workerSuccess = { ok: true, status: "visible_verified", actionAttempted: true, observationId: "stale", commentText: "stale", proof: { kept: true } };
+  let releaseSlowWorker;
+  queue.push(new Promise((resolve) => { releaseSlowWorker = resolve; }));
+  const pending = comment(context);
+  assert.equal(typeof pending.then, "function", "a long-running comment worker must remain asynchronous without a local hard timeout");
+  setImmediate(() => releaseSlowWorker(workerSuccess));
+  const normalized = await pending;
+  assert.equal(normalized.observationId, context.observationId);
+  assert.equal(normalized.commentText, context.commentText);
+  assert.equal(normalized.actionAttempted, true);
+  assert.deepEqual(normalized.proof, { kept: true });
+
+  const failedAfterClick = { ok: false, status: "outcome_unknown", reason: "post_click_proof_failed", actionAttempted: true };
+  queue.push(Promise.resolve(failedAfterClick));
+  assert.strictEqual(await comment(context), failedAfterClick, "post-click failure metadata must pass through unchanged");
+  const failedBeforeClick = { ok: false, status: "blocked", reason: "pre_click_blocked", actionAttempted: false };
+  queue.push(Promise.resolve(failedBeforeClick));
+  assert.strictEqual(await comment(context), failedBeforeClick, "pre-click failure metadata must pass through unchanged");
+
+  queue.push(workerSuccess);
+  const syncNormalized = comment(context);
+  assert.equal(typeof syncNormalized.then, "undefined");
+  assert.equal(syncNormalized.observationId, context.observationId);
+  assert.equal(syncNormalized.commentText, context.commentText);
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+`;
+const commentPromiseHarness = spawnSync(process.execPath, ["-e", commentPromiseHarnessSource], {
+  encoding: "utf8",
+  windowsHide: true,
+});
+assert.equal(commentPromiseHarness.status, 0, commentPromiseHarness.stderr || "comment Promise normalization harness must pass");
 
 console.log("moments visual self-check passed");

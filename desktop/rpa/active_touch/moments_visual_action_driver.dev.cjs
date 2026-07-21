@@ -11,9 +11,7 @@ const MOMENTS_VISUAL_POST_RELOCK_TOLERANCE_PX = 12;
 const VISUAL_ACTION_TIMEOUT_CAP_MS = Object.freeze({
   inspect: 20_000,
   like: 30_000,
-  comment_check: 85_000,
-  comment: 55_000,
-  comment_readback: 30_000
+  comment_check: 85_000
 });
 
 function exactCommentText(value) {
@@ -4212,7 +4210,7 @@ function runVisualAction(action, context = {}) {
     XIAOXI_MOMENTS_VISUAL_ACTION: action,
     XIAOXI_MOMENTS_VISUAL_CONTEXT_BASE64: Buffer.from(JSON.stringify(payload), "utf8").toString("base64")
   };
-  if (action === "comment_readback") {
+  if (action === "comment" || action === "comment_readback") {
     return runPowerShellAsync(MOMENTS_VISUAL_ACTION_POWERSHELL, env, {
       ensure: false,
       sta: true,
@@ -4251,13 +4249,16 @@ function like(context = {}) {
 function comment(context = {}) {
   const commentText = exactCommentText(context.commentText);
   if (!commentText || commentText.length > 500) return blocked("moments_comment_missing");
-  const result = runVisualAction("comment", context);
-  if (!result?.ok) return result;
-  return {
-    ...result,
-    observationId: String(context.observationId ?? ""),
-    commentText
+  const normalizeResult = (result) => {
+    if (!result?.ok) return result;
+    return {
+      ...result,
+      observationId: String(context.observationId ?? ""),
+      commentText
+    };
   };
+  const result = runVisualAction("comment", context);
+  return typeof result?.then === "function" ? result.then(normalizeResult) : normalizeResult(result);
 }
 
 function commentReadback(context = {}) {
