@@ -513,8 +513,37 @@ button:focus-visible {
   margin: 0 24px 20px;
 }
 
-.auto-reply-status {
-  max-width: 720px;
+.status-strip.auto-reply-status {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  max-width: 1080px;
+}
+
+.auto-reply-status .status-card strong {
+  overflow-wrap: anywhere;
+}
+
+.auto-reply-reason {
+  margin: -4px 0 16px;
+  padding: 10px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #475467;
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.auto-reply-reason.is-warning {
+  border-color: #fed7aa;
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+.auto-reply-reason.is-degraded {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b42318;
 }
 
 .deepseek-settings {
@@ -1233,6 +1262,10 @@ td {
 
 .status-card .warn {
   color: #f97316;
+}
+
+.status-card .danger {
+  color: #dc2626;
 }
 
 .conversation-check {

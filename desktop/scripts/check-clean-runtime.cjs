@@ -11,6 +11,7 @@ const releaseAppDirs = isPackagedApp ? [desktopDir] : [
 const relativeRuntimeFiles = [
   path.join("ai-expert.json"),
   path.join("auto-reply-state.json"),
+  path.join("auto-reply-diagnostics.jsonl"),
   path.join("rpa", "active_touch", "contacts.json"),
   path.join("rpa", "active_touch", "touch_task.json"),
   path.join("rpa", "active_touch", "run_logs.jsonl"),
@@ -24,6 +25,7 @@ const forbidden = [
     path.join(root, ".env.ai.local"),
     path.join(root, "data", "ai-expert.json"),
     path.join(root, "data", "auto_reply", "auto-reply-state.json"),
+    path.join(root, "data", "auto_reply", "auto-reply-diagnostics.jsonl"),
     path.join(root, "data", "deepseek-api-key.bin")
   ]),
   ...(isPackagedApp ? [path.join(desktopDir, ".env.ai.local")] : [])

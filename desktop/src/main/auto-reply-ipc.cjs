@@ -7,6 +7,61 @@ const POLL_INTERVAL_MS = 5_000;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
 const GLOBAL_RATE_LIMIT = 30;
 const MAX_STATE_ENTRIES = 1_000;
+const SCAN_DEGRADED_AFTER = 3;
+const DIAGNOSTIC_LOG_MAX_BYTES = 512 * 1024;
+const DIAGNOSTIC_LOG_MAX_LINES = 500;
+const SCAN_HEALTH_VALUES = new Set(["unknown", "checking", "healthy", "warning", "degraded", "waiting"]);
+const HEALTHY_SCAN_REASONS = new Set([
+  "no_unread_message",
+  "current_session_baselined",
+  "latest_message_not_incoming"
+]);
+const KNOWN_SCAN_REASONS = new Set([
+  ...HEALTHY_SCAN_REASONS,
+  "automation_root_missing",
+  "baseline_ready",
+  "baseline_epoch_changed",
+  "candidate_detected",
+  "conversation_open_failed",
+  "conversation_title_changed",
+  "conversation_title_mismatch",
+  "history_avatar_ambiguous",
+  "history_changed_during_scan",
+  "history_empty",
+  "history_item_invalid",
+  "history_not_at_bottom",
+  "history_overlap_ambiguous",
+  "history_overlap_mismatch",
+  "history_overlap_missing",
+  "history_restore_failed",
+  "history_screenshot_failed",
+  "history_scroll_failed",
+  "history_viewport_invalid",
+  "history_viewport_missing",
+  "history_window_not_foreground",
+  "history_window_obscured",
+  "incoming_identity_missing",
+  "incoming_message_changed",
+  "incoming_message_missing",
+  "latest_text_message_missing",
+  "no_current_conversation",
+  "powershell_failed",
+  "powershell_output_invalid",
+  "powershell_timeout",
+  "scan_exception",
+  "scan_result_invalid",
+  "unknown_scan_reason",
+  "unread_preview_mismatch",
+  "unread_preview_missing",
+  "wechat_operation_busy",
+  "wechat_process_changed",
+  "wechat_window_ambiguous",
+  "wechat_window_changed",
+  "wechat_window_missing",
+  "wechat_window_not_ready",
+  "whitelist_empty",
+  "whitelist_invalid"
+]);
 const consumedClickTokens = new Set();
 const SYSTEM_IDS = new Set([
   "filehelper",
@@ -84,6 +139,72 @@ function writeAtomic(file, value) {
   fs.renameSync(temporary, file);
 }
 
+function diagnosticCode(value, fallback = "unknown") {
+  const code = String(value || "").trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9_.:-]{0,80}$/.test(code) ? code : fallback;
+}
+
+function scanReason(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  const code = diagnosticCode(raw, "scan_result_invalid");
+  if (KNOWN_SCAN_REASONS.has(code)) return { code, ref: "" };
+  return {
+    code: "unknown_scan_reason",
+    ref: crypto.createHash("sha256").update(raw || "invalid").digest("hex").slice(0, 12)
+  };
+}
+
+function rotateDiagnosticLog(file) {
+  let temporary = "";
+  try {
+    if (!fs.existsSync(file) || fs.statSync(file).size <= DIAGNOSTIC_LOG_MAX_BYTES) return true;
+    const validLines = fs.readFileSync(file, "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .filter((line) => {
+        try {
+          JSON.parse(line);
+          return true;
+        } catch {
+          return false;
+        }
+      })
+      .slice(-DIAGNOSTIC_LOG_MAX_LINES);
+    temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
+    let handle;
+    try {
+      handle = fs.openSync(temporary, "w");
+      fs.writeFileSync(handle, validLines.length ? `${validLines.join("\n")}\n` : "", "utf8");
+      fs.fsyncSync(handle);
+    } finally {
+      if (handle !== undefined) fs.closeSync(handle);
+    }
+    fs.renameSync(temporary, file);
+    temporary = "";
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (temporary && fs.existsSync(temporary)) {
+      try {
+        fs.rmSync(temporary, { force: true });
+      } catch {
+        // A locked temporary file is harmless and will never be treated as a log.
+      }
+    }
+  }
+}
+
+function appendDiagnosticLine(file, entry) {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (!rotateDiagnosticLog(file)) return;
+    fs.appendFileSync(file, `${JSON.stringify(entry)}\n`, "utf8");
+  } catch {
+    // Diagnostics are best effort and contain no customer or message content.
+  }
+}
+
 function readJson(file, fallback) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -143,6 +264,11 @@ function createDefaultState() {
     rate_events: [],
     last_event: "",
     last_error: "",
+    scan_health: "unknown",
+    last_scan_at: "",
+    last_scan_success_at: "",
+    last_scan_reason: "",
+    consecutive_scan_failures: 0,
     updated_at: ""
   };
 }
@@ -172,6 +298,11 @@ function migrateState(raw, current) {
       }));
     next.pending_handoff = next.pending_handoffs[0] || null;
     next.rate_events = Array.isArray(raw.rate_events) ? raw.rate_events : [];
+    next.scan_health = SCAN_HEALTH_VALUES.has(raw.scan_health) ? raw.scan_health : "unknown";
+    next.last_scan_at = normalizeText(raw.last_scan_at);
+    next.last_scan_success_at = normalizeText(raw.last_scan_success_at);
+    next.last_scan_reason = normalizeText(raw.last_scan_reason) ? scanReason(raw.last_scan_reason).code : "";
+    next.consecutive_scan_failures = Math.max(0, Math.floor(Number(raw.consecutive_scan_failures) || 0));
     if (handoffNeedsConfirmation(next.pending_handoff)) {
       next.status = "paused";
       next.last_event = "handoff_confirmation_required";
@@ -281,6 +412,8 @@ function createAutoReplyController(options = {}) {
   const dataDir = String(options.dataDir || "");
   const activeTouchDir = String(options.activeTouchDir || "");
   const stateFile = path.join(dataDir, "auto-reply-state.json");
+  const diagnosticLogFile = path.join(dataDir, "auto-reply-diagnostics.jsonl");
+  const diagnosticRunId = crypto.randomBytes(8).toString("hex");
   const coordinator = options.coordinator;
   const deepSeekClient = options.deepSeekClient;
   const expertStore = options.expertStore;
@@ -295,6 +428,7 @@ function createAutoReplyController(options = {}) {
   const now = options.now || (() => new Date());
   const rawState = readJson(stateFile, null);
   let state = migrateState(rawState, now());
+  let diagnosticSequence = 0;
   if (rawState && (
     rawState.version !== 2
     || rawState.status === "running"
@@ -324,6 +458,78 @@ function createAutoReplyController(options = {}) {
     writeAtomic(stateFile, state);
   }
 
+  function appendDiagnostic(event, details = {}) {
+    const phase = diagnosticCode(details.phase, "runtime");
+    const code = diagnosticCode(details.code || state.last_scan_reason, "");
+    const entry = {
+      v: 1,
+      ts: now().toISOString(),
+      run_id: diagnosticRunId,
+      seq: ++diagnosticSequence,
+      event: diagnosticCode(event, "diagnostic_event"),
+      phase,
+      status: diagnosticCode(state.status, "unknown"),
+      scan_health: SCAN_HEALTH_VALUES.has(state.scan_health) ? state.scan_health : "unknown",
+      consecutive_scan_failures: Math.max(0, Math.floor(Number(state.consecutive_scan_failures) || 0))
+    };
+    if (code) entry.code = code;
+    const pid = Math.floor(Number(details.pid));
+    if (Number.isSafeInteger(pid) && pid > 0) entry.wechat_pid = pid;
+    const windowHandle = String(details.hWnd || "").trim();
+    if (/^[0-9]{1,20}$/.test(windowHandle)) entry.wechat_window_handle = windowHandle;
+    const reasonRef = String(details.reasonRef || "").trim().toLowerCase();
+    if (/^[a-f0-9]{12}$/.test(reasonRef)) entry.reason_ref = reasonRef;
+    appendDiagnosticLine(diagnosticLogFile, entry);
+  }
+
+  function markWechatBusy() {
+    const changed = state.scan_health !== "waiting" || state.last_scan_reason !== "wechat_operation_busy";
+    state.scan_health = "waiting";
+    state.last_scan_reason = "wechat_operation_busy";
+    if (changed) appendDiagnostic("scan_waiting", { phase: "coordinator", code: "wechat_operation_busy" });
+  }
+
+  function recordScanResult(result, phase = "scan") {
+    const previousHealth = state.scan_health;
+    const previousReason = state.last_scan_reason;
+    const previousFailures = Math.max(0, Math.floor(Number(state.consecutive_scan_failures) || 0));
+    const normalizedReason = result?.ok === true
+      ? result?.reason ? scanReason(result.reason) : { code: phase === "prime" ? "baseline_ready" : "candidate_detected", ref: "" }
+      : scanReason(result?.reason);
+    const reason = normalizedReason.code;
+    const observedAt = now().toISOString();
+    state.last_scan_at = observedAt;
+    state.last_scan_reason = reason;
+
+    const neutral = reason === "baseline_epoch_changed" || phase === "prime" && reason === "no_current_conversation";
+    const successful = result?.ok === true || HEALTHY_SCAN_REASONS.has(reason);
+    if (neutral) {
+      if (!SCAN_HEALTH_VALUES.has(state.scan_health) || state.scan_health === "unknown") state.scan_health = "checking";
+    } else if (successful) {
+      state.scan_health = "healthy";
+      state.last_scan_success_at = observedAt;
+      state.consecutive_scan_failures = 0;
+    } else {
+      state.consecutive_scan_failures = Math.max(0, Math.floor(Number(state.consecutive_scan_failures) || 0)) + 1;
+      state.scan_health = state.consecutive_scan_failures >= SCAN_DEGRADED_AFTER ? "degraded" : "warning";
+    }
+
+    const changed = previousHealth !== state.scan_health || previousReason !== reason;
+    const recovered = successful && (previousFailures > 0 || previousHealth === "warning" || previousHealth === "degraded");
+    const becameHealthy = successful && previousHealth !== "healthy";
+    const faultChanged = !successful && !neutral && changed;
+    if (neutral && changed || recovered || becameHealthy || faultChanged) {
+      appendDiagnostic(neutral ? phase === "prime" ? "prime_skipped" : "scan_cancelled" : recovered ? "scan_recovered" : successful ? "scan_healthy" : "scan_failed", {
+        phase,
+        code: reason,
+        reasonRef: normalizedReason.ref,
+        pid: result?.pid,
+        hWnd: result?.hWnd
+      });
+    }
+    return successful || neutral;
+  }
+
   function publicState() {
     const manualWarning = manualFollowupMessage(state.manual_followups);
     const showManualWarning = Boolean(manualWarning) && !normalizeText(state.last_error);
@@ -332,6 +538,11 @@ function createAutoReplyController(options = {}) {
       reply_count: state.reply_count,
       last_event: showManualWarning ? "handoff_manual_followup_required" : state.last_event,
       last_error: showManualWarning ? manualWarning : state.last_error,
+      scan_health: state.scan_health,
+      last_scan_at: state.last_scan_at,
+      last_scan_success_at: state.last_scan_success_at,
+      last_scan_reason: state.last_scan_reason,
+      consecutive_scan_failures: state.consecutive_scan_failures,
       updated_at: state.updated_at
     };
   }
@@ -473,6 +684,7 @@ function createAutoReplyController(options = {}) {
       state.status = "paused";
       state.last_event = reason;
     }
+    appendDiagnostic("paused", { phase: "control", code: state.last_event || reason });
     save();
     return { ok: true, state: publicState() };
   }
@@ -510,7 +722,10 @@ function createAutoReplyController(options = {}) {
     state.status = "starting";
     state.last_event = "starting";
     state.last_error = "";
+    state.scan_health = "checking";
+    state.consecutive_scan_failures = 0;
     resetDailyCounter(now());
+    appendDiagnostic("start_requested", { phase: "prime", code: "starting" });
     save();
     try {
       await waitForScanIdle();
@@ -518,8 +733,10 @@ function createAutoReplyController(options = {}) {
       scanIncoming.resetBaselines?.();
       if (typeof primeIncoming === "function") {
         const primed = await Promise.resolve(primeIncoming(contacts.map((contact) => contact.name)));
+        if (runEpoch !== startEpoch || state.status !== "starting") return { ok: false, error: "自动回复启动已取消", state: publicState() };
+        recordScanResult(primed, "prime");
         if (primed?.ok !== true && primed?.reason !== "no_current_conversation") {
-          throw new Error(primed?.reason || "微信当前会话基线初始化失败");
+          throw new Error(state.last_scan_reason || "微信当前会话基线初始化失败");
         }
       }
       if (runEpoch !== startEpoch || state.status !== "starting") return { ok: false, error: "自动回复启动已取消", state: publicState() };
@@ -536,6 +753,7 @@ function createAutoReplyController(options = {}) {
       state.status = "running";
       state.last_event = recoveredHandoffWarning ? "handoff_manual_followup_required" : "started";
       state.last_error = recoveredHandoffWarning;
+      appendDiagnostic("started", { phase: "prime", code: state.last_scan_reason || "started" });
       save();
       queueNext(0);
       return { ok: true, state: publicState() };
@@ -544,6 +762,7 @@ function createAutoReplyController(options = {}) {
         state.status = "paused";
         state.last_event = "start_failed";
         state.last_error = String(error?.message || error || "自动回复启动失败");
+        appendDiagnostic("start_failed", { phase: "prime", code: state.last_scan_reason || "start_failed" });
         save();
       }
       return { ok: false, error: String(error?.message || error || "自动回复启动失败"), state: publicState() };
@@ -688,6 +907,7 @@ function createAutoReplyController(options = {}) {
       if (!lock?.ok) {
         state.last_event = "wechat_operation_busy";
         state.last_error = "";
+        markWechatBusy();
         save();
         return publicState();
       }
@@ -697,11 +917,26 @@ function createAutoReplyController(options = {}) {
       if (handoffDelivery === "handled") return publicState();
 
       const contacts = eligibleContacts(activeTouchDir);
-      const candidate = await Promise.resolve(scanIncoming(contacts.map((contact) => contact.name)));
+      let candidate;
+      try {
+        candidate = await Promise.resolve(scanIncoming(contacts.map((contact) => contact.name)));
+      } catch (error) {
+        if (isCurrentRun()) recordScanResult({ ok: false, reason: "scan_exception" }, "scan");
+        throw error;
+      }
       if (!isCurrentRun()) return publicState();
+      if (candidate?.scanProbe?.ok !== null) {
+        const observation = candidate?.scanProbe
+          ? { ...candidate.scanProbe, pid: candidate.pid, hWnd: candidate.hWnd }
+          : candidate;
+        recordScanResult(observation, "scan");
+      }
       if (!candidate?.ok) {
-        if (handoffDelivery !== "none") return publicState();
-        state.last_event = candidate?.reason || "no_unread_message";
+        if (handoffDelivery !== "none") {
+          save();
+          return publicState();
+        }
+        state.last_event = state.last_scan_reason || "scan_result_invalid";
         state.last_error = "";
         save();
         return publicState();

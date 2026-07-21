@@ -18,12 +18,12 @@ const NATIVE_LIBRARY_SHA256 = Object.freeze({
   "vcruntime140.dll": "d5e4d9a3e835fa679450145d6a7d94e36573a509317111904d9b3712c30d9066",
   "vcruntime140_1.dll": "1f2d41c4aa5db0bc33ebf7b66d72943a817d7ce6cbe880502a9403823633093f"
 });
-const runtimeFiles = new Set(["ai-expert.json", "auto-reply-state.json", "contacts.json", "touch_task.json", "touch_task.json.bak", "run_logs.jsonl", "state.json", "deepseek-api-key.bin"]);
+const runtimeFiles = new Set(["ai-expert.json", "auto-reply-state.json", "auto-reply-diagnostics.jsonl", "contacts.json", "touch_task.json", "touch_task.json.bak", "run_logs.jsonl", "state.json", "deepseek-api-key.bin"]);
 const databaseFilePattern = /\.(?:db(?:-wal|-shm)?|sqlite3?)$/i;
 
 function isBlockedRuntimeFile(name) {
   const lower = String(name).toLowerCase();
-  return runtimeFiles.has(lower) || databaseFilePattern.test(lower);
+  return runtimeFiles.has(lower) || lower.startsWith("auto-reply-diagnostics.jsonl.") || databaseFilePattern.test(lower);
 }
 
 function insideRelease(target) {

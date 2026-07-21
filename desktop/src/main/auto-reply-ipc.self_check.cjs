@@ -353,10 +353,68 @@ async function main() {
   await startupPrimeEntered;
   assert.equal(startupSettled, false, "start must not report running before the current-session baseline probe completes");
   assert.equal(startupController.status().status, "starting");
+  assert.equal(startupController.status().scan_health, "checking", "startup must not claim healthy before the baseline probe completes");
   releaseStartupPrime({ ok: true, primed: true });
   assert.equal((await startup).state.status, "running");
+  assert.equal(startupController.status().scan_health, "healthy");
+  assert.equal(startupController.status().last_scan_reason, "baseline_ready");
+  assert.equal(startupController.status().last_scan_success_at, "2026-07-14T02:00:00.000Z");
   assert.equal(startupDelays[0], 0);
   startupController.pause();
+
+  const noCurrentDir = path.join(root, "startup_no_current_conversation");
+  const noCurrentController = createAutoReplyController({
+    dataDir: noCurrentDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    deepSeekClient: { assertAvailable: () => true },
+    scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
+    primeIncoming: async () => ({ ok: false, reason: "no_current_conversation" }),
+    send: async () => ({ ok: true }),
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await noCurrentController.start()).ok, true, "no selected conversation may still start all-contact unread polling");
+  assert.equal(noCurrentController.status().scan_health, "checking", "an allowed skipped prime must not claim success or failure");
+  assert.equal(noCurrentController.status().consecutive_scan_failures, 0);
+  assert.equal(noCurrentController.status().last_scan_reason, "no_current_conversation");
+  const noCurrentLog = fs.readFileSync(path.join(noCurrentDir, "auto-reply-diagnostics.jsonl"), "utf8");
+  assert.match(noCurrentLog, /prime_skipped/);
+  assert.doesNotMatch(noCurrentLog, /scan_failed/);
+  noCurrentController.pause();
+
+  let releaseCancelledPrime;
+  let enterCancelledPrime;
+  const cancelledPrimeEntered = new Promise((resolve) => { enterCancelledPrime = resolve; });
+  const cancelledPrimeGate = new Promise((resolve) => { releaseCancelledPrime = resolve; });
+  const cancelledPrimeDir = path.join(root, "startup_prime_cancelled");
+  const cancelledPrimeController = createAutoReplyController({
+    dataDir: cancelledPrimeDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    deepSeekClient: { assertAvailable: () => true },
+    scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
+    primeIncoming: async () => { enterCancelledPrime(); return cancelledPrimeGate; },
+    send: async () => ({ ok: true }),
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  const cancelledStart = cancelledPrimeController.start();
+  await cancelledPrimeEntered;
+  cancelledPrimeController.pause();
+  releaseCancelledPrime({ ok: true, primed: true });
+  assert.equal((await cancelledStart).ok, false);
+  assert.equal(cancelledPrimeController.status().status, "paused");
+  assert.equal(cancelledPrimeController.status().scan_health, "checking", "a stale prime result must not mutate health after pause");
+  assert.doesNotMatch(fs.readFileSync(path.join(cancelledPrimeDir, "auto-reply-diagnostics.jsonl"), "utf8"), /baseline_ready/, "a stale prime result must not write a success diagnostic");
 
   const scrolledPrimeController = createAutoReplyController({
     dataDir: path.join(root, "startup_prime_scrolled"),
@@ -376,6 +434,184 @@ async function main() {
   assert.equal((await scrolledPrimeController.start()).ok, false);
   assert.equal(scrolledPrimeController.status().status, "paused", "startup must stay paused when the current conversation is not at the bottom");
   assert.equal(scrolledPrimeController.status().last_event, "start_failed");
+  assert.equal(scrolledPrimeController.status().scan_health, "warning");
+  assert.equal(scrolledPrimeController.status().last_scan_reason, "history_not_at_bottom");
+
+  const healthDir = path.join(root, "scan_health");
+  const healthResults = [
+    { ok: false, reason: "powershell_timeout" },
+    { ok: false, reason: "history_avatar_ambiguous" },
+    { ok: false, reason: "sk" + "-reason-secret-must-not-enter-diagnostics" },
+    { ok: false, reason: "future_wechat_breakage" },
+    {
+      ok: true,
+      conversation: "未同步客户",
+      message: "message-canary-secret-must-not-enter-diagnostics",
+      runtimeId: "canary-runtime",
+      pid: 81,
+      hWnd: "91",
+      context: [{ role: "user", content: "message-canary-secret-must-not-enter-diagnostics", key: "canary-runtime" }]
+    },
+    { ok: false, reason: "no_unread_message" },
+    { ok: false, reason: "no_unread_message" }
+  ];
+  const healthController = createAutoReplyController({
+    dataDir: healthDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    deepSeekClient: { assertAvailable: () => true, reply: async () => { throw new Error("AI must not run in scan health checks"); } },
+    scanIncoming: () => healthResults.shift(),
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => { throw new Error("send must not run in scan health checks"); },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await healthController.start()).ok, true);
+  assert.equal(healthController.status().scan_health, "checking");
+  await healthController.runOnce();
+  assert.equal(healthController.status().scan_health, "warning");
+  assert.equal(healthController.status().consecutive_scan_failures, 1);
+  await healthController.runOnce();
+  assert.equal(healthController.status().scan_health, "warning");
+  assert.equal(healthController.status().consecutive_scan_failures, 2);
+  await healthController.runOnce();
+  assert.equal(healthController.status().scan_health, "degraded", "unknown scan reasons must fail visibly instead of being treated as an empty poll");
+  assert.equal(healthController.status().consecutive_scan_failures, 3);
+  assert.equal(healthController.status().status, "running", "a degraded scanner must keep retrying so it can self-recover");
+  await healthController.runOnce();
+  assert.equal(healthController.status().last_scan_reason, "unknown_scan_reason", "unknown scanner reasons must not be persisted verbatim");
+  assert.equal(healthController.status().consecutive_scan_failures, 4);
+  await healthController.runOnce();
+  assert.equal(healthController.status().scan_health, "healthy", "a valid candidate must restore scan health before business eligibility checks");
+  assert.equal(healthController.status().last_scan_reason, "candidate_detected");
+  assert.equal(healthController.status().last_event, "conversation_not_eligible");
+  assert.equal(healthController.status().consecutive_scan_failures, 0);
+  assert.equal(healthController.status().last_scan_success_at, "2026-07-14T02:00:00.000Z");
+  await healthController.runOnce();
+  const healthLogFile = path.join(healthDir, "auto-reply-diagnostics.jsonl");
+  const logBeforeRepeatedEmptyPoll = fs.readFileSync(healthLogFile, "utf8").trim().split(/\r?\n/).length;
+  await healthController.runOnce();
+  assert.equal(fs.readFileSync(healthLogFile, "utf8").trim().split(/\r?\n/).length, logBeforeRepeatedEmptyPoll, "unchanged empty polls must not write a diagnostic line every five seconds");
+  const healthLog = fs.readFileSync(healthLogFile, "utf8");
+  assert.match(healthLog, /powershell_timeout/);
+  assert.match(healthLog, /unknown_scan_reason/);
+  assert.match(healthLog, /"reason_ref":"[a-f0-9]{12}"/);
+  assert.doesNotMatch(healthLog, /future_wechat_breakage|reason-secret|canary-secret|未同步客户/, "diagnostics must not persist unknown reasons, messages, or contact content");
+  healthController.pause();
+
+  const rotationDir = path.join(root, "diagnostic_rotation");
+  fs.mkdirSync(rotationDir, { recursive: true });
+  const rotationLogFile = path.join(rotationDir, "auto-reply-diagnostics.jsonl");
+  const oversizedDiagnostics = Array.from({ length: 1_000 }, (_, index) => JSON.stringify({ v: 1, seq: index, padding: "x".repeat(600) }));
+  fs.writeFileSync(rotationLogFile, `${oversizedDiagnostics.join("\n")}\n{invalid-tail`, "utf8");
+  const rotationController = createAutoReplyController({
+    dataDir: rotationDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    deepSeekClient: { assertAvailable: () => true },
+    scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => ({ ok: true }),
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await rotationController.start()).ok, true);
+  rotationController.pause();
+  const rotatedLines = fs.readFileSync(rotationLogFile, "utf8").trim().split(/\r?\n/);
+  assert.ok(rotatedLines.length <= 503, "oversized diagnostics must retain at most 500 previous entries plus current transitions");
+  assert.doesNotThrow(() => rotatedLines.forEach((line) => JSON.parse(line)), "malformed trailing lines must not poison a rotated diagnostic log");
+  assert.ok(fs.statSync(rotationLogFile).size < 512 * 1024, "normal bounded diagnostic entries must rotate below the size limit");
+  assert.equal(fs.readdirSync(rotationDir).some((name) => name.endsWith(".tmp")), false, "successful diagnostic rotation must not leave temporary files");
+
+  let busy = true;
+  let busyScanCalls = 0;
+  const busyController = createAutoReplyController({
+    dataDir: path.join(root, "scan_waiting"),
+    activeTouchDir,
+    coordinator: {
+      acquire: () => busy ? { ok: false } : { ok: true, lock: { owner: "waiting-owner" } },
+      update: () => ({ ok: true }),
+      release: () => ({ ok: true })
+    },
+    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    deepSeekClient: { assertAvailable: () => true },
+    scanIncoming: () => { busyScanCalls += 1; return { ok: false, reason: "no_unread_message" }; },
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => ({ ok: true }),
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await busyController.start()).ok, true);
+  await busyController.runOnce();
+  assert.equal(busyController.status().scan_health, "waiting");
+  assert.equal(busyController.status().consecutive_scan_failures, 0);
+  assert.equal(busyController.status().last_scan_at, "");
+  assert.equal(busyScanCalls, 0, "a busy coordinator means no scan was attempted");
+  busy = false;
+  await busyController.runOnce();
+  assert.equal(busyController.status().scan_health, "healthy");
+  assert.equal(busyScanCalls, 1);
+  busyController.pause();
+
+  const cachedRetryController = createAutoReplyController({
+    dataDir: path.join(root, "cached_retry_without_probe"),
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    deepSeekClient: { assertAvailable: () => true },
+    scanIncoming: () => ({
+      ok: true,
+      conversation: "未同步缓存客户",
+      message: "缓存重试",
+      runtimeId: "cached-retry",
+      context: [{ role: "user", content: "缓存重试", key: "cached-retry" }],
+      scanProbe: { ok: null, reason: "retry_candidate_without_probe" }
+    }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => ({ ok: true }),
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await cachedRetryController.start()).ok, true);
+  await cachedRetryController.runOnce();
+  assert.equal(cachedRetryController.status().scan_health, "checking", "a cached retry without a live probe must not claim healthy");
+  assert.equal(cachedRetryController.status().last_scan_at, "");
+  assert.equal(cachedRetryController.status().last_event, "conversation_not_eligible");
+  cachedRetryController.pause();
+
+  const throwingScanController = createAutoReplyController({
+    dataDir: path.join(root, "scan_exception"),
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    deepSeekClient: { assertAvailable: () => true },
+    scanIncoming: () => { throw new Error("scanner exploded"); },
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => ({ ok: true }),
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await throwingScanController.start()).ok, true);
+  await throwingScanController.runOnce();
+  assert.equal(throwingScanController.status().status, "paused", "a thrown scanner exception keeps the existing immediate-pause behavior");
+  assert.equal(throwingScanController.status().last_scan_reason, "scan_exception");
 
   let safeHistoryAiCalls = 0;
   const safeHistorySends = [];
@@ -713,6 +949,9 @@ async function main() {
   assert.ok(JSON.parse(fs.readFileSync(path.join(retryHandoffDataDir, "auto-reply-state.json"), "utf8")).pending_handoff);
   await retryHandoffController.runOnce();
   assert.equal(retryHandoffCalls, 1, "the first handoff retry poll must back off");
+  const retryHandoffWaitingState = JSON.parse(fs.readFileSync(path.join(retryHandoffDataDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(retryHandoffWaitingState.last_scan_reason, "no_unread_message", "scan health observed after a deferred handoff must still be persisted");
+  assert.equal(retryHandoffWaitingState.scan_health, "healthy");
   await retryHandoffController.runOnce();
   assert.equal(retryHandoffCalls, 2);
   assert.equal(retryHandoffCustomerSends, 1, "retrying the file-helper handoff must not resend the customer reply");
@@ -1257,7 +1496,23 @@ async function main() {
   assert.equal(recovered.status().status, "paused");
   assert.equal(recovered.status().reply_count, 7);
   assert.equal(recovered.status().last_event, "state_upgraded_paused");
-  assert.deepEqual(Object.keys(recovered.status()).sort(), ["last_error", "last_event", "reply_count", "status", "updated_at"].sort(), "public v2 state must expose only the five documented fields");
+  assert.equal(recovered.status().scan_health, "unknown");
+  assert.equal(recovered.status().last_scan_at, "");
+  assert.equal(recovered.status().last_scan_success_at, "");
+  assert.equal(recovered.status().last_scan_reason, "");
+  assert.equal(recovered.status().consecutive_scan_failures, 0);
+  assert.deepEqual(Object.keys(recovered.status()).sort(), [
+    "consecutive_scan_failures",
+    "last_error",
+    "last_event",
+    "last_scan_at",
+    "last_scan_reason",
+    "last_scan_success_at",
+    "reply_count",
+    "scan_health",
+    "status",
+    "updated_at"
+  ].sort(), "public v2 state must expose only the documented control and scan-health fields");
 
   const runningRecoveryDir = path.join(root, "running_recovery_auto_reply");
   fs.mkdirSync(runningRecoveryDir, { recursive: true });
@@ -1270,7 +1525,28 @@ async function main() {
   });
   assert.equal(runningRecovery.status().status, "paused");
   assert.equal(runningRecovery.status().last_event, "recovered_after_restart");
+  assert.equal(runningRecovery.status().scan_health, "unknown", "old v2 state without scan fields must remain readable");
   assert.equal(JSON.parse(fs.readFileSync(path.join(runningRecoveryDir, "auto-reply-state.json"), "utf8")).status, "paused");
+
+  for (const internalReason of ["baseline_ready", "candidate_detected", "wechat_operation_busy", "unknown_scan_reason"]) {
+    const internalReasonDir = path.join(root, `internal_reason_${internalReason}`);
+    fs.mkdirSync(internalReasonDir, { recursive: true });
+    fs.writeFileSync(path.join(internalReasonDir, "auto-reply-state.json"), JSON.stringify({
+      version: 2,
+      status: "paused",
+      daily_date: "2026-07-14",
+      scan_health: internalReason === "wechat_operation_busy" ? "waiting" : "healthy",
+      last_scan_reason: internalReason,
+      consecutive_scan_failures: 0
+    }), "utf8");
+    const internalReasonRecovery = createAutoReplyController({
+      dataDir: internalReasonDir,
+      activeTouchDir,
+      coordinator,
+      now: () => new Date("2026-07-14T10:00:00+08:00")
+    });
+    assert.equal(internalReasonRecovery.status().last_scan_reason, internalReason, `restart must preserve internal scan reason ${internalReason}`);
+  }
 
   const startingRecoveryDir = path.join(root, "starting_recovery");
   fs.mkdirSync(startingRecoveryDir, { recursive: true });

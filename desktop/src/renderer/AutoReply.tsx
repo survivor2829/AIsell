@@ -1,11 +1,18 @@
 import { Check, Pause, Play } from "lucide-react";
 import { useEffect, useState } from "react";
 
+type ScanHealth = "unknown" | "checking" | "healthy" | "warning" | "degraded" | "waiting";
 type AutoReplyState = {
   status: string;
   reply_count: number;
   last_event: string;
   last_error: string;
+  updated_at?: string;
+  scan_health?: ScanHealth;
+  last_scan_at?: string;
+  last_scan_success_at?: string;
+  last_scan_reason?: string;
+  consecutive_scan_failures?: number;
 };
 type AutoReplyResult = { ok: boolean; state?: Partial<AutoReplyState>; error?: string };
 
@@ -24,13 +31,93 @@ const EMPTY_STATE: AutoReplyState = {
   status: "stopped",
   reply_count: 0,
   last_event: "",
-  last_error: ""
+  last_error: "",
+  scan_health: "unknown",
+  last_scan_at: "",
+  last_scan_success_at: "",
+  last_scan_reason: "",
+  consecutive_scan_failures: 0
 };
+
+const SCAN_HEALTH_LABELS: Record<ScanHealth, string> = {
+  unknown: "暂无数据",
+  checking: "检查中",
+  healthy: "轮询正常",
+  warning: "扫描波动",
+  degraded: "扫描异常",
+  waiting: "等待微信空闲"
+};
+
+const SCAN_REASON_LABELS: Record<string, string> = {
+  baseline_ready: "启动基线检查通过",
+  candidate_detected: "已发现待处理消息",
+  no_unread_message: "本轮未发现新消息",
+  current_session_baselined: "当前会话已建立消息基线",
+  latest_message_not_incoming: "最近一条不是客户新消息",
+  wechat_operation_busy: "微信正被其他任务使用，等待下轮",
+  baseline_epoch_changed: "扫描基线已更新，本轮已取消",
+  no_current_conversation: "当前没有打开已同步的一对一联系人",
+  powershell_timeout: "读取微信界面超时",
+  powershell_failed: "微信界面读取组件运行失败",
+  powershell_output_invalid: "微信界面读取结果无效",
+  wechat_window_missing: "未找到已登录的微信主窗口",
+  wechat_window_ambiguous: "检测到多个微信主窗口",
+  wechat_window_not_ready: "微信窗口尚未准备完成",
+  automation_root_missing: "无法读取微信界面，可能是权限不一致",
+  history_viewport_missing: "未找到当前聊天消息区域",
+  history_viewport_invalid: "当前聊天消息区域无效",
+  history_not_at_bottom: "当前聊天记录没有停留在底部",
+  history_window_not_foreground: "微信窗口无法切换到前台",
+  history_window_obscured: "微信消息区域被其他窗口遮挡",
+  history_screenshot_failed: "微信消息区域读取失败",
+  history_avatar_ambiguous: "无法判断最新消息的发送方向",
+  history_changed_during_scan: "扫描期间聊天内容发生变化",
+  history_scroll_failed: "读取较早聊天记录失败",
+  history_restore_failed: "聊天记录滚动位置恢复失败",
+  history_empty: "当前聊天记录为空",
+  history_item_invalid: "聊天记录中存在无法识别的项目",
+  history_overlap_missing: "两页聊天记录无法安全衔接",
+  history_overlap_ambiguous: "两页聊天记录衔接不唯一",
+  history_overlap_mismatch: "两页聊天记录衔接不一致",
+  unread_preview_missing: "未读会话缺少消息预览",
+  unread_preview_mismatch: "未读预览与最新消息不一致",
+  conversation_open_failed: "无法打开未读会话",
+  conversation_title_changed: "扫描期间聊天对象发生变化",
+  conversation_title_mismatch: "当前聊天对象校验失败",
+  wechat_process_changed: "扫描期间微信进程发生变化",
+  wechat_window_changed: "扫描期间微信窗口发生变化",
+  latest_text_message_missing: "没有找到可识别的最新文本消息",
+  incoming_message_missing: "没有找到待校验的客户消息",
+  incoming_identity_missing: "最新消息缺少稳定身份",
+  whitelist_empty: "没有可监听的已同步联系人",
+  whitelist_invalid: "联系人监听名单无效",
+  unknown_scan_reason: "扫描器返回了未知状态，已安全隐藏原始值",
+  scan_exception: "扫描微信时发生异常",
+  scan_result_invalid: "扫描器返回了无效结果"
+};
+
+function normalizeScanHealth(value: AutoReplyState["scan_health"]): ScanHealth {
+  return value && Object.prototype.hasOwnProperty.call(SCAN_HEALTH_LABELS, value) ? value : "unknown";
+}
+
+function formatScanTime(value?: string) {
+  if (!value) return "--";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "--";
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}:${pad(parsed.getSeconds())}`;
+}
+
+function scanReasonLabel(reason?: string) {
+  if (!reason) return "尚无扫描结果";
+  return SCAN_REASON_LABELS[reason] || "未识别扫描状态";
+}
 
 export function AutoReply() {
   const [state, setState] = useState<AutoReplyState>(EMPTY_STATE);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [pollError, setPollError] = useState("");
 
   const applyResult = (result: AutoReplyResult, clearOperationError = true) => {
     if (result.state) setState((current) => ({ ...current, ...result.state }));
@@ -39,8 +126,11 @@ export function AutoReply() {
   };
 
   const refresh = () => {
-    if (!window.xiaoxiAutoReply) return setError("当前版本未连接自动回复执行器");
-    void window.xiaoxiAutoReply.status().then((result) => applyResult(result, false)).catch(() => setError("读取自动回复状态失败"));
+    if (!window.xiaoxiAutoReply) return setPollError("当前版本未连接自动回复执行器");
+    void window.xiaoxiAutoReply.status().then((result) => {
+      if (result.state) setState((current) => ({ ...current, ...result.state }));
+      setPollError(result.ok ? "" : result.error || "读取自动回复状态失败");
+    }).catch(() => setPollError("读取自动回复状态失败"));
   };
 
   useEffect(() => {
@@ -59,7 +149,13 @@ export function AutoReply() {
   const starting = state.status === "starting";
   const confirmationRequired = state.last_event === "handoff_confirmation_required";
   const manualFollowupRequired = state.last_event === "handoff_manual_followup_required";
-  const statusLabel = running ? "监听中" : starting ? "启动中" : state.status === "paused" ? "已暂停" : "未启动";
+  const statusLabel = running ? "运行中" : starting ? "启动中" : state.status === "paused" ? "已暂停" : "未启动";
+  const scanHealth = normalizeScanHealth(state.scan_health);
+  const scanning = running || starting;
+  const healthLabel = scanning ? SCAN_HEALTH_LABELS[scanHealth] : "未运行";
+  const healthClass = !scanning ? "" : scanHealth === "healthy" ? "ok" : scanHealth === "degraded" ? "danger" : scanHealth === "warning" || scanHealth === "waiting" ? "warn" : "";
+  const scanFailures = Math.max(0, Number(state.consecutive_scan_failures) || 0);
+  const visibleError = error || pollError || state.last_error;
 
   return (
     <section className="page agent-page auto-reply-page">
@@ -87,11 +183,20 @@ export function AutoReply() {
       </div>
 
       <div className="status-strip auto-reply-status">
-        <div className="status-card"><span>运行状态</span><strong className={running ? "ok" : "warn"}>{statusLabel}</strong></div>
+        <div className="status-card"><span>运行状态</span><strong className={starting ? "warn" : ""}>{statusLabel}</strong></div>
+        <div className="status-card"><span>扫描健康</span><strong className={healthClass}>{healthLabel}</strong></div>
         <div className="status-card"><span>今日已回复</span><strong>{state.reply_count}</strong></div>
+        <div className="status-card"><span>最近扫描</span><strong>{formatScanTime(state.last_scan_at)}</strong></div>
+        <div className="status-card"><span>最近正常扫描</span><strong>{formatScanTime(state.last_scan_success_at)}</strong></div>
+        <div className="status-card"><span>连续扫描失败</span><strong className={scanFailures >= 3 ? "danger" : scanFailures > 0 ? "warn" : ""}>{scanFailures}</strong></div>
       </div>
 
-      {(error || state.last_error) && <div className="touch-notice" role="alert">{error || state.last_error}</div>}
+      {state.last_scan_reason && (
+        <div className={`auto-reply-reason ${scanHealth === "degraded" ? "is-degraded" : scanHealth === "warning" || scanHealth === "waiting" ? "is-warning" : ""}`}>
+          最近扫描结果：{scanReasonLabel(state.last_scan_reason)}（{state.last_scan_reason}）
+        </div>
+      )}
+      {visibleError && <div className="touch-notice" role="alert">{visibleError}</div>}
     </section>
   );
 }

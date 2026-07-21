@@ -665,10 +665,10 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
     return [...new Set((Array.isArray(names) ? names : []).map((name) => String(name || "").trim()).filter(Boolean))];
   }
 
-  function takeRetryCandidate(allowed) {
+  function takeRetryCandidate(allowed, scanProbe = { ok: null, reason: "retry_candidate_without_probe" }) {
     while (retryCandidates.length) {
       const candidate = retryCandidates.shift();
-      if (allowed.includes(String(candidate.conversation || "").trim())) return candidate;
+      if (allowed.includes(String(candidate.conversation || "").trim())) return { ...candidate, scanProbe };
     }
     return null;
   }
@@ -705,7 +705,9 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
       XIAOXI_CURRENT_BASELINES: JSON.stringify(Object.fromEntries(currentSessionBaselines))
     }, { ensure: false }));
     if (activeBaselineEpoch !== baselineEpoch) return { ok: false, reason: "baseline_epoch_changed" };
-    if (result?.ok !== true) return takeRetryCandidate(allowed) || result;
+    if (result?.ok !== true) {
+      return takeRetryCandidate(allowed, { ok: false, reason: result?.reason || "scan_result_invalid" }) || result;
+    }
     const conversation = String(result.conversation || "").trim();
     const runtimeId = String(result.runtimeId || "").trim();
     const sessionKey = `${result.pid || ""}:${result.hWnd || ""}:${conversation}`;
@@ -713,14 +715,14 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
     const previous = currentSessionBaselines.get(sessionKey);
     currentSessionBaselines.set(sessionKey, runtimeId);
     if (currentSessionBaselines.size > 1_000) currentSessionBaselines.delete(currentSessionBaselines.keys().next().value);
-    if (result.source === "current_probe") return takeRetryCandidate(allowed) || { ok: false, reason: "current_session_baselined" };
+    if (result.source === "current_probe") return takeRetryCandidate(allowed, { ok: true, reason: "current_session_baselined" }) || { ok: false, reason: "current_session_baselined" };
     if (result.source !== "current_open") {
       if (retryCandidates.length) retryAfterFresh = true;
       return result;
     }
-    if (!previous) return takeRetryCandidate(allowed) || { ok: false, reason: "current_session_baselined" };
-    if (previous === runtimeId) return takeRetryCandidate(allowed) || { ok: false, reason: "no_unread_message" };
-    if (result.latestRole !== "user") return takeRetryCandidate(allowed) || { ok: false, reason: "latest_message_not_incoming" };
+    if (!previous) return takeRetryCandidate(allowed, { ok: true, reason: "current_session_baselined" }) || { ok: false, reason: "current_session_baselined" };
+    if (previous === runtimeId) return takeRetryCandidate(allowed, { ok: true, reason: "no_unread_message" }) || { ok: false, reason: "no_unread_message" };
+    if (result.latestRole !== "user") return takeRetryCandidate(allowed, { ok: true, reason: "latest_message_not_incoming" }) || { ok: false, reason: "latest_message_not_incoming" };
     if (retryCandidates.length) retryAfterFresh = true;
     return result;
   }
@@ -745,10 +747,11 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
   scanWechatIncoming.primeBaselines = primeWechatSession;
   scanWechatIncoming.requeue = (candidate) => {
     if (candidate?.ok !== true) return false;
-    const key = [candidate.conversation, candidate.runtimeId, candidate.message].map(String).join("\n");
+    const { scanProbe: _discardedProbe, ...retryCandidate } = candidate;
+    const key = [retryCandidate.conversation, retryCandidate.runtimeId, retryCandidate.message].map(String).join("\n");
     if (retryCandidates.some((item) => [item.conversation, item.runtimeId, item.message].map(String).join("\n") === key)) return true;
     if (retryCandidates.length >= 1_000) return false;
-    retryCandidates.push(candidate);
+    retryCandidates.push(retryCandidate);
     return true;
   };
   scanWechatIncoming.resetBaselines = () => {

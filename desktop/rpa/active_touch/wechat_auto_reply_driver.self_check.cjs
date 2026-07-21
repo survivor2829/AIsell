@@ -133,13 +133,33 @@ const retryDriver = createWechatAutoReplyDriver(() => { retryScanCalls += 1; ret
 const firstRetryCandidate = await retryDriver.scanWechatIncoming(["李经理"]);
 assert.equal(retryDriver.scanWechatIncoming.requeue(firstRetryCandidate), true);
 assert.equal((await retryDriver.scanWechatIncoming(["李经理"])).runtimeId, "fresh-2", "a pending retry must not starve a newly arrived customer message");
-assert.equal((await retryDriver.scanWechatIncoming(["李经理"])).runtimeId, "retry-1", "the deferred retry must run after one fresh customer message");
+const deferredRetry = await retryDriver.scanWechatIncoming(["李经理"]);
+assert.equal(deferredRetry.runtimeId, "retry-1", "the deferred retry must run after one fresh customer message");
+assert.deepEqual(deferredRetry.scanProbe, { ok: null, reason: "retry_candidate_without_probe" }, "a deferred cached retry must not pretend that a live probe ran");
 assert.equal(retryScanCalls, 2, "the deferred retry should not need another PowerShell scan");
 
 const pauseStartDriver = createWechatAutoReplyDriver(() => ({ ok: false, reason: "no_unread_message" }));
 assert.equal(pauseStartDriver.scanWechatIncoming.requeue(retryCandidate), true);
 pauseStartDriver.scanWechatIncoming.resetBaselines();
 assert.equal((await pauseStartDriver.scanWechatIncoming(["李经理"])).runtimeId, "retry-1", "resetting UIA baselines on pause-start must preserve proven-unsent retries");
+
+const failedProbeRetryDriver = createWechatAutoReplyDriver(() => ({ ok: false, reason: "powershell_timeout" }));
+assert.equal(failedProbeRetryDriver.scanWechatIncoming.requeue(retryCandidate), true);
+const failedProbeRetry = await failedProbeRetryDriver.scanWechatIncoming(["李经理"]);
+assert.equal(failedProbeRetry.runtimeId, "retry-1");
+assert.deepEqual(failedProbeRetry.scanProbe, { ok: false, reason: "powershell_timeout" }, "a cached retry must preserve the failed live-probe health instead of looking like a healthy scan");
+
+const recoveredProbeResults = [
+  { ok: false, reason: "powershell_timeout" },
+  { ok: true, source: "current_probe", conversation: "李经理", runtimeId: "baseline-after-recovery", pid: 82, hWnd: 92 }
+];
+const recoveredProbeRetryDriver = createWechatAutoReplyDriver(() => recoveredProbeResults.shift());
+assert.equal(recoveredProbeRetryDriver.scanWechatIncoming.requeue(retryCandidate), true);
+const failedProbeCandidate = await recoveredProbeRetryDriver.scanWechatIncoming(["李经理"]);
+assert.deepEqual(failedProbeCandidate.scanProbe, { ok: false, reason: "powershell_timeout" });
+assert.equal(recoveredProbeRetryDriver.scanWechatIncoming.requeue(failedProbeCandidate), true);
+const recoveredProbeCandidate = await recoveredProbeRetryDriver.scanWechatIncoming(["李经理"]);
+assert.deepEqual(recoveredProbeCandidate.scanProbe, { ok: true, reason: "current_session_baselined" }, "requeue must discard stale probe metadata and attach the current live-probe result");
 
 const boundedRetryDriver = createWechatAutoReplyDriver(() => ({ ok: false, reason: "no_unread_message" }));
 for (let index = 0; index < 1_000; index += 1) {

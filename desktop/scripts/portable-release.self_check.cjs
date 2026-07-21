@@ -64,12 +64,16 @@ const momentsVisualSourceMarkers = [
   "MOMENTS_VISUAL_ACTION_POWERSHELL"
 ];
 const databaseFilePattern = /\.(?:db(?:-wal|-shm)?|sqlite3?)$/i;
-const blockedNames = new Set(["python.exe", "dump_data.exe", "wechat-dump-rs.exe", "ai-expert.json", "auto-reply-state.json", "contacts.json", "touch_task.json", "touch_task.json.bak", "run_logs.jsonl", "state.json", "deepseek-api-key.bin"]);
+const blockedNames = new Set(["python.exe", "dump_data.exe", "wechat-dump-rs.exe", "ai-expert.json", "auto-reply-state.json", "auto-reply-diagnostics.jsonl", "contacts.json", "touch_task.json", "touch_task.json.bak", "run_logs.jsonl", "state.json", "deepseek-api-key.bin"]);
+
+function isBlockedName(name) {
+  return blockedNames.has(name) || name.startsWith("auto-reply-diagnostics.jsonl.") || databaseFilePattern.test(name);
+}
 
 function assertNoBlockedFiles(names, label) {
   const normalized = names.map((name) => path.basename(String(name).replaceAll("/", path.sep)).toLowerCase()).filter(Boolean);
   for (const name of normalized) {
-    assert.equal(blockedNames.has(name) || databaseFilePattern.test(name), false, `${label} must not contain ${name}`);
+    assert.equal(isBlockedName(name), false, `${label} must not contain ${name}`);
   }
   assert.equal(normalized.some((name) => name.endsWith(".py") || name.includes("dt-ai-helper")), false, `${label} must not contain Python sources or dt-ai-helper`);
 }
