@@ -731,11 +731,58 @@ const selectedDraftEmptyPairSource = actionSource.match(
 )?.[0] ?? "";
 assert.ok(selectedDraftEmptyPairSource, "bounded selected-draft empty-pair proof should be present");
 assert.doesNotMatch(selectedDraftEmptyPairSource, /Invoke-VisualOwnedKeyboardBackspace|Focus-VisualCommentKeyboardTarget|Dismiss-VisualCommentComposer|Invoke-VisualOwnedClick|AtomicMouseClick|Clipboard/u);
-assert.match(selectedDraftEmptyPairSource, /for \(\$attempt = 0; \$attempt -lt 3; \$attempt\+\+\)/u);
-assert.equal((selectedDraftEmptyPairSource.match(/Get-LockedVisualCommentState/gu) ?? []).length, 2, "each bounded attempt must inspect exactly two locked frames");
-assert.equal((selectedDraftEmptyPairSource.match(/GetLastInputTick/gu) ?? []).length, 4, "each bounded attempt must verify the exact input tick before and after both frames");
-assert.match(selectedDraftEmptyPairSource, /\$firstEmptyState = Get-LockedVisualCommentState[\s\S]*Test-VisualSelectedCommentDraftEmpty \$firstEmptyState[\s\S]*Start-Sleep -Milliseconds 500[\s\S]*\$secondEmptyState = Get-LockedVisualCommentState[\s\S]*Test-VisualSelectedCommentDraftEmpty \$secondEmptyState/u);
-assert.match(selectedDraftEmptyPairSource, /Start-Sleep -Milliseconds 140[\s\S]*continue[\s\S]*Start-Sleep -Milliseconds 500[\s\S]*Start-Sleep -Milliseconds 140/u);
+assert.match(selectedDraftEmptyPairSource, /for \(\$pass = 0; \$pass -lt 2; \$pass\+\+\)/u);
+assert.equal((selectedDraftEmptyPairSource.match(/Get-LockedVisualCommentState/gu) ?? []).length, 2, "each quiet pass must inspect exactly two locked frames");
+assert.match(selectedDraftEmptyPairSource, /\$startedTick = Get-VisualInputTick[\s\S]*\$retryBaselineTick[\s\S]*\$quietStartTick = Get-VisualInputTick/u);
+assert.match(selectedDraftEmptyPairSource, /Test-VisualLockedForeground \$lock[\s\S]*\$firstEmptyState = Get-LockedVisualCommentState[\s\S]*Start-Sleep -Milliseconds 500[\s\S]*\$secondEmptyState = Get-LockedVisualCommentState/u);
+assert.match(selectedDraftEmptyPairSource, /Test-VisualSelectedCommentDraftEmpty \$firstEmptyState[\s\S]*Test-VisualSelectedCommentDraftEmpty \$secondEmptyState/u);
+assert.match(selectedDraftEmptyPairSource, /\$finishedTick -eq \$startedTick[\s\S]*inputTick = \$finishedTick[\s\S]*if \(\$pass -eq 0 -and -not \$inputTickRebased\)[\s\S]*\$retryBaselineTick = \$finishedTick[\s\S]*continue/u);
+assert.match(selectedDraftEmptyPairSource, /firstStateReason[\s\S]*firstSendReason[\s\S]*secondStateReason[\s\S]*secondSendReason/u);
+assert.match(visualClipboardRoundTripSource, /\$emptyProof = Wait-VisualSelectedCommentDraftEmptyPair[\s\S]*if \(-not \$emptyProof\.ok\)[\s\S]*\$draftCleanupDiagnostics = \$emptyProof\.diagnostics[\s\S]*\$inputTick = \[uint32\]\$emptyProof\.inputTick[\s\S]*Dismiss-VisualCommentComposer \$lock \$menu \$inputTick/u);
+const selectedDraftEmptyPairProbeSource = `
+$ErrorActionPreference = "Stop"
+${selectedDraftEmptyStateSource}
+${selectedDraftEmptyPairSource}
+function Start-Sleep { param([int]$Milliseconds) }
+function Get-VisualInputTick {
+  if ($script:tickIndex -ge $script:ticks.Count) { throw "tick underflow" }
+  [uint32]$value = [uint32]$script:ticks[$script:tickIndex]
+  $script:tickIndex += 1
+  return $value
+}
+function Test-VisualLockedForeground($lock) { return $true }
+function Get-LockedVisualCommentState($lock, $menu, $bounds, $avatarBounds, [string]$avatarHash) {
+  if ($script:frameIndex -ge $script:frames.Count) { throw "frame underflow" }
+  $value = $script:frames[$script:frameIndex]
+  $script:frameIndex += 1
+  return $value
+}
+function New-EmptyState([string]$marker, [bool]$sendOk = $false) {
+  return @{ ok = $true; marker = $marker; composer = @{ ok = $true; bounds = @{} }; send = @{ ok = $sendOk; reason = $(if ($sendOk) { "" } else { "moments_comment_send_button_not_found" }) }; avatarHash = "hash" }
+}
+function Invoke-EmptyPairCase([object[]]$Ticks, [object[]]$Frames, [uint32]$ExpectedTick = 100) {
+  $script:ticks = @($Ticks); $script:frames = @($Frames); $script:tickIndex = 0; $script:frameIndex = 0
+  return Wait-VisualSelectedCommentDraftEmptyPair @{} @{} @{} @{} "hash" $ExpectedTick
+}
+$result = Invoke-EmptyPairCase @([uint32]100, [uint32]100) @((New-EmptyState "quiet-1"), (New-EmptyState "quiet-2"))
+if (-not $result.ok -or $result.inputTick -ne 100 -or $result.inputTickRebased) { throw "quiet pair must pass without rebase" }
+$result = Invoke-EmptyPairCase @([uint32]101, [uint32]101, [uint32]101) @((New-EmptyState "late-1"), (New-EmptyState "late-2"))
+if (-not $result.ok -or $result.inputTick -ne 101 -or -not $result.inputTickRebased -or $script:frameIndex -ne 2) { throw "one late owned tick must pass only after a quiet pair" }
+$result = Invoke-EmptyPairCase @([uint32]100, [uint32]101, [uint32]101, [uint32]101) @((New-EmptyState "discard-1"), (New-EmptyState "discard-2"), (New-EmptyState "accept-1"), (New-EmptyState "accept-2"))
+if (-not $result.ok -or $result.inputTick -ne 101 -or $result.checkpointPass -ne 1 -or $script:frameIndex -ne 4) { throw "tick drift must discard the first pair and require a fresh quiet pair" }
+$result = Invoke-EmptyPairCase @([uint32]100, [uint32]101, [uint32]102) @((New-EmptyState "change-1"), (New-EmptyState "change-2"))
+if ($result.ok -or $result.reason -cne "moments_external_input_detected" -or $result.safeToDismiss) { throw "a second tick change must fail closed" }
+$result = Invoke-EmptyPairCase @([uint32]101, [uint32]101, [uint32]102) @((New-EmptyState "late-change-1"), (New-EmptyState "late-change-2"))
+if ($result.ok -or $result.reason -cne "moments_external_input_detected" -or $result.safeToDismiss -or $script:frameIndex -ne 2) { throw "a tick change after initial rebase must fail closed" }
+$result = Invoke-EmptyPairCase @([uint32]100, [uint32]100) @((New-EmptyState "draft-1" $true), (New-EmptyState "draft-2"))
+if ($result.ok -or $result.reason -cne "moments_comment_draft_empty_state_unverified" -or $result.safeToDismiss) { throw "enabled send must fail closed" }
+`;
+const selectedDraftEmptyPairProbe = spawnSync(
+  "powershell.exe",
+  ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(selectedDraftEmptyPairProbeSource, "utf16le").toString("base64")],
+  { encoding: "utf8", windowsHide: true },
+);
+assert.equal(selectedDraftEmptyPairProbe.status, 0, selectedDraftEmptyPairProbe.stderr || "selected-draft late-tick quiet-pass probe must pass");
 const selectedDraftCleanupSource = actionSource.match(
   /function Clear-And-CloseVisualSelectedCommentDraft\([\s\S]*?\n\}/u,
 )?.[0] ?? "";

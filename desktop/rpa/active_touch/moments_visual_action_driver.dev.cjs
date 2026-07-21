@@ -2880,28 +2880,76 @@ function Wait-VisualSelectedCommentDraftEmptyPair(
   [string]$expectedAvatarHash,
   [uint32]$expectedInputTick
 ) {
-  if ($expectedInputTick -eq [uint32]::MaxValue) { return $false }
+  if ($expectedInputTick -eq [uint32]::MaxValue) {
+    return @{ ok = $false; reason = "moments_external_input_detected"; safeToDismiss = $false; diagnostics = @{ stage = "invalid_expected_tick" } }
+  }
 
-  # Clearing the editor can briefly move foreground or animate the composer.
-  # Wait passively for two fully locked empty frames; never refocus, click, or
-  # clear again. Three pairs keep this recovery bounded by the outer timeout.
-  for ($attempt = 0; $attempt -lt 3; $attempt++) {
-    if ([Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick) { return $false }
-    $firstEmptyState = Get-LockedVisualCommentState $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash
-    if ([Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick) { return $false }
-    if (-not (Test-VisualSelectedCommentDraftEmpty $firstEmptyState)) {
-      Start-Sleep -Milliseconds 140
-      continue
+  # GetLastInputInfo is session-wide and may expose our Backspace tick after
+  # the key helper returns. Permit one passive rebaseline only: discard every
+  # frame from the changing pass, then require a wholly quiet two-frame pass.
+  # No refocus, click or second Backspace is permitted here.
+  [uint32]$retryBaselineTick = [uint32]::MaxValue
+  $inputTickRebased = $false
+  for ($pass = 0; $pass -lt 2; $pass++) {
+    [uint32]$startedTick = Get-VisualInputTick
+    if ($startedTick -eq [uint32]::MaxValue -or
+      ($pass -gt 0 -and $startedTick -ne $retryBaselineTick)) {
+      return @{ ok = $false; reason = "moments_external_input_detected"; safeToDismiss = $false; diagnostics = @{ stage = "quiet_pass_start"; pass = $pass; inputTickRebased = $inputTickRebased } }
+    }
+    if ($pass -eq 0 -and $startedTick -ne $expectedInputTick) {
+      $inputTickRebased = $true
+      Start-Sleep -Milliseconds 160
+      [uint32]$quietStartTick = Get-VisualInputTick
+      if ($quietStartTick -eq [uint32]::MaxValue -or $quietStartTick -ne $startedTick) {
+        return @{ ok = $false; reason = "moments_external_input_detected"; safeToDismiss = $false; diagnostics = @{ stage = "initial_rebase_not_quiet"; pass = $pass; inputTickRebased = $true } }
+      }
+      $startedTick = $quietStartTick
+    }
+    if (-not (Test-VisualLockedForeground $lock)) {
+      return @{ ok = $false; reason = "moments_window_not_foreground"; safeToDismiss = $false; diagnostics = @{ stage = "quiet_pass_start"; pass = $pass; inputTickRebased = $inputTickRebased } }
     }
 
+    $firstEmptyState = Get-LockedVisualCommentState $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash
     Start-Sleep -Milliseconds 500
-    if ([Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick) { return $false }
     $secondEmptyState = Get-LockedVisualCommentState $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash
-    if ([Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick) { return $false }
-    if (Test-VisualSelectedCommentDraftEmpty $secondEmptyState) { return $true }
-    Start-Sleep -Milliseconds 140
+    [uint32]$finishedTick = Get-VisualInputTick
+    $firstEmpty = Test-VisualSelectedCommentDraftEmpty $firstEmptyState
+    $secondEmpty = Test-VisualSelectedCommentDraftEmpty $secondEmptyState
+    $diagnostics = @{
+      stage = "empty_pair"
+      pass = $pass
+      inputTickRebased = $inputTickRebased
+      firstStateOk = [bool]$firstEmptyState.ok
+      firstStateReason = [string]$firstEmptyState.reason
+      firstSendOk = [bool]$firstEmptyState.send.ok
+      firstSendReason = [string]$firstEmptyState.send.reason
+      secondStateOk = [bool]$secondEmptyState.ok
+      secondStateReason = [string]$secondEmptyState.reason
+      secondSendOk = [bool]$secondEmptyState.send.ok
+      secondSendReason = [string]$secondEmptyState.send.reason
+    }
+    if (-not $firstEmptyState.ok -or -not $secondEmptyState.ok) {
+      $stateReason = $(if (-not $firstEmptyState.ok) { [string]$firstEmptyState.reason } else { [string]$secondEmptyState.reason })
+      return @{ ok = $false; reason = $(if ($stateReason) { $stateReason } else { "moments_comment_draft_empty_state_unverified" }); safeToDismiss = $false; diagnostics = $diagnostics }
+    }
+    if (-not $firstEmpty -or -not $secondEmpty) {
+      return @{ ok = $false; reason = "moments_comment_draft_empty_state_unverified"; safeToDismiss = $false; diagnostics = $diagnostics }
+    }
+    if ($finishedTick -eq [uint32]::MaxValue -or -not (Test-VisualLockedForeground $lock)) {
+      return @{ ok = $false; reason = "moments_external_input_detected"; safeToDismiss = $false; diagnostics = $diagnostics }
+    }
+    if ($finishedTick -eq $startedTick) {
+      return @{ ok = $true; inputTick = $finishedTick; checkpointPass = $pass; inputTickRebased = $inputTickRebased; safeToDismiss = $true; diagnostics = $diagnostics }
+    }
+    if ($pass -eq 0 -and -not $inputTickRebased) {
+      $retryBaselineTick = $finishedTick
+      $inputTickRebased = $true
+      Start-Sleep -Milliseconds 160
+      continue
+    }
+    return @{ ok = $false; reason = "moments_external_input_detected"; safeToDismiss = $false; diagnostics = $diagnostics }
   }
-  return $false
+  return @{ ok = $false; reason = "moments_external_input_detected"; safeToDismiss = $false; diagnostics = @{ stage = "quiet_pass_exhausted"; inputTickRebased = $inputTickRebased } }
 }
 
 function Get-VisualPostSendCommentState(
@@ -3234,6 +3282,7 @@ function Invoke-VisualCommentCheckClipboardRoundTrip(
   $draftCleared = $false
   $emptyStateCandidate = $false
   $draftCleanupReason = ""
+  $draftCleanupDiagnostics = @{}
   $composerClosed = $false
   $clipboardCaptured = $false
   $clipboardChanged = $false
@@ -3413,10 +3462,13 @@ function Invoke-VisualCommentCheckClipboardRoundTrip(
         throw [System.InvalidOperationException]::new($draftCleanupReason)
       }
       [uint32]$inputTick = [uint32]$clear.inputTick
-      if (-not (Wait-VisualSelectedCommentDraftEmptyPair $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash $inputTick)) {
-        $draftCleanupReason = "moments_comment_draft_empty_state_unverified"
+      $emptyProof = Wait-VisualSelectedCommentDraftEmptyPair $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash $inputTick
+      if (-not $emptyProof.ok) {
+        $draftCleanupReason = $(if ($emptyProof.reason) { [string]$emptyProof.reason } else { "moments_comment_draft_empty_state_unverified" })
+        $draftCleanupDiagnostics = $emptyProof.diagnostics
         throw [System.InvalidOperationException]::new($draftCleanupReason)
       }
+      [uint32]$inputTick = [uint32]$emptyProof.inputTick
       $emptyStateCandidate = $true
       $draftCleared = $true
       $draftMayExist = $false
@@ -3483,10 +3535,13 @@ function Invoke-VisualCommentCheckClipboardRoundTrip(
       $clear = Invoke-VisualOwnedKeyboardBackspace $lock $expectedComposerBounds $inputTick
       if ($clear.ok) {
         [uint32]$inputTick = [uint32]$clear.inputTick
-        if (Wait-VisualSelectedCommentDraftEmptyPair $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash $inputTick) {
+        $emptyProof = Wait-VisualSelectedCommentDraftEmptyPair $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash $inputTick
+        if ($emptyProof.ok) {
+          [uint32]$inputTick = [uint32]$emptyProof.inputTick
           $emptyStateCandidate = $true
         } else {
-          $draftCleanupReason = "moments_comment_draft_empty_state_unverified"
+          $draftCleanupReason = $(if ($emptyProof.reason) { [string]$emptyProof.reason } else { "moments_comment_draft_empty_state_unverified" })
+          $draftCleanupDiagnostics = $emptyProof.diagnostics
         }
       } else {
         $draftCleanupReason = [string]$clear.reason
@@ -3549,7 +3604,7 @@ function Invoke-VisualCommentCheckClipboardRoundTrip(
     $failureReason = "moments_comment_clipboard_restore_failed"
   }
   if ($failureReason) {
-    return @{ ok = $false; status = "blocked"; reason = $failureReason; actionAttempted = $false }
+    return @{ ok = $false; status = "blocked"; reason = $failureReason; actionAttempted = $false; diagnostics = $draftCleanupDiagnostics }
   }
   return @{
     ok = $true
@@ -3579,8 +3634,9 @@ function Clear-And-CloseVisualSelectedCommentDraft(
   $clear = Invoke-VisualOwnedKeyboardBackspace $lock $expectedComposerBounds $expectedInputTick
   if (-not $clear.ok) { return $false }
   [uint32]$clearedInputTick = [uint32]$clear.inputTick
-  if (-not (Wait-VisualSelectedCommentDraftEmptyPair $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash $clearedInputTick)) { return $false }
-  return Dismiss-VisualCommentComposer $lock $menu $clearedInputTick
+  $emptyProof = Wait-VisualSelectedCommentDraftEmptyPair $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash $clearedInputTick
+  if (-not $emptyProof.ok) { return $false }
+  return Dismiss-VisualCommentComposer $lock $menu ([uint32]$emptyProof.inputTick)
 }
 
 function Dismiss-VisualExactEmptyCommentComposer(
