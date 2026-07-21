@@ -21,6 +21,10 @@ assert.match(source, /setCommentSendSupported\(result\.comment_send_supported ==
 assert.match(source, /disabled=\{busy \|\| !observationId \|\| !menuVerified \|\| !commentSendSupported/u);
 assert.match(source, /已锁定目标内容/u);
 assert.doesNotMatch(source, /已锁定唯一内容/u);
+assert.match(source, /neutralCandidateReasons = \[/u);
+assert.match(source, /条可操作内容中自动选择/u);
+assert.doesNotMatch(source, /条完整内容中自动选择/u);
+assert.doesNotMatch(source, /已阻断/u);
 assert.match(source, /verification_level === "clipboard_exact"/u);
 assert.match(source, /verification_level === "visible_exact"/u);
 assert.match(source, /已在原帖唯一识别到相同评论，并复核帖子锚点与评论候选稳定/u);

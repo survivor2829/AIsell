@@ -9,7 +9,7 @@ const MOMENTS_INSPECT_UI_TIMEOUT_MS = 110_000;
 
 const ACTION_BLOCK_MESSAGES: Record<string, string> = {
   moments_action_state_persist_failed: "动作状态无法安全保存，请勿继续操作。",
-  moments_attempt_already_recorded: "同一帖子上的相同动作已有记录，已阻断重复执行。",
+  moments_attempt_already_recorded: "同一帖子上的相同动作已有记录，本次不再重复执行。",
   moments_comment_duplicate: "原帖评论区已存在完全相同的评论，未重复发送。",
   moments_comment_text_already_attempted: "完全相同的评论文案已有发送尝试记录，已在操作微信前阻断。",
   moments_comment_editor_targeting_unsupported: "当前微信版本没有提供可安全定向的评论编辑框，未写入草稿、未发送评论。",
@@ -22,7 +22,7 @@ const ACTION_BLOCK_MESSAGES: Record<string, string> = {
   moments_comment_region_ambiguous: "无法唯一确认原帖评论区，未输入或发送。",
   moments_comment_send_button_ambiguous: "无法唯一确认评论发送按钮，草稿已清理并停止。",
   moments_dry_run_expired: "观察锁已超过 5 分钟，请重新预演。",
-  moments_like_not_in_dry_run: "本次预演未启用点赞，已阻断。",
+  moments_like_not_in_dry_run: "本次预演未启用点赞，请重新选择后预演。",
   runtime_coordinator_failed: "微信运行锁获取失败，未执行操作。",
   runtime_coordinator_unavailable: "微信运行锁不可用，未执行操作。",
   wechat_operation_busy: "联系人同步、主动触达或自动回复正在使用微信，请稍后再试。"
@@ -78,7 +78,13 @@ export default function MomentsDryRunPanel() {
     void executor({ mode, likeEnabled, commentEnabled, commentText }).then((result) => {
       if (timedOut) return;
       if (!result.ok) {
-        setStatusBlocked(true);
+        const neutralCandidateReasons = [
+          "moments_post_not_found",
+          "moments_post_ambiguous",
+          "moments_post_changed",
+          "moments_post_identity_missing"
+        ];
+        setStatusBlocked(!neutralCandidateReasons.includes(result.blocked_reason || ""));
         setStatus(result.blocked_reason === "moments_window_not_found" ? "未识别到朋友圈窗口，请先在微信中打开朋友圈。" : result.error || "朋友圈安全预演未通过。");
         return;
       }
@@ -90,7 +96,7 @@ export default function MomentsDryRunPanel() {
       setObservationId(result.post_snapshot.observation_id);
       const order = result.plan?.action_order.map((action) => action === "comment" ? "评论" : "点赞").join(" → ") || "无动作";
       const visibleCount = result.plan?.visible_post_count || 1;
-      const targetNotice = visibleCount > 1 ? `；已从当前 ${visibleCount} 条完整内容中自动选择` : "";
+      const targetNotice = visibleCount > 1 ? `；已从当前 ${visibleCount} 条可操作内容中自动选择` : "";
       setStatus(`已锁定目标内容：${result.post_snapshot.preview}；计划：${order}${targetNotice}。观察锁 5 分钟内有效，请先点击“检查互动菜单”。`);
     }).catch(() => {
       if (timedOut) return;
@@ -106,7 +112,7 @@ export default function MomentsDryRunPanel() {
     const api = window.xiaoxiActiveTouch;
     if (!api || !observationId) {
       setStatusBlocked(true);
-      setStatus("已阻断：请先完成朋友圈安全预演并取得观察锁。");
+      setStatus("请先完成朋友圈预演并取得观察锁。");
       return;
     }
     setBusy(true);

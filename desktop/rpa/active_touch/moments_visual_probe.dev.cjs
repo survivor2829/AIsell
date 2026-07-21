@@ -400,13 +400,24 @@ function Measure-MomentsAvatarBox($frame, [int]$left, [int]$top, [int]$size) {
   return @{ ok = $ok; score = (($foregroundRatio * 0.68) + ($ringLightRatio * 0.32)); foregroundRatio = $foregroundRatio; ringLightRatio = $ringLightRatio }
 }
 
-function Find-MomentsAvatarForMenu($frame, $menus, [int]$menuIndex) {
+function Test-MomentsVisualBoundsInside($inner, $outer) {
+  if ($inner -eq $null -or $outer -eq $null) { return $false }
+  return [double]$inner.width -gt 0 -and [double]$inner.height -gt 0 -and
+    [double]$outer.width -gt 0 -and [double]$outer.height -gt 0 -and
+    [double]$inner.left -ge [double]$outer.left -and [double]$inner.top -ge [double]$outer.top -and
+    ([double]$inner.left + [double]$inner.width) -le ([double]$outer.left + [double]$outer.width) -and
+    ([double]$inner.top + [double]$inner.height) -le ([double]$outer.top + [double]$outer.height)
+}
+
+function Find-MomentsAvatarForMenu($frame, $menus, [int]$menuIndex, $viewportBounds) {
   $menu = $menus[$menuIndex]
-  $size = [int][Math]::Max(32, [Math]::Min(52, [Math]::Round($frame.width * 0.09)))
-  $x = [int][Math]::Max(8, [Math]::Min($frame.width - $size - 1, [Math]::Round($frame.width * 0.055)))
-  $previousMenuY = if ($menuIndex -gt 0) { [double]$menus[$menuIndex - 1].centerY } else { 40.0 }
-  $yStart = [int][Math]::Max(48, [Math]::Round($previousMenuY + ($size * 0.45)))
-  $yEnd = [int][Math]::Floor($menu.centerY - ($size * 1.6))
+  $size = [int][Math]::Max(32, [Math]::Min(52, [Math]::Round([double]$viewportBounds.width * 0.09)))
+  $viewportRight = [double]$viewportBounds.left + [double]$viewportBounds.width
+  $viewportBottom = [double]$viewportBounds.top + [double]$viewportBounds.height
+  $x = [int][Math]::Max([double]$viewportBounds.left, [Math]::Min($viewportRight - $size, [double]$viewportBounds.left + ([double]$viewportBounds.width * 0.055)))
+  $previousMenuY = if ($menuIndex -gt 0) { [double]$menus[$menuIndex - 1].centerY } else { [double]$viewportBounds.top }
+  $yStart = [int][Math]::Max([double]$viewportBounds.top, [Math]::Round($previousMenuY + ($size * 0.45)))
+  $yEnd = [int][Math]::Min($viewportBottom - $size, [Math]::Floor($menu.centerY - ($size * 1.6)))
   if ($yEnd -lt $yStart) { return @{ ok = $false; reason = "moments_visual_avatar_not_found" } }
   $peaks = New-Object System.Collections.Generic.List[object]
   for ($y = $yStart; $y -le $yEnd; $y += 4) {
@@ -675,20 +686,23 @@ function Get-MomentsPostIdentityText($ocr, $postRect, $menuBounds) {
   ).Trim()
 }
 
-function Get-MomentsVisualPostCandidates($frame) {
-  $menus = @(Find-MomentsMenuDots $frame)
+function Get-MomentsVisualPostCandidates($frame, $viewportBounds) {
+  $frameBounds = @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
+  if (-not (Test-MomentsVisualBoundsInside $viewportBounds $frameBounds)) { return @{ menus = @(); posts = @() } }
+  $menus = @(Find-MomentsMenuDots $frame | Where-Object { Test-MomentsVisualBoundsInside $_.bounds $viewportBounds })
   $posts = New-Object System.Collections.Generic.List[object]
   for ($index = 0; $index -lt $menus.Count; $index++) {
     $menu = $menus[$index]
-    $avatar = Find-MomentsAvatarForMenu $frame $menus $index
-    if (-not $avatar.ok) { continue }
-    $postLeft = [Math]::Max(0.0, [double]$avatar.bounds.left - 6.0)
-    $postTop = [Math]::Max(0.0, [double]$avatar.bounds.top - 6.0)
-    $postRight = [Math]::Min([double]$frame.width, [double]$menu.bounds.left + [double]$menu.bounds.width + 5.0)
-    $postBottom = [Math]::Min([double]$frame.height, [double]$menu.bounds.top + [double]$menu.bounds.height + [Math]::Max(48.0, [double]$avatar.bounds.height * 1.35))
-    $safeTop = [Math]::Max(48.0, [double]$frame.height * 0.035)
-    $safeBottom = [double]$frame.height - [Math]::Max(8.0, [double]$frame.height * 0.006)
-    if ($postTop -lt $safeTop -or $postBottom -gt $safeBottom -or $postRight -le $postLeft -or $postBottom -le $postTop) { continue }
+    $avatar = Find-MomentsAvatarForMenu $frame $menus $index $viewportBounds
+    if (-not $avatar.ok -or -not (Test-MomentsVisualBoundsInside $avatar.bounds $viewportBounds)) { continue }
+    $viewportRight = [double]$viewportBounds.left + [double]$viewportBounds.width
+    $viewportBottom = [double]$viewportBounds.top + [double]$viewportBounds.height
+    $postLeft = [Math]::Max([double]$viewportBounds.left, [double]$avatar.bounds.left - 6.0)
+    $postTop = [Math]::Max([double]$viewportBounds.top, [double]$avatar.bounds.top - 6.0)
+    $postRight = [Math]::Min($viewportRight, [double]$menu.bounds.left + [double]$menu.bounds.width + 5.0)
+    $unclippedPostBottom = [double]$menu.bounds.top + [double]$menu.bounds.height + [Math]::Max(48.0, [double]$avatar.bounds.height * 1.35)
+    $postBottom = [Math]::Min($viewportBottom, $unclippedPostBottom)
+    if ($postRight -le $postLeft -or $postBottom -le $postTop) { continue }
     $postRect = @{ left = $postLeft; top = $postTop; width = $postRight - $postLeft; height = $postBottom - $postTop }
     $ocr = Get-MomentsOcrObservation $frame $postRect
     if (-not $ocr.ok -or -not $ocr.text -or $ocr.text.Length -lt 8 -or $ocr.text.Length -gt 2000) { continue }
@@ -706,6 +720,7 @@ function Get-MomentsVisualPostCandidates($frame) {
       bounds = $postRect
       menuBounds = $menu.bounds
       avatarBounds = $avatar.bounds
+      partialVisible = $unclippedPostBottom -gt $viewportBottom
       ocrLines = $ocr.lines
     })
   }

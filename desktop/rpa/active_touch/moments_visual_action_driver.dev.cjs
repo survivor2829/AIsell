@@ -222,9 +222,9 @@ function validVisualContext(context = {}) {
     && snapshot.identity_text.length <= 2000
     && SHA256_PATTERN.test(String(snapshot.post_fingerprint ?? ""))
     && momentsPostFingerprint(snapshot.identity_text) === snapshot.post_fingerprint
-    && boundsWithin(snapshot.bounds, windowBounds)
-    && boundsWithin(snapshot.menu_bounds, windowBounds)
-    && boundsWithin(snapshot.avatar_bounds, windowBounds);
+    && boundsWithin(snapshot.bounds, window.renderPaneBounds)
+    && boundsWithin(snapshot.menu_bounds, window.renderPaneBounds)
+    && boundsWithin(snapshot.avatar_bounds, window.renderPaneBounds);
   return windowValid
     && snapshotValid
     && SHA256_PATTERN.test(observationId)
@@ -836,7 +836,8 @@ function Get-CurrentLockedVisualPost($lock, $context, [bool]$activate = $true) {
   $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $activate
   if (-not $frame.ok) { return @{ ok = $false; reason = $frame.reason } }
   try {
-    $read = Get-MomentsVisualPostCandidates $frame
+    $expectedRenderPaneBounds = ConvertTo-RelativeVisualBounds $context.expectedWindow.renderPaneBounds $context.expectedWindow
+    $read = Get-MomentsVisualPostCandidates $frame $expectedRenderPaneBounds
     $posts = @($read.posts)
     if ($posts.Count -eq 0) { return @{ ok = $false; reason = "moments_post_not_found"; frame = $frame } }
     $snapshot = $context.postSnapshot

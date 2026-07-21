@@ -44,27 +44,27 @@ function momentsPostFingerprint(value) {
 }
 
 const MOMENTS_BLOCK_ERRORS = Object.freeze({
-  moments_action_missing: "已阻断：请至少选择点赞或评论",
-  moments_mode_invalid: "已阻断：朋友圈预演模式无效",
-  moments_comment_missing: "已阻断：启用评论后必须填写评论文案",
-  moments_probe_failed: "已阻断：朋友圈窗口检查执行失败，请稍后重试",
-  moments_window_not_found: "已阻断：请先在微信中打开朋友圈窗口",
-  moments_window_ambiguous: "已阻断：检测到多个朋友圈窗口，请只保留一个后重试",
-  moments_window_identity_mismatch: "已阻断：当前窗口不是可确认的个人微信朋友圈",
-  moments_feed_not_found: "已阻断：当前朋友圈列表无法读取",
-  moments_feed_ambiguous: "已阻断：当前朋友圈列表结构不唯一",
-  moments_render_pane_not_found: "已阻断：新版微信朋友圈渲染区域无法确认",
-  moments_render_pane_ambiguous: "已阻断：新版微信朋友圈渲染区域不唯一",
-  moments_render_pane_bounds_invalid: "已阻断：新版微信朋友圈渲染区域越界",
-  moments_visual_capture_failed: "已阻断：朋友圈视觉快照获取失败",
-  moments_visual_ocr_unavailable: "已阻断：本机简体中文视觉识别不可用",
-  moments_visual_ocr_failed: "已阻断：朋友圈文字识别失败",
-  moments_window_not_foreground: "已阻断：朋友圈窗口无法保持在前台",
-  moments_window_obscured: "已阻断：朋友圈窗口被其他窗口遮挡",
-  moments_post_not_found: "已阻断：未找到可安全锁定的完整可见朋友圈内容",
-  moments_post_ambiguous: "已阻断：无法唯一回锁同一条朋友圈内容，请保持页面稳定后重试",
-  moments_post_changed: "已阻断：朋友圈内容正在变化，请稳定后重试",
-  moments_post_identity_missing: "已阻断：当前朋友圈内容缺少稳定的只读身份信息"
+  moments_action_missing: "请至少选择点赞或评论",
+  moments_mode_invalid: "朋友圈预演模式无效",
+  moments_comment_missing: "启用评论后必须填写评论文案",
+  moments_probe_failed: "朋友圈窗口检查执行失败，请稍后重试",
+  moments_window_not_found: "请先在微信中打开朋友圈窗口",
+  moments_window_ambiguous: "检测到多个朋友圈窗口，请只保留一个后重试",
+  moments_window_identity_mismatch: "当前窗口不是可确认的个人微信朋友圈",
+  moments_feed_not_found: "当前朋友圈列表无法读取",
+  moments_feed_ambiguous: "当前朋友圈列表结构不唯一",
+  moments_render_pane_not_found: "新版微信朋友圈渲染区域无法确认",
+  moments_render_pane_ambiguous: "新版微信朋友圈渲染区域不唯一",
+  moments_render_pane_bounds_invalid: "新版微信朋友圈渲染区域越界",
+  moments_visual_capture_failed: "朋友圈视觉快照获取失败",
+  moments_visual_ocr_unavailable: "本机简体中文视觉识别不可用",
+  moments_visual_ocr_failed: "朋友圈文字识别失败",
+  moments_window_not_foreground: "朋友圈窗口无法保持在前台",
+  moments_window_obscured: "朋友圈窗口被其他窗口遮挡",
+  moments_post_not_found: "暂未找到可操作的朋友圈内容，系统未执行任何操作",
+  moments_post_ambiguous: "暂时无法唯一确认目标朋友圈内容，系统未执行任何操作",
+  moments_post_changed: "朋友圈内容正在变化，系统未执行任何操作，请保持页面稳定后重试",
+  moments_post_identity_missing: "当前可见内容缺少稳定身份或完整菜单锚点，系统未执行任何操作"
 });
 
 const MOMENTS_WINDOW_PROBE_SCRIPT = `
@@ -153,6 +153,7 @@ function Get-VisibleMomentPosts([System.Windows.Automation.AutomationElement]$ro
   $listItemCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::ListItem)
   $items = $feed.FindAll([System.Windows.Automation.TreeScope]::Descendants, $listItemCondition)
   $posts = New-Object System.Collections.Generic.List[object]
+  $hadIdentityMissing = $false
   for ($index = 0; $index -lt $items.Count; $index++) {
     $item = $items.Item($index)
     $feedDepth = Get-TopLevelFeedItemDepth $feed $item
@@ -171,7 +172,7 @@ function Get-VisibleMomentPosts([System.Windows.Automation.AutomationElement]$ro
     $fullyVisible = $rect.Left -ge ($feedRect.Left - 2) -and $rect.Top -ge ($feedRect.Top - 2) -and $rect.Right -le ($feedRect.Right + 2) -and $rect.Bottom -le ($feedRect.Bottom + 2)
     if (-not $fullyVisible) { continue }
     $runtimeId = Get-RuntimeId $item
-    if ([string]::IsNullOrWhiteSpace($runtimeId)) { return @{ ok = $false; reason = "moments_post_identity_missing" } }
+    if ([string]::IsNullOrWhiteSpace($runtimeId)) { $hadIdentityMissing = $true; continue }
     [void]$posts.Add([pscustomobject]@{
       runtimeId = $runtimeId
       automationId = $automationId
@@ -184,7 +185,7 @@ function Get-VisibleMomentPosts([System.Windows.Automation.AutomationElement]$ro
       height = [double]$rect.Height
     })
   }
-  return @{ ok = $true; feedAutomationId = [string]$feed.Current.AutomationId; feedRuntimeId = $feedRuntimeId; feedCount = 1; posts = @($posts.ToArray() | Sort-Object top, left) }
+  return @{ ok = $true; feedAutomationId = [string]$feed.Current.AutomationId; feedRuntimeId = $feedRuntimeId; feedCount = 1; hadIdentityMissing = $hadIdentityMissing; posts = @($posts.ToArray() | Sort-Object top, left) }
 }
 
 function Test-PostSequence($first, $second) {
@@ -261,7 +262,8 @@ if (-not $firstRead.ok) { Write-Result $firstRead }
 Start-Sleep -Milliseconds 120
 $secondRead = Get-VisibleMomentPosts $root
 if (-not $secondRead.ok) { Write-Result $secondRead }
-if ($firstRead.feedRuntimeId -cne $secondRead.feedRuntimeId -or -not (Test-PostSequence $firstRead.posts $secondRead.posts)) { Write-Result @{ ok = $false; reason = "moments_post_changed" } }
+if ($firstRead.feedRuntimeId -cne $secondRead.feedRuntimeId -or [bool]$firstRead.hadIdentityMissing -ne [bool]$secondRead.hadIdentityMissing -or
+  -not (Test-PostSequence $firstRead.posts $secondRead.posts)) { Write-Result @{ ok = $false; reason = "moments_post_changed" } }
 $identityMode = if ($rootAutomationId -ceq "SNSWindow") { "automation_id" } else { "structural_sns_feed" }
 $matched["automationId"] = $rootAutomationId
 $matched["identityMode"] = $identityMode
@@ -272,7 +274,9 @@ $matched["feedAutomationId"] = [string]$secondRead.feedAutomationId
 $matched["feedRuntimeId"] = [string]$secondRead.feedRuntimeId
 $matched["feedCount"] = [int]$secondRead.feedCount
 $posts = @($secondRead.posts)
-if ($posts.Count -eq 0) { Write-Result @{ ok = $false; reason = "moments_post_not_found" } }
+if ($posts.Count -eq 0) {
+  Write-Result @{ ok = $false; reason = $(if ($secondRead.hadIdentityMissing) { "moments_post_identity_missing" } else { "moments_post_not_found" }) }
+}
 $matched["posts"] = $posts
 Write-Result $matched
 `;
@@ -328,8 +332,65 @@ function momentsCandidateBounds(post) {
   };
 }
 
-function preferredVisibleMomentsPost(posts, viewportBounds) {
-  if (!Array.isArray(posts) || posts.length === 0) return null;
+function boundsIntersection(inner, outer) {
+  if (!strictBounds(inner) || !strictBounds(outer)) return null;
+  const left = Math.max(inner.left, outer.left);
+  const top = Math.max(inner.top, outer.top);
+  const right = Math.min(inner.left + inner.width, outer.left + outer.width);
+  const bottom = Math.min(inner.top + inner.height, outer.top + outer.height);
+  if (right <= left || bottom <= top) return null;
+  return { left, top, width: right - left, height: bottom - top };
+}
+
+function stableMomentsCandidateKey(post) {
+  const runtimeId = String(post?.runtimeId ?? "").trim();
+  if (runtimeId) return `uia:${runtimeId}`;
+  const identityText = String(post?.identityText ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
+  const avatarHash = String(post?.avatarHash ?? "").trim();
+  const bounds = momentsCandidateBounds(post);
+  const menuBounds = post?.menuBounds;
+  if (!identityText || !/^[0-9a-f]{64}$/u.test(avatarHash) || !strictBounds(bounds) || !strictBounds(menuBounds)) return "";
+  return [
+    "visual",
+    momentsPostFingerprint(identityText),
+    avatarHash,
+    bounds.left,
+    bounds.top,
+    bounds.width,
+    bounds.height,
+    menuBounds.left,
+    menuBounds.top,
+    menuBounds.width,
+    menuBounds.height
+  ].join(":");
+}
+
+function assessVisibleMomentsCandidate(post, viewportBounds) {
+  const viewport = strictBounds(viewportBounds) ? viewportBounds : null;
+  const bounds = momentsCandidateBounds(post);
+  const visibleBounds = boundsIntersection(bounds, viewport);
+  if (!viewport || !visibleBounds) return { ok: false };
+  const partialVisible = post?.partialVisible === true || !boundsWithin(bounds, viewport);
+  const stableKey = stableMomentsCandidateKey(post);
+  if (!stableKey || post?.structureVerified !== true) return { ok: false };
+
+  if (String(post?.runtimeId ?? "").trim()) {
+    const label = String(post?.text ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
+    const feedDepth = Number(post?.feedDepth);
+    if (!label || label.length > 2000 || !Number.isInteger(feedDepth) || feedDepth < 1 || feedDepth > 16
+      || partialVisible) return { ok: false };
+  } else {
+    const label = String(post?.text ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
+    const identityText = String(post?.identityText ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
+    const hashesValid = [post?.regionHash, post?.avatarHash, post?.layoutHash]
+      .every((value) => /^[0-9a-f]{64}$/u.test(String(value ?? "")));
+    if (!label || label.length > 2000 || !identityText || identityText.length > 2000 || !hashesValid
+      || !boundsWithin(post?.menuBounds, viewport) || !boundsWithin(post?.avatarBounds, viewport)) return { ok: false };
+  }
+  return { ok: true, post, partialVisible, stableKey, visibleBounds };
+}
+
+function rankVisibleMomentsPosts(posts, viewportBounds) {
   const viewport = strictBounds(viewportBounds)
     ? viewportBounds
     : { left: 0, top: 0, width: 1, height: 1 };
@@ -356,7 +417,34 @@ function preferredVisibleMomentsPost(posts, viewportBounds) {
     || left.top - right.top
     || left.left - right.left
     || (left.stableKey < right.stableKey ? -1 : left.stableKey > right.stableKey ? 1 : 0)
-    || left.index - right.index)[0].post;
+    || left.index - right.index);
+}
+
+function selectVisibleMomentsPost(posts, viewportBounds) {
+  if (!Array.isArray(posts) || posts.length === 0) {
+    return { ok: false, reason: "moments_post_not_found", acceptedCount: 0 };
+  }
+  const accepted = posts.map((post) => assessVisibleMomentsCandidate(post, viewportBounds)).filter((entry) => entry.ok);
+  if (accepted.length === 0) {
+    return { ok: false, reason: "moments_post_identity_missing", acceptedCount: 0 };
+  }
+  const partialKeyCounts = new Map();
+  for (const entry of accepted) {
+    if (!entry.partialVisible) continue;
+    partialKeyCounts.set(entry.stableKey, (partialKeyCounts.get(entry.stableKey) ?? 0) + 1);
+  }
+  const unambiguous = accepted.filter((entry) => !entry.partialVisible || partialKeyCounts.get(entry.stableKey) === 1);
+  if (unambiguous.length === 0) {
+    return { ok: false, reason: "moments_post_ambiguous", acceptedCount: 0 };
+  }
+  const selected = rankVisibleMomentsPosts(unambiguous.map((entry) => entry.post), viewportBounds)[0]?.post;
+  const assessment = unambiguous.find((entry) => entry.post === selected);
+  return { ok: true, post: selected, partialVisible: assessment?.partialVisible === true, acceptedCount: unambiguous.length };
+}
+
+function preferredVisibleMomentsPost(posts, viewportBounds) {
+  if (!Array.isArray(posts) || posts.length === 0) return null;
+  return rankVisibleMomentsPosts(posts, viewportBounds)[0]?.post ?? null;
 }
 
 function validMomentsWindowIdentity(windowResult) {
@@ -395,7 +483,10 @@ function validMomentsWindowIdentity(windowResult) {
 function visualMomentsPostSnapshot(windowResult, verifiedWindow) {
   const posts = Array.isArray(windowResult?.posts) ? windowResult.posts : [];
   if (posts.length === 0) return { ok: false, reason: "moments_post_not_found", error: MOMENTS_BLOCK_ERRORS.moments_post_not_found };
-  const post = preferredVisibleMomentsPost(posts, windowResult?.renderPaneBounds ?? verifiedWindow) || {};
+  const renderPaneBounds = windowResult?.renderPaneBounds;
+  const selection = selectVisibleMomentsPost(posts, renderPaneBounds);
+  if (!selection.ok) return { ok: false, reason: selection.reason, error: MOMENTS_BLOCK_ERRORS[selection.reason] };
+  const post = selection.post;
   const label = String(post.text ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
   const identityText = String(post.identityText ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
   const postFingerprint = momentsPostFingerprint(identityText);
@@ -413,7 +504,8 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow) {
   };
   if (!label || label.length > 2000 || !identityText || identityText.length > 2000 || !postFingerprint || !/^[0-9a-f]{64}$/u.test(regionHash)
     || !/^[0-9a-f]{64}$/u.test(avatarHash) || !/^[0-9a-f]{64}$/u.test(layoutHash) || post.structureVerified !== true
-    || !boundsWithin(bounds, windowBounds) || !boundsWithin(menuBounds, windowBounds) || !boundsWithin(avatarBounds, windowBounds)) {
+    || !boundsWithin(renderPaneBounds, windowBounds) || !boundsWithin(bounds, renderPaneBounds)
+    || !boundsWithin(menuBounds, renderPaneBounds) || !boundsWithin(avatarBounds, renderPaneBounds)) {
     return { ok: false, reason: "moments_post_identity_missing", error: MOMENTS_BLOCK_ERRORS.moments_post_identity_missing };
   }
   const observationPayload = JSON.stringify({
@@ -472,6 +564,8 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow) {
   });
   return {
     ok: true,
+    visiblePostCount: selection.acceptedCount,
+    partialVisible: selection.partialVisible,
     snapshot: {
       observation_id: crypto.createHash("sha256").update(observationPayload, "utf8").digest("hex"),
       post_fingerprint: postFingerprint,
@@ -501,7 +595,9 @@ function momentsPostSnapshot(windowResult, verifiedWindow) {
   }
   const posts = Array.isArray(windowResult?.posts) ? windowResult.posts : [];
   if (posts.length === 0) return { ok: false, reason: "moments_post_not_found", error: MOMENTS_BLOCK_ERRORS.moments_post_not_found };
-  const post = preferredVisibleMomentsPost(posts, verifiedWindow) || {};
+  const selection = selectVisibleMomentsPost(posts, verifiedWindow);
+  if (!selection.ok) return { ok: false, reason: selection.reason, error: MOMENTS_BLOCK_ERRORS[selection.reason] };
+  const post = selection.post;
   const runtimeId = String(post.runtimeId ?? "").trim();
   const automationId = String(post.automationId ?? "").trim();
   const feedDepth = Number(post.feedDepth);
@@ -546,6 +642,8 @@ function momentsPostSnapshot(windowResult, verifiedWindow) {
   });
   return {
     ok: true,
+    visiblePostCount: selection.acceptedCount,
+    partialVisible: selection.partialVisible,
     snapshot: {
       observation_id: crypto.createHash("sha256").update(observationPayload, "utf8").digest("hex"),
       post_fingerprint: postFingerprint,
@@ -597,7 +695,7 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
   if (!likeEnabled && !commentEnabled) return momentsDryRunBlock(baseDir, state, "moments_action_missing", MOMENTS_BLOCK_ERRORS.moments_action_missing, plan);
   if (!["targeted", "random"].includes(mode)) return momentsDryRunBlock(baseDir, state, "moments_mode_invalid", MOMENTS_BLOCK_ERRORS.moments_mode_invalid, plan);
   if (commentEnabled && !commentText) return momentsDryRunBlock(baseDir, state, "moments_comment_missing", MOMENTS_BLOCK_ERRORS.moments_comment_missing, plan);
-  if (commentText.length > MAX_MOMENTS_COMMENT_LENGTH) return momentsDryRunBlock(baseDir, state, "moments_comment_too_long", `已阻断：评论文案不能超过 ${MAX_MOMENTS_COMMENT_LENGTH} 个字符`, plan);
+  if (commentText.length > MAX_MOMENTS_COMMENT_LENGTH) return momentsDryRunBlock(baseDir, state, "moments_comment_too_long", `评论文案不能超过 ${MAX_MOMENTS_COMMENT_LENGTH} 个字符`, plan);
 
   let windowResult = driver();
   if (
@@ -609,7 +707,7 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
   }
   if (!windowResult?.ok) {
     const reason = windowResult?.reason || "moments_probe_failed";
-    const error = MOMENTS_BLOCK_ERRORS[reason] || "已阻断：朋友圈窗口检查执行失败，请稍后重试";
+    const error = MOMENTS_BLOCK_ERRORS[reason] || "朋友圈窗口检查执行失败，请稍后重试";
     const safeDiagnostics = windowResult?.diagnostics && typeof windowResult.diagnostics === "object"
       ? { visual_diagnostics: windowResult.diagnostics }
       : {};
@@ -621,7 +719,7 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
   const snapshotResult = momentsPostSnapshot(windowResult, verifiedWindow);
   if (!snapshotResult.ok) return momentsDryRunBlock(baseDir, state, snapshotResult.reason, snapshotResult.error, plan);
   const postSnapshot = snapshotResult.snapshot;
-  const visiblePostCount = Array.isArray(windowResult.posts) ? windowResult.posts.length : 0;
+  const visiblePostCount = snapshotResult.visiblePostCount;
 
   const configuredOrder = mode === "targeted" ? ["comment", "like"] : ["like", "comment"];
   const actionOrder = configuredOrder.filter((action) => action === "like" ? likeEnabled : commentEnabled);
@@ -629,6 +727,7 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
     ...plan,
     action_order: actionOrder,
     visible_post_count: visiblePostCount,
+    target_partial_visible: snapshotResult.partialVisible === true,
     verification_level: windowResult.identityMode === "visual_mmui_render" ? "visual_post_snapshot_only" : "post_snapshot_only"
   };
   const window = {
@@ -667,7 +766,7 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
     }
   };
   saveState(baseDir, nextState);
-  appendLog(baseDir, "朋友圈安全预演", `已从 ${visiblePostCount} 条完整可见内容中稳定锁定一条；动作顺序：${actionOrder.join(" -> ")}；未执行真实点赞或评论`);
+  appendLog(baseDir, "朋友圈安全预演", `已从 ${visiblePostCount} 条具有稳定锚点的可见内容中锁定一条；动作顺序：${actionOrder.join(" -> ")}；未执行真实点赞或评论`);
   return {
     ok: true,
     action: "moments-dry-run",

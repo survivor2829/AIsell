@@ -104,6 +104,85 @@ try {
   assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ...momentsWindow, width: Number.NaN })).blocked_reason, "moments_window_identity_mismatch");
   assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ...momentsWindow, height: 0 })).blocked_reason, "moments_window_identity_mismatch");
   assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ...momentsWindow, posts: [] })).blocked_reason, "moments_post_not_found");
+  const uiaPartialMoments = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({
+    ...momentsWindow,
+    posts: [{ ...momentsPost, top: 20, height: 440, partialVisible: true }]
+  }));
+  assert.equal(uiaPartialMoments.blocked_reason, "moments_post_identity_missing", "UIA posts still require full visibility because they have no real menu control anchor");
+  const visualPartialPost = {
+    text: "测试账号 超长九宫格朋友圈正文 刚刚",
+    identityText: "测试账号 超长九宫格朋友圈正文 刚刚",
+    structureVerified: true,
+    regionHash: "1".repeat(64),
+    avatarHash: "2".repeat(64),
+    layoutHash: "3".repeat(64),
+    bounds: { left: 80, top: 100, width: 780, height: 650 },
+    menuBounds: { left: 820, top: 724, width: 36, height: 24 },
+    avatarBounds: { left: 88, top: 112, width: 48, height: 48 },
+    partialVisible: true
+  };
+  const visualMomentsWindow = {
+    ...momentsWindow,
+    automationId: "",
+    identityMode: "visual_mmui_render",
+    feedAutomationId: "",
+    feedRuntimeId: "",
+    feedCount: 0,
+    renderPaneName: "MMUIRenderSubWindowHW",
+    renderPaneAutomationId: "",
+    renderPaneControlType: "ControlType.Pane",
+    renderPaneProcessId: 42,
+    renderPaneRuntimeId: "42.7.render",
+    renderPaneBounds: { left: 50, top: 70, width: 880, height: 680 },
+    posts: [visualPartialPost]
+  };
+  const visualPartialMoments = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => visualMomentsWindow);
+  assert.equal(visualPartialMoments.ok, true, "a bottom-clipped visual post with complete identity, avatar, and menu anchors must prepare");
+  assert.equal(visualPartialMoments.plan.target_partial_visible, true);
+  assert.equal(visualPartialMoments.post_snapshot.source, "visual:windows_media_ocr");
+  const visualMenuOutsidePane = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({
+    ...visualMomentsWindow,
+    posts: [{ ...visualPartialPost, menuBounds: { left: 820, top: 728, width: 36, height: 24 } }]
+  }));
+  assert.equal(visualMenuOutsidePane.blocked_reason, "moments_post_identity_missing", "a menu outside the render pane must not produce an observation lock");
+  const ambiguousVisualPartial = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({
+    ...visualMomentsWindow,
+    posts: [visualPartialPost, { ...visualPartialPost }]
+  }));
+  assert.equal(ambiguousVisualPartial.blocked_reason, "moments_post_ambiguous", "duplicate partial visual anchors must remain non-actionable");
+  assert.doesNotMatch(ambiguousVisualPartial.error, /已阻断|完整可见/u);
+  const visualSafeSibling = {
+    ...visualPartialPost,
+    text: "另一个账号 可稳定识别的朋友圈正文 刚刚",
+    identityText: "另一个账号 可稳定识别的朋友圈正文 刚刚",
+    regionHash: "4".repeat(64),
+    avatarHash: "5".repeat(64),
+    layoutHash: "6".repeat(64),
+    bounds: { left: 80, top: 180, width: 780, height: 360 },
+    menuBounds: { left: 820, top: 500, width: 36, height: 24 },
+    avatarBounds: { left: 88, top: 192, width: 48, height: 48 },
+    partialVisible: false
+  };
+  const ambiguousVisualWithSafeSibling = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({
+    ...visualMomentsWindow,
+    posts: [visualPartialPost, { ...visualPartialPost }, visualSafeSibling]
+  }));
+  assert.equal(ambiguousVisualWithSafeSibling.ok, true, "ambiguous edge candidates must be skipped when another visual post is safe");
+  assert.equal(ambiguousVisualWithSafeSibling.post_snapshot.identity_text, visualSafeSibling.identityText);
+  const visualWithSkippedAnchorlessCandidate = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({
+    ...visualMomentsWindow,
+    posts: [
+      { ...visualPartialPost, identityText: "", avatarHash: "", bounds: { ...visualPartialPost.bounds, top: 90 } },
+      visualPartialPost
+    ]
+  }));
+  assert.equal(visualWithSkippedAnchorlessCandidate.ok, true, "an anchorless candidate must not block another uniquely lockable visual post");
+  assert.equal(visualWithSkippedAnchorlessCandidate.plan.visible_post_count, 1);
+  const uiaWithSkippedRuntimeId = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({
+    ...momentsWindow,
+    posts: [{ ...momentsPost, runtimeId: "" }, momentsPost]
+  }));
+  assert.equal(uiaWithSkippedRuntimeId.ok, true, "a missing runtime id on one UIA item must not block a usable sibling");
   const centerMomentsPost = { ...momentsPost, runtimeId: "42.7.center", text: "中部账号 中部朋友圈内容 刚刚", top: 280 };
   const topMomentsPost = { ...momentsPost, runtimeId: "42.7.top", text: "顶部账号 顶部朋友圈内容 刚刚", top: 90, height: 160 };
   const bottomMomentsPost = { ...momentsPost, runtimeId: "42.7.bottom", text: "底部账号 底部朋友圈内容 刚刚", top: 520, height: 120 };
@@ -168,7 +247,7 @@ try {
     assert.equal(liveMomentsProbe.title, "朋友圈");
     assert.equal(liveMomentsProbe.automationId, "SNSWindow");
     assert.equal(["Weixin", "WeChat"].includes(liveMomentsProbe.processName), true);
-    assert.equal(liveMomentsProbe.posts.length, 1);
+    assert.equal(liveMomentsProbe.posts.length >= 1, true);
     assert.equal(typeof liveMomentsProbe.posts[0].runtimeId, "string");
   } else {
     assert.equal(["moments_window_not_found", "moments_window_ambiguous", "moments_window_identity_mismatch", "moments_feed_not_found", "moments_post_not_found", "moments_post_ambiguous", "moments_post_changed", "moments_post_identity_missing", "powershell_timeout"].includes(liveMomentsProbe.reason), true);
@@ -177,7 +256,15 @@ try {
   assert.match(momentsSource, /const MOMENTS_STRUCTURAL_PROBE_TIMEOUT_MS = 5_000;/u);
   assert.match(momentsSource, /\["moments_feed_not_found", "powershell_timeout"\]\.includes\(windowResult\?\.reason\)/u);
   assert.match(momentsSource, /function preferredVisibleMomentsPost\(posts, viewportBounds\)/u);
+  assert.match(momentsSource, /\$fullyVisible = \$rect\.Left[\s\S]*?if \(-not \$fullyVisible\) \{ continue \}/u);
+  assert.match(momentsSource, /\$hadIdentityMissing = \$false/u);
+  assert.match(momentsSource, /if \(\[string\]::IsNullOrWhiteSpace\(\$runtimeId\)\) \{ \$hadIdentityMissing = \$true; continue \}/u);
+  assert.doesNotMatch(momentsSource, /IsNullOrWhiteSpace\(\$runtimeId\)\) \{ return @\{ ok = \$false; reason = "moments_post_identity_missing"/u);
+  assert.match(momentsSource, /selectVisibleMomentsPost\(posts, renderPaneBounds\)/u);
+  assert.match(momentsSource, /target_partial_visible: snapshotResult\.partialVisible === true/u);
   assert.doesNotMatch(momentsSource, /请调整到只完整显示一条/u);
+  assert.doesNotMatch(momentsSource, /未找到可安全锁定的完整可见朋友圈内容/u);
+  assert.doesNotMatch(momentsSource, /已阻断：/u);
   for (const blockedToken of [
     "SetCursorPos",
     "mouse_event",

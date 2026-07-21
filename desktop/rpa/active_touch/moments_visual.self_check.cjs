@@ -12,7 +12,7 @@ const dryRunSource = fs.readFileSync(dryRunFile, "utf8");
 const actionSource = fs.readFileSync(actionFile, "utf8");
 const windowDriverSource = fs.readFileSync(windowDriverFile, "utf8");
 const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require(probeFile);
-const { MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT } = require(dryRunFile);
+const { MOMENTS_VISUAL_STABILITY_TOLERANCE_PX, MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT } = require(dryRunFile);
 const visualActionDriver = require(actionFile);
 const {
   MOMENTS_VISUAL_ACTION_POWERSHELL,
@@ -23,6 +23,7 @@ assert.equal(typeof MOMENTS_VISUAL_READONLY_POWERSHELL, "string");
 assert.equal(typeof MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT, "string");
 assert.ok(MOMENTS_VISUAL_READONLY_POWERSHELL.length > 1_000);
 assert.ok(MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT.includes(MOMENTS_VISUAL_READONLY_POWERSHELL));
+assert.equal(MOMENTS_VISUAL_STABILITY_TOLERANCE_PX, 12);
 assert.equal(typeof MOMENTS_VISUAL_ACTION_POWERSHELL, "string");
 assert.ok(MOMENTS_VISUAL_ACTION_POWERSHELL.length > 10_000);
 assert.equal(MOMENTS_VISUAL_POST_RELOCK_TOLERANCE_PX, 12);
@@ -116,6 +117,8 @@ assert.match(script, /\$secondFrame = Get-MomentsVisualFrame \$hWnd \$matched\.r
 assert.match(script, /Start-Sleep -Milliseconds 180/u);
 assert.match(script, /Test-VisualMenuSequence \$firstRead\.menus \$secondRead\.menus/u);
 assert.match(script, /Test-VisualPostSequence \$firstRead\.posts \$secondRead\.posts/u);
+assert.match(script, /\$script:momentsVisualStabilityTolerancePx = 12\.0/u);
+assert.doesNotMatch(script, /Test-Visual(?:Menu|Post)Sequence[\s\S]*?-gt 1\.5/u);
 assert.match(script, /Test-MomentsStableContentSimilarity \(\[string\]\$left\[\$index\]\.identityText\) \(\[string\]\$right\[\$index\]\.identityText\)/u);
 assert.match(script, /\[string\]\$left\[\$index\]\.avatarHash -cne \[string\]\$right\[\$index\]\.avatarHash/u);
 assert.match(script, /foreach \(\$boundsField in @\("bounds", "menuBounds", "avatarBounds"\)\)/u);
@@ -165,11 +168,23 @@ assert.match(identityTextBuilder, /\$lineCenterY -le \$menuRowBottom/u);
 assert.match(script, /identityText = \[string\]\$identityText/u);
 assert.match(script, /identityText = \[string\]\$post\.identityText/u);
 assert.match(script, /avatarHash = \[string\]\$post\.avatarHash/u);
+assert.match(script, /partialVisible = \[bool\]\$post\.partialVisible/u);
+assert.match(probeSource, /function Get-MomentsVisualPostCandidates\(\$frame, \$viewportBounds\)/u);
+assert.match(probeSource, /Find-MomentsMenuDots \$frame \| Where-Object \{ Test-MomentsVisualBoundsInside \$_\.bounds \$viewportBounds \}/u);
+assert.match(probeSource, /Find-MomentsAvatarForMenu \$frame \$menus \$index \$viewportBounds/u);
+assert.match(probeSource, /\$postBottom = \[Math\]::Min\(\$viewportBottom, \$unclippedPostBottom\)/u);
+assert.match(probeSource, /partialVisible = \$unclippedPostBottom -gt \$viewportBottom/u);
+assert.doesNotMatch(probeSource, /\$postBottom -gt \$safeBottom/u);
 assert.match(script, /function Test-VisualBoundsInside\(\$inner, \$outer\)/u);
 assert.match(script, /Test-VisualBoundsInside \$renderEvidence\.pane\.bounds \$windowBounds/u);
-assert.match(script, /Test-VisualBoundsInside \$absoluteBounds \$windowBounds/u);
-assert.match(script, /Test-VisualBoundsInside \$absoluteMenuBounds \$windowBounds/u);
-assert.match(script, /Test-VisualBoundsInside \$absoluteAvatarBounds \$windowBounds/u);
+assert.match(script, /Get-MomentsVisualPostCandidates \$firstFrame \$relativeRenderPaneBounds/u);
+assert.match(script, /Get-MomentsVisualPostCandidates \$secondFrame \$relativeRenderPaneBounds/u);
+assert.match(script, /Test-VisualBoundsInside \$absoluteBounds \$renderEvidence\.pane\.bounds/u);
+assert.match(script, /Test-VisualBoundsInside \$absoluteMenuBounds \$renderEvidence\.pane\.bounds/u);
+assert.match(script, /Test-VisualBoundsInside \$absoluteAvatarBounds \$renderEvidence\.pane\.bounds/u);
+assert.match(actionSource, /Get-MomentsVisualPostCandidates \$frame \$expectedRenderPaneBounds/u);
+assert.match(actionSource, /boundsWithin\(snapshot\.menu_bounds, window\.renderPaneBounds\)/u);
+assert.match(actionSource, /boundsWithin\(snapshot\.avatar_bounds, window\.renderPaneBounds\)/u);
 for (const field of ["bounds", "menuBounds", "avatarBounds"]) {
   assert.match(script, new RegExp(`${field} = \\$absolute`, "u"));
 }

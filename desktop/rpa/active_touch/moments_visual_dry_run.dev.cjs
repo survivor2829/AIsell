@@ -1,9 +1,12 @@
 const { runPowerShell } = require("./wechat_window_driver.cjs");
 const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require("./moments_visual_probe.dev.cjs");
 
+const MOMENTS_VISUAL_STABILITY_TOLERANCE_PX = 12;
+
 const MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = "Stop"
+$script:momentsVisualStabilityTolerancePx = ${MOMENTS_VISUAL_STABILITY_TOLERANCE_PX.toFixed(1)}
 Add-Type -AssemblyName UIAutomationClient
 Add-Type @"
 using System;
@@ -43,6 +46,15 @@ function ConvertTo-AbsoluteVisualBounds($bounds, [double]$left, [double]$top) {
   }
 }
 
+function ConvertTo-RelativeVisualBounds($bounds, [double]$left, [double]$top) {
+  return @{
+    left = [double]$bounds.left - $left
+    top = [double]$bounds.top - $top
+    width = [double]$bounds.width
+    height = [double]$bounds.height
+  }
+}
+
 function Test-VisualBoundsInside($inner, $outer) {
   return $inner.width -gt 0 -and $inner.height -gt 0 -and
     $inner.left -ge $outer.left -and $inner.top -ge $outer.top -and
@@ -55,8 +67,8 @@ function Test-VisualMenuSequence($first, $second) {
   $right = @($second)
   if ($left.Count -ne $right.Count) { return $false }
   for ($index = 0; $index -lt $left.Count; $index++) {
-    if ([Math]::Abs([double]$left[$index].centerX - [double]$right[$index].centerX) -gt 1.5 -or
-      [Math]::Abs([double]$left[$index].centerY - [double]$right[$index].centerY) -gt 1.5) { return $false }
+    if ([Math]::Abs([double]$left[$index].centerX - [double]$right[$index].centerX) -gt $script:momentsVisualStabilityTolerancePx -or
+      [Math]::Abs([double]$left[$index].centerY - [double]$right[$index].centerY) -gt $script:momentsVisualStabilityTolerancePx) { return $false }
   }
   return $true
 }
@@ -67,10 +79,11 @@ function Test-VisualPostSequence($first, $second) {
   if ($left.Count -ne $right.Count) { return $false }
   for ($index = 0; $index -lt $left.Count; $index++) {
     if (-not (Test-MomentsStableContentSimilarity ([string]$left[$index].identityText) ([string]$right[$index].identityText)) -or
-      [string]$left[$index].avatarHash -cne [string]$right[$index].avatarHash) { return $false }
+      [string]$left[$index].avatarHash -cne [string]$right[$index].avatarHash -or
+      [bool]$left[$index].partialVisible -ne [bool]$right[$index].partialVisible) { return $false }
     foreach ($boundsField in @("bounds", "menuBounds", "avatarBounds")) {
       foreach ($coordinate in @("left", "top", "width", "height")) {
-        if ([Math]::Abs([double]$left[$index].$boundsField.$coordinate - [double]$right[$index].$boundsField.$coordinate) -gt 1.5) { return $false }
+        if ([Math]::Abs([double]$left[$index].$boundsField.$coordinate - [double]$right[$index].$boundsField.$coordinate) -gt $script:momentsVisualStabilityTolerancePx) { return $false }
       }
     }
   }
@@ -140,14 +153,15 @@ $windowBounds = @{ left = $matched.left; top = $matched.top; width = $matched.wi
 if (-not (Test-VisualBoundsInside $renderEvidence.pane.bounds $windowBounds)) {
   Write-Result @{ ok = $false; reason = "moments_render_pane_bounds_invalid" }
 }
+$relativeRenderPaneBounds = ConvertTo-RelativeVisualBounds $renderEvidence.pane.bounds $matched.left $matched.top
 
 $firstFrame = Get-MomentsVisualFrame $hWnd $matched.rect $matched.pid $true
 if (-not $firstFrame.ok) { Close-And-Write $firstFrame }
-$firstRead = Get-MomentsVisualPostCandidates $firstFrame
+$firstRead = Get-MomentsVisualPostCandidates $firstFrame $relativeRenderPaneBounds
 Start-Sleep -Milliseconds 180
 $secondFrame = Get-MomentsVisualFrame $hWnd $matched.rect $matched.pid $false
 if (-not $secondFrame.ok) { Close-And-Write $secondFrame $firstFrame }
-$secondRead = Get-MomentsVisualPostCandidates $secondFrame
+$secondRead = Get-MomentsVisualPostCandidates $secondFrame $relativeRenderPaneBounds
 if (-not (Test-VisualMenuSequence $firstRead.menus $secondRead.menus) -or -not (Test-VisualPostSequence $firstRead.posts $secondRead.posts)) {
   Close-And-Write @{ ok = $false; reason = "moments_post_changed" } $firstFrame $secondFrame
 }
@@ -167,9 +181,9 @@ foreach ($post in $posts) {
   $absoluteBounds = ConvertTo-AbsoluteVisualBounds $post.bounds $matched.left $matched.top
   $absoluteMenuBounds = ConvertTo-AbsoluteVisualBounds $post.menuBounds $matched.left $matched.top
   $absoluteAvatarBounds = ConvertTo-AbsoluteVisualBounds $post.avatarBounds $matched.left $matched.top
-  if (-not (Test-VisualBoundsInside $absoluteBounds $windowBounds) -or
-    -not (Test-VisualBoundsInside $absoluteMenuBounds $windowBounds) -or
-    -not (Test-VisualBoundsInside $absoluteAvatarBounds $windowBounds)) {
+  if (-not (Test-VisualBoundsInside $absoluteBounds $renderEvidence.pane.bounds) -or
+    -not (Test-VisualBoundsInside $absoluteMenuBounds $renderEvidence.pane.bounds) -or
+    -not (Test-VisualBoundsInside $absoluteAvatarBounds $renderEvidence.pane.bounds)) {
     Close-And-Write @{ ok = $false; reason = "moments_post_identity_missing" } $firstFrame $secondFrame
   }
   [void]$absolutePosts.Add(@{
@@ -182,6 +196,7 @@ foreach ($post in $posts) {
     bounds = $absoluteBounds
     menuBounds = $absoluteMenuBounds
     avatarBounds = $absoluteAvatarBounds
+    partialVisible = [bool]$post.partialVisible
   })
 }
 $result = @{
@@ -219,6 +234,7 @@ function probeVisualWechatMomentsWindow() {
 }
 
 module.exports = {
+  MOMENTS_VISUAL_STABILITY_TOLERANCE_PX,
   MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT,
   probeVisualWechatMomentsWindow
 };
