@@ -5,6 +5,17 @@ const POWERSHELL_STDIN_BOOTSTRAP = Buffer.from(
   "utf16le"
 ).toString("base64");
 
+const DPI_AWARE_POWERSHELL = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class Win32XiaoxiDpiContext {
+  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
+}
+"@
+try { [void][Win32XiaoxiDpiContext]::SetThreadDpiAwarenessContext([IntPtr](-4)) } catch {}
+`;
+
 const ENSURE_WECHAT_WINDOW_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient
@@ -42,7 +53,7 @@ function Get-PersonalWechatWindows {
       $h = $rect.Bottom - $rect.Top
       $isIconic = [Win32WechatEnsureWindow]::IsIconic($hWnd)
       $isLoginSize = ($w -ge 260 -and $w -le 380 -and $h -ge 320 -and $h -le 460)
-      $isNormalMainWindow = ($w -ge 400 -and $h -ge 300 -and $rect.Left -gt -1000 -and $rect.Top -gt -1000)
+      $isNormalMainWindow = ($w -ge 400 -and $h -ge 300)
       $isExpectedTitle = $text.ToString().Trim() -eq "微信"
       if ($isExpectedTitle -and -not $isLoginSize -and ($isNormalMainWindow -or $isIconic)) {
         [void]$items.Add(@{ hWnd = $hWnd; visible = [Win32WechatEnsureWindow]::IsWindowVisible($hWnd); minimized = $isIconic; x = $rect.Left; y = $rect.Top; w = $w; h = $h })
@@ -55,7 +66,7 @@ function Get-PersonalWechatWindows {
 }
 function Test-VisiblePersonalWechat {
   foreach ($item in Get-PersonalWechatWindows) {
-    if ($item.visible -and -not $item.minimized -and $item.w -ge 400 -and $item.h -ge 300 -and $item.x -gt -1000 -and $item.y -gt -1000) { return $true }
+    if ($item.visible -and -not $item.minimized -and $item.w -ge 400 -and $item.h -ge 300) { return $true }
   }
   return $false
 }
@@ -114,7 +125,6 @@ function Start-PersonalWechat {
   }
   $pf86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
   foreach ($path in @(
-    "D:\\微信\\Weixin\\Weixin.exe",
     "$env:LOCALAPPDATA\\Tencent\\WeChat\\WeChat.exe",
     "$env:ProgramFiles\\Tencent\\WeChat\\WeChat.exe",
     "$pf86\\Tencent\\WeChat\\WeChat.exe"
@@ -187,12 +197,20 @@ function Find-PersonalWechatMainWindow {
 }
 $main = Find-PersonalWechatMainWindow
 if (-not $main) {
+  $paths = New-Object System.Collections.Generic.List[string]
+  foreach ($name in @("Weixin", "WeChat")) {
+    foreach ($proc in Get-Process -Name $name -ErrorAction SilentlyContinue) {
+      if ($proc.Path -and -not $paths.Contains($proc.Path)) { [void]$paths.Add($proc.Path) }
+    }
+  }
   foreach ($path in @(
-    "D:\\微信\\Weixin\\Weixin.exe",
     "$env:LOCALAPPDATA\\Tencent\\WeChat\\WeChat.exe",
     "$env:ProgramFiles\\Tencent\\WeChat\\WeChat.exe"
   )) {
-    if ($path -and (Test-Path $path)) { Start-Process -FilePath $path | Out-Null; break }
+    if ($path -and (Test-Path $path) -and -not $paths.Contains($path)) { [void]$paths.Add($path) }
+  }
+  foreach ($path in $paths) {
+    try { Start-Process -FilePath $path | Out-Null; break } catch {}
   }
   for ($i = 0; $i -lt 12 -and -not $main; $i++) { Start-Sleep -Milliseconds 500; $main = Find-PersonalWechatMainWindow }
 }
@@ -224,7 +242,7 @@ $ok = [Win32WechatSimpleWindow]::IsWindowVisible($hWnd) -and -not [Win32WechatSi
 `;
 
 function ensureWechatWindowVisible() {
-  const encoded = Buffer.from(SIMPLE_ENSURE_WECHAT_WINDOW_SCRIPT, "utf16le").toString("base64");
+  const encoded = Buffer.from(`${DPI_AWARE_POWERSHELL}\n${SIMPLE_ENSURE_WECHAT_WINDOW_SCRIPT}`, "utf16le").toString("base64");
   const result = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], {
     encoding: "utf8",
     timeout: 10000,
@@ -239,7 +257,7 @@ function ensureWechatWindowVisible() {
 
 function runPowerShell(script, env = {}, options = {}) {
   const ensureResult = options.ensure === false ? {} : ensureWechatWindowVisible();
-  const scriptInput = Buffer.from(script, "utf16le").toString("base64");
+  const scriptInput = Buffer.from(`${DPI_AWARE_POWERSHELL}\n${script}`, "utf16le").toString("base64");
   const timeout = Number(options.timeout) > 0 ? Number(options.timeout) : 15000;
   const shellArgs = ["-NoProfile"];
   if (options.sta === true) shellArgs.push("-STA");
@@ -274,8 +292,14 @@ function runPowerShell(script, env = {}, options = {}) {
   }
 }
 
-const FOCUS_SCRIPT = `
+// Keep one logical WeChat work area across display scaling settings. The
+// PowerShell normalizer converts these device-independent pixels to the
+// target window's physical pixels (880x560 becomes 1100x700 at 125% DPI).
+const WECHAT_STABLE_WINDOW_LAYOUT = Object.freeze({ width: 880, height: 560 });
+
+const NORMALIZE_WECHAT_WINDOW_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
 using System;
 using System.Text;
@@ -283,21 +307,38 @@ using System.Runtime.InteropServices;
 public static class Win32WechatWindow {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
   public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr extraData);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 }
 "@
-  $processNames = @("Weixin", "WeChat")
-$matched = $null
+try { [void][Win32WechatWindow]::SetThreadDpiAwarenessContext([IntPtr](-4)) } catch {}
+$expectedPid = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")
+$expectedHWnd = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND")
+$targetWidthText = [Environment]::GetEnvironmentVariable("XIAOXI_WECHAT_WINDOW_WIDTH")
+$targetHeightText = [Environment]::GetEnvironmentVariable("XIAOXI_WECHAT_WINDOW_HEIGHT")
+$targetWidth = 0
+$targetHeight = 0
+if (-not [int]::TryParse($targetWidthText, [ref]$targetWidth) -or $targetWidth -lt 600) {
+  @{ ok = $false; reason = "wechat_window_not_ready" } | ConvertTo-Json -Compress
+  exit
+}
+if (-not [int]::TryParse($targetHeightText, [ref]$targetHeight) -or $targetHeight -lt 500) {
+  @{ ok = $false; reason = "wechat_window_not_ready" } | ConvertTo-Json -Compress
+  exit
+}
+$processNames = @("Weixin", "WeChat")
+$matches = New-Object System.Collections.Generic.List[object]
 $callback = [Win32WechatWindow+EnumWindowsProc]{
   param([IntPtr]$hWnd, [IntPtr]$lParam)
-  if ($matched -ne $null) { return $true }
   if ([Win32WechatWindow]::IsWindowVisible($hWnd)) {
     $text = New-Object System.Text.StringBuilder 512
     [void][Win32WechatWindow]::GetWindowText($hWnd, $text, $text.Capacity)
@@ -309,27 +350,91 @@ $callback = [Win32WechatWindow+EnumWindowsProc]{
     [uint32]$windowProcessId = 0
     [void][Win32WechatWindow]::GetWindowThreadProcessId($hWnd, [ref]$windowProcessId)
     $proc = Get-Process -Id $windowProcessId -ErrorAction SilentlyContinue
-    if ($proc -and $processNames -contains $proc.ProcessName -and $proc.MainWindowHandle -eq $hWnd -and $title -eq "微信" -and $w -ge 400 -and $h -ge 300 -and $rect.Left -gt -1000 -and $rect.Top -gt -1000) {
-      [void][Win32WechatWindow]::ShowWindowAsync($hWnd, 9)
-      $focused = [Win32WechatWindow]::SetForegroundWindow($hWnd)
-      if (-not $focused) { try { $focused = (New-Object -ComObject WScript.Shell).AppActivate([int]$windowProcessId) } catch {} }
-      Start-Sleep -Milliseconds 200
-      $focused = $focused -or ([Win32WechatWindow]::GetForegroundWindow() -eq $hWnd)
-      $script:matched = @{ title = $title; focused = $focused; processName = $proc.ProcessName; pid = $windowProcessId; hWnd = $hWnd.ToInt64() }
+    $matchesExpected = ([string]::IsNullOrWhiteSpace($expectedPid) -or [string]$windowProcessId -eq $expectedPid) -and
+      ([string]::IsNullOrWhiteSpace($expectedHWnd) -or [string]$hWnd.ToInt64() -eq $expectedHWnd)
+    if ($proc -and $matchesExpected -and $processNames -contains $proc.ProcessName -and [int64]$proc.MainWindowHandle -eq $hWnd.ToInt64() -and $title -eq "微信" -and $w -ge 400 -and $h -ge 300) {
+      [void]$matches.Add(@{ hWnd = $hWnd; title = $title; processName = $proc.ProcessName; pid = $windowProcessId })
     }
   }
   return $true
 }
 [void][Win32WechatWindow]::EnumWindows($callback, [IntPtr]::Zero)
-if ($matched -eq $null) { @{ ok = $false; reason = "personal_wechat_main_window_not_found" } | ConvertTo-Json -Compress } else { @{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd } | ConvertTo-Json -Compress }
+if ($matches.Count -eq 0) {
+  @{ ok = $false; reason = "personal_wechat_main_window_not_found" } | ConvertTo-Json -Compress
+  exit
+}
+if ($matches.Count -gt 1) {
+  @{ ok = $false; reason = "wechat_window_ambiguous" } | ConvertTo-Json -Compress
+  exit
+}
+$matched = $matches[0]
+$hWnd = [IntPtr]$matched.hWnd
+[void][Win32WechatWindow]::ShowWindowAsync($hWnd, 9)
+Start-Sleep -Milliseconds 120
+$workArea = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+$movedToTargetDisplay = [Win32WechatWindow]::SetWindowPos($hWnd, [IntPtr]::Zero, $workArea.Left, $workArea.Top, 0, 0, 0x0005)
+Start-Sleep -Milliseconds 120
+$dpi = [uint32]96
+try {
+  $windowDpi = [Win32WechatWindow]::GetDpiForWindow($hWnd)
+  if ($windowDpi -ge 72 -and $windowDpi -le 480) { $dpi = $windowDpi }
+} catch {}
+$dpiScale = [double]$dpi / 96.0
+$width = [Math]::Min([int][Math]::Round($targetWidth * $dpiScale), $workArea.Width)
+$height = [Math]::Min([int][Math]::Round($targetHeight * $dpiScale), $workArea.Height)
+$positioned = $movedToTargetDisplay -and [Win32WechatWindow]::SetWindowPos($hWnd, [IntPtr]::Zero, $workArea.Left, $workArea.Top, $width, $height, 0x0004)
+$focused = [Win32WechatWindow]::SetForegroundWindow($hWnd)
+if (-not $focused) { try { $focused = (New-Object -ComObject WScript.Shell).AppActivate([int]$matched.pid) } catch {} }
+Start-Sleep -Milliseconds 250
+$focused = $focused -or ([Win32WechatWindow]::GetForegroundWindow() -eq $hWnd)
+$rect = New-Object Win32WechatWindow+RECT
+$rectAvailable = [Win32WechatWindow]::GetWindowRect($hWnd, [ref]$rect)
+$layoutVerified = $positioned -and $rectAvailable -and
+  [Math]::Abs($rect.Left - $workArea.Left) -le 3 -and [Math]::Abs($rect.Top - $workArea.Top) -le 3 -and
+  [Math]::Abs(($rect.Right - $rect.Left) - $width) -le 3 -and [Math]::Abs(($rect.Bottom - $rect.Top) - $height) -le 3
+if (-not $layoutVerified) {
+  @{ ok = $false; reason = "wechat_window_not_ready"; pid = $matched.pid; hWnd = $hWnd.ToInt64() } | ConvertTo-Json -Compress
+  exit
+}
+if (-not $focused) {
+  @{ ok = $false; reason = "wechat_focus_failed"; pid = $matched.pid; hWnd = $hWnd.ToInt64() } | ConvertTo-Json -Compress
+  exit
+}
+@{
+  ok = $true
+  normalized = $true
+  title = $matched.title
+  focused = $true
+  processName = $matched.processName
+  pid = $matched.pid
+  hWnd = $hWnd.ToInt64()
+  x = $rect.Left
+  y = $rect.Top
+  width = $rect.Right - $rect.Left
+  height = $rect.Bottom - $rect.Top
+  dpi = $dpi
+} | ConvertTo-Json -Compress
 `;
 
-function focusWechatWindow() {
-  return runPowerShell(FOCUS_SCRIPT);
+function normalizeWechatMainWindow(context = {}, runner = runPowerShell) {
+  return runner(NORMALIZE_WECHAT_WINDOW_SCRIPT, {
+    XIAOXI_EXPECTED_PID: String(context.expectedPid ?? context.pid ?? ""),
+    XIAOXI_EXPECTED_HWND: String(context.expectedHWnd ?? context.hWnd ?? ""),
+    XIAOXI_WECHAT_WINDOW_WIDTH: String(WECHAT_STABLE_WINDOW_LAYOUT.width),
+    XIAOXI_WECHAT_WINDOW_HEIGHT: String(WECHAT_STABLE_WINDOW_LAYOUT.height)
+  }, { ensure: context.ensure !== false, timeout: 10_000 });
 }
 
-function focusWechatWindowAsync() {
-  return runPowerShellAsync(FOCUS_SCRIPT, {}, { ensure: false });
+function normalizeWechatMainWindowAsync(context = {}, runner = runPowerShellAsync) {
+  return Promise.resolve(normalizeWechatMainWindow(context, runner));
+}
+
+function focusWechatWindow(context = {}, runner = runPowerShell) {
+  return normalizeWechatMainWindow(context, runner);
+}
+
+function focusWechatWindowAsync(context = {}, runner = runPowerShellAsync) {
+  return normalizeWechatMainWindowAsync(context, runner);
 }
 
 const SEARCH_SCRIPT = `
@@ -377,7 +482,7 @@ $callback = [Win32WechatWindowSearch+EnumWindowsProc]{
     [void][Win32WechatWindowSearch]::GetWindowThreadProcessId($hWnd, [ref]$windowProcessId)
     $proc = Get-Process -Id $windowProcessId -ErrorAction SilentlyContinue
     $matchesExpected = ([string]::IsNullOrWhiteSpace($expectedPid) -or [string]$windowProcessId -eq $expectedPid) -and ([string]::IsNullOrWhiteSpace($expectedHwnd) -or [string]$hWnd.ToInt64() -eq $expectedHwnd)
-    if ($proc -and $matchesExpected -and $processNames -contains $proc.ProcessName -and $proc.MainWindowHandle -eq $hWnd -and $title -eq "微信" -and $w -ge 400 -and $h -ge 300 -and $rect.Left -gt -1000 -and $rect.Top -gt -1000) {
+    if ($proc -and $matchesExpected -and $processNames -contains $proc.ProcessName -and $proc.MainWindowHandle -eq $hWnd -and $title -eq "微信" -and $w -ge 400 -and $h -ge 300) {
       [void][Win32WechatWindowSearch]::ShowWindowAsync($hWnd, 9)
       $focused = [Win32WechatWindowSearch]::SetForegroundWindow($hWnd)
       if (-not $focused) { try { $focused = (New-Object -ComObject WScript.Shell).AppActivate([int]$windowProcessId) } catch {} }
@@ -451,7 +556,7 @@ function inputWechatSearchQuery(query, context = {}) {
 
 function runPowerShellAsync(script, env = {}, options = {}) {
   const ensureResult = options.ensure === false ? {} : ensureWechatWindowVisible();
-  const scriptInput = Buffer.from(script, "utf16le").toString("base64");
+  const scriptInput = Buffer.from(`${DPI_AWARE_POWERSHELL}\n${script}`, "utf16le").toString("base64");
   const timeout = options.timeout === false ? null : (Number(options.timeout) > 0 ? Number(options.timeout) : 15000);
   const shellArgs = ["-NoProfile"];
   if (options.sta === true) shellArgs.push("-STA");
@@ -557,7 +662,7 @@ $callback = [Win32WechatConversationTitle+EnumWindowsProc]{
     [void][Win32WechatConversationTitle]::GetWindowThreadProcessId($hWnd, [ref]$windowProcessId)
     $proc = Get-Process -Id $windowProcessId -ErrorAction SilentlyContinue
     $matchesExpected = ([string]::IsNullOrWhiteSpace($expectedPid) -or [string]$windowProcessId -eq $expectedPid) -and ([string]::IsNullOrWhiteSpace($expectedHwnd) -or [string]$hWnd.ToInt64() -eq $expectedHwnd)
-    if ($proc -and $matchesExpected -and $processNames -contains $proc.ProcessName -and $proc.MainWindowHandle -eq $hWnd -and $title -eq "微信" -and $w -ge 400 -and $h -ge 300 -and $rect.Left -gt -1000 -and $rect.Top -gt -1000) {
+    if ($proc -and $matchesExpected -and $processNames -contains $proc.ProcessName -and $proc.MainWindowHandle -eq $hWnd -and $title -eq "微信" -and $w -ge 400 -and $h -ge 300) {
       [void][Win32WechatConversationTitle]::ShowWindowAsync($hWnd, 9)
       [void][Win32WechatConversationTitle]::SetForegroundWindow($hWnd)
       $script:matched = @{ hWnd = $hWnd; title = $title; rect = $rect; processName = $proc.ProcessName; pid = $windowProcessId }
@@ -673,7 +778,7 @@ $callback = [Win32WechatMessageDraft+EnumWindowsProc]{
     [void][Win32WechatMessageDraft]::GetWindowThreadProcessId($hWnd, [ref]$windowProcessId)
     $proc = Get-Process -Id $windowProcessId -ErrorAction SilentlyContinue
     $matchesExpected = ([string]::IsNullOrWhiteSpace($expectedPid) -or [string]$windowProcessId -eq $expectedPid) -and ([string]::IsNullOrWhiteSpace($expectedHwnd) -or [string]$hWnd.ToInt64() -eq $expectedHwnd)
-    if ($proc -and $matchesExpected -and $processNames -contains $proc.ProcessName -and $proc.MainWindowHandle -eq $hWnd -and $title -eq "微信" -and $w -ge 400 -and $h -ge 300 -and $rect.Left -gt -1000 -and $rect.Top -gt -1000) {
+    if ($proc -and $matchesExpected -and $processNames -contains $proc.ProcessName -and $proc.MainWindowHandle -eq $hWnd -and $title -eq "微信" -and $w -ge 400 -and $h -ge 300) {
       [void][Win32WechatMessageDraft]::ShowWindowAsync($hWnd, 9)
       $focused = [Win32WechatMessageDraft]::SetForegroundWindow($hWnd)
       if (-not $focused) { try { $focused = (New-Object -ComObject WScript.Shell).AppActivate([int]$windowProcessId) } catch {} }
@@ -787,11 +892,15 @@ function inputWechatMessageDraftAsync(message, context = {}) {
 }
 
 module.exports = {
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  WECHAT_STABLE_WINDOW_LAYOUT,
   focusWechatWindow,
   focusWechatWindowAsync,
   inputWechatMessageDraft,
   inputWechatMessageDraftAsync,
   inputWechatSearchQuery,
+  normalizeWechatMainWindow,
+  normalizeWechatMainWindowAsync,
   openWechatSearchResult,
   openWechatSearchResultAsync,
   runPowerShell,

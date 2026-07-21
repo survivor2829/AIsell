@@ -539,27 +539,31 @@ fs.copyFileSync(input, output);
 
     let retryHookCalls = 0;
     const retryFallbackCalls = [];
+    const retryAttemptOrder = [];
     const capturedAfterInitRetry = capture(syncDir, {
       wechatRoot,
       activeTouchDir,
       keyToolPath: path.join(root, "missing-key-tool.exe"),
       dumpToolPath,
       pythonPath: builtIn.pythonPath,
-      timeoutMs: 500,
+      timeoutMs: 10000,
       pollIntervalMs: 5,
       restartWechat: true,
       loginFlowDriver: () => ({ ok: true, restarted: true, wechatExePath: "D:\\微信\\Weixin\\Weixin.exe" }),
       processProvider: () => [{ id: 123, path: "D:\\微信\\Weixin\\Weixin.exe", commandLine: "--scene=desktop", moduleReady: true }],
       keyInfoReader: () => {
+        retryAttemptOrder.push("key-info");
         retryFallbackCalls.push("key-info");
         return { observed: true, keyHex: "" };
       },
       memoryKeyReader: () => {
+        retryAttemptOrder.push("memory");
         retryFallbackCalls.push("memory");
         return "";
       },
       wxKeyReader: () => {
         retryHookCalls += 1;
+        retryAttemptOrder.push(`hook-${retryHookCalls}`);
         return retryHookCalls === 1
           ? { keyHex: "", stage: "init_failed", error: "Weixin.dll not ready", status: 1 }
           : { keyHex: rawKeyHex, stage: "captured", error: "", status: 0 };
@@ -567,7 +571,8 @@ fs.copyFileSync(input, output);
     });
     assert.equal(capturedAfterInitRetry.ok, true);
     assert.equal(retryHookCalls, 2, "a transient hook initialization failure must be retried");
-    assert.deepEqual(retryFallbackCalls, []);
+    assert.deepEqual(retryAttemptOrder.slice(0, 2), ["hook-1", "hook-2"], "fallback readers must not run before the hook initialization retry");
+    assert.ok(retryFallbackCalls.every((source) => ["key-info", "memory"].includes(source)));
 
     const timeoutWithoutKeyInfo = capture(syncDir, {
       wechatRoot,

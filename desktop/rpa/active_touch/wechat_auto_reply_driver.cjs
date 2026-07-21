@@ -1,4 +1,4 @@
-const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
+const { normalizeWechatMainWindowAsync, runPowerShellAsync } = require("./wechat_window_driver.cjs");
 const { gzipSync } = require("node:zlib");
 
 function classifyAvatarSide({ leftAvatar = false, rightAvatar = false } = {}) {
@@ -66,19 +66,23 @@ public static class Win32WechatAutoReply {
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
-  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
 }
 "@
-[void][Win32WechatAutoReply]::SetProcessDPIAware()
+try { [void][Win32WechatAutoReply]::SetThreadDpiAwarenessContext([IntPtr](-4)) } catch {}
 
 $script:sessionBaselines = $null
 $script:pendingSessionConversation = ""
+$script:sessionProbeDiagnostics = $null
 function Write-Result($value) {
   if ($value -is [System.Collections.IDictionary] -and $null -ne $script:sessionBaselines) {
     $value["sessionBaselines"] = @($script:sessionBaselines)
   }
   if ($value -is [System.Collections.IDictionary] -and -not [string]::IsNullOrWhiteSpace($script:pendingSessionConversation)) {
     $value["sessionBaselinePending"] = [string]$script:pendingSessionConversation
+  }
+  if ($value -is [System.Collections.IDictionary] -and $null -ne $script:sessionProbeDiagnostics) {
+    $value["sessionProbe"] = $script:sessionProbeDiagnostics
   }
   $value | ConvertTo-Json -Compress -Depth 5
   exit
@@ -350,6 +354,15 @@ function Test-UnreadName([string]$text) {
   return $text.Trim() -match "^(?:未读|新消息|unread|new message|\\[[1-9][0-9]*条\\])$"
 }
 
+function Test-AggregateSessionUnread([string]$text, [string]$name) {
+  if ([string]::IsNullOrWhiteSpace($text) -or [string]::IsNullOrWhiteSpace($name)) { return $false }
+  $normalized = [regex]::Replace($text.Normalize([Text.NormalizationForm]::FormKC).Trim(), "\\s+", " ")
+  if (-not $normalized.StartsWith($name, [System.StringComparison]::Ordinal)) { return $false }
+  $remainder = $normalized.Substring($name.Length)
+  if ($remainder.Length -eq 0 -or (-not [char]::IsWhiteSpace($remainder[0]) -and $remainder[0] -ne "[")) { return $false }
+  return $remainder.TrimStart() -match "^\\[[1-9][0-9]*条\\](?:\\s|$)"
+}
+
 function Test-Unread([System.Windows.Automation.AutomationElement]$item) {
   try { $itemRect = $item.Current.BoundingRectangle } catch { $itemRect = $null }
   $itemText = Get-ElementText $item
@@ -402,6 +415,37 @@ function Test-SessionMetaElement([System.Windows.Automation.AutomationElement]$e
   )
 }
 
+function Get-SessionTextSignature([string]$text) {
+  if ([string]::IsNullOrWhiteSpace($text)) { return "" }
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($text)
+    return -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") })
+  } finally { $sha.Dispose() }
+}
+
+function Normalize-SessionAggregatePreview([string]$text, [string]$name) {
+  if ([string]::IsNullOrWhiteSpace($text) -or [string]::IsNullOrWhiteSpace($name)) { return "" }
+  $text = [regex]::Replace($text.Normalize([Text.NormalizationForm]::FormKC).Trim(), "\\s+", " ")
+  if (-not $text.StartsWith($name, [System.StringComparison]::Ordinal)) { return "" }
+  $remainder = $text.Substring($name.Length)
+  if ($remainder.Length -gt 0 -and -not [char]::IsWhiteSpace($remainder[0]) -and $remainder[0] -ne "[") { return "" }
+  $text = $remainder.Trim()
+  $text = [regex]::Replace($text, "^\\s*(?:\\[[1-9][0-9]*条\\]|[1-9][0-9]*条(?:未读|新)消息)\\s*", "")
+  $text = [regex]::Replace($text, "(?:^|\\s)(?:刚刚|(?:[01]?[0-9]|2[0-3]):[0-5][0-9]|昨天|前天|星期[一二三四五六日天]|周[一二三四五六日天])\\s*$", "")
+  if ($text -match "(?:^|\\s)(?:刚刚|(?:[01]?[0-9]|2[0-3]):[0-5][0-9]|昨天|前天|星期[一二三四五六日天]|周[一二三四五六日天])(?:\\s|$)") { return "" }
+  if (
+    [string]::IsNullOrWhiteSpace($text) -or
+    $text -ceq $name -or
+    $text -match "^(?:未读|新消息|unread|new message)$"
+  ) { return "" }
+  return $text.Trim()
+}
+
+function Get-SessionAggregatePreview([System.Windows.Automation.AutomationElement]$item, [string]$name) {
+  return Normalize-SessionAggregatePreview (Get-ElementText $item) $name
+}
+
 function Get-SessionPreviewSignature([System.Windows.Automation.AutomationElement]$item, [string]$name) {
   $parts = New-Object System.Collections.Generic.List[string]
   $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
@@ -411,7 +455,9 @@ function Get-SessionPreviewSignature([System.Windows.Automation.AutomationElemen
     $children = $item.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
     for ($index = 0; $index -lt $children.Count; $index++) { [void]$elements.Add($children.Item($index)) }
   } catch {}
-  if ($elements.Count -eq 0) { return "" }
+  if ($elements.Count -eq 0) {
+    return Get-SessionTextSignature (Get-SessionAggregatePreview $item $name)
+  }
   foreach ($element in $elements) {
     if (Test-SessionMetaElement $element $itemRect) { continue }
     $text = Get-ElementText $element
@@ -426,12 +472,10 @@ function Get-SessionPreviewSignature([System.Windows.Automation.AutomationElemen
     ) { continue }
     if ($seen.Add($text)) { [void]$parts.Add($text) }
   }
-  if ($parts.Count -eq 0) { return "" }
-  $sha = [System.Security.Cryptography.SHA256]::Create()
-  try {
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes(($parts -join [Environment]::NewLine))
-    return -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") })
-  } finally { $sha.Dispose() }
+  if ($parts.Count -eq 0) {
+    return Get-SessionTextSignature (Get-SessionAggregatePreview $item $name)
+  }
+  return Get-SessionTextSignature ($parts -join [Environment]::NewLine)
 }
 
 function Get-SessionDisplayTime([System.Windows.Automation.AutomationElement]$item) {
@@ -464,6 +508,44 @@ function Test-SessionSincePrime([string]$displayTime, [long]$primedAtMs) {
   } catch { return $false }
 }
 
+function Resolve-UniqueAggregateSessionName([string]$text, $allowedSet) {
+  if ([string]::IsNullOrWhiteSpace($text)) { return "" }
+  $normalized = [regex]::Replace($text.Normalize([Text.NormalizationForm]::FormKC).Trim(), "\\s+", " ")
+  $matches = New-Object System.Collections.Generic.List[string]
+  foreach ($allowedName in $allowedSet) {
+    $candidate = [string]$allowedName
+    if ([string]::IsNullOrWhiteSpace($candidate) -or -not $normalized.StartsWith($candidate, [System.StringComparison]::Ordinal)) { continue }
+    $remainder = $normalized.Substring($candidate.Length)
+    if ($remainder.Length -gt 0 -and -not [char]::IsWhiteSpace($remainder[0]) -and $remainder[0] -ne "[") { continue }
+    [void]$matches.Add($candidate)
+  }
+  if ($matches.Count -eq 1) { return [string]$matches[0] }
+  return ""
+}
+
+function Test-AggregateSessionListItem([System.Windows.Automation.AutomationElement]$item, $listRect) {
+  try {
+    if ($item.Current.IsOffscreen) { return $false }
+    $isListItem = $item.Current.ControlType -eq [System.Windows.Automation.ControlType]::ListItem
+    $itemRect = $item.Current.BoundingRectangle
+  } catch { return $false }
+  $supportsSelection = $false
+  try {
+    $selection = $item.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+    $supportsSelection = $null -ne $selection
+  } catch {}
+  if (-not $isListItem -and -not $supportsSelection) { return $false }
+  if (
+    $itemRect.Left -lt $listRect.Left -or $itemRect.Top -lt $listRect.Top -or
+    $itemRect.Right -gt $listRect.Right -or $itemRect.Bottom -gt $listRect.Bottom
+  ) { return $false }
+  try {
+    $descendants = $item.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+    if ($descendants.Count -gt 0) { return $false }
+  } catch { return $false }
+  return $true
+}
+
 function Find-EligibleSessionRows($all, $allowedSet, $windowRect) {
   $windowWidth = $windowRect.Right - $windowRect.Left
   $windowHeight = $windowRect.Bottom - $windowRect.Top
@@ -476,13 +558,65 @@ function Find-EligibleSessionRows($all, $allowedSet, $windowRect) {
   $rows = New-Object System.Collections.Generic.List[object]
   $seenNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
   $schemaObserved = $false
+  $automationIdSessionItems = 0
+  $automationIdAllowedMatches = 0
+  $allowedTextMatches = 0
+  $parentCandidates = 0
+  $emptySignatures = 0
+  $listContainerCount = 0
+  $listRowCount = 0
+  $rejectedRowLeftBoundary = 0
+  $rejectedRowTooNarrow = 0
+  $rejectedRowVertical = 0
+  $rejectedRowHeight = 0
+  $sessionLists = New-Object System.Collections.Generic.List[object]
+  $exactElementIndices = New-Object System.Collections.Generic.List[int]
+  $exactElementIndexSet = [System.Collections.Generic.HashSet[int]]::new()
   for ($index = 0; $index -lt $all.Count; $index++) {
+    $element = $all.Item($index)
+    try { $automationId = [string]$element.Current.AutomationId } catch { $automationId = "" }
+    if ($automationId.StartsWith("session_item_", [System.StringComparison]::Ordinal)) {
+      $automationIdSessionItems += 1
+      $schemaObserved = $true
+      $candidateName = $automationId.Substring("session_item_".Length)
+      if ($allowedSet.Contains($candidateName)) {
+        $automationIdAllowedMatches += 1
+        [void]$exactElementIndices.Add($index)
+        [void]$exactElementIndexSet.Add($index)
+      }
+    }
+    try {
+      if ($element.Current.ControlType -ne [System.Windows.Automation.ControlType]::List) { continue }
+      if ((Get-ElementText $element) -cne "会话") { continue }
+      if ($element.Current.IsOffscreen) { continue }
+      $listRect = $element.Current.BoundingRectangle
+      if (
+        $listRect.Left -lt $windowRect.Left -or $listRect.Top -lt $windowRect.Top -or
+        $listRect.Right -gt $leftLimit -or $listRect.Bottom -gt $windowRect.Bottom -or
+        $listRect.Width -lt $minimumRowWidth -or $listRect.Height -lt $minimumRowHeight
+      ) { continue }
+      $listContainerCount += 1
+      [void]$sessionLists.Add($element)
+      $listChildren = $element.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
+      $listRowCount += [int]$listChildren.Count
+    } catch {}
+  }
+  $aggregateList = $null
+  if ($sessionLists.Count -eq 1) {
+    $aggregateList = $sessionLists[0]
+    $schemaObserved = $true
+  }
+  $orderedElementIndices = New-Object System.Collections.Generic.List[int]
+  foreach ($index in $exactElementIndices) { [void]$orderedElementIndices.Add($index) }
+  for ($index = 0; $index -lt $all.Count; $index++) {
+    if (-not $exactElementIndexSet.Contains($index)) { [void]$orderedElementIndices.Add($index) }
+  }
+  foreach ($index in $orderedElementIndices) {
     $element = $all.Item($index)
     $name = ""
     $item = $null
     try { $automationId = [string]$element.Current.AutomationId } catch { $automationId = "" }
     if ($automationId.StartsWith("session_item_", [System.StringComparison]::Ordinal)) {
-      $schemaObserved = $true
       $candidateName = $automationId.Substring("session_item_".Length)
       if ($allowedSet.Contains($candidateName)) {
         $name = $candidateName
@@ -491,39 +625,115 @@ function Find-EligibleSessionRows($all, $allowedSet, $windowRect) {
     }
     if ($item -eq $null) {
       $candidateName = Get-ElementText $element
-      if (-not $allowedSet.Contains([string]$candidateName)) { continue }
-      try { $rect = $element.Current.BoundingRectangle } catch { continue }
-      if ($rect.Left -ge $leftLimit -or $rect.Top -lt $topLimit -or $rect.Bottom -gt $bottomLimit) { continue }
-      $name = [string]$candidateName
-      $item = $element
-      $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
-      for ($level = 0; $level -lt 10; $level++) {
-        try { $itemRect = $item.Current.BoundingRectangle } catch { $item = $null; break }
-        if ($itemRect.Width -ge $minimumRowWidth -and $itemRect.Height -ge $minimumRowHeight -and $itemRect.Height -le $maximumRowHeight -and $itemRect.Left -lt $leftLimit) { break }
-        try { $item = $walker.GetParent($item) } catch { $item = $null }
-        if ($item -eq $null) { break }
-      }
+      if ($allowedSet.Contains([string]$candidateName)) {
+        $allowedTextMatches += 1
+        try { $rect = $element.Current.BoundingRectangle } catch { continue }
+        if ($rect.Left -ge $leftLimit) { $rejectedRowLeftBoundary += 1; continue }
+        if ($rect.Top -lt $topLimit -or $rect.Bottom -gt $bottomLimit) { $rejectedRowVertical += 1; continue }
+        $name = [string]$candidateName
+        $item = $element
+        $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+        for ($level = 0; $level -lt 10; $level++) {
+          try { $itemRect = $item.Current.BoundingRectangle } catch { $item = $null; break }
+          if ($itemRect.Width -ge $minimumRowWidth -and $itemRect.Height -ge $minimumRowHeight -and $itemRect.Height -le $maximumRowHeight -and $itemRect.Left -lt $leftLimit) { break }
+          try { $item = $walker.GetParent($item) } catch { $item = $null }
+          if ($item -eq $null) { break }
+        }
+      } else { continue }
     }
     if ($item -eq $null -or $seenNames.Contains($name)) { continue }
+    $parentCandidates += 1
     try { $itemRect = $item.Current.BoundingRectangle } catch { continue }
-    if (
-      $itemRect.Left -ge $leftLimit -or $itemRect.Top -lt $topLimit -or $itemRect.Bottom -gt $bottomLimit -or
-      $itemRect.Right -gt $leftLimit -or
-      $itemRect.Width -lt $minimumRowWidth -or $itemRect.Height -lt $minimumRowHeight -or $itemRect.Height -gt $maximumRowHeight
-    ) { continue }
+    $rowRejected = $false
+    if ($itemRect.Left -ge $leftLimit -or $itemRect.Right -gt $leftLimit) { $rejectedRowLeftBoundary += 1; $rowRejected = $true }
+    if ($itemRect.Width -lt $minimumRowWidth) { $rejectedRowTooNarrow += 1; $rowRejected = $true }
+    if ($itemRect.Top -lt $topLimit -or $itemRect.Bottom -gt $bottomLimit) { $rejectedRowVertical += 1; $rowRejected = $true }
+    if ($itemRect.Height -lt $minimumRowHeight -or $itemRect.Height -gt $maximumRowHeight) { $rejectedRowHeight += 1; $rowRejected = $true }
+    if ($rowRejected) { continue }
     $schemaObserved = $true
     [void]$seenNames.Add($name)
+    $signature = Get-SessionPreviewSignature $item $name
+    if ([string]::IsNullOrWhiteSpace([string]$signature)) { $emptySignatures += 1 }
+    $unread = Test-Unread $item
     [void]$rows.Add([pscustomobject]@{
       name = $name
       item = $item
-      unread = Test-Unread $item
+      unread = [bool]$unread
       preview = Get-SessionPreview $item $name
-      signature = Get-SessionPreviewSignature $item $name
+      signature = $signature
       displayTime = Get-SessionDisplayTime $item
       top = [double]$itemRect.Top
     })
   }
-  return @{ rows = @($rows.ToArray()); schemaObserved = $schemaObserved }
+  if ($aggregateList -ne $null) {
+    try {
+      $aggregateListRect = $aggregateList.Current.BoundingRectangle
+      $aggregateChildren = $aggregateList.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
+    } catch {
+      $aggregateChildren = $null
+    }
+    if ($aggregateChildren -ne $null) {
+      for ($childIndex = 0; $childIndex -lt $aggregateChildren.Count; $childIndex++) {
+        $item = $aggregateChildren.Item($childIndex)
+        if (-not (Test-AggregateSessionListItem $item $aggregateListRect)) { continue }
+        $itemText = Get-ElementText $item
+        $name = Resolve-UniqueAggregateSessionName $itemText $allowedSet
+        if ([string]::IsNullOrWhiteSpace($name) -or $seenNames.Contains($name)) { continue }
+        if (-not (Test-AggregateSessionUnread $itemText $name)) { continue }
+        try { $itemRect = $item.Current.BoundingRectangle } catch { continue }
+        $rowRejected = $false
+        if ($itemRect.Left -ge $leftLimit -or $itemRect.Right -gt $leftLimit) { $rejectedRowLeftBoundary += 1; $rowRejected = $true }
+        if ($itemRect.Width -lt $minimumRowWidth) { $rejectedRowTooNarrow += 1; $rowRejected = $true }
+        if ($itemRect.Top -lt $topLimit -or $itemRect.Bottom -gt $bottomLimit) { $rejectedRowVertical += 1; $rowRejected = $true }
+        if ($itemRect.Height -lt $minimumRowHeight -or $itemRect.Height -gt $maximumRowHeight) { $rejectedRowHeight += 1; $rowRejected = $true }
+        if ($rowRejected) { continue }
+        $allowedTextMatches += 1
+        $parentCandidates += 1
+        [void]$seenNames.Add($name)
+        $signature = Get-SessionPreviewSignature $item $name
+        if ([string]::IsNullOrWhiteSpace([string]$signature)) { $emptySignatures += 1 }
+        [void]$rows.Add([pscustomobject]@{
+          name = $name
+          item = $item
+          unread = $true
+          preview = Get-SessionPreview $item $name
+          signature = $signature
+          displayTime = Get-SessionDisplayTime $item
+          top = [double]$itemRect.Top
+        })
+      }
+    }
+  }
+  $signatureCount = @($rows.ToArray() | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.signature) }).Count
+  return @{
+    rows = @($rows.ToArray())
+    schemaObserved = $schemaObserved
+    diagnostics = [ordered]@{
+      v = 1
+      failure = ""
+      schemaObserved = [bool]$schemaObserved
+      elementCount = [int]$all.Count
+      automationIdSessionItems = [int]$automationIdSessionItems
+      automationIdAllowedMatches = [int]$automationIdAllowedMatches
+      allowedTextMatches = [int]$allowedTextMatches
+      parentCandidates = [int]$parentCandidates
+      listContainerCount = [int]$listContainerCount
+      listRowCount = [int]$listRowCount
+      rejectedRowLeftBoundary = [int]$rejectedRowLeftBoundary
+      rejectedRowTooNarrow = [int]$rejectedRowTooNarrow
+      rejectedRowVertical = [int]$rejectedRowVertical
+      rejectedRowHeight = [int]$rejectedRowHeight
+      eligibleRowCount = [int]$rows.Count
+      signatureCount = [int]$signatureCount
+      emptySignatureCount = [int]$emptySignatures
+      windowWidth = [int][Math]::Round($windowWidth)
+      windowHeight = [int][Math]::Round($windowHeight)
+      leftLimitOffset = [int][Math]::Round($leftLimit - $windowRect.Left)
+      minimumRowWidth = [int][Math]::Round($minimumRowWidth)
+      minimumRowHeight = [int][Math]::Round($minimumRowHeight)
+      maximumRowHeight = [int][Math]::Round($maximumRowHeight)
+    }
+  }
 }
 
 function Find-CurrentEligibleConversation($all, $allowedSet, $windowRect) {
@@ -635,11 +845,13 @@ if ($mode -eq "prime" -or $mode -eq "scan") {
   $script:sessionBaselines = @($sessionRows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.signature) } | ForEach-Object {
     [pscustomobject]@{ conversation = [string]$_.name; signature = [string]$_.signature }
   })
+  $script:sessionProbeDiagnostics = $sessionProbe.diagnostics
+  if (-not $sessionProbe.schemaObserved) { $script:sessionProbeDiagnostics["failure"] = "schema_not_observed" }
 }
 
 if ($mode -eq "prime") {
-  if (-not $sessionProbe.schemaObserved -or $sessionRows.Count -eq 0 -or $script:sessionBaselines.Count -eq 0) {
-    Write-Result @{ ok = $false; reason = "session_probe_unsupported" }
+  if (-not $sessionProbe.schemaObserved) {
+    Write-Result @{ ok = $false; reason = "session_probe_unsupported"; pid = [int]$process.Id; hWnd = [int64]$process.MainWindowHandle }
   }
   $primeConversation = Find-CurrentEligibleConversation $all $allowedSet $windowRect
   if ([string]::IsNullOrWhiteSpace($primeConversation)) {
@@ -667,8 +879,8 @@ if ($mode -eq "prime") {
 }
 
 if ($mode -eq "scan") {
-  if (-not $sessionProbe.schemaObserved -or $sessionRows.Count -eq 0 -or $script:sessionBaselines.Count -eq 0) {
-    Write-Result @{ ok = $false; reason = "session_probe_unsupported" }
+  if (-not $sessionProbe.schemaObserved) {
+    Write-Result @{ ok = $false; reason = "session_probe_unsupported"; pid = [int]$process.Id; hWnd = [int64]$process.MainWindowHandle }
   }
   $match = $null
   $matchChanged = $false
@@ -821,7 +1033,7 @@ Invoke-Expression ([IO.StreamReader]::new($g).ReadToEnd())
 
 const AUTO_REPLY_RUN_SCRIPT = compressedPowerShell(AUTO_REPLY_SCAN_SCRIPT);
 
-function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
+function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, windowNormalizer = normalizeWechatMainWindowAsync) {
   const currentSessionBaselines = new Map();
   const sessionPreviewBaselines = new Map();
   const retryCandidates = [];
@@ -831,6 +1043,41 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
   let sessionPreviewPrimedAt = 0;
   let sessionPreviewProcess = null;
   let needsReprime = false;
+  let activeScanMode = "uia";
+  let visualDriver = null;
+
+  function getVisualDriver() {
+    if (visualDriver) return visualDriver;
+    try {
+      const { createWechatVisualAutoReplyDriver } = require("./wechat_auto_reply_visual_driver.dev.cjs");
+      visualDriver = createWechatVisualAutoReplyDriver(powerShellRunner);
+      return visualDriver;
+    } catch {
+      return null;
+    }
+  }
+
+  function visualCandidate(result) {
+    return result?.ok === true && result?.conversation
+      ? { ...result, visualMode: "visual_render_v1" }
+      : result;
+  }
+
+  function isVisualCandidate(candidate = {}) {
+    const runtimeId = String(candidate.runtimeId || "");
+    const evidenceRuntimeId = String(candidate.visualEvidenceRuntimeId || "");
+    return candidate.visualMode === "visual_render_v1"
+      || /^visual:v[12]:[a-f0-9]{64}$/u.test(runtimeId)
+      || /^visual:v1:[a-f0-9]{64}$/u.test(evidenceRuntimeId);
+  }
+
+  async function switchToVisualPrime(allowed, fallbackResult) {
+    const driver = getVisualDriver();
+    if (!driver) return fallbackResult;
+    const primed = await driver.primeWechatSession(allowed);
+    if (primed?.ok === true) activeScanMode = "visual";
+    return primed;
+  }
 
   function allowedNames(names) {
     return [...new Set((Array.isArray(names) ? names : []).map((name) => String(name || "").trim()).filter(Boolean))];
@@ -849,6 +1096,17 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
     sessionPreviewPrimedAt = 0;
     sessionPreviewProcess = null;
     needsReprime = true;
+  }
+
+  async function normalizeWindowForExecution() {
+    let normalized;
+    try {
+      normalized = await Promise.resolve(windowNormalizer());
+    } catch {
+      return { ok: false, reason: "wechat_window_not_ready" };
+    }
+    if (normalized?.ok !== true) return normalized?.reason ? normalized : { ok: false, reason: "wechat_window_not_ready" };
+    return null;
   }
 
   function applySessionBaselines(result, allowed, { priming = false } = {}) {
@@ -882,6 +1140,12 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
   async function primeWechatSession(names) {
     const allowed = allowedNames(names);
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
+    const windowFailure = await normalizeWindowForExecution();
+    if (windowFailure) return windowFailure;
+    if (activeScanMode === "visual") {
+      const driver = getVisualDriver();
+      return driver ? driver.primeWechatSession(allowed) : { ok: false, reason: "visual_driver_missing" };
+    }
     const activeBaselineEpoch = baselineEpoch;
     const result = await Promise.resolve(powerShellRunner(AUTO_REPLY_RUN_SCRIPT, {
       XIAOXI_AUTO_REPLY_MODE: "prime",
@@ -891,6 +1155,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
       XIAOXI_SESSION_PRIMED_AT: "0"
     }, { ensure: false }));
     if (activeBaselineEpoch !== baselineEpoch) return { ok: false, reason: "baseline_epoch_changed" };
+    if (result?.reason === "session_probe_unsupported") return switchToVisualPrime(allowed, result);
     if (result?.ok !== true) return result;
     const identity = processIdentity(result);
     if (!identity) return { ok: false, reason: "incoming_identity_missing" };
@@ -920,6 +1185,12 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
       const primed = await primeWechatSession(allowed);
       return primed?.ok === true ? { ok: false, reason: "current_session_baselined" } : primed;
     }
+    const windowFailure = await normalizeWindowForExecution();
+    if (windowFailure) return windowFailure;
+    if (activeScanMode === "visual") {
+      const driver = getVisualDriver();
+      return driver ? visualCandidate(await driver.scanWechatIncoming(allowed)) : { ok: false, reason: "visual_driver_missing" };
+    }
     if (retryAfterFresh) {
       retryAfterFresh = false;
       const retry = takeRetryCandidate(allowed);
@@ -937,6 +1208,10 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
       XIAOXI_SESSION_EXPECTED_HWND: String(sessionPreviewProcess?.hWnd || 0)
     }, { ensure: false }));
     if (activeBaselineEpoch !== baselineEpoch) return { ok: false, reason: "baseline_epoch_changed" };
+    if (result?.reason === "session_probe_unsupported") {
+      const primed = await switchToVisualPrime(allowed, result);
+      return primed?.ok === true ? { ok: false, reason: "current_session_baselined" } : primed;
+    }
     const observedIdentity = processIdentity(result);
     const identityChanged = sessionPreviewProcess && observedIdentity && (
       sessionPreviewProcess.pid !== observedIdentity.pid || sessionPreviewProcess.hWnd !== observedIdentity.hWnd
@@ -974,6 +1249,10 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
     const runtimeId = String(candidate.runtimeId || "").trim();
     if (!conversation || !message) return { ok: false, reason: "incoming_message_missing" };
     if (!runtimeId) return { ok: false, reason: "incoming_identity_missing" };
+    if (isVisualCandidate(candidate)) {
+      const driver = getVisualDriver();
+      return driver ? driver.verifyWechatIncoming(candidate) : { ok: false, reason: "visual_driver_missing" };
+    }
     return Promise.resolve(powerShellRunner(AUTO_REPLY_RUN_SCRIPT, {
       XIAOXI_AUTO_REPLY_MODE: "verify",
       XIAOXI_ALLOWED_NAMES: JSON.stringify([conversation]),
@@ -988,6 +1267,9 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
   scanWechatIncoming.primeBaselines = primeWechatSession;
   scanWechatIncoming.requeue = (candidate) => {
     if (candidate?.ok !== true) return false;
+    if (isVisualCandidate(candidate)) {
+      return getVisualDriver()?.scanWechatIncoming?.requeue?.(candidate) === true;
+    }
     const { scanProbe: _discardedProbe, ...retryCandidate } = candidate;
     const key = [retryCandidate.conversation, retryCandidate.runtimeId, retryCandidate.message].map(String).join("\n");
     if (retryCandidates.some((item) => [item.conversation, item.runtimeId, item.message].map(String).join("\n") === key)) return true;
@@ -997,12 +1279,14 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
   };
   scanWechatIncoming.resetBaselines = () => {
     baselineEpoch += 1;
+    activeScanMode = "uia";
     currentSessionBaselines.clear();
     sessionPreviewBaselines.clear();
     sessionPreviewPrimed = false;
     sessionPreviewPrimedAt = 0;
     sessionPreviewProcess = null;
     needsReprime = false;
+    visualDriver?.scanWechatIncoming?.resetBaselines?.();
   };
   return { primeWechatSession, scanWechatIncoming, verifyWechatIncoming };
 }

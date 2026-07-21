@@ -371,7 +371,62 @@ async function executeVerifiedContactSend(options = {}) {
   const contactId = String(options.contactId || "").trim();
   const message = String(options.message || "").trim();
   if (options.authorized !== true) return withSendAttempted({ ok: false, action: "send", blocked_reason: "batch_authorization_missing", error: "已阻断：缺少本批用户授权" });
-  if (!contactId || !message || typeof options.runStep !== "function") return withSendAttempted({ ok: false, action: "send", blocked_reason: "contact_or_message_missing", error: "已阻断：联系人、文案或执行器缺失" });
+  if (!contactId || !message) return withSendAttempted({ ok: false, action: "send", blocked_reason: "contact_or_message_missing", error: "已阻断：联系人或文案缺失" });
+
+  if (String(options.visualMode || "") === "visual_render_v1") {
+    const pid = Number(options.expectedPid);
+    const hWnd = Number(options.expectedHWnd);
+    const conversation = String(options.expectedConversation || "").trim();
+    if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(hWnd) || hWnd <= 0 || !conversation) {
+      return withSendAttempted({ ok: false, action: "send", blocked_reason: "visual_send_context_invalid", error: "视觉发送缺少微信窗口或会话信息" });
+    }
+    if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
+    if (typeof options.beforeDraft === "function") {
+      let allowed = false;
+      try {
+        allowed = (await options.beforeDraft({ session: { ok: true, pid, hWnd, title: conversation, visualMode: "visual_render_v1" } })) === true;
+      } catch {}
+      if (!allowed) {
+        return withSendAttempted({ ok: false, action: "send", blocked_reason: "incoming_message_changed", error: "对方最新消息或当前会话已变化，本次回复已取消" });
+      }
+    }
+    if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
+    const visualSender = options.visualSendDriver || require("./wechat_auto_reply_visual_send.dev.cjs").sendVisualAutoReply;
+    let result;
+    try {
+      result = await Promise.resolve(visualSender({
+        pid,
+        hWnd,
+        conversation,
+        incomingMessage: String(options.expectedIncomingMessage || ""),
+        incomingVerified: true,
+        reply: message,
+        beforeSend: () => executionMayContinue(options)
+      }));
+    } catch {
+      return withSendAttempted({ ok: false, action: "send", blocked_reason: "visual_send_driver_exception", error: "视觉发送执行器异常，消息未确认发出" });
+    }
+    if (result?.ok !== true) {
+      const reason = String(result?.reason || "visual_send_not_verified");
+      return withSendAttempted({
+        ok: false,
+        action: "send",
+        blocked_reason: reason,
+        error: result?.outcomeUnknown === true ? "已点击发送，但无法确认最终结果" : "视觉发送未完成",
+        verification_mode: String(result?.verificationMode || "")
+      }, result?.send_attempted === true);
+    }
+    return withSendAttempted({
+      ok: true,
+      action: "send",
+      state: { real_send_status: "sent_verified" },
+      verification_mode: String(result.verificationMode || ""),
+      pid: Number(result.pid || pid),
+      hWnd: String(result.hWnd || hWnd)
+    }, true);
+  }
+
+  if (typeof options.runStep !== "function") return withSendAttempted({ ok: false, action: "send", blocked_reason: "contact_or_message_missing", error: "已阻断：执行器缺失" });
 
   const steps = [
     ["select-customer", ["--id", contactId]],

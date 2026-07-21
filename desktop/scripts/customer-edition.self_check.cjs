@@ -122,7 +122,6 @@ for (const name of [
   "moments_action_cli.dev.cjs",
   "moments_action_driver.dev.cjs",
   "moments_comment_readback_proof.dev.cjs",
-  "moments_visual_probe.dev.cjs",
   "moments_visual_dry_run.dev.cjs",
   "moments_visual_action_driver.dev.cjs"
 ]) {
@@ -130,9 +129,26 @@ for (const name of [
   assert.equal(sourceAllowed(source, "test"), true, `${name} must be included in the test edition`);
   assert.equal(sourceAllowed(source, "delivery"), false, `${name} must be excluded from the delivery edition`);
 }
+for (const name of [
+  "moments_visual_probe.dev.cjs",
+  "wechat_auto_reply_visual_driver.dev.cjs",
+  "wechat_auto_reply_visual_send.dev.cjs"
+]) {
+  const source = path.join(desktopDir, "rpa", "active_touch", name);
+  assert.equal(sourceAllowed(source, "test"), true, `${name} must be included in the test edition`);
+  assert.equal(sourceAllowed(source, "delivery"), true, `${name} must be included in the delivery edition`);
+}
 const momentsActionSelfCheck = path.join(desktopDir, "rpa", "active_touch", "moments_action.self_check.cjs");
 assert.equal(sourceAllowed(momentsActionSelfCheck, "test"), false, "Moments action self-check must not be packaged in the test edition");
 assert.equal(sourceAllowed(momentsActionSelfCheck, "delivery"), false, "Moments action self-check must not be packaged in the delivery edition");
+for (const name of [
+  "wechat_auto_reply_visual_driver.self_check.cjs",
+  "wechat_auto_reply_visual_send.self_check.cjs"
+]) {
+  const source = path.join(desktopDir, "rpa", "active_touch", name);
+  assert.equal(sourceAllowed(source, "test"), false, `${name} must not be packaged in the test edition`);
+  assert.equal(sourceAllowed(source, "delivery"), false, `${name} must not be packaged in the delivery edition`);
+}
 assert.equal(read(path.join(desktopDir, "package.json")).includes("build:test"), true);
 assert.equal(read(path.join(desktopDir, "package.json")).includes("build:delivery"), true);
 assert.equal(read(path.join(desktopDir, "package.json")).includes("build:customer"), false);

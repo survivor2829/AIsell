@@ -10,6 +10,8 @@ const checks = [
   "rpa/active_touch/moments_action_driver.self_check.cjs",
   "rpa/active_touch/moments_action_cli.self_check.cjs",
   "rpa/active_touch/wechat_auto_reply_driver.self_check.cjs",
+  "rpa/active_touch/wechat_auto_reply_visual_driver.self_check.cjs",
+  "rpa/active_touch/wechat_auto_reply_visual_send.self_check.cjs",
   "rpa/contact_sync/self_check.cjs",
   "src/main/contact-sync-ipc.self_check.cjs",
   "src/main/ai-expert.self_check.cjs",

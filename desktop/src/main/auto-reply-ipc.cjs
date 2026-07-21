@@ -44,6 +44,11 @@ const KNOWN_SCAN_REASONS = new Set([
   "incoming_message_changed",
   "incoming_message_missing",
   "latest_text_message_missing",
+  "moments_render_pane_ambiguous",
+  "moments_render_pane_not_found",
+  "moments_visual_ocr_failed",
+  "moments_visual_ocr_region_invalid",
+  "moments_visual_ocr_unavailable",
   "no_current_conversation",
   "powershell_failed",
   "powershell_output_invalid",
@@ -54,14 +59,24 @@ const KNOWN_SCAN_REASONS = new Set([
   "unknown_scan_reason",
   "unread_preview_mismatch",
   "unread_preview_missing",
+  "visual_candidate_ambiguous",
+  "visual_capture_failed",
+  "visual_driver_missing",
+  "visual_ocr_failed",
+  "visual_render_pane_mismatch",
+  "visual_sidebar_match_ambiguous",
+  "visual_sidebar_match_missing",
   "wechat_operation_busy",
   "wechat_process_changed",
   "wechat_window_ambiguous",
   "wechat_window_changed",
   "wechat_window_missing",
+  "wechat_window_not_foreground",
   "wechat_window_not_ready",
+  "wechat_window_obscured",
   "whitelist_empty",
-  "whitelist_invalid"
+  "whitelist_invalid",
+  "whitelist_name_ambiguous"
 ]);
 const consumedClickTokens = new Set();
 const SYSTEM_IDS = new Set([
@@ -143,6 +158,49 @@ function writeAtomic(file, value) {
 function diagnosticCode(value, fallback = "unknown") {
   const code = String(value || "").trim().toLowerCase();
   return /^[a-z0-9][a-z0-9_.:-]{0,80}$/.test(code) ? code : fallback;
+}
+
+function normalizeAiWarningCode(value) {
+  const code = String(value || "").trim().toUpperCase();
+  return /^[A-Z][A-Z0-9_]{0,63}$/u.test(code) ? code : "";
+}
+
+const SESSION_PROBE_FAILURES = new Set(["schema_not_observed", "matched_rows_zero", "signature_count_zero"]);
+const SESSION_PROBE_NUMBER_FIELDS = Object.freeze({
+  elementCount: "probe_element_count",
+  automationIdSessionItems: "probe_automation_id_session_items",
+  automationIdAllowedMatches: "probe_automation_id_allowed_matches",
+  allowedTextMatches: "probe_allowed_text_matches",
+  parentCandidates: "probe_parent_candidates",
+  listContainerCount: "probe_list_container_count",
+  listRowCount: "probe_list_row_count",
+  rejectedRowLeftBoundary: "probe_rejected_row_left_boundary",
+  rejectedRowTooNarrow: "probe_rejected_row_too_narrow",
+  rejectedRowVertical: "probe_rejected_row_vertical",
+  rejectedRowHeight: "probe_rejected_row_height",
+  eligibleRowCount: "probe_eligible_row_count",
+  signatureCount: "probe_signature_count",
+  emptySignatureCount: "probe_empty_signature_count",
+  windowWidth: "probe_window_width",
+  windowHeight: "probe_window_height",
+  leftLimitOffset: "probe_left_limit_offset",
+  minimumRowWidth: "probe_minimum_row_width",
+  minimumRowHeight: "probe_minimum_row_height",
+  maximumRowHeight: "probe_maximum_row_height"
+});
+
+function sanitizeSessionProbe(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result = {};
+  const failure = String(value.failure || "").trim().toLowerCase();
+  if (SESSION_PROBE_FAILURES.has(failure)) result.probe_failure = failure;
+  if (typeof value.schemaObserved === "boolean") result.probe_schema_observed = value.schemaObserved;
+  for (const [source, target] of Object.entries(SESSION_PROBE_NUMBER_FIELDS)) {
+    if (typeof value[source] !== "number") continue;
+    const number = value[source];
+    if (Number.isSafeInteger(number) && number >= 0 && number <= 10_000_000) result[target] = number;
+  }
+  return result;
 }
 
 function scanReason(value) {
@@ -265,6 +323,8 @@ function createDefaultState() {
     rate_events: [],
     last_event: "",
     last_error: "",
+    last_ai_warning_code: "",
+    last_ai_warning: "",
     scan_health: "unknown",
     last_scan_at: "",
     last_scan_success_at: "",
@@ -274,11 +334,25 @@ function createDefaultState() {
   };
 }
 
+function recoverInterruptedProcessedSends(processed) {
+  const entries = processed && typeof processed === "object" && !Array.isArray(processed) ? processed : {};
+  let recovered = false;
+  const result = Object.fromEntries(Object.entries(entries).map(([key, value]) => {
+    if (!value || typeof value !== "object" || Array.isArray(value) || normalizeText(value.status) !== "sending") {
+      return [key, value];
+    }
+    recovered = true;
+    return [key, { ...value, status: "outcome_unknown" }];
+  }));
+  return { processed: result, recovered };
+}
+
 function migrateState(raw, current) {
   if (!raw || Object.keys(raw).length === 0) return createDefaultState();
   if (raw.version === 2) {
     const next = { ...createDefaultState(), ...raw };
-    next.processed = raw.processed && typeof raw.processed === "object" ? raw.processed : {};
+    const processedRecovery = recoverInterruptedProcessedSends(raw.processed);
+    next.processed = processedRecovery.processed;
     next.handoff_notified = raw.handoff_notified && typeof raw.handoff_notified === "object" ? raw.handoff_notified : {};
     next.manual_followups = Array.isArray(raw.manual_followups)
       ? raw.manual_followups
@@ -303,11 +377,17 @@ function migrateState(raw, current) {
     next.last_scan_at = normalizeText(raw.last_scan_at);
     next.last_scan_success_at = normalizeText(raw.last_scan_success_at);
     next.last_scan_reason = normalizeText(raw.last_scan_reason) ? scanReason(raw.last_scan_reason).code : "";
+    next.last_ai_warning_code = normalizeAiWarningCode(raw.last_ai_warning_code);
+    next.last_ai_warning = normalizeText(raw.last_ai_warning).slice(0, 300);
     next.consecutive_scan_failures = Math.max(0, Math.floor(Number(raw.consecutive_scan_failures) || 0));
     if (handoffNeedsConfirmation(next.pending_handoff)) {
       next.status = "paused";
       next.last_event = "handoff_confirmation_required";
       next.last_error = handoffInterruptedMessage(next.pending_handoff);
+    } else if (processedRecovery.recovered) {
+      next.status = "paused";
+      next.last_event = "send_outcome_unknown_paused";
+      next.last_error = "上次自动回复在发送过程中中断，发送结果无法确认；请先在微信中检查是否已经发出，再重新启动自动回复。";
     } else if (next.status === "running" || next.status === "starting") {
       next.status = "paused";
       next.last_event = "recovered_after_restart";
@@ -434,6 +514,7 @@ function createAutoReplyController(options = {}) {
     rawState.version !== 2
     || rawState.status === "running"
     || rawState.status === "starting"
+    || Object.values(rawState.processed || {}).some((entry) => normalizeText(entry?.status) === "sending")
     || rawState.daily_date !== state.daily_date
     || Number(rawState.reply_count) !== state.reply_count
     || Boolean(rawState.pending_handoff) && (
@@ -480,6 +561,7 @@ function createAutoReplyController(options = {}) {
     if (/^[0-9]{1,20}$/.test(windowHandle)) entry.wechat_window_handle = windowHandle;
     const reasonRef = String(details.reasonRef || "").trim().toLowerCase();
     if (/^[a-f0-9]{12}$/.test(reasonRef)) entry.reason_ref = reasonRef;
+    if (code === "session_probe_unsupported") Object.assign(entry, sanitizeSessionProbe(details.sessionProbe));
     appendDiagnosticLine(diagnosticLogFile, entry);
   }
 
@@ -525,7 +607,8 @@ function createAutoReplyController(options = {}) {
         code: reason,
         reasonRef: normalizedReason.ref,
         pid: result?.pid,
-        hWnd: result?.hWnd
+        hWnd: result?.hWnd,
+        sessionProbe: result?.sessionProbe
       });
     }
     return successful || neutral;
@@ -539,6 +622,8 @@ function createAutoReplyController(options = {}) {
       reply_count: state.reply_count,
       last_event: showManualWarning ? "handoff_manual_followup_required" : state.last_event,
       last_error: showManualWarning ? manualWarning : state.last_error,
+      last_ai_warning_code: state.last_ai_warning_code,
+      last_ai_warning: state.last_ai_warning,
       scan_health: state.scan_health,
       last_scan_at: state.last_scan_at,
       last_scan_success_at: state.last_scan_success_at,
@@ -1018,6 +1103,7 @@ function createAutoReplyController(options = {}) {
 
       let incomingStillCurrent = true;
       let draftPhaseStarted = false;
+      const isVisualCandidate = normalizeText(candidate.visualMode) === "visual_render_v1";
       const verifyCurrent = async () => {
         if (!isCurrentRun()) {
           incomingStillCurrent = false;
@@ -1031,7 +1117,17 @@ function createAutoReplyController(options = {}) {
         draftPhaseStarted = true;
         return verifyCurrent();
       };
-      const shouldContinue = () => draftPhaseStarted ? verifyCurrent() : isCurrentRun();
+      const shouldContinue = () => {
+        if (!isCurrentRun()) {
+          incomingStillCurrent = false;
+          return false;
+        }
+        // The visual sender already re-checks the bound conversation, exact draft,
+        // send button, foreground ownership and cursor immediately before clicking.
+        // Re-running the pixel/line-bound incoming verifier after the draft is typed
+        // is invalid because the expanded input area can legitimately reflow the chat.
+        return draftPhaseStarted && !isVisualCandidate ? verifyCurrent() : true;
+      };
       state.processed[fingerprint].status = "sending";
       save();
       coordinator.update(lock.lock.owner, "send-reply");
@@ -1044,6 +1140,10 @@ function createAutoReplyController(options = {}) {
         attemptId: fingerprint,
         expectedIncomingMessage: candidate.message,
         expectedIncomingRuntimeId: candidate.runtimeId,
+        visualMode: String(candidate.visualMode || ""),
+        expectedPid: candidate.pid,
+        expectedHWnd: candidate.hWnd,
+        expectedConversation: candidate.conversation,
         beforeDraft,
         shouldContinue,
         runStep: (command, args) => runStep(command, args, lock.lock.owner)
@@ -1087,14 +1187,14 @@ function createAutoReplyController(options = {}) {
           const retryQueued = requeueCandidate(candidate);
           if (retryQueued) {
             state.last_event = "send_retry_pending";
-            state.last_error = `本次回复尚未发出，将自动重试：${normalizeText(result?.error || result?.blocked_reason) || "发送前校验未通过"}`;
+            state.last_error = `本次回复尚未发出，将自动重试：${normalizeText(result?.blocked_reason || result?.error) || "发送前校验未通过"}`;
           } else {
             pauseWithError("send_retry_queue_paused", "回复尚未发出，但安全重试队列不可用，请人工检查后再启动");
           }
         } else {
           retryGenerations.delete(fingerprint);
           state.processed[fingerprint].status = "outcome_unknown";
-          pauseWithError("send_outcome_unknown_paused", result?.error || result?.blocked_reason || "自动回复发送结果无法确认");
+          pauseWithError("send_outcome_unknown_paused", result?.blocked_reason || result?.error || "自动回复发送结果无法确认");
         }
         save();
         return publicState();
@@ -1108,6 +1208,8 @@ function createAutoReplyController(options = {}) {
       state.rate_events.push({ contact_id: contact.id, at: sentAt.toISOString() });
       state.last_event = "reply_sent_verified";
       state.last_error = "";
+      state.last_ai_warning_code = normalizeAiWarningCode(generated?.aiWarningCode);
+      state.last_ai_warning = normalizeText(generated?.aiWarning).slice(0, 300);
       const pauseReason = generated?.pauseAfterHandoff === true
         ? normalizeText(generated?.pauseReason) || "DeepSeek 配置需要人工处理"
         : "";

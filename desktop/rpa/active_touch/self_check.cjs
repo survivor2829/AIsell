@@ -668,6 +668,68 @@ try {
     .digest("hex");
   assert.equal(loadState(sharedDir).real_send_attempt_key, firstIncomingAttemptKey, "verified contact sends must scope idempotency to the incoming turn");
 
+  let visualBeforeDraftCalls = 0;
+  let visualSenderCalls = 0;
+  const visualSendResult = await executeVerifiedContactSend({
+    baseDir: sharedDir,
+    contactId: sharedContact.id,
+    message: "视觉自动回复",
+    authorized: true,
+    visualMode: "visual_render_v1",
+    expectedPid: 81,
+    expectedHWnd: "91",
+    expectedConversation: "A测试客户",
+    expectedIncomingMessage: "你是谁",
+    expectedIncomingRuntimeId: `visual:v1:${"a".repeat(64)}`,
+    beforeDraft: ({ session }) => {
+      visualBeforeDraftCalls += 1;
+      assert.equal(session.title, "A测试客户");
+      return true;
+    },
+    runStep: () => { throw new Error("visual sends must not use the inaccessible UIA active-touch steps"); },
+    visualSendDriver: async (request) => {
+      visualSenderCalls += 1;
+      assert.deepEqual({
+        pid: request.pid,
+        hWnd: request.hWnd,
+        conversation: request.conversation,
+        incomingMessage: request.incomingMessage,
+        incomingVerified: request.incomingVerified,
+        reply: request.reply
+      }, {
+        pid: 81,
+        hWnd: 91,
+        conversation: "A测试客户",
+        incomingMessage: "你是谁",
+        incomingVerified: true,
+        reply: "视觉自动回复"
+      });
+      assert.equal(await request.beforeSend(), true);
+      return { ok: true, send_attempted: true, verificationMode: "draft_consumed_same_header", pid: 81, hWnd: 91 };
+    }
+  });
+  assert.equal(visualSendResult.ok, true);
+  assert.equal(visualSendResult.send_attempted, true);
+  assert.equal(visualSendResult.state.real_send_status, "sent_verified");
+  assert.equal(visualSendResult.verification_mode, "draft_consumed_same_header");
+  assert.equal(visualBeforeDraftCalls, 1);
+  assert.equal(visualSenderCalls, 1);
+
+  const visualUnknownResult = await executeVerifiedContactSend({
+    baseDir: sharedDir,
+    contactId: sharedContact.id,
+    message: "视觉结果未知",
+    authorized: true,
+    visualMode: "visual_render_v1",
+    expectedPid: 81,
+    expectedHWnd: "91",
+    expectedConversation: "A测试客户",
+    visualSendDriver: async () => ({ ok: false, send_attempted: true, outcomeUnknown: true, reason: "visual_send_outcome_unknown" })
+  });
+  assert.equal(visualUnknownResult.ok, false);
+  assert.equal(visualUnknownResult.send_attempted, true, "a visual click with an unknown outcome must never be treated as retryable");
+  assert.equal(visualUnknownResult.blocked_reason, "visual_send_outcome_unknown");
+
   saveState(sharedDir, {
     ...loadState(sharedDir),
     real_send_status: "not_sent",
@@ -1262,7 +1324,7 @@ try {
   assert.equal(driverSource.includes("WeChatAppEx"), false);
   assert.doesNotMatch(driverSource, /\$pf86\\\\Tencent\\\\WeChat\\\\WeChat\.exe",\s*\n\s*\)\)/);
   assert.match(driverSource, /const SIMPLE_ENSURE_WECHAT_WINDOW_SCRIPT/);
-  assert.match(driverSource, /Buffer\.from\(SIMPLE_ENSURE_WECHAT_WINDOW_SCRIPT/);
+  assert.match(driverSource, /Buffer\.from\(`\$\{DPI_AWARE_POWERSHELL\}\\n\$\{SIMPLE_ENSURE_WECHAT_WINDOW_SCRIPT\}`/);
   assert.equal(driverSource.includes("if (!ensureResult.ok) return ensureResult;"), false);
   assert.match(driverSource, /if \(Test-VisiblePersonalWechat\) \{ \[void\]\(Focus-PersonalWechatMainWindowByAutomation\) \}/);
   assert.equal(driverSource.includes("XIAOXI_EXPECTED_ACCOUNT"), false);

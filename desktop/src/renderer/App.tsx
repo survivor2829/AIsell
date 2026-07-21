@@ -259,7 +259,7 @@ type TouchTaskResult = {
   preview?: TouchTaskPreview;
   error?: string;
 };
-type DeepSeekApiResult = { ok: boolean; data?: { configured?: boolean; maskedKey?: string }; error?: string };
+type DeepSeekApiResult = { ok: boolean; data?: { configured?: boolean; maskedKey?: string; code?: string; error?: string }; code?: string; error?: string };
 
 declare global {
   interface Window {
@@ -1145,8 +1145,9 @@ function DeepSeekApiSettings({
       const configured = Boolean(result.ok && result.data?.configured);
       setMaskedKey(configured ? result.data?.maskedKey || "" : "");
       onConfiguredChange?.(configured);
-      setStatusTone(result.ok ? "neutral" : "error");
-      setStatus(configured ? "已保存，可测试连接。" : result.error || "尚未保存 API Key。");
+      const statusError = result.data?.error || result.error;
+      setStatusTone(statusError ? "error" : "neutral");
+      setStatus(configured ? "已保存，可测试连接。" : statusError || "尚未保存 API Key。");
     }).catch(() => {
       setStatusTone("error");
       onConfiguredChange?.(false);
@@ -1158,6 +1159,11 @@ function DeepSeekApiSettings({
   const run = (operation: () => Promise<DeepSeekApiResult>, success: string, clearInput = false) => {
     setBusy(true);
     void operation().then((result) => {
+      if (typeof result.data?.configured === "boolean") {
+        const configured = result.data.configured;
+        setMaskedKey(configured ? result.data.maskedKey || "" : "");
+        onConfiguredChange?.(configured);
+      }
       if (!result.ok) {
         setStatusTone("error");
         return setStatus(result.error || "操作失败，请稍后重试。");
@@ -1165,15 +1171,18 @@ function DeepSeekApiSettings({
       if (clearInput) setApiKey("");
       setStatusTone("success");
       setStatus(success);
-      if (typeof result.data?.configured === "boolean") {
-        const configured = result.data.configured;
-        setMaskedKey(configured ? result.data.maskedKey || "" : "");
-        onConfiguredChange?.(configured);
-      }
     }).catch(() => {
       setStatusTone("error");
       setStatus("操作失败，请稍后重试。");
     }).finally(() => setBusy(false));
+  };
+
+  const saveAndTest = async (): Promise<DeepSeekApiResult> => {
+    const value = apiKey.trim();
+    if (!value) return window.xiaoxiDeepSeekApi!.test();
+    const tested = await window.xiaoxiDeepSeekApi!.test({ apiKey: value });
+    if (!tested.ok) return tested;
+    return window.xiaoxiDeepSeekApi!.save({ apiKey: value });
   };
 
   return (
@@ -1204,7 +1213,7 @@ function DeepSeekApiSettings({
         <div className="deepseek-settings-footer">
           <div className={`deepseek-status is-${statusTone}`} aria-live="polite">{status}</div>
           <div className="actions deepseek-actions">
-            <button className="secondary-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.test(apiKey.trim() ? { apiKey: apiKey.trim() } : undefined), "DeepSeek 连接正常。") } disabled={busy || (!apiKey.trim() && !maskedKey)}>
+            <button className="secondary-button" onClick={() => run(saveAndTest, apiKey.trim() ? "DeepSeek 连接正常，当前 Key 已保存。" : "DeepSeek 连接正常。", Boolean(apiKey.trim()))} disabled={busy || (!apiKey.trim() && !maskedKey)}>
               <RefreshCw size={16} />
               测试连接
             </button>

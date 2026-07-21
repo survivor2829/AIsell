@@ -323,8 +323,7 @@ function findWechatExecutable(options = {}) {
     path.join(process.env.ProgramFiles ?? "C:\\Program Files", "Tencent", "Weixin", "Weixin.exe"),
     process.env["ProgramFiles(x86)"] ? path.join(process.env["ProgramFiles(x86)"], "Tencent", "Weixin", "Weixin.exe") : "",
     path.join(process.env.LOCALAPPDATA ?? "", "Tencent", "Weixin", "Weixin.exe"),
-    path.join(process.env.LOCALAPPDATA ?? "", "Programs", "Tencent", "Weixin", "Weixin.exe"),
-    "D:\\微信\\Weixin\\Weixin.exe"
+    path.join(process.env.LOCALAPPDATA ?? "", "Programs", "Tencent", "Weixin", "Weixin.exe")
   ];
   const candidates = [explicit, ...running, ...commonCandidates].filter(Boolean);
   const direct = candidates.find((candidate) => fs.existsSync(candidate));
@@ -340,7 +339,6 @@ $paths = New-Object System.Collections.Generic.List[string]
 if ($main -and $main.ExecutablePath) { [void]$paths.Add($main.ExecutablePath) }
 foreach ($path in @(
   "$env:XIAOXI_WECHAT_EXE",
-  "D:\\微信\\Weixin\\Weixin.exe",
   "$env:LOCALAPPDATA\\Tencent\\Weixin\\Weixin.exe",
   "$env:ProgramFiles\\Tencent\\Weixin\\Weixin.exe"
 )) {

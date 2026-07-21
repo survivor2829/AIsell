@@ -30,6 +30,8 @@ const momentsCommentReadbackProof = path.join(appDir, "rpa", "active_touch", "mo
 const momentsVisualProbe = path.join(appDir, "rpa", "active_touch", "moments_visual_probe.dev.cjs");
 const momentsVisualDryRun = path.join(appDir, "rpa", "active_touch", "moments_visual_dry_run.dev.cjs");
 const momentsVisualActionDriver = path.join(appDir, "rpa", "active_touch", "moments_visual_action_driver.dev.cjs");
+const visualAutoReplyDriver = path.join(appDir, "rpa", "active_touch", "wechat_auto_reply_visual_driver.dev.cjs");
+const visualAutoReplySend = path.join(appDir, "rpa", "active_touch", "wechat_auto_reply_visual_send.dev.cjs");
 const momentsActionSelfCheck = path.join(appDir, "rpa", "active_touch", "moments_action.self_check.cjs");
 const momentsRuntimeNames = [
   "moments_dry_run.dev.cjs",
@@ -38,9 +40,13 @@ const momentsRuntimeNames = [
   "moments_action_cli.dev.cjs",
   "moments_action_driver.dev.cjs",
   "moments_comment_readback_proof.dev.cjs",
-  "moments_visual_probe.dev.cjs",
   "moments_visual_dry_run.dev.cjs",
   "moments_visual_action_driver.dev.cjs"
+];
+const visualAutoReplyRuntimeNames = [
+  "moments_visual_probe.dev.cjs",
+  "wechat_auto_reply_visual_driver.dev.cjs",
+  "wechat_auto_reply_visual_send.dev.cjs"
 ];
 const momentsActionSourceMarkers = [
   "moments_test_action",
@@ -58,11 +64,11 @@ const momentsActionUiMarkers = [
   "data-xiaoxi-moments-like",
   "data-xiaoxi-moments-comment"
 ];
-const momentsVisualSourceMarkers = [
+const momentsTestVisualSourceMarkers = [
   "MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT",
-  "Windows.Media.Ocr.OcrEngine",
   "MOMENTS_VISUAL_ACTION_POWERSHELL"
 ];
+const visualAutoReplyReadOnlySourceMarkers = ["Windows.Media.Ocr.OcrEngine"];
 const databaseFilePattern = /\.(?:db(?:-wal|-shm)?|sqlite3?)$/i;
 const blockedNames = new Set(["python.exe", "dump_data.exe", "wechat-dump-rs.exe", "ai-expert.json", "auto-reply-state.json", "auto-reply-diagnostics.jsonl", "contacts.json", "touch_task.json", "touch_task.json.bak", "run_logs.jsonl", "state.json", "deepseek-api-key.bin"]);
 
@@ -137,7 +143,16 @@ assertNoBlockedFiles(archiveEntries, "portable ZIP");
 for (const name of momentsRuntimeNames) {
   assert.equal(archiveEntries.some((entry) => entry.replaceAll("\\", "/").endsWith(`/rpa/active_touch/${name}`)), edition === "test", `${name} ZIP boundary must match the edition`);
 }
+for (const name of visualAutoReplyRuntimeNames) {
+  assert.equal(archiveEntries.some((entry) => entry.replaceAll("\\", "/").endsWith(`/rpa/active_touch/${name}`)), true, `${name} must be present in every portable ZIP`);
+}
 assert.equal(archiveEntries.some((entry) => entry.replaceAll("\\", "/").endsWith("/rpa/active_touch/moments_action.self_check.cjs")), false, "Moments action self-check must not be packaged");
+for (const name of [
+  "wechat_auto_reply_visual_driver.self_check.cjs",
+  "wechat_auto_reply_visual_send.self_check.cjs"
+]) {
+  assert.equal(archiveEntries.some((entry) => entry.replaceAll("\\", "/").endsWith(`/rpa/active_touch/${name}`)), false, `${name} must not be packaged`);
+}
 
 const helperCheck = spawnSync(helper, ["self-check"], { encoding: "utf8", windowsHide: true, timeout: 30000 });
 assert.equal(helperCheck.status, 0, helperCheck.stderr || helperCheck.stdout || "packaged helper self-check failed");
@@ -258,9 +273,11 @@ assert.equal(fs.existsSync(momentsActionModule), edition === "test");
 assert.equal(fs.existsSync(momentsActionCli), edition === "test");
 assert.equal(fs.existsSync(momentsActionDriver), edition === "test");
 assert.equal(fs.existsSync(momentsCommentReadbackProof), edition === "test");
-assert.equal(fs.existsSync(momentsVisualProbe), edition === "test");
+assert.equal(fs.existsSync(momentsVisualProbe), true);
 assert.equal(fs.existsSync(momentsVisualDryRun), edition === "test");
 assert.equal(fs.existsSync(momentsVisualActionDriver), edition === "test");
+assert.equal(fs.existsSync(visualAutoReplyDriver), true);
+assert.equal(fs.existsSync(visualAutoReplySend), true);
 assert.equal(fs.existsSync(momentsActionSelfCheck), false, "Moments action self-check must not be packaged");
 const activeTouchSources = fs.readdirSync(activeDir)
   .filter((name) => name.endsWith(".cjs"))
@@ -276,8 +293,11 @@ assert.equal(activeTouchSources.includes("sns_list"), edition === "test", "only 
 for (const marker of momentsActionSourceMarkers) {
   assert.equal(packagedSources.includes(marker), edition === "test", `only test-edition source may contain ${marker}`);
 }
-for (const marker of momentsVisualSourceMarkers) {
+for (const marker of momentsTestVisualSourceMarkers) {
   assert.equal(packagedSources.includes(marker), edition === "test", `only test-edition source may contain ${marker}`);
+}
+for (const marker of visualAutoReplyReadOnlySourceMarkers) {
+  assert.equal(packagedSources.includes(marker), true, `every edition must contain the read-only visual auto-reply dependency ${marker}`);
 }
 const renderer = fs.readdirSync(path.join(appDir, "dist", "assets"))
   .filter((name) => /\.(?:css|js)$/.test(name))

@@ -7,6 +7,8 @@ type AutoReplyState = {
   reply_count: number;
   last_event: string;
   last_error: string;
+  last_ai_warning_code?: string;
+  last_ai_warning?: string;
   updated_at?: string;
   scan_health?: ScanHealth;
   last_scan_at?: string;
@@ -32,6 +34,8 @@ const EMPTY_STATE: AutoReplyState = {
   reply_count: 0,
   last_event: "",
   last_error: "",
+  last_ai_warning_code: "",
+  last_ai_warning: "",
   scan_health: "unknown",
   last_scan_at: "",
   last_scan_success_at: "",
@@ -94,7 +98,22 @@ const SCAN_REASON_LABELS: Record<string, string> = {
   unknown_scan_reason: "扫描器返回了未知状态，已安全隐藏原始值",
   scan_exception: "扫描微信时发生异常",
   scan_result_invalid: "扫描器返回了无效结果",
-  session_probe_unsupported: "当前微信会话列表结构无法可靠识别，已停止把漏检误报为正常"
+  session_probe_unsupported: "当前微信会话列表结构无法可靠识别，已自动切换视觉识别",
+  moments_render_pane_ambiguous: "微信渲染窗口不唯一",
+  moments_render_pane_not_found: "未找到微信渲染窗口",
+  visual_candidate_ambiguous: "同时发现多个待处理会话",
+  visual_capture_failed: "读取微信画面失败",
+  visual_driver_missing: "当前测试包缺少微信视觉识别组件",
+  visual_ocr_failed: "识别微信画面文字失败",
+  moments_visual_ocr_failed: "Windows 中文文字识别失败",
+  moments_visual_ocr_region_invalid: "微信文字识别区域无效",
+  moments_visual_ocr_unavailable: "当前 Windows 缺少中文文字识别能力",
+  visual_render_pane_mismatch: "微信渲染窗口结构与预期不一致",
+  visual_sidebar_match_ambiguous: "联系人列表中出现多个同名视觉匹配",
+  visual_sidebar_match_missing: "当前可见列表中未找到待监听联系人",
+  wechat_window_not_foreground: "微信窗口无法切换到前台",
+  wechat_window_obscured: "微信窗口被其他窗口遮挡",
+  whitelist_name_ambiguous: "同步联系人去除空格后出现重名"
 };
 
 const CONTROL_EVENT_LABELS: Record<string, string> = {
@@ -208,6 +227,7 @@ export function AutoReply() {
         </div>
       )}
       {visibleError && <div className="touch-notice" role="alert">{visibleError}</div>}
+      {state.last_ai_warning && <div className="touch-notice" role="status">{state.last_ai_warning}{state.last_ai_warning_code ? `（${state.last_ai_warning_code}）` : ""}</div>}
     </section>
   );
 }

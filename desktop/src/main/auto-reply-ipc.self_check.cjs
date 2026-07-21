@@ -64,6 +64,7 @@ async function main() {
       runtimeId: "message-1",
       pid: 81,
       hWnd: "91",
+      visualMode: "visual_render_v1",
       context: [
         { role: "assistant", content: "我们有基础版和进阶版。", key: "a-1" },
         { role: "user", content: "第二个方案适合粉尘车间吗？", key: "u-1" }
@@ -105,6 +106,7 @@ async function main() {
   const scannedNames = [];
   const sent = [];
   const sentAttemptIds = [];
+  const sentBindings = [];
   const handoffs = [];
   const scheduledDelays = [];
   let verifyAllowed = true;
@@ -136,6 +138,12 @@ async function main() {
     send: async (options) => {
       sent.push(options.frozenContact.name);
       sentAttemptIds.push(options.attemptId);
+      sentBindings.push({
+        visualMode: options.visualMode,
+        expectedPid: options.expectedPid,
+        expectedHWnd: options.expectedHWnd,
+        expectedConversation: options.expectedConversation
+      });
       const allowed = await options.beforeDraft();
       return allowed ? { ok: true, state: { real_send_status: "sent_verified" } } : { ok: false, blocked_reason: "incoming_message_changed" };
     },
@@ -151,6 +159,12 @@ async function main() {
   await controller.runOnce();
   assert.equal(controller.status().reply_count, 1);
   assert.match(sentAttemptIds[0], /^[a-f0-9]{64}$/, "each incoming turn must supply a stable real-send attempt id");
+  assert.deepEqual(sentBindings[0], {
+    visualMode: "visual_render_v1",
+    expectedPid: 81,
+    expectedHWnd: "91",
+    expectedConversation: "张总"
+  }, "visual candidates must keep their exact WeChat binding through the real-send call");
   assert.equal(handoffs.length, 0, "interest that can continue through AI guidance must not alert a human");
   assert.deepEqual(scannedNames[0].sort(), ["张总", "李经理", "已停用"].sort(), "legacy whitelist flags must not narrow the synced private-contact scope");
 
@@ -249,7 +263,7 @@ async function main() {
       assert.equal(await options.beforeDraft(), true);
       retryableSendCalls += 1;
       return retryableSendCalls === 1
-        ? { ok: false, blocked_reason: "atomic_draft_changed", send_attempted: false }
+        ? { ok: false, error: "generic_visual_error", blocked_reason: "atomic_draft_changed", send_attempted: false }
         : { ok: true, send_attempted: true };
     },
     sendHandoff: async () => ({ ok: true }),
@@ -262,6 +276,8 @@ async function main() {
   await retryableController.runOnce();
   assert.equal(retryableController.status().status, "running", "a proven pre-send failure must not pause all contacts");
   assert.equal(retryableController.status().reply_count, 0);
+  assert.match(retryableController.status().last_error, /atomic_draft_changed/, "the actionable visual block reason must take priority over a generic sender error");
+  assert.doesNotMatch(retryableController.status().last_error, /generic_visual_error/);
   assert.equal(Object.values(JSON.parse(fs.readFileSync(path.join(retryableDataDir, "auto-reply-state.json"), "utf8")).processed).at(-1).status, "retryable");
   retryableController.pause();
   assert.equal((await retryableController.start()).ok, true);
@@ -444,7 +460,31 @@ async function main() {
     expertStore: { read: () => ({ text: "礼貌回复。" }) },
     deepSeekClient: { assertAvailable: () => true },
     scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
-    primeIncoming: async () => ({ ok: false, reason: "session_probe_unsupported" }),
+    primeIncoming: async () => ({
+      ok: false,
+      reason: "session_probe_unsupported",
+      pid: 81,
+      hWnd: "91",
+      sessionProbe: {
+        v: 1,
+        failure: "signature_count_zero",
+        schemaObserved: true,
+        elementCount: 120,
+        eligibleRowCount: 3,
+        signatureCount: 0,
+        emptySignatureCount: 3,
+        rejectedRowLeftBoundary: 2,
+        rejectedRowTooNarrow: 1,
+        minimumRowWidth: -1,
+        maximumRowHeight: Number.MAX_SAFE_INTEGER,
+        listRowCount: "7",
+        contactName: "probe-contact-secret",
+        preview: "probe-message-secret",
+        automationId: "session_item_probe-secret",
+        negative: -1,
+        huge: Number.MAX_SAFE_INTEGER
+      }
+    }),
     send: async () => ({ ok: true }),
     sendHandoff: async () => ({ ok: true }),
     runStep: async () => ({ ok: true }),
@@ -455,6 +495,47 @@ async function main() {
   assert.equal((await unsupportedSessionPrimeController.start()).ok, false);
   assert.equal(unsupportedSessionPrimeController.status().last_scan_reason, "session_probe_unsupported", "known UIA compatibility failures must remain actionable instead of being hidden as unknown");
   assert.equal(unsupportedSessionPrimeController.status().scan_health, "warning");
+  const unsupportedSessionProbeLog = fs.readFileSync(path.join(root, "startup_session_probe_unsupported", "auto-reply-diagnostics.jsonl"), "utf8");
+  assert.match(unsupportedSessionProbeLog, /"probe_failure":"signature_count_zero"/);
+  assert.match(unsupportedSessionProbeLog, /"probe_eligible_row_count":3/);
+  assert.match(unsupportedSessionProbeLog, /"probe_signature_count":0/);
+  assert.match(unsupportedSessionProbeLog, /"probe_rejected_row_left_boundary":2/);
+  assert.match(unsupportedSessionProbeLog, /"probe_rejected_row_too_narrow":1/);
+  assert.doesNotMatch(unsupportedSessionProbeLog, /"probe_list_row_count"/, "numeric diagnostic fields must not coerce strings");
+  assert.doesNotMatch(unsupportedSessionProbeLog, /probe-contact-secret|probe-message-secret|session_item_probe-secret|negative|huge/, "session probe diagnostics must whitelist only content-free counters");
+  assert.doesNotMatch(unsupportedSessionProbeLog, /probe_minimum_row_width|probe_maximum_row_height/, "session probe diagnostics must reject out-of-range values even for allowlisted fields");
+
+  const visualDiagnosticDir = path.join(root, "visual_scan_diagnostic");
+  const visualDiagnosticController = createAutoReplyController({
+    dataDir: visualDiagnosticDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "test" }) },
+    deepSeekClient: { assertAvailable: () => true },
+    scanIncoming: () => ({
+      ok: false,
+      reason: "visual_sidebar_match_ambiguous",
+      pid: 81,
+      hWnd: "91",
+      conversation: "visual-contact-canary",
+      message: "visual-message-canary",
+      context: [{ role: "user", content: "visual-context-canary", key: "visual-key-canary" }]
+    }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => ({ ok: true }),
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await visualDiagnosticController.start()).ok, true);
+  await visualDiagnosticController.runOnce();
+  assert.equal(visualDiagnosticController.status().last_scan_reason, "visual_sidebar_match_ambiguous", "known visual scan failures must remain actionable");
+  const visualDiagnosticLog = fs.readFileSync(path.join(visualDiagnosticDir, "auto-reply-diagnostics.jsonl"), "utf8");
+  assert.match(visualDiagnosticLog, /"code":"visual_sidebar_match_ambiguous"/);
+  assert.doesNotMatch(visualDiagnosticLog, /visual-contact-canary|visual-message-canary|visual-context-canary|visual-key-canary/, "visual scan diagnostics must not persist contact or message content");
+  visualDiagnosticController.pause();
 
   const healthDir = path.join(root, "scan_health");
   const healthResults = [
@@ -791,6 +872,45 @@ async function main() {
   assert.equal(takeoverController.status().last_event, "manual_reply_or_message_changed");
   assert.equal(takeoverController.status().status, "running");
   takeoverController.pause();
+
+  let visualPostDraftChecks = 0;
+  const visualPostDraftController = createAutoReplyController({
+    dataDir: path.join(root, "visual_post_draft_reflow"),
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply politely." }) },
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => ({ reply: "Understood.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })
+    },
+    scanIncoming: () => ({
+      ok: true,
+      conversation: retryableCandidate.conversation,
+      message: "Visual incoming message",
+      runtimeId: "visual-post-draft-runtime",
+      visualMode: "visual_render_v1",
+      pid: 81,
+      hWnd: "91",
+      context: [{ role: "user", content: "Visual incoming message", key: "visual-user" }]
+    }),
+    verifyIncoming: () => ({ ok: ++visualPostDraftChecks === 1 }),
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true, "visual incoming identity must still be strict before drafting");
+      assert.equal(await options.shouldContinue(), true, "post-draft layout reflow must not trigger a second pixel-bound incoming check");
+      return { ok: true, send_attempted: true };
+    },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await visualPostDraftController.start()).ok, true);
+  await visualPostDraftController.runOnce();
+  assert.equal(visualPostDraftChecks, 1, "visual incoming verification must run once before the draft is typed");
+  assert.equal(visualPostDraftController.status().reply_count, 1);
+  assert.equal(visualPostDraftController.status().last_event, "reply_sent_verified");
+  visualPostDraftController.pause();
 
   let pauseDuringSendController;
   pauseDuringSendController = createAutoReplyController({
@@ -1343,6 +1463,8 @@ async function main() {
         intentReason: "",
         needsHuman: true,
         handoffReason: "DeepSeek(API_KEY_INVALID)需要人工跟进",
+        aiWarningCode: "API_KEY_INVALID",
+        aiWarning: "DeepSeek 本次未生成可靠回复，已发送兜底消息并提醒人工。",
         pauseAfterHandoff: true,
         pauseReason: "DeepSeek API Key 无效"
       })
@@ -1379,6 +1501,8 @@ async function main() {
   assert.equal(aiConfigFailureController.status().status, "paused");
   assert.equal(aiConfigFailureController.status().last_event, "ai_configuration_paused");
   assert.match(aiConfigFailureController.status().last_error, /API Key 无效/);
+  assert.equal(aiConfigFailureController.status().last_ai_warning_code, "API_KEY_INVALID");
+  assert.match(aiConfigFailureController.status().last_ai_warning, /已发送兜底消息并提醒人工/);
 
   const rateCases = [
     {
@@ -1524,6 +1648,8 @@ async function main() {
     "consecutive_scan_failures",
     "last_error",
     "last_event",
+    "last_ai_warning",
+    "last_ai_warning_code",
     "last_scan_at",
     "last_scan_reason",
     "last_scan_success_at",
@@ -1578,6 +1704,32 @@ async function main() {
   });
   assert.equal(startingRecovery.status().status, "paused", "a crash during baseline priming must recover paused");
   assert.equal(startingRecovery.status().last_event, "recovered_after_restart");
+
+  const interruptedSendDir = path.join(root, "interrupted_send_recovery");
+  fs.mkdirSync(interruptedSendDir, { recursive: true });
+  fs.writeFileSync(path.join(interruptedSendDir, "auto-reply-state.json"), JSON.stringify({
+    version: 2,
+    status: "paused",
+    daily_date: "2026-07-14",
+    processed: {
+      interrupted: { status: "sending", contact_id: "c1", at: "2026-07-14T02:00:00.000Z" },
+      verified: { status: "sent_verified", contact_id: "c2", at: "2026-07-14T01:00:00.000Z" }
+    },
+    last_event: "paused_by_user",
+    last_error: ""
+  }), "utf8");
+  const interruptedSendRecovery = createAutoReplyController({
+    dataDir: interruptedSendDir,
+    activeTouchDir,
+    coordinator,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal(interruptedSendRecovery.status().status, "paused");
+  assert.equal(interruptedSendRecovery.status().last_event, "send_outcome_unknown_paused", "a restart during send must surface an actionable pause");
+  assert.match(interruptedSendRecovery.status().last_error, /发送结果无法确认/);
+  const interruptedSendState = JSON.parse(fs.readFileSync(path.join(interruptedSendDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(interruptedSendState.processed.interrupted.status, "outcome_unknown", "a persisted sending attempt must not remain a silent terminal state after restart");
+  assert.equal(interruptedSendState.processed.verified.status, "sent_verified", "restart recovery must not rewrite completed sends");
 
   const interruptedHandoffDir = path.join(root, "interrupted_handoff_recovery");
   fs.mkdirSync(interruptedHandoffDir, { recursive: true });

@@ -44,7 +44,14 @@ function sourceAllowed(source, edition) {
   if (relative.includes("/__pycache__/") || relative.includes("/libs/") || /(?:dump_data|wechat-dump|wx_key\.dll)/i.test(name)) return false;
   if (edition !== "test" && relative.startsWith("src/main/") && ["active-touch-dev-ipc.cjs", "preload.dev.cjs"].includes(name)) return false;
   if (name.endsWith(".dev.cjs")) {
-    const allowed = ["state_machine.dev.cjs", "wechat_window_driver.dev.cjs", "active_touch_cli.dev.cjs"];
+    const allowed = [
+      "state_machine.dev.cjs",
+      "wechat_window_driver.dev.cjs",
+      "active_touch_cli.dev.cjs",
+      "moments_visual_probe.dev.cjs",
+      "wechat_auto_reply_visual_driver.dev.cjs",
+      "wechat_auto_reply_visual_send.dev.cjs"
+    ];
     if (edition === "test") allowed.push(
       "preload.dev.cjs",
       "moments_dry_run.dev.cjs",
@@ -53,7 +60,6 @@ function sourceAllowed(source, edition) {
       "moments_action_cli.dev.cjs",
       "moments_action_driver.dev.cjs",
       "moments_comment_readback_proof.dev.cjs",
-      "moments_visual_probe.dev.cjs",
       "moments_visual_dry_run.dev.cjs",
       "moments_visual_action_driver.dev.cjs"
     );

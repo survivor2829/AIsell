@@ -86,7 +86,7 @@ $callback = [Win32WechatSendMessage+EnumWindowsProc]{
     [void][Win32WechatSendMessage]::GetWindowThreadProcessId($hWnd, [ref]$windowProcessId)
     $proc = Get-Process -Id $windowProcessId -ErrorAction SilentlyContinue
     $matchesExpected = ([string]::IsNullOrWhiteSpace($expectedPid) -or [string]$windowProcessId -eq $expectedPid) -and ([string]::IsNullOrWhiteSpace($expectedHandle) -or [string]$hWnd.ToInt64() -eq $expectedHandle)
-    if ($proc -and $matchesExpected -and [int64]$proc.MainWindowHandle -eq $hWnd.ToInt64() -and $processNames -contains $proc.ProcessName -and $title -eq "微信" -and $w -ge 400 -and $h -ge 300 -and $rect.Left -gt -1000 -and $rect.Top -gt -1000) {
+    if ($proc -and $matchesExpected -and [int64]$proc.MainWindowHandle -eq $hWnd.ToInt64() -and $processNames -contains $proc.ProcessName -and $title -eq "微信" -and $w -ge 400 -and $h -ge 300) {
       [void][Win32WechatSendMessage]::ShowWindowAsync($hWnd, 9)
       $focused = [Win32WechatSendMessage]::SetForegroundWindow($hWnd)
       if (-not $focused) { try { $focused = (New-Object -ComObject WScript.Shell).AppActivate([int]$windowProcessId) } catch {} }

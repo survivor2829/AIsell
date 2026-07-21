@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { DEEPSEEK_MODEL, createDeepSeekClient, createDeepSeekKeyStore, maskApiKey, parseReplyDecision, prompt, replyPrompt } = require("./deepseek-api.cjs");
+const { DEEPSEEK_MODEL, createDeepSeekClient, createDeepSeekKeyStore, maskApiKey, parsePlainPayload, parseReplyDecision, prompt, replyPrompt } = require("./deepseek-api.cjs");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-deepseek-"));
 const safeStorage = { isEncryptionAvailable: () => true, encryptString: (value) => Buffer.from(`encrypted:${value}`), decryptString: (value) => value.toString().replace(/^encrypted:/, "") };
@@ -14,6 +14,25 @@ async function main() {
   assert.equal(store.read(), "test-customer-key");
   assert.equal(store.status().maskedKey, maskApiKey("test-customer-key"));
   assert.equal(maskApiKey("sk-a"), "****");
+  const unreadableRoot = path.join(root, "foreign-windows-user");
+  fs.mkdirSync(unreadableRoot, { recursive: true });
+  const unreadableKeyFile = path.join(unreadableRoot, "deepseek-api-key.bin");
+  fs.writeFileSync(unreadableKeyFile, "encrypted-on-another-computer", "utf8");
+  const unreadableStore = createDeepSeekKeyStore({
+    rootDir: unreadableRoot,
+    safeStorage: {
+      isEncryptionAvailable: () => true,
+      decryptString: () => { throw new Error("different DPAPI user"); }
+    }
+  });
+  assert.deepEqual(unreadableStore.status(), {
+    configured: false,
+    maskedKey: "",
+    code: "API_KEY_UNREADABLE",
+    error: "已保存的 DeepSeek API Key 无法在当前 Windows 用户下解密，请重新填写。"
+  });
+  assert.throws(() => unreadableStore.read(), (error) => error.code === "API_KEY_UNREADABLE");
+  assert.equal(fs.existsSync(unreadableKeyFile), true, "a key encrypted for another Windows user must not be deleted automatically");
   const messages = prompt({ salutation: "张总", script: "{称呼}，您好，我们这边有清洁设备短租方案。" });
   assert.match(messages[0].content, /完整微信消息/);
   assert.match(messages[0].content, /50至90个汉字/);
@@ -42,9 +61,20 @@ async function main() {
       : "您好，欢迎了解我们的服务。";
     return { ok: true, json: async () => ({ choices: [{ finish_reason: "stop", message: { content } }] }) };
   } });
+  const requestsBeforeCapabilityTest = requests.length;
+  await client.test("test-customer-key");
+  const capabilityRequests = requests.slice(requestsBeforeCapabilityTest);
+  assert.equal(capabilityRequests.length, 2, "connection tests must validate both production output modes");
+  assert.equal(capabilityRequests[0].max_tokens, 300);
+  assert.equal(capabilityRequests[0].response_format, undefined, "connection tests must validate active-touch plain text output");
+  assert.deepEqual(capabilityRequests[0].thinking, { type: "disabled" });
+  assert.equal(capabilityRequests[1].max_tokens, 300);
+  assert.deepEqual(capabilityRequests[1].response_format, { type: "json_object" }, "connection tests must validate auto-reply structured output");
+  assert.deepEqual(capabilityRequests[1].thinking, { type: "disabled" }, "connection tests must not accept reasoning-only HTTP 200 responses");
   assert.equal((await client.draft({ task: { script: "欢迎咨询" }, result: { request_id: "request", salutation: { type: "person", value: "张总" } } })).draft, "您好，欢迎了解我们的服务。");
   assert.equal(requests.at(-1).response_format, undefined, "plain-text draft must not enable JSON mode");
-  assert.equal(requests.at(-1).thinking, undefined, "plain-text draft must keep the model default");
+  assert.deepEqual(requests.at(-1).thinking, { type: "disabled" }, "plain-text draft must not spend its completion budget on hidden reasoning");
+  assert.equal(requests.at(-1).max_tokens, 300);
   const requestsBeforeReply = requests.length;
   const decision = await client.reply({
     expert: "业务信息：设备短租。人工提醒：明确要求正式报价或下单时提醒人工。",
@@ -74,6 +104,9 @@ async function main() {
   assert.throws(() => parseReplyDecision(JSON.stringify({ reply: "收到", intent: false })), (error) => error.code === "AI_RESPONSE_INVALID");
   assert.throws(() => parseReplyDecision(JSON.stringify({ reply: "收到", intent: "false", intentReason: "", needsHuman: false, handoffReason: "" })), (error) => error.code === "AI_RESPONSE_INVALID");
   assert.throws(() => parseReplyDecision(JSON.stringify({ reply: "   ", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })), (error) => error.code === "AI_RESPONSE_INVALID");
+  assert.equal(parsePlainPayload({ choices: [{ finish_reason: "stop", message: { content: "连接正常" } }] }, "missing"), "连接正常");
+  assert.throws(() => parsePlainPayload({ choices: [{ finish_reason: "stop", message: { content: "" } }] }, "missing"), (error) => error.code === "AI_RESPONSE_EMPTY");
+  assert.throws(() => parsePlainPayload({ choices: [{ finish_reason: "length", message: { content: "未完成" } }] }, "missing"), (error) => error.code === "AI_RESPONSE_TRUNCATED");
   assert.equal(parseReplyDecision(JSON.stringify({ reply: "收到", intent: true, intentReason: "有意向", needsHuman: false, handoffReason: "" })).needsHuman, false, "interest alone must not force a human handoff");
   assert.equal(JSON.stringify(requests.at(-1)).includes("张总"), false, "auto-reply request must not include the contact name");
   assert.equal(JSON.stringify(requests.at(-1)).includes("设备短租"), true);
@@ -82,6 +115,18 @@ async function main() {
     expert: "业务信息：工业清洁设备。",
     context: [{ role: "user", content: "工厂粉尘多，想了解高压清洗机。" }]
   };
+  const draftRetryBodies = [];
+  const draftRetryPayloads = [
+    { choices: [{ finish_reason: "length", message: { content: "" } }] },
+    { choices: [{ finish_reason: "stop", message: { content: "您好，这是恢复后的完整测试文案。" } }] }
+  ];
+  const draftRetryClient = createDeepSeekClient({ keyStore: store, fetchImpl: async (_url, request) => {
+    draftRetryBodies.push(JSON.parse(request.body));
+    return { ok: true, json: async () => draftRetryPayloads.shift() };
+  } });
+  assert.equal((await draftRetryClient.draft({ task: { script: "测试服务" }, result: { salutation: { type: "generic", value: "" } } })).draft, "您好，这是恢复后的完整测试文案。");
+  assert.deepEqual(draftRetryBodies.map((body) => body.max_tokens), [300, 600]);
+  assert.equal(draftRetryBodies.every((body) => body.thinking?.type === "disabled"), true);
   const validRetryContent = JSON.stringify({ reply: "粉尘主要在开阔地面，还是设备周边和边角？", intent: true, intentReason: "客户正在选型", needsHuman: false, handoffReason: "" });
   const emptyRetryBodies = [];
   const emptyRetryPayloads = [
@@ -155,6 +200,8 @@ async function main() {
   assert.equal(exhausted.reply, "这个问题我帮您确认一下，稍后回复您。");
   assert.equal(exhausted.intent, false);
   assert.equal(exhausted.needsHuman, true, "three invalid responses must use the existing human handoff path");
+  assert.equal(exhausted.aiWarningCode, "AI_RESPONSE_EMPTY");
+  assert.match(exhausted.aiWarning, /已发送兜底消息并提醒人工/);
   assert.match(exhausted.handoffReason, /AI_RESPONSE_TRUNCATED/);
   assert.match(exhausted.handoffReason, /AI_RESPONSE_EMPTY/);
   assert.doesNotMatch(exhausted.handoffReason, /finish=|content=|tokens=|id=/, "file-helper handoff must stay short and business-readable");
@@ -236,10 +283,18 @@ async function main() {
     })
   });
   await assert.rejects(() => stalledClient.test(), (error) => error.code === "AI_REQUEST_TIMEOUT");
+  const invalidPayloadClient = createDeepSeekClient({
+    keyStore: store,
+    fetchImpl: async () => ({ ok: true, json: async () => { throw new SyntaxError("invalid json"); } })
+  });
+  await assert.rejects(() => invalidPayloadClient.test(), (error) => error.code === "AI_RESPONSE_INVALID", "an unparsable HTTP 200 payload is a provider response error, not a network failure");
   store.clear();
   await assert.rejects(() => client.test(), (error) => error.code === "API_KEY_MISSING");
   const preload = fs.readFileSync(path.join(__dirname, "preload-api.cjs"), "utf8");
   assert.equal(preload.includes("deepseek-api:read"), false, "preload must not expose a Key read IPC");
+  const renderer = fs.readFileSync(path.join(__dirname, "../renderer/App.tsx"), "utf8");
+  const saveAndTestBlock = renderer.slice(renderer.indexOf("const saveAndTest"), renderer.indexOf("return (", renderer.indexOf("const saveAndTest")));
+  assert.ok(saveAndTestBlock.indexOf(".test({ apiKey: value })") < saveAndTestBlock.indexOf(".save({ apiKey: value })"), "a replacement Key must pass the production capability test before it can replace the saved Key");
   console.log("deepseek-api self-check passed");
 }
 

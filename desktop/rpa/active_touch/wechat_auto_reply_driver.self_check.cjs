@@ -1,13 +1,75 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const {
   AUTO_REPLY_SCAN_SCRIPT,
   classifyAvatarSide,
-  createWechatAutoReplyDriver,
+  createWechatAutoReplyDriver: createWechatAutoReplyDriverWithWindowLayout,
   mergeContextPages
 } = require("./wechat_auto_reply_driver.cjs");
-const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
+const {
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  WECHAT_STABLE_WINDOW_LAYOUT,
+  focusWechatWindowAsync,
+  normalizeWechatMainWindowAsync,
+  runPowerShellAsync
+} = require("./wechat_window_driver.cjs");
+
+const normalizedWindow = { ok: true, normalized: true, pid: 81, hWnd: "91", x: 0, y: 0, width: 1100, height: 700 };
+function createWechatAutoReplyDriver(powerShellRunner, windowNormalizer = async () => normalizedWindow) {
+  return createWechatAutoReplyDriverWithWindowLayout(powerShellRunner, windowNormalizer);
+}
 
 async function main() {
+const layoutCalls = [];
+const layoutRunner = (script, env, options) => {
+  layoutCalls.push({ script, env, options });
+  return normalizedWindow;
+};
+const normalized = await normalizeWechatMainWindowAsync({ expectedPid: 81, expectedHWnd: "91" }, layoutRunner);
+assert.equal(normalized.ok, true);
+assert.equal(layoutCalls[0].script, NORMALIZE_WECHAT_WINDOW_SCRIPT);
+assert.equal(layoutCalls[0].env.XIAOXI_EXPECTED_PID, "81");
+assert.equal(layoutCalls[0].env.XIAOXI_EXPECTED_HWND, "91");
+assert.equal(layoutCalls[0].env.XIAOXI_WECHAT_WINDOW_WIDTH, String(WECHAT_STABLE_WINDOW_LAYOUT.width));
+assert.equal(layoutCalls[0].env.XIAOXI_WECHAT_WINDOW_HEIGHT, String(WECHAT_STABLE_WINDOW_LAYOUT.height));
+assert.deepEqual(WECHAT_STABLE_WINDOW_LAYOUT, { width: 880, height: 560 }, "the shared layout must be expressed in logical pixels");
+assert.equal(layoutCalls[0].options.ensure, true);
+assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /SetWindowPos/);
+assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /SetThreadDpiAwarenessContext/);
+assert.doesNotMatch(NORMALIZE_WECHAT_WINDOW_SCRIPT, /SetProcessDPIAware/);
+assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /GetDpiForWindow/);
+assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /\$targetWidth \* \$dpiScale/);
+assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /PrimaryScreen\.WorkingArea/);
+assert.ok(NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("$movedToTargetDisplay") < NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("GetDpiForWindow($hWnd)"), "mixed-DPI layout must move to the target display before reading its DPI");
+assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /wechat_window_ambiguous/);
+const windowDriverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.cjs"), "utf8");
+assert.doesNotMatch(windowDriverSource, /D:\\\\微信\\\\Weixin\\\\Weixin\.exe/u, "the launcher must not embed this development machine's WeChat path");
+assert.doesNotMatch(windowDriverSource, /(?:Left|Top) -gt -1000/u, "valid windows on a left-side monitor must not be rejected by coordinate magic numbers");
+await focusWechatWindowAsync({ expectedPid: 81, expectedHWnd: "91" }, layoutRunner);
+assert.equal(layoutCalls[1].script, NORMALIZE_WECHAT_WINDOW_SCRIPT, "active-touch focus must use the same stable window layout contract");
+
+const executionOrder = [];
+const normalizedDriver = createWechatAutoReplyDriverWithWindowLayout(
+  () => {
+    executionOrder.push("scan");
+    return { ok: true, conversation: "张总", message: "您好", runtimeId: "normalized-1", latestRole: "user", pid: 81, hWnd: 91, context: [{ role: "user", content: "您好", key: "normalized-1" }] };
+  },
+  async () => {
+    executionOrder.push("normalize");
+    return normalizedWindow;
+  }
+);
+assert.equal((await normalizedDriver.scanWechatIncoming(["张总"])).ok, true);
+assert.deepEqual(executionOrder, ["normalize", "scan"], "auto-reply scans must normalize the WeChat window before reading it");
+let blockedScanCalls = 0;
+const blockedByLayout = createWechatAutoReplyDriverWithWindowLayout(
+  () => { blockedScanCalls += 1; return { ok: true }; },
+  async () => ({ ok: false, reason: "wechat_window_not_ready" })
+);
+assert.equal((await blockedByLayout.primeWechatSession(["张总"])).reason, "wechat_window_not_ready");
+assert.equal(blockedScanCalls, 0, "a failed window layout must stop before the auto-reply scanner runs");
+
 assert.equal(classifyAvatarSide({ leftAvatar: true, rightAvatar: false, textWidth: 80 }), "user", "short incoming text must use the left avatar");
 assert.equal(classifyAvatarSide({ leftAvatar: true, rightAvatar: false, textWidth: 760 }), "user", "long incoming text must not become outgoing");
 assert.equal(classifyAvatarSide({ leftAvatar: false, rightAvatar: true, textWidth: 80 }), "assistant", "short outgoing text must use the right avatar");
@@ -79,7 +141,8 @@ assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("wechat_window_ambiguous"), true, "
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("$bubbleCandidates.Count -gt 0"), true, "exact message bubbles must take priority over legacy text nodes");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("Add-Type -AssemblyName System.Drawing"), true, "avatar-side detection must use an in-memory screenshot");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("CopyFromScreen"), true, "the screenshot must be captured in memory without a file");
-assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("SetProcessDPIAware"), true, "screenshot and UIA coordinates must share the physical DPI coordinate space");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("SetThreadDpiAwarenessContext"), true, "screenshot and UIA coordinates must share the per-monitor physical DPI coordinate space");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("SetProcessDPIAware"), false);
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes(".Save("), false, "chat screenshots must never be saved");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("function Measure-AvatarBand"), true, "roles must come from left and right avatar bands");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("SetScrollPercent"), true, "history may inspect at most one older viewport");
@@ -99,10 +162,16 @@ assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("history_window_not_foreground"), t
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("Find-EligibleSessionRows $all $allowedSet"), true, "all-contact polling must traverse the visible session tree once");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("function Get-SessionPreviewSignature"), true, "visible session previews must have content-free change signatures");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("function Test-SessionMetaElement"), true, "preview signatures must exclude right-top time and date metadata by geometry");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("function Normalize-SessionAggregatePreview"), true, "self-drawn aggregate session rows must have a strict preview-only fallback");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes('foreach ($index in $exactElementIndices)'), true, "session_item identities must be evaluated before weaker text fallbacks");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes('$aggregateChildren = $aggregateList.FindAll([System.Windows.Automation.TreeScope]::Children'), true, "aggregate compatibility must inspect only direct children of one verified conversation list");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes('if ($sessionLists.Count -eq 1)'), true, "multiple visible conversation lists must disable aggregate compatibility");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes('Test-AggregateSessionListItem $item $aggregateListRect'), true, "aggregate rows must be visible list items fully contained by the verified list");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes('$value["sessionProbe"] = $script:sessionProbeDiagnostics'), true, "unsupported session probes must return content-free diagnostic counters");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("function Test-UnreadBadgeGeometry"), true, "numeric unread hints must pass a dedicated geometry gate");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("function Test-UnreadName"), true, "unread labels in ordinary element names must use an exact status shape");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("$itemRect.Right -gt $leftLimit"), true, "a session row must stay completely inside the left conversation region");
-assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("$sessionRows.Count -eq 0 -or $script:sessionBaselines.Count -eq 0"), true, "zero matched eligible rows must fail visibly instead of claiming full-list coverage");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("$sessionRows.Count -eq 0 -or $script:sessionBaselines.Count -eq 0"), false, "a verified session schema must remain healthy while no allowed contact currently has an unread aggregate row");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes('$text -match "^[1-9][0-9]{0,2}$" -or\n      $text -match'), false, "numeric preview or badge changes must participate in the signature instead of being silently discarded");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("$minimumRowWidth = [Math]::Min(240.0"), true, "ultrawide windows must not scale the minimum session-row width past the real sidebar width");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("preview_change"), true, "a changed preview must detect messages even when WeChat does not expose an unread badge");
@@ -338,6 +407,8 @@ const unreadNameProbe = await runPowerShellAsync(`${AUTO_REPLY_SCAN_SCRIPT.slice
   exactChinese = Test-UnreadName "新消息"
   exactEnglish = Test-UnreadName "new message"
   exactCount = Test-UnreadName "[3条]"
+  compositeCount = Test-UnreadName "客户 [3条] 预览"
+  embeddedCount = Test-UnreadName "价格[3条]套餐"
   missingOpenBracket = Test-UnreadName "3条]"
   missingCloseBracket = Test-UnreadName "[3条"
   customerSentence = Test-UnreadName "没有新消息了吗"
@@ -346,10 +417,121 @@ const unreadNameProbe = await runPowerShellAsync(`${AUTO_REPLY_SCAN_SCRIPT.slice
 assert.equal(unreadNameProbe.exactChinese, true);
 assert.equal(unreadNameProbe.exactEnglish, true);
 assert.equal(unreadNameProbe.exactCount, true);
+assert.equal(unreadNameProbe.compositeCount, false, "an unread-looking marker inside an ordinary composite name must not bypass preview baselines");
+assert.equal(unreadNameProbe.embeddedCount, false, "an unread-looking count embedded inside customer text must not match");
 assert.equal(unreadNameProbe.missingOpenBracket, false, "an unread count missing its opening bracket must not match");
 assert.equal(unreadNameProbe.missingCloseBracket, false, "an unread count missing its closing bracket must not match");
 assert.equal(unreadNameProbe.customerSentence, false, "a customer sentence containing 新消息 must not be treated as unread state");
 assert.equal(unreadNameProbe.englishSentence, false, "a customer sentence containing new message must not be treated as unread state");
+
+const aggregateUnreadFunctionStart = AUTO_REPLY_SCAN_SCRIPT.indexOf("function Test-AggregateSessionUnread");
+const aggregateUnreadFunctionEnd = AUTO_REPLY_SCAN_SCRIPT.indexOf("function Test-Unread", aggregateUnreadFunctionStart + 1);
+assert.ok(aggregateUnreadFunctionStart >= 0 && aggregateUnreadFunctionEnd > aggregateUnreadFunctionStart);
+const aggregateUnreadProbe = await runPowerShellAsync(`${AUTO_REPLY_SCAN_SCRIPT.slice(aggregateUnreadFunctionStart, aggregateUnreadFunctionEnd)}
+@{
+  immediateCount = Test-AggregateSessionUnread "A测试客户 [3条] 新问题 18:44" "A测试客户"
+  noSpaceBeforeCount = Test-AggregateSessionUnread "A测试客户[3条] 新问题 18:44" "A测试客户"
+  previewCount = Test-AggregateSessionUnread "A测试客户 请看 [3条] 方案 18:44" "A测试客户"
+  wrongContact = Test-AggregateSessionUnread "B测试客户 [3条] 新问题 18:44" "A测试客户"
+  zeroCount = Test-AggregateSessionUnread "A测试客户 [0条] 新问题 18:44" "A测试客户"
+} | ConvertTo-Json -Compress`, {}, { ensure: false, timeout: 5000 });
+assert.equal(aggregateUnreadProbe.immediateCount, true);
+assert.equal(aggregateUnreadProbe.noSpaceBeforeCount, true);
+assert.equal(aggregateUnreadProbe.previewCount, false, "an unread-looking count inside the customer preview must not trigger aggregate unread state");
+assert.equal(aggregateUnreadProbe.wrongContact, false);
+assert.equal(aggregateUnreadProbe.zeroCount, false);
+
+const aggregateNormalizerStart = AUTO_REPLY_SCAN_SCRIPT.indexOf("function Normalize-SessionAggregatePreview");
+const aggregateNormalizerEnd = AUTO_REPLY_SCAN_SCRIPT.indexOf("function Get-SessionAggregatePreview", aggregateNormalizerStart);
+assert.ok(aggregateNormalizerStart >= 0 && aggregateNormalizerEnd > aggregateNormalizerStart);
+const aggregatePreviewProbe = await runPowerShellAsync(`${AUTO_REPLY_SCAN_SCRIPT.slice(aggregateNormalizerStart, aggregateNormalizerEnd)}
+@{
+  composite = (Normalize-SessionAggregatePreview "A测试客户 [3条] 新问题 18:44" "A测试客户") -ceq "新问题"
+  countAndTimeOnly = [string]::IsNullOrEmpty((Normalize-SessionAggregatePreview "A测试客户 [3条] 18:44" "A测试客户"))
+  exactName = [string]::IsNullOrEmpty((Normalize-SessionAggregatePreview "A测试客户" "A测试客户"))
+  customerSentence = (Normalize-SessionAggregatePreview "A测试客户 没有新消息了吗 18:44" "A测试客户") -ceq "没有新消息了吗"
+  wrongPrefix = [string]::IsNullOrEmpty((Normalize-SessionAggregatePreview "18:44 A测试客户 新问题" "A测试客户"))
+  timeBeforePreview = [string]::IsNullOrEmpty((Normalize-SessionAggregatePreview "A测试客户 18:44 新问题" "A测试客户"))
+} | ConvertTo-Json -Compress`, {}, { ensure: false, timeout: 5000 });
+assert.equal(aggregatePreviewProbe.composite, true);
+assert.equal(aggregatePreviewProbe.countAndTimeOnly, true);
+assert.equal(aggregatePreviewProbe.exactName, true);
+assert.equal(aggregatePreviewProbe.customerSentence, true, "ordinary customer text containing 新消息 must remain part of the preview signature");
+assert.equal(aggregatePreviewProbe.wrongPrefix, true, "aggregate fallback must prove the exact contact-name prefix");
+assert.equal(aggregatePreviewProbe.timeBeforePreview, true, "unexpected metadata ordering must fail closed instead of changing a stale signature");
+
+const aggregateNameResolverStart = AUTO_REPLY_SCAN_SCRIPT.indexOf("function Resolve-UniqueAggregateSessionName");
+const aggregateNameResolverEnd = AUTO_REPLY_SCAN_SCRIPT.indexOf("function Test-AggregateSessionListItem", aggregateNameResolverStart);
+assert.ok(aggregateNameResolverStart >= 0 && aggregateNameResolverEnd > aggregateNameResolverStart);
+const aggregateNameProbe = await runPowerShellAsync(`${AUTO_REPLY_SCAN_SCRIPT.slice(aggregateNameResolverStart, aggregateNameResolverEnd)}
+$uniqueNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+[void]$uniqueNames.Add("A测试客户")
+$ambiguousNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+[void]$ambiguousNames.Add("A")
+[void]$ambiguousNames.Add("A 测试客户")
+@{
+  unique = (Resolve-UniqueAggregateSessionName "A测试客户 [3条] 新问题 18:44" $uniqueNames) -ceq "A测试客户"
+  ambiguous = [string]::IsNullOrEmpty((Resolve-UniqueAggregateSessionName "A 测试客户 [3条] 新问题 18:44" $ambiguousNames))
+  embedded = [string]::IsNullOrEmpty((Resolve-UniqueAggregateSessionName "18:44 A测试客户 新问题" $uniqueNames))
+} | ConvertTo-Json -Compress`, {}, { ensure: false, timeout: 5000 });
+assert.equal(aggregateNameProbe.unique, true);
+assert.equal(aggregateNameProbe.ambiguous, true, "overlapping allowed-name prefixes must fail closed");
+assert.equal(aggregateNameProbe.embedded, true, "an allowed name outside the exact prefix position must not be accepted");
+
+const visualRuntimeId = `visual:v1:${"a".repeat(64)}`;
+const visualPreviewSignature = "b".repeat(64);
+const visualMessageSignature = "c".repeat(64);
+const visualFallbackResults = [
+  {
+    ok: false,
+    reason: "session_probe_unsupported",
+    pid: 81,
+    hWnd: 91,
+    sessionProbe: { schemaObserved: false, elementCount: 2 }
+  },
+  {
+    ok: true,
+    source: "session_prime",
+    pid: 81,
+    hWnd: 91,
+    sessionBaselines: [{ conversation: "A测试客户", signature: visualPreviewSignature }]
+  },
+  {
+    ok: true,
+    conversation: "A测试客户",
+    message: "你是谁",
+    runtimeId: visualRuntimeId,
+    previewSignature: visualPreviewSignature,
+    messageSignature: visualMessageSignature,
+    pid: 81,
+    hWnd: 91,
+    source: "preview_change",
+    latestRole: "user",
+    context: [{ role: "user", content: "你是谁", key: visualRuntimeId }]
+  },
+  {
+    ok: true,
+    conversation: "A测试客户",
+    message: "你是谁",
+    runtimeId: visualRuntimeId,
+    pid: 81,
+    hWnd: 91,
+    source: "verify",
+    latestRole: "user",
+    context: [{ role: "user", content: "你是谁", key: visualRuntimeId }]
+  }
+];
+const visualFallbackDriver = createWechatAutoReplyDriver(() => visualFallbackResults.shift());
+assert.equal((await visualFallbackDriver.primeWechatSession(["A测试客户"])).ok, true, "an unsupported rendered WeChat tree must transparently prime the visual driver");
+const visualFallbackCandidate = await visualFallbackDriver.scanWechatIncoming(["A测试客户"]);
+assert.equal(visualFallbackCandidate.visualMode, "visual_render_v1");
+assert.match(visualFallbackCandidate.runtimeId, /^visual:v2:[a-f0-9]{64}$/);
+assert.equal(visualFallbackCandidate.visualEvidenceRuntimeId, visualRuntimeId);
+const verifiedVisualFallback = await visualFallbackDriver.verifyWechatIncoming({ ...visualFallbackCandidate, visualMode: "" });
+assert.equal(verifiedVisualFallback.ok, true);
+assert.equal(verifiedVisualFallback.runtimeId, visualFallbackCandidate.runtimeId, "visual verification must preserve the public event identity");
+assert.equal(visualFallbackDriver.scanWechatIncoming.requeue({ ...visualFallbackCandidate, visualMode: "" }), true, "visual v2 candidates must keep the visual retry queue even after serialization drops the mode field");
+visualFallbackDriver.scanWechatIncoming.resetBaselines();
 
 let eventLoopAdvanced = false;
 setTimeout(() => { eventLoopAdvanced = true; }, 0);

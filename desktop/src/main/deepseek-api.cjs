@@ -7,7 +7,7 @@ const DEEPSEEK_MODEL = "deepseek-v4-flash";
 const REQUEST_TIMEOUT_MS = 25_000;
 const AUTO_REPLY_FALLBACK = "这个问题我帮您确认一下，稍后回复您。";
 const TEMPORARY_REPLY_FAILURES = new Set(["AI_NETWORK_ERROR", "AI_REQUEST_TIMEOUT", "AI_RATE_LIMITED", "AI_REQUEST_FAILED"]);
-const PAUSING_REPLY_FAILURES = new Set(["API_KEY_MISSING", "API_KEY_INVALID", "SECURE_STORAGE_UNAVAILABLE", "AI_BALANCE_INSUFFICIENT", "AI_REQUEST_REJECTED"]);
+const PAUSING_REPLY_FAILURES = new Set(["API_KEY_MISSING", "API_KEY_UNREADABLE", "API_KEY_INVALID", "SECURE_STORAGE_UNAVAILABLE", "AI_BALANCE_INSUFFICIENT", "AI_REQUEST_REJECTED"]);
 
 class DeepSeekApiError extends Error {
   constructor(code, message) {
@@ -32,15 +32,31 @@ function createDeepSeekKeyStore({ rootDir, safeStorage }) {
     try {
       return safeStorage.decryptString(fs.readFileSync(keyFile)).trim();
     } catch {
-      fs.rmSync(keyFile, { force: true });
-      throw new DeepSeekApiError("API_KEY_MISSING", "已保存的 DeepSeek API Key 无法读取，请重新填写。");
+      throw new DeepSeekApiError("API_KEY_UNREADABLE", "已保存的 DeepSeek API Key 无法在当前 Windows 用户下解密，请重新填写。");
     }
   }
 
   return {
     status() {
-      if (!encryptionAvailable() || !fs.existsSync(keyFile)) return { configured: false, maskedKey: "" };
-      try { return { configured: true, maskedKey: maskApiKey(read()) }; } catch { return { configured: false, maskedKey: "" }; }
+      if (!encryptionAvailable()) {
+        return {
+          configured: false,
+          maskedKey: "",
+          code: "SECURE_STORAGE_UNAVAILABLE",
+          error: "无法启用 Windows 账户加密存储，请检查当前 Windows 用户后重试。"
+        };
+      }
+      if (!fs.existsSync(keyFile)) return { configured: false, maskedKey: "" };
+      try {
+        return { configured: true, maskedKey: maskApiKey(read()) };
+      } catch (error) {
+        return {
+          configured: false,
+          maskedKey: "",
+          code: String(error?.code || "API_KEY_UNREADABLE"),
+          error: String(error?.message || "已保存的 DeepSeek API Key 无法读取，请重新填写。")
+        };
+      }
     },
     read,
     write(value) {
@@ -141,18 +157,34 @@ function parseReplyPayload(payload) {
   return parseReplyDecision(content);
 }
 
+function parsePlainPayload(payload, unavailableMessage) {
+  const choice = payload?.choices?.[0];
+  const finishReason = String(choice?.finish_reason || "");
+  const content = String(choice?.message?.content || "");
+  if (finishReason === "length") throw new DeepSeekApiError("AI_RESPONSE_TRUNCATED", "DeepSeek 返回的文案被截断");
+  if (finishReason === "content_filter") throw new DeepSeekApiError("AI_CONTENT_FILTERED", "DeepSeek 本次文案被内容策略拦截");
+  if (finishReason && finishReason !== "stop") throw new DeepSeekApiError("AI_RESPONSE_INCOMPLETE", "DeepSeek 本次文案未完整结束");
+  if (!content.trim()) throw new DeepSeekApiError("AI_RESPONSE_EMPTY", unavailableMessage);
+  const text = sanitizeAiMessage(content);
+  if (!text) throw new DeepSeekApiError("AI_RESPONSE_INVALID", unavailableMessage);
+  return text;
+}
+
 function replyFailureDiagnostic(error, attempt) {
   return `${attempt}:${error.code}`;
 }
 
 function fallbackReply(diagnostics, pauseReason = "") {
   const failureSummary = diagnostics.filter(Boolean).join("、");
+  const warningCode = String(diagnostics.filter(Boolean).at(-1) || "AI_RESPONSE_INVALID").split(":").at(-1) || "AI_RESPONSE_INVALID";
   const reply = {
     reply: AUTO_REPLY_FALLBACK,
     intent: false,
     intentReason: "",
     needsHuman: true,
-    handoffReason: `DeepSeek连续未生成可靠回复${failureSummary ? `（${failureSummary}）` : ""}，请查看客户需求`
+    handoffReason: `DeepSeek连续未生成可靠回复${failureSummary ? `（${failureSummary}）` : ""}，请查看客户需求`,
+    aiWarningCode: warningCode,
+    aiWarning: `DeepSeek 本次未生成可靠回复（${warningCode}），已发送兜底消息并提醒人工。`
   };
   return pauseReason
     ? { ...reply, pauseAfterHandoff: true, pauseReason: String(pauseReason).slice(0, 200) }
@@ -191,7 +223,12 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
         })
       });
       if (!response.ok) throw await responseError(response);
-      return await response.json();
+      try {
+        return await response.json();
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 返回的数据无法解析，请稍后重试。");
+      }
     } catch (error) {
       if (error instanceof DeepSeekApiError) throw error;
       if (error?.name === "AbortError") throw new DeepSeekApiError("AI_REQUEST_TIMEOUT", "DeepSeek 请求超时，请检查网络后重试。");
@@ -205,19 +242,40 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
     assertAvailable: () => keyStore.read(),
     async test(value) {
       const key = String(value || "").trim() || keyStore.read();
-      await request({ key, messages: [{ role: "user", content: "请回复：连接正常" }], maxTokens: 8 });
+      const plainPayload = await request({
+        key,
+        messages: prompt({ salutation: "测试客户", script: "您好，这是 DeepSeek 文案能力测试，请用一句自然问候回复。" }),
+        maxTokens: 300,
+        disableThinking: true
+      });
+      parsePlainPayload(plainPayload, "DeepSeek 连接成功，但未返回可用文案。");
+      const replyPayload = await request({
+        key,
+        messages: replyPrompt({
+          context: [{ role: "user", content: "你好，我想了解测试服务。" }],
+          expert: "可礼貌介绍测试服务，并询问客户想了解哪一方面。"
+        }),
+        maxTokens: 300,
+        responseFormat: { type: "json_object" },
+        disableThinking: true
+      });
+      parseReplyPayload(replyPayload);
       return {};
     },
     async draft({ task, result }) {
       const key = keyStore.read();
       const salutation = result.salutation?.type === "person" ? result.salutation.value : "";
-      const payload = await request({
-        key,
-        messages: prompt({ salutation, script: String(task.script || "").trim() })
-      });
-      const draft = sanitizeAiMessage(payload.choices?.[0]?.message?.content || "");
-      if (!draft) throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回可用文案，任务已暂停。");
-      return { draft };
+      const messages = prompt({ salutation, script: String(task.script || "").trim() });
+      for (const maxTokens of [300, 600]) {
+        try {
+          const payload = await request({ key, messages, maxTokens, disableThinking: true });
+          return { draft: parsePlainPayload(payload, "DeepSeek 未返回可用文案，任务已暂停。") };
+        } catch (error) {
+          const recoverable = ["AI_RESPONSE_EMPTY", "AI_RESPONSE_TRUNCATED", "AI_RESPONSE_INCOMPLETE", "AI_RESPONSE_INVALID"].includes(String(error?.code || ""));
+          if (!recoverable || maxTokens === 600) throw error;
+        }
+      }
+      throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回可用文案，任务已暂停。");
     },
     async reply({ context, expert }) {
       if (!String(expert || "").trim()) throw new DeepSeekApiError("AI_EXPERT_MISSING", "请先在 AI专家 中添加话术文件。");
@@ -262,4 +320,4 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
   };
 }
 
-module.exports = { DEEPSEEK_MODEL, DeepSeekApiError, createDeepSeekClient, createDeepSeekKeyStore, maskApiKey, parseReplyDecision, prompt, replyPrompt };
+module.exports = { DEEPSEEK_MODEL, DeepSeekApiError, createDeepSeekClient, createDeepSeekKeyStore, maskApiKey, parsePlainPayload, parseReplyDecision, prompt, replyPrompt };
