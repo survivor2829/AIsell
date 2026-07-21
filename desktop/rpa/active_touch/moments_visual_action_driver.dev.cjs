@@ -11,7 +11,7 @@ const MOMENTS_VISUAL_POST_RELOCK_TOLERANCE_PX = 12;
 const VISUAL_ACTION_TIMEOUT_CAP_MS = Object.freeze({
   inspect: 20_000,
   like: 30_000,
-  comment_check: 55_000,
+  comment_check: 85_000,
   comment: 55_000,
   comment_readback: 30_000
 });

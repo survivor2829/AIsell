@@ -151,7 +151,7 @@ const momentsComment = handlers.get("active-touch:dev-moments-comment");
       cliName: "moments_action_cli.dev.cjs",
       owner: "moments-owner-1",
       phase: "developer:moments-inspect-menu",
-      timeoutMs: 100000
+      timeoutMs: 125000
     }
   }]);
   assert.equal(coordinatorEvents[0][1].phase, "developer:moments-inspect-menu");

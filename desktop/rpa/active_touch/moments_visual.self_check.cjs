@@ -1054,7 +1054,7 @@ assert.match(actionSource, /moments_comment_draft_close_unverified/u);
 assert.match(actionSource, /\$x - \$lastDark\) -gt \[Math\]::Max\(18\.0, \[double\]\$frame\.width \* 0\.05\)/u);
 assert.match(actionSource, /\$widthRatio -ge 0\.32[\s\S]*\$visualState = "赞"/u);
 assert.match(actionSource, /\$widthRatio -ge 0\.78[\s\S]*\$visualState = "取消"/u);
-assert.match(actionSource, /VISUAL_ACTION_TIMEOUT_CAP_MS = Object\.freeze\(\{[\s\S]*inspect: 20_000[\s\S]*comment_check: 55_000[\s\S]*comment: 55_000[\s\S]*comment_readback: 30_000/u);
+assert.match(actionSource, /VISUAL_ACTION_TIMEOUT_CAP_MS = Object\.freeze\(\{[\s\S]*inspect: 20_000[\s\S]*comment_check: 85_000[\s\S]*comment: 55_000[\s\S]*comment_readback: 30_000/u);
 assert.doesNotMatch(actionSource, /comment_check: 35_000/u);
 assert.match(actionSource, /const timeoutMs = Math\.min\(timeoutCapMs, Math\.max\(1_000, remainingMs \+ 2_500\)\)/u);
 assert.match(actionSource, /runPowerShell\(MOMENTS_VISUAL_ACTION_POWERSHELL, env,[\s\S]*sta: true,[\s\S]*timeout: timeoutMs,[\s\S]*diagnostics: true/u);

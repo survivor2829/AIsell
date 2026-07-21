@@ -4,7 +4,7 @@ const { executeVerifiedContactSend, setRealSendArm } = require("../../rpa/active
 const { MAX_MOMENTS_COMMENT_LENGTH } = require("../../rpa/active_touch/moments_dry_run.dev.cjs");
 
 const MOMENTS_DRY_RUN_TIMEOUT_MS = 45_000;
-const MOMENTS_INSPECT_TIMEOUT_MS = 100_000;
+const MOMENTS_INSPECT_TIMEOUT_MS = 125_000;
 
 let realSendInFlight = false;
 let momentsActionInFlight = false;
