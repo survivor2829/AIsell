@@ -608,6 +608,20 @@ public static class Win32WechatMomentsVisualAction {
     return false;
   }
 
+  public static bool AtomicKeyboardEscape() {
+    if (IntPtr.Size != 8) return false;
+    const ushort VkEscape = 0x1B;
+    INPUT[] inputs = new INPUT[] {
+      KeyboardInput(VkEscape, false),
+      KeyboardInput(VkEscape, true)
+    };
+    uint sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+    if (sent == inputs.Length) return true;
+    INPUT[] releases = new INPUT[] { KeyboardInput(VkEscape, true) };
+    SendInput((uint)releases.Length, releases, Marshal.SizeOf(typeof(INPUT)));
+    return false;
+  }
+
 }
 "@
 
@@ -3569,6 +3583,93 @@ function Clear-And-CloseVisualSelectedCommentDraft(
   return Dismiss-VisualCommentComposer $lock $menu $clearedInputTick
 }
 
+function Dismiss-VisualExactEmptyCommentComposer(
+  $lock,
+  $menu,
+  $expectedComposerBounds,
+  [string]$editorRuntimeId,
+  $editorBounds,
+  [uint32]$expectedInputTick
+) {
+  try {
+    if ($lock -eq $null -or $lock.windowRect -eq $null -or $menu -eq $null -or
+      [string]::IsNullOrWhiteSpace($editorRuntimeId) -or
+      -not (Test-VisualBounds $expectedComposerBounds 40 40) -or
+      $expectedInputTick -eq [uint32]::MaxValue -or
+      [Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
+      [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick -or
+      -not [Win32WechatMomentsVisualAction]::IsWindowVisible($lock.hWnd) -or
+      [Win32WechatMomentsVisualAction]::IsIconic($lock.hWnd)) { return $false }
+
+    $currentRect = New-Object Win32WechatMomentsVisualAction+RECT
+    [uint32]$currentPid = 0
+    if (-not [Win32WechatMomentsVisualAction]::GetWindowRect($lock.hWnd, [ref]$currentRect) -or
+      [Win32WechatMomentsVisualAction]::GetWindowThreadProcessId($lock.hWnd, [ref]$currentPid) -eq 0 -or
+      [int]$currentPid -ne [int]$lock.pid -or
+      $currentRect.Left -ne $lock.windowRect.Left -or $currentRect.Top -ne $lock.windowRect.Top -or
+      $currentRect.Right -ne $lock.windowRect.Right -or $currentRect.Bottom -ne $lock.windowRect.Bottom) { return $false }
+
+    # Escape is permitted only after both the visual empty state and the exact
+    # UIA editor/runtime identity have been re-proved. It can never submit text.
+    $emptyFrame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $false
+    if (-not $emptyFrame.ok) {
+      Close-MomentsVisualFrame $emptyFrame
+      return $false
+    }
+    try {
+      $emptyComposer = Get-VisualCommentComposer $emptyFrame $menu
+      $emptySend = Get-VisualSendButton $emptyFrame $emptyComposer
+      if (-not $emptyComposer.ok -or
+        -not (Test-VisualBoundsNear $emptyComposer.bounds $expectedComposerBounds 4.0) -or
+        $emptySend.ok -or [string]$emptySend.reason -cne "moments_comment_send_button_not_found") { return $false }
+    } finally {
+      Close-MomentsVisualFrame $emptyFrame
+    }
+    $exactEmptyEditor = Get-VisualCommentEditorAdapter $lock $expectedComposerBounds $editorRuntimeId $editorBounds
+    if (-not $exactEmptyEditor.ok -or
+      -not [String]::Equals([string]$exactEmptyEditor.value, "", [StringComparison]::Ordinal) -or
+      [Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
+      [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick -or
+      -not [Win32WechatMomentsVisualAction]::AtomicKeyboardEscape()) { return $false }
+
+    Start-Sleep -Milliseconds 120
+    [uint32]$escapeInputTick = [Win32WechatMomentsVisualAction]::GetLastInputTick()
+    if ($escapeInputTick -eq [uint32]::MaxValue) { return $false }
+    $missingFrames = 0
+    for ($attempt = 0; $attempt -lt 4; $attempt++) {
+      if ([Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
+        [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $escapeInputTick -or
+        -not [Win32WechatMomentsVisualAction]::IsWindowVisible($lock.hWnd) -or
+        [Win32WechatMomentsVisualAction]::IsIconic($lock.hWnd)) { return $false }
+      $closedFrame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $false
+      if (-not $closedFrame.ok) {
+        Close-MomentsVisualFrame $closedFrame
+        return $false
+      }
+      try {
+        $remainingComposer = Get-VisualCommentComposer $closedFrame $menu
+        if (-not $remainingComposer.ok -and
+          [string]$remainingComposer.reason -ceq "moments_comment_composer_not_found") {
+          $missingFrames += 1
+          if ($missingFrames -ge 2) { return $true }
+        } else {
+          $missingFrames = 0
+          if (-not $remainingComposer.ok -or
+            -not (Test-VisualBoundsNear $remainingComposer.bounds $expectedComposerBounds 4.0)) { return $false }
+        }
+      } finally {
+        Close-MomentsVisualFrame $closedFrame
+      }
+      Start-Sleep -Milliseconds 120
+    }
+
+    # Some WeChat builds ignore Escape. The already guarded neutral title-bar
+    # click remains a fallback, using the input tick owned by this Escape.
+    return Dismiss-VisualCommentComposer $lock $menu $escapeInputTick
+  } catch {}
+  return $false
+}
+
 function Clear-And-CloseVisualCommentDraft($lock, $menu, $expectedComposerBounds, [string]$expectedText, [string]$editorRuntimeId, $editorBounds) {
   try {
     if (-not $expectedText -or [string]::IsNullOrWhiteSpace($editorRuntimeId) -or
@@ -3609,7 +3710,7 @@ function Clear-And-CloseVisualCommentDraft($lock, $menu, $expectedComposerBounds
       -not [String]::Equals([string]$finalEmptyEditor.value, "", [StringComparison]::Ordinal) -or
       [Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
       [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $cleanupInputTick) { return $false }
-    return Dismiss-VisualCommentComposer $lock $menu $cleanupInputTick
+    return Dismiss-VisualExactEmptyCommentComposer $lock $menu $composer.bounds $editorRuntimeId $editorBounds $cleanupInputTick
   } catch {}
   return $false
 }

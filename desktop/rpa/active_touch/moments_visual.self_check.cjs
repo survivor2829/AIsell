@@ -386,6 +386,7 @@ assert.doesNotMatch(actionSource, /System\.Windows\.Forms\.Clipboard/u);
 assert.match(actionSource, /StructLayout\(LayoutKind\.Explicit\)[\s\S]*FieldOffset\(8\)[\s\S]*KEYBDINPUT/u);
 assert.match(actionSource, /AtomicKeyboardChord\(ushort modifier, ushort key\)[\s\S]*modifier != 0x11[\s\S]*key != 0x41 && key != 0x43 && key != 0x56/u);
 assert.match(actionSource, /AtomicKeyboardBackspace\(\)[\s\S]*KeyboardScanInput\(BackspaceScanCode, false\)[\s\S]*KeyboardScanInput\(BackspaceScanCode, true\)/u);
+assert.match(actionSource, /AtomicKeyboardEscape\(\)[\s\S]*const ushort VkEscape = 0x1B[\s\S]*KeyboardInput\(VkEscape, false\)[\s\S]*KeyboardInput\(VkEscape, true\)/u);
 assert.match(actionSource, /if \(sent == inputs\.Length\) return true;[\s\S]*KeyboardInput\(key, true\)[\s\S]*KeyboardInput\(modifier, true\)/u);
 assert.doesNotMatch(actionSource, /0x0D|VK_RETURN|AtomicKeyboardEnter/u);
 assert.match(actionSource, /if \(\$sendBefore\.ok\)[\s\S]*moments_comment_preexisting_draft[\s\S]*Get-VisualCommentDraftTargeted \$lock \$composer\.bounds \$emptyCheckFinishedTick[\s\S]*Set-VisualCommentTextTargeted \$lock \$composer\.bounds \$commentText \$editorRuntimeId \$editorBounds/u);
@@ -1024,6 +1025,18 @@ assert.match(dismissCommentComposerSource, /Invoke-VisualNeutralTitleBarClick \$
 assert.match(dismissCommentComposerSource, /moments_comment_composer_not_found/u);
 assert.doesNotMatch(actionSource, /^\s*Dismiss-VisualCommentComposer\b/mu);
 
+const exactEmptyComposerEscapeSource = actionSource.match(
+  /function Dismiss-VisualExactEmptyCommentComposer\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.ok(exactEmptyComposerEscapeSource, "exact-empty comment composer Escape dismissal should be present");
+assert.match(exactEmptyComposerEscapeSource, /GetForegroundWindow\(\) -ne \$lock\.hWnd/u);
+assert.match(exactEmptyComposerEscapeSource, /GetWindowThreadProcessId\(\$lock\.hWnd, \[ref\]\$currentPid\)[\s\S]*\[int\]\$currentPid -ne \[int\]\$lock\.pid/u);
+assert.match(exactEmptyComposerEscapeSource, /Get-VisualSendButton \$emptyFrame \$emptyComposer[\s\S]*moments_comment_send_button_not_found/u);
+assert.match(exactEmptyComposerEscapeSource, /Get-VisualCommentEditorAdapter \$lock \$expectedComposerBounds \$editorRuntimeId \$editorBounds[\s\S]*String\]::Equals\(\[string\]\$exactEmptyEditor\.value, "", \[StringComparison\]::Ordinal\)/u);
+assert.match(exactEmptyComposerEscapeSource, /AtomicKeyboardEscape\(\)[\s\S]*\$missingFrames \+= 1[\s\S]*\$missingFrames -ge 2/u);
+assert.match(exactEmptyComposerEscapeSource, /return Dismiss-VisualCommentComposer \$lock \$menu \$escapeInputTick/u);
+assert.doesNotMatch(exactEmptyComposerEscapeSource, /AtomicMouseClick|SendKeys|SendWait/u);
+
 const clearCommentDraftSource = actionSource.match(
   /function Clear-And-CloseVisualCommentDraft\(\$lock, \$menu, \$expectedComposerBounds, \[string\]\$expectedText, \[string\]\$editorRuntimeId, \$editorBounds\) \{[\s\S]*?\n\}/u,
 )?.[0] ?? "";
@@ -1033,7 +1046,7 @@ assert.doesNotMatch(clearCommentDraftSource, /Clipboard|Backspace|SendKeys|SendW
 assert.match(clearCommentDraftSource, /Clear-VisualCommentTextTargetedIfExact \$lock \$composer\.bounds \$expectedText \$editorRuntimeId \$editorBounds \$cleanupInputTick/u);
 assert.match(clearCommentDraftSource, /Get-MomentsVisualFrame/u);
 assert.match(clearCommentDraftSource, /moments_comment_send_button_not_found/u);
-assert.match(clearCommentDraftSource, /\$finalEmptyEditor = Get-VisualCommentEditorAdapter[\s\S]*GetLastInputTick\(\) -ne \$cleanupInputTick[\s\S]*return Dismiss-VisualCommentComposer \$lock \$menu \$cleanupInputTick/u);
+assert.match(clearCommentDraftSource, /\$finalEmptyEditor = Get-VisualCommentEditorAdapter[\s\S]*GetLastInputTick\(\) -ne \$cleanupInputTick[\s\S]*return Dismiss-VisualExactEmptyCommentComposer \$lock \$menu \$composer\.bounds \$editorRuntimeId \$editorBounds \$cleanupInputTick/u);
 assert.match(clearCommentDraftSource, /\} catch \{\}[\s\S]*return \$false/u);
 
 const clearCommentTextSource = actionSource.match(
