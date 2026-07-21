@@ -67,11 +67,26 @@ button:focus-visible {
   display: flex;
   align-items: center;
   gap: 12px;
-  height: 42px;
+  height: 50px;
   padding-left: 4px;
   margin-bottom: 12px;
   font-size: 16px;
   font-weight: 700;
+}
+
+.brand-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.2;
+}
+
+.brand-copy small {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  opacity: 0.78;
 }
 
 .brand-mark {

@@ -262,18 +262,74 @@ function runningWeixinProcesses(options = {}) {
   }
 }
 
+const WEIXIN_INSTALL_QUERY_SCRIPT = `
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$ProgressPreference = "SilentlyContinue"
+$registryRoots = @(
+  "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
+  "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
+  "HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*"
+)
+$paths = New-Object System.Collections.Generic.List[string]
+foreach ($item in @(Get-ItemProperty $registryRoots -ErrorAction SilentlyContinue)) {
+  $installLocation = ([string]$item.InstallLocation).Trim().Trim('"')
+  if ($installLocation) {
+    $candidate = Join-Path $installLocation "Weixin.exe"
+    if ((Test-Path -LiteralPath $candidate) -and -not $paths.Contains($candidate)) { [void]$paths.Add($candidate) }
+  }
+  $displayIcon = ([string]$item.DisplayIcon).Trim()
+  if ($displayIcon) {
+    if ($displayIcon.StartsWith('"')) {
+      $closingQuote = $displayIcon.IndexOf('"', 1)
+      $candidate = if ($closingQuote -gt 1) { $displayIcon.Substring(1, $closingQuote - 1) } else { "" }
+    } else {
+      $candidate = ($displayIcon -split ',')[0].Trim()
+    }
+    if (([System.IO.Path]::GetFileName($candidate) -ieq "Weixin.exe") -and (Test-Path -LiteralPath $candidate) -and -not $paths.Contains($candidate)) {
+      [void]$paths.Add($candidate)
+    }
+  }
+}
+if ($paths.Count) { $paths | ConvertTo-Json -Compress } else { "[]" }
+`;
+
+function installedWeixinExecutables(options = {}) {
+  if (options.installedExecutableProvider) {
+    const provided = options.installedExecutableProvider();
+    return (Array.isArray(provided) ? provided : [provided]).map((candidate) => String(candidate || "")).filter(Boolean);
+  }
+  if (process.platform !== "win32") return [];
+  const encoded = Buffer.from(WEIXIN_INSTALL_QUERY_SCRIPT, "utf16le").toString("base64");
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-EncodedCommand", encoded], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 5000
+  });
+  if (result.status !== 0 || !result.stdout.trim()) return [];
+  try {
+    const parsed = JSON.parse(result.stdout);
+    return (Array.isArray(parsed) ? parsed : [parsed]).map((candidate) => String(candidate || "")).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 function findWechatExecutable(options = {}) {
   const explicit = options.wechatExePath ?? process.env.XIAOXI_WECHAT_EXE ?? "";
   const processes = Array.isArray(options.weixinProcesses) ? options.weixinProcesses : runningWeixinProcesses(options);
   const running = processes.map((processInfo) => processInfo.path).filter(Boolean);
-  const candidates = [
-    explicit,
-    ...running,
+  const commonCandidates = options.commonWechatExeCandidates ?? [
+    process.env.ProgramW6432 ? path.join(process.env.ProgramW6432, "Tencent", "Weixin", "Weixin.exe") : "",
     path.join(process.env.ProgramFiles ?? "C:\\Program Files", "Tencent", "Weixin", "Weixin.exe"),
+    process.env["ProgramFiles(x86)"] ? path.join(process.env["ProgramFiles(x86)"], "Tencent", "Weixin", "Weixin.exe") : "",
     path.join(process.env.LOCALAPPDATA ?? "", "Tencent", "Weixin", "Weixin.exe"),
+    path.join(process.env.LOCALAPPDATA ?? "", "Programs", "Tencent", "Weixin", "Weixin.exe"),
     "D:\\微信\\Weixin\\Weixin.exe"
-  ].filter(Boolean);
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? "";
+  ];
+  const candidates = [explicit, ...running, ...commonCandidates].filter(Boolean);
+  const direct = candidates.find((candidate) => fs.existsSync(candidate));
+  if (direct) return direct;
+  return installedWeixinExecutables(options).find((candidate) => fs.existsSync(candidate)) ?? "";
 }
 
 const PREPARE_WECHAT_LOGIN_SCRIPT = `
@@ -770,10 +826,16 @@ function capture(baseDir = __dirname, options = {}) {
   }
   if (options.restartWechat) {
     saveState(baseDir, { ...loadState(baseDir), status: "capturing", last_stage: "restarting_wechat", last_error: "" });
-    const loginFlow = prepareWechatLogin({ ...options, stopOnly: hasWxKeyReader });
+    const loginFlow = prepareWechatLogin({
+      ...options,
+      wechatExePath: findWechatExecutable({ ...options, weixinProcesses: [] }),
+      stopOnly: hasWxKeyReader
+    });
     if (!loginFlow.ok) {
       const reason = loginFlow.reason || "wechat_start_failed";
-      const message = reason === "wechat_executable_not_found" ? "未找到微信程序，请先安装微信" : "微信未能自动重新启动";
+      const message = reason === "wechat_executable_not_found"
+        ? "未找到个人微信 4.x 的 Weixin.exe，请安装受支持版本，或在同步联系人页手动选择微信程序"
+        : "微信未能自动重新启动";
       return block(baseDir, reason, message, { helperConfigured: helper.helperConfigured, activeTouchDir: options.activeTouchDir });
     }
     restartWechatExe = hasWxKeyReader ? String(loginFlow.wechatExePath || findWechatExecutable(options)) : "";
@@ -1197,6 +1259,7 @@ if (require.main === module) {
 module.exports = {
   candidateWechatRoots,
   runningWeixinProcesses,
+  installedWeixinExecutables,
   normalizeContacts,
   findAccount,
   findWechatExecutable,

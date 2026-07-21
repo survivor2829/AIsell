@@ -9,7 +9,8 @@ function valueAfter(args, flag) {
 }
 
 function optionalValueAfter(args, flag) {
-  return args.includes(flag) ? valueAfter(args, flag) : undefined;
+  const index = args.indexOf(flag);
+  return index === -1 || index === args.length - 1 ? undefined : args[index + 1];
 }
 
 function main(argv) {
@@ -20,7 +21,7 @@ function main(argv) {
   if (command === "fail-conversation") return development.failConversation(baseDir);
   if (command === "verify-message-bubble") return development.verifyMessageBubble(baseDir);
   const handlers = {
-    status: () => safe.status(baseDir), calibrate: () => safe.calibrate(baseDir), "focus-wechat-window": () => safe.focusWechatWindowDryRun(baseDir), "clear-customer": () => safe.clearCustomer(baseDir), "select-customer": () => safe.selectCustomer(baseDir, valueAfter(args, "--id")), "verify-conversation": () => safe.verifyConversation(baseDir, valueAfter(args, "--title")), "locate-conversation": () => safe.locateConversation(baseDir), "open-conversation-dry-run": () => safe.openConversationDryRun(baseDir), "search-conversation-dry-run": () => safe.searchConversationDryRun(baseDir), "click-search-result-dry-run": () => safe.clickSearchResultDryRun(baseDir), "input-message-dry-run": () => safe.inputMessageDryRun(baseDir, valueAfter(args, "--message")), "queue-dry-run": () => safe.queueDryRun(baseDir, valueAfter(args, "--ids").split(",").filter(Boolean), valueAfter(args, "--message")), "verify-send-result-dry-run": () => safe.verifySendResultDryRun(baseDir), "verify-window-title": () => safe.verifyWindowTitle(baseDir), send: () => safe.send(baseDir, { dryRun: true, message: optionalValueAfter(args, "--message" ) })
+    status: () => safe.status(baseDir), calibrate: () => safe.calibrate(baseDir), "focus-wechat-window": () => safe.focusWechatWindowDryRun(baseDir), "clear-customer": () => safe.clearCustomer(baseDir), "select-customer": () => safe.selectCustomer(baseDir, valueAfter(args, "--id")), "verify-conversation": () => safe.verifyConversation(baseDir, valueAfter(args, "--title")), "locate-conversation": () => safe.locateConversation(baseDir), "open-conversation-dry-run": () => safe.openConversationDryRun(baseDir), "search-conversation-dry-run": () => safe.searchConversationDryRun(baseDir), "click-search-result-dry-run": () => safe.clickSearchResultDryRun(baseDir), "input-message-dry-run": () => safe.inputMessageDryRun(baseDir, valueAfter(args, "--message")), "queue-dry-run": () => safe.queueDryRun(baseDir, valueAfter(args, "--ids").split(",").filter(Boolean), valueAfter(args, "--message")), "verify-send-result-dry-run": () => safe.verifySendResultDryRun(baseDir), "verify-window-title": () => safe.verifyWindowTitle(baseDir), send: () => safe.send(baseDir, { dryRun: true, message: args.includes("--message") ? valueAfter(args, "--message") : undefined })
   };
   return handlers[command] ? handlers[command]() : { ok: false, action: command, error: `Unknown command: ${command}`, logs: [] };
 }

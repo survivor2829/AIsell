@@ -1,0 +1,21 @@
+.moments-dry-run-card {
+  margin-top: 16px;
+}
+
+.moments-dry-run-card .primary-button {
+  margin-left: auto;
+}
+
+.moments-comment-field {
+  padding: 0 16px 12px;
+}
+
+.moments-comment-field textarea {
+  min-height: 88px;
+}
+
+.moments-comment-field textarea:disabled {
+  cursor: not-allowed;
+  background: #f5f6f8;
+  color: #98a2b3;
+}

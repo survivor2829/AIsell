@@ -39,3 +39,4 @@ desktop/.vite/
 
 # Generated portable app and its runtime data
 release/
+.codex-runtime-*/

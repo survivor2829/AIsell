@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository is a small Electron desktop app for the 小玺AI员工 active-touch workflow.
+This repository is a small Electron desktop app for the AI获客 active-touch workflow.
 
 - `desktop/` contains the editable Electron + React + Vite source.
 - `desktop/src/main/` contains Electron main-process code.

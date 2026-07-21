@@ -5,8 +5,8 @@ const desktopDir = path.resolve(__dirname, "..");
 const releaseDir = path.resolve(desktopDir, "..", "release");
 const isPackagedApp = path.basename(desktopDir).toLowerCase() === "app" && path.basename(path.dirname(desktopDir)).toLowerCase() === "resources";
 const releaseAppDirs = isPackagedApp ? [desktopDir] : [
-  path.resolve(desktopDir, "..", "release", "小玺AI员工-测试版", "resources", "app"),
-  path.resolve(desktopDir, "..", "release", "小玺AI员工", "resources", "app")
+  path.resolve(desktopDir, "..", "release", "AI获客-测试版", "resources", "app"),
+  path.resolve(desktopDir, "..", "release", "AI获客", "resources", "app")
 ];
 const relativeRuntimeFiles = [
   path.join("ai-expert.json"),

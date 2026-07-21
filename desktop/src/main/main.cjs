@@ -31,12 +31,13 @@ function createWindow() {
     minHeight: 760,
     autoHideMenuBar: true,
     backgroundColor: "#f8d9df",
-    title: ["小玺AI员工", editionLabel].filter(Boolean).join(" "),
+    title: ["AI获客", editionLabel].filter(Boolean).join(" "),
     webPreferences: {
       preload: path.join(__dirname, preloadFile),
       sandbox: false,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      backgroundThrottling: false
     }
   });
 
@@ -90,7 +91,11 @@ if (!gotSingleInstanceLock) {
     configureActiveTouchRuntime({ dataDir: runtime.activeTouchDir, coordinator });
     const internalRealSend = developmentEdition || pilotEdition ? require("../../rpa/active_touch/state_machine.dev.cjs") : null;
     const developmentRealSend = developmentEdition ? require("./active-touch-dev-ipc.cjs") : null;
-    if (developmentRealSend) developmentRealSend.registerActiveTouchDevIpc({ dataDir: runtime.activeTouchDir, getMainWindow: () => mainWindow });
+    if (developmentRealSend) developmentRealSend.registerActiveTouchDevIpc({
+      dataDir: runtime.activeTouchDir,
+      coordinator,
+      getMainWindow: () => mainWindow
+    });
     if (internalRealSend) disarmRealSend = () => internalRealSend.setRealSendArm(runtime.activeTouchDir, false);
     registerContactSyncIpc({ dataDir: runtime.contactSyncDir, activeTouchDir: runtime.activeTouchDir, coordinator });
     registerDeepSeekApiIpc({ keyStore: deepSeekKeyStore, client: deepSeekClient });

@@ -1,6 +1,52 @@
 const assert = require("node:assert/strict");
+const { EventEmitter } = require("node:events");
+const Module = require("node:module");
+const path = require("node:path");
 
-const { parseExecutorOutput } = require("./active-touch-ipc.cjs");
+const spawnCalls = [];
+let hangNext = false;
+let exitWithoutCloseNext = false;
+let killedChildren = 0;
+
+const originalLoad = Module._load;
+Module._load = function load(request, parent, isMain) {
+  if (request === "electron") return { app: { getAppPath: () => "C:\\packaged-app" } };
+  if (request === "node:child_process") {
+    return {
+      spawn: (executable, args, options) => {
+        spawnCalls.push({ executable, args, options });
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.kill = () => {
+          killedChildren += 1;
+          return true;
+        };
+        if (hangNext) {
+          hangNext = false;
+        } else if (exitWithoutCloseNext) {
+          exitWithoutCloseNext = false;
+          queueMicrotask(() => {
+            child.stdout.emit("data", Buffer.from('{"ok":true,"action":"moments-dry-run"}'));
+            child.emit("exit", 0);
+          });
+        } else {
+          queueMicrotask(() => {
+            child.stdout.emit("data", Buffer.from('{"ok":true,"action":"moments-dry-run"}'));
+            child.emit("close", 0);
+          });
+        }
+        return child;
+      }
+    };
+  }
+  return originalLoad.call(this, request, parent, isMain);
+};
+
+const modulePath = path.join(__dirname, "active-touch-ipc.cjs");
+delete require.cache[require.resolve(modulePath)];
+const { configureActiveTouchRuntime, parseExecutorOutput, runActiveTouchDev } = require(modulePath);
+Module._load = originalLoad;
 
 assert.equal(typeof parseExecutorOutput, "function", "executor output parser must be testable");
 
@@ -40,4 +86,36 @@ assert.deepEqual(
   { ok: true, action: "status" }
 );
 
-console.log("active-touch IPC self-check passed");
+(async () => {
+  const releasedOwners = [];
+  let ownerSequence = 0;
+  configureActiveTouchRuntime({
+    dataDir: "runtime-data",
+    coordinator: {
+      acquire: () => ({ ok: true, lock: { owner: `owner-${++ownerSequence}` } }),
+      release: (owner) => releasedOwners.push(owner)
+    }
+  });
+
+  const routed = await runActiveTouchDev(["moments-dry-run", "--mode", "targeted", "--like"], { cliName: "moments_dry_run_cli.dev.cjs", timeoutMs: 100 });
+  assert.equal(routed.ok, true);
+  assert.equal(path.basename(spawnCalls[0].args[0]), "moments_dry_run_cli.dev.cjs");
+  assert.deepEqual(spawnCalls[0].args.slice(-2), ["--data-dir", "runtime-data"]);
+  assert.deepEqual(releasedOwners, ["owner-1"]);
+
+  exitWithoutCloseNext = true;
+  const exited = await runActiveTouchDev(["moments-dry-run", "--mode", "targeted", "--like"], { cliName: "moments_dry_run_cli.dev.cjs", timeoutMs: 500 });
+  assert.equal(exited.ok, true, "a complete result must not wait forever when exit is observed without close");
+  assert.deepEqual(releasedOwners, ["owner-1", "owner-2"]);
+
+  hangNext = true;
+  const timedOut = await runActiveTouchDev(["moments-dry-run", "--mode", "targeted", "--like"], { cliName: "moments_dry_run_cli.dev.cjs", timeoutMs: 5 });
+  assert.equal(timedOut.blocked_reason, "executor_timeout");
+  assert.equal(killedChildren, 1);
+  assert.deepEqual(releasedOwners, ["owner-1", "owner-2", "owner-3"]);
+
+  console.log("active-touch IPC self-check passed");
+})().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

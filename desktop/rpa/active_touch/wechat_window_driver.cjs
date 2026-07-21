@@ -240,22 +240,34 @@ function ensureWechatWindowVisible() {
 function runPowerShell(script, env = {}, options = {}) {
   const ensureResult = options.ensure === false ? {} : ensureWechatWindowVisible();
   const scriptInput = Buffer.from(script, "utf16le").toString("base64");
-  const result = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", POWERSHELL_STDIN_BOOTSTRAP], {
+  const timeout = Number(options.timeout) > 0 ? Number(options.timeout) : 15000;
+  const shellArgs = ["-NoProfile"];
+  if (options.sta === true) shellArgs.push("-STA");
+  shellArgs.push("-ExecutionPolicy", "Bypass", "-EncodedCommand", POWERSHELL_STDIN_BOOTSTRAP);
+  const spawnOptions = {
     encoding: "utf8",
     env: { ...process.env, ...env },
     input: scriptInput,
-    timeout: 15000,
     windowsHide: true
-  });
+  };
+  spawnOptions.timeout = timeout;
+  const result = spawnSync("powershell.exe", shellArgs, spawnOptions);
 
   if (result.error) {
     return { ok: false, reason: result.error.code === "ETIMEDOUT" ? "powershell_timeout" : "powershell_failed" };
   }
-  if (result.status !== 0) return { ok: false, reason: "powershell_failed" };
+  if (result.status !== 0) {
+    const diagnostics = options.diagnostics === true
+      ? { stderr: String(result.stderr ?? "").trim().slice(-1200) }
+      : undefined;
+    return { ok: false, reason: "powershell_failed", ...(diagnostics ? { diagnostics } : {}) };
+  }
 
   try {
-    const parsed = JSON.parse(result.stdout.trim() || "{\"ok\":false}");
-    if (!parsed.ok && ensureResult?.reason && !parsed.reason) return { ...parsed, reason: ensureResult.reason };
+    const stdout = result.stdout.trim();
+    if (!stdout) return { ok: false, reason: ensureResult?.reason || "powershell_output_invalid" };
+    const parsed = JSON.parse(stdout);
+    if (!parsed.ok && !parsed.reason) return { ...parsed, reason: ensureResult?.reason || "powershell_output_invalid" };
     return parsed;
   } catch {
     return { ok: false, reason: ensureResult?.reason || "powershell_output_invalid" };
@@ -440,10 +452,13 @@ function inputWechatSearchQuery(query, context = {}) {
 function runPowerShellAsync(script, env = {}, options = {}) {
   const ensureResult = options.ensure === false ? {} : ensureWechatWindowVisible();
   const scriptInput = Buffer.from(script, "utf16le").toString("base64");
-  const timeout = Number(options.timeout) > 0 ? Number(options.timeout) : 15000;
+  const timeout = options.timeout === false ? null : (Number(options.timeout) > 0 ? Number(options.timeout) : 15000);
+  const shellArgs = ["-NoProfile"];
+  if (options.sta === true) shellArgs.push("-STA");
+  shellArgs.push("-ExecutionPolicy", "Bypass", "-EncodedCommand", POWERSHELL_STDIN_BOOTSTRAP);
 
   return new Promise((resolve) => {
-    const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", POWERSHELL_STDIN_BOOTSTRAP], {
+    const child = spawn("powershell.exe", shellArgs, {
       env: { ...process.env, ...env },
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"]
@@ -456,7 +471,7 @@ function runPowerShellAsync(script, env = {}, options = {}) {
       clearTimeout(timer);
       resolve(value);
     };
-    const timer = setTimeout(() => {
+    const timer = timeout === null ? null : setTimeout(() => {
       child.kill();
       finish({ ok: false, reason: "powershell_timeout" });
     }, timeout);
@@ -467,8 +482,10 @@ function runPowerShellAsync(script, env = {}, options = {}) {
       if (settled) return;
       if (status !== 0) return finish({ ok: false, reason: "powershell_failed" });
       try {
-        const parsed = JSON.parse(stdout.trim() || "{\"ok\":false}");
-        if (!parsed.ok && ensureResult?.reason && !parsed.reason) return finish({ ...parsed, reason: ensureResult.reason });
+        const output = stdout.trim();
+        if (!output) return finish({ ok: false, reason: ensureResult?.reason || "powershell_output_invalid" });
+        const parsed = JSON.parse(output);
+        if (!parsed.ok && !parsed.reason) return finish({ ...parsed, reason: ensureResult?.reason || "powershell_output_invalid" });
         return finish(parsed);
       } catch {
         return finish(ensureResult?.reason ? { ok: false, reason: ensureResult.reason } : { ok: false, reason: "powershell_output_invalid" });

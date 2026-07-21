@@ -24,6 +24,7 @@ const {
   verifyWindowTitle
 } = require("./state_machine.cjs");
 const { executeVerifiedContactSend, refreshRealSendSession, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession } = require("./state_machine.dev.cjs");
+const { prepareMomentsDryRun, preferredVisibleMomentsPost, probeWechatMomentsWindow } = require("./moments_dry_run.dev.cjs");
 const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
 const {
   authorizeNextBatch,
@@ -47,6 +48,196 @@ const { runPowerShell } = require("./wechat_window_driver.cjs");
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-active-touch-"));
 
 try {
+  let momentsProbeCalls = 0;
+  const momentsPost = {
+    runtimeId: "42.7.10",
+    automationId: "",
+    structureVerified: true,
+    feedDepth: 1,
+    text: "测试账号 测试朋友圈内容 包含1张图片 刚刚",
+    left: 120,
+    top: 220,
+    width: 480,
+    height: 260
+  };
+  const momentsWindow = {
+    ok: true,
+    title: "朋友圈",
+    className: "Qt51514QWindowIcon",
+    automationId: "SNSWindow",
+    identityMode: "automation_id",
+    rootName: "朋友圈",
+    rootControlType: "ControlType.Window",
+    rootProcessId: 42,
+    feedAutomationId: "sns_list",
+    feedRuntimeId: "42.7.feed",
+    feedCount: 1,
+    processName: "Weixin",
+    pid: 42,
+    hWnd: "84",
+    left: 40,
+    top: 60,
+    width: 900,
+    height: 700,
+    posts: [momentsPost]
+  };
+  assert.equal(prepareMomentsDryRun(dir, {}, () => { momentsProbeCalls += 1; return momentsWindow; }).blocked_reason, "moments_action_missing");
+  assert.equal(momentsProbeCalls, 0);
+  assert.equal(loadState(dir).moments_dry_run.status, "blocked");
+  assert.equal(loadState(dir).moments_dry_run.blocked_reason, "moments_action_missing");
+  assert.equal(prepareMomentsDryRun(dir, { mode: "unsupported", likeEnabled: true }, () => momentsWindow).blocked_reason, "moments_mode_invalid");
+  assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", commentEnabled: true }, () => momentsWindow).blocked_reason, "moments_comment_missing");
+  assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", commentEnabled: true, commentText: "x".repeat(501) }, () => momentsWindow).blocked_reason, "moments_comment_too_long");
+  assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ok: false, reason: "moments_window_not_found" })).blocked_reason, "moments_window_not_found");
+  const momentsProbeFailure = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ok: false, reason: "powershell_timeout" }));
+  assert.equal(momentsProbeFailure.blocked_reason, "powershell_timeout");
+  const momentsProbeMissingReason = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ok: false }));
+  assert.equal(momentsProbeMissingReason.blocked_reason, "moments_probe_failed");
+  assert.match(momentsProbeFailure.error, /窗口检查执行失败/);
+  const momentsAmbiguous = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ok: false, reason: "moments_window_ambiguous" }));
+  assert.equal(momentsAmbiguous.blocked_reason, "moments_window_ambiguous");
+  assert.match(momentsAmbiguous.error, /多个朋友圈窗口/);
+  assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ...momentsWindow, automationId: "OtherWindow" })).blocked_reason, "moments_window_identity_mismatch");
+  assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ...momentsWindow, pid: 0 })).blocked_reason, "moments_window_identity_mismatch");
+  assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ...momentsWindow, pid: undefined })).blocked_reason, "moments_window_identity_mismatch");
+  assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ...momentsWindow, hWnd: "0" })).blocked_reason, "moments_window_identity_mismatch");
+  assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ...momentsWindow, width: Number.NaN })).blocked_reason, "moments_window_identity_mismatch");
+  assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ...momentsWindow, height: 0 })).blocked_reason, "moments_window_identity_mismatch");
+  assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ...momentsWindow, posts: [] })).blocked_reason, "moments_post_not_found");
+  const centerMomentsPost = { ...momentsPost, runtimeId: "42.7.center", text: "中部账号 中部朋友圈内容 刚刚", top: 280 };
+  const topMomentsPost = { ...momentsPost, runtimeId: "42.7.top", text: "顶部账号 顶部朋友圈内容 刚刚", top: 90, height: 160 };
+  const bottomMomentsPost = { ...momentsPost, runtimeId: "42.7.bottom", text: "底部账号 底部朋友圈内容 刚刚", top: 520, height: 120 };
+  const multipleVisibleMoments = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({
+    ...momentsWindow,
+    posts: [bottomMomentsPost, topMomentsPost, centerMomentsPost]
+  }));
+  assert.equal(multipleVisibleMoments.ok, true);
+  assert.equal(multipleVisibleMoments.plan.visible_post_count, 3);
+  assert.equal(multipleVisibleMoments.post_snapshot.runtime_id, centerMomentsPost.runtimeId);
+  const reorderedVisibleMoments = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({
+    ...momentsWindow,
+    posts: [centerMomentsPost, bottomMomentsPost, topMomentsPost]
+  }));
+  assert.equal(reorderedVisibleMoments.post_snapshot.observation_id, multipleVisibleMoments.post_snapshot.observation_id);
+  assert.equal(preferredVisibleMomentsPost(
+    [bottomMomentsPost, topMomentsPost, centerMomentsPost],
+    momentsWindow
+  ).runtimeId, centerMomentsPost.runtimeId);
+  assert.equal(preferredVisibleMomentsPost([
+    { identityText: "底部", bounds: { left: 120, top: 520, width: 480, height: 120 } },
+    { identityText: "中部", bounds: { left: 120, top: 280, width: 480, height: 260 } },
+    { identityText: "顶部", bounds: { left: 120, top: 90, width: 480, height: 160 } }
+  ], momentsWindow).identityText, "中部");
+  assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ...momentsWindow, posts: [{ ...momentsPost, runtimeId: "" }] })).blocked_reason, "moments_post_identity_missing");
+  assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ...momentsWindow, posts: [{ ...momentsPost, structureVerified: false, feedDepth: 2 }] })).blocked_reason, "moments_post_identity_missing");
+  assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ...momentsWindow, posts: [{ ...momentsPost, structureVerified: true, feedDepth: 17 }] })).blocked_reason, "moments_post_identity_missing");
+  const targetedMoments = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true, commentEnabled: true, commentText: "  您好  " }, () => momentsWindow);
+  assert.equal(targetedMoments.ok, true);
+  assert.equal(targetedMoments.dry_run, true);
+  assert.equal(targetedMoments.real_action_attempted, false);
+  for (const unrelatedField of ["state", "contacts", "logs", "baseDir"]) {
+    assert.equal(unrelatedField in targetedMoments, false, `Moments result must omit unrelated ${unrelatedField}`);
+  }
+  assert.deepEqual(targetedMoments.plan.action_order, ["comment", "like"]);
+  assert.equal(targetedMoments.plan.comment_text, "您好");
+  assert.equal(targetedMoments.plan.verification_level, "post_snapshot_only");
+  assert.equal(targetedMoments.plan.target_verified, false);
+  assert.equal(targetedMoments.window.className, "Qt51514QWindowIcon");
+  assert.equal(targetedMoments.window.automationId, "SNSWindow");
+  assert.equal(targetedMoments.window.hWnd, "84");
+  assert.match(targetedMoments.post_snapshot.observation_id, /^[0-9a-f]{64}$/);
+  assert.equal(targetedMoments.post_snapshot.source, "uia:sns_list");
+  assert.equal(targetedMoments.post_snapshot.structure_verified, true);
+  assert.equal(targetedMoments.post_snapshot.feed_depth, 1);
+  assert.equal(targetedMoments.post_snapshot.label, momentsPost.text);
+  assert.equal(targetedMoments.post_snapshot.like_state, "unknown");
+  assert.equal(targetedMoments.post_snapshot.comment_state, "unknown");
+  const repeatedMoments = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => momentsWindow);
+  assert.equal(repeatedMoments.post_snapshot.observation_id, targetedMoments.post_snapshot.observation_id);
+  assert.equal(loadState(dir).moments_dry_run.status, "prepared");
+  assert.equal(loadState(dir).moments_dry_run.post_snapshot.observation_id, targetedMoments.post_snapshot.observation_id);
+  const randomMoments = prepareMomentsDryRun(dir, { mode: "random", likeEnabled: true, commentEnabled: true, commentText: "您好" }, () => momentsWindow);
+  assert.deepEqual(randomMoments.plan.action_order, ["like", "comment"]);
+  const likeOnlyMoments = prepareMomentsDryRun(dir, { mode: "random", likeEnabled: true, commentText: "不应保存" }, () => momentsWindow);
+  assert.equal(likeOnlyMoments.plan.comment_text, "");
+  const liveMomentsProbe = probeWechatMomentsWindow();
+  if (process.env.XIAOXI_REQUIRE_LIVE_MOMENTS_POST === "1") {
+    assert.equal(liveMomentsProbe.ok, true, `live Moments post recognition required: ${JSON.stringify(liveMomentsProbe)}`);
+  }
+  if (liveMomentsProbe.ok) {
+    assert.equal(liveMomentsProbe.title, "朋友圈");
+    assert.equal(liveMomentsProbe.automationId, "SNSWindow");
+    assert.equal(["Weixin", "WeChat"].includes(liveMomentsProbe.processName), true);
+    assert.equal(liveMomentsProbe.posts.length, 1);
+    assert.equal(typeof liveMomentsProbe.posts[0].runtimeId, "string");
+  } else {
+    assert.equal(["moments_window_not_found", "moments_window_ambiguous", "moments_window_identity_mismatch", "moments_feed_not_found", "moments_post_not_found", "moments_post_ambiguous", "moments_post_changed", "moments_post_identity_missing", "powershell_timeout"].includes(liveMomentsProbe.reason), true);
+  }
+  const momentsSource = fs.readFileSync(path.join(__dirname, "moments_dry_run.dev.cjs"), "utf8");
+  assert.match(momentsSource, /const MOMENTS_STRUCTURAL_PROBE_TIMEOUT_MS = 5_000;/u);
+  assert.match(momentsSource, /\["moments_feed_not_found", "powershell_timeout"\]\.includes\(windowResult\?\.reason\)/u);
+  assert.match(momentsSource, /function preferredVisibleMomentsPost\(posts, viewportBounds\)/u);
+  assert.doesNotMatch(momentsSource, /请调整到只完整显示一条/u);
+  for (const blockedToken of [
+    "SetCursorPos",
+    "mouse_event",
+    "SendInput",
+    "keybd_event",
+    "SendKeys",
+    "SetFocus",
+    "InvokePattern",
+    "LegacyIAccessiblePattern",
+    "ExpandCollapsePattern",
+    "SelectionItemPattern",
+    "TogglePattern",
+    "ScrollPattern",
+    "SetScrollPercent",
+    "Get-Clipboard",
+    "Set-Clipboard",
+    "Clipboard",
+    "CopyFromScreen",
+    "BitBlt",
+    "OCR"
+  ]) {
+    assert.equal(momentsSource.includes(blockedToken), false, `Moments read-only probe must not contain ${blockedToken}`);
+  }
+  const momentsCliDir = path.join(dir, "moments-cli");
+  const momentsCliPath = path.join(__dirname, "moments_dry_run_cli.dev.cjs");
+  const momentsCli = spawnSync(process.execPath, [momentsCliPath, "moments-dry-run", "--mode", "targeted", "--comment-enabled", "--comment-text-base64", Buffer.from("   ", "utf8").toString("base64"), "--data-dir", momentsCliDir], {
+    cwd: path.resolve(__dirname, "../.."),
+    encoding: "utf8",
+    windowsHide: true
+  });
+  assert.equal(momentsCli.status, 1);
+  assert.equal(JSON.parse(momentsCli.stdout.trim()).blocked_reason, "moments_comment_missing");
+  assert.equal(fs.existsSync(path.join(momentsCliDir, "state.json")), true);
+  const momentsUnicodeCliDir = path.join(dir, "moments-cli-unicode");
+  const momentsUnicodeCli = spawnSync(process.execPath, [momentsCliPath, "moments-dry-run", "--mode", "invalid", "--comment-enabled", "--comment-text-base64", Buffer.from("  您好  ", "utf8").toString("base64"), "--data-dir", momentsUnicodeCliDir], {
+    cwd: path.resolve(__dirname, "../.."),
+    encoding: "utf8",
+    windowsHide: true
+  });
+  assert.equal(momentsUnicodeCli.status, 1);
+  assert.equal(JSON.parse(momentsUnicodeCli.stdout.trim()).blocked_reason, "moments_mode_invalid");
+  assert.equal(loadState(momentsUnicodeCliDir).moments_dry_run.comment_text, "您好");
+  const developmentCliDir = path.join(dir, "development-cli-empty-message");
+  saveState(developmentCliDir, {
+    ...loadState(developmentCliDir),
+    calibrated: true,
+    target_selected: true,
+    conversation_verified: true,
+    message_input_done: true,
+    message_draft: "已保存草稿"
+  });
+  const developmentCliPath = path.join(__dirname, "active_touch_cli.dev.cjs");
+  const explicitEmptyMessage = spawnSync(process.execPath, [developmentCliPath, "send", "--data-dir", developmentCliDir, "--message"], {
+    cwd: path.resolve(__dirname, "../.."),
+    encoding: "utf8",
+    windowsHide: true
+  });
+  assert.equal(explicitEmptyMessage.status, 0);
+  assert.equal(JSON.parse(explicitEmptyMessage.stdout.trim()).blocked_reason, "empty_message");
+
   const longPowerShellProbe = `$OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8\n$padding = "${"x".repeat(16000)}"\n@{ ok = $true; length = $padding.Length; value = "微信发送" } | ConvertTo-Json -Compress`;
   assert.deepEqual(
     runPowerShell(longPowerShellProbe, {}, { ensure: false }),
@@ -59,6 +250,7 @@ try {
     { ok: false, reason: "probe_reason" }
   );
   assert.deepEqual(runPowerShell("exit 7", {}, { ensure: false }), { ok: false, reason: "powershell_failed" });
+  assert.deepEqual(runPowerShell("exit 0", {}, { ensure: false }), { ok: false, reason: "powershell_output_invalid" });
 
   const task = createTask(
     "{称呼}，您好",
@@ -995,6 +1187,7 @@ try {
   assert.match(developmentPreloadSource, /active-touch:dev-click-search-result/);
   assert.match(developmentPreloadSource, /active-touch:dev-input-message/);
   assert.match(developmentPreloadSource, /active-touch:dev-send-dry-run/);
+  assert.match(developmentPreloadSource, /active-touch:dev-moments-dry-run/);
   assert.match(developmentPreloadSource, /active-touch:send-selected-contact/);
   assert.equal(developmentPreloadSource.includes("active-touch:send-real"), false);
   assert.equal(developmentPreloadSource.includes("sendReal:"), false);
@@ -1036,6 +1229,10 @@ try {
   const asyncPowerShellResult = await asyncPowerShell;
   assert.equal(asyncPowerShellYielded, true, "async PowerShell must yield the Electron event loop");
   assert.deepEqual(asyncPowerShellResult, { ok: true, length: 40_000 }, "async PowerShell must stream large scripts over stdin instead of the Windows command line");
+  assert.deepEqual(
+    await runPowerShellAsync("exit 0", {}, { ensure: false }),
+    { ok: false, reason: "powershell_output_invalid" }
+  );
 
   saveState(dir, { ...loadState(dir), self_check_marker: true });
   assert.equal(fs.readdirSync(dir).some((name) => name.includes("state.json.tmp")), false);

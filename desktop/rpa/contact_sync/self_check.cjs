@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
-const { candidateWechatRoots, capture, captureKeyFromWxKeyDll, decryptSqlcipher4Raw, findWechatRoot, prepareWechatLogin, resolveHelper, runningWeixinProcesses, status, sync } = require("./contact_sync_cli.cjs");
+const { candidateWechatRoots, capture, captureKeyFromWxKeyDll, decryptSqlcipher4Raw, findWechatExecutable, findWechatRoot, prepareWechatLogin, resolveHelper, runningWeixinProcesses, status, sync } = require("./contact_sync_cli.cjs");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-contact-sync-"));
 const syncDir = path.join(root, "contact_sync");
@@ -84,6 +84,14 @@ try {
     "wx_key capture must target the desktop main process even when a child process owns a visible window"
   );
   assert.equal(runningWeixinProcesses({ processProvider: () => [{ id: 42, path: "D:\\微信\\Weixin\\Weixin.exe", commandLine: "--scene=desktop", moduleReady: true }] })[0].path, "D:\\微信\\Weixin\\Weixin.exe", "Chinese executable paths must remain intact");
+  const registryWechatExe = path.join(root, "自定义微信", "Weixin.exe");
+  fs.mkdirSync(path.dirname(registryWechatExe), { recursive: true });
+  fs.writeFileSync(registryWechatExe, "test", "utf8");
+  assert.equal(findWechatExecutable({
+    processProvider: () => [],
+    commonWechatExeCandidates: [],
+    installedExecutableProvider: () => [registryWechatExe]
+  }), registryWechatExe, "the Windows uninstall registry must provide a custom Weixin install path when WeChat is closed");
   assert.deepEqual(prepareWechatLogin({ loginFlowDriver: () => ({ ok: true, restarted: true }) }), { ok: true, restarted: true });
   assert.deepEqual(prepareWechatLogin({ loginFlowDriver: () => ({ ok: false, reason: "wechat_start_failed" }) }), {
     ok: false,
@@ -466,6 +474,8 @@ fs.copyFileSync(input, output);
       timeoutMs: 1000,
       pollIntervalMs: 10,
       restartWechat: true,
+      commonWechatExeCandidates: [],
+      installedExecutableProvider: () => [registryWechatExe],
       loginFlowDriver: (options) => {
         restartPreparation = options;
         return { ok: true, restarted: true, wechatExePath: "C:\\Weixin.exe" };
@@ -488,6 +498,7 @@ fs.copyFileSync(input, output);
     assert.equal(capturedDuringRestart.ok, true);
     assert.deepEqual(restartCaptureOrder, ["wx-key"]);
     assert.equal(Boolean(restartPreparation.stopOnly), true, "restart capture must stop WeChat without starting login before hook setup");
+    assert.equal(restartPreparation.wechatExePath, registryWechatExe, "restart capture must pass the registry-discovered Weixin executable to the login flow");
     assert.equal(restartHookOptions.launchWechatExe, "C:\\Weixin.exe", "wx-key helper must launch WeChat and install hook before login continues");
 
     let processChecks = 0;

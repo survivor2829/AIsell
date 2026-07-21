@@ -4,6 +4,11 @@ const { spawnSync } = require("node:child_process");
 const desktopDir = path.resolve(__dirname, "..");
 const checks = [
   "rpa/active_touch/self_check.cjs",
+  "rpa/active_touch/moments_visual.self_check.cjs",
+  "rpa/active_touch/moments_comment_readback_proof.self_check.cjs",
+  "rpa/active_touch/moments_action.self_check.cjs",
+  "rpa/active_touch/moments_action_driver.self_check.cjs",
+  "rpa/active_touch/moments_action_cli.self_check.cjs",
   "rpa/active_touch/wechat_auto_reply_driver.self_check.cjs",
   "rpa/contact_sync/self_check.cjs",
   "src/main/contact-sync-ipc.self_check.cjs",
@@ -16,6 +21,7 @@ const checks = [
   "src/main/active-touch-ipc.self_check.cjs",
   "src/main/active-touch-dev-ipc.self_check.cjs",
   "src/main/touch-task-ipc.self_check.cjs",
+  "src/renderer/moments-dry-run-panel.self_check.cjs",
   "scripts/portable-runtime-dependencies.self_check.cjs",
   "scripts/customer-edition.self_check.cjs"
 ];

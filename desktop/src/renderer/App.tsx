@@ -106,6 +106,86 @@ type ActiveTouchResult = {
   logs?: RunLog[];
   error?: string;
 };
+type MomentsDryRunResult = {
+  ok: boolean;
+  action: string;
+  blocked_reason?: string;
+  error?: string;
+  dry_run?: boolean;
+  real_action_attempted?: boolean;
+  plan?: {
+    mode: "targeted" | "random";
+    action_order: Array<"comment" | "like">;
+    visible_post_count?: number;
+    verification_level: string;
+    target_verified: false;
+  };
+  window?: {
+    title: string;
+    className: string;
+    automationId: string;
+    identityMode: "automation_id" | "structural_sns_feed" | "visual_mmui_render";
+    rootName: "朋友圈";
+    rootControlType: "ControlType.Window";
+    rootProcessId: number;
+    feedAutomationId: "sns_list" | "";
+    feedRuntimeId: string;
+    feedCount: 0 | 1;
+    renderPaneName?: "MMUIRenderSubWindowHW";
+    renderPaneAutomationId?: string;
+    renderPaneControlType?: "ControlType.Pane";
+    renderPaneProcessId?: number;
+    renderPaneRuntimeId?: string;
+    renderPaneBounds?: { left: number; top: number; width: number; height: number };
+    processName: string;
+    pid: number;
+    hWnd: string;
+    left?: number;
+    top?: number;
+    width?: number;
+    height?: number;
+  };
+  post_snapshot?: {
+    observation_id: string;
+    post_fingerprint: string;
+    source: "uia:sns_list" | "visual:windows_media_ocr";
+    identity_scope: "window_session_only";
+    runtime_id?: string;
+    structure_verified: true;
+    feed_depth?: number;
+    ocr_provider?: "windows_media_ocr";
+    ocr_language?: "zh-Hans-CN";
+    region_hash?: string;
+    avatar_hash?: string;
+    layout_hash?: string;
+    bounds?: { left: number; top: number; width: number; height: number };
+    menu_bounds?: { left: number; top: number; width: number; height: number };
+    avatar_bounds?: { left: number; top: number; width: number; height: number };
+    label: string;
+    preview: string;
+    like_state: "unknown";
+    comment_state: "unknown";
+  };
+};
+type MomentsActionResult = {
+  ok: boolean;
+  action: string;
+  status?: "blocked" | "outcome_unknown" | "verified";
+  blocked_reason?: string;
+  error?: string;
+  real_action_attempted?: boolean | null;
+  retry_locked?: boolean;
+  observation_id?: string;
+  menu_state?: "赞" | "取消" | "取消赞";
+  comment_draft_verified?: boolean;
+  comment_draft_verification_mode?: string;
+  comment_send_supported?: boolean;
+  no_op?: boolean;
+  comment_text?: string;
+  verification_mode?: string;
+  verification_level?: "visible_exact" | "clipboard_exact" | "uia_exact";
+  readback_enhancement_status?: "not_requested" | "verified" | "failed";
+};
 type ContactSyncState = {
   status: string;
   contact_count: number;
@@ -186,6 +266,10 @@ declare global {
     xiaoxiActiveTouch?: {
       status: () => Promise<ActiveTouchResult>;
       calibrate: () => Promise<ActiveTouchResult>;
+      momentsDryRun: (payload: { mode: "targeted" | "random"; likeEnabled: boolean; commentEnabled: boolean; commentText: string }) => Promise<MomentsDryRunResult>;
+      momentsInspectMenu: (payload: { observationId: string }) => Promise<MomentsActionResult>;
+      momentsLike: (payload: { observationId: string }) => Promise<MomentsActionResult>;
+      momentsComment: (payload: { observationId: string; commentText: string }) => Promise<MomentsActionResult>;
       clearCustomer: () => Promise<ActiveTouchResult>;
       sendDryRun: (payload: { message: string }) => Promise<ActiveTouchResult>;
       sendSelectedContact: (payload: { contactId: string; message: string }) => Promise<ActiveTouchResult>;
@@ -235,12 +319,14 @@ const USER_STORAGE_KEY = "xiaoxi-user-profile";
 const DEFAULT_USER_PROFILE: UserProfile = { name: "2829347524", avatar: "2" };
 const DEFAULT_TOUCH_MESSAGE = "{称呼}，您好，我们这边有清洁设备短租和会员特惠方案，想了解一下您近期是否需要降本增效？";
 const XIAOXI_EDITION = import.meta.env.VITE_XIAOXI_EDITION;
+const BUILD_ID = import.meta.env.VITE_XIAOXI_BUILD_ID || "";
 const DEVELOPMENT_EDITION = XIAOXI_EDITION === "development";
 const PILOT_EDITION = XIAOXI_EDITION === "pilot";
 const REAL_SEND_EDITION = DEVELOPMENT_EDITION || PILOT_EDITION;
 const DEFAULT_ACTIVE_MODULE: ModuleKey = PILOT_EDITION ? "touch" : "reply";
 const EDITION_LABEL = DEVELOPMENT_EDITION ? "测试版" : "";
 const DevelopmentAcceptance = DEVELOPMENT_EDITION ? lazy(() => import("./DevelopmentAcceptance")) : null;
+const MomentsDryRunPanel = DEVELOPMENT_EDITION ? lazy(() => import("./MomentsDryRunPanel")) : null;
 
 const agentChildren: NavItem[] = [
   { key: "reply", label: "自动回复", icon: MessageCircle },
@@ -265,7 +351,7 @@ const operationsChildren: NavItem[] = [
 ];
 
 const navGroups: NavGroup[] = [
-  { key: "agent", label: "个微Agent", icon: UsersRound, children: agentChildren },
+  { key: "agent", label: "微信拓客", icon: UsersRound, children: agentChildren },
   { key: "production", label: "内容生产", icon: Video, children: productionChildren },
   { key: "operations", label: "渠道运营", icon: BarChart3, children: operationsChildren }
 ];
@@ -433,7 +519,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    document.title = ["小玺AI员工", EDITION_LABEL].filter(Boolean).join(" ");
+    document.title = ["AI获客", EDITION_LABEL, BUILD_ID].filter(Boolean).join(" ");
   }, []);
 
   const activeTitle = useMemo(() => navItems.find((item) => item.key === active)?.label ?? "自动回复", [active]);
@@ -685,7 +771,10 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">玺</div>
-          <span>小玺AI员工{EDITION_LABEL ? ` · ${EDITION_LABEL}` : ""}</span>
+          <div className="brand-copy">
+            <span>AI获客{EDITION_LABEL ? ` · ${EDITION_LABEL}` : ""}</span>
+            {BUILD_ID && <small title={`构建编号 ${BUILD_ID}`}>{BUILD_ID}</small>}
+          </div>
         </div>
         <nav className="nav-list">
           {navGroups.map((group) => {
@@ -820,7 +909,7 @@ function LoginScreen({ onLogin }: { onLogin: (account: string) => void }) {
         <div className="login-brand">
           <div className="brand-mark login-logo">玺</div>
           <div>
-            <h1>小玺AI员工</h1>
+            <h1>AI获客</h1>
             <p>登录一次后会记住账号，下次直接进入工作台</p>
           </div>
         </div>
@@ -878,7 +967,7 @@ function ContactSyncPage({
       <div className="page-head">
         <div>
           <h1>同步微信联系人</h1>
-          <p>把当前微信通讯录同步到小玺，后续主动触达可直接筛选联系人。同步只读取联系人，不会发送消息。</p>
+          <p>把当前微信通讯录同步到 AI获客，后续主动触达可直接筛选联系人。首次同步会由 AI获客重启微信，请按提示重新登录；同步不会发送消息。</p>
         </div>
         <div className="actions">
           <button className="secondary-button" onClick={onRefresh} disabled={busy}>
@@ -986,8 +1075,8 @@ function AccountManagement() {
 
 function MomentsOperations() {
   const features = [
-    { title: "朋友圈发布", description: "编辑并发布业务微信的朋友圈内容。", icon: Send },
-    { title: "点赞评论", description: "统一处理朋友圈点赞与评论互动。", icon: ThumbsUp }
+    { title: "朋友圈发布", description: "编辑并发布业务微信的朋友圈内容。", icon: Send, status: "下一阶段" },
+    { title: "点赞评论", description: DEVELOPMENT_EDITION ? "先验证当前朋友圈窗口，再生成单条安全预演。" : "统一处理朋友圈点赞与评论互动，下一阶段开放。", icon: ThumbsUp, status: DEVELOPMENT_EDITION ? "安全预演" : "下一阶段" }
   ];
 
   return (
@@ -1008,11 +1097,16 @@ function MomentsOperations() {
                 <strong>{feature.title}</strong>
                 <p>{feature.description}</p>
               </div>
-              <span>下一阶段</span>
+              <span>{feature.status}</span>
             </article>
           );
         })}
       </div>
+      {MomentsDryRunPanel && (
+        <Suspense fallback={null}>
+          <MomentsDryRunPanel />
+        </Suspense>
+      )}
     </section>
   );
 }

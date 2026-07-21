@@ -3,9 +3,31 @@ const { createPreloadApis, createTrustedClickGate } = require("./preload-api.cjs
 
 const apis = createPreloadApis(ipcRenderer);
 const consumeRealSendClick = createTrustedClickGate("[data-xiaoxi-real-send]");
+const consumeMomentsInspectClick = createTrustedClickGate("[data-xiaoxi-moments-inspect]");
+const consumeMomentsLikeClick = createTrustedClickGate("[data-xiaoxi-moments-like]");
+const consumeMomentsCommentClick = createTrustedClickGate("[data-xiaoxi-moments-comment]");
+
+function momentsClickToken(intent, consumeClick) {
+  const clickToken = consumeClick();
+  return clickToken ? `${intent}:${clickToken}` : "";
+}
 
 const activeTouch = {
   calibrate: () => ipcRenderer.invoke("active-touch:dev-calibrate"),
+  momentsDryRun: (payload) => ipcRenderer.invoke("active-touch:dev-moments-dry-run", payload),
+  momentsInspectMenu: (payload) => ipcRenderer.invoke("active-touch:dev-moments-inspect-menu", {
+    observationId: String(payload?.observationId ?? ""),
+    clickToken: momentsClickToken("moments-inspect", consumeMomentsInspectClick)
+  }),
+  momentsLike: (payload) => ipcRenderer.invoke("active-touch:dev-moments-like", {
+    observationId: String(payload?.observationId ?? ""),
+    clickToken: momentsClickToken("moments-like", consumeMomentsLikeClick)
+  }),
+  momentsComment: (payload) => ipcRenderer.invoke("active-touch:dev-moments-comment", {
+    observationId: String(payload?.observationId ?? ""),
+    commentText: String(payload?.commentText ?? ""),
+    clickToken: momentsClickToken("moments-comment", consumeMomentsCommentClick)
+  }),
   selectCustomer: (payload) => ipcRenderer.invoke("active-touch:dev-select-customer", payload),
   clickSearchResultDryRun: () => ipcRenderer.invoke("active-touch:dev-click-search-result"),
   inputMessageDryRun: (payload) => ipcRenderer.invoke("active-touch:dev-input-message", payload),
