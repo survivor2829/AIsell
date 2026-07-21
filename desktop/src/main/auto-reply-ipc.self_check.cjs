@@ -437,6 +437,25 @@ async function main() {
   assert.equal(scrolledPrimeController.status().scan_health, "warning");
   assert.equal(scrolledPrimeController.status().last_scan_reason, "history_not_at_bottom");
 
+  const unsupportedSessionPrimeController = createAutoReplyController({
+    dataDir: path.join(root, "startup_session_probe_unsupported"),
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    deepSeekClient: { assertAvailable: () => true },
+    scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
+    primeIncoming: async () => ({ ok: false, reason: "session_probe_unsupported" }),
+    send: async () => ({ ok: true }),
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await unsupportedSessionPrimeController.start()).ok, false);
+  assert.equal(unsupportedSessionPrimeController.status().last_scan_reason, "session_probe_unsupported", "known UIA compatibility failures must remain actionable instead of being hidden as unknown");
+  assert.equal(unsupportedSessionPrimeController.status().scan_health, "warning");
+
   const healthDir = path.join(root, "scan_health");
   const healthResults = [
     { ok: false, reason: "powershell_timeout" },

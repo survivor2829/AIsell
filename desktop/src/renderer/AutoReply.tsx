@@ -93,7 +93,16 @@ const SCAN_REASON_LABELS: Record<string, string> = {
   whitelist_invalid: "联系人监听名单无效",
   unknown_scan_reason: "扫描器返回了未知状态，已安全隐藏原始值",
   scan_exception: "扫描微信时发生异常",
-  scan_result_invalid: "扫描器返回了无效结果"
+  scan_result_invalid: "扫描器返回了无效结果",
+  session_probe_unsupported: "当前微信会话列表结构无法可靠识别，已停止把漏检误报为正常"
+};
+
+const CONTROL_EVENT_LABELS: Record<string, string> = {
+  paused_by_user: "已通过界面手动暂停",
+  app_closed: "应用窗口关闭时已安全暂停",
+  recovered_after_restart: "应用重启后按安全策略保持暂停，请重新启动",
+  state_upgraded_paused: "运行状态升级后已安全暂停，请重新启动",
+  start_failed: "启动检查未通过"
 };
 
 function normalizeScanHealth(value: AutoReplyState["scan_health"]): ScanHealth {
@@ -155,6 +164,7 @@ export function AutoReply() {
   const healthLabel = scanning ? SCAN_HEALTH_LABELS[scanHealth] : "未运行";
   const healthClass = !scanning ? "" : scanHealth === "healthy" ? "ok" : scanHealth === "degraded" ? "danger" : scanHealth === "warning" || scanHealth === "waiting" ? "warn" : "";
   const scanFailures = Math.max(0, Number(state.consecutive_scan_failures) || 0);
+  const controlStatus = !scanning ? CONTROL_EVENT_LABELS[state.last_event] || "" : "";
   const visibleError = error || pollError || state.last_error;
 
   return (
@@ -191,9 +201,10 @@ export function AutoReply() {
         <div className="status-card"><span>连续扫描失败</span><strong className={scanFailures >= 3 ? "danger" : scanFailures > 0 ? "warn" : ""}>{scanFailures}</strong></div>
       </div>
 
+      {controlStatus && <div className="auto-reply-control-note">当前状态：{controlStatus}</div>}
       {state.last_scan_reason && (
         <div className={`auto-reply-reason ${scanHealth === "degraded" ? "is-degraded" : scanHealth === "warning" || scanHealth === "waiting" ? "is-warning" : ""}`}>
-          最近扫描结果：{scanReasonLabel(state.last_scan_reason)}（{state.last_scan_reason}）
+          {scanning ? "最近扫描结果" : "停止前最近扫描结果"}：{scanReasonLabel(state.last_scan_reason)}（{state.last_scan_reason}）
         </div>
       )}
       {visibleError && <div className="touch-notice" role="alert">{visibleError}</div>}

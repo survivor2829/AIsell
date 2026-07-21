@@ -534,6 +534,15 @@ button:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.auto-reply-control-note {
+  margin-top: 16px;
+  padding: 11px 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  color: #475569;
+  background: #f8fafc;
+}
+
 .auto-reply-reason.is-warning {
   border-color: #fed7aa;
   background: #fff7ed;

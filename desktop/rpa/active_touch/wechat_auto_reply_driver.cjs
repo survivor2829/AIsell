@@ -71,7 +71,15 @@ public static class Win32WechatAutoReply {
 "@
 [void][Win32WechatAutoReply]::SetProcessDPIAware()
 
+$script:sessionBaselines = $null
+$script:pendingSessionConversation = ""
 function Write-Result($value) {
+  if ($value -is [System.Collections.IDictionary] -and $null -ne $script:sessionBaselines) {
+    $value["sessionBaselines"] = @($script:sessionBaselines)
+  }
+  if ($value -is [System.Collections.IDictionary] -and -not [string]::IsNullOrWhiteSpace($script:pendingSessionConversation)) {
+    $value["sessionBaselinePending"] = [string]$script:pendingSessionConversation
+  }
   $value | ConvertTo-Json -Compress -Depth 5
   exit
 }
@@ -321,9 +329,31 @@ function Merge-HistoryPages($currentItems, $previousItems) {
   return @{ ok = $true; context = @($merged.ToArray() | Select-Object -Last 12) }
 }
 
+function Test-UnreadBadgeGeometry($rect, $itemRect) {
+  if ($rect -eq $null -or $itemRect -eq $null -or $itemRect.Height -le 0 -or $itemRect.Width -le 0) { return $false }
+  $badgeWidth = [Math]::Max(30.0, $itemRect.Height * 0.75)
+  $badgeHeight = [Math]::Max(24.0, $itemRect.Height * 0.58)
+  $badgeRight = $itemRect.Left + ($itemRect.Width * 0.48)
+  $badgeBottom = $itemRect.Top + ($itemRect.Height * 0.50)
+  return (
+    $rect.Width -le $badgeWidth -and
+    $rect.Height -le $badgeHeight -and
+    $rect.Left -ge $itemRect.Left -and
+    $rect.Left -lt $badgeRight -and
+    $rect.Top -ge $itemRect.Top -and
+    $rect.Bottom -le $badgeBottom
+  )
+}
+
+function Test-UnreadName([string]$text) {
+  if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+  return $text.Trim() -match "^(?:未读|新消息|unread|new message|\\[[1-9][0-9]*条\\])$"
+}
+
 function Test-Unread([System.Windows.Automation.AutomationElement]$item) {
+  try { $itemRect = $item.Current.BoundingRectangle } catch { $itemRect = $null }
   $itemText = Get-ElementText $item
-  if ($itemText -match "\\[[1-9][0-9]*条\\]" -or $itemText -match "unread|new message") { return $true }
+  if (Test-UnreadName $itemText) { return $true }
   try {
     if ([string]$item.Current.ItemStatus -match "未读|新消息|unread|new message") { return $true }
   } catch {}
@@ -337,10 +367,10 @@ function Test-Unread([System.Windows.Automation.AutomationElement]$item) {
       $text = Get-ElementText $child
       try { $childStatus = [string]$child.Current.ItemStatus } catch { $childStatus = "" }
       try { $helpText = [string]$child.GetCurrentPropertyValue([System.Windows.Automation.AutomationElement]::HelpTextProperty) } catch { $helpText = "" }
-      if ($text -match "未读|新消息|unread|new message" -or $childStatus -match "未读|新消息|unread|new message" -or $helpText -match "未读|新消息|unread|new message") { return $true }
+      if ((Test-UnreadName $text) -or $childStatus -match "未读|新消息|unread|new message" -or $helpText -match "未读|新消息|unread|new message") { return $true }
       if ($text -notmatch "^[1-9][0-9]{0,2}$") { continue }
       try { $rect = $child.Current.BoundingRectangle } catch { continue }
-      if ($rect.Width -le 40 -and $rect.Height -le 30) { return $true }
+      if (Test-UnreadBadgeGeometry $rect $itemRect) { return $true }
     }
   } catch {}
   return $false
@@ -357,17 +387,102 @@ function Get-SessionPreview([System.Windows.Automation.AutomationElement]$item, 
   return $itemText.Trim()
 }
 
-function Find-UnreadSessionMatches($all, $allowedSet, $windowRect) {
+function Test-SessionMetaElement([System.Windows.Automation.AutomationElement]$element, $itemRect) {
+  if ($itemRect -eq $null) { return $false }
+  try {
+    $rect = $element.Current.BoundingRectangle
+    $text = Get-ElementText $element
+  } catch { return $false }
+  if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+  return (
+    $rect.Left -ge ($itemRect.Left + ($itemRect.Width * 0.55)) -and
+    $rect.Top -le ($itemRect.Top + ($itemRect.Height * 0.58)) -and
+    $rect.Width -le ($itemRect.Width * 0.45) -and
+    $text.Length -le 32
+  )
+}
+
+function Get-SessionPreviewSignature([System.Windows.Automation.AutomationElement]$item, [string]$name) {
+  $parts = New-Object System.Collections.Generic.List[string]
+  $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+  $elements = New-Object System.Collections.Generic.List[object]
+  try { $itemRect = $item.Current.BoundingRectangle } catch { return "" }
+  try {
+    $children = $item.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+    for ($index = 0; $index -lt $children.Count; $index++) { [void]$elements.Add($children.Item($index)) }
+  } catch {}
+  if ($elements.Count -eq 0) { return "" }
+  foreach ($element in $elements) {
+    if (Test-SessionMetaElement $element $itemRect) { continue }
+    $text = Get-ElementText $element
+    if ([string]::IsNullOrWhiteSpace($text)) { continue }
+    $text = [regex]::Replace($text.Trim(), "\\s+", " ")
+    if ($text.StartsWith($name, [System.StringComparison]::Ordinal)) { $text = $text.Substring($name.Length).Trim() }
+    $text = [regex]::Replace($text, "^\\s*\\[[1-9][0-9]*条\\]\\s*", "")
+    if (
+      [string]::IsNullOrWhiteSpace($text) -or
+      $text -ceq $name -or
+      $text -match "^(?:昨天|前天|星期[一二三四五六日天]|周[一二三四五六日天]|未读|新消息|unread|new message)$"
+    ) { continue }
+    if ($seen.Add($text)) { [void]$parts.Add($text) }
+  }
+  if ($parts.Count -eq 0) { return "" }
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes(($parts -join [Environment]::NewLine))
+    return -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") })
+  } finally { $sha.Dispose() }
+}
+
+function Get-SessionDisplayTime([System.Windows.Automation.AutomationElement]$item) {
+  $elements = New-Object System.Collections.Generic.List[object]
+  try { $itemRect = $item.Current.BoundingRectangle } catch { return "" }
+  try {
+    $children = $item.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+    for ($index = 0; $index -lt $children.Count; $index++) { [void]$elements.Add($children.Item($index)) }
+  } catch {}
+  foreach ($element in $elements) {
+    if (-not (Test-SessionMetaElement $element $itemRect)) { continue }
+    $text = Get-ElementText $element
+    if ([string]::IsNullOrWhiteSpace($text)) { continue }
+    if ($text.Trim() -ceq "刚刚") { return "now" }
+    if ($text.Trim() -match "^(?:[01]?[0-9]|2[0-3]):[0-5][0-9]$") { return $text.Trim() }
+  }
+  return ""
+}
+
+function Test-SessionSincePrime([string]$displayTime, [long]$primedAtMs) {
+  if ($primedAtMs -le 0 -or [string]::IsNullOrWhiteSpace($displayTime)) { return $false }
+  if ($displayTime -ceq "now") { return $false }
+  if ($displayTime -notmatch "^(?:[01]?[0-9]|2[0-3]):[0-5][0-9]$") { return $false }
+  try {
+    $parts = $displayTime.Split(":")
+    $displayed = [DateTime]::Today.AddHours([int]$parts[0]).AddMinutes([int]$parts[1])
+    $primed = [DateTimeOffset]::FromUnixTimeMilliseconds($primedAtMs).LocalDateTime
+    $nowLocal = [DateTime]::Now
+    return $displayed -gt $primed.Date.AddHours($primed.Hour).AddMinutes($primed.Minute) -and $displayed -le $nowLocal.AddMinutes(1)
+  } catch { return $false }
+}
+
+function Find-EligibleSessionRows($all, $allowedSet, $windowRect) {
   $windowWidth = $windowRect.Right - $windowRect.Left
+  $windowHeight = $windowRect.Bottom - $windowRect.Top
   $leftLimit = $windowRect.Left + [Math]::Max(280, $windowWidth * 0.42)
-  $matches = New-Object System.Collections.Generic.List[object]
+  $topLimit = $windowRect.Top + [Math]::Max(35, $windowHeight * 0.04)
+  $bottomLimit = $windowRect.Bottom - [Math]::Max(20, $windowHeight * 0.03)
+  $minimumRowWidth = [Math]::Min(240.0, [Math]::Max(120.0, $windowWidth * 0.10))
+  $minimumRowHeight = [Math]::Max(24, $windowHeight * 0.025)
+  $maximumRowHeight = [Math]::Max(120, $windowHeight * 0.20)
+  $rows = New-Object System.Collections.Generic.List[object]
   $seenNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+  $schemaObserved = $false
   for ($index = 0; $index -lt $all.Count; $index++) {
     $element = $all.Item($index)
     $name = ""
     $item = $null
     try { $automationId = [string]$element.Current.AutomationId } catch { $automationId = "" }
     if ($automationId.StartsWith("session_item_", [System.StringComparison]::Ordinal)) {
+      $schemaObserved = $true
       $candidateName = $automationId.Substring("session_item_".Length)
       if ($allowedSet.Contains($candidateName)) {
         $name = $candidateName
@@ -378,24 +493,37 @@ function Find-UnreadSessionMatches($all, $allowedSet, $windowRect) {
       $candidateName = Get-ElementText $element
       if (-not $allowedSet.Contains([string]$candidateName)) { continue }
       try { $rect = $element.Current.BoundingRectangle } catch { continue }
-      if ($rect.Left -ge $leftLimit -or $rect.Top -lt ($windowRect.Top + 55) -or $rect.Bottom -gt ($windowRect.Bottom - 35)) { continue }
+      if ($rect.Left -ge $leftLimit -or $rect.Top -lt $topLimit -or $rect.Bottom -gt $bottomLimit) { continue }
       $name = [string]$candidateName
       $item = $element
       $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
-      for ($level = 0; $level -lt 7; $level++) {
+      for ($level = 0; $level -lt 10; $level++) {
         try { $itemRect = $item.Current.BoundingRectangle } catch { $item = $null; break }
-        if ($itemRect.Width -ge 150 -and $itemRect.Height -ge 36 -and $itemRect.Height -le 120 -and $itemRect.Left -lt $leftLimit) { break }
+        if ($itemRect.Width -ge $minimumRowWidth -and $itemRect.Height -ge $minimumRowHeight -and $itemRect.Height -le $maximumRowHeight -and $itemRect.Left -lt $leftLimit) { break }
         try { $item = $walker.GetParent($item) } catch { $item = $null }
         if ($item -eq $null) { break }
       }
     }
-    if ($item -eq $null -or $seenNames.Contains($name) -or -not (Test-Unread $item)) { continue }
+    if ($item -eq $null -or $seenNames.Contains($name)) { continue }
     try { $itemRect = $item.Current.BoundingRectangle } catch { continue }
-    if ($itemRect.Left -ge $leftLimit -or $itemRect.Top -lt ($windowRect.Top + 55) -or $itemRect.Bottom -gt ($windowRect.Bottom - 35)) { continue }
+    if (
+      $itemRect.Left -ge $leftLimit -or $itemRect.Top -lt $topLimit -or $itemRect.Bottom -gt $bottomLimit -or
+      $itemRect.Right -gt $leftLimit -or
+      $itemRect.Width -lt $minimumRowWidth -or $itemRect.Height -lt $minimumRowHeight -or $itemRect.Height -gt $maximumRowHeight
+    ) { continue }
+    $schemaObserved = $true
     [void]$seenNames.Add($name)
-    [void]$matches.Add([pscustomobject]@{ name = $name; item = $item; preview = Get-SessionPreview $item $name; top = [double]$itemRect.Top })
+    [void]$rows.Add([pscustomobject]@{
+      name = $name
+      item = $item
+      unread = Test-Unread $item
+      preview = Get-SessionPreview $item $name
+      signature = Get-SessionPreviewSignature $item $name
+      displayTime = Get-SessionDisplayTime $item
+      top = [double]$itemRect.Top
+    })
   }
-  return $matches.ToArray()
+  return @{ rows = @($rows.ToArray()); schemaObserved = $schemaObserved }
 }
 
 function Find-CurrentEligibleConversation($all, $allowedSet, $windowRect) {
@@ -469,12 +597,25 @@ foreach ($name in $allowed) {
 }
 if ($allowedSet.Count -eq 0) { Write-Result @{ ok = $false; reason = "whitelist_empty" } }
 try { $currentBaselines = [Environment]::GetEnvironmentVariable("XIAOXI_CURRENT_BASELINES") | ConvertFrom-Json } catch { $currentBaselines = $null }
+try { $sessionPreviewBaselines = [Environment]::GetEnvironmentVariable("XIAOXI_SESSION_BASELINES") | ConvertFrom-Json } catch { $sessionPreviewBaselines = $null }
+$sessionPreviewPrimed = [Environment]::GetEnvironmentVariable("XIAOXI_SESSION_PRIMED") -ceq "true"
+try { $sessionPrimedAtMs = [long][Environment]::GetEnvironmentVariable("XIAOXI_SESSION_PRIMED_AT") } catch { $sessionPrimedAtMs = 0 }
+try { $sessionExpectedPid = [int][Environment]::GetEnvironmentVariable("XIAOXI_SESSION_EXPECTED_PID") } catch { $sessionExpectedPid = 0 }
+try { $sessionExpectedHwnd = [int64][Environment]::GetEnvironmentVariable("XIAOXI_SESSION_EXPECTED_HWND") } catch { $sessionExpectedHwnd = 0 }
 
 $processes = @(Get-Process -Name Weixin, WeChat -ErrorAction SilentlyContinue |
   Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -eq "微信" })
 if ($processes.Count -eq 0) { Write-Result @{ ok = $false; reason = "wechat_window_missing" } }
 if ($processes.Count -ne 1) { Write-Result @{ ok = $false; reason = "wechat_window_ambiguous" } }
 $process = $processes[0]
+if ($mode -eq "scan" -and $sessionPreviewPrimed) {
+  if ($sessionExpectedPid -gt 0 -and $sessionExpectedPid -ne $process.Id) {
+    Write-Result @{ ok = $false; reason = "wechat_process_changed"; pid = [int]$process.Id; hWnd = [int64]$process.MainWindowHandle }
+  }
+  if ($sessionExpectedHwnd -gt 0 -and $sessionExpectedHwnd -ne [int64]$process.MainWindowHandle) {
+    Write-Result @{ ok = $false; reason = "wechat_window_changed"; pid = [int]$process.Id; hWnd = [int64]$process.MainWindowHandle }
+  }
+}
 if ($mode -eq "verify") {
   if ($expectedPid -and [int]$expectedPid -ne $process.Id) { Write-Result @{ ok = $false; reason = "wechat_process_changed" } }
   if ($expectedHwnd -and [int64]$expectedHwnd -ne [int64]$process.MainWindowHandle) { Write-Result @{ ok = $false; reason = "wechat_window_changed" } }
@@ -486,10 +627,24 @@ if ($root -eq $null) { Write-Result @{ ok = $false; reason = "automation_root_mi
 $windowRect = $root.Current.BoundingRectangle
 if ($windowRect.Width -lt 400 -or $windowRect.Height -lt 300) { Write-Result @{ ok = $false; reason = "wechat_window_not_ready" } }
 $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+$sessionProbe = $null
+$sessionRows = @()
+if ($mode -eq "prime" -or $mode -eq "scan") {
+  $sessionProbe = Find-EligibleSessionRows $all $allowedSet $windowRect
+  $sessionRows = @($sessionProbe.rows)
+  $script:sessionBaselines = @($sessionRows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.signature) } | ForEach-Object {
+    [pscustomobject]@{ conversation = [string]$_.name; signature = [string]$_.signature }
+  })
+}
 
 if ($mode -eq "prime") {
+  if (-not $sessionProbe.schemaObserved -or $sessionRows.Count -eq 0 -or $script:sessionBaselines.Count -eq 0) {
+    Write-Result @{ ok = $false; reason = "session_probe_unsupported" }
+  }
   $primeConversation = Find-CurrentEligibleConversation $all $allowedSet $windowRect
-  if ([string]::IsNullOrWhiteSpace($primeConversation)) { Write-Result @{ ok = $false; reason = "no_current_conversation" } }
+  if ([string]::IsNullOrWhiteSpace($primeConversation)) {
+    Write-Result @{ ok = $true; source = "session_prime"; pid = [int]$process.Id; hWnd = [int64]$process.MainWindowHandle }
+  }
   $primeChatList = Get-ChatList $root
   if ($primeChatList -eq $null) { Write-Result @{ ok = $false; reason = "history_viewport_missing" } }
   try {
@@ -512,11 +667,22 @@ if ($mode -eq "prime") {
 }
 
 if ($mode -eq "scan") {
-  $matches = @(Find-UnreadSessionMatches $all $allowedSet $windowRect)
-  $match = $matches | Sort-Object top | Select-Object -First 1
+  if (-not $sessionProbe.schemaObserved -or $sessionRows.Count -eq 0 -or $script:sessionBaselines.Count -eq 0) {
+    Write-Result @{ ok = $false; reason = "session_probe_unsupported" }
+  }
+  $match = $null
+  $matchChanged = $false
+  foreach ($row in @($sessionRows | Sort-Object top)) {
+    $previewBaseline = Get-CurrentBaseline $sessionPreviewBaselines ([string]$row.name)
+    $firstSeen = $sessionPreviewPrimed -and -not [string]::IsNullOrWhiteSpace([string]$row.signature) -and [string]::IsNullOrWhiteSpace($previewBaseline) -and (Test-SessionSincePrime ([string]$row.displayTime) $sessionPrimedAtMs)
+    $changed = -not [string]::IsNullOrWhiteSpace([string]$row.signature) -and -not [string]::IsNullOrWhiteSpace($previewBaseline) -and $previewBaseline -cne [string]$row.signature
+    if ($row.unread -or $changed -or $firstSeen) { $match = $row; $matchChanged = $changed -or $firstSeen; break }
+  }
   if ($match -eq $null) {
     $expectedConversation = Find-CurrentEligibleConversation $all $allowedSet $windowRect
-    if ([string]::IsNullOrWhiteSpace($expectedConversation)) { Write-Result @{ ok = $false; reason = "no_unread_message" } }
+    if ([string]::IsNullOrWhiteSpace($expectedConversation)) {
+      Write-Result @{ ok = $false; reason = "no_unread_message" }
+    }
     $expectedMessage = ""
     $candidateSource = "current_open"
 
@@ -533,10 +699,12 @@ if ($mode -eq "scan") {
     }
     if ($currentBaseline -ceq [string]$probeLatest.key) { Write-Result @{ ok = $false; reason = "no_unread_message" } }
   } else {
-    if ([string]::IsNullOrWhiteSpace([string]$match.preview)) { Write-Result @{ ok = $false; reason = "unread_preview_missing" } }
+    if (-not $matchChanged -and [string]::IsNullOrWhiteSpace([string]$match.preview)) { Write-Result @{ ok = $false; reason = "unread_preview_missing" } }
+    $script:pendingSessionConversation = [string]$match.name
     if (-not (Open-Session $match.item $hWnd)) { Write-Result @{ ok = $false; reason = "conversation_open_failed" } }
     $expectedConversation = $match.name
-    $expectedMessage = [string]$match.preview
+    $candidateSource = $(if ($matchChanged) { "preview_change" } else { "unread" })
+    $expectedMessage = $(if ($candidateSource -eq "unread") { [string]$match.preview } else { "" })
     $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
   }
 }
@@ -642,14 +810,12 @@ Write-Result @{
 `;
 
 function compressedPowerShell(script) {
-  const payload = gzipSync(Buffer.from(script, "utf8")).toString("base64");
+  const payload = gzipSync(Buffer.from(script, "utf8"), { level: 9 }).toString("base64");
   return `
-$compressed = [Convert]::FromBase64String("${payload}")
-$memory = [System.IO.MemoryStream]::new($compressed)
-$gzip = [System.IO.Compression.GZipStream]::new($memory, [System.IO.Compression.CompressionMode]::Decompress)
-$reader = [System.IO.StreamReader]::new($gzip, [System.Text.Encoding]::UTF8)
-try { $source = $reader.ReadToEnd() } finally { $reader.Dispose() }
-Invoke-Expression $source
+$c = [Convert]::FromBase64String("${payload}")
+$m = [IO.MemoryStream]::new($c)
+$g = [IO.Compression.GZipStream]::new($m, [IO.Compression.CompressionMode]::Decompress)
+Invoke-Expression ([IO.StreamReader]::new($g).ReadToEnd())
 `;
 }
 
@@ -657,12 +823,52 @@ const AUTO_REPLY_RUN_SCRIPT = compressedPowerShell(AUTO_REPLY_SCAN_SCRIPT);
 
 function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
   const currentSessionBaselines = new Map();
+  const sessionPreviewBaselines = new Map();
   const retryCandidates = [];
   let baselineEpoch = 0;
   let retryAfterFresh = false;
+  let sessionPreviewPrimed = false;
+  let sessionPreviewPrimedAt = 0;
+  let sessionPreviewProcess = null;
+  let needsReprime = false;
 
   function allowedNames(names) {
     return [...new Set((Array.isArray(names) ? names : []).map((name) => String(name || "").trim()).filter(Boolean))];
+  }
+
+  function processIdentity(result) {
+    const pid = Math.floor(Number(result?.pid));
+    const hWnd = String(result?.hWnd || "").trim();
+    return Number.isSafeInteger(pid) && pid > 0 && /^[1-9][0-9]{0,19}$/.test(hWnd) ? { pid, hWnd } : null;
+  }
+
+  function resetSessionIdentityForReprime() {
+    currentSessionBaselines.clear();
+    sessionPreviewBaselines.clear();
+    sessionPreviewPrimed = false;
+    sessionPreviewPrimedAt = 0;
+    sessionPreviewProcess = null;
+    needsReprime = true;
+  }
+
+  function applySessionBaselines(result, allowed, { priming = false } = {}) {
+    const rows = Array.isArray(result?.sessionBaselines) ? result.sessionBaselines : [];
+    const pending = String(result?.sessionBaselinePending || "").trim();
+    const commitPending = result?.ok === true || result?.reason === "latest_message_not_incoming";
+    for (const row of rows.slice(0, 1_000)) {
+      const conversation = String(row?.conversation || "").trim();
+      const signature = String(row?.signature || "").trim().toLowerCase();
+      if (!allowed.includes(conversation) || !/^[a-f0-9]{64}$/.test(signature)) continue;
+      const previous = sessionPreviewBaselines.get(conversation);
+      if (conversation === pending && !commitPending) {
+        if (!previous) sessionPreviewBaselines.set(conversation, "0".repeat(64));
+        continue;
+      }
+      if (conversation !== pending && previous && previous !== signature) continue;
+      if (conversation !== pending && !previous && !priming) continue;
+      sessionPreviewBaselines.set(conversation, signature);
+    }
+    while (sessionPreviewBaselines.size > 1_000) sessionPreviewBaselines.delete(sessionPreviewBaselines.keys().next().value);
   }
 
   function takeRetryCandidate(allowed, scanProbe = { ok: null, reason: "retry_candidate_without_probe" }) {
@@ -679,20 +885,41 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
     const activeBaselineEpoch = baselineEpoch;
     const result = await Promise.resolve(powerShellRunner(AUTO_REPLY_RUN_SCRIPT, {
       XIAOXI_AUTO_REPLY_MODE: "prime",
-      XIAOXI_ALLOWED_NAMES: JSON.stringify(allowed)
+      XIAOXI_ALLOWED_NAMES: JSON.stringify(allowed),
+      XIAOXI_SESSION_BASELINES: JSON.stringify(Object.fromEntries(sessionPreviewBaselines)),
+      XIAOXI_SESSION_PRIMED: "false",
+      XIAOXI_SESSION_PRIMED_AT: "0"
     }, { ensure: false }));
     if (activeBaselineEpoch !== baselineEpoch) return { ok: false, reason: "baseline_epoch_changed" };
     if (result?.ok !== true) return result;
+    const identity = processIdentity(result);
+    if (!identity) return { ok: false, reason: "incoming_identity_missing" };
+    applySessionBaselines(result, allowed, { priming: true });
+    if (result.source === "session_prime") {
+      sessionPreviewPrimed = true;
+      sessionPreviewPrimedAt = Date.now();
+      sessionPreviewProcess = identity;
+      needsReprime = false;
+      return { ok: true, primed: true };
+    }
     const conversation = String(result.conversation || "").trim();
     const runtimeId = String(result.runtimeId || "").trim();
     if (!conversation || !runtimeId) return { ok: false, reason: "incoming_identity_missing" };
     currentSessionBaselines.set(`${result.pid || ""}:${result.hWnd || ""}:${conversation}`, runtimeId);
+    sessionPreviewPrimed = true;
+    sessionPreviewPrimedAt = Date.now();
+    sessionPreviewProcess = identity;
+    needsReprime = false;
     return { ok: true, primed: true };
   }
 
   async function scanWechatIncoming(names) {
     const allowed = allowedNames(names);
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
+    if (needsReprime) {
+      const primed = await primeWechatSession(allowed);
+      return primed?.ok === true ? { ok: false, reason: "current_session_baselined" } : primed;
+    }
     if (retryAfterFresh) {
       retryAfterFresh = false;
       const retry = takeRetryCandidate(allowed);
@@ -702,9 +929,23 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
     const result = await Promise.resolve(powerShellRunner(AUTO_REPLY_RUN_SCRIPT, {
       XIAOXI_AUTO_REPLY_MODE: "scan",
       XIAOXI_ALLOWED_NAMES: JSON.stringify(allowed),
-      XIAOXI_CURRENT_BASELINES: JSON.stringify(Object.fromEntries(currentSessionBaselines))
+      XIAOXI_CURRENT_BASELINES: JSON.stringify(Object.fromEntries(currentSessionBaselines)),
+      XIAOXI_SESSION_BASELINES: JSON.stringify(Object.fromEntries(sessionPreviewBaselines)),
+      XIAOXI_SESSION_PRIMED: sessionPreviewPrimed ? "true" : "false",
+      XIAOXI_SESSION_PRIMED_AT: String(sessionPreviewPrimedAt || 0),
+      XIAOXI_SESSION_EXPECTED_PID: String(sessionPreviewProcess?.pid || 0),
+      XIAOXI_SESSION_EXPECTED_HWND: String(sessionPreviewProcess?.hWnd || 0)
     }, { ensure: false }));
     if (activeBaselineEpoch !== baselineEpoch) return { ok: false, reason: "baseline_epoch_changed" };
+    const observedIdentity = processIdentity(result);
+    const identityChanged = sessionPreviewProcess && observedIdentity && (
+      sessionPreviewProcess.pid !== observedIdentity.pid || sessionPreviewProcess.hWnd !== observedIdentity.hWnd
+    );
+    if (identityChanged || result?.reason === "wechat_process_changed" || result?.reason === "wechat_window_changed") {
+      resetSessionIdentityForReprime();
+      return result?.reason === "wechat_window_changed" ? result : { ...result, ok: false, reason: "wechat_process_changed" };
+    }
+    applySessionBaselines(result, allowed);
     if (result?.ok !== true) {
       return takeRetryCandidate(allowed, { ok: false, reason: result?.reason || "scan_result_invalid" }) || result;
     }
@@ -757,6 +998,11 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
   scanWechatIncoming.resetBaselines = () => {
     baselineEpoch += 1;
     currentSessionBaselines.clear();
+    sessionPreviewBaselines.clear();
+    sessionPreviewPrimed = false;
+    sessionPreviewPrimedAt = 0;
+    sessionPreviewProcess = null;
+    needsReprime = false;
   };
   return { primeWechatSession, scanWechatIncoming, verifyWechatIncoming };
 }

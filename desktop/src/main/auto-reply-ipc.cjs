@@ -50,6 +50,7 @@ const KNOWN_SCAN_REASONS = new Set([
   "powershell_timeout",
   "scan_exception",
   "scan_result_invalid",
+  "session_probe_unsupported",
   "unknown_scan_reason",
   "unread_preview_mismatch",
   "unread_preview_missing",

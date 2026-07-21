@@ -64,6 +64,9 @@ const scanResult = await driver.scanWechatIncoming([" 张总 ", "李经理", "�
 assert.deepEqual(scanResult.conversation, "张总");
 assert.deepEqual(scanResult.context, scannedContext, "scan results must preserve role-tagged context");
 assert.deepEqual(JSON.parse(calls[0].env.XIAOXI_ALLOWED_NAMES), ["张总", "李经理"]);
+assert.deepEqual(JSON.parse(calls[0].env.XIAOXI_SESSION_BASELINES), {});
+assert.equal(calls[0].env.XIAOXI_SESSION_PRIMED, "false");
+assert.equal(calls[0].env.XIAOXI_SESSION_PRIMED_AT, "0");
 assert.equal(calls[0].env.XIAOXI_AUTO_REPLY_MODE, "scan");
 assert.equal(calls[0].options.ensure, false);
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("$automationId.StartsWith(\"session_item_\""), true, "current WeChat session items must match by their exact automation-id prefix and allowed name");
@@ -89,11 +92,23 @@ assert.ok(unconditionalBottomGate >= 0 && unconditionalBottomGate < shortHistory
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("latest_message_not_incoming"), true, "the newest message must be classified as incoming");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("outgoingEdge"), false, "message width must never classify direction");
 assert.equal(calls[0].script.includes("GZipStream"), true, "the large fixed script must be decompressed in memory");
-assert.ok(Buffer.from(calls[0].script, "utf16le").toString("base64").length < 30000, "the PowerShell command must stay below the Windows command-line limit");
+assert.ok(Buffer.from(calls[0].script, "utf16le").toString("base64").length < 64 * 1024, "the compressed PowerShell payload sent over stdin must stay bounded");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("candidateSource = \"current_open\""), true, "the foreground current conversation must support later messages without an unread badge");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("GetForegroundWindow() -ne $hWnd) { Write-Result @{ ok = $false; reason = \"no_unread_message\""), false, "a changed current conversation must be detected before requiring WeChat to be foreground");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("history_window_not_foreground"), true, "a changed conversation must still fail closed if WeChat cannot be foregrounded for visual verification");
-assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("Find-UnreadSessionMatches $all $allowedSet"), true, "all-contact polling must traverse the visible session tree once");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("Find-EligibleSessionRows $all $allowedSet"), true, "all-contact polling must traverse the visible session tree once");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("function Get-SessionPreviewSignature"), true, "visible session previews must have content-free change signatures");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("function Test-SessionMetaElement"), true, "preview signatures must exclude right-top time and date metadata by geometry");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("function Test-UnreadBadgeGeometry"), true, "numeric unread hints must pass a dedicated geometry gate");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("function Test-UnreadName"), true, "unread labels in ordinary element names must use an exact status shape");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("$itemRect.Right -gt $leftLimit"), true, "a session row must stay completely inside the left conversation region");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("$sessionRows.Count -eq 0 -or $script:sessionBaselines.Count -eq 0"), true, "zero matched eligible rows must fail visibly instead of claiming full-list coverage");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes('$text -match "^[1-9][0-9]{0,2}$" -or\n      $text -match'), false, "numeric preview or badge changes must participate in the signature instead of being silently discarded");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("$minimumRowWidth = [Math]::Min(240.0"), true, "ultrawide windows must not scale the minimum session-row width past the real sidebar width");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("preview_change"), true, "a changed preview must detect messages even when WeChat does not expose an unread badge");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("$firstSeen = $sessionPreviewPrimed"), true, "a conversation first surfaced after priming must be verified instead of silently becoming a baseline");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("Test-SessionSincePrime ([string]$row.displayTime) $sessionPrimedAtMs"), true, "a first-seen row must prove a post-prime timestamp instead of treating manual scrolling as a new message");
+assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("session_probe_unsupported"), true, "an unsupported session tree must never be reported as a healthy empty scan");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("source = \"current_probe\""), true, "an unchanged foreground conversation must be deduplicated before screenshot history work");
 const primeModeStart = AUTO_REPLY_SCAN_SCRIPT.indexOf("if ($mode -eq \"prime\")");
 const scanModeStart = AUTO_REPLY_SCAN_SCRIPT.indexOf("if ($mode -eq \"scan\")", primeModeStart);
@@ -101,6 +116,113 @@ const primeModeSource = AUTO_REPLY_SCAN_SCRIPT.slice(primeModeStart, scanModeSta
 assert.equal(primeModeSource.includes("VerticalScrollPercent -lt 98.5"), true, "startup priming must refuse a conversation that is not at the bottom");
 assert.equal(primeModeSource.includes("Test-BubbleSequence $primeBubblesBefore $primeBubblesAfter"), true, "startup priming must reject messages that change while being observed");
 assert.equal(primeModeSource.includes("conversation_title_changed"), true, "startup priming must revalidate the selected conversation header");
+const scanModeSource = AUTO_REPLY_SCAN_SCRIPT.slice(scanModeStart);
+assert.ok(scanModeSource.indexOf('reason = "session_probe_unsupported"') < scanModeSource.indexOf("Find-CurrentEligibleConversation $all"), "full session-list compatibility must be checked before falling back to only the open conversation");
+
+const sessionSignatureA = "a".repeat(64);
+const sessionSignatureB = "b".repeat(64);
+const previewBaselineCalls = [];
+const previewBaselineResults = [
+  { ok: true, source: "session_prime", pid: 81, hWnd: 91, sessionBaselines: [{ conversation: "张总", signature: sessionSignatureA }] },
+  { ok: false, reason: "no_unread_message", sessionBaselines: [{ conversation: "张总", signature: sessionSignatureB }] },
+  { ok: false, reason: "no_unread_message" }
+];
+const previewBaselineDriver = createWechatAutoReplyDriver((script, env) => {
+  previewBaselineCalls.push(env);
+  return previewBaselineResults.shift();
+});
+assert.equal((await previewBaselineDriver.primeWechatSession(["张总"])).primed, true, "priming visible session previews must not require an open conversation");
+await previewBaselineDriver.scanWechatIncoming(["张总"]);
+assert.equal(previewBaselineCalls[1].XIAOXI_SESSION_PRIMED, "true", "the PowerShell scan must distinguish a post-prime first-seen row from startup history");
+assert.ok(Number(previewBaselineCalls[1].XIAOXI_SESSION_PRIMED_AT) > 0, "post-prime recency checks must receive the listener start time");
+assert.equal(JSON.parse(previewBaselineCalls[1].XIAOXI_SESSION_BASELINES)["张总"], sessionSignatureA, "scan must receive the startup preview baseline");
+await previewBaselineDriver.scanWechatIncoming(["张总"]);
+assert.equal(JSON.parse(previewBaselineCalls[2].XIAOXI_SESSION_BASELINES)["张总"], sessionSignatureA, "an unverified changed preview must not advance its baseline");
+
+const newlyVisibleCalls = [];
+const newlyVisibleResults = [
+  { ok: true, source: "session_prime", pid: 81, hWnd: 91, sessionBaselines: [{ conversation: "张总", signature: sessionSignatureA }] },
+  { ok: false, reason: "no_unread_message", sessionBaselines: [{ conversation: "张总", signature: sessionSignatureA }, { conversation: "李经理", signature: sessionSignatureB }] },
+  { ok: false, reason: "no_unread_message" }
+];
+const newlyVisibleDriver = createWechatAutoReplyDriver((script, env) => {
+  newlyVisibleCalls.push(env);
+  return newlyVisibleResults.shift();
+});
+await newlyVisibleDriver.primeWechatSession(["张总", "李经理"]);
+await newlyVisibleDriver.scanWechatIncoming(["张总", "李经理"]);
+await newlyVisibleDriver.scanWechatIncoming(["张总", "李经理"]);
+assert.equal(Object.hasOwn(JSON.parse(newlyVisibleCalls[2].XIAOXI_SESSION_BASELINES), "李经理"), false, "a newly visible row without verified new-message evidence must not silently become a baseline");
+
+const failedPreviewCalls = [];
+const failedPreviewResults = [
+  { ok: true, source: "session_prime", pid: 81, hWnd: 91, sessionBaselines: [{ conversation: "张总", signature: sessionSignatureA }] },
+  { ok: false, reason: "conversation_title_mismatch", sessionBaselinePending: "张总", sessionBaselines: [{ conversation: "张总", signature: sessionSignatureB }] },
+  { ok: true, source: "preview_change", conversation: "张总", message: "新问题", runtimeId: "preview-user-1", latestRole: "user", sessionBaselinePending: "张总", sessionBaselines: [{ conversation: "张总", signature: sessionSignatureB }], context: [{ role: "user", content: "新问题", key: "preview-user-1" }] },
+  { ok: false, reason: "no_unread_message" }
+];
+const failedPreviewDriver = createWechatAutoReplyDriver((script, env) => {
+  failedPreviewCalls.push(env);
+  return failedPreviewResults.shift();
+});
+await failedPreviewDriver.primeWechatSession(["张总"]);
+assert.equal((await failedPreviewDriver.scanWechatIncoming(["张总"])).reason, "conversation_title_mismatch");
+await failedPreviewDriver.scanWechatIncoming(["张总"]);
+assert.equal(JSON.parse(failedPreviewCalls[2].XIAOXI_SESSION_BASELINES)["张总"], sessionSignatureA, "a transient failure after opening a changed row must preserve the old signature so the message is retried");
+await failedPreviewDriver.scanWechatIncoming(["张总"]);
+assert.equal(JSON.parse(failedPreviewCalls[3].XIAOXI_SESSION_BASELINES)["张总"], sessionSignatureB, "a verified preview candidate may commit the new signature");
+
+const firstSeenFailureCalls = [];
+const firstSeenFailureResults = [
+  { ok: true, source: "session_prime", pid: 81, hWnd: 91, sessionBaselines: [] },
+  { ok: false, reason: "history_changed_during_scan", sessionBaselinePending: "张总", sessionBaselines: [{ conversation: "张总", signature: sessionSignatureB }] },
+  { ok: false, reason: "no_unread_message" }
+];
+const firstSeenFailureDriver = createWechatAutoReplyDriver((script, env) => {
+  firstSeenFailureCalls.push(env);
+  return firstSeenFailureResults.shift();
+});
+await firstSeenFailureDriver.primeWechatSession(["张总"]);
+await firstSeenFailureDriver.scanWechatIncoming(["张总"]);
+await firstSeenFailureDriver.scanWechatIncoming(["张总"]);
+assert.equal(JSON.parse(firstSeenFailureCalls[2].XIAOXI_SESSION_BASELINES)["张总"], "0".repeat(64), "a first-seen row that fails after opening must remain visibly changed on the next scan");
+
+const secondContactSignatureA = "c".repeat(64);
+const secondContactSignatureB = "d".repeat(64);
+const simultaneousCalls = [];
+const simultaneousResults = [
+  { ok: true, source: "session_prime", pid: 81, hWnd: 91, sessionBaselines: [{ conversation: "张总", signature: sessionSignatureA }, { conversation: "李经理", signature: secondContactSignatureA }] },
+  { ok: true, source: "preview_change", conversation: "张总", message: "问题一", runtimeId: "sim-user-1", latestRole: "user", pid: 81, hWnd: 91, sessionBaselinePending: "张总", sessionBaselines: [{ conversation: "张总", signature: sessionSignatureB }, { conversation: "李经理", signature: secondContactSignatureB }], context: [{ role: "user", content: "问题一", key: "sim-user-1" }] },
+  { ok: false, reason: "no_unread_message" }
+];
+const simultaneousDriver = createWechatAutoReplyDriver((script, env) => {
+  simultaneousCalls.push(env);
+  return simultaneousResults.shift();
+});
+await simultaneousDriver.primeWechatSession(["张总", "李经理"]);
+await simultaneousDriver.scanWechatIncoming(["张总", "李经理"]);
+await simultaneousDriver.scanWechatIncoming(["张总", "李经理"]);
+const simultaneousNextBaselines = JSON.parse(simultaneousCalls[2].XIAOXI_SESSION_BASELINES);
+assert.equal(simultaneousNextBaselines["张总"], sessionSignatureB, "the selected verified conversation may commit its changed signature");
+assert.equal(simultaneousNextBaselines["李经理"], secondContactSignatureA, "another changed conversation must retain its old signature until it is selected and verified");
+
+const processChangeCalls = [];
+const processChangeResults = [
+  { ok: true, source: "session_prime", pid: 81, hWnd: 91, sessionBaselines: [{ conversation: "张总", signature: sessionSignatureA }] },
+  { ok: false, reason: "wechat_process_changed", pid: 82, hWnd: 92 },
+  { ok: true, source: "session_prime", pid: 82, hWnd: 92, sessionBaselines: [{ conversation: "张总", signature: sessionSignatureB }] }
+];
+const processChangeDriver = createWechatAutoReplyDriver((script, env) => {
+  processChangeCalls.push(env);
+  return processChangeResults.shift();
+});
+await processChangeDriver.primeWechatSession(["张总"]);
+assert.equal((await processChangeDriver.scanWechatIncoming(["张总"])).reason, "wechat_process_changed");
+assert.equal(processChangeCalls[1].XIAOXI_SESSION_EXPECTED_PID, "81");
+assert.equal(processChangeCalls[1].XIAOXI_SESSION_EXPECTED_HWND, "91");
+assert.equal((await processChangeDriver.scanWechatIncoming(["张总"])).reason, "current_session_baselined", "a changed WeChat process must re-prime instead of comparing against the old process baseline");
+assert.equal(processChangeCalls[2].XIAOXI_AUTO_REPLY_MODE, "prime");
+assert.deepEqual(JSON.parse(processChangeCalls[2].XIAOXI_SESSION_BASELINES), {}, "process changes must discard old preview signatures before re-priming");
 
 const currentOpenResults = [
   { ok: true, source: "current_probe", conversation: "张总", runtimeId: "assistant-1", pid: 81, hWnd: 91 },
@@ -176,6 +298,58 @@ assert.equal(calls[1].env.XIAOXI_EXPECTED_PID, "81");
 assert.equal(calls[1].env.XIAOXI_EXPECTED_HWND, "91");
 assert.equal((await driver.verifyWechatIncoming({ conversation: "", message: "" })).reason, "incoming_message_missing");
 assert.equal((await driver.verifyWechatIncoming({ conversation: "张总", message: "你好" })).reason, "incoming_identity_missing");
+
+const recencyFunctionStart = AUTO_REPLY_SCAN_SCRIPT.indexOf("function Test-SessionSincePrime");
+const recencyFunctionEnd = AUTO_REPLY_SCAN_SCRIPT.indexOf("function Find-EligibleSessionRows", recencyFunctionStart);
+assert.ok(recencyFunctionStart >= 0 && recencyFunctionEnd > recencyFunctionStart);
+const currentMinute = new Date();
+currentMinute.setSeconds(0, 0);
+const previousMinute = new Date(currentMinute.getTime() - 60_000);
+const currentMinuteText = `${String(currentMinute.getHours()).padStart(2, "0")}:${String(currentMinute.getMinutes()).padStart(2, "0")}`;
+const recencyProbe = await runPowerShellAsync(`${AUTO_REPLY_SCAN_SCRIPT.slice(recencyFunctionStart, recencyFunctionEnd)}
+@{
+  recent = Test-SessionSincePrime "${currentMinuteText}" ${previousMinute.getTime()}
+  sameMinute = Test-SessionSincePrime "${currentMinuteText}" ${currentMinute.getTime()}
+  justNow = Test-SessionSincePrime "刚刚" ${currentMinute.getTime()}
+  old = Test-SessionSincePrime "昨天" ${currentMinute.getTime()}
+} | ConvertTo-Json -Compress`, {}, { ensure: false, timeout: 5000 });
+assert.equal(recencyProbe.recent, true, "a first-seen row timestamped after the listener start minute may be verified as a new candidate");
+assert.equal(recencyProbe.sameMinute, false, "minute-level timestamps must fail closed when the row could predate listener start within the same minute");
+assert.equal(recencyProbe.justNow, false, "an ambiguous just-now label must not turn a manually revealed old row into a candidate");
+assert.equal(recencyProbe.old, false, "an old row exposed by manual scrolling must not be treated as a new message");
+
+const badgeFunctionStart = AUTO_REPLY_SCAN_SCRIPT.indexOf("function Test-UnreadBadgeGeometry");
+const badgeFunctionEnd = AUTO_REPLY_SCAN_SCRIPT.indexOf("function Test-Unread", badgeFunctionStart + 1);
+assert.ok(badgeFunctionStart >= 0 && badgeFunctionEnd > badgeFunctionStart);
+const badgeGeometryProbe = await runPowerShellAsync(`${AUTO_REPLY_SCAN_SCRIPT.slice(badgeFunctionStart, badgeFunctionEnd)}
+$row = [pscustomobject]@{ Left = 0; Top = 0; Width = 300; Height = 80 }
+@{
+  realBadge = Test-UnreadBadgeGeometry ([pscustomobject]@{ Left = 58; Top = 8; Right = 78; Bottom = 28; Width = 20; Height = 20 }) $row
+  numericPreview = Test-UnreadBadgeGeometry ([pscustomobject]@{ Left = 92; Top = 44; Right = 104; Bottom = 64; Width = 12; Height = 20 }) $row
+} | ConvertTo-Json -Compress`, {}, { ensure: false, timeout: 5000 });
+assert.equal(badgeGeometryProbe.realBadge, true, "a compact numeric badge in the avatar's upper half must remain detectable");
+assert.equal(badgeGeometryProbe.numericPreview, false, "a pure-numeric message preview in the lower half must never be treated as unread");
+
+const unreadNameFunctionStart = AUTO_REPLY_SCAN_SCRIPT.indexOf("function Test-UnreadName");
+const unreadNameFunctionEnd = AUTO_REPLY_SCAN_SCRIPT.indexOf("function Test-Unread", unreadNameFunctionStart + 1);
+assert.ok(unreadNameFunctionStart >= 0 && unreadNameFunctionEnd > unreadNameFunctionStart);
+const unreadNameProbe = await runPowerShellAsync(`${AUTO_REPLY_SCAN_SCRIPT.slice(unreadNameFunctionStart, unreadNameFunctionEnd)}
+@{
+  exactChinese = Test-UnreadName "新消息"
+  exactEnglish = Test-UnreadName "new message"
+  exactCount = Test-UnreadName "[3条]"
+  missingOpenBracket = Test-UnreadName "3条]"
+  missingCloseBracket = Test-UnreadName "[3条"
+  customerSentence = Test-UnreadName "没有新消息了吗"
+  englishSentence = Test-UnreadName "new message 怎么处理"
+} | ConvertTo-Json -Compress`, {}, { ensure: false, timeout: 5000 });
+assert.equal(unreadNameProbe.exactChinese, true);
+assert.equal(unreadNameProbe.exactEnglish, true);
+assert.equal(unreadNameProbe.exactCount, true);
+assert.equal(unreadNameProbe.missingOpenBracket, false, "an unread count missing its opening bracket must not match");
+assert.equal(unreadNameProbe.missingCloseBracket, false, "an unread count missing its closing bracket must not match");
+assert.equal(unreadNameProbe.customerSentence, false, "a customer sentence containing 新消息 must not be treated as unread state");
+assert.equal(unreadNameProbe.englishSentence, false, "a customer sentence containing new message must not be treated as unread state");
 
 let eventLoopAdvanced = false;
 setTimeout(() => { eventLoopAdvanced = true; }, 0);
