@@ -413,7 +413,7 @@ assert.match(stableBlankCommentSource, /moments_comment_draft_state_unknown/u);
 assert.match(stableBlankCommentSource, /Test-VisualBoundsNear \$stableState\.composer\.bounds \$expectedComposerBounds 4\.0[\s\S]*moments_comment_editor_changed/u);
 assert.match(stableBlankCommentSource, /\$stableState\.avatarHash -cne \$expectedAvatarHash[\s\S]*moments_post_anchor_changed/u);
 assert.doesNotMatch(stableBlankCommentSource, /Click|AtomicMouse|Keyboard|Clipboard|SetCursorPos|Focus-|Open-Visual/u);
-assert.match(actionSource, /\$blankCheckpoint = Get-VisualStableBlankCommentCheckpoint[\s\S]*\$blankCheckpoint\.safeToDismiss[\s\S]*Dismiss-VisualCommentComposer[\s\S]*\$emptyCheckFinishedTick = \[uint32\]\$blankCheckpoint\.inputTick/u);
+assert.match(actionSource, /\$blankCheckpoint = Get-VisualStableBlankCommentCheckpoint[\s\S]*\$blankCheckpoint\.safeToDismiss[\s\S]*Dismiss-VisualProvenEmptyCommentComposer[\s\S]*\$emptyCheckFinishedTick = \[uint32\]\$blankCheckpoint\.inputTick/u);
 const stableBlankCommentProbeSource = `
 $ErrorActionPreference = "Stop"
 ${stableBlankCommentSource}
@@ -556,7 +556,7 @@ assert.match(draftProbeSource, /Get-VisualCommentEditorAdapter \$lock \$composer
 assert.match(draftProbeSource, /\$null -eq \$value[\s\S]*\(\[string\]\$value\)\.Length -eq 0/u);
 assert.match(draftProbeSource, /editorRuntimeId = \[string\]\$adapter\.runtimeId/u);
 assert.match(actionSource, /if \(-not \$draftProbe\.ok\)[\s\S]*reason = \[string\]\$draftProbe\.reason[\s\S]*if \(-not \$draftProbe\.empty\)[\s\S]*moments_comment_preexisting_draft/u);
-assert.match(actionSource, /if \(-not \$draftProbe\.ok\)[\s\S]*Dismiss-VisualCommentComposer \$lock \$opened\.menu \$emptyCheckFinishedTick[\s\S]*moments_comment_draft_close_unverified[\s\S]*reason = \[string\]\$draftProbe\.reason/u);
+assert.match(actionSource, /if \(-not \$draftProbe\.ok\)[\s\S]*Dismiss-VisualProvenEmptyCommentComposer \$lock \$opened\.menu \$composer\.bounds \$opened\.expectedAvatarBounds \$opened\.avatarHash \$emptyCheckFinishedTick[\s\S]*moments_comment_draft_close_unverified[\s\S]*reason = \[string\]\$draftProbe\.reason/u);
 const targetedSetSource = actionSource.match(
   /function Set-VisualCommentTextTargeted\(\$lock, \$composerBounds,[\s\S]*?\n\}/u,
 )?.[0] ?? "";
@@ -569,7 +569,7 @@ const preMutationCommentSource = actionSource.match(
   /\$composerFrame = Get-MomentsVisualFrame[\s\S]*?\$roundTrip = Set-VisualCommentTextTargeted/u,
 )?.[0] ?? "";
 assert.ok(preMutationCommentSource, "pre-mutation comment validation source should be present");
-assert.match(preMutationCommentSource, /if \(-not \$draftProbe\.ok\)[\s\S]*Dismiss-VisualCommentComposer/u);
+assert.match(preMutationCommentSource, /if \(-not \$draftProbe\.ok\)[\s\S]*Dismiss-VisualProvenEmptyCommentComposer/u);
 assert.match(
   actionSource,
   /\$beforeCandidate = Find-VisualCommentCandidate \$beforeFrame \$opened\.postBounds \$opened\.menu \$commentText "exact"/u,
@@ -677,7 +677,7 @@ const exactDraftProofIndex = visualClipboardRoundTripSource.indexOf("$exactDraft
 const commentCheckCleanupBranchIndex = visualClipboardRoundTripSource.indexOf("if (-not $retainExactDraftForSend)", exactDraftProofIndex);
 const immediateBackspaceIndex = visualClipboardRoundTripSource.indexOf("Invoke-VisualOwnedKeyboardBackspace", commentCheckCleanupBranchIndex);
 const boundedEmptyProofIndex = visualClipboardRoundTripSource.indexOf("Wait-VisualSelectedCommentDraftEmptyPair", immediateBackspaceIndex);
-const immediateDismissIndex = visualClipboardRoundTripSource.indexOf("$composerClosed = Dismiss-VisualCommentComposer", boundedEmptyProofIndex);
+const immediateDismissIndex = visualClipboardRoundTripSource.indexOf("$composerClosed = Dismiss-VisualProvenEmptyCommentComposer", boundedEmptyProofIndex);
 const clipboardRestoreAfterCleanupIndex = visualClipboardRoundTripSource.indexOf("$clipboardRestoreSucceeded = Restore-VisualClipboard", immediateDismissIndex);
 const retainedReadyProofIndex = visualClipboardRoundTripSource.indexOf("$readyState = Get-LockedVisualCommentState", clipboardRestoreAfterCleanupIndex);
 assert.ok(
@@ -700,7 +700,7 @@ assert.equal(
   1,
   "comment_check exact-draft cleanup must issue one guarded Backspace without refocusing",
 );
-assert.match(immediateCommentCheckCleanupSource, /Invoke-VisualOwnedKeyboardBackspace[\s\S]*Wait-VisualSelectedCommentDraftEmptyPair[\s\S]*Dismiss-VisualCommentComposer/u);
+assert.match(immediateCommentCheckCleanupSource, /Invoke-VisualOwnedKeyboardBackspace[\s\S]*Wait-VisualSelectedCommentDraftEmptyPair[\s\S]*Dismiss-VisualProvenEmptyCommentComposer/u);
 assert.match(immediateCommentCheckCleanupSource, /moments_comment_draft_empty_state_unverified[\s\S]*moments_comment_composer_dismiss_unverified/u);
 assert.match(actionSource, /private const ushort BackspaceScanCode = 0x0E[\s\S]*private static INPUT KeyboardScanInput[\s\S]*KeyEventfScanCode/u);
 assert.match(actionSource, /private static INPUT KeyboardScanInput[\s\S]*virtualKey = 0[\s\S]*scanCode = scanCode[\s\S]*flags = KeyEventfScanCode/u);
@@ -718,7 +718,7 @@ const visualClipboardRoundTripFinallySource = visualClipboardRoundTripSource.sli
 assert.match(visualClipboardRoundTripFinallySource, /Restore-VisualClipboard[\s\S]*if \(\$retainExactDraftForSend -and -not \$draftRetainedForSend -and \$draftMayExist -and \$exactDraftProven\)[\s\S]*Invoke-VisualOwnedKeyboardBackspace/u);
 assert.doesNotMatch(visualClipboardRoundTripFinallySource, /if \(-not \$retainExactDraftForSend[^\n]*\$exactDraftProven\)[\s\S]*Invoke-VisualOwnedKeyboardBackspace/u);
 assert.doesNotMatch(visualClipboardRoundTripFinallySource, /Focus-VisualCommentKeyboardTarget/u);
-assert.match(visualClipboardRoundTripSource, /\$emptyStateCandidate = \$true[\s\S]*Dismiss-VisualCommentComposer[\s\S]*if \(\$composerClosed\)[\s\S]*\$draftCleared = \$true/u);
+assert.match(visualClipboardRoundTripSource, /\$emptyStateCandidate = \$true[\s\S]*Dismiss-VisualProvenEmptyCommentComposer[\s\S]*if \(\$composerClosed\)[\s\S]*\$draftCleared = \$true/u);
 assert.match(actionSource, /function Dismiss-VisualCommentComposer[\s\S]*for \(\$attempt = 0; \$attempt -lt 7; \$attempt\+\+\)[\s\S]*\$missingFrames -ge 2/u);
 assert.match(visualClipboardRoundTripSource, /moments_comment_draft_empty_state_unverified[\s\S]*moments_comment_composer_dismiss_unverified/u);
 const selectedDraftEmptyStateSource = actionSource.match(
@@ -730,7 +730,7 @@ const selectedDraftEmptyPairSource = actionSource.match(
   /function Wait-VisualSelectedCommentDraftEmptyPair\([\s\S]*?\n\}/u,
 )?.[0] ?? "";
 assert.ok(selectedDraftEmptyPairSource, "bounded selected-draft empty-pair proof should be present");
-assert.doesNotMatch(selectedDraftEmptyPairSource, /Invoke-VisualOwnedKeyboardBackspace|Focus-VisualCommentKeyboardTarget|Dismiss-VisualCommentComposer|Invoke-VisualOwnedClick|AtomicMouseClick|Clipboard/u);
+assert.doesNotMatch(selectedDraftEmptyPairSource, /Invoke-VisualOwnedKeyboardBackspace|Focus-VisualCommentKeyboardTarget|Dismiss-Visual(?:ProvenEmpty)?CommentComposer|Invoke-VisualOwnedClick|AtomicMouseClick|Clipboard/u);
 assert.match(selectedDraftEmptyPairSource, /for \(\$pass = 0; \$pass -lt 2; \$pass\+\+\)/u);
 assert.equal((selectedDraftEmptyPairSource.match(/Get-LockedVisualCommentState/gu) ?? []).length, 2, "each quiet pass must inspect exactly two locked frames");
 assert.match(selectedDraftEmptyPairSource, /\$startedTick = Get-VisualInputTick[\s\S]*\$retryBaselineTick[\s\S]*\$quietStartTick = Get-VisualInputTick/u);
@@ -738,7 +738,20 @@ assert.match(selectedDraftEmptyPairSource, /Test-VisualLockedForeground \$lock[\
 assert.match(selectedDraftEmptyPairSource, /Test-VisualSelectedCommentDraftEmpty \$firstEmptyState[\s\S]*Test-VisualSelectedCommentDraftEmpty \$secondEmptyState/u);
 assert.match(selectedDraftEmptyPairSource, /\$finishedTick -eq \$startedTick[\s\S]*inputTick = \$finishedTick[\s\S]*if \(\$pass -eq 0 -and -not \$inputTickRebased\)[\s\S]*\$retryBaselineTick = \$finishedTick[\s\S]*continue/u);
 assert.match(selectedDraftEmptyPairSource, /firstStateReason[\s\S]*firstSendReason[\s\S]*secondStateReason[\s\S]*secondSendReason/u);
-assert.match(visualClipboardRoundTripSource, /\$emptyProof = Wait-VisualSelectedCommentDraftEmptyPair[\s\S]*if \(-not \$emptyProof\.ok\)[\s\S]*\$draftCleanupDiagnostics = \$emptyProof\.diagnostics[\s\S]*\$inputTick = \[uint32\]\$emptyProof\.inputTick[\s\S]*Dismiss-VisualCommentComposer \$lock \$menu \$inputTick/u);
+assert.match(visualClipboardRoundTripSource, /\$emptyProof = Wait-VisualSelectedCommentDraftEmptyPair[\s\S]*if \(-not \$emptyProof\.ok\)[\s\S]*\$draftCleanupDiagnostics = \$emptyProof\.diagnostics[\s\S]*\$inputTick = \[uint32\]\$emptyProof\.inputTick[\s\S]*Dismiss-VisualProvenEmptyCommentComposer \$lock \$menu \$expectedComposerBounds \$expectedAvatarBounds \$expectedAvatarHash \$inputTick/u);
+const provenEmptyDismissSource = actionSource.match(
+  /function Dismiss-VisualProvenEmptyCommentComposer\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.ok(provenEmptyDismissSource, "clipboard-compatible proven-empty composer dismissal should be present");
+assert.match(provenEmptyDismissSource, /Get-LockedVisualCommentState[\s\S]*Test-VisualSelectedCommentDraftEmpty/u);
+assert.match(provenEmptyDismissSource, /Focus-VisualCommentKeyboardTarget[\s\S]*Wait-VisualSelectedCommentDraftEmptyPair[\s\S]*AtomicKeyboardEscape\(\)/u);
+assert.match(provenEmptyDismissSource, /Focus-VisualCommentKeyboardTarget[^\n]+\(\[int64\]::MaxValue\)/u);
+assert.match(provenEmptyDismissSource, /\$settledEscapeInputTick -ne \$escapeInputTick[\s\S]*GetLastInputTick\(\) -ne \$settledEscapeInputTick/u);
+assert.match(provenEmptyDismissSource, /Get-MomentsPixelHash[^\n]+\$expectedAvatarBounds[\s\S]*Find-MomentsMenuDots[\s\S]*\$remainingMenus\.Count -ne 1/u);
+assert.match(provenEmptyDismissSource, /moments_comment_composer_not_found[\s\S]*\$missingFrames -ge 2/u);
+assert.doesNotMatch(provenEmptyDismissSource, /SetForegroundWindow|ShowWindowAsync|Invoke-VisualOwnedKeyboardBackspace|AtomicMouseClick/u);
+assert.match(actionSource, /function Invoke-VisualCommentCheckClipboardRoundTrip[\s\S]*Dismiss-VisualProvenEmptyCommentComposer \$lock \$menu \$expectedComposerBounds \$expectedAvatarBounds \$expectedAvatarHash \$inputTick/u);
+assert.match(actionSource, /function Clear-And-CloseVisualSelectedCommentDraft[\s\S]*Dismiss-VisualProvenEmptyCommentComposer \$lock \$menu \$expectedComposerBounds \$expectedAvatarBounds \$expectedAvatarHash/u);
 const selectedDraftEmptyPairProbeSource = `
 $ErrorActionPreference = "Stop"
 ${selectedDraftEmptyStateSource}
@@ -789,7 +802,7 @@ const selectedDraftCleanupSource = actionSource.match(
 assert.ok(selectedDraftCleanupSource, "exact selected visual draft cleanup should be present");
 assert.doesNotMatch(selectedDraftCleanupSource, /Clipboard|0x41|0x43|0x56|Invoke-VisualOwnedClick|AtomicMouseClick|Write-VisualResult|0x0D|VK_RETURN/u);
 assert.match(selectedDraftCleanupSource, /GetForegroundWindow\(\) -ne \$lock\.hWnd[\s\S]*GetLastInputTick\(\) -ne \$expectedInputTick[\s\S]*Invoke-VisualOwnedKeyboardBackspace/u);
-assert.match(selectedDraftCleanupSource, /Invoke-VisualOwnedKeyboardBackspace[\s\S]*Wait-VisualSelectedCommentDraftEmptyPair[\s\S]*Dismiss-VisualCommentComposer/u);
+assert.match(selectedDraftCleanupSource, /Invoke-VisualOwnedKeyboardBackspace[\s\S]*Wait-VisualSelectedCommentDraftEmptyPair[\s\S]*Dismiss-VisualProvenEmptyCommentComposer/u);
 assert.match(actionSource, /\$preSendLock = Get-LockedVisualRoot \$context[\s\S]*Get-LockedVisualCommentState \$preSendLock[\s\S]*Test-VisualBoundsNear \$preSendState\.send\.bounds \$clipboardRoundTrip\.sendBounds 3\.0[\s\S]*Test-VisualDeadlineMargin \(\[int64\]\$context\.deadlineMs\) 10000[\s\S]*GetForegroundWindow\(\) -eq \$preSendLock\.hWnd[\s\S]*GetLastInputTick\(\) -eq \[uint32\]\$clipboardRoundTrip\.inputTick/u);
 assert.match(actionSource, /if \(-not \$preSendProofOk\)[\s\S]*Clear-And-CloseVisualSelectedCommentDraft[\s\S]*moments_comment_draft_close_unverified[\s\S]*moments_comment_editor_changed/u);
 const visualSendFailureSource = actionSource.match(
@@ -1080,6 +1093,8 @@ assert.match(exactEmptyComposerEscapeSource, /GetForegroundWindow\(\) -ne \$lock
 assert.match(exactEmptyComposerEscapeSource, /GetWindowThreadProcessId\(\$lock\.hWnd, \[ref\]\$currentPid\)[\s\S]*\[int\]\$currentPid -ne \[int\]\$lock\.pid/u);
 assert.match(exactEmptyComposerEscapeSource, /Get-VisualSendButton \$emptyFrame \$emptyComposer[\s\S]*moments_comment_send_button_not_found/u);
 assert.match(exactEmptyComposerEscapeSource, /Get-VisualCommentEditorAdapter \$lock \$expectedComposerBounds \$editorRuntimeId \$editorBounds[\s\S]*String\]::Equals\(\[string\]\$exactEmptyEditor\.value, "", \[StringComparison\]::Ordinal\)/u);
+assert.match(exactEmptyComposerEscapeSource, /\$exactEmptyEditor\.element\.SetFocus\(\)[\s\S]*AutomationElement\]::FocusedElement[\s\S]*\$focusedRuntimeId -cne \$editorRuntimeId/u);
+assert.match(exactEmptyComposerEscapeSource, /\$focusedEmptyEditor = Get-VisualCommentEditorAdapter[\s\S]*String\]::Equals\(\[string\]\$focusedEmptyEditor\.value, "", \[StringComparison\]::Ordinal\)[\s\S]*AtomicKeyboardEscape\(\)/u);
 assert.match(exactEmptyComposerEscapeSource, /AtomicKeyboardEscape\(\)[\s\S]*\$missingFrames \+= 1[\s\S]*\$missingFrames -ge 2/u);
 assert.match(exactEmptyComposerEscapeSource, /return Dismiss-VisualCommentComposer \$lock \$menu \$escapeInputTick/u);
 assert.doesNotMatch(exactEmptyComposerEscapeSource, /AtomicMouseClick|SendKeys|SendWait/u);

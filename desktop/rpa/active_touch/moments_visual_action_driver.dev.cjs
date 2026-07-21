@@ -2950,6 +2950,81 @@ function Wait-VisualSelectedCommentDraftEmptyPair(
   return @{ ok = $false; reason = "moments_external_input_detected"; safeToDismiss = $false; diagnostics = @{ stage = "quiet_pass_exhausted"; inputTickRebased = $inputTickRebased } }
 }
 
+function Dismiss-VisualProvenEmptyCommentComposer(
+  $lock,
+  $menu,
+  $expectedComposerBounds,
+  $expectedAvatarBounds,
+  [string]$expectedAvatarHash,
+  [uint32]$expectedInputTick
+) {
+  if ($menu -eq $null -or -not (Test-VisualBounds $expectedComposerBounds 40 40) -or
+    -not (Test-VisualBounds $expectedAvatarBounds 12 12) -or
+    [string]::IsNullOrWhiteSpace($expectedAvatarHash) -or
+    $expectedInputTick -eq [uint32]::MaxValue -or
+    [Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
+    [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick) { return $false }
+
+  $preFocusState = Get-LockedVisualCommentState $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash
+  if (-not (Test-VisualSelectedCommentDraftEmpty $preFocusState)) { return $false }
+  $focus = Focus-VisualCommentKeyboardTarget $lock $expectedComposerBounds ([int64]::MaxValue) $expectedInputTick
+  if (-not $focus.ok) { return $false }
+  [uint32]$focusedInputTick = [uint32]$focus.inputTick
+  $focusedEmptyProof = Wait-VisualSelectedCommentDraftEmptyPair $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash $focusedInputTick
+  if (-not $focusedEmptyProof.ok) { return $false }
+  [uint32]$focusedEmptyInputTick = [uint32]$focusedEmptyProof.inputTick
+  if ([Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
+    [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $focusedEmptyInputTick -or
+    -not [Win32WechatMomentsVisualAction]::AtomicKeyboardEscape()) { return $false }
+
+  Start-Sleep -Milliseconds 120
+  [uint32]$escapeInputTick = [Win32WechatMomentsVisualAction]::GetLastInputTick()
+  Start-Sleep -Milliseconds 120
+  [uint32]$settledEscapeInputTick = [Win32WechatMomentsVisualAction]::GetLastInputTick()
+  if ($escapeInputTick -eq [uint32]::MaxValue -or $settledEscapeInputTick -eq [uint32]::MaxValue) { return $false }
+  if ($settledEscapeInputTick -ne $escapeInputTick) {
+    Start-Sleep -Milliseconds 160
+    if ([Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $settledEscapeInputTick) { return $false }
+    $escapeInputTick = $settledEscapeInputTick
+  }
+
+  $missingFrames = 0
+  for ($attempt = 0; $attempt -lt 6; $attempt++) {
+    if ([Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
+      [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $escapeInputTick -or
+      -not [Win32WechatMomentsVisualAction]::IsWindowVisible($lock.hWnd) -or
+      [Win32WechatMomentsVisualAction]::IsIconic($lock.hWnd)) { return $false }
+    $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $false
+    if (-not $frame.ok) {
+      Close-MomentsVisualFrame $frame
+      return $false
+    }
+    try {
+      $remainingComposer = Get-VisualCommentComposer $frame $menu
+      $remainingAvatarHash = Get-MomentsPixelHash $frame $expectedAvatarBounds
+      $remainingMenus = @(Find-MomentsMenuDots $frame | Where-Object { Test-VisualBoundsNear $_.bounds $menu.bounds 3.0 })
+      if (-not $remainingAvatarHash -or $remainingAvatarHash -cne $expectedAvatarHash -or $remainingMenus.Count -ne 1) {
+        return $false
+      }
+      if (-not $remainingComposer.ok -and [string]$remainingComposer.reason -ceq "moments_comment_composer_not_found") {
+        $missingFrames += 1
+        if ($missingFrames -ge 2) { return $true }
+      } else {
+        if (-not $remainingComposer.ok -or
+          -not (Test-VisualBoundsNear $remainingComposer.bounds $expectedComposerBounds 4.0)) { return $false }
+        $remainingSend = Get-VisualSendButton $frame $remainingComposer
+        if ($remainingSend.ok -or [string]$remainingSend.reason -cne "moments_comment_send_button_not_found") { return $false }
+        $missingFrames = 0
+      }
+    } finally {
+      Close-MomentsVisualFrame $frame
+    }
+    Start-Sleep -Milliseconds 120
+  }
+
+  return Dismiss-VisualCommentComposer $lock $menu $escapeInputTick
+}
+
 function Get-VisualPostSendCommentState(
   $context,
   $opened,
@@ -3470,7 +3545,7 @@ function Invoke-VisualCommentCheckClipboardRoundTrip(
       $emptyStateCandidate = $true
       $draftCleared = $true
       $draftMayExist = $false
-      $composerClosed = Dismiss-VisualCommentComposer $lock $menu $inputTick
+      $composerClosed = Dismiss-VisualProvenEmptyCommentComposer $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash $inputTick
       if (-not $composerClosed) {
         $draftCleanupReason = "moments_comment_composer_dismiss_unverified"
         throw [System.InvalidOperationException]::new($draftCleanupReason)
@@ -3561,7 +3636,7 @@ function Invoke-VisualCommentCheckClipboardRoundTrip(
 
     if (($retainExactDraftForSend -or -not $exactDraftProven) -and
       -not $draftRetainedForSend -and $emptyStateCandidate -and -not $unknownDraftPresent) {
-      $composerClosed = Dismiss-VisualCommentComposer $lock $menu $inputTick
+      $composerClosed = Dismiss-VisualProvenEmptyCommentComposer $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash $inputTick
       if ($composerClosed) {
         $draftCleared = $true
         $draftMayExist = $false
@@ -3570,7 +3645,7 @@ function Invoke-VisualCommentCheckClipboardRoundTrip(
       }
     } elseif (($retainExactDraftForSend -or -not $exactDraftProven) -and
       -not $draftRetainedForSend -and -not $draftMayExist -and -not $unknownDraftPresent) {
-      $composerClosed = Dismiss-VisualCommentComposer $lock $menu $inputTick
+      $composerClosed = Dismiss-VisualProvenEmptyCommentComposer $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash $inputTick
       if (-not $composerClosed -and -not $draftCleanupReason) {
         $draftCleanupReason = "moments_comment_draft_close_unverified"
       }
@@ -3634,7 +3709,7 @@ function Clear-And-CloseVisualSelectedCommentDraft(
   [uint32]$clearedInputTick = [uint32]$clear.inputTick
   $emptyProof = Wait-VisualSelectedCommentDraftEmptyPair $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash $clearedInputTick
   if (-not $emptyProof.ok) { return $false }
-  return Dismiss-VisualCommentComposer $lock $menu ([uint32]$emptyProof.inputTick)
+  return Dismiss-VisualProvenEmptyCommentComposer $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash ([uint32]$emptyProof.inputTick)
 }
 
 function Dismiss-VisualExactEmptyCommentComposer(
@@ -3682,6 +3757,20 @@ function Dismiss-VisualExactEmptyCommentComposer(
     $exactEmptyEditor = Get-VisualCommentEditorAdapter $lock $expectedComposerBounds $editorRuntimeId $editorBounds
     if (-not $exactEmptyEditor.ok -or
       -not [String]::Equals([string]$exactEmptyEditor.value, "", [StringComparison]::Ordinal) -or
+      [Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
+      [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick) { return $false }
+    try {
+      $exactEmptyEditor.element.SetFocus()
+    } catch {
+      return $false
+    }
+    Start-Sleep -Milliseconds 80
+    $focusedEditor = [System.Windows.Automation.AutomationElement]::FocusedElement
+    if ($focusedEditor -eq $null -or [int]$focusedEditor.Current.ProcessId -ne [int]$lock.pid) { return $false }
+    $focusedRuntimeId = (@($focusedEditor.GetRuntimeId()) | ForEach-Object { [string][int]$_ }) -join "."
+    $focusedEmptyEditor = Get-VisualCommentEditorAdapter $lock $expectedComposerBounds $editorRuntimeId $editorBounds
+    if ($focusedRuntimeId -cne $editorRuntimeId -or -not $focusedEmptyEditor.ok -or
+      -not [String]::Equals([string]$focusedEmptyEditor.value, "", [StringComparison]::Ordinal) -or
       [Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
       [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick -or
       -not [Win32WechatMomentsVisualAction]::AtomicKeyboardEscape()) { return $false }
@@ -3933,7 +4022,7 @@ try {
     if (-not $blankCheckpoint.ok) {
       if ($blankCheckpoint.safeToDismiss -eq $true -and
         [uint32]$blankCheckpoint.inputTick -ne [uint32]::MaxValue -and
-        -not (Dismiss-VisualCommentComposer $lock $opened.menu ([uint32]$blankCheckpoint.inputTick))) {
+        -not (Dismiss-VisualProvenEmptyCommentComposer $lock $opened.menu $composer.bounds $opened.expectedAvatarBounds $opened.avatarHash ([uint32]$blankCheckpoint.inputTick))) {
         Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $false }
       }
       Write-VisualResult @{
@@ -3992,7 +4081,7 @@ try {
         [uint32]$commentInputTick = [uint32]$clipboardRoundTrip.inputTick
         $sendButton = $preSendState.send
       } else {
-        if (-not (Dismiss-VisualCommentComposer $lock $opened.menu $emptyCheckFinishedTick)) {
+        if (-not (Dismiss-VisualProvenEmptyCommentComposer $lock $opened.menu $composer.bounds $opened.expectedAvatarBounds $opened.avatarHash $emptyCheckFinishedTick)) {
           Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $false }
         }
         Write-VisualResult @{ ok = $false; status = "blocked"; reason = [string]$draftProbe.reason; actionAttempted = $false }
@@ -4003,7 +4092,7 @@ try {
       Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_preexisting_draft"; actionAttempted = $false }
     }
     if (-not (Test-VisualDeadlineMargin ([int64]$context.deadlineMs) 5000)) {
-      if (-not (Dismiss-VisualCommentComposer $lock $opened.menu $emptyCheckFinishedTick)) {
+      if (-not (Dismiss-VisualProvenEmptyCommentComposer $lock $opened.menu $composer.bounds $opened.expectedAvatarBounds $opened.avatarHash $emptyCheckFinishedTick)) {
         Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $false }
       }
       Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_dry_run_expired"; actionAttempted = $false }
