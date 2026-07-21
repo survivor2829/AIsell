@@ -3032,7 +3032,8 @@ function Get-VisualPostSendCommentState(
   [uint32]$expectedInputTick,
   [bool]$findCandidate = $false,
   $expectedCandidateBounds = $null,
-  [string]$expectedCandidateHash = ""
+  [string]$expectedCandidateHash = "",
+  [string]$candidateMatchMode = "exact"
 ) {
   $hashProofRequired = $expectedCandidateBounds -ne $null -or -not [string]::IsNullOrWhiteSpace($expectedCandidateHash)
   if ($hashProofRequired -and ($expectedCandidateBounds -eq $null -or $expectedCandidateHash -notmatch '^[0-9a-f]{64}$')) {
@@ -3066,7 +3067,7 @@ function Get-VisualPostSendCommentState(
     if ($findCandidate) {
       # The OCR line may include an author prefix, so exact mode still uses
       # IndexOf. It also keeps sibling comments ending in -A/-B unambiguous.
-      $candidate = Find-VisualCommentCandidate $frame $opened.postBounds $opened.menu $commentText "exact"
+      $candidate = Find-VisualCommentCandidate $frame $opened.postBounds $opened.menu $commentText $candidateMatchMode
     }
     if ($hashProofRequired) {
       $observedCandidateHash = $(if ((Test-VisualBounds $expectedCandidateBounds 2 2) -and
@@ -3098,6 +3099,7 @@ function Get-VisualPostSendCommentState(
       candidateReason = [string]$candidate.reason
       candidateCount = [int]$candidate.candidateCount
       candidateHashStable = [bool]$candidateHashStable
+      candidateMatchMode = $candidateMatchMode
     }
   }
 }
@@ -3171,8 +3173,18 @@ function Wait-VisualCommentReadbackSeed(
     }
     Start-Sleep -Milliseconds 350
     if (-not (Test-VisualPostSendBudget $context $settleDeadlineMs)) { break }
-    $candidateState = Get-VisualPostSendCommentState $context $opened $commentText $expectedInputTick $true
+    $locatorOnly = $false
+    $candidateState = Get-VisualPostSendCommentState $context $opened $commentText $expectedInputTick $true $null "" "exact"
     if ([string]$candidateState.reason -ceq "moments_external_input_detected") { return $candidateState }
+    if (-not $candidateState.ok -and [string]$candidateState.reason -ceq "moments_comment_candidate_not_found") {
+      if (-not (Test-VisualPostSendBudget $context $settleDeadlineMs)) {
+        $lastState = $candidateState
+        break
+      }
+      $candidateState = Get-VisualPostSendCommentState $context $opened $commentText $expectedInputTick $true $null "" "fuzzy"
+      $locatorOnly = $candidateState.ok
+      if ([string]$candidateState.reason -ceq "moments_external_input_detected") { return $candidateState }
+    }
     if (-not (Test-VisualPostSendBudget $context $settleDeadlineMs)) {
       $lastState = $candidateState
       break
@@ -3201,10 +3213,13 @@ function Wait-VisualCommentReadbackSeed(
           menuStable = [bool]$stableState.diagnostics.menuStable
           menuMatchCount = [int]$stableState.diagnostics.menuMatchCount
           candidateCount = [int]$candidateState.candidate.candidateCount
-          candidateExactMatch = [bool]$candidateState.candidate.exactMatch
+          candidateExactMatch = $(if ($locatorOnly) { $false } else { [bool]$candidateState.candidate.exactMatch })
           candidateHashStable = [bool]$stableState.diagnostics.candidateHashStable
           candidateStable = $true
+          candidateLocatorOnly = [bool]$locatorOnly
+          candidateMatchMode = $(if ($locatorOnly) { "fuzzy" } else { "exact" })
         }
+        locatorOnly = [bool]$locatorOnly
       }
     }
     $lastState = $stableState
@@ -4242,14 +4257,15 @@ try {
       expectedInputTick = [uint32]$postClickInputTick
       createdAtMs = (Get-VisualEpochMs)
     }
+    $locatorOnly = [bool]$seedResult.locatorOnly
     Write-VisualResult @{
       ok = $true
-      status = "visible_verified"
+      status = $(if ($locatorOnly) { "readback_required" } else { "visible_verified" })
       actionAttempted = $true
-      commentStatus = "verified"
-      commentVerified = $true
-      verificationMode = "unique_exact_ocr_candidate_and_stable_post_v1"
-      verificationLevel = "visible_exact"
+      commentStatus = $(if ($locatorOnly) { "located" } else { "verified" })
+      commentVerified = -not $locatorOnly
+      verificationMode = $(if ($locatorOnly) { "unique_fuzzy_ocr_locator_and_stable_post_v1" } else { "unique_exact_ocr_candidate_and_stable_post_v1" })
+      verificationLevel = $(if ($locatorOnly) { "locator_only" } else { "visible_exact" })
       normalizedOcrCountBefore = $normalizedOcrCountBefore
       normalizedOcrCountAfter = [int]$seedResult.normalizedOcrCountAfter
       diagnostics = $seedResult.diagnostics

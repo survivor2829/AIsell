@@ -17,6 +17,8 @@ const {
 const {
   MOMENTS_DRY_RUN_TTL_MS,
   UIA_COMMENT_VERIFICATION_MODE,
+  VISUAL_COMMENT_LOCATOR_LEVEL,
+  VISUAL_COMMENT_LOCATOR_MODE,
   VISUAL_COMMENT_VERIFICATION_LEVEL,
   VISUAL_COMMENT_VERIFICATION_MODE,
   createMomentsAttemptKey,
@@ -288,6 +290,24 @@ function verifiedVisibleComment(fixture, context, overrides = {}) {
       menuBounds: { left: 720, top: 370, width: 80, height: 40 },
       expectedInputTick: 1234,
       createdAtMs: Date.now()
+    },
+    ...overrides
+  };
+}
+
+function locatedVisualComment(fixture, context, overrides = {}) {
+  const exact = verifiedVisibleComment(fixture, context);
+  return {
+    ...exact,
+    status: "readback_required",
+    commentVerified: false,
+    verificationMode: VISUAL_COMMENT_LOCATOR_MODE,
+    verificationLevel: VISUAL_COMMENT_LOCATOR_LEVEL,
+    diagnostics: {
+      ...exact.diagnostics,
+      candidateExactMatch: false,
+      candidateLocatorOnly: true,
+      candidateMatchMode: "fuzzy"
     },
     ...overrides
   };
@@ -1328,6 +1348,100 @@ async function main() {
     const enhancedVerifiedAttempt = loadState(enhancedCommentFixture.baseDir)
       .moments_test_action.attempts[enhancedCommentSuccess.attempt_key];
     assert.ok(COMMENT_READBACK_REQUIRED_PROOF_KEYS.every((key) => enhancedVerifiedAttempt.readback_proof[key] === true));
+
+    const fuzzyLocatorFixture = visualPreparedDirectory(root, "visual-comment-fuzzy-locator-readback-success");
+    let fuzzyLocatorCommentCalls = 0;
+    let fuzzyLocatorReadbackCalls = 0;
+    const fuzzyLocatorSuccess = await executeMomentsComment({
+      ...fuzzyLocatorFixture,
+      commentText: COMMENT_TEXT,
+      driver: verifiedDriver(fuzzyLocatorFixture.observationId, {
+        comment: (context) => {
+          fuzzyLocatorCommentCalls += 1;
+          return locatedVisualComment(fuzzyLocatorFixture, context);
+        },
+        commentReadback: (context) => {
+          fuzzyLocatorReadbackCalls += 1;
+          assert.equal(context.phase, "readback");
+          return verifiedCommentReadback(fuzzyLocatorFixture.observationId, COMMENT_TEXT);
+        }
+      })
+    });
+    assert.equal(fuzzyLocatorCommentCalls, 1);
+    assert.equal(fuzzyLocatorReadbackCalls, 1, "a fuzzy locator must automatically require exact clipboard readback");
+    assert.equal(fuzzyLocatorSuccess.ok, true);
+    assert.equal(fuzzyLocatorSuccess.verification_mode, COMMENT_READBACK_VERIFICATION_MODE);
+    assert.equal(fuzzyLocatorSuccess.verification_level, "clipboard_exact");
+    const fuzzyLocatorAttempt = loadState(fuzzyLocatorFixture.baseDir)
+      .moments_test_action.attempts[fuzzyLocatorSuccess.attempt_key];
+    assert.equal(fuzzyLocatorAttempt.status, "verified");
+    assert.equal(fuzzyLocatorAttempt.visible_candidate_proof.candidate_exact_match, false);
+    assert.equal(fuzzyLocatorAttempt.visible_candidate_proof.candidate_locator_only, true);
+    assert.equal(fuzzyLocatorAttempt.visible_candidate_proof.candidate_match_mode, "fuzzy");
+    assert.ok(COMMENT_READBACK_REQUIRED_PROOF_KEYS.every((key) => fuzzyLocatorAttempt.readback_proof[key] === true));
+
+    const fuzzyMismatchFixture = visualPreparedDirectory(root, "visual-comment-fuzzy-locator-readback-mismatch");
+    let fuzzyMismatchCommentCalls = 0;
+    let fuzzyMismatchReadbackCalls = 0;
+    const fuzzyMismatch = await executeMomentsComment({
+      ...fuzzyMismatchFixture,
+      commentText: COMMENT_TEXT,
+      driver: verifiedDriver(fuzzyMismatchFixture.observationId, {
+        comment: (context) => {
+          fuzzyMismatchCommentCalls += 1;
+          return locatedVisualComment(fuzzyMismatchFixture, context);
+        },
+        commentReadback: () => {
+          fuzzyMismatchReadbackCalls += 1;
+          return {
+            ok: false,
+            status: "readback_blocked",
+            actionAttempted: false,
+            reason: "moments_comment_readback_text_mismatch",
+            proof: {
+              ...Object.fromEntries(COMMENT_READBACK_REQUIRED_PROOF_KEYS.map((key) => [key, true])),
+              clipboardOrdinalMatched: false
+            }
+          };
+        }
+      })
+    });
+    assert.equal(fuzzyMismatch.status, "outcome_unknown");
+    assert.equal(fuzzyMismatch.driver_reason, "moments_comment_readback_text_mismatch");
+    assert.equal(fuzzyMismatchCommentCalls, 1);
+    assert.equal(fuzzyMismatchReadbackCalls, 1);
+    const fuzzyMismatchRepeat = await executeMomentsComment({
+      ...fuzzyMismatchFixture,
+      commentText: COMMENT_TEXT,
+      driver: {
+        inspectMenu: () => { throw new Error("an unknown fuzzy attempt must stop before inspection"); },
+        comment: () => { throw new Error("an unknown fuzzy attempt must never resend"); },
+        commentReadback: () => { throw new Error("a duplicate request must not perform a new readback"); }
+      }
+    });
+    assert.equal(fuzzyMismatchRepeat.blocked_reason, "moments_comment_text_already_attempted");
+    assert.equal(fuzzyMismatchRepeat.real_action_attempted, false);
+
+    const fuzzyAmbiguousFixture = visualPreparedDirectory(root, "visual-comment-fuzzy-locator-ambiguous");
+    let fuzzyAmbiguousReadbackCalls = 0;
+    const fuzzyAmbiguous = await executeMomentsComment({
+      ...fuzzyAmbiguousFixture,
+      commentText: COMMENT_TEXT,
+      driver: verifiedDriver(fuzzyAmbiguousFixture.observationId, {
+        comment: (context) => locatedVisualComment(fuzzyAmbiguousFixture, context, {
+          diagnostics: {
+            ...locatedVisualComment(fuzzyAmbiguousFixture, context).diagnostics,
+            candidateCount: 2
+          }
+        }),
+        commentReadback: () => {
+          fuzzyAmbiguousReadbackCalls += 1;
+          return verifiedCommentReadback(fuzzyAmbiguousFixture.observationId, COMMENT_TEXT);
+        }
+      })
+    });
+    assert.equal(fuzzyAmbiguous.status, "outcome_unknown");
+    assert.equal(fuzzyAmbiguousReadbackCalls, 0, "an ambiguous fuzzy locator must never reach clipboard readback");
 
     const seedDiagnosticsFixture = visualPreparedDirectory(root, "visual-comment-seed-diagnostics");
     const privateDiagnosticMarker = "PRIVATE_VISUAL_DIAGNOSTIC_MUST_NOT_PERSIST";

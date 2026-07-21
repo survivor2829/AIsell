@@ -635,7 +635,7 @@ assert.match(actionSource, /targeted_uia_value_roundtrip_and_unique_enabled_butt
 assert.match(actionSource, /\$finalEditor = Get-VisualCommentEditorAdapter \$lock \$composer\.bounds \$editorRuntimeId \$editorBounds[\s\S]*String\]::Equals\(\[string\]\$finalEditor\.value, \$commentText, \[StringComparison\]::Ordinal\)[\s\S]*GetLastInputTick\(\) -ne \$commentInputTick/u);
 assert.match(actionSource, /Invoke-VisualOwnedClick \$sendX \$sendY \$lock \(\[int64\]\$context\.deadlineMs\) \$true \$true \$null \$commentInputTick/u);
 assert.match(actionSource, /function Invoke-VisualOwnedClick\([\s\S]*\$expectedInputTick[\s\S]*GetLastInputTick\(\) -ne \$expectedInputTick[\s\S]*AtomicMouseClick\(\$screenX, \$screenY, \$false\)/u);
-assert.match(actionSource, /status = "visible_verified"[\s\S]*commentVerified = \$true[\s\S]*unique_exact_ocr_candidate_and_stable_post_v1[\s\S]*verificationLevel = "visible_exact"[\s\S]*readbackSeed = \$readbackSeed/u);
+assert.match(actionSource, /status = \$\(if \(\$locatorOnly\) \{ "readback_required" \} else \{ "visible_verified" \}\)[\s\S]*commentVerified = -not \$locatorOnly[\s\S]*unique_exact_ocr_candidate_and_stable_post_v1[\s\S]*verificationLevel = \$\(if \(\$locatorOnly\) \{ "locator_only" \} else \{ "visible_exact" \}\)[\s\S]*readbackSeed = \$readbackSeed/u);
 assert.match(actionSource, /normalizedOcrCountBefore[\s\S]*normalizedOcrCountAfter/u);
 assert.doesNotMatch(actionSource, /Get-VisualExactTextCount|exactCountBefore|exactCountAfter/u);
 
@@ -820,7 +820,7 @@ assert.equal((postSendCommentStateSource.match(/GetLastInputTick/gu) ?? []).leng
 assert.match(postSendCommentStateSource, /Get-LockedVisualRoot \$context[\s\S]*GetForegroundWindow\(\) -ne \$stateLock\.hWnd[\s\S]*Get-MomentsVisualFrame \$stateLock\.hWnd \$stateLock\.windowRect \$stateLock\.pid \$false/u);
 assert.match(postSendCommentStateSource, /\$composerCompleted = -not \$composer\.ok -and \[string\]\$composer\.reason -ceq "moments_comment_composer_not_found"[\s\S]*\$avatarHash -ceq \$opened\.avatarHash[\s\S]*\$menuMatches\.Count -eq 1/u);
 assert.equal((postSendCommentStateSource.match(/Find-VisualCommentCandidate/gu) ?? []).length, 1, "post-send state may perform at most one OCR candidate lookup per call");
-assert.match(postSendCommentStateSource, /Find-VisualCommentCandidate[^\n]+\$commentText "exact"/u);
+assert.match(postSendCommentStateSource, /\[string\]\$candidateMatchMode = "exact"[\s\S]*Find-VisualCommentCandidate[^\n]+\$commentText \$candidateMatchMode/u);
 assert.match(postSendCommentStateSource, /Get-MomentsPixelHash \$frame \$expectedCandidateBounds[\s\S]*\$observedCandidateHash -ceq \$expectedCandidateHash/u);
 assert.match(postSendCommentStateSource, /\$hashProofRequired[\s\S]*moments_comment_readback_seed_unstable[\s\S]*GetLastInputTick\(\)[\s\S]*moments_external_input_detected/u);
 const postSendBudgetSource = actionSource.match(
@@ -844,7 +844,11 @@ assert.match(readbackSeedWaitSource, /\$sampleOffsetsMs = @\(0, 2200, 5000\)[\s\
 assert.ok((readbackSeedWaitSource.match(/Test-VisualPostSendBudget/gu) ?? []).length >= 5, "every passive wait/capture stage must recheck all post-send deadlines");
 assert.match(readbackSeedWaitSource, /GetLastInputTick\(\) -ne \$expectedInputTick[\s\S]*moments_external_input_detected/u);
 assert.match(readbackSeedWaitSource, /if \(-not \$surface\.ok\)[\s\S]*Test-VisualPostSendBudget[\s\S]*continue/u);
-assert.match(readbackSeedWaitSource, /candidateCount = \[int\]\$candidateState\.candidate\.candidateCount[\s\S]*candidateExactMatch = \[bool\]\$candidateState\.candidate\.exactMatch[\s\S]*candidateHashStable = \[bool\]\$stableState\.diagnostics\.candidateHashStable[\s\S]*candidateStable = \$true/u);
+assert.match(readbackSeedWaitSource, /candidateCount = \[int\]\$candidateState\.candidate\.candidateCount[\s\S]*candidateExactMatch = \$\(if \(\$locatorOnly\) \{ \$false \} else \{ \[bool\]\$candidateState\.candidate\.exactMatch \}\)[\s\S]*candidateHashStable = \[bool\]\$stableState\.diagnostics\.candidateHashStable[\s\S]*candidateStable = \$true/u);
+assert.match(readbackSeedWaitSource, /"exact"[\s\S]*moments_comment_candidate_not_found[\s\S]*"fuzzy"[\s\S]*\$locatorOnly = \$candidateState\.ok/u);
+assert.match(readbackSeedWaitSource, /candidateLocatorOnly = \[bool\]\$locatorOnly[\s\S]*candidateMatchMode = \$\(if \(\$locatorOnly\) \{ "fuzzy" \} else \{ "exact" \}\)[\s\S]*locatorOnly = \[bool\]\$locatorOnly/u);
+assert.doesNotMatch(readbackSeedWaitSource, /Invoke-VisualOwnedRightClick|Invoke-VisualCommentReadback/u);
+assert.match(actionSource, /\$locatorOnly = \[bool\]\$seedResult\.locatorOnly[\s\S]*status = \$\(if \(\$locatorOnly\) \{ "readback_required" \} else \{ "visible_verified" \}\)[\s\S]*commentVerified = -not \$locatorOnly[\s\S]*unique_fuzzy_ocr_locator_and_stable_post_v1[\s\S]*locator_only/u);
 assert.match(actionSource, /\$script:visualWorkerSoftDeadlineMs = \(Get-VisualEpochMs\) \+ 45000/u);
 assert.match(actionSource, /\$script:visualPostSendSettleMs = 15000[\s\S]*\$script:visualPostSendRequiredMs = 18000[\s\S]*\$script:visualCommentReadbackRequiredMs = 30000[\s\S]*\$script:visualContextPostSendRequiredMs = \$script:visualPostSendSettleMs \+ \$script:visualCommentReadbackRequiredMs/u);
 assert.match(actionSource, /\$preSendNowMs = Get-VisualEpochMs[\s\S]*visualWorkerSoftDeadlineMs - \$preSendNowMs[\s\S]*visualPostSendRequiredMs[\s\S]*Clear-And-CloseVisualSelectedCommentDraft[\s\S]*Clear-And-CloseVisualCommentDraft[\s\S]*moments_comment_send_budget_exhausted/u);

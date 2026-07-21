@@ -17,6 +17,8 @@ const LIKED_MENU_STATES = Object.freeze(["取消", "取消赞"]);
 const UIA_COMMENT_VERIFICATION_MODE = "exact_comment_count_increment_and_editor_completion";
 const VISUAL_COMMENT_VERIFICATION_MODE = "unique_exact_ocr_candidate_and_stable_post_v1";
 const VISUAL_COMMENT_VERIFICATION_LEVEL = "visible_exact";
+const VISUAL_COMMENT_LOCATOR_MODE = "unique_fuzzy_ocr_locator_and_stable_post_v1";
+const VISUAL_COMMENT_LOCATOR_LEVEL = "locator_only";
 const ENHANCED_COMMENT_VERIFICATION_LEVEL = "clipboard_exact";
 const COMMENT_DRAFT_CHECK_VERIFICATION_MODE = "targeted_uia_value_roundtrip_and_unique_enabled_button_transition";
 const VISUAL_COMMENT_DRAFT_CHECK_VERIFICATION_MODE = "visual_clipboard_ordinal_roundtrip_and_unique_enabled_button_transition";
@@ -99,7 +101,8 @@ function sanitizeVisualCommentReadbackDiagnostics(raw) {
     ["menuStable", "menu_stable"],
     ["candidateHashStable", "candidate_hash_stable"],
     ["candidateExactMatch", "candidate_exact_match"],
-    ["candidateStable", "candidate_stable"]
+    ["candidateStable", "candidate_stable"],
+    ["candidateLocatorOnly", "candidate_locator_only"]
   ]) {
     if (typeof raw[source] === "boolean") sanitized[target] = raw[source];
   }
@@ -113,6 +116,9 @@ function sanitizeVisualCommentReadbackDiagnostics(raw) {
   }
   if (VISUAL_READBACK_CANDIDATE_REASONS.has(raw.candidateReason)) {
     sanitized.candidate_reason = raw.candidateReason;
+  }
+  if (["exact", "fuzzy"].includes(raw.candidateMatchMode)) {
+    sanitized.candidate_match_mode = raw.candidateMatchMode;
   }
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;
 }
@@ -443,20 +449,8 @@ function requiresVisualCommentVerification(context) {
     && context?.postSnapshot?.source === "visual:windows_media_ocr";
 }
 
-function validVisualCommentSendResult(result, context, attemptKey, commentText) {
-  return result?.ok === true
-    && result.status === "visible_verified"
-    && result.actionAttempted === true
-    && result.observationId === context.observationId
-    && result.commentText === commentText
-    && result.readbackSeed?.attemptKey === attemptKey
-    && result.readbackSeed !== null
-    && typeof result.readbackSeed === "object";
-}
-
-function validVisualCommentCandidateResult(result, context, attemptKey, commentText) {
+function validVisualCommentSeedBinding(result, context, attemptKey, commentText) {
   const seed = result?.readbackSeed;
-  const diagnostics = result?.diagnostics;
   const expectedWindow = context?.expectedWindow;
   const candidateBounds = seed?.candidateBounds;
   const finiteBounds = (bounds) => bounds !== null
@@ -471,12 +465,12 @@ function validVisualCommentCandidateResult(result, context, attemptKey, commentT
     && candidateBounds.top >= 0
     && candidateBounds.left + candidateBounds.width <= expectedWindow.width
     && candidateBounds.top + candidateBounds.height <= expectedWindow.height;
-  return validVisualCommentSendResult(result, context, attemptKey, commentText)
-    && result.commentVerified === true
-    && result.verificationMode === VISUAL_COMMENT_VERIFICATION_MODE
-    && result.verificationLevel === VISUAL_COMMENT_VERIFICATION_LEVEL
-    && result.normalizedOcrCountBefore === 0
-    && result.normalizedOcrCountAfter === 1
+  return result?.ok === true
+    && result.actionAttempted === true
+    && result.observationId === context.observationId
+    && result.commentText === commentText
+    && seed !== null
+    && typeof seed === "object"
     && seed.version === 1
     && seed.observationId === context.observationId
     && seed.attemptKey === attemptKey
@@ -484,7 +478,23 @@ function validVisualCommentCandidateResult(result, context, attemptKey, commentT
     && seed.commentTextSha256 === sha256(commentText)
     && /^[0-9a-f]{64}$/u.test(String(seed.candidatePixelHash ?? ""))
     && /^[0-9a-f]{64}$/u.test(String(seed.avatarHash ?? ""))
-    && candidateInsideWindow
+    && candidateInsideWindow;
+}
+
+function validVisualCommentSendResult(result, context, attemptKey, commentText) {
+  return result?.status === "visible_verified"
+    && validVisualCommentSeedBinding(result, context, attemptKey, commentText);
+}
+
+function validVisualCommentCandidateResult(result, context, attemptKey, commentText) {
+  const seed = result?.readbackSeed;
+  const diagnostics = result?.diagnostics;
+  return validVisualCommentSendResult(result, context, attemptKey, commentText)
+    && result.commentVerified === true
+    && result.verificationMode === VISUAL_COMMENT_VERIFICATION_MODE
+    && result.verificationLevel === VISUAL_COMMENT_VERIFICATION_LEVEL
+    && result.normalizedOcrCountBefore === 0
+    && result.normalizedOcrCountAfter === 1
     && diagnostics !== null
     && typeof diagnostics === "object"
     && diagnostics.composerCompleted === true
@@ -497,8 +507,34 @@ function validVisualCommentCandidateResult(result, context, attemptKey, commentT
     && diagnostics.candidateStable === true;
 }
 
+function validVisualCommentLocatorResult(result, context, attemptKey, commentText) {
+  const diagnostics = result?.diagnostics;
+  return result?.status === "readback_required"
+    && validVisualCommentSeedBinding(result, context, attemptKey, commentText)
+    && result.commentVerified === false
+    && result.verificationMode === VISUAL_COMMENT_LOCATOR_MODE
+    && result.verificationLevel === VISUAL_COMMENT_LOCATOR_LEVEL
+    && result.normalizedOcrCountBefore === 0
+    && result.normalizedOcrCountAfter === 1
+    && diagnostics !== null
+    && typeof diagnostics === "object"
+    && diagnostics.composerCompleted === true
+    && diagnostics.anchorStable === true
+    && diagnostics.menuStable === true
+    && diagnostics.menuMatchCount === 1
+    && diagnostics.candidateCount === 1
+    && diagnostics.candidateExactMatch === false
+    && diagnostics.candidateHashStable === true
+    && diagnostics.candidateStable === true
+    && diagnostics.candidateLocatorOnly === true
+    && diagnostics.candidateMatchMode === "fuzzy";
+}
+
 async function readbackVisualComment(driver, context, attemptKey, commentText, sendResult) {
-  if (!validVisualCommentSendResult(sendResult, context, attemptKey, commentText)) {
+  if (
+    !validVisualCommentSendResult(sendResult, context, attemptKey, commentText)
+    && !validVisualCommentLocatorResult(sendResult, context, attemptKey, commentText)
+  ) {
     return { ok: false, reason: "moments_comment_readback_seed_invalid" };
   }
   if (typeof driver?.commentReadback !== "function") {
@@ -1042,16 +1078,19 @@ async function executeMomentsComment(options = {}) {
   let verificationMode = "";
   let verificationLevel = "";
   if (visualVerificationRequired && attempted === true) {
-    verified = validVisualCommentCandidateResult(result, context, attemptKey, commentText);
-    if (verified) {
+    const exactCandidateVerified = validVisualCommentCandidateResult(result, context, attemptKey, commentText);
+    const locatorReady = validVisualCommentLocatorResult(result, context, attemptKey, commentText);
+    verified = exactCandidateVerified;
+    if (exactCandidateVerified) {
       verificationMode = VISUAL_COMMENT_VERIFICATION_MODE;
       verificationLevel = VISUAL_COMMENT_VERIFICATION_LEVEL;
-      if (options.enhancedReadback === true) {
-        readback = await readbackVisualComment(driver, context, attemptKey, commentText, result);
-        if (readback.ok === true) {
-          verificationMode = COMMENT_READBACK_VERIFICATION_MODE;
-          verificationLevel = ENHANCED_COMMENT_VERIFICATION_LEVEL;
-        }
+    }
+    if (locatorReady || (exactCandidateVerified && options.enhancedReadback === true)) {
+      readback = await readbackVisualComment(driver, context, attemptKey, commentText, result);
+      if (readback.ok === true) {
+        verified = true;
+        verificationMode = COMMENT_READBACK_VERIFICATION_MODE;
+        verificationLevel = ENHANCED_COMMENT_VERIFICATION_LEVEL;
       }
     }
   } else if (!visualVerificationRequired) {
@@ -1119,6 +1158,8 @@ module.exports = {
   MOMENTS_DRY_RUN_TTL_MS,
   NON_RETRYABLE_ATTEMPT_STATUSES,
   UIA_COMMENT_VERIFICATION_MODE,
+  VISUAL_COMMENT_LOCATOR_LEVEL,
+  VISUAL_COMMENT_LOCATOR_MODE,
   VISUAL_COMMENT_VERIFICATION_LEVEL,
   VISUAL_COMMENT_VERIFICATION_MODE,
   createMomentsAttemptKey,
