@@ -151,6 +151,7 @@ function expectedVisualObservationId(window, snapshot) {
     layoutHash: String(snapshot.layout_hash ?? ""),
     label: String(snapshot.label ?? ""),
     identityText: String(snapshot.identity_text ?? ""),
+    ...(String(snapshot.stable_anchor_text ?? "") ? { stableAnchorText: String(snapshot.stable_anchor_text) } : {}),
     postFingerprint: String(snapshot.post_fingerprint ?? ""),
     bounds: {
       left: Number(snapshot.bounds?.left),
@@ -220,6 +221,8 @@ function validVisualContext(context = {}) {
     && typeof snapshot.identity_text === "string"
     && Boolean(snapshot.identity_text.trim())
     && snapshot.identity_text.length <= 2000
+    && (snapshot.stable_anchor_text === undefined
+      || (typeof snapshot.stable_anchor_text === "string" && snapshot.stable_anchor_text.length <= 2000))
     && SHA256_PATTERN.test(String(snapshot.post_fingerprint ?? ""))
     && momentsPostFingerprint(snapshot.identity_text) === snapshot.post_fingerprint
     && boundsWithin(snapshot.bounds, window.renderPaneBounds)
@@ -832,6 +835,10 @@ function Get-LockedVisualRoot($context) {
   }
 }
 
+function Test-MomentsStablePostIdentity($post, $snapshot) {
+  return Test-MomentsStablePostIdentityText ([string]$post.identityText) ([string]$snapshot.identity_text) ([string]$post.stableAnchorText) ([string]$snapshot.stable_anchor_text)
+}
+
 function Get-CurrentLockedVisualPost($lock, $context, [bool]$activate = $true) {
   $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $activate
   if (-not $frame.ok) { return @{ ok = $false; reason = $frame.reason } }
@@ -846,7 +853,7 @@ function Get-CurrentLockedVisualPost($lock, $context, [bool]$activate = $true) {
     $expectedAvatarBounds = ConvertTo-RelativeVisualBounds $snapshot.avatar_bounds $context.expectedWindow
     $matchingPosts = New-Object System.Collections.Generic.List[object]
     foreach ($post in $posts) {
-      if (-not (Test-MomentsStableContentSimilarity ([string]$post.identityText) ([string]$snapshot.identity_text)) -or
+      if (-not (Test-MomentsStablePostIdentity $post $snapshot) -or
         [string]$post.avatarHash -cne [string]$snapshot.avatar_hash -or
         -not (Test-VisualBoundsNear $post.bounds $expectedBounds $script:momentsVisualPostRelockTolerancePx) -or
         -not (Test-VisualBoundsNear $post.menuBounds $expectedMenuBounds $script:momentsVisualPostRelockTolerancePx) -or

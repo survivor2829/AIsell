@@ -78,7 +78,7 @@ function Test-VisualPostSequence($first, $second) {
   $right = @($second)
   if ($left.Count -ne $right.Count) { return $false }
   for ($index = 0; $index -lt $left.Count; $index++) {
-    if (-not (Test-MomentsStableContentSimilarity ([string]$left[$index].identityText) ([string]$right[$index].identityText)) -or
+    if (-not (Test-MomentsStablePostIdentityText ([string]$left[$index].identityText) ([string]$right[$index].identityText) ([string]$left[$index].stableAnchorText) ([string]$right[$index].stableAnchorText)) -or
       [string]$left[$index].avatarHash -cne [string]$right[$index].avatarHash -or
       [bool]$left[$index].partialVisible -ne [bool]$right[$index].partialVisible) { return $false }
     foreach ($boundsField in @("bounds", "menuBounds", "avatarBounds")) {
@@ -189,6 +189,7 @@ foreach ($post in $posts) {
   [void]$absolutePosts.Add(@{
     text = [string]$post.text
     identityText = [string]$post.identityText
+    stableAnchorText = [string]$post.stableAnchorText
     structureVerified = $true
     regionHash = [string]$post.regionHash
     avatarHash = [string]$post.avatarHash

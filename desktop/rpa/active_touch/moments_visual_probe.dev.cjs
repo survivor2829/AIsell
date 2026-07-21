@@ -224,6 +224,19 @@ function Test-MomentsStableContentSimilarity([string]$first, [string]$second) {
   return $distance -le $allowed -and ([double]$distance / [double]$maximumLength) -le 0.07
 }
 
+function Test-MomentsStablePostIdentityText(
+  [string]$firstIdentity,
+  [string]$secondIdentity,
+  [string]$firstAnchor,
+  [string]$secondAnchor
+) {
+  if (Test-MomentsStableContentSimilarity $firstIdentity $secondIdentity) { return $true }
+  if ([string]::IsNullOrWhiteSpace($firstAnchor) -or [string]::IsNullOrWhiteSpace($secondAnchor)) {
+    return $false
+  }
+  return Test-MomentsStableContentSimilarity $firstAnchor $secondAnchor
+}
+
 function Get-MomentsPixel($frame, [int]$x, [int]$y) {
   if ($x -lt 0 -or $y -lt 0 -or $x -ge $frame.width -or $y -ge $frame.height) { return $null }
   $offset = ($y * $frame.stride) + ($x * 4)
@@ -686,6 +699,27 @@ function Get-MomentsPostIdentityText($ocr, $postRect, $menuBounds) {
   ).Trim()
 }
 
+function Get-MomentsPostStableAnchorText($ocr, $postRect, $avatarBounds) {
+  # Author and fixed body lines render beside the avatar. A playing video or
+  # photo is below this band, so its changing OCR must not veto a same-post
+  # relock. Require at least two lines; author-only posts keep the strong path.
+  $avatarRowTop = [double]$avatarBounds.top - [double]$postRect.top
+  $avatarRowBottom = $avatarRowTop + [double]$avatarBounds.height
+  $anchorLines = @($ocr.lines | Where-Object {
+    $lineCenterY = [double]$_.bounds.top + ([double]$_.bounds.height / 2.0)
+    $lineCenterY -ge $avatarRowTop -and $lineCenterY -le $avatarRowBottom
+  } | Sort-Object { [double]$_.bounds.top }, { [double]$_.bounds.left })
+  if ($anchorLines.Count -lt 2) { return "" }
+  $anchorText = [string]::Join(" ", @($anchorLines | ForEach-Object { [string]$_.compact }))
+  $normalized = [Text.RegularExpressions.Regex]::Replace(
+    $anchorText.Normalize([Text.NormalizationForm]::FormKC),
+    "\\s+",
+    " "
+  ).Trim()
+  if ($normalized.Length -lt 16) { return "" }
+  return $normalized
+}
+
 function Get-MomentsVisualPostCandidates($frame, $viewportBounds) {
   $frameBounds = @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
   if (-not (Test-MomentsVisualBoundsInside $viewportBounds $frameBounds)) { return @{ menus = @(); posts = @() } }
@@ -707,6 +741,7 @@ function Get-MomentsVisualPostCandidates($frame, $viewportBounds) {
     $ocr = Get-MomentsOcrObservation $frame $postRect
     if (-not $ocr.ok -or -not $ocr.text -or $ocr.text.Length -lt 8 -or $ocr.text.Length -gt 2000) { continue }
     $identityText = Get-MomentsPostIdentityText $ocr $postRect $menu.bounds
+    $stableAnchorText = Get-MomentsPostStableAnchorText $ocr $postRect $avatar.bounds
     if (-not $identityText -or $identityText.Length -gt 2000) { continue }
     $regionHash = Get-MomentsPixelHash $frame $postRect
     $avatarHash = Get-MomentsPixelHash $frame $avatar.bounds
@@ -714,6 +749,7 @@ function Get-MomentsVisualPostCandidates($frame, $viewportBounds) {
     [void]$posts.Add(@{
       text = [string]$ocr.text
       identityText = [string]$identityText
+      stableAnchorText = [string]$stableAnchorText
       regionHash = $regionHash
       avatarHash = $avatarHash
       layoutHash = [string]$ocr.layoutHash

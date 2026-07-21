@@ -259,6 +259,9 @@ function expectedObservationId(window, snapshot) {
       layoutHash: String(snapshot.layout_hash ?? ""),
       label: String(snapshot.label ?? ""),
       identityText: String(snapshot.identity_text ?? ""),
+      ...(String(snapshot.stable_anchor_text ?? "")
+        ? { stableAnchorText: String(snapshot.stable_anchor_text) }
+        : {}),
       postFingerprint: String(snapshot.post_fingerprint ?? ""),
       bounds: {
         left: Number(snapshot.bounds?.left),
@@ -382,6 +385,8 @@ function loadLockedContext(baseDir, suppliedObservationId) {
     && typeof snapshot.identity_text === "string"
     && Boolean(snapshot.identity_text.trim())
     && snapshot.identity_text.length <= 2000
+    && (snapshot.stable_anchor_text === undefined
+      || (typeof snapshot.stable_anchor_text === "string" && snapshot.stable_anchor_text.length <= 2000))
     && typeof snapshot.post_fingerprint === "string"
     && OBSERVATION_ID_PATTERN.test(snapshot.post_fingerprint)
     && momentsPostFingerprint(snapshot.identity_text) === snapshot.post_fingerprint

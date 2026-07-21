@@ -19,6 +19,7 @@ const ACTION_BLOCK_MESSAGES: Record<string, string> = {
   moments_comment_draft_close_unverified: "无法确认测试草稿已精确清空并关闭，已停止且不会发送评论。",
   moments_comment_editor_focus_invalid: "无法确认焦点属于原帖评论框，未输入或发送。",
   moments_external_input_detected: "检测到其他鼠标或键盘输入，已停止且未发送；请暂时不要操作后重试。",
+  moments_post_changed: "目标内容画面发生变化，本次没有点击；请直接重新预演。",
   moments_comment_region_ambiguous: "无法唯一确认原帖评论区，未输入或发送。",
   moments_comment_send_button_ambiguous: "无法唯一确认评论发送按钮，草稿已清理并停止。",
   moments_dry_run_expired: "观察锁已超过 5 分钟，请重新预演。",

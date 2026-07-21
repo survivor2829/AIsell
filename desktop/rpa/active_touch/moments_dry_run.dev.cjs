@@ -489,6 +489,7 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow) {
   const post = selection.post;
   const label = String(post.text ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
   const identityText = String(post.identityText ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
+  const stableAnchorText = String(post.stableAnchorText ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
   const postFingerprint = momentsPostFingerprint(identityText);
   const regionHash = String(post.regionHash ?? "").trim();
   const avatarHash = String(post.avatarHash ?? "").trim();
@@ -502,7 +503,7 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow) {
     width: verifiedWindow.width,
     height: verifiedWindow.height
   };
-  if (!label || label.length > 2000 || !identityText || identityText.length > 2000 || !postFingerprint || !/^[0-9a-f]{64}$/u.test(regionHash)
+  if (!label || label.length > 2000 || !identityText || identityText.length > 2000 || stableAnchorText.length > 2000 || !postFingerprint || !/^[0-9a-f]{64}$/u.test(regionHash)
     || !/^[0-9a-f]{64}$/u.test(avatarHash) || !/^[0-9a-f]{64}$/u.test(layoutHash) || post.structureVerified !== true
     || !boundsWithin(renderPaneBounds, windowBounds) || !boundsWithin(bounds, renderPaneBounds)
     || !boundsWithin(menuBounds, renderPaneBounds) || !boundsWithin(avatarBounds, renderPaneBounds)) {
@@ -542,6 +543,7 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow) {
     layoutHash,
     label,
     identityText,
+    ...(stableAnchorText ? { stableAnchorText } : {}),
     postFingerprint,
     bounds: {
       left: Number(bounds.left),
@@ -579,6 +581,7 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow) {
       layout_hash: layoutHash,
       label,
       identity_text: identityText,
+      stable_anchor_text: stableAnchorText,
       preview: label.length > 160 ? `${label.slice(0, 157)}...` : label,
       bounds,
       menu_bounds: menuBounds,

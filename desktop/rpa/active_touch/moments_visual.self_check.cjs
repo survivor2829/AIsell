@@ -119,7 +119,7 @@ assert.match(script, /Test-VisualMenuSequence \$firstRead\.menus \$secondRead\.m
 assert.match(script, /Test-VisualPostSequence \$firstRead\.posts \$secondRead\.posts/u);
 assert.match(script, /\$script:momentsVisualStabilityTolerancePx = 12\.0/u);
 assert.doesNotMatch(script, /Test-Visual(?:Menu|Post)Sequence[\s\S]*?-gt 1\.5/u);
-assert.match(script, /Test-MomentsStableContentSimilarity \(\[string\]\$left\[\$index\]\.identityText\) \(\[string\]\$right\[\$index\]\.identityText\)/u);
+assert.match(script, /Test-MomentsStablePostIdentityText \(\[string\]\$left\[\$index\]\.identityText\) \(\[string\]\$right\[\$index\]\.identityText\) \(\[string\]\$left\[\$index\]\.stableAnchorText\) \(\[string\]\$right\[\$index\]\.stableAnchorText\)/u);
 assert.match(script, /\[string\]\$left\[\$index\]\.avatarHash -cne \[string\]\$right\[\$index\]\.avatarHash/u);
 assert.match(script, /foreach \(\$boundsField in @\("bounds", "menuBounds", "avatarBounds"\)\)/u);
 assert.match(script, /Close-And-Write \$result \$firstFrame \$secondFrame/u);
@@ -165,10 +165,45 @@ assert.ok(identityTextBuilder);
 assert.match(identityTextBuilder, /\$menuRowBottom = \[double\]\$menuBounds\.top \+ \[double\]\$menuBounds\.height - \[double\]\$postRect\.top/u);
 assert.match(identityTextBuilder, /\$lineCenterY = \[double\]\$_\.bounds\.top \+ \(\[double\]\$_\.bounds\.height \/ 2\.0\)/u);
 assert.match(identityTextBuilder, /\$lineCenterY -le \$menuRowBottom/u);
+assert.match(script, /Get-MomentsPostIdentityText \$ocr \$postRect \$menu\.bounds/u);
 assert.match(script, /identityText = \[string\]\$identityText/u);
+assert.match(script, /stableAnchorText = \[string\]\$stableAnchorText/u);
 assert.match(script, /identityText = \[string\]\$post\.identityText/u);
+assert.match(script, /stableAnchorText = \[string\]\$post\.stableAnchorText/u);
 assert.match(script, /avatarHash = \[string\]\$post\.avatarHash/u);
 assert.match(script, /partialVisible = \[bool\]\$post\.partialVisible/u);
+
+const stableAnchorFunction = MOMENTS_VISUAL_READONLY_POWERSHELL.match(
+  /function Get-MomentsPostStableAnchorText\([^\n]+\) \{[\s\S]*?\n\}/u
+)?.[0] ?? "";
+assert.ok(stableAnchorFunction, "stable anchor builder should be extractable");
+assert.match(stableAnchorFunction, /\$anchorLines\.Count -lt 2/u);
+assert.match(stableAnchorFunction, /\$normalized\.Length -lt 16/u);
+const stableAnchorProgram = `${stableAnchorFunction}
+$ocr = @{ lines = @(
+  @{ compact = "author stable"; bounds = @{ left = 70.0; top = 8.0; width = 120.0; height = 12.0 } },
+  @{ compact = "fixed body line"; bounds = @{ left = 70.0; top = 30.0; width = 160.0; height = 16.0 } },
+  @{ compact = "dynamic video subtitle"; bounds = @{ left = 70.0; top = 82.0; width = 190.0; height = 18.0 } },
+  @{ compact = "55 minutes video channel"; bounds = @{ left = 70.0; top = 150.0; width = 190.0; height = 18.0 } }
+) }
+$post = @{ left = 100.0; top = 100.0; width = 500.0; height = 220.0 }
+$avatar = @{ left = 106.0; top = 106.0; width = 50.0; height = 50.0 }
+@{ anchor = (Get-MomentsPostStableAnchorText $ocr $post $avatar); authorOnly = (Get-MomentsPostStableAnchorText @{ lines = @($ocr.lines[0]) } $post $avatar) } | ConvertTo-Json -Compress`;
+const stableAnchorHarness = spawnSync("powershell.exe", [
+  "-NoProfile",
+  "-NonInteractive",
+  "-Command",
+  "$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())); Invoke-Expression $source"
+], {
+  input: Buffer.from(stableAnchorProgram, "utf8").toString("base64"),
+  encoding: "utf8",
+  windowsHide: true
+});
+assert.equal(stableAnchorHarness.status, 0, stableAnchorHarness.stderr || "stable anchor builder harness must run");
+assert.deepEqual(JSON.parse(stableAnchorHarness.stdout.trim()), {
+  authorOnly: "",
+  anchor: "author stable fixed body line"
+});
 assert.match(probeSource, /function Get-MomentsVisualPostCandidates\(\$frame, \$viewportBounds\)/u);
 assert.match(probeSource, /Find-MomentsMenuDots \$frame \| Where-Object \{ Test-MomentsVisualBoundsInside \$_\.bounds \$viewportBounds \}/u);
 assert.match(probeSource, /Find-MomentsAvatarForMenu \$frame \$menus \$index \$viewportBounds/u);
@@ -275,15 +310,51 @@ assert.match(actionSource, /version: 5/u);
 assert.match(actionSource, /avatarHash: String\(snapshot\.avatar_hash \?\? ""\)/u);
 assert.match(actionSource, /SHA256_PATTERN\.test\(String\(snapshot\.avatar_hash \?\? ""\)\)/u);
 assert.match(actionSource, /identityText: String\(snapshot\.identity_text \?\? ""\)/u);
+assert.match(actionSource, /stableAnchorText: String\(snapshot\.stable_anchor_text\)/u);
 assert.match(actionSource, /momentsPostFingerprint\(snapshot\.identity_text\) === snapshot\.post_fingerprint/u);
 assert.match(actionSource, /post\.identityText[\s\S]*snapshot\.identity_text/u);
+const stablePostIdentityFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
+  /function Test-MomentsStablePostIdentity\([^\n]+\) \{[\s\S]*?\n\}/u
+)?.[0] ?? "";
+assert.ok(stablePostIdentityFunction, "stable post identity helper should be extractable");
+const stablePostIdentityProgram = `${MOMENTS_VISUAL_READONLY_POWERSHELL}
+${stablePostIdentityFunction}
+$fullPost = @{ identityText = "same complete identity"; stableAnchorText = "" }
+$fullSnapshot = @{ identity_text = "same complete identity"; stable_anchor_text = "" }
+$dynamicPost = @{ identityText = "author fixed body zzzzz dynamic frame"; stableAnchorText = "author stable fixed body line" }
+$dynamicSnapshot = @{ identity_text = "author fixed body aaaaa changing frame"; stable_anchor_text = "author stable fixed body line" }
+$differentSnapshot = @{ identity_text = "author fixed body aaaaa changing frame"; stable_anchor_text = "different author and body text" }
+$noAnchorPost = @{ identityText = "author fixed body zzzzz dynamic frame"; stableAnchorText = "" }
+@{
+  full = (Test-MomentsStablePostIdentity $fullPost $fullSnapshot)
+  dynamic = (Test-MomentsStablePostIdentity $dynamicPost $dynamicSnapshot)
+  different = (Test-MomentsStablePostIdentity $dynamicPost $differentSnapshot)
+  missing = (Test-MomentsStablePostIdentity $noAnchorPost $dynamicSnapshot)
+} | ConvertTo-Json -Compress`;
+const stablePostIdentityHarness = spawnSync("powershell.exe", [
+  "-NoProfile",
+  "-NonInteractive",
+  "-Command",
+  "$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())); Invoke-Expression $source"
+], {
+  input: Buffer.from(stablePostIdentityProgram, "utf8").toString("base64"),
+  encoding: "utf8",
+  windowsHide: true
+});
+assert.equal(stablePostIdentityHarness.status, 0, stablePostIdentityHarness.stderr || "stable post identity harness must run");
+assert.deepEqual(JSON.parse(stablePostIdentityHarness.stdout.trim()), {
+  missing: false,
+  dynamic: true,
+  different: false,
+  full: true
+});
 const currentPostLock = actionSource.match(
   /function Get-CurrentLockedVisualPost\([\s\S]*?\n\}\n\nfunction Get-FreshVisualMenuAnchor/u
 )?.[0] ?? "";
 assert.ok(currentPostLock, "current visual post lock should be present");
 assert.doesNotMatch(currentPostLock, /regionHash|region_hash/u);
 assert.doesNotMatch(currentPostLock, /\$posts\.Count -ne 1/u);
-assert.match(currentPostLock, /Test-MomentsStableContentSimilarity \(\[string\]\$post\.identityText\) \(\[string\]\$snapshot\.identity_text\)/u);
+assert.match(currentPostLock, /Test-MomentsStablePostIdentity \$post \$snapshot/u);
 assert.match(currentPostLock, /\[string\]\$post\.avatarHash -cne \[string\]\$snapshot\.avatar_hash/u);
 assert.doesNotMatch(currentPostLock, /snapshot\.layout_hash/u);
 assert.match(currentPostLock, /\$matchingPosts\.Count -eq 0[\s\S]*moments_post_changed/u);

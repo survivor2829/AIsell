@@ -122,6 +122,9 @@ function visualObservationPayload(window, snapshot) {
     layoutHash: String(snapshot.layout_hash ?? ""),
     label: String(snapshot.label ?? ""),
     identityText: String(snapshot.identity_text ?? ""),
+    ...(String(snapshot.stable_anchor_text ?? "")
+      ? { stableAnchorText: String(snapshot.stable_anchor_text) }
+      : {}),
     postFingerprint: String(snapshot.post_fingerprint ?? ""),
     bounds: {
       left: Number(snapshot.bounds?.left),
@@ -158,6 +161,7 @@ function visualPreparedDirectory(root, name) {
     layout_hash: "2".repeat(64),
     label: MOMENTS_POST.text,
     identity_text: MOMENTS_POST.text,
+    stable_anchor_text: `${MOMENTS_POST.text} stable anchor`,
     post_fingerprint: momentsPostFingerprint(MOMENTS_POST.text),
     bounds: { left: 140, top: 180, width: 620, height: 320 },
     menu_bounds: { left: 760, top: 430, width: 80, height: 40 },
@@ -428,6 +432,28 @@ async function main() {
     assert.equal(visualResult.ok, true, "a complete visual v5 observation must reach the driver");
     assert.equal(visualDriverCalls, 1);
 
+    const legacyObservationFixture = visualPreparedDirectory(root, "visual-observation-legacy-without-anchor");
+    const legacyObservationState = loadState(legacyObservationFixture.baseDir);
+    const legacyObservationSnapshot = legacyObservationState.moments_dry_run.post_snapshot;
+    delete legacyObservationSnapshot.stable_anchor_text;
+    legacyObservationSnapshot.observation_id = crypto.createHash("sha256")
+      .update(visualObservationPayload(legacyObservationState.moments_dry_run.window, legacyObservationSnapshot), "utf8")
+      .digest("hex");
+    saveState(legacyObservationFixture.baseDir, legacyObservationState);
+    let legacyObservationDriverCalls = 0;
+    const legacyObservationResult = await inspectMomentsMenu({
+      baseDir: legacyObservationFixture.baseDir,
+      observationId: legacyObservationSnapshot.observation_id,
+      driver: verifiedDriver(legacyObservationSnapshot.observation_id, {
+        inspectMenu: () => {
+          legacyObservationDriverCalls += 1;
+          return { ok: true, observationId: legacyObservationSnapshot.observation_id, menuState: "\u8d5e" };
+        }
+      })
+    });
+    assert.equal(legacyObservationResult.ok, true, "a legacy visual observation without a stable anchor must remain valid");
+    assert.equal(legacyObservationDriverCalls, 1);
+
     const invalidAvatarFixture = visualPreparedDirectory(root, "visual-observation-avatar-missing");
     const invalidAvatarState = loadState(invalidAvatarFixture.baseDir);
     const invalidAvatarSnapshot = invalidAvatarState.moments_dry_run.post_snapshot;
@@ -561,6 +587,7 @@ async function main() {
       ["snapshot.layout_hash", "4".repeat(64)],
       ["snapshot.label", `${MOMENTS_POST.text} changed`],
       ["snapshot.identity_text", `${MOMENTS_POST.text} changed`],
+      ["snapshot.stable_anchor_text", `${MOMENTS_POST.text} changed anchor`],
       ["snapshot.post_fingerprint", "f".repeat(64)],
       ["snapshot.bounds.left", 141],
       ["snapshot.bounds.top", 181],
