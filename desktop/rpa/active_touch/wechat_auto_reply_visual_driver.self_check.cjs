@@ -52,6 +52,9 @@ assert.match(visualDriverSource, /active\.previewSignature === previewSignature[
 assert.match(visualDriverSource, /scanWechatIncoming\.resetBaselines[\s\S]*retryCandidates\.length = 0/u, "a restarted listener must not inherit an unsent candidate from the previous run");
 assert.doesNotMatch(visualDriverSource, /eventSequence|eventSessionId/u, "stable visual evidence must not receive a new ID on every scan");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(\$row\.unread -and -not \$row\.draft\)/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /-not \(Test-AutoReplyVisualUnreadDot \$frame \$line\.bounds\)/u, "an unread badge must be able to discover the rendered session name when contact sync is stale");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /discoveredConversation = \[bool\]\$match\.discovered/u);
+assert.match(visualDriverSource, /!allowed\.includes\(conversation\) && result\?\.discoveredConversation !== true/u, "a visually proven unread session must not be discarded by the active-touch contact name list");
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$row\.unread -or \$changed/u);
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /source -NotePropertyValue .*preview_change/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$nameBounds\.left - \(Scale-AutoReplyVisualMetric 20\.0\)/u);

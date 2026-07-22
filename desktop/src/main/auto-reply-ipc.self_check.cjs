@@ -2529,6 +2529,44 @@ async function main() {
   assert.equal(crossingState.daily_date, "2026-07-15");
   assert.equal(crossingState.reply_count, 1, "a reply verified after midnight must count toward the new day");
   crossingController.pause();
+
+  let discoveredSend = null;
+  const discoveredController = createAutoReplyController({
+    dataDir: path.join(root, "discovered_alias"),
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => ({ reply: "Received.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })
+    },
+    scanIncoming: () => ({
+      ok: true,
+      conversation: "Remote Alias",
+      discoveredConversation: true,
+      message: "Hello from another computer",
+      runtimeId: "remote-alias-1",
+      pid: 81,
+      hWnd: "91",
+      context: [{ role: "user", content: "Hello from another computer", key: "remote-alias-1" }]
+    }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => {
+      discoveredSend = options;
+      assert.equal(await options.beforeDraft(), true);
+      return { ok: true };
+    },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-15T10:00:00+08:00")
+  });
+  assert.equal((await discoveredController.start()).ok, true);
+  await discoveredController.runOnce();
+  assert.equal(discoveredSend?.expectedConversation, "Remote Alias", "auto reply must use the actual rendered WeChat alias even when it is absent from contacts.json");
+  assert.equal(discoveredController.status().reply_count, 1);
+  discoveredController.pause();
   console.log("auto-reply v2 self-check passed");
 }
 

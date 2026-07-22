@@ -326,9 +326,36 @@ function Get-AutoReplyVisualSidebarRows($frame, $lines, $allowedSet, [double]$si
     if ($left -lt (Scale-AutoReplyVisualMetric 42.0) -or $right -gt ($sidebarRight + (Scale-AutoReplyVisualMetric 8.0)) -or $top -lt (Scale-AutoReplyVisualMetric 72.0) -or $top -gt ($frame.height - (Scale-AutoReplyVisualMetric 42.0))) { continue }
     foreach ($name in $allowedSet) {
       if (Test-AutoReplyVisualSidebarNameLine ([string]$line.compact) ([string]$name)) {
-        [void]$nameMatches.Add([pscustomobject]@{ name = [string]$name; line = $line })
+        [void]$nameMatches.Add([pscustomobject]@{ name = [string]$name; line = $line; discovered = $false })
       }
     }
+  }
+  # Auto reply follows actual unread one-to-one sessions. Contact sync is used
+  # by active touch and can expose a stale nickname while WeChat renders a local
+  # remark. Discover that rendered name from the unread badge instead of
+  # silently filtering the customer out through the synced-name whitelist.
+  foreach ($line in $lines) {
+    $left = [double]$line.bounds.left; $top = [double]$line.bounds.top
+    $right = $left + [double]$line.bounds.width
+    $name = Normalize-AutoReplyVisualText ([string]$line.compact)
+    $looksLikePreview = @($lines | Where-Object {
+      $otherTop = [double]$_.bounds.top
+      $otherLeft = [double]$_.bounds.left
+      $otherTop -lt $top -and
+        $otherTop -ge ($top - (Scale-AutoReplyVisualMetric 34.0)) -and
+        [Math]::Abs($otherLeft - $left) -le (Scale-AutoReplyVisualMetric 18.0) -and
+        (Test-AutoReplyVisualPureText ([string]$_.compact))
+    }).Count -gt 0
+    if (-not $name -or $name.Length -gt 64 -or $looksLikePreview -or
+        $left -lt (Scale-AutoReplyVisualMetric 42.0) -or
+        $right -gt ($sidebarRight + (Scale-AutoReplyVisualMetric 8.0)) -or
+        $top -lt (Scale-AutoReplyVisualMetric 72.0) -or
+        $top -gt ($frame.height - (Scale-AutoReplyVisualMetric 42.0)) -or
+        -not (Test-AutoReplyVisualPureText $name) -or
+        $allowedSet.Contains($name) -or
+        $script:AutoReplyVisualExcludedNames.Contains($name) -or
+        -not (Test-AutoReplyVisualUnreadDot $frame $line.bounds)) { continue }
+    [void]$nameMatches.Add([pscustomobject]@{ name = $name; line = $line; discovered = $true })
   }
   $rows = New-Object System.Collections.Generic.List[object]
   foreach ($group in @($nameMatches.ToArray() | Group-Object name)) {
@@ -359,6 +386,7 @@ function Get-AutoReplyVisualSidebarRows($frame, $lines, $allowedSet, [double]$si
       signature = Get-AutoReplyVisualSha256 $preview
       unread = [bool](Test-AutoReplyVisualUnreadDot $frame $nameLine.bounds)
       draft = [bool]$isDraft
+      discoveredConversation = [bool]$match.discovered
       nameBounds = $nameLine.bounds
       previewBounds = $previewLine.bounds
     })
@@ -906,6 +934,11 @@ foreach ($name in $allowed) {
   if ($normalizedName) { [void]$allowedSet.Add($normalizedName) }
 }
 if ($allowedSet.Count -eq 0) { Write-AutoReplyVisualResult @{ ok = $false; reason = "whitelist_empty" } }
+$script:AutoReplyVisualExcludedNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+try { $excludedNames = @(([Environment]::GetEnvironmentVariable("XIAOXI_EXCLUDED_NAMES") | ConvertFrom-Json)) } catch { $excludedNames = @() }
+foreach ($name in $excludedNames) {
+  [void]$script:AutoReplyVisualExcludedNames.Add((Normalize-AutoReplyVisualText $name))
+}
 try { $baselines = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_BASELINES") | ConvertFrom-Json } catch { $baselines = $null }
 try { $messageBaselines = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_MESSAGE_BASELINES") | ConvertFrom-Json } catch { $messageBaselines = $null }
 $expectedConversation = Normalize-AutoReplyVisualText ([Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_CONVERSATION"))
@@ -942,6 +975,9 @@ try {
   $sidebar = Get-AutoReplyVisualSidebarRows $frame $observation.lines $allowedSet $sidebarRight
   if (-not $sidebar.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$sidebar.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
   $rows = @($sidebar.rows)
+  foreach ($row in $rows) {
+    if ([bool]$row.discoveredConversation) { [void]$allowedSet.Add([string]$row.conversation) }
+  }
   $sessionBaselines = @($rows | ForEach-Object { @{ conversation = [string]$_.conversation; signature = [string]$_.signature } })
   $currentConversation = Get-AutoReplyVisualCurrentConversation $observation.lines $allowedSet $sidebarRight ([double]$frame.width)
   if (-not $currentConversation.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$currentConversation.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
@@ -1314,6 +1350,7 @@ try {
     pid = [int]$process.Id
     hWnd = [int64]$hWnd
     source = $source
+    discoveredConversation = [bool]$candidate.discoveredConversation
     latestRole = "user"
     context = @(@{ role = "user"; content = $resolvedMessage; key = $runtimeId })
   }
@@ -1360,6 +1397,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
   const messageBaselines = new Map();
   const occurrenceStates = new Map();
   const retryCandidates = [];
+  const discoveredConversationNames = new Set();
   let primedProcess = null;
   let pendingOpenedUnread = null;
   let restoredPendingObservation = null;
@@ -1570,7 +1608,8 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     const previewSignature = String(result?.previewSignature || "").trim().toLowerCase();
     const messageSignature = String(result?.messageSignature || "").trim().toLowerCase();
     const process = processIdentity(result);
-    if (!allowed.includes(conversation) || !message || String(result?.latestRole || "") !== "user"
+    const discoveredConversation = result?.discoveredConversation === true;
+    if ((!allowed.includes(conversation) && !discoveredConversation) || !message || String(result?.latestRole || "") !== "user"
       || !/^visual:v1:[a-f0-9]{64}$/u.test(runtimeId) || !isSha256(previewSignature)
       || !isSha256(messageSignature) || !process) return null;
     return {
@@ -1584,6 +1623,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       hWnd: process.hWnd,
       source: String(result?.source || "unread"),
       latestRole: "user",
+      discoveredConversation,
       pendingVerifyAttempts: 0,
       context: [{ role: "user", content: message, key: runtimeId }]
     };
@@ -1592,7 +1632,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
   async function settlePendingOpenedUnread(nameIdentity, allowed) {
     const pending = pendingOpenedUnread;
     if (!pending) return null;
-    if (!allowed.includes(pending.conversation)) {
+    if (!allowed.includes(pending.conversation) && pending.discoveredConversation !== true) {
       pendingOpenedUnread = null;
       return null;
     }
@@ -1653,6 +1693,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     return Promise.resolve(powerShellRunner(AUTO_REPLY_VISUAL_SCRIPT, {
       XIAOXI_AUTO_REPLY_MODE: mode,
       XIAOXI_ALLOWED_NAMES: JSON.stringify(allowed),
+      XIAOXI_EXCLUDED_NAMES: JSON.stringify(["文件传输助手", "微信团队", "服务通知", "订阅号消息", "群聊"]),
       XIAOXI_VISUAL_BASELINES: JSON.stringify(Object.fromEntries(previewBaselines)),
       XIAOXI_VISUAL_MESSAGE_BASELINES: JSON.stringify(Object.fromEntries(messageBaselines)),
       ...extra
@@ -1689,7 +1730,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
 
   async function scanWechatIncoming(names) {
     const nameIdentity = allowedNameIdentity(names);
-    const allowed = nameIdentity.compactNames;
+    const allowed = [...new Set([...nameIdentity.compactNames, ...discoveredConversationNames])];
     if (nameIdentity.ambiguous) return { ok: false, reason: "whitelist_name_ambiguous" };
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
     if (!primedProcess) {
@@ -1722,6 +1763,8 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       primedProcess = null;
       return result;
     }
+    const observedConversation = compactContactName(result?.conversation);
+    if (result?.discoveredConversation === true && observedConversation) discoveredConversationNames.add(observedConversation);
     if (result?.ok !== true) {
       if (result?.reason === "unread_preview_pending") {
         const pending = pendingCandidateFromResult(result, allowed);
@@ -1751,10 +1794,13 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     const runtimeId = String(result.runtimeId || "").trim();
     const signature = String(result.previewSignature || "").trim().toLowerCase();
     const messageSignature = String(result.messageSignature || "").trim().toLowerCase();
-    if (!allowed.includes(conversation) || !message) return { ok: false, reason: "incoming_message_missing" };
+    if ((!allowed.includes(conversation) && result?.discoveredConversation !== true) || !message) return { ok: false, reason: "incoming_message_missing" };
     if (!/^visual:v1:[a-f0-9]{64}$/u.test(runtimeId) || !isSha256(signature) || !isSha256(messageSignature)) return { ok: false, reason: "incoming_identity_missing" };
     const predecessorSignature = messageBaselines.get(conversation) || "";
-    const decorated = decorateCandidate(result, nameIdentity, predecessorSignature);
+    const decorated = decorateCandidate({
+      ...result,
+      discoveredConversation: result?.discoveredConversation === true || discoveredConversationNames.has(conversation)
+    }, nameIdentity, predecessorSignature);
     previewBaselines.set(conversation, signature);
     observeMessageSignature(conversation, messageSignature);
     return decorated;
@@ -1828,6 +1874,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     messageBaselines.clear();
     occurrenceStates.clear();
     retryCandidates.length = 0;
+    discoveredConversationNames.clear();
     pendingOpenedUnread = null;
     restoredPendingObservation = null;
     primedProcess = null;

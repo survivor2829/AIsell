@@ -587,6 +587,29 @@ function fingerprintFor(contact, candidate) {
     .digest("hex");
 }
 
+function contactForAutoReplyConversation(contacts, candidate) {
+  const conversation = normalizeText(candidate?.conversation || candidate?.currentConversation);
+  if (!conversation) return null;
+  const exact = contacts.find((contact) => [contact?.name, contact?.remark, contact?.nickname, contact?.wechatId]
+    .some((value) => normalizeText(value) === conversation));
+  if (exact) return exact;
+  if (candidate?.discoveredConversation !== true || isSystemContact({
+    id: `visual:${conversation}`,
+    name: conversation,
+    wechatId: conversation
+  })) return null;
+  const accountId = normalizeText(contacts[0]?.wechatAccountId) || "visual-account";
+  return {
+    id: `visual:${crypto.createHash("sha256").update(`${accountId}\n${conversation}`).digest("hex")}`,
+    name: conversation,
+    remark: conversation,
+    nickname: conversation,
+    wechatId: "",
+    wechatAccountId: accountId,
+    source: "visual_unread_session"
+  };
+}
+
 function incomingEvidenceFor(candidate) {
   const runtimeId = normalizeText(candidate?.runtimeId);
   const visualEvidenceRuntimeId = normalizeText(candidate?.visualEvidenceRuntimeId);
@@ -1022,7 +1045,7 @@ function createAutoReplyController(options = {}) {
     const conversation = normalizeText(baseline?.conversation || candidate?.conversation || candidate?.currentConversation);
     const signature = normalizeText(baseline?.signature || candidate?.messageSignature || candidate?.currentMessageSignature).toLowerCase();
     if (!conversation || !/^[a-f0-9]{64}$/u.test(signature)) return false;
-    const contact = contacts.find((item) => normalizeText(item.name) === conversation);
+    const contact = contactForAutoReplyConversation(contacts, candidate);
     const guard = contact ? state.reply_guards?.[contact.id] : null;
     if (!guard || normalizeText(guard.turn_state) !== "awaiting_outgoing_observation") return false;
     guard.turn_state = "outgoing_observed";
@@ -1360,7 +1383,7 @@ function createAutoReplyController(options = {}) {
 
       const conversation = normalizeText(candidate.conversation);
       clearPendingObservation(candidate);
-      const contact = contacts.find((item) => normalizeText(item.name) === conversation);
+      const contact = contactForAutoReplyConversation(contacts, candidate);
       if (!contact) {
         state.last_event = "conversation_not_eligible";
         state.last_error = "";
