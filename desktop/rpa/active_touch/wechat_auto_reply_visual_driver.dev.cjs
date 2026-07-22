@@ -1317,6 +1317,31 @@ try {
           $messageChanged = $previousMessageSignature -cne $currentMessageSignature
           $currentMessageTransition = Test-AutoReplyVisualCurrentMessageTransition $previousPreviewSignature $currentPreviewSignature $previousMessageSignature $currentMessageSignature
           if ($previewChanged -or $messageChanged) {
+            # For the already-open conversation, one current frame already
+            # contains two independent signals: the selected-row preview and
+            # the latest customer-side bubble. Do not require a second OCR
+            # frame to reproduce identical geometry before the first reply.
+            if ($currentMessageTransition -and
+                [bool]$currentMessage.hasMessage -and
+                -not [bool]$currentRow[0].draft -and
+                [string]$currentMessage.latestRole -ceq "user") {
+              $resolvedCurrentMessage = Resolve-AutoReplyVisualMessageText ([string]$currentRow[0].preview) ([string]$currentMessage.message)
+              $runtimeSeed = [string]::Join([char]10, @($currentName, $currentMessageSignature))
+              $runtimeId = "visual:v1:" + (Get-AutoReplyVisualSha256 $runtimeSeed)
+              Write-AutoReplyVisualResult @{
+                ok = $true
+                conversation = $currentName
+                message = $resolvedCurrentMessage
+                runtimeId = $runtimeId
+                previewSignature = $currentPreviewSignature
+                messageSignature = $currentMessageSignature
+                pid = [int]$process.Id
+                hWnd = [int64]$hWnd
+                source = "current_message_change"
+                latestRole = "user"
+                context = @(@{ role = "user"; content = $resolvedCurrentMessage; key = $runtimeId })
+              }
+            }
             $firstCurrentSnapshot = @{
               ok = $true
               conversation = $currentName

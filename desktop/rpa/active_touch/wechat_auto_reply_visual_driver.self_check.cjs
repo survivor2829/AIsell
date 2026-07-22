@@ -79,7 +79,8 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /messageBaselineAdvance = @\{ conversatio
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /source = "current_message_change"/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$expectedRows\.Count -ne 1 -and -not \$currentConversationMatches/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Test-AutoReplyVisualCurrentMessageTransition \$previousPreviewSignature \$currentPreviewSignature \$previousMessageSignature \$currentMessageSignature/u, "an open conversation needs both sidebar and bubble evidence to advance");
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-AutoReplyVisualCurrentTransitionSnapshot \$hWnd \(\[int\]\$process\.Id\) \$windowRect \$allowedSet \$sidebarRight \$currentName/u, "current-open changes must be confirmed from a second independent frame");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(\$currentMessageTransition -and[\s\S]*\$currentMessage\.latestRole -ceq "user"\)[\s\S]*source = "current_message_change"[\s\S]*\$firstCurrentSnapshot/u, "a current-open customer message with two independent signals must become a candidate before second-frame OCR geometry can block it");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-AutoReplyVisualCurrentTransitionSnapshot \$hWnd \(\[int\]\$process\.Id\) \$windowRect \$allowedSet \$sidebarRight \$currentName/u, "one-channel or unknown-role visual changes may still use the settling fallback");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Resolve-AutoReplyVisualCurrentTransition \$previousPreviewSignature \$previousMessageSignature \$firstCurrentSnapshot \$secondCurrentSnapshot/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /reason = "current_visual_drift_consumed"/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /reason = "current_transition_unresolved"/u);
