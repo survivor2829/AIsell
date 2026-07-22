@@ -33,6 +33,36 @@ function Normalize-AutoReplyVisualText([string]$value) {
   return [Text.RegularExpressions.Regex]::Replace($normalized, "\s+", "").Trim()
 }
 
+function Get-AutoReplyVisualEditDistance([string]$left, [string]$right) {
+  $left = Normalize-AutoReplyVisualText $left; $right = Normalize-AutoReplyVisualText $right
+  $rows = $left.Length + 1; $columns = $right.Length + 1
+  $matrix = New-Object int[] ($rows * $columns)
+  for ($i = 0; $i -lt $rows; $i++) { $matrix[$i * $columns] = $i }
+  for ($j = 0; $j -lt $columns; $j++) { $matrix[$j] = $j }
+  for ($i = 1; $i -lt $rows; $i++) {
+    for ($j = 1; $j -lt $columns; $j++) {
+      $cost = if ($left[$i - 1] -ceq $right[$j - 1]) { 0 } else { 1 }
+      $index = ($i * $columns) + $j
+      $matrix[$index] = [Math]::Min(
+        [Math]::Min($matrix[(($i - 1) * $columns) + $j] + 1, $matrix[($i * $columns) + $j - 1] + 1),
+        $matrix[(($i - 1) * $columns) + $j - 1] + $cost
+      )
+    }
+  }
+  return $matrix[(($rows - 1) * $columns) + $columns - 1]
+}
+
+function Test-AutoReplyVisualConversationMatch([string]$expected, [string]$observed) {
+  $expected = Normalize-AutoReplyVisualText $expected; $observed = Normalize-AutoReplyVisualText $observed
+  if (-not $expected -or -not $observed) { return $false }
+  if ($expected -ceq $observed) { return $true }
+  $maximumLength = [Math]::Max($expected.Length, $observed.Length)
+  if ([Math]::Min($expected.Length, $observed.Length) -lt 4 -or [Math]::Abs($expected.Length - $observed.Length) -gt 2) { return $false }
+  if ($expected[0] -cne $observed[0] -or $expected.Substring($expected.Length - 2) -cne $observed.Substring($observed.Length - 2)) { return $false }
+  $maximumDistance = [Math]::Max(1, [int][Math]::Floor($maximumLength * 0.34))
+  return (Get-AutoReplyVisualEditDistance $expected $observed) -le $maximumDistance
+}
+
 function Get-AutoReplyVisualSha256([string]$value) {
   $sha = [Security.Cryptography.SHA256]::Create()
   try {
@@ -83,7 +113,9 @@ function Get-AutoReplyVisualLines($ocr) {
 
 function Test-AutoReplyVisualSidebarNameLine([string]$lineText, [string]$name) {
   if ([string]::IsNullOrWhiteSpace($lineText) -or [string]::IsNullOrWhiteSpace($name)) { return $false }
-  if (-not $lineText.StartsWith($name, [StringComparison]::Ordinal)) { return $false }
+  if (-not $lineText.StartsWith($name, [StringComparison]::Ordinal)) {
+    return Test-AutoReplyVisualConversationMatch $name $lineText
+  }
   $suffix = $lineText.Substring($name.Length)
   return -not $suffix -or (Test-AutoReplyVisualTimeText $suffix)
 }
@@ -590,10 +622,9 @@ function Get-AutoReplyVisualHeader($lines, [string]$conversation, [double]$sideb
       [double]$_.bounds.left -lt ($frameWidth - (Scale-AutoReplyVisualMetric 20.0)) -and
       [double]$_.bounds.top -ge (Scale-AutoReplyVisualMetric 20.0) -and [double]$_.bounds.top -le (Scale-AutoReplyVisualMetric 108.0)
   })
-  $prefixed = @($headerLines | Where-Object { ([string]$_.compact).StartsWith($conversation, [StringComparison]::Ordinal) })
-  $exact = @($prefixed | Where-Object { [string]$_.compact -ceq $conversation })
-  if ($prefixed.Count -ne 1 -or $exact.Count -ne 1) { return @{ ok = $false; reason = "conversation_title_mismatch" } }
-  return @{ ok = $true; line = $exact[0] }
+  $matches = @($headerLines | Where-Object { Test-AutoReplyVisualConversationMatch $conversation ([string]$_.compact) })
+  if ($matches.Count -ne 1) { return @{ ok = $false; reason = "conversation_title_mismatch" } }
+  return @{ ok = $true; line = $matches[0] }
 }
 
 function Get-AutoReplyVisualAnyHeader($lines, [double]$sidebarRight, [double]$frameWidth) {
@@ -615,7 +646,7 @@ function Get-AutoReplyVisualCurrentConversation($lines, $allowedSet, [double]$si
         [double]$line.bounds.left -ge ($frameWidth - (Scale-AutoReplyVisualMetric 20.0)) -or
         [double]$line.bounds.top -lt (Scale-AutoReplyVisualMetric 20.0) -or [double]$line.bounds.top -gt (Scale-AutoReplyVisualMetric 108.0)) { continue }
     foreach ($name in $allowedSet) {
-      if ([string]$line.compact -ceq [string]$name) { [void]$matches.Add([string]$name) }
+      if (Test-AutoReplyVisualConversationMatch ([string]$name) ([string]$line.compact)) { [void]$matches.Add([string]$name) }
     }
   }
   $unique = @($matches.ToArray() | Select-Object -Unique)
@@ -992,10 +1023,10 @@ function Get-AutoReplyVisualCurrentTransitionSnapshot(
     if (-not $sidebar.ok) { return @{ ok = $false; reason = [string]$sidebar.reason } }
     $currentConversation = Get-AutoReplyVisualCurrentConversation $observation.lines $allowedSet $sidebarRight ([double]$frame.width)
     if (-not $currentConversation.ok -or -not $currentConversation.active -or
-        [string]$currentConversation.conversation -cne $expectedConversation) {
+        -not (Test-AutoReplyVisualConversationMatch $expectedConversation ([string]$currentConversation.conversation))) {
       return @{ ok = $false; reason = "current_conversation_changed" }
     }
-    $matchingRows = @($sidebar.rows | Where-Object { [string]$_.conversation -ceq $expectedConversation })
+    $matchingRows = @($sidebar.rows | Where-Object { Test-AutoReplyVisualConversationMatch $expectedConversation ([string]$_.conversation) })
     if ($matchingRows.Count -ne 1) { return @{ ok = $false; reason = "current_sidebar_row_unresolved" } }
     $latest = Get-AutoReplyVisualLatestMessageEvidence $frame $observation.lines $sidebarRight
     if (-not $latest.ok) { return @{ ok = $false; reason = [string]$latest.reason } }
@@ -1116,10 +1147,10 @@ try {
         $expectedMessageSignature -notmatch "^[a-f0-9]{64}$") {
       Write-AutoReplyVisualResult @{ ok = $false; reason = "incoming_identity_missing" }
     }
-    if (-not $currentConversation.active -or [string]$currentConversation.conversation -cne $expectedConversation) {
+    if (-not $currentConversation.active -or -not (Test-AutoReplyVisualConversationMatch $expectedConversation ([string]$currentConversation.conversation))) {
       Write-AutoReplyVisualResult @{ ok = $false; reason = "conversation_title_mismatch"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
     }
-    $expectedRows = @($rows | Where-Object { [string]$_.conversation -ceq $expectedConversation -and [string]$_.signature -ceq $expectedPreviewSignature })
+    $expectedRows = @($rows | Where-Object { (Test-AutoReplyVisualConversationMatch $expectedConversation ([string]$_.conversation)) -and [string]$_.signature -ceq $expectedPreviewSignature })
     if ($expectedRows.Count -ne 1) {
       Write-AutoReplyVisualResult @{ ok = $false; reason = "incoming_message_changed"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
     }
@@ -1156,8 +1187,8 @@ try {
   if ($mode -eq "verify") {
     if (-not $expectedConversation -or -not $expectedMessage -or -not $expectedRuntimeId -or
         $expectedMessageSignature -notmatch "^[a-f0-9]{64}$") { Write-AutoReplyVisualResult @{ ok = $false; reason = "incoming_message_missing" } }
-    $expectedRows = @($rows | Where-Object { [string]$_.conversation -ceq $expectedConversation -and [string]$_.preview -ceq $expectedMessage })
-    $currentConversationMatches = $currentConversation.active -and [string]$currentConversation.conversation -ceq $expectedConversation
+    $expectedRows = @($rows | Where-Object { (Test-AutoReplyVisualConversationMatch $expectedConversation ([string]$_.conversation)) -and [string]$_.preview -ceq $expectedMessage })
+    $currentConversationMatches = $currentConversation.active -and (Test-AutoReplyVisualConversationMatch $expectedConversation ([string]$currentConversation.conversation))
     if ($expectedRows.Count -ne 1 -and -not $currentConversationMatches) { Write-AutoReplyVisualResult @{ ok = $false; reason = "incoming_message_changed"; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
     $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width)
     if (-not $header.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
@@ -1233,7 +1264,7 @@ try {
   if ($candidates.Count -eq 0) {
     if ($currentConversation.active -and $currentMessage -ne $null) {
       $currentName = [string]$currentConversation.conversation
-      $currentRow = @($rows | Where-Object { [string]$_.conversation -ceq $currentName })
+      $currentRow = @($rows | Where-Object { Test-AutoReplyVisualConversationMatch $currentName ([string]$_.conversation) })
       $previousPreviewSignature = Get-AutoReplyVisualBaseline $baselines $currentName
       $previousMessageSignature = Get-AutoReplyVisualBaseline $messageBaselines $currentName
       $previousBoundariesValid = (Test-AutoReplyVisualSignature $previousPreviewSignature) -and

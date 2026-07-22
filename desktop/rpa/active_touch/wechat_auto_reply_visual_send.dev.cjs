@@ -54,6 +54,36 @@ function Normalize-VisualSendText([string]$value) {
   ).Trim()
 }
 
+function Get-VisualSendEditDistance([string]$left, [string]$right) {
+  $left = Normalize-VisualSendText $left; $right = Normalize-VisualSendText $right
+  $rows = $left.Length + 1; $columns = $right.Length + 1
+  $matrix = New-Object int[] ($rows * $columns)
+  for ($i = 0; $i -lt $rows; $i++) { $matrix[$i * $columns] = $i }
+  for ($j = 0; $j -lt $columns; $j++) { $matrix[$j] = $j }
+  for ($i = 1; $i -lt $rows; $i++) {
+    for ($j = 1; $j -lt $columns; $j++) {
+      $cost = if ($left[$i - 1] -ceq $right[$j - 1]) { 0 } else { 1 }
+      $index = ($i * $columns) + $j
+      $matrix[$index] = [Math]::Min(
+        [Math]::Min($matrix[(($i - 1) * $columns) + $j] + 1, $matrix[($i * $columns) + $j - 1] + 1),
+        $matrix[(($i - 1) * $columns) + $j - 1] + $cost
+      )
+    }
+  }
+  return $matrix[(($rows - 1) * $columns) + $columns - 1]
+}
+
+function Test-VisualSendConversationMatch([string]$expected, [string]$observed) {
+  $expected = Normalize-VisualSendText $expected; $observed = Normalize-VisualSendText $observed
+  if (-not $expected -or -not $observed) { return $false }
+  if ($expected -ceq $observed) { return $true }
+  $maximumLength = [Math]::Max($expected.Length, $observed.Length)
+  if ([Math]::Min($expected.Length, $observed.Length) -lt 4 -or [Math]::Abs($expected.Length - $observed.Length) -gt 2) { return $false }
+  if ($expected[0] -cne $observed[0] -or $expected.Substring($expected.Length - 2) -cne $observed.Substring($observed.Length - 2)) { return $false }
+  $maximumDistance = [Math]::Max(1, [int][Math]::Floor($maximumLength * 0.34))
+  return (Get-VisualSendEditDistance $expected $observed) -le $maximumDistance
+}
+
 function Normalize-VisualSendDraftText([string]$value) {
   $normalized = ([string]$value).Replace([Environment]::NewLine, [string][char]10)
   $normalized = $normalized.Replace([string][char]13, [string][char]10)
@@ -138,7 +168,7 @@ function Test-VisualSendConversation($frame) {
   $matches = @($ocr.lines | Where-Object {
     $absoluteCenterX = [double]$headerRect.left + [double]$_.bounds.left + ([double]$_.bounds.width / 2.0)
     $absoluteCenterY = [double]$headerRect.top + [double]$_.bounds.top + ([double]$_.bounds.height / 2.0)
-    (Normalize-VisualSendText ([string]$_.text)) -ceq $expected -and
+    (Test-VisualSendConversationMatch $expected (Normalize-VisualSendText ([string]$_.text))) -and
       $absoluteCenterX -ge $minimumHeaderCenterX -and $absoluteCenterY -le ([double]$frame.height * 0.13)
   })
   if ($matches.Count -ne 1) { return @{ ok = $false; reason = "visual_send_conversation_not_verified" } }
@@ -178,7 +208,8 @@ function Test-VisualSendTimeText([string]$value) {
 function Test-VisualSendSidebarNameLine([string]$lineText, [string]$name) {
   $line = Normalize-VisualSendText $lineText
   $wanted = Normalize-VisualSendText $name
-  if (-not $line -or -not $wanted -or -not $line.StartsWith($wanted, [StringComparison]::Ordinal)) { return $false }
+  if (-not $line -or -not $wanted) { return $false }
+  if (-not $line.StartsWith($wanted, [StringComparison]::Ordinal)) { return Test-VisualSendConversationMatch $wanted $line }
   $suffix = $line.Substring($wanted.Length)
   return -not $suffix -or (Test-VisualSendTimeText $suffix)
 }

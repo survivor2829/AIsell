@@ -47,14 +47,14 @@ function Find-WeChatWindow {
   $callback = [LiveTraceWin32+EnumWindowsProc]{
     param([IntPtr]$handle, [IntPtr]$unused)
     if (-not [LiveTraceWin32]::IsWindowVisible($handle)) { return $true }
-    [uint32]$pid = 0; [void][LiveTraceWin32]::GetWindowThreadProcessId($handle, [ref]$pid)
-    if ($processIds -notcontains $pid) { return $true }
+    [uint32]$windowProcessId = 0; [void][LiveTraceWin32]::GetWindowThreadProcessId($handle, [ref]$windowProcessId)
+    if ($processIds -notcontains $windowProcessId) { return $true }
     $rect = New-Object LiveTraceWin32+RECT
     if (-not [LiveTraceWin32]::GetWindowRect($handle, [ref]$rect)) { return $true }
     $width = $rect.Right - $rect.Left; $height = $rect.Bottom - $rect.Top
     if ($width -lt 600 -or $height -lt 500) { return $true }
     [void]$windows.Add([pscustomobject]@{
-      handle = [int64]$handle; pid = [int]$pid; title = Get-WindowTextValue $handle; className = Get-ClassNameValue $handle
+      handle = [int64]$handle; pid = [int]$windowProcessId; title = Get-WindowTextValue $handle; className = Get-ClassNameValue $handle
       left = $rect.Left; top = $rect.Top; width = $width; height = $height; area = [int64]$width * [int64]$height
     })
     return $true

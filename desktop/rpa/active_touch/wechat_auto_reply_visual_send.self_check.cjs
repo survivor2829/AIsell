@@ -68,6 +68,24 @@ const evidenceResult = JSON.parse(evidenceProbe.stdout.trim().split(/\r?\n/u).fi
 assert.equal(evidenceResult.user, createHash("sha256").update("bubble-ocr\nuser\nw:10\nh:4", "utf8").digest("hex"));
 assert.notEqual(evidenceResult.assistant, evidenceResult.user, "an outgoing role must never satisfy the bound incoming evidence");
 
+const conversationMatchProgram = `
+${WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(normalizeStart, lockStart)}
+@{
+  drift = Test-VisualSendConversationMatch ("A" + [char]27979 + [char]35797 + [char]23458 + [char]25143) ("A" + [char]27701 + [char]21017 + [char]35797 + [char]23458 + [char]25143)
+  unrelated = Test-VisualSendConversationMatch ("A" + [char]27979 + [char]35797 + [char]23458 + [char]25143) ("B" + [char]27979 + [char]35797 + [char]23458 + [char]25143)
+} | ConvertTo-Json -Compress
+`;
+const conversationMatchProbe = spawnSync("powershell.exe", [
+  "-NoProfile",
+  "-EncodedCommand",
+  Buffer.from(conversationMatchProgram, "utf16le").toString("base64")
+], { encoding: "utf8" });
+assert.equal(conversationMatchProbe.status, 0, conversationMatchProbe.stderr || conversationMatchProbe.stdout);
+assert.deepEqual(JSON.parse(conversationMatchProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1)), {
+  drift: true,
+  unrelated: false
+});
+
 const pureStart = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Test-VisualSendPureMessageText");
 const previewHelperEnd = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Get-VisualSendSidebarRight", pureStart);
 assert.ok(pureStart >= 0 && previewHelperEnd > pureStart);

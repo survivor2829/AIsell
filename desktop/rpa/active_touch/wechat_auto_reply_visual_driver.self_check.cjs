@@ -46,7 +46,11 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$candidates\.Count -eq 0/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$unreadCandidates = @\(\$candidates\.ToArray\(\) \| Where-Object \{ \$_\.unread \}\)/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$candidate = if \(\$unreadCandidates\.Count -gt 0\) \{ \$unreadCandidates\[0\] \} else \{ \$candidates\[0\] \}/u);
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$candidates\.Count -ne 1/u);
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$prefixed\.Count -ne 1 -or \$exact\.Count -ne 1/u);
+assert.match(
+  AUTO_REPLY_VISUAL_SCRIPT,
+  /function Get-AutoReplyVisualHeader[\s\S]*Test-AutoReplyVisualConversationMatch/u,
+  "header verification must tolerate bounded OCR drift instead of requiring exact text"
+);
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$chatMid/u, "role classification must not depend on a single midpoint test");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /"visual:v1:" \+ \(Get-AutoReplyVisualSha256/u);
 assert.match(visualDriverSource, /visual-occurrence-v2/u);
@@ -508,6 +512,24 @@ assert.deepEqual(JSON.parse(normalizationJson), {
   formKC: "A测试客户",
   allWhitespace: "你是谁",
   empty: ""
+});
+
+const conversationMatchProgram = `
+${normalizationFunction}
+@{
+  drift = Test-AutoReplyVisualConversationMatch ("A" + [char]27979 + [char]35797 + [char]23458 + [char]25143) ("A" + [char]27701 + [char]21017 + [char]35797 + [char]23458 + [char]25143)
+  unrelated = Test-AutoReplyVisualConversationMatch ("A" + [char]27979 + [char]35797 + [char]23458 + [char]25143) ("B" + [char]27979 + [char]35797 + [char]23458 + [char]25143)
+} | ConvertTo-Json -Compress
+`;
+const conversationMatchProbe = spawnSync("powershell.exe", [
+  "-NoProfile",
+  "-EncodedCommand",
+  Buffer.from(conversationMatchProgram, "utf16le").toString("base64")
+], { encoding: "utf8" });
+assert.equal(conversationMatchProbe.status, 0, conversationMatchProbe.stderr || conversationMatchProbe.stdout);
+assert.deepEqual(JSON.parse(conversationMatchProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1)), {
+  drift: true,
+  unrelated: false
 });
 
 const parserCommand = "$source=[Console]::In.ReadToEnd(); $tokens=$null; $errors=$null; [void][System.Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors); if($errors.Count){$errors | ForEach-Object {$_.ToString()}; exit 1}";
