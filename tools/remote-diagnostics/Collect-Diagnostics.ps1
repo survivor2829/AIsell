@@ -1,3 +1,4 @@
+# ASCII-only file name keeps the collector compatible with legacy Windows ZIP tools.
 [CmdletBinding()]
 param(
   [string]$OutputRoot = [Environment]::GetFolderPath("Desktop"),
