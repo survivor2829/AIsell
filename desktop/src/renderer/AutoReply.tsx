@@ -15,6 +15,7 @@ type AutoReplyState = {
   last_scan_success_at?: string;
   last_scan_reason?: string;
   consecutive_scan_failures?: number;
+  pending_retry_count?: number;
 };
 type AutoReplyResult = { ok: boolean; state?: Partial<AutoReplyState>; error?: string };
 
@@ -25,6 +26,7 @@ declare global {
       start: () => Promise<AutoReplyResult>;
       pause: () => Promise<AutoReplyResult>;
       acknowledgeManualFollowup: () => Promise<AutoReplyResult>;
+      onUpdate?: (callback: (result: AutoReplyResult) => void) => () => void;
     };
   }
 }
@@ -40,7 +42,8 @@ const EMPTY_STATE: AutoReplyState = {
   last_scan_at: "",
   last_scan_success_at: "",
   last_scan_reason: "",
-  consecutive_scan_failures: 0
+  consecutive_scan_failures: 0,
+  pending_retry_count: 0
 };
 
 const SCAN_HEALTH_LABELS: Record<ScanHealth, string> = {
@@ -60,7 +63,7 @@ const SCAN_REASON_LABELS: Record<string, string> = {
   current_session_baselined: "当前会话已建立消息基线",
   current_outgoing_settling: "已发送消息正在稳定显示，等待下轮确认",
   current_visual_drift_consumed: "已校准当前会话的单项识别波动",
-  current_transition_unresolved: "当前会话的新消息证据未能稳定确认",
+  current_transition_unresolved: "新消息证据暂不稳定，已保留并继续后台复核",
   latest_message_not_incoming: "最近一条不是客户新消息",
   latest_message_role_unresolved: "最新消息的发送方向暂时无法可靠确认，已跳过本轮并等待重试",
   wechat_operation_busy: "微信正被其他任务使用，等待下轮",
@@ -92,7 +95,7 @@ const SCAN_REASON_LABELS: Record<string, string> = {
   unread_preview_missing: "未读会话缺少消息预览",
   unread_preview_mismatch: "未读预览与最新消息不一致",
   unread_preview_pending: "已打开未读会话，正在复核最新消息",
-  unread_preview_unresolved: "未读消息连续复核仍不稳定",
+  unread_preview_unresolved: "未读消息证据暂不稳定，已保留并继续后台复核",
   conversation_open_failed: "无法打开未读会话",
   conversation_title_changed: "扫描期间聊天对象发生变化",
   conversation_title_mismatch: "当前聊天对象校验失败",
@@ -172,9 +175,17 @@ export function AutoReply() {
   };
 
   useEffect(() => {
+    const unsubscribe = window.xiaoxiAutoReply?.onUpdate?.((result) => {
+      if (result.state) setState((current) => ({ ...current, ...result.state }));
+      if (!result.ok) setPollError(result.error || "读取自动回复状态失败");
+      else setPollError("");
+    });
     refresh();
-    const timer = window.setInterval(refresh, 2_000);
-    return () => window.clearInterval(timer);
+    const timer = window.setInterval(refresh, 15_000);
+    return () => {
+      unsubscribe?.();
+      window.clearInterval(timer);
+    };
   }, []);
 
   const run = (operation: () => Promise<AutoReplyResult>, failure: string) => {
@@ -193,6 +204,7 @@ export function AutoReply() {
   const healthLabel = scanning ? SCAN_HEALTH_LABELS[scanHealth] : "未运行";
   const healthClass = !scanning ? "" : scanHealth === "healthy" ? "ok" : scanHealth === "degraded" ? "danger" : scanHealth === "warning" || scanHealth === "waiting" ? "warn" : "";
   const scanFailures = Math.max(0, Number(state.consecutive_scan_failures) || 0);
+  const pendingRetries = Math.max(0, Number(state.pending_retry_count) || 0);
   const controlStatus = !scanning ? CONTROL_EVENT_LABELS[state.last_event] || "" : "";
   const visibleError = error || pollError || state.last_error;
 
@@ -234,6 +246,11 @@ export function AutoReply() {
       {state.last_scan_reason && (
         <div className={`auto-reply-reason ${scanHealth === "degraded" ? "is-degraded" : scanHealth === "warning" || scanHealth === "waiting" ? "is-warning" : ""}`}>
           {scanning ? "最近扫描结果" : "停止前最近扫描结果"}：{scanReasonLabel(state.last_scan_reason)}（{state.last_scan_reason}）
+        </div>
+      )}
+      {running && pendingRetries > 0 && (
+        <div className="auto-reply-control-note" role="status">
+          已保留一条尚未确认的新消息证据并后台复核（{pendingRetries} 次）；证据明确前不会发送，也不会停止其他轮询。
         </div>
       )}
       {visibleError && <div className="touch-notice" role="alert">{visibleError}</div>}

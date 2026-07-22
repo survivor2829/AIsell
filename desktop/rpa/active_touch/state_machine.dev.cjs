@@ -22,9 +22,9 @@ function attemptKey(state, message, attemptId = "") {
   return crypto.createHash("sha256").update(`${taskId}\n${contactId}\n${message}`).digest("hex");
 }
 
-function singleContactIdentityError(state, baseDir) {
+function singleContactIdentityError(state, contactsDir) {
   const customer = state.selected_customer;
-  const contacts = readContacts(baseDir);
+  const contacts = readContacts(contactsDir);
   return contactIdentityError(contacts, customer);
 }
 
@@ -55,6 +55,9 @@ function sessionCheck(state, driver = verifyWechatCurrentConversation, baseDir =
     allowExactSearchFallback
   });
   if (!result.ok) return result;
+  const observedToken = String(result.conversationToken ?? "").trim();
+  if (allowExactSearchFallback && !observedToken && !state.conversation_token) return { ok: false, reason: "conversation_token_missing" };
+  if (!allowExactSearchFallback && state.conversation_token && observedToken && observedToken !== String(state.conversation_token)) return { ok: false, reason: "atomic_conversation_changed" };
   if (!result.pid || !result.hWnd || !["Weixin", "WeChat"].includes(result.processName)) return { ok: false, reason: "personal_wechat_main_window_not_found" };
   if (!expectedAccountId) return { ok: false, reason: "wechat_account_identity_missing" };
   if (result.accountVerified !== true || !String(result.accountId ?? "").trim()) return { ok: false, reason: result.accountReason || "wechat_account_not_verified" };
@@ -80,6 +83,9 @@ async function sessionCheckAsync(state, driver = verifyWechatCurrentConversation
     allowExactSearchFallback
   }));
   if (!result.ok) return result;
+  const observedToken = String(result.conversationToken ?? "").trim();
+  if (allowExactSearchFallback && !observedToken && !state.conversation_token) return { ok: false, reason: "conversation_token_missing" };
+  if (!allowExactSearchFallback && state.conversation_token && observedToken && observedToken !== String(state.conversation_token)) return { ok: false, reason: "atomic_conversation_changed" };
   if (!result.pid || !result.hWnd || !["Weixin", "WeChat"].includes(result.processName)) return { ok: false, reason: "personal_wechat_main_window_not_found" };
   if (!expectedAccountId) return { ok: false, reason: "wechat_account_identity_missing" };
   if (result.accountVerified !== true || !String(result.accountId ?? "").trim()) return { ok: false, reason: result.accountReason || "wechat_account_not_verified" };
@@ -145,7 +151,16 @@ function cancelVerifiedContactSend(baseDir) {
 }
 
 function withSendAttempted(result, sendAttempted = false) {
-  return { ...result, send_attempted: sendAttempted };
+  const explicit = String(result?.send_result ?? "");
+  const stateStatus = String(result?.state?.real_send_status ?? "");
+  const sendResult = ["not_attempted", "sent_verified", "outcome_unknown"].includes(explicit)
+    ? explicit
+    : result?.ok === true && stateStatus === "sent_verified"
+      ? "sent_verified"
+      : sendAttempted === false
+        ? "not_attempted"
+        : "outcome_unknown";
+  return { ...result, send_attempted: sendAttempted, send_result: sendResult };
 }
 
 function sendAttemptedFromState(state, attemptKey = "") {
@@ -157,7 +172,7 @@ function sendAttemptedFromState(state, attemptKey = "") {
   return false;
 }
 
-function persistNotAttempted(baseDir, state, reason, onTransition) {
+function persistNotAttempted(baseDir, state, reason, onTransition, diagnostics = null) {
   const attempts = { ...(state.real_send_attempts ?? {}) };
   delete attempts[String(state.real_send_attempt_key ?? "")];
   const nextState = {
@@ -175,12 +190,13 @@ function persistNotAttempted(baseDir, state, reason, onTransition) {
     message_bubble_verified: false,
     message_bubble_status: "not_sent",
     message_bubble_reason: reason,
+    send_diagnostics: diagnostics,
     last_result: "send_not_attempted",
     blocked_reason: reason
   };
   saveState(baseDir, nextState);
   try { notifyTransition(onTransition, "sending", nextState); } catch {}
-  return output(false, "send", nextState, { baseDir, blocked_reason: reason, send_attempted: false });
+  return output(false, "send", nextState, { baseDir, blocked_reason: reason, send_attempted: false, send_result: "not_attempted" });
 }
 
 function persistOutcomeUnknown(baseDir, state, reason, sendAttempted = null, onTransition) {
@@ -205,7 +221,7 @@ function persistOutcomeUnknown(baseDir, state, reason, sendAttempted = null, onT
   saveState(baseDir, nextState);
   try { notifyTransition(onTransition, "outcome_unknown", nextState); } catch {}
   appendLog(baseDir, "真实发送", `发送结果无法确认：${reason}；已暂停且绝不自动重试`);
-  return output(false, "send", nextState, { baseDir, blocked_reason: "outcome_unknown", send_attempted: sendAttempted });
+  return output(false, "send", nextState, { baseDir, blocked_reason: "outcome_unknown", send_attempted: sendAttempted, send_result: "outcome_unknown" });
 }
 
 function verifyRealSendSession(baseDir = __dirname, driver = verifyWechatCurrentConversation) {
@@ -237,6 +253,9 @@ function refreshedSessionState(state, result) {
     window_process_name: result.processName,
     conversation_title: result.title ?? state.conversation_title,
     located_window_title: result.windowTitle ?? state.located_window_title,
+    conversation_verification_mode: result.verificationMode ?? state.conversation_verification_mode,
+    conversation_token: String(result.conversationToken ?? state.conversation_token ?? ""),
+    conversation_title_mode: String(result.conversationTitleMode ?? state.conversation_title_mode ?? ""),
     last_result: "real_send_session_verified",
     blocked_reason: ""
   };
@@ -251,7 +270,7 @@ function refreshRealSendSession(baseDir = __dirname, driver = verifyWechatCurren
   return { ...result, state: nextState };
 }
 
-function setRealSendArm(baseDir = __dirname, enabled = false) {
+function setRealSendArm(baseDir = __dirname, enabled = false, contactsDir = baseDir) {
   const state = loadState(baseDir);
   if (!enabled) {
     if (!state.real_send_armed && !state.real_send_enabled) {
@@ -276,7 +295,7 @@ function setRealSendArm(baseDir = __dirname, enabled = false) {
   if (state.send_gate_status !== "dry_run_passed") {
     return block(baseDir, "真发开关 dry-run", { ...state, real_send_armed: false, real_send_enabled: false, real_send_status: "blocked", real_send_reason: "send_gate_not_passed" }, "send_gate_not_passed", "已阻断：发送门禁 dry-run 未通过");
   }
-  const identityError = singleContactIdentityError(state, baseDir);
+  const identityError = singleContactIdentityError(state, contactsDir);
   if (identityError) return blockSendGate(baseDir, state, identityError, "已阻断：联系人姓名或微信号无法唯一确认");
   if (!state.window_pid || !state.window_handle) {
     return blockSendGate(baseDir, state, "real_send_session_not_verified", "已阻断：请重新验证微信窗口和当前会话");
@@ -308,6 +327,8 @@ async function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWec
     hWnd: state.window_handle,
     inputPoint: state.message_input_point,
     expectedConversation: state.selected_customer?.name,
+    expectedConversationMode: state.conversation_verification_mode,
+    expectedConversationToken: state.conversation_token,
     expectedMessage: message,
     expectedIncomingMessage: String(options.expectedIncomingMessage || "").trim(),
     expectedIncomingRuntimeId: String(options.expectedIncomingRuntimeId || "").trim()
@@ -342,9 +363,9 @@ async function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWec
   } catch {
     return persistOutcomeUnknown(baseDir, prepared, "send_driver_exception", null, options.onTransition);
   }
-  if (!sendResult?.ok || sendResult.conversationVerified !== true || sendResult.draftVerified !== true) {
+  if (!sendResult?.ok || sendResult.conversationVerified !== true || sendResult.composerVerified === false || sendResult.draftVerified !== true) {
     if (sendResult?.sendAttempted === false) {
-      return persistNotAttempted(baseDir, prepared, sendResult?.reason || "atomic_send_not_verified", options.onTransition);
+      return persistNotAttempted(baseDir, prepared, sendResult?.reason || "atomic_send_not_verified", options.onTransition, sendResult?.composerDiagnostics || null);
     }
     return persistOutcomeUnknown(baseDir, prepared, sendResult?.reason || "atomic_send_not_verified", sendResult?.sendAttempted === true ? true : null, options.onTransition);
   }
@@ -363,7 +384,7 @@ async function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWec
   saveState(baseDir, nextState);
   try { notifyTransition(options.onTransition, "sent_verified", nextState); } catch {}
   appendLog(baseDir, "真实发送", draftConsumed ? "已验证发送前精确文案与发送后输入框清空" : "消息气泡与完整文案已自动验证");
-  return output(true, "send", nextState, { baseDir, send_attempted: true });
+  return output(true, "send", nextState, { baseDir, send_attempted: true, send_result: "sent_verified" });
 }
 
 async function executeVerifiedContactSend(options = {}) {
@@ -435,8 +456,9 @@ async function executeVerifiedContactSend(options = {}) {
 
   if (typeof options.runStep !== "function") return withSendAttempted({ ok: false, action: "send", blocked_reason: "contact_or_message_missing", error: "已阻断：执行器缺失" });
 
+  const contactsArgs = options.contactsDir ? ["--contacts-dir", String(options.contactsDir)] : [];
   const steps = [
-    ["select-customer", ["--id", contactId]],
+    ["select-customer", ["--id", contactId, ...contactsArgs]],
     ["calibrate", []],
     ["focus-wechat-window", []],
     ["click-search-result-dry-run", []]
@@ -479,7 +501,7 @@ async function executeVerifiedContactSend(options = {}) {
     if (!result?.ok) return withSendAttempted(result);
   }
   if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
-  const armed = setRealSendArm(baseDir, true);
+  const armed = setRealSendArm(baseDir, true, options.contactsDir || baseDir);
   if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
   if (!armed.ok) return withSendAttempted(armed, sendAttemptedFromState(armed.state));
   return sendReal(baseDir, {

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "targetWeixin": [
+    "4.1.11.54"
+  ],
+  "capabilities": {
+    "contactSync": {
+      "implementation": "implemented",
+      "localLiveVerification": "verified",
+      "portableVerification": "pending"
+    },
+    "autoReply": {
+      "implementation": "implemented",
+      "localLiveVerification": "verified",
+      "portableVerification": "pending"
+    },
+    "activeTouch": {
+      "implementation": "implemented",
+      "localLiveVerification": "verified",
+      "portableVerification": "pending"
+    },
+    "moments": {
+      "implementation": "single-post-preview",
+      "localLiveVerification": "pending",
+      "portableVerification": "pending"
+    }
+  }
+}

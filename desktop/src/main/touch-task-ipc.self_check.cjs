@@ -62,6 +62,17 @@ Module._load = function load(request, parent, isMain) {
   }
   if (request === "./ai-draft.cjs") {
     return {
+      generateFixedScriptFallback: ({ task, error }) => {
+        const message = String(task?.script || "").trim();
+        if (!message) return null;
+        const fallbackCode = String(error?.code || "AI_GENERATION_FAILED");
+        return {
+          message,
+          usedAi: false,
+          fallbackCode,
+          reason: `DeepSeek 文案生成失败（${fallbackCode}），已使用用户确认的固定话术`
+        };
+      },
       generatePersonalizedDraft: async ({ result }) => {
         const code = aiFailureCodes.get(result.id);
         if (code) {
@@ -96,7 +107,7 @@ const modulePath = path.join(__dirname, "touch-task-ipc.cjs");
 delete require.cache[require.resolve(modulePath)];
 const { registerTouchTaskIpc } = require(modulePath);
 Module._load = originalLoad;
-const { authorizeNextBatch, createTask, isBatchAuthorized, recoverInterruptedTask, saveTaskState } = require("../../rpa/active_touch/touch_task_state.cjs");
+const { authorizeNextBatch, classifyContacts, createTask, isBatchAuthorized, recoverInterruptedTask, saveTaskState } = require("../../rpa/active_touch/touch_task_state.cjs");
 
 function contacts(count) {
   return Array.from({ length: count }, (_, index) => ({
@@ -392,6 +403,24 @@ async function waitFor(read, predicate, timeoutMs = 3000) {
       options.onTransition("sent_verified", { real_send_attempt_key: attemptKey });
       return { ok: true, state: { real_send_status: "sent_verified", real_send_attempt_key: attemptKey } };
     };
+    const frozenContacts = contacts(3);
+    const frozenClassification = classifyContacts(frozenContacts, { excludedContactIds: ["wxid_batch_2", "wxid_batch_3"] });
+    let frozenPausedTask = createTask("冻结名单恢复测试", frozenContacts, "2026-07-11T00:00:00.000Z", { executionMode: "real_send", classification: frozenClassification });
+    frozenPausedTask.status = "paused";
+    frozenPausedTask.phase = "paused";
+    frozenPausedTask.results[0].status = "blocked";
+    frozenPausedTask.results[0].message = "冻结名单恢复测试";
+    frozenPausedTask = saveTaskState(dir, frozenPausedTask);
+    const sendsBeforeFrozenResume = sends;
+    await start({}, { script: "冻结名单恢复测试", excludedContactIds: [], clickToken: "trusted-frozen-resume" });
+    const frozenCompleted = await waitFor(status, (value) => value.task?.status === "completed");
+    assert.equal(frozenCompleted.task.id, frozenPausedTask.id, "resuming must reuse the frozen task instead of creating a broader task");
+    assert.equal(frozenCompleted.task.total, 1, "empty renderer exclusions after restart must not widen a frozen one-contact task");
+    assert.deepEqual(frozenCompleted.task.user_excluded_ids, ["wxid_batch_2", "wxid_batch_3"]);
+    assert.equal(sends, sendsBeforeFrozenResume + 1);
+
+    fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
+    fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
     await start({}, { script: "排除测试", excludedContactIds: ["wxid_batch_2"], clickToken: "trusted-exclusion" });
     const excluded = await waitFor(status, (value) => value.task?.status === "completed");
     assert.equal(excluded.task.total, 2);
@@ -408,32 +437,30 @@ async function waitFor(read, predicate, timeoutMs = 3000) {
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
-    fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify(contacts(1)), "utf8");
+    fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify(contacts(2)), "utf8");
     aiFailuresRemaining = new Map([["wxid_batch_1", 2]]);
-    const sendsBeforeAiPause = sends;
-    await start({}, { script: "AI 失败暂停", clickToken: "trusted-ai-pause" });
-    const aiPaused = await waitFor(status, (value) => value.task?.results?.[0]?.status === "ai_failed");
-    assert.equal(aiPaused.task.status, "paused");
-    assert.equal(aiPaused.task.results[0].ai_attempts, 2);
-    assert.equal(sends, sendsBeforeAiPause);
-    aiFailuresRemaining = new Map();
-    await resume({}, { clickToken: "trusted-ai-resume" });
-    await waitFor(status, (value) => value.task?.status === "completed");
-    assert.equal(sends, sendsBeforeAiPause + 1);
+    const sendsBeforeAiFallback = sends;
+    await start({}, { script: "用户确认的固定话术", clickToken: "trusted-ai-fallback" });
+    const aiFallback = await waitFor(status, (value) => value.task?.status === "completed");
+    assert.equal(aiFallback.task.results[0].ai_attempts, 2);
+    assert.equal(aiFallback.task.results[0].ai_status, "fallback");
+    assert.equal(aiFallback.task.results[0].ai_error_code, "AI_GENERATION_FAILED");
+    assert.equal(aiFallback.task.results[0].message, "用户确认的固定话术");
+    assert.equal(aiFallback.task.results[1].ai_status, "generated");
+    assert.equal(sends, sendsBeforeAiFallback + 2, "one contact's AI failure must not pause the remaining batch");
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
+    fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify(contacts(1)), "utf8");
     aiFailureCodes = new Map([["wxid_batch_1", "API_KEY_INVALID"]]);
-    const sendsBeforeKeyPause = sends;
-    await start({}, { script: "Key 错误不重试", clickToken: "trusted-key-pause" });
-    const keyPaused = await waitFor(status, (value) => value.task?.results?.[0]?.status === "ai_failed");
-    assert.equal(keyPaused.task.status, "paused");
-    assert.equal(keyPaused.task.results[0].ai_attempts, 1);
-    assert.equal(sends, sendsBeforeKeyPause);
+    const sendsBeforeKeyFallback = sends;
+    await start({}, { script: "Key 错误固定话术", clickToken: "trusted-key-fallback" });
+    const keyFallback = await waitFor(status, (value) => value.task?.status === "completed");
+    assert.equal(keyFallback.task.results[0].ai_attempts, 1);
+    assert.equal(keyFallback.task.results[0].ai_status, "fallback");
+    assert.equal(keyFallback.task.results[0].ai_error_code, "API_KEY_INVALID");
+    assert.equal(sends, sendsBeforeKeyFallback + 1);
     aiFailureCodes = new Map();
-    await resume({}, { clickToken: "trusted-key-resume" });
-    await waitFor(status, (value) => value.task?.status === "completed");
-    assert.equal(sends, sendsBeforeKeyPause + 1);
 
     const expectedBatchEnds = new Map([
       [1, [1]],

@@ -44,7 +44,8 @@ function executeActiveTouch(args, options = {}) {
   return new Promise((resolve) => {
     const development = options.development === true;
     const timeoutMs = Number(options.timeoutMs) || 0;
-    const childArgs = runtimeDataDir ? [...args, "--data-dir", runtimeDataDir] : args;
+    const selectedDataDir = options.dataDir === undefined ? runtimeDataDir : String(options.dataDir || "");
+    const childArgs = selectedDataDir ? [...args, "--data-dir", selectedDataDir] : args;
     const executable = cliPath(development, options.cliName);
     const child = spawn(process.execPath, [executable, ...childArgs], {
       cwd: path.dirname(executable),

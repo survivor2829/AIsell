@@ -1286,6 +1286,15 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
   }
 
   scanWechatIncoming.primeBaselines = primeWechatSession;
+  scanWechatIncoming.restorePendingObservation = (metadata) => {
+    const driver = getVisualDriver();
+    const restored = driver?.scanWechatIncoming?.restorePendingObservation?.(metadata) === true;
+    if (restored) {
+      activeScanMode = "visual";
+      needsReprime = false;
+    }
+    return restored;
+  };
   scanWechatIncoming.noteVerifiedSend = (candidate, metadata) => {
     if (!isVisualCandidate(candidate)) return false;
     return getVisualDriver()?.scanWechatIncoming?.noteVerifiedSend?.(candidate, metadata) === true;

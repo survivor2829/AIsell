@@ -213,6 +213,9 @@ type TouchTaskItem = {
   status: string;
   reason: string;
   message: string;
+  ai_status?: "generated" | "fallback" | "failed";
+  ai_reason?: string;
+  ai_error_code?: string;
   updated_at: string;
   outcome_unknown_retry_count?: number;
   awaiting_resolution?: boolean;
@@ -259,7 +262,7 @@ type TouchTaskResult = {
   preview?: TouchTaskPreview;
   error?: string;
 };
-type DeepSeekApiResult = { ok: boolean; data?: { configured?: boolean; maskedKey?: string; code?: string; error?: string }; code?: string; error?: string };
+type DeepSeekApiResult = { ok: boolean; data?: { configured?: boolean; maskedKey?: string; code?: string; error?: string }; code?: string; category?: string; error?: string };
 
 declare global {
   interface Window {
@@ -660,10 +663,6 @@ export default function App() {
         return;
       }
 
-      if (!deepSeekConfigured) {
-        setTouchTaskError("请先配置并保存 DeepSeek API Key");
-        return;
-      }
     }
 
     setTouchTaskError("");
@@ -743,7 +742,7 @@ export default function App() {
   const resumingTask = touchTask.status === "paused" && taskHasUnfinishedSnapshot(touchTask);
   const requiresUnknownResolution = resumingTask && touchTask.phase === "awaiting_unknown_resolution";
   const touchTaskLocked = taskHasUnfinishedSnapshot(touchTask);
-  const canLaunchTouch = active === "touch" && !touchTaskBusy && touchTask.status !== "running" && !requiresUnknownResolution && (resumingTask || (launchContactCount > 0 && Boolean(messageDraft.trim()) && deepSeekConfigured));
+  const canLaunchTouch = active === "touch" && !touchTaskBusy && touchTask.status !== "running" && !requiresUnknownResolution && (resumingTask || (launchContactCount > 0 && Boolean(messageDraft.trim())));
   const launchTitle =
     active !== "touch"
       ? "请先进入主动触达"
@@ -756,7 +755,7 @@ export default function App() {
         : !messageDraft.trim()
           ? "请先填写触达话术"
           : !deepSeekConfigured
-            ? "请先配置 DeepSeek API Key"
+            ? "未配置 DeepSeek，将使用已填写的固定话术"
           : touchTaskBusy
             ? "正在启动主动触达任务"
             : touchTask.status === "running"
@@ -1213,7 +1212,7 @@ function DeepSeekApiSettings({
         <div className="deepseek-settings-footer">
           <div className={`deepseek-status is-${statusTone}`} aria-live="polite">{status}</div>
           <div className="actions deepseek-actions">
-            <button className="secondary-button" onClick={() => run(saveAndTest, apiKey.trim() ? "DeepSeek 连接正常，当前 Key 已保存。" : "DeepSeek 连接正常。", Boolean(apiKey.trim()))} disabled={busy || (!apiKey.trim() && !maskedKey)}>
+            <button className="secondary-button" onClick={() => run(saveAndTest, apiKey.trim() ? "DeepSeek 生产文案预检正常，当前 Key 已保存。" : "DeepSeek 生产文案预检正常。", Boolean(apiKey.trim()))} disabled={busy || (!apiKey.trim() && !maskedKey)}>
               <RefreshCw size={16} />
               测试连接
             </button>
@@ -1393,7 +1392,7 @@ function ActiveTouch({
                       <td>{result.contact.remark || "-"}</td>
                       <td>{result.contact.nickname || "-"}</td>
                       <td>{result.contact.wechatId || "-"}</td>
-                      <td>{taskResultLabel(result.status)}</td>
+                      <td title={result.ai_status === "fallback" ? result.ai_reason : undefined}>{taskResultLabel(result.status)}{result.ai_status === "fallback" ? " · 固定话术" : ""}</td>
                       <td className="touch-message-cell">{result.reason || result.message || fillTouchTemplate(touchTask.script, result.contact)}</td>
                       <td className="touch-row-actions">
                         {touchTask.phase === "awaiting_unknown_resolution" && touchTask.current_result?.id === result.id && result.awaiting_resolution ? (
@@ -1549,7 +1548,7 @@ function FloatingTouchWindow() {
         </div>
         <div className="floating-state">
           <span>{touchTaskStatusLabel(touchTask)}</span>
-          <strong>{currentResult ? taskResultLabel(currentResult.status) : statusText}</strong>
+          <strong>{currentResult ? `${taskResultLabel(currentResult.status)}${currentResult.ai_status === "fallback" ? " · 固定话术" : ""}` : statusText}</strong>
         </div>
       </div>
 

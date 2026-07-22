@@ -1,4 +1,4 @@
-const { createHash, randomBytes } = require("node:crypto");
+const { createHash } = require("node:crypto");
 const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require("./moments_visual_probe.dev.cjs");
 const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
 
@@ -909,6 +909,7 @@ try { $messageBaselines = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_M
 $expectedConversation = Normalize-AutoReplyVisualText ([Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_CONVERSATION"))
 $expectedMessage = Normalize-AutoReplyVisualText ([Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_MESSAGE"))
 $expectedRuntimeId = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_RUNTIME_ID")
+$expectedPreviewSignature = ([string][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PREVIEW_SIGNATURE")).Trim().ToLowerInvariant()
 $expectedMessageSignature = ([string][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_MESSAGE_SIGNATURE")).Trim().ToLowerInvariant()
 try { $expectedPid = [int][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID") } catch { $expectedPid = 0 }
 try { $expectedHWnd = [int64][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND") } catch { $expectedHWnd = 0 }
@@ -971,6 +972,49 @@ try {
       messageSignature = $currentResultMessageSignature
       sessionBaselines = $sessionBaselines
       sessionMessageBaselines = $sessionMessageBaselines
+    }
+  }
+
+  if ($mode -eq "recover") {
+    if (-not $expectedConversation -or
+        $expectedPreviewSignature -notmatch "^[a-f0-9]{64}$" -or
+        $expectedMessageSignature -notmatch "^[a-f0-9]{64}$") {
+      Write-AutoReplyVisualResult @{ ok = $false; reason = "incoming_identity_missing" }
+    }
+    if (-not $currentConversation.active -or [string]$currentConversation.conversation -cne $expectedConversation) {
+      Write-AutoReplyVisualResult @{ ok = $false; reason = "conversation_title_mismatch"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
+    }
+    $expectedRows = @($rows | Where-Object { [string]$_.conversation -ceq $expectedConversation -and [string]$_.signature -ceq $expectedPreviewSignature })
+    if ($expectedRows.Count -ne 1) {
+      Write-AutoReplyVisualResult @{ ok = $false; reason = "incoming_message_changed"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
+    }
+    $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width)
+    if (-not $header.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
+    if ($currentMessage -eq $null -or -not $currentMessage.hasMessage) {
+      Write-AutoReplyVisualResult @{ ok = $false; reason = "latest_text_message_missing"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
+    }
+    if ([string]$currentMessage.latestRole -cne "user") {
+      $roleReason = if ([string]$currentMessage.latestRole -ceq "assistant") { "latest_message_not_incoming" } else { "latest_message_role_unresolved" }
+      Write-AutoReplyVisualResult @{ ok = $false; reason = $roleReason; pid = [int]$process.Id; hWnd = [int64]$hWnd; latestRole = [string]$currentMessage.latestRole }
+    }
+    if ([string]$currentMessage.evidenceSignature -cne $expectedMessageSignature) {
+      Write-AutoReplyVisualResult @{ ok = $false; reason = "incoming_message_changed"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
+    }
+    $recoveredMessage = [string]$currentMessage.message
+    $runtimeSeed = [string]::Join([char]10, @($expectedConversation, $expectedMessageSignature))
+    $runtimeId = "visual:v1:" + (Get-AutoReplyVisualSha256 $runtimeSeed)
+    Write-AutoReplyVisualResult @{
+      ok = $true
+      conversation = $expectedConversation
+      message = $recoveredMessage
+      runtimeId = $runtimeId
+      previewSignature = $expectedPreviewSignature
+      messageSignature = $expectedMessageSignature
+      pid = [int]$process.Id
+      hWnd = [int64]$hWnd
+      source = "pending_recovery"
+      latestRole = "user"
+      context = @(@{ role = "user"; content = $recoveredMessage; key = $runtimeId })
     }
   }
 
@@ -1090,6 +1134,10 @@ try {
                 pid = [int]$process.Id
                 hWnd = [int64]$hWnd
                 conversation = $currentName
+                pendingPreviewSignature = [string]$firstCurrentSnapshot.previewSignature
+                pendingMessageSignature = [string]$firstCurrentSnapshot.messageSignature
+                predecessorPreviewSignature = $previousPreviewSignature
+                predecessorMessageSignature = $previousMessageSignature
               }
             }
             if ([string]$resolvedTransition.action -eq "consume" -or
@@ -1315,10 +1363,41 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
   const messageBaselines = new Map();
   const occurrenceStates = new Map();
   const retryCandidates = [];
-  const driverSessionId = randomBytes(16).toString("hex");
-  let occurrenceSequence = 0;
   let primedProcess = null;
   let pendingOpenedUnread = null;
+  let restoredPendingObservation = null;
+
+  function restorePendingObservation(value) {
+    const conversation = compactContactName(value?.conversation);
+    const pid = Math.floor(Number(value?.pid));
+    const hWnd = String(value?.hWnd || "").trim();
+    const previewSignature = String(value?.preview_signature || "").trim().toLowerCase();
+    const messageSignature = String(value?.message_signature || "").trim().toLowerCase();
+    if (!conversation || !Number.isSafeInteger(pid) || pid <= 0 || !/^[0-9]{1,20}$/u.test(hWnd)
+      || !isSha256(previewSignature) || !isSha256(messageSignature)) return false;
+    restoredPendingObservation = {
+      conversation,
+      pid,
+      hWnd,
+      previewSignature,
+      messageSignature,
+      predecessorPreviewSignature: String(value?.predecessor_preview_signature || "").trim().toLowerCase(),
+      predecessorMessageSignature: String(value?.predecessor_message_signature || "").trim().toLowerCase()
+    };
+    previewBaselines.clear();
+    messageBaselines.clear();
+    occurrenceStates.clear();
+    retryCandidates.length = 0;
+    pendingOpenedUnread = null;
+    if (isSha256(restoredPendingObservation.predecessorPreviewSignature)) {
+      previewBaselines.set(conversation, restoredPendingObservation.predecessorPreviewSignature);
+    }
+    if (isSha256(restoredPendingObservation.predecessorMessageSignature)) {
+      messageBaselines.set(conversation, restoredPendingObservation.predecessorMessageSignature);
+    }
+    primedProcess = { pid, hWnd };
+    return true;
+  }
 
   function decorateCandidate(result, identity, predecessorSignature) {
     const evidenceRuntimeId = String(result?.runtimeId || "").trim();
@@ -1332,13 +1411,11 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       ? active.runtimeId
       : "";
     if (!runtimeId) {
-      occurrenceSequence += 1;
       runtimeId = `visual:v2:${createHash("sha256").update([
         "visual-occurrence-v2",
-        driverSessionId,
-        String(occurrenceSequence),
         conversation,
         evidenceRuntimeId,
+        previewSignature,
         messageSignature,
         String(predecessorSignature || "")
       ].join("\n"), "utf8").digest("hex")}`;
@@ -1429,6 +1506,56 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     const conversation = compactContactName(result?.messageBaselineAdvance?.conversation);
     const signature = String(result?.messageBaselineAdvance?.signature || "").trim().toLowerCase();
     if (allowed.includes(conversation) && isSha256(signature)) observeMessageSignature(conversation, signature);
+  }
+
+  async function recoverPendingObservation(nameIdentity, allowed) {
+    const pending = restoredPendingObservation;
+    if (!pending) return null;
+    if (!allowed.includes(pending.conversation)) {
+      restoredPendingObservation = null;
+      return { ok: false, reason: "whitelist_invalid" };
+    }
+    const result = await invoke("recover", [pending.conversation], {
+      XIAOXI_EXPECTED_CONVERSATION: pending.conversation,
+      XIAOXI_EXPECTED_PREVIEW_SIGNATURE: pending.previewSignature,
+      XIAOXI_EXPECTED_MESSAGE_SIGNATURE: pending.messageSignature,
+      XIAOXI_EXPECTED_PID: String(pending.pid),
+      XIAOXI_EXPECTED_HWND: pending.hWnd
+    });
+    const identity = processIdentity(result);
+    if (identity && (identity.pid !== pending.pid || identity.hWnd !== pending.hWnd)) {
+      restoredPendingObservation = null;
+      primedProcess = null;
+      return { ...result, ok: false, reason: identity.pid !== pending.pid ? "wechat_process_changed" : "wechat_window_changed" };
+    }
+    if (result?.ok !== true) {
+      const terminal = new Set([
+        "conversation_title_mismatch",
+        "incoming_message_changed",
+        "latest_message_not_incoming",
+        "wechat_process_changed",
+        "wechat_window_changed"
+      ]).has(String(result?.reason || ""));
+      if (terminal) restoredPendingObservation = null;
+      return terminal ? result : {
+        ...result,
+        ok: false,
+        reason: "current_transition_unresolved",
+        conversation: pending.conversation,
+        pid: pending.pid,
+        hWnd: pending.hWnd,
+        pendingPreviewSignature: pending.previewSignature,
+        pendingMessageSignature: pending.messageSignature,
+        predecessorPreviewSignature: pending.predecessorPreviewSignature,
+        predecessorMessageSignature: pending.predecessorMessageSignature
+      };
+    }
+    restoredPendingObservation = null;
+    const predecessor = isSha256(pending.predecessorMessageSignature) ? pending.predecessorMessageSignature : "";
+    const decorated = decorateCandidate(result, nameIdentity, predecessor);
+    previewBaselines.set(pending.conversation, pending.previewSignature);
+    observeMessageSignature(pending.conversation, pending.messageSignature);
+    return decorated;
   }
 
   function takeRetry(allowed, scanProbe) {
@@ -1547,6 +1674,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     applyBaselines(result, allowed, { replace: true });
     applyMessageBaselines(result, allowed, { replace: true });
     pendingOpenedUnread = null;
+    restoredPendingObservation = null;
     primedProcess = process;
     const observedConversation = nameIdentity.compactToOriginal.get(compactContactName(result.conversation)) || String(result.conversation || "");
     const observedRole = String(result.latestRole || "");
@@ -1571,6 +1699,8 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       const prime = await primeWechatSession(names);
       return prime?.ok === true ? { ...prime, ok: false, reason: "current_session_baselined" } : prime;
     }
+    const restoredResult = await recoverPendingObservation(nameIdentity, allowed);
+    if (restoredResult) return restoredResult;
     const pendingResult = await settlePendingOpenedUnread(nameIdentity, allowed);
     if (pendingResult) return pendingResult;
     const result = await invoke("scan", allowed, {
@@ -1685,6 +1815,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
   }
 
   scanWechatIncoming.primeBaselines = primeWechatSession;
+  scanWechatIncoming.restorePendingObservation = restorePendingObservation;
   scanWechatIncoming.noteVerifiedSend = noteVerifiedSend;
   scanWechatIncoming.requeue = (candidate) => {
     if (candidate?.ok !== true || !/^visual:v[12]:[a-f0-9]{64}$/u.test(String(candidate.runtimeId || ""))) return false;
@@ -1701,6 +1832,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     occurrenceStates.clear();
     retryCandidates.length = 0;
     pendingOpenedUnread = null;
+    restoredPendingObservation = null;
     primedProcess = null;
   };
 

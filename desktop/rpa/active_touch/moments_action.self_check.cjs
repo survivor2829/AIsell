@@ -2206,11 +2206,12 @@ async function main() {
     assert.match(panelSource, /重新预演也不会再次执行该动作/u);
 
     const mainSource = fs.readFileSync(path.join(__dirname, "../../src/main/main.cjs"), "utf8");
-    assert.match(mainSource, /registerActiveTouchDevIpc\(\{[\s\S]*dataDir: runtime\.activeTouchDir,[\s\S]*coordinator,[\s\S]*getMainWindow/u);
+    assert.match(mainSource, /registerActiveTouchDevIpc\(\{[\s\S]*activeTouchDir: runtime\.activeTouchDir,[\s\S]*momentsDir: runtime\.momentsDir,[\s\S]*coordinator,[\s\S]*getMainWindow/u);
     assert.match(mainSource, /backgroundThrottling: false/u);
     const devIpcSource = fs.readFileSync(path.join(__dirname, "../../src/main/active-touch-dev-ipc.cjs"), "utf8");
     assert.match(devIpcSource, /runtimeCoordinator\.acquire\(\{/u);
     assert.match(devIpcSource, /runtimeCoordinator\.release\(lock\.lock\.owner\)/u);
+    assert.match(devIpcSource, /dataDir: momentsDataDir/u);
 
     console.log("moments action self-check passed");
   } finally {

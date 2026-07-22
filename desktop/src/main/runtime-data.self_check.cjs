@@ -28,7 +28,12 @@ try {
     "utf8"
   );
   fs.writeFileSync(path.join(legacyActiveTouch, "run_logs.jsonl"), '{"stage":"test"}\n', "utf8");
-  fs.writeFileSync(path.join(legacyActiveTouch, "state.json"), '{"calibrated":true}', "utf8");
+  fs.writeFileSync(path.join(legacyActiveTouch, "state.json"), JSON.stringify({
+    calibrated: true,
+    selected_customer: { id: "test-contact" },
+    moments_dry_run: { status: "prepared" },
+    moments_test_action: { status: "verified" }
+  }), "utf8");
   fs.writeFileSync(path.join(legacyContactSync, "state.json"), '{"status":"synced"}', "utf8");
   fs.writeFileSync(path.join(appPath, ".env.ai.local"), "XIAOXI_AI_API_KEY=test-key\n", "utf8");
 
@@ -39,6 +44,19 @@ try {
   assert.equal(hasUnfinishedPausedTask(loadTaskState(paths.activeTouchDir)), true);
   assert.equal(fs.existsSync(path.join(paths.contactSyncDir, "state.json")), true);
   assert.equal(fs.existsSync(paths.autoReplyDir), true);
+  assert.equal(fs.existsSync(paths.momentsDir), true);
+  assert.equal(fs.existsSync(paths.wechatAdapterDir), true);
+  assert.equal(fs.existsSync(paths.runtimeArchiveDir), true);
+  const activeState = JSON.parse(fs.readFileSync(path.join(paths.activeTouchDir, "state.json"), "utf8"));
+  const momentsState = JSON.parse(fs.readFileSync(path.join(paths.momentsDir, "state.json"), "utf8"));
+  assert.equal(activeState.calibrated, true);
+  assert.equal(activeState.selected_customer.id, "test-contact");
+  assert.equal(activeState.moments_dry_run, undefined);
+  assert.equal(activeState.moments_test_action, undefined);
+  assert.equal(momentsState.moments_dry_run.status, "prepared");
+  assert.equal(momentsState.moments_test_action.status, "verified");
+  assert.equal(fs.existsSync(path.join(paths.runtimeArchiveDir, "active-touch-state-before-moments-split.json")), true);
+  assert.equal(migrated.splitState.length, 1);
   assert.equal(fs.existsSync(path.join(paths.rootDir, ".env.ai.local")), false);
   assert.equal(fs.existsSync(path.join(appPath, ".env.ai.local")), false);
   assert.equal(fs.existsSync(path.join(legacyActiveTouch, "contacts.json")), false);
@@ -52,10 +70,16 @@ try {
   const foreignContacts = path.join(foreignAppPath, "rpa", "active_touch", "contacts.json");
   fs.mkdirSync(path.dirname(foreignContacts), { recursive: true });
   fs.writeFileSync(foreignContacts, '[{"id":"must-not-migrate"}]', "utf8");
+  fs.writeFileSync(path.join(paths.activeTouchDir, "state.json"), JSON.stringify({
+    ...activeState,
+    moments_dry_run: { status: "newer-prepared" }
+  }), "utf8");
   const skipped = migrateLegacyRuntimeData({ appPath: foreignAppPath, userDataDir, userHome });
   assert.equal(skipped.skippedForeignInstall, true);
   assert.equal(fs.existsSync(foreignContacts), true);
   assert.equal(fs.readFileSync(path.join(paths.activeTouchDir, "contacts.json"), "utf8"), '[{"id":"test-contact"}]');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(paths.activeTouchDir, "state.json"), "utf8")).moments_dry_run, undefined);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(paths.momentsDir, "state.json"), "utf8")).moments_dry_run.status, "newer-prepared");
 
   const appDataDir = path.join(userHome, "AppData", "Roaming");
   const latestProfile = path.join(appDataDir, "xiaoxi-active-touch-desktop");

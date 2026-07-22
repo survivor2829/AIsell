@@ -1,87 +1,67 @@
 # AI获客
 
-当前阶段维护两个物理隔离版本：
+Windows Electron 桌面应用。当前唯一验收目标是个人微信 `4.1.11.54`；能力是否可用、是否经过本机或便携包实测，以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。现有 `release/AI获客-测试版.zip` 是 2026-07-21 的旧包，包含已知缺陷，不得继续分发。
 
-```text
-测试版：同步联系人 -> 编辑默认话术 -> 单联系人验收或整次名单真实发送
-阶段交付版：同步联系人 -> 编辑话术 -> 移出本次不触达联系人 -> 一次启动整次名单
-```
+## 本地运行
 
-测试版包含内部单联系人验收入口和朋友圈单条点赞评论；阶段交付版隐藏这些测试能力。两个版本复用同一套真实发送事务，并包含联系人同步、全私聊自动回复、AI 专家话术、主动触达和人工交接；朋友圈发布仍标注为下一阶段开放。当前包不代表完整商品。
-
-## 启动
-
-开发环境：
+环境要求：Windows 10/11 x64、Node.js、已安装并登录的个人微信 `4.1.11.54`。
 
 ```powershell
 cd desktop
-npm install
-npm run desktop
+npm.cmd install
+npm.cmd run desktop
 ```
 
-构建检查：
+浏览器预览只检查界面，不代表微信自动化可用：
 
 ```powershell
-cd desktop
-npm run build
-npm run build:test
-npm run build:delivery
-npm run check:self
-npm run release:test
-npm run release:delivery
+npm.cmd run dev
 ```
 
-便携包：
+首次使用测试版时，在应用中依次完成：
+
+1. 保存并测试自己的 DeepSeek API Key。
+2. 导入 AI 专家资料。
+3. 同步当前微信账号的联系人。
+4. 按 `PROJECT_STATUS.md` 的实机验收顺序测试，不直接使用历史任务状态。
+
+## 检查与构建
+
+以下命令均在 `desktop/` 运行：
+
+```powershell
+npm.cmd run check:self
+npm.cmd run build:test
+npm.cmd run build:delivery
+```
+
+生成便携包：
+
+```powershell
+npm.cmd run release:test
+npm.cmd run release:delivery
+```
+
+`release:*` 会先执行 self-check 和对应 renderer 构建，再生成目录与 ZIP 并检查包内运行依赖和隐私文件。便携包必须完整解压后运行，不能只复制 EXE。构建通过不等于实机验收通过，也不自动获得“可分发”状态。
+
+## 本地数据目录
+
+测试版和交付版使用不同的 Windows 用户目录：
 
 ```text
-release\AI获客-测试版.zip
-release\AI获客.zip
+测试版：%APPDATA%\xiaoxi-active-touch-test\data
+交付版：%APPDATA%\xiaoxi-active-touch-delivery\data
 ```
 
-必须解压完整 ZIP 后运行，不能只复制 EXE。目标环境为 Windows 10/11 x64，并需安装、登录已验证版本的个人微信（当前实测版本为 4.1.11.24、4.1.11.54）。新电脑只需本软件和个人微信，无需 Node、Python、Codex 或 `dt-ai-helper`；联系人、DeepSeek Key 与 AI 专家话术需要在每台新电脑首次重新配置。当前 EXE/Helper 未签名，仍需完成干净电脑 Defender/SmartScreen 人工验收。
-
-## 当前能力
-
-- 启动后默认进入工作台，不再被本地假登录页拦住。
-- `同步联系人` 从微信通讯录同步联系人，运行数据保存在当前 Windows 用户目录。
-- `自动回复` 面向全部可唯一识别的已同步一对一联系人；应用重启后保持暂停，必须人工启动，取消工作时间、每日上限和联系人冷却配置。
-- 每次回复最多读取当前屏和上一屏的最近 12 条文字消息；UIAutomation 读取正文与顺序，内存截图只用左右头像判断角色，方向、窗口或滚动恢复不明确时不发送。
-- `AI专家` 只保留一份全局话术文件，支持 `.txt`、`.md`、`.docx`；有意向或话术无法可靠回答时，在客户回复验证成功后向文件传输助手发送人工跟进提醒。
-- `主动触达` 提供客户主流程：同步联系人、话术输入、移出本次不触达联系人、任务状态和联系人预览。
-- 默认触达话术直接填入编辑框，可原地修改；联系人预览展示全部同步联系人，不再只显示前 8 人。
-- 在侧栏底部 `API密钥` 保存用户自己的 DeepSeek API Key 后，自动回复、主动触达及后续 AI 模块共用。自动回复遇到空/截断/非法结构化输出、超时、限流、临时网络或服务错误时，发送保守确认话术并提醒人工，监听保持运行；Key 无效、余额不足或持久请求配置错误时，也先处理当前来信并提醒人工，再明确暂停等待修正。
-- `账号管理` 现为抖音、小红书、快手、视频号入口，本阶段不接真实登录。
-- 右下角 `启动程序` 创建触达任务，主窗口隐藏，右侧悬浮窗显示当前联系人、下一位、进度和暂停原因。
-- 微信窗口驱动只绑定个人微信主进程 `Weixin`、`WeChat`。
-- 测试版可由用户明确选择一个测试联系人完成真实发送；账号、窗口、会话或身份无法唯一确认时会阻断。
-- 测试版朋友圈会从当前完整可见的 2—3 条内容中稳定选择一条，支持单次点赞或评论，并防止相同动作重复执行；朋友圈发布暂不开放。
-- 阶段交付版调用同一发送事务：一次用户点击授权整次冻结名单，每次发送前重验账号/PID/句柄/会话，先持久化 `prepared`，再验证最新完整消息气泡。
-- 发送结果无法确认时会再次核验并最多自动补发一次；仍无法确认才暂停等待人工标记为已发送或跳过。
-- 任务状态持久化到当前 Windows 用户的应用数据目录，暂停、退出或异常重启后可继续；源码和 ZIP 不包含运行任务。
-
-## 关键目录
+业务状态按目录隔离：
 
 ```text
-desktop/src/main/             Electron 主进程和 IPC
-desktop/src/renderer/         React UI
-desktop/rpa/contact_sync/     微信联系人同步执行器
-desktop/rpa/active_touch/     主动触达状态机和窗口驱动
-release/AI获客-测试版/ 内部测试 portable 包
-release/AI获客/ 阶段交付 portable 包
+contact_sync/    联系人同步过程状态
+active_touch/    联系人清单、主动触达任务和发送账本
+auto_reply/      自动回复监听、消息去重和诊断
+moments/         朋友圈观察与动作账本
+wechat_adapter/  共享微信窗口和适配信息，不保存业务结果
+runtime_archive/ 数据迁移前的只读归档证据
 ```
 
-## 数据文件
-
-- `contacts.json`：同步后的联系人入口，主动触达直接读取（位于当前 Windows 用户运行目录）。
-- `ai-expert.json`：规范化后的全局话术文本与文件元信息。
-- `auto-reply-state.json`：自动回复 v2 的暂停状态、当天回复数、去重和熔断记录。
-- `touch_task.json`：当前触达任务进度。
-- `state.json`、`run_logs.jsonl`：执行器运行状态和日志。
-
-这些是本地运行数据，不是产品源码。
-
-## 暂不做
-
-- 当前阶段不宣称公开规模化发送或完整商品交付。
-- 当前不做许可证、远程停用、安装器、代码签名或自动更新。
-- 自动回复只处理可安全判定的一对一文字消息；群聊、图片、语音、文件、系统消息和任何方向歧义都会跳过。内容渠道的批量运营链路暂不开放。
+`data/deepseek-api-key.bin` 由 Electron `safeStorage` 使用当前 Windows 用户凭据加密；`data/ai-expert.json` 保存规范化后的 AI 专家资料。运行数据、密钥、联系人和任务状态都不得打入源码包或 ZIP，也不应在两台电脑之间直接复制。

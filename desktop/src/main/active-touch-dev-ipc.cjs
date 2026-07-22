@@ -8,7 +8,8 @@ const MOMENTS_INSPECT_TIMEOUT_MS = 125_000;
 
 let realSendInFlight = false;
 let momentsActionInFlight = false;
-let runtimeDataDir = "";
+let activeTouchDataDir = "";
+let momentsDataDir = "";
 let runtimeCoordinator = null;
 let getMainWindow = () => null;
 const consumedClickTokens = new Set();
@@ -91,7 +92,7 @@ async function runMomentsAction(event, payload, definition) {
   if (!/^[a-f0-9]{64}$/.test(observationId)) {
     return blockedMomentsAction(definition.action, "moments_observation_required", "已阻断：请先重新完成朋友圈安全预演");
   }
-  const options = { baseDir: runtimeDataDir, observationId };
+  const options = { baseDir: momentsDataDir, observationId };
   if (definition === MOMENTS_ACTIONS.comment) {
     const commentText = String(payload.commentText ?? "").trim();
     if (!commentText) {
@@ -131,6 +132,7 @@ async function runMomentsAction(event, payload, definition) {
     }
     const result = await runActiveTouchDev(args, {
       cliName: "moments_action_cli.dev.cjs",
+      dataDir: momentsDataDir,
       owner: lock.lock.owner,
       phase: `developer:${definition.action}`,
       ...(definition.timeoutMs ? { timeoutMs: definition.timeoutMs } : {})
@@ -164,7 +166,8 @@ async function runMomentsAction(event, payload, definition) {
 }
 
 function registerActiveTouchDevIpc(options = {}) {
-  runtimeDataDir = String(options.dataDir ?? "");
+  activeTouchDataDir = String(options.activeTouchDir ?? options.dataDir ?? "");
+  momentsDataDir = String(options.momentsDir ?? activeTouchDataDir);
   runtimeCoordinator = options.coordinator ?? null;
   getMainWindow = typeof options.getMainWindow === "function" ? options.getMainWindow : () => null;
   ipcMain.handle("active-touch:dev-calibrate", () => runActiveTouchDev(["calibrate"]));
@@ -185,7 +188,7 @@ function registerActiveTouchDevIpc(options = {}) {
       }
       args.push("--comment-enabled", "--comment-text-base64", Buffer.from(commentText, "utf8").toString("base64"));
     }
-    return runActiveTouchDev(args, { cliName: "moments_dry_run_cli.dev.cjs", timeoutMs: MOMENTS_DRY_RUN_TIMEOUT_MS })
+    return runActiveTouchDev(args, { cliName: "moments_dry_run_cli.dev.cjs", dataDir: momentsDataDir, timeoutMs: MOMENTS_DRY_RUN_TIMEOUT_MS })
       .finally(refocusMainWindow);
   });
   Object.values(MOMENTS_ACTIONS).forEach((definition) => {
@@ -215,14 +218,14 @@ function registerActiveTouchDevIpc(options = {}) {
     realSendInFlight = true;
     try {
       return await executeVerifiedContactSend({
-        baseDir: runtimeDataDir,
+        baseDir: activeTouchDataDir,
         contactId,
         message,
         authorized: true,
         runStep: (command, args = []) => runActiveTouchDev([command, ...args])
       });
     } catch (error) {
-      setRealSendArm(runtimeDataDir, false);
+      setRealSendArm(activeTouchDataDir, false);
       return { ok: false, action: "send", blocked_reason: "real_send_failed", error: error instanceof Error ? error.message : "真实发送执行失败", send_attempted: null };
     } finally {
       realSendInFlight = false;

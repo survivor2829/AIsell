@@ -123,6 +123,34 @@ function replyPrompt({ context, expert, recovery = false }) {
   ];
 }
 
+function completionChoice(payload) {
+  if (!payload || typeof payload !== "object" || !Array.isArray(payload.choices) || !payload.choices.length) {
+    throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 返回的数据缺少有效的生成结果");
+  }
+  const choice = payload.choices[0];
+  if (!choice || typeof choice !== "object" || !choice.message || typeof choice.message !== "object" || !("content" in choice.message)) {
+    throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 返回的数据结构不完整");
+  }
+  if (choice.message.content !== null && typeof choice.message.content !== "string") {
+    throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 返回的文案格式无效");
+  }
+  return {
+    finishReason: String(choice.finish_reason || ""),
+    content: choice.message.content === null ? "" : choice.message.content
+  };
+}
+
+function validateUsableMessage(value, { emptyCode = "AI_RESPONSE_INVALID", emptyMessage, lengthMessage } = {}) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!text) throw new DeepSeekApiError(emptyCode, emptyMessage || "DeepSeek 未返回可用文案");
+  if (text.length < 2 || text.length > 260) {
+    throw new DeepSeekApiError("AI_RESPONSE_LENGTH_INVALID", lengthMessage || "DeepSeek 返回的文案长度不符合发送要求");
+  }
+  const sanitized = sanitizeAiMessage(text);
+  if (!sanitized) throw new DeepSeekApiError("AI_RESPONSE_INVALID", emptyMessage || "DeepSeek 未返回可用文案");
+  return sanitized;
+}
+
 function parseReplyDecision(value) {
   const raw = String(value || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   let parsed;
@@ -135,8 +163,10 @@ function parseReplyDecision(value) {
     || typeof parsed.handoffReason !== "string") {
     throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回完整的结构化回复");
   }
-  const reply = sanitizeAiMessage(parsed.reply);
-  if (!reply) throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回可用回复");
+  const reply = validateUsableMessage(parsed.reply, {
+    emptyMessage: "DeepSeek 未返回可用回复",
+    lengthMessage: "DeepSeek 返回的回复长度不符合发送要求"
+  });
   return {
     reply,
     intent: parsed.intent,
@@ -147,9 +177,7 @@ function parseReplyDecision(value) {
 }
 
 function parseReplyPayload(payload) {
-  const choice = payload?.choices?.[0];
-  const finishReason = String(choice?.finish_reason || "");
-  const content = String(choice?.message?.content || "");
+  const { finishReason, content } = completionChoice(payload);
   if (finishReason === "length") throw new DeepSeekApiError("AI_RESPONSE_TRUNCATED", "DeepSeek 返回的结构化回复被截断");
   if (finishReason === "content_filter") throw new DeepSeekApiError("AI_CONTENT_FILTERED", "DeepSeek 本次回复被安全策略拦截");
   if (finishReason && finishReason !== "stop") throw new DeepSeekApiError("AI_RESPONSE_INCOMPLETE", "DeepSeek 本次生成未完整结束");
@@ -158,16 +186,15 @@ function parseReplyPayload(payload) {
 }
 
 function parsePlainPayload(payload, unavailableMessage) {
-  const choice = payload?.choices?.[0];
-  const finishReason = String(choice?.finish_reason || "");
-  const content = String(choice?.message?.content || "");
+  const { finishReason, content } = completionChoice(payload);
   if (finishReason === "length") throw new DeepSeekApiError("AI_RESPONSE_TRUNCATED", "DeepSeek 返回的文案被截断");
   if (finishReason === "content_filter") throw new DeepSeekApiError("AI_CONTENT_FILTERED", "DeepSeek 本次文案被内容策略拦截");
   if (finishReason && finishReason !== "stop") throw new DeepSeekApiError("AI_RESPONSE_INCOMPLETE", "DeepSeek 本次文案未完整结束");
-  if (!content.trim()) throw new DeepSeekApiError("AI_RESPONSE_EMPTY", unavailableMessage);
-  const text = sanitizeAiMessage(content);
-  if (!text) throw new DeepSeekApiError("AI_RESPONSE_INVALID", unavailableMessage);
-  return text;
+  return validateUsableMessage(content, {
+    emptyCode: "AI_RESPONSE_EMPTY",
+    emptyMessage: unavailableMessage,
+    lengthMessage: "DeepSeek 返回的文案长度不符合发送要求"
+  });
 }
 
 function replyFailureDiagnostic(error, attempt) {
@@ -238,51 +265,90 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
     }
   }
 
+  async function generateDraftWithKey(key, { task, result }) {
+    const salutation = result?.salutation?.type === "person" ? result.salutation.value : "";
+    const messages = prompt({ salutation, script: String(task?.script || "").trim() });
+    let lastError;
+    for (const maxTokens of [300, 600]) {
+      try {
+        const payload = await request({ key, messages, maxTokens, disableThinking: true });
+        return { draft: parsePlainPayload(payload, "DeepSeek 未返回可用文案。") };
+      } catch (error) {
+        lastError = error;
+        const recoverable = [
+          "AI_RESPONSE_EMPTY",
+          "AI_RESPONSE_TRUNCATED",
+          "AI_RESPONSE_INCOMPLETE",
+          "AI_RESPONSE_INVALID",
+          "AI_RESPONSE_LENGTH_INVALID"
+        ].includes(String(error?.code || ""));
+        if (!recoverable || maxTokens === 600) throw error;
+      }
+    }
+    throw lastError || new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回可用文案。");
+  }
+
+  async function generateReplyWithKey(key, { context, expert }, { strict = false } = {}) {
+    if (!String(expert || "").trim()) throw new DeepSeekApiError("AI_EXPERT_MISSING", "请先在 AI专家 中添加话术文件。");
+    const normalizedContext = (Array.isArray(context) ? context : []).filter((message) => String(message?.content || "").trim()).slice(-12);
+    if (!normalizedContext.length || normalizedContext.at(-1)?.role !== "user") {
+      throw new DeepSeekApiError("AI_CONTEXT_INVALID", "未读取到可靠的客户最新消息，自动回复已取消。");
+    }
+    const attempts = [
+      { name: "json", maxTokens: 300, responseFormat: { type: "json_object" } },
+      { name: "plain", maxTokens: 600, recovery: true },
+      { name: "json-recovery", maxTokens: 600, responseFormat: { type: "json_object" }, recovery: true }
+    ];
+    const diagnostics = [];
+    let lastError;
+    for (let index = 0; index < attempts.length; index += 1) {
+      const { name, recovery, ...options } = attempts[index];
+      const messages = replyPrompt({ context: normalizedContext, expert, recovery });
+      try {
+        const payload = await request({ key, ...options, messages, disableThinking: true });
+        return parseReplyPayload(payload);
+      } catch (error) {
+        lastError = error;
+        const code = String(error?.code || "");
+        const outputFailure = code.startsWith("AI_RESPONSE_") || code === "AI_CONTENT_FILTERED";
+        const temporaryFailure = TEMPORARY_REPLY_FAILURES.has(code);
+        const pausingFailure = PAUSING_REPLY_FAILURES.has(code);
+        if (!(error instanceof DeepSeekApiError) || (!outputFailure && !temporaryFailure && !pausingFailure)) throw error;
+        diagnostics.push(replyFailureDiagnostic(error, `${index + 1}/${name}`));
+        if (strict && (pausingFailure || code === "AI_CONTENT_FILTERED" || temporaryFailure)) throw error;
+        if (pausingFailure) return fallbackReply(diagnostics, error.message);
+        if (code === "AI_CONTENT_FILTERED" || temporaryFailure) return fallbackReply(diagnostics);
+      }
+    }
+    if (strict) throw lastError || new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回可用的结构化回复");
+    return fallbackReply(diagnostics);
+  }
+
   return {
     assertAvailable: () => keyStore.read(),
     async test(value) {
       const key = String(value || "").trim() || keyStore.read();
-      const plainPayload = await request({
-        key,
-        messages: prompt({ salutation: "测试客户", script: "您好，这是 DeepSeek 文案能力测试，请用一句自然问候回复。" }),
-        maxTokens: 300,
-        disableThinking: true
+      const draft = await generateDraftWithKey(key, {
+        task: { script: "您好，这是 DeepSeek 文案能力测试，请用一句自然问候回复。" },
+        result: { salutation: { type: "person", value: "测试客户" } }
       });
-      parsePlainPayload(plainPayload, "DeepSeek 连接成功，但未返回可用文案。");
-      const replyPayload = await request({
-        key,
-        messages: replyPrompt({
-          context: [{ role: "user", content: "你好，我想了解测试服务。" }],
-          expert: "可礼貌介绍测试服务，并询问客户想了解哪一方面。"
-        }),
-        maxTokens: 300,
-        responseFormat: { type: "json_object" },
-        disableThinking: true
-      });
-      parseReplyPayload(replyPayload);
-      return {};
-    },
-    async draft({ task, result }) {
-      const key = keyStore.read();
-      const salutation = result.salutation?.type === "person" ? result.salutation.value : "";
-      const messages = prompt({ salutation, script: String(task.script || "").trim() });
-      for (const maxTokens of [300, 600]) {
-        try {
-          const payload = await request({ key, messages, maxTokens, disableThinking: true });
-          return { draft: parsePlainPayload(payload, "DeepSeek 未返回可用文案，任务已暂停。") };
-        } catch (error) {
-          const recoverable = ["AI_RESPONSE_EMPTY", "AI_RESPONSE_TRUNCATED", "AI_RESPONSE_INCOMPLETE", "AI_RESPONSE_INVALID"].includes(String(error?.code || ""));
-          if (!recoverable || maxTokens === 600) throw error;
+      const reply = await generateReplyWithKey(key, {
+        context: [{ role: "user", content: "你好，我想了解测试服务。" }],
+        expert: "可礼貌介绍测试服务，并询问客户想了解哪一方面。"
+      }, { strict: true });
+      return {
+        provider: "deepseek",
+        model: DEEPSEEK_MODEL,
+        capabilities: {
+          activeTouch: { ok: true, outputLength: draft.draft.length },
+          autoReply: { ok: true, outputLength: reply.reply.length }
         }
-      }
-      throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回可用文案，任务已暂停。");
+      };
     },
-    async reply({ context, expert }) {
-      if (!String(expert || "").trim()) throw new DeepSeekApiError("AI_EXPERT_MISSING", "请先在 AI专家 中添加话术文件。");
-      const normalizedContext = (Array.isArray(context) ? context : []).filter((message) => String(message?.content || "").trim()).slice(-12);
-      if (!normalizedContext.length || normalizedContext.at(-1)?.role !== "user") {
-        throw new DeepSeekApiError("AI_CONTEXT_INVALID", "未读取到可靠的客户最新消息，自动回复已取消。");
-      }
+    async draft(input) {
+      return generateDraftWithKey(keyStore.read(), input);
+    },
+    async reply(input) {
       let key;
       try {
         key = keyStore.read();
@@ -291,31 +357,7 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
         if (!PAUSING_REPLY_FAILURES.has(code)) throw error;
         return fallbackReply([replyFailureDiagnostic(error, "0/config")], error.message);
       }
-      const attempts = [
-        { name: "json", maxTokens: 300, responseFormat: { type: "json_object" } },
-        { name: "plain", maxTokens: 600, recovery: true },
-        { name: "json-recovery", maxTokens: 600, responseFormat: { type: "json_object" }, recovery: true }
-      ];
-      const diagnostics = [];
-      for (let index = 0; index < attempts.length; index += 1) {
-        const { name, recovery, ...options } = attempts[index];
-        const messages = replyPrompt({ context: normalizedContext, expert, recovery });
-        let payload;
-        try {
-          payload = await request({ key, ...options, messages, disableThinking: true });
-          return parseReplyPayload(payload);
-        } catch (error) {
-          const code = String(error?.code || "");
-          const outputFailure = code.startsWith("AI_RESPONSE_") || code === "AI_CONTENT_FILTERED";
-          const temporaryFailure = TEMPORARY_REPLY_FAILURES.has(code);
-          const pausingFailure = PAUSING_REPLY_FAILURES.has(code);
-          if (!(error instanceof DeepSeekApiError) || (!outputFailure && !temporaryFailure && !pausingFailure)) throw error;
-          diagnostics.push(replyFailureDiagnostic(error, `${index + 1}/${name}`));
-          if (pausingFailure) return fallbackReply(diagnostics, error.message);
-          if (code === "AI_CONTENT_FILTERED" || temporaryFailure) return fallbackReply(diagnostics);
-        }
-      }
-      return fallbackReply(diagnostics);
+      return generateReplyWithKey(key, input);
     }
   };
 }

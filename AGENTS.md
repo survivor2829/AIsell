@@ -1,52 +1,41 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
+## 项目定位
 
-This repository is a small Electron desktop app for the AI获客 active-touch workflow.
+这是一个面向个人微信 `4.1.11.54` 的 Windows Electron 桌面应用。当前修复主线先恢复联系人同步、自动回复和主动触达的可重复验收，再继续扩展朋友圈自动化。能力与验证状态只以 `PROJECT_STATUS.md` 为准。
 
-- `desktop/` contains the editable Electron + React + Vite source.
-- `desktop/src/main/` contains Electron main-process code.
-- `desktop/src/renderer/` contains the React UI, local state, mock/empty data, and CSS.
-- `desktop/rpa/active_touch/` contains the local dry-run executor and state-machine blocking rules.
-- `release/` contains generated portable app output. Do not edit files there directly; rebuild and resync from `desktop/`.
-- `ACTIVE_TOUCH_PLAN.md`, `MODULE_MAP.md`, `PROJECT_STATUS.md`, and `design-qa.md` are project handoff and planning documents.
+## 结构与边界
 
-## Build, Test, and Development Commands
+- `desktop/src/renderer/`：React 界面与展示状态，不直接操作微信或读取密钥。
+- `desktop/src/main/`：Electron 主进程、IPC、运行协调、AI 与本地数据入口。
+- `desktop/rpa/`：联系人同步、微信窗口适配和业务执行器。
+- `desktop/scripts/`：self-check、构建和便携包生成。
+- `release/`：生成物，不直接编辑；只从 `desktop/` 重建。
 
-Run commands from `desktop/`.
+运行状态必须按业务隔离：`contact_sync/`、`active_touch/`、`auto_reply/`、`moments/` 分别保存；`wechat_adapter/` 只保存共享适配信息，不保存业务发送结果。
 
-```powershell
-npm install
-npm run dev
-npm run desktop
-npm run build
-npm run preview
-```
+## 开发与验证
 
-- `npm run dev` starts the Vite browser preview on `127.0.0.1:5173`.
-- `npm run desktop` starts the Electron shell in development mode.
-- `npm run build` creates the production renderer bundle in `desktop/dist/`.
-- `npm run preview` serves the built renderer for a quick production preview.
-
-## Coding Style & Naming Conventions
-
-Use TypeScript/React patterns already present in `desktop/src/renderer/App.tsx`. Keep components small only when they remove real duplication. Use 2-space indentation, double quotes in TS/JS, and kebab-case for CSS class names. Keep UI state in the renderer, and keep WeChat/RPA execution behind the main-process IPC boundary and local executor.
-
-## Testing Guidelines
-
-There is no test framework configured yet. For now, the required check is:
+在 `desktop/` 运行：
 
 ```powershell
-npm run build
-node rpa\active_touch\self_check.cjs
+npm.cmd install
+npm.cmd run desktop
+npm.cmd run check:self
+npm.cmd run build:test
+npm.cmd run build:delivery
 ```
 
-For UI changes, also smoke-test `npm run desktop` or the portable exe. Keep active-touch state-machine changes covered by `node rpa\active_touch\self_check.cjs` before adding real WeChat operations.
+生成便携包前运行 `npm.cmd run release:test` 或 `npm.cmd run release:delivery`。真实微信验收不能由 self-check 或构建结果替代。
 
-## Commit & Pull Request Guidelines
+## 代码约定
 
-This folder currently has no Git history. Use short, imperative commits such as `Add active-touch dry-run executor` or Conventional Commit style like `feat: add login persistence`. PRs should include a short summary, screenshots for UI changes, verification commands, and any safety notes about WeChat/RPA behavior.
+TypeScript/JavaScript 使用 2 空格缩进和双引号；CSS 类名使用 kebab-case。微信/RPA 操作必须经过主进程 IPC 和本地执行器。优先复用共享适配器，避免在功能模块中散落窗口尺寸、DPI、坐标和微信版本判断。
 
-## Safety & Scope
+## 安全与发布
 
-Default to dry-run behavior. Do not send real customer messages, add bulk sending, or wire automatic reply/朋友圈 behavior unless the task explicitly asks for it. Preserve the current boundary: UI first, active-touch only, one stable step at a time.
+- 未经用户明确授权，只运行 self-check、dry-run 或只读诊断；授权后的真实发送仅限明确的测试账号和联系人。
+- 发送结果不确定时不得自动补发；运行态波动应隔离当前对象，不得伪装成成功。
+- DeepSeek Key 不进入源码、Git、日志或 ZIP，只保存在当前 Windows 用户的加密运行目录。
+- 不从 dirty worktree 对外发布。提交、构建、包内 manifest 和实机验收必须指向同一版本。
+- 删除旧运行时、构建目录、旧脚本或发布物前，先提交清理候选报告并取得用户确认。

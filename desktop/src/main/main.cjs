@@ -25,6 +25,8 @@ const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
 function createWindow() {
   mainWindow = new BrowserWindow({
+    x: 0,
+    y: 0,
     width: 1440,
     height: 900,
     minWidth: 1180,
@@ -92,7 +94,8 @@ if (!gotSingleInstanceLock) {
     const internalRealSend = developmentEdition || pilotEdition ? require("../../rpa/active_touch/state_machine.dev.cjs") : null;
     const developmentRealSend = developmentEdition ? require("./active-touch-dev-ipc.cjs") : null;
     if (developmentRealSend) developmentRealSend.registerActiveTouchDevIpc({
-      dataDir: runtime.activeTouchDir,
+      activeTouchDir: runtime.activeTouchDir,
+      momentsDir: runtime.momentsDir,
       coordinator,
       getMainWindow: () => mainWindow
     });
@@ -110,7 +113,12 @@ if (!gotSingleInstanceLock) {
         expertStore: aiExpertStore,
         send: internalRealSend.executeVerifiedContactSend,
         sendHandoff: internalRealSend.executeVerifiedFileHelperSend,
-        runStep: (command, args, owner) => runActiveTouch([command, ...args], { development: true, owner, phase: `auto-reply:${command}` })
+        runStep: (command, args, owner) => runActiveTouch([command, ...args], {
+          development: true,
+          owner,
+          phase: `auto-reply:${command}`,
+          dataDir: runtime.autoReplyDir
+        })
       });
     }
     touchTaskController = registerTouchTaskIpc({

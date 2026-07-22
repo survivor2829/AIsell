@@ -45,6 +45,8 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$prefixed\.Count -ne 1 -or \$exact\.Cou
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$chatMid/u, "role classification must not depend on a single midpoint test");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /"visual:v1:" \+ \(Get-AutoReplyVisualSha256/u);
 assert.match(visualDriverSource, /visual-occurrence-v2/u);
+assert.doesNotMatch(visualDriverSource, /randomBytes|driverSessionId|occurrenceSequence/u, "occurrence IDs must not depend on a process session or scan counter");
+assert.match(visualDriverSource, /restorePendingObservation/u, "pending evidence must have a restart recovery entry point");
 assert.match(visualDriverSource, /active\.previewSignature === previewSignature[\s\S]*active\.runtimeId/u, "an active occurrence must reuse its public ID across bubble OCR drift");
 assert.match(visualDriverSource, /scanWechatIncoming\.resetBaselines[\s\S]*retryCandidates\.length = 0/u, "a restarted listener must not inherit an unsent candidate from the previous run");
 assert.doesNotMatch(visualDriverSource, /eventSequence|eventSessionId/u, "stable visual evidence must not receive a new ID on every scan");
@@ -813,6 +815,75 @@ assert.equal(afterRecoveredPending.ok, false, "one recovered unread observation 
 assert.equal(afterRecoveredPending.reason, "no_unread_message");
 assert.equal(JSON.parse(pendingCalls[3].XIAOXI_VISUAL_BASELINES)["A测试客户"], pendingPreviewSignature);
 assert.equal(JSON.parse(pendingCalls[3].XIAOXI_VISUAL_MESSAGE_BASELINES)["A测试客户"], pendingBubbleSignature);
+
+const restoredPendingCalls = [];
+const restoredPendingDriver = createWechatVisualAutoReplyDriver((_script, env) => {
+  restoredPendingCalls.push(env);
+  return {
+    ok: true,
+    conversation: "A测试客户",
+    message: "重启后重新识别",
+    runtimeId: pendingEvidenceRuntimeId,
+    previewSignature: pendingPreviewSignature,
+    messageSignature: pendingBubbleSignature,
+    pid: 71,
+    hWnd: 72,
+    source: "pending_recovery",
+    latestRole: "user",
+    context: [{ role: "user", content: "重启后重新识别", key: pendingEvidenceRuntimeId }]
+  };
+});
+assert.equal(restoredPendingDriver.scanWechatIncoming.restorePendingObservation({
+  conversation: "A测试客户",
+  pid: 71,
+  hWnd: "72",
+  preview_signature: pendingPreviewSignature,
+  message_signature: pendingBubbleSignature,
+  predecessor_preview_signature: pendingPreviewBefore,
+  predecessor_message_signature: pendingMessageBefore
+}), true);
+const restoredAfterRestart = await restoredPendingDriver.scanWechatIncoming(["A测试客户"]);
+assert.equal(restoredAfterRestart.ok, true);
+assert.equal(restoredAfterRestart.message, "重启后重新识别");
+assert.equal(restoredPendingCalls.length, 1, "pending restart recovery must not run a fresh prime first");
+assert.equal(restoredPendingCalls[0].XIAOXI_AUTO_REPLY_MODE, "recover");
+assert.equal(restoredPendingCalls[0].XIAOXI_EXPECTED_PREVIEW_SIGNATURE, pendingPreviewSignature);
+assert.equal(restoredPendingCalls[0].XIAOXI_EXPECTED_MESSAGE_SIGNATURE, pendingBubbleSignature);
+assert.equal("XIAOXI_EXPECTED_MESSAGE" in restoredPendingCalls[0], false, "recovery must re-read message text instead of persisting it");
+
+function createDeterministicOccurrenceDriver() {
+  const results = [
+    {
+      ok: true,
+      source: "session_prime",
+      pid: 79,
+      hWnd: 80,
+      sessionBaselines: [{ conversation: "A测试客户", signature: pendingPreviewBefore }],
+      sessionMessageBaselines: [{ conversation: "A测试客户", signature: pendingMessageBefore }]
+    },
+    {
+      ok: true,
+      conversation: "A测试客户",
+      message: "相同进站消息",
+      runtimeId: pendingEvidenceRuntimeId,
+      previewSignature: pendingPreviewSignature,
+      messageSignature: pendingBubbleSignature,
+      pid: 79,
+      hWnd: 80,
+      source: "unread",
+      latestRole: "user",
+      context: [{ role: "user", content: "相同进站消息", key: pendingEvidenceRuntimeId }]
+    }
+  ];
+  return createWechatVisualAutoReplyDriver(() => results.shift());
+}
+const deterministicFirstDriver = createDeterministicOccurrenceDriver();
+const deterministicSecondDriver = createDeterministicOccurrenceDriver();
+await deterministicFirstDriver.primeWechatSession(["A测试客户"]);
+await deterministicSecondDriver.primeWechatSession(["A测试客户"]);
+const deterministicFirst = await deterministicFirstDriver.scanWechatIncoming(["A测试客户"]);
+const deterministicSecond = await deterministicSecondDriver.scanWechatIncoming(["A测试客户"]);
+assert.equal(deterministicFirst.runtimeId, deterministicSecond.runtimeId, "the same evidence chain must keep one occurrence ID across process reconstruction");
 
 const resetPendingModes = [];
 let resetPendingCall = 0;

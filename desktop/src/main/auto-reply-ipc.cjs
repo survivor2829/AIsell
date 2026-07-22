@@ -25,6 +25,19 @@ const TRANSIENT_SCAN_FENCE_REASONS = new Set([
   "latest_message_role_unresolved",
   "wechat_focus_failed"
 ]);
+const PENDING_OBSERVATION_REASONS = new Set([
+  "unread_preview_pending",
+  "unread_preview_unresolved",
+  "current_transition_unresolved"
+]);
+const TERMINAL_PENDING_OBSERVATION_REASONS = new Set([
+  "conversation_title_changed",
+  "conversation_title_mismatch",
+  "incoming_message_changed",
+  "latest_message_not_incoming",
+  "wechat_process_changed",
+  "wechat_window_changed"
+]);
 const KNOWN_SCAN_REASONS = new Set([
   ...HEALTHY_SCAN_REASONS,
   "automation_root_missing",
@@ -326,6 +339,46 @@ function pendingHandoffKey(pending) {
     .digest("hex");
 }
 
+function normalizePendingObservation(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const reason = normalizeText(value.reason);
+  if (!PENDING_OBSERVATION_REASONS.has(reason)) return null;
+  const conversation = normalizeText(value.conversation).slice(0, 200);
+  const pid = Math.max(0, Math.floor(Number(value.pid) || 0));
+  const rawHWnd = normalizeText(value.hWnd);
+  const hWnd = /^[1-9][0-9]{0,19}$/u.test(rawHWnd) ? rawHWnd : "";
+  const signature = (field) => {
+    const normalized = normalizeText(value[field]).toLowerCase();
+    return /^[a-f0-9]{64}$/u.test(normalized) ? normalized : "";
+  };
+  const runtimeId = normalizeText(value.runtime_id);
+  const visualEvidenceRuntimeId = normalizeText(value.visual_evidence_runtime_id);
+  if (!conversation && !pid && !hWnd) return null;
+  return {
+    key: crypto.createHash("sha256").update([
+      conversation,
+      pid,
+      hWnd,
+      visualEvidenceRuntimeId,
+      signature("preview_signature"),
+      signature("message_signature")
+    ].join("\n")).digest("hex"),
+    reason,
+    conversation,
+    pid,
+    hWnd,
+    runtime_id: /^visual:v[12]:[a-f0-9]{64}$/u.test(runtimeId) ? runtimeId : "",
+    visual_evidence_runtime_id: /^visual:v1:[a-f0-9]{64}$/u.test(visualEvidenceRuntimeId) ? visualEvidenceRuntimeId : "",
+    preview_signature: signature("preview_signature"),
+    message_signature: signature("message_signature"),
+    predecessor_preview_signature: signature("predecessor_preview_signature"),
+    predecessor_message_signature: signature("predecessor_message_signature"),
+    attempts: Math.max(1, Math.floor(Number(value.attempts) || 1)),
+    first_seen_at: normalizeText(value.first_seen_at).slice(0, 100),
+    last_seen_at: normalizeText(value.last_seen_at).slice(0, 100)
+  };
+}
+
 function createDefaultState() {
   return {
     version: 2,
@@ -338,6 +391,7 @@ function createDefaultState() {
     manual_followups: [],
     pending_handoff: null,
     pending_handoffs: [],
+    pending_observation: null,
     rate_events: [],
     last_event: "",
     last_error: "",
@@ -446,6 +500,7 @@ function migrateState(raw, current) {
         delivery_state: handoffDeliveryState(pending.delivery_state)
       }));
     next.pending_handoff = next.pending_handoffs[0] || null;
+    next.pending_observation = normalizePendingObservation(raw.pending_observation);
     next.rate_events = Array.isArray(raw.rate_events) ? raw.rate_events : [];
     next.scan_health = SCAN_HEALTH_VALUES.has(raw.scan_health) ? raw.scan_health : "unknown";
     next.last_scan_at = normalizeText(raw.last_scan_at);
@@ -645,6 +700,7 @@ function createAutoReplyController(options = {}) {
   const schedule = options.schedule || setTimeout;
   const cancelSchedule = options.cancelSchedule || clearTimeout;
   const now = options.now || (() => new Date());
+  const onStateChange = typeof options.onStateChange === "function" ? options.onStateChange : null;
   const rawState = readJson(stateFile, null);
   let state = migrateState(rawState, now());
   let diagnosticSequence = 0;
@@ -677,6 +733,13 @@ function createAutoReplyController(options = {}) {
   function save() {
     state.updated_at = now().toISOString();
     writeAtomic(stateFile, state);
+    if (onStateChange) {
+      try {
+        onStateChange(publicState());
+      } catch {
+        // Renderer updates are best effort; durable state remains authoritative.
+      }
+    }
   }
 
   function appendDiagnostic(event, details = {}) {
@@ -768,6 +831,7 @@ function createAutoReplyController(options = {}) {
       last_scan_success_at: state.last_scan_success_at,
       last_scan_reason: state.last_scan_reason,
       consecutive_scan_failures: state.consecutive_scan_failures,
+      pending_retry_count: Math.max(0, Number(state.pending_observation?.attempts) || 0),
       updated_at: state.updated_at
     };
   }
@@ -971,6 +1035,46 @@ function createAutoReplyController(options = {}) {
     while (scanActive) await new Promise((resolve) => setTimeout(resolve, 10));
   }
 
+  function pendingObservationMatches(candidate) {
+    const pending = state.pending_observation;
+    if (!pending) return false;
+    const conversation = normalizeText(candidate?.conversation || candidate?.currentConversation);
+    if (pending.conversation && conversation && pending.conversation !== conversation) return false;
+    const pid = Math.max(0, Math.floor(Number(candidate?.pid) || 0));
+    const hWnd = normalizeText(candidate?.hWnd);
+    if (pending.pid && pid && pending.pid !== pid) return false;
+    if (pending.hWnd && hWnd && pending.hWnd !== hWnd) return false;
+    return true;
+  }
+
+  function retainPendingObservation(candidate, observedAt) {
+    const previous = state.pending_observation;
+    const value = normalizePendingObservation({
+      ...(previous || {}),
+      reason: normalizeText(candidate?.reason),
+      conversation: normalizeText(candidate?.conversation || candidate?.currentConversation || previous?.conversation),
+      pid: candidate?.pid || previous?.pid,
+      hWnd: candidate?.hWnd || previous?.hWnd,
+      runtime_id: candidate?.runtimeId || previous?.runtime_id,
+      visual_evidence_runtime_id: candidate?.visualEvidenceRuntimeId
+        || (/^visual:v1:/u.test(normalizeText(candidate?.runtimeId)) ? candidate.runtimeId : "")
+        || previous?.visual_evidence_runtime_id,
+      preview_signature: candidate?.pendingPreviewSignature || candidate?.previewSignature || previous?.preview_signature,
+      message_signature: candidate?.pendingMessageSignature || candidate?.messageSignature || previous?.message_signature,
+      predecessor_preview_signature: candidate?.predecessorPreviewSignature || previous?.predecessor_preview_signature,
+      predecessor_message_signature: candidate?.predecessorMessageSignature || previous?.predecessor_message_signature,
+      attempts: pendingObservationMatches(candidate) ? Number(previous?.attempts || 0) + 1 : 1,
+      first_seen_at: pendingObservationMatches(candidate) ? previous?.first_seen_at : observedAt.toISOString(),
+      last_seen_at: observedAt.toISOString()
+    });
+    if (value) state.pending_observation = value;
+    return value;
+  }
+
+  function clearPendingObservation(candidate) {
+    if (pendingObservationMatches(candidate)) state.pending_observation = null;
+  }
+
   async function start() {
     if (state.status === "running") return { ok: true, state: publicState() };
     if (starting) return { ok: false, error: "自动回复正在启动，请稍候" };
@@ -1008,8 +1112,13 @@ function createAutoReplyController(options = {}) {
     try {
       await waitForScanIdle();
       if (runEpoch !== startEpoch || state.status !== "starting") return { ok: false, error: "自动回复启动已取消", state: publicState() };
-      scanIncoming.resetBaselines?.();
-      if (typeof primeIncoming === "function") {
+      const pendingObservation = state.pending_observation;
+      let pendingRestored = false;
+      if (pendingObservation && typeof scanIncoming.restorePendingObservation === "function") {
+        pendingRestored = scanIncoming.restorePendingObservation(pendingObservation) === true;
+      }
+      if (!pendingObservation) scanIncoming.resetBaselines?.();
+      if (!pendingObservation && typeof primeIncoming === "function") {
         const primed = await Promise.resolve(primeIncoming(contacts.map((contact) => contact.name)));
         if (runEpoch !== startEpoch || state.status !== "starting") return { ok: false, error: "自动回复启动已取消", state: publicState() };
         recordScanResult(primed, "prime");
@@ -1017,6 +1126,9 @@ function createAutoReplyController(options = {}) {
         if (primed?.ok !== true && primed?.reason !== "no_current_conversation") {
           throw new Error(state.last_scan_reason || "微信当前会话基线初始化失败");
         }
+      } else if (pendingObservation) {
+        state.last_event = pendingRestored ? "pending_observation_restored" : "pending_observation_retrying";
+        state.last_error = "";
       }
       if (runEpoch !== startEpoch || state.status !== "starting") return { ok: false, error: "自动回复启动已取消", state: publicState() };
       deepSeekClient?.assertAvailable();
@@ -1215,6 +1327,13 @@ function createAutoReplyController(options = {}) {
       }
       if (!candidate?.ok) {
         const candidateReason = normalizeText(candidate?.reason);
+        if (PENDING_OBSERVATION_REASONS.has(candidateReason)) {
+          retainPendingObservation(candidate, current);
+          state.last_event = candidateReason === "unread_preview_pending" ? "unread_preview_pending" : "pending_observation_retrying";
+          state.last_error = "";
+          save();
+          return publicState();
+        }
         if (TRANSIENT_SCAN_FENCE_REASONS.has(candidateReason)) {
           // These are incomplete live observations, not proof that the current
           // turn is empty or outgoing. Keep all reply/baseline/retry state
@@ -1224,22 +1343,10 @@ function createAutoReplyController(options = {}) {
           save();
           return publicState();
         }
-        if (candidateReason === "unread_preview_unresolved") {
-          pauseWithError(
-            "unread_preview_unresolved_paused",
-            "已打开未读联系人，但连续三次无法稳定识别最新客户气泡。任务已暂停，避免把这条消息静默丢失；请保持微信窗口可见后重新启动自动回复。"
-          );
-          save();
-          return publicState();
-        }
-        if (candidateReason === "current_transition_unresolved") {
-          pauseWithError(
-            "current_transition_unresolved_paused",
-            "当前聊天的会话预览与消息气泡在连续两帧中没有形成一致的新消息证据。任务已安全暂停，避免把旧消息误当成新消息；请保持微信窗口完整可见后重新启动自动回复。"
-          );
-          save();
-          return publicState();
-        }
+        const terminalPendingReason = TERMINAL_PENDING_OBSERVATION_REASONS.has(candidateReason);
+        if (terminalPendingReason && (pendingObservationMatches(candidate)
+          || candidateReason === "wechat_process_changed"
+          || candidateReason === "wechat_window_changed")) state.pending_observation = null;
         const outgoingObserved = recordOutgoingObservation(candidate, contacts, current);
         if (handoffDelivery !== "none") {
           save();
@@ -1252,6 +1359,7 @@ function createAutoReplyController(options = {}) {
       }
 
       const conversation = normalizeText(candidate.conversation);
+      clearPendingObservation(candidate);
       const contact = contacts.find((item) => normalizeText(item.name) === conversation);
       if (!contact) {
         state.last_event = "conversation_not_eligible";
@@ -1394,7 +1502,8 @@ function createAutoReplyController(options = {}) {
       save();
       coordinator.update(lock.lock.owner, "send-reply");
       const result = await send({
-        baseDir: activeTouchDir,
+        baseDir: dataDir,
+        contactsDir: activeTouchDir,
         authorized: true,
         contactId: contact.id,
         frozenContact: contact,
@@ -1548,7 +1657,21 @@ function createAutoReplyController(options = {}) {
 function registerAutoReplyIpc(options = {}) {
   const ipcMain = options.ipcMain || require("electron").ipcMain;
   const getMainWindow = options.getMainWindow;
-  const controller = createAutoReplyController(options);
+  const controller = createAutoReplyController({
+    ...options,
+    onStateChange: (state) => {
+      try {
+        options.onStateChange?.(state);
+      } catch {}
+      const mainWindow = getMainWindow?.();
+      if (!mainWindow || mainWindow.isDestroyed?.()) return;
+      try {
+        mainWindow.webContents?.send?.("auto-reply:update", { ok: true, state });
+      } catch {
+        // The renderer may be reloading; polling remains the fallback.
+      }
+    }
+  });
 
   function consumeTrustedClick(event, payload) {
     const token = String(payload?.clickToken || "");

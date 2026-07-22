@@ -103,16 +103,25 @@ assert.deepEqual(
   assert.deepEqual(spawnCalls[0].args.slice(-2), ["--data-dir", "runtime-data"]);
   assert.deepEqual(releasedOwners, ["owner-1"]);
 
+  const isolated = await runActiveTouchDev(["moments-dry-run", "--mode", "targeted", "--like"], {
+    cliName: "moments_dry_run_cli.dev.cjs",
+    dataDir: "moments-data",
+    timeoutMs: 100
+  });
+  assert.equal(isolated.ok, true);
+  assert.deepEqual(spawnCalls[1].args.slice(-2), ["--data-dir", "moments-data"]);
+  assert.deepEqual(releasedOwners, ["owner-1", "owner-2"]);
+
   exitWithoutCloseNext = true;
   const exited = await runActiveTouchDev(["moments-dry-run", "--mode", "targeted", "--like"], { cliName: "moments_dry_run_cli.dev.cjs", timeoutMs: 500 });
   assert.equal(exited.ok, true, "a complete result must not wait forever when exit is observed without close");
-  assert.deepEqual(releasedOwners, ["owner-1", "owner-2"]);
+  assert.deepEqual(releasedOwners, ["owner-1", "owner-2", "owner-3"]);
 
   hangNext = true;
   const timedOut = await runActiveTouchDev(["moments-dry-run", "--mode", "targeted", "--like"], { cliName: "moments_dry_run_cli.dev.cjs", timeoutMs: 5 });
   assert.equal(timedOut.blocked_reason, "executor_timeout");
   assert.equal(killedChildren, 1);
-  assert.deepEqual(releasedOwners, ["owner-1", "owner-2", "owner-3"]);
+  assert.deepEqual(releasedOwners, ["owner-1", "owner-2", "owner-3", "owner-4"]);
 
   console.log("active-touch IPC self-check passed");
 })().catch((error) => {

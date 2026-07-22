@@ -27,7 +27,12 @@ function createPreloadApis(ipcRenderer) {
       status: () => ipcRenderer.invoke("auto-reply:status"),
       start: () => ipcRenderer.invoke("auto-reply:start", { clickToken: consumeAutoReplyClick() }),
       pause: () => ipcRenderer.invoke("auto-reply:pause"),
-      acknowledgeManualFollowup: () => ipcRenderer.invoke("auto-reply:acknowledge-manual-followup", { clickToken: consumeAutoReplyClick() })
+      acknowledgeManualFollowup: () => ipcRenderer.invoke("auto-reply:acknowledge-manual-followup", { clickToken: consumeAutoReplyClick() }),
+      onUpdate: (callback) => {
+        const handler = (_event, payload) => callback(payload);
+        ipcRenderer.on("auto-reply:update", handler);
+        return () => ipcRenderer.removeListener("auto-reply:update", handler);
+      }
     },
     aiExpert: {
       status: () => ipcRenderer.invoke("ai-expert:status"),

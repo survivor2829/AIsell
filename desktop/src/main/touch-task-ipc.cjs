@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, screen } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
-const { generatePersonalizedDraft } = require("./ai-draft.cjs");
+const { generateFixedScriptFallback, generatePersonalizedDraft } = require("./ai-draft.cjs");
 const { runActiveTouch } = require("./active-touch-ipc.cjs");
 const { preloadFile, rendererDir = "dist" } = require("./edition.cjs");
 const { saveState: saveExecutionState } = require("../../rpa/active_touch/state_machine.cjs");
@@ -10,7 +10,6 @@ const {
   classifyContacts,
   cleanupTaskCache,
   createTask,
-  hasUnfinishedPausedTask,
   isBatchAuthorized,
   loadTaskState,
   publicTaskState,
@@ -295,41 +294,45 @@ async function prepareCurrentBatch() {
     task = loadTaskState(activeTouchDir());
     const pending = task.results
       .slice(start, Math.min(start + DRAFT_GENERATION_CONCURRENCY, task.batch_end_index))
-      .filter((result) => result && !["generated", "identity_skipped", "sent_verified"].includes(result.status));
+      .filter((result) => result && !["generated", "ai_failed_skipped", "identity_skipped", "sent_verified"].includes(result.status));
     const generated = await Promise.all(pending.map(async (result) => {
       const generatedResult = await draftMessageWithRetry(task, result);
       return { id: result.id, ...generatedResult };
     }));
 
     task = loadTaskState(activeTouchDir());
-    let generationFailure = "";
     for (const generatedResult of generated) {
       const result = task.results.find((item) => item.id === generatedResult.id);
-      if (!result || ["generated", "identity_skipped", "sent_verified"].includes(result.status)) continue;
+      if (!result || ["generated", "ai_failed_skipped", "identity_skipped", "sent_verified"].includes(result.status)) continue;
       result.ai_attempts = Number(result.ai_attempts || 0) + generatedResult.attempts;
       if (generatedResult.error) {
-        result.status = "ai_failed";
-        result.reason = String(generatedResult.error?.message || "DeepSeek 文案生成失败，任务已暂停");
-        result.ai_status = "failed";
-        result.ai_reason = result.reason;
-        generationFailure ||= result.reason;
+        const fallback = generateFixedScriptFallback({ task, result, error: generatedResult.error });
+        if (fallback) {
+          result.status = "generated";
+          result.reason = "固定话术已准备";
+          result.message = fallback.message;
+          result.ai_status = "fallback";
+          result.ai_reason = fallback.reason;
+          result.ai_error_code = fallback.fallbackCode;
+        } else {
+          result.status = "ai_failed_skipped";
+          result.reason = `${String(generatedResult.error?.message || "DeepSeek 文案生成失败")}，且固定话术不可用，已跳过当前联系人`;
+          result.ai_status = "failed";
+          result.ai_reason = result.reason;
+          result.ai_error_code = String(generatedResult.error?.code || "AI_GENERATION_FAILED");
+        }
       } else {
         result.status = "generated";
         result.reason = "文案已准备";
         result.message = generatedResult.draft.message;
         result.ai_status = generatedResult.draft.usedAi ? "generated" : "fallback";
         result.ai_reason = generatedResult.draft.reason;
+        result.ai_error_code = "";
       }
       result.updated_at = new Date().toISOString();
     }
-    if (generationFailure) {
-      task.status = "paused";
-      task.phase = "paused";
-      task.pause_reason = `文案生成失败：${generationFailure}`;
-    }
     task = saveTaskState(activeTouchDir(), task);
     emitTaskUpdate(task);
-    if (generationFailure) break;
   }
 
   task = loadTaskState(activeTouchDir());
@@ -588,6 +591,11 @@ async function runTaskLoop() {
       }
 
       if (task.execution_mode === "real_send") {
+        if (current.status === "ai_failed_skipped") {
+          advanceTask(task, index);
+          emitTaskUpdate();
+          continue;
+        }
         if (current.status !== "generated") {
           pauseTask(task, "当前联系人文案尚未准备，任务已暂停", index);
           break;
@@ -704,19 +712,16 @@ function buildRunnableTask(script, excludedContactIds = []) {
   const existingCurrent = existing.results[existing.current_index];
   const unknownNeedsResolution = existingCurrent?.status === "outcome_unknown" && (existingCurrent?.awaiting_resolution || existingCurrent?.outcome_unknown_retry_count >= 1);
   const existingUnfinished = !["idle", "completed", "stopped"].includes(existing.status) && existing.current_index < existing.total;
-  if (existingUnfinished && (["prepared", "clicked", "retry_blocked"].includes(existingCurrent?.status) || unknownNeedsResolution)) {
+  if (existingUnfinished && (["prepared", "clicked"].includes(existingCurrent?.status) || existingCurrent?.retry_blocked === true || unknownNeedsResolution)) {
     return { ok: false, blocked_reason: "outcome_unknown", error: "当前联系人可能已经执行发送，任务不会自动重试" };
   }
-  if (existing.status === "running" && existing.current_index < existing.total && existing.execution_mode === executionMode) {
-    return { ok: true, task: existing };
-  }
-
-  if (executionMode === "real_send" && existing.version < 3 && existing.current_index < existing.total && ["running", "paused"].includes(existing.status)) {
-    return { ok: false, blocked_reason: "legacy_draft_task", error: "检测到旧版草稿任务，已阻断自动升级为真实发送；请先停止旧任务" };
-  }
-
-  if (hasUnfinishedPausedTask(existing, script)) {
+  if (existingUnfinished) {
     if (existing.execution_mode !== executionMode) return { ok: false, blocked_reason: "task_execution_mode_changed", error: "未完成任务的执行模式不同，请先停止旧任务" };
+    if (executionMode === "real_send" && existing.version < 3) {
+      return { ok: false, blocked_reason: "legacy_draft_task", error: "检测到旧版草稿任务，已阻断自动升级为真实发送；请先停止旧任务" };
+    }
+    if (existing.status === "running") return { ok: true, task: existing };
+    if (existing.status !== "paused") return { ok: false, blocked_reason: "unfinished_task_state_invalid", error: "当前未完成任务状态异常，请先结束该任务" };
     const current = existing.results[existing.current_index];
     existing.status = "running";
     existing.pause_reason = "";
@@ -782,7 +787,6 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     const runnable = buildRunnableTask(script, excludedContactIds);
     if (!runnable.ok) return runnable;
     runnable.task = authorizeTask(runnable.task);
-    try { deepSeekClient?.assertAvailable(); } catch (error) { return { ok: false, error: String(error?.message || "请先保存 DeepSeek API Key。") }; }
     const lock = runtimeCoordinator?.acquire({ state: "touching", taskId: runnable.task.id, account: "unknown", phase: "starting" });
     if (lock && !lock.ok) return { ok: false, error: "当前正在进行联系人同步或其他微信操作，请完成后再启动触达任务。", blocked_reason: lock.error };
     runnerOwner = lock?.lock.owner || "";
@@ -832,14 +836,6 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     else if (current?.status === "generated") resumed.phase = "sending_batch";
     else if (recoverableUnknown) resumed.phase = "sending_batch";
     saveTaskState(activeTouchDir(), resumed);
-    try {
-      deepSeekClient?.assertAvailable();
-    } catch (error) {
-      pauseTask(loadTaskState(activeTouchDir()), String(error?.message || "请先保存 DeepSeek API Key。"));
-      if (runnerOwner) runtimeCoordinator?.release(runnerOwner);
-      runnerOwner = "";
-      return publicTaskState(loadTaskState(activeTouchDir()));
-    }
     createFloatingWindow();
     if (recoverableUnknown) {
       try {

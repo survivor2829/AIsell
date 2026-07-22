@@ -26,6 +26,7 @@ const {
 const { executeVerifiedContactSend, refreshRealSendSession, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession } = require("./state_machine.dev.cjs");
 const { prepareMomentsDryRun, preferredVisibleMomentsPost, probeWechatMomentsWindow } = require("./moments_dry_run.dev.cjs");
 const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
+const { normalizeAtomicSendResult } = require("./wechat_window_driver.dev.cjs");
 const {
   authorizeNextBatch,
   classifyContacts,
@@ -48,6 +49,9 @@ const { runPowerShell } = require("./wechat_window_driver.cjs");
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-active-touch-"));
 
 try {
+  assert.equal(normalizeAtomicSendResult({ ok: false, sendAttempted: false }).sendResult, "not_attempted");
+  assert.equal(normalizeAtomicSendResult({ ok: true, sendAttempted: true }).sendResult, "outcome_unknown");
+  assert.equal(normalizeAtomicSendResult({ ok: true, sendResult: "sent_verified" }).sendResult, "sent_verified");
   let momentsProbeCalls = 0;
   const momentsPost = {
     runtimeId: "42.7.10",
@@ -317,6 +321,18 @@ try {
     message_draft: "已保存草稿"
   });
   const developmentCliPath = path.join(__dirname, "active_touch_cli.dev.cjs");
+  const isolatedCliRuntimeDir = path.join(dir, "isolated-cli-runtime");
+  const isolatedCliContactsDir = path.join(dir, "isolated-cli-contacts");
+  fs.mkdirSync(isolatedCliContactsDir, { recursive: true });
+  fs.writeFileSync(path.join(isolatedCliContactsDir, "contacts.json"), JSON.stringify([{ id: "cli-isolated", name: "CLI Isolated", wechatId: "cli-isolated", allowed: true }]), "utf8");
+  const isolatedCliSelection = spawnSync(process.execPath, [developmentCliPath, "select-customer", "--data-dir", isolatedCliRuntimeDir, "--contacts-dir", isolatedCliContactsDir, "--id", "cli-isolated"], {
+    cwd: path.resolve(__dirname, "../.."),
+    encoding: "utf8",
+    windowsHide: true
+  });
+  assert.equal(isolatedCliSelection.status, 0);
+  assert.equal(JSON.parse(isolatedCliSelection.stdout.trim()).state.selected_customer.id, "cli-isolated");
+  assert.equal(fs.existsSync(path.join(isolatedCliRuntimeDir, "contacts.json")), false);
   const explicitEmptyMessage = spawnSync(process.execPath, [developmentCliPath, "send", "--data-dir", developmentCliDir, "--message"], {
     cwd: path.resolve(__dirname, "../.."),
     encoding: "utf8",
@@ -639,15 +655,17 @@ try {
     },
     sessionDriver: (_title, context) => {
       sharedSessionContexts.push(context);
-      return { ok: true, pid: 81, hWnd: "91", processName: "Weixin", title: sharedContact.name, accountId: "account-a", accountVerified: true };
+      return { ok: true, pid: 81, hWnd: "91", processName: "Weixin", title: sharedContact.name, accountId: "account-a", accountVerified: true, verificationMode: "exact_wechat_id_search", conversationTitleMode: "visual_header", conversationToken: "conversation:v1:81:91:shared" };
     },
     sendDriver: (_key, context) => {
       sharedClicks += 1;
       assert.equal(context.expectedConversation, sharedContact.name);
+      assert.equal(context.expectedConversationMode, "exact_wechat_id_search");
+      assert.equal(context.expectedConversationToken, "conversation:v1:81:91:shared");
       assert.equal(context.expectedMessage, "共享事务消息");
       assert.equal(context.expectedIncomingMessage, "客户最新问题");
       assert.equal(context.expectedIncomingRuntimeId, "incoming-runtime-1");
-      return { ok: true, conversationVerified: true, draftVerified: true };
+      return { ok: true, conversationVerified: true, composerVerified: true, draftVerified: true };
     },
     bubbleVerifier: (_message, context) => context.phase === "before"
       ? { ok: true, snapshot: "before" }
@@ -655,6 +673,7 @@ try {
     onTransition: (status) => sharedTransitions.push(status)
   });
   assert.equal(sharedResult.ok, true);
+  assert.equal(sharedResult.send_result, "sent_verified");
   assert.deepEqual(sharedSteps, ["select-customer", "calibrate", "focus-wechat-window", "click-search-result-dry-run", "input-message-dry-run", "send"]);
   assert.deepEqual(sharedTransitions, ["prepared", "clicked", "sent_verified"]);
   assert.deepEqual(sharedSessionContexts.map((context) => context?.wechatRoot), ["D:\\wechat-data\\xwechat_files", "D:\\wechat-data\\xwechat_files"], "real-send account verification must reuse the successful contact-sync root before input and before send");
@@ -663,6 +682,21 @@ try {
   assert.deepEqual(sharedSessionContexts.map((context) => context?.expectedHWnd), ["91", "91"]);
   assert.deepEqual(sharedSessionContexts.map((context) => context?.allowExactSearchFallback), [true, true]);
   assert.equal(sharedClicks, 1);
+  assert.equal(loadState(sharedDir).conversation_token, "conversation:v1:81:91:shared", "exact WeChat-id search must bind the visual header observation token");
+  assert.equal(loadState(sharedDir).conversation_title_mode, "visual_header", "new-render conversations may be verified without a UIA customer-name node");
+  const switchedConversation = refreshRealSendSession(sharedDir, () => ({
+    ok: true,
+    pid: 81,
+    hWnd: "91",
+    processName: "Weixin",
+    title: sharedContact.name,
+    accountId: "account-a",
+    accountVerified: true,
+    verificationMode: "exact_wechat_id_search",
+    conversationTitleMode: "visual_header",
+    conversationToken: "conversation:v1:81:91:switched"
+  }));
+  assert.equal(switchedConversation.ok, true, "an exact WeChat-ID session must tolerate cosmetic visual-token repaint after draft insertion");
   const firstIncomingAttemptKey = crypto.createHash("sha256")
     .update(`incoming-turn-1\n${sharedContact.id}\n共享事务消息`)
     .digest("hex");
@@ -922,6 +956,16 @@ try {
   assert.equal(status(dir).contacts.length, 1);
   assert.equal(verifyConversation(dir, "测试客户").blocked_reason, "no_whitelist_customer");
   assert.equal(selectCustomer(dir, "wxid_internal").state.selected_customer.name, "测试客户");
+  const isolatedRuntimeDir = path.join(dir, "isolated-runtime");
+  const isolatedContactsDir = path.join(dir, "isolated-contacts");
+  fs.mkdirSync(isolatedContactsDir, { recursive: true });
+  fs.writeFileSync(path.join(isolatedContactsDir, "contacts.json"), JSON.stringify([{ id: "isolated-contact", name: "Isolated Contact", wechatId: "isolated-id", wechatAccountId: "internal-account", allowed: true }]), "utf8");
+  const isolatedSelection = selectCustomer(isolatedRuntimeDir, "isolated-contact", isolatedContactsDir);
+  assert.equal(isolatedSelection.ok, true);
+  assert.equal(loadState(isolatedRuntimeDir).selected_customer.id, "isolated-contact");
+  assert.equal(fs.existsSync(path.join(isolatedRuntimeDir, "contacts.json")), false, "feature runtime must not copy the shared contact inventory into its own state directory");
+  saveState(isolatedRuntimeDir, { ...loadState(isolatedRuntimeDir), send_gate_status: "dry_run_passed", window_pid: 81, window_handle: "91" });
+  assert.equal(setRealSendArm(isolatedRuntimeDir, true, isolatedContactsDir).ok, true, "real-send identity checks must read the explicitly shared contact inventory");
   assert.equal(send(dir, { dryRun: true, message: "hello" }).blocked_reason, "conversation_not_verified");
   assert.equal(inputMessageDryRun(dir, "hello", () => ({ ok: true })).blocked_reason, "conversation_not_verified");
   assert.equal(locateConversation(dir, () => ["其他窗口"]).blocked_reason, "conversation_window_not_found");
@@ -1078,6 +1122,7 @@ try {
   assert.equal(preClick.blocked_reason, "atomic_draft_changed");
   assert.equal(preClick.send_attempted, false);
   assert.equal(preClick.state.real_send_attempt_key, "");
+  assert.equal(preClick.send_result, "not_attempted");
   assert.deepEqual(preClick.state.real_send_attempts, attemptsBeforeRetry);
   setRealSendArm(retryDir, true);
   const unknownRetry = await sendReal(
@@ -1091,6 +1136,7 @@ try {
   assert.equal(unknownRetry.blocked_reason, "outcome_unknown");
   assert.equal(unknownRetry.send_attempted, null);
   assert.equal(unknownRetry.state.real_send_attempts[unknownRetry.state.real_send_attempt_key], "outcome_unknown");
+  assert.equal(unknownRetry.send_result, "outcome_unknown");
   assert.equal(setRealSendArm(retryDir, true).blocked_reason, "real_send_already_attempted");
   const repeatedUnknown = await executeVerifiedContactSend({
     baseDir: retryDir,
@@ -1276,6 +1322,7 @@ try {
   const messageDraftSource = driverSource.split("const MESSAGE_DRAFT_SCRIPT = `")[1].split("`;")[0];
   const developmentDriverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.dev.cjs"), "utf8");
   const sendMessageSource = developmentDriverSource.split("const SEND_MESSAGE_SCRIPT = `")[1].split("`;")[0];
+  const observeConversationSource = developmentDriverSource.split("const OBSERVE_CONVERSATION_SCRIPT = `")[1].split("`;")[0];
   const clickSendSource = developmentDriverSource.split("function clickWechatSendButton")[1].split("const DETECT_ACTIVE_ACCOUNT_SCRIPT")[0];
   const bubbleVerifierSource = developmentDriverSource.split("function verifyWechatMessageBubble")[1].split("module.exports")[0];
   assert.equal(driverSource.includes("clickWechatSendButton"), false);
@@ -1300,11 +1347,11 @@ try {
   assert.match(developmentDriverSource, /atomic_conversation_changed/);
   assert.match(developmentDriverSource, /atomic_draft_changed/);
   assert.match(developmentDriverSource, /function Normalize-WechatDraftText/);
-  assert.match(sendMessageSource, /conversationVerified = \$true[\s\S]*draftVerified = \(Normalize-WechatDraftText \$copiedDraft\) -ceq \$normalizedExpectedMessage/);
+  assert.match(sendMessageSource, /\$conversationBefore = Get-ConversationObservation[\s\S]*\$draftVerified = \(Normalize-WechatDraftText \$copiedDraft\) -ceq \$normalizedExpectedMessage[\s\S]*\$conversationAfterDraft = Get-ConversationObservation/);
   assert.match(sendMessageSource, /atomic_expected_window_not_found/);
   assert.match(sendMessageSource, /reason = "wechat_focus_failed";[^\r\n]*sendAttempted = \$false/);
   assert.match(sendMessageSource, /reason = "atomic_send_context_missing";[^\r\n]*sendAttempted = \$false/);
-  assert.match(sendMessageSource, /reason = "atomic_conversation_changed"; sendAttempted = \$false/);
+  assert.match(sendMessageSource, /reason = "atomic_conversation_changed";[\s\S]*sendAttempted = \$false/);
   assert.equal((sendMessageSource.match(/\$sendAttempted = \$true/g) || []).length, 1);
   assert.doesNotMatch(sendMessageSource, /\(Get-ElementText \$element\) -cne "发送"/);
   assert.doesNotMatch(sendMessageSource, /InvokePattern/);
@@ -1320,12 +1367,25 @@ try {
   assert.match(sendMessageSource, /XIAOXI_EXPECTED_INCOMING_RUNTIME_ID/);
   assert.match(sendMessageSource, /function Get-ElementKey/);
   assert.match(sendMessageSource, /chat_message_list[\s\S]*incoming_message_changed[\s\S]*\$sendAttempted = \$true/, "the atomic click script must revalidate the latest incoming bubble before the send attempt");
-  assert.match(sendMessageSource, /\$conversationElement[\s\S]*atomic_conversation_changed/);
+  assert.doesNotMatch(sendMessageSource, /\$conversationElement/, "atomic send must rebuild its UIA root instead of retaining a stale header element");
+  assert.match(sendMessageSource, /Get-ConversationObservation \(\[IntPtr\]\[int64\]\$matched\.hWnd\)[\s\S]*Get-ConversationObservation \(\[IntPtr\]\[int64\]\$matched\.hWnd\)/);
+  assert.match(sendMessageSource, /Get-ComposerObservation[\s\S]*atomic_composer_not_verified[\s\S]*\$composerAfterDraft = Get-ComposerObservation/);
+  assert.match(sendMessageSource, /GetClassName\(\$pointWindow[\s\S]*MMUIRender[\s\S]*visual_render_composer/, "visual-header sends must prove the composer through the owned MMUI render child when UIA exposes no editor node");
+  assert.match(sendMessageSource, /StartsWith\("Qt"[\s\S]*EndsWith\("QWindowIcon"[\s\S]*visual_qt_root_composer/, "current WeChat Qt roots must be accepted without a cross-language regex escape hazard");
+  assert.match(sendMessageSource, /composer:v1:win32:\\\$\{pointClassName\}:/, "PowerShell variables followed by a colon must use braced interpolation without triggering JavaScript interpolation");
+  assert.equal((sendMessageSource.match(/\$headerLeft = .*Width \* 0\.36/g) || []).length, 1, "the atomic-send observation must exclude the mutable session-list draft preview");
+  assert.equal((developmentDriverSource.match(/\$headerLeft = .*Width \* 0\.36/g) || []).length, 2, "both visual conversation observations must use the stable chat-header region");
+  assert.match(observeConversationSource, /IsWindow\(\$expectedHWnd\)[\s\S]*IsWindowVisible\(\$expectedHWnd\)[\s\S]*GetWindowThreadProcessId\(\$expectedHWnd/, "session refresh must validate the exact visible HWND and owning PID");
+  assert.doesNotMatch(observeConversationSource, /process\.MainWindowHandle/, "Qt WeChat session refresh must not depend on Process.MainWindowHandle, which is zero on 4.1.11.54");
+  assert.match(sendMessageSource, /\$expectedConversationMode -ne "exact_wechat_id_search"[\s\S]*\$conversationBefore\.token -ceq \$expectedConversationToken/, "exact WeChat-ID sessions must not be blocked by a cosmetic visual-hash repaint");
+  assert.match(sendMessageSource, /\$expectedConversationMode -eq "exact_wechat_id_search" -or \$conversationAfterDraft\.token -ceq \$boundConversationToken/, "draft insertion must not invalidate an exact WeChat-ID session");
+  assert.match(sendMessageSource, /\$pointProcessId -eq \[uint32\]\$matched\.pid[\s\S]*\(\$renderChildClass -or \$wechatQtRootClass\)[\s\S]*\$renderSurfaceOwnsComposer/, "the visual composer proof must remain bound to the exact WeChat process and render surface");
+  assert.match(sendMessageSource, /\$composerVerified = \$composerAfterDraft\.ok -and \$composerAfterDraft\.token -ceq \$composerBefore\.token/);
   assert.match(sendMessageSource, /GetCursorPos\(\[ref\]\$sendPoint\)[\s\S]*wechat_send_cursor_mismatch/);
   assert.match(sendMessageSource, /SetCursorPos\(\$sendX, \$sendY\)[\s\S]*mouse_event\(0x0002[\s\S]*mouse_event\(0x0004/);
   assert.equal(sendMessageSource.includes("SendWait($sendKey)"), false);
   assert.equal(sendMessageSource.includes("XIAOXI_SEND_KEY"), false);
-  assert.match(clickSendSource, /runPowerShell\(SEND_MESSAGE_SCRIPT,[\s\S]*\{ ensure: false \}\);/);
+  assert.match(clickSendSource, /normalizeAtomicSendResult\(runPowerShell\(SEND_MESSAGE_SCRIPT,[\s\S]*\{ ensure: false \}\)\)/);
   assert.match(bubbleVerifierSource, /\}, \{ ensure: false \}\);/);
   assert.match(driverSource, /"powershell_timeout"/);
   assert.match(driverSource, /"powershell_failed"/);

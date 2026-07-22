@@ -110,6 +110,7 @@ async function main() {
   const sentBindings = [];
   const handoffs = [];
   const scheduledDelays = [];
+  const autoReplyDir = path.join(root, "auto_reply");
   let verifyAllowed = true;
   let replyCalls = 0;
   const coordinator = {
@@ -118,7 +119,7 @@ async function main() {
     release: () => ({ ok: true })
   };
   const controller = createAutoReplyController({
-    dataDir: path.join(root, "auto_reply"),
+    dataDir: autoReplyDir,
     activeTouchDir,
     coordinator,
     expertStore: { read: () => ({ text: "业务信息：设备短租。意向判定：客户继续了解方案。" }) },
@@ -140,6 +141,8 @@ async function main() {
       sent.push(options.frozenContact.name);
       sentAttemptIds.push(options.attemptId);
       sentBindings.push({
+        baseDir: options.baseDir,
+        contactsDir: options.contactsDir,
         visualMode: options.visualMode,
         expectedPid: options.expectedPid,
         expectedHWnd: options.expectedHWnd,
@@ -161,6 +164,8 @@ async function main() {
   assert.equal(controller.status().reply_count, 1);
   assert.match(sentAttemptIds[0], /^[a-f0-9]{64}$/, "each incoming turn must supply a stable real-send attempt id");
   assert.deepEqual(sentBindings[0], {
+    baseDir: autoReplyDir,
+    contactsDir: activeTouchDir,
     visualMode: "visual_render_v1",
     expectedPid: 81,
     expectedHWnd: "91",
@@ -937,9 +942,10 @@ async function main() {
   });
   assert.equal((await unresolvedHealthController.start()).ok, true);
   await unresolvedHealthController.runOnce();
-  assert.equal(unresolvedHealthController.status().status, "paused", "an opened unread event must not silently become a healthy empty poll after evidence retries are exhausted");
-  assert.equal(unresolvedHealthController.status().last_event, "unread_preview_unresolved_paused");
-  assert.match(unresolvedHealthController.status().last_error, /连续三次无法稳定识别/);
+  assert.equal(unresolvedHealthController.status().status, "running", "an unresolved opened-unread observation must stay pending without stopping the global listener");
+  assert.equal(unresolvedHealthController.status().last_event, "pending_observation_retrying");
+  assert.equal(unresolvedHealthController.status().pending_retry_count, 1);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, "scan_unresolved_health", "auto-reply-state.json"), "utf8")).pending_observation.reason, "unread_preview_unresolved");
 
   const unresolvedCurrentTransitionController = createAutoReplyController({
     dataDir: path.join(root, "scan_current_transition_unresolved"),
@@ -958,9 +964,9 @@ async function main() {
   });
   assert.equal((await unresolvedCurrentTransitionController.start()).ok, true);
   await unresolvedCurrentTransitionController.runOnce();
-  assert.equal(unresolvedCurrentTransitionController.status().status, "paused", "an unstable current-open transition must fail closed instead of carrying evidence across polls");
-  assert.equal(unresolvedCurrentTransitionController.status().last_event, "current_transition_unresolved_paused");
-  assert.match(unresolvedCurrentTransitionController.status().last_error, /连续两帧/);
+  assert.equal(unresolvedCurrentTransitionController.status().status, "running", "an unstable current-open transition must remain unsendable while other polls continue");
+  assert.equal(unresolvedCurrentTransitionController.status().last_event, "pending_observation_retrying");
+  assert.equal(unresolvedCurrentTransitionController.status().pending_retry_count, 1);
 
   const fencedRetryVisualRuntime = `visual:v1:${"a".repeat(64)}`;
   const fencedRetryVisualCandidate = {
@@ -1011,10 +1017,139 @@ async function main() {
   assert.equal((await fencedRetryController.start()).ok, true);
   assert.equal(fencedRetryVisualDriver.scanWechatIncoming.requeue(fencedRetryVisualCandidate), true);
   await fencedRetryController.runOnce();
-  assert.equal(fencedRetryController.status().status, "paused", "an unresolved live transition must pause even when a cached retry exists");
-  assert.equal(fencedRetryController.status().last_event, "current_transition_unresolved_paused");
+  assert.equal(fencedRetryController.status().status, "running", "an unresolved live transition must fence sends without stopping the listener");
+  assert.equal(fencedRetryController.status().last_event, "pending_observation_retrying");
   assert.equal(fencedRetryAiCalls, 0);
   assert.equal(fencedRetrySendCalls, 0);
+
+  const pendingRestartDir = path.join(root, "pending_observation_restart");
+  const pendingPreviewSignature = "d".repeat(64);
+  const pendingMessageSignature = "e".repeat(64);
+  const pendingVisualRuntime = `visual:v1:${"f".repeat(64)}`;
+  const pendingFirstScan = () => ({
+    ok: false,
+    reason: "current_transition_unresolved",
+    conversation: "张总",
+    pid: 81,
+    hWnd: "91",
+    pendingPreviewSignature,
+    pendingMessageSignature,
+    predecessorPreviewSignature: "a".repeat(64),
+    predecessorMessageSignature: "b".repeat(64),
+    message: "这段客户正文绝不能进入 pending 状态文件"
+  });
+  const pendingFirstController = createAutoReplyController({
+    dataDir: pendingRestartDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: { assertAvailable: () => true },
+    scanIncoming: pendingFirstScan,
+    primeIncoming: async () => ({ ok: true, primed: true }),
+    verifyIncoming: () => ({ ok: false }),
+    send: async () => { throw new Error("pending evidence must not send"); },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await pendingFirstController.start()).ok, true);
+  await pendingFirstController.runOnce();
+  pendingFirstController.pause();
+  const persistedPendingText = fs.readFileSync(path.join(pendingRestartDir, "auto-reply-state.json"), "utf8");
+  assert.doesNotMatch(persistedPendingText, /这段客户正文/, "pending recovery metadata must never persist customer message text");
+  const persistedPending = JSON.parse(persistedPendingText).pending_observation;
+  assert.equal(persistedPending.preview_signature, pendingPreviewSignature);
+  assert.equal(persistedPending.message_signature, pendingMessageSignature);
+
+  let restoredPending;
+  let restartResetCalls = 0;
+  let restartPrimeCalls = 0;
+  let pendingRestartSends = 0;
+  const recoveredCandidate = {
+    ok: true,
+    conversation: "张总",
+    message: "重启后重新读取到的客户消息",
+    runtimeId: `visual:v2:${"1".repeat(64)}`,
+    visualEvidenceRuntimeId: pendingVisualRuntime,
+    previewSignature: pendingPreviewSignature,
+    messageSignature: pendingMessageSignature,
+    visualMode: "visual_render_v1",
+    pid: 81,
+    hWnd: "91",
+    latestRole: "user",
+    context: [{ role: "user", content: "重启后重新读取到的客户消息", key: `visual:v2:${"1".repeat(64)}` }]
+  };
+  const pendingRestartScan = () => recoveredCandidate;
+  pendingRestartScan.restorePendingObservation = (value) => { restoredPending = value; return true; };
+  pendingRestartScan.resetBaselines = () => { restartResetCalls += 1; };
+  const pendingRestartController = createAutoReplyController({
+    dataDir: pendingRestartDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: { assertAvailable: () => true, reply: async () => ({ reply: "收到。", needsHuman: false }) },
+    scanIncoming: pendingRestartScan,
+    primeIncoming: async () => { restartPrimeCalls += 1; return { ok: true, primed: true }; },
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      pendingRestartSends += 1;
+      return { ok: true, verification_mode: "visual_message_bubble" };
+    },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:05+08:00")
+  });
+  assert.equal((await pendingRestartController.start()).ok, true);
+  assert.equal(restoredPending.key, persistedPending.key, "restart must restore the exact durable pending observation");
+  assert.equal(restartResetCalls, 0, "startup must not reset baselines while a pending observation exists");
+  assert.equal(restartPrimeCalls, 0, "startup must not prime over a pending observation");
+  await pendingRestartController.runOnce();
+  assert.equal(pendingRestartSends, 1);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(pendingRestartDir, "auto-reply-state.json"), "utf8")).pending_observation, null);
+  pendingRestartController.pause();
+
+  const repeatedOccurrenceDir = path.join(root, "same_occurrence_twenty_scans");
+  const repeatedOccurrence = {
+    ...recoveredCandidate,
+    message: "同一个气泡连续扫描二十次",
+    runtimeId: `visual:v2:${"2".repeat(64)}`,
+    context: [{ role: "user", content: "同一个气泡连续扫描二十次", key: `visual:v2:${"2".repeat(64)}` }]
+  };
+  let repeatedOccurrenceAiCalls = 0;
+  let repeatedOccurrenceSends = 0;
+  const repeatedOccurrenceController = createAutoReplyController({
+    dataDir: repeatedOccurrenceDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => { repeatedOccurrenceAiCalls += 1; return { reply: "只回复一次。", needsHuman: false }; }
+    },
+    scanIncoming: () => repeatedOccurrence,
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      repeatedOccurrenceSends += 1;
+      return { ok: true, verification_mode: "visual_message_bubble" };
+    },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:01:00+08:00")
+  });
+  assert.equal((await repeatedOccurrenceController.start()).ok, true);
+  for (let index = 0; index < 20; index += 1) await repeatedOccurrenceController.runOnce();
+  assert.equal(repeatedOccurrenceSends, 1, "twenty scans of one occurrence must send exactly once");
+  assert.equal(repeatedOccurrenceAiCalls, 1, "duplicate scans must not regenerate AI text");
+  assert.equal(repeatedOccurrenceController.status().status, "running");
+  repeatedOccurrenceController.pause();
 
   const healthDir = path.join(root, "scan_health");
   const healthResults = [
@@ -2106,7 +2241,8 @@ async function main() {
   }
 
   const handlers = new Map();
-  const webContents = {};
+  const autoReplyUpdates = [];
+  const webContents = { send: (channel, payload) => autoReplyUpdates.push({ channel, payload }) };
   registerAutoReplyIpc({
     dataDir: path.join(root, "ipc_auto_reply"),
     activeTouchDir,
@@ -2126,8 +2262,13 @@ async function main() {
   assert.deepEqual([...handlers.keys()].sort(), ["auto-reply:acknowledge-manual-followup", "auto-reply:pause", "auto-reply:start", "auto-reply:status"]);
   assert.equal((await handlers.get("auto-reply:start")({ sender: webContents }, {})).ok, false);
   assert.equal((await handlers.get("auto-reply:start")({ sender: webContents }, { clickToken: "trusted" })).ok, true);
+  assert.equal(autoReplyUpdates.at(-1).channel, "auto-reply:update");
+  assert.equal(autoReplyUpdates.at(-1).payload.state.status, "running", "successful start must push authoritative state without waiting for renderer polling");
   assert.equal((await handlers.get("auto-reply:acknowledge-manual-followup")({ sender: webContents }, {})).ok, false);
   assert.equal((await handlers.get("auto-reply:acknowledge-manual-followup")({ sender: webContents }, { clickToken: "trusted-ack" })).ok, true);
+  await handlers.get("auto-reply:pause")({ sender: webContents }, {});
+  assert.equal(autoReplyUpdates.at(-1).payload.state.status, "paused", "pause must push state immediately");
+  assert.match(fs.readFileSync(path.join(__dirname, "preload-api.cjs"), "utf8"), /auto-reply:update[\s\S]*removeListener/u, "preload must expose a removable auto-reply state subscription");
 
   const recoveryDir = path.join(root, "recovery_auto_reply");
   fs.mkdirSync(recoveryDir, { recursive: true });
@@ -2166,6 +2307,7 @@ async function main() {
     "last_scan_at",
     "last_scan_reason",
     "last_scan_success_at",
+    "pending_retry_count",
     "reply_count",
     "scan_health",
     "status",

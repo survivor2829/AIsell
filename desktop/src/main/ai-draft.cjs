@@ -26,8 +26,26 @@ async function generatePersonalizedDraft({ client, task, result }) {
   const salutation = contactSalutation(result.contact);
   const data = await client.draft({ task, result: { ...result, salutation } });
   const message = sanitizeAiMessage(data.draft);
-  if (!message) throw new Error("DeepSeek 未返回可用文案，任务已暂停。");
+  if (!message) throw new Error("DeepSeek 未返回可用文案。");
   return { message, usedAi: true, reason: "" };
 }
 
-module.exports = { contactSalutation, generatePersonalizedDraft, sanitizeAiMessage };
+function generateFixedScriptFallback({ task, result, error } = {}) {
+  const script = String(task?.script || "").trim();
+  if (!script) return null;
+  const salutation = contactSalutation(result?.contact);
+  const name = salutation.type === "person" ? salutation.value : "";
+  let message = script.replaceAll("{称呼}", name).trim();
+  if (!name) message = message.replace(/^[，,、:：;；\s]+/, "");
+  message = sanitizeAiMessage(message);
+  if (!message) return null;
+  const code = String(error?.code || "AI_GENERATION_FAILED");
+  return {
+    message,
+    usedAi: false,
+    fallbackCode: code,
+    reason: `DeepSeek 文案生成失败（${code}），已使用用户确认的固定话术`
+  };
+}
+
+module.exports = { contactSalutation, generateFixedScriptFallback, generatePersonalizedDraft, sanitizeAiMessage };

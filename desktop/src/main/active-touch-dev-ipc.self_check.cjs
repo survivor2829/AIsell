@@ -68,7 +68,12 @@ const coordinator = {
   }
 };
 
-registerActiveTouchDevIpc({ dataDir: "test-data", coordinator, getMainWindow: () => mainWindow });
+registerActiveTouchDevIpc({
+  activeTouchDir: "test-data",
+  momentsDir: "moments-data",
+  coordinator,
+  getMainWindow: () => mainWindow
+});
 const sendSelected = handlers.get("active-touch:send-selected-contact");
 const momentsDryRun = handlers.get("active-touch:dev-moments-dry-run");
 const momentsInspect = handlers.get("active-touch:dev-moments-inspect-menu");
@@ -114,7 +119,7 @@ const momentsComment = handlers.get("active-touch:dev-moments-comment");
       "--comment-text-base64",
       Buffer.from("您好", "utf8").toString("base64")
     ],
-    options: { cliName: "moments_dry_run_cli.dev.cjs", timeoutMs: 45000 }
+    options: { cliName: "moments_dry_run_cli.dev.cjs", dataDir: "moments-data", timeoutMs: 45000 }
   }]);
   runnerCalls.length = 0;
   runBehavior = async (args, options) => {
@@ -149,6 +154,7 @@ const momentsComment = handlers.get("active-touch:dev-moments-comment");
     args: ["moments-inspect-menu", "--observation-id", observationId],
     options: {
       cliName: "moments_action_cli.dev.cjs",
+      dataDir: "moments-data",
       owner: "moments-owner-1",
       phase: "developer:moments-inspect-menu",
       timeoutMs: 125000
@@ -194,6 +200,7 @@ const momentsComment = handlers.get("active-touch:dev-moments-comment");
     ],
     options: {
       cliName: "moments_action_cli.dev.cjs",
+      dataDir: "moments-data",
       owner: "moments-owner-2",
       phase: "developer:moments-comment"
     }
@@ -296,7 +303,7 @@ const momentsComment = handlers.get("active-touch:dev-moments-comment");
   assert.deepEqual(armCalls.at(-1), ["test-data", false]);
 
   const callsBeforeMissingCoordinator = runnerCalls.length;
-  registerActiveTouchDevIpc({ dataDir: "test-data", getMainWindow: () => mainWindow });
+  registerActiveTouchDevIpc({ activeTouchDir: "test-data", momentsDir: "moments-data", getMainWindow: () => mainWindow });
   const missingCoordinatorInspect = handlers.get("active-touch:dev-moments-inspect-menu");
   const missingCoordinator = await missingCoordinatorInspect({ sender: webContents }, {
     observationId,

@@ -11,6 +11,7 @@ const SEND_MESSAGE_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System;
 using System.Text;
@@ -32,12 +33,15 @@ public static class Win32WechatSendMessage {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder className, int maxCount);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
 }
 "@
 $expectedPid = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")
 $expectedHandle = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND")
 $expectedConversation = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_CONVERSATION")
+$expectedConversationMode = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_CONVERSATION_MODE")
+$expectedConversationToken = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_CONVERSATION_TOKEN")
 $expectedMessage = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_MESSAGE")
 $expectedIncomingMessage = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_INCOMING_MESSAGE")
 $expectedIncomingRuntimeId = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_INCOMING_RUNTIME_ID")
@@ -68,6 +72,142 @@ function Get-ElementKey([System.Windows.Automation.AutomationElement]$element, $
     if ($runtimeId -and $runtimeId.Count -gt 0) { return [string]($runtimeId -join ".") }
   } catch {}
   return [string]("rect:{0}:{1}:{2}:{3}:{4}" -f [int]$rect.Left, [int]$rect.Top, [int]$rect.Right, [int]$rect.Bottom, $text)
+}
+
+function Get-ConversationObservation([IntPtr]$hWnd, [string]$expectedTitle, [string]$verificationMode) {
+  $freshRoot = [System.Windows.Automation.AutomationElement]::FromHandle($hWnd)
+  if ($freshRoot -eq $null) { return @{ ok = $false; reason = "automation_root_missing" } }
+  try { $freshRect = $freshRoot.Current.BoundingRectangle } catch { return @{ ok = $false; reason = "automation_root_missing" } }
+  # WeChat 4.1's left session list occupies roughly the first third of the window.
+  # Keep the identity token wholly inside the chat header so a sidebar [Draft]
+  # preview cannot change the active-conversation fingerprint.
+  $headerLeft = $freshRect.Left + ($freshRect.Width * 0.36)
+  $titleVisible = $false
+  try {
+    $freshAll = $freshRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+    for ($index = 0; $index -lt $freshAll.Count; $index++) {
+      $candidate = $freshAll.Item($index)
+      if ((Get-ElementText $candidate) -cne $expectedTitle) { continue }
+      try { $candidateRect = $candidate.Current.BoundingRectangle } catch { continue }
+      if (-not $candidate.Current.IsOffscreen -and $candidateRect.Left -ge $headerLeft -and $candidateRect.Top -ge ($freshRect.Top + 25) -and $candidateRect.Top -le ($freshRect.Top + 125)) {
+        $titleVisible = $true
+        break
+      }
+    }
+  } catch {}
+
+  $visualHash = ""
+  try {
+    $captureLeft = [int]$headerLeft
+    $captureTop = [int]($freshRect.Top + 28)
+    $captureRight = [int]($freshRect.Left + ($freshRect.Width * 0.78))
+    $captureBottom = [int][Math]::Min($freshRect.Bottom - 1, $freshRect.Top + 112)
+    $captureWidth = $captureRight - $captureLeft
+    $captureHeight = $captureBottom - $captureTop
+    if ($captureWidth -ge 120 -and $captureHeight -ge 40) {
+      $bitmap = New-Object System.Drawing.Bitmap($captureWidth, $captureHeight)
+      $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+      $graphics.CopyFromScreen($captureLeft, $captureTop, 0, 0, $bitmap.Size, [System.Drawing.CopyPixelOperation]::SourceCopy)
+      $stream = New-Object System.IO.MemoryStream
+      $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+      $sha = [System.Security.Cryptography.SHA256]::Create()
+      $visualHash = -join ($sha.ComputeHash($stream.ToArray()) | ForEach-Object { $_.ToString("x2") })
+      $sha.Dispose()
+      $stream.Dispose()
+      $graphics.Dispose()
+      $bitmap.Dispose()
+    }
+  } catch { $visualHash = "" }
+
+  $visualMode = $verificationMode -eq "exact_wechat_id_search"
+  $verified = -not [string]::IsNullOrWhiteSpace($visualHash) -and ($visualMode -or $titleVisible)
+  return @{
+    ok = $verified
+    reason = $(if ($verified) { "" } elseif ([string]::IsNullOrWhiteSpace($visualHash)) { "conversation_visual_token_unavailable" } else { "atomic_conversation_changed" })
+    titleVisible = $titleVisible
+    titleMode = $(if ($titleVisible) { "uia_header" } else { "visual_header" })
+    token = $(if ([string]::IsNullOrWhiteSpace($visualHash)) { "" } else { "conversation:v1:$($matched.pid):$($matched.hWnd):$visualHash" })
+    root = $freshRoot
+    rect = $freshRect
+  }
+}
+
+function Get-ComposerObservation([System.Windows.Automation.AutomationElement]$freshRoot, $freshRect, [int]$x, [int]$y, [string]$verificationMode) {
+  $chatLeft = $freshRect.Left + [Math]::Max(240, $freshRect.Width * 0.22)
+  $composerTop = $freshRect.Top + ($freshRect.Height * 0.64)
+  $pointInsideComposer = $x -ge $chatLeft -and $x -lt $freshRect.Right -and $y -ge $composerTop -and $y -lt ($freshRect.Bottom - 18)
+  if (-not $pointInsideComposer) { return @{ ok = $false; reason = "atomic_composer_point_invalid" } }
+  $point = New-Object Win32WechatSendMessage+POINT
+  $point.X = $x
+  $point.Y = $y
+  $pointWindow = [Win32WechatSendMessage]::WindowFromPoint($point)
+  if ($pointWindow -eq [IntPtr]::Zero -or [Win32WechatSendMessage]::GetAncestor($pointWindow, 2).ToInt64() -ne [int64]$matched.hWnd) {
+    return @{ ok = $false; reason = "atomic_composer_obscured" }
+  }
+  [uint32]$pointProcessId = 0
+  [void][Win32WechatSendMessage]::GetWindowThreadProcessId($pointWindow, [ref]$pointProcessId)
+  $pointClass = New-Object System.Text.StringBuilder 256
+  [void][Win32WechatSendMessage]::GetClassName($pointWindow, $pointClass, $pointClass.Capacity)
+  $pointRect = New-Object Win32WechatSendMessage+RECT
+  $pointRectAvailable = [Win32WechatSendMessage]::GetWindowRect($pointWindow, [ref]$pointRect)
+  $pointClassName = $pointClass.ToString()
+  $renderChildClass = $pointClassName.StartsWith("MMUIRender", [System.StringComparison]::Ordinal)
+  $wechatQtRootClass = $pointWindow.ToInt64() -eq [int64]$matched.hWnd -and
+    $pointClassName.StartsWith("Qt", [System.StringComparison]::Ordinal) -and
+    $pointClassName.EndsWith("QWindowIcon", [System.StringComparison]::Ordinal)
+  $renderSurfaceOwnsComposer = $pointRectAvailable -and
+    $pointRect.Left -le ($chatLeft + 40) -and $pointRect.Right -ge ($freshRect.Right - 40) -and
+    $pointRect.Top -le $composerTop -and $pointRect.Bottom -ge ($freshRect.Bottom - 24)
+  $composerDiagnostics = @{
+    pointWindow = $pointWindow.ToInt64()
+    pointProcessId = $pointProcessId
+    pointClass = $pointClass.ToString()
+    pointRect = @{ left = $pointRect.Left; top = $pointRect.Top; right = $pointRect.Right; bottom = $pointRect.Bottom }
+    renderChildClass = $renderChildClass
+    wechatQtRootClass = $wechatQtRootClass
+    renderSurfaceOwnsComposer = $renderSurfaceOwnsComposer
+    verificationMode = $verificationMode
+  }
+  $visualConversationMode = @("visual_header", "exact_wechat_id_search") -contains $verificationMode
+  if ($visualConversationMode) {
+    if ($pointProcessId -eq [uint32]$matched.pid -and ($renderChildClass -or $wechatQtRootClass) -and $renderSurfaceOwnsComposer) {
+      return @{
+        ok = $true
+        token = "composer:v1:win32:\${pointClassName}:$($pointWindow.ToInt64()):$($pointRect.Left):$($pointRect.Top):$($pointRect.Right):$($pointRect.Bottom)"
+        controlType = "Win32.RenderSurface"
+        automationId = ""
+        proofMode = $(if ($renderChildClass) { "visual_render_composer" } else { "visual_qt_root_composer" })
+      }
+    }
+  }
+  $element = $null
+  try { $element = [System.Windows.Automation.AutomationElement]::FromPoint((New-Object System.Windows.Point($x, $y))) } catch {}
+  if ($element -eq $null) { return @{ ok = $false; reason = "atomic_composer_not_verified" } }
+  for ($depth = 0; $depth -lt 8 -and $element -ne $null; $depth++) {
+    try {
+      $elementRect = $element.Current.BoundingRectangle
+      $controlType = [string]$element.Current.ControlType.ProgrammaticName
+      $automationId = [string]$element.Current.AutomationId
+      $sameProcess = [int]$element.Current.ProcessId -eq [int]$matched.pid
+      $containsPoint = $x -ge $elementRect.Left -and $x -lt $elementRect.Right -and $y -ge $elementRect.Top -and $y -lt $elementRect.Bottom
+      $visible = -not $element.Current.IsOffscreen -and $elementRect.Width -ge 40 -and $elementRect.Height -ge 18
+      $confinedToComposer = $elementRect.Left -ge ($chatLeft - 8) -and $elementRect.Top -ge ($composerTop - 8) -and $elementRect.Right -le ($freshRect.Right + 1) -and $elementRect.Bottom -le ($freshRect.Bottom + 1) -and $elementRect.Height -le ($freshRect.Height * 0.36)
+      $explicitEditor = @("ControlType.Edit", "ControlType.Document") -contains $controlType
+      $renderSurface = @("ControlType.Custom", "ControlType.Pane") -contains $controlType -and $elementRect.Left -le ($chatLeft + 40) -and $elementRect.Right -ge ($freshRect.Right - 40) -and $elementRect.Top -le $composerTop -and $elementRect.Bottom -ge ($freshRect.Bottom - 24)
+      $boundedRenderEditor = ($confinedToComposer -or $renderSurface) -and @("ControlType.Custom", "ControlType.Pane") -contains $controlType
+      if ($sameProcess -and $containsPoint -and $visible -and ($explicitEditor -or $boundedRenderEditor)) {
+        return @{
+          ok = $true
+          token = "composer:v1:$($controlType):$($automationId):$([int]$elementRect.Left):$([int]$elementRect.Top):$([int]$elementRect.Right):$([int]$elementRect.Bottom)"
+          controlType = $controlType
+          automationId = $automationId
+          proofMode = $(if ($explicitEditor) { "uia_editor" } elseif ($confinedToComposer) { "bounded_render_composer" } else { "render_composer_region" })
+        }
+      }
+    } catch {}
+    try { $element = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($element) } catch { $element = $null }
+  }
+  return @{ ok = $false; reason = "atomic_composer_not_verified"; diagnostics = $composerDiagnostics }
 }
   $processNames = @("Weixin", "WeChat")
 $matched = $null
@@ -111,25 +251,18 @@ if ($root -eq $null -or [string]::IsNullOrWhiteSpace($expectedConversation) -or 
   @{ ok = $false; reason = "atomic_send_context_missing"; sendAttempted = $false } | ConvertTo-Json -Compress
   exit
 }
-$windowRect = $root.Current.BoundingRectangle
-$headerLeft = $windowRect.Left + [Math]::Max(240, $windowRect.Width * 0.22)
-$conversationVerified = $false
-$conversationElement = $null
-$all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
-for ($index = 0; $index -lt $all.Count; $index++) {
-  $element = $all.Item($index)
-  if ((Get-ElementText $element) -cne $expectedConversation) { continue }
-  try { $elementRect = $element.Current.BoundingRectangle } catch { continue }
-  if ($elementRect.Left -ge $headerLeft -and $elementRect.Top -ge ($windowRect.Top + 25) -and $elementRect.Top -le ($windowRect.Top + 125)) {
-    $conversationVerified = $true
-    $conversationElement = $element
-    break
-  }
+$conversationBefore = Get-ConversationObservation ([IntPtr][int64]$matched.hWnd) $expectedConversation $expectedConversationMode
+$conversationVerified = $conversationBefore.ok -and -not [string]::IsNullOrWhiteSpace($conversationBefore.token)
+if ($conversationVerified -and $expectedConversationMode -ne "exact_wechat_id_search" -and -not [string]::IsNullOrWhiteSpace($expectedConversationToken)) {
+  $conversationVerified = $conversationBefore.token -ceq $expectedConversationToken
 }
 if (-not $conversationVerified) {
-  @{ ok = $false; reason = "atomic_conversation_changed"; sendAttempted = $false } | ConvertTo-Json -Compress
+  @{ ok = $false; reason = $(if ($conversationBefore.reason) { $conversationBefore.reason } else { "atomic_conversation_changed" }); conversationToken = $conversationBefore.token; conversationTitleMode = $conversationBefore.titleMode; sendAttempted = $false } | ConvertTo-Json -Compress
   exit
 }
+$boundConversationToken = $(if ([string]::IsNullOrWhiteSpace($expectedConversationToken)) { $conversationBefore.token } else { $expectedConversationToken })
+$root = $conversationBefore.root
+$windowRect = $conversationBefore.rect
 
 $inputXRatio = 0.65
 $inputYRatio = 0.0
@@ -149,6 +282,11 @@ try {
   Start-Sleep -Milliseconds 35
   [Win32WechatSendMessage]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 60
+  $composerBefore = Get-ComposerObservation $root $windowRect $inputX $inputY $expectedConversationMode
+  if (-not $composerBefore.ok) {
+    @{ ok = $false; reason = $composerBefore.reason; composerDiagnostics = $composerBefore.diagnostics; conversationVerified = $conversationVerified; composerVerified = $false; sendAttempted = $false } | ConvertTo-Json -Compress -Depth 6
+    exit
+  }
   $probe = "__XIAOXI_ATOMIC_SEND_" + [Guid]::NewGuid().ToString("N")
   Set-Clipboard -Value $probe
   [System.Windows.Forms.SendKeys]::SendWait("^a")
@@ -161,15 +299,18 @@ try {
     exit
   }
 
-  $conversationVerified = $false
-  try {
-    $currentHeaderRect = $conversationElement.Current.BoundingRectangle
-    $conversationVerified = -not $conversationElement.Current.IsOffscreen -and
-      (Get-ElementText $conversationElement) -ceq $expectedConversation -and
-      $currentHeaderRect.Left -ge $headerLeft -and $currentHeaderRect.Top -ge ($windowRect.Top + 25) -and $currentHeaderRect.Top -le ($windowRect.Top + 125)
-  } catch {}
+  $conversationAfterDraft = Get-ConversationObservation ([IntPtr][int64]$matched.hWnd) $expectedConversation $expectedConversationMode
+  $conversationVerified = $conversationAfterDraft.ok -and ($expectedConversationMode -eq "exact_wechat_id_search" -or $conversationAfterDraft.token -ceq $boundConversationToken)
   if (-not $conversationVerified) {
-    @{ ok = $false; reason = "atomic_conversation_changed"; conversationVerified = $false; draftVerified = $draftVerified; sendAttempted = $false } | ConvertTo-Json -Compress
+    @{ ok = $false; reason = "atomic_conversation_changed"; conversationVerified = $false; conversationToken = $conversationAfterDraft.token; draftVerified = $draftVerified; composerVerified = $composerBefore.ok; sendAttempted = $false } | ConvertTo-Json -Compress
+    exit
+  }
+  $root = $conversationAfterDraft.root
+  $windowRect = $conversationAfterDraft.rect
+  $composerAfterDraft = Get-ComposerObservation $root $windowRect $inputX $inputY $expectedConversationMode
+  $composerVerified = $composerAfterDraft.ok -and $composerAfterDraft.token -ceq $composerBefore.token
+  if (-not $composerVerified) {
+    @{ ok = $false; reason = "atomic_composer_changed"; conversationVerified = $conversationVerified; draftVerified = $draftVerified; composerVerified = $false; sendAttempted = $false } | ConvertTo-Json -Compress
     exit
   }
 
@@ -263,14 +404,150 @@ try {
   [void][Win32WechatSendMessage]::SetCursorPos($oldPoint.X, $oldPoint.Y)
 }
 Start-Sleep -Milliseconds 300
-@{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; sendAction = $sendAction; sendAttempted = $sendAttempted; conversationVerified = $conversationVerified; draftVerified = $draftVerified } | ConvertTo-Json -Compress
+@{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; sendAction = $sendAction; sendAttempted = $sendAttempted; conversationVerified = $conversationVerified; conversationToken = $boundConversationToken; conversationTitleMode = $conversationAfterDraft.titleMode; composerVerified = $composerVerified; composerToken = $composerAfterDraft.token; draftVerified = $draftVerified } | ConvertTo-Json -Compress
 `;
+
+const OBSERVE_CONVERSATION_SCRIPT = `
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName System.Drawing
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class Win32WechatConversationObservation {
+  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+}
+"@
+$expectedPid = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")
+$expectedHandle = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND")
+$expectedConversation = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_CONVERSATION")
+$verificationMode = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_CONVERSATION_MODE")
+if ([string]::IsNullOrWhiteSpace($expectedPid) -or [string]::IsNullOrWhiteSpace($expectedHandle) -or [string]::IsNullOrWhiteSpace($expectedConversation)) {
+  @{ ok = $false; reason = "conversation_observation_context_missing" } | ConvertTo-Json -Compress
+  exit
+}
+$process = Get-Process -Id ([int]$expectedPid) -ErrorAction SilentlyContinue
+$expectedHWnd = [IntPtr][int64]$expectedHandle
+[uint32]$observedWindowPid = 0
+$expectedWindowExists = [Win32WechatConversationObservation]::IsWindow($expectedHWnd)
+$expectedWindowVisible = [Win32WechatConversationObservation]::IsWindowVisible($expectedHWnd)
+$expectedWindowThreadId = [Win32WechatConversationObservation]::GetWindowThreadProcessId($expectedHWnd, [ref]$observedWindowPid)
+$windowStillOwned = $expectedWindowExists -and $expectedWindowVisible -and
+  $expectedWindowThreadId -ne 0 -and
+  $observedWindowPid -eq [uint32][int]$expectedPid
+if ($process -eq $null -or @("Weixin", "WeChat") -notcontains $process.ProcessName -or -not $windowStillOwned) {
+  @{ ok = $false; reason = "real_send_session_changed"; expectedHWnd = [int64]$expectedHWnd; expectedPid = [int]$expectedPid; processName = [string]$process.ProcessName; windowExists = $expectedWindowExists; windowVisible = $expectedWindowVisible; windowThreadId = $expectedWindowThreadId; observedWindowPid = $observedWindowPid } | ConvertTo-Json -Compress
+  exit
+}
+$root = [System.Windows.Automation.AutomationElement]::FromHandle($expectedHWnd)
+if ($root -eq $null) {
+  @{ ok = $false; reason = "automation_root_missing" } | ConvertTo-Json -Compress
+  exit
+}
+try { $windowRect = $root.Current.BoundingRectangle } catch {
+  @{ ok = $false; reason = "automation_root_missing" } | ConvertTo-Json -Compress
+  exit
+}
+function Get-ObservedElementText([System.Windows.Automation.AutomationElement]$element) {
+  try {
+    $name = [string]$element.Current.Name
+    if (-not [string]::IsNullOrWhiteSpace($name)) { return $name.Trim() }
+    $pattern = $element.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+    if ($pattern -and -not [string]::IsNullOrWhiteSpace($pattern.Current.Value)) { return ([string]$pattern.Current.Value).Trim() }
+  } catch {}
+  return ""
+}
+# Exclude the session-list preview from the conversation identity token. Typing a
+# draft updates that preview even though the active conversation has not changed.
+$headerLeft = $windowRect.Left + ($windowRect.Width * 0.36)
+$titleVisible = $false
+try {
+  $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+  for ($index = 0; $index -lt $all.Count; $index++) {
+    $element = $all.Item($index)
+    if ((Get-ObservedElementText $element) -cne $expectedConversation) { continue }
+    try { $rect = $element.Current.BoundingRectangle } catch { continue }
+    if (-not $element.Current.IsOffscreen -and $rect.Left -ge $headerLeft -and $rect.Top -ge ($windowRect.Top + 25) -and $rect.Top -le ($windowRect.Top + 125)) {
+      $titleVisible = $true
+      break
+    }
+  }
+} catch {}
+$visualHash = ""
+try {
+  $captureLeft = [int]$headerLeft
+  $captureTop = [int]($windowRect.Top + 28)
+  $captureRight = [int]($windowRect.Left + ($windowRect.Width * 0.78))
+  $captureBottom = [int][Math]::Min($windowRect.Bottom - 1, $windowRect.Top + 112)
+  $captureWidth = $captureRight - $captureLeft
+  $captureHeight = $captureBottom - $captureTop
+  if ($captureWidth -ge 120 -and $captureHeight -ge 40) {
+    $bitmap = New-Object System.Drawing.Bitmap($captureWidth, $captureHeight)
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    $graphics.CopyFromScreen($captureLeft, $captureTop, 0, 0, $bitmap.Size, [System.Drawing.CopyPixelOperation]::SourceCopy)
+    $stream = New-Object System.IO.MemoryStream
+    $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $visualHash = -join ($sha.ComputeHash($stream.ToArray()) | ForEach-Object { $_.ToString("x2") })
+    $sha.Dispose()
+    $stream.Dispose()
+    $graphics.Dispose()
+    $bitmap.Dispose()
+  }
+} catch { $visualHash = "" }
+$visualFallback = $verificationMode -eq "exact_wechat_id_search"
+$verified = -not [string]::IsNullOrWhiteSpace($visualHash) -and ($visualFallback -or $titleVisible)
+@{
+  ok = $verified
+  reason = $(if ($verified) { "" } elseif ([string]::IsNullOrWhiteSpace($visualHash)) { "conversation_visual_token_unavailable" } else { "atomic_conversation_changed" })
+  title = $(if ($titleVisible) { $expectedConversation } else { "" })
+  windowTitle = $process.MainWindowTitle
+  processName = $process.ProcessName
+  pid = $process.Id
+  hWnd = [int64]$expectedHWnd
+  verificationMode = $verificationMode
+  conversationTitleMode = $(if ($titleVisible) { "uia_header" } else { "visual_header" })
+  conversationToken = $(if ([string]::IsNullOrWhiteSpace($visualHash)) { "" } else { "conversation:v1:$($process.Id):$([int64]$expectedHWnd):$visualHash" })
+} | ConvertTo-Json -Compress
+`;
+
+function observationEnvironment(expectedTitle, context = {}) {
+  return {
+    XIAOXI_EXPECTED_PID: String(context.expectedPid ?? context.pid ?? ""),
+    XIAOXI_EXPECTED_HWND: String(context.expectedHWnd ?? context.hWnd ?? ""),
+    XIAOXI_EXPECTED_CONVERSATION: String(expectedTitle ?? ""),
+    XIAOXI_EXPECTED_CONVERSATION_MODE: String(context.verificationMode ?? "conversation_title")
+  };
+}
+
+function observeWechatConversation(expectedTitle, context = {}) {
+  if (!String(expectedTitle ?? "").trim()) return { ok: false, reason: "conversation_observation_context_missing" };
+  return runPowerShell(OBSERVE_CONVERSATION_SCRIPT, observationEnvironment(expectedTitle, context), { ensure: false });
+}
+
+function observeWechatConversationAsync(expectedTitle, context = {}) {
+  if (!String(expectedTitle ?? "").trim()) return Promise.resolve({ ok: false, reason: "conversation_observation_context_missing" });
+  return runPowerShellAsync(OBSERVE_CONVERSATION_SCRIPT, observationEnvironment(expectedTitle, context), { ensure: false });
+}
+
+const SEND_RESULTS = new Set(["not_attempted", "sent_verified", "outcome_unknown"]);
+
+function normalizeAtomicSendResult(result) {
+  const raw = result && typeof result === "object" ? result : { ok: false, reason: "atomic_send_result_invalid" };
+  if (SEND_RESULTS.has(raw.sendResult)) return raw;
+  if (raw.sendAttempted === false) return { ...raw, sendResult: "not_attempted" };
+  return { ...raw, sendResult: "outcome_unknown" };
+}
 
 function sendMessageEnvironment(context = {}) {
   return {
     XIAOXI_EXPECTED_PID: String(context.pid ?? ""),
     XIAOXI_EXPECTED_HWND: String(context.hWnd ?? ""),
     XIAOXI_EXPECTED_CONVERSATION: String(context.expectedConversation ?? ""),
+    XIAOXI_EXPECTED_CONVERSATION_MODE: String(context.expectedConversationMode ?? "conversation_title"),
+    XIAOXI_EXPECTED_CONVERSATION_TOKEN: String(context.expectedConversationToken ?? ""),
     XIAOXI_EXPECTED_MESSAGE: String(context.expectedMessage ?? ""),
     XIAOXI_EXPECTED_INCOMING_MESSAGE: String(context.expectedIncomingMessage ?? ""),
     XIAOXI_EXPECTED_INCOMING_RUNTIME_ID: String(context.expectedIncomingRuntimeId ?? ""),
@@ -280,11 +557,11 @@ function sendMessageEnvironment(context = {}) {
 }
 
 function clickWechatSendButton(_sendKey = "{ENTER}", context = {}) {
-  return runPowerShell(SEND_MESSAGE_SCRIPT, sendMessageEnvironment(context), { ensure: false });
+  return normalizeAtomicSendResult(runPowerShell(SEND_MESSAGE_SCRIPT, sendMessageEnvironment(context), { ensure: false }));
 }
 
-function clickWechatSendButtonAsync(_sendKey = "{ENTER}", context = {}) {
-  return runPowerShellAsync(SEND_MESSAGE_SCRIPT, sendMessageEnvironment(context), { ensure: false });
+async function clickWechatSendButtonAsync(_sendKey = "{ENTER}", context = {}) {
+  return normalizeAtomicSendResult(await runPowerShellAsync(SEND_MESSAGE_SCRIPT, sendMessageEnvironment(context), { ensure: false }));
 }
 
 const DETECT_ACTIVE_ACCOUNT_SCRIPT = `
@@ -375,24 +652,24 @@ function detectActiveWechatAccountAsync(context = {}) {
 }
 
 function verifyWechatCurrentConversation(expectedTitle, context = {}) {
-  let result = verifyWechatCurrentConversationSafe(expectedTitle);
-  if (!result.ok && context.allowExactSearchFallback === true) {
-    const currentWindow = focusWechatWindow();
-    const sameWindow = currentWindow.ok
-      && Number(currentWindow.pid) === Number(context.expectedPid)
-      && String(currentWindow.hWnd) === String(context.expectedHWnd)
-      && ["Weixin", "WeChat"].includes(currentWindow.processName);
-    if (sameWindow) {
-      result = {
-        ...currentWindow,
-        ok: true,
-        title: String(expectedTitle),
-        windowTitle: currentWindow.title,
-        verificationMode: "exact_wechat_id_search"
-      };
-    }
-  }
+  const expectedWindow = { pid: context.expectedPid, hWnd: context.expectedHWnd };
+  const verificationMode = context.allowExactSearchFallback === true ? "exact_wechat_id_search" : "conversation_title";
+  let result = verifyWechatCurrentConversationSafe(expectedTitle, expectedWindow);
+  if (!result.ok && context.allowExactSearchFallback === true) result = focusWechatWindow({ expectedPid: context.expectedPid, expectedHWnd: context.expectedHWnd });
   if (!result.ok) return result;
+  const sameWindow = Number(result.pid) === Number(context.expectedPid)
+    && String(result.hWnd) === String(context.expectedHWnd)
+    && ["Weixin", "WeChat"].includes(result.processName);
+  if (!sameWindow) return { ok: false, reason: "real_send_session_changed" };
+  const observation = observeWechatConversation(expectedTitle, { ...expectedWindow, verificationMode });
+  if (!observation.ok || !String(observation.conversationToken ?? "").trim()) return observation;
+  result = {
+    ...result,
+    ...observation,
+    ok: true,
+    title: observation.title || String(expectedTitle),
+    verificationMode
+  };
   const account = detectActiveWechatAccount({
     pid: result.pid,
     expectedAccountId: context.expectedAccountId,
@@ -407,24 +684,24 @@ function verifyWechatCurrentConversation(expectedTitle, context = {}) {
 }
 
 async function verifyWechatCurrentConversationAsync(expectedTitle, context = {}) {
-  let result = await verifyWechatCurrentConversationSafeAsync(expectedTitle);
-  if (!result.ok && context.allowExactSearchFallback === true) {
-    const currentWindow = await focusWechatWindowAsync();
-    const sameWindow = currentWindow.ok
-      && Number(currentWindow.pid) === Number(context.expectedPid)
-      && String(currentWindow.hWnd) === String(context.expectedHWnd)
-      && ["Weixin", "WeChat"].includes(currentWindow.processName);
-    if (sameWindow) {
-      result = {
-        ...currentWindow,
-        ok: true,
-        title: String(expectedTitle),
-        windowTitle: currentWindow.title,
-        verificationMode: "exact_wechat_id_search"
-      };
-    }
-  }
+  const expectedWindow = { pid: context.expectedPid, hWnd: context.expectedHWnd };
+  const verificationMode = context.allowExactSearchFallback === true ? "exact_wechat_id_search" : "conversation_title";
+  let result = await verifyWechatCurrentConversationSafeAsync(expectedTitle, expectedWindow);
+  if (!result.ok && context.allowExactSearchFallback === true) result = await focusWechatWindowAsync({ expectedPid: context.expectedPid, expectedHWnd: context.expectedHWnd });
   if (!result.ok) return result;
+  const sameWindow = Number(result.pid) === Number(context.expectedPid)
+    && String(result.hWnd) === String(context.expectedHWnd)
+    && ["Weixin", "WeChat"].includes(result.processName);
+  if (!sameWindow) return { ok: false, reason: "real_send_session_changed" };
+  const observation = await observeWechatConversationAsync(expectedTitle, { ...expectedWindow, verificationMode });
+  if (!observation.ok || !String(observation.conversationToken ?? "").trim()) return observation;
+  result = {
+    ...result,
+    ...observation,
+    ok: true,
+    title: observation.title || String(expectedTitle),
+    verificationMode
+  };
   const account = await detectActiveWechatAccountAsync({
     pid: result.pid,
     expectedAccountId: context.expectedAccountId,
@@ -675,6 +952,9 @@ module.exports = {
   clickWechatSendButton,
   clickWechatSendButtonAsync,
   detectActiveWechatAccount,
+  normalizeAtomicSendResult,
+  observeWechatConversation,
+  observeWechatConversationAsync,
   verifyWechatCurrentConversation,
   verifyWechatCurrentConversationAsync,
   verifyWechatMessageBubble,

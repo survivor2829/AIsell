@@ -8,7 +8,10 @@ function resolveRuntimePaths(userDataDir) {
     rootDir,
     activeTouchDir: path.join(rootDir, "active_touch"),
     autoReplyDir: path.join(rootDir, "auto_reply"),
-    contactSyncDir: path.join(rootDir, "contact_sync")
+    contactSyncDir: path.join(rootDir, "contact_sync"),
+    momentsDir: path.join(rootDir, "moments"),
+    wechatAdapterDir: path.join(rootDir, "wechat_adapter"),
+    runtimeArchiveDir: path.join(rootDir, "runtime_archive")
   };
 }
 
@@ -43,12 +46,63 @@ function copyVerifiedFile(source, destination) {
   }
 }
 
+function writeJsonAtomic(destination, value) {
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  const temp = `${destination}.write-${process.pid}-${Date.now()}`;
+  try {
+    fs.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    fs.rmSync(destination, { force: true });
+    fs.renameSync(temp, destination);
+  } catch (error) {
+    fs.rmSync(temp, { force: true });
+    throw error;
+  }
+}
+
+function splitLegacyMomentsState(paths, result) {
+  const activeStateFile = path.join(paths.activeTouchDir, "state.json");
+  if (!fs.existsSync(activeStateFile)) return;
+  let activeState;
+  try {
+    activeState = JSON.parse(fs.readFileSync(activeStateFile, "utf8"));
+  } catch {
+    return;
+  }
+  if (!activeState || Array.isArray(activeState) || typeof activeState !== "object") return;
+  const momentsEntries = Object.entries(activeState).filter(([key]) => key.startsWith("moments_"));
+  if (!momentsEntries.length) return;
+
+  const archiveFile = path.join(paths.runtimeArchiveDir, "active-touch-state-before-moments-split.json");
+  if (!fs.existsSync(archiveFile)) {
+    copyVerifiedFile(activeStateFile, archiveFile);
+    result.archived.push(archiveFile);
+  }
+
+  const momentsStateFile = path.join(paths.momentsDir, "state.json");
+  let momentsState = {};
+  try {
+    const existing = JSON.parse(fs.readFileSync(momentsStateFile, "utf8"));
+    if (existing && !Array.isArray(existing) && typeof existing === "object") momentsState = existing;
+  } catch {}
+  for (const [key, value] of momentsEntries) momentsState[key] = value;
+  const nextActiveState = { ...activeState };
+  for (const [key] of momentsEntries) delete nextActiveState[key];
+
+  writeJsonAtomic(momentsStateFile, momentsState);
+  writeJsonAtomic(activeStateFile, nextActiveState);
+  result.splitState.push({ from: activeStateFile, to: momentsStateFile, keys: momentsEntries.map(([key]) => key) });
+}
+
 function migrateLegacyRuntimeData({ appPath, userDataDir, userHome = os.homedir() }) {
   const paths = resolveRuntimePaths(userDataDir);
   fs.mkdirSync(paths.activeTouchDir, { recursive: true });
   fs.mkdirSync(paths.autoReplyDir, { recursive: true });
   fs.mkdirSync(paths.contactSyncDir, { recursive: true });
-  const result = { ...paths, migrated: [], keptExisting: [], skippedForeignInstall: false };
+  fs.mkdirSync(paths.momentsDir, { recursive: true });
+  fs.mkdirSync(paths.wechatAdapterDir, { recursive: true });
+  fs.mkdirSync(paths.runtimeArchiveDir, { recursive: true });
+  const result = { ...paths, migrated: [], keptExisting: [], archived: [], splitState: [], skippedForeignInstall: false };
+  splitLegacyMomentsState(paths, result);
   if (!isInside(userHome, appPath)) {
     result.skippedForeignInstall = true;
     return result;
@@ -67,6 +121,7 @@ function migrateLegacyRuntimeData({ appPath, userDataDir, userHome = os.homedir(
     if (status === "migrated") result.migrated.push(destination);
     if (status === "kept-existing") result.keptExisting.push(destination);
   }
+  splitLegacyMomentsState(paths, result);
   // ponytail: delete the obsolete local AI secret instead of maintaining a second migration path.
   for (const legacySecret of [path.join(appPath, ".env.ai.local"), path.join(paths.rootDir, ".env.ai.local")]) {
     if (fs.existsSync(legacySecret)) fs.rmSync(legacySecret, { force: true });

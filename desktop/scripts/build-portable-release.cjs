@@ -200,6 +200,7 @@ function buildPortable(edition = "delivery") {
   const packageJson = JSON.parse(fs.readFileSync(path.join(desktopDir, "package.json"), "utf8"));
   const electronPackage = JSON.parse(fs.readFileSync(path.join(desktopDir, "node_modules", "electron", "package.json"), "utf8"));
   const rendererMarker = JSON.parse(fs.readFileSync(path.join(desktopDir, edition === "test" ? "dist-development" : "dist-pilot", "build-edition.json"), "utf8"));
+  const capabilityMatrix = JSON.parse(fs.readFileSync(path.join(desktopDir, "release-capabilities.json"), "utf8"));
   const manifest = {
     product: "AI获客",
     edition,
@@ -213,21 +214,22 @@ function buildPortable(edition = "delivery") {
     wxKeySha256: NATIVE_LIBRARY_SHA256["wx_key.dll"],
     databaseDecryptorSha256: DATABASE_DECRYPTOR_SHA256,
     nativeLibrarySha256: NATIVE_LIBRARY_SHA256,
-    verifiedWeixin: ["4.1.11.24", "4.1.11.54"],
-    releaseStage: "wechat-lead-demo-v3",
+    targetWeixin: capabilityMatrix.targetWeixin,
+    capabilityMatrix: capabilityMatrix.capabilities,
+    releaseStage: "wechat-4.1.11.54-stabilization",
     commercialReady: false,
     builtAt: new Date().toISOString(),
     signed: false
   };
   fs.writeFileSync(path.join(target, "版本清单.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   fs.writeFileSync(path.join(target, "版本标识.txt"), edition === "test"
-    ? `AI获客 测试版 ${manifest.buildId}\n用于联系人同步、主动触达、AI专家话术与全私聊自动回复内部验收；朋友圈单条点赞评论仅供测试号验收，不包含批量操作。\n`
-    : `AI获客 ${manifest.buildId}\n已完成联系人同步、主动触达、AI专家话术与全私聊自动回复；朋友圈等功能下一阶段开放，本包不代表完整商品。\n`, "utf8");
+    ? `AI获客 测试版 ${manifest.buildId}\n用于微信 4.1.11.54 联系人同步、主动触达和自动回复受控验收；朋友圈当前仅为单帖预演，不包含批量操作。\n`
+    : `AI获客 ${manifest.buildId}\n当前功能验收状态以版本清单中的 capabilityMatrix 为准；朋友圈等功能仍在开发，本包不代表完整商品。\n`, "utf8");
   fs.writeFileSync(path.join(target, "首次使用说明.txt"), [
     `AI获客 ${edition === "test" ? "测试版" : ""} ${manifest.buildId}`.trim(),
     "",
     "1. 完整解压 ZIP 到一个全新目录后运行同名 EXE；不要覆盖旧目录，也不要只复制 EXE。",
-    "2. 使用 Windows 10/11 x64 和个人微信 Weixin.exe 4.1.11.24 或 4.1.11.54；微信与本软件请使用相同权限运行。",
+    "2. 第一阶段仅验证 Windows 10/11 x64 和个人微信 Weixin.exe 4.1.11.54；微信与本软件请使用相同权限运行。",
     "3. 每台新电脑首次使用都要重新配置 API 密钥、导入 AI 专家话术并同步联系人；这些本地数据不会写入 ZIP。",
     "4. 同步联系人时软件会重启微信，请按提示重新登录。若路径未自动识别，可在同步联系人页手动选择 Weixin.exe 和 xwechat_files。",
     "5. 演示顺序：同步联系人 -> 导入 AI 专家并配置 API 密钥 -> 自动回复 -> 主动触达 -> 朋友圈点赞评论。",

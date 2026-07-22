@@ -20,6 +20,8 @@ const DEFAULT_STATE = {
   task_context: null,
   conversation_title: "",
   conversation_verification_mode: "",
+  conversation_token: "",
+  conversation_title_mode: "",
   located_window_title: "",
   search_input_done: false,
   search_result_clicked: false,
@@ -259,6 +261,8 @@ function clearConversationState(state, reason, extra = {}) {
     conversation_verified: false,
     conversation_title: "",
     conversation_verification_mode: "",
+    conversation_token: "",
+    conversation_title_mode: "",
     located_window_title: "",
     message_input_done: false,
     message_draft: "",
@@ -346,8 +350,8 @@ function send(baseDir = __dirname, options = {}) {
   return output(true, "send", nextState, { baseDir });
 }
 
-function selectCustomer(baseDir = __dirname, customerId = "") {
-  const contacts = readContacts(baseDir);
+function selectCustomer(baseDir = __dirname, customerId = "", contactsDir = baseDir) {
+  const contacts = readContacts(contactsDir);
   const customer = contacts.find((row) => row.id === customerId);
   const state = loadState(baseDir);
 
@@ -366,6 +370,9 @@ function selectCustomer(baseDir = __dirname, customerId = "") {
     conversation_verified: false,
     selected_customer: customer,
     conversation_title: "",
+    conversation_verification_mode: "",
+    conversation_token: "",
+    conversation_title_mode: "",
     located_window_title: "",
     search_input_done: false,
     search_result_clicked: false,
@@ -676,6 +683,8 @@ function clickSearchResultDryRun(
     conversation_verified: true,
     conversation_title: title,
     conversation_verification_mode: verifiedConversation.verificationMode || "conversation_title",
+    conversation_token: "",
+    conversation_title_mode: "",
     located_window_title: title,
     window_pid: Number(verifiedConversation.pid ?? inputResult.pid ?? 0),
     window_handle: String(verifiedConversation.hWnd ?? inputResult.hWnd ?? ""),
