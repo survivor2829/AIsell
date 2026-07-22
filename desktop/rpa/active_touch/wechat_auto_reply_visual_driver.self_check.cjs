@@ -54,8 +54,9 @@ assert.doesNotMatch(visualDriverSource, /eventSequence|eventSessionId/u, "stable
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(\$row\.unread -and -not \$row\.draft\)/u);
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$row\.unread -or \$changed/u);
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /source -NotePropertyValue .*preview_change/u);
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$nameBounds\.left - \(Scale-AutoReplyVisualMetric 32\.0\)/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$nameBounds\.left - \(Scale-AutoReplyVisualMetric 20\.0\)/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$nameBounds\.top - \(Scale-AutoReplyVisualMetric 22\.0\)/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$nameBounds\.height \* 0\.65/u, "unread search must include badges vertically aligned with the contact name");
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$nameBounds\.left - 78\.0/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$windowDpi \/ 120\.0/u, "physical visual thresholds must scale from the live-tested 120-DPI baseline");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$script:AutoReplyVisualScale \* \$script:AutoReplyVisualScale/u, "pixel-area thresholds must scale quadratically");
@@ -448,9 +449,12 @@ function Test-UnreadAtScale([double]$scale) {
   Set-TestRedRect $redAvatar ([int][Math]::Round(62 * $scale)) ([int][Math]::Round(40 * $scale)) ([int][Math]::Round(11 * $scale)) ([int][Math]::Round(11 * $scale))
   $realBadge = New-TestFrame $scale
   Set-TestRedRect $realBadge ([int][Math]::Round(72 * $scale)) ([int][Math]::Round(26 * $scale)) ([int][Math]::Round(11 * $scale)) ([int][Math]::Round(11 * $scale))
+  $alignedBadge = New-TestFrame $scale
+  Set-TestRedRect $alignedBadge ([int][Math]::Round(72 * $scale)) ([int][Math]::Round(38 * $scale)) ([int][Math]::Round(11 * $scale)) ([int][Math]::Round(11 * $scale))
   return @{
     redAvatar = [bool](Test-AutoReplyVisualUnreadDot $redAvatar $nameBounds)
     realBadge = [bool](Test-AutoReplyVisualUnreadDot $realBadge $nameBounds)
+    alignedBadge = [bool](Test-AutoReplyVisualUnreadDot $alignedBadge $nameBounds)
   }
 }
 @{
@@ -466,9 +470,9 @@ const unreadProbe = spawnSync("powershell.exe", [
 ], { encoding: "utf8" });
 assert.equal(unreadProbe.status, 0, unreadProbe.stderr || unreadProbe.stdout);
 assert.deepEqual(JSON.parse(unreadProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1)), {
-  dpi96: { realBadge: true, redAvatar: false },
-  dpi120: { realBadge: true, redAvatar: false },
-  dpi144: { realBadge: true, redAvatar: false }
+  dpi96: { alignedBadge: true, realBadge: true, redAvatar: false },
+  dpi120: { alignedBadge: true, realBadge: true, redAvatar: false },
+  dpi144: { alignedBadge: true, realBadge: true, redAvatar: false }
 });
 
 const normalizationProgram = `

@@ -261,13 +261,15 @@ function Get-AutoReplyVisualChatBottom($frame, [double]$sidebarRight) {
 }
 
 function Test-AutoReplyVisualUnreadDot($frame, $nameBounds) {
-  # The avatar occupies most of the old name.left-78..-6 search area. Brand-red
-  # avatars therefore looked like unread badges. Only inspect the small cap at
-  # the avatar's upper-right edge, above the contact-name text baseline.
-  $xStart = [int][Math]::Max(0, [Math]::Floor([double]$nameBounds.left - (Scale-AutoReplyVisualMetric 32.0)))
+  # WeChat versions place the unread badge anywhere from above the name to the
+  # name's vertical center. Keep the horizontal band tight around the avatar's
+  # upper-right edge so a red avatar body is still rejected by blob geometry.
+  $xStart = [int][Math]::Max(0, [Math]::Floor([double]$nameBounds.left - (Scale-AutoReplyVisualMetric 20.0)))
   $xEnd = [int][Math]::Min($frame.width - 1, [Math]::Ceiling([double]$nameBounds.left - (Scale-AutoReplyVisualMetric 4.0)))
   $yStart = [int][Math]::Max(0, [Math]::Floor([double]$nameBounds.top - (Scale-AutoReplyVisualMetric 22.0)))
-  $yEnd = [int][Math]::Min($frame.height - 1, [Math]::Ceiling([double]$nameBounds.top - (Scale-AutoReplyVisualMetric 1.0)))
+  $yEnd = [int][Math]::Min($frame.height - 1, [Math]::Ceiling(
+    [double]$nameBounds.top + [Math]::Max((Scale-AutoReplyVisualMetric 12.0), [double]$nameBounds.height * 0.65)
+  ))
   $regionWidth = $xEnd - $xStart + 1
   $regionHeight = $yEnd - $yStart + 1
   if ($regionWidth -lt (Scale-AutoReplyVisualMetric 8.0) -or $regionHeight -lt (Scale-AutoReplyVisualMetric 8.0)) { return $false }
