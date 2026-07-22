@@ -57,7 +57,8 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /discoveredConversation = \[bool\]\$match
 assert.match(visualDriverSource, /!allowed\.includes\(conversation\) && result\?\.discoveredConversation !== true/u, "a visually proven unread session must not be discarded by the active-touch contact name list");
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$row\.unread -or \$changed/u);
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /source -NotePropertyValue .*preview_change/u);
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$nameBounds\.left - \(Scale-AutoReplyVisualMetric 20\.0\)/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$nameBounds\.left - \(Scale-AutoReplyVisualMetric 44\.0\)/u, "4.1.12 at 125% DPI must capture the complete badge over the avatar rather than a clipped edge");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$nameBounds\.left \+ \(Scale-AutoReplyVisualMetric 24\.0\)/u, "badge-count OCR merged into a name line must still keep the badge inside the probe");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$nameBounds\.top - \(Scale-AutoReplyVisualMetric 22\.0\)/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$nameBounds\.height \* 0\.65/u, "unread search must include badges vertically aligned with the contact name");
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$nameBounds\.left - 78\.0/u);
@@ -82,7 +83,7 @@ assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /Get-AutoReplyVisualSha256 \(\[str
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /draft = \[bool\]\$isDraft/u, "draft-marked sidebar previews must be baselined but never become customer messages");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$currentPreviewSignature = \[string\]\$currentRow\[0\]\.signature/u, "draft rows must retain a real preview boundary so clearing a draft can be consumed atomically");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\[bool\]\$first\.draft -or \[bool\]\$second\.draft/u, "a draft row must never become a two-frame incoming candidate");
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$red -ge 205[\s\S]*\$ratio -le 1\.75 -and \$density -ge 0\.25/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$red -ge 235[\s\S]*\$green -ge 50[\s\S]*\$ratio -le 1\.75 -and \$density -ge 0\.25/u);
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /SendKeys|Set-Clipboard|Get-Clipboard/iu);
 assert.ok(
   AUTO_REPLY_VISUAL_SCRIPT.indexOf('if ($mode -eq "prime")') < AUTO_REPLY_VISUAL_SCRIPT.indexOf("$candidates = New-Object"),
@@ -434,13 +435,13 @@ function New-TestFrame([double]$scale) {
   $width = [int][Math]::Round(160 * $scale); $height = [int][Math]::Round(100 * $scale); $stride = $width * 4
   return @{ width = $width; height = $height; stride = $stride; bytes = (New-Object byte[] ($stride * $height)) }
 }
-function Set-TestRedRect($frame, [int]$left, [int]$top, [int]$width, [int]$height) {
+function Set-TestRedRect($frame, [int]$left, [int]$top, [int]$width, [int]$height, [int]$red = 249, [int]$green = 81, [int]$blue = 81) {
   for ($y = $top; $y -lt ($top + $height); $y++) {
     for ($x = $left; $x -lt ($left + $width); $x++) {
       $offset = ($y * $frame.stride) + ($x * 4)
-      $frame.bytes[$offset] = 20
-      $frame.bytes[$offset + 1] = 20
-      $frame.bytes[$offset + 2] = 235
+      $frame.bytes[$offset] = $blue
+      $frame.bytes[$offset + 1] = $green
+      $frame.bytes[$offset + 2] = $red
       $frame.bytes[$offset + 3] = 255
     }
   }
@@ -449,7 +450,7 @@ function Test-UnreadAtScale([double]$scale) {
   $script:AutoReplyVisualScale = $scale
   $nameBounds = @{ left = 90.0 * $scale; top = 40.0 * $scale; width = 56.0 * $scale; height = 18.0 * $scale }
   $redAvatar = New-TestFrame $scale
-  Set-TestRedRect $redAvatar ([int][Math]::Round(62 * $scale)) ([int][Math]::Round(40 * $scale)) ([int][Math]::Round(11 * $scale)) ([int][Math]::Round(11 * $scale))
+  Set-TestRedRect $redAvatar ([int][Math]::Round(62 * $scale)) ([int][Math]::Round(40 * $scale)) ([int][Math]::Round(11 * $scale)) ([int][Math]::Round(11 * $scale)) 218 40 28
   $realBadge = New-TestFrame $scale
   Set-TestRedRect $realBadge ([int][Math]::Round(72 * $scale)) ([int][Math]::Round(26 * $scale)) ([int][Math]::Round(11 * $scale)) ([int][Math]::Round(11 * $scale))
   $alignedBadge = New-TestFrame $scale

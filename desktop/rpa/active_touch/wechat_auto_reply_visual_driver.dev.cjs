@@ -94,7 +94,13 @@ function Test-AutoReplyVisualRedPixel($frame, [int]$x, [int]$y) {
   $blue = [int]$frame.bytes[$offset]
   $green = [int]$frame.bytes[$offset + 1]
   $red = [int]$frame.bytes[$offset + 2]
-  return $red -ge 205 -and $green -le 125 -and $blue -le 125 -and ($red - $green) -ge 85 -and ($red - $blue) -ge 85
+  # WeChat's unread badge uses the stable #FA5151 family. Requiring its lighter
+  # red channel mix separates it from the darker saturated reds commonly found
+  # in contact avatars, so the wider 4.1.12 search band does not create false
+  # unread rows from brand artwork.
+  return $red -ge 235 -and $green -ge 50 -and $green -le 125 -and
+    $blue -ge 45 -and $blue -le 125 -and
+    ($red - $green) -ge 105 -and ($red - $blue) -ge 105
 }
 
 function Test-AutoReplyVisualGreenPixel($frame, [int]$x, [int]$y) {
@@ -264,8 +270,17 @@ function Test-AutoReplyVisualUnreadDot($frame, $nameBounds) {
   # WeChat versions place the unread badge anywhere from above the name to the
   # name's vertical center. Keep the horizontal band tight around the avatar's
   # upper-right edge so a red avatar body is still rejected by blob geometry.
-  $xStart = [int][Math]::Max(0, [Math]::Floor([double]$nameBounds.left - (Scale-AutoReplyVisualMetric 20.0)))
-  $xEnd = [int][Math]::Min($frame.width - 1, [Math]::Ceiling([double]$nameBounds.left - (Scale-AutoReplyVisualMetric 4.0)))
+  # The 4.1.12 sidebar at 125% DPI places the badge over the avatar, farther
+  # left than 4.1.11. The former 16-pixel strip clipped the circle into a thin
+  # fragment, which then failed the round-blob test. Capture the complete
+  # avatar upper-right band; the component size/roundness checks below still
+  # reject a full red avatar and irregular artwork.
+  $xStart = [int][Math]::Max(0, [Math]::Floor([double]$nameBounds.left - (Scale-AutoReplyVisualMetric 44.0)))
+  # Some OCR providers merge the white badge count into the adjacent name
+  # line, making the reported text bounds begin at the badge itself. Include a
+  # small band to the right of that bound so this representation is equivalent
+  # to providers that return the name and badge separately.
+  $xEnd = [int][Math]::Min($frame.width - 1, [Math]::Ceiling([double]$nameBounds.left + (Scale-AutoReplyVisualMetric 24.0)))
   $yStart = [int][Math]::Max(0, [Math]::Floor([double]$nameBounds.top - (Scale-AutoReplyVisualMetric 22.0)))
   $yEnd = [int][Math]::Min($frame.height - 1, [Math]::Ceiling(
     [double]$nameBounds.top + [Math]::Max((Scale-AutoReplyVisualMetric 12.0), [double]$nameBounds.height * 0.65)
