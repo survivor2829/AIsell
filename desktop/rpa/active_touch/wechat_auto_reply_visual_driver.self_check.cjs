@@ -11,7 +11,8 @@ async function main() {
 assert.equal(typeof AUTO_REPLY_VISUAL_SCRIPT, "string");
 const visualDriverSource = createWechatVisualAutoReplyDriver.toString();
 assert.ok(AUTO_REPLY_VISUAL_SCRIPT.includes(MOMENTS_VISUAL_READONLY_POWERSHELL));
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-MomentsRenderPaneEvidence \$root/u);
+const autoReplyEntry = AUTO_REPLY_VISUAL_SCRIPT.slice(AUTO_REPLY_VISUAL_SCRIPT.indexOf('$mode = [Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_MODE")'));
+assert.doesNotMatch(autoReplyEntry, /Get-MomentsRenderPaneEvidence/u, "auto reply must not require the Moments-only MMUIRenderSubWindowHW child pane");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-AutoReplyVisualFrame \$hWnd \$windowRect \$expectedProcessId/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-MomentsOcrObservation \$frame/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualCurrentConversation/u);

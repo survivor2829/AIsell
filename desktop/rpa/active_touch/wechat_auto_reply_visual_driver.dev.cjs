@@ -925,11 +925,6 @@ $root = [System.Windows.Automation.AutomationElement]::FromHandle($hWnd)
 if ($root -eq $null) { Write-AutoReplyVisualResult @{ ok = $false; reason = "automation_root_missing" } }
 try { $windowRect = $root.Current.BoundingRectangle } catch { Write-AutoReplyVisualResult @{ ok = $false; reason = "wechat_window_not_ready" } }
 if ($windowRect.Width -lt 600 -or $windowRect.Height -lt 500) { Write-AutoReplyVisualResult @{ ok = $false; reason = "wechat_window_not_ready" } }
-$paneEvidence = Get-MomentsRenderPaneEvidence $root ([int]$process.Id)
-if (-not $paneEvidence.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$paneEvidence.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
-if ([double]$paneEvidence.pane.bounds.width -lt ($windowRect.Width * 0.7) -or [double]$paneEvidence.pane.bounds.height -lt ($windowRect.Height * 0.7)) {
-  Write-AutoReplyVisualResult @{ ok = $false; reason = "visual_render_pane_mismatch"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
-}
 
 $windowDpi = [double]96
 try {

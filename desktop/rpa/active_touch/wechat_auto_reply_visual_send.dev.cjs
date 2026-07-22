@@ -112,9 +112,7 @@ function Get-VisualSendLock {
   if ($root -eq $null -or [int]$root.Current.ProcessId -ne $expectedPid) {
     return @{ ok = $false; reason = "visual_send_automation_root_missing" }
   }
-  $pane = Get-MomentsRenderPaneEvidence $root $expectedPid
-  if (-not $pane.ok) { return @{ ok = $false; reason = "visual_send_render_pane_missing" } }
-  return @{ ok = $true; pid = $expectedPid; hWnd = $hWnd; rect = $rect; root = $root; pane = $pane.pane }
+  return @{ ok = $true; pid = $expectedPid; hWnd = $hWnd; rect = $rect; root = $root }
 }
 
 function Get-VisualSendFrame($lock) {

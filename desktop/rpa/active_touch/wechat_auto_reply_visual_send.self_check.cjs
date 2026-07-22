@@ -7,7 +7,11 @@ const {
 } = require("./wechat_auto_reply_visual_send.dev.cjs");
 
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /GetWindowThreadProcessId[\s\S]*MainWindowHandle[\s\S]*-cne "微信"/u);
-assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /Get-MomentsRenderPaneEvidence/u);
+const visualSendLock = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(
+  WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Get-VisualSendLock"),
+  WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Get-VisualSendFrame")
+);
+assert.doesNotMatch(visualSendLock, /Get-MomentsRenderPaneEvidence|visual_send_render_pane_missing/u, "visual send must use the verified WeChat top-level window instead of a Moments-only child pane");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /Test-VisualSendConversation[\s\S]*Normalize-VisualSendText/u);
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendIncoming[\s\S]*height = \[double\]\(\$frame\.height \* 0\.69\)/u, "incoming verification must include messages immediately above the composer");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendLatestIncoming[\s\S]*Get-MomentsOcrObservation \$frame @\{ left = 0\.0; top = 0\.0; width = \[double\]\$frame\.width; height = \[double\]\$frame\.height \}/u, "the final incoming guard must reuse full-frame OCR geometry");
