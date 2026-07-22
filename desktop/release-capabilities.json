@@ -12,7 +12,7 @@
     "autoReply": {
       "implementation": "implemented",
       "localLiveVerification": "verified",
-      "portableVerification": "pending"
+      "portableVerification": "verified"
     },
     "activeTouch": {
       "implementation": "implemented",

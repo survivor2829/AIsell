@@ -1,6 +1,6 @@
 # AI获客
 
-Windows Electron 桌面应用。当前唯一验收目标是个人微信 `4.1.11.54`；能力是否可用、是否经过本机或便携包实测，以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。现有 `release/AI获客-测试版.zip` 是 2026-07-21 的旧包，包含已知缺陷，不得继续分发。
+Windows Electron 桌面应用。当前唯一验收目标是个人微信 `4.1.11.54`；能力是否可用、是否经过本机或异机实测，以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。正式候选包统一命名为 `release/AI获客.zip`，完整解压后运行 `AI获客.exe`。
 
 ## 本地运行
 
@@ -18,7 +18,7 @@ npm.cmd run desktop
 npm.cmd run dev
 ```
 
-首次使用测试版时，在应用中依次完成：
+首次在任一电脑使用时，在应用中依次完成：
 
 1. 保存并测试自己的 DeepSeek API Key。
 2. 导入 AI 专家资料。
@@ -46,7 +46,7 @@ npm.cmd run release:delivery
 
 ## 本地数据目录
 
-测试版和交付版使用不同的 Windows 用户目录：
+内部测试构建和正式交付构建使用不同的 Windows 用户目录：
 
 ```text
 测试版：%APPDATA%\xiaoxi-active-touch-test\data
