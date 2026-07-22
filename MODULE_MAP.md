@@ -38,7 +38,7 @@
 |---|---|
 | `contact_sync/` | 联系人同步过程和诊断；同步后的规范化联系人清单写入 `active_touch/contacts.json`，供业务只读消费 |
 | `active_touch/` | 主动触达任务快照、联系人清单、发送事务、结果账本和运行日志 |
-| `auto_reply/` | 监听状态、稳定消息 occurrence、pending 队列、exactly-once 去重和诊断 |
+| `auto_reply/` | 状态 v3、稳定消息 occurrence、exactly-once 去重、未知发送 occurrence 隔离和诊断；旧包 OCR 临时观察与频率事件不跨版本继承 |
 | `moments/` | 朋友圈观察、帖子稳定标识、动作尝试和去重账本 |
 | `wechat_adapter/` | 共享微信窗口与 adapter 配置，不含业务结果 |
 | `runtime_archive/` | 数据拆分或迁移前的证据归档，不作为现役状态读取 |

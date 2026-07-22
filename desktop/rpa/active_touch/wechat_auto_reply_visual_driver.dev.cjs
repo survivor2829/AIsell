@@ -536,24 +536,6 @@ function Get-AutoReplyVisualSidebarRight([double]$windowWidth, [double]$dpi) {
   return [Math]::Min($expected, $compactLimit)
 }
 
-function Test-AutoReplyVisualViewportOwned($windowRect, [int]$expectedProcessId) {
-  $width = [double]($windowRect.Right - $windowRect.Left)
-  $height = [double]($windowRect.Bottom - $windowRect.Top)
-  foreach ($xRatio in @(0.08, 0.5, 0.92)) {
-    foreach ($yRatio in @(0.08, 0.5, 0.92)) {
-      $point = New-Object Win32WechatMomentsVisualReadOnly+POINT
-      $point.X = [int][Math]::Round($windowRect.Left + ($width * $xRatio))
-      $point.Y = [int][Math]::Round($windowRect.Top + ($height * $yRatio))
-      $hit = [Win32WechatMomentsVisualReadOnly]::WindowFromPoint($point)
-      if ($hit -eq [IntPtr]::Zero) { return $false }
-      [uint32]$hitProcessId = 0
-      [void][Win32WechatMomentsVisualReadOnly]::GetWindowThreadProcessId($hit, [ref]$hitProcessId)
-      if ([int]$hitProcessId -ne $expectedProcessId) { return $false }
-    }
-  }
-  return $true
-}
-
 function Get-AutoReplyVisualFrame([IntPtr]$hWnd, $windowRect, [int]$expectedProcessId) {
   if (-not [Win32WechatMomentsVisualReadOnly]::IsWindowVisible($hWnd) -or [Win32WechatMomentsVisualReadOnly]::IsIconic($hWnd)) {
     return @{ ok = $false; reason = "wechat_window_missing" }
@@ -562,7 +544,6 @@ function Get-AutoReplyVisualFrame([IntPtr]$hWnd, $windowRect, [int]$expectedProc
   [void][Win32WechatMomentsVisualReadOnly]::SetForegroundWindow($hWnd)
   Start-Sleep -Milliseconds 140
   if ([Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -ne $hWnd) { return @{ ok = $false; reason = "wechat_window_not_foreground" } }
-  if (-not (Test-AutoReplyVisualViewportOwned $windowRect $expectedProcessId)) { return @{ ok = $false; reason = "wechat_window_obscured" } }
   $width = [int]($windowRect.Right - $windowRect.Left); $height = [int]($windowRect.Bottom - $windowRect.Top)
   $bitmap = $null; $graphics = $null
   try {

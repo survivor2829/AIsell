@@ -11,8 +11,8 @@
     },
     "autoReply": {
       "implementation": "implemented",
-      "localLiveVerification": "verified",
-      "portableVerification": "verified"
+      "localLiveVerification": "pending",
+      "portableVerification": "pending"
     },
     "activeTouch": {
       "implementation": "implemented",

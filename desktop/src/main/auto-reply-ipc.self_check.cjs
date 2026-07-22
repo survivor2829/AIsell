@@ -12,7 +12,7 @@ const {
 } = require("./auto-reply-ipc.cjs");
 const { createWechatVisualAutoReplyDriver } = require("../../rpa/active_touch/wechat_auto_reply_visual_driver.dev.cjs");
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-auto-reply-v2-"));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-auto-reply-v3-"));
 const activeTouchDir = path.join(root, "active_touch");
 fs.mkdirSync(activeTouchDir, { recursive: true });
 fs.writeFileSync(path.join(activeTouchDir, "contacts.json"), JSON.stringify([
@@ -324,9 +324,9 @@ async function main() {
   await duplicateEvidenceController.runOnce();
   assert.equal(duplicateEvidenceSends, 1, "one occurrence token must not become replyable again after OCR text drift");
   assert.equal(duplicateEvidenceAiCalls, 1, "duplicate occurrence evidence must be stopped before another AI generation/send cycle");
-  assert.equal(duplicateEvidenceController.status().status, "paused");
-  assert.equal(duplicateEvidenceController.status().last_event, "reply_guard_duplicate_evidence_paused");
-  assert.match(duplicateEvidenceController.status().last_error, /同一条客户/);
+  assert.equal(duplicateEvidenceController.status().status, "running");
+  assert.equal(duplicateEvidenceController.status().last_event, "duplicate_skipped");
+  assert.equal(duplicateEvidenceController.status().last_error, "");
   const duplicateEvidenceState = JSON.parse(fs.readFileSync(path.join(duplicateEvidenceDir, "auto-reply-state.json"), "utf8"));
   assert.equal(duplicateEvidenceState.reply_guards.c1.delivery_status, "sent_verified");
   assert.equal(duplicateEvidenceState.reply_guards.c1.turn_state, "outgoing_observed", "sent_verified itself is the trusted outgoing boundary for the next turn");
@@ -342,7 +342,7 @@ async function main() {
   assert.equal((await restartedDuplicateController.start()).ok, true);
   await restartedDuplicateController.runOnce();
   assert.equal(restartedDuplicateSends, 0, "the occurrence fence must survive restart");
-  assert.equal(restartedDuplicateController.status().last_event, "reply_guard_duplicate_evidence_paused");
+  assert.equal(restartedDuplicateController.status().last_event, "duplicate_skipped");
 
   const immediateDifferentTurnCandidates = [
     visualGuardCandidate({ message: "first immediate customer turn", runtimeChar: "a", evidenceChar: "b" }),
@@ -427,8 +427,9 @@ async function main() {
   assert.equal((await incompleteVerificationController.start()).ok, true);
   await incompleteVerificationController.runOnce();
   await incompleteVerificationController.runOnce();
-  assert.equal(incompleteVerificationSends, 1, "visual { ok: true } without exact occurrence fields must not unlock the fence");
-  assert.equal(incompleteVerificationController.status().last_event, "reply_guard_unverified_followup_paused");
+  assert.equal(incompleteVerificationSends, 2, "a new stable occurrence must not be blocked by a second OCR identity pass");
+  assert.equal(incompleteVerificationCalls, 0, "visual candidates rely on the atomic sender checks after binding");
+  assert.equal(incompleteVerificationController.status().last_event, "reply_sent_verified");
 
   const contactFuseCandidates = [
     visualGuardCandidate({ message: "rapid visual occurrence one", runtimeChar: "6", evidenceChar: "d" }),
@@ -457,9 +458,9 @@ async function main() {
   await contactFuseController.runOnce();
   await contactFuseController.runOnce();
   await contactFuseController.runOnce();
-  assert.equal(contactFuseSends, 3, "the same-contact visual emergency fuse must block the fourth rapid send");
-  assert.equal(contactFuseController.status().status, "paused");
-  assert.equal(contactFuseController.status().last_event, "same_contact_visual_rate_limit_paused");
+  assert.equal(contactFuseSends, 4, "four distinct customer occurrences must all be replyable");
+  assert.equal(contactFuseController.status().status, "running");
+  assert.equal(contactFuseController.status().last_event, "reply_sent_verified");
 
   const retryableCandidate = {
     ok: true,
@@ -592,7 +593,23 @@ async function main() {
   assert.equal((await unknownVisualRestarted.start()).ok, true);
   await unknownVisualRestarted.runOnce();
   assert.equal(unknownVisualSends, 1, "an outcome-unknown occurrence fence must survive restart and reject a rewrapped runtime ID");
-  assert.equal(unknownVisualRestarted.status().last_event, "reply_guard_duplicate_evidence_paused");
+  assert.equal(unknownVisualRestarted.status().last_event, "outcome_unknown_occurrence_skipped");
+
+  const unknownVisualNewTurn = visualGuardCandidate({ message: "a later customer turn", runtimeChar: "8", evidenceChar: "c" });
+  const unknownVisualNewTurnController = createAutoReplyController(guardedControllerOptions({
+    dataDir: unknownVisualDir,
+    scanIncoming: () => unknownVisualNewTurn,
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      unknownVisualSends += 1;
+      return { ok: true, send_attempted: true };
+    }
+  }));
+  assert.equal((await unknownVisualNewTurnController.start()).ok, true);
+  await unknownVisualNewTurnController.runOnce();
+  assert.equal(unknownVisualSends, 2, "an unknown send fences only that occurrence, not all future messages from the contact");
+  assert.equal(unknownVisualNewTurnController.status().last_event, "reply_sent_verified");
+  unknownVisualNewTurnController.pause();
 
   let releaseStartupPrime;
   let markStartupPrime;
@@ -1509,7 +1526,7 @@ async function main() {
     }),
     verifyIncoming: () => ({ ok: ++visualPostDraftChecks === 1 }),
     send: async (options) => {
-      assert.equal(await options.beforeDraft(), true, "visual incoming identity must still be strict before drafting");
+      assert.equal(await options.beforeDraft(), true, "a bound visual occurrence must proceed without a second OCR pass");
       assert.equal(await options.shouldContinue(), true, "post-draft layout reflow must not trigger a second pixel-bound incoming check");
       return { ok: true, send_attempted: true };
     },
@@ -1521,7 +1538,7 @@ async function main() {
   });
   assert.equal((await visualPostDraftController.start()).ok, true);
   await visualPostDraftController.runOnce();
-  assert.equal(visualPostDraftChecks, 1, "visual incoming verification must run once before the draft is typed");
+  assert.equal(visualPostDraftChecks, 0, "visual OCR must not be repeated after AI generation");
   assert.equal(visualPostDraftController.status().reply_count, 1);
   assert.equal(visualPostDraftController.status().last_event, "reply_sent_verified");
   visualPostDraftController.pause();
@@ -1594,7 +1611,7 @@ async function main() {
   assert.equal((await staleUnknownRestarted.start()).ok, true);
   await staleUnknownRestarted.runOnce();
   assert.equal(staleUnknownSendCalls, 1, "a stale outcome-unknown occurrence must remain fenced after restart");
-  assert.equal(staleUnknownRestarted.status().last_event, "reply_guard_duplicate_evidence_paused");
+  assert.equal(staleUnknownRestarted.status().last_event, "outcome_unknown_occurrence_skipped");
 
   let resolveOldReply;
   let markOldReplyStarted;
@@ -2169,7 +2186,7 @@ async function main() {
       activeTouchDir,
       coordinator,
       expertStore: { read: () => ({ text: "安全话术" }) },
-      deepSeekClient: { assertAvailable: () => true, reply: async () => { rateAiCalls += 1; return {}; } },
+      deepSeekClient: { assertAvailable: () => true, reply: async () => { rateAiCalls += 1; return { reply: "Continue.", needsHuman: false }; } },
       scanIncoming: () => ({
         ok: true,
         conversation: "张总",
@@ -2180,7 +2197,7 @@ async function main() {
         context: [{ role: "user", content: "继续", key: `rate-${rateCase.name}` }]
       }),
       verifyIncoming: () => ({ ok: true }),
-      send: async () => { rateSendCalls += 1; return { ok: true }; },
+      send: async (options) => { assert.equal(await options.beforeDraft(), true); rateSendCalls += 1; return { ok: true }; },
       sendHandoff: async () => ({ ok: true }),
       runStep: async () => ({ ok: true }),
       schedule: () => 1,
@@ -2189,10 +2206,10 @@ async function main() {
     });
     assert.equal((await rateController.start()).ok, true);
     await rateController.runOnce();
-    assert.equal(rateController.status().status, "paused");
-    assert.equal(rateController.status().last_event, "rate_limit_paused");
-    assert.equal(rateAiCalls, 0);
-    assert.equal(rateSendCalls, 0);
+    assert.equal(rateController.status().status, "running");
+    assert.equal(rateController.status().last_event, "reply_sent_verified");
+    assert.equal(rateAiCalls, 1);
+    assert.equal(rateSendCalls, 1);
   }
 
   for (const coordinatorFailure of [
@@ -2287,7 +2304,7 @@ async function main() {
     now: () => new Date("2026-07-14T10:00:00+08:00")
   });
   const migratedState = JSON.parse(fs.readFileSync(path.join(recoveryDir, "auto-reply-state.json"), "utf8"));
-  assert.equal(migratedState.version, 2);
+  assert.equal(migratedState.version, 3);
   assert.deepEqual(migratedState.processed, {}, "legacy fingerprints must be discarded during v1 migration");
   assert.equal("contact_ids" in migratedState, false, "legacy whitelist state must be discarded during v1 migration");
   assert.equal(recovered.status().status, "paused");
@@ -2332,7 +2349,7 @@ async function main() {
     const internalReasonDir = path.join(root, `internal_reason_${internalReason}`);
     fs.mkdirSync(internalReasonDir, { recursive: true });
     fs.writeFileSync(path.join(internalReasonDir, "auto-reply-state.json"), JSON.stringify({
-      version: 2,
+      version: 3,
       status: "paused",
       daily_date: "2026-07-14",
       scan_health: internalReason === "wechat_operation_busy" ? "waiting" : "healthy",
@@ -2413,7 +2430,7 @@ async function main() {
     coordinator,
     now: () => new Date("2026-07-14T10:00:00+08:00")
   });
-  assert.equal(JSON.parse(fs.readFileSync(path.join(legacyRawGuardDir, "auto-reply-state.json"), "utf8")).reply_guards.c2.turn_state, "outgoing_observed", "legacy verified guards must migrate out of the old awaiting state");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(legacyRawGuardDir, "auto-reply-state.json"), "utf8")).reply_guards.c2, undefined, "ordinary v2 visual guards must not block a new portable build");
 
   const interruptedHandoffDir = path.join(root, "interrupted_handoff_recovery");
   fs.mkdirSync(interruptedHandoffDir, { recursive: true });
@@ -2567,7 +2584,7 @@ async function main() {
   assert.equal(discoveredSend?.expectedConversation, "Remote Alias", "auto reply must use the actual rendered WeChat alias even when it is absent from contacts.json");
   assert.equal(discoveredController.status().reply_count, 1);
   discoveredController.pause();
-  console.log("auto-reply v2 self-check passed");
+  console.log("auto-reply v3 self-check passed");
 }
 
 main().finally(() => fs.rmSync(root, { recursive: true, force: true })).catch((error) => {

@@ -132,6 +132,9 @@ const SCAN_REASON_LABELS: Record<string, string> = {
 };
 
 const CONTROL_EVENT_LABELS: Record<string, string> = {
+  outcome_unknown_occurrence_skipped: "上一条消息发送结果无法确认，已禁止对同一条消息自动补发",
+  candidate_evidence_missing: "本轮新消息缺少稳定标识，已跳过并等待下一轮",
+  duplicate_skipped: "已跳过重复识别到的同一条客户消息",
   paused_by_user: "已通过界面手动暂停",
   app_closed: "应用窗口关闭时已安全暂停",
   recovered_after_restart: "应用重启后按安全策略保持暂停，请重新启动",

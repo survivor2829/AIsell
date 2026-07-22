@@ -4,10 +4,9 @@ const path = require("node:path");
 const { readContacts } = require("../../rpa/active_touch/state_machine.cjs");
 
 const POLL_INTERVAL_MS = 5_000;
+const AUTO_REPLY_STATE_VERSION = 3;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
 const GLOBAL_RATE_LIMIT = 30;
-const SAME_CONTACT_VISUAL_RATE_WINDOW_MS = 2 * 60 * 1000;
-const SAME_CONTACT_VISUAL_RATE_LIMIT = 3;
 const MAX_STATE_ENTRIES = 1_000;
 const SCAN_DEGRADED_AFTER = 3;
 const DIAGNOSTIC_LOG_MAX_BYTES = 512 * 1024;
@@ -384,7 +383,7 @@ function normalizePendingObservation(value) {
 
 function createDefaultState() {
   return {
-    version: 2,
+    version: AUTO_REPLY_STATE_VERSION,
     status: "stopped",
     reply_count: 0,
     daily_date: "",
@@ -395,7 +394,6 @@ function createDefaultState() {
     pending_handoff: null,
     pending_handoffs: [],
     pending_observation: null,
-    rate_events: [],
     last_event: "",
     last_error: "",
     last_ai_warning_code: "",
@@ -479,8 +477,11 @@ function recoverReplyGuards(rawGuards, processed) {
 
 function migrateState(raw, current) {
   if (!raw || Object.keys(raw).length === 0) return createDefaultState();
-  if (raw.version === 2) {
+  if (raw.version === 2 || raw.version === AUTO_REPLY_STATE_VERSION) {
+    const upgrading = raw.version !== AUTO_REPLY_STATE_VERSION;
     const next = { ...createDefaultState(), ...raw };
+    next.version = AUTO_REPLY_STATE_VERSION;
+    delete next.rate_events;
     const processedRecovery = recoverInterruptedProcessedSends(raw.processed);
     next.processed = processedRecovery.processed;
     next.reply_guards = recoverReplyGuards(raw.reply_guards, next.processed);
@@ -503,15 +504,27 @@ function migrateState(raw, current) {
         delivery_state: handoffDeliveryState(pending.delivery_state)
       }));
     next.pending_handoff = next.pending_handoffs[0] || null;
-    next.pending_observation = normalizePendingObservation(raw.pending_observation);
-    next.rate_events = Array.isArray(raw.rate_events) ? raw.rate_events : [];
-    next.scan_health = SCAN_HEALTH_VALUES.has(raw.scan_health) ? raw.scan_health : "unknown";
-    next.last_scan_at = normalizeText(raw.last_scan_at);
-    next.last_scan_success_at = normalizeText(raw.last_scan_success_at);
-    next.last_scan_reason = normalizeText(raw.last_scan_reason) ? scanReason(raw.last_scan_reason).code : "";
+    if (upgrading) {
+      // OCR observations and rate fuses are build-specific runtime data. They
+      // must not make a newly unpacked portable build inherit an old blockage.
+      // Keep the exactly-once ledger and unknown send outcomes only.
+      next.reply_guards = Object.fromEntries(Object.entries(next.reply_guards)
+        .filter(([, guard]) => normalizeText(guard?.delivery_status) === "outcome_unknown"));
+      next.pending_observation = null;
+      next.last_scan_at = "";
+      next.last_scan_success_at = "";
+      next.last_scan_reason = "";
+      next.consecutive_scan_failures = 0;
+    } else {
+      next.pending_observation = normalizePendingObservation(raw.pending_observation);
+    }
+    next.scan_health = upgrading ? "unknown" : SCAN_HEALTH_VALUES.has(raw.scan_health) ? raw.scan_health : "unknown";
+    next.last_scan_at = upgrading ? "" : normalizeText(raw.last_scan_at);
+    next.last_scan_success_at = upgrading ? "" : normalizeText(raw.last_scan_success_at);
+    next.last_scan_reason = upgrading ? "" : normalizeText(raw.last_scan_reason) ? scanReason(raw.last_scan_reason).code : "";
     next.last_ai_warning_code = normalizeAiWarningCode(raw.last_ai_warning_code);
     next.last_ai_warning = normalizeText(raw.last_ai_warning).slice(0, 300);
-    next.consecutive_scan_failures = Math.max(0, Math.floor(Number(raw.consecutive_scan_failures) || 0));
+    next.consecutive_scan_failures = upgrading ? 0 : Math.max(0, Math.floor(Number(raw.consecutive_scan_failures) || 0));
     if (handoffNeedsConfirmation(next.pending_handoff)) {
       next.status = "paused";
       next.last_event = "handoff_confirmation_required";
@@ -639,32 +652,6 @@ function incomingEvidenceFor(candidate) {
   };
 }
 
-function verificationMatchesCandidate(candidate, verification, evidence) {
-  if (verification?.ok !== true) return false;
-  const verifiedConversation = normalizeText(verification.conversation);
-  const verifiedMessage = normalizeText(verification.message);
-  const verifiedRuntimeId = normalizeText(verification.runtimeId);
-  const verifiedVisualEvidenceRuntimeId = normalizeText(verification.visualEvidenceRuntimeId);
-  const verifiedMessageSignature = normalizeText(verification.messageSignature).toLowerCase();
-  if (evidence.kind === "visual") {
-    return normalizeText(verification.latestRole) === "user"
-      && verifiedConversation === normalizeText(candidate?.conversation)
-      && verifiedMessage === normalizeText(candidate?.message)
-      && verifiedRuntimeId === evidence.runtimeId
-      && verifiedVisualEvidenceRuntimeId === evidence.visualEvidenceRuntimeId
-      && verifiedMessageSignature === evidence.messageSignature
-      && /^visual:v1:[a-f0-9]{64}$/u.test(verifiedVisualEvidenceRuntimeId)
-      && /^[a-f0-9]{64}$/u.test(verifiedMessageSignature);
-  }
-  if (normalizeText(verification.latestRole) && normalizeText(verification.latestRole) !== "user") return false;
-  if (verifiedConversation && verifiedConversation !== normalizeText(candidate?.conversation)) return false;
-  if (verifiedMessage && verifiedMessage !== normalizeText(candidate?.message)) return false;
-  if (verifiedRuntimeId && verifiedRuntimeId !== evidence.runtimeId) {
-    return false;
-  }
-  return true;
-}
-
 function isTerminalProcessed(entry) {
   return Boolean(entry) && !["generating", "retryable"].includes(normalizeText(entry.status));
 }
@@ -673,28 +660,13 @@ function retryPolls(attempts) {
   return Math.min(2 ** Math.max(0, Math.min(Number(attempts) - 1, 6)), 60);
 }
 
-function recentRateEvents(events, nowMs) {
+// Kept as a diagnostic calculation for existing logs and self-checks. It no
+// longer blocks or pauses the live listener.
+function exceedsRateLimit(events, nowMs = Date.now()) {
   return (Array.isArray(events) ? events : []).filter((event) => {
     const at = new Date(event?.at || 0).getTime();
     return Number.isFinite(at) && at <= nowMs && nowMs - at < RATE_WINDOW_MS;
-  });
-}
-
-function exceedsRateLimit(events, nowMs = Date.now()) {
-  const recent = recentRateEvents(events, nowMs);
-  return recent.length >= GLOBAL_RATE_LIMIT;
-}
-
-function exceedsSameContactVisualRateLimit(events, contactId, nowMs = Date.now()) {
-  const normalizedContactId = normalizeText(contactId);
-  if (!normalizedContactId) return false;
-  return (Array.isArray(events) ? events : []).filter((event) => {
-    const at = new Date(event?.at || 0).getTime();
-    return normalizeText(event?.contact_id) === normalizedContactId
-      && Number.isFinite(at)
-      && at <= nowMs
-      && nowMs - at < SAME_CONTACT_VISUAL_RATE_WINDOW_MS;
-  }).length >= SAME_CONTACT_VISUAL_RATE_LIMIT;
+  }).length >= GLOBAL_RATE_LIMIT;
 }
 
 function buildHandoffMessage({ conversation, reason, latest, at = new Date() }) {
@@ -731,7 +703,7 @@ function createAutoReplyController(options = {}) {
   let state = migrateState(rawState, now());
   let diagnosticSequence = 0;
   if (rawState && (
-    rawState.version !== 2
+    rawState.version !== AUTO_REPLY_STATE_VERSION
     || rawState.status === "running"
     || rawState.status === "starting"
     || Object.values(rawState.processed || {}).some((entry) => normalizeText(entry?.status) === "sending")
@@ -1421,46 +1393,32 @@ function createAutoReplyController(options = {}) {
 
       const replyGuard = state.reply_guards?.[contact.id];
       if (replyGuard) {
-        if (!incomingEvidence.id) {
-          pauseWithError("reply_guard_evidence_missing_paused", "上一条自动回复已发送或发送结果无法确认，但当前扫描结果缺少可验证的新客户入站证据，已暂停以防连续误发。请确认微信中出现新的客户消息后再启动。");
-          save();
-          return publicState();
-        }
-        if (normalizeText(replyGuard.incoming_evidence) && normalizeText(replyGuard.incoming_evidence) === incomingEvidence.id) {
-          pauseWithError("reply_guard_duplicate_evidence_paused", "检测到同一条客户入站证据被再次包装成新消息，已暂停自动回复，避免把己方回复或同一气泡反复当成客户新消息。");
-          save();
-          return publicState();
-        }
-        if (incomingEvidence.kind === "visual" && normalizeText(replyGuard.turn_state) !== "outgoing_observed") {
-          if (normalizeText(replyGuard.visual_evidence_runtime_id)
-            && normalizeText(replyGuard.visual_evidence_runtime_id) === incomingEvidence.visualEvidenceRuntimeId) {
-            pauseWithError("reply_guard_duplicate_evidence_paused", "检测到同一条客户气泡被再次包装成新的运行标识，已暂停自动回复，避免同一气泡被重复回复。");
+        if (normalizeText(replyGuard.delivery_status) === "outcome_unknown") {
+          const sameUnknownOccurrence = (
+            Boolean(normalizeText(replyGuard.incoming_evidence))
+            && normalizeText(replyGuard.incoming_evidence) === incomingEvidence.id
+          ) || (
+            incomingEvidence.kind === "visual"
+            && Boolean(normalizeText(replyGuard.visual_evidence_runtime_id))
+            && normalizeText(replyGuard.visual_evidence_runtime_id) === incomingEvidence.visualEvidenceRuntimeId
+          );
+          if (sameUnknownOccurrence) {
+            remember(fingerprint, { status: "skipped", ...processedMetadata, conversation, at: current.toISOString() });
+            state.last_event = "outcome_unknown_occurrence_skipped";
+            state.last_error = "上一条消息的发送结果无法确认，已禁止对同一条消息自动补发。";
             save();
             return publicState();
           }
-          pauseWithError("reply_guard_turn_transition_missing_paused", "上一条自动回复之后尚未观察到己方发送气泡，当前视觉变化不能证明是新的客户消息，已暂停以防同一气泡漂移导致重复回复。");
+        }
+        const sameEvidence = normalizeText(replyGuard.incoming_evidence)
+          && normalizeText(replyGuard.incoming_evidence) === incomingEvidence.id;
+        if (sameEvidence) {
+          remember(fingerprint, { status: "skipped", ...processedMetadata, conversation, at: current.toISOString() });
+          state.last_event = "duplicate_skipped";
+          state.last_error = "";
           save();
           return publicState();
         }
-        const guardVerification = await Promise.resolve(verifyIncoming(candidate));
-        if (!isCurrentRun()) return publicState();
-        if (!verificationMatchesCandidate(candidate, guardVerification, incomingEvidence)) {
-          pauseWithError("reply_guard_unverified_followup_paused", "上一条自动回复已发送或发送结果无法确认，但当前候选消息未通过新的客户入站证据复核，已暂停以防连续误发。");
-          save();
-          return publicState();
-        }
-      }
-
-      state.rate_events = recentRateEvents(state.rate_events, current.getTime());
-      if (incomingEvidence.kind === "visual" && exceedsSameContactVisualRateLimit(state.rate_events, contact.id, current.getTime())) {
-        pauseWithError("same_contact_visual_rate_limit_paused", `同一联系人在两分钟内已连续完成 ${SAME_CONTACT_VISUAL_RATE_LIMIT} 次视觉自动回复，下一次发送前已紧急熔断。请人工确认确有新的客户消息后再启动。`);
-        save();
-        return publicState();
-      }
-      if (exceedsRateLimit(state.rate_events, current.getTime())) {
-        pauseWithError("rate_limit_paused", "触发异常频率熔断，请人工检查后再启动");
-        save();
-        return publicState();
       }
 
       const retryEntry = retryGenerations.get(fingerprint);
@@ -1511,7 +1469,10 @@ function createAutoReplyController(options = {}) {
       };
       const beforeDraft = async () => {
         draftPhaseStarted = true;
-        return verifyCurrent();
+        // Visual OCR geometry can drift while AI is generating. The visual
+        // sender rechecks the target conversation, exact draft, foreground
+        // window and owned send button immediately before the click.
+        return isVisualCandidate ? isCurrentRun() : verifyCurrent();
       };
       const shouldContinue = () => {
         if (!isCurrentRun()) {
@@ -1560,7 +1521,6 @@ function createAutoReplyController(options = {}) {
           resetDailyCounter(staleSentAt);
           state.processed[fingerprint].status = "sent_verified";
           state.reply_count += 1;
-          state.rate_events.push({ contact_id: contact.id, evidence_kind: incomingEvidence.kind, at: staleSentAt.toISOString() });
           noteVerifiedVisualBoundary(candidate, result);
           recordReplyGuard(contact, candidate, fingerprint, incomingEvidence, staleSentAt);
           pauseWithError("stale_run_send_paused", "旧运行轮次在暂停后仍完成了发送，请人工检查");
@@ -1610,7 +1570,6 @@ function createAutoReplyController(options = {}) {
       resetDailyCounter(sentAt);
       state.processed[fingerprint].status = "sent_verified";
       state.reply_count += 1;
-      state.rate_events.push({ contact_id: contact.id, evidence_kind: incomingEvidence.kind, at: sentAt.toISOString() });
       noteVerifiedVisualBoundary(candidate, result);
       recordReplyGuard(contact, candidate, fingerprint, incomingEvidence, sentAt);
       state.last_event = "reply_sent_verified";

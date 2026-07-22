@@ -115,8 +115,10 @@ assert.doesNotMatch(evidenceSeedBlock, /\$pixelHash/u, "exact pixels are diagnos
 assert.doesNotMatch(evidenceSeedBlock, /viewportHash|bounds\.left|bounds\.top/u, "viewport movement and absolute bubble position must not churn identity");
 
 const sidebarStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Get-AutoReplyVisualSidebarRight");
-const sidebarEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Test-AutoReplyVisualViewportOwned", sidebarStart);
+const sidebarEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Get-AutoReplyVisualFrame", sidebarStart);
 assert.ok(sidebarStart >= 0 && sidebarEnd > sidebarStart);
+assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /Test-AutoReplyVisualViewportOwned/u, "read-only scans must not require all nine viewport points to be unobscured");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Test-AutoReplyVisualPointOwned/u, "conversation clicks must still verify the owned action point");
 const sidebarFunction = AUTO_REPLY_VISUAL_SCRIPT.slice(sidebarStart, sidebarEnd);
 const sidebarProgram = `${sidebarFunction}
 @{
