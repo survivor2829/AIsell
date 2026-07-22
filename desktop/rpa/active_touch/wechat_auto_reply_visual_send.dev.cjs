@@ -626,6 +626,29 @@ function Write-VisualSendDraft($lock) {
   return @{ ok = $readback.ok -and $readback.exact; exact = $readback.exact }
 }
 
+function Clear-VisualSendDraft($lock) {
+  if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd) { return $false }
+  $width = [double]($lock.rect.Right - $lock.rect.Left)
+  $height = [double]($lock.rect.Bottom - $lock.rect.Top)
+  $relativeX = [int]($width * 0.64)
+  $relativeY = [int]($height * 0.87)
+  if (-not (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)) { return $false }
+  try {
+    [void][Win32WechatVisualAutoReply]::SetCursorPos([int]($lock.rect.Left + $relativeX), [int]($lock.rect.Top + $relativeY))
+    [Win32WechatVisualAutoReply]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 35
+    [Win32WechatVisualAutoReply]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 70
+    [System.Windows.Forms.SendKeys]::SendWait("^a")
+    [System.Windows.Forms.SendKeys]::SendWait("{BACKSPACE}")
+    Start-Sleep -Milliseconds 120
+    $readback = Read-VisualSendDraft $lock
+    return $readback.ok -and $readback.empty
+  } catch {
+    return $false
+  }
+}
+
 function Test-VisualSendOutgoingBubble($frame, [double]$sidebarRight) {
   $chatBottom = Get-VisualSendChatBottom $frame $sidebarRight
   $ocr = Get-MomentsOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
@@ -700,6 +723,7 @@ try {
   }
   $button = Find-VisualSendButton $fresh
   if (-not $button.ok) {
+    [void](Clear-VisualSendDraft $lock)
     Write-VisualSendResult @{ ok = $false; reason = $button.reason; sendAttempted = $false; conversationVerified = $true; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
   }
 } finally {
@@ -708,23 +732,8 @@ try {
 
 if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
   -not (Test-VisualSendOwnedPoint $lock ([int]$button.point.x) ([int]$button.point.y))) {
+  [void](Clear-VisualSendDraft $lock)
   Write-VisualSendResult @{ ok = $false; reason = "visual_send_button_not_owned"; sendAttempted = $false; conversationVerified = $true; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
-}
-$guard = Get-VisualSendFrame $lock
-if (-not $guard.ok) {
-  Write-VisualSendResult @{ ok = $false; reason = $guard.reason; sendAttempted = $false; conversationVerified = $true; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
-}
-$latestIncomingStillCurrent = $false
-try {
-  $guardConversation = Test-VisualSendConversation $guard
-  $guardDpi = Get-VisualSendWindowDpi $lock.hWnd
-  $guardSidebarRight = Get-VisualSendSidebarRight ([double]$guard.width) $guardDpi
-  $latestIncomingStillCurrent = $guardConversation.ok -and (Test-VisualSendLatestIncoming $guard $guardSidebarRight $guardDpi)
-} finally {
-  Close-MomentsVisualFrame $guard
-}
-if (-not $latestIncomingStillCurrent) {
-  Write-VisualSendResult @{ ok = $false; reason = "visual_send_incoming_changed"; sendAttempted = $false; conversationVerified = $true; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
 }
 $screenX = [int]($lock.rect.Left + [int]$button.point.x)
 $screenY = [int]($lock.rect.Top + [int]$button.point.y)
@@ -738,6 +747,7 @@ $cursorExact = $moved -and [Win32WechatVisualAutoReply]::GetCursorPos([ref]$actu
 if (-not $cursorExact -or [Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
   -not (Test-VisualSendOwnedPoint $lock ([int]$button.point.x) ([int]$button.point.y))) {
   [void][Win32WechatVisualAutoReply]::SetCursorPos($oldPoint.X, $oldPoint.Y)
+  [void](Clear-VisualSendDraft $lock)
   Write-VisualSendResult @{ ok = $false; reason = "visual_send_cursor_not_verified"; sendAttempted = $false; conversationVerified = $true; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
 }
 
@@ -789,9 +799,10 @@ function visualSendEnvironment(options, phase) {
     XIAOXI_VISUAL_SEND_CONVERSATION: String(options.conversation ?? ""),
     XIAOXI_VISUAL_SEND_INCOMING: String(options.incomingMessage ?? ""),
     XIAOXI_VISUAL_SEND_INCOMING_SIGNATURE: String(options.incomingMessageSignature ?? ""),
-    // The controller's strict line/pixel proof avoids a second incompatible
-    // preflight crop. The send phase still checks that this text remains the
-    // latest incoming line immediately before the click.
+    // The controller binds the incoming occurrence before draft input. Once
+    // the composer expands, re-reading the bubble uses different geometry and
+    // is not a valid identity check; the send phase instead rechecks the same
+    // conversation, exact draft, foreground window and owned send button.
     XIAOXI_VISUAL_SEND_INCOMING_VERIFIED: options.incomingVerified === true ? "true" : "false",
     XIAOXI_VISUAL_SEND_REPLY: String(options.reply ?? ""),
     XIAOXI_VISUAL_SEND_PHASE: phase

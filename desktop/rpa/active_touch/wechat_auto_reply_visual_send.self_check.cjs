@@ -28,7 +28,13 @@ assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /return \[double\]\$frame\.hei
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$top -gt \$chatBottom/u, "draft text below the proven divider must be excluded");
 assert.doesNotMatch(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /frame\.width \* 0\.273|frame\.height \* 0\.88/u, "final geometry must not use one-machine fixed ratios");
 assert.doesNotMatch(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$chatMid/u, "the final guard must not infer sender from one midpoint comparison");
-assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$guard = Get-VisualSendFrame[\s\S]*Test-VisualSendLatestIncoming \$guard[\s\S]*visual_send_incoming_changed[\s\S]*\$sendAttempted = \$true/u, "the latest incoming line must be rechecked immediately before the click");
+const sendClickPhase = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(
+  WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf('if ($phase -cne "send")'),
+  WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("$sendAttempted = $true")
+);
+assert.doesNotMatch(sendClickPhase, /Test-VisualSendLatestIncoming|visual_send_incoming_changed/u, "composer expansion must not trigger a second geometry-dependent incoming check");
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Clear-VisualSendDraft[\s\S]*\{BACKSPACE\}[\s\S]*\$readback\.empty/u, "pre-click failures need a verified draft cleanup path");
+assert.match(sendClickPhase, /Find-VisualSendButton[\s\S]*Clear-VisualSendDraft \$lock[\s\S]*visual_send_button_not_owned[\s\S]*Clear-VisualSendDraft \$lock[\s\S]*visual_send_cursor_not_verified/u, "owned pre-click failures must not leave a stale draft behind");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendOutgoingBubble[\s\S]*Get-VisualSendChatBottom \$frame \$sidebarRight[\s\S]*Test-VisualSendOutgoingLineEvidence/u, "post-send verification must inspect the dynamic bottom of the chat");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendOutgoingLineEvidence[\s\S]*\$latest = \$ordered\[-1\][\s\S]*Get-VisualSendLineGreenRatio[\s\S]*Test-VisualSendGreenBridge/u, "only the latest connected green bubble may verify a send");
 assert.doesNotMatch(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendOutgoingBubble[\s\S]*height = \[double\]\(\$frame\.height \* 0\.64\)/u, "post-send verification must not stop above a bottom bubble");

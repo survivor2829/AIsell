@@ -532,6 +532,30 @@ assert.deepEqual(JSON.parse(conversationMatchProbe.stdout.trim().split(/\r?\n/u)
   unrelated: false
 });
 
+const messageTextProgram = `
+${normalizationFunction}
+$prefix = ([string][char]25105) + [char]26469 + [char]21672 + [char]35810 + [char]19968 + [char]19979
+$suffix = ([string][char]35774) + [char]22791 + [char]30340
+$preview = $prefix + [char]28165 + [char]27905 + $suffix
+$bubble = $prefix + [char]23578 + [char]21513 + $suffix
+@{
+  corrected = Resolve-AutoReplyVisualMessageText $preview $bubble
+  truncated = Resolve-AutoReplyVisualMessageText ($prefix + [char]28165 + [char]27905 + "...") $bubble
+  unrelated = Resolve-AutoReplyVisualMessageText $preview ($prefix + [char]24037 + [char]19994 + [char]21560 + [char]23576 + [char]22120)
+} | ConvertTo-Json -Compress
+`;
+const messageTextProbe = spawnSync("powershell.exe", [
+  "-NoProfile",
+  "-EncodedCommand",
+  Buffer.from(messageTextProgram, "utf16le").toString("base64")
+], { encoding: "utf8" });
+assert.equal(messageTextProbe.status, 0, messageTextProbe.stderr || messageTextProbe.stdout);
+assert.deepEqual(JSON.parse(messageTextProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1)), {
+  corrected: "我来咨询一下清洁设备的",
+  truncated: "我来咨询一下尚吉设备的",
+  unrelated: "我来咨询一下工业吸尘器"
+});
+
 const parserCommand = "$source=[Console]::In.ReadToEnd(); $tokens=$null; $errors=$null; [void][System.Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors); if($errors.Count){$errors | ForEach-Object {$_.ToString()}; exit 1}";
 const syntaxProbe = spawnSync("powershell.exe", ["-NoProfile", "-Command", parserCommand], {
   input: AUTO_REPLY_VISUAL_SCRIPT,

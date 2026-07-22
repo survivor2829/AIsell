@@ -63,6 +63,21 @@ function Test-AutoReplyVisualConversationMatch([string]$expected, [string]$obser
   return (Get-AutoReplyVisualEditDistance $expected $observed) -le $maximumDistance
 }
 
+function Resolve-AutoReplyVisualMessageText([string]$sidebarPreview, [string]$bubbleText) {
+  $preview = Normalize-AutoReplyVisualText $sidebarPreview
+  $bubble = Normalize-AutoReplyVisualText $bubbleText
+  if (-not $bubble) { return $preview }
+  if (-not $preview -or $preview -match "(?:\.\.\.|…)$" -or $preview -match "^\[草稿\]") { return $bubble }
+  if ($preview -ceq $bubble) { return $bubble }
+  $maximumLength = [Math]::Max($preview.Length, $bubble.Length)
+  if ([Math]::Min($preview.Length, $bubble.Length) -lt 6 -or [Math]::Abs($preview.Length - $bubble.Length) -gt 2) { return $bubble }
+  if ($preview.Substring(0, 2) -cne $bubble.Substring(0, 2) -or
+      $preview.Substring($preview.Length - 2) -cne $bubble.Substring($bubble.Length - 2)) { return $bubble }
+  $maximumDistance = [Math]::Max(1, [int][Math]::Floor($maximumLength * 0.25))
+  if ((Get-AutoReplyVisualEditDistance $preview $bubble) -le $maximumDistance) { return $preview }
+  return $bubble
+}
+
 function Get-AutoReplyVisualSha256([string]$value) {
   $sha = [Security.Cryptography.SHA256]::Create()
   try {
@@ -1512,7 +1527,11 @@ try {
       Close-MomentsVisualFrame $confirmationFrame
     }
   } else {
-    $resolvedMessage = [string]$latest.message
+    # The selected unread-row preview and the chat bubble are two independent
+    # OCR observations of the same message. Prefer the complete preview only
+    # when both agree on stable prefix/suffix anchors; this corrects isolated
+    # glyph errors such as 清洁 -> 尚吉 without trusting a stale/truncated row.
+    $resolvedMessage = Resolve-AutoReplyVisualMessageText $preview ([string]$latest.message)
   }
   $runtimeSeed = [string]::Join([char]10, @($conversation, [string]$latest.evidenceSignature))
   $runtimeId = "visual:v1:" + (Get-AutoReplyVisualSha256 $runtimeSeed)
