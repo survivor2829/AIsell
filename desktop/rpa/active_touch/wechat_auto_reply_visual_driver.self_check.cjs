@@ -16,6 +16,10 @@ assert.doesNotMatch(autoReplyEntry, /Get-MomentsRenderPaneEvidence/u, "auto repl
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-AutoReplyVisualFrame \$hWnd \$windowRect \$expectedProcessId/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-MomentsOcrObservation \$frame/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualCurrentConversation/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualAnyHeader/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualUnreadBadges/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Test-AutoReplyVisualBadgeRemains \$openedFrame \$candidate\.badgeBounds/u, "a geometry-only badge candidate must disappear after opening before it can become a message");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-AutoReplyVisualAnyHeader \$openedObservation\.lines/u, "a badge-opened conversation must derive its identity from the live header");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualLatestMessageEvidence/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualSidebarRight/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualMessageRole/u);
@@ -432,7 +436,7 @@ const unreadProgram = `
 ${scaleFunction}
 ${unreadFunctions}
 function New-TestFrame([double]$scale) {
-  $width = [int][Math]::Round(160 * $scale); $height = [int][Math]::Round(100 * $scale); $stride = $width * 4
+  $width = [int][Math]::Round(160 * $scale); $height = [int][Math]::Round(160 * $scale); $stride = $width * 4
   return @{ width = $width; height = $height; stride = $stride; bytes = (New-Object byte[] ($stride * $height)) }
 }
 function Set-TestRedRect($frame, [int]$left, [int]$top, [int]$width, [int]$height, [int]$red = 249, [int]$green = 81, [int]$blue = 81) {
@@ -455,10 +459,15 @@ function Test-UnreadAtScale([double]$scale) {
   Set-TestRedRect $realBadge ([int][Math]::Round(72 * $scale)) ([int][Math]::Round(26 * $scale)) ([int][Math]::Round(11 * $scale)) ([int][Math]::Round(11 * $scale))
   $alignedBadge = New-TestFrame $scale
   Set-TestRedRect $alignedBadge ([int][Math]::Round(72 * $scale)) ([int][Math]::Round(38 * $scale)) ([int][Math]::Round(11 * $scale)) ([int][Math]::Round(11 * $scale))
+  $globalBadge = New-TestFrame $scale
+  Set-TestRedRect $globalBadge ([int][Math]::Round(72 * $scale)) ([int][Math]::Round(75 * $scale)) ([int][Math]::Round(11 * $scale)) ([int][Math]::Round(11 * $scale))
   return @{
     redAvatar = [bool](Test-AutoReplyVisualUnreadDot $redAvatar $nameBounds)
     realBadge = [bool](Test-AutoReplyVisualUnreadDot $realBadge $nameBounds)
     alignedBadge = [bool](Test-AutoReplyVisualUnreadDot $alignedBadge $nameBounds)
+    globalRedAvatarCount = @(Get-AutoReplyVisualUnreadBadges $redAvatar (300 * $scale)).Count
+    globalBadgeCount = @(Get-AutoReplyVisualUnreadBadges $globalBadge (300 * $scale)).Count
+    badgeRemains = [bool](Test-AutoReplyVisualBadgeRemains $realBadge @{ left = 72 * $scale; top = 26 * $scale; width = 11 * $scale; height = 11 * $scale })
   }
 }
 @{
@@ -474,9 +483,9 @@ const unreadProbe = spawnSync("powershell.exe", [
 ], { encoding: "utf8" });
 assert.equal(unreadProbe.status, 0, unreadProbe.stderr || unreadProbe.stdout);
 assert.deepEqual(JSON.parse(unreadProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1)), {
-  dpi96: { alignedBadge: true, realBadge: true, redAvatar: false },
-  dpi120: { alignedBadge: true, realBadge: true, redAvatar: false },
-  dpi144: { alignedBadge: true, realBadge: true, redAvatar: false }
+  dpi96: { alignedBadge: true, realBadge: true, redAvatar: false, globalRedAvatarCount: 0, globalBadgeCount: 1, badgeRemains: true },
+  dpi120: { alignedBadge: true, realBadge: true, redAvatar: false, globalRedAvatarCount: 0, globalBadgeCount: 1, badgeRemains: true },
+  dpi144: { alignedBadge: true, realBadge: true, redAvatar: false, globalRedAvatarCount: 0, globalBadgeCount: 1, badgeRemains: true }
 });
 
 const normalizationProgram = `

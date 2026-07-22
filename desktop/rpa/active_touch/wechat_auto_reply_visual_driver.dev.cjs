@@ -333,6 +333,67 @@ function Test-AutoReplyVisualUnreadDot($frame, $nameBounds) {
   return $false
 }
 
+function Get-AutoReplyVisualUnreadBadges($frame, [double]$sidebarRight) {
+  # Discover unread events from WeChat's own badge pixels before involving
+  # contact OCR. This is the cross-machine path for renamed contacts and OCR
+  # providers that merge the badge count into the adjacent name line.
+  $xStart = [int][Math]::Max(0, [Math]::Floor((Scale-AutoReplyVisualMetric 58.0)))
+  $xEnd = [int][Math]::Min($frame.width - 1, [Math]::Ceiling([Math]::Min($sidebarRight - (Scale-AutoReplyVisualMetric 80.0), (Scale-AutoReplyVisualMetric 170.0))))
+  $yStart = [int][Math]::Max(0, [Math]::Floor((Scale-AutoReplyVisualMetric 70.0)))
+  $yEnd = [int][Math]::Min($frame.height - 1, [Math]::Ceiling($frame.height - (Scale-AutoReplyVisualMetric 42.0)))
+  if ($xEnd -le $xStart -or $yEnd -le $yStart) { return @() }
+  $regionWidth = $xEnd - $xStart + 1; $regionHeight = $yEnd - $yStart + 1
+  $mask = New-Object bool[] ($regionWidth * $regionHeight)
+  for ($localY = 0; $localY -lt $regionHeight; $localY++) {
+    for ($localX = 0; $localX -lt $regionWidth; $localX++) {
+      $mask[($localY * $regionWidth) + $localX] = Test-AutoReplyVisualRedPixel $frame ($xStart + $localX) ($yStart + $localY)
+    }
+  }
+  $seen = New-Object bool[] $mask.Length
+  $badges = New-Object System.Collections.Generic.List[object]
+  for ($seedY = 0; $seedY -lt $regionHeight; $seedY++) {
+    for ($seedX = 0; $seedX -lt $regionWidth; $seedX++) {
+      $seedIndex = ($seedY * $regionWidth) + $seedX
+      if (-not $mask[$seedIndex] -or $seen[$seedIndex]) { continue }
+      $queue = New-Object System.Collections.Generic.Queue[int]
+      $queue.Enqueue($seedIndex); $seen[$seedIndex] = $true
+      $minX = $seedX; $maxX = $seedX; $minY = $seedY; $maxY = $seedY; $count = 0
+      while ($queue.Count -gt 0) {
+        $current = $queue.Dequeue(); $currentY = [int][Math]::Floor($current / $regionWidth); $currentX = $current - ($currentY * $regionWidth)
+        $minX = [Math]::Min($minX, $currentX); $maxX = [Math]::Max($maxX, $currentX)
+        $minY = [Math]::Min($minY, $currentY); $maxY = [Math]::Max($maxY, $currentY); $count += 1
+        foreach ($delta in @(@(-1,-1), @(0,-1), @(1,-1), @(-1,0), @(1,0), @(-1,1), @(0,1), @(1,1))) {
+          $nextX = $currentX + $delta[0]; $nextY = $currentY + $delta[1]
+          if ($nextX -lt 0 -or $nextY -lt 0 -or $nextX -ge $regionWidth -or $nextY -ge $regionHeight) { continue }
+          $nextIndex = ($nextY * $regionWidth) + $nextX
+          if ($mask[$nextIndex] -and -not $seen[$nextIndex]) { $seen[$nextIndex] = $true; $queue.Enqueue($nextIndex) }
+        }
+      }
+      $width = $maxX - $minX + 1; $height = $maxY - $minY + 1
+      $minimumBlob = Scale-AutoReplyVisualMetric 8.0; $maximumBlob = Scale-AutoReplyVisualMetric 28.0
+      $minimumPixels = 28.0 * $script:AutoReplyVisualScale * $script:AutoReplyVisualScale
+      if ($width -lt $minimumBlob -or $width -gt $maximumBlob -or $height -lt $minimumBlob -or $height -gt $maximumBlob -or $count -lt $minimumPixels) { continue }
+      $ratio = [double][Math]::Max($width, $height) / [double][Math]::Max(1, [Math]::Min($width, $height))
+      $density = [double]$count / [double]($width * $height)
+      if ($ratio -gt 1.65 -or $density -lt 0.25) { continue }
+      [void]$badges.Add([pscustomobject]@{
+        left = $xStart + $minX; top = $yStart + $minY; width = $width; height = $height
+        centerX = $xStart + (($minX + $maxX) * 0.5); centerY = $yStart + (($minY + $maxY) * 0.5)
+      })
+    }
+  }
+  return @($badges.ToArray() | Sort-Object top, left)
+}
+
+function Test-AutoReplyVisualBadgeRemains($frame, $badge) {
+  $left = [int][Math]::Max(0, [Math]::Floor([double]$badge.left - 2)); $top = [int][Math]::Max(0, [Math]::Floor([double]$badge.top - 2))
+  $right = [int][Math]::Min($frame.width - 1, [Math]::Ceiling([double]$badge.left + [double]$badge.width + 2))
+  $bottom = [int][Math]::Min($frame.height - 1, [Math]::Ceiling([double]$badge.top + [double]$badge.height + 2))
+  $count = 0
+  for ($y = $top; $y -le $bottom; $y++) { for ($x = $left; $x -le $right; $x++) { if (Test-AutoReplyVisualRedPixel $frame $x $y) { $count += 1 } } }
+  return $count -ge [Math]::Max(8, [int][Math]::Round(18.0 * $script:AutoReplyVisualScale * $script:AutoReplyVisualScale))
+}
+
 function Get-AutoReplyVisualSidebarRows($frame, $lines, $allowedSet, [double]$sidebarRight) {
   $nameMatches = New-Object System.Collections.Generic.List[object]
   foreach ($line in $lines) {
@@ -533,6 +594,18 @@ function Get-AutoReplyVisualHeader($lines, [string]$conversation, [double]$sideb
   $exact = @($prefixed | Where-Object { [string]$_.compact -ceq $conversation })
   if ($prefixed.Count -ne 1 -or $exact.Count -ne 1) { return @{ ok = $false; reason = "conversation_title_mismatch" } }
   return @{ ok = $true; line = $exact[0] }
+}
+
+function Get-AutoReplyVisualAnyHeader($lines, [double]$sidebarRight, [double]$frameWidth) {
+  $matches = @($lines | Where-Object {
+    $text = Normalize-AutoReplyVisualText ([string]$_.compact)
+    $text -and $text.Length -le 64 -and -not (Test-AutoReplyVisualTimeText $text) -and
+      [double]$_.bounds.left -ge ($sidebarRight + (Scale-AutoReplyVisualMetric 8.0)) -and
+      [double]$_.bounds.left -lt ($frameWidth - (Scale-AutoReplyVisualMetric 80.0)) -and
+      [double]$_.bounds.top -ge (Scale-AutoReplyVisualMetric 20.0) -and [double]$_.bounds.top -le (Scale-AutoReplyVisualMetric 108.0)
+  } | Sort-Object { [double]$_.bounds.left }, { [double]$_.bounds.top })
+  if ($matches.Count -eq 0) { return @{ ok = $false; reason = "conversation_title_mismatch" } }
+  return @{ ok = $true; conversation = Normalize-AutoReplyVisualText ([string]$matches[0].compact); line = $matches[0] }
 }
 
 function Get-AutoReplyVisualCurrentConversation($lines, $allowedSet, [double]$sidebarRight, [double]$frameWidth) {
@@ -993,9 +1066,22 @@ try {
   foreach ($row in $rows) {
     if ([bool]$row.discoveredConversation) { [void]$allowedSet.Add([string]$row.conversation) }
   }
-  $sessionBaselines = @($rows | ForEach-Object { @{ conversation = [string]$_.conversation; signature = [string]$_.signature } })
+  $currentConversationDiscovered = $false
   $currentConversation = Get-AutoReplyVisualCurrentConversation $observation.lines $allowedSet $sidebarRight ([double]$frame.width)
   if (-not $currentConversation.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$currentConversation.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
+  if (-not $currentConversation.active) {
+    $anyHeader = Get-AutoReplyVisualAnyHeader $observation.lines $sidebarRight ([double]$frame.width)
+    if ($anyHeader.ok -and $anyHeader.conversation) {
+      [void]$allowedSet.Add([string]$anyHeader.conversation)
+      $expandedSidebar = Get-AutoReplyVisualSidebarRows $frame $observation.lines $allowedSet $sidebarRight
+      if ($expandedSidebar.ok) {
+        $rows = @($expandedSidebar.rows)
+        $currentConversation = Get-AutoReplyVisualCurrentConversation $observation.lines $allowedSet $sidebarRight ([double]$frame.width)
+        $currentConversationDiscovered = $currentConversation.ok -and $currentConversation.active
+      }
+    }
+  }
+  $sessionBaselines = @($rows | ForEach-Object { @{ conversation = [string]$_.conversation; signature = [string]$_.signature } })
   $currentMessage = $null
   $sessionMessageBaselines = @()
   if ($currentConversation.active) {
@@ -1018,6 +1104,7 @@ try {
       conversation = $currentResultConversation
       latestRole = $currentResultLatestRole
       messageSignature = $currentResultMessageSignature
+      discoveredConversation = [bool]$currentConversationDiscovered
       sessionBaselines = $sessionBaselines
       sessionMessageBaselines = $sessionMessageBaselines
     }
@@ -1118,6 +1205,29 @@ try {
     if ($row.unread -and -not $row.draft) {
       $row | Add-Member -NotePropertyName source -NotePropertyValue "unread" -Force
       [void]$candidates.Add($row)
+    }
+  }
+  if ($candidates.Count -eq 0) {
+    $badgeFallbacks = @(Get-AutoReplyVisualUnreadBadges $frame $sidebarRight)
+    if ($badgeFallbacks.Count -gt 0) {
+      $badge = $badgeFallbacks[0]
+      $badgeSeed = [string]::Join(":", @([int][Math]::Round([double]$badge.centerX), [int][Math]::Round([double]$badge.centerY)))
+      [void]$candidates.Add([pscustomobject]@{
+        conversation = ""
+        preview = ""
+        signature = Get-AutoReplyVisualSha256 ("unread-badge:" + $badgeSeed)
+        unread = $true
+        draft = $false
+        discoveredConversation = $true
+        badgeOnly = $true
+        badgeBounds = $badge
+        nameBounds = @{
+          left = [double]$sidebarRight * 0.55
+          top = [double]$badge.centerY + (Scale-AutoReplyVisualMetric 6.0)
+          width = Scale-AutoReplyVisualMetric 50.0
+          height = Scale-AutoReplyVisualMetric 2.0
+        }
+      })
     }
   }
   if ($candidates.Count -eq 0) {
@@ -1247,7 +1357,8 @@ try {
   }
   $unreadCandidates = @($candidates.ToArray() | Where-Object { $_.unread })
   $candidate = if ($unreadCandidates.Count -gt 0) { $unreadCandidates[0] } else { $candidates[0] }
-  $conversation = [string]$candidate.conversation; $preview = [string]$candidate.preview; $source = [string]$candidate.source
+  $conversation = [string]$candidate.conversation; $preview = [string]$candidate.preview
+  $source = if ([bool]$candidate.badgeOnly) { "unread_badge" } else { [string]$candidate.source }
 } finally {
   Close-MomentsVisualFrame $frame
 }
@@ -1259,8 +1370,27 @@ $openedObservation = Get-AutoReplyVisualObservation $hWnd ([int]$process.Id) $wi
 if (-not $openedObservation.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$openedObservation.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
 $openedFrame = $openedObservation.frame
 try {
-  $header = Get-AutoReplyVisualHeader $openedObservation.lines $conversation $sidebarRight ([double]$openedFrame.width)
+  if ([bool]$candidate.badgeOnly) {
+    if (Test-AutoReplyVisualBadgeRemains $openedFrame $candidate.badgeBounds) {
+      Write-AutoReplyVisualResult @{ ok = $false; reason = "no_unread_message"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
+    }
+    $header = Get-AutoReplyVisualAnyHeader $openedObservation.lines $sidebarRight ([double]$openedFrame.width)
+    if ($header.ok) { $conversation = [string]$header.conversation }
+  } else {
+    $header = Get-AutoReplyVisualHeader $openedObservation.lines $conversation $sidebarRight ([double]$openedFrame.width)
+  }
   if (-not $header.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
+  if ([bool]$candidate.badgeOnly) {
+    $badgeLatest = Get-AutoReplyVisualLatestMessageEvidence $openedFrame $openedObservation.lines $sidebarRight
+    if (-not $badgeLatest.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$badgeLatest.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
+    if (-not $badgeLatest.hasMessage) { Write-AutoReplyVisualResult @{ ok = $false; reason = "latest_text_message_missing"; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
+    if ([string]$badgeLatest.latestRole -cne "user") {
+      $badgeRoleReason = if ([string]$badgeLatest.latestRole -ceq "assistant") { "latest_message_not_incoming" } else { "latest_message_role_unresolved" }
+      Write-AutoReplyVisualResult @{ ok = $false; reason = $badgeRoleReason; pid = [int]$process.Id; hWnd = [int64]$hWnd; conversation = $conversation; latestRole = [string]$badgeLatest.latestRole }
+    }
+    $preview = [string]$badgeLatest.message
+    $candidate.signature = Get-AutoReplyVisualSha256 ([string]$badgeLatest.evidenceSignature)
+  }
   $latest = Get-AutoReplyVisualLatestIncoming $openedFrame $openedObservation.lines $preview $sidebarRight
   $resolvedMessage = $preview
   if (-not $latest.ok) {
@@ -1724,8 +1854,11 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     if (result?.ok !== true) return result;
     const process = processIdentity(result);
     if (!process) return { ok: false, reason: "incoming_identity_missing" };
-    applyBaselines(result, allowed, { replace: true });
-    applyMessageBaselines(result, allowed, { replace: true });
+    const observedCompactConversation = compactContactName(result.conversation);
+    if (result?.discoveredConversation === true && observedCompactConversation) discoveredConversationNames.add(observedCompactConversation);
+    const effectiveAllowed = [...new Set([...allowed, ...discoveredConversationNames])];
+    applyBaselines(result, effectiveAllowed, { replace: true });
+    applyMessageBaselines(result, effectiveAllowed, { replace: true });
     pendingOpenedUnread = null;
     restoredPendingObservation = null;
     primedProcess = process;
