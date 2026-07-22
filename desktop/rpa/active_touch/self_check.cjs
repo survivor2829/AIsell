@@ -681,6 +681,7 @@ try {
     expectedConversation: "A测试客户",
     expectedIncomingMessage: "你是谁",
     expectedIncomingRuntimeId: `visual:v1:${"a".repeat(64)}`,
+    expectedIncomingMessageSignature: "b".repeat(64),
     beforeDraft: ({ session }) => {
       visualBeforeDraftCalls += 1;
       assert.equal(session.title, "A测试客户");
@@ -694,6 +695,7 @@ try {
         hWnd: request.hWnd,
         conversation: request.conversation,
         incomingMessage: request.incomingMessage,
+        incomingMessageSignature: request.incomingMessageSignature,
         incomingVerified: request.incomingVerified,
         reply: request.reply
       }, {
@@ -701,6 +703,7 @@ try {
         hWnd: 91,
         conversation: "A测试客户",
         incomingMessage: "你是谁",
+        incomingMessageSignature: "b".repeat(64),
         incomingVerified: true,
         reply: "视觉自动回复"
       });
@@ -729,6 +732,34 @@ try {
   assert.equal(visualUnknownResult.ok, false);
   assert.equal(visualUnknownResult.send_attempted, true, "a visual click with an unknown outcome must never be treated as retryable");
   assert.equal(visualUnknownResult.blocked_reason, "visual_send_outcome_unknown");
+
+  const visualThrowResult = await executeVerifiedContactSend({
+    baseDir: sharedDir,
+    contactId: sharedContact.id,
+    message: "视觉发送阶段异常",
+    authorized: true,
+    visualMode: "visual_render_v1",
+    expectedPid: 81,
+    expectedHWnd: "91",
+    expectedConversation: "A测试客户",
+    visualSendDriver: async () => { throw new Error("timeout after a possible click"); }
+  });
+  assert.equal(visualThrowResult.ok, false);
+  assert.equal(visualThrowResult.send_attempted, null, "a visual sender exception has an unknown click outcome and must never be retried automatically");
+  assert.equal(visualThrowResult.blocked_reason, "visual_send_driver_exception");
+
+  const visualMissingAttemptResult = await executeVerifiedContactSend({
+    baseDir: sharedDir,
+    contactId: sharedContact.id,
+    message: "视觉发送状态缺失",
+    authorized: true,
+    visualMode: "visual_render_v1",
+    expectedPid: 81,
+    expectedHWnd: "91",
+    expectedConversation: "A测试客户",
+    visualSendDriver: async () => ({ ok: false, outcomeUnknown: true, reason: "visual_send_outcome_unknown" })
+  });
+  assert.equal(visualMissingAttemptResult.send_attempted, null, "an outcome-unknown result without an explicit attempt flag must remain unknown instead of becoming retryable");
 
   saveState(sharedDir, {
     ...loadState(sharedDir),

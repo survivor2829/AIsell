@@ -1046,6 +1046,20 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
   let activeScanMode = "uia";
   let visualDriver = null;
 
+  const scanFenceReasons = new Set([
+    "chat_boundary_unresolved",
+    "latest_message_role_unresolved",
+    "wechat_focus_failed"
+  ]);
+
+  function scanFenceResult(result) {
+    const directReason = String(result?.reason || "").trim();
+    if (result?.ok !== true && scanFenceReasons.has(directReason)) return result;
+    const probeReason = String(result?.scanProbe?.reason || "").trim();
+    if (!scanFenceReasons.has(probeReason)) return null;
+    return { ok: false, reason: probeReason, scanProbe: result.scanProbe };
+  }
+
   function getVisualDriver() {
     if (visualDriver) return visualDriver;
     try {
@@ -1189,7 +1203,12 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     if (windowFailure) return windowFailure;
     if (activeScanMode === "visual") {
       const driver = getVisualDriver();
-      return driver ? visualCandidate(await driver.scanWechatIncoming(allowed)) : { ok: false, reason: "visual_driver_missing" };
+      if (!driver) return { ok: false, reason: "visual_driver_missing" };
+      const result = visualCandidate(await driver.scanWechatIncoming(allowed));
+      const fenced = scanFenceResult(result);
+      if (!fenced) return result;
+      if (result?.ok === true && result?.scanProbe) driver.scanWechatIncoming?.requeue?.(result);
+      return fenced;
     }
     if (retryAfterFresh) {
       retryAfterFresh = false;
@@ -1212,6 +1231,8 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
       const primed = await switchToVisualPrime(allowed, result);
       return primed?.ok === true ? { ok: false, reason: "current_session_baselined" } : primed;
     }
+    const fenced = scanFenceResult(result);
+    if (fenced) return fenced;
     const observedIdentity = processIdentity(result);
     const identityChanged = sessionPreviewProcess && observedIdentity && (
       sessionPreviewProcess.pid !== observedIdentity.pid || sessionPreviewProcess.hWnd !== observedIdentity.hWnd
@@ -1265,6 +1286,10 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
   }
 
   scanWechatIncoming.primeBaselines = primeWechatSession;
+  scanWechatIncoming.noteVerifiedSend = (candidate, metadata) => {
+    if (!isVisualCandidate(candidate)) return false;
+    return getVisualDriver()?.scanWechatIncoming?.noteVerifiedSend?.(candidate, metadata) === true;
+  };
   scanWechatIncoming.requeue = (candidate) => {
     if (candidate?.ok !== true) return false;
     if (isVisualCandidate(candidate)) {

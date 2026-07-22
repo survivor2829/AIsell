@@ -399,22 +399,29 @@ async function executeVerifiedContactSend(options = {}) {
         hWnd,
         conversation,
         incomingMessage: String(options.expectedIncomingMessage || ""),
+        incomingMessageSignature: String(options.expectedIncomingMessageSignature || ""),
         incomingVerified: true,
         reply: message,
         beforeSend: () => executionMayContinue(options)
       }));
     } catch {
-      return withSendAttempted({ ok: false, action: "send", blocked_reason: "visual_send_driver_exception", error: "视觉发送执行器异常，消息未确认发出" });
+      // The visual sender owns the final click. If it throws, this caller cannot
+      // prove whether the exception happened before or after that click, so the
+      // outcome must stay unknown and must never enter the automatic retry path.
+      return withSendAttempted({ ok: false, action: "send", blocked_reason: "visual_send_driver_exception", error: "视觉发送执行器异常，消息是否发出无法确认" }, null);
     }
     if (result?.ok !== true) {
       const reason = String(result?.reason || "visual_send_not_verified");
+      const sendAttempted = result?.outcomeUnknown === true
+        ? result?.send_attempted === true ? true : null
+        : result?.send_attempted === false ? false : result?.send_attempted === true ? true : null;
       return withSendAttempted({
         ok: false,
         action: "send",
         blocked_reason: reason,
         error: result?.outcomeUnknown === true ? "已点击发送，但无法确认最终结果" : "视觉发送未完成",
         verification_mode: String(result?.verificationMode || "")
-      }, result?.send_attempted === true);
+      }, sendAttempted);
     }
     return withSendAttempted({
       ok: true,

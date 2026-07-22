@@ -18,6 +18,7 @@ public static class Win32WechatVisualAutoReply {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maximum);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
@@ -34,6 +35,7 @@ $expectedPidText = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_PID
 $expectedHWndText = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_HWND")
 $expectedConversation = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_CONVERSATION")
 $expectedIncoming = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_INCOMING")
+$expectedIncomingSignature = ([string][Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_INCOMING_SIGNATURE")).Trim().ToLowerInvariant()
 $incomingWasVerified = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_INCOMING_VERIFIED") -ceq "true"
 $expectedReply = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_REPLY")
 $phase = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_PHASE")
@@ -56,6 +58,16 @@ function Normalize-VisualSendDraftText([string]$value) {
   $normalized = ([string]$value).Replace([Environment]::NewLine, [string][char]10)
   $normalized = $normalized.Replace([string][char]13, [string][char]10)
   return $normalized.TrimEnd([char[]]@([char]0xFFFC))
+}
+
+function Get-VisualSendSha256([string]$value) {
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    $digest = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes([string]$value))
+    return ([BitConverter]::ToString($digest).Replace("-", "").ToLowerInvariant())
+  } finally {
+    $sha.Dispose()
+  }
 }
 
 function Get-VisualSendLock {
@@ -159,31 +171,164 @@ function Test-VisualSendPureMessageText([string]$value) {
   return $true
 }
 
-function Test-VisualSendLatestIncoming($frame) {
-  if ([string]::IsNullOrWhiteSpace($expectedIncoming)) { return $true }
+function Test-VisualSendTimeText([string]$value) {
+  $text = Normalize-VisualSendText $value
+  if (-not $text) { return $true }
+  return $text -match "^(?:[0-2]?[0-9]:[0-5][0-9]|昨天|前天|星期[一二三四五六日天]|周[一二三四五六日天]|[0-9]{1,2}/[0-9]{1,2}|[0-9]{4}/[0-9]{1,2}/[0-9]{1,2})$"
+}
+
+function Test-VisualSendSidebarNameLine([string]$lineText, [string]$name) {
+  $line = Normalize-VisualSendText $lineText
+  $wanted = Normalize-VisualSendText $name
+  if (-not $line -or -not $wanted -or -not $line.StartsWith($wanted, [StringComparison]::Ordinal)) { return $false }
+  $suffix = $line.Substring($wanted.Length)
+  return -not $suffix -or (Test-VisualSendTimeText $suffix)
+}
+
+function Test-VisualSendSelectedSidebarPreview($frame, $lines, [double]$sidebarRight, [double]$logicalScale) {
+  $expected = Normalize-VisualSendText $expectedIncoming
+  if (-not $expected) { return $false }
+  $nameMatches = @($lines | Where-Object {
+    $left = [double]$_.bounds.left
+    $right = $left + [double]$_.bounds.width
+    $top = [double]$_.bounds.top
+    $left -ge (42.0 * $logicalScale) -and
+      $right -le ($sidebarRight + (8.0 * $logicalScale)) -and
+      $top -ge (72.0 * $logicalScale) -and
+      $top -le ([double]$frame.height - (42.0 * $logicalScale)) -and
+      (Test-VisualSendSidebarNameLine ([string]$_.text) $expectedConversation)
+  })
+  if ($nameMatches.Count -ne 1) { return $false }
+  $nameLine = $nameMatches[0]
+  $nameBottom = [double]$nameLine.bounds.top + [double]$nameLine.bounds.height
+  $previewCandidates = @($lines | Where-Object {
+    $left = [double]$_.bounds.left
+    $top = [double]$_.bounds.top
+    $right = $left + [double]$_.bounds.width
+    $top -ge ($nameBottom - (3.0 * $logicalScale)) -and
+      $top -le ([double]$nameLine.bounds.top + (58.0 * $logicalScale)) -and
+      $left -ge ([double]$nameLine.bounds.left - (14.0 * $logicalScale)) -and
+      $right -le ($sidebarRight + (8.0 * $logicalScale)) -and
+      (Test-VisualSendPureMessageText ([string]$_.text))
+  } | Sort-Object { [double]$_.bounds.top }, { [double]$_.bounds.left })
+  if ($previewCandidates.Count -eq 0) { return $false }
+  return (Normalize-VisualSendText ([string]$previewCandidates[0].text)) -ceq $expected
+}
+
+function Get-VisualSendSidebarRight([double]$windowWidth, [double]$dpi) {
+  if ($dpi -lt 72 -or $dpi -gt 480) { $dpi = 96.0 }
+  $scale = $dpi / 96.0
+  $expected = 300.0 * $scale
+  $compactLimit = [Math]::Max(230.0 * $scale, $windowWidth * 0.45)
+  return [Math]::Min($expected, $compactLimit)
+}
+
+function Get-VisualSendWindowDpi([IntPtr]$hWnd) {
+  $dpi = [double]96
+  try {
+    $reported = [Win32WechatVisualAutoReply]::GetDpiForWindow($hWnd)
+    if ($reported -ge 72 -and $reported -le 480) { $dpi = [double]$reported }
+  } catch {}
+  return $dpi
+}
+
+function Get-VisualSendRowStats($frame, [int]$y, [int]$left, [int]$right) {
+  if ($y -lt 0 -or $y -ge $frame.height -or $right -le $left) { return @{ samples = 0; dividerRatio = 0.0; luminance = 0.0 } }
+  $samples = 0
+  $dividerPixels = 0
+  $luminanceTotal = 0.0
+  for ($x = [Math]::Max(0, $left); $x -lt [Math]::Min($frame.width, $right); $x += 4) {
+    $pixel = Get-MomentsPixel $frame $x $y
+    if ($pixel -eq $null) { continue }
+    $maximum = [Math]::Max($pixel.r, [Math]::Max($pixel.g, $pixel.b))
+    $minimum = [Math]::Min($pixel.r, [Math]::Min($pixel.g, $pixel.b))
+    $luminance = ($pixel.r + $pixel.g + $pixel.b) / 3.0
+    if (($maximum - $minimum) -le 10 -and $luminance -ge 180 -and $luminance -le 244) { $dividerPixels += 1 }
+    $luminanceTotal += $luminance
+    $samples += 1
+  }
+  if ($samples -eq 0) { return @{ samples = 0; dividerRatio = 0.0; luminance = 0.0 } }
+  return @{
+    samples = $samples
+    dividerRatio = [double]$dividerPixels / [double]$samples
+    luminance = $luminanceTotal / [double]$samples
+  }
+}
+
+function Get-VisualSendChatBottom($frame, [double]$sidebarRight) {
+  $left = [int][Math]::Max(0, [Math]::Round($sidebarRight + 8.0))
+  $right = [int][Math]::Min($frame.width, [Math]::Round([double]$frame.width - 8.0))
+  $startY = [int][Math]::Floor([double]$frame.height * 0.55)
+  $endY = [int][Math]::Ceiling([double]$frame.height * 0.92)
+  $candidateY = -1
+  for ($y = $startY; $y -le $endY; $y++) {
+    $row = Get-VisualSendRowStats $frame $y $left $right
+    if ($row.samples -eq 0 -or $row.dividerRatio -lt 0.72) { continue }
+    $above = Get-VisualSendRowStats $frame ([Math]::Max(0, $y - 3)) $left $right
+    $below = Get-VisualSendRowStats $frame ([Math]::Min($frame.height - 1, $y + 3)) $left $right
+    $contrastsAbove = $row.luminance -le ($above.luminance - 3.0)
+    $contrastsBelow = $row.luminance -le ($below.luminance - 3.0)
+    if ($contrastsAbove -and $contrastsBelow -and [Math]::Abs($above.luminance - $below.luminance) -le 12.0) {
+      $candidateY = $y
+    }
+  }
+  if ($candidateY -ge 0) { return [double][Math]::Max(0, $candidateY - 2) }
+  return [double]$frame.height * 0.60
+}
+
+function Get-VisualSendIncomingEvidenceSignature($line, [string]$role, [double]$dpi) {
+  $logicalScale = [Math]::Max(0.5, $dpi / 120.0)
+  $widthBucket = [int][Math]::Round(([double]$line.width / $logicalScale) / 8.0)
+  $heightBucket = [int][Math]::Round(([double]$line.height / $logicalScale) / 4.0)
+  $evidenceSeed = [string]::Join([char]10, @(
+    (Normalize-VisualSendText ([string]$line.text)),
+    $role,
+    ("w:{0}" -f $widthBucket),
+    ("h:{0}" -f $heightBucket)
+  ))
+  return Get-VisualSendSha256 $evidenceSeed
+}
+
+function Test-VisualSendLatestIncoming($frame, [double]$sidebarRight, [double]$dpi) {
+  if ([string]::IsNullOrWhiteSpace($expectedIncoming) -and $expectedIncomingSignature -notmatch "^[a-f0-9]{64}$") { return $true }
   # Use the same full-frame OCR geometry as the scanner. A cropped OCR pass can
   # recognize the same Chinese line differently, while draft input can move the
   # line without changing its identity.
   $ocr = Get-MomentsOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
   if (-not $ocr.ok) { return $false }
-  $sidebarRight = [double]$frame.width * 0.273
-  $chatMid = $sidebarRight + (([double]$frame.width - $sidebarRight) * 0.58)
+  $chatBottom = Get-VisualSendChatBottom $frame $sidebarRight
+  $logicalScale = [Math]::Max(0.5, [Math]::Min(4.0, $dpi / 120.0))
   $messageLines = New-Object System.Collections.Generic.List[object]
   foreach ($line in @($ocr.lines)) {
     if ($line -eq $null -or -not (Test-VisualSendPureMessageText ([string]$line.text))) { continue }
     $left = [double]$line.bounds.left
     $top = [double]$line.bounds.top
-    if ($left -lt ([double]$frame.width * 0.286) -or $left -ge ([double]$frame.width * 0.982) -or
-      $top -lt ([double]$frame.height * 0.154) -or $top -gt ([double]$frame.height * 0.81)) { continue }
+    $normalizedLine = Normalize-VisualSendText ([string]$line.text)
+    if ($left -lt ($sidebarRight + (14.0 * $logicalScale)) -or $left -ge ([double]$frame.width - (20.0 * $logicalScale)) -or
+      $top -lt (108.0 * $logicalScale) -or $top -gt $chatBottom) { continue }
     [void]$messageLines.Add([pscustomobject]@{
-      text = Normalize-VisualSendText ([string]$line.text)
+      text = $normalizedLine
       left = $left
       top = $top
+      width = [double]$line.bounds.width
+      height = [double]$line.bounds.height
     })
   }
   if ($messageLines.Count -eq 0) { return $false }
   $latest = @($messageLines.ToArray() | Sort-Object top, left | Select-Object -Last 1)[0]
-  return [string]$latest.text -ceq (Normalize-VisualSendText $expectedIncoming) -and [double]$latest.left -lt $chatMid
+  $latestRole = Get-VisualSendMessageRole $frame $latest $sidebarRight $logicalScale
+  if ($latestRole -cne "user") { return $false }
+  if ($expectedIncomingSignature -match "^[a-f0-9]{64}$") {
+    # Keep this identity calculation byte-for-byte aligned with the scanner.
+    # The sidebar text is the semantic message, while this bubble signature is
+    # the final guard against the conversation changing before the send click.
+    if ((Get-VisualSendIncomingEvidenceSignature $latest $latestRole $dpi) -ceq $expectedIncomingSignature) { return $true }
+  }
+  if ([string]$latest.text -ceq (Normalize-VisualSendText $expectedIncoming)) { return $true }
+  # The chat bubble and selected-row preview use different font sizes. If the
+  # bubble OCR drifts, independently require the same selected contact preview,
+  # while the caller also holds the exact header and latest customer role.
+  return Test-VisualSendSelectedSidebarPreview $frame @($ocr.lines) $sidebarRight $logicalScale
 }
 
 function Test-VisualSendGreenPixel($frame, [int]$x, [int]$y) {
@@ -202,6 +347,81 @@ function Get-VisualSendGreenRatio($frame, [int]$left, [int]$top, [int]$right, [i
   }
   if ($total -eq 0) { return 0.0 }
   return [double]$green / [double]$total
+}
+
+function Get-VisualSendLineGreenRatio($frame, $line, [double]$sidebarRight) {
+  $paneWidth = [Math]::Max(1.0, [double]$frame.width - $sidebarRight)
+  $left = [double]$line.left
+  $right = $left + [double]$line.width
+  $top = [double]$line.top
+  $bottom = $top + [double]$line.height
+  $paddingX = [Math]::Max(8.0, $paneWidth * 0.012)
+  $paddingY = [Math]::Max(6.0, [double]$frame.height * 0.008)
+  return Get-VisualSendGreenRatio $frame ([int]($left - $paddingX)) ([int]($top - $paddingY)) ([int]($right + $paddingX)) ([int]($bottom + $paddingY))
+}
+
+function Get-VisualSendMessageRole($frame, $line, [double]$sidebarRight, [double]$logicalScale) {
+  $paneWidth = [Math]::Max(1.0, [double]$frame.width - $sidebarRight)
+  $left = [double]$line.left
+  $right = $left + [double]$line.width
+  $top = [double]$line.top
+  $bottom = $top + [double]$line.height
+  $bubbleLeft = [Math]::Max($sidebarRight, $left - (12.0 * $logicalScale))
+  $bubbleTop = [Math]::Max(0.0, $top - (8.0 * $logicalScale))
+  $bubbleRight = [Math]::Min([double]$frame.width, $right + (12.0 * $logicalScale))
+  $bubbleBottom = [Math]::Min([double]$frame.height, $bottom + (8.0 * $logicalScale))
+  $greenRatio = Get-VisualSendGreenRatio $frame ([int][Math]::Floor($bubbleLeft)) ([int][Math]::Floor($bubbleTop)) ([int][Math]::Ceiling($bubbleRight)) ([int][Math]::Ceiling($bubbleBottom))
+
+  # Outgoing bubbles are green. Prefer that local proof over the OCR text's
+  # left edge: a long outgoing line can cross the pane midpoint.
+  if ($greenRatio -ge 0.16) { return "assistant" }
+
+  # Only clear edge anchors may fall back to geometry. Ambiguous middle lines
+  # fail closed instead of becoming new customer messages.
+  $rightInset = [Math]::Max((18.0 * $logicalScale), $paneWidth * 0.035)
+  if ($right -ge ([double]$frame.width - $rightInset) -and
+      $left -ge ($sidebarRight + ($paneWidth * 0.18))) { return "assistant" }
+  if ($left -le ($sidebarRight + ($paneWidth * 0.18)) -and
+      $right -le ($sidebarRight + ($paneWidth * 0.84))) { return "user" }
+  return "unknown"
+}
+
+function Test-VisualSendGreenBridge($frame, $upper, $lower) {
+  $upperBottom = [int][Math]::Ceiling([double]$upper.top + [double]$upper.height)
+  $lowerTop = [int][Math]::Floor([double]$lower.top)
+  if ($lowerTop -le $upperBottom) { return $true }
+  $upperRight = [double]$upper.left + [double]$upper.width
+  $lowerRight = [double]$lower.left + [double]$lower.width
+  $x = [int][Math]::Min($frame.width - 1, [Math]::Round([Math]::Max($upperRight, $lowerRight) + 6.0))
+  $green = 0
+  $samples = 0
+  for ($y = $upperBottom; $y -le $lowerTop; $y++) {
+    if (Test-VisualSendGreenPixel $frame $x $y) { $green += 1 }
+    $samples += 1
+  }
+  return $samples -gt 0 -and ([double]$green / [double]$samples) -ge 0.72
+}
+
+function Test-VisualSendOutgoingLineEvidence($frame, $lines, [string]$reply, [double]$sidebarRight) {
+  $wanted = Normalize-VisualSendText $reply
+  if (-not $wanted) { return $false }
+  $ordered = @($lines | Sort-Object { [double]$_.top }, { [double]$_.left })
+  if ($ordered.Count -eq 0) { return $false }
+  $latest = $ordered[-1]
+  if ((Get-VisualSendLineGreenRatio $frame $latest $sidebarRight) -lt 0.16) { return $false }
+  $aggregate = Normalize-VisualSendText ([string]$latest.text)
+  if ($aggregate -ceq $wanted) { return $true }
+  $lower = $latest
+  for ($index = $ordered.Count - 2; $index -ge 0; $index--) {
+    $upper = $ordered[$index]
+    if ((Get-VisualSendLineGreenRatio $frame $upper $sidebarRight) -lt 0.16) { break }
+    if (-not (Test-VisualSendGreenBridge $frame $upper $lower)) { break }
+    $aggregate = (Normalize-VisualSendText ([string]$upper.text)) + $aggregate
+    if ($aggregate -ceq $wanted) { return $true }
+    if ($aggregate.Length -ge $wanted.Length) { break }
+    $lower = $upper
+  }
+  return $false
 }
 
 function Find-VisualSendGreenComponents($frame, $region) {
@@ -377,20 +597,26 @@ function Write-VisualSendDraft($lock) {
   return @{ ok = $readback.ok -and $readback.exact; exact = $readback.exact }
 }
 
-function Test-VisualSendOutgoingBubble($frame) {
-  $rect = @{
-    left = [double]($frame.width * 0.45)
-    top = [double]($frame.height * 0.13)
-    width = [double]($frame.width * 0.53)
-    height = [double]($frame.height * 0.64)
-  }
-  $ocr = Get-MomentsOcrObservation $frame $rect
+function Test-VisualSendOutgoingBubble($frame, [double]$sidebarRight) {
+  $chatBottom = Get-VisualSendChatBottom $frame $sidebarRight
+  $ocr = Get-MomentsOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
   if (-not $ocr.ok) { return $false }
-  $wanted = Normalize-VisualSendText $expectedReply
-  return @($ocr.lines | Where-Object {
-    (Normalize-VisualSendText ([string]$_.text)) -ceq $wanted -and
-    ([double]$_.bounds.left + ([double]$_.bounds.width / 2.0)) -ge ([double]$rect.width * 0.35)
-  }).Count -ge 1
+  $messageLines = New-Object System.Collections.Generic.List[object]
+  foreach ($line in @($ocr.lines)) {
+    if ($line -eq $null -or -not (Test-VisualSendPureMessageText ([string]$line.text))) { continue }
+    $left = [double]$line.bounds.left
+    $top = [double]$line.bounds.top
+    if ($left -lt ($sidebarRight + 14.0) -or $left -ge ([double]$frame.width * 0.982) -or
+        $top -lt ([double]$frame.height * 0.13) -or $top -gt $chatBottom) { continue }
+    [void]$messageLines.Add([pscustomobject]@{
+      text = Normalize-VisualSendText ([string]$line.text)
+      left = $left
+      top = $top
+      width = [double]$line.bounds.width
+      height = [double]$line.bounds.height
+    })
+  }
+  return Test-VisualSendOutgoingLineEvidence $frame @($messageLines.ToArray()) $expectedReply $sidebarRight
 }
 
 $lock = Get-VisualSendLock
@@ -462,7 +688,9 @@ if (-not $guard.ok) {
 $latestIncomingStillCurrent = $false
 try {
   $guardConversation = Test-VisualSendConversation $guard
-  $latestIncomingStillCurrent = $guardConversation.ok -and (Test-VisualSendLatestIncoming $guard)
+  $guardDpi = Get-VisualSendWindowDpi $lock.hWnd
+  $guardSidebarRight = Get-VisualSendSidebarRight ([double]$guard.width) $guardDpi
+  $latestIncomingStillCurrent = $guardConversation.ok -and (Test-VisualSendLatestIncoming $guard $guardSidebarRight $guardDpi)
 } finally {
   Close-MomentsVisualFrame $guard
 }
@@ -501,7 +729,11 @@ $bubbleVerified = $false
 if ($postFrame.ok) {
   try {
     $sameConversation = (Test-VisualSendConversation $postFrame).ok
-    if ($sameConversation) { $bubbleVerified = Test-VisualSendOutgoingBubble $postFrame }
+    if ($sameConversation) {
+      $postDpi = Get-VisualSendWindowDpi $postLock.hWnd
+      $postSidebarRight = Get-VisualSendSidebarRight ([double]$postFrame.width) $postDpi
+      $bubbleVerified = Test-VisualSendOutgoingBubble $postFrame $postSidebarRight
+    }
   } finally {
     Close-MomentsVisualFrame $postFrame
   }
@@ -527,6 +759,7 @@ function visualSendEnvironment(options, phase) {
     XIAOXI_VISUAL_SEND_HWND: String(options.hWnd ?? ""),
     XIAOXI_VISUAL_SEND_CONVERSATION: String(options.conversation ?? ""),
     XIAOXI_VISUAL_SEND_INCOMING: String(options.incomingMessage ?? ""),
+    XIAOXI_VISUAL_SEND_INCOMING_SIGNATURE: String(options.incomingMessageSignature ?? ""),
     // The controller's strict line/pixel proof avoids a second incompatible
     // preflight crop. The send phase still checks that this text remains the
     // latest incoming line immediately before the click.
@@ -603,11 +836,28 @@ function createVisualAutoReplySender({
       }
     }
 
-    let sent = await powerShellRunner(
-      WECHAT_VISUAL_AUTO_REPLY_POWERSHELL,
-      visualSendEnvironment(request, "send"),
-      { ensure: false, sta: true, timeout: 75_000 }
-    );
+    let sent;
+    try {
+      sent = await powerShellRunner(
+        WECHAT_VISUAL_AUTO_REPLY_POWERSHELL,
+        visualSendEnvironment(request, "send"),
+        { ensure: false, sta: true, timeout: 75_000 }
+      );
+    } catch {
+      // The click lives inside this final phase, so a timeout/rejection cannot
+      // prove that nothing was sent. Report an attempted unknown outcome and
+      // let the controller fence the turn instead of retrying.
+      sent = {
+        ok: false,
+        reason: "visual_send_outcome_unknown",
+        outcomeUnknown: true,
+        sendAttempted: true,
+        conversationVerified: true,
+        draftVerified: true,
+        pid,
+        hWnd
+      };
+    }
     if (!sent || typeof sent.sendAttempted !== "boolean") {
       sent = {
         ok: false,

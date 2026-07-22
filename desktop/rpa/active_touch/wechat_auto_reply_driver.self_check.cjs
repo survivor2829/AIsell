@@ -302,6 +302,7 @@ const currentOpenResults = [
 ];
 const currentOpenDriver = createWechatAutoReplyDriver(() => currentOpenResults.shift());
 assert.equal(typeof currentOpenDriver.scanWechatIncoming.resetBaselines, "function");
+assert.equal(typeof currentOpenDriver.scanWechatIncoming.noteVerifiedSend, "function");
 assert.equal((await currentOpenDriver.primeWechatSession(["张总"])).primed, true, "listener start must await a current-conversation-only baseline probe");
 assert.equal((await currentOpenDriver.scanWechatIncoming(["张总"])).reason, "no_unread_message");
 assert.equal((await currentOpenDriver.scanWechatIncoming(["张总"])).runtimeId, "user-2", "a new incoming message in the open conversation must be returned without an unread badge");
@@ -328,6 +329,89 @@ const deferredRetry = await retryDriver.scanWechatIncoming(["李经理"]);
 assert.equal(deferredRetry.runtimeId, "retry-1", "the deferred retry must run after one fresh customer message");
 assert.deepEqual(deferredRetry.scanProbe, { ok: null, reason: "retry_candidate_without_probe" }, "a deferred cached retry must not pretend that a live probe ran");
 assert.equal(retryScanCalls, 2, "the deferred retry should not need another PowerShell scan");
+
+const boundaryProbeEnvironments = [];
+const boundaryProbeResults = [
+  {
+    ok: false,
+    reason: "chat_boundary_unresolved",
+    sessionBaselinePending: "李经理",
+    sessionBaselines: [{ conversation: "李经理", signature: "d".repeat(64) }]
+  },
+  { ...freshCandidate, runtimeId: "fresh-after-boundary" }
+];
+const boundaryFenceDriver = createWechatAutoReplyDriver((script, env) => {
+  boundaryProbeEnvironments.push(env);
+  return boundaryProbeResults.shift() || { ok: false, reason: "no_unread_message" };
+});
+assert.equal(boundaryFenceDriver.scanWechatIncoming.requeue(retryCandidate), true);
+const unresolvedBoundary = await boundaryFenceDriver.scanWechatIncoming(["李经理"]);
+assert.deepEqual(unresolvedBoundary, { ok: false, reason: "chat_boundary_unresolved", sessionBaselinePending: "李经理", sessionBaselines: [{ conversation: "李经理", signature: "d".repeat(64) }] });
+assert.equal(unresolvedBoundary.runtimeId, undefined, "an unresolved chat boundary must not release a queued candidate toward AI/send");
+const freshAfterBoundary = await boundaryFenceDriver.scanWechatIncoming(["李经理"]);
+assert.equal(freshAfterBoundary.runtimeId, "fresh-after-boundary", "a fresh proven customer message must be scanned before an older retry after boundary recovery");
+assert.deepEqual(JSON.parse(boundaryProbeEnvironments[1].XIAOXI_SESSION_BASELINES), {}, "an unresolved chat boundary must not advance or seed session baselines");
+const retryAfterBoundary = await boundaryFenceDriver.scanWechatIncoming(["李经理"]);
+assert.equal(retryAfterBoundary.runtimeId, "retry-1", "the queued retry must remain available after the boundary becomes provable");
+assert.equal(boundaryProbeEnvironments.length, 2, "the preserved retry should be released only after one later fresh probe");
+
+const roleProbeEnvironments = [];
+const roleProbeResults = [
+  {
+    ok: false,
+    reason: "latest_message_role_unresolved",
+    sessionBaselinePending: "李经理",
+    sessionBaselines: [{ conversation: "李经理", signature: "e".repeat(64) }]
+  },
+  {
+    ...freshCandidate,
+    runtimeId: "must-not-escape-role-probe",
+    scanProbe: { ok: false, reason: "latest_message_role_unresolved" },
+    sessionBaselinePending: "李经理",
+    sessionBaselines: [{ conversation: "李经理", signature: "f".repeat(64) }]
+  },
+  { ...freshCandidate, runtimeId: "fresh-after-role-proof" }
+];
+const roleFenceDriver = createWechatAutoReplyDriver((script, env) => {
+  roleProbeEnvironments.push(env);
+  return roleProbeResults.shift() || { ok: false, reason: "no_unread_message" };
+});
+assert.equal(roleFenceDriver.scanWechatIncoming.requeue(retryCandidate), true);
+const unresolvedDirectRole = await roleFenceDriver.scanWechatIncoming(["李经理"]);
+assert.equal(unresolvedDirectRole.reason, "latest_message_role_unresolved");
+assert.equal(unresolvedDirectRole.runtimeId, undefined, "a direct unresolved role must not release a queued candidate toward AI/send");
+const unresolvedNestedRole = await roleFenceDriver.scanWechatIncoming(["李经理"]);
+assert.deepEqual(unresolvedNestedRole, {
+  ok: false,
+  reason: "latest_message_role_unresolved",
+  scanProbe: { ok: false, reason: "latest_message_role_unresolved" }
+});
+assert.equal(unresolvedNestedRole.runtimeId, undefined, "an unresolved nested role probe must not escape as a send candidate");
+assert.equal((await roleFenceDriver.scanWechatIncoming(["李经理"])).runtimeId, "fresh-after-role-proof");
+assert.deepEqual(JSON.parse(roleProbeEnvironments[2].XIAOXI_SESSION_BASELINES), {}, "unresolved direct and nested role evidence must not advance or seed session baselines");
+assert.equal((await roleFenceDriver.scanWechatIncoming(["李经理"])).runtimeId, "retry-1", "the queued retry must survive direct and nested unresolved role evidence");
+assert.equal(roleProbeEnvironments.length, 3);
+
+let focusNormalizeCalls = 0;
+let focusScanCalls = 0;
+const focusFenceDriver = createWechatAutoReplyDriverWithWindowLayout(
+  () => {
+    focusScanCalls += 1;
+    return { ...freshCandidate, runtimeId: "fresh-after-focus" };
+  },
+  async () => {
+    focusNormalizeCalls += 1;
+    return focusNormalizeCalls === 1 ? { ok: false, reason: "wechat_focus_failed" } : normalizedWindow;
+  }
+);
+assert.equal(focusFenceDriver.scanWechatIncoming.requeue(retryCandidate), true);
+const failedFocus = await focusFenceDriver.scanWechatIncoming(["李经理"]);
+assert.deepEqual(failedFocus, { ok: false, reason: "wechat_focus_failed" });
+assert.equal(failedFocus.runtimeId, undefined, "a focus failure must not release a queued candidate toward AI/send");
+assert.equal(focusScanCalls, 0, "a focus failure must stop before the scanner can observe or advance baselines");
+assert.equal((await focusFenceDriver.scanWechatIncoming(["李经理"])).runtimeId, "fresh-after-focus");
+assert.equal((await focusFenceDriver.scanWechatIncoming(["李经理"])).runtimeId, "retry-1", "a retry must remain queued across a transient focus failure");
+assert.equal(focusScanCalls, 1);
 
 const pauseStartDriver = createWechatAutoReplyDriver(() => ({ ok: false, reason: "no_unread_message" }));
 assert.equal(pauseStartDriver.scanWechatIncoming.requeue(retryCandidate), true);
@@ -532,6 +616,64 @@ assert.equal(verifiedVisualFallback.ok, true);
 assert.equal(verifiedVisualFallback.runtimeId, visualFallbackCandidate.runtimeId, "visual verification must preserve the public event identity");
 assert.equal(visualFallbackDriver.scanWechatIncoming.requeue({ ...visualFallbackCandidate, visualMode: "" }), true, "visual v2 candidates must keep the visual retry queue even after serialization drops the mode field");
 visualFallbackDriver.scanWechatIncoming.resetBaselines();
+
+const visualFencePreview0 = "1".repeat(64);
+const visualFencePreview1 = "2".repeat(64);
+const visualFencePreview2 = "3".repeat(64);
+const visualFenceMessage0 = "4".repeat(64);
+const visualFenceMessage1 = "5".repeat(64);
+const visualFenceMessage2 = "6".repeat(64);
+const visualFenceResults = [
+  { ok: false, reason: "session_probe_unsupported", pid: 81, hWnd: 91 },
+  {
+    ok: true,
+    source: "session_prime",
+    pid: 81,
+    hWnd: 91,
+    sessionBaselines: [{ conversation: "Visual客户", signature: visualFencePreview0 }],
+    sessionMessageBaselines: [{ conversation: "Visual客户", signature: visualFenceMessage0 }]
+  },
+  {
+    ok: true,
+    conversation: "Visual客户",
+    message: "旧重试",
+    runtimeId: `visual:v1:${"7".repeat(64)}`,
+    previewSignature: visualFencePreview1,
+    messageSignature: visualFenceMessage1,
+    pid: 81,
+    hWnd: 91,
+    source: "preview_change",
+    latestRole: "user",
+    context: [{ role: "user", content: "旧重试", key: `visual:v1:${"7".repeat(64)}` }]
+  },
+  { ok: false, reason: "wechat_focus_failed", pid: 81, hWnd: 91 },
+  {
+    ok: true,
+    conversation: "Visual客户",
+    message: "恢复后的新消息",
+    runtimeId: `visual:v1:${"8".repeat(64)}`,
+    previewSignature: visualFencePreview2,
+    messageSignature: visualFenceMessage2,
+    pid: 81,
+    hWnd: 91,
+    source: "preview_change",
+    latestRole: "user",
+    context: [{ role: "user", content: "恢复后的新消息", key: `visual:v1:${"8".repeat(64)}` }]
+  },
+  { ok: false, reason: "no_unread_message", pid: 81, hWnd: 91 }
+];
+const visualFenceDriver = createWechatAutoReplyDriver(() => visualFenceResults.shift());
+assert.equal((await visualFenceDriver.primeWechatSession(["Visual客户"])).ok, true);
+const visualRetryCandidate = await visualFenceDriver.scanWechatIncoming(["Visual客户"]);
+assert.equal(visualFenceDriver.scanWechatIncoming.requeue(visualRetryCandidate), true);
+const visualFocusFence = await visualFenceDriver.scanWechatIncoming(["Visual客户"]);
+assert.equal(visualFocusFence.reason, "wechat_focus_failed");
+assert.equal(visualFocusFence.ok, false);
+assert.equal(visualFocusFence.runtimeId, undefined, "a visual focus failure must not escape as a queued send candidate");
+const visualFreshAfterFocus = await visualFenceDriver.scanWechatIncoming(["Visual客户"]);
+assert.equal(visualFreshAfterFocus.message, "恢复后的新消息");
+const visualRetryAfterFocus = await visualFenceDriver.scanWechatIncoming(["Visual客户"]);
+assert.equal(visualRetryAfterFocus.runtimeId, visualRetryCandidate.runtimeId, "the top-level visual fence must preserve a retry that an inner scanner attached to a failed focus probe");
 
 let eventLoopAdvanced = false;
 setTimeout(() => { eventLoopAdvanced = true; }, 0);

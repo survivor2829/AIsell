@@ -97,6 +97,169 @@ function Test-AutoReplyVisualRedPixel($frame, [int]$x, [int]$y) {
   return $red -ge 205 -and $green -le 125 -and $blue -le 125 -and ($red - $green) -ge 85 -and ($red - $blue) -ge 85
 }
 
+function Test-AutoReplyVisualGreenPixel($frame, [int]$x, [int]$y) {
+  if ($x -lt 0 -or $y -lt 0 -or $x -ge $frame.width -or $y -ge $frame.height) { return $false }
+  $offset = ($y * $frame.stride) + ($x * 4)
+  $blue = [int]$frame.bytes[$offset]
+  $green = [int]$frame.bytes[$offset + 1]
+  $red = [int]$frame.bytes[$offset + 2]
+  return $green -ge 105 -and $green -ge ($red + 28) -and $green -ge ($blue + 18)
+}
+
+function Get-AutoReplyVisualGreenRatio($frame, $rect) {
+  $green = 0
+  $total = 0
+  $left = [int][Math]::Max(0, [Math]::Floor([double]$rect.left))
+  $top = [int][Math]::Max(0, [Math]::Floor([double]$rect.top))
+  $right = [int][Math]::Min($frame.width, [Math]::Ceiling([double]$rect.left + [double]$rect.width))
+  $bottom = [int][Math]::Min($frame.height, [Math]::Ceiling([double]$rect.top + [double]$rect.height))
+  for ($y = $top; $y -lt $bottom; $y += 2) {
+    for ($x = $left; $x -lt $right; $x += 2) {
+      if (Test-AutoReplyVisualGreenPixel $frame $x $y) { $green += 1 }
+      $total += 1
+    }
+  }
+  if ($total -eq 0) { return 0.0 }
+  return [double]$green / [double]$total
+}
+
+function Get-AutoReplyVisualMessageRole($frame, $line, [double]$sidebarRight, $bubbleRect) {
+  $paneWidth = [Math]::Max(1.0, [double]$frame.width - $sidebarRight)
+  $left = [double]$line.bounds.left
+  $right = $left + [double]$line.bounds.width
+  $greenRatio = Get-AutoReplyVisualGreenRatio $frame $bubbleRect
+
+  # WeChat renders our outgoing bubbles green. This local pixel proof takes
+  # precedence over OCR geometry because a long right-aligned bubble can cross
+  # the chat midpoint and make its text look left-aligned.
+  if ($greenRatio -ge 0.16) { return "assistant" }
+
+  # Geometry is only a conservative fallback. A line must be clearly anchored
+  # to an edge; an ambiguous middle line is never treated as customer input.
+  $rightInset = [Math]::Max((Scale-AutoReplyVisualMetric 18.0), $paneWidth * 0.035)
+  if ($right -ge ([double]$frame.width - $rightInset) -and
+      $left -ge ($sidebarRight + ($paneWidth * 0.18))) { return "assistant" }
+  if ($left -le ($sidebarRight + ($paneWidth * 0.18)) -and
+      $right -le ($sidebarRight + ($paneWidth * 0.84))) { return "user" }
+  return "unknown"
+}
+
+function Get-AutoReplyVisualRowStats($frame, [int]$y, [int]$left, [int]$right) {
+  if ($y -lt 0 -or $y -ge $frame.height -or $right -le $left) {
+    return @{ samples = 0; luminance = 0.0; variance = 0.0; neutralRatio = 0.0; lightNeutralRatio = 0.0 }
+  }
+  $samples = 0
+  $neutralPixels = 0
+  $lightNeutralPixels = 0
+  $luminanceTotal = 0.0
+  $luminanceSquaredTotal = 0.0
+  for ($x = [Math]::Max(0, $left); $x -lt [Math]::Min($frame.width, $right); $x += 4) {
+    $offset = ($y * $frame.stride) + ($x * 4)
+    $blue = [int]$frame.bytes[$offset]
+    $green = [int]$frame.bytes[$offset + 1]
+    $red = [int]$frame.bytes[$offset + 2]
+    $maximum = [Math]::Max($red, [Math]::Max($green, $blue))
+    $minimum = [Math]::Min($red, [Math]::Min($green, $blue))
+    $luminance = ($red + $green + $blue) / 3.0
+    $neutral = ($maximum - $minimum) -le 12
+    if ($neutral) { $neutralPixels += 1 }
+    if ($neutral -and $luminance -ge 238) { $lightNeutralPixels += 1 }
+    $luminanceTotal += $luminance
+    $luminanceSquaredTotal += ($luminance * $luminance)
+    $samples += 1
+  }
+  if ($samples -eq 0) {
+    return @{ samples = 0; luminance = 0.0; variance = 0.0; neutralRatio = 0.0; lightNeutralRatio = 0.0 }
+  }
+  $mean = $luminanceTotal / [double]$samples
+  return @{
+    samples = $samples
+    luminance = $mean
+    variance = [Math]::Max(0.0, ($luminanceSquaredTotal / [double]$samples) - ($mean * $mean))
+    neutralRatio = [double]$neutralPixels / [double]$samples
+    lightNeutralRatio = [double]$lightNeutralPixels / [double]$samples
+  }
+}
+
+function Get-AutoReplyVisualHorizontalEdgeStats($frame, [int]$y, [int]$left, [int]$right, [int]$offset) {
+  if ($y -lt $offset -or $y -ge ($frame.height - $offset) -or $right -le $left) {
+    return @{ samples = 0; edgeRatio = 0.0; luminance = 0.0 }
+  }
+  $samples = 0
+  $edgePixels = 0
+  $luminanceTotal = 0.0
+  for ($x = [Math]::Max(0, $left); $x -lt [Math]::Min($frame.width, $right); $x += 4) {
+    $centerOffset = ($y * $frame.stride) + ($x * 4)
+    $aboveOffset = (($y - $offset) * $frame.stride) + ($x * 4)
+    $belowOffset = (($y + $offset) * $frame.stride) + ($x * 4)
+    $blue = [int]$frame.bytes[$centerOffset]
+    $green = [int]$frame.bytes[$centerOffset + 1]
+    $red = [int]$frame.bytes[$centerOffset + 2]
+    $maximum = [Math]::Max($red, [Math]::Max($green, $blue))
+    $minimum = [Math]::Min($red, [Math]::Min($green, $blue))
+    $centerLuminance = ($red + $green + $blue) / 3.0
+    $aboveLuminance = ([int]$frame.bytes[$aboveOffset] + [int]$frame.bytes[$aboveOffset + 1] + [int]$frame.bytes[$aboveOffset + 2]) / 3.0
+    $belowLuminance = ([int]$frame.bytes[$belowOffset] + [int]$frame.bytes[$belowOffset + 1] + [int]$frame.bytes[$belowOffset + 2]) / 3.0
+    if (($maximum - $minimum) -le 12 -and
+        $centerLuminance -ge 180 -and $centerLuminance -le 252 -and
+        $centerLuminance -le ($aboveLuminance - 2.0) -and
+        $centerLuminance -le ($belowLuminance - 2.0)) {
+      $edgePixels += 1
+    }
+    $luminanceTotal += $centerLuminance
+    $samples += 1
+  }
+  if ($samples -eq 0) { return @{ samples = 0; edgeRatio = 0.0; luminance = 0.0 } }
+  return @{
+    samples = $samples
+    edgeRatio = [double]$edgePixels / [double]$samples
+    luminance = $luminanceTotal / [double]$samples
+  }
+}
+
+function Test-AutoReplyVisualEditorArea($frame, [int]$dividerY, [int]$left, [int]$right) {
+  # Only inspect the shallow, normally blank strip immediately below the
+  # divider. Toolbar icons and a typed draft can exist deeper in the editor.
+  $validRows = 0
+  foreach ($logicalOffset in @(4.0, 8.0, 14.0)) {
+    $rowY = $dividerY + [Math]::Max(2, [int][Math]::Round((Scale-AutoReplyVisualMetric $logicalOffset)))
+    if ($rowY -ge $frame.height) { return $false }
+    $row = Get-AutoReplyVisualRowStats $frame $rowY $left $right
+    if ($row.samples -eq 0 -or $row.luminance -lt 238.0 -or
+        $row.neutralRatio -lt 0.88 -or $row.lightNeutralRatio -lt 0.82 -or
+        $row.variance -gt 420.0) { return $false }
+    $validRows += 1
+  }
+  return $validRows -eq 3
+}
+
+function Get-AutoReplyVisualChatBottom($frame, [double]$sidebarRight) {
+  # The composer begins at a long neutral horizontal separator. Detect it so
+  # the final real bubble row remains eligible without admitting draft text.
+  $left = [int][Math]::Max(0, [Math]::Round($sidebarRight + (Scale-AutoReplyVisualMetric 8.0)))
+  $right = [int][Math]::Min($frame.width, [Math]::Round([double]$frame.width - (Scale-AutoReplyVisualMetric 8.0)))
+  $startY = [int][Math]::Floor([double]$frame.height * 0.55)
+  $endY = [int][Math]::Ceiling([double]$frame.height * 0.92)
+  $candidateY = -1
+  for ($y = $startY; $y -le $endY; $y++) {
+    $edge = Get-AutoReplyVisualHorizontalEdgeStats $frame $y $left $right 3
+    if ($edge.samples -eq 0 -or $edge.edgeRatio -lt 0.78) { continue }
+    if (-not (Test-AutoReplyVisualEditorArea $frame $y $left $right)) { continue }
+    # Chat bubbles can create shorter horizontal edges above the composer. The
+    # proven composer divider is the lowest broad edge with a light editor below.
+    $candidateY = $y
+  }
+  if ($candidateY -ge 0) {
+    return @{
+      ok = $true
+      bottom = [double][Math]::Max(0, $candidateY - [Math]::Max(1, [int][Math]::Round($script:AutoReplyVisualScale * 2.0)))
+      dividerY = [double]$candidateY
+      source = "composer_divider"
+    }
+  }
+  return @{ ok = $false; reason = "chat_boundary_unresolved"; source = "none" }
+}
+
 function Test-AutoReplyVisualUnreadDot($frame, $nameBounds) {
   # The avatar occupies most of the old name.left-78..-6 search area. Brand-red
   # avatars therefore looked like unread badges. Only inspect the small cap at
@@ -187,11 +350,13 @@ function Get-AutoReplyVisualSidebarRows($frame, $lines, $allowedSet, [double]$si
     $previewLine = $previewCandidates[0]
     $preview = Normalize-AutoReplyVisualText ([string]$previewLine.compact)
     if (-not (Test-AutoReplyVisualPureText $preview)) { continue }
+    $isDraft = $preview -match "^\[?草稿\]?[：:]?"
     [void]$rows.Add([pscustomobject]@{
       conversation = [string]$match.name
       preview = $preview
       signature = Get-AutoReplyVisualSha256 $preview
       unread = [bool](Test-AutoReplyVisualUnreadDot $frame $nameLine.bounds)
+      draft = [bool]$isDraft
       nameBounds = $nameLine.bounds
       previewBounds = $previewLine.bounds
     })
@@ -341,50 +506,156 @@ function Get-AutoReplyVisualCurrentConversation($lines, $allowedSet, [double]$si
   return @{ ok = $true; active = $true; conversation = [string]$unique[0] }
 }
 
-function Get-AutoReplyVisualLatestMessageEvidence($frame, $lines, [double]$sidebarRight) {
-  $chatBottom = [double]$frame.height * 0.81
-  $chatMid = $sidebarRight + (([double]$frame.width - $sidebarRight) * 0.58)
-  $viewportRect = @{
-    left = $sidebarRight + (Scale-AutoReplyVisualMetric 10.0)
-    top = Scale-AutoReplyVisualMetric 108.0
-    width = [Math]::Max(1.0, [double]$frame.width - $sidebarRight - (Scale-AutoReplyVisualMetric 24.0))
-    height = [Math]::Max(1.0, $chatBottom - (Scale-AutoReplyVisualMetric 108.0))
+function Get-AutoReplyVisualBubbleRect($frame, $line, [double]$sidebarRight) {
+  $left = [Math]::Max($sidebarRight, [double]$line.bounds.left - (Scale-AutoReplyVisualMetric 12.0))
+  $top = [Math]::Max(0.0, [double]$line.bounds.top - (Scale-AutoReplyVisualMetric 8.0))
+  $right = [Math]::Min([double]$frame.width, [double]$line.bounds.left + [double]$line.bounds.width + (Scale-AutoReplyVisualMetric 12.0))
+  $bottom = [Math]::Min([double]$frame.height, [double]$line.bounds.top + [double]$line.bounds.height + (Scale-AutoReplyVisualMetric 8.0))
+  return @{
+    left = $left
+    top = $top
+    width = [Math]::Max(1.0, $right - $left)
+    height = [Math]::Max(1.0, $bottom - $top)
   }
-  $viewportHash = Get-MomentsPixelHash $frame $viewportRect
-  if (-not $viewportHash) { return @{ ok = $false; reason = "latest_text_message_missing" } }
+}
+
+function Merge-AutoReplyVisualMessageParts($parts, [bool]$sameRow = $false) {
+  $items = @($parts)
+  if ($items.Count -eq 0) { return $null }
+  $left = [double]::PositiveInfinity
+  $top = [double]::PositiveInfinity
+  $right = 0.0
+  $bottom = 0.0
+  $partCount = 0
+  $texts = New-Object System.Collections.Generic.List[string]
+  $orderedItems = if ($sameRow) {
+    @($items | Sort-Object { [double]$_.bounds.left }, { [double]$_.bounds.top })
+  } else {
+    @($items | Sort-Object { [double]$_.bounds.top }, { [double]$_.bounds.left })
+  }
+  foreach ($item in $orderedItems) {
+    $itemLeft = [double]$item.bounds.left
+    $itemTop = [double]$item.bounds.top
+    $itemRight = $itemLeft + [double]$item.bounds.width
+    $itemBottom = $itemTop + [double]$item.bounds.height
+    $left = [Math]::Min($left, $itemLeft)
+    $top = [Math]::Min($top, $itemTop)
+    $right = [Math]::Max($right, $itemRight)
+    $bottom = [Math]::Max($bottom, $itemBottom)
+    [void]$texts.Add((Normalize-AutoReplyVisualText ([string]$item.compact)))
+    $itemPartCount = if ($item.PSObject.Properties["partCount"] -ne $null) { [int]$item.partCount } else { 1 }
+    $partCount += [Math]::Max(1, $itemPartCount)
+  }
+  return [pscustomobject]@{
+    compact = [string]::Join("", $texts.ToArray())
+    bounds = @{
+      left = $left
+      top = $top
+      width = [Math]::Max(1.0, $right - $left)
+      height = [Math]::Max(1.0, $bottom - $top)
+    }
+    partCount = $partCount
+  }
+}
+
+function Get-AutoReplyVisualMessageRows($messageLines) {
+  $rows = New-Object System.Collections.Generic.List[object]
+  $current = New-Object System.Collections.Generic.List[object]
+  foreach ($line in @($messageLines | Sort-Object { [double]$_.bounds.top }, { [double]$_.bounds.left })) {
+    if ($current.Count -eq 0) { [void]$current.Add($line); continue }
+    $row = Merge-AutoReplyVisualMessageParts $current.ToArray() $true
+    $rowCenter = [double]$row.bounds.top + ([double]$row.bounds.height * 0.5)
+    $lineCenter = [double]$line.bounds.top + ([double]$line.bounds.height * 0.5)
+    $centerTolerance = [Math]::Max((Scale-AutoReplyVisualMetric 8.0), [Math]::Min([double]$row.bounds.height, [double]$line.bounds.height) * 0.45)
+    $rowRight = [double]$row.bounds.left + [double]$row.bounds.width
+    $lineRight = [double]$line.bounds.left + [double]$line.bounds.width
+    $horizontalSeparation = [Math]::Max(0.0, [Math]::Max([double]$row.bounds.left, [double]$line.bounds.left) - [Math]::Min($rowRight, $lineRight))
+    $sameRow = [Math]::Abs($lineCenter - $rowCenter) -le $centerTolerance -and
+      $horizontalSeparation -le (Scale-AutoReplyVisualMetric 40.0)
+    if ($sameRow) {
+      [void]$current.Add($line)
+      continue
+    }
+    [void]$rows.Add($row)
+    $current.Clear()
+    [void]$current.Add($line)
+  }
+  if ($current.Count -gt 0) { [void]$rows.Add((Merge-AutoReplyVisualMessageParts $current.ToArray() $true)) }
+  return @($rows.ToArray())
+}
+
+function Test-AutoReplyVisualMessageRowsSameBubble($frame, $block, $row, [double]$sidebarRight) {
+  $blockBottom = [double]$block.bounds.top + [double]$block.bounds.height
+  $verticalGap = [double]$row.bounds.top - $blockBottom
+  if ($verticalGap -lt -(Scale-AutoReplyVisualMetric 2.0) -or
+      $verticalGap -gt (Scale-AutoReplyVisualMetric 10.0)) { return $false }
+  $blockLeft = [double]$block.bounds.left
+  $blockRight = $blockLeft + [double]$block.bounds.width
+  $rowLeft = [double]$row.bounds.left
+  $rowRight = $rowLeft + [double]$row.bounds.width
+  $overlap = [Math]::Max(0.0, [Math]::Min($blockRight, $rowRight) - [Math]::Max($blockLeft, $rowLeft))
+  $minimumWidth = [Math]::Max(1.0, [Math]::Min([double]$block.bounds.width, [double]$row.bounds.width))
+  $aligned = $overlap -ge ($minimumWidth * 0.20) -or
+    [Math]::Abs($blockLeft - $rowLeft) -le (Scale-AutoReplyVisualMetric 24.0) -or
+    [Math]::Abs($blockRight - $rowRight) -le (Scale-AutoReplyVisualMetric 24.0)
+  if (-not $aligned) { return $false }
+  $blockRole = Get-AutoReplyVisualMessageRole $frame $block $sidebarRight (Get-AutoReplyVisualBubbleRect $frame $block $sidebarRight)
+  $rowRole = Get-AutoReplyVisualMessageRole $frame $row $sidebarRight (Get-AutoReplyVisualBubbleRect $frame $row $sidebarRight)
+  return $blockRole -ceq "unknown" -or $rowRole -ceq "unknown" -or $blockRole -ceq $rowRole
+}
+
+function Get-AutoReplyVisualMessageBlocks($frame, $messageLines, [double]$sidebarRight) {
+  $blocks = New-Object System.Collections.Generic.List[object]
+  $currentRows = New-Object System.Collections.Generic.List[object]
+  foreach ($row in @(Get-AutoReplyVisualMessageRows $messageLines)) {
+    if ($currentRows.Count -eq 0) { [void]$currentRows.Add($row); continue }
+    $block = Merge-AutoReplyVisualMessageParts $currentRows.ToArray()
+    if (Test-AutoReplyVisualMessageRowsSameBubble $frame $block $row $sidebarRight) {
+      [void]$currentRows.Add($row)
+      continue
+    }
+    [void]$blocks.Add($block)
+    $currentRows.Clear()
+    [void]$currentRows.Add($row)
+  }
+  if ($currentRows.Count -gt 0) { [void]$blocks.Add((Merge-AutoReplyVisualMessageParts $currentRows.ToArray())) }
+  return @($blocks.ToArray())
+}
+
+function Get-AutoReplyVisualLatestMessageEvidence($frame, $lines, [double]$sidebarRight) {
+  $chatBoundary = Get-AutoReplyVisualChatBottom $frame $sidebarRight
+  if (-not $chatBoundary.ok) {
+    return @{ ok = $false; reason = "chat_boundary_unresolved"; boundarySource = [string]$chatBoundary.source }
+  }
+  $chatBottom = [double]$chatBoundary.bottom
   $messageLines = @($lines | Where-Object {
     [double]$_.bounds.left -ge ($sidebarRight + (Scale-AutoReplyVisualMetric 14.0)) -and
-      [double]$_.bounds.top -ge (Scale-AutoReplyVisualMetric 108.0) -and [double]$_.bounds.top -le $chatBottom -and
+      [double]$_.bounds.top -ge (Scale-AutoReplyVisualMetric 108.0) -and
+      [double]$_.bounds.top -le $chatBottom -and
       (Test-AutoReplyVisualPureText ([string]$_.compact))
   } | Sort-Object { [double]$_.bounds.top }, { [double]$_.bounds.left })
-  if ($messageLines.Count -eq 0) {
+  $messageBlocks = @(Get-AutoReplyVisualMessageBlocks $frame $messageLines $sidebarRight)
+  if ($messageBlocks.Count -eq 0) {
     return @{
       ok = $true
       hasMessage = $false
-      viewportHash = $viewportHash
-      evidenceSignature = Get-AutoReplyVisualSha256 ([string]::Join([char]10, @("empty", $viewportHash)))
+      evidenceSignature = Get-AutoReplyVisualSha256 "empty"
     }
   }
-  $latest = $messageLines[-1]
+  $latest = $messageBlocks[-1]
   $message = Normalize-AutoReplyVisualText ([string]$latest.compact)
-  $pixelRect = @{
-    left = [Math]::Max($sidebarRight, [double]$latest.bounds.left - (Scale-AutoReplyVisualMetric 8.0))
-    top = [Math]::Max(0.0, [double]$latest.bounds.top - (Scale-AutoReplyVisualMetric 6.0))
-    width = [Math]::Min([double]$frame.width, [double]$latest.bounds.left + [double]$latest.bounds.width + (Scale-AutoReplyVisualMetric 8.0)) - [Math]::Max($sidebarRight, [double]$latest.bounds.left - (Scale-AutoReplyVisualMetric 8.0))
-    height = [Math]::Min([double]$frame.height, [double]$latest.bounds.top + [double]$latest.bounds.height + (Scale-AutoReplyVisualMetric 6.0)) - [Math]::Max(0.0, [double]$latest.bounds.top - (Scale-AutoReplyVisualMetric 6.0))
-  }
-  $pixelHash = Get-MomentsPixelHash $frame $pixelRect
+  $bubbleRect = Get-AutoReplyVisualBubbleRect $frame $latest $sidebarRight
+  $pixelHash = Get-MomentsPixelHash $frame $bubbleRect
   if (-not $pixelHash) { return @{ ok = $false; reason = "latest_text_message_missing" } }
-  $latestRole = if ([double]$latest.bounds.left -ge $chatMid) { "assistant" } else { "user" }
+  $latestRole = Get-AutoReplyVisualMessageRole $frame $latest $sidebarRight $bubbleRect
+  $logicalScale = [Math]::Max(0.5, [double]$script:AutoReplyVisualScale)
+  $bubbleWidthBucket = [int][Math]::Round(([double]$latest.bounds.width / $logicalScale) / 8.0)
+  $bubbleHeightBucket = [int][Math]::Round(([double]$latest.bounds.height / $logicalScale) / 4.0)
   $evidenceSeed = [string]::Join([char]10, @(
     $message,
     $latestRole,
-    $pixelHash,
-    $viewportHash,
-    ("{0:N1}" -f [double]$latest.bounds.left),
-    ("{0:N1}" -f [double]$latest.bounds.top),
-    ("{0:N1}" -f [double]$latest.bounds.width),
-    ("{0:N1}" -f [double]$latest.bounds.height)
+    ("w:{0}" -f $bubbleWidthBucket),
+    ("h:{0}" -f $bubbleHeightBucket)
   ))
   return @{
     ok = $true
@@ -392,7 +663,6 @@ function Get-AutoReplyVisualLatestMessageEvidence($frame, $lines, [double]$sideb
     message = $message
     line = $latest
     pixelHash = $pixelHash
-    viewportHash = $viewportHash
     latestRole = $latestRole
     evidenceSignature = Get-AutoReplyVisualSha256 $evidenceSeed
   }
@@ -400,21 +670,176 @@ function Get-AutoReplyVisualLatestMessageEvidence($frame, $lines, [double]$sideb
 
 function Get-AutoReplyVisualLatestIncoming($frame, $lines, [string]$expectedMessage, [double]$sidebarRight) {
   $latest = Get-AutoReplyVisualLatestMessageEvidence $frame $lines $sidebarRight
-  if (-not $latest.ok -or -not $latest.hasMessage) { return @{ ok = $false; reason = "latest_text_message_missing" } }
-  if ([string]$latest.message -cne (Normalize-AutoReplyVisualText $expectedMessage)) { return @{ ok = $false; reason = "unread_preview_mismatch" } }
-  if ([string]$latest.latestRole -cne "user") {
+  if (-not $latest.ok) { return @{ ok = $false; reason = [string]$latest.reason } }
+  if (-not $latest.hasMessage) { return @{ ok = $false; reason = "latest_text_message_missing" } }
+  if ([string]$latest.latestRole -ceq "assistant") {
     return @{
       ok = $false
       reason = "latest_message_not_incoming"
       message = [string]$latest.message
       line = $latest.line
       pixelHash = [string]$latest.pixelHash
-      viewportHash = [string]$latest.viewportHash
       evidenceSignature = [string]$latest.evidenceSignature
-      latestRole = "assistant"
+      latestRole = [string]$latest.latestRole
+    }
+  }
+  if ([string]$latest.latestRole -cne "user") {
+    return @{
+      ok = $false
+      reason = "latest_message_role_unresolved"
+      message = [string]$latest.message
+      line = $latest.line
+      pixelHash = [string]$latest.pixelHash
+      evidenceSignature = [string]$latest.evidenceSignature
+      latestRole = [string]$latest.latestRole
+    }
+  }
+  if ([string]$latest.message -cne (Normalize-AutoReplyVisualText $expectedMessage)) {
+    return @{
+      ok = $false
+      reason = "unread_preview_mismatch"
+      hasMessage = $true
+      message = [string]$latest.message
+      line = $latest.line
+      pixelHash = [string]$latest.pixelHash
+      evidenceSignature = [string]$latest.evidenceSignature
+      latestRole = [string]$latest.latestRole
     }
   }
   return $latest
+}
+
+function Test-AutoReplyVisualStableIncomingEvidence($first, $second) {
+  if ($first -eq $null -or $second -eq $null -or
+      -not $first.hasMessage -or -not $second.hasMessage -or
+      [string]$first.latestRole -cne "user" -or [string]$second.latestRole -cne "user") { return $false }
+  $firstSignature = [string]$first.evidenceSignature
+  $secondSignature = [string]$second.evidenceSignature
+  return $firstSignature -match "^[a-f0-9]{64}$" -and $firstSignature -ceq $secondSignature
+}
+
+function Test-AutoReplyVisualBoundIncomingEvidence(
+  [string]$observedRuntimeId,
+  [string]$observedMessageSignature,
+  [string]$boundRuntimeId,
+  [string]$boundMessageSignature,
+  [int]$matchingSidebarRows
+) {
+  if ($boundRuntimeId -notmatch "^visual:v1:[a-f0-9]{64}$" -or
+      $boundMessageSignature -notmatch "^[a-f0-9]{64}$") { return $false }
+  if ($observedRuntimeId -ceq $boundRuntimeId -and
+      $observedMessageSignature -ceq $boundMessageSignature) { return $true }
+  return $matchingSidebarRows -eq 1
+}
+
+function Test-AutoReplyVisualCurrentMessageTransition(
+  [string]$previousPreviewSignature,
+  [string]$currentPreviewSignature,
+  [string]$previousMessageSignature,
+  [string]$currentMessageSignature
+) {
+  foreach ($signature in @($previousPreviewSignature, $currentPreviewSignature, $previousMessageSignature, $currentMessageSignature)) {
+    if ($signature -notmatch "^[a-f0-9]{64}$") { return $false }
+  }
+  return $previousPreviewSignature -cne $currentPreviewSignature -and
+    $previousMessageSignature -cne $currentMessageSignature
+}
+
+function Test-AutoReplyVisualSignature([string]$value) {
+  return $value -match "^[a-f0-9]{64}$"
+}
+
+function Resolve-AutoReplyVisualCurrentTransition(
+  [string]$previousPreviewSignature,
+  [string]$previousMessageSignature,
+  $first,
+  $second
+) {
+  if (-not (Test-AutoReplyVisualSignature $previousPreviewSignature) -or
+      -not (Test-AutoReplyVisualSignature $previousMessageSignature) -or
+      $first -eq $null -or -not $first.ok) {
+    return @{ action = "unresolved"; reason = "current_transition_unresolved"; detail = "first_frame_invalid" }
+  }
+  $firstPreviewSignature = [string]$first.previewSignature
+  $firstMessageSignature = [string]$first.messageSignature
+  if (-not (Test-AutoReplyVisualSignature $firstPreviewSignature) -or
+      -not (Test-AutoReplyVisualSignature $firstMessageSignature)) {
+    return @{ action = "unresolved"; reason = "current_transition_unresolved"; detail = "first_frame_identity_invalid" }
+  }
+  $previewChanged = $previousPreviewSignature -cne $firstPreviewSignature
+  $messageChanged = $previousMessageSignature -cne $firstMessageSignature
+  if (-not $previewChanged -and -not $messageChanged) { return @{ action = "none" } }
+  if ($second -eq $null -or -not $second.ok) {
+    return @{ action = "unresolved"; reason = "current_transition_unresolved"; detail = "second_frame_invalid" }
+  }
+  $secondPreviewSignature = [string]$second.previewSignature
+  $secondMessageSignature = [string]$second.messageSignature
+  if (-not (Test-AutoReplyVisualSignature $secondPreviewSignature) -or
+      -not (Test-AutoReplyVisualSignature $secondMessageSignature) -or
+      [string]$first.conversation -cne [string]$second.conversation) {
+    return @{ action = "unresolved"; reason = "current_transition_unresolved"; detail = "second_frame_unstable" }
+  }
+  if ($firstPreviewSignature -cne $secondPreviewSignature -or
+      $firstMessageSignature -cne $secondMessageSignature) {
+    # Immediately after a verified send, WeChat can reflow the green outgoing
+    # bubble for more than one capture interval. Two independent assistant-role
+    # frames prove this is not customer input, so wait for the visual boundary
+    # to settle instead of pausing the listener. Never advance an unstable hash.
+    if ($first.hasMessage -and $second.hasMessage -and
+        -not [bool]$first.draft -and -not [bool]$second.draft -and
+        [string]$first.latestRole -ceq "assistant" -and
+        [string]$second.latestRole -ceq "assistant") {
+      return @{
+        action = "settle"
+        reason = "current_outgoing_settling"
+        conversation = [string]$second.conversation
+        latestRole = "assistant"
+      }
+    }
+    return @{ action = "unresolved"; reason = "current_transition_unresolved"; detail = "second_frame_unstable" }
+  }
+
+  # A stable one-channel change is visual settling, not an incoming turn. Move
+  # only that channel's boundary so a later change in the other channel cannot
+  # combine with it into a synthetic two-channel event.
+  if ($previewChanged -xor $messageChanged) {
+    $resolved = @{
+      action = "consume"
+      reason = "current_visual_drift_consumed"
+      conversation = [string]$second.conversation
+      latestRole = [string]$second.latestRole
+      messageSignature = $secondMessageSignature
+    }
+    if ($previewChanged) {
+      $resolved["baselineAdvance"] = @{ conversation = [string]$second.conversation; signature = $secondPreviewSignature }
+    } else {
+      $resolved["messageBaselineAdvance"] = @{ conversation = [string]$second.conversation; signature = $secondMessageSignature }
+    }
+    return $resolved
+  }
+
+  # A real current-open incoming transition must be present, non-draft and
+  # identical in two independent frames before it can become a candidate.
+  if (-not $first.hasMessage -or -not $second.hasMessage -or
+      [bool]$first.draft -or [bool]$second.draft -or
+      [string]$first.latestRole -cne [string]$second.latestRole) {
+    return @{ action = "unresolved"; reason = "current_transition_unresolved"; detail = "two_channel_evidence_invalid" }
+  }
+  if ([string]$second.latestRole -ceq "user") {
+    return @{ action = "candidate"; conversation = [string]$second.conversation }
+  }
+  if ([string]$second.latestRole -ceq "assistant") {
+    return @{
+      action = "boundary"
+      reason = "latest_message_not_incoming"
+      conversation = [string]$second.conversation
+      latestRole = "assistant"
+      messageSignature = $secondMessageSignature
+      baselineAdvance = @{ conversation = [string]$second.conversation; signature = $secondPreviewSignature }
+      messageBaselineAdvance = @{ conversation = [string]$second.conversation; signature = $secondMessageSignature }
+    }
+  }
+  return @{ action = "unresolved"; reason = "current_transition_unresolved"; detail = "latest_role_unresolved" }
 }
 
 function Get-AutoReplyVisualObservation([IntPtr]$hWnd, [int]$expectedProcessId, $windowRect) {
@@ -422,11 +847,52 @@ function Get-AutoReplyVisualObservation([IntPtr]$hWnd, [int]$expectedProcessId, 
   if (-not $frame.ok) { return @{ ok = $false; reason = [string]$frame.reason } }
   try {
     $ocr = Get-MomentsOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
-    if (-not $ocr.ok) { return @{ ok = $false; reason = [string]$ocr.reason } }
+    if (-not $ocr.ok) {
+      Close-MomentsVisualFrame $frame
+      return @{ ok = $false; reason = [string]$ocr.reason }
+    }
     return @{ ok = $true; frame = $frame; lines = @(Get-AutoReplyVisualLines $ocr) }
   } catch {
     Close-MomentsVisualFrame $frame
     return @{ ok = $false; reason = "visual_ocr_failed" }
+  }
+}
+
+function Get-AutoReplyVisualCurrentTransitionSnapshot(
+  [IntPtr]$hWnd,
+  [int]$expectedProcessId,
+  $windowRect,
+  $allowedSet,
+  [double]$sidebarRight,
+  [string]$expectedConversation
+) {
+  $observation = Get-AutoReplyVisualObservation $hWnd $expectedProcessId $windowRect
+  if (-not $observation.ok) { return @{ ok = $false; reason = [string]$observation.reason } }
+  $frame = $observation.frame
+  try {
+    $sidebar = Get-AutoReplyVisualSidebarRows $frame $observation.lines $allowedSet $sidebarRight
+    if (-not $sidebar.ok) { return @{ ok = $false; reason = [string]$sidebar.reason } }
+    $currentConversation = Get-AutoReplyVisualCurrentConversation $observation.lines $allowedSet $sidebarRight ([double]$frame.width)
+    if (-not $currentConversation.ok -or -not $currentConversation.active -or
+        [string]$currentConversation.conversation -cne $expectedConversation) {
+      return @{ ok = $false; reason = "current_conversation_changed" }
+    }
+    $matchingRows = @($sidebar.rows | Where-Object { [string]$_.conversation -ceq $expectedConversation })
+    if ($matchingRows.Count -ne 1) { return @{ ok = $false; reason = "current_sidebar_row_unresolved" } }
+    $latest = Get-AutoReplyVisualLatestMessageEvidence $frame $observation.lines $sidebarRight
+    if (-not $latest.ok) { return @{ ok = $false; reason = [string]$latest.reason } }
+    return @{
+      ok = $true
+      conversation = $expectedConversation
+      previewSignature = [string]$matchingRows[0].signature
+      draft = [bool]$matchingRows[0].draft
+      hasMessage = [bool]$latest.hasMessage
+      message = [string]$latest.message
+      latestRole = [string]$latest.latestRole
+      messageSignature = [string]$latest.evidenceSignature
+    }
+  } finally {
+    Close-MomentsVisualFrame $frame
   }
 }
 
@@ -443,6 +909,7 @@ try { $messageBaselines = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_M
 $expectedConversation = Normalize-AutoReplyVisualText ([Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_CONVERSATION"))
 $expectedMessage = Normalize-AutoReplyVisualText ([Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_MESSAGE"))
 $expectedRuntimeId = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_RUNTIME_ID")
+$expectedMessageSignature = ([string][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_MESSAGE_SIGNATURE")).Trim().ToLowerInvariant()
 try { $expectedPid = [int][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID") } catch { $expectedPid = 0 }
 try { $expectedHWnd = [int64][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND") } catch { $expectedHWnd = 0 }
 
@@ -490,40 +957,64 @@ try {
       signature = [string]$currentMessage.evidenceSignature
     })
   }
+  $currentResultConversation = if ($currentConversation.active) { [string]$currentConversation.conversation } else { "" }
+  $currentResultLatestRole = if ($currentMessage -ne $null -and $currentMessage.hasMessage) { [string]$currentMessage.latestRole } else { "" }
+  $currentResultMessageSignature = if ($currentMessage -ne $null) { [string]$currentMessage.evidenceSignature } else { "" }
   if ($mode -eq "prime") {
     Write-AutoReplyVisualResult @{
       ok = $true
       source = "session_prime"
       pid = [int]$process.Id
       hWnd = [int64]$hWnd
+      conversation = $currentResultConversation
+      latestRole = $currentResultLatestRole
+      messageSignature = $currentResultMessageSignature
       sessionBaselines = $sessionBaselines
       sessionMessageBaselines = $sessionMessageBaselines
     }
   }
 
   if ($mode -eq "verify") {
-    if (-not $expectedConversation -or -not $expectedMessage -or -not $expectedRuntimeId) { Write-AutoReplyVisualResult @{ ok = $false; reason = "incoming_message_missing" } }
+    if (-not $expectedConversation -or -not $expectedMessage -or -not $expectedRuntimeId -or
+        $expectedMessageSignature -notmatch "^[a-f0-9]{64}$") { Write-AutoReplyVisualResult @{ ok = $false; reason = "incoming_message_missing" } }
     $expectedRows = @($rows | Where-Object { [string]$_.conversation -ceq $expectedConversation -and [string]$_.preview -ceq $expectedMessage })
     $currentConversationMatches = $currentConversation.active -and [string]$currentConversation.conversation -ceq $expectedConversation
     if ($expectedRows.Count -ne 1 -and -not $currentConversationMatches) { Write-AutoReplyVisualResult @{ ok = $false; reason = "incoming_message_changed"; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
     $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width)
     if (-not $header.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
-    $latest = Get-AutoReplyVisualLatestIncoming $frame $observation.lines $expectedMessage $sidebarRight
+    # The sidebar and chat bubble use different font sizes. The same Chinese text
+    # can therefore have deterministic OCR drift (for example “你好” vs “亻子”).
+    # Verify the exact bubble evidence captured during scan instead of comparing
+    # text recognized from two different visual regions.
+    $latest = Get-AutoReplyVisualLatestMessageEvidence $frame $observation.lines $sidebarRight
     if (-not $latest.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$latest.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
-    $runtimeSeed = [string]::Join([char]10, @($expectedConversation, $latest.message, $latest.pixelHash, ("{0:N1}" -f [double]$latest.line.bounds.left), ("{0:N1}" -f [double]$latest.line.bounds.top)))
-    $runtimeId = "visual:v1:" + (Get-AutoReplyVisualSha256 $runtimeSeed)
-    if ($runtimeId -cne $expectedRuntimeId) { Write-AutoReplyVisualResult @{ ok = $false; reason = "incoming_message_changed"; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
+    if (-not $latest.hasMessage) { Write-AutoReplyVisualResult @{ ok = $false; reason = "latest_text_message_missing"; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
+    if ([string]$latest.latestRole -ceq "assistant") { Write-AutoReplyVisualResult @{ ok = $false; reason = "latest_message_not_incoming"; pid = [int]$process.Id; hWnd = [int64]$hWnd; latestRole = "assistant" } }
+    if ([string]$latest.latestRole -cne "user") { Write-AutoReplyVisualResult @{ ok = $false; reason = "latest_message_role_unresolved"; pid = [int]$process.Id; hWnd = [int64]$hWnd; latestRole = [string]$latest.latestRole } }
+    $observedMessageSignature = [string]$latest.evidenceSignature
+    $runtimeSeed = [string]::Join([char]10, @($expectedConversation, $observedMessageSignature))
+    $observedRuntimeId = "visual:v1:" + (Get-AutoReplyVisualSha256 $runtimeSeed)
+    $bubbleEvidenceMatches = $observedRuntimeId -ceq $expectedRuntimeId -and $observedMessageSignature -ceq $expectedMessageSignature
+    # OCR of the large chat bubble can drift between otherwise identical frames.
+    # When that happens, bind the turn through the independently recognized
+    # selected sidebar preview, while still requiring the exact header and a
+    # latest customer-role bubble. A changed preview cannot use this fallback.
+    if (-not (Test-AutoReplyVisualBoundIncomingEvidence $observedRuntimeId $observedMessageSignature $expectedRuntimeId $expectedMessageSignature $expectedRows.Count)) {
+      Write-AutoReplyVisualResult @{ ok = $false; reason = "incoming_message_changed"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
+    }
     Write-AutoReplyVisualResult @{
       ok = $true
       conversation = $expectedConversation
-      message = $latest.message
-      runtimeId = $runtimeId
-      messageSignature = [string]$latest.evidenceSignature
+      message = $expectedMessage
+      runtimeId = $expectedRuntimeId
+      messageSignature = $expectedMessageSignature
+      observedMessageSignature = $observedMessageSignature
+      evidenceReconciled = -not $bubbleEvidenceMatches
       pid = [int]$process.Id
       hWnd = [int64]$hWnd
       source = "verify"
       latestRole = "user"
-      context = @(@{ role = "user"; content = $latest.message; key = $runtimeId })
+      context = @(@{ role = "user"; content = $expectedMessage; key = $runtimeId })
     }
   }
 
@@ -532,7 +1023,7 @@ try {
     # OCR-only preview changes are not an event signal: small recognition jitter
     # previously caused a click on every scan. Background sessions require a
     # geometric unread badge; the already-open session uses message-area evidence.
-    if ($row.unread) {
+    if ($row.unread -and -not $row.draft) {
       $row | Add-Member -NotePropertyName source -NotePropertyValue "unread" -Force
       [void]$candidates.Add($row)
     }
@@ -540,42 +1031,109 @@ try {
   if ($candidates.Count -eq 0) {
     if ($currentConversation.active -and $currentMessage -ne $null) {
       $currentName = [string]$currentConversation.conversation
+      $currentRow = @($rows | Where-Object { [string]$_.conversation -ceq $currentName })
+      $previousPreviewSignature = Get-AutoReplyVisualBaseline $baselines $currentName
       $previousMessageSignature = Get-AutoReplyVisualBaseline $messageBaselines $currentName
-      $currentMessageSignature = [string]$currentMessage.evidenceSignature
-      $messageChanged = $previousMessageSignature -match "^[a-f0-9]{64}$" -and $previousMessageSignature -cne $currentMessageSignature
-      if ($messageChanged -and $currentMessage.hasMessage) {
-        $currentRow = @($rows | Where-Object { [string]$_.conversation -ceq $currentName } | Select-Object -First 1)
-        $currentPreviewSignature = if ($currentRow.Count -eq 1) { [string]$currentRow[0].signature } else { Get-AutoReplyVisualSha256 ([string]$currentMessage.message) }
-        if ([string]$currentMessage.latestRole -cne "user") {
-          Write-AutoReplyVisualResult @{
-            ok = $false
-            reason = "latest_message_not_incoming"
-            pid = [int]$process.Id
-            hWnd = [int64]$hWnd
-            baselineAdvance = @{ conversation = $currentName; signature = $currentPreviewSignature }
-            messageBaselineAdvance = @{ conversation = $currentName; signature = $currentMessageSignature }
-          }
-        }
-        $runtimeSeed = [string]::Join([char]10, @(
-          $currentName,
-          [string]$currentMessage.message,
-          [string]$currentMessage.pixelHash,
-          ("{0:N1}" -f [double]$currentMessage.line.bounds.left),
-          ("{0:N1}" -f [double]$currentMessage.line.bounds.top)
-        ))
-        $runtimeId = "visual:v1:" + (Get-AutoReplyVisualSha256 $runtimeSeed)
+      $previousBoundariesValid = (Test-AutoReplyVisualSignature $previousPreviewSignature) -and
+        (Test-AutoReplyVisualSignature $previousMessageSignature)
+      if ($previousBoundariesValid -and $currentRow.Count -ne 1) {
         Write-AutoReplyVisualResult @{
-          ok = $true
-          conversation = $currentName
-          message = [string]$currentMessage.message
-          runtimeId = $runtimeId
-          previewSignature = $currentPreviewSignature
-          messageSignature = $currentMessageSignature
+          ok = $false
+          reason = "current_transition_unresolved"
+          transitionDetail = "current_sidebar_row_unresolved"
           pid = [int]$process.Id
           hWnd = [int64]$hWnd
-          source = "current_message_change"
-          latestRole = "user"
-          context = @(@{ role = "user"; content = [string]$currentMessage.message; key = $runtimeId })
+          conversation = $currentName
+        }
+      }
+      if ($currentRow.Count -eq 1) {
+        # Keep the actual draft-row signature as visual state. Draft status
+        # blocks a candidate, but discarding its signature would let clearing a
+        # draft be combined with a later, unrelated bubble OCR change.
+        $currentPreviewSignature = [string]$currentRow[0].signature
+        $currentMessageSignature = [string]$currentMessage.evidenceSignature
+        if ($previousBoundariesValid -and
+            (-not (Test-AutoReplyVisualSignature $currentPreviewSignature) -or
+             -not (Test-AutoReplyVisualSignature $currentMessageSignature))) {
+          Write-AutoReplyVisualResult @{
+            ok = $false
+            reason = "current_transition_unresolved"
+            transitionDetail = "current_identity_invalid"
+            pid = [int]$process.Id
+            hWnd = [int64]$hWnd
+            conversation = $currentName
+          }
+        }
+        if ($previousBoundariesValid) {
+          $previewChanged = $previousPreviewSignature -cne $currentPreviewSignature
+          $messageChanged = $previousMessageSignature -cne $currentMessageSignature
+          $currentMessageTransition = Test-AutoReplyVisualCurrentMessageTransition $previousPreviewSignature $currentPreviewSignature $previousMessageSignature $currentMessageSignature
+          if ($previewChanged -or $messageChanged) {
+            $firstCurrentSnapshot = @{
+              ok = $true
+              conversation = $currentName
+              previewSignature = $currentPreviewSignature
+              draft = [bool]$currentRow[0].draft
+              hasMessage = [bool]$currentMessage.hasMessage
+              message = [string]$currentMessage.message
+              latestRole = [string]$currentMessage.latestRole
+              messageSignature = $currentMessageSignature
+            }
+            Start-Sleep -Milliseconds 140
+            $secondCurrentSnapshot = Get-AutoReplyVisualCurrentTransitionSnapshot $hWnd ([int]$process.Id) $windowRect $allowedSet $sidebarRight $currentName
+            $resolvedTransition = Resolve-AutoReplyVisualCurrentTransition $previousPreviewSignature $previousMessageSignature $firstCurrentSnapshot $secondCurrentSnapshot
+            if ([string]$resolvedTransition.action -eq "unresolved") {
+              Write-AutoReplyVisualResult @{
+                ok = $false
+                reason = "current_transition_unresolved"
+                transitionDetail = [string]$resolvedTransition.detail
+                pid = [int]$process.Id
+                hWnd = [int64]$hWnd
+                conversation = $currentName
+              }
+            }
+            if ([string]$resolvedTransition.action -eq "consume" -or
+                [string]$resolvedTransition.action -eq "boundary" -or
+                [string]$resolvedTransition.action -eq "settle") {
+              $transitionResult = @{
+                ok = $false
+                reason = [string]$resolvedTransition.reason
+                pid = [int]$process.Id
+                hWnd = [int64]$hWnd
+                conversation = $currentName
+                message = [string]$secondCurrentSnapshot.message
+                latestRole = [string]$resolvedTransition.latestRole
+                messageSignature = [string]$resolvedTransition.messageSignature
+              }
+              if ($resolvedTransition.baselineAdvance -ne $null) {
+                $transitionResult["baselineAdvance"] = $resolvedTransition.baselineAdvance
+              }
+              if ($resolvedTransition.messageBaselineAdvance -ne $null) {
+                $transitionResult["messageBaselineAdvance"] = $resolvedTransition.messageBaselineAdvance
+              }
+              Write-AutoReplyVisualResult $transitionResult
+            }
+            if ([string]$resolvedTransition.action -eq "candidate" -and $currentMessageTransition) {
+              $confirmedPreviewSignature = [string]$secondCurrentSnapshot.previewSignature
+              $confirmedMessageSignature = [string]$secondCurrentSnapshot.messageSignature
+              $confirmedMessage = [string]$secondCurrentSnapshot.message
+              $runtimeSeed = [string]::Join([char]10, @($currentName, $confirmedMessageSignature))
+              $runtimeId = "visual:v1:" + (Get-AutoReplyVisualSha256 $runtimeSeed)
+              Write-AutoReplyVisualResult @{
+                ok = $true
+                conversation = $currentName
+                message = $confirmedMessage
+                runtimeId = $runtimeId
+                previewSignature = $confirmedPreviewSignature
+                messageSignature = $confirmedMessageSignature
+                pid = [int]$process.Id
+                hWnd = [int64]$hWnd
+                source = "current_message_change"
+                latestRole = "user"
+                context = @(@{ role = "user"; content = $confirmedMessage; key = $runtimeId })
+              }
+            }
+          }
         }
       }
     }
@@ -584,6 +1142,9 @@ try {
       reason = "no_unread_message"
       pid = [int]$process.Id
       hWnd = [int64]$hWnd
+      conversation = $currentResultConversation
+      latestRole = $currentResultLatestRole
+      messageSignature = $currentResultMessageSignature
       sessionBaselines = $sessionBaselines
       sessionMessageBaselines = $sessionMessageBaselines
     }
@@ -605,6 +1166,7 @@ try {
   $header = Get-AutoReplyVisualHeader $openedObservation.lines $conversation $sidebarRight ([double]$openedFrame.width)
   if (-not $header.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
   $latest = Get-AutoReplyVisualLatestIncoming $openedFrame $openedObservation.lines $preview $sidebarRight
+  $resolvedMessage = $preview
   if (-not $latest.ok) {
     if ([string]$latest.reason -ceq "latest_message_not_incoming") {
       Write-AutoReplyVisualResult @{
@@ -612,18 +1174,95 @@ try {
         reason = "latest_message_not_incoming"
         pid = [int]$process.Id
         hWnd = [int64]$hWnd
+        conversation = $conversation
+        message = [string]$latest.message
+        latestRole = [string]$latest.latestRole
+        messageSignature = [string]$latest.evidenceSignature
         baselineAdvance = @{ conversation = $conversation; signature = [string]$candidate.signature }
         messageBaselineAdvance = @{ conversation = $conversation; signature = [string]$latest.evidenceSignature }
       }
     }
-    Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$latest.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd }
+    if ([string]$latest.reason -cne "unread_preview_mismatch") {
+      Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$latest.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd }
+    }
+
+    $pendingRuntimeSeed = [string]::Join([char]10, @($conversation, [string]$latest.evidenceSignature))
+    $pendingRuntimeId = "visual:v1:" + (Get-AutoReplyVisualSha256 $pendingRuntimeSeed)
+
+    # Opening the unread row consumes its red badge. Before accepting OCR drift,
+    # prove that the exact allowed conversation is still open and that the same
+    # incoming bubble is stable across a second independent capture.
+    Start-Sleep -Milliseconds 140
+    $confirmation = Get-AutoReplyVisualObservation $hWnd ([int]$process.Id) $windowRect
+    if (-not $confirmation.ok) {
+      Write-AutoReplyVisualResult @{
+        ok = $false
+        reason = "unread_preview_pending"
+        pendingReason = [string]$confirmation.reason
+        pid = [int]$process.Id
+        hWnd = [int64]$hWnd
+        conversation = $conversation
+        message = $preview
+        runtimeId = $pendingRuntimeId
+        previewSignature = [string]$candidate.signature
+        messageSignature = [string]$latest.evidenceSignature
+        source = $source
+        latestRole = "user"
+        context = @(@{ role = "user"; content = $preview; key = $pendingRuntimeId })
+      }
+    }
+    $confirmationFrame = $confirmation.frame
+    try {
+      $confirmationHeader = Get-AutoReplyVisualHeader $confirmation.lines $conversation $sidebarRight ([double]$confirmationFrame.width)
+      if (-not $confirmationHeader.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$confirmationHeader.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
+      $confirmedLatest = Get-AutoReplyVisualLatestMessageEvidence $confirmationFrame $confirmation.lines $sidebarRight
+      if (-not $confirmedLatest.ok) {
+        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$confirmedLatest.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd }
+      }
+      if (-not (Test-AutoReplyVisualStableIncomingEvidence $latest $confirmedLatest)) {
+        if ($confirmedLatest -ne $null -and $confirmedLatest.ok -and $confirmedLatest.hasMessage -and [string]$confirmedLatest.latestRole -ceq "assistant") {
+          Write-AutoReplyVisualResult @{
+            ok = $false
+            reason = "latest_message_not_incoming"
+            pid = [int]$process.Id
+            hWnd = [int64]$hWnd
+            conversation = $conversation
+            message = [string]$confirmedLatest.message
+            latestRole = "assistant"
+            messageSignature = [string]$confirmedLatest.evidenceSignature
+            baselineAdvance = @{ conversation = $conversation; signature = [string]$candidate.signature }
+            messageBaselineAdvance = @{ conversation = $conversation; signature = [string]$confirmedLatest.evidenceSignature }
+          }
+        }
+        Write-AutoReplyVisualResult @{
+          ok = $false
+          reason = "unread_preview_pending"
+          pendingReason = if ($confirmedLatest -ne $null -and $confirmedLatest.ok -and $confirmedLatest.hasMessage -and [string]$confirmedLatest.latestRole -ceq "user") { "second_frame_evidence_changed" } else { "second_frame_incoming_unresolved" }
+          pid = [int]$process.Id
+          hWnd = [int64]$hWnd
+          conversation = $conversation
+          message = $preview
+          runtimeId = $pendingRuntimeId
+          previewSignature = [string]$candidate.signature
+          messageSignature = [string]$latest.evidenceSignature
+          source = $source
+          latestRole = "user"
+          context = @(@{ role = "user"; content = $preview; key = $pendingRuntimeId })
+        }
+      }
+      $latest = $confirmedLatest
+    } finally {
+      Close-MomentsVisualFrame $confirmationFrame
+    }
+  } else {
+    $resolvedMessage = [string]$latest.message
   }
-  $runtimeSeed = [string]::Join([char]10, @($conversation, $latest.message, $latest.pixelHash, ("{0:N1}" -f [double]$latest.line.bounds.left), ("{0:N1}" -f [double]$latest.line.bounds.top)))
+  $runtimeSeed = [string]::Join([char]10, @($conversation, [string]$latest.evidenceSignature))
   $runtimeId = "visual:v1:" + (Get-AutoReplyVisualSha256 $runtimeSeed)
   Write-AutoReplyVisualResult @{
     ok = $true
     conversation = $conversation
-    message = $latest.message
+    message = $resolvedMessage
     runtimeId = $runtimeId
     previewSignature = [string]$candidate.signature
     messageSignature = [string]$latest.evidenceSignature
@@ -631,7 +1270,7 @@ try {
     hWnd = [int64]$hWnd
     source = $source
     latestRole = "user"
-    context = @(@{ role = "user"; content = $latest.message; key = $runtimeId })
+    context = @(@{ role = "user"; content = $resolvedMessage; key = $runtimeId })
   }
 } finally {
   Close-MomentsVisualFrame $openedFrame
@@ -671,17 +1310,57 @@ function candidateKey(candidate) {
 }
 
 function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync) {
+  const pendingVerifyAttemptLimit = 3;
   const previewBaselines = new Map();
   const messageBaselines = new Map();
+  const occurrenceStates = new Map();
   const retryCandidates = [];
-  const eventSessionId = randomBytes(16).toString("hex");
-  let eventSequence = 0;
+  const driverSessionId = randomBytes(16).toString("hex");
+  let occurrenceSequence = 0;
   let primedProcess = null;
+  let pendingOpenedUnread = null;
 
-  function decorateCandidate(result, identity) {
+  function decorateCandidate(result, identity, predecessorSignature) {
     const evidenceRuntimeId = String(result?.runtimeId || "").trim();
-    eventSequence += 1;
-    const runtimeId = `visual:v2:${createHash("sha256").update(`${eventSessionId}\n${eventSequence}\n${evidenceRuntimeId}`, "utf8").digest("hex")}`;
+    const conversation = compactContactName(result?.conversation);
+    const previewSignature = String(result?.previewSignature || "").trim().toLowerCase();
+    const messageSignature = String(result?.messageSignature || "").trim().toLowerCase();
+    const active = occurrenceStates.get(conversation);
+    let runtimeId = active?.active === true
+      && isSha256(previewSignature)
+      && active.previewSignature === previewSignature
+      ? active.runtimeId
+      : "";
+    if (!runtimeId) {
+      occurrenceSequence += 1;
+      runtimeId = `visual:v2:${createHash("sha256").update([
+        "visual-occurrence-v2",
+        driverSessionId,
+        String(occurrenceSequence),
+        conversation,
+        evidenceRuntimeId,
+        messageSignature,
+        String(predecessorSignature || "")
+      ].join("\n"), "utf8").digest("hex")}`;
+      occurrenceStates.set(conversation, {
+        active: true,
+        previewSignature,
+        evidenceRuntimeId,
+        messageSignature,
+        runtimeId
+      });
+    } else {
+      // Keep one occurrence identity while the selected-row preview is the
+      // same. Bubble OCR text/bounds may legitimately drift between frames;
+      // the latest evidence is still retained for the next verification.
+      occurrenceStates.set(conversation, {
+        ...active,
+        previewSignature,
+        evidenceRuntimeId,
+        messageSignature,
+        runtimeId
+      });
+    }
     const context = rewriteLatestContextKey(result?.context, runtimeId);
     return {
       ...result,
@@ -691,6 +1370,14 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       visualMode: "visual_render_v1",
       context
     };
+  }
+
+  function observeMessageSignature(conversation, signature) {
+    const current = occurrenceStates.get(conversation);
+    if (current?.active === true && current.messageSignature !== signature) {
+      occurrenceStates.set(conversation, { ...current, active: false, boundarySignature: signature });
+    }
+    messageBaselines.set(conversation, signature);
   }
 
   function rewriteLatestContextKey(context, runtimeId) {
@@ -724,21 +1411,24 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
   }
 
   function applyMessageBaselines(result, allowed, { replace = false, missingOnly = false } = {}) {
-    if (replace) messageBaselines.clear();
+    if (replace) {
+      messageBaselines.clear();
+      occurrenceStates.clear();
+    }
     const rows = Array.isArray(result?.sessionMessageBaselines) ? result.sessionMessageBaselines : [];
     for (const row of rows.slice(0, 1_000)) {
       const conversation = compactContactName(row?.conversation);
       const signature = String(row?.signature || "").trim().toLowerCase();
       if (!allowed.includes(conversation) || !isSha256(signature)) continue;
       if (missingOnly && messageBaselines.has(conversation)) continue;
-      messageBaselines.set(conversation, signature);
+      observeMessageSignature(conversation, signature);
     }
   }
 
   function applyMessageBaselineAdvance(result, allowed) {
     const conversation = compactContactName(result?.messageBaselineAdvance?.conversation);
     const signature = String(result?.messageBaselineAdvance?.signature || "").trim().toLowerCase();
-    if (allowed.includes(conversation) && isSha256(signature)) messageBaselines.set(conversation, signature);
+    if (allowed.includes(conversation) && isSha256(signature)) observeMessageSignature(conversation, signature);
   }
 
   function takeRetry(allowed, scanProbe) {
@@ -747,6 +1437,92 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       if (allowed.includes(compactContactName(candidate.conversation))) return { ...candidate, scanProbe };
     }
     return null;
+  }
+
+  function pendingCandidateFromResult(result, allowed) {
+    const conversation = compactContactName(result?.conversation);
+    const message = String(result?.message || "").normalize("NFKC").replace(/\s+/gu, "").trim();
+    const runtimeId = String(result?.runtimeId || "").trim();
+    const previewSignature = String(result?.previewSignature || "").trim().toLowerCase();
+    const messageSignature = String(result?.messageSignature || "").trim().toLowerCase();
+    const process = processIdentity(result);
+    if (!allowed.includes(conversation) || !message || String(result?.latestRole || "") !== "user"
+      || !/^visual:v1:[a-f0-9]{64}$/u.test(runtimeId) || !isSha256(previewSignature)
+      || !isSha256(messageSignature) || !process) return null;
+    return {
+      ok: true,
+      conversation,
+      message,
+      runtimeId,
+      previewSignature,
+      messageSignature,
+      pid: process.pid,
+      hWnd: process.hWnd,
+      source: String(result?.source || "unread"),
+      latestRole: "user",
+      pendingVerifyAttempts: 0,
+      context: [{ role: "user", content: message, key: runtimeId }]
+    };
+  }
+
+  async function settlePendingOpenedUnread(nameIdentity, allowed) {
+    const pending = pendingOpenedUnread;
+    if (!pending) return null;
+    if (!allowed.includes(pending.conversation)) {
+      pendingOpenedUnread = null;
+      return null;
+    }
+    const verification = await verifyWechatIncoming({
+      ...pending,
+      visualMode: "visual_render_v1",
+      visualEvidenceRuntimeId: pending.runtimeId
+    });
+    const identity = processIdentity(verification);
+    if (identity && primedProcess && (identity.pid !== primedProcess.pid || identity.hWnd !== primedProcess.hWnd)) {
+      const processChanged = identity.pid !== primedProcess.pid;
+      previewBaselines.clear();
+      messageBaselines.clear();
+      occurrenceStates.clear();
+      pendingOpenedUnread = null;
+      primedProcess = null;
+      return { ...verification, ok: false, reason: processChanged ? "wechat_process_changed" : "wechat_window_changed" };
+    }
+    if (verification?.ok !== true) {
+      const terminalReasons = new Set([
+        "conversation_title_mismatch",
+        "incoming_message_changed",
+        "incoming_message_missing",
+        "latest_message_not_incoming",
+        "wechat_process_changed",
+        "wechat_window_changed"
+      ]);
+      if (terminalReasons.has(String(verification?.reason || ""))) pendingOpenedUnread = null;
+      else {
+        pending.pendingVerifyAttempts = Math.max(0, Math.floor(Number(pending.pendingVerifyAttempts) || 0)) + 1;
+        if (pending.pendingVerifyAttempts >= pendingVerifyAttemptLimit) pendingOpenedUnread = null;
+      }
+      return pendingOpenedUnread
+        ? { ...verification, ok: false, reason: "unread_preview_pending", pendingReason: String(verification?.reason || "pending_verify_failed") }
+        : terminalReasons.has(String(verification?.reason || ""))
+          ? verification
+          : { ...verification, ok: false, reason: "unread_preview_unresolved", pendingReason: String(verification?.reason || "pending_verify_failed") };
+    }
+    const verifiedConversation = compactContactName(verification.conversation);
+    const verifiedMessage = String(verification.message || "").normalize("NFKC").replace(/\s+/gu, "").trim();
+    const verifiedRuntimeId = String(verification.visualEvidenceRuntimeId || "").trim();
+    const verifiedSignature = String(verification.messageSignature || "").trim().toLowerCase();
+    if (verifiedConversation !== pending.conversation || verifiedMessage !== pending.message
+      || verifiedRuntimeId !== pending.runtimeId || verifiedSignature !== pending.messageSignature
+      || String(verification.latestRole || "") !== "user") {
+      pendingOpenedUnread = null;
+      return { ...verification, ok: false, reason: "incoming_message_changed" };
+    }
+    pendingOpenedUnread = null;
+    const predecessorSignature = messageBaselines.get(pending.conversation) || "";
+    const decorated = decorateCandidate(pending, nameIdentity, predecessorSignature);
+    previewBaselines.set(pending.conversation, pending.previewSignature);
+    observeMessageSignature(pending.conversation, pending.messageSignature);
+    return decorated;
   }
 
   function invoke(mode, allowed, extra = {}) {
@@ -770,8 +1546,20 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     if (!process) return { ok: false, reason: "incoming_identity_missing" };
     applyBaselines(result, allowed, { replace: true });
     applyMessageBaselines(result, allowed, { replace: true });
+    pendingOpenedUnread = null;
     primedProcess = process;
-    return { ok: true, primed: true, pid: process.pid, hWnd: process.hWnd };
+    const observedConversation = nameIdentity.compactToOriginal.get(compactContactName(result.conversation)) || String(result.conversation || "");
+    const observedRole = String(result.latestRole || "");
+    const observedSignature = String(result.messageSignature || "").trim().toLowerCase();
+    return {
+      ok: true,
+      primed: true,
+      pid: process.pid,
+      hWnd: process.hWnd,
+      ...(observedConversation ? { conversation: observedConversation } : {}),
+      ...(observedRole ? { latestRole: observedRole } : {}),
+      ...(isSha256(observedSignature) ? { messageSignature: observedSignature } : {})
+    };
   }
 
   async function scanWechatIncoming(names) {
@@ -781,8 +1569,10 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
     if (!primedProcess) {
       const prime = await primeWechatSession(names);
-      return prime?.ok === true ? { ok: false, reason: "current_session_baselined" } : prime;
+      return prime?.ok === true ? { ...prime, ok: false, reason: "current_session_baselined" } : prime;
     }
+    const pendingResult = await settlePendingOpenedUnread(nameIdentity, allowed);
+    if (pendingResult) return pendingResult;
     const result = await invoke("scan", allowed, {
       XIAOXI_EXPECTED_PID: String(primedProcess.pid),
       XIAOXI_EXPECTED_HWND: primedProcess.hWnd
@@ -792,19 +1582,40 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       const processChanged = identity.pid !== primedProcess.pid;
       previewBaselines.clear();
       messageBaselines.clear();
+      occurrenceStates.clear();
+      pendingOpenedUnread = null;
       primedProcess = null;
       return { ...result, ok: false, reason: processChanged ? "wechat_process_changed" : "wechat_window_changed" };
     }
     if (result?.reason === "wechat_process_changed" || result?.reason === "wechat_window_changed") {
       previewBaselines.clear();
       messageBaselines.clear();
+      occurrenceStates.clear();
+      pendingOpenedUnread = null;
       primedProcess = null;
       return result;
     }
     if (result?.ok !== true) {
-      if (result?.reason === "latest_message_not_incoming") applyBaselineAdvance(result, allowed);
+      if (result?.reason === "unread_preview_pending") {
+        const pending = pendingCandidateFromResult(result, allowed);
+        if (!pending) return { ...result, ok: false, reason: "incoming_identity_missing" };
+        if (primedProcess && (pending.pid !== primedProcess.pid || pending.hWnd !== primedProcess.hWnd)) {
+          pendingOpenedUnread = null;
+          return { ...result, ok: false, reason: pending.pid !== primedProcess.pid ? "wechat_process_changed" : "wechat_window_changed" };
+        }
+        pendingOpenedUnread = pending;
+        return { ...result, ok: false, reason: "unread_preview_pending" };
+      }
+      // An unstable two-frame transition is a run-level safety fence. Never
+      // let an older retry candidate hide it and continue toward AI/send.
+      if (result?.reason === "wechat_focus_failed"
+        || result?.reason === "chat_boundary_unresolved"
+        || result?.reason === "latest_message_role_unresolved"
+        || result?.reason === "current_transition_unresolved"
+        || result?.reason === "current_outgoing_settling") return result;
+      if (result?.reason === "latest_message_not_incoming" || result?.reason === "current_visual_drift_consumed") applyBaselineAdvance(result, allowed);
       else applyBaselines(result, allowed, { missingOnly: true });
-      if (result?.reason === "latest_message_not_incoming") applyMessageBaselineAdvance(result, allowed);
+      if (result?.reason === "latest_message_not_incoming" || result?.reason === "current_visual_drift_consumed") applyMessageBaselineAdvance(result, allowed);
       else applyMessageBaselines(result, allowed, { missingOnly: true });
       return takeRetry(allowed, { ok: false, reason: result?.reason || "scan_result_invalid" }) || result;
     }
@@ -815,9 +1626,11 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     const messageSignature = String(result.messageSignature || "").trim().toLowerCase();
     if (!allowed.includes(conversation) || !message) return { ok: false, reason: "incoming_message_missing" };
     if (!/^visual:v1:[a-f0-9]{64}$/u.test(runtimeId) || !isSha256(signature) || !isSha256(messageSignature)) return { ok: false, reason: "incoming_identity_missing" };
+    const predecessorSignature = messageBaselines.get(conversation) || "";
+    const decorated = decorateCandidate(result, nameIdentity, predecessorSignature);
     previewBaselines.set(conversation, signature);
-    messageBaselines.set(conversation, messageSignature);
-    return decorateCandidate(result, nameIdentity);
+    observeMessageSignature(conversation, messageSignature);
+    return decorated;
   }
 
   async function verifyWechatIncoming(candidate = {}) {
@@ -832,6 +1645,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       XIAOXI_EXPECTED_CONVERSATION: conversation,
       XIAOXI_EXPECTED_MESSAGE: message,
       XIAOXI_EXPECTED_RUNTIME_ID: evidenceRuntimeId,
+      XIAOXI_EXPECTED_MESSAGE_SIGNATURE: String(candidate.messageSignature || ""),
       XIAOXI_EXPECTED_PID: String(candidate.pid || ""),
       XIAOXI_EXPECTED_HWND: String(candidate.hWnd || "")
     });
@@ -846,7 +1660,32 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       : result;
   }
 
+  function noteVerifiedSend(candidate = {}, metadata = {}) {
+    const verificationMode = String(metadata?.verificationMode || "");
+    if (!new Set(["visual_message_bubble", "draft_consumed_same_header"]).has(verificationMode)) return false;
+    const conversation = compactContactName(candidate?.conversation);
+    const runtimeId = String(candidate?.runtimeId || "").trim();
+    const active = occurrenceStates.get(conversation);
+    if (!conversation || !/^visual:v2:[a-f0-9]{64}$/u.test(runtimeId) || active?.runtimeId !== runtimeId) return false;
+    const boundarySignature = createHash("sha256").update([
+      "visual-verified-outgoing-boundary-v1",
+      conversation,
+      runtimeId,
+      String(candidate?.visualEvidenceRuntimeId || "")
+    ].join("\n"), "utf8").digest("hex");
+    if (active.active !== true) return active.boundarySignature === boundarySignature;
+    occurrenceStates.set(conversation, { ...active, active: false, boundarySignature });
+    // A successful sender result proves either the outgoing bubble itself or
+    // the exact click plus consumed draft in the same bound conversation.
+    // Advancing to an opaque boundary keeps an immediately following identical
+    // customer bubble observable before the next regular assistant scan.
+    previewBaselines.set(conversation, boundarySignature);
+    messageBaselines.set(conversation, boundarySignature);
+    return true;
+  }
+
   scanWechatIncoming.primeBaselines = primeWechatSession;
+  scanWechatIncoming.noteVerifiedSend = noteVerifiedSend;
   scanWechatIncoming.requeue = (candidate) => {
     if (candidate?.ok !== true || !/^visual:v[12]:[a-f0-9]{64}$/u.test(String(candidate.runtimeId || ""))) return false;
     const key = candidateKey(candidate);
@@ -859,10 +1698,13 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
   scanWechatIncoming.resetBaselines = () => {
     previewBaselines.clear();
     messageBaselines.clear();
+    occurrenceStates.clear();
+    retryCandidates.length = 0;
+    pendingOpenedUnread = null;
     primedProcess = null;
   };
 
-  return { primeWechatSession, scanWechatIncoming, verifyWechatIncoming };
+  return { primeWechatSession, scanWechatIncoming, verifyWechatIncoming, noteVerifiedSend };
 }
 
 const driver = createWechatVisualAutoReplyDriver();

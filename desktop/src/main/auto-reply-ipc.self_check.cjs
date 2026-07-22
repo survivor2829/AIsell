@@ -10,6 +10,7 @@ const {
   isSafeReplyText,
   registerAutoReplyIpc
 } = require("./auto-reply-ipc.cjs");
+const { createWechatVisualAutoReplyDriver } = require("../../rpa/active_touch/wechat_auto_reply_visual_driver.dev.cjs");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-auto-reply-v2-"));
 const activeTouchDir = path.join(root, "active_touch");
@@ -155,7 +156,7 @@ async function main() {
   });
 
   assert.equal((await controller.start()).ok, true);
-  assert.equal(scheduledDelays[0], 0, "listener start must prime the current open conversation before the first five-second interval");
+  assert.equal(scheduledDelays[0], 5_000, "listener start must return to the renderer before the first five-second scan interval");
   await controller.runOnce();
   assert.equal(controller.status().reply_count, 1);
   assert.match(sentAttemptIds[0], /^[a-f0-9]{64}$/, "each incoming turn must supply a stable real-send attempt id");
@@ -235,6 +236,225 @@ async function main() {
   await recycledController.runOnce();
   assert.equal(recycledSends, 3, "repeated text with a new runtime identity must remain a new turn");
   recycledController.pause();
+
+  const guardConversation = JSON.parse(fs.readFileSync(path.join(activeTouchDir, "contacts.json"), "utf8"))[0].name;
+  const visualGuardCandidate = ({ message, runtimeChar, evidenceChar, signatureChar = evidenceChar }) => {
+    const runtimeId = `visual:v2:${runtimeChar.repeat(64)}`;
+    return {
+      ok: true,
+      conversation: guardConversation,
+      message,
+      runtimeId,
+      visualEvidenceRuntimeId: `visual:v1:${evidenceChar.repeat(64)}`,
+      messageSignature: signatureChar.repeat(64),
+      visualMode: "visual_render_v1",
+      latestRole: "user",
+      pid: 81,
+      hWnd: "91",
+      context: [{ role: "user", content: message, key: runtimeId }]
+    };
+  };
+  const verifiedVisualCandidate = (candidate) => ({
+    ok: true,
+    conversation: candidate.conversation,
+    message: candidate.message,
+    runtimeId: candidate.runtimeId,
+    visualEvidenceRuntimeId: candidate.visualEvidenceRuntimeId,
+    messageSignature: candidate.messageSignature,
+    latestRole: "user"
+  });
+  const outgoingVisualObservation = (signatureChar) => ({
+    ok: false,
+    reason: "latest_message_not_incoming",
+    latestRole: "assistant",
+    messageBaselineAdvance: { conversation: guardConversation, signature: signatureChar.repeat(64) }
+  });
+  const guardedControllerOptions = ({
+    dataDir,
+    scanIncoming,
+    send,
+    verifyIncoming = verifiedVisualCandidate,
+    primeIncoming,
+    deepSeekClient = { assertAvailable: () => true, reply: async () => ({ reply: "Acknowledged.", needsHuman: false }) }
+  }) => ({
+    dataDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient,
+    scanIncoming,
+    primeIncoming,
+    verifyIncoming,
+    send,
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+
+  const duplicateEvidenceDir = path.join(root, "reply_guard_duplicate_visual_evidence");
+  const duplicateEvidenceCandidates = [
+    visualGuardCandidate({ message: "one customer occurrence", runtimeChar: "1", evidenceChar: "a" }),
+    visualGuardCandidate({ message: "one customer occurrence with OCR drift", runtimeChar: "1", evidenceChar: "a" })
+  ];
+  let duplicateEvidenceSends = 0;
+  let duplicateEvidenceAiCalls = 0;
+  const duplicateEvidenceController = createAutoReplyController(guardedControllerOptions({
+    dataDir: duplicateEvidenceDir,
+    scanIncoming: () => duplicateEvidenceCandidates.shift() || { ok: false, reason: "no_unread_message" },
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => { duplicateEvidenceAiCalls += 1; return { reply: "Acknowledged.", needsHuman: false }; }
+    },
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      assert.equal(options.expectedIncomingMessageSignature, "a".repeat(64), "the controller must carry the bound bubble evidence into the final visual sender");
+      duplicateEvidenceSends += 1;
+      return { ok: true, send_attempted: true };
+    }
+  }));
+  assert.equal((await duplicateEvidenceController.start()).ok, true);
+  await duplicateEvidenceController.runOnce();
+  await duplicateEvidenceController.runOnce();
+  assert.equal(duplicateEvidenceSends, 1, "one occurrence token must not become replyable again after OCR text drift");
+  assert.equal(duplicateEvidenceAiCalls, 1, "duplicate occurrence evidence must be stopped before another AI generation/send cycle");
+  assert.equal(duplicateEvidenceController.status().status, "paused");
+  assert.equal(duplicateEvidenceController.status().last_event, "reply_guard_duplicate_evidence_paused");
+  assert.match(duplicateEvidenceController.status().last_error, /同一条客户/);
+  const duplicateEvidenceState = JSON.parse(fs.readFileSync(path.join(duplicateEvidenceDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(duplicateEvidenceState.reply_guards.c1.delivery_status, "sent_verified");
+  assert.equal(duplicateEvidenceState.reply_guards.c1.turn_state, "outgoing_observed", "sent_verified itself is the trusted outgoing boundary for the next turn");
+  assert.equal(JSON.stringify(duplicateEvidenceState).includes("one customer occurrence"), false, "the occurrence fence must not persist customer message text");
+
+  let restartedDuplicateSends = 0;
+  const restartedDuplicateCandidate = visualGuardCandidate({ message: "one customer occurrence after restart drift", runtimeChar: "1", evidenceChar: "a" });
+  const restartedDuplicateController = createAutoReplyController(guardedControllerOptions({
+    dataDir: duplicateEvidenceDir,
+    scanIncoming: () => restartedDuplicateCandidate,
+    send: async () => { restartedDuplicateSends += 1; return { ok: true }; }
+  }));
+  assert.equal((await restartedDuplicateController.start()).ok, true);
+  await restartedDuplicateController.runOnce();
+  assert.equal(restartedDuplicateSends, 0, "the occurrence fence must survive restart");
+  assert.equal(restartedDuplicateController.status().last_event, "reply_guard_duplicate_evidence_paused");
+
+  const immediateDifferentTurnCandidates = [
+    visualGuardCandidate({ message: "first immediate customer turn", runtimeChar: "a", evidenceChar: "b" }),
+    visualGuardCandidate({ message: "second immediate customer turn", runtimeChar: "b", evidenceChar: "c" })
+  ];
+  let immediateDifferentTurnSends = 0;
+  let immediateVerifiedBoundaries = 0;
+  const immediateDifferentTurnScan = () => immediateDifferentTurnCandidates.shift() || { ok: false, reason: "no_unread_message" };
+  immediateDifferentTurnScan.noteVerifiedSend = (_candidate, metadata) => {
+    assert.equal(metadata.verificationMode, "draft_consumed_same_header");
+    immediateVerifiedBoundaries += 1;
+    return true;
+  };
+  const immediateDifferentTurnController = createAutoReplyController(guardedControllerOptions({
+    dataDir: path.join(root, "reply_guard_immediate_different_turn"),
+    scanIncoming: immediateDifferentTurnScan,
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      immediateDifferentTurnSends += 1;
+      return { ok: true, send_attempted: true, verification_mode: "draft_consumed_same_header" };
+    }
+  }));
+  assert.equal((await immediateDifferentTurnController.start()).ok, true);
+  await immediateDifferentTurnController.runOnce();
+  await immediateDifferentTurnController.runOnce();
+  assert.equal(immediateDifferentTurnSends, 2, "sent_verified must permit an immediately observed, independently verified different customer turn");
+  assert.equal(immediateVerifiedBoundaries, 2, "each verified sent turn must advance the visual occurrence boundary even when bubble OCR is temporarily unavailable");
+  assert.equal(immediateDifferentTurnController.status().status, "running");
+  immediateDifferentTurnController.pause();
+
+  const genuineFollowupCandidates = [
+    visualGuardCandidate({ message: "same text repeated by customer", runtimeChar: "4", evidenceChar: "b" }),
+    visualGuardCandidate({ message: "same text repeated by customer", runtimeChar: "5", evidenceChar: "b" })
+  ];
+  let genuineFollowupSends = 0;
+  const genuineFollowupController = createAutoReplyController(guardedControllerOptions({
+    dataDir: path.join(root, "reply_guard_genuine_followup"),
+    scanIncoming: () => genuineFollowupCandidates.shift() || { ok: false, reason: "no_unread_message" },
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      genuineFollowupSends += 1;
+      return { ok: true, send_attempted: true };
+    }
+  }));
+  assert.equal((await genuineFollowupController.start()).ok, true);
+  await genuineFollowupController.runOnce();
+  genuineFollowupController.pause();
+  const genuineFollowupRestarted = createAutoReplyController(guardedControllerOptions({
+    dataDir: path.join(root, "reply_guard_genuine_followup"),
+    scanIncoming: () => genuineFollowupCandidates.shift() || { ok: false, reason: "no_unread_message" },
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      genuineFollowupSends += 1;
+      return { ok: true, send_attempted: true };
+    }
+  }));
+  assert.equal((await genuineFollowupRestarted.start()).ok, true);
+  await genuineFollowupRestarted.runOnce();
+  assert.equal(genuineFollowupSends, 2, "a distinct, exactly verified same-text occurrence may follow sent_verified immediately and survive restart");
+  assert.equal(genuineFollowupRestarted.status().status, "running");
+  genuineFollowupRestarted.pause();
+
+  const incompleteVerificationCandidates = [
+    visualGuardCandidate({ message: "first strict visual occurrence", runtimeChar: "c", evidenceChar: "d" }),
+    visualGuardCandidate({ message: "second strict visual occurrence", runtimeChar: "d", evidenceChar: "e" })
+  ];
+  let incompleteVerificationCalls = 0;
+  let incompleteVerificationSends = 0;
+  const incompleteVerificationController = createAutoReplyController(guardedControllerOptions({
+    dataDir: path.join(root, "reply_guard_incomplete_visual_verification"),
+    scanIncoming: () => incompleteVerificationCandidates.shift() || { ok: false, reason: "no_unread_message" },
+    verifyIncoming: (candidate) => {
+      incompleteVerificationCalls += 1;
+      return incompleteVerificationCalls === 1 ? verifiedVisualCandidate(candidate) : { ok: true };
+    },
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      incompleteVerificationSends += 1;
+      return { ok: true, send_attempted: true };
+    }
+  }));
+  assert.equal((await incompleteVerificationController.start()).ok, true);
+  await incompleteVerificationController.runOnce();
+  await incompleteVerificationController.runOnce();
+  assert.equal(incompleteVerificationSends, 1, "visual { ok: true } without exact occurrence fields must not unlock the fence");
+  assert.equal(incompleteVerificationController.status().last_event, "reply_guard_unverified_followup_paused");
+
+  const contactFuseCandidates = [
+    visualGuardCandidate({ message: "rapid visual occurrence one", runtimeChar: "6", evidenceChar: "d" }),
+    outgoingVisualObservation("2"),
+    visualGuardCandidate({ message: "rapid visual occurrence two", runtimeChar: "7", evidenceChar: "e" }),
+    outgoingVisualObservation("3"),
+    visualGuardCandidate({ message: "rapid visual occurrence three", runtimeChar: "8", evidenceChar: "f" }),
+    outgoingVisualObservation("5"),
+    visualGuardCandidate({ message: "rapid visual occurrence four", runtimeChar: "9", evidenceChar: "a" })
+  ];
+  let contactFuseSends = 0;
+  const contactFuseController = createAutoReplyController(guardedControllerOptions({
+    dataDir: path.join(root, "reply_guard_contact_fuse"),
+    scanIncoming: () => contactFuseCandidates.shift() || { ok: false, reason: "no_unread_message" },
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      contactFuseSends += 1;
+      return { ok: true, send_attempted: true };
+    }
+  }));
+  assert.equal((await contactFuseController.start()).ok, true);
+  await contactFuseController.runOnce();
+  await contactFuseController.runOnce();
+  await contactFuseController.runOnce();
+  await contactFuseController.runOnce();
+  await contactFuseController.runOnce();
+  await contactFuseController.runOnce();
+  await contactFuseController.runOnce();
+  assert.equal(contactFuseSends, 3, "the same-contact visual emergency fuse must block the fourth rapid send");
+  assert.equal(contactFuseController.status().status, "paused");
+  assert.equal(contactFuseController.status().last_event, "same_contact_visual_rate_limit_paused");
 
   const retryableCandidate = {
     ok: true,
@@ -341,6 +561,34 @@ async function main() {
   assert.equal(unknownSendCalls, 1, "an unknown customer-send outcome must remain terminal and never auto-resend");
   unknownSendController.pause();
 
+  const unknownVisualDir = path.join(root, "unknown_visual_occurrence_fence");
+  const unknownVisualFirst = visualGuardCandidate({ message: "visual outcome is unknown", runtimeChar: "9", evidenceChar: "b" });
+  let unknownVisualSends = 0;
+  const unknownVisualController = createAutoReplyController(guardedControllerOptions({
+    dataDir: unknownVisualDir,
+    scanIncoming: () => unknownVisualFirst,
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      unknownVisualSends += 1;
+      return { ok: false, blocked_reason: "outcome_unknown", send_attempted: null };
+    }
+  }));
+  assert.equal((await unknownVisualController.start()).ok, true);
+  await unknownVisualController.runOnce();
+  assert.equal(unknownVisualController.status().last_event, "send_outcome_unknown_paused");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(unknownVisualDir, "auto-reply-state.json"), "utf8")).reply_guards.c1.delivery_status, "outcome_unknown");
+
+  const unknownVisualRewrapped = visualGuardCandidate({ message: "visual outcome is unknown", runtimeChar: "0", evidenceChar: "b" });
+  const unknownVisualRestarted = createAutoReplyController(guardedControllerOptions({
+    dataDir: unknownVisualDir,
+    scanIncoming: () => unknownVisualRewrapped,
+    send: async () => { unknownVisualSends += 1; return { ok: true }; }
+  }));
+  assert.equal((await unknownVisualRestarted.start()).ok, true);
+  await unknownVisualRestarted.runOnce();
+  assert.equal(unknownVisualSends, 1, "an outcome-unknown occurrence fence must survive restart and reject a rewrapped runtime ID");
+  assert.equal(unknownVisualRestarted.status().last_event, "reply_guard_duplicate_evidence_paused");
+
   let releaseStartupPrime;
   let markStartupPrime;
   let startupSettled = false;
@@ -375,7 +623,7 @@ async function main() {
   assert.equal(startupController.status().scan_health, "healthy");
   assert.equal(startupController.status().last_scan_reason, "baseline_ready");
   assert.equal(startupController.status().last_scan_success_at, "2026-07-14T02:00:00.000Z");
-  assert.equal(startupDelays[0], 0);
+  assert.equal(startupDelays[0], 5_000);
   startupController.pause();
 
   const noCurrentDir = path.join(root, "startup_no_current_conversation");
@@ -536,6 +784,237 @@ async function main() {
   assert.match(visualDiagnosticLog, /"code":"visual_sidebar_match_ambiguous"/);
   assert.doesNotMatch(visualDiagnosticLog, /visual-contact-canary|visual-message-canary|visual-context-canary|visual-key-canary/, "visual scan diagnostics must not persist contact or message content");
   visualDiagnosticController.pause();
+
+  const transientFenceDir = path.join(root, "scan_transient_fences");
+  const transientFenceResults = [
+    { ok: false, reason: "chat_boundary_unresolved", pid: 81, hWnd: "91" },
+    { ok: false, reason: "wechat_focus_failed", pid: 81, hWnd: "91" },
+    { ok: false, reason: "latest_message_role_unresolved", pid: 81, hWnd: "91" }
+  ];
+  let transientFenceAiCalls = 0;
+  let transientFenceSendCalls = 0;
+  let transientFenceRequeues = 0;
+  let transientFenceBaselineResets = 0;
+  let transientFenceVerifiedBoundaries = 0;
+  const transientFenceScan = () => transientFenceResults.shift() || { ok: false, reason: "no_unread_message" };
+  transientFenceScan.resetBaselines = () => { transientFenceBaselineResets += 1; };
+  transientFenceScan.requeue = () => { transientFenceRequeues += 1; return true; };
+  transientFenceScan.noteVerifiedSend = () => { transientFenceVerifiedBoundaries += 1; return true; };
+  const transientFenceController = createAutoReplyController({
+    dataDir: transientFenceDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => { transientFenceAiCalls += 1; return "不应生成"; }
+    },
+    scanIncoming: transientFenceScan,
+    primeIncoming: () => ({ ok: true, reason: "baseline_ready", pid: 81, hWnd: "91" }),
+    verifyIncoming: () => { throw new Error("transient scan fences must not verify a candidate"); },
+    send: async () => { transientFenceSendCalls += 1; return { ok: true }; },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await transientFenceController.start()).ok, true);
+  assert.equal(transientFenceBaselineResets, 1, "start may reset baselines once before priming");
+  const transientFenceStateBefore = JSON.parse(fs.readFileSync(path.join(transientFenceDir, "auto-reply-state.json"), "utf8"));
+  await transientFenceController.runOnce();
+  assert.equal(transientFenceController.status().status, "running", "an unresolved chat boundary must keep polling instead of pretending the message is absent");
+  assert.equal(transientFenceController.status().scan_health, "warning");
+  assert.equal(transientFenceController.status().last_scan_reason, "chat_boundary_unresolved");
+  assert.equal(transientFenceController.status().last_event, "chat_boundary_unresolved");
+  await transientFenceController.runOnce();
+  assert.equal(transientFenceController.status().status, "running", "a transient focus failure must keep polling");
+  assert.equal(transientFenceController.status().scan_health, "warning");
+  assert.equal(transientFenceController.status().last_scan_reason, "wechat_focus_failed");
+  assert.equal(transientFenceController.status().consecutive_scan_failures, 2);
+  await transientFenceController.runOnce();
+  assert.equal(transientFenceController.status().scan_health, "degraded", "repeated boundary failures must be visible instead of looking healthy");
+  assert.equal(transientFenceController.status().consecutive_scan_failures, 3);
+  assert.equal(transientFenceController.status().last_scan_reason, "latest_message_role_unresolved");
+  assert.equal(transientFenceController.status().last_event, "latest_message_role_unresolved");
+  const transientFenceStateAfter = JSON.parse(fs.readFileSync(path.join(transientFenceDir, "auto-reply-state.json"), "utf8"));
+  assert.deepEqual(transientFenceStateAfter.processed, transientFenceStateBefore.processed, "a boundary/focus fence must not consume or rewrite pending message state");
+  assert.deepEqual(transientFenceStateAfter.reply_guards, transientFenceStateBefore.reply_guards, "a boundary/focus fence must not advance an outgoing guard");
+  assert.equal(transientFenceAiCalls, 0);
+  assert.equal(transientFenceSendCalls, 0);
+  assert.equal(transientFenceRequeues, 0, "a boundary/focus fence must not consume or replace a queued retry");
+  assert.equal(transientFenceBaselineResets, 1, "a transient scan failure must not reset live baselines");
+  assert.equal(transientFenceVerifiedBoundaries, 0, "a transient scan failure must not advance a verified visual boundary");
+  const transientFenceLog = fs.readFileSync(path.join(transientFenceDir, "auto-reply-diagnostics.jsonl"), "utf8");
+  assert.match(transientFenceLog, /"code":"chat_boundary_unresolved"/);
+  assert.match(transientFenceLog, /"code":"wechat_focus_failed"/);
+  assert.match(transientFenceLog, /"code":"latest_message_role_unresolved"/);
+  assert.doesNotMatch(transientFenceLog, /"code":"unknown_scan_reason"/, "known transient fences must remain diagnosable instead of being collapsed into an unknown status");
+  transientFenceController.pause();
+
+  const pendingHealthController = createAutoReplyController({
+    dataDir: path.join(root, "scan_pending_health"),
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: { assertAvailable: () => true, reply: async () => { throw new Error("AI must wait for pending visual evidence"); } },
+    scanIncoming: () => ({ ok: false, reason: "unread_preview_pending", pid: 81, hWnd: "91" }),
+    verifyIncoming: () => ({ ok: false }),
+    send: async () => { throw new Error("send must wait for pending visual evidence"); },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await pendingHealthController.start()).ok, true);
+  await pendingHealthController.runOnce();
+  assert.equal(pendingHealthController.status().scan_health, "checking", "a retained opened-unread transaction must be settling, not a false scan warning");
+  assert.equal(pendingHealthController.status().consecutive_scan_failures, 0);
+  assert.equal(pendingHealthController.status().last_scan_reason, "unread_preview_pending");
+  pendingHealthController.pause();
+
+  const consumedVisualDriftController = createAutoReplyController({
+    dataDir: path.join(root, "scan_consumed_visual_drift"),
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: { assertAvailable: () => true, reply: async () => { throw new Error("consumed visual drift must not call AI"); } },
+    scanIncoming: () => ({ ok: false, reason: "current_visual_drift_consumed", pid: 81, hWnd: "91" }),
+    verifyIncoming: () => ({ ok: false }),
+    send: async () => { throw new Error("consumed visual drift must never send"); },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await consumedVisualDriftController.start()).ok, true);
+  await consumedVisualDriftController.runOnce();
+  assert.equal(consumedVisualDriftController.status().status, "running");
+  assert.equal(consumedVisualDriftController.status().scan_health, "healthy", "a confirmed one-channel visual drift must be consumed without showing a scan warning");
+  assert.equal(consumedVisualDriftController.status().consecutive_scan_failures, 0);
+  assert.equal(consumedVisualDriftController.status().last_scan_reason, "current_visual_drift_consumed");
+  consumedVisualDriftController.pause();
+
+  const outgoingSettlingController = createAutoReplyController({
+    dataDir: path.join(root, "scan_current_outgoing_settling"),
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: { assertAvailable: () => true, reply: async () => { throw new Error("outgoing settling must not call AI"); } },
+    scanIncoming: () => ({ ok: false, reason: "current_outgoing_settling", pid: 81, hWnd: "91", latestRole: "assistant" }),
+    verifyIncoming: () => ({ ok: false }),
+    send: async () => { throw new Error("outgoing settling must never send"); },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await outgoingSettlingController.start()).ok, true);
+  await outgoingSettlingController.runOnce();
+  assert.equal(outgoingSettlingController.status().status, "running", "a reflowing assistant bubble must keep the listener alive");
+  assert.equal(outgoingSettlingController.status().scan_health, "healthy");
+  assert.equal(outgoingSettlingController.status().consecutive_scan_failures, 0);
+  assert.equal(outgoingSettlingController.status().last_scan_reason, "current_outgoing_settling");
+  outgoingSettlingController.pause();
+
+  const unresolvedHealthController = createAutoReplyController({
+    dataDir: path.join(root, "scan_unresolved_health"),
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: { assertAvailable: () => true },
+    scanIncoming: () => ({ ok: false, reason: "unread_preview_unresolved", pid: 81, hWnd: "91" }),
+    verifyIncoming: () => ({ ok: false }),
+    send: async () => { throw new Error("unresolved evidence must never send"); },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await unresolvedHealthController.start()).ok, true);
+  await unresolvedHealthController.runOnce();
+  assert.equal(unresolvedHealthController.status().status, "paused", "an opened unread event must not silently become a healthy empty poll after evidence retries are exhausted");
+  assert.equal(unresolvedHealthController.status().last_event, "unread_preview_unresolved_paused");
+  assert.match(unresolvedHealthController.status().last_error, /连续三次无法稳定识别/);
+
+  const unresolvedCurrentTransitionController = createAutoReplyController({
+    dataDir: path.join(root, "scan_current_transition_unresolved"),
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: { assertAvailable: () => true },
+    scanIncoming: () => ({ ok: false, reason: "current_transition_unresolved", pid: 81, hWnd: "91" }),
+    verifyIncoming: () => ({ ok: false }),
+    send: async () => { throw new Error("unresolved current transition must never send"); },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await unresolvedCurrentTransitionController.start()).ok, true);
+  await unresolvedCurrentTransitionController.runOnce();
+  assert.equal(unresolvedCurrentTransitionController.status().status, "paused", "an unstable current-open transition must fail closed instead of carrying evidence across polls");
+  assert.equal(unresolvedCurrentTransitionController.status().last_event, "current_transition_unresolved_paused");
+  assert.match(unresolvedCurrentTransitionController.status().last_error, /连续两帧/);
+
+  const fencedRetryVisualRuntime = `visual:v1:${"a".repeat(64)}`;
+  const fencedRetryVisualCandidate = {
+    ok: true,
+    conversation: "张总",
+    message: "旧的待重试消息",
+    runtimeId: fencedRetryVisualRuntime,
+    previewSignature: "b".repeat(64),
+    messageSignature: "c".repeat(64),
+    pid: 81,
+    hWnd: "91",
+    source: "current_message_change",
+    latestRole: "user",
+    context: [{ role: "user", content: "旧的待重试消息", key: fencedRetryVisualRuntime }]
+  };
+  const fencedRetryVisualResults = [
+    {
+      ok: true,
+      source: "session_prime",
+      pid: 81,
+      hWnd: 91,
+      sessionBaselines: [{ conversation: "张总", signature: "b".repeat(64) }],
+      sessionMessageBaselines: [{ conversation: "张总", signature: "c".repeat(64) }]
+    },
+    { ok: false, reason: "current_transition_unresolved", pid: 81, hWnd: 91 }
+  ];
+  const fencedRetryVisualDriver = createWechatVisualAutoReplyDriver(() => fencedRetryVisualResults.shift());
+  let fencedRetryAiCalls = 0;
+  let fencedRetrySendCalls = 0;
+  const fencedRetryController = createAutoReplyController({
+    dataDir: path.join(root, "scan_current_transition_fences_retry"),
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => { fencedRetryAiCalls += 1; return "不应生成"; }
+    },
+    scanIncoming: fencedRetryVisualDriver.scanWechatIncoming,
+    verifyIncoming: fencedRetryVisualDriver.verifyWechatIncoming,
+    send: async () => { fencedRetrySendCalls += 1; return { ok: true }; },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await fencedRetryController.start()).ok, true);
+  assert.equal(fencedRetryVisualDriver.scanWechatIncoming.requeue(fencedRetryVisualCandidate), true);
+  await fencedRetryController.runOnce();
+  assert.equal(fencedRetryController.status().status, "paused", "an unresolved live transition must pause even when a cached retry exists");
+  assert.equal(fencedRetryController.status().last_event, "current_transition_unresolved_paused");
+  assert.equal(fencedRetryAiCalls, 0);
+  assert.equal(fencedRetrySendCalls, 0);
 
   const healthDir = path.join(root, "scan_health");
   const healthResults = [
@@ -947,6 +1426,40 @@ async function main() {
   assert.equal(pauseDuringSendController.status().status, "paused");
   assert.equal(pauseDuringSendController.status().last_event, "paused_by_user");
   assert.equal(pauseDuringSendController.status().last_error, "");
+
+  const staleUnknownDir = path.join(root, "pause_during_unknown_visual_send");
+  const staleUnknownFirst = visualGuardCandidate({ message: "paused while visual outcome is unknown", runtimeChar: "a", evidenceChar: "f" });
+  let staleUnknownSendCalls = 0;
+  let staleUnknownController;
+  staleUnknownController = createAutoReplyController(guardedControllerOptions({
+    dataDir: staleUnknownDir,
+    scanIncoming: () => staleUnknownFirst,
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      staleUnknownSendCalls += 1;
+      staleUnknownController.pause();
+      return { ok: false, blocked_reason: "visual_send_outcome_unknown", outcomeUnknown: true, send_attempted: null };
+    }
+  }));
+  assert.equal((await staleUnknownController.start()).ok, true);
+  await staleUnknownController.runOnce();
+  assert.equal(staleUnknownSendCalls, 1);
+  assert.equal(staleUnknownController.status().status, "paused");
+  assert.equal(staleUnknownController.status().last_event, "send_outcome_unknown_paused");
+  const staleUnknownState = JSON.parse(fs.readFileSync(path.join(staleUnknownDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(Object.values(staleUnknownState.processed).at(-1).status, "outcome_unknown", "a stale run must preserve an unknown click outcome instead of cancelling it");
+  assert.equal(staleUnknownState.reply_guards.c1.delivery_status, "outcome_unknown");
+
+  const staleUnknownRewrapped = visualGuardCandidate({ message: staleUnknownFirst.message, runtimeChar: "b", evidenceChar: "f" });
+  const staleUnknownRestarted = createAutoReplyController(guardedControllerOptions({
+    dataDir: staleUnknownDir,
+    scanIncoming: () => staleUnknownRewrapped,
+    send: async () => { staleUnknownSendCalls += 1; return { ok: true }; }
+  }));
+  assert.equal((await staleUnknownRestarted.start()).ok, true);
+  await staleUnknownRestarted.runOnce();
+  assert.equal(staleUnknownSendCalls, 1, "a stale outcome-unknown occurrence must remain fenced after restart");
+  assert.equal(staleUnknownRestarted.status().last_event, "reply_guard_duplicate_evidence_paused");
 
   let resolveOldReply;
   let markOldReplyStarted;
@@ -1730,6 +2243,35 @@ async function main() {
   const interruptedSendState = JSON.parse(fs.readFileSync(path.join(interruptedSendDir, "auto-reply-state.json"), "utf8"));
   assert.equal(interruptedSendState.processed.interrupted.status, "outcome_unknown", "a persisted sending attempt must not remain a silent terminal state after restart");
   assert.equal(interruptedSendState.processed.verified.status, "sent_verified", "restart recovery must not rewrite completed sends");
+  assert.equal(interruptedSendState.reply_guards.c1.delivery_status, "outcome_unknown", "an interrupted send must recover a persistent occurrence fence");
+  assert.equal(interruptedSendState.reply_guards.c1.turn_state, "awaiting_outgoing_observation");
+  assert.equal(interruptedSendState.reply_guards.c2, undefined, "an unrelated historical sent_verified entry without occurrence evidence must not migrate into a blocking contact fence");
+
+  const legacyRawGuardDir = path.join(root, "legacy_raw_sent_guard");
+  fs.mkdirSync(legacyRawGuardDir, { recursive: true });
+  fs.writeFileSync(path.join(legacyRawGuardDir, "auto-reply-state.json"), JSON.stringify({
+    version: 2,
+    status: "paused",
+    daily_date: "2026-07-14",
+    processed: {},
+    reply_guards: {
+      c2: {
+        contact_id: "c2",
+        incoming_evidence: "legacy-evidence",
+        evidence_kind: "visual",
+        delivery_status: "sent_verified",
+        turn_state: "awaiting_outgoing_observation",
+        at: "2026-07-14T01:00:00.000Z"
+      }
+    }
+  }), "utf8");
+  const legacyRawGuard = createAutoReplyController({
+    dataDir: legacyRawGuardDir,
+    activeTouchDir,
+    coordinator,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(legacyRawGuardDir, "auto-reply-state.json"), "utf8")).reply_guards.c2.turn_state, "outgoing_observed", "legacy verified guards must migrate out of the old awaiting state");
 
   const interruptedHandoffDir = path.join(root, "interrupted_handoff_recovery");
   fs.mkdirSync(interruptedHandoffDir, { recursive: true });

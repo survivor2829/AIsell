@@ -55,10 +55,16 @@ const SCAN_HEALTH_LABELS: Record<ScanHealth, string> = {
 const SCAN_REASON_LABELS: Record<string, string> = {
   baseline_ready: "启动基线检查通过",
   candidate_detected: "已发现待处理消息",
+  chat_boundary_unresolved: "聊天区与输入框边界暂时无法可靠确认，已跳过本轮并等待重试",
   no_unread_message: "本轮未发现新消息",
   current_session_baselined: "当前会话已建立消息基线",
+  current_outgoing_settling: "已发送消息正在稳定显示，等待下轮确认",
+  current_visual_drift_consumed: "已校准当前会话的单项识别波动",
+  current_transition_unresolved: "当前会话的新消息证据未能稳定确认",
   latest_message_not_incoming: "最近一条不是客户新消息",
+  latest_message_role_unresolved: "最新消息的发送方向暂时无法可靠确认，已跳过本轮并等待重试",
   wechat_operation_busy: "微信正被其他任务使用，等待下轮",
+  wechat_focus_failed: "微信窗口本轮未能切到前台，已跳过并等待重试",
   baseline_epoch_changed: "扫描基线已更新，本轮已取消",
   no_current_conversation: "当前没有打开已同步的一对一联系人",
   powershell_timeout: "读取微信界面超时",
@@ -85,6 +91,8 @@ const SCAN_REASON_LABELS: Record<string, string> = {
   history_overlap_mismatch: "两页聊天记录衔接不一致",
   unread_preview_missing: "未读会话缺少消息预览",
   unread_preview_mismatch: "未读预览与最新消息不一致",
+  unread_preview_pending: "已打开未读会话，正在复核最新消息",
+  unread_preview_unresolved: "未读消息连续复核仍不稳定",
   conversation_open_failed: "无法打开未读会话",
   conversation_title_changed: "扫描期间聊天对象发生变化",
   conversation_title_mismatch: "当前聊天对象校验失败",
@@ -92,6 +100,7 @@ const SCAN_REASON_LABELS: Record<string, string> = {
   wechat_window_changed: "扫描期间微信窗口发生变化",
   latest_text_message_missing: "没有找到可识别的最新文本消息",
   incoming_message_missing: "没有找到待校验的客户消息",
+  incoming_message_changed: "发送前发现客户消息证据已变化",
   incoming_identity_missing: "最新消息缺少稳定身份",
   whitelist_empty: "没有可监听的已同步联系人",
   whitelist_invalid: "联系人监听名单无效",
@@ -121,7 +130,8 @@ const CONTROL_EVENT_LABELS: Record<string, string> = {
   app_closed: "应用窗口关闭时已安全暂停",
   recovered_after_restart: "应用重启后按安全策略保持暂停，请重新启动",
   state_upgraded_paused: "运行状态升级后已安全暂停，请重新启动",
-  start_failed: "启动检查未通过"
+  start_failed: "启动检查未通过",
+  current_transition_unresolved_paused: "新消息证据不一致，已安全暂停"
 };
 
 function normalizeScanHealth(value: AutoReplyState["scan_health"]): ScanHealth {

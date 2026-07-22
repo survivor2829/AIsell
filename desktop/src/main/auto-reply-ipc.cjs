@@ -6,6 +6,8 @@ const { readContacts } = require("../../rpa/active_touch/state_machine.cjs");
 const POLL_INTERVAL_MS = 5_000;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
 const GLOBAL_RATE_LIMIT = 30;
+const SAME_CONTACT_VISUAL_RATE_WINDOW_MS = 2 * 60 * 1000;
+const SAME_CONTACT_VISUAL_RATE_LIMIT = 3;
 const MAX_STATE_ENTRIES = 1_000;
 const SCAN_DEGRADED_AFTER = 3;
 const DIAGNOSTIC_LOG_MAX_BYTES = 512 * 1024;
@@ -14,7 +16,14 @@ const SCAN_HEALTH_VALUES = new Set(["unknown", "checking", "healthy", "warning",
 const HEALTHY_SCAN_REASONS = new Set([
   "no_unread_message",
   "current_session_baselined",
+  "current_outgoing_settling",
+  "current_visual_drift_consumed",
   "latest_message_not_incoming"
+]);
+const TRANSIENT_SCAN_FENCE_REASONS = new Set([
+  "chat_boundary_unresolved",
+  "latest_message_role_unresolved",
+  "wechat_focus_failed"
 ]);
 const KNOWN_SCAN_REASONS = new Set([
   ...HEALTHY_SCAN_REASONS,
@@ -22,9 +31,13 @@ const KNOWN_SCAN_REASONS = new Set([
   "baseline_ready",
   "baseline_epoch_changed",
   "candidate_detected",
+  "chat_boundary_unresolved",
   "conversation_open_failed",
   "conversation_title_changed",
   "conversation_title_mismatch",
+  "current_outgoing_settling",
+  "current_transition_unresolved",
+  "current_visual_drift_consumed",
   "history_avatar_ambiguous",
   "history_changed_during_scan",
   "history_empty",
@@ -43,6 +56,7 @@ const KNOWN_SCAN_REASONS = new Set([
   "incoming_identity_missing",
   "incoming_message_changed",
   "incoming_message_missing",
+  "latest_message_role_unresolved",
   "latest_text_message_missing",
   "moments_render_pane_ambiguous",
   "moments_render_pane_not_found",
@@ -58,6 +72,8 @@ const KNOWN_SCAN_REASONS = new Set([
   "session_probe_unsupported",
   "unknown_scan_reason",
   "unread_preview_mismatch",
+  "unread_preview_pending",
+  "unread_preview_unresolved",
   "unread_preview_missing",
   "visual_candidate_ambiguous",
   "visual_capture_failed",
@@ -67,6 +83,7 @@ const KNOWN_SCAN_REASONS = new Set([
   "visual_sidebar_match_ambiguous",
   "visual_sidebar_match_missing",
   "wechat_operation_busy",
+  "wechat_focus_failed",
   "wechat_process_changed",
   "wechat_window_ambiguous",
   "wechat_window_changed",
@@ -316,6 +333,7 @@ function createDefaultState() {
     reply_count: 0,
     daily_date: "",
     processed: {},
+    reply_guards: {},
     handoff_notified: {},
     manual_followups: [],
     pending_handoff: null,
@@ -347,12 +365,68 @@ function recoverInterruptedProcessedSends(processed) {
   return { processed: result, recovered };
 }
 
+function normalizeReplyGuard(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const contactId = normalizeText(value.contact_id);
+  if (!contactId) return null;
+  const deliveryStatus = ["sent_verified", "outcome_unknown"].includes(normalizeText(value.delivery_status || value.status))
+    ? normalizeText(value.delivery_status || value.status)
+    : "sent_verified";
+  const turnState = normalizeText(value.turn_state);
+  return {
+    contact_id: contactId,
+    incoming_evidence: normalizeText(value.incoming_evidence).slice(0, 200),
+    evidence_kind: ["visual", "uia"].includes(normalizeText(value.evidence_kind)) ? normalizeText(value.evidence_kind) : "unknown",
+    incoming_runtime_id: normalizeText(value.incoming_runtime_id).slice(0, 200),
+    visual_evidence_runtime_id: normalizeText(value.visual_evidence_runtime_id).slice(0, 200),
+    message_signature: normalizeText(value.message_signature).slice(0, 200),
+    fingerprint: normalizeText(value.fingerprint).slice(0, 200),
+    delivery_status: deliveryStatus,
+    // A verified delivery is itself a trusted outgoing turn boundary. Older
+    // builds persisted `awaiting_outgoing_observation` before this rule existed;
+    // normalize those guards so a non-current contact is not blocked forever.
+    turn_state: deliveryStatus === "sent_verified" ? "outgoing_observed" : "awaiting_outgoing_observation",
+    outgoing_observation: normalizeText(value.outgoing_observation).slice(0, 200),
+    outgoing_observed_at: normalizeText(value.outgoing_observed_at).slice(0, 100),
+    at: normalizeText(value.at).slice(0, 100)
+  };
+}
+
+function recoverReplyGuards(rawGuards, processed) {
+  const guards = {};
+  const source = rawGuards && typeof rawGuards === "object" && !Array.isArray(rawGuards) ? rawGuards : {};
+  for (const value of Object.values(source).slice(-MAX_STATE_ENTRIES)) {
+    const guard = normalizeReplyGuard(value);
+    if (guard) guards[guard.contact_id] = guard;
+  }
+  for (const [fingerprint, value] of Object.entries(processed || {})) {
+    const deliveryStatus = normalizeText(value?.status);
+    if (!["sent_verified", "outcome_unknown"].includes(deliveryStatus)) continue;
+    const hasOccurrenceEvidence = Boolean(
+      normalizeText(value?.incoming_evidence)
+      || normalizeText(value?.incoming_runtime_id)
+      || normalizeText(value?.visual_evidence_runtime_id)
+      || normalizeText(value?.message_signature)
+    );
+    if (deliveryStatus === "sent_verified" && !hasOccurrenceEvidence) continue;
+    const recovered = normalizeReplyGuard({ ...value, fingerprint });
+    if (!recovered) continue;
+    const existingAt = new Date(guards[recovered.contact_id]?.at || 0).getTime();
+    const recoveredAt = new Date(recovered.at || 0).getTime();
+    if (!guards[recovered.contact_id] || !Number.isFinite(existingAt) || Number.isFinite(recoveredAt) && recoveredAt > existingAt) {
+      guards[recovered.contact_id] = recovered;
+    }
+  }
+  return guards;
+}
+
 function migrateState(raw, current) {
   if (!raw || Object.keys(raw).length === 0) return createDefaultState();
   if (raw.version === 2) {
     const next = { ...createDefaultState(), ...raw };
     const processedRecovery = recoverInterruptedProcessedSends(raw.processed);
     next.processed = processedRecovery.processed;
+    next.reply_guards = recoverReplyGuards(raw.reply_guards, next.processed);
     next.handoff_notified = raw.handoff_notified && typeof raw.handoff_notified === "object" ? raw.handoff_notified : {};
     next.manual_followups = Array.isArray(raw.manual_followups)
       ? raw.manual_followups
@@ -458,6 +532,58 @@ function fingerprintFor(contact, candidate) {
     .digest("hex");
 }
 
+function incomingEvidenceFor(candidate) {
+  const runtimeId = normalizeText(candidate?.runtimeId);
+  const visualEvidenceRuntimeId = normalizeText(candidate?.visualEvidenceRuntimeId);
+  const messageSignature = normalizeText(candidate?.messageSignature).toLowerCase();
+  const incoming = normalizeText(candidate?.message);
+  const isVisual = normalizeText(candidate?.visualMode) === "visual_render_v1"
+    || /^visual:v[12]:[a-f0-9]{64}$/u.test(runtimeId)
+    || /^visual:v1:[a-f0-9]{64}$/u.test(visualEvidenceRuntimeId);
+  let identity = "";
+  if (isVisual) {
+    if (/^visual:v2:[a-f0-9]{64}$/u.test(runtimeId)) identity = runtimeId;
+    else if (/^visual:v1:[a-f0-9]{64}$/u.test(visualEvidenceRuntimeId)) identity = visualEvidenceRuntimeId;
+    else if (/^[a-f0-9]{64}$/u.test(messageSignature)) identity = `visual-message:${messageSignature}`;
+  } else if (runtimeId && incoming) {
+    const latestContextKey = Array.isArray(candidate?.context) ? normalizeText(candidate.context.at(-1)?.key) : "";
+    identity = JSON.stringify([runtimeId, latestContextKey || runtimeId, incoming]);
+  }
+  return {
+    id: identity ? crypto.createHash("sha256").update(`${isVisual ? "visual" : "uia"}\n${identity}`).digest("hex") : "",
+    kind: isVisual ? "visual" : "uia",
+    runtimeId,
+    visualEvidenceRuntimeId,
+    messageSignature
+  };
+}
+
+function verificationMatchesCandidate(candidate, verification, evidence) {
+  if (verification?.ok !== true) return false;
+  const verifiedConversation = normalizeText(verification.conversation);
+  const verifiedMessage = normalizeText(verification.message);
+  const verifiedRuntimeId = normalizeText(verification.runtimeId);
+  const verifiedVisualEvidenceRuntimeId = normalizeText(verification.visualEvidenceRuntimeId);
+  const verifiedMessageSignature = normalizeText(verification.messageSignature).toLowerCase();
+  if (evidence.kind === "visual") {
+    return normalizeText(verification.latestRole) === "user"
+      && verifiedConversation === normalizeText(candidate?.conversation)
+      && verifiedMessage === normalizeText(candidate?.message)
+      && verifiedRuntimeId === evidence.runtimeId
+      && verifiedVisualEvidenceRuntimeId === evidence.visualEvidenceRuntimeId
+      && verifiedMessageSignature === evidence.messageSignature
+      && /^visual:v1:[a-f0-9]{64}$/u.test(verifiedVisualEvidenceRuntimeId)
+      && /^[a-f0-9]{64}$/u.test(verifiedMessageSignature);
+  }
+  if (normalizeText(verification.latestRole) && normalizeText(verification.latestRole) !== "user") return false;
+  if (verifiedConversation && verifiedConversation !== normalizeText(candidate?.conversation)) return false;
+  if (verifiedMessage && verifiedMessage !== normalizeText(candidate?.message)) return false;
+  if (verifiedRuntimeId && verifiedRuntimeId !== evidence.runtimeId) {
+    return false;
+  }
+  return true;
+}
+
 function isTerminalProcessed(entry) {
   return Boolean(entry) && !["generating", "retryable"].includes(normalizeText(entry.status));
 }
@@ -476,6 +602,18 @@ function recentRateEvents(events, nowMs) {
 function exceedsRateLimit(events, nowMs = Date.now()) {
   const recent = recentRateEvents(events, nowMs);
   return recent.length >= GLOBAL_RATE_LIMIT;
+}
+
+function exceedsSameContactVisualRateLimit(events, contactId, nowMs = Date.now()) {
+  const normalizedContactId = normalizeText(contactId);
+  if (!normalizedContactId) return false;
+  return (Array.isArray(events) ? events : []).filter((event) => {
+    const at = new Date(event?.at || 0).getTime();
+    return normalizeText(event?.contact_id) === normalizedContactId
+      && Number.isFinite(at)
+      && at <= nowMs
+      && nowMs - at < SAME_CONTACT_VISUAL_RATE_WINDOW_MS;
+  }).length >= SAME_CONTACT_VISUAL_RATE_LIMIT;
 }
 
 function buildHandoffMessage({ conversation, reason, latest, at = new Date() }) {
@@ -515,6 +653,7 @@ function createAutoReplyController(options = {}) {
     || rawState.status === "running"
     || rawState.status === "starting"
     || Object.values(rawState.processed || {}).some((entry) => normalizeText(entry?.status) === "sending")
+    || JSON.stringify(rawState.reply_guards || {}) !== JSON.stringify(state.reply_guards || {})
     || rawState.daily_date !== state.daily_date
     || Number(rawState.reply_count) !== state.reply_count
     || Boolean(rawState.pending_handoff) && (
@@ -584,7 +723,7 @@ function createAutoReplyController(options = {}) {
     state.last_scan_at = observedAt;
     state.last_scan_reason = reason;
 
-    const neutral = reason === "baseline_epoch_changed" || phase === "prime" && reason === "no_current_conversation";
+    const neutral = reason === "baseline_epoch_changed" || reason === "unread_preview_pending" || phase === "prime" && reason === "no_current_conversation";
     const successful = result?.ok === true || HEALTHY_SCAN_REASONS.has(reason);
     if (neutral) {
       if (!SCAN_HEALTH_VALUES.has(state.scan_health) || state.scan_health === "unknown") state.scan_health = "checking";
@@ -775,6 +914,59 @@ function createAutoReplyController(options = {}) {
     return { ok: true, state: publicState() };
   }
 
+  function processedEvidenceMetadata(contact, candidate, evidence) {
+    return {
+      contact_id: contact.id,
+      incoming_evidence: evidence.id,
+      evidence_kind: evidence.kind,
+      incoming_runtime_id: evidence.runtimeId,
+      visual_evidence_runtime_id: evidence.visualEvidenceRuntimeId,
+      message_signature: evidence.messageSignature
+    };
+  }
+
+  function recordReplyGuard(contact, candidate, fingerprint, evidence, sentAt, deliveryStatus = "sent_verified") {
+    state.reply_guards ||= {};
+    state.reply_guards[contact.id] = {
+      ...processedEvidenceMetadata(contact, candidate, evidence),
+      fingerprint,
+      delivery_status: deliveryStatus,
+      turn_state: deliveryStatus === "sent_verified" ? "outgoing_observed" : "awaiting_outgoing_observation",
+      outgoing_observation: "",
+      outgoing_observed_at: "",
+      at: sentAt.toISOString()
+    };
+    trimMap(state.reply_guards);
+  }
+
+  function noteVerifiedVisualBoundary(candidate, result) {
+    const verificationMode = normalizeText(result?.verification_mode);
+    if (!new Set(["visual_message_bubble", "draft_consumed_same_header"]).has(verificationMode)) return false;
+    try {
+      return scanIncoming.noteVerifiedSend?.(candidate, { verificationMode }) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  function recordOutgoingObservation(candidate, contacts, observedAt) {
+    const isScanObservation = normalizeText(candidate?.reason) === "latest_message_not_incoming";
+    const isPrimeObservation = candidate?.ok === true
+      && (normalizeText(candidate?.source) === "session_prime" || candidate?.primed === true);
+    if ((!isScanObservation && !isPrimeObservation) || normalizeText(candidate?.latestRole) !== "assistant") return false;
+    const baseline = candidate?.messageBaselineAdvance;
+    const conversation = normalizeText(baseline?.conversation || candidate?.conversation || candidate?.currentConversation);
+    const signature = normalizeText(baseline?.signature || candidate?.messageSignature || candidate?.currentMessageSignature).toLowerCase();
+    if (!conversation || !/^[a-f0-9]{64}$/u.test(signature)) return false;
+    const contact = contacts.find((item) => normalizeText(item.name) === conversation);
+    const guard = contact ? state.reply_guards?.[contact.id] : null;
+    if (!guard || normalizeText(guard.turn_state) !== "awaiting_outgoing_observation") return false;
+    guard.turn_state = "outgoing_observed";
+    guard.outgoing_observation = signature;
+    guard.outgoing_observed_at = observedAt.toISOString();
+    return true;
+  }
+
   async function waitForScanIdle() {
     while (scanActive) await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -821,6 +1013,7 @@ function createAutoReplyController(options = {}) {
         const primed = await Promise.resolve(primeIncoming(contacts.map((contact) => contact.name)));
         if (runEpoch !== startEpoch || state.status !== "starting") return { ok: false, error: "自动回复启动已取消", state: publicState() };
         recordScanResult(primed, "prime");
+        recordOutgoingObservation(primed, contacts, now());
         if (primed?.ok !== true && primed?.reason !== "no_current_conversation") {
           throw new Error(state.last_scan_reason || "微信当前会话基线初始化失败");
         }
@@ -841,7 +1034,10 @@ function createAutoReplyController(options = {}) {
       state.last_error = recoveredHandoffWarning;
       appendDiagnostic("started", { phase: "prime", code: state.last_scan_reason || "started" });
       save();
-      queueNext(0);
+      // Let the successful start IPC reach the renderer before the first OCR
+      // pass. The Windows visual probe can briefly occupy the main process, so
+      // an immediate scan made the page look stuck on “启动中/检查中”.
+      queueNext();
       return { ok: true, state: publicState() };
     } catch (error) {
       if (runEpoch === startEpoch && state.status === "starting") {
@@ -1018,11 +1214,38 @@ function createAutoReplyController(options = {}) {
         recordScanResult(observation, "scan");
       }
       if (!candidate?.ok) {
+        const candidateReason = normalizeText(candidate?.reason);
+        if (TRANSIENT_SCAN_FENCE_REASONS.has(candidateReason)) {
+          // These are incomplete live observations, not proof that the current
+          // turn is empty or outgoing. Keep all reply/baseline/retry state
+          // untouched and let the next poll re-observe the same WeChat state.
+          state.last_event = state.last_scan_reason || candidateReason;
+          state.last_error = "";
+          save();
+          return publicState();
+        }
+        if (candidateReason === "unread_preview_unresolved") {
+          pauseWithError(
+            "unread_preview_unresolved_paused",
+            "已打开未读联系人，但连续三次无法稳定识别最新客户气泡。任务已暂停，避免把这条消息静默丢失；请保持微信窗口可见后重新启动自动回复。"
+          );
+          save();
+          return publicState();
+        }
+        if (candidateReason === "current_transition_unresolved") {
+          pauseWithError(
+            "current_transition_unresolved_paused",
+            "当前聊天的会话预览与消息气泡在连续两帧中没有形成一致的新消息证据。任务已安全暂停，避免把旧消息误当成新消息；请保持微信窗口完整可见后重新启动自动回复。"
+          );
+          save();
+          return publicState();
+        }
+        const outgoingObserved = recordOutgoingObservation(candidate, contacts, current);
         if (handoffDelivery !== "none") {
           save();
           return publicState();
         }
-        state.last_event = state.last_scan_reason || "scan_result_invalid";
+        state.last_event = outgoingObserved ? "reply_guard_outgoing_observed" : state.last_scan_reason || "scan_result_invalid";
         state.last_error = "";
         save();
         return publicState();
@@ -1039,6 +1262,8 @@ function createAutoReplyController(options = {}) {
       const rawContext = normalizedContext(candidate);
       const incoming = normalizeText(candidate.message);
       const fingerprint = fingerprintFor(contact, candidate);
+      const incomingEvidence = incomingEvidenceFor(candidate);
+      const processedMetadata = processedEvidenceMetadata(contact, candidate, incomingEvidence);
       if (!rawContext.length || !fingerprint) {
         state.last_event = "ambiguous_message_context";
         state.last_error = "";
@@ -1052,7 +1277,7 @@ function createAutoReplyController(options = {}) {
         return publicState();
       }
       if (!isReplyableText(incoming)) {
-        remember(fingerprint, { status: "skipped", contact_id: contact.id, conversation, at: current.toISOString() });
+        remember(fingerprint, { status: "skipped", ...processedMetadata, conversation, at: current.toISOString() });
         state.last_event = "unsupported_or_risky_message";
         state.last_error = "";
         save();
@@ -1060,7 +1285,44 @@ function createAutoReplyController(options = {}) {
       }
       const context = safeContextSuffix(rawContext);
 
+      const replyGuard = state.reply_guards?.[contact.id];
+      if (replyGuard) {
+        if (!incomingEvidence.id) {
+          pauseWithError("reply_guard_evidence_missing_paused", "上一条自动回复已发送或发送结果无法确认，但当前扫描结果缺少可验证的新客户入站证据，已暂停以防连续误发。请确认微信中出现新的客户消息后再启动。");
+          save();
+          return publicState();
+        }
+        if (normalizeText(replyGuard.incoming_evidence) && normalizeText(replyGuard.incoming_evidence) === incomingEvidence.id) {
+          pauseWithError("reply_guard_duplicate_evidence_paused", "检测到同一条客户入站证据被再次包装成新消息，已暂停自动回复，避免把己方回复或同一气泡反复当成客户新消息。");
+          save();
+          return publicState();
+        }
+        if (incomingEvidence.kind === "visual" && normalizeText(replyGuard.turn_state) !== "outgoing_observed") {
+          if (normalizeText(replyGuard.visual_evidence_runtime_id)
+            && normalizeText(replyGuard.visual_evidence_runtime_id) === incomingEvidence.visualEvidenceRuntimeId) {
+            pauseWithError("reply_guard_duplicate_evidence_paused", "检测到同一条客户气泡被再次包装成新的运行标识，已暂停自动回复，避免同一气泡被重复回复。");
+            save();
+            return publicState();
+          }
+          pauseWithError("reply_guard_turn_transition_missing_paused", "上一条自动回复之后尚未观察到己方发送气泡，当前视觉变化不能证明是新的客户消息，已暂停以防同一气泡漂移导致重复回复。");
+          save();
+          return publicState();
+        }
+        const guardVerification = await Promise.resolve(verifyIncoming(candidate));
+        if (!isCurrentRun()) return publicState();
+        if (!verificationMatchesCandidate(candidate, guardVerification, incomingEvidence)) {
+          pauseWithError("reply_guard_unverified_followup_paused", "上一条自动回复已发送或发送结果无法确认，但当前候选消息未通过新的客户入站证据复核，已暂停以防连续误发。");
+          save();
+          return publicState();
+        }
+      }
+
       state.rate_events = recentRateEvents(state.rate_events, current.getTime());
+      if (incomingEvidence.kind === "visual" && exceedsSameContactVisualRateLimit(state.rate_events, contact.id, current.getTime())) {
+        pauseWithError("same_contact_visual_rate_limit_paused", `同一联系人在两分钟内已连续完成 ${SAME_CONTACT_VISUAL_RATE_LIMIT} 次视觉自动回复，下一次发送前已紧急熔断。请人工确认确有新的客户消息后再启动。`);
+        save();
+        return publicState();
+      }
       if (exceedsRateLimit(state.rate_events, current.getTime())) {
         pauseWithError("rate_limit_paused", "触发异常频率熔断，请人工检查后再启动");
         save();
@@ -1071,7 +1333,7 @@ function createAutoReplyController(options = {}) {
       if (retryEntry?.pollsRemaining > 0) {
         retryEntry.pollsRemaining -= 1;
         retryGenerations.set(fingerprint, retryEntry);
-        remember(fingerprint, { status: "retryable", contact_id: contact.id, conversation, at: current.toISOString() });
+        remember(fingerprint, { status: "retryable", ...processedMetadata, conversation, at: current.toISOString() });
         if (requeueCandidate(candidate)) {
           state.last_event = "send_retry_waiting";
           state.last_error = "回复尚未发出，正在退避后重试";
@@ -1081,7 +1343,7 @@ function createAutoReplyController(options = {}) {
         save();
         return publicState();
       }
-      remember(fingerprint, { status: "generating", contact_id: contact.id, conversation, at: current.toISOString() });
+      remember(fingerprint, { status: "generating", ...processedMetadata, conversation, at: current.toISOString() });
       state.last_event = "generating_reply";
       state.last_error = "";
       save();
@@ -1140,6 +1402,7 @@ function createAutoReplyController(options = {}) {
         attemptId: fingerprint,
         expectedIncomingMessage: candidate.message,
         expectedIncomingRuntimeId: candidate.runtimeId,
+        expectedIncomingMessageSignature: candidate.messageSignature,
         visualMode: String(candidate.visualMode || ""),
         expectedPid: candidate.pid,
         expectedHWnd: candidate.hWnd,
@@ -1162,8 +1425,14 @@ function createAutoReplyController(options = {}) {
           resetDailyCounter(staleSentAt);
           state.processed[fingerprint].status = "sent_verified";
           state.reply_count += 1;
-          state.rate_events.push({ contact_id: contact.id, at: staleSentAt.toISOString() });
+          state.rate_events.push({ contact_id: contact.id, evidence_kind: incomingEvidence.kind, at: staleSentAt.toISOString() });
+          noteVerifiedVisualBoundary(candidate, result);
+          recordReplyGuard(contact, candidate, fingerprint, incomingEvidence, staleSentAt);
           pauseWithError("stale_run_send_paused", "旧运行轮次在暂停后仍完成了发送，请人工检查");
+        } else if (result?.send_attempted !== false) {
+          state.processed[fingerprint].status = "outcome_unknown";
+          recordReplyGuard(contact, candidate, fingerprint, incomingEvidence, now(), "outcome_unknown");
+          pauseWithError("send_outcome_unknown_paused", result?.blocked_reason || result?.error || "自动回复发送结果无法确认");
         } else {
           state.processed[fingerprint].status = "cancelled";
         }
@@ -1194,6 +1463,7 @@ function createAutoReplyController(options = {}) {
         } else {
           retryGenerations.delete(fingerprint);
           state.processed[fingerprint].status = "outcome_unknown";
+          recordReplyGuard(contact, candidate, fingerprint, incomingEvidence, now(), "outcome_unknown");
           pauseWithError("send_outcome_unknown_paused", result?.blocked_reason || result?.error || "自动回复发送结果无法确认");
         }
         save();
@@ -1205,7 +1475,9 @@ function createAutoReplyController(options = {}) {
       resetDailyCounter(sentAt);
       state.processed[fingerprint].status = "sent_verified";
       state.reply_count += 1;
-      state.rate_events.push({ contact_id: contact.id, at: sentAt.toISOString() });
+      state.rate_events.push({ contact_id: contact.id, evidence_kind: incomingEvidence.kind, at: sentAt.toISOString() });
+      noteVerifiedVisualBoundary(candidate, result);
+      recordReplyGuard(contact, candidate, fingerprint, incomingEvidence, sentAt);
       state.last_event = "reply_sent_verified";
       state.last_error = "";
       state.last_ai_warning_code = normalizeAiWarningCode(generated?.aiWarningCode);
