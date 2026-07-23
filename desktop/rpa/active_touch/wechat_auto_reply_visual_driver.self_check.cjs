@@ -18,7 +18,9 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-MomentsOcrObservation \$frame/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualCurrentConversation/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualAnyHeader/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualUnreadBadges/u);
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /reason = "unread_contact_unresolved"/u, "an unknown unread badge must remain observation-only");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /badgeOnly = \$true[\s\S]*source = "unread_badge"/u, "an OCR-unresolved unread badge must use the row-opening fallback");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$row\.badgeBounds\.centerX[\s\S]*\$row\.badgeBounds\.centerY/u, "the unread fallback must click WeChat's own badge geometry");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Resolve-AutoReplyVisualAllowedConversation \(\[string\]\$header\.conversation\) \$allowedSet/u, "a badge-opened chat must be allowlist verified before reading or sending");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualLatestMessageEvidence/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualSidebarRight/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualMessageRole/u);
@@ -92,10 +94,10 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /messageBaselineAdvance = @\{ conversatio
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /source = "current_message_change"/u);
 const unresolvedBadgeCapture = AUTO_REPLY_VISUAL_SCRIPT.indexOf("$unresolvedUnreadBadgeCount = $badgeFallbacks.Count");
 const allowlistedCurrentTransition = AUTO_REPLY_VISUAL_SCRIPT.indexOf("$currentMessageChanged = $previousMessageSignature -cne $currentMessageSignature", unresolvedBadgeCapture);
-const unresolvedBadgeReturn = AUTO_REPLY_VISUAL_SCRIPT.indexOf('reason = "unread_contact_unresolved"', allowlistedCurrentTransition);
+const unresolvedBadgeFallback = AUTO_REPLY_VISUAL_SCRIPT.indexOf("badgeOnly = $true", allowlistedCurrentTransition);
 assert.ok(
-  unresolvedBadgeCapture >= 0 && allowlistedCurrentTransition > unresolvedBadgeCapture && unresolvedBadgeReturn > allowlistedCurrentTransition,
-  "a persistent unknown unread dot must be recorded first, while an allowlisted current-chat bubble gets candidate priority before the unknown-contact result"
+  unresolvedBadgeCapture >= 0 && allowlistedCurrentTransition > unresolvedBadgeCapture && unresolvedBadgeFallback > allowlistedCurrentTransition,
+  "an allowlisted current-chat bubble gets priority before opening an OCR-unresolved unread badge"
 );
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /source = "current_message_change"[\s\S]*unreadBadgeCount = \[int\]\$unresolvedUnreadBadgeCount/u, "the winning allowlisted current-chat candidate must retain the unknown-dot diagnostic without being starved by it");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$previousMessageSignature -cne \$currentMessageSignature/u, "the chat bubble alone decides whether the open conversation advanced");

@@ -871,10 +871,18 @@ function Open-AutoReplyVisualConversation($row, [IntPtr]$hWnd, [int]$expectedPro
   [void][Win32WechatMomentsVisualReadOnly]::SetForegroundWindow($hWnd)
   Start-Sleep -Milliseconds 120
   if ([Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -ne $hWnd) { return $false }
-  # Click the center of the matched name glyphs. The previous Y coordinate sat
-  # in the preview line, which is less reliable in a compressed session list.
-  $localX = [int][Math]::Round([double]$row.nameBounds.left + [Math]::Min((Scale-AutoReplyVisualMetric 40.0), [Math]::Max((Scale-AutoReplyVisualMetric 8.0), [double]$row.nameBounds.width * 0.5)))
-  $localY = [int][Math]::Round([double]$row.nameBounds.top + ([double]$row.nameBounds.height * 0.5))
+  if ([bool]$row.badgeOnly) {
+    # OCR may fail to read the row title on another PC. Clicking WeChat's own
+    # unread badge still selects that row; the opened chat title is allowlist
+    # verified before any message is read or sent.
+    $localX = [int][Math]::Round([double]$row.badgeBounds.centerX)
+    $localY = [int][Math]::Round([double]$row.badgeBounds.centerY)
+  } else {
+    # Click the center of the matched name glyphs. The previous Y coordinate sat
+    # in the preview line, which is less reliable in a compressed session list.
+    $localX = [int][Math]::Round([double]$row.nameBounds.left + [Math]::Min((Scale-AutoReplyVisualMetric 40.0), [Math]::Max((Scale-AutoReplyVisualMetric 8.0), [double]$row.nameBounds.width * 0.5)))
+    $localY = [int][Math]::Round([double]$row.nameBounds.top + ([double]$row.nameBounds.height * 0.5))
+  }
   $screenX = [int]$windowRect.Left + $localX; $screenY = [int]$windowRect.Top + $localY
   if (-not (Test-AutoReplyVisualPointOwned $screenX $screenY $hWnd $expectedProcessId)) { return $false }
   $oldPoint = New-Object Win32WechatAutoReplyVisual+POINT
@@ -1637,6 +1645,7 @@ try {
   }
 
   $candidates = New-Object System.Collections.Generic.List[object]
+  $candidate = $null
   $suppressedStartupUnread = 0
   foreach ($row in $rows) {
     # OCR-only preview changes are not an event signal: small recognition jitter
@@ -1764,28 +1773,34 @@ try {
       }
     }
     if ($unresolvedUnreadBadgeCount -gt 0) {
+      $badge = $badgeFallbacks[0]
+      $candidate = [pscustomobject]@{
+        badgeOnly = $true
+        unread = $true
+        badgeBounds = $badge
+        conversation = ""
+        preview = ""
+        signature = ""
+        source = "unread_badge"
+      }
+    } else {
       Write-AutoReplyVisualResult @{
         ok = $false
-        reason = "unread_contact_unresolved"
+        reason = "no_unread_message"
         pid = [int]$process.Id
         hWnd = [int64]$hWnd
-        unreadBadgeCount = [int]$unresolvedUnreadBadgeCount
+        conversation = $currentResultConversation
+        latestRole = $currentResultLatestRole
+        messageSignature = $currentResultMessageSignature
+        sessionBaselines = $sessionBaselines
+        sessionMessageBaselines = $sessionMessageBaselines
       }
     }
-    Write-AutoReplyVisualResult @{
-      ok = $false
-      reason = "no_unread_message"
-      pid = [int]$process.Id
-      hWnd = [int64]$hWnd
-      conversation = $currentResultConversation
-      latestRole = $currentResultLatestRole
-      messageSignature = $currentResultMessageSignature
-      sessionBaselines = $sessionBaselines
-      sessionMessageBaselines = $sessionMessageBaselines
-    }
   }
-  $unreadCandidates = @($candidates.ToArray() | Where-Object { $_.unread })
-  $candidate = if ($unreadCandidates.Count -gt 0) { $unreadCandidates[0] } else { $candidates[0] }
+  if ($null -eq $candidate) {
+    $unreadCandidates = @($candidates.ToArray() | Where-Object { $_.unread })
+    $candidate = if ($unreadCandidates.Count -gt 0) { $unreadCandidates[0] } else { $candidates[0] }
+  }
   $conversation = [string]$candidate.conversation; $preview = [string]$candidate.preview
   $source = if ([bool]$candidate.badgeOnly) { "unread_badge" } else { [string]$candidate.source }
 } finally {
@@ -1804,7 +1819,20 @@ try {
       Write-AutoReplyVisualResult @{ ok = $false; reason = "no_unread_message"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
     }
     $header = Get-AutoReplyVisualAnyHeader $openedObservation.lines $sidebarRight ([double]$openedFrame.width)
-    if ($header.ok) { $conversation = [string]$header.conversation }
+    if ($header.ok) {
+      $resolvedHeader = Resolve-AutoReplyVisualAllowedConversation ([string]$header.conversation) $allowedSet
+      if (-not $resolvedHeader.ok) {
+        Write-AutoReplyVisualResult @{
+          ok = $false
+          reason = if ([bool]$resolvedHeader.ambiguous) { "current_conversation_ambiguous" } else { "conversation_title_mismatch" }
+          pid = [int]$process.Id
+          hWnd = [int64]$hWnd
+          headerCandidateCount = [int]$header.headerCandidateCount
+          headerCandidateHashes = @($header.headerCandidateHashes)
+        }
+      }
+      $conversation = [string]$resolvedHeader.conversation
+    }
   } else {
     $header = Get-AutoReplyVisualHeader $openedObservation.lines $conversation $sidebarRight ([double]$openedFrame.width) $allowedSet
   }

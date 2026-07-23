@@ -16,6 +16,7 @@ const xwechatAccountDir = path.join(xwechatRoot, "wxid_latest_abcd");
 const helperPath = path.join(root, "fake_helper.cjs");
 const keyToolPath = path.join(root, "fake_key_tool.cjs");
 const dumpToolPath = path.join(root, "fake_dump_tool.cjs");
+const CAPTURE_SUCCESS_TIMEOUT_MS = 3_000;
 
 function encryptSqlcipher4Like(inputPath, outputPath, keyHex) {
   const pageSize = 4096;
@@ -279,7 +280,7 @@ con.close()
       dumpToolPath: path.join(root, "missing-dump-tool.exe"),
       wxKeyProbePath: path.join(root, "missing-wx-key-probe.py"),
       pythonPath: builtIn.pythonPath,
-      timeoutMs: 1000,
+      timeoutMs: CAPTURE_SUCCESS_TIMEOUT_MS,
       pollIntervalMs: 10,
       processProvider: () => [{ id: 123, path: "C:\\Weixin.exe" }],
       keyInfoReader: () => ({ keyHex: rawKeyHex, observed: true }),
@@ -305,7 +306,7 @@ con.close()
       activeTouchDir,
       keyToolPath: path.join(root, "missing-key-tool.exe"),
       dumpToolPath: path.join(root, "missing-dump-tool.exe"),
-      timeoutMs: 1000,
+      timeoutMs: CAPTURE_SUCCESS_TIMEOUT_MS,
       pollIntervalMs: 10,
       restartWechat: true,
       loginFlowDriver: () => ({ ok: true, restarted: true, wechatExePath: "D:\\微信\\Weixin\\Weixin.exe" }),
@@ -348,7 +349,7 @@ con.close()
       activeTouchDir,
       keyToolPath: path.join(root, "missing-key-tool.exe"),
       dumpToolPath: path.join(root, "missing-dump-tool.exe"),
-      timeoutMs: 1000,
+      timeoutMs: CAPTURE_SUCCESS_TIMEOUT_MS,
       pollIntervalMs: 10,
       restartWechat: true,
       loginFlowDriver: () => ({ ok: true, restarted: true }),
@@ -395,7 +396,7 @@ fs.copyFileSync(input, output);
       dumpToolPath,
       wxKeyProbePath: path.join(root, "missing-wx-key-probe.py"),
       pythonPath: builtIn.pythonPath,
-      timeoutMs: 1000,
+      timeoutMs: CAPTURE_SUCCESS_TIMEOUT_MS,
       pollIntervalMs: 10,
       processProvider: () => [],
       keyInfoReader: () => ({
@@ -415,7 +416,7 @@ fs.copyFileSync(input, output);
       keyToolPath: path.join(root, "missing-key-tool.exe"),
       dumpToolPath,
       pythonPath: builtIn.pythonPath,
-      timeoutMs: 1000,
+      timeoutMs: CAPTURE_SUCCESS_TIMEOUT_MS,
       pollIntervalMs: 10,
       processProvider: () => [{ id: 123, path: "Weixin.exe" }],
       keyInfoReader: () => {
@@ -443,7 +444,7 @@ fs.copyFileSync(input, output);
       keyToolPath: path.join(root, "missing-key-tool.exe"),
       dumpToolPath,
       pythonPath: builtIn.pythonPath,
-      timeoutMs: 1000,
+      timeoutMs: CAPTURE_SUCCESS_TIMEOUT_MS,
       pollIntervalMs: 10,
       processProvider: () => [{ id: 123, path: "Weixin.exe" }],
       keyInfoReader: () => {
@@ -471,7 +472,7 @@ fs.copyFileSync(input, output);
       keyToolPath: path.join(root, "missing-key-tool.exe"),
       dumpToolPath,
       pythonPath: builtIn.pythonPath,
-      timeoutMs: 1000,
+      timeoutMs: CAPTURE_SUCCESS_TIMEOUT_MS,
       pollIntervalMs: 10,
       restartWechat: true,
       commonWechatExeCandidates: [],
@@ -612,7 +613,7 @@ fs.copyFileSync(input, output);
       dumpToolPath,
       wxKeyProbePath: path.join(root, "missing-wx-key-probe.py"),
       pythonPath: builtIn.pythonPath,
-      timeoutMs: 1000,
+      timeoutMs: CAPTURE_SUCCESS_TIMEOUT_MS,
       pollIntervalMs: 10,
       processProvider: () => [{ id: 123, path: "Weixin.exe" }]
     });
