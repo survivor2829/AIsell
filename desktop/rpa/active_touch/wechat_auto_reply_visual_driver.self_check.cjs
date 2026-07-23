@@ -21,6 +21,11 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualUnreadBadges
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /badgeOnly = \$true[\s\S]*source = "unread_badge"/u, "an OCR-unresolved unread badge must use the row-opening fallback");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$row\.badgeBounds\.centerX[\s\S]*\$row\.badgeBounds\.centerY/u, "the unread fallback must click WeChat's own badge geometry");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Resolve-AutoReplyVisualAllowedConversation \(\[string\]\$header\.conversation\) \$allowedSet/u, "a badge-opened chat must be allowlist verified before reading or sending");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$selectedAllowedRows\.Count -eq 1[\s\S]*state = "selected_sidebar_row"/u, "one green selected allowlisted sidebar row must verify the opened badge conversation without another title guess");
+assert.ok(
+  AUTO_REPLY_VISUAL_SCRIPT.indexOf("$selectedAllowedRows.Count -eq 1") < AUTO_REPLY_VISUAL_SCRIPT.indexOf("Get-AutoReplyVisualAnyHeader $openedObservation.lines"),
+  "selected WeChat row state must take priority over header OCR"
+);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualLatestMessageEvidence/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualSidebarRight/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualMessageRole/u);

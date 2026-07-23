@@ -1850,20 +1850,36 @@ try {
     if (Test-AutoReplyVisualBadgeRemains $openedFrame $candidate.badgeBounds) {
       Write-AutoReplyVisualResult @{ ok = $false; reason = "no_unread_message"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
     }
-    $header = Get-AutoReplyVisualAnyHeader $openedObservation.lines $sidebarRight ([double]$openedFrame.width)
-    if ($header.ok) {
-      $resolvedHeader = Resolve-AutoReplyVisualAllowedConversation ([string]$header.conversation) $allowedSet
-      if (-not $resolvedHeader.ok) {
-        Write-AutoReplyVisualResult @{
-          ok = $false
-          reason = if ([bool]$resolvedHeader.ambiguous) { "current_conversation_ambiguous" } else { "conversation_title_mismatch" }
-          pid = [int]$process.Id
-          hWnd = [int64]$hWnd
-          headerCandidateCount = [int]$header.headerCandidateCount
-          headerCandidateHashes = @($header.headerCandidateHashes)
-        }
+    $openedSidebar = Get-AutoReplyVisualSidebarRows $openedFrame $openedObservation.lines $allowedSet $sidebarRight
+    $selectedAllowedRows = if ($openedSidebar.ok) { @($openedSidebar.rows | Where-Object { [bool]$_.selected }) } else { @() }
+    if ($selectedAllowedRows.Count -eq 1) {
+      # The green selected row is direct WeChat state and its conversation value
+      # has already been resolved against the synchronized contact set. Prefer
+      # this over another OCR pass over the title.
+      $conversation = [string]$selectedAllowedRows[0].conversation
+      $header = @{
+        ok = $true
+        state = "selected_sidebar_row"
+        conversation = $conversation
+        headerCandidateCount = 0
+        headerCandidateHashes = @()
       }
-      $conversation = [string]$resolvedHeader.conversation
+    } else {
+      $header = Get-AutoReplyVisualAnyHeader $openedObservation.lines $sidebarRight ([double]$openedFrame.width)
+      if ($header.ok) {
+        $resolvedHeader = Resolve-AutoReplyVisualAllowedConversation ([string]$header.conversation) $allowedSet
+        if (-not $resolvedHeader.ok) {
+          Write-AutoReplyVisualResult @{
+            ok = $false
+            reason = if ([bool]$resolvedHeader.ambiguous) { "current_conversation_ambiguous" } else { "conversation_title_mismatch" }
+            pid = [int]$process.Id
+            hWnd = [int64]$hWnd
+            headerCandidateCount = [int]$header.headerCandidateCount
+            headerCandidateHashes = @($header.headerCandidateHashes)
+          }
+        }
+        $conversation = [string]$resolvedHeader.conversation
+      }
     }
   } else {
     $header = Get-AutoReplyVisualHeader $openedObservation.lines $conversation $sidebarRight ([double]$openedFrame.width) $allowedSet
