@@ -122,9 +122,14 @@ const normalizationStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Normalize-
 const normalizationEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Get-AutoReplyVisualSha256", normalizationStart);
 assert.ok(normalizationStart >= 0 && normalizationEnd > normalizationStart);
 const normalizationFunction = AUTO_REPLY_VISUAL_SCRIPT.slice(normalizationStart, normalizationEnd);
+const allowedResolutionStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Resolve-AutoReplyVisualAllowedConversation");
+const allowedResolutionEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Scale-AutoReplyVisualMetric", allowedResolutionStart);
+assert.ok(allowedResolutionStart >= 0 && allowedResolutionEnd > allowedResolutionStart);
+const allowedResolutionFunction = AUTO_REPLY_VISUAL_SCRIPT.slice(allowedResolutionStart, allowedResolutionEnd);
 assert.match(normalizationFunction, /Replace\(\$normalized, "\\s\+", ""\)/u, "OCR whitespace must use a single PowerShell regex backslash");
 assert.doesNotMatch(normalizationFunction, /"\\\\s\+"/u, "a double regex backslash would preserve OCR-inserted spaces");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Resolve-AutoReplyVisualSidebarConversation[\s\S]*\$fuzzyMatches\.Count -eq 1[\s\S]*ambiguous = \$fuzzyMatches\.Count -gt 1/u, "one physical OCR row must be ambiguous when it fuzzily matches multiple allowlisted contacts");
+assert.match(allowedResolutionFunction, /\$bestMatches\.Count -eq 1[\s\S]*nearest = \$true/u, "header OCR drift may pass only when one allowlisted contact is uniquely nearest");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$resolvedName\.ambiguous[\s\S]*reason = "visual_sidebar_match_ambiguous"/u, "ambiguous physical rows must never become logical contact candidates");
 
 const conversationFunctionsStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Get-AutoReplyVisualEditDistance");
@@ -580,9 +585,20 @@ assert.deepEqual(JSON.parse(normalizationJson), {
 
 const conversationMatchProgram = `
 ${normalizationFunction}
+${allowedResolutionFunction}
+$singleAllowed = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+[void]$singleAllowed.Add(("A" + [char]27979 + [char]35797 + [char]23458 + [char]25143))
+$nearest = Resolve-AutoReplyVisualAllowedConversation ("A" + [char]27979 + [char]35797 + [char]23458 + [char]23608) $singleAllowed
+$ambiguousAllowed = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+[void]$ambiguousAllowed.Add(("A" + [char]27979 + [char]35797 + [char]23458 + [char]25143))
+[void]$ambiguousAllowed.Add(("B" + [char]27979 + [char]35797 + [char]23458 + [char]25143))
+$ambiguous = Resolve-AutoReplyVisualAllowedConversation ("C" + [char]27979 + [char]35797 + [char]23458 + [char]25143) $ambiguousAllowed
 @{
   drift = Test-AutoReplyVisualConversationMatch ("A" + [char]27979 + [char]35797 + [char]23458 + [char]25143) ("A" + [char]27701 + [char]21017 + [char]35797 + [char]23458 + [char]25143)
   unrelated = Test-AutoReplyVisualConversationMatch ("A" + [char]27979 + [char]35797 + [char]23458 + [char]25143) ("B" + [char]27979 + [char]35797 + [char]23458 + [char]25143)
+  nearest = [bool]$nearest.ok
+  nearestName = [string]$nearest.conversation
+  ambiguous = [bool]$ambiguous.ambiguous
 } | ConvertTo-Json -Compress
 `;
 const conversationMatchProbe = spawnSync("powershell.exe", [
@@ -592,7 +608,10 @@ const conversationMatchProbe = spawnSync("powershell.exe", [
 ], { encoding: "utf8" });
 assert.equal(conversationMatchProbe.status, 0, conversationMatchProbe.stderr || conversationMatchProbe.stdout);
 assert.deepEqual(JSON.parse(conversationMatchProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1)), {
+  ambiguous: true,
   drift: true,
+  nearest: true,
+  nearestName: "A测试客户",
   unrelated: false
 });
 

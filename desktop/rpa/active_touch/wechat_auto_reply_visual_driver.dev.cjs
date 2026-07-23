@@ -196,6 +196,38 @@ function Resolve-AutoReplyVisualAllowedConversation([string]$observed, $allowedS
   if ($fuzzyMatches.Count -eq 1) {
     return @{ ok = $true; ambiguous = $false; conversation = [string]$fuzzyMatches[0]; observed = $observed; exact = $false }
   }
+  if ($fuzzyMatches.Count -eq 0) {
+    # Header OCR is larger and more reliable than sidebar OCR, but another PC
+    # can still misread the first or final glyph. Accept only one uniquely
+    # nearest allowlisted name; an equal-distance result remains ambiguous.
+    $nearMatches = @($allowedSet | ForEach-Object {
+      $candidate = Normalize-AutoReplyVisualText ([string]$_)
+      $maximumLength = [Math]::Max($candidate.Length, $observed.Length)
+      if ([Math]::Min($candidate.Length, $observed.Length) -lt 4 -or
+          [Math]::Abs($candidate.Length - $observed.Length) -gt 2) { return }
+      $distance = Get-AutoReplyVisualEditDistance $candidate $observed
+      $maximumDistance = [Math]::Max(1, [int][Math]::Floor($maximumLength * 0.4))
+      if ($distance -le $maximumDistance) {
+        [pscustomobject]@{ conversation = [string]$_; distance = [int]$distance }
+      }
+    })
+    if ($nearMatches.Count -gt 0) {
+      $bestDistance = [int](($nearMatches | Measure-Object distance -Minimum).Minimum)
+      $bestMatches = @($nearMatches | Where-Object { [int]$_.distance -eq $bestDistance })
+      if ($bestMatches.Count -eq 1) {
+        return @{
+          ok = $true
+          ambiguous = $false
+          conversation = [string]$bestMatches[0].conversation
+          observed = $observed
+          exact = $false
+          nearest = $true
+          distance = $bestDistance
+        }
+      }
+      return @{ ok = $false; ambiguous = $true; conversation = ""; observed = $observed; exact = $false }
+    }
+  }
   return @{
     ok = $false
     ambiguous = $fuzzyMatches.Count -gt 1
