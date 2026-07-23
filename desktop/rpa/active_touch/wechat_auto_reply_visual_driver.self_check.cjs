@@ -20,12 +20,11 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualAnyHeader/u)
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualUnreadBadges/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /badgeOnly = \$true[\s\S]*source = "unread_badge"/u, "an OCR-unresolved unread badge must use the row-opening fallback");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$row\.badgeBounds\.centerX[\s\S]*\$row\.badgeBounds\.centerY/u, "the unread fallback must click WeChat's own badge geometry");
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Resolve-AutoReplyVisualAllowedConversation \(\[string\]\$header\.conversation\) \$allowedSet/u, "a badge-opened chat must be allowlist verified before reading or sending");
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$selectedAllowedRows\.Count -eq 1[\s\S]*state = "selected_sidebar_row"/u, "one green selected allowlisted sidebar row must verify the opened badge conversation without another title guess");
-assert.ok(
-  AUTO_REPLY_VISUAL_SCRIPT.indexOf("$selectedAllowedRows.Count -eq 1") < AUTO_REPLY_VISUAL_SCRIPT.indexOf("Get-AutoReplyVisualAnyHeader $openedObservation.lines"),
-  "selected WeChat row state must take priority over header OCR"
-);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /badgeOnly = \$true[\s\S]*messageDriven = \$true/u, "a red-dot inbound event must be message-driven rather than contact-name authorized");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Message-driven auto reply keeps the observed title only as diagnostic[\s\S]*\$conversation = \[string\]\$header\.conversation/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(-not \[bool\]\$candidate\.badgeOnly\)[\s\S]*Get-AutoReplyVisualHeader \$confirmation\.lines/u, "title confirmation must remain for named paths but not block a red-dot message event");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(\$expectedMessageDriven\)[\s\S]*state = "message_driven"[\s\S]*Get-AutoReplyVisualHeader \$observation\.lines/u, "final incoming verification must not restore the contact-title gate");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$bubbleEvidenceMatches = \$observedMessageSignature -ceq \$expectedMessageSignature -and \([\s\S]*\$expectedMessageDriven -or/u, "message-driven verification must bind the same incoming bubble without a title-derived runtime id");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualLatestMessageEvidence/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualSidebarRight/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualMessageRole/u);

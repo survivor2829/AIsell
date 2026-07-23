@@ -3015,6 +3015,50 @@ async function main() {
   assert.equal(arbitraryDiscoverySends, 0, "visual autodiscovery must never authorize an unsynced conversation");
   assert.equal(arbitraryDiscoveryController.status().last_event, "conversation_not_eligible");
   arbitraryDiscoveryController.pause();
+
+  let messageDrivenSend;
+  const messageDrivenController = createAutoReplyController({
+    dataDir: path.join(root, "message_driven_unread"),
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => ({ reply: "Message-driven reply.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })
+    },
+    scanIncoming: () => ({
+      ok: true,
+      conversation: "OCR title far from the contact name",
+      conversationEvidence: "visual-unread-row:128",
+      messageDriven: true,
+      source: "unread_badge",
+      message: "New customer message",
+      runtimeId: `visual:v2:${"d".repeat(64)}`,
+      messageSignature: "e".repeat(64),
+      visualMode: "visual_render_v1",
+      pid: 81,
+      hWnd: "91",
+      context: [{ role: "user", content: "New customer message", key: `visual:v2:${"d".repeat(64)}` }]
+    }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => {
+      messageDrivenSend = options;
+      assert.equal(options.messageDriven, true);
+      assert.match(options.contactId, /^visual-inbound-/u);
+      assert.equal(options.frozenContact.name, "");
+      return { ok: true };
+    },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-15T10:00:00+08:00")
+  });
+  assert.equal((await messageDrivenController.start()).ok, true);
+  await messageDrivenController.runOnce();
+  assert.equal(messageDrivenSend?.expectedConversation, "OCR title far from the contact name");
+  assert.equal(messageDrivenController.status().reply_count, 1, "a red-dot incoming message must not require contact-name authorization");
+  messageDrivenController.pause();
   console.log("auto-reply v3 self-check passed");
 }
 

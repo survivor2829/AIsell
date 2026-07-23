@@ -747,7 +747,22 @@ function contactForAutoReplyConversation(contacts, candidate) {
   const conversation = normalizeText(candidate?.conversation || candidate?.currentConversation);
   if (!conversation) return null;
   const entry = contactAliasIndex(contacts, { includeOpaqueWechatId: true }).get(compactConversationAlias(conversation));
-  return entry?.contacts?.length === 1 ? entry.contacts[0] : null;
+  if (entry?.contacts?.length === 1) return entry.contacts[0];
+  if (candidate?.messageDriven !== true) return null;
+  const visualIdentity = [
+    normalizeText(candidate?.conversationEvidence) || conversation,
+    String(candidate?.pid || ""),
+    String(candidate?.hWnd || "")
+  ].join("\n");
+  const identity = crypto.createHash("sha256").update(visualIdentity).digest("hex").slice(0, 24);
+  return {
+    id: `visual-inbound-${identity}`,
+    wechatAccountId: `visual-window-${String(candidate?.pid || "unknown")}`,
+    name: "",
+    remark: "",
+    nickname: "",
+    wechatId: ""
+  };
 }
 
 function incomingEvidenceFor(candidate) {
@@ -1834,6 +1849,7 @@ function createAutoReplyController(options = {}) {
         expectedConversation: candidate.conversation,
         expectedConversationEvidence: candidate.conversationEvidence || candidate.conversation,
         expectedConversationAliases: conversationAliases,
+        messageDriven: candidate.messageDriven === true,
         beforeDraft,
         shouldContinue,
         runStep: (command, args) => runStep(command, args, lock.lock.owner)

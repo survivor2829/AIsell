@@ -1477,6 +1477,7 @@ try { $startupUnreadBoundaries = [Environment]::GetEnvironmentVariable("XIAOXI_S
 $expectedConversation = Normalize-AutoReplyVisualText ([Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_CONVERSATION"))
 $expectedMessage = Normalize-AutoReplyVisualText ([Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_MESSAGE"))
 $expectedRuntimeId = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_RUNTIME_ID")
+$expectedMessageDriven = [Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_MESSAGE_DRIVEN") -eq "1"
 $expectedPreviewSignature = ([string][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PREVIEW_SIGNATURE")).Trim().ToLowerInvariant()
 $expectedMessageSignature = ([string][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_MESSAGE_SIGNATURE")).Trim().ToLowerInvariant()
 try { $expectedPid = [int][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID") } catch { $expectedPid = 0 }
@@ -1598,9 +1599,13 @@ try {
         $expectedMessageSignature -notmatch "^[a-f0-9]{64}$") {
       Write-AutoReplyVisualResult @{ ok = $false; reason = "incoming_identity_missing" }
     }
-    $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet
-    if (-not $header.ok -and [string]$header.state -eq "different") {
-      Write-AutoReplyVisualResult @{ ok = $false; reason = "conversation_title_mismatch"; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = "different"; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+    if ($expectedMessageDriven) {
+      $header = @{ ok = $true; state = "message_driven"; headerCandidateCount = 0; headerCandidateHashes = @() }
+    } else {
+      $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet
+      if (-not $header.ok -and [string]$header.state -eq "different") {
+        Write-AutoReplyVisualResult @{ ok = $false; reason = "conversation_title_mismatch"; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = "different"; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+      }
     }
     if ($currentMessage -eq $null -or -not $currentMessage.hasMessage) {
       Write-AutoReplyVisualResult @{ ok = $false; reason = "latest_text_message_missing"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
@@ -1636,9 +1641,13 @@ try {
   if ($mode -eq "verify") {
     if (-not $expectedConversation -or -not $expectedMessage -or -not $expectedRuntimeId -or
         $expectedMessageSignature -notmatch "^[a-f0-9]{64}$") { Write-AutoReplyVisualResult @{ ok = $false; reason = "incoming_message_missing" } }
-    $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet
-    if (-not $header.ok -and [string]$header.state -eq "different") {
-      Write-AutoReplyVisualResult @{ ok = $false; reason = "conversation_title_mismatch"; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = "different"; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+    if ($expectedMessageDriven) {
+      $header = @{ ok = $true; state = "message_driven"; headerCandidateCount = 0; headerCandidateHashes = @() }
+    } else {
+      $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet
+      if (-not $header.ok -and [string]$header.state -eq "different") {
+        Write-AutoReplyVisualResult @{ ok = $false; reason = "conversation_title_mismatch"; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = "different"; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+      }
     }
     # The sidebar and chat bubble use different font sizes. The same Chinese text
     # can therefore have deterministic OCR drift (for example “你好” vs “亻子”).
@@ -1652,7 +1661,9 @@ try {
     $observedMessageSignature = [string]$latest.evidenceSignature
     $runtimeSeed = [string]::Join([char]10, @($expectedConversation, $observedMessageSignature))
     $observedRuntimeId = "visual:v1:" + (Get-AutoReplyVisualSha256 $runtimeSeed)
-    $bubbleEvidenceMatches = $observedRuntimeId -ceq $expectedRuntimeId -and $observedMessageSignature -ceq $expectedMessageSignature
+    $bubbleEvidenceMatches = $observedMessageSignature -ceq $expectedMessageSignature -and (
+      $expectedMessageDriven -or $observedRuntimeId -ceq $expectedRuntimeId
+    )
     $messageTextMatches = Test-AutoReplyVisualMessageMatch $expectedMessage ([string]$latest.message)
     if (-not $bubbleEvidenceMatches -and -not $messageTextMatches) {
       Write-AutoReplyVisualResult @{ ok = $false; reason = "incoming_message_changed"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
@@ -1808,8 +1819,10 @@ try {
       $badge = $badgeFallbacks[0]
       $candidate = [pscustomobject]@{
         badgeOnly = $true
+        messageDriven = $true
         unread = $true
         badgeBounds = $badge
+        conversationEvidence = "visual-unread-row:" + [string][Math]::Round([double]$badge.centerY)
         conversation = ""
         preview = ""
         signature = ""
@@ -1850,41 +1863,25 @@ try {
     if (Test-AutoReplyVisualBadgeRemains $openedFrame $candidate.badgeBounds) {
       Write-AutoReplyVisualResult @{ ok = $false; reason = "no_unread_message"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
     }
-    $openedSidebar = Get-AutoReplyVisualSidebarRows $openedFrame $openedObservation.lines $allowedSet $sidebarRight
-    $selectedAllowedRows = if ($openedSidebar.ok) { @($openedSidebar.rows | Where-Object { [bool]$_.selected }) } else { @() }
-    if ($selectedAllowedRows.Count -eq 1) {
-      # The green selected row is direct WeChat state and its conversation value
-      # has already been resolved against the synchronized contact set. Prefer
-      # this over another OCR pass over the title.
-      $conversation = [string]$selectedAllowedRows[0].conversation
+    $header = Get-AutoReplyVisualAnyHeader $openedObservation.lines $sidebarRight ([double]$openedFrame.width)
+    if ($header.ok) {
+      # Message-driven auto reply keeps the observed title only as diagnostic
+      # context. It is not an authorization gate.
+      $conversation = [string]$header.conversation
+    } else {
+      $conversation = "微信客户"
       $header = @{
         ok = $true
-        state = "selected_sidebar_row"
+        state = "message_driven"
         conversation = $conversation
         headerCandidateCount = 0
         headerCandidateHashes = @()
-      }
-    } else {
-      $header = Get-AutoReplyVisualAnyHeader $openedObservation.lines $sidebarRight ([double]$openedFrame.width)
-      if ($header.ok) {
-        $resolvedHeader = Resolve-AutoReplyVisualAllowedConversation ([string]$header.conversation) $allowedSet
-        if (-not $resolvedHeader.ok) {
-          Write-AutoReplyVisualResult @{
-            ok = $false
-            reason = if ([bool]$resolvedHeader.ambiguous) { "current_conversation_ambiguous" } else { "conversation_title_mismatch" }
-            pid = [int]$process.Id
-            hWnd = [int64]$hWnd
-            headerCandidateCount = [int]$header.headerCandidateCount
-            headerCandidateHashes = @($header.headerCandidateHashes)
-          }
-        }
-        $conversation = [string]$resolvedHeader.conversation
       }
     }
   } else {
     $header = Get-AutoReplyVisualHeader $openedObservation.lines $conversation $sidebarRight ([double]$openedFrame.width) $allowedSet
   }
-  if (-not $header.ok -and ([bool]$candidate.badgeOnly -or [string]$header.state -eq "different")) {
+  if (-not [bool]$candidate.badgeOnly -and -not $header.ok -and [string]$header.state -eq "different") {
     Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
   }
   if ([bool]$candidate.badgeOnly) {
@@ -1919,7 +1916,7 @@ try {
       Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$latest.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd }
     }
 
-    $pendingRuntimeSeed = [string]::Join([char]10, @($conversation, [string]$latest.evidenceSignature))
+    $pendingRuntimeSeed = [string]::Join([char]10, @([string]$candidate.conversationEvidence, $conversation, [string]$latest.evidenceSignature))
     $pendingRuntimeId = "visual:v1:" + (Get-AutoReplyVisualSha256 $pendingRuntimeSeed)
 
     # Opening the unread row consumes its red badge. Before accepting OCR drift,
@@ -1941,15 +1938,18 @@ try {
         previewSignature = [string]$candidate.signature
         messageSignature = [string]$latest.evidenceSignature
         source = $source
+        messageDriven = [bool]$candidate.messageDriven
         latestRole = "user"
         context = @(@{ role = "user"; content = $preview; key = $pendingRuntimeId })
       }
     }
     $confirmationFrame = $confirmation.frame
     try {
-      $confirmationHeader = Get-AutoReplyVisualHeader $confirmation.lines $conversation $sidebarRight ([double]$confirmationFrame.width) $allowedSet
-      if (-not $confirmationHeader.ok -and [string]$confirmationHeader.state -eq "different") {
-        Write-AutoReplyVisualResult @{ ok = $false; reason = "conversation_title_mismatch"; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = "different"; headerCandidateCount = [int]$confirmationHeader.headerCandidateCount; headerCandidateHashes = @($confirmationHeader.headerCandidateHashes) }
+      if (-not [bool]$candidate.badgeOnly) {
+        $confirmationHeader = Get-AutoReplyVisualHeader $confirmation.lines $conversation $sidebarRight ([double]$confirmationFrame.width) $allowedSet
+        if (-not $confirmationHeader.ok -and [string]$confirmationHeader.state -eq "different") {
+          Write-AutoReplyVisualResult @{ ok = $false; reason = "conversation_title_mismatch"; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = "different"; headerCandidateCount = [int]$confirmationHeader.headerCandidateCount; headerCandidateHashes = @($confirmationHeader.headerCandidateHashes) }
+        }
       }
       $confirmedLatest = Get-AutoReplyVisualLatestMessageEvidence $confirmationFrame $confirmation.lines $sidebarRight
       if (-not $confirmedLatest.ok) {
@@ -1983,6 +1983,7 @@ try {
           previewSignature = [string]$candidate.signature
           messageSignature = [string]$latest.evidenceSignature
           source = $source
+          messageDriven = [bool]$candidate.messageDriven
           latestRole = "user"
           context = @(@{ role = "user"; content = $preview; key = $pendingRuntimeId })
         }
@@ -1999,7 +2000,7 @@ try {
     # glyph errors such as 清洁 -> 尚吉 without trusting a stale/truncated row.
     $resolvedMessage = Resolve-AutoReplyVisualMessageText $preview ([string]$latest.message)
   }
-  $runtimeSeed = [string]::Join([char]10, @($conversation, [string]$latest.evidenceSignature))
+  $runtimeSeed = [string]::Join([char]10, @([string]$candidate.conversationEvidence, $conversation, [string]$latest.evidenceSignature))
   $runtimeId = "visual:v1:" + (Get-AutoReplyVisualSha256 $runtimeSeed)
   Write-AutoReplyVisualResult @{
     ok = $true
@@ -2012,6 +2013,7 @@ try {
     pid = [int]$process.Id
     hWnd = [int64]$hWnd
     source = $source
+    messageDriven = [bool]$candidate.messageDriven
     discoveredConversation = [bool]$candidate.discoveredConversation
     latestRole = "user"
     headerState = [string]$header.state
@@ -2365,7 +2367,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
   function takeRetry(allowed, scanProbe) {
     while (retryCandidates.length) {
       const candidate = retryCandidates.shift();
-      if (allowed.includes(compactContactName(candidate.conversation))) return { ...candidate, scanProbe };
+      if (candidate?.messageDriven === true || allowed.includes(compactContactName(candidate.conversation))) return { ...candidate, scanProbe };
     }
     return null;
   }
@@ -2377,7 +2379,8 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     const previewSignature = String(result?.previewSignature || "").trim().toLowerCase();
     const messageSignature = String(result?.messageSignature || "").trim().toLowerCase();
     const process = processIdentity(result);
-    if (!allowed.includes(conversation) || !message || String(result?.latestRole || "") !== "user"
+    const messageDriven = result?.messageDriven === true;
+    if ((!messageDriven && !allowed.includes(conversation)) || !message || String(result?.latestRole || "") !== "user"
       || !/^visual:v1:[a-f0-9]{64}$/u.test(runtimeId)
       || !isSha256(messageSignature) || !process) return null;
     return {
@@ -2391,6 +2394,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       pid: process.pid,
       hWnd: process.hWnd,
       source: String(result?.source || "unread"),
+      messageDriven,
       latestRole: "user",
       discoveredConversation: false,
       pendingVerifyAttempts: 0,
@@ -2401,7 +2405,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
   async function settlePendingOpenedUnread(nameIdentity, allowed) {
     const pending = pendingOpenedUnread;
     if (!pending) return null;
-    if (!allowed.includes(pending.conversation)) {
+    if (pending?.messageDriven !== true && !allowed.includes(pending.conversation)) {
       pendingOpenedUnread = null;
       return null;
     }
@@ -2621,10 +2625,11 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     const runtimeId = String(result.runtimeId || "").trim();
     const signature = String(result.previewSignature || "").trim().toLowerCase();
     const messageSignature = String(result.messageSignature || "").trim().toLowerCase();
-    if (!allowed.includes(conversation) || !message) return { ok: false, reason: "incoming_message_missing" };
+    const messageDriven = result?.messageDriven === true;
+    if ((!messageDriven && !allowed.includes(conversation)) || !message) return { ok: false, reason: "incoming_message_missing" };
     if (!/^visual:v1:[a-f0-9]{64}$/u.test(runtimeId) || !isSha256(messageSignature)) return { ok: false, reason: "incoming_identity_missing" };
     const predecessorSignature = messageBaselines.get(conversation) || "";
-    const decorated = decorateCandidate({ ...result, discoveredConversation: false }, nameIdentity, predecessorSignature);
+    const decorated = decorateCandidate({ ...result, discoveredConversation: false, messageDriven }, nameIdentity, predecessorSignature);
     startupUnreadBoundaries.delete(conversation);
     const turn = turnBoundaries.get(conversation);
     if (turn?.pending === true) turnBoundaries.set(conversation, { ...turn, pending: false });
@@ -2646,6 +2651,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       XIAOXI_EXPECTED_MESSAGE: message,
       XIAOXI_EXPECTED_RUNTIME_ID: evidenceRuntimeId,
       XIAOXI_EXPECTED_MESSAGE_SIGNATURE: String(candidate.messageSignature || ""),
+      XIAOXI_AUTO_REPLY_MESSAGE_DRIVEN: candidate.messageDriven === true ? "1" : "",
       XIAOXI_EXPECTED_PID: String(candidate.pid || ""),
       XIAOXI_EXPECTED_HWND: String(candidate.hWnd || "")
     });

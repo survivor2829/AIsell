@@ -33,6 +33,7 @@ $expectedPidText = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_PID
 $expectedHWndText = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_HWND")
 $expectedConversation = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_CONVERSATION")
 $expectedConversationEvidence = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_CONVERSATION_EVIDENCE")
+$messageDriven = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_MESSAGE_DRIVEN") -eq "1"
 try { $allowedConversationNames = @(([Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_ALLOWED_NAMES") | ConvertFrom-Json)) } catch { $allowedConversationNames = @() }
 $expectedIncoming = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_INCOMING")
 $expectedIncomingSignature = ([string][Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_INCOMING_SIGNATURE")).Trim().ToLowerInvariant()
@@ -568,6 +569,9 @@ function Test-VisualSendSelectedSidebarConversation($frame, [double]$sidebarRigh
 }
 
 function Get-VisualSendConversationBinding($frame, [double]$sidebarRight, [double]$dpi) {
+  if ($messageDriven) {
+    return @{ ok = $true; proof = "message_driven"; headerState = "not_required"; selectedRow = $null }
+  }
   $header = Test-VisualSendConversation $frame
   if ([string]$header.state -ceq "matched") {
     return @{ ok = $true; proof = "header_title"; headerState = "matched"; selectedRow = $null }
@@ -984,7 +988,7 @@ $bubbleVerified = $false
 if ($postFrame.ok) {
   try {
     $postConversation = Test-VisualSendConversation $postFrame
-    $sameConversation = [string]$postConversation.state -cne "different"
+    $sameConversation = $messageDriven -or [string]$postConversation.state -cne "different"
     if ($sameConversation) {
       $postDpi = Get-VisualSendWindowDpi $postLock.hWnd
       $postSidebarRight = Get-VisualSendSidebarRight ([double]$postFrame.width) $postDpi
@@ -1018,6 +1022,7 @@ function visualSendEnvironment(options, phase) {
     XIAOXI_VISUAL_SEND_HWND: String(options.hWnd ?? ""),
     XIAOXI_VISUAL_SEND_CONVERSATION: String(options.conversation ?? ""),
     XIAOXI_VISUAL_SEND_CONVERSATION_EVIDENCE: String(options.conversationEvidence ?? options.conversation ?? ""),
+    XIAOXI_VISUAL_SEND_MESSAGE_DRIVEN: options.messageDriven === true ? "1" : "",
     XIAOXI_VISUAL_SEND_ALLOWED_NAMES: JSON.stringify(Array.isArray(options.conversationAliases) ? options.conversationAliases : [options.conversation].filter(Boolean)),
     XIAOXI_VISUAL_SEND_INCOMING: String(options.incomingMessage ?? ""),
     XIAOXI_VISUAL_SEND_INCOMING_SIGNATURE: String(options.incomingMessageSignature ?? ""),
@@ -1069,6 +1074,7 @@ function createVisualAutoReplySender({
       conversation,
       conversationEvidence,
       conversationAliases,
+      messageDriven: options.messageDriven === true,
       incomingMessage,
       incomingMessageSignature,
       reply
