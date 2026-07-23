@@ -18,6 +18,10 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-MomentsOcrObservation \$frame/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualCurrentConversation/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualAnyHeader/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualUnreadBadges/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualUnreadRowPreview/u, "a red-dot event must preserve the sidebar preview before opening the chat");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$badgePreview = Get-AutoReplyVisualUnreadRowPreview \$observation\.lines \$badge \$sidebarRight[\s\S]*preview = \$badgePreview/u, "the independent sidebar OCR must travel with the red-dot candidate");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(-not \$preview\)[\s\S]*\$preview = \[string\]\$badgeLatest\.message/u, "bubble OCR must only replace a missing sidebar preview");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$resolvedMessage = Resolve-AutoReplyVisualMessageText \$preview \(\[string\]\$confirmedLatest\.message\)/u, "a stable second bubble frame must still be reconciled with the pre-click sidebar preview");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /badgeOnly = \$true[\s\S]*source = "unread_badge"/u, "an OCR-unresolved unread badge must use the row-opening fallback");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$row\.badgeBounds\.centerX[\s\S]*\$row\.badgeBounds\.centerY/u, "the unread fallback must click WeChat's own badge geometry");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /badgeOnly = \$true[\s\S]*messageDriven = \$true/u, "a red-dot inbound event must be message-driven rather than contact-name authorized");
@@ -212,10 +216,14 @@ assert.deepEqual(JSON.parse(sidebarProbe.stdout.trim().split(/\r?\n/u).filter(Bo
 const unreadStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Test-AutoReplyVisualRedPixel");
 const unreadRedEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Test-AutoReplyVisualGreenPixel", unreadStart);
 const unreadDotStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Test-AutoReplyVisualUnreadDot", unreadRedEnd);
+const unreadPreviewStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Get-AutoReplyVisualUnreadRowPreview", unreadDotStart);
+const badgeRemainsStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Test-AutoReplyVisualBadgeRemains", unreadPreviewStart);
 const unreadEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Test-AutoReplyVisualSelectedSidebarRow", unreadDotStart);
-assert.ok(unreadStart >= 0 && unreadRedEnd > unreadStart && unreadDotStart > unreadRedEnd && unreadEnd > unreadDotStart);
+assert.ok(unreadStart >= 0 && unreadRedEnd > unreadStart && unreadDotStart > unreadRedEnd
+  && unreadPreviewStart > unreadDotStart && badgeRemainsStart > unreadPreviewStart && unreadEnd > badgeRemainsStart);
 const unreadFunctions = AUTO_REPLY_VISUAL_SCRIPT.slice(unreadStart, unreadRedEnd)
-  + AUTO_REPLY_VISUAL_SCRIPT.slice(unreadDotStart, unreadEnd);
+  + AUTO_REPLY_VISUAL_SCRIPT.slice(unreadDotStart, unreadPreviewStart)
+  + AUTO_REPLY_VISUAL_SCRIPT.slice(badgeRemainsStart, unreadEnd);
 const scaleStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Scale-AutoReplyVisualMetric");
 const scaleEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Test-AutoReplyVisualTimeText", scaleStart);
 assert.ok(scaleStart >= 0 && scaleEnd > scaleStart);

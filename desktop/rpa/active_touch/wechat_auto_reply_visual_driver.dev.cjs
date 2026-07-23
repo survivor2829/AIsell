@@ -621,6 +621,30 @@ function Get-AutoReplyVisualUnreadBadges($frame, [double]$sidebarRight) {
   return @($badges.ToArray() | Sort-Object top, left)
 }
 
+function Get-AutoReplyVisualUnreadRowPreview($lines, $badge, [double]$sidebarRight) {
+  # The unread badge and sidebar preview are independent evidence from the chat
+  # bubble. Preserve the preview before opening the row so common bubble OCR
+  # glyph drift can be corrected without a contact-name gate.
+  if ($badge -eq $null) { return "" }
+  $minimumTop = [double]$badge.centerY + (Scale-AutoReplyVisualMetric 4.0)
+  $maximumTop = [double]$badge.centerY + (Scale-AutoReplyVisualMetric 52.0)
+  $candidates = @($lines | Where-Object {
+    $left = [double]$_.bounds.left
+    $top = [double]$_.bounds.top
+    $right = $left + [double]$_.bounds.width
+    $top -ge $minimumTop -and $top -le $maximumTop -and
+      $left -ge (Scale-AutoReplyVisualMetric 42.0) -and
+      $right -le ($sidebarRight + (Scale-AutoReplyVisualMetric 8.0)) -and
+      (Test-AutoReplyVisualPureText ([string]$_.compact))
+  } | Sort-Object { [double]$_.bounds.top }, { [double]$_.bounds.left })
+  foreach ($line in $candidates) {
+    $text = Normalize-AutoReplyVisualText ([string]$line.compact)
+    if (-not $text -or $text -match "^\[?草稿\]?[：:]?") { continue }
+    return $text
+  }
+  return ""
+}
+
 function Test-AutoReplyVisualBadgeRemains($frame, $badge) {
   $left = [int][Math]::Max(0, [Math]::Floor([double]$badge.left - 2)); $top = [int][Math]::Max(0, [Math]::Floor([double]$badge.top - 2))
   $right = [int][Math]::Min($frame.width - 1, [Math]::Ceiling([double]$badge.left + [double]$badge.width + 2))
@@ -1817,6 +1841,7 @@ try {
     }
     if ($unresolvedUnreadBadgeCount -gt 0) {
       $badge = $badgeFallbacks[0]
+      $badgePreview = Get-AutoReplyVisualUnreadRowPreview $observation.lines $badge $sidebarRight
       $candidate = [pscustomobject]@{
         badgeOnly = $true
         messageDriven = $true
@@ -1824,8 +1849,8 @@ try {
         badgeBounds = $badge
         conversationEvidence = "visual-unread-row:" + [string][Math]::Round([double]$badge.centerY)
         conversation = ""
-        preview = ""
-        signature = ""
+        preview = $badgePreview
+        signature = if ($badgePreview) { Get-AutoReplyVisualSha256 $badgePreview } else { "" }
         source = "unread_badge"
       }
     } else {
@@ -1892,8 +1917,10 @@ try {
       $badgeRoleReason = if ([string]$badgeLatest.latestRole -ceq "assistant") { "latest_message_not_incoming" } else { "latest_message_role_unresolved" }
       Write-AutoReplyVisualResult @{ ok = $false; reason = $badgeRoleReason; pid = [int]$process.Id; hWnd = [int64]$hWnd; conversation = $conversation; latestRole = [string]$badgeLatest.latestRole }
     }
-    $preview = [string]$badgeLatest.message
-    $candidate.signature = Get-AutoReplyVisualSha256 ([string]$badgeLatest.evidenceSignature)
+    if (-not $preview) {
+      $preview = [string]$badgeLatest.message
+      $candidate.signature = Get-AutoReplyVisualSha256 ([string]$badgeLatest.evidenceSignature)
+    }
   }
   $latest = Get-AutoReplyVisualLatestIncoming $openedFrame $openedObservation.lines $preview $sidebarRight
   $resolvedMessage = $preview
@@ -1920,8 +1947,8 @@ try {
     $pendingRuntimeId = "visual:v1:" + (Get-AutoReplyVisualSha256 $pendingRuntimeSeed)
 
     # Opening the unread row consumes its red badge. Before accepting OCR drift,
-    # prove that the exact allowed conversation is still open and that the same
-    # incoming bubble is stable across a second independent capture.
+    # prove that the same incoming bubble is stable across a second independent
+    # capture. Contact-title OCR is diagnostic only on the message-driven path.
     Start-Sleep -Milliseconds 140
     $confirmation = Get-AutoReplyVisualObservation $hWnd ([int]$process.Id) $windowRect $true
     if (-not $confirmation.ok) {
@@ -1989,7 +2016,7 @@ try {
         }
       }
       $latest = $confirmedLatest
-      $resolvedMessage = [string]$confirmedLatest.message
+      $resolvedMessage = Resolve-AutoReplyVisualMessageText $preview ([string]$confirmedLatest.message)
     } finally {
       Close-MomentsVisualFrame $confirmationFrame
     }
