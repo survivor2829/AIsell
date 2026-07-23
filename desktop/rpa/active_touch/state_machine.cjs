@@ -291,7 +291,9 @@ function wechatWindowReason(result) {
     "wechat_window_not_ready",
     "wechat_window_ambiguous",
     "wechat_window_identity_mismatch",
-    "personal_wechat_main_window_not_found"
+    "personal_wechat_main_window_not_found",
+    "powershell_timeout",
+    "powershell_failed"
   ].includes(reason)) return reason;
   return "wechat_window_not_found";
 }
@@ -303,6 +305,8 @@ function wechatWindowBlockText(reason) {
   if (reason === "wechat_window_ambiguous") return "已阻断：检测到多个个人微信主窗口";
   if (reason === "wechat_window_identity_mismatch") return "已阻断：微信窗口在操作过程中发生变化";
   if (reason === "personal_wechat_main_window_not_found") return "已阻断：未识别到个人微信主窗口";
+  if (reason === "powershell_timeout") return "已阻断：微信窗口适配程序执行超时";
+  if (reason === "powershell_failed") return "已阻断：微信窗口适配程序启动失败，请检查权限或安全软件";
   return "已阻断：未找到微信窗口";
 }
 

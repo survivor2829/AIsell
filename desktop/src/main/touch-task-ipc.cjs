@@ -78,9 +78,12 @@ function resultReason(result, fallback) {
     wechat_window_ambiguous: "检测到多个个人微信主窗口，请只保留一个可见主窗口后继续",
     wechat_window_identity_mismatch: "微信窗口在操作过程中发生变化，请保持当前微信窗口后继续",
     personal_wechat_main_window_not_found: "当前进程中未识别到个人微信主窗口",
+    powershell_timeout: "微信窗口适配程序执行超时，请检查电脑负载或安全软件",
+    powershell_failed: "微信窗口适配程序启动失败，请确认AI获客与微信权限一致，并检查安全软件拦截",
+    exact_search_result_not_found: "未找到该联系人的精确微信号搜索结果，已隔离并跳过当前联系人",
+    search_result_not_opened: "未打开匹配联系人会话，已隔离并跳过当前联系人",
+    customer_conversation_not_found: "未定位到客户会话，已隔离并跳过当前联系人",
     contact_unavailable: "该联系人已停用，已自动跳过",
-    search_result_not_opened: "未打开匹配联系人会话",
-    customer_conversation_not_found: "未定位到客户会话",
     message_input_failed: "草稿输入失败，未能定位微信输入框",
     conversation_not_verified: "会话未验证",
     empty_message: "触达内容为空",
@@ -258,6 +261,9 @@ function shouldContinueRunning() {
 function isIdentitySkip(result) {
   return new Set([
     "contact_unavailable",
+    "exact_search_result_not_found",
+    "search_result_not_opened",
+    "customer_conversation_not_found",
     "customer_not_allowed",
     "contact_snapshot_changed",
     "contact_disabled",
@@ -277,10 +283,14 @@ function advanceTask(task, index) {
     task.phase = "completed";
     task.completed_at = new Date().toISOString();
   } else if (task.execution_mode === "real_send" && task.current_index >= task.batch_end_index) {
+    const completedBatch = task.current_batch;
     task.current_batch = Math.floor(task.current_index / task.batch_size) + 1;
     task.batch_start_index = task.current_index;
     task.batch_end_index = Math.min(task.current_index + task.batch_size, task.total);
-    task.phase = "preparing_batch";
+    task.status = "paused";
+    task.phase = "paused";
+    task.batch_authorization = null;
+    task.pause_reason = `第 ${completedBatch} 批已完成（${task.current_index}/${task.total}），点击继续任务后处理下一批`;
   }
   return saveTaskState(activeTouchDir(), task);
 }

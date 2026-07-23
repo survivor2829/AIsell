@@ -1,4 +1,20 @@
 const { spawn, spawnSync } = require("node:child_process");
+const { findWechatExecutable } = require("../contact_sync/contact_sync_cli.cjs");
+
+let cachedWechatExecutable = "";
+let cachedWechatExecutableAt = 0;
+
+function wechatExecutableForLaunch() {
+  const now = Date.now();
+  if (now - cachedWechatExecutableAt < 30_000) return cachedWechatExecutable;
+  cachedWechatExecutableAt = now;
+  try {
+    cachedWechatExecutable = String(findWechatExecutable() || "");
+  } catch {
+    cachedWechatExecutable = "";
+  }
+  return cachedWechatExecutable;
+}
 
 const POWERSHELL_STDIN_BOOTSTRAP = Buffer.from(
   '$ProgressPreference="SilentlyContinue";$raw=[Console]::In.ReadToEnd();$text=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($raw));. ([ScriptBlock]::Create($text))',
@@ -94,6 +110,7 @@ function Start-PersonalWechat {
   }
   $pf86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
   foreach ($path in @(
+    "$env:XIAOXI_WECHAT_EXE",
     "$env:LOCALAPPDATA\\Tencent\\WeChat\\WeChat.exe",
     "$env:ProgramFiles\\Tencent\\WeChat\\WeChat.exe",
     "$pf86\\Tencent\\WeChat\\WeChat.exe"
@@ -257,6 +274,7 @@ if (-not $main) {
   }
   $pf86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
   foreach ($path in @(
+    "$env:XIAOXI_WECHAT_EXE",
     "$env:LOCALAPPDATA\\Tencent\\WeChat\\WeChat.exe",
     "$env:ProgramFiles\\Tencent\\WeChat\\WeChat.exe",
     "$pf86\\Tencent\\WeChat\\WeChat.exe"
@@ -295,6 +313,7 @@ function ensureWechatWindowVisible() {
   const encoded = Buffer.from(`${DPI_AWARE_POWERSHELL}\n${SIMPLE_ENSURE_WECHAT_WINDOW_SCRIPT}`, "utf16le").toString("base64");
   const result = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], {
     encoding: "utf8",
+    env: { ...process.env, XIAOXI_WECHAT_EXE: wechatExecutableForLaunch() },
     timeout: 10000,
     windowsHide: true
   });
@@ -314,7 +333,7 @@ function runPowerShell(script, env = {}, options = {}) {
   shellArgs.push("-ExecutionPolicy", "Bypass", "-EncodedCommand", POWERSHELL_STDIN_BOOTSTRAP);
   const spawnOptions = {
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: { ...process.env, XIAOXI_WECHAT_EXE: process.env.XIAOXI_WECHAT_EXE || cachedWechatExecutable, ...env },
     input: scriptInput,
     windowsHide: true
   };
@@ -578,6 +597,7 @@ if (-not $usableCurrentLayout) {
 
 function normalizeWechatMainWindow(context = {}, runner = runPowerShell) {
   return runner(NORMALIZE_WECHAT_WINDOW_SCRIPT, {
+    XIAOXI_WECHAT_EXE: wechatExecutableForLaunch(),
     XIAOXI_EXPECTED_PID: String(context.expectedPid ?? context.pid ?? ""),
     XIAOXI_EXPECTED_HWND: String(context.expectedHWnd ?? context.hWnd ?? ""),
     XIAOXI_WECHAT_WINDOW_WIDTH: String(WECHAT_STABLE_WINDOW_LAYOUT.width),
@@ -728,7 +748,7 @@ function runPowerShellAsync(script, env = {}, options = {}) {
 
   return new Promise((resolve) => {
     const child = spawn("powershell.exe", shellArgs, {
-      env: { ...process.env, ...env },
+      env: { ...process.env, XIAOXI_WECHAT_EXE: process.env.XIAOXI_WECHAT_EXE || cachedWechatExecutable, ...env },
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"]
     });

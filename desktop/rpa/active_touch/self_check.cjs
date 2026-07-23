@@ -959,6 +959,8 @@ try {
   assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: false, reason: "wechat_window_ambiguous" })).blocked_reason, "wechat_window_ambiguous");
   assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: false, reason: "wechat_window_identity_mismatch" })).blocked_reason, "wechat_window_identity_mismatch");
   assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: false, reason: "personal_wechat_main_window_not_found" })).blocked_reason, "personal_wechat_main_window_not_found");
+  assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: false, reason: "powershell_timeout" })).blocked_reason, "powershell_timeout");
+  assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: false, reason: "powershell_failed" })).blocked_reason, "powershell_failed");
   assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: true, title: "企业微信", processName: "WXWork" })).state.last_result, "wechat_window_focused");
   assert.equal(send(dir, { dryRun: true, message: "hello" }).blocked_reason, "no_whitelist_customer");
 
@@ -1431,6 +1433,9 @@ try {
   assert.match(driverSource, /\$name\.Trim\(\) -ne \$expected\.Trim\(\)/);
   assert.equal(driverSource.includes("WXWork"), false);
   assert.equal(driverSource.includes("WeChatAppEx"), false);
+  assert.match(driverSource, /findWechatExecutable/);
+  assert.match(driverSource, /XIAOXI_WECHAT_EXE: wechatExecutableForLaunch\(\)/);
+  assert.match(driverSource, /"\$env:XIAOXI_WECHAT_EXE"/);
   assert.doesNotMatch(driverSource, /\$pf86\\\\Tencent\\\\WeChat\\\\WeChat\.exe",\s*\n\s*\)\)/);
   assert.match(driverSource, /const SIMPLE_ENSURE_WECHAT_WINDOW_SCRIPT/);
   assert.match(driverSource, /Buffer\.from\(`\$\{DPI_AWARE_POWERSHELL\}\\n\$\{SIMPLE_ENSURE_WECHAT_WINDOW_SCRIPT\}`/);

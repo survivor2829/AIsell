@@ -194,6 +194,12 @@ async function waitFor(read, predicate, timeoutMs = 3000) {
     const resolveUnknown = handlers.get("touch-task:resolve-unknown");
     await start({}, { script: "默认触达话术", clickToken: "trusted-start" });
     assert.equal((await start({}, { script: "默认触达话术", clickToken: "trusted-start" })).blocked_reason, "trusted_batch_click_required");
+    const firstBatchPaused = await waitFor(status, (value) => value.task?.status === "paused" && value.task?.current_index === 50);
+    assert.match(firstBatchPaused.task.pause_reason, /第 1 批已完成（50\/51）/);
+    assert.equal(firstBatchPaused.task.current_batch, 2);
+    assert.equal(firstBatchPaused.task.batch_authorization, undefined);
+    assert.equal(sends, 50, "a real-send task must pause after each 50-contact batch");
+    await resume({}, { clickToken: "trusted-second-batch" });
     const completed = await waitFor(status, (value) => value.task?.status === "completed");
     assert.equal(completed.task.version, 4);
     assert.equal(completed.task.execution_mode, "real_send");
@@ -203,6 +209,24 @@ async function waitFor(read, predicate, timeoutMs = 3000) {
     assert.equal(completed.task.results.filter((result) => result.status === "sent_verified").length, 51);
     assert.ok(waitedDeadlines.length > 0);
     assert.ok(Number.isFinite(Date.parse(completed.task.next_send_not_before)));
+
+    fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
+    fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
+    fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify(contacts(2)), "utf8");
+    let contactScopedAttempts = 0;
+    executorBehavior = async (options) => {
+      contactScopedAttempts += 1;
+      if (options.contactId === "wxid_batch_1") {
+        return { ok: false, blocked_reason: "exact_search_result_not_found", state: { real_send_status: "not_sent" } };
+      }
+      options.onTransition("sent_verified", { real_send_attempt_key: `isolated-${options.contactId}` });
+      return { ok: true, state: { real_send_status: "sent_verified", real_send_attempt_key: `isolated-${options.contactId}` } };
+    };
+    await start({}, { script: "联系人失败隔离", clickToken: "trusted-contact-isolation" });
+    const isolatedFailure = await waitFor(status, (value) => value.task?.status === "completed");
+    assert.equal(isolatedFailure.task.results[0].status, "identity_skipped");
+    assert.equal(isolatedFailure.task.results[1].status, "sent_verified");
+    assert.equal(contactScopedAttempts, 2, "one contact-scoped search failure must not pause the remaining task");
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
