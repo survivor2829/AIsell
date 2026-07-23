@@ -955,6 +955,10 @@ try {
   assert.equal(send(dir, { dryRun: true, message: "hello" }).blocked_reason, "not_calibrated");
   calibrate(dir);
   assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: false, reason: "wechat_focus_failed" })).blocked_reason, "wechat_focus_failed");
+  assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: false, reason: "wechat_window_not_ready" })).blocked_reason, "wechat_window_not_ready");
+  assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: false, reason: "wechat_window_ambiguous" })).blocked_reason, "wechat_window_ambiguous");
+  assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: false, reason: "wechat_window_identity_mismatch" })).blocked_reason, "wechat_window_identity_mismatch");
+  assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: false, reason: "personal_wechat_main_window_not_found" })).blocked_reason, "personal_wechat_main_window_not_found");
   assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: true, title: "企业微信", processName: "WXWork" })).state.last_result, "wechat_window_focused");
   assert.equal(send(dir, { dryRun: true, message: "hello" }).blocked_reason, "no_whitelist_customer");
 
@@ -1455,7 +1459,8 @@ try {
   assert.match(simpleEnsureSource, /struct WINDOWPLACEMENT[\s\S]*GetWindowPlacement/);
   assert.match(simpleEnsureSource, /\$normalWidth = \$placement\.rcNormalPosition\.Right - \$placement\.rcNormalPosition\.Left/);
   assert.match(simpleEnsureSource, /\$hasMainLayout = \$evidence\.effectiveWidth -ge 600 -and \$evidence\.effectiveHeight -ge 500/);
-  assert.match(simpleEnsureSource, /\$isMain = \$hasMainLayout -and \(\$evidence\.hasMainClass -or \$evidence\.hasMainStyle\)/);
+  assert.match(simpleEnsureSource, /\$isMain = \$hasMainLayout/);
+  assert.doesNotMatch(simpleEnsureSource, /\$isMain = \$hasMainLayout -and/);
   assert.ok(
     simpleEnsureSource.indexOf("GetWindowPlacement($hWnd") < simpleEnsureSource.indexOf("$isMain = $hasMainLayout"),
     "the lightweight window adapter must inspect the restored-size evidence before rejecting a minimized main window"
@@ -1464,6 +1469,9 @@ try {
     simpleEnsureSource.indexOf("ShowWindowAsync($hWnd, 9)") < simpleEnsureSource.indexOf("$visible = $rectAvailable"),
     "a minimized main window must be restored before its live geometry is verified"
   );
+  assert.match(driverSource, /\$usableCurrentLayout = \$rectAvailable/);
+  assert.match(driverSource, /layoutMode = \$\(if \(\$targetLayoutVerified\) \{ "stable_target" \} else \{ "current_usable" \}\)/);
+  assert.doesNotMatch(driverSource, /if \(-not \$layoutVerified\)/, "a usable current WeChat layout must not be rejected only because fixed positioning failed");
   assert.equal(driverSource.includes("XIAOXI_EXPECTED_ACCOUNT"), false);
   const taskIpcSource = fs.readFileSync(path.join(__dirname, "../../src/main/touch-task-ipc.cjs"), "utf8");
   assert.match(taskIpcSource, /function shouldSkipBlockedContact\([^)]*\)[\s\S]*contact_unavailable/);

@@ -207,7 +207,11 @@ function Get-PersonalWechatTopLevelWindows {
     $height = $evidence.height
     $minimized = $evidence.minimized
     $hasMainLayout = $evidence.effectiveWidth -ge 600 -and $evidence.effectiveHeight -ge 500
-    $isMain = $hasMainLayout -and ($evidence.hasMainClass -or $evidence.hasMainStyle)
+    # Patch releases and GPU/window-manager combinations can expose different
+    # classes and style bits for the same personal WeChat main window. Process
+    # ownership + visibility + usable chat geometry discover the window;
+    # class/style remain diagnostic evidence only.
+    $isMain = $hasMainLayout
     $isLogin = -not $minimized -and -not $isMain -and $width -ge 240 -and $width -le 600 -and $height -ge 280 -and $height -le 760
     if ($isMain -or $isLogin) {
       [void]$items.Add(@{
@@ -543,16 +547,20 @@ if (-not $focused) {
 }
 $rect = New-Object Win32WechatWindow+RECT
 $rectAvailable = [Win32WechatWindow]::GetWindowRect($hWnd, [ref]$rect)
-$layoutVerified = $positioned -and $rectAvailable -and
+$targetLayoutVerified = $positioned -and $rectAvailable -and
   [Math]::Abs($rect.Left - $workArea.Left) -le 3 -and [Math]::Abs($rect.Top - $workArea.Top) -le 3 -and
   [Math]::Abs(($rect.Right - $rect.Left) - $width) -le 3 -and [Math]::Abs(($rect.Bottom - $rect.Top) - $height) -le 3
-if (-not $layoutVerified) {
+$usableCurrentLayout = $rectAvailable -and [Win32WechatWindow]::IsWindowVisible($hWnd) -and
+  -not [Win32WechatWindow]::IsIconic($hWnd) -and
+  ($rect.Right - $rect.Left) -ge 600 -and ($rect.Bottom - $rect.Top) -ge 500
+if (-not $usableCurrentLayout) {
   @{ ok = $false; reason = "wechat_window_not_ready"; pid = $matched.pid; hWnd = $hWnd.ToInt64() } | ConvertTo-Json -Compress
   exit
 }
 @{
   ok = $true
-  normalized = $true
+  normalized = [bool]$targetLayoutVerified
+  layoutMode = $(if ($targetLayoutVerified) { "stable_target" } else { "current_usable" })
   title = $matched.title
   focused = [bool]$focused
   processName = $matched.processName

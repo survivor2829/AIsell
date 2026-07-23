@@ -285,14 +285,25 @@ function clearConversationState(state, reason, extra = {}) {
 
 function wechatWindowReason(result) {
   const reason = String(result?.reason || "");
-  if (reason === "wechat_login_required" || reason === "wechat_focus_failed") return reason;
+  if ([
+    "wechat_login_required",
+    "wechat_focus_failed",
+    "wechat_window_not_ready",
+    "wechat_window_ambiguous",
+    "wechat_window_identity_mismatch",
+    "personal_wechat_main_window_not_found"
+  ].includes(reason)) return reason;
   return "wechat_window_not_found";
 }
 
 function wechatWindowBlockText(reason) {
   if (reason === "wechat_login_required") return "已阻断：微信需要完成登录确认";
   if (reason === "wechat_focus_failed") return "已阻断：微信窗口未获得前台焦点";
-  return reason === "wechat_login_required" ? "已阻断：微信需要完成登录确认" : "已阻断：未找到微信窗口";
+  if (reason === "wechat_window_not_ready") return "已阻断：已找到微信窗口，但当前窗口尺寸不可操作";
+  if (reason === "wechat_window_ambiguous") return "已阻断：检测到多个个人微信主窗口";
+  if (reason === "wechat_window_identity_mismatch") return "已阻断：微信窗口在操作过程中发生变化";
+  if (reason === "personal_wechat_main_window_not_found") return "已阻断：未识别到个人微信主窗口";
+  return "已阻断：未找到微信窗口";
 }
 
 function send(baseDir = __dirname, options = {}) {
