@@ -1078,6 +1078,37 @@ function Get-AutoReplyVisualBubbleRect($frame, $line, [double]$sidebarRight) {
   }
 }
 
+function Resolve-AutoReplyVisualRefinedBubbleText([string]$rawText, [string]$refinedText) {
+  $raw = Normalize-AutoReplyVisualText $rawText
+  $refined = Normalize-AutoReplyVisualText $refinedText
+  if (-not $raw) { return $refined }
+  if (-not $refined -or $raw -ceq $refined) { return $raw }
+  $maximumLength = [Math]::Max($raw.Length, $refined.Length)
+  if ([Math]::Min($raw.Length, $refined.Length) -lt 4 -or
+      [Math]::Abs($raw.Length - $refined.Length) -gt 2) { return $raw }
+  if ($raw[0] -cne $refined[0] -or
+      $raw.Substring($raw.Length - 2) -cne $refined.Substring($refined.Length - 2)) { return $raw }
+  $maximumDistance = [Math]::Max(1, [int][Math]::Floor($maximumLength * 0.34))
+  if ((Get-AutoReplyVisualEditDistance $raw $refined) -le $maximumDistance) { return $refined }
+  return $raw
+}
+
+function Get-AutoReplyVisualRefinedBubbleText($frame, $bubbleRect, [string]$rawText) {
+  # Full-window OCR is used only to locate the latest bubble. Re-read that tight
+  # crop at 3x: field evidence shows 2x preserves glyph confusion while 4x can
+  # over-smooth the WeChat font; 3x recovers the original text.
+  $ocr = Get-MomentsScaledOcrObservation $frame $bubbleRect 3
+  if (-not $ocr.ok) {
+    return @{ message = Normalize-AutoReplyVisualText $rawText; source = "full_window"; refined = "" }
+  }
+  $refined = Normalize-AutoReplyVisualText ([string]$ocr.text)
+  return @{
+    message = Resolve-AutoReplyVisualRefinedBubbleText $rawText $refined
+    source = "bubble_crop_3x"
+    refined = $refined
+  }
+}
+
 function Merge-AutoReplyVisualMessageParts($parts, [bool]$sameRow = $false) {
   $items = @($parts)
   if ($items.Count -eq 0) { return $null }
@@ -1202,11 +1233,17 @@ function Get-AutoReplyVisualLatestMessageEvidence($frame, $lines, [double]$sideb
     }
   }
   $latest = $messageBlocks[-1]
-  $message = Normalize-AutoReplyVisualText ([string]$latest.compact)
+  $rawMessage = Normalize-AutoReplyVisualText ([string]$latest.compact)
   $bubbleRect = Get-AutoReplyVisualBubbleRect $frame $latest $sidebarRight
   $pixelHash = Get-MomentsPixelHash $frame $bubbleRect
   if (-not $pixelHash) { return @{ ok = $false; reason = "latest_text_message_missing" } }
   $latestRole = Get-AutoReplyVisualMessageRole $frame $latest $sidebarRight $bubbleRect
+  $refinedMessage = if ($latestRole -ceq "user") {
+    Get-AutoReplyVisualRefinedBubbleText $frame $bubbleRect $rawMessage
+  } else {
+    @{ message = $rawMessage; source = "full_window"; refined = "" }
+  }
+  $message = [string]$refinedMessage.message
   $logicalScale = [Math]::Max(0.5, [double]$script:AutoReplyVisualScale)
   $bubbleWidthBucket = [int][Math]::Round(([double]$latest.bounds.width / $logicalScale) / 8.0)
   $bubbleHeightBucket = [int][Math]::Round(([double]$latest.bounds.height / $logicalScale) / 4.0)
@@ -1226,6 +1263,9 @@ function Get-AutoReplyVisualLatestMessageEvidence($frame, $lines, [double]$sideb
     ok = $true
     hasMessage = $true
     message = $message
+    rawMessage = $rawMessage
+    refinedMessage = [string]$refinedMessage.refined
+    messageOcrSource = [string]$refinedMessage.source
     line = $latest
     pixelHash = $pixelHash
     latestRole = $latestRole
@@ -1699,6 +1739,9 @@ try {
       runtimeId = $expectedRuntimeId
       messageSignature = $expectedMessageSignature
       observedMessageSignature = $observedMessageSignature
+      rawMessage = [string]$latest.rawMessage
+      refinedMessage = [string]$latest.refinedMessage
+      messageOcrSource = [string]$latest.messageOcrSource
       evidenceReconciled = -not $bubbleEvidenceMatches
       headerState = [string]$header.state
       headerCandidateCount = [int]$header.headerCandidateCount
@@ -2034,6 +2077,9 @@ try {
     conversation = $conversation
     conversationEvidence = [string]$candidate.conversationEvidence
     message = $resolvedMessage
+    rawMessage = [string]$latest.rawMessage
+    refinedMessage = [string]$latest.refinedMessage
+    messageOcrSource = [string]$latest.messageOcrSource
     runtimeId = $runtimeId
     previewSignature = [string]$candidate.signature
     messageSignature = [string]$latest.evidenceSignature

@@ -130,6 +130,12 @@ const normalizationStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Normalize-
 const normalizationEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Get-AutoReplyVisualSha256", normalizationStart);
 assert.ok(normalizationStart >= 0 && normalizationEnd > normalizationStart);
 const normalizationFunction = AUTO_REPLY_VISUAL_SCRIPT.slice(normalizationStart, normalizationEnd);
+const refinedResolverStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Resolve-AutoReplyVisualRefinedBubbleText");
+const refinedResolverEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Get-AutoReplyVisualRefinedBubbleText", refinedResolverStart);
+assert.ok(refinedResolverStart >= 0 && refinedResolverEnd > refinedResolverStart);
+const refinedResolverFunction = AUTO_REPLY_VISUAL_SCRIPT.slice(refinedResolverStart, refinedResolverEnd);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-MomentsScaledOcrObservation \$frame \$bubbleRect 3/u, "message content must be re-read from a tight 3x bubble crop");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$rawMessage = Normalize-AutoReplyVisualText[\s\S]*\$refinedMessage = if[\s\S]*Get-AutoReplyVisualRefinedBubbleText[\s\S]*\$message = \[string\]\$refinedMessage\.message/u, "full-window OCR may locate a bubble but must not remain the final message text");
 const allowedResolutionStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Resolve-AutoReplyVisualAllowedConversation");
 const allowedResolutionEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Scale-AutoReplyVisualMetric", allowedResolutionStart);
 assert.ok(allowedResolutionStart >= 0 && allowedResolutionEnd > allowedResolutionStart);
@@ -390,6 +396,7 @@ function Get-MomentsPixelHash($frame, $rect) { return ("b" * 64) }
 function Get-AutoReplyVisualMessageBlocks($frame, $messageLines, [double]$sidebarRight) { return @($messageLines) }
 function Get-AutoReplyVisualBubbleRect($frame, $line, [double]$sidebarRight) { return @{ left = 0; top = 0; width = 10; height = 10 } }
 function Get-AutoReplyVisualMessageRole($frame, $line, [double]$sidebarRight, $bubbleRect) { return "user" }
+function Get-AutoReplyVisualRefinedBubbleText($frame, $bubbleRect, [string]$rawText) { return @{ message = $rawText; source = "fixture"; refined = $rawText } }
 function Get-AutoReplyVisualChatBottom($frame, [double]$sidebarRight) {
   if (-not $script:EvidenceBoundaryOk) { return @{ ok = $false; reason = "chat_boundary_unresolved"; source = "none" } }
   return @{ ok = $true; bottom = [double]$script:EvidenceBottom; source = "test_divider" }
@@ -629,14 +636,21 @@ assert.deepEqual(JSON.parse(conversationMatchProbe.stdout.trim().split(/\r?\n/u)
 
 const messageTextProgram = `
 ${normalizationFunction}
+${refinedResolverFunction}
 $prefix = ([string][char]25105) + [char]26469 + [char]21672 + [char]35810 + [char]19968 + [char]19979
 $suffix = ([string][char]35774) + [char]22791 + [char]30340
 $preview = $prefix + [char]28165 + [char]27905 + $suffix
 $bubble = $prefix + [char]23578 + [char]21513 + $suffix
+$shortPrefix = ([string][char]25105) + [char]38656 + [char]35201
+$correctShort = $shortPrefix + [char]28165 + [char]27905 + [char]35774 + [char]22791
+$wrongShort = $shortPrefix + [char]23578 + [char]21513 + [char]35774 + [char]22791
+$partialShort = $shortPrefix + [char]28165 + [char]27905 + [char]22791
 @{
   corrected = Resolve-AutoReplyVisualMessageText $preview $bubble
   truncated = Resolve-AutoReplyVisualMessageText ($prefix + [char]28165 + [char]27905 + "...") $bubble
   unrelated = Resolve-AutoReplyVisualMessageText $preview ($prefix + [char]24037 + [char]19994 + [char]21560 + [char]23576 + [char]22120)
+  refinedExact = (Resolve-AutoReplyVisualRefinedBubbleText $wrongShort $correctShort) -ceq $correctShort
+  refinedPartialRejected = (Resolve-AutoReplyVisualRefinedBubbleText $wrongShort $partialShort) -ceq $wrongShort
 } | ConvertTo-Json -Compress
 `;
 const messageTextProbe = spawnSync("powershell.exe", [
@@ -647,6 +661,8 @@ const messageTextProbe = spawnSync("powershell.exe", [
 assert.equal(messageTextProbe.status, 0, messageTextProbe.stderr || messageTextProbe.stdout);
 assert.deepEqual(JSON.parse(messageTextProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1)), {
   corrected: "我来咨询一下清洁设备的",
+  refinedExact: true,
+  refinedPartialRejected: true,
   truncated: "我来咨询一下尚吉设备的",
   unrelated: "我来咨询一下工业吸尘器"
 });
