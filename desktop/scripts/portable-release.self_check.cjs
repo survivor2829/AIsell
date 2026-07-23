@@ -251,6 +251,7 @@ assert.equal(manifest.releaseStage, "wechat-4.1.11.54-stabilization");
 assert.deepEqual(manifest.targetWeixin, ["4.1.11.54"]);
 assert.deepEqual(manifest.capabilityMatrix, declaredCapabilities.capabilities, "portable manifest must match the single source capability matrix");
 assert.equal(manifest.capabilityMatrix?.contactSync?.implementation, "implemented");
+assert.equal(manifest.capabilityMatrix?.autoReply?.localLiveVerification, "verified");
 assert.equal(manifest.capabilityMatrix?.activeTouch?.localLiveVerification, "verified");
 assert.equal(manifest.capabilityMatrix?.moments?.implementation, "single-post-preview");
 assert.equal(manifest.verifiedWeixin, undefined, "a global verified version list must not overclaim every capability");

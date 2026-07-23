@@ -18,5 +18,7 @@ for (const [name, capability] of Object.entries(matrix.capabilities)) {
   assert.equal(validVerification.has(capability.portableVerification), true, `${name} portable verification status is invalid`);
 }
 assert.equal(matrix.capabilities.moments.implementation, "single-post-preview");
+assert.equal(matrix.capabilities.autoReply.localLiveVerification, "verified");
+assert.equal(matrix.capabilities.activeTouch.localLiveVerification, "verified");
 
 console.log("release capability matrix self-check passed");

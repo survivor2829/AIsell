@@ -82,7 +82,7 @@
 |---|---|---|
 | 代码 | changed-and-verified | 稳定化修复已提交，完整源码自检通过；正式候选包从干净 commit 构建 |
 | 运行态 | pending | 自动回复与主动触达最小门禁源码版均已完成 2026-07-23 本机 live 验收；新便携包与异机仍待验证；朋友圈仍待验证 |
-| 文档 | changed-and-verified | 当前说明已按 2026-07-22 代码、目录和发布现实收敛 |
+| 文档 | changed-and-verified | 当前说明已按 2026-07-23 代码、目录和发布现实收敛 |
 | 规则 | changed-and-verified | `AGENTS.md` 已移除不存在文档、错误命令和过期仅 dry-run 限制 |
 | 记忆 | not-applicable | 未写入或修改平台生成记忆 |
 | 工作区 | pending | 复核现场和清理候选仍保留，等待发布闭环后再报告清场 |
