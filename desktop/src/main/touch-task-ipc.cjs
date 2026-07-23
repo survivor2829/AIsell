@@ -4,7 +4,6 @@ const path = require("node:path");
 const { generateFixedScriptFallback, generatePersonalizedDraft } = require("./ai-draft.cjs");
 const { runActiveTouch } = require("./active-touch-ipc.cjs");
 const { preloadFile, rendererDir = "dist" } = require("./edition.cjs");
-const { saveState: saveExecutionState } = require("../../rpa/active_touch/state_machine.cjs");
 const {
   authorizeTask,
   classifyContacts,
@@ -360,39 +359,6 @@ async function waitUntilSendAllowed() {
   return false;
 }
 
-function clearExecutionAttemptForRetry(task, result, index) {
-  const file = path.join(activeTouchDir(), "state.json");
-  try {
-    const state = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
-    const context = state.task_context;
-    const attemptKey = String(result.attempt_key || state.real_send_attempt_key || "");
-    if (
-      !attemptKey ||
-      context?.task_id !== task.id ||
-      String(context?.contact_id || "") !== String(result.id) ||
-      Number(context?.current_index) !== index ||
-      state.real_send_attempts?.[attemptKey] !== "outcome_unknown"
-    ) return false;
-    const attempts = { ...(state.real_send_attempts || {}) };
-    delete attempts[attemptKey];
-    const nextState = {
-      ...state,
-      real_send_armed: false,
-      real_send_enabled: false,
-      real_send_clicked: false,
-      real_send_status: "not_sent",
-      real_send_reason: "",
-      real_send_attempt_key: "",
-      real_send_attempts: attempts,
-      blocked_reason: ""
-    };
-    saveExecutionState(activeTouchDir(), nextState);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function finishVerifiedContact(index, executionState = {}, reason = "发送成功并已验证最新消息气泡") {
   const task = loadTaskState(activeTouchDir());
   const result = task.results[index];
@@ -428,25 +394,15 @@ async function verifyUnknownOutcome(index) {
   return { verified: false, blocked: false };
 }
 
-function prepareSingleUnknownRetry(task, index) {
+function requireUnknownResolution(task, index) {
   const unknown = task.results[index];
-  if (!unknown || unknown.status !== "outcome_unknown" || Number(unknown.outcome_unknown_retry_count || 0) >= 1) {
-    return { ok: false, task };
-  }
-  unknown.outcome_unknown_retry_count = 1;
-  unknown.status = "generated";
-  unknown.reason = "首次发送结果未确认，正在执行唯一一次自动补发";
-  unknown.retry_blocked = false;
-  unknown.awaiting_resolution = false;
+  if (!unknown || unknown.status !== "outcome_unknown") return pauseTask(task, "发送结果无法确认，任务已暂停且不会自动补发", index);
+  unknown.awaiting_resolution = true;
+  unknown.retry_blocked = true;
+  unknown.reason = "发送结果无法确认，请人工标记已发送或跳过；系统不会自动补发";
   unknown.updated_at = new Date().toISOString();
-  task.status = "running";
-  task.phase = "sending_batch";
-  task.pause_reason = "";
-  task.next_send_not_before = new Date(Date.now() + sendDelayMs(randomSource)).toISOString();
-  const saved = saveTaskState(activeTouchDir(), task);
-  emitTaskUpdate(saved);
-  if (clearExecutionAttemptForRetry(saved, saved.results[index], index)) return { ok: true, task: saved };
-  return { ok: false, task: pauseTask(saved, "无法安全准备唯一一次补发，任务已暂停", index) };
+  task.phase = "awaiting_unknown_resolution";
+  return pauseTask(task, unknown.reason, index);
 }
 
 function persistRealSendTransition(index, status, executionState = {}) {
@@ -522,15 +478,7 @@ async function runRealContact(task, current, index) {
     const verification = await verifyUnknownOutcome(index);
     if (verification.verified) return true;
     if (verification.blocked) return false;
-    task = loadTaskState(activeTouchDir());
-    const unknown = task.results[index];
-    unknown.status = "outcome_unknown";
-    unknown.awaiting_resolution = true;
-    unknown.retry_blocked = true;
-    unknown.reason = "发送结果无法确认，请人工选择处理结果";
-    unknown.updated_at = new Date().toISOString();
-    task.phase = "awaiting_unknown_resolution";
-    pauseTask(task, unknown.reason, index);
+    requireUnknownResolution(loadTaskState(activeTouchDir()), index);
     return false;
   }
   if (isIdentitySkip(response)) {
@@ -854,12 +802,10 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
           runnerOwner = "";
           return taskPayload();
         }
-        const prepared = prepareSingleUnknownRetry(loadTaskState(activeTouchDir()), task.current_index);
-        if (!prepared.ok) {
-          if (runnerOwner) runtimeCoordinator?.release(runnerOwner);
-          runnerOwner = "";
-          return taskPayload(prepared.task);
-        }
+        const unresolved = requireUnknownResolution(loadTaskState(activeTouchDir()), task.current_index);
+        if (runnerOwner) runtimeCoordinator?.release(runnerOwner);
+        runnerOwner = "";
+        return taskPayload(unresolved);
       } catch (error) {
         const paused = pauseTask(loadTaskState(activeTouchDir()), `发送结果恢复核验失败：${String(error?.message || "unknown_error")}`, task.current_index);
         if (runnerOwner) runtimeCoordinator?.release(runnerOwner);

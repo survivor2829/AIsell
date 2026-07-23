@@ -1,9 +1,22 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 
 const desktopDir = path.resolve(__dirname, "..");
-const { sourceAllowed } = require("./build-portable-release.cjs");
+const {
+  runTransactionalRelease,
+  scanRelease,
+  sourceAllowed,
+  treeSha256
+} = require("./build-portable-release.cjs");
+const {
+  normalizeArchiveEntry,
+  parsePortableArguments,
+  resolvePortablePaths,
+  verifyPortableArchive
+} = require("./portable-release.self_check.cjs");
 const blockedChannels = [
   "active-touch:send-real",
   "active-touch:set-real-send-arm",
@@ -155,5 +168,266 @@ assert.equal(read(path.join(desktopDir, "package.json")).includes("build:custome
 const packageMetadata = JSON.parse(read(path.join(desktopDir, "package.json")));
 assert.equal(packageMetadata.productName, "AI获客");
 assert.equal(packageMetadata.version, "0.2.0");
+const portableBuilderSource = read(path.join(desktopDir, "scripts", "build-portable-release.cjs"));
+assert.equal(portableBuilderSource.includes("localeCompare"), false, "release ordering must not depend on the host locale");
+assert.equal(portableBuilderSource.includes("removeLegacyProducts"), false, "ordinary releases must not delete other editions or retired brands");
+assert.match(read(path.join(desktopDir, "scripts", "portable-release.self_check.cjs")), /parsePortableArguments/);
+assert.match(read(path.join(desktopDir, "scripts", "portable-release.self_check.cjs")), /resolvePortablePaths/);
+for (const name of [".env", ".env.ai.local", ".env.production"]) {
+  const source = path.join(desktopDir, "src", "main", name);
+  assert.equal(sourceAllowed(source, "test"), false, `${name} must be excluded from the test edition`);
+  assert.equal(sourceAllowed(source, "delivery"), false, `${name} must be excluded from the delivery edition`);
+}
+for (const [scriptName, buildStep] of [["release:test", "build:test"], ["release:delivery", "build:delivery"]]) {
+  const script = packageMetadata.scripts[scriptName];
+  assert.equal(script.indexOf("check:clean-runtime") < script.indexOf(buildStep), true, `${scriptName} must check runtime residue before building`);
+  assert.equal((script.match(/portable-release\.self_check/g) || []).length, 0, `${scriptName} must rely on the staging self-check before promotion, not revalidate after publication`);
+}
+assert.match(read(path.join(desktopDir, "scripts", "check-clean-runtime.cjs")), /\^\\\.env\(\?:\\\.|\$\)\/i/, "clean-runtime must detect environment files case-insensitively on Windows");
+const hashFixture = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-release-hash-"));
+try {
+  fs.mkdirSync(path.join(hashFixture, "nested"));
+  fs.writeFileSync(path.join(hashFixture, "a.txt"), "one", "utf8");
+  fs.writeFileSync(path.join(hashFixture, "nested", "b.txt"), "two", "utf8");
+  const firstHash = treeSha256(hashFixture);
+  assert.match(firstHash, /^[0-9a-f]{64}$/);
+  assert.equal(treeSha256(hashFixture), firstHash, "source tree hash must be deterministic");
+  fs.writeFileSync(path.join(hashFixture, "nested", "b.txt"), "changed", "utf8");
+  assert.notEqual(treeSha256(hashFixture), firstHash, "source tree hash must change with packaged content");
+} finally {
+  fs.rmSync(hashFixture, { recursive: true, force: true });
+}
+
+const blockedFixture = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-release-blocked-"));
+try {
+  fs.writeFileSync(path.join(blockedFixture, ".env.ai.local"), "DEEPSEEK_API_KEY=fixture-only", "utf8");
+  assert.throws(() => scanRelease(blockedFixture), /blocked files or secrets/, "release scan must reject environment files");
+} finally {
+  fs.rmSync(blockedFixture, { recursive: true, force: true });
+}
+
+assert.deepEqual(parsePortableArguments([]), { edition: "delivery", targetOption: null, zipOption: null });
+assert.deepEqual(parsePortableArguments(["test", "--target", "target", "--zip", "target.zip"]), {
+  edition: "test",
+  targetOption: "target",
+  zipOption: "target.zip"
+});
+assert.throws(() => parsePortableArguments(["delivery", "--unknown", "value"]), /Unknown portable self-check option/);
+assert.throws(() => parsePortableArguments(["delivery", "--target", "one", "--target", "two", "--zip", "three"]), /Duplicate portable self-check option/);
+assert.throws(() => parsePortableArguments(["delivery", "--target", "one"]), /must be provided together/);
+for (const unsafe of ["/AI获客/file", "C:/AI获客/file", "AI获客/../file", "AI获客/file:stream", "AI获客/file."]) {
+  assert.throws(() => normalizeArchiveEntry(unsafe, "AI获客"), /absolute|unsafe/);
+}
+assert.throws(() => verifyPortableArchive({
+  zip: "fixture.zip",
+  target: "fixture-target",
+  productName: "AI获客",
+  expectedSourceTreeSha256: "a".repeat(64),
+  tar: (args) => args[0] === "-tf"
+    ? { status: 0, stdout: "AI获客/\nAI获客/link\n", stderr: "" }
+    : { status: 0, stdout: "drwxrwxrwx AI获客/\nlrwxrwxrwx AI获客/link\n", stderr: "" }
+}), /only regular files and directories/, "portable ZIP must reject symbolic or special entries before extraction");
+
+const portablePathFixture = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-portable-paths-"));
+try {
+  const stagingRoot = path.join(portablePathFixture, ".staging-test-fixture");
+  const target = path.join(stagingRoot, "AI获客-测试版");
+  const zip = path.join(stagingRoot, "AI获客-测试版.zip");
+  fs.mkdirSync(target, { recursive: true });
+  fs.writeFileSync(zip, "fixture", "utf8");
+  const resolved = resolvePortablePaths({
+    edition: "test",
+    targetOption: target,
+    zipOption: zip,
+    releaseRoot: portablePathFixture
+  });
+  assert.equal(resolved.productName, "AI获客-测试版");
+  const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-portable-outside-"));
+  try {
+    const outsideTarget = path.join(outsideRoot, "AI获客-测试版");
+    const outsideZip = path.join(outsideRoot, "AI获客-测试版.zip");
+    fs.mkdirSync(outsideTarget);
+    fs.writeFileSync(outsideZip, "fixture", "utf8");
+    assert.throws(() => resolvePortablePaths({
+      edition: "test",
+      targetOption: outsideTarget,
+      zipOption: outsideZip,
+      releaseRoot: portablePathFixture
+    }), /below the project release directory/);
+  } finally {
+    fs.rmSync(outsideRoot, { recursive: true, force: true });
+  }
+  assert.throws(() => resolvePortablePaths({
+    edition: "test",
+    targetOption: target,
+    zipOption: path.join(portablePathFixture, "AI获客-测试版.zip"),
+    releaseRoot: portablePathFixture
+  }), /same parent directory|does not exist/);
+} finally {
+  fs.rmSync(portablePathFixture, { recursive: true, force: true });
+}
+
+const portableArchiveFixture = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-portable-archive-fixture-"));
+try {
+  const productName = "AI获客";
+  const target = path.join(portableArchiveFixture, productName);
+  const appDir = path.join(target, "resources", "app");
+  const zip = path.join(portableArchiveFixture, `${productName}.zip`);
+  fs.mkdirSync(appDir, { recursive: true });
+  fs.writeFileSync(path.join(appDir, "app.txt"), "packaged-app", "utf8");
+  fs.writeFileSync(path.join(target, "marker.txt"), "same-tree", "utf8");
+  const archive = spawnSync("tar.exe", ["-a", "-c", "-f", zip, "-C", portableArchiveFixture, productName], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 30000
+  });
+  assert.equal(archive.status, 0, archive.stderr || archive.stdout || "portable archive fixture creation failed");
+  verifyPortableArchive({
+    zip,
+    target,
+    productName,
+    expectedSourceTreeSha256: treeSha256(appDir)
+  });
+  fs.writeFileSync(path.join(target, "marker.txt"), "target-changed-after-archive", "utf8");
+  assert.throws(() => verifyPortableArchive({
+    zip,
+    target,
+    productName,
+    expectedSourceTreeSha256: treeSha256(appDir)
+  }), /must exactly match/);
+  fs.writeFileSync(path.join(target, "marker.txt"), "same-tree", "utf8");
+  let retainedTemporaryRoot = "";
+  const cleanupResult = verifyPortableArchive({
+    zip,
+    target: path.join(portableArchiveFixture, productName),
+    productName,
+    expectedSourceTreeSha256: treeSha256(appDir),
+    removeTemporary: (temporaryRoot) => {
+      retainedTemporaryRoot = temporaryRoot;
+      throw new Error("fixture cleanup denied");
+    },
+    warn: () => {}
+  });
+  assert.equal(cleanupResult.cleanupWarnings.length, 1, "archive cleanup failure must be reported as a warning");
+  fs.rmSync(retainedTemporaryRoot, { recursive: true, force: true });
+} finally {
+  fs.rmSync(portableArchiveFixture, { recursive: true, force: true });
+}
+
+function transactionFixture() {
+  const releaseRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-release-transaction-"));
+  const canonicalTarget = path.join(releaseRoot, "AI获客");
+  const canonicalZip = path.join(releaseRoot, "AI获客.zip");
+  const stagingRoot = path.join(releaseRoot, ".staging-fixture");
+  const stagingTarget = path.join(stagingRoot, "AI获客");
+  const stagingZip = path.join(stagingRoot, "AI获客.zip");
+  fs.mkdirSync(canonicalTarget);
+  fs.writeFileSync(path.join(canonicalTarget, "marker.txt"), "old-good", "utf8");
+  fs.writeFileSync(canonicalZip, "old-good-zip", "utf8");
+  return { releaseRoot, canonicalTarget, canonicalZip, stagingRoot, stagingTarget, stagingZip };
+}
+
+function assertOldPackageUnchanged(paths) {
+  assert.equal(fs.readFileSync(path.join(paths.canonicalTarget, "marker.txt"), "utf8"), "old-good");
+  assert.equal(fs.readFileSync(paths.canonicalZip, "utf8"), "old-good-zip");
+  assert.equal(fs.existsSync(paths.stagingRoot), false, "failed transaction must clean its staging directory");
+}
+
+for (const failurePhase of ["preflight", "prepare", "validate"]) {
+  const paths = transactionFixture();
+  try {
+    assert.throws(() => runTransactionalRelease({
+      ...paths,
+      transactionId: `fixture-${failurePhase}`,
+      preflight: () => {
+        if (failurePhase === "preflight") throw new Error("dirty fixture");
+        return { commit: "a".repeat(40), dirty: false };
+      },
+      prepare: () => {
+        fs.mkdirSync(paths.stagingTarget);
+        fs.writeFileSync(path.join(paths.stagingTarget, "marker.txt"), "new", "utf8");
+        fs.writeFileSync(paths.stagingZip, "new-zip", "utf8");
+        if (failurePhase === "prepare") throw new Error("build fixture failed");
+        return { target: paths.stagingTarget, zip: paths.stagingZip };
+      },
+      validate: () => {
+        if (failurePhase === "validate") throw new Error("validation fixture failed");
+      }
+    }), failurePhase === "preflight" ? /dirty fixture/ : /fixture failed/);
+    assertOldPackageUnchanged(paths);
+  } finally {
+    fs.rmSync(paths.releaseRoot, { recursive: true, force: true });
+  }
+}
+
+const publishFailureFixture = transactionFixture();
+try {
+  assert.throws(() => runTransactionalRelease({
+    ...publishFailureFixture,
+    transactionId: "fixture-publish-failure",
+    preflight: () => ({ commit: "a".repeat(40), dirty: false }),
+    prepare: () => {
+      fs.mkdirSync(publishFailureFixture.stagingTarget);
+      fs.writeFileSync(path.join(publishFailureFixture.stagingTarget, "marker.txt"), "new", "utf8");
+      return { target: publishFailureFixture.stagingTarget, zip: publishFailureFixture.stagingZip };
+    },
+    validate: () => {}
+  }), /ENOENT/, "publish failure must be reported");
+  assertOldPackageUnchanged(publishFailureFixture);
+} finally {
+  fs.rmSync(publishFailureFixture.releaseRoot, { recursive: true, force: true });
+}
+
+const publishFixture = transactionFixture();
+try {
+  const otherEdition = path.join(publishFixture.releaseRoot, "AI获客-测试版");
+  const otherEditionZip = `${otherEdition}.zip`;
+  fs.mkdirSync(otherEdition);
+  fs.writeFileSync(path.join(otherEdition, "marker.txt"), "other-good", "utf8");
+  fs.writeFileSync(otherEditionZip, "other-good-zip", "utf8");
+  runTransactionalRelease({
+    ...publishFixture,
+    transactionId: "fixture-success",
+    preflight: () => ({ commit: "a".repeat(40), dirty: false }),
+    prepare: () => {
+      fs.mkdirSync(publishFixture.stagingTarget);
+      fs.writeFileSync(path.join(publishFixture.stagingTarget, "marker.txt"), "new-good", "utf8");
+      fs.writeFileSync(publishFixture.stagingZip, "new-good-zip", "utf8");
+      return { target: publishFixture.stagingTarget, zip: publishFixture.stagingZip };
+    },
+    validate: () => {}
+  });
+  assert.equal(fs.readFileSync(path.join(publishFixture.canonicalTarget, "marker.txt"), "utf8"), "new-good");
+  assert.equal(fs.readFileSync(publishFixture.canonicalZip, "utf8"), "new-good-zip");
+  assert.equal(fs.readFileSync(path.join(otherEdition, "marker.txt"), "utf8"), "other-good");
+  assert.equal(fs.readFileSync(otherEditionZip, "utf8"), "other-good-zip");
+} finally {
+  fs.rmSync(publishFixture.releaseRoot, { recursive: true, force: true });
+}
+
+const cleanupWarningFixture = transactionFixture();
+try {
+  const result = runTransactionalRelease({
+    ...cleanupWarningFixture,
+    transactionId: "fixture-cleanup-warning",
+    preflight: () => ({ commit: "a".repeat(40), dirty: false }),
+    prepare: () => {
+      fs.mkdirSync(cleanupWarningFixture.stagingTarget);
+      fs.writeFileSync(path.join(cleanupWarningFixture.stagingTarget, "marker.txt"), "published-despite-cleanup-warning", "utf8");
+      fs.writeFileSync(cleanupWarningFixture.stagingZip, "published-zip", "utf8");
+      return { target: cleanupWarningFixture.stagingTarget, zip: cleanupWarningFixture.stagingZip };
+    },
+    validate: () => {},
+    cleanup: (_targets, label) => {
+      throw new Error(`${label} fixture cleanup denied`);
+    }
+  });
+  assert.equal(result.published, true, "cleanup failure after promotion must not turn publication into a failure");
+  assert.equal(result.cleanupWarnings.length, 2, "backup and staging cleanup failures must remain visible");
+  assert.equal(fs.readFileSync(path.join(cleanupWarningFixture.canonicalTarget, "marker.txt"), "utf8"), "published-despite-cleanup-warning");
+  assert.equal(fs.readFileSync(cleanupWarningFixture.canonicalZip, "utf8"), "published-zip");
+} finally {
+  fs.rmSync(cleanupWarningFixture.releaseRoot, { recursive: true, force: true });
+}
 
 console.log("edition boundary self-check passed");

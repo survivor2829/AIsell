@@ -300,6 +300,8 @@ async function main() {
       json: () => new Promise((_resolve, reject) => request.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true }))
     })
   });
+  assert.equal(parseReplyDecision(JSON.stringify({ reply: "您好，丫子，有什么可以帮您的吗？", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })).reply, "您好，有什么可以帮您的吗？");
+  assert.equal(parseReplyDecision(JSON.stringify({ reply: "张总，您好，请问想了解哪类设备？", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })).reply, "您好，请问想了解哪类设备？");
   await assert.rejects(() => stalledClient.test(), (error) => error.code === "AI_REQUEST_TIMEOUT");
   const invalidPayloadClient = createDeepSeekClient({
     keyStore: store,

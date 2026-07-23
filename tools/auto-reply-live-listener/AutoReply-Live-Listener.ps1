@@ -41,14 +41,20 @@ function Get-ClassNameValue([IntPtr]$Handle) {
 }
 
 function Find-WeChatWindow {
-  $processIds = @(Get-Process -Name Weixin, WeChat -ErrorAction SilentlyContinue | ForEach-Object { [uint32]$_.Id })
-  if ($processIds.Count -eq 0) { return $null }
+  $wechatProcesses = @(foreach ($processName in @("Weixin", "WeChat")) {
+    Get-Process -Name $processName -ErrorAction SilentlyContinue
+  })
+  if ($wechatProcesses.Count -eq 0) { return $null }
   $windows = New-Object System.Collections.Generic.List[object]
   $callback = [LiveTraceWin32+EnumWindowsProc]{
     param([IntPtr]$handle, [IntPtr]$unused)
     if (-not [LiveTraceWin32]::IsWindowVisible($handle)) { return $true }
     [uint32]$windowProcessId = 0; [void][LiveTraceWin32]::GetWindowThreadProcessId($handle, [ref]$windowProcessId)
-    if ($processIds -notcontains $windowProcessId) { return $true }
+    if ($windowProcessId -eq 0) { return $true }
+    # MainWindowHandle is not reliable for multi-process Weixin. Resolve the
+    # owner of each actual top-level HWND instead of filtering on that property.
+    $windowProcess = Get-Process -Id ([int]$windowProcessId) -ErrorAction SilentlyContinue
+    if ($null -eq $windowProcess -or @("Weixin", "WeChat") -notcontains $windowProcess.ProcessName) { return $true }
     $rect = New-Object LiveTraceWin32+RECT
     if (-not [LiveTraceWin32]::GetWindowRect($handle, [ref]$rect)) { return $true }
     $width = $rect.Right - $rect.Left; $height = $rect.Bottom - $rect.Top
@@ -82,7 +88,7 @@ function Test-BadgePixel([Drawing.Color]$Pixel) {
 function Get-BadgeComponents([string]$ImagePath, [double]$Dpi) {
   $bitmap = [Drawing.Bitmap]::FromFile($ImagePath)
   try {
-    $scale = [Math]::Min(4.0, [Math]::Max(0.5, $Dpi / 120.0))
+    $scale = [Math]::Min(4.0, [Math]::Max(0.5, $Dpi / 96.0))
     $sidebarRight = [Math]::Min(300.0 * ($Dpi / 96.0), [Math]::Max(230.0 * ($Dpi / 96.0), $bitmap.Width * 0.45))
     $xStart = [int][Math]::Max(0, [Math]::Floor(58 * $scale)); $xEnd = [int][Math]::Min($bitmap.Width - 1, [Math]::Ceiling([Math]::Min($sidebarRight - (80 * $scale), 170 * $scale)))
     $yStart = [int][Math]::Max(0, [Math]::Floor(70 * $scale)); $yEnd = [int][Math]::Min($bitmap.Height - 1, [Math]::Ceiling($bitmap.Height - (42 * $scale)))

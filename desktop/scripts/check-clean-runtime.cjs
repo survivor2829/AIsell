@@ -36,7 +36,7 @@ function findEnvFiles(root) {
   return fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
     const file = path.join(root, entry.name);
     if (entry.isDirectory()) return ["node_modules", "dist", "dist-development", ".vite"].includes(entry.name) ? [] : findEnvFiles(file);
-    return entry.isFile() && /^\.env(?:\.|$)/.test(entry.name) ? [file] : [];
+    return entry.isFile() && /^\.env(?:\.|$)/i.test(entry.name) ? [file] : [];
   });
 }
 

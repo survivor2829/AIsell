@@ -4,15 +4,163 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { treeSha256 } = require("./release-tree-hash.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const projectDir = path.resolve(desktopDir, "..");
-const edition = process.argv[2] || "delivery";
-if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported portable edition: ${edition}`);
-const productName = edition === "test" ? "AI获客-测试版" : "AI获客";
-const target = path.join(projectDir, "release", productName);
+
+function parsePortableArguments(argv) {
+  const args = [...argv];
+  let edition = "delivery";
+  if (args[0] && !args[0].startsWith("--")) edition = args.shift();
+  if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported portable edition: ${edition}`);
+
+  const values = new Map();
+  const allowed = new Set(["--target", "--zip"]);
+  while (args.length) {
+    const option = args.shift();
+    if (!allowed.has(option)) throw new Error(`Unknown portable self-check option: ${option}`);
+    if (values.has(option)) throw new Error(`Duplicate portable self-check option: ${option}`);
+    const value = args.shift();
+    if (!value || value.startsWith("--")) throw new Error(`Missing value for ${option}`);
+    values.set(option, value);
+  }
+  if (values.has("--target") !== values.has("--zip")) {
+    throw new Error("--target and --zip must be provided together");
+  }
+  return {
+    edition,
+    targetOption: values.get("--target") || null,
+    zipOption: values.get("--zip") || null
+  };
+}
+
+function samePath(left, right) {
+  const normalizedLeft = path.resolve(left);
+  const normalizedRight = path.resolve(right);
+  return process.platform === "win32"
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
+}
+
+function assertRealPathInside(root, target, label) {
+  const relative = path.relative(root, target);
+  if (relative === "" || path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`)) {
+    throw new Error(`${label} must be below the project release directory: ${target}`);
+  }
+}
+
+function resolvePortablePaths({ edition, targetOption, zipOption, releaseRoot = path.join(projectDir, "release") }) {
+  const productName = edition === "test" ? "AI获客-测试版" : "AI获客";
+  const target = path.resolve(targetOption || path.join(releaseRoot, productName));
+  const zip = path.resolve(zipOption || path.join(releaseRoot, `${productName}.zip`));
+  if (path.basename(target) !== productName) throw new Error(`Portable target basename must be ${productName}`);
+  if (path.basename(zip) !== `${productName}.zip`) throw new Error(`Portable ZIP basename must be ${productName}.zip`);
+  if (!samePath(path.dirname(target), path.dirname(zip))) throw new Error("Portable target and ZIP must have the same parent directory");
+  if (!fs.existsSync(releaseRoot)) throw new Error(`Project release directory does not exist: ${releaseRoot}`);
+  if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) throw new Error(`Portable target directory does not exist: ${target}`);
+  if (!fs.existsSync(zip) || !fs.statSync(zip).isFile()) throw new Error(`Portable ZIP does not exist: ${zip}`);
+
+  const realReleaseRoot = fs.realpathSync(releaseRoot);
+  const realTarget = fs.realpathSync(target);
+  const realZip = fs.realpathSync(zip);
+  assertRealPathInside(realReleaseRoot, realTarget, "Portable target");
+  assertRealPathInside(realReleaseRoot, realZip, "Portable ZIP");
+  if (path.basename(realTarget) !== productName || path.basename(realZip) !== `${productName}.zip`) {
+    throw new Error("Portable target or ZIP resolves through an unexpected alias");
+  }
+  const realParent = path.dirname(realTarget);
+  if (!samePath(realParent, path.dirname(realZip))) throw new Error("Portable target and ZIP must resolve to the same parent directory");
+  const relativeParent = path.relative(realReleaseRoot, realParent);
+  if (relativeParent !== "") {
+    const parts = relativeParent.split(path.sep).filter(Boolean);
+    if (parts.length !== 1 || !parts[0].startsWith(`.staging-${edition}-`)) {
+      throw new Error("Portable target and ZIP must be canonical outputs or direct release staging outputs");
+    }
+  }
+  return { edition, productName, target: realTarget, zip: realZip, releaseRoot: realReleaseRoot };
+}
+
+function normalizeArchiveEntry(entry, expectedRoot = null) {
+  const source = String(entry).replace(/\r$/, "");
+  if (!source || /[\0-\x1f\x7f]/.test(source)) throw new Error(`Portable ZIP contains an invalid entry name: ${JSON.stringify(source)}`);
+  let normalized = source.replaceAll("\\", "/");
+  if (normalized.startsWith("/") || normalized.startsWith("//") || /^[A-Za-z]:/.test(normalized)) {
+    throw new Error(`Portable ZIP contains an absolute entry: ${source}`);
+  }
+  normalized = normalized.replace(/\/+$/, "");
+  const segments = normalized.split("/");
+  if (!normalized || segments.some((segment) => !segment || segment === "." || segment === ".." || segment.includes(":") || /[. ]$/.test(segment))) {
+    throw new Error(`Portable ZIP contains an unsafe entry: ${source}`);
+  }
+  if (expectedRoot && segments[0] !== expectedRoot) throw new Error(`Portable ZIP entry is outside its single root: ${source}`);
+  return normalized;
+}
+
+function runTar(args, timeout = 30000) {
+  return spawnSync("tar.exe", args, {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout,
+    maxBuffer: 16 * 1024 * 1024
+  });
+}
+
+function assertTarSucceeded(result, message) {
+  if (result.status !== 0) throw new Error(result.stderr || result.stdout || message);
+}
+
+function verifyPortableArchive({
+  zip,
+  target,
+  productName,
+  expectedSourceTreeSha256,
+  tar = runTar,
+  removeTemporary = (temporaryRoot) => fs.rmSync(temporaryRoot, { recursive: true, force: true }),
+  warn = console.warn
+}) {
+  const list = tar(["-tf", zip]);
+  assertTarSucceeded(list, "portable ZIP must be readable");
+  const rawEntries = String(list.stdout || "").split(/\r?\n/).filter((entry) => entry !== "");
+  assert.ok(rawEntries.length > 0, "portable ZIP must not be empty");
+  const firstEntry = normalizeArchiveEntry(rawEntries[0]);
+  const encodedArchiveRoot = firstEntry.split("/")[0];
+  const archiveEntries = rawEntries.map((entry) => normalizeArchiveEntry(entry, encodedArchiveRoot));
+
+  const verbose = tar(["-tvf", zip]);
+  assertTarSucceeded(verbose, "portable ZIP entry types must be readable");
+  const verboseEntries = String(verbose.stdout || "").split(/\r?\n/).filter(Boolean);
+  assert.equal(verboseEntries.length, rawEntries.length, "portable ZIP entry listings must agree");
+  assert.equal(verboseEntries.every((entry) => /^[d-]/.test(entry)), true, "portable ZIP must contain only regular files and directories");
+
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-portable-archive-"));
+  const cleanupWarnings = [];
+  try {
+    const extract = tar(["-xf", zip, "-C", temporaryRoot], 120000);
+    assertTarSucceeded(extract, "portable ZIP extraction failed");
+    const rootEntries = fs.readdirSync(temporaryRoot);
+    assert.deepEqual(rootEntries, [productName], `portable ZIP must extract exactly one ${productName} root`);
+    const extractedTarget = fs.realpathSync(path.join(temporaryRoot, productName));
+    assertRealPathInside(fs.realpathSync(temporaryRoot), extractedTarget, "Extracted portable target");
+    const extractedAppDir = path.join(extractedTarget, "resources", "app");
+    assert.equal(treeSha256(extractedAppDir), expectedSourceTreeSha256, "ZIP app tree must match the manifest source tree hash");
+    assert.equal(treeSha256(extractedTarget), treeSha256(target), "ZIP content must exactly match the staged portable target");
+  } finally {
+    try {
+      removeTemporary(temporaryRoot);
+    } catch (error) {
+      const warning = `portable ZIP temporary cleanup failed for ${temporaryRoot}: ${error.message}`;
+      cleanupWarnings.push(warning);
+      warn(warning);
+    }
+  }
+  return { archiveEntries, cleanupWarnings };
+}
+
+function main(argv = process.argv.slice(2)) {
+const parsedArguments = parsePortableArguments(argv);
+const { edition, productName, target, zip } = resolvePortablePaths(parsedArguments);
 const appDir = path.join(target, "resources", "app");
-const zip = path.join(projectDir, "release", `${productName}.zip`);
 const executable = path.join(target, `${productName}.exe`);
 const helper = path.join(appDir, "rpa", "contact_sync", "xiaoxi-contact-helper.exe");
 const CONTACT_HELPER_SHA256 = "f9c90aec8589ac11a93db7acfbc9b3b92c0c9c2a3b9175642829fba2e0f12eeb";
@@ -73,7 +221,7 @@ const databaseFilePattern = /\.(?:db(?:-wal|-shm)?|sqlite3?)$/i;
 const blockedNames = new Set(["python.exe", "dump_data.exe", "wechat-dump-rs.exe", "ai-expert.json", "auto-reply-state.json", "auto-reply-diagnostics.jsonl", "contacts.json", "touch_task.json", "touch_task.json.bak", "run_logs.jsonl", "state.json", "deepseek-api-key.bin"]);
 
 function isBlockedName(name) {
-  return blockedNames.has(name) || name.startsWith("auto-reply-diagnostics.jsonl.") || databaseFilePattern.test(name);
+  return blockedNames.has(name) || name === ".env" || name.startsWith(".env.") || name.startsWith("auto-reply-diagnostics.jsonl.") || databaseFilePattern.test(name);
 }
 
 function assertNoBlockedFiles(names, label) {
@@ -109,6 +257,8 @@ assert.equal(manifest.verifiedWeixin, undefined, "a global verified version list
 assert.equal(manifest.commercialReady, false);
 assert.equal(manifest.dirty, false, "portable release must come from a clean worktree");
 assert.match(manifest.commit, /^[0-9a-f]{40}$/, "portable release must record a full git commit");
+assert.match(manifest.sourceTreeSha256, /^[0-9a-f]{64}$/, "portable release must record the packaged source tree hash");
+assert.equal(treeSha256(appDir), manifest.sourceTreeSha256, "packaged app tree must match the manifest source tree hash");
 const releaseLabel = fs.readFileSync(path.join(target, "版本标识.txt"), "utf8");
 assert.equal(releaseLabel.includes(edition === "test" ? "主动触达和自动回复受控验收" : "capabilityMatrix"), true);
 assert.equal(releaseLabel.includes(edition === "test" ? "朋友圈当前仅为单帖预演" : "朋友圈等功能仍在开发"), true);
@@ -141,10 +291,12 @@ walk(target);
 const names = files.map((file) => path.basename(file).toLowerCase());
 assertNoBlockedFiles(names, "release");
 
-const archive = spawnSync("tar.exe", ["-tf", zip], { encoding: "utf8", windowsHide: true, timeout: 30000 });
-assert.equal(archive.status, 0, archive.stderr || archive.stdout || "portable ZIP must be readable");
-const archiveEntries = archive.stdout.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
-assert.ok(archiveEntries.length > 0, "portable ZIP must not be empty");
+const { archiveEntries } = verifyPortableArchive({
+  zip,
+  target,
+  productName,
+  expectedSourceTreeSha256: manifest.sourceTreeSha256
+});
 assertNoBlockedFiles(archiveEntries, "portable ZIP");
 for (const name of momentsRuntimeNames) {
   assert.equal(archiveEntries.some((entry) => entry.replaceAll("\\", "/").endsWith(`/rpa/active_touch/${name}`)), edition === "test", `${name} ZIP boundary must match the edition`);
@@ -173,11 +325,6 @@ assert.equal(wxKeyHelp.stdout.includes("--exe"), true, "packaged helper must own
 const wxKeyLoad = spawnSync(helper, ["wx-key", "--dll", wxKeyDll, "--load-only"], { encoding: "utf8", windowsHide: true, timeout: 30000 });
 assert.equal(wxKeyLoad.status, 0, wxKeyLoad.stderr || wxKeyLoad.stdout || "packaged wx_key.dll failed to load");
 assert.equal(JSON.parse(wxKeyLoad.stdout.trim()).stage, "dll_loaded", "packaged wx_key.dll load check must succeed");
-
-for (const legacyName of [edition === "test" ? "AI获客" : "AI获客-测试版", "小玺AI员工", "小玺AI员工-测试版", "小玺AI员工-客户版", "小玺AI员工-受控试用版", "小玺AI员工-交付版"]) {
-  assert.equal(fs.existsSync(path.join(projectDir, "release", legacyName)), false, `legacy release directory must be absent: ${legacyName}`);
-  assert.equal(fs.existsSync(path.join(projectDir, "release", `${legacyName}.zip`)), false, `legacy release ZIP must be absent: ${legacyName}`);
-}
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-portable-self-check-"));
 try {
@@ -326,3 +473,14 @@ if (edition === "delivery") {
   }
 }
 console.log(`${edition} portable release self-check passed`);
+}
+
+if (require.main === module) main();
+
+module.exports = {
+  main,
+  normalizeArchiveEntry,
+  parsePortableArguments,
+  resolvePortablePaths,
+  verifyPortableArchive
+};

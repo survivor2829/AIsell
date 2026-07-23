@@ -3,7 +3,6 @@ const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
 
 const WECHAT_VISUAL_AUTO_REPLY_POWERSHELL = String.raw`
 $OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8
-Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
 using System;
@@ -19,7 +18,6 @@ public static class Win32WechatVisualAutoReply {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
   [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maximum);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
@@ -34,9 +32,10 @@ ${MOMENTS_VISUAL_READONLY_POWERSHELL}
 $expectedPidText = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_PID")
 $expectedHWndText = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_HWND")
 $expectedConversation = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_CONVERSATION")
+$expectedConversationEvidence = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_CONVERSATION_EVIDENCE")
+try { $allowedConversationNames = @(([Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_ALLOWED_NAMES") | ConvertFrom-Json)) } catch { $allowedConversationNames = @() }
 $expectedIncoming = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_INCOMING")
 $expectedIncomingSignature = ([string][Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_INCOMING_SIGNATURE")).Trim().ToLowerInvariant()
-$incomingWasVerified = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_INCOMING_VERIFIED") -ceq "true"
 $expectedReply = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_REPLY")
 $phase = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_PHASE")
 
@@ -84,6 +83,44 @@ function Test-VisualSendConversationMatch([string]$expected, [string]$observed) 
   return (Get-VisualSendEditDistance $expected $observed) -le $maximumDistance
 }
 
+$script:VisualSendAllowedNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+foreach ($name in @($allowedConversationNames) + @($expectedConversation)) {
+  $normalizedName = Normalize-VisualSendText ([string]$name)
+  if ($normalizedName) { [void]$script:VisualSendAllowedNames.Add($normalizedName) }
+}
+$expectedConversation = Normalize-VisualSendText $expectedConversation
+$expectedConversationEvidence = Normalize-VisualSendText $(if ($expectedConversationEvidence) { $expectedConversationEvidence } else { $expectedConversation })
+
+function Resolve-VisualSendAllowedConversation([string]$observed) {
+  $observed = Normalize-VisualSendText $observed
+  if (-not $observed) { return @{ ok = $false; ambiguous = $false; conversation = ""; observed = "" } }
+  $exactMatches = @($script:VisualSendAllowedNames | Where-Object { [string]$_ -ceq $observed })
+  if ($exactMatches.Count -eq 1) {
+    return @{ ok = $true; ambiguous = $false; conversation = [string]$exactMatches[0]; observed = $observed; exact = $true }
+  }
+  if ($exactMatches.Count -gt 1) {
+    return @{ ok = $false; ambiguous = $true; conversation = ""; observed = $observed; exact = $false }
+  }
+  $fuzzyMatches = @($script:VisualSendAllowedNames | Where-Object {
+    Test-VisualSendConversationMatch ([string]$_) $observed
+  })
+  if ($fuzzyMatches.Count -eq 1) {
+    return @{ ok = $true; ambiguous = $false; conversation = [string]$fuzzyMatches[0]; observed = $observed; exact = $false }
+  }
+  return @{
+    ok = $false
+    ambiguous = $fuzzyMatches.Count -gt 1
+    conversation = ""
+    observed = $observed
+    exact = $false
+  }
+}
+
+function Test-VisualSendFrozenConversationEvidence([string]$observed) {
+  if (-not $expectedConversationEvidence) { return $false }
+  return Test-VisualSendConversationMatch $expectedConversationEvidence (Normalize-VisualSendText $observed)
+}
+
 function Normalize-VisualSendDraftText([string]$value) {
   $normalized = ([string]$value).Replace([Environment]::NewLine, [string][char]10)
   $normalized = $normalized.Replace([string][char]13, [string][char]10)
@@ -102,7 +139,8 @@ function Get-VisualSendSha256([string]$value) {
 
 function Get-VisualSendLock {
   if ($expectedPidText -notmatch '^[1-9][0-9]*$' -or $expectedHWndText -notmatch '^[1-9][0-9]*$' -or
-    [string]::IsNullOrWhiteSpace($expectedConversation) -or [string]::IsNullOrWhiteSpace($expectedReply)) {
+    [string]::IsNullOrWhiteSpace($expectedConversation) -or [string]::IsNullOrWhiteSpace($expectedReply) -or
+    ([string]::IsNullOrWhiteSpace($expectedIncoming) -and $expectedIncomingSignature -notmatch '^[a-f0-9]{64}$')) {
     return @{ ok = $false; reason = "visual_send_context_invalid" }
   }
   $expectedPid = [int]$expectedPidText
@@ -113,11 +151,8 @@ function Get-VisualSendLock {
   [uint32]$actualPid = 0
   [void][Win32WechatVisualAutoReply]::GetWindowThreadProcessId($hWnd, [ref]$actualPid)
   $process = Get-Process -Id $actualPid -ErrorAction SilentlyContinue
-  $title = New-Object Text.StringBuilder 64
-  [void][Win32WechatVisualAutoReply]::GetWindowText($hWnd, $title, $title.Capacity)
   if ($process -eq $null -or [int]$actualPid -ne $expectedPid -or
-    @("Weixin", "WeChat") -notcontains $process.ProcessName -or
-    [int64]$process.MainWindowHandle -ne $hWnd.ToInt64() -or $title.ToString().Trim() -cne "微信") {
+    @("Weixin", "WeChat") -notcontains $process.ProcessName) {
     return @{ ok = $false; reason = "visual_send_window_identity_mismatch" }
   }
   $rect = New-Object Win32WechatVisualAutoReply+RECT
@@ -138,15 +173,15 @@ function Get-VisualSendLock {
   if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $hWnd) {
     return @{ ok = $false; reason = "visual_send_window_not_foreground" }
   }
-  try { $root = [System.Windows.Automation.AutomationElement]::FromHandle($hWnd) } catch { $root = $null }
-  if ($root -eq $null -or [int]$root.Current.ProcessId -ne $expectedPid) {
-    return @{ ok = $false; reason = "visual_send_automation_root_missing" }
-  }
-  return @{ ok = $true; pid = $expectedPid; hWnd = $hWnd; rect = $rect; root = $root }
+  return @{ ok = $true; pid = $expectedPid; hWnd = $hWnd; rect = $rect }
 }
 
 function Get-VisualSendFrame($lock) {
-  $frame = Get-MomentsVisualFrame $lock.hWnd $lock.rect $lock.pid $false
+  # The Moments reader needs an unobscured full viewport. Auto-reply does not:
+  # it validates the composer and send-button points immediately before acting.
+  # Requiring nine unrelated window points here makes harmless IME/toast overlays
+  # block sending on otherwise compatible PCs.
+  $frame = Get-MomentsVisualFrame $lock.hWnd $lock.rect $lock.pid $false $false
   if (-not $frame.ok) { return @{ ok = $false; reason = $frame.reason } }
   return $frame
 }
@@ -159,20 +194,64 @@ function Test-VisualSendConversation($frame) {
     height = [double]([Math]::Max(70, $frame.height * 0.13))
   }
   $ocr = Get-MomentsScaledOcrObservation $frame $headerRect 3
-  if (-not $ocr.ok) { return @{ ok = $false; reason = "visual_send_header_ocr_failed" } }
+  if (-not $ocr.ok) {
+    return @{ ok = $true; state = "unresolved"; reason = "visual_send_header_ocr_unresolved"; candidates = @() }
+  }
   $expected = Normalize-VisualSendText $expectedConversation
   $minimumHeaderCenterX = [Math]::Min(
     [double]$frame.width * 0.38,
     [Math]::Max([double]$frame.width * 0.20, 230.0)
   )
-  $matches = @($ocr.lines | Where-Object {
+  $candidates = @($ocr.lines | Where-Object {
     $absoluteCenterX = [double]$headerRect.left + [double]$_.bounds.left + ([double]$_.bounds.width / 2.0)
     $absoluteCenterY = [double]$headerRect.top + [double]$_.bounds.top + ([double]$_.bounds.height / 2.0)
-    (Test-VisualSendConversationMatch $expected (Normalize-VisualSendText ([string]$_.text))) -and
-      $absoluteCenterX -ge $minimumHeaderCenterX -and $absoluteCenterY -le ([double]$frame.height * 0.13)
+    $text = Normalize-VisualSendText ([string]$_.text)
+    $text -and $text.Length -le 64 -and
+      $absoluteCenterX -ge $minimumHeaderCenterX -and
+      $absoluteCenterX -le ([double]$frame.width * 0.78) -and
+      $absoluteCenterY -le ([double]$frame.height * 0.13)
   })
-  if ($matches.Count -ne 1) { return @{ ok = $false; reason = "visual_send_conversation_not_verified" } }
-  return @{ ok = $true }
+  $ambiguousMatch = $false
+  $matches = @($candidates | Where-Object {
+    $observed = Normalize-VisualSendText ([string]$_.text)
+    $resolved = Resolve-VisualSendAllowedConversation $observed
+    if ($resolved.ambiguous) { $ambiguousMatch = $true }
+    $resolved.ok -and [string]$resolved.conversation -ceq $expected -and
+      (Test-VisualSendFrozenConversationEvidence $observed)
+  })
+  if ($matches.Count -ge 1) {
+    return @{ ok = $true; state = "matched"; observed = Normalize-VisualSendText ([string]$matches[0].text); candidates = @($candidates).Count }
+  }
+  if ($ambiguousMatch) {
+    return @{ ok = $true; state = "unresolved"; reason = "visual_send_conversation_ambiguous"; candidates = @($candidates).Count }
+  }
+  # An empty, noisy or multi-line header is an OCR uncertainty, not proof that
+  # WeChat changed conversations. Only one clear title in the title band can
+  # establish an explicit different-conversation result.
+  $clearCandidates = @($candidates | Where-Object {
+    $text = Normalize-VisualSendText ([string]$_.text)
+    $text.Length -ge 2 -and $text -notmatch "^[\.·…_\-]+$"
+  })
+  if ($clearCandidates.Count -eq 1) {
+    $observed = Normalize-VisualSendText ([string]$clearCandidates[0].text)
+    $maximumLength = [Math]::Max($expected.Length, $observed.Length)
+    $distance = Get-VisualSendEditDistance $expected $observed
+    # Match the observer contract: a short title or a near OCR alias cannot
+    # prove that the operator switched conversations. Treat it as explicitly
+    # different only when both titles are long enough and substantially apart.
+    $clearlyDifferent = [Math]::Min($expected.Length, $observed.Length) -ge 4 -and
+      $maximumLength -gt 0 -and ([double]$distance / [double]$maximumLength) -ge 0.55
+    if ($clearlyDifferent) {
+      return @{
+        ok = $false
+        state = "different"
+        reason = "visual_send_conversation_different"
+        observed = $observed
+        candidates = @($candidates).Count
+      }
+    }
+  }
+  return @{ ok = $true; state = "unresolved"; reason = "visual_send_conversation_unresolved"; candidates = @($candidates).Count }
 }
 
 function Test-VisualSendIncoming($frame) {
@@ -212,6 +291,37 @@ function Test-VisualSendSidebarNameLine([string]$lineText, [string]$name) {
   if (-not $line.StartsWith($wanted, [StringComparison]::Ordinal)) { return Test-VisualSendConversationMatch $wanted $line }
   $suffix = $line.Substring($wanted.Length)
   return -not $suffix -or (Test-VisualSendTimeText $suffix)
+}
+
+function Resolve-VisualSendSidebarConversation([string]$observed) {
+  $observed = Normalize-VisualSendText $observed
+  if (-not $observed) { return @{ ok = $false; ambiguous = $false; conversation = ""; observed = "" } }
+  $strongMatches = @($script:VisualSendAllowedNames | Where-Object {
+    $name = Normalize-VisualSendText ([string]$_)
+    if (-not $observed.StartsWith($name, [StringComparison]::Ordinal)) { return $false }
+    $suffix = $observed.Substring($name.Length)
+    return -not $suffix -or (Test-VisualSendTimeText $suffix)
+  })
+  if ($strongMatches.Count -eq 1) {
+    $conversation = Normalize-VisualSendText ([string]$strongMatches[0])
+    return @{ ok = $true; ambiguous = $false; conversation = $conversation; observed = $conversation; exact = $true }
+  }
+  if ($strongMatches.Count -gt 1) {
+    return @{ ok = $false; ambiguous = $true; conversation = ""; observed = $observed; exact = $false }
+  }
+  $fuzzyMatches = @($script:VisualSendAllowedNames | Where-Object {
+    Test-VisualSendSidebarNameLine $observed ([string]$_)
+  })
+  if ($fuzzyMatches.Count -eq 1) {
+    return @{ ok = $true; ambiguous = $false; conversation = [string]$fuzzyMatches[0]; observed = $observed; exact = $false }
+  }
+  return @{
+    ok = $false
+    ambiguous = $fuzzyMatches.Count -gt 1
+    conversation = ""
+    observed = $observed
+    exact = $false
+  }
 }
 
 function Test-VisualSendSelectedSidebarPreview($frame, $lines, [double]$sidebarRight, [double]$logicalScale) {
@@ -306,27 +416,26 @@ function Get-VisualSendChatBottom($frame, [double]$sidebarRight) {
 }
 
 function Get-VisualSendIncomingEvidenceSignature($line, [string]$role, [double]$dpi) {
-  $logicalScale = [Math]::Max(0.5, $dpi / 120.0)
-  $widthBucket = [int][Math]::Round(([double]$line.width / $logicalScale) / 8.0)
-  $heightBucket = [int][Math]::Round(([double]$line.height / $logicalScale) / 4.0)
+  # Keep the pre-click identity byte-for-byte aligned with the observer. Pixel
+  # bounds are diagnostic only: DPI and text reflow must not turn the same
+  # customer bubble into a different occurrence.
   $evidenceSeed = [string]::Join([char]10, @(
+    "visual-message-semantic-v1",
     (Normalize-VisualSendText ([string]$line.text)),
-    $role,
-    ("w:{0}" -f $widthBucket),
-    ("h:{0}" -f $heightBucket)
+    $role
   ))
   return Get-VisualSendSha256 $evidenceSeed
 }
 
 function Test-VisualSendLatestIncoming($frame, [double]$sidebarRight, [double]$dpi) {
-  if ([string]::IsNullOrWhiteSpace($expectedIncoming) -and $expectedIncomingSignature -notmatch "^[a-f0-9]{64}$") { return $true }
+  if ([string]::IsNullOrWhiteSpace($expectedIncoming) -and $expectedIncomingSignature -notmatch "^[a-f0-9]{64}$") { return $false }
   # Use the same full-frame OCR geometry as the scanner. A cropped OCR pass can
   # recognize the same Chinese line differently, while draft input can move the
   # line without changing its identity.
   $ocr = Get-MomentsOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
   if (-not $ocr.ok) { return $false }
   $chatBottom = Get-VisualSendChatBottom $frame $sidebarRight
-  $logicalScale = [Math]::Max(0.5, [Math]::Min(4.0, $dpi / 120.0))
+  $logicalScale = [Math]::Max(0.5, [Math]::Min(4.0, $dpi / 96.0))
   $messageLines = New-Object System.Collections.Generic.List[object]
   foreach ($line in @($ocr.lines)) {
     if ($line -eq $null -or -not (Test-VisualSendPureMessageText ([string]$line.text))) { continue }
@@ -353,11 +462,17 @@ function Test-VisualSendLatestIncoming($frame, [double]$sidebarRight, [double]$d
     # the final guard against the conversation changing before the send click.
     if ((Get-VisualSendIncomingEvidenceSignature $latest $latestRole $dpi) -ceq $expectedIncomingSignature) { return $true }
   }
-  if ([string]$latest.text -ceq (Normalize-VisualSendText $expectedIncoming)) { return $true }
-  # The chat bubble and selected-row preview use different font sizes. If the
-  # bubble OCR drifts, independently require the same selected contact preview,
-  # while the caller also holds the exact header and latest customer role.
-  return Test-VisualSendSelectedSidebarPreview $frame @($ocr.lines) $sidebarRight $logicalScale
+  $expectedText = Normalize-VisualSendText $expectedIncoming
+  $observedText = Normalize-VisualSendText ([string]$latest.text)
+  if ($observedText -ceq $expectedText) { return $true }
+  # The observer already accepts bounded OCR drift across two captures. Mirror
+  # that contract at preflight so a single glyph such as 清/尚 does not turn a
+  # proven customer bubble into an artificial send block.
+  if ([Math]::Min($expectedText.Length, $observedText.Length) -lt 4 -or
+      [Math]::Abs($expectedText.Length - $observedText.Length) -gt 1) { return $false }
+  $maximumLength = [Math]::Max($expectedText.Length, $observedText.Length)
+  return (Get-VisualSendEditDistance $expectedText $observedText) -le
+    [Math]::Max(1, [int][Math]::Floor($maximumLength * 0.15))
 }
 
 function Test-VisualSendGreenPixel($frame, [int]$x, [int]$y) {
@@ -376,6 +491,98 @@ function Get-VisualSendGreenRatio($frame, [int]$left, [int]$top, [int]$right, [i
   }
   if ($total -eq 0) { return 0.0 }
   return [double]$green / [double]$total
+}
+
+function Test-VisualSendSelectedSidebarConversation($frame, [double]$sidebarRight, [double]$dpi) {
+  # Header OCR is frequently empty on GPU-rendered WeChat windows. In that
+  # case, bind the send to the one expected contact row that is visibly
+  # selected. Message preview text is deliberately not part of the identity:
+  # two contacts can send the same words and preview OCR may be empty.
+  $logicalScale = [Math]::Max(0.5, [Math]::Min(4.0, $dpi / 96.0))
+  $ocr = Get-MomentsOcrObservation $frame @{
+    left = 0.0
+    top = 0.0
+    width = [double]$frame.width
+    height = [double]$frame.height
+  }
+  if (-not $ocr.ok) {
+    return @{ ok = $false; reason = "visual_send_sidebar_ocr_unresolved"; matches = 0 }
+  }
+
+  $nameMatches = New-Object System.Collections.Generic.List[object]
+  foreach ($line in @($ocr.lines)) {
+    $left = [double]$line.bounds.left
+    $right = $left + [double]$line.bounds.width
+    $top = [double]$line.bounds.top
+    if ($left -lt (42.0 * $logicalScale) -or
+        $right -gt ($sidebarRight + (8.0 * $logicalScale)) -or
+        $top -lt (72.0 * $logicalScale) -or
+        $top -gt ([double]$frame.height - (42.0 * $logicalScale))) { continue }
+    $resolved = Resolve-VisualSendSidebarConversation ([string]$line.text)
+    if ($resolved.ambiguous) {
+      return @{ ok = $false; reason = "visual_send_sidebar_contact_ambiguous"; matches = 0 }
+    }
+    if ($resolved.ok -and [string]$resolved.conversation -ceq $expectedConversation -and
+        (Test-VisualSendFrozenConversationEvidence ([string]$resolved.observed))) {
+      [void]$nameMatches.Add($line)
+    }
+  }
+  if ($nameMatches.Count -ne 1) {
+    return @{
+      ok = $false
+      reason = $(if ($nameMatches.Count -gt 1) { "visual_send_sidebar_contact_ambiguous" } else { "visual_send_sidebar_contact_unresolved" })
+      matches = $nameMatches.Count
+    }
+  }
+
+  $nameLine = $nameMatches[0]
+  $nameBottom = [double]$nameLine.bounds.top + [double]$nameLine.bounds.height
+  $previewCandidates = @($ocr.lines | Where-Object {
+    $candidateLeft = [double]$_.bounds.left
+    $candidateTop = [double]$_.bounds.top
+    $candidateRight = $candidateLeft + [double]$_.bounds.width
+    $candidateTop -ge ($nameBottom - (3.0 * $logicalScale)) -and
+      $candidateTop -le ([double]$nameLine.bounds.top + (58.0 * $logicalScale)) -and
+      $candidateLeft -ge ([double]$nameLine.bounds.left - (14.0 * $logicalScale)) -and
+      $candidateRight -le ($sidebarRight + (8.0 * $logicalScale))
+  } | Sort-Object { [double]$_.bounds.top }, { [double]$_.bounds.left })
+
+  # Preview OCR is optional. Its bounds only help estimate the selected row's
+  # height; when it is absent, use the normal one-line preview height.
+  $rowBottom = if ($previewCandidates.Count -gt 0) {
+    [double]$previewCandidates[0].bounds.top + [double]$previewCandidates[0].bounds.height
+  } else {
+    $nameBottom + (20.0 * $logicalScale)
+  }
+  $stripLeft = [int][Math]::Floor([Math]::Max(0.0, $sidebarRight - (20.0 * $logicalScale)))
+  $stripRight = [int][Math]::Ceiling([Math]::Min([double]$frame.width, $sidebarRight - (8.0 * $logicalScale)))
+  $stripTop = [int][Math]::Floor([Math]::Max(0.0, [double]$nameLine.bounds.top - (8.0 * $logicalScale)))
+  $stripBottom = [int][Math]::Ceiling([Math]::Min([double]$frame.height, $rowBottom + (8.0 * $logicalScale)))
+  $greenRatio = Get-VisualSendGreenRatio $frame $stripLeft $stripTop $stripRight $stripBottom
+  return @{
+    ok = $greenRatio -ge 0.55
+    reason = $(if ($greenRatio -ge 0.55) { "" } else { "visual_send_sidebar_contact_not_selected" })
+    matches = 1
+    greenRatio = $greenRatio
+  }
+}
+
+function Get-VisualSendConversationBinding($frame, [double]$sidebarRight, [double]$dpi) {
+  $header = Test-VisualSendConversation $frame
+  if ([string]$header.state -ceq "matched") {
+    return @{ ok = $true; proof = "header_title"; headerState = "matched"; selectedRow = $null }
+  }
+  $selectedRow = Test-VisualSendSelectedSidebarConversation $frame $sidebarRight $dpi
+  if ($selectedRow.ok) {
+    return @{ ok = $true; proof = "selected_sidebar_row"; headerState = [string]$header.state; selectedRow = $selectedRow }
+  }
+  return @{
+    ok = $false
+    reason = "visual_send_conversation_not_bound"
+    headerState = [string]$header.state
+    headerReason = [string]$header.reason
+    selectedRow = $selectedRow
+  }
 }
 
 function Get-VisualSendLineGreenRatio($frame, $line, [double]$sidebarRight) {
@@ -680,23 +887,29 @@ if (-not $frame.ok) {
   Write-VisualSendResult @{ ok = $false; reason = $frame.reason; sendAttempted = $false; conversationVerified = $false; draftVerified = $false; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
 }
 try {
-  $conversation = Test-VisualSendConversation $frame
-  if (-not $conversation.ok) {
-    Write-VisualSendResult @{ ok = $false; reason = $conversation.reason; sendAttempted = $false; conversationVerified = $false; draftVerified = $false; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+  $dpi = Get-VisualSendWindowDpi $lock.hWnd
+  $sidebarRight = Get-VisualSendSidebarRight ([double]$frame.width) $dpi
+  $binding = Get-VisualSendConversationBinding $frame $sidebarRight $dpi
+  if (-not $binding.ok) {
+    Write-VisualSendResult @{ ok = $false; reason = $binding.reason; sendAttempted = $false; conversationVerified = $false; conversationState = [string]$binding.headerState; draftVerified = $false; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+  }
+  if (@("preflight", "draft") -contains $phase) {
+    $liveIncomingVerified = Test-VisualSendLatestIncoming $frame $sidebarRight $dpi
+    # Never reuse the occurrence observed before DeepSeek generation. Even a
+    # matched header must still show the expected latest customer bubble now.
+    if (-not $liveIncomingVerified) {
+      Write-VisualSendResult @{ ok = $false; reason = "visual_send_incoming_changed"; sendAttempted = $false; conversationVerified = $true; conversationState = [string]$binding.headerState; incomingVerified = $false; draftVerified = $false; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+    }
   }
   if ($phase -ceq "preflight") {
-    $incomingVerified = $incomingWasVerified -or (Test-VisualSendIncoming $frame)
-    if (-not $incomingVerified) {
-      Write-VisualSendResult @{ ok = $false; reason = "visual_send_incoming_not_verified"; sendAttempted = $false; conversationVerified = $true; incomingVerified = $false; draftVerified = $false; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
-    }
-    Write-VisualSendResult @{ ok = $true; sendAttempted = $false; conversationVerified = $true; incomingVerified = $incomingVerified; draftVerified = $false; verificationMode = "visual_preflight"; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+    Write-VisualSendResult @{ ok = $true; sendAttempted = $false; conversationVerified = $true; conversationState = [string]$binding.headerState; incomingVerified = $true; draftVerified = $false; verificationMode = $("visual_preflight_{0}" -f $binding.proof); pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
   }
   if ($phase -ceq "draft") {
     $written = Write-VisualSendDraft $lock
     if (-not $written.ok) {
-      Write-VisualSendResult @{ ok = $false; reason = "visual_send_draft_input_failed"; sendAttempted = $false; conversationVerified = $true; draftVerified = $false; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+      Write-VisualSendResult @{ ok = $false; reason = "visual_send_draft_input_failed"; sendAttempted = $false; conversationVerified = $true; conversationState = [string]$binding.headerState; draftVerified = $false; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
     }
-    Write-VisualSendResult @{ ok = $true; sendAttempted = $false; conversationVerified = $true; draftVerified = $true; verificationMode = "visual_draft_roundtrip"; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+    Write-VisualSendResult @{ ok = $true; sendAttempted = $false; conversationVerified = $true; conversationState = [string]$binding.headerState; incomingVerified = $true; draftVerified = $true; verificationMode = $("visual_draft_{0}" -f $binding.proof); pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
   }
 } finally {
   Close-MomentsVisualFrame $frame
@@ -717,9 +930,12 @@ if (-not $fresh.ok) {
 }
 $button = $null
 try {
-  $conversation = Test-VisualSendConversation $fresh
-  if (-not $conversation.ok) {
-    Write-VisualSendResult @{ ok = $false; reason = "visual_send_conversation_changed"; sendAttempted = $false; conversationVerified = $false; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+  $freshDpi = Get-VisualSendWindowDpi $lock.hWnd
+  $freshSidebarRight = Get-VisualSendSidebarRight ([double]$fresh.width) $freshDpi
+  $freshBinding = Get-VisualSendConversationBinding $fresh $freshSidebarRight $freshDpi
+  if (-not $freshBinding.ok) {
+    [void](Clear-VisualSendDraft $lock)
+    Write-VisualSendResult @{ ok = $false; reason = $freshBinding.reason; sendAttempted = $false; conversationVerified = $false; conversationState = [string]$freshBinding.headerState; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
   }
   $button = Find-VisualSendButton $fresh
   if (-not $button.ok) {
@@ -767,7 +983,8 @@ $sameConversation = $false
 $bubbleVerified = $false
 if ($postFrame.ok) {
   try {
-    $sameConversation = (Test-VisualSendConversation $postFrame).ok
+    $postConversation = Test-VisualSendConversation $postFrame
+    $sameConversation = [string]$postConversation.state -cne "different"
     if ($sameConversation) {
       $postDpi = Get-VisualSendWindowDpi $postLock.hWnd
       $postSidebarRight = Get-VisualSendSidebarRight ([double]$postFrame.width) $postDpi
@@ -782,6 +999,9 @@ $draftConsumed = $afterDraft.ok -and $afterDraft.empty
 $verificationMode = if ($sameConversation -and $bubbleVerified -and $draftConsumed) {
   "visual_message_bubble"
 } elseif ($sameConversation -and $draftConsumed) {
+  # Keep the established verification-mode value for controller compatibility;
+  # sameConversation here means the expected HWND was retained and no explicit
+  # different title was observed, even when title OCR itself was unresolved.
   "draft_consumed_same_header"
 } else {
   ""
@@ -797,13 +1017,10 @@ function visualSendEnvironment(options, phase) {
     XIAOXI_VISUAL_SEND_PID: String(options.pid ?? ""),
     XIAOXI_VISUAL_SEND_HWND: String(options.hWnd ?? ""),
     XIAOXI_VISUAL_SEND_CONVERSATION: String(options.conversation ?? ""),
+    XIAOXI_VISUAL_SEND_CONVERSATION_EVIDENCE: String(options.conversationEvidence ?? options.conversation ?? ""),
+    XIAOXI_VISUAL_SEND_ALLOWED_NAMES: JSON.stringify(Array.isArray(options.conversationAliases) ? options.conversationAliases : [options.conversation].filter(Boolean)),
     XIAOXI_VISUAL_SEND_INCOMING: String(options.incomingMessage ?? ""),
     XIAOXI_VISUAL_SEND_INCOMING_SIGNATURE: String(options.incomingMessageSignature ?? ""),
-    // The controller binds the incoming occurrence before draft input. Once
-    // the composer expands, re-reading the bubble uses different geometry and
-    // is not a valid identity check; the send phase instead rechecks the same
-    // conversation, exact draft, foreground window and owned send button.
-    XIAOXI_VISUAL_SEND_INCOMING_VERIFIED: options.incomingVerified === true ? "true" : "false",
     XIAOXI_VISUAL_SEND_REPLY: String(options.reply ?? ""),
     XIAOXI_VISUAL_SEND_PHASE: phase
   };
@@ -819,7 +1036,8 @@ function normalizeVisualSendResult(result, fallback) {
     pid: Number(result?.pid ?? fallback.pid),
     hWnd: Number(result?.hWnd ?? fallback.hWnd),
     ...(result?.reason ? { reason: String(result.reason) } : {}),
-    ...(result?.outcomeUnknown === true ? { outcomeUnknown: true } : {})
+    ...(result?.outcomeUnknown === true ? { outcomeUnknown: true } : {}),
+    ...(String(result?.conversationState ?? "") ? { conversationState: String(result.conversationState) } : {})
   };
 }
 
@@ -831,22 +1049,40 @@ function createVisualAutoReplySender({
     const pid = Number(options.pid);
     const hWnd = Number(options.hWnd);
     const conversation = String(options.conversation ?? "").trim();
+    const conversationEvidence = String(options.conversationEvidence ?? conversation).trim();
+    const conversationAliases = [...new Set((Array.isArray(options.conversationAliases) ? options.conversationAliases : [conversation])
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean))];
+    if (!conversationAliases.includes(conversation)) conversationAliases.push(conversation);
+    const incomingMessage = String(options.incomingMessage ?? "").trim();
+    const incomingMessageSignature = String(options.incomingMessageSignature ?? "").trim().toLowerCase();
     const reply = String(options.reply ?? "");
     if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(hWnd) || hWnd <= 0
-      || !conversation || !reply.trim() || reply.length > 4000) {
+      || !conversation || !conversationEvidence || !conversationAliases.length || !reply.trim() || reply.length > 4000
+      || (!incomingMessage && !/^[a-f0-9]{64}$/u.test(incomingMessageSignature))) {
       return normalizeVisualSendResult({ reason: "visual_send_context_invalid" }, { pid, hWnd });
     }
-    const request = { ...options, pid, hWnd, conversation, reply };
+    const request = {
+      ...options,
+      pid,
+      hWnd,
+      conversation,
+      conversationEvidence,
+      conversationAliases,
+      incomingMessage,
+      incomingMessageSignature,
+      reply
+    };
     const preflight = await powerShellRunner(
       WECHAT_VISUAL_AUTO_REPLY_POWERSHELL,
       visualSendEnvironment(request, "preflight"),
       { ensure: false, sta: true, timeout: 60_000 }
     );
     if (!preflight?.ok) return normalizeVisualSendResult(preflight, request);
-    if (request.incomingVerified !== true && String(request.incomingMessage ?? "").trim() && preflight.incomingVerified !== true) {
+    if (preflight.incomingVerified !== true) {
       return normalizeVisualSendResult({
-        reason: "visual_send_incoming_not_verified",
-        conversationVerified: true
+        reason: "visual_send_incoming_changed",
+        conversationVerified: false
       }, request);
     }
 

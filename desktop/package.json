@@ -16,8 +16,8 @@
     "build:test": "node scripts/build-renderer.cjs test",
     "build:delivery": "node scripts/build-renderer.cjs delivery",
     "build:helper": "node scripts/build-contact-helper.cjs",
-    "release:test": "npm run check:self && npm run build:test && node scripts/build-portable-release.cjs test && node scripts/check-clean-runtime.cjs --release && node scripts/portable-release.self_check.cjs test",
-    "release:delivery": "npm run check:self && npm run build:delivery && node scripts/build-portable-release.cjs delivery && node scripts/check-clean-runtime.cjs --release && node scripts/portable-release.self_check.cjs delivery",
+    "release:test": "npm run check:self && npm run check:clean-runtime && npm run build:test && node scripts/build-portable-release.cjs test",
+    "release:delivery": "npm run check:self && npm run check:clean-runtime && npm run build:delivery && node scripts/build-portable-release.cjs delivery",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

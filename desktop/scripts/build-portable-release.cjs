@@ -1,7 +1,7 @@
-const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const projectDir = path.resolve(desktopDir, "..");
@@ -26,21 +26,16 @@ function isBlockedRuntimeFile(name) {
   return runtimeFiles.has(lower) || lower.startsWith("auto-reply-diagnostics.jsonl.") || databaseFilePattern.test(lower);
 }
 
-function insideRelease(target) {
-  const resolved = path.resolve(target);
-  return resolved.startsWith(`${releaseDir}${path.sep}`) && resolved !== releaseDir;
-}
-
-function removeGenerated(target) {
-  if (!insideRelease(target)) throw new Error(`Refusing to remove path outside release: ${target}`);
-  fs.rmSync(target, { recursive: true, force: true });
+function isBlockedEnvironmentFile(name) {
+  const lower = String(name).toLowerCase();
+  return lower === ".env" || lower.startsWith(".env.");
 }
 
 function sourceAllowed(source, edition) {
   const relative = path.relative(desktopDir, source).replaceAll("\\", "/");
   const name = path.basename(source);
   const lower = name.toLowerCase();
-  if (isBlockedRuntimeFile(name) || lower.endsWith(".py") || lower.endsWith(".pyc") || lower.includes("self_check")) return false;
+  if (isBlockedRuntimeFile(name) || isBlockedEnvironmentFile(name) || lower.endsWith(".py") || lower.endsWith(".pyc") || lower.includes("self_check")) return false;
   if (relative.includes("/__pycache__/") || relative.includes("/libs/") || /(?:dump_data|wechat-dump|wx_key\.dll)/i.test(name)) return false;
   if (edition !== "test" && relative.startsWith("src/main/") && ["active-touch-dev-ipc.cjs", "preload.dev.cjs"].includes(name)) return false;
   if (name.endsWith(".dev.cjs")) {
@@ -127,10 +122,6 @@ function copyAppSource(appDir, edition) {
   if (sha256(databaseDecryptorTarget) !== DATABASE_DECRYPTOR_SHA256) throw new Error(`Packaged ${DATABASE_DECRYPTOR_NAME} hash mismatch`);
 }
 
-function sha256(file) {
-  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-}
-
 function gitText(args) {
   const result = spawnSync("git", args, { cwd: projectDir, encoding: "utf8", windowsHide: true });
   if (result.status !== 0) throw new Error(result.stderr || result.error?.message || `git ${args.join(" ")} failed`);
@@ -145,7 +136,7 @@ function scanRelease(target) {
       if (entry.isDirectory()) visit(file);
       else {
         const lower = entry.name.toLowerCase();
-        if (isBlockedRuntimeFile(entry.name) || lower === "python.exe" || lower.endsWith(".py") || lower.includes("dump_data") || lower.includes("wechat-dump") || lower.includes("dt-ai-helper")) blocked.push(file);
+        if (isBlockedRuntimeFile(entry.name) || isBlockedEnvironmentFile(entry.name) || lower === "python.exe" || lower.endsWith(".py") || lower.includes("dump_data") || lower.includes("wechat-dump") || lower.includes("dt-ai-helper")) blocked.push(file);
         if (entry.isFile() && fs.statSync(file).size <= 5 * 1024 * 1024) {
           const content = fs.readFileSync(file, "utf8");
           if (/\bsk-[A-Za-z0-9_-]{12,}\b/.test(content)) blocked.push(file);
@@ -157,16 +148,7 @@ function scanRelease(target) {
   if (blocked.length) throw new Error(`Release contains blocked files or secrets:\n${blocked.join("\n")}`);
 }
 
-function removeLegacyProducts() {
-  for (const name of ["AI获客", "AI获客-测试版", "小玺AI员工", "小玺AI员工-测试版", "小玺AI员工-客户版", "小玺AI员工-受控试用版", "小玺AI员工-交付版"]) {
-    const directory = path.join(releaseDir, name);
-    if (fs.existsSync(directory)) removeGenerated(directory);
-    const zip = path.join(releaseDir, `${name}.zip`);
-    if (fs.existsSync(zip)) fs.rmSync(zip, { force: true });
-  }
-}
-
-function buildPortable(edition = "delivery") {
+function assertBuildPreconditions(edition) {
   if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported edition: ${edition}`);
   if (!fs.existsSync(path.join(electronDir, "electron.exe"))) throw new Error("Electron portable runtime is missing; run npm ci first");
   if (!fs.existsSync(helper) || sha256(helper) !== CONTACT_HELPER_SHA256) throw new Error("Pinned contact helper is missing or has the wrong hash");
@@ -183,13 +165,13 @@ function buildPortable(edition = "delivery") {
   const dirty = Boolean(gitText(["status", "--porcelain"]));
   if (dirty) throw new Error("Refusing to build a portable release from a dirty worktree");
 
+  return { commit, dirty };
+}
+
+function buildPortableStaging(edition, paths, sourceState) {
   const productName = edition === "test" ? "AI获客-测试版" : "AI获客";
-  const target = path.join(releaseDir, productName);
-  const zip = path.join(releaseDir, `${productName}.zip`);
+  const { target, zip, archiveBaseDir } = paths;
   fs.mkdirSync(releaseDir, { recursive: true });
-  removeLegacyProducts();
-  removeGenerated(target);
-  if (fs.existsSync(zip)) fs.rmSync(zip, { force: true });
   fs.cpSync(electronDir, target, { recursive: true });
   const electronExe = path.join(target, "electron.exe");
   fs.renameSync(electronExe, path.join(target, `${productName}.exe`));
@@ -206,8 +188,9 @@ function buildPortable(edition = "delivery") {
     edition,
     version: packageJson.version,
     buildId: String(rendererMarker.buildId || ""),
-    commit,
-    dirty,
+    commit: sourceState.commit,
+    dirty: sourceState.dirty,
+    sourceTreeSha256: treeSha256(appDir),
     architecture: process.arch,
     electron: electronPackage.version,
     contactHelperSha256: CONTACT_HELPER_SHA256,
@@ -239,12 +222,210 @@ function buildPortable(edition = "delivery") {
   ].join("\n") + "\n", "utf8");
   scanRelease(target);
 
-  const archive = spawnSync("tar.exe", ["-a", "-c", "-f", zip, "-C", releaseDir, productName], { encoding: "utf8", windowsHide: true });
+  const archive = spawnSync("tar.exe", ["-a", "-c", "-f", zip, "-C", archiveBaseDir, productName], { encoding: "utf8", windowsHide: true });
   if (archive.status !== 0 || !fs.existsSync(zip)) throw new Error(archive.stderr || archive.stdout || "portable ZIP creation failed");
-  console.log(`${edition} portable release built: ${zip}`);
   return { target, zip, manifest };
+}
+
+function assertContained(root, target) {
+  const resolvedRoot = path.resolve(root);
+  const resolvedTarget = path.resolve(target);
+  if (!resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`) || resolvedTarget === resolvedRoot) {
+    throw new Error(`Release transaction path is outside its root: ${target}`);
+  }
+}
+
+function cleanupPaths(paths, label) {
+  const errors = [];
+  for (const target of paths) {
+    try {
+      if (fs.existsSync(target)) fs.rmSync(target, { recursive: true, force: true });
+    } catch (error) {
+      errors.push(new Error(`${label} cleanup failed for ${target}: ${error.message}`, { cause: error }));
+    }
+  }
+  return errors;
+}
+
+function runCleanup(cleanup, paths, label) {
+  try {
+    const errors = cleanup(paths, label);
+    return Array.isArray(errors) ? errors : [];
+  } catch (error) {
+    return [new Error(`${label} cleanup failed: ${error.message}`, { cause: error })];
+  }
+}
+
+function combineErrors(primary, secondary, message) {
+  if (!secondary.length) return primary;
+  return new AggregateError([primary, ...secondary].filter(Boolean), message);
+}
+
+function publishStagedRelease({
+  releaseRoot,
+  canonicalTarget,
+  canonicalZip,
+  stagingTarget,
+  stagingZip,
+  transactionId,
+  cleanup = cleanupPaths
+}) {
+  for (const target of [canonicalTarget, canonicalZip, stagingTarget, stagingZip]) assertContained(releaseRoot, target);
+  const backupTarget = path.join(releaseRoot, `.backup-target-${transactionId}`);
+  const backupZip = path.join(releaseRoot, `.backup-zip-${transactionId}`);
+  assertContained(releaseRoot, backupTarget);
+  assertContained(releaseRoot, backupZip);
+  let targetBackedUp = false;
+  let zipBackedUp = false;
+  let targetPublished = false;
+  let zipPublished = false;
+
+  try {
+    if (fs.existsSync(canonicalTarget)) {
+      fs.renameSync(canonicalTarget, backupTarget);
+      targetBackedUp = true;
+    }
+    if (fs.existsSync(canonicalZip)) {
+      fs.renameSync(canonicalZip, backupZip);
+      zipBackedUp = true;
+    }
+    fs.renameSync(stagingTarget, canonicalTarget);
+    targetPublished = true;
+    fs.renameSync(stagingZip, canonicalZip);
+    zipPublished = true;
+  } catch (error) {
+    const rollbackErrors = [];
+    try {
+      if (zipPublished && fs.existsSync(canonicalZip)) fs.rmSync(canonicalZip, { force: true });
+      if (zipBackedUp && fs.existsSync(backupZip)) fs.renameSync(backupZip, canonicalZip);
+    } catch (rollbackError) {
+      rollbackErrors.push(new Error(`ZIP rollback failed: ${rollbackError.message}`, { cause: rollbackError }));
+    }
+    try {
+      if (targetPublished && fs.existsSync(canonicalTarget)) fs.rmSync(canonicalTarget, { recursive: true, force: true });
+      if (targetBackedUp && fs.existsSync(backupTarget)) fs.renameSync(backupTarget, canonicalTarget);
+    } catch (rollbackError) {
+      rollbackErrors.push(new Error(`directory rollback failed: ${rollbackError.message}`, { cause: rollbackError }));
+    }
+    throw combineErrors(error, rollbackErrors, "Release publish failed and rollback was incomplete");
+  }
+
+  const cleanupErrors = runCleanup(cleanup, [backupTarget, backupZip], "release backup");
+  return {
+    published: true,
+    cleanupWarnings: cleanupErrors.map((error) => error.message)
+  };
+}
+
+function runTransactionalRelease({
+  releaseRoot,
+  stagingRoot,
+  stagingTarget,
+  stagingZip,
+  canonicalTarget,
+  canonicalZip,
+  transactionId,
+  preflight,
+  prepare,
+  validate,
+  cleanup = cleanupPaths
+}) {
+  for (const target of [stagingRoot, stagingTarget, stagingZip, canonicalTarget, canonicalZip]) assertContained(releaseRoot, target);
+  const sourceState = preflight();
+  let result;
+  let publishResult = { published: false, cleanupWarnings: [] };
+  let primaryError = null;
+  try {
+    fs.mkdirSync(releaseRoot, { recursive: true });
+    fs.mkdirSync(stagingRoot, { recursive: false });
+    result = prepare(sourceState);
+    validate(result);
+    publishResult = publishStagedRelease({
+      releaseRoot,
+      canonicalTarget,
+      canonicalZip,
+      stagingTarget,
+      stagingZip,
+      transactionId,
+      cleanup
+    });
+  } catch (error) {
+    primaryError = error;
+  }
+  const cleanupErrors = runCleanup(cleanup, [stagingRoot], "release staging");
+  if (primaryError) throw combineErrors(primaryError, cleanupErrors, "Release build failed and staging cleanup was incomplete");
+  const cleanupWarnings = [
+    ...publishResult.cleanupWarnings,
+    ...cleanupErrors.map((error) => error.message)
+  ];
+  return {
+    ...result,
+    target: canonicalTarget,
+    zip: canonicalZip,
+    published: publishResult.published,
+    cleanupWarnings
+  };
+}
+
+function runPortableSelfCheck(edition, target, zip) {
+  const check = spawnSync(process.execPath, [
+    path.join(__dirname, "portable-release.self_check.cjs"),
+    edition,
+    "--target",
+    target,
+    "--zip",
+    zip
+  ], { cwd: desktopDir, encoding: "utf8", windowsHide: true, timeout: 300000 });
+  if (check.status !== 0) throw new Error(check.stderr || check.stdout || "portable release self-check failed");
+  if (String(check.stderr || "").trim()) {
+    console.warn(`portable release self-check warning:\n${String(check.stderr).trim()}`);
+  }
+}
+
+function buildPortable(edition = "delivery") {
+  if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported edition: ${edition}`);
+  const productName = edition === "test" ? "AI获客-测试版" : "AI获客";
+  const transactionId = `${process.pid}-${Date.now()}-${process.hrtime.bigint().toString(36)}`;
+  const stagingRoot = path.join(releaseDir, `.staging-${edition}-${transactionId}`);
+  const stagingTarget = path.join(stagingRoot, productName);
+  const stagingZip = path.join(stagingRoot, `${productName}.zip`);
+  const canonicalTarget = path.join(releaseDir, productName);
+  const canonicalZip = path.join(releaseDir, `${productName}.zip`);
+  const result = runTransactionalRelease({
+    releaseRoot: releaseDir,
+    stagingRoot,
+    stagingTarget,
+    stagingZip,
+    canonicalTarget,
+    canonicalZip,
+    transactionId,
+    preflight: () => assertBuildPreconditions(edition),
+    prepare: (sourceState) => buildPortableStaging(edition, {
+      target: stagingTarget,
+      zip: stagingZip,
+      archiveBaseDir: stagingRoot
+    }, sourceState),
+    validate: () => {
+      scanRelease(stagingTarget);
+      runPortableSelfCheck(edition, stagingTarget, stagingZip);
+    }
+  });
+  for (const warning of result.cleanupWarnings || []) {
+    console.warn(`release cleanup warning: ${warning}`);
+  }
+  console.log(`${edition} portable release built: ${result.zip}`);
+  return result;
 }
 
 if (require.main === module) buildPortable(process.argv[2] || "delivery");
 
-module.exports = { buildPortable, copyRuntimePackageTree, sourceAllowed };
+module.exports = {
+  buildPortable,
+  cleanupPaths,
+  copyRuntimePackageTree,
+  publishStagedRelease,
+  runTransactionalRelease,
+  scanRelease,
+  sourceAllowed,
+  treeSha256
+};

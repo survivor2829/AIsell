@@ -18,8 +18,7 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-MomentsOcrObservation \$frame/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualCurrentConversation/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualAnyHeader/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualUnreadBadges/u);
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Test-AutoReplyVisualBadgeRemains \$openedFrame \$candidate\.badgeBounds/u, "a geometry-only badge candidate must disappear after opening before it can become a message");
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-AutoReplyVisualAnyHeader \$openedObservation\.lines/u, "a badge-opened conversation must derive its identity from the live header");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /reason = "unread_contact_unresolved"/u, "an unknown unread badge must remain observation-only");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualLatestMessageEvidence/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualSidebarRight/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualMessageRole/u);
@@ -29,14 +28,22 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Merge-AutoReplyVisualMessageParts \$curr
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$latest = \$messageBlocks\[-1\][\s\S]*Get-AutoReplyVisualMessageRole \$frame \$latest/u, "role and evidence must use the aggregated bubble rather than its last OCR fragment");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$greenRatio -ge 0\.16/u, "outgoing green bubble proof must take priority over OCR geometry");
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$viewportHash|\$viewportRect/u, "whole-viewport changes must not alter message identity");
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /evidenceSignature = Get-AutoReplyVisualSha256 \$evidenceSeed/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /evidenceSignature = Get-AutoReplyVisualSha256 \$semanticSeed/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /diagnosticSignature = Get-AutoReplyVisualSha256 \$diagnosticSeed/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualChatBottom/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-AutoReplyVisualChatBottom \$frame \$sidebarRight/u);
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /return @\{ ok = \$false; reason = "chat_boundary_unresolved"; source = "none" \}/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /source = "normalized_window_ratio"/u, "an unrecognized composer theme must use a conservative normalized boundary instead of blocking the listener");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /bottom = \[double\]\[Math\]::Max/u, "a proven divider must return a structured boundary");
-assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /composerReserveFallback|ratioFallback|Test-AutoReplyVisualMessageLinePosition/u, "an unproven boundary must never expand from window geometry or a left-offset heuristic");
+assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /composerReserveFallback|Test-AutoReplyVisualMessageLinePosition/u);
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$chatBottom = \[double\]\$frame\.height \* 0\.88/u, "a fixed permissive cutoff can admit composer drafts");
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$processes\.Count -ne 1/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Resolve-AutoReplyVisualWechatWindow/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /PrintWindow\(\$hWnd, \$hdc, 2\)/u, "background observation must capture the bound HWND rather than a covering Electron window");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Test-AutoReplyVisualFrameContent/u, "blank or failed PrintWindow output must never reach OCR");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /captureMethod -ceq "hwnd_printwindow"[\s\S]*reason = "visual_ocr_structure_missing"/u, "a compositor shell without chat structure must force one real screen capture");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(-not \$allowForegroundFallback\) \{ return @\{ ok = \$false; reason = "visual_capture_failed" \} \}/u, "passive polling must not steal foreground when HWND capture is unavailable");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$previousForeground = \[Win32WechatMomentsVisualReadOnly\]::GetForegroundWindow\(\)[\s\S]*finally \{[\s\S]*SetForegroundWindow\(\$previousForeground\)/u, "a live screen freshness check must best-effort restore the user's previous foreground window");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\[Win32WechatAutoReplyVisual\]::EnumWindows\(\$callback, \[IntPtr\]::Zero\)/u);
+assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\.MainWindowHandle/u, "window discovery must enumerate visible top-level HWNDs because WeChat 4.x can expose MainWindowHandle=0");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /WindowFromPoint\(\$point\)/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$hitRoot = \[Win32WechatMomentsVisualReadOnly\]::GetAncestor\(\$hit, 2\)/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /GetWindowThreadProcessId\(\$hit, \[ref\]\$hitPid\)/u);
@@ -45,24 +52,30 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /GetForegroundWindow\(\) -ne \$hWnd/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$candidates\.Count -eq 0/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$unreadCandidates = @\(\$candidates\.ToArray\(\) \| Where-Object \{ \$_\.unread \}\)/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$candidate = if \(\$unreadCandidates\.Count -gt 0\) \{ \$unreadCandidates\[0\] \} else \{ \$candidates\[0\] \}/u);
-assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$candidates\.Count -ne 1/u);
 assert.match(
   AUTO_REPLY_VISUAL_SCRIPT,
   /function Get-AutoReplyVisualHeader[\s\S]*Test-AutoReplyVisualConversationMatch/u,
   "header verification must tolerate bounded OCR drift instead of requiring exact text"
 );
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /state = "matched"/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /state = "unresolved"[\s\S]*reason = "conversation_title_unresolved"/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /state = if \(\$clearlyDifferent\) \{ "different" \} else \{ "unresolved" \}/u, "only a clearly different title may block the bound bubble");
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$chatMid/u, "role classification must not depend on a single midpoint test");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /"visual:v1:" \+ \(Get-AutoReplyVisualSha256/u);
-assert.match(visualDriverSource, /visual-occurrence-v2/u);
+assert.match(visualDriverSource, /visual-occurrence-bubble-v3/u);
 assert.doesNotMatch(visualDriverSource, /randomBytes|driverSessionId|occurrenceSequence/u, "occurrence IDs must not depend on a process session or scan counter");
 assert.match(visualDriverSource, /restorePendingObservation/u, "pending evidence must have a restart recovery entry point");
-assert.match(visualDriverSource, /active\.previewSignature === previewSignature[\s\S]*active\.runtimeId/u, "an active occurrence must reuse its public ID across bubble OCR drift");
+assert.match(visualDriverSource, /active\.messageSignature === messageSignature \|\| sameObservedMessage\(active\.message, message\)[\s\S]*active\.runtimeId/u, "an active occurrence must reuse its public ID while the authoritative bubble is unchanged or has bounded OCR drift");
+assert.match(visualDriverSource, /visual-occurrence-bubble-v3[\s\S]*conversation[\s\S]*messageSignature[\s\S]*String\(turn\.epoch\)/u, "a new occurrence must include the per-contact turn epoch without using sidebar geometry");
+assert.match(visualDriverSource, /if \(outcomeUnknown\)[\s\S]*advanced: false[\s\S]*turnEpoch: previousTurn\.epoch/u, "an unknown send result must retain the current occurrence and epoch");
+assert.match(visualDriverSource, /observeAssistantBoundary[\s\S]*turnEpoch = previousTurn\.epoch \+ 1/u, "an observed outgoing boundary must advance the contact turn once");
+assert.doesNotMatch(visualDriverSource, /liveScreenRefreshIntervalMs|lastLiveScreenCheckAt|forceLiveScreen/u, "stable background polling must never periodically steal foreground");
+assert.doesNotMatch(visualDriverSource, /foregroundCaptureMode/u, "one successful fallback must not permanently force every poll to steal foreground");
 assert.match(visualDriverSource, /scanWechatIncoming\.resetBaselines[\s\S]*retryCandidates\.length = 0/u, "a restarted listener must not inherit an unsent candidate from the previous run");
 assert.doesNotMatch(visualDriverSource, /eventSequence|eventSessionId/u, "stable visual evidence must not receive a new ID on every scan");
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(\$row\.unread -and -not \$row\.draft\)/u);
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /-not \(Test-AutoReplyVisualUnreadDot \$frame \$line\.bounds\)/u, "an unread badge must be able to discover the rendered session name when contact sync is stale");
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /discoveredConversation = \[bool\]\$match\.discovered/u);
-assert.match(visualDriverSource, /!allowed\.includes\(conversation\) && result\?\.discoveredConversation !== true/u, "a visually proven unread session must not be discarded by the active-touch contact name list");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(\$row\.unread -and -not \$row\.draft -and \$newSinceStartupBoundary -and -not \$sameHistoricalUnread\)/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(-not \[bool\]\$match\.exact -or -not \$unread\) \{ continue \}/u, "a missing preview may locate only an exact allowlisted unread row");
+assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /-not \(Test-AutoReplyVisualUnreadDot \$frame \$line\.bounds\)/u, "an arbitrary unread title must never add itself to the one-to-one whitelist");
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$row\.unread -or \$changed/u);
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /source -NotePropertyValue .*preview_change/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$nameBounds\.left - \(Scale-AutoReplyVisualMetric 44\.0\)/u, "4.1.12 at 125% DPI must capture the complete badge over the avatar rather than a clipped edge");
@@ -70,28 +83,32 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$nameBounds\.left \+ \(Scale-AutoReplyV
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$nameBounds\.top - \(Scale-AutoReplyVisualMetric 22\.0\)/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$nameBounds\.height \* 0\.65/u, "unread search must include badges vertically aligned with the contact name");
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$nameBounds\.left - 78\.0/u);
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$windowDpi \/ 120\.0/u, "physical visual thresholds must scale from the live-tested 120-DPI baseline");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$windowDpi \/ 96\.0/u, "physical visual thresholds must scale from Windows' logical 96-DPI baseline");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$script:AutoReplyVisualScale \* \$script:AutoReplyVisualScale/u, "pixel-area thresholds must scale quadratically");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$row\.nameBounds\.top \+ \(\[double\]\$row\.nameBounds\.height \* 0\.5\)/u);
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$row\.nameBounds\.height \+ 8\.0/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /baselineAdvance = @\{ conversation = \$conversation; signature = \[string\]\$candidate\.signature \}/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /messageBaselineAdvance = @\{ conversation = \$conversation; signature = \[string\]\$latest\.evidenceSignature \}/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /source = "current_message_change"/u);
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$expectedRows\.Count -ne 1 -and -not \$currentConversationMatches/u);
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Test-AutoReplyVisualCurrentMessageTransition \$previousPreviewSignature \$currentPreviewSignature \$previousMessageSignature \$currentMessageSignature/u, "an open conversation needs both sidebar and bubble evidence to advance");
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(\$currentMessageTransition -and[\s\S]*\$currentMessage\.latestRole -ceq "user"\)[\s\S]*source = "current_message_change"[\s\S]*\$firstCurrentSnapshot/u, "a current-open customer message with two independent signals must become a candidate before second-frame OCR geometry can block it");
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-AutoReplyVisualCurrentTransitionSnapshot \$hWnd \(\[int\]\$process\.Id\) \$windowRect \$allowedSet \$sidebarRight \$currentName/u, "one-channel or unknown-role visual changes may still use the settling fallback");
+const unresolvedBadgeCapture = AUTO_REPLY_VISUAL_SCRIPT.indexOf("$unresolvedUnreadBadgeCount = $badgeFallbacks.Count");
+const allowlistedCurrentTransition = AUTO_REPLY_VISUAL_SCRIPT.indexOf("$currentMessageChanged = $previousMessageSignature -cne $currentMessageSignature", unresolvedBadgeCapture);
+const unresolvedBadgeReturn = AUTO_REPLY_VISUAL_SCRIPT.indexOf('reason = "unread_contact_unresolved"', allowlistedCurrentTransition);
+assert.ok(
+  unresolvedBadgeCapture >= 0 && allowlistedCurrentTransition > unresolvedBadgeCapture && unresolvedBadgeReturn > allowlistedCurrentTransition,
+  "a persistent unknown unread dot must be recorded first, while an allowlisted current-chat bubble gets candidate priority before the unknown-contact result"
+);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /source = "current_message_change"[\s\S]*unreadBadgeCount = \[int\]\$unresolvedUnreadBadgeCount/u, "the winning allowlisted current-chat candidate must retain the unknown-dot diagnostic without being starved by it");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$previousMessageSignature -cne \$currentMessageSignature/u, "the chat bubble alone decides whether the open conversation advanced");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Start-Sleep -Milliseconds 140[\s\S]*Get-AutoReplyVisualCurrentTransitionSnapshot \$hWnd \(\[int\]\$process\.Id\) \$windowRect \$allowedSet \$sidebarRight \$currentName/u, "a changed bubble must remain stable across a second frame before becoming a candidate");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Resolve-AutoReplyVisualCurrentTransition \$previousPreviewSignature \$previousMessageSignature \$firstCurrentSnapshot \$secondCurrentSnapshot/u);
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /reason = "current_visual_drift_consumed"/u);
+assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /reason = "current_visual_drift_consumed"/u, "sidebar-only drift must never consume the authoritative message boundary");
+assert.doesNotMatch(visualDriverSource, /current_visual_drift_consumed/u, "the JS adapter must not advance either baseline for a legacy sidebar-drift result");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /reason = "current_transition_unresolved"/u);
-assert.match(visualDriverSource, /result\?\.reason === "current_visual_drift_consumed"\) applyBaselineAdvance/u);
-assert.match(visualDriverSource, /result\?\.reason === "current_visual_drift_consumed"\) applyMessageBaselineAdvance/u);
 assert.match(visualDriverSource, /result\?\.reason === "wechat_focus_failed"[\s\S]*result\?\.reason === "chat_boundary_unresolved"[\s\S]*result\?\.reason === "latest_message_role_unresolved"[\s\S]*result\?\.reason === "current_transition_unresolved"[\s\S]*result\?\.reason === "current_outgoing_settling"\) return result;[\s\S]*return takeRetry/u, "focus loss, unresolved role or boundary, and unstable transitions must fence older retry candidates");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$latest\.latestRole -ceq "assistant"[\s\S]*reason = "latest_message_not_incoming"[\s\S]*\$latest\.latestRole -cne "user"[\s\S]*reason = "latest_message_role_unresolved"/u, "unknown role must fail closed instead of advancing an outgoing boundary");
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /Get-AutoReplyVisualSha256 \(\[string\]\$currentMessage\.message\)/u, "missing sidebar evidence must not be synthesized from the drifting bubble OCR");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /draft = \[bool\]\$isDraft/u, "draft-marked sidebar previews must be baselined but never become customer messages");
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$currentPreviewSignature = \[string\]\$currentRow\[0\]\.signature/u, "draft rows must retain a real preview boundary so clearing a draft can be consumed atomically");
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\[bool\]\$first\.draft -or \[bool\]\$second\.draft/u, "a draft row must never become a two-frame incoming candidate");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$currentPreviewSignature = if \(\$currentRow\.Count -eq 1\) \{ \[string\]\$currentRow\[0\]\.signature \} else \{ "" \}/u, "sidebar preview remains optional diagnostic metadata for an open conversation");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$red -ge 235[\s\S]*\$green -ge 50[\s\S]*\$ratio -le 1\.75 -and \$density -ge 0\.25/u);
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /SendKeys|Set-Clipboard|Get-Clipboard/iu);
 assert.ok(
@@ -105,19 +122,58 @@ assert.ok(normalizationStart >= 0 && normalizationEnd > normalizationStart);
 const normalizationFunction = AUTO_REPLY_VISUAL_SCRIPT.slice(normalizationStart, normalizationEnd);
 assert.match(normalizationFunction, /Replace\(\$normalized, "\\s\+", ""\)/u, "OCR whitespace must use a single PowerShell regex backslash");
 assert.doesNotMatch(normalizationFunction, /"\\\\s\+"/u, "a double regex backslash would preserve OCR-inserted spaces");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Resolve-AutoReplyVisualSidebarConversation[\s\S]*\$fuzzyMatches\.Count -eq 1[\s\S]*ambiguous = \$fuzzyMatches\.Count -gt 1/u, "one physical OCR row must be ambiguous when it fuzzily matches multiple allowlisted contacts");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$resolvedName\.ambiguous[\s\S]*reason = "visual_sidebar_match_ambiguous"/u, "ambiguous physical rows must never become logical contact candidates");
 
-const evidenceSeedStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("$evidenceSeed =");
-const evidenceSeedEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("return @{", evidenceSeedStart);
-assert.ok(evidenceSeedStart >= 0 && evidenceSeedEnd > evidenceSeedStart);
-const evidenceSeedBlock = AUTO_REPLY_VISUAL_SCRIPT.slice(evidenceSeedStart, evidenceSeedEnd);
-assert.match(evidenceSeedBlock, /\$latestRole[\s\S]*\$bubbleWidthBucket[\s\S]*\$bubbleHeightBucket/u, "identity must use stable current-bubble role and quantized shape evidence");
-assert.doesNotMatch(evidenceSeedBlock, /\$pixelHash/u, "exact pixels are diagnostic only because a scrolled bubble can be rendered at a different screen offset");
-assert.doesNotMatch(evidenceSeedBlock, /viewportHash|bounds\.left|bounds\.top/u, "viewport movement and absolute bubble position must not churn identity");
+const conversationFunctionsStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Get-AutoReplyVisualEditDistance");
+const conversationFunctionsEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Test-AutoReplyVisualMessageMatch", conversationFunctionsStart);
+const sidebarResolverStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Test-AutoReplyVisualTimeText");
+const sidebarResolverEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Test-AutoReplyVisualRedPixel", sidebarResolverStart);
+assert.ok(conversationFunctionsStart >= 0 && conversationFunctionsEnd > conversationFunctionsStart && sidebarResolverStart >= 0 && sidebarResolverEnd > sidebarResolverStart);
+const similarContactProgram = `
+${normalizationFunction.slice(0, normalizationFunction.indexOf("function Get-AutoReplyVisualEditDistance"))}
+${AUTO_REPLY_VISUAL_SCRIPT.slice(conversationFunctionsStart, conversationFunctionsEnd)}
+${AUTO_REPLY_VISUAL_SCRIPT.slice(sidebarResolverStart, sidebarResolverEnd)}
+$allowed = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+[void]$allowed.Add("A1ZZ")
+[void]$allowed.Add("A2ZZ")
+$ambiguous = Resolve-AutoReplyVisualSidebarConversation "A3ZZ" $allowed
+$exact = Resolve-AutoReplyVisualSidebarConversation "A1ZZ" $allowed
+@{
+  ambiguous = [bool]$ambiguous.ambiguous
+  ambiguousOk = [bool]$ambiguous.ok
+  exact = [string]$exact.conversation
+  exactOk = [bool]$exact.ok
+} | ConvertTo-Json -Compress
+`;
+const similarContactProbe = spawnSync("powershell.exe", [
+  "-NoProfile",
+  "-EncodedCommand",
+  Buffer.from(similarContactProgram, "utf16le").toString("base64")
+], { encoding: "utf8" });
+assert.equal(similarContactProbe.status, 0, similarContactProbe.stderr || similarContactProbe.stdout);
+assert.deepEqual(JSON.parse(similarContactProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1)), {
+  ambiguous: true,
+  ambiguousOk: false,
+  exact: "A1ZZ",
+  exactOk: true
+});
+
+const semanticSeedStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("$semanticSeed =");
+const semanticSeedEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("$diagnosticSeed =", semanticSeedStart);
+assert.ok(semanticSeedStart >= 0 && semanticSeedEnd > semanticSeedStart);
+const semanticSeedBlock = AUTO_REPLY_VISUAL_SCRIPT.slice(semanticSeedStart, semanticSeedEnd);
+assert.match(semanticSeedBlock, /visual-message-semantic-v1[\s\S]*\$message[\s\S]*\$latestRole/u, "message identity must use only normalized bubble text and role");
+assert.doesNotMatch(semanticSeedBlock, /\$pixelHash|bubbleWidthBucket|bubbleHeightBucket|viewportHash|bounds\.left|bounds\.top/u, "DPI, pixels, geometry and viewport movement must not churn identity");
+const diagnosticSeedStart = semanticSeedEnd;
+const diagnosticSeedEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("return @{", diagnosticSeedStart);
+const diagnosticSeedBlock = AUTO_REPLY_VISUAL_SCRIPT.slice(diagnosticSeedStart, diagnosticSeedEnd);
+assert.match(diagnosticSeedBlock, /\$bubbleWidthBucket[\s\S]*\$bubbleHeightBucket[\s\S]*\$pixelHash/u, "shape and pixel evidence may remain diagnostic-only");
 
 const sidebarStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Get-AutoReplyVisualSidebarRight");
 const sidebarEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Get-AutoReplyVisualFrame", sidebarStart);
 assert.ok(sidebarStart >= 0 && sidebarEnd > sidebarStart);
-assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /Test-AutoReplyVisualViewportOwned/u, "read-only scans must not require all nine viewport points to be unobscured");
+assert.doesNotMatch(autoReplyEntry, /Test-AutoReplyVisualViewportOwned/u, "the active auto-reply path must not require all nine viewport points to be unobscured");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Test-AutoReplyVisualPointOwned/u, "conversation clicks must still verify the owned action point");
 const sidebarFunction = AUTO_REPLY_VISUAL_SCRIPT.slice(sidebarStart, sidebarEnd);
 const sidebarProgram = `${sidebarFunction}
@@ -145,7 +201,7 @@ assert.deepEqual(JSON.parse(sidebarProbe.stdout.trim().split(/\r?\n/u).filter(Bo
 const unreadStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Test-AutoReplyVisualRedPixel");
 const unreadRedEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Test-AutoReplyVisualGreenPixel", unreadStart);
 const unreadDotStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Test-AutoReplyVisualUnreadDot", unreadRedEnd);
-const unreadEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Get-AutoReplyVisualSidebarRows", unreadStart);
+const unreadEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Test-AutoReplyVisualSelectedSidebarRow", unreadDotStart);
 assert.ok(unreadStart >= 0 && unreadRedEnd > unreadStart && unreadDotStart > unreadRedEnd && unreadEnd > unreadDotStart);
 const unreadFunctions = AUTO_REPLY_VISUAL_SCRIPT.slice(unreadStart, unreadRedEnd)
   + AUTO_REPLY_VISUAL_SCRIPT.slice(unreadDotStart, unreadEnd);
@@ -266,6 +322,8 @@ $physicalDetected = Get-AutoReplyVisualChatBottom $physicalFrame 375.0
   tallBottom = [double]$tallDetected.bottom
   unresolvedOk = [bool]$unresolved.ok
   unresolvedReason = [string]$unresolved.reason
+  unresolvedBottom = [double]$unresolved.bottom
+  unresolvedSource = [string]$unresolved.source
   physicalBottom = [double]$physicalDetected.bottom
   physicalDivider = [double]$physicalDetected.dividerY
   includesLiveMessage = [bool](365 -le [double]$detected.bottom)
@@ -284,8 +342,9 @@ assert.equal(chatBoundaryResult.detectedDivider, 411, "the lowest proven divider
 assert.equal(chatBoundaryResult.detectedBottom, 409);
 assert.equal(chatBoundaryResult.detectedSource, "composer_divider");
 assert.equal(chatBoundaryResult.tallBottom, 348, "a manually enlarged composer must still be detected");
-assert.equal(chatBoundaryResult.unresolvedOk, false);
-assert.equal(chatBoundaryResult.unresolvedReason, "chat_boundary_unresolved", "missing structural proof must fail closed");
+assert.equal(chatBoundaryResult.unresolvedOk, true);
+assert.equal(chatBoundaryResult.unresolvedSource, "normalized_window_ratio");
+assert.ok(Math.abs(chatBoundaryResult.unresolvedBottom - (554 * 0.74)) < 0.01, "theme-independent fallback must be tied to normalized window geometry");
 assert.equal(chatBoundaryResult.physicalDivider, 513, "the original 1081x690 frame divider must be structurally detected");
 assert.equal(chatBoundaryResult.physicalBottom, 511);
 assert.equal(chatBoundaryResult.includesLiveMessage, true, "the live bottom incoming row must remain inside the proven chat viewport");
@@ -583,12 +642,15 @@ const stableIncomingFunction = AUTO_REPLY_VISUAL_SCRIPT.slice(stableIncomingStar
 const stableSignature = "a".repeat(64);
 const changedStableSignature = "b".repeat(64);
 const stableIncomingProgram = `
+${normalizationFunction}
 ${stableIncomingFunction}
-$sameFirst = [pscustomobject]@{ hasMessage = $true; latestRole = "user"; evidenceSignature = "${stableSignature}" }
-$sameSecond = [pscustomobject]@{ hasMessage = $true; latestRole = "user"; evidenceSignature = "${stableSignature}" }
-$changedSecond = [pscustomobject]@{ hasMessage = $true; latestRole = "user"; evidenceSignature = "${changedStableSignature}" }
+$sameFirst = [pscustomobject]@{ hasMessage = $true; latestRole = "user"; message = "咨询清洁设备"; evidenceSignature = "${stableSignature}" }
+$sameSecond = [pscustomobject]@{ hasMessage = $true; latestRole = "user"; message = "咨询清洁设备"; evidenceSignature = "${stableSignature}" }
+$driftedSecond = [pscustomobject]@{ hasMessage = $true; latestRole = "user"; message = "咨询尚洁设备"; evidenceSignature = "${changedStableSignature}" }
+$changedSecond = [pscustomobject]@{ hasMessage = $true; latestRole = "user"; message = "完全不同问题"; evidenceSignature = "${changedStableSignature}" }
 @{
   sameEvidence = [bool](Test-AutoReplyVisualStableIncomingEvidence $sameFirst $sameSecond)
+  driftedEvidence = [bool](Test-AutoReplyVisualStableIncomingEvidence $sameFirst $driftedSecond)
   changedEvidence = [bool](Test-AutoReplyVisualStableIncomingEvidence $sameFirst $changedSecond)
 } | ConvertTo-Json -Compress
 `;
@@ -600,12 +662,14 @@ const stableIncomingProbe = spawnSync("powershell.exe", [
 assert.equal(stableIncomingProbe.status, 0, stableIncomingProbe.stderr || stableIncomingProbe.stdout);
 assert.deepEqual(JSON.parse(stableIncomingProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1)), {
   changedEvidence: false,
+  driftedEvidence: true,
   sameEvidence: true
 });
 
 const boundRuntime = `visual:v1:${"c".repeat(64)}`;
 const driftedRuntime = `visual:v1:${"d".repeat(64)}`;
 const boundIncomingProgram = `
+${normalizationFunction}
 ${stableIncomingFunction}
 @{
   exactBubble = [bool](Test-AutoReplyVisualBoundIncomingEvidence "${boundRuntime}" "${stableSignature}" "${boundRuntime}" "${stableSignature}" 0)
@@ -650,8 +714,8 @@ const currentTransitionProbe = spawnSync("powershell.exe", [
 assert.equal(currentTransitionProbe.status, 0, currentTransitionProbe.stderr || currentTransitionProbe.stdout);
 assert.deepEqual(JSON.parse(currentTransitionProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1)), {
   bothChanged: true,
-  bubbleOnly: false,
-  missingPreview: false,
+  bubbleOnly: true,
+  missingPreview: true,
   previewOnly: false
 });
 
@@ -672,27 +736,30 @@ function New-CurrentSnapshot([string]$preview, [string]$message, [bool]$draft = 
   }
 }
 
-# Prime(draft,bubbleA) -> clearDraft(previewB,bubbleA) consumes only the
-# preview boundary. A later bubble OCR drift then consumes only the message
-# boundary instead of combining into a candidate.
+# Prime(previewA,bubbleA) -> previewB,bubbleA is presentation-only and must not
+# consume anything. A later stable customer bubbleB is the single message
+# transition and must become a candidate regardless of preview timing.
 $previewBoundary = "${previewBeforeTransition}"
 $messageBoundary = "${messageBeforeTransition}"
 $clearDraftFirst = New-CurrentSnapshot "${previewAfterTransition}" "${messageBeforeTransition}"
 $clearDraftSecond = New-CurrentSnapshot "${previewAfterTransition}" "${messageBeforeTransition}"
 $clearDraft = Resolve-AutoReplyVisualCurrentTransition $previewBoundary $messageBoundary $clearDraftFirst $clearDraftSecond
-if ($clearDraft.baselineAdvance -ne $null) { $previewBoundary = [string]$clearDraft.baselineAdvance.signature }
 $bubbleDriftFirst = New-CurrentSnapshot "${previewAfterTransition}" "${messageAfterTransition}"
 $bubbleDriftSecond = New-CurrentSnapshot "${previewAfterTransition}" "${messageAfterTransition}"
 $bubbleDrift = Resolve-AutoReplyVisualCurrentTransition $previewBoundary $messageBoundary $bubbleDriftFirst $bubbleDriftSecond
+if ([string]$bubbleDrift.action -eq "candidate") { $messageBoundary = "${messageAfterTransition}" }
+$previewAfterCandidateFirst = New-CurrentSnapshot "${previewLaterTransition}" "${messageAfterTransition}"
+$previewAfterCandidateSecond = New-CurrentSnapshot "${previewLaterTransition}" "${messageAfterTransition}"
+$previewAfterCandidate = Resolve-AutoReplyVisualCurrentTransition $previewBoundary $messageBoundary $previewAfterCandidateFirst $previewAfterCandidateSecond
 
-# Reverse ordering: bubble-only settling is consumed first, then preview-only
-# settling is independently consumed.
+# Reverse ordering: the bubble is still a candidate immediately; once its
+# authoritative boundary is recorded, a later preview change is a no-op.
 $reversePreviewBoundary = "${previewBeforeTransition}"
 $reverseMessageBoundary = "${messageBeforeTransition}"
 $reverseBubbleFirst = New-CurrentSnapshot "${previewBeforeTransition}" "${messageAfterTransition}"
 $reverseBubbleSecond = New-CurrentSnapshot "${previewBeforeTransition}" "${messageAfterTransition}"
 $reverseBubble = Resolve-AutoReplyVisualCurrentTransition $reversePreviewBoundary $reverseMessageBoundary $reverseBubbleFirst $reverseBubbleSecond
-if ($reverseBubble.messageBaselineAdvance -ne $null) { $reverseMessageBoundary = [string]$reverseBubble.messageBaselineAdvance.signature }
+if ([string]$reverseBubble.action -eq "candidate") { $reverseMessageBoundary = "${messageAfterTransition}" }
 $reversePreviewFirst = New-CurrentSnapshot "${previewAfterTransition}" "${messageAfterTransition}"
 $reversePreviewSecond = New-CurrentSnapshot "${previewAfterTransition}" "${messageAfterTransition}"
 $reversePreview = Resolve-AutoReplyVisualCurrentTransition $reversePreviewBoundary $reverseMessageBoundary $reversePreviewFirst $reversePreviewSecond
@@ -708,10 +775,8 @@ $draftBoth = Resolve-AutoReplyVisualCurrentTransition "${previewBeforeTransition
 
 @{
   clearDraftAction = [string]$clearDraft.action
-  clearDraftReason = [string]$clearDraft.reason
-  clearDraftPreviewOnly = [bool]($clearDraft.baselineAdvance -ne $null -and $clearDraft.messageBaselineAdvance -eq $null)
   bubbleDriftAction = [string]$bubbleDrift.action
-  bubbleDriftMessageOnly = [bool]($bubbleDrift.baselineAdvance -eq $null -and $bubbleDrift.messageBaselineAdvance -ne $null)
+  previewAfterCandidateAction = [string]$previewAfterCandidate.action
   sequentialCandidateCount = [int](@($clearDraft, $bubbleDrift | Where-Object { [string]$_.action -eq "candidate" }).Count)
   reverseBubbleAction = [string]$reverseBubble.action
   reversePreviewAction = [string]$reversePreview.action
@@ -728,17 +793,15 @@ const atomicTransitionProbe = spawnSync("powershell.exe", [
 ], { encoding: "utf8" });
 assert.equal(atomicTransitionProbe.status, 0, atomicTransitionProbe.stderr || atomicTransitionProbe.stdout);
 assert.deepEqual(JSON.parse(atomicTransitionProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1)), {
-  bubbleDriftAction: "consume",
-  bubbleDriftMessageOnly: true,
-  clearDraftAction: "consume",
-  clearDraftPreviewOnly: true,
-  clearDraftReason: "current_visual_drift_consumed",
-  draftBothReason: "current_transition_unresolved",
+  bubbleDriftAction: "candidate",
+  clearDraftAction: "none",
+  draftBothReason: "",
   genuineAction: "candidate",
-  reverseBubbleAction: "consume",
-  reverseCandidateCount: 0,
-  reversePreviewAction: "consume",
-  sequentialCandidateCount: 0,
+  previewAfterCandidateAction: "none",
+  reverseBubbleAction: "candidate",
+  reverseCandidateCount: 1,
+  reversePreviewAction: "none",
+  sequentialCandidateCount: 1,
   unstableReason: "current_transition_unresolved"
 });
 
@@ -1313,37 +1376,37 @@ const repeatedResults = [
     context: [{ role: "user", content: "相同消息", key: runtimeId }]
   }
 ];
-const distinctEvidenceRuntimeId = `visual:v1:${"b".repeat(64)}`;
-repeatedResults.push({
-  ...repeatedResults[1],
-  runtimeId: distinctEvidenceRuntimeId,
-  messageSignature: createHash("sha256").update("second-local-occurrence", "utf8").digest("hex"),
-  viewportHash: "3".repeat(64),
-  context: [{ role: "user", content: repeatedResults[1].message, key: distinctEvidenceRuntimeId }]
-});
 const differentPreviewSignature = createHash("sha256").update("不同消息", "utf8").digest("hex");
 const differentPreviewEvidenceRuntimeId = `visual:v1:${"d".repeat(64)}`;
 repeatedResults.push({
   ...repeatedResults[1],
-  message: "不同消息",
   runtimeId: differentPreviewEvidenceRuntimeId,
   previewSignature: differentPreviewSignature,
-  messageSignature: createHash("sha256").update("different-preview-bubble", "utf8").digest("hex"),
-  context: [{ role: "user", content: "不同消息", key: differentPreviewEvidenceRuntimeId }]
+  viewportHash: "3".repeat(64),
+  context: [{ role: "user", content: repeatedResults[1].message, key: differentPreviewEvidenceRuntimeId }]
+});
+const distinctEvidenceRuntimeId = `visual:v1:${"b".repeat(64)}`;
+repeatedResults.push({
+  ...repeatedResults[1],
+  runtimeId: distinctEvidenceRuntimeId,
+  message: "另一条消息",
+  messageSignature: createHash("sha256").update("second-local-occurrence", "utf8").digest("hex"),
+  viewportHash: "4".repeat(64),
+  context: [{ role: "user", content: "另一条消息", key: distinctEvidenceRuntimeId }]
 });
 const repeatedDriver = createWechatVisualAutoReplyDriver(() => repeatedResults.shift());
 assert.equal((await repeatedDriver.primeWechatSession(["A测试客户"])).ok, true);
 const repeatedFirst = await repeatedDriver.scanWechatIncoming(["A测试客户"]);
 const repeatedSecond = await repeatedDriver.scanWechatIncoming(["A测试客户"]);
-const distinctOccurrence = await repeatedDriver.scanWechatIncoming([repeatedFirst.conversation]);
 const differentPreviewOccurrence = await repeatedDriver.scanWechatIncoming([repeatedFirst.conversation]);
+const distinctOccurrence = await repeatedDriver.scanWechatIncoming([repeatedFirst.conversation]);
 assert.equal(repeatedFirst.visualEvidenceRuntimeId, runtimeId);
 assert.equal(repeatedSecond.visualEvidenceRuntimeId, runtimeId);
 assert.equal(repeatedFirst.runtimeId, repeatedSecond.runtimeId, "the same local evidence must keep one public runtime ID across rescans and viewport changes");
-assert.equal(distinctOccurrence.visualEvidenceRuntimeId, distinctEvidenceRuntimeId);
-assert.equal(distinctOccurrence.runtimeId, repeatedFirst.runtimeId, "bubble OCR aliases must stay inside the same active sidebar-preview occurrence");
 assert.equal(differentPreviewOccurrence.visualEvidenceRuntimeId, differentPreviewEvidenceRuntimeId);
-assert.notEqual(differentPreviewOccurrence.runtimeId, repeatedFirst.runtimeId, "a different selected-row preview must create a new occurrence");
+assert.equal(differentPreviewOccurrence.runtimeId, repeatedFirst.runtimeId, "sidebar preview changes must not split one authoritative bubble occurrence");
+assert.equal(distinctOccurrence.visualEvidenceRuntimeId, distinctEvidenceRuntimeId);
+assert.notEqual(distinctOccurrence.runtimeId, repeatedFirst.runtimeId, "a different authoritative bubble must create a new occurrence");
 assert.deepEqual(repeatedFirst.context, [{ role: "user", content: "相同消息", key: repeatedFirst.runtimeId }]);
 assert.deepEqual(repeatedSecond.context, [{ role: "user", content: "相同消息", key: repeatedSecond.runtimeId }]);
 
@@ -1391,11 +1454,12 @@ const boundaryResults = [
 const boundaryDriver = createWechatVisualAutoReplyDriver(() => boundaryResults.shift());
 assert.equal((await boundaryDriver.primeWechatSession(["TestCustomer"])).ok, true);
 const boundaryFirst = await boundaryDriver.scanWechatIncoming(["TestCustomer"]);
+assert.equal(boundaryDriver.scanWechatIncoming.noteVerifiedSend(boundaryFirst, { verificationMode: "visual_message_bubble" }), true);
 const assistantBoundary = await boundaryDriver.scanWechatIncoming(["TestCustomer"]);
 const boundarySecond = await boundaryDriver.scanWechatIncoming(["TestCustomer"]);
 assert.equal(assistantBoundary.latestRole, "assistant", "the scanner must expose the observed assistant turn fence");
 assert.equal(boundaryFirst.visualEvidenceRuntimeId, boundarySecond.visualEvidenceRuntimeId);
-assert.notEqual(boundaryFirst.runtimeId, boundarySecond.runtimeId, "the same customer text after an observed assistant turn is a new occurrence");
+assert.notEqual(boundaryFirst.runtimeId, boundarySecond.runtimeId, "the same customer text after a verified send turn is a new occurrence");
 
 const immediateSameSignature = createHash("sha256").update("immediate-identical-bubble", "utf8").digest("hex");
 const immediateSameEvidenceRuntimeId = `visual:v1:${"d".repeat(64)}`;
@@ -1486,6 +1550,20 @@ const atomicPreviewBefore = createHash("sha256").update("atomic-preview-before",
 const atomicPreviewAfter = createHash("sha256").update("atomic-preview-after", "utf8").digest("hex");
 const atomicMessageBefore = createHash("sha256").update("atomic-message-before", "utf8").digest("hex");
 const atomicMessageAfter = createHash("sha256").update("atomic-message-after", "utf8").digest("hex");
+const atomicEvidenceRuntimeId = `visual:v1:${"e".repeat(64)}`;
+const atomicCandidate = {
+  ok: true,
+  conversation: "A测试客户",
+  message: "异步客户消息",
+  runtimeId: atomicEvidenceRuntimeId,
+  previewSignature: atomicPreviewAfter,
+  messageSignature: atomicMessageAfter,
+  pid: 37,
+  hWnd: 38,
+  source: "current_message_change",
+  latestRole: "user",
+  context: [{ role: "user", content: "异步客户消息", key: atomicEvidenceRuntimeId }]
+};
 
 const previewThenBubbleCalls = [];
 const previewThenBubbleResults = [
@@ -1497,20 +1575,8 @@ const previewThenBubbleResults = [
     sessionBaselines: [{ conversation: "A测试客户", signature: atomicPreviewBefore }],
     sessionMessageBaselines: [{ conversation: "A测试客户", signature: atomicMessageBefore }]
   },
-  {
-    ok: false,
-    reason: "current_visual_drift_consumed",
-    pid: 37,
-    hWnd: 38,
-    baselineAdvance: { conversation: "A测试客户", signature: atomicPreviewAfter }
-  },
-  {
-    ok: false,
-    reason: "current_visual_drift_consumed",
-    pid: 37,
-    hWnd: 38,
-    messageBaselineAdvance: { conversation: "A测试客户", signature: atomicMessageAfter }
-  },
+  { ok: false, reason: "no_unread_message", pid: 37, hWnd: 38 },
+  atomicCandidate,
   { ok: false, reason: "no_unread_message", pid: 37, hWnd: 38 }
 ];
 const previewThenBubbleDriver = createWechatVisualAutoReplyDriver((script, env) => {
@@ -1518,14 +1584,13 @@ const previewThenBubbleDriver = createWechatVisualAutoReplyDriver((script, env) 
   return previewThenBubbleResults.shift();
 });
 assert.equal((await previewThenBubbleDriver.primeWechatSession(["A测试客户"])).ok, true);
-const clearDraftSettled = await previewThenBubbleDriver.scanWechatIncoming(["A测试客户"]);
-const laterBubbleSettled = await previewThenBubbleDriver.scanWechatIncoming(["A测试客户"]);
-assert.equal(clearDraftSettled.reason, "current_visual_drift_consumed");
-assert.equal(laterBubbleSettled.reason, "current_visual_drift_consumed");
-assert.equal(clearDraftSettled.ok, false);
-assert.equal(laterBubbleSettled.ok, false, "preview-only then bubble-only changes must yield zero candidates");
+const previewOnly = await previewThenBubbleDriver.scanWechatIncoming(["A测试客户"]);
+const laterBubble = await previewThenBubbleDriver.scanWechatIncoming(["A测试客户"]);
+assert.equal(previewOnly.reason, "no_unread_message");
+assert.equal(laterBubble.ok, true, "a later stable customer bubble must not be swallowed because the sidebar preview updated first");
+assert.equal(laterBubble.messageSignature, atomicMessageAfter);
 await previewThenBubbleDriver.scanWechatIncoming(["A测试客户"]);
-assert.equal(JSON.parse(previewThenBubbleCalls[2].XIAOXI_VISUAL_BASELINES)["A测试客户"], atomicPreviewAfter);
+assert.equal(JSON.parse(previewThenBubbleCalls[2].XIAOXI_VISUAL_BASELINES)["A测试客户"], atomicPreviewBefore);
 assert.equal(JSON.parse(previewThenBubbleCalls[2].XIAOXI_VISUAL_MESSAGE_BASELINES)["A测试客户"], atomicMessageBefore);
 assert.equal(JSON.parse(previewThenBubbleCalls[3].XIAOXI_VISUAL_BASELINES)["A测试客户"], atomicPreviewAfter);
 assert.equal(JSON.parse(previewThenBubbleCalls[3].XIAOXI_VISUAL_MESSAGE_BASELINES)["A测试客户"], atomicMessageAfter);
@@ -1540,20 +1605,8 @@ const bubbleThenPreviewResults = [
     sessionBaselines: [{ conversation: "A测试客户", signature: atomicPreviewBefore }],
     sessionMessageBaselines: [{ conversation: "A测试客户", signature: atomicMessageBefore }]
   },
-  {
-    ok: false,
-    reason: "current_visual_drift_consumed",
-    pid: 39,
-    hWnd: 40,
-    messageBaselineAdvance: { conversation: "A测试客户", signature: atomicMessageAfter }
-  },
-  {
-    ok: false,
-    reason: "current_visual_drift_consumed",
-    pid: 39,
-    hWnd: 40,
-    baselineAdvance: { conversation: "A测试客户", signature: atomicPreviewAfter }
-  },
+  { ...atomicCandidate, pid: 39, hWnd: 40, previewSignature: atomicPreviewBefore },
+  { ok: false, reason: "no_unread_message", pid: 39, hWnd: 40 },
   { ok: false, reason: "no_unread_message", pid: 39, hWnd: 40 }
 ];
 const bubbleThenPreviewDriver = createWechatVisualAutoReplyDriver((script, env) => {
@@ -1561,14 +1614,14 @@ const bubbleThenPreviewDriver = createWechatVisualAutoReplyDriver((script, env) 
   return bubbleThenPreviewResults.shift();
 });
 assert.equal((await bubbleThenPreviewDriver.primeWechatSession(["A测试客户"])).ok, true);
-const bubbleFirstSettled = await bubbleThenPreviewDriver.scanWechatIncoming(["A测试客户"]);
-const previewLaterSettled = await bubbleThenPreviewDriver.scanWechatIncoming(["A测试客户"]);
-assert.equal(bubbleFirstSettled.ok, false);
-assert.equal(previewLaterSettled.ok, false, "bubble-only then preview-only changes must yield zero candidates");
+const bubbleFirst = await bubbleThenPreviewDriver.scanWechatIncoming(["A测试客户"]);
+const previewLater = await bubbleThenPreviewDriver.scanWechatIncoming(["A测试客户"]);
+assert.equal(bubbleFirst.ok, true, "a stable customer bubble must become a candidate before the sidebar preview catches up");
+assert.equal(previewLater.reason, "no_unread_message", "a later preview-only change must not produce a second candidate");
 await bubbleThenPreviewDriver.scanWechatIncoming(["A测试客户"]);
 assert.equal(JSON.parse(bubbleThenPreviewCalls[2].XIAOXI_VISUAL_BASELINES)["A测试客户"], atomicPreviewBefore);
 assert.equal(JSON.parse(bubbleThenPreviewCalls[2].XIAOXI_VISUAL_MESSAGE_BASELINES)["A测试客户"], atomicMessageAfter);
-assert.equal(JSON.parse(bubbleThenPreviewCalls[3].XIAOXI_VISUAL_BASELINES)["A测试客户"], atomicPreviewAfter);
+assert.equal(JSON.parse(bubbleThenPreviewCalls[3].XIAOXI_VISUAL_BASELINES)["A测试客户"], atomicPreviewBefore);
 assert.equal(JSON.parse(bubbleThenPreviewCalls[3].XIAOXI_VISUAL_MESSAGE_BASELINES)["A测试客户"], atomicMessageAfter);
 
 const advancedSignature = createHash("sha256").update("已回复", "utf8").digest("hex");
@@ -1604,6 +1657,159 @@ assert.equal(JSON.parse(advanceCalls[1].XIAOXI_VISUAL_BASELINES)["A测试客户"
 assert.equal(JSON.parse(advanceCalls[2].XIAOXI_VISUAL_BASELINES)["A测试客户"], advancedSignature);
 assert.equal(JSON.parse(advanceCalls[1].XIAOXI_VISUAL_MESSAGE_BASELINES)["A测试客户"], initialMessageSignature);
 assert.equal(JSON.parse(advanceCalls[2].XIAOXI_VISUAL_MESSAGE_BASELINES)["A测试客户"], advancedMessageSignature);
+
+const captureFallbackCalls = [];
+const captureFallbackEvidence = `visual:v1:${"e".repeat(64)}`;
+const captureFallbackSignature = "e".repeat(64);
+const captureFallbackDriver = createWechatVisualAutoReplyDriver((_script, env) => {
+  captureFallbackCalls.push(env);
+  if (captureFallbackCalls.length === 1) return { ok: false, reason: "moments_visual_ocr_unavailable", captureMode: "hwnd_printwindow" };
+  if (captureFallbackCalls.length === 2) return {
+    ok: true, source: "session_prime", captureMode: "foreground_screen", pid: 101, hWnd: 102,
+    sessionBaselines: [], sessionMessageBaselines: []
+  };
+  return {
+    ok: true, conversation: "CaptureCustomer", message: "hello", runtimeId: captureFallbackEvidence,
+    previewSignature: captureFallbackSignature, messageSignature: captureFallbackSignature,
+    pid: 101, hWnd: 102, source: "unread", latestRole: "user",
+    context: [{ role: "user", content: "hello", key: captureFallbackEvidence }]
+  };
+});
+assert.equal((await captureFallbackDriver.primeWechatSession(["CaptureCustomer"])).ok, true, "a compositor shell whose OCR is unusable must get one forced foreground retry");
+assert.equal(captureFallbackCalls[0].XIAOXI_ALLOW_FOCUS_FALLBACK, "");
+assert.equal(captureFallbackCalls[1].XIAOXI_ALLOW_FOCUS_FALLBACK, "1");
+assert.equal(captureFallbackCalls[1].XIAOXI_FORCE_SCREEN_CAPTURE, "1", "the fallback must skip a misleading compositor PrintWindow frame");
+assert.equal((await captureFallbackDriver.scanWechatIncoming(["CaptureCustomer"])).ok, true);
+assert.equal(captureFallbackCalls[2].XIAOXI_ALLOW_FOCUS_FALLBACK, "", "a successful live fallback must return the next poll to background PrintWindow");
+assert.equal(captureFallbackCalls[2].XIAOXI_FORCE_SCREEN_CAPTURE, "");
+assert.equal((await captureFallbackDriver.scanWechatIncoming(["CaptureCustomer"])).ok, true);
+assert.equal(captureFallbackCalls[3].XIAOXI_ALLOW_FOCUS_FALLBACK, "", "a long stable background run must not steal foreground");
+assert.equal(captureFallbackCalls[3].XIAOXI_FORCE_SCREEN_CAPTURE, "");
+
+const startupBoundaryCalls = [];
+const startupOldPreview = "a".repeat(64);
+const startupOldMessage = "b".repeat(64);
+const startupNewMessage = "c".repeat(64);
+const startupEvidenceRuntime = `visual:v1:${"f".repeat(64)}`;
+const startupBoundaryDriver = createWechatVisualAutoReplyDriver((_script, env) => {
+  startupBoundaryCalls.push(env);
+  return startupBoundaryCalls.length === 1 ? {
+    ok: true, source: "session_prime", startupBoundarySupported: true, pid: 111, hWnd: 112,
+    conversation: "BoundaryCustomer", latestRole: "user", messageSignature: startupOldMessage,
+    sessionBaselines: [{ conversation: "BoundaryCustomer", signature: startupOldPreview, preview: "old", unread: false }],
+    sessionMessageBaselines: [{ conversation: "BoundaryCustomer", signature: startupOldMessage, message: "old", latestRole: "user" }]
+  } : {
+    ok: true, conversation: "BoundaryCustomer", message: "new during start", runtimeId: startupEvidenceRuntime,
+    previewSignature: startupOldPreview, messageSignature: startupNewMessage, pid: 111, hWnd: 112,
+    source: "current_message_change", latestRole: "user",
+    context: [{ role: "user", content: "new during start", key: startupEvidenceRuntime }]
+  };
+});
+assert.equal((await startupBoundaryDriver.primeWechatSession(["BoundaryCustomer"])).ok, true);
+assert.deepEqual(startupBoundaryCalls.map((env) => env.XIAOXI_AUTO_REPLY_MODE), ["prime", "prime_confirm"]);
+assert.equal(JSON.parse(startupBoundaryCalls[1].XIAOXI_STARTUP_MESSAGES).BoundaryCustomer.message, "old");
+const startupCandidate = await startupBoundaryDriver.scanWechatIncoming(["BoundaryCustomer"]);
+assert.equal(startupCandidate.ok, true, "a message appearing inside prime must be queued, not baselined away");
+assert.equal(startupCandidate.message, "new during start");
+assert.equal(startupBoundaryCalls.length, 2, "the startup occurrence must be returned before another visual scan");
+
+const repeatedTurnSignature = "d".repeat(64);
+const repeatedTurnEvidence = `visual:v1:${"9".repeat(64)}`;
+const repeatedTurnCandidate = {
+  ok: true, conversation: "RepeatCustomer", message: "same", runtimeId: repeatedTurnEvidence,
+  previewSignature: repeatedTurnSignature, messageSignature: repeatedTurnSignature,
+  pid: 121, hWnd: 122, source: "current_message_change", latestRole: "user",
+  context: [{ role: "user", content: "same", key: repeatedTurnEvidence }]
+};
+const assistantTurn = {
+  ok: false, reason: "latest_message_not_incoming", latestRole: "assistant", pid: 121, hWnd: 122,
+  messageBaselineAdvance: { conversation: "RepeatCustomer", signature: "8".repeat(64) }
+};
+const repeatedTurnResults = [{ ok: true, source: "session_prime", pid: 121, hWnd: 122, sessionBaselines: [], sessionMessageBaselines: [] }];
+for (let index = 0; index < 4; index += 1) {
+  repeatedTurnResults.push({ ...repeatedTurnCandidate });
+  if (index < 3) repeatedTurnResults.push({ ...assistantTurn });
+}
+const repeatedTurnDriver = createWechatVisualAutoReplyDriver(() => repeatedTurnResults.shift());
+assert.equal((await repeatedTurnDriver.primeWechatSession(["RepeatCustomer"])).ok, true);
+const repeatedTurnIds = [];
+let lastAdvance;
+for (let index = 0; index < 4; index += 1) {
+  const candidate = await repeatedTurnDriver.scanWechatIncoming(["RepeatCustomer"]);
+  repeatedTurnIds.push(candidate.runtimeId);
+  lastAdvance = repeatedTurnDriver.scanWechatIncoming.noteSendAttempted(candidate, index === 3
+    ? { outcomeUnknown: true }
+    : { verificationMode: "visual_message_bubble" });
+  assert.equal(lastAdvance.turnEpoch, index === 3 ? 3 : index + 1);
+  assert.equal(lastAdvance.advanced, index !== 3, "an unknown outcome must not manufacture a new turn epoch");
+  if (index < 3) assert.equal((await repeatedTurnDriver.scanWechatIncoming(["RepeatCustomer"])).latestRole, "assistant");
+}
+assert.equal(new Set(repeatedTurnIds).size, 4, "four identical customer turns must have four occurrence IDs");
+const repeatedUnknown = repeatedTurnDriver.scanWechatIncoming.noteSendAttempted(
+  { ...repeatedTurnCandidate, runtimeId: repeatedTurnIds[3] }, { outcomeUnknown: true }
+);
+assert.equal(repeatedUnknown.turnEpoch, 3, "repeating one outcome-unknown attempt must retain the same epoch");
+assert.equal(repeatedUnknown.advanced, false);
+
+const unknownBoundarySignature = "6".repeat(64);
+const unknownResults = [
+  { ok: true, source: "session_prime", pid: 131, hWnd: 132, sessionBaselines: [], sessionMessageBaselines: [] },
+  { ...repeatedTurnCandidate, pid: 131, hWnd: 132 },
+  { ...repeatedTurnCandidate, pid: 131, hWnd: 132 },
+  {
+    ok: false, reason: "latest_message_not_incoming", latestRole: "assistant", pid: 131, hWnd: 132,
+    messageBaselineAdvance: { conversation: "RepeatCustomer", signature: unknownBoundarySignature }
+  },
+  { ...repeatedTurnCandidate, pid: 131, hWnd: 132 }
+];
+const unknownDriver = createWechatVisualAutoReplyDriver(() => unknownResults.shift());
+assert.equal((await unknownDriver.primeWechatSession(["RepeatCustomer"])).ok, true);
+const unknownFirst = await unknownDriver.scanWechatIncoming(["RepeatCustomer"]);
+const unknownAttempt = unknownDriver.scanWechatIncoming.noteSendAttempted(unknownFirst, { outcomeUnknown: true });
+assert.equal(unknownAttempt.advanced, false);
+assert.equal(unknownAttempt.turnEpoch, 0);
+const unknownSameBubble = await unknownDriver.scanWechatIncoming(["RepeatCustomer"]);
+assert.equal(unknownSameBubble.runtimeId, unknownFirst.runtimeId, "an unknown result must leave the original bubble on its original public ID");
+assert.equal(unknownDriver.scanWechatIncoming.requeue(unknownSameBubble), true, "a cancelled retry may still exist before an outgoing boundary is observed");
+assert.equal((await unknownDriver.scanWechatIncoming(["RepeatCustomer"])).latestRole, "assistant");
+const afterUnknownAssistant = await unknownDriver.scanWechatIncoming(["RepeatCustomer"]);
+assert.notEqual(afterUnknownAssistant.runtimeId, unknownFirst.runtimeId, "an observed assistant boundary must give future identical customer text a new occurrence ID");
+assert.equal(afterUnknownAssistant.message, unknownFirst.message, "the new turn may legitimately repeat the same customer text");
+
+const restartTurnCalls = [];
+const restartTurnDriver = createWechatVisualAutoReplyDriver((_script, env) => {
+  restartTurnCalls.push(env);
+  return restartTurnCalls.length === 1 ? {
+    ok: true, source: "session_prime", pid: 121, hWnd: 122,
+    sessionBaselines: [{ conversation: "RepeatCustomer", signature: "7".repeat(64), preview: "assistant", unread: false }],
+    sessionMessageBaselines: [{ conversation: "RepeatCustomer", signature: "8".repeat(64), message: "assistant", latestRole: "assistant" }]
+  } : { ...repeatedTurnCandidate };
+});
+assert.equal(restartTurnDriver.scanWechatIncoming.restoreTurnBoundaries([{
+  conversation: "RepeatCustomer", turnEpoch: 3, runtimeId: repeatedTurnIds[2]
+}]), 1);
+assert.equal((await restartTurnDriver.primeWechatSession(["RepeatCustomer"])).ok, true);
+const afterRestartSameText = await restartTurnDriver.scanWechatIncoming(["RepeatCustomer"]);
+assert.notEqual(afterRestartSameText.runtimeId, repeatedTurnIds[2], "the next identical turn must remain distinct from the restored verified turn after restart");
+assert.equal(afterRestartSameText.runtimeId, repeatedTurnIds[3], "observing the restored verified assistant boundary must not advance the epoch a second time");
+assert.equal(JSON.parse(restartTurnCalls[1].XIAOXI_VISUAL_MESSAGE_BASELINES).RepeatCustomer.length, 64, "assistant observation must keep a valid restored turn baseline");
+
+const restartUnknownResults = [
+  {
+    ok: true, source: "session_prime", pid: 121, hWnd: 122,
+    sessionBaselines: [{ conversation: "RepeatCustomer", signature: "7".repeat(64), preview: "assistant", unread: false }],
+    sessionMessageBaselines: [{ conversation: "RepeatCustomer", signature: "8".repeat(64), message: "assistant", latestRole: "assistant" }]
+  },
+  { ...repeatedTurnCandidate }
+];
+const restartUnknownDriver = createWechatVisualAutoReplyDriver(() => restartUnknownResults.shift());
+assert.equal(restartUnknownDriver.scanWechatIncoming.restoreTurnBoundaries([
+  { conversation: "RepeatCustomer", turnEpoch: 3, runtimeId: repeatedTurnIds[2] },
+  { conversation: "RepeatCustomer", turnEpoch: 0, runtimeId: repeatedTurnIds[3] }
+]), 1);
+assert.equal((await restartUnknownDriver.primeWechatSession(["RepeatCustomer"])).ok, true);
+const afterRestartUnknownAssistant = await restartUnknownDriver.scanWechatIncoming(["RepeatCustomer"]);
+assert.notEqual(afterRestartUnknownAssistant.runtimeId, repeatedTurnIds[3], "an assistant bubble observed after a restored unknown attempt must open the next epoch instead of reviving the unknown occurrence");
 
 assert.equal((await driver.verifyWechatIncoming({ conversation: "", message: "" })).reason, "incoming_message_missing");
 assert.equal((await driver.verifyWechatIncoming({ conversation: "A测试客户", message: "你是谁", runtimeId: "bad" })).reason, "incoming_identity_missing");

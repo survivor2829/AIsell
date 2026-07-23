@@ -318,7 +318,7 @@ async function waitFor(read, predicate, timeoutMs = 3000) {
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
-    const restartUnknownRetry = createTask("首次未知后重启补发", contacts(1), "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+    const restartUnknownRetry = createTask("首次未知后重启复核", contacts(1), "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
     restartUnknownRetry.status = "running";
     restartUnknownRetry.phase = "sending_batch";
     restartUnknownRetry.results[0].status = "outcome_unknown";
@@ -340,10 +340,15 @@ async function waitFor(read, predicate, timeoutMs = 3000) {
     bubbleVerificationResult = { ok: false, state: { real_send_status: "outcome_unknown" } };
     const sendsBeforeRestartRetry = sends;
     await resume({}, { clickToken: "trusted-restart-unknown-retry" });
-    const retryCompleted = await waitFor(status, (value) => value.task?.status === "completed");
-    assert.equal(retryCompleted.task.results[0].outcome_unknown_retry_count, 1);
-    assert.equal(sends, sendsBeforeRestartRetry + 1);
+    const retryBlocked = await waitFor(status, (value) => value.task?.phase === "awaiting_unknown_resolution");
+    assert.equal(retryBlocked.task.status, "paused");
+    assert.equal(retryBlocked.task.results[0].status, "outcome_unknown");
+    assert.equal(retryBlocked.task.results[0].outcome_unknown_retry_count, 0);
+    assert.equal(retryBlocked.task.results[0].awaiting_resolution, true);
+    assert.equal(sends, sendsBeforeRestartRetry, "failed re-verification must never call the real-send executor again");
     assert.equal(observedBubbleHandle, "retry-new-handle");
+    await resume({}, { clickToken: "trusted-restart-unknown-still-no-retry" });
+    assert.equal(sends, sendsBeforeRestartRetry, "continuing an unresolved unknown outcome must remain non-sending");
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });

@@ -419,6 +419,8 @@ async function executeVerifiedContactSend(options = {}) {
         pid,
         hWnd,
         conversation,
+        conversationEvidence: String(options.expectedConversationEvidence || conversation),
+        conversationAliases: Array.isArray(options.expectedConversationAliases) ? options.expectedConversationAliases : [conversation],
         incomingMessage: String(options.expectedIncomingMessage || ""),
         incomingMessageSignature: String(options.expectedIncomingMessageSignature || ""),
         incomingVerified: true,

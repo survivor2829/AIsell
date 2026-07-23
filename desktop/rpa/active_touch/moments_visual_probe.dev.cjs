@@ -101,7 +101,13 @@ function Test-MomentsVisualViewportOwned($windowRect, [IntPtr]$expectedHWnd, [in
   return $true
 }
 
-function Get-MomentsVisualFrame([IntPtr]$hWnd, $windowRect, [int]$expectedPid, [bool]$activate = $true) {
+function Get-MomentsVisualFrame(
+  [IntPtr]$hWnd,
+  $windowRect,
+  [int]$expectedPid,
+  [bool]$activate = $true,
+  [bool]$requireFullViewportOwnership = $true
+) {
   if (-not [Win32WechatMomentsVisualReadOnly]::IsWindowVisible($hWnd) -or [Win32WechatMomentsVisualReadOnly]::IsIconic($hWnd)) {
     return @{ ok = $false; reason = "moments_window_not_found" }
   }
@@ -113,7 +119,7 @@ function Get-MomentsVisualFrame([IntPtr]$hWnd, $windowRect, [int]$expectedPid, [
   if ([Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -ne $hWnd) {
     return @{ ok = $false; reason = "moments_window_not_foreground" }
   }
-  if (-not (Test-MomentsVisualViewportOwned $windowRect $hWnd $expectedPid)) {
+  if ($requireFullViewportOwnership -and -not (Test-MomentsVisualViewportOwned $windowRect $hWnd $expectedPid)) {
     return @{ ok = $false; reason = "moments_window_obscured" }
   }
   $width = [int]($windowRect.Right - $windowRect.Left)

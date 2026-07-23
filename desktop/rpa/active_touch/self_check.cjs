@@ -684,7 +684,7 @@ try {
   assert.equal(sharedClicks, 1);
   assert.equal(loadState(sharedDir).conversation_token, "conversation:v1:81:91:shared", "exact WeChat-id search must bind the visual header observation token");
   assert.equal(loadState(sharedDir).conversation_title_mode, "visual_header", "new-render conversations may be verified without a UIA customer-name node");
-  const switchedConversation = refreshRealSendSession(sharedDir, () => ({
+  const titleBackedConversation = refreshRealSendSession(sharedDir, () => ({
     ok: true,
     pid: 81,
     hWnd: "91",
@@ -693,10 +693,10 @@ try {
     accountId: "account-a",
     accountVerified: true,
     verificationMode: "exact_wechat_id_search",
-    conversationTitleMode: "visual_header",
-    conversationToken: "conversation:v1:81:91:switched"
+    conversationTitleMode: "uia_header",
+    conversationToken: "conversation:v2:81:91:title:shared-title"
   }));
-  assert.equal(switchedConversation.ok, true, "an exact WeChat-ID session must tolerate cosmetic visual-token repaint after draft insertion");
+  assert.equal(titleBackedConversation.ok, true, "an exact visible UIA title may promote the frozen search session to a stable title token");
   const firstIncomingAttemptKey = crypto.createHash("sha256")
     .update(`incoming-turn-1\n${sharedContact.id}\n共享事务消息`)
     .digest("hex");
@@ -712,6 +712,8 @@ try {
     visualMode: "visual_render_v1",
     expectedPid: 81,
     expectedHWnd: "91",
+    expectedConversationEvidence: "visual-contact-evidence",
+    expectedConversationAliases: ["visual-contact-a", "visual-contact-b"],
     expectedConversation: "A测试客户",
     expectedIncomingMessage: "你是谁",
     expectedIncomingRuntimeId: `visual:v1:${"a".repeat(64)}`,
@@ -728,6 +730,8 @@ try {
         pid: request.pid,
         hWnd: request.hWnd,
         conversation: request.conversation,
+        conversationEvidence: request.conversationEvidence,
+        conversationAliases: request.conversationAliases,
         incomingMessage: request.incomingMessage,
         incomingMessageSignature: request.incomingMessageSignature,
         incomingVerified: request.incomingVerified,
@@ -738,6 +742,8 @@ try {
         conversation: "A测试客户",
         incomingMessage: "你是谁",
         incomingMessageSignature: "b".repeat(64),
+        conversationEvidence: "visual-contact-evidence",
+        conversationAliases: ["visual-contact-a", "visual-contact-b"],
         incomingVerified: true,
         reply: "视觉自动回复"
       });
@@ -1359,8 +1365,11 @@ try {
   assert.match(sendMessageSource, /GetDpiForWindow/);
   assert.match(sendMessageSource, /\$sendRightOffsetDip = 64/);
   assert.match(sendMessageSource, /\$sendBottomOffsetDip = 42/);
-  assert.match(sendMessageSource, /\$clickRect = \$root\.Current\.BoundingRectangle/);
-  assert.doesNotMatch(sendMessageSource, /GetWindowRect\([^\r\n]*clickRect/);
+  assert.match(sendMessageSource, /\$clickRect = \$windowRect/);
+  assert.match(sendMessageSource, /IsWindow\(\$expectedHWnd\)[\s\S]*IsWindowVisible\(\$expectedHWnd\)[\s\S]*GetWindowThreadProcessId\(\$expectedHWnd[\s\S]*GetWindowRect\(\$expectedHWnd/);
+  assert.doesNotMatch(sendMessageSource, /process\.MainWindowHandle|proc\.MainWindowHandle/);
+  assert.doesNotMatch(sendMessageSource, /MainWindowTitle\s*-eq|\$title\s*-eq\s*"微信"/);
+  assert.doesNotMatch(sendMessageSource, /\$root -eq \$null[^\r\n]*atomic_send_context_missing/);
   assert.match(sendMessageSource, /wechat_send_point_invalid/);
   assert.match(sendMessageSource, /WindowFromPoint\(\$sendPoint\)[\s\S]*GetAncestor\(\$pointWindow, 2\)[\s\S]*wechat_send_point_obscured[\s\S]*\$sendAttempted = \$true/);
   assert.match(sendMessageSource, /XIAOXI_EXPECTED_INCOMING_MESSAGE/);
@@ -1377,8 +1386,10 @@ try {
   assert.equal((developmentDriverSource.match(/\$headerLeft = .*Width \* 0\.36/g) || []).length, 2, "both visual conversation observations must use the stable chat-header region");
   assert.match(observeConversationSource, /IsWindow\(\$expectedHWnd\)[\s\S]*IsWindowVisible\(\$expectedHWnd\)[\s\S]*GetWindowThreadProcessId\(\$expectedHWnd/, "session refresh must validate the exact visible HWND and owning PID");
   assert.doesNotMatch(observeConversationSource, /process\.MainWindowHandle/, "Qt WeChat session refresh must not depend on Process.MainWindowHandle, which is zero on 4.1.11.54");
-  assert.match(sendMessageSource, /\$expectedConversationMode -ne "exact_wechat_id_search"[\s\S]*\$conversationBefore\.token -ceq \$expectedConversationToken/, "exact WeChat-ID sessions must not be blocked by a cosmetic visual-hash repaint");
-  assert.match(sendMessageSource, /\$expectedConversationMode -eq "exact_wechat_id_search" -or \$conversationAfterDraft\.token -ceq \$boundConversationToken/, "draft insertion must not invalidate an exact WeChat-ID session");
+  assert.doesNotMatch(observeConversationSource, /reason = "automation_root_missing"/, "an empty UIA compositor root must not invalidate the frozen Win32 window identity");
+  assert.match(observeConversationSource, /\$titleToken = ""[\s\S]*\$titleVisible[\s\S]*conversation:v2:[^\r\n]*:title:[\s\S]*\$visualFallback = -not \$titleVisible -and \$verificationMode -eq "exact_wechat_id_search"/, "a visible exact title must use a stable title token without requiring a visual hash");
+  assert.match(sendMessageSource, /\$titleProof = \$conversationBefore\.titleVisible[\s\S]*\$exactSearchVisualProof = \$expectedConversationMode -eq "exact_wechat_id_search" -and \$conversationBefore\.titleMode -eq "visual_header"[\s\S]*\$conversationVerified = \$titleProof -or \$exactSearchVisualProof -or \$conversationBefore\.token -ceq \$expectedConversationToken/, "an exact-WeChat-ID search may survive harmless raw header pixel drift");
+  assert.match(sendMessageSource, /\$boundConversationToken = \$conversationBefore\.token[\s\S]*\$exactSearchVisualProofAfterDraft = \$expectedConversationMode -eq "exact_wechat_id_search" -and \$conversationAfterDraft\.titleMode -eq "visual_header"[\s\S]*\$conversationAfterDraft\.token -ceq \$boundConversationToken/, "the post-draft check must relax only the exact-search visual hash while retaining window and composer identity");
   assert.match(sendMessageSource, /\$pointProcessId -eq \[uint32\]\$matched\.pid[\s\S]*\(\$renderChildClass -or \$wechatQtRootClass\)[\s\S]*\$renderSurfaceOwnsComposer/, "the visual composer proof must remain bound to the exact WeChat process and render surface");
   assert.match(sendMessageSource, /\$composerVerified = \$composerAfterDraft\.ok -and \$composerAfterDraft\.token -ceq \$composerBefore\.token/);
   assert.match(sendMessageSource, /GetCursorPos\(\[ref\]\$sendPoint\)[\s\S]*wechat_send_cursor_mismatch/);
@@ -1402,10 +1413,13 @@ try {
   assert.match(developmentDriverSource, /allowExactSearchFallback/);
   assert.match(developmentDriverSource, /\*\.db-wal/);
   assert.match(developmentDriverSource, /wechat_account_ambiguous/);
+  assert.match(developmentDriverSource, /\$exactSearchVisualProof = \$expectedConversationMode -eq "exact_wechat_id_search" -and \$conversationBefore\.titleMode -eq "visual_header"/);
+  assert.match(developmentDriverSource, /\$exactSearchVisualProofAfterDraft = \$expectedConversationMode -eq "exact_wechat_id_search" -and \$conversationAfterDraft\.titleMode -eq "visual_header"/);
   assert.match(developmentDriverSource, /\$outgoingExact\.Count -gt \$beforeExactCount/);
   assert.match(developmentDriverSource, /draftExact/);
   assert.match(developmentDriverSource, /draftConsumed/);
   assert.match(developmentDriverSource, /elseif \(\$draftConsumed\) \{ "draft_consumed" \}/);
+  assert.doesNotMatch(bubbleVerifierSource, /MainWindowHandle|MainWindowTitle\s*-ne|automation_root_missing/, "post-send proof must bind the expected HWND directly and retain clipboard fallback when UIA is empty");
   assert.match(developmentDriverSource, /XIAOXI_INPUT_X_RATIO/);
   assert.match(developmentDriverSource, /XIAOXI_INPUT_Y_RATIO/);
   assert.ok(driverSource.includes('$processNames = @("Weixin", "WeChat")'));
@@ -1417,7 +1431,39 @@ try {
   assert.match(driverSource, /const SIMPLE_ENSURE_WECHAT_WINDOW_SCRIPT/);
   assert.match(driverSource, /Buffer\.from\(`\$\{DPI_AWARE_POWERSHELL\}\\n\$\{SIMPLE_ENSURE_WECHAT_WINDOW_SCRIPT\}`/);
   assert.equal(driverSource.includes("if (!ensureResult.ok) return ensureResult;"), false);
-  assert.match(driverSource, /if \(Test-VisiblePersonalWechat\) \{ \[void\]\(Focus-PersonalWechatMainWindowByAutomation\) \}/);
+  const canonicalEnsureSource = driverSource.slice(
+    driverSource.indexOf("const ENSURE_WECHAT_WINDOW_SCRIPT"),
+    driverSource.indexOf("const SIMPLE_ENSURE_WECHAT_WINDOW_SCRIPT")
+  );
+  const simpleEnsureSource = driverSource.slice(
+    driverSource.indexOf("const SIMPLE_ENSURE_WECHAT_WINDOW_SCRIPT"),
+    driverSource.indexOf("function ensureWechatWindowVisible")
+  );
+  for (const ensureSource of [canonicalEnsureSource, simpleEnsureSource]) {
+    assert.match(ensureSource, /EnumWindows/);
+    assert.match(ensureSource, /GetWindowThreadProcessId/);
+    assert.match(ensureSource, /\$processNames = @\("Weixin", "WeChat"\)/);
+    assert.match(ensureSource, /\$isLogin(?:Size)? =/);
+    assert.match(ensureSource, /\$is(?:Normal)?Main(?:Window)? =/);
+    assert.doesNotMatch(ensureSource, /MainWindowHandle/);
+    assert.doesNotMatch(ensureSource, /MainWindowTitle/);
+    assert.doesNotMatch(ensureSource, /-eq "微信"/);
+    assert.doesNotMatch(ensureSource, /mouse_event/);
+  }
+  assert.match(canonicalEnsureSource, /Get-PersonalWechatWindows \| Where-Object \{ \$_\.isMain \}/);
+  assert.match(simpleEnsureSource, /Get-PersonalWechatTopLevelWindows \|[\s\S]*Where-Object \{ \$_\.isMain \}/);
+  assert.match(simpleEnsureSource, /struct WINDOWPLACEMENT[\s\S]*GetWindowPlacement/);
+  assert.match(simpleEnsureSource, /\$normalWidth = \$placement\.rcNormalPosition\.Right - \$placement\.rcNormalPosition\.Left/);
+  assert.match(simpleEnsureSource, /\$hasMainLayout = \$evidence\.effectiveWidth -ge 600 -and \$evidence\.effectiveHeight -ge 500/);
+  assert.match(simpleEnsureSource, /\$isMain = \$hasMainLayout -and \(\$evidence\.hasMainClass -or \$evidence\.hasMainStyle\)/);
+  assert.ok(
+    simpleEnsureSource.indexOf("GetWindowPlacement($hWnd") < simpleEnsureSource.indexOf("$isMain = $hasMainLayout"),
+    "the lightweight window adapter must inspect the restored-size evidence before rejecting a minimized main window"
+  );
+  assert.ok(
+    simpleEnsureSource.indexOf("ShowWindowAsync($hWnd, 9)") < simpleEnsureSource.indexOf("$visible = $rectAvailable"),
+    "a minimized main window must be restored before its live geometry is verified"
+  );
   assert.equal(driverSource.includes("XIAOXI_EXPECTED_ACCOUNT"), false);
   const taskIpcSource = fs.readFileSync(path.join(__dirname, "../../src/main/touch-task-ipc.cjs"), "utf8");
   assert.match(taskIpcSource, /function shouldSkipBlockedContact\([^)]*\)[\s\S]*contact_unavailable/);
@@ -1460,8 +1506,33 @@ try {
   assert.equal(developmentUiSource.includes("beginRealSendHold"), false);
   assert.equal(fs.existsSync(path.join(__dirname, "../../src/main/real-send-hold.dev.cjs")), false);
   assert.equal(fs.existsSync(path.join(__dirname, "../../src/main/real-send-hold.self_check.cjs")), false);
-  assert.match(driverSource, /\$proc\.MainWindowHandle -eq \$hWnd/);
-  assert.match(driverSource, /\$title -eq "微信"/);
+  const normalizerStart = driverSource.indexOf("const NORMALIZE_WECHAT_WINDOW_SCRIPT");
+  const normalizerEnd = driverSource.indexOf("function normalizeWechatMainWindow", normalizerStart);
+  const normalizerSource = driverSource.slice(normalizerStart, normalizerEnd);
+  assert.doesNotMatch(normalizerSource, /MainWindowHandle/, "the canonical window adapter must enumerate real HWNDs on WeChat 4.x");
+  assert.match(normalizerSource, /GetWindowThreadProcessId/, "the canonical window adapter must bind the HWND to its owning process");
+  assert.doesNotMatch(normalizerSource, /\$title -eq "微信"/, "window ownership and geometry, not an exact localized caption, identify WeChat");
+  assert.match(normalizerSource, /GetClassName/);
+  assert.match(normalizerSource, /GetWindowLong/);
+  assert.match(normalizerSource, /struct WINDOWPLACEMENT[\s\S]*GetWindowPlacement/);
+  assert.match(normalizerSource, /\$expectedHandleIsValid = [\s\S]*IsWindow\(\[IntPtr\]\$expectedHandleValue\)/);
+  assert.match(normalizerSource, /Get-WechatWindowCandidate \(\[IntPtr\]\$expectedHandleValue\) \$true/);
+  assert.match(normalizerSource, /\$normalWidth = \$placement\.rcNormalPosition\.Right - \$placement\.rcNormalPosition\.Left/);
+  assert.doesNotMatch(normalizerSource, /\$hasMainEvidence/);
+  assert.match(normalizerSource, /if \(-not \$exactExpectedHandle -and \$layoutRank -eq 0\)/);
+  assert.match(normalizerSource, /\$classRank = if \(\$className -ieq "mmui::MainWindow"\)/);
+  assert.match(normalizerSource, /\$layoutRank = if \(\$w -ge 720[\s\S]*\$aspectRatio -ge 1\.15\)/);
+  assert.match(normalizerSource, /\$styleRank = 0[\s\S]*0x00040000[\s\S]*0x00080000[\s\S]*0x00000080/);
+  assert.match(normalizerSource, /Sort-Object -Property \$sortRules/);
+  assert.match(normalizerSource, /\$_.classRank -eq \$best.classRank[\s\S]*\$_.layoutRank -eq \$best.layoutRank[\s\S]*\$_.styleRank -eq \$best.styleRank[\s\S]*\$_.area -eq \[int64\]\$best.area/);
+  assert.doesNotMatch(normalizerSource, /Sort-Object area -Descending/, "area alone must not select among unrelated WeChat top-level windows");
+  assert.doesNotMatch(normalizerSource, /reason = "wechat_focus_failed"/, "successful window identity and layout must not fail merely because Windows refused foreground activation");
+  assert.match(normalizerSource, /focused = \[bool\]\$focused/);
+  assert.ok(
+    normalizerSource.indexOf("ShowWindowAsync($hWnd, 9)") < normalizerSource.indexOf("$restoredMainLayout ="),
+    "the canonical adapter must restore a minimized window before validating its live main-window geometry"
+  );
+  assert.match(normalizerSource, /\$restoredMainLayout = [\s\S]*IsWindowVisible\(\$hWnd\)[\s\S]*-not \[Win32WechatWindow\]::IsIconic\(\$hWnd\)[\s\S]*-ge 600[\s\S]*-ge 500/);
 
   let asyncPowerShellYielded = false;
   const asyncPowerShell = runPowerShellAsync(`$padding = "${"x".repeat(40_000)}"\nStart-Sleep -Milliseconds 50\n@{ ok = $true; length = $padding.Length } | ConvertTo-Json -Compress`, {}, { ensure: false, timeout: 5_000 });

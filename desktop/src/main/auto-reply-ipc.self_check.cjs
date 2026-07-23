@@ -16,10 +16,10 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-auto-reply-v3-"));
 const activeTouchDir = path.join(root, "active_touch");
 fs.mkdirSync(activeTouchDir, { recursive: true });
 fs.writeFileSync(path.join(activeTouchDir, "contacts.json"), JSON.stringify([
-  { id: "c1", name: "张总", allowed: true, wechatAccountId: "wx-a", wechatId: "zhang" },
-  { id: "c2", name: "李经理", allowed: true, wechatAccountId: "wx-a", wechatId: "li" },
-  { id: "dup-1", name: "同名客户", allowed: true, wechatAccountId: "wx-a", wechatId: "dup1" },
-  { id: "dup-2", name: "同名客户", allowed: true, wechatAccountId: "wx-a", wechatId: "dup2" },
+  { id: "c1", name: "张总", remark: "共同备注", nickname: "阿张", allowed: true, wechatAccountId: "wx-a", wechatId: "zhang" },
+  { id: "c2", name: "李经理", remark: "共同备注", nickname: "小李", allowed: true, wechatAccountId: "wx-a", wechatId: "li" },
+  { id: "dup-1", name: "同名客户", remark: "客户甲", allowed: true, wechatAccountId: "wx-a", wechatId: "dup1" },
+  { id: "dup-2", name: "同名客户", remark: "客户乙", allowed: true, wechatAccountId: "wx-a", wechatId: "dup2" },
   { id: "helper", name: "文件传输助手", allowed: true, wechatAccountId: "wx-a", wechatId: "filehelper" },
   { id: "group", name: "项目讨论", allowed: true, wechatAccountId: "wx-a", wechatId: "project", wxid: "group@chatroom" },
   { id: "official", name: "品牌服务号", allowed: true, wechatAccountId: "wx-a", wechatId: "brand", wxid: "gh_brand" },
@@ -172,7 +172,7 @@ async function main() {
     expectedConversation: "张总"
   }, "visual candidates must keep their exact WeChat binding through the real-send call");
   assert.equal(handoffs.length, 0, "interest that can continue through AI guidance must not alert a human");
-  assert.deepEqual(scannedNames[0].sort(), ["张总", "李经理", "已停用"].sort(), "legacy whitelist flags must not narrow the synced private-contact scope");
+  assert.deepEqual(scannedNames[0].sort(), ["张总", "阿张", "李经理", "小李", "客户甲", "客户乙", "已停用"].sort(), "the observer must receive every unique display alias, exclude collisions, and never treat opaque WeChat IDs as titles");
 
   await controller.runOnce();
   assert.equal(sent.length, 1, "same runtime message must not send twice");
@@ -538,6 +538,23 @@ async function main() {
   assert.equal(rejectedRetryController.status().status, "paused");
   assert.equal(rejectedRetryController.status().last_event, "send_retry_queue_paused");
 
+  let changedDuringSendRequeues = 0;
+  const changedDuringSendCandidate = visualGuardCandidate({ message: "message changed while sending", runtimeChar: "6", evidenceChar: "7" });
+  const changedDuringSendScan = () => changedDuringSendCandidate;
+  changedDuringSendScan.requeue = () => { changedDuringSendRequeues += 1; return true; };
+  const changedDuringSendController = createAutoReplyController(guardedControllerOptions({
+    dataDir: path.join(root, "visual_send_incoming_changed"),
+    scanIncoming: changedDuringSendScan,
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      return { ok: false, blocked_reason: "visual_send_incoming_changed", send_attempted: false };
+    }
+  }));
+  assert.equal((await changedDuringSendController.start()).ok, true);
+  await changedDuringSendController.runOnce();
+  assert.equal(changedDuringSendController.status().last_event, "manual_reply_or_message_changed");
+  assert.equal(changedDuringSendRequeues, 0, "a changed incoming bubble must cancel stale generated copy instead of retrying it");
+
   let unknownSendCalls = 0;
   const unknownSendDataDir = path.join(root, "unknown_customer_send");
   const unknownSendController = createAutoReplyController({
@@ -568,32 +585,77 @@ async function main() {
   unknownSendController.pause();
 
   const unknownVisualDir = path.join(root, "unknown_visual_occurrence_fence");
+  const unknownVisualVerifiedFirst = visualGuardCandidate({ message: "verified visual turn", runtimeChar: "7", evidenceChar: "a" });
   const unknownVisualFirst = visualGuardCandidate({ message: "visual outcome is unknown", runtimeChar: "9", evidenceChar: "b" });
   let unknownVisualSends = 0;
+  let unknownVisualBoundaryAttempts = 0;
+  let unknownVisualTurnEpoch = 0;
+  const unknownVisualCandidates = [unknownVisualVerifiedFirst, unknownVisualFirst];
+  const unknownVisualScan = () => unknownVisualCandidates.shift() || { ok: false, reason: "no_unread_message" };
+  unknownVisualScan.noteSendAttempted = (_candidate, metadata) => {
+    if (metadata.outcomeUnknown === true) {
+      unknownVisualBoundaryAttempts += 1;
+      return { advanced: false, outcomeUnknown: true, turnEpoch: unknownVisualTurnEpoch };
+    }
+    assert.equal(metadata.verificationMode, "visual_message_bubble");
+    unknownVisualTurnEpoch += 1;
+    return { advanced: true, turnEpoch: unknownVisualTurnEpoch };
+  };
   const unknownVisualController = createAutoReplyController(guardedControllerOptions({
     dataDir: unknownVisualDir,
-    scanIncoming: () => unknownVisualFirst,
+    scanIncoming: unknownVisualScan,
     send: async (options) => {
       assert.equal(await options.beforeDraft(), true);
       unknownVisualSends += 1;
+      if (unknownVisualSends === 1) return { ok: true, send_attempted: true, verification_mode: "visual_message_bubble" };
       return { ok: false, blocked_reason: "outcome_unknown", send_attempted: null };
     }
   }));
   assert.equal((await unknownVisualController.start()).ok, true);
   await unknownVisualController.runOnce();
+  assert.equal(unknownVisualController.status().last_event, "reply_sent_verified", "the first verified visual turn must establish epoch one");
+  await unknownVisualController.runOnce();
   assert.equal(unknownVisualController.status().last_event, "send_outcome_unknown_paused");
-  assert.equal(JSON.parse(fs.readFileSync(path.join(unknownVisualDir, "auto-reply-state.json"), "utf8")).reply_guards.c1.delivery_status, "outcome_unknown");
+  const unknownVisualState = JSON.parse(fs.readFileSync(path.join(unknownVisualDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(unknownVisualState.reply_guards.c1.delivery_status, "outcome_unknown");
+  assert.equal(unknownVisualState.reply_guards.c1.turn_epoch, 1, "an outcome-unknown click must persist the current visual turn even when it did not advance it");
+  assert.equal(unknownVisualBoundaryAttempts, 1);
 
-  const unknownVisualRewrapped = visualGuardCandidate({ message: "visual outcome is unknown", runtimeChar: "0", evidenceChar: "b" });
+  const unknownVisualRewrapped = visualGuardCandidate({
+    message: "visual outcome is unknown after harmless OCR drift",
+    runtimeChar: "9",
+    evidenceChar: "b"
+  });
+  let restoredVisualTurns = [];
+  const unknownVisualRestartScan = () => unknownVisualRewrapped;
+  unknownVisualRestartScan.restoreTurnBoundaries = (turns) => { restoredVisualTurns = turns; return turns.length; };
   const unknownVisualRestarted = createAutoReplyController(guardedControllerOptions({
     dataDir: unknownVisualDir,
-    scanIncoming: () => unknownVisualRewrapped,
+    scanIncoming: unknownVisualRestartScan,
     send: async () => { unknownVisualSends += 1; return { ok: true }; }
   }));
   assert.equal((await unknownVisualRestarted.start()).ok, true);
+  assert.equal(restoredVisualTurns[0].turnEpoch, 1, "the controller must restore the persisted per-contact turn before priming");
+  assert.equal(unknownVisualRewrapped.runtimeId, unknownVisualFirst.runtimeId, "rebuilding the unresolved original bubble must retain its public occurrence ID");
   await unknownVisualRestarted.runOnce();
-  assert.equal(unknownVisualSends, 1, "an outcome-unknown occurrence fence must survive restart and reject a rewrapped runtime ID");
+  assert.equal(unknownVisualSends, 2, "an outcome-unknown v2 occurrence fence must survive restart and reject OCR drift in the same turn");
   assert.equal(unknownVisualRestarted.status().last_event, "outcome_unknown_occurrence_skipped");
+
+  const unknownVisualSameTextNewTurn = visualGuardCandidate({ message: "visual outcome is unknown", runtimeChar: "0", evidenceChar: "b" });
+  const unknownVisualSameTextNewTurnController = createAutoReplyController(guardedControllerOptions({
+    dataDir: unknownVisualDir,
+    scanIncoming: () => unknownVisualSameTextNewTurn,
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      unknownVisualSends += 1;
+      return { ok: true, send_attempted: true };
+    }
+  }));
+  assert.equal((await unknownVisualSameTextNewTurnController.start()).ok, true);
+  await unknownVisualSameTextNewTurnController.runOnce();
+  assert.equal(unknownVisualSends, 3, "the semantic v1 OCR signature must not block a later v2 turn with the same customer text");
+  assert.equal(unknownVisualSameTextNewTurnController.status().last_event, "reply_sent_verified");
+  unknownVisualSameTextNewTurnController.pause();
 
   const unknownVisualNewTurn = visualGuardCandidate({ message: "a later customer turn", runtimeChar: "8", evidenceChar: "c" });
   const unknownVisualNewTurnController = createAutoReplyController(guardedControllerOptions({
@@ -607,7 +669,7 @@ async function main() {
   }));
   assert.equal((await unknownVisualNewTurnController.start()).ok, true);
   await unknownVisualNewTurnController.runOnce();
-  assert.equal(unknownVisualSends, 2, "an unknown send fences only that occurrence, not all future messages from the contact");
+  assert.equal(unknownVisualSends, 4, "an unknown send fences only that occurrence, not all future messages from the contact");
   assert.equal(unknownVisualNewTurnController.status().last_event, "reply_sent_verified");
   unknownVisualNewTurnController.pause();
 
@@ -702,14 +764,21 @@ async function main() {
   assert.equal(cancelledPrimeController.status().scan_health, "checking", "a stale prime result must not mutate health after pause");
   assert.doesNotMatch(fs.readFileSync(path.join(cancelledPrimeDir, "auto-reply-diagnostics.jsonl"), "utf8"), /baseline_ready/, "a stale prime result must not write a success diagnostic");
 
+  let scrolledPrimeCalls = 0;
+  let scrolledScanCalls = 0;
   const scrolledPrimeController = createAutoReplyController({
     dataDir: path.join(root, "startup_prime_scrolled"),
     activeTouchDir,
     coordinator,
     expertStore: { read: () => ({ text: "礼貌回复。" }) },
     deepSeekClient: { assertAvailable: () => true },
-    scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
-    primeIncoming: async () => ({ ok: false, reason: "history_not_at_bottom" }),
+    scanIncoming: () => { scrolledScanCalls += 1; return { ok: false, reason: "no_unread_message" }; },
+    primeIncoming: async () => {
+      scrolledPrimeCalls += 1;
+      return scrolledPrimeCalls === 1
+        ? { ok: false, reason: "history_not_at_bottom" }
+        : { ok: true, reason: "baseline_ready" };
+    },
     send: async () => ({ ok: true }),
     sendHandoff: async () => ({ ok: true }),
     runStep: async () => ({ ok: true }),
@@ -717,11 +786,18 @@ async function main() {
     cancelSchedule: () => undefined,
     now: () => new Date("2026-07-14T10:00:00+08:00")
   });
-  assert.equal((await scrolledPrimeController.start()).ok, false);
-  assert.equal(scrolledPrimeController.status().status, "paused", "startup must stay paused when the current conversation is not at the bottom");
-  assert.equal(scrolledPrimeController.status().last_event, "start_failed");
-  assert.equal(scrolledPrimeController.status().scan_health, "warning");
+  assert.equal((await scrolledPrimeController.start()).ok, true);
+  assert.equal(scrolledPrimeController.status().status, "running", "a transient viewport prime failure must not stop the listener");
+  assert.equal(scrolledPrimeController.status().last_event, "started");
+  assert.equal(scrolledPrimeController.status().scan_health, "checking");
+  assert.equal(scrolledPrimeController.status().consecutive_scan_failures, 0);
   assert.equal(scrolledPrimeController.status().last_scan_reason, "history_not_at_bottom");
+  assert.match(fs.readFileSync(path.join(root, "startup_prime_scrolled", "auto-reply-diagnostics.jsonl"), "utf8"), /prime_deferred/);
+  await scrolledPrimeController.runOnce();
+  assert.equal(scrolledPrimeCalls, 2, "the next poll must retry a deferred startup prime");
+  assert.equal(scrolledScanCalls, 1, "a successful retry may continue into the ordinary scan");
+  assert.equal(scrolledPrimeController.status().scan_health, "healthy");
+  scrolledPrimeController.pause();
 
   const unsupportedSessionPrimeController = createAutoReplyController({
     dataDir: path.join(root, "startup_session_probe_unsupported"),
@@ -789,7 +865,12 @@ async function main() {
       hWnd: "91",
       conversation: "visual-contact-canary",
       message: "visual-message-canary",
-      context: [{ role: "user", content: "visual-context-canary", key: "visual-key-canary" }]
+      context: [{ role: "user", content: "visual-context-canary", key: "visual-key-canary" }],
+      transitionDetail: "current_identity_invalid",
+      nestedReason: "conversation_title_unresolved",
+      window: { x: -1200, y: 0, width: 1100, height: 700, title: "window-title-canary", key: "window-key-canary" },
+      DPI: 120,
+      counts: { bubble_count: 3, ocr_rows: 8, message_text: "count-message-canary", runtime_key: "count-key-canary" }
     }),
     verifyIncoming: () => ({ ok: true }),
     send: async () => ({ ok: true }),
@@ -804,7 +885,12 @@ async function main() {
   assert.equal(visualDiagnosticController.status().last_scan_reason, "visual_sidebar_match_ambiguous", "known visual scan failures must remain actionable");
   const visualDiagnosticLog = fs.readFileSync(path.join(visualDiagnosticDir, "auto-reply-diagnostics.jsonl"), "utf8");
   assert.match(visualDiagnosticLog, /"code":"visual_sidebar_match_ambiguous"/);
-  assert.doesNotMatch(visualDiagnosticLog, /visual-contact-canary|visual-message-canary|visual-context-canary|visual-key-canary/, "visual scan diagnostics must not persist contact or message content");
+  assert.match(visualDiagnosticLog, /"transitionDetail":"current_identity_invalid"/);
+  assert.match(visualDiagnosticLog, /"nestedReason":"conversation_title_unresolved"/);
+  assert.match(visualDiagnosticLog, /"window":\{"x":-1200,"y":0,"width":1100,"height":700\}/);
+  assert.match(visualDiagnosticLog, /"DPI":120/);
+  assert.match(visualDiagnosticLog, /"counts":\{"bubble_count":3,"ocr_rows":8\}/);
+  assert.doesNotMatch(visualDiagnosticLog, /visual-contact-canary|visual-message-canary|visual-context-canary|visual-key-canary|window-title-canary|window-key-canary|count-message-canary|count-key-canary/, "visual scan diagnostics must preserve only structured content-free fields");
   visualDiagnosticController.pause();
 
   const transientFenceDir = path.join(root, "scan_transient_fences");
@@ -959,10 +1045,10 @@ async function main() {
   });
   assert.equal((await unresolvedHealthController.start()).ok, true);
   await unresolvedHealthController.runOnce();
-  assert.equal(unresolvedHealthController.status().status, "running", "an unresolved opened-unread observation must stay pending without stopping the global listener");
-  assert.equal(unresolvedHealthController.status().last_event, "pending_observation_retrying");
-  assert.equal(unresolvedHealthController.status().pending_retry_count, 1);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(root, "scan_unresolved_health", "auto-reply-state.json"), "utf8")).pending_observation.reason, "unread_preview_unresolved");
+  assert.equal(unresolvedHealthController.status().status, "running", "an unresolved opened-unread observation must not stop the global listener");
+  assert.equal(unresolvedHealthController.status().last_event, "unread_preview_unresolved");
+  assert.equal(unresolvedHealthController.status().pending_retry_count, 0);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, "scan_unresolved_health", "auto-reply-state.json"), "utf8")).pending_observation, null);
 
   const unresolvedCurrentTransitionController = createAutoReplyController({
     dataDir: path.join(root, "scan_current_transition_unresolved"),
@@ -970,7 +1056,15 @@ async function main() {
     coordinator,
     expertStore: { read: () => ({ text: "Reply briefly." }) },
     deepSeekClient: { assertAvailable: () => true },
-    scanIncoming: () => ({ ok: false, reason: "current_transition_unresolved", pid: 81, hWnd: "91" }),
+    scanIncoming: () => ({
+      ok: false,
+      reason: "current_transition_unresolved",
+      conversation: "张三",
+      pid: 81,
+      hWnd: "91",
+      pendingPreviewSignature: "a".repeat(64),
+      pendingMessageSignature: "b".repeat(64)
+    }),
     verifyIncoming: () => ({ ok: false }),
     send: async () => { throw new Error("unresolved current transition must never send"); },
     sendHandoff: async () => ({ ok: true }),
@@ -982,8 +1076,9 @@ async function main() {
   assert.equal((await unresolvedCurrentTransitionController.start()).ok, true);
   await unresolvedCurrentTransitionController.runOnce();
   assert.equal(unresolvedCurrentTransitionController.status().status, "running", "an unstable current-open transition must remain unsendable while other polls continue");
-  assert.equal(unresolvedCurrentTransitionController.status().last_event, "pending_observation_retrying");
-  assert.equal(unresolvedCurrentTransitionController.status().pending_retry_count, 1);
+  assert.equal(unresolvedCurrentTransitionController.status().last_event, "current_transition_unresolved");
+  assert.equal(unresolvedCurrentTransitionController.status().pending_retry_count, 0, "a generic transition fence must never become durable recovery state, even with complete live evidence");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, "scan_current_transition_unresolved", "auto-reply-state.json"), "utf8")).pending_observation, null);
 
   const fencedRetryVisualRuntime = `visual:v1:${"a".repeat(64)}`;
   const fencedRetryVisualCandidate = {
@@ -1035,7 +1130,7 @@ async function main() {
   assert.equal(fencedRetryVisualDriver.scanWechatIncoming.requeue(fencedRetryVisualCandidate), true);
   await fencedRetryController.runOnce();
   assert.equal(fencedRetryController.status().status, "running", "an unresolved live transition must fence sends without stopping the listener");
-  assert.equal(fencedRetryController.status().last_event, "pending_observation_retrying");
+  assert.equal(fencedRetryController.status().last_event, "current_transition_unresolved");
   assert.equal(fencedRetryAiCalls, 0);
   assert.equal(fencedRetrySendCalls, 0);
 
@@ -1045,7 +1140,7 @@ async function main() {
   const pendingVisualRuntime = `visual:v1:${"f".repeat(64)}`;
   const pendingFirstScan = () => ({
     ok: false,
-    reason: "current_transition_unresolved",
+    reason: "unread_preview_pending",
     conversation: "张总",
     pid: 81,
     hWnd: "91",
@@ -1125,10 +1220,310 @@ async function main() {
   assert.equal(restoredPending.key, persistedPending.key, "restart must restore the exact durable pending observation");
   assert.equal(restartResetCalls, 0, "startup must not reset baselines while a pending observation exists");
   assert.equal(restartPrimeCalls, 0, "startup must not prime over a pending observation");
-  await pendingRestartController.runOnce();
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(pendingRestartDir, "auto-reply-state.json"), "utf8")).pending_observation.key,
+    persistedPending.key,
+    "a successful driver handoff must remain durable until the recovered candidate is actually observed"
+  );
+  let restoredPendingAfterCrash;
+  const pendingCrashRestartScan = () => recoveredCandidate;
+  pendingCrashRestartScan.restorePendingObservation = (value) => { restoredPendingAfterCrash = value; return true; };
+  pendingCrashRestartScan.resetBaselines = () => { restartResetCalls += 1; };
+  const pendingCrashRestartController = createAutoReplyController({
+    dataDir: pendingRestartDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: { assertAvailable: () => true, reply: async () => ({ reply: "Acknowledged.", needsHuman: false }) },
+    scanIncoming: pendingCrashRestartScan,
+    primeIncoming: async () => { restartPrimeCalls += 1; return { ok: true, primed: true }; },
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      pendingRestartSends += 1;
+      return { ok: true, verification_mode: "visual_message_bubble" };
+    },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:05+08:00")
+  });
+  assert.equal((await pendingCrashRestartController.start()).ok, true, "a crash after handoff must leave the pending observation recoverable on the next process start");
+  assert.equal(restoredPendingAfterCrash.key, persistedPending.key);
+  await pendingCrashRestartController.runOnce();
   assert.equal(pendingRestartSends, 1);
   assert.equal(JSON.parse(fs.readFileSync(path.join(pendingRestartDir, "auto-reply-state.json"), "utf8")).pending_observation, null);
-  pendingRestartController.pause();
+  pendingCrashRestartController.pause();
+
+  const generationCrashDir = path.join(root, "reply_generation_crash_recovery");
+  const generationCrashCandidate = visualGuardCandidate({
+    message: "recover this occurrence after generation hangs",
+    runtimeChar: "7",
+    evidenceChar: "8"
+  });
+  let generationEntered;
+  const generationStarted = new Promise((resolve) => { generationEntered = resolve; });
+  const generationCrashScan = () => generationCrashCandidate;
+  const generationCrashController = createAutoReplyController(guardedControllerOptions({
+    dataDir: generationCrashDir,
+    scanIncoming: generationCrashScan,
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => {
+        generationEntered();
+        return new Promise(() => undefined);
+      }
+    },
+    send: async () => { throw new Error("a hung generation must never reach send"); }
+  }));
+  assert.equal((await generationCrashController.start()).ok, true);
+  void generationCrashController.runOnce();
+  await generationStarted;
+  const generationCrashState = JSON.parse(fs.readFileSync(path.join(generationCrashDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(generationCrashState.pending_observation.reason, "reply_in_flight", "a complete occurrence must remain durable while DeepSeek is pending");
+  assert.equal(Object.values(generationCrashState.processed)[0].status, "generating");
+  assert.equal(JSON.stringify(generationCrashState.pending_observation).includes(generationCrashCandidate.message), false, "in-flight recovery must not persist customer text");
+
+  let restoredGenerationCrash;
+  let generationCrashSends = 0;
+  const generationRecoveryScan = () => generationCrashCandidate;
+  generationRecoveryScan.restorePendingObservation = (value) => { restoredGenerationCrash = value; return true; };
+  const generationRecoveryController = createAutoReplyController(guardedControllerOptions({
+    dataDir: generationCrashDir,
+    scanIncoming: generationRecoveryScan,
+    deepSeekClient: { assertAvailable: () => true, reply: async () => ({ reply: "Recovered once.", needsHuman: false }) },
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      generationCrashSends += 1;
+      return { ok: true, send_attempted: true };
+    }
+  }));
+  assert.equal((await generationRecoveryController.start()).ok, true);
+  assert.equal(restoredGenerationCrash.reason, "reply_in_flight");
+  await generationRecoveryController.runOnce();
+  await generationRecoveryController.runOnce();
+  assert.equal(generationCrashSends, 1, "a generation crash must recover the same v2 occurrence exactly once");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(generationCrashDir, "auto-reply-state.json"), "utf8")).pending_observation, null, "sent_verified is terminal and must clear pending recovery");
+  generationRecoveryController.pause();
+
+  const readyCrashDir = path.join(root, "reply_ready_before_draft_crash");
+  const readyCrashCandidate = visualGuardCandidate({ message: "generated but not drafted", runtimeChar: "9", evidenceChar: "a" });
+  let readySendEntered;
+  const readySendStarted = new Promise((resolve) => { readySendEntered = resolve; });
+  const readyCrashController = createAutoReplyController(guardedControllerOptions({
+    dataDir: readyCrashDir,
+    scanIncoming: () => readyCrashCandidate,
+    send: async () => {
+      readySendEntered();
+      return new Promise(() => undefined);
+    }
+  }));
+  assert.equal((await readyCrashController.start()).ok, true);
+  void readyCrashController.runOnce();
+  await readySendStarted;
+  const readyCrashState = JSON.parse(fs.readFileSync(path.join(readyCrashDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(Object.values(readyCrashState.processed)[0].status, "ready_to_send", "generation completion before draft must remain a known-unsent state");
+  assert.ok(readyCrashState.pending_observation, "known-unsent pre-draft work must retain its occurrence");
+
+  let readyRecoverySends = 0;
+  const readyRecoveryScan = () => readyCrashCandidate;
+  readyRecoveryScan.restorePendingObservation = () => true;
+  const readyRecoveryController = createAutoReplyController(guardedControllerOptions({
+    dataDir: readyCrashDir,
+    scanIncoming: readyRecoveryScan,
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      readyRecoverySends += 1;
+      return { ok: true, send_attempted: true };
+    }
+  }));
+  assert.equal((await readyRecoveryController.start()).ok, true);
+  await readyRecoveryController.runOnce();
+  await readyRecoveryController.runOnce();
+  assert.equal(readyRecoverySends, 1, "a crash before draft begins must recover and send the occurrence once");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(readyCrashDir, "auto-reply-state.json"), "utf8")).pending_observation, null);
+  readyRecoveryController.pause();
+
+  const sendingCrashDir = path.join(root, "reply_sending_crash_unknown");
+  const sendingCrashCandidate = visualGuardCandidate({ message: "sending may have clicked", runtimeChar: "b", evidenceChar: "c" });
+  let sendingEntered;
+  const sendingStarted = new Promise((resolve) => { sendingEntered = resolve; });
+  const sendingCrashController = createAutoReplyController(guardedControllerOptions({
+    dataDir: sendingCrashDir,
+    scanIncoming: () => sendingCrashCandidate,
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      sendingEntered();
+      return new Promise(() => undefined);
+    }
+  }));
+  assert.equal((await sendingCrashController.start()).ok, true);
+  void sendingCrashController.runOnce();
+  await sendingStarted;
+  const sendingCrashState = JSON.parse(fs.readFileSync(path.join(sendingCrashDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(Object.values(sendingCrashState.processed)[0].status, "sending");
+  assert.ok(sendingCrashState.pending_observation, "a possibly attempted send keeps its occurrence until restart classifies it");
+
+  let sendingRecoverySends = 0;
+  const sendingRecoveryScan = () => sendingCrashCandidate;
+  sendingRecoveryScan.restorePendingObservation = () => true;
+  const sendingRecoveryController = createAutoReplyController(guardedControllerOptions({
+    dataDir: sendingCrashDir,
+    scanIncoming: sendingRecoveryScan,
+    send: async () => { sendingRecoverySends += 1; return { ok: true, send_attempted: true }; }
+  }));
+  const sendingRecoveredBeforeStart = JSON.parse(fs.readFileSync(path.join(sendingCrashDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(Object.values(sendingRecoveredBeforeStart.processed)[0].status, "outcome_unknown");
+  assert.equal(sendingRecoveredBeforeStart.pending_observation, null, "restart must clear pending as soon as sending becomes terminal outcome_unknown");
+  assert.equal((await sendingRecoveryController.start()).ok, true);
+  await sendingRecoveryController.runOnce();
+  const sendingRecoveryState = JSON.parse(fs.readFileSync(path.join(sendingCrashDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(sendingRecoverySends, 0, "a crash after draft/send may have started must never auto-resend");
+  assert.equal(Object.values(sendingRecoveryState.processed)[0].status, "outcome_unknown");
+  assert.equal(sendingRecoveryState.pending_observation, null, "outcome_unknown is terminal and clears pending recovery");
+  sendingRecoveryController.pause();
+
+  const stalePendingDir = path.join(root, "stale_pending_window");
+  fs.mkdirSync(stalePendingDir, { recursive: true });
+  fs.writeFileSync(path.join(stalePendingDir, "auto-reply-state.json"), JSON.stringify({
+    version: 3,
+    status: "paused",
+    daily_date: "2026-07-14",
+    pending_observation: {
+      reason: "unread_preview_pending",
+      conversation: "张总",
+      pid: 80,
+      hWnd: "90",
+      message_signature: "a".repeat(64),
+      attempts: 1,
+      first_seen_at: "2026-07-14T02:00:00.000Z",
+      last_seen_at: "2026-07-14T02:00:00.000Z"
+    }
+  }), "utf8");
+  let stalePendingRestoreCalls = 0;
+  let stalePendingResetCalls = 0;
+  let stalePendingPrimeCalls = 0;
+  const stalePendingScan = () => ({ ok: false, reason: "no_unread_message" });
+  stalePendingScan.restorePendingObservation = () => { stalePendingRestoreCalls += 1; return false; };
+  stalePendingScan.resetBaselines = () => { stalePendingResetCalls += 1; };
+  const stalePendingController = createAutoReplyController({
+    dataDir: stalePendingDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: { assertAvailable: () => true },
+    scanIncoming: stalePendingScan,
+    primeIncoming: () => { stalePendingPrimeCalls += 1; return { ok: true, reason: "baseline_ready" }; },
+    verifyIncoming: () => ({ ok: false }),
+    send: async () => ({ ok: true }),
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:05+08:00")
+  });
+  assert.equal((await stalePendingController.start()).ok, true);
+  assert.equal(stalePendingRestoreCalls, 1);
+  assert.equal(stalePendingResetCalls, 1, "a rejected old PID/HWND must reset the stale driver baseline");
+  assert.equal(stalePendingPrimeCalls, 1, "a rejected old PID/HWND must fall back to a fresh prime");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(stalePendingDir, "auto-reply-state.json"), "utf8")).pending_observation, null);
+  stalePendingController.pause();
+
+  const reboundPendingDir = path.join(root, "pending_observation_window_rebind");
+  fs.mkdirSync(reboundPendingDir, { recursive: true });
+  fs.writeFileSync(path.join(reboundPendingDir, "auto-reply-state.json"), JSON.stringify({
+    version: 3,
+    status: "paused",
+    daily_date: "2026-07-14",
+    pending_observation: {
+      reason: "unread_preview_pending",
+      conversation: guardConversation,
+      pid: 80,
+      hWnd: "90",
+      message_signature: "a".repeat(64),
+      attempts: 1,
+      first_seen_at: "2026-07-14T02:00:00.000Z",
+      last_seen_at: "2026-07-14T02:00:00.000Z"
+    }
+  }), "utf8");
+  const reboundCandidate = visualGuardCandidate({
+    message: "recovered after the WeChat window restarted",
+    runtimeChar: "3",
+    evidenceChar: "4",
+    signatureChar: "a"
+  });
+  reboundCandidate.pid = 81;
+  reboundCandidate.hWnd = "91";
+  const reboundResults = [
+    { ok: false, reason: "wechat_process_changed", conversation: guardConversation, pid: 81, hWnd: "91" },
+    reboundCandidate,
+    reboundCandidate
+  ];
+  const reboundRestores = [];
+  let reboundSends = 0;
+  const reboundScan = () => reboundResults.shift() || { ok: false, reason: "no_unread_message" };
+  reboundScan.restorePendingObservation = (value) => { reboundRestores.push(value); return true; };
+  const reboundController = createAutoReplyController(guardedControllerOptions({
+    dataDir: reboundPendingDir,
+    scanIncoming: reboundScan,
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      reboundSends += 1;
+      return { ok: true, send_attempted: true, verification_mode: "visual_message_bubble" };
+    }
+  }));
+  assert.equal((await reboundController.start()).ok, true);
+  assert.equal(reboundRestores.length, 1, "startup must hand off the durable observation without consuming it");
+  await reboundController.runOnce();
+  const reboundState = JSON.parse(fs.readFileSync(path.join(reboundPendingDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(reboundState.pending_observation.pid, 81);
+  assert.equal(reboundState.pending_observation.hWnd, "91");
+  assert.equal(reboundState.pending_observation.rebind_attempts, 1);
+  assert.equal(reboundRestores.length, 2, "one changed WeChat window may rebind the same contact + message signature once");
+  assert.equal(reboundSends, 0);
+  await reboundController.runOnce();
+  assert.equal(reboundSends, 1, "the exact recovered message may send only after the new window re-verifies it");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(reboundPendingDir, "auto-reply-state.json"), "utf8")).pending_observation, null);
+  await reboundController.runOnce();
+  assert.equal(reboundSends, 1, "the recovered occurrence must remain exactly-once after its durable pending record is consumed");
+  reboundController.pause();
+
+  const boundedRebindDir = path.join(root, "pending_observation_rebind_bounded");
+  fs.mkdirSync(boundedRebindDir, { recursive: true });
+  fs.writeFileSync(path.join(boundedRebindDir, "auto-reply-state.json"), JSON.stringify({
+    version: 3,
+    status: "paused",
+    daily_date: "2026-07-14",
+    pending_observation: {
+      reason: "unread_preview_pending",
+      conversation: guardConversation,
+      pid: 80,
+      hWnd: "90",
+      message_signature: "a".repeat(64),
+      attempts: 1,
+      first_seen_at: "2026-07-14T02:00:00.000Z",
+      last_seen_at: "2026-07-14T02:00:00.000Z"
+    }
+  }), "utf8");
+  const boundedRebindResults = [
+    { ok: false, reason: "wechat_window_changed", conversation: guardConversation, pid: 81, hWnd: "91" },
+    { ok: false, reason: "wechat_window_changed", conversation: guardConversation, pid: 82, hWnd: "92" }
+  ];
+  let boundedRestoreCalls = 0;
+  const boundedRebindScan = () => boundedRebindResults.shift() || { ok: false, reason: "no_unread_message" };
+  boundedRebindScan.restorePendingObservation = () => { boundedRestoreCalls += 1; return true; };
+  const boundedRebindController = createAutoReplyController(guardedControllerOptions({
+    dataDir: boundedRebindDir,
+    scanIncoming: boundedRebindScan,
+    send: async () => { throw new Error("an unresolved second window change must never send"); }
+  }));
+  assert.equal((await boundedRebindController.start()).ok, true);
+  await boundedRebindController.runOnce();
+  await boundedRebindController.runOnce();
+  assert.equal(boundedRestoreCalls, 2, "window rebinding must be bounded to the initial handoff plus one rebind");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(boundedRebindDir, "auto-reply-state.json"), "utf8")).pending_observation, null);
+  boundedRebindController.pause();
 
   const repeatedOccurrenceDir = path.join(root, "same_occurrence_twenty_scans");
   const repeatedOccurrence = {
@@ -1517,6 +1912,7 @@ async function main() {
     scanIncoming: () => ({
       ok: true,
       conversation: retryableCandidate.conversation,
+      conversationEvidence: "visual-ocr-contact",
       message: "Visual incoming message",
       runtimeId: "visual-post-draft-runtime",
       visualMode: "visual_render_v1",
@@ -1526,6 +1922,9 @@ async function main() {
     }),
     verifyIncoming: () => ({ ok: ++visualPostDraftChecks === 1 }),
     send: async (options) => {
+      assert.equal(options.expectedConversationEvidence, "visual-ocr-contact");
+      assert.equal(Array.isArray(options.expectedConversationAliases), true);
+      assert.equal(options.expectedConversationAliases.includes(retryableCandidate.conversation), true);
       assert.equal(await options.beforeDraft(), true, "a bound visual occurrence must proceed without a second OCR pass");
       assert.equal(await options.shouldContinue(), true, "post-draft layout reflow must not trigger a second pixel-bound incoming check");
       return { ok: true, send_attempted: true };
@@ -1602,7 +2001,7 @@ async function main() {
   assert.equal(Object.values(staleUnknownState.processed).at(-1).status, "outcome_unknown", "a stale run must preserve an unknown click outcome instead of cancelling it");
   assert.equal(staleUnknownState.reply_guards.c1.delivery_status, "outcome_unknown");
 
-  const staleUnknownRewrapped = visualGuardCandidate({ message: staleUnknownFirst.message, runtimeChar: "b", evidenceChar: "f" });
+  const staleUnknownRewrapped = visualGuardCandidate({ message: `${staleUnknownFirst.message} OCR drift`, runtimeChar: "a", evidenceChar: "f" });
   const staleUnknownRestarted = createAutoReplyController(guardedControllerOptions({
     dataDir: staleUnknownDir,
     scanIncoming: () => staleUnknownRewrapped,
@@ -1946,11 +2345,9 @@ async function main() {
     now: () => new Date("2026-07-14T10:00:00+08:00")
   });
   assert.equal(restoredQueueController.status().last_event, "recovered_after_restart");
-  assert.equal((await restoredQueueController.start()).ok, false);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(restartQueueDir, "auto-reply-state.json"), "utf8")).pending_handoffs.length, 2, "a failed start must not discard known-unsent handoff identities");
-  restoredQueuePrimeOk = true;
   const restoredQueueStart = await restoredQueueController.start();
-  assert.equal(restoredQueueStart.ok, true, "known-unsent handoffs must not block automatic replies after restart");
+  assert.equal(restoredQueueStart.ok, true, "a transient prime failure must not block known-unsent handoff recovery after restart");
+  assert.equal(restoredQueueStart.state.scan_health, "checking");
   assert.equal(restoredQueueStart.state.last_event, "handoff_manual_followup_required");
   assert.match(restoredQueueStart.state.last_error, /尚未补发/);
   let restoredQueueState = JSON.parse(fs.readFileSync(path.join(restartQueueDir, "auto-reply-state.json"), "utf8"));
@@ -2559,7 +2956,7 @@ async function main() {
     },
     scanIncoming: () => ({
       ok: true,
-      conversation: "Remote Alias",
+      conversation: "阿张",
       discoveredConversation: true,
       message: "Hello from another computer",
       runtimeId: "remote-alias-1",
@@ -2581,9 +2978,43 @@ async function main() {
   });
   assert.equal((await discoveredController.start()).ok, true);
   await discoveredController.runOnce();
-  assert.equal(discoveredSend?.expectedConversation, "Remote Alias", "auto reply must use the actual rendered WeChat alias even when it is absent from contacts.json");
+  assert.equal(discoveredSend?.expectedConversation, "阿张", "a unique synced nickname may bind the rendered WeChat conversation");
   assert.equal(discoveredController.status().reply_count, 1);
   discoveredController.pause();
+
+  let arbitraryDiscoverySends = 0;
+  const arbitraryDiscoveryController = createAutoReplyController({
+    dataDir: path.join(root, "arbitrary_discovery_rejected"),
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => ({ reply: "Must not send.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })
+    },
+    scanIncoming: () => ({
+      ok: true,
+      conversation: "Remote Alias",
+      discoveredConversation: true,
+      message: "Unknown contact",
+      runtimeId: "remote-unknown-1",
+      pid: 81,
+      hWnd: "91",
+      context: [{ role: "user", content: "Unknown contact", key: "remote-unknown-1" }]
+    }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => { arbitraryDiscoverySends += 1; return { ok: true }; },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-15T10:00:00+08:00")
+  });
+  assert.equal((await arbitraryDiscoveryController.start()).ok, true);
+  await arbitraryDiscoveryController.runOnce();
+  assert.equal(arbitraryDiscoverySends, 0, "visual autodiscovery must never authorize an unsynced conversation");
+  assert.equal(arbitraryDiscoveryController.status().last_event, "conversation_not_eligible");
+  arbitraryDiscoveryController.pause();
   console.log("auto-reply v3 self-check passed");
 }
 

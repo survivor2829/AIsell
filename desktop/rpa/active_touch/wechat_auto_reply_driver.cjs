@@ -67,6 +67,7 @@ public static class Win32WechatAutoReply {
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
   [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
 }
 "@
 try { [void][Win32WechatAutoReply]::SetThreadDpiAwarenessContext([IntPtr](-4)) } catch {}
@@ -74,6 +75,8 @@ try { [void][Win32WechatAutoReply]::SetThreadDpiAwarenessContext([IntPtr](-4)) }
 $script:sessionBaselines = $null
 $script:pendingSessionConversation = ""
 $script:sessionProbeDiagnostics = $null
+$script:windowIdentity = $null
+$script:windowDpi = $null
 function Write-Result($value) {
   if ($value -is [System.Collections.IDictionary] -and $null -ne $script:sessionBaselines) {
     $value["sessionBaselines"] = @($script:sessionBaselines)
@@ -83,6 +86,12 @@ function Write-Result($value) {
   }
   if ($value -is [System.Collections.IDictionary] -and $null -ne $script:sessionProbeDiagnostics) {
     $value["sessionProbe"] = $script:sessionProbeDiagnostics
+  }
+  if ($value -is [System.Collections.IDictionary] -and $null -ne $script:windowIdentity) {
+    $value["window"] = $script:windowIdentity
+  }
+  if ($value -is [System.Collections.IDictionary] -and $null -ne $script:windowDpi) {
+    $value["dpi"] = $script:windowDpi
   }
   $value | ConvertTo-Json -Compress -Depth 5
   exit
@@ -836,6 +845,17 @@ try { $root = [System.Windows.Automation.AutomationElement]::FromHandle($hWnd) }
 if ($root -eq $null) { Write-Result @{ ok = $false; reason = "automation_root_missing" } }
 $windowRect = $root.Current.BoundingRectangle
 if ($windowRect.Width -lt 400 -or $windowRect.Height -lt 300) { Write-Result @{ ok = $false; reason = "wechat_window_not_ready" } }
+$script:windowIdentity = @{
+  x = [int][Math]::Round($windowRect.Left)
+  y = [int][Math]::Round($windowRect.Top)
+  width = [int][Math]::Round($windowRect.Width)
+  height = [int][Math]::Round($windowRect.Height)
+}
+$script:windowDpi = [int]96
+try {
+  $reportedDpi = [Win32WechatAutoReply]::GetDpiForWindow($hWnd)
+  if ($reportedDpi -ge 72 -and $reportedDpi -le 480) { $script:windowDpi = [int]$reportedDpi }
+} catch {}
 $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
 $sessionProbe = $null
 $sessionRows = @()
@@ -1043,7 +1063,13 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
   let sessionPreviewPrimedAt = 0;
   let sessionPreviewProcess = null;
   let needsReprime = false;
-  let activeScanMode = "uia";
+  let normalizedWindowIdentity = null;
+  let windowNormalized = false;
+  let normalizedForReprime = false;
+  // WeChat 4.1.x exposes only a compositor pane through UIA on many machines.
+  // Pick one adapter for the whole run instead of probing UIA and then silently
+  // switching baselines underneath the visual scanner.
+  let activeScanMode = "visual";
   let visualDriver = null;
 
   const scanFenceReasons = new Set([
@@ -1064,7 +1090,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     if (visualDriver) return visualDriver;
     try {
       const { createWechatVisualAutoReplyDriver } = require("./wechat_auto_reply_visual_driver.dev.cjs");
-      visualDriver = createWechatVisualAutoReplyDriver(powerShellRunner);
+      visualDriver = createWechatVisualAutoReplyDriver(powerShellRunner, () => normalizedWindowIdentity);
       return visualDriver;
     } catch {
       return null;
@@ -1103,24 +1129,66 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     return Number.isSafeInteger(pid) && pid > 0 && /^[1-9][0-9]{0,19}$/.test(hWnd) ? { pid, hWnd } : null;
   }
 
-  function resetSessionIdentityForReprime() {
+  function windowIdentity(result) {
+    const process = processIdentity(result);
+    if (!process) return null;
+    const window = result?.window && typeof result.window === "object" ? result.window : result;
+    const number = (...values) => {
+      const value = values.map(Number).find(Number.isFinite);
+      return value === undefined ? null : Math.round(value);
+    };
+    const x = number(window.x, window.left);
+    const y = number(window.y, window.top);
+    const width = number(window.width, Number(window.right) - Number(window.left));
+    const height = number(window.height, Number(window.bottom) - Number(window.top));
+    const dpi = number(result?.dpi, result?.DPI, result?.windowDpi, window.dpi, window.DPI);
+    return { ...process, x, y, width, height, dpi };
+  }
+
+  function materiallyChangedWindow(expected, observed) {
+    if (!expected || !observed) return false;
+    if (expected.pid !== observed.pid || expected.hWnd !== observed.hWnd) return true;
+    for (const field of ["x", "y", "width", "height"]) {
+      if (expected[field] !== null && observed[field] !== null && Math.abs(expected[field] - observed[field]) > 3) return true;
+    }
+    return expected.dpi !== null && observed.dpi !== null && expected.dpi !== observed.dpi;
+  }
+
+  function resetSessionIdentityForReprime({ windowAlreadyNormalized = false } = {}) {
     currentSessionBaselines.clear();
     sessionPreviewBaselines.clear();
     sessionPreviewPrimed = false;
     sessionPreviewPrimedAt = 0;
     sessionPreviewProcess = null;
     needsReprime = true;
+    normalizedForReprime = windowAlreadyNormalized;
   }
 
-  async function normalizeWindowForExecution() {
+  async function normalizeWindowForExecution(expectedIdentity = null) {
     let normalized;
     try {
-      normalized = await Promise.resolve(windowNormalizer());
+      normalized = await Promise.resolve(windowNormalizer(expectedIdentity ? {
+        expectedPid: expectedIdentity.pid,
+        expectedHWnd: expectedIdentity.hWnd
+      } : {}));
     } catch {
       return { ok: false, reason: "wechat_window_not_ready" };
     }
     if (normalized?.ok !== true) return normalized?.reason ? normalized : { ok: false, reason: "wechat_window_not_ready" };
+    normalizedWindowIdentity = windowIdentity(normalized);
+    windowNormalized = true;
     return null;
+  }
+
+  async function normalizeChangedWindow(result) {
+    const observed = windowIdentity(result);
+    if (!observed || !normalizedWindowIdentity
+      || observed.pid !== normalizedWindowIdentity.pid
+      || observed.hWnd !== normalizedWindowIdentity.hWnd
+      || !materiallyChangedWindow(normalizedWindowIdentity, observed)) return false;
+    const failure = await normalizeWindowForExecution(observed);
+    resetSessionIdentityForReprime({ windowAlreadyNormalized: !failure });
+    return failure || { ok: false, reason: "wechat_window_changed", pid: observed.pid, hWnd: observed.hWnd };
   }
 
   function applySessionBaselines(result, allowed, { priming = false } = {}) {
@@ -1154,8 +1222,11 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
   async function primeWechatSession(names) {
     const allowed = allowedNames(names);
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
-    const windowFailure = await normalizeWindowForExecution();
-    if (windowFailure) return windowFailure;
+    if (normalizedForReprime) normalizedForReprime = false;
+    else {
+      const windowFailure = await normalizeWindowForExecution();
+      if (windowFailure) return windowFailure;
+    }
     if (activeScanMode === "visual") {
       const driver = getVisualDriver();
       return driver ? driver.primeWechatSession(allowed) : { ok: false, reason: "visual_driver_missing" };
@@ -1199,12 +1270,24 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
       const primed = await primeWechatSession(allowed);
       return primed?.ok === true ? { ok: false, reason: "current_session_baselined" } : primed;
     }
-    const windowFailure = await normalizeWindowForExecution();
-    if (windowFailure) return windowFailure;
+    if (!windowNormalized) {
+      const windowFailure = await normalizeWindowForExecution();
+      if (windowFailure) return windowFailure;
+    }
     if (activeScanMode === "visual") {
       const driver = getVisualDriver();
       if (!driver) return { ok: false, reason: "visual_driver_missing" };
       const result = visualCandidate(await driver.scanWechatIncoming(allowed));
+      if (result?.reason === "wechat_process_changed" || result?.reason === "wechat_window_changed") {
+        // The visual adapter has dropped its old binding. Drop the shared
+        // normalizer identity too; otherwise the next prime would be forced
+        // back onto the dead HWND forever.
+        normalizedWindowIdentity = null;
+        windowNormalized = false;
+        return result;
+      }
+      const changedWindow = await normalizeChangedWindow(result);
+      if (changedWindow) return changedWindow;
       const fenced = scanFenceResult(result);
       if (!fenced) return result;
       if (result?.ok === true && result?.scanProbe) driver.scanWechatIncoming?.requeue?.(result);
@@ -1231,6 +1314,8 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
       const primed = await switchToVisualPrime(allowed, result);
       return primed?.ok === true ? { ok: false, reason: "current_session_baselined" } : primed;
     }
+    const changedWindow = await normalizeChangedWindow(result);
+    if (changedWindow) return changedWindow;
     const fenced = scanFenceResult(result);
     if (fenced) return fenced;
     const observedIdentity = processIdentity(result);
@@ -1238,7 +1323,9 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
       sessionPreviewProcess.pid !== observedIdentity.pid || sessionPreviewProcess.hWnd !== observedIdentity.hWnd
     );
     if (identityChanged || result?.reason === "wechat_process_changed" || result?.reason === "wechat_window_changed") {
-      resetSessionIdentityForReprime();
+      const observed = windowIdentity(result);
+      const windowFailure = observed ? await normalizeWindowForExecution(observed) : null;
+      resetSessionIdentityForReprime({ windowAlreadyNormalized: Boolean(observed) && !windowFailure });
       return result?.reason === "wechat_window_changed" ? result : { ...result, ok: false, reason: "wechat_process_changed" };
     }
     applySessionBaselines(result, allowed);
@@ -1299,6 +1386,16 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     if (!isVisualCandidate(candidate)) return false;
     return getVisualDriver()?.scanWechatIncoming?.noteVerifiedSend?.(candidate, metadata) === true;
   };
+  scanWechatIncoming.noteSendAttempted = (candidate, metadata) => {
+    if (!isVisualCandidate(candidate)) return false;
+    return getVisualDriver()?.scanWechatIncoming?.noteSendAttempted?.(candidate, metadata) || false;
+  };
+  scanWechatIncoming.restoreTurnBoundaries = (values) => {
+    const driver = getVisualDriver();
+    if (!driver?.scanWechatIncoming?.restoreTurnBoundaries) return 0;
+    activeScanMode = "visual";
+    return driver.scanWechatIncoming.restoreTurnBoundaries(values);
+  };
   scanWechatIncoming.requeue = (candidate) => {
     if (candidate?.ok !== true) return false;
     if (isVisualCandidate(candidate)) {
@@ -1313,13 +1410,16 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
   };
   scanWechatIncoming.resetBaselines = () => {
     baselineEpoch += 1;
-    activeScanMode = "uia";
+    activeScanMode = "visual";
     currentSessionBaselines.clear();
     sessionPreviewBaselines.clear();
     sessionPreviewPrimed = false;
     sessionPreviewPrimedAt = 0;
     sessionPreviewProcess = null;
     needsReprime = false;
+    normalizedWindowIdentity = null;
+    windowNormalized = false;
+    normalizedForReprime = false;
     visualDriver?.scanWechatIncoming?.resetBaselines?.();
   };
   return { primeWechatSession, scanWechatIncoming, verifyWechatIncoming };

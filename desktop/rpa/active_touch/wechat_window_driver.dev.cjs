@@ -1,10 +1,6 @@
 const {
-  focusWechatWindow,
-  focusWechatWindowAsync,
   runPowerShell,
-  runPowerShellAsync,
-  verifyWechatCurrentConversation: verifyWechatCurrentConversationSafe,
-  verifyWechatCurrentConversationAsync: verifyWechatCurrentConversationSafeAsync
+  runPowerShellAsync
 } = require("./wechat_window_driver.cjs");
 
 const SEND_MESSAGE_SCRIPT = `
@@ -19,8 +15,7 @@ using System.Runtime.InteropServices;
 public static class Win32WechatSendMessage {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
-  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr extraData);
+  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -75,15 +70,25 @@ function Get-ElementKey([System.Windows.Automation.AutomationElement]$element, $
 }
 
 function Get-ConversationObservation([IntPtr]$hWnd, [string]$expectedTitle, [string]$verificationMode) {
-  $freshRoot = [System.Windows.Automation.AutomationElement]::FromHandle($hWnd)
-  if ($freshRoot -eq $null) { return @{ ok = $false; reason = "automation_root_missing" } }
-  try { $freshRect = $freshRoot.Current.BoundingRectangle } catch { return @{ ok = $false; reason = "automation_root_missing" } }
+  $nativeRect = New-Object Win32WechatSendMessage+RECT
+  if (-not [Win32WechatSendMessage]::GetWindowRect($hWnd, [ref]$nativeRect)) { return @{ ok = $false; reason = "real_send_session_changed" } }
+  $freshRect = [pscustomobject]@{
+    Left = [double]$nativeRect.Left
+    Top = [double]$nativeRect.Top
+    Right = [double]$nativeRect.Right
+    Bottom = [double]$nativeRect.Bottom
+    Width = [double]($nativeRect.Right - $nativeRect.Left)
+    Height = [double]($nativeRect.Bottom - $nativeRect.Top)
+  }
+  $freshRoot = $null
+  try { $freshRoot = [System.Windows.Automation.AutomationElement]::FromHandle($hWnd) } catch {}
   # WeChat 4.1's left session list occupies roughly the first third of the window.
   # Keep the identity token wholly inside the chat header so a sidebar [Draft]
   # preview cannot change the active-conversation fingerprint.
   $headerLeft = $freshRect.Left + ($freshRect.Width * 0.36)
   $titleVisible = $false
   try {
+    if ($freshRoot -eq $null) { throw "uia_root_unavailable" }
     $freshAll = $freshRoot.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
     for ($index = 0; $index -lt $freshAll.Count; $index++) {
       $candidate = $freshAll.Item($index)
@@ -96,6 +101,15 @@ function Get-ConversationObservation([IntPtr]$hWnd, [string]$expectedTitle, [str
     }
   } catch {}
 
+  $titleToken = ""
+  if ($titleVisible) {
+    try {
+      $titleSha = [System.Security.Cryptography.SHA256]::Create()
+      $titleHash = -join ($titleSha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($expectedTitle)) | ForEach-Object { $_.ToString("x2") })
+      $titleSha.Dispose()
+      $titleToken = "conversation:v2:$($matched.pid):$($matched.hWnd):title:$titleHash"
+    } catch { $titleToken = "" }
+  }
   $visualHash = ""
   try {
     $captureLeft = [int]$headerLeft
@@ -119,14 +133,18 @@ function Get-ConversationObservation([IntPtr]$hWnd, [string]$expectedTitle, [str
     }
   } catch { $visualHash = "" }
 
-  $visualMode = $verificationMode -eq "exact_wechat_id_search"
-  $verified = -not [string]::IsNullOrWhiteSpace($visualHash) -and ($visualMode -or $titleVisible)
+  # The visual hash proves that the same header pixels stayed stable; it cannot
+  # identify a contact by itself. Only a visible matching title or an upstream
+  # frozen exact-WeChat-ID search transaction may bind the conversation.
+  $visualFallback = -not $titleVisible -and $verificationMode -eq "exact_wechat_id_search"
+  $visualToken = $(if ([string]::IsNullOrWhiteSpace($visualHash)) { "" } else { "conversation:v2:$($matched.pid):$($matched.hWnd):visual:$visualHash" })
+  $verified = (-not [string]::IsNullOrWhiteSpace($titleToken)) -or ($visualFallback -and -not [string]::IsNullOrWhiteSpace($visualToken))
   return @{
     ok = $verified
     reason = $(if ($verified) { "" } elseif ([string]::IsNullOrWhiteSpace($visualHash)) { "conversation_visual_token_unavailable" } else { "atomic_conversation_changed" })
     titleVisible = $titleVisible
     titleMode = $(if ($titleVisible) { "uia_header" } else { "visual_header" })
-    token = $(if ([string]::IsNullOrWhiteSpace($visualHash)) { "" } else { "conversation:v1:$($matched.pid):$($matched.hWnd):$visualHash" })
+    token = $(if ($titleVisible) { $titleToken } else { $visualToken })
     root = $freshRoot
     rect = $freshRect
   }
@@ -209,58 +227,50 @@ function Get-ComposerObservation([System.Windows.Automation.AutomationElement]$f
   }
   return @{ ok = $false; reason = "atomic_composer_not_verified"; diagnostics = $composerDiagnostics }
 }
-  $processNames = @("Weixin", "WeChat")
-$matched = $null
-$callback = [Win32WechatSendMessage+EnumWindowsProc]{
-  param([IntPtr]$hWnd, [IntPtr]$lParam)
-  if ($matched -ne $null) { return $true }
-  if ([Win32WechatSendMessage]::IsWindowVisible($hWnd)) {
-    $text = New-Object System.Text.StringBuilder 512
-    [void][Win32WechatSendMessage]::GetWindowText($hWnd, $text, $text.Capacity)
-    $title = $text.ToString().Trim()
-    $rect = New-Object Win32WechatSendMessage+RECT
-    [void][Win32WechatSendMessage]::GetWindowRect($hWnd, [ref]$rect)
-    $w = $rect.Right - $rect.Left
-    $h = $rect.Bottom - $rect.Top
-    [uint32]$windowProcessId = 0
-    [void][Win32WechatSendMessage]::GetWindowThreadProcessId($hWnd, [ref]$windowProcessId)
-    $proc = Get-Process -Id $windowProcessId -ErrorAction SilentlyContinue
-    $matchesExpected = ([string]::IsNullOrWhiteSpace($expectedPid) -or [string]$windowProcessId -eq $expectedPid) -and ([string]::IsNullOrWhiteSpace($expectedHandle) -or [string]$hWnd.ToInt64() -eq $expectedHandle)
-    if ($proc -and $matchesExpected -and [int64]$proc.MainWindowHandle -eq $hWnd.ToInt64() -and $processNames -contains $proc.ProcessName -and $title -eq "微信" -and $w -ge 400 -and $h -ge 300) {
-      [void][Win32WechatSendMessage]::ShowWindowAsync($hWnd, 9)
-      $focused = [Win32WechatSendMessage]::SetForegroundWindow($hWnd)
-      if (-not $focused) { try { $focused = (New-Object -ComObject WScript.Shell).AppActivate([int]$windowProcessId) } catch {} }
-      Start-Sleep -Milliseconds 200
-      $focused = $focused -or ([Win32WechatSendMessage]::GetForegroundWindow() -eq $hWnd)
-      $script:matched = @{ title = $title; focused = $focused; processName = $proc.ProcessName; pid = $windowProcessId; hWnd = $hWnd.ToInt64() }
-    }
-  }
-  return $true
+if ([string]::IsNullOrWhiteSpace($expectedPid) -or [string]::IsNullOrWhiteSpace($expectedHandle) -or [string]::IsNullOrWhiteSpace($expectedConversation) -or [string]::IsNullOrWhiteSpace($expectedMessage)) {
+  @{ ok = $false; reason = "atomic_send_context_missing"; sendAttempted = $false } | ConvertTo-Json -Compress
+  exit
 }
-[void][Win32WechatSendMessage]::EnumWindows($callback, [IntPtr]::Zero)
-if ($matched -eq $null) {
+$expectedHWnd = [IntPtr][int64]$expectedHandle
+$nativeRect = New-Object Win32WechatSendMessage+RECT
+[uint32]$windowProcessId = 0
+$windowExists = [Win32WechatSendMessage]::IsWindow($expectedHWnd)
+$windowVisible = [Win32WechatSendMessage]::IsWindowVisible($expectedHWnd)
+$windowThreadId = [Win32WechatSendMessage]::GetWindowThreadProcessId($expectedHWnd, [ref]$windowProcessId)
+$rectAvailable = [Win32WechatSendMessage]::GetWindowRect($expectedHWnd, [ref]$nativeRect)
+$proc = Get-Process -Id $windowProcessId -ErrorAction SilentlyContinue
+$w = $nativeRect.Right - $nativeRect.Left
+$h = $nativeRect.Bottom - $nativeRect.Top
+if (-not $windowExists -or -not $windowVisible -or $windowThreadId -eq 0 -or [string]$windowProcessId -ne $expectedPid -or $proc -eq $null -or @("Weixin", "WeChat") -notcontains $proc.ProcessName -or -not $rectAvailable -or $w -lt 400 -or $h -lt 300) {
   @{ ok = $false; reason = "atomic_expected_window_not_found"; sendAttempted = $false } | ConvertTo-Json -Compress
   exit
 }
+$text = New-Object System.Text.StringBuilder 512
+[void][Win32WechatSendMessage]::GetWindowText($expectedHWnd, $text, $text.Capacity)
+[void][Win32WechatSendMessage]::ShowWindowAsync($expectedHWnd, 9)
+$focused = [Win32WechatSendMessage]::SetForegroundWindow($expectedHWnd)
+if (-not $focused) { try { $focused = (New-Object -ComObject WScript.Shell).AppActivate([int]$windowProcessId) } catch {} }
+Start-Sleep -Milliseconds 200
+$focused = [Win32WechatSendMessage]::GetForegroundWindow() -eq $expectedHWnd
+$matched = @{ title = $text.ToString().Trim(); focused = $focused; processName = $proc.ProcessName; pid = $windowProcessId; hWnd = $expectedHWnd.ToInt64() }
 if (-not $matched.focused) {
   @{ ok = $false; reason = "wechat_focus_failed"; title = $matched.title; processName = $matched.processName; sendAttempted = $false } | ConvertTo-Json -Compress
   exit
 }
-$root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr][int64]$matched.hWnd)
-if ($root -eq $null -or [string]::IsNullOrWhiteSpace($expectedConversation) -or [string]::IsNullOrWhiteSpace($expectedMessage)) {
-  @{ ok = $false; reason = "atomic_send_context_missing"; sendAttempted = $false } | ConvertTo-Json -Compress
-  exit
-}
+$root = $null
+try { $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr][int64]$matched.hWnd) } catch {}
 $conversationBefore = Get-ConversationObservation ([IntPtr][int64]$matched.hWnd) $expectedConversation $expectedConversationMode
 $conversationVerified = $conversationBefore.ok -and -not [string]::IsNullOrWhiteSpace($conversationBefore.token)
-if ($conversationVerified -and $expectedConversationMode -ne "exact_wechat_id_search" -and -not [string]::IsNullOrWhiteSpace($expectedConversationToken)) {
-  $conversationVerified = $conversationBefore.token -ceq $expectedConversationToken
+if ($conversationVerified -and -not [string]::IsNullOrWhiteSpace($expectedConversationToken)) {
+  $titleProof = $conversationBefore.titleVisible -and $expectedConversationMode -eq "exact_wechat_id_search"
+  $exactSearchVisualProof = $expectedConversationMode -eq "exact_wechat_id_search" -and $conversationBefore.titleMode -eq "visual_header"
+  $conversationVerified = $titleProof -or $exactSearchVisualProof -or $conversationBefore.token -ceq $expectedConversationToken
 }
 if (-not $conversationVerified) {
   @{ ok = $false; reason = $(if ($conversationBefore.reason) { $conversationBefore.reason } else { "atomic_conversation_changed" }); conversationToken = $conversationBefore.token; conversationTitleMode = $conversationBefore.titleMode; sendAttempted = $false } | ConvertTo-Json -Compress
   exit
 }
-$boundConversationToken = $(if ([string]::IsNullOrWhiteSpace($expectedConversationToken)) { $conversationBefore.token } else { $expectedConversationToken })
+$boundConversationToken = $conversationBefore.token
 $root = $conversationBefore.root
 $windowRect = $conversationBefore.rect
 
@@ -282,7 +292,7 @@ try {
   Start-Sleep -Milliseconds 35
   [Win32WechatSendMessage]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 60
-  $composerBefore = Get-ComposerObservation $root $windowRect $inputX $inputY $expectedConversationMode
+  $composerBefore = Get-ComposerObservation $root $windowRect $inputX $inputY $conversationBefore.titleMode
   if (-not $composerBefore.ok) {
     @{ ok = $false; reason = $composerBefore.reason; composerDiagnostics = $composerBefore.diagnostics; conversationVerified = $conversationVerified; composerVerified = $false; sendAttempted = $false } | ConvertTo-Json -Compress -Depth 6
     exit
@@ -300,14 +310,16 @@ try {
   }
 
   $conversationAfterDraft = Get-ConversationObservation ([IntPtr][int64]$matched.hWnd) $expectedConversation $expectedConversationMode
-  $conversationVerified = $conversationAfterDraft.ok -and ($expectedConversationMode -eq "exact_wechat_id_search" -or $conversationAfterDraft.token -ceq $boundConversationToken)
+  $titleProofAfterDraft = $conversationAfterDraft.titleVisible -and $expectedConversationMode -eq "exact_wechat_id_search"
+  $exactSearchVisualProofAfterDraft = $expectedConversationMode -eq "exact_wechat_id_search" -and $conversationAfterDraft.titleMode -eq "visual_header"
+  $conversationVerified = $conversationAfterDraft.ok -and ($titleProofAfterDraft -or $exactSearchVisualProofAfterDraft -or $conversationAfterDraft.token -ceq $boundConversationToken)
   if (-not $conversationVerified) {
     @{ ok = $false; reason = "atomic_conversation_changed"; conversationVerified = $false; conversationToken = $conversationAfterDraft.token; draftVerified = $draftVerified; composerVerified = $composerBefore.ok; sendAttempted = $false } | ConvertTo-Json -Compress
     exit
   }
   $root = $conversationAfterDraft.root
   $windowRect = $conversationAfterDraft.rect
-  $composerAfterDraft = Get-ComposerObservation $root $windowRect $inputX $inputY $expectedConversationMode
+  $composerAfterDraft = Get-ComposerObservation $root $windowRect $inputX $inputY $conversationAfterDraft.titleMode
   $composerVerified = $composerAfterDraft.ok -and $composerAfterDraft.token -ceq $composerBefore.token
   if (-not $composerVerified) {
     @{ ok = $false; reason = "atomic_composer_changed"; conversationVerified = $conversationVerified; draftVerified = $draftVerified; composerVerified = $false; sendAttempted = $false } | ConvertTo-Json -Compress
@@ -319,12 +331,7 @@ try {
     exit
   }
 
-  try {
-    $clickRect = $root.Current.BoundingRectangle
-  } catch {
-    @{ ok = $false; reason = "wechat_send_point_invalid"; conversationVerified = $conversationVerified; draftVerified = $draftVerified; sendAttempted = $false } | ConvertTo-Json -Compress
-    exit
-  }
+  $clickRect = $windowRect
   $dpi = 96
   try {
     $windowDpi = [int][Win32WechatSendMessage]::GetDpiForWindow([IntPtr][int64]$matched.hWnd)
@@ -413,10 +420,16 @@ Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System;
+using System.Text;
 using System.Runtime.InteropServices;
 public static class Win32WechatConversationObservation {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 }
 "@
@@ -434,22 +447,35 @@ $expectedHWnd = [IntPtr][int64]$expectedHandle
 $expectedWindowExists = [Win32WechatConversationObservation]::IsWindow($expectedHWnd)
 $expectedWindowVisible = [Win32WechatConversationObservation]::IsWindowVisible($expectedHWnd)
 $expectedWindowThreadId = [Win32WechatConversationObservation]::GetWindowThreadProcessId($expectedHWnd, [ref]$observedWindowPid)
+$nativeRect = New-Object Win32WechatConversationObservation+RECT
+$rectAvailable = [Win32WechatConversationObservation]::GetWindowRect($expectedHWnd, [ref]$nativeRect)
+$windowWidth = $nativeRect.Right - $nativeRect.Left
+$windowHeight = $nativeRect.Bottom - $nativeRect.Top
 $windowStillOwned = $expectedWindowExists -and $expectedWindowVisible -and
   $expectedWindowThreadId -ne 0 -and
-  $observedWindowPid -eq [uint32][int]$expectedPid
+  $observedWindowPid -eq [uint32][int]$expectedPid -and
+  $rectAvailable -and $windowWidth -ge 400 -and $windowHeight -ge 300
 if ($process -eq $null -or @("Weixin", "WeChat") -notcontains $process.ProcessName -or -not $windowStillOwned) {
   @{ ok = $false; reason = "real_send_session_changed"; expectedHWnd = [int64]$expectedHWnd; expectedPid = [int]$expectedPid; processName = [string]$process.ProcessName; windowExists = $expectedWindowExists; windowVisible = $expectedWindowVisible; windowThreadId = $expectedWindowThreadId; observedWindowPid = $observedWindowPid } | ConvertTo-Json -Compress
   exit
 }
-$root = [System.Windows.Automation.AutomationElement]::FromHandle($expectedHWnd)
-if ($root -eq $null) {
-  @{ ok = $false; reason = "automation_root_missing" } | ConvertTo-Json -Compress
+$focused = [Win32WechatConversationObservation]::SetForegroundWindow($expectedHWnd)
+Start-Sleep -Milliseconds 160
+$focused = [Win32WechatConversationObservation]::GetForegroundWindow() -eq $expectedHWnd
+if (-not $focused) {
+  @{ ok = $false; reason = "wechat_focus_failed"; pid = $process.Id; hWnd = [int64]$expectedHWnd } | ConvertTo-Json -Compress
   exit
 }
-try { $windowRect = $root.Current.BoundingRectangle } catch {
-  @{ ok = $false; reason = "automation_root_missing" } | ConvertTo-Json -Compress
-  exit
+$windowRect = [pscustomobject]@{
+  Left = [double]$nativeRect.Left
+  Top = [double]$nativeRect.Top
+  Right = [double]$nativeRect.Right
+  Bottom = [double]$nativeRect.Bottom
+  Width = [double]$windowWidth
+  Height = [double]$windowHeight
 }
+$root = $null
+try { $root = [System.Windows.Automation.AutomationElement]::FromHandle($expectedHWnd) } catch {}
 function Get-ObservedElementText([System.Windows.Automation.AutomationElement]$element) {
   try {
     $name = [string]$element.Current.Name
@@ -464,6 +490,7 @@ function Get-ObservedElementText([System.Windows.Automation.AutomationElement]$e
 $headerLeft = $windowRect.Left + ($windowRect.Width * 0.36)
 $titleVisible = $false
 try {
+  if ($root -eq $null) { throw "uia_root_unavailable" }
   $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
   for ($index = 0; $index -lt $all.Count; $index++) {
     $element = $all.Item($index)
@@ -475,6 +502,15 @@ try {
     }
   }
 } catch {}
+$titleToken = ""
+if ($titleVisible) {
+  try {
+    $titleSha = [System.Security.Cryptography.SHA256]::Create()
+    $titleHash = -join ($titleSha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($expectedConversation)) | ForEach-Object { $_.ToString("x2") })
+    $titleSha.Dispose()
+    $titleToken = "conversation:v2:$($process.Id):$([int64]$expectedHWnd):title:$titleHash"
+  } catch { $titleToken = "" }
+}
 $visualHash = ""
 try {
   $captureLeft = [int]$headerLeft
@@ -497,19 +533,22 @@ try {
     $bitmap.Dispose()
   }
 } catch { $visualHash = "" }
-$visualFallback = $verificationMode -eq "exact_wechat_id_search"
-$verified = -not [string]::IsNullOrWhiteSpace($visualHash) -and ($visualFallback -or $titleVisible)
+$visualFallback = -not $titleVisible -and $verificationMode -eq "exact_wechat_id_search"
+$visualToken = $(if ([string]::IsNullOrWhiteSpace($visualHash)) { "" } else { "conversation:v2:$($process.Id):$([int64]$expectedHWnd):visual:$visualHash" })
+$verified = (-not [string]::IsNullOrWhiteSpace($titleToken)) -or ($visualFallback -and -not [string]::IsNullOrWhiteSpace($visualToken))
+$windowText = New-Object System.Text.StringBuilder 512
+[void][Win32WechatConversationObservation]::GetWindowText($expectedHWnd, $windowText, $windowText.Capacity)
 @{
   ok = $verified
   reason = $(if ($verified) { "" } elseif ([string]::IsNullOrWhiteSpace($visualHash)) { "conversation_visual_token_unavailable" } else { "atomic_conversation_changed" })
   title = $(if ($titleVisible) { $expectedConversation } else { "" })
-  windowTitle = $process.MainWindowTitle
+  windowTitle = $windowText.ToString().Trim()
   processName = $process.ProcessName
   pid = $process.Id
   hWnd = [int64]$expectedHWnd
   verificationMode = $verificationMode
   conversationTitleMode = $(if ($titleVisible) { "uia_header" } else { "visual_header" })
-  conversationToken = $(if ([string]::IsNullOrWhiteSpace($visualHash)) { "" } else { "conversation:v1:$($process.Id):$([int64]$expectedHWnd):$visualHash" })
+  conversationToken = $(if ($titleVisible) { $titleToken } else { $visualToken })
 } | ConvertTo-Json -Compress
 `;
 
@@ -654,17 +693,9 @@ function detectActiveWechatAccountAsync(context = {}) {
 function verifyWechatCurrentConversation(expectedTitle, context = {}) {
   const expectedWindow = { pid: context.expectedPid, hWnd: context.expectedHWnd };
   const verificationMode = context.allowExactSearchFallback === true ? "exact_wechat_id_search" : "conversation_title";
-  let result = verifyWechatCurrentConversationSafe(expectedTitle, expectedWindow);
-  if (!result.ok && context.allowExactSearchFallback === true) result = focusWechatWindow({ expectedPid: context.expectedPid, expectedHWnd: context.expectedHWnd });
-  if (!result.ok) return result;
-  const sameWindow = Number(result.pid) === Number(context.expectedPid)
-    && String(result.hWnd) === String(context.expectedHWnd)
-    && ["Weixin", "WeChat"].includes(result.processName);
-  if (!sameWindow) return { ok: false, reason: "real_send_session_changed" };
   const observation = observeWechatConversation(expectedTitle, { ...expectedWindow, verificationMode });
   if (!observation.ok || !String(observation.conversationToken ?? "").trim()) return observation;
-  result = {
-    ...result,
+  const result = {
     ...observation,
     ok: true,
     title: observation.title || String(expectedTitle),
@@ -686,17 +717,9 @@ function verifyWechatCurrentConversation(expectedTitle, context = {}) {
 async function verifyWechatCurrentConversationAsync(expectedTitle, context = {}) {
   const expectedWindow = { pid: context.expectedPid, hWnd: context.expectedHWnd };
   const verificationMode = context.allowExactSearchFallback === true ? "exact_wechat_id_search" : "conversation_title";
-  let result = await verifyWechatCurrentConversationSafeAsync(expectedTitle, expectedWindow);
-  if (!result.ok && context.allowExactSearchFallback === true) result = await focusWechatWindowAsync({ expectedPid: context.expectedPid, expectedHWnd: context.expectedHWnd });
-  if (!result.ok) return result;
-  const sameWindow = Number(result.pid) === Number(context.expectedPid)
-    && String(result.hWnd) === String(context.expectedHWnd)
-    && ["Weixin", "WeChat"].includes(result.processName);
-  if (!sameWindow) return { ok: false, reason: "real_send_session_changed" };
   const observation = await observeWechatConversationAsync(expectedTitle, { ...expectedWindow, verificationMode });
   if (!observation.ok || !String(observation.conversationToken ?? "").trim()) return observation;
-  result = {
-    ...result,
+  const result = {
     ...observation,
     ok: true,
     title: observation.title || String(expectedTitle),
@@ -721,10 +744,17 @@ Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
 using System;
+using System.Text;
 using System.Runtime.InteropServices;
 public static class Win32WechatMessageProof {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
+  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
@@ -747,25 +777,31 @@ if ([string]::IsNullOrWhiteSpace($message) -or [string]::IsNullOrWhiteSpace($exp
   @{ ok = $false; reason = "window_or_message_missing" } | ConvertTo-Json -Compress
   exit
 }
-$process = Get-Process -Id ([int]$expectedPid) -ErrorAction SilentlyContinue
-if (
-  $process -eq $null -or
-  @("Weixin", "WeChat") -notcontains $process.ProcessName -or
-  [string]$process.MainWindowHandle -ne [string]$expectedHandle -or
-  $process.MainWindowTitle -ne "微信"
-) {
+$expectedHWnd = [IntPtr][int64]$expectedHandle
+[uint32]$observedWindowPid = 0
+$windowExists = [Win32WechatMessageProof]::IsWindow($expectedHWnd)
+$windowVisible = [Win32WechatMessageProof]::IsWindowVisible($expectedHWnd)
+$windowThreadId = [Win32WechatMessageProof]::GetWindowThreadProcessId($expectedHWnd, [ref]$observedWindowPid)
+$nativeRect = New-Object Win32WechatMessageProof+RECT
+$rectAvailable = [Win32WechatMessageProof]::GetWindowRect($expectedHWnd, [ref]$nativeRect)
+$windowWidth = $nativeRect.Right - $nativeRect.Left
+$windowHeight = $nativeRect.Bottom - $nativeRect.Top
+$process = Get-Process -Id $observedWindowPid -ErrorAction SilentlyContinue
+if (-not $windowExists -or -not $windowVisible -or $windowThreadId -eq 0 -or [string]$observedWindowPid -ne $expectedPid -or $process -eq $null -or @("Weixin", "WeChat") -notcontains $process.ProcessName -or -not $rectAvailable -or $windowWidth -lt 400 -or $windowHeight -lt 300) {
   @{ ok = $false; reason = "real_send_session_changed" } | ConvertTo-Json -Compress
   exit
 }
-$root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr][int64]$expectedHandle)
-if ($root -eq $null) {
-  @{ ok = $false; reason = "automation_root_missing" } | ConvertTo-Json -Compress
-  exit
-}
+$root = $null
+try { $root = [System.Windows.Automation.AutomationElement]::FromHandle($expectedHWnd) } catch {}
 Start-Sleep -Milliseconds 350
-$windowRect = $root.Current.BoundingRectangle
-$windowWidth = $windowRect.Width
-$windowHeight = $windowRect.Height
+$windowRect = [pscustomobject]@{
+  Left = [double]$nativeRect.Left
+  Top = [double]$nativeRect.Top
+  Right = [double]$nativeRect.Right
+  Bottom = [double]$nativeRect.Bottom
+  Width = [double]$windowWidth
+  Height = [double]$windowHeight
+}
 $chatLeft = $windowRect.Left + ($windowWidth * 0.25)
 $chatTop = $windowRect.Top + 45
 $chatBottom = $windowRect.Bottom - 125
@@ -825,36 +861,40 @@ function Get-ElementKey([System.Windows.Automation.AutomationElement]$element, $
   return [string]("rect:{0}:{1}:{2}:{3}:{4}" -f [int]$rect.Left, [int]$rect.Top, [int]$rect.Right, [int]$rect.Bottom, $text)
 }
 
-$all = $root.FindAll(
-  [System.Windows.Automation.TreeScope]::Descendants,
-  [System.Windows.Automation.Condition]::TrueCondition
-)
 $candidates = New-Object System.Collections.Generic.List[object]
-for ($index = 0; $index -lt $all.Count; $index++) {
-  $element = $all.Item($index)
-  $text = Get-ElementText $element
-  if ([string]::IsNullOrWhiteSpace($text)) { continue }
-  try { $rect = $element.Current.BoundingRectangle } catch { continue }
-  if (
-    $rect.Width -le 0 -or
-    $rect.Height -le 0 -or
-    $rect.Right -lt $chatLeft -or
-    $rect.Top -lt $chatTop -or
-    $rect.Bottom -gt $chatBottom
-  ) { continue }
-  $normalizedText = Normalize-WechatProofText $text
-  $isExpectedText = $normalizedText -ceq $normalizedMessage
-  if ($rect.Height -gt [Math]::Max(240, $windowHeight * 0.35) -and -not $isExpectedText) { continue }
-  $key = Get-ElementKey $element $rect $text
-  [void]$candidates.Add([pscustomobject]@{
-    normalizedText = [string]$normalizedText
-    key = [string]$key
-    left = [double]$rect.Left
-    top = [double]$rect.Top
-    right = [double]$rect.Right
-    bottom = [double]$rect.Bottom
-    outgoing = ([double]$rect.Right -ge $outgoingEdge -and (($rect.Left + $rect.Right) / 2) -ge ($windowRect.Left + ($windowWidth * 0.55)))
-  })
+if ($root -ne $null) {
+  try {
+    $all = $root.FindAll(
+      [System.Windows.Automation.TreeScope]::Descendants,
+      [System.Windows.Automation.Condition]::TrueCondition
+    )
+    for ($index = 0; $index -lt $all.Count; $index++) {
+      $element = $all.Item($index)
+      $text = Get-ElementText $element
+      if ([string]::IsNullOrWhiteSpace($text)) { continue }
+      try { $rect = $element.Current.BoundingRectangle } catch { continue }
+      if (
+        $rect.Width -le 0 -or
+        $rect.Height -le 0 -or
+        $rect.Right -lt $chatLeft -or
+        $rect.Top -lt $chatTop -or
+        $rect.Bottom -gt $chatBottom
+      ) { continue }
+      $normalizedText = Normalize-WechatProofText $text
+      $isExpectedText = $normalizedText -ceq $normalizedMessage
+      if ($rect.Height -gt [Math]::Max(240, $windowHeight * 0.35) -and -not $isExpectedText) { continue }
+      $key = Get-ElementKey $element $rect $text
+      [void]$candidates.Add([pscustomobject]@{
+        normalizedText = [string]$normalizedText
+        key = [string]$key
+        left = [double]$rect.Left
+        top = [double]$rect.Top
+        right = [double]$rect.Right
+        bottom = [double]$rect.Bottom
+        outgoing = ([double]$rect.Right -ge $outgoingEdge -and (($rect.Left + $rect.Right) / 2) -ge ($windowRect.Left + ($windowWidth * 0.55)))
+      })
+    }
+  } catch {}
 }
 $exactCandidates = @($candidates | Where-Object { $_.normalizedText -ceq $normalizedMessage })
 $outgoingExactBefore = @($exactCandidates | Where-Object { $_.outgoing })
@@ -903,6 +943,8 @@ $isLatest = $selected -ne $null -and $latestOutgoing -ne $null -and $selected.bo
 $draftAfter = Read-InputDraft
 $draftConsumed = $beforeSnapshot.draftExact -eq $true -and $draftAfter.ok -and $draftAfter.sameWindow -and $draftAfter.isEmpty
 $verificationMode = $(if ($exactMatch -and $outgoing -and $isLatest -and $isNew) { "message_bubble" } elseif ($draftConsumed) { "draft_consumed" } else { "" })
+$windowText = New-Object System.Text.StringBuilder 512
+[void][Win32WechatMessageProof]::GetWindowText($expectedHWnd, $windowText, $windowText.Capacity)
 @{
   ok = (($selected -ne $null) -or $draftConsumed)
   messageText = $(if ($selected -ne $null) { [string]$selected.normalizedText } else { "" })
@@ -913,10 +955,10 @@ $verificationMode = $(if ($exactMatch -and $outgoing -and $isLatest -and $isNew)
   draftConsumed = $draftConsumed
   sameWindow = $draftAfter.sameWindow
   verificationMode = $verificationMode
-  title = $process.MainWindowTitle
+  title = $windowText.ToString().Trim()
   processName = $process.ProcessName
   pid = $process.Id
-  hWnd = [int64]$process.MainWindowHandle
+  hWnd = [int64]$expectedHWnd
 } | ConvertTo-Json -Compress
 `;
 

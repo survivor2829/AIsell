@@ -107,12 +107,13 @@ function replyPrompt({ context, expert, recovery = false }) {
       content: `你是微信一对一客服回复助手。只根据AI专家话术文件和最近对话生成可直接发送的回复，并判断是否需要人工跟进。
 要求：
 1. 回复自然、礼貌、简短，不重复询问对话中已经回答过的信息。
-2. 在话术允许范围内先做专业判断，给出最相关方向和简短理由；缺少的信息可以通过一个关键问题确认时，继续由AI沟通。
-3. 不编造话术文件中没有的价格、政策、承诺、活动、库存或身份。
-4. 不索要验证码、密码、银行卡、身份证等敏感信息，不引导转账。
-5. 按话术文件中的“意向判定”判断intent；intent与needsHuman分别判断，一般咨询、初步询价或愿意留下需求可以intent为true但needsHuman为false。
-6. 可以通过一个关键问题继续判断时needsHuman为false；只有客户明确要求实时报价、下单、实时库存或必须人工承诺时needsHuman为true。话术文件明确规定必须核实的货期、合同、售后、预约等实时事实，客户主动要求人工，或话术资料确实无法可靠回答且继续澄清也不能解决时，也设为true并使用话术文件中的无法回答话术；文件未提供时回复“${AUTO_REPLY_FALLBACK}”。
-7. 只输出一个JSON对象，不加Markdown或解释，字段必须完整：
+2. 自动回复不得使用联系人姓名或昵称，不得从客户消息中猜测称呼；需要问候时只使用“您好”。
+3. 在话术允许范围内先做专业判断，给出最相关方向和简短理由；缺少的信息可以通过一个关键问题确认时，继续由AI沟通。
+4. 不编造话术文件中没有的价格、政策、承诺、活动、库存或身份。
+5. 不索要验证码、密码、银行卡、身份证等敏感信息，不引导转账。
+6. 按话术文件中的“意向判定”判断intent；intent与needsHuman分别判断，一般咨询、初步询价或愿意留下需求可以intent为true但needsHuman为false。
+7. 可以通过一个关键问题继续判断时needsHuman为false；只有客户明确要求实时报价、下单、实时库存或必须人工承诺时needsHuman为true。话术文件明确规定必须核实的货期、合同、售后、预约等实时事实，客户主动要求人工，或话术资料确实无法可靠回答且继续澄清也不能解决时，也设为true并使用话术文件中的无法回答话术；文件未提供时回复“${AUTO_REPLY_FALLBACK}”。
+8. 只输出一个JSON对象，不加Markdown或解释，字段必须完整：
 {"reply":"发给客户的消息","intent":false,"intentReason":"","needsHuman":false,"handoffReason":""}${recovery ? "\n8. 当前为结构化恢复请求：必须输出非空、完整且可被JSON.parse解析的JSON对象。" : ""}`
     },
     {
@@ -163,10 +164,10 @@ function parseReplyDecision(value) {
     || typeof parsed.handoffReason !== "string") {
     throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回完整的结构化回复");
   }
-  const reply = validateUsableMessage(parsed.reply, {
+  const reply = sanitizeAutoReplySalutation(validateUsableMessage(parsed.reply, {
     emptyMessage: "DeepSeek 未返回可用回复",
     lengthMessage: "DeepSeek 返回的回复长度不符合发送要求"
-  });
+  }));
   return {
     reply,
     intent: parsed.intent,
@@ -183,6 +184,13 @@ function parseReplyPayload(payload) {
   if (finishReason && finishReason !== "stop") throw new DeepSeekApiError("AI_RESPONSE_INCOMPLETE", "DeepSeek 本次生成未完整结束");
   if (!content.trim()) throw new DeepSeekApiError("AI_RESPONSE_EMPTY", "DeepSeek 返回空内容");
   return parseReplyDecision(content);
+}
+
+function sanitizeAutoReplySalutation(value) {
+  return String(value || "")
+    .replace(/^(您好|你好)[，,\s]+[^，,。！？!?：:\n]{1,8}[，,]\s*/u, "$1，")
+    .replace(/^[^，,。！？!?：:\n]{1,8}[，,]\s*(您好|你好)([！!。，,\s]*)/u, "$1$2")
+    .trim();
 }
 
 function parsePlainPayload(payload, unavailableMessage) {
