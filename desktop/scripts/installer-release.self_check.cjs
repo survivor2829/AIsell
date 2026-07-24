@@ -11,6 +11,7 @@ const {
 const desktopDir = path.resolve(__dirname, "..");
 const packageMetadata = JSON.parse(fs.readFileSync(path.join(desktopDir, "package.json"), "utf8"));
 const config = fs.readFileSync(path.join(desktopDir, "electron-builder-installer.yml"), "utf8");
+const nsis = fs.readFileSync(path.join(desktopDir, "build", "installer.nsh"), "utf8");
 const builder = fs.readFileSync(path.join(desktopDir, "scripts", "build-installer-release.cjs"), "utf8");
 
 assert.equal(packageMetadata.productName, "AI获客");
@@ -19,6 +20,7 @@ assert.match(packageMetadata.scripts["release:installer"], /build-installer-rele
 assert.match(config, /^appId: com\.aihuoke\.desktop$/m);
 assert.match(config, /^productName: AI获客$/m);
 assert.match(config, /^\s+perMachine: false$/m);
+assert.match(config, /^\s+include: build\/installer\.nsh$/m);
 assert.match(config, /^\s+deleteAppDataOnUninstall: false$/m);
 assert.match(config, /^\s+createDesktopShortcut: always$/m);
 assert.match(config, /^\s+createStartMenuShortcut: true$/m);
@@ -28,6 +30,7 @@ assert.match(builder, /Portable build commit does not match the current clean co
 assert.match(builder, /require\.resolve\("electron-builder\/out\/cli\/cli\.js"\)/);
 assert.match(builder, /spawnSync\(process\.execPath/);
 assert.match(builder, /%APPDATA%\\\\xiaoxi-active-touch-delivery\\\\data/);
+assert.match(nsis, /StrCpy \$INSTDIR "\$LocalAppData\\Programs\\AI获客"/);
 assert.equal(installerName, "AI获客-安装程序.exe");
 assert.equal(installerManifestName, "AI获客-安装程序-版本清单.json");
 

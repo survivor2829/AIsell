@@ -11,6 +11,7 @@ win:
   executableName: AI获客
   artifactName: AI获客-安装程序.${ext}
 nsis:
+  include: build/installer.nsh
   oneClick: true
   perMachine: false
   runAfterFinish: true
