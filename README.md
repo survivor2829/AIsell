@@ -1,6 +1,6 @@
 # AI获客
 
-Windows Electron 桌面应用。当前唯一验收目标是个人微信 `4.1.11.54`；能力是否可用、是否经过本机或异机实测，以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。正式候选包统一命名为 `release/AI获客.zip`，完整解压后运行 `AI获客.exe`。
+Windows Electron 桌面应用。当前唯一验收目标是个人微信 `4.1.11.54`；能力是否可用、是否经过本机或异机实测，以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。正式交付优先使用 `release/AI获客-安装程序.exe`；`release/AI获客.zip` 只作为免安装备用包。
 
 ## 本地运行
 
@@ -41,6 +41,14 @@ npm.cmd run build:delivery
 npm.cmd run release:test
 npm.cmd run release:delivery
 ```
+
+生成正式离线安装器：
+
+```powershell
+npm.cmd run release:installer
+```
+
+安装器按当前 Windows 用户安装到 `%LOCALAPPDATA%\Programs\AI获客`。后续拿到新安装器后直接双击即可覆盖升级，不需要先卸载或删除旧目录。程序文件与 `%APPDATA%\xiaoxi-active-touch-delivery\data` 中的 API Key、联系人、AI 专家资料、任务状态和诊断日志相互独立；覆盖升级不会删除这些数据，控制面板中的普通卸载也默认保留这些数据。
 
 `release:*` 会先执行 self-check 和对应 renderer 构建，再生成目录与 ZIP 并检查包内运行依赖和隐私文件。便携包必须完整解压后运行，不能只复制 EXE。构建通过不等于实机验收通过，也不自动获得“可分发”状态。
 

@@ -1,0 +1,22 @@
+appId: com.aihuoke.desktop
+productName: AI获客
+compression: normal
+directories:
+  output: ../release/.installer-output
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  executableName: AI获客
+  artifactName: AI获客-安装程序.${ext}
+nsis:
+  oneClick: true
+  perMachine: false
+  runAfterFinish: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: AI获客
+  uninstallDisplayName: AI获客
+  deleteAppDataOnUninstall: false
+  differentialPackage: false

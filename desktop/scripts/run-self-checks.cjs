@@ -26,6 +26,7 @@ const checks = [
   "src/main/touch-task-ipc.self_check.cjs",
   "src/renderer/moments-dry-run-panel.self_check.cjs",
   "scripts/portable-runtime-dependencies.self_check.cjs",
+  "scripts/installer-release.self_check.cjs",
   "scripts/release-capabilities.self_check.cjs",
   "scripts/customer-edition.self_check.cjs"
 ];
