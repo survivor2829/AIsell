@@ -15,6 +15,7 @@ const autoReplyEntry = AUTO_REPLY_VISUAL_SCRIPT.slice(AUTO_REPLY_VISUAL_SCRIPT.i
 assert.doesNotMatch(autoReplyEntry, /Get-MomentsRenderPaneEvidence/u, "auto reply must not require the Moments-only MMUIRenderSubWindowHW child pane");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-AutoReplyVisualFrame \$hWnd \$windowRect \$expectedProcessId/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Get-MomentsOcrObservation \$frame/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$ocrDownscale = if \(\[double\]\$script:AutoReplyVisualScale -ge 2\.5\) \{ 2 \} else \{ 1 \}[\s\S]*Get-MomentsDownscaledOcrObservation/u, "300% DPI scans should reduce OCR pixels while normal desktop and laptop scaling remains unchanged");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualCurrentConversation/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualAnyHeader/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualUnreadBadges/u);

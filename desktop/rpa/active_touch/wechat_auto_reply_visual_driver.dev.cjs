@@ -1455,7 +1455,8 @@ function Get-AutoReplyVisualObservation([IntPtr]$hWnd, [int]$expectedProcessId, 
   if (-not $frame.ok) { return @{ ok = $false; reason = [string]$frame.reason } }
   $script:AutoReplyVisualCaptureMethod = [string]$frame.captureMethod
   try {
-    $ocr = Get-MomentsOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
+    $ocrDownscale = if ([double]$script:AutoReplyVisualScale -ge 2.5) { 2 } else { 1 }
+    $ocr = Get-MomentsDownscaledOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height } $ocrDownscale
     if (-not $ocr.ok) {
       Close-MomentsVisualFrame $frame
       return @{ ok = $false; reason = [string]$ocr.reason }

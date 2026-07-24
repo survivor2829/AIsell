@@ -570,6 +570,57 @@ function Get-MomentsOcrObservation($frame, $rect) {
   }
 }
 
+function Get-MomentsDownscaledOcrObservation($frame, $rect, [int]$factor = 1) {
+  $safeFactor = [Math]::Max(1, [Math]::Min($factor, 3))
+  if ($safeFactor -le 1) { return Get-MomentsOcrObservation $frame $rect }
+  $crop = ConvertTo-MomentsOcrBitmap $frame $rect
+  if ($crop -eq $null) { return @{ ok = $false; reason = "moments_visual_ocr_region_invalid" } }
+  $scaled = $null
+  $graphics = $null
+  try {
+    $scaledWidth = [Math]::Max(1, [int][Math]::Round($crop.Width / [double]$safeFactor))
+    $scaledHeight = [Math]::Max(1, [int][Math]::Round($crop.Height / [double]$safeFactor))
+    $scaled = [System.Drawing.Bitmap]::new(
+      $scaledWidth,
+      $scaledHeight,
+      [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+    )
+    $graphics = [System.Drawing.Graphics]::FromImage($scaled)
+    $graphics.CompositingMode = [System.Drawing.Drawing2D.CompositingMode]::SourceCopy
+    $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+    $graphics.DrawImage(
+      $crop,
+      [System.Drawing.Rectangle]::new(0, 0, $scaledWidth, $scaledHeight),
+      0,
+      0,
+      $crop.Width,
+      $crop.Height,
+      [System.Drawing.GraphicsUnit]::Pixel
+    )
+    $ocr = Get-MomentsOcrObservationFromBitmap $scaled
+    if (-not $ocr.ok) { return $ocr }
+    foreach ($line in @($ocr.lines)) {
+      $line.bounds.left = [double]$line.bounds.left * $safeFactor
+      $line.bounds.top = [double]$line.bounds.top * $safeFactor
+      $line.bounds.width = [double]$line.bounds.width * $safeFactor
+      $line.bounds.height = [double]$line.bounds.height * $safeFactor
+    }
+    foreach ($word in @($ocr.words)) {
+      $word.bounds.left = [double]$word.bounds.left * $safeFactor
+      $word.bounds.top = [double]$word.bounds.top * $safeFactor
+      $word.bounds.width = [double]$word.bounds.width * $safeFactor
+      $word.bounds.height = [double]$word.bounds.height * $safeFactor
+    }
+    $ocr["downscaleFactor"] = $safeFactor
+    return $ocr
+  } finally {
+    if ($graphics) { $graphics.Dispose() }
+    if ($scaled) { $scaled.Dispose() }
+    $crop.Dispose()
+  }
+}
+
 function Get-MomentsScaledOcrObservation($frame, $rect, [int]$scale = 3) {
   $crop = ConvertTo-MomentsOcrBitmap $frame $rect
   if ($crop -eq $null) { return @{ ok = $false; reason = "moments_visual_ocr_region_invalid" } }

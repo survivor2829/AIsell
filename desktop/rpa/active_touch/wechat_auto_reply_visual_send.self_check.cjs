@@ -22,10 +22,15 @@ assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /state = "matched"[\s\S]*state
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\[Math\]::Min\(\$expected\.Length, \$observed\.Length\) -ge 4[\s\S]*\$distance \/ \[double\]\$maximumLength\) -ge 0\.55/u, "sender and observer must share the clearly-different title threshold");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendConversationBinding[\s\S]*state -ceq "matched"[\s\S]*Test-VisualSendSelectedSidebarConversation[\s\S]*proof = "selected_sidebar_row"[\s\S]*visual_send_conversation_not_bound/u, "conversation identity must be either a matched header or the uniquely selected expected sidebar row");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /if \(\$messageDriven\)[\s\S]*proof = "message_driven"[\s\S]*headerState = "not_required"/u, "red-dot auto reply must bind the live incoming message without a contact-name gate");
-assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /if \(\$messageDriven\)[\s\S]*\$sameConversation = \$true[\s\S]*else \{[\s\S]*Test-VisualSendConversation/u, "post-click verification must not reintroduce title OCR for a message-driven reply");
-assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /if \(\$sameConversation -and -not \$messageDriven\)[\s\S]*Test-VisualSendOutgoingBubble/u, "message-driven replies must use retained HWND plus consumed draft instead of a third full-frame OCR pass");
+const postClickVerification = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(
+  WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("$postLock = Get-VisualSendLock"),
+  WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("$afterDraft = Read-VisualSendDraft")
+);
+assert.match(postClickVerification, /\$sameConversation = \$true/u, "post-click verification must retain the exact HWND already bound immediately before clicking");
+assert.doesNotMatch(postClickVerification, /Get-VisualSendFrame|Test-VisualSendConversation|Test-VisualSendOutgoingBubble|Get-MomentsOcrObservation/u, "post-click verification must not run a third full-frame OCR pass");
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$script:VisualSendOcrDownscale = if \(\[double\]\$dpi -ge 240\.0\) \{ 2 \} else \{ 1 \}/u, "only extreme-DPI windows should use adaptive OCR downscaling");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendIncoming[\s\S]*height = \[double\]\(\$frame\.height \* 0\.69\)/u, "incoming verification must include messages immediately above the composer");
-assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendLatestIncoming[\s\S]*Get-MomentsOcrObservation \$frame @\{ left = 0\.0; top = 0\.0; width = \[double\]\$frame\.width; height = \[double\]\$frame\.height \}/u, "the final incoming guard must reuse full-frame OCR geometry");
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendLatestIncoming[\s\S]*Get-MomentsDownscaledOcrObservation \$frame @\{ left = 0\.0; top = 0\.0; width = \[double\]\$frame\.width; height = \[double\]\$frame\.height \} \$script:VisualSendOcrDownscale/u, "the final incoming guard must reuse full-frame OCR geometry with adaptive high-DPI downscaling");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendIncomingEvidenceSignature[\s\S]*visual-message-semantic-v1[\s\S]*Normalize-VisualSendText[\s\S]*\$role[\s\S]*Get-VisualSendSha256/u, "the final guard must reproduce the scanner's semantic bubble identity");
 assert.doesNotMatch(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\/ 120\.0/u, "all Win32 DPI scaling must use the 96-DPI logical baseline");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$dpi \/ 96\.0/u);
@@ -274,6 +279,9 @@ function Get-MomentsOcrObservation($frame, $rect) {
     [void]$lines.Add([pscustomobject]@{ text = "ATestCustomer"; bounds = @{ left = 80.0; top = 260.0; width = 112.0; height = 20.0 } })
   }
   return @{ ok = $true; lines = @($lines.ToArray()) }
+}
+function Get-MomentsDownscaledOcrObservation($frame, $rect, [int]$factor = 1) {
+  return Get-MomentsOcrObservation $frame $rect
 }
 function Get-VisualSendGreenRatio($frame, [int]$left, [int]$top, [int]$right, [int]$bottom) {
   $selectedStripTop = [int]($script:selectedNameTop - 8.0)

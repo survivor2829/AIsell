@@ -39,6 +39,7 @@ $expectedIncoming = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_IN
 $expectedIncomingSignature = ([string][Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_INCOMING_SIGNATURE")).Trim().ToLowerInvariant()
 $expectedReply = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_REPLY")
 $phase = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_PHASE")
+$script:VisualSendOcrDownscale = 1
 
 function Write-VisualSendResult($value) {
   $value | ConvertTo-Json -Compress -Depth 8
@@ -263,7 +264,7 @@ function Test-VisualSendIncoming($frame) {
     width = [double]($frame.width * 0.75)
     height = [double]($frame.height * 0.69)
   }
-  $ocr = Get-MomentsOcrObservation $frame $bodyRect
+  $ocr = Get-MomentsDownscaledOcrObservation $frame $bodyRect $script:VisualSendOcrDownscale
   if (-not $ocr.ok) { return $false }
   $wanted = Normalize-VisualSendText $expectedIncoming
   $observed = Normalize-VisualSendText ([string]$ocr.text)
@@ -433,7 +434,7 @@ function Test-VisualSendLatestIncoming($frame, [double]$sidebarRight, [double]$d
   # Use the same full-frame OCR geometry as the scanner. A cropped OCR pass can
   # recognize the same Chinese line differently, while draft input can move the
   # line without changing its identity.
-  $ocr = Get-MomentsOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
+  $ocr = Get-MomentsDownscaledOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height } $script:VisualSendOcrDownscale
   if (-not $ocr.ok) { return $false }
   $chatBottom = Get-VisualSendChatBottom $frame $sidebarRight
   $logicalScale = [Math]::Max(0.5, [Math]::Min(4.0, $dpi / 96.0))
@@ -500,12 +501,12 @@ function Test-VisualSendSelectedSidebarConversation($frame, [double]$sidebarRigh
   # selected. Message preview text is deliberately not part of the identity:
   # two contacts can send the same words and preview OCR may be empty.
   $logicalScale = [Math]::Max(0.5, [Math]::Min(4.0, $dpi / 96.0))
-  $ocr = Get-MomentsOcrObservation $frame @{
+  $ocr = Get-MomentsDownscaledOcrObservation $frame @{
     left = 0.0
     top = 0.0
     width = [double]$frame.width
     height = [double]$frame.height
-  }
+  } $script:VisualSendOcrDownscale
   if (-not $ocr.ok) {
     return @{ ok = $false; reason = "visual_send_sidebar_ocr_unresolved"; matches = 0 }
   }
@@ -862,7 +863,7 @@ function Clear-VisualSendDraft($lock) {
 
 function Test-VisualSendOutgoingBubble($frame, [double]$sidebarRight) {
   $chatBottom = Get-VisualSendChatBottom $frame $sidebarRight
-  $ocr = Get-MomentsOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
+  $ocr = Get-MomentsDownscaledOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height } $script:VisualSendOcrDownscale
   if (-not $ocr.ok) { return $false }
   $messageLines = New-Object System.Collections.Generic.List[object]
   foreach ($line in @($ocr.lines)) {
@@ -892,6 +893,7 @@ if (-not $frame.ok) {
 }
 try {
   $dpi = Get-VisualSendWindowDpi $lock.hWnd
+  $script:VisualSendOcrDownscale = if ([double]$dpi -ge 240.0) { 2 } else { 1 }
   $sidebarRight = Get-VisualSendSidebarRight ([double]$frame.width) $dpi
   $binding = Get-VisualSendConversationBinding $frame $sidebarRight $dpi
   if (-not $binding.ok) {
@@ -982,30 +984,12 @@ $postLock = Get-VisualSendLock
 if (-not $postLock.ok) {
   Write-VisualSendResult @{ ok = $false; reason = "visual_send_outcome_unknown"; outcomeUnknown = $true; sendAttempted = $true; conversationVerified = $false; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
 }
-$postFrame = Get-VisualSendFrame $postLock
-$sameConversation = $false
+# The final phase already re-bound the exact expected HWND/conversation and
+# exact draft immediately before clicking. A post-click full-frame OCR cannot
+# prevent a wrong send; it only adds tens of seconds on high-DPI displays.
+# Retained HWND ownership plus consumed exact draft is the delivery proof.
+$sameConversation = $true
 $bubbleVerified = $false
-if ($postFrame.ok) {
-  try {
-    if ($messageDriven) {
-      # The red-dot observer already bound this send to one live incoming
-      # occurrence on this HWND, and the draft phase rechecked it immediately
-      # before writing. Post-send identity therefore needs the retained HWND
-      # and consumed exact draft, not another full-frame OCR pass.
-      $sameConversation = $true
-    } else {
-      $postConversation = Test-VisualSendConversation $postFrame
-      $sameConversation = [string]$postConversation.state -cne "different"
-    }
-    if ($sameConversation -and -not $messageDriven) {
-      $postDpi = Get-VisualSendWindowDpi $postLock.hWnd
-      $postSidebarRight = Get-VisualSendSidebarRight ([double]$postFrame.width) $postDpi
-      $bubbleVerified = Test-VisualSendOutgoingBubble $postFrame $postSidebarRight
-    }
-  } finally {
-    Close-MomentsVisualFrame $postFrame
-  }
-}
 $afterDraft = Read-VisualSendDraft $postLock
 $draftConsumed = $afterDraft.ok -and $afterDraft.empty
 $verificationMode = if ($sameConversation -and $bubbleVerified -and $draftConsumed) {
