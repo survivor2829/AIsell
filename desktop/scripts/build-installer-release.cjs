@@ -79,8 +79,9 @@ function buildInstaller() {
   fs.mkdirSync(stagingDir, { recursive: false });
 
   try {
-    const builder = path.join(desktopDir, "node_modules", ".bin", "electron-builder.cmd");
-    const result = spawnSync(builder, [
+    const builder = require.resolve("electron-builder/out/cli/cli.js");
+    const result = spawnSync(process.execPath, [
+      builder,
       "--win",
       "nsis",
       "--x64",
@@ -100,7 +101,7 @@ function buildInstaller() {
       }
     });
     if (result.status !== 0 || !fs.existsSync(stagedInstaller)) {
-      throw new Error(result.stderr || result.stdout || "Installer build failed");
+      throw new Error(result.error?.message || result.stderr || result.stdout || "Installer build failed");
     }
     const size = fs.statSync(stagedInstaller).size;
     if (size < 20 * 1024 * 1024) throw new Error("Installer is unexpectedly small");

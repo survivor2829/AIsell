@@ -25,6 +25,8 @@ assert.match(config, /^\s+createStartMenuShortcut: true$/m);
 assert.match(config, /^  artifactName: AI获客-安装程序\.\$\{ext\}$/m);
 assert.match(builder, /Refusing to build an installer from a dirty worktree/);
 assert.match(builder, /Portable build commit does not match the current clean commit/);
+assert.match(builder, /require\.resolve\("electron-builder\/out\/cli\/cli\.js"\)/);
+assert.match(builder, /spawnSync\(process\.execPath/);
 assert.match(builder, /%APPDATA%\\\\xiaoxi-active-touch-delivery\\\\data/);
 assert.equal(installerName, "AI获客-安装程序.exe");
 assert.equal(installerManifestName, "AI获客-安装程序-版本清单.json");
