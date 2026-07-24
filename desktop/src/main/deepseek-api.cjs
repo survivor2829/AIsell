@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { sanitizeAiMessage } = require("./ai-draft.cjs");
+const { diagnostics } = require("./diagnostics.cjs");
 
 const DEEPSEEK_ORIGIN = "https://api.deepseek.com";
 const DEEPSEEK_MODEL = "deepseek-v4-flash";
@@ -242,6 +243,16 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
   async function request({ key, messages, maxTokens = 180, responseFormat, disableThinking = false }) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
+    const operation = diagnostics().begin("deepseek", "chat_completion", {
+      model: DEEPSEEK_MODEL,
+      message_count: Array.isArray(messages) ? messages.length : 0,
+      message_roles: Array.isArray(messages) ? messages.map((message) => String(message?.role || "")) : [],
+      input_characters: Array.isArray(messages) ? messages.reduce((total, message) => total + String(message?.content || "").length, 0) : 0,
+      max_tokens: maxTokens,
+      response_format: responseFormat?.type || "plain",
+      thinking_disabled: disableThinking,
+      timeout_ms: requestTimeoutMs
+    });
     try {
       const response = await fetchImpl(`${DEEPSEEK_ORIGIN}/chat/completions`, {
         method: "POST",
@@ -259,15 +270,34 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
       });
       if (!response.ok) throw await responseError(response);
       try {
-        return await response.json();
+        const payload = await response.json();
+        operation.end({
+          ok: true,
+          http_status: response.status,
+          finish_reason: payload?.choices?.[0]?.finish_reason || "",
+          output_characters: String(payload?.choices?.[0]?.message?.content || "").length,
+          reasoning_characters: String(payload?.choices?.[0]?.message?.reasoning_content || "").length,
+          prompt_tokens: Number(payload?.usage?.prompt_tokens) || 0,
+          completion_tokens: Number(payload?.usage?.completion_tokens) || 0
+        });
+        return payload;
       } catch (error) {
         if (error?.name === "AbortError") throw error;
         throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 返回的数据无法解析，请稍后重试。");
       }
     } catch (error) {
-      if (error instanceof DeepSeekApiError) throw error;
-      if (error?.name === "AbortError") throw new DeepSeekApiError("AI_REQUEST_TIMEOUT", "DeepSeek 请求超时，请检查网络后重试。");
-      throw new DeepSeekApiError("AI_NETWORK_ERROR", "无法连接 DeepSeek，请检查网络后重试。");
+      if (error instanceof DeepSeekApiError) {
+        operation.end({ ok: false, error }, { ok: false, code: error.code });
+        throw error;
+      }
+      if (error?.name === "AbortError") {
+        const failure = new DeepSeekApiError("AI_REQUEST_TIMEOUT", "DeepSeek 请求超时，请检查网络后重试。");
+        operation.end({ ok: false, error: failure }, { ok: false, code: failure.code });
+        throw failure;
+      }
+      const failure = new DeepSeekApiError("AI_NETWORK_ERROR", "无法连接 DeepSeek，请检查网络后重试。");
+      operation.end({ ok: false, error: failure }, { ok: false, code: failure.code });
+      throw failure;
     } finally {
       clearTimeout(timer);
     }

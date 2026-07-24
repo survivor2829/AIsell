@@ -53,6 +53,11 @@ function createPreloadApis(ipcRenderer) {
       test: (payload) => ipcRenderer.invoke("deepseek-api:test", payload),
       remove: () => ipcRenderer.invoke("deepseek-api:delete")
     },
+    diagnostics: {
+      status: () => ipcRenderer.invoke("diagnostics:status"),
+      openFolder: () => ipcRenderer.invoke("diagnostics:open-folder"),
+      export: () => ipcRenderer.invoke("diagnostics:export")
+    },
     touchTask: {
       start: (payload) => ipcRenderer.invoke("touch-task:start", { ...payload, clickToken: consumeBatchClick() }),
       status: () => ipcRenderer.invoke("touch-task:status"),

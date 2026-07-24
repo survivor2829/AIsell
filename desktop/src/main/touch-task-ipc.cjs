@@ -4,6 +4,7 @@ const path = require("node:path");
 const { generateFixedScriptFallback, generatePersonalizedDraft } = require("./ai-draft.cjs");
 const { runActiveTouch } = require("./active-touch-ipc.cjs");
 const { preloadFile, rendererDir = "dist" } = require("./edition.cjs");
+const { diagnostics } = require("./diagnostics.cjs");
 const {
   authorizeTask,
   classifyContacts,
@@ -33,6 +34,7 @@ let messageBubbleVerifier = null;
 let waitForDelay = null;
 let randomSource = Math.random;
 let requestPauseRef = null;
+let lastDiagnosticTaskSignature = "";
 const consumedBatchTokens = new Set();
 const DRAFT_GENERATION_CONCURRENCY = 3;
 
@@ -183,6 +185,30 @@ function taskPayload(task = loadTaskState(activeTouchDir())) {
 
 function emitTaskUpdate(task) {
   const payload = taskPayload(task);
+  const current = payload.task?.current_result;
+  const diagnosticSnapshot = {
+    task_id: payload.task?.id || "",
+    status: payload.task?.status || "",
+    phase: payload.task?.phase || "",
+    current_index: Number(payload.task?.current_index) || 0,
+    total: Number(payload.task?.total) || 0,
+    batch: Number(payload.task?.current_batch) || 0,
+    current_status: current?.status || "",
+    contact_id: current?.contact?.id || current?.id || "",
+    ai_status: current?.ai_status || "",
+    ai_error_code: current?.ai_error_code || "",
+    awaiting_resolution: current?.awaiting_resolution === true,
+    pause_reason: payload.task?.pause_reason || "",
+    result_reason: current?.reason || ""
+  };
+  const signature = JSON.stringify(diagnosticSnapshot);
+  if (signature !== lastDiagnosticTaskSignature) {
+    lastDiagnosticTaskSignature = signature;
+    diagnostics().event("active_touch", "task_transition", diagnosticSnapshot, {
+      level: payload.task?.status === "paused" && Boolean(payload.task?.pause_reason) ? "error" : "info",
+      code: current?.ai_error_code || (payload.task?.status === "paused" ? current?.status || "task_paused" : "")
+    });
+  }
   BrowserWindow.getAllWindows().forEach((window) => {
     if (!window.isDestroyed()) window.webContents.send("touch-task:update", payload);
   });
@@ -222,7 +248,14 @@ function taskCommandArgs(task, result) {
 async function runStep(task, result, command, args, blockReason) {
   runtimeCoordinator?.update(runnerOwner, command);
   const commandArgs = [...args, ...taskCommandArgs(task, result)];
-  const response = await runActiveTouch([command, ...commandArgs], { owner: runnerOwner, workflow: "touching", phase: command });
+  const response = await runActiveTouch([command, ...commandArgs], {
+    owner: runnerOwner,
+    workflow: "touching",
+    phase: command,
+    taskId: task.id,
+    contactId: result.id,
+    currentIndex: task.current_index
+  });
   if (!response.ok) return { ok: false, reason: resultReason(response, blockReason), result: response };
   return { ok: true, result: response };
 }

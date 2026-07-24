@@ -1,6 +1,7 @@
 const { app } = require("electron");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
+const { diagnostics } = require("./diagnostics.cjs");
 
 let runtimeDataDir = "";
 let runtimeCoordinator = null;
@@ -47,6 +48,18 @@ function executeActiveTouch(args, options = {}) {
     const selectedDataDir = options.dataDir === undefined ? runtimeDataDir : String(options.dataDir || "");
     const childArgs = selectedDataDir ? [...args, "--data-dir", selectedDataDir] : args;
     const executable = cliPath(development, options.cliName);
+    const operation = diagnostics().begin("wechat_adapter", "executor", {
+      command: args[0] ?? "status",
+      argument_count: args.length,
+      development,
+      timeout_ms: timeoutMs,
+      workflow: options.workflow || "",
+      phase: options.phase || "",
+      coordinator_owner: options.owner || "",
+      task_id: options.taskId || "",
+      contact_id: options.contactId || "",
+      current_index: Number.isFinite(Number(options.currentIndex)) ? Number(options.currentIndex) : undefined
+    });
     const child = spawn(process.execPath, [executable, ...childArgs], {
       cwd: path.dirname(executable),
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
@@ -63,6 +76,16 @@ function executeActiveTouch(args, options = {}) {
       settled = true;
       if (timeout) clearTimeout(timeout);
       if (exitDrain) clearTimeout(exitDrain);
+      operation.end({
+        ok: result?.ok === true,
+        action: result?.action || args[0] || "status",
+        blocked_reason: result?.blocked_reason || result?.state?.blocked_reason || "",
+        error: result?.error || "",
+        process_pid: child.pid || 0,
+        stdout_bytes: Buffer.byteLength(stdout),
+        stderr_bytes: Buffer.byteLength(stderr),
+        diagnostics: result?.diagnostics || result?.state?.diagnostics || null
+      }, { ok: result?.ok === true, code: result?.blocked_reason || result?.state?.blocked_reason || "" });
       resolve(result);
     };
     const settleFromOutput = (status) => {

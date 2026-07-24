@@ -1,4 +1,5 @@
 const crypto = require("node:crypto");
+const { diagnostics } = require("./diagnostics.cjs");
 const fs = require("node:fs");
 const path = require("node:path");
 const { readContacts } = require("../../rpa/active_touch/state_machine.cjs");
@@ -906,6 +907,14 @@ function createAutoReplyController(options = {}) {
     if (code === "session_probe_unsupported") Object.assign(entry, sanitizeSessionProbe(details.sessionProbe));
     Object.assign(entry, sanitizeStructuredScanDiagnostics(details));
     appendDiagnosticLine(diagnosticLogFile, entry);
+    diagnostics().event("auto_reply", entry.event, {
+      ...entry,
+      legacy_diagnostic_run_id: entry.run_id
+    }, {
+      level: /failed|exception|blocked/u.test(entry.event) ? "error" : "info",
+      code: entry.code || "",
+      phase: entry.phase || ""
+    });
   }
 
   function markWechatBusy() {

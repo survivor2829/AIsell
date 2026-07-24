@@ -1,4 +1,5 @@
-const { app, BrowserWindow, dialog, safeStorage } = require("electron");
+const { app, BrowserWindow, dialog, safeStorage, screen } = require("electron");
+const fs = require("node:fs");
 const path = require("node:path");
 const { configureActiveTouchRuntime, runActiveTouch } = require("./active-touch-ipc.cjs");
 const { registerAutoReplyIpc } = require("./auto-reply-ipc.cjs");
@@ -10,12 +11,22 @@ const { registerTouchTaskIpc } = require("./touch-task-ipc.cjs");
 const { createRuntimeCoordinator } = require("./runtime-coordinator.cjs");
 const { createDeepSeekClient, createDeepSeekKeyStore } = require("./deepseek-api.cjs");
 const { registerDeepSeekApiIpc } = require("./deepseek-api-ipc.cjs");
+const { configureDiagnostics, diagnostics } = require("./diagnostics.cjs");
+const { registerDiagnosticsIpc } = require("./diagnostics-ipc.cjs");
 const { developmentEdition, pilotEdition, editionLabel, preloadFile, rendererDir } = require("./edition.cjs");
 
 let mainWindow = null;
 let disarmRealSend = null;
 let touchTaskController = null;
 let autoReplyController = null;
+
+function rendererBuildInfo() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, `../../${rendererDir}/build-edition.json`), "utf8"));
+  } catch {
+    return {};
+  }
+}
 
 // ponytail: keep test data separate from the delivery profile.
 if (developmentEdition) app.setPath("userData", path.join(app.getPath("appData"), "xiaoxi-active-touch-test"));
@@ -44,7 +55,16 @@ function createWindow() {
   });
 
   mainWindow.setMenu(null);
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl) => {
+    diagnostics().event("renderer", "load_failed", { error_code: errorCode, error: errorDescription, url: validatedUrl }, { level: "error", code: `load_${errorCode}` });
+  });
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    diagnostics().event("renderer", "process_gone", details, { level: "fatal", code: details.reason || "renderer_gone" });
+  });
+  mainWindow.on("unresponsive", () => diagnostics().event("renderer", "unresponsive", {}, { level: "error", code: "renderer_unresponsive" }));
+  mainWindow.on("responsive", () => diagnostics().event("renderer", "responsive"));
   mainWindow.on("close", () => {
+    diagnostics().event("app", "window_closing");
     autoReplyController?.pause("app_closed");
     touchTaskController?.pause("应用窗口已关闭，任务已暂停");
     disarmRealSend?.();
@@ -70,6 +90,7 @@ if (!gotSingleInstanceLock) {
   app.quit();
 } else {
   app.on("second-instance", () => {
+    diagnostics().event("app", "second_instance_requested");
     if (!mainWindow) createWindow();
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
@@ -85,6 +106,36 @@ if (!gotSingleInstanceLock) {
       app.quit();
       return;
     }
+    const build = rendererBuildInfo();
+    const logger = configureDiagnostics({
+      rootDir: runtime.rootDir,
+      appInfo: {
+        name: app.getName(),
+        version: app.getVersion(),
+        edition: developmentEdition ? "development" : pilotEdition ? "pilot" : "unknown",
+        build_id: build.buildId || process.env.XIAOXI_BUILD_ID || "",
+        packaged: app.isPackaged
+      }
+    });
+    process.on("uncaughtException", (error) => logger.event("app", "uncaught_exception", { error }, { level: "fatal", code: error?.code || "uncaught_exception" }));
+    process.on("unhandledRejection", (error) => logger.event("app", "unhandled_rejection", { error }, { level: "error", code: error?.code || "unhandled_rejection" }));
+    logger.environment({
+      displays: screen.getAllDisplays().map((display) => ({
+        id: display.id,
+        bounds: display.bounds,
+        work_area: display.workArea,
+        scale_factor: display.scaleFactor,
+        rotation: display.rotation,
+        internal: display.internal
+      }))
+    });
+    logger.event("runtime", "migration_finished", {
+      migrated_count: runtime.migrated.length,
+      kept_existing_count: runtime.keptExisting.length,
+      archived_count: runtime.archived.length,
+      split_state_count: runtime.splitState.length,
+      skipped_foreign_install: runtime.skippedForeignInstall
+    });
     const coordinator = createRuntimeCoordinator(runtime.rootDir);
     const deepSeekKeyStore = createDeepSeekKeyStore({ rootDir: runtime.rootDir, safeStorage });
     const deepSeekClient = createDeepSeekClient({ keyStore: deepSeekKeyStore });
@@ -102,6 +153,7 @@ if (!gotSingleInstanceLock) {
     if (internalRealSend) disarmRealSend = () => internalRealSend.setRealSendArm(runtime.activeTouchDir, false);
     registerContactSyncIpc({ dataDir: runtime.contactSyncDir, activeTouchDir: runtime.activeTouchDir, coordinator });
     registerDeepSeekApiIpc({ keyStore: deepSeekKeyStore, client: deepSeekClient });
+    registerDiagnosticsIpc();
     registerAiExpertIpc({ store: aiExpertStore, isAutoReplyRunning: () => ["starting", "running"].includes(autoReplyController?.status().status) });
     if (internalRealSend) {
       autoReplyController = registerAutoReplyIpc({
@@ -133,6 +185,7 @@ if (!gotSingleInstanceLock) {
       onPause: disarmRealSend || undefined
     });
     createWindow();
+    logger.event("app", "ready", { window_created: true });
 
     app.on("activate", () => {
       if (!mainWindow) createWindow();

@@ -2,6 +2,7 @@ const { app, dialog, ipcMain } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { diagnostics } = require("./diagnostics.cjs");
 
 let runtimeDataDir = "";
 let activeTouchRuntimeDir = "";
@@ -34,6 +35,10 @@ function writePathSettings(settings) {
 
 function executeContactSync(args) {
   return new Promise((resolve) => {
+    const operation = diagnostics().begin("contact_sync", "executor", {
+      command: args[0] ?? "status",
+      argument_count: args.length
+    });
     const settings = readPathSettings();
     const runtimeArgs = [
       ...args,
@@ -59,16 +64,35 @@ function executeContactSync(args) {
       stderr += chunk.toString();
     });
 
+    let settled = false;
+    const finish = (result, exitCode = null) => {
+      if (settled) return;
+      settled = true;
+      operation.end({
+        ok: result?.ok === true,
+        action: result?.action || args[0] || "status",
+        blocked_reason: result?.blocked_reason || "",
+        error: result?.error || "",
+        stage: result?.state?.last_stage || "",
+        contact_count: Array.isArray(result?.contacts) ? result.contacts.length : Number(result?.state?.contact_count) || 0,
+        process_pid: child.pid || 0,
+        exit_code: exitCode,
+        stdout_bytes: Buffer.byteLength(stdout),
+        stderr_bytes: Buffer.byteLength(stderr)
+      }, { ok: result?.ok === true, code: result?.blocked_reason || result?.state?.last_stage || "" });
+      resolve(result);
+    };
+
     child.on("error", (error) => {
-      resolve({ ok: false, action: args[0] ?? "status", error: error.message, contacts: [] });
+      finish({ ok: false, action: args[0] ?? "status", error: error.message, contacts: [] });
     });
 
-    child.on("close", () => {
+    child.on("close", (exitCode) => {
       try {
         const line = stdout.trim().split(/\r?\n/).filter(Boolean).pop() ?? "{}";
-        resolve(JSON.parse(line));
+        finish(JSON.parse(line), exitCode);
       } catch {
-        resolve({ ok: false, action: args[0] ?? "status", error: stderr || stdout || "contact-sync executor failed", contacts: [] });
+        finish({ ok: false, action: args[0] ?? "status", error: stderr || stdout || "contact-sync executor failed", contacts: [] }, exitCode);
       }
     });
   });

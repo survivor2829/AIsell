@@ -1,4 +1,5 @@
 const { ipcMain } = require("electron");
+const { diagnostics } = require("./diagnostics.cjs");
 
 function errorCategory(code) {
   if (["API_KEY_MISSING", "API_KEY_UNREADABLE", "API_KEY_INVALID", "SECURE_STORAGE_UNAVAILABLE"].includes(code)) return "configuration";
@@ -21,15 +22,43 @@ function publicError(error) {
 }
 
 function registerDeepSeekApiIpc({ keyStore, client } = {}) {
-  ipcMain.handle("deepseek-api:status", () => ({ ok: true, data: keyStore.status() }));
+  ipcMain.handle("deepseek-api:status", () => {
+    const result = { ok: true, data: keyStore.status() };
+    diagnostics().event("deepseek", "key_status", { configured: result.data?.configured === true });
+    return result;
+  });
   ipcMain.handle("deepseek-api:save", (_event, payload = {}) => {
-    try { return { ok: true, data: keyStore.write(payload.apiKey) }; } catch (error) { return publicError(error); }
+    const operation = diagnostics().begin("deepseek", "key_save", { apiKey: payload.apiKey });
+    try {
+      const result = { ok: true, data: keyStore.write(payload.apiKey) };
+      operation.end({ ok: true, configured: result.data?.configured === true });
+      return result;
+    } catch (error) {
+      operation.fail(error);
+      return publicError(error);
+    }
   });
   ipcMain.handle("deepseek-api:test", async (_event, payload = {}) => {
-    try { return { ok: true, data: await client.test(payload.apiKey) }; } catch (error) { return publicError(error); }
+    const operation = diagnostics().begin("deepseek", "connection_test", { supplied_key: Boolean(payload.apiKey) });
+    try {
+      const result = { ok: true, data: await client.test(payload.apiKey) };
+      operation.end({ ok: true, model: result.data?.model || "", reply_length: String(result.data?.reply || "").length });
+      return result;
+    } catch (error) {
+      operation.fail(error);
+      return publicError(error);
+    }
   });
   ipcMain.handle("deepseek-api:delete", () => {
-    try { return { ok: true, data: keyStore.clear() }; } catch (error) { return publicError(error); }
+    const operation = diagnostics().begin("deepseek", "key_delete");
+    try {
+      const result = { ok: true, data: keyStore.clear() };
+      operation.end({ ok: true });
+      return result;
+    } catch (error) {
+      operation.fail(error);
+      return publicError(error);
+    }
   });
 }
 

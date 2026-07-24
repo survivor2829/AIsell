@@ -6,6 +6,7 @@ import {
   ChevronRight,
   CircleHelp,
   Clapperboard,
+  FileText,
   Folder,
   Lock,
   MessageCircle,
@@ -28,6 +29,7 @@ import {
 import { lazy, Suspense, type ComponentType, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AiExpert } from "./AiExpert";
 import { AutoReply } from "./AutoReply";
+import { Diagnostics } from "./Diagnostics";
 
 type ModuleKey =
   | "agent"
@@ -46,7 +48,8 @@ type ModuleKey =
   | "publish"
   | "leads"
   | "data"
-  | "api-key";
+  | "api-key"
+  | "diagnostics";
 
 type GroupKey = "agent" | "production" | "operations";
 type NavItem = { key: ModuleKey; label: string; icon: ComponentType<{ size?: number; strokeWidth?: number }> };
@@ -360,7 +363,8 @@ const navGroups: NavGroup[] = [
 ];
 
 const apiKeyNavItem: NavItem = { key: "api-key", label: "API密钥", icon: Lock };
-const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), apiKeyNavItem];
+const diagnosticsNavItem: NavItem = { key: "diagnostics", label: "日志诊断", icon: FileText };
+const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), apiKeyNavItem, diagnosticsNavItem];
 
 function nowTime() {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -448,7 +452,7 @@ function taskHasUnfinishedSnapshot(task: TouchTaskState) {
 }
 
 function moduleIsAvailable(key: ModuleKey) {
-  return ["reply", "expert", "contact-sync", "touch", "moments", "accounts", "api-key"].includes(key);
+  return ["reply", "expert", "contact-sync", "touch", "moments", "accounts", "api-key", "diagnostics"].includes(key);
 }
 
 function touchTaskStatusLabel(task: TouchTaskState) {
@@ -810,10 +814,16 @@ export default function App() {
             );
           })}
         </nav>
-        <button className={`nav-item sidebar-api-key ${active === apiKeyNavItem.key ? "active" : ""}`} onClick={() => setActive(apiKeyNavItem.key)}>
-          <apiKeyNavItem.icon size={20} strokeWidth={2.7} />
-          <span>{apiKeyNavItem.label}</span>
-        </button>
+        <div className="sidebar-system-nav">
+          <button className={`nav-item ${active === diagnosticsNavItem.key ? "active" : ""}`} onClick={() => setActive(diagnosticsNavItem.key)}>
+            <diagnosticsNavItem.icon size={20} strokeWidth={2.7} />
+            <span>{diagnosticsNavItem.label}</span>
+          </button>
+          <button className={`nav-item sidebar-api-key ${active === apiKeyNavItem.key ? "active" : ""}`} onClick={() => setActive(apiKeyNavItem.key)}>
+            <apiKeyNavItem.icon size={20} strokeWidth={2.7} />
+            <span>{apiKeyNavItem.label}</span>
+          </button>
+        </div>
       </aside>
 
       <section className="workspace">
@@ -849,6 +859,7 @@ export default function App() {
           {active === "moments" && <MomentsOperations />}
           {active === "accounts" && <AccountManagement />}
           {active === "api-key" && <ApiKeyPage onConfiguredChange={setDeepSeekConfigured} />}
+          {active === "diagnostics" && <Diagnostics />}
           {active === "touch" && (
             <ActiveTouch
               contacts={contactRows}
