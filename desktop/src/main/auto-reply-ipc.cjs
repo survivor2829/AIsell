@@ -312,6 +312,8 @@ function sanitizeStructuredScanDiagnostics(value) {
 
   const counts = sanitizeCounts(source.counts);
   if (counts) result.counts = counts;
+  const scanMs = Math.floor(Number(source.timings?.scan_ms));
+  if (Number.isSafeInteger(scanMs) && scanMs >= 0 && scanMs <= 300_000) result.scan_ms = scanMs;
   const captureMode = diagnosticCode(source.captureMode, "");
   if (new Set(["hwnd_printwindow", "foreground_screen"]).has(captureMode)) result.capture_mode = captureMode;
   return result;
@@ -914,6 +916,14 @@ function createAutoReplyController(options = {}) {
       const count = Math.floor(Number(details[field]));
       if (Number.isSafeInteger(count) && count >= 0) entry[field] = count;
     }
+    for (const field of ["duration_ms", "preflight_ms", "draft_ms", "before_send_ms", "send_ms", "total_ms"]) {
+      const duration = Math.floor(Number(details[field]));
+      if (Number.isSafeInteger(duration) && duration >= 0) entry[field] = duration;
+    }
+    const sendPhase = diagnosticCode(details.send_phase, "");
+    if (sendPhase) entry.send_phase = sendPhase;
+    const verificationMode = diagnosticCode(details.verification_mode, "");
+    if (verificationMode) entry.verification_mode = verificationMode;
     if (code === "session_probe_unsupported") Object.assign(entry, sanitizeSessionProbe(details.sessionProbe));
     Object.assign(entry, sanitizeStructuredScanDiagnostics(details));
     appendDiagnosticLine(diagnosticLogFile, entry);
@@ -1807,7 +1817,13 @@ function createAutoReplyController(options = {}) {
           user_turn_count: context.filter((item) => item.role === "user").length,
           assistant_turn_count: context.filter((item) => item.role === "assistant").length
         });
+        const generationStartedAt = Date.now();
         generated = await deepSeekClient.reply({ context, expert: expert.text });
+        appendDiagnostic("reply_generation_finished", {
+          phase: "generate",
+          code: "reply_ready",
+          duration_ms: Date.now() - generationStartedAt
+        });
       }
       if (!isCurrentRun()) {
         retryGenerations.delete(fingerprint);
@@ -1859,6 +1875,13 @@ function createAutoReplyController(options = {}) {
         return draftPhaseStarted && !isVisualCandidate ? verifyCurrent() : true;
       };
       coordinator.update(lock.lock.owner, "send-reply");
+      const sendStartedAt = Date.now();
+      appendDiagnostic("reply_send_started", {
+        phase: "send",
+        code: isVisualCandidate ? "visual_send_started" : "send_started",
+        pid: candidate.pid,
+        hWnd: candidate.hWnd
+      });
       const result = await send({
         baseDir: dataDir,
         contactsDir: activeTouchDir,
@@ -1880,6 +1903,23 @@ function createAutoReplyController(options = {}) {
         beforeDraft,
         shouldContinue,
         runStep: (command, args) => runStep(command, args, lock.lock.owner)
+      });
+      const sendTimings = result?.send_diagnostics?.timings || {};
+      appendDiagnostic("reply_send_finished", {
+        phase: "send",
+        code: result?.ok === true
+          ? "sent_verified"
+          : normalizeText(result?.blocked_reason || result?.error) || "send_failed",
+        duration_ms: Date.now() - sendStartedAt,
+        send_phase: result?.send_diagnostics?.phase || "",
+        verification_mode: result?.verification_mode || "",
+        preflight_ms: sendTimings.preflight_ms,
+        draft_ms: sendTimings.draft_ms,
+        before_send_ms: sendTimings.before_send_ms,
+        send_ms: sendTimings.send_ms,
+        total_ms: sendTimings.total_ms,
+        pid: result?.pid || candidate.pid,
+        hWnd: result?.hWnd || candidate.hWnd
       });
 
       if (!isCurrentRun() && result?.blocked_reason === "batch_cancelled") {

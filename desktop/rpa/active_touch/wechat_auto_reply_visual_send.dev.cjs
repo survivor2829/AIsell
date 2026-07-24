@@ -987,9 +987,17 @@ $sameConversation = $false
 $bubbleVerified = $false
 if ($postFrame.ok) {
   try {
-    $postConversation = Test-VisualSendConversation $postFrame
-    $sameConversation = $messageDriven -or [string]$postConversation.state -cne "different"
-    if ($sameConversation) {
+    if ($messageDriven) {
+      # The red-dot observer already bound this send to one live incoming
+      # occurrence on this HWND, and the draft phase rechecked it immediately
+      # before writing. Post-send identity therefore needs the retained HWND
+      # and consumed exact draft, not another full-frame OCR pass.
+      $sameConversation = $true
+    } else {
+      $postConversation = Test-VisualSendConversation $postFrame
+      $sameConversation = [string]$postConversation.state -cne "different"
+    }
+    if ($sameConversation -and -not $messageDriven) {
       $postDpi = Get-VisualSendWindowDpi $postLock.hWnd
       $postSidebarRight = Get-VisualSendSidebarRight ([double]$postFrame.width) $postDpi
       $bubbleVerified = Test-VisualSendOutgoingBubble $postFrame $postSidebarRight
@@ -1042,7 +1050,8 @@ function normalizeVisualSendResult(result, fallback) {
     hWnd: Number(result?.hWnd ?? fallback.hWnd),
     ...(result?.reason ? { reason: String(result.reason) } : {}),
     ...(result?.outcomeUnknown === true ? { outcomeUnknown: true } : {}),
-    ...(String(result?.conversationState ?? "") ? { conversationState: String(result.conversationState) } : {})
+    ...(String(result?.conversationState ?? "") ? { conversationState: String(result.conversationState) } : {}),
+    ...(result?.diagnostics && typeof result.diagnostics === "object" ? { diagnostics: result.diagnostics } : {})
   };
 }
 
@@ -1079,46 +1088,75 @@ function createVisualAutoReplySender({
       incomingMessageSignature,
       reply
     };
-    const preflight = await powerShellRunner(
-      WECHAT_VISUAL_AUTO_REPLY_POWERSHELL,
-      visualSendEnvironment(request, "preflight"),
-      { ensure: false, sta: true, timeout: 60_000 }
-    );
-    if (!preflight?.ok) return normalizeVisualSendResult(preflight, request);
-    if (preflight.incomingVerified !== true) {
-      return normalizeVisualSendResult({
-        reason: "visual_send_incoming_changed",
-        conversationVerified: false
-      }, request);
-    }
-
-    const draft = typeof draftInput === "function"
-      ? await draftInput(reply, { pid, hWnd })
-      : await powerShellRunner(
+    const timings = {};
+    let draft;
+    const draftStartedAt = Date.now();
+    if (typeof draftInput === "function") {
+      // An injected draft writer does not own the visual occurrence check, so
+      // keep preflight only for this development seam. In production the
+      // visual draft phase performs the same live check immediately before
+      // writing; a separate full-frame OCR preflight would be redundant.
+      const preflightStartedAt = Date.now();
+      const preflight = await powerShellRunner(
+        WECHAT_VISUAL_AUTO_REPLY_POWERSHELL,
+        visualSendEnvironment(request, "preflight"),
+        { ensure: false, sta: true, timeout: 45_000 }
+      );
+      timings.preflight_ms = Date.now() - preflightStartedAt;
+      if (!preflight?.ok || preflight.incomingVerified !== true) {
+        return normalizeVisualSendResult({
+          ...preflight,
+          ok: false,
+          reason: preflight?.reason || "visual_send_incoming_changed",
+          conversationVerified: false,
+          diagnostics: { phase: "preflight", timings }
+        }, request);
+      }
+      draft = await draftInput(reply, { pid, hWnd });
+    } else {
+      draft = await powerShellRunner(
         WECHAT_VISUAL_AUTO_REPLY_POWERSHELL,
         visualSendEnvironment(request, "draft"),
         { ensure: false, sta: true, timeout: 45_000 }
       );
+    }
+    timings.draft_ms = Date.now() - draftStartedAt;
     if (!draft?.ok || draft.draftVerified !== true) {
       return normalizeVisualSendResult({
         reason: draft?.reason || draft?.draftCheck || "visual_send_draft_input_failed",
-        conversationVerified: true
+        conversationVerified: draft?.conversationVerified === true,
+        diagnostics: { phase: "draft", timings }
       }, request);
     }
 
+    const beforeSendStartedAt = Date.now();
     if (typeof options.beforeSend === "function") {
       let allowed;
       try {
         allowed = await options.beforeSend({ pid, hWnd, conversation, incomingMessage: String(options.incomingMessage ?? ""), reply });
       } catch {
-        return normalizeVisualSendResult({ reason: "visual_send_before_send_failed", conversationVerified: true, draftVerified: true }, request);
+        timings.before_send_ms = Date.now() - beforeSendStartedAt;
+        return normalizeVisualSendResult({
+          reason: "visual_send_before_send_failed",
+          conversationVerified: true,
+          draftVerified: true,
+          diagnostics: { phase: "before_send", timings }
+        }, request);
       }
       if (allowed === false || allowed?.ok === false) {
-        return normalizeVisualSendResult({ reason: "visual_send_cancelled", conversationVerified: true, draftVerified: true }, request);
+        timings.before_send_ms = Date.now() - beforeSendStartedAt;
+        return normalizeVisualSendResult({
+          reason: "visual_send_cancelled",
+          conversationVerified: true,
+          draftVerified: true,
+          diagnostics: { phase: "before_send", timings }
+        }, request);
       }
     }
+    timings.before_send_ms = Date.now() - beforeSendStartedAt;
 
     let sent;
+    const sendStartedAt = Date.now();
     try {
       sent = await powerShellRunner(
         WECHAT_VISUAL_AUTO_REPLY_POWERSHELL,
@@ -1140,6 +1178,8 @@ function createVisualAutoReplySender({
         hWnd
       };
     }
+    timings.send_ms = Date.now() - sendStartedAt;
+    timings.total_ms = Object.values(timings).reduce((total, value) => total + Math.max(0, Number(value) || 0), 0);
     if (!sent || typeof sent.sendAttempted !== "boolean") {
       sent = {
         ok: false,
@@ -1152,7 +1192,13 @@ function createVisualAutoReplySender({
         hWnd
       };
     }
-    return normalizeVisualSendResult(sent, request);
+    return normalizeVisualSendResult({
+      ...sent,
+      diagnostics: {
+        phase: sent?.ok === true ? "completed" : "send",
+        timings
+      }
+    }, request);
   };
 }
 

@@ -645,29 +645,18 @@ function clickSearchResultDryRun(
     return block(baseDir, "点击搜索结果 dry-run", clearConversationState(state, reason), reason, wechatWindowBlockText(reason));
   }
 
-  const titleReadStartedAt = Date.now();
-  const titles = [inputResult.title, ...titleReader()].filter(Boolean);
-  const titleReadMs = Date.now() - titleReadStartedAt;
-  const matchedTitle = titles.find((item) => item.includes(customerName));
-  const verifyStartedAt = Date.now();
-  let verifiedConversation = matchedTitle ? { ok: true, title: matchedTitle } : conversationVerifier(customerName);
-  const conversationVerifyMs = Date.now() - verifyStartedAt;
-  const timings = {
-    open_result_ms: openResultMs,
-    title_read_ms: titleReadMs,
-    conversation_verify_ms: conversationVerifyMs,
-    total_ms: Date.now() - operationStartedAt
-  };
   const wechatId = String(state.selected_customer?.wechatId ?? "").trim();
-  const exactWechatIdSearch = !verifiedConversation.ok
-    && verifiedConversation.reason !== "contact_unavailable"
-    && Boolean(wechatId)
+  const exactWechatIdSearch = Boolean(wechatId)
     && searchQuery === wechatId
     && inputResult.exactSearchOpened === true
     && inputResult.searchQuery === searchQuery
     && ["Weixin", "WeChat"].includes(inputResult.processName)
     && Boolean(inputResult.pid)
     && Boolean(inputResult.hWnd);
+  let titleReadMs = 0;
+  let conversationVerifyMs = 0;
+  let matchedTitle = "";
+  let verifiedConversation;
   if (exactWechatIdSearch) {
     verifiedConversation = {
       ok: true,
@@ -677,7 +666,21 @@ function clickSearchResultDryRun(
       hWnd: inputResult.hWnd,
       verificationMode: "exact_wechat_id_search"
     };
+  } else {
+    const titleReadStartedAt = Date.now();
+    const titles = [inputResult.title, ...titleReader()].filter(Boolean);
+    titleReadMs = Date.now() - titleReadStartedAt;
+    matchedTitle = titles.find((item) => item.includes(customerName)) || "";
+    const verifyStartedAt = Date.now();
+    verifiedConversation = matchedTitle ? { ok: true, title: matchedTitle } : conversationVerifier(customerName);
+    conversationVerifyMs = Date.now() - verifyStartedAt;
   }
+  const timings = {
+    open_result_ms: openResultMs,
+    title_read_ms: titleReadMs,
+    conversation_verify_ms: conversationVerifyMs,
+    total_ms: Date.now() - operationStartedAt
+  };
   if (!verifiedConversation.ok) {
     const reason = verifiedConversation.reason === "contact_unavailable" ? "contact_unavailable" : "search_result_not_opened";
     const nextState = clearConversationState(state, reason, {

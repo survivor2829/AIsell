@@ -2537,6 +2537,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
 
   function invoke(mode, allowed, extra = {}) {
     const sharedWindow = typeof windowIdentityProvider === "function" ? windowIdentityProvider() : null;
+    const startedAt = Date.now();
     return Promise.resolve(powerShellRunner(AUTO_REPLY_VISUAL_SCRIPT, {
       XIAOXI_AUTO_REPLY_MODE: mode,
       XIAOXI_ALLOWED_NAMES: JSON.stringify(allowed),
@@ -2549,7 +2550,16 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       XIAOXI_ALLOW_FOCUS_FALLBACK: "",
       XIAOXI_FORCE_SCREEN_CAPTURE: "",
       ...extra
-    }, { ensure: false, sta: true, timeout: 30_000 }));
+    }, { ensure: false, sta: true, timeout: 45_000 })).then((result) => ({
+      ...result,
+      diagnostics: {
+        ...(result?.diagnostics && typeof result.diagnostics === "object" ? result.diagnostics : {}),
+        timings: {
+          ...(result?.diagnostics?.timings && typeof result.diagnostics.timings === "object" ? result.diagnostics.timings : {}),
+          scan_ms: Date.now() - startedAt
+        }
+      }
+    }));
   }
 
   async function primeWechatSession(names) {

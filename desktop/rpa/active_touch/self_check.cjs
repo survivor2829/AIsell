@@ -1041,6 +1041,8 @@ try {
   const clickMismatch = clickSearchResultDryRun(dir, () => ({ ok: true, title: "企业微信" }), () => ["企业微信"], () => ({ ok: false }));
   assert.equal(clickMismatch.blocked_reason, "search_result_not_opened");
   assert.equal(clickMismatch.state.conversation_located, false);
+  let exactTitleReads = 0;
+  let exactConversationVerifications = 0;
   const clickExactWechatIdFallback = clickSearchResultDryRun(
     dir,
     () => ({
@@ -1052,13 +1054,21 @@ try {
       exactSearchOpened: true,
       searchQuery: "internal-test-001"
     }),
-    () => ["微信"],
-    () => ({ ok: false })
+    () => {
+      exactTitleReads += 1;
+      return ["微信"];
+    },
+    () => {
+      exactConversationVerifications += 1;
+      return { ok: false };
+    }
   );
   assert.equal(clickExactWechatIdFallback.ok, true);
   assert.equal(clickExactWechatIdFallback.state.conversation_verification_mode, "exact_wechat_id_search");
   assert.equal(clickExactWechatIdFallback.state.window_pid, 11);
   assert.equal(clickExactWechatIdFallback.state.window_handle, "22");
+  assert.equal(exactTitleReads, 0, "an exact WeChat-ID result must not repeat title discovery");
+  assert.equal(exactConversationVerifications, 0, "an exact WeChat-ID result must not repeat conversation verification");
   assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.open_result_ms), true);
   assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.title_read_ms), true);
   assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.conversation_verify_ms), true);

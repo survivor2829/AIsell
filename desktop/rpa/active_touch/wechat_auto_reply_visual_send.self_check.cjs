@@ -22,7 +22,8 @@ assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /state = "matched"[\s\S]*state
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\[Math\]::Min\(\$expected\.Length, \$observed\.Length\) -ge 4[\s\S]*\$distance \/ \[double\]\$maximumLength\) -ge 0\.55/u, "sender and observer must share the clearly-different title threshold");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendConversationBinding[\s\S]*state -ceq "matched"[\s\S]*Test-VisualSendSelectedSidebarConversation[\s\S]*proof = "selected_sidebar_row"[\s\S]*visual_send_conversation_not_bound/u, "conversation identity must be either a matched header or the uniquely selected expected sidebar row");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /if \(\$messageDriven\)[\s\S]*proof = "message_driven"[\s\S]*headerState = "not_required"/u, "red-dot auto reply must bind the live incoming message without a contact-name gate");
-assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$sameConversation = \$messageDriven -or/u, "post-click verification must not reintroduce title OCR for a message-driven reply");
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /if \(\$messageDriven\)[\s\S]*\$sameConversation = \$true[\s\S]*else \{[\s\S]*Test-VisualSendConversation/u, "post-click verification must not reintroduce title OCR for a message-driven reply");
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /if \(\$sameConversation -and -not \$messageDriven\)[\s\S]*Test-VisualSendOutgoingBubble/u, "message-driven replies must use retained HWND plus consumed draft instead of a third full-frame OCR pass");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendIncoming[\s\S]*height = \[double\]\(\$frame\.height \* 0\.69\)/u, "incoming verification must include messages immediately above the composer");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendLatestIncoming[\s\S]*Get-MomentsOcrObservation \$frame @\{ left = 0\.0; top = 0\.0; width = \[double\]\$frame\.width; height = \[double\]\$frame\.height \}/u, "the final incoming guard must reuse full-frame OCR geometry");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendIncomingEvidenceSignature[\s\S]*visual-message-semantic-v1[\s\S]*Normalize-VisualSendText[\s\S]*\$role[\s\S]*Get-VisualSendSha256/u, "the final guard must reproduce the scanner's semantic bubble identity");
@@ -543,15 +544,18 @@ const sender = createVisualAutoReplySender({
       return true;
     }
   });
-  assert.deepEqual(result, {
+  assert.deepEqual({ ...result, diagnostics: undefined }, {
     ok: true,
     send_attempted: true,
     conversationVerified: true,
     draftVerified: true,
     verificationMode: "draft_consumed_same_header",
     pid: 77,
-    hWnd: 88
+    hWnd: 88,
+    diagnostics: undefined
   });
+  assert.equal(result.diagnostics.phase, "completed");
+  assert.equal(Number.isFinite(result.diagnostics.timings.total_ms), true);
   assert.equal(beforeSendCalled, true);
   assert.equal(calls.length, 3);
   assert.equal(calls[0].env.XIAOXI_VISUAL_SEND_PHASE, "preflight");
@@ -635,7 +639,7 @@ const sender = createVisualAutoReplySender({
     },
     draftInput: async () => ({ ok: true, draftVerified: true })
   })({ pid: 33, hWnd: 44, conversation: "TestCustomer", incomingMessage: "hello", incomingVerified: true, reply: "world" });
-  assert.deepEqual(rejectedSend, {
+  assert.deepEqual({ ...rejectedSend, diagnostics: undefined }, {
     ok: false,
     send_attempted: true,
     conversationVerified: true,
@@ -644,7 +648,8 @@ const sender = createVisualAutoReplySender({
     pid: 33,
     hWnd: 44,
     reason: "visual_send_outcome_unknown",
-    outcomeUnknown: true
+    outcomeUnknown: true,
+    diagnostics: undefined
   });
   assert.equal(rejectedSendCalls, 1, "a rejected final send phase must become terminal unknown, never an automatic retry");
 
@@ -662,7 +667,7 @@ const sender = createVisualAutoReplySender({
     }
   })({ pid: 5, hWnd: 6, conversation: "A测试客户", incomingMessage: "仍是这一条", reply: "视觉同 DPI 输入" });
   assert.equal(visualDraft.ok, true);
-  assert.deepEqual(visualPhases, ["preflight", "draft", "send"]);
+  assert.deepEqual(visualPhases, ["draft", "send"], "production visual send must not run duplicate full-frame preflight OCR");
 
   let mismatchDraftCalls = 0;
   const mismatch = await createVisualAutoReplySender({

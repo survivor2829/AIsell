@@ -1320,7 +1320,7 @@ assert.equal(outgoingSettlingFence.scanProbe, undefined);
 
 assert.equal(calls.length, 4);
 assert.ok(calls.every((call) => call.script === AUTO_REPLY_VISUAL_SCRIPT));
-assert.ok(calls.every((call) => call.options.ensure === false && call.options.sta === true && call.options.timeout === 30_000));
+assert.ok(calls.every((call) => call.options.ensure === false && call.options.sta === true && call.options.timeout === 45_000));
 assert.deepEqual(JSON.parse(calls[0].env.XIAOXI_ALLOWED_NAMES), ["A测试客户"]);
 assert.equal(calls[1].env.XIAOXI_EXPECTED_PID, "81");
 assert.equal(calls[1].env.XIAOXI_EXPECTED_HWND, "91");

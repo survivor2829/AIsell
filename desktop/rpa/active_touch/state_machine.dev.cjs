@@ -444,7 +444,8 @@ async function executeVerifiedContactSend(options = {}) {
         action: "send",
         blocked_reason: reason,
         error: result?.outcomeUnknown === true ? "已点击发送，但无法确认最终结果" : "视觉发送未完成",
-        verification_mode: String(result?.verificationMode || "")
+        verification_mode: String(result?.verificationMode || ""),
+        send_diagnostics: result?.diagnostics || null
       }, sendAttempted);
     }
     return withSendAttempted({
@@ -453,7 +454,8 @@ async function executeVerifiedContactSend(options = {}) {
       state: { real_send_status: "sent_verified" },
       verification_mode: String(result.verificationMode || ""),
       pid: Number(result.pid || pid),
-      hWnd: String(result.hWnd || hWnd)
+      hWnd: String(result.hWnd || hWnd),
+      send_diagnostics: result?.diagnostics || null
     }, true);
   }
 
