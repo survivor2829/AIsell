@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const { writeJsonAtomic } = require("../../src/main/atomic-file.cjs");
 const { readWindowTitles } = require("./window_title_reader.cjs");
 const {
   focusWechatWindow,
@@ -81,14 +82,7 @@ function loadState(baseDir = __dirname) {
 
 function saveState(baseDir, state) {
   fs.mkdirSync(baseDir, { recursive: true });
-  const filePath = statePath(baseDir);
-  const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  try {
-    fs.writeFileSync(tempPath, JSON.stringify(state, null, 2), "utf8");
-    fs.renameSync(tempPath, filePath);
-  } finally {
-    if (fs.existsSync(tempPath)) fs.rmSync(tempPath, { force: true });
-  }
+  writeJsonAtomic(statePath(baseDir), state, { trailingNewline: false });
 }
 
 function readLogs(baseDir = __dirname, limit = 50) {
@@ -201,7 +195,7 @@ function focusWechatWindowDryRun(baseDir = __dirname, driver = focusWechatWindow
   return output(true, "focus-wechat-window", nextState, { baseDir });
 }
 
-function block(baseDir, action, state, reason, result) {
+function block(baseDir, action, state, reason, result, extra = {}) {
   const nextState = {
     ...state,
     last_result: "blocked",
@@ -209,7 +203,7 @@ function block(baseDir, action, state, reason, result) {
   };
   saveState(baseDir, nextState);
   appendLog(baseDir, action, result);
-  return output(false, action, nextState, { baseDir, blocked_reason: reason });
+  return output(false, action, nextState, { baseDir, blocked_reason: reason, ...extra });
 }
 
 function blockSendGate(baseDir, state, reason, result) {
@@ -634,6 +628,7 @@ function clickSearchResultDryRun(
   titleReader = readWindowTitles,
   conversationVerifier = verifyWechatCurrentConversation
 ) {
+  const operationStartedAt = Date.now();
   const state = loadState(baseDir);
   const customerName = String(state.selected_customer?.name ?? "").trim();
   const searchQuery = customerSearchQuery(state.selected_customer);
@@ -642,15 +637,27 @@ function clickSearchResultDryRun(
     return block(baseDir, "点击搜索结果 dry-run", state, "no_whitelist_customer", "已阻断：未选择白名单客户");
   }
 
+  const openStartedAt = Date.now();
   const inputResult = openResultDriver(searchQuery);
+  const openResultMs = Date.now() - openStartedAt;
   if (!inputResult.ok) {
     const reason = wechatWindowReason(inputResult);
     return block(baseDir, "点击搜索结果 dry-run", clearConversationState(state, reason), reason, wechatWindowBlockText(reason));
   }
 
+  const titleReadStartedAt = Date.now();
   const titles = [inputResult.title, ...titleReader()].filter(Boolean);
+  const titleReadMs = Date.now() - titleReadStartedAt;
   const matchedTitle = titles.find((item) => item.includes(customerName));
+  const verifyStartedAt = Date.now();
   let verifiedConversation = matchedTitle ? { ok: true, title: matchedTitle } : conversationVerifier(customerName);
+  const conversationVerifyMs = Date.now() - verifyStartedAt;
+  const timings = {
+    open_result_ms: openResultMs,
+    title_read_ms: titleReadMs,
+    conversation_verify_ms: conversationVerifyMs,
+    total_ms: Date.now() - operationStartedAt
+  };
   const wechatId = String(state.selected_customer?.wechatId ?? "").trim();
   const exactWechatIdSearch = !verifiedConversation.ok
     && verifiedConversation.reason !== "contact_unavailable"
@@ -722,10 +729,12 @@ function clickSearchResultDryRun(
   };
   saveState(baseDir, nextState);
   appendLog(baseDir, "点击搜索结果 dry-run", `已打开并验证：${title}`);
-  return output(true, "click-search-result-dry-run", nextState, { baseDir });
+  timings.total_ms = Date.now() - operationStartedAt;
+  return output(true, "click-search-result-dry-run", nextState, { baseDir, diagnostics: { timings } });
 }
 
 function inputMessageDryRun(baseDir = __dirname, message = "", inputDriver = inputWechatMessageDraft) {
+  const operationStartedAt = Date.now();
   const state = loadState(baseDir);
   const draft = String(message ?? "").trim();
 
@@ -741,10 +750,16 @@ function inputMessageDryRun(baseDir = __dirname, message = "", inputDriver = inp
     return block(baseDir, "消息输入 dry-run", state, "empty_message", "已阻断：触达内容为空");
   }
 
+  const inputStartedAt = Date.now();
   const inputResult = inputDriver(draft, {
     pid: state.window_pid,
     hWnd: state.window_handle
   });
+  const timings = {
+    input_driver_ms: Date.now() - inputStartedAt,
+    total_ms: Date.now() - operationStartedAt,
+    draft_attempts: Math.max(0, Number(inputResult.draftAttempts || 0))
+  };
   if (!inputResult.ok || inputResult.draftVerified !== true) {
     const diagnostic = String(inputResult.draftCheck || inputResult.reason || "").trim();
     const safeDiagnostic = /^[a-z0-9_]+$/.test(diagnostic) ? diagnostic : "";
@@ -784,7 +799,8 @@ function inputMessageDryRun(baseDir = __dirname, message = "", inputDriver = inp
   };
   saveState(baseDir, nextState);
   appendLog(baseDir, "消息输入 dry-run", "已输入草稿，未发送");
-  return output(true, "input-message-dry-run", nextState, { baseDir });
+  timings.total_ms = Date.now() - operationStartedAt;
+  return output(true, "input-message-dry-run", nextState, { baseDir, diagnostics: { timings } });
 }
 
 function queueDryRun(

@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { sanitizeAiMessage } = require("./ai-draft.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
+const { writeFileAtomic } = require("./atomic-file.cjs");
 
 const DEEPSEEK_ORIGIN = "https://api.deepseek.com";
 const DEEPSEEK_MODEL = "deepseek-v4-flash";
@@ -65,9 +66,7 @@ function createDeepSeekKeyStore({ rootDir, safeStorage }) {
       if (!key) throw new DeepSeekApiError("API_KEY_MISSING", "请输入 DeepSeek API Key。");
       if (!encryptionAvailable()) throw new DeepSeekApiError("SECURE_STORAGE_UNAVAILABLE", "无法启用 Windows 账户加密存储，请检查当前 Windows 用户后重试。");
       fs.mkdirSync(rootDir, { recursive: true });
-      const temporary = `${keyFile}.tmp`;
-      fs.writeFileSync(temporary, safeStorage.encryptString(key), { mode: 0o600 });
-      fs.renameSync(temporary, keyFile);
+      writeFileAtomic(keyFile, safeStorage.encryptString(key), { mode: 0o600 });
       return this.status();
     },
     clear() { fs.rmSync(keyFile, { force: true }); return { configured: false, maskedKey: "" }; }
@@ -334,7 +333,6 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
     }
     const attempts = [
       { name: "json", maxTokens: 300, responseFormat: { type: "json_object" } },
-      { name: "plain", maxTokens: 600, recovery: true },
       { name: "json-recovery", maxTokens: 600, responseFormat: { type: "json_object" }, recovery: true }
     ];
     const diagnostics = [];

@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const { writeJsonAtomic } = require("./atomic-file.cjs");
 
 const STATES = new Set(["idle", "syncing_contacts", "preparing_campaign", "touching", "replying", "paused", "stopping"]);
 
@@ -15,18 +16,6 @@ function processIsAlive(pid) {
   } catch (error) {
     return error.code === "EPERM";
   }
-}
-
-function writeAtomic(file, value) {
-  const temporary = `${file}.tmp`;
-  const handle = fs.openSync(temporary, "w");
-  try {
-    fs.writeFileSync(handle, JSON.stringify(value, null, 2), "utf8");
-    fs.fsyncSync(handle);
-  } finally {
-    fs.closeSync(handle);
-  }
-  fs.renameSync(temporary, file);
 }
 
 function readLock(file) {
@@ -83,25 +72,30 @@ function createRuntimeCoordinator(dataDir) {
       started_at: nowIso(),
       current_phase: String(phase || state)
     };
-    writeAtomic(lockFile, lock);
+    writeJsonAtomic(lockFile, lock);
     current = lock;
     return { ok: true, lock, stale_recovered: Boolean(stale) };
   }
 
   function update(owner, phase) {
     if (!current || current.owner !== owner) return { ok: false, error: "runtime_lock_lost" };
-    current.current_phase = String(phase || current.current_phase);
-    writeAtomic(lockFile, current);
-    return { ok: true, lock: current };
+    const next = { ...current, current_phase: String(phase || current.current_phase) };
+    writeJsonAtomic(lockFile, next);
+    current = next;
+    return { ok: true, lock: next };
   }
 
   function transition(owner, state, phase = "") {
     if (!current || current.owner !== owner) return { ok: false, error: "runtime_lock_lost" };
     if (!STATES.has(state)) return { ok: false, error: "invalid_runtime_state" };
-    current.state = state;
-    current.current_phase = String(phase || current.current_phase);
-    writeAtomic(lockFile, current);
-    return { ok: true, lock: current };
+    const next = {
+      ...current,
+      state,
+      current_phase: String(phase || current.current_phase)
+    };
+    writeJsonAtomic(lockFile, next);
+    current = next;
+    return { ok: true, lock: next };
   }
 
   function release(owner, state = "idle") {

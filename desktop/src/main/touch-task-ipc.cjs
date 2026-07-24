@@ -12,6 +12,7 @@ const {
   createTask,
   isBatchAuthorized,
   loadTaskState,
+  markPreviousBuildTask,
   publicTaskState,
   recoverInterruptedTask,
   saveTaskState,
@@ -35,6 +36,7 @@ let waitForDelay = null;
 let randomSource = Math.random;
 let requestPauseRef = null;
 let lastDiagnosticTaskSignature = "";
+let currentBuildId = "";
 const consumedBatchTokens = new Set();
 const DRAFT_GENERATION_CONCURRENCY = 3;
 
@@ -707,6 +709,9 @@ function buildRunnableTask(script, excludedContactIds = []) {
   const existingCurrent = existing.results[existing.current_index];
   const unknownNeedsResolution = existingCurrent?.status === "outcome_unknown" && (existingCurrent?.awaiting_resolution || existingCurrent?.outcome_unknown_retry_count >= 1);
   const existingUnfinished = !["idle", "completed", "stopped"].includes(existing.status) && existing.current_index < existing.total;
+  if (existingUnfinished && existing.previous_build_task) {
+    return { ok: false, blocked_reason: "previous_build_task", error: existing.pause_reason };
+  }
   if (existingUnfinished && (["prepared", "clicked"].includes(existingCurrent?.status) || existingCurrent?.retry_blocked === true || unknownNeedsResolution)) {
     return { ok: false, blocked_reason: "outcome_unknown", error: "当前联系人可能已经执行发送，任务不会自动重试" };
   }
@@ -738,10 +743,17 @@ function buildRunnableTask(script, excludedContactIds = []) {
       ? { ok: false, blocked_reason: "no_eligible_contacts", error: "本次联系人已全部移出，请恢复至少一位联系人" }
       : { ok: false, error: "请先同步当前微信联系人" };
   }
-  return { ok: true, task: createTask(script, contacts, new Date().toISOString(), { executionMode, classification }) };
+  return {
+    ok: true,
+    task: createTask(script, contacts, new Date().toISOString(), {
+      executionMode,
+      classification,
+      sourceBuildId: currentBuildId
+    })
+  };
 }
 
-function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekClient: client, onPause, executionMode: mode, realSendExecutor: executor, verifyRealSendSession: sessionVerifier, verifyMessageBubble: verifier, waitForDelay: wait, random } = {}) {
+function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekClient: client, onPause, executionMode: mode, realSendExecutor: executor, verifyRealSendSession: sessionVerifier, verifyMessageBubble: verifier, waitForDelay: wait, random, buildId = "" } = {}) {
   getMainWindowRef = getMainWindow;
   runtimeDataDir = String(dataDir || "");
   runtimeCoordinator = coordinator;
@@ -752,8 +764,20 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
   messageBubbleVerifier = typeof verifier === "function" ? verifier : null;
   waitForDelay = typeof wait === "function" ? wait : null;
   randomSource = typeof random === "function" ? random : Math.random;
+  currentBuildId = String(buildId || "").trim();
   cleanupTaskCache(activeTouchDir());
   recoverInterruptedTask(activeTouchDir());
+  const previousBuild = markPreviousBuildTask(loadTaskState(activeTouchDir()), currentBuildId);
+  if (previousBuild.changed) {
+    saveTaskState(activeTouchDir(), previousBuild.task);
+    diagnostics().event("active_touch", "previous_build_task_paused", {
+      task_id: previousBuild.task.id,
+      source_build_id: previousBuild.task.source_build_id || "unknown",
+      current_build_id: currentBuildId,
+      current_index: previousBuild.task.current_index,
+      total: previousBuild.task.total
+    }, { level: "warning", code: "previous_build_task" });
+  }
 
   function requestPause(reason = "用户已暂停") {
     onPause?.();
@@ -803,6 +827,9 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     const task = loadTaskState(activeTouchDir());
     if (task.status !== "paused") return publicTaskState(task);
     if (task.integrity_error) return publicTaskState(task);
+    if (task.previous_build_task) {
+      return { ok: false, blocked_reason: "previous_build_task", error: task.pause_reason };
+    }
     if (executionMode === "real_send" && task.version < 3) {
       return { ok: false, blocked_reason: "legacy_draft_task", error: "检测到旧版草稿任务，已阻断自动升级为真实发送；请先结束旧任务" };
     }

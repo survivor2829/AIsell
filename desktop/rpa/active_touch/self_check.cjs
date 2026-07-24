@@ -36,6 +36,7 @@ const {
   hasUnfinishedPausedTask,
   isBatchAuthorized,
   loadTaskState,
+  markPreviousBuildTask,
   publicTaskState,
   recoverInterruptedTask,
   saveTaskState,
@@ -448,6 +449,17 @@ try {
   assert.equal(classified.excluded.some((row) => row.reason_code === "contact_disabled"), true);
 
   const batchTask = createTask("批量测试", validContacts, "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  const currentBuildTask = createTask("当前版本", validContacts.slice(0, 1), "2026-07-11T00:00:00.000Z", {
+    executionMode: "real_send",
+    sourceBuildId: "build-current"
+  });
+  assert.equal(markPreviousBuildTask(currentBuildTask, "build-current").changed, false);
+  const previousBuildTask = markPreviousBuildTask(currentBuildTask, "build-next");
+  assert.equal(previousBuildTask.changed, true);
+  assert.equal(previousBuildTask.task.status, "paused");
+  assert.equal(previousBuildTask.task.previous_build_task, true);
+  assert.equal(previousBuildTask.task.batch_authorization, null);
+  assert.match(previousBuildTask.task.pause_reason, /上一版本/);
   assert.equal(batchTask.version, 4);
   assert.equal(batchTask.execution_mode, "real_send");
   assert.equal(batchTask.total, 51);
@@ -1047,6 +1059,9 @@ try {
   assert.equal(clickExactWechatIdFallback.state.conversation_verification_mode, "exact_wechat_id_search");
   assert.equal(clickExactWechatIdFallback.state.window_pid, 11);
   assert.equal(clickExactWechatIdFallback.state.window_handle, "22");
+  assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.open_result_ms), true);
+  assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.title_read_ms), true);
+  assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.conversation_verify_ms), true);
   const unavailableContact = clickSearchResultDryRun(
     dir,
     () => ({ ok: true, title: "微信" }),
@@ -1076,6 +1091,8 @@ try {
   const inputWithAdaptivePoint = inputMessageDryRun(dir, "hello", () => ({ ok: true, title: "测试客户 - 企业微信", draftVerified: true, draftPoint: { xRatio: 0.65, yRatio: 0.84 } }));
   assert.equal(inputWithAdaptivePoint.state.message_input_done, true);
   assert.deepEqual(inputWithAdaptivePoint.state.message_input_point, { xRatio: 0.65, yRatio: 0.84 });
+  assert.equal(inputWithAdaptivePoint.diagnostics.timings.draft_attempts, 0);
+  assert.equal(Number.isFinite(inputWithAdaptivePoint.diagnostics.timings.input_driver_ms), true);
   assert.equal(send(dir, { dryRun: true, message: "changed" }).blocked_reason, "message_draft_changed");
   assert.equal(verifySendResultDryRun(dir, () => ["测试客户 - 企业微信"]).blocked_reason, "send_gate_not_passed");
   assert.equal(setRealSendArm(dir, true).blocked_reason, "send_gate_not_passed");

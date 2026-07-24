@@ -2,6 +2,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { replaceWithRetry, writeJsonAtomic } = require("./atomic-file.cjs");
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const MAX_ARCHIVES = 5;
@@ -94,19 +95,7 @@ function rotate(file) {
     const destination = `${file}.${index}`;
     if (!fs.existsSync(source)) continue;
     if (index === MAX_ARCHIVES) fs.rmSync(destination, { force: true });
-    fs.renameSync(source, destination);
-  }
-}
-
-function writeJsonAtomic(file, value) {
-  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  try {
-    fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-    fs.rmSync(file, { force: true });
-    fs.renameSync(temporary, file);
-  } finally {
-    fs.rmSync(temporary, { force: true });
+    replaceWithRetry(source, destination);
   }
 }
 

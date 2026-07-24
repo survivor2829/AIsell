@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { writeFileAtomic, writeJsonAtomic } = require("./atomic-file.cjs");
 
 function resolveRuntimePaths(userDataDir) {
   const rootDir = path.join(userDataDir, "data");
@@ -34,29 +35,9 @@ function migrateFile(source, destination) {
 
 function copyVerifiedFile(source, destination) {
   fs.mkdirSync(path.dirname(destination), { recursive: true });
-  const temp = `${destination}.migration-${process.pid}-${Date.now()}`;
-  try {
-    fs.copyFileSync(source, temp);
-    if (fs.statSync(source).size !== fs.statSync(temp).size) throw new Error("runtime data migration verification failed");
-    fs.rmSync(destination, { force: true });
-    fs.renameSync(temp, destination);
-  } catch (error) {
-    fs.rmSync(temp, { force: true });
-    throw error;
-  }
-}
-
-function writeJsonAtomic(destination, value) {
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
-  const temp = `${destination}.write-${process.pid}-${Date.now()}`;
-  try {
-    fs.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-    fs.rmSync(destination, { force: true });
-    fs.renameSync(temp, destination);
-  } catch (error) {
-    fs.rmSync(temp, { force: true });
-    throw error;
-  }
+  const content = fs.readFileSync(source);
+  if (fs.statSync(source).size !== content.length) throw new Error("runtime data migration verification failed");
+  writeFileAtomic(destination, content);
 }
 
 function splitLegacyMomentsState(paths, result) {

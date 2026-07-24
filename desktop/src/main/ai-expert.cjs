@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const { writeJsonAtomic } = require("./atomic-file.cjs");
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TEXT_CHARS = 50_000;
@@ -91,14 +92,7 @@ function createAiExpertStore({ rootDir, now = () => new Date(), mammothImpl } = 
       text
     };
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-    const temporary = `${stateFile}.${process.pid}.${Date.now()}.tmp`;
-    try {
-      fs.writeFileSync(temporary, JSON.stringify(value), "utf8");
-      fs.renameSync(temporary, stateFile);
-    } catch (error) {
-      fs.rmSync(temporary, { force: true });
-      throw error;
-    }
+    writeJsonAtomic(stateFile, value, { trailingNewline: false });
     return statusFrom(value);
   }
 

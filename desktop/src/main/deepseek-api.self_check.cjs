@@ -160,8 +160,8 @@ async function main() {
   assert.equal(emptyRetryBodies[0].max_tokens, 300);
   assert.equal(emptyRetryBodies[1].max_tokens, 600, "the retry must allow a complete JSON response");
   assert.deepEqual(emptyRetryBodies[0].response_format, { type: "json_object" });
-  assert.equal(emptyRetryBodies[1].response_format, undefined, "the retry must leave the provider's flaky JSON Output mode");
-  assert.deepEqual(emptyRetryBodies[1].thinking, { type: "disabled" }, "plain recovery must remain in non-thinking mode");
+  assert.deepEqual(emptyRetryBodies[1].response_format, { type: "json_object" }, "the single recovery must keep the structured output contract");
+  assert.deepEqual(emptyRetryBodies[1].thinking, { type: "disabled" }, "structured recovery must remain in non-thinking mode");
   assert.match(emptyRetryBodies[1].messages[0].content, /结构化恢复请求/, "the plain retry must strengthen the JSON instruction");
   let truncatedCalls = 0;
   const truncatedRetryClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => ({
@@ -195,16 +195,14 @@ async function main() {
       }
     };
   } });
-  assert.equal((await finalRecoveryClient.reply(retryInput)).needsHuman, false, "a recoverable format failure must not force human handoff");
-  assert.equal(recoveredCalls, 3, "two output-format failures must get one final structured recovery attempt");
+  assert.equal((await finalRecoveryClient.reply(retryInput)).needsHuman, true, "two failed structured attempts must use the bounded fallback");
+  assert.equal(recoveredCalls, 2, "reply generation must never exceed one recovery call");
   assert.deepEqual(finalRecoveryBodies.map((body) => [body.max_tokens, body.response_format?.type || "plain"]), [
     [300, "json_object"],
-    [600, "plain"],
     [600, "json_object"]
-  ], "the final recovery must restore JSON mode without shrinking the completion budget");
+  ], "the recovery must keep JSON mode and use the larger completion budget");
   assert.equal(finalRecoveryBodies.every((body) => body.thinking?.type === "disabled"), true, "every reply attempt must keep thinking disabled");
   assert.notEqual(finalRecoveryBodies[0].messages[0].content, finalRecoveryBodies[1].messages[0].content, "recovery attempts must strengthen the reply contract");
-  assert.equal(finalRecoveryBodies[1].messages[0].content, finalRecoveryBodies[2].messages[0].content, "both recovery attempts must use the same strengthened prompt");
   const privateModelOutput = "RAW_PRIVATE_MODEL_OUTPUT";
   const privateReasoning = "RAW_PRIVATE_REASONING";
   let exhaustedCalls = 0;
@@ -217,7 +215,7 @@ async function main() {
   const exhausted = await exhaustedClient.reply(retryInput);
   assert.equal(exhausted.reply, "这个问题我帮您确认一下，稍后回复您。");
   assert.equal(exhausted.intent, false);
-  assert.equal(exhausted.needsHuman, true, "three invalid responses must use the existing human handoff path");
+  assert.equal(exhausted.needsHuman, true, "two invalid responses must use the existing human handoff path");
   assert.equal(exhausted.aiWarningCode, "AI_RESPONSE_EMPTY");
   assert.match(exhausted.aiWarning, /已发送兜底消息并提醒人工/);
   assert.match(exhausted.handoffReason, /AI_RESPONSE_TRUNCATED/);
@@ -227,7 +225,7 @@ async function main() {
   assert.equal(exhausted.handoffReason.includes(privateReasoning), false, "provider diagnostics must not expose raw model reasoning");
   assert.equal(exhausted.handoffReason.includes(retryInput.context[0].content), false, "provider diagnostics must not repeat customer messages");
   assert.equal(exhausted.handoffReason.includes("test-customer-key"), false, "provider diagnostics must not expose the API key");
-  assert.equal(exhaustedCalls, 3, "three invalid responses must fall back instead of retrying forever");
+  assert.equal(exhaustedCalls, 2, "one recovery attempt must fall back instead of retrying again");
   let incompleteCalls = 0;
   const incompleteRetryClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => ({
     ok: true,

@@ -18,6 +18,7 @@ const checks = [
   "src/main/auto-reply-ipc.self_check.cjs",
   "src/main/ai-draft.self_check.cjs",
   "src/main/deepseek-api.self_check.cjs",
+  "src/main/atomic-file.self_check.cjs",
   "src/main/diagnostics.self_check.cjs",
   "src/main/runtime-data.self_check.cjs",
   "src/main/runtime-coordinator.self_check.cjs",

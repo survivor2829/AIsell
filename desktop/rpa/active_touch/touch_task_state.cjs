@@ -208,6 +208,8 @@ function createTask(script, contacts, startedAt = nowIso(), options = {}) {
     version: CURRENT_TASK_VERSION,
     snapshot_hash_version: 2,
     id: `touch-${crypto.randomUUID()}`,
+    source_build_id: String(options.sourceBuildId || ""),
+    previous_build_task: false,
     status: "running",
     execution_mode: executionMode,
     phase: executionMode === "real_send" ? "preparing_batch" : "running_draft",
@@ -242,6 +244,8 @@ function emptyTask() {
     version: CURRENT_TASK_VERSION,
     snapshot_hash_version: 2,
     id: "",
+    source_build_id: "",
+    previous_build_task: false,
     status: "idle",
     execution_mode: "draft_only",
     phase: "idle",
@@ -524,6 +528,8 @@ function publicTaskState(task) {
     ok: true,
     task: {
       id: normalized.id,
+      source_build_id: normalized.source_build_id,
+      previous_build_task: normalized.previous_build_task === true,
       status: normalized.status,
       script: normalized.script,
       started_at: normalized.started_at,
@@ -554,6 +560,22 @@ function publicTaskState(task) {
       results: normalized.results
     }
   };
+}
+
+function markPreviousBuildTask(task, currentBuildId) {
+  const normalized = normalizeTask(task);
+  const buildId = String(currentBuildId || "").trim();
+  const terminal = ["idle", "completed", "stopped"].includes(normalized.status) || normalized.current_index >= normalized.total;
+  if (!buildId || terminal || normalized.source_build_id === buildId || normalized.previous_build_task === true) {
+    return { changed: false, task: normalized };
+  }
+  normalized.status = "paused";
+  normalized.phase = "paused";
+  normalized.previous_build_task = true;
+  normalized.batch_authorization = null;
+  normalized.pause_reason = "检测到上一版本未完成的触达任务。为避免跨版本误发，不会自动继续；请先核对并结束旧任务，再启动新任务。";
+  normalized.updated_at = nowIso();
+  return { changed: true, task: normalized };
 }
 
 function hasUnfinishedPausedTask(task) {
@@ -612,6 +634,7 @@ module.exports = {
   hasUnfinishedPausedTask,
   isBatchAuthorized,
   loadTaskState,
+  markPreviousBuildTask,
   identityKey,
   publicTaskState,
   recoverInterruptedTask,

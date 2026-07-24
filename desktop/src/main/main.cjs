@@ -178,6 +178,7 @@ if (!gotSingleInstanceLock) {
       dataDir: runtime.activeTouchDir,
       coordinator,
       deepSeekClient,
+      buildId: build.buildId || process.env.XIAOXI_BUILD_ID || "",
       executionMode: "real_send",
       realSendExecutor: internalRealSend.executeVerifiedContactSend,
       verifyRealSendSession: internalRealSend.refreshRealSendSession,

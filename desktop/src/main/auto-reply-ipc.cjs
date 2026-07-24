@@ -3,6 +3,7 @@ const { diagnostics } = require("./diagnostics.cjs");
 const fs = require("node:fs");
 const path = require("node:path");
 const { readContacts } = require("../../rpa/active_touch/state_machine.cjs");
+const { writeFileAtomic, writeJsonAtomic } = require("./atomic-file.cjs");
 
 const POLL_INTERVAL_MS = 5_000;
 const FAST_RECHECK_MS = 750;
@@ -197,13 +198,6 @@ function safeContextSuffix(context) {
   return context.slice(start);
 }
 
-function writeAtomic(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(value, null, 2), "utf8");
-  fs.renameSync(temporary, file);
-}
-
 function diagnosticCode(value, fallback = "unknown") {
   const code = String(value || "").trim().toLowerCase();
   return /^[a-z0-9][a-z0-9_.:-]{0,80}$/.test(code) ? code : fallback;
@@ -334,7 +328,6 @@ function scanReason(value) {
 }
 
 function rotateDiagnosticLog(file) {
-  let temporary = "";
   try {
     if (!fs.existsSync(file) || fs.statSync(file).size <= DIAGNOSTIC_LOG_MAX_BYTES) return true;
     const validLines = fs.readFileSync(file, "utf8")
@@ -349,28 +342,10 @@ function rotateDiagnosticLog(file) {
         }
       })
       .slice(-DIAGNOSTIC_LOG_MAX_LINES);
-    temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
-    let handle;
-    try {
-      handle = fs.openSync(temporary, "w");
-      fs.writeFileSync(handle, validLines.length ? `${validLines.join("\n")}\n` : "", "utf8");
-      fs.fsyncSync(handle);
-    } finally {
-      if (handle !== undefined) fs.closeSync(handle);
-    }
-    fs.renameSync(temporary, file);
-    temporary = "";
+    writeFileAtomic(file, validLines.length ? `${validLines.join("\n")}\n` : "", { encoding: "utf8" });
     return true;
   } catch {
     return false;
-  } finally {
-    if (temporary && fs.existsSync(temporary)) {
-      try {
-        fs.rmSync(temporary, { force: true });
-      } catch {
-        // A locked temporary file is harmless and will never be treated as a log.
-      }
-    }
   }
 }
 
@@ -861,7 +836,7 @@ function createAutoReplyController(options = {}) {
     )
   )) {
     state.updated_at = now().toISOString();
-    writeAtomic(stateFile, state);
+    writeJsonAtomic(stateFile, state);
   }
   let timer = null;
   let scanActive = false;
@@ -904,7 +879,7 @@ function createAutoReplyController(options = {}) {
 
   function save() {
     state.updated_at = now().toISOString();
-    writeAtomic(stateFile, state);
+    writeJsonAtomic(stateFile, state);
     if (onStateChange) {
       try {
         onStateChange(publicState());
