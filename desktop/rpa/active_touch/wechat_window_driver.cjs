@@ -793,7 +793,7 @@ function openWechatSearchResult(query, context = {}) {
     XIAOXI_SEARCH_RESULT_AUTOMATION_ID: String(context.resultAutomationId ?? ""),
     XIAOXI_EXPECTED_PID: String(context.pid ?? ""),
     XIAOXI_EXPECTED_HWND: String(context.hWnd ?? "")
-  });
+  }, { ensure: false });
 }
 
 function openWechatSearchResultAsync(query, context = {}) {
@@ -1063,7 +1063,7 @@ function inputWechatMessageDraft(message, context = {}) {
     XIAOXI_MESSAGE_DRAFT: String(message),
     XIAOXI_EXPECTED_PID: String(context.pid ?? ""),
     XIAOXI_EXPECTED_HWND: String(context.hWnd ?? "")
-  });
+  }, { ensure: false });
 }
 
 function inputWechatMessageDraftAsync(message, context = {}) {

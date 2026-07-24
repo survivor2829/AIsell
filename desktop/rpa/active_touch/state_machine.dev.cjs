@@ -463,7 +463,6 @@ async function executeVerifiedContactSend(options = {}) {
   const steps = [
     ["select-customer", ["--id", contactId, ...contactsArgs]],
     ["calibrate", []],
-    ["focus-wechat-window", []],
     ["click-search-result-dry-run", []]
   ];
   for (const [command, args] of steps) {

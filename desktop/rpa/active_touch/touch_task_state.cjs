@@ -390,7 +390,7 @@ function readTaskFile(file) {
 }
 
 function writeFileAtomically(file, content) {
-  const temporary = `${file}.tmp`;
+  const temporary = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
   const handle = fs.openSync(temporary, "w");
   try {
     fs.writeFileSync(handle, content, "utf8");
@@ -398,7 +398,21 @@ function writeFileAtomically(file, content) {
   } finally {
     fs.closeSync(handle);
   }
-  fs.renameSync(temporary, file);
+  let lastError;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      fs.renameSync(temporary, file);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!["EBUSY", "EPERM", "EACCES"].includes(String(error?.code)) || attempt === 5) break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (attempt + 1));
+    }
+  }
+  try {
+    fs.unlinkSync(temporary);
+  } catch {}
+  throw lastError;
 }
 
 function loadTaskState(baseDir = __dirname) {

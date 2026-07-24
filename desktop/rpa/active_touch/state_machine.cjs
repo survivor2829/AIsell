@@ -741,7 +741,10 @@ function inputMessageDryRun(baseDir = __dirname, message = "", inputDriver = inp
     return block(baseDir, "消息输入 dry-run", state, "empty_message", "已阻断：触达内容为空");
   }
 
-  const inputResult = inputDriver(draft);
+  const inputResult = inputDriver(draft, {
+    pid: state.window_pid,
+    hWnd: state.window_handle
+  });
   if (!inputResult.ok || inputResult.draftVerified !== true) {
     const diagnostic = String(inputResult.draftCheck || inputResult.reason || "").trim();
     const safeDiagnostic = /^[a-z0-9_]+$/.test(diagnostic) ? diagnostic : "";

@@ -113,6 +113,7 @@ async function main() {
   const autoReplyDir = path.join(root, "auto_reply");
   let verifyAllowed = true;
   let replyCalls = 0;
+  const replyContexts = [];
   const coordinator = {
     acquire: ({ state }) => state === "replying" ? { ok: true, lock: { owner: "reply-owner" } } : { ok: false },
     update: () => ({ ok: true }),
@@ -127,6 +128,7 @@ async function main() {
       assertAvailable: () => true,
       reply: async ({ context, expert }) => {
         replyCalls += 1;
+        replyContexts.push(context.map((item) => ({ ...item })));
         assert.equal(context.at(-1).role, "user");
         assert.match(expert, /设备短租/);
         return decisions.shift();
@@ -182,6 +184,18 @@ async function main() {
   assert.equal(sent.length, 2, "same text with a new runtime identity is a new turn");
   assert.notEqual(sentAttemptIds[1], sentAttemptIds[0], "different incoming turns must not share a real-send attempt id");
   assert.equal(controller.status().reply_count, 2);
+  assert.ok(
+    replyContexts[1].filter((item) => item.role === "assistant").length >= 2,
+    "a later customer turn must include both observed and in-session assistant context"
+  );
+  const contextDiagnostic = fs.readFileSync(path.join(autoReplyDir, "auto-reply-diagnostics.jsonl"), "utf8")
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => JSON.parse(line))
+    .filter((entry) => entry.event === "reply_generation_started")
+    .at(-1);
+  assert.equal(contextDiagnostic.context_turn_count, replyContexts[1].length);
+  assert.equal(contextDiagnostic.user_turn_count, replyContexts[1].filter((item) => item.role === "user").length);
 
   verifyAllowed = false;
   await controller.runOnce();

@@ -5,6 +5,7 @@ const path = require("node:path");
 const { readContacts } = require("../../rpa/active_touch/state_machine.cjs");
 
 const POLL_INTERVAL_MS = 5_000;
+const FAST_RECHECK_MS = 750;
 const AUTO_REPLY_STATE_VERSION = 3;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
 const GLOBAL_RATE_LIMIT = 30;
@@ -869,7 +870,37 @@ function createAutoReplyController(options = {}) {
   let primeRetryNeeded = false;
   const pendingHandoffQueue = [];
   const retryGenerations = new Map();
+  // Customer text stays in memory only. Durable state keeps opaque occurrence
+  // evidence, while this cache carries preceding turns because the visual
+  // adapter currently returns only the newest bubble.
+  const conversationHistories = new Map();
   let handoffConfirmationRequired = handoffNeedsConfirmation(state.pending_handoff);
+
+  function mergedConversationContext(contactId, observedContext) {
+    const remembered = conversationHistories.get(contactId) || [];
+    const combined = observedContext.length > 1
+      ? observedContext
+      : [...remembered, ...observedContext];
+    const normalized = [];
+    for (const item of combined) {
+      const previous = normalized.at(-1);
+      if (previous
+        && previous.role === item.role
+        && previous.content === item.content
+        && (!item.key || previous.key === item.key)) continue;
+      normalized.push(item);
+    }
+    return safeContextSuffix(normalized.slice(-12));
+  }
+
+  function rememberConversation(contactId, context, reply) {
+    const assistant = normalizeText(reply);
+    if (!assistant) return;
+    conversationHistories.set(contactId, [
+      ...context,
+      { role: "assistant", content: assistant, key: "" }
+    ].slice(-12));
+  }
 
   function save() {
     state.updated_at = now().toISOString();
@@ -904,6 +935,10 @@ function createAutoReplyController(options = {}) {
     if (/^[0-9]{1,20}$/.test(windowHandle)) entry.wechat_window_handle = windowHandle;
     const reasonRef = String(details.reasonRef || "").trim().toLowerCase();
     if (/^[a-f0-9]{12}$/.test(reasonRef)) entry.reason_ref = reasonRef;
+    for (const field of ["context_turn_count", "user_turn_count", "assistant_turn_count"]) {
+      const count = Math.floor(Number(details[field]));
+      if (Number.isSafeInteger(count) && count >= 0) entry[field] = count;
+    }
     if (code === "session_probe_unsupported") Object.assign(entry, sanitizeSessionProbe(details.sessionProbe));
     Object.assign(entry, sanitizeStructuredScanDiagnostics(details));
     appendDiagnosticLine(diagnosticLogFile, entry);
@@ -1646,6 +1681,7 @@ function createAutoReplyController(options = {}) {
           }
           state.last_error = "";
           save();
+          queueNext(FAST_RECHECK_MS);
           return publicState();
         }
         if (TRANSIENT_SCAN_FENCE_REASONS.has(candidateReason)) {
@@ -1724,7 +1760,7 @@ function createAutoReplyController(options = {}) {
         save();
         return publicState();
       }
-      const context = safeContextSuffix(rawContext);
+      const context = mergedConversationContext(contact.id, rawContext);
 
       const replyGuard = state.reply_guards?.[contact.id];
       if (replyGuard) {
@@ -1789,6 +1825,13 @@ function createAutoReplyController(options = {}) {
         const expert = expertStore?.read();
         if (!normalizeText(expert?.text)) throw new Error("AI专家话术文件不可用");
         coordinator.update(lock.lock.owner, "generate-reply");
+        appendDiagnostic("reply_generation_started", {
+          phase: "generate",
+          code: "context_ready",
+          context_turn_count: context.length,
+          user_turn_count: context.filter((item) => item.role === "user").length,
+          assistant_turn_count: context.filter((item) => item.role === "assistant").length
+        });
         generated = await deepSeekClient.reply({ context, expert: expert.text });
       }
       if (!isCurrentRun()) {
@@ -1878,6 +1921,7 @@ function createAutoReplyController(options = {}) {
           resetDailyCounter(staleSentAt);
           state.processed[fingerprint].status = "sent_verified";
           state.reply_count += 1;
+          rememberConversation(contact.id, context, reply);
           const turnEpoch = noteVisualSendAttempt(candidate, result);
           recordReplyGuard(contact, candidate, fingerprint, incomingEvidence, staleSentAt, "sent_verified", turnEpoch);
           clearPendingObservation(candidate);
@@ -1934,6 +1978,7 @@ function createAutoReplyController(options = {}) {
       resetDailyCounter(sentAt);
       state.processed[fingerprint].status = "sent_verified";
       state.reply_count += 1;
+      rememberConversation(contact.id, context, reply);
       const turnEpoch = noteVisualSendAttempt(candidate, result);
       recordReplyGuard(contact, candidate, fingerprint, incomingEvidence, sentAt, "sent_verified", turnEpoch);
       clearPendingObservation(candidate);
@@ -1949,7 +1994,7 @@ function createAutoReplyController(options = {}) {
       if (generated?.needsHuman === true) {
         const reason = normalizeText(generated?.handoffReason || generated?.intentReason) || "需要人工跟进";
         const handoffKey = crypto.createHash("sha256")
-          .update(`${contact.id}\n${context.map((item) => `${item.role}:${item.key || item.content}`).join("\n")}`)
+          .update(`${contact.id}\n${rawContext.map((item) => `${item.role}:${item.key || item.content}`).join("\n")}`)
           .digest("hex");
         if (!state.handoff_notified?.[handoffKey] && !state.manual_followups?.some((item) => pendingHandoffKey(item) === handoffKey)) {
           const metadata = { key: handoffKey, contact_id: contact.id, conversation, at: sentAt.toISOString() };

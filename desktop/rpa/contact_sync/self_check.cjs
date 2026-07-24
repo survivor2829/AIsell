@@ -58,6 +58,8 @@ function runBuiltInHelper(helper, args) {
 
 try {
   assert.equal(candidateWechatRoots().includes(path.join(os.homedir(), "xwechat_files")), true, "new WeChat default data root must be auto-detected");
+  assert.equal(candidateWechatRoots().includes(path.join(os.homedir(), "Documents", "xwechat_files")), true, "Documents xwechat_files must be auto-detected");
+  if (process.platform === "win32") assert.equal(candidateWechatRoots().includes("C:\\xwechat_files"), true, "drive-root xwechat_files must be auto-detected");
 
   const configuredBase = path.join(root, "自定义 微信数据");
   const configuredRoot = path.join(configuredBase, "xwechat_files");
@@ -68,7 +70,7 @@ try {
   fs.mkdirSync(path.join(configuredAppData, "Tencent", "xwechat", "config"), { recursive: true });
   fs.writeFileSync(path.join(configuredAccount, "db_storage", "contact", "contact.db"), "encrypted", "utf8");
   fs.writeFileSync(path.join(configuredRoot, "all_users", "login", "wxid_customer", "key_info.db"), "key-window", "utf8");
-  fs.writeFileSync(path.join(configuredAppData, "Tencent", "xwechat", "config", "customer.ini"), `${configuredBase}\n`, "utf8");
+  fs.writeFileSync(path.join(configuredAppData, "Tencent", "xwechat", "config", "customer.ini"), `data_dir=${configuredBase}\n`, "utf8");
   assert.equal(findWechatRoot({ appDataDir: configuredAppData, processProvider: () => [] }), configuredRoot, "WeChat's own config must locate a custom Chinese data directory");
   assert.equal(findWechatRoot({ wechatRoot: path.join(root, "stale-missing-root"), appDataDir: configuredAppData, processProvider: () => [] }), configuredRoot, "a missing saved path must not hide WeChat's current configured data root");
   assert.equal(findWechatRoot({ wechatRoot: configuredBase }), configuredRoot, "manual selection may point at the parent containing xwechat_files");

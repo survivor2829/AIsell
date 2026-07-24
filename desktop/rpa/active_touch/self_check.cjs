@@ -382,6 +382,23 @@ try {
   saveTaskState(dir, task);
   assert.equal(loadTaskState(dir).total, 2);
   assert.equal(fs.existsSync(taskBackupPath(dir)), true);
+  const originalRenameSync = fs.renameSync;
+  let transientRenameFailures = 0;
+  fs.renameSync = (source, destination) => {
+    if (destination === path.join(dir, "touch_task.json") && transientRenameFailures < 2) {
+      transientRenameFailures += 1;
+      const error = new Error("simulated Windows file lock");
+      error.code = "EPERM";
+      throw error;
+    }
+    return originalRenameSync(source, destination);
+  };
+  try {
+    assert.doesNotThrow(() => saveTaskState(dir, task), "a short Windows file lock must not pause the task");
+  } finally {
+    fs.renameSync = originalRenameSync;
+  }
+  assert.equal(transientRenameFailures, 2);
   const intact = loadTaskState(dir);
   const interrupted = spawnSync(process.execPath, [
     "-e",
@@ -674,7 +691,7 @@ try {
   });
   assert.equal(sharedResult.ok, true);
   assert.equal(sharedResult.send_result, "sent_verified");
-  assert.deepEqual(sharedSteps, ["select-customer", "calibrate", "focus-wechat-window", "click-search-result-dry-run", "input-message-dry-run", "send"]);
+  assert.deepEqual(sharedSteps, ["select-customer", "calibrate", "click-search-result-dry-run", "input-message-dry-run", "send"]);
   assert.deepEqual(sharedTransitions, ["prepared", "clicked", "sent_verified"]);
   assert.deepEqual(sharedSessionContexts.map((context) => context?.wechatRoot), ["D:\\wechat-data\\xwechat_files", "D:\\wechat-data\\xwechat_files"], "real-send account verification must reuse the successful contact-sync root before input and before send");
   assert.deepEqual(sharedSessionContexts.map((context) => context?.expectedAccountId), ["account-a", "account-a"]);
@@ -867,7 +884,7 @@ try {
     bubbleVerifier: () => ({ ok: true, snapshot: "before" })
   });
   assert.equal(guardedSend.blocked_reason, "incoming_message_changed");
-  assert.deepEqual(guardedSteps, ["select-customer", "calibrate", "focus-wechat-window", "click-search-result-dry-run"]);
+  assert.deepEqual(guardedSteps, ["select-customer", "calibrate", "click-search-result-dry-run"]);
 
   saveState(sharedDir, {
     ...loadState(sharedDir),
@@ -1331,6 +1348,7 @@ try {
   assert.equal(queueResult.state.real_send_clicked, false);
 
   const driverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.cjs"), "utf8");
+  const safeStateMachineSource = fs.readFileSync(path.join(__dirname, "state_machine.cjs"), "utf8");
   const messageDraftSource = driverSource.split("const MESSAGE_DRAFT_SCRIPT = `")[1].split("`;")[0];
   const developmentDriverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.dev.cjs"), "utf8");
   const sendMessageSource = developmentDriverSource.split("const SEND_MESSAGE_SCRIPT = `")[1].split("`;")[0];
@@ -1341,6 +1359,9 @@ try {
   assert.equal(driverSource.includes("SEND_MESSAGE_SCRIPT"), false);
   assert.equal(driverSource.includes("XIAOXI_SEND_KEY"), false);
   assert.equal(driverSource.includes("verifyWechatMessageBubble"), false);
+  assert.match(driverSource, /function openWechatSearchResult[\s\S]*\}, \{ ensure: false \}\);/);
+  assert.match(driverSource, /function inputWechatMessageDraft[\s\S]*\}, \{ ensure: false \}\);/);
+  assert.match(safeStateMachineSource, /inputDriver\(draft, \{\s*pid: state\.window_pid,\s*hWnd: state\.window_handle\s*\}\)/);
   assert.match(messageDraftSource, /SendWait\("\^a"\)[\s\S]*Set-Clipboard -Value \$message[\s\S]*SendWait\("\^v"\)/);
   assert.match(messageDraftSource, /SendWait\("\^c"\)/);
   assert.match(messageDraftSource, /draftCheck = "clipboard_roundtrip"/);
@@ -1506,7 +1527,7 @@ try {
   assert.match(developmentDriverSource, /function clickWechatSendButtonAsync[\s\S]*runPowerShellAsync/);
   assert.match(sharedTransactionSource, /beforeDraft/);
   assert.match(sharedTransactionSource, /inputPoint: state\.message_input_point/);
-  assert.match(sharedTransactionSource, /select-customer[\s\S]*calibrate[\s\S]*focus-wechat-window[\s\S]*click-search-result-dry-run[\s\S]*verifyRealSendSession[\s\S]*input-message-dry-run[\s\S]*send[\s\S]*dry-run[\s\S]*sendReal/);
+  assert.match(sharedTransactionSource, /select-customer[\s\S]*calibrate[\s\S]*click-search-result-dry-run[\s\S]*input-message-dry-run[\s\S]*send[\s\S]*dry-run[\s\S]*sendReal/);
   assert.equal(developmentIpcSource.includes("real-send-hold"), false);
   const developmentUiSource = fs.readFileSync(path.join(__dirname, "../../src/renderer/DevelopmentAcceptance.tsx"), "utf8");
   assert.match(developmentUiSource, /sendSelectedContact/);

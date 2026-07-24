@@ -169,7 +169,10 @@ function configuredWechatRoots(options = {}) {
       .flatMap((entry) => {
         const buffer = fs.readFileSync(path.join(configDir, entry.name));
         const content = buffer[0] === 0xff && buffer[1] === 0xfe ? buffer.toString("utf16le") : buffer.toString("utf8");
-        return content.split(/\r?\n/).map(normalizeWechatRootCandidate).filter(Boolean);
+        return content.split(/\r?\n/)
+          .map((line) => line.includes("=") ? line.slice(line.indexOf("=") + 1) : line)
+          .map(normalizeWechatRootCandidate)
+          .filter(Boolean);
       });
   } catch {
     return [];
@@ -401,6 +404,7 @@ function candidateWechatRoots(options = {}) {
       ? "CDEFGHIJKLMNOPQRSTUVWXYZ"
           .split("")
           .flatMap((drive) => [
+            `${drive}:\\xwechat_files`,
             `${drive}:\\微信\\xwechat_files`,
             `${drive}:\\WeChat\\xwechat_files`,
             `${drive}:\\Weixin\\xwechat_files`
@@ -410,6 +414,8 @@ function candidateWechatRoots(options = {}) {
     explicit,
     ...configuredWechatRoots(options),
     path.join(os.homedir(), "xwechat_files"),
+    path.join(os.homedir(), "Documents", "xwechat_files"),
+    process.env.OneDrive ? path.join(process.env.OneDrive, "Documents", "xwechat_files") : "",
     defaultWechatRoot(),
     path.join(os.homedir(), "Documents", "WeChat Files"),
     ...runningWeixinDataRoots(options),
