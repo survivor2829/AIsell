@@ -5,6 +5,7 @@ const desktopDir = path.resolve(__dirname, "..");
 const checks = [
   "rpa/active_touch/self_check.cjs",
   "rpa/active_touch/moments_visual.self_check.cjs",
+  "rpa/active_touch/moments_navigation.self_check.cjs",
   "rpa/active_touch/moments_comment_readback_proof.self_check.cjs",
   "rpa/active_touch/moments_action.self_check.cjs",
   "rpa/active_touch/moments_action_driver.self_check.cjs",
