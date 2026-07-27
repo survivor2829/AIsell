@@ -19,3 +19,18 @@
   background: #f5f6f8;
   color: #98a2b3;
 }
+
+.moments-campaign-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.moments-campaign-metrics span {
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: #fff2f4;
+  color: #9f1239;
+  font-size: 13px;
+}

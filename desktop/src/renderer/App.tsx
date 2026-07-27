@@ -333,6 +333,7 @@ const DEFAULT_ACTIVE_MODULE: ModuleKey = PILOT_EDITION ? "touch" : "reply";
 const EDITION_LABEL = DEVELOPMENT_EDITION ? "测试版" : "";
 const DevelopmentAcceptance = DEVELOPMENT_EDITION ? lazy(() => import("./DevelopmentAcceptance")) : null;
 const MomentsDryRunPanel = DEVELOPMENT_EDITION ? lazy(() => import("./MomentsDryRunPanel")) : null;
+const MomentsCampaignPanel = DEVELOPMENT_EDITION ? lazy(() => import("./MomentsCampaignPanel")) : null;
 
 const agentChildren: NavItem[] = [
   { key: "reply", label: "自动回复", icon: MessageCircle },
@@ -1112,6 +1113,11 @@ function MomentsOperations() {
           );
         })}
       </div>
+      {MomentsCampaignPanel && (
+        <Suspense fallback={null}>
+          <MomentsCampaignPanel />
+        </Suspense>
+      )}
       {MomentsDryRunPanel && (
         <Suspense fallback={null}>
           <MomentsDryRunPanel />

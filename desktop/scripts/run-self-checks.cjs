@@ -25,6 +25,7 @@ const checks = [
   "src/main/runtime-coordinator.self_check.cjs",
   "src/main/active-touch-ipc.self_check.cjs",
   "src/main/active-touch-dev-ipc.self_check.cjs",
+  "src/main/moments-campaign-ipc.self_check.cjs",
   "src/main/touch-task-ipc.self_check.cjs",
   "src/renderer/moments-dry-run-panel.self_check.cjs",
   "scripts/portable-runtime-dependencies.self_check.cjs",

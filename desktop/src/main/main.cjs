@@ -144,9 +144,15 @@ if (!gotSingleInstanceLock) {
     configureActiveTouchRuntime({ dataDir: runtime.activeTouchDir, coordinator });
     const internalRealSend = developmentEdition || pilotEdition ? require("../../rpa/active_touch/state_machine.dev.cjs") : null;
     const developmentRealSend = developmentEdition ? require("./active-touch-dev-ipc.cjs") : null;
+    const momentsCampaign = developmentEdition ? require("./moments-campaign-ipc.cjs") : null;
     if (developmentRealSend) developmentRealSend.registerActiveTouchDevIpc({
       activeTouchDir: runtime.activeTouchDir,
       momentsDir: runtime.momentsDir,
+      coordinator,
+      getMainWindow: () => mainWindow
+    });
+    if (momentsCampaign) momentsCampaign.registerMomentsCampaignIpc({
+      baseDir: runtime.momentsDir,
       coordinator,
       getMainWindow: () => mainWindow
     });

@@ -6,6 +6,7 @@ const consumeRealSendClick = createTrustedClickGate("[data-xiaoxi-real-send]");
 const consumeMomentsInspectClick = createTrustedClickGate("[data-xiaoxi-moments-inspect]");
 const consumeMomentsLikeClick = createTrustedClickGate("[data-xiaoxi-moments-like]");
 const consumeMomentsCommentClick = createTrustedClickGate("[data-xiaoxi-moments-comment]");
+const consumeMomentsCampaignClick = createTrustedClickGate("[data-xiaoxi-moments-campaign-start]");
 
 function momentsClickToken(intent, consumeClick) {
   const clickToken = consumeClick();
@@ -44,6 +45,21 @@ const activeTouch = {
   failConversation: () => ipcRenderer.invoke("active-touch:fail-conversation")
 };
 
+const momentsCampaign = {
+  status: () => ipcRenderer.invoke("moments-campaign:status"),
+  start: (payload) => ipcRenderer.invoke("moments-campaign:start", {
+    maxPosts: Number(payload?.maxPosts || 10),
+    clickToken: consumeMomentsCampaignClick()
+  }),
+  pause: () => ipcRenderer.invoke("moments-campaign:pause"),
+  stop: () => ipcRenderer.invoke("moments-campaign:stop"),
+  onUpdate: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on("moments-campaign:update", handler);
+    return () => ipcRenderer.removeListener("moments-campaign:update", handler);
+  }
+};
+
 contextBridge.exposeInMainWorld("xiaoxiActiveTouch", activeTouch);
 contextBridge.exposeInMainWorld("xiaoxiAutoReply", apis.autoReply);
 contextBridge.exposeInMainWorld("xiaoxiAiExpert", apis.aiExpert);
@@ -51,3 +67,4 @@ contextBridge.exposeInMainWorld("xiaoxiContactSync", apis.contactSync);
 contextBridge.exposeInMainWorld("xiaoxiDeepSeekApi", apis.deepSeekApi);
 contextBridge.exposeInMainWorld("xiaoxiDiagnostics", apis.diagnostics);
 contextBridge.exposeInMainWorld("xiaoxiTouchTask", apis.touchTask);
+contextBridge.exposeInMainWorld("xiaoxiMomentsCampaign", momentsCampaign);
