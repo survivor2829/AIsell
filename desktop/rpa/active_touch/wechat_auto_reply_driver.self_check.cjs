@@ -577,6 +577,16 @@ const asynchronousProbe = await runPowerShellAsync("Start-Sleep -Milliseconds 15
 assert.equal(asynchronousProbe.ok, true);
 assert.equal(eventLoopAdvanced, true, "auto-reply PowerShell scans must not block Electron's event loop");
 
+const asynchronousFailureProbe = await runPowerShellAsync(
+  'Write-Error "async-diagnostics-marker"; exit 7',
+  {},
+  { ensure: false, timeout: 5000, diagnostics: true }
+);
+assert.equal(asynchronousFailureProbe.ok, false);
+assert.equal(asynchronousFailureProbe.reason, "powershell_failed");
+assert.match(asynchronousFailureProbe.diagnostics.stderr, /async-diagnostics-marker/u);
+assert.equal(asynchronousFailureProbe.diagnostics.exit_code, 7);
+
 console.log("wechat auto-reply driver self-check passed");
 }
 

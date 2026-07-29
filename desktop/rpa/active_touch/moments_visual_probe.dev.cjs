@@ -101,6 +101,17 @@ function Test-MomentsVisualViewportOwned($windowRect, [IntPtr]$expectedHWnd, [in
   return $true
 }
 
+function Request-MomentsVisualForeground([IntPtr]$hWnd) {
+  if ([Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -eq $hWnd) { return $true }
+  [void][Win32WechatMomentsVisualReadOnly]::ShowWindowAsync($hWnd, 9)
+  foreach ($delayMs in @(80, 140, 220, 320)) {
+    [void][Win32WechatMomentsVisualReadOnly]::SetForegroundWindow($hWnd)
+    Start-Sleep -Milliseconds $delayMs
+    if ([Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -eq $hWnd) { return $true }
+  }
+  return $false
+}
+
 function Get-MomentsVisualFrame(
   [IntPtr]$hWnd,
   $windowRect,
@@ -111,13 +122,17 @@ function Get-MomentsVisualFrame(
   if (-not [Win32WechatMomentsVisualReadOnly]::IsWindowVisible($hWnd) -or [Win32WechatMomentsVisualReadOnly]::IsIconic($hWnd)) {
     return @{ ok = $false; reason = "moments_window_not_found" }
   }
+  $foregroundReady = [Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -eq $hWnd
   if ($activate) {
-    [void][Win32WechatMomentsVisualReadOnly]::ShowWindowAsync($hWnd, 9)
-    [void][Win32WechatMomentsVisualReadOnly]::SetForegroundWindow($hWnd)
-    Start-Sleep -Milliseconds 140
+    $foregroundReady = Request-MomentsVisualForeground $hWnd
   }
-  if ([Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -ne $hWnd) {
-    return @{ ok = $false; reason = "moments_window_not_foreground" }
+  if (-not $foregroundReady) {
+    return @{
+      ok = $false
+      reason = "moments_window_not_foreground"
+      expectedHWnd = [int64]$hWnd
+      actualForegroundHWnd = [int64][Win32WechatMomentsVisualReadOnly]::GetForegroundWindow()
+    }
   }
   if ($requireFullViewportOwnership -and -not (Test-MomentsVisualViewportOwned $windowRect $hWnd $expectedPid)) {
     return @{ ok = $false; reason = "moments_window_obscured" }
@@ -779,17 +794,33 @@ function Get-MomentsPostStableAnchorText($ocr, $postRect, $avatarBounds) {
 
 function Get-MomentsVisualPostCandidates($frame, $viewportBounds) {
   $frameBounds = @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
-  if (-not (Test-MomentsVisualBoundsInside $viewportBounds $frameBounds)) { return @{ menus = @(); posts = @() } }
+  if (-not (Test-MomentsVisualBoundsInside $viewportBounds $frameBounds)) {
+    return @{ menus = @(); posts = @(); postBoundaries = @() }
+  }
   $menus = @(Find-MomentsMenuDots $frame | Where-Object { Test-MomentsVisualBoundsInside $_.bounds $viewportBounds })
   $posts = New-Object System.Collections.Generic.List[object]
+  $postBoundaries = New-Object System.Collections.Generic.List[object]
   for ($index = 0; $index -lt $menus.Count; $index++) {
     $menu = $menus[$index]
     $avatar = Find-MomentsAvatarForMenu $frame $menus $index $viewportBounds
-    if (-not $avatar.ok -or -not (Test-MomentsVisualBoundsInside $avatar.bounds $viewportBounds)) { continue }
+    if (-not $avatar.ok -or -not (Test-MomentsVisualBoundsInside $avatar.bounds $viewportBounds)) {
+      [void]$postBoundaries.Add(@{
+        ok = $false
+        menuBounds = $menu.bounds
+        reason = $(if ($avatar.reason) { [string]$avatar.reason } else { "moments_visual_avatar_not_found" })
+      })
+      continue
+    }
     $viewportRight = [double]$viewportBounds.left + [double]$viewportBounds.width
     $viewportBottom = [double]$viewportBounds.top + [double]$viewportBounds.height
     $postLeft = [Math]::Max([double]$viewportBounds.left, [double]$avatar.bounds.left - 6.0)
     $postTop = [Math]::Max([double]$viewportBounds.top, [double]$avatar.bounds.top - 6.0)
+    [void]$postBoundaries.Add(@{
+      ok = $true
+      top = $postTop
+      menuBounds = $menu.bounds
+      avatarBounds = $avatar.bounds
+    })
     $postRight = [Math]::Min($viewportRight, [double]$menu.bounds.left + [double]$menu.bounds.width + 5.0)
     $unclippedPostBottom = [double]$menu.bounds.top + [double]$menu.bounds.height + [Math]::Max(48.0, [double]$avatar.bounds.height * 1.35)
     $postBottom = [Math]::Min($viewportBottom, $unclippedPostBottom)
@@ -817,7 +848,11 @@ function Get-MomentsVisualPostCandidates($frame, $viewportBounds) {
       ocrLines = $ocr.lines
     })
   }
-  return @{ menus = $menus; posts = @($posts.ToArray() | Sort-Object { $_.bounds.top }) }
+  return @{
+    menus = $menus
+    posts = @($posts.ToArray() | Sort-Object { $_.bounds.top })
+    postBoundaries = @($postBoundaries.ToArray() | Sort-Object { [double]$_.menuBounds.top })
+  }
 }
 `;
 

@@ -55,7 +55,13 @@ const visualBoundsFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
 const visualBoundsNearFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
   /function Test-VisualBoundsNear\([^\n]+\) \{[\s\S]*?\n\}/u
 )?.[0] ?? "";
-assert.ok(visualBoundsFunction && visualBoundsNearFunction, "visual geometry helpers should be extractable");
+const visualBoundsInsideFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
+  /function Test-VisualBoundsInside\([^\n]+\) \{[\s\S]*?\n\}/u
+)?.[0] ?? "";
+assert.ok(
+  visualBoundsFunction && visualBoundsNearFunction && visualBoundsInsideFunction,
+  "visual geometry helpers should be extractable"
+);
 const relockGeometryProgram = `${visualBoundsFunction}\n${visualBoundsNearFunction}\n$tolerance = ${MOMENTS_VISUAL_POST_RELOCK_TOLERANCE_PX.toFixed(1)}\n$expected = @{ left = 100.0; top = 200.0; width = 300.0; height = 180.0 }\n$within = @{ left = 112.0; top = 188.0; width = 312.0; height = 168.0 }\n$beyond = @{ left = 112.1; top = 200.0; width = 300.0; height = 180.0 }\n$alsoWithin = @{ left = 94.0; top = 205.0; width = 300.0; height = 180.0 }\n$matches = @(@($within, $alsoWithin) | Where-Object { Test-VisualBoundsNear $_ $expected $tolerance })\n@{ within = (Test-VisualBoundsNear $within $expected $tolerance); beyond = (Test-VisualBoundsNear $beyond $expected $tolerance); matchCount = $matches.Count; unique = ($matches.Count -eq 1) } | ConvertTo-Json -Compress`;
 const relockGeometryHarness = spawnSync("powershell.exe", [
   "-NoProfile",
@@ -73,6 +79,149 @@ assert.deepEqual(JSON.parse(relockGeometryHarness.stdout.trim()), {
   beyond: false,
   unique: false,
   within: true
+});
+
+const visualMenuResolverFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
+  /(function Resolve-VisualMenuAnchor\([\s\S]*?\n\})\n\nfunction ConvertTo-RelativeVisualBounds/u
+)?.[1] ?? "";
+assert.ok(visualMenuResolverFunction, "visual menu resolver should be extractable");
+const visualMenuResolverProgram = `${visualBoundsFunction}
+${visualBoundsNearFunction}
+${visualMenuResolverFunction}
+$expected = @{ left = 100.0; top = 200.0; width = 36.0; height = 24.0 }
+$exact = @{ centerX = 118.0; centerY = 212.0; bounds = @{ left = 100.0; top = 200.0; width = 36.0; height = 24.0 } }
+$overlap = @{ centerX = 118.8; centerY = 211.5; bounds = @{ left = 100.8; top = 199.5; width = 36.0; height = 24.0 } }
+$distinct = @{ centerX = 126.0; centerY = 220.0; bounds = @{ left = 108.0; top = 208.0; width = 36.0; height = 24.0 } }
+$deduped = Resolve-VisualMenuAnchor @($overlap, $exact) $expected 12.0
+$nearest = Resolve-VisualMenuAnchor @($exact, $distinct) $expected 12.0
+$missing = Resolve-VisualMenuAnchor @() $expected 12.0
+@{
+  dedupedOk = $deduped.ok
+  dedupedRaw = $deduped.diagnostics.rawCandidateCount
+  dedupedCount = $deduped.diagnostics.distinctCandidateCount
+  chosenLeft = $deduped.menu.bounds.left
+  nearestOk = $nearest.ok
+  nearestLeft = $nearest.menu.bounds.left
+  nearestCount = $nearest.diagnostics.distinctCandidateCount
+  missingReason = $missing.reason
+} | ConvertTo-Json -Compress`;
+const visualMenuResolverHarness = spawnSync("powershell.exe", [
+  "-NoProfile",
+  "-NonInteractive",
+  "-EncodedCommand",
+  Buffer.from(visualMenuResolverProgram, "utf16le").toString("base64")
+], {
+  encoding: "utf8",
+  windowsHide: true
+});
+assert.equal(visualMenuResolverHarness.status, 0, visualMenuResolverHarness.stderr || "visual menu resolver harness must run");
+assert.deepEqual(JSON.parse(visualMenuResolverHarness.stdout.trim()), {
+  missingReason: "moments_menu_not_found",
+  nearestCount: 2,
+  nearestLeft: 100,
+  nearestOk: true,
+  chosenLeft: 100,
+  dedupedRaw: 2,
+  dedupedCount: 1,
+  dedupedOk: true
+});
+
+const visualSendButtonFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
+  /function Get-VisualSendButton\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.ok(visualSendButtonFunction, "visual send button detector should be extractable");
+const visualGreenClassifierFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
+  /function Test-VisualWechatGreenPixel\(\$pixel\) \{[\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.ok(visualGreenClassifierFunction, "the production green classifier should be extractable");
+const visualSendButtonProgram = `
+$ErrorActionPreference = "Stop"
+${visualGreenClassifierFunction}
+function Get-MomentsPixel($frame, [int]$x, [int]$y) {
+  return $(if ($frame.green.ContainsKey("$x,$y")) { $frame.green["$x,$y"] } else { $null })
+}
+${visualBoundsFunction}
+${visualBoundsInsideFunction}
+function Get-MomentsHighContrastOcrObservation($frame, $region, [int]$scale) {
+  return @{ ok = $false; reason = "ocr_unavailable" }
+}
+function Normalize-VisualText([string]$value) { return $value }
+function New-GreenFrame { return @{ green = @{} } }
+function Add-GreenRect($frame, [int]$left, [int]$top, [int]$width, [int]$height) {
+  $green = @{ r = 7; g = 168; b = 99 }
+  for ($y = $top; $y -lt ($top + $height); $y++) {
+    for ($x = $left; $x -lt ($left + $width); $x++) { $frame.green["$x,$y"] = $green }
+  }
+}
+function Add-GreenInsetBorder($frame, [int]$width, [int]$height) {
+  Add-GreenRect $frame 6 6 ($width - 12) 6
+  Add-GreenRect $frame 6 ($height - 12) ($width - 12) 6
+  Add-GreenRect $frame 6 6 6 ($height - 12)
+  Add-GreenRect $frame ($width - 12) 6 6 ($height - 12)
+}
+${visualSendButtonFunction}
+$composer = @{ ok = $true; bounds = @{ left = 0.0; top = 0.0; width = 420.0; height = 140.0 } }
+
+$borderOnlyFrame = New-GreenFrame
+Add-GreenInsetBorder $borderOnlyFrame 420 140
+$borderOnly = Get-VisualSendButton $borderOnlyFrame $composer
+
+$singleFrame = New-GreenFrame
+Add-GreenInsetBorder $singleFrame 420 140
+Add-GreenRect $singleFrame 315 82 86 36
+$single = Get-VisualSendButton $singleFrame $composer
+
+$twoFrame = New-GreenFrame
+Add-GreenRect $twoFrame 288 82 55 36
+Add-GreenRect $twoFrame 350 82 55 36
+$two = Get-VisualSendButton $twoFrame $composer
+
+$ocrEmptyFrame = New-GreenFrame
+Add-GreenRect $ocrEmptyFrame 315 82 86 36
+$ocrEmpty = Get-VisualSendButton $ocrEmptyFrame $composer
+
+$nearEdgeFrame = New-GreenFrame
+Add-GreenRect $nearEdgeFrame 326 96 88 36
+$nearEdge = Get-VisualSendButton $nearEdgeFrame $composer
+
+@{
+  borderOnlyOk = [bool]$borderOnly.ok
+  borderOnlyReason = [string]$borderOnly.reason
+  singleOk = [bool]$single.ok
+  singleCandidateCount = [int]$single.candidateCount
+  twoOk = [bool]$two.ok
+  twoReason = [string]$two.reason
+  twoCandidateCount = [int]$two.candidateCount
+  ocrEmptyOk = [bool]$ocrEmpty.ok
+  ocrEmptyLabelVerified = [bool]$ocrEmpty.labelVerified
+  nearEdgeOk = [bool]$nearEdge.ok
+} | ConvertTo-Json -Compress
+`;
+const visualSendButtonHarness = spawnSync("powershell.exe", [
+  "-NoProfile",
+  "-NonInteractive",
+  "-EncodedCommand",
+  Buffer.from(visualSendButtonProgram, "utf16le").toString("base64"),
+], {
+  encoding: "utf8",
+  windowsHide: true,
+});
+assert.equal(
+  visualSendButtonHarness.status,
+  0,
+  visualSendButtonHarness.stderr || "visual send button component harness must run",
+);
+assert.deepEqual(JSON.parse(visualSendButtonHarness.stdout.trim()), {
+  borderOnlyOk: false,
+  borderOnlyReason: "moments_comment_send_button_not_found",
+  nearEdgeOk: true,
+  ocrEmptyLabelVerified: false,
+  ocrEmptyOk: true,
+  singleCandidateCount: 1,
+  singleOk: true,
+  twoCandidateCount: 2,
+  twoOk: false,
+  twoReason: "moments_comment_send_button_ambiguous",
 });
 
 const embeddedCSharp = MOMENTS_VISUAL_ACTION_POWERSHELL.match(/Add-Type @"\r?\n([\s\S]*?)\r?\n"@/u)?.[1] ?? "";
@@ -112,6 +261,16 @@ assert.match(script, /\$feeds = \$root\.FindAll\(\[System\.Windows\.Automation\.
 assert.match(script, /\$feeds\.Count -ne 0[\s\S]*moments_visual_profile_conflict/u);
 
 // Two independently captured observations must agree before a post is accepted.
+const foregroundRecovery = script.match(
+  /function Request-MomentsVisualForeground\([^\n]+\) \{([\s\S]*?)\n\}/u,
+)?.[1] ?? "";
+assert.ok(foregroundRecovery, "visual capture should have bounded foreground recovery");
+assert.match(foregroundRecovery, /foreach \(\$delayMs in @\(80, 140, 220, 320\)\)/u);
+assert.match(foregroundRecovery, /SetForegroundWindow\(\$hWnd\)[\s\S]*Start-Sleep -Milliseconds \$delayMs/u);
+assert.match(
+  script,
+  /\$foregroundReady = Request-MomentsVisualForeground \$hWnd[\s\S]*if \(-not \$foregroundReady\)[\s\S]*moments_window_not_foreground/u,
+);
 assert.match(script, /\$firstFrame = Get-MomentsVisualFrame \$hWnd \$matched\.rect \$matched\.pid \$true/u);
 assert.match(script, /\$secondFrame = Get-MomentsVisualFrame \$hWnd \$matched\.rect \$matched\.pid \$false/u);
 assert.match(script, /Start-Sleep -Milliseconds 180/u);
@@ -296,10 +455,10 @@ assert.doesNotMatch(probeSource, /\$task\.Wait\(\)/u);
 
 // Visual actions remain test-only and fail closed before PowerShell when the
 // immutable observation context is missing.
-for (const name of ["comment", "commentReadback", "inspectCommentDraft", "inspectMenu", "like"]) {
+for (const name of ["comment", "commentOccurrenceCheck", "commentReadback", "inspectCommentDraft", "inspectMenu", "like"]) {
   assert.equal(typeof visualActionDriver[name], "function");
 }
-for (const name of ["comment", "commentReadback", "inspectCommentDraft", "inspectMenu", "like"]) {
+for (const name of ["comment", "commentOccurrenceCheck", "commentReadback", "inspectCommentDraft", "inspectMenu", "like"]) {
   const result = visualActionDriver[name]({});
   assert.equal(result.ok, false);
   assert.equal(result.status, "blocked");
@@ -352,6 +511,11 @@ const currentPostLock = actionSource.match(
   /function Get-CurrentLockedVisualPost\([\s\S]*?\n\}\n\nfunction Get-FreshVisualMenuAnchor/u
 )?.[0] ?? "";
 assert.ok(currentPostLock, "current visual post lock should be present");
+assert.match(
+  currentPostLock,
+  /Get-MomentsVisualFrame \$lock\.hWnd \$lock\.windowRect \$lock\.pid \$activate \$false/u,
+  "action relock should rely on the exact target checks instead of whole-window ownership"
+);
 assert.doesNotMatch(currentPostLock, /regionHash|region_hash/u);
 assert.doesNotMatch(currentPostLock, /\$posts\.Count -ne 1/u);
 assert.match(currentPostLock, /Test-MomentsStablePostIdentity \$post \$snapshot/u);
@@ -362,18 +526,304 @@ assert.match(currentPostLock, /\$matchingPosts\.Count -ne 1[\s\S]*moments_post_a
 assert.match(currentPostLock, /Test-VisualBoundsNear \$post\.bounds \$expectedBounds \$script:momentsVisualPostRelockTolerancePx/u);
 assert.match(currentPostLock, /Test-VisualBoundsNear \$post\.menuBounds \$expectedMenuBounds \$script:momentsVisualPostRelockTolerancePx/u);
 assert.match(currentPostLock, /Test-VisualBoundsNear \$post\.avatarBounds \$expectedAvatarBounds \$script:momentsVisualPostRelockTolerancePx/u);
+assert.match(currentPostLock, /Resolve-VisualMenuAnchor \$read\.menus \$post\.menuBounds 1\.5[\s\S]*diagnostics = \$menuResolution\.diagnostics/u);
 assert.match(currentPostLock, /\$avatarHash = Get-MomentsPixelHash \$frame \$post\.avatarBounds/u);
 const freshMenuLock = actionSource.match(
   /function Get-FreshVisualMenuAnchor\([\s\S]*?\n\}\n\nfunction Test-VisualOwnedHit/u
 )?.[0] ?? "";
 assert.ok(freshMenuLock, "fresh visual menu lock should be present");
-assert.match(freshMenuLock, /Test-VisualBoundsNear \$_\.bounds \$expectedMenuBounds \$script:momentsVisualPostRelockTolerancePx/u);
+assert.match(
+  freshMenuLock,
+  /Get-MomentsVisualFrame \$lock\.hWnd \$lock\.windowRect \$lock\.pid \$activate \$false/u,
+  "fresh menu relock should not fail on an unrelated transient overlay"
+);
+const openMenuReader = actionSource.match(
+  /function Read-OpenVisualMenu\([\s\S]*?\n\}(?=\n\nfunction Open-LockedVisualMenu)/u
+)?.[0] ?? "";
+assert.ok(openMenuReader, "open visual menu reader should be present");
+const openMenuReadOnceSource = actionSource.match(
+  /function Read-OpenVisualMenuOnce\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.ok(openMenuReadOnceSource, "single-frame open visual menu reader should be present");
+assert.doesNotMatch(
+  openMenuReader,
+  /Invoke-VisualOwnedClick|AtomicMouse|Keyboard|Clipboard|SetCursorPos|Focus-|Open-LockedVisualMenu|Close-VisualMenu/u,
+  "an ambiguous menu frame may only trigger one passive reread",
+);
+assert.match(openMenuReader, /Read-OpenVisualMenuOnce \$lock \$menu \$requestedAction/u);
+for (const field of [
+  "menuReadRetryCount",
+  "firstReason",
+  "secondReason",
+  "requestedAction",
+  "firstSegmentCount",
+  "secondSegmentCount",
+  "firstStrictCandidateCount",
+  "secondStrictCandidateCount",
+  "firstFallbackCandidateCount",
+  "secondFallbackCandidateCount",
+]) {
+  assert.match(openMenuReader, new RegExp(`\\b${field}\\b`, "u"), `menu retry diagnostics must include ${field}`);
+}
+const passiveMenuRetryProbeSource = `
+${openMenuReader}
+$script:menuScenario = ""
+$script:menuReadCount = 0
+function Start-Sleep { param([int]$Milliseconds) }
+function Read-OpenVisualMenuOnce($lock, $menu, [string]$requestedAction) {
+  $script:menuReadCount += 1
+  if ($script:menuScenario -ceq "retry_success" -and $script:menuReadCount -eq 1) {
+    return @{
+      ok = $false
+      reason = "moments_menu_surface_ambiguous"
+      diagnostics = @{ segmentCount = 3; strictCandidateCount = 0; fallbackCandidateCount = 2 }
+    }
+  }
+  if ($script:menuScenario -ceq "retry_failure") {
+    $segmentCount = $(if ($script:menuReadCount -eq 1) { 3 } else { 4 })
+    $fallbackCount = $(if ($script:menuReadCount -eq 1) { 2 } else { 3 })
+    return @{
+      ok = $false
+      reason = "moments_menu_surface_ambiguous"
+      diagnostics = @{ segmentCount = $segmentCount; strictCandidateCount = 0; fallbackCandidateCount = $fallbackCount }
+    }
+  }
+  return @{
+    ok = $true
+    menuState = "unknown"
+    comment = @{ centerX = 450.0; centerY = 320.0 }
+    menuSurface = @{ left = 320.0; top = 290.0; width = 180.0; height = 60.0 }
+    diagnostics = @{ segmentCount = 1; strictCandidateCount = 1; fallbackCandidateCount = 0 }
+  }
+}
+function Invoke-MenuRetryCase([string]$scenario) {
+  $script:menuScenario = $scenario
+  $script:menuReadCount = 0
+  $result = Read-OpenVisualMenu @{} @{} "comment"
+  return [pscustomobject]@{
+    scenario = $scenario
+    ok = [bool]$result.ok
+    reason = [string]$result.reason
+    reads = $script:menuReadCount
+    menuReadRetryCount = [int]$result.diagnostics.menuReadRetryCount
+    firstReason = [string]$result.diagnostics.firstReason
+    secondReason = [string]$result.diagnostics.secondReason
+    requestedAction = [string]$result.diagnostics.requestedAction
+    firstSegmentCount = [int]$result.diagnostics.firstSegmentCount
+    secondSegmentCount = [int]$result.diagnostics.secondSegmentCount
+    firstStrictCandidateCount = [int]$result.diagnostics.firstStrictCandidateCount
+    secondStrictCandidateCount = [int]$result.diagnostics.secondStrictCandidateCount
+    firstFallbackCandidateCount = [int]$result.diagnostics.firstFallbackCandidateCount
+    secondFallbackCandidateCount = [int]$result.diagnostics.secondFallbackCandidateCount
+  }
+}
+@(
+  (Invoke-MenuRetryCase "first_success"),
+  (Invoke-MenuRetryCase "retry_success"),
+  (Invoke-MenuRetryCase "retry_failure")
+) | ConvertTo-Json -Depth 6 -Compress
+`;
+const passiveMenuRetryProbe = spawnSync(
+  "powershell.exe",
+  ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(passiveMenuRetryProbeSource, "utf16le").toString("base64")],
+  { encoding: "utf8", windowsHide: true },
+);
+assert.equal(passiveMenuRetryProbe.status, 0, passiveMenuRetryProbe.stderr || "passive menu retry probe must run");
+assert.deepEqual(JSON.parse(passiveMenuRetryProbe.stdout.trim()), [
+  {
+    scenario: "first_success",
+    ok: true,
+    reason: "",
+    reads: 1,
+    menuReadRetryCount: 0,
+    firstReason: "",
+    secondReason: "",
+    requestedAction: "comment",
+    firstSegmentCount: 1,
+    secondSegmentCount: 0,
+    firstStrictCandidateCount: 1,
+    secondStrictCandidateCount: 0,
+    firstFallbackCandidateCount: 0,
+    secondFallbackCandidateCount: 0,
+  },
+  {
+    scenario: "retry_success",
+    ok: true,
+    reason: "",
+    reads: 2,
+    menuReadRetryCount: 1,
+    firstReason: "moments_menu_surface_ambiguous",
+    secondReason: "",
+    requestedAction: "comment",
+    firstSegmentCount: 3,
+    secondSegmentCount: 1,
+    firstStrictCandidateCount: 0,
+    secondStrictCandidateCount: 1,
+    firstFallbackCandidateCount: 2,
+    secondFallbackCandidateCount: 0,
+  },
+  {
+    scenario: "retry_failure",
+    ok: false,
+    reason: "moments_menu_surface_ambiguous",
+    reads: 2,
+    menuReadRetryCount: 1,
+    firstReason: "moments_menu_surface_ambiguous",
+    secondReason: "moments_menu_surface_ambiguous",
+    requestedAction: "comment",
+    firstSegmentCount: 3,
+    secondSegmentCount: 4,
+    firstStrictCandidateCount: 0,
+    secondStrictCandidateCount: 0,
+    firstFallbackCandidateCount: 2,
+    secondFallbackCandidateCount: 3,
+  },
+]);
+const openLockedMenuSource = actionSource.match(
+  /function Open-LockedVisualMenu\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.ok(openLockedMenuSource, "locked visual menu opener should be present");
+assert.equal(
+  (openLockedMenuSource.match(/Invoke-VisualOwnedClick/gu) ?? []).length,
+  1,
+  "opening a menu, including its passive read retry, may click the three-dot anchor only once",
+);
+assert.equal(
+  (openLockedMenuSource.match(/Read-OpenVisualMenu \$lock \$menu/gu) ?? []).length,
+  1,
+  "the menu opener must delegate the bounded passive retry to one reader call",
+);
+assert.match(openLockedMenuSource, /menuSurface = \$read\.menuSurface/u);
+assert.match(openLockedMenuSource, /diagnostics = \$read\.diagnostics/u);
+const openMenuSegmentResolverSource = actionSource.match(
+  /function Resolve-VisualOpenMenuHorizontalSegment\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.ok(openMenuSegmentResolverSource, "open menu segment resolver should be present");
+assert.match(openMenuSegmentResolverSource, /\$strictMatches[\s\S]*\$strictMatches\.Count -eq 1[\s\S]*geometryFallback = \$false/u);
+assert.match(openMenuSegmentResolverSource, /\$requestedAction -cne "comment"[\s\S]*\$fallbackMatches[\s\S]*\$fallbackMatches\.Count -ne 1[\s\S]*geometryFallback = \$true/u);
+const openMenuSegmentResolverProbeSource = `
+$ErrorActionPreference = "Stop"
+${openMenuSegmentResolverSource}
+$strict = Resolve-VisualOpenMenuHorizontalSegment @(@{ left = 310; right = 499 }) 568 520 "like"
+if (-not $strict.ok -or $strict.geometryFallback) { throw "strict popup segment must pass without fallback" }
+$commentFallback = Resolve-VisualOpenMenuHorizontalSegment @(@{ left = 355; right = 499 }) 568 520 "comment"
+if (-not $commentFallback.ok -or -not $commentFallback.geometryFallback) { throw "narrow unique comment popup must use geometry fallback" }
+$likeBlocked = Resolve-VisualOpenMenuHorizontalSegment @(@{ left = 355; right = 499 }) 568 520 "like"
+if ($likeBlocked.ok -or $likeBlocked.reason -cne "moments_menu_surface_ambiguous") { throw "like mode must retain strict popup proof" }
+$ambiguous = Resolve-VisualOpenMenuHorizontalSegment @(
+  @{ left = 355; right = 499 },
+  @{ left = 360; right = 505 }
+) 568 520 "comment"
+if ($ambiguous.ok -or $ambiguous.candidateCount -ne 2) { throw "multiple comment fallback segments must remain ambiguous" }
+`;
+const openMenuSegmentResolverProbe = spawnSync(
+  "powershell.exe",
+  ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(openMenuSegmentResolverProbeSource, "utf16le").toString("base64")],
+  { encoding: "utf8", windowsHide: true },
+);
+assert.equal(openMenuSegmentResolverProbe.status, 0, openMenuSegmentResolverProbe.stderr || "open menu segment fallback behavior probe must pass");
+assert.match(
+  openMenuReadOnceSource,
+  /Get-MomentsVisualFrame \$lock\.hWnd \$lock\.windowRect \$lock\.pid \$false \$false/u,
+  "the WeChat-owned popup menu must not be mistaken for an external full-window obstruction"
+);
+assert.match(
+  openMenuReadOnceSource,
+  /function Read-OpenVisualMenuOnce\(\$lock, \$menu, \[string\]\$requestedAction\)/u,
+  "menu reading should validate only the action the user requested",
+);
+assert.match(openMenuReadOnceSource, /Get-VisualOpenMenuBounds \$frame \$menu \$requestedAction/u);
+assert.match(
+  openMenuReadOnceSource,
+  /\$requestedAction -ceq "comment"[\s\S]*\$commentEntry -eq \$null[\s\S]*centerX = \[double\]\$surface\.bounds\.left \+ \(\$cellWidth \* 1\.5\)/u,
+  "comment action should use the verified right menu cell when OCR text is unavailable",
+);
+assert.match(
+  actionSource,
+  /Read-OpenVisualMenu \$lock \$menu \(\[string\]\$context\.requestedAction\)/u,
+);
+const likeActionStart = actionSource.indexOf('if ([string]$env:XIAOXI_MOMENTS_VISUAL_ACTION -ceq "like")');
+const commentActionStart = actionSource.indexOf('if (@("comment", "comment_check")', likeActionStart);
+const commentActionEnd = actionSource.indexOf("\n  [void](Close-VisualMenu $lock)", commentActionStart);
+assert.ok(likeActionStart >= 0 && commentActionStart > likeActionStart && commentActionEnd > commentActionStart);
+const likeActionSource = actionSource.slice(likeActionStart, commentActionStart);
+const commentActionSource = actionSource.slice(commentActionStart, commentActionEnd);
+assert.doesNotMatch(
+  likeActionSource,
+  /Read-OpenVisualMenu \$lock \$opened\.menu "comment"/u,
+  "like refresh must not use the comment-only menu contract",
+);
+assert.match(
+  commentActionSource,
+  /\$commentX = [^\n]*\$opened\.comment\.centerX[\s\S]*\$commentY = [^\n]*\$opened\.comment\.centerY/u,
+  "the comment branch must use the comment cell from the bounded menu read",
+);
+assert.doesNotMatch(
+  commentActionSource,
+  /Read-OpenVisualMenu|Open-LockedVisualMenu/u,
+  "the comment branch must not re-read or reopen the menu after the bounded reader succeeds",
+);
+assert.match(
+  commentActionSource,
+  /\$commentClick = Invoke-VisualOwnedClickDetailed \$commentX \$commentY \$lock [^\n]*\$opened\.menuSurface[\s\S]*if \(-not \$commentClick\.ok\)[\s\S]*diagnostics = \$commentClick\.diagnostics/u,
+  "the comment branch must use the detailed owned click and preserve its diagnostics",
+);
+assert.doesNotMatch(
+  commentActionSource,
+  /\$comment[XY] = [^\n]*\$opened\.like\.center[XY]/u,
+  "the comment branch must never derive its click from the like entry",
+);
+assert.doesNotMatch(
+  commentActionSource,
+  /Test-VisualBoundsNear [^\n]*\.comment\.bounds/u,
+  "comment pre-send refresh should trust the newly verified right-hand cell instead of comparing OCR-label and geometry-cell rectangles",
+);
+assert.match(
+  actionSource,
+  /requestedAction: String\(context\.action \?\? action\)/u,
+  "the inspect preflight must preserve whether the caller intends to like or comment",
+);
+assert.match(freshMenuLock, /Resolve-VisualMenuAnchor \$menus \$expectedMenuBounds \$script:momentsVisualPostRelockTolerancePx/u);
+assert.match(freshMenuLock, /moments_menu_not_found[\s\S]*Start-Sleep -Milliseconds 160[\s\S]*continue/u);
 assert.match(freshMenuLock, /\$expectedHash -and \$hash -cne \$expectedHash/u);
 assert.match(actionSource, /SetThreadDpiAwarenessContext\(\[IntPtr\]\(-4\)\)/u);
-assert.match(actionSource, /Qt51514QWindowToolSaveBits/u);
-assert.match(actionSource, /\$titleText\.ToString\(\)\.Trim\(\) -cne "Weixin"/u);
-assert.match(actionSource, /Test-VisualBoundsInside \$popupBounds \$lockedBounds/u);
-assert.match(actionSource, /\$surfaceInsidePopup -and \$pointInsideSurface/u);
+const ownedHitSource = actionSource.match(
+  /function Test-VisualOwnedHitDetailed\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.ok(ownedHitSource, "detailed owned-hit validation should be present");
+assert.doesNotMatch(
+  ownedHitSource,
+  /Qt51514QWindowToolSaveBits|Weixin|GetClassName|GetWindowText/u,
+  "owned popup clicks must not depend on a Qt build-specific class name or window title",
+);
+assert.match(ownedHitSource, /GetWindowThreadProcessId\(\$hit,[^\n]*\$hitPid[\s\S]*\[int\]\$hitPid -ne \[int\]\$lock\.pid/u);
+assert.match(ownedHitSource, /IsWindowVisible\(\$hitRoot\)[\s\S]*IsIconic\(\$hitRoot\)/u);
+for (const field of [
+  "pointInsideSurface",
+  "surfaceInsidePopup",
+  "surfaceInsideWindow",
+]) {
+  assert.match(ownedHitSource, new RegExp(`\\b${field}\\b`, "u"), `owned-hit diagnostics must include ${field}`);
+}
+const ownedClickDetailedSource = actionSource.match(
+  /function Invoke-VisualOwnedClickDetailed\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.ok(ownedClickDetailedSource, "detailed owned click helper should be present");
+assert.doesNotMatch(
+  ownedClickDetailedSource,
+  /Qt51514QWindowToolSaveBits|Weixin|GetClassName|GetWindowText/u,
+  "the click helper must use ownership and geometry rather than popup class/title literals",
+);
+assert.match(ownedClickDetailedSource, /Test-VisualOwnedHitDetailed[\s\S]*SetCursorPos[\s\S]*Test-VisualOwnedHitDetailed/u);
+assert.match(
+  ownedClickDetailedSource,
+  /\$secondProof = Test-VisualOwnedHitDetailed[\s\S]*\$diagnostics\[\$name\] = \[bool\]\$secondProof\.diagnostics\.\$name/u,
+  "confirmed-hit failures must report the second geometry proof instead of stale first-hit values",
+);
+assert.match(ownedClickDetailedSource, /firstRootMatchesSecond/u);
+assert.match(ownedClickDetailedSource, /foregroundOk/u);
+assert.match(ownedClickDetailedSource, /ownedClickReason/u);
+assert.match(ownedClickDetailedSource, /ownedClickPhase/u);
 
 // Comment text is never hard-coded. UIA remains the primary targeted path. The
 // custom-rendered fallback is action-scoped: it may prepare an exact draft for
@@ -390,148 +840,412 @@ assert.match(actionSource, /AtomicKeyboardEscape\(\)[\s\S]*const ushort VkEscape
 assert.match(actionSource, /if \(sent == inputs\.Length\) return true;[\s\S]*KeyboardInput\(key, true\)[\s\S]*KeyboardInput\(modifier, true\)/u);
 assert.doesNotMatch(actionSource, /0x0D|VK_RETURN|AtomicKeyboardEnter/u);
 assert.match(actionSource, /if \(\$sendBefore\.ok\)[\s\S]*moments_comment_preexisting_draft[\s\S]*Get-VisualCommentDraftTargeted \$lock \$composer\.bounds \$emptyCheckFinishedTick[\s\S]*Set-VisualCommentTextTargeted \$lock \$composer\.bounds \$commentText \$editorRuntimeId \$editorBounds/u);
-assert.match(actionSource, /if \(\$sendBefore\.ok\)[\s\S]*moments_comment_preexisting_draft[\s\S]*\$sendBefore\.reason -cne "moments_comment_send_button_not_found"[\s\S]*moments_comment_draft_state_unknown/u);
+assert.doesNotMatch(
+  commentActionSource,
+  /\$sendBefore\.reason -cne "moments_comment_send_button_not_found"[\s\S]*moments_comment_draft_state_unknown/u,
+  "an ambiguous first send-button frame must reach the passive blank checkpoint instead of failing immediately",
+);
+assert.match(commentActionSource, /\$sendBefore\.ok[\s\S]*moments_comment_preexisting_draft[\s\S]*Get-VisualStableBlankCommentCheckpoint/u);
+const openedCommentComposerProofSource = actionSource.match(
+  /\$composerFrame = Get-MomentsVisualFrame[\s\S]*?Set-VisualActionStage "composer_opened"/u,
+)?.[0] ?? "";
+assert.ok(openedCommentComposerProofSource, "opened comment composer proof should be present");
+assert.match(
+  openedCommentComposerProofSource,
+  /\$composer = Get-VisualCommentComposer[\s\S]*if \(-not \$composer\.ok\)[\s\S]*if \(\$composerAvatarHash\) \{ \$opened\.avatarHash = \$composerAvatarHash \}/u,
+  "the unique composer is sufficient to continue; a missing avatar sample must not block comment input",
+);
+assert.doesNotMatch(openedCommentComposerProofSource, /Find-MomentsMenuDots|Resolve-VisualMenuAnchor|composerMenuResolution/u);
+assert.doesNotMatch(actionSource, /if \([^\n]*\$composerAvatarHash -cne \$opened\.avatarHash/u);
+
+const duplicateCheckIndex = actionSource.indexOf("$beforeCandidate = Find-VisualCommentCandidate");
+const duplicateCountIndex = actionSource.indexOf("$normalizedOcrCountBefore = [int]$beforeCandidate.normalizedTextCount");
+const openLockedMenuIndex = actionSource.indexOf("$opened = Open-LockedVisualMenu");
+assert.ok(
+  duplicateCheckIndex >= 0 &&
+    duplicateCountIndex > duplicateCheckIndex &&
+    openLockedMenuIndex > duplicateCheckIndex &&
+    openLockedMenuIndex > duplicateCountIndex,
+  "duplicate detection must finish before opening the transient action menu",
+);
+assert.doesNotMatch(
+  actionSource,
+  /\$beforeOcr = Get-MomentsOcrObservation/u,
+  "duplicate detection must reuse the candidate OCR observations instead of scanning the post twice",
+);
+
+const commentOccurrenceStart = actionSource.indexOf(
+  'if ([string]$env:XIAOXI_MOMENTS_VISUAL_ACTION -ceq "comment_occurrence_check")',
+);
+const commentOccurrenceEnd = actionSource.indexOf("\n  [string]$commentText = \"\"", commentOccurrenceStart);
+assert.ok(
+  commentOccurrenceStart >= 0 && commentOccurrenceEnd > commentOccurrenceStart,
+  "read-only comment occurrence branch should be present",
+);
+const commentOccurrenceSource = actionSource.slice(commentOccurrenceStart, commentOccurrenceEnd);
+assert.equal(
+  (commentOccurrenceSource.match(/Get-CurrentLockedVisualPost \$lock \$context \$true/gu) ?? []).length,
+  2,
+  "comment occurrence proof must capture and relock exactly two visual frames",
+);
+assert.equal(
+  (commentOccurrenceSource.match(/Find-VisualCommentCandidate[\s\S]*?"exact"/gu) ?? []).length,
+  2,
+  "both occurrence frames must use exact comment-region matching",
+);
+assert.match(
+  commentOccurrenceSource,
+  /Find-VisualCommentCandidate[\s\S]*?"exact" \$firstOccurrencePost\.nextPostTop[\s\S]*Find-VisualCommentCandidate[\s\S]*?"exact" \$secondOccurrencePost\.nextPostTop/u,
+  "both occurrence frames must stop at the next proven post boundary",
+);
+assert.match(
+  actionSource,
+  /\$followingBoundaries = @\(\$read\.postBoundaries[\s\S]*\$followingBoundaries\[0\]\.ok[\s\S]*\$nextPostTop/u,
+  "the next post boundary must come from the nearest menu/avatar proof, not the next OCR-readable post",
+);
+assert.match(
+  probeSource,
+  /\$postBoundaries\.Add\([\s\S]*menuBounds = \$menu\.bounds[\s\S]*avatarBounds = \$avatar\.bounds[\s\S]*postBoundaries = @\(\$postBoundaries\.ToArray\(\)/u,
+  "post boundary evidence must be retained before body OCR filtering",
+);
+assert.match(
+  commentOccurrenceSource,
+  /\$occurrenceResolution = Resolve-VisualCommentOccurrence[\s\S]*commentOccurrence = "present"/u,
+);
+assert.match(
+  commentOccurrenceSource,
+  /\$occurrenceResolution\.commentOccurrence -ceq "absent"[\s\S]*commentOccurrence = "absent"/u,
+);
+assert.match(
+  commentOccurrenceSource,
+  /reason = "moments_comment_occurrence_unresolved"[\s\S]*actionAttempted = \$false/u,
+);
+assert.match(
+  actionSource,
+  /\$matchMode -ceq "exact" -and -not \$match\.ok[\s\S]*Get-VisualCommentLineMatch \$expected \$lineText "fuzzy"/u,
+  "exact occurrence checks must retain near-text OCR matches as an absence veto",
+);
+assert.doesNotMatch(
+  commentOccurrenceSource,
+  /Invoke-VisualOwnedClick|AtomicMouseClick|AtomicKeyboard|Invoke-VisualOwnedUnicodeText|Open-LockedVisualMenu/u,
+  "comment occurrence proof must remain read-only and must not open a menu, click, or type",
+);
+
+const commentTextRegionFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
+  /function Get-VisualCommentTextRegion\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+const commentOccurrenceResolverFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
+  /function Resolve-VisualCommentOccurrence\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+const visualLocatorBoundsSameFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
+  /function Test-VisualLocatorBoundsSame\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.ok(
+  commentTextRegionFunction && commentOccurrenceResolverFunction && visualLocatorBoundsSameFunction,
+  "comment region and occurrence decision helpers should be extractable",
+);
+const commentOccurrenceProgram = `
+${visualBoundsFunction}
+${visualBoundsNearFunction}
+${visualLocatorBoundsSameFunction}
+${commentTextRegionFunction}
+${commentOccurrenceResolverFunction}
+$frame = @{ width = 800.0; height = 600.0 }
+$post = @{ left = 100.0; top = 100.0; width = 500.0; height = 200.0 }
+$menu = @{ bounds = @{ left = 540.0; top = 250.0; width = 40.0; height = 20.0 } }
+$boundedRegion = Get-VisualCommentTextRegion $frame $post $menu 500.0
+$unboundedRegion = Get-VisualCommentTextRegion $frame $post $menu
+$stableRegion = @{ left = 150.0; top = 274.0; width = 450.0; height = 222.0 }
+$wrappedFirst = @{ ok = $false; reason = "moments_comment_candidate_not_found"; candidateCount = 0; normalizedTextCount = 1; fuzzyCandidateCount = 0; regionComplete = $true; regionBounds = $stableRegion; regionPixelHash = "a" }
+$wrappedSecond = @{ ok = $false; reason = "moments_comment_candidate_not_found"; candidateCount = 0; normalizedTextCount = 1; fuzzyCandidateCount = 0; regionComplete = $true; regionBounds = $stableRegion; regionPixelHash = "a" }
+$absentFirst = @{ ok = $false; reason = "moments_comment_candidate_not_found"; candidateCount = 0; normalizedTextCount = 0; fuzzyCandidateCount = 0; regionComplete = $true; regionBounds = $stableRegion; regionPixelHash = "b" }
+$absentSecond = @{ ok = $false; reason = "moments_comment_candidate_not_found"; candidateCount = 0; normalizedTextCount = 0; fuzzyCandidateCount = 0; regionComplete = $true; regionBounds = $stableRegion; regionPixelHash = "b" }
+$ocrDrift = @{ ok = $false; reason = "moments_comment_candidate_not_found"; candidateCount = 0; normalizedTextCount = 0; fuzzyCandidateCount = 1; regionComplete = $true; regionBounds = $stableRegion; regionPixelHash = "c" }
+$clipped = @{ ok = $false; reason = "moments_comment_candidate_not_found"; candidateCount = 0; normalizedTextCount = 0; fuzzyCandidateCount = 0; regionComplete = $false; regionBounds = $stableRegion; regionPixelHash = "b" }
+$wrapped = Resolve-VisualCommentOccurrence $wrappedFirst $wrappedSecond
+$absent = Resolve-VisualCommentOccurrence $absentFirst $absentSecond
+$ocrDriftResult = Resolve-VisualCommentOccurrence $ocrDrift $ocrDrift
+$cropped = Resolve-VisualCommentOccurrence $clipped $clipped
+@{
+  boundedComplete = $boundedRegion.complete
+  boundedBottom = $boundedRegion.top + $boundedRegion.height
+  boundedBeforeNextPost = ($boundedRegion.top + $boundedRegion.height) -lt 500.0
+  unboundedComplete = $unboundedRegion.complete
+  unboundedBottom = $unboundedRegion.top + $unboundedRegion.height
+  wrapped = $wrapped.commentOccurrence
+  absent = $absent.commentOccurrence
+  ocrDrift = $ocrDriftResult.commentOccurrence
+  cropped = $cropped.commentOccurrence
+} | ConvertTo-Json -Compress
+`;
+const commentOccurrenceHarness = spawnSync(
+  "powershell.exe",
+  ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(commentOccurrenceProgram, "utf16le").toString("base64")],
+  { encoding: "utf8", windowsHide: true },
+);
+assert.equal(
+  commentOccurrenceHarness.status,
+  0,
+  commentOccurrenceHarness.stderr || "comment occurrence decision probe should run",
+);
+assert.deepEqual(JSON.parse(commentOccurrenceHarness.stdout.trim()), {
+  boundedComplete: true,
+  boundedBottom: 496,
+  boundedBeforeNextPost: true,
+  unboundedComplete: false,
+  unboundedBottom: 300,
+  wrapped: "unresolved",
+  absent: "absent",
+  ocrDrift: "unresolved",
+  cropped: "unresolved",
+});
+
+const commentStageIndexes = Object.fromEntries(
+  [
+    "menu_opened",
+    "comment_entry_clicked",
+    "composer_opened",
+    "send_clicked",
+    "send_verified",
+  ].map((stage) => [stage, actionSource.indexOf(`Set-VisualActionStage "${stage}"`)]),
+);
+assert.ok(
+  commentStageIndexes.menu_opened >= 0 &&
+    commentStageIndexes.menu_opened < commentStageIndexes.comment_entry_clicked &&
+    commentStageIndexes.comment_entry_clicked < commentStageIndexes.composer_opened &&
+    commentStageIndexes.composer_opened < commentStageIndexes.send_clicked &&
+    commentStageIndexes.send_clicked < commentStageIndexes.send_verified,
+  "comment lifecycle stages must follow menu → entry → composer → send click → verification",
+);
+const draftWrittenIndexes = [...actionSource.matchAll(/Set-VisualActionStage "draft_written"/gu)].map(
+  (match) => match.index,
+);
+const sendButtonLocatedIndexes = [
+  ...actionSource.matchAll(/Set-VisualActionStage "send_button_located"/gu),
+].map((match) => match.index);
+assert.equal(draftWrittenIndexes.length, 2, "UIA and visual clipboard input paths must both log draft_written");
+assert.equal(
+  sendButtonLocatedIndexes.length,
+  2,
+  "UIA and visual clipboard input paths must both log send_button_located",
+);
+for (let index = 0; index < draftWrittenIndexes.length; index += 1) {
+  assert.ok(
+    commentStageIndexes.composer_opened < draftWrittenIndexes[index] &&
+      draftWrittenIndexes[index] < sendButtonLocatedIndexes[index] &&
+      sendButtonLocatedIndexes[index] < commentStageIndexes.send_clicked,
+    "each comment input path must write the draft, locate the button, then click send",
+  );
+}
+const sendMarkerSource = actionSource.match(
+  /function Write-VisualCommentSendMarker\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.ok(sendMarkerSource, "the visual comment path must durably mark the irreversible send attempt");
+assert.match(sendMarkerSource, /\$clickedAt = \[DateTime\]::UtcNow\.ToString\("o"\)/u);
+assert.match(sendMarkerSource, /\[IO\.File\]::WriteAllText\([\s\S]*\[IO\.File\]::Move\(\$temporaryPath, \$fullPath\)/u);
+assert.match(sendMarkerSource, /\$script:visualSendClickedAt = \$clickedAt/u);
+assert.match(sendMarkerSource, /avatar_hash = \$avatarHash/u);
+assert.match(sendMarkerSource, /identity_text = \$identityText/u);
+assert.match(sendMarkerSource, /stable_anchor_text = \$stableAnchorText/u);
+assert.doesNotMatch(sendMarkerSource, /\$context\.commentText\b/u, "the durable marker must never contain the comment body");
+assert.equal(
+  (actionSource.match(/Write-VisualCommentSendMarker \$context/gu) ?? []).length,
+  1,
+  "only the final comment send click may create a comment marker",
+);
+const ownedClickSource = actionSource.match(
+  /function Invoke-VisualOwnedClick\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.match(
+  `${ownedClickDetailedSource}\n${ownedClickSource}`,
+  /& \$beforeIrreversibleClick[\s\S]*\$script:visualActionAttempted = \$true[\s\S]*AtomicMouseClick/u,
+  "the durable marker must be written before the irreversible click attempt",
+);
+
+const lockedCommentSendStateSource = actionSource.match(
+  /function Get-LockedVisualCommentSendState\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.ok(lockedCommentSendStateSource, "minimal pre-send comment state should be present");
+assert.match(lockedCommentSendStateSource, /\$composer = Get-VisualCommentComposer \$frame \$menu/u);
+assert.match(lockedCommentSendStateSource, /\$send = Get-VisualSendButton \$frame \$composer/u);
+assert.match(
+  lockedCommentSendStateSource,
+  /-not \$send\.ok -or -not \(Test-VisualBoundsInside \$send\.bounds \$composer\.bounds\)/u,
+  "pre-send proof should require only one composer and one send button inside it",
+);
+assert.doesNotMatch(
+  lockedCommentSendStateSource,
+  /avatarHash|Test-VisualBoundsNear|GetLastInputTick|Test-VisualDeadlineMargin/u,
+  "pre-send proof must not reintroduce anchor hashes, pixel tolerances, input ticks, or long time budgets",
+);
+
 const stableBlankCommentSource = actionSource.match(
   /function Get-VisualStableBlankCommentCheckpoint\([\s\S]*?\n\}/u,
 )?.[0] ?? "";
-assert.ok(stableBlankCommentSource, "bounded passive blank-comment checkpoint should be present");
 const blankCommentFrameReaderSource = actionSource.match(
   /function Read-VisualBlankCommentFrame\([\s\S]*?\n\}/u,
 )?.[0] ?? "";
-assert.ok(blankCommentFrameReaderSource, "blank-comment frame reader should be present");
-assert.match(blankCommentFrameReaderSource, /Get-MomentsVisualFrame \$lock\.hWnd \$lock\.windowRect \$lock\.pid \$false/u);
-assert.match(blankCommentFrameReaderSource, /try \{[\s\S]*Get-VisualCommentComposer[\s\S]*Get-VisualSendButton[\s\S]*Get-MomentsPixelHash[\s\S]*\} finally \{\s*Close-MomentsVisualFrame \$frame/u);
+assert.ok(blankCommentFrameReaderSource, "single passive blank-comment frame reader should be present");
+assert.ok(stableBlankCommentSource, "stable blank-comment checkpoint should be present");
 assert.doesNotMatch(blankCommentFrameReaderSource, /Click|AtomicMouse|Keyboard|Clipboard|SetCursorPos|Focus-|Open-Visual/u);
-assert.match(stableBlankCommentSource, /for \(\$pass = 0; \$pass -lt 2; \$pass\+\+\)/u);
-assert.match(stableBlankCommentSource, /\$startedTick -eq \[uint32\]::MaxValue/u);
-assert.match(stableBlankCommentSource, /\$pass -gt 0 -and \$startedTick -ne \$retryBaselineTick/u);
-assert.match(stableBlankCommentSource, /\$finishedTick -eq \[uint32\]::MaxValue/u);
-assert.match(stableBlankCommentSource, /\$finishedTick -eq \$startedTick[\s\S]*checkpointPass = \$pass/u);
-assert.match(stableBlankCommentSource, /if \(\$pass -eq 0\)[\s\S]*\$retryBaselineTick = \$finishedTick[\s\S]*continue/u);
-assert.match(stableBlankCommentSource, /\$stableState\.send\.ok -or \$settledState\.send\.ok[\s\S]*moments_comment_preexisting_draft/u);
-assert.match(stableBlankCommentSource, /moments_comment_draft_state_unknown/u);
-assert.match(stableBlankCommentSource, /Test-VisualBoundsNear \$stableState\.composer\.bounds \$expectedComposerBounds 4\.0[\s\S]*moments_comment_editor_changed/u);
-assert.match(stableBlankCommentSource, /\$stableState\.avatarHash -cne \$expectedAvatarHash[\s\S]*moments_post_anchor_changed/u);
-assert.doesNotMatch(stableBlankCommentSource, /Click|AtomicMouse|Keyboard|Clipboard|SetCursorPos|Focus-|Open-Visual/u);
-assert.match(actionSource, /\$blankCheckpoint = Get-VisualStableBlankCommentCheckpoint[\s\S]*\$blankCheckpoint\.safeToDismiss[\s\S]*Dismiss-VisualProvenEmptyCommentComposer[\s\S]*\$emptyCheckFinishedTick = \[uint32\]\$blankCheckpoint\.inputTick/u);
-const stableBlankCommentProbeSource = `
-$ErrorActionPreference = "Stop"
+assert.doesNotMatch(
+  stableBlankCommentSource,
+  /Click|AtomicMouse|Keyboard|Clipboard|SetCursorPos|Focus-|Open-Visual|Open-LockedVisualMenu/u,
+  "blank-state retry must remain entirely passive",
+);
+for (const field of [
+  "blankCheckpointRetryCount",
+  "retryReason",
+  "checkpointPass",
+  "startedInputTick",
+  "finishedInputTick",
+  "inputTickStable",
+  "stableComposerOk",
+  "stableComposerReason",
+  "settledComposerOk",
+  "settledComposerReason",
+  "stableSendOk",
+  "stableSendReason",
+  "settledSendOk",
+  "settledSendReason",
+  "stableSendCandidateCount",
+  "settledSendCandidateCount",
+]) {
+  assert.match(stableBlankCommentSource, new RegExp(`\\b${field}\\b`, "u"), `blank checkpoint diagnostics must include ${field}`);
+}
+const passiveBlankRetryProbeSource = `
 ${stableBlankCommentSource}
+$script:blankScenario = ""
+$script:blankReadCount = 0
 function Start-Sleep { param([int]$Milliseconds) }
-function Get-VisualInputTick {
-  if ($script:tickIndex -ge $script:ticks.Count) { throw "tick underflow" }
-  [uint32]$value = [uint32]$script:ticks[$script:tickIndex]
-  $script:tickIndex += 1
-  return $value
-}
-function Test-VisualLockedForeground($lock) {
-  if ($script:foregroundIndex -ge $script:foregroundStates.Count) {
-    return [bool]$script:foregroundStates[$script:foregroundStates.Count - 1]
-  }
-  $value = [bool]$script:foregroundStates[$script:foregroundIndex]
-  $script:foregroundIndex += 1
-  return $value
-}
-function Read-VisualBlankCommentFrame($lock, $menu, $expectedAvatarBounds) {
-  if ($script:frameIndex -ge $script:frames.Count) { throw "frame underflow" }
-  $value = $script:frames[$script:frameIndex]
-  $script:frameIndex += 1
-  return $value
-}
-function Test-VisualBoundsNear($first, $second, [double]$tolerance) {
-  return $first -ne $null -and $second -ne $null -and [string]$first.token -ceq [string]$second.token
-}
-function New-BlankFrame(
-  [string]$marker,
-  [bool]$sendOk = $false,
-  [bool]$composerOk = $true,
-  [string]$boundsToken = "b",
-  [string]$avatarHash = "hash",
-  [string]$sendReason = "moments_comment_send_button_not_found"
-) {
+function Get-VisualInputTick { return [uint32]101 }
+function Test-VisualLockedForeground { param($lock); return $true }
+function Test-VisualBoundsNear { param($actual, $expected, [double]$tolerance); return $true }
+function New-BlankFrame([bool]$composerOk, [string]$composerReason, [bool]$sendOk, [string]$sendReason, [int]$sendCandidateCount) {
   return @{
     ok = $true
-    marker = $marker
-    composer = @{ ok = $composerOk; bounds = @{ token = $boundsToken }; marker = $marker }
-    send = @{ ok = $sendOk; reason = $(if ($sendOk) { "" } else { $sendReason }); marker = $marker }
-    avatarHash = $avatarHash
+    composer = @{
+      ok = $composerOk
+      reason = $composerReason
+      bounds = @{ left = 100.0; top = 200.0; width = 300.0; height = 80.0 }
+      candidateCount = $(if ($composerOk) { 1 } else { 2 })
+      potentialCandidateCount = $(if ($composerOk) { 1 } else { 2 })
+      validCandidateCount = $(if ($composerOk) { 1 } else { 0 })
+    }
+    send = @{
+      ok = $sendOk
+      reason = $sendReason
+      candidateCount = $sendCandidateCount
+      connectedComponentCount = $sendCandidateCount
+      potentialCandidateCount = $sendCandidateCount
+      borderRejectedCount = 0
+    }
+    avatarHash = "avatar"
   }
 }
-function Invoke-BlankCase([object[]]$Ticks, [object[]]$Frames, [object[]]$ForegroundStates = @($true)) {
-  $script:ticks = @($Ticks)
-  $script:frames = @($Frames)
-  $script:tickIndex = 0
-  $script:frameIndex = 0
-  $script:foregroundStates = @($ForegroundStates)
-  $script:foregroundIndex = 0
-  return Get-VisualStableBlankCommentCheckpoint @{} @{} @{ token = "b" } @{} "hash"
+function Read-VisualBlankCommentFrame($lock, $menu, $expectedAvatarBounds) {
+  $script:blankReadCount += 1
+  if ($script:blankScenario -ceq "old_draft") {
+    return New-BlankFrame $true "" $true "" 1
+  }
+  if ($script:blankScenario -ceq "retry_failure" -or $script:blankReadCount -le 2) {
+    return New-BlankFrame $false "moments_comment_composer_not_found" $false "moments_comment_send_button_ambiguous" 2
+  }
+  return New-BlankFrame $true "" $false "moments_comment_send_button_not_found" 0
 }
-
-$result = Invoke-BlankCase -Ticks @([uint32]100, [uint32]100) -Frames @(
-  (New-BlankFrame "quiet-1"), (New-BlankFrame "quiet-2")
-)
-if (-not $result.ok -or $result.checkpointPass -ne 0 -or $script:frameIndex -ne 2) { throw "quiet first pass must succeed" }
-
-$result = Invoke-BlankCase -Ticks @([uint32]100, [uint32]101, [uint32]101, [uint32]101) -Frames @(
-  (New-BlankFrame "discard-1"), (New-BlankFrame "discard-2"),
-  (New-BlankFrame "accept-1"), (New-BlankFrame "accept-2")
-)
-if (-not $result.ok -or $result.checkpointPass -ne 1 -or $script:frameIndex -ne 4 -or $result.inputTick -ne 101 -or
-  $result.composer.marker -cne "accept-2" -or $result.send.marker -cne "accept-2") { throw "one delayed tick must discard the first pass and return second-pass evidence" }
-
-$result = Invoke-BlankCase -Ticks @([uint32]100, [uint32]101, [uint32]102) -Frames @(
-  (New-BlankFrame "between-1"), (New-BlankFrame "between-2")
-)
-if ($result.ok -or $result.reason -cne "moments_external_input_detected" -or $script:frameIndex -ne 2) { throw "input between passes must not be rebased" }
-
-$result = Invoke-BlankCase -Ticks @([uint32]100, [uint32]101, [uint32]101, [uint32]102) -Frames @(
-  (New-BlankFrame "change-1"), (New-BlankFrame "change-2"),
-  (New-BlankFrame "change-3"), (New-BlankFrame "change-4")
-)
-if ($result.ok -or $result.reason -cne "moments_external_input_detected" -or $result.safeToDismiss -eq $true -or $script:frameIndex -ne 4) { throw "a second changing pass must block without cleanup" }
-
-$result = Invoke-BlankCase -Ticks @([uint32]::MaxValue) -Frames @()
-if ($result.ok -or $result.reason -cne "moments_external_input_detected" -or $script:frameIndex -ne 0) { throw "MaxValue start tick must block without frames" }
-
-$result = Invoke-BlankCase -Ticks @([uint32]100, [uint32]::MaxValue) -Frames @(
-  (New-BlankFrame "max-1"), (New-BlankFrame "max-2")
-)
-if ($result.ok -or $result.reason -cne "moments_external_input_detected" -or $script:frameIndex -ne 2) { throw "MaxValue finish tick must block without retry" }
-
-$result = Invoke-BlankCase -Ticks @([uint32]100, [uint32]101) -Frames @(
-  (New-BlankFrame "draft-1" $true), (New-BlankFrame "draft-2")
-)
-if ($result.ok -or $result.reason -cne "moments_comment_preexisting_draft" -or $script:frameIndex -ne 2) { throw "a visible draft must outrank tick rebase" }
-
-$result = Invoke-BlankCase -Ticks @([uint32]100, [uint32]101) -Frames @(
-  (New-BlankFrame "unknown-1" $false $false), (New-BlankFrame "unknown-2")
-)
-if ($result.ok -or $result.reason -cne "moments_comment_draft_state_unknown" -or $result.safeToDismiss -eq $true -or $script:frameIndex -ne 2) { throw "unknown draft state must block without retry or cleanup" }
-
-$result = Invoke-BlankCase -Ticks @([uint32]100, [uint32]101) -Frames @(
-  (New-BlankFrame "bounds-1" $false $true "changed"), (New-BlankFrame "bounds-2")
-)
-if ($result.ok -or $result.reason -cne "moments_comment_editor_changed") { throw "changed composer bounds must block without retry" }
-
-$result = Invoke-BlankCase -Ticks @([uint32]100, [uint32]101) -Frames @(
-  (New-BlankFrame "anchor-1" $false $true "b" "changed"), (New-BlankFrame "anchor-2")
-)
-if ($result.ok -or $result.reason -cne "moments_post_anchor_changed") { throw "changed anchor must block without retry" }
-
-$result = Invoke-BlankCase -Ticks @([uint32]100) -Frames @() -ForegroundStates @($false)
-if ($result.ok -or $result.reason -cne "moments_window_not_foreground" -or $script:frameIndex -ne 0) { throw "lost foreground must block without frames" }
-
-$result = Invoke-BlankCase -Ticks @([uint32]100, [uint32]101) -Frames @(
-  (New-BlankFrame "foreground-1"), (New-BlankFrame "foreground-2")
-) -ForegroundStates @($true, $false)
-if ($result.ok -or $result.reason -cne "moments_external_input_detected" -or $result.safeToDismiss -eq $true -or $script:frameIndex -ne 2) { throw "foreground loss after frames must block without retry or cleanup" }
+function Invoke-BlankRetryCase([string]$scenario) {
+  $script:blankScenario = $scenario
+  $script:blankReadCount = 0
+  $result = Get-VisualStableBlankCommentCheckpoint @{} @{} @{ left = 100.0; top = 200.0; width = 300.0; height = 80.0 } @{} "avatar"
+  return [pscustomobject]@{
+    scenario = $scenario
+    ok = [bool]$result.ok
+    reason = [string]$result.reason
+    reads = $script:blankReadCount
+    retryCount = [int]$result.diagnostics.blankCheckpointRetryCount
+    retryReason = [string]$result.diagnostics.retryReason
+    checkpointPass = [int]$result.diagnostics.checkpointPass
+    startedInputTick = [uint32]$result.diagnostics.startedInputTick
+    finishedInputTick = [uint32]$result.diagnostics.finishedInputTick
+    inputTickStable = [bool]$result.diagnostics.inputTickStable
+    stableComposerOk = [bool]$result.diagnostics.stableComposerOk
+    stableComposerReason = [string]$result.diagnostics.stableComposerReason
+    settledComposerOk = [bool]$result.diagnostics.settledComposerOk
+    settledComposerReason = [string]$result.diagnostics.settledComposerReason
+    stableSendOk = [bool]$result.diagnostics.stableSendOk
+    stableSendReason = [string]$result.diagnostics.stableSendReason
+    settledSendOk = [bool]$result.diagnostics.settledSendOk
+    settledSendReason = [string]$result.diagnostics.settledSendReason
+    stableSendCandidateCount = [int]$result.diagnostics.stableSendCandidateCount
+    settledSendCandidateCount = [int]$result.diagnostics.settledSendCandidateCount
+  }
+}
+@(
+  (Invoke-BlankRetryCase "retry_success"),
+  (Invoke-BlankRetryCase "retry_failure"),
+  (Invoke-BlankRetryCase "old_draft")
+) | ConvertTo-Json -Depth 6 -Compress
 `;
-const stableBlankCommentProbe = spawnSync(
+const passiveBlankRetryProbe = spawnSync(
   "powershell.exe",
-  ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(stableBlankCommentProbeSource, "utf16le").toString("base64")],
+  ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(passiveBlankRetryProbeSource, "utf16le").toString("base64")],
   { encoding: "utf8", windowsHide: true },
 );
-assert.equal(stableBlankCommentProbe.status, 0, stableBlankCommentProbe.stderr || "blank-comment quiet rebase behavior probe must pass");
+assert.equal(passiveBlankRetryProbe.status, 0, passiveBlankRetryProbe.stderr || "passive blank retry probe must run");
+const [blankRetrySuccess, blankRetryFailure, oldDraftNoRetry] = JSON.parse(passiveBlankRetryProbe.stdout.trim());
+assert.deepEqual(blankRetrySuccess, {
+  scenario: "retry_success",
+  ok: true,
+  reason: "",
+  reads: 4,
+  retryCount: 1,
+  retryReason: "moments_comment_draft_state_unknown",
+  checkpointPass: 1,
+  startedInputTick: 101,
+  finishedInputTick: 101,
+  inputTickStable: true,
+  stableComposerOk: true,
+  stableComposerReason: "",
+  settledComposerOk: true,
+  settledComposerReason: "",
+  stableSendOk: false,
+  stableSendReason: "moments_comment_send_button_not_found",
+  settledSendOk: false,
+  settledSendReason: "moments_comment_send_button_not_found",
+  stableSendCandidateCount: 0,
+  settledSendCandidateCount: 0,
+});
+assert.deepEqual(blankRetryFailure, {
+  scenario: "retry_failure",
+  ok: false,
+  reason: "moments_comment_draft_state_unknown",
+  reads: 4,
+  retryCount: 1,
+  retryReason: "moments_comment_draft_state_unknown",
+  checkpointPass: 1,
+  startedInputTick: 101,
+  finishedInputTick: 101,
+  inputTickStable: true,
+  stableComposerOk: false,
+  stableComposerReason: "moments_comment_composer_not_found",
+  settledComposerOk: false,
+  settledComposerReason: "moments_comment_composer_not_found",
+  stableSendOk: false,
+  stableSendReason: "moments_comment_send_button_ambiguous",
+  settledSendOk: false,
+  settledSendReason: "moments_comment_send_button_ambiguous",
+  stableSendCandidateCount: 2,
+  settledSendCandidateCount: 2,
+});
+assert.equal(oldDraftNoRetry.ok, false);
+assert.equal(oldDraftNoRetry.reason, "moments_comment_preexisting_draft");
+assert.equal(oldDraftNoRetry.retryCount, 0, "a proven old draft must never be retried");
+assert.ok(oldDraftNoRetry.reads <= 2, "a proven old draft must stop before any second checkpoint pass");
+assert.match(
+  commentActionSource,
+  /if \(-not \$blankCheckpoint\.ok\)[\s\S]*diagnostics = \$blankCheckpoint\.diagnostics/u,
+  "blank checkpoint failures must return their bounded diagnostics to the caller",
+);
 const editorAdapterSource = actionSource.match(
   /function Get-VisualCommentEditorAdapter\(\$lock, \$composerBounds,[\s\S]*?\n\}/u,
 )?.[0] ?? "";
@@ -570,14 +1284,6 @@ const preMutationCommentSource = actionSource.match(
 )?.[0] ?? "";
 assert.ok(preMutationCommentSource, "pre-mutation comment validation source should be present");
 assert.match(preMutationCommentSource, /if \(-not \$draftProbe\.ok\)[\s\S]*Dismiss-VisualProvenEmptyCommentComposer/u);
-assert.match(
-  actionSource,
-  /\$beforeCandidate = Find-VisualCommentCandidate \$beforeFrame \$opened\.postBounds \$opened\.menu \$commentText "exact"/u,
-);
-assert.match(
-  actionSource,
-  /Find-VisualCommentCandidate \$beforeFrame[^\n]+"exact"[\s\S]*\$beforeCandidate\.candidateCount -gt 0[\s\S]*moments_comment_duplicate/u,
-);
 const compactCommentTextSource = actionSource.match(
   /function Get-VisualCompactLocatorText\([\s\S]*?\n\}/u,
 )?.[0] ?? "";
@@ -628,16 +1334,89 @@ assert.deepEqual(JSON.parse(commentLineMatchProbe.stdout.trim()), {
   colonPrefixedSuperstringExact: false,
   ocrFuzzy: true,
 });
-assert.match(actionSource, /\$sendBefore\.ok -or -not \$sendButton\.ok/u);
 assert.match(actionSource, /"comment_check"[\s\S]*Clear-And-CloseVisualCommentDraft/u);
 assert.match(actionSource, /status = "comment_draft_verified"[\s\S]*actionAttempted = \$false/u);
 assert.match(actionSource, /targeted_uia_value_roundtrip_and_unique_enabled_button_transition/u);
-assert.match(actionSource, /\$finalEditor = Get-VisualCommentEditorAdapter \$lock \$composer\.bounds \$editorRuntimeId \$editorBounds[\s\S]*String\]::Equals\(\[string\]\$finalEditor\.value, \$commentText, \[StringComparison\]::Ordinal\)[\s\S]*GetLastInputTick\(\) -ne \$commentInputTick/u);
-assert.match(actionSource, /Invoke-VisualOwnedClick \$sendX \$sendY \$lock \(\[int64\]\$context\.deadlineMs\) \$true \$true \$null \$commentInputTick/u);
-assert.match(actionSource, /function Invoke-VisualOwnedClick\([\s\S]*\$expectedInputTick[\s\S]*GetLastInputTick\(\) -ne \$expectedInputTick[\s\S]*AtomicMouseClick\(\$screenX, \$screenY, \$false\)/u);
-assert.match(actionSource, /status = \$\(if \(\$locatorOnly\) \{ "readback_required" \} else \{ "visible_verified" \}\)[\s\S]*commentVerified = -not \$locatorOnly[\s\S]*unique_exact_ocr_candidate_and_stable_post_v1[\s\S]*verificationLevel = \$\(if \(\$locatorOnly\) \{ "locator_only" \} else \{ "visible_exact" \}\)[\s\S]*readbackSeed = \$readbackSeed/u);
-assert.match(actionSource, /normalizedOcrCountBefore[\s\S]*normalizedOcrCountAfter/u);
-assert.doesNotMatch(actionSource, /Get-VisualExactTextCount|exactCountBefore|exactCountAfter/u);
+assert.match(
+  actionSource,
+  /\$finalEditor = Get-VisualCommentEditorAdapter \$lock \$composer\.bounds \$editorRuntimeId \$editorBounds[\s\S]*String\]::Equals\(\[string\]\$finalEditor\.value, \$commentText, \[StringComparison\]::Ordinal\)[\s\S]*GetForegroundWindow\(\) -ne \$lock\.hWnd/u,
+  "targeted input must prove the intended draft is still present in the foreground composer",
+);
+assert.match(
+  actionSource,
+  /Invoke-VisualOwnedClick \$sendX \$sendY \$lock \(\[int64\]\$context\.deadlineMs\) \$true \$true \$null \(\[uint32\]::MaxValue\) \{ Write-VisualCommentSendMarker \$context \}/u,
+  "the final send click must not be vetoed by a global Windows input tick",
+);
+assert.match(actionSource, /action === "comment"[\s\S]*validCommentSendMarkerPath\(context\.sendMarkerPath, context\.postFingerprint\)/u);
+
+const writeVisualResultSource = actionSource.match(
+  /function Write-VisualResult\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.ok(writeVisualResultSource, "structured visual result writer should be present");
+assert.match(writeVisualResultSource, /\$value\.stage = \$script:visualActionStage/u);
+assert.match(writeVisualResultSource, /\$value\.sendClickedAt = \$script:visualSendClickedAt/u);
+assert.match(writeVisualResultSource, /\$value\.primaryReason = \[string\]\$value\.reason/u);
+assert.match(writeVisualResultSource, /\$value\.cleanupReason = ""/u);
+assert.match(writeVisualResultSource, /\$value\.verificationMode = ""/u);
+assert.match(writeVisualResultSource, /\$value\.realActionAttempted = \[bool\]/u);
+const writeVisualResultProbeSource = `
+$script:visualActionStage = "draft_written"
+$script:visualSendClickedAt = ""
+$script:visualActionAttempted = $false
+${writeVisualResultSource}
+Write-VisualResult @{
+  ok = $false
+  status = "blocked"
+  reason = "primary_failure"
+  primaryReason = "primary_failure"
+  cleanupReason = "cleanup_failure"
+  actionAttempted = $false
+}
+`;
+const writeVisualResultProbe = spawnSync(
+  "powershell.exe",
+  [
+    "-NoProfile",
+    "-NonInteractive",
+    "-EncodedCommand",
+    Buffer.from(writeVisualResultProbeSource, "utf16le").toString("base64"),
+  ],
+  { encoding: "utf8", windowsHide: true },
+);
+assert.equal(writeVisualResultProbe.status, 0, writeVisualResultProbe.stderr || "structured result probe must run");
+const writeVisualResultValue = JSON.parse(writeVisualResultProbe.stdout.trim());
+assert.equal(writeVisualResultValue.reason, "primary_failure");
+assert.equal(writeVisualResultValue.primaryReason, "primary_failure");
+assert.equal(writeVisualResultValue.cleanupReason, "cleanup_failure");
+
+const verifiedCommentSuccessSource = actionSource.match(
+  /if \(\$seedResult\.stateTransitionVerified -eq \$true\) \{[\s\S]*?\n    \}/u,
+)?.[0] ?? "";
+assert.ok(verifiedCommentSuccessSource, "verified comment success branch should be present");
+assert.match(
+  verifiedCommentSuccessSource,
+  /Set-VisualActionStage "send_verified"[\s\S]*ok = \$true[\s\S]*status = "visible_verified"[\s\S]*commentVerified = \$true[\s\S]*verificationMode = \[string\]\$seedResult\.verificationMode/u,
+  "only a verified post-send state transition may return comment success",
+);
+assert.equal(
+  (actionSource.match(/commentVerified = \$true/gu) ?? []).length,
+  1,
+  "comment success must have a single verified result path",
+);
+const finalSendTail = actionSource.slice(
+  actionSource.indexOf("Invoke-VisualOwnedClick $sendX $sendY"),
+  actionSource.indexOf("\n  [void](Close-VisualMenu $lock)", actionSource.indexOf("Invoke-VisualOwnedClick $sendX $sendY")),
+);
+assert.equal(
+  (finalSendTail.match(/ok = \$true/gu) ?? []).length,
+  1,
+  "the post-click path must expose exactly one success result",
+);
+assert.ok(
+  finalSendTail.indexOf("if ($seedResult.stateTransitionVerified -eq $true)") <
+    finalSendTail.indexOf("ok = $true"),
+  "post-click success must be nested behind state-transition verification",
+);
 
 const visualClipboardRoundTripSource = actionSource.match(
   /function Invoke-VisualCommentCheckClipboardRoundTrip\([\s\S]*?\nfunction Clear-And-CloseVisualSelectedCommentDraft/u,
@@ -647,11 +1426,8 @@ assert.doesNotMatch(visualClipboardRoundTripSource, /Write-VisualResult|Invoke-V
 assert.equal((visualClipboardRoundTripSource.match(/\$failureReason = ""/gu) ?? []).length, 1, "comment-check failures must not be cleared after cleanup");
 assert.match(actionSource, /if \(-not \$draftProbe\.ok\)[\s\S]*\$draftProbe\.reason -ceq "moments_comment_editor_targeting_unsupported"[\s\S]*@\("comment", "comment_check"\) -contains [^\n]+XIAOXI_MOMENTS_VISUAL_ACTION[\s\S]*Invoke-VisualCommentCheckClipboardRoundTrip/u);
 assert.match(visualClipboardRoundTripSource, /\[bool\]\$retainExactDraftForSend = \$false/u);
-assert.match(visualClipboardRoundTripSource, /if \(\$retainExactDraftForSend\) \{[\s\S]*\$readyState = Get-LockedVisualCommentState[\s\S]*\$stableReadyState = Get-LockedVisualCommentState[\s\S]*Test-VisualBoundsNear \$readyState\.send\.bounds \$stableReadyState\.send\.bounds 3\.0[\s\S]*Test-VisualDeadlineMargin \$deadlineMs 10000[\s\S]*Test-VisualBounds \$sendBounds 64 22[\s\S]*GetForegroundWindow\(\) -ne \$lock\.hWnd[\s\S]*GetLastInputTick\(\) -ne \$inputTick[\s\S]*\$draftRetainedForSend = \$true/u);
 assert.match(visualClipboardRoundTripSource, /if \(\$draftRetainedForSend\)[\s\S]*status = "comment_draft_ready_for_send"[\s\S]*actionAttempted = \$false[\s\S]*inputTick = \$inputTick[\s\S]*clipboardRestored = \$clipboardRestored[\s\S]*draftRetainedForSend = \$true/u);
 assert.match(actionSource, /\$retainExactDraftForSend = [^\n]+XIAOXI_MOMENTS_VISUAL_ACTION -ceq "comment"[\s\S]*if \(-not \$retainExactDraftForSend\) \{ Write-VisualResult \$clipboardRoundTrip \}[\s\S]*status -cne "comment_draft_ready_for_send"[\s\S]*\$visualClipboardSend = \$true/u);
-assert.match(actionSource, /\$blankCheckpoint = Get-VisualStableBlankCommentCheckpoint[\s\S]*\$composer = \$blankCheckpoint\.composer[\s\S]*\$sendBefore = \$blankCheckpoint\.send[\s\S]*\$emptyCheckFinishedTick = \[uint32\]\$blankCheckpoint\.inputTick[\s\S]*\$draftProbe = Get-VisualCommentDraftTargeted/u);
-assert.match(visualClipboardRoundTripSource, /Focus-VisualCommentKeyboardTarget[\s\S]*Get-LockedVisualCommentState[\s\S]*moments_comment_send_button_not_found[\s\S]*TryCaptureTextClipboard/u);
 assert.match(visualClipboardRoundTripSource, /Set-VisualKnownClipboardText[\s\S]*\$commentText[\s\S]*Invoke-VisualOwnedKeyboardChord[^\n]+0x56/u);
 const ownedKeyboardChordSource = actionSource.match(
   /function Invoke-VisualOwnedKeyboardChord\([\s\S]*?\n\}/u,
@@ -679,7 +1455,7 @@ const immediateBackspaceIndex = visualClipboardRoundTripSource.indexOf("Invoke-V
 const boundedEmptyProofIndex = visualClipboardRoundTripSource.indexOf("Wait-VisualSelectedCommentDraftEmptyPair", immediateBackspaceIndex);
 const immediateDismissIndex = visualClipboardRoundTripSource.indexOf("$composerClosed = Dismiss-VisualProvenEmptyCommentComposer", boundedEmptyProofIndex);
 const clipboardRestoreAfterCleanupIndex = visualClipboardRoundTripSource.indexOf("$clipboardRestoreSucceeded = Restore-VisualClipboard", immediateDismissIndex);
-const retainedReadyProofIndex = visualClipboardRoundTripSource.indexOf("$readyState = Get-LockedVisualCommentState", clipboardRestoreAfterCleanupIndex);
+const retainedReadyProofIndex = visualClipboardRoundTripSource.indexOf("$readyState = Get-LockedVisualCommentSendState", clipboardRestoreAfterCleanupIndex);
 assert.ok(
   exactDraftProofIndex >= 0
     && commentCheckCleanupBranchIndex > exactDraftProofIndex
@@ -726,87 +1502,19 @@ const selectedDraftEmptyStateSource = actionSource.match(
 )?.[0] ?? "";
 assert.ok(selectedDraftEmptyStateSource, "strict selected-draft empty-state predicate should be present");
 assert.match(selectedDraftEmptyStateSource, /\$state\.ok[\s\S]*-not \$state\.send\.ok[\s\S]*\$state\.send\.reason -ceq "moments_comment_send_button_not_found"/u);
-const selectedDraftEmptyPairSource = actionSource.match(
-  /function Wait-VisualSelectedCommentDraftEmptyPair\([\s\S]*?\n\}/u,
-)?.[0] ?? "";
-assert.ok(selectedDraftEmptyPairSource, "bounded selected-draft empty-pair proof should be present");
-assert.doesNotMatch(selectedDraftEmptyPairSource, /Invoke-VisualOwnedKeyboardBackspace|Focus-VisualCommentKeyboardTarget|Dismiss-Visual(?:ProvenEmpty)?CommentComposer|Invoke-VisualOwnedClick|AtomicMouseClick|Clipboard/u);
-assert.match(selectedDraftEmptyPairSource, /for \(\$pass = 0; \$pass -lt 2; \$pass\+\+\)/u);
-assert.equal((selectedDraftEmptyPairSource.match(/Get-LockedVisualCommentState/gu) ?? []).length, 2, "each quiet pass must inspect exactly two locked frames");
-assert.match(selectedDraftEmptyPairSource, /\$startedTick = Get-VisualInputTick[\s\S]*\$retryBaselineTick[\s\S]*\$quietStartTick = Get-VisualInputTick/u);
-assert.match(selectedDraftEmptyPairSource, /Test-VisualLockedForeground \$lock[\s\S]*\$firstEmptyState = Get-LockedVisualCommentState[\s\S]*Start-Sleep -Milliseconds 500[\s\S]*\$secondEmptyState = Get-LockedVisualCommentState/u);
-assert.match(selectedDraftEmptyPairSource, /Test-VisualSelectedCommentDraftEmpty \$firstEmptyState[\s\S]*Test-VisualSelectedCommentDraftEmpty \$secondEmptyState/u);
-assert.match(selectedDraftEmptyPairSource, /\$finishedTick -eq \$startedTick[\s\S]*inputTick = \$finishedTick[\s\S]*if \(\$pass -eq 0 -and -not \$inputTickRebased\)[\s\S]*\$retryBaselineTick = \$finishedTick[\s\S]*continue/u);
-assert.match(selectedDraftEmptyPairSource, /firstStateReason[\s\S]*firstSendReason[\s\S]*secondStateReason[\s\S]*secondSendReason/u);
-assert.match(visualClipboardRoundTripSource, /\$emptyProof = Wait-VisualSelectedCommentDraftEmptyPair[\s\S]*if \(-not \$emptyProof\.ok\)[\s\S]*\$draftCleanupDiagnostics = \$emptyProof\.diagnostics[\s\S]*\$inputTick = \[uint32\]\$emptyProof\.inputTick[\s\S]*Dismiss-VisualProvenEmptyCommentComposer \$lock \$menu \$expectedComposerBounds \$expectedAvatarBounds \$expectedAvatarHash \$inputTick/u);
 const provenEmptyDismissSource = actionSource.match(
   /function Dismiss-VisualProvenEmptyCommentComposer\([\s\S]*?\n\}/u,
 )?.[0] ?? "";
 assert.ok(provenEmptyDismissSource, "clipboard-compatible proven-empty composer dismissal should be present");
-assert.match(provenEmptyDismissSource, /Get-LockedVisualCommentState[\s\S]*Test-VisualSelectedCommentDraftEmpty/u);
-assert.match(provenEmptyDismissSource, /Focus-VisualCommentKeyboardTarget[\s\S]*Wait-VisualSelectedCommentDraftEmptyPair[\s\S]*AtomicKeyboardEscape\(\)/u);
-assert.match(provenEmptyDismissSource, /Focus-VisualCommentKeyboardTarget[^\n]+\(\[int64\]::MaxValue\)/u);
-assert.match(provenEmptyDismissSource, /\$settledEscapeInputTick -ne \$escapeInputTick[\s\S]*GetLastInputTick\(\) -ne \$settledEscapeInputTick/u);
-assert.match(provenEmptyDismissSource, /Get-MomentsPixelHash[^\n]+\$expectedAvatarBounds[\s\S]*Find-MomentsMenuDots[\s\S]*\$remainingMenus\.Count -ne 1/u);
-assert.match(provenEmptyDismissSource, /moments_comment_composer_not_found[\s\S]*\$missingFrames -ge 2/u);
 assert.doesNotMatch(provenEmptyDismissSource, /SetForegroundWindow|ShowWindowAsync|Invoke-VisualOwnedKeyboardBackspace|AtomicMouseClick/u);
-assert.match(actionSource, /function Invoke-VisualCommentCheckClipboardRoundTrip[\s\S]*Dismiss-VisualProvenEmptyCommentComposer \$lock \$menu \$expectedComposerBounds \$expectedAvatarBounds \$expectedAvatarHash \$inputTick/u);
-assert.match(actionSource, /function Clear-And-CloseVisualSelectedCommentDraft[\s\S]*Dismiss-VisualProvenEmptyCommentComposer \$lock \$menu \$expectedComposerBounds \$expectedAvatarBounds \$expectedAvatarHash/u);
-const selectedDraftEmptyPairProbeSource = `
-$ErrorActionPreference = "Stop"
-${selectedDraftEmptyStateSource}
-${selectedDraftEmptyPairSource}
-function Start-Sleep { param([int]$Milliseconds) }
-function Get-VisualInputTick {
-  if ($script:tickIndex -ge $script:ticks.Count) { throw "tick underflow" }
-  [uint32]$value = [uint32]$script:ticks[$script:tickIndex]
-  $script:tickIndex += 1
-  return $value
-}
-function Test-VisualLockedForeground($lock) { return $true }
-function Get-LockedVisualCommentState($lock, $menu, $bounds, $avatarBounds, [string]$avatarHash) {
-  if ($script:frameIndex -ge $script:frames.Count) { throw "frame underflow" }
-  $value = $script:frames[$script:frameIndex]
-  $script:frameIndex += 1
-  return $value
-}
-function New-EmptyState([string]$marker, [bool]$sendOk = $false) {
-  return @{ ok = $true; marker = $marker; composer = @{ ok = $true; bounds = @{} }; send = @{ ok = $sendOk; reason = $(if ($sendOk) { "" } else { "moments_comment_send_button_not_found" }) }; avatarHash = "hash" }
-}
-function Invoke-EmptyPairCase([object[]]$Ticks, [object[]]$Frames, [uint32]$ExpectedTick = 100) {
-  $script:ticks = @($Ticks); $script:frames = @($Frames); $script:tickIndex = 0; $script:frameIndex = 0
-  return Wait-VisualSelectedCommentDraftEmptyPair @{} @{} @{} @{} "hash" $ExpectedTick
-}
-$result = Invoke-EmptyPairCase @([uint32]100, [uint32]100) @((New-EmptyState "quiet-1"), (New-EmptyState "quiet-2"))
-if (-not $result.ok -or $result.inputTick -ne 100 -or $result.inputTickRebased) { throw "quiet pair must pass without rebase" }
-$result = Invoke-EmptyPairCase @([uint32]101, [uint32]101, [uint32]101) @((New-EmptyState "late-1"), (New-EmptyState "late-2"))
-if (-not $result.ok -or $result.inputTick -ne 101 -or -not $result.inputTickRebased -or $script:frameIndex -ne 2) { throw "one late owned tick must pass only after a quiet pair" }
-$result = Invoke-EmptyPairCase @([uint32]100, [uint32]101, [uint32]101, [uint32]101) @((New-EmptyState "discard-1"), (New-EmptyState "discard-2"), (New-EmptyState "accept-1"), (New-EmptyState "accept-2"))
-if (-not $result.ok -or $result.inputTick -ne 101 -or $result.checkpointPass -ne 1 -or $script:frameIndex -ne 4) { throw "tick drift must discard the first pair and require a fresh quiet pair" }
-$result = Invoke-EmptyPairCase @([uint32]100, [uint32]101, [uint32]102) @((New-EmptyState "change-1"), (New-EmptyState "change-2"))
-if ($result.ok -or $result.reason -cne "moments_external_input_detected" -or $result.safeToDismiss) { throw "a second tick change must fail closed" }
-$result = Invoke-EmptyPairCase @([uint32]101, [uint32]101, [uint32]102) @((New-EmptyState "late-change-1"), (New-EmptyState "late-change-2"))
-if ($result.ok -or $result.reason -cne "moments_external_input_detected" -or $result.safeToDismiss -or $script:frameIndex -ne 2) { throw "a tick change after initial rebase must fail closed" }
-$result = Invoke-EmptyPairCase @([uint32]100, [uint32]100) @((New-EmptyState "draft-1" $true), (New-EmptyState "draft-2"))
-if ($result.ok -or $result.reason -cne "moments_comment_draft_empty_state_unverified" -or $result.safeToDismiss) { throw "enabled send must fail closed" }
-`;
-const selectedDraftEmptyPairProbe = spawnSync(
-  "powershell.exe",
-  ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(selectedDraftEmptyPairProbeSource, "utf16le").toString("base64")],
-  { encoding: "utf8", windowsHide: true },
-);
-assert.equal(selectedDraftEmptyPairProbe.status, 0, selectedDraftEmptyPairProbe.stderr || "selected-draft late-tick quiet-pass probe must pass");
 const selectedDraftCleanupSource = actionSource.match(
   /function Clear-And-CloseVisualSelectedCommentDraft\([\s\S]*?\n\}/u,
 )?.[0] ?? "";
 assert.ok(selectedDraftCleanupSource, "exact selected visual draft cleanup should be present");
 assert.doesNotMatch(selectedDraftCleanupSource, /Clipboard|0x41|0x43|0x56|Invoke-VisualOwnedClick|AtomicMouseClick|Write-VisualResult|0x0D|VK_RETURN/u);
-assert.match(selectedDraftCleanupSource, /GetForegroundWindow\(\) -ne \$lock\.hWnd[\s\S]*GetLastInputTick\(\) -ne \$expectedInputTick[\s\S]*Invoke-VisualOwnedKeyboardBackspace/u);
 assert.match(selectedDraftCleanupSource, /Invoke-VisualOwnedKeyboardBackspace[\s\S]*Wait-VisualSelectedCommentDraftEmptyPair[\s\S]*Dismiss-VisualProvenEmptyCommentComposer/u);
-assert.match(actionSource, /\$preSendLock = Get-LockedVisualRoot \$context[\s\S]*Get-LockedVisualCommentState \$preSendLock[\s\S]*Test-VisualBoundsNear \$preSendState\.send\.bounds \$clipboardRoundTrip\.sendBounds 3\.0[\s\S]*Test-VisualDeadlineMargin \(\[int64\]\$context\.deadlineMs\) 10000[\s\S]*GetForegroundWindow\(\) -eq \$preSendLock\.hWnd[\s\S]*GetLastInputTick\(\) -eq \[uint32\]\$clipboardRoundTrip\.inputTick/u);
-assert.match(actionSource, /if \(-not \$preSendProofOk\)[\s\S]*Clear-And-CloseVisualSelectedCommentDraft[\s\S]*moments_comment_draft_close_unverified[\s\S]*moments_comment_editor_changed/u);
 const visualSendFailureSource = actionSource.match(
-  /if \(-not \(Invoke-VisualOwnedClick \$sendX \$sendY[\s\S]*?\n    Start-Sleep -Milliseconds 60/u,
+  /if \(-not \(Invoke-VisualOwnedClick \$sendX \$sendY[\s\S]*?\n    Set-VisualActionStage "send_clicked"/u,
 )?.[0] ?? "";
 assert.ok(visualSendFailureSource, "guarded visual send failure path should be present");
 assert.match(visualSendFailureSource, /if \(\$visualClipboardSend\)[\s\S]*-not \$script:visualActionAttempted -and[\s\S]*Clear-And-CloseVisualSelectedCommentDraft[\s\S]*moments_comment_send_blocked/u);
@@ -816,45 +1524,152 @@ const postSendCommentStateSource = actionSource.match(
 )?.[0] ?? "";
 assert.ok(postSendCommentStateSource, "strict passive post-send comment state should be present");
 assert.doesNotMatch(postSendCommentStateSource, /Invoke-VisualOwnedClick|AtomicMouseClick|Invoke-VisualOwnedKeyboard|AtomicKeyboard|Clipboard|Open-LockedVisualMenu|SetForegroundWindow/u);
-assert.equal((postSendCommentStateSource.match(/GetLastInputTick/gu) ?? []).length, 2, "post-send frames must verify the exact input tick before and after capture");
+assert.equal((postSendCommentStateSource.match(/GetLastInputTick/gu) ?? []).length, 0, "passive post-send readback must not fail because unrelated Windows input ticks changed");
 assert.match(postSendCommentStateSource, /Get-LockedVisualRoot \$context[\s\S]*GetForegroundWindow\(\) -ne \$stateLock\.hWnd[\s\S]*Get-MomentsVisualFrame \$stateLock\.hWnd \$stateLock\.windowRect \$stateLock\.pid \$false/u);
-assert.match(postSendCommentStateSource, /\$composerCompleted = -not \$composer\.ok -and \[string\]\$composer\.reason -ceq "moments_comment_composer_not_found"[\s\S]*\$avatarHash -ceq \$opened\.avatarHash[\s\S]*\$menuMatches\.Count -eq 1/u);
-assert.equal((postSendCommentStateSource.match(/Find-VisualCommentCandidate/gu) ?? []).length, 1, "post-send state may perform at most one OCR candidate lookup per call");
-assert.match(postSendCommentStateSource, /\[string\]\$candidateMatchMode = "exact"[\s\S]*Find-VisualCommentCandidate[^\n]+\$commentText \$candidateMatchMode/u);
-assert.match(postSendCommentStateSource, /Get-MomentsPixelHash \$frame \$expectedCandidateBounds[\s\S]*\$observedCandidateHash -ceq \$expectedCandidateHash/u);
-assert.match(postSendCommentStateSource, /\$hashProofRequired[\s\S]*moments_comment_readback_seed_unstable[\s\S]*GetLastInputTick\(\)[\s\S]*moments_external_input_detected/u);
-const postSendBudgetSource = actionSource.match(
-  /function Test-VisualPostSendBudget\([\s\S]*?\n\}/u,
-)?.[0] ?? "";
-assert.ok(postSendBudgetSource, "post-send acceptance budget should be explicit");
-assert.match(postSendBudgetSource, /\$nowMs -lt \$settleDeadlineMs[\s\S]*\$script:visualWorkerSoftDeadlineMs[\s\S]*Test-VisualDeadlineMargin[^\n]+5000/u);
+assert.match(postSendCommentStateSource, /\$composerClosed = -not \$composer\.ok[\s\S]*\$sendInactive = \$composer\.ok -and -not \$send\.ok[\s\S]*\$composerCompleted = \$composerClosed -or \$sendInactive/u);
+assert.match(postSendCommentStateSource, /Get-VisualSendButton \$frame \$composer \$false[\s\S]*ok = \[bool\]\$composerCompleted/u);
+assert.doesNotMatch(postSendCommentStateSource, /Find-MomentsMenuDots|Resolve-VisualMenuAnchor|Get-MomentsPixelHash|Find-VisualCommentCandidate/u);
 const postSendSurfaceSettleSource = actionSource.match(
   /function Wait-VisualPostSendSurfaceSettled\([\s\S]*?\n\}/u,
 )?.[0] ?? "";
 assert.ok(postSendSurfaceSettleSource, "bounded passive post-send surface settle should be present");
 assert.doesNotMatch(postSendSurfaceSettleSource, /Find-VisualCommentCandidate|Invoke-VisualOwnedClick|AtomicMouseClick|Keyboard|Clipboard/u);
-assert.match(postSendSurfaceSettleSource, /for \(\$attempt = 0; \$attempt -lt 20; \$attempt\+\+\)[\s\S]*Test-VisualPostSendBudget[\s\S]*Get-VisualPostSendCommentState[\s\S]*\$consecutiveFrames -ge 2[\s\S]*Start-Sleep -Milliseconds 120/u);
-assert.match(postSendSurfaceSettleSource, /Get-VisualPostSendCommentState[\s\S]*Test-VisualPostSendBudget[\s\S]*if \(\$lastState\.ok\)/u);
+const postSendStateCaptureIndex = postSendSurfaceSettleSource.indexOf(
+  "$lastState = Get-VisualPostSendCommentState $context $opened",
+);
+const postCaptureBudgetIndex = postSendSurfaceSettleSource.indexOf(
+  "if (-not (Test-VisualPostSendBudget $context $settleDeadlineMs))",
+  postSendStateCaptureIndex + 1,
+);
+assert.ok(postSendStateCaptureIndex >= 0, "post-send state should be captured");
+assert.match(
+  postSendSurfaceSettleSource.slice(postCaptureBudgetIndex),
+  /if \(\$lastState\.ok\)[\s\S]*\$deadlineConfirmation = Get-VisualPostSendCommentState \$context \$opened[\s\S]*if \(\$deadlineConfirmation\.ok\) \{ return \$deadlineConfirmation \}/u,
+  "a success captured at the deadline should receive one final passive confirmation frame",
+);
+assert.match(
+  postSendSurfaceSettleSource,
+  /if \(\$lastState\.ok\)[\s\S]*\$consecutiveFrames \+= 1[\s\S]*\$consecutiveFrames -ge 2/u,
+  "ordinary post-send transitions should still require two consecutive frames",
+);
+const postSendDeadlineEdgeProbeSource = `
+${postSendSurfaceSettleSource}
+$script:budgetChecks = 0
+$script:stateReads = 0
+function Test-VisualPostSendBudget($context, [int64]$settleDeadlineMs) {
+  $script:budgetChecks += 1
+  return $script:budgetChecks -eq 1
+}
+function Get-VisualPostSendCommentState($context, $opened) {
+  $script:stateReads += 1
+  return @{
+    ok = $true
+    diagnostics = @{
+      composerCompleted = $true
+      composerClosed = $true
+      sendInactive = $false
+      sendCandidateCount = 0
+    }
+  }
+}
+function Start-Sleep { param([int]$Milliseconds) }
+$result = Wait-VisualPostSendSurfaceSettled @{} @{} 1
+@{
+  ok = [bool]$result.ok
+  composerClosed = [bool]$result.diagnostics.composerClosed
+  budgetChecks = [int]$script:budgetChecks
+  stateReads = [int]$script:stateReads
+} | ConvertTo-Json -Compress
+`;
+const postSendDeadlineEdgeProbe = spawnSync(
+  "powershell.exe",
+  [
+    "-NoProfile",
+    "-NonInteractive",
+    "-EncodedCommand",
+    Buffer.from(postSendDeadlineEdgeProbeSource, "utf16le").toString("base64"),
+  ],
+  { encoding: "utf8", windowsHide: true },
+);
+assert.equal(
+  postSendDeadlineEdgeProbe.status,
+  0,
+  postSendDeadlineEdgeProbe.stderr || "post-send deadline-edge probe must run",
+);
+assert.deepEqual(JSON.parse(postSendDeadlineEdgeProbe.stdout.trim()), {
+  budgetChecks: 2,
+  composerClosed: true,
+  ok: true,
+  stateReads: 2,
+});
+const postSendTransientMissingProbeSource = `
+${postSendSurfaceSettleSource}
+$script:budgetChecks = 0
+$script:stateReads = 0
+function Test-VisualPostSendBudget($context, [int64]$settleDeadlineMs) {
+  $script:budgetChecks += 1
+  return $script:budgetChecks -eq 1
+}
+function Get-VisualPostSendCommentState($context, $opened) {
+  $script:stateReads += 1
+  if ($script:stateReads -eq 1) {
+    return @{
+      ok = $true
+      diagnostics = @{
+        composerCompleted = $true
+        composerClosed = $true
+        sendInactive = $false
+        sendCandidateCount = 0
+      }
+    }
+  }
+  return @{
+    ok = $false
+    reason = "moments_comment_composer_not_settled"
+    diagnostics = @{
+      composerCompleted = $false
+      composerClosed = $false
+      sendInactive = $false
+      sendCandidateCount = 1
+    }
+  }
+}
+function Start-Sleep { param([int]$Milliseconds) }
+$result = Wait-VisualPostSendSurfaceSettled @{} @{} 1
+@{
+  ok = [bool]$result.ok
+  reason = [string]$result.reason
+  stateReads = [int]$script:stateReads
+} | ConvertTo-Json -Compress
+`;
+const postSendTransientMissingProbe = spawnSync(
+  "powershell.exe",
+  [
+    "-NoProfile",
+    "-NonInteractive",
+    "-EncodedCommand",
+    Buffer.from(postSendTransientMissingProbeSource, "utf16le").toString("base64"),
+  ],
+  { encoding: "utf8", windowsHide: true },
+);
+assert.equal(
+  postSendTransientMissingProbe.status,
+  0,
+  postSendTransientMissingProbe.stderr || "post-send transient-missing probe must run",
+);
+assert.deepEqual(JSON.parse(postSendTransientMissingProbe.stdout.trim()), {
+  ok: false,
+  reason: "moments_comment_readback_seed_timeout",
+  stateReads: 2,
+});
 const readbackSeedWaitSource = actionSource.match(
   /function Wait-VisualCommentReadbackSeed\([\s\S]*?\n\}/u,
 )?.[0] ?? "";
 assert.ok(readbackSeedWaitSource, "bounded passive readback-seed wait should be present");
 assert.doesNotMatch(readbackSeedWaitSource, /Invoke-VisualOwnedClick|AtomicMouseClick|Keyboard|Clipboard|Open-LockedVisualMenu/u);
-assert.match(readbackSeedWaitSource, /\$sampleOffsetsMs = @\(0, 2200, 5000\)[\s\S]*for \(\$ocrAttempt = 0; \$ocrAttempt -lt \$sampleOffsetsMs\.Count; \$ocrAttempt\+\+\)[\s\S]*Start-Sleep -Milliseconds \$sampleWaitMs[\s\S]*Wait-VisualPostSendSurfaceSettled[\s\S]*Start-Sleep -Milliseconds 350[\s\S]*Get-VisualPostSendCommentState[^\n]+\$true[\s\S]*Start-Sleep -Milliseconds 160[\s\S]*Get-VisualPostSendCommentState[^\n]+\$false \$candidateState\.candidate\.bounds/u);
-assert.ok((readbackSeedWaitSource.match(/Test-VisualPostSendBudget/gu) ?? []).length >= 5, "every passive wait/capture stage must recheck all post-send deadlines");
-assert.match(readbackSeedWaitSource, /GetLastInputTick\(\) -ne \$expectedInputTick[\s\S]*moments_external_input_detected/u);
-assert.match(readbackSeedWaitSource, /if \(-not \$surface\.ok\)[\s\S]*Test-VisualPostSendBudget[\s\S]*continue/u);
-assert.match(readbackSeedWaitSource, /candidateCount = \[int\]\$candidateState\.candidate\.candidateCount[\s\S]*candidateExactMatch = \$\(if \(\$locatorOnly\) \{ \$false \} else \{ \[bool\]\$candidateState\.candidate\.exactMatch \}\)[\s\S]*candidateHashStable = \[bool\]\$stableState\.diagnostics\.candidateHashStable[\s\S]*candidateStable = \$true/u);
-assert.match(readbackSeedWaitSource, /"exact"[\s\S]*moments_comment_candidate_not_found[\s\S]*"fuzzy"[\s\S]*\$locatorOnly = \$candidateState\.ok/u);
-assert.match(readbackSeedWaitSource, /candidateLocatorOnly = \[bool\]\$locatorOnly[\s\S]*candidateMatchMode = \$\(if \(\$locatorOnly\) \{ "fuzzy" \} else \{ "exact" \}\)[\s\S]*locatorOnly = \[bool\]\$locatorOnly/u);
-assert.doesNotMatch(readbackSeedWaitSource, /Invoke-VisualOwnedRightClick|Invoke-VisualCommentReadback/u);
-assert.match(actionSource, /\$locatorOnly = \[bool\]\$seedResult\.locatorOnly[\s\S]*status = \$\(if \(\$locatorOnly\) \{ "readback_required" \} else \{ "visible_verified" \}\)[\s\S]*commentVerified = -not \$locatorOnly[\s\S]*unique_fuzzy_ocr_locator_and_stable_post_v1[\s\S]*locator_only/u);
-assert.match(actionSource, /\$script:visualWorkerSoftDeadlineMs = \(Get-VisualEpochMs\) \+ 45000/u);
-assert.match(actionSource, /\$script:visualPostSendSettleMs = 15000[\s\S]*\$script:visualPostSendRequiredMs = 18000[\s\S]*\$script:visualCommentReadbackRequiredMs = 30000[\s\S]*\$script:visualContextPostSendRequiredMs = \$script:visualPostSendSettleMs \+ \$script:visualCommentReadbackRequiredMs/u);
-assert.match(actionSource, /\$preSendNowMs = Get-VisualEpochMs[\s\S]*visualWorkerSoftDeadlineMs - \$preSendNowMs[\s\S]*visualPostSendRequiredMs[\s\S]*Clear-And-CloseVisualSelectedCommentDraft[\s\S]*Clear-And-CloseVisualCommentDraft[\s\S]*moments_comment_send_budget_exhausted/u);
-assert.match(actionSource, /\$preSendNowMs = Get-VisualEpochMs[\s\S]*Test-VisualDeadlineMargin \(\[int64\]\$context\.deadlineMs\) \$script:visualContextPostSendRequiredMs/u);
-assert.match(actionSource, /\$postClickInputTick = [^\n]+GetLastInputTick[\s\S]*Start-Sleep -Milliseconds 60[\s\S]*GetLastInputTick\(\) -ne \$postClickInputTick[\s\S]*moments_external_input_detected[\s\S]*\$nowAfterClickMs \+ \$script:visualPostSendSettleMs[\s\S]*\$script:visualWorkerSoftDeadlineMs[\s\S]*\$context\.deadlineMs - 5000[\s\S]*Wait-VisualCommentReadbackSeed/u);
-assert.doesNotMatch(actionSource, /Start-Sleep -Milliseconds 650/u);
+assert.doesNotMatch(readbackSeedWaitSource, /GetLastInputTick|moments_external_input_detected/u);
+assert.match(readbackSeedWaitSource, /Wait-VisualPostSendSurfaceSettled[\s\S]*if \(-not \$surface\.ok\)[\s\S]*stateTransitionVerified = \$true[\s\S]*verificationMode = "composer_closed_or_send_inactive_v1"/u);
+assert.doesNotMatch(readbackSeedWaitSource, /Find-VisualCommentCandidate|Get-MomentsOcrObservation|Invoke-VisualCommentReadback|locatorOnly/u);
 const neutralTitleBarClickSource = actionSource.match(
   /function Invoke-VisualNeutralTitleBarClick\([\s\S]*?\n\}/u,
 )?.[0] ?? "";
@@ -881,9 +1696,6 @@ assert.match(visualCommentComposerSource, /\$topEdge -lt \(\[double\]\$bounds\.w
 assert.match(visualCommentComposerSource, /\$validCandidates\.Count -ne 1/u);
 assert.match(visualCommentComposerSource, /\$validCandidates\.Count -eq 0 -and \$potentialCandidateCount -eq 0[\s\S]*moments_comment_composer_not_found/u);
 assert.doesNotMatch(visualCommentComposerSource, /Sort-Object|largest|maximum component/iu);
-assert.match(stableBlankCommentSource, /Start-Sleep -Milliseconds 140\s+\$stableState = Read-VisualBlankCommentFrame[\s\S]*Start-Sleep -Milliseconds 260\s+\$settledState = Read-VisualBlankCommentFrame/u);
-assert.match(stableBlankCommentSource, /\$stableState\.composer\.ok[\s\S]*\$settledState\.composer\.ok[\s\S]*Test-VisualBoundsNear \$stableState\.composer\.bounds \$settledState\.composer\.bounds 4\.0/u);
-assert.match(stableBlankCommentSource, /\$stableState\.send\.reason -cne "moments_comment_send_button_not_found"[\s\S]*\$settledState\.send\.reason -cne "moments_comment_send_button_not_found"/u);
 
 // Published comments are verified only through the unique Copy menu item and
 // an ordinal clipboard proof. The adjacent Delete item is never selected.
@@ -997,10 +1809,34 @@ assert.match(actionSource, /\$deleteCenterY -le \(\[double\]\$frame\.height \* 0
 assert.match(actionSource, /Invoke-VisualOwnedRightClick[\s\S]*Invoke-VisualOwnedPopupClick/u);
 assert.match(actionSource, /function Invoke-VisualOwnedRightClick\([^\n]+\$expectedInputTick\)[\s\S]*\$expectedInputTick -eq \[uint32\]::MaxValue[\s\S]*GetLastInputTick\(\) -ne \$expectedInputTick[\s\S]*AtomicMouseClick/u);
 assert.match(actionSource, /"menuBounds",\s*"expectedInputTick",\s*"createdAtMs"[\s\S]*Number\.isInteger\(seed\.expectedInputTick\)[\s\S]*seed\.expectedInputTick < 0xffff_ffff/u);
-assert.match(actionSource, /function Test-VisualCommentReadbackSeed[\s\S]*seed\.expectedInputTick -ge \[uint32\]::MaxValue[\s\S]*GetLastInputTick\(\) -eq \[uint32\]\$seed\.expectedInputTick/u);
-assert.match(actionSource, /expectedInputTick = \[uint32\]\$postClickInputTick/u);
+assert.match(actionSource, /function Test-VisualCommentReadbackSeed[\s\S]*seed\.expectedInputTick -ge \[uint32\]::MaxValue[\s\S]*IsWindowVisible\(\$lock\.hWnd\)/u);
+const readbackSeedValidationSource = actionSource.match(
+  /function Test-VisualCommentReadbackSeed\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.doesNotMatch(readbackSeedValidationSource, /GetLastInputTick/u);
 assert.match(actionSource, /\$copyX = [^\n]+\$copyEntry\.bounds/u);
 assert.match(actionSource, /public static bool TryCaptureTextClipboard/u);
+assert.match(
+  actionSource,
+  /public static bool AtomicKeyboardUnicodeText\(string text\)[\s\S]*KeyEventfUnicode[\s\S]*SendInput/u,
+  "comment input must have a clipboard-independent Unicode keyboard fallback",
+);
+assert.match(
+  actionSource,
+  /function Invoke-VisualCommentUnicodeDraftForSend[\s\S]*Invoke-VisualOwnedUnicodeText[\s\S]*comment_draft_ready_for_send/u,
+  "unsupported clipboard contents should fall back to direct Unicode input",
+);
+assert.match(
+  actionSource,
+  /\$clipboardCanRoundTrip = [\s\S]*TryCaptureTextClipboard[\s\S]*if \(\$retainExactDraftForSend -and -not \$clipboardCanRoundTrip\)[\s\S]*Invoke-VisualCommentUnicodeDraftForSend/u,
+  "clipboard backup failure must not stop a real comment before typing",
+);
+assert.match(actionSource, /TryCaptureTextClipboard[\s\S]*for \(int captureAttempt = 0; captureAttempt < 6; captureAttempt\+\+\)[\s\S]*Thread\.Sleep\(35\)[\s\S]*if \(result\) return true/u);
+assert.match(
+  actionSource,
+  /TryCaptureTextClipboard[\s\S]*?ClipboardContainsOnlyTextFormatsLocked\(\)\s*&&\s*TryReadUnicodeTextLocked/u,
+  "rich clipboard formats must bypass destructive text-only replacement and use Unicode input instead",
+);
 assert.match(actionSource, /public static int AtomicReplaceTextClipboard/u);
 assert.match(actionSource, /OpenClipboard\(owner\)[\s\S]*GetClipboardSequenceNumber\(\) != expectedSequence[\s\S]*EmptyClipboard\(\)[\s\S]*SetClipboardData/u);
 assert.match(actionSource, /OpenClipboardWithRetry[\s\S]*CloseClipboardWithRetry/u);
@@ -1041,7 +1877,7 @@ const ownedSequenceRebindSource = clipboardRestoreSource.match(
 )?.[0] ?? "";
 assert.ok(ownedSequenceRebindSource, "owned clipboard sequence rebind should be present");
 assert.doesNotMatch(ownedSequenceRebindSource, /\$owned(?:Text|Empty)\s*=/u);
-assert.match(visualClipboardRoundTripSource, /\$exactDraftProven = \$true[\s\S]*GetLastInputTick\(\) -ne \$inputTick[\s\S]*\$clipboardRestoreSucceeded = Restore-VisualClipboard[\s\S]*TryClipboardTextMatches\([\s\S]*\$originalClipboardText[\s\S]*\$originalClipboardMatches[\s\S]*if \(-not \$clipboardRestoreSucceeded\)[\s\S]*moments_comment_clipboard_restore_failed[\s\S]*\$readyState = Get-LockedVisualCommentState/u);
+assert.match(visualClipboardRoundTripSource, /\$exactDraftProven = \$true[\s\S]*\$clipboardRestoreSucceeded = Restore-VisualClipboard[\s\S]*TryClipboardTextMatches\([\s\S]*\$originalClipboardText[\s\S]*\$originalClipboardMatches[\s\S]*if \(-not \$clipboardRestoreSucceeded\)[\s\S]*moments_comment_clipboard_restore_failed[\s\S]*\$readyState = Get-LockedVisualCommentSendState/u);
 assert.doesNotMatch(visualClipboardRoundTripSource, /\$failureReason -ceq "moments_comment_clipboard_restore_failed"[\s\S]*\$failureReason = ""/u);
 assert.match(actionSource, /replacementSequence != expectedSequence \? 1 : 3[\s\S]*\$restoreStatus -eq 1 -or \$restoreStatus -eq 3/u);
 assert.match(actionSource, /\$restoreStatus -eq 2[\s\S]*\$ownedSequence = \$restoredSequence/u);
@@ -1137,7 +1973,10 @@ const visualActionTimeoutCapsSource = actionSource.match(
   /VISUAL_ACTION_TIMEOUT_CAP_MS = Object\.freeze\(\{[\s\S]*?\}\);/u,
 )?.[0] ?? "";
 assert.ok(visualActionTimeoutCapsSource, "visual action timeout caps should be present");
-assert.match(visualActionTimeoutCapsSource, /inspect: 20_000[\s\S]*like: 30_000[\s\S]*comment_check: 85_000/u);
+assert.match(
+  visualActionTimeoutCapsSource,
+  /inspect: 20_000[\s\S]*like: 30_000[\s\S]*comment_occurrence_check: 45_000[\s\S]*comment_check: 85_000/u,
+);
 assert.doesNotMatch(visualActionTimeoutCapsSource, /\bcomment:|\bcomment_readback:/u);
 assert.doesNotMatch(actionSource, /comment_check: 35_000/u);
 assert.match(actionSource, /const timeoutMs = Math\.min\(timeoutCapMs, Math\.max\(1_000, remainingMs \+ 2_500\)\)/u);
@@ -1146,7 +1985,10 @@ const runVisualActionSource = actionSource.match(
   /function runVisualAction\(action, context = \{\}\) \{[\s\S]*?\n\}/u,
 )?.[0] ?? "";
 assert.ok(runVisualActionSource, "visual action runner should be present");
-assert.match(runVisualActionSource, /action === "comment" \|\| action === "comment_readback"[\s\S]*runPowerShellAsync\(MOMENTS_VISUAL_ACTION_POWERSHELL[\s\S]*sta: true,[\s\S]*timeout: false/u);
+assert.match(
+  runVisualActionSource,
+  /action === "comment"[\s\S]*action === "comment_readback"[\s\S]*action === "comment_occurrence_check"[\s\S]*runPowerShellAsync\(MOMENTS_VISUAL_ACTION_POWERSHELL[\s\S]*sta: true,[\s\S]*timeout: false/u,
+);
 assert.match(runVisualActionSource, /return runPowerShell\(MOMENTS_VISUAL_ACTION_POWERSHELL, env,[\s\S]*timeout: timeoutMs/u);
 const commentAdapterSource = actionSource.match(
   /function comment\(context = \{\}\) \{[\s\S]*?\n\}/u,
@@ -1155,7 +1997,11 @@ assert.ok(commentAdapterSource, "comment adapter should be present");
 assert.match(commentAdapterSource, /if \(!result\?\.ok\) return result[\s\S]*observationId: String\(context\.observationId \?\? ""\)[\s\S]*commentText/u);
 assert.match(commentAdapterSource, /runVisualAction\("comment", context\)[\s\S]*typeof result\?\.then === "function" \? result\.then\(normalizeResult\) : normalizeResult\(result\)/u);
 assert.match(actionSource, /function commentReadback[\s\S]*runVisualAction\("comment_readback", context\)[\s\S]*result\.then\(normalizeResult\)/u);
-assert.match(actionSource, /Test-VisualDeadlineMargin \(\[int64\]\$context\.deadlineMs\) 5000[\s\S]*Test-VisualDeadlineMargin \(\[int64\]\$context\.deadlineMs\) 10000/u);
+assert.match(
+  actionSource,
+  /function commentOccurrenceCheck[\s\S]*runVisualAction\("comment_occurrence_check", context\)[\s\S]*result\.then\(normalizeResult\)/u,
+);
+assert.match(actionSource, /function commentOccurrenceCheck[\s\S]*actionAttempted: false[\s\S]*realActionAttempted: false/u);
 assert.match(windowDriverSource, /spawnOptions\.timeout = timeout/u);
 assert.match(windowDriverSource, /function runPowerShellAsync[\s\S]*options\.timeout === false \? null[\s\S]*options\.sta === true[\s\S]*timeout === null \? null : setTimeout/u);
 

@@ -124,6 +124,35 @@ function replyPrompt({ context, expert, recovery = false }) {
   ];
 }
 
+function momentsCommentPrompt({ postText, guidance = "" }) {
+  const source = String(postText || "").replace(/\s+/g, " ").trim().slice(0, 800);
+  const extra = String(guidance || "").replace(/\s+/g, " ").trim().slice(0, 200);
+  return [
+    {
+      role: "system",
+      content: `你是微信朋友圈互动助手。根据帖子正文生成一条自然、真诚、可以直接发布的评论。
+要求：
+1. 评论必须针对帖子里的具体内容，不能只说“不错”“支持”“学习了”等空话。
+2. 忽略作者昵称、发布时间、“赞”“评论”等界面文字，不要把它们当成帖子正文。
+3. 不编造帖子没有提到的人、地点、产品、价格或经历。
+4. 语气像熟人之间的自然互动，不要营销，不要自我介绍，不要提AI。
+5. 控制在8到60个汉字，可使用0到1个自然Emoji。
+6. 只输出最终评论，不要引号、编号、解释或Markdown。${extra ? `\n7. 额外要求：${extra}` : ""}`
+    },
+    { role: "user", content: `帖子内容：${source}` }
+  ];
+}
+
+function parseMomentsCommentPayload(payload) {
+  const comment = parsePlainPayload(payload, "DeepSeek 未返回可用的朋友圈评论。")
+    .replace(/^["“”']+|["“”']+$/gu, "")
+    .trim();
+  if (comment.length < 2 || comment.length > 80) {
+    throw new DeepSeekApiError("AI_RESPONSE_LENGTH_INVALID", "DeepSeek 返回的朋友圈评论长度不符合要求");
+  }
+  return comment;
+}
+
 function completionChoice(payload) {
   if (!payload || typeof payload !== "object" || !Array.isArray(payload.choices) || !payload.choices.length) {
     throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 返回的数据缺少有效的生成结果");
@@ -360,6 +389,32 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
     return fallbackReply(diagnostics);
   }
 
+  async function generateMomentsCommentWithKey(key, { postText, guidance = "" } = {}) {
+    const normalizedPostText = String(postText || "").replace(/\s+/g, " ").trim();
+    if (normalizedPostText.length < 2) {
+      throw new DeepSeekApiError("AI_CONTEXT_INVALID", "未读取到可用于生成评论的帖子正文");
+    }
+    const messages = momentsCommentPrompt({ postText: normalizedPostText, guidance });
+    let lastError;
+    for (const maxTokens of [120, 240]) {
+      try {
+        const payload = await request({ key, messages, maxTokens, disableThinking: true });
+        return { comment: parseMomentsCommentPayload(payload) };
+      } catch (error) {
+        lastError = error;
+        const recoverable = [
+          "AI_RESPONSE_EMPTY",
+          "AI_RESPONSE_TRUNCATED",
+          "AI_RESPONSE_INCOMPLETE",
+          "AI_RESPONSE_INVALID",
+          "AI_RESPONSE_LENGTH_INVALID"
+        ].includes(String(error?.code || ""));
+        if (!recoverable || maxTokens === 240) throw error;
+      }
+    }
+    throw lastError || new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回可用的朋友圈评论。");
+  }
+
   return {
     assertAvailable: () => keyStore.read(),
     async test(value) {
@@ -372,12 +427,17 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
         context: [{ role: "user", content: "你好，我想了解测试服务。" }],
         expert: "可礼貌介绍测试服务，并询问客户想了解哪一方面。"
       }, { strict: true });
+      const moments = await generateMomentsCommentWithKey(key, {
+        postText: "今天完成了新门店的设备安装",
+        guidance: "自然一点"
+      });
       return {
         provider: "deepseek",
         model: DEEPSEEK_MODEL,
         capabilities: {
           activeTouch: { ok: true, outputLength: draft.draft.length },
-          autoReply: { ok: true, outputLength: reply.reply.length }
+          autoReply: { ok: true, outputLength: reply.reply.length },
+          momentsComment: { ok: true, outputLength: moments.comment.length }
         }
       };
     },
@@ -394,8 +454,23 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
         return fallbackReply([replyFailureDiagnostic(error, "0/config")], error.message);
       }
       return generateReplyWithKey(key, input);
+    },
+    async momentsComment(input) {
+      return generateMomentsCommentWithKey(keyStore.read(), input);
     }
   };
 }
 
-module.exports = { DEEPSEEK_MODEL, DeepSeekApiError, createDeepSeekClient, createDeepSeekKeyStore, maskApiKey, parsePlainPayload, parseReplyDecision, prompt, replyPrompt };
+module.exports = {
+  DEEPSEEK_MODEL,
+  DeepSeekApiError,
+  createDeepSeekClient,
+  createDeepSeekKeyStore,
+  maskApiKey,
+  momentsCommentPrompt,
+  parseMomentsCommentPayload,
+  parsePlainPayload,
+  parseReplyDecision,
+  prompt,
+  replyPrompt
+};

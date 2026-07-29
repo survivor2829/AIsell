@@ -49,6 +49,9 @@ const momentsCampaign = {
   status: () => ipcRenderer.invoke("moments-campaign:status"),
   start: (payload) => ipcRenderer.invoke("moments-campaign:start", {
     maxPosts: Number(payload?.maxPosts || 10),
+    likeEnabled: payload?.likeEnabled !== false,
+    commentEnabled: payload?.commentEnabled === true,
+    commentGuidance: String(payload?.commentGuidance || ""),
     clickToken: consumeMomentsCampaignClick()
   }),
   pause: () => ipcRenderer.invoke("moments-campaign:pause"),

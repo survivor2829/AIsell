@@ -24,6 +24,7 @@ public static class Win32WechatMomentsNavigation {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, int data, UIntPtr extraInfo);
 }
 "@
@@ -38,9 +39,9 @@ function Get-WechatWindows {
   $callback = [Win32WechatMomentsNavigation+EnumWindowsProc]{
     param([IntPtr]$hWnd, [IntPtr]$lParam)
     if (-not [Win32WechatMomentsNavigation]::IsWindowVisible($hWnd)) { return $true }
-    [uint32]$pid = 0
-    [void][Win32WechatMomentsNavigation]::GetWindowThreadProcessId($hWnd, [ref]$pid)
-    $process = Get-Process -Id $pid -ErrorAction SilentlyContinue
+    [uint32]$windowProcessId = 0
+    [void][Win32WechatMomentsNavigation]::GetWindowThreadProcessId($hWnd, [ref]$windowProcessId)
+    $process = Get-Process -Id $windowProcessId -ErrorAction SilentlyContinue
     if ($process -eq $null -or @("Weixin", "WeChat") -notcontains $process.ProcessName) { return $true }
     $rect = New-Object Win32WechatMomentsNavigation+RECT
     if (-not [Win32WechatMomentsNavigation]::GetWindowRect($hWnd, [ref]$rect)) { return $true }
@@ -51,7 +52,7 @@ function Get-WechatWindows {
     [void][Win32WechatMomentsNavigation]::GetWindowText($hWnd, $titleText, $titleText.Capacity)
     [void]$windows.Add(@{
       hWnd = $hWnd
-      pid = [int]$pid
+      pid = [int]$windowProcessId
       processName = $process.ProcessName
       title = $titleText.ToString().Trim()
       minimized = [Win32WechatMomentsNavigation]::IsIconic($hWnd)
@@ -64,7 +65,7 @@ function Get-WechatWindows {
     return $true
   }
   [void][Win32WechatMomentsNavigation]::EnumWindows($callback, [IntPtr]::Zero)
-  return @($windows)
+  return $windows
 }
 
 function Focus-Window($window) {
@@ -80,6 +81,33 @@ function Focus-Window($window) {
 
 function Get-MomentsWindow {
   return @(Get-WechatWindows | Where-Object { $_.title -ceq "朋友圈" } | Sort-Object area -Descending)
+}
+
+function Invoke-MomentsSidebarFallback($main) {
+  $mainHwnd = [IntPtr]$main.hWnd
+  $dpi = 96
+  try {
+    $observedDpi = [Win32WechatMomentsNavigation]::GetDpiForWindow($mainHwnd)
+    if ($observedDpi -ge 96 -and $observedDpi -le 480) { $dpi = [int]$observedDpi }
+  } catch {}
+  $scale = [double]$dpi / 96.0
+  $x = [int][Math]::Round($main.left + (26 * $scale))
+  $y = [int][Math]::Round($main.top + (248 * $scale))
+  $point = New-Object Win32WechatMomentsNavigation+POINT
+  $point.X = $x
+  $point.Y = $y
+  $hitRoot = [Win32WechatMomentsNavigation]::GetAncestor(
+    [Win32WechatMomentsNavigation]::WindowFromPoint($point),
+    2
+  )
+  if ($hitRoot -ne $mainHwnd) {
+    return @{ ok = $false; reason = "moments_entry_fallback_not_owned"; dpi = $dpi; x = $x; y = $y }
+  }
+  [void][Win32WechatMomentsNavigation]::SetCursorPos($x, $y)
+  [Win32WechatMomentsNavigation]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 45
+  [Win32WechatMomentsNavigation]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+  return @{ ok = $true; mode = "dpi_sidebar_fallback"; dpi = $dpi; x = $x; y = $y }
 }
 
 function Open-Moments {
@@ -114,28 +142,34 @@ function Open-Moments {
       [void]$entries.Add(@{ element = $element; bounds = $bounds })
     } catch {}
   }
-  if ($entries.Count -eq 0) { Write-Result @{ ok = $false; reason = "moments_entry_not_found" } }
   if ($entries.Count -gt 1) { Write-Result @{ ok = $false; reason = "moments_entry_ambiguous"; count = $entries.Count } }
 
-  $entry = $entries[0]
+  $entryMode = "uia_name"
   $invoked = $false
-  try {
-    $pattern = $entry.element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-    $pattern.Invoke()
-    $invoked = $true
-  } catch {}
-  if (-not $invoked) {
-    $x = [int][Math]::Round($entry.bounds.Left + ($entry.bounds.Width / 2))
-    $y = [int][Math]::Round($entry.bounds.Top + ($entry.bounds.Height / 2))
-    $point = New-Object Win32WechatMomentsNavigation+POINT
-    $point.X = $x
-    $point.Y = $y
-    $hitRoot = [Win32WechatMomentsNavigation]::GetAncestor([Win32WechatMomentsNavigation]::WindowFromPoint($point), 2)
-    if ($hitRoot -ne [IntPtr]$main.hWnd) { Write-Result @{ ok = $false; reason = "moments_entry_not_owned" } }
-    [void][Win32WechatMomentsNavigation]::SetCursorPos($x, $y)
-    [Win32WechatMomentsNavigation]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 45
-    [Win32WechatMomentsNavigation]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+  if ($entries.Count -eq 1) {
+    $entry = $entries[0]
+    try {
+      $pattern = $entry.element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+      $pattern.Invoke()
+      $invoked = $true
+    } catch {}
+    if (-not $invoked) {
+      $x = [int][Math]::Round($entry.bounds.Left + ($entry.bounds.Width / 2))
+      $y = [int][Math]::Round($entry.bounds.Top + ($entry.bounds.Height / 2))
+      $point = New-Object Win32WechatMomentsNavigation+POINT
+      $point.X = $x
+      $point.Y = $y
+      $hitRoot = [Win32WechatMomentsNavigation]::GetAncestor([Win32WechatMomentsNavigation]::WindowFromPoint($point), 2)
+      if ($hitRoot -ne [IntPtr]$main.hWnd) { Write-Result @{ ok = $false; reason = "moments_entry_not_owned" } }
+      [void][Win32WechatMomentsNavigation]::SetCursorPos($x, $y)
+      [Win32WechatMomentsNavigation]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+      Start-Sleep -Milliseconds 45
+      [Win32WechatMomentsNavigation]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    }
+  } else {
+    $fallback = Invoke-MomentsSidebarFallback $main
+    if (-not $fallback.ok) { Write-Result $fallback }
+    $entryMode = "dpi_sidebar_fallback"
   }
 
   for ($attempt = 0; $attempt -lt 16; $attempt++) {
@@ -143,10 +177,10 @@ function Open-Moments {
     $opened = @(Get-MomentsWindow)
     if ($opened.Count -eq 1) {
       [void](Focus-Window $opened[0])
-      Write-Result @{ ok = $true; action = "moments-open"; alreadyOpen = $false; pid = $opened[0].pid; hWnd = [string]$opened[0].hWnd }
+      Write-Result @{ ok = $true; action = "moments-open"; alreadyOpen = $false; entryMode = $entryMode; pid = $opened[0].pid; hWnd = [string]$opened[0].hWnd }
     }
   }
-  Write-Result @{ ok = $false; reason = "moments_window_open_timeout" }
+  Write-Result @{ ok = $false; reason = "moments_window_open_timeout"; entryMode = $entryMode }
 }
 
 function Scroll-Moments {

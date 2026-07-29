@@ -753,6 +753,7 @@ function runPowerShellAsync(script, env = {}, options = {}) {
       stdio: ["pipe", "pipe", "pipe"]
     });
     let stdout = "";
+    let stderr = "";
     let settled = false;
     const finish = (value) => {
       if (settled) return;
@@ -766,10 +767,22 @@ function runPowerShellAsync(script, env = {}, options = {}) {
     }, timeout);
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.on("error", () => finish({ ok: false, reason: "powershell_failed" }));
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", (error) => {
+      const diagnostics = options.diagnostics === true
+        ? { error_code: String(error?.code || ""), stderr: stderr.trim().slice(-1200) }
+        : undefined;
+      finish({ ok: false, reason: "powershell_failed", ...(diagnostics ? { diagnostics } : {}) });
+    });
     child.on("close", (status) => {
       if (settled) return;
-      if (status !== 0) return finish({ ok: false, reason: "powershell_failed" });
+      if (status !== 0) {
+        const diagnostics = options.diagnostics === true
+          ? { exit_code: status, stderr: stderr.trim().slice(-1200) }
+          : undefined;
+        return finish({ ok: false, reason: "powershell_failed", ...(diagnostics ? { diagnostics } : {}) });
+      }
       try {
         const output = stdout.trim();
         if (!output) return finish({ ok: false, reason: ensureResult?.reason || "powershell_output_invalid" });

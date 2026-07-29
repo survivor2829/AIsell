@@ -2,7 +2,18 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { DEEPSEEK_MODEL, createDeepSeekClient, createDeepSeekKeyStore, maskApiKey, parsePlainPayload, parseReplyDecision, prompt, replyPrompt } = require("./deepseek-api.cjs");
+const {
+  DEEPSEEK_MODEL,
+  createDeepSeekClient,
+  createDeepSeekKeyStore,
+  maskApiKey,
+  momentsCommentPrompt,
+  parseMomentsCommentPayload,
+  parsePlainPayload,
+  parseReplyDecision,
+  prompt,
+  replyPrompt
+} = require("./deepseek-api.cjs");
 const { errorCategory } = require("./deepseek-api-ipc.cjs");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-deepseek-"));
@@ -20,6 +31,19 @@ async function main() {
   assert.equal(errorCategory("AI_RESPONSE_EMPTY"), "empty_content");
   assert.equal(errorCategory("AI_RESPONSE_INVALID"), "parse_error");
   assert.equal(errorCategory("AI_RESPONSE_LENGTH_INVALID"), "unusable_content");
+  const momentsMessages = momentsCommentPrompt({
+    postText: "今天完成了新门店的设备安装",
+    guidance: "自然一点"
+  });
+  assert.match(momentsMessages[0].content, /针对帖子里的具体内容/);
+  assert.match(momentsMessages[0].content, /额外要求：自然一点/);
+  assert.equal(momentsMessages[1].content, "帖子内容：今天完成了新门店的设备安装");
+  assert.equal(parseMomentsCommentPayload({
+    choices: [{ finish_reason: "stop", message: { content: "“新门店布置得很有质感，开业顺利！”" } }]
+  }), "新门店布置得很有质感，开业顺利！");
+  assert.throws(() => parseMomentsCommentPayload({
+    choices: [{ finish_reason: "stop", message: { content: "长".repeat(81) } }]
+  }), (error) => error.code === "AI_RESPONSE_LENGTH_INVALID");
   const unreadableRoot = path.join(root, "foreign-windows-user");
   fs.mkdirSync(unreadableRoot, { recursive: true });
   const unreadableKeyFile = path.join(unreadableRoot, "deepseek-api-key.bin");
@@ -74,21 +98,46 @@ async function main() {
     model: DEEPSEEK_MODEL,
     capabilities: {
       activeTouch: { ok: true, outputLength: 13 },
-      autoReply: { ok: true, outputLength: 18 }
+      autoReply: { ok: true, outputLength: 18 },
+      momentsComment: { ok: true, outputLength: 13 }
     }
   });
   const capabilityRequests = requests.slice(requestsBeforeCapabilityTest);
-  assert.equal(capabilityRequests.length, 2, "connection tests must validate both production output modes");
+  assert.equal(capabilityRequests.length, 3, "connection tests must validate every production AI output mode");
   assert.equal(capabilityRequests[0].max_tokens, 300);
   assert.equal(capabilityRequests[0].response_format, undefined, "connection tests must validate active-touch plain text output");
   assert.deepEqual(capabilityRequests[0].thinking, { type: "disabled" });
   assert.equal(capabilityRequests[1].max_tokens, 300);
   assert.deepEqual(capabilityRequests[1].response_format, { type: "json_object" }, "connection tests must validate auto-reply structured output");
   assert.deepEqual(capabilityRequests[1].thinking, { type: "disabled" }, "connection tests must not accept reasoning-only HTTP 200 responses");
+  assert.equal(capabilityRequests[2].max_tokens, 120);
+  assert.equal(capabilityRequests[2].response_format, undefined, "connection tests must validate moments plain-text output");
+  assert.deepEqual(capabilityRequests[2].thinking, { type: "disabled" });
   assert.equal((await client.draft({ task: { script: "欢迎咨询" }, result: { request_id: "request", salutation: { type: "person", value: "张总" } } })).draft, "您好，欢迎了解我们的服务。");
   assert.equal(requests.at(-1).response_format, undefined, "plain-text draft must not enable JSON mode");
   assert.deepEqual(requests.at(-1).thinking, { type: "disabled" }, "plain-text draft must not spend its completion budget on hidden reasoning");
   assert.equal(requests.at(-1).max_tokens, 300);
+  const momentsBodies = [];
+  const momentsClient = createDeepSeekClient({
+    keyStore: store,
+    fetchImpl: async (_url, request) => {
+      momentsBodies.push(JSON.parse(request.body));
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ finish_reason: "stop", message: { content: "新店布置得很有质感，开业顺利！" } }]
+        })
+      };
+    }
+  });
+  assert.deepEqual(await momentsClient.momentsComment({
+    postText: "今天完成了新门店的设备安装",
+    guidance: "自然一点"
+  }), { comment: "新店布置得很有质感，开业顺利！" });
+  assert.equal(momentsBodies.length, 1);
+  assert.equal(momentsBodies[0].max_tokens, 120);
+  assert.deepEqual(momentsBodies[0].thinking, { type: "disabled" });
+  assert.match(momentsBodies[0].messages[1].content, /新门店的设备安装/);
   const requestsBeforeReply = requests.length;
   const decision = await client.reply({
     expert: "业务信息：设备短租。人工提醒：明确要求正式报价或下单时提醒人工。",

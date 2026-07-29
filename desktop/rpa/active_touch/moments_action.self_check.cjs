@@ -7,6 +7,8 @@ const {
   momentsPostFingerprint,
   momentsPostIdentityPrefix,
   prepareMomentsDryRun,
+  stableMomentsContentSimilarity,
+  stableMomentsPostIdentityText,
   stableMomentsPostLabel
 } = require("./moments_dry_run.dev.cjs");
 const { loadState, saveState } = require("./state_machine.cjs");
@@ -15,10 +17,13 @@ const {
   COMMENT_READBACK_VERIFICATION_MODE
 } = require("./moments_comment_readback_proof.dev.cjs");
 const {
+  COMMENT_SEND_VERIFIED_STAGE,
   MOMENTS_DRY_RUN_TTL_MS,
   UIA_COMMENT_VERIFICATION_MODE,
   VISUAL_COMMENT_LOCATOR_LEVEL,
   VISUAL_COMMENT_LOCATOR_MODE,
+  VISUAL_COMMENT_STATE_TRANSITION_LEVEL,
+  VISUAL_COMMENT_STATE_TRANSITION_MODE,
   VISUAL_COMMENT_VERIFICATION_LEVEL,
   VISUAL_COMMENT_VERIFICATION_MODE,
   createMomentsAttemptKey,
@@ -186,7 +191,11 @@ function visualPreparedDirectory(root, name) {
       post_snapshot: snapshot
     }
   });
-  return { baseDir, observationId: snapshot.observation_id };
+  return {
+    baseDir,
+    observationId: snapshot.observation_id,
+    postFingerprint: snapshot.post_fingerprint
+  };
 }
 
 function setNestedValue(target, dottedPath, value) {
@@ -210,6 +219,63 @@ function preparedDirectory(root, name, commentText = COMMENT_TEXT, momentsWindow
     baseDir,
     observationId: result.post_snapshot.observation_id,
     postFingerprint: result.post_snapshot.post_fingerprint
+  };
+}
+
+function writeCommentSendMarker(
+  fixture,
+  attemptKey,
+  commentText = COMMENT_TEXT,
+  sendClickedAt = "2026-07-28T12:00:00.000Z",
+  overrides = {}
+) {
+  const snapshot = loadState(fixture.baseDir).moments_dry_run.post_snapshot;
+  const postFingerprint = String(overrides.postFingerprint ?? fixture.postFingerprint);
+  const markerPath = path.join(
+    fixture.baseDir,
+    "moments_comment_send_markers",
+    `${postFingerprint}.json`
+  );
+  fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+  fs.writeFileSync(markerPath, JSON.stringify({
+    version: 1,
+    kind: "moments_comment_send_click",
+    status: "click_attempted",
+    attempt_key: attemptKey,
+    post_fingerprint: postFingerprint,
+    observation_id: String(overrides.observationId ?? fixture.observationId),
+    comment_text_sha256: crypto.createHash("sha256").update(commentText, "utf8").digest("hex"),
+    avatar_hash: String(overrides.avatarHash ?? snapshot.avatar_hash),
+    identity_text: String(overrides.identityText ?? snapshot.identity_text),
+    stable_anchor_text: String(overrides.stableAnchorText ?? snapshot.stable_anchor_text ?? ""),
+    send_clicked_at: sendClickedAt
+  }), "utf8");
+  return markerPath;
+}
+
+function updateVisualFixtureIdentity(fixture, {
+  identityText,
+  stableAnchorText,
+  avatarHash,
+  commentText = COMMENT_TEXT,
+  label = identityText
+}) {
+  const state = loadState(fixture.baseDir);
+  const snapshot = state.moments_dry_run.post_snapshot;
+  snapshot.identity_text = identityText;
+  snapshot.label = label;
+  snapshot.stable_anchor_text = stableAnchorText;
+  snapshot.avatar_hash = avatarHash;
+  snapshot.post_fingerprint = momentsPostFingerprint(identityText);
+  snapshot.observation_id = crypto.createHash("sha256")
+    .update(visualObservationPayload(state.moments_dry_run.window, snapshot), "utf8")
+    .digest("hex");
+  state.moments_dry_run.comment_text = commentText;
+  saveState(fixture.baseDir, state);
+  return {
+    baseDir: fixture.baseDir,
+    observationId: snapshot.observation_id,
+    postFingerprint: snapshot.post_fingerprint
   };
 }
 
@@ -261,9 +327,12 @@ function verifiedVisibleComment(fixture, context, overrides = {}) {
     ok: true,
     status: "visible_verified",
     actionAttempted: true,
+    realActionAttempted: true,
     observationId: fixture.observationId,
     commentText: COMMENT_TEXT,
     commentVerified: true,
+    stage: "send_verified",
+    sendClickedAt: new Date().toISOString(),
     verificationMode: VISUAL_COMMENT_VERIFICATION_MODE,
     verificationLevel: VISUAL_COMMENT_VERIFICATION_LEVEL,
     normalizedOcrCountBefore: 0,
@@ -290,6 +359,31 @@ function verifiedVisibleComment(fixture, context, overrides = {}) {
       menuBounds: { left: 720, top: 370, width: 80, height: 40 },
       expectedInputTick: 1234,
       createdAtMs: Date.now()
+    },
+    ...overrides
+  };
+}
+
+function verifiedStateTransitionComment(fixture, context, overrides = {}) {
+  return {
+    ok: true,
+    status: "visible_verified",
+    actionAttempted: true,
+    realActionAttempted: true,
+    observationId: fixture.observationId,
+    commentText: context.commentText,
+    commentVerified: true,
+    stage: "send_verified",
+    sendClickedAt: new Date().toISOString(),
+    verificationMode: VISUAL_COMMENT_STATE_TRANSITION_MODE,
+    verificationLevel: VISUAL_COMMENT_STATE_TRANSITION_LEVEL,
+    normalizedOcrCountBefore: 0,
+    normalizedOcrCountAfter: 0,
+    diagnostics: {
+      composerCompleted: true,
+      composerClosed: true,
+      sendInactive: false,
+      sendButtonClicked: true
     },
     ...overrides
   };
@@ -336,6 +430,13 @@ async function main() {
     assert.equal(stableMomentsPostLabel("测试账号 昨天 去公园"), "测试账号 昨天 去公园");
     assert.equal(momentsPostIdentityPrefix("测试账号 昨天 去公园"), "测试账号 昨天 去公园");
     assert.equal(momentsPostIdentityPrefix("测试账号 稳定正文 5 秒前 点赞 评论"), "测试账号 稳定正文");
+    const visualIdentityBeforeComment = "测试账号 稳定正文 5 秒前";
+    const visualIdentityAfterComment = `${visualIdentityBeforeComment} 测试账号: 已有评论`;
+    assert.equal(
+      momentsPostFingerprint(visualIdentityBeforeComment),
+      momentsPostFingerprint(visualIdentityAfterComment),
+      "comments appended below the post timestamp must not change the durable post fingerprint"
+    );
     const relativeTimeLabel = "测试账号 稳定正文 5 分钟前 赞 评论";
     const absoluteTimeLabel = "测试账号 稳定正文 7月15日 取消 评论";
     const datedOwnPostLabel = "测试账号 稳定正文 2026年7月15日 删除 取消赞 评论";
@@ -346,6 +447,27 @@ async function main() {
     assert.equal(momentsPostFingerprint(relativeTimeLabel), momentsPostFingerprint(datedOwnPostLabel), "delete and like-state UI suffixes must not change the fingerprint");
     assert.equal(momentsPostIdentityPrefix(absoluteTimeLabel), "测试账号 稳定正文");
     assert.equal(stableMomentsPostLabel("测试账号 计划在 7月15日 去公园"), "测试账号 计划在 7月15日 去公园");
+
+    const stableIdentity = "author stable post content 1234567890";
+    assert.equal(
+      stableMomentsContentSimilarity(stableIdentity, "author stable post content 123456789X"),
+      true,
+      "one-character OCR drift must retain the stable post identity"
+    );
+    assert.equal(
+      stableMomentsContentSimilarity(stableIdentity, "unrelated post content 9876543210"),
+      false
+    );
+    assert.equal(
+      stableMomentsPostIdentityText(
+        "short",
+        "other",
+        "author stable anchor content 1234567890",
+        "author stable anchor content 123456789X"
+      ),
+      true,
+      "a stable anchor must recover a post when the full OCR identity is too short"
+    );
 
     const structuralWindow = {
       ...MOMENTS_WINDOW,
@@ -1077,6 +1199,8 @@ async function main() {
       });
       assert.equal(result.blocked_reason, "moments_attempt_already_recorded");
       assert.equal(result.previous_status, status);
+      assert.equal(result.real_action_attempted, false);
+      assert.equal(result.previous_real_action_attempted, null);
       assert.equal(calls, 0, `${status} attempts must never be retried`);
     }
 
@@ -1099,6 +1223,9 @@ async function main() {
       })
     });
     assert.equal(likeThrowRepeat.blocked_reason, "moments_attempt_already_recorded");
+    assert.equal(likeThrowRepeat.previous_status, "outcome_unknown");
+    assert.equal(likeThrowRepeat.real_action_attempted, false);
+    assert.equal(likeThrowRepeat.previous_real_action_attempted, null);
     assert.equal(thrownLikeCalls, 1);
 
     const badLikeProofFixture = preparedDirectory(root, "like-bad-proof");
@@ -1135,7 +1262,7 @@ async function main() {
     assert.equal((await executeMomentsComment({ ...commentValidationFixture, commentText: "有  两个空格", driver: verifiedDriver(commentValidationFixture.observationId) })).blocked_reason, "moments_comment_not_in_dry_run");
     assert.equal((await executeMomentsComment({ ...commentValidationFixture, commentText: "长".repeat(501), driver: verifiedDriver(commentValidationFixture.observationId) })).blocked_reason, "moments_comment_too_long");
 
-    for (const status of ["prepared", "clicked", "verified", "outcome_unknown"]) {
+    for (const status of ["clicked", "verified", "outcome_unknown"]) {
       const fixture = preparedDirectory(root, `comment-text-lock-${status}`);
       const previousPostFingerprint = fixture.postFingerprint;
       const previousAttemptKey = createMomentsAttemptKey({
@@ -1175,6 +1302,7 @@ async function main() {
       assert.equal(result.candidate_attempt_key, previousAttemptKey);
       assert.equal(result.previous_status, status);
       assert.equal(result.real_action_attempted, false);
+      assert.equal(result.previous_real_action_attempted, null);
       assert.equal(calls, 0, `${status} exact comment attempts must stop before every driver call`);
       const persistedAction = loadState(fixture.baseDir).moments_test_action;
       assert.equal(persistedAction.attempt_key, previousAttemptKey);
@@ -1182,15 +1310,63 @@ async function main() {
       assert.equal(persistedAction.candidate_attempt_key, result.candidate_attempt_key);
       assert.equal(persistedAction.previous_status, status);
       assert.equal(persistedAction.real_action_attempted, false);
+      assert.equal(persistedAction.previous_real_action_attempted, null);
       assert.equal(persistedAction.attempts[result.candidate_attempt_key].status, status);
       assert.deepEqual(Object.keys(persistedAction.attempts), [previousAttemptKey]);
     }
+
+    const knownPreClickFailureFixture = preparedDirectory(root, "comment-known-pre-click-failure");
+    const knownPreClickFailureKey = createMomentsAttemptKey({
+      postFingerprint: knownPreClickFailureFixture.postFingerprint,
+      action: "comment",
+      commentText: COMMENT_TEXT
+    });
+    const knownPreClickFailureState = loadState(knownPreClickFailureFixture.baseDir);
+    knownPreClickFailureState.moments_test_action = {
+      version: 1,
+      attempts: {
+        [knownPreClickFailureKey]: {
+          action: "moments-comment",
+          status: "prepared",
+          post_fingerprint: knownPreClickFailureFixture.postFingerprint,
+          comment_text: COMMENT_TEXT,
+          real_action_attempted: false,
+          reason: "moments_menu_changed"
+        }
+      }
+    };
+    saveState(knownPreClickFailureFixture.baseDir, knownPreClickFailureState);
+    let knownPreClickFailureDriverCalls = 0;
+    const knownPreClickFailureResult = await executeMomentsComment({
+      ...knownPreClickFailureFixture,
+      commentText: COMMENT_TEXT,
+      driver: verifiedDriver(knownPreClickFailureFixture.observationId, {
+        inspectMenu: () => {
+          knownPreClickFailureDriverCalls += 1;
+          return { ok: true, observationId: knownPreClickFailureFixture.observationId, menuState: "赞" };
+        },
+        comment: () => {
+          knownPreClickFailureDriverCalls += 1;
+          return {
+            ok: true,
+            actionAttempted: true,
+            observationId: knownPreClickFailureFixture.observationId,
+            commentVerified: true,
+            commentText: COMMENT_TEXT,
+            verificationMode: "exact_comment_count_increment_and_editor_completion"
+          };
+        }
+      })
+    });
+    assert.equal(knownPreClickFailureResult.ok, true, JSON.stringify(knownPreClickFailureResult));
+    assert.equal(knownPreClickFailureResult.status, "verified");
+    assert.equal(knownPreClickFailureDriverCalls, 2, "a proven pre-click failure must be retryable");
 
     const differentCommentText = `${COMMENT_TEXT}（不同文案）`;
     const differentTextFixture = preparedDirectory(root, "comment-text-lock-different", differentCommentText);
     const differentTextState = loadState(differentTextFixture.baseDir);
     const oldTextAttemptKey = createMomentsAttemptKey({
-      postFingerprint: "e".repeat(64),
+      postFingerprint: differentTextFixture.postFingerprint,
       action: "comment",
       commentText: COMMENT_TEXT
     });
@@ -1200,7 +1376,7 @@ async function main() {
         [oldTextAttemptKey]: {
           action: "moments-comment",
           status: "outcome_unknown",
-          post_fingerprint: "e".repeat(64),
+          post_fingerprint: differentTextFixture.postFingerprint,
           comment_text: COMMENT_TEXT
         }
       }
@@ -1228,11 +1404,16 @@ async function main() {
         }
       })
     });
-    assert.equal(differentTextResult.ok, true, "a different exact comment must not hit the text lock");
-    assert.equal(differentTextDriverCalls, 2);
+    assert.equal(differentTextResult.blocked_reason, "moments_comment_post_already_attempted");
+    assert.equal(differentTextResult.previous_attempt_key, oldTextAttemptKey);
+    assert.equal(differentTextResult.previous_status, "outcome_unknown");
+    assert.equal(differentTextResult.real_action_attempted, false);
+    assert.equal(differentTextResult.previous_real_action_attempted, null);
+    assert.equal(differentTextDriverCalls, 0, "a post with any prior comment attempt must stop before every driver call even when AI text changes");
 
     const commentFixture = preparedDirectory(root, "comment-success");
     const commentCalls = [];
+    const commentSendClickedAt = "2026-07-28T01:02:03.000Z";
     const commentSuccess = await executeMomentsComment({
       ...commentFixture,
       commentText: COMMENT_TEXT,
@@ -1253,7 +1434,14 @@ async function main() {
             observationId: commentFixture.observationId,
             commentVerified: true,
             commentText: COMMENT_TEXT,
-            verificationMode: "exact_comment_count_increment_and_editor_completion"
+            verificationMode: "exact_comment_count_increment_and_editor_completion",
+            stage: "post_send_verified",
+            sendClickedAt: commentSendClickedAt,
+            diagnostics: {
+              composerCompleted: true,
+              sendButtonLocated: true,
+              sendButtonCount: 1
+            }
           };
         }
       })
@@ -1262,7 +1450,21 @@ async function main() {
     assert.equal(commentSuccess.ok, true);
     assert.equal(commentSuccess.status, "verified");
     assert.equal(commentSuccess.comment_text, COMMENT_TEXT);
-    assert.equal(loadState(commentFixture.baseDir).moments_test_action.attempts[commentSuccess.attempt_key].comment_text_verified, COMMENT_TEXT);
+    assert.equal(commentSuccess.stage, "post_send_verified");
+    assert.equal(commentSuccess.send_clicked_at, commentSendClickedAt);
+    assert.equal(commentSuccess.verification_mode, "exact_comment_count_increment_and_editor_completion");
+    assert.deepEqual(commentSuccess.diagnostics, {
+      composer_completed: true,
+      send_button_located: true,
+      send_button_count: 1
+    });
+    const commentSuccessState = loadState(commentFixture.baseDir).moments_test_action;
+    const commentSuccessAttempt = commentSuccessState.attempts[commentSuccess.attempt_key];
+    assert.equal(commentSuccessAttempt.comment_text_verified, COMMENT_TEXT);
+    assert.equal(commentSuccessAttempt.stage, "post_send_verified");
+    assert.equal(commentSuccessAttempt.send_clicked_at, commentSendClickedAt);
+    assert.equal(commentSuccessState.stage, "post_send_verified");
+    assert.equal(commentSuccessState.send_clicked_at, commentSendClickedAt);
     const commentRepeat = await executeMomentsComment({
       ...commentFixture,
       commentText: COMMENT_TEXT,
@@ -1276,30 +1478,35 @@ async function main() {
 
     const visualCommentFixture = visualPreparedDirectory(root, "visual-comment-readback-success");
     const visualCommentCalls = [];
+    let visualCommentMarkerPath = "";
     const visualCommentSuccess = await executeMomentsComment({
       ...visualCommentFixture,
       commentText: COMMENT_TEXT,
       driver: verifiedDriver(visualCommentFixture.observationId, {
-        inspectMenu: () => {
-          visualCommentCalls.push("inspect");
-          return { ok: true, observationId: visualCommentFixture.observationId, menuState: "赞" };
-        },
+        inspectMenu: () => { throw new Error("visual comment must not open and close a preliminary menu"); },
         comment: (context) => {
           visualCommentCalls.push("comment");
           assert.equal(
             loadState(visualCommentFixture.baseDir).moments_test_action.attempts[context.attemptKey].status,
             "prepared"
           );
+          visualCommentMarkerPath = writeCommentSendMarker(
+            visualCommentFixture,
+            context.attemptKey,
+            context.commentText
+          );
           return verifiedVisibleComment(visualCommentFixture, context);
         },
         commentReadback: () => { throw new Error("standard visible verification must not right-click"); }
       })
     });
-    assert.deepEqual(visualCommentCalls, ["inspect", "comment"]);
+    assert.deepEqual(visualCommentCalls, ["comment"]);
     assert.equal(visualCommentSuccess.ok, true);
+    assert.equal(visualCommentSuccess.stage, COMMENT_SEND_VERIFIED_STAGE);
     assert.equal(visualCommentSuccess.verification_mode, VISUAL_COMMENT_VERIFICATION_MODE);
     assert.equal(visualCommentSuccess.verification_level, VISUAL_COMMENT_VERIFICATION_LEVEL);
     assert.equal(visualCommentSuccess.readback_enhancement_status, "not_requested");
+    assert.equal(fs.existsSync(visualCommentMarkerPath), false, "verified state must replace and clear the click marker");
     const visualVerifiedAttempt = loadState(visualCommentFixture.baseDir)
       .moments_test_action.attempts[visualCommentSuccess.attempt_key];
     assert.equal(visualVerifiedAttempt.status, "verified");
@@ -1319,6 +1526,61 @@ async function main() {
       }
     });
     assert.equal(visualCommentRepeat.blocked_reason, "moments_comment_text_already_attempted");
+
+    const stateTransitionFixture = visualPreparedDirectory(root, "visual-comment-state-transition-success");
+    let stateTransitionCommentCalls = 0;
+    const stateTransitionSuccess = await executeMomentsComment({
+      ...stateTransitionFixture,
+      commentText: COMMENT_TEXT,
+      driver: verifiedDriver(stateTransitionFixture.observationId, {
+        comment: (context) => {
+          stateTransitionCommentCalls += 1;
+          return verifiedStateTransitionComment(stateTransitionFixture, context);
+        },
+        commentReadback: () => {
+          throw new Error("state transition verification must not depend on OCR readback");
+        }
+      })
+    });
+    assert.equal(stateTransitionCommentCalls, 1);
+    assert.equal(stateTransitionSuccess.ok, true);
+    assert.equal(stateTransitionSuccess.status, "verified");
+    assert.equal(stateTransitionSuccess.real_action_attempted, true);
+    assert.equal(stateTransitionSuccess.verification_mode, VISUAL_COMMENT_STATE_TRANSITION_MODE);
+    assert.equal(stateTransitionSuccess.verification_level, VISUAL_COMMENT_STATE_TRANSITION_LEVEL);
+    const stateTransitionAttempt = loadState(stateTransitionFixture.baseDir)
+      .moments_test_action.attempts[stateTransitionSuccess.attempt_key];
+    assert.equal(stateTransitionAttempt.status, "verified");
+    assert.equal(stateTransitionAttempt.verification_mode, VISUAL_COMMENT_STATE_TRANSITION_MODE);
+    assert.equal(stateTransitionAttempt.verification_level, VISUAL_COMMENT_STATE_TRANSITION_LEVEL);
+    assert.equal(stateTransitionAttempt.visible_candidate_proof.composer_closed, true);
+    assert.equal(stateTransitionAttempt.visible_candidate_proof.send_inactive, false);
+
+    for (const [name, missingField] of [
+      ["missing-stage", "stage"],
+      ["missing-click-time", "sendClickedAt"],
+      ["missing-real-action", "realActionAttempted"]
+    ]) {
+      const invalidTransitionFixture = visualPreparedDirectory(root, `visual-comment-state-transition-${name}`);
+      const invalidTransition = await executeMomentsComment({
+        ...invalidTransitionFixture,
+        commentText: COMMENT_TEXT,
+        driver: verifiedDriver(invalidTransitionFixture.observationId, {
+          comment: (context) => verifiedStateTransitionComment(
+            invalidTransitionFixture,
+            context,
+            { [missingField]: undefined }
+          )
+        })
+      });
+      assert.equal(invalidTransition.ok, false);
+      assert.equal(invalidTransition.status, "outcome_unknown");
+      assert.equal(
+        loadState(invalidTransitionFixture.baseDir)
+          .moments_test_action.attempts[invalidTransition.attempt_key].status,
+        "outcome_unknown"
+      );
+    }
 
     const enhancedCommentFixture = visualPreparedDirectory(root, "visual-comment-enhanced-readback-success");
     let enhancedReadbackCalls = 0;
@@ -1445,6 +1707,7 @@ async function main() {
 
     const seedDiagnosticsFixture = visualPreparedDirectory(root, "visual-comment-seed-diagnostics");
     const privateDiagnosticMarker = "PRIVATE_VISUAL_DIAGNOSTIC_MUST_NOT_PERSIST";
+    const seedSendClickedAt = "2026-07-28T02:03:04.000Z";
     const seedDiagnosticsFailure = await executeMomentsComment({
       ...seedDiagnosticsFixture,
       commentText: COMMENT_TEXT,
@@ -1453,16 +1716,61 @@ async function main() {
           ok: false,
           status: "outcome_unknown",
           actionAttempted: true,
-          reason: "moments_comment_readback_seed_unavailable",
+          reason: "moments_comment_draft_close_unverified",
+          primaryReason: "moments_comment_readback_seed_unavailable",
+          cleanupReason: "moments_comment_draft_close_unverified",
+          stage: "send_clicked",
+          sendClickedAt: seedSendClickedAt,
+          verificationMode: "green_component_state_transition_v1",
           diagnostics: {
             composerCompleted: true,
+            sendButtonLocated: true,
+            sendButtonCount: 1,
             anchorStable: true,
             menuStable: true,
             menuMatchCount: 1,
             candidateReason: "moments_comment_candidate_ambiguous",
             candidateCount: 2,
             candidateHashStable: false,
+            menuReadRetryCount: 1,
+            firstReason: "moments_menu_surface_ambiguous",
+            secondReason: "moments_comment_draft_state_unknown",
+            requestedAction: "comment",
+            firstSegmentCount: 3,
+            secondSegmentCount: 2,
+            firstStrictCandidateCount: 0,
+            secondStrictCandidateCount: 1,
+            firstFallbackCandidateCount: 2,
+            secondFallbackCandidateCount: 1,
+            blankCheckpointRetryCount: 1,
+            retryReason: "moments_comment_draft_state_unknown",
+            checkpointPass: 1,
+            startedInputTick: 1234,
+            finishedInputTick: 1234,
+            inputTickStable: true,
+            stableComposerOk: false,
+            stableComposerReason: "moments_comment_composer_not_found",
+            settledComposerOk: true,
+            settledComposerReason: "moments_comment_composer_recovered",
+            stableSendOk: false,
+            stableSendReason: "moments_comment_send_button_ambiguous",
+            settledSendOk: false,
+            settledSendReason: "moments_comment_send_button_not_found",
+            stableSendCandidateCount: 2,
+            settledSendCandidateCount: 0,
+            ownedClickReason: "moments_comment_open_blocked",
+            ownedClickPhase: "confirmed_hit",
+            pointInsideSurface: true,
+            surfaceInsidePopup: true,
+            surfaceInsideWindow: true,
+            firstRootMatchesSecond: false,
+            foregroundOk: true,
             sendOcrText: privateDiagnosticMarker,
+            rawOcrText: privateDiagnosticMarker,
+            firstRawOcrText: privateDiagnosticMarker,
+            secondRawOcrText: privateDiagnosticMarker,
+            stableRawOcrText: privateDiagnosticMarker,
+            settledRawOcrText: privateDiagnosticMarker,
             stderr: privateDiagnosticMarker,
             clipboardText: privateDiagnosticMarker,
             nested: { raw: privateDiagnosticMarker }
@@ -1471,18 +1779,92 @@ async function main() {
       })
     });
     assert.equal(seedDiagnosticsFailure.status, "outcome_unknown");
+    assert.equal(seedDiagnosticsFailure.driver_reason, "moments_comment_readback_seed_unavailable");
+    assert.equal(seedDiagnosticsFailure.primary_reason, "moments_comment_readback_seed_unavailable");
+    assert.equal(seedDiagnosticsFailure.cleanup_reason, "moments_comment_draft_close_unverified");
+    assert.equal(seedDiagnosticsFailure.stage, "send_clicked");
+    assert.equal(seedDiagnosticsFailure.send_clicked_at, seedSendClickedAt);
+    assert.equal(seedDiagnosticsFailure.verification_mode, "green_component_state_transition_v1");
+    assert.equal(seedDiagnosticsFailure.real_action_attempted, true);
+    assert.equal(JSON.stringify(seedDiagnosticsFailure.diagnostics).includes(privateDiagnosticMarker), false);
     const seedDiagnosticsAttempt = loadState(seedDiagnosticsFixture.baseDir)
       .moments_test_action.attempts[seedDiagnosticsFailure.attempt_key];
-    assert.deepEqual(seedDiagnosticsAttempt.readback_diagnostics, {
+    assert.equal(seedDiagnosticsAttempt.reason, "moments_comment_readback_seed_unavailable");
+    assert.equal(seedDiagnosticsAttempt.primary_reason, "moments_comment_readback_seed_unavailable");
+    assert.equal(seedDiagnosticsAttempt.cleanup_reason, "moments_comment_draft_close_unverified");
+    assert.equal(seedDiagnosticsAttempt.stage, "send_clicked");
+    assert.equal(seedDiagnosticsAttempt.send_clicked_at, seedSendClickedAt);
+    assert.equal(seedDiagnosticsAttempt.verification_mode, "green_component_state_transition_v1");
+    assert.deepEqual(seedDiagnosticsFailure.diagnostics, {
       composer_completed: true,
+      send_button_located: true,
       anchor_stable: true,
       menu_stable: true,
       candidate_hash_stable: false,
       menu_match_count: 1,
       candidate_count: 2,
-      candidate_reason: "moments_comment_candidate_ambiguous"
+      send_button_count: 1,
+      candidate_reason: "moments_comment_candidate_ambiguous",
+      menu_read_retry_count: 1,
+      first_reason: "moments_menu_surface_ambiguous",
+      second_reason: "moments_comment_draft_state_unknown",
+      requested_action: "comment",
+      first_segment_count: 3,
+      second_segment_count: 2,
+      first_strict_candidate_count: 0,
+      second_strict_candidate_count: 1,
+      first_fallback_candidate_count: 2,
+      second_fallback_candidate_count: 1,
+      blank_checkpoint_retry_count: 1,
+      retry_reason: "moments_comment_draft_state_unknown",
+      checkpoint_pass: 1,
+      started_input_tick: 1234,
+      finished_input_tick: 1234,
+      input_tick_stable: true,
+      stable_composer_ok: false,
+      stable_composer_reason: "moments_comment_composer_not_found",
+      settled_composer_ok: true,
+      settled_composer_reason: "moments_comment_composer_recovered",
+      stable_send_ok: false,
+      stable_send_reason: "moments_comment_send_button_ambiguous",
+      settled_send_ok: false,
+      settled_send_reason: "moments_comment_send_button_not_found",
+      stable_send_candidate_count: 2,
+      settled_send_candidate_count: 0,
+      owned_click_reason: "moments_comment_open_blocked",
+      owned_click_phase: "confirmed_hit",
+      point_inside_surface: true,
+      surface_inside_popup: true,
+      surface_inside_window: true,
+      first_root_matches_second: false,
+      foreground_ok: true
     });
+    assert.deepEqual(seedDiagnosticsAttempt.diagnostics, seedDiagnosticsFailure.diagnostics);
+    assert.equal(seedDiagnosticsAttempt.readback_diagnostics.composer_completed, true);
+    assert.equal(seedDiagnosticsAttempt.readback_diagnostics.anchor_stable, true);
+    assert.equal(seedDiagnosticsAttempt.readback_diagnostics.menu_stable, true);
+    assert.equal(seedDiagnosticsAttempt.readback_diagnostics.candidate_hash_stable, false);
+    assert.equal(seedDiagnosticsAttempt.readback_diagnostics.menu_match_count, 1);
+    assert.equal(seedDiagnosticsAttempt.readback_diagnostics.candidate_count, 2);
+    assert.equal(seedDiagnosticsAttempt.readback_diagnostics.candidate_reason, "moments_comment_candidate_ambiguous");
     assert.equal(JSON.stringify(seedDiagnosticsAttempt.readback_diagnostics).includes(privateDiagnosticMarker), false);
+    for (const unsafeKey of [
+      "send_ocr_text",
+      "raw_ocr_text",
+      "first_raw_ocr_text",
+      "second_raw_ocr_text",
+      "stable_raw_ocr_text",
+      "settled_raw_ocr_text",
+      "stderr",
+      "clipboard_text",
+      "nested",
+    ]) {
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(seedDiagnosticsFailure.diagnostics, unsafeKey),
+        false,
+        `${unsafeKey} must not escape the diagnostic allowlist`,
+      );
+    }
 
     const ambiguousVisibleFixture = visualPreparedDirectory(root, "visual-comment-ambiguous-visible-proof");
     let ambiguousReadbackCalls = 0;
@@ -1696,6 +2078,7 @@ async function main() {
     assert.equal(differentPostDriverCalls, 2, "a different post must reach inspection and comment drivers");
 
     const commentBlockedFixture = preparedDirectory(root, "comment-blocked-before-send");
+    const blockedPrivateMarker = "PRIVATE_BLOCKED_DIAGNOSTIC_MUST_NOT_PERSIST";
     const commentBlocked = await executeMomentsComment({
       ...commentBlockedFixture,
       commentText: COMMENT_TEXT,
@@ -1703,16 +2086,81 @@ async function main() {
         comment: () => ({
           ok: false,
           status: "blocked",
-          reason: "moments_comment_send_button_ambiguous",
-          actionAttempted: false
+          reason: "moments_comment_draft_close_unverified",
+          primaryReason: "moments_comment_send_button_ambiguous",
+          cleanupReason: "moments_comment_draft_close_unverified",
+          stage: "draft_written",
+          verificationMode: "unique_green_component_geometry_v1",
+          realActionAttempted: false,
+          diagnostics: {
+            composerCompleted: true,
+            sendButtonLocated: false,
+            sendButtonCount: 2,
+            sendCandidateCount: 2,
+            sendButtonOk: false,
+            sendInsideComposer: false,
+            foregroundOk: true,
+            sendBounds: { left: 640, top: 520, width: 72, height: 32 },
+            sendOcrText: blockedPrivateMarker,
+            commentText: blockedPrivateMarker,
+            nested: { raw: blockedPrivateMarker }
+          }
         })
       })
     });
     assert.equal(commentBlocked.status, "blocked");
     assert.equal(commentBlocked.blocked_reason, "moments_comment_send_button_ambiguous");
     assert.equal(commentBlocked.real_action_attempted, false);
-    assert.equal(commentBlocked.retry_locked, true);
-    assert.equal(loadState(commentBlockedFixture.baseDir).moments_test_action.attempts[commentBlocked.attempt_key].status, "prepared");
+    assert.equal(commentBlocked.retry_locked, false);
+    assert.equal(commentBlocked.stage, "draft_written");
+    assert.equal(commentBlocked.primary_reason, "moments_comment_send_button_ambiguous");
+    assert.equal(commentBlocked.cleanup_reason, "moments_comment_draft_close_unverified");
+    assert.equal(commentBlocked.verification_mode, "unique_green_component_geometry_v1");
+    assert.deepEqual(commentBlocked.diagnostics, {
+      composer_completed: true,
+      send_button_located: false,
+      send_button_ok: false,
+      send_inside_composer: false,
+      foreground_ok: true,
+      send_button_count: 2,
+      send_candidate_count: 2,
+      send_bounds: { left: 640, top: 520, width: 72, height: 32 }
+    });
+    assert.equal(JSON.stringify(commentBlocked).includes(blockedPrivateMarker), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(commentBlocked, "primaryReason"), false);
+    const commentBlockedState = loadState(commentBlockedFixture.baseDir).moments_test_action;
+    const commentBlockedAttempt = commentBlockedState.attempts[commentBlocked.attempt_key];
+    assert.equal(commentBlockedAttempt.status, "prepared");
+    assert.equal(commentBlockedAttempt.reason, "moments_comment_send_button_ambiguous");
+    assert.equal(commentBlockedAttempt.primary_reason, "moments_comment_send_button_ambiguous");
+    assert.equal(commentBlockedAttempt.cleanup_reason, "moments_comment_draft_close_unverified");
+    assert.equal(commentBlockedAttempt.stage, "draft_written");
+    assert.deepEqual(commentBlockedAttempt.diagnostics, commentBlocked.diagnostics);
+    assert.equal(commentBlockedState.primary_reason, "moments_comment_send_button_ambiguous");
+    assert.equal(commentBlockedState.cleanup_reason, "moments_comment_draft_close_unverified");
+    assert.equal(commentBlockedState.stage, "draft_written");
+    assert.equal(JSON.stringify(commentBlockedState).includes(blockedPrivateMarker), false);
+    const blockedLikeAfterComment = await executeMomentsLike({
+      baseDir: commentBlockedFixture.baseDir,
+      observationId: "f".repeat(64),
+      driver: {}
+    });
+    assert.equal(blockedLikeAfterComment.blocked_reason, "moments_observation_id_mismatch");
+    const clearedTopLevelMetadata = loadState(commentBlockedFixture.baseDir).moments_test_action;
+    for (const key of [
+      "stage",
+      "send_clicked_at",
+      "primary_reason",
+      "cleanup_reason",
+      "verification_mode",
+      "diagnostics"
+    ]) {
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(clearedTopLevelMetadata, key),
+        false,
+        `a later early block must clear stale top-level ${key}`
+      );
+    }
 
     const commentThrowFixture = preparedDirectory(root, "comment-throw");
     let thrownCommentCalls = 0;
@@ -1723,20 +2171,593 @@ async function main() {
         comment: () => { thrownCommentCalls += 1; throw new Error("submit result lost"); }
       })
     });
-    assert.equal(commentThrow.status, "outcome_unknown");
-    assert.equal(commentThrow.real_action_attempted, null);
+    assert.equal(commentThrow.status, "blocked");
+    assert.equal(commentThrow.real_action_attempted, false);
+    assert.equal(commentThrow.retry_locked, false);
+    assert.equal(commentThrow.stage, "driver_exception");
+    assert.equal(commentThrow.primary_reason, "moments_comment_driver_failed");
     assert.equal(thrownCommentCalls, 1);
     const commentThrowRepeat = await executeMomentsComment({
       ...commentThrowFixture,
       commentText: COMMENT_TEXT,
       driver: verifiedDriver(commentThrowFixture.observationId, {
-        comment: () => { thrownCommentCalls += 1; return {}; }
+        comment: (context) => {
+          thrownCommentCalls += 1;
+          return {
+            ok: true,
+            actionAttempted: true,
+            observationId: commentThrowFixture.observationId,
+            commentVerified: true,
+            commentText: context.commentText,
+            verificationMode: UIA_COMMENT_VERIFICATION_MODE
+          };
+        }
       })
     });
-    assert.equal(commentThrowRepeat.blocked_reason, "moments_comment_text_already_attempted");
+    assert.equal(commentThrowRepeat.status, "verified");
     assert.equal(commentThrowRepeat.attempt_key, commentThrow.attempt_key);
-    assert.equal(commentThrowRepeat.real_action_attempted, false);
-    assert.equal(thrownCommentCalls, 1);
+    assert.equal(commentThrowRepeat.real_action_attempted, true);
+    assert.equal(thrownCommentCalls, 2);
+
+    const preparedRestartFixture = preparedDirectory(root, "comment-prepared-without-marker-restart");
+    const preparedRestartAttemptKey = createMomentsAttemptKey({
+      postFingerprint: preparedRestartFixture.postFingerprint,
+      action: "comment",
+      commentText: COMMENT_TEXT
+    });
+    const preparedRestartState = loadState(preparedRestartFixture.baseDir);
+    preparedRestartState.moments_test_action = {
+      version: 1,
+      attempts: {
+        [preparedRestartAttemptKey]: {
+          action: "moments-comment",
+          observation_id: preparedRestartFixture.observationId,
+          post_fingerprint: preparedRestartFixture.postFingerprint,
+          comment_text: COMMENT_TEXT,
+          status: "prepared",
+          real_action_attempted: false
+        }
+      }
+    };
+    saveState(preparedRestartFixture.baseDir, preparedRestartState);
+    let preparedRestartDriverCalls = 0;
+    const preparedRestartResult = await executeMomentsComment({
+      ...preparedRestartFixture,
+      commentText: COMMENT_TEXT,
+      driver: verifiedDriver(preparedRestartFixture.observationId, {
+        comment: (context) => {
+          preparedRestartDriverCalls += 1;
+          return {
+            ok: true,
+            actionAttempted: true,
+            observationId: preparedRestartFixture.observationId,
+            commentVerified: true,
+            commentText: context.commentText,
+            verificationMode: UIA_COMMENT_VERIFICATION_MODE
+          };
+        }
+      })
+    });
+    assert.equal(preparedRestartResult.status, "verified");
+    assert.equal(preparedRestartDriverCalls, 1, "prepared without a durable click marker must retry after restart");
+
+    const markerThrowFixture = visualPreparedDirectory(root, "comment-marker-throw");
+    const markerThrowClickedAt = "2026-07-28T12:34:56.000Z";
+    let markerThrowCalls = 0;
+    const markerThrow = await executeMomentsComment({
+      ...markerThrowFixture,
+      commentText: COMMENT_TEXT,
+      driver: verifiedDriver(markerThrowFixture.observationId, {
+        comment: (context) => {
+          markerThrowCalls += 1;
+          assert.equal(path.basename(context.sendMarkerPath), `${markerThrowFixture.postFingerprint}.json`);
+          assert.equal(
+            context.commentTextSha256,
+            crypto.createHash("sha256").update(COMMENT_TEXT, "utf8").digest("hex")
+          );
+          writeCommentSendMarker(
+            markerThrowFixture,
+            context.attemptKey,
+            context.commentText,
+            markerThrowClickedAt
+          );
+          throw new Error("driver exited after the send click");
+        }
+      })
+    });
+    assert.equal(markerThrow.status, "outcome_unknown");
+    assert.equal(markerThrow.real_action_attempted, true);
+    assert.equal(markerThrow.stage, "send_clicked");
+    assert.equal(markerThrow.send_clicked_at, markerThrowClickedAt);
+    assert.equal(markerThrow.primary_reason, "moments_comment_driver_failed_after_send_click");
+    assert.equal(markerThrowCalls, 1);
+    const markerThrowState = loadState(markerThrowFixture.baseDir)
+      .moments_test_action.attempts[markerThrow.attempt_key];
+    assert.equal(markerThrowState.status, "outcome_unknown");
+    assert.equal(markerThrowState.real_action_attempted, true);
+    const markerThrowRepeat = await executeMomentsComment({
+      ...markerThrowFixture,
+      commentText: COMMENT_TEXT,
+      driver: {
+        comment: () => {
+          markerThrowCalls += 1;
+          throw new Error("a durable marker must stop every resend");
+        }
+      }
+    });
+    assert.equal(markerThrowRepeat.status, "outcome_unknown");
+    assert.equal(markerThrowRepeat.real_action_attempted, true);
+    assert.equal(markerThrowRepeat.send_clicked_at, markerThrowClickedAt);
+    assert.equal(markerThrowCalls, 1);
+
+    const restartMarkerFixture = visualPreparedDirectory(root, "comment-marker-restart");
+    const regeneratedCommentText = `${COMMENT_TEXT} regenerated`;
+    const restartAttemptKey = createMomentsAttemptKey({
+      postFingerprint: restartMarkerFixture.postFingerprint,
+      action: "comment",
+      commentText: COMMENT_TEXT
+    });
+    const restartState = loadState(restartMarkerFixture.baseDir);
+    restartState.moments_dry_run.comment_text = regeneratedCommentText;
+    restartState.moments_test_action = {
+      version: 1,
+      attempts: {
+        [restartAttemptKey]: {
+          action: "moments-comment",
+          observation_id: restartMarkerFixture.observationId,
+          post_fingerprint: restartMarkerFixture.postFingerprint,
+          comment_text: COMMENT_TEXT,
+          status: "prepared",
+          real_action_attempted: false
+        }
+      }
+    };
+    saveState(restartMarkerFixture.baseDir, restartState);
+    const restartClickedAt = "2026-07-28T13:00:00.000Z";
+    writeCommentSendMarker(
+      restartMarkerFixture,
+      restartAttemptKey,
+      COMMENT_TEXT,
+      restartClickedAt
+    );
+    let restartDriverCalls = 0;
+    const restartRecovered = await executeMomentsComment({
+      ...restartMarkerFixture,
+      commentText: regeneratedCommentText,
+      driver: {
+        comment: () => {
+          restartDriverCalls += 1;
+          throw new Error("restart recovery must happen before the driver");
+        }
+      }
+    });
+    assert.equal(restartRecovered.status, "outcome_unknown");
+    assert.equal(restartRecovered.attempt_key, restartAttemptKey);
+    assert.equal(restartRecovered.real_action_attempted, true);
+    assert.equal(restartRecovered.send_clicked_at, restartClickedAt);
+    assert.equal(restartDriverCalls, 0);
+    assert.equal(
+      loadState(restartMarkerFixture.baseDir).moments_test_action.attempts[restartAttemptKey].status,
+      "outcome_unknown"
+    );
+
+    const fuzzyRestartSeed = visualPreparedDirectory(root, "comment-fuzzy-marker-restart");
+    const fuzzyRestartFixture = updateVisualFixtureIdentity(fuzzyRestartSeed, {
+      identityText: "author stable post content 1234567890",
+      stableAnchorText: "author stable anchor content 1234567890",
+      avatarHash: loadState(fuzzyRestartSeed.baseDir).moments_dry_run.post_snapshot.avatar_hash
+    });
+    const fuzzyOriginalState = loadState(fuzzyRestartFixture.baseDir);
+    const fuzzyOriginalSnapshot = fuzzyOriginalState.moments_dry_run.post_snapshot;
+    const fuzzyOriginalIdentity = fuzzyOriginalSnapshot.identity_text;
+    const fuzzyOriginalAnchor = fuzzyOriginalSnapshot.stable_anchor_text;
+    const fuzzyAttemptKey = createMomentsAttemptKey({
+      postFingerprint: fuzzyRestartFixture.postFingerprint,
+      action: "comment",
+      commentText: COMMENT_TEXT
+    });
+    fuzzyOriginalState.moments_test_action = {
+      version: 1,
+      attempts: {
+        [fuzzyAttemptKey]: {
+          action: "moments-comment",
+          observation_id: fuzzyRestartFixture.observationId,
+          post_fingerprint: fuzzyRestartFixture.postFingerprint,
+          post_identity_text: fuzzyOriginalIdentity,
+          post_stable_anchor_text: fuzzyOriginalAnchor,
+          post_avatar_hash: fuzzyOriginalSnapshot.avatar_hash,
+          comment_text: COMMENT_TEXT,
+          status: "prepared",
+          real_action_attempted: false
+        }
+      }
+    };
+    saveState(fuzzyRestartFixture.baseDir, fuzzyOriginalState);
+    const fuzzyRestartClickedAt = "2026-07-28T13:10:00.000Z";
+    writeCommentSendMarker(
+      fuzzyRestartFixture,
+      fuzzyAttemptKey,
+      COMMENT_TEXT,
+      fuzzyRestartClickedAt
+    );
+    const fuzzyRegeneratedComment = `${COMMENT_TEXT} changed`;
+    const fuzzyCurrentFixture = updateVisualFixtureIdentity(fuzzyRestartFixture, {
+      identityText: `${fuzzyOriginalIdentity.slice(0, -1)}X`,
+      stableAnchorText: `${fuzzyOriginalAnchor.slice(0, -1)}Y`,
+      avatarHash: fuzzyOriginalSnapshot.avatar_hash,
+      commentText: fuzzyRegeneratedComment
+    });
+    let fuzzyRestartDriverCalls = 0;
+    const fuzzyRestartResult = await executeMomentsComment({
+      ...fuzzyCurrentFixture,
+      commentText: fuzzyRegeneratedComment,
+      driver: {
+        comment: () => {
+          fuzzyRestartDriverCalls += 1;
+          throw new Error("fuzzy marker recovery must happen before the driver");
+        }
+      }
+    });
+    assert.equal(fuzzyRestartResult.status, "outcome_unknown", JSON.stringify(fuzzyRestartResult));
+    assert.equal(fuzzyRestartResult.attempt_key, fuzzyAttemptKey);
+    assert.equal(fuzzyRestartResult.send_clicked_at, fuzzyRestartClickedAt);
+    assert.equal(fuzzyRestartDriverCalls, 0);
+
+    const fuzzyLedgerSeed = visualPreparedDirectory(root, "comment-fuzzy-ledger-distinct-post");
+    const fuzzyLedgerFixture = updateVisualFixtureIdentity(fuzzyLedgerSeed, {
+      identityText: "author stable post content 1734567890",
+      stableAnchorText: "author stable anchor content 1734567890",
+      avatarHash: loadState(fuzzyLedgerSeed.baseDir).moments_dry_run.post_snapshot.avatar_hash
+    });
+    const fuzzyLedgerState = loadState(fuzzyLedgerFixture.baseDir);
+    const fuzzyLedgerSnapshot = fuzzyLedgerState.moments_dry_run.post_snapshot;
+    const fuzzyLedgerAttemptKey = createMomentsAttemptKey({
+      postFingerprint: fuzzyLedgerFixture.postFingerprint,
+      action: "comment",
+      commentText: COMMENT_TEXT
+    });
+    fuzzyLedgerState.moments_test_action = {
+      version: 1,
+      attempts: {
+        [fuzzyLedgerAttemptKey]: {
+          action: "moments-comment",
+          observation_id: fuzzyLedgerFixture.observationId,
+          post_fingerprint: fuzzyLedgerFixture.postFingerprint,
+          post_identity_text: fuzzyLedgerSnapshot.identity_text,
+          post_stable_anchor_text: fuzzyLedgerSnapshot.stable_anchor_text,
+          post_avatar_hash: fuzzyLedgerSnapshot.avatar_hash,
+          comment_text: COMMENT_TEXT,
+          status: "verified",
+          real_action_attempted: true
+        }
+      }
+    };
+    saveState(fuzzyLedgerFixture.baseDir, fuzzyLedgerState);
+    const fuzzyLedgerNewComment = `${COMMENT_TEXT} new copy`;
+    const fuzzyLedgerCurrent = updateVisualFixtureIdentity(fuzzyLedgerFixture, {
+      identityText: `${fuzzyLedgerSnapshot.identity_text.slice(0, -1)}X`,
+      stableAnchorText: `${fuzzyLedgerSnapshot.stable_anchor_text.slice(0, -1)}Y`,
+      avatarHash: fuzzyLedgerSnapshot.avatar_hash,
+      commentText: fuzzyLedgerNewComment
+    });
+    let fuzzyLedgerDriverCalls = 0;
+    let fuzzyLedgerOccurrenceChecks = 0;
+    const fuzzyLedgerResult = await executeMomentsComment({
+      ...fuzzyLedgerCurrent,
+      commentText: fuzzyLedgerNewComment,
+      driver: verifiedDriver(fuzzyLedgerCurrent.observationId, {
+        commentOccurrenceCheck: () => {
+          fuzzyLedgerOccurrenceChecks += 1;
+          return {
+            ok: true,
+            status: "absent",
+            actionAttempted: false,
+            commentOccurrence: "absent",
+            verificationMode: "two_frame_exact_comment_region"
+          };
+        },
+        comment: (context) => {
+          fuzzyLedgerDriverCalls += 1;
+          return verifiedStateTransitionComment(fuzzyLedgerCurrent, context);
+        }
+      })
+    });
+    assert.equal(fuzzyLedgerResult.status, "verified", JSON.stringify(fuzzyLedgerResult));
+    assert.equal(fuzzyLedgerOccurrenceChecks, 1);
+    assert.equal(fuzzyLedgerDriverCalls, 1, "a similar new post from the same author must not be swallowed by fuzzy ledger matching");
+
+    const fuzzyVerifiedSeed = visualPreparedDirectory(root, "comment-fuzzy-verified-visible-proof");
+    const fuzzyVerifiedFixture = updateVisualFixtureIdentity(fuzzyVerifiedSeed, {
+      identityText: "author stable post content 1934567890",
+      stableAnchorText: "author stable anchor content 1934567890",
+      avatarHash: loadState(fuzzyVerifiedSeed.baseDir).moments_dry_run.post_snapshot.avatar_hash
+    });
+    const fuzzyVerifiedState = loadState(fuzzyVerifiedFixture.baseDir);
+    const fuzzyVerifiedSnapshot = fuzzyVerifiedState.moments_dry_run.post_snapshot;
+    const fuzzyVerifiedAttemptKey = createMomentsAttemptKey({
+      postFingerprint: fuzzyVerifiedFixture.postFingerprint,
+      action: "comment",
+      commentText: COMMENT_TEXT
+    });
+    fuzzyVerifiedState.moments_test_action = {
+      version: 1,
+      attempts: {
+        [fuzzyVerifiedAttemptKey]: {
+          action: "moments-comment",
+          observation_id: fuzzyVerifiedFixture.observationId,
+          post_fingerprint: fuzzyVerifiedFixture.postFingerprint,
+          post_identity_text: fuzzyVerifiedSnapshot.identity_text,
+          post_stable_anchor_text: fuzzyVerifiedSnapshot.stable_anchor_text,
+          post_avatar_hash: fuzzyVerifiedSnapshot.avatar_hash,
+          comment_text: COMMENT_TEXT,
+          status: "verified",
+          real_action_attempted: true
+        }
+      }
+    };
+    saveState(fuzzyVerifiedFixture.baseDir, fuzzyVerifiedState);
+    const fuzzyVerifiedNewComment = `${COMMENT_TEXT} should not send twice`;
+    const fuzzyVerifiedCurrentIdentity = `${fuzzyVerifiedSnapshot.identity_text.slice(0, -1)}X`;
+    const fuzzyVerifiedCurrent = updateVisualFixtureIdentity(fuzzyVerifiedFixture, {
+      identityText: fuzzyVerifiedCurrentIdentity,
+      stableAnchorText: `${fuzzyVerifiedSnapshot.stable_anchor_text.slice(0, -1)}Y`,
+      avatarHash: fuzzyVerifiedSnapshot.avatar_hash,
+      commentText: fuzzyVerifiedNewComment
+    });
+    let fuzzyVerifiedDriverCalls = 0;
+    let fuzzyVerifiedOccurrenceChecks = 0;
+    const fuzzyVerifiedResult = await executeMomentsComment({
+      ...fuzzyVerifiedCurrent,
+      commentText: fuzzyVerifiedNewComment,
+      driver: {
+        commentOccurrenceCheck: () => {
+          fuzzyVerifiedOccurrenceChecks += 1;
+          return {
+            ok: true,
+            status: "present",
+            actionAttempted: false,
+            commentOccurrence: "present",
+            verificationMode: "two_frame_exact_comment_region"
+          };
+        },
+        comment: () => {
+          fuzzyVerifiedDriverCalls += 1;
+          throw new Error("verified prior comment occurrence must prevent a second send");
+        }
+      }
+    });
+    assert.equal(fuzzyVerifiedResult.status, "blocked", JSON.stringify(fuzzyVerifiedResult));
+    assert.equal(fuzzyVerifiedResult.blocked_reason, "moments_comment_post_already_attempted");
+    assert.equal(fuzzyVerifiedOccurrenceChecks, 1);
+    assert.equal(fuzzyVerifiedDriverCalls, 0);
+
+    const fuzzyUnresolvedSeed = visualPreparedDirectory(root, "comment-fuzzy-occurrence-unresolved");
+    const fuzzyUnresolvedFixture = updateVisualFixtureIdentity(fuzzyUnresolvedSeed, {
+      identityText: "author stable post content 2034567890",
+      stableAnchorText: "author stable anchor content 2034567890",
+      avatarHash: loadState(fuzzyUnresolvedSeed.baseDir).moments_dry_run.post_snapshot.avatar_hash
+    });
+    const fuzzyUnresolvedState = loadState(fuzzyUnresolvedFixture.baseDir);
+    const fuzzyUnresolvedSnapshot = fuzzyUnresolvedState.moments_dry_run.post_snapshot;
+    const fuzzyUnresolvedAttemptKey = createMomentsAttemptKey({
+      postFingerprint: fuzzyUnresolvedFixture.postFingerprint,
+      action: "comment",
+      commentText: COMMENT_TEXT
+    });
+    fuzzyUnresolvedState.moments_test_action = {
+      version: 1,
+      attempts: {
+        [fuzzyUnresolvedAttemptKey]: {
+          action: "moments-comment",
+          observation_id: fuzzyUnresolvedFixture.observationId,
+          post_fingerprint: fuzzyUnresolvedFixture.postFingerprint,
+          post_identity_text: fuzzyUnresolvedSnapshot.identity_text,
+          post_stable_anchor_text: fuzzyUnresolvedSnapshot.stable_anchor_text,
+          post_avatar_hash: fuzzyUnresolvedSnapshot.avatar_hash,
+          comment_text: COMMENT_TEXT,
+          status: "verified",
+          real_action_attempted: true
+        }
+      }
+    };
+    saveState(fuzzyUnresolvedFixture.baseDir, fuzzyUnresolvedState);
+    const fuzzyUnresolvedNewComment = `${COMMENT_TEXT} unresolved candidate`;
+    const fuzzyUnresolvedCurrent = updateVisualFixtureIdentity(fuzzyUnresolvedFixture, {
+      identityText: `${fuzzyUnresolvedSnapshot.identity_text.slice(0, -1)}X`,
+      stableAnchorText: `${fuzzyUnresolvedSnapshot.stable_anchor_text.slice(0, -1)}Y`,
+      avatarHash: fuzzyUnresolvedSnapshot.avatar_hash,
+      commentText: fuzzyUnresolvedNewComment
+    });
+    let fuzzyUnresolvedDriverCalls = 0;
+    const fuzzyUnresolvedResult = await executeMomentsComment({
+      ...fuzzyUnresolvedCurrent,
+      commentText: fuzzyUnresolvedNewComment,
+      driver: {
+        commentOccurrenceCheck: () => ({
+          ok: false,
+          status: "blocked",
+          reason: "moments_comment_occurrence_unresolved",
+          actionAttempted: false,
+          commentOccurrence: "unresolved",
+          verificationMode: "two_frame_exact_comment_region"
+        }),
+        comment: () => {
+          fuzzyUnresolvedDriverCalls += 1;
+          throw new Error("an unresolved occurrence check must skip before send");
+        }
+      }
+    });
+    assert.equal(fuzzyUnresolvedResult.status, "blocked", JSON.stringify(fuzzyUnresolvedResult));
+    assert.equal(fuzzyUnresolvedResult.blocked_reason, "moments_comment_occurrence_unresolved");
+    assert.equal(fuzzyUnresolvedResult.real_action_attempted, false);
+    assert.equal(fuzzyUnresolvedDriverCalls, 0);
+
+    const differentAvatarSeed = visualPreparedDirectory(root, "comment-marker-different-avatar");
+    const differentAvatarFixture = updateVisualFixtureIdentity(differentAvatarSeed, {
+      identityText: "author stable post content 2234567890",
+      stableAnchorText: "author stable anchor content 2234567890",
+      avatarHash: loadState(differentAvatarSeed.baseDir).moments_dry_run.post_snapshot.avatar_hash
+    });
+    const differentAvatarState = loadState(differentAvatarFixture.baseDir);
+    const differentAvatarSnapshot = differentAvatarState.moments_dry_run.post_snapshot;
+    const differentAvatarAttemptKey = createMomentsAttemptKey({
+      postFingerprint: differentAvatarFixture.postFingerprint,
+      action: "comment",
+      commentText: COMMENT_TEXT
+    });
+    differentAvatarState.moments_test_action = {
+      version: 1,
+      attempts: {
+        [differentAvatarAttemptKey]: {
+          action: "moments-comment",
+          observation_id: differentAvatarFixture.observationId,
+          post_fingerprint: differentAvatarFixture.postFingerprint,
+          post_identity_text: differentAvatarSnapshot.identity_text,
+          post_stable_anchor_text: differentAvatarSnapshot.stable_anchor_text,
+          post_avatar_hash: differentAvatarSnapshot.avatar_hash,
+          comment_text: COMMENT_TEXT,
+          status: "outcome_unknown",
+          real_action_attempted: true
+        }
+      }
+    };
+    saveState(differentAvatarFixture.baseDir, differentAvatarState);
+    writeCommentSendMarker(differentAvatarFixture, differentAvatarAttemptKey);
+    const differentAvatarCurrent = updateVisualFixtureIdentity(differentAvatarFixture, {
+      identityText: `${differentAvatarSnapshot.identity_text.slice(0, -1)}Z`,
+      stableAnchorText: differentAvatarSnapshot.stable_anchor_text,
+      avatarHash: "8".repeat(64)
+    });
+    let differentAvatarDriverCalls = 0;
+    const differentAvatarResult = await executeMomentsComment({
+      ...differentAvatarCurrent,
+      commentText: COMMENT_TEXT,
+      driver: verifiedDriver(differentAvatarCurrent.observationId, {
+        comment: () => {
+          differentAvatarDriverCalls += 1;
+          throw new Error("different avatar should not recover an unrelated marker");
+        }
+      })
+    });
+    assert.equal(differentAvatarResult.status, "blocked");
+    assert.equal(differentAvatarDriverCalls, 1);
+
+    const ambiguousMarkerSeed = visualPreparedDirectory(root, "comment-marker-ambiguous");
+    const ambiguousMarkerFixture = updateVisualFixtureIdentity(ambiguousMarkerSeed, {
+      identityText: "author stable post content 3234567890",
+      stableAnchorText: "author stable anchor content 3234567890",
+      avatarHash: loadState(ambiguousMarkerSeed.baseDir).moments_dry_run.post_snapshot.avatar_hash
+    });
+    const ambiguousState = loadState(ambiguousMarkerFixture.baseDir);
+    const ambiguousSnapshot = ambiguousState.moments_dry_run.post_snapshot;
+    const ambiguousBaseIdentity = ambiguousSnapshot.identity_text;
+    const ambiguousBaseAnchor = ambiguousSnapshot.stable_anchor_text;
+    const ambiguousAttempts = {};
+    for (const [index, suffix] of ["A", "B"].entries()) {
+      const identityText = `${ambiguousBaseIdentity.slice(0, -1)}${suffix}`;
+      const postFingerprint = momentsPostFingerprint(identityText);
+      const observationId = String(index + 4).repeat(64);
+      const attemptKey = createMomentsAttemptKey({
+        postFingerprint,
+        action: "comment",
+        commentText: COMMENT_TEXT
+      });
+      ambiguousAttempts[attemptKey] = {
+        action: "moments-comment",
+        observation_id: observationId,
+        post_fingerprint: postFingerprint,
+        post_identity_text: identityText,
+        post_stable_anchor_text: ambiguousBaseAnchor,
+        post_avatar_hash: ambiguousSnapshot.avatar_hash,
+        comment_text: COMMENT_TEXT,
+        status: "prepared",
+        real_action_attempted: false
+      };
+      writeCommentSendMarker(
+        ambiguousMarkerFixture,
+        attemptKey,
+        COMMENT_TEXT,
+        `2026-07-28T13:2${index}:00.000Z`,
+        {
+          postFingerprint,
+          observationId,
+          identityText,
+          stableAnchorText: ambiguousBaseAnchor,
+          avatarHash: ambiguousSnapshot.avatar_hash
+        }
+      );
+    }
+    ambiguousState.moments_test_action = { version: 1, attempts: ambiguousAttempts };
+    saveState(ambiguousMarkerFixture.baseDir, ambiguousState);
+    let ambiguousMarkerDriverCalls = 0;
+    const ambiguousMarkerResult = await executeMomentsComment({
+      ...ambiguousMarkerFixture,
+      commentText: COMMENT_TEXT,
+      driver: {
+        comment: () => {
+          ambiguousMarkerDriverCalls += 1;
+          throw new Error("ambiguous marker recovery must pause before the driver");
+        }
+      }
+    });
+    assert.equal(ambiguousMarkerResult.status, "outcome_unknown");
+    assert.equal(ambiguousMarkerResult.primary_reason, "moments_comment_send_marker_ambiguous");
+    assert.equal(ambiguousMarkerDriverCalls, 0);
+
+    const unrelatedInvalidMarkerFixture = preparedDirectory(root, "comment-unrelated-invalid-marker");
+    const unrelatedInvalidMarkerPath = path.join(
+      unrelatedInvalidMarkerFixture.baseDir,
+      "moments_comment_send_markers",
+      `${"f".repeat(64)}.json`
+    );
+    assert.notEqual("f".repeat(64), unrelatedInvalidMarkerFixture.postFingerprint);
+    fs.mkdirSync(path.dirname(unrelatedInvalidMarkerPath), { recursive: true });
+    fs.writeFileSync(unrelatedInvalidMarkerPath, "{not-valid-json", "utf8");
+    let unrelatedInvalidMarkerDriverCalls = 0;
+    const unrelatedInvalidMarkerResult = await executeMomentsComment({
+      ...unrelatedInvalidMarkerFixture,
+      commentText: COMMENT_TEXT,
+      driver: verifiedDriver(unrelatedInvalidMarkerFixture.observationId, {
+        comment: (context) => {
+          unrelatedInvalidMarkerDriverCalls += 1;
+          return {
+            ok: true,
+            actionAttempted: true,
+            observationId: unrelatedInvalidMarkerFixture.observationId,
+            commentVerified: true,
+            commentText: context.commentText,
+            verificationMode: UIA_COMMENT_VERIFICATION_MODE
+          };
+        }
+      })
+    });
+    assert.equal(unrelatedInvalidMarkerResult.status, "verified", JSON.stringify(unrelatedInvalidMarkerResult));
+    assert.equal(unrelatedInvalidMarkerDriverCalls, 1, "an unrelated corrupt marker must not poison the current post");
+    assert.equal(fs.existsSync(unrelatedInvalidMarkerPath), true, "unrelated corrupt evidence must be preserved for diagnostics");
+
+    const invalidMarkerFixture = visualPreparedDirectory(root, "comment-marker-invalid");
+    const invalidMarkerPath = path.join(
+      invalidMarkerFixture.baseDir,
+      "moments_comment_send_markers",
+      `${invalidMarkerFixture.postFingerprint}.json`
+    );
+    fs.mkdirSync(path.dirname(invalidMarkerPath), { recursive: true });
+    fs.writeFileSync(invalidMarkerPath, "{not-valid-json", "utf8");
+    let invalidMarkerDriverCalls = 0;
+    const invalidMarker = await executeMomentsComment({
+      ...invalidMarkerFixture,
+      commentText: COMMENT_TEXT,
+      driver: {
+        comment: () => {
+          invalidMarkerDriverCalls += 1;
+          throw new Error("an invalid durable marker must pause before the driver");
+        }
+      }
+    });
+    assert.equal(invalidMarker.status, "outcome_unknown");
+    assert.equal(invalidMarker.primary_reason, "moments_comment_send_marker_invalid");
+    assert.equal(invalidMarker.real_action_attempted, true);
+    assert.equal(invalidMarkerDriverCalls, 0);
 
     const dryRunSource = fs.readFileSync(path.join(__dirname, "moments_dry_run.dev.cjs"), "utf8");
     assert.match(dryRunSource, /\$feeds = \$root\.FindAll/u);

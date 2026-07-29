@@ -1,9 +1,11 @@
 const crypto = require("node:crypto");
+const path = require("node:path");
 const { momentsPostFingerprint } = require("./moments_dry_run.dev.cjs");
 const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require("./moments_visual_probe.dev.cjs");
 const { runPowerShell, runPowerShellAsync } = require("./wechat_window_driver.cjs");
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
+const COMMENT_SEND_MARKER_DIRECTORY = "moments_comment_send_markers";
 // The reverse-engineered reference re-detects menu coordinates and accepts
 // roughly 12 px of per-axis movement. We keep that rendering tolerance while
 // still requiring exactly one content/avatar/geometry match before any click.
@@ -11,11 +13,20 @@ const MOMENTS_VISUAL_POST_RELOCK_TOLERANCE_PX = 12;
 const VISUAL_ACTION_TIMEOUT_CAP_MS = Object.freeze({
   inspect: 20_000,
   like: 30_000,
+  comment_occurrence_check: 45_000,
   comment_check: 85_000
 });
 
 function exactCommentText(value) {
   return String(value ?? "");
+}
+
+function validCommentSendMarkerPath(filePath, postFingerprint) {
+  const value = String(filePath ?? "");
+  return path.isAbsolute(value)
+    && SHA256_PATTERN.test(String(postFingerprint ?? ""))
+    && path.basename(value) === `${postFingerprint}.json`
+    && path.basename(path.dirname(value)) === COMMENT_SEND_MARKER_DIRECTORY;
 }
 
 function sha256(value) {
@@ -299,6 +310,7 @@ public static class Win32WechatMomentsVisualAction {
   private const uint GmemMoveable = 2;
   private const ushort BackspaceScanCode = 0x0E;
   private const uint KeyEventfKeyUp = 0x0002u;
+  private const uint KeyEventfUnicode = 0x0004u;
   private const uint KeyEventfScanCode = 0x0008u;
   private static readonly IntPtr HwndMessage = new IntPtr(-3);
   private const int MaxClipboardTextBytes = 8 * 1024 * 1024;
@@ -390,16 +402,27 @@ public static class Win32WechatMomentsVisualAction {
     sequence = 0;
     empty = false;
     text = "";
-    if (!OpenClipboardWithRetry(IntPtr.Zero)) return false;
-    bool result = false;
-    try {
-      sequence = GetClipboardSequenceNumber();
-      result = ClipboardContainsOnlyTextFormatsLocked() && TryReadUnicodeTextLocked(out empty, out text) &&
-        GetClipboardSequenceNumber() == sequence;
-    } finally {
-      if (!CloseClipboardWithRetry()) result = false;
+    for (int captureAttempt = 0; captureAttempt < 6; captureAttempt++) {
+      if (!OpenClipboardWithRetry(IntPtr.Zero)) {
+        Thread.Sleep(35);
+        continue;
+      }
+      bool result = false;
+      try {
+        sequence = GetClipboardSequenceNumber();
+        result = ClipboardContainsOnlyTextFormatsLocked() &&
+          TryReadUnicodeTextLocked(out empty, out text) &&
+          GetClipboardSequenceNumber() == sequence;
+      } finally {
+        if (!CloseClipboardWithRetry()) result = false;
+      }
+      if (result) return true;
+      sequence = 0;
+      empty = false;
+      text = "";
+      Thread.Sleep(35);
     }
-    return result;
+    return false;
   }
 
   public static bool TryClipboardTextMatches(uint expectedSequence, bool expectedEmpty, string expectedText, out bool matches) {
@@ -593,6 +616,31 @@ public static class Win32WechatMomentsVisualAction {
     return false;
   }
 
+  public static bool AtomicKeyboardUnicodeText(string text) {
+    if (IntPtr.Size != 8 || String.IsNullOrEmpty(text) || text.Length > 500) return false;
+    INPUT[] inputs = new INPUT[text.Length * 2];
+    for (int index = 0; index < text.Length; index++) {
+      ushort codeUnit = text[index];
+      inputs[index * 2].type = 1;
+      inputs[index * 2].keyboardInput = new KEYBDINPUT {
+        virtualKey = 0,
+        scanCode = codeUnit,
+        flags = KeyEventfUnicode,
+        time = 0,
+        extraInfo = UIntPtr.Zero
+      };
+      inputs[index * 2 + 1].type = 1;
+      inputs[index * 2 + 1].keyboardInput = new KEYBDINPUT {
+        virtualKey = 0,
+        scanCode = codeUnit,
+        flags = KeyEventfUnicode | KeyEventfKeyUp,
+        time = 0,
+        extraInfo = UIntPtr.Zero
+      };
+    }
+    return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT))) == inputs.Length;
+  }
+
   public static bool AtomicKeyboardBackspace() {
     if (IntPtr.Size != 8) return false;
     INPUT[] inputs = new INPUT[] {
@@ -629,10 +677,101 @@ ${MOMENTS_VISUAL_READONLY_POWERSHELL}
 
 $script:visualActionAttempted = $false
 $script:visualMenuOpen = $false
+$script:visualActionStage = "initialized"
+$script:visualSendClickedAt = ""
+$script:visualIrreversibleMarkerReason = ""
+
+function Set-VisualActionStage([string]$stage) {
+  if (-not [string]::IsNullOrWhiteSpace($stage)) {
+    $script:visualActionStage = $stage
+  }
+}
 
 function Write-VisualResult($value) {
+  if ($value -is [System.Collections.IDictionary]) {
+    if (-not $value.Contains("stage")) { $value.stage = $script:visualActionStage }
+    if (-not $value.Contains("sendClickedAt")) { $value.sendClickedAt = $script:visualSendClickedAt }
+    if (-not $value.Contains("primaryReason")) { $value.primaryReason = [string]$value.reason }
+    if (-not $value.Contains("cleanupReason")) { $value.cleanupReason = "" }
+    if (-not $value.Contains("verificationMode")) { $value.verificationMode = "" }
+    if (-not $value.Contains("realActionAttempted")) {
+      $value.realActionAttempted = [bool]($script:visualActionAttempted -or [bool]$value.actionAttempted)
+    }
+  }
   $value | ConvertTo-Json -Compress -Depth 10
   exit
+}
+
+function Write-VisualCommentSendMarker($context) {
+  $temporaryPath = ""
+  try {
+    $markerPath = [string]$context.sendMarkerPath
+    $attemptKey = [string]$context.attemptKey
+    $postFingerprint = [string]$context.postFingerprint
+    $observationId = [string]$context.observationId
+    $commentTextSha256 = [string]$context.commentTextSha256
+    $avatarHash = [string]$context.postSnapshot.avatar_hash
+    $identityText = [string]$context.postSnapshot.identity_text
+    $stableAnchorText = [string]$context.postSnapshot.stable_anchor_text
+    if ([string]::IsNullOrWhiteSpace($markerPath) -or
+      $attemptKey -notmatch '^[0-9a-f]{64}$' -or
+      $postFingerprint -notmatch '^[0-9a-f]{64}$' -or
+      $observationId -notmatch '^[0-9a-f]{64}$' -or
+      $commentTextSha256 -notmatch '^[0-9a-f]{64}$' -or
+      $avatarHash -notmatch '^[0-9a-f]{64}$' -or
+      [string]::IsNullOrWhiteSpace($identityText) -or
+      $identityText.Length -gt 2000 -or
+      $stableAnchorText.Length -gt 2000) {
+      $script:visualIrreversibleMarkerReason = "moments_comment_send_marker_invalid"
+      return $false
+    }
+    $fullPath = [IO.Path]::GetFullPath($markerPath)
+    if ([IO.Path]::GetFileName($fullPath) -cne ($postFingerprint + ".json") -or
+      [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($fullPath)) -cne "moments_comment_send_markers") {
+      $script:visualIrreversibleMarkerReason = "moments_comment_send_marker_invalid"
+      return $false
+    }
+    if ([IO.File]::Exists($fullPath)) {
+      $script:visualIrreversibleMarkerReason = "moments_comment_send_marker_exists"
+      return $false
+    }
+    $directory = [IO.Path]::GetDirectoryName($fullPath)
+    if ([string]::IsNullOrWhiteSpace($directory)) {
+      $script:visualIrreversibleMarkerReason = "moments_comment_send_marker_invalid"
+      return $false
+    }
+    [void][IO.Directory]::CreateDirectory($directory)
+    $clickedAt = [DateTime]::UtcNow.ToString("o")
+    $marker = @{
+      version = 1
+      kind = "moments_comment_send_click"
+      status = "click_attempted"
+      attempt_key = $attemptKey
+      post_fingerprint = $postFingerprint
+      observation_id = $observationId
+      comment_text_sha256 = $commentTextSha256
+      avatar_hash = $avatarHash
+      identity_text = $identityText
+      stable_anchor_text = $stableAnchorText
+      send_clicked_at = $clickedAt
+    }
+    $temporaryPath = $fullPath + "." + [Guid]::NewGuid().ToString("N") + ".tmp"
+    [IO.File]::WriteAllText(
+      $temporaryPath,
+      ($marker | ConvertTo-Json -Compress -Depth 4),
+      [Text.UTF8Encoding]::new($false)
+    )
+    [IO.File]::Move($temporaryPath, $fullPath)
+    $temporaryPath = ""
+    $script:visualSendClickedAt = $clickedAt
+    return $true
+  } catch {
+    $script:visualIrreversibleMarkerReason = "moments_comment_send_marker_failed"
+    if (-not [string]::IsNullOrWhiteSpace($temporaryPath) -and [IO.File]::Exists($temporaryPath)) {
+      try { [IO.File]::Delete($temporaryPath) } catch {}
+    }
+    return $false
+  }
 }
 
 function Normalize-VisualText([string]$value) {
@@ -740,6 +879,39 @@ function Test-VisualBoundsNear($left, $right, [double]$tolerance = 1.5) {
     if ([Math]::Abs([double]$left.$name - [double]$right.$name) -gt $tolerance) { return $false }
   }
   return $true
+}
+
+function Resolve-VisualMenuAnchor($menus, $expectedBounds, [double]$tolerance = 12.0) {
+  $ranked = @(@($menus) | Where-Object {
+    Test-VisualBoundsNear $_.bounds $expectedBounds $tolerance
+  } | ForEach-Object {
+    $score = 0.0
+    foreach ($name in @("left", "top", "width", "height")) {
+      $score += [Math]::Abs([double]$_.bounds.$name - [double]$expectedBounds.$name)
+    }
+    @{ menu = $_; score = $score }
+  } | Sort-Object { [double]$_.score })
+  $distinct = New-Object System.Collections.Generic.List[object]
+  foreach ($entry in $ranked) {
+    $overlapsExisting = $false
+    foreach ($existing in $distinct) {
+      if (Test-VisualBoundsNear $entry.menu.bounds $existing.menu.bounds 2.5) {
+        $overlapsExisting = $true
+        break
+      }
+    }
+    if (-not $overlapsExisting) { [void]$distinct.Add($entry) }
+  }
+  $diagnostics = @{
+    rawCandidateCount = [int]$ranked.Count
+    distinctCandidateCount = [int]$distinct.Count
+    expectedBounds = $expectedBounds
+    candidateBounds = @($distinct | ForEach-Object { $_.menu.bounds })
+  }
+  if ($distinct.Count -eq 0) {
+    return @{ ok = $false; reason = "moments_menu_not_found"; diagnostics = $diagnostics }
+  }
+  return @{ ok = $true; menu = $distinct[0].menu; diagnostics = $diagnostics }
 }
 
 function ConvertTo-RelativeVisualBounds($absolute, $window) {
@@ -852,7 +1024,7 @@ function Test-MomentsStablePostIdentity($post, $snapshot) {
 }
 
 function Get-CurrentLockedVisualPost($lock, $context, [bool]$activate = $true) {
-  $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $activate
+  $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $activate $false
   if (-not $frame.ok) { return @{ ok = $false; reason = $frame.reason } }
   try {
     $expectedRenderPaneBounds = ConvertTo-RelativeVisualBounds $context.expectedWindow.renderPaneBounds $context.expectedWindow
@@ -875,20 +1047,43 @@ function Get-CurrentLockedVisualPost($lock, $context, [bool]$activate = $true) {
     if ($matchingPosts.Count -eq 0) { return @{ ok = $false; reason = "moments_post_changed"; frame = $frame } }
     if ($matchingPosts.Count -ne 1) { return @{ ok = $false; reason = "moments_post_ambiguous"; frame = $frame } }
     $post = $matchingPosts[0]
-    $matchingMenus = @($read.menus | Where-Object { Test-VisualBoundsNear $_.bounds $post.menuBounds 1.5 })
-    if ($matchingMenus.Count -ne 1) { return @{ ok = $false; reason = "moments_menu_ambiguous"; frame = $frame } }
-    $menuHash = Get-MomentsPixelHash $frame $matchingMenus[0].bounds
+    $menuBottom = [double]$post.menuBounds.top + [double]$post.menuBounds.height
+    # The nearest menu below the locked post determines which visual post is
+    # actually next. Its avatar may prove the boundary without requiring OCR
+    # on that post; if the nearest menu has no unique avatar, keep the region
+    # incomplete instead of skipping across it to a later OCR-readable post.
+    $followingBoundaries = @($read.postBoundaries | Where-Object {
+      [double]$_.menuBounds.top -gt ($menuBottom + 8.0)
+    } | Sort-Object { [double]$_.menuBounds.top })
+    $nextPostTop = $(if ($followingBoundaries.Count -gt 0 -and
+      [bool]$followingBoundaries[0].ok -and
+      [double]$followingBoundaries[0].top -gt ($menuBottom + 8.0)) {
+      [double]$followingBoundaries[0].top
+    } else {
+      $null
+    })
+    $menuResolution = Resolve-VisualMenuAnchor $read.menus $post.menuBounds 1.5
+    if (-not $menuResolution.ok) {
+      return @{
+        ok = $false
+        reason = $menuResolution.reason
+        diagnostics = $menuResolution.diagnostics
+        frame = $frame
+      }
+    }
+    $menuHash = Get-MomentsPixelHash $frame $menuResolution.menu.bounds
     $avatarHash = Get-MomentsPixelHash $frame $post.avatarBounds
     if (-not $menuHash -or -not $avatarHash) { return @{ ok = $false; reason = "moments_post_changed"; frame = $frame } }
     return @{
       ok = $true
       frame = $frame
       post = $post
-      menu = $matchingMenus[0]
+      menu = $menuResolution.menu
       menuHash = $menuHash
       avatarHash = $avatarHash
       expectedMenuBounds = $expectedMenuBounds
       expectedAvatarBounds = $expectedAvatarBounds
+      nextPostTop = $nextPostTop
     }
   } catch {
     return @{ ok = $false; reason = "moments_visual_probe_failed"; frame = $frame }
@@ -896,73 +1091,231 @@ function Get-CurrentLockedVisualPost($lock, $context, [bool]$activate = $true) {
 }
 
 function Get-FreshVisualMenuAnchor($lock, $expectedMenuBounds, [string]$expectedHash, [bool]$activate = $false) {
-  $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $activate
-  if (-not $frame.ok) { return @{ ok = $false; reason = $frame.reason } }
-  try {
-    $menus = @(Find-MomentsMenuDots $frame)
-    $matches = @($menus | Where-Object {
-      Test-VisualBoundsNear $_.bounds $expectedMenuBounds $script:momentsVisualPostRelockTolerancePx
-    })
-    if ($matches.Count -ne 1) { return @{ ok = $false; reason = "moments_menu_ambiguous"; frame = $frame } }
-    $hash = Get-MomentsPixelHash $frame $matches[0].bounds
-    if (-not $hash -or ($expectedHash -and $hash -cne $expectedHash)) {
-      return @{ ok = $false; reason = "moments_menu_changed"; frame = $frame }
+  for ($attempt = 0; $attempt -lt 2; $attempt++) {
+    $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $activate $false
+    if (-not $frame.ok) { return @{ ok = $false; reason = $frame.reason } }
+    try {
+      $menus = @(Find-MomentsMenuDots $frame)
+      $resolution = Resolve-VisualMenuAnchor $menus $expectedMenuBounds $script:momentsVisualPostRelockTolerancePx
+      if (-not $resolution.ok) {
+        if ([string]$resolution.reason -ceq "moments_menu_not_found" -and $attempt -eq 0) {
+          Close-MomentsVisualFrame $frame
+          $frame = $null
+          Start-Sleep -Milliseconds 160
+          continue
+        }
+        return @{
+          ok = $false
+          reason = $resolution.reason
+          diagnostics = $resolution.diagnostics
+          frame = $frame
+        }
+      }
+      $hash = Get-MomentsPixelHash $frame $resolution.menu.bounds
+      if (-not $hash -or ($expectedHash -and $hash -cne $expectedHash)) {
+        return @{ ok = $false; reason = "moments_menu_changed"; frame = $frame }
+      }
+      return @{
+        ok = $true
+        frame = $frame
+        menu = $resolution.menu
+        menuHash = $hash
+        diagnostics = $resolution.diagnostics
+      }
+    } catch {
+      return @{ ok = $false; reason = "moments_visual_probe_failed"; frame = $frame }
     }
-    return @{ ok = $true; frame = $frame; menu = $matches[0]; menuHash = $hash }
-  } catch {
-    return @{ ok = $false; reason = "moments_visual_probe_failed"; frame = $frame }
   }
 }
 
-function Test-VisualOwnedHit([IntPtr]$hit, [int]$screenX, [int]$screenY, $lock, $allowedPopupBounds = $null) {
-  if ($hit -eq [IntPtr]::Zero) { return $false }
+function Test-VisualOwnedHitDetailed([IntPtr]$hit, [int]$screenX, [int]$screenY, $lock, $allowedPopupBounds = $null) {
+  $diagnostics = @{
+    pointInsideSurface = $false
+    surfaceInsidePopup = $false
+    surfaceInsideWindow = $false
+  }
+  if ($hit -eq [IntPtr]::Zero) {
+    return @{ ok = $false; reason = "moments_click_target_missing"; diagnostics = $diagnostics }
+  }
   [uint32]$hitPid = 0
   [void][Win32WechatMomentsVisualAction]::GetWindowThreadProcessId($hit, [ref]$hitPid)
-  if ([int]$hitPid -ne $lock.pid) { return $false }
+  if ([int]$hitPid -ne [int]$lock.pid) {
+    return @{ ok = $false; reason = "moments_click_target_process_changed"; diagnostics = $diagnostics }
+  }
   $hitRoot = [Win32WechatMomentsVisualAction]::GetAncestor($hit, 2)
-  if ($hitRoot -eq $lock.hWnd) { return $true }
-  if ($allowedPopupBounds -eq $null -or $hitRoot -eq [IntPtr]::Zero -or
-    -not [Win32WechatMomentsVisualAction]::IsWindowVisible($hitRoot) -or [Win32WechatMomentsVisualAction]::IsIconic($hitRoot)) { return $false }
+  if ($hitRoot -eq [IntPtr]::Zero -or
+    -not [Win32WechatMomentsVisualAction]::IsWindowVisible($hitRoot) -or
+    [Win32WechatMomentsVisualAction]::IsIconic($hitRoot)) {
+    return @{ ok = $false; reason = "moments_click_target_not_visible"; diagnostics = $diagnostics }
+  }
   [uint32]$rootPid = 0
   [void][Win32WechatMomentsVisualAction]::GetWindowThreadProcessId($hitRoot, [ref]$rootPid)
-  if ([int]$rootPid -ne $lock.pid) { return $false }
-  $classText = New-Object System.Text.StringBuilder 96
-  $titleText = New-Object System.Text.StringBuilder 96
-  [void][Win32WechatMomentsVisualAction]::GetClassName($hitRoot, $classText, $classText.Capacity)
-  [void][Win32WechatMomentsVisualAction]::GetWindowText($hitRoot, $titleText, $titleText.Capacity)
-  if ($classText.ToString() -cne "Qt51514QWindowToolSaveBits" -or $titleText.ToString().Trim() -cne "Weixin") { return $false }
-  $popupRect = New-Object Win32WechatMomentsVisualAction+RECT
-  if (-not [Win32WechatMomentsVisualAction]::GetWindowRect($hitRoot, [ref]$popupRect)) { return $false }
-  $popupBounds = @{
-    left = [double]$popupRect.Left
-    top = [double]$popupRect.Top
-    width = [double]($popupRect.Right - $popupRect.Left)
-    height = [double]($popupRect.Bottom - $popupRect.Top)
+  if ([int]$rootPid -ne [int]$lock.pid) {
+    return @{ ok = $false; reason = "moments_click_root_process_changed"; diagnostics = $diagnostics }
   }
-  $expectedSurface = @{
-    left = [double]$lock.windowRect.Left + [double]$allowedPopupBounds.left
-    top = [double]$lock.windowRect.Top + [double]$allowedPopupBounds.top
-    width = [double]$allowedPopupBounds.width
-    height = [double]$allowedPopupBounds.height
-  }
+
   $lockedBounds = @{
     left = [double]$lock.windowRect.Left
     top = [double]$lock.windowRect.Top
     width = [double]($lock.windowRect.Right - $lock.windowRect.Left)
     height = [double]($lock.windowRect.Bottom - $lock.windowRect.Top)
   }
-  $surfaceInsidePopup = [double]$expectedSurface.left -ge ([double]$popupBounds.left - 2.0) -and
+  if ($allowedPopupBounds -eq $null) {
+    if ($hitRoot -ne $lock.hWnd) {
+      return @{ ok = $false; reason = "moments_click_popup_surface_missing"; diagnostics = $diagnostics }
+    }
+    $diagnostics.pointInsideSurface = $true
+    $diagnostics.surfaceInsidePopup = $true
+    $diagnostics.surfaceInsideWindow = $true
+    return @{ ok = $true; root = $hitRoot; diagnostics = $diagnostics }
+  }
+
+  $expectedSurface = @{
+    left = [double]$lock.windowRect.Left + [double]$allowedPopupBounds.left
+    top = [double]$lock.windowRect.Top + [double]$allowedPopupBounds.top
+    width = [double]$allowedPopupBounds.width
+    height = [double]$allowedPopupBounds.height
+  }
+  if ($hitRoot -eq $lock.hWnd) {
+    $popupBounds = $lockedBounds
+  } else {
+    $popupRect = New-Object Win32WechatMomentsVisualAction+RECT
+    if (-not [Win32WechatMomentsVisualAction]::GetWindowRect($hitRoot, [ref]$popupRect)) {
+      return @{ ok = $false; reason = "moments_click_popup_bounds_unavailable"; diagnostics = $diagnostics }
+    }
+    $popupBounds = @{
+      left = [double]$popupRect.Left
+      top = [double]$popupRect.Top
+      width = [double]($popupRect.Right - $popupRect.Left)
+      height = [double]($popupRect.Bottom - $popupRect.Top)
+    }
+  }
+  $diagnostics.surfaceInsidePopup = [double]$expectedSurface.left -ge ([double]$popupBounds.left - 3.0) -and
     [double]$expectedSurface.top -ge ([double]$popupBounds.top - 2.0) -and
-    ([double]$expectedSurface.left + [double]$expectedSurface.width) -le ([double]$popupBounds.left + [double]$popupBounds.width + 2.0) -and
-    ([double]$expectedSurface.top + [double]$expectedSurface.height) -le ([double]$popupBounds.top + [double]$popupBounds.height + 2.0)
-  $pointInsideSurface = $screenX -ge ([double]$expectedSurface.left - 2.0) -and
+    ([double]$expectedSurface.left + [double]$expectedSurface.width) -le ([double]$popupBounds.left + [double]$popupBounds.width + 3.0) -and
+    ([double]$expectedSurface.top + [double]$expectedSurface.height) -le ([double]$popupBounds.top + [double]$popupBounds.height + 3.0)
+  $diagnostics.pointInsideSurface = $screenX -ge ([double]$expectedSurface.left - 2.0) -and
     $screenX -le ([double]$expectedSurface.left + [double]$expectedSurface.width + 2.0) -and
     $screenY -ge ([double]$expectedSurface.top - 2.0) -and
     $screenY -le ([double]$expectedSurface.top + [double]$expectedSurface.height + 2.0)
-  return $surfaceInsidePopup -and $pointInsideSurface -and
-    (Test-VisualBoundsInside $popupBounds $lockedBounds) -and
-    [double]$popupBounds.width -le ([double]$expectedSurface.width + 36.0) -and
-    [double]$popupBounds.height -le ([double]$expectedSurface.height + 36.0)
+  $diagnostics.surfaceInsideWindow = Test-VisualBoundsInside $expectedSurface $lockedBounds
+  if (-not $diagnostics.surfaceInsideWindow) {
+    return @{ ok = $false; reason = "moments_click_surface_outside_window"; root = $hitRoot; diagnostics = $diagnostics }
+  }
+  if (-not $diagnostics.surfaceInsidePopup) {
+    return @{ ok = $false; reason = "moments_click_surface_outside_popup"; root = $hitRoot; diagnostics = $diagnostics }
+  }
+  if (-not $diagnostics.pointInsideSurface) {
+    return @{ ok = $false; reason = "moments_click_point_outside_surface"; root = $hitRoot; diagnostics = $diagnostics }
+  }
+  return @{ ok = $true; root = $hitRoot; diagnostics = $diagnostics }
+}
+
+function Test-VisualOwnedHit([IntPtr]$hit, [int]$screenX, [int]$screenY, $lock, $allowedPopupBounds = $null) {
+  return [bool](Test-VisualOwnedHitDetailed $hit $screenX $screenY $lock $allowedPopupBounds).ok
+}
+
+function Invoke-VisualOwnedClickDetailed(
+  [int]$screenX,
+  [int]$screenY,
+  $lock,
+  [int64]$deadlineMs,
+  [bool]$irreversible,
+  [bool]$enforceDeadline,
+  $allowedPopupBounds = $null,
+  [uint32]$expectedInputTick = [uint32]::MaxValue,
+  [scriptblock]$beforeIrreversibleClick = $null
+) {
+  $diagnostics = @{
+    ownedClickReason = ""
+    ownedClickPhase = "preflight"
+    pointInsideSurface = $false
+    surfaceInsidePopup = $false
+    surfaceInsideWindow = $false
+    firstRootMatchesSecond = $false
+    foregroundOk = $false
+  }
+  if ($expectedInputTick -ne [uint32]::MaxValue -and
+    [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick) {
+    $diagnostics.ownedClickReason = "moments_external_input_detected"
+    return @{ ok = $false; reason = $diagnostics.ownedClickReason; diagnostics = $diagnostics }
+  }
+  $point = New-Object Win32WechatMomentsVisualAction+POINT
+  $point.X = $screenX
+  $point.Y = $screenY
+  $hit = [Win32WechatMomentsVisualAction]::WindowFromPoint($point)
+  $firstProof = Test-VisualOwnedHitDetailed $hit $screenX $screenY $lock $allowedPopupBounds
+  foreach ($name in @("pointInsideSurface", "surfaceInsidePopup", "surfaceInsideWindow")) {
+    $diagnostics[$name] = [bool]$firstProof.diagnostics.$name
+  }
+  if (-not $firstProof.ok) {
+    $diagnostics.ownedClickReason = [string]$firstProof.reason
+    $diagnostics.ownedClickPhase = "initial_hit"
+    return @{ ok = $false; reason = $diagnostics.ownedClickReason; diagnostics = $diagnostics }
+  }
+  $foreground = [Win32WechatMomentsVisualAction]::GetForegroundWindow()
+  $diagnostics.foregroundOk = $foreground -eq $lock.hWnd -or $foreground -eq $firstProof.root
+  if (-not $diagnostics.foregroundOk) {
+    $diagnostics.ownedClickReason = "moments_click_foreground_changed"
+    return @{ ok = $false; reason = $diagnostics.ownedClickReason; diagnostics = $diagnostics }
+  }
+  if (-not [Win32WechatMomentsVisualAction]::SetCursorPos($screenX, $screenY)) {
+    $diagnostics.ownedClickReason = "moments_click_cursor_move_failed"
+    $diagnostics.ownedClickPhase = "cursor_move"
+    return @{ ok = $false; reason = $diagnostics.ownedClickReason; diagnostics = $diagnostics }
+  }
+  Start-Sleep -Milliseconds 20
+  $confirmedHit = [Win32WechatMomentsVisualAction]::WindowFromPoint($point)
+  $secondProof = Test-VisualOwnedHitDetailed $confirmedHit $screenX $screenY $lock $allowedPopupBounds
+  foreach ($name in @("pointInsideSurface", "surfaceInsidePopup", "surfaceInsideWindow")) {
+    $diagnostics[$name] = [bool]$secondProof.diagnostics.$name
+  }
+  $diagnostics.firstRootMatchesSecond = $secondProof.ok -and $secondProof.root -eq $firstProof.root
+  $foreground = [Win32WechatMomentsVisualAction]::GetForegroundWindow()
+  $diagnostics.foregroundOk = $foreground -eq $lock.hWnd -or $foreground -eq $firstProof.root
+  if (-not $secondProof.ok -or -not $diagnostics.firstRootMatchesSecond) {
+    $diagnostics.ownedClickReason = $(if (-not $secondProof.ok) { [string]$secondProof.reason } else { "moments_click_target_changed" })
+    $diagnostics.ownedClickPhase = "confirmed_hit"
+    return @{ ok = $false; reason = $diagnostics.ownedClickReason; diagnostics = $diagnostics }
+  }
+  if (-not $diagnostics.foregroundOk) {
+    $diagnostics.ownedClickReason = "moments_click_foreground_changed"
+    $diagnostics.ownedClickPhase = "confirmed_hit"
+    return @{ ok = $false; reason = $diagnostics.ownedClickReason; diagnostics = $diagnostics }
+  }
+  if ($expectedInputTick -ne [uint32]::MaxValue -and
+    [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick) {
+    $diagnostics.ownedClickReason = "moments_external_input_detected"
+    $diagnostics.ownedClickPhase = "confirmed_hit"
+    return @{ ok = $false; reason = $diagnostics.ownedClickReason; diagnostics = $diagnostics }
+  }
+  if ($enforceDeadline -and -not (Test-VisualDeadline $deadlineMs)) {
+    $diagnostics.ownedClickReason = "moments_dry_run_expired"
+    $diagnostics.ownedClickPhase = "deadline"
+    return @{ ok = $false; reason = $diagnostics.ownedClickReason; diagnostics = $diagnostics }
+  }
+  if ($irreversible -and $beforeIrreversibleClick -ne $null) {
+    try {
+      if (-not (& $beforeIrreversibleClick)) {
+        $diagnostics.ownedClickReason = "moments_click_marker_failed"
+        $diagnostics.ownedClickPhase = "before_irreversible"
+        return @{ ok = $false; reason = $diagnostics.ownedClickReason; diagnostics = $diagnostics }
+      }
+    } catch {
+      $diagnostics.ownedClickReason = "moments_click_marker_failed"
+      $diagnostics.ownedClickPhase = "before_irreversible"
+      return @{ ok = $false; reason = $diagnostics.ownedClickReason; diagnostics = $diagnostics }
+    }
+  }
+  if ($irreversible) { $script:visualActionAttempted = $true }
+  $clicked = [Win32WechatMomentsVisualAction]::AtomicMouseClick($screenX, $screenY, $false)
+  if (-not $clicked) {
+    $diagnostics.ownedClickReason = "moments_click_injection_failed"
+    $diagnostics.ownedClickPhase = "atomic_click"
+    return @{ ok = $false; reason = $diagnostics.ownedClickReason; diagnostics = $diagnostics }
+  }
+  $diagnostics.ownedClickPhase = "clicked"
+  return @{ ok = $true; diagnostics = $diagnostics }
 }
 
 function Invoke-VisualOwnedClick(
@@ -973,26 +1326,11 @@ function Invoke-VisualOwnedClick(
   [bool]$irreversible,
   [bool]$enforceDeadline,
   $allowedPopupBounds = $null,
-  [uint32]$expectedInputTick = [uint32]::MaxValue
+  [uint32]$expectedInputTick = [uint32]::MaxValue,
+  [scriptblock]$beforeIrreversibleClick = $null
 ) {
-  if ([Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
-    ($expectedInputTick -ne [uint32]::MaxValue -and
-      [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick)) { return $false }
-  $point = New-Object Win32WechatMomentsVisualAction+POINT
-  $point.X = $screenX
-  $point.Y = $screenY
-  $hit = [Win32WechatMomentsVisualAction]::WindowFromPoint($point)
-  if (-not (Test-VisualOwnedHit $hit $screenX $screenY $lock $allowedPopupBounds) -or
-    -not [Win32WechatMomentsVisualAction]::SetCursorPos($screenX, $screenY)) { return $false }
-  Start-Sleep -Milliseconds 20
-  $confirmedHit = [Win32WechatMomentsVisualAction]::WindowFromPoint($point)
-  if (-not (Test-VisualOwnedHit $confirmedHit $screenX $screenY $lock $allowedPopupBounds) -or
-    [Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
-    ($expectedInputTick -ne [uint32]::MaxValue -and
-      [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick)) { return $false }
-  if ($enforceDeadline -and -not (Test-VisualDeadline $deadlineMs)) { return $false }
-  if ($irreversible) { $script:visualActionAttempted = $true }
-  return [Win32WechatMomentsVisualAction]::AtomicMouseClick($screenX, $screenY, $false)
+  $result = Invoke-VisualOwnedClickDetailed $screenX $screenY $lock $deadlineMs $irreversible $enforceDeadline $allowedPopupBounds $expectedInputTick $beforeIrreversibleClick
+  return [bool]$result.ok
 }
 
 function Test-VisualOwnedKeyboardTarget($lock, $composerBounds, [uint32]$expectedInputTick) {
@@ -1103,6 +1441,27 @@ function Invoke-VisualOwnedKeyboardChord(
     inputMayHaveBeenIssued = $true
     clipboardSequence = $verifiedClipboardSequence
   }
+}
+
+function Invoke-VisualOwnedUnicodeText($lock, $composerBounds, [uint32]$expectedInputTick, [string]$text) {
+  if ([string]::IsNullOrEmpty($text) -or $text.Length -gt 500 -or
+    -not (Test-VisualOwnedKeyboardTarget $lock $composerBounds $expectedInputTick)) {
+    return @{ ok = $false; reason = "moments_comment_editor_changed" }
+  }
+  if (-not [Win32WechatMomentsVisualAction]::AtomicKeyboardUnicodeText($text)) {
+    return @{ ok = $false; reason = "moments_comment_keyboard_input_blocked"; inputMayHaveBeenIssued = $true }
+  }
+  Start-Sleep -Milliseconds 140
+  [uint32]$nextInputTick = [Win32WechatMomentsVisualAction]::GetLastInputTick()
+  if (-not (Test-VisualOwnedKeyboardTarget $lock $composerBounds $nextInputTick)) {
+    return @{
+      ok = $false
+      reason = "moments_comment_editor_changed"
+      inputMayHaveBeenIssued = $true
+      inputTick = $nextInputTick
+    }
+  }
+  return @{ ok = $true; inputTick = $nextInputTick; inputMayHaveBeenIssued = $true }
 }
 
 function Invoke-VisualOwnedKeyboardBackspace($lock, $composerBounds, [uint32]$expectedInputTick) {
@@ -1611,7 +1970,63 @@ function Get-VisualMenuRegion($frame, $menu) {
   return @{ left = $left; top = $top; width = $right - $left; height = $bottom - $top }
 }
 
-function Get-VisualOpenMenuBounds($frame, $menu) {
+function Resolve-VisualOpenMenuHorizontalSegment(
+  [object[]]$segments,
+  [double]$frameWidth,
+  [double]$menuCenterX,
+  [string]$requestedAction
+) {
+  $segmentCount = @($segments).Count
+  $strictMatches = @($segments | Where-Object {
+    $width = [double]$_.right - [double]$_.left + 1.0
+    $width -ge [Math]::Max(150.0, $frameWidth * 0.30) -and
+      $width -le [Math]::Min(330.0, $frameWidth * 0.62) -and
+      [double]$_.left -lt ($menuCenterX - 120.0) -and
+      [double]$_.right -ge ($menuCenterX - 72.0) -and
+      [double]$_.right -le ($menuCenterX - 8.0)
+  })
+  $diagnostics = @{
+    requestedAction = [string]$requestedAction
+    segmentCount = $segmentCount
+    strictCandidateCount = $strictMatches.Count
+    fallbackCandidateCount = 0
+  }
+  if ($strictMatches.Count -eq 1) {
+    return @{ ok = $true; segment = $strictMatches[0]; geometryFallback = $false; diagnostics = $diagnostics }
+  }
+  if ($requestedAction -cne "comment") {
+    return @{
+      ok = $false
+      reason = "moments_menu_surface_ambiguous"
+      candidateCount = $strictMatches.Count
+      diagnostics = $diagnostics
+    }
+  }
+
+  # Comment-only mode already owns the unique three-dot anchor. Some DPI/theme
+  # combinations render the popup narrower than the strict like-state detector.
+  # Accept one nearby dark horizontal surface, then use its right-hand cell.
+  $fallbackMatches = @($segments | Where-Object {
+    $width = [double]$_.right - [double]$_.left + 1.0
+    $width -ge [Math]::Max(110.0, $frameWidth * 0.22) -and
+      $width -le [Math]::Min(360.0, $frameWidth * 0.70) -and
+      [double]$_.left -lt ($menuCenterX - 80.0) -and
+      [double]$_.right -ge ($menuCenterX - 110.0) -and
+      [double]$_.right -le ($menuCenterX + 4.0)
+  })
+  $diagnostics.fallbackCandidateCount = $fallbackMatches.Count
+  if ($fallbackMatches.Count -ne 1) {
+    return @{
+      ok = $false
+      reason = "moments_menu_surface_ambiguous"
+      candidateCount = $fallbackMatches.Count
+      diagnostics = $diagnostics
+    }
+  }
+  return @{ ok = $true; segment = $fallbackMatches[0]; geometryFallback = $true; diagnostics = $diagnostics }
+}
+
+function Get-VisualOpenMenuBounds($frame, $menu, [string]$requestedAction = "") {
   $scanY = [int][Math]::Round([double]$menu.centerY)
   $scanLeft = [int][Math]::Max(0, [Math]::Floor([double]$menu.centerX - [Math]::Min(340.0, [double]$frame.width * 0.64)))
   $scanRight = [int][Math]::Min($frame.width - 1, [Math]::Ceiling([double]$menu.centerX - 10.0))
@@ -1627,31 +2042,41 @@ function Get-VisualOpenMenuBounds($frame, $menu) {
     $lastDark = $x
   }
   if ($runLeft -ge 0) { [void]$segments.Add(@{ left = $runLeft; right = $lastDark }) }
-  $matches = @($segments.ToArray() | Where-Object {
-    $width = [double]$_.right - [double]$_.left + 1.0
-    $width -ge [Math]::Max(150.0, [double]$frame.width * 0.30) -and
-      $width -le [Math]::Min(330.0, [double]$frame.width * 0.62) -and
-      [double]$_.left -lt ([double]$menu.centerX - 120.0) -and
-      [double]$_.right -ge ([double]$menu.centerX - 72.0) -and
-      [double]$_.right -le ([double]$menu.centerX - 8.0)
-  })
-  if ($matches.Count -ne 1) {
-    return @{ ok = $false; reason = "moments_menu_surface_ambiguous"; candidateCount = $matches.Count }
+  $segmentResolution = Resolve-VisualOpenMenuHorizontalSegment (@($segments.ToArray())) ([double]$frame.width) ([double]$menu.centerX) $requestedAction
+  $diagnostics = @{
+    requestedAction = [string]$requestedAction
+    segmentCount = [int]$segmentResolution.diagnostics.segmentCount
+    strictCandidateCount = [int]$segmentResolution.diagnostics.strictCandidateCount
+    fallbackCandidateCount = [int]$segmentResolution.diagnostics.fallbackCandidateCount
   }
-  $left = [int]$matches[0].left
-  $right = [int]$matches[0].right + 1
+  if (-not $segmentResolution.ok) {
+    return @{
+      ok = $false
+      reason = [string]$segmentResolution.reason
+      candidateCount = [int]$segmentResolution.candidateCount
+      diagnostics = $diagnostics
+    }
+  }
+  $left = [int]$segmentResolution.segment.left
+  $right = [int]$segmentResolution.segment.right + 1
   $sampleX = [int][Math]::Min($right - 2, $left + [Math]::Max(6.0, ($right - $left) * 0.06))
   $top = $scanY
   while ($top -gt 0 -and (Test-MomentsDarkNeutralPixel (Get-MomentsPixel $frame $sampleX ($top - 1)))) { $top -= 1 }
   $bottom = $scanY + 1
   while ($bottom -lt $frame.height -and (Test-MomentsDarkNeutralPixel (Get-MomentsPixel $frame $sampleX $bottom))) { $bottom += 1 }
   $bounds = @{ left = [double]$left; top = [double]$top; width = [double]($right - $left); height = [double]($bottom - $top) }
-  if (-not (Test-VisualBounds $bounds 149 31) -or [double]$bounds.height -gt 82.0 -or
+  $minimumSurfaceWidth = $(if ($segmentResolution.geometryFallback) { 110 } else { 149 })
+  if (-not (Test-VisualBounds $bounds $minimumSurfaceWidth 31) -or [double]$bounds.height -gt 82.0 -or
     [double]$menu.centerY -lt [double]$bounds.top -or
     [double]$menu.centerY -gt ([double]$bounds.top + [double]$bounds.height)) {
-    return @{ ok = $false; reason = "moments_menu_surface_ambiguous"; bounds = $bounds }
+    return @{ ok = $false; reason = "moments_menu_surface_ambiguous"; bounds = $bounds; diagnostics = $diagnostics }
   }
-  return @{ ok = $true; bounds = $bounds }
+  return @{
+    ok = $true
+    bounds = $bounds
+    geometryFallback = [bool]$segmentResolution.geometryFallback
+    diagnostics = $diagnostics
+  }
 }
 
 function Get-VisualMenuTextEntry($ocr, $region, $frame, $allowedTexts) {
@@ -1729,12 +2154,12 @@ function Get-VisualMenuLabelSignature($frame, $region) {
   }
 }
 
-function Read-OpenVisualMenu($lock, $menu) {
-  $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $false
+function Read-OpenVisualMenuOnce($lock, $menu, [string]$requestedAction) {
+  $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $false $false
   if (-not $frame.ok) { return @{ ok = $false; reason = $frame.reason } }
   try {
     $allowedLike = @("赞", "取消", "取消赞")
-    $surface = Get-VisualOpenMenuBounds $frame $menu
+    $surface = Get-VisualOpenMenuBounds $frame $menu $requestedAction
     if (-not $surface.ok) { return $surface }
     $cellWidth = [double]$surface.bounds.width / 2.0
     $likeRegion = @{
@@ -1780,12 +2205,30 @@ function Read-OpenVisualMenu($lock, $menu) {
         }
       }
     }
-    if ($likeEntry -eq $null -or $commentEntry -eq $null -or
-      [Math]::Abs([double]$likeEntry.centerY - [double]$commentEntry.centerY) -gt [Math]::Max(18.0, [double]$frame.height * 0.025)) {
+    if ($requestedAction -ceq "comment" -and $commentEntry -eq $null) {
+      $commentEntry = @{
+        text = "评论"
+        bounds = @{
+          left = [double]$surface.bounds.left + $cellWidth
+          top = [double]$surface.bounds.top
+          width = $cellWidth
+          height = [double]$surface.bounds.height
+        }
+        centerX = [double]$surface.bounds.left + ($cellWidth * 1.5)
+        centerY = [double]$surface.bounds.top + ([double]$surface.bounds.height / 2.0)
+        geometryFallback = $true
+      }
+    }
+    $requestedEntryMissing = ($requestedAction -ceq "comment" -and $commentEntry -eq $null) -or
+      ($requestedAction -ne "comment" -and $likeEntry -eq $null)
+    if ($requestedEntryMissing) {
       return @{
         ok = $false
         reason = "moments_menu_ambiguous"
         diagnostics = @{
+          segmentCount = [int]$surface.diagnostics.segmentCount
+          strictCandidateCount = [int]$surface.diagnostics.strictCandidateCount
+          fallbackCandidateCount = [int]$surface.diagnostics.fallbackCandidateCount
           surface = $surface.bounds
           likeRegion = $likeRegion
           commentRegion = $commentRegion
@@ -1803,23 +2246,66 @@ function Read-OpenVisualMenu($lock, $menu) {
         }
       }
     }
-    return @{ ok = $true; like = $likeEntry; comment = $commentEntry; menuState = [string]$likeEntry.text; menuSurface = $surface.bounds }
+    return @{
+      ok = $true
+      like = $likeEntry
+      comment = $commentEntry
+      menuState = $(if ($likeEntry -ne $null) { [string]$likeEntry.text } else { "unknown" })
+      menuSurface = $surface.bounds
+      diagnostics = $surface.diagnostics
+    }
   } finally {
     Close-MomentsVisualFrame $frame
   }
+}
+
+function Read-OpenVisualMenu($lock, $menu, [string]$requestedAction) {
+  $first = Read-OpenVisualMenuOnce $lock $menu $requestedAction
+  $firstReason = $(if ($first.ok) { "" } else { [string]$first.reason })
+  if ($first.ok -or [string]$first.reason -notin @("moments_menu_surface_ambiguous", "moments_menu_ambiguous")) {
+    $first.diagnostics = @{
+      menuReadRetryCount = 0
+      firstReason = $firstReason
+      secondReason = ""
+      requestedAction = [string]$requestedAction
+      firstSegmentCount = [int]$first.diagnostics.segmentCount
+      secondSegmentCount = 0
+      firstStrictCandidateCount = [int]$first.diagnostics.strictCandidateCount
+      secondStrictCandidateCount = 0
+      firstFallbackCandidateCount = [int]$first.diagnostics.fallbackCandidateCount
+      secondFallbackCandidateCount = 0
+    }
+    return $first
+  }
+
+  Start-Sleep -Milliseconds 160
+  $second = Read-OpenVisualMenuOnce $lock $menu $requestedAction
+  $second.diagnostics = @{
+    menuReadRetryCount = 1
+    firstReason = $firstReason
+    secondReason = $(if ($second.ok) { "" } else { [string]$second.reason })
+    requestedAction = [string]$requestedAction
+    firstSegmentCount = [int]$first.diagnostics.segmentCount
+    secondSegmentCount = [int]$second.diagnostics.segmentCount
+    firstStrictCandidateCount = [int]$first.diagnostics.strictCandidateCount
+    secondStrictCandidateCount = [int]$second.diagnostics.strictCandidateCount
+    firstFallbackCandidateCount = [int]$first.diagnostics.fallbackCandidateCount
+    secondFallbackCandidateCount = [int]$second.diagnostics.fallbackCandidateCount
+  }
+  return $second
 }
 
 function Open-LockedVisualMenu($lock, $context) {
   $current = Get-CurrentLockedVisualPost $lock $context $true
   if (-not $current.ok) {
     Close-MomentsVisualFrame $current.frame
-    return @{ ok = $false; reason = $current.reason }
+    return @{ ok = $false; reason = $current.reason; diagnostics = $current.diagnostics }
   }
   $fresh = Get-FreshVisualMenuAnchor $lock $current.expectedMenuBounds $current.menuHash $false
   Close-MomentsVisualFrame $current.frame
   if (-not $fresh.ok) {
     Close-MomentsVisualFrame $fresh.frame
-    return @{ ok = $false; reason = $fresh.reason }
+    return @{ ok = $false; reason = $fresh.reason; diagnostics = $fresh.diagnostics }
   }
   $menu = $fresh.menu
   Close-MomentsVisualFrame $fresh.frame
@@ -1830,7 +2316,7 @@ function Open-LockedVisualMenu($lock, $context) {
   }
   $script:visualMenuOpen = $true
   Start-Sleep -Milliseconds 240
-  $read = Read-OpenVisualMenu $lock $menu
+  $read = Read-OpenVisualMenu $lock $menu ([string]$context.requestedAction)
   if (-not $read.ok) {
     if (-not (Close-VisualMenu $lock)) {
       return @{ ok = $false; reason = "moments_menu_close_blocked" }
@@ -1844,6 +2330,8 @@ function Open-LockedVisualMenu($lock, $context) {
     menuState = $read.menuState
     like = $read.like
     comment = $read.comment
+    menuSurface = $read.menuSurface
+    diagnostics = $read.diagnostics
     avatarHash = $current.avatarHash
     postBounds = $current.post.bounds
     expectedAvatarBounds = $current.expectedAvatarBounds
@@ -1872,9 +2360,11 @@ function Get-PostActionMenuAnchor($lock, $expectedMenuBounds, $expectedAvatarBou
       return @{ ok = $false; reason = "moments_post_anchor_changed" }
     }
     $menus = @(Find-MomentsMenuDots $frame)
-    $matches = @($menus | Where-Object { Test-VisualBoundsNear $_.bounds $expectedMenuBounds 2.5 })
-    if ($matches.Count -ne 1) { return @{ ok = $false; reason = "moments_menu_ambiguous" } }
-    return @{ ok = $true; menu = $matches[0] }
+    $resolution = Resolve-VisualMenuAnchor $menus $expectedMenuBounds 2.5
+    if (-not $resolution.ok) {
+      return @{ ok = $false; reason = $resolution.reason; diagnostics = $resolution.diagnostics }
+    }
+    return @{ ok = $true; menu = $resolution.menu; diagnostics = $resolution.diagnostics }
   } finally {
     Close-MomentsVisualFrame $frame
   }
@@ -2025,79 +2515,181 @@ function Get-VisualCommentComposer($frame, $menu) {
   }
 }
 
-function Get-VisualSendButton($frame, $composer) {
+function Get-VisualSendButton($frame, $composer, [bool]$includeOcr = $true) {
   if (-not $composer.ok) { return @{ ok = $false; reason = "moments_comment_composer_not_found" } }
   $bounds = $composer.bounds
-  $scanLeft = [int][Math]::Floor([double]$bounds.left + ([double]$bounds.width * 0.67))
-  $scanRight = [int][Math]::Ceiling([double]$bounds.left + [double]$bounds.width - 6.0)
-  $scanTop = [int][Math]::Floor([double]$bounds.top + ([double]$bounds.height * 0.48))
-  $scanBottom = [int][Math]::Ceiling([double]$bounds.top + [double]$bounds.height - 6.0)
-  $minimumX = [int]::MaxValue
-  $minimumY = [int]::MaxValue
-  $maximumX = [int]::MinValue
-  $maximumY = [int]::MinValue
+  $scanLeft = [int][Math]::Max(0, [Math]::Floor([double]$bounds.left + ([double]$bounds.width * 0.58)))
+  $scanRight = [int][Math]::Ceiling([double]$bounds.left + [double]$bounds.width - 1.0)
+  $scanTop = [int][Math]::Max(0, [Math]::Floor([double]$bounds.top + ([double]$bounds.height * 0.38)))
+  $scanBottom = [int][Math]::Ceiling([double]$bounds.top + [double]$bounds.height - 1.0)
+  $scanWidth = $scanRight - $scanLeft + 1
+  $scanHeight = $scanBottom - $scanTop + 1
+  if ($scanWidth -lt 1 -or $scanHeight -lt 1) {
+    return @{ ok = $false; reason = "moments_comment_send_button_not_found"; candidateCount = 0 }
+  }
+  $mask = New-Object bool[] ($scanWidth * $scanHeight)
   $pixelCount = 0
-  for ($y = $scanTop; $y -le $scanBottom; $y++) {
-    for ($x = $scanLeft; $x -le $scanRight; $x++) {
+  for ($localY = 0; $localY -lt $scanHeight; $localY++) {
+    $y = $scanTop + $localY
+    for ($localX = 0; $localX -lt $scanWidth; $localX++) {
+      $x = $scanLeft + $localX
       if (-not (Test-VisualWechatGreenPixel (Get-MomentsPixel $frame $x $y))) { continue }
+      $mask[($localY * $scanWidth) + $localX] = $true
       $pixelCount += 1
-      $minimumX = [Math]::Min($minimumX, $x)
-      $minimumY = [Math]::Min($minimumY, $y)
-      $maximumX = [Math]::Max($maximumX, $x)
-      $maximumY = [Math]::Max($maximumY, $y)
     }
   }
-  if ($pixelCount -lt 450 -or $maximumX -lt $minimumX -or $maximumY -lt $minimumY) {
-    return @{ ok = $false; reason = "moments_comment_send_button_not_found" }
+  if ($pixelCount -lt 80) {
+    return @{ ok = $false; reason = "moments_comment_send_button_not_found"; candidateCount = 0; componentCount = 0 }
   }
-  $buttonBounds = @{
-    left = [double]$minimumX
-    top = [double]$minimumY
-    width = [double]($maximumX - $minimumX + 1)
-    height = [double]($maximumY - $minimumY + 1)
-  }
-  if (-not (Test-VisualBounds $buttonBounds 64 22) -or [double]$buttonBounds.width -gt 150.0 -or
-    [double]$buttonBounds.height -gt 64.0 -or -not (Test-VisualBoundsInside $buttonBounds $bounds)) {
-    return @{ ok = $false; reason = "moments_comment_send_button_ambiguous"; bounds = $buttonBounds }
-  }
-  $sampled = 0
-  $green = 0
-  for ($y = [int]$buttonBounds.top + 2; $y -lt [int]([double]$buttonBounds.top + [double]$buttonBounds.height - 2); $y += 2) {
-    for ($x = [int]$buttonBounds.left + 2; $x -lt [int]([double]$buttonBounds.left + [double]$buttonBounds.width - 2); $x += 2) {
-      $sampled += 1
-      if (Test-VisualWechatGreenPixel (Get-MomentsPixel $frame $x $y)) { $green += 1 }
+  $seen = New-Object bool[] $mask.Length
+  $validCandidates = New-Object System.Collections.Generic.List[object]
+  $componentCount = 0
+  $potentialCandidateCount = 0
+  $borderRejectedCount = 0
+  $borderInset = 3.0
+  for ($seedY = 0; $seedY -lt $scanHeight; $seedY++) {
+    for ($seedX = 0; $seedX -lt $scanWidth; $seedX++) {
+      $seedIndex = ($seedY * $scanWidth) + $seedX
+      if (-not $mask[$seedIndex] -or $seen[$seedIndex]) { continue }
+      $componentCount += 1
+      $queue = New-Object System.Collections.Generic.Queue[int]
+      $queue.Enqueue($seedIndex)
+      $seen[$seedIndex] = $true
+      $minimumX = $seedX
+      $minimumY = $seedY
+      $maximumX = $seedX
+      $maximumY = $seedY
+      $componentPixelCount = 0
+      while ($queue.Count -gt 0) {
+        $current = $queue.Dequeue()
+        $currentY = [int][Math]::Floor($current / $scanWidth)
+        $currentX = $current - ($currentY * $scanWidth)
+        $minimumX = [Math]::Min($minimumX, $currentX)
+        $minimumY = [Math]::Min($minimumY, $currentY)
+        $maximumX = [Math]::Max($maximumX, $currentX)
+        $maximumY = [Math]::Max($maximumY, $currentY)
+        $componentPixelCount += 1
+        for ($deltaY = -1; $deltaY -le 1; $deltaY++) {
+          for ($deltaX = -1; $deltaX -le 1; $deltaX++) {
+            if ($deltaX -eq 0 -and $deltaY -eq 0) { continue }
+            $nextX = $currentX + $deltaX
+            $nextY = $currentY + $deltaY
+            if ($nextX -lt 0 -or $nextY -lt 0 -or $nextX -ge $scanWidth -or $nextY -ge $scanHeight) { continue }
+            $nextIndex = ($nextY * $scanWidth) + $nextX
+            if ($mask[$nextIndex] -and -not $seen[$nextIndex]) {
+              $seen[$nextIndex] = $true
+              $queue.Enqueue($nextIndex)
+            }
+          }
+        }
+      }
+      $componentBounds = @{
+        left = [double]($scanLeft + $minimumX)
+        top = [double]($scanTop + $minimumY)
+        width = [double]($maximumX - $minimumX + 1)
+        height = [double]($maximumY - $minimumY + 1)
+      }
+      $componentRight = [double]$componentBounds.left + [double]$componentBounds.width
+      $componentBottom = [double]$componentBounds.top + [double]$componentBounds.height
+      $composerRight = [double]$bounds.left + [double]$bounds.width
+      $composerBottom = [double]$bounds.top + [double]$bounds.height
+      $isComposerBorder = [double]$componentBounds.width -ge ([double]$bounds.width * 0.75) -and
+        [double]$componentBounds.height -ge ([double]$bounds.height * 0.70)
+      $touchesComposerBorder = $isComposerBorder -or
+        [double]$componentBounds.left -le ([double]$bounds.left + $borderInset) -or
+        [double]$componentBounds.top -le ([double]$bounds.top + $borderInset) -or
+        $componentRight -ge ($composerRight - $borderInset) -or
+        $componentBottom -ge ($composerBottom - $borderInset)
+      if ($touchesComposerBorder) {
+        $borderRejectedCount += 1
+        continue
+      }
+      if ($componentPixelCount -ge 80) { $potentialCandidateCount += 1 }
+      $area = [Math]::Max(1.0, [double]$componentBounds.width * [double]$componentBounds.height)
+      $fillRatio = [double]$componentPixelCount / $area
+      $centerX = [double]$componentBounds.left + ([double]$componentBounds.width / 2.0)
+      $centerY = [double]$componentBounds.top + ([double]$componentBounds.height / 2.0)
+      if ($componentPixelCount -lt 180 -or
+        -not (Test-VisualBounds $componentBounds 44 18) -or
+        [double]$componentBounds.width -gt 180.0 -or
+        [double]$componentBounds.height -gt 72.0 -or
+        $fillRatio -lt 0.50 -or
+        $centerX -lt ([double]$bounds.left + ([double]$bounds.width * 0.58)) -or
+        $centerY -lt ([double]$bounds.top + ([double]$bounds.height * 0.38)) -or
+        -not (Test-VisualBoundsInside $componentBounds $bounds)) { continue }
+      [void]$validCandidates.Add(@{
+        bounds = $componentBounds
+        centerX = $centerX
+        centerY = $centerY
+        pixelCount = $componentPixelCount
+        fillRatio = $fillRatio
+      })
     }
   }
-  if ($sampled -eq 0 -or ([double]$green / [double]$sampled) -lt 0.58) {
-    return @{ ok = $false; reason = "moments_comment_send_button_ambiguous"; bounds = $buttonBounds }
+  if ($validCandidates.Count -ne 1) {
+    return @{
+      ok = $false
+      reason = $(if ($validCandidates.Count -eq 0) { "moments_comment_send_button_not_found" } else { "moments_comment_send_button_ambiguous" })
+      candidateCount = $validCandidates.Count
+      componentCount = $componentCount
+      potentialCandidateCount = $potentialCandidateCount
+      borderRejectedCount = $borderRejectedCount
+    }
   }
+  $button = $validCandidates[0]
+  $buttonBounds = $button.bounds
   $ocrRegion = @{
     left = [Math]::Max([double]$bounds.left, [double]$buttonBounds.left - 4.0)
     top = [Math]::Max([double]$bounds.top, [double]$buttonBounds.top - 4.0)
     width = [double]$buttonBounds.width + 8.0
     height = [double]$buttonBounds.height + 8.0
   }
-  $ocr = Get-MomentsHighContrastOcrObservation $frame $ocrRegion 4
-  $text = $(if ($ocr.ok) { [Text.RegularExpressions.Regex]::Replace((Normalize-VisualText ([string]$ocr.text)), "\s+", "") } else { "" })
-  if ($text -and $text -cne "发送") {
-    return @{ ok = $false; reason = "moments_comment_send_button_ambiguous"; bounds = $buttonBounds; ocrText = $text }
+  $text = ""
+  if ($includeOcr) {
+    $ocr = Get-MomentsHighContrastOcrObservation $frame $ocrRegion 4
+    $text = $(if ($ocr.ok) { [Text.RegularExpressions.Regex]::Replace((Normalize-VisualText ([string]$ocr.text)), "\s+", "") } else { "" })
   }
+  $sendLabel = ([string]([char]0x53D1) + [string]([char]0x9001))
   return @{
     ok = $true
     bounds = $buttonBounds
-    centerX = [double]$buttonBounds.left + ([double]$buttonBounds.width / 2.0)
-    centerY = [double]$buttonBounds.top + ([double]$buttonBounds.height / 2.0)
+    centerX = $button.centerX
+    centerY = $button.centerY
+    pixelCount = $button.pixelCount
+    fillRatio = $button.fillRatio
+    candidateCount = 1
+    componentCount = $componentCount
+    potentialCandidateCount = $potentialCandidateCount
+    borderRejectedCount = $borderRejectedCount
     ocrText = $text
-    labelVerified = $text -ceq "发送"
+    ocrAttempted = $includeOcr
+    labelVerified = $text -ceq $sendLabel
   }
 }
 
-function Get-VisualCommentTextRegion($frame, $postBounds, $menu) {
+function Get-VisualCommentTextRegion($frame, $postBounds, $menu, $nextPostTop = $null) {
   $left = [Math]::Max(0.0, [double]$postBounds.left + ([double]$postBounds.width * 0.10))
   $top = [Math]::Max(0.0, [double]$menu.bounds.top + [double]$menu.bounds.height + 4.0)
   $right = [Math]::Min([double]$frame.width, [double]$postBounds.left + [double]$postBounds.width)
-  $bottom = [Math]::Min([double]$frame.height, $top + [Math]::Min(360.0, [double]$frame.height * 0.38))
-  return @{ left = $left; top = $top; width = $right - $left; height = $bottom - $top }
+  $fallbackBottom = [Math]::Min(
+    [double]$frame.height,
+    [double]$postBounds.top + [double]$postBounds.height
+  )
+  $hasCompleteBoundary = $nextPostTop -ne $null -and
+    [double]$nextPostTop -gt ($top + 12.0) -and
+    [double]$nextPostTop -le [double]$frame.height
+  $bottom = $(if ($hasCompleteBoundary) {
+    [Math]::Min([double]$frame.height, [double]$nextPostTop - 4.0)
+  } else {
+    $fallbackBottom
+  })
+  return @{
+    left = $left
+    top = $top
+    width = $right - $left
+    height = $bottom - $top
+    complete = [bool]$hasCompleteBoundary
+  }
 }
 
 function Get-VisualNormalizedOcrCount([string]$haystack, [string]$needle) {
@@ -2175,15 +2767,37 @@ function Test-VisualLocatorBoundsSame($left, $right) {
     [Math]::Abs($leftCenterY - $rightCenterY) -le 10.0
 }
 
-function Find-VisualCommentCandidate($frame, $postBounds, $menu, [string]$commentText, [string]$matchMode = "fuzzy") {
+function Find-VisualCommentCandidate(
+  $frame,
+  $postBounds,
+  $menu,
+  [string]$commentText,
+  [string]$matchMode = "fuzzy",
+  $nextPostTop = $null
+) {
   $expected = Get-VisualCompactLocatorText $commentText
   if (-not $expected) { return @{ ok = $false; reason = "moments_comment_missing" } }
   if (@("exact", "fuzzy") -notcontains $matchMode) {
     return @{ ok = $false; reason = "moments_comment_match_mode_invalid"; candidateCount = 0 }
   }
-  $region = Get-VisualCommentTextRegion $frame $postBounds $menu
+  $region = Get-VisualCommentTextRegion $frame $postBounds $menu $nextPostTop
   if (-not (Test-VisualBounds $region 20 12)) {
-    return @{ ok = $false; reason = "moments_comment_candidate_region_invalid"; candidateCount = 0 }
+    return @{
+      ok = $false
+      reason = "moments_comment_candidate_region_invalid"
+      candidateCount = 0
+      regionComplete = [bool]$region.complete
+    }
+  }
+  $regionPixelHash = Get-MomentsPixelHash $frame $region
+  if (-not $regionPixelHash) {
+    return @{
+      ok = $false
+      reason = "moments_comment_candidate_hash_failed"
+      candidateCount = 0
+      regionComplete = [bool]$region.complete
+      regionBounds = $region
+    }
   }
   $observations = @(
     (Get-MomentsOcrObservation $frame $region),
@@ -2192,14 +2806,45 @@ function Find-VisualCommentCandidate($frame, $postBounds, $menu, [string]$commen
   )
   $usable = @($observations | Where-Object { $_ -and $_.ok })
   if ($usable.Count -eq 0) {
-    return @{ ok = $false; reason = "moments_comment_candidate_ocr_unavailable"; candidateCount = 0 }
+    return @{
+      ok = $false
+      reason = "moments_comment_candidate_ocr_unavailable"
+      candidateCount = 0
+      normalizedTextCount = 0
+      regionComplete = [bool]$region.complete
+      regionBounds = $region
+      regionPixelHash = $regionPixelHash
+    }
+  }
+  [int]$normalizedTextCount = 0
+  foreach ($observation in $usable) {
+    $normalizedTextCount = [Math]::Max(
+      $normalizedTextCount,
+      (Get-VisualNormalizedOcrCount ([string]$observation.text) $commentText)
+    )
   }
   $candidates = New-Object System.Collections.Generic.List[object]
+  $fuzzyCandidates = New-Object System.Collections.Generic.List[object]
   foreach ($observation in $usable) {
     foreach ($line in @($observation.lines)) {
       $lineText = Get-VisualCompactLocatorText ([string]$line.text)
       if (-not $lineText -or -not (Test-VisualBounds $line.bounds 2 2)) { continue }
       $match = Get-VisualCommentLineMatch $expected $lineText $matchMode
+      if ($matchMode -ceq "exact" -and -not $match.ok) {
+        $fuzzyMatch = Get-VisualCommentLineMatch $expected $lineText "fuzzy"
+        if ($fuzzyMatch.ok) {
+          [void]$fuzzyCandidates.Add(@{
+            score = [double]$fuzzyMatch.score
+            common = [int]$fuzzyMatch.common
+            bounds = @{
+              left = [double]$region.left + [double]$line.bounds.left
+              top = [double]$region.top + [double]$line.bounds.top
+              width = [double]$line.bounds.width
+              height = [double]$line.bounds.height
+            }
+          })
+        }
+      }
       if (-not $match.ok) { continue }
       [void]$candidates.Add(@{
         score = [double]$match.score
@@ -2215,7 +2860,16 @@ function Find-VisualCommentCandidate($frame, $postBounds, $menu, [string]$commen
     }
   }
   if ($candidates.Count -eq 0) {
-    return @{ ok = $false; reason = "moments_comment_candidate_not_found"; candidateCount = 0 }
+    return @{
+      ok = $false
+      reason = "moments_comment_candidate_not_found"
+      candidateCount = 0
+      normalizedTextCount = $normalizedTextCount
+      fuzzyCandidateCount = $fuzzyCandidates.Count
+      regionComplete = [bool]$region.complete
+      regionBounds = $region
+      regionPixelHash = $regionPixelHash
+    }
   }
   $ordered = @($candidates.ToArray() | Sort-Object -Property @{ Expression = { [double]$_.score }; Descending = $true }, @{ Expression = { [int]$_.common }; Descending = $true })
   $best = $ordered[0]
@@ -2227,25 +2881,92 @@ function Find-VisualCommentCandidate($frame, $postBounds, $menu, [string]$commen
     if ($same.Count -eq 0) { [void]$locations.Add($candidate) }
   }
   if ($locations.Count -ne 1) {
-    return @{ ok = $false; reason = "moments_comment_candidate_ambiguous"; candidateCount = $locations.Count }
+    return @{
+      ok = $false
+      reason = "moments_comment_candidate_ambiguous"
+      candidateCount = $locations.Count
+      normalizedTextCount = $normalizedTextCount
+      fuzzyCandidateCount = $fuzzyCandidates.Count
+      regionComplete = [bool]$region.complete
+      regionBounds = $region
+      regionPixelHash = $regionPixelHash
+    }
   }
   $bounds = $locations[0].bounds
   if (-not (Test-VisualBoundsInside $bounds @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height })) {
-    return @{ ok = $false; reason = "moments_comment_candidate_outside_window"; candidateCount = 1 }
+    return @{
+      ok = $false
+      reason = "moments_comment_candidate_outside_window"
+      candidateCount = 1
+      normalizedTextCount = $normalizedTextCount
+      fuzzyCandidateCount = $fuzzyCandidates.Count
+      regionComplete = [bool]$region.complete
+      regionBounds = $region
+      regionPixelHash = $regionPixelHash
+    }
   }
   $pixelHash = Get-MomentsPixelHash $frame $bounds
   if (-not $pixelHash) {
-    return @{ ok = $false; reason = "moments_comment_candidate_hash_failed"; candidateCount = 1 }
+    return @{ ok = $false; reason = "moments_comment_candidate_hash_failed"; candidateCount = 1; normalizedTextCount = $normalizedTextCount }
   }
   return @{
     ok = $true
     candidateCount = 1
+    normalizedTextCount = $normalizedTextCount
+    fuzzyCandidateCount = $fuzzyCandidates.Count
     bounds = $bounds
     pixelHash = $pixelHash
     score = [double]$locations[0].score
     common = [int]$locations[0].common
     exactMatch = [bool]$locations[0].exactMatch
     matchMode = $matchMode
+    regionComplete = [bool]$region.complete
+    regionBounds = $region
+    regionPixelHash = $regionPixelHash
+  }
+}
+
+function Resolve-VisualCommentOccurrence($first, $second) {
+  $regionStable = [bool]$first.regionComplete -and
+    [bool]$second.regionComplete -and
+    (Test-VisualBoundsNear $first.regionBounds $second.regionBounds 2.0) -and
+    -not [string]::IsNullOrWhiteSpace([string]$first.regionPixelHash) -and
+    [string]$first.regionPixelHash -ceq [string]$second.regionPixelHash
+  $singleLineStable = $regionStable -and
+    $first.ok -and
+    $second.ok -and
+    [bool]$first.exactMatch -and
+    [bool]$second.exactMatch -and
+    (Test-VisualLocatorBoundsSame $first.bounds $second.bounds)
+  if ($singleLineStable) {
+    return @{
+      ok = $true
+      commentOccurrence = "present"
+      verificationMode = "two_frame_exact_comment_line"
+    }
+  }
+
+  $firstAbsent = -not $first.ok -and
+    [string]$first.reason -ceq "moments_comment_candidate_not_found" -and
+    [int]$first.candidateCount -eq 0 -and
+    [int]$first.normalizedTextCount -eq 0 -and
+    [int]$first.fuzzyCandidateCount -eq 0
+  $secondAbsent = -not $second.ok -and
+    [string]$second.reason -ceq "moments_comment_candidate_not_found" -and
+    [int]$second.candidateCount -eq 0 -and
+    [int]$second.normalizedTextCount -eq 0 -and
+    [int]$second.fuzzyCandidateCount -eq 0
+  if ($regionStable -and $firstAbsent -and $secondAbsent) {
+    return @{
+      ok = $true
+      commentOccurrence = "absent"
+      verificationMode = "two_frame_complete_comment_region_absence"
+    }
+  }
+  return @{
+    ok = $false
+    commentOccurrence = "unresolved"
+    verificationMode = "two_frame_exact_comment_region"
   }
 }
 
@@ -2279,8 +3000,7 @@ function Test-VisualCommentReadbackSeed($seed, $context, $lock) {
     -not (Test-VisualBoundsNear $seed.menuBounds $menuBounds 3.0)) { return $false }
   $createdAtMs = [int64]$seed.createdAtMs
   return $createdAtMs -gt 0 -and $createdAtMs -le [int64]$context.deadlineMs -and
-    $createdAtMs -le ((Get-VisualEpochMs) + 5000) -and [Win32WechatMomentsVisualAction]::IsWindowVisible($lock.hWnd) -and
-    [Win32WechatMomentsVisualAction]::GetLastInputTick() -eq [uint32]$seed.expectedInputTick
+    $createdAtMs -le ((Get-VisualEpochMs) + 5000) -and [Win32WechatMomentsVisualAction]::IsWindowVisible($lock.hWnd)
 }
 
 function Test-VisualReadbackCandidateFrame($frame, $seed, $context) {
@@ -2288,13 +3008,14 @@ function Test-VisualReadbackCandidateFrame($frame, $seed, $context) {
   $avatarBounds = ConvertTo-RelativeVisualBounds $context.postSnapshot.avatar_bounds $context.expectedWindow
   $avatarHash = Get-MomentsPixelHash $frame $avatarBounds
   $menus = @(Find-MomentsMenuDots $frame)
-  $menuMatches = @($menus | Where-Object { Test-VisualBoundsNear $_.bounds $seed.menuBounds 3.0 })
+  $menuResolution = Resolve-VisualMenuAnchor $menus $seed.menuBounds 3.0
   return @{
     ok = $candidateHash -and $candidateHash -ceq [string]$seed.candidatePixelHash -and
-      $avatarHash -and $avatarHash -ceq [string]$seed.avatarHash -and $menuMatches.Count -eq 1
+      $avatarHash -and $avatarHash -ceq [string]$seed.avatarHash -and $menuResolution.ok
     candidateHash = $candidateHash
     avatarHash = $avatarHash
-    menuCount = $menuMatches.Count
+    menuCount = [int]$menuResolution.diagnostics.distinctCandidateCount
+    menuDiagnostics = $menuResolution.diagnostics
   }
 }
 
@@ -2763,6 +3484,32 @@ function Get-LockedVisualCommentState($lock, $menu, $expectedComposerBounds, $ex
   }
 }
 
+function Get-LockedVisualCommentSendState($lock, $menu) {
+  $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $false
+  if (-not $frame.ok) {
+    Close-MomentsVisualFrame $frame
+    return @{ ok = $false; reason = [string]$frame.reason }
+  }
+  try {
+    $composer = Get-VisualCommentComposer $frame $menu
+    if (-not $composer.ok) {
+      return @{ ok = $false; reason = [string]$composer.reason; composer = $composer }
+    }
+    $send = Get-VisualSendButton $frame $composer
+    if (-not $send.ok -or -not (Test-VisualBoundsInside $send.bounds $composer.bounds)) {
+      return @{
+        ok = $false
+        reason = $(if (-not $send.ok) { [string]$send.reason } else { "moments_comment_send_button_ambiguous" })
+        composer = $composer
+        send = $send
+      }
+    }
+    return @{ ok = $true; composer = $composer; send = $send }
+  } finally {
+    Close-MomentsVisualFrame $frame
+  }
+}
+
 function Test-VisualSelectedCommentDraftEmpty($state) {
   return $state.ok -and -not $state.send.ok -and
     [string]$state.send.reason -ceq "moments_comment_send_button_not_found"
@@ -2806,47 +3553,162 @@ function Get-VisualStableBlankCommentCheckpoint(
   [string]$expectedAvatarHash
 ) {
   [uint32]$retryBaselineTick = [uint32]::MaxValue
+  $blankCheckpointRetryCount = 0
+  $retryReason = ""
   for ($pass = 0; $pass -lt 2; $pass++) {
     [uint32]$startedTick = Get-VisualInputTick
     if ($startedTick -eq [uint32]::MaxValue -or
       ($pass -gt 0 -and $startedTick -ne $retryBaselineTick)) {
-      return @{ ok = $false; reason = "moments_external_input_detected"; safeToDismiss = $false }
+      return @{
+        ok = $false
+        reason = "moments_external_input_detected"
+        safeToDismiss = $false
+        diagnostics = @{
+          blankCheckpointRetryCount = $blankCheckpointRetryCount
+          retryReason = $retryReason
+          checkpointPass = $pass
+          startedInputTick = $startedTick
+          finishedInputTick = [uint32]::MaxValue
+          inputTickStable = $false
+        }
+      }
     }
     if (-not (Test-VisualLockedForeground $lock)) {
-      return @{ ok = $false; reason = "moments_window_not_foreground"; safeToDismiss = $false }
+      return @{
+        ok = $false
+        reason = "moments_window_not_foreground"
+        safeToDismiss = $false
+        diagnostics = @{
+          blankCheckpointRetryCount = $blankCheckpointRetryCount
+          retryReason = $retryReason
+          checkpointPass = $pass
+          startedInputTick = $startedTick
+          finishedInputTick = $startedTick
+          inputTickStable = $true
+        }
+      }
     }
 
     Start-Sleep -Milliseconds 140
     $stableState = Read-VisualBlankCommentFrame $lock $menu $expectedAvatarBounds
     if (-not $stableState.ok) {
-      return @{ ok = $false; reason = [string]$stableState.reason; safeToDismiss = $false }
+      return @{
+        ok = $false
+        reason = [string]$stableState.reason
+        safeToDismiss = $false
+        diagnostics = @{
+          blankCheckpointRetryCount = $blankCheckpointRetryCount
+          retryReason = $retryReason
+          checkpointPass = $pass
+          startedInputTick = $startedTick
+          finishedInputTick = (Get-VisualInputTick)
+          inputTickStable = $false
+          stableComposerOk = $false
+          stableComposerReason = [string]$stableState.reason
+        }
+      }
     }
     Start-Sleep -Milliseconds 260
     $settledState = Read-VisualBlankCommentFrame $lock $menu $expectedAvatarBounds
     if (-not $settledState.ok) {
-      return @{ ok = $false; reason = [string]$settledState.reason; safeToDismiss = $false }
+      return @{
+        ok = $false
+        reason = [string]$settledState.reason
+        safeToDismiss = $false
+        diagnostics = @{
+          blankCheckpointRetryCount = $blankCheckpointRetryCount
+          retryReason = $retryReason
+          checkpointPass = $pass
+          startedInputTick = $startedTick
+          finishedInputTick = (Get-VisualInputTick)
+          inputTickStable = $false
+          stableComposerOk = [bool]$stableState.composer.ok
+          stableComposerReason = [string]$stableState.composer.reason
+          settledComposerOk = $false
+          settledComposerReason = [string]$settledState.reason
+          stableSendOk = [bool]$stableState.send.ok
+          stableSendReason = [string]$stableState.send.reason
+          stableSendCandidateCount = [int]$stableState.send.candidateCount
+        }
+      }
     }
     [uint32]$finishedTick = Get-VisualInputTick
+    $diagnostics = @{
+      blankCheckpointRetryCount = $blankCheckpointRetryCount
+      retryReason = $retryReason
+      checkpointPass = $pass
+      startedInputTick = $startedTick
+      finishedInputTick = $finishedTick
+      inputTickStable = $finishedTick -eq $startedTick
+      stableComposerOk = [bool]$stableState.composer.ok
+      stableComposerReason = [string]$stableState.composer.reason
+      settledComposerOk = [bool]$settledState.composer.ok
+      settledComposerReason = [string]$settledState.composer.reason
+      stableSendOk = [bool]$stableState.send.ok
+      stableSendReason = [string]$stableState.send.reason
+      settledSendOk = [bool]$settledState.send.ok
+      settledSendReason = [string]$settledState.send.reason
+      stableSendCandidateCount = [int]$stableState.send.candidateCount
+      settledSendCandidateCount = [int]$settledState.send.candidateCount
+    }
 
     if ($stableState.send.ok -or $settledState.send.ok) {
-      return @{ ok = $false; reason = "moments_comment_preexisting_draft"; inputTick = $finishedTick; safeToDismiss = $false }
+      return @{
+        ok = $false
+        reason = "moments_comment_preexisting_draft"
+        inputTick = $finishedTick
+        safeToDismiss = $false
+        diagnostics = $diagnostics
+      }
     }
     if (-not $stableState.composer.ok -or -not $settledState.composer.ok -or
       [string]$stableState.send.reason -cne "moments_comment_send_button_not_found" -or
       [string]$settledState.send.reason -cne "moments_comment_send_button_not_found") {
-      return @{ ok = $false; reason = "moments_comment_draft_state_unknown"; inputTick = $finishedTick; safeToDismiss = $false }
+      if ($pass -eq 0 -and $finishedTick -eq $startedTick -and (Test-VisualLockedForeground $lock)) {
+        $blankCheckpointRetryCount = 1
+        $retryReason = "moments_comment_draft_state_unknown"
+        $retryBaselineTick = $finishedTick
+        Start-Sleep -Milliseconds 160
+        continue
+      }
+      $diagnostics.blankCheckpointRetryCount = $blankCheckpointRetryCount
+      $diagnostics.retryReason = $retryReason
+      return @{
+        ok = $false
+        reason = "moments_comment_draft_state_unknown"
+        inputTick = $finishedTick
+        safeToDismiss = $false
+        diagnostics = $diagnostics
+      }
     }
     if (-not (Test-VisualBoundsNear $stableState.composer.bounds $expectedComposerBounds 4.0) -or
       -not (Test-VisualBoundsNear $settledState.composer.bounds $expectedComposerBounds 4.0) -or
       -not (Test-VisualBoundsNear $stableState.composer.bounds $settledState.composer.bounds 4.0)) {
-      return @{ ok = $false; reason = "moments_comment_editor_changed"; inputTick = $finishedTick; safeToDismiss = $false }
+      return @{
+        ok = $false
+        reason = "moments_comment_editor_changed"
+        inputTick = $finishedTick
+        safeToDismiss = $false
+        diagnostics = $diagnostics
+      }
     }
     if (-not $stableState.avatarHash -or $stableState.avatarHash -cne $expectedAvatarHash -or
       -not $settledState.avatarHash -or $settledState.avatarHash -cne $expectedAvatarHash) {
-      return @{ ok = $false; reason = "moments_post_anchor_changed"; inputTick = $finishedTick; safeToDismiss = $false }
+      return @{
+        ok = $false
+        reason = "moments_post_anchor_changed"
+        inputTick = $finishedTick
+        safeToDismiss = $false
+        diagnostics = $diagnostics
+      }
     }
     if ($finishedTick -eq [uint32]::MaxValue -or -not (Test-VisualLockedForeground $lock)) {
-      return @{ ok = $false; reason = "moments_external_input_detected"; safeToDismiss = $false }
+      return @{
+        ok = $false
+        reason = "moments_external_input_detected"
+        safeToDismiss = $false
+        diagnostics = $diagnostics
+      }
     }
     if ($finishedTick -eq $startedTick) {
       return @{
@@ -2856,18 +3718,37 @@ function Get-VisualStableBlankCommentCheckpoint(
         inputTick = $finishedTick
         checkpointPass = $pass
         safeToDismiss = $true
+        diagnostics = $diagnostics
       }
     }
     if ($pass -eq 0) {
       # GetLastInputInfo is session-wide and can surface a delayed SendInput tick.
       # Discard both frames and require one entirely fresh, passive quiet pass.
+      $blankCheckpointRetryCount = 1
+      $retryReason = "moments_external_input_detected"
       $retryBaselineTick = $finishedTick
       Start-Sleep -Milliseconds 160
       continue
     }
-    return @{ ok = $false; reason = "moments_external_input_detected"; inputTick = $finishedTick; safeToDismiss = $false }
+    return @{
+      ok = $false
+      reason = "moments_external_input_detected"
+      inputTick = $finishedTick
+      safeToDismiss = $false
+      diagnostics = $diagnostics
+    }
   }
-  return @{ ok = $false; reason = "moments_external_input_detected"; safeToDismiss = $false }
+  return @{
+    ok = $false
+    reason = "moments_external_input_detected"
+    safeToDismiss = $false
+    diagnostics = @{
+      blankCheckpointRetryCount = $blankCheckpointRetryCount
+      retryReason = $retryReason
+      checkpointPass = 1
+      inputTickStable = $false
+    }
+  }
 }
 
 function Wait-VisualSelectedCommentDraftEmptyPair(
@@ -3002,8 +3883,9 @@ function Dismiss-VisualProvenEmptyCommentComposer(
     try {
       $remainingComposer = Get-VisualCommentComposer $frame $menu
       $remainingAvatarHash = Get-MomentsPixelHash $frame $expectedAvatarBounds
-      $remainingMenus = @(Find-MomentsMenuDots $frame | Where-Object { Test-VisualBoundsNear $_.bounds $menu.bounds 3.0 })
-      if (-not $remainingAvatarHash -or $remainingAvatarHash -cne $expectedAvatarHash -or $remainingMenus.Count -ne 1) {
+      $remainingMenus = @(Find-MomentsMenuDots $frame)
+      $remainingMenuResolution = Resolve-VisualMenuAnchor $remainingMenus $menu.bounds 3.0
+      if (-not $remainingAvatarHash -or $remainingAvatarHash -cne $expectedAvatarHash -or -not $remainingMenuResolution.ok) {
         return $false
       }
       if (-not $remainingComposer.ok -and [string]$remainingComposer.reason -ceq "moments_comment_composer_not_found") {
@@ -3027,23 +3909,8 @@ function Dismiss-VisualProvenEmptyCommentComposer(
 
 function Get-VisualPostSendCommentState(
   $context,
-  $opened,
-  [string]$commentText,
-  [uint32]$expectedInputTick,
-  [bool]$findCandidate = $false,
-  $expectedCandidateBounds = $null,
-  [string]$expectedCandidateHash = "",
-  [string]$candidateMatchMode = "exact"
+  $opened
 ) {
-  $hashProofRequired = $expectedCandidateBounds -ne $null -or -not [string]::IsNullOrWhiteSpace($expectedCandidateHash)
-  if ($hashProofRequired -and ($expectedCandidateBounds -eq $null -or $expectedCandidateHash -notmatch '^[0-9a-f]{64}$')) {
-    return @{ ok = $false; reason = "moments_comment_readback_seed_unstable" }
-  }
-  if ($expectedInputTick -eq [uint32]::MaxValue -or
-    [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick) {
-    return @{ ok = $false; reason = "moments_external_input_detected" }
-  }
-
   $stateLock = Get-LockedVisualRoot $context
   if (-not $stateLock.ok -or [Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $stateLock.hWnd) {
     return @{ ok = $false; reason = $(if (-not $stateLock.ok) { [string]$stateLock.reason } else { "moments_window_not_foreground" }) }
@@ -3054,52 +3921,25 @@ function Get-VisualPostSendCommentState(
     return @{ ok = $false; reason = [string]$frame.reason }
   }
 
-  $candidate = @{ ok = $false; reason = "moments_comment_candidate_not_requested"; candidateCount = 0 }
-  $candidateHashStable = -not $hashProofRequired
   try {
     $composer = Get-VisualCommentComposer $frame $opened.menu
-    $composerCompleted = -not $composer.ok -and [string]$composer.reason -ceq "moments_comment_composer_not_found"
-    $avatarHash = Get-MomentsPixelHash $frame $opened.expectedAvatarBounds
-    $anchorStable = $avatarHash -and $avatarHash -ceq $opened.avatarHash
-    $menus = @(Find-MomentsMenuDots $frame)
-    $menuMatches = @($menus | Where-Object { Test-VisualBoundsNear $_.bounds $opened.expectedMenuBounds 3.0 })
-    $menuStable = $menuMatches.Count -eq 1
-    if ($findCandidate) {
-      # The OCR line may include an author prefix, so exact mode still uses
-      # IndexOf. It also keeps sibling comments ending in -A/-B unambiguous.
-      $candidate = Find-VisualCommentCandidate $frame $opened.postBounds $opened.menu $commentText $candidateMatchMode
-    }
-    if ($hashProofRequired) {
-      $observedCandidateHash = $(if ((Test-VisualBounds $expectedCandidateBounds 2 2) -and
-        (Test-VisualBoundsInside $expectedCandidateBounds @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height })) {
-        Get-MomentsPixelHash $frame $expectedCandidateBounds
-      } else { "" })
-      $candidateHashStable = $observedCandidateHash -and $observedCandidateHash -ceq $expectedCandidateHash
-    }
+    $send = Get-VisualSendButton $frame $composer $false
+    $composerClosed = -not $composer.ok -and [string]$composer.reason -ceq "moments_comment_composer_not_found"
+    $sendInactive = $composer.ok -and -not $send.ok -and [string]$send.reason -ceq "moments_comment_send_button_not_found"
+    $composerCompleted = $composerClosed -or $sendInactive
   } finally {
     Close-MomentsVisualFrame $frame
   }
 
-  if ([Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick) {
-    return @{ ok = $false; reason = "moments_external_input_detected" }
-  }
-  $surfaceStable = $composerCompleted -and $anchorStable -and $menuStable
-  $candidateStable = -not $findCandidate -or $candidate.ok
-  $ok = $surfaceStable -and $candidateStable -and $candidateHashStable
   return @{
-    ok = $ok
-    reason = $(if ($ok) { "" } elseif (-not $composerCompleted) { "moments_comment_composer_not_settled" } elseif (-not $anchorStable) { "moments_post_anchor_changed" } elseif (-not $menuStable) { "moments_menu_changed" } elseif ($findCandidate -and -not $candidate.ok) { [string]$candidate.reason } else { "moments_comment_readback_seed_unstable" })
+    ok = [bool]$composerCompleted
+    reason = $(if ($composerCompleted) { "" } else { "moments_comment_composer_not_settled" })
     lock = $stateLock
-    candidate = $candidate
     diagnostics = @{
       composerCompleted = [bool]$composerCompleted
-      anchorStable = [bool]$anchorStable
-      menuStable = [bool]$menuStable
-      menuMatchCount = [int]$menuMatches.Count
-      candidateReason = [string]$candidate.reason
-      candidateCount = [int]$candidate.candidateCount
-      candidateHashStable = [bool]$candidateHashStable
-      candidateMatchMode = $candidateMatchMode
+      composerClosed = [bool]$composerClosed
+      sendInactive = [bool]$sendInactive
+      sendCandidateCount = [int]$send.candidateCount
     }
   }
 }
@@ -3109,23 +3949,41 @@ function Test-VisualPostSendBudget($context, [int64]$settleDeadlineMs) {
   return $settleDeadlineMs -gt 0 -and
     $nowMs -lt $settleDeadlineMs -and
     $nowMs -lt [int64]$script:visualWorkerSoftDeadlineMs -and
-    (Test-VisualDeadlineMargin ([int64]$context.deadlineMs) 5000)
+    (Test-VisualDeadlineMargin ([int64]$context.deadlineMs) 500)
+}
+
+function Wait-VisualPostClickInputQuiet($context, $lock) {
+  if (-not (Test-VisualDeadlineMargin ([int64]$context.deadlineMs) 500)) {
+    return @{ ok = $false; reason = "moments_comment_readback_seed_timeout" }
+  }
+  if ([Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
+    -not [Win32WechatMomentsVisualAction]::IsWindowVisible($lock.hWnd) -or
+    [Win32WechatMomentsVisualAction]::IsIconic($lock.hWnd)) {
+    return @{ ok = $false; reason = "moments_window_not_foreground" }
+  }
+  return @{ ok = $true }
 }
 
 function Wait-VisualPostSendSurfaceSettled(
   $context,
   $opened,
-  [string]$commentText,
-  [uint32]$expectedInputTick,
   [int64]$settleDeadlineMs
 ) {
   $consecutiveFrames = 0
   $lastState = $null
   for ($attempt = 0; $attempt -lt 20; $attempt++) {
     if (-not (Test-VisualPostSendBudget $context $settleDeadlineMs)) { break }
-    $lastState = Get-VisualPostSendCommentState $context $opened $commentText $expectedInputTick
-    if ([string]$lastState.reason -ceq "moments_external_input_detected") { return $lastState }
+    $lastState = Get-VisualPostSendCommentState $context $opened
     if (-not (Test-VisualPostSendBudget $context $settleDeadlineMs)) {
+      if ($lastState.ok) {
+        $deadlineConfirmation = Get-VisualPostSendCommentState $context $opened
+        if ($deadlineConfirmation.ok) { return $deadlineConfirmation }
+        return @{
+          ok = $false
+          reason = "moments_comment_readback_seed_timeout"
+          diagnostics = $deadlineConfirmation.diagnostics
+        }
+      }
       return @{ ok = $false; reason = "moments_comment_readback_seed_timeout"; diagnostics = $lastState.diagnostics }
     }
     if ($lastState.ok) {
@@ -3146,88 +4004,22 @@ function Wait-VisualPostSendSurfaceSettled(
 function Wait-VisualCommentReadbackSeed(
   $context,
   $opened,
-  [string]$commentText,
-  [uint32]$expectedInputTick,
   [int64]$settleDeadlineMs
 ) {
-  $lastState = $null
-  [int64]$seedWaitStartedMs = Get-VisualEpochMs
-  [int64[]]$sampleOffsetsMs = @(0, 2200, 5000)
-  for ($ocrAttempt = 0; $ocrAttempt -lt $sampleOffsetsMs.Count; $ocrAttempt++) {
-    [int64]$sampleAtMs = $seedWaitStartedMs + $sampleOffsetsMs[$ocrAttempt]
-    while ((Get-VisualEpochMs) -lt $sampleAtMs) {
-      if (-not (Test-VisualPostSendBudget $context $settleDeadlineMs)) { break }
-      if ([Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick) {
-        return @{ ok = $false; reason = "moments_external_input_detected" }
-      }
-      [int]$sampleWaitMs = [int][Math]::Min([int64]160, [Math]::Max([int64]20, $sampleAtMs - (Get-VisualEpochMs)))
-      Start-Sleep -Milliseconds $sampleWaitMs
+  $surface = Wait-VisualPostSendSurfaceSettled $context $opened $settleDeadlineMs
+  if (-not $surface.ok) {
+    return @{
+      ok = $false
+      reason = "moments_comment_readback_seed_unavailable"
+      diagnostics = $surface.diagnostics
     }
-    if (-not (Test-VisualPostSendBudget $context $settleDeadlineMs)) { break }
-    $surface = Wait-VisualPostSendSurfaceSettled $context $opened $commentText $expectedInputTick $settleDeadlineMs
-    if (-not $surface.ok) {
-      if ([string]$surface.reason -ceq "moments_external_input_detected") { return $surface }
-      $lastState = $surface
-      if (-not (Test-VisualPostSendBudget $context $settleDeadlineMs)) { break }
-      continue
-    }
-    Start-Sleep -Milliseconds 350
-    if (-not (Test-VisualPostSendBudget $context $settleDeadlineMs)) { break }
-    $locatorOnly = $false
-    $candidateState = Get-VisualPostSendCommentState $context $opened $commentText $expectedInputTick $true $null "" "exact"
-    if ([string]$candidateState.reason -ceq "moments_external_input_detected") { return $candidateState }
-    if (-not $candidateState.ok -and [string]$candidateState.reason -ceq "moments_comment_candidate_not_found") {
-      if (-not (Test-VisualPostSendBudget $context $settleDeadlineMs)) {
-        $lastState = $candidateState
-        break
-      }
-      $candidateState = Get-VisualPostSendCommentState $context $opened $commentText $expectedInputTick $true $null "" "fuzzy"
-      $locatorOnly = $candidateState.ok
-      if ([string]$candidateState.reason -ceq "moments_external_input_detected") { return $candidateState }
-    }
-    if (-not (Test-VisualPostSendBudget $context $settleDeadlineMs)) {
-      $lastState = $candidateState
-      break
-    }
-    if (-not $candidateState.ok) {
-      $lastState = $candidateState
-      continue
-    }
-
-    Start-Sleep -Milliseconds 160
-    if (-not (Test-VisualPostSendBudget $context $settleDeadlineMs)) { break }
-    $stableState = Get-VisualPostSendCommentState $context $opened $commentText $expectedInputTick $false $candidateState.candidate.bounds ([string]$candidateState.candidate.pixelHash)
-    if ([string]$stableState.reason -ceq "moments_external_input_detected") { return $stableState }
-    if (-not (Test-VisualPostSendBudget $context $settleDeadlineMs)) {
-      $lastState = $stableState
-      break
-    }
-    if ($stableState.ok) {
-      return @{
-        ok = $true
-        candidate = $candidateState.candidate
-        normalizedOcrCountAfter = [int]$candidateState.candidate.candidateCount
-        diagnostics = @{
-          composerCompleted = [bool]$stableState.diagnostics.composerCompleted
-          anchorStable = [bool]$stableState.diagnostics.anchorStable
-          menuStable = [bool]$stableState.diagnostics.menuStable
-          menuMatchCount = [int]$stableState.diagnostics.menuMatchCount
-          candidateCount = [int]$candidateState.candidate.candidateCount
-          candidateExactMatch = $(if ($locatorOnly) { $false } else { [bool]$candidateState.candidate.exactMatch })
-          candidateHashStable = [bool]$stableState.diagnostics.candidateHashStable
-          candidateStable = $true
-          candidateLocatorOnly = [bool]$locatorOnly
-          candidateMatchMode = $(if ($locatorOnly) { "fuzzy" } else { "exact" })
-        }
-        locatorOnly = [bool]$locatorOnly
-      }
-    }
-    $lastState = $stableState
   }
   return @{
-    ok = $false
-    reason = "moments_comment_readback_seed_unavailable"
-    diagnostics = $(if ($lastState) { $lastState.diagnostics } else { @{} })
+    ok = $true
+    stateTransitionVerified = $true
+    verificationMode = "composer_closed_or_send_inactive_v1"
+    normalizedOcrCountAfter = 0
+    diagnostics = $surface.diagnostics
   }
 }
 
@@ -3351,6 +4143,61 @@ function Get-VisualClipboardAfterCopyFailure(
   return @{ known = $false }
 }
 
+function Invoke-VisualCommentUnicodeDraftForSend(
+  $lock,
+  $menu,
+  $expectedComposerBounds,
+  [string]$commentText,
+  [int64]$deadlineMs,
+  [uint32]$expectedInputTick,
+  [int]$normalizedOcrCountBefore
+) {
+  if (-not $commentText -or $commentText.Length -gt 500 -or
+    -not (Test-VisualDeadline $deadlineMs)) {
+    return @{ ok = $false; status = "blocked"; reason = "moments_dry_run_expired"; actionAttempted = $false }
+  }
+  $focus = Focus-VisualCommentKeyboardTarget $lock $expectedComposerBounds $deadlineMs $expectedInputTick
+  if (-not $focus.ok) {
+    return @{ ok = $false; status = "blocked"; reason = [string]$focus.reason; actionAttempted = $false }
+  }
+  [uint32]$inputTick = [uint32]$focus.inputTick
+  $typed = Invoke-VisualOwnedUnicodeText $lock $expectedComposerBounds $inputTick $commentText
+  if (-not $typed.ok) {
+    return @{
+      ok = $false
+      status = "blocked"
+      reason = [string]$typed.reason
+      actionAttempted = $false
+      inputTick = [uint32]$typed.inputTick
+    }
+  }
+  [uint32]$inputTick = [uint32]$typed.inputTick
+  Start-Sleep -Milliseconds 120
+  $readyState = Get-LockedVisualCommentSendState $lock $menu
+  if (-not $readyState.ok -or
+    [Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd) {
+    return @{
+      ok = $false
+      status = "blocked"
+      reason = $(if (-not $readyState.ok -and [string]$readyState.reason) { [string]$readyState.reason } else { "moments_window_not_foreground" })
+      actionAttempted = $false
+      inputTick = $inputTick
+    }
+  }
+  return @{
+    ok = $true
+    status = "comment_draft_ready_for_send"
+    actionAttempted = $false
+    commentStatus = "draft_ready_for_send"
+    verificationMode = "unicode_sendinput_and_unique_enabled_button_transition"
+    normalizedOcrCountBefore = $normalizedOcrCountBefore
+    sendBounds = $readyState.send.bounds
+    inputTick = $inputTick
+    clipboardRestored = $true
+    draftRetainedForSend = $true
+  }
+}
+
 function Invoke-VisualCommentCheckClipboardRoundTrip(
   $lock,
   $menu,
@@ -3388,7 +4235,7 @@ function Invoke-VisualCommentCheckClipboardRoundTrip(
 
   try {
     if (-not $commentText -or $commentText.Length -gt 500 -or
-      -not (Test-VisualDeadlineMargin $deadlineMs 5000)) {
+      -not (Test-VisualDeadline $deadlineMs)) {
       throw [System.InvalidOperationException]::new("moments_dry_run_expired")
     }
 
@@ -3585,22 +4432,14 @@ function Invoke-VisualCommentCheckClipboardRoundTrip(
     $clipboardChanged = $false
 
     if ($retainExactDraftForSend) {
-      # Real comment sends retain the exact draft and keep the existing two-frame
-      # enabled-button proof. The caller performs one more locked pre-send proof.
-      $readyState = Get-LockedVisualCommentState $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash
-      Start-Sleep -Milliseconds 140
-      $stableReadyState = Get-LockedVisualCommentState $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash
-      if (-not $readyState.ok -or -not $stableReadyState.ok -or
-        -not $readyState.send.ok -or -not $stableReadyState.send.ok -or
-        -not (Test-VisualBoundsNear $readyState.send.bounds $stableReadyState.send.bounds 3.0) -or
-        [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $inputTick) {
+      $readyState = Get-LockedVisualCommentSendState $lock $menu
+      if (-not $readyState.ok -or -not $readyState.send.ok -or
+        -not (Test-VisualBoundsInside $readyState.send.bounds $readyState.composer.bounds)) {
         throw [System.InvalidOperationException]::new("moments_comment_send_button_ambiguous")
       }
-      $sendBounds = $stableReadyState.send.bounds
-      if (-not (Test-VisualDeadlineMargin $deadlineMs 10000) -or
-        -not (Test-VisualBounds $sendBounds 64 22) -or
-        [Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
-        [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $inputTick) {
+      $sendBounds = $readyState.send.bounds
+      if (-not (Test-VisualBounds $sendBounds 44 18) -or
+        [Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd) {
         throw [System.InvalidOperationException]::new("moments_comment_editor_changed")
       }
       $draftRetainedForSend = $true
@@ -3669,8 +4508,15 @@ function Invoke-VisualCommentCheckClipboardRoundTrip(
 
   if ($draftRetainedForSend) {
     if ($failureReason -or -not $draftMayExist -or $unknownDraftPresent -or -not $exactDraftProven -or
-      -not $clipboardRestored -or $clipboardChanged -or -not (Test-VisualBounds $sendBounds 64 22)) {
-      return @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_ready_proof_invalid"; actionAttempted = $false }
+      -not $clipboardRestored -or $clipboardChanged -or -not (Test-VisualBounds $sendBounds 44 18)) {
+      return @{
+        ok = $false
+        status = "blocked"
+        reason = "moments_comment_draft_ready_proof_invalid"
+        primaryReason = $(if ($failureReason) { $failureReason } else { "moments_comment_draft_ready_proof_invalid" })
+        cleanupReason = $draftCleanupReason
+        actionAttempted = $false
+      }
     }
     return @{
       ok = $true
@@ -3686,13 +4532,23 @@ function Invoke-VisualCommentCheckClipboardRoundTrip(
     }
   }
 
+  $primaryFailureReason = $failureReason
   if ($draftMayExist -or $unknownDraftPresent -or ($exactDraftProven -and -not $draftCleared) -or -not $composerClosed) {
-    $failureReason = $(if ($draftCleanupReason) { $draftCleanupReason } else { "moments_comment_draft_close_unverified" })
+    if (-not $draftCleanupReason) { $draftCleanupReason = "moments_comment_draft_close_unverified" }
+    if (-not $failureReason) { $failureReason = $draftCleanupReason }
   } elseif ($clipboardCaptured -and (-not $clipboardRestored -or $clipboardChanged)) {
     $failureReason = "moments_comment_clipboard_restore_failed"
   }
   if ($failureReason) {
-    return @{ ok = $false; status = "blocked"; reason = $failureReason; actionAttempted = $false; diagnostics = $draftCleanupDiagnostics }
+    return @{
+      ok = $false
+      status = "blocked"
+      reason = $(if ($primaryFailureReason) { $primaryFailureReason } else { $failureReason })
+      primaryReason = $(if ($primaryFailureReason) { $primaryFailureReason } else { $failureReason })
+      cleanupReason = $draftCleanupReason
+      actionAttempted = $false
+      diagnostics = $draftCleanupDiagnostics
+    }
   }
   return @{
     ok = $true
@@ -3874,10 +4730,7 @@ function Clear-And-CloseVisualCommentDraft($lock, $menu, $expectedComposerBounds
 }
 
 $script:visualWorkerSoftDeadlineMs = (Get-VisualEpochMs) + 45000
-$script:visualPostSendSettleMs = 15000
-$script:visualPostSendRequiredMs = 18000
-$script:visualCommentReadbackRequiredMs = 30000
-$script:visualContextPostSendRequiredMs = $script:visualPostSendSettleMs + $script:visualCommentReadbackRequiredMs
+$script:visualPostSendSettleMs = 6000
 $context = Get-VisualContext
 if ($context -eq $null -or [string]$context.observationId -notmatch '^[0-9a-f]{64}$' -or
   [string]$context.postSnapshot.observation_id -cne [string]$context.observationId -or
@@ -3898,8 +4751,136 @@ try {
     $readback = Invoke-VisualCommentReadback $lock $context
     Write-VisualResult $readback
   }
+  if ([string]$env:XIAOXI_MOMENTS_VISUAL_ACTION -ceq "comment_occurrence_check") {
+    [string]$occurrenceCommentText = [string]$context.commentText
+    if (-not $occurrenceCommentText -or $occurrenceCommentText.Length -gt 500) {
+      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_missing"; actionAttempted = $false }
+    }
+    Set-VisualActionStage "comment_occurrence_check_started"
+    $firstOccurrencePost = Get-CurrentLockedVisualPost $lock $context $true
+    if (-not $firstOccurrencePost.ok) {
+      if ($firstOccurrencePost.frame) { Close-MomentsVisualFrame $firstOccurrencePost.frame }
+      Write-VisualResult @{
+        ok = $false
+        status = "blocked"
+        reason = "moments_comment_occurrence_unresolved"
+        actionAttempted = $false
+        diagnostics = @{
+          firstReason = [string]$firstOccurrencePost.reason
+          secondReason = ""
+        }
+      }
+    }
+    try {
+      $firstOccurrenceCandidate = Find-VisualCommentCandidate $firstOccurrencePost.frame $firstOccurrencePost.post.bounds $firstOccurrencePost.menu $occurrenceCommentText "exact" $firstOccurrencePost.nextPostTop
+    } finally {
+      Close-MomentsVisualFrame $firstOccurrencePost.frame
+    }
+
+    Start-Sleep -Milliseconds 160
+    $secondOccurrencePost = Get-CurrentLockedVisualPost $lock $context $true
+    if (-not $secondOccurrencePost.ok) {
+      if ($secondOccurrencePost.frame) { Close-MomentsVisualFrame $secondOccurrencePost.frame }
+      Write-VisualResult @{
+        ok = $false
+        status = "blocked"
+        reason = "moments_comment_occurrence_unresolved"
+        actionAttempted = $false
+        diagnostics = @{
+          firstReason = [string]$firstOccurrenceCandidate.reason
+          secondReason = [string]$secondOccurrencePost.reason
+        }
+      }
+    }
+    try {
+      $secondOccurrenceCandidate = Find-VisualCommentCandidate $secondOccurrencePost.frame $secondOccurrencePost.post.bounds $secondOccurrencePost.menu $occurrenceCommentText "exact" $secondOccurrencePost.nextPostTop
+    } finally {
+      Close-MomentsVisualFrame $secondOccurrencePost.frame
+    }
+
+    $occurrenceResolution = Resolve-VisualCommentOccurrence $firstOccurrenceCandidate $secondOccurrenceCandidate
+    if ($occurrenceResolution.ok -and [string]$occurrenceResolution.commentOccurrence -ceq "present") {
+      Set-VisualActionStage "comment_occurrence_present"
+      Write-VisualResult @{
+        ok = $true
+        status = "present"
+        commentOccurrence = "present"
+        actionAttempted = $false
+        verificationMode = [string]$occurrenceResolution.verificationMode
+        diagnostics = @{
+          firstBounds = $firstOccurrenceCandidate.bounds
+          secondBounds = $secondOccurrenceCandidate.bounds
+          normalizedTextCount = [Math]::Min(
+            [int]$firstOccurrenceCandidate.normalizedTextCount,
+            [int]$secondOccurrenceCandidate.normalizedTextCount
+          )
+        }
+      }
+    }
+
+    if ($occurrenceResolution.ok -and [string]$occurrenceResolution.commentOccurrence -ceq "absent") {
+      Set-VisualActionStage "comment_occurrence_absent"
+      Write-VisualResult @{
+        ok = $true
+        status = "absent"
+        commentOccurrence = "absent"
+        actionAttempted = $false
+        verificationMode = [string]$occurrenceResolution.verificationMode
+        diagnostics = @{
+          firstNormalizedTextCount = [int]$firstOccurrenceCandidate.normalizedTextCount
+          secondNormalizedTextCount = [int]$secondOccurrenceCandidate.normalizedTextCount
+        }
+      }
+    }
+
+    Write-VisualResult @{
+      ok = $false
+      status = "blocked"
+      reason = "moments_comment_occurrence_unresolved"
+      actionAttempted = $false
+      verificationMode = "two_frame_exact_comment_region"
+      diagnostics = @{
+        firstReason = [string]$firstOccurrenceCandidate.reason
+        firstCandidateCount = [int]$firstOccurrenceCandidate.candidateCount
+        firstRegionComplete = [bool]$firstOccurrenceCandidate.regionComplete
+        secondReason = [string]$secondOccurrenceCandidate.reason
+        secondCandidateCount = [int]$secondOccurrenceCandidate.candidateCount
+        secondRegionComplete = [bool]$secondOccurrenceCandidate.regionComplete
+      }
+    }
+  }
+  [string]$commentText = ""
+  [int]$normalizedOcrCountBefore = 0
+  if (@("comment", "comment_check") -contains [string]$env:XIAOXI_MOMENTS_VISUAL_ACTION) {
+    $commentText = [string]$context.commentText
+    if (-not $commentText -or $commentText.Length -gt 500) {
+      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_missing"; actionAttempted = $false }
+    }
+    $beforePost = Get-CurrentLockedVisualPost $lock $context $true
+    if (-not $beforePost.ok) {
+      if ($beforePost.frame) { Close-MomentsVisualFrame $beforePost.frame }
+      Write-VisualResult @{ ok = $false; status = "blocked"; reason = $beforePost.reason; actionAttempted = $false; diagnostics = $beforePost.diagnostics }
+    }
+    try {
+      $beforeCandidate = Find-VisualCommentCandidate $beforePost.frame $beforePost.post.bounds $beforePost.menu $commentText "exact"
+      $normalizedOcrCountBefore = [int]$beforeCandidate.normalizedTextCount
+    } finally {
+      Close-MomentsVisualFrame $beforePost.frame
+    }
+    if ($beforeCandidate.ok -or [int]$beforeCandidate.candidateCount -gt 0 -or $normalizedOcrCountBefore -gt 0) {
+      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_duplicate"; actionAttempted = $false; normalizedOcrCountBefore = $normalizedOcrCountBefore }
+    }
+    if ([string]$beforeCandidate.reason -eq "moments_comment_candidate_ocr_unavailable" -or
+      [string]$beforeCandidate.reason -eq "moments_comment_candidate_region_invalid") {
+      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_duplicate_visual_state_unknown"; actionAttempted = $false }
+    }
+    Set-VisualActionStage "post_checked"
+  }
   $opened = Open-LockedVisualMenu $lock $context
   if (-not $opened.ok) { Write-VisualResult @{ ok = $false; status = "blocked"; reason = $opened.reason; actionAttempted = $false; diagnostics = $opened.diagnostics } }
+  if (@("comment", "comment_check") -contains [string]$env:XIAOXI_MOMENTS_VISUAL_ACTION) {
+    Set-VisualActionStage "menu_opened"
+  }
 
   if ([string]$env:XIAOXI_MOMENTS_VISUAL_ACTION -ceq "inspect") {
     $closed = Close-And-VerifyUnchanged $lock $context
@@ -3971,47 +4952,21 @@ try {
   }
 
   if (@("comment", "comment_check") -contains [string]$env:XIAOXI_MOMENTS_VISUAL_ACTION) {
-    $commentText = [string]$context.commentText
-    if (-not $commentText -or $commentText.Length -gt 500) {
+    $commentX = [int][Math]::Round([double]$context.expectedWindow.left + [double]$opened.comment.centerX)
+    $commentY = [int][Math]::Round([double]$context.expectedWindow.top + [double]$opened.comment.centerY)
+    $commentClick = Invoke-VisualOwnedClickDetailed $commentX $commentY $lock ([int64]$context.deadlineMs) $false $true $opened.menuSurface
+    if (-not $commentClick.ok) {
       [void](Close-VisualMenu $lock)
-      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_missing"; actionAttempted = $false }
-    }
-    $beforeFrame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $false
-    if (-not $beforeFrame.ok) {
-      [void](Close-VisualMenu $lock)
-      Write-VisualResult @{ ok = $false; status = "blocked"; reason = $beforeFrame.reason; actionAttempted = $false }
-    }
-    try {
-      $beforeRegion = Get-VisualCommentTextRegion $beforeFrame $opened.postBounds $opened.menu
-      $beforeOcr = Get-MomentsOcrObservation $beforeFrame $beforeRegion
-      $normalizedOcrCountBefore = $(if ($beforeOcr.ok) { Get-VisualNormalizedOcrCount ([string]$beforeOcr.text) $commentText } else { 0 })
-      # Sending-before duplicate proof must be exact. The fuzzy locator is only
-      # for finding the newly published comment during post-send readback.
-      $beforeCandidate = Find-VisualCommentCandidate $beforeFrame $opened.postBounds $opened.menu $commentText "exact"
-    } finally {
-      Close-MomentsVisualFrame $beforeFrame
-    }
-    if ($beforeCandidate.ok -or [int]$beforeCandidate.candidateCount -gt 0 -or $normalizedOcrCountBefore -gt 0) {
-      [void](Close-VisualMenu $lock)
-      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_duplicate"; actionAttempted = $false; normalizedOcrCountBefore = $normalizedOcrCountBefore }
-    }
-    if ([string]$beforeCandidate.reason -eq "moments_comment_candidate_ocr_unavailable" -or
-      [string]$beforeCandidate.reason -eq "moments_comment_candidate_region_invalid") {
-      [void](Close-VisualMenu $lock)
-      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_duplicate_visual_state_unknown"; actionAttempted = $false }
-    }
-    $freshMenu = Read-OpenVisualMenu $lock $opened.menu
-    if (-not $freshMenu.ok -or -not (Test-VisualBoundsNear $freshMenu.comment.bounds $opened.comment.bounds 3.0)) {
-      [void](Close-VisualMenu $lock)
-      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_menu_changed"; actionAttempted = $false }
-    }
-    $commentX = [int][Math]::Round([double]$context.expectedWindow.left + [double]$freshMenu.comment.centerX)
-    $commentY = [int][Math]::Round([double]$context.expectedWindow.top + [double]$freshMenu.comment.centerY)
-    if (-not (Invoke-VisualOwnedClick $commentX $commentY $lock ([int64]$context.deadlineMs) $false $true $freshMenu.menuSurface)) {
-      [void](Close-VisualMenu $lock)
-      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_open_blocked"; actionAttempted = $false }
+      Write-VisualResult @{
+        ok = $false
+        status = "blocked"
+        reason = "moments_comment_open_blocked"
+        actionAttempted = $false
+        diagnostics = $commentClick.diagnostics
+      }
     }
     $script:visualMenuOpen = $false
+    Set-VisualActionStage "comment_entry_clicked"
     Start-Sleep -Milliseconds 280
     $composerFrame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $false
     if (-not $composerFrame.ok) {
@@ -4024,27 +4979,42 @@ try {
     } finally {
       Close-MomentsVisualFrame $composerFrame
     }
-    if (-not $composer.ok -or -not $composerAvatarHash -or $composerAvatarHash -cne $opened.avatarHash) {
-      Write-VisualResult @{ ok = $false; status = "blocked"; reason = $(if (-not $composer.ok) { $composer.reason } else { "moments_post_anchor_changed" }); actionAttempted = $false }
+    if (-not $composer.ok) {
+      Write-VisualResult @{
+        ok = $false
+        status = "blocked"
+        reason = [string]$composer.reason
+        actionAttempted = $false
+        diagnostics = @{
+          sendCandidateCount = [int]$sendBefore.candidateCount
+        }
+      }
     }
+    # Opening the native comment composer can legitimately move the post body
+    # through the old avatar sample rectangle and hide the post's three-dot menu.
+    # The composer was opened by the already-locked menu click, so its geometry is
+    # the stable continuation proof; rebase only the passive pixel guard.
+    if ($composerAvatarHash) { $opened.avatarHash = $composerAvatarHash }
     if ($sendBefore.ok) {
       Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_preexisting_draft"; actionAttempted = $false }
     }
-    if ([string]$sendBefore.reason -cne "moments_comment_send_button_not_found") {
-      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_state_unknown"; actionAttempted = $false }
-    }
+    Set-VisualActionStage "composer_opened"
     $blankCheckpoint = Get-VisualStableBlankCommentCheckpoint $lock $opened.menu $composer.bounds $opened.expectedAvatarBounds $opened.avatarHash
     if (-not $blankCheckpoint.ok) {
+      $cleanupReason = ""
       if ($blankCheckpoint.safeToDismiss -eq $true -and
         [uint32]$blankCheckpoint.inputTick -ne [uint32]::MaxValue -and
         -not (Dismiss-VisualProvenEmptyCommentComposer $lock $opened.menu $composer.bounds $opened.expectedAvatarBounds $opened.avatarHash ([uint32]$blankCheckpoint.inputTick))) {
-        Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $false }
+        $cleanupReason = "moments_comment_draft_close_unverified"
       }
       Write-VisualResult @{
         ok = $false
         status = "blocked"
         reason = [string]$blankCheckpoint.reason
+        primaryReason = [string]$blankCheckpoint.reason
+        cleanupReason = $cleanupReason
         actionAttempted = $false
+        diagnostics = $blankCheckpoint.diagnostics
       }
     }
     $composer = $blankCheckpoint.composer
@@ -4060,97 +5030,136 @@ try {
       if ([string]$draftProbe.reason -ceq "moments_comment_editor_targeting_unsupported" -and
         @("comment", "comment_check") -contains [string]$env:XIAOXI_MOMENTS_VISUAL_ACTION) {
         $retainExactDraftForSend = [string]$env:XIAOXI_MOMENTS_VISUAL_ACTION -ceq "comment"
-        $clipboardRoundTrip = Invoke-VisualCommentCheckClipboardRoundTrip $lock $opened.menu $composer.bounds $opened.expectedAvatarBounds $opened.avatarHash $commentText ([int64]$context.deadlineMs) $emptyCheckFinishedTick $normalizedOcrCountBefore $retainExactDraftForSend
+        [uint32]$clipboardProbeSequence = 0
+        $clipboardProbeEmpty = $false
+        $clipboardProbeText = ""
+        $clipboardCanRoundTrip = [Win32WechatMomentsVisualAction]::TryCaptureTextClipboard(
+          [ref]$clipboardProbeSequence,
+          [ref]$clipboardProbeEmpty,
+          [ref]$clipboardProbeText
+        )
+        if ($retainExactDraftForSend -and -not $clipboardCanRoundTrip) {
+          $clipboardRoundTrip = Invoke-VisualCommentUnicodeDraftForSend $lock $opened.menu $composer.bounds $commentText ([int64]$context.deadlineMs) $emptyCheckFinishedTick $normalizedOcrCountBefore
+        } else {
+          $clipboardRoundTrip = Invoke-VisualCommentCheckClipboardRoundTrip $lock $opened.menu $composer.bounds $opened.expectedAvatarBounds $opened.avatarHash $commentText ([int64]$context.deadlineMs) $emptyCheckFinishedTick $normalizedOcrCountBefore $retainExactDraftForSend
+        }
         if (-not $clipboardRoundTrip.ok) { Write-VisualResult $clipboardRoundTrip }
         if (-not $retainExactDraftForSend) { Write-VisualResult $clipboardRoundTrip }
+        $supportedDraftVerification = @(
+          "visual_clipboard_ordinal_roundtrip_and_unique_enabled_button_transition",
+          "unicode_sendinput_and_unique_enabled_button_transition"
+        ) -contains [string]$clipboardRoundTrip.verificationMode
         if ([string]$clipboardRoundTrip.status -cne "comment_draft_ready_for_send" -or
           $clipboardRoundTrip.actionAttempted -ne $false -or
           [string]$clipboardRoundTrip.commentStatus -cne "draft_ready_for_send" -or
-          [string]$clipboardRoundTrip.verificationMode -cne "visual_clipboard_ordinal_roundtrip_and_unique_enabled_button_transition" -or
+          -not $supportedDraftVerification -or
           $clipboardRoundTrip.clipboardRestored -ne $true -or $clipboardRoundTrip.draftRetainedForSend -ne $true -or
-          -not (Test-VisualBounds $clipboardRoundTrip.sendBounds 64 22) -or
+          -not (Test-VisualBounds $clipboardRoundTrip.sendBounds 44 18) -or
           [uint32]$clipboardRoundTrip.inputTick -eq [uint32]::MaxValue) {
+          $cleanupReason = ""
           if ([uint32]$clipboardRoundTrip.inputTick -eq [uint32]::MaxValue -or
             -not (Clear-And-CloseVisualSelectedCommentDraft $lock $opened.menu $composer.bounds $opened.expectedAvatarBounds $opened.avatarHash ([uint32]$clipboardRoundTrip.inputTick))) {
-            Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $false }
+            $cleanupReason = "moments_comment_draft_close_unverified"
           }
-          Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_ready_proof_invalid"; actionAttempted = $false }
+          Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_ready_proof_invalid"; primaryReason = "moments_comment_draft_ready_proof_invalid"; cleanupReason = $cleanupReason; actionAttempted = $false }
         }
+        Set-VisualActionStage "draft_written"
         $preSendLock = Get-LockedVisualRoot $context
         $preSendState = $(if ($preSendLock.ok) {
-          Get-LockedVisualCommentState $preSendLock $opened.menu $composer.bounds $opened.expectedAvatarBounds $opened.avatarHash
+          Get-LockedVisualCommentSendState $preSendLock $opened.menu
         } else { @{ ok = $false; reason = [string]$preSendLock.reason } })
         $preSendProofOk = $preSendLock.ok -and $preSendState.ok -and $preSendState.send.ok -and
-          (Test-VisualBoundsNear $preSendState.send.bounds $clipboardRoundTrip.sendBounds 3.0) -and
-          (Test-VisualDeadlineMargin ([int64]$context.deadlineMs) 10000) -and
-          [Win32WechatMomentsVisualAction]::GetForegroundWindow() -eq $preSendLock.hWnd -and
-          [Win32WechatMomentsVisualAction]::GetLastInputTick() -eq [uint32]$clipboardRoundTrip.inputTick
+          (Test-VisualBoundsInside $preSendState.send.bounds $preSendState.composer.bounds) -and
+          [Win32WechatMomentsVisualAction]::GetForegroundWindow() -eq $preSendLock.hWnd
         if (-not $preSendProofOk) {
+          $cleanupReason = ""
           if (-not (Clear-And-CloseVisualSelectedCommentDraft $lock $opened.menu $composer.bounds $opened.expectedAvatarBounds $opened.avatarHash ([uint32]$clipboardRoundTrip.inputTick))) {
-            Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $false }
+            $cleanupReason = "moments_comment_draft_close_unverified"
           }
-          Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_editor_changed"; actionAttempted = $false }
+          Write-VisualResult @{
+            ok = $false
+            status = "blocked"
+            reason = "moments_comment_editor_changed"
+            primaryReason = "moments_comment_editor_changed"
+            cleanupReason = $cleanupReason
+            actionAttempted = $false
+            diagnostics = @{
+              preSendLockOk = [bool]$preSendLock.ok
+              preSendStateOk = [bool]$preSendState.ok
+              sendButtonOk = [bool]$preSendState.send.ok
+              sendInsideComposer = [bool]($preSendState.ok -and (Test-VisualBoundsInside $preSendState.send.bounds $preSendState.composer.bounds))
+              foregroundOk = [bool]($preSendLock.ok -and [Win32WechatMomentsVisualAction]::GetForegroundWindow() -eq $preSendLock.hWnd)
+            }
+          }
         }
         $lock = $preSendLock
         $visualClipboardSend = $true
         [uint32]$commentInputTick = [uint32]$clipboardRoundTrip.inputTick
         $sendButton = $preSendState.send
+        Set-VisualActionStage "send_button_located"
       } else {
+        $cleanupReason = ""
         if (-not (Dismiss-VisualProvenEmptyCommentComposer $lock $opened.menu $composer.bounds $opened.expectedAvatarBounds $opened.avatarHash $emptyCheckFinishedTick)) {
-          Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $false }
+          $cleanupReason = "moments_comment_draft_close_unverified"
         }
-        Write-VisualResult @{ ok = $false; status = "blocked"; reason = [string]$draftProbe.reason; actionAttempted = $false }
+        Write-VisualResult @{ ok = $false; status = "blocked"; reason = [string]$draftProbe.reason; primaryReason = [string]$draftProbe.reason; cleanupReason = $cleanupReason; actionAttempted = $false }
       }
     }
     if (-not $visualClipboardSend) {
     if (-not $draftProbe.empty) {
       Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_preexisting_draft"; actionAttempted = $false }
     }
-    if (-not (Test-VisualDeadlineMargin ([int64]$context.deadlineMs) 5000)) {
-      if (-not (Dismiss-VisualProvenEmptyCommentComposer $lock $opened.menu $composer.bounds $opened.expectedAvatarBounds $opened.avatarHash $emptyCheckFinishedTick)) {
-        Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $false }
-      }
-      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_dry_run_expired"; actionAttempted = $false }
-    }
     $editorRuntimeId = [string]$draftProbe.editorRuntimeId
     $editorBounds = $draftProbe.editorBounds
     [uint32]$commentInputTick = [uint32]$draftProbe.inputTick
     $roundTrip = Set-VisualCommentTextTargeted $lock $composer.bounds $commentText $editorRuntimeId $editorBounds $commentInputTick
     if (-not $roundTrip.ok) {
+      $cleanupReason = ""
       if ($roundTrip.valueSetAttempted -and
         -not (Clear-And-CloseVisualCommentDraft $lock $opened.menu $composer.bounds $commentText $editorRuntimeId $editorBounds)) {
-        Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $false }
+        $cleanupReason = "moments_comment_draft_close_unverified"
       }
-      Write-VisualResult @{ ok = $false; status = "blocked"; reason = $roundTrip.reason; actionAttempted = $false }
+      Write-VisualResult @{ ok = $false; status = "blocked"; reason = $roundTrip.reason; primaryReason = $roundTrip.reason; cleanupReason = $cleanupReason; actionAttempted = $false }
     }
+    Set-VisualActionStage "draft_written"
     Start-Sleep -Milliseconds 180
     $readyFrame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $false
     if (-not $readyFrame.ok) {
+      $cleanupReason = ""
       if (-not (Clear-And-CloseVisualCommentDraft $lock $opened.menu $composer.bounds $commentText $editorRuntimeId $editorBounds)) {
-        Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $false }
+        $cleanupReason = "moments_comment_draft_close_unverified"
       }
-      Write-VisualResult @{ ok = $false; status = "blocked"; reason = $readyFrame.reason; actionAttempted = $false }
+      Write-VisualResult @{ ok = $false; status = "blocked"; reason = $readyFrame.reason; primaryReason = $readyFrame.reason; cleanupReason = $cleanupReason; actionAttempted = $false }
     }
     try {
       $readyComposer = Get-VisualCommentComposer $readyFrame $opened.menu
       $sendButton = Get-VisualSendButton $readyFrame $readyComposer
-      $readyAvatarHash = Get-MomentsPixelHash $readyFrame $opened.expectedAvatarBounds
     } finally {
       Close-MomentsVisualFrame $readyFrame
     }
-    if (-not $readyComposer.ok -or -not (Test-VisualBoundsNear $readyComposer.bounds $composer.bounds 4.0) -or
-      $sendBefore.ok -or -not $sendButton.ok -or -not $readyAvatarHash -or $readyAvatarHash -cne $opened.avatarHash) {
+    if (-not $readyComposer.ok -or -not $sendButton.ok -or
+      -not (Test-VisualBoundsInside $sendButton.bounds $readyComposer.bounds)) {
+      $primaryReason = $(if (-not $readyComposer.ok) { [string]$readyComposer.reason } else { "moments_comment_send_button_ambiguous" })
+      $cleanupReason = ""
       if (-not (Clear-And-CloseVisualCommentDraft $lock $opened.menu $composer.bounds $commentText $editorRuntimeId $editorBounds)) {
-        Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $false }
+        $cleanupReason = "moments_comment_draft_close_unverified"
       }
       Write-VisualResult @{
         ok = $false
         status = "blocked"
-        reason = $(if (-not $readyComposer.ok) { $readyComposer.reason } elseif ($sendBefore.ok -or -not $sendButton.ok) { "moments_comment_send_button_ambiguous" } else { "moments_post_anchor_changed" })
+        reason = $primaryReason
+        primaryReason = $primaryReason
+        cleanupReason = $cleanupReason
         actionAttempted = $false
-        diagnostics = @{ sendOcrText = [string]$sendButton.ocrText; sendBounds = $sendButton.bounds; composerBounds = $readyComposer.bounds }
+        diagnostics = @{
+          sendOcrText = [string]$sendButton.ocrText
+          sendBounds = $sendButton.bounds
+          composerBounds = $readyComposer.bounds
+          sendInsideComposer = [bool]($readyComposer.ok -and $sendButton.ok -and (Test-VisualBoundsInside $sendButton.bounds $readyComposer.bounds))
+        }
       }
     }
+    Set-VisualActionStage "send_button_located"
     if ([string]$env:XIAOXI_MOMENTS_VISUAL_ACTION -ceq "comment_check") {
       if (-not (Clear-And-CloseVisualCommentDraft $lock $opened.menu $composer.bounds $commentText $editorRuntimeId $editorBounds)) {
         Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $false }
@@ -4165,56 +5174,53 @@ try {
         sendBounds = $sendButton.bounds
       }
     }
-    if (-not (Test-VisualDeadlineMargin ([int64]$context.deadlineMs) 10000)) {
-      if (-not (Clear-And-CloseVisualCommentDraft $lock $opened.menu $composer.bounds $commentText $editorRuntimeId $editorBounds)) {
-        Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $false }
-      }
-      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_dry_run_expired"; actionAttempted = $false }
-    }
     $finalEditor = Get-VisualCommentEditorAdapter $lock $composer.bounds $editorRuntimeId $editorBounds
     if (-not $finalEditor.ok -or
       -not [String]::Equals([string]$finalEditor.value, $commentText, [StringComparison]::Ordinal) -or
-      [Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
-      [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $commentInputTick) {
+      [Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd) {
+      $cleanupReason = ""
       if (-not (Clear-And-CloseVisualCommentDraft $lock $opened.menu $composer.bounds $commentText $editorRuntimeId $editorBounds)) {
-        Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $false }
+        $cleanupReason = "moments_comment_draft_close_unverified"
       }
-      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_editor_changed"; actionAttempted = $false }
+      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_editor_changed"; primaryReason = "moments_comment_editor_changed"; cleanupReason = $cleanupReason; actionAttempted = $false }
     }
-    }
-    [int64]$preSendNowMs = Get-VisualEpochMs
-    if (($script:visualWorkerSoftDeadlineMs - $preSendNowMs) -lt $script:visualPostSendRequiredMs -or
-      -not (Test-VisualDeadlineMargin ([int64]$context.deadlineMs) $script:visualContextPostSendRequiredMs)) {
-      if ($visualClipboardSend) {
-        if (-not (Clear-And-CloseVisualSelectedCommentDraft $lock $opened.menu $composer.bounds $opened.expectedAvatarBounds $opened.avatarHash $commentInputTick)) {
-          Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $false }
-        }
-      } elseif (-not (Clear-And-CloseVisualCommentDraft $lock $opened.menu $composer.bounds $commentText $editorRuntimeId $editorBounds)) {
-        Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $false }
-      }
-      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_send_budget_exhausted"; actionAttempted = $false }
     }
     $sendX = [int][Math]::Round([double]$context.expectedWindow.left + [double]$sendButton.centerX)
     $sendY = [int][Math]::Round([double]$context.expectedWindow.top + [double]$sendButton.centerY)
-    if (-not (Invoke-VisualOwnedClick $sendX $sendY $lock ([int64]$context.deadlineMs) $true $true $null $commentInputTick)) {
+    if (-not (Invoke-VisualOwnedClick $sendX $sendY $lock ([int64]$context.deadlineMs) $true $true $null ([uint32]::MaxValue) { Write-VisualCommentSendMarker $context })) {
+      $cleanupReason = ""
       if ($visualClipboardSend) {
         if (-not $script:visualActionAttempted -and
           -not (Clear-And-CloseVisualSelectedCommentDraft $lock $opened.menu $composer.bounds $opened.expectedAvatarBounds $opened.avatarHash $commentInputTick)) {
-          Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $false }
+          $cleanupReason = "moments_comment_draft_close_unverified"
         }
-      } elseif (-not (Clear-And-CloseVisualCommentDraft $lock $opened.menu $composer.bounds $commentText $editorRuntimeId $editorBounds)) {
-        Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_draft_close_unverified"; actionAttempted = $script:visualActionAttempted }
+      } elseif (-not $script:visualActionAttempted -and
+        -not (Clear-And-CloseVisualCommentDraft $lock $opened.menu $composer.bounds $commentText $editorRuntimeId $editorBounds)) {
+        $cleanupReason = "moments_comment_draft_close_unverified"
       }
-      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_send_blocked"; actionAttempted = $script:visualActionAttempted }
+      $sendFailureReason = $(if ($script:visualActionAttempted) {
+        "moments_comment_outcome_unknown"
+      } elseif (-not [string]::IsNullOrWhiteSpace($script:visualIrreversibleMarkerReason)) {
+        $script:visualIrreversibleMarkerReason
+      } else {
+        "moments_comment_send_blocked"
+      })
+      Write-VisualResult @{
+        ok = $false
+        status = $(if ($script:visualActionAttempted) { "outcome_unknown" } else { "blocked" })
+        reason = $sendFailureReason
+        primaryReason = $sendFailureReason
+        cleanupReason = $cleanupReason
+        actionAttempted = $script:visualActionAttempted
+      }
     }
-    [uint32]$postClickInputTick = [Win32WechatMomentsVisualAction]::GetLastInputTick()
-    Start-Sleep -Milliseconds 60
-    if ($postClickInputTick -eq [uint32]::MaxValue -or
-      [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $postClickInputTick) {
+    Set-VisualActionStage "send_clicked"
+    $postClickQuiet = Wait-VisualPostClickInputQuiet $context $lock
+    if (-not $postClickQuiet.ok) {
       Write-VisualResult @{
         ok = $false
         status = "outcome_unknown"
-        reason = "moments_external_input_detected"
+        reason = [string]$postClickQuiet.reason
         actionAttempted = $true
         normalizedOcrCountBefore = $normalizedOcrCountBefore
       }
@@ -4222,7 +5228,7 @@ try {
     [int64]$nowAfterClickMs = Get-VisualEpochMs
     [int64]$settleDeadlineMs = [Math]::Min(
       $nowAfterClickMs + $script:visualPostSendSettleMs,
-      [Math]::Min([int64]$script:visualWorkerSoftDeadlineMs, ([int64]$context.deadlineMs - 5000))
+      [Math]::Min([int64]$script:visualWorkerSoftDeadlineMs, ([int64]$context.deadlineMs - 500))
     )
     if ($settleDeadlineMs -le $nowAfterClickMs) {
       Write-VisualResult @{
@@ -4233,7 +5239,7 @@ try {
         normalizedOcrCountBefore = $normalizedOcrCountBefore
       }
     }
-    $seedResult = Wait-VisualCommentReadbackSeed $context $opened $commentText $postClickInputTick $settleDeadlineMs
+    $seedResult = Wait-VisualCommentReadbackSeed $context $opened $settleDeadlineMs
     if (-not $seedResult.ok) {
       Write-VisualResult @{
         ok = $false
@@ -4244,32 +5250,20 @@ try {
         diagnostics = $seedResult.diagnostics
       }
     }
-    $readbackSeed = @{
-      version = 1
-      observationId = [string]$context.observationId
-      attemptKey = [string]$context.attemptKey
-      postFingerprint = [string]$context.postFingerprint
-      commentTextSha256 = (Get-VisualTextSha256 $commentText)
-      candidateBounds = $seedResult.candidate.bounds
-      candidatePixelHash = [string]$seedResult.candidate.pixelHash
-      avatarHash = [string]$opened.avatarHash
-      menuBounds = $opened.expectedMenuBounds
-      expectedInputTick = [uint32]$postClickInputTick
-      createdAtMs = (Get-VisualEpochMs)
-    }
-    $locatorOnly = [bool]$seedResult.locatorOnly
-    Write-VisualResult @{
-      ok = $true
-      status = $(if ($locatorOnly) { "readback_required" } else { "visible_verified" })
-      actionAttempted = $true
-      commentStatus = $(if ($locatorOnly) { "located" } else { "verified" })
-      commentVerified = -not $locatorOnly
-      verificationMode = $(if ($locatorOnly) { "unique_fuzzy_ocr_locator_and_stable_post_v1" } else { "unique_exact_ocr_candidate_and_stable_post_v1" })
-      verificationLevel = $(if ($locatorOnly) { "locator_only" } else { "visible_exact" })
-      normalizedOcrCountBefore = $normalizedOcrCountBefore
-      normalizedOcrCountAfter = [int]$seedResult.normalizedOcrCountAfter
-      diagnostics = $seedResult.diagnostics
-      readbackSeed = $readbackSeed
+    if ($seedResult.stateTransitionVerified -eq $true) {
+      Set-VisualActionStage "send_verified"
+      Write-VisualResult @{
+        ok = $true
+        status = "visible_verified"
+        actionAttempted = $true
+        commentStatus = "verified"
+        commentVerified = $true
+        verificationMode = [string]$seedResult.verificationMode
+        verificationLevel = "state_transition"
+        normalizedOcrCountBefore = $normalizedOcrCountBefore
+        normalizedOcrCountAfter = 0
+        diagnostics = $seedResult.diagnostics
+      }
     }
   }
 
@@ -4298,6 +5292,10 @@ function blocked(reason) {
 function runVisualAction(action, context = {}) {
   if (!validVisualContext(context)) return blocked("moments_visual_target_lock_invalid");
   if (Date.now() > Number(context.deadlineMs)) return blocked("moments_dry_run_expired");
+  if (
+    action === "comment"
+    && !validCommentSendMarkerPath(context.sendMarkerPath, context.postFingerprint)
+  ) return blocked("moments_comment_send_marker_invalid");
   const payload = {
     observationId: String(context.observationId),
     deadlineMs: Number(context.deadlineMs),
@@ -4305,7 +5303,10 @@ function runVisualAction(action, context = {}) {
     postSnapshot: context.postSnapshot,
     attemptKey: String(context.attemptKey ?? ""),
     postFingerprint: String(context.postFingerprint ?? ""),
+    requestedAction: String(context.action ?? action),
     commentText: exactCommentText(context.commentText),
+    commentTextSha256: String(context.commentTextSha256 ?? ""),
+    sendMarkerPath: String(context.sendMarkerPath ?? ""),
     readbackSeed: context.readbackSeed ?? null
   };
   const timeoutCapMs = VISUAL_ACTION_TIMEOUT_CAP_MS[action] ?? 20_000;
@@ -4315,7 +5316,11 @@ function runVisualAction(action, context = {}) {
     XIAOXI_MOMENTS_VISUAL_ACTION: action,
     XIAOXI_MOMENTS_VISUAL_CONTEXT_BASE64: Buffer.from(JSON.stringify(payload), "utf8").toString("base64")
   };
-  if (action === "comment" || action === "comment_readback") {
+  if (
+    action === "comment"
+    || action === "comment_readback"
+    || action === "comment_occurrence_check"
+  ) {
     return runPowerShellAsync(MOMENTS_VISUAL_ACTION_POWERSHELL, env, {
       ensure: false,
       sta: true,
@@ -4389,6 +5394,21 @@ function commentReadback(context = {}) {
   return typeof result?.then === "function" ? result.then(normalizeResult) : normalizeResult(result);
 }
 
+function commentOccurrenceCheck(context = {}) {
+  const commentText = exactCommentText(context.commentText);
+  if (!commentText || commentText.length > 500) return blocked("moments_comment_missing");
+  const normalizeResult = (result) => ({
+    ...result,
+    observationId: String(context.observationId ?? ""),
+    commentText,
+    actionAttempted: false,
+    realActionAttempted: false,
+    commentOccurrence: String(result?.commentOccurrence ?? "")
+  });
+  const result = runVisualAction("comment_occurrence_check", context);
+  return typeof result?.then === "function" ? result.then(normalizeResult) : normalizeResult(result);
+}
+
 function inspectCommentDraft(context = {}) {
   const commentText = exactCommentText(context.commentText);
   if (!commentText || commentText.length > 500) return blocked("moments_comment_missing");
@@ -4404,6 +5424,7 @@ module.exports = {
   MOMENTS_VISUAL_POST_RELOCK_TOLERANCE_PX,
   MOMENTS_VISUAL_ACTION_POWERSHELL,
   comment,
+  commentOccurrenceCheck,
   commentReadback,
   inspectCommentDraft,
   inspectMenu,

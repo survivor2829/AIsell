@@ -154,6 +154,7 @@ if (!gotSingleInstanceLock) {
     if (momentsCampaign) momentsCampaign.registerMomentsCampaignIpc({
       baseDir: runtime.momentsDir,
       coordinator,
+      deepSeekClient,
       getMainWindow: () => mainWindow
     });
     if (internalRealSend) disarmRealSend = () => internalRealSend.setRealSendArm(runtime.activeTouchDir, false);

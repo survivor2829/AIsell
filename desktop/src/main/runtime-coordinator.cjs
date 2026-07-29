@@ -2,7 +2,16 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 
-const STATES = new Set(["idle", "syncing_contacts", "preparing_campaign", "touching", "replying", "paused", "stopping"]);
+const STATES = new Set([
+  "idle",
+  "syncing_contacts",
+  "preparing_campaign",
+  "touching",
+  "replying",
+  "running_moments",
+  "paused",
+  "stopping"
+]);
 
 function nowIso() {
   return new Date().toISOString();

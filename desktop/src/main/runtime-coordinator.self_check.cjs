@@ -24,6 +24,16 @@ try {
   assert.equal(reply.ok, true);
   assert.equal(coordinator.release(reply.lock.owner).ok, true);
 
+  const moments = coordinator.acquire({
+    state: "running_moments",
+    taskId: "moments-1",
+    account: "wx-a",
+    phase: "moments:campaign"
+  });
+  assert.equal(moments.ok, true, "moments campaign must be a valid exclusive WeChat operation");
+  assert.equal(coordinator.status().state, "running_moments");
+  assert.equal(coordinator.release(moments.lock.owner).ok, true);
+
   fs.writeFileSync(coordinator.lockFile, JSON.stringify({ pid: 999999, owner: "crashed", state: "touching", task_id: "task-2", account: "wx-b", started_at: "2026-07-10T00:00:00.000Z", current_phase: "send" }));
   assert.equal(coordinator.initialize().recovered, true);
   assert.equal(fs.existsSync(coordinator.lockFile), false);

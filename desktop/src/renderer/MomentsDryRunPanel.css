@@ -34,3 +34,19 @@
   color: #9f1239;
   font-size: 13px;
 }
+
+.moments-campaign-controls {
+  flex-wrap: wrap;
+}
+
+.moments-action-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.moments-action-toggle input {
+  width: 16px;
+  height: 16px;
+}

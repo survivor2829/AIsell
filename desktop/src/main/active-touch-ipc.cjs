@@ -76,16 +76,31 @@ function executeActiveTouch(args, options = {}) {
       settled = true;
       if (timeout) clearTimeout(timeout);
       if (exitDrain) clearTimeout(exitDrain);
+      const resultState = result?.state && typeof result.state === "object" && !Array.isArray(result.state)
+        ? result.state
+        : {};
+      const diagnosticValue = (key) => result
+        && Object.prototype.hasOwnProperty.call(result, key)
+        ? result[key]
+        : resultState[key];
+      const blockedReason = result?.blocked_reason || resultState.blocked_reason || "";
+      const primaryReason = diagnosticValue("primary_reason") || blockedReason;
       operation.end({
         ok: result?.ok === true,
         action: result?.action || args[0] || "status",
-        blocked_reason: result?.blocked_reason || result?.state?.blocked_reason || "",
+        blocked_reason: blockedReason,
+        stage: diagnosticValue("stage"),
+        send_clicked_at: diagnosticValue("send_clicked_at"),
+        primary_reason: primaryReason,
+        cleanup_reason: diagnosticValue("cleanup_reason"),
+        verification_mode: diagnosticValue("verification_mode"),
+        real_action_attempted: diagnosticValue("real_action_attempted"),
         error: result?.error || "",
         process_pid: child.pid || 0,
         stdout_bytes: Buffer.byteLength(stdout),
         stderr_bytes: Buffer.byteLength(stderr),
-        diagnostics: result?.diagnostics || result?.state?.diagnostics || null
-      }, { ok: result?.ok === true, code: result?.blocked_reason || result?.state?.blocked_reason || "" });
+        diagnostics: diagnosticValue("diagnostics") ?? null
+      }, { ok: result?.ok === true, code: primaryReason });
       resolve(result);
     };
     const settleFromOutput = (status) => {

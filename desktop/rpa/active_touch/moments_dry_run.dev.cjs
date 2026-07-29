@@ -20,7 +20,8 @@ function lastVolatileTimeToken(value) {
   const suffix = normalized.slice(match.index + match[0].length).trim();
   const suffixTokens = suffix ? suffix.split(" ") : [];
   const suffixIsNonContentUi = suffixTokens.every((token) => MOMENTS_NON_CONTENT_SUFFIX_TOKENS.has(token));
-  return { normalized, match: suffixIsNonContentUi ? match : undefined };
+  const suffixContainsCommentRow = /(?:^|\s)\S{1,80}\s*[:：]\s*\S/u.test(suffix);
+  return { normalized, match: suffixIsNonContentUi || suffixContainsCommentRow ? match : undefined };
 }
 
 function stableMomentsPostLabel(value) {
@@ -41,6 +42,60 @@ function momentsPostFingerprint(value) {
     version: 1,
     label: stableLabel
   }), "utf8").digest("hex");
+}
+
+function normalizeMomentsStableContentText(value) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .replace(/(?:刚刚|昨天|[0-9]+\s*(?:秒|分钟|小时|天)前)(?=(?:\s|赞|点赞|取消|取消赞|评论|删除)*$)/gu, "")
+    .replace(/\s+/gu, "")
+    .trim();
+}
+
+function boundedMomentsEditDistance(left, right, maximumDistance) {
+  if (Math.abs(left.length - right.length) > maximumDistance) return maximumDistance + 1;
+  const infinity = maximumDistance + 1;
+  let previous = Array(right.length + 1).fill(infinity);
+  for (let column = 0; column <= Math.min(right.length, maximumDistance); column += 1) {
+    previous[column] = column;
+  }
+  for (let row = 1; row <= left.length; row += 1) {
+    const current = Array(right.length + 1).fill(infinity);
+    const start = Math.max(1, row - maximumDistance);
+    const end = Math.min(right.length, row + maximumDistance);
+    if (row <= maximumDistance) current[0] = row;
+    let rowMinimum = infinity;
+    for (let column = start; column <= end; column += 1) {
+      current[column] = Math.min(
+        previous[column] + 1,
+        current[column - 1] + 1,
+        previous[column - 1] + (left[row - 1] === right[column - 1] ? 0 : 1)
+      );
+      rowMinimum = Math.min(rowMinimum, current[column]);
+    }
+    if (rowMinimum > maximumDistance) return infinity;
+    previous = current;
+  }
+  return previous[right.length];
+}
+
+function stableMomentsContentSimilarity(first, second) {
+  const left = normalizeMomentsStableContentText(first);
+  const right = normalizeMomentsStableContentText(second);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const maximumLength = Math.max(left.length, right.length);
+  const minimumLength = Math.min(left.length, right.length);
+  if (minimumLength < 16 || maximumLength > 512) return false;
+  const allowed = Math.min(3, Math.max(1, Math.floor(maximumLength * 0.04)));
+  const distance = boundedMomentsEditDistance(left, right, allowed);
+  return distance <= allowed && distance / maximumLength <= 0.07;
+}
+
+function stableMomentsPostIdentityText(firstIdentity, secondIdentity, firstAnchor, secondAnchor) {
+  if (stableMomentsContentSimilarity(firstIdentity, secondIdentity)) return true;
+  if (!String(firstAnchor ?? "").trim() || !String(secondAnchor ?? "").trim()) return false;
+  return stableMomentsContentSimilarity(firstAnchor, secondAnchor);
 }
 
 const MOMENTS_BLOCK_ERRORS = Object.freeze({
@@ -788,5 +843,7 @@ module.exports = {
   prepareMomentsDryRun,
   preferredVisibleMomentsPost,
   probeWechatMomentsWindow,
+  stableMomentsContentSimilarity,
+  stableMomentsPostIdentityText,
   stableMomentsPostLabel
 };
