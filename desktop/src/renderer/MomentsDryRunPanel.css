@@ -50,3 +50,51 @@
   width: 16px;
   height: 16px;
 }
+
+.moments-daily-plan {
+  margin: 0 16px 14px;
+  padding: 14px;
+  border: 1px solid #ffd4da;
+  border-radius: 12px;
+  background: #fff8f9;
+}
+
+.moments-daily-plan-row,
+.moments-daily-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.moments-daily-plan-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.moments-daily-plan-row input[type="number"] {
+  width: 64px;
+}
+
+.moments-daily-plan-row input[type="time"] {
+  width: 112px;
+}
+
+.moments-daily-summary {
+  margin-top: 12px;
+}
+
+.moments-daily-summary span {
+  padding: 6px 9px;
+  border-radius: 9px;
+  background: #ffecef;
+  color: #9f1239;
+  font-size: 13px;
+}
+
+.moments-daily-plan p {
+  margin: 10px 0 0;
+  color: #8a4b54;
+  font-size: 13px;
+}

@@ -5,12 +5,20 @@ const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
 const { runActiveTouchDev } = require("./active-touch-ipc.cjs");
 const {
+  createMomentsDailyAutomation,
+  localDayKey,
+  publicDailyState,
+  sanitizeCommentGuidance
+} = require("./moments-daily-automation.cjs");
+const {
   openWechatMoments,
   scrollWechatMomentsFeed
 } = require("../../rpa/active_touch/moments_navigation.dev.cjs");
 
 const DEFAULT_MAX_POSTS = 10;
 const MAX_POSTS_PER_RUN = 50;
+const DAILY_BUSY_RETRY_MS = 60_000;
+const DAILY_FAILURE_RETRY_MS = 30 * 60_000;
 
 function readJson(file, fallback = {}) {
   try {
@@ -27,6 +35,7 @@ function publicState(value = {}) {
     max_posts: Number(value.max_posts || DEFAULT_MAX_POSTS),
     processed_count: Number(value.processed_count || 0),
     completed_post_count: Number(value.completed_post_count || 0),
+    new_completed_post_count: Number(value.new_completed_post_count || 0),
     liked_count: Number(value.liked_count || 0),
     already_liked_count: Number(value.already_liked_count || 0),
     commented_count: Number(value.commented_count || 0),
@@ -37,6 +46,9 @@ function publicState(value = {}) {
     like_enabled: value.like_enabled !== false,
     comment_enabled: value.comment_enabled === true,
     comment_guidance: String(value.comment_guidance || ""),
+    automated_run: value.automated_run === true,
+    daily_tracking: value.daily_tracking === true,
+    outcome_unknown: value.outcome_unknown === true,
     last_reason: String(value.last_reason || ""),
     started_at: String(value.started_at || ""),
     updated_at: String(value.updated_at || "")
@@ -56,17 +68,88 @@ function createMomentsCampaignController(options = {}) {
       : null);
   const emit = typeof options.emit === "function" ? options.emit : () => undefined;
   const logger = options.logger || diagnostics();
-  let pauseRequested = false;
+  const now = typeof options.now === "function" ? options.now : () => new Date();
+  const writeStateJson = typeof options.writeStateJson === "function"
+    ? options.writeStateJson
+    : writeJsonAtomic;
+  let pendingPauseReason = "";
   let stopRequested = false;
   let loopPromise = null;
-  let state = publicState(readJson(stateFile).moments_campaign);
+  let dailyAutomation = null;
+  const initialRoot = readJson(stateFile);
+  let state = publicState(initialRoot.moments_campaign);
+  let dailyState = publicDailyState(
+    initialRoot.moments_daily_automation,
+    now(),
+    MAX_POSTS_PER_RUN
+  );
+
+  function snapshot() {
+    return {
+      status: state.status,
+      max_posts: state.max_posts,
+      processed_count: state.processed_count,
+      completed_post_count: state.completed_post_count,
+      liked_count: state.liked_count,
+      already_liked_count: state.already_liked_count,
+      commented_count: state.commented_count,
+      comment_skipped_count: state.comment_skipped_count,
+      skipped_count: state.skipped_count,
+      scroll_count: state.scroll_count,
+      current_post: state.current_post,
+      like_enabled: state.like_enabled,
+      comment_enabled: state.comment_enabled,
+      comment_guidance: state.comment_guidance,
+      outcome_unknown: state.outcome_unknown,
+      last_reason: state.last_reason,
+      started_at: state.started_at,
+      updated_at: state.updated_at,
+      daily_automation: dailyAutomation.snapshot()
+    };
+  }
+
+  function writeState(campaignPatch = null, dailyPatch = null) {
+    const updatedAt = now().toISOString();
+    if (campaignPatch) {
+      state = publicState({ ...state, ...campaignPatch, updated_at: updatedAt });
+    }
+    if (dailyPatch) {
+      dailyState = publicDailyState({
+        ...dailyState,
+        ...dailyPatch,
+        updated_at: updatedAt
+      }, now(), MAX_POSTS_PER_RUN);
+    }
+    const root = readJson(stateFile);
+    writeStateJson(stateFile, {
+      ...root,
+      moments_campaign: state,
+      moments_daily_automation: dailyState
+    });
+    const next = snapshot();
+    emit(next);
+    return next;
+  }
 
   function persist(patch = {}) {
-    state = publicState({ ...state, ...patch, updated_at: new Date().toISOString() });
-    const root = readJson(stateFile);
-    writeJsonAtomic(stateFile, { ...root, moments_campaign: state });
-    emit(state);
+    writeState(patch, null);
     return state;
+  }
+
+  function persistDaily(patch = {}) {
+    writeState(null, patch);
+    return dailyState;
+  }
+
+  function dailyValueEquals(current, next) {
+    if (!Array.isArray(current) || !Array.isArray(next)) return current === next;
+    return current.length === next.length && current.every((value, index) => value === next[index]);
+  }
+
+  function persistDailyIfChanged(patch = {}) {
+    const changed = Object.entries(patch)
+      .some(([key, value]) => !dailyValueEquals(dailyState[key], value));
+    return changed ? persistDaily(patch) : dailyState;
   }
 
   function record(event, fields = {}, level = "info") {
@@ -76,13 +159,46 @@ function createMomentsCampaignController(options = {}) {
         comment_guidance: undefined,
         comment_guidance_length: state.comment_guidance.length
       },
+      daily_automation: {
+        ...dailyState,
+        comment_guidance: undefined,
+        comment_guidance_length: dailyState.comment_guidance.length,
+        completed_posts: undefined,
+        completed_post_count: dailyState.completed_posts.length,
+        status: dailyAutomation?.status() || "waiting"
+      },
       ...fields
     }, { level });
   }
 
-  function finish(status, reason = "") {
-    persist({ status, last_reason: reason, current_post: 0 });
+  dailyAutomation = createMomentsDailyAutomation({
+    maxTarget: MAX_POSTS_PER_RUN,
+    getState: () => dailyState,
+    getCampaignState: () => state,
+    getPublicState: snapshot,
+    persist: persistDaily,
+    persistIfChanged: persistDailyIfChanged,
+    startCampaign: (payload, runOptions) => start(payload, runOptions),
+    isCampaignRunning: () => Boolean(loopPromise),
+    canGenerateComment: () => typeof generateComment === "function",
+    record,
+    now,
+    schedule: options.schedule,
+    cancelSchedule: options.cancelSchedule,
+    busyRetryMs: options.busyRetryMs || DAILY_BUSY_RETRY_MS,
+    failureRetryMs: options.failureRetryMs || DAILY_FAILURE_RETRY_MS
+  });
+
+  function finish(status, reason = "", finishOptions = {}) {
+    const automatedRun = state.automated_run;
+    persist({
+      status,
+      last_reason: reason,
+      current_post: 0,
+      outcome_unknown: finishOptions.outcomeUnknown === true
+    });
     record(`campaign.${status}`, { reason }, status === "completed" ? "info" : "warn");
+    if (automatedRun) dailyAutomation.planAfterCampaign(status, reason);
   }
 
   function shouldStop() {
@@ -90,15 +206,17 @@ function createMomentsCampaignController(options = {}) {
       finish("stopped", "stopped_by_user");
       return true;
     }
-    if (pauseRequested) {
-      finish("paused", "paused_by_user");
+    if (pendingPauseReason) {
+      finish("paused", pendingPauseReason);
       return true;
     }
     return false;
   }
 
   function successfulPostCount() {
-    return state.completed_post_count;
+    return state.automated_run
+      ? state.new_completed_post_count
+      : state.completed_post_count;
   }
 
   async function executeLoop(lockOwner) {
@@ -297,14 +415,18 @@ function createMomentsCampaignController(options = {}) {
                   || liked?.previous_status === "outcome_unknown"
                   || liked?.real_action_attempted !== false)
               ) {
-                finish("paused", "moments_like_outcome_unknown");
+                finish("paused", "moments_like_outcome_unknown", { outcomeUnknown: true });
                 return;
               } else if (!liked?.ok || liked.status !== "verified") {
                 if (liked?.real_action_attempted === false) {
                   itemSkipped = 1;
                   lastReason = String(liked?.blocked_reason || liked?.reason || "moments_like_skipped");
                 } else {
-                  finish("paused", liked?.blocked_reason || liked?.reason || "moments_like_failed");
+                  finish(
+                    "paused",
+                    liked?.blocked_reason || liked?.reason || "moments_like_failed",
+                    { outcomeUnknown: true }
+                  );
                   return;
                 }
               } else {
@@ -368,13 +490,17 @@ function createMomentsCampaignController(options = {}) {
                 && (commented?.previous_status === "clicked"
                   || commented?.previous_status === "outcome_unknown")
               ) {
-                finish("paused", "moments_comment_outcome_unknown");
+                finish("paused", "moments_comment_outcome_unknown", { outcomeUnknown: true });
                 return;
               } else if (commented?.real_action_attempted === false) {
                 commentSkipped = true;
                 lastReason = commentPrimaryReason || "moments_comment_skipped";
               } else {
-                finish("paused", commentPrimaryReason || "moments_comment_outcome_unknown");
+                finish(
+                  "paused",
+                  commentPrimaryReason || "moments_comment_outcome_unknown",
+                  { outcomeUnknown: true }
+                );
                 return;
               }
             }
@@ -383,16 +509,32 @@ function createMomentsCampaignController(options = {}) {
             const likeSucceededForPost = !state.like_enabled || likedCount + alreadyLikedCount > 0;
             const commentSucceededForPost = !state.comment_enabled || commentedCount > 0;
             const completedPostCount = likeSucceededForPost && commentSucceededForPost ? 1 : 0;
-            persist({
+            const newCompletedPostCount = completedPostCount > 0 && likedCount + commentedCount > 0 ? 1 : 0;
+            const dailyPatch = dailyAutomation.buildProgressPatch(
+              fingerprint,
+              newCompletedPostCount,
+              state.daily_tracking
+            );
+            writeState({
               processed_count: state.processed_count + 1,
               completed_post_count: state.completed_post_count + completedPostCount,
+              new_completed_post_count: state.new_completed_post_count + newCompletedPostCount,
               liked_count: state.liked_count + likedCount,
               already_liked_count: state.already_liked_count + alreadyLikedCount,
               commented_count: state.commented_count + commentedCount,
               comment_skipped_count: state.comment_skipped_count + (commentSkipped ? 1 : 0),
               skipped_count: state.skipped_count + itemSkipped + (!state.like_enabled && !commentedCount ? 1 : 0),
               last_reason: lastReason
-            });
+            }, dailyPatch);
+            if (dailyPatch) {
+              record("daily.progress", {
+                post_fingerprint: fingerprint,
+                completed: newCompletedPostCount > 0,
+                completed_count: dailyState.completed_count,
+                checked_count: dailyState.checked_count,
+                target: dailyState.target
+              });
+            }
           } else {
             repeatedFingerprintScans += 1;
             persist({ last_reason: "post_already_processed_in_run" });
@@ -430,20 +572,27 @@ function createMomentsCampaignController(options = {}) {
     }
   }
 
-  function start(payload = {}) {
+  function start(payload = {}, runOptions = {}) {
     if (loopPromise) {
       record("campaign.start_rejected", { reason: "moments_campaign_already_running" }, "warn");
-      return { ok: false, reason: "moments_campaign_already_running", state };
+      return { ok: false, reason: "moments_campaign_already_running", state: snapshot() };
     }
     const maxPosts = Math.max(1, Math.min(MAX_POSTS_PER_RUN, Number(payload.maxPosts) || DEFAULT_MAX_POSTS));
     const likeEnabled = payload.likeEnabled !== false;
     const commentEnabled = payload.commentEnabled === true;
-    const commentGuidance = String(payload.commentGuidance || "").replace(/\s+/g, " ").trim().slice(0, 200);
+    const commentGuidance = sanitizeCommentGuidance(payload.commentGuidance);
+    const automatedRun = runOptions.automated === true;
+    const today = localDayKey(now());
+    const dailyTracking = automatedRun
+      && dailyState.enabled
+      && dailyState.date === today
+      && dailyState.suppressed_date !== today
+      && dailyState.completed_count < dailyState.target;
     if (!likeEnabled && !commentEnabled) {
-      return { ok: false, reason: "moments_action_missing", state };
+      return { ok: false, reason: "moments_action_missing", state: snapshot() };
     }
     if (commentEnabled && typeof generateComment !== "function") {
-      return { ok: false, reason: "moments_comment_ai_unavailable", state };
+      return { ok: false, reason: "moments_comment_ai_unavailable", state: snapshot() };
     }
     let lock;
     try {
@@ -458,7 +607,7 @@ function createMomentsCampaignController(options = {}) {
         reason: "runtime_coordinator_failed",
         error
       }, "error");
-      return { ok: false, reason: "runtime_coordinator_failed", state };
+      return { ok: false, reason: "runtime_coordinator_failed", state: snapshot() };
     }
     if (!lock?.ok || !lock.lock?.owner) {
       const reason = lock?.error || "wechat_operation_busy";
@@ -466,15 +615,16 @@ function createMomentsCampaignController(options = {}) {
         reason,
         coordinator_state: lock?.state || ""
       }, "warn");
-      return { ok: false, reason, state };
+      return { ok: false, reason, state: snapshot() };
     }
-    pauseRequested = false;
+    pendingPauseReason = "";
     stopRequested = false;
-    persist({
+    writeState({
       status: "running",
       max_posts: maxPosts,
       processed_count: 0,
       completed_post_count: 0,
+      new_completed_post_count: 0,
       liked_count: 0,
       already_liked_count: 0,
       commented_count: 0,
@@ -485,40 +635,71 @@ function createMomentsCampaignController(options = {}) {
       like_enabled: likeEnabled,
       comment_enabled: commentEnabled,
       comment_guidance: commentGuidance,
+      automated_run: automatedRun,
+      daily_tracking: dailyTracking,
+      outcome_unknown: false,
       last_reason: "starting",
-      started_at: new Date().toISOString()
-    });
+      started_at: now().toISOString()
+    }, automatedRun ? dailyAutomation.markRunStarted() : null);
     record("campaign.started", {
       max_posts: maxPosts,
       like_enabled: likeEnabled,
       comment_enabled: commentEnabled,
+      automated_run: automatedRun,
+      daily_tracking: dailyTracking,
       comment_guidance_length: commentGuidance.length
     });
     loopPromise = executeLoop(lock.lock.owner);
-    return { ok: true, state };
+    return { ok: true, state: snapshot() };
+  }
+
+  function requestPause(reason, suppressDaily) {
+    if (suppressDaily) dailyAutomation.suppressToday(reason);
+    if (!loopPromise) return { ok: true, state: snapshot() };
+    pendingPauseReason = String(reason || "paused_by_user");
+    persist({ last_reason: "pause_requested" });
+    return { ok: true, state: snapshot() };
   }
 
   function pause() {
-    if (!loopPromise) return { ok: true, state };
-    pauseRequested = true;
-    persist({ last_reason: "pause_requested" });
-    return { ok: true, state };
+    return requestPause("paused_by_user", true);
+  }
+
+  function pauseForAppClose() {
+    return requestPause("app_closed", false);
   }
 
   function stop() {
+    dailyAutomation.suppressToday("stopped_by_user");
     if (!loopPromise) {
       finish("stopped", "stopped_by_user");
-      return { ok: true, state };
+      return { ok: true, state: snapshot() };
     }
     stopRequested = true;
     persist({ last_reason: "stop_requested" });
-    return { ok: true, state };
+    return { ok: true, state: snapshot() };
+  }
+
+  function initialize() {
+    if (state.status === "running" && !loopPromise) {
+      persist({
+        status: "partial",
+        current_post: 0,
+        last_reason: "app_restarted_pending_resume"
+      });
+    }
+    return dailyAutomation.initialize();
   }
 
   return {
+    configureDaily: dailyAutomation.configure,
+    dispose: dailyAutomation.dispose,
+    initialize,
     pause,
+    pauseForAppClose,
+    runDailyNow: dailyAutomation.runNow,
     start,
-    status: () => ({ ok: true, state }),
+    status: () => ({ ok: true, state: snapshot() }),
     stop
   };
 }
@@ -533,21 +714,38 @@ function registerMomentsCampaignIpc(options = {}) {
       if (window && !window.isDestroyed()) window.webContents.send("moments-campaign:update", state);
     }
   });
-  ipcMain.handle("moments-campaign:status", () => controller.status());
-  ipcMain.handle("moments-campaign:start", (event, payload = {}) => {
+
+  function trustedClick(event, token) {
     const window = getMainWindow();
-    const token = String(payload.clickToken || "");
+    const value = String(token || "");
     if (
-      !token
-      || consumedTokens.has(token)
+      !value
+      || consumedTokens.has(value)
       || !window
       || window.isDestroyed()
       || event.sender !== window.webContents
       || !window.isFocused()
-    ) return { ok: false, reason: "trusted_user_click_required", state: controller.status().state };
-    consumedTokens.add(token);
+    ) return false;
+    consumedTokens.add(value);
     if (consumedTokens.size > 100) consumedTokens.delete(consumedTokens.values().next().value);
+    return true;
+  }
+
+  ipcMain.handle("moments-campaign:status", () => controller.status());
+  ipcMain.handle("moments-campaign:start", (event, payload = {}) => {
+    if (!trustedClick(event, payload.clickToken)) {
+      return { ok: false, reason: "trusted_user_click_required", state: controller.status().state };
+    }
     return controller.start(payload);
+  });
+  ipcMain.handle("moments-campaign:configure-daily", (_event, payload = {}) => {
+    return controller.configureDaily(payload);
+  });
+  ipcMain.handle("moments-campaign:run-daily-now", (event, payload = {}) => {
+    if (!trustedClick(event, payload.clickToken)) {
+      return { ok: false, reason: "trusted_user_click_required", state: controller.status().state };
+    }
+    return controller.runDailyNow();
   });
   ipcMain.handle("moments-campaign:pause", () => controller.pause());
   ipcMain.handle("moments-campaign:stop", () => controller.stop());

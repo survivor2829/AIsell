@@ -1,5 +1,5 @@
 import { Pause, Play, Square } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import "./MomentsDryRunPanel.css";
 
 type MomentsCampaignState = {
@@ -17,7 +17,32 @@ type MomentsCampaignState = {
   like_enabled: boolean;
   comment_enabled: boolean;
   comment_guidance: string;
+  outcome_unknown: boolean;
   last_reason: string;
+  started_at: string;
+  updated_at: string;
+  daily_automation: MomentsDailyAutomationState;
+};
+
+type MomentsDailyAutomationState = {
+  enabled: boolean;
+  target: number;
+  start_time: string;
+  like_enabled: boolean;
+  comment_enabled: boolean;
+  comment_guidance: string;
+  date: string;
+  completed_count: number;
+  checked_count: number;
+  skipped_count: number;
+  remaining_count: number;
+  suppressed_date: string;
+  blocked_reason: string;
+  last_reason: string;
+  last_run_at: string;
+  next_run_at: string;
+  updated_at: string;
+  status: string;
 };
 
 type MomentsCampaignResult = {
@@ -33,17 +58,49 @@ type StartPayload = {
   commentGuidance: string;
 };
 
+type DailyPayload = {
+  enabled: boolean;
+  target: number;
+  startTime: string;
+  likeEnabled: boolean;
+  commentEnabled: boolean;
+  commentGuidance: string;
+};
+
 declare global {
   interface Window {
     xiaoxiMomentsCampaign?: {
       status: () => Promise<MomentsCampaignResult>;
+      configureDaily: (payload: DailyPayload) => Promise<MomentsCampaignResult>;
       start: (payload: StartPayload) => Promise<MomentsCampaignResult>;
+      runDailyNow: () => Promise<MomentsCampaignResult>;
       pause: () => Promise<MomentsCampaignResult>;
       stop: () => Promise<MomentsCampaignResult>;
       onUpdate: (callback: (state: MomentsCampaignState) => void) => () => void;
     };
   }
 }
+
+const EMPTY_DAILY_STATE: MomentsDailyAutomationState = {
+  enabled: false,
+  target: 20,
+  start_time: "09:00",
+  like_enabled: true,
+  comment_enabled: false,
+  comment_guidance: "",
+  date: "",
+  completed_count: 0,
+  checked_count: 0,
+  skipped_count: 0,
+  remaining_count: 20,
+  suppressed_date: "",
+  blocked_reason: "",
+  last_reason: "",
+  last_run_at: "",
+  next_run_at: "",
+  updated_at: "",
+  status: "disabled"
+};
 
 const EMPTY_STATE: MomentsCampaignState = {
   status: "idle",
@@ -60,7 +117,11 @@ const EMPTY_STATE: MomentsCampaignState = {
   like_enabled: true,
   comment_enabled: false,
   comment_guidance: "",
-  last_reason: ""
+  outcome_unknown: false,
+  last_reason: "",
+  started_at: "",
+  updated_at: "",
+  daily_automation: EMPTY_DAILY_STATE
 };
 
 const REASON_LABELS: Record<string, string> = {
@@ -81,7 +142,15 @@ const REASON_LABELS: Record<string, string> = {
   pause_requested: "正在完成当前步骤后暂停",
   paused_by_user: "已暂停",
   stop_requested: "正在停止",
-  stopped_by_user: "已结束"
+  stopped_by_user: "已结束",
+  moments_daily_start_time_invalid: "每日开始时间格式不正确",
+  moments_action_missing: "请至少选择点赞或AI评论中的一项",
+  moments_comment_ai_unavailable: "AI评论服务尚未配置，暂时不能启用每日评论",
+  moments_daily_not_enabled: "请先启用并保存每日计划",
+  moments_campaign_already_running: "朋友圈任务正在运行，请稍后再试",
+  wechat_operation_busy: "微信正在执行其他任务，稍后会自动再试",
+  runtime_coordinator_failed: "微信任务协调器暂时不可用",
+  moments_daily_evaluate_failed: "每日计划调度失败，已记录诊断日志"
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -93,22 +162,105 @@ const STATUS_LABELS: Record<string, string> = {
   partial: "未全部完成"
 };
 
+const DAILY_STATUS_LABELS: Record<string, string> = {
+  disabled: "未启用",
+  waiting: "等待执行",
+  running: "正在执行",
+  completed: "今日已完成",
+  paused: "今日已暂停"
+};
+
+function formatNextRun(value: string) {
+  if (!value) return "暂无";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "暂无";
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+}
+
+function reasonLabel(reason: string, fallback: string) {
+  return REASON_LABELS[reason] || reason || fallback;
+}
+
+function campaignStateVersion(value: MomentsCampaignState) {
+  const daily = value.daily_automation || EMPTY_DAILY_STATE;
+  return [
+    value.updated_at,
+    value.status,
+    value.processed_count,
+    value.completed_post_count,
+    value.current_post,
+    value.last_reason,
+    daily.updated_at,
+    daily.status,
+    daily.enabled,
+    daily.target,
+    daily.start_time,
+    daily.completed_count,
+    daily.checked_count,
+    daily.suppressed_date,
+    daily.blocked_reason,
+    daily.next_run_at,
+    daily.last_reason
+  ].join("|");
+}
+
 export default function MomentsCampaignPanel() {
   const api = window.xiaoxiMomentsCampaign;
   const [maxPosts, setMaxPosts] = useState(5);
   const [likeEnabled, setLikeEnabled] = useState(true);
   const [commentEnabled, setCommentEnabled] = useState(false);
   const [commentGuidance, setCommentGuidance] = useState("");
+  const [dailyEnabled, setDailyEnabled] = useState(false);
+  const [dailyTarget, setDailyTarget] = useState(20);
+  const [dailyStartTime, setDailyStartTime] = useState("09:00");
   const [state, setState] = useState<MomentsCampaignState>(EMPTY_STATE);
   const [error, setError] = useState("");
+  const dailyFormDirty = useRef(false);
+  const dailyFormHydrated = useRef(false);
+  const acceptState = useCallback((next: MomentsCampaignState) => {
+    setState((current) => (
+      campaignStateVersion(current) === campaignStateVersion(next) ? current : next
+    ));
+  }, []);
 
   useEffect(() => {
     if (!api) return;
-    void api.status().then((result) => {
-      if (result?.state) setState(result.state);
+    let disposed = false;
+    let liveStateSeen = false;
+    const hydrateDailyForm = (next: MomentsCampaignState) => {
+      if (dailyFormDirty.current || dailyFormHydrated.current) return;
+      const daily = next.daily_automation;
+      if (!daily) return;
+      setDailyEnabled(daily.enabled);
+      setDailyTarget(daily.target);
+      setDailyStartTime(daily.start_time);
+      setLikeEnabled(daily.like_enabled);
+      setCommentEnabled(daily.comment_enabled);
+      setCommentGuidance(daily.comment_guidance);
+      dailyFormHydrated.current = true;
+    };
+    const unsubscribe = api.onUpdate((next) => {
+      if (disposed) return;
+      liveStateSeen = true;
+      acceptState(next);
+      hydrateDailyForm(next);
     });
-    return api.onUpdate((next) => setState(next));
-  }, [api]);
+    void api.status().then((result) => {
+      if (disposed || liveStateSeen || dailyFormDirty.current || !result?.state) return;
+      acceptState(result.state);
+      hydrateDailyForm(result.state);
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [acceptState, api]);
 
   const running = state.status === "running";
 
@@ -125,7 +277,7 @@ export default function MomentsCampaignPanel() {
       commentEnabled,
       commentGuidance
     }).then((result) => {
-      if (result?.state) setState(result.state);
+      if (result?.state) acceptState(result.state);
       if (!result?.ok) setError(result?.reason || "朋友圈连续任务未能启动");
     }).catch(() => setError("朋友圈连续任务启动失败"));
   };
@@ -133,17 +285,48 @@ export default function MomentsCampaignPanel() {
   const pause = () => {
     if (!api) return;
     void api.pause().then((result) => {
-      if (result?.state) setState(result.state);
+      if (result?.state) acceptState(result.state);
     });
   };
 
   const stop = () => {
     if (!api) return;
     void api.stop().then((result) => {
-      if (result?.state) setState(result.state);
+      if (result?.state) acceptState(result.state);
     });
   };
 
+  const saveDaily = () => {
+    if (!api) return;
+    dailyFormDirty.current = true;
+    if (dailyEnabled && !likeEnabled && !commentEnabled) {
+      setError("启用每日计划前，请至少选择点赞或AI评论中的一项。");
+      return;
+    }
+    setError("");
+    void api.configureDaily({
+      enabled: dailyEnabled,
+      target: dailyTarget,
+      startTime: dailyStartTime,
+      likeEnabled,
+      commentEnabled,
+      commentGuidance
+    }).then((result) => {
+      if (result?.state) acceptState(result.state);
+      if (!result?.ok) setError(reasonLabel(result?.reason || "", "每日计划保存失败"));
+    }).catch(() => setError("每日计划保存失败"));
+  };
+
+  const runDailyNow = () => {
+    if (!api) return;
+    setError("");
+    void api.runDailyNow().then((result) => {
+      if (result?.state) acceptState(result.state);
+      if (!result?.ok) setError(reasonLabel(result?.reason || "", "今日剩余任务未能启动"));
+    }).catch(() => setError("今日剩余任务启动失败"));
+  };
+
+  const daily = state.daily_automation || EMPTY_DAILY_STATE;
   const startLabel = commentEnabled
     ? (likeEnabled ? "启动点赞并评论" : "启动连续评论")
     : "启动连续点赞";
@@ -154,6 +337,71 @@ export default function MomentsCampaignPanel() {
         <Play size={18} />
         <strong>朋友圈连续互动</strong>
         <span>逐帖点赞 · AI定制评论</span>
+      </div>
+      <div className="moments-daily-plan">
+        <div className="moments-daily-plan-row">
+          <label className="moments-action-toggle">
+            <input
+              type="checkbox"
+              checked={dailyEnabled}
+              disabled={running}
+              onChange={(event) => {
+                dailyFormDirty.current = true;
+                setDailyEnabled(event.target.checked);
+              }}
+            />
+            每日自动执行
+          </label>
+          <label>
+            每天完成
+            <input
+              type="number"
+              min={1}
+              max={50}
+              value={dailyTarget}
+              disabled={running}
+              onChange={(event) => {
+                dailyFormDirty.current = true;
+                setDailyTarget(Math.max(1, Math.min(50, Number(event.target.value) || 1)));
+              }}
+            />
+            条
+          </label>
+          <label>
+            开始时间
+            <input
+              type="time"
+              value={dailyStartTime}
+              disabled={running}
+              onChange={(event) => {
+                dailyFormDirty.current = true;
+                setDailyStartTime(event.target.value);
+              }}
+            />
+          </label>
+          <button onClick={saveDaily} disabled={running}>保存每日计划</button>
+          <button
+            data-xiaoxi-moments-daily-run
+            className="primary-button"
+            onClick={runDailyNow}
+            disabled={running || !daily.enabled || daily.remaining_count <= 0}
+          >
+            <Play size={15} />立即执行今日剩余
+          </button>
+        </div>
+        <div className="moments-daily-summary">
+          <span>计划：{DAILY_STATUS_LABELS[daily.status] || daily.status}</span>
+          <span>今日完成：{daily.completed_count}/{daily.target}</span>
+          <span>剩余：{daily.remaining_count}</span>
+          <span>今日检查：{daily.checked_count}</span>
+          <span>下次执行：{formatNextRun(daily.next_run_at)}</span>
+          {daily.blocked_reason && (
+            <span>说明：{reasonLabel(daily.blocked_reason, daily.blocked_reason)}</span>
+          )}
+        </div>
+        <p>
+          保存后无需每天再点按钮；下方点赞、AI评论和评论偏好同时用于每日计划。错过时间时，下次打开程序会补跑今日剩余额度。
+        </p>
       </div>
       <div className="dev-control-row moments-campaign-controls">
         <label>
@@ -173,7 +421,10 @@ export default function MomentsCampaignPanel() {
             type="checkbox"
             checked={likeEnabled}
             disabled={running}
-            onChange={(event) => setLikeEnabled(event.target.checked)}
+            onChange={(event) => {
+              dailyFormDirty.current = true;
+              setLikeEnabled(event.target.checked);
+            }}
           />
           点赞
         </label>
@@ -182,7 +433,10 @@ export default function MomentsCampaignPanel() {
             type="checkbox"
             checked={commentEnabled}
             disabled={running}
-            onChange={(event) => setCommentEnabled(event.target.checked)}
+            onChange={(event) => {
+              dailyFormDirty.current = true;
+              setCommentEnabled(event.target.checked);
+            }}
           />
           AI评论
         </label>
@@ -206,7 +460,10 @@ export default function MomentsCampaignPanel() {
               maxLength={200}
               disabled={running}
               placeholder="例如：语气亲切一点；只评论产品和工作内容。留空则完全按帖子正文生成。"
-              onChange={(event) => setCommentGuidance(event.target.value)}
+              onChange={(event) => {
+                dailyFormDirty.current = true;
+                setCommentGuidance(event.target.value);
+              }}
             />
           </label>
         </div>

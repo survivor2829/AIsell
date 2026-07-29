@@ -19,6 +19,7 @@ let mainWindow = null;
 let disarmRealSend = null;
 let touchTaskController = null;
 let autoReplyController = null;
+let momentsCampaignController = null;
 
 function rendererBuildInfo() {
   try {
@@ -67,6 +68,7 @@ function createWindow() {
     diagnostics().event("app", "window_closing");
     autoReplyController?.pause("app_closed");
     touchTaskController?.pause("应用窗口已关闭，任务已暂停");
+    momentsCampaignController?.pauseForAppClose();
     disarmRealSend?.();
   });
   mainWindow.on("blur", () => {
@@ -151,12 +153,14 @@ if (!gotSingleInstanceLock) {
       coordinator,
       getMainWindow: () => mainWindow
     });
-    if (momentsCampaign) momentsCampaign.registerMomentsCampaignIpc({
-      baseDir: runtime.momentsDir,
-      coordinator,
-      deepSeekClient,
-      getMainWindow: () => mainWindow
-    });
+    if (momentsCampaign) {
+      momentsCampaignController = momentsCampaign.registerMomentsCampaignIpc({
+        baseDir: runtime.momentsDir,
+        coordinator,
+        deepSeekClient,
+        getMainWindow: () => mainWindow
+      });
+    }
     if (internalRealSend) disarmRealSend = () => internalRealSend.setRealSendArm(runtime.activeTouchDir, false);
     registerContactSyncIpc({ dataDir: runtime.contactSyncDir, activeTouchDir: runtime.activeTouchDir, coordinator });
     registerDeepSeekApiIpc({ keyStore: deepSeekKeyStore, client: deepSeekClient });
@@ -193,6 +197,7 @@ if (!gotSingleInstanceLock) {
       onPause: disarmRealSend || undefined
     });
     createWindow();
+    momentsCampaignController?.initialize();
     logger.event("app", "ready", { window_created: true });
 
     app.on("activate", () => {
@@ -204,4 +209,5 @@ if (!gotSingleInstanceLock) {
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
   });
+  app.on("before-quit", () => momentsCampaignController?.dispose());
 }
