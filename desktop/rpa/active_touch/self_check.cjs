@@ -174,6 +174,31 @@ try {
   }));
   assert.equal(ambiguousVisualWithSafeSibling.ok, true, "ambiguous edge candidates must be skipped when another visual post is safe");
   assert.equal(ambiguousVisualWithSafeSibling.post_snapshot.identity_text, visualSafeSibling.identityText);
+  const visualTopEdgePost = {
+    ...visualSafeSibling,
+    text: "top edge account top edge Moments content just now",
+    identityText: "top edge account top edge Moments content just now",
+    regionHash: "7".repeat(64),
+    avatarHash: "8".repeat(64),
+    layoutHash: "9".repeat(64),
+    bounds: { left: 80, top: 72, width: 780, height: 360 },
+    menuBounds: { left: 820, top: 392, width: 36, height: 24 },
+    avatarBounds: { left: 88, top: 76, width: 48, height: 48 }
+  };
+  const visualTopEdgeOnly = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({
+    ...visualMomentsWindow,
+    posts: [visualTopEdgePost]
+  }));
+  assert.equal(visualTopEdgeOnly.blocked_reason, "moments_post_position_unsafe", "a top-edge visual post must be skipped before opening its menu");
+  assert.equal(visualTopEdgeOnly.real_action_attempted, false);
+  const visualTopEdgeWithSafeSibling = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({
+    ...visualMomentsWindow,
+    posts: [visualTopEdgePost, visualSafeSibling]
+  }));
+  assert.equal(visualTopEdgeWithSafeSibling.ok, true, "a top-edge candidate must not block a central safe sibling");
+  assert.equal(visualTopEdgeWithSafeSibling.post_snapshot.identity_text, visualSafeSibling.identityText);
+  assert.equal(visualTopEdgeWithSafeSibling.plan.visible_post_count, 1);
+  assert.equal(visualTopEdgeWithSafeSibling.plan.target_partial_visible, false);
   const visualWithSkippedAnchorlessCandidate = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({
     ...visualMomentsWindow,
     posts: [

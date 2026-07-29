@@ -298,6 +298,31 @@ function sanitizeDiagnosticBounds(raw) {
   return bounds;
 }
 
+function sanitizeVisualMenuDiagnostics(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const sanitized = {};
+  if (["like", "comment", "inspect"].includes(raw.requestedAction)) {
+    sanitized.requested_action = raw.requestedAction;
+  }
+  for (const [source, target] of [["firstReason", "first_reason"], ["secondReason", "second_reason"]]) {
+    const code = safeDiagnosticCode(raw[source]);
+    if (code.startsWith("moments_")) sanitized[target] = code;
+  }
+  for (const [source, target] of [
+    ["menuReadRetryCount", "menu_read_retry_count"],
+    ["firstSegmentCount", "first_segment_count"],
+    ["secondSegmentCount", "second_segment_count"],
+    ["firstStrictCandidateCount", "first_strict_candidate_count"],
+    ["secondStrictCandidateCount", "second_strict_candidate_count"],
+    ["firstFallbackCandidateCount", "first_fallback_candidate_count"],
+    ["secondFallbackCandidateCount", "second_fallback_candidate_count"]
+  ]) {
+    if (Number.isSafeInteger(raw[source]) && raw[source] >= 0 && raw[source] <= 1_000) {
+      sanitized[target] = raw[source];
+    }
+  }
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
 function sanitizeCommentDriverDiagnostics(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const sanitized = {
@@ -924,13 +949,15 @@ async function inspectWithDriver(driver, context, action, attemptKey = "", comme
   } catch {
     return { ok: false, reason: "moments_menu_driver_failed" };
   }
+  const diagnostics = sanitizeVisualMenuDiagnostics(result?.diagnostics);
   if (!validMenuProof(result, context.observationId, action)) {
     return {
       ok: false,
-      reason: safeDriverReason(result) || "moments_menu_proof_invalid"
+      reason: safeDriverReason(result) || "moments_menu_proof_invalid",
+      diagnostics
     };
   }
-  return { ok: true, menuState: result.menuState };
+  return { ok: true, menuState: result.menuState, diagnostics };
 }
 
 async function inspectCommentDraftWithDriver(driver, context, commentText) {
@@ -1285,7 +1312,7 @@ async function executeMomentsLike(options = {}) {
   }
   const inspected = await inspectWithDriver(driver, context, "like", attemptKey);
   if (!inspected.ok) {
-    return persistBlocked(baseDir, context.state, action, context.observationId, inspected.reason, { attempt_key: attemptKey });
+    return persistBlocked(baseDir, context.state, action, context.observationId, inspected.reason, { attempt_key: attemptKey, diagnostics: inspected.diagnostics });
   }
   if (!preparedSnapshotIsFresh(context.preparedAtMs)) {
     return persistBlocked(baseDir, context.state, action, context.observationId, "moments_dry_run_expired", { attempt_key: attemptKey });
@@ -1336,6 +1363,7 @@ async function executeMomentsLike(options = {}) {
   }
 
   const attempted = typeof result?.actionAttempted === "boolean" ? result.actionAttempted : null;
+  const likeDiagnostics = sanitizeVisualMenuDiagnostics(result?.diagnostics);
   let persistedState = loadState(baseDir);
   if (attempted === true) {
     try {
@@ -1351,7 +1379,8 @@ async function executeMomentsLike(options = {}) {
     try {
       persistAttempt(baseDir, persistedState, details, "prepared", {
         reason,
-        real_action_attempted: false
+        real_action_attempted: false,
+        diagnostics: likeDiagnostics
       });
     } catch {
       return persistenceBlockedResult(action, details);
@@ -1360,7 +1389,8 @@ async function executeMomentsLike(options = {}) {
       observation_id: context.observationId,
       attempt_key: attemptKey,
       previous_status: "prepared",
-      retry_locked: true
+      retry_locked: true,
+      ...(likeDiagnostics ? { diagnostics: likeDiagnostics } : {})
     });
   }
   const verified = result?.ok === true
@@ -1368,13 +1398,19 @@ async function executeMomentsLike(options = {}) {
     && LIKED_MENU_STATES.includes(result.menuState)
     && (attempted === true || attempted === false);
   if (!verified) {
+    const reason = safeDriverReason(result) || "moments_like_proof_invalid";
     try {
       persistAttempt(baseDir, persistedState, details, "outcome_unknown", {
-        reason: safeDriverReason(result) || "moments_like_proof_invalid",
-        real_action_attempted: attempted
+        reason,
+        real_action_attempted: attempted,
+        diagnostics: likeDiagnostics
       });
     } catch {}
-    return outcomeUnknownResult(action, details, result, attempted);
+    return outcomeUnknownResult(action, details, {
+      primary_reason: reason,
+      real_action_attempted: attempted,
+      ...(likeDiagnostics ? { diagnostics: likeDiagnostics } : {})
+    });
   }
 
   const noOp = attempted === false;

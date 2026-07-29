@@ -55,6 +55,50 @@ function publicState(value = {}) {
   };
 }
 
+function sanitizeMomentsPositionDiagnostics(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const sanitized = {};
+  if (["top_edge", "bottom_partial", "actionable", "uia"].includes(value.position_zone)) {
+    sanitized.position_zone = value.position_zone;
+  }
+  if (typeof value.top_edge_unsafe === "boolean") {
+    sanitized.top_edge_unsafe = value.top_edge_unsafe;
+  }
+  for (const key of ["candidate_count", "accepted_count", "rejected_top_count"]) {
+    const count = value[key];
+    if (Number.isSafeInteger(count) && count >= 0 && count <= 1_000) sanitized[key] = count;
+  }
+  for (const key of ["target_top_ratio", "target_center_y_ratio", "target_menu_y_ratio"]) {
+    const ratio = value[key];
+    if (Number.isFinite(ratio) && ratio >= 0 && ratio <= 1) sanitized[key] = ratio;
+  }
+  return sanitized;
+}
+
+function sanitizeMomentsMenuDiagnostics(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const sanitized = {};
+  if (["like", "comment", "inspect"].includes(value.requested_action)) {
+    sanitized.requested_action = value.requested_action;
+  }
+  for (const key of ["first_reason", "second_reason"]) {
+    const reason = String(value[key] || "");
+    if (/^moments_[a-z0-9_:-]{1,91}$/u.test(reason)) sanitized[key] = reason;
+  }
+  for (const key of [
+    "menu_read_retry_count",
+    "first_segment_count",
+    "second_segment_count",
+    "first_strict_candidate_count",
+    "second_strict_candidate_count",
+    "first_fallback_candidate_count",
+    "second_fallback_candidate_count"
+  ]) {
+    const count = value[key];
+    if (Number.isSafeInteger(count) && count >= 0 && count <= 1_000) sanitized[key] = count;
+  }
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
 function createMomentsCampaignController(options = {}) {
   const baseDir = String(options.baseDir || "");
   const stateFile = path.join(baseDir, "state.json");
@@ -249,15 +293,23 @@ function createMomentsCampaignController(options = {}) {
           }
         );
         candidateChecks += 1;
+        const directPositionDiagnostics = sanitizeMomentsPositionDiagnostics(observed?.diagnostics);
+        const positionDiagnostics = Object.keys(directPositionDiagnostics).length > 0
+          ? directPositionDiagnostics
+          : sanitizeMomentsPositionDiagnostics(observed?.plan?.position_diagnostics);
         record("campaign.observation_finished", {
           ok: observed?.ok === true,
           reason: observed?.blocked_reason || observed?.reason || "",
-          visible_post_count: observed?.plan?.visible_post_count || 0
+          visible_post_count: observed?.plan?.visible_post_count || 0,
+          ...positionDiagnostics
         }, observed?.ok ? "info" : "warn");
 
         if (!observed?.ok) {
           const reason = String(observed?.blocked_reason || observed?.reason || "moments_observation_failed");
-          if (reason === "moments_post_not_found" && emptyScans < 2) {
+          if (reason === "moments_post_position_unsafe") {
+            emptyScans = 0;
+            persist({ last_reason: reason });
+          } else if (reason === "moments_post_not_found" && emptyScans < 2) {
             emptyScans += 1;
           } else {
             finish("paused", reason);
@@ -393,12 +445,14 @@ function createMomentsCampaignController(options = {}) {
                   timeoutMs: 125_000
                 }
               );
+              const likeDiagnostics = sanitizeMomentsMenuDiagnostics(liked?.diagnostics);
               record("campaign.like_finished", {
                 ok: liked?.ok === true,
                 status: liked?.status || "",
                 reason: liked?.blocked_reason || liked?.reason || "",
                 no_op: liked?.no_op === true,
-                real_action_attempted: liked?.real_action_attempted
+                real_action_attempted: liked?.real_action_attempted,
+                ...(likeDiagnostics ? { diagnostics: likeDiagnostics } : {})
               }, liked?.ok ? "info" : "warn");
               if (
                 liked?.ok === false

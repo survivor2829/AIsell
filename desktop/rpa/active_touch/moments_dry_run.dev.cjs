@@ -9,6 +9,7 @@ const { probeVisualWechatMomentsWindow } = require("./moments_visual_dry_run.dev
 
 const MAX_MOMENTS_COMMENT_LENGTH = 500;
 const MOMENTS_STRUCTURAL_PROBE_TIMEOUT_MS = 5_000;
+const MOMENTS_VISUAL_TOP_EDGE_RATIO = 0.035;
 
 const MOMENTS_NON_CONTENT_SUFFIX_TOKENS = new Set(["赞", "点赞", "取消", "取消赞", "评论", "删除"]);
 
@@ -120,6 +121,8 @@ const MOMENTS_BLOCK_ERRORS = Object.freeze({
   moments_post_ambiguous: "暂时无法唯一确认目标朋友圈内容，系统未执行任何操作",
   moments_post_changed: "朋友圈内容正在变化，系统未执行任何操作，请保持页面稳定后重试",
   moments_post_identity_missing: "当前可见内容缺少稳定身份或完整菜单锚点，系统未执行任何操作"
+  ,
+  moments_post_position_unsafe: "\u9876\u90e8\u5e16\u5b50\u4f4d\u7f6e\u4e0d\u9002\u5408\u64cd\u4f5c\uff0c\u5df2\u8df3\u8fc7\u5e76\u7ee7\u7eed\u67e5\u627e\u4e0b\u4e00\u6761",
 });
 
 const MOMENTS_WINDOW_PROBE_SCRIPT = `
@@ -420,12 +423,43 @@ function stableMomentsCandidateKey(post) {
   ].join(":");
 }
 
+function roundedMomentsRatio(value) {
+  const normalized = Math.min(1, Math.max(0, Number(value)));
+  return Number(normalized.toFixed(4));
+}
+
+function momentsCandidatePosition(post, viewportBounds, partialVisible = false) {
+  const viewport = strictBounds(viewportBounds) ? viewportBounds : null;
+  if (!viewport) return {};
+  const bounds = momentsCandidateBounds(post);
+  if (!strictBounds(bounds)) return {};
+  const runtimeId = String(post?.runtimeId ?? "").trim();
+  const relativeTop = (bounds.top - viewport.top) / viewport.height;
+  const relativeCenter = (bounds.top + (bounds.height / 2) - viewport.top) / viewport.height;
+  const menuBounds = strictBounds(post?.menuBounds) ? post.menuBounds : null;
+  const relativeMenuCenter = menuBounds
+    ? (menuBounds.top + (menuBounds.height / 2) - viewport.top) / viewport.height
+    : undefined;
+  const topRatio = roundedMomentsRatio(relativeTop);
+  const centerRatio = roundedMomentsRatio(relativeCenter);
+  const menuYRatio = Number.isFinite(relativeMenuCenter) ? roundedMomentsRatio(relativeMenuCenter) : undefined;
+  const topEdgeUnsafe = !runtimeId && relativeTop < MOMENTS_VISUAL_TOP_EDGE_RATIO;
+  return {
+    position_zone: topEdgeUnsafe ? "top_edge" : partialVisible ? "bottom_partial" : runtimeId ? "uia" : "actionable",
+    top_edge_unsafe: topEdgeUnsafe,
+    target_top_ratio: topRatio,
+    target_center_y_ratio: centerRatio,
+    ...(menuYRatio === undefined ? {} : { target_menu_y_ratio: menuYRatio })
+  };
+}
+
 function assessVisibleMomentsCandidate(post, viewportBounds) {
   const viewport = strictBounds(viewportBounds) ? viewportBounds : null;
   const bounds = momentsCandidateBounds(post);
   const visibleBounds = boundsIntersection(bounds, viewport);
   if (!viewport || !visibleBounds) return { ok: false };
   const partialVisible = post?.partialVisible === true || !boundsWithin(bounds, viewport);
+  const position = momentsCandidatePosition(post, viewport, partialVisible);
   const stableKey = stableMomentsCandidateKey(post);
   if (!stableKey || post?.structureVerified !== true) return { ok: false };
 
@@ -442,7 +476,8 @@ function assessVisibleMomentsCandidate(post, viewportBounds) {
     if (!label || label.length > 2000 || !identityText || identityText.length > 2000 || !hashesValid
       || !boundsWithin(post?.menuBounds, viewport) || !boundsWithin(post?.avatarBounds, viewport)) return { ok: false };
   }
-  return { ok: true, post, partialVisible, stableKey, visibleBounds };
+  if (position.top_edge_unsafe) return { ok: false, rejection: "top_edge", position };
+  return { ok: true, post, partialVisible, stableKey, visibleBounds, position };
 }
 
 function rankVisibleMomentsPosts(posts, viewportBounds) {
@@ -479,9 +514,17 @@ function selectVisibleMomentsPost(posts, viewportBounds) {
   if (!Array.isArray(posts) || posts.length === 0) {
     return { ok: false, reason: "moments_post_not_found", acceptedCount: 0 };
   }
-  const accepted = posts.map((post) => assessVisibleMomentsCandidate(post, viewportBounds)).filter((entry) => entry.ok);
+  const assessments = posts.map((post) => assessVisibleMomentsCandidate(post, viewportBounds));
+  const accepted = assessments.filter((entry) => entry.ok);
+  const topRejected = assessments.filter((entry) => entry.rejection === "top_edge");
+  const baseDiagnostics = {
+    candidate_count: posts.length,
+    accepted_count: accepted.length,
+    rejected_top_count: topRejected.length
+  };
   if (accepted.length === 0) {
-    return { ok: false, reason: "moments_post_identity_missing", acceptedCount: 0 };
+    const topPosition = topRejected[0]?.position;
+    return { ok: false, reason: topRejected.length > 0 ? "moments_post_position_unsafe" : "moments_post_identity_missing", acceptedCount: 0, diagnostics: { ...baseDiagnostics, ...(topPosition ?? {}) } };
   }
   const partialKeyCounts = new Map();
   for (const entry of accepted) {
@@ -490,11 +533,11 @@ function selectVisibleMomentsPost(posts, viewportBounds) {
   }
   const unambiguous = accepted.filter((entry) => !entry.partialVisible || partialKeyCounts.get(entry.stableKey) === 1);
   if (unambiguous.length === 0) {
-    return { ok: false, reason: "moments_post_ambiguous", acceptedCount: 0 };
+    return { ok: false, reason: "moments_post_ambiguous", acceptedCount: 0, diagnostics: baseDiagnostics };
   }
   const selected = rankVisibleMomentsPosts(unambiguous.map((entry) => entry.post), viewportBounds)[0]?.post;
   const assessment = unambiguous.find((entry) => entry.post === selected);
-  return { ok: true, post: selected, partialVisible: assessment?.partialVisible === true, acceptedCount: unambiguous.length };
+  return { ok: true, post: selected, partialVisible: assessment?.partialVisible === true, acceptedCount: unambiguous.length, diagnostics: { ...baseDiagnostics, accepted_count: unambiguous.length, ...(assessment?.position ?? {}) } };
 }
 
 function preferredVisibleMomentsPost(posts, viewportBounds) {
@@ -540,7 +583,7 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow) {
   if (posts.length === 0) return { ok: false, reason: "moments_post_not_found", error: MOMENTS_BLOCK_ERRORS.moments_post_not_found };
   const renderPaneBounds = windowResult?.renderPaneBounds;
   const selection = selectVisibleMomentsPost(posts, renderPaneBounds);
-  if (!selection.ok) return { ok: false, reason: selection.reason, error: MOMENTS_BLOCK_ERRORS[selection.reason] };
+  if (!selection.ok) return { ok: false, reason: selection.reason, error: MOMENTS_BLOCK_ERRORS[selection.reason], diagnostics: selection.diagnostics };
   const post = selection.post;
   const label = String(post.text ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
   const identityText = String(post.identityText ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
@@ -623,6 +666,7 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow) {
     ok: true,
     visiblePostCount: selection.acceptedCount,
     partialVisible: selection.partialVisible,
+    diagnostics: selection.diagnostics,
     snapshot: {
       observation_id: crypto.createHash("sha256").update(observationPayload, "utf8").digest("hex"),
       post_fingerprint: postFingerprint,
@@ -654,7 +698,7 @@ function momentsPostSnapshot(windowResult, verifiedWindow) {
   const posts = Array.isArray(windowResult?.posts) ? windowResult.posts : [];
   if (posts.length === 0) return { ok: false, reason: "moments_post_not_found", error: MOMENTS_BLOCK_ERRORS.moments_post_not_found };
   const selection = selectVisibleMomentsPost(posts, verifiedWindow);
-  if (!selection.ok) return { ok: false, reason: selection.reason, error: MOMENTS_BLOCK_ERRORS[selection.reason] };
+  if (!selection.ok) return { ok: false, reason: selection.reason, error: MOMENTS_BLOCK_ERRORS[selection.reason], diagnostics: selection.diagnostics };
   const post = selection.post;
   const runtimeId = String(post.runtimeId ?? "").trim();
   const automationId = String(post.automationId ?? "").trim();
@@ -702,6 +746,7 @@ function momentsPostSnapshot(windowResult, verifiedWindow) {
     ok: true,
     visiblePostCount: selection.acceptedCount,
     partialVisible: selection.partialVisible,
+    diagnostics: selection.diagnostics,
     snapshot: {
       observation_id: crypto.createHash("sha256").update(observationPayload, "utf8").digest("hex"),
       post_fingerprint: postFingerprint,
@@ -720,7 +765,7 @@ function momentsPostSnapshot(windowResult, verifiedWindow) {
   };
 }
 
-function momentsDryRunBlock(baseDir, state, reason, error, plan = {}) {
+function momentsDryRunBlock(baseDir, state, reason, error, plan = {}, diagnostics = undefined) {
   const nextState = {
     ...state,
     moments_dry_run: {
@@ -738,7 +783,8 @@ function momentsDryRunBlock(baseDir, state, reason, error, plan = {}) {
     blocked_reason: reason,
     dry_run: true,
     error,
-    real_action_attempted: false
+    real_action_attempted: false,
+    ...(diagnostics && typeof diagnostics === "object" ? { diagnostics } : {})
   };
 }
 
@@ -775,7 +821,7 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
   const verifiedWindow = normalizeMomentsWindow(windowResult);
   if (!windowVerified || !verifiedWindow) return momentsDryRunBlock(baseDir, state, "moments_window_identity_mismatch", MOMENTS_BLOCK_ERRORS.moments_window_identity_mismatch, plan);
   const snapshotResult = momentsPostSnapshot(windowResult, verifiedWindow);
-  if (!snapshotResult.ok) return momentsDryRunBlock(baseDir, state, snapshotResult.reason, snapshotResult.error, plan);
+  if (!snapshotResult.ok) return momentsDryRunBlock(baseDir, state, snapshotResult.reason, snapshotResult.error, { ...plan, position_diagnostics: snapshotResult.diagnostics }, snapshotResult.diagnostics);
   const postSnapshot = snapshotResult.snapshot;
   const visiblePostCount = snapshotResult.visiblePostCount;
 
@@ -786,6 +832,7 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
     action_order: actionOrder,
     visible_post_count: visiblePostCount,
     target_partial_visible: snapshotResult.partialVisible === true,
+    position_diagnostics: snapshotResult.diagnostics,
     verification_level: windowResult.identityMode === "visual_mmui_render" ? "visual_post_snapshot_only" : "post_snapshot_only"
   };
   const window = {
@@ -832,6 +879,7 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
     plan: preparedPlan,
     post_snapshot: postSnapshot,
     real_action_attempted: false,
+    diagnostics: snapshotResult.diagnostics,
     window
   };
 }

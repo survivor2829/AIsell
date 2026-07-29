@@ -1085,6 +1085,43 @@ async function main() {
     assert.equal(inspectThrow.status, "blocked");
     assert.equal(inspectThrow.blocked_reason, "moments_menu_driver_failed");
     assert.equal(inspectThrow.real_action_attempted, false);
+    const inspectDiagnosticsFixture = preparedDirectory(root, "inspect-diagnostics");
+    const inspectDiagnostics = await executeMomentsLike({
+      ...inspectDiagnosticsFixture,
+      driver: verifiedDriver(inspectDiagnosticsFixture.observationId, {
+        inspectMenu: () => ({
+          ok: false,
+          reason: "moments_menu_ambiguous",
+          diagnostics: {
+            requestedAction: "like",
+            menuReadRetryCount: 1,
+            firstReason: "moments_menu_surface_ambiguous",
+            secondReason: "moments_menu_ambiguous",
+            firstSegmentCount: 2,
+            secondSegmentCount: 3,
+            firstStrictCandidateCount: 0,
+            secondStrictCandidateCount: 0,
+            firstFallbackCandidateCount: 2,
+            secondFallbackCandidateCount: 3,
+            rawOcrText: "PRIVATE-MENU-OCR"
+          }
+        })
+      })
+    });
+    assert.equal(inspectDiagnostics.blocked_reason, "moments_menu_ambiguous");
+    assert.deepEqual(inspectDiagnostics.diagnostics, {
+      requested_action: "like",
+      menu_read_retry_count: 1,
+      first_reason: "moments_menu_surface_ambiguous",
+      second_reason: "moments_menu_ambiguous",
+      first_segment_count: 2,
+      second_segment_count: 3,
+      first_strict_candidate_count: 0,
+      second_strict_candidate_count: 0,
+      first_fallback_candidate_count: 2,
+      second_fallback_candidate_count: 3
+    });
+    assert.equal(JSON.stringify(inspectDiagnostics).includes("PRIVATE-MENU-OCR"), false);
 
     const alreadyLikedFixture = preparedDirectory(root, "already-liked");
     let alreadyLikedCalls = 0;
@@ -1237,6 +1274,28 @@ async function main() {
     });
     assert.equal(badLikeProof.status, "outcome_unknown");
     assert.equal(badLikeProof.real_action_attempted, true);
+    const likeUnknownDiagnosticsFixture = preparedDirectory(root, "like-unknown-diagnostics");
+    const likeUnknownDiagnostics = await executeMomentsLike({
+      ...likeUnknownDiagnosticsFixture,
+      driver: verifiedDriver(likeUnknownDiagnosticsFixture.observationId, {
+        like: () => ({
+          ok: true,
+          actionAttempted: true,
+          observationId: likeUnknownDiagnosticsFixture.observationId,
+          menuState: "not-liked",
+          diagnostics: {
+            requestedAction: "like",
+            menuReadRetryCount: 1,
+            firstReason: "moments_menu_ambiguous",
+            rawOcrText: "PRIVATE-UNKNOWN-OCR"
+          }
+        })
+      })
+    });
+    assert.equal(likeUnknownDiagnostics.status, "outcome_unknown");
+    assert.deepEqual(likeUnknownDiagnostics.diagnostics, { requested_action: "like", menu_read_retry_count: 1, first_reason: "moments_menu_ambiguous" });
+    assert.equal(JSON.stringify(likeUnknownDiagnostics).includes("PRIVATE-UNKNOWN-OCR"), false);
+    assert.deepEqual(loadState(likeUnknownDiagnosticsFixture.baseDir).moments_test_action.attempts[likeUnknownDiagnostics.attempt_key].diagnostics, likeUnknownDiagnostics.diagnostics);
 
     const likeBlockedFixture = preparedDirectory(root, "like-blocked-before-click");
     const likeBlocked = await executeMomentsLike({
@@ -1246,7 +1305,14 @@ async function main() {
           ok: false,
           status: "blocked",
           reason: "moments_like_click_blocked",
-          actionAttempted: false
+          actionAttempted: false,
+          diagnostics: {
+            requestedAction: "like",
+            menuReadRetryCount: 2,
+            firstReason: "moments_menu_ambiguous",
+            firstSegmentCount: 2,
+            rawOcrText: "PRIVATE-LIKE-OCR"
+          }
         })
       })
     });
@@ -1254,6 +1320,9 @@ async function main() {
     assert.equal(likeBlocked.blocked_reason, "moments_like_click_blocked");
     assert.equal(likeBlocked.real_action_attempted, false);
     assert.equal(likeBlocked.retry_locked, true);
+    assert.deepEqual(likeBlocked.diagnostics, { requested_action: "like", menu_read_retry_count: 2, first_reason: "moments_menu_ambiguous", first_segment_count: 2 });
+    assert.equal(JSON.stringify(likeBlocked).includes("PRIVATE-LIKE-OCR"), false);
+    assert.deepEqual(loadState(likeBlockedFixture.baseDir).moments_test_action.attempts[likeBlocked.attempt_key].diagnostics, likeBlocked.diagnostics);
     assert.equal(loadState(likeBlockedFixture.baseDir).moments_test_action.attempts[likeBlocked.attempt_key].status, "prepared");
 
     const commentValidationFixture = preparedDirectory(root, "comment-validation");

@@ -73,13 +73,14 @@ async function main() {
   assert.equal(persisted.moments_campaign.status, "completed");
 
   const likeRecognitionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-like-recognition-"));
+  const likeRecognitionEvents = [];
   const likeRecognitionController = createMomentsCampaignController({
     baseDir: likeRecognitionRoot,
     coordinator: {
       acquire: () => ({ ok: true, lock: { owner: "like-recognition-owner" } }),
       release: () => undefined
     },
-    logger: { event: () => undefined },
+    logger: { event: (module, event, details) => likeRecognitionEvents.push({ module, event, details }) },
     openMoments: async () => ({ ok: true }),
     scrollMoments: async () => ({ ok: true }),
     runStep: async (args) => {
@@ -97,7 +98,16 @@ async function main() {
         ok: false,
         status: "blocked",
         blocked_reason: "moments_menu_ambiguous",
-        real_action_attempted: false
+        real_action_attempted: false,
+        diagnostics: {
+          requested_action: "like",
+          menu_read_retry_count: 1,
+          first_reason: "moments_menu_ambiguous",
+          first_segment_count: 2,
+          second_segment_count: null,
+          second_fallback_candidate_count: "",
+          raw_ocr_text: "PRIVATE-CAMPAIGN-OCR"
+        }
       };
     }
   });
@@ -114,6 +124,73 @@ async function main() {
   assert.equal(likeRecognitionPartial.liked_count, 0);
   assert.equal(likeRecognitionPartial.skipped_count, 1);
   assert.equal(likeRecognitionPartial.last_reason, "target_not_reached");
+  const likeRecognitionEvent = likeRecognitionEvents.find((entry) => entry.event === "campaign.like_finished");
+  assert.deepEqual(likeRecognitionEvent.details.diagnostics, { requested_action: "like", menu_read_retry_count: 1, first_reason: "moments_menu_ambiguous", first_segment_count: 2 });
+  assert.equal(JSON.stringify(likeRecognitionEvent).includes("PRIVATE-CAMPAIGN-OCR"), false);
+
+  const topPositionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-top-position-"));
+  let topPositionObservations = 0;
+  let topPositionScrolls = 0;
+  const topPositionEvents = [];
+  const topPositionController = createMomentsCampaignController({
+    baseDir: topPositionRoot,
+    coordinator: {
+      acquire: () => ({ ok: true, lock: { owner: "top-position-owner" } }),
+      release: () => undefined
+    },
+    logger: { event: (module, event, details) => topPositionEvents.push({ module, event, details }) },
+    openMoments: async () => ({ ok: true }),
+    scrollMoments: async () => {
+      topPositionScrolls += 1;
+      return { ok: true };
+    },
+    runStep: async (args) => {
+      if (args[0] === "moments-dry-run") {
+        topPositionObservations += 1;
+        if (topPositionObservations === 1) {
+          return {
+            ok: false,
+            blocked_reason: "moments_post_position_unsafe",
+            real_action_attempted: false,
+            diagnostics: {
+              position_zone: "top_edge",
+              top_edge_unsafe: true,
+              target_top_ratio: 0.003,
+              rejected_top_count: 1
+            }
+          };
+        }
+        return {
+          ok: true,
+          post_snapshot: {
+            observation_id: "e".repeat(64),
+            post_fingerprint: "e".repeat(64)
+          },
+          plan: { visible_post_count: 1, target_partial_visible: false },
+          diagnostics: { position_zone: "actionable", top_edge_unsafe: false }
+        };
+      }
+      return {
+        ok: true,
+        status: "verified",
+        no_op: false,
+        real_action_attempted: true
+      };
+    }
+  });
+  assert.equal(topPositionController.start({ maxPosts: 1 }).ok, true);
+  const topPositionCompleted = await waitFor(
+    () => topPositionController.status().state,
+    (state) => state.status === "completed"
+  );
+  assert.equal(topPositionObservations, 2);
+  assert.equal(topPositionScrolls, 1);
+  assert.equal(topPositionCompleted.processed_count, 1);
+  assert.equal(topPositionCompleted.liked_count, 1);
+  const topObservationEvent = topPositionEvents.find((entry) => entry.event === "campaign.observation_finished");
+  assert.equal(topObservationEvent.details.position_zone, "top_edge");
+  assert.equal(topObservationEvent.details.top_edge_unsafe, true);
+  assert.equal(topObservationEvent.details.rejected_top_count, 1);
 
   const duplicateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-duplicate-"));
   const duplicateController = createMomentsCampaignController({
@@ -690,6 +767,8 @@ async function main() {
   assert.equal(rejectedEvents[0].details.reason, "invalid_runtime_state");
 
   fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(likeRecognitionRoot, { recursive: true, force: true });
+  fs.rmSync(topPositionRoot, { recursive: true, force: true });
   fs.rmSync(duplicateRoot, { recursive: true, force: true });
   fs.rmSync(duplicateUnknownRoot, { recursive: true, force: true });
   fs.rmSync(partialRoot, { recursive: true, force: true });
