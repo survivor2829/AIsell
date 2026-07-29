@@ -19,6 +19,39 @@ function createTrustedClickGate(selector) {
   };
 }
 
+function createMomentsCampaignApi(ipcRenderer) {
+  const consumeStartClick = createTrustedClickGate(
+    "[data-xiaoxi-moments-campaign-start], [data-xiaoxi-moments-daily-run]"
+  );
+  return {
+    status: () => ipcRenderer.invoke("moments-campaign:status"),
+    configureDaily: (payload) => ipcRenderer.invoke("moments-campaign:configure-daily", {
+      enabled: payload?.enabled === true,
+      target: Number(payload?.target || 20),
+      startTime: String(payload?.startTime || "09:00"),
+      likeEnabled: payload?.likeEnabled !== false,
+      commentEnabled: payload?.commentEnabled === true,
+      commentGuidance: String(payload?.commentGuidance || "")
+    }),
+    start: (payload) => ipcRenderer.invoke("moments-campaign:start", {
+      maxPosts: Number(payload?.maxPosts || 10),
+      likeEnabled: payload?.likeEnabled !== false,
+      commentEnabled: payload?.commentEnabled === true,
+      commentGuidance: String(payload?.commentGuidance || ""),
+      clickToken: consumeStartClick()
+    }),
+    runDailyNow: () => ipcRenderer.invoke("moments-campaign:run-daily-now", {
+      clickToken: consumeStartClick()
+    }),
+    pause: () => ipcRenderer.invoke("moments-campaign:pause"),
+    stop: () => ipcRenderer.invoke("moments-campaign:stop"),
+    onUpdate: (callback) => {
+      const handler = (_event, payload) => callback(payload);
+      ipcRenderer.on("moments-campaign:update", handler);
+      return () => ipcRenderer.removeListener("moments-campaign:update", handler);
+    }
+  };
+}
 function createPreloadApis(ipcRenderer) {
   const consumeBatchClick = createTrustedClickGate("[data-xiaoxi-batch-authorize]");
   const consumeAutoReplyClick = createTrustedClickGate("[data-xiaoxi-auto-reply-start], [data-xiaoxi-auto-reply-acknowledge]");
@@ -76,4 +109,4 @@ function createPreloadApis(ipcRenderer) {
   };
 }
 
-module.exports = { createPreloadApis, createTrustedClickGate };
+module.exports = { createMomentsCampaignApi, createPreloadApis, createTrustedClickGate };

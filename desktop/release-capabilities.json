@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "targetWeixin": [
     "4.1.11.54"
   ],
@@ -20,9 +20,25 @@
       "portableVerification": "pending"
     },
     "moments": {
-      "implementation": "single-post-preview",
-      "localLiveVerification": "pending",
-      "portableVerification": "pending"
+      "implementation": "implemented",
+      "localLiveVerification": "partial",
+      "portableVerification": "pending",
+      "packagedEditions": [
+        "test",
+        "delivery"
+      ],
+      "workflows": {
+        "perPostInteraction": {
+          "implementation": "implemented",
+          "localLiveVerification": "verified",
+          "portableVerification": "pending"
+        },
+        "dailyAutomation": {
+          "implementation": "implemented",
+          "localLiveVerification": "pending",
+          "portableVerification": "pending"
+        }
+      }
     }
   }
 }

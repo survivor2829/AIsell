@@ -44,11 +44,7 @@ function sourceAllowed(source, edition) {
       "wechat_window_driver.dev.cjs",
       "active_touch_cli.dev.cjs",
       "moments_visual_probe.dev.cjs",
-      "wechat_auto_reply_visual_driver.dev.cjs",
-      "wechat_auto_reply_visual_send.dev.cjs"
-    ];
-    if (edition === "test") allowed.push(
-      "preload.dev.cjs",
+      "moments_navigation.dev.cjs",
       "moments_dry_run.dev.cjs",
       "moments_dry_run_cli.dev.cjs",
       "moments_action.dev.cjs",
@@ -56,7 +52,12 @@ function sourceAllowed(source, edition) {
       "moments_action_driver.dev.cjs",
       "moments_comment_readback_proof.dev.cjs",
       "moments_visual_dry_run.dev.cjs",
-      "moments_visual_action_driver.dev.cjs"
+      "moments_visual_action_driver.dev.cjs",
+      "wechat_auto_reply_visual_driver.dev.cjs",
+      "wechat_auto_reply_visual_send.dev.cjs"
+    ];
+    if (edition === "test") allowed.push(
+      "preload.dev.cjs"
     );
     return allowed.includes(name);
   }
@@ -206,8 +207,8 @@ function buildPortableStaging(edition, paths, sourceState) {
   };
   fs.writeFileSync(path.join(target, "版本清单.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   fs.writeFileSync(path.join(target, "版本标识.txt"), edition === "test"
-    ? `AI获客 测试版 ${manifest.buildId}\n用于微信 4.1.11.54 联系人同步、主动触达和自动回复受控验收；朋友圈当前仅为单帖预演，不包含批量操作。\n`
-    : `AI获客 ${manifest.buildId}\n当前功能验收状态以版本清单中的 capabilityMatrix 为准；朋友圈等功能仍在开发，本包不代表完整商品。\n`, "utf8");
+    ? `AI获客 测试版 ${manifest.buildId}\n朋友圈逐帖互动已完成本机验收；每日自动计划已实现但仍待真实计时验收。\n`
+    : `AI获客 ${manifest.buildId}\n当前功能验收状态以版本清单中的 capabilityMatrix 为准；朋友圈逐帖互动已进入本包，每日自动计划仍待真实计时与异机验收，本包不代表完整商品。\n`, "utf8");
   fs.writeFileSync(path.join(target, "首次使用说明.txt"), [
     `AI获客 ${edition === "test" ? "测试版" : ""} ${manifest.buildId}`.trim(),
     "",

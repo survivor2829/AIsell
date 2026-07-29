@@ -333,7 +333,7 @@ const DEFAULT_ACTIVE_MODULE: ModuleKey = PILOT_EDITION ? "touch" : "reply";
 const EDITION_LABEL = DEVELOPMENT_EDITION ? "测试版" : "";
 const DevelopmentAcceptance = DEVELOPMENT_EDITION ? lazy(() => import("./DevelopmentAcceptance")) : null;
 const MomentsDryRunPanel = DEVELOPMENT_EDITION ? lazy(() => import("./MomentsDryRunPanel")) : null;
-const MomentsCampaignPanel = DEVELOPMENT_EDITION ? lazy(() => import("./MomentsCampaignPanel")) : null;
+const MomentsCampaignPanel = REAL_SEND_EDITION ? lazy(() => import("./MomentsCampaignPanel")) : null;
 
 const agentChildren: NavItem[] = [
   { key: "reply", label: "自动回复", icon: MessageCircle },
@@ -1087,7 +1087,7 @@ function AccountManagement() {
 function MomentsOperations() {
   const features = [
     { title: "朋友圈发布", description: "编辑并发布业务微信的朋友圈内容。", icon: Send, status: "下一阶段" },
-    { title: "点赞评论", description: DEVELOPMENT_EDITION ? "先验证当前朋友圈窗口，再生成单条安全预演。" : "统一处理朋友圈点赞与评论互动，下一阶段开放。", icon: ThumbsUp, status: DEVELOPMENT_EDITION ? "安全预演" : "下一阶段" }
+    { title: "点赞评论", description: REAL_SEND_EDITION ? "自动打开朋友圈，逐帖点赞并可生成 AI 定制评论。" : "统一处理朋友圈点赞与评论互动，下一阶段开放。", icon: ThumbsUp, status: REAL_SEND_EDITION ? "连续互动" : "下一阶段" }
   ];
 
   return (

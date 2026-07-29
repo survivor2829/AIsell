@@ -3,7 +3,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const source = fs.readFileSync(path.join(__dirname, "MomentsCampaignPanel.tsx"), "utf8");
-const preload = fs.readFileSync(path.join(__dirname, "../main/preload.dev.cjs"), "utf8");
+const preloadApi = fs.readFileSync(path.join(__dirname, "../main/preload-api.cjs"), "utf8");
+const preload = fs.readFileSync(path.join(__dirname, "../main/preload.cjs"), "utf8");
+const developmentPreload = fs.readFileSync(path.join(__dirname, "../main/preload.dev.cjs"), "utf8");
+const app = fs.readFileSync(path.join(__dirname, "App.tsx"), "utf8");
 
 assert.match(source, /每日自动执行/u);
 assert.match(source, /每天完成/u);
@@ -28,11 +31,15 @@ assert.match(source, /dailyFormDirty\.current = true;\s+setLikeEnabled/u);
 assert.match(source, /dailyFormDirty\.current = true;\s+setCommentEnabled/u);
 assert.match(source, /dailyFormDirty\.current = true;\s+setCommentGuidance/u);
 assert.match(source, /disposed = true;\s+unsubscribe\(\)/u);
-assert.match(preload, /moments-campaign:configure-daily/u);
-assert.match(preload, /moments-campaign:run-daily-now/u);
+assert.match(preloadApi, /moments-campaign:configure-daily/u);
+assert.match(preloadApi, /moments-campaign:run-daily-now/u);
 assert.match(
-  preload,
+  preloadApi,
   /\[data-xiaoxi-moments-campaign-start\], \[data-xiaoxi-moments-daily-run\]/u
 );
+assert.match(preload, /exposeInMainWorld\("xiaoxiMomentsCampaign"/u);
+assert.match(developmentPreload, /createMomentsCampaignApi\(ipcRenderer\)/u);
+assert.match(app, /const MomentsCampaignPanel = REAL_SEND_EDITION \? lazy/u);
+assert.match(app, /const MomentsDryRunPanel = DEVELOPMENT_EDITION \? lazy/u);
 
 console.log("Moments campaign panel self-check passed");

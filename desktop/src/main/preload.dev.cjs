@@ -1,14 +1,15 @@
 const { contextBridge, ipcRenderer } = require("electron");
-const { createPreloadApis, createTrustedClickGate } = require("./preload-api.cjs");
+const {
+  createMomentsCampaignApi,
+  createPreloadApis,
+  createTrustedClickGate
+} = require("./preload-api.cjs");
 
 const apis = createPreloadApis(ipcRenderer);
 const consumeRealSendClick = createTrustedClickGate("[data-xiaoxi-real-send]");
 const consumeMomentsInspectClick = createTrustedClickGate("[data-xiaoxi-moments-inspect]");
 const consumeMomentsLikeClick = createTrustedClickGate("[data-xiaoxi-moments-like]");
 const consumeMomentsCommentClick = createTrustedClickGate("[data-xiaoxi-moments-comment]");
-const consumeMomentsCampaignClick = createTrustedClickGate(
-  "[data-xiaoxi-moments-campaign-start], [data-xiaoxi-moments-daily-run]"
-);
 
 function momentsClickToken(intent, consumeClick) {
   const clickToken = consumeClick();
@@ -47,34 +48,7 @@ const activeTouch = {
   failConversation: () => ipcRenderer.invoke("active-touch:fail-conversation")
 };
 
-const momentsCampaign = {
-  status: () => ipcRenderer.invoke("moments-campaign:status"),
-  configureDaily: (payload) => ipcRenderer.invoke("moments-campaign:configure-daily", {
-    enabled: payload?.enabled === true,
-    target: Number(payload?.target || 20),
-    startTime: String(payload?.startTime || "09:00"),
-    likeEnabled: payload?.likeEnabled !== false,
-    commentEnabled: payload?.commentEnabled === true,
-    commentGuidance: String(payload?.commentGuidance || "")
-  }),
-  start: (payload) => ipcRenderer.invoke("moments-campaign:start", {
-    maxPosts: Number(payload?.maxPosts || 10),
-    likeEnabled: payload?.likeEnabled !== false,
-    commentEnabled: payload?.commentEnabled === true,
-    commentGuidance: String(payload?.commentGuidance || ""),
-    clickToken: consumeMomentsCampaignClick()
-  }),
-  runDailyNow: () => ipcRenderer.invoke("moments-campaign:run-daily-now", {
-    clickToken: consumeMomentsCampaignClick()
-  }),
-  pause: () => ipcRenderer.invoke("moments-campaign:pause"),
-  stop: () => ipcRenderer.invoke("moments-campaign:stop"),
-  onUpdate: (callback) => {
-    const handler = (_event, payload) => callback(payload);
-    ipcRenderer.on("moments-campaign:update", handler);
-    return () => ipcRenderer.removeListener("moments-campaign:update", handler);
-  }
-};
+const momentsCampaign = createMomentsCampaignApi(ipcRenderer);
 
 contextBridge.exposeInMainWorld("xiaoxiActiveTouch", activeTouch);
 contextBridge.exposeInMainWorld("xiaoxiAutoReply", apis.autoReply);

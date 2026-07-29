@@ -170,6 +170,7 @@ const wxKeyDll = path.join(nativeLibDir, "wx_key.dll");
 const databaseDecryptor = path.join(nativeLibDir, "xiaoxi-db-decrypt.exe");
 const internalAutoReplyCli = path.join(appDir, "rpa", "active_touch", "active_touch_cli.dev.cjs");
 const momentsDryRunModule = path.join(appDir, "rpa", "active_touch", "moments_dry_run.dev.cjs");
+const momentsNavigation = path.join(appDir, "rpa", "active_touch", "moments_navigation.dev.cjs");
 const momentsDryRunCli = path.join(appDir, "rpa", "active_touch", "moments_dry_run_cli.dev.cjs");
 const momentsActionModule = path.join(appDir, "rpa", "active_touch", "moments_action.dev.cjs");
 const momentsActionCli = path.join(appDir, "rpa", "active_touch", "moments_action_cli.dev.cjs");
@@ -183,6 +184,7 @@ const visualAutoReplySend = path.join(appDir, "rpa", "active_touch", "wechat_aut
 const momentsActionSelfCheck = path.join(appDir, "rpa", "active_touch", "moments_action.self_check.cjs");
 const momentsRuntimeNames = [
   "moments_dry_run.dev.cjs",
+  "moments_navigation.dev.cjs",
   "moments_dry_run_cli.dev.cjs",
   "moments_action.dev.cjs",
   "moments_action_cli.dev.cjs",
@@ -217,6 +219,11 @@ const momentsTestVisualSourceMarkers = [
   "MOMENTS_VISUAL_ACTION_POWERSHELL"
 ];
 const visualAutoReplyReadOnlySourceMarkers = ["Windows.Media.Ocr.OcrEngine"];
+const momentsCampaignSourceMarkers = [
+  "moments-campaign:start",
+  "xiaoxiMomentsCampaign"
+];
+const momentsCampaignUiMarkers = ["data-xiaoxi-moments-campaign-start"];
 const databaseFilePattern = /\.(?:db(?:-wal|-shm)?|sqlite3?)$/i;
 const blockedNames = new Set(["python.exe", "dump_data.exe", "wechat-dump-rs.exe", "ai-expert.json", "auto-reply-state.json", "auto-reply-diagnostics.jsonl", "contacts.json", "touch_task.json", "touch_task.json.bak", "run_logs.jsonl", "state.json", "deepseek-api-key.bin"]);
 
@@ -253,7 +260,11 @@ assert.deepEqual(manifest.capabilityMatrix, declaredCapabilities.capabilities, "
 assert.equal(manifest.capabilityMatrix?.contactSync?.implementation, "implemented");
 assert.equal(manifest.capabilityMatrix?.autoReply?.localLiveVerification, "verified");
 assert.equal(manifest.capabilityMatrix?.activeTouch?.localLiveVerification, "verified");
-assert.equal(manifest.capabilityMatrix?.moments?.implementation, "single-post-preview");
+assert.equal(manifest.capabilityMatrix?.moments?.implementation, "implemented");
+assert.equal(manifest.capabilityMatrix?.moments?.localLiveVerification, "partial");
+assert.equal(manifest.capabilityMatrix?.moments?.workflows?.perPostInteraction?.localLiveVerification, "verified");
+assert.equal(manifest.capabilityMatrix?.moments?.workflows?.dailyAutomation?.localLiveVerification, "pending");
+assert.deepEqual(manifest.capabilityMatrix?.moments?.packagedEditions, ["test", "delivery"]);
 assert.equal(manifest.verifiedWeixin, undefined, "a global verified version list must not overclaim every capability");
 assert.equal(manifest.commercialReady, false);
 assert.equal(manifest.dirty, false, "portable release must come from a clean worktree");
@@ -261,8 +272,9 @@ assert.match(manifest.commit, /^[0-9a-f]{40}$/, "portable release must record a 
 assert.match(manifest.sourceTreeSha256, /^[0-9a-f]{64}$/, "portable release must record the packaged source tree hash");
 assert.equal(treeSha256(appDir), manifest.sourceTreeSha256, "packaged app tree must match the manifest source tree hash");
 const releaseLabel = fs.readFileSync(path.join(target, "版本标识.txt"), "utf8");
-assert.equal(releaseLabel.includes(edition === "test" ? "主动触达和自动回复受控验收" : "capabilityMatrix"), true);
-assert.equal(releaseLabel.includes(edition === "test" ? "朋友圈当前仅为单帖预演" : "朋友圈等功能仍在开发"), true);
+assert.equal(releaseLabel.includes("朋友圈逐帖互动已"), true);
+assert.equal(releaseLabel.includes("每日自动计划"), true);
+assert.equal(edition !== "delivery" || releaseLabel.includes("capabilityMatrix"), true);
 assert.equal(edition !== "delivery" || releaseLabel.includes("本包不代表完整商品"), true);
 const firstUseGuide = fs.readFileSync(path.join(target, "首次使用说明.txt"), "utf8");
 assert.equal(firstUseGuide.includes(manifest.buildId), true);
@@ -300,7 +312,7 @@ const { archiveEntries } = verifyPortableArchive({
 });
 assertNoBlockedFiles(archiveEntries, "portable ZIP");
 for (const name of momentsRuntimeNames) {
-  assert.equal(archiveEntries.some((entry) => entry.replaceAll("\\", "/").endsWith(`/rpa/active_touch/${name}`)), edition === "test", `${name} ZIP boundary must match the edition`);
+  assert.equal(archiveEntries.some((entry) => entry.replaceAll("\\", "/").endsWith(`/rpa/active_touch/${name}`)), true, `${name} must be present in every portable ZIP`);
 }
 for (const name of visualAutoReplyRuntimeNames) {
   assert.equal(archiveEntries.some((entry) => entry.replaceAll("\\", "/").endsWith(`/rpa/active_touch/${name}`)), true, `${name} must be present in every portable ZIP`);
@@ -356,7 +368,7 @@ try {
   assert.equal(activeTouchPayload.ok, true, "packaged auto-reply executor must start successfully");
   assert.equal(activeTouchPayload.action, "status", "packaged auto-reply executor must run the requested command");
 
-  if (edition === "test") {
+  {
     const momentsDataDir = path.join(tempDir, "moments");
     const moments = spawnSync(executable, [momentsDryRunCli, "moments-dry-run", "--mode", "targeted", "--like", "--data-dir", momentsDataDir], {
       encoding: "utf8",
@@ -380,6 +392,7 @@ try {
         "moments_post_changed",
         "moments_post_identity_missing",
         "moments_visual_profile_conflict",
+        "moments_post_position_unsafe",
         "moments_render_pane_not_found",
         "moments_render_pane_ambiguous",
         "moments_render_pane_bounds_invalid",
@@ -421,15 +434,16 @@ assert.equal(fs.readFileSync(path.join(mainDir, "active-touch-ipc.cjs"), "utf8")
 const activeDir = path.join(appDir, "rpa", "active_touch");
 assert.equal(fs.existsSync(path.join(activeDir, "state_machine.dev.cjs")), true);
 assert.equal(fs.existsSync(path.join(activeDir, "wechat_window_driver.dev.cjs")), true);
-assert.equal(fs.existsSync(momentsDryRunModule), edition === "test");
-assert.equal(fs.existsSync(momentsDryRunCli), edition === "test");
-assert.equal(fs.existsSync(momentsActionModule), edition === "test");
-assert.equal(fs.existsSync(momentsActionCli), edition === "test");
-assert.equal(fs.existsSync(momentsActionDriver), edition === "test");
-assert.equal(fs.existsSync(momentsCommentReadbackProof), edition === "test");
+assert.equal(fs.existsSync(momentsNavigation), true);
+assert.equal(fs.existsSync(momentsDryRunModule), true);
+assert.equal(fs.existsSync(momentsDryRunCli), true);
+assert.equal(fs.existsSync(momentsActionModule), true);
+assert.equal(fs.existsSync(momentsActionCli), true);
+assert.equal(fs.existsSync(momentsActionDriver), true);
+assert.equal(fs.existsSync(momentsCommentReadbackProof), true);
 assert.equal(fs.existsSync(momentsVisualProbe), true);
-assert.equal(fs.existsSync(momentsVisualDryRun), edition === "test");
-assert.equal(fs.existsSync(momentsVisualActionDriver), edition === "test");
+assert.equal(fs.existsSync(momentsVisualDryRun), true);
+assert.equal(fs.existsSync(momentsVisualActionDriver), true);
 assert.equal(fs.existsSync(visualAutoReplyDriver), true);
 assert.equal(fs.existsSync(visualAutoReplySend), true);
 assert.equal(fs.existsSync(momentsActionSelfCheck), false, "Moments action self-check must not be packaged");
@@ -442,13 +456,13 @@ const mainSources = fs.readdirSync(mainDir)
   .map((name) => fs.readFileSync(path.join(mainDir, name), "utf8"))
   .join("\n");
 const packagedSources = `${mainSources}\n${activeTouchSources}`;
-assert.equal(activeTouchSources.includes("moments-dry-run"), edition === "test", "only the test package may contain the Moments dry-run command");
-assert.equal(activeTouchSources.includes("sns_list"), edition === "test", "only the test package may contain the Moments post probe");
+assert.equal(activeTouchSources.includes("moments-dry-run"), true, "every package must contain the Moments dry-run command used by the campaign");
+assert.equal(activeTouchSources.includes("sns_list"), true, "every package must contain the Moments post probe used by the campaign");
 for (const marker of momentsActionSourceMarkers) {
-  assert.equal(packagedSources.includes(marker), edition === "test", `only test-edition source may contain ${marker}`);
+  assert.equal(packagedSources.includes(marker), true, `every edition must contain ${marker}`);
 }
 for (const marker of momentsTestVisualSourceMarkers) {
-  assert.equal(packagedSources.includes(marker), edition === "test", `only test-edition source may contain ${marker}`);
+  assert.equal(packagedSources.includes(marker), true, `every edition must contain ${marker}`);
 }
 for (const marker of visualAutoReplyReadOnlySourceMarkers) {
   assert.equal(packagedSources.includes(marker), true, `every edition must contain the read-only visual auto-reply dependency ${marker}`);
@@ -459,7 +473,12 @@ const renderer = fs.readdirSync(path.join(appDir, "dist", "assets"))
   .join("\n");
 assert.equal(renderer.includes("内部测试"), edition === "test");
 assert.equal(renderer.includes(edition === "test" ? "测试版" : "交付版"), edition === "test");
-assert.equal(renderer.includes("moments-dry-run-card"), edition === "test", "only the test renderer may contain Moments preflight styles");
+for (const marker of momentsCampaignSourceMarkers) {
+  assert.equal(packagedSources.includes(marker), true, `every edition must contain campaign source marker ${marker}`);
+}
+for (const marker of momentsCampaignUiMarkers) {
+  assert.equal(renderer.includes(marker), true, `every edition must contain campaign UI marker ${marker}`);
+}
 for (const marker of momentsActionIpcMarkers) {
   assert.equal(packagedSources.includes(marker), edition === "test", `only test-edition source may contain ${marker}`);
 }
@@ -467,11 +486,8 @@ for (const marker of momentsActionUiMarkers) {
   assert.equal(renderer.includes(marker), edition === "test", `only the test renderer may contain ${marker}`);
 }
 if (edition === "delivery") {
-  const actionMarkers = [...momentsActionSourceMarkers, ...momentsActionIpcMarkers, ...momentsActionUiMarkers];
-  for (const marker of actionMarkers) {
-    assert.equal(packagedSources.includes(marker), false, `delivery source must not contain ${marker}`);
-    assert.equal(renderer.includes(marker), false, `delivery JS/CSS must not contain ${marker}`);
-  }
+  for (const marker of momentsActionIpcMarkers) assert.equal(packagedSources.includes(marker), false, `delivery source must not contain ${marker}`);
+  for (const marker of momentsActionUiMarkers) assert.equal(renderer.includes(marker), false, `delivery renderer must not contain ${marker}`);
 }
 console.log(`${edition} portable release self-check passed`);
 }

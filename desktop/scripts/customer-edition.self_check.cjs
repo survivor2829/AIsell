@@ -92,6 +92,10 @@ function assertMomentsActionEditionBoundary() {
   const deliveryMain = ["active-touch-ipc.cjs", "preload.cjs", "preload-api.cjs"]
     .map((name) => read(path.join(desktopDir, "src", "main", name)))
     .join("\n");
+  const campaignMain = ["main.cjs", "moments-campaign-ipc.cjs", "preload-api.cjs", "preload.cjs"]
+    .map((name) => read(path.join(desktopDir, "src", "main", name)))
+    .join("\n");
+  assert.match(campaignMain, /moments-campaign:start/, "delivery must expose the scoped Moments campaign bridge");
   for (const marker of momentsActionIpcMarkers) {
     assert.equal(developmentMain.includes(marker), true, `test-only main process must contain ${marker}`);
     assert.equal(deliveryMain.includes(marker), false, `delivery main process must not contain ${marker}`);
@@ -102,7 +106,9 @@ function assertMomentsActionEditionBoundary() {
     assert.equal(sourceAllowed(source, "delivery"), false, `${name} must be excluded from the delivery edition`);
   }
   const app = read(path.join(desktopDir, "src", "renderer", "App.tsx"));
-  assert.match(app, /const MomentsDryRunPanel = DEVELOPMENT_EDITION \? lazy\(\(\) => import\("\.\/MomentsDryRunPanel"\)\) : null;/, "Moments action UI must remain behind the test-edition build gate");
+  assert.match(app, /const MomentsCampaignPanel = REAL_SEND_EDITION \? lazy/, "Moments campaign UI must be available in pilot and development editions");
+  assert.match(app, /const MomentsDryRunPanel = DEVELOPMENT_EDITION \? lazy/, "single-post Moments controls must remain behind the test-edition build gate");
+  assert.match(read(path.join(desktopDir, "src", "main", "main.cjs")), /developmentEdition \|\| pilotEdition\s+\? require\("\.\/moments-campaign-ipc\.cjs"\)/, "pilot main process must register Moments campaign IPC");
   const panel = read(path.join(desktopDir, "src", "renderer", "MomentsDryRunPanel.tsx"));
   for (const marker of momentsActionUiMarkers) assert.equal(panel.includes(marker), true, `test-only Moments panel must contain ${marker}`);
 }
@@ -130,6 +136,7 @@ assert.equal(read(path.join(desktopDir, "rpa", "active_touch", "state_machine.de
 assert.match(read(path.join(desktopDir, "scripts", "build-portable-release.cjs")), /name\.endsWith\("\.dev\.cjs"\)/);
 for (const name of [
   "moments_dry_run.dev.cjs",
+  "moments_navigation.dev.cjs",
   "moments_dry_run_cli.dev.cjs",
   "moments_action.dev.cjs",
   "moments_action_cli.dev.cjs",
@@ -140,7 +147,7 @@ for (const name of [
 ]) {
   const source = path.join(desktopDir, "rpa", "active_touch", name);
   assert.equal(sourceAllowed(source, "test"), true, `${name} must be included in the test edition`);
-  assert.equal(sourceAllowed(source, "delivery"), false, `${name} must be excluded from the delivery edition`);
+  assert.equal(sourceAllowed(source, "delivery"), true, `${name} must be included in the delivery edition`);
 }
 for (const name of [
   "moments_visual_probe.dev.cjs",
