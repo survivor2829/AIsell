@@ -2,6 +2,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { treeSha256 } = require("./release-tree-hash.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const projectDir = path.resolve(desktopDir, "..");
@@ -70,8 +71,10 @@ function replaceCanonicalFile(staged, canonical) {
 
 function buildInstaller() {
   const { commit, portableManifest } = assertInstallerSource();
+  const portableTreeHash = treeSha256(portableDir);
   const transactionId = `${process.pid}-${Date.now()}`;
   const stagingDir = path.join(releaseDir, `.installer-staging-${transactionId}`);
+  const installerInputDir = path.join(stagingDir, "portable-input");
   const stagedInstaller = path.join(stagingDir, installerName);
   const stagedManifest = path.join(stagingDir, installerManifestName);
   const canonicalInstaller = path.join(releaseDir, installerName);
@@ -79,6 +82,7 @@ function buildInstaller() {
   fs.mkdirSync(stagingDir, { recursive: false });
 
   try {
+    fs.cpSync(portableDir, installerInputDir, { recursive: true, errorOnExist: true });
     const builder = require.resolve("electron-builder/out/cli/cli.js");
     const result = spawnSync(process.execPath, [
       builder,
@@ -86,7 +90,7 @@ function buildInstaller() {
       "nsis",
       "--x64",
       "--prepackaged",
-      portableDir,
+      installerInputDir,
       "--config",
       path.join(desktopDir, "electron-builder-installer.yml"),
       `--config.directories.output=${stagingDir}`
@@ -100,6 +104,9 @@ function buildInstaller() {
         CSC_IDENTITY_AUTO_DISCOVERY: "false"
       }
     });
+    if (treeSha256(portableDir) !== portableTreeHash) {
+      throw new Error("Portable application changed while building the installer");
+    }
     if (result.status !== 0 || !fs.existsSync(stagedInstaller)) {
       throw new Error(result.error?.message || result.stderr || result.stdout || "Installer build failed");
     }
