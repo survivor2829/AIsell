@@ -2,6 +2,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
+const {
+  copyProductDetailRuntime,
+  createReleaseDescriptor,
+  isProductDetailPythonSource,
+  resolveProductDetailBuild
+} = require("./product-detail-release-runtime.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const projectDir = path.resolve(desktopDir, "..");
@@ -137,7 +143,10 @@ function scanRelease(target) {
       if (entry.isDirectory()) visit(file);
       else {
         const lower = entry.name.toLowerCase();
-        if (isBlockedRuntimeFile(entry.name) || isBlockedEnvironmentFile(entry.name) || lower === "python.exe" || lower.endsWith(".py") || lower.includes("dump_data") || lower.includes("wechat-dump") || lower.includes("dt-ai-helper")) blocked.push(file);
+        const relative = path.relative(target, file).replaceAll("\\", "/");
+        const blockedPythonSource = lower.endsWith(".py")
+          && !isProductDetailPythonSource(relative);
+        if (isBlockedRuntimeFile(entry.name) || isBlockedEnvironmentFile(entry.name) || lower === "python.exe" || blockedPythonSource || lower.includes("dump_data") || lower.includes("wechat-dump") || lower.includes("dt-ai-helper")) blocked.push(file);
         if (entry.isFile() && fs.statSync(file).size <= 5 * 1024 * 1024) {
           const content = fs.readFileSync(file, "utf8");
           if (/\bsk-[A-Za-z0-9_-]{12,}\b/.test(content)) blocked.push(file);
@@ -162,11 +171,13 @@ function assertBuildPreconditions(edition) {
     throw new Error(`${DATABASE_DECRYPTOR_NAME} is missing or has the wrong hash`);
   }
 
+  const productDetailRuntime = resolveProductDetailBuild(desktopDir);
+
   const commit = gitText(["rev-parse", "HEAD"]);
   const dirty = Boolean(gitText(["status", "--porcelain"]));
   if (dirty) throw new Error("Refusing to build a portable release from a dirty worktree");
 
-  return { commit, dirty };
+  return { commit, dirty, productDetailRuntime };
 }
 
 function buildPortableStaging(edition, paths, sourceState) {
@@ -179,6 +190,7 @@ function buildPortableStaging(edition, paths, sourceState) {
   const appDir = path.join(target, "resources", "app");
   fs.rmSync(appDir, { recursive: true, force: true });
   copyAppSource(appDir, edition);
+  copyProductDetailRuntime(sourceState.productDetailRuntime, target);
 
   const packageJson = JSON.parse(fs.readFileSync(path.join(desktopDir, "package.json"), "utf8"));
   const electronPackage = JSON.parse(fs.readFileSync(path.join(desktopDir, "node_modules", "electron", "package.json"), "utf8"));
@@ -198,6 +210,10 @@ function buildPortableStaging(edition, paths, sourceState) {
     wxKeySha256: NATIVE_LIBRARY_SHA256["wx_key.dll"],
     databaseDecryptorSha256: DATABASE_DECRYPTOR_SHA256,
     nativeLibrarySha256: NATIVE_LIBRARY_SHA256,
+    productDetailSidecar: createReleaseDescriptor(
+      sourceState.productDetailRuntime,
+      sourceState.commit
+    ),
     targetWeixin: capabilityMatrix.targetWeixin,
     capabilityMatrix: capabilityMatrix.capabilities,
     releaseStage: "wechat-4.1.11.54-stabilization",

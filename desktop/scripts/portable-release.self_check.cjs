@@ -5,6 +5,13 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { treeSha256 } = require("./release-tree-hash.cjs");
+const {
+  PRODUCT_DETAIL_EXECUTABLE,
+  PRODUCT_DETAIL_RELEASE_PATH,
+  isProductDetailArchivePythonSource,
+  isProductDetailPythonSource,
+  runPackagedProductDetailSelfCheck
+} = require("./product-detail-release-runtime.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const projectDir = path.resolve(desktopDir, "..");
@@ -154,13 +161,14 @@ function verifyPortableArchive({
       warn(warning);
     }
   }
-  return { archiveEntries, cleanupWarnings };
+  return { archiveEntries, archiveRoot: encodedArchiveRoot, cleanupWarnings };
 }
 
 function main(argv = process.argv.slice(2)) {
 const parsedArguments = parsePortableArguments(argv);
 const { edition, productName, target, zip } = resolvePortablePaths(parsedArguments);
-const appDir = path.join(target, "resources", "app");
+const resourcesDir = path.join(target, "resources");
+const appDir = path.join(resourcesDir, "app");
 const executable = path.join(target, `${productName}.exe`);
 const helper = path.join(appDir, "rpa", "contact_sync", "xiaoxi-contact-helper.exe");
 const CONTACT_HELPER_SHA256 = "f9c90aec8589ac11a93db7acfbc9b3b92c0c9c2a3b9175642829fba2e0f12eeb";
@@ -231,12 +239,32 @@ function isBlockedName(name) {
   return blockedNames.has(name) || name === ".env" || name.startsWith(".env.") || name.startsWith("auto-reply-diagnostics.jsonl.") || databaseFilePattern.test(name);
 }
 
-function assertNoBlockedFiles(names, label) {
-  const normalized = names.map((name) => path.basename(String(name).replaceAll("/", path.sep)).toLowerCase()).filter(Boolean);
-  for (const name of normalized) {
+function assertNoBlockedFiles(names, label, { targetRoot = null, archiveRoot = null } = {}) {
+  assert.equal(Boolean(targetRoot) && Boolean(archiveRoot), false, "blocked-file scan accepts only one trusted root");
+  for (const value of names) {
+    let normalizedPath;
+    if (targetRoot) {
+      const relative = path.relative(path.resolve(targetRoot), path.resolve(String(value || "")));
+      assert.equal(relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative), false, `${label} entry is outside its trusted root`);
+      normalizedPath = relative.replaceAll("\\", "/").toLowerCase();
+    } else {
+      normalizedPath = String(value || "").replaceAll("\\", "/").toLowerCase();
+    }
+    if (!normalizedPath) continue;
+    const name = path.posix.basename(normalizedPath);
     assert.equal(isBlockedName(name), false, `${label} must not contain ${name}`);
+    assert.equal(name.includes("dt-ai-helper"), false, `${label} must not contain dt-ai-helper`);
+    if (name.endsWith(".py")) {
+      const allowed = archiveRoot
+        ? isProductDetailArchivePythonSource(normalizedPath, archiveRoot)
+        : isProductDetailPythonSource(normalizedPath);
+      assert.equal(
+        allowed,
+        true,
+        `${label} may contain Python dependency sources only inside the pinned product-detail runtime`
+      );
+    }
   }
-  assert.equal(normalized.some((name) => name.endsWith(".py") || name.includes("dt-ai-helper")), false, `${label} must not contain Python sources or dt-ai-helper`);
 }
 
 function sha256(file) {
@@ -271,6 +299,7 @@ assert.equal(manifest.dirty, false, "portable release must come from a clean wor
 assert.match(manifest.commit, /^[0-9a-f]{40}$/, "portable release must record a full git commit");
 assert.match(manifest.sourceTreeSha256, /^[0-9a-f]{64}$/, "portable release must record the packaged source tree hash");
 assert.equal(treeSha256(appDir), manifest.sourceTreeSha256, "packaged app tree must match the manifest source tree hash");
+assert.equal(manifest.productDetailSidecar?.buildCommit, manifest.commit, "product-detail runtime must be pinned to the portable release commit");
 const releaseLabel = fs.readFileSync(path.join(target, "版本标识.txt"), "utf8");
 assert.equal(releaseLabel.includes("朋友圈逐帖互动已"), true);
 assert.equal(releaseLabel.includes("每日自动计划"), true);
@@ -301,16 +330,20 @@ function walk(root) {
   }
 }
 walk(target);
-const names = files.map((file) => path.basename(file).toLowerCase());
-assertNoBlockedFiles(names, "release");
+assertNoBlockedFiles(files, "release", { targetRoot: target });
 
-const { archiveEntries } = verifyPortableArchive({
+const { archiveEntries, archiveRoot } = verifyPortableArchive({
   zip,
   target,
   productName,
   expectedSourceTreeSha256: manifest.sourceTreeSha256
 });
-assertNoBlockedFiles(archiveEntries, "portable ZIP");
+assertNoBlockedFiles(archiveEntries, "portable ZIP", { archiveRoot });
+assert.equal(
+  archiveEntries.some((entry) => entry.replaceAll("\\", "/").endsWith(`/${PRODUCT_DETAIL_RELEASE_PATH}/${PRODUCT_DETAIL_EXECUTABLE}`)),
+  true,
+  "portable ZIP must contain the product-detail executable at the runtime root"
+);
 for (const name of momentsRuntimeNames) {
   assert.equal(archiveEntries.some((entry) => entry.replaceAll("\\", "/").endsWith(`/rpa/active_touch/${name}`)), true, `${name} must be present in every portable ZIP`);
 }
@@ -341,6 +374,14 @@ assert.equal(JSON.parse(wxKeyLoad.stdout.trim()).stage, "dll_loaded", "packaged 
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-portable-self-check-"));
 try {
+  const productDetailPayload = runPackagedProductDetailSelfCheck({
+    releaseTarget: target,
+    resourcesDir,
+    descriptor: manifest.productDetailSidecar,
+    dataDir: path.join(tempDir, "product-detail")
+  });
+  assert.equal(productDetailPayload.version, manifest.productDetailSidecar.version);
+
   const contactSyncDir = path.join(tempDir, "contact_sync");
   const activeTouchDir = path.join(tempDir, "active_touch");
   fs.mkdirSync(contactSyncDir, { recursive: true });
