@@ -1,0 +1,120 @@
+# 生产 compose — 两种部署形态:
+#
+#   1) 单机最小 (阶段六当前): docker compose up -d
+#      → 只起 web, SQLite + 内存 pub/sub, 适合 2核2G 小机 / 个人测试
+#   2) 完整生产 (阶段七上大机再用): docker compose --profile full up -d
+#      → web + pg + redis 全栈
+#
+# db/redis 打了 profiles: ["full"], 默认 up 不会起. Compose V2 会自动把 web
+# depends_on 里指向未激活 profile service 的条目摘掉, 所以 depends_on 不用改.
+#
+# 扩展性标注:
+# - 小机 → 大机升级零改代码: 把 .env 的 DATABASE_URL / PUBSUB_BACKEND 指向 pg/redis,
+#   然后 `docker compose --profile full up -d`
+# - db/redis 走内部网络, 不对外暴露端口 (腾讯云安全组外层还会再挡)
+# - pg_data / redis_data 是 named volume, docker compose down 不会清, 只有 down -v 才会
+
+services:
+  db:
+    profiles: ["full"]
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: xiaoxi
+      # ⚠ full profile 部署必须在 .env 里配真密码. 这里用 :- 软默认值是为了
+      # 让默认 `docker compose up` (pg 不激活) 不在 interpolation 阶段就炸 —
+      # Compose V2 的 bug/feature: profile 过滤发生在 interpolation 之后
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-MUST_SET_IN_ENV_FOR_FULL_PROFILE}
+      POSTGRES_DB: xiaoxi
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    # 容器内端口 5432, 不对外暴露 — web 走 service 名 db:5432 连
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xiaoxi -d xiaoxi"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    profiles: ["full"]
+    image: redis:7-alpine
+    restart: unless-stopped
+    # --requirepass 只在 REDIS_PASSWORD 非空时生效 (内网部署可选)
+    command:
+      - sh
+      - -c
+      - |
+        if [ -n "$$REDIS_PASSWORD" ]; then
+          exec redis-server --requirepass "$$REDIS_PASSWORD" --appendonly yes
+        else
+          exec redis-server --appendonly yes
+        fi
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    restart: unless-stopped
+    # 2026-05-09 OOM 事故修复: 加 healthcheck 让容器假死时 docker ps 能看到 (unhealthy).
+    # python urllib 而非 curl: python:slim 基镜像不一定有 curl, python 解释器是必有的.
+    # /auth/login 永远 200 (登录表单页, 无 auth 门), 比 / (302 redirect) 更适合判定.
+    # ⚠ 注意: docker 默认 healthcheck 失败不会自动重启容器 (unless-stopped 只对 exit
+    # 生效). 当前只给 visibility, 自动重启需要 autoheal sidecar 或升 docker swarm,
+    # 单独 PR 处理.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/auth/login', timeout=5)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    # ⚠ 不用 depends_on — Compose V2 对 depends_on 不跟随 profile gating,
+    # full profile 未激活时 depends_on 指向 db/redis 会报 "undefined service".
+    # 代价: full 部署时 web 可能先于 pg 起来, 靠 restart + pool_pre_ping 重连.
+    # 阶段七用 docker-compose.full.yml override 文件把 depends_on 补回去.
+    ports:
+      - "${WEB_PORT:-5000}:5000"
+    # 2026-04-21 OOM 事故修复: 显式配 mem_limit + memswap_limit,
+    # 不靠 docker 默认(默认 mem_limit = 主机 RAM + memswap_limit = mem_limit → 禁 swap).
+    # 1400m RAM + 2000m swap = 3400m 有效内存; 留 200MB 给主机 sshd/journald.
+    # 升 4C8G 后这俩要同步调 (阶段七踩坑文档会写).
+    mem_limit: 1400m
+    memswap_limit: 3400m
+    env_file:
+      - .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      # 关键默认值 — .env 里没配就走这里. 单机最小部署默认 memory, full profile
+      # 启动时 .env 应显式设 PUBSUB_BACKEND=redis (否则内存 pub/sub 跨不了进程)
+      PUBSUB_BACKEND: ${PUBSUB_BACKEND:-memory}
+      # 2026-04-21 OOM 事故修复: 并发池默认 3 + 2C2G + docker 无 swap → 必 OOM.
+      # 紧急降到 1 (串行). 升 4C8G 后阶段七调回 3.
+      # 非机密部署参数, 故放 compose.yml 而非 .env (方便 git 审计/回滚).
+      BATCH_POOL_SIZE: "1"
+      SINGLE_POOL_SIZE: "1"
+      REFINE_POOL_SIZE: "1"
+    volumes:
+      # 用户产物持久化 — named volume 在 /var/lib/docker/volumes/ 下
+      - uploads:/app/static/uploads
+      - outputs:/app/static/outputs
+      - ai_cache:/app/static/cache
+      # AI 精修 v2 产物 (8 屏图 + assembled.png + _summary.json, ~¥5-8/产品).
+      # 2026-05-07 事故: 漏挂 named volume 导致 deploy 重建时整个目录被清,
+      # 用户已生成的精修产物全丢. 必须 named volume 跟 uploads/outputs 同等持久化.
+      - ai_refine_v2:/app/static/ai_refine_v2
+      # 兼容老部署: 仍挂 instance/, 但生产用 Postgres 后它只存调试 sqlite (如有)
+      - ./instance:/app/instance
+
+volumes:
+  pg_data:
+  redis_data:
+  uploads:
+  outputs:
+  ai_cache:
+  ai_refine_v2:

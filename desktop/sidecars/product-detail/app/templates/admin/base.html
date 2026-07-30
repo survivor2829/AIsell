@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}管理后台{% endblock %} · 小玺AI</title>
+<link rel="stylesheet" href="/static/css/design-system.css">
+<style>
+  body { background: var(--color-bg-page); }
+
+  .topbar {
+    background: rgba(255,255,255,0.8);
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--color-border);
+    padding: 0 24px; height: 52px;
+    display: flex; align-items: center; justify-content: space-between;
+    position: sticky; top: 0; z-index: 100;
+  }
+  .topbar h1 {
+    font-size: 15px; font-weight: 600; color: var(--color-text);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .topbar h1::before {
+    content: ''; width: 8px; height: 8px;
+    background: var(--color-primary); border-radius: 50%;
+  }
+  .topbar .nav { display: flex; gap: 4px; align-items: center; }
+  .topbar a {
+    color: var(--color-text-muted); text-decoration: none; font-size: 13px;
+    font-weight: 500; padding: 6px 12px; border-radius: var(--radius-md);
+    transition: all var(--transition-fast);
+  }
+  .topbar a:hover, .topbar a.active {
+    color: var(--color-text);
+    background: rgba(0,0,0,0.04);
+  }
+  .topbar .user-info { font-size: 12px; color: var(--color-text-muted); margin-left: 8px; }
+
+  .container { max-width: 1100px; margin: 24px auto; padding: 0 24px; }
+
+  .card {
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    margin-bottom: 16px;
+    box-shadow: var(--shadow-xs);
+  }
+  .card-title {
+    font-size: 15px; font-weight: 600; color: var(--color-text);
+    margin-bottom: 16px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card-title::before {
+    content: ''; width: 3px; height: 16px;
+    background: var(--color-primary); border-radius: 2px;
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left; padding: 10px 14px; font-size: 12px; font-weight: 600;
+    color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--color-border); background: var(--color-bg-subtle);
+  }
+  td { padding: 10px 14px; border-bottom: 1px solid #f3f4f6; color: var(--color-text-secondary); }
+  tr:hover td { background: var(--color-bg-subtle); }
+
+  .btn { padding: 5px 12px; border: none; border-radius: var(--radius-sm); font-size: 12px; font-weight: 500; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; transition: all var(--transition-fast); }
+  .btn-sm { padding: 4px 10px; font-size: 11px; }
+  .btn-green { background: var(--color-success-bg); color: #059669; }
+  .btn-green:hover { background: #d1fae5; }
+  .btn-red { background: var(--color-error-bg); color: var(--color-error); }
+  .btn-red:hover { background: #fecaca; }
+  .btn-blue { background: var(--color-info-bg); color: var(--color-primary); }
+  .btn-blue:hover { background: #dbeafe; }
+  .btn-orange { background: var(--color-warning-bg); color: #d97706; }
+  .btn-orange:hover { background: #fde68a; }
+
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 20px; }
+  .stat-box {
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: 20px; text-align: center;
+    box-shadow: var(--shadow-xs);
+  }
+  .stat-num { font-size: 28px; font-weight: 700; color: var(--color-primary); }
+  .stat-label { font-size: 12px; color: var(--color-text-muted); margin-top: 4px; font-weight: 500; }
+
+  .pagination { display: flex; gap: 6px; justify-content: center; margin-top: 16px; }
+  .pagination a, .pagination span { padding: 6px 12px; border-radius: var(--radius-sm); font-size: 13px; text-decoration: none; }
+  .pagination a { background: var(--color-bg); color: var(--color-text-secondary); border: 1px solid var(--color-border); }
+  .pagination a:hover { background: var(--color-bg-subtle); }
+  .pagination .current { background: var(--color-primary); color: #fff; border: 1px solid var(--color-primary); }
+
+  .search-bar { display: flex; gap: 8px; margin-bottom: 16px; }
+  .search-bar input {
+    padding: 8px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-md);
+    font-size: 13px; flex: 1; max-width: 260px; outline: none;
+    font-family: var(--font-sans); color: var(--color-text);
+    transition: border-color var(--transition-fast);
+  }
+  .search-bar input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-light); }
+  .search-bar button {
+    padding: 8px 18px; background: var(--color-primary); color: #fff;
+    border: none; border-radius: var(--radius-md); font-size: 13px; font-weight: 500;
+    cursor: pointer; font-family: var(--font-sans);
+    transition: background var(--transition-fast);
+  }
+  .search-bar button:hover { background: var(--color-primary-hover); }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>小玺AI · 管理后台</h1>
+  <div class="nav">
+    <a href="{{ url_for('admin.users') }}" class="{% if request.endpoint == 'admin.users' %}active{% endif %}">用户管理</a>
+    <a href="{{ url_for('admin.logs') }}" class="{% if request.endpoint == 'admin.logs' %}active{% endif %}">生成记录</a>
+    <a href="{{ url_for('admin.stats') }}" class="{% if request.endpoint == 'admin.stats' %}active{% endif %}">使用统计</a>
+    <a href="{{ url_for('index') }}">返回前台</a>
+    <span class="user-info">{{ current_user.username }}</span>
+  </div>
+</div>
+<div class="container">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash-msg flash-{{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</div>
+<script>document.querySelectorAll('form[method="POST"]').forEach(function(f){if(!f.querySelector('[name=csrf_token]')){var i=document.createElement('input');i.type='hidden';i.name='csrf_token';i.value='{{ csrf_token() }}';f.appendChild(i);}});</script>
+</body>
+</html>

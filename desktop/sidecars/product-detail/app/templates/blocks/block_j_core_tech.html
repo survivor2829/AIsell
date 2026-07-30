@@ -1,0 +1,45 @@
+<!--
+  block_j_core_tech — 核心技术总览（技术目录式展示）
+  宽度：750px
+
+  变量：
+  - section_title: 标题（如"六大核心技术"）
+  - section_subtitle: 副标题（可空）
+  - tech_items: 技术列表（4-8项），每项：{"title":"感应电机","desc":"高效稳定，适配长时间作业"}
+-->
+
+{% if tech_items %}<div style="width:750px; box-sizing:border-box; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; background:var(--theme-gradient-dark, linear-gradient(135deg,#0E1220 0%,#111827 50%,#0B0F1A 100%)); color:#ffffff; padding:44px 36px 48px; position:relative; overflow:hidden;">
+
+  <!-- 装饰：左上角光斑 -->
+  <div style="position:absolute; top:-40px; left:-30px; width:200px; height:200px; background:radial-gradient(circle, rgba(232,35,26,0.06) 0%, transparent 70%); pointer-events:none;"></div>
+
+  <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:16px; position:relative; z-index:1;">
+    <div style="min-width:0;">
+      <div style="font-size:28px; font-weight:900; line-height:1.2; letter-spacing:1px;">{{ section_title }}</div>
+      {% if section_subtitle %}
+      <div style="margin-top:10px; font-size:14px; color:rgba(255,255,255,0.65); line-height:1.7;">{{ section_subtitle }}</div>
+      {% endif %}
+    </div>
+    <div style="flex:0 0 auto; padding:8px 14px; border-radius:12px; background:rgba(232,35,26,0.1); border:1px solid rgba(232,35,26,0.25);">
+      <div style="font-size:12px; color:var(--theme-accent, #FFB3AF); font-weight:800; letter-spacing:0.5px;">技术总览</div>
+    </div>
+  </div>
+
+  <div style="margin-top:18px; height:1px; background:linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.12) 30%, rgba(232,35,26,0.3) 65%, transparent 100%);"></div>
+
+  <div style="margin-top:18px; display:flex; flex-wrap:wrap; gap:12px; position:relative; z-index:1;">
+    {% for t in tech_items %}
+    <div style="width:calc(50% - 6px); box-sizing:border-box; border-radius:16px; padding:16px 16px 14px; background:linear-gradient(145deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.02) 100%); border:1px solid rgba(255,255,255,0.1); position:relative; overflow:hidden;">
+      <!-- 卡片左上装饰 -->
+      <div style="position:absolute; top:0; left:0; width:3px; height:28px; background:var(--theme-primary, #E8231A); border-radius:0 0 2px 0;"></div>
+      <div style="display:flex; align-items:flex-start; gap:10px;">
+        <div style="flex:0 0 28px; width:28px; height:28px; border-radius:8px; background:linear-gradient(135deg, var(--theme-primary, #E8231A), #ff4d3a); display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:900; box-shadow:0 2px 8px rgba(232,35,26,0.25);">{{ '%02d' % loop.index }}</div>
+        <div style="flex:1; min-width:0;">
+          <div style="font-size:15px; font-weight:900; line-height:1.35;">{{ t.title }}</div>
+          <div style="margin-top:6px; font-size:12px; line-height:1.75; color:rgba(255,255,255,0.65);">{{ t.desc }}</div>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>{% endif %}

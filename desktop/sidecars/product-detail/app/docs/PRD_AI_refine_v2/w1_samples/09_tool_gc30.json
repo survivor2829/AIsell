@@ -1,0 +1,81 @@
+{
+  "_meta": {
+    "product_slug": "gc30",
+    "product_cat": "tool",
+    "elapsed_s": 20.15,
+    "usage": {
+      "prompt_tokens": 866,
+      "completion_tokens": 549,
+      "total_tokens": 1415,
+      "prompt_tokens_details": {
+        "cached_tokens": 384
+      },
+      "prompt_cache_hit_tokens": 384,
+      "prompt_cache_miss_tokens": 482
+    },
+    "model": "deepseek-chat",
+    "schema_warnings": []
+  },
+  "planner_output": {
+    "product_meta": {
+      "name": "GC-30 玻璃水垢清除剂，温和配方快速清除顽固水垢",
+      "category": "耗材类",
+      "primary_color": "transparent spray bottle with blue label",
+      "key_visual_parts": [
+        "transparent spray bottle",
+        "blue label",
+        "liquid inside",
+        "spraying action"
+      ],
+      "proportions": "500ml spray bottle held in hand"
+    },
+    "selling_points": [
+      {
+        "idx": 1,
+        "text": "柠檬酸 + 表面活性剂温和配方，喷涂 3 分钟后擦拭即净",
+        "visual_type": "concept_visual",
+        "priority": "high",
+        "reason": "卖点强调“3分钟”速度和“擦拭即净”的清洁效率，属于抽象指标"
+      },
+      {
+        "idx": 2,
+        "text": "可清除 5 年以上顽固水垢 / 肥皂泡水 / 硬水钙化",
+        "visual_type": "concept_visual",
+        "priority": "high",
+        "reason": "卖点强调清除顽固污渍的能力，属于抽象的性能指标"
+      },
+      {
+        "idx": 3,
+        "text": "无 VOC 无氨水不伤皮肤",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "卖点强调安全性和环保性，属于抽象概念"
+      },
+      {
+        "idx": 4,
+        "text": "适用于淋浴房玻璃 / 汽车挡风玻璃 / 办公楼落地窗",
+        "visual_type": "product_in_scene",
+        "priority": "high",
+        "reason": "卖点明确提到“适用于”和具体应用场景"
+      },
+      {
+        "idx": 5,
+        "text": "500ml 透明喷雾瓶装，清洁公司专用另有 5kg 大桶装",
+        "visual_type": "product_closeup",
+        "priority": "medium",
+        "reason": "卖点描述产品包装形态（喷雾瓶装）和规格选项"
+      }
+    ],
+    "planning": {
+      "total_blocks": 5,
+      "block_order": [
+        "hero",
+        "selling_point_1",
+        "selling_point_2",
+        "selling_point_3",
+        "selling_point_5"
+      ],
+      "hero_scene_hint": "A clear spray bottle of GC-30 being used to clean a large, dirty office glass window, showing the spray mist on the glass."
+    }
+  }
+}

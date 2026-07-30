@@ -1,0 +1,92 @@
+# screen_types.yaml — AI 精修 v2 屏型库 (PRD §1.2 fallback 待命)
+#
+# 第一版默认 enabled: false. 由 plan_v2 自由发挥, DeepSeek 自己决定屏数和屏型组合.
+#
+# 启用条件 (PRD §阶段六, 不要在阶段一/二/三/四随便打开):
+#   1. 已跑 5-10 条真实产品的完整 v2 pipeline
+#   2. 人工评审屏型组合, 发现"叙事节奏失控"(10 张全 hero / 全参数表 / 等)
+#   3. 跟 Scott 确认 + 装 pyyaml + 改 enabled: true + 重启进程
+#
+# 编辑约定:
+#   - 不要删 id 字段, 不要改 id 字符串值 (代码按 id 引用)
+#   - name / purpose / prompt_hint / typical_position 可以改, 重启进程生效
+#   - typical_position 取值: first | middle | mid_late | late
+#   - 想加新屏型: 在 screen_types 列表末尾追加, 5 字段都要写
+
+enabled: false   # ⚠️ PRD §阶段一·任务 1.2 铁律: 必须 false, 改 true 前先做阶段六真测
+
+screen_types:
+  - id: hero
+    name: 首屏
+    purpose: 抓眼球, 立 slogan, 产品主视觉
+    prompt_hint: >
+      Wide cinematic hero shot of the product, product fills 30-50% of canvas
+      with environmental context behind. Bold display headline with product
+      name in 「」, small subtitle below with one core selling point. Magazine-
+      cover composition with editorial confidence.
+    typical_position: first
+
+  - id: feature_wall
+    name: 卖点墙
+    purpose: 用图标矩阵呈现 4-6 个核心优势
+    prompt_hint: >
+      2x3 or 3x2 grid layout. Each cell: one icon + one short Chinese label
+      in 「」 + one concise English benefit line. Consistent icon style across
+      cells, generous white space, no clutter.
+    typical_position: middle
+
+  - id: vs_compare
+    name: VS 对比
+    purpose: 与竞品/旧款/人工对比, 破除疑虑
+    prompt_hint: >
+      Split-screen left/right or top/bottom comparison. Chinese labels
+      「OLD WAY」 vs 「NEW WAY」 (or 「人工」 vs 「DZ600M」). Concrete
+      contrast on speed, cost, effort, or result. Visual asymmetry
+      emphasizes the new way's advantage.
+    typical_position: middle
+
+  - id: scenario
+    name: 应用场景
+    purpose: 多宫格展示产品在不同场景下的使用
+    prompt_hint: >
+      3-4 application scenarios in a grid, each showing the product operating
+      in a different real environment (urban river / industrial pond / park
+      lake). Brief Chinese caption in 「」 for each scenario.
+    typical_position: middle
+
+  - id: detail_zoom
+    name: 细节特写
+    purpose: 局部特写 + 标注, 彰显工艺品质
+    prompt_hint: >
+      Macro close-up of 1-2 key components. Numbered callout labels pointing
+      to specific parts with brief Chinese annotations in 「」. Studio
+      lighting, shallow depth of field, B2B technical-catalog aesthetic.
+    typical_position: mid_late
+
+  - id: spec_table
+    name: 参数表
+    purpose: 产品参数 + 尺寸图, 专业背书
+    prompt_hint: >
+      Clean specification table on left (Chinese labels in 「」 + English
+      values), product silhouette with dimension callouts on right.
+      Black-on-white or dark-on-light readable typography. No decoration,
+      professional B2B documentation style.
+    typical_position: late
+
+  - id: value_story
+    name: 价值故事
+    purpose: 用一组数据/场景讲产品带来的实际价值
+    prompt_hint: >
+      Editorial layout with large numerical KPIs (「节省 70%」, 「效率 ×3」).
+      Each number paired with a small icon and one-line Chinese context.
+      Confident editorial typography, premium magazine-style composition.
+    typical_position: mid_late
+
+  - id: brand_quality
+    name: 品质工艺
+    purpose: 多个细节图拼接, 强调用料与工艺
+    prompt_hint: >
+      Mosaic of 4-6 close-up details (welding seam, coating texture, sensor
+      module, control panel). Material-focused photography, premium gloss,
+      Chinese caption in 「」 for each detail emphasizing craftsmanship.
+    typical_position: late

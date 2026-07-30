@@ -1,0 +1,73 @@
+<!--
+  Block B2 — 图标宫格屏（icon_grid）
+  用途：红色背景 + 大标题 + 圆形图标带文字
+  宽度：750px
+
+  需要传入的变量：
+  - title_num: 数字部分（如"6"）
+  - title_text: 标题文字（如"大硬核优势"）
+  - subtitle: 副标题（如"Plus 创新升级"）
+  - items: 图标项列表，每项格式：
+      {
+        "icon_image": "图标图片路径（可选，留空用文字代替）",
+        "icon_text": "图标内文字（当没有icon_image时显示，如"电"）",
+        "label": "底部文字（如"全新锂电\n续航久"）"
+      }
+    可任意项数；grid_columns（默认3）控制列数。
+-->
+{% if items %}<div style="width:750px; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; overflow:hidden;">
+
+  <!-- 红色背景区 -->
+  <div style="background:var(--theme-gradient-hero, linear-gradient(135deg, #E8231A 0%, #D41B13 50%, #B91C1C 100%)); padding:48px 36px 52px; position:relative; overflow:hidden;">
+
+    <!-- 装饰：右上角光斑 -->
+    <div style="position:absolute; top:-60px; right:-40px; width:280px; height:280px; background:radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%); pointer-events:none;"></div>
+    <!-- 装饰：左下角暗角 -->
+    <div style="position:absolute; bottom:-80px; left:-60px; width:300px; height:300px; background:radial-gradient(circle, rgba(0,0,0,0.15) 0%, transparent 70%); pointer-events:none;"></div>
+
+    <!-- 标题（title_num 留空则使用 items 数量） -->
+    {% set _cols = (grid_columns|default(3))|int %}
+    {% set _tn = title_num if title_num else (items|length|string) %}
+    <div style="display:flex; align-items:baseline; gap:6px; position:relative; z-index:1;">
+      <span style="font-size:76px; font-weight:900; color:#fff; line-height:1; text-shadow:0 2px 16px rgba(0,0,0,0.2);">{{ _tn }}</span>
+      <span style="font-size:44px; font-weight:800; color:#fff; letter-spacing:2px;">{{ title_text }}</span>
+    </div>
+
+    <!-- 副标题 + 箭头 -->
+    <div style="display:flex; align-items:center; gap:12px; margin-top:16px; position:relative; z-index:1;">
+      <div style="display:flex; gap:3px; flex-shrink:0;">
+        <span style="display:inline-block; width:0; height:0; border-top:7px solid transparent; border-bottom:7px solid transparent; border-left:10px solid rgba(255,255,255,0.7);"></span>
+        <span style="display:inline-block; width:0; height:0; border-top:7px solid transparent; border-bottom:7px solid transparent; border-left:10px solid rgba(255,255,255,0.85);"></span>
+        <span style="display:inline-block; width:0; height:0; border-top:7px solid transparent; border-bottom:7px solid transparent; border-left:10px solid #fff;"></span>
+      </div>
+      <div style="font-size:24px; color:rgba(255,255,255,0.92); font-weight:500; letter-spacing:0.5px;">{{ subtitle }}</div>
+    </div>
+
+    <!-- 图标网格 -->
+    <div style="display:grid; grid-template-columns:repeat({{ _cols }}, 1fr); gap:28px 18px; margin-top:38px; position:relative; z-index:1;">
+      {% for item in items %}
+      <div style="text-align:center;">
+        <!-- 玻璃态圆形图标 -->
+        <div style="width:116px; height:116px; margin:0 auto; background:linear-gradient(145deg, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0.08) 100%); border:1.5px solid rgba(255,255,255,0.4); border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 8px 28px rgba(0,0,0,0.2), inset 0 1px 1px rgba(255,255,255,0.3); backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);">
+          {% if item.icon_image %}
+          <img src="{{ item.icon_image }}" style="width:52px; height:52px; object-fit:contain; filter:brightness(0) invert(1);" alt="">
+          {% else %}
+          <span style="font-size:38px; color:#fff; font-weight:700; text-shadow:0 1px 4px rgba(0,0,0,0.15);">{{ item.icon_text|default('●') }}</span>
+          {% endif %}
+        </div>
+        <!-- 文字标签 -->
+        <div style="margin-top:14px; font-size:21px; font-weight:600; color:#fff; line-height:1.5; text-shadow:0 1px 4px rgba(0,0,0,0.15);">
+          {{ item.label | replace('\n', '<br>') | safe }}
+        </div>
+        {% if item.desc %}
+        <div style="margin-top:6px; font-size:15px; font-weight:400; color:rgba(255,255,255,0.78); line-height:1.45; text-shadow:0 1px 3px rgba(0,0,0,0.1);">
+          {{ item.desc }}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+
+  </div>
+
+</div>{% endif %}

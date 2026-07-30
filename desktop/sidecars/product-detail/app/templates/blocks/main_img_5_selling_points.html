@@ -1,0 +1,34 @@
+{# 主图模板5：卖点矩阵图 — 800x800 电商主图 #}
+<div class="main-img-canvas" style="width:800px;height:800px;position:relative;overflow:hidden;background:#FFFFFF;font-family:'PingFang SC','Microsoft YaHei',sans-serif;">
+  <!-- 顶部品牌栏 -->
+  <div style="position:absolute;top:0;left:0;right:0;height:64px;background:var(--theme-primary,#E8231A);display:flex;align-items:center;padding:0 36px;gap:12px;">
+    {% if logo_image %}
+    <img src="{{ logo_image }}" alt="" style="height:26px;object-fit:contain;filter:brightness(0) invert(1);">
+    {% endif %}
+    <span style="font-size:18px;font-weight:700;color:var(--theme-text-on-primary,#fff);">{{ brand_text|default('') }}</span>
+  </div>
+  <!-- 产品图 -->
+  <div style="position:absolute;top:64px;left:0;right:0;height:420px;display:flex;align-items:center;justify-content:center;background:var(--theme-bg-section,#F5F5F5);">
+    <img src="{{ product_image }}" alt="" style="max-width:85%;max-height:90%;object-fit:contain;filter:drop-shadow(0 8px 24px rgba(0,0,0,0.10));">
+  </div>
+  <!-- 型号 -->
+  {% if model_name %}
+  <div style="position:absolute;top:480px;left:0;right:0;padding:0 36px;">
+    <div style="font-size:22px;font-weight:800;color:#222;">{{ model_name }}</div>
+    {% if category_line %}
+    <div style="font-size:14px;color:#888;margin-top:2px;">{{ category_line }}</div>
+    {% endif %}
+  </div>
+  {% endif %}
+  <!-- 卖点网格 -->
+  {% if advantages %}
+  <div style="position:absolute;bottom:0;left:0;right:0;display:grid;grid-template-columns:repeat({{ [advantages|length, 5]|min }},1fr);border-top:1px solid #eee;">
+    {% for adv in advantages[:5] %}
+    <div style="padding:20px 8px;text-align:center;{% if not loop.last %}border-right:1px solid #eee;{% endif %}">
+      <div style="font-size:24px;line-height:1;">{{ adv.emoji }}</div>
+      <div style="font-size:13px;font-weight:600;color:#333;margin-top:6px;">{{ adv.text }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>

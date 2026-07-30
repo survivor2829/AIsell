@@ -1,0 +1,88 @@
+<!--
+  block_l_service_compare — 买前买后服务承诺对比
+  宽度：750px
+
+  变量：
+  - section_title: 标题（如"买前买后，服务全程护航"）
+  - section_subtitle: 副标题（可空）
+  - left_title: 左侧标题（如"旗舰店/官方"）
+  - right_title: 右侧标题（如"普通商家"）
+  - compare_rows: 对比项列表（5-10项），每项：
+      {"label":"30天免费试用", "left_desc":"支持", "right_desc":"不支持", "left_ok":true, "right_ok":false}
+  - service_flow: 可选服务流程（3-6步），每项：{"title":"送货上门","desc":"预约时间，免费送达"}
+-->
+
+{% if compare_rows %}<div style="width:750px; box-sizing:border-box; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; background:var(--theme-bg-dark, #0E1220); color:#ffffff; padding:44px 40px 46px 40px;">
+  <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:16px;">
+    <div style="min-width:0;">
+      <div style="font-size:28px; font-weight:900; line-height:1.2;">{{ section_title }}</div>
+      {% if section_subtitle %}
+      <div style="margin-top:10px; font-size:14px; color:rgba(255,255,255,0.78); line-height:1.7;">{{ section_subtitle }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div style="margin-top:18px; height:1px; background:linear-gradient(90deg, rgba(255,255,255,0.0) 0%, rgba(255,255,255,0.18) 38%, rgba(232,35,26,0.35) 70%, rgba(255,255,255,0.0) 100%);"></div>
+
+  <div style="margin-top:18px; display:flex; gap:12px;">
+    <div style="flex:1; border-radius:18px; overflow:hidden; border:1px solid rgba(255,255,255,0.12);">
+      <div style="background:var(--theme-tag-bg, rgba(232,35,26,0.16)); border-bottom:1px solid rgba(255,255,255,0.10); padding:14px 14px 12px 14px;">
+        <div style="font-size:14px; font-weight:900; color:var(--theme-accent, #FFB3AF);">{{ left_title }}</div>
+        {% if left_subtitle %}<div style="margin-top:4px; font-size:12px; color:rgba(255,255,255,0.70);">{{ left_subtitle }}</div>{% endif %}
+      </div>
+      <div style="padding:12px 14px 10px 14px;">
+        {% for r in compare_rows %}
+        <div style="padding:12px 0; border-top:1px dashed rgba(255,255,255,0.14);">
+          <div style="display:flex; align-items:flex-start; gap:10px;">
+            <div style="flex:0 0 auto; width:22px; height:22px; border-radius:8px; background:var(--theme-primary, #E8231A); display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:900;">{% if r.left_ok %}✅{% else %}❌{% endif %}</div>
+            <div style="flex:1; min-width:0;">
+              <div style="font-size:13px; font-weight:900; line-height:1.35;">{{ r.label }}</div>
+              <div style="margin-top:6px; font-size:12px; line-height:1.7; color:rgba(255,255,255,0.78);">{{ r.left_desc }}</div>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div style="flex:1; border-radius:18px; overflow:hidden; border:1px solid rgba(255,255,255,0.12);">
+      <div style="background:rgba(255,255,255,0.06); border-bottom:1px solid rgba(255,255,255,0.10); padding:14px 14px 12px 14px;">
+        <div style="font-size:14px; font-weight:900; color:rgba(255,255,255,0.88);">{{ right_title }}</div>
+        {% if right_subtitle %}<div style="margin-top:4px; font-size:12px; color:rgba(255,255,255,0.62);">{{ right_subtitle }}</div>{% endif %}
+      </div>
+      <div style="padding:12px 14px 10px 14px;">
+        {% for r in compare_rows %}
+        <div style="padding:12px 0; border-top:1px dashed rgba(255,255,255,0.14);">
+          <div style="display:flex; align-items:flex-start; gap:10px;">
+            <div style="flex:0 0 auto; width:22px; height:22px; border-radius:8px; background:rgba(255,255,255,0.10); display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:900;">{% if r.right_ok %}✅{% else %}❌{% endif %}</div>
+            <div style="flex:1; min-width:0;">
+              <div style="font-size:13px; font-weight:900; line-height:1.35; color:rgba(255,255,255,0.88);">{{ r.label }}</div>
+              <div style="margin-top:6px; font-size:12px; line-height:1.7; color:rgba(255,255,255,0.68);">{{ r.right_desc }}</div>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  {% if service_flow %}
+  <div style="margin-top:16px; border-radius:18px; border:1px solid rgba(255,255,255,0.12); background:rgba(255,255,255,0.04); padding:16px 16px 14px 16px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+      <div style="font-size:14px; font-weight:900;">服务流程</div>
+      {% if service_flow_note %}<div style="font-size:11px; color:rgba(255,255,255,0.60);">{{ service_flow_note }}</div>{% endif %}
+    </div>
+    <div style="margin-top:12px; display:flex; flex-wrap:wrap; gap:10px;">
+      {% for s in service_flow %}
+      <div style="width:calc(33.333% - 6.7px); box-sizing:border-box; border-radius:14px; border:1px solid rgba(255,255,255,0.10); background:rgba(0,0,0,0.10); padding:12px 12px 10px 12px;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <div style="flex:0 0 22px; width:22px; height:22px; border-radius:8px; background:var(--theme-primary, #E8231A); display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:900;">{{ loop.index }}</div>
+          <div style="font-size:13px; font-weight:900; line-height:1.25;">{{ s.title }}</div>
+        </div>
+        <div style="margin-top:6px; font-size:12px; line-height:1.7; color:rgba(255,255,255,0.74);">{{ s.desc }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>{% endif %}

@@ -1,0 +1,1905 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<title>批量生成 · 小玺AI</title>
+<link rel="stylesheet" href="/static/css/design-system.css">
+<link rel="stylesheet" href="/static/css/announcement.css">
+<script src="/static/vendor/jszip-3.10.1.min.js"></script>
+<style>
+  body { background: var(--color-bg-page); font-family: var(--font-sans); }
+
+  /* ── Topbar (玻璃顶栏, 跟 workspace.html 风格一致) ── */
+  .topbar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    background: rgba(255,255,255,0.72);
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--color-border);
+    padding: 0 32px; height: 52px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .topbar-brand {
+    font-size: 15px; font-weight: 600; color: var(--color-text);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .topbar-brand .dot {
+    width: 8px; height: 8px; background: var(--color-primary);
+    border-radius: 50%; flex-shrink: 0;
+  }
+  .topbar-right { display: flex; align-items: center; gap: 6px; }
+  .topbar-right span,
+  .topbar-right a, .topbar-right button {
+    font-size: 13px; color: var(--color-text-muted);
+    padding: 6px 12px; border-radius: var(--radius-md);
+    background: none; border: none; cursor: pointer;
+    text-decoration: none; transition: all var(--transition-fast);
+  }
+  .topbar-right a:hover, .topbar-right button:hover {
+    color: var(--color-text); background: rgba(0,0,0,0.04);
+  }
+
+  /* ── 页面骨架 ── */
+  .page {
+    max-width: 980px; margin: 0 auto;
+    padding: 90px 32px 60px;
+  }
+  .page-title {
+    font-size: 28px; font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-bottom: 6px;
+  }
+  .page-subtitle {
+    font-size: 14px; color: var(--color-text-muted);
+    margin-bottom: 28px;
+  }
+
+  /* ── 上传区 (drag-and-drop look) ── */
+  .upload-card {
+    background: #fff;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: 32px;
+    margin-bottom: 24px;
+  }
+  .form-row {
+    display: flex; gap: 12px; margin-bottom: 16px;
+    align-items: center;
+  }
+  .form-row label {
+    font-size: 13px; font-weight: 500;
+    color: var(--color-text); width: 80px;
+  }
+  .form-row input[type="text"] {
+    flex: 1; padding: 9px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    font-size: 14px; font-family: inherit;
+  }
+  .form-row input[type="text"]:focus {
+    outline: none; border-color: var(--color-primary);
+  }
+
+  .picker {
+    border: 2px dashed var(--color-border);
+    border-radius: var(--radius-md);
+    padding: 36px 24px;
+    text-align: center;
+    transition: all var(--transition-base);
+    cursor: pointer;
+  }
+  .picker:hover {
+    border-color: var(--color-primary);
+    background: var(--color-primary-light);
+  }
+  .picker .icon { font-size: 32px; margin-bottom: 8px; }
+  .picker .hint { font-size: 14px; color: var(--color-text); margin-bottom: 4px; }
+  .picker .sub  { font-size: 12px; color: var(--color-text-muted); }
+  .picker .icon,
+  .picker .hint,
+  .picker .sub { pointer-events: none; }
+  .picker input[type="file"] { display: none; }
+
+  .picker.has-files {
+    border-style: solid;
+    border-color: var(--color-primary);
+    background: var(--color-primary-light);
+  }
+
+  .actions {
+    display: flex; gap: 10px; margin-top: 18px;
+    align-items: center;
+  }
+  .btn {
+    padding: 9px 18px; border-radius: var(--radius-md);
+    font-size: 14px; font-weight: 500; font-family: inherit;
+    cursor: pointer; border: 1px solid transparent;
+    transition: all var(--transition-fast);
+  }
+  .btn-primary {
+    background: var(--color-primary); color: #fff;
+  }
+  .btn-primary:hover { background: var(--color-primary-hover, #0a5dd6); }
+  .btn-primary:disabled {
+    background: var(--color-text-muted); cursor: not-allowed; opacity: 0.6;
+  }
+  .btn-ghost {
+    background: #fff; color: var(--color-text);
+    border-color: var(--color-border);
+  }
+  .btn-ghost:hover { background: rgba(0,0,0,0.03); }
+
+  /* ── 进度状态 ── */
+  .status {
+    font-size: 13px; color: var(--color-text-muted);
+  }
+  .status.busy { color: var(--color-primary); }
+  .status.error { color: #d92f2f; }
+  .status.success { color: #1c8d3a; }
+
+  /* ── 结果区 ── */
+  .result-card {
+    background: #fff; border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg); padding: 24px;
+    margin-bottom: 16px;
+  }
+  .summary {
+    display: flex; gap: 20px; margin-bottom: 18px;
+    flex-wrap: wrap;
+  }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 12px; border-radius: var(--radius-full);
+    font-size: 13px; font-weight: 500;
+    background: rgba(0,0,0,0.04);
+  }
+  .pill.green { background: rgba(28,141,58,0.1); color: #1c8d3a; }
+  .pill.amber { background: rgba(217,143,47,0.12); color: #b76b1f; }
+  .pill.blue  { background: var(--color-primary-light); color: var(--color-primary); }
+
+  table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+  }
+  th, td {
+    text-align: left; padding: 10px 8px;
+    border-bottom: 1px solid var(--color-border);
+    vertical-align: middle;
+  }
+  th {
+    font-size: 12px; color: var(--color-text-muted);
+    font-weight: 500; text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  td .thumb {
+    width: 56px; height: 56px; object-fit: cover;
+    border-radius: var(--radius-sm);
+    background: rgba(0,0,0,0.05);
+  }
+  td.muted { color: var(--color-text-muted); }
+  .reason-bad { color: #d92f2f; }
+
+  .section-title {
+    font-size: 14px; font-weight: 600;
+    margin: 18px 0 10px; color: var(--color-text);
+  }
+  .empty {
+    color: var(--color-text-muted); font-size: 13px;
+    padding: 12px 0;
+  }
+
+  /* 详情图缩略组 */
+  .det-thumbs { display: flex; gap: 4px; }
+  .det-thumbs img {
+    width: 28px; height: 28px; object-fit: cover;
+    border-radius: 3px; background: rgba(0,0,0,0.05);
+  }
+  .det-thumbs .more {
+    font-size: 11px; color: var(--color-text-muted);
+    align-self: center; margin-left: 4px;
+  }
+
+  /* ── 实时进度 (任务6 新增) ── */
+  .progress-card {
+    background: #fff; border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg); padding: 20px 24px;
+    margin-bottom: 16px;
+  }
+  .progress-row {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  .progress-counts { display: flex; gap: 8px; flex-wrap: wrap; }
+  .progress-counts .pill { font-size: 12px; padding: 4px 10px; }
+
+  .ws-indicator {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--color-text-muted);
+  }
+  .ws-indicator .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--color-text-muted);
+  }
+  .ws-indicator.connecting .dot { background: #d99b2f;
+    animation: pulse 1s ease-in-out infinite; }
+  .ws-indicator.connected  .dot { background: #1c8d3a; }
+  .ws-indicator.disconnected .dot { background: #d92f2f; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
+  }
+
+  .progress-bar {
+    height: 6px; border-radius: 999px;
+    background: rgba(0,0,0,0.05); overflow: hidden;
+  }
+  .progress-bar > .fill {
+    height: 100%; background: var(--color-primary);
+    transition: width 0.4s ease;
+  }
+
+  /* 状态徽章 (产品表里用) */
+  .badge {
+    display: inline-block; padding: 2px 8px;
+    border-radius: var(--radius-full);
+    font-size: 11px; font-weight: 500;
+    background: rgba(0,0,0,0.05); color: var(--color-text-muted);
+  }
+  .badge.pending    { background: rgba(0,0,0,0.05); color: var(--color-text-muted); }
+  .badge.processing { background: rgba(20,110,245,0.12); color: var(--color-primary);
+    animation: pulse 1.4s ease-in-out infinite; }
+  .badge.done       { background: rgba(28,141,58,0.12); color: #1c8d3a; }
+  .badge.failed     { background: rgba(217,47,47,0.12); color: #d92f2f; }
+  .badge.skipped    { background: rgba(217,143,47,0.12); color: #b76b1f; }
+
+  /* ── 任务7 + Step C: 长图缩略 (HTML 版 + AI 版) ──────────────── */
+  /* object-position: top center 切首屏(最有信息量的那块), 而不是长图正中央 */
+  .preview-cell { min-width: 84px; }
+  .refine-cell  { min-width: 96px; }
+
+  .preview-thumb, .ai-thumb {
+    display: block;
+    width: 72px; aspect-ratio: 3 / 4;
+    object-fit: cover; object-position: top center;
+    border-radius: var(--radius-sm);
+    cursor: zoom-in;
+    background: rgba(0,0,0,0.04);
+    transition: transform 180ms cubic-bezier(.2,.8,.2,1),
+                box-shadow 180ms cubic-bezier(.2,.8,.2,1);
+  }
+  .preview-thumb { border: 1px solid var(--color-primary-border); }
+  .preview-thumb:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 18px rgba(20,110,245,0.28);
+  }
+  .ai-thumb {
+    border: 1px solid rgba(217,143,47,0.38);
+    box-shadow: 0 1px 6px rgba(217,143,47,0.18);
+  }
+  .ai-thumb:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 22px rgba(217,143,47,0.44);
+  }
+
+  /* 未生成占位: 虚线框, 保持行高稳定 (不跳版) */
+  .thumb-placeholder {
+    display: flex; align-items: center; justify-content: center;
+    width: 72px; aspect-ratio: 3 / 4;
+    border: 1px dashed rgba(0,0,0,0.18);
+    border-radius: var(--radius-sm);
+    background: rgba(0,0,0,0.015);
+    font-size: 10px; color: var(--color-text-muted);
+    text-align: center; padding: 0 6px; line-height: 1.3;
+    user-select: none;
+  }
+
+  /* 加载中: shimmer (比纯灰色更明显告诉用户"在渲染") */
+  .thumb-skeleton {
+    width: 72px; aspect-ratio: 3 / 4;
+    border-radius: var(--radius-sm);
+    background: linear-gradient(
+      100deg,
+      rgba(0,0,0,0.04) 30%,
+      rgba(0,0,0,0.10) 50%,
+      rgba(0,0,0,0.04) 70%
+    );
+    background-size: 220% 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
+  @keyframes shimmer {
+    from { background-position: 220% 0; }
+    to   { background-position: -20% 0; }
+  }
+
+  /* refine-cell 纵向布局: 控制在上, AI 缩略在下 */
+  .refine-cell .refine-ctrl    { display: block; margin-bottom: 6px; }
+  .refine-cell .ai-thumb-slot  { display: block; }
+  .refine-cell .ai-thumb-slot .dl-btn { margin-top: 4px; }
+  .preview-cell .muted { font-size: 12px; }
+
+  .refine-cell label {
+    display: inline-flex; align-items: center; gap: 6px;
+    cursor: pointer; user-select: none;
+    font-size: 12px; color: var(--color-text-muted);
+  }
+  .refine-cell input[type="checkbox"] {
+    width: 16px; height: 16px; cursor: pointer;
+    accent-color: var(--color-primary);
+  }
+  .refine-cell input[type="checkbox"]:disabled {
+    cursor: not-allowed; opacity: 0.4;
+  }
+  .refine-cell label.disabled { color: rgba(0,0,0,0.25); cursor: not-allowed; }
+
+  /* 阶段四·Step B: 单文件下载小按钮 — 预览列 HTML↓ + 精修列 AI↓ */
+  .dl-btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    margin-top: 4px; padding: 3px 8px;
+    font-size: 11px; line-height: 1.2;
+    background: var(--color-primary-light);
+    color: var(--color-primary);
+    border: 1px solid var(--color-primary-border);
+    border-radius: 4px;
+    text-decoration: none; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .dl-btn:hover {
+    background: var(--color-primary); color: #fff;
+    border-color: var(--color-primary);
+  }
+  .dl-btn::before { content: "↓"; font-weight: bold; }
+  .dl-btn.dl-ai { /* AI 版给一点区分色, 不跟 HTML 混 */
+    background: rgba(217,143,47,0.10);
+    color: #9a5a18;
+    border-color: rgba(217,143,47,0.35);
+  }
+  .dl-btn.dl-ai:hover { background: #9a5a18; color: #fff; }
+
+  /* Step D: 整批打包下载条 (批次级主操作, 和 refine-toolbar 平级) */
+  .batch-actions {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 18px; margin: 14px 0 10px;
+    background: linear-gradient(135deg,
+      rgba(20,110,245,0.07) 0%,
+      rgba(20,110,245,0.02) 100%);
+    border: 1px solid var(--color-primary-border);
+    border-radius: var(--radius-md);
+  }
+  .batch-actions .btn-dl-all {
+    display: inline-flex; align-items: center; gap: 6px;
+    white-space: nowrap; text-decoration: none;
+  }
+  .batch-actions .btn-dl-all::before {
+    content: "⬇"; font-weight: bold;
+  }
+  .batch-actions .hint {
+    font-size: 12px; color: var(--color-text-muted);
+    flex: 1; line-height: 1.4;
+  }
+  .batch-actions .btn-dl-all.loading {
+    pointer-events: none; opacity: 0.7;
+  }
+
+  /* 精修工具条:全选/已选N/启动按钮 */
+  .refine-toolbar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 14px; margin: 14px 0 10px;
+    background: var(--color-primary-light);
+    border: 1px solid var(--color-primary-border);
+    border-radius: var(--radius-md);
+    font-size: 13px;
+  }
+  .refine-toolbar .picked-count {
+    font-weight: 600; color: var(--color-primary);
+  }
+  .refine-toolbar .grow { flex: 1; }
+  .refine-toolbar .btn { padding: 6px 14px; font-size: 13px; }
+  .refine-toolbar .btn-primary:disabled {
+    background: var(--color-text-muted); opacity: 0.5;
+  }
+  .refine-toolbar .phase-tag {
+    font-size: 10px; padding: 2px 6px;
+    background: rgba(0,0,0,0.06); border-radius: 4px;
+    color: var(--color-text-muted); margin-left: 4px;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+
+  /* 全屏 lightbox — 原生 <dialog>, a11y / focus-trap / Esc 全免费
+     2026-04-22 任务1 UX 修复 v2: width 用 min(85vw, 1200px) 硬收.
+     v1 只设 max-width 85vw 无效 — preview.png 固定 1500 宽 < 85vw (1920 屏 1632),
+     max-width 约束从不触发 → dialog 永远等于 img intrinsic 1500 + padding.
+     v2 改 width (非 max-width) 硬性收到 1200px 上限, 大屏上图被等比缩放显示.
+     *** 1200px 是基于当前 preview.png 1500 宽的设计 (750@2x). ***
+     *** 如果将来 block 模板改动导出宽度 (比如 2x→3x 或改成 900 宽), 同步调这里 ***
+     激活断点 1412px 屏宽 (85vw=1200): 之上走 1200, 之下走 85vw.
+     移动端 <768px 走 95vw 仍用 max-width (小屏 img 会被 vw 约束到). */
+  #lightboxDlg {
+    padding: 0; border: none; background: transparent;
+    width: min(85vw, 1200px); max-height: 88vh;
+    /* 2026-04-22 任务1 v3: 显式 max-width 压 UA stylesheet 默认.
+       原生 <dialog>:modal 有默认 max-width: calc(100% - 6px - 2em) ≈ calc(100vw - 38px).
+       桌面屏远大于 1200 所以 UA 默认不影响, 但小屏 (<768) 的 95vw=356 会被 UA 337 截掉.
+       所以 width 和 max-width 都显式设成同一个 min() 表达式, 把 UA 挤掉. (铁律13) */
+    max-width: min(85vw, 1200px);
+    overflow: visible;
+    opacity: 1;
+    transition: opacity 180ms ease-out;
+  }
+  #lightboxDlg.closing { opacity: 0; }
+  #lightboxDlg::backdrop {
+    background: rgba(0,0,0,0.78);
+    backdrop-filter: blur(20px) saturate(1.2);
+    -webkit-backdrop-filter: blur(20px) saturate(1.2);
+    animation: lbBackdropIn 180ms ease-out;
+  }
+  #lightboxDlg[open] { animation: lbCardIn 180ms cubic-bezier(.2,.9,.2,1); }
+  @keyframes lbBackdropIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes lbCardIn {
+    from { opacity: 0; transform: scale(0.96) translateY(6px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
+  }
+  #lightboxDlg .lb-scroll {
+    max-height: 88vh; overflow-y: auto;
+    border-radius: var(--radius-lg);       /* 12px, design-token */
+    box-shadow: 0 28px 72px rgba(0,0,0,0.55),
+                0 0 0 1px rgba(255,255,255,0.04);  /* 加极细 hairline 让白卡不贴死黑 */
+    background: #fff;
+    padding: var(--space-4);               /* 16px 呼吸感, 图片不再贴边 */
+    -webkit-overflow-scrolling: touch;
+  }
+  #lightboxDlg .lb-scroll img {
+    display: block;
+    max-width: 100%;                       /* 父级 .lb-scroll 已收了 85vw, img 自适应 */
+    height: auto;
+    object-fit: contain;                   /* 明示比例保持 */
+    border-radius: var(--radius-md);       /* 8px 和白卡内层呼应 */
+  }
+  #lightboxDlg .lb-close {
+    position: absolute;                    /* 相对 dialog 自身, 随弹窗尺寸一起动 */
+    top: -16px; right: -16px;              /* 贴弹窗外沿右上角, 视觉悬浮 */
+    width: 40px; height: 40px; border-radius: 50%;
+    background: rgba(255,255,255,0.16);
+    backdrop-filter: blur(16px) saturate(1.2);
+    -webkit-backdrop-filter: blur(16px) saturate(1.2);
+    border: 1px solid rgba(255,255,255,0.28);
+    color: #fff; font-size: 22px; font-weight: 300; line-height: 1;
+    cursor: pointer; z-index: 2;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+    transition: background var(--transition-fast),
+                transform var(--transition-fast),
+                box-shadow var(--transition-fast);
+  }
+  #lightboxDlg .lb-close:hover {
+    background: rgba(255,255,255,0.32);
+    transform: scale(1.08);
+    box-shadow: 0 6px 16px rgba(0,0,0,0.45);
+  }
+  #lightboxDlg .lb-close:focus-visible {
+    outline: 2px solid rgba(255,255,255,0.55);
+    outline-offset: 2px;
+  }
+  #lightboxDlg .lb-caption {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: 24px; z-index: 2;
+    padding: 8px 16px; border-radius: var(--radius-full);
+    background: rgba(0,0,0,0.55); color: #fff;
+    font-size: 13px; letter-spacing: 0.02em;
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    white-space: nowrap; max-width: 80vw;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  #lightboxDlg .lb-caption:empty { display: none; }
+  /* 响应式: 手机屏 <768px 走 95vw, close 按钮回到内侧 (避免被边缘遮).
+     这里可以用 width: 95vw (不是 min) 因为小屏 95vw 必然 < 1500 img 宽,
+     vw 约束一定触发, dialog 等于 95vw. close 按钮 -16px 在小屏会被切, 改 10px 内侧. */
+  @media (max-width: 768px) {
+    /* 同上: max-width 必须和 width 一起显式, 否则 UA 的 calc(100vw-38px)=337px
+       会把 95vw=356 截到 337 (实测 iPhone SE 375 屏). 铁律13. */
+    #lightboxDlg { width: 95vw; max-width: 95vw; max-height: 92vh; }
+    #lightboxDlg .lb-scroll { max-height: 92vh; padding: var(--space-2); }
+    #lightboxDlg .lb-close { top: 10px; right: 10px; }
+  }
+
+  /* ── 任务10: 费用预估弹窗 (PRD F6) ─────────────────────────────── */
+  .modal-mask {
+    position: fixed; inset: 0; z-index: 250;
+    background: rgba(0,0,0,0.55);
+    display: none; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .modal-mask.show { display: flex; }
+  .modal-card {
+    background: #fff; border-radius: var(--radius-lg);
+    box-shadow: 0 16px 48px rgba(0,0,0,0.32);
+    max-width: 460px; width: 100%;
+    padding: 24px 28px;
+  }
+  .modal-card .modal-title {
+    font-size: 17px; font-weight: 700; margin-bottom: 14px;
+    color: var(--color-text);
+  }
+  .modal-card .modal-body {
+    font-size: 14px; line-height: 1.75; color: var(--color-text);
+    margin-bottom: 18px;
+  }
+  .modal-card .modal-body .row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 4px 0;
+  }
+  .modal-card .modal-body .row .k { color: var(--color-text-muted); }
+  .modal-card .modal-body .row .v {
+    font-weight: 600; color: var(--color-text);
+  }
+  .modal-card .modal-body .row .v.cost { color: #d92f2f; }
+  .modal-card .modal-body .hint {
+    font-size: 12px; color: var(--color-text-muted);
+    background: rgba(0,0,0,0.03); border-radius: var(--radius-sm);
+    padding: 8px 10px; margin-top: 10px;
+  }
+  .modal-card .modal-actions {
+    display: flex; justify-content: flex-end; gap: 10px;
+  }
+  .modal-card .modal-actions .btn { padding: 8px 18px; font-size: 13px; }
+  .modal-card .loading {
+    text-align: center; padding: 28px 0;
+    color: var(--color-text-muted); font-size: 13px;
+  }
+  .modal-card .err {
+    color: #d92f2f; padding: 10px 0; font-size: 13px;
+  }
+  /* 任务11: 橙色警告 — already_done 覆盖重扣费 / skipped 名单 */
+  .modal-card .warn {
+    background: #fff7ed; border-left: 3px solid #f97316;
+    color: #9a3412; padding: 8px 12px; margin: 8px 0 0;
+    font-size: 13px; line-height: 1.55; border-radius: 4px;
+  }
+  .modal-card .warn ul { margin: 6px 0 0 18px; padding: 0; }
+  .modal-card .warn li { margin: 2px 0; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-brand">
+    <span class="dot"></span>
+    小玺AI · 批量生成
+  </div>
+  <div class="topbar-right">
+    <a href="/">返回首页</a>
+    <a href="/batch/history">历史批次</a>
+    <span>{{ current_user.username }}</span>
+    <a href="/settings">账号设置</a>
+    {% if current_user.is_admin %}
+      <a href="/admin/users" class="admin-link">管理后台</a>
+    {% endif %}
+    <form method="POST" action="/auth/logout" style="display:inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit">退出</button>
+    </form>
+  </div>
+</div>
+
+<div class="page">
+  <div class="page-title">批量生成</div>
+  <div class="page-subtitle">
+    一次上传一个文件夹，里面每个子文件夹是一个产品（含 product.jpg + desc.txt）。
+    上传后由 AI 自动识别并并发生成详情长图。
+  </div>
+
+  <div class="upload-card">
+    <div class="form-row">
+      <label for="batchName">批次名</label>
+      <input type="text" id="batchName" placeholder="留空则取文件夹名">
+    </div>
+
+    <!-- 任务9 (PRD F11): 模板策略 -->
+    <div class="form-row">
+      <label for="productCategory">产品大类</label>
+      <select id="productCategory" style="padding:6px 10px;border:1px solid #d4d4d8;border-radius:6px;background:#fff;">
+        <option value="设备类" selected>设备类（清洁机/扫地车等）</option>
+        <option value="工具类">工具类（拖把/刮水器等）</option>
+        <option value="耗材类">耗材类（清洁剂/除垢液等）</option>
+        <option value="配件类">配件类（刷盘/滤芯等）</option>
+      </select>
+      <span style="color:#71717a;font-size:12px;margin-left:8px;">决定 AI 自动匹配时的兜底主题</span>
+    </div>
+
+    <div class="form-row">
+      <label>模板策略</label>
+      <label style="margin-right:16px;font-weight:normal;">
+        <input type="radio" name="templateStrategy" value="auto" checked>
+        <span style="margin-left:4px;">AI 自动匹配</span>
+        <span style="color:#71717a;font-size:12px;margin-left:4px;">(按产品类型关键词选色板)</span>
+      </label>
+      <label style="font-weight:normal;">
+        <input type="radio" name="templateStrategy" value="fixed">
+        <span style="margin-left:4px;">统一用一个模板</span>
+      </label>
+    </div>
+
+    <div class="form-row" id="fixedThemeRow" style="display:none;">
+      <label for="fixedThemeId">统一模板</label>
+      <select id="fixedThemeId" style="padding:6px 10px;border:1px solid #d4d4d8;border-radius:6px;background:#fff;min-width:220px;">
+        <option value="">加载中…</option>
+      </select>
+    </div>
+
+    <label class="picker" id="picker">
+      <div class="icon">📁</div>
+      <div class="hint" id="pickerHint">选择产品文件夹</div>
+      <div class="sub">浏览器会上传该文件夹下所有子文件（含子目录）。仅支持 Chrome / Edge。</div>
+      <input type="file" id="folderInput" webkitdirectory directory multiple>
+    </label>
+
+    <div class="actions">
+      <button class="btn btn-primary" id="btnUpload" disabled>上传并识别</button>
+      <button class="btn btn-ghost" id="btnReset">清空</button>
+      <span class="status" id="status">等待选择文件夹</span>
+    </div>
+  </div>
+
+  <div id="resultArea"></div>
+</div>
+
+<!-- 任务10: 费用预估弹窗 (PRD F6) -->
+<div class="modal-mask" id="estimateModal" role="dialog" aria-modal="true" aria-labelledby="estimateTitle">
+  <div class="modal-card">
+    <div class="modal-title" id="estimateTitle">AI 精修费用确认</div>
+    <div class="modal-body" id="estimateBody">
+      <div class="loading">正在计算费用…</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" type="button" id="btnEstimateCancel">取消</button>
+      <button class="btn btn-primary" type="button" id="btnEstimateConfirm" disabled>确认开始</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  // 所有改后端状态的 fetch 必须带上这个 token — 后端 CSRFProtect 用它校验,
+  // 缺失或错误直接 400. 详见 PROJECT_STATUS_批量生成.md 阶段六 CSRF 审计表.
+  const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+  const folderInput = $('folderInput');
+  const picker = $('picker');
+  const pickerHint = $('pickerHint');
+  const btnUpload = $('btnUpload');
+  const btnReset = $('btnReset');
+  const status = $('status');
+  const batchName = $('batchName');
+  const productCategory = $('productCategory');
+  const fixedThemeRow = $('fixedThemeRow');
+  const fixedThemeSelect = $('fixedThemeId');
+  const resultArea = $('resultArea');
+
+  // ── 任务9: 加载主题列表 + 切换策略显示 ─────────────────────────────
+  function getStrategy() {
+    const r = document.querySelector('input[name="templateStrategy"]:checked');
+    return r ? r.value : 'auto';
+  }
+  function refreshStrategyUi() {
+    fixedThemeRow.style.display = (getStrategy() === 'fixed') ? '' : 'none';
+  }
+  document.querySelectorAll('input[name="templateStrategy"]').forEach(r =>
+    r.addEventListener('change', refreshStrategyUi)
+  );
+  refreshStrategyUi();
+
+  fetch('/api/themes').then(r => r.json()).then(data => {
+    const themes = data.themes || [];
+    fixedThemeSelect.innerHTML = themes.map(t =>
+      `<option value="${t.id}">${t.name} — ${t.description || t.id}</option>`
+    ).join('') || '<option value="">(无可用主题)</option>';
+  }).catch(e => {
+    console.warn('[themes] 加载失败', e);
+    fixedThemeSelect.innerHTML = '<option value="">(主题列表加载失败)</option>';
+  });
+
+  let selectedFiles = [];
+
+  function setStatus(msg, kind) {
+    status.textContent = msg;
+    status.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  function detectRootFolder(files) {
+    // webkitRelativePath 形如 "批量任务/产品A/product.jpg"
+    if (!files.length) return '';
+    const first = files[0].webkitRelativePath || '';
+    return first.split('/')[0] || '';
+  }
+
+  picker.addEventListener('click', (e) => {
+    if (e.target !== folderInput) {
+      e.preventDefault();
+      folderInput.click();
+    }
+  });
+
+  folderInput.addEventListener('change', (e) => {
+    selectedFiles = Array.from(e.target.files || []);
+    if (!selectedFiles.length) {
+      picker.classList.remove('has-files');
+      pickerHint.textContent = '选择产品文件夹';
+      btnUpload.disabled = true;
+      setStatus('等待选择文件夹');
+      return;
+    }
+    const root = detectRootFolder(selectedFiles);
+    picker.classList.add('has-files');
+    pickerHint.textContent = `已选择: ${root}（${selectedFiles.length} 个文件）`;
+    btnUpload.disabled = false;
+    if (!batchName.value.trim()) batchName.value = root;
+    setStatus(`待上传 ${selectedFiles.length} 个文件`, '');
+  });
+
+  btnReset.addEventListener('click', () => {
+    selectedFiles = [];
+    folderInput.value = '';
+    picker.classList.remove('has-files');
+    pickerHint.textContent = '选择产品文件夹';
+    btnUpload.disabled = true;
+    batchName.value = '';
+    resultArea.innerHTML = '';
+    setStatus('等待选择文件夹');
+  });
+
+  async function buildZip(files) {
+    const zip = new JSZip();
+    for (const f of files) {
+      // 用 webkitRelativePath 保留目录结构,后端 unzip 才能扫到 产品名/product.jpg
+      const path = f.webkitRelativePath || f.name;
+      zip.file(path, f);
+    }
+    return await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+  }
+
+  function formatBytesPerSecond(bytesPerSecond) {
+    if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '';
+    const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+    let value = bytesPerSecond;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    return `${value.toFixed(value >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+  }
+
+  function formatDuration(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0) return '';
+    if (seconds < 60) return `${Math.ceil(seconds)}s`;
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.ceil(seconds % 60);
+    return `${mins}m ${secs}s`;
+  }
+
+  function uploadBatchForm(fd, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/batch/upload');
+      xhr.setRequestHeader('X-CSRFToken', csrfToken);
+      xhr.upload.onprogress = onProgress;
+      xhr.onload = () => {
+        let data = {};
+        try { data = JSON.parse(xhr.responseText || '{}'); } catch (_) {}
+        resolve({
+          ok: xhr.status >= 200 && xhr.status < 300,
+          status: xhr.status,
+          data,
+          statusText: xhr.statusText,
+        });
+      };
+      xhr.onerror = () => reject(new Error('网络异常'));
+      xhr.send(fd);
+    });
+  }
+
+  btnUpload.addEventListener('click', async () => {
+    if (!selectedFiles.length) return;
+    btnUpload.disabled = true;
+    btnReset.disabled = true;
+    resultArea.innerHTML = '';
+    try {
+      setStatus('打包中(浏览器内 JSZip 压缩)...', 'busy');
+      const blob = await buildZip(selectedFiles);
+      setStatus(`打包完成 ${(blob.size/1024).toFixed(0)} KB,正在上传...`, 'busy');
+
+      const fd = new FormData();
+      // 后端只看扩展名,文件名自定一个 .zip
+      const root = detectRootFolder(selectedFiles) || 'batch';
+      fd.append('file', blob, `${root}.zip`);
+      fd.append('batch_name', batchName.value.trim());
+      // 任务9 (PRD F11): 模板策略
+      fd.append('product_category', productCategory.value);
+      fd.append('template_strategy', getStrategy());
+      if (getStrategy() === 'fixed' && fixedThemeSelect.value) {
+        fd.append('fixed_theme_id', fixedThemeSelect.value);
+      }
+
+      const uploadStart = performance.now();
+      const r = await uploadBatchForm(fd, (e) => {
+        const elapsedSeconds = Math.max((performance.now() - uploadStart) / 1000, 0.1);
+        const speed = e.loaded / elapsedSeconds;
+        const speedText = formatBytesPerSecond(speed);
+        if (e.lengthComputable && e.total > 0) {
+          const pct = Math.min(100, Math.round((e.loaded / e.total) * 100));
+          const remaining = speed > 0 ? (e.total - e.loaded) / speed : NaN;
+          const etaText = formatDuration(remaining);
+          setStatus(
+            `上传中 ${pct}% · ${speedText || '计算速度中'}${etaText ? ` · 剩余 ${etaText}` : ''}`,
+            'busy'
+          );
+        } else {
+          setStatus(
+            `上传中 ${(e.loaded / 1024 / 1024).toFixed(1)} MB${speedText ? ` · ${speedText}` : ''}`,
+            'busy'
+          );
+        }
+      });
+      const data = r.data || {};
+      if (!r.ok) {
+        setStatus(`上传失败 ${r.status}: ${data.error || r.statusText}`, 'error');
+        return;
+      }
+      setStatus(
+        `识别完成: ${data.valid_count} 个有效产品 / ${data.skipped_count} 个跳过`,
+        'success'
+      );
+      renderResult(data);
+    } catch (e) {
+      console.error(e);
+      setStatus('异常: ' + e.message, 'error');
+    } finally {
+      btnUpload.disabled = false;
+      btnReset.disabled = false;
+    }
+  });
+
+  // 当前批次的状态 (任务6 引入,用于 WS 实时刷新)
+  const session = {
+    batchId: null,
+    productNames: [],   // 顺序与 products[] 一致
+    counts: { pending: 0, processing: 0, done: 0, failed: 0, total: 0 },
+    ws: null,
+    // 任务11 修复: 精修进行中锁 + 失败聚合提示
+    //   refineInFlight = submitted 时派发 → 每个 done/failed 事件 -1
+    //   refineFailed 累计失败数 → 归零时若 >0 就弹一次大提示
+    refineInFlight: 0,
+    refineFailed: 0,
+  };
+
+  function renderResult(data) {
+    const products = data.products || [];
+    const skipped = data.skipped || [];
+
+    session.batchId = data.batch_id;
+    session.productNames = products.map(p => p.name);
+    session.counts = {
+      pending: products.length,
+      processing: 0, done: 0, failed: 0,
+      total: products.length,
+    };
+
+    // 任务9: 显示模板策略
+    const strategyPill = data.template_strategy === 'fixed'
+      ? `<div class="pill blue">🎨 统一模板: ${data.fixed_theme_id || '?'}</div>`
+      : `<div class="pill blue">🎨 AI 自动匹配 (${data.product_category || '设备类'})</div>`;
+
+    const summary = `
+      <div class="summary">
+        <div class="pill blue">批次 ID: ${data.batch_id}</div>
+        <div class="pill blue">名称: ${data.batch_name}</div>
+        <div class="pill green">✓ 有效 ${data.valid_count}</div>
+        <div class="pill amber">⚠ 跳过 ${data.skipped_count}</div>
+        ${strategyPill}
+      </div>
+    `;
+
+    const productRows = products.length ? products.map((p) => {
+      const det = (p.detail_image_paths || []).slice(0, 4);
+      const more = (p.detail_image_paths || []).length - det.length;
+      const detHtml = det.length
+        ? `<div class="det-thumbs">
+             ${det.map(u => `<img src="${u}" alt="">`).join('')}
+             ${more > 0 ? `<span class="more">+${more}</span>` : ''}
+           </div>`
+        : '<span class="muted">无</span>';
+      const safeName = escapeHtml(p.name);
+      // data-name 让 WS update 能精确锁定行
+      return `
+        <tr data-name="${safeName}">
+          <td>${p.main_image_path
+            ? `<img class="thumb" src="${p.main_image_path}" alt="">`
+            : '<span class="muted">无图</span>'}</td>
+          <td><strong>${safeName}</strong></td>
+          <td class="status-cell"><span class="stage-pill stage-pending">⏳ 等待中</span></td>
+          <td class="preview-cell"><span class="muted">—</span></td>
+          <td class="refine-cell">
+            <div class="refine-ctrl">
+              <label class="disabled" title="完成后才能勾选">
+                <input type="checkbox" disabled data-refine="${safeName}">
+                <span>精修</span>
+              </label>
+            </div>
+            <div class="ai-thumb-slot">
+              <div class="thumb-placeholder">未精修</div>
+            </div>
+          </td>
+          <td class="muted">${p.desc_chars} 字</td>
+          <td>${detHtml}</td>
+        </tr>
+      `;
+    }).join('') : `<tr><td colspan="7" class="empty">没有有效产品</td></tr>`;
+
+    const skippedRows = skipped.length ? skipped.map((s) => `
+      <tr>
+        <td><strong>${escapeHtml(s.name)}</strong></td>
+        <td class="reason-bad">${escapeHtml(s.reason || '')}</td>
+      </tr>
+    `).join('') : '';
+
+    const startBtn = products.length
+      ? `<button class="btn btn-primary" id="btnStart">启动批次 (${products.length} 个产品)</button>`
+      : `<span class="muted">没有有效产品,无法启动</span>`;
+
+    resultArea.innerHTML = `
+      <div class="result-card">
+        ${summary}
+        <div style="margin-bottom: 16px;">${startBtn}</div>
+
+        <div class="section-title">有效产品 (${products.length})</div>
+        <div class="batch-actions" id="batchActions" style="display:none">
+          <a class="btn btn-primary btn-dl-all" id="btnDownloadAll"
+             href="/api/batch/${encodeURIComponent(data.batch_id)}/download-all"
+             download>打包下载全部</a>
+          <span class="hint">
+            zip 内按 <code>${escapeHtml(data.batch_id)}/产品名/</code> 分文件夹 ·
+            含 HTML 版 + AI 精修版 · 大批次可能需要几秒
+          </span>
+        </div>
+        <div class="refine-toolbar" id="refineToolbar" style="display:none">
+          <button class="btn btn-ghost" id="btnSelectAll">全选待精修</button>
+          <button class="btn btn-ghost" id="btnClearAll">取消全选</button>
+          <span class="grow"></span>
+          <span>已选 <span class="picked-count" id="pickedCount">0</span> 个</span>
+          <button class="btn btn-primary" id="btnStartRefine" disabled>
+            开始 AI 精修<span class="phase-tag">阶段3</span>
+          </button>
+        </div>
+        <table>
+          <thead><tr>
+            <th>主图</th><th>产品名</th><th>状态</th>
+            <th>预览</th><th>AI 精修</th>
+            <th>文案</th><th>细节图</th>
+          </tr></thead>
+          <tbody id="productTbody">${productRows}</tbody>
+        </table>
+
+        ${skipped.length ? `
+          <div class="section-title">跳过 (${skipped.length})</div>
+          <table>
+            <thead><tr><th>名称</th><th>原因</th></tr></thead>
+            <tbody>${skippedRows}</tbody>
+          </table>
+        ` : ''}
+      </div>
+    `;
+
+    const startBtnEl = $('btnStart');
+    if (startBtnEl) startBtnEl.addEventListener('click', startBatch);
+  }
+
+  // ── 启动批次 + 订阅 WS ────────────────────────────────────────────
+  async function startBatch() {
+    const startBtn = $('btnStart');
+    if (!startBtn || !session.batchId) return;
+    startBtn.disabled = true;
+    startBtn.textContent = '启动中...';
+    try {
+      const r = await fetch(`/api/batch/${session.batchId}/start`, {
+        method: 'POST',
+        headers: {'X-CSRFToken': csrfToken},
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        startBtn.disabled = false;
+        startBtn.textContent = '重试启动';
+        setStatus(`启动失败 ${r.status}: ${data.error || r.statusText}`, 'error');
+        return;
+      }
+      setStatus(`已提交 ${data.submitted} 个产品到批量池`, 'busy');
+      startBtn.remove();
+      injectProgressCard();
+      openWS(session.batchId);
+      // 任务8: 设置 URL hash, 让用户刷新/分享时能 resume
+      history.replaceState(null, '', '#batch=' + session.batchId);
+      injectResumeBanner();
+    } catch (e) {
+      startBtn.disabled = false;
+      startBtn.textContent = '重试启动';
+      setStatus('启动异常: ' + e.message, 'error');
+    }
+  }
+
+  // ── 任务8: reload-resume — URL hash → 拉详情 → 重建 UI ───────────
+  function getHashBatchId() {
+    const m = (location.hash || '').match(/[#&]batch=([^&]+)/);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+
+  function detailToUploadShape(detail) {
+    // 把 GET /api/batches/<id> 的 items[] 拆成 products + skipped, 复用 renderResult
+    const items = detail.items || [];
+    const products = items.filter(it => it.status !== 'skipped').map(it => ({
+      name: it.name,
+      main_image_path: it.main_image_path,
+      detail_image_paths: it.detail_image_paths || [],
+      desc_chars: it.desc_chars || 0,
+    }));
+    const skipped = items.filter(it => it.status === 'skipped').map(it => ({
+      name: it.name,
+      reason: it.skip_reason || '(无)',
+    }));
+    return {
+      batch_id: detail.batch_id,
+      batch_name: detail.name,
+      valid_count: detail.valid_count,
+      skipped_count: detail.skipped_count,
+      products,
+      skipped,
+    };
+  }
+
+  async function loadExistingBatch(batchId) {
+    setStatus('加载批次 ' + batchId + ' ...', 'busy');
+    let detail;
+    try {
+      const r = await fetch('/api/batches/' + encodeURIComponent(batchId));
+      if (r.status === 404) {
+        // 失效的 hash — 清掉,回正常上传流程
+        history.replaceState(null, '', location.pathname);
+        setStatus('该批次不存在(已清除链接), 可重新上传', '');
+        return;
+      }
+      if (r.status === 403) {
+        setStatus('没有权限查看该批次', 'error');
+        return;
+      }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      detail = await r.json();
+    } catch (e) {
+      setStatus('加载失败: ' + e.message, 'error');
+      return;
+    }
+
+    // 隐藏上传卡片(reload-resume 模式不让用户混淆),换一个返回入口
+    document.querySelector('.upload-card').style.display = 'none';
+    injectResumeBanner();
+
+    renderResult(detailToUploadShape(detail));
+    setStatus(
+      `已加载: ${detail.name} (status=${detail.status})`,
+      detail.status === 'completed' ? 'success' : 'busy'
+    );
+
+    // 把每行的 status / result / want_ai_refine 一一回写
+    (detail.items || []).forEach(it => {
+      if (it.status === 'skipped') return;
+      // 第5参 aiStatus: AI 精修 done → updateProductRow 会在精修列追加 "下载AI版"
+      updateProductRow(it.name, it.status, it.error, it.result, it.ai_refine_status);
+      // 单独把 refine checkbox 状态打勾(updateProductRow 只解锁,不勾上)
+      if (it.want_ai_refine) {
+        const cb = document.querySelector(
+          `input[type="checkbox"][data-refine="${cssEscape(it.name)}"]`
+        );
+        if (cb) cb.checked = true;
+      }
+    });
+    refreshPickedCount();
+
+    // running/queued → 重连 WS 继续看进度;completed/failed → 不连
+    if (detail.status === 'running' || detail.status === 'queued'
+        || detail.status === 'uploaded') {
+      injectProgressCard();
+      openWS(batchId);
+    } else {
+      // 已终态 — 用一个"已完成"指示替代 WS 灯
+      setStatus(`批次 ${detail.status}`, 'success');
+    }
+  }
+
+  function injectResumeBanner() {
+    if ($('resumeBanner')) return;
+    const banner = document.createElement('div');
+    banner.id = 'resumeBanner';
+    banner.style.cssText =
+      'margin-bottom:12px; padding:10px 14px; ' +
+      'background:rgba(217,143,47,0.10); border:1px solid rgba(217,143,47,0.3); ' +
+      'border-radius:8px; font-size:13px; color:#9a5a18; ' +
+      'display:flex; align-items:center; gap:12px;';
+    banner.innerHTML = `
+      <span>⏳ 正在查看批次 <code>${escapeHtml(getHashBatchId() || session.batchId || '')}</code></span>
+      <span style="flex:1"></span>
+      <a href="${location.pathname}" style="color:#9a5a18; text-decoration:underline">
+        ← 返回上传新批次
+      </a>
+    `;
+    document.querySelector('.page').insertBefore(
+      banner, document.querySelector('.upload-card').nextSibling
+    );
+  }
+
+  // CSS.escape 兜底(老浏览器没有,选择器用)
+  function cssEscape(s) {
+    if (window.CSS && CSS.escape) return CSS.escape(s);
+    return String(s).replace(/["\\]/g, '\\$&');
+  }
+
+  function injectProgressCard() {
+    // 2026-05-08: 加幂等 guard — ai-refine-start 路径会重复 inject (用户多次
+    // 点 AI 精修), 不 guard 会有重复 DOM #progressCard 节点导致 querySelector
+    // 行为不可预测.
+    if (document.getElementById('progressCard')) return;
+    // 把进度条 + 计数 + WS 状态指示插到结果卡片上方
+    const card = document.createElement('div');
+    card.className = 'progress-card';
+    card.id = 'progressCard';
+    card.innerHTML = `
+      <div class="progress-row">
+        <div class="progress-counts" id="progressCounts"></div>
+        <div class="ws-indicator connecting" id="wsIndicator">
+          <span class="dot"></span><span id="wsLabel">连接中...</span>
+        </div>
+      </div>
+      <div class="progress-bar"><div class="fill" id="progressFill" style="width:0%"></div></div>
+    `;
+    resultArea.insertBefore(card, resultArea.firstChild);
+    refreshProgressCounts();
+  }
+
+  function refreshProgressCounts() {
+    const c = session.counts;
+    const counts = $('progressCounts');
+    if (!counts) return;
+    counts.innerHTML = `
+      <span class="pill">total ${c.total}</span>
+      <span class="pill">pending ${c.pending}</span>
+      <span class="pill blue">processing ${c.processing}</span>
+      <span class="pill green">done ${c.done}</span>
+      <span class="pill" style="background:rgba(217,47,47,0.12);color:#d92f2f">failed ${c.failed}</span>
+    `;
+    const finished = c.done + c.failed;
+    const pct = c.total ? Math.round(finished * 100 / c.total) : 0;
+    const fill = $('progressFill');
+    if (fill) fill.style.width = pct + '%';
+  }
+
+  function setWSState(state, label) {
+    const el = $('wsIndicator');
+    const lbl = $('wsLabel');
+    if (!el) return;
+    el.classList.remove('connecting', 'connected', 'disconnected');
+    el.classList.add(state);
+    if (lbl) lbl.textContent = label;
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // 任务2 (2026-04-22): WebSocket 重连 + fallback polling + catch-up
+  //   - Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s (cap)
+  //   - 重连成功后拉 /api/batch/<id>/status snapshot 补上断线期间漏的 stage
+  //   - WS 态 RECONNECTING/FAILED 时启动 polling (5s/次, 不重复启)
+  //   - tab 切后台 → Chrome throttle WS → visibilitychange 主动重连
+  // ═══════════════════════════════════════════════════════
+  const WS_MAX_DELAY = 30000;
+  let wsRetryDelay = 1000;
+  let wsRetryTimer = null;
+  let wsClosedByUs = false;
+  let pollingTimer = null;
+
+  function openWS(batchId) {
+    // 2026-05-08: 加幂等 guard — 同 batch_id 的 WS 已开就别开第二个,
+    // 避免重复连接 / 双倍 onmessage 处理.
+    if (session.ws
+        && (session.ws.readyState === WebSocket.OPEN
+            || session.ws.readyState === WebSocket.CONNECTING)
+        && session.wsBatchId === batchId) {
+      return;
+    }
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = `${proto}//${location.host}/ws/batch/${batchId}`;
+    setWSState('connecting', '连接中...');
+    const ws = new WebSocket(url);
+    session.ws = ws;
+    session.wsBatchId = batchId;
+    wsClosedByUs = false;
+
+    ws.onopen = () => {
+      setWSState('connected', '实时连接');
+      wsRetryDelay = 1000;              // 重连成功清零 backoff
+      stopPollingFallback();
+      fetchCatchupSnapshot(batchId);    // 主动拉 snapshot 补状态
+    };
+    ws.onmessage = (ev) => {
+      let evt = null;
+      try { evt = JSON.parse(ev.data); } catch (_) { return; }
+      handleEvent(evt);
+    };
+    ws.onclose = () => {
+      if (wsClosedByUs) {
+        setWSState('disconnected', '连接已关闭');
+        return;
+      }
+      // Exponential backoff 重连 + 启动 polling 兜底
+      setWSState('reconnecting', `已断开, ${Math.round(wsRetryDelay/1000)}s 后重连...`);
+      startPollingFallback(batchId);
+      if (wsRetryTimer) clearTimeout(wsRetryTimer);
+      wsRetryTimer = setTimeout(() => openWS(batchId), wsRetryDelay);
+      wsRetryDelay = Math.min(wsRetryDelay * 2, WS_MAX_DELAY);
+    };
+    ws.onerror = () => {
+      // onerror 往往紧跟 onclose, 不单独处理; 统一由 onclose 走重连
+      console.warn('[ws] error on', batchId);
+    };
+  }
+
+  function closeWS() {
+    wsClosedByUs = true;
+    if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
+    stopPollingFallback();
+    if (session.ws) try { session.ws.close(); } catch (_) {}
+    session.ws = null;
+  }
+
+  // 重连成功后拉 snapshot, 每行 pill 按 DB current_stage 对齐
+  // (WS 断线期间如果 worker 推进了阶段, 此处一次性补齐)
+  function fetchCatchupSnapshot(batchId) {
+    fetch(`/api/batch/${encodeURIComponent(batchId)}/status`, {
+      credentials: 'same-origin',
+    }).then(r => r.ok ? r.json() : null).then(data => {
+      if (!data || !data.items) return;
+      data.items.forEach(it => {
+        // 优先用 current_stage (处理中), 其次 status (终态)
+        if (it.status === 'done') {
+          setRowStage(it.name, 'done');
+        } else if (it.status === 'failed') {
+          setRowStage(it.name, 'failed', it.error);
+        } else if (it.current_stage) {
+          setRowStage(it.name, it.current_stage);
+        } else if (it.status === 'pending') {
+          setRowStage(it.name, 'pending');
+        }
+      });
+    }).catch(e => console.warn('[catchup] failed', e));
+  }
+
+  // Polling fallback: WS 断线期间 5s 拉一次 /status, 补 pill + 进度
+  function startPollingFallback(batchId) {
+    if (pollingTimer) return;  // 已在跑
+    const tick = () => {
+      fetch(`/api/batch/${encodeURIComponent(batchId)}/status`, {
+        credentials: 'same-origin',
+      }).then(r => r.ok ? r.json() : null).then(data => {
+        if (!data || !data.items) return;
+        data.items.forEach(it => {
+          if (it.status === 'done') setRowStage(it.name, 'done');
+          else if (it.status === 'failed') setRowStage(it.name, 'failed', it.error);
+          else if (it.current_stage) setRowStage(it.name, it.current_stage);
+        });
+      }).catch(e => console.warn('[polling] failed', e));
+    };
+    pollingTimer = setInterval(tick, 5000);
+    tick();  // 立即跑一次不等 5s
+  }
+  function stopPollingFallback() {
+    if (pollingTimer) { clearInterval(pollingTimer); pollingTimer = null; }
+  }
+
+  // tab 切回前台 → 如果 ws 不是 OPEN, 主动重连 (Chrome 后台会 throttle WS)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    if (!session.wsBatchId) return;
+    const ws = session.ws;
+    if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+      wsRetryDelay = 1000;  // 前台回来立即重试
+      if (wsRetryTimer) clearTimeout(wsRetryTimer);
+      openWS(session.wsBatchId);
+    }
+  });
+
+  // ── 任务2: 阶段 pill 标签 + 切换函数 ──────────────────
+  const STAGE_LABELS = {
+    pending:   '⏳ 等待中',
+    parsing:   '🧠 AI 解析中...',
+    cutting:   '✂️ 正在抠图...',
+    rendering: '🎨 合成设计...',
+    capturing: '📸 生成图片...',
+    done:      '✅ 完成',
+    failed:    '❌ 失败',
+  };
+  const STAGE_VARIANTS = ['pending', 'parsing', 'cutting', 'rendering', 'capturing', 'done', 'failed'];
+
+  function setRowStage(name, stage, errMsg) {
+    if (!name || !STAGE_LABELS[stage]) return;
+    const row = findRow(name);
+    if (!row) return;
+    const cell = row.querySelector('.status-cell');
+    if (!cell) return;
+    let pill = cell.querySelector('.stage-pill');
+    if (!pill) {
+      pill = document.createElement('span');
+      pill.className = 'stage-pill';
+      cell.innerHTML = '';
+      cell.appendChild(pill);
+    }
+    // 清旧 variant, 加新
+    STAGE_VARIANTS.forEach(v => pill.classList.remove(`stage-${v}`));
+    pill.classList.add(`stage-${stage}`);
+    pill.textContent = STAGE_LABELS[stage];
+    // failed 态: hover 显示错误详情
+    if (stage === 'failed' && errMsg) {
+      pill.setAttribute('title', String(errMsg).slice(0, 200));
+    } else {
+      pill.removeAttribute('title');
+    }
+  }
+
+  // ── 任务2: Toast 通知 (挂到 body, z-index: 300) ───────
+  // kind: 'success' | 'warning' | 'error' | 'info'
+  // opts.sticky: true → 不自动消失, 需要用户点关闭按钮
+  function showToast(kind, title, msg, opts) {
+    opts = opts || {};
+    const icons = { success: '✅', warning: '⚠️', error: '❌', info: 'ℹ️' };
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${kind}`;
+    toast.setAttribute('role', 'status');
+    toast.setAttribute('aria-live', 'polite');
+    toast.innerHTML = `
+      <span class="toast-icon">${icons[kind] || icons.info}</span>
+      <div class="toast-body">
+        <strong class="toast-title">${escapeHtml(title || '')}</strong>
+        <span class="toast-msg">${escapeHtml(msg || '')}</span>
+      </div>
+      <button type="button" class="toast-close" aria-label="关闭">×</button>
+    `;
+    const close = () => {
+      toast.classList.add('closing');
+      setTimeout(() => toast.remove(), 250);  // 等 toastOut 动画
+    };
+    toast.querySelector('.toast-close').addEventListener('click', close);
+    document.body.appendChild(toast);
+    if (!opts.sticky) {
+      setTimeout(close, 4000);
+    }
+    return toast;
+  }
+  // 暴露给 Playwright 测试脚本和调试
+  window.__showToast = showToast;
+  window.__setRowStage = setRowStage;
+
+  function handleEvent(evt) {
+    if (!evt || !evt.type) return;
+    if (evt.type === 'error') {
+      setStatus('WS 错误: ' + (evt.code || 'unknown'), 'error');
+      return;
+    }
+    // 任务11: 精修事件单独处理,不能污染 HTML 批次的计数和行状态
+    if (evt.type === 'refine') {
+      const snap = evt.snapshot;
+      if (snap) {
+        const msg = `AI 精修进度: ${snap.done || 0}/${snap.total || 0} 完成`
+          + (snap.failed ? ` · ${snap.failed} 失败` : '')
+          + (snap.processing ? ` · ${snap.processing} 进行中` : '');
+        setStatus(msg, snap.failed ? 'error' : '');
+      }
+      // 每个产品终态事件 → 减一 in-flight 计数; failed 累计
+      if (evt.status === 'done' || evt.status === 'failed') {
+        session.refineInFlight = Math.max(0, session.refineInFlight - 1);
+        if (evt.status === 'failed') {
+          session.refineFailed += 1;
+          console.error('[refine] 失败:', evt.name, evt.error);
+        }
+        // 阶段四·Step B+C: 精修 done → 实时把 AI 缩略 + "下载AI版"按钮挂到该行
+        // (不调 updateProductRow 主 status 分支, 只触发 aiStatus 逻辑)
+        if (evt.status === 'done' && evt.name) {
+          const row = findRow(evt.name);
+          if (row && !row.querySelector('.ai-thumb')) {
+            // 2026-04-22 紧急3回归修复 (问题6): 传 evt.result.ai_refined_path,
+            // 让 mountAiThumb 用后端给的真实 URL (含 zip 子目录)
+            const aiUrl = evt.result?.ai_refined_path || '';
+            mountAiThumb(row.querySelector('.refine-cell'), evt.name, aiUrl);
+          }
+        }
+        refreshPickedCount();  // 归零后解锁 btnStartRefine
+        // 整批结束 → 一次性大弹窗,避免 3 个产品弹 3 次
+        if (session.refineInFlight === 0 && session.refineFailed > 0) {
+          const failed = session.refineFailed;
+          session.refineFailed = 0;  // 防重复弹
+          setTimeout(() => {
+            alert(
+              `⚠ ${failed} 个产品精修失败!\n\n` +
+              `可能原因:\n` +
+              `  · 豆包 API Key 无效/额度不足\n` +
+              `  · 网络/代理问题\n` +
+              `  · 产品 parsed.json 字段缺失\n\n` +
+              `建议: 打开浏览器控制台查看详细错误,` +
+              `或查看服务器 [refine] 日志。可再次勾选并重试。`
+            );
+          }, 100);
+        }
+      }
+      return;
+    }
+    // snapshot 和 product 事件都带 snapshot, 我们用它直接覆盖计数
+    const snap = evt.snapshot;
+    if (snap) {
+      session.counts = {
+        pending: snap.pending || 0,
+        processing: snap.processing || 0,
+        done: snap.done || 0,
+        failed: snap.failed || 0,
+        total: snap.total || session.counts.total,
+      };
+      refreshProgressCounts();
+      // snapshot 里有完整 products 数组,逐行刷状态
+      (snap.products || []).forEach(p => updateProductRow(p.name, p.status, p.error));
+    }
+    if (evt.type === 'product') {
+      updateProductRow(evt.name, evt.status, evt.error, evt.result);
+    }
+    // 任务2 (2026-04-22): 实时阶段 pill 事件 — 每 stage 进入时触发
+    if (evt.type === 'stage') {
+      setRowStage(evt.name, evt.stage);
+    }
+    if (evt.type === 'batch_complete') {
+      setStatus('批次全部完成', 'success');
+      // 任务2: toast 通知 (4s 自动消失), 失败数 > 0 时用 warning variant 且不自动消失
+      const snap = evt.snapshot || {};
+      const total = snap.total || snap.done || 0;
+      const failed = snap.failed || 0;
+      const elapsed = snap.elapsed_sec
+        ? ` · 耗时 ${Math.floor(snap.elapsed_sec/60)} 分 ${snap.elapsed_sec%60} 秒`
+        : '';
+      if (failed > 0) {
+        showToast('warning', '批次完成 (含失败)',
+                  `完成 ${snap.done || 0}/${total} 个产品, ${failed} 个失败${elapsed}`,
+                  { sticky: true });
+      } else {
+        showToast('success', '批次完成',
+                  `${total} 个产品已全部生成${elapsed}`);
+      }
+    }
+  }
+
+  function findRow(name) {
+    const tbody = $('productTbody');
+    if (!tbody) return null;
+    const escaped = escapeHtml(name);
+    for (const row of tbody.querySelectorAll('tr')) {
+      if (row.dataset.name === escaped || row.dataset.name === name) return row;
+    }
+    return null;
+  }
+
+  // 阶段四·Step B: 生成单文件下载链接 HTML 片段
+  //   kind='html' → preview.png;   kind='ai' → ai_refined.jpg
+  //   走 /api/batch/<bid>/download?name=X&kind=X, 后端 send_from_directory + as_attachment
+  function buildDlLink(name, kind) {
+    if (!session.batchId || !name) return '';
+    const url = `/api/batch/${encodeURIComponent(session.batchId)}`
+              + `/download?name=${encodeURIComponent(name)}&kind=${kind}`;
+    const label = kind === 'ai' ? '下载AI版' : '下载HTML版';
+    const cls = kind === 'ai' ? 'dl-btn dl-ai' : 'dl-btn';
+    // download 属性: 空字符串=用服务端 Content-Disposition 给的文件名, 保中文
+    return `<a class="${cls}" href="${url}" download
+               title="${label}">${kind === 'ai' ? 'AI版' : 'HTML版'}</a>`;
+  }
+
+  // Step C: 把 AI 精修缩略图 + 下载按钮 挂到 refine-cell 的 .ai-thumb-slot
+  // 图片走 /uploads 静态路由 (Step A 修的那条 <path:subpath>), 不是 download 端点
+  //
+  // 2026-04-22 紧急3回归修复 (问题6): 接受可选 aiUrl 参数 — 优先用后端传的
+  // 真实 URL (来自 result.ai_refined_path), 避免硬拼 batches/${bid}/${name}/ 漏掉
+  // zip 顶层子目录 (实测 "测试/" 时硬拼 URL 404). aiUrl 缺省时仍回退到老硬拼.
+  function mountAiThumb(refineCell, name, aiUrl) {
+    if (!refineCell || !name || !session.batchId) return;
+    let slot = refineCell.querySelector('.ai-thumb-slot');
+    if (!slot) {
+      slot = document.createElement('div');
+      slot.className = 'ai-thumb-slot';
+      refineCell.appendChild(slot);
+    }
+    const safeN = escapeHtml(name);
+    // 优先用后端给的真实 URL (含 zip 子目录); 没传或为空时回退到硬拼 (老行为)
+    const imgUrl = aiUrl
+      || `/uploads/batches/${encodeURIComponent(session.batchId)}`
+         + `/${encodeURIComponent(name)}/ai_refined.jpg`;
+    slot.innerHTML = `
+      <img class="ai-thumb" src="${imgUrl}"
+           alt="AI 精修版 — ${safeN}"
+           loading="lazy" decoding="async"
+           data-full="${imgUrl}"
+           data-caption="AI 精修 · ${safeN}"
+           onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'thumb-placeholder',textContent:'图缺失'}))">
+      ${buildDlLink(name, 'ai')}
+    `;
+  }
+
+  function updateProductRow(name, status, error, result, aiStatus) {
+    if (!name) return;
+    const row = findRow(name);
+    if (!row) return;
+
+    // 状态 pill (任务2: 用 stage-pill 替代旧 .badge, 按 status 推导 stage)
+    // - processing: 不动 pill (让 type='stage' 事件推进到具体 parsing/cutting/...)
+    //               除非 pill 当前还是 stage-pending (未收到任何 stage 事件) → 默认 parsing
+    // - done / failed / pending: 直接映射
+    const cell = row.querySelector('.status-cell');
+    if (cell) {
+      const pill = cell.querySelector('.stage-pill');
+      if (status === 'done') {
+        setRowStage(name, 'done');
+      } else if (status === 'failed') {
+        setRowStage(name, 'failed', error);
+      } else if (status === 'processing') {
+        // 兜底: 如果 stage 事件还没到, 至少让 pill 表现"在跑"
+        if (pill && pill.classList.contains('stage-pending')) {
+          setRowStage(name, 'parsing');  // 默认进入 parsing, 下一个 stage 事件会覆盖
+        }
+      } else if (status === 'pending' && pill) {
+        setRowStage(name, 'pending');
+      }
+    }
+
+    // done → 渲染预览缩略 + 下载HTML版按钮 + 解锁勾选框
+    if (status === 'done' && result) {
+      const previewUrl = result.preview_png || '';
+      // 2026-04-22 紧急3: done 但 preview_png=null (Playwright 超时等原因)
+      // 时, 不再显示纯 "(无)", 让 render_error 的具体原因冒泡给用户 —
+      // 他才知道是渲染失败不是系统没反应.
+      const renderError = result.render_error || '';
+      const previewCell = row.querySelector('.preview-cell');
+      if (previewCell) {
+        const safeN = escapeHtml(name);
+        const thumb = previewUrl
+          ? `<img class="preview-thumb" src="${previewUrl}"
+                  alt="HTML 版预览 — ${safeN}"
+                  loading="lazy" decoding="async"
+                  data-full="${previewUrl}"
+                  data-caption="HTML 版 · ${safeN}">`
+          : renderError
+            ? `<span class="muted" title="${escapeHtml(renderError)}">(渲染失败)</span>`
+            : '<span class="muted">(无)</span>';
+        // 下载按钮只在真有 preview.png 时才显示, 避免点出 404
+        const dl = previewUrl ? `<div>${buildDlLink(name, 'html')}</div>` : '';
+        previewCell.innerHTML = thumb + dl;
+      }
+      const refineCell = row.querySelector('.refine-cell');
+      if (refineCell) {
+        const cb = refineCell.querySelector('input[type="checkbox"]');
+        if (cb) {
+          cb.disabled = false;
+          const lbl = refineCell.querySelector('label');
+          if (lbl) {
+            lbl.classList.remove('disabled');
+            lbl.title = '勾选后该产品进入 AI 精修队列';
+          }
+        }
+      }
+      $('refineToolbar')?.style.removeProperty('display');
+      // Step D: 一旦有任意产品 done, 整批打包下载就有意义了 — 同步解锁
+      $('batchActions')?.style.removeProperty('display');
+    }
+
+    // AI 精修 done → 在 ai-thumb-slot 里挂: AI 缩略 + 下载AI版 按钮
+    // (复选框保留, 支持再重跑)
+    if (aiStatus === 'done') {
+      const refineCell = row.querySelector('.refine-cell');
+      if (refineCell && !refineCell.querySelector('.ai-thumb')) {
+        // 2026-04-22 紧急3回归修复 (问题6): 用 result.ai_refined_path 真实 URL
+        const aiUrl = result?.ai_refined_path || '';
+        mountAiThumb(refineCell, name, aiUrl);
+      }
+    }
+
+    // failed/skipped → 显示错误,勾选保持禁用
+    if (status === 'failed' || status === 'skipped') {
+      const previewCell = row.querySelector('.preview-cell');
+      if (previewCell) previewCell.innerHTML = '<span class="muted">—</span>';
+    }
+  }
+
+  // ── 精修勾选 (PATCH) + 工具条 ────────────────────────────────────
+  document.addEventListener('change', async (e) => {
+    const cb = e.target;
+    if (!(cb instanceof HTMLInputElement) || cb.type !== 'checkbox') return;
+    const name = cb.dataset.refine;
+    if (!name || !session.batchId) return;
+    cb.disabled = true;
+    try {
+      const r = await fetch(
+        `/api/batches/${session.batchId}/items/${encodeURIComponent(name)}`,
+        { method: 'PATCH',
+          headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrfToken},
+          body: JSON.stringify({want_ai_refine: cb.checked}) }
+      );
+      if (!r.ok) {
+        cb.checked = !cb.checked;
+        setStatus(`勾选失败 ${r.status}`, 'error');
+      }
+    } catch (err) {
+      cb.checked = !cb.checked;
+      setStatus('勾选异常: ' + err.message, 'error');
+    } finally {
+      cb.disabled = false;
+      refreshPickedCount();
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (e.target.id === 'btnSelectAll') bulkPick(true);
+    else if (e.target.id === 'btnClearAll') bulkPick(false);
+    else if (e.target.id === 'btnStartRefine' || e.target.closest?.('#btnStartRefine')) {
+      // 任务10: 不直接进精修队列,先弹费用预估
+      openEstimateModal();
+    }
+    else if (e.target.id === 'btnEstimateCancel') closeEstimateModal();
+    else if (e.target.id === 'estimateModal') closeEstimateModal();
+    else if (e.target.id === 'btnEstimateConfirm') {
+      // 任务11: 真派发到精修队列 (豆包 Seedream)
+      confirmStartRefine(e.target);
+    }
+    else if (e.target.classList?.contains('preview-thumb') ||
+             e.target.classList?.contains('ai-thumb')) {
+      openLightbox(
+        e.target.dataset.full || e.target.src,
+        e.target.dataset.caption || ''
+      );
+    }
+  });
+
+  function bulkPick(picked) {
+    document.querySelectorAll('input[type="checkbox"][data-refine]')
+      .forEach(cb => {
+        if (cb.disabled) return;
+        if (cb.checked === picked) return;
+        cb.checked = picked;
+        cb.dispatchEvent(new Event('change', {bubbles: true}));
+      });
+  }
+
+  function refreshPickedCount() {
+    const n = document.querySelectorAll(
+      'input[type="checkbox"][data-refine]:checked'
+    ).length;
+    const el = $('pickedCount');
+    if (el) el.textContent = n;
+    // 任务10/11: 0 个锁住; 精修进行中也锁住 (防用户连点烧钱,2026-04-20 线上事故)
+    const btn = $('btnStartRefine');
+    if (btn) {
+      if (session.refineInFlight > 0) {
+        btn.disabled = true;
+        btn.innerHTML = `AI 精修进行中 <span class="phase-tag">剩 ${session.refineInFlight}</span>`;
+      } else {
+        btn.disabled = (n === 0);
+        btn.innerHTML = `开始 AI 精修<span class="phase-tag">阶段3</span>`;
+      }
+    }
+  }
+
+  // ── 任务10: 费用预估弹窗 (PRD F6) ────────────────────────────────
+  function openEstimateModal() {
+    const modal = $('estimateModal');
+    const body = $('estimateBody');
+    const ok = $('btnEstimateConfirm');
+    if (!modal || !body || !ok || !session.batchId) return;
+    body.innerHTML = '<div class="loading">正在计算费用…</div>';
+    ok.disabled = true;
+    modal.classList.add('show');
+
+    fetch(`/api/batch/${encodeURIComponent(session.batchId)}/ai-refine-estimate`, {
+      credentials: 'same-origin',
+    })
+      .then(r => r.json().then(d => ({ok: r.ok, data: d})))
+      .then(({ok: httpOk, data}) => {
+        if (!httpOk) {
+          body.innerHTML = `<div class="err">加载失败: ${escapeHtml(data.error || '未知错误')}</div>`;
+          return;
+        }
+        if (!data.count || data.count === 0) {
+          body.innerHTML = `<div class="err">还没有勾选任何已完成产品。请先勾选要精修的产品。</div>`;
+          return;
+        }
+        const yuan = data.est_cost_yuan.toFixed(2);
+        // 任务11: 拼装 already_done / skipped 警告块
+        const alreadyDone = data.already_done_count || 0;
+        const skipped = Array.isArray(data.skipped) ? data.skipped : [];
+        let warnBlock = '';
+        if (alreadyDone > 0) {
+          warnBlock += `<div class="warn">⚠ 其中 ${alreadyDone} 个已精修过,确认后会重新生成并<b>覆盖旧结果(重复扣费)</b>。</div>`;
+        }
+        if (skipped.length > 0) {
+          const items = skipped.map(s =>
+            `<li>${escapeHtml(s.name)} — ${escapeHtml(s.reason || '')}</li>`
+          ).join('');
+          warnBlock += `<div class="warn">⚠ ${skipped.length} 个被跳过 (不满足白名单):<ul>${items}</ul></div>`;
+        }
+        body.innerHTML = `
+          <div class="row"><span class="k">即将精修产品</span>
+            <span class="v">${data.count} 个</span></div>
+          <div class="row"><span class="k">预估调用</span>
+            <span class="v">${data.count} × ${data.zones_per_product} = ${data.api_calls} 次 Seedream</span></div>
+          <div class="row"><span class="k">预估费用</span>
+            <span class="v cost">约 ¥${yuan}</span></div>
+          <div class="row"><span class="k">预估耗时</span>
+            <span class="v">约 ${data.est_minutes} 分钟</span></div>
+          ${warnBlock}
+          <div class="hint">
+            按豆包 Seedream 当前单价 ¥${data.unit_price_yuan.toFixed(2)}/次 计算。
+            实际耗时受网络、并发、失败重试影响,可能略有出入。
+          </div>
+        `;
+        ok.disabled = false;
+        ok.dataset.count = data.count;
+      })
+      .catch(err => {
+        body.innerHTML = `<div class="err">网络异常: ${escapeHtml(err.message || String(err))}</div>`;
+      });
+  }
+  function closeEstimateModal() {
+    $('estimateModal')?.classList.remove('show');
+  }
+
+  // ── 任务11: 真派发到精修队列 (PRD F6/F11) ─────────────────────────
+  function confirmStartRefine(btn) {
+    if (!session.batchId) return;
+    const arkKey = (localStorage.getItem('ark_api_key') || '').trim();
+    if (!arkKey) {
+      // 跟 /api/generate-ai-detail-html 一致: 没 key 就跳 workspace 配置
+      const go = confirm(
+        '尚未配置豆包 Seedream API Key,无法精修。\n\n' +
+        '点「确定」跳到 workspace 页配置(左栏 ⚙️ 豆包 Key),\n' +
+        '配置完回到当前批次页重新点「开始 AI 精修」即可。'
+      );
+      if (go) window.location.href = '/#/ai-compose';
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = '启动中…';
+
+    fetch(`/api/batch/${encodeURIComponent(session.batchId)}/ai-refine-start`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrfToken},
+      body: JSON.stringify({ark_api_key: arkKey}),
+    })
+      .then(r => r.json().then(d => ({ok: r.ok, status: r.status, data: d})))
+      .then(({ok, status, data}) => {
+        if (!ok) {
+          // 400 + action=configure_ark_key → 跳 workspace
+          if (status === 400 && data.action === 'configure_ark_key') {
+            const go = confirm(
+              (data.error || '未配置豆包 Key') + '\n\n点「确定」跳 workspace 配置。'
+            );
+            if (go) window.location.href = data.redirect || '/#/ai-compose';
+          } else if (status === 400 && data.action === 'cost_exceeds_cap') {
+            // 物理余额保护: 服务端兜底拦住,给用户明确提示
+            alert(
+              `⚠ 费用超限,请求已被拦住(没有任何扣费)\n\n` +
+              `预估 ¥${data.estimated_cost_yuan} (${data.product_count} 个产品)\n` +
+              `单次上限 ¥${data.cap_yuan}\n\n` +
+              `请减少勾选数量,或联系运维调大 MAX_REFINE_COST_PER_RUN。`
+            );
+          } else {
+            alert(`启动失败: ${data.error || '未知错误'}`);
+          }
+          btn.disabled = false;
+          btn.textContent = '确认开始';
+          return;
+        }
+        closeEstimateModal();
+        btn.textContent = '确认开始';
+        // 任务11 bug 修复: 派发成功后锁住「开始 AI 精修」按钮,
+        // 每个 WS refine 事件 (done/failed) 减 1, 归零才解锁 → 杜绝重复扣费
+        session.refineInFlight += (data.submitted || 0);
+        session.refineFailed = 0;  // 新一批启动,清零失败计数
+        refreshPickedCount();  // 立即反映到按钮 disabled 状态
+        const msg = `✓ 已派发 ${data.submitted} 个产品到精修队列`
+          + (data.already_done_count ? ` (其中 ${data.already_done_count} 个覆盖重跑)` : '')
+          + (Array.isArray(data.skipped) && data.skipped.length
+              ? ` · ${data.skipped.length} 个已跳过` : '');
+        setStatus(msg, 'success');
+        // 2026-05-08: 接管进度 UI (此前 ai-refine-start 200 后无任何进度
+        // 显示, 用户只能盲等 5-15 min). 幂等: injectProgressCard / openWS
+        // 都自带 guard, 重复点不会出问题.
+        injectProgressCard();
+        openWS(session.batchId);
+      })
+      .catch(err => {
+        alert('网络异常: ' + (err.message || String(err)));
+        btn.disabled = false;
+        btn.textContent = '确认开始';
+      });
+  }
+
+  // ── Lightbox 大图预览 (原生 <dialog>, Esc / focus-trap / a11y 免费) ──
+  // 2026-04-22 任务1: 加 closeLightbox() 带 fade out 过渡,
+  // .closing class + 180ms transition 之后才真正 dlg.close() 卸载 backdrop.
+  function closeLightbox(dlg) {
+    if (!dlg || !dlg.open) return;
+    dlg.classList.add('closing');
+    setTimeout(() => {
+      dlg.classList.remove('closing');
+      dlg.close();
+    }, 180);
+  }
+  function ensureLightboxDlg() {
+    let dlg = document.getElementById('lightboxDlg');
+    if (!dlg) {
+      dlg = document.createElement('dialog');
+      dlg.id = 'lightboxDlg';
+      dlg.innerHTML = `
+        <button type="button" class="lb-close" aria-label="关闭预览">×</button>
+        <div class="lb-scroll"><img alt="预览大图"></div>
+        <div class="lb-caption"></div>
+      `;
+      // 点击灰色背景 (dialog 容器本身)  → 关;  点击 .lb-scroll (白卡) 不关
+      // 原生 <dialog> 点 ::backdrop 时 e.target === dlg, 所以这一条够用
+      dlg.addEventListener('click', (e) => {
+        if (e.target === dlg) closeLightbox(dlg);
+      });
+      dlg.querySelector('.lb-close').addEventListener('click', () => closeLightbox(dlg));
+      // ESC 原生 <dialog> 会触发 cancel 事件 → 默认行为是立即 close (硬切).
+      // 我们拦下来走 fade out 过渡, 行为和按钮 / 点背景一致.
+      dlg.addEventListener('cancel', (e) => {
+        e.preventDefault();
+        closeLightbox(dlg);
+      });
+      document.body.appendChild(dlg);
+    }
+    return dlg;
+  }
+  function openLightbox(src, caption) {
+    const dlg = ensureLightboxDlg();
+    dlg.classList.remove('closing');       // 防止重复打开时残留 .closing
+    dlg.querySelector('img').src = src;
+    dlg.querySelector('.lb-caption').textContent = caption || '';
+    dlg.querySelector('.lb-scroll').scrollTop = 0;
+    if (typeof dlg.showModal === 'function') {
+      dlg.showModal();
+    } else {
+      dlg.setAttribute('open', '');  // 旧浏览器兜底
+    }
+  }
+  // 估价弹窗还是用老的 .modal-mask, 它的 Esc 还得手动兜
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      $('estimateModal')?.classList.remove('show');
+    }
+  });
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  // ── 任务8: 入口 — URL 有 #batch=xxx 就 resume,没有就走正常上传 ────
+  function bootstrap() {
+    const bid = getHashBatchId();
+    if (bid) loadExistingBatch(bid);
+  }
+  // script 在 body 末尾,DOMContentLoaded 可能已经发了 — 两边都兜
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bootstrap);
+  } else {
+    bootstrap();
+  }
+})();
+</script>
+
+<script src="/static/js/announcement.js" defer></script>
+</body>
+</html>

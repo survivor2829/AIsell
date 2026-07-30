@@ -1,0 +1,135 @@
+<!--
+  Block F — 产品展示+VS屏（product_showcase_vs）
+  用途：场景背景 + 产品人物图 + 底部VS对比条 + 多维度对比行
+  宽度：750px
+
+  需要传入的变量：
+  - title_line1: 标题第一行（如"1台顶"）
+  - title_line1_red: 第一行红色部分（如"8-10"）
+  - title_line1_end: 第一行结尾（如"人"）
+  - title_line2: 标题第二行前半（如"机洗与人工"）
+  - title_line2_red: 第二行红色部分（如"的区别。"）
+  - bg_image: 场景背景图路径
+  - product_image: 产品+人物合照路径（PNG）
+  - vs_left_title, vs_left_sub, vs_right_title, vs_right_sub
+  - vs_left_bottom, vs_right_bottom
+  - vs_rows: 多维度对比行列表 [{"label":"维度","left":"机器数据","right":"人工数据"},...]
+  - left_label, right_label: 双图对比胶囊标签 (品类自适应; 默认设备类语义"本产品"/"传统人工")
+-->
+{% if vs_left_title or title_line1_red %}<div style="width:750px; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; background:#fff; overflow:hidden;">
+
+  <!-- 顶部标题 -->
+  <div style="padding:48px 36px 28px; position:relative;">
+    <!-- 装饰：标题左侧竖线 -->
+    <div style="position:absolute; left:28px; top:48px; width:4px; height:80px; border-radius:2px; background:linear-gradient(180deg, var(--theme-primary, #E8231A) 0%, rgba(232,35,26,0.1) 100%);"></div>
+    <div style="padding-left:12px;">
+      <div style="font-size:48px; font-weight:900; color:#111; line-height:1.3; letter-spacing:1px;">
+        {{ title_line1 }}<span style="color:var(--theme-primary, #E8231A); text-shadow:0 0 30px rgba(232,35,26,0.15);">{{ title_line1_red }}</span>{{ title_line1_end }}
+      </div>
+      <div style="font-size:48px; font-weight:900; color:#111; line-height:1.3; letter-spacing:1px;">
+        {{ title_line2 }}<span style="color:var(--theme-primary, #E8231A); text-shadow:0 0 30px rgba(232,35,26,0.15);">{{ title_line2_red }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 场景区：背景图 + 产品人物（VS条已移到下方 sibling，避免遮挡产品图下半部）-->
+  <div style="width:750px; height:680px; position:relative; overflow:hidden; background:#1a1e28;">
+
+    <!-- 场景背景图 -->
+    {% if bg_image %}
+    <img src="{{ bg_image }}" style="width:100%; height:100%; object-fit:cover; position:absolute; top:0; left:0;" alt="">
+    <!-- 底部柔和渐变，给 VS 条一个自然过渡 -->
+    <div style="position:absolute; bottom:0; left:0; right:0; height:160px; background:linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.35) 100%); pointer-events:none;"></div>
+    {% endif %}
+
+    {% if labor_image %}
+    <!-- 双图对比：左=left_label / 右=right_label (默认设备类"本产品/传统人工")。labor_image 由 Seedream 生成并磁盘缓存 -->
+    <div style="position:absolute; top:30px; left:0; right:0; height:620px; z-index:1; display:flex; align-items:stretch; justify-content:space-around; padding:0 24px;">
+      <!-- 本产品 -->
+      <div style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:0 8px;">
+        <img src="{{ product_image }}"
+             style="max-width:100%; max-height:86%; object-fit:contain; filter:drop-shadow(0 10px 30px rgba(0,0,0,0.3));"
+             alt="">
+        <div style="margin-top:10px; padding:5px 16px; background:linear-gradient(135deg, var(--theme-primary, #E8231A) 0%, #d42a1e 100%); color:#fff; font-size:15px; font-weight:700; border-radius:14px; letter-spacing:1px; box-shadow:0 3px 10px rgba(232,35,26,0.35);">
+          {{ left_label|default('本产品') }}
+        </div>
+      </div>
+      <!-- 传统人工 -->
+      <div style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:0 8px;">
+        <img src="{{ labor_image }}"
+             style="max-width:100%; max-height:86%; object-fit:contain; border-radius:12px; filter:drop-shadow(0 10px 30px rgba(0,0,0,0.3));"
+             alt="">
+        <div style="margin-top:10px; padding:5px 16px; background:linear-gradient(135deg, #3a3e48 0%, #22262e 100%); color:rgba(255,255,255,0.92); font-size:15px; font-weight:700; border-radius:14px; letter-spacing:1px; box-shadow:0 3px 10px rgba(0,0,0,0.35);">
+          {{ right_label|default('传统人工') }}
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <!-- 单图回退（labor_image 生成失败 / ARK_API_KEY 未配置时）-->
+    <div style="position:absolute; top:30px; left:50%; transform:translateX(-50%); width:680px; height:620px; z-index:1; display:flex; align-items:center; justify-content:center;">
+      <img src="{{ product_image }}" style="max-width:100%; max-height:100%; object-fit:contain; filter:drop-shadow(0 10px 30px rgba(0,0,0,0.3));" alt="">
+    </div>
+    {% endif %}
+
+  </div>
+
+  <!-- VS 对比条（独立区块，natural height，不会遮挡产品图）-->
+  <div style="width:750px;">
+    <div style="background:#fff; overflow:hidden; box-shadow:0 -6px 24px rgba(0,0,0,0.08);">
+
+        <!-- VS上半：左右对比标题 -->
+        <div style="display:flex; align-items:stretch;">
+          <!-- 左侧（推荐） -->
+          <div style="flex:1; padding:22px 16px; text-align:center; background:linear-gradient(180deg, rgba(232,35,26,0.04) 0%, rgba(232,35,26,0.01) 100%);">
+            <div style="font-size:26px; font-weight:900; color:var(--theme-primary, #E8231A); line-height:1.3;">{{ vs_left_title }}</div>
+            <div style="font-size:18px; font-weight:500; color:#888; margin-top:5px;">{{ vs_left_sub }}</div>
+          </div>
+          <!-- VS圆圈 -->
+          <div style="width:72px; display:flex; align-items:center; justify-content:center;">
+            <div style="width:54px; height:54px; background:linear-gradient(135deg, var(--theme-primary, #E8231A), #ff4d3a); color:#fff; font-size:19px; font-weight:800; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 16px rgba(232,35,26,0.3); letter-spacing:1px;">VS</div>
+          </div>
+          <!-- 右侧 -->
+          <div style="flex:1; padding:22px 16px; text-align:center;">
+            <div style="font-size:26px; font-weight:900; color:#444; line-height:1.3;">{{ vs_right_title }}</div>
+            <div style="font-size:18px; font-weight:500; color:#aaa; margin-top:5px;">{{ vs_right_sub }}</div>
+          </div>
+        </div>
+
+        <!-- VS中间：多维度对比行 -->
+        {% if vs_rows %}
+        <div style="border-top:1px solid rgba(0,0,0,0.06);">
+          {% for row in vs_rows %}
+          <div style="display:flex; align-items:stretch; {% if not loop.last %}border-bottom:1px solid rgba(0,0,0,0.05);{% endif %}">
+            <!-- 左侧数据（产品优势） -->
+            <div style="flex:1; padding:14px 18px; text-align:center;">
+              <div style="font-size:20px; font-weight:700; color:var(--theme-primary, #E8231A); line-height:1.4;">{{ row.left }}</div>
+            </div>
+            <!-- 中间维度标签 -->
+            <div style="width:108px; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.03);">
+              <span style="font-size:16px; font-weight:600; color:#666; letter-spacing:0.5px;">{{ row.label }}</span>
+            </div>
+            <!-- 右侧数据（人工劣势） -->
+            <div style="flex:1; padding:14px 18px; text-align:center;">
+              <div style="font-size:20px; font-weight:500; color:#999; line-height:1.4;">{{ row.right }}</div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        <!-- VS下半：结论条 -->
+        <div style="display:flex;">
+          <div style="flex:1; background:linear-gradient(135deg, var(--theme-primary, #E8231A) 0%, #d42a1e 100%); color:#fff; text-align:center; padding:18px 14px; font-size:21px; font-weight:700; line-height:1.5; position:relative; overflow:hidden;">
+            <!-- 左侧装饰光效 -->
+            <div style="position:absolute; top:0; left:0; width:80px; height:100%; background:linear-gradient(90deg, rgba(255,255,255,0.1), transparent); pointer-events:none;"></div>
+            <span style="position:relative; z-index:1;">{{ vs_left_bottom | replace('\n', '<br>') | safe }}</span>
+          </div>
+          <div style="flex:1; background:linear-gradient(135deg, #1e2228 0%, #2a2e38 100%); color:rgba(255,255,255,0.8); text-align:center; padding:18px 14px; font-size:21px; font-weight:500; line-height:1.5;">
+            {{ vs_right_bottom | replace('\n', '<br>') | safe }}
+          </div>
+        </div>
+
+    </div>
+  </div>
+
+</div>{% endif %}

@@ -1,0 +1,171 @@
+{% extends "assembled_base.html" %}
+
+{% block category_screens %}
+{# ── 效果图全宽屏 ── #}
+{% if effect_image %}
+<div class="screen" id="screen_effect">
+  <img class="fixed-screen" src="{{ effect_image }}" alt="">
+</div>
+{% endif %}
+
+{# ── 清洁故事 ── #}
+{% if block_b3 %}
+<div class="screen" id="screen3">
+  {% with header_line1=block_b3.header_line1, header_line2=block_b3.header_line2,
+    hero_image=block_b3.hero_image, scene_image=block_b3.scene_image,
+    caption_line1=block_b3.caption_line1, caption_line2=block_b3.caption_line2,
+    floor_title=block_b3.floor_title, floor_items=block_b3.floor_items,
+    footer_line1=block_b3.footer_line1, footer_line2=block_b3.footer_line2 %}
+    {% include 'blocks/block_b3_clean_story.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── 品牌背书 ── #}
+{% if block_g and block_g.brand_title %}
+<div class="screen" id="screen_g">
+  {% with brand_title=block_g.brand_title, brand_subtitle=block_g.brand_subtitle,
+          brand_stats=block_g.brand_stats, brand_story_lines=block_g.brand_story_lines %}
+    {% include 'blocks/block_g_brand_story.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── 适用场景 ── #}
+{% if block_h and block_h.scenes %}
+<div class="screen" id="screen_h">
+  {% with section_title=block_h.section_title, section_subtitle=block_h.section_subtitle,
+          scenes=block_h.scenes %}
+    {% include 'blocks/block_h_scene_grid.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── KPI 数据 ── #}
+{% if block_i and block_i.kpis %}
+<div class="screen" id="screen_i">
+  {% with section_title=block_i.section_title, kpis=block_i.kpis %}
+    {% include 'blocks/block_i_kpi_strip.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── 核心技术 ── #}
+{% if block_j and block_j.tech_items %}
+<div class="screen" id="screen_j">
+  {% with section_title=block_j.section_title, section_subtitle=block_j.section_subtitle,
+          tech_items=block_j.tech_items %}
+    {% include 'blocks/block_j_core_tech.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── VS 对比屏 ── #}
+{% if block_f and block_f.title_line1 %}
+<div class="screen" id="screen_f">
+  {% with title_line1=block_f.title_line1, title_line1_red=block_f.title_line1_red,
+    title_line1_end=block_f.title_line1_end,
+    title_line2=block_f.title_line2, title_line2_red=block_f.title_line2_red,
+    bg_image=block_f.bg_image, product_image=block_f.product_image,
+    vs_left_title=block_f.vs_left_title, vs_left_sub=block_f.vs_left_sub,
+    vs_right_title=block_f.vs_right_title, vs_right_sub=block_f.vs_right_sub,
+    vs_left_bottom=block_f.vs_left_bottom, vs_right_bottom=block_f.vs_right_bottom,
+    left_label=block_f.left_label, right_label=block_f.right_label %}
+    {% include 'blocks/block_f_showcase_vs.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── 实测数据 ── #}
+{% if block_x and block_x.metrics %}
+<div class="screen" id="screen_x">
+  {% with section_title=block_x.section_title, section_subtitle=block_x.section_subtitle,
+          metrics=block_x.metrics, test_note=block_x.test_note %}
+    {% include 'blocks/block_x_durability.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── 视频封面 ── #}
+{% if block_w and block_w.cover_image %}
+<div class="screen" id="screen_w">
+  {% with section_title=block_w.section_title, video_title=block_w.video_title,
+          video_duration=block_w.video_duration, cover_image=block_w.cover_image,
+          qr_image=block_w.qr_image, qr_text=block_w.qr_text %}
+    {% include 'blocks/block_w_video_cover.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── 型号对比 ── #}
+{% if block_v and block_v.models %}
+<div class="screen" id="screen_v">
+  {% with section_title=block_v.section_title, section_subtitle=block_v.section_subtitle,
+          models=block_v.models, spec_labels=block_v.spec_labels %}
+    {% include 'blocks/block_v_model_compare.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block category_tail %}
+{# ── 资质认证 ── #}
+{% if block_k and block_k.badge_items %}
+<div class="screen" id="screen_k">
+  {% with section_title=block_k.section_title, section_subtitle=block_k.section_subtitle,
+          badge_items=block_k.badge_items %}
+    {% include 'blocks/block_k_cert_badges.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── 服务承诺对比 ── #}
+{% if block_l and block_l.compare_rows %}
+<div class="screen" id="screen_l">
+  {% with section_title=block_l.section_title, section_subtitle=block_l.section_subtitle,
+          left_title=block_l.left_title, right_title=block_l.right_title,
+          compare_rows=block_l.compare_rows, service_flow=block_l.service_flow %}
+    {% include 'blocks/block_l_service_compare.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── 使用流程 ── #}
+{% if block_m and block_m.steps %}
+<div class="screen" id="screen_m">
+  {% with section_title=block_m.section_title, steps=block_m.steps %}
+    {% include 'blocks/block_m_steps.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── 客户案例 ── #}
+{% if block_t and (block_t.client_logos or block_t.cases) %}
+<div class="screen" id="screen_t">
+  {% with section_title=block_t.section_title, section_subtitle=block_t.section_subtitle,
+          client_count=block_t.client_count, client_logos=block_t.client_logos, cases=block_t.cases %}
+    {% include 'blocks/block_t_customer_cases.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── 售后服务 ── #}
+{% if block_u and block_u.promises %}
+<div class="screen" id="screen_u">
+  {% with section_title=block_u.section_title, section_subtitle=block_u.section_subtitle,
+          promises=block_u.promises, service_note=block_u.service_note %}
+    {% include 'blocks/block_u_after_sales.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── FAQ ── #}
+{% if block_s and block_s.faqs %}
+<div class="screen" id="screen_s">
+  {% with section_title=block_s.section_title, section_subtitle=block_s.section_subtitle,
+          faqs=block_s.faqs %}
+    {% include 'blocks/block_s_faq.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+{% endblock %}

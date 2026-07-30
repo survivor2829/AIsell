@@ -1,0 +1,75 @@
+{% extends "assembled_base.html" %}
+
+{% block category_screens %}
+{# ── 适用场景 ── #}
+{% if block_h and block_h.scenes %}
+<div class="screen" id="screen_h">
+  {% with section_title=block_h.section_title, section_subtitle=block_h.section_subtitle,
+          scenes=block_h.scenes %}
+    {% include 'blocks/block_h_scene_grid.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── 使用前后对比 ── #}
+{% if block_q and block_q.comparisons %}
+<div class="screen" id="screen_q">
+  {% with section_title=block_q.section_title, section_subtitle=block_q.section_subtitle,
+          comparisons=block_q.comparisons %}
+    {% include 'blocks/block_q_before_after.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── 耐用性测试 ── #}
+{% if block_x and block_x.metrics %}
+<div class="screen" id="screen_x">
+  {% with section_title=block_x.section_title, section_subtitle=block_x.section_subtitle,
+          metrics=block_x.metrics, test_note=block_x.test_note %}
+    {% include 'blocks/block_x_durability.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block category_tail %}
+{# ── 包装清单 ── #}
+{% if block_r and block_r.package_items %}
+<div class="screen" id="screen_r">
+  {% with section_title=block_r.section_title, section_subtitle=block_r.section_subtitle,
+          package_items=block_r.package_items, package_note=block_r.package_note %}
+    {% include 'blocks/block_r_package_list.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── 客户案例 ── #}
+{% if block_t and (block_t.client_logos or block_t.cases) %}
+<div class="screen" id="screen_t">
+  {% with section_title=block_t.section_title, section_subtitle=block_t.section_subtitle,
+          client_count=block_t.client_count, client_logos=block_t.client_logos, cases=block_t.cases %}
+    {% include 'blocks/block_t_customer_cases.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── 售后服务 ── #}
+{% if block_u and block_u.promises %}
+<div class="screen" id="screen_u">
+  {% with section_title=block_u.section_title, section_subtitle=block_u.section_subtitle,
+          promises=block_u.promises, service_note=block_u.service_note %}
+    {% include 'blocks/block_u_after_sales.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── FAQ ── #}
+{% if block_s and block_s.faqs %}
+<div class="screen" id="screen_s">
+  {% with section_title=block_s.section_title, section_subtitle=block_s.section_subtitle,
+          faqs=block_s.faqs %}
+    {% include 'blocks/block_s_faq.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+{% endblock %}

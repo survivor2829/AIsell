@@ -1,0 +1,89 @@
+{
+  "_meta": {
+    "product_slug": "sm200",
+    "product_cat": "consumable",
+    "elapsed_s": 24.81,
+    "usage": {
+      "prompt_tokens": 863,
+      "completion_tokens": 619,
+      "total_tokens": 1482,
+      "prompt_tokens_details": {
+        "cached_tokens": 384
+      },
+      "prompt_cache_hit_tokens": 384,
+      "prompt_cache_miss_tokens": 479
+    },
+    "model": "deepseek-chat",
+    "schema_warnings": []
+  },
+  "planner_output": {
+    "product_meta": {
+      "name": "SM-200 商用防滑安全地垫，墨绿色PVC发泡表层与黑色橡胶底托",
+      "category": "耗材类",
+      "primary_color": "dark green",
+      "key_visual_parts": [
+        "dark green PVC foam surface",
+        "black rubber base",
+        "drainage holes pattern",
+        "modular connection edges"
+      ],
+      "proportions": "single mat 120cm x 80cm x 1.5cm"
+    },
+    "selling_points": [
+      {
+        "idx": 1,
+        "text": "墨绿色PVC发泡表层+黑色橡胶底托，单片尺寸120×80cm厚度15mm",
+        "visual_type": "product_closeup",
+        "priority": "high",
+        "reason": "卖点描述了产品的具体结构、材质和尺寸，适合特写展示细节。"
+      },
+      {
+        "idx": 2,
+        "text": "表面排水孔设计避免积水",
+        "visual_type": "product_closeup",
+        "priority": "high",
+        "reason": "卖点描述了具体的结构设计（排水孔），适合特写展示。"
+      },
+      {
+        "idx": 3,
+        "text": "抗压强度500kg/m²",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "卖点描述了抽象的性能指标（抗压强度），适合概念可视化。"
+      },
+      {
+        "idx": 4,
+        "text": "适用于商场入口/车间走道/后厨洗碗区",
+        "visual_type": "product_in_scene",
+        "priority": "high",
+        "reason": "卖点明确提到了多个使用场景和地点。"
+      },
+      {
+        "idx": 5,
+        "text": "可机洗可拼接延展任意长度",
+        "visual_type": "product_in_scene",
+        "priority": "medium",
+        "reason": "卖点描述了产品的使用状态（拼接延展），适合场景展示。"
+      },
+      {
+        "idx": 6,
+        "text": "-20°C到60°C宽温域使用",
+        "visual_type": "concept_visual",
+        "priority": "low",
+        "reason": "卖点描述了抽象的性能指标（温度范围），适合概念可视化。"
+      }
+    ],
+    "planning": {
+      "total_blocks": 6,
+      "block_order": [
+        "hero",
+        "selling_point_1",
+        "selling_point_2",
+        "selling_point_3",
+        "selling_point_5",
+        "selling_point_6"
+      ],
+      "hero_scene_hint": "A dark green SM-200 anti-slip safety mat placed at the entrance of a modern shopping mall, with people walking on it, showcasing its application in a high-traffic commercial setting."
+    }
+  }
+}

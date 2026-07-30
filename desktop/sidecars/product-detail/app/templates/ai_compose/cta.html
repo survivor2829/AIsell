@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>AI Compose · CTA</title>
+  <style>
+    :root {
+      --theme-primary:      {{ theme_primary      | default('#E8231A') }};
+      --theme-primary-dark: {{ theme_primary_dark | default('#B51A13') }};
+      --theme-accent:       {{ theme_accent       | default('#FFD166') }};
+
+      /* CTA 专属底色三段(Apple 调色师:柔红→酒红→近黑,不是纯品牌红平铺) */
+      --cta-start: {{ cta_start | default('#9d2319') }};
+      --cta-mid:   {{ cta_mid   | default('#65140f') }};
+      --cta-end:   {{ cta_end   | default('#390b08') }};
+
+      --canvas-w: {{ canvas_width  | default(750) }}px;
+      --canvas-h: {{ canvas_height | default(500) }}px;
+
+      --text-main: #FFFFFF;
+      --text-sub:  rgba(255, 255, 255, 0.82);
+      --text-dim:  rgba(255, 255, 255, 0.55);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: var(--canvas-w);
+      height: var(--canvas-h);
+      overflow: hidden;
+      font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      color: var(--text-main);
+    }
+
+    .screen {
+      position: relative;
+      width: var(--canvas-w);
+      height: var(--canvas-h);
+      overflow: hidden;
+      /* 三层叠加:柔红高光 + 右下镜头暗角 + 三段对角基底 */
+      background:
+        radial-gradient(ellipse 72% 58% at 22% 25%,
+          rgba(216, 82, 72, 0.78) 0%,
+          rgba(216, 82, 72, 0)    60%),
+        radial-gradient(ellipse 95% 75% at 82% 88%,
+          rgba(22, 5, 5, 0.85) 0%,
+          rgba(22, 5, 5, 0)    58%),
+        linear-gradient(135deg,
+          var(--cta-start) 0%,
+          var(--cta-mid)   52%,
+          var(--cta-end)   100%);
+    }
+
+    /* 右上聚光(白,降至 14% — 舞台聚光感而非过曝) */
+    .burst-tr {
+      position: absolute;
+      top: -180px;
+      right: -160px;
+      width: 520px;
+      height: 520px;
+      background: radial-gradient(circle,
+        rgba(255, 255, 255, 0.14) 0%,
+        rgba(255, 255, 255, 0.05) 40%,
+        rgba(255, 255, 255, 0)    66%);
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    /* 左下金晕(氛围光底,给底部加一点温度) */
+    .burst-bl {
+      position: absolute;
+      bottom: -140px;
+      left: -120px;
+      width: 420px;
+      height: 420px;
+      background: radial-gradient(circle,
+        rgba(255, 209, 102, 0.22) 0%,
+        rgba(255, 209, 102, 0.07) 42%,
+        rgba(255, 209, 102, 0)    68%);
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .content {
+      position: relative;
+      z-index: 2;
+      width: 100%;
+      height: 100%;
+      padding: 50px 56px;
+      display: flex;
+      gap: 36px;
+      align-items: center;
+    }
+
+    .left {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .section-label {
+      font-size: 12px;
+      letter-spacing: 6px;
+      font-weight: 600;
+      color: var(--theme-accent);
+      margin-bottom: 18px;
+      font-family: "Arial", "Helvetica Neue", sans-serif;
+    }
+
+    .cta-main {
+      font-size: 36px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      line-height: 1.2;
+      color: var(--text-main);
+      text-shadow: 0 2px 14px rgba(0, 0, 0, 0.42);
+    }
+
+    .cta-sub {
+      font-size: 14px;
+      color: var(--text-sub);
+      letter-spacing: 1.2px;
+      margin-top: 14px;
+      line-height: 1.6;
+    }
+
+    .divider {
+      width: 48px;
+      height: 3px;
+      background: var(--theme-accent);
+      border-radius: 2px;
+      margin: 22px 0 18px;
+      box-shadow: 0 2px 10px rgba(255, 209, 102, 0.40);
+    }
+
+    /* 联系方式列表 */
+    .contacts {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .contact-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .contact-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.16);
+      border: 1px solid rgba(255, 255, 255, 0.24);
+      font-size: 13px;
+      font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+      flex-shrink: 0;
+    }
+    .contact-body {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      min-width: 0;
+    }
+    .contact-label {
+      font-size: 10px;
+      color: var(--text-dim);
+      letter-spacing: 1.5px;
+      font-family: "Arial", "Helvetica Neue", sans-serif;
+      flex-shrink: 0;
+    }
+    .contact-value {
+      font-size: 14px;
+      color: var(--text-main);
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      font-family: "Arial", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* 右侧 QR 卡片 */
+    .right {
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+    .qr-card {
+      width: 160px;
+      height: 160px;
+      padding: 10px;
+      background: #FFFFFF;
+      border-radius: 14px;
+      box-shadow:
+        0 14px 34px rgba(0, 0, 0, 0.32),
+        0 2px 6px rgba(0, 0, 0, 0.12);
+    }
+    .qr-img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+    .qr-caption {
+      font-size: 12px;
+      color: var(--theme-accent);
+      letter-spacing: 3px;
+      font-weight: 700;
+      font-family: "Arial", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+    }
+
+    /* 产品小图(与 QR 互斥) */
+    .product-thumb {
+      width: 200px;
+      height: auto;
+      max-height: 240px;
+      object-fit: contain;
+      filter: drop-shadow(0 16px 28px rgba(0, 0, 0, 0.35));
+    }
+  </style>
+</head>
+<body>
+  <div class="screen">
+    <div class="burst-tr"></div>
+    <div class="burst-bl"></div>
+
+    <div class="content">
+      <div class="left">
+        {% if section_label %}
+        <div class="section-label">{{ section_label }}</div>
+        {% endif %}
+
+        <h1 class="cta-main">{{ cta_main }}</h1>
+
+        {% if cta_sub %}
+        <div class="cta-sub">{{ cta_sub }}</div>
+        {% endif %}
+
+        {% if contacts %}
+        <div class="divider"></div>
+        <div class="contacts">
+          {% for c in contacts %}
+          <div class="contact-item">
+            {% if c.icon %}<span class="contact-icon">{{ c.icon }}</span>{% endif %}
+            <div class="contact-body">
+              {% if c.label %}<div class="contact-label">{{ c.label }}</div>{% endif %}
+              <div class="contact-value">{{ c.value }}</div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+
+      {% if qr_url %}
+      <div class="right">
+        <div class="qr-card">
+          <img class="qr-img" src="{{ qr_url }}" alt="">
+        </div>
+        {% if qr_caption %}
+        <div class="qr-caption">{{ qr_caption }}</div>
+        {% endif %}
+      </div>
+      {% elif product_url %}
+      <div class="right">
+        <img class="product-thumb" src="{{ product_url }}" alt="">
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,89 @@
+{
+  "_meta": {
+    "product_slug": "fs300",
+    "product_cat": "tool",
+    "elapsed_s": 18.06,
+    "usage": {
+      "prompt_tokens": 1517,
+      "completion_tokens": 548,
+      "total_tokens": 2065,
+      "prompt_tokens_details": {
+        "cached_tokens": 1088
+      },
+      "prompt_cache_hit_tokens": 1088,
+      "prompt_cache_miss_tokens": 429
+    },
+    "model": "deepseek-chat",
+    "schema_warnings": []
+  },
+  "planner_output": {
+    "product_meta": {
+      "name": "FS-300 半便携推车式扫地机，适用于小型车间和商铺的电动清洁设备",
+      "category": "设备类",
+      "primary_color": "matte gray",
+      "key_visual_parts": [
+        "matte gray metal body",
+        "main brush and side brushes",
+        "control panel with buttons",
+        "four swivel casters"
+      ],
+      "proportions": "compact push-cart style with handle"
+    },
+    "selling_points": [
+      {
+        "idx": 1,
+        "text": "适用于小型车间和商铺",
+        "visual_type": "product_in_scene",
+        "priority": "high",
+        "reason": "卖点明确提到具体应用地点（车间、商铺）"
+      },
+      {
+        "idx": 2,
+        "text": "哑光灰金属",
+        "visual_type": "product_closeup",
+        "priority": "medium",
+        "reason": "卖点描述产品外观材质"
+      },
+      {
+        "idx": 3,
+        "text": "整机 15kg 带万向轮",
+        "visual_type": "product_closeup",
+        "priority": "medium",
+        "reason": "卖点描述产品结构和部件（重量、轮子）"
+      },
+      {
+        "idx": 4,
+        "text": "人工推行或一键电动行进",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "卖点描述操作模式，是抽象功能能力"
+      },
+      {
+        "idx": 5,
+        "text": "24V 锂电续航 3 小时",
+        "visual_type": "concept_visual",
+        "priority": "high",
+        "reason": "卖点主语是电池续航时间，为抽象性能指标"
+      },
+      {
+        "idx": 6,
+        "text": "吸力 8000Pa",
+        "visual_type": "concept_visual",
+        "priority": "high",
+        "reason": "卖点主语是吸力强度，为抽象性能指标"
+      }
+    ],
+    "planning": {
+      "total_blocks": 6,
+      "block_order": [
+        "hero",
+        "selling_point_2",
+        "selling_point_3",
+        "selling_point_4",
+        "selling_point_5",
+        "selling_point_6"
+      ],
+      "hero_scene_hint": "The FS-300 floor sweeper in action inside a small workshop, cleaning debris from the concrete floor."
+    }
+  }
+}

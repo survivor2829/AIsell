@@ -1,0 +1,20 @@
+<!--
+  block_o_disclaimer — 免责声明/温馨提示（末尾小字屏）
+  宽度：750px
+
+  变量：
+  - disclaimer_title: 可选标题（默认"温馨提示"）
+  - disclaimer_text: 免责声明正文
+-->
+
+<div style="width:750px; box-sizing:border-box; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; background:var(--theme-bg-section, #F3F4F6); color:#111827; padding:24px 32px;">
+  <div style="border-radius:14px; border:1px solid rgba(17,24,39,0.08); background:linear-gradient(180deg, #fff 0%, #fdfdfe 100%); padding:18px 18px 16px; box-shadow:0 1px 4px rgba(0,0,0,0.03);">
+    <div style="display:flex; align-items:flex-start; gap:12px;">
+      <div style="flex:0 0 28px; width:28px; height:28px; border-radius:8px; background:linear-gradient(135deg, rgba(232,35,26,0.08), rgba(232,35,26,0.04)); border:1px solid rgba(232,35,26,0.15); display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:900; color:var(--theme-primary-dark, #B91C1C);">i</div>
+      <div style="flex:1; min-width:0;">
+        <div style="font-size:13px; font-weight:800; line-height:1.35; color:#333;">{% if disclaimer_title %}{{ disclaimer_title }}{% else %}温馨提示{% endif %}</div>
+        <div style="margin-top:6px; font-size:12px; line-height:1.85; color:rgba(17,24,39,0.6); white-space:pre-line;">{{ disclaimer_text }}</div>
+      </div>
+    </div>
+  </div>
+</div>

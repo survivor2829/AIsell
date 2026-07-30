@@ -1,0 +1,51 @@
+{#
+  客户案例 / 标杆客户 Logo 墙
+  变量:
+  - section_title: 标题（默认"他们都在用"）
+  - section_subtitle: 副标题
+  - client_logos: [{name, image}, ...] Logo列表
+  - cases: [{client_name, scene, result_text, image}, ...] 案例卡片
+  - client_count: 服务客户数量文字（如"5000+"）
+#}
+<div style="width:750px; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; background:var(--theme-gradient-dark, linear-gradient(180deg, #0a0e1a 0%, #141828 100%)); padding:50px 40px;">
+
+  <div style="text-align:center; margin-bottom:10px;">
+    <div style="font-size:28px; font-weight:800; color:#fff; letter-spacing:1px;">{{ section_title|default('他们都在用') }}</div>
+    {% if section_subtitle %}
+    <div style="font-size:14px; color:rgba(255,255,255,0.45); margin-top:8px;">{{ section_subtitle }}</div>
+    {% endif %}
+    {% if client_count %}
+    <div style="margin-top:16px; font-size:42px; font-weight:900; color:var(--theme-primary, #E8231A);">{{ client_count }}<span style="font-size:16px; color:rgba(255,255,255,0.5); font-weight:400; margin-left:6px;">家企业的选择</span></div>
+    {% endif %}
+  </div>
+
+  {# Logo 墙 #}
+  {% if client_logos %}
+  <div style="display:flex; flex-wrap:wrap; justify-content:center; gap:16px; margin:30px 0;">
+    {% for logo in client_logos %}
+    <div style="width:100px; height:60px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.1); border-radius:10px; display:flex; align-items:center; justify-content:center; padding:8px;">
+      {% if logo.image %}
+      <img src="{{ logo.image }}" alt="{{ logo.name }}" style="max-width:80px; max-height:40px; filter:brightness(0) invert(1); opacity:0.6;">
+      {% else %}
+      <span style="font-size:12px; color:rgba(255,255,255,0.5); font-weight:600;">{{ logo.name }}</span>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# 案例卡片 #}
+  {% for case in cases|default([]) %}
+  <div style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); border-radius:14px; padding:20px 24px; margin-bottom:14px; display:flex; gap:18px; align-items:center;">
+    {% if case.image %}
+    <img src="{{ case.image }}" style="width:100px; height:70px; object-fit:cover; border-radius:8px; flex-shrink:0;">
+    {% endif %}
+    <div>
+      <div style="font-size:15px; font-weight:700; color:#fff;">{{ case.client_name }}</div>
+      <div style="font-size:12px; color:rgba(255,255,255,0.4); margin-top:4px;">{{ case.scene }}</div>
+      <div style="font-size:13px; color:#4ade80; margin-top:6px; line-height:1.5;">{{ case.result_text }}</div>
+    </div>
+  </div>
+  {% endfor %}
+
+</div>

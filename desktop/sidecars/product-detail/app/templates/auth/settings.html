@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>账号设置 · 小玺AI</title>
+<link rel="stylesheet" href="/static/css/design-system.css">
+<style>
+  body { max-width: 640px; margin: 0 auto; padding: 20px; }
+
+  .back-link {
+    display: inline-flex; align-items: center; gap: 5px;
+    color: var(--color-primary); text-decoration: none;
+    font-size: 14px; font-weight: 500; margin-bottom: 20px;
+    transition: opacity var(--transition-fast);
+  }
+  .back-link:hover { opacity: 0.7; }
+
+  .page-title {
+    font-size: 24px; font-weight: 600; margin-bottom: 24px;
+    letter-spacing: -0.02em;
+  }
+
+  .card {
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    margin-bottom: 16px;
+    box-shadow: var(--shadow-xs);
+  }
+
+  .card-title {
+    font-size: 15px; font-weight: 600; color: var(--color-text);
+    margin-bottom: 16px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card-title::before {
+    content: ''; width: 3px; height: 16px;
+    background: var(--color-primary); border-radius: 2px;
+  }
+
+  .info-row {
+    display: flex; padding: 10px 0;
+    font-size: 14px; border-bottom: 1px solid #f3f4f6;
+  }
+  .info-row:last-child { border-bottom: none; }
+  .info-label { width: 100px; color: var(--color-text-muted); flex-shrink: 0; font-weight: 500; }
+  .info-value { color: var(--color-text-secondary); }
+
+  .status-box {
+    padding: 14px 16px; border-radius: var(--radius-md);
+    font-size: 13px; line-height: 1.7; margin-bottom: 16px;
+    background: var(--color-warning-bg); color: #92400e;
+    border: 1px solid #fde68a;
+  }
+  .status-box a { color: var(--color-primary); font-weight: 500; }
+</style>
+</head>
+<body>
+  <a href="/" class="back-link">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+    返回首页
+  </a>
+  <h1 class="page-title">账号设置</h1>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash-msg flash-{{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <div class="card">
+    <div class="card-title">账号信息</div>
+    <div class="info-row">
+      <span class="info-label">用户名</span>
+      <span class="info-value">{{ current_user.username }}</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">邮箱</span>
+      <span class="info-value">{{ current_user.email or '未设置' }}</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">账号状态</span>
+      <span class="info-value">
+        {% if current_user.is_admin %}<span class="badge badge-info">管理员</span> {% endif %}
+        {% if current_user.is_paid %}<span class="badge badge-success">已付费</span>{% else %}<span class="badge badge-error">未付费</span>{% endif %}
+      </span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">注册时间</span>
+      <span class="info-value">{{ current_user.created_at.strftime('%Y-%m-%d %H:%M') if current_user.created_at else '-' }}</span>
+    </div>
+  </div>
+
+  {% if current_user.is_paid or current_user.is_admin %}
+  <div class="card">
+    <div class="card-title">服务说明</div>
+    <div class="info-row">
+      <span class="info-label">AI 服务</span>
+      <span class="info-value">您是付费用户（或管理员），AI 识别 / 精修 / 生图 使用平台密钥，无需自行配置。</span>
+    </div>
+  </div>
+  {% else %}
+  {# PR C (2026-05-07): 非付费用户自配 API Key #}
+  <div class="card">
+    <div class="card-title">API Key 配置</div>
+    <p style="color:#666;font-size:13px;line-height:1.6;margin-bottom:16px;">
+      您是免费用户，使用 AI 功能需自行配置 DeepSeek 和 GPT-image-2 (APIMart) 的 API Key。
+      费用按次扣您自己账户。如需升级付费版（用平台密钥免去自配），请联系管理员。
+    </p>
+    <form method="POST" action="{{ url_for('user_settings') }}">
+      {% if csrf_token %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+      <div class="info-row" style="flex-direction:column;align-items:flex-start;gap:8px;">
+        <label class="info-label" for="custom_deepseek_key">DeepSeek API Key</label>
+        <input type="password" id="custom_deepseek_key" name="custom_deepseek_key"
+               placeholder="{% if current_user.custom_deepseek_key_enc %}已配置（输入新值覆盖）{% else %}sk-...（DeepSeek 官网申请）{% endif %}"
+               style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:4px;font-family:monospace;">
+        <small style="color:#999;font-size:12px;">用途: AI 识别产品文案 → JSON。申请: <a href="https://platform.deepseek.com" target="_blank">platform.deepseek.com</a></small>
+      </div>
+      <div class="info-row" style="flex-direction:column;align-items:flex-start;gap:8px;margin-top:16px;">
+        <label class="info-label" for="custom_gpt_image_key">GPT-image-2 API Key (APIMart)</label>
+        <input type="password" id="custom_gpt_image_key" name="custom_gpt_image_key"
+               placeholder="{% if current_user.custom_gpt_image_key_enc %}已配置（输入新值覆盖）{% else %}APIMart key（gpt-image-2 服务）{% endif %}"
+               style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:4px;font-family:monospace;">
+        <small style="color:#999;font-size:12px;">用途: AI 精修 12 屏 (~¥7-8/产品)。申请: APIMart 平台账号</small>
+      </div>
+      <div style="margin-top:20px;">
+        <button type="submit" class="btn btn-primary" style="padding:10px 24px;">保存配置</button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+</body>
+</html>

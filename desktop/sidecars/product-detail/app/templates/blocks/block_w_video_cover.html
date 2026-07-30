@@ -1,0 +1,45 @@
+{#
+  视频封面屏（静态展示，带播放按钮+二维码）
+  变量:
+  - section_title: 标题（默认"产品视频"）
+  - video_title: 视频标题文字
+  - video_duration: 时长文字（如"02:30"）
+  - cover_image: 视频封面图URL
+  - qr_image: 扫码看视频的二维码URL（可选）
+  - qr_text: 二维码说明文字
+#}
+<div style="width:750px; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; background:#000; position:relative;">
+
+  {# 封面图 #}
+  {% if cover_image %}
+  <img src="{{ cover_image }}" style="width:750px; display:block; opacity:0.75;">
+  {% else %}
+  <div style="width:750px; height:420px; background:var(--theme-gradient-dark, linear-gradient(135deg, #1a1a2e, #0a0a1a));"></div>
+  {% endif %}
+
+  {# 播放按钮叠加层 #}
+  <div style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;">
+    <div style="width:80px; height:80px; background:rgba(255,255,255,0.15); backdrop-filter:blur(10px); border:2px solid rgba(255,255,255,0.3); border-radius:50%; display:flex; align-items:center; justify-content:center;">
+      <div style="width:0; height:0; border-left:28px solid #fff; border-top:16px solid transparent; border-bottom:16px solid transparent; margin-left:6px;"></div>
+    </div>
+
+    {% if video_title %}
+    <div style="margin-top:20px; font-size:18px; font-weight:700; color:#fff; text-shadow:0 2px 8px rgba(0,0,0,0.5); text-align:center; padding:0 40px;">{{ video_title }}</div>
+    {% endif %}
+
+    {% if video_duration %}
+    <div style="margin-top:8px; font-size:13px; color:rgba(255,255,255,0.6); background:rgba(0,0,0,0.4); padding:4px 12px; border-radius:999px;">{{ video_duration }}</div>
+    {% endif %}
+  </div>
+
+  {# 右下角二维码 #}
+  {% if qr_image %}
+  <div style="position:absolute; bottom:16px; right:16px; background:rgba(255,255,255,0.95); border-radius:10px; padding:8px; text-align:center;">
+    <img src="{{ qr_image }}" style="width:64px; height:64px; display:block;">
+    {% if qr_text %}
+    <div style="font-size:10px; color:#666; margin-top:4px;">{{ qr_text|default('扫码看视频') }}</div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+</div>

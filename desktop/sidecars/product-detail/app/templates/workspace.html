@@ -1,0 +1,1667 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <title>小玺AI · 工作台</title>
+  <link rel="stylesheet" href="/static/css/design-system.css?v=2">
+  <link rel="stylesheet" href="/static/css/announcement.css">
+  <script src="/static/vendor/sortable-1.15.6.min.js"></script>
+  <style>
+    /* ── Reset ─────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; overflow: hidden; font-family: var(--font-sans); background: var(--color-bg-page); color: var(--color-text); }
+
+    /* ── Topbar ─────────────────────────────────────────────── */
+    .topbar {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      background: rgba(255,255,255,0.78);
+      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--color-border);
+      padding: 0 24px; height: 54px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .topbar-brand {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 16px; font-weight: 700; color: var(--color-title);
+      text-decoration: none; letter-spacing: -0.01em;
+    }
+    .brand-dot {
+      width: 26px; height: 26px; border-radius: 7px;
+      background: var(--color-primary); display: flex; align-items: center; justify-content: center;
+      font-size: 13px; color: #fff; font-weight: 800;
+      box-shadow: 0 2px 6px var(--color-primary-shadow);
+    }
+    .topbar-right {
+      display: flex; align-items: center; gap: 18px;
+      font-size: 13px; color: var(--color-text-secondary);
+    }
+    .topbar-right a {
+      color: var(--color-text-muted); text-decoration: none;
+      transition: color var(--transition-fast);
+    }
+    .topbar-right a:hover { color: var(--color-text); }
+    .topbar-username { font-weight: 600; color: var(--color-text); }
+
+    /* ── Workspace Layout(grid + 三档预设)───────────────────────
+       grid + fr 单位天然支持 transition,flex 的 width 切换在 Safari 有锯齿。
+       默认 = layout-balance,JS 加载前的裸奔体验也是均衡档。 */
+    .workspace {
+      display: grid;
+      grid-template-columns: var(--col-left) var(--col-center) var(--col-right);
+      gap: 14px;
+      height: calc(100vh - 54px); margin-top: 54px;
+      padding: 14px; background: var(--color-bg-page);
+      --col-left: 30fr; --col-center: 38fr; --col-right: 32fr;
+      transition: grid-template-columns 220ms cubic-bezier(.2,.8,.2,1);
+    }
+    /* layout-balance 走基础默认值 (上面 .workspace 的 30/38/32),无需重复定义 */
+    .workspace.layout-edit    { --col-left: 38fr; --col-center: 32fr; --col-right: 30fr; }
+    .workspace.layout-preview { --col-left: 22fr; --col-center: 56fr; --col-right: 22fr; }
+
+    .panel-left,
+    .panel-center,
+    .panel-right {
+      background: #fff; border-radius: 8px;
+      box-shadow: var(--shadow-panel); border: var(--border-panel);
+      overflow-y: auto;
+      min-width: 0; /* 关键:grid 子项默认 min-width:auto 会被内容(如 #preview_container 750px)撑爆列 */
+    }
+    .panel-center {
+      position: relative; display: flex; flex-direction: column;
+    }
+
+    /* ── 顶栏布局切换按钮 ─────────────────────────────────────── */
+    .layout-toggle {
+      display: inline-flex; gap: 2px;
+      background: var(--color-bg-soft, #f4f4f5);
+      border-radius: 8px; padding: 3px; margin-right: 4px;
+    }
+    .layout-toggle button {
+      border: none; background: transparent;
+      padding: 5px 10px; font-size: 12px; font-weight: 500;
+      color: var(--color-text-muted);
+      border-radius: 6px; cursor: pointer;
+      transition: all .15s; font-family: inherit;
+    }
+    .layout-toggle button:hover { color: var(--color-text); }
+    .layout-toggle button.active {
+      background: #fff; color: var(--color-primary);
+      box-shadow: 0 1px 2px rgba(0,0,0,.08); font-weight: 600;
+    }
+
+    /* ── 响应式降级 ──────────────────────────────────────────── */
+    /* <1280px:预览档不够装 #preview_container 750px,自动降级到均衡 */
+    @media (max-width: 1279px) {
+      .workspace.layout-preview { --col-left: 30fr; --col-center: 38fr; --col-right: 32fr; }
+      .layout-toggle button[data-layout="preview"] {
+        opacity: 0.4; cursor: not-allowed;
+      }
+    }
+    /* <1024px:三栏堆叠,toggle 隐藏 */
+    @media (max-width: 1023px) {
+      .workspace {
+        grid-template-columns: 1fr !important;
+        height: auto; overflow-y: auto;
+      }
+      .panel-left, .panel-right { max-height: 50vh; }
+      .layout-toggle { display: none; }
+    }
+
+    /* ── Panel Section ──────────────────────────────────────── */
+    .panel-section { padding: 16px 18px; border-bottom: 1px solid var(--color-divider); }
+    .panel-section:first-child { padding-top: 18px; }
+    .panel-section:last-child { border-bottom: none; }
+    .section-title {
+      font-size: 13px; font-weight: 600; color: var(--color-title);
+      margin: 0 0 12px 0; letter-spacing: 0.01em;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .section-title::before {
+      content: ''; width: 3px; height: 13px; border-radius: 2px;
+      background: var(--color-primary); flex-shrink: 0;
+    }
+
+    /* ── Category Pills ─────────────────────────────────────── */
+    .cat-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+    .cat-pill {
+      display: inline-flex; align-items: center; gap: 5px;
+      height: 32px; padding: 0 14px; border-radius: var(--radius-pill);
+      border: 1px solid var(--color-border);
+      background: #fff; cursor: pointer;
+      font-size: 13px; font-weight: 500; color: var(--color-text-hint);
+      transition: all var(--transition-fast); user-select: none;
+      white-space: nowrap;
+    }
+    .cat-pill:hover { border-color: var(--color-border-hover); color: var(--color-text); }
+    .cat-pill.active {
+      background-color: var(--cat-color-bg, rgba(20,110,245,0.08));
+      border-color: var(--cat-color, var(--color-primary));
+      color: var(--cat-color, var(--color-primary));
+      font-weight: 600;
+    }
+
+    /* ── Upload Grid ────────────────────────────────────────── */
+    .upload-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .upload-box {
+      border: 1px solid var(--color-border-2); border-radius: var(--radius-input);
+      background: #fff; cursor: pointer;
+      transition: all var(--transition-fast); position: relative; overflow: hidden;
+      height: 104px;
+    }
+    .upload-box:hover, .upload-box.drag-over {
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 3px var(--color-primary-light);
+    }
+    .upload-placeholder {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      height: 100%; gap: 4px; pointer-events: none;
+    }
+    .upload-placeholder .upload-icon { font-size: 22px; opacity: 0.75; }
+    .upload-placeholder .upload-label { font-size: 12px; color: var(--color-text-hint); font-weight: 500; }
+    .upload-placeholder .upload-required { color: #ee1d36; font-size: 11px; font-weight: 500; }
+    .upload-preview { display: none; width: 100%; height: 100%; position: relative; }
+    .upload-preview img { width: 100%; height: 100%; object-fit: contain; padding: 4px; }
+    .upload-remove {
+      position: absolute; top: 4px; right: 4px; width: 20px; height: 20px;
+      background: rgba(0,0,0,0.5); color: #fff; border: none; border-radius: 50%;
+      cursor: pointer; font-size: 14px; line-height: 1; display: flex;
+      align-items: center; justify-content: center;
+    }
+    .upload-remove:hover { background: rgba(0,0,0,0.75); }
+
+    /* ── Text Input ─────────────────────────────────────────── */
+    .text-area {
+      width: 100%; height: 200px; padding: 10px 12px;
+      border: 1px solid var(--color-border); border-radius: var(--radius-input);
+      font-size: 13px; font-family: var(--font-sans); color: var(--color-text);
+      background: #fff; resize: vertical;
+      transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+      outline: none;
+    }
+    .text-area--single { height: 38px; padding: 0 12px; resize: none; }
+    .text-area:focus {
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 3px var(--color-primary-light);
+    }
+    .text-area::placeholder { color: var(--color-text-muted); }
+    .text-hint {
+      font-size: 12px; color: var(--color-text-muted); margin-top: 6px;
+      line-height: 1.5;
+    }
+
+    /* ── Generate Button ────────────────────────────────────── */
+    .btn-generate {
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+      width: 100%; height: 40px; border: none; border-radius: 6px;
+      background: var(--color-primary); color: #fff;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04); transition: all var(--transition-fast);
+      letter-spacing: 0.01em;
+    }
+    .btn-generate:hover:not(:disabled) {
+      background: var(--color-primary-hover);
+      box-shadow: 0 3px 8px var(--color-primary-shadow-strong);
+      transform: translateY(-1px);
+    }
+    .btn-generate:disabled { opacity: 0.65; cursor: not-allowed; }
+
+    /* ── Center Panel: Empty State ──────────────────────────── */
+    #empty_state {
+      flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 14px; padding: 40px;
+    }
+    .empty-icon { font-size: 54px; line-height: 1; opacity: 0.6; }
+    .empty-title {
+      font-size: 18px; font-weight: 600; color: var(--color-title);
+      text-align: center; letter-spacing: -0.01em;
+    }
+    .empty-subtitle {
+      font-size: 13px; color: var(--color-text-muted);
+      text-align: center; letter-spacing: 0.01em;
+    }
+
+    /* ── Preview Wrapper ────────────────────────────────────── */
+    #preview_wrapper {
+      display: none; padding: 24px; flex: 1;
+      background: #f8f8fa;
+    }
+    #preview_container {
+      width: 750px; margin: 0 auto;
+      background: #fff;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06), 0 12px 32px rgba(0,0,0,0.08);
+      border-radius: 8px; overflow: hidden;
+    }
+
+    /* ── Module Wrappers ────────────────────────────────────── */
+    .module-wrapper { position: relative; transition: all 0.2s; }
+    .module-wrapper:hover { outline: 2px dashed var(--color-primary); outline-offset: 2px; }
+    .module-toolbar {
+      position: absolute; top: -36px; left: 0; right: 0;
+      display: none; align-items: center; justify-content: space-between;
+      background: #fff; border: 1px solid var(--color-border);
+      border-radius: 8px; padding: 4px 12px; z-index: 10;
+      box-shadow: var(--shadow-sm);
+    }
+    .module-wrapper:hover .module-toolbar { display: flex; }
+    .module-name { font-size: 12px; color: var(--color-text-muted); font-weight: 600; }
+    .module-actions { display: flex; gap: 4px; align-items: center; }
+    .mod-btn {
+      background: none; border: 1px solid var(--color-border); border-radius: 6px;
+      padding: 3px 8px; font-size: 13px; cursor: pointer;
+      transition: all var(--transition-fast);
+    }
+    .mod-btn:hover { border-color: var(--color-primary); background: var(--color-bg-subtle); }
+    .mod-drag-handle { cursor: grab; font-size: 18px; color: var(--color-text-muted); padding: 2px 6px; user-select: none; }
+    .mod-drag-handle:active { cursor: grabbing; }
+    .module-ghost { opacity: 0.4; outline: 2px dashed var(--color-primary); }
+
+    .module-wrapper.module-hidden .module-content { display: none; }
+    .module-wrapper.module-hidden .module-toolbar { display: flex; }
+    .module-hidden-placeholder {
+      display: none; align-items: center; justify-content: center; gap: 8px;
+      padding: 12px; background: var(--color-bg-subtle); border-radius: 8px;
+      color: var(--color-text-muted); font-size: 13px;
+    }
+    .module-wrapper.module-hidden .module-hidden-placeholder { display: flex; }
+
+    /* ── Export Bar ─────────────────────────────────────────── */
+    #export_bar {
+      display: none; align-items: center; justify-content: center;
+      gap: 12px;
+      padding: 12px 24px;
+      background: rgba(255,255,255,0.92);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      border-top: 1px solid var(--color-divider);
+      position: sticky; bottom: 0; z-index: 50;
+    }
+    .btn-export {
+      display: flex; align-items: center; gap: 8px;
+      height: 40px; padding: 0 24px; border: none; border-radius: 6px;
+      background: var(--color-title); color: #fff;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+      transition: all var(--transition-fast); letter-spacing: 0.01em;
+    }
+    .btn-export:hover:not(:disabled) {
+      background: #000;
+      box-shadow: 0 3px 10px rgba(0,0,0,0.16);
+      transform: translateY(-1px);
+    }
+    .btn-export:disabled { opacity: 0.65; cursor: not-allowed; }
+    /* 次要导出 (如 JPG): 软灰背景 + 深色字, 视觉降一级让 PNG 主按钮先吸引注意 */
+    .btn-export-secondary {
+      background: var(--color-bg-soft, #f4f4f5);
+      color: var(--color-text);
+    }
+    .btn-export-secondary:hover:not(:disabled) {
+      background: var(--color-bg-hover, #e8e8ea);
+    }
+
+    /* ── Theme Grid ─────────────────────────────────────────── */
+    /* auto-fill + minmax 让卡片随右栏宽度自适应:
+       - layout-balance/edit 右栏 ≈ 460px → 3-4 列
+       - layout-preview 右栏 ≈ 320px → 2 列
+       避免硬写两列在右栏变宽时变得过宽且丑。 */
+    .theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 10px; padding: 14px 16px 16px; }
+    .theme-card {
+      border: 2px solid transparent;
+      border-radius: 10px;
+      padding: 6px; cursor: pointer; transition: all var(--transition-fast);
+      text-align: center; position: relative; background: #fff;
+      box-shadow: 0 0 0 1px var(--color-border);
+    }
+    .theme-card:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 0 0 1px var(--color-border), 0 3px 8px var(--color-primary-shadow);
+      border-color: var(--color-primary);
+    }
+    .theme-card.selected {
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 1px var(--color-primary), 0 3px 8px var(--color-primary-shadow);
+    }
+    .theme-card.selected::after {
+      content: '✓'; position: absolute; top: 4px; right: 4px;
+      width: 20px; height: 20px; background: var(--color-primary);
+      color: #fff; border-radius: 50%; font-size: 11px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 2px 4px var(--color-primary-shadow-strong);
+    }
+    .theme-card img { width: 100%; border-radius: 6px; display: block; }
+    .theme-card-name {
+      font-size: 12px; color: var(--color-text-secondary);
+      margin-top: 6px; font-weight: 500;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
+    /* ── Right Panel Title ──────────────────────────────────── */
+    .panel-right-title {
+      padding: 18px 18px 6px;
+      font-size: 18px; font-weight: 400; color: var(--color-title);
+      letter-spacing: -0.005em;
+    }
+
+    /* ── Spinner animation ──────────────────────────────────── */
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    /* ── Center Tabs ────────────────────────────────────────── */
+    .center-tabs {
+      display: none; padding: 0 20px; background: #fff;
+      border-bottom: 1px solid var(--color-divider);
+      position: sticky; top: 0; z-index: 40;
+      gap: 4px;
+    }
+    .center-tabs.visible { display: flex; }
+    .center-tab {
+      padding: 13px 16px 11px; font-size: 14px; font-weight: 500;
+      color: var(--color-text-muted); cursor: pointer;
+      border-bottom: 2px solid transparent; transition: all var(--transition-fast);
+      background: none; border-top: none; border-left: none; border-right: none;
+    }
+    .center-tab:hover { color: var(--color-title); }
+    .center-tab.active {
+      color: var(--color-primary);
+      border-bottom-color: var(--color-primary);
+      font-weight: 600;
+    }
+
+    /* ── Module Main Image Tab ─────────────────────────────── */
+    #main_img_wrapper {
+      display: none; padding: 24px; flex: 1;
+      background: #f8f8fa;
+    }
+    .main-img-viewer {
+      width: 750px; margin: 0 auto;
+    }
+    .main-img-large {
+      width: 750px; background: #fff;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06), 0 12px 32px rgba(0,0,0,0.08);
+      border-radius: 10px;
+      overflow: hidden; position: relative;
+    }
+    .main-img-large > div { width: 100%; }
+    .main-img-strip {
+      display: flex; gap: 10px; margin-top: 16px; justify-content: center;
+    }
+    .main-img-thumb {
+      width: 90px; height: 120px; border: 2px solid transparent;
+      border-radius: 10px; overflow: hidden; cursor: pointer;
+      transition: all var(--transition-fast); flex-shrink: 0;
+      background: #fff; box-shadow: 0 0 0 1px var(--color-border);
+      position: relative;
+    }
+    .main-img-thumb:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 0 0 1px var(--color-border), 0 3px 8px var(--color-primary-shadow);
+    }
+    .main-img-thumb.active {
+      border-color: var(--color-primary);
+      box-shadow: 0 0 0 1px var(--color-primary), 0 3px 8px var(--color-primary-shadow);
+    }
+    .main-img-thumb-label {
+      position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
+      padding: 3px 4px; font-size: 10px; font-weight: 600;
+      color: #fff; background: linear-gradient(180deg, transparent, rgba(0,0,0,0.6));
+      text-align: center; line-height: 1.2;
+    }
+
+    /* ── E-commerce Copy Panel ─────────────────────────────── */
+    .ecom-panel { padding: 14px 18px; border-bottom: 1px solid var(--color-divider); }
+    .ecom-panel:last-child { border-bottom: none; }
+    .ecom-section-title {
+      font-size: 13px; font-weight: 600; color: var(--color-title);
+      margin: 0 0 10px 0; display: flex; align-items: center; justify-content: space-between;
+    }
+    .ecom-copy-btn {
+      font-size: 12px; color: var(--color-primary); background: #fff;
+      border: 1px solid var(--color-primary); border-radius: 100px;
+      padding: 2px 12px; cursor: pointer; font-weight: 500;
+      transition: all var(--transition-fast); height: 24px;
+    }
+    .ecom-copy-btn:hover { background: var(--color-primary); color: #fff; }
+    .ecom-copy-btn.copied { background: #059669; border-color: #059669; color: #fff; }
+    .ecom-field {
+      font-size: 13px; color: var(--color-text); line-height: 1.6;
+      background: #f7f8fa; border: 1px solid var(--color-divider);
+      border-radius: 10px;
+      padding: 10px 12px; margin-bottom: 8px; word-break: break-all;
+    }
+    .ecom-field:last-child { margin-bottom: 0; }
+    .ecom-field-label {
+      font-size: 11px; color: var(--color-text-muted); font-weight: 600;
+      margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .ecom-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+    .ecom-tag {
+      font-size: 12px; padding: 3px 10px; border-radius: 999px;
+      background: rgba(20,110,245,0.06); color: var(--color-primary);
+      font-weight: 500;
+    }
+    .ecom-points { list-style: none; padding: 0; margin: 0; }
+    .ecom-points li {
+      font-size: 13px; color: var(--color-text); padding: 4px 0;
+      display: flex; align-items: baseline; gap: 6px;
+    }
+    .ecom-points li::before { content: '✓'; color: #059669; font-weight: 700; font-size: 12px; }
+    .ecom-expand-toggle {
+      width: 100%; padding: 8px; background: none; border: 1px solid var(--color-border);
+      border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--color-text-muted);
+      font-weight: 500; transition: all var(--transition-fast); margin-top: 8px;
+    }
+    .ecom-expand-toggle:hover { border-color: var(--color-primary); color: var(--color-primary); }
+    #ecom_content { display: none; }
+
+    /* ── Main Image Export Bar ─────────────────────────────── */
+    #main_img_export_bar {
+      display: none; align-items: center; justify-content: center; gap: 12px;
+      padding: 12px 24px;
+      background: rgba(255,255,255,0.88);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+      border-top: 1px solid var(--color-border);
+      position: sticky; bottom: 0; z-index: 50;
+    }
+
+    /* ── Scrollbar ──────────────────────────────────────────── */
+    .panel-left::-webkit-scrollbar,
+    .panel-center::-webkit-scrollbar,
+    .panel-right::-webkit-scrollbar { width: 5px; }
+    .panel-left::-webkit-scrollbar-track,
+    .panel-center::-webkit-scrollbar-track,
+    .panel-right::-webkit-scrollbar-track { background: transparent; }
+    .panel-left::-webkit-scrollbar-thumb,
+    .panel-center::-webkit-scrollbar-thumb,
+    .panel-right::-webkit-scrollbar-thumb { background: #ddd; border-radius: 4px; }
+  </style>
+</head>
+<body>
+
+<!-- ─── Topbar ──────────────────────────────────────────────────── -->
+<header class="topbar">
+  <a class="topbar-brand" href="/">
+    <div class="brand-dot">玺</div>
+    小玺AI · 工作台
+  </a>
+  <div class="topbar-right">
+    <div class="layout-toggle" role="group" aria-label="布局预设">
+      <button type="button" data-layout="edit"    onclick="setLayout('edit')"    title="编辑主导:上传/填表阶段">✏️ 编辑</button>
+      <button type="button" data-layout="balance" onclick="setLayout('balance')" title="均衡(推荐)" class="active">⚖️ 均衡</button>
+      <button type="button" data-layout="preview" onclick="setLayout('preview')" title="预览主导:查看生成结果(需 ≥1280 屏宽)">🖼️ 预览</button>
+    </div>
+    <a href="/batch/upload">批量生成</a>
+    <a href="/batch/history">历史记录</a>
+    <span class="topbar-username">{{ current_user.username }}</span>
+    {% if current_user.is_admin %}<a href="/admin">管理后台</a>{% endif %}
+    <a href="/settings">设置</a>
+    <form method="POST" action="/auth/logout" style="display:inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" style="background:none;border:none;color:inherit;cursor:pointer;font:inherit;padding:0">退出</button>
+    </form>
+  </div>
+</header>
+
+<!-- ─── Workspace ────────────────────────────────────────────────── -->
+<div class="workspace">
+
+  <!-- ── LEFT PANEL ──────────────────────────────────────────── -->
+  <aside class="panel-left">
+
+    <!-- Category Tabs -->
+    <div class="panel-section">
+      <p class="section-title">选择品类</p>
+      <div class="cat-pills">
+        <button class="cat-pill" data-type="设备类"
+          style="--cat-color:#E8231A; --cat-color-bg:rgba(232,35,26,0.08)"
+          onclick="selectCategory('设备类')">🤖 设备类</button>
+        <button class="cat-pill" data-type="配件类"
+          style="--cat-color:#1E6FBF; --cat-color-bg:rgba(30,111,191,0.08)"
+          onclick="selectCategory('配件类')">🔧 配件类</button>
+        <button class="cat-pill" data-type="耗材类"
+          style="--cat-color:#2E8B57; --cat-color-bg:rgba(46,139,87,0.08)"
+          onclick="selectCategory('耗材类')">🧪 耗材类</button>
+        <button class="cat-pill" data-type="工具类"
+          style="--cat-color:#E87C1A; --cat-color-bg:rgba(232,124,26,0.08)"
+          onclick="selectCategory('工具类')">🧹 工具类</button>
+      </div>
+    </div>
+
+    <!-- Image Upload -->
+    <div class="panel-section">
+      <p class="section-title">上传图片</p>
+      <div class="upload-grid">
+
+        <!-- 产品主图 -->
+        <div class="upload-box" id="upload_product">
+          <input type="file" accept="image/*" style="display:none">
+          <div class="upload-placeholder">
+            <span class="upload-icon">🖼️</span>
+            <span class="upload-label">产品主图</span>
+            <span class="upload-required">* 必填</span>
+          </div>
+          <div class="upload-preview"></div>
+        </div>
+
+        <!-- 场景底图 -->
+        <div class="upload-box" id="upload_scene">
+          <input type="file" accept="image/*" style="display:none">
+          <div class="upload-placeholder">
+            <span class="upload-icon">🏭</span>
+            <span class="upload-label">场景底图</span>
+            <span class="upload-required">可选</span>
+          </div>
+          <div class="upload-preview"></div>
+        </div>
+
+        <!-- 效果图 -->
+        <div class="upload-box" id="upload_effect">
+          <input type="file" accept="image/*" style="display:none">
+          <div class="upload-placeholder">
+            <span class="upload-icon">🎬</span>
+            <span class="upload-label">效果图</span>
+            <span class="upload-required">可选</span>
+          </div>
+          <div class="upload-preview"></div>
+        </div>
+
+        <!-- 二维码 -->
+        <div class="upload-box" id="upload_qr">
+          <input type="file" accept="image/*" style="display:none">
+          <div class="upload-placeholder">
+            <span class="upload-icon">📲</span>
+            <span class="upload-label">二维码</span>
+            <span class="upload-required">可选</span>
+          </div>
+          <div class="upload-preview"></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Product Title -->
+    <div class="panel-section">
+      <p class="section-title">产品标题</p>
+      <input
+        id="product_title_input"
+        type="text"
+        class="text-area text-area--single"
+        placeholder="输入产品标题，如：德威莱克DZ50X驾驶式洗地机">
+      <p class="text-hint">用于首屏大标题和电商标题生成</p>
+    </div>
+
+    <!-- Text Paste -->
+    <div class="panel-section">
+      <p class="section-title">产品文案</p>
+      <textarea
+        id="text_input"
+        class="text-area"
+        placeholder="粘贴产品资料、参数表、电商文案..."></textarea>
+      <p class="text-hint">支持任意格式文本，AI自动识别产品参数</p>
+    </div>
+
+    <!-- Generate Button -->
+    <div class="panel-section">
+      <button class="btn-generate" id="btn_generate" onclick="generatePreview()">
+        ✨ 一键生成详情页
+      </button>
+      <p class="text-hint" style="margin-top:8px;">Jinja 模板秒出 HTML 预览,中央区直接看效果</p>
+
+      <button class="btn-generate" id="btn_ai_html_v2" onclick="generateAiHtmlV2()" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(5,150,105,0.28);">
+        🎨 AI精修（专业版）
+      </button>
+      <p class="text-hint" style="margin-top:8px;">DeepSeek 分析文案 + GPT-image-2 真·AI 重绘 6 张图 → Playwright 拼装长图,约 3-5 分钟。服务端缺 key 会自动降级占位图。</p>
+      <div id="ark_key_status" style="margin-top:8px; padding:8px 10px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; font-size:12px; display:flex; align-items:center; justify-content:space-between; gap:8px;">
+        <span id="ark_key_label" style="color:#6b7280;">⚙️ 豆包 Key: 未配置</span>
+        <a href="#" onclick="setupArkKey(); return false;" style="color:#10b981; text-decoration:underline; font-size:12px;">设置</a>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- ── CENTER PANEL ─────────────────────────────────────────── -->
+  <main class="panel-center">
+
+    <!-- Tabs -->
+    <div class="center-tabs" id="center_tabs">
+      <button class="center-tab active" data-tab="detail" onclick="switchCenterTab('detail')">一键生成版</button>
+      <button class="center-tab" data-tab="main_img" onclick="switchCenterTab('main_img')">模块主图</button>
+      <button class="center-tab" data-tab="ai_img" onclick="switchCenterTab('ai_img')">AI精修版</button>
+    </div>
+
+    <!-- Empty State -->
+    <div id="empty_state">
+      <div class="empty-icon">📋</div>
+      <div class="empty-title">上传产品图 → 粘贴文案 → 一键生成</div>
+      <div class="empty-subtitle">生成后可在「一键生成版」「主图」「AI精修版」之间切换对比</div>
+    </div>
+
+    <!-- Detail Tab: Preview Wrapper -->
+    <div id="preview_wrapper">
+      <div id="preview_container"></div>
+    </div>
+
+    <!-- AI Image Tab -->
+    <div id="ai_img_wrapper" style="display:none;">
+      <div id="ai_img_loading" style="display:none; text-align:center; padding:60px 20px;">
+        <div style="font-size:48px; margin-bottom:20px;">🎨</div>
+        <div style="font-size:18px; font-weight:600; color:#10b981;">AI 正在生成高质量详情图...</div>
+        <div style="font-size:14px; color:#888; margin-top:8px;">豆包 Seedream 生成 AI 背景 + HTML/CSS 排版 + Chromium 截图,约 10-20 秒</div>
+        <div style="margin-top:20px; width:200px; height:4px; background:#e5e7eb; border-radius:2px; margin-left:auto; margin-right:auto; overflow:hidden;">
+          <div id="ai_progress_bar" style="width:0%; height:100%; background:linear-gradient(90deg,#6366f1,#8b5cf6); border-radius:2px; transition:width 0.5s;"></div>
+        </div>
+      </div>
+      <div id="ai_img_results" style="display:flex; flex-direction:column; align-items:center; gap:12px; padding:20px;"></div>
+    </div>
+
+    <!-- Main Image Tab -->
+    <div id="main_img_wrapper">
+      <div class="main-img-viewer">
+        <div class="main-img-large" id="main_img_large"></div>
+        <div class="main-img-strip" id="main_img_strip"></div>
+      </div>
+    </div>
+
+    <!-- Export Bar (detail) -->
+    <div id="export_bar">
+      <button class="btn-export" id="btn_export_png" onclick="doExport('png')" title="无损 PNG, 文件较大 (~5MB)">
+        📥 导出 PNG
+      </button>
+      <button class="btn-export btn-export-secondary" id="btn_export_jpg" onclick="doExport('jpg')"
+              title="JPG quality 90, 文件更小 (~1.5-2MB), 适合电商上传">
+        📥 导出 JPG <span style="font-size:11px; opacity:.7;">(较小)</span>
+      </button>
+    </div>
+
+    <!-- Export Bar (main images) -->
+    <div id="main_img_export_bar">
+      <button class="btn-export" onclick="exportMainImagesZip()">
+        📦 导出全部主图 ZIP
+      </button>
+    </div>
+
+  </main>
+
+  <!-- ── RIGHT PANEL ──────────────────────────────────────────── -->
+  <aside class="panel-right">
+    <p class="panel-right-title">选择模板</p>
+    <div class="theme-grid" id="theme_grid">
+      <!-- populated by loadThemes() -->
+    </div>
+
+    <!-- E-commerce Copy Section -->
+    <div id="ecom_content">
+      <div class="ecom-panel">
+        <div class="ecom-section-title">
+          电商标题
+          <button class="ecom-copy-btn" onclick="copyField('ecom_title')">复制</button>
+        </div>
+        <div class="ecom-field" id="ecom_title"></div>
+      </div>
+
+      <div class="ecom-panel">
+        <div class="ecom-section-title">
+          搜索关键词
+          <button class="ecom-copy-btn" onclick="copyField('ecom_keywords')">复制</button>
+        </div>
+        <div class="ecom-tags" id="ecom_keywords"></div>
+      </div>
+
+      <div class="ecom-panel">
+        <div class="ecom-section-title">
+          核心卖点
+          <button class="ecom-copy-btn" onclick="copyAllPoints()">全部复制</button>
+        </div>
+        <ul class="ecom-points" id="ecom_points"></ul>
+      </div>
+
+      <div class="ecom-panel" id="ecom_desc_panel" style="display:none;">
+        <button class="ecom-expand-toggle" onclick="toggleEcomDesc()" id="ecom_desc_toggle">展开商品描述 ▾</button>
+        <div id="ecom_desc_content" style="display:none;margin-top:10px;">
+          <div class="ecom-section-title">
+            商品描述
+            <button class="ecom-copy-btn" onclick="copyField('ecom_desc')">复制</button>
+          </div>
+          <div class="ecom-field" id="ecom_desc"></div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+</div><!-- .workspace -->
+
+<!-- ─── Edit Modal ──────────────────────────────────────────────── -->
+<div id="edit_modal" style="display:none; position:fixed; inset:0; z-index:9998; background:rgba(0,0,0,0.4); backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px);">
+  <div style="position:absolute; right:0; top:0; bottom:0; width:420px; background:#fff; box-shadow:-8px 0 30px rgba(0,0,0,0.12); display:flex; flex-direction:column;">
+    <div style="padding:20px 24px; border-bottom:1px solid var(--color-border); display:flex; align-items:center; justify-content:space-between;">
+      <div>
+        <div style="font-size:16px; font-weight:700; color:var(--color-text);" id="edit_modal_title">编辑模块</div>
+        <div style="font-size:12px; color:var(--color-text-muted); margin-top:2px;" id="edit_modal_subtitle"></div>
+      </div>
+      <button onclick="closeEditModal()" style="background:none; border:none; font-size:20px; cursor:pointer; color:var(--color-text-muted); padding:4px;">✕</button>
+    </div>
+    <div id="edit_modal_fields" style="flex:1; overflow-y:auto; padding:20px 24px;"></div>
+    <div style="padding:16px 24px; border-top:1px solid var(--color-border); display:flex; gap:10px;">
+      <button onclick="closeEditModal()" style="flex:1; padding:10px; border:1px solid var(--color-border); border-radius:8px; background:#fff; cursor:pointer; font-size:14px; font-weight:500;">取消</button>
+      <button onclick="saveEditModal()" style="flex:1; padding:10px; border:none; border-radius:8px; background:var(--color-primary); color:#fff; cursor:pointer; font-size:14px; font-weight:600;">保存并刷新</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─── Progress Overlay ─────────────────────────────────────────── -->
+<div id="progress_overlay" style="display:none; position:fixed; inset:0; z-index:9999; background:rgba(255,255,255,0.75); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); flex-direction:column; align-items:center; justify-content:center;">
+  <div style="background:#fff; border:1px solid rgba(0,0,0,0.04); border-radius:16px; padding:44px 56px; text-align:center; box-shadow:0 24px 60px rgba(0,0,0,0.12), 0 8px 20px rgba(0,0,0,0.06);">
+    <div style="width:42px; height:42px; border:3px solid var(--color-border); border-top-color:var(--color-primary); border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 22px;"></div>
+    <div id="progress_text" style="color:var(--color-title); font-size:16px; font-weight:600; letter-spacing:-0.01em;">正在生成...</div>
+    <div style="color:var(--color-text-muted); font-size:13px; margin-top:6px;">请稍候，AI正在分析产品信息</div>
+  </div>
+</div>
+
+<!-- ─── Scripts ──────────────────────────────────────────────────── -->
+<script>
+  /* ── State ─────────────────────────────────────────────────── */
+  let productImageUrl = '';
+  let sceneImageUrl = '';
+  let effectImageUrl = '';
+  let qrImageUrl = '';
+  let currentProductType = '{{ initial_product_type|default("设备类") }}';
+  let currentThemeId = 'classic-red';
+  let allThemes = [];
+  let currentBuildData = null;
+  let originalRawText = '';
+  let mainImageHtmls = [];       // [{id, name, html}, ...]
+  let currentMainImgIndex = 0;
+  let currentEcomData = null;    // {listing_title, listing_keywords, ...}
+  let moduleDataMap = {};        // block_id → block_data (for editing)
+  let editingModuleId = null;    // currently editing block_id
+
+  /* e2e 测试钩子 — 让 Playwright 脚本能直接注入 parsed_data 绕过 AI 解析流程 */
+  window.__TEST_setBuildData = (parsed, themeId, productImageUrl) => {
+    currentBuildData = { parsed };
+    if (themeId) currentThemeId = themeId;
+    if (productImageUrl) {
+      // 兜底:让 #product_image_preview 存在且携带 dataset.url,AI精修读这里
+      let el = document.getElementById('product_image_preview');
+      if (!el) {
+        el = document.createElement('img');
+        el.id = 'product_image_preview';
+        el.style.display = 'none';
+        document.body.appendChild(el);
+      }
+      el.dataset.url = productImageUrl;
+      el.src = productImageUrl;
+    }
+  };
+
+  /* ── Helpers ────────────────────────────────────────────────── */
+  const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+
+  async function postJson(url, data) {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+      body: JSON.stringify(data)
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ error: '请求失败' }));
+      throw new Error(err.error || `HTTP ${resp.status}`);
+    }
+    return resp.json();
+  }
+
+  function showError(msg) {
+    alert(msg);
+  }
+
+  /* ── Category Selection ─────────────────────────────────────── */
+  function selectCategory(type) {
+    currentProductType = type;
+    document.querySelectorAll('.cat-pill').forEach(p => {
+      const isActive = p.dataset.type === type;
+      p.classList.toggle('active', isActive);
+    });
+    // Auto-select default theme for this category
+    const defaultTheme = allThemes.find(t => t.default_for && t.default_for.includes(type));
+    if (defaultTheme) applyTheme(defaultTheme.id);
+  }
+
+  /* ── Image Upload ───────────────────────────────────────────── */
+  /* opts.autoRembg=true → 后端自动调 rembg 抠图,返回去背景透明 PNG
+     仅 upload_product 需要(产品主图),其他图(场景/效果/二维码)保留原背景 */
+  function initUploadBox(boxId, onSuccess, opts) {
+    const box = document.getElementById(boxId);
+    const input = box.querySelector('input[type="file"]');
+    const preview = box.querySelector('.upload-preview');
+    const placeholder = box.querySelector('.upload-placeholder');
+    const autoRembg = !!(opts && opts.autoRembg);
+
+    box.addEventListener('click', () => input.click());
+    box.addEventListener('dragover', e => { e.preventDefault(); box.classList.add('drag-over'); });
+    box.addEventListener('dragleave', () => box.classList.remove('drag-over'));
+    box.addEventListener('drop', e => {
+      e.preventDefault(); box.classList.remove('drag-over');
+      if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0], box, preview, placeholder, onSuccess, autoRembg);
+    });
+    input.addEventListener('change', () => {
+      if (input.files.length) uploadFile(input.files[0], box, preview, placeholder, onSuccess, autoRembg);
+    });
+  }
+
+  async function uploadFile(file, box, preview, placeholder, onSuccess, autoRembg) {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (autoRembg) formData.append('auto_rembg', '1');
+    // 抠图耗时 3-8s,给用户即时占位提示避免以为卡死
+    if (autoRembg) {
+      preview.innerHTML = `<div style="padding:24px;color:#6366f1;font-size:13px;">AI 抠图中…约 5 秒</div>`;
+      preview.style.display = 'block';
+      placeholder.style.display = 'none';
+    }
+    try {
+      const resp = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrfToken },
+        body: formData
+      });
+      const data = await resp.json();
+      if (data.url) {
+        const badge = data.rembg
+          ? `<div style="position:absolute;top:4px;left:4px;background:#10b981;color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;">已去背景</div>`
+          : '';
+        preview.innerHTML = `${badge}<img src="${data.url}" alt=""><button class="upload-remove" onclick="removeUpload(event, '${box.id}')">&times;</button>`;
+        preview.style.display = 'block';
+        placeholder.style.display = 'none';
+        onSuccess(data.url);
+      } else {
+        preview.innerHTML = '';
+        preview.style.display = 'none';
+        placeholder.style.display = 'flex';
+        showError(data.error || '上传失败');
+      }
+    } catch (e) {
+      preview.innerHTML = '';
+      preview.style.display = 'none';
+      placeholder.style.display = 'flex';
+      showError('上传失败: ' + e.message);
+    }
+  }
+
+  function removeUpload(event, boxId) {
+    event.stopPropagation();
+    const box = document.getElementById(boxId);
+    const preview = box.querySelector('.upload-preview');
+    const placeholder = box.querySelector('.upload-placeholder');
+    preview.innerHTML = '';
+    preview.style.display = 'none';
+    placeholder.style.display = 'flex';
+    if (boxId === 'upload_product') productImageUrl = '';
+    else if (boxId === 'upload_scene') sceneImageUrl = '';
+    else if (boxId === 'upload_effect') effectImageUrl = '';
+    else if (boxId === 'upload_qr') qrImageUrl = '';
+  }
+
+  /* ── Theme Loading & Application ────────────────────────────── */
+  async function loadThemes() {
+    try {
+      const resp = await fetch('/api/themes', { headers: { 'X-CSRFToken': csrfToken } });
+      const data = await resp.json();
+      allThemes = data.themes;
+      renderThemeGrid();
+      const defaultTheme = allThemes.find(t => t.default_for && t.default_for.includes(currentProductType));
+      if (defaultTheme) applyTheme(defaultTheme.id);
+      else if (allThemes.length) applyTheme(allThemes[0].id);
+    } catch (e) { console.error('Failed to load themes', e); }
+  }
+
+  function renderThemeGrid() {
+    const grid = document.getElementById('theme_grid');
+    grid.innerHTML = allThemes.map(t => `
+      <div class="theme-card ${t.id === currentThemeId ? 'selected' : ''}" data-theme-id="${t.id}" onclick="applyTheme('${t.id}')">
+        <img src="/static/themes/${t.thumbnail}" alt="${t.name}">
+        <div class="theme-card-name">${t.name}</div>
+      </div>
+    `).join('');
+  }
+
+  function applyTheme(themeId) {
+    const theme = allThemes.find(t => t.id === themeId);
+    if (!theme) return;
+    currentThemeId = themeId;
+    const container = document.getElementById('preview_container');
+    if (container && theme.vars) {
+      Object.entries(theme.vars).forEach(([key, value]) => {
+        container.style.setProperty(key, value);
+      });
+    }
+    document.querySelectorAll('.theme-card').forEach(card => {
+      card.classList.toggle('selected', card.dataset.themeId === themeId);
+    });
+    // Also apply to main image viewer
+    const mainLarge = document.getElementById('main_img_large');
+    if (mainLarge && theme && theme.vars) {
+      Object.entries(theme.vars).forEach(([key, value]) => {
+        mainLarge.style.setProperty(key, value);
+      });
+    }
+  }
+
+  /* ── 布局预设(三档:edit/balance/preview)───────────────────── */
+  const LAYOUT_KEY = 'workspace_layout_v1';
+  const VALID_LAYOUTS = ['edit', 'balance', 'preview'];
+
+  function setLayout(name, opts = {}) {
+    if (!VALID_LAYOUTS.includes(name)) name = 'balance';
+    // 预览档要求 ≥1280 屏宽(中栏 56% 才装得下 750px 的 #preview_container)
+    if (name === 'preview' && window.innerWidth < 1280) name = 'balance';
+    const ws = document.querySelector('.workspace');
+    if (!ws) return;
+    VALID_LAYOUTS.forEach(n => ws.classList.toggle(`layout-${n}`, n === name));
+    document.querySelectorAll('.layout-toggle button').forEach(b =>
+      b.classList.toggle('active', b.dataset.layout === name));
+    if (!opts.silent) localStorage.setItem(LAYOUT_KEY, name);
+  }
+
+  function initLayout() {
+    setLayout(localStorage.getItem(LAYOUT_KEY) || 'balance', { silent: true });
+  }
+
+  /* ── Generate Preview ───────────────────────────────────────── */
+  async function generatePreview() {
+    if (!productImageUrl) { showError('请先上传产品主图'); return; }
+    const rawText = document.getElementById('text_input').value.trim();
+    if (!rawText) { showError('请粘贴产品资料文案'); return; }
+    originalRawText = rawText;
+    const productTitle = (document.getElementById('product_title_input').value || '').trim();
+    if (!productTitle) {
+      const hint = document.getElementById('product_title_input');
+      hint.style.borderColor = '#f59e0b';
+      hint.setAttribute('placeholder', '⚠️ 建议填写产品标题（品牌+型号），首屏效果更好');
+      setTimeout(() => { hint.style.borderColor = ''; hint.setAttribute('placeholder', '输入产品标题，如：德威莱克DZ50X驾驶式洗地机'); }, 5000);
+    }
+
+    const btn = document.getElementById('btn_generate');
+    const progress = document.getElementById('progress_overlay');
+    btn.disabled = true;
+    btn.innerHTML = '<span style="display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,0.4);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:6px;"></span>AI 正在生成...';
+    progress.style.display = 'flex';
+
+    try {
+      updateProgress('AI 正在分析产品参数...');
+      const parsed = await postJson(`/api/build/${encodeURIComponent(currentProductType)}/parse-text`, { text: rawText, product_title: productTitle });
+
+      updateProgress('正在组装详情页模块...');
+      const preview = await postJson(`/api/build/${encodeURIComponent(currentProductType)}/render-preview`, {
+        parsed_data: parsed,
+        product_image: productImageUrl,
+        scene_image: sceneImageUrl || '',
+        effect_image: effectImageUrl || '',
+        qr_image: qrImageUrl || '',
+        theme_id: currentThemeId
+      });
+
+      renderModules(preview.modules);
+      currentBuildData = { parsed, productType: currentProductType, themeId: currentThemeId, modules: preview.modules };
+
+      document.getElementById('empty_state').style.display = 'none';
+      document.getElementById('preview_wrapper').style.display = 'block';
+      document.getElementById('export_bar').style.display = 'flex';
+      document.getElementById('center_tabs').classList.add('visible');
+
+      applyTheme(currentThemeId);
+
+      // Populate e-commerce copy from parsed data
+      populateEcomData(parsed);
+
+      // 模块主图：直接从详情图 modules 里摘指定 5 个 block，不再单独渲染
+      renderMainImages(extractMainBlocksFromModules(preview.modules));
+
+    } catch (err) {
+      showError('生成失败：' + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '✨ 一键生成详情页';
+      progress.style.display = 'none';
+    }
+  }
+
+  function updateProgress(text) {
+    document.getElementById('progress_text').textContent = text;
+  }
+
+  /* ── Module Rendering ───────────────────────────────────────── */
+  function renderModules(modules) {
+    const container = document.getElementById('preview_container');
+    container.innerHTML = '';
+    moduleDataMap = {};
+    modules.forEach((mod, index) => {
+      if (mod.data) moduleDataMap[mod.id] = mod.data;
+      const wrapper = document.createElement('div');
+      wrapper.className = 'module-wrapper';
+      wrapper.setAttribute('data-module-id', mod.id);
+      wrapper.setAttribute('data-module-index', index);
+      wrapper.innerHTML = `
+        <div class="module-toolbar">
+          <span class="module-name">${mod.name}</span>
+          <div class="module-actions">
+            <button class="mod-btn" onclick="editModule('${mod.id}')" title="编辑">✏️</button>
+            <button class="mod-btn" onclick="regenerateModule('${mod.id}')" title="AI重新生成">🔄</button>
+            <button class="mod-btn mod-toggle" onclick="toggleModule(this, '${mod.id}')" title="显示/隐藏">👁</button>
+            <span class="mod-drag-handle" title="拖拽排序">⠿</span>
+          </div>
+        </div>
+        <div class="module-content">${mod.html}</div>
+        <div class="module-hidden-placeholder">
+          <span>📦 ${mod.name}</span><span style="opacity:0.6">已隐藏</span>
+        </div>
+      `;
+      container.appendChild(wrapper);
+    });
+    initSortable();
+  }
+
+  /* ── Sortable ───────────────────────────────────────────────── */
+  function initSortable() {
+    const container = document.getElementById('preview_container');
+    if (typeof Sortable !== 'undefined') {
+      Sortable.create(container, {
+        handle: '.mod-drag-handle',
+        animation: 200,
+        ghostClass: 'module-ghost',
+        onEnd: () => updateModuleOrder()
+      });
+    }
+  }
+
+  function updateModuleOrder() {
+    if (!currentBuildData) return;
+    const ids = [...document.querySelectorAll('.module-wrapper')].map(w => w.dataset.moduleId);
+    currentBuildData.moduleOrder = ids;
+  }
+
+  /* ── Module Actions ─────────────────────────────────────────── */
+  function toggleModule(btn, moduleId) {
+    const wrapper = document.querySelector(`[data-module-id="${moduleId}"]`);
+    wrapper.classList.toggle('module-hidden');
+    btn.style.opacity = wrapper.classList.contains('module-hidden') ? '0.3' : '1';
+  }
+
+  // Fields to show in edit panel per block type
+  const _EDIT_FIELDS = {
+    block_a: [
+      {key:'brand_text',label:'品牌名',type:'text'},
+      {key:'model_name',label:'型号',type:'text'},
+      {key:'category_line',label:'品类短语',type:'text'},
+      {key:'main_title',label:'主标题',type:'text'},
+      {key:'hero_subtitle_pre',label:'副标题前缀',type:'text'},
+      {key:'hero_subtitle_em',label:'副标题强调',type:'text'},
+      {key:'hero_subtitle_post',label:'副标题后缀',type:'text'},
+      {key:'tagline_sub',label:'底部标语',type:'text'},
+    ],
+    block_b2: [
+      {key:'title_num',label:'数字标题',type:'text'},
+      {key:'title_text',label:'文字标题',type:'text'},
+      {key:'subtitle',label:'副标题',type:'text'},
+    ],
+    block_b3: [
+      {key:'header_line1',label:'大标题行1',type:'text'},
+      {key:'header_line2',label:'大标题行2',type:'text'},
+      {key:'caption_line1',label:'说明行1',type:'text'},
+      {key:'caption_line2',label:'说明行2',type:'text'},
+      {key:'footer_line1',label:'底部行1',type:'text'},
+      {key:'footer_line2',label:'底部行2',type:'text'},
+    ],
+    block_e: [
+      {key:'title',label:'标题',type:'text'},
+      {key:'subtitle',label:'副标题',type:'text'},
+      {key:'red_bar_text',label:'红条文案',type:'text'},
+      {key:'dim_height',label:'高度(mm)',type:'text'},
+      {key:'dim_width',label:'宽度(mm)',type:'text'},
+      {key:'dim_length',label:'长度(mm)',type:'text'},
+    ],
+    block_f: [
+      {key:'title_line1',label:'标题行1',type:'text'},
+      {key:'title_line1_red',label:'标题红字',type:'text'},
+      {key:'title_line2',label:'标题行2',type:'text'},
+      {key:'vs_left_title',label:'左侧标题',type:'text'},
+      {key:'vs_left_sub',label:'左侧副标题',type:'text'},
+      {key:'vs_right_sub',label:'右侧副标题',type:'text'},
+      {key:'vs_left_bottom',label:'左侧结论',type:'textarea'},
+      {key:'vs_right_bottom',label:'右侧结论',type:'textarea'},
+    ],
+    block_n: [
+      {key:'cta_title',label:'CTA标题',type:'text'},
+      {key:'cta_subtitle',label:'CTA副标题',type:'text'},
+      {key:'qr_caption',label:'二维码说明',type:'text'},
+    ],
+    block_o: [
+      {key:'disclaimer_title',label:'标题',type:'text'},
+      {key:'disclaimer_text',label:'免责声明',type:'textarea'},
+    ],
+  };
+
+  function editModule(moduleId) {
+    const data = moduleDataMap[moduleId];
+    if (!data) { showError('没有可编辑的数据'); return; }
+    editingModuleId = moduleId;
+    const blockName = _get_block_display_name_js(moduleId);
+
+    document.getElementById('edit_modal_title').textContent = `编辑 · ${blockName}`;
+    document.getElementById('edit_modal_subtitle').textContent = moduleId;
+
+    const fieldsContainer = document.getElementById('edit_modal_fields');
+    const fields = _EDIT_FIELDS[moduleId];
+
+    if (fields) {
+      fieldsContainer.innerHTML = fields.map(f => {
+        const val = data[f.key] || '';
+        const escaped = String(val).replace(/"/g, '&quot;').replace(/</g, '&lt;');
+        if (f.type === 'textarea') {
+          return `<div style="margin-bottom:14px;">
+            <label style="font-size:12px;font-weight:600;color:var(--color-text-secondary);display:block;margin-bottom:4px;">${f.label}</label>
+            <textarea data-field="${f.key}" style="width:100%;height:80px;padding:8px 10px;border:1.5px solid var(--color-border);border-radius:8px;font-size:13px;font-family:var(--font-sans);resize:vertical;">${escaped}</textarea>
+          </div>`;
+        }
+        return `<div style="margin-bottom:14px;">
+          <label style="font-size:12px;font-weight:600;color:var(--color-text-secondary);display:block;margin-bottom:4px;">${f.label}</label>
+          <input data-field="${f.key}" type="text" value="${escaped}" style="width:100%;padding:8px 10px;border:1.5px solid var(--color-border);border-radius:8px;font-size:13px;">
+        </div>`;
+      }).join('');
+    } else {
+      // Generic: show all string fields
+      const entries = Object.entries(data).filter(([k,v]) => typeof v === 'string' && v.length < 500 && !k.endsWith('_image'));
+      fieldsContainer.innerHTML = entries.map(([k, v]) => {
+        const escaped = String(v).replace(/"/g, '&quot;').replace(/</g, '&lt;');
+        return `<div style="margin-bottom:14px;">
+          <label style="font-size:12px;font-weight:600;color:var(--color-text-secondary);display:block;margin-bottom:4px;">${k}</label>
+          <input data-field="${k}" type="text" value="${escaped}" style="width:100%;padding:8px 10px;border:1.5px solid var(--color-border);border-radius:8px;font-size:13px;">
+        </div>`;
+      }).join('');
+    }
+
+    document.getElementById('edit_modal').style.display = 'block';
+  }
+
+  function _get_block_display_name_js(moduleId) {
+    const wrapper = document.querySelector(`[data-module-id="${moduleId}"] .module-name`);
+    return wrapper ? wrapper.textContent : moduleId;
+  }
+
+  function closeEditModal() {
+    document.getElementById('edit_modal').style.display = 'none';
+    editingModuleId = null;
+  }
+
+  async function saveEditModal() {
+    if (!editingModuleId) return;
+    const data = { ...moduleDataMap[editingModuleId] };
+    // Collect field values
+    document.querySelectorAll('#edit_modal_fields [data-field]').forEach(el => {
+      data[el.dataset.field] = el.value;
+    });
+
+    try {
+      const result = await postJson(`/api/build/${encodeURIComponent(currentProductType)}/render-block`, {
+        block_id: editingModuleId,
+        block_data: data,
+      });
+      // Update module HTML in preview
+      const wrapper = document.querySelector(`[data-module-id="${editingModuleId}"]`);
+      if (wrapper) {
+        wrapper.querySelector('.module-content').innerHTML = result.html;
+      }
+      moduleDataMap[editingModuleId] = data;
+      closeEditModal();
+    } catch (err) {
+      showError('保存失败：' + err.message);
+    }
+  }
+
+  async function regenerateModule(moduleId) {
+    if (!currentBuildData || !currentBuildData.parsed) { showError('没有产品数据'); return; }
+    const wrapper = document.querySelector(`[data-module-id="${moduleId}"]`);
+    const btn = wrapper.querySelector('[title="AI重新生成"]');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
+
+    try {
+      const result = await postJson(`/api/build/${encodeURIComponent(currentProductType)}/regenerate-block`, {
+        block_id: moduleId,
+        parsed_data: currentBuildData.parsed,
+        product_image: productImageUrl,
+        scene_image: sceneImageUrl || '',
+        effect_image: effectImageUrl || '',
+        qr_image: qrImageUrl || '',
+      });
+      if (wrapper) {
+        wrapper.querySelector('.module-content').innerHTML = result.html;
+      }
+      if (result.data) moduleDataMap[moduleId] = result.data;
+    } catch (err) {
+      showError('AI重新生成失败：' + err.message);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '🔄'; }
+    }
+  }
+
+  function getCurrentModuleOrder() {
+    return [...document.querySelectorAll('.module-wrapper')].map(w => w.dataset.moduleId);
+  }
+
+  function getHiddenModuleIds() {
+    return [...document.querySelectorAll('.module-wrapper.module-hidden')].map(w => w.dataset.moduleId);
+  }
+
+  /* ── Export ─────────────────────────────────────────────────── */
+  async function doExport(format = 'png') {
+    const fmt = format === 'jpg' ? 'jpg' : 'png';
+    // 双按钮: 点哪个 disable 哪个, 另一个保持可点 (避免误锁)
+    const btnPng = document.getElementById('btn_export_png');
+    const btnJpg = document.getElementById('btn_export_jpg');
+    const activeBtn = fmt === 'jpg' ? btnJpg : btnPng;
+    const originalText = activeBtn.innerHTML;
+    activeBtn.disabled = true;
+    activeBtn.textContent = '导出中...';
+    try {
+      const resp = await fetch(`/export/${encodeURIComponent(currentProductType)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+        body: JSON.stringify({
+          module_order: getCurrentModuleOrder(),
+          hidden_modules: getHiddenModuleIds(),
+          theme_id: currentThemeId,
+          build_data: currentBuildData,
+          format: fmt
+        })
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ error: '导出失败' }));
+        throw new Error(err.error || '导出失败');
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${currentProductType}_详情页.${fmt}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      showError('导出失败：' + err.message);
+    } finally {
+      activeBtn.disabled = false;
+      activeBtn.innerHTML = originalText;
+    }
+  }
+
+  /* ── Center Tab Switching ────────────────────────────────────── */
+  function switchCenterTab(tab) {
+    document.querySelectorAll('.center-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+    document.getElementById('preview_wrapper').style.display = tab === 'detail' ? 'block' : 'none';
+    document.getElementById('export_bar').style.display = tab === 'detail' ? 'flex' : 'none';
+    document.getElementById('main_img_wrapper').style.display = tab === 'main_img' ? 'block' : 'none';
+    document.getElementById('main_img_export_bar').style.display = tab === 'main_img' ? 'flex' : 'none';
+    document.getElementById('ai_img_wrapper').style.display = tab === 'ai_img' ? 'block' : 'none';
+  }
+
+  /* ── 豆包 API Key 用户自管(只存浏览器 localStorage,不上传服务器存储) ─── */
+  function renderArkKeyStatus() {
+    const key = (localStorage.getItem('ark_api_key') || '').trim();
+    const label = document.getElementById('ark_key_label');
+    if (!label) return;
+    if (key) {
+      label.innerHTML = `⚙️ 豆包 Key: <span style="color:#059669;">已配置 ✓ ····${key.slice(-4)}</span>`;
+    } else {
+      label.innerHTML = `⚙️ 豆包 Key: <span style="color:#dc2626;">未配置 ⚠️</span>`;
+    }
+  }
+  function setupArkKey() {
+    const cur = (localStorage.getItem('ark_api_key') || '').trim();
+    const tip = '请粘贴你的豆包 Seedream API Key:\n\n' +
+      '获取入口:火山方舟控制台 → API Key 管理 → 创建 → 复制 sk-xxx\n' +
+      '安全说明:仅存在你浏览器 localStorage,不会上传服务器,清空请提交空内容\n\n' +
+      (cur ? `当前(末4位 ····${cur.slice(-4)})` : '当前:未配置');
+    const input = prompt(tip, cur);
+    if (input === null) return cur;
+    const next = input.trim();
+    if (next) localStorage.setItem('ark_api_key', next);
+    else      localStorage.removeItem('ark_api_key');
+    renderArkKeyStatus();
+    return next;
+  }
+
+  function escapeHtml(value) {
+    const div = document.createElement('div');
+    div.textContent = value == null ? '' : String(value);
+    return div.innerHTML;
+  }
+
+  function renderAiRefineResult(result, options = {}) {
+    const results = document.getElementById('ai_img_results');
+    const imageUrl = result.image_url || result.assembled_url;
+    if (!results || !imageUrl) return;
+
+    const downloadUrl = result.assembled_url || imageUrl;
+    const sep = imageUrl.includes('?') ? '&' : '?';
+    const displayUrl = `${imageUrl}${sep}t=${Date.now()}`;
+    const blocksCount = Number(result.blocks_count || (Array.isArray(result.blocks) ? result.blocks.length : 0));
+    const elapsed = Number(result.elapsed_s || 0);
+    const cost = Number(result.cost_rmb || 0);
+    const restored = options.restored ? '上次生成 · ' : '';
+    const info = `${restored}AI 精修版 · ${blocksCount} 屏 · ${elapsed}s · ¥${cost.toFixed(2)}`;
+
+    results.innerHTML = `
+      <div style="text-align:center; margin-bottom:16px;">
+        <span style="font-size:14px; color:#555; margin-right:12px;">${escapeHtml(info)}</span>
+        <a href="${escapeHtml(downloadUrl)}" download
+          style="padding:6px 16px; background:#10b981; color:#fff;
+          border:none; border-radius:6px; font-size:13px; text-decoration:none;">
+          下载详情图
+        </a>
+      </div>
+      <div style="position:relative; width:375px; border-radius:8px; overflow:hidden;
+        box-shadow:0 4px 18px rgba(0,0,0,0.12);">
+        <img src="${escapeHtml(displayUrl)}" style="width:100%; display:block;" />
+      </div>`;
+  }
+
+  async function rememberAiRefineResult(taskId) {
+    try {
+      await postJson(`/api/workspace-results/ai-refine-v2/${encodeURIComponent(taskId)}`, {
+        product_category: currentProductType,
+      });
+    } catch (err) {
+      console.warn('[workspace-results] save failed', err);
+    }
+  }
+
+  async function restoreLatestAiResult() {
+    try {
+      const resp = await fetch('/api/workspace-results/latest?kind=ai_refine_v2');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (!data.ok || !data.result) return;
+
+      const loading = document.getElementById('ai_img_loading');
+      if (loading) loading.style.display = 'none';
+      document.getElementById('empty_state').style.display = 'none';
+      switchCenterTab('ai_img');
+      renderAiRefineResult(data.result, { restored: true });
+    } catch (err) {
+      console.warn('[workspace-results] restore failed', err);
+    }
+  }
+
+  /* ── AI 精修（专业版）: DeepSeek planner + GPT-image-2 重绘 + Playwright 拼装 ─── */
+  async function generateAiHtmlV2() {
+    if (!productImageUrl) {
+      showError('请先上传产品主图');
+      return;
+    }
+    const productText = (document.getElementById('text_input')?.value || '').trim();
+    const productTitle = (document.getElementById('product_title_input')?.value || '').trim();
+    if (!productText && !productTitle) {
+      showError('请填产品文案或产品标题');
+      return;
+    }
+
+    switchCenterTab('ai_img');
+    document.getElementById('empty_state').style.display = 'none';
+
+    const loading = document.getElementById('ai_img_loading');
+    const results = document.getElementById('ai_img_results');
+    loading.style.display = 'block';
+    results.innerHTML = '';
+
+    const loadingText = loading.querySelector('div:nth-child(2)');
+    const subText = loading.querySelector('div:nth-child(3)');
+    if (loadingText) loadingText.textContent = '正在生成 AI 精修版详情页…';
+    if (subText) subText.textContent = '提交中…';
+
+    const bar = document.getElementById('ai_progress_bar');
+    bar.style.width = '0%';
+
+    try {
+      // 1. POST /execute → task_id + mode
+      // schema_mode='v2' (PRD v3.2): 走 plan_v2 (DeepSeek 12 屏型 + 大疆风高级灰
+      // + lifestyle_demo 必出 + 商业承诺法律合规 + 产品色保真) → generate_v2.
+      // 不传 schema_mode 后端默认 v1, 走老的 selling_points + visual_type 路径.
+      const startResp = await postJson('/api/ai-refine-v2/execute', {
+        product_text:      productText,
+        product_image_url: productImageUrl,
+        product_title:     productTitle,
+        schema_mode:       'v2',
+        product_category:  currentProductType,
+      });
+      const taskId = startResp.task_id;
+      const mode = startResp.mode;
+      const modeBadge = mode === 'real' ? '✅ 真实 API (DeepSeek + GPT-image-2)'
+        : mode === 'partial-mock' ? '⚠️ 部分占位 (缺 DEEPSEEK_API_KEY)'
+        : '⚠️ 全占位 (服务端未配置 key, UI 自检模式)';
+
+      // 2. 轮询 /status (2s/次, 最多 10 分钟)
+      // 容错: 如果 status 端点返回 404 / 5xx (gunicorn 多 worker _TASKS 不共享
+      // 可能命中没有该任务的 worker), 视为 transient 跳过本轮, 下一轮重试.
+      // 本是 2026-04-29 现场踩坑诊断后加的防御层.
+      // 2026-05-07: 6 min → 10 min (180 → 300). 12 屏 task + APIMart 503 重试
+      // 实际跑 ~6 min, 边界踩死. PR #17 disk fallback 兜底"task done 但内存丢"
+      // 场景, 但需要等磁盘 _summary.json 落盘. 多 4 min 让 fallback 生效.
+      const maxIter = 300;
+      let finalState = null;
+      let consecutiveNotFound = 0;
+      for (let i = 0; i < maxIter; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        let state;
+        try {
+          const resp = await fetch(`/api/ai-refine-v2/status/${taskId}`);
+          if (resp.status === 404) {
+            consecutiveNotFound++;
+            if (consecutiveNotFound > 30) {  // 连续 1 分钟拿不到 = 真挂了
+              throw new Error(`task ${taskId} 在所有 worker 都查不到 (连续 ${consecutiveNotFound} 次 404)`);
+            }
+            continue;
+          }
+          if (!resp.ok) continue;  // 5xx / 网络错 → 下一轮
+          state = await resp.json();
+          consecutiveNotFound = 0;
+        } catch (err) {
+          // JSON parse / network — transient, 下一轮重试
+          if (err.message && err.message.includes('在所有 worker 都查不到')) throw err;
+          continue;
+        }
+        bar.style.width = (state.progress_pct || 0) + '%';
+        if (subText) subText.textContent = `${modeBadge} · ${state.progress_msg || state.status}`;
+        if (state.status === 'success' || state.status === 'failed') {
+          finalState = state;
+          break;
+        }
+      }
+      if (!finalState) throw new Error('轮询超时 (>10 分钟)');
+      if (finalState.status === 'failed') {
+        throw new Error(finalState.error || 'pipeline failed');
+      }
+
+      loading.style.display = 'none';
+      renderAiRefineResult(finalState);
+      await rememberAiRefineResult(taskId);
+    } catch (e) {
+      loading.style.display = 'none';
+      results.innerHTML = `<div style="text-align:center; color:#ef4444; padding:40px;">AI 精修失败: ${e.message}</div>`;
+    }
+  }
+
+  /* ── Module Main Image Display ─────────────────────────────── */
+  // 作为"模块主图"的 block 候选（从详情图里摘）
+  const MAIN_BLOCK_META = [
+    { id: 'block_a',  name: '英雄封面' },
+    { id: 'block_b3', name: '清洁故事' },
+    { id: 'block_f',  name: 'VS对比' },
+    { id: 'block_h',  name: '场景网格' },
+    { id: 'block_c1', name: '数据对比' },
+  ];
+
+  function extractMainBlocksFromModules(modules) {
+    const byId = {};
+    modules.forEach(m => { byId[m.id] = m; });
+    // 按 MAIN_BLOCK_META 顺序过滤：只保留存在且 HTML 非空的
+    return MAIN_BLOCK_META
+      .map(meta => byId[meta.id] ? { id: meta.id, name: meta.name, html: byId[meta.id].html } : null)
+      .filter(x => x && x.html && x.html.trim());
+  }
+
+  function renderMainImages(images) {
+    mainImageHtmls = images;
+    if (!images.length) return;
+    currentMainImgIndex = 0;
+    showMainImage(0);
+    renderMainImgStrip();
+  }
+
+  function showMainImage(index) {
+    currentMainImgIndex = index;
+    const container = document.getElementById('main_img_large');
+    if (mainImageHtmls[index]) {
+      container.innerHTML = mainImageHtmls[index].html;
+      // Apply theme vars to main image
+      const theme = allThemes.find(t => t.id === currentThemeId);
+      if (theme && theme.vars) {
+        Object.entries(theme.vars).forEach(([key, value]) => {
+          container.style.setProperty(key, value);
+        });
+      }
+    }
+    document.querySelectorAll('.main-img-thumb').forEach((t, i) => t.classList.toggle('active', i === index));
+  }
+
+  function renderMainImgStrip() {
+    const strip = document.getElementById('main_img_strip');
+    // 缩略图：90×120，内部用 scale(90/750) 缩放 block，顶部截取
+    const scale = 90 / 750;
+    strip.innerHTML = mainImageHtmls.map((img, i) => `
+      <div class="main-img-thumb ${i === 0 ? 'active' : ''}" onclick="showMainImage(${i})" title="${img.name}">
+        <div style="width:750px;transform:scale(${scale});transform-origin:top left;pointer-events:none;">${img.html}</div>
+        <div class="main-img-thumb-label">${img.name}</div>
+      </div>
+    `).join('');
+  }
+
+  /* ── E-commerce Copy ───────────────────────────────────────── */
+  function populateEcomData(parsed) {
+    currentEcomData = {
+      listing_title: parsed.listing_title || '',
+      listing_keywords: parsed.listing_keywords || '',
+      listing_selling_points: parsed.listing_selling_points || [],
+      listing_description: parsed.listing_description || '',
+    };
+
+    const panel = document.getElementById('ecom_content');
+    if (!currentEcomData.listing_title && !currentEcomData.listing_keywords) {
+      panel.style.display = 'none';
+      return;
+    }
+    panel.style.display = 'block';
+
+    // Title
+    document.getElementById('ecom_title').textContent = currentEcomData.listing_title;
+
+    // Keywords
+    const kwContainer = document.getElementById('ecom_keywords');
+    const keywords = currentEcomData.listing_keywords.split(/[,，]/).map(k => k.trim()).filter(Boolean);
+    kwContainer.innerHTML = keywords.map(k => `<span class="ecom-tag">${k}</span>`).join('');
+
+    // Selling points
+    const pointsList = document.getElementById('ecom_points');
+    pointsList.innerHTML = currentEcomData.listing_selling_points.map(p => `<li>${p}</li>`).join('');
+
+    // Description
+    if (currentEcomData.listing_description) {
+      document.getElementById('ecom_desc_panel').style.display = 'block';
+      document.getElementById('ecom_desc').textContent = currentEcomData.listing_description;
+    } else {
+      document.getElementById('ecom_desc_panel').style.display = 'none';
+    }
+  }
+
+  function toggleEcomDesc() {
+    const content = document.getElementById('ecom_desc_content');
+    const toggle = document.getElementById('ecom_desc_toggle');
+    const isHidden = content.style.display === 'none';
+    content.style.display = isHidden ? 'block' : 'none';
+    toggle.textContent = isHidden ? '收起商品描述 ▴' : '展开商品描述 ▾';
+  }
+
+  /* ── Clipboard ─────────────────────────────────────────────── */
+  async function copyField(elemId) {
+    const el = document.getElementById(elemId);
+    if (!el) return;
+    const text = el.innerText || el.textContent;
+    try {
+      await navigator.clipboard.writeText(text);
+      const btn = el.closest('.ecom-panel').querySelector('.ecom-copy-btn');
+      if (btn) { btn.classList.add('copied'); btn.textContent = '已复制'; setTimeout(() => { btn.classList.remove('copied'); btn.textContent = '复制'; }, 1500); }
+    } catch(e) { showError('复制失败'); }
+  }
+
+  async function copyAllPoints() {
+    if (!currentEcomData || !currentEcomData.listing_selling_points) return;
+    const text = currentEcomData.listing_selling_points.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      const btn = document.querySelector('#ecom_points').closest('.ecom-panel').querySelector('.ecom-copy-btn');
+      if (btn) { btn.classList.add('copied'); btn.textContent = '已复制'; setTimeout(() => { btn.classList.remove('copied'); btn.textContent = '全部复制'; }, 1500); }
+    } catch(e) { showError('复制失败'); }
+  }
+
+  /* ── Main Image ZIP Export ─────────────────────────────────── */
+  async function exportMainImagesZip() {
+    if (!currentBuildData) { showError('请先生成预览'); return; }
+    const btn = event.target;
+    btn.disabled = true; btn.textContent = '导出中...';
+    try {
+      const resp = await fetch(`/export/${encodeURIComponent(currentProductType)}/main-images`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+        body: JSON.stringify({
+          parsed_data: currentBuildData.parsed,
+          product_image: productImageUrl,
+          scene_image: sceneImageUrl || '',
+          effect_image: effectImageUrl || '',
+          theme_id: currentThemeId,
+        })
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ error: '导出失败' }));
+        throw new Error(err.error || '导出失败');
+      }
+      const blob = await resp.blob();
+      // 后端按张数返回 image/png(单图)或 application/zip(多图);文件名优先用 Content-Disposition
+      const ct = resp.headers.get('Content-Type') || '';
+      const isZip = ct.includes('zip');
+      const cd = resp.headers.get('Content-Disposition') || '';
+      const m = cd.match(/filename\*?=(?:UTF-8'')?["']?([^;"']+)/i);
+      const fallbackName = `${currentProductType}_主图.${isZip ? 'zip' : 'png'}`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = m ? decodeURIComponent(m[1]) : fallbackName;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) { showError('主图导出失败：' + err.message); }
+    finally { btn.disabled = false; btn.textContent = '📦 导出全部主图 ZIP'; }
+  }
+
+  /* ── Init ───────────────────────────────────────────────────── */
+  document.addEventListener('DOMContentLoaded', () => {
+    initLayout();           // 必须最先,从 localStorage 恢复布局档,避免 loadThemes 后才切档导致闪烁
+    loadThemes();
+    renderArkKeyStatus();   // 显示用户已配置的豆包 Key 状态(末4位)
+    // 产品图走自动抠图 — 否则 AI 精修合成时原图背景 + 原图水印文字会穿透到模板
+    initUploadBox('upload_product', url => { productImageUrl = url; }, { autoRembg: true });
+    initUploadBox('upload_scene', url => { sceneImageUrl = url; });
+    initUploadBox('upload_effect', url => { effectImageUrl = url; });
+    initUploadBox('upload_qr', url => { qrImageUrl = url; });
+    selectCategory(currentProductType);
+    restoreLatestAiResult();
+  });
+</script>
+<script src="/static/js/announcement.js" defer></script>
+</body>
+</html>

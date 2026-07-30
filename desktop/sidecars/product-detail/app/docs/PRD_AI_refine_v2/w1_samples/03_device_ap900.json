@@ -1,0 +1,90 @@
+{
+  "_meta": {
+    "product_slug": "ap900",
+    "product_cat": "device",
+    "elapsed_s": 23.64,
+    "usage": {
+      "prompt_tokens": 867,
+      "completion_tokens": 578,
+      "total_tokens": 1445,
+      "prompt_tokens_details": {
+        "cached_tokens": 384
+      },
+      "prompt_cache_hit_tokens": 384,
+      "prompt_cache_miss_tokens": 483
+    },
+    "model": "deepseek-chat",
+    "schema_warnings": []
+  },
+  "planner_output": {
+    "product_meta": {
+      "name": "AP900 车间大型空气净化器，哑黑色立柱式金属外壳，三层过滤，处理风量900m³/h",
+      "category": "设备类",
+      "primary_color": "matte black",
+      "key_visual_parts": [
+        "matte black metal body",
+        "multi-layer filter structure",
+        "LED display screen",
+        "air intake/exhaust vents"
+      ],
+      "proportions": "tall vertical column"
+    },
+    "selling_points": [
+      {
+        "idx": 1,
+        "text": "三层过滤 (HEPA + 活性炭 + 光触媒)",
+        "visual_type": "product_closeup",
+        "priority": "high",
+        "reason": "卖点明确提到过滤结构部件"
+      },
+      {
+        "idx": 2,
+        "text": "处理风量 900m³/h 适合 150 平方米车间",
+        "visual_type": "product_in_scene",
+        "priority": "high",
+        "reason": "卖点提到适用面积和场景"
+      },
+      {
+        "idx": 3,
+        "text": "PM2.5 净化效率 99.97%",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "卖点是抽象的效率指标"
+      },
+      {
+        "idx": 4,
+        "text": "除甲醛速率 500mg/h",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "卖点是抽象的速率指标"
+      },
+      {
+        "idx": 5,
+        "text": "LED 屏实时显示 PM2.5 / CO2 / VOC 三项数据",
+        "visual_type": "product_closeup",
+        "priority": "medium",
+        "reason": "卖点提到具体的部件（LED屏）和显示内容"
+      },
+      {
+        "idx": 6,
+        "text": "适用于化工实验室 / 汽车喷漆车间 / 电子元件车间",
+        "visual_type": "product_in_scene",
+        "priority": "high",
+        "reason": "卖点明确列出多个应用场景"
+      }
+    ],
+    "planning": {
+      "total_blocks": 6,
+      "block_order": [
+        "hero",
+        "selling_point_1",
+        "selling_point_2",
+        "selling_point_3",
+        "selling_point_4",
+        "selling_point_5",
+        "selling_point_6"
+      ],
+      "hero_scene_hint": "The AP900 air purifier operating in a clean, modern industrial workshop, with a worker in the background, showcasing its scale and integration."
+    }
+  }
+}

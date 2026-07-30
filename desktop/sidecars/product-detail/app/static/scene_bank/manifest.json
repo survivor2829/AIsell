@@ -1,0 +1,563 @@
+[
+  {
+    "file": "water/water_01.jpg",
+    "category": "water",
+    "keywords": [
+      "河道",
+      "水面",
+      "河流",
+      "河流湖泊",
+      "水上作业",
+      "河道管网",
+      "溯源"
+    ]
+  },
+  {
+    "file": "water/water_02.jpg",
+    "category": "water",
+    "keywords": [
+      "湖泊",
+      "湖水",
+      "水质检测",
+      "清洁水",
+      "河流湖泊",
+      "水源"
+    ]
+  },
+  {
+    "file": "water/water_03.jpg",
+    "category": "water",
+    "keywords": [
+      "河道污染",
+      "污染物",
+      "水面污染",
+      "河道污染物溯源",
+      "清污",
+      "河流湖泊",
+      "河道"
+    ]
+  },
+  {
+    "file": "water/water_04.jpg",
+    "category": "water",
+    "keywords": [
+      "游泳池",
+      "泳池",
+      "水池",
+      "池水",
+      "水上"
+    ]
+  },
+  {
+    "file": "water/water_05.jpg",
+    "category": "water",
+    "keywords": [
+      "水库",
+      "水坝",
+      "水源",
+      "蓄水",
+      "河流湖泊",
+      "水面"
+    ]
+  },
+  {
+    "file": "water/water_06.jpg",
+    "category": "water",
+    "keywords": [
+      "无人船",
+      "水下机器人",
+      "水下作业",
+      "水面巡查",
+      "河道管网",
+      "水面",
+      "河流湖泊"
+    ]
+  },
+  {
+    "file": "pipeline/pipeline_01.jpg",
+    "category": "pipeline",
+    "keywords": [
+      "下水道",
+      "排水管",
+      "地下管网",
+      "城市管网",
+      "排水",
+      "管道箱涵",
+      "城市管网内部巡查"
+    ]
+  },
+  {
+    "file": "pipeline/pipeline_02.jpg",
+    "category": "pipeline",
+    "keywords": [
+      "管道巡查",
+      "管道检测",
+      "管网巡查",
+      "管道",
+      "城市管网",
+      "内部巡查",
+      "城市管网内部巡查"
+    ]
+  },
+  {
+    "file": "pipeline/pipeline_03.jpg",
+    "category": "pipeline",
+    "keywords": [
+      "箱涵",
+      "涵洞",
+      "排水渠",
+      "涵管",
+      "地下管道",
+      "管道箱涵",
+      "地下管道箱涵",
+      "地下管道箱涵调查"
+    ]
+  },
+  {
+    "file": "pipeline/pipeline_04.jpg",
+    "category": "pipeline",
+    "keywords": [
+      "雨水管",
+      "街道排水",
+      "下水井",
+      "雨污",
+      "市政排水",
+      "城市管网"
+    ]
+  },
+  {
+    "file": "pipeline/pipeline_05.jpg",
+    "category": "pipeline",
+    "keywords": [
+      "工业管道",
+      "厂区管道",
+      "化工管道",
+      "管道"
+    ]
+  },
+  {
+    "file": "pipeline/pipeline_06.jpg",
+    "category": "pipeline",
+    "keywords": [
+      "地下通道",
+      "地下管道",
+      "城市管廊",
+      "地下管网",
+      "管道箱涵",
+      "管网巡查"
+    ]
+  },
+  {
+    "file": "industrial/industrial_01.jpg",
+    "category": "industrial",
+    "keywords": [
+      "仓库",
+      "仓储",
+      "厂房地面",
+      "水泥地",
+      "物流仓库",
+      "厂房"
+    ]
+  },
+  {
+    "file": "industrial/industrial_02.jpg",
+    "category": "industrial",
+    "keywords": [
+      "工厂",
+      "生产线",
+      "车间",
+      "大型生产车间",
+      "工业园区",
+      "厂房"
+    ]
+  },
+  {
+    "file": "industrial/industrial_03.jpg",
+    "category": "industrial",
+    "keywords": [
+      "工业清洁",
+      "清扫机",
+      "工厂清洁",
+      "车间清洁",
+      "大型生产车间"
+    ]
+  },
+  {
+    "file": "industrial/industrial_04.jpg",
+    "category": "industrial",
+    "keywords": [
+      "物流中心",
+      "堆场",
+      "物流",
+      "物流仓库",
+      "仓储",
+      "厂房"
+    ]
+  },
+  {
+    "file": "industrial/industrial_05.jpg",
+    "category": "industrial",
+    "keywords": [
+      "地下车库",
+      "停车场",
+      "车库地面",
+      "大型地下停车场"
+    ]
+  },
+  {
+    "file": "commercial/commercial_01.jpg",
+    "category": "commercial",
+    "keywords": [
+      "商场",
+      "购物中心",
+      "商超",
+      "大型商超",
+      "商业零售"
+    ]
+  },
+  {
+    "file": "commercial/commercial_02.jpg",
+    "category": "commercial",
+    "keywords": [
+      "写字楼",
+      "办公楼",
+      "大堂",
+      "前台",
+      "商业办公"
+    ]
+  },
+  {
+    "file": "commercial/commercial_03.jpg",
+    "category": "commercial",
+    "keywords": [
+      "酒店大堂",
+      "酒店",
+      "大理石",
+      "商业办公"
+    ]
+  },
+  {
+    "file": "commercial/commercial_04.jpg",
+    "category": "commercial",
+    "keywords": [
+      "机场",
+      "候机楼",
+      "航站楼",
+      "商业零售"
+    ]
+  },
+  {
+    "file": "commercial/commercial_05.jpg",
+    "category": "commercial",
+    "keywords": [
+      "超市",
+      "大卖场",
+      "商超通道",
+      "商业零售"
+    ]
+  },
+  {
+    "file": "医院.jpg",
+    "category": "public",
+    "keywords": [
+      "医院",
+      "医院走廊",
+      "医疗机构",
+      "医疗设施"
+    ]
+  },
+  {
+    "file": "学校.jpg",
+    "category": "public",
+    "keywords": [
+      "学校",
+      "校园",
+      "教学楼",
+      "教育"
+    ]
+  },
+  {
+    "file": "地铁站.jpg",
+    "category": "public",
+    "keywords": [
+      "地铁站",
+      "地铁",
+      "站台",
+      "公共交通"
+    ]
+  },
+  {
+    "file": "火车站.jpg",
+    "category": "public",
+    "keywords": [
+      "火车站",
+      "高铁站",
+      "车站",
+      "公共交通"
+    ]
+  },
+  {
+    "file": "博物馆.jpg",
+    "category": "public",
+    "keywords": [
+      "博物馆",
+      "展厅",
+      "展馆",
+      "文化"
+    ]
+  },
+  {
+    "file": "写字楼.jpg",
+    "category": "commercial",
+    "keywords": [
+      "写字楼",
+      "办公楼",
+      "大堂",
+      "前台",
+      "商业办公"
+    ]
+  },
+  {
+    "file": "商场.jpg",
+    "category": "commercial",
+    "keywords": [
+      "商场",
+      "购物中心",
+      "商超",
+      "大型商超",
+      "商业零售"
+    ]
+  },
+  {
+    "file": "酒店大堂.jpg",
+    "category": "commercial",
+    "keywords": [
+      "酒店大堂",
+      "酒店",
+      "大堂",
+      "商业办公"
+    ]
+  },
+  {
+    "file": "机场.jpg",
+    "category": "commercial",
+    "keywords": [
+      "机场",
+      "候机楼",
+      "航站楼",
+      "商业零售"
+    ]
+  },
+  {
+    "file": "超市.jpg",
+    "category": "commercial",
+    "keywords": [
+      "超市",
+      "大卖场",
+      "商超通道",
+      "商业零售"
+    ]
+  },
+  {
+    "file": "餐厅.jpg",
+    "category": "commercial",
+    "keywords": [
+      "餐厅",
+      "餐饮",
+      "商业场所",
+      "商业零售"
+    ]
+  },
+  {
+    "file": "展厅.jpg",
+    "category": "commercial",
+    "keywords": [
+      "展厅",
+      "展馆",
+      "展览",
+      "商业零售"
+    ]
+  },
+  {
+    "file": "仓库.jpg",
+    "category": "industrial",
+    "keywords": [
+      "仓库",
+      "仓储",
+      "物流仓库",
+      "厂房",
+      "大型生产车间"
+    ]
+  },
+  {
+    "file": "工厂车间.jpg",
+    "category": "industrial",
+    "keywords": [
+      "工厂",
+      "车间",
+      "大型生产车间",
+      "工业园区",
+      "厂房"
+    ]
+  },
+  {
+    "file": "地下车库.jpg",
+    "category": "industrial",
+    "keywords": [
+      "地下车库",
+      "停车场",
+      "大型地下停车场",
+      "车库"
+    ]
+  },
+  {
+    "file": "停车场.jpg",
+    "category": "industrial",
+    "keywords": [
+      "停车场",
+      "地下停车场",
+      "大型地下停车场",
+      "车库"
+    ]
+  },
+  {
+    "file": "体育馆.jpg",
+    "category": "public",
+    "keywords": [
+      "体育馆",
+      "体育",
+      "场馆",
+      "运动"
+    ]
+  },
+  {
+    "file": "健身房.jpg",
+    "category": "public",
+    "keywords": [
+      "健身房",
+      "健身",
+      "运动",
+      "商业零售"
+    ]
+  },
+  {
+    "file": "公园.jpg",
+    "category": "public",
+    "keywords": [
+      "公园",
+      "绿地",
+      "户外",
+      "公共空间"
+    ]
+  },
+  {
+    "file": "公交站.jpg",
+    "category": "public",
+    "keywords": [
+      "公交站",
+      "公交",
+      "公共交通",
+      "站台"
+    ]
+  },
+  {
+    "file": "景区.jpg",
+    "category": "public",
+    "keywords": [
+      "景区",
+      "风景",
+      "旅游",
+      "户外"
+    ]
+  },
+  {
+    "file": "广场.jpg",
+    "category": "public",
+    "keywords": [
+      "广场",
+      "公共广场",
+      "户外",
+      "公共空间"
+    ]
+  },
+  {
+    "file": "加油站.jpg",
+    "category": "commercial",
+    "keywords": [
+      "加油站",
+      "油站",
+      "商业零售",
+      "服务站"
+    ]
+  },
+  {
+    "file": "公寓.jpg",
+    "category": "public",
+    "keywords": [
+      "公寓",
+      "住宅",
+      "住宅小区"
+    ]
+  },
+  {
+    "file": "小区.jpg",
+    "category": "public",
+    "keywords": [
+      "小区",
+      "住宅小区",
+      "住宅",
+      "社区"
+    ]
+  },
+  {
+    "file": "人行道.jpg",
+    "category": "public",
+    "keywords": [
+      "人行道",
+      "街道",
+      "路面",
+      "市政"
+    ]
+  },
+  {
+    "file": "小巷.jpg",
+    "category": "public",
+    "keywords": [
+      "小巷",
+      "巷道",
+      "街道",
+      "市政"
+    ]
+  },
+  {
+    "file": "码头.jpg",
+    "category": "water",
+    "keywords": [
+      "码头",
+      "港口",
+      "河流湖泊",
+      "水面",
+      "水上作业"
+    ]
+  },
+  {
+    "file": "街道.jpg",
+    "category": "public",
+    "keywords": [
+      "街道",
+      "市政",
+      "路面",
+      "城市"
+    ]
+  },
+  {
+    "file": "高速.jpg",
+    "category": "public",
+    "keywords": [
+      "高速",
+      "高速公路",
+      "公路",
+      "市政"
+    ]
+  }
+]

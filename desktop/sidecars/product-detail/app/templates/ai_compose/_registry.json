@@ -1,0 +1,105 @@
+{
+  "_comment": "AI Compose 屏幕模板注册表 | 新增屏幕类型 = 添加一个 HTML + 在这里注册一项 | 顺序由前端拖拽决定,这里只是目录",
+
+  "hero": {
+    "template": "hero.html",
+    "canvas": [750, 1000],
+    "required_keys": ["main_title"],
+    "optional_keys": [
+      "bg_url", "product_url",
+      "subtitle", "taglines", "kpi_list",
+      "theme_primary", "theme_primary_dark", "theme_accent"
+    ],
+    "description": "首屏:大标题 + 产品主图(可选) + KPI 四宫格(可选);bg_url 缺省走主题色渐变兜底"
+  },
+
+  "advantages": {
+    "template": "advantages.html",
+    "canvas": [750, 900],
+    "required_keys": ["advantages"],
+    "optional_keys": [
+      "section_label", "title_prefix", "title_main", "subtitle", "bg_url",
+      "grid_cols", "canvas_height",
+      "theme_primary", "theme_primary_dark", "theme_accent"
+    ],
+    "description": "优势屏:玻璃卡片网格(列数/高度由 ctx 动态传入:3 项 1×3、4 项 2×2、5-6 项 2×3)"
+  },
+
+  "effect": {
+    "template": "effect.html",
+    "canvas": [750, 900],
+    "required_keys": ["effect_image_url", "title_main"],
+    "optional_keys": [
+      "section_label", "title_prefix", "subtitle", "tag_text",
+      "kpi_items", "kpi_cols",
+      "theme_primary", "theme_primary_dark", "theme_accent"
+    ],
+    "description": "实景效果屏:上 60% 用户上传效果图(大图展示),下 40% 标题+3-4 条 KPI 卖点条(当用户上传 effect_image 时才插入)"
+  },
+
+  "specs": {
+    "template": "specs.html",
+    "canvas": [750, 800],
+    "required_keys": ["specs", "title_main"],
+    "optional_keys": [
+      "section_label", "title_prefix", "subtitle",
+      "bg_url", "product_url", "product_badge",
+      "theme_primary", "theme_primary_dark", "theme_accent"
+    ],
+    "description": "参数屏:深色遮罩 + 左产品 + 右两列参数表"
+  },
+
+  "vs": {
+    "template": "vs.html",
+    "canvas": [750, 900],
+    "required_keys": ["compare_items", "title_main", "left_label", "right_label"],
+    "optional_keys": [
+      "section_label", "title_prefix", "subtitle",
+      "left_sublabel", "left_icon",
+      "right_sublabel", "right_icon",
+      "vs_badge_text", "summary_points",
+      "bg_url", "canvas_height",
+      "theme_primary", "theme_primary_dark", "theme_accent"
+    ],
+    "description": "对比屏:左右分栏 + 中央VS徽标 + N行对比项 + 可选底部总结条(canvas_height 随行数 2→620 / 3→720 / 4→820 / 5+→900)"
+  },
+
+  "scene": {
+    "template": "scene.html",
+    "canvas": [750, 800],
+    "required_keys": ["scene_items", "title_main"],
+    "optional_keys": [
+      "section_label", "title_prefix", "subtitle",
+      "bg_url", "grid_columns", "grid_gap",
+      "theme_primary", "theme_primary_dark", "theme_accent"
+    ],
+    "description": "场景屏:N 个场景卡片网格(2×2 或 3 列),每个场景=图+名+可选描述+可选tag(所有文案必须显式传入,无默认场景)"
+  },
+
+  "brand": {
+    "template": "brand.html",
+    "canvas": [750, 700],
+    "required_keys": ["brand_name", "brand_story"],
+    "optional_keys": [
+      "section_label", "brand_name_sub", "brand_logo_url",
+      "credentials", "credentials_cols", "ornament_symbol",
+      "bg_url",
+      "theme_primary", "theme_primary_dark", "theme_accent"
+    ],
+    "description": "品牌屏:深色背景 + 品牌名(白→金渐变) + 一句话故事 + 资质网格(所有文案必须显式传入)"
+  },
+
+  "cta": {
+    "template": "cta.html",
+    "canvas": [750, 500],
+    "required_keys": ["cta_main"],
+    "optional_keys": [
+      "section_label", "cta_sub",
+      "contacts",
+      "qr_url", "qr_caption",
+      "product_url",
+      "theme_primary", "theme_primary_dark", "theme_accent"
+    ],
+    "description": "CTA行动屏:品牌色对角渐变 + 光晕 + 号召标题 + 联系方式列表 + 可选 QR/产品小图(QR 和产品图二选一)"
+  }
+}

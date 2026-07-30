@@ -1,0 +1,89 @@
+{
+  "_meta": {
+    "product_slug": "st800",
+    "product_cat": "tool",
+    "elapsed_s": 21.17,
+    "usage": {
+      "prompt_tokens": 878,
+      "completion_tokens": 596,
+      "total_tokens": 1474,
+      "prompt_tokens_details": {
+        "cached_tokens": 384
+      },
+      "prompt_cache_hit_tokens": 384,
+      "prompt_cache_miss_tokens": 494
+    },
+    "model": "deepseek-chat",
+    "schema_warnings": []
+  },
+  "planner_output": {
+    "product_meta": {
+      "name": "ST-800 便携蒸汽清洗机，高效高温蒸汽，家商两用清洁消毒",
+      "category": "设备类",
+      "primary_color": "matte white",
+      "key_visual_parts": [
+        "matte white body",
+        "stainless steel water tank",
+        "red control buttons",
+        "interchangeable brush heads"
+      ],
+      "proportions": "compact and portable handheld device"
+    },
+    "selling_points": [
+      {
+        "idx": 1,
+        "text": "30 秒出蒸汽温度 145°C 压力 5bar",
+        "visual_type": "concept_visual",
+        "priority": "high",
+        "reason": "卖点强调速度、温度、压力等抽象性能指标"
+      },
+      {
+        "idx": 2,
+        "text": "杀菌率 99.9% 无需化学剂",
+        "visual_type": "concept_visual",
+        "priority": "high",
+        "reason": "卖点强调杀菌效率和环保特性等抽象优势"
+      },
+      {
+        "idx": 3,
+        "text": "适用于厨房油烟机 / 卫生间瓷砖 / 沙发织物消毒",
+        "visual_type": "product_in_scene",
+        "priority": "high",
+        "reason": "卖点明确提到多个具体应用场景"
+      },
+      {
+        "idx": 4,
+        "text": "10 种可换刷头 (长喷嘴 / 毛刷 / 铲刀 / 挤水器)",
+        "visual_type": "product_closeup",
+        "priority": "medium",
+        "reason": "卖点详细描述产品的可更换部件和结构"
+      },
+      {
+        "idx": 5,
+        "text": "1.5L 不锈钢水箱 1800W 加热功率",
+        "visual_type": "product_closeup",
+        "priority": "medium",
+        "reason": "卖点描述核心部件（水箱）的材料和技术参数"
+      },
+      {
+        "idx": 6,
+        "text": "整机 3.5kg 便携家商两用",
+        "visual_type": "concept_visual",
+        "priority": "low",
+        "reason": "卖点强调重量和便携性等抽象特性"
+      }
+    ],
+    "planning": {
+      "total_blocks": 6,
+      "block_order": [
+        "hero",
+        "selling_point_1",
+        "selling_point_2",
+        "selling_point_4",
+        "selling_point_5",
+        "selling_point_6"
+      ],
+      "hero_scene_hint": "The ST-800 steam cleaner in use, sanitizing kitchen range hood surfaces with high-temperature steam, showcasing its application in a real home environment."
+    }
+  }
+}

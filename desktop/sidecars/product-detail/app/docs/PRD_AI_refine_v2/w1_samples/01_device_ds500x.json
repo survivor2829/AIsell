@@ -1,0 +1,97 @@
+{
+  "_meta": {
+    "product_slug": "ds500x",
+    "product_cat": "device",
+    "elapsed_s": 22.77,
+    "usage": {
+      "prompt_tokens": 870,
+      "completion_tokens": 640,
+      "total_tokens": 1510,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 870
+    },
+    "model": "deepseek-chat",
+    "schema_warnings": []
+  },
+  "planner_output": {
+    "product_meta": {
+      "name": "DS500X 商用扫地机器人，适用于大型购物中心与机场的静音清洁专家",
+      "category": "设备类",
+      "primary_color": "matte gray",
+      "key_visual_parts": [
+        "matte gray metal body",
+        "circular LiDAR sensor",
+        "bottom brush and suction module",
+        "drive wheels"
+      ],
+      "proportions": "compact cylindrical robot on a clean floor"
+    },
+    "selling_points": [
+      {
+        "idx": 1,
+        "text": "适用于大型购物中心 / 机场航站楼 / 地铁站",
+        "visual_type": "product_in_scene",
+        "priority": "high",
+        "reason": "卖点明确提到了应用场景和地点。"
+      },
+      {
+        "idx": 2,
+        "text": "底部 3 组双排毛刷 + 吸口模块",
+        "visual_type": "product_closeup",
+        "priority": "high",
+        "reason": "卖点描述了产品的具体结构和功能部件。"
+      },
+      {
+        "idx": 3,
+        "text": "圆形激光雷达 360° 扫描避障",
+        "visual_type": "product_closeup",
+        "priority": "high",
+        "reason": "卖点聚焦于特定的传感器和技术部件。"
+      },
+      {
+        "idx": 4,
+        "text": "48V 锂电池续航 8 小时",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "卖点描述了续航这一抽象性能指标。"
+      },
+      {
+        "idx": 5,
+        "text": "吸力 12000Pa 秒吸碎屑",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "卖点描述了吸力这一抽象性能指标。"
+      },
+      {
+        "idx": 6,
+        "text": "超静音 < 55dB 不打扰顾客",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "卖点描述了噪音这一抽象性能指标。"
+      },
+      {
+        "idx": 7,
+        "text": "IP54 防尘防水适合室外半户外场景",
+        "visual_type": "product_in_scene",
+        "priority": "low",
+        "reason": "卖点提到了防护等级及其适用的场景。"
+      }
+    ],
+    "planning": {
+      "total_blocks": 7,
+      "block_order": [
+        "hero",
+        "selling_point_2",
+        "selling_point_3",
+        "selling_point_4",
+        "selling_point_5",
+        "selling_point_6",
+        "selling_point_7"
+      ],
+      "hero_scene_hint": "A matte gray DS500X commercial cleaning robot autonomously navigating and cleaning the polished floor of a spacious, modern shopping mall with people in the background."
+    }
+  }
+}

@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>AI Compose · VS</title>
+  <style>
+    :root {
+      --theme-primary:      {{ theme_primary      | default('#E8231A') }};
+      --theme-primary-dark: {{ theme_primary_dark | default('#B51A13') }};
+      --theme-accent:       {{ theme_accent       | default('#FFD166') }};
+
+      --canvas-w: {{ canvas_width  | default(750) }}px;
+      /* 高度从 900 → 820:压 80px,vs-container flex:1 + compare-row flex:1 让行自然铺满 */
+      --canvas-h: {{ canvas_height | default(820) }}px;
+
+      /* AI 背景上覆淡色雾化,让对比卡浮起来 */
+      --veil-start:   {{ veil_start | default('rgba(248, 248, 252, 0.55)') }};
+      --veil-end:     {{ veil_end   | default('rgba(248, 248, 252, 0.30)') }};
+
+      --text-dark:   #1a1a1a;
+      --text-body:   #2f2f2f;
+      --text-label:  #5f5f5f;
+      --text-sub:    #7a7a82;
+      --divider:     rgba(0, 0, 0, 0.10);
+
+      /* 左右两侧色温 */
+      --left-tint-a:  rgba(130, 132, 142, 0.22);
+      --left-tint-b:  rgba(110, 112, 122, 0.10);
+      --right-tint-a: rgba(232, 35, 26, 0.05);
+      --right-tint-b: rgba(232, 35, 26, 0.18);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: var(--canvas-w);
+      height: var(--canvas-h);
+      overflow: hidden;
+      font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      color: var(--text-dark);
+    }
+
+    .screen {
+      position: relative;
+      width: var(--canvas-w);
+      height: var(--canvas-h);
+      {% if bg_url %}
+      background-image: url("{{ bg_url }}");
+      background-size: cover;
+      background-position: center center;
+      background-repeat: no-repeat;
+      {% else %}
+      background: #f4f4f7;
+      {% endif %}
+      overflow: hidden;
+    }
+
+    /* 背景之上的淡色薄雾,让对比板块浮起 */
+    .soft-veil {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(180deg,
+        var(--veil-start) 0%,
+        var(--veil-end) 100%);
+      z-index: 1;
+      pointer-events: none;
+    }
+
+    .content {
+      position: relative;
+      z-index: 2;
+      padding: 32px 28px 24px;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+
+    /* ── 标题区 ──────────────────────────────────────── */
+    .title-block {
+      text-align: center;
+      margin-bottom: 16px;
+    }
+    .section-label {
+      font-size: 12px;
+      letter-spacing: 5px;
+      font-weight: 600;
+      color: var(--theme-primary);
+      margin-bottom: 10px;
+      font-family: "Arial", "Helvetica Neue", sans-serif;
+    }
+    .title-main {
+      font-size: 38px;
+      font-weight: 800;
+      letter-spacing: 3px;
+      color: var(--text-dark);
+      line-height: 1.1;
+    }
+    .title-prefix { color: var(--theme-primary); margin-right: 2px; }
+    .title-underline {
+      width: 38px;
+      height: 3px;
+      background: var(--theme-primary);
+      border-radius: 2px;
+      margin: 8px auto 7px;
+    }
+    .subtitle {
+      font-size: 14px;
+      color: var(--text-label);
+      letter-spacing: 2px;
+    }
+
+    /* ── 对比容器:玻璃底板 ─────────────────────────── */
+    .vs-container {
+      position: relative;
+      flex: 1;
+      background: rgba(255, 255, 255, 0.78);
+      backdrop-filter: blur(18px) saturate(140%);
+      -webkit-backdrop-filter: blur(18px) saturate(140%);
+      border: 1px solid rgba(255, 255, 255, 0.85);
+      border-radius: 18px;
+      padding: 28px 22px 24px;
+      box-shadow:
+        0 14px 40px rgba(0, 0, 0, 0.10),
+        0 2px 8px rgba(0, 0, 0, 0.05);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* 左右色温条带 (放在 .content 之下,rows 之上) */
+    .vs-tint {
+      position: absolute;
+      top: 0; bottom: 0;
+      width: 50%;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .tint-left {
+      left: 0;
+      background: linear-gradient(135deg, var(--left-tint-a) 0%, var(--left-tint-b) 100%);
+    }
+    .tint-right {
+      right: 0;
+      background: linear-gradient(225deg, var(--right-tint-a) 0%, var(--right-tint-b) 100%);
+    }
+
+    /* 中央垂直分隔线(两端淡出) */
+    .vs-divider {
+      position: absolute;
+      top: 16px;
+      bottom: 16px;
+      left: 50%;
+      width: 1px;
+      background: linear-gradient(to bottom,
+        rgba(0,0,0,0) 0%,
+        rgba(0,0,0,0.18) 12%,
+        rgba(0,0,0,0.18) 88%,
+        rgba(0,0,0,0) 100%);
+      z-index: 0;
+    }
+
+    /* 列头 + 对比行的共同栅格:左值 | 中标签 | 右值 */
+    .vs-row {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: 1fr 92px 1fr;
+      align-items: center;
+    }
+
+    /* 对比行区域:撑满剩余高度,行从顶部开始堆,多余空间甩到 summary 上方 */
+    .rows-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      min-height: 0;
+    }
+
+    /* ── 列头区 ─────────────────────────────────────── */
+    .col-heads {
+      padding: 8px 0 22px;
+      margin-bottom: 10px;
+      border-bottom: 1px solid var(--divider);
+    }
+    .col-head {
+      text-align: center;
+    }
+    .head-icon {
+      font-size: 34px;
+      line-height: 1;
+      margin-bottom: 10px;
+      font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+    }
+    .head-title {
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      color: var(--text-dark);
+    }
+    .col-head.right-head .head-title { color: var(--theme-primary); }
+    .head-sub {
+      font-size: 12px;
+      color: var(--text-sub);
+      margin-top: 5px;
+      letter-spacing: 0.5px;
+    }
+
+    /* VS 徽标:中心圆形红色渐变 */
+    .vs-badge {
+      width: 62px;
+      height: 62px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--theme-primary) 0%, var(--theme-primary-dark) 100%);
+      color: #fff;
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: 1.5px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: "Arial Black", "Arial", sans-serif;
+      box-shadow:
+        0 8px 20px rgba(232, 35, 26, 0.40),
+        0 2px 4px rgba(232, 35, 26, 0.30),
+        inset 0 1px 0 rgba(255, 255, 255, 0.25);
+      margin: 0 auto;
+    }
+
+    /* ── 对比行 ─────────────────────────────────────── */
+    /* 固定 min-height 而非 flex:1 — 2-3 行时避免行被拉得过高成大留白;
+       行多时自然撑开(内容驱动),行少时剩余空间甩到底部 summary 上 */
+    .compare-row {
+      min-height: 90px;
+      flex: 0 0 auto;
+      border-bottom: 1px solid var(--divider);
+      display: grid;
+      grid-template-columns: 1fr 92px 1fr;
+      align-items: center;
+      padding: 14px 0;
+    }
+    .compare-row:last-child { border-bottom: none; }
+
+    .cell {
+      text-align: center;
+      padding: 0 10px;
+    }
+    .cell-value {
+      font-size: 26px;
+      font-weight: 800;
+      line-height: 1.05;
+      letter-spacing: 0.5px;
+      font-family: "Arial", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+    }
+    .cell.left .cell-value  { color: #6a6a6a; }
+    .cell.right .cell-value { color: var(--theme-primary); }
+    .cell-desc {
+      font-size: 12px;
+      color: var(--text-sub);
+      margin-top: 6px;
+      letter-spacing: 0.5px;
+    }
+    .cell-label {
+      font-size: 12px;
+      letter-spacing: 2px;
+      color: var(--text-label);
+      text-align: center;
+      font-weight: 500;
+    }
+
+    /* ── 底部红色总结条:品牌红 gradient,收束对比叙事 ── */
+    .vs-summary {
+      position: relative;
+      z-index: 1;
+      margin-top: 16px;
+      padding: 18px 16px;
+      background: linear-gradient(135deg, var(--theme-primary-dark) 0%, var(--theme-primary) 100%);
+      border-radius: 14px;
+      color: #fff;
+      display: flex;
+      justify-content: space-around;
+      align-items: center;
+      box-shadow:
+        0 8px 22px rgba(232, 35, 26, 0.32),
+        inset 0 1px 0 rgba(255, 255, 255, 0.22);
+      flex-shrink: 0;
+    }
+    .summary-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      flex: 1;
+    }
+    .summary-num {
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      line-height: 1;
+      font-family: "Arial", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+    }
+    .summary-label {
+      font-size: 12px;
+      opacity: 0.88;
+      letter-spacing: 2px;
+      margin-top: 7px;
+    }
+    .summary-divider {
+      width: 1px;
+      align-self: stretch;
+      background: rgba(255, 255, 255, 0.35);
+      margin: 4px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="screen">
+    <div class="soft-veil"></div>
+
+    <div class="content">
+      <div class="title-block">
+        {% if section_label %}
+        <div class="section-label">{{ section_label }}</div>
+        {% endif %}
+        <h1 class="title-main">
+          {% if title_prefix %}<span class="title-prefix">{{ title_prefix }}</span>{% endif %}{{ title_main }}
+        </h1>
+        <div class="title-underline"></div>
+        {% if subtitle %}
+        <div class="subtitle">{{ subtitle }}</div>
+        {% endif %}
+      </div>
+
+      <div class="vs-container">
+        <div class="vs-tint tint-left"></div>
+        <div class="vs-tint tint-right"></div>
+        <div class="vs-divider"></div>
+
+        <!-- 列头行 -->
+        <div class="vs-row col-heads">
+          <div class="col-head left-head">
+            {% if left_icon %}<div class="head-icon">{{ left_icon }}</div>{% endif %}
+            <div class="head-title">{{ left_label }}</div>
+            {% if left_sublabel %}<div class="head-sub">{{ left_sublabel }}</div>{% endif %}
+          </div>
+          <div class="vs-badge">{{ vs_badge_text | default('VS') }}</div>
+          <div class="col-head right-head">
+            {% if right_icon %}<div class="head-icon">{{ right_icon }}</div>{% endif %}
+            <div class="head-title">{{ right_label }}</div>
+            {% if right_sublabel %}<div class="head-sub">{{ right_sublabel }}</div>{% endif %}
+          </div>
+        </div>
+
+        <!-- 对比行 -->
+        <div class="rows-body">
+        {% for c in compare_items %}
+        <div class="vs-row compare-row">
+          <div class="cell left">
+            <div class="cell-value">{{ c.left_value }}</div>
+            {% if c.left_desc %}<div class="cell-desc">{{ c.left_desc }}</div>{% endif %}
+          </div>
+          <div class="cell-label">{{ c.label }}</div>
+          <div class="cell right">
+            <div class="cell-value">{{ c.right_value }}</div>
+            {% if c.right_desc %}<div class="cell-desc">{{ c.right_desc }}</div>{% endif %}
+          </div>
+        </div>
+        {% endfor %}
+        </div>
+
+        <!-- 底部红色总结条:可选,收束对比叙事 -->
+        {% if summary_points %}
+        <div class="vs-summary">
+          {% for s in summary_points %}
+          <div class="summary-item">
+            <div class="summary-num">{{ s.num }}</div>
+            <div class="summary-label">{{ s.label }}</div>
+          </div>
+          {% if not loop.last %}<div class="summary-divider"></div>{% endif %}
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</body>
+</html>

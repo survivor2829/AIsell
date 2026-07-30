@@ -1,0 +1,81 @@
+<!--
+  Block B3 — 设备类卖点竖屏（红头 + 产品俯拍区 + 地坪适用宫格 + 底部证言）
+  宽度 750px；文案与项数全部数据驱动。
+  变量：header_line1, header_line2, hero_image, scene_image, caption_line1, caption_line2,
+        floor_title(可选), floor_items[{icon_image, icon_text, label}], footer_line1, footer_line2
+-->
+{% if header_line1 or header_line2 %}<div style="width:750px; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; overflow:hidden; background:#fff;">
+  <!-- 红色标题头 -->
+  <div style="background:var(--theme-gradient-hero, linear-gradient(135deg, #E8231A 0%, #D41B13 50%, #B91C1C 100%)); padding:34px 32px 38px; position:relative; overflow:hidden;">
+    <!-- 装饰光斑 -->
+    <div style="position:absolute; top:-30px; right:-20px; width:180px; height:180px; background:radial-gradient(circle, rgba(255,255,255,0.08) 0%, transparent 70%); pointer-events:none;"></div>
+    <div style="font-size:36px; font-weight:900; color:#fff; line-height:1.35; position:relative; z-index:1;">{{ header_line1 }}</div>
+    <div style="font-size:30px; font-weight:800; color:rgba(255,255,255,0.92); line-height:1.35; margin-top:8px; position:relative; z-index:1;">{{ header_line2 }}</div>
+  </div>
+
+  <!-- 产品图区 -->
+  <div style="position:relative; {% if effect_image or scene_image %}background:#1a2a3a{% else %}background:linear-gradient(180deg,#eceff4 0%,#f5f6f8 100%){% endif %}; {% if not effect_image %}min-height:420px;{% endif %} overflow:hidden;">
+    {% if effect_image %}
+    <!-- 效果图按原比例显示，宽度750、高度自适应、不裁剪 -->
+    <img src="{{ effect_image }}" alt="" style="display:block; width:100%; height:auto;">
+    <div style="position:absolute; inset:0; background:linear-gradient(180deg, rgba(0,0,0,0.05) 0%, rgba(0,0,0,0.35) 100%); pointer-events:none;"></div>
+    {% else %}
+    {% if scene_image %}
+    <img src="{{ scene_image }}" alt="" style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover;">
+    <div style="position:absolute; inset:0; background:linear-gradient(180deg, rgba(0,0,0,0.05) 0%, rgba(0,0,0,0.35) 100%); pointer-events:none;"></div>
+    {% endif %}
+    {% if hero_image %}
+    <div style="position:relative; z-index:2; padding:28px 24px 120px; text-align:center;">
+      <img src="{{ hero_image }}" alt="" style="max-width:92%; max-height:360px; object-fit:contain; filter:drop-shadow(0 16px 36px rgba(0,0,0,{% if scene_image %}.35{% else %}.12{% endif %}));">
+    </div>
+    {% else %}
+    <div style="position:relative; z-index:2; padding:80px 24px; text-align:center; font-size:22px; color:{% if scene_image %}rgba(255,255,255,0.7){% else %}#999{% endif %};">请上传产品图</div>
+    {% endif %}
+    {% endif %}
+    {% if caption_line1 or caption_line2 %}
+    <div style="position:absolute; left:0; right:0; bottom:0; z-index:3; padding:20px 24px 24px; background:linear-gradient(180deg, transparent, rgba(0,0,0,.6));">
+      {% if caption_line1 %}
+      <div style="font-size:23px; font-weight:800; color:#fff; text-align:center; text-shadow:0 1px 8px rgba(0,0,0,.4);">{{ caption_line1 }}</div>
+      {% endif %}
+      {% if caption_line2 %}
+      <div style="font-size:20px; font-weight:700; color:rgba(255,255,255,.92); text-align:center; margin-top:6px; text-shadow:0 1px 6px rgba(0,0,0,.3);">{{ caption_line2 }}</div>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- 地坪适用宫格 -->
+  {% if floor_title %}
+  <div style="padding:18px 20px 0; font-size:24px; font-weight:800; color:#222; text-align:center;">{{ floor_title }}</div>
+  {% endif %}
+  {% if floor_items %}
+  <div style="padding:20px 20px 28px; background:#fff;">
+    <div style="display:grid; grid-template-columns:repeat(4, 1fr); gap:16px 12px;">
+      {% for it in floor_items %}
+      <div style="text-align:center;">
+        <div style="width:68px; height:68px; margin:0 auto; border-radius:50%; background:linear-gradient(180deg,#f5f7fa,#ebeef3); border:1px solid rgba(0,0,0,.05); display:flex; align-items:center; justify-content:center; box-shadow:0 4px 14px rgba(0,0,0,.06);">
+          {% if it.icon_image %}
+          <img src="{{ it.icon_image }}" style="width:38px; height:38px; object-fit:contain;" alt="">
+          {% else %}
+          <span style="font-size:24px; color:#666;">{{ it.icon_text|default('·') }}</span>
+          {% endif %}
+        </div>
+        <div style="margin-top:8px; font-size:14px; font-weight:600; color:#333; line-height:1.4;">{{ it.label }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- 底部证言 -->
+  {% if footer_line1 or footer_line2 %}
+  <div style="padding:28px 28px 36px; background:linear-gradient(180deg, #fff 0%, #fafbfc 100%);">
+    {% if footer_line1 %}
+    <div style="font-size:26px; font-weight:900; color:#111; line-height:1.45; text-align:center;">{{ footer_line1 }}</div>
+    {% endif %}
+    {% if footer_line2 %}
+    <div style="font-size:22px; font-weight:700; color:#444; line-height:1.5; text-align:center; margin-top:10px;">{{ footer_line2 }}</div>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>{% endif %}

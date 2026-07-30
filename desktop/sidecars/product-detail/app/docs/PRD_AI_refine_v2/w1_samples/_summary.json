@@ -1,0 +1,162 @@
+{
+  "ran_at": "2026-04-23 11:14:43",
+  "model": "deepseek-chat",
+  "total": 10,
+  "results": [
+    {
+      "id": 1,
+      "slug": "ds500x",
+      "cat": "device",
+      "out_file": "01_device_ds500x.json",
+      "ok": true,
+      "warnings_count": 0,
+      "warnings": [],
+      "tokens": 1510,
+      "visual_type_dist": {
+        "product_in_scene": 2,
+        "product_closeup": 2,
+        "concept_visual": 3
+      }
+    },
+    {
+      "id": 2,
+      "slug": "hp3000",
+      "cat": "device",
+      "out_file": "02_device_hp3000.json",
+      "ok": true,
+      "warnings_count": 0,
+      "warnings": [],
+      "tokens": 1416,
+      "visual_type_dist": {
+        "product_in_scene": 1,
+        "product_closeup": 2,
+        "concept_visual": 2
+      }
+    },
+    {
+      "id": 3,
+      "slug": "ap900",
+      "cat": "device",
+      "out_file": "03_device_ap900.json",
+      "ok": true,
+      "warnings_count": 0,
+      "warnings": [],
+      "tokens": 1445,
+      "visual_type_dist": {
+        "product_in_scene": 2,
+        "product_closeup": 2,
+        "concept_visual": 2
+      }
+    },
+    {
+      "id": 4,
+      "slug": "cc100",
+      "cat": "consumable",
+      "out_file": "04_consumable_cc100.json",
+      "ok": true,
+      "warnings_count": 0,
+      "warnings": [],
+      "tokens": 1467,
+      "visual_type_dist": {
+        "product_in_scene": 1,
+        "product_closeup": 1,
+        "concept_visual": 4
+      }
+    },
+    {
+      "id": 5,
+      "slug": "sm200",
+      "cat": "consumable",
+      "out_file": "05_consumable_sm200.json",
+      "ok": true,
+      "warnings_count": 0,
+      "warnings": [],
+      "tokens": 1482,
+      "visual_type_dist": {
+        "product_in_scene": 2,
+        "product_closeup": 2,
+        "concept_visual": 2
+      }
+    },
+    {
+      "id": 6,
+      "slug": "mf50",
+      "cat": "consumable",
+      "out_file": "06_consumable_mf50.json",
+      "ok": true,
+      "warnings_count": 0,
+      "warnings": [],
+      "tokens": 1435,
+      "visual_type_dist": {
+        "product_in_scene": 2,
+        "product_closeup": 1,
+        "concept_visual": 3
+      }
+    },
+    {
+      "id": 7,
+      "slug": "pl600",
+      "cat": "tool",
+      "out_file": "07_tool_pl600.json",
+      "ok": true,
+      "warnings_count": 0,
+      "warnings": [],
+      "tokens": 1490,
+      "visual_type_dist": {
+        "product_in_scene": 1,
+        "product_closeup": 3,
+        "concept_visual": 2
+      }
+    },
+    {
+      "id": 8,
+      "slug": "st800",
+      "cat": "tool",
+      "out_file": "08_tool_st800.json",
+      "ok": true,
+      "warnings_count": 0,
+      "warnings": [],
+      "tokens": 1474,
+      "visual_type_dist": {
+        "product_in_scene": 1,
+        "product_closeup": 2,
+        "concept_visual": 3
+      }
+    },
+    {
+      "id": 9,
+      "slug": "gc30",
+      "cat": "tool",
+      "out_file": "09_tool_gc30.json",
+      "ok": true,
+      "warnings_count": 0,
+      "warnings": [],
+      "tokens": 1415,
+      "visual_type_dist": {
+        "product_in_scene": 1,
+        "product_closeup": 1,
+        "concept_visual": 3
+      }
+    },
+    {
+      "id": 10,
+      "slug": "dz600m",
+      "cat": "device",
+      "out_file": "10_device_dz600m.json",
+      "ok": true,
+      "warnings_count": 0,
+      "warnings": [],
+      "tokens": 1358,
+      "visual_type_dist": {
+        "product_in_scene": 1,
+        "product_closeup": 2,
+        "concept_visual": 2
+      }
+    }
+  ],
+  "ok_count": 10,
+  "fail_count": 0,
+  "total_tokens": 14492,
+  "estimated_cost_rmb": 0.0217,
+  "total_schema_warnings": 0
+}

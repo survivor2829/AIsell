@@ -1,0 +1,67 @@
+{% extends "admin/base.html" %}
+{% block title %}用户管理{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-title">用户管理（共 {{ users|length }} 人）</div>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>用户名</th>
+        <th>邮箱</th>
+        <th>状态</th>
+        <th>注册时间</th>
+        <th>最后活跃</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        <td>{{ u.id }}</td>
+        <td>
+          {{ u.username }}
+          {% if u.is_admin %}<span class="badge badge-blue">管理员</span>{% endif %}
+        </td>
+        <td>{{ u.email or '-' }}</td>
+        <td>
+          {% if not u.is_approved %}
+            <span class="badge badge-orange">待审核</span>
+          {% elif u.is_paid %}
+            <span class="badge badge-green">已付费</span>
+          {% else %}
+            <span class="badge badge-gray">免费</span>
+          {% endif %}
+        </td>
+        <td>{{ u.created_at.strftime('%m-%d %H:%M') if u.created_at else '-' }}</td>
+        <td>{{ u.last_active.strftime('%m-%d %H:%M') if u.last_active else '-' }}</td>
+        <td>
+          {% if not u.is_approved %}
+            <form method="POST" action="{{ url_for('admin.approve_user', uid=u.id) }}" style="display:inline">
+              <button class="btn btn-sm btn-green">通过</button>
+            </form>
+            <form method="POST" action="{{ url_for('admin.reject_user', uid=u.id) }}" style="display:inline">
+              <button class="btn btn-sm btn-red">拒绝</button>
+            </form>
+          {% endif %}
+          <form method="POST" action="{{ url_for('admin.toggle_paid', uid=u.id) }}" style="display:inline">
+            <button class="btn btn-sm {{ 'btn-red' if u.is_paid else 'btn-green' }}">
+              {{ '取消付费' if u.is_paid else '标记付费' }}
+            </button>
+          </form>
+          {% if u.id != current_user.id %}
+            <form method="POST" action="{{ url_for('admin.toggle_admin', uid=u.id) }}" style="display:inline">
+              <button class="btn btn-sm btn-blue">{{ '取消管理' if u.is_admin else '设为管理' }}</button>
+            </form>
+            <form method="POST" action="{{ url_for('admin.delete_user', uid=u.id) }}" style="display:inline"
+                  onsubmit="return confirm('确定删除用户 ' + {{ u.username | tojson }} + '？此操作不可恢复')">
+              <button class="btn btn-sm btn-red">删除</button>
+            </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

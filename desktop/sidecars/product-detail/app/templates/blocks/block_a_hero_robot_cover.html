@@ -1,0 +1,129 @@
+<!--
+  Block A — 通用「封面首屏」(品类无关)
+  宽度 750px
+
+  支持品类: 设备类 / 耗材类 / 配件类 / 工具类 (P5.1 起)
+  原文件名 hero_robot_cover 是历史命名, 实际渲染逻辑完全数据驱动, 品类无关.
+
+  场景图（floor_bg_image）铺满整个英雄屏；产品图（product_image）居中叠放。
+  若传入 cover_image（成品宣发图）则直接显示整张图，不做合成。
+
+  变量：
+  - logo_image: 可选，顶部 Logo URL
+  - category_line: 品类一行，按品类填: 设备「多功能清洁设备」/ 耗材「食品级清洁剂」/ 工具「304 不锈钢拖把」
+  - product_name / brand_text: 第一行小字数据源（品牌+产品名），优先级高于 category_line
+  - model_name: 型号，胶囊标签
+  - main_title: 主标题
+  - hero_subtitle_pre, hero_subtitle_em, hero_subtitle_post: 副标题三段
+  - tagline_sub: 兼容旧表单：若三段副标题皆空则显示此项
+  - cover_image, floor_bg_image, product_image: URL
+  - bg_focal: 背景 object-position，默认 center center
+  - footer_note: 底部灰字声明
+  - show_hero_params: 是否显示底部参数条
+  - params: [{label, value}, ...]
+-->
+<div style="width:750px; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; overflow:hidden;">
+
+  {% if cover_image %}
+  <!-- ── 成品宣发图模式：直接全图显示 ── -->
+  <div style="position:relative; width:750px;">
+    <img src="{{ cover_image }}" alt="" style="width:750px; display:block; object-fit:cover;">
+  </div>
+
+  {% else %}
+  <!-- ── 合成模式：场景图满铺 + 产品图叠放 ── -->
+  <div style="position:relative; width:750px; min-height:720px; overflow:hidden; background:#1a2a3a; display:flex; flex-direction:column;">
+
+    <!-- 场景底图：铺满整个英雄屏 -->
+    {% if floor_bg_image %}
+    <img src="{{ floor_bg_image }}" alt=""
+      style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover; object-position:{{ bg_focal|default('center center') }};">
+    {% else %}
+    <div style="position:absolute; inset:0; background:linear-gradient(160deg,#2c3e6b 0%,#1a2a4a 40%,#0f1926 100%);"></div>
+    {% endif %}
+
+    <!-- 顶部渐变遮罩 -->
+    <div style="position:absolute; inset:0; background:linear-gradient(180deg, rgba(0,10,30,0.65) 0%, rgba(0,10,30,0.30) 35%, rgba(0,0,0,0) 60%, rgba(0,0,0,0.15) 100%); pointer-events:none;"></div>
+
+    <!-- 装饰：左上角几何光斑 -->
+    <div style="position:absolute; top:-80px; left:-60px; width:320px; height:320px; background:radial-gradient(circle, rgba(255,255,255,0.06) 0%, transparent 70%); pointer-events:none;"></div>
+    <!-- 装饰：右侧弧形光带 -->
+    <div style="position:absolute; top:60px; right:-40px; width:200px; height:500px; background:linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.06) 50%, rgba(255,255,255,0) 100%); border-radius:50%; transform:rotate(-15deg); pointer-events:none;"></div>
+
+    <!-- 文字区（叠加在场景图上） -->
+    <div style="position:relative; z-index:2; padding:28px 32px 6px; text-align:center;">
+      {% if logo_image %}
+      <div style="margin-bottom:16px;">
+        <img src="{{ logo_image }}" alt="" style="max-height:52px; max-width:240px; object-fit:contain; vertical-align:middle; filter:drop-shadow(0 2px 8px rgba(0,0,0,0.3));">
+      </div>
+      {% endif %}
+
+      <div style="display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+        <span style="font-size:20px; color:rgba(255,255,255,0.88); font-weight:500; letter-spacing:1px;">
+          {# app.py:_map_parsed_to_form_fields 已把 category_line 组装为"产品名+型号"(如 "DZ50X 驾驶式洗地机");优先用它,保证首屏小字带具体产品 #}
+          {% if category_line %}{{ category_line }}{% elif brand_text and product_name %}{{ brand_text }} {{ product_name }}{% elif product_name %}{{ product_name }}{% elif brand_text %}{{ brand_text }}{% endif %}
+        </span>
+        {% if model_name %}
+        <span style="font-size:17px; color:#fff; background:rgba(255,255,255,0.12); border:1px solid rgba(255,255,255,0.35); padding:5px 18px; border-radius:999px; font-weight:700; backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); letter-spacing:0.5px;">
+          {{ model_name }}
+        </span>
+        {% endif %}
+      </div>
+
+      {% if main_title %}
+      <h1 style="margin:10px 0 0; font-size:52px; font-weight:900; color:#fff; line-height:1.18; letter-spacing:3px; text-shadow:0 2px 20px rgba(0,0,0,0.5), 0 0 60px rgba(0,0,0,0.15);">
+        {{ main_title }}
+      </h1>
+      {% endif %}
+
+      <div style="margin-top:14px; font-size:21px; color:rgba(255,255,255,0.85); line-height:1.55; font-weight:500; text-shadow:0 1px 10px rgba(0,0,0,0.3);">
+        {% if hero_subtitle_pre or hero_subtitle_em or hero_subtitle_post %}
+          {{ hero_subtitle_pre }}<span style="color:#ffd666; font-weight:800; text-shadow:0 0 20px rgba(255,214,102,0.3);">{{ hero_subtitle_em }}</span>{{ hero_subtitle_post }}
+        {% elif tagline_sub %}
+          {{ tagline_sub }}
+        {% endif %}
+      </div>
+
+      <!-- 装饰分隔线 -->
+      <div style="margin:16px auto 0; width:60px; height:3px; border-radius:2px; background:linear-gradient(90deg, transparent, rgba(255,255,255,0.5), transparent);"></div>
+    </div>
+
+    <!-- 产品图（叠在场景上，底部对齐；小图自动放大、大图自动缩小，始终撑满比例盒） -->
+    <div style="position:relative; z-index:2; width:100%; flex:1; display:flex; align-items:flex-end; justify-content:center; padding-bottom:12px;">
+      {% if product_image %}
+      <div style="width:85%; height:500px; display:flex; align-items:flex-end; justify-content:center;">
+        <img src="{{ product_image }}" alt=""
+          style="width:100%; height:100%; object-fit:contain; filter:drop-shadow(0 20px 40px rgba(0,0,0,0.35)) drop-shadow(0 4px 12px rgba(0,0,0,0.2));">
+      </div>
+      {% else %}
+      <div style="padding:32px; color:rgba(255,255,255,0.5); font-size:18px; text-align:center;">请上传产品主图（抠图）</div>
+      {% endif %}
+    </div>
+
+    {% if footer_note %}
+    <div style="position:relative; z-index:2; padding:0 32px 20px; text-align:center; font-size:13px; color:rgba(255,255,255,0.45); letter-spacing:0.5px;">
+      {{ footer_note }}
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <!-- ── 底部参数条 ── -->
+  {% if show_hero_params and params %}
+  {% set valid_params = params | selectattr('value') | list %}
+  {% set valid_params = valid_params | rejectattr('value', 'equalto', '--') | list %}
+  {% if valid_params %}
+  <div style="background:linear-gradient(180deg, #fff 0%, #fafbfc 100%); border-top:4px solid var(--theme-primary, #E8231A); display:flex; position:relative;">
+    <!-- 参数条顶部装饰高光 -->
+    <div style="position:absolute; top:0; left:50%; transform:translateX(-50%); width:120px; height:4px; background:linear-gradient(90deg, transparent, rgba(255,255,255,0.8), transparent);"></div>
+    {% for param in valid_params %}
+    <div style="flex:1; min-width:0; text-align:center; padding:16px 8px 14px; overflow:hidden; display:flex; flex-direction:column; align-items:center; justify-content:center;{% if not loop.last %} border-right:1px solid #eef0f2;{% endif %}">
+      <div style="font-size:26px; font-weight:900; color:#111; line-height:1.1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; letter-spacing:0.5px;">{{ param.value }}</div>
+      <div style="font-size:14px; color:#8c8c8c; margin-top:6px; line-height:1.1; font-weight:500;">{{ param.label or '参数' }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% endif %}
+
+</div>

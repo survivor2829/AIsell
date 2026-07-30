@@ -1,0 +1,133 @@
+{
+  "name": "耗材类",
+  "product_type": "耗材类",
+  "engines": ["blocks"],
+  "default_engine": "blocks",
+  "hero_block_template": "blocks/block_a_hero_robot_cover.html",
+  "spec_block_template": "blocks/block_e_glass_dimension.html",
+  "default_cover_image": "",
+  "hero_cover_defaults": {
+    "category_line": "",
+    "main_title": "",
+    "hero_subtitle_pre": "",
+    "hero_subtitle_em": "",
+    "hero_subtitle_post": "",
+    "footer_note": "*产品不定期升级，外观及颜色可能有部分差异，以实际发货为准。",
+    "bg_focal": "center center"
+  },
+  "generic_enabled_screens": [1, 2, 5, 10],
+  "defaults": {
+    "brand_text": "德威莱克清洁耗材",
+    "brand": "德威莱克",
+    "brand_en": "DWEILK",
+    "model_name": "",
+    "product_name": "清洁耗材",
+    "tagline_line1": "",
+    "tagline_line2": "",
+    "tagline_sub": "专业配方，高效洁净"
+  },
+  "hero_params": [
+    {"label": "容量/规格", "default_value": ""},
+    {"label": "稀释比", "default_value": ""},
+    {"label": "适用场景", "default_value": ""},
+    {"label": "保质期", "default_value": ""}
+  ],
+  "default_specs": [],
+  "default_dims": {
+    "height": "",
+    "width": "",
+    "length": ""
+  },
+  "blocks_hardcoded": {
+    "block_b2": {
+      "title_num": "",
+      "title_text": "大产品优势",
+      "subtitle": "",
+      "grid_columns": 2,
+      "items": []
+    },
+    "block_b3": {
+      "header_line1": "",
+      "header_line2": "",
+      "hero_image": "",
+      "caption_line1": "",
+      "caption_line2": "",
+      "floor_title": "",
+      "floor_items": [],
+      "footer_line1": "",
+      "footer_line2": ""
+    },
+    "block_f": {
+      "title_line1": "",
+      "title_line1_red": "",
+      "title_line1_end": "",
+      "title_line2": "",
+      "title_line2_red": "",
+      "vs_left_title": "",
+      "vs_left_sub": "",
+      "vs_right_title": "",
+      "vs_right_sub": "",
+      "vs_left_bottom": "",
+      "vs_right_bottom": ""
+    }
+  },
+  "block_q": {
+    "section_title": "清洁效果对比",
+    "section_subtitle": "真实场景实测效果",
+    "comparisons": []
+  },
+  "block_m": {
+    "section_title": "使用方法",
+    "steps": []
+  },
+  "block_i": {
+    "section_title": "产品数据",
+    "kpis": []
+  },
+  "block_k": {
+    "section_title": "安全认证",
+    "section_subtitle": "安全环保，放心使用",
+    "badge_items": []
+  },
+  "block_n": {
+    "cta_title": "批量采购 · 获取优惠报价",
+    "cta_subtitle": "大批量供应，价格更优，专业清洁方案定制",
+    "contact_items": [],
+    "highlights": [{"text": "厂家直供"}, {"text": "批量优惠"}, {"text": "配方定制"}],
+    "qr_image": "",
+    "qr_caption": ""
+  },
+  "block_o": {
+    "disclaimer_title": "安全提示",
+    "disclaimer_text": "1. 请按推荐稀释比例使用，勿直接接触皮肤或眼睛。\n2. 请存放在儿童接触不到的地方，避免阳光直射。\n3. 产品参数为实验室标准工况下测试数据，实际效果因场地、污渍类型等因素可能存在差异。"
+  },
+  "block_s": {
+    "section_title": "常见问题",
+    "section_subtitle": "购买前您可能想了解",
+    "faqs": []
+  },
+  "block_u": {
+    "section_title": "品质保障",
+    "section_subtitle": "安全放心使用",
+    "promises": [
+      {"icon_text": "🧪", "number": "SGS", "unit": "", "label": "第三方检测认证"},
+      {"icon_text": "🌿", "number": "0", "unit": "磷", "label": "环保无磷配方"},
+      {"icon_text": "📦", "number": "3", "unit": "年", "label": "保质期"},
+      {"icon_text": "📞", "number": "1v1", "unit": "", "label": "使用指导"}
+    ],
+    "service_note": ""
+  },
+  "block_y": {
+    "section_title": "每次使用成本",
+    "section_subtitle": "精打细算，每次清洁成本更低",
+    "cost_per_use": "",
+    "coverage_text": "",
+    "dilution_ratio": "",
+    "dilution_note": "",
+    "calc_items": []
+  },
+  "fixed_selling_images": [],
+  "ai_detail_key_priority": [
+    "容量", "稀释比", "有效成分", "PH值", "适用材质", "保质期", "产品规格", "包装规格"
+  ]
+}

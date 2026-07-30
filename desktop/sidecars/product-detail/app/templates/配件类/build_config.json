@@ -1,0 +1,133 @@
+{
+  "name": "配件类",
+  "product_type": "配件类",
+  "engines": ["blocks"],
+  "default_engine": "blocks",
+  "hero_block_template": "blocks/block_a_hero_robot_cover.html",
+  "spec_block_template": "blocks/block_e_glass_dimension.html",
+  "default_cover_image": "",
+  "hero_cover_defaults": {
+    "category_line": "",
+    "main_title": "",
+    "hero_subtitle_pre": "",
+    "hero_subtitle_em": "",
+    "hero_subtitle_post": "",
+    "footer_note": "*产品不定期升级，外观及颜色可能有部分差异，以实际发货为准。",
+    "bg_focal": "center center"
+  },
+  "generic_enabled_screens": [1, 2, 5, 10],
+  "defaults": {
+    "brand_text": "德威莱克原厂配件",
+    "brand": "德威莱克",
+    "brand_en": "DWEILK",
+    "model_name": "",
+    "product_name": "清洁设备配件",
+    "tagline_line1": "",
+    "tagline_line2": "",
+    "tagline_sub": "原厂品质，完美适配"
+  },
+  "hero_params": [
+    {"label": "适配机型", "default_value": ""},
+    {"label": "材质", "default_value": ""},
+    {"label": "使用寿命", "default_value": ""},
+    {"label": "规格", "default_value": ""}
+  ],
+  "default_specs": [],
+  "default_dims": {
+    "height": "",
+    "width": "",
+    "length": ""
+  },
+  "blocks_hardcoded": {
+    "block_b2": {
+      "title_num": "",
+      "title_text": "大产品优势",
+      "subtitle": "",
+      "grid_columns": 2,
+      "items": []
+    },
+    "block_b3": {
+      "header_line1": "",
+      "header_line2": "",
+      "hero_image": "",
+      "caption_line1": "",
+      "caption_line2": "",
+      "floor_title": "",
+      "floor_items": [],
+      "footer_line1": "",
+      "footer_line2": ""
+    },
+    "block_f": {
+      "title_line1": "",
+      "title_line1_red": "",
+      "title_line1_end": "",
+      "title_line2": "",
+      "title_line2_red": "",
+      "vs_left_title": "",
+      "vs_left_sub": "",
+      "vs_right_title": "",
+      "vs_right_sub": "",
+      "vs_left_bottom": "",
+      "vs_right_bottom": ""
+    }
+  },
+  "block_p": {
+    "section_title": "适配机型",
+    "section_subtitle": "购买前请确认您的设备型号",
+    "compat_models": [],
+    "compat_note": "* 如不确定适配型号，请联系客服确认。"
+  },
+  "block_m": {
+    "section_title": "安装步骤",
+    "steps": []
+  },
+  "block_r": {
+    "section_title": "包装清单",
+    "section_subtitle": "",
+    "package_items": [],
+    "package_note": "* 包装清单以实物为准"
+  },
+  "block_k": {
+    "section_title": "品质保障",
+    "section_subtitle": "原厂配件，质量可溯",
+    "badge_items": []
+  },
+  "block_n": {
+    "cta_title": "批量采购 · 获取优惠报价",
+    "cta_subtitle": "支持大批量定制，原厂直供价格更优",
+    "contact_items": [],
+    "highlights": [{"text": "原厂直供"}, {"text": "批量优惠"}, {"text": "快速发货"}],
+    "qr_image": "",
+    "qr_caption": ""
+  },
+  "block_o": {
+    "disclaimer_title": "温馨提示",
+    "disclaimer_text": "1. 请在购买前确认适配型号，因型号选错导致的退换运费由买家承担。\n2. 配件外观以实物为准，图片仅供参考。\n3. 安装请参考说明书或联系售后指导。"
+  },
+  "block_s": {
+    "section_title": "常见问题",
+    "section_subtitle": "购买前您可能想了解",
+    "faqs": []
+  },
+  "block_u": {
+    "section_title": "品质保障",
+    "section_subtitle": "与原装同等级品质",
+    "promises": [
+      {"icon_text": "🔧", "number": "100%", "unit": "", "label": "适配验证"},
+      {"icon_text": "🛡️", "number": "6", "unit": "月", "label": "质量保证"},
+      {"icon_text": "📦", "number": "48", "unit": "h", "label": "极速发货"},
+      {"icon_text": "🔄", "number": "7", "unit": "天", "label": "不满意退换"}
+    ],
+    "service_note": ""
+  },
+  "block_x": {
+    "section_title": "耐用性测试",
+    "section_subtitle": "经得起检验的品质",
+    "metrics": [],
+    "test_note": ""
+  },
+  "fixed_selling_images": [],
+  "ai_detail_key_priority": [
+    "适配机型", "材质", "规格", "尺寸", "使用寿命", "产品重量", "包装数量"
+  ]
+}

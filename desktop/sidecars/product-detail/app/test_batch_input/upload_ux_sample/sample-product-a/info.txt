@@ -1,0 +1,3 @@
+﻿Name: sample-product-a
+Purpose: synthetic upload UX browser validation sample
+Contains: no real customer data

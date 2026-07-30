@@ -1,0 +1,90 @@
+{
+  "_meta": {
+    "product_slug": "pl600",
+    "product_cat": "tool",
+    "elapsed_s": 23.66,
+    "usage": {
+      "prompt_tokens": 869,
+      "completion_tokens": 621,
+      "total_tokens": 1490,
+      "prompt_tokens_details": {
+        "cached_tokens": 384
+      },
+      "prompt_cache_hit_tokens": 384,
+      "prompt_cache_miss_tokens": 485
+    },
+    "model": "deepseek-chat",
+    "schema_warnings": []
+  },
+  "planner_output": {
+    "product_meta": {
+      "name": "PL-600 手持电动抛光机，橙黑双拼机身，1200W可变速电机，适用于汽车美容与家具抛光",
+      "category": "工具类",
+      "primary_color": "orange-black",
+      "key_visual_parts": [
+        "orange-black plastic body",
+        "ergonomic anti-vibration handle",
+        "7-inch sponge pad",
+        "speed control switch"
+      ],
+      "proportions": "handheld tool with a compact motor housing and a side handle"
+    },
+    "selling_points": [
+      {
+        "idx": 1,
+        "text": "1200W 铜线电机可变速 1000-6000rpm",
+        "visual_type": "concept_visual",
+        "priority": "high",
+        "reason": "卖点核心是“可变速”这一抽象性能指标"
+      },
+      {
+        "idx": 2,
+        "text": "7 寸海绵盘 + 3 档羊毛盘可更换",
+        "visual_type": "product_closeup",
+        "priority": "high",
+        "reason": "卖点明确描述“盘”这一功能部件及其可更换结构"
+      },
+      {
+        "idx": 3,
+        "text": "25° 偏心设计防止烧漆面",
+        "visual_type": "product_closeup",
+        "priority": "medium",
+        "reason": "卖点描述“偏心设计”这一具体机械结构"
+      },
+      {
+        "idx": 4,
+        "text": "软起动 3 秒到位保护电机",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "卖点核心是“软起动”这一保护功能和“3秒”这一时间指标"
+      },
+      {
+        "idx": 5,
+        "text": "适用于汽车美容店 / 家具厂抛光工位 / 大理石打磨",
+        "visual_type": "product_in_scene",
+        "priority": "high",
+        "reason": "卖点明确列出多个应用场景和地点"
+      },
+      {
+        "idx": 6,
+        "text": "整机重 2.3kg 人体工学减震把手",
+        "visual_type": "product_closeup",
+        "priority": "low",
+        "reason": "卖点描述“减震把手”这一具体部件和人体工学设计"
+      }
+    ],
+    "planning": {
+      "total_blocks": 6,
+      "block_order": [
+        "hero",
+        "selling_point_5",
+        "selling_point_1",
+        "selling_point_2",
+        "selling_point_3",
+        "selling_point_4",
+        "selling_point_6"
+      ],
+      "hero_scene_hint": "A handheld polisher with an orange-black body in use at a professional car detailing shop, polishing the glossy surface of a car door panel."
+    }
+  }
+}

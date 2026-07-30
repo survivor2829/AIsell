@@ -1,0 +1,81 @@
+{
+  "_meta": {
+    "product_slug": "hp3000",
+    "product_cat": "device",
+    "elapsed_s": 21.02,
+    "usage": {
+      "prompt_tokens": 866,
+      "completion_tokens": 550,
+      "total_tokens": 1416,
+      "prompt_tokens_details": {
+        "cached_tokens": 384
+      },
+      "prompt_cache_hit_tokens": 384,
+      "prompt_cache_miss_tokens": 482
+    },
+    "model": "deepseek-chat",
+    "schema_warnings": []
+  },
+  "planner_output": {
+    "product_meta": {
+      "name": "HP3000 工业高压清洗机，亮橙色金属外壳，200bar高压，适用于工业清洗",
+      "category": "设备类",
+      "primary_color": "safety orange",
+      "key_visual_parts": [
+        "orange metal body",
+        "copper plunger pump",
+        "black high-pressure hose",
+        "interchangeable nozzle heads"
+      ],
+      "proportions": "industrial equipment with a compact pump unit and a long hose"
+    },
+    "selling_points": [
+      {
+        "idx": 1,
+        "text": "亮橙色金属外壳配黑色高压管，铜制柱塞泵 3000W 功率",
+        "visual_type": "product_closeup",
+        "priority": "high",
+        "reason": "卖点明确描述了产品的外壳、管材和核心泵体结构"
+      },
+      {
+        "idx": 2,
+        "text": "压力 200bar 可调 / 流量 1500L/h",
+        "visual_type": "concept_visual",
+        "priority": "high",
+        "reason": "卖点核心是抽象的性能指标：压力和流量"
+      },
+      {
+        "idx": 3,
+        "text": "5 档可换喷嘴头适应不同清洁任务",
+        "visual_type": "product_closeup",
+        "priority": "medium",
+        "reason": "卖点描述了可更换的部件（喷嘴头）及其功能"
+      },
+      {
+        "idx": 4,
+        "text": "适用于机械设备清洗 / 车辆底盘除污 / 混凝土地坪去垢",
+        "visual_type": "product_in_scene",
+        "priority": "high",
+        "reason": "卖点明确列出了多个应用场景和地点"
+      },
+      {
+        "idx": 5,
+        "text": "三相 380V 工业电源，热水型可冲到 80°C 高温除油污",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "卖点核心是抽象的性能指标：电源规格和高温能力"
+      }
+    ],
+    "planning": {
+      "total_blocks": 5,
+      "block_order": [
+        "hero",
+        "selling_point_1",
+        "selling_point_2",
+        "selling_point_3",
+        "selling_point_5"
+      ],
+      "hero_scene_hint": "The HP3000 high-pressure washer in action, cleaning heavy machinery or a vehicle chassis in an industrial workshop, with visible water spray and dirt removal."
+    }
+  }
+}

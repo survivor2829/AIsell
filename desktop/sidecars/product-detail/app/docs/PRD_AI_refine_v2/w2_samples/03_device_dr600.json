@@ -1,0 +1,98 @@
+{
+  "_meta": {
+    "product_slug": "dr600",
+    "product_cat": "device",
+    "elapsed_s": 22.07,
+    "usage": {
+      "prompt_tokens": 1537,
+      "completion_tokens": 669,
+      "total_tokens": 2206,
+      "prompt_tokens_details": {
+        "cached_tokens": 1088
+      },
+      "prompt_cache_hit_tokens": 1088,
+      "prompt_cache_miss_tokens": 449
+    },
+    "model": "deepseek-chat",
+    "schema_warnings": []
+  },
+  "planner_output": {
+    "product_meta": {
+      "name": "DR-600 商用洗地机，哑光蓝金属机身，适用于大面积地面清洁",
+      "category": "设备类",
+      "primary_color": "matte blue",
+      "key_visual_parts": [
+        "matte blue metal body",
+        "40L water tank",
+        "control panel with pressure dial",
+        "drive wheels and brush disc"
+      ],
+      "proportions": "compact ride-on floor scrubber"
+    },
+    "selling_points": [
+      {
+        "idx": 1,
+        "text": "哑光蓝金属机身",
+        "visual_type": "product_closeup",
+        "priority": "high",
+        "reason": "主语是产品的外观结构和材质"
+      },
+      {
+        "idx": 2,
+        "text": "IP66 防尘防水等级适合室外",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "主语是认证等级，去掉‘适合室外’后核心是‘IP66防尘防水等级’"
+      },
+      {
+        "idx": 3,
+        "text": "40L 水箱适合 2000m² 连续作业",
+        "visual_type": "concept_visual",
+        "priority": "high",
+        "reason": "主语是性能指标‘40L水箱’，去掉‘适合...作业’后核心是容量与作业面积的关系"
+      },
+      {
+        "idx": 4,
+        "text": "可调压力 2-8bar 适应不同地面",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "主语是性能指标‘可调压力 2-8bar’，去掉‘适应不同地面’后核心是压力参数"
+      },
+      {
+        "idx": 5,
+        "text": "续航 4 小时",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "主语是抽象性能指标‘续航’"
+      },
+      {
+        "idx": 6,
+        "text": "低噪音 < 58dB 适用于商场和写字楼",
+        "visual_type": "product_in_scene",
+        "priority": "high",
+        "reason": "去掉‘适用于’后，卖点仍在描述具体地点‘商场和写字楼’，这是场景"
+      },
+      {
+        "idx": 7,
+        "text": "附带 3 种刷盘",
+        "visual_type": "product_closeup",
+        "priority": "low",
+        "reason": "主语是产品部件‘刷盘’"
+      }
+    ],
+    "planning": {
+      "total_blocks": 7,
+      "block_order": [
+        "hero",
+        "selling_point_1",
+        "selling_point_3",
+        "selling_point_6",
+        "selling_point_2",
+        "selling_point_4",
+        "selling_point_5",
+        "selling_point_7"
+      ],
+      "hero_scene_hint": "A matte blue commercial floor scrubber operating quietly in a modern shopping mall corridor, with shoppers in the background."
+    }
+  }
+}

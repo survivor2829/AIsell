@@ -1,0 +1,208 @@
+{
+  "name": "设备类",
+  "product_type": "设备类",
+  "engines": ["legacy", "blocks"],
+  "default_engine": "blocks",
+  "hero_block_template": "blocks/block_a_hero_robot_cover.html",
+  "spec_block_template": "blocks/block_e_glass_dimension.html",
+  "default_cover_image": "ref_dz50x_cover.png",
+  "screen_7_block": "b3",
+  "hero_cover_defaults": {
+    "category_line": "",
+    "main_title": "",
+    "hero_subtitle_pre": "",
+    "hero_subtitle_em": "",
+    "hero_subtitle_post": "",
+    "footer_note": "*产品不定期升级，外观及颜色可能有部分差异，以实际发货为准。",
+    "bg_focal": "center bottom"
+  },
+  "generic_enabled_screens": [1, 2, 5, 7, 10],
+  "simple_enabled_screens": [1, 2, 5, 7, 10],
+  "defaults": {
+    "brand_text": "",
+    "brand": "",
+    "brand_en": "",
+    "model_name": "",
+    "product_name": "",
+    "tagline_line1": "",
+    "tagline_line2": "",
+    "tagline_sub": ""
+  },
+  "hero_params": [],
+  "default_specs": [],
+  "default_dims": {
+    "height": "",
+    "width": "",
+    "length": ""
+  },
+  "fixed_screens": {
+    "场所": "screen_fixed_场所.jpg",
+    "污渍": "screen_fixed_污渍.jpg"
+  },
+  "blocks_hardcoded": {
+    "block_b2": {
+      "title_num": "",
+      "title_text": "大核心优势",
+      "subtitle": "",
+      "grid_columns": 3,
+      "items": []
+    },
+    "block_b3": {
+      "header_line1": "",
+      "header_line2": "",
+      "hero_image": "",
+      "caption_line1": "",
+      "caption_line2": "",
+      "floor_title": "",
+      "floor_items": [],
+      "footer_line1": "",
+      "footer_line2": ""
+    },
+    "block_c1": {
+      "title_line1": "",
+      "title_line2": "",
+      "title_line2_red": "",
+      "subtitle": "",
+      "left_image": "",
+      "left_label": "",
+      "right_image": "",
+      "right_label": "",
+      "rows": []
+    },
+    "block_f": {
+      "title_line1": "",
+      "title_line1_red": "",
+      "title_line1_end": "",
+      "title_line2": "",
+      "title_line2_red": "",
+      "vs_left_title": "",
+      "vs_left_sub": "",
+      "vs_right_title": "",
+      "vs_right_sub": "",
+      "vs_left_bottom": "",
+      "vs_right_bottom": "",
+      "left_label": "本产品",
+      "right_label": "传统人工"
+    },
+    "block_d1": {
+      "title_line1_pre": "",
+      "title_line1_red": "",
+      "title_line1_end": "",
+      "title_line2": "",
+      "badge_text": ""
+    },
+    "block_c3": {
+      "title_before": "",
+      "title_after": "",
+      "comparisons": []
+    },
+    "block_d2": {
+      "title_line1": "",
+      "title_line2": "",
+      "subtitle": "",
+      "detail_image": "",
+      "bottom_text": ""
+    }
+  },
+  "block_g": {
+    "brand_title": "",
+    "brand_subtitle": "",
+    "brand_stats": [],
+    "brand_story_lines": []
+  },
+  "block_h": {
+    "section_title": "适用场景",
+    "section_subtitle": "",
+    "scenes": []
+  },
+  "block_i": {
+    "section_title": "效率与性能",
+    "kpis": []
+  },
+  "block_j": {
+    "section_title": "核心技术",
+    "section_subtitle": "",
+    "tech_items": []
+  },
+  "block_k": {
+    "section_title": "资质认证",
+    "section_subtitle": "",
+    "badge_items": []
+  },
+  "block_l": {
+    "section_title": "买前买后，服务全程护航",
+    "section_subtitle": "",
+    "left_title": "官方旗舰店",
+    "right_title": "普通商家",
+    "compare_rows": [],
+    "service_flow": []
+  },
+  "block_m": {
+    "section_title": "使用流程",
+    "steps": []
+  },
+  "block_n": {
+    "cta_title": "获取报价与解决方案",
+    "cta_subtitle": "提交需求，我们将为您推荐合适机型与配置",
+    "contact_items": [],
+    "highlights": [],
+    "qr_image": "",
+    "qr_caption": ""
+  },
+  "block_o": {
+    "disclaimer_title": "温馨提示",
+    "disclaimer_text": "1. 产品参数为实验室标准工况下测试数据，实际使用中因场地、污渍类型等因素可能存在差异。\n2. 产品外观及颜色以实物为准，图片仅供参考。\n3. 产品不定期升级优化，恕不另行通知。"
+  },
+  "block_s": {
+    "section_title": "常见问题",
+    "section_subtitle": "购买前您可能想了解",
+    "faqs": []
+  },
+  "block_t": {
+    "section_title": "他们都在用",
+    "section_subtitle": "",
+    "client_count": "",
+    "client_logos": [],
+    "cases": []
+  },
+  "block_u": {
+    "section_title": "售后无忧",
+    "section_subtitle": "",
+    "promises": [],
+    "service_note": ""
+  },
+  "block_v": {
+    "section_title": "型号对比",
+    "section_subtitle": "选择最适合您的型号",
+    "models": [],
+    "spec_labels": []
+  },
+  "block_w": {
+    "section_title": "产品视频",
+    "video_title": "",
+    "video_duration": "",
+    "cover_image": "",
+    "qr_image": "",
+    "qr_text": "扫码看完整视频"
+  },
+  "block_x": {
+    "section_title": "实测数据",
+    "section_subtitle": "权威机构检测认证",
+    "metrics": [],
+    "test_note": ""
+  },
+  "legacy_defaults": {
+    "efficiency_claim": "1台顶8-10人",
+    "efficiency_value": "3600m²/h",
+    "savings_claim": "26W+元",
+    "people_count": "8-10",
+    "machine_name": "商用清洁设备"
+  },
+  "fixed_selling_images": [],
+  "ai_detail_key_priority": [
+    "清洗宽度", "清扫宽度", "吸水宽度", "清水容量", "污水容量", "水箱容量",
+    "工作效率", "工作时间", "续航时间", "刷盘功率", "吸水功率", "驱动功率",
+    "刷盘电机", "吸水电机", "刷盘压力", "工作噪音", "电瓶容量", "锂电容量",
+    "整机重量", "产品尺寸", "设备尺寸"
+  ]
+}

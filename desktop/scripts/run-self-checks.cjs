@@ -33,6 +33,7 @@ const checks = [
   "src/main/product-detail-desktop-integration.self_check.cjs",
   "src/renderer/moments-campaign-panel.self_check.cjs",
   "src/renderer/moments-dry-run-panel.self_check.cjs",
+  "scripts/build-product-detail-sidecar.self_check.cjs",
   "scripts/portable-runtime-dependencies.self_check.cjs",
   "scripts/installer-release.self_check.cjs",
   "scripts/release-capabilities.self_check.cjs",

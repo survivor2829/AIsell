@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>AI Compose · Specs</title>
+  <style>
+    /* ── 可被 JSON ctx 覆盖的全部 token ─────────────────── */
+    :root {
+      --theme-primary:      {{ theme_primary      | default('#E8231A') }};
+      --theme-primary-dark: {{ theme_primary_dark | default('#B51A13') }};
+      --theme-accent:       {{ theme_accent       | default('#FFD166') }};
+
+      --canvas-w: {{ canvas_width  | default(750) }}px;
+      --canvas-h: {{ canvas_height | default(800) }}px;
+
+      /* 深色遮罩强度:AI 背景上压一层深色保障文字可读
+         0.62/0.32 是"保留背景纹理 + 白字仍可读"的平衡点 */
+      --veil-start:   {{ veil_start | default('rgba(10, 12, 16, 0.62)') }};
+      --veil-end:     {{ veil_end   | default('rgba(10, 12, 16, 0.32)') }};
+
+      /* 文本阶:深底白字三级灰 */
+      --text-main:   #FFFFFF;
+      --text-sub:    rgba(255, 255, 255, 0.72);
+      --text-dim:    rgba(255, 255, 255, 0.48);
+      --divider:     rgba(255, 255, 255, 0.14);
+
+      /* 可被 ctx 覆盖的排版变量 */
+      --title-align:        {{ title_align        | default('left') }};
+      --title-main-size:    {{ title_main_size    | default('38px') }};
+      --section-label-size: {{ section_label_size | default('12px') }};
+      --spec-label-size:    {{ spec_label_size    | default('13px') }};
+      --spec-value-size:    {{ spec_value_size    | default('20px') }};
+      /* 行内 padding:Python 端按 specs 行数自适应传入,N 越多越紧凑 */
+      --spec-row-pad:       {{ spec_row_pad       | default('11px') }};
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: var(--canvas-w);
+      height: var(--canvas-h);
+      overflow: hidden;
+      font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      color: var(--text-main);
+    }
+
+    /* ── Screen 容器 ──────────────────────────────────── */
+    .screen {
+      position: relative;
+      width: var(--canvas-w);
+      height: var(--canvas-h);
+      {% if bg_url %}
+      background-image: url("{{ bg_url }}");
+      background-size: cover;
+      background-position: center center;
+      background-repeat: no-repeat;
+      {% else %}
+      background: #101318;
+      {% endif %}
+      overflow: hidden;
+    }
+
+    /* 深色遮罩:把任意 AI 背景压成深色工程质感,文字白底高可读 */
+    .dark-veil {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg,
+        var(--veil-start) 0%,
+        var(--veil-end) 100%);
+      z-index: 1;
+      pointer-events: none;
+    }
+
+    .content {
+      position: relative;
+      z-index: 2;
+      width: 100%;
+      height: 100%;
+      padding: 48px 40px 40px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── 标题区 ──────────────────────────────────────── */
+    .title-block {
+      text-align: var(--title-align);
+      margin-bottom: 26px;
+    }
+
+    .section-label {
+      font-size: var(--section-label-size);
+      letter-spacing: 5px;
+      font-weight: 600;
+      color: var(--theme-accent);
+      margin-bottom: 10px;
+      font-family: "Arial", "Helvetica Neue", sans-serif;
+    }
+
+    .title-main {
+      font-size: var(--title-main-size);
+      font-weight: 800;
+      letter-spacing: 3px;
+      color: var(--text-main);
+      line-height: 1.15;
+    }
+    .title-prefix {
+      color: var(--theme-primary);
+      margin-right: 2px;
+    }
+
+    .title-underline {
+      width: 36px;
+      height: 3px;
+      background: var(--theme-primary);
+      border-radius: 2px;
+      margin: 12px 0 10px;
+      {% if (title_align | default('left')) == 'center' %}
+      margin-left: auto; margin-right: auto;
+      {% endif %}
+    }
+
+    .subtitle {
+      font-size: 14px;
+      color: var(--text-sub);
+      letter-spacing: 1.5px;
+    }
+
+    /* ── 主体:左产品 + 右参数 ────────────────────────── */
+    .body {
+      flex: 1;
+      display: grid;
+      grid-template-columns: {{ body_cols | default('5fr 6fr') }};
+      gap: 28px;
+      align-items: center;
+    }
+
+    .product-col {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+    }
+    .product-img {
+      max-width: 100%;
+      max-height: 420px;
+      display: block;
+      filter:
+        drop-shadow(0 18px 28px rgba(0, 0, 0, 0.50))
+        drop-shadow(0 40px 60px rgba(0, 0, 0, 0.32));
+    }
+    /* 占位框:无产品图时显示,保持 specs 双列布局不塌陷 */
+    .product-placeholder {
+      width: 88%;
+      aspect-ratio: 1 / 1;
+      max-height: 380px;
+      border-radius: 22px;
+      background:
+        linear-gradient(135deg,
+          rgba(255, 255, 255, 0.08) 0%,
+          rgba(255, 255, 255, 0.02) 100%);
+      border: 1px dashed rgba(255, 255, 255, 0.28);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      box-shadow:
+        inset 0 2px 8px rgba(255, 255, 255, 0.06),
+        0 10px 28px rgba(0, 0, 0, 0.28);
+    }
+    .product-placeholder .ph-icon {
+      font-size: 72px;
+      line-height: 1;
+      opacity: 0.72;
+    }
+    .product-placeholder .ph-text {
+      font-size: 14px;
+      letter-spacing: 2.5px;
+      color: var(--text-dim);
+    }
+
+    /* 产品下方可选型号徽章 */
+    .product-badge {
+      position: absolute;
+      bottom: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 4px 14px;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 20px;
+      font-size: 11px;
+      letter-spacing: 2px;
+      color: var(--text-sub);
+      background: rgba(255, 255, 255, 0.06);
+      backdrop-filter: blur(8px) saturate(140%);
+      -webkit-backdrop-filter: blur(8px) saturate(140%);
+    }
+
+    /* ── 参数表 ──────────────────────────────────────── */
+    .spec-table {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      height: 100%;
+    }
+    .spec-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      padding: var(--spec-row-pad) 0;
+      border-bottom: 1px solid var(--divider);
+    }
+    .spec-row:last-child {
+      border-bottom: none;
+    }
+    .spec-label {
+      font-size: var(--spec-label-size);
+      color: var(--text-sub);
+      letter-spacing: 1.5px;
+      flex-shrink: 0;
+    }
+    .spec-value-wrap {
+      display: flex;
+      align-items: baseline;
+      gap: 3px;
+      text-align: right;
+    }
+    .spec-value {
+      font-size: var(--spec-value-size);
+      font-weight: 700;
+      color: var(--text-main);
+      letter-spacing: 0.5px;
+      font-family: "Arial", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+      line-height: 1;
+    }
+    .spec-unit {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-sub);
+      letter-spacing: 0.5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="screen">
+    <div class="dark-veil"></div>
+
+    <div class="content">
+      <div class="title-block">
+        {% if section_label %}
+        <div class="section-label">{{ section_label }}</div>
+        {% endif %}
+
+        <h1 class="title-main">
+          {% if title_prefix %}<span class="title-prefix">{{ title_prefix }}</span>{% endif %}{{ title_main }}
+        </h1>
+
+        <div class="title-underline"></div>
+
+        {% if subtitle %}
+        <div class="subtitle">{{ subtitle }}</div>
+        {% endif %}
+      </div>
+
+      <div class="body">
+        <div class="product-col">
+          {% if product_url %}
+          <img class="product-img" src="{{ product_url }}" alt="">
+          {% else %}
+          <div class="product-placeholder">
+            <div class="ph-icon">📷</div>
+            <div class="ph-text">产品图预览</div>
+          </div>
+          {% endif %}
+          {% if product_badge %}
+          <div class="product-badge">{{ product_badge }}</div>
+          {% endif %}
+        </div>
+
+        <div class="spec-table">
+          {% for s in specs %}
+          <div class="spec-row">
+            <div class="spec-label">{{ s.label }}</div>
+            <div class="spec-value-wrap">
+              <span class="spec-value">{{ s.value }}</span>
+              {% if s.unit %}<span class="spec-unit">{{ s.unit }}</span>{% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

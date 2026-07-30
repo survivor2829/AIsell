@@ -1,0 +1,79 @@
+{% extends "admin/base.html" %}
+{% block title %}生成记录{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-title">生成记录</div>
+  <form class="search-bar" method="GET" action="{{ url_for('admin.logs') }}">
+    <input type="text" name="username" placeholder="按用户名搜索" value="{{ search_username }}">
+    <button type="submit">搜索</button>
+    {% if search_username %}
+      <a href="{{ url_for('admin.logs') }}" style="padding:8px;font-size:13px;color:#888;text-decoration:none;">清除</a>
+    {% endif %}
+  </form>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>用户</th>
+        <th>操作</th>
+        <th>产品类型</th>
+        <th>型号</th>
+        <th>Key来源</th>
+        <th>时间</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for log, username in pagination.items %}
+      <tr>
+        <td>{{ log.id }}</td>
+        <td>{{ username }}</td>
+        <td>
+          {% if log.action == 'ai_parse' %}
+            <span class="badge badge-blue">AI识别</span>
+          {% elif log.action == 'export' %}
+            <span class="badge badge-green">导出PNG</span>
+          {% else %}
+            <span class="badge badge-gray">{{ log.action }}</span>
+          {% endif %}
+        </td>
+        <td>{{ log.product_type }}</td>
+        <td>{{ log.model_name or '-' }}</td>
+        <td>
+          {% if log.api_key_source == 'platform' %}
+            <span class="badge badge-orange">平台</span>
+          {% elif log.api_key_source == 'custom' %}
+            <span class="badge badge-blue">自有</span>
+          {% else %}
+            <span class="badge badge-gray">-</span>
+          {% endif %}
+        </td>
+        <td>{{ log.created_at.strftime('%m-%d %H:%M') if log.created_at else '-' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" style="text-align:center;color:#999;padding:20px;">暂无记录</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if pagination.pages > 1 %}
+  <div class="pagination">
+    {% if pagination.has_prev %}
+      <a href="{{ url_for('admin.logs', page=pagination.prev_num, username=search_username) }}">上一页</a>
+    {% endif %}
+    {% for p in pagination.iter_pages(left_edge=1, right_edge=1, left_current=2, right_current=2) %}
+      {% if p %}
+        {% if p == pagination.page %}
+          <span class="current">{{ p }}</span>
+        {% else %}
+          <a href="{{ url_for('admin.logs', page=p, username=search_username) }}">{{ p }}</a>
+        {% endif %}
+      {% else %}
+        <span>...</span>
+      {% endif %}
+    {% endfor %}
+    {% if pagination.has_next %}
+      <a href="{{ url_for('admin.logs', page=pagination.next_num, username=search_username) }}">下一页</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

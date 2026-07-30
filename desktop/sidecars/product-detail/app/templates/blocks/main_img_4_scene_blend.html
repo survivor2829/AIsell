@@ -1,0 +1,33 @@
+{# 主图模板4：场景融合图 — 800x800 电商主图 #}
+<div class="main-img-canvas" style="width:800px;height:800px;position:relative;overflow:hidden;background:#1A1A1A;font-family:'PingFang SC','Microsoft YaHei',sans-serif;">
+  <!-- 场景背景 -->
+  {% if scene_image %}
+  <div style="position:absolute;inset:0;">
+    <img src="{{ scene_image }}" alt="" style="width:100%;height:100%;object-fit:cover;opacity:0.45;">
+  </div>
+  {% else %}
+  <div style="position:absolute;inset:0;background:var(--theme-gradient-dark, linear-gradient(135deg,#0B0F1A 0%,#131D3A 55%,#0B0F1A 100%));"></div>
+  {% endif %}
+  <!-- 上方文案 -->
+  <div style="position:absolute;top:40px;left:44px;right:44px;z-index:2;">
+    {% if logo_image %}
+    <img src="{{ logo_image }}" alt="" style="height:30px;object-fit:contain;filter:brightness(0) invert(1);opacity:0.8;margin-bottom:14px;">
+    {% endif %}
+    <div style="font-size:30px;font-weight:800;color:#fff;line-height:1.3;">{{ slogan|default('') }}</div>
+    {% if hero_subtitle %}
+    <div style="font-size:16px;color:rgba(255,255,255,0.7);margin-top:8px;">{{ hero_subtitle }}</div>
+    {% endif %}
+  </div>
+  <!-- 产品图 -->
+  <div style="position:absolute;bottom:20px;right:20px;width:70%;text-align:right;">
+    <img src="{{ product_image }}" alt="" style="max-width:100%;max-height:480px;object-fit:contain;filter:drop-shadow(0 16px 40px rgba(0,0,0,0.4));">
+  </div>
+  <!-- 底部标签 -->
+  {% if advantages %}
+  <div style="position:absolute;bottom:32px;left:44px;display:flex;flex-wrap:wrap;gap:8px;max-width:320px;">
+    {% for adv in advantages[:4] %}
+    <span style="font-size:12px;font-weight:600;color:#fff;background:rgba(255,255,255,0.15);backdrop-filter:blur(8px);padding:5px 12px;border-radius:999px;border:1px solid rgba(255,255,255,0.2);">{{ adv.emoji }} {{ adv.text }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>

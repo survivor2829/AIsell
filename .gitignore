@@ -25,6 +25,7 @@ desktop/.vite/
 # Local runtime data
 **/deepseek-api-key.bin
 **/__pycache__/
+**/.pytest_cache/
 **/run_logs.jsonl
 **/state.json
 **/touch_task.json

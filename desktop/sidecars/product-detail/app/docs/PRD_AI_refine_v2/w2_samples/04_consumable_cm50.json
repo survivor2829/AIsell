@@ -1,0 +1,89 @@
+{
+  "_meta": {
+    "product_slug": "cm50",
+    "product_cat": "consumable",
+    "elapsed_s": 20.38,
+    "usage": {
+      "prompt_tokens": 1529,
+      "completion_tokens": 582,
+      "total_tokens": 2111,
+      "prompt_tokens_details": {
+        "cached_tokens": 1088
+      },
+      "prompt_cache_hit_tokens": 1088,
+      "prompt_cache_miss_tokens": 441
+    },
+    "model": "deepseek-chat",
+    "schema_warnings": []
+  },
+  "planner_output": {
+    "product_meta": {
+      "name": "CM-50 微纤维清洁布, 35×35cm 5 色可选, 适用于餐饮后厨 / 医院病房 / 酒店客房",
+      "category": "耗材类",
+      "primary_color": "assorted colors",
+      "key_visual_parts": [
+        "35x35cm microfiber cloth",
+        "assorted color options",
+        "textured weave surface",
+        "folded or in-use state"
+      ],
+      "proportions": "square cloth, hand-held scale"
+    },
+    "selling_points": [
+      {
+        "idx": 1,
+        "text": "35×35cm 5 色可选",
+        "visual_type": "product_closeup",
+        "priority": "high",
+        "reason": "卖点描述具体尺寸和颜色选项，属于外观特征"
+      },
+      {
+        "idx": 2,
+        "text": "80% 聚酯 + 20% 锦纶",
+        "visual_type": "concept_visual",
+        "priority": "low",
+        "reason": "卖点描述材料成分比例，是抽象指标"
+      },
+      {
+        "idx": 3,
+        "text": "280gsm 克重厚实",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "卖点描述克重指标，是抽象性能参数"
+      },
+      {
+        "idx": 4,
+        "text": "吸水量自身 6 倍",
+        "visual_type": "concept_visual",
+        "priority": "high",
+        "reason": "卖点描述吸水性能倍数，是抽象指标"
+      },
+      {
+        "idx": 5,
+        "text": "机洗 300 次不变形",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "卖点描述耐用性次数，是抽象指标"
+      },
+      {
+        "idx": 6,
+        "text": "适用于餐饮后厨 / 医院病房 / 酒店客房",
+        "visual_type": "product_in_scene",
+        "priority": "high",
+        "reason": "卖点明确提到具体应用场景和地点"
+      }
+    ],
+    "planning": {
+      "total_blocks": 6,
+      "block_order": [
+        "hero",
+        "selling_point_1",
+        "selling_point_4",
+        "selling_point_3",
+        "selling_point_5",
+        "selling_point_2"
+      ],
+      "hero_scene_hint": "A clean, well-lit commercial kitchen countertop, with a CM-50 microfiber cloth in use, wiping a stainless steel surface."
+    }
+  }
+}

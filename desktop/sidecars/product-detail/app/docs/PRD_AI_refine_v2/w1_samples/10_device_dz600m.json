@@ -1,0 +1,81 @@
+{
+  "_meta": {
+    "product_slug": "dz600m",
+    "product_cat": "device",
+    "elapsed_s": 18.82,
+    "usage": {
+      "prompt_tokens": 840,
+      "completion_tokens": 518,
+      "total_tokens": 1358,
+      "prompt_tokens_details": {
+        "cached_tokens": 384
+      },
+      "prompt_cache_hit_tokens": 384,
+      "prompt_cache_miss_tokens": 456
+    },
+    "model": "deepseek-chat",
+    "schema_warnings": []
+  },
+  "planner_output": {
+    "product_meta": {
+      "name": "DZ600M 无人水面清洁机，工业黄色螺旋履带清污机器人",
+      "category": "设备类",
+      "primary_color": "industrial yellow",
+      "key_visual_parts": [
+        "industrial yellow body",
+        "black spiral track pontoon",
+        "spiral cleaning mechanism",
+        "drive components"
+      ],
+      "proportions": "compact floating platform with prominent spiral tracks"
+    },
+    "selling_points": [
+      {
+        "idx": 1,
+        "text": "螺旋清污机构清污效率提升 3 倍",
+        "visual_type": "product_closeup",
+        "priority": "high",
+        "reason": "卖点明确提到具体结构部件“螺旋清污机构”，属于产品特写。"
+      },
+      {
+        "idx": 2,
+        "text": "适用于城市河道 / 工厂污水池 / 景区湖泊",
+        "visual_type": "product_in_scene",
+        "priority": "high",
+        "reason": "卖点明确提到具体应用场景“城市河道、工厂污水池、景区湖泊”。"
+      },
+      {
+        "idx": 3,
+        "text": "续航 8 小时一天不充电",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "卖点核心是抽象指标“续航时间”，适合概念化表达。"
+      },
+      {
+        "idx": 4,
+        "text": "防腐涂层 5 年不锈",
+        "visual_type": "product_closeup",
+        "priority": "medium",
+        "reason": "卖点提到具体工艺“防腐涂层”，适合通过特写展示涂层细节。"
+      },
+      {
+        "idx": 5,
+        "text": "低噪音运行不打扰居民",
+        "visual_type": "concept_visual",
+        "priority": "low",
+        "reason": "卖点核心是抽象指标“低噪音”，适合概念化表达。"
+      }
+    ],
+    "planning": {
+      "total_blocks": 5,
+      "block_order": [
+        "hero",
+        "selling_point_1",
+        "selling_point_2",
+        "selling_point_3",
+        "selling_point_4"
+      ],
+      "hero_scene_hint": "The DZ600M unmanned surface cleaner operating in a scenic lake, with clear water and greenery in the background."
+    }
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(pip install:*)",
+      "Bash(pip show:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git checkout:*)",
+      "Bash(git rm:*)",
+      "Bash(git ls-tree:*)",
+      "Bash(git rev-list:*)",
+      "Bash(git remote:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(grep:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(awk:*)",
+      "Bash(sed:*)",
+      "Bash(file *)",
+      "Bash(curl -s http://localhost:5000/*)",
+      "Bash(curl -s http://localhost:5000/api/*)",
+      "Bash(docker --version)",
+      "Bash(docker compose:*)",
+      "Bash(pkill -f \"python app.py\")",
+      "Bash(taskkill //F //IM python.exe)",
+      "Bash(tasklist)",
+      "Bash(netstat -ano)",
+      "Bash(rm -rf __pycache__/*.pyc)",
+      "Bash(rm -f ./output/_last_*_preview.json)",
+      "Bash(rm -f ./output/1/_last_*_preview.json)",
+      "Bash(find static/outputs -name \"_last_*_preview.json\" -delete)",
+      "Bash(find ./output -name \"_last_*_preview.json\" -delete)",
+      "Bash(HTTPS_PROXY=\"\" HTTP_PROXY=\"\" python:*)",
+      "Bash(HTTPS_PROXY=\"\" HTTP_PROXY=\"\" timeout 5 python app.py)",
+      "Read(//c/Users/28293/.claude/**)",
+      "Read(//c/Users/28293/AppData/Local/Temp/**)",
+      "Read(//tmp/**)",
+      "WebFetch(domain:help.aliyun.com)",
+      "WebFetch(domain:www.alibabacloud.com)",
+      "WebFetch(domain:www.aliyunbaike.com)",
+      "WebFetch(domain:www.volcengine.com)",
+      "WebFetch(domain:cloud.tencent.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:blog.csdn.net)",
+      "WebSearch"
+    ],
+    "ask": [
+      "Bash(git push:*)",
+      "Bash(docker compose up:*)",
+      "Bash(docker compose down:*)",
+      "Bash(ssh tencent-prod:*)"
+    ],
+    "deny": [
+      "Bash(rm -rf /:*)",
+      "Bash(rm -rf ~/:*)",
+      "Bash(git push --force:*)",
+      "Bash(git reset --hard:*)",
+      "Edit(.env)",
+      "Edit(crypto_utils.py)",
+      "Edit(instance/**)",
+      "Read(.env)",
+      "Read(instance/**)"
+    ]
+  },
+  "additionalDirectories": [
+    "./static/scene_bank"
+  ],
+  "enableAllProjectMcpServers": true,
+  "env": {
+    "PYTHONIOENCODING": "utf-8",
+    "PYTHONUTF8": "1"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import sys, json; d = json.load(sys.stdin); path = d.get('tool_input', {}).get('file_path', ''); blocked = ['.env', 'crypto_utils.py', '/instance/']; sys.exit(2) if any(b in path for b in blocked) else sys.exit(0)\""
+          }
+        ]
+      }
+    ]
+  }
+}

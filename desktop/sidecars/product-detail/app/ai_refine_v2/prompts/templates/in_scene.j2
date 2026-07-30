@@ -1,0 +1,21 @@
+Image 1 is the reference photo of {{ product.name }}. Preserve its exact visual identity.
+
+PRESERVE from Image 1:
+- Main body color: {{ product.primary_color }}
+- Structural parts: {{ product.key_visual_parts | join(', ') }}
+- Proportions: {{ product.proportions }}
+
+CHANGE (new scene):
+- Setting: {{ scene }}
+{% if hero %}- Context: hero shot, product prominent
+{% else %}- Context: {{ selling_point.text }}
+{% endif %}{% if human_hint %}- Human presence: {{ human_hint }}
+{% endif %}
+CONSTRAINTS:
+- NO redesign of the product
+- NO color drift — {{ product.primary_color }} body stays pure
+- NO added parts not in Image 1
+- NO text, NO logo, NO watermark
+
+STYLE MODIFIER:
+cinematic golden-hour grading, product-in-scene composition.

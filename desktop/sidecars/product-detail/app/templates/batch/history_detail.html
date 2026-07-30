@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+{# 2026-04-22 历史批次详情页 (方向 B): 展示单批所有产品 + HTML/AI 预览 + 下载.
+   数据异步拉 /api/batches/<id> (自带 disk_available + exists 字段).
+   Lightbox / stage-pill / toast 复用 design-system.css tokens + 任务1 v3 实现. #}
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="csrf-token" content="{{ csrf_token() }}">
+<title>{{ batch.name or batch.raw_name or batch.batch_id }} · 历史批次详情 · 小玺AI</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/design-system.css') }}">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--color-bg-page);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    line-height: 1.5;
+  }
+
+  /* 顶栏 (复用 history.html 风格) */
+  .hd-topbar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: var(--z-topbar, 100);
+    height: 44px; padding: 0 24px;
+    background: rgba(255,255,255,0.72);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    border-bottom: 1px solid var(--color-border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .hd-topbar-brand { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+  .hd-topbar-brand .dot { width: 8px; height: 8px; background: var(--color-primary); border-radius: 50%; }
+  .hd-topbar-right { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--color-text-muted); }
+  .hd-topbar-right a, .hd-topbar-right button {
+    color: var(--color-text-muted); text-decoration: none; padding: 6px 12px;
+    border-radius: var(--radius-md); border: none; background: none; cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+  .hd-topbar-right a:hover, .hd-topbar-right button:hover { color: var(--color-text); background: rgba(0,0,0,0.04); }
+
+  .hd-container { max-width: 1080px; margin: 0 auto; padding: 72px 24px 48px; }
+
+  /* 顶部 header 区 */
+  .hd-back { color: var(--color-text-muted); text-decoration: none; font-size: 13px;
+             display: inline-flex; align-items: center; gap: 4px;
+             padding: 6px 0; margin-bottom: 12px; transition: color var(--transition-fast); }
+  .hd-back:hover { color: var(--color-primary); }
+  .hd-header {
+    display: flex; justify-content: space-between; align-items: flex-start; gap: var(--space-4);
+    margin-bottom: var(--space-6);
+  }
+  .hd-header-left { flex: 1; min-width: 0; }
+  .hd-title { font-size: 24px; font-weight: 600; color: var(--color-title); margin: 0 0 8px 0; }
+  .hd-meta { display: flex; flex-wrap: wrap; gap: var(--space-4); font-size: 13px; color: var(--color-text-muted); }
+  .hd-meta strong { color: var(--color-text); font-weight: 500; }
+  .hd-btn-zip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 10px 18px; font-size: 14px; font-weight: 500;
+    background: var(--color-primary); color: white;
+    border: 1px solid var(--color-primary); border-radius: var(--radius-md);
+    text-decoration: none;
+    box-shadow: var(--shadow-sm);
+    transition: all var(--transition-fast);
+    white-space: nowrap;
+  }
+  .hd-btn-zip:hover { background: var(--color-primary-hover); border-color: var(--color-primary-hover); box-shadow: 0 3px 8px var(--color-primary-shadow-strong); }
+  .hd-btn-zip.hd-btn-disabled { background: var(--color-text-muted); border-color: var(--color-text-muted); cursor: not-allowed; box-shadow: none; pointer-events: none; }
+
+  /* 磁盘状态 banner */
+  .hd-disk-banner {
+    padding: 10px 14px; margin-bottom: var(--space-4);
+    border-radius: var(--radius-md); font-size: 13px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .hd-disk-banner.full    { background: var(--color-success-bg); color: var(--color-success); border: 1px solid var(--color-success); }
+  .hd-disk-banner.partial { background: var(--color-warning-bg); color: var(--color-warning); border: 1px solid var(--color-warning); }
+  .hd-disk-banner.missing { background: var(--color-error-bg);   color: var(--color-error);   border: 1px solid var(--color-error); }
+
+  .hd-workbench {
+    margin-bottom: var(--space-4);
+    padding: var(--space-4);
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+  }
+  .hd-workbench-head {
+    display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+    margin-bottom: var(--space-3);
+  }
+  .hd-workbench-title { margin: 0; font-size: 16px; font-weight: 600; color: var(--color-title); }
+  .hd-workbench-sub { font-size: 12px; color: var(--color-text-muted); }
+  .hd-stats {
+    display: grid; grid-template-columns: repeat(6, minmax(96px, 1fr)); gap: var(--space-2);
+    margin-bottom: var(--space-3);
+  }
+  .hd-stat {
+    min-height: 64px; padding: 10px 12px;
+    background: var(--color-bg-subtle);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+  }
+  .hd-stat-num { display: block; font-size: 22px; font-weight: 700; line-height: 1.1; color: var(--color-title); }
+  .hd-stat-label { display: block; margin-top: 5px; font-size: 12px; color: var(--color-text-muted); }
+  .hd-filters { display: flex; flex-wrap: wrap; gap: 8px; }
+  .hd-filter-btn {
+    padding: 7px 12px; border: 1px solid var(--color-border);
+    border-radius: var(--radius-full); background: var(--color-bg);
+    color: var(--color-text); cursor: pointer; font-size: 13px;
+    transition: all var(--transition-fast);
+  }
+  .hd-filter-btn:hover { border-color: var(--color-primary-border); color: var(--color-primary); }
+  .hd-filter-btn.active {
+    background: var(--color-primary); color: #fff; border-color: var(--color-primary);
+    box-shadow: 0 3px 8px var(--color-primary-shadow);
+  }
+  .hd-filter-count { opacity: 0.76; }
+  .hd-filter-empty {
+    margin-bottom: var(--space-4); padding: 28px 16px; text-align: center;
+    color: var(--color-text-muted); background: var(--color-bg-subtle);
+    border: 1px dashed var(--color-border); border-radius: var(--radius-md);
+  }
+  .hd-decision-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .hd-chip {
+    display: inline-flex; align-items: center; min-height: 24px;
+    padding: 3px 8px; border-radius: var(--radius-full);
+    font-size: 12px; border: 1px solid var(--color-border);
+    color: var(--color-text-muted); background: var(--color-bg-subtle);
+  }
+  .hd-chip.ok { color: var(--color-success); background: var(--color-success-bg); border-color: rgba(27, 143, 82, 0.2); }
+  .hd-chip.warn { color: var(--color-warning); background: var(--color-warning-bg); border-color: rgba(176, 115, 0, 0.22); }
+  .hd-chip.error { color: var(--color-error); background: var(--color-error-bg); border-color: rgba(196, 58, 58, 0.22); }
+  .hd-action-note { max-width: 280px; font-size: 12px; color: var(--color-text-muted); text-align: center; }
+
+  /* 产品 card */
+  .hd-card {
+    display: grid; grid-template-columns: 220px 1fr 1fr; gap: var(--space-5);
+    padding: var(--space-5); margin-bottom: var(--space-4);
+    background: var(--color-bg); border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);
+    transition: box-shadow var(--transition-base);
+  }
+  .hd-card:hover { box-shadow: var(--shadow-md); }
+  .hd-card-left { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+  .hd-main-thumb {
+    width: 100%; max-width: 200px; aspect-ratio: 1/1; object-fit: contain;
+    background: var(--color-bg-subtle); border-radius: var(--radius-md);
+    border: 1px solid var(--color-border);
+  }
+  .hd-name { font-size: 15px; font-weight: 600; color: var(--color-title); word-break: break-all; }
+  .hd-thumb-col { display: flex; flex-direction: column; align-items: center; gap: var(--space-2); }
+  .hd-thumb-label { font-size: 12px; color: var(--color-text-muted); letter-spacing: 0.02em; }
+  .hd-thumb {
+    width: 100%; max-width: 280px; aspect-ratio: 3/4; object-fit: cover;
+    background: var(--color-bg-subtle); border-radius: var(--radius-md);
+    border: 1px solid var(--color-border); cursor: zoom-in;
+    transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+  }
+  .hd-thumb:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+  .hd-thumb-missing {
+    width: 100%; max-width: 280px; aspect-ratio: 3/4;
+    background: var(--color-bg-subtle); border: 1px dashed var(--color-border-hover);
+    border-radius: var(--radius-md);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 6px; font-size: 13px; color: var(--color-text-muted); text-align: center; padding: 16px;
+  }
+  .hd-thumb-missing-icon { font-size: 24px; }
+  .hd-btn-dl {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 6px 14px; font-size: 13px; font-weight: 500;
+    color: var(--color-primary); background: var(--color-primary-light);
+    border: 1px solid var(--color-primary-border); border-radius: var(--radius-md);
+    text-decoration: none;
+    transition: all var(--transition-fast);
+    white-space: nowrap;
+  }
+  .hd-btn-dl:hover { background: var(--color-primary); color: white; border-color: var(--color-primary); }
+  .hd-btn-dl.hd-btn-disabled {
+    color: var(--color-text-muted); background: var(--color-bg-subtle);
+    border-color: var(--color-border); cursor: not-allowed; pointer-events: none;
+  }
+
+  /* split-view toggle (Task 7) */
+  .hd-view-toggle { display: flex; gap: 8px; margin: 12px 0; }
+  .btn-toggle {
+    padding: 6px 14px; border: 1px solid var(--color-border);
+    background: var(--color-bg-card, var(--color-bg)); cursor: pointer;
+    border-radius: var(--radius-sm); font-size: 12px;
+    transition: all var(--transition-fast);
+  }
+  .btn-toggle.btn-active {
+    background: var(--color-primary); color: white;
+    border-color: var(--color-primary);
+  }
+  .hd-split-loading {
+    padding: 40px 20px; text-align: center;
+    color: var(--color-text-muted); font-size: 13px;
+  }
+
+  /* 12-屏 grid + reroll (Task 8) */
+  .hd-split-grid { display: grid; grid-template-columns: repeat(2, 1fr);
+                   gap: 12px; }
+  .hd-screen-card { position: relative; }
+  .hd-screen-img { width: 100%; display: block; border-radius: var(--radius-sm); }
+  .btn-reroll { position: absolute; top: 8px; right: 8px; padding: 4px 10px;
+                background: rgba(0,0,0,0.7); color: white; border: none;
+                border-radius: 999px; cursor: pointer; font-size: 12px; }
+  .btn-reroll:hover { background: rgba(0,0,0,0.9); }
+  .btn-reroll:disabled { opacity: 0.5; cursor: wait; }
+
+  /* confirm modal (Task 8) */
+  .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+                display: flex; align-items: center; justify-content: center;
+                z-index: 1000; }
+  .modal-card { background: var(--color-bg-card, white); padding: 24px;
+                border-radius: var(--radius-md); min-width: 320px;
+                max-width: 90vw; box-shadow: var(--shadow-md, 0 4px 16px rgba(0,0,0,0.2)); }
+
+  .hd-toast-root {
+    position: fixed; right: 20px; bottom: 20px; z-index: 1200;
+    display: flex; flex-direction: column; gap: 10px; pointer-events: none;
+  }
+  .hd-toast {
+    min-width: 220px; max-width: min(360px, calc(100vw - 40px));
+    padding: 10px 14px; border-radius: var(--radius-md);
+    background: rgba(24, 24, 24, 0.92); color: #fff;
+    box-shadow: var(--shadow-md); font-size: 13px;
+    transform: translateY(8px); opacity: 0;
+    transition: opacity var(--transition-fast), transform var(--transition-fast);
+  }
+  .hd-toast.show { opacity: 1; transform: translateY(0); }
+  .hd-toast.success { background: rgba(27, 143, 82, 0.96); }
+  .hd-toast.error { background: rgba(196, 58, 58, 0.96); }
+
+  .hd-loading, .hd-empty {
+    padding: 60px 20px; text-align: center; color: var(--color-text-muted);
+  }
+
+  /* Lightbox (复用任务1 v3 实现, 本页内联一份 — design-system.css 暂未提供) */
+  #lightboxDlg {
+    padding: 0; border: none; background: transparent;
+    width: min(85vw, 1200px); max-height: 88vh;
+    max-width: min(85vw, 1200px);
+    overflow: visible; opacity: 1;
+    transition: opacity 180ms ease-out;
+  }
+  #lightboxDlg.closing { opacity: 0; }
+  #lightboxDlg::backdrop {
+    background: rgba(0,0,0,0.78);
+    backdrop-filter: blur(20px) saturate(1.2);
+    -webkit-backdrop-filter: blur(20px) saturate(1.2);
+    animation: lbBackdropIn 180ms ease-out;
+  }
+  #lightboxDlg[open] { animation: lbCardIn 180ms var(--ease-spring); }
+  @keyframes lbBackdropIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes lbCardIn {
+    from { opacity: 0; transform: scale(0.96) translateY(6px); }
+    to   { opacity: 1; transform: scale(1) translateY(0); }
+  }
+  #lightboxDlg .lb-scroll {
+    max-height: 88vh; overflow-y: auto;
+    border-radius: var(--radius-lg);
+    box-shadow: 0 28px 72px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04);
+    background: #fff; padding: var(--space-4);
+  }
+  #lightboxDlg .lb-scroll img {
+    display: block; max-width: 100%; height: auto; object-fit: contain;
+    border-radius: var(--radius-md);
+  }
+  #lightboxDlg .lb-close {
+    position: absolute; top: -16px; right: -16px;
+    width: 40px; height: 40px; border-radius: 50%;
+    background: rgba(255,255,255,0.16);
+    backdrop-filter: blur(16px) saturate(1.2);
+    -webkit-backdrop-filter: blur(16px) saturate(1.2);
+    border: 1px solid rgba(255,255,255,0.28);
+    color: #fff; font-size: 22px; font-weight: 300; line-height: 1;
+    cursor: pointer; z-index: 2;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+    transition: background var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
+  }
+  #lightboxDlg .lb-close:hover {
+    background: rgba(255,255,255,0.32); transform: scale(1.08);
+    box-shadow: 0 6px 16px rgba(0,0,0,0.45);
+  }
+  #lightboxDlg .lb-caption {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: 24px; z-index: 2;
+    padding: 8px 16px; border-radius: var(--radius-full);
+    background: rgba(0,0,0,0.55); color: #fff;
+    font-size: 13px; letter-spacing: 0.02em;
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    white-space: nowrap; max-width: 80vw; overflow: hidden; text-overflow: ellipsis;
+  }
+  #lightboxDlg .lb-caption:empty { display: none; }
+
+  /* 响应式: 手机竖排 */
+  @media (max-width: 768px) {
+    .hd-container { padding: 64px 16px 32px; }
+    .hd-header { flex-direction: column; gap: var(--space-3); }
+    .hd-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .hd-card { grid-template-columns: 1fr; gap: var(--space-3); padding: var(--space-4); }
+    .hd-main-thumb { max-width: 140px; }
+    #lightboxDlg { width: 95vw; max-width: 95vw; max-height: 92vh; }
+    #lightboxDlg .lb-scroll { max-height: 92vh; padding: var(--space-2); }
+    #lightboxDlg .lb-close { top: 10px; right: 10px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="hd-topbar">
+  <div class="hd-topbar-brand"><span class="dot"></span>小玺AI · 批次详情</div>
+  <div class="hd-topbar-right">
+    <a href="/batch/history">历史批次</a>
+    <a href="/batch/upload">新建批次</a>
+    <span>{{ current_user.username }}</span>
+    <form method="POST" action="/auth/logout" style="display:inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit">退出</button>
+    </form>
+  </div>
+</div>
+
+<div class="hd-container">
+  <a href="/batch/history" class="hd-back">← 返回列表</a>
+  <div class="hd-header">
+    <div class="hd-header-left">
+      <h1 class="hd-title">{{ batch.name or batch.raw_name or '(未命名)' }}</h1>
+      <div class="hd-meta">
+        <span>创建于 <strong>{{ batch.created_at.strftime('%Y-%m-%d %H:%M') if batch.created_at else '-' }}</strong></span>
+        <span>状态: <strong>{{ batch.status }}</strong></span>
+        <span>产品数: <strong>{{ batch.valid_count or 0 }}/{{ batch.total_count or 0 }}</strong></span>
+      </div>
+    </div>
+    <a id="btnZip" class="hd-btn-zip" href="/api/batch/{{ batch.batch_id }}/download-all">↓ 批量 zip 下载</a>
+  </div>
+  <section class="hd-workbench" aria-label="生产结果管理">
+    <div class="hd-workbench-head">
+      <div>
+        <h2 class="hd-workbench-title">生产结果管理</h2>
+        <div class="hd-workbench-sub" id="filterSummary">加载批次结果中...</div>
+      </div>
+    </div>
+    <div class="hd-stats" id="resultStats">
+      <div class="hd-stat"><span class="hd-stat-num" id="statTotal">0</span><span class="hd-stat-label">总产品</span></div>
+      <div class="hd-stat"><span class="hd-stat-num" id="statDone">0</span><span class="hd-stat-label">完成</span></div>
+      <div class="hd-stat"><span class="hd-stat-num" id="statFailed">0</span><span class="hd-stat-label">失败</span></div>
+      <div class="hd-stat"><span class="hd-stat-num" id="statMissingHtml">0</span><span class="hd-stat-label">缺 HTML</span></div>
+      <div class="hd-stat"><span class="hd-stat-num" id="statMissingAi">0</span><span class="hd-stat-label">缺 AI</span></div>
+      <div class="hd-stat"><span class="hd-stat-num" id="statRerollable">0</span><span class="hd-stat-label">可返工</span></div>
+    </div>
+    <div class="hd-filters" id="resultFilters">
+      <button type="button" class="hd-filter-btn active" data-filter="all">全部 <span class="hd-filter-count" data-count-for="all">(0)</span></button>
+      <button type="button" class="hd-filter-btn" data-filter="failed">失败 <span class="hd-filter-count" data-count-for="failed">(0)</span></button>
+      <button type="button" class="hd-filter-btn" data-filter="missing">缺文件 <span class="hd-filter-count" data-count-for="missing">(0)</span></button>
+      <button type="button" class="hd-filter-btn" data-filter="unrefined">未精修 <span class="hd-filter-count" data-count-for="unrefined">(0)</span></button>
+      <button type="button" class="hd-filter-btn" data-filter="refined">已精修 <span class="hd-filter-count" data-count-for="refined">(0)</span></button>
+      <button type="button" class="hd-filter-btn" data-filter="rerollable">可返工 <span class="hd-filter-count" data-count-for="rerollable">(0)</span></button>
+    </div>
+  </section>
+  <div class="hd-disk-banner" id="diskBanner" hidden></div>
+  <div class="hd-filter-empty" id="filterEmpty" hidden>当前筛选没有匹配的产品</div>
+  <div id="itemList"><div class="hd-loading">加载中...</div></div>
+</div>
+
+<script>
+  const BATCH_ID = {{ batch.batch_id | tojson }};
+  const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+  let allDisplayItems = [];
+  let currentFilter = 'all';
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  // ── Lightbox (任务1 v3 实现, 此页独立版) ──────────────────
+  function closeLightbox(dlg) {
+    if (!dlg || !dlg.open) return;
+    dlg.classList.add('closing');
+    setTimeout(() => { dlg.classList.remove('closing'); dlg.close(); }, 180);
+  }
+  function ensureLightboxDlg() {
+    let dlg = document.getElementById('lightboxDlg');
+    if (!dlg) {
+      dlg = document.createElement('dialog');
+      dlg.id = 'lightboxDlg';
+      dlg.innerHTML = `
+        <button type="button" class="lb-close" aria-label="关闭预览">×</button>
+        <div class="lb-scroll"><img alt="预览大图"></div>
+        <div class="lb-caption"></div>`;
+      dlg.addEventListener('click', (e) => { if (e.target === dlg) closeLightbox(dlg); });
+      dlg.querySelector('.lb-close').addEventListener('click', () => closeLightbox(dlg));
+      dlg.addEventListener('cancel', (e) => { e.preventDefault(); closeLightbox(dlg); });
+      document.body.appendChild(dlg);
+    }
+    return dlg;
+  }
+  function openLightbox(src, caption) {
+    const dlg = ensureLightboxDlg();
+    dlg.classList.remove('closing');
+    dlg.querySelector('img').src = src;
+    dlg.querySelector('.lb-caption').textContent = caption || '';
+    dlg.querySelector('.lb-scroll').scrollTop = 0;
+    if (typeof dlg.showModal === 'function') dlg.showModal();
+    else dlg.setAttribute('open', '');
+  }
+  window.openLightbox = openLightbox;
+
+  // ── 渲染 ──────────────────────────────────────────────────
+  function stageLabelFor(item) {
+    if (item.status === 'done')   return { cls: 'stage-done',   label: '✅ 完成' };
+    if (item.status === 'failed') return { cls: 'stage-failed', label: '❌ 失败' };
+    if (item.status === 'processing') return { cls: 'stage-parsing', label: '🔄 处理中' };
+    if (item.status === 'skipped') return { cls: 'stage-pending', label: '⏭️ 跳过' };
+    return { cls: 'stage-pending', label: '⏳ 待处理' };
+  }
+
+  function itemFlags(item) {
+    const result = item.result || {};
+    const hasPreview = !!item.preview_png_exists;
+    const hasAI = !!item.ai_refined_exists;
+    const refinedDone = item.ai_refine_status === 'done';
+    const canReroll = refinedDone && hasAI && !!result.task_id;
+    const missingHtml = item.status === 'done' && !hasPreview;
+    const missingAi = refinedDone && !hasAI;
+    return {
+      hasPreview,
+      hasAI,
+      refinedDone,
+      canReroll,
+      missingHtml,
+      missingAi,
+      missingAny: missingHtml || missingAi,
+      failed: item.status === 'failed',
+      unrefined: item.status === 'done' && !refinedDone,
+      refined: refinedDone && hasAI,
+    };
+  }
+
+  function filterMatches(item, filter) {
+    const flags = itemFlags(item);
+    if (filter === 'failed') return flags.failed;
+    if (filter === 'missing') return flags.missingAny;
+    if (filter === 'unrefined') return flags.unrefined;
+    if (filter === 'refined') return flags.refined;
+    if (filter === 'rerollable') return flags.canReroll;
+    return true;
+  }
+
+  function countForFilter(items, filter) {
+    return items.filter(item => filterMatches(item, filter)).length;
+  }
+
+  function updateWorkbench(items) {
+    const stats = items.reduce((acc, item) => {
+      const flags = itemFlags(item);
+      acc.total += 1;
+      if (item.status === 'done') acc.done += 1;
+      if (flags.failed) acc.failed += 1;
+      if (flags.missingHtml) acc.missingHtml += 1;
+      if (flags.missingAi) acc.missingAi += 1;
+      if (flags.canReroll) acc.rerollable += 1;
+      return acc;
+    }, {total: 0, done: 0, failed: 0, missingHtml: 0, missingAi: 0, rerollable: 0});
+
+    const setText = (id, value) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = String(value);
+    };
+    setText('statTotal', stats.total);
+    setText('statDone', stats.done);
+    setText('statFailed', stats.failed);
+    setText('statMissingHtml', stats.missingHtml);
+    setText('statMissingAi', stats.missingAi);
+    setText('statRerollable', stats.rerollable);
+
+    ['all', 'failed', 'missing', 'unrefined', 'refined', 'rerollable'].forEach(filter => {
+      const el = document.querySelector(`[data-count-for="${filter}"]`);
+      if (el) el.textContent = `(${countForFilter(items, filter)})`;
+    });
+  }
+
+  function renderDecisionChips(item) {
+    const flags = itemFlags(item);
+    const chips = [];
+    chips.push(flags.hasPreview
+      ? '<span class="hd-chip ok">HTML 可交付</span>'
+      : '<span class="hd-chip error">缺 HTML 图</span>');
+    if (flags.refined) {
+      chips.push('<span class="hd-chip ok">AI 可交付</span>');
+    } else if (flags.missingAi) {
+      chips.push('<span class="hd-chip error">缺 AI 图</span>');
+    } else if (flags.unrefined) {
+      chips.push('<span class="hd-chip warn">未精修</span>');
+    } else {
+      chips.push('<span class="hd-chip warn">AI 未生成</span>');
+    }
+    if (flags.canReroll) chips.push('<span class="hd-chip ok">可单屏返工</span>');
+    if (flags.failed) chips.push('<span class="hd-chip error">生成失败</span>');
+    return `<div class="hd-decision-row">${chips.join('')}</div>`;
+  }
+
+  function renderActionNote(item) {
+    const flags = itemFlags(item);
+    if (flags.failed) return '<div class="hd-action-note">该产品生成失败，请先查看失败原因或重新跑批次。</div>';
+    if (flags.missingAny) return '<div class="hd-action-note">产物文件缺失，当前只能下载仍在磁盘上的结果。</div>';
+    if (flags.unrefined) return '<div class="hd-action-note">已生成 HTML 版，尚未进入 AI 精修。</div>';
+    if (flags.refined && !flags.canReroll) return '<div class="hd-action-note">AI 长图可交付，但缺少分屏任务信息，不能单屏返工。</div>';
+    return '';
+  }
+
+  function renderItemCard(item, batchId) {
+    const hasPreview = !!item.preview_png_exists;
+    const hasAI = !!item.ai_refined_exists;
+    const previewUrl = (item.result && item.result.preview_png) || '';
+    const aiUrl = (item.result && item.result.ai_refined_path) || '';
+    const safeName = escapeHtml(item.name || '');
+    const nameEnc = encodeURIComponent(item.name || '');
+    const bidEnc = encodeURIComponent(batchId);
+    const stage = stageLabelFor(item);
+    const mainImg = item.main_image_path
+      ? `<img class="hd-main-thumb" src="${escapeHtml(item.main_image_path)}" alt="" onerror="this.style.display='none'">`
+      : '';
+
+    const htmlCol = hasPreview
+      ? `<img class="hd-thumb" src="${escapeHtml(previewUrl)}" alt=""
+             onclick="openLightbox(${JSON.stringify(previewUrl)}, 'HTML 版 · ' + ${JSON.stringify(item.name || '')})">
+         <a class="hd-btn-dl" href="/api/batch/${bidEnc}/download?name=${nameEnc}&kind=html">↓ HTML版</a>`
+      : `<div class="hd-thumb-missing">
+           <span class="hd-thumb-missing-icon">⚠️</span><span>文件已丢失</span>
+         </div>
+         <span class="hd-btn-dl hd-btn-disabled" title="文件已丢失, 无法下载">↓ HTML版</span>`;
+
+    const aiImgInner = hasAI
+      ? `<img class="hd-thumb hd-ai-img" data-item-pk="${item.id}" src="${escapeHtml(aiUrl)}" alt=""
+             onclick="openLightbox(${JSON.stringify(aiUrl)}, 'AI 精修 · ' + ${JSON.stringify(item.name || '')})">
+         <a class="hd-btn-dl" href="/api/batch/${bidEnc}/download?name=${nameEnc}&kind=ai">↓ AI版</a>`
+      : `<div class="hd-thumb-missing">
+           <span class="hd-thumb-missing-icon">⚠️</span>
+           <span>${item.ai_refine_status === 'done' ? '文件已丢失' : '未精修 / 未生成'}</span>
+         </div>
+         <span class="hd-btn-dl hd-btn-disabled" title="文件未生成">↓ AI版</span>`;
+
+    const aiCol = `
+      <div class="hd-view-toggle" data-item-id="${item.id}">
+        <button type="button" class="btn-toggle btn-active" data-mode="full">长图视图</button>
+        <button type="button" class="btn-toggle" data-mode="split">分屏视图 (12 屏)</button>
+      </div>
+      <div class="hd-view-full">
+        ${aiImgInner}
+      </div>
+      <div class="hd-view-split" style="display:none;">
+        <div class="hd-split-grid" data-task-id="${(item.result && item.result.task_id) || ''}">
+          ${(() => {
+            const taskId = (item.result && item.result.task_id) || '';
+            const segCount = (item.result && item.result.segments_count) || 12;
+            if (!taskId) {
+              return '<div class="hd-split-loading">无 task_id, 无法显示分屏 (旧批次?)</div>';
+            }
+            let cards = '';
+            for (let i = 0; i < segCount; i++) {
+              cards += `
+                <div class="hd-screen-card" data-item-pk="${item.id}" data-index="${i}">
+                  <img src="/static/ai_refine_v2/${taskId}/block_${i}.jpg"
+                       class="hd-screen-img" alt="第 ${i+1} 屏" loading="lazy">
+                  <button type="button" class="btn-reroll" data-index="${i}"
+                          data-item-pk="${item.id}" data-batch-id="${batchId}">
+                    🔄 重生此屏
+                  </button>
+                </div>`;
+            }
+            return cards;
+          })()}
+        </div>
+      </div>`;
+
+    return `
+      <div class="hd-card" data-name="${safeName}" data-item-id="${item.id}">
+        <div class="hd-card-left">
+          ${mainImg}
+          <div class="hd-name">${safeName}</div>
+          <span class="stage-pill ${stage.cls}">${stage.label}</span>
+          ${renderDecisionChips(item)}
+        </div>
+        <div class="hd-thumb-col">
+          <div class="hd-thumb-label">HTML 版预览</div>
+          ${htmlCol}
+        </div>
+        <div class="hd-thumb-col">
+          <div class="hd-thumb-label">AI 精修版</div>
+          ${aiCol}
+          ${renderActionNote(item)}
+        </div>
+      </div>`;
+  }
+
+  function renderDiskBanner(disk_available) {
+    const banner = document.getElementById('diskBanner');
+    const btnZip = document.getElementById('btnZip');
+    if (!disk_available || disk_available === 'full') {
+      banner.hidden = true;
+      return;
+    }
+    banner.hidden = false;
+    banner.className = 'hd-disk-banner ' + disk_available;
+    if (disk_available === 'partial') {
+      banner.innerHTML = '⚠️ 部分产品文件已丢失, 仍可下载在磁盘的部分';
+    } else if (disk_available === 'missing') {
+      banner.innerHTML = '❌ 该批次所有文件已丢失. 通常是容器重启前生成在临时层 (紧急3 前).';
+      btnZip.classList.add('hd-btn-disabled');
+      btnZip.setAttribute('title', '所有文件已丢失, zip 打包无意义');
+    }
+  }
+
+  function renderFilteredItems(batchId) {
+    const listEl = document.getElementById('itemList');
+    const emptyEl = document.getElementById('filterEmpty');
+    const filtered = allDisplayItems.filter(item => filterMatches(item, currentFilter));
+    if (emptyEl) emptyEl.hidden = filtered.length !== 0;
+    if (filtered.length === 0) {
+      listEl.innerHTML = '';
+    } else {
+      listEl.innerHTML = filtered.map(it => renderItemCard(it, batchId)).join('');
+    }
+    const summary = document.getElementById('filterSummary');
+    if (summary) summary.textContent = `当前显示 ${filtered.length} / ${allDisplayItems.length} 个产品`;
+  }
+
+  document.getElementById('resultFilters')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.hd-filter-btn');
+    if (!btn) return;
+    currentFilter = btn.dataset.filter || 'all';
+    document.querySelectorAll('.hd-filter-btn').forEach(el => el.classList.remove('active'));
+    btn.classList.add('active');
+    renderFilteredItems(BATCH_ID);
+  });
+
+  async function init() {
+    const listEl = document.getElementById('itemList');
+    let data;
+    try {
+      const resp = await fetch('/api/batches/' + encodeURIComponent(BATCH_ID), {
+        credentials: 'same-origin',
+      });
+      if (!resp.ok) {
+        listEl.innerHTML = '<div class="hd-empty">加载失败: HTTP ' + resp.status + '</div>';
+        return;
+      }
+      data = await resp.json();
+    } catch (e) {
+      listEl.innerHTML = '<div class="hd-empty">加载异常: ' + escapeHtml(e.message || String(e)) + '</div>';
+      return;
+    }
+    renderDiskBanner(data.disk_available);
+    allDisplayItems = (data.items || []).filter(it => it.status !== 'skipped');
+    updateWorkbench(allDisplayItems);
+    if (allDisplayItems.length === 0) {
+      listEl.innerHTML = '<div class="hd-empty">该批次没有可展示的产品</div>';
+      return;
+    }
+    renderFilteredItems(data.batch_id);
+  }
+
+  // ── split-view toggle (Task 7) ────────────────────────────
+  document.addEventListener('click', (e) => {
+    if (!e.target.classList.contains('btn-toggle')) return;
+    const wrap = e.target.closest('.hd-view-toggle').parentElement;
+    const mode = e.target.dataset.mode;
+    wrap.querySelectorAll('.btn-toggle').forEach(b => b.classList.remove('btn-active'));
+    e.target.classList.add('btn-active');
+    wrap.querySelector('.hd-view-full').style.display = mode === 'full' ? '' : 'none';
+    wrap.querySelector('.hd-view-split').style.display = mode === 'split' ? '' : 'none';
+  });
+
+  function showToast(message, type = 'default') {
+    let root = document.getElementById('toastRoot');
+    if (!root) {
+      root = document.createElement('div');
+      root.id = 'toastRoot';
+      root.className = 'hd-toast-root';
+      document.body.appendChild(root);
+    }
+    const toast = document.createElement('div');
+    toast.className = `hd-toast ${type}`;
+    toast.textContent = message;
+    root.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('show'));
+    setTimeout(() => {
+      toast.classList.remove('show');
+      setTimeout(() => toast.remove(), 180);
+    }, 3200);
+  }
+  window._showToast = showToast;
+  window.__showToast = showToast;
+
+  init();
+
+  // ── WS 监听 screen_regenerated (Task 9) ──────────────────────
+  (function initRegenWS() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = `${proto}//${location.host}/ws/batch/${BATCH_ID}`;
+    let ws;
+    let retryDelay = 2000;
+    const MAX_DELAY = 30000;
+    let retryTimer = null;
+    let closedByUs = false;
+
+    function connect() {
+      ws = new WebSocket(url);
+      ws.onopen = () => { retryDelay = 2000; };
+      ws.onmessage = (ev) => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch (_) { return; }
+        if (msg.type === 'screen_regenerated') {
+          const itemCard = document.querySelector(`.hd-card[data-item-id="${msg.item_pk}"]`);
+          const screenCard = itemCard?.querySelector(
+            `.hd-screen-card[data-item-pk="${msg.item_pk}"][data-index="${msg.block_index}"]`
+          );
+          const screenImg = screenCard?.querySelector('.hd-screen-img');
+          if (screenImg && msg.new_block_url) screenImg.src = msg.new_block_url;
+
+          const aiImg = itemCard?.querySelector(`.hd-ai-img[data-item-pk="${msg.item_pk}"]`);
+          if (aiImg && msg.new_assembled_url) {
+            aiImg.src = msg.new_assembled_url;
+            aiImg.setAttribute('onclick', `openLightbox(${JSON.stringify(msg.new_assembled_url)}, 'AI 精修 · ${msg.item_pk}')`);
+          }
+          showToast(`第 ${Number(msg.block_index) + 1} 屏已重生，费用 ¥${msg.cost_rmb}`, 'success');
+          return;
+          // 替换该屏 img
+          const card = document.querySelector(
+            `.hd-screen-card[data-index="${msg.block_index}"]`
+          );
+          if (card) {
+            const img = card.querySelector('.hd-screen-img');
+            if (img) img.src = msg.new_block_url; // 已带 ?v=ts
+          }
+          // 同时刷长图 (cache-bust)
+          document.querySelectorAll('.hd-ai-img').forEach(el => {
+            el.src = msg.new_assembled_url;
+          });
+          // toast (如果存在 _showToast helper)
+          if (window._showToast) {
+            window._showToast(`第 ${msg.block_index + 1} 屏已重生 (¥${msg.cost_rmb})`, 'success');
+          }
+        }
+      };
+      ws.onclose = () => {
+        if (closedByUs) return;
+        retryTimer = setTimeout(() => {
+          retryDelay = Math.min(retryDelay * 2, MAX_DELAY);
+          connect();
+        }, retryDelay);
+      };
+      ws.onerror = () => { /* onclose 会跟着触发, 由 onclose 处理重连 */ };
+    }
+
+    connect();
+
+    // tab 切回前台时如果 ws 已断, 立即重连
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') return;
+      if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+        if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+        retryDelay = 2000;
+        connect();
+      }
+    });
+  })();
+
+  // ── reroll 确认 modal + fetch (Task 8) ───────────────────────
+  let _pendingReroll = null;
+
+  document.addEventListener('click', (e) => {
+    if (e.target.classList.contains('btn-reroll')) {
+      _pendingReroll = {
+        batch_id: e.target.dataset.batchId,
+        item_pk: e.target.dataset.itemPk,
+        block_index: parseInt(e.target.dataset.index, 10),
+        btn: e.target,
+      };
+      document.getElementById('rerollIdx').textContent = (_pendingReroll.block_index + 1).toString();
+      document.getElementById('rerollConfirmModal').style.display = 'flex';
+    }
+    if (e.target.id === 'rerollCancel') {
+      document.getElementById('rerollConfirmModal').style.display = 'none';
+      _pendingReroll = null;
+    }
+    if (e.target.id === 'rerollConfirm') {
+      if (!_pendingReroll) return;
+      const p = _pendingReroll;
+      document.getElementById('rerollConfirmModal').style.display = 'none';
+      p.btn.disabled = true;
+      p.btn.textContent = '⏳ 生成中…';
+      fetch(`/api/batch/${p.batch_id}/items/${p.item_pk}/regenerate-screen`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrfToken},
+        body: JSON.stringify({block_index: p.block_index}),
+      }).then(r => r.json().then(j => ({ok: r.ok, status: r.status, body: j})))
+        .then(({ok, status, body}) => {
+          if (ok) {
+            // WS 会推 screen_regenerated, 由 Task 9 监听刷图.
+            // 这里 fallback 直接刷:
+            const card = p.btn.closest('.hd-screen-card');
+            const img = card.querySelector('.hd-screen-img');
+            img.src = body.new_block_url;
+            const itemCard = p.btn.closest('.hd-card');
+            const aiImg = itemCard?.querySelector(`.hd-ai-img[data-item-pk="${p.item_pk}"]`);
+            if (aiImg && body.new_assembled_url) aiImg.src = body.new_assembled_url;
+            showToast(`第 ${p.block_index + 1} 屏已重生`, 'success');
+            p.btn.disabled = false;
+            p.btn.textContent = '🔄 重生此屏';
+          } else {
+            alert(`重生失败 (${status}): ${body.error || '未知错误'}`);
+            p.btn.disabled = false;
+            p.btn.textContent = '🔄 重生此屏';
+          }
+          _pendingReroll = null;
+        })
+        .catch(err => {
+          alert(`网络错误: ${err.message}`);
+          p.btn.disabled = false;
+          p.btn.textContent = '🔄 重生此屏';
+          _pendingReroll = null;
+        });
+    }
+  });
+</script>
+
+<div id="rerollConfirmModal" class="modal-mask" style="display:none;">
+  <div class="modal-card">
+    <h3>重生第 <span id="rerollIdx"></span> 屏？</h3>
+    <p>本次操作消耗 <strong>¥0.70</strong>，约 30 秒完成。</p>
+    <div style="display:flex; gap:8px; justify-content:flex-end;">
+      <button type="button" id="rerollCancel" class="btn">取消</button>
+      <button type="button" id="rerollConfirm" class="btn btn-primary">确认</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

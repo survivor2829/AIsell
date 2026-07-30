@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>AI Compose · Hero</title>
+  <style>
+    /* ── 主题变量（后续主题切换只改这里） ──────────────── */
+    :root {
+      --theme-primary:      {{ theme_primary | default('#E8231A') }};
+      --theme-primary-dark: {{ theme_primary_dark | default('#B51A13') }};
+      --theme-accent:       {{ theme_accent | default('#FFD166') }};
+
+      --canvas-w: {{ canvas_width | default(750) }}px;
+      --canvas-h: {{ canvas_height | default(1000) }}px;
+
+      --text-on-dark:            #FFFFFF;
+      --text-on-dark-secondary:  rgba(255, 255, 255, 0.78);
+      --text-label:              #5F5F5F;  /* 借用黑米正文灰 */
+      --divider-on-light:        rgba(0, 0, 0, 0.14);
+      --divider-on-dark:         rgba(255, 255, 255, 0.55);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: var(--canvas-w);
+      height: var(--canvas-h);
+      overflow: hidden;
+      font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      font-feature-settings: "palt";
+      color: var(--text-on-dark);
+    }
+
+    /* ── Screen 容器 ──────────────────────────────────── */
+    .screen {
+      position: relative;
+      width: var(--canvas-w);
+      height: var(--canvas-h);
+      {% if bg_url %}
+      background-image: url("{{ bg_url }}");
+      background-size: cover;
+      background-position: center center;
+      background-repeat: no-repeat;
+      {% else %}
+      /* 无 AI 背景时走主题色多层渐变兜底(Apple 调色师:暖红→酒红→近黑) */
+      background:
+        radial-gradient(ellipse 70% 55% at 22% 28%,
+          rgba(216, 82, 72, 0.55) 0%, rgba(216, 82, 72, 0) 62%),
+        radial-gradient(ellipse 90% 70% at 82% 85%,
+          rgba(18, 4, 4, 0.85) 0%, rgba(18, 4, 4, 0) 60%),
+        linear-gradient(150deg,
+          var(--theme-primary-dark, #65140f) 0%,
+          #2a0906 100%);
+      {% endif %}
+      overflow: hidden;
+    }
+
+    /* 顶部柔暗遮罩：保证白字在任意亮背景下可读 */
+    .top-veil {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 38%;
+      background: linear-gradient(
+        to bottom,
+        rgba(0, 0, 0, 0.42) 0%,
+        rgba(0, 0, 0, 0.12) 60%,
+        rgba(0, 0, 0, 0)    100%
+      );
+      z-index: 1;
+      pointer-events: none;
+    }
+
+    /* ── 标题区 ──────────────────────────────────────── */
+    .title-block {
+      position: absolute;
+      top: 7%;
+      left: 0; right: 0;
+      z-index: 4;
+      text-align: center;
+      padding: 0 40px;
+    }
+
+    .main-title {
+      font-size: 68px;
+      font-weight: 800;
+      letter-spacing: 4px;
+      color: var(--text-on-dark);
+      line-height: 1;
+      text-shadow:
+        0 2px 6px rgba(0, 0, 0, 0.55),
+        0 6px 24px rgba(0, 0, 0, 0.35);
+    }
+
+    /* 副标题双横线结构：editorial 风格分隔 */
+    .subtitle-wrap {
+      margin-top: 18px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 14px;
+    }
+    .subtitle-line {
+      width: 40px;
+      height: 1px;
+      background: var(--divider-on-dark);
+    }
+    .subtitle {
+      font-size: 22px;
+      font-weight: 400;
+      letter-spacing: 3px;
+      color: var(--text-on-dark-secondary);
+      text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+    }
+
+    /* 卖点胶囊（可选） */
+    .tagline-wrap {
+      margin-top: 18px;
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .tagline-item {
+      font-size: 18px;
+      font-weight: 500;
+      color: rgba(255, 255, 255, 0.92);
+      padding: 6px 18px;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(8px) saturate(140%);
+      -webkit-backdrop-filter: blur(8px) saturate(140%);
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    }
+
+    /* ── 产品层 ──────────────────────────────────────── */
+    .product-layer {
+      position: absolute;
+      bottom: 22%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 62%;
+      z-index: 3;
+    }
+    .product-img {
+      width: 100%;
+      height: auto;
+      display: block;
+      /* 双层投影：近距离落地 + 远距离氛围 */
+      filter:
+        drop-shadow(0 12px 24px rgba(0, 0, 0, 0.30))
+        drop-shadow(0 40px 60px rgba(0, 0, 0, 0.22));
+    }
+    /* 占位框:无产品图时显示,保持 hero 布局不塌陷 */
+    .product-placeholder {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 30% 30%,
+          rgba(255, 255, 255, 0.18) 0%,
+          rgba(255, 255, 255, 0.04) 45%,
+          rgba(0, 0, 0, 0.22) 100%);
+      border: 1px dashed rgba(255, 255, 255, 0.35);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      box-shadow:
+        inset 0 2px 10px rgba(255, 255, 255, 0.12),
+        0 20px 40px rgba(0, 0, 0, 0.35);
+    }
+    .product-placeholder .ph-icon {
+      font-size: 88px;
+      line-height: 1;
+      opacity: 0.82;
+      filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
+    }
+    .product-placeholder .ph-text {
+      font-size: 18px;
+      letter-spacing: 3px;
+      color: rgba(255, 255, 255, 0.72);
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+    }
+
+    /* ── KPI 条 ───────────────────────────────────────── */
+    .kpi-bar {
+      position: absolute;
+      bottom: 0;
+      left: 0; right: 0;
+      height: 16%;
+      z-index: 5;
+      display: flex;
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(18px) saturate(140%);
+      -webkit-backdrop-filter: blur(18px) saturate(140%);
+      border-top: 1px solid rgba(255, 255, 255, 0.7);
+      box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.10);
+    }
+    .kpi-item {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 14px 6px;
+      position: relative;
+    }
+    /* 渐变分隔线：中段可见，两端淡出 */
+    .kpi-item + .kpi-item::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 24%;
+      bottom: 24%;
+      width: 1px;
+      background: linear-gradient(
+        to bottom,
+        rgba(0, 0, 0, 0) 0%,
+        var(--divider-on-light) 50%,
+        rgba(0, 0, 0, 0) 100%
+      );
+    }
+    .kpi-value {
+      font-size: 26px;
+      font-weight: 700;
+      color: var(--theme-primary);
+      line-height: 1.1;
+      letter-spacing: 0.5px;
+    }
+    .kpi-label {
+      font-size: 13px;
+      color: var(--text-label);
+      margin-top: 6px;
+      letter-spacing: 1px;
+    }
+  </style>
+</head>
+<body>
+  <div class="screen">
+    <div class="top-veil"></div>
+
+    <div class="title-block">
+      <div class="main-title">{{ main_title }}</div>
+
+      <div class="subtitle-wrap">
+        <span class="subtitle-line"></span>
+        <span class="subtitle">{{ subtitle }}</span>
+        <span class="subtitle-line"></span>
+      </div>
+
+      {% if taglines %}
+      <div class="tagline-wrap">
+        {% for t in taglines %}
+          <span class="tagline-item">{{ t }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="product-layer">
+      {% if product_url %}
+      <img class="product-img" src="{{ product_url }}" alt="">
+      {% else %}
+      <div class="product-placeholder">
+        <div class="ph-icon">📷</div>
+        <div class="ph-text">产品图预览</div>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="kpi-bar">
+      {% for kpi in kpi_list %}
+      <div class="kpi-item">
+        <div class="kpi-value">{{ kpi.value }}</div>
+        <div class="kpi-label">{{ kpi.label }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</body>
+</html>

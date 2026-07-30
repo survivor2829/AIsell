@@ -1,0 +1,24 @@
+flask
+jinja2
+playwright==1.58.0
+pillow
+numpy
+pdfplumber
+python-docx
+openpyxl
+rembg
+onnxruntime
+requests
+flask-sqlalchemy
+flask-login
+flask-migrate
+python-dotenv
+cryptography
+flask-wtf
+flask-sock
+# P4 §A.4: 登录暴力破解防护 (5 客户 demo 上线前必修)
+flask-limiter>=3.5
+# 生产驱动 — gunicorn 容器启动; psycopg2-binary 连 Postgres; redis 走 PubSubBackend
+gunicorn
+psycopg2-binary
+redis

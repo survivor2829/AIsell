@@ -1,0 +1,87 @@
+{
+  "ran_at": "2026-04-23 11:55:23",
+  "model": "deepseek-chat",
+  "total": 5,
+  "results": [
+    {
+      "id": 1,
+      "slug": "pc80",
+      "cat": "tool",
+      "out_file": "01_tool_pc80.json",
+      "ok": true,
+      "warnings_count": 0,
+      "warnings": [],
+      "tokens": 2227,
+      "visual_type_dist": {
+        "product_in_scene": 1,
+        "product_closeup": 4,
+        "concept_visual": 3
+      }
+    },
+    {
+      "id": 2,
+      "slug": "ww20",
+      "cat": "consumable",
+      "out_file": "02_consumable_ww20.json",
+      "ok": true,
+      "warnings_count": 0,
+      "warnings": [],
+      "tokens": 2093,
+      "visual_type_dist": {
+        "product_in_scene": 1,
+        "product_closeup": 3,
+        "concept_visual": 2
+      }
+    },
+    {
+      "id": 3,
+      "slug": "dr600",
+      "cat": "device",
+      "out_file": "03_device_dr600.json",
+      "ok": true,
+      "warnings_count": 0,
+      "warnings": [],
+      "tokens": 2206,
+      "visual_type_dist": {
+        "product_in_scene": 1,
+        "product_closeup": 2,
+        "concept_visual": 4
+      }
+    },
+    {
+      "id": 4,
+      "slug": "cm50",
+      "cat": "consumable",
+      "out_file": "04_consumable_cm50.json",
+      "ok": true,
+      "warnings_count": 0,
+      "warnings": [],
+      "tokens": 2111,
+      "visual_type_dist": {
+        "product_in_scene": 1,
+        "product_closeup": 1,
+        "concept_visual": 4
+      }
+    },
+    {
+      "id": 5,
+      "slug": "fs300",
+      "cat": "tool",
+      "out_file": "05_tool_fs300.json",
+      "ok": true,
+      "warnings_count": 0,
+      "warnings": [],
+      "tokens": 2065,
+      "visual_type_dist": {
+        "product_in_scene": 1,
+        "product_closeup": 2,
+        "concept_visual": 3
+      }
+    }
+  ],
+  "ok_count": 5,
+  "fail_count": 0,
+  "total_tokens": 10702,
+  "estimated_cost_rmb": 0.0161,
+  "total_schema_warnings": 0
+}

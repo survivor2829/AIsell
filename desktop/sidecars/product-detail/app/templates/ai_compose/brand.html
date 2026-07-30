@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>AI Compose · Brand</title>
+  <style>
+    :root {
+      --theme-primary:      {{ theme_primary      | default('#E8231A') }};
+      --theme-primary-dark: {{ theme_primary_dark | default('#B51A13') }};
+      --theme-accent:       {{ theme_accent       | default('#FFD166') }};
+
+      --canvas-w: {{ canvas_width  | default(750) }}px;
+      --canvas-h: {{ canvas_height | default(700) }}px;
+
+      /* 上下深、中间略亮的"剧场感"遮罩 */
+      --veil-top:    {{ veil_top    | default('rgba(6, 8, 12, 0.72)') }};
+      --veil-mid:    {{ veil_mid    | default('rgba(6, 8, 12, 0.52)') }};
+      --veil-bottom: {{ veil_bottom | default('rgba(6, 8, 12, 0.76)') }};
+
+      --text-main:   #FFFFFF;
+      --text-sub:    rgba(255, 255, 255, 0.72);
+      --text-dim:    rgba(255, 255, 255, 0.45);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: var(--canvas-w);
+      height: var(--canvas-h);
+      overflow: hidden;
+      font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      color: var(--text-main);
+    }
+
+    .screen {
+      position: relative;
+      width: var(--canvas-w);
+      height: var(--canvas-h);
+      {% if bg_url %}
+      background-image: url("{{ bg_url }}");
+      background-size: cover;
+      background-position: center center;
+      background-repeat: no-repeat;
+      {% else %}
+      /* 无 AI 背景时用深色放射渐变 */
+      background: radial-gradient(ellipse at center,
+        #16181d 0%,
+        #0a0c12 80%);
+      {% endif %}
+      overflow: hidden;
+    }
+
+    /* 上下暗中间亮的剧场感遮罩 */
+    .theater-veil {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(180deg,
+        var(--veil-top)    0%,
+        var(--veil-mid)   50%,
+        var(--veil-bottom) 100%);
+      z-index: 1;
+      pointer-events: none;
+    }
+
+    .content {
+      position: relative;
+      z-index: 2;
+      width: 100%;
+      height: 100%;
+      padding: 60px 48px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }
+
+    .section-label {
+      font-size: 12px;
+      letter-spacing: 6px;
+      font-weight: 600;
+      color: var(--theme-accent);
+      margin-bottom: 20px;
+      font-family: "Arial", "Helvetica Neue", sans-serif;
+    }
+
+    .brand-logo {
+      max-height: 64px;
+      max-width: 200px;
+      margin-bottom: 18px;
+      filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.4));
+    }
+
+    /* 品牌名:白→金渐变文字 + 柔光 */
+    .brand-name {
+      font-size: 50px;
+      font-weight: 800;
+      letter-spacing: 5px;
+      line-height: 1;
+      background: linear-gradient(180deg,
+        #FFFFFF 0%,
+        #FFF2C4 55%,
+        var(--theme-accent) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      filter: drop-shadow(0 4px 20px rgba(255, 209, 102, 0.18));
+    }
+    .brand-name-sub {
+      font-size: 14px;
+      letter-spacing: 6px;
+      color: var(--text-sub);
+      margin-top: 10px;
+      font-family: "Arial", "Helvetica Neue", sans-serif;
+      font-weight: 500;
+    }
+
+    /* 金色装饰分隔器:两端渐变淡出 + 中央符号 */
+    .ornament {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      margin: 26px 0 22px;
+      color: var(--theme-accent);
+      font-size: 10px;
+      letter-spacing: 4px;
+    }
+    .ornament::before, .ornament::after {
+      content: "";
+      width: 70px;
+      height: 1px;
+      background: linear-gradient(to right,
+        rgba(255, 209, 102, 0) 0%,
+        var(--theme-accent) 50%,
+        rgba(255, 209, 102, 0) 100%);
+    }
+
+    .brand-story {
+      font-size: 15px;
+      color: var(--text-sub);
+      line-height: 1.85;
+      letter-spacing: 1.5px;
+      max-width: 580px;
+    }
+
+    /* 资质网格 */
+    .credentials-grid {
+      margin-top: 40px;
+      display: grid;
+      grid-template-columns: repeat({{ credentials_cols | default(4) }}, 1fr);
+      gap: 0;
+      width: 100%;
+      max-width: 640px;
+    }
+    .credential {
+      position: relative;
+      text-align: center;
+      padding: 8px 10px;
+    }
+    /* 金色渐变竖线分隔 */
+    .credential + .credential::before {
+      content: "";
+      position: absolute;
+      top: 12%; bottom: 12%;
+      left: 0;
+      width: 1px;
+      background: linear-gradient(to bottom,
+        rgba(255, 209, 102, 0) 0%,
+        rgba(255, 209, 102, 0.45) 50%,
+        rgba(255, 209, 102, 0) 100%);
+    }
+    .cred-icon {
+      font-size: 22px;
+      line-height: 1;
+      margin-bottom: 10px;
+      font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+      filter: drop-shadow(0 0 6px rgba(255, 209, 102, 0.30));
+    }
+    .cred-main {
+      font-size: 24px;
+      font-weight: 800;
+      color: var(--theme-accent);
+      letter-spacing: 0.5px;
+      line-height: 1;
+      font-family: "Arial", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+    }
+    .cred-label {
+      font-size: 11px;
+      color: var(--text-sub);
+      margin-top: 8px;
+      letter-spacing: 2px;
+    }
+  </style>
+</head>
+<body>
+  <div class="screen">
+    <div class="theater-veil"></div>
+
+    <div class="content">
+      {% if section_label %}
+      <div class="section-label">{{ section_label }}</div>
+      {% endif %}
+
+      {% if brand_logo_url %}
+      <img class="brand-logo" src="{{ brand_logo_url }}" alt="">
+      {% endif %}
+
+      <h1 class="brand-name">{{ brand_name }}</h1>
+
+      {% if brand_name_sub %}
+      <div class="brand-name-sub">{{ brand_name_sub }}</div>
+      {% endif %}
+
+      <div class="ornament">{{ ornament_symbol | default('◆') }}</div>
+
+      <div class="brand-story">{{ brand_story }}</div>
+
+      {% if credentials %}
+      <div class="credentials-grid">
+        {% for c in credentials %}
+        <div class="credential">
+          {% if c.icon %}<div class="cred-icon">{{ c.icon }}</div>{% endif %}
+          <div class="cred-main">{{ c.main }}</div>
+          <div class="cred-label">{{ c.label }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</body>
+</html>

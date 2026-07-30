@@ -1,0 +1,189 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-07-30",
+  "source": {
+    "repository": "产品详情图/product-detail",
+    "head": "9305413b884c3e646df155a7fefcf7fc5e4e9e30",
+    "trackedModifiedCount": 5,
+    "untrackedCount": 23
+  },
+  "snapshot": {
+    "path": "desktop/sidecars/product-detail/app",
+    "fileCount": 415,
+    "treeSha256BeforeDesktopAdaptation": "efb661ee2e93a3097ef02492c895883977033e5b2c4a7c0a4abba9b3e5b6bd4a",
+    "includes": [
+      "Python application source",
+      "templates and static assets",
+      "migrations and pubsub modules",
+      "tests and test fixtures",
+      "project verification scripts and documentation",
+      "safe example and container configuration required by inherited tests"
+    ],
+    "excludes": [
+      ".git",
+      ".agents",
+      ".codex",
+      "local .env files",
+      "databases, uploads, outputs and caches",
+      "repository-local runtime artifacts"
+    ]
+  },
+  "baselineVerification": {
+    "python": "3.12.13",
+    "command": "python -m pytest sidecars/product-detail/app -q",
+    "environment": "isolated desktop/.build/product-detail-venv with fake non-production API values",
+    "result": {
+      "passed": 476,
+      "skipped": 1,
+      "subtestsPassed": 134,
+      "failed": 0
+    },
+    "notes": [
+      "PYTHONUTF8=1 is required on the current Chinese Windows host for inherited subprocess-output tests.",
+      "rembg and its ONNX model were not installed for this baseline; the inherited application exercised its documented no-rembg fallback.",
+      "Playwright Python was installed, but the Chromium runtime was not downloaded during this baseline."
+    ]
+  },
+  "dirtyFiles": [
+    {
+      "status": "modified",
+      "path": "ai_refine_v2/refine_generator.py",
+      "sha256": "756cc1424fb9649c51f7b6ec80c71d80c04826e0e591f29b29c5074d7c613d3f"
+    },
+    {
+      "status": "modified",
+      "path": "ai_refine_v2/refine_planner.py",
+      "sha256": "8979b7c6e9c6e77d8756b0d30b1301c6327a7968e86af5802487f4523482fd92"
+    },
+    {
+      "status": "modified",
+      "path": "app.py",
+      "sha256": "af2f9dac80c6fe180b3f5dfc401feda10ccd07950f134321c3dfc95bd9872fa7"
+    },
+    {
+      "status": "modified",
+      "path": "templates/batch/history_detail.html",
+      "sha256": "a8203b33f6e868cb2f67cbac00671118b268ac8212b9a4c15645d2138cd9cb4a"
+    },
+    {
+      "status": "modified",
+      "path": "templates/batch/upload.html",
+      "sha256": "062e5aed5ffdc10e5c14c030b7a1c602848b546e1e8c67c4c1f3672a1b10ec70"
+    },
+    {
+      "status": "untracked",
+      "path": "docs/2026-05-27_commit-manifest.md",
+      "sha256": "cb0831e526cce26f3f55030ca089c583caa5a2a11661016ba6dbba19804ac859"
+    },
+    {
+      "status": "untracked",
+      "path": "docs/2026-05-27_decision-brief.md",
+      "sha256": "b9a7ac1cca26d1d55d5ae8ba37338692da4734a98822375797c702318fe7c779"
+    },
+    {
+      "status": "untracked",
+      "path": "docs/2026-05-27_handoff-index.md",
+      "sha256": "8d0a47df4a842c5f93035be1ee1d9924e4611db36cd65e74a4dda258fb9b7b17"
+    },
+    {
+      "status": "untracked",
+      "path": "docs/2026-05-27_next-action-tracker.md",
+      "sha256": "39f5c2b084d6b3d892fab40b4ab0812796736db28ef6f512c1c32ced75eaa978"
+    },
+    {
+      "status": "untracked",
+      "path": "docs/2026-05-27_next-planning-baseline.md",
+      "sha256": "f0cef21ddcd05732dd0be811f67dd263f9f56dc7f954e08947baef878d155a3f"
+    },
+    {
+      "status": "untracked",
+      "path": "docs/2026-05-27_phase7-readiness-checklist.md",
+      "sha256": "89a66fda9b5ac55485a8cf089aff6541c9ed284efac43bd4d21928c2b018b697"
+    },
+    {
+      "status": "untracked",
+      "path": "docs/2026-05-27_python-flask-env-recovery-options.md",
+      "sha256": "1ec1bd8b61d0ba7cfd96280fc99f30498fbb4d752010e6e1327be4b30f43f15a"
+    },
+    {
+      "status": "untracked",
+      "path": "docs/2026-05-27_upload-ux-browser-validation-report.md",
+      "sha256": "b5e8b822956ca99206e470539b602a30f6bde541cd280fd2fd62805ad0d30e15"
+    },
+    {
+      "status": "untracked",
+      "path": "docs/2026-05-27_upload-ux-browser-validation-runbook.md",
+      "sha256": "1106be5a9ed3f02e9fb7f01dff5d76031543462b65c693f8f14aba35062ed25c"
+    },
+    {
+      "status": "untracked",
+      "path": "docs/2026-05-27_upload-ux-quick-win-plan.md",
+      "sha256": "e61670f4c0c162aead02598979525495b07343814860cf2bc5cfce2cef5ea58c"
+    },
+    {
+      "status": "untracked",
+      "path": "docs/superpowers/audits/2026-05-27-p5-6-consumable-e2e.md",
+      "sha256": "7906e67412d6f822a1f080aeb8d9f40ab8d37a1cdfc2595c7afee9a197d35597"
+    },
+    {
+      "status": "untracked",
+      "path": "scripts/bootstrap_local_dev_env.ps1",
+      "sha256": "99e7f5d9db51688e8d84282e23d84205068f802ee80200ac30c01a657d8c7562"
+    },
+    {
+      "status": "untracked",
+      "path": "scripts/check_local_dev_env.ps1",
+      "sha256": "092cba4119f8ef3fe341ad1653bd803d07dcb80b0f4fe5d54547d18ff196f9bf"
+    },
+    {
+      "status": "untracked",
+      "path": "scripts/make_upload_ux_sample.ps1",
+      "sha256": "18eb5ab65fcf6d6554512e8636a623b072e2e0ac4163c4abe6a9f23492e33fcc"
+    },
+    {
+      "status": "untracked",
+      "path": "scripts/verify_2026_05_27_commit_manifest.js",
+      "sha256": "e08e2fd2766a11e9dcc860285f32237f00b7534025a1ba277185443cfed66f15"
+    },
+    {
+      "status": "untracked",
+      "path": "scripts/verify_2026_05_27_handoff_all.ps1",
+      "sha256": "11517e468da2d6eaee5cd3fda39af57001c8debb7a98e7f0234b807fba8acd9b"
+    },
+    {
+      "status": "untracked",
+      "path": "scripts/verify_2026_05_27_planning_paths.js",
+      "sha256": "df12552a7ab72ffbb3cef206d058cb17f61ac3be0a3169e2b5908853e3c7df2e"
+    },
+    {
+      "status": "untracked",
+      "path": "scripts/verify_batch_upload_inline_js_syntax.js",
+      "sha256": "c2f82b43b286cbf88c2064ee79641829f6a6b1054337eab64d8a579ccb10d6f8"
+    },
+    {
+      "status": "untracked",
+      "path": "scripts/verify_batch_upload_runtime_smoke.js",
+      "sha256": "59e899812eb9cab31bde33c3e27aa0407bfe33018aa802b8fd09e3333e0d0589"
+    },
+    {
+      "status": "untracked",
+      "path": "scripts/verify_batch_upload_ux_all.js",
+      "sha256": "89037f3ba823d6877f9ab0192f6b66a6a31484a7c97cc34f588f2ae7ff4621c9"
+    },
+    {
+      "status": "untracked",
+      "path": "scripts/verify_batch_upload_ux_static.py",
+      "sha256": "fdadd3032dc6fdce97dea285571e601dab23800a8d5c2ca6c36aa367e16ed310"
+    },
+    {
+      "status": "untracked",
+      "path": "tests/test_batch_history_detail_workbench.py",
+      "sha256": "031ee68854d6516f29417582e09a34dc0571eda65e104212513e068c7a9810b8"
+    },
+    {
+      "status": "untracked",
+      "path": "tests/test_batch_upload_ux.py",
+      "sha256": "a40ed1dce5318399753faafbbd377ee09ab3bd3094b13485c3ef0667045d3dab"
+    }
+  ]
+}

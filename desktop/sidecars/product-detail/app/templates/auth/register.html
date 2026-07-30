@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>注册 · 小玺AI</title>
+<link rel="stylesheet" href="/static/css/design-system.css">
+<style>
+  body { background: var(--color-bg-page); }
+</style>
+</head>
+<body class="auth-page">
+<div class="auth-card animate-in">
+  <div class="auth-logo">
+    <div class="auth-logo-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/>
+      </svg>
+    </div>
+    <h1>注册账号</h1>
+    <p>小玺AI · 产品详情页自动生成平台</p>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash-msg flash-{{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <form method="POST" action="{{ url_for('auth.register') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="form-group">
+      <label class="form-label">用户名 <span style="color:var(--color-error)">*</span></label>
+      <input type="text" name="username" class="form-input" placeholder="请输入用户名" required autofocus>
+    </div>
+    <div class="form-group">
+      <label class="form-label">邮箱 <span style="color:var(--color-text-muted);font-weight:400">(选填)</span></label>
+      <input type="email" name="email" class="form-input" placeholder="用于找回密码">
+    </div>
+    <div class="form-group">
+      <label class="form-label">密码 <span style="color:var(--color-error)">*</span></label>
+      <input type="password" name="password" class="form-input" placeholder="至少6个字符" required minlength="6">
+    </div>
+    <div class="form-group">
+      <label class="form-label">确认密码 <span style="color:var(--color-error)">*</span></label>
+      <input type="password" name="password2" class="form-input" placeholder="再次输入密码" required minlength="6">
+    </div>
+    <button type="submit" class="btn btn-primary btn-lg btn-block" style="margin-top:8px">注 册</button>
+    <p style="text-align:center;margin-top:14px;font-size:13px;color:var(--color-text-muted);">
+      注册后需要管理员审核通过才能使用
+    </p>
+  </form>
+
+  <div class="auth-links">
+    已有账号？<a href="{{ url_for('auth.login') }}">返回登录</a>
+  </div>
+</div>
+</body>
+</html>

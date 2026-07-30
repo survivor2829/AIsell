@@ -1,0 +1,105 @@
+{
+  "_meta": {
+    "product_slug": "pc80",
+    "product_cat": "tool",
+    "elapsed_s": 23.15,
+    "usage": {
+      "prompt_tokens": 1540,
+      "completion_tokens": 687,
+      "total_tokens": 2227,
+      "prompt_tokens_details": {
+        "cached_tokens": 192
+      },
+      "prompt_cache_hit_tokens": 192,
+      "prompt_cache_miss_tokens": 1348
+    },
+    "model": "deepseek-chat",
+    "schema_warnings": []
+  },
+  "planner_output": {
+    "product_meta": {
+      "name": "PC-80 便携手持工业吸尘器，亮黑色机身配橙色按钮，1200W电机吸力强劲",
+      "category": "工具类",
+      "primary_color": "glossy black",
+      "key_visual_parts": [
+        "glossy black plastic body",
+        "orange control buttons",
+        "ergonomic carry handle",
+        "detachable hose and brush heads"
+      ],
+      "proportions": "compact handheld device with a central body and a protruding nozzle"
+    },
+    "selling_points": [
+      {
+        "idx": 1,
+        "text": "PC-80 便携手持工业吸尘器",
+        "visual_type": "product_closeup",
+        "priority": "high",
+        "reason": "产品主体外观描述，展示整体形态和配色"
+      },
+      {
+        "idx": 2,
+        "text": "亮黑色机身配橙色按钮",
+        "visual_type": "product_closeup",
+        "priority": "high",
+        "reason": "描述产品具体颜色和部件细节"
+      },
+      {
+        "idx": 3,
+        "text": "1200W 电机吸力 20kPa",
+        "visual_type": "concept_visual",
+        "priority": "high",
+        "reason": "核心性能指标，主语是功率和吸力"
+      },
+      {
+        "idx": 4,
+        "text": "单手提握 3kg 整机重",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "描述便携性指标，主语是重量"
+      },
+      {
+        "idx": 5,
+        "text": "HEPA 过滤 99.97%",
+        "visual_type": "product_closeup",
+        "priority": "medium",
+        "reason": "描述核心部件（过滤器）的技术规格"
+      },
+      {
+        "idx": 6,
+        "text": "2 米长软管 + 4 种刷头",
+        "visual_type": "product_closeup",
+        "priority": "medium",
+        "reason": "描述产品附件和结构部件"
+      },
+      {
+        "idx": 7,
+        "text": "适用于车间地面 / 办公室死角 / 汽车内饰",
+        "visual_type": "product_in_scene",
+        "priority": "high",
+        "reason": "明确提及具体应用场景和地点"
+      },
+      {
+        "idx": 8,
+        "text": "续航 45 分钟",
+        "visual_type": "concept_visual",
+        "priority": "low",
+        "reason": "描述抽象性能指标（续航时间）"
+      }
+    ],
+    "planning": {
+      "total_blocks": 8,
+      "block_order": [
+        "hero",
+        "selling_point_1",
+        "selling_point_2",
+        "selling_point_3",
+        "selling_point_4",
+        "selling_point_5",
+        "selling_point_6",
+        "selling_point_8"
+      ],
+      "hero_scene_hint": "A glossy black handheld vacuum cleaner with orange buttons being used to clean car seats in a vehicle interior, demonstrating its application."
+    }
+  }
+}

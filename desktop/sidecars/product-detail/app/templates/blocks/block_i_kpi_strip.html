@@ -1,0 +1,35 @@
+<!--
+  block_i_kpi_strip — KPI大数字条（效率与性能数据展示）
+  宽度：750px
+
+  变量：
+  - section_title: 标题（如"效率与性能"）
+  - kpis: 列表（3-6项），每项：{"label":"理论效率", "value":"3600", "unit":"m²/h", "note":"视工况而定"}
+-->
+
+{% if kpis %}<div style="width:750px; box-sizing:border-box; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; background:#FFFFFF; color:#101828; padding:44px 36px 48px;">
+  <div style="display:flex; align-items:center; gap:12px;">
+    <div style="width:4px; height:26px; border-radius:2px; background:var(--theme-primary, #E8231A); flex-shrink:0;"></div>
+    <div style="font-size:28px; font-weight:900; line-height:1.2; letter-spacing:0.5px;">{{ section_title }}</div>
+  </div>
+  <div style="margin-top:14px; height:2px; background:linear-gradient(90deg, var(--theme-primary, #E8231A) 0%, rgba(232,35,26,0.12) 60%, transparent 100%); border-radius:1px;"></div>
+
+  {% set _n = kpis|length %}
+  {% if _n == 1 %}{% set _w = '100%' %}
+  {% elif _n == 3 %}{% set _w = 'calc(33.333% - 8px)' %}
+  {% else %}{% set _w = 'calc(50% - 6px)' %}{% endif %}
+  <div style="margin-top:20px; display:flex; flex-wrap:wrap; gap:12px;">
+    {% for k in kpis %}
+    <div style="width:{{ _w }}; border-radius:16px; border:1px solid #EAECF0; background:linear-gradient(180deg, #FAFBFC 0%, #F5F6F8 100%); padding:18px 18px 16px; box-sizing:border-box; position:relative; overflow:hidden;">
+      <!-- 卡片左上角装饰 -->
+      <div style="position:absolute; top:0; left:0; width:3px; height:32px; background:var(--theme-primary, #E8231A); border-radius:0 0 2px 0;"></div>
+      <div style="font-size:12px; color:#667085; font-weight:700; letter-spacing:0.5px; text-transform:uppercase;">{{ k.label }}</div>
+      <div style="margin-top:10px; display:flex; align-items:baseline; gap:4px;">
+        <div style="font-size:34px; font-weight:950; color:#101828; line-height:1; letter-spacing:-0.5px;">{{ k.value }}</div>
+        {% if k.unit %}<div style="font-size:14px; color:#475467; font-weight:700;">{{ k.unit }}</div>{% endif %}
+      </div>
+      {% if k.note %}<div style="margin-top:8px; font-size:12px; color:#98A2B3; line-height:1.5;">{{ k.note }}</div>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>{% endif %}

@@ -1,0 +1,89 @@
+{
+  "_meta": {
+    "product_slug": "cc100",
+    "product_cat": "consumable",
+    "elapsed_s": 25.66,
+    "usage": {
+      "prompt_tokens": 859,
+      "completion_tokens": 608,
+      "total_tokens": 1467,
+      "prompt_tokens_details": {
+        "cached_tokens": 384
+      },
+      "prompt_cache_hit_tokens": 384,
+      "prompt_cache_miss_tokens": 475
+    },
+    "model": "deepseek-chat",
+    "schema_warnings": []
+  },
+  "planner_output": {
+    "product_meta": {
+      "name": "CC-100 工业多功能清洁剂，5升蓝色桶装中性配方",
+      "category": "耗材类",
+      "primary_color": "blue",
+      "key_visual_parts": [
+        "blue HDPE plastic drum",
+        "product label with specifications",
+        "diluted solution in use",
+        "sealed cap and handle"
+      ],
+      "proportions": "5-liter cylindrical drum with handle"
+    },
+    "selling_points": [
+      {
+        "idx": 1,
+        "text": "5升蓝色HDPE塑料桶包装，耐用便携",
+        "visual_type": "product_closeup",
+        "priority": "high",
+        "reason": "卖点明确描述包装的材质和颜色，属于产品特写。"
+      },
+      {
+        "idx": 2,
+        "text": "中性pH7.5配方，对金属不腐蚀",
+        "visual_type": "concept_visual",
+        "priority": "high",
+        "reason": "卖点强调抽象的化学属性（pH值、腐蚀性），适合概念可视化。"
+      },
+      {
+        "idx": 3,
+        "text": "生物降解28天>90%，符合OECD 301B标准",
+        "visual_type": "concept_visual",
+        "priority": "high",
+        "reason": "卖点强调环保性能和抽象认证标准，适合概念可视化。"
+      },
+      {
+        "idx": 4,
+        "text": "一瓶稀释100倍使用，超经济",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "卖点强调成本效益这一抽象指标，适合概念可视化。"
+      },
+      {
+        "idx": 5,
+        "text": "适用于食品加工车间/餐饮后厨/医院地面",
+        "visual_type": "product_in_scene",
+        "priority": "high",
+        "reason": "卖点明确列出多个应用场景，适合场景展示。"
+      },
+      {
+        "idx": 6,
+        "text": "无香型不刺鼻，ISO 9001认证工厂生产",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "卖点包含感官体验（无香）和质量管理体系认证，均为抽象概念。"
+      }
+    ],
+    "planning": {
+      "total_blocks": 6,
+      "block_order": [
+        "hero",
+        "selling_point_1",
+        "selling_point_2",
+        "selling_point_3",
+        "selling_point_4",
+        "selling_point_6"
+      ],
+      "hero_scene_hint": "A blue 5-liter CC-100 cleaning drum being used to mop a clean, wet floor in a professional food processing kitchen, with stainless steel equipment in the background."
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{#
+  FAQ 常见问题屏
+  变量:
+  - section_title: 标题（默认"常见问题"）
+  - section_subtitle: 副标题
+  - faqs: [{question, answer}, ...]
+#}
+{% if faqs %}<div style="width:750px; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; background:linear-gradient(180deg, #f8f9fb 0%, #fff 100%); padding:48px 36px;">
+
+  <div style="text-align:center; margin-bottom:32px;">
+    <div style="font-size:28px; font-weight:900; color:#111; letter-spacing:1px;">{{ section_title|default('常见问题') }}</div>
+    {% if section_subtitle %}
+    <div style="font-size:14px; color:#999; margin-top:8px;">{{ section_subtitle }}</div>
+    {% endif %}
+    <div style="margin:14px auto 0; width:48px; height:3px; border-radius:2px; background:linear-gradient(90deg, var(--theme-primary, #E8231A), rgba(232,35,26,0.3));"></div>
+  </div>
+
+  {% for item in faqs %}
+  <div style="border:1px solid #eef0f3; border-radius:14px; padding:20px 22px; margin-bottom:12px; background:#fff; box-shadow:0 2px 8px rgba(0,0,0,0.03);">
+    <div style="display:flex; align-items:flex-start; gap:12px;">
+      <span style="flex-shrink:0; width:28px; height:28px; background:linear-gradient(135deg, var(--theme-primary, #E8231A), #ff5040); color:#fff; border-radius:8px; font-size:13px; font-weight:800; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 6px rgba(232,35,26,0.2);">Q</span>
+      <div style="font-size:15px; font-weight:700; color:#111; line-height:1.65; padding-top:3px;">{{ item.question }}</div>
+    </div>
+    <div style="display:flex; align-items:flex-start; gap:12px; margin-top:14px; padding-top:14px; border-top:1px dashed #eef0f3;">
+      <span style="flex-shrink:0; width:28px; height:28px; background:linear-gradient(135deg, #f0f2f5, #e8eaed); color:#666; border-radius:8px; font-size:13px; font-weight:800; display:flex; align-items:center; justify-content:center;">A</span>
+      <div style="font-size:14px; color:#555; line-height:1.85; padding-top:3px;">{{ item.answer }}</div>
+    </div>
+  </div>
+  {% endfor %}
+
+</div>{% endif %}

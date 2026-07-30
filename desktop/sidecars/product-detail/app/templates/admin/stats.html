@@ -1,0 +1,73 @@
+{% extends "admin/base.html" %}
+{% block title %}使用统计{% endblock %}
+{% block content %}
+
+<div class="stat-grid">
+  <div class="stat-box">
+    <div class="stat-num">{{ total_users }}</div>
+    <div class="stat-label">注册用户</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-num">{{ approved_users }}</div>
+    <div class="stat-label">已审核</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-num">{{ paid_users }}</div>
+    <div class="stat-label">付费用户</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-num" style="color:#e65100">{{ pending_users }}</div>
+    <div class="stat-label">待审核</div>
+  </div>
+</div>
+
+<div class="stat-grid">
+  <div class="stat-box">
+    <div class="stat-num">{{ today_logs }}</div>
+    <div class="stat-label">今日操作</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-num">{{ week_logs }}</div>
+    <div class="stat-label">本周操作</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-num">{{ month_logs }}</div>
+    <div class="stat-label">本月操作</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-num">{{ total_logs }}</div>
+    <div class="stat-label">累计操作</div>
+  </div>
+</div>
+
+<div class="stat-grid">
+  <div class="stat-box">
+    <div class="stat-num" style="color:#e65100">{{ platform_calls }}</div>
+    <div class="stat-label">平台Key调用</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-num" style="color:#1565c0">{{ custom_calls }}</div>
+    <div class="stat-label">自有Key调用</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">用户使用量排行 (Top 20)</div>
+  <table>
+    <thead>
+      <tr><th>排名</th><th>用户名</th><th>操作次数</th></tr>
+    </thead>
+    <tbody>
+      {% for username, count in user_usage %}
+      <tr>
+        <td>{{ loop.index }}</td>
+        <td>{{ username }}</td>
+        <td><strong>{{ count }}</strong></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3" style="text-align:center;color:#999;padding:20px;">暂无数据</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

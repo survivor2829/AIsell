@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: clean-ai-assistant
+    runtime: docker
+    plan: free
+    envVars:
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: FLASK_ENV
+        value: production

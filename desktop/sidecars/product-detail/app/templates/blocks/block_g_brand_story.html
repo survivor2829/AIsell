@@ -1,0 +1,55 @@
+<!--
+  block_g_brand_story — 品牌背书/集团实力（数据卡+可选里程碑）
+  宽度：750px
+
+  变量：
+  - brand_title: 主标题（如"德国博赫尔集团"）
+  - brand_subtitle: 副标题（可空）
+  - brand_stats: 数据卡列表，每项：{"value":"200+","label":"全球客户","note":"可选"}
+  - brand_story_lines: 可选里程碑，每条：{"year":"2020","text":"建立华北中心仓"}
+-->
+
+{% if brand_stats or brand_story_lines %}<div style="width:750px; box-sizing:border-box; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; color:#ffffff; overflow:hidden; background:var(--theme-gradient-dark, linear-gradient(135deg,#0B0F1A 0%,#131D3A 55%,#0B0F1A 100%)); padding:46px 44px 44px 44px;">
+  <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:18px;">
+    <div style="min-width:0;">
+      <div style="font-size:30px; font-weight:900; line-height:1.18; letter-spacing:0.2px;">{{ brand_title }}</div>
+      {% if brand_subtitle %}
+      <div style="margin-top:12px; font-size:14px; line-height:1.75; color:rgba(255,255,255,0.78);">{{ brand_subtitle }}</div>
+      {% endif %}
+    </div>
+    <div style="flex:0 0 auto; padding:10px 12px; border-radius:14px; background:var(--theme-tag-bg, rgba(232,35,26,0.12)); border:1px solid var(--theme-primary-border, rgba(232,35,26,0.38));">
+      <div style="font-size:12px; color:var(--theme-accent, #FFB3AF); font-weight:700;">品牌实力</div>
+    </div>
+  </div>
+
+  <div style="margin-top:22px; height:1px; background:linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.18) 30%, rgba(232,35,26,0.36) 70%, rgba(255,255,255,0) 100%);"></div>
+
+  <div style="margin-top:22px; display:flex; flex-wrap:wrap; gap:12px;">
+    {% for s in brand_stats %}
+    <div style="width:calc(50% - 6px); box-sizing:border-box; border-radius:18px; padding:18px 18px 16px 18px; background:linear-gradient(180deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.03) 100%); border:1px solid rgba(255,255,255,0.10);">
+      <div style="display:flex; align-items:baseline; justify-content:space-between; gap:12px;">
+        <div style="font-size:28px; font-weight:900; color:#FFFFFF; letter-spacing:0.2px; line-height:1;">{{ s.value }}</div>
+        <div style="flex:0 0 auto; width:10px; height:10px; border-radius:999px; background:var(--theme-primary, #E8231A); box-shadow:0 0 0 4px var(--theme-primary-light, rgba(232,35,26,0.18));"></div>
+      </div>
+      <div style="margin-top:10px; font-size:13px; font-weight:800; line-height:1.35;">{{ s.label }}</div>
+      {% if s.note %}
+      <div style="margin-top:6px; font-size:12px; line-height:1.6; color:rgba(255,255,255,0.70);">{{ s.note }}</div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if brand_story_lines %}
+  <div style="margin-top:18px; border-radius:18px; padding:18px 18px 14px 18px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.10);">
+    <div style="font-size:14px; font-weight:900; letter-spacing:0.2px;">发展里程碑</div>
+    <div style="margin-top:12px;">
+      {% for l in brand_story_lines %}
+      <div style="display:flex; align-items:flex-start; gap:12px; padding:10px 0; border-top:1px dashed rgba(255,255,255,0.14);">
+        <div style="flex:0 0 62px; font-size:12px; font-weight:900; color:var(--theme-accent, #FFB3AF);">{{ l.year }}</div>
+        <div style="flex:1; font-size:12px; line-height:1.7; color:rgba(255,255,255,0.80);">{{ l.text }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>{% endif %}

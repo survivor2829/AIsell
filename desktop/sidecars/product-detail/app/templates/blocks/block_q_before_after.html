@@ -1,0 +1,50 @@
+<!--
+  block_q_before_after — 使用前后对比（耗材类/工具类通用）
+  宽度：750px
+
+  变量：
+  - section_title: 标题（如"清洁效果对比"）
+  - section_subtitle: 副标题（可空）
+  - comparisons: 对比列表（1-3组），每项：
+      {"before_image":"url", "after_image":"url", "before_label":"使用前", "after_label":"使用后", "desc":"可选说明"}
+-->
+
+{% if comparisons %}<div style="width:750px; box-sizing:border-box; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; background:#ffffff; color:#111827; padding:44px 40px 46px 40px;">
+  <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:16px;">
+    <div style="min-width:0;">
+      <div style="font-size:28px; font-weight:900; line-height:1.2;">{{ section_title }}</div>
+      {% if section_subtitle %}
+      <div style="margin-top:10px; font-size:14px; color:rgba(17,24,39,0.70); line-height:1.7;">{{ section_subtitle }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div style="margin-top:18px; height:2px; background:linear-gradient(90deg, var(--theme-primary, #2E8B57) 0%, rgba(46,139,87,0.15) 70%, rgba(46,139,87,0.0) 100%);"></div>
+
+  {% for c in comparisons %}
+  <div style="margin-top:20px; border-radius:18px; overflow:hidden; border:1px solid #EAECF0;">
+    <div style="display:flex;">
+      <div style="flex:1; position:relative;">
+        {% if c.before_image %}
+        <img src="{{ c.before_image }}" alt="使用前" style="width:100%; height:200px; object-fit:cover; display:block;" />
+        {% else %}
+        <div style="width:100%; height:200px; background:#f0f0f0; display:flex; align-items:center; justify-content:center; color:#999; font-size:14px;">使用前</div>
+        {% endif %}
+        <div style="position:absolute; left:12px; top:12px; padding:6px 12px; border-radius:999px; background:rgba(0,0,0,0.6); color:#fff; font-size:12px; font-weight:700;">{{ c.before_label|default('使用前') }}</div>
+      </div>
+      <div style="flex:0 0 3px; background:linear-gradient(180deg, var(--theme-primary, #2E8B57), var(--theme-primary-dark, #1a5e3a));"></div>
+      <div style="flex:1; position:relative;">
+        {% if c.after_image %}
+        <img src="{{ c.after_image }}" alt="使用后" style="width:100%; height:200px; object-fit:cover; display:block;" />
+        {% else %}
+        <div style="width:100%; height:200px; background:#e8f5e9; display:flex; align-items:center; justify-content:center; color:var(--theme-primary, #2E8B57); font-size:14px;">使用后</div>
+        {% endif %}
+        <div style="position:absolute; right:12px; top:12px; padding:6px 12px; border-radius:999px; background:var(--theme-primary, rgba(46,139,87,0.85)); color:#fff; font-size:12px; font-weight:700;">{{ c.after_label|default('使用后') }}</div>
+      </div>
+    </div>
+    {% if c.desc %}
+    <div style="padding:12px 16px; background:#F9FAFB; font-size:13px; color:#475467; line-height:1.6;">{{ c.desc }}</div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>{% endif %}

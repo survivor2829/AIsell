@@ -1,0 +1,40 @@
+{# 主图模板3：参数标注图 — 800x800 电商主图 #}
+<div class="main-img-canvas" style="width:800px;height:800px;position:relative;overflow:hidden;background:#F8F9FA;font-family:'PingFang SC','Microsoft YaHei',sans-serif;">
+  <!-- 产品居中 -->
+  <div style="position:absolute;inset:80px 60px;display:flex;align-items:center;justify-content:center;">
+    <img src="{{ product_image }}" alt="" style="max-width:90%;max-height:90%;object-fit:contain;filter:drop-shadow(0 6px 20px rgba(0,0,0,0.08));">
+  </div>
+  <!-- 顶部品类标签 -->
+  <div style="position:absolute;top:32px;left:32px;right:32px;display:flex;align-items:center;justify-content:space-between;">
+    <div>
+      {% if logo_image %}<img src="{{ logo_image }}" alt="" style="height:28px;object-fit:contain;">{% endif %}
+    </div>
+    {% if category_line %}
+    <span style="font-size:13px;font-weight:600;color:var(--theme-primary,#E8231A);background:var(--theme-primary-light,rgba(232,35,26,0.08));padding:5px 14px;border-radius:999px;">{{ category_line }}</span>
+    {% endif %}
+  </div>
+  <!-- 参数标注：左侧 -->
+  {% if spec_callouts %}
+  {% for item in spec_callouts[:3] %}
+  <div style="position:absolute;left:28px;top:{{ 200 + loop.index0 * 120 }}px;max-width:180px;">
+    <div style="font-size:24px;font-weight:800;color:var(--theme-primary,#E8231A);line-height:1;">{{ item.value }}</div>
+    <div style="font-size:13px;color:#666;margin-top:4px;">{{ item.label }}</div>
+    <div style="width:40px;height:2px;background:var(--theme-primary,#E8231A);margin-top:6px;border-radius:1px;"></div>
+  </div>
+  {% endfor %}
+  <!-- 参数标注：右侧 -->
+  {% for item in spec_callouts[3:6] %}
+  <div style="position:absolute;right:28px;top:{{ 200 + loop.index0 * 120 }}px;max-width:180px;text-align:right;">
+    <div style="font-size:24px;font-weight:800;color:var(--theme-primary,#E8231A);line-height:1;">{{ item.value }}</div>
+    <div style="font-size:13px;color:#666;margin-top:4px;">{{ item.label }}</div>
+    <div style="width:40px;height:2px;background:var(--theme-primary,#E8231A);margin-top:6px;border-radius:1px;margin-left:auto;"></div>
+  </div>
+  {% endfor %}
+  {% endif %}
+  <!-- 底部型号 -->
+  {% if model_name %}
+  <div style="position:absolute;bottom:28px;left:0;right:0;text-align:center;">
+    <span style="font-size:20px;font-weight:700;color:#333;letter-spacing:0.5px;">{{ model_name }}</span>
+  </div>
+  {% endif %}
+</div>

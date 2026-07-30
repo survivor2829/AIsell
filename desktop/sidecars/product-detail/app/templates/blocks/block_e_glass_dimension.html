@@ -1,0 +1,94 @@
+<!--
+  Block E — 红顶条 + 产品图 + 文字尺寸 + 磨砂玻璃双列参数表
+  宽度 750px
+
+  变量：title, subtitle, red_bar_text, product_image,
+        dim_height, dim_width, dim_length, specs[], footnote
+-->
+<div style="width:750px; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; overflow:hidden;
+  background:linear-gradient(180deg,#e4eaf3 0%,#dae2ed 50%,#d0d9e6 100%); position:relative;">
+
+  <!-- 装饰：右上角淡光斑 -->
+  <div style="position:absolute; top:-40px; right:-30px; width:200px; height:200px; background:radial-gradient(circle, rgba(255,255,255,0.25) 0%, transparent 70%); pointer-events:none;"></div>
+
+  <!-- 红顶条 -->
+  <div style="background:var(--theme-primary, #E8231A); padding:18px 28px; display:flex; align-items:center; gap:14px; position:relative; overflow:hidden;">
+    <!-- 顶条装饰光带 -->
+    <div style="position:absolute; top:0; right:0; width:200px; height:100%; background:linear-gradient(90deg, transparent, rgba(255,255,255,0.08)); pointer-events:none;"></div>
+    <span style="display:inline-flex; gap:3px; flex-shrink:0; position:relative; z-index:1;">
+      <span style="display:inline-block; width:0; height:0; border-top:8px solid transparent; border-bottom:8px solid transparent; border-left:12px solid rgba(255,255,255,0.6);"></span>
+      <span style="display:inline-block; width:0; height:0; border-top:8px solid transparent; border-bottom:8px solid transparent; border-left:12px solid rgba(255,255,255,0.8);"></span>
+      <span style="display:inline-block; width:0; height:0; border-top:8px solid transparent; border-bottom:8px solid transparent; border-left:12px solid #fff;"></span>
+    </span>
+    <span style="color:#fff; font-size:22px; font-weight:800; letter-spacing:1px; position:relative; z-index:1;">{{ red_bar_text or '产品 创新升级' }}</span>
+  </div>
+
+  <!-- 产品图 -->
+  <div style="padding:30px 20px 12px; text-align:center; position:relative; z-index:1;">
+    {% if product_image %}
+    <img src="{{ product_image }}" alt=""
+      style="max-width:400px; max-height:280px; object-fit:contain; filter:drop-shadow(0 16px 32px rgba(0,0,0,0.15)) drop-shadow(0 4px 8px rgba(0,0,0,0.1)); display:inline-block;">
+    {% else %}
+    <div style="height:120px; display:flex; align-items:center; justify-content:center; color:#aaa; font-size:18px;">请上传产品图</div>
+    {% endif %}
+  </div>
+
+  <!-- 文字尺寸标注（一横行） -->
+  {% if dim_length or dim_width or dim_height %}
+  <div style="text-align:center; padding:4px 20px 24px; font-size:21px; color:#3a4a5c; font-weight:700; letter-spacing:1px; position:relative; z-index:1;">
+    {% if dim_length %}长 <span style="color:#111; font-weight:900; font-size:25px;">{{ dim_length }}</span>{% endif %}
+    {% if dim_length and (dim_width or dim_height) %}&nbsp;&nbsp;×&nbsp;&nbsp;{% endif %}
+    {% if dim_width %}宽 <span style="color:#111; font-weight:900; font-size:25px;">{{ dim_width }}</span>{% endif %}
+    {% if dim_width and dim_height %}&nbsp;&nbsp;×&nbsp;&nbsp;{% endif %}
+    {% if dim_height %}高 <span style="color:#111; font-weight:900; font-size:25px;">{{ dim_height }}</span>{% endif %}
+  </div>
+  {% endif %}
+
+  <!-- 磨砂玻璃参数卡 -->
+  {% if specs %}
+  <div style="margin:0 20px; padding:0 0 24px; position:relative; z-index:3;">
+    <div style="border-radius:20px; border:1px solid rgba(255,255,255,0.9);
+      background:rgba(255,255,255,0.55); backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px);
+      box-shadow:0 12px 48px rgba(30,45,70,0.12), 0 2px 6px rgba(0,0,0,0.04), inset 0 1px 0 rgba(255,255,255,1); overflow:hidden;">
+
+      <!-- 参数表标题 -->
+      <div style="padding:16px 20px 10px; display:flex; align-items:center; gap:10px;">
+        <div style="width:4px; height:24px; background:var(--theme-primary, #E8231A); border-radius:2px; flex-shrink:0;"></div>
+        <span style="font-size:19px; font-weight:800; color:#111; letter-spacing:0.5px;">{{ title }}</span>
+        {% if subtitle %}
+        <span style="font-size:13px; color:#888; font-weight:500; margin-left:4px;">{{ subtitle }}</span>
+        {% endif %}
+      </div>
+
+      <!-- 装饰分隔线 -->
+      <div style="margin:0 20px; height:1px; background:linear-gradient(90deg, var(--theme-primary, #E8231A), rgba(0,0,0,0.06), transparent);"></div>
+
+      {% set half = (specs|length + 1) // 2 %}
+      {% for i in range(half) %}
+      <div style="display:flex;{% if not loop.last %} border-bottom:1px solid rgba(0,0,0,0.05);{% endif %}">
+        <!-- 左列 -->
+        <div style="flex:1; display:flex; border-right:1px solid rgba(0,0,0,0.05); min-width:0; overflow:hidden;">
+          <div style="width:108px; flex-shrink:0; padding:12px 14px; font-size:14px; color:#666; background:rgba(240,243,248,0.7); line-height:1.35; font-weight:500;">{{ specs[i].name }}</div>
+          <div style="flex:1; min-width:0; padding:12px 14px; font-size:14px; font-weight:700; color:#111; overflow-wrap:break-word; word-break:break-all; line-height:1.35;">{{ specs[i].value }}</div>
+        </div>
+        <!-- 右列 -->
+        {% if i + half < specs|length %}
+        <div style="flex:1; display:flex; min-width:0; overflow:hidden;">
+          <div style="width:108px; flex-shrink:0; padding:12px 14px; font-size:14px; color:#666; background:rgba(240,243,248,0.7); line-height:1.35; font-weight:500;">{{ specs[i + half].name }}</div>
+          <div style="flex:1; min-width:0; padding:12px 14px; font-size:14px; font-weight:700; color:#111; overflow-wrap:break-word; word-break:break-all; line-height:1.35;">{{ specs[i + half].value }}</div>
+        </div>
+        {% else %}
+        <div style="flex:1;"></div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if footnote %}
+  <div style="padding:8px 32px 22px; text-align:right; position:relative; z-index:1;">
+    <span style="font-size:13px; color:#8a939e;">{{ footnote }}</span>
+  </div>
+  {% endif %}
+</div>

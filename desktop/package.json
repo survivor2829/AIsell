@@ -14,6 +14,7 @@
     "dev": "vite --host 127.0.0.1",
     "desktop": "node scripts/dev-electron.cjs",
     "build": "npm run build:delivery",
+    "build:product-detail": "node scripts/build-product-detail-sidecar.cjs",
     "build:test": "node scripts/build-renderer.cjs test",
     "build:delivery": "node scripts/build-renderer.cjs delivery",
     "build:helper": "node scripts/build-contact-helper.cjs",

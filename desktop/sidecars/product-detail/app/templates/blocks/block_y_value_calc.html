@@ -1,0 +1,58 @@
+{#
+  用量计算/性价比展示屏（耗材类专用）
+  变量:
+  - section_title: 标题（默认"超值性价比"）
+  - section_subtitle: 副标题
+  - calc_items: [{label, value, highlight}, ...] 计算项
+  - cost_per_use: 每次使用成本文字（如"仅需0.5元/次"）
+  - coverage_text: 覆盖面积/用量文字（如"1瓶可清洁500㎡"）
+  - dilution_ratio: 稀释比例（如"1:50"）（可选）
+  - dilution_note: 稀释说明
+#}
+<div style="width:750px; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; background:linear-gradient(180deg,#f0faf5 0%,#e8f5ee 100%); padding:50px 40px;">
+
+  <div style="text-align:center; margin-bottom:36px;">
+    <div style="font-size:28px; font-weight:800; color:#1a1a1a; letter-spacing:1px;">{{ section_title|default('超值性价比') }}</div>
+    {% if section_subtitle %}
+    <div style="font-size:14px; color:#999; margin-top:8px;">{{ section_subtitle }}</div>
+    {% endif %}
+  </div>
+
+  {# 核心数据高亮区 #}
+  <div style="display:flex; gap:14px; margin-bottom:24px;">
+    {% if cost_per_use %}
+    <div style="flex:1; background:#fff; border-radius:14px; padding:24px 16px; text-align:center; box-shadow:0 2px 12px rgba(0,0,0,0.06);">
+      <div style="font-size:13px; color:#888; margin-bottom:8px;">每次使用成本</div>
+      <div style="font-size:30px; font-weight:900; color:var(--theme-primary, #2E8B57);">{{ cost_per_use }}</div>
+    </div>
+    {% endif %}
+    {% if coverage_text %}
+    <div style="flex:1; background:#fff; border-radius:14px; padding:24px 16px; text-align:center; box-shadow:0 2px 12px rgba(0,0,0,0.06);">
+      <div style="font-size:13px; color:#888; margin-bottom:8px;">覆盖面积</div>
+      <div style="font-size:30px; font-weight:900; color:var(--theme-primary, #2E8B57);">{{ coverage_text }}</div>
+    </div>
+    {% endif %}
+    {% if dilution_ratio %}
+    <div style="flex:1; background:#fff; border-radius:14px; padding:24px 16px; text-align:center; box-shadow:0 2px 12px rgba(0,0,0,0.06);">
+      <div style="font-size:13px; color:#888; margin-bottom:8px;">稀释比例</div>
+      <div style="font-size:30px; font-weight:900; color:var(--theme-primary, #2E8B57);">{{ dilution_ratio }}</div>
+      {% if dilution_note %}
+      <div style="font-size:11px; color:#aaa; margin-top:4px;">{{ dilution_note }}</div>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  {# 计算明细 #}
+  {% if calc_items %}
+  <div style="background:#fff; border-radius:14px; overflow:hidden; box-shadow:0 2px 12px rgba(0,0,0,0.06);">
+    {% for item in calc_items %}
+    <div style="display:flex; justify-content:space-between; padding:14px 20px; {{ 'border-top:1px solid #f0f0f0;' if not loop.first else '' }} {{ 'background:#f0faf5;' if item.highlight else '' }}">
+      <span style="font-size:14px; color:#555;">{{ item.label }}</span>
+      <span style="font-size:14px; font-weight:{{ '700' if item.highlight else '400' }}; color:{{ 'var(--theme-primary, #2E8B57)' if item.highlight else '#333' }};">{{ item.value }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+</div>

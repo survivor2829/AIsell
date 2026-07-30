@@ -1,0 +1,89 @@
+{
+  "_meta": {
+    "product_slug": "mf50",
+    "product_cat": "consumable",
+    "elapsed_s": 21.56,
+    "usage": {
+      "prompt_tokens": 872,
+      "completion_tokens": 563,
+      "total_tokens": 1435,
+      "prompt_tokens_details": {
+        "cached_tokens": 384
+      },
+      "prompt_cache_hit_tokens": 384,
+      "prompt_cache_miss_tokens": 488
+    },
+    "model": "deepseek-chat",
+    "schema_warnings": []
+  },
+  "planner_output": {
+    "product_meta": {
+      "name": "MF-50 微纤维高吸擦布，不掉毛不留痕，商用清洁标配",
+      "category": "耗材类",
+      "primary_color": "yellow",
+      "key_visual_parts": [
+        "color",
+        "texture",
+        "packaging",
+        "usage_state"
+      ],
+      "proportions": "40x40cm square cloth"
+    },
+    "selling_points": [
+      {
+        "idx": 1,
+        "text": "85% 聚酯 + 15% 锦纶编织，300gsm 高克重厚实",
+        "visual_type": "product_closeup",
+        "priority": "medium",
+        "reason": "卖点描述材料成分和结构（编织、克重）"
+      },
+      {
+        "idx": 2,
+        "text": "吸水量达自身重量 7 倍",
+        "visual_type": "concept_visual",
+        "priority": "high",
+        "reason": "卖点描述抽象性能指标（吸水量）"
+      },
+      {
+        "idx": 3,
+        "text": "不掉毛不留痕",
+        "visual_type": "concept_visual",
+        "priority": "high",
+        "reason": "卖点描述抽象性能指标（清洁效果）"
+      },
+      {
+        "idx": 4,
+        "text": "机洗 500 次不变形",
+        "visual_type": "concept_visual",
+        "priority": "medium",
+        "reason": "卖点描述抽象耐用性指标（机洗次数）"
+      },
+      {
+        "idx": 5,
+        "text": "适用于玻璃 / 不锈钢 / 实木家具表面清洁",
+        "visual_type": "product_in_scene",
+        "priority": "high",
+        "reason": "卖点明确提到适用场景和表面类型"
+      },
+      {
+        "idx": 6,
+        "text": "商用洗车店 / 酒店客房 / 办公楼物业标配",
+        "visual_type": "product_in_scene",
+        "priority": "medium",
+        "reason": "卖点明确提到适用行业和地点"
+      }
+    ],
+    "planning": {
+      "total_blocks": 6,
+      "block_order": [
+        "hero",
+        "selling_point_2",
+        "selling_point_3",
+        "selling_point_1",
+        "selling_point_5",
+        "selling_point_4"
+      ],
+      "hero_scene_hint": "A yellow microfiber cloth being used to wipe a large, streak-free glass window in a bright, modern office building lobby."
+    }
+  }
+}

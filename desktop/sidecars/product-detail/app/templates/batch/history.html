@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+{# 独立页 (不 extends), 保持和 upload.html 相同的 topbar/字体/色变量 #}
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>历史批次 · 小玺AI</title>
+<link rel="stylesheet" href="/static/css/announcement.css">
+<style>
+  :root {
+    --color-primary: #0A84FF;
+    --color-text: #1c1c1e;
+    --color-text-muted: #8e8e93;
+    --color-border: #e5e5e7;
+    --color-bg: #fafafa;
+    --color-card: #ffffff;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-md: 0 4px 12px rgba(0,0,0,0.06);
+    --transition-fast: 0.15s ease;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--color-bg); color: var(--color-text);
+    font-size: 14px; line-height: 1.5;
+  }
+
+  .topbar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    background: rgba(255,255,255,0.72);
+    backdrop-filter: saturate(180%) blur(20px);
+    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    border-bottom: 1px solid var(--color-border);
+    height: 44px; padding: 0 24px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .topbar-brand {
+    font-size: 15px; font-weight: 600;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .topbar-brand .dot {
+    width: 8px; height: 8px; background: var(--color-primary);
+    border-radius: 50%;
+  }
+  .topbar-right { display: flex; align-items: center; gap: 6px; }
+  .topbar-right span,
+  .topbar-right a, .topbar-right button {
+    font-size: 13px; color: var(--color-text-muted);
+    padding: 6px 12px; border-radius: var(--radius-md);
+    border: none; background: none; cursor: pointer;
+    text-decoration: none; transition: all var(--transition-fast);
+  }
+  .topbar-right a:hover, .topbar-right button:hover {
+    color: var(--color-text); background: rgba(0,0,0,0.04);
+  }
+  .topbar-right .admin-link { color: var(--color-primary); }
+
+  .page {
+    max-width: 1080px; margin: 0 auto; padding: 72px 24px 48px;
+  }
+  .page-title { font-size: 24px; font-weight: 600; margin-bottom: 4px; }
+  .page-subtitle { color: var(--color-text-muted); margin-bottom: 24px; }
+
+  .card {
+    background: var(--color-card);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  th, td {
+    padding: 12px 16px; text-align: left;
+    border-bottom: 1px solid var(--color-border);
+    font-size: 13px;
+  }
+  th {
+    background: #f9f9fb;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #fafafb; }
+
+  .name-cell a {
+    color: var(--color-text); text-decoration: none;
+    font-weight: 500;
+  }
+  .name-cell a:hover { color: var(--color-primary); }
+  .name-cell .raw { color: var(--color-text-muted); font-size: 12px; }
+
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: 11px; font-weight: 500;
+    line-height: 1.4;
+  }
+  .badge-uploaded  { background: #eef1f6; color: #60636a; }
+  .badge-queued    { background: #fff4cc; color: #8a6d00; }
+  .badge-running   { background: #cfe7ff; color: #0053c2; }
+  .badge-completed { background: #d2f5dd; color: #00663a; }
+  .badge-failed    { background: #ffd7d9; color: #a4111a; }
+  .badge-archived  { background: #e8e8ea; color: #636366; }
+
+  .count-cell { color: var(--color-text-muted); font-variant-numeric: tabular-nums; }
+  .count-cell .ok { color: var(--color-text); font-weight: 500; }
+  .count-cell .skip { color: #a4111a; }
+
+  .date-cell {
+    color: var(--color-text-muted);
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  /* 操作列: "查看详情" + "批量zip" 按钮 (2026-04-22 方向 B) */
+  .action-cell { white-space: nowrap; }
+  .action-btn {
+    display: inline-block; padding: 5px 10px; margin-right: 6px;
+    font-size: 12px; font-weight: 500;
+    color: var(--color-text-muted);
+    background: transparent; border: 1px solid var(--color-border);
+    border-radius: var(--radius-md); text-decoration: none;
+    transition: all var(--transition-fast);
+  }
+  .action-btn:hover { color: var(--color-text); border-color: var(--color-border-hover); background: #f9f9fb; }
+  .action-btn.action-primary { color: var(--color-primary); border-color: var(--color-primary); }
+  .action-btn.action-primary:hover { color: #fff; background: var(--color-primary); }
+
+  .empty {
+    padding: 60px 20px; text-align: center; color: var(--color-text-muted);
+  }
+  .empty a {
+    display: inline-block; margin-top: 12px;
+    color: var(--color-primary); text-decoration: none;
+    padding: 8px 16px; border: 1px solid var(--color-primary);
+    border-radius: var(--radius-md); font-size: 13px;
+  }
+  .empty a:hover { background: var(--color-primary); color: white; }
+
+  .footer-note {
+    margin-top: 16px; text-align: center;
+    color: var(--color-text-muted); font-size: 12px;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-brand">
+    <span class="dot"></span>
+    小玺AI · 历史批次
+  </div>
+  <div class="topbar-right">
+    <a href="/">返回首页</a>
+    <a href="/batch/upload">新建批次</a>
+    <span>{{ current_user.username }}</span>
+    <a href="/settings">账号设置</a>
+    {% if current_user.is_admin %}
+      <a href="/admin/users" class="admin-link">管理后台</a>
+    {% endif %}
+    <form method="POST" action="/auth/logout" style="display:inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit">退出</button>
+    </form>
+  </div>
+</div>
+
+<div class="page">
+  <div class="page-title">历史批次</div>
+  <div class="page-subtitle">
+    按创建时间倒序, 显示最近 50 条. 点击批次名可回到上传页查看详情 / 下载.
+  </div>
+
+  <div class="card">
+    {% if batches %}
+      <table>
+        <thead>
+          <tr>
+            <th>批次</th>
+            <th>状态</th>
+            <th>产品数 (有效 / 跳过)</th>
+            <th>创建时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for b in batches %}
+            <tr>
+              <td class="name-cell">
+                <a href="/batch/upload#batch={{ b.batch_id }}" title="跳回上传页恢复此批次">
+                  {{ b.name or b.raw_name or '(未命名)' }}
+                </a>
+                {% if b.raw_name and b.raw_name != b.name %}
+                  <div class="raw">原名: {{ b.raw_name }}</div>
+                {% endif %}
+              </td>
+              <td>
+                <span class="badge badge-{{ b.status or 'uploaded' }}">
+                  {% if b.status == 'uploaded' %}已上传
+                  {% elif b.status == 'queued' %}排队中
+                  {% elif b.status == 'running' %}运行中
+                  {% elif b.status == 'completed' %}已完成
+                  {% elif b.status == 'failed' %}失败
+                  {% elif b.status == 'archived' %}已归档
+                  {% else %}{{ b.status }}
+                  {% endif %}
+                </span>
+              </td>
+              <td class="count-cell">
+                <span class="ok">{{ b.valid_count or 0 }}</span>
+                / 共 {{ b.total_count or 0 }}
+                {% if b.skipped_count %}
+                  <span class="skip">· 跳过 {{ b.skipped_count }}</span>
+                {% endif %}
+              </td>
+              <td class="date-cell">
+                {{ b.created_at.strftime('%Y-%m-%d %H:%M') if b.created_at else '-' }}
+              </td>
+              <td class="action-cell">
+                <a class="action-btn action-primary" href="/batch/history/{{ b.batch_id }}">查看详情</a>
+                <a class="action-btn" href="/api/batch/{{ b.batch_id }}/download-all" title="下载该批次所有产物 zip">批量↓</a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="empty">
+        还没有历史批次
+        <br>
+        <a href="/batch/upload">去新建一个批次</a>
+      </div>
+    {% endif %}
+  </div>
+
+  {% if batches and batches|length == 50 %}
+    <div class="footer-note">
+      已显示最近 50 条. 更多历史批次将在 v2 加入分页支持.
+    </div>
+  {% endif %}
+</div>
+
+<script src="/static/js/announcement.js" defer></script>
+</body>
+</html>

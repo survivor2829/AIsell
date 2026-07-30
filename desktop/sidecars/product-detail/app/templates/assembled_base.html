@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+{# ── 品类主题色映射 ── #}
+{% set _theme_colors = {"设备类":"#E8231A","配件类":"#1E6FBF","耗材类":"#2E8B57","工具类":"#E87C1A"} %}
+{% set _theme_color = _theme_colors.get(product_type|default("设备类"), "#E8231A") %}
+{% set _tag_bg_colors = {"设备类":"rgba(232,35,26,0.08)","配件类":"rgba(30,111,191,0.08)","耗材类":"rgba(46,139,87,0.08)","工具类":"rgba(232,124,26,0.08)"} %}
+{% set _tag_text_colors = {"设备类":"#E8231A","配件类":"#1E6FBF","耗材类":"#2E8B57","工具类":"#E87C1A"} %}
+
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  {% if not export_mode|default(false) %}
+  html { background: #f7f8fa; }
+  body { width: 750px; margin: 0 auto; background: #fff; padding-top: 56px; }
+
+  .export-bar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+    background: rgba(255,255,255,0.8);
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    border-bottom: 1px solid #e5e7eb;
+    padding: 0 24px; height: 56px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    font-family: 'Inter', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  }
+  .export-bar .left { display: flex; align-items: center; gap: 12px; }
+  .export-bar .back-btn {
+    color: #6b7280; text-decoration: none; font-size: 13px; font-weight: 500;
+    border: 1px solid #e5e7eb; border-radius: 9999px;
+    padding: 6px 14px; display: flex; align-items: center; gap: 5px;
+    transition: all 150ms;
+  }
+  .export-bar .back-btn:hover { color: #080808; border-color: #898989; }
+  .export-bar .bar-title { color: #ababab; font-size: 13px; font-weight: 500; }
+  .export-bar .bar-tag {
+    background: {{ _tag_bg_colors.get(product_type|default("设备类"), "rgba(232,35,26,0.08)") }};
+    color: {{ _tag_text_colors.get(product_type|default("设备类"), "#E8231A") }};
+    font-size: 12px; font-weight: 500; padding: 3px 10px; border-radius: 9999px;
+    border: 1px solid #e5e7eb;
+  }
+  .export-bar .right { display: flex; align-items: center; gap: 12px; }
+  .export-bar .status { color: #059669; font-size: 13px; font-weight: 500; }
+  .export-bar .export-btn {
+    background: #146ef5; color: #fff; border: none;
+    padding: 8px 20px; font-size: 14px; font-weight: 600;
+    border-radius: 8px; cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+    transition: all 200ms;
+    display: flex; align-items: center; gap: 7px;
+    font-family: 'Inter', -apple-system, 'PingFang SC', sans-serif;
+  }
+  .export-btn:hover { background: #0055d4; transform: translateY(-1px); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+  .export-btn:disabled { background: #ababab; cursor: wait; box-shadow: none; transform: none; }
+
+  #exportOverlay {
+    display: none; position: fixed; inset: 0; z-index: 99999;
+    background: rgba(255,255,255,0.85);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    flex-direction: column; align-items: center; justify-content: center; gap: 20px;
+  }
+  #exportOverlay.active { display: flex; }
+  .ov-card {
+    background: #fff; border: 1px solid #e5e7eb;
+    border-radius: 16px; padding: 44px 56px; text-align: center;
+    box-shadow: 0 25px 50px -12px rgba(0,0,0,0.15);
+  }
+  .ov-spinner {
+    width: 44px; height: 44px;
+    border: 3px solid #e5e7eb;
+    border-top-color: #146ef5;
+    border-radius: 50%; animation: spin .8s linear infinite; margin: 0 auto 20px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .ov-title { color: #080808; font-size: 18px; font-weight: 600; margin-bottom: 6px; font-family: 'Inter', -apple-system, 'PingFang SC', sans-serif; }
+  .ov-sub { color: #ababab; font-size: 13px; }
+  {% else %}
+  body { width: 750px; background: #fff; }
+  {% endif %}
+
+  .screen { width: 750px; }
+  .screen img.fixed-screen { width: 750px; display: block; }
+</style>
+</head>
+<body data-product-type="{{ product_type|default('设备类') }}">
+
+{% if not export_mode|default(false) %}
+<div class="export-bar">
+  <div class="left">
+    <a class="back-btn" href="javascript:history.back()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+      返回修改
+    </a>
+    <span class="bar-title">{{ product_type|default('设备类') }} · 详情页预览</span>
+    <span class="bar-tag">750px</span>
+  </div>
+  <div class="right">
+    <span class="status" id="exportStatus"></span>
+    <button class="export-btn" id="exportBtn" onclick="doExport()">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      导出高清 PNG
+    </button>
+  </div>
+</div>
+<div id="exportOverlay"><div class="ov-card"><div class="ov-spinner"></div><div class="ov-title">正在生成高清截图…</div><div class="ov-sub">Playwright 截图中，请稍候</div></div></div>
+{% endif %}
+
+{# ── 英雄屏（所有品类共用） ── #}
+<div class="screen" id="screen1">
+  {% with brand_text=block_a.brand_text, model_name=block_a.model_name,
+    logo_image=block_a.logo_image, category_line=block_a.category_line,
+    main_title=block_a.main_title, hero_subtitle_pre=block_a.hero_subtitle_pre,
+    hero_subtitle_em=block_a.hero_subtitle_em, hero_subtitle_post=block_a.hero_subtitle_post,
+    tagline_sub=block_a.tagline_sub, cover_image=block_a.cover_image,
+    floor_bg_image=block_a.floor_bg_image, product_image=block_a.product_image,
+    bg_focal=block_a.bg_focal, footer_note=block_a.footer_note,
+    show_hero_params=block_a.show_hero_params, params=block_a.params %}
+    {% include 'blocks/block_a_hero_robot_cover.html' %}
+  {% endwith %}
+</div>
+
+{# ── 产品优势（所有品类共用） ── #}
+{% if block_b2 and block_b2.items %}
+<div class="screen" id="screen2">
+  {% with title_num=block_b2.title_num, title_text=block_b2.title_text,
+          subtitle=block_b2.subtitle, items=block_b2["items"],
+          grid_columns=block_b2.grid_columns|default(3) %}
+    {% include 'blocks/block_b2_icon_grid.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── 品类专属屏幕区域 ── #}
+{% block category_screens %}{% endblock %}
+
+{# ── 固定卖点图 ── #}
+{% for img_url in fixed_selling_images|default([]) %}
+{% if img_url %}
+<div class="screen"><img class="fixed-screen" src="{{ img_url }}" alt=""></div>
+{% endif %}
+{% endfor %}
+
+{# ── 产品参数表（所有品类共用） ── #}
+{% if block_e and (block_e.specs or block_e.product_image) %}
+<div class="screen" id="screen_spec">
+  {% with title=block_e.title, subtitle=block_e.subtitle,
+    red_bar_text=block_e.red_bar_text, product_image=block_e.product_image,
+    dim_height=block_e.dim_height, dim_width=block_e.dim_width,
+    dim_length=block_e.dim_length, specs=block_e.specs, footnote=block_e.footnote %}
+    {% include 'blocks/block_e_glass_dimension.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── 品类专属尾部区域 ── #}
+{% block category_tail %}{% endblock %}
+
+{# ── 询价 CTA（所有品类共用） ── #}
+{% if block_n and block_n.cta_title %}
+<div class="screen" id="screen_n">
+  {% with cta_title=block_n.cta_title, cta_subtitle=block_n.cta_subtitle,
+          contact_items=block_n.contact_items, highlights=block_n.highlights,
+          qr_image=block_n.qr_image, qr_caption=block_n.qr_caption %}
+    {% include 'blocks/block_n_quote_cta.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{# ── 免责声明（所有品类共用） ── #}
+{% if block_o and block_o.disclaimer_text %}
+<div class="screen" id="screen_o">
+  {% with disclaimer_title=block_o.disclaimer_title, disclaimer_text=block_o.disclaimer_text %}
+    {% include 'blocks/block_o_disclaimer.html' %}
+  {% endwith %}
+</div>
+{% endif %}
+
+{% if not export_mode|default(false) %}
+<script>
+function doExport() {
+  var btn = document.getElementById('exportBtn');
+  var status = document.getElementById('exportStatus');
+  var overlay = document.getElementById('exportOverlay');
+  var pt = document.body.getAttribute('data-product-type') || '设备类';
+  btn.disabled = true; overlay.classList.add('active'); status.textContent = '';
+  fetch(window.location.pathname.replace('/build/', '/export/'), { method: 'POST', headers: {'X-CSRFToken': '{{ csrf_token() }}'} })
+    .then(function(resp) { if (!resp.ok) return resp.json().then(function(d) { throw new Error(d.error || '导出失败'); }); return resp.blob(); })
+    .then(function(blob) { var url = URL.createObjectURL(blob); var a = document.createElement('a'); a.href = url; a.download = pt + '_详情页.png'; a.click(); URL.revokeObjectURL(url); overlay.classList.remove('active'); btn.disabled = false; status.textContent = '导出成功'; setTimeout(function(){ status.textContent = ''; }, 3000); })
+    .catch(function(err) { overlay.classList.remove('active'); btn.disabled = false; status.textContent = err.message; });
+}
+</script>
+{% endif %}
+</body>
+</html>

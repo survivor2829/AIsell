@@ -1,0 +1,38 @@
+{#
+  售后服务承诺屏
+  变量:
+  - section_title: 标题（默认"售后无忧"）
+  - section_subtitle: 副标题
+  - promises: [{icon_text, number, unit, label}, ...] 承诺卡片
+  - service_note: 底部补充说明
+#}
+{% if promises %}<div style="width:750px; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; background:var(--theme-gradient-dark, linear-gradient(135deg, #0e1526 0%, #151d38 50%, #1a2240 100%)); padding:48px 36px; position:relative; overflow:hidden;">
+
+  <!-- 装饰：右上角光斑 -->
+  <div style="position:absolute; top:-60px; right:-40px; width:250px; height:250px; background:radial-gradient(circle, rgba(232,35,26,0.1) 0%, transparent 70%); pointer-events:none;"></div>
+
+  <div style="text-align:center; margin-bottom:32px; position:relative; z-index:1;">
+    <div style="font-size:28px; font-weight:900; color:#fff; letter-spacing:1px;">{{ section_title|default('售后无忧') }}</div>
+    {% if section_subtitle %}
+    <div style="font-size:14px; color:rgba(255,255,255,0.45); margin-top:8px;">{{ section_subtitle }}</div>
+    {% endif %}
+    <div style="margin:14px auto 0; width:48px; height:3px; border-radius:2px; background:linear-gradient(90deg, var(--theme-primary, #E8231A), rgba(232,35,26,0.2));"></div>
+  </div>
+
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; position:relative; z-index:1;">
+    {% for p in promises %}
+    <div style="background:linear-gradient(145deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.03) 100%); border:1px solid rgba(255,255,255,0.1); border-radius:16px; padding:24px 20px; text-align:center; position:relative; overflow:hidden;">
+      <!-- 卡片顶部渐变装饰线 -->
+      <div style="position:absolute; top:0; left:20%; right:20%; height:2px; background:linear-gradient(90deg, transparent, var(--theme-primary, #E8231A), transparent); border-radius:1px;"></div>
+      <div style="font-size:28px; margin-bottom:10px;">{{ p.icon_text|default('🛡️') }}</div>
+      <div style="font-size:38px; font-weight:900; color:#fff; letter-spacing:-0.5px;">{{ p.number }}<span style="font-size:16px; font-weight:400; color:rgba(255,255,255,0.45); margin-left:4px;">{{ p.unit }}</span></div>
+      <div style="font-size:13px; color:rgba(255,255,255,0.55); margin-top:10px; line-height:1.55;">{{ p.label }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if service_note %}
+  <div style="text-align:center; margin-top:20px; font-size:12px; color:rgba(255,255,255,0.28); line-height:1.6; position:relative; z-index:1;">{{ service_note }}</div>
+  {% endif %}
+
+</div>{% endif %}

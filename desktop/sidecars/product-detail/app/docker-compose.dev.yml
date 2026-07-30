@@ -1,0 +1,74 @@
+# 开发 compose — 带热挂载 + 暴露 db/redis 端口便于本地工具连.
+#
+# 启动:
+#   docker compose -f docker-compose.dev.yml up -d --build
+#   # 改模板/app.py → docker compose -f docker-compose.dev.yml restart web
+#
+# 和生产 (docker-compose.yml) 的区别:
+# - ports: 把 db (5433) / redis (6380) 暴露到宿主, 错开常用端口避免本机已有实例
+# - volumes: 热挂载 app.py/templates/static/pubsub 为 :ro, 改完直接 restart
+# - PUBSUB_BACKEND 默认 memory, 本机单 worker 调试不需要 Redis 也能跑
+# - WEB_WORKERS=1 + WEB_THREADS=8: 开发不需要高并发, 单 worker 调试更容易
+#
+# 注意:
+# - POSTGRES_PASSWORD 仍然要在 .env 里填, 但本机随便填一个能跑就行
+# - 生产配置永远不要直接 -f 这个文件启动; 两个文件故意分开避免误用
+
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: xiaoxi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpwd}
+      POSTGRES_DB: xiaoxi
+    ports:
+      - "5433:5432"  # 宿主 5433 避开本机常用的 5432
+    volumes:
+      - pg_data_dev:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6380:6379"  # 宿主 6380 避开本机常用的 6379
+    volumes:
+      - redis_data_dev:/data
+
+  web:
+    build: .
+    depends_on:
+      - db
+      - redis
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      FLASK_ENV: development
+      WEB_WORKERS: "1"
+      WEB_THREADS: "8"
+      PUBSUB_BACKEND: ${PUBSUB_BACKEND:-memory}
+    volumes:
+      - uploads_dev:/app/static/uploads
+      - outputs_dev:/app/static/outputs
+      - ai_cache_dev:/app/static/cache
+      - ./instance:/app/instance
+      # 热挂载 — 改完代码 docker compose restart web 即可 (不 --build)
+      - ./app.py:/app/app.py:ro
+      - ./batch_pubsub.py:/app/batch_pubsub.py:ro
+      - ./batch_queue.py:/app/batch_queue.py:ro
+      - ./batch_processor.py:/app/batch_processor.py:ro
+      - ./refine_processor.py:/app/refine_processor.py:ro
+      - ./models.py:/app/models.py:ro
+      - ./pubsub:/app/pubsub:ro
+      - ./templates:/app/templates:ro
+      - ./static/设备类:/app/static/设备类:ro
+
+volumes:
+  pg_data_dev:
+  redis_data_dev:
+  uploads_dev:
+  outputs_dev:
+  ai_cache_dev:
