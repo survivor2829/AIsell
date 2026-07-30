@@ -591,6 +591,23 @@ $croppedLike = Resolve-VisualLikeMenuState $null @{
   centerX = 18.5
   centerY = 25.0
 } $commentSignature
+$croppedLikeVerify = Resolve-VisualLikeMenuState $null @{
+  ok = $true
+  horizontalEdgeClear = $false
+  bounds = @{ left = 10.0; top = 20.0; width = 17.0; height = 10.0 }
+  centerX = 18.5
+  centerY = 25.0
+} $commentSignature "ocr" "verify_outcome"
+$croppedCancelSignature = @{
+  ok = $true
+  horizontalEdgeClear = $false
+  bounds = @{ left = 10.0; top = 20.0; width = 31.0; height = 10.0 }
+  centerX = 25.5
+  centerY = 25.0
+}
+$croppedCancelAuthorize = Resolve-VisualLikeMenuState $null $croppedCancelSignature $commentSignature "ocr" "authorize_action"
+$croppedCancelVerify = Resolve-VisualLikeMenuState $null $croppedCancelSignature $commentSignature "ocr" "verify_outcome"
+$croppedCancelUnknownPurpose = Resolve-VisualLikeMenuState $null $croppedCancelSignature $commentSignature "ocr" "unexpected"
 $croppedComment = Resolve-VisualLikeMenuState $null $likeSignature @{
   ok = $true
   horizontalEdgeClear = $false
@@ -624,6 +641,15 @@ $croppedTargetedOcr = Resolve-VisualLikeMenuState $ocrEntry @{
   missingReferenceMode = [string]$missingReference.mode
   croppedLikeHasEntry = ($croppedLike.entry -ne $null)
   croppedLikeMode = [string]$croppedLike.mode
+  croppedLikeVerifyHasEntry = ($croppedLikeVerify.entry -ne $null)
+  croppedLikeVerifyMode = [string]$croppedLikeVerify.mode
+  croppedCancelAuthorizeHasEntry = ($croppedCancelAuthorize.entry -ne $null)
+  croppedCancelAuthorizeMode = [string]$croppedCancelAuthorize.mode
+  croppedCancelVerifyOk = ([string]$croppedCancelVerify.entry.text -ceq "取消")
+  croppedCancelVerifyMode = [string]$croppedCancelVerify.mode
+  croppedCancelVerifyRequiresStability = [bool]$croppedCancelVerify.requiresStability
+  croppedCancelUnknownPurposeHasEntry = ($croppedCancelUnknownPurpose.entry -ne $null)
+  croppedCancelUnknownPurpose = [string]$croppedCancelUnknownPurpose.proofPurpose
   croppedCommentHasEntry = ($croppedComment.entry -ne $null)
   croppedCommentMode = [string]$croppedComment.mode
   lowerBoundaryOk = ([string]$lowerBoundary.entry.text -ceq "赞")
@@ -664,10 +690,19 @@ assert.deepEqual(JSON.parse(visualLikeMenuStateHarness.stdout.trim()), {
   cancelMode: "visual_signature",
   cancelOcrOk: true,
   cancelOcrMode: "ocr",
+  croppedCancelAuthorizeHasEntry: false,
+  croppedCancelAuthorizeMode: "ambiguous",
+  croppedCancelUnknownPurpose: "authorize_action",
+  croppedCancelUnknownPurposeHasEntry: false,
+  croppedCancelVerifyMode: "visual_signature",
+  croppedCancelVerifyOk: true,
+  croppedCancelVerifyRequiresStability: true,
   croppedCommentHasEntry: false,
   croppedCommentMode: "ambiguous",
   croppedLikeHasEntry: false,
   croppedLikeMode: "ambiguous",
+  croppedLikeVerifyHasEntry: false,
+  croppedLikeVerifyMode: "ambiguous",
   croppedTargetedOcrHasEntry: false,
   croppedTargetedOcrMode: "ambiguous",
   gapHasEntry: false,
@@ -708,6 +743,7 @@ function Get-MomentsPixel($frame, [int]$x, [int]$y) {
   if ($y -lt 112 -or $y -gt 121) { return $dark }
   if ($x -ge 350 -and $x -le 384) { return $light }
   if ($script:readerScenario -ceq "cancel" -and $x -ge 258 -and $x -le 288) { return $light }
+  if ($script:readerScenario -ceq "cancel_cropped" -and $x -ge 252 -and $x -le 282) { return $light }
   if ($script:readerScenario -ceq "cropped" -and $x -ge 252 -and $x -le 268) { return $light }
   if (@("like", "like_ocr_miss") -contains $script:readerScenario -and $x -ge 260 -and $x -le 276) { return $light }
   return $dark
@@ -734,14 +770,16 @@ function Get-MomentsHighContrastOcrObservation($frame, $region, [int]$scale = 4)
 }
 function Get-MomentsScaledOcrObservation { return @{ ok = $false } }
 function Close-MomentsVisualFrame {}
-function Invoke-ReaderCase([string]$scenario) {
+function Invoke-ReaderCase([string]$scenario, [string]$proofPurpose = "authorize_action") {
   $script:readerScenario = $scenario
-  $result = Read-OpenVisualMenuOnce @{} @{} "like"
+  $result = Read-OpenVisualMenuOnce @{} @{} "like" $proofPurpose
   return [pscustomobject]@{
     scenario = $scenario
+    proofPurpose = $proofPurpose
     ok = [bool]$result.ok
-    expectedState = ([string]$result.menuState -ceq $(if ($scenario -ceq "cancel") { "取消" } else { "赞" }))
+    expectedState = ([string]$result.menuState -ceq $(if ($scenario -like "cancel*") { "取消" } else { "赞" }))
     resolutionMode = [string]$result.diagnostics.likeResolutionMode
+    requiresStability = [bool]$result.diagnostics.requiresStability
     likeOcrMatched = [bool]$result.diagnostics.likeOcrMatched
     likeBaseOcrMatched = [bool]$result.diagnostics.likeBaseOcrMatched
     targetedLikeOcrAttempted = [bool]$result.diagnostics.targetedLikeOcrAttempted
@@ -755,7 +793,9 @@ function Invoke-ReaderCase([string]$scenario) {
   (Invoke-ReaderCase "like"),
   (Invoke-ReaderCase "like_ocr_miss"),
   (Invoke-ReaderCase "cancel"),
-  (Invoke-ReaderCase "cropped")
+  (Invoke-ReaderCase "cropped"),
+  (Invoke-ReaderCase "cancel_cropped"),
+  (Invoke-ReaderCase "cancel_cropped" "verify_outcome")
 ) | ConvertTo-Json -Depth 5 -Compress
 `;
 const visualLikeMenuReaderScript = path.join(
@@ -783,9 +823,11 @@ assert.equal(
 assert.deepEqual(JSON.parse(visualLikeMenuReaderHarness.stdout.trim()), [
   {
     scenario: "like",
+    proofPurpose: "authorize_action",
     ok: true,
     expectedState: true,
     resolutionMode: "targeted_ocr",
+    requiresStability: false,
     likeOcrMatched: true,
     likeBaseOcrMatched: false,
     targetedLikeOcrAttempted: true,
@@ -796,9 +838,11 @@ assert.deepEqual(JSON.parse(visualLikeMenuReaderHarness.stdout.trim()), [
   },
   {
     scenario: "like_ocr_miss",
+    proofPurpose: "authorize_action",
     ok: true,
     expectedState: true,
     resolutionMode: "visual_signature",
+    requiresStability: false,
     likeOcrMatched: false,
     likeBaseOcrMatched: false,
     targetedLikeOcrAttempted: true,
@@ -809,9 +853,11 @@ assert.deepEqual(JSON.parse(visualLikeMenuReaderHarness.stdout.trim()), [
   },
   {
     scenario: "cancel",
+    proofPurpose: "authorize_action",
     ok: true,
     expectedState: true,
     resolutionMode: "visual_signature",
+    requiresStability: false,
     likeOcrMatched: false,
     likeBaseOcrMatched: false,
     targetedLikeOcrAttempted: true,
@@ -822,13 +868,45 @@ assert.deepEqual(JSON.parse(visualLikeMenuReaderHarness.stdout.trim()), [
   },
   {
     scenario: "cropped",
+    proofPurpose: "authorize_action",
     ok: false,
     expectedState: false,
     resolutionMode: "ambiguous",
+    requiresStability: false,
     likeOcrMatched: true,
     likeBaseOcrMatched: false,
     targetedLikeOcrAttempted: true,
     targetedLikeOcrMatched: true,
+    commentOcrMatched: false,
+    likeEdgeClear: false,
+    commentEdgeClear: true,
+  },
+  {
+    scenario: "cancel_cropped",
+    proofPurpose: "authorize_action",
+    ok: false,
+    expectedState: false,
+    resolutionMode: "ambiguous",
+    requiresStability: false,
+    likeOcrMatched: false,
+    likeBaseOcrMatched: false,
+    targetedLikeOcrAttempted: true,
+    targetedLikeOcrMatched: false,
+    commentOcrMatched: false,
+    likeEdgeClear: false,
+    commentEdgeClear: true,
+  },
+  {
+    scenario: "cancel_cropped",
+    proofPurpose: "verify_outcome",
+    ok: true,
+    expectedState: true,
+    resolutionMode: "visual_signature",
+    requiresStability: true,
+    likeOcrMatched: false,
+    likeBaseOcrMatched: false,
+    targetedLikeOcrAttempted: true,
+    targetedLikeOcrMatched: false,
     commentOcrMatched: false,
     likeEdgeClear: false,
     commentEdgeClear: true,
@@ -839,12 +917,16 @@ assert.doesNotMatch(
   /Invoke-VisualOwnedClick|AtomicMouse|Keyboard|Clipboard|SetCursorPos|Focus-|Open-LockedVisualMenu|Close-VisualMenu/u,
   "an ambiguous menu frame may only trigger one passive reread",
 );
-assert.match(openMenuReader, /Read-OpenVisualMenuOnce \$lock \$menu \$requestedAction/u);
+assert.match(openMenuReader, /Read-OpenVisualMenuOnce \$lock \$menu \$requestedAction \$normalizedProofPurpose/u);
 for (const field of [
   "menuReadRetryCount",
   "firstReason",
   "secondReason",
   "requestedAction",
+  "proofPurpose",
+  "firstRequiresStability",
+  "secondRequiresStability",
+  "outcomeObservationCount",
   "firstSegmentCount",
   "secondSegmentCount",
   "firstStrictCandidateCount",
@@ -883,7 +965,7 @@ ${openMenuReader}
 $script:menuScenario = ""
 $script:menuReadCount = 0
 function Start-Sleep { param([int]$Milliseconds) }
-function Read-OpenVisualMenuOnce($lock, $menu, [string]$requestedAction) {
+function Read-OpenVisualMenuOnce($lock, $menu, [string]$requestedAction, [string]$proofPurpose = "authorize_action") {
   $script:menuReadCount += 1
   if ($script:menuScenario -ceq "retry_success" -and $script:menuReadCount -eq 1) {
     return @{
@@ -992,11 +1074,146 @@ assert.deepEqual(JSON.parse(passiveMenuRetryProbe.stdout.trim()), [
     secondFallbackCandidateCount: 3,
   },
 ]);
+const outcomeStabilityProbeSource = `
+${openMenuReader}
+$script:outcomeFrames = @()
+$script:outcomeReadCount = 0
+function Start-Sleep { param([int]$Milliseconds) }
+function Test-VisualBoundsNear($left, $right, [double]$tolerance) {
+  if ($left -eq $null -or $right -eq $null) { return $false }
+  return [Math]::Abs([double]$left.left - [double]$right.left) -le $tolerance -and
+    [Math]::Abs([double]$left.top - [double]$right.top) -le $tolerance -and
+    [Math]::Abs([double]$left.width - [double]$right.width) -le $tolerance -and
+    [Math]::Abs([double]$left.height - [double]$right.height) -le $tolerance
+}
+function New-OutcomeFrame(
+  [bool]$ok,
+  [string]$state,
+  [bool]$requiresStability,
+  [double]$left = 100.0,
+  [string]$reason = ""
+) {
+  if (-not $ok) {
+    return @{
+      ok = $false
+      reason = $(if ($reason) { $reason } else { "moments_menu_ambiguous" })
+      diagnostics = @{
+        segmentCount = 1
+        strictCandidateCount = 1
+        fallbackCandidateCount = 0
+        requiresStability = $false
+        likeResolutionMode = "ambiguous"
+      }
+    }
+  }
+  return @{
+    ok = $true
+    menuState = $state
+    like = @{ bounds = @{ left = $left; top = 120.0; width = 31.0; height = 10.0 } }
+    menuSurface = @{ left = $left - 20.0; top = 100.0; width = 200.0; height = 44.0 }
+    diagnostics = @{
+      segmentCount = 1
+      strictCandidateCount = 1
+      fallbackCandidateCount = 0
+      requiresStability = $requiresStability
+      likeResolutionMode = "visual_signature"
+    }
+  }
+}
+function Read-OpenVisualMenuOnce($lock, $menu, [string]$requestedAction, [string]$proofPurpose = "authorize_action") {
+  $frame = $script:outcomeFrames[$script:outcomeReadCount]
+  $script:outcomeReadCount += 1
+  return $frame
+}
+function Invoke-OutcomeStabilityCase([string]$scenario) {
+  $script:outcomeReadCount = 0
+  if ($scenario -ceq "stable") {
+    $script:outcomeFrames = @(
+      (New-OutcomeFrame $true "取消" $true 100.0),
+      (New-OutcomeFrame $true "取消" $true 101.0)
+    )
+  } elseif ($scenario -ceq "drift") {
+    $script:outcomeFrames = @(
+      (New-OutcomeFrame $true "取消" $true 100.0),
+      (New-OutcomeFrame $true "取消" $true 110.0)
+    )
+  } elseif ($scenario -ceq "single_weak") {
+    $script:outcomeFrames = @(
+      (New-OutcomeFrame $false "" $false 100.0 "moments_menu_ambiguous"),
+      (New-OutcomeFrame $true "取消" $true 100.0)
+    )
+  } else {
+    $script:outcomeFrames = @(
+      (New-OutcomeFrame $true "取消" $true 100.0),
+      (New-OutcomeFrame $true "赞" $false 100.0)
+    )
+  }
+  $result = Read-OpenVisualMenu @{} @{} "like" "verify_outcome"
+  return [pscustomobject]@{
+    scenario = $scenario
+    ok = [bool]$result.ok
+    reason = [string]$result.reason
+    reads = $script:outcomeReadCount
+    proofPurpose = [string]$result.diagnostics.proofPurpose
+    observationCount = [int]$result.diagnostics.outcomeObservationCount
+  }
+}
+@(
+  (Invoke-OutcomeStabilityCase "stable"),
+  (Invoke-OutcomeStabilityCase "drift"),
+  (Invoke-OutcomeStabilityCase "single_weak"),
+  (Invoke-OutcomeStabilityCase "changed")
+) | ConvertTo-Json -Depth 6 -Compress
+`;
+const outcomeStabilityProbe = spawnSync(
+  "powershell.exe",
+  ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(outcomeStabilityProbeSource, "utf16le").toString("base64")],
+  { encoding: "utf8", windowsHide: true },
+);
+assert.equal(
+  outcomeStabilityProbe.status,
+  0,
+  outcomeStabilityProbe.stderr || "post-click outcome stability probe must run",
+);
+assert.deepEqual(JSON.parse(outcomeStabilityProbe.stdout.trim()), [
+  {
+    scenario: "stable",
+    ok: true,
+    reason: "",
+    reads: 2,
+    proofPurpose: "verify_outcome",
+    observationCount: 2,
+  },
+  {
+    scenario: "drift",
+    ok: false,
+    reason: "moments_menu_ambiguous",
+    reads: 2,
+    proofPurpose: "verify_outcome",
+    observationCount: 1,
+  },
+  {
+    scenario: "single_weak",
+    ok: false,
+    reason: "moments_menu_ambiguous",
+    reads: 2,
+    proofPurpose: "verify_outcome",
+    observationCount: 1,
+  },
+  {
+    scenario: "changed",
+    ok: false,
+    reason: "moments_menu_ambiguous",
+    reads: 2,
+    proofPurpose: "verify_outcome",
+    observationCount: 1,
+  },
+]);
 const menuLabelDiagnosticsProbeSource = `
 ${openMenuReader}
 $script:menuReadCount = 0
 function Start-Sleep { param([int]$Milliseconds) }
-function Read-OpenVisualMenuOnce($lock, $menu, [string]$requestedAction) {
+function Read-OpenVisualMenuOnce($lock, $menu, [string]$requestedAction, [string]$proofPurpose = "authorize_action") {
   $script:menuReadCount += 1
   if ($script:menuReadCount -eq 1) {
     return @{
@@ -1163,8 +1380,8 @@ assert.match(
 );
 assert.match(
   openMenuReadOnceSource,
-  /function Read-OpenVisualMenuOnce\(\$lock, \$menu, \[string\]\$requestedAction\)/u,
-  "menu reading should validate only the action the user requested",
+  /function Read-OpenVisualMenuOnce\([\s\S]*\[string\]\$requestedAction,[\s\S]*\[string\]\$proofPurpose = "authorize_action"[\s\S]*\)/u,
+  "menu reading should separate the requested action from the evidence purpose",
 );
 assert.match(openMenuReadOnceSource, /Get-VisualOpenMenuBounds \$frame \$menu \$requestedAction/u);
 assert.match(
@@ -1174,7 +1391,7 @@ assert.match(
 );
 assert.match(
   actionSource,
-  /Read-OpenVisualMenu \$lock \$menu \(\[string\]\$context\.requestedAction\)/u,
+  /Read-OpenVisualMenu \$lock \$menu \(\[string\]\$context\.requestedAction\) "authorize_action"/u,
 );
 const likeActionStart = actionSource.indexOf('if ([string]$env:XIAOXI_MOMENTS_VISUAL_ACTION -ceq "like")');
 const commentActionStart = actionSource.indexOf('if (@("comment", "comment_check")', likeActionStart);
@@ -1203,13 +1420,28 @@ assert.doesNotMatch(
 );
 assert.match(
   likeActionSource,
-  /\$freshMenu = Read-OpenVisualMenu \$lock \$opened\.menu "like"[\s\S]*reason = "moments_menu_changed"[\s\S]*diagnostics = \$freshMenu\.diagnostics/u,
+  /\$freshMenu = Read-OpenVisualMenu \$lock \$opened\.menu "like" "authorize_action"[\s\S]*reason = "moments_menu_changed"[\s\S]*diagnostics = \$freshMenu\.diagnostics/u,
   "a failed pre-click refresh must preserve the detailed menu diagnostics",
 );
 assert.match(
   likeActionSource,
-  /\$afterMenu = Read-OpenVisualMenu \$afterLock \$afterAnchor\.menu "like"[\s\S]*reason = "moments_like_verification_failed"[\s\S]*diagnostics = \$afterMenu\.diagnostics/u,
+  /\$afterMenu = Read-OpenVisualMenu \$afterLock \$afterAnchor\.menu "like" "verify_outcome"[\s\S]*reason = "moments_like_verification_failed"[\s\S]*diagnostics = \$afterMenu\.diagnostics/u,
   "a failed post-click verification must preserve the detailed menu diagnostics",
+);
+assert.match(
+  alreadyLikedNoOpSource,
+  /Close-VisualMenu \$lock[\s\S]*cleanupReason = "moments_menu_close_blocked"[\s\S]*status = "already_liked_verified"[\s\S]*cleanupReason = \$cleanupReason/u,
+  "closing an already-liked menu is cleanup and must not overturn the verified no-op",
+);
+assert.match(
+  likeActionSource,
+  /\$cleanupReason = ""[\s\S]*Close-VisualMenu \$afterLock[\s\S]*status = "verified"[\s\S]*cleanupReason = \$cleanupReason/u,
+  "post-click menu cleanup failure must remain a warning after the cancel state is verified",
+);
+assert.doesNotMatch(
+  likeActionSource,
+  /Close-VisualMenu \$afterLock\)\) \{\s*Write-VisualResult @\{\s*ok = \$false;\s*status = "outcome_unknown"/u,
+  "cleanup failure must not replace a verified like with outcome_unknown",
 );
 assert.match(
   commentActionSource,
@@ -2423,13 +2655,21 @@ assert.doesNotMatch(actionSource, /\{ESC\}/u);
 assert.match(actionSource, /moments_comment_draft_close_unverified/u);
 
 // The broad and targeted OCR passes may both miss the isolated like glyph.
-// A complete narrow glyph can authorize the like, while cropped, middle-width,
-// and wider cancel labels must remain blocked.
+// A complete narrow glyph may authorize a like. A cropped wide cancel label is
+// outcome-only evidence and must request a second stable passive observation.
 assert.match(actionSource, /\$x - \$lastDark\) -gt \[Math\]::Max\(18\.0, \[double\]\$frame\.width \* 0\.05\)/u);
 assert.match(actionSource, /Get-VisualMenuTargetedOcrRegion[\s\S]*Get-MomentsHighContrastOcrObservation \$frame \$targetedLikeRegion 5/u);
-assert.match(actionSource, /\$widthRatio -ge 0\.42 -and \$widthRatio -le 0\.60\) \{ \$visualState = "赞" \}/u);
+assert.match(
+  actionSource,
+  /\[bool\]\$likeSignature\.horizontalEdgeClear -and[\s\S]*?\$widthRatio -ge 0\.42 -and \$widthRatio -le 0\.60\)[\s\S]*?\$visualState = "赞"/u,
+);
 assert.doesNotMatch(actionSource, /\$widthRatio -ge 0\.32 -and \$widthRatio -le 0\.68\) \{ \$visualState = "赞" \}/u);
-assert.match(actionSource, /\$widthRatio -ge 0\.78[\s\S]*\$visualState = "取消"/u);
+assert.match(
+  actionSource,
+  /\$widthRatio -ge 0\.78 -and \$widthRatio -le 1\.42[\s\S]*?\$normalizedProofPurpose -ceq "verify_outcome"[\s\S]*?\$visualState = "取消"[\s\S]*?\$requiresStability = -not \[bool\]\$likeSignature\.horizontalEdgeClear/u,
+);
+assert.match(actionSource, /\[string\]\$proofPurpose = "authorize_action"/u);
+assert.doesNotMatch(actionSource, /0\.885714/u);
 const visualActionTimeoutCapsSource = actionSource.match(
   /VISUAL_ACTION_TIMEOUT_CAP_MS = Object\.freeze\(\{[\s\S]*?\}\);/u,
 )?.[0] ?? "";

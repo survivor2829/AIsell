@@ -81,6 +81,9 @@ function sanitizeMomentsMenuDiagnostics(value) {
   if (["like", "comment", "inspect"].includes(value.requested_action)) {
     sanitized.requested_action = value.requested_action;
   }
+  if (["authorize_action", "verify_outcome"].includes(value.proof_purpose)) {
+    sanitized.proof_purpose = value.proof_purpose;
+  }
   for (const key of ["first_reason", "second_reason"]) {
     const reason = String(value[key] || "");
     if (/^moments_[a-z0-9_:-]{1,91}$/u.test(reason)) sanitized[key] = reason;
@@ -92,7 +95,8 @@ function sanitizeMomentsMenuDiagnostics(value) {
     "first_strict_candidate_count",
     "second_strict_candidate_count",
     "first_fallback_candidate_count",
-    "second_fallback_candidate_count"
+    "second_fallback_candidate_count",
+    "outcome_observation_count"
   ]) {
     const count = value[key];
     if (Number.isSafeInteger(count) && count >= 0 && count <= 1_000) sanitized[key] = count;
@@ -115,7 +119,9 @@ function sanitizeMomentsMenuDiagnostics(value) {
     "second_like_signature_ok",
     "second_comment_signature_ok",
     "second_like_signature_edge_clear",
-    "second_comment_signature_edge_clear"
+    "second_comment_signature_edge_clear",
+    "first_requires_stability",
+    "second_requires_stability"
   ]) {
     if (typeof value[key] === "boolean") sanitized[key] = value[key];
   }

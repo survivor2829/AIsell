@@ -304,6 +304,9 @@ function sanitizeVisualMenuDiagnostics(raw) {
   if (["like", "comment", "inspect"].includes(raw.requestedAction)) {
     sanitized.requested_action = raw.requestedAction;
   }
+  if (["authorize_action", "verify_outcome"].includes(raw.proofPurpose)) {
+    sanitized.proof_purpose = raw.proofPurpose;
+  }
   for (const [source, target] of [["firstReason", "first_reason"], ["secondReason", "second_reason"]]) {
     const code = safeDiagnosticCode(raw[source]);
     if (code.startsWith("moments_")) sanitized[target] = code;
@@ -315,7 +318,8 @@ function sanitizeVisualMenuDiagnostics(raw) {
     ["firstStrictCandidateCount", "first_strict_candidate_count"],
     ["secondStrictCandidateCount", "second_strict_candidate_count"],
     ["firstFallbackCandidateCount", "first_fallback_candidate_count"],
-    ["secondFallbackCandidateCount", "second_fallback_candidate_count"]
+    ["secondFallbackCandidateCount", "second_fallback_candidate_count"],
+    ["outcomeObservationCount", "outcome_observation_count"]
   ]) {
     if (Number.isSafeInteger(raw[source]) && raw[source] >= 0 && raw[source] <= 1_000) {
       sanitized[target] = raw[source];
@@ -339,7 +343,9 @@ function sanitizeVisualMenuDiagnostics(raw) {
     ["secondLikeSignatureOk", "second_like_signature_ok"],
     ["secondCommentSignatureOk", "second_comment_signature_ok"],
     ["secondLikeSignatureEdgeClear", "second_like_signature_edge_clear"],
-    ["secondCommentSignatureEdgeClear", "second_comment_signature_edge_clear"]
+    ["secondCommentSignatureEdgeClear", "second_comment_signature_edge_clear"],
+    ["firstRequiresStability", "first_requires_stability"],
+    ["secondRequiresStability", "second_requires_stability"]
   ]) {
     if (typeof raw[source] === "boolean") sanitized[target] = raw[source];
   }
@@ -1374,7 +1380,9 @@ async function executeMomentsLike(options = {}) {
       persistAttempt(baseDir, context.state, details, "verified", {
         menu_state: inspected.menuState,
         no_op: true,
-        real_action_attempted: false
+        real_action_attempted: false,
+        cleanup_reason: inspected.cleanupReason,
+        diagnostics: inspected.diagnostics
       });
     } catch {
       return persistenceBlockedResult(action, details);
@@ -1387,7 +1395,9 @@ async function executeMomentsLike(options = {}) {
       attempt_key: attemptKey,
       menu_state: inspected.menuState,
       no_op: true,
-      real_action_attempted: false
+      real_action_attempted: false,
+      ...(inspected.cleanupReason ? { cleanup_reason: inspected.cleanupReason } : {}),
+      ...(inspected.diagnostics ? { diagnostics: inspected.diagnostics } : {})
     };
   }
 
@@ -1415,6 +1425,8 @@ async function executeMomentsLike(options = {}) {
 
   const attempted = typeof result?.actionAttempted === "boolean" ? result.actionAttempted : null;
   const likeDiagnostics = sanitizeVisualMenuDiagnostics(result?.diagnostics);
+  const cleanupReason = safeDiagnosticCode(result?.cleanupReason);
+  const verificationMode = safeDiagnosticCode(result?.verificationMode);
   let persistedState = loadState(baseDir);
   if (attempted === true) {
     try {
@@ -1430,8 +1442,10 @@ async function executeMomentsLike(options = {}) {
     try {
       persistAttempt(baseDir, persistedState, details, "prepared", {
         reason,
+        primary_reason: reason,
         real_action_attempted: false,
-        diagnostics: likeDiagnostics
+        diagnostics: likeDiagnostics,
+        cleanup_reason: cleanupReason
       });
     } catch {
       return persistenceBlockedResult(action, details);
@@ -1441,6 +1455,8 @@ async function executeMomentsLike(options = {}) {
       attempt_key: attemptKey,
       previous_status: "prepared",
       retry_locked: true,
+      primary_reason: reason,
+      ...(cleanupReason ? { cleanup_reason: cleanupReason } : {}),
       ...(likeDiagnostics ? { diagnostics: likeDiagnostics } : {})
     });
   }
@@ -1453,13 +1469,18 @@ async function executeMomentsLike(options = {}) {
     try {
       persistAttempt(baseDir, persistedState, details, "outcome_unknown", {
         reason,
+        primary_reason: reason,
         real_action_attempted: attempted,
-        diagnostics: likeDiagnostics
+        diagnostics: likeDiagnostics,
+        cleanup_reason: cleanupReason,
+        verification_mode: verificationMode
       });
     } catch {}
     return outcomeUnknownResult(action, details, {
       primary_reason: reason,
       real_action_attempted: attempted,
+      ...(cleanupReason ? { cleanup_reason: cleanupReason } : {}),
+      ...(verificationMode ? { verification_mode: verificationMode } : {}),
       ...(likeDiagnostics ? { diagnostics: likeDiagnostics } : {})
     });
   }
@@ -1469,7 +1490,10 @@ async function executeMomentsLike(options = {}) {
     persistAttempt(baseDir, persistedState, details, "verified", {
       menu_state: result.menuState,
       no_op: noOp,
-      real_action_attempted: attempted
+      real_action_attempted: attempted,
+      cleanup_reason: cleanupReason,
+      verification_mode: verificationMode,
+      diagnostics: likeDiagnostics
     });
   } catch {
     return outcomeUnknownResult(action, details, { reason: "moments_action_state_persist_failed" }, attempted);
@@ -1482,7 +1506,10 @@ async function executeMomentsLike(options = {}) {
     attempt_key: attemptKey,
     menu_state: result.menuState,
     no_op: noOp,
-    real_action_attempted: attempted
+    real_action_attempted: attempted,
+    ...(cleanupReason ? { cleanup_reason: cleanupReason } : {}),
+    ...(verificationMode ? { verification_mode: verificationMode } : {}),
+    ...(likeDiagnostics ? { diagnostics: likeDiagnostics } : {})
   };
 }
 

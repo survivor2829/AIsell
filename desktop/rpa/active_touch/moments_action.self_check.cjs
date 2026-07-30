@@ -1174,19 +1174,29 @@ async function main() {
     const alreadyLiked = await executeMomentsLike({
       ...alreadyLikedFixture,
       driver: verifiedDriver(alreadyLikedFixture.observationId, {
-        inspectMenu: () => ({ ok: true, observationId: alreadyLikedFixture.observationId, menuState: "取消" }),
+        inspectMenu: () => ({
+          ok: true,
+          observationId: alreadyLikedFixture.observationId,
+          menuState: "取消",
+          cleanupReason: "moments_menu_close_blocked",
+        }),
         like: () => { alreadyLikedCalls += 1; return {}; }
       })
     });
     assert.equal(alreadyLiked.ok, true);
     assert.equal(alreadyLiked.no_op, true);
     assert.equal(alreadyLiked.real_action_attempted, false);
+    assert.equal(alreadyLiked.cleanup_reason, "moments_menu_close_blocked");
     assert.equal(alreadyLikedCalls, 0);
     const persistedAlreadyLiked = loadState(alreadyLikedFixture.baseDir).moments_test_action;
     assert.equal(persistedAlreadyLiked.attempts[alreadyLiked.attempt_key].status, "verified");
     assert.equal(persistedAlreadyLiked.real_action_attempted, false);
     assert.equal(persistedAlreadyLiked.menu_state, alreadyLiked.menu_state);
     assert.equal(persistedAlreadyLiked.no_op, true);
+    assert.equal(
+      persistedAlreadyLiked.attempts[alreadyLiked.attempt_key].cleanup_reason,
+      "moments_menu_close_blocked",
+    );
     const alreadyLikedRepeat = await executeMomentsLike({
       ...alreadyLikedFixture,
       driver: verifiedDriver(alreadyLikedFixture.observationId, {
@@ -1209,7 +1219,22 @@ async function main() {
           likeCalls.push("like");
           const diskAttempt = loadState(likeFixture.baseDir).moments_test_action.attempts[context.attemptKey];
           assert.equal(diskAttempt.status, "prepared", "prepared must be durable before the irreversible call");
-          return { ok: true, actionAttempted: true, observationId: likeFixture.observationId, menuState: "取消赞" };
+          return {
+            ok: true,
+            actionAttempted: true,
+            observationId: likeFixture.observationId,
+            menuState: "取消赞",
+            cleanupReason: "moments_menu_close_blocked",
+            verificationMode: "visual_menu_state_transition_and_static_anchor",
+            diagnostics: {
+              requestedAction: "like",
+              proofPurpose: "verify_outcome",
+              menuReadRetryCount: 1,
+              firstRequiresStability: true,
+              secondRequiresStability: true,
+              outcomeObservationCount: 2,
+            },
+          };
         }
       })
     });
@@ -1217,6 +1242,11 @@ async function main() {
     assert.equal(likeSuccess.ok, true);
     assert.equal(likeSuccess.status, "verified");
     assert.equal(likeSuccess.real_action_attempted, true);
+    assert.equal(likeSuccess.cleanup_reason, "moments_menu_close_blocked");
+    assert.equal(
+      likeSuccess.verification_mode,
+      "visual_menu_state_transition_and_static_anchor",
+    );
     const persistedLikeSuccess = loadState(likeFixture.baseDir).moments_test_action;
     assert.equal(persistedLikeSuccess.attempts[likeSuccess.attempt_key].status, "verified");
     assert.equal(persistedLikeSuccess.action, "moments-like");
@@ -1225,6 +1255,25 @@ async function main() {
     assert.equal(persistedLikeSuccess.real_action_attempted, true);
     assert.equal(persistedLikeSuccess.menu_state, likeSuccess.menu_state);
     assert.equal(persistedLikeSuccess.no_op, false);
+    assert.equal(
+      persistedLikeSuccess.attempts[likeSuccess.attempt_key].cleanup_reason,
+      "moments_menu_close_blocked",
+    );
+    assert.equal(
+      persistedLikeSuccess.attempts[likeSuccess.attempt_key].verification_mode,
+      "visual_menu_state_transition_and_static_anchor",
+    );
+    assert.deepEqual(
+      persistedLikeSuccess.attempts[likeSuccess.attempt_key].diagnostics,
+      {
+        requested_action: "like",
+        proof_purpose: "verify_outcome",
+        menu_read_retry_count: 1,
+        first_requires_stability: true,
+        second_requires_stability: true,
+        outcome_observation_count: 2,
+      },
+    );
 
     const inspectAfterLike = await inspectMomentsMenu({
       ...likeFixture,

@@ -2178,7 +2178,14 @@ function Get-VisualMenuTargetedOcrRegion($frame, $signature, $sourceRegion) {
   return $region
 }
 
-function Resolve-VisualLikeMenuState($likeEntry, $likeSignature, $commentSignature, [string]$ocrMode = "ocr") {
+function Resolve-VisualLikeMenuState(
+  $likeEntry,
+  $likeSignature,
+  $commentSignature,
+  [string]$ocrMode = "ocr",
+  [string]$proofPurpose = "authorize_action"
+) {
+  $normalizedProofPurpose = $(if ($proofPurpose -ceq "verify_outcome") { "verify_outcome" } else { "authorize_action" })
   $widthRatio = 0.0
   $heightRatio = 0.0
   if ($likeSignature.ok -and $commentSignature.ok) {
@@ -2197,6 +2204,8 @@ function Resolve-VisualLikeMenuState($likeEntry, $likeSignature, $commentSignatu
       return @{
         entry = $null
         mode = "ambiguous"
+        proofPurpose = $normalizedProofPurpose
+        requiresStability = $false
         widthRatio = $widthRatio
         heightRatio = $heightRatio
       }
@@ -2204,19 +2213,31 @@ function Resolve-VisualLikeMenuState($likeEntry, $likeSignature, $commentSignatu
     return @{
       entry = $likeEntry
       mode = $(if ($ocrMode -ceq "targeted_ocr") { "targeted_ocr" } else { "ocr" })
+      proofPurpose = $normalizedProofPurpose
+      requiresStability = $false
       widthRatio = $widthRatio
       heightRatio = $heightRatio
     }
   }
   if ($likeSignature.ok -and $commentSignature.ok -and
-    [bool]$likeSignature.horizontalEdgeClear -and
     [bool]$commentSignature.horizontalEdgeClear -and
     $heightRatio -ge 0.76 -and $heightRatio -le 1.24) {
     $visualState = ""
+    $requiresStability = $false
     # A complete narrow glyph is the normal "赞" label even when Windows OCR
-    # misses the isolated character. Cropped or wider labels remain blocked.
-    if ($widthRatio -ge 0.42 -and $widthRatio -le 0.60) { $visualState = "赞" }
-    elseif ($widthRatio -ge 0.78 -and $widthRatio -le 1.42) { $visualState = "取消" }
+    # misses the isolated character. It remains strict in every proof phase.
+    if ([bool]$likeSignature.horizontalEdgeClear -and
+      $widthRatio -ge 0.42 -and $widthRatio -le 0.60) {
+      $visualState = "赞"
+    } elseif ($widthRatio -ge 0.78 -and $widthRatio -le 1.42 -and
+      ([bool]$likeSignature.horizontalEdgeClear -or $normalizedProofPurpose -ceq "verify_outcome")) {
+      # After a real click the business question is whether the menu changed to
+      # the wider two-character "取消" state. A narrow OCR crop may touch its
+      # horizontal edge, so only outcome verification may use this fallback,
+      # and the reader must corroborate it with a second passive observation.
+      $visualState = "取消"
+      $requiresStability = -not [bool]$likeSignature.horizontalEdgeClear
+    }
     if ($visualState) {
       return @{
         entry = @{
@@ -2226,6 +2247,8 @@ function Resolve-VisualLikeMenuState($likeEntry, $likeSignature, $commentSignatu
           centerY = $likeSignature.centerY
         }
         mode = "visual_signature"
+        proofPurpose = $normalizedProofPurpose
+        requiresStability = [bool]$requiresStability
         widthRatio = $widthRatio
         heightRatio = $heightRatio
       }
@@ -2234,12 +2257,19 @@ function Resolve-VisualLikeMenuState($likeEntry, $likeSignature, $commentSignatu
   return @{
     entry = $null
     mode = "ambiguous"
+    proofPurpose = $normalizedProofPurpose
+    requiresStability = $false
     widthRatio = $widthRatio
     heightRatio = $heightRatio
   }
 }
 
-function Read-OpenVisualMenuOnce($lock, $menu, [string]$requestedAction) {
+function Read-OpenVisualMenuOnce(
+  $lock,
+  $menu,
+  [string]$requestedAction,
+  [string]$proofPurpose = "authorize_action"
+) {
   $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $false $false
   if (-not $frame.ok) { return @{ ok = $false; reason = $frame.reason } }
   try {
@@ -2288,7 +2318,7 @@ function Read-OpenVisualMenuOnce($lock, $menu, [string]$requestedAction) {
       }
     }
     $likeOcrMatched = ($likeEntry -ne $null)
-    $likeResolution = Resolve-VisualLikeMenuState $likeEntry $likeSignature $commentSignature $(if ($targetedLikeOcrMatched) { "targeted_ocr" } else { "ocr" })
+    $likeResolution = Resolve-VisualLikeMenuState $likeEntry $likeSignature $commentSignature $(if ($targetedLikeOcrMatched) { "targeted_ocr" } else { "ocr" }) $proofPurpose
     $likeEntry = $likeResolution.entry
     $widthRatio = [double]$likeResolution.widthRatio
     $heightRatio = [double]$likeResolution.heightRatio
@@ -2306,6 +2336,8 @@ function Read-OpenVisualMenuOnce($lock, $menu, [string]$requestedAction) {
       likeSignatureEdgeClear = [bool]$likeSignature.horizontalEdgeClear
       commentSignatureEdgeClear = [bool]$commentSignature.horizontalEdgeClear
       likeResolutionMode = [string]$likeResolution.mode
+      proofPurpose = [string]$likeResolution.proofPurpose
+      requiresStability = [bool]$likeResolution.requiresStability
       widthRatio = $widthRatio
       heightRatio = $heightRatio
       surface = $surface.bounds
@@ -2349,15 +2381,30 @@ function Read-OpenVisualMenuOnce($lock, $menu, [string]$requestedAction) {
   }
 }
 
-function Read-OpenVisualMenu($lock, $menu, [string]$requestedAction) {
-  $first = Read-OpenVisualMenuOnce $lock $menu $requestedAction
+function Read-OpenVisualMenu(
+  $lock,
+  $menu,
+  [string]$requestedAction,
+  [string]$proofPurpose = "authorize_action"
+) {
+  $normalizedProofPurpose = $(if ($proofPurpose -ceq "verify_outcome") { "verify_outcome" } else { "authorize_action" })
+  $first = Read-OpenVisualMenuOnce $lock $menu $requestedAction $normalizedProofPurpose
   $firstReason = $(if ($first.ok) { "" } else { [string]$first.reason })
-  if ($first.ok -or [string]$first.reason -notin @("moments_menu_surface_ambiguous", "moments_menu_ambiguous")) {
+  $firstRequiresStability = [bool]$first.diagnostics.requiresStability
+  $retryForOutcomeStability = $first.ok -and
+    $normalizedProofPurpose -ceq "verify_outcome" -and
+    $firstRequiresStability
+  if (($first.ok -and -not $retryForOutcomeStability) -or
+    (-not $first.ok -and [string]$first.reason -notin @("moments_menu_surface_ambiguous", "moments_menu_ambiguous"))) {
     $first.diagnostics = @{
       menuReadRetryCount = 0
       firstReason = $firstReason
       secondReason = ""
       requestedAction = [string]$requestedAction
+      proofPurpose = $normalizedProofPurpose
+      firstRequiresStability = $firstRequiresStability
+      secondRequiresStability = $false
+      outcomeObservationCount = $(if ($first.ok) { 1 } else { 0 })
       firstSegmentCount = [int]$first.diagnostics.segmentCount
       secondSegmentCount = 0
       firstStrictCandidateCount = [int]$first.diagnostics.strictCandidateCount
@@ -2393,12 +2440,29 @@ function Read-OpenVisualMenu($lock, $menu, [string]$requestedAction) {
   }
 
   Start-Sleep -Milliseconds 160
-  $second = Read-OpenVisualMenuOnce $lock $menu $requestedAction
+  $second = Read-OpenVisualMenuOnce $lock $menu $requestedAction $normalizedProofPurpose
+  $secondWasOk = [bool]$second.ok
+  $secondRequiresStability = [bool]$second.diagnostics.requiresStability
+  $stableOutcome = $retryForOutcomeStability -and
+    $second.ok -and
+    @("取消", "取消赞") -contains [string]$first.menuState -and
+    @("取消", "取消赞") -contains [string]$second.menuState -and
+    (Test-VisualBoundsNear $first.menuSurface $second.menuSurface 3.0) -and
+    (Test-VisualBoundsNear $first.like.bounds $second.like.bounds 3.0)
+  if (($retryForOutcomeStability -and -not $stableOutcome) -or
+    (-not $first.ok -and $second.ok -and $secondRequiresStability)) {
+    $second.ok = $false
+    $second.reason = "moments_menu_ambiguous"
+  }
   $second.diagnostics = @{
     menuReadRetryCount = 1
     firstReason = $firstReason
     secondReason = $(if ($second.ok) { "" } else { [string]$second.reason })
     requestedAction = [string]$requestedAction
+    proofPurpose = $normalizedProofPurpose
+    firstRequiresStability = $firstRequiresStability
+    secondRequiresStability = $secondRequiresStability
+    outcomeObservationCount = $(if ($stableOutcome) { 2 } elseif ($secondWasOk) { 1 } else { 0 })
     firstSegmentCount = [int]$first.diagnostics.segmentCount
     secondSegmentCount = [int]$second.diagnostics.segmentCount
     firstStrictCandidateCount = [int]$first.diagnostics.strictCandidateCount
@@ -2454,7 +2518,7 @@ function Open-LockedVisualMenu($lock, $context) {
   }
   $script:visualMenuOpen = $true
   Start-Sleep -Milliseconds 240
-  $read = Read-OpenVisualMenu $lock $menu ([string]$context.requestedAction)
+  $read = Read-OpenVisualMenu $lock $menu ([string]$context.requestedAction) "authorize_action"
   if (-not $read.ok) {
     if (-not (Close-VisualMenu $lock)) {
       $read.cleanupReason = "moments_menu_close_blocked"
@@ -5044,15 +5108,22 @@ try {
 
   if ([string]$env:XIAOXI_MOMENTS_VISUAL_ACTION -ceq "like") {
     if (@("取消", "取消赞") -contains [string]$opened.menuState) {
-      $closed = Close-And-VerifyUnchanged $lock $context
-      if (-not $closed.ok) { Write-VisualResult @{ ok = $false; status = "blocked"; reason = $closed.reason; actionAttempted = $false } }
-      Write-VisualResult @{ ok = $true; status = "already_liked_verified"; actionAttempted = $false; menuState = $opened.menuState }
+      $cleanupReason = ""
+      if (-not (Close-VisualMenu $lock)) { $cleanupReason = "moments_menu_close_blocked" }
+      Write-VisualResult @{
+        ok = $true
+        status = "already_liked_verified"
+        actionAttempted = $false
+        menuState = $opened.menuState
+        cleanupReason = $cleanupReason
+        verificationMode = "visual_menu_state"
+      }
     }
     if ([string]$opened.menuState -cne "赞") {
       [void](Close-VisualMenu $lock)
       Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_like_state_unknown"; actionAttempted = $false }
     }
-    $freshMenu = Read-OpenVisualMenu $lock $opened.menu "like"
+    $freshMenu = Read-OpenVisualMenu $lock $opened.menu "like" "authorize_action"
     if (-not $freshMenu.ok -or [string]$freshMenu.menuState -cne "赞" -or
       -not (Test-VisualBoundsNear $freshMenu.like.bounds $opened.like.bounds 3.0)) {
       [void](Close-VisualMenu $lock)
@@ -5088,7 +5159,7 @@ try {
     }
     $script:visualMenuOpen = $true
     Start-Sleep -Milliseconds 240
-    $afterMenu = Read-OpenVisualMenu $afterLock $afterAnchor.menu "like"
+    $afterMenu = Read-OpenVisualMenu $afterLock $afterAnchor.menu "like" "verify_outcome"
     if (-not $afterMenu.ok -or @("取消", "取消赞") -notcontains [string]$afterMenu.menuState) {
       [void](Close-VisualMenu $afterLock)
       Write-VisualResult @{
@@ -5099,15 +5170,16 @@ try {
         diagnostics = $afterMenu.diagnostics
       }
     }
-    if (-not (Close-VisualMenu $afterLock)) {
-      Write-VisualResult @{ ok = $false; status = "outcome_unknown"; reason = "moments_menu_close_blocked"; actionAttempted = $true }
-    }
+    $cleanupReason = ""
+    if (-not (Close-VisualMenu $afterLock)) { $cleanupReason = "moments_menu_close_blocked" }
     Write-VisualResult @{
       ok = $true
       status = "verified"
       actionAttempted = $true
       menuState = $afterMenu.menuState
       verificationMode = "visual_menu_state_transition_and_static_anchor"
+      cleanupReason = $cleanupReason
+      diagnostics = $afterMenu.diagnostics
     }
   }
 

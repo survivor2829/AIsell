@@ -103,7 +103,9 @@ async function main() {
         real_action_attempted: false,
         diagnostics: {
           requested_action: "like",
+          proof_purpose: "verify_outcome",
           menu_read_retry_count: 1,
+          outcome_observation_count: 2,
           first_reason: "moments_menu_ambiguous",
           first_segment_count: 2,
           first_like_ocr_matched: false,
@@ -115,6 +117,7 @@ async function main() {
           first_comment_signature_ok: true,
           first_like_signature_edge_clear: false,
           first_comment_signature_edge_clear: true,
+          first_requires_stability: true,
           first_like_resolution_mode: "visual_signature",
           first_width_ratio: 0.7,
           first_height_ratio: 1,
@@ -127,6 +130,7 @@ async function main() {
           second_comment_signature_ok: true,
           second_like_signature_edge_clear: false,
           second_comment_signature_edge_clear: true,
+          second_requires_stability: true,
           second_like_resolution_mode: "unknown_mode",
           second_width_ratio: -1,
           second_height_ratio: 11,
@@ -153,7 +157,9 @@ async function main() {
   const likeRecognitionEvent = likeRecognitionEvents.find((entry) => entry.event === "campaign.like_finished");
   assert.deepEqual(likeRecognitionEvent.details.diagnostics, {
     requested_action: "like",
+    proof_purpose: "verify_outcome",
     menu_read_retry_count: 1,
+    outcome_observation_count: 2,
     first_reason: "moments_menu_ambiguous",
     first_segment_count: 2,
     first_like_ocr_matched: false,
@@ -165,6 +171,7 @@ async function main() {
     first_comment_signature_ok: true,
     first_like_signature_edge_clear: false,
     first_comment_signature_edge_clear: true,
+    first_requires_stability: true,
     first_like_resolution_mode: "visual_signature",
     first_width_ratio: 0.7,
     first_height_ratio: 1,
@@ -176,6 +183,7 @@ async function main() {
     second_comment_signature_ok: true,
     second_like_signature_edge_clear: false,
     second_comment_signature_edge_clear: true,
+    second_requires_stability: true,
   });
   assert.equal(likeRecognitionEvent.details.reason, "moments_menu_ambiguous");
   assert.equal(likeRecognitionEvent.details.primary_reason, "moments_menu_ambiguous");
