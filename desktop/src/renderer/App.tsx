@@ -8,6 +8,7 @@ import {
   Clapperboard,
   FileText,
   Folder,
+  Images,
   Lock,
   MessageCircle,
   MonitorPlay,
@@ -30,6 +31,7 @@ import { lazy, Suspense, type ComponentType, type FormEvent, useEffect, useMemo,
 import { AiExpert } from "./AiExpert";
 import { AutoReply } from "./AutoReply";
 import { Diagnostics } from "./Diagnostics";
+import { ProductDetailPage } from "./ProductDetailPage";
 
 type ModuleKey =
   | "agent"
@@ -41,6 +43,7 @@ type ModuleKey =
   | "production"
   | "operations"
   | "accounts"
+  | "product-detail"
   | "materials"
   | "script"
   | "cut"
@@ -344,6 +347,7 @@ const agentChildren: NavItem[] = [
 ];
 
 const productionChildren: NavItem[] = [
+  { key: "product-detail", label: "产品详情图", icon: Images },
   { key: "materials", label: "素材仓库", icon: Folder },
   { key: "script", label: "AI脚本工厂", icon: BookOpen },
   { key: "cut", label: "自动剪辑工厂", icon: Scissors },
@@ -453,7 +457,7 @@ function taskHasUnfinishedSnapshot(task: TouchTaskState) {
 }
 
 function moduleIsAvailable(key: ModuleKey) {
-  return ["reply", "expert", "contact-sync", "touch", "moments", "accounts", "api-key", "diagnostics"].includes(key);
+  return ["reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "api-key", "diagnostics"].includes(key);
 }
 
 function touchTaskStatusLabel(task: TouchTaskState) {
@@ -859,6 +863,7 @@ export default function App() {
           {active === "expert" && <AiExpert />}
           {active === "moments" && <MomentsOperations />}
           {active === "accounts" && <AccountManagement />}
+          {active === "product-detail" && <ProductDetailPage />}
           {active === "api-key" && <ApiKeyPage onConfiguredChange={setDeepSeekConfigured} />}
           {active === "diagnostics" && <Diagnostics />}
           {active === "touch" && (

@@ -91,6 +91,17 @@ function createPreloadApis(ipcRenderer) {
       openFolder: () => ipcRenderer.invoke("diagnostics:open-folder"),
       export: () => ipcRenderer.invoke("diagnostics:export")
     },
+    productDetail: {
+      status: () => ipcRenderer.invoke("product-detail:status"),
+      start: () => ipcRenderer.invoke("product-detail:start"),
+      restart: () => ipcRenderer.invoke("product-detail:restart"),
+      stop: () => ipcRenderer.invoke("product-detail:stop"),
+      onUpdate: (callback) => {
+        const handler = (_event, payload) => callback(payload);
+        ipcRenderer.on("product-detail:update", handler);
+        return () => ipcRenderer.removeListener("product-detail:update", handler);
+      }
+    },
     touchTask: {
       start: (payload) => ipcRenderer.invoke("touch-task:start", { ...payload, clickToken: consumeBatchClick() }),
       status: () => ipcRenderer.invoke("touch-task:status"),

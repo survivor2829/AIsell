@@ -56,5 +56,6 @@ contextBridge.exposeInMainWorld("xiaoxiAiExpert", apis.aiExpert);
 contextBridge.exposeInMainWorld("xiaoxiContactSync", apis.contactSync);
 contextBridge.exposeInMainWorld("xiaoxiDeepSeekApi", apis.deepSeekApi);
 contextBridge.exposeInMainWorld("xiaoxiDiagnostics", apis.diagnostics);
+contextBridge.exposeInMainWorld("xiaoxiProductDetail", apis.productDetail);
 contextBridge.exposeInMainWorld("xiaoxiTouchTask", apis.touchTask);
 contextBridge.exposeInMainWorld("xiaoxiMomentsCampaign", momentsCampaign);

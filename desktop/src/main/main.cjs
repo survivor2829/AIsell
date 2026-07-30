@@ -14,12 +14,41 @@ const { registerDeepSeekApiIpc } = require("./deepseek-api-ipc.cjs");
 const { configureDiagnostics, diagnostics } = require("./diagnostics.cjs");
 const { registerDiagnosticsIpc } = require("./diagnostics-ipc.cjs");
 const { developmentEdition, pilotEdition, editionLabel, preloadFile, rendererDir } = require("./edition.cjs");
+const { createProductDetailSidecar } = require("./product-detail-sidecar.cjs");
+const { registerProductDetailIpc } = require("./product-detail-ipc.cjs");
 
 let mainWindow = null;
 let disarmRealSend = null;
 let touchTaskController = null;
 let autoReplyController = null;
 let momentsCampaignController = null;
+let productDetailController = null;
+let productDetailIpcRegistration = null;
+let quitCleanupStarted = false;
+let quitCleanupComplete = false;
+
+function productDetailRuntimePath() {
+  const configuredPath = String(process.env.XIAOXI_PRODUCT_DETAIL_SIDECAR || "").trim();
+  if (configuredPath) return configuredPath;
+  if (app.isPackaged) {
+    return path.join(
+      process.resourcesPath,
+      "product-detail",
+      "product-detail-server.exe"
+    );
+  }
+  return "";
+}
+
+function isAllowedProductDetailFrameNavigation(targetUrl) {
+  const sidecarOrigin = productDetailController?.status().origin;
+  if (!sidecarOrigin) return false;
+  try {
+    return new URL(targetUrl).origin === new URL(sidecarOrigin).origin;
+  } catch {
+    return false;
+  }
+}
 
 function rendererBuildInfo() {
   try {
@@ -56,6 +85,15 @@ function createWindow() {
   });
 
   mainWindow.setMenu(null);
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  mainWindow.webContents.on("will-navigate", (event) => {
+    event.preventDefault();
+  });
+  mainWindow.webContents.on("will-frame-navigate", (event) => {
+    if (event.isMainFrame || !isAllowedProductDetailFrameNavigation(event.url)) {
+      event.preventDefault();
+    }
+  });
   mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl) => {
     diagnostics().event("renderer", "load_failed", { error_code: errorCode, error: errorDescription, url: validatedUrl }, { level: "error", code: `load_${errorCode}` });
   });
@@ -167,6 +205,14 @@ if (!gotSingleInstanceLock) {
     registerContactSyncIpc({ dataDir: runtime.contactSyncDir, activeTouchDir: runtime.activeTouchDir, coordinator });
     registerDeepSeekApiIpc({ keyStore: deepSeekKeyStore, client: deepSeekClient });
     registerDiagnosticsIpc();
+    productDetailController = createProductDetailSidecar({
+      runtimePath: productDetailRuntimePath(),
+      dataDir: path.join(app.getPath("userData"), "product-detail")
+    });
+    productDetailIpcRegistration = registerProductDetailIpc({
+      controller: productDetailController,
+      getMainWindow: () => mainWindow
+    });
     registerAiExpertIpc({ store: aiExpertStore, isAutoReplyRunning: () => ["starting", "running"].includes(autoReplyController?.status().status) });
     if (internalRealSend) {
       autoReplyController = registerAutoReplyIpc({
@@ -211,5 +257,22 @@ if (!gotSingleInstanceLock) {
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
   });
-  app.on("before-quit", () => momentsCampaignController?.dispose());
+  app.on("before-quit", (event) => {
+    if (quitCleanupComplete) return;
+    event.preventDefault();
+    if (quitCleanupStarted) return;
+    quitCleanupStarted = true;
+    const cleanupTimeout = new Promise((resolve) => {
+      setTimeout(resolve, 8_000);
+    });
+    Promise.race([
+      Promise.resolve(productDetailController?.dispose()),
+      cleanupTimeout
+    ]).catch(() => undefined).finally(() => {
+      productDetailIpcRegistration?.dispose();
+      momentsCampaignController?.dispose();
+      quitCleanupComplete = true;
+      app.quit();
+    });
+  });
 }
