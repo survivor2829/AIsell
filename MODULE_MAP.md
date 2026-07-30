@@ -10,6 +10,8 @@
 | `desktop/src/main/` | Electron 生命周期、IPC、业务编排、DeepSeek、运行协调和数据目录注入 | 在页面组件中复制 RPA 逻辑；把单功能状态写进共享适配配置 |
 | `desktop/rpa/contact_sync/` | 读取微信联系人并输出规范化联系人清单 | 自动回复、主动触达或朋友圈动作 |
 | `desktop/rpa/active_touch/` | 微信窗口观察/发送适配、主动触达状态机及测试版朋友圈执行器 | renderer 状态管理、API Key 持久化、跨业务混用发送账本 |
+| `desktop/sidecars/product-detail/` | 产品详情图本地 sidecar、隔离工作台和用户数据迁移 | 向 renderer 暴露文件系统、密钥或任意本机进程能力 |
+| `desktop/sidecars/content-engine/` | 原素材原地索引、媒体探测、素材版权/使用权状态、内容任务和成片登记 | 复制或删除用户原片；调用微信自动化或绕过 Electron 主进程 |
 | `desktop/scripts/` | self-check、renderer 构建、便携包生成和包内检查 | 保存运行数据或作为 live 验收凭证 |
 | `release/` | 从源码生成的便携目录与 ZIP | 手工修改后回灌源码或作为唯一真相 |
 
@@ -47,6 +49,8 @@
 
 各业务只能读取共享联系人或适配证据，不能读取另一业务的成功账本来决定自己的动作。迁移旧状态时先归档，再拆分；不得把朋友圈字段继续写回主动触达的 `state.json`。
 
+内容生产使用独立的 `product-detail/` 与 `content-engine/` 数据目录。前者保存产品详情图的数据库、上传、输出和缓存；后者保存素材索引、任务、成片登记和缓存设置。原始视频和图片只由素材索引记录位置、指纹、媒体信息与版权/使用权状态，始终留在用户原有磁盘位置。
+
 ## 数据流
 
 ```text
@@ -59,4 +63,9 @@ renderer
 contact_sync -> active_touch/contacts.json
 DeepSeek Key -> main 进程 -> AI 文案/回复
 业务结果 -> 对应业务目录，不回写共享 adapter
+
+内容生产：素材原文件 -> content-engine 原地索引/探测 -> 课程拆条或智能混剪工作流 -> 可编辑时间线/渲染 -> 成片中心
+产品详情图 -> 用户确认后登记到素材仓库 -> 后续内容工作流
 ```
+
+内容分析、转码和渲染的资源队列必须与微信协调器隔离：内容任务可暂停、恢复或失败，不得占用微信 RPA 的锁，也不得阻断联系人同步、自动回复、主动触达或朋友圈计划。

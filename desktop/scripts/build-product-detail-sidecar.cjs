@@ -1,3 +1,4 @@
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -16,6 +17,7 @@ function resolveBuildPaths(root = desktopDir) {
   const distDir = path.join(buildRoot, `${sessionPrefix}-d`);
   return {
     desktopDir: resolvedDesktopDir,
+    projectDir: path.resolve(resolvedDesktopDir, ".."),
     buildRoot,
     sourceRoot,
     sourceDir,
@@ -150,6 +152,120 @@ function findBuildPython(paths, env = process.env) {
   );
 }
 
+const PRODUCT_DETAIL_SOURCE_DIRECTORIES = new Set([
+  "ai_refine_v2",
+  "pubsub",
+  "static",
+  "templates"
+]);
+const PRODUCT_DETAIL_SOURCE_EXCLUDED_DIRECTORIES = new Set([
+  ".pytest_cache",
+  "__pycache__",
+  "test_batch_input",
+  "tests"
+]);
+const PRODUCT_DETAIL_MODULE_EXTENSIONS = new Set([".j2", ".py", ".yaml", ".yml"]);
+
+function sourcePathParts(relativePath) {
+  return String(relativePath || "").replaceAll("\\", "/").split("/").filter(Boolean);
+}
+
+function isProductDetailSourceFile(relativePath) {
+  const parts = sourcePathParts(relativePath);
+  if (parts.length === 0) return false;
+  if (parts.some((part) => PRODUCT_DETAIL_SOURCE_EXCLUDED_DIRECTORIES.has(part))) return false;
+  const extension = path.extname(parts.at(-1)).toLowerCase();
+  if (extension === ".pyc" || extension === ".pyo") return false;
+  if (parts.length === 1) {
+    return extension === ".py" && parts[0] !== "conftest.py";
+  }
+  if (parts[0] === "static" || parts[0] === "templates") return true;
+  if (parts[0] === "pubsub") return extension === ".py";
+  if (parts[0] === "ai_refine_v2") return PRODUCT_DETAIL_MODULE_EXTENSIONS.has(extension);
+  return false;
+}
+
+function productDetailSourceFiles(paths) {
+  if (!fs.existsSync(paths.sourceDir) || !fs.statSync(paths.sourceDir).isDirectory()) {
+    throw new Error(`Product-detail source directory is missing: ${paths.sourceDir}`);
+  }
+  const files = [];
+  const visit = (directory, relativeDirectory = "") => {
+    const entries = fs.readdirSync(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const relative = relativeDirectory
+        ? `${relativeDirectory}/${entry.name}`
+        : entry.name;
+      const parts = sourcePathParts(relative);
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (parts.some((part) => PRODUCT_DETAIL_SOURCE_EXCLUDED_DIRECTORIES.has(part))) continue;
+        if (parts.length === 1 && !PRODUCT_DETAIL_SOURCE_DIRECTORIES.has(parts[0])) continue;
+        visit(absolute, relative);
+      } else if (entry.isFile()) {
+        if (isProductDetailSourceFile(relative)) files.push(absolute);
+      } else if (
+        parts.length > 0
+        && PRODUCT_DETAIL_SOURCE_DIRECTORIES.has(parts[0])
+      ) {
+        throw new Error(`Unsupported product-detail source entry: ${absolute}`);
+      }
+    }
+  };
+  visit(paths.sourceDir);
+  return files.sort((left, right) => Buffer.compare(
+    Buffer.from(path.relative(paths.sourceDir, left).replaceAll("\\", "/"), "utf8"),
+    Buffer.from(path.relative(paths.sourceDir, right).replaceAll("\\", "/"), "utf8")
+  ));
+}
+
+function productDetailSourceTreeSha256(paths) {
+  const hash = crypto.createHash("sha256");
+  const files = productDetailSourceFiles(paths);
+  if (files.length === 0) {
+    throw new Error("Product-detail packaged source set is empty");
+  }
+  for (const file of files) {
+    const relative = path.relative(paths.sourceDir, file).replaceAll("\\", "/");
+    const content = fs.readFileSync(file);
+    hash.update(`file\0${relative}\0${content.length}\0`, "utf8");
+    hash.update(content);
+    hash.update("\0", "utf8");
+  }
+  return hash.digest("hex");
+}
+
+function gitText(projectDir, args) {
+  const result = spawnSync("git", args, {
+    cwd: projectDir,
+    encoding: "utf8",
+    windowsHide: true
+  });
+  if (result.status !== 0) {
+    throw new Error(result.stderr || result.error?.message || `git ${args.join(" ")} failed`);
+  }
+  return String(result.stdout || "").trim();
+}
+
+function desktopSourceProvenance(paths, readGit = gitText) {
+  const relativeSource = path.relative(paths.projectDir, paths.sourceDir).replaceAll("\\", "/");
+  const commit = readGit(paths.projectDir, ["rev-parse", "HEAD"]);
+  if (!/^[0-9a-f]{40}$/.test(commit)) {
+    throw new Error("Product-detail desktop build requires a full Git source commit");
+  }
+  return {
+    commit,
+    dirty: Boolean(readGit(paths.projectDir, [
+      "status",
+      "--porcelain",
+      "--untracked-files=all",
+      "--",
+      relativeSource
+    ])),
+    treeSha256: productDetailSourceTreeSha256(paths)
+  };
+}
+
 function sourceProvenance(snapshot) {
   const trackedModifiedCount = Number(snapshot?.source?.trackedModifiedCount || 0);
   const untrackedCount = Number(snapshot?.source?.untrackedCount || 0);
@@ -184,17 +300,32 @@ function buildManifest({
   outputExe,
   version,
   source,
+  desktopSource,
   builtAt,
   bundledPlaywright = false
 }) {
   if (!fs.existsSync(outputExe)) {
     throw new Error(`Product-detail runtime executable is missing: ${outputExe}`);
   }
+  if (!/^[0-9a-f]{40}$/.test(String(desktopSource?.commit || ""))) {
+    throw new Error("Product-detail runtime manifest requires a full desktop source commit");
+  }
+  if (typeof desktopSource?.dirty !== "boolean") {
+    throw new Error("Product-detail runtime manifest requires the desktop source dirty state");
+  }
+  if (!/^[0-9a-f]{64}$/.test(String(desktopSource?.treeSha256 || ""))) {
+    throw new Error("Product-detail runtime manifest requires a desktop source tree hash");
+  }
   return {
     schemaVersion: 1,
     version,
     builtAt: builtAt || new Date().toISOString(),
     source,
+    desktopSource: {
+      commit: desktopSource.commit,
+      dirty: desktopSource.dirty,
+      treeSha256: desktopSource.treeSha256
+    },
     runtime: {
       kind: "pyinstaller-onedir",
       entry: path.basename(outputExe),
@@ -251,6 +382,7 @@ function main() {
   assertFreshOutput(paths);
   fs.mkdirSync(paths.specDir, { recursive: true });
 
+  const desktopSourceBefore = desktopSourceProvenance(paths);
   const python = findBuildPython(paths);
   console.log(`Building product-detail sidecar with ${python}`);
   const result = spawnSync(
@@ -296,12 +428,17 @@ function main() {
     parseJsonOutput(selfCheckResult, "Product-detail runtime self-check")
   );
 
+  const desktopSourceAfter = desktopSourceProvenance(paths);
+  if (JSON.stringify(desktopSourceAfter) !== JSON.stringify(desktopSourceBefore)) {
+    throw new Error("Product-detail desktop source changed while the runtime was being built");
+  }
   const snapshot = JSON.parse(fs.readFileSync(paths.snapshotFile, "utf8"));
   const manifest = buildManifest({
     outputDir: paths.outputDir,
     outputExe: paths.outputExe,
     version: selfCheck.version,
     source: sourceProvenance(snapshot),
+    desktopSource: desktopSourceBefore,
     bundledPlaywright: fs.existsSync(paths.playwrightBrowsersDir)
   });
   fs.writeFileSync(paths.manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
@@ -324,7 +461,11 @@ module.exports = {
   assertFreshOutput,
   buildManifest,
   buildPyInstallerArgs,
+  desktopSourceProvenance,
   ensureSafeBuildTarget,
+  isProductDetailSourceFile,
+  productDetailSourceFiles,
+  productDetailSourceTreeSha256,
   findBuildPython,
   main,
   pythonCandidates,

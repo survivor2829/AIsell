@@ -83,3 +83,7 @@ node scripts/product-detail-runtime.integration.cjs
 构建脚本采用 fresh-build：发现已有固定输出时拒绝覆盖，也不会自动删除任何旧构建目录。
 
 当前完整 Python 回归结果为 `484 passed, 1 skipped, 134 subtests passed`；新增桌面契约、构建脚本自检和真实 EXE 集成验收均通过。冻结来源仓库未被修改，其 5 个已修改文件和 23 个未跟踪文件的哈希保存在 `source-snapshot.json`。
+
+## 当前固定运行时边界
+
+源码级本地 E2E 已验证上传、预览、PNG 导出与历史恢复；但现有 `.build/product-detail-runtime/` 固定运行时构建于离线工作流源码提交 `a17565f` 之前，不能当作该提交的正式交付物。当前构建/发布脚本会记录并复核本仓库产品详情图实际输入的 Git commit、scoped dirty 状态和确定性源码树哈希，因此旧 manifest 会被默认开发启动与正式发布前置检查同时拒绝，桌面端不会静默运行落后源码的默认 `.build` runtime。替换或删除这份旧 runtime 前，必须先向用户提交清理候选与影响说明并获得明确批准；获批后再从对应提交重新构建、复验，并以 `PROJECT_STATUS.md` 记录正式包状态。

@@ -35,6 +35,13 @@ npm.cmd run build:test
 npm.cmd run build:delivery
 ```
 
+构建本地内容能力的固定运行时：
+
+```powershell
+npm.cmd run build:product-detail
+npm.cmd run build:content-engine
+```
+
 生成便携包：
 
 ```powershell
@@ -52,7 +59,7 @@ npm.cmd run release:installer
 
 当前安装器尚未购买商业代码签名证书，Windows 可能显示“未知发布者”；分发前应同时提供安装器版本清单和 SHA256，验收人员核对后再运行。
 
-`release:*` 会先执行 self-check 和对应 renderer 构建，再生成目录与 ZIP 并检查包内运行依赖和隐私文件。便携包必须完整解压后运行，不能只复制 EXE。构建通过不等于实机验收通过，也不自动获得“可分发”状态。
+`release:*` 会先执行 self-check 和对应 renderer 构建，再生成目录与 ZIP 并检查包内运行依赖和隐私文件。包含内容生产入口的正式 release 还必须同时使用与当前提交对应的 `product-detail` 和 `content-engine` 固定运行时；不能拿历史 runtime 与新源码混合打包。便携包必须完整解压后运行，不能只复制 EXE。构建通过不等于实机验收通过，也不自动获得“可分发”状态。当前各能力的真实状态仍只以 `PROJECT_STATUS.md` 为准。
 
 ## 本地数据目录
 
@@ -73,5 +80,14 @@ moments/         朋友圈观察与动作账本
 wechat_adapter/  共享微信窗口和适配信息，不保存业务结果
 runtime_archive/ 数据迁移前的只读归档证据
 ```
+
+内容生产的可变数据保存在同一 edition 的 Electron `userData` 根目录下，与现有 `data/` 业务目录并列：
+
+```text
+product-detail/  产品详情图的数据库、上传、输出和缓存
+content-engine/  素材索引、任务、成片登记和可重建缓存设置
+```
+
+素材仓库只保存原片的索引和元数据；原始视频、图片仍保留在用户选择的位置，不会复制进应用数据目录。
 
 `data/deepseek-api-key.bin` 由 Electron `safeStorage` 使用当前 Windows 用户凭据加密；`data/ai-expert.json` 保存规范化后的 AI 专家资料。运行数据、密钥、联系人和任务状态都不得打入源码包或 ZIP，也不应在两台电脑之间直接复制。

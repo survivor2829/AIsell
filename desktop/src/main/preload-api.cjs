@@ -52,10 +52,95 @@ function createMomentsCampaignApi(ipcRenderer) {
     }
   };
 }
+function createContentEngineApi(ipcRenderer) {
+  return {
+    status: () => ipcRenderer.invoke("content-engine:status"),
+    restart: () => ipcRenderer.invoke("content-engine:restart"),
+    library: {
+      list: (payload) => ipcRenderer.invoke("content-engine:list-assets", {
+        includeArchived: payload?.includeArchived === true,
+        limit: Number(payload?.limit || 200)
+      }),
+      chooseFiles: () => ipcRenderer.invoke("content-engine:choose-files"),
+      chooseFolder: (payload) => ipcRenderer.invoke("content-engine:choose-folder", {
+        recursive: payload?.recursive !== false
+      }),
+      probe: (payload) => ipcRenderer.invoke("content-engine:probe-asset", {
+        assetId: String(payload?.assetId || "")
+      }),
+      probePending: (payload) => ipcRenderer.invoke("content-engine:probe-pending", {
+        limit: Number(payload?.limit || 10)
+      }),
+      updateRights: (payload) => ipcRenderer.invoke(
+        "content-engine:update-asset-rights",
+        {
+          assetId: String(payload?.assetId || ""),
+          rightsStatus: String(payload?.rightsStatus || "")
+        }
+      ),
+      archive: (payload) => ipcRenderer.invoke("content-engine:archive-asset", {
+        assetId: String(payload?.assetId || "")
+      }),
+      reveal: (payload) => ipcRenderer.invoke("content-engine:reveal-asset", {
+        assetId: String(payload?.assetId || "")
+      })
+    },
+    tasks: {
+      list: (payload) => ipcRenderer.invoke("content-engine:list-tasks", {
+        status: payload?.status == null ? undefined : String(payload.status),
+        limit: Number(payload?.limit || 200)
+      }),
+      pause: (payload) => ipcRenderer.invoke("content-engine:pause-task", {
+        taskId: String(payload?.taskId || "")
+      }),
+      resume: (payload) => ipcRenderer.invoke("content-engine:resume-task", {
+        taskId: String(payload?.taskId || "")
+      }),
+      cancel: (payload) => ipcRenderer.invoke("content-engine:cancel-task", {
+        taskId: String(payload?.taskId || "")
+      })
+    },
+    finished: {
+      list: (payload) => ipcRenderer.invoke("content-engine:list-finished", {
+        limit: Number(payload?.limit || 200)
+      }),
+      chooseAndRegister: (payload) => ipcRenderer.invoke(
+        "content-engine:choose-and-register-finished",
+        {
+          title: String(payload?.title || ""),
+          taskId: String(payload?.taskId || "")
+        }
+      ),
+      open: (payload) => ipcRenderer.invoke("content-engine:open-finished", {
+        finishedVideoId: String(payload?.finishedVideoId || "")
+      }),
+      reveal: (payload) => ipcRenderer.invoke("content-engine:reveal-finished", {
+        finishedVideoId: String(payload?.finishedVideoId || "")
+      })
+    },
+    settings: {
+      status: () => ipcRenderer.invoke("content-engine:settings-status"),
+      chooseCacheDirectory: () => ipcRenderer.invoke(
+        "content-engine:choose-cache-directory"
+      ),
+      updateCacheLimit: (payload) => ipcRenderer.invoke(
+        "content-engine:update-cache-limit",
+        { limitGb: Number(payload?.limitGb || 0) }
+      )
+    },
+    onUpdate: (callback) => {
+      if (typeof callback !== "function") return () => {};
+      const handler = (_event, payload) => callback(payload);
+      ipcRenderer.on("content-engine:update", handler);
+      return () => ipcRenderer.removeListener("content-engine:update", handler);
+    }
+  };
+}
 function createPreloadApis(ipcRenderer) {
   const consumeBatchClick = createTrustedClickGate("[data-xiaoxi-batch-authorize]");
   const consumeAutoReplyClick = createTrustedClickGate("[data-xiaoxi-auto-reply-start], [data-xiaoxi-auto-reply-acknowledge]");
   return {
+    content: createContentEngineApi(ipcRenderer),
     autoReply: {
       status: () => ipcRenderer.invoke("auto-reply:status"),
       start: () => ipcRenderer.invoke("auto-reply:start", { clickToken: consumeAutoReplyClick() }),
@@ -120,4 +205,9 @@ function createPreloadApis(ipcRenderer) {
   };
 }
 
-module.exports = { createMomentsCampaignApi, createPreloadApis, createTrustedClickGate };
+module.exports = {
+  createContentEngineApi,
+  createMomentsCampaignApi,
+  createPreloadApis,
+  createTrustedClickGate
+};

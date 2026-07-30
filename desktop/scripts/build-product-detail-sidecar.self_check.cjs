@@ -6,7 +6,11 @@ const path = require("node:path");
 const {
   buildManifest,
   buildPyInstallerArgs,
+  desktopSourceProvenance,
   ensureSafeBuildTarget,
+  isProductDetailSourceFile,
+  productDetailSourceFiles,
+  productDetailSourceTreeSha256,
   resolveBuildPaths,
   sourceProvenance,
   validateSelfCheckPayload
@@ -114,6 +118,76 @@ assert.throws(
 
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-product-detail-build-"));
 try {
+  const fixturePaths = resolveBuildPaths(path.join(fixtureRoot, "desktop"));
+  fs.mkdirSync(fixturePaths.sourceDir, { recursive: true });
+  fs.writeFileSync(fixturePaths.entryFile, "from app import app\n", "utf8");
+  fs.writeFileSync(path.join(fixturePaths.sourceDir, "app.py"), "app = object()\n", "utf8");
+  fs.writeFileSync(path.join(fixturePaths.sourceDir, "conftest.py"), "IGNORED = True\n", "utf8");
+  fs.mkdirSync(fixturePaths.templatesDir, { recursive: true });
+  fs.writeFileSync(path.join(fixturePaths.templatesDir, "workspace.html"), "<main>fixture</main>\n", "utf8");
+  fs.mkdirSync(fixturePaths.staticDir, { recursive: true });
+  fs.writeFileSync(path.join(fixturePaths.staticDir, "app.js"), "window.fixture = true;\n", "utf8");
+  const refineDir = path.join(fixturePaths.sourceDir, "ai_refine_v2");
+  fs.mkdirSync(path.join(refineDir, "prompts", "templates"), { recursive: true });
+  fs.writeFileSync(path.join(refineDir, "pipeline.py"), "VALUE = 1\n", "utf8");
+  fs.writeFileSync(path.join(refineDir, "screen_types.yaml"), "screens: []\n", "utf8");
+  fs.writeFileSync(path.join(refineDir, "prompts", "templates", "hero.j2"), "hero\n", "utf8");
+  fs.mkdirSync(path.join(refineDir, "tests"), { recursive: true });
+  fs.writeFileSync(path.join(refineDir, "tests", "test_pipeline.py"), "IGNORED = True\n", "utf8");
+  fs.mkdirSync(path.join(refineDir, "__pycache__"), { recursive: true });
+  fs.writeFileSync(path.join(refineDir, "__pycache__", "pipeline.pyc"), "ignored", "utf8");
+  const pubsubDir = path.join(fixturePaths.sourceDir, "pubsub");
+  fs.mkdirSync(pubsubDir, { recursive: true });
+  fs.writeFileSync(path.join(pubsubDir, "memory.py"), "VALUE = 1\n", "utf8");
+  fs.mkdirSync(path.join(fixturePaths.sourceDir, "instance"), { recursive: true });
+  fs.writeFileSync(path.join(fixturePaths.sourceDir, "instance", "runtime.db"), "ignored", "utf8");
+
+  assert.equal(isProductDetailSourceFile("desktop_entry.py"), true);
+  assert.equal(isProductDetailSourceFile("conftest.py"), false);
+  assert.equal(isProductDetailSourceFile("ai_refine_v2/tests/test_pipeline.py"), false);
+  assert.equal(isProductDetailSourceFile("ai_refine_v2/__pycache__/pipeline.pyc"), false);
+  assert.equal(isProductDetailSourceFile("static/app.js"), true);
+  assert.equal(isProductDetailSourceFile("instance/runtime.db"), false);
+  const included = productDetailSourceFiles(fixturePaths)
+    .map((file) => path.relative(fixturePaths.sourceDir, file).replaceAll("\\", "/"));
+  assert.deepEqual(included, [...included].sort((left, right) => Buffer.compare(
+    Buffer.from(left, "utf8"),
+    Buffer.from(right, "utf8")
+  )));
+  const fixtureSourceHash = productDetailSourceTreeSha256(fixturePaths);
+  assert.match(fixtureSourceHash, /^[0-9a-f]{64}$/);
+  fs.writeFileSync(path.join(refineDir, "__pycache__", "other.pyc"), "still ignored", "utf8");
+  fs.writeFileSync(path.join(refineDir, "tests", "other.py"), "still ignored\n", "utf8");
+  assert.equal(
+    productDetailSourceTreeSha256(fixturePaths),
+    fixtureSourceHash,
+    "cache and tests must not affect the packaged source identity"
+  );
+  fs.writeFileSync(path.join(fixturePaths.templatesDir, "workspace.html"), "<main>changed</main>\n", "utf8");
+  assert.notEqual(
+    productDetailSourceTreeSha256(fixturePaths),
+    fixtureSourceHash,
+    "a bundled template edit must change the packaged source identity"
+  );
+  fs.writeFileSync(path.join(fixturePaths.templatesDir, "workspace.html"), "<main>fixture</main>\n", "utf8");
+  assert.equal(productDetailSourceTreeSha256(fixturePaths), fixtureSourceHash);
+
+  const gitCalls = [];
+  const dirtyDesktopSource = desktopSourceProvenance(fixturePaths, (projectDir, args) => {
+    gitCalls.push({ projectDir, args });
+    return args[0] === "rev-parse" ? "d".repeat(40) : "?? desktop/sidecars/product-detail/app/new.py";
+  });
+  assert.equal(dirtyDesktopSource.dirty, true);
+  assert.equal(dirtyDesktopSource.treeSha256, fixtureSourceHash);
+  assert.deepEqual(gitCalls[1].args, [
+    "status",
+    "--porcelain",
+    "--untracked-files=all",
+    "--",
+    "desktop/sidecars/product-detail/app"
+  ]);
+  const cleanDesktopSource = { ...dirtyDesktopSource, dirty: false };
+
   const runtimeDir = path.join(fixtureRoot, "runtime");
   fs.mkdirSync(runtimeDir);
   const exe = path.join(runtimeDir, "product-detail-server.exe");
@@ -124,6 +198,7 @@ try {
     outputExe: exe,
     version: "2.0.0-desktop",
     source: provenance,
+    desktopSource: cleanDesktopSource,
     bundledPlaywright: true,
     builtAt: "2026-07-30T00:00:00.000Z"
   });
@@ -135,6 +210,17 @@ try {
   assert.match(manifest.runtime.treeSha256, /^[a-f0-9]{64}$/);
   assert.equal(manifest.version, "2.0.0-desktop");
   assert.deepEqual(manifest.source, provenance);
+  assert.deepEqual(manifest.desktopSource, cleanDesktopSource);
+  assert.throws(
+    () => buildManifest({
+      outputDir: runtimeDir,
+      outputExe: exe,
+      version: "2.0.0-desktop",
+      source: provenance
+    }),
+    /desktop source commit/,
+    "legacy manifests without desktop source provenance must be impossible to build"
+  );
 } finally {
   fs.rmSync(fixtureRoot, { recursive: true, force: true });
 }

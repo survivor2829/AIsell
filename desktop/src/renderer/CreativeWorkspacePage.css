@@ -1,0 +1,134 @@
+.creative-workspace-page {
+  min-height: 100%;
+}
+
+.workspace-building-badge {
+  padding: 6px 11px;
+  border: 1px solid #f8b4c1;
+  border-radius: 999px;
+  color: #c81e48;
+  font-size: 12px;
+  font-weight: 600;
+  background: #fff1f4;
+}
+
+.workspace-foundation-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 15px 16px;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  color: #2563eb;
+  background: #eff6ff;
+}
+
+.workspace-foundation-note strong {
+  color: #1d2939;
+  font-size: 14px;
+}
+
+.workspace-foundation-note p {
+  margin: 4px 0 0;
+  color: #667085;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.workspace-mode-grid {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.workspace-mode-card {
+  min-height: 360px;
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e4e7ec;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 2px 5px rgba(16, 24, 40, 0.04);
+}
+
+.workspace-mode-icon {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: #d92d4f;
+  background: #fff1f4;
+}
+
+.workspace-mode-icon.is-mix {
+  color: #7c3aed;
+  background: #f5f3ff;
+}
+
+.workspace-mode-copy {
+  flex: 1;
+}
+
+.workspace-mode-order {
+  margin-top: 17px;
+  display: inline-block;
+  color: #98a2b3;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.workspace-mode-card h2 {
+  margin: 6px 0 0;
+  color: #1d2939;
+  font-size: 21px;
+}
+
+.workspace-mode-card p {
+  min-height: 62px;
+  margin: 9px 0 0;
+  color: #667085;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.workspace-mode-card ul {
+  margin: 15px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+  list-style: none;
+}
+
+.workspace-mode-card li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #475467;
+  font-size: 12px;
+}
+
+.workspace-mode-card li svg {
+  flex: 0 0 auto;
+  color: #98a2b3;
+}
+
+.workspace-mode-card button {
+  min-height: 38px;
+  margin-top: 20px;
+  border: 1px solid #e4e7ec;
+  border-radius: 8px;
+  color: #98a2b3;
+  font-size: 13px;
+  background: #f9fafb;
+  cursor: not-allowed;
+}
+
+@media (max-width: 1050px) {
+  .workspace-mode-grid {
+    grid-template-columns: 1fr;
+  }
+}

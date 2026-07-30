@@ -12,6 +12,13 @@ const {
   isProductDetailPythonSource,
   runPackagedProductDetailSelfCheck
 } = require("./product-detail-release-runtime.cjs");
+const {
+  CONTENT_ENGINE_EXECUTABLE,
+  CONTENT_ENGINE_RELEASE_PATH,
+  isContentEngineArchivePythonSource,
+  isContentEnginePythonSource,
+  runPackagedContentEngineSelfCheck
+} = require("./content-engine-release-runtime.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const projectDir = path.resolve(desktopDir, "..");
@@ -256,12 +263,18 @@ function assertNoBlockedFiles(names, label, { targetRoot = null, archiveRoot = n
     assert.equal(name.includes("dt-ai-helper"), false, `${label} must not contain dt-ai-helper`);
     if (name.endsWith(".py")) {
       const allowed = archiveRoot
-        ? isProductDetailArchivePythonSource(normalizedPath, archiveRoot)
-        : isProductDetailPythonSource(normalizedPath);
+        ? (
+          isProductDetailArchivePythonSource(normalizedPath, archiveRoot)
+          || isContentEngineArchivePythonSource(normalizedPath, archiveRoot)
+        )
+        : (
+          isProductDetailPythonSource(normalizedPath)
+          || isContentEnginePythonSource(normalizedPath)
+        );
       assert.equal(
         allowed,
         true,
-        `${label} may contain Python dependency sources only inside the pinned product-detail runtime`
+        `${label} may contain Python dependency sources only inside pinned sidecar runtimes`
       );
     }
   }
@@ -300,6 +313,11 @@ assert.match(manifest.commit, /^[0-9a-f]{40}$/, "portable release must record a 
 assert.match(manifest.sourceTreeSha256, /^[0-9a-f]{64}$/, "portable release must record the packaged source tree hash");
 assert.equal(treeSha256(appDir), manifest.sourceTreeSha256, "packaged app tree must match the manifest source tree hash");
 assert.equal(manifest.productDetailSidecar?.buildCommit, manifest.commit, "product-detail runtime must be pinned to the portable release commit");
+assert.equal(manifest.productDetailSidecar?.desktopSourceCommit, manifest.commit, "product-detail desktop source must match the portable release commit");
+assert.equal(manifest.productDetailSidecar?.desktopSourceDirty, false, "product-detail runtime must come from clean desktop source");
+assert.equal(manifest.contentEngineSidecar?.buildCommit, manifest.commit, "content-engine runtime must be pinned to the portable release commit");
+assert.equal(manifest.contentEngineSidecar?.sourceCommit, manifest.commit, "content-engine source must match the portable release commit");
+assert.equal(manifest.contentEngineSidecar?.sourceDirty, false, "content-engine runtime must come from a clean source tree");
 const releaseLabel = fs.readFileSync(path.join(target, "版本标识.txt"), "utf8");
 assert.equal(releaseLabel.includes("朋友圈逐帖互动已"), true);
 assert.equal(releaseLabel.includes("每日自动计划"), true);
@@ -344,6 +362,11 @@ assert.equal(
   true,
   "portable ZIP must contain the product-detail executable at the runtime root"
 );
+assert.equal(
+  archiveEntries.some((entry) => entry.replaceAll("\\", "/").endsWith(`/${CONTENT_ENGINE_RELEASE_PATH}/${CONTENT_ENGINE_EXECUTABLE}`)),
+  true,
+  "portable ZIP must contain the content-engine executable at the runtime root"
+);
 for (const name of momentsRuntimeNames) {
   assert.equal(archiveEntries.some((entry) => entry.replaceAll("\\", "/").endsWith(`/rpa/active_touch/${name}`)), true, `${name} must be present in every portable ZIP`);
 }
@@ -381,6 +404,14 @@ try {
     dataDir: path.join(tempDir, "product-detail")
   });
   assert.equal(productDetailPayload.version, manifest.productDetailSidecar.version);
+
+  const contentEngineSession = runPackagedContentEngineSelfCheck({
+    releaseTarget: target,
+    resourcesDir,
+    descriptor: manifest.contentEngineSidecar,
+    dataDir: path.join(tempDir, "content-engine")
+  });
+  assert.equal(contentEngineSession.ready.version, manifest.contentEngineSidecar.version);
 
   const contactSyncDir = path.join(tempDir, "contact_sync");
   const activeTouchDir = path.join(tempDir, "active_touch");

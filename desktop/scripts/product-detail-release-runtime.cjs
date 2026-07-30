@@ -3,6 +3,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
+const {
+  productDetailSourceTreeSha256,
+  resolveBuildPaths
+} = require("./build-product-detail-sidecar.cjs");
 
 const PRODUCT_DETAIL_RELEASE_PATH = "resources/product-detail";
 const PRODUCT_DETAIL_EXECUTABLE = "product-detail-server.exe";
@@ -51,6 +55,15 @@ function validateBuildManifest(manifest, manifestFile) {
   if (!COMMIT_PATTERN.test(String(manifest.source?.commit || ""))) {
     throw new Error(`Product-detail runtime manifest has an invalid source commit: ${manifestFile}`);
   }
+  if (!COMMIT_PATTERN.test(String(manifest.desktopSource?.commit || ""))) {
+    throw new Error(`Product-detail runtime manifest has an invalid desktop source commit: ${manifestFile}`);
+  }
+  if (typeof manifest.desktopSource?.dirty !== "boolean") {
+    throw new Error(`Product-detail runtime manifest is missing the desktop source dirty state: ${manifestFile}`);
+  }
+  if (!SHA256_PATTERN.test(String(manifest.desktopSource?.treeSha256 || ""))) {
+    throw new Error(`Product-detail runtime manifest has an invalid desktop source tree hash: ${manifestFile}`);
+  }
   if (!Number.isFinite(Date.parse(String(manifest.builtAt || "")))) {
     throw new Error(`Product-detail runtime manifest has an invalid build time: ${manifestFile}`);
   }
@@ -67,6 +80,12 @@ function resolveProductDetailBuild(desktopDir) {
     readJson(manifestFile, "Product-detail runtime manifest"),
     manifestFile
   );
+  const currentDesktopSourceTreeSha256 = productDetailSourceTreeSha256(
+    resolveBuildPaths(desktopDir)
+  );
+  if (currentDesktopSourceTreeSha256 !== manifest.desktopSource.treeSha256) {
+    throw new Error("Product-detail runtime desktop source tree hash does not match the current source tree");
+  }
   const executable = path.join(runtimeDir, PRODUCT_DETAIL_EXECUTABLE);
   assertFile(executable, "Product-detail runtime executable");
   if (sha256(executable) !== manifest.runtime.exeSha256) {
@@ -78,7 +97,8 @@ function resolveProductDetailBuild(desktopDir) {
   return {
     runtimeDir,
     manifestFile,
-    manifest
+    manifest,
+    currentDesktopSourceTreeSha256
   };
 }
 
@@ -108,6 +128,12 @@ function createReleaseDescriptor(build, buildCommit) {
   if (!COMMIT_PATTERN.test(String(buildCommit || ""))) {
     throw new Error("Product-detail release descriptor requires the release build commit");
   }
+  if (build.manifest.desktopSource.dirty) {
+    throw new Error("Refusing to package a product-detail runtime built from dirty desktop source");
+  }
+  if (build.manifest.desktopSource.commit !== buildCommit) {
+    throw new Error("Product-detail runtime desktop source commit does not match the portable release commit");
+  }
   return {
     path: PRODUCT_DETAIL_RELEASE_PATH,
     version: build.manifest.version,
@@ -117,6 +143,9 @@ function createReleaseDescriptor(build, buildCommit) {
     buildCommit,
     sourceCommit: build.manifest.source.commit,
     sourceDirty: Boolean(build.manifest.source.dirty),
+    desktopSourceCommit: build.manifest.desktopSource.commit,
+    desktopSourceDirty: build.manifest.desktopSource.dirty,
+    desktopSourceTreeSha256: build.manifest.desktopSource.treeSha256,
     builtAt: build.manifest.builtAt,
     selfCheck: {
       verified: true,
@@ -147,6 +176,18 @@ function validateReleaseDescriptor(descriptor) {
   }
   if (!COMMIT_PATTERN.test(String(descriptor.sourceCommit || ""))) {
     throw new Error("Portable manifest has an invalid product-detail source commit");
+  }
+  if (!COMMIT_PATTERN.test(String(descriptor.desktopSourceCommit || ""))) {
+    throw new Error("Portable manifest has an invalid product-detail desktop source commit");
+  }
+  if (descriptor.desktopSourceDirty !== false) {
+    throw new Error("Portable manifest product-detail desktop source must be clean");
+  }
+  if (descriptor.desktopSourceCommit !== descriptor.buildCommit) {
+    throw new Error("Portable manifest product-detail desktop source commit must match its build commit");
+  }
+  if (!SHA256_PATTERN.test(String(descriptor.desktopSourceTreeSha256 || ""))) {
+    throw new Error("Portable manifest has an invalid product-detail desktop source tree hash");
   }
   if (!Number.isFinite(Date.parse(String(descriptor.builtAt || "")))) {
     throw new Error("Portable manifest has an invalid product-detail build time");

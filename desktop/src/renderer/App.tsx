@@ -1,6 +1,5 @@
 import {
   BarChart3,
-  BookOpen,
   Bot,
   ChevronDown,
   ChevronRight,
@@ -16,7 +15,6 @@ import {
   Play,
   RefreshCw,
   Save,
-  Scissors,
   Send,
   Square,
   ThumbsUp,
@@ -32,6 +30,8 @@ import { AiExpert } from "./AiExpert";
 import { AutoReply } from "./AutoReply";
 import { Diagnostics } from "./Diagnostics";
 import { ProductDetailPage } from "./ProductDetailPage";
+import { FinishedVideoCenterPage, MaterialsLibraryPage } from "./ContentFoundationPage";
+import { CreativeWorkspacePage } from "./CreativeWorkspacePage";
 
 type ModuleKey =
   | "agent"
@@ -45,10 +45,11 @@ type ModuleKey =
   | "accounts"
   | "product-detail"
   | "materials"
-  | "script"
-  | "cut"
+  | "workspace"
+  | "finished"
   | "ai-video"
   | "publish"
+  | "ai-check"
   | "leads"
   | "data"
   | "api-key"
@@ -355,14 +356,15 @@ const agentChildren: NavItem[] = [
 const productionChildren: NavItem[] = [
   { key: "product-detail", label: "产品详情图", icon: Images },
   { key: "materials", label: "素材仓库", icon: Folder },
-  { key: "script", label: "AI脚本工厂", icon: BookOpen },
-  { key: "cut", label: "自动剪辑工厂", icon: Scissors },
+  { key: "workspace", label: "创作工作台", icon: Clapperboard },
+  { key: "finished", label: "成片中心", icon: Video },
   { key: "ai-video", label: "AI生成视频", icon: MonitorPlay }
 ];
 
 const operationsChildren: NavItem[] = [
-  { key: "accounts", label: "账号管理", icon: UserRound },
-  { key: "publish", label: "发布工作台", icon: Clapperboard },
+  { key: "accounts", label: "学员与账号", icon: UserRound },
+  { key: "publish", label: "发布任务", icon: Clapperboard },
+  { key: "ai-check", label: "AI检查", icon: CircleHelp },
   { key: "leads", label: "线索回流", icon: RefreshCw },
   { key: "data", label: "数据复盘", icon: BarChart3 }
 ];
@@ -480,7 +482,7 @@ function taskHasUnfinishedSnapshot(task: TouchTaskState) {
 }
 
 function moduleIsAvailable(key: ModuleKey) {
-  return ["reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "api-key", "diagnostics"].includes(key);
+  return ["reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "materials", "workspace", "finished", "api-key", "diagnostics"].includes(key);
 }
 
 function touchTaskStatusLabel(task: TouchTaskState) {
@@ -887,6 +889,9 @@ export default function App() {
           {active === "moments" && <MomentsOperations />}
           {active === "accounts" && <AccountManagement />}
           {active === "product-detail" && <ProductDetailPage />}
+          {active === "materials" && <MaterialsLibraryPage />}
+          {active === "workspace" && <CreativeWorkspacePage />}
+          {active === "finished" && <FinishedVideoCenterPage />}
           {active === "api-key" && <ApiKeyPage onConfiguredChange={setDeepSeekConfigured} />}
           {active === "diagnostics" && <Diagnostics />}
           {active === "touch" && (
@@ -1108,8 +1113,8 @@ function AccountManagement() {
     <section className="page account-page">
       <div className="page-head">
         <div>
-          <h1>账号管理</h1>
-          <p>统一管理内容渠道账号。账号接入将在下一阶段开放。</p>
+          <h1>学员与账号</h1>
+          <p>只记录平台、账号标识、城市和授权状态；不保存密码、验证码、Cookie 或设备登录态。</p>
         </div>
       </div>
       <div className="channel-account-grid">

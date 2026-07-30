@@ -8,6 +8,12 @@ const {
   isProductDetailPythonSource,
   resolveProductDetailBuild
 } = require("./product-detail-release-runtime.cjs");
+const {
+  copyContentEngineRuntime,
+  createReleaseDescriptor: createContentEngineReleaseDescriptor,
+  isContentEnginePythonSource,
+  resolveContentEngineBuild
+} = require("./content-engine-release-runtime.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const projectDir = path.resolve(desktopDir, "..");
@@ -26,6 +32,7 @@ const NATIVE_LIBRARY_SHA256 = Object.freeze({
 });
 const runtimeFiles = new Set(["ai-expert.json", "auto-reply-state.json", "auto-reply-diagnostics.jsonl", "contacts.json", "touch_task.json", "touch_task.json.bak", "run_logs.jsonl", "state.json", "deepseek-api-key.bin"]);
 const databaseFilePattern = /\.(?:db(?:-wal|-shm)?|sqlite3?)$/i;
+const PORTABLE_SELF_CHECK_TIMEOUT_MS = 600_000;
 
 function isBlockedRuntimeFile(name) {
   const lower = String(name).toLowerCase();
@@ -145,7 +152,8 @@ function scanRelease(target) {
         const lower = entry.name.toLowerCase();
         const relative = path.relative(target, file).replaceAll("\\", "/");
         const blockedPythonSource = lower.endsWith(".py")
-          && !isProductDetailPythonSource(relative);
+          && !isProductDetailPythonSource(relative)
+          && !isContentEnginePythonSource(relative);
         if (isBlockedRuntimeFile(entry.name) || isBlockedEnvironmentFile(entry.name) || lower === "python.exe" || blockedPythonSource || lower.includes("dump_data") || lower.includes("wechat-dump") || lower.includes("dt-ai-helper")) blocked.push(file);
         if (entry.isFile() && fs.statSync(file).size <= 5 * 1024 * 1024) {
           const content = fs.readFileSync(file, "utf8");
@@ -172,12 +180,13 @@ function assertBuildPreconditions(edition) {
   }
 
   const productDetailRuntime = resolveProductDetailBuild(desktopDir);
+  const contentEngineRuntime = resolveContentEngineBuild(desktopDir);
 
   const commit = gitText(["rev-parse", "HEAD"]);
   const dirty = Boolean(gitText(["status", "--porcelain"]));
   if (dirty) throw new Error("Refusing to build a portable release from a dirty worktree");
 
-  return { commit, dirty, productDetailRuntime };
+  return { commit, dirty, productDetailRuntime, contentEngineRuntime };
 }
 
 function buildPortableStaging(edition, paths, sourceState) {
@@ -191,6 +200,7 @@ function buildPortableStaging(edition, paths, sourceState) {
   fs.rmSync(appDir, { recursive: true, force: true });
   copyAppSource(appDir, edition);
   copyProductDetailRuntime(sourceState.productDetailRuntime, target);
+  copyContentEngineRuntime(sourceState.contentEngineRuntime, target);
 
   const packageJson = JSON.parse(fs.readFileSync(path.join(desktopDir, "package.json"), "utf8"));
   const electronPackage = JSON.parse(fs.readFileSync(path.join(desktopDir, "node_modules", "electron", "package.json"), "utf8"));
@@ -212,6 +222,10 @@ function buildPortableStaging(edition, paths, sourceState) {
     nativeLibrarySha256: NATIVE_LIBRARY_SHA256,
     productDetailSidecar: createReleaseDescriptor(
       sourceState.productDetailRuntime,
+      sourceState.commit
+    ),
+    contentEngineSidecar: createContentEngineReleaseDescriptor(
+      sourceState.contentEngineRuntime,
       sourceState.commit
     ),
     targetWeixin: capabilityMatrix.targetWeixin,
@@ -392,7 +406,7 @@ function runPortableSelfCheck(edition, target, zip) {
     target,
     "--zip",
     zip
-  ], { cwd: desktopDir, encoding: "utf8", windowsHide: true, timeout: 300000 });
+  ], { cwd: desktopDir, encoding: "utf8", windowsHide: true, timeout: PORTABLE_SELF_CHECK_TIMEOUT_MS });
   if (check.status !== 0) throw new Error(check.stderr || check.stdout || "portable release self-check failed");
   if (String(check.stderr || "").trim()) {
     console.warn(`portable release self-check warning:\n${String(check.stderr).trim()}`);
@@ -437,6 +451,7 @@ function buildPortable(edition = "delivery") {
 if (require.main === module) buildPortable(process.argv[2] || "delivery");
 
 module.exports = {
+  PORTABLE_SELF_CHECK_TIMEOUT_MS,
   buildPortable,
   cleanupPaths,
   copyRuntimePackageTree,

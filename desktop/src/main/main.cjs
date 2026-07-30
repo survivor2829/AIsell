@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, safeStorage, screen } = require("electron");
+const { app, BrowserWindow, dialog, safeStorage, screen, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 const { configureActiveTouchRuntime, runActiveTouch } = require("./active-touch-ipc.cjs");
@@ -16,6 +16,11 @@ const { registerDiagnosticsIpc } = require("./diagnostics-ipc.cjs");
 const { developmentEdition, pilotEdition, editionLabel, preloadFile, rendererDir } = require("./edition.cjs");
 const { createProductDetailSidecar } = require("./product-detail-sidecar.cjs");
 const { registerProductDetailIpc } = require("./product-detail-ipc.cjs");
+const { createContentEngineSidecar } = require("./content-engine-sidecar.cjs");
+const { registerContentEngineIpc } = require("./content-engine-ipc.cjs");
+const {
+  resolveDefaultDevelopmentSidecarRuntime
+} = require("./development-sidecar-runtime.cjs");
 
 let mainWindow = null;
 let disarmRealSend = null;
@@ -24,12 +29,12 @@ let autoReplyController = null;
 let momentsCampaignController = null;
 let productDetailController = null;
 let productDetailIpcRegistration = null;
+let contentEngineController = null;
+let contentEngineIpcRegistration = null;
 let quitCleanupStarted = false;
 let quitCleanupComplete = false;
 
 function productDetailRuntimePath() {
-  const configuredPath = String(process.env.XIAOXI_PRODUCT_DETAIL_SIDECAR || "").trim();
-  if (configuredPath) return configuredPath;
   if (app.isPackaged) {
     return path.join(
       process.resourcesPath,
@@ -37,7 +42,22 @@ function productDetailRuntimePath() {
       "product-detail-server.exe"
     );
   }
-  return "";
+  const configuredPath = String(process.env.XIAOXI_PRODUCT_DETAIL_SIDECAR || "").trim();
+  if (configuredPath) return configuredPath;
+  return resolveDefaultDevelopmentSidecarRuntime("product-detail");
+}
+
+function contentEngineRuntimePath() {
+  if (app.isPackaged) {
+    return path.join(
+      process.resourcesPath,
+      "content-engine",
+      "content-engine-worker.exe"
+    );
+  }
+  const configuredPath = String(process.env.XIAOXI_CONTENT_ENGINE_SIDECAR || "").trim();
+  if (configuredPath) return configuredPath;
+  return resolveDefaultDevelopmentSidecarRuntime("content-engine");
 }
 
 function isAllowedProductDetailFrameNavigation(targetUrl) {
@@ -213,6 +233,17 @@ if (!gotSingleInstanceLock) {
       controller: productDetailController,
       getMainWindow: () => mainWindow
     });
+    contentEngineController = createContentEngineSidecar({
+      runtimePath: contentEngineRuntimePath(),
+      dataDir: path.join(app.getPath("userData"), "content-engine")
+    });
+    contentEngineIpcRegistration = registerContentEngineIpc({
+      controller: contentEngineController,
+      dialog,
+      shell,
+      getMainWindow: () => mainWindow
+    });
+    contentEngineController.start().catch(() => undefined);
     registerAiExpertIpc({ store: aiExpertStore, isAutoReplyRunning: () => ["starting", "running"].includes(autoReplyController?.status().status) });
     if (internalRealSend) {
       autoReplyController = registerAutoReplyIpc({
@@ -266,10 +297,14 @@ if (!gotSingleInstanceLock) {
       setTimeout(resolve, 8_000);
     });
     Promise.race([
-      Promise.resolve(productDetailController?.dispose()),
+      Promise.allSettled([
+        Promise.resolve(productDetailController?.dispose()),
+        Promise.resolve(contentEngineController?.dispose())
+      ]),
       cleanupTimeout
     ]).catch(() => undefined).finally(() => {
       productDetailIpcRegistration?.dispose();
+      contentEngineIpcRegistration?.dispose();
       momentsCampaignController?.dispose();
       quitCleanupComplete = true;
       app.quit();

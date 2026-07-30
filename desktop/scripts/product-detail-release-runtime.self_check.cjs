@@ -5,6 +5,10 @@ const path = require("node:path");
 const { scanRelease } = require("./build-portable-release.cjs");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
 const {
+  productDetailSourceTreeSha256,
+  resolveBuildPaths
+} = require("./build-product-detail-sidecar.cjs");
+const {
   PRODUCT_DETAIL_EXECUTABLE,
   PRODUCT_DETAIL_RELEASE_PATH,
   copyProductDetailRuntime,
@@ -13,6 +17,7 @@ const {
   isProductDetailPythonSource,
   resolveProductDetailBuild,
   runPackagedProductDetailSelfCheck,
+  validateBuildManifest,
   validateReleaseDescriptor
 } = require("./product-detail-release-runtime.cjs");
 
@@ -23,6 +28,17 @@ try {
   const buildRoot = path.join(desktopDir, ".build");
   const runtimeDir = path.join(buildRoot, "product-detail-runtime");
   const manifestFile = path.join(buildRoot, "product-detail-runtime.manifest.json");
+  const buildCommit = "2".repeat(40);
+  const sourcePaths = resolveBuildPaths(desktopDir);
+  fs.mkdirSync(sourcePaths.templatesDir, { recursive: true });
+  fs.mkdirSync(sourcePaths.staticDir, { recursive: true });
+  fs.mkdirSync(path.join(sourcePaths.sourceDir, "ai_refine_v2"), { recursive: true });
+  fs.writeFileSync(sourcePaths.entryFile, "from app import app\n", "utf8");
+  fs.writeFileSync(path.join(sourcePaths.sourceDir, "app.py"), "app = object()\n", "utf8");
+  fs.writeFileSync(path.join(sourcePaths.templatesDir, "workspace.html"), "<main>fixture</main>\n", "utf8");
+  fs.writeFileSync(path.join(sourcePaths.staticDir, "app.js"), "window.fixture = true;\n", "utf8");
+  fs.writeFileSync(sourcePaths.screenTypesFile, "screens: []\n", "utf8");
+  const fixtureDesktopSourceTreeSha256 = productDetailSourceTreeSha256(sourcePaths);
   fs.mkdirSync(path.join(runtimeDir, "_internal", "playwright"), { recursive: true });
   fs.writeFileSync(path.join(runtimeDir, PRODUCT_DETAIL_EXECUTABLE), "fixture-executable", "utf8");
   fs.writeFileSync(
@@ -38,6 +54,11 @@ try {
       commit: "1".repeat(40),
       dirty: true
     },
+    desktopSource: {
+      commit: buildCommit,
+      dirty: false,
+      treeSha256: fixtureDesktopSourceTreeSha256
+    },
     runtime: {
       kind: "pyinstaller-onedir",
       entry: PRODUCT_DETAIL_EXECUTABLE,
@@ -50,6 +71,24 @@ try {
 
   const build = resolveProductDetailBuild(desktopDir);
   assert.equal(build.manifest.version, manifest.version);
+  assert.equal(build.currentDesktopSourceTreeSha256, fixtureDesktopSourceTreeSha256);
+  assert.throws(
+    () => validateBuildManifest({ ...manifest, desktopSource: undefined }, manifestFile),
+    /desktop source commit/,
+    "legacy product-detail manifests without desktop source provenance must be rejected"
+  );
+  const workspaceTemplate = path.join(sourcePaths.templatesDir, "workspace.html");
+  fs.writeFileSync(workspaceTemplate, "<main>changed</main>\n", "utf8");
+  assert.throws(
+    () => resolveProductDetailBuild(desktopDir),
+    /desktop source tree hash does not match the current source tree/,
+    "release preflight must reject a source change after the runtime build"
+  );
+  fs.writeFileSync(workspaceTemplate, "<main>fixture</main>\n", "utf8");
+  assert.equal(
+    resolveProductDetailBuild(desktopDir).currentDesktopSourceTreeSha256,
+    fixtureDesktopSourceTreeSha256
+  );
 
   const releaseTarget = path.join(root, "portable", "AI获客");
   const resourcesDir = path.join(releaseTarget, "resources");
@@ -75,12 +114,29 @@ try {
     "packaging must never overwrite a pre-existing sidecar destination"
   );
 
-  const buildCommit = "2".repeat(40);
+
   const descriptor = createReleaseDescriptor(build, buildCommit);
   validateReleaseDescriptor(descriptor);
   assert.equal(descriptor.buildCommit, buildCommit);
   assert.equal(descriptor.sourceCommit, manifest.source.commit);
   assert.equal(descriptor.sourceDirty, true);
+  assert.equal(descriptor.desktopSourceCommit, buildCommit);
+  assert.equal(descriptor.desktopSourceDirty, false);
+  assert.equal(descriptor.desktopSourceTreeSha256, fixtureDesktopSourceTreeSha256);
+  assert.throws(
+    () => createReleaseDescriptor({
+      ...build,
+      manifest: {
+        ...build.manifest,
+        desktopSource: { ...build.manifest.desktopSource, dirty: true }
+      }
+    }, buildCommit),
+    /dirty desktop source/
+  );
+  assert.throws(
+    () => createReleaseDescriptor(build, "3".repeat(40)),
+    /desktop source commit does not match the portable release commit/
+  );
   assert.equal(isProductDetailPythonSource("resources/product-detail/_internal/module.py"), true);
   assert.equal(isProductDetailPythonSource("AI获客/resources/product-detail/_internal/module.py"), false);
   assert.equal(isProductDetailPythonSource("resources/app/module.py"), false);
