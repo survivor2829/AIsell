@@ -261,7 +261,6 @@ def _install_desktop_contract(
             abort(403)
 
     disabled_paid_endpoints = {
-        "parse_text_for_build",
         "generate_ai_images",
         "generate_ai_detail",
         "generate_ai_detail_html",

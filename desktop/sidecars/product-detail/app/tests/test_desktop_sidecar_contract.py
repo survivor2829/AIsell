@@ -4,6 +4,7 @@ import http.cookiejar
 import json
 import os
 import queue
+import re
 import sqlite3
 import subprocess
 import sys
@@ -83,10 +84,11 @@ def _request(
     *,
     method: str = "GET",
     headers: dict[str, str] | None = None,
+    body: bytes | None = None,
 ) -> tuple[int, bytes, dict[str, str]]:
     request = urllib.request.Request(
         url,
-        data=b"" if method == "POST" else None,
+        data=body if body is not None else (b"" if method == "POST" else None),
         method=method,
         headers=headers or {},
     )
@@ -274,6 +276,68 @@ def test_server_bootstrap_is_one_time_and_shutdown_is_authenticated(tmp_path):
         status, body, _ = _request(fresh_opener, bootstrap_url)
         assert status == 409
         assert bootstrap_token.encode() not in body
+
+        status, workspace_body, _ = _request(opener, base_url + "/")
+        assert status == 200
+        csrf_match = re.search(
+            rb'<meta name="csrf-token" content="([^"]+)"', workspace_body
+        )
+        assert csrf_match is not None
+        local_payload = json.dumps(
+            {
+                "product_title": "本地测试洗地机",
+                "text": (
+                    "品牌：测试品牌\n产品名称：本地测试洗地机\n"
+                    "型号：LOCAL-500\n工作效率：5000㎡/h\n"
+                    "清洗宽度：860mm\n优势：参数真实、无需联网"
+                ),
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        status, body, _ = _request(
+            opener,
+            base_url + "/api/build/%E8%AE%BE%E5%A4%87%E7%B1%BB/parse-text",
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-CSRFToken": csrf_match.group(1).decode("utf-8"),
+            },
+            body=local_payload,
+        )
+        assert status == 200, body.decode("utf-8", errors="replace")
+        local_result = json.loads(body)
+        assert local_result["model_name"] == "LOCAL-500"
+        assert local_result["param_1_value"] == "5000㎡/h"
+        assert local_result["_raw_parsed"]["brand"] == "测试品牌"
+
+        boundary = "----xiaoxi-desktop-upload"
+        multipart_body = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="auto_rembg"\r\n\r\n'
+            "1\r\n"
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="offline.png"\r\n'
+            "Content-Type: image/png\r\n\r\n"
+        ).encode("utf-8") + b"offline-image-fixture" + (
+            f"\r\n--{boundary}--\r\n"
+        ).encode("utf-8")
+        status, body, _ = _request(
+            opener,
+            base_url + "/api/upload",
+            method="POST",
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "X-CSRFToken": csrf_match.group(1).decode("utf-8"),
+            },
+            body=multipart_body,
+        )
+        assert status == 200, body.decode("utf-8", errors="replace")
+        upload_result = json.loads(body)
+        assert upload_result["rembg"] is False
+        assert "path" not in upload_result
+        assert upload_result["url"].startswith("/static/uploads/1/")
+        status, _, _ = _request(opener, base_url + upload_result["url"])
+        assert status == 200
 
         status, _, _ = _request(opener, base_url + "/static/uploads/999/private.png")
         assert status == 403

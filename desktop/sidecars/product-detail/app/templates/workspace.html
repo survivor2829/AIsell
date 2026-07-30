@@ -598,7 +598,7 @@
         id="text_input"
         class="text-area"
         placeholder="粘贴产品资料、参数表、电商文案..."></textarea>
-      <p class="text-hint">支持任意格式文本，AI自动识别产品参数</p>
+      <p class="text-hint">建议按“字段：内容”填写；桌面版会在本地识别，不调用付费 API</p>
     </div>
 
     <!-- Generate Button -->
@@ -983,11 +983,11 @@
     const btn = document.getElementById('btn_generate');
     const progress = document.getElementById('progress_overlay');
     btn.disabled = true;
-    btn.innerHTML = '<span style="display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,0.4);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:6px;"></span>AI 正在生成...';
+    btn.innerHTML = '<span style="display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,0.4);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:6px;"></span>正在生成...';
     progress.style.display = 'flex';
 
     try {
-      updateProgress('AI 正在分析产品参数...');
+      updateProgress('正在分析产品参数...');
       const parsed = await postJson(`/api/build/${encodeURIComponent(currentProductType)}/parse-text`, { text: rawText, product_title: productTitle });
 
       updateProgress('正在组装详情页模块...');
@@ -1648,10 +1648,37 @@
     finally { btn.disabled = false; btn.textContent = '📦 导出全部主图 ZIP'; }
   }
 
+  async function restoreLatestLocalPreview() {
+    try {
+      const resp = await fetch(`/api/build/${encodeURIComponent(currentProductType)}/latest-preview`, {
+        headers: { 'X-CSRFToken': csrfToken }
+      });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (!data.available || !Array.isArray(data.modules) || !data.modules.length) return;
+      if (data.theme_id) currentThemeId = data.theme_id;
+      renderModules(data.modules);
+      currentBuildData = {
+        parsed: {},
+        productType: currentProductType,
+        themeId: currentThemeId,
+        modules: data.modules,
+        restored: true
+      };
+      document.getElementById('empty_state').style.display = 'none';
+      document.getElementById('preview_wrapper').style.display = 'block';
+      document.getElementById('export_bar').style.display = 'flex';
+      document.getElementById('center_tabs').classList.add('visible');
+      applyTheme(currentThemeId);
+      renderMainImages(extractMainBlocksFromModules(data.modules));
+    } catch (err) {
+      console.warn('[workspace] latest local preview restore failed');
+    }
+  }
   /* ── Init ───────────────────────────────────────────────────── */
-  document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('DOMContentLoaded', async () => {
     initLayout();           // 必须最先,从 localStorage 恢复布局档,避免 loadThemes 后才切档导致闪烁
-    loadThemes();
+    await loadThemes();
     renderArkKeyStatus();   // 显示用户已配置的豆包 Key 状态(末4位)
     // 产品图走自动抠图 — 否则 AI 精修合成时原图背景 + 原图水印文字会穿透到模板
     initUploadBox('upload_product', url => { productImageUrl = url; }, { autoRembg: true });
@@ -1659,6 +1686,7 @@
     initUploadBox('upload_effect', url => { effectImageUrl = url; });
     initUploadBox('upload_qr', url => { qrImageUrl = url; });
     selectCategory(currentProductType);
+    await restoreLatestLocalPreview();
     restoreLatestAiResult();
   });
 </script>

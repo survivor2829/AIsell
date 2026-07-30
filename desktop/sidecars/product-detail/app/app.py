@@ -1100,17 +1100,24 @@ def _persist_upload(file_storage, *, auto_rembg: bool = False) -> dict:
     file_storage.save(str(save_path))
 
     final_filename = filename
+    if auto_rembg and _DESKTOP_MODE:
+        # Desktop runtime is offline-first. rembg may download a model on first use,
+        # so the local workspace keeps the original image unless a bundled model is
+        # introduced and declared as a capability in a later release.
+        auto_rembg = False
     if auto_rembg:
         nobg = _remove_bg_if_needed(save_path, user_dir, uid)
         if nobg:
             final_filename = nobg
 
-    return {
+    result = {
         "filename": final_filename,
-        "path":     str(user_dir / final_filename),
         "url":      f"/static/uploads/{current_user.id}/{final_filename}",
         "rembg":    final_filename != filename,
     }
+    if not _DESKTOP_MODE:
+        result["path"] = str(user_dir / final_filename)
+    return result
 
 
 def _save_upload(file_field_name, auto_rembg: bool = False) -> str:
@@ -3125,6 +3132,23 @@ def _derive_advantages_from_specs(detail_params: dict) -> list:
         if len(items) >= 6:
             break
     return items
+
+
+def _parse_text_for_desktop(raw_text: str, product_type: str, product_title: str) -> dict:
+    """Parse explicit product fields locally without network or paid model calls."""
+    parsed = _extract_json_object(raw_text)
+    if not isinstance(parsed, dict):
+        parsed = _parse_text_by_template(raw_text)
+    if not isinstance(parsed, dict) or not parsed:
+        return {}
+    if product_title:
+        parsed.setdefault("product_name", product_title)
+        parsed.setdefault("main_title", product_title)
+    mapped = _map_parsed_to_form_fields(parsed, product_category=product_type)
+    mapped["_raw_parsed"] = parsed
+    return mapped
+
+
 @app.route("/api/build/<product_type>/parse-text", methods=["POST"])
 @login_required
 def parse_text_for_build(product_type):
@@ -3141,6 +3165,24 @@ def parse_text_for_build(product_type):
     product_title = _to_str(data.get("product_title", ""))
     if product_title:
         raw_text = f"【产品标题】{product_title}\n\n{raw_text}"
+
+    if _DESKTOP_MODE:
+        mapped = _parse_text_for_desktop(raw_text, product_type, product_title)
+        if not mapped:
+            return jsonify({
+                "error": "本地解析未识别到足够字段，请按“字段：内容”格式补充品牌、型号和参数。",
+                "code": "DESKTOP_LOCAL_PARSE_INSUFFICIENT",
+            }), 400
+        log = GenerationLog(
+            user_id=current_user.id,
+            product_type=product_type,
+            model_name=mapped.get("model_name", ""),
+            api_key_source="desktop_local",
+            action="local_parse",
+        )
+        db.session.add(log)
+        db.session.commit()
+        return jsonify(mapped)
 
     # PR C (2026-05-07): 二级 key 模式 — paid/admin 用 platform, else 用 user 自配
     try:
@@ -5263,6 +5305,31 @@ def build_submit_generic(product_type):
     return render_template(f"{product_type}/assembled.html", **data)
 
 
+def _render_preview_modules(all_data: dict) -> list[dict]:
+    """Render persisted preview data into the public workspace module DTO."""
+    render_order = [
+        "block_a", "block_b2", "block_b3", "block_g", "block_h", "block_i",
+        "block_j", "block_f", "block_x", "block_w", "block_v",
+        "block_e", "block_k", "block_l", "block_m", "block_t", "block_u",
+        "block_s", "block_p", "block_q", "block_r", "block_n", "block_o",
+    ]
+    modules = []
+    for block_id in render_order:
+        block_data = all_data.get(block_id, {})
+        if _is_block_empty(block_id, block_data):
+            continue
+        html = _render_single_block(block_id, block_data)
+        if not html or not html.strip():
+            continue
+        modules.append({
+            "id": block_id,
+            "name": _get_block_display_name(block_id),
+            "html": html,
+            "data": block_data,
+        })
+    return modules
+
+
 @app.route('/api/build/<product_type>/render-preview', methods=['POST'])
 @login_required
 def render_preview(product_type):
@@ -5288,40 +5355,41 @@ def render_preview(product_type):
     }
 
     all_data = _assemble_all_blocks(product_type, mapped, images, cfg)
+    all_data["_workspace_meta"] = {
+        "theme_id": data.get("theme_id", "classic-red"),
+    }
 
-    # Save preview data for export
+    # Save preview data for export and restart recovery.
     _user_out = _user_output_dir()
     _last_preview = _user_out / f"_last_{product_type}_preview.json"
     with open(_last_preview, "w", encoding="utf-8") as fp:
         json.dump(all_data, fp, ensure_ascii=False)
 
-    # Define render order (matches assembled.html order)
-    render_order = [
-        "block_a", "block_b2", "block_b3", "block_g", "block_h", "block_i",
-        "block_j", "block_f", "block_x", "block_w", "block_v",
-        "block_e",
-        "block_k", "block_l", "block_m", "block_t", "block_u", "block_s",
-        "block_p", "block_q", "block_r",
-        "block_n", "block_o",
-    ]
+    return jsonify({"modules": _render_preview_modules(all_data)})
 
-    modules = []
-    for bid in render_order:
-        block_data = all_data.get(bid, {})
-        # 智能模块匹配：跳过没有有效数据的模块
-        if _is_block_empty(bid, block_data):
-            continue
-        html = _render_single_block(bid, block_data)
-        if not html or not html.strip():
-            continue
-        modules.append({
-            "id": bid,
-            "name": _get_block_display_name(bid),
-            "html": html,
-            "data": block_data,
-        })
 
-    return jsonify({"modules": modules})
+@app.route('/api/build/<product_type>/latest-preview', methods=['GET'])
+@login_required
+def latest_preview(product_type):
+    """Restore the latest local preview after an application restart."""
+    _validate_product_type(product_type)
+    preview_json = _user_output_dir() / f"_last_{product_type}_preview.json"
+    if not preview_json.is_file():
+        return jsonify({"available": False, "modules": []})
+    try:
+        with open(preview_json, "r", encoding="utf-8") as handle:
+            all_data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return jsonify({"available": False, "modules": []})
+    if not isinstance(all_data, dict):
+        return jsonify({"available": False, "modules": []})
+    meta = all_data.get("_workspace_meta", {})
+    theme_id = meta.get("theme_id", "classic-red") if isinstance(meta, dict) else "classic-red"
+    return jsonify({
+        "available": True,
+        "modules": _render_preview_modules(all_data),
+        "theme_id": theme_id,
+    })
 
 
 @app.route('/api/build/<product_type>/render-block', methods=['POST'])
