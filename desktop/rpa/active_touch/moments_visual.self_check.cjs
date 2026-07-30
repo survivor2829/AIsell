@@ -563,39 +563,50 @@ const visualLikeMenuStateFunction = actionSource.match(
 )?.[1] ?? "";
 assert.ok(visualLikeMenuStateFunction, "visual like menu state resolver should be extractable");
 const visualLikeMenuStateProgram = `${visualLikeMenuStateFunction}
-$likeSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 10.0; height = 10.0 }; centerX = 15.0; centerY = 25.0 }
-$commentSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 30.0; top = 20.0; width = 20.0; height = 10.0 }; centerX = 40.0; centerY = 25.0 }
+$likeSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 17.0; height = 10.0 }; centerX = 18.5; centerY = 25.0 }
+$commentSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 30.0; top = 20.0; width = 35.0; height = 10.0 }; centerX = 47.5; centerY = 25.0 }
 $like = Resolve-VisualLikeMenuState $null $likeSignature $commentSignature
-$cancelSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 20.0; height = 10.0 }; centerX = 20.0; centerY = 25.0 }
+$cancelSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 31.0; height = 10.0 }; centerX = 25.5; centerY = 25.0 }
 $cancel = Resolve-VisualLikeMenuState $null $cancelSignature $commentSignature
-$gapSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 14.0; height = 10.0 }; centerX = 17.0; centerY = 25.0 }
+$gapSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 27.0; height = 10.0 }; centerX = 23.5; centerY = 25.0 }
 $gap = Resolve-VisualLikeMenuState $null $gapSignature $commentSignature
-$shortSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 10.0; height = 7.0 }; centerX = 15.0; centerY = 23.5 }
+$boundaryReferenceSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 120.0; top = 20.0; width = 100.0; height = 10.0 }; centerX = 170.0; centerY = 25.0 }
+$lowerBoundarySignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 42.0; height = 10.0 }; centerX = 31.0; centerY = 25.0 }
+$upperBoundarySignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 60.0; height = 10.0 }; centerX = 40.0; centerY = 25.0 }
+$belowBoundarySignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 41.0; height = 10.0 }; centerX = 30.5; centerY = 25.0 }
+$aboveBoundarySignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 61.0; height = 10.0 }; centerX = 40.5; centerY = 25.0 }
+$lowerBoundary = Resolve-VisualLikeMenuState $null $lowerBoundarySignature $boundaryReferenceSignature
+$upperBoundary = Resolve-VisualLikeMenuState $null $upperBoundarySignature $boundaryReferenceSignature
+$belowBoundary = Resolve-VisualLikeMenuState $null $belowBoundarySignature $boundaryReferenceSignature
+$aboveBoundary = Resolve-VisualLikeMenuState $null $aboveBoundarySignature $boundaryReferenceSignature
+$shortSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 17.0; height = 7.0 }; centerX = 18.5; centerY = 23.5 }
 $short = Resolve-VisualLikeMenuState $null $shortSignature $commentSignature
-$tallSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 10.0; height = 13.0 }; centerX = 15.0; centerY = 26.5 }
+$tallSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 17.0; height = 13.0 }; centerX = 18.5; centerY = 26.5 }
 $tall = Resolve-VisualLikeMenuState $null $tallSignature $commentSignature
 $missingReference = Resolve-VisualLikeMenuState $null $likeSignature @{ ok = $false }
 $croppedLike = Resolve-VisualLikeMenuState $null @{
   ok = $true
   horizontalEdgeClear = $false
-  bounds = @{ left = 10.0; top = 20.0; width = 10.0; height = 10.0 }
-  centerX = 15.0
+  bounds = @{ left = 10.0; top = 20.0; width = 17.0; height = 10.0 }
+  centerX = 18.5
   centerY = 25.0
 } $commentSignature
 $croppedComment = Resolve-VisualLikeMenuState $null $likeSignature @{
   ok = $true
   horizontalEdgeClear = $false
-  bounds = @{ left = 30.0; top = 20.0; width = 20.0; height = 10.0 }
-  centerX = 40.0
+  bounds = @{ left = 30.0; top = 20.0; width = 35.0; height = 10.0 }
+  centerX = 47.5
   centerY = 25.0
 }
-$ocrEntry = @{ text = "赞"; bounds = @{ left = 10.0; top = 20.0; width = 10.0; height = 10.0 }; centerX = 15.0; centerY = 25.0 }
+$ocrEntry = @{ text = "赞"; bounds = @{ left = 10.0; top = 20.0; width = 17.0; height = 10.0 }; centerX = 18.5; centerY = 25.0 }
 $ocr = Resolve-VisualLikeMenuState $ocrEntry @{ ok = $false } @{ ok = $false }
+$cancelOcrEntry = @{ text = "取消"; bounds = @{ left = 10.0; top = 20.0; width = 31.0; height = 10.0 }; centerX = 25.5; centerY = 25.0 }
+$cancelOcr = Resolve-VisualLikeMenuState $cancelOcrEntry $likeSignature $commentSignature
 $croppedTargetedOcr = Resolve-VisualLikeMenuState $ocrEntry @{
   ok = $true
   horizontalEdgeClear = $false
-  bounds = @{ left = 10.0; top = 20.0; width = 10.0; height = 10.0 }
-  centerX = 15.0
+  bounds = @{ left = 10.0; top = 20.0; width = 17.0; height = 10.0 }
+  centerX = 18.5
   centerY = 25.0
 } $commentSignature "targeted_ocr"
 @{
@@ -615,8 +626,18 @@ $croppedTargetedOcr = Resolve-VisualLikeMenuState $ocrEntry @{
   croppedLikeMode = [string]$croppedLike.mode
   croppedCommentHasEntry = ($croppedComment.entry -ne $null)
   croppedCommentMode = [string]$croppedComment.mode
+  lowerBoundaryOk = ([string]$lowerBoundary.entry.text -ceq "赞")
+  lowerBoundaryMode = [string]$lowerBoundary.mode
+  upperBoundaryOk = ([string]$upperBoundary.entry.text -ceq "赞")
+  upperBoundaryMode = [string]$upperBoundary.mode
+  belowBoundaryHasEntry = ($belowBoundary.entry -ne $null)
+  belowBoundaryMode = [string]$belowBoundary.mode
+  aboveBoundaryHasEntry = ($aboveBoundary.entry -ne $null)
+  aboveBoundaryMode = [string]$aboveBoundary.mode
   ocrOk = ([string]$ocr.entry.text -ceq "赞")
   ocrMode = [string]$ocr.mode
+  cancelOcrOk = ([string]$cancelOcr.entry.text -ceq "取消")
+  cancelOcrMode = [string]$cancelOcr.mode
   croppedTargetedOcrHasEntry = ($croppedTargetedOcr.entry -ne $null)
   croppedTargetedOcrMode = [string]$croppedTargetedOcr.mode
 } | ConvertTo-Json -Compress`;
@@ -635,8 +656,14 @@ assert.equal(
   visualLikeMenuStateHarness.stderr || "visual like menu state resolver harness must run"
 );
 assert.deepEqual(JSON.parse(visualLikeMenuStateHarness.stdout.trim()), {
+  aboveBoundaryHasEntry: false,
+  aboveBoundaryMode: "ambiguous",
+  belowBoundaryHasEntry: false,
+  belowBoundaryMode: "ambiguous",
   cancelOk: true,
   cancelMode: "visual_signature",
+  cancelOcrOk: true,
+  cancelOcrMode: "ocr",
   croppedCommentHasEntry: false,
   croppedCommentMode: "ambiguous",
   croppedLikeHasEntry: false,
@@ -645,8 +672,10 @@ assert.deepEqual(JSON.parse(visualLikeMenuStateHarness.stdout.trim()), {
   croppedTargetedOcrMode: "ambiguous",
   gapHasEntry: false,
   gapMode: "ambiguous",
-  likeOk: false,
-  likeMode: "ambiguous",
+  lowerBoundaryOk: true,
+  lowerBoundaryMode: "visual_signature",
+  likeOk: true,
+  likeMode: "visual_signature",
   missingReferenceHasEntry: false,
   missingReferenceMode: "ambiguous",
   ocrOk: true,
@@ -654,7 +683,9 @@ assert.deepEqual(JSON.parse(visualLikeMenuStateHarness.stdout.trim()), {
   shortHasEntry: false,
   shortMode: "ambiguous",
   tallHasEntry: false,
-  tallMode: "ambiguous"
+  tallMode: "ambiguous",
+  upperBoundaryOk: true,
+  upperBoundaryMode: "visual_signature"
 });
 const visualLikeMenuReaderProgram = `
 ${visualMenuTextEntryFunction}
@@ -675,10 +706,10 @@ function Get-MomentsPixel($frame, [int]$x, [int]$y) {
   $light = @{ r = 220; g = 220; b = 220 }
   $dark = @{ r = 20; g = 20; b = 20 }
   if ($y -lt 112 -or $y -gt 121) { return $dark }
-  if ($x -ge 350 -and $x -le 369) { return $light }
-  if ($script:readerScenario -ceq "cancel" -and $x -ge 260 -and $x -le 279) { return $light }
-  if ($script:readerScenario -ceq "cropped" -and $x -ge 252 -and $x -le 261) { return $light }
-  if ($script:readerScenario -ceq "like" -and $x -ge 260 -and $x -le 269) { return $light }
+  if ($x -ge 350 -and $x -le 384) { return $light }
+  if ($script:readerScenario -ceq "cancel" -and $x -ge 258 -and $x -le 288) { return $light }
+  if ($script:readerScenario -ceq "cropped" -and $x -ge 252 -and $x -le 268) { return $light }
+  if (@("like", "like_ocr_miss") -contains $script:readerScenario -and $x -ge 260 -and $x -le 276) { return $light }
   return $dark
 }
 function Test-VisualBounds($bounds, [double]$minimumWidth, [double]$minimumHeight) {
@@ -722,6 +753,7 @@ function Invoke-ReaderCase([string]$scenario) {
 }
 @(
   (Invoke-ReaderCase "like"),
+  (Invoke-ReaderCase "like_ocr_miss"),
   (Invoke-ReaderCase "cancel"),
   (Invoke-ReaderCase "cropped")
 ) | ConvertTo-Json -Depth 5 -Compress
@@ -758,6 +790,19 @@ assert.deepEqual(JSON.parse(visualLikeMenuReaderHarness.stdout.trim()), [
     likeBaseOcrMatched: false,
     targetedLikeOcrAttempted: true,
     targetedLikeOcrMatched: true,
+    commentOcrMatched: false,
+    likeEdgeClear: true,
+    commentEdgeClear: true,
+  },
+  {
+    scenario: "like_ocr_miss",
+    ok: true,
+    expectedState: true,
+    resolutionMode: "visual_signature",
+    likeOcrMatched: false,
+    likeBaseOcrMatched: false,
+    targetedLikeOcrAttempted: true,
+    targetedLikeOcrMatched: false,
     commentOcrMatched: false,
     likeEdgeClear: true,
     commentEdgeClear: true,
@@ -2377,12 +2422,13 @@ assert.doesNotMatch(actionSource, /^\s*Clear-And-CloseVisualCommentDraft\b/mu);
 assert.doesNotMatch(actionSource, /\{ESC\}/u);
 assert.match(actionSource, /moments_comment_draft_close_unverified/u);
 
-// The first broad OCR pass may miss the single-character 赞 label. Retry only
-// its detected glyph bounds at higher contrast; visual width alone may prove
-// the wider no-op 取消 label but must never authorize a like click.
+// The broad and targeted OCR passes may both miss the isolated like glyph.
+// A complete narrow glyph can authorize the like, while cropped, middle-width,
+// and wider cancel labels must remain blocked.
 assert.match(actionSource, /\$x - \$lastDark\) -gt \[Math\]::Max\(18\.0, \[double\]\$frame\.width \* 0\.05\)/u);
 assert.match(actionSource, /Get-VisualMenuTargetedOcrRegion[\s\S]*Get-MomentsHighContrastOcrObservation \$frame \$targetedLikeRegion 5/u);
-assert.doesNotMatch(actionSource, /\$widthRatio -ge 0\.32[\s\S]*\$visualState = "赞"/u);
+assert.match(actionSource, /\$widthRatio -ge 0\.42 -and \$widthRatio -le 0\.60\) \{ \$visualState = "赞" \}/u);
+assert.doesNotMatch(actionSource, /\$widthRatio -ge 0\.32 -and \$widthRatio -le 0\.68\) \{ \$visualState = "赞" \}/u);
 assert.match(actionSource, /\$widthRatio -ge 0\.78[\s\S]*\$visualState = "取消"/u);
 const visualActionTimeoutCapsSource = actionSource.match(
   /VISUAL_ACTION_TIMEOUT_CAP_MS = Object\.freeze\(\{[\s\S]*?\}\);/u,

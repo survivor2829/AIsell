@@ -2213,10 +2213,10 @@ function Resolve-VisualLikeMenuState($likeEntry, $likeSignature, $commentSignatu
     [bool]$commentSignature.horizontalEdgeClear -and
     $heightRatio -ge 0.76 -and $heightRatio -le 1.24) {
     $visualState = ""
-    # A wider two-character label can safely prove the no-op "取消" state.
-    # A single visible glyph must still be read as "赞" by OCR before clicking,
-    # because a partially obscured "取消" label could otherwise be mistaken for it.
-    if ($widthRatio -ge 0.78 -and $widthRatio -le 1.42) { $visualState = "取消" }
+    # A complete narrow glyph is the normal "赞" label even when Windows OCR
+    # misses the isolated character. Cropped or wider labels remain blocked.
+    if ($widthRatio -ge 0.42 -and $widthRatio -le 0.60) { $visualState = "赞" }
+    elseif ($widthRatio -ge 0.78 -and $widthRatio -le 1.42) { $visualState = "取消" }
     if ($visualState) {
       return @{
         entry = @{
