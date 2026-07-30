@@ -235,6 +235,9 @@ type TouchTaskPreview = {
   eligible: ContactRow[];
   excluded: TouchTaskExcludedContact[];
   total?: number;
+  eligible_count?: number;
+  excluded_count?: number;
+  reason_counts?: Record<string, number>;
 };
 type TouchTaskState = {
   id: string;
@@ -260,6 +263,7 @@ type TouchTaskState = {
   current_contact: ContactRow | null;
   next_contact: ContactRow | null;
   current_result: TouchTaskItem | null;
+  result_updates?: TouchTaskItem[];
   results: TouchTaskItem[];
 };
 type TouchTaskResult = {
@@ -327,6 +331,8 @@ declare global {
 const USER_STORAGE_KEY = "xiaoxi-user-profile";
 const DEFAULT_USER_PROFILE: UserProfile = { name: "2829347524", avatar: "2" };
 const DEFAULT_TOUCH_MESSAGE = "{称呼}，您好，我们这边有清洁设备短租和会员特惠方案，想了解一下您近期是否需要降本增效？";
+const CONTACT_PAGE_SIZE = 50;
+const CONTACT_RENDER_LIMIT = 50;
 const XIAOXI_EDITION = import.meta.env.VITE_XIAOXI_EDITION;
 const BUILD_ID = import.meta.env.VITE_XIAOXI_BUILD_ID || "";
 const DEVELOPMENT_EDITION = XIAOXI_EDITION === "development";
@@ -440,9 +446,26 @@ function emptyTouchTask(): TouchTaskState {
   };
 }
 
+function mergeTouchTaskState(current: TouchTaskState, incoming: TouchTaskState): TouchTaskState {
+  if (Array.isArray(incoming.results)) return { ...current, ...incoming, results: incoming.results };
+  const updates = Array.isArray(incoming.result_updates) ? incoming.result_updates : [];
+  if (!updates.length) return { ...current, ...incoming, results: current.results };
+  const results = [...current.results];
+  for (const update of updates) {
+    const contactIndex = Number.isInteger(update.contact_index) ? Number(update.contact_index) : -1;
+    const existingIndex = contactIndex >= 0 && contactIndex < results.length
+      ? contactIndex
+      : results.findIndex((result) => result.id === update.id);
+    if (existingIndex >= 0) results[existingIndex] = { ...results[existingIndex], ...update };
+    else results.push(update);
+  }
+  return { ...current, ...incoming, results };
+}
+
 function taskStatusLabel(status: string) {
   const labels: Record<string, string> = {
     idle: "未开始",
+
     running: "执行中",
     paused: "已暂停",
     blocked: "已阻断",
@@ -576,7 +599,7 @@ export default function App() {
   const applyTouchTaskResult = (result: TouchTaskResult) => {
     if (result.preview) setTouchTaskPreview(result.preview);
     if (result.task) {
-      setTouchTask(result.task);
+      setTouchTask((current) => mergeTouchTaskState(current, result.task!));
       const unfinished = (result.task.status === "running" || result.task.status === "paused") && result.task.current_index < result.task.total;
       if (unfinished && result.task.script.trim()) setMessageDraft(result.task.script);
     }
@@ -978,6 +1001,13 @@ function ContactSyncPage({
   const lastSynced = syncState.last_synced_at ? new Date(syncState.last_synced_at).toLocaleString("zh-CN", { hour12: false }) : "暂无";
   const error = syncError || syncState.last_error;
 
+  const [page, setPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(contacts.length / CONTACT_PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+  const pageStart = (safePage - 1) * CONTACT_PAGE_SIZE;
+  const visibleContacts = contacts.slice(pageStart, pageStart + CONTACT_PAGE_SIZE);
+  useEffect(() => setPage((current) => Math.min(current, pageCount)), [pageCount]);
+
   return (
     <section className="page agent-page">
       <div className="page-head">
@@ -1043,7 +1073,7 @@ function ContactSyncPage({
           </thead>
           <tbody>
             {contacts.length ? (
-              contacts.map((contact) => (
+              visibleContacts.map((contact) => (
                 <tr key={contact.id}>
                   <td>{contactName(contact)}</td>
                   <td>{contact.remark}</td>
@@ -1057,6 +1087,15 @@ function ContactSyncPage({
             )}
           </tbody>
         </table>
+        {contacts.length > CONTACT_PAGE_SIZE && (
+          <div className="contact-pagination">
+            <span>{`\u7b2c ${safePage}/${pageCount} \u9875 \u00b7 \u5171 ${contacts.length} \u4eba`}</span>
+            <div>
+              <button className="secondary-button" onClick={() => setPage((current) => Math.max(1, current - 1))} disabled={safePage <= 1}>{"\u4e0a\u4e00\u9875"}</button>
+              <button className="secondary-button" onClick={() => setPage((current) => Math.min(pageCount, current + 1))} disabled={safePage >= pageCount}>{"\u4e0b\u4e00\u9875"}</button>
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -1287,6 +1326,8 @@ function ActiveTouch({
   onEndTask: () => void;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
+  const [renderLimit, setRenderLimit] = useState(CONTACT_RENDER_LIMIT);
+  useEffect(() => setRenderLimit(CONTACT_RENDER_LIMIT), [searchQuery, touchTask.id]);
   const hasFrozenSnapshot = taskHasUnfinishedSnapshot(touchTask);
   const excludedIdSet = new Set(excludedContactIds);
   const liveEligibleContacts = touchTaskPreview?.eligible ?? contacts.filter((contact) => contact.allowed);
@@ -1312,6 +1353,31 @@ function ActiveTouch({
   const visibleEligible = hasFrozenSnapshot ? [] : (query ? eligibleContacts.filter(matchesSearch) : eligibleContacts);
   const visibleUserExcluded = hasFrozenSnapshot ? [] : (query ? userExcludedContacts.filter(matchesSearch) : userExcludedContacts);
   const visibleExcluded = query ? excludedContacts.filter((item) => matchesSearch(item.contact)) : excludedContacts;
+  const renderedResults = visibleResults.slice(0, renderLimit);
+  const renderedEligible = visibleEligible.slice(0, Math.max(0, renderLimit - renderedResults.length));
+  const renderedUserExcluded = visibleUserExcluded.slice(0, Math.max(0, renderLimit - renderedResults.length - renderedEligible.length));
+  const renderedExcluded = visibleExcluded.slice(0, Math.max(0, renderLimit - renderedResults.length - renderedEligible.length - renderedUserExcluded.length));
+  const matchingContactCount = visibleResults.length + visibleEligible.length + visibleUserExcluded.length + visibleExcluded.length;
+  const renderedContactCount = renderedResults.length + renderedEligible.length + renderedUserExcluded.length + renderedExcluded.length;
+  const exclusionCounts: Record<string, number> = {
+    ...(hasFrozenSnapshot
+      ? excludedContacts.reduce<Record<string, number>>((counts, entry) => {
+        const reasonCode = String(entry.reason_code || "unknown");
+        counts[reasonCode] = (counts[reasonCode] || 0) + 1;
+        return counts;
+      }, {})
+      : touchTaskPreview?.reason_counts || {})
+  };
+  if (!hasFrozenSnapshot && userExcludedContacts.length) exclusionCounts.user_excluded = userExcludedContacts.length;
+  const exclusionSummary = Object.entries(exclusionCounts)
+    .filter(([, count]) => count > 0)
+    .sort((left, right) => right[1] - left[1])
+    .map(([reasonCode, count]) => ({
+      reasonCode,
+      count,
+      label: excludedContacts.find((entry) => entry.reason_code === reasonCode)?.reason
+        || (reasonCode === "user_excluded" ? "\u5df2\u624b\u52a8\u79fb\u51fa\u672c\u6b21\u89e6\u8fbe" : reasonCode)
+    }));
   const syncStatusLabel = contactSyncState.status === "synced"
     ? `已同步 ${contacts.length || contactSyncState.contact_count} 人`
     : contactSyncState.status === "capturing"
@@ -1336,6 +1402,17 @@ function ActiveTouch({
         <StatusCard label="任务状态" value={touchTaskStatusLabel(touchTask)} good={touchTask.status === "running" || touchTask.status === "completed"} />
         <StatusCard label="已处理" value={`${processedCount}/${touchTask.total || eligibleCount}`} good={processedCount > 0 || touchTask.status === "completed"} />
       </div>
+      {exclusionSummary.length > 0 && (
+        <div className="exclusion-summary">
+          <strong>{"\u672a\u89e6\u8fbe\u539f\u56e0"}</strong>
+          <div>
+            {exclusionSummary.map((item) => (
+              <span key={item.reasonCode}>{item.label} <b>{item.count}</b></span>
+            ))}
+          </div>
+        </div>
+      )}
+
 
       <div className="touch-setup-grid">
         <div className="table-panel touch-sync-card">
@@ -1408,7 +1485,7 @@ function ActiveTouch({
             <tbody>
               {hasFrozenSnapshot ? (
                 <>
-                  {visibleResults.map((result) => (
+                  {renderedResults.map((result) => (
                     <tr key={result.id}>
                       <td>{contactName(result.contact)}</td>
                       <td>{result.contact.remark || "-"}</td>
@@ -1426,7 +1503,7 @@ function ActiveTouch({
                       </td>
                     </tr>
                   ))}
-                  {visibleExcluded.map((item, index) => (
+                  {renderedExcluded.map((item, index) => (
                     <tr key={`excluded-${item.contact.id || index}`}>
                       <td>{contactName(item.contact)}</td>
                       <td>{item.contact.remark || "-"}</td>
@@ -1440,7 +1517,7 @@ function ActiveTouch({
                 </>
               ) : eligibleContacts.length || userExcludedContacts.length || excludedContacts.length ? (
                 <>
-                  {visibleEligible.map((contact) => (
+                  {renderedEligible.map((contact) => (
                     <tr key={contact.id}>
                       <td>{contactName(contact)}</td>
                       <td>{contact.remark || "-"}</td>
@@ -1451,7 +1528,7 @@ function ActiveTouch({
                       <td className="touch-row-actions"><button className="text-button" onClick={() => onExclude(contact.id)}>移出本次触达</button></td>
                     </tr>
                   ))}
-                  {visibleUserExcluded.map((contact) => (
+                  {renderedUserExcluded.map((contact) => (
                     <tr key={`user-excluded-${contact.id}`}>
                       <td>{contactName(contact)}</td>
                       <td>{contact.remark || "-"}</td>
@@ -1462,7 +1539,7 @@ function ActiveTouch({
                       <td className="touch-row-actions"><button className="text-button" onClick={() => onRestore(contact.id)}>恢复</button></td>
                     </tr>
                   ))}
-                  {visibleExcluded.map((item, index) => (
+                  {renderedExcluded.map((item, index) => (
                     <tr key={`excluded-${item.contact.id || index}`}>
                       <td>{contactName(item.contact)}</td>
                       <td>{item.contact.remark || "-"}</td>
@@ -1484,6 +1561,14 @@ function ActiveTouch({
             </tbody>
           </table>
         </div>
+        {matchingContactCount > 0 && (
+          <div className="contact-pagination">
+            <span>{`\u5df2\u663e\u793a ${renderedContactCount}/${matchingContactCount} \u4eba`}</span>
+            {renderedContactCount < matchingContactCount && (
+              <button className="secondary-button" onClick={() => setRenderLimit((current) => current + CONTACT_RENDER_LIMIT)}>{"\u7ee7\u7eed\u663e\u793a"}</button>
+            )}
+          </div>
+        )}
       </details>
 
     </section>
@@ -1496,7 +1581,7 @@ function FloatingTouchWindow() {
   const [busy, setBusy] = useState(false);
 
   const applyResult = (result: TouchTaskResult) => {
-    if (result.task) setTouchTask(result.task);
+    if (result.task) setTouchTask((current) => mergeTouchTaskState(current, result.task!));
     setError(result.error ?? "");
   };
 

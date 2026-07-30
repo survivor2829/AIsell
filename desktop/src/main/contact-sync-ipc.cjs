@@ -28,6 +28,45 @@ function readPathSettings() {
   }
 }
 
+function readJsonFile(filePath, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, ""));
+  } catch {
+    return fallback;
+  }
+}
+
+function readCachedContactStatus() {
+  const settings = readPathSettings();
+  const storedState = readJsonFile(path.join(runtimeDataDir, "state.json"), {});
+  const rawContacts = readJsonFile(path.join(activeTouchRuntimeDir, "contacts.json"), []);
+  const rows = Array.isArray(rawContacts) ? rawContacts : Array.isArray(rawContacts?.contacts) ? rawContacts.contacts : [];
+  const accountName = String(storedState.account_name || "").trim();
+  const contacts = accountName
+    ? rows.map((contact) => String(contact?.wechatAccountId || "").trim() ? contact : { ...contact, wechatAccountId: accountName })
+    : rows;
+  return {
+    ok: true,
+    action: "status",
+    state: {
+      status: "idle",
+      contact_count: contacts.length,
+      last_synced_at: "",
+      last_error: "",
+      last_stage: "idle",
+      account_name: "",
+      helper_configured: false,
+      wechat_exe_path: settings.wechatExePath || "",
+      wechat_root: settings.wechatRoot || "",
+      ...storedState,
+      contact_count: contacts.length,
+      wechat_exe_path: settings.wechatExePath || storedState.wechat_exe_path || "",
+      wechat_root: settings.wechatRoot || storedState.wechat_root || ""
+    },
+    contacts
+  };
+}
+
 function writePathSettings(settings) {
   fs.mkdirSync(runtimeDataDir, { recursive: true });
   fs.writeFileSync(settingsPath(), `${JSON.stringify(settings, null, 2)}\n`, "utf8");
@@ -116,7 +155,7 @@ async function chooseWechatPath(kind) {
   const nestedRoot = !selectingExe && path.basename(selected).toLowerCase() !== "xwechat_files" ? path.join(selected, "xwechat_files") : "";
   const selectedValue = !selectingExe && nestedRoot && fs.existsSync(nestedRoot) ? nestedRoot : selected;
   writePathSettings({ ...settings, [kind]: selectedValue });
-  const status = await runContactSync(["status"]);
+  const status = await executeContactSync(["status"]);
   if (!selectingExe && !status.ok) {
     writePathSettings(settings);
     return status;
@@ -139,7 +178,7 @@ async function chooseWechatPath(kind) {
 
 async function runContactSync(args) {
   const command = args[0] ?? "status";
-  if (command === "status") return executeContactSync(args);
+  if (command === "status") return readCachedContactStatus();
   const lock = runtimeCoordinator?.acquire({ state: "syncing_contacts", taskId: "", account: "unknown", phase: command });
   if (lock && !lock.ok) return { ok: false, action: command, blocked_reason: lock.error, error: "当前正在进行主动触达或其他微信操作，联系人同步已禁用", contacts: [] };
   try {
@@ -161,7 +200,7 @@ function registerContactSyncIpc({ dataDir, activeTouchDir, coordinator } = {}) {
   ipcMain.handle("contact-sync:auto-detect-paths", async () => {
     const settings = readPathSettings();
     writePathSettings({ wechatExePath: "", wechatRoot: "" });
-    const result = await runContactSync(["status"]);
+    const result = await executeContactSync(["status"]);
     if (!result.ok || !result.state?.wechat_root) {
       writePathSettings(settings);
       if (!result.ok) return result;

@@ -158,13 +158,24 @@ function createFloatingWindow() {
   return floatingWindow;
 }
 
+function exclusionReasonCounts(entries = []) {
+  return entries.reduce((counts, entry) => {
+    const reasonCode = String(entry?.reason_code || "unknown");
+    counts[reasonCode] = (counts[reasonCode] || 0) + 1;
+    return counts;
+  }, {});
+}
+
 function contactPreview(task = loadTaskState(activeTouchDir())) {
   if (task.id && task.results.length && !["idle", "completed", "stopped"].includes(task.status)) {
     return {
       frozen: true,
-      eligible: task.results.map((result) => result.contact),
-      excluded: task.excluded_contacts || [],
-      total: Number(task.eligible_total || task.results.length) + Number(task.excluded_total || 0)
+      eligible: [],
+      excluded: [],
+      total: Number(task.eligible_total || task.results.length) + Number(task.excluded_total || 0),
+      eligible_count: Number(task.eligible_total || task.results.length),
+      excluded_count: Number(task.excluded_total || 0),
+      reason_counts: exclusionReasonCounts(task.excluded_contacts || [])
     };
   }
   const rows = readContacts();
@@ -174,19 +185,37 @@ function contactPreview(task = loadTaskState(activeTouchDir())) {
       frozen: false,
       eligible: classified.eligible.map((contact) => ({ ...contact })),
       excluded: classified.excluded,
-      total: rows.length
+      total: rows.length,
+      eligible_count: classified.eligible.length,
+      excluded_count: classified.excluded.length,
+      reason_counts: classified.reasonCounts
     };
   }
   const eligible = rows.filter((contact) => contact?.allowed !== false);
-  return { frozen: false, eligible, excluded: [], total: rows.length };
+  return { frozen: false, eligible, excluded: [], total: rows.length, eligible_count: eligible.length, excluded_count: rows.length - eligible.length, reason_counts: {} };
 }
 
 function taskPayload(task = loadTaskState(activeTouchDir())) {
   return { ...publicTaskState(task), preview: contactPreview(task) };
 }
 
+function compactTaskPayload(task = loadTaskState(activeTouchDir())) {
+  const payload = publicTaskState(task, { includeResults: false });
+  const results = Array.isArray(task?.results) ? task.results : [];
+  const currentIndex = Math.max(0, Number(task?.current_index || 0));
+  const batchStart = Math.max(0, Number(task?.batch_start_index ?? currentIndex));
+  const batchEnd = Math.min(results.length, Math.max(Number(task?.batch_end_index || 0), currentIndex + 2));
+  return {
+    ...payload,
+    task: {
+      ...payload.task,
+      result_updates: results.slice(Math.max(0, batchStart - 1), batchEnd)
+    }
+  };
+}
+
 function emitTaskUpdate(task) {
-  const payload = taskPayload(task);
+  const payload = compactTaskPayload(task || loadTaskState(activeTouchDir()));
   const current = payload.task?.current_result;
   const diagnosticSnapshot = {
     task_id: payload.task?.id || "",
@@ -738,6 +767,12 @@ function buildRunnableTask(script, excludedContactIds = []) {
   if (invalidExcludedId) return { ok: false, blocked_reason: "excluded_contact_invalid", error: "本次移出的联系人已不在当前同步通讯录，请刷新后重试" };
   const classification = executionMode === "real_send" ? classifyContacts(contacts, { excludedContactIds }) : null;
   const available = classification ? classification.eligible : contacts.filter((contact) => contact?.allowed !== false);
+  diagnostics().event("active_touch", "classification.summary", {
+    total_count: contacts.length,
+    eligible_count: available.length,
+    excluded_count: Math.max(0, contacts.length - available.length),
+    reason_counts: classification?.reasonCounts || {}
+  });
   if (!available.length) {
     return excludedContactIds.length
       ? { ok: false, blocked_reason: "no_eligible_contacts", error: "本次联系人已全部移出，请恢复至少一位联系人" }
@@ -816,7 +851,8 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
 
     void runTaskLoop();
-    return emitTaskUpdate();
+    emitTaskUpdate();
+    return taskPayload();
   });
 
   ipcMain.handle("touch-task:status", () => taskPayload());
@@ -869,7 +905,8 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
             runtimeCoordinator?.release(runnerOwner);
             runnerOwner = "";
           }
-          return emitTaskUpdate(verified);
+          emitTaskUpdate(verified);
+          return taskPayload(verified);
         }
         if (verification.blocked) {
           if (runnerOwner) runtimeCoordinator?.release(runnerOwner);
@@ -888,7 +925,8 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
       }
     }
     void runTaskLoop();
-    return emitTaskUpdate();
+    emitTaskUpdate();
+    return taskPayload();
   });
 
   ipcMain.handle("touch-task:stop", () => {
@@ -942,7 +980,8 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
       runtimeCoordinator?.release(runnerOwner);
       runnerOwner = "";
     }
-    return emitTaskUpdate(nextTask);
+    emitTaskUpdate(nextTask);
+    return taskPayload(nextTask);
   });
 
   ipcMain.handle("touch-task:show-main", () => {

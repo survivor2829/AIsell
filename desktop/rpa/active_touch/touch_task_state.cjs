@@ -139,10 +139,16 @@ function classifyContacts(contacts = [], options = {}) {
     else if (userExcludedIds.has(String(contact?.id ?? "").trim())) excluded.push({ contact: publicContact(contact), reason_code: "user_excluded", reason: labels.user_excluded });
     else eligible.push(contact);
   }
+  const reasonCounts = excluded.reduce((counts, entry) => {
+    const reasonCode = String(entry?.reason_code || "unknown");
+    counts[reasonCode] = (counts[reasonCode] || 0) + 1;
+    return counts;
+  }, {});
   return {
     eligible,
     excluded,
-    accountId: eligible.length ? String(eligible[0]?.wechatAccountId ?? "").trim() : ""
+    accountId: eligible.length ? String(eligible[0]?.wechatAccountId ?? "").trim() : "",
+    reasonCounts
   };
 }
 
@@ -519,11 +525,12 @@ function resultAt(task, index) {
   return task.results[index] ?? null;
 }
 
-function publicTaskState(task) {
+function publicTaskState(task, options = {}) {
   const normalized = normalizeTask(task);
   const displayIndex = activeResultIndex(normalized);
   const current = resultAt(normalized, displayIndex);
   const next = resultAt(normalized, displayIndex + 1);
+  const includeResults = options.includeResults !== false;
   return {
     ok: true,
     task: {
@@ -557,7 +564,7 @@ function publicTaskState(task) {
       current_contact: current?.contact ?? null,
       next_contact: next?.contact ?? null,
       current_result: current ?? null,
-      results: normalized.results
+      ...(includeResults ? { results: normalized.results } : {})
     }
   };
 }

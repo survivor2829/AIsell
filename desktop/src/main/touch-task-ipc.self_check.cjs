@@ -7,6 +7,7 @@ const path = require("node:path");
 const handlers = new Map();
 const windows = [];
 let aiFailuresRemaining = new Map([["wxid_batch_2", 1]]);
+const taskUpdates = [];
 let aiFailureCodes = new Map();
 let sessionVerificationResult = { ok: true };
 let bubbleVerificationResult = { ok: false, state: { real_send_status: "outcome_unknown" } };
@@ -15,7 +16,7 @@ class FakeWindow {
   constructor() {
     this.destroyed = false;
     this.listeners = new Map();
-    this.webContents = { send() {} };
+    this.webContents = { send(channel, payload) { if (channel === "touch-task:update") taskUpdates.push(payload); } };
     windows.push(this);
   }
   isDestroyed() { return this.destroyed; }
@@ -193,6 +194,12 @@ async function waitFor(read, predicate, timeoutMs = 3000) {
     const stop = handlers.get("touch-task:stop");
     const resolveUnknown = handlers.get("touch-task:resolve-unknown");
     await start({}, { script: "默认触达话术", clickToken: "trusted-start" });
+    const initial = await status();
+    assert.equal(initial.task.results.length, 51, "status responses must retain the complete recoverable task snapshot");
+    const compactUpdate = taskUpdates.find((payload) => Array.isArray(payload.task?.result_updates));
+    assert.ok(compactUpdate, "task events must include compact result updates");
+    assert.equal(Object.hasOwn(compactUpdate.task, "results"), false, "task events must not resend every contact result");
+    assert.equal(compactUpdate.task.result_updates.length <= 50, true, "task events must stay bounded to the active batch");
     assert.equal((await start({}, { script: "默认触达话术", clickToken: "trusted-start" })).blocked_reason, "trusted_batch_click_required");
     const firstBatchPaused = await waitFor(status, (value) => value.task?.status === "paused" && value.task?.current_index === 50);
     assert.match(firstBatchPaused.task.pause_reason, /第 1 批已完成（50\/51）/);

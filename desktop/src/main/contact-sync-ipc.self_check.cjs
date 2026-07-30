@@ -8,6 +8,8 @@ const path = require("node:path");
 const handlers = new Map();
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-contact-sync-ipc-"));
 const dataDir = path.join(root, "contact_sync");
+const activeTouchDir = path.join(root, "active_touch");
+let spawnCalls = 0;
 const parentRoot = path.join(root, "微信数据");
 const validRoot = path.join(parentRoot, "xwechat_files");
 const invalidRoot = path.join(root, "empty", "xwechat_files");
@@ -19,11 +21,16 @@ let autoExecutableEmpty = false;
 
 fs.mkdirSync(validRoot, { recursive: true });
 fs.mkdirSync(invalidRoot, { recursive: true });
+fs.mkdirSync(dataDir, { recursive: true });
+fs.mkdirSync(activeTouchDir, { recursive: true });
+fs.writeFileSync(path.join(dataDir, "state.json"), JSON.stringify({ status: "synced", account_name: "account-a", contact_count: 1 }), "utf8");
+fs.writeFileSync(path.join(activeTouchDir, "contacts.json"), JSON.stringify([{ id: "contact-a", name: "A", wechatAccountId: "account-a" }]), "utf8");
 
 function fakeSpawn(_command, args) {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
+  spawnCalls += 1;
   setImmediate(() => {
     if (executorFailure) {
       child.stdout.emit("data", Buffer.from(JSON.stringify({ ok: false, action: "status", error: "executor failed", contacts: [] })));
@@ -65,11 +72,17 @@ delete require.cache[require.resolve(modulePath)];
 const { registerContactSyncIpc } = require(modulePath);
 Module._load = originalLoad;
 
-registerContactSyncIpc({ dataDir });
+registerContactSyncIpc({ dataDir, activeTouchDir });
 
 (async () => {
   const chooseRoot = handlers.get("contact-sync:choose-wechat-root");
   const autoDetect = handlers.get("contact-sync:auto-detect-paths");
+
+  const cachedStatus = await handlers.get("contact-sync:status")();
+  assert.equal(cachedStatus.state.status, "synced");
+  assert.equal(cachedStatus.contacts.length, 1);
+  assert.equal(cachedStatus.contacts[0].wechatAccountId, "account-a");
+  assert.equal(spawnCalls, 0, "ordinary status reads must not spawn Electron or PowerShell executors");
 
   const selected = await chooseRoot();
   assert.equal(selected.state.wechat_root, validRoot);

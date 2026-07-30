@@ -1895,6 +1895,51 @@ td .text-button {
   font-weight: 800;
 }
 
+.contact-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-top: 1px solid #eaecf0;
+  color: #475467;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.contact-pagination > div {
+  display: flex;
+  gap: 8px;
+}
+
+.contact-pagination .secondary-button {
+  min-height: 32px;
+  padding: 6px 12px;
+}
+
+.exclusion-summary {
+  margin: 12px 0 18px;
+  padding: 12px 14px;
+  border: 1px solid #fed7aa;
+  border-radius: 10px;
+  background: #fff7ed;
+  color: #7c2d12;
+}
+
+.exclusion-summary > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.exclusion-summary span {
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #ffedd5;
+  font-size: 12px;
+}
+
 .touch-row-actions {
   white-space: normal;
 }
