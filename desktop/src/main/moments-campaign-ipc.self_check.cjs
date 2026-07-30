@@ -98,12 +98,38 @@ async function main() {
         ok: false,
         status: "blocked",
         blocked_reason: "moments_menu_ambiguous",
+        primary_reason: "moments_menu_ambiguous",
+        cleanup_reason: "moments_menu_close_blocked",
         real_action_attempted: false,
         diagnostics: {
           requested_action: "like",
           menu_read_retry_count: 1,
           first_reason: "moments_menu_ambiguous",
           first_segment_count: 2,
+          first_like_ocr_matched: false,
+          first_like_base_ocr_matched: false,
+          first_targeted_like_ocr_attempted: true,
+          first_targeted_like_ocr_matched: false,
+          first_comment_ocr_matched: false,
+          first_like_signature_ok: true,
+          first_comment_signature_ok: true,
+          first_like_signature_edge_clear: false,
+          first_comment_signature_edge_clear: true,
+          first_like_resolution_mode: "visual_signature",
+          first_width_ratio: 0.7,
+          first_height_ratio: 1,
+          second_like_ocr_matched: false,
+          second_like_base_ocr_matched: false,
+          second_targeted_like_ocr_attempted: true,
+          second_targeted_like_ocr_matched: "false",
+          second_comment_ocr_matched: true,
+          second_like_signature_ok: false,
+          second_comment_signature_ok: true,
+          second_like_signature_edge_clear: false,
+          second_comment_signature_edge_clear: true,
+          second_like_resolution_mode: "unknown_mode",
+          second_width_ratio: -1,
+          second_height_ratio: 11,
           second_segment_count: null,
           second_fallback_candidate_count: "",
           raw_ocr_text: "PRIVATE-CAMPAIGN-OCR"
@@ -125,7 +151,35 @@ async function main() {
   assert.equal(likeRecognitionPartial.skipped_count, 1);
   assert.equal(likeRecognitionPartial.last_reason, "target_not_reached");
   const likeRecognitionEvent = likeRecognitionEvents.find((entry) => entry.event === "campaign.like_finished");
-  assert.deepEqual(likeRecognitionEvent.details.diagnostics, { requested_action: "like", menu_read_retry_count: 1, first_reason: "moments_menu_ambiguous", first_segment_count: 2 });
+  assert.deepEqual(likeRecognitionEvent.details.diagnostics, {
+    requested_action: "like",
+    menu_read_retry_count: 1,
+    first_reason: "moments_menu_ambiguous",
+    first_segment_count: 2,
+    first_like_ocr_matched: false,
+    first_like_base_ocr_matched: false,
+    first_targeted_like_ocr_attempted: true,
+    first_targeted_like_ocr_matched: false,
+    first_comment_ocr_matched: false,
+    first_like_signature_ok: true,
+    first_comment_signature_ok: true,
+    first_like_signature_edge_clear: false,
+    first_comment_signature_edge_clear: true,
+    first_like_resolution_mode: "visual_signature",
+    first_width_ratio: 0.7,
+    first_height_ratio: 1,
+    second_like_ocr_matched: false,
+    second_like_base_ocr_matched: false,
+    second_targeted_like_ocr_attempted: true,
+    second_comment_ocr_matched: true,
+    second_like_signature_ok: false,
+    second_comment_signature_ok: true,
+    second_like_signature_edge_clear: false,
+    second_comment_signature_edge_clear: true,
+  });
+  assert.equal(likeRecognitionEvent.details.reason, "moments_menu_ambiguous");
+  assert.equal(likeRecognitionEvent.details.primary_reason, "moments_menu_ambiguous");
+  assert.equal(likeRecognitionEvent.details.cleanup_reason, "moments_menu_close_blocked");
   assert.equal(JSON.stringify(likeRecognitionEvent).includes("PRIVATE-CAMPAIGN-OCR"), false);
 
   const topPositionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-top-position-"));

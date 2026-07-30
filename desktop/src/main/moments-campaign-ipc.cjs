@@ -97,6 +97,42 @@ function sanitizeMomentsMenuDiagnostics(value) {
     const count = value[key];
     if (Number.isSafeInteger(count) && count >= 0 && count <= 1_000) sanitized[key] = count;
   }
+  for (const key of [
+    "first_like_ocr_matched",
+    "first_like_base_ocr_matched",
+    "first_targeted_like_ocr_attempted",
+    "first_targeted_like_ocr_matched",
+    "first_comment_ocr_matched",
+    "first_like_signature_ok",
+    "first_comment_signature_ok",
+    "first_like_signature_edge_clear",
+    "first_comment_signature_edge_clear",
+    "second_like_ocr_matched",
+    "second_like_base_ocr_matched",
+    "second_targeted_like_ocr_attempted",
+    "second_targeted_like_ocr_matched",
+    "second_comment_ocr_matched",
+    "second_like_signature_ok",
+    "second_comment_signature_ok",
+    "second_like_signature_edge_clear",
+    "second_comment_signature_edge_clear"
+  ]) {
+    if (typeof value[key] === "boolean") sanitized[key] = value[key];
+  }
+  for (const key of ["first_like_resolution_mode", "second_like_resolution_mode"]) {
+    if (["ocr", "targeted_ocr", "visual_signature", "ambiguous"].includes(value[key])) {
+      sanitized[key] = value[key];
+    }
+  }
+  for (const key of [
+    "first_width_ratio",
+    "first_height_ratio",
+    "second_width_ratio",
+    "second_height_ratio"
+  ]) {
+    const ratio = value[key];
+    if (Number.isFinite(ratio) && ratio >= 0 && ratio <= 10) sanitized[key] = ratio;
+  }
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;
 }
 function createMomentsCampaignController(options = {}) {
@@ -446,10 +482,18 @@ function createMomentsCampaignController(options = {}) {
                 }
               );
               const likeDiagnostics = sanitizeMomentsMenuDiagnostics(liked?.diagnostics);
+              const likePrimaryReason = String(
+                liked?.primary_reason
+                || liked?.blocked_reason
+                || liked?.reason
+                || ""
+              );
               record("campaign.like_finished", {
                 ok: liked?.ok === true,
                 status: liked?.status || "",
-                reason: liked?.blocked_reason || liked?.reason || "",
+                reason: likePrimaryReason,
+                primary_reason: String(liked?.primary_reason || ""),
+                cleanup_reason: String(liked?.cleanup_reason || ""),
                 no_op: liked?.no_op === true,
                 real_action_attempted: liked?.real_action_attempted,
                 ...(likeDiagnostics ? { diagnostics: likeDiagnostics } : {})

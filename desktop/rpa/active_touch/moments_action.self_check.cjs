@@ -1092,34 +1092,80 @@ async function main() {
         inspectMenu: () => ({
           ok: false,
           reason: "moments_menu_ambiguous",
+          cleanupReason: "moments_menu_close_blocked",
           diagnostics: {
             requestedAction: "like",
             menuReadRetryCount: 1,
             firstReason: "moments_menu_surface_ambiguous",
             secondReason: "moments_menu_ambiguous",
             firstSegmentCount: 2,
-            secondSegmentCount: 3,
+            secondSegmentCount: -1,
             firstStrictCandidateCount: 0,
             secondStrictCandidateCount: 0,
             firstFallbackCandidateCount: 2,
             secondFallbackCandidateCount: 3,
+            firstLikeOcrMatched: false,
+            firstLikeBaseOcrMatched: false,
+            firstTargetedLikeOcrAttempted: true,
+            firstTargetedLikeOcrMatched: false,
+            firstCommentOcrMatched: false,
+            firstLikeSignatureOk: true,
+            firstCommentSignatureOk: true,
+            firstLikeSignatureEdgeClear: false,
+            firstCommentSignatureEdgeClear: true,
+            firstLikeResolutionMode: "targeted_ocr",
+            firstWidthRatio: 0.7,
+            firstHeightRatio: 1,
+            secondLikeOcrMatched: false,
+            secondLikeBaseOcrMatched: false,
+            secondTargetedLikeOcrAttempted: true,
+            secondTargetedLikeOcrMatched: "false",
+            secondCommentOcrMatched: true,
+            secondLikeSignatureOk: false,
+            secondCommentSignatureOk: true,
+            secondLikeSignatureEdgeClear: false,
+            secondCommentSignatureEdgeClear: true,
+            secondLikeResolutionMode: "unknown_mode",
+            secondWidthRatio: Number.POSITIVE_INFINITY,
+            secondHeightRatio: 11,
             rawOcrText: "PRIVATE-MENU-OCR"
           }
         })
       })
     });
     assert.equal(inspectDiagnostics.blocked_reason, "moments_menu_ambiguous");
+    assert.equal(inspectDiagnostics.primary_reason, "moments_menu_ambiguous");
+    assert.equal(inspectDiagnostics.cleanup_reason, "moments_menu_close_blocked");
     assert.deepEqual(inspectDiagnostics.diagnostics, {
       requested_action: "like",
       menu_read_retry_count: 1,
       first_reason: "moments_menu_surface_ambiguous",
       second_reason: "moments_menu_ambiguous",
       first_segment_count: 2,
-      second_segment_count: 3,
       first_strict_candidate_count: 0,
       second_strict_candidate_count: 0,
       first_fallback_candidate_count: 2,
-      second_fallback_candidate_count: 3
+      second_fallback_candidate_count: 3,
+      first_like_ocr_matched: false,
+      first_like_base_ocr_matched: false,
+      first_targeted_like_ocr_attempted: true,
+      first_targeted_like_ocr_matched: false,
+      first_comment_ocr_matched: false,
+      first_like_signature_ok: true,
+      first_comment_signature_ok: true,
+      first_like_signature_edge_clear: false,
+      first_comment_signature_edge_clear: true,
+      first_like_resolution_mode: "targeted_ocr",
+      first_width_ratio: 0.7,
+      first_height_ratio: 1,
+      second_like_ocr_matched: false,
+      second_like_base_ocr_matched: false,
+      second_targeted_like_ocr_attempted: true,
+      second_comment_ocr_matched: true,
+      second_like_signature_ok: false,
+      second_comment_signature_ok: true,
+      second_like_signature_edge_clear: false,
+      second_comment_signature_edge_clear: true,
     });
     assert.equal(JSON.stringify(inspectDiagnostics).includes("PRIVATE-MENU-OCR"), false);
 

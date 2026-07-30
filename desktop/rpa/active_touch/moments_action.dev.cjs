@@ -321,6 +321,46 @@ function sanitizeVisualMenuDiagnostics(raw) {
       sanitized[target] = raw[source];
     }
   }
+  for (const [source, target] of [
+    ["firstLikeOcrMatched", "first_like_ocr_matched"],
+    ["firstLikeBaseOcrMatched", "first_like_base_ocr_matched"],
+    ["firstTargetedLikeOcrAttempted", "first_targeted_like_ocr_attempted"],
+    ["firstTargetedLikeOcrMatched", "first_targeted_like_ocr_matched"],
+    ["firstCommentOcrMatched", "first_comment_ocr_matched"],
+    ["firstLikeSignatureOk", "first_like_signature_ok"],
+    ["firstCommentSignatureOk", "first_comment_signature_ok"],
+    ["firstLikeSignatureEdgeClear", "first_like_signature_edge_clear"],
+    ["firstCommentSignatureEdgeClear", "first_comment_signature_edge_clear"],
+    ["secondLikeOcrMatched", "second_like_ocr_matched"],
+    ["secondLikeBaseOcrMatched", "second_like_base_ocr_matched"],
+    ["secondTargetedLikeOcrAttempted", "second_targeted_like_ocr_attempted"],
+    ["secondTargetedLikeOcrMatched", "second_targeted_like_ocr_matched"],
+    ["secondCommentOcrMatched", "second_comment_ocr_matched"],
+    ["secondLikeSignatureOk", "second_like_signature_ok"],
+    ["secondCommentSignatureOk", "second_comment_signature_ok"],
+    ["secondLikeSignatureEdgeClear", "second_like_signature_edge_clear"],
+    ["secondCommentSignatureEdgeClear", "second_comment_signature_edge_clear"]
+  ]) {
+    if (typeof raw[source] === "boolean") sanitized[target] = raw[source];
+  }
+  for (const [source, target] of [
+    ["firstLikeResolutionMode", "first_like_resolution_mode"],
+    ["secondLikeResolutionMode", "second_like_resolution_mode"]
+  ]) {
+    if (["ocr", "targeted_ocr", "visual_signature", "ambiguous"].includes(raw[source])) {
+      sanitized[target] = raw[source];
+    }
+  }
+  for (const [source, target] of [
+    ["firstWidthRatio", "first_width_ratio"],
+    ["firstHeightRatio", "first_height_ratio"],
+    ["secondWidthRatio", "second_width_ratio"],
+    ["secondHeightRatio", "second_height_ratio"]
+  ]) {
+    if (Number.isFinite(raw[source]) && raw[source] >= 0 && raw[source] <= 10) {
+      sanitized[target] = raw[source];
+    }
+  }
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;
 }
 function sanitizeCommentDriverDiagnostics(raw) {
@@ -950,14 +990,16 @@ async function inspectWithDriver(driver, context, action, attemptKey = "", comme
     return { ok: false, reason: "moments_menu_driver_failed" };
   }
   const diagnostics = sanitizeVisualMenuDiagnostics(result?.diagnostics);
+  const cleanupReason = safeDiagnosticCode(result?.cleanupReason);
   if (!validMenuProof(result, context.observationId, action)) {
     return {
       ok: false,
       reason: safeDriverReason(result) || "moments_menu_proof_invalid",
-      diagnostics
+      diagnostics,
+      cleanupReason
     };
   }
-  return { ok: true, menuState: result.menuState, diagnostics };
+  return { ok: true, menuState: result.menuState, diagnostics, cleanupReason };
 }
 
 async function inspectCommentDraftWithDriver(driver, context, commentText) {
@@ -1021,7 +1063,11 @@ async function inspectMomentsMenu(options = {}) {
 
   const inspected = await inspectWithDriver(driver, context, "inspect");
   if (!inspected.ok) {
-    return persistBlocked(baseDir, context.state, action, context.observationId, inspected.reason);
+    return persistBlocked(baseDir, context.state, action, context.observationId, inspected.reason, {
+      primary_reason: inspected.reason,
+      diagnostics: inspected.diagnostics,
+      cleanup_reason: inspected.cleanupReason
+    });
   }
 
   let commentDraftCheck = null;
@@ -1312,7 +1358,12 @@ async function executeMomentsLike(options = {}) {
   }
   const inspected = await inspectWithDriver(driver, context, "like", attemptKey);
   if (!inspected.ok) {
-    return persistBlocked(baseDir, context.state, action, context.observationId, inspected.reason, { attempt_key: attemptKey, diagnostics: inspected.diagnostics });
+    return persistBlocked(baseDir, context.state, action, context.observationId, inspected.reason, {
+      attempt_key: attemptKey,
+      primary_reason: inspected.reason,
+      diagnostics: inspected.diagnostics,
+      cleanup_reason: inspected.cleanupReason
+    });
   }
   if (!preparedSnapshotIsFresh(context.preparedAtMs)) {
     return persistBlocked(baseDir, context.state, action, context.observationId, "moments_dry_run_expired", { attempt_key: attemptKey });
@@ -1615,7 +1666,12 @@ async function executeMomentsComment(options = {}) {
     ? { ok: true, menuState: "unknown" }
     : await inspectWithDriver(driver, context, "comment", attemptKey, commentText);
   if (!inspected.ok) {
-    return persistBlocked(baseDir, context.state, action, context.observationId, inspected.reason, { attempt_key: attemptKey });
+    return persistBlocked(baseDir, context.state, action, context.observationId, inspected.reason, {
+      attempt_key: attemptKey,
+      primary_reason: inspected.reason,
+      diagnostics: inspected.diagnostics,
+      cleanup_reason: inspected.cleanupReason
+    });
   }
   if (!preparedSnapshotIsFresh(context.preparedAtMs)) {
     return persistBlocked(baseDir, context.state, action, context.observationId, "moments_dry_run_expired", { attempt_key: attemptKey });

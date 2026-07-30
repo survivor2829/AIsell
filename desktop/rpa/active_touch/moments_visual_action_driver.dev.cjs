@@ -2149,8 +2149,93 @@ function Get-VisualMenuLabelSignature($frame, $region) {
     ok = $true
     pixelCount = $pixelCount
     bounds = $bounds
+    horizontalEdgeClear = ($minimumX -gt $left -and $maximumX -lt ($right - 1))
     centerX = [double]$bounds.left + ([double]$bounds.width / 2.0)
     centerY = [double]$bounds.top + ([double]$bounds.height / 2.0)
+  }
+}
+
+function Get-VisualMenuTargetedOcrRegion($frame, $signature, $sourceRegion) {
+  if ($signature -eq $null -or -not $signature.ok) { return $null }
+  $paddingX = [Math]::Max(7.0, [Math]::Ceiling([double]$signature.bounds.width * 0.45))
+  $paddingY = [Math]::Max(5.0, [Math]::Ceiling([double]$signature.bounds.height * 0.55))
+  $sourceLeft = [Math]::Max(0.0, [double]$sourceRegion.left)
+  $sourceTop = [Math]::Max(0.0, [double]$sourceRegion.top)
+  $sourceRight = [Math]::Min([double]$frame.width, [double]$sourceRegion.left + [double]$sourceRegion.width)
+  $sourceBottom = [Math]::Min([double]$frame.height, [double]$sourceRegion.top + [double]$sourceRegion.height)
+  $left = [Math]::Max($sourceLeft, [double]$signature.bounds.left - $paddingX)
+  $top = [Math]::Max($sourceTop, [double]$signature.bounds.top - $paddingY)
+  $right = [Math]::Min($sourceRight, [double]$signature.bounds.left + [double]$signature.bounds.width + $paddingX)
+  $bottom = [Math]::Min($sourceBottom, [double]$signature.bounds.top + [double]$signature.bounds.height + $paddingY)
+  $region = @{
+    left = $left
+    top = $top
+    width = $right - $left
+    height = $bottom - $top
+    targetedLike = $true
+  }
+  if (-not (Test-VisualBounds $region 10 10)) { return $null }
+  return $region
+}
+
+function Resolve-VisualLikeMenuState($likeEntry, $likeSignature, $commentSignature, [string]$ocrMode = "ocr") {
+  $widthRatio = 0.0
+  $heightRatio = 0.0
+  if ($likeSignature.ok -and $commentSignature.ok) {
+    $widthRatio = [double]$likeSignature.bounds.width / [double]$commentSignature.bounds.width
+    $heightRatio = [double]$likeSignature.bounds.height / [double]$commentSignature.bounds.height
+  }
+  if ($likeEntry -ne $null) {
+    $targetedLikeProofOk = $ocrMode -cne "targeted_ocr" -or
+      [string]$likeEntry.text -cne "赞" -or
+      ($likeSignature.ok -and $commentSignature.ok -and
+        [bool]$likeSignature.horizontalEdgeClear -and
+        [bool]$commentSignature.horizontalEdgeClear -and
+        $widthRatio -ge 0.32 -and $widthRatio -le 0.68 -and
+        $heightRatio -ge 0.76 -and $heightRatio -le 1.24)
+    if (-not $targetedLikeProofOk) {
+      return @{
+        entry = $null
+        mode = "ambiguous"
+        widthRatio = $widthRatio
+        heightRatio = $heightRatio
+      }
+    }
+    return @{
+      entry = $likeEntry
+      mode = $(if ($ocrMode -ceq "targeted_ocr") { "targeted_ocr" } else { "ocr" })
+      widthRatio = $widthRatio
+      heightRatio = $heightRatio
+    }
+  }
+  if ($likeSignature.ok -and $commentSignature.ok -and
+    [bool]$likeSignature.horizontalEdgeClear -and
+    [bool]$commentSignature.horizontalEdgeClear -and
+    $heightRatio -ge 0.76 -and $heightRatio -le 1.24) {
+    $visualState = ""
+    # A wider two-character label can safely prove the no-op "取消" state.
+    # A single visible glyph must still be read as "赞" by OCR before clicking,
+    # because a partially obscured "取消" label could otherwise be mistaken for it.
+    if ($widthRatio -ge 0.78 -and $widthRatio -le 1.42) { $visualState = "取消" }
+    if ($visualState) {
+      return @{
+        entry = @{
+          text = $visualState
+          bounds = $likeSignature.bounds
+          centerX = $likeSignature.centerX
+          centerY = $likeSignature.centerY
+        }
+        mode = "visual_signature"
+        widthRatio = $widthRatio
+        heightRatio = $heightRatio
+      }
+    }
+  }
+  return @{
+    entry = $null
+    mode = "ambiguous"
+    widthRatio = $widthRatio
+    heightRatio = $heightRatio
   }
 }
 
@@ -2182,28 +2267,51 @@ function Read-OpenVisualMenuOnce($lock, $menu, [string]$requestedAction) {
     $commentScaledOcr = Get-MomentsScaledOcrObservation $frame $commentRegion 4
     if ($likeEntry -eq $null) { $likeEntry = Get-VisualMenuTextEntry $likeScaledOcr $likeRegion $frame $allowedLike }
     if ($commentEntry -eq $null) { $commentEntry = Get-VisualMenuTextEntry $commentScaledOcr $commentRegion $frame @("评论") }
+    $likeBaseOcrMatched = ($likeEntry -ne $null)
+    $commentOcrMatched = ($commentEntry -ne $null)
     $likeSignature = Get-VisualMenuLabelSignature $frame $likeRegion
     $commentSignature = Get-VisualMenuLabelSignature $frame $commentRegion
-    $widthRatio = 0.0
-    $heightRatio = 0.0
-    if ($likeSignature.ok -and $commentSignature.ok) {
-      $widthRatio = [double]$likeSignature.bounds.width / [double]$commentSignature.bounds.width
-      $heightRatio = [double]$likeSignature.bounds.height / [double]$commentSignature.bounds.height
-    }
-    if ($likeEntry -eq $null -and $commentEntry -ne $null -and
-      $likeSignature.ok -and $commentSignature.ok -and
-      $heightRatio -ge 0.76 -and $heightRatio -le 1.24) {
-      $visualState = ""
-      if ($widthRatio -ge 0.32 -and $widthRatio -le 0.68) { $visualState = "赞" }
-      elseif ($widthRatio -ge 0.78 -and $widthRatio -le 1.42) { $visualState = "取消" }
-      if ($visualState) {
-        $likeEntry = @{
-          text = $visualState
-          bounds = $likeSignature.bounds
-          centerX = $likeSignature.centerX
-          centerY = $likeSignature.centerY
+    $targetedLikeOcrAttempted = $false
+    $targetedLikeOcrMatched = $false
+    $targetedLikeRegion = $null
+    if ($requestedAction -ne "comment" -and $likeEntry -eq $null -and $likeSignature.ok) {
+      $targetedLikeRegion = Get-VisualMenuTargetedOcrRegion $frame $likeSignature $likeRegion
+      if ($targetedLikeRegion -ne $null) {
+        $targetedLikeOcrAttempted = $true
+        $targetedLikeOcr = Get-MomentsHighContrastOcrObservation $frame $targetedLikeRegion 5
+        $likeEntry = Get-VisualMenuTextEntry $targetedLikeOcr $targetedLikeRegion $frame $allowedLike
+        if ($likeEntry -eq $null) {
+          $targetedLikeScaledOcr = Get-MomentsScaledOcrObservation $frame $targetedLikeRegion 4
+          $likeEntry = Get-VisualMenuTextEntry $targetedLikeScaledOcr $targetedLikeRegion $frame $allowedLike
         }
+        $targetedLikeOcrMatched = ($likeEntry -ne $null)
       }
+    }
+    $likeOcrMatched = ($likeEntry -ne $null)
+    $likeResolution = Resolve-VisualLikeMenuState $likeEntry $likeSignature $commentSignature $(if ($targetedLikeOcrMatched) { "targeted_ocr" } else { "ocr" })
+    $likeEntry = $likeResolution.entry
+    $widthRatio = [double]$likeResolution.widthRatio
+    $heightRatio = [double]$likeResolution.heightRatio
+    $menuDiagnostics = @{
+      segmentCount = [int]$surface.diagnostics.segmentCount
+      strictCandidateCount = [int]$surface.diagnostics.strictCandidateCount
+      fallbackCandidateCount = [int]$surface.diagnostics.fallbackCandidateCount
+      likeOcrMatched = [bool]$likeOcrMatched
+      likeBaseOcrMatched = [bool]$likeBaseOcrMatched
+      targetedLikeOcrAttempted = [bool]$targetedLikeOcrAttempted
+      targetedLikeOcrMatched = [bool]$targetedLikeOcrMatched
+      commentOcrMatched = [bool]$commentOcrMatched
+      likeSignatureOk = [bool]$likeSignature.ok
+      commentSignatureOk = [bool]$commentSignature.ok
+      likeSignatureEdgeClear = [bool]$likeSignature.horizontalEdgeClear
+      commentSignatureEdgeClear = [bool]$commentSignature.horizontalEdgeClear
+      likeResolutionMode = [string]$likeResolution.mode
+      widthRatio = $widthRatio
+      heightRatio = $heightRatio
+      surface = $surface.bounds
+      likeRegion = $likeRegion
+      targetedLikeRegion = $targetedLikeRegion
+      commentRegion = $commentRegion
     }
     if ($requestedAction -ceq "comment" -and $commentEntry -eq $null) {
       $commentEntry = @{
@@ -2225,25 +2333,7 @@ function Read-OpenVisualMenuOnce($lock, $menu, [string]$requestedAction) {
       return @{
         ok = $false
         reason = "moments_menu_ambiguous"
-        diagnostics = @{
-          segmentCount = [int]$surface.diagnostics.segmentCount
-          strictCandidateCount = [int]$surface.diagnostics.strictCandidateCount
-          fallbackCandidateCount = [int]$surface.diagnostics.fallbackCandidateCount
-          surface = $surface.bounds
-          likeRegion = $likeRegion
-          commentRegion = $commentRegion
-          likeText = $(if ($likeOcr -and $likeOcr.ok) { [string]$likeOcr.text } else { [string]$likeOcr.reason })
-          commentText = $(if ($commentOcr -and $commentOcr.ok) { [string]$commentOcr.text } else { [string]$commentOcr.reason })
-          likeScaledText = $(if ($likeScaledOcr -and $likeScaledOcr.ok) { [string]$likeScaledOcr.text } else { [string]$likeScaledOcr.reason })
-          commentScaledText = $(if ($commentScaledOcr -and $commentScaledOcr.ok) { [string]$commentScaledOcr.text } else { [string]$commentScaledOcr.reason })
-          likeDetail = [string]$likeOcr.detail
-          likeScaledDetail = [string]$likeScaledOcr.detail
-          commentScaledDetail = [string]$commentScaledOcr.detail
-          likeSignature = $likeSignature
-          commentSignature = $commentSignature
-          widthRatio = $widthRatio
-          heightRatio = $heightRatio
-        }
+        diagnostics = $menuDiagnostics
       }
     }
     return @{
@@ -2252,7 +2342,7 @@ function Read-OpenVisualMenuOnce($lock, $menu, [string]$requestedAction) {
       comment = $commentEntry
       menuState = $(if ($likeEntry -ne $null) { [string]$likeEntry.text } else { "unknown" })
       menuSurface = $surface.bounds
-      diagnostics = $surface.diagnostics
+      diagnostics = $menuDiagnostics
     }
   } finally {
     Close-MomentsVisualFrame $frame
@@ -2274,6 +2364,30 @@ function Read-OpenVisualMenu($lock, $menu, [string]$requestedAction) {
       secondStrictCandidateCount = 0
       firstFallbackCandidateCount = [int]$first.diagnostics.fallbackCandidateCount
       secondFallbackCandidateCount = 0
+      firstLikeOcrMatched = [bool]$first.diagnostics.likeOcrMatched
+      firstLikeBaseOcrMatched = [bool]$first.diagnostics.likeBaseOcrMatched
+      firstTargetedLikeOcrAttempted = [bool]$first.diagnostics.targetedLikeOcrAttempted
+      firstTargetedLikeOcrMatched = [bool]$first.diagnostics.targetedLikeOcrMatched
+      firstCommentOcrMatched = [bool]$first.diagnostics.commentOcrMatched
+      firstLikeSignatureOk = [bool]$first.diagnostics.likeSignatureOk
+      firstCommentSignatureOk = [bool]$first.diagnostics.commentSignatureOk
+      firstLikeSignatureEdgeClear = [bool]$first.diagnostics.likeSignatureEdgeClear
+      firstCommentSignatureEdgeClear = [bool]$first.diagnostics.commentSignatureEdgeClear
+      firstLikeResolutionMode = [string]$first.diagnostics.likeResolutionMode
+      firstWidthRatio = [double]$first.diagnostics.widthRatio
+      firstHeightRatio = [double]$first.diagnostics.heightRatio
+      secondLikeOcrMatched = $false
+      secondLikeBaseOcrMatched = $false
+      secondTargetedLikeOcrAttempted = $false
+      secondTargetedLikeOcrMatched = $false
+      secondCommentOcrMatched = $false
+      secondLikeSignatureOk = $false
+      secondCommentSignatureOk = $false
+      secondLikeSignatureEdgeClear = $false
+      secondCommentSignatureEdgeClear = $false
+      secondLikeResolutionMode = ""
+      secondWidthRatio = 0.0
+      secondHeightRatio = 0.0
     }
     return $first
   }
@@ -2291,6 +2405,30 @@ function Read-OpenVisualMenu($lock, $menu, [string]$requestedAction) {
     secondStrictCandidateCount = [int]$second.diagnostics.strictCandidateCount
     firstFallbackCandidateCount = [int]$first.diagnostics.fallbackCandidateCount
     secondFallbackCandidateCount = [int]$second.diagnostics.fallbackCandidateCount
+    firstLikeOcrMatched = [bool]$first.diagnostics.likeOcrMatched
+    firstLikeBaseOcrMatched = [bool]$first.diagnostics.likeBaseOcrMatched
+    firstTargetedLikeOcrAttempted = [bool]$first.diagnostics.targetedLikeOcrAttempted
+    firstTargetedLikeOcrMatched = [bool]$first.diagnostics.targetedLikeOcrMatched
+    firstCommentOcrMatched = [bool]$first.diagnostics.commentOcrMatched
+    firstLikeSignatureOk = [bool]$first.diagnostics.likeSignatureOk
+    firstCommentSignatureOk = [bool]$first.diagnostics.commentSignatureOk
+    firstLikeSignatureEdgeClear = [bool]$first.diagnostics.likeSignatureEdgeClear
+    firstCommentSignatureEdgeClear = [bool]$first.diagnostics.commentSignatureEdgeClear
+    firstLikeResolutionMode = [string]$first.diagnostics.likeResolutionMode
+    firstWidthRatio = [double]$first.diagnostics.widthRatio
+    firstHeightRatio = [double]$first.diagnostics.heightRatio
+    secondLikeOcrMatched = [bool]$second.diagnostics.likeOcrMatched
+    secondLikeBaseOcrMatched = [bool]$second.diagnostics.likeBaseOcrMatched
+    secondTargetedLikeOcrAttempted = [bool]$second.diagnostics.targetedLikeOcrAttempted
+    secondTargetedLikeOcrMatched = [bool]$second.diagnostics.targetedLikeOcrMatched
+    secondCommentOcrMatched = [bool]$second.diagnostics.commentOcrMatched
+    secondLikeSignatureOk = [bool]$second.diagnostics.likeSignatureOk
+    secondCommentSignatureOk = [bool]$second.diagnostics.commentSignatureOk
+    secondLikeSignatureEdgeClear = [bool]$second.diagnostics.likeSignatureEdgeClear
+    secondCommentSignatureEdgeClear = [bool]$second.diagnostics.commentSignatureEdgeClear
+    secondLikeResolutionMode = [string]$second.diagnostics.likeResolutionMode
+    secondWidthRatio = [double]$second.diagnostics.widthRatio
+    secondHeightRatio = [double]$second.diagnostics.heightRatio
   }
   return $second
 }
@@ -2319,7 +2457,7 @@ function Open-LockedVisualMenu($lock, $context) {
   $read = Read-OpenVisualMenu $lock $menu ([string]$context.requestedAction)
   if (-not $read.ok) {
     if (-not (Close-VisualMenu $lock)) {
-      return @{ ok = $false; reason = "moments_menu_close_blocked" }
+      $read.cleanupReason = "moments_menu_close_blocked"
     }
     return $read
   }
@@ -4877,7 +5015,17 @@ try {
     Set-VisualActionStage "post_checked"
   }
   $opened = Open-LockedVisualMenu $lock $context
-  if (-not $opened.ok) { Write-VisualResult @{ ok = $false; status = "blocked"; reason = $opened.reason; actionAttempted = $false; diagnostics = $opened.diagnostics } }
+  if (-not $opened.ok) {
+    Write-VisualResult @{
+      ok = $false
+      status = "blocked"
+      reason = $opened.reason
+      primaryReason = $opened.reason
+      cleanupReason = $opened.cleanupReason
+      actionAttempted = $false
+      diagnostics = $opened.diagnostics
+    }
+  }
   if (@("comment", "comment_check") -contains [string]$env:XIAOXI_MOMENTS_VISUAL_ACTION) {
     Set-VisualActionStage "menu_opened"
   }
@@ -4904,11 +5052,17 @@ try {
       [void](Close-VisualMenu $lock)
       Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_like_state_unknown"; actionAttempted = $false }
     }
-    $freshMenu = Read-OpenVisualMenu $lock $opened.menu
+    $freshMenu = Read-OpenVisualMenu $lock $opened.menu "like"
     if (-not $freshMenu.ok -or [string]$freshMenu.menuState -cne "赞" -or
       -not (Test-VisualBoundsNear $freshMenu.like.bounds $opened.like.bounds 3.0)) {
       [void](Close-VisualMenu $lock)
-      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_menu_changed"; actionAttempted = $false }
+      Write-VisualResult @{
+        ok = $false
+        status = "blocked"
+        reason = "moments_menu_changed"
+        actionAttempted = $false
+        diagnostics = $freshMenu.diagnostics
+      }
     }
     $likeX = [int][Math]::Round([double]$context.expectedWindow.left + [double]$freshMenu.like.centerX)
     $likeY = [int][Math]::Round([double]$context.expectedWindow.top + [double]$freshMenu.like.centerY)
@@ -4934,10 +5088,16 @@ try {
     }
     $script:visualMenuOpen = $true
     Start-Sleep -Milliseconds 240
-    $afterMenu = Read-OpenVisualMenu $afterLock $afterAnchor.menu
+    $afterMenu = Read-OpenVisualMenu $afterLock $afterAnchor.menu "like"
     if (-not $afterMenu.ok -or @("取消", "取消赞") -notcontains [string]$afterMenu.menuState) {
       [void](Close-VisualMenu $afterLock)
-      Write-VisualResult @{ ok = $false; status = "outcome_unknown"; reason = "moments_like_verification_failed"; actionAttempted = $true }
+      Write-VisualResult @{
+        ok = $false
+        status = "outcome_unknown"
+        reason = "moments_like_verification_failed"
+        actionAttempted = $true
+        diagnostics = $afterMenu.diagnostics
+      }
     }
     if (-not (Close-VisualMenu $afterLock)) {
       Write-VisualResult @{ ok = $false; status = "outcome_unknown"; reason = "moments_menu_close_blocked"; actionAttempted = $true }

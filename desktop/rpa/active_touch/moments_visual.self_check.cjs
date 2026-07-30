@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const probeFile = path.join(__dirname, "moments_visual_probe.dev.cjs");
@@ -545,6 +546,249 @@ const openMenuReadOnceSource = actionSource.match(
   /function Read-OpenVisualMenuOnce\([\s\S]*?\n\}/u,
 )?.[0] ?? "";
 assert.ok(openMenuReadOnceSource, "single-frame open visual menu reader should be present");
+const visualMenuTextEntryFunction = actionSource.match(
+  /(function Get-VisualMenuTextEntry\([\s\S]*?\n\})\n\nfunction Get-VisualMenuLabelSignature/u,
+)?.[1] ?? "";
+assert.ok(visualMenuTextEntryFunction, "visual menu OCR entry parser should be extractable");
+const visualMenuLabelSignatureFunction = actionSource.match(
+  /(function Get-VisualMenuLabelSignature\([\s\S]*?\n\})\n\nfunction Get-VisualMenuTargetedOcrRegion/u,
+)?.[1] ?? "";
+assert.ok(visualMenuLabelSignatureFunction, "visual menu label signature reader should be extractable");
+const visualMenuTargetedOcrRegionFunction = actionSource.match(
+  /(function Get-VisualMenuTargetedOcrRegion\([\s\S]*?\n\})\n\nfunction Resolve-VisualLikeMenuState/u,
+)?.[1] ?? "";
+assert.ok(visualMenuTargetedOcrRegionFunction, "targeted menu OCR region builder should be extractable");
+const visualLikeMenuStateFunction = actionSource.match(
+  /(function Resolve-VisualLikeMenuState\([\s\S]*?\n\})\n\nfunction Read-OpenVisualMenuOnce/u,
+)?.[1] ?? "";
+assert.ok(visualLikeMenuStateFunction, "visual like menu state resolver should be extractable");
+const visualLikeMenuStateProgram = `${visualLikeMenuStateFunction}
+$likeSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 10.0; height = 10.0 }; centerX = 15.0; centerY = 25.0 }
+$commentSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 30.0; top = 20.0; width = 20.0; height = 10.0 }; centerX = 40.0; centerY = 25.0 }
+$like = Resolve-VisualLikeMenuState $null $likeSignature $commentSignature
+$cancelSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 20.0; height = 10.0 }; centerX = 20.0; centerY = 25.0 }
+$cancel = Resolve-VisualLikeMenuState $null $cancelSignature $commentSignature
+$gapSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 14.0; height = 10.0 }; centerX = 17.0; centerY = 25.0 }
+$gap = Resolve-VisualLikeMenuState $null $gapSignature $commentSignature
+$shortSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 10.0; height = 7.0 }; centerX = 15.0; centerY = 23.5 }
+$short = Resolve-VisualLikeMenuState $null $shortSignature $commentSignature
+$tallSignature = @{ ok = $true; horizontalEdgeClear = $true; bounds = @{ left = 10.0; top = 20.0; width = 10.0; height = 13.0 }; centerX = 15.0; centerY = 26.5 }
+$tall = Resolve-VisualLikeMenuState $null $tallSignature $commentSignature
+$missingReference = Resolve-VisualLikeMenuState $null $likeSignature @{ ok = $false }
+$croppedLike = Resolve-VisualLikeMenuState $null @{
+  ok = $true
+  horizontalEdgeClear = $false
+  bounds = @{ left = 10.0; top = 20.0; width = 10.0; height = 10.0 }
+  centerX = 15.0
+  centerY = 25.0
+} $commentSignature
+$croppedComment = Resolve-VisualLikeMenuState $null $likeSignature @{
+  ok = $true
+  horizontalEdgeClear = $false
+  bounds = @{ left = 30.0; top = 20.0; width = 20.0; height = 10.0 }
+  centerX = 40.0
+  centerY = 25.0
+}
+$ocrEntry = @{ text = "赞"; bounds = @{ left = 10.0; top = 20.0; width = 10.0; height = 10.0 }; centerX = 15.0; centerY = 25.0 }
+$ocr = Resolve-VisualLikeMenuState $ocrEntry @{ ok = $false } @{ ok = $false }
+$croppedTargetedOcr = Resolve-VisualLikeMenuState $ocrEntry @{
+  ok = $true
+  horizontalEdgeClear = $false
+  bounds = @{ left = 10.0; top = 20.0; width = 10.0; height = 10.0 }
+  centerX = 15.0
+  centerY = 25.0
+} $commentSignature "targeted_ocr"
+@{
+  likeOk = ([string]$like.entry.text -ceq "赞")
+  likeMode = [string]$like.mode
+  cancelOk = ([string]$cancel.entry.text -ceq "取消")
+  cancelMode = [string]$cancel.mode
+  gapHasEntry = ($gap.entry -ne $null)
+  gapMode = [string]$gap.mode
+  shortHasEntry = ($short.entry -ne $null)
+  shortMode = [string]$short.mode
+  tallHasEntry = ($tall.entry -ne $null)
+  tallMode = [string]$tall.mode
+  missingReferenceHasEntry = ($missingReference.entry -ne $null)
+  missingReferenceMode = [string]$missingReference.mode
+  croppedLikeHasEntry = ($croppedLike.entry -ne $null)
+  croppedLikeMode = [string]$croppedLike.mode
+  croppedCommentHasEntry = ($croppedComment.entry -ne $null)
+  croppedCommentMode = [string]$croppedComment.mode
+  ocrOk = ([string]$ocr.entry.text -ceq "赞")
+  ocrMode = [string]$ocr.mode
+  croppedTargetedOcrHasEntry = ($croppedTargetedOcr.entry -ne $null)
+  croppedTargetedOcrMode = [string]$croppedTargetedOcr.mode
+} | ConvertTo-Json -Compress`;
+const visualLikeMenuStateHarness = spawnSync("powershell.exe", [
+  "-NoProfile",
+  "-NonInteractive",
+  "-EncodedCommand",
+  Buffer.from(visualLikeMenuStateProgram, "utf16le").toString("base64")
+], {
+  encoding: "utf8",
+  windowsHide: true
+});
+assert.equal(
+  visualLikeMenuStateHarness.status,
+  0,
+  visualLikeMenuStateHarness.stderr || "visual like menu state resolver harness must run"
+);
+assert.deepEqual(JSON.parse(visualLikeMenuStateHarness.stdout.trim()), {
+  cancelOk: true,
+  cancelMode: "visual_signature",
+  croppedCommentHasEntry: false,
+  croppedCommentMode: "ambiguous",
+  croppedLikeHasEntry: false,
+  croppedLikeMode: "ambiguous",
+  croppedTargetedOcrHasEntry: false,
+  croppedTargetedOcrMode: "ambiguous",
+  gapHasEntry: false,
+  gapMode: "ambiguous",
+  likeOk: false,
+  likeMode: "ambiguous",
+  missingReferenceHasEntry: false,
+  missingReferenceMode: "ambiguous",
+  ocrOk: true,
+  ocrMode: "ocr",
+  shortHasEntry: false,
+  shortMode: "ambiguous",
+  tallHasEntry: false,
+  tallMode: "ambiguous"
+});
+const visualLikeMenuReaderProgram = `
+${visualMenuTextEntryFunction}
+${visualMenuLabelSignatureFunction}
+${visualMenuTargetedOcrRegionFunction}
+${visualLikeMenuStateFunction}
+${openMenuReadOnceSource}
+$script:readerScenario = ""
+function Get-MomentsVisualFrame { return @{ ok = $true; width = 600; height = 800 } }
+function Get-VisualOpenMenuBounds {
+  return @{
+    ok = $true
+    bounds = @{ left = 200.0; top = 100.0; width = 200.0; height = 44.0 }
+    diagnostics = @{ segmentCount = 2; strictCandidateCount = 1; fallbackCandidateCount = 0 }
+  }
+}
+function Get-MomentsPixel($frame, [int]$x, [int]$y) {
+  $light = @{ r = 220; g = 220; b = 220 }
+  $dark = @{ r = 20; g = 20; b = 20 }
+  if ($y -lt 112 -or $y -gt 121) { return $dark }
+  if ($x -ge 350 -and $x -le 369) { return $light }
+  if ($script:readerScenario -ceq "cancel" -and $x -ge 260 -and $x -le 279) { return $light }
+  if ($script:readerScenario -ceq "cropped" -and $x -ge 252 -and $x -le 261) { return $light }
+  if ($script:readerScenario -ceq "like" -and $x -ge 260 -and $x -le 269) { return $light }
+  return $dark
+}
+function Test-VisualBounds($bounds, [double]$minimumWidth, [double]$minimumHeight) {
+  return [double]$bounds.width -ge $minimumWidth -and [double]$bounds.height -ge $minimumHeight
+}
+function Normalize-VisualText([string]$value) { return $value }
+function Test-VisualBoundsInside($inner, $outer) {
+  return [double]$inner.left -ge [double]$outer.left -and
+    [double]$inner.top -ge [double]$outer.top -and
+    ([double]$inner.left + [double]$inner.width) -le ([double]$outer.left + [double]$outer.width) -and
+    ([double]$inner.top + [double]$inner.height) -le ([double]$outer.top + [double]$outer.height)
+}
+function Get-MomentsHighContrastOcrObservation($frame, $region, [int]$scale = 4) {
+  if (@("like", "cropped") -contains $script:readerScenario -and [bool]$region.targetedLike) {
+    return @{
+      ok = $true
+      text = "赞"
+      words = @(@{ bounds = @{ left = 4.0; top = 4.0; width = 10.0; height = 10.0 } })
+    }
+  }
+  return @{ ok = $false }
+}
+function Get-MomentsScaledOcrObservation { return @{ ok = $false } }
+function Close-MomentsVisualFrame {}
+function Invoke-ReaderCase([string]$scenario) {
+  $script:readerScenario = $scenario
+  $result = Read-OpenVisualMenuOnce @{} @{} "like"
+  return [pscustomobject]@{
+    scenario = $scenario
+    ok = [bool]$result.ok
+    expectedState = ([string]$result.menuState -ceq $(if ($scenario -ceq "cancel") { "取消" } else { "赞" }))
+    resolutionMode = [string]$result.diagnostics.likeResolutionMode
+    likeOcrMatched = [bool]$result.diagnostics.likeOcrMatched
+    likeBaseOcrMatched = [bool]$result.diagnostics.likeBaseOcrMatched
+    targetedLikeOcrAttempted = [bool]$result.diagnostics.targetedLikeOcrAttempted
+    targetedLikeOcrMatched = [bool]$result.diagnostics.targetedLikeOcrMatched
+    commentOcrMatched = [bool]$result.diagnostics.commentOcrMatched
+    likeEdgeClear = [bool]$result.diagnostics.likeSignatureEdgeClear
+    commentEdgeClear = [bool]$result.diagnostics.commentSignatureEdgeClear
+  }
+}
+@(
+  (Invoke-ReaderCase "like"),
+  (Invoke-ReaderCase "cancel"),
+  (Invoke-ReaderCase "cropped")
+) | ConvertTo-Json -Depth 5 -Compress
+`;
+const visualLikeMenuReaderScript = path.join(
+  os.tmpdir(),
+  `xiaoxi-moments-menu-reader-${process.pid}-${Date.now()}.ps1`,
+);
+let visualLikeMenuReaderHarness;
+try {
+  fs.writeFileSync(visualLikeMenuReaderScript, `\uFEFF${visualLikeMenuReaderProgram}`, "utf8");
+  visualLikeMenuReaderHarness = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", visualLikeMenuReaderScript],
+    { encoding: "utf8", windowsHide: true },
+  );
+} finally {
+  fs.rmSync(visualLikeMenuReaderScript, { force: true });
+}
+assert.equal(
+  visualLikeMenuReaderHarness.status,
+  0,
+  visualLikeMenuReaderHarness.stderr
+    || visualLikeMenuReaderHarness.error?.stack
+    || `production menu reader harness must run (signal=${visualLikeMenuReaderHarness.signal ?? "none"})`,
+);
+assert.deepEqual(JSON.parse(visualLikeMenuReaderHarness.stdout.trim()), [
+  {
+    scenario: "like",
+    ok: true,
+    expectedState: true,
+    resolutionMode: "targeted_ocr",
+    likeOcrMatched: true,
+    likeBaseOcrMatched: false,
+    targetedLikeOcrAttempted: true,
+    targetedLikeOcrMatched: true,
+    commentOcrMatched: false,
+    likeEdgeClear: true,
+    commentEdgeClear: true,
+  },
+  {
+    scenario: "cancel",
+    ok: true,
+    expectedState: true,
+    resolutionMode: "visual_signature",
+    likeOcrMatched: false,
+    likeBaseOcrMatched: false,
+    targetedLikeOcrAttempted: true,
+    targetedLikeOcrMatched: false,
+    commentOcrMatched: false,
+    likeEdgeClear: true,
+    commentEdgeClear: true,
+  },
+  {
+    scenario: "cropped",
+    ok: false,
+    expectedState: false,
+    resolutionMode: "ambiguous",
+    likeOcrMatched: true,
+    likeBaseOcrMatched: false,
+    targetedLikeOcrAttempted: true,
+    targetedLikeOcrMatched: true,
+    commentOcrMatched: false,
+    likeEdgeClear: false,
+    commentEdgeClear: true,
+  },
+]);
 assert.doesNotMatch(
   openMenuReader,
   /Invoke-VisualOwnedClick|AtomicMouse|Keyboard|Clipboard|SetCursorPos|Focus-|Open-LockedVisualMenu|Close-VisualMenu/u,
@@ -562,6 +806,30 @@ for (const field of [
   "secondStrictCandidateCount",
   "firstFallbackCandidateCount",
   "secondFallbackCandidateCount",
+  "firstLikeOcrMatched",
+  "firstLikeBaseOcrMatched",
+  "firstTargetedLikeOcrAttempted",
+  "firstTargetedLikeOcrMatched",
+  "firstCommentOcrMatched",
+  "firstLikeSignatureOk",
+  "firstCommentSignatureOk",
+  "firstLikeSignatureEdgeClear",
+  "firstCommentSignatureEdgeClear",
+  "firstLikeResolutionMode",
+  "firstWidthRatio",
+  "firstHeightRatio",
+  "secondLikeOcrMatched",
+  "secondLikeBaseOcrMatched",
+  "secondTargetedLikeOcrAttempted",
+  "secondTargetedLikeOcrMatched",
+  "secondCommentOcrMatched",
+  "secondLikeSignatureOk",
+  "secondCommentSignatureOk",
+  "secondLikeSignatureEdgeClear",
+  "secondCommentSignatureEdgeClear",
+  "secondLikeResolutionMode",
+  "secondWidthRatio",
+  "secondHeightRatio",
 ]) {
   assert.match(openMenuReader, new RegExp(`\\b${field}\\b`, "u"), `menu retry diagnostics must include ${field}`);
 }
@@ -679,6 +947,117 @@ assert.deepEqual(JSON.parse(passiveMenuRetryProbe.stdout.trim()), [
     secondFallbackCandidateCount: 3,
   },
 ]);
+const menuLabelDiagnosticsProbeSource = `
+${openMenuReader}
+$script:menuReadCount = 0
+function Start-Sleep { param([int]$Milliseconds) }
+function Read-OpenVisualMenuOnce($lock, $menu, [string]$requestedAction) {
+  $script:menuReadCount += 1
+  if ($script:menuReadCount -eq 1) {
+    return @{
+      ok = $false
+      reason = "moments_menu_ambiguous"
+      diagnostics = @{
+        segmentCount = 2
+        strictCandidateCount = 1
+        fallbackCandidateCount = 0
+        likeOcrMatched = $false
+        likeBaseOcrMatched = $false
+        targetedLikeOcrAttempted = $true
+        targetedLikeOcrMatched = $false
+        commentOcrMatched = $false
+        likeSignatureOk = $true
+        commentSignatureOk = $true
+        likeSignatureEdgeClear = $false
+        commentSignatureEdgeClear = $true
+        likeResolutionMode = "ambiguous"
+        widthRatio = 0.70
+        heightRatio = 1.00
+      }
+    }
+  }
+  return @{
+    ok = $false
+    reason = "moments_menu_ambiguous"
+    diagnostics = @{
+      segmentCount = 2
+      strictCandidateCount = 1
+      fallbackCandidateCount = 0
+      likeOcrMatched = $false
+      likeBaseOcrMatched = $false
+      targetedLikeOcrAttempted = $true
+      targetedLikeOcrMatched = $false
+      commentOcrMatched = $true
+      likeSignatureOk = $false
+      commentSignatureOk = $true
+      likeSignatureEdgeClear = $false
+      commentSignatureEdgeClear = $true
+      likeResolutionMode = "ambiguous"
+      widthRatio = 0.00
+      heightRatio = 0.00
+    }
+  }
+}
+$result = Read-OpenVisualMenu @{} @{} "like"
+@{
+  firstLikeOcrMatched = [bool]$result.diagnostics.firstLikeOcrMatched
+  firstLikeBaseOcrMatched = [bool]$result.diagnostics.firstLikeBaseOcrMatched
+  firstTargetedLikeOcrAttempted = [bool]$result.diagnostics.firstTargetedLikeOcrAttempted
+  firstTargetedLikeOcrMatched = [bool]$result.diagnostics.firstTargetedLikeOcrMatched
+  firstCommentOcrMatched = [bool]$result.diagnostics.firstCommentOcrMatched
+  firstLikeSignatureOk = [bool]$result.diagnostics.firstLikeSignatureOk
+  firstCommentSignatureOk = [bool]$result.diagnostics.firstCommentSignatureOk
+  firstLikeSignatureEdgeClear = [bool]$result.diagnostics.firstLikeSignatureEdgeClear
+  firstCommentSignatureEdgeClear = [bool]$result.diagnostics.firstCommentSignatureEdgeClear
+  firstLikeResolutionMode = [string]$result.diagnostics.firstLikeResolutionMode
+  firstWidthRatio = [double]$result.diagnostics.firstWidthRatio
+  firstHeightRatio = [double]$result.diagnostics.firstHeightRatio
+  secondLikeOcrMatched = [bool]$result.diagnostics.secondLikeOcrMatched
+  secondLikeBaseOcrMatched = [bool]$result.diagnostics.secondLikeBaseOcrMatched
+  secondTargetedLikeOcrAttempted = [bool]$result.diagnostics.secondTargetedLikeOcrAttempted
+  secondTargetedLikeOcrMatched = [bool]$result.diagnostics.secondTargetedLikeOcrMatched
+  secondCommentOcrMatched = [bool]$result.diagnostics.secondCommentOcrMatched
+  secondLikeSignatureOk = [bool]$result.diagnostics.secondLikeSignatureOk
+  secondCommentSignatureOk = [bool]$result.diagnostics.secondCommentSignatureOk
+  secondLikeSignatureEdgeClear = [bool]$result.diagnostics.secondLikeSignatureEdgeClear
+  secondCommentSignatureEdgeClear = [bool]$result.diagnostics.secondCommentSignatureEdgeClear
+  secondLikeResolutionMode = [string]$result.diagnostics.secondLikeResolutionMode
+  secondWidthRatio = [double]$result.diagnostics.secondWidthRatio
+  secondHeightRatio = [double]$result.diagnostics.secondHeightRatio
+} | ConvertTo-Json -Compress
+`;
+const menuLabelDiagnosticsProbe = spawnSync(
+  "powershell.exe",
+  ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(menuLabelDiagnosticsProbeSource, "utf16le").toString("base64")],
+  { encoding: "utf8", windowsHide: true },
+);
+assert.equal(menuLabelDiagnosticsProbe.status, 0, menuLabelDiagnosticsProbe.stderr || "menu label diagnostics probe must run");
+assert.deepEqual(JSON.parse(menuLabelDiagnosticsProbe.stdout.trim()), {
+  firstCommentOcrMatched: false,
+  firstCommentSignatureEdgeClear: true,
+  firstCommentSignatureOk: true,
+  firstHeightRatio: 1,
+  firstLikeBaseOcrMatched: false,
+  firstLikeOcrMatched: false,
+  firstLikeSignatureEdgeClear: false,
+  firstLikeResolutionMode: "ambiguous",
+  firstLikeSignatureOk: true,
+  firstTargetedLikeOcrAttempted: true,
+  firstTargetedLikeOcrMatched: false,
+  firstWidthRatio: 0.7,
+  secondCommentOcrMatched: true,
+  secondCommentSignatureEdgeClear: true,
+  secondCommentSignatureOk: true,
+  secondHeightRatio: 0,
+  secondLikeBaseOcrMatched: false,
+  secondLikeOcrMatched: false,
+  secondLikeSignatureEdgeClear: false,
+  secondLikeResolutionMode: "ambiguous",
+  secondLikeSignatureOk: false,
+  secondTargetedLikeOcrAttempted: true,
+  secondTargetedLikeOcrMatched: false,
+  secondWidthRatio: 0
+});
 const openLockedMenuSource = actionSource.match(
   /function Open-LockedVisualMenu\([\s\S]*?\n\}/u,
 )?.[0] ?? "";
@@ -695,6 +1074,16 @@ assert.equal(
 );
 assert.match(openLockedMenuSource, /menuSurface = \$read\.menuSurface/u);
 assert.match(openLockedMenuSource, /diagnostics = \$read\.diagnostics/u);
+assert.match(
+  openLockedMenuSource,
+  /\$read\.cleanupReason = "moments_menu_close_blocked"[\s\S]*return \$read/u,
+  "menu cleanup failure must preserve the primary read failure and attach a separate cleanup reason",
+);
+assert.doesNotMatch(
+  openLockedMenuSource,
+  /return @\{ ok = \$false; reason = "moments_menu_close_blocked" \}/u,
+  "menu cleanup failure must not overwrite the original menu read reason",
+);
 const openMenuSegmentResolverSource = actionSource.match(
   /function Resolve-VisualOpenMenuHorizontalSegment\([\s\S]*?\n\}/u,
 )?.[0] ?? "";
@@ -752,6 +1141,30 @@ assert.doesNotMatch(
   likeActionSource,
   /Read-OpenVisualMenu \$lock \$opened\.menu "comment"/u,
   "like refresh must not use the comment-only menu contract",
+);
+const alreadyLikedNoOpSource = likeActionSource.slice(
+  likeActionSource.indexOf('if (@("取消", "取消赞")'),
+  likeActionSource.indexOf("$freshMenu = Read-OpenVisualMenu"),
+);
+assert.match(
+  alreadyLikedNoOpSource,
+  /status = "already_liked_verified"[\s\S]*actionAttempted = \$false/u,
+  "production like action must return a verified no-op for an already-liked post",
+);
+assert.doesNotMatch(
+  alreadyLikedNoOpSource,
+  /Invoke-VisualOwnedClick/u,
+  "production like action must not click when the menu already shows 取消",
+);
+assert.match(
+  likeActionSource,
+  /\$freshMenu = Read-OpenVisualMenu \$lock \$opened\.menu "like"[\s\S]*reason = "moments_menu_changed"[\s\S]*diagnostics = \$freshMenu\.diagnostics/u,
+  "a failed pre-click refresh must preserve the detailed menu diagnostics",
+);
+assert.match(
+  likeActionSource,
+  /\$afterMenu = Read-OpenVisualMenu \$afterLock \$afterAnchor\.menu "like"[\s\S]*reason = "moments_like_verification_failed"[\s\S]*diagnostics = \$afterMenu\.diagnostics/u,
+  "a failed post-click verification must preserve the detailed menu diagnostics",
 );
 assert.match(
   commentActionSource,
@@ -1964,10 +2377,12 @@ assert.doesNotMatch(actionSource, /^\s*Clear-And-CloseVisualCommentDraft\b/mu);
 assert.doesNotMatch(actionSource, /\{ESC\}/u);
 assert.match(actionSource, /moments_comment_draft_close_unverified/u);
 
-// A filled heart may create a wider color gap than the outline state. Both
-// states still require the same unique popup geometry and exact 评论 anchor.
+// The first broad OCR pass may miss the single-character 赞 label. Retry only
+// its detected glyph bounds at higher contrast; visual width alone may prove
+// the wider no-op 取消 label but must never authorize a like click.
 assert.match(actionSource, /\$x - \$lastDark\) -gt \[Math\]::Max\(18\.0, \[double\]\$frame\.width \* 0\.05\)/u);
-assert.match(actionSource, /\$widthRatio -ge 0\.32[\s\S]*\$visualState = "赞"/u);
+assert.match(actionSource, /Get-VisualMenuTargetedOcrRegion[\s\S]*Get-MomentsHighContrastOcrObservation \$frame \$targetedLikeRegion 5/u);
+assert.doesNotMatch(actionSource, /\$widthRatio -ge 0\.32[\s\S]*\$visualState = "赞"/u);
 assert.match(actionSource, /\$widthRatio -ge 0\.78[\s\S]*\$visualState = "取消"/u);
 const visualActionTimeoutCapsSource = actionSource.match(
   /VISUAL_ACTION_TIMEOUT_CAP_MS = Object\.freeze\(\{[\s\S]*?\}\);/u,
