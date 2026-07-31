@@ -86,4 +86,4 @@ node scripts/product-detail-runtime.integration.cjs
 
 ## 当前固定运行时边界
 
-源码级本地 E2E 已验证上传、预览、PNG 导出与历史恢复；但现有 `.build/product-detail-runtime/` 固定运行时构建于离线工作流源码提交 `a17565f` 之前，不能当作该提交的正式交付物。当前构建/发布脚本会记录并复核本仓库产品详情图实际输入的 Git commit、scoped dirty 状态和确定性源码树哈希，因此旧 manifest 会被默认开发启动与正式发布前置检查同时拒绝，桌面端不会静默运行落后源码的默认 `.build` runtime。替换或删除这份旧 runtime 前，必须先向用户提交清理候选与影响说明并获得明确批准；获批后再从对应提交重新构建、复验，并以 `PROJECT_STATUS.md` 记录正式包状态。
+2026-07-31 已按用户授权把旧固定运行时移入 `.build/backups/`，并从干净提交重新生成 `.build/product-detail-runtime/`。新 manifest 记录并复核本仓库实际输入的 Git commit、scoped dirty 状态和确定性源码树哈希；默认开发启动与正式发布前置检查都会拒绝缺少这些证明或与当前提交不一致的 runtime。新 PyInstaller EXE 已通过随机端口、health、一次性 bootstrap、私有资源、付费接口禁用和正常关闭集成测试，并使用打包内置浏览器完成真实 PNG 上传、4 个模块生成、约 1.06 MB PNG 导出与重启恢复；同提交测试便携包也已通过解压、整树哈希、隐私扫描和包内自检。当前结论仍限于开发机测试包，用户界面验收、无 Python/Docker 净机复验和正式交付状态统一以 `PROJECT_STATUS.md` 为准。

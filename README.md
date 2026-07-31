@@ -49,6 +49,8 @@ npm.cmd run release:test
 npm.cmd run release:delivery
 ```
 
+当前内部验收使用 `release/AI获客-测试版.zip`。它包含同提交的产品详情图和内容引擎固定运行时，只能用于本轮用户与净机验证；不得把测试包自动检查通过写成正式交付或微信实机验收完成。
+
 生成正式离线安装器：
 
 ```powershell
