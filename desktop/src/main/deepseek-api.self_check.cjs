@@ -51,7 +51,7 @@ async function main() {
     client: { test: async () => ({ provider: "deepseek", model: DEEPSEEK_MODEL }) },
     onChanged: (change) => providerChanges.push(change)
   });
-  const ipcSecret = "sk-ipc-secret-must-not-leak";
+  const ipcSecret = "ipc-secret-must-not-leak";
   const savedFromIpc = await ipcHandlers.get("deepseek-api:save")(null, { apiKey: ipcSecret });
   assert.equal(savedFromIpc.ok, true);
   assert.equal(JSON.stringify(savedFromIpc).includes(ipcSecret), false);
