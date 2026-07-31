@@ -16,6 +16,7 @@ const runtimePath = path.join(
   "product-detail-server.exe"
 );
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+const SESSION_COOKIE_NAME = "xiaoxi_product_detail_session";
 
 function request(url, { method = "GET", headers = {} } = {}) {
   return new Promise((resolve, reject) => {
@@ -67,8 +68,14 @@ function sessionCookie(headers) {
     ? headers["set-cookie"]
     : [headers["set-cookie"]].filter(Boolean);
   for (const value of values) {
-    const pair = String(value).split(";", 1)[0];
-    if (/^session=.+/.test(pair)) return pair;
+    const cookie = String(value);
+    const pair = cookie.split(";", 1)[0];
+    if (!pair.startsWith(`${SESSION_COOKIE_NAME}=`)) continue;
+    assert.match(cookie, /;\s*HttpOnly(?:;|$)/i);
+    assert.match(cookie, /;\s*Secure(?:;|$)/i);
+    assert.match(cookie, /;\s*SameSite=None(?:;|$)/i);
+    assert.match(cookie, /;\s*Partitioned(?:;|$)/i);
+    return pair;
   }
   return "";
 }
