@@ -14,7 +14,7 @@ const {
   prompt,
   replyPrompt
 } = require("./deepseek-api.cjs");
-const { errorCategory } = require("./deepseek-api-ipc.cjs");
+const { errorCategory, registerDeepSeekApiIpc } = require("./deepseek-api-ipc.cjs");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-deepseek-"));
 const safeStorage = { isEncryptionAvailable: () => true, encryptString: (value) => Buffer.from(`encrypted:${value}`), decryptString: (value) => value.toString().replace(/^encrypted:/, "") };
@@ -31,6 +31,41 @@ async function main() {
   assert.equal(errorCategory("AI_RESPONSE_EMPTY"), "empty_content");
   assert.equal(errorCategory("AI_RESPONSE_INVALID"), "parse_error");
   assert.equal(errorCategory("AI_RESPONSE_LENGTH_INVALID"), "unusable_content");
+
+  const ipcHandlers = new Map();
+  const providerChanges = [];
+  let ipcKey = "";
+  registerDeepSeekApiIpc({
+    ipcMain: { handle: (channel, handler) => ipcHandlers.set(channel, handler) },
+    keyStore: {
+      status: () => ({ configured: Boolean(ipcKey), maskedKey: ipcKey ? "sk-****test" : "" }),
+      write: (value) => {
+        ipcKey = String(value || "");
+        return { configured: true, maskedKey: "sk-****test" };
+      },
+      clear: () => {
+        ipcKey = "";
+        return { configured: false, maskedKey: "" };
+      }
+    },
+    client: { test: async () => ({ provider: "deepseek", model: DEEPSEEK_MODEL }) },
+    onChanged: (change) => providerChanges.push(change)
+  });
+  const ipcSecret = "sk-ipc-secret-must-not-leak";
+  const savedFromIpc = await ipcHandlers.get("deepseek-api:save")(null, { apiKey: ipcSecret });
+  assert.equal(savedFromIpc.ok, true);
+  assert.equal(JSON.stringify(savedFromIpc).includes(ipcSecret), false);
+  assert.deepEqual(providerChanges, [{ action: "saved", configured: true }]);
+  const deletedFromIpc = await ipcHandlers.get("deepseek-api:delete")();
+  assert.equal(deletedFromIpc.ok, true);
+  assert.deepEqual(providerChanges, [
+    { action: "saved", configured: true },
+    { action: "deleted", configured: false }
+  ]);
+  const ipcSource = fs.readFileSync(path.join(__dirname, "deepseek-api-ipc.cjs"), "utf8");
+  assert.match(ipcSource, /key_save[\s\S]*supplied_key/u);
+  assert.doesNotMatch(ipcSource, /key_save[^\n]*apiKey/u);
+
   const momentsMessages = momentsCommentPrompt({
     postText: "今天完成了新门店的设备安装",
     guidance: "自然一点"

@@ -31,6 +31,7 @@ const checks = [
   "src/main/development-sidecar-runtime.self_check.cjs",
   "src/main/product-detail-sidecar.self_check.cjs",
   "src/main/product-detail-ipc.self_check.cjs",
+  "src/main/product-detail-ai-settings.self_check.cjs",
   "src/main/product-detail-desktop-integration.self_check.cjs",
   "src/main/content-engine-sidecar.self_check.cjs",
   "src/main/content-engine-ipc.self_check.cjs",

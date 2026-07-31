@@ -243,7 +243,7 @@ def test_server_bootstrap_is_one_time_and_shutdown_is_authenticated(tmp_path):
             opener,
             base_url + "/static/ai_refine_v2/task/_summary.json",
         )
-        assert status == 404
+        assert status == 401
         status, _, _ = _request(
             opener,
             base_url + "/static/uploads/batches/batch/private.png",
@@ -357,19 +357,92 @@ def test_server_bootstrap_is_one_time_and_shutdown_is_authenticated(tmp_path):
 
         status, _, _ = _request(opener, base_url + "/static/uploads/999/private.png")
         assert status == 403
-        for paid_path in (
-            "/api/generate-ai-images",
-            "/api/generate-ai-detail",
-            "/api/generate-ai-detail-html",
-            "/api/ai-refine-v2/execute",
-        ):
+        # Removing provider keys must not hide already completed local results.
+        owner_task = "history-owner"
+        owner_dir = data_dir / "static" / "ai_refine_v2" / owner_task
+        owner_dir.mkdir(parents=True)
+        (owner_dir / "assembled.png").write_bytes(b"local-history")
+        (owner_dir / "_summary.json").write_text(
+            json.dumps(
+                {
+                    "user_id": 1,
+                    "mode": "real",
+                    "total_cost_rmb": 0,
+                    "blocks": [],
+                    "raw_urls": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        status, body, _ = _request(
+            opener, base_url + f"/api/ai-refine-v2/status/{owner_task}"
+        )
+        assert status == 200, body.decode("utf-8", errors="replace")
+        assert json.loads(body)["task_id"] == owner_task
+        status, _, _ = _request(
+            opener,
+            base_url + f"/static/ai_refine_v2/{owner_task}/assembled.png",
+        )
+        assert status == 200
+        status, body, _ = _request(
+            opener,
+            base_url + f"/api/workspace-results/ai-refine-v2/{owner_task}",
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-CSRFToken": csrf_match.group(1).decode("utf-8"),
+            },
+            body=b"{}",
+        )
+        assert status == 200, body.decode("utf-8", errors="replace")
+        status, body, _ = _request(
+            opener,
+            base_url + "/api/workspace-results/latest?kind=ai_refine_v2",
+        )
+        assert status == 200, body.decode("utf-8", errors="replace")
+        latest = json.loads(body)
+        assert latest["ok"] is True
+        assert latest["result"]["task_id"] == owner_task
+
+        foreign_task = "history-foreign"
+        foreign_dir = data_dir / "static" / "ai_refine_v2" / foreign_task
+        foreign_dir.mkdir(parents=True)
+        (foreign_dir / "assembled.png").write_bytes(b"foreign-history")
+        (foreign_dir / "_summary.json").write_text(
+            json.dumps(
+                {
+                    "user_id": 999,
+                    "mode": "real",
+                    "total_cost_rmb": 0,
+                    "blocks": [],
+                    "raw_urls": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        status, _, _ = _request(
+            opener,
+            base_url + f"/static/ai_refine_v2/{foreign_task}/assembled.png",
+        )
+        assert status == 403
+        status, _, _ = _request(
+            opener, base_url + f"/api/ai-refine-v2/status/{foreign_task}"
+        )
+        assert status == 403
+        paid_paths = {
+            "/api/generate-ai-images": "DESKTOP_PAID_ACTION_DISABLED",
+            "/api/generate-ai-detail": "DESKTOP_PAID_ACTION_DISABLED",
+            "/api/generate-ai-detail-html": "DESKTOP_PAID_ACTION_DISABLED",
+            "/api/ai-refine-v2/execute": "DESKTOP_AI_REFINE_NOT_CONFIGURED",
+        }
+        for paid_path, expected_code in paid_paths.items():
             status, body, _ = _request(
                 opener,
                 base_url + paid_path,
                 method="POST",
             )
             assert status == 503
-            assert json.loads(body)["code"] == "DESKTOP_PAID_ACTION_DISABLED"
+            assert json.loads(body)["code"] == expected_code
 
         status, _, _ = _request(opener, base_url + "/auth/register")
         assert status == 404

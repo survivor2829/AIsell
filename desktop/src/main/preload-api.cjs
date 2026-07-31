@@ -187,6 +187,32 @@ function createPreloadApis(ipcRenderer) {
         return () => ipcRenderer.removeListener("product-detail:update", handler);
       }
     },
+    productDetailAiSettings: {
+      status: () => ipcRenderer.invoke("product-detail-ai-settings:status"),
+      save: (payload) => ipcRenderer.invoke("product-detail-ai-settings:save", {
+        ...(Object.hasOwn(payload || {}, "apiKey")
+          ? { apiKey: String(payload.apiKey || "") }
+          : {}),
+        ...(Object.hasOwn(payload || {}, "baseUrl")
+          ? { baseUrl: String(payload.baseUrl || "") }
+          : {}),
+        ...(Object.hasOwn(payload || {}, "enabled")
+          ? { enabled: payload.enabled === true }
+          : {})
+      }),
+      delete: () => ipcRenderer.invoke("product-detail-ai-settings:delete"),
+      validate: (payload) => ipcRenderer.invoke("product-detail-ai-settings:validate", {
+        ...(Object.hasOwn(payload || {}, "apiKey")
+          ? { apiKey: String(payload.apiKey || "") }
+          : {}),
+        ...(Object.hasOwn(payload || {}, "baseUrl")
+          ? { baseUrl: String(payload.baseUrl || "") }
+          : {}),
+        ...(Object.hasOwn(payload || {}, "enabled")
+          ? { enabled: payload.enabled === true }
+          : {})
+      })
+    },
     touchTask: {
       start: (payload) => ipcRenderer.invoke("touch-task:start", { ...payload, clickToken: consumeBatchClick() }),
       status: () => ipcRenderer.invoke("touch-task:status"),

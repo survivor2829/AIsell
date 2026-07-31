@@ -22,7 +22,7 @@
 {% endif %}
 
 {# ── 品牌背书 ── #}
-{% if block_g and block_g.brand_title %}
+{% if block_g and (block_g.brand_stats or block_g.brand_story_lines) %}
 <div class="screen" id="screen_g">
   {% with brand_title=block_g.brand_title, brand_subtitle=block_g.brand_subtitle,
           brand_stats=block_g.brand_stats, brand_story_lines=block_g.brand_story_lines %}
@@ -61,7 +61,7 @@
 {% endif %}
 
 {# ── VS 对比屏 ── #}
-{% if block_f and block_f.title_line1 %}
+{% if block_f and (block_f.title_line1 or block_f.title_line1_red or block_f.title_line2 or block_f.title_line2_red or block_f.vs_left_title or block_f.vs_right_title or block_f.vs_rows) %}
 <div class="screen" id="screen_f">
   {% with title_line1=block_f.title_line1, title_line1_red=block_f.title_line1_red,
     title_line1_end=block_f.title_line1_end,
@@ -70,6 +70,7 @@
     vs_left_title=block_f.vs_left_title, vs_left_sub=block_f.vs_left_sub,
     vs_right_title=block_f.vs_right_title, vs_right_sub=block_f.vs_right_sub,
     vs_left_bottom=block_f.vs_left_bottom, vs_right_bottom=block_f.vs_right_bottom,
+    vs_rows=block_f.vs_rows,
     left_label=block_f.left_label, right_label=block_f.right_label %}
     {% include 'blocks/block_f_showcase_vs.html' %}
   {% endwith %}

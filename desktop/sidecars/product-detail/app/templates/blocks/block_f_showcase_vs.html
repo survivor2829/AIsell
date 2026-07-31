@@ -16,7 +16,7 @@
   - vs_rows: 多维度对比行列表 [{"label":"维度","left":"机器数据","right":"人工数据"},...]
   - left_label, right_label: 双图对比胶囊标签 (品类自适应; 默认设备类语义"本产品"/"传统人工")
 -->
-{% if vs_left_title or title_line1_red %}<div style="width:750px; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; background:#fff; overflow:hidden;">
+{% if title_line1 or title_line1_red or title_line2 or title_line2_red or vs_left_title or vs_right_title or vs_rows %}<div style="width:750px; font-family:'PingFang SC','Noto Sans SC','Microsoft YaHei','Helvetica Neue',sans-serif; background:#fff; overflow:hidden;">
 
   <!-- 顶部标题 -->
   <div style="padding:48px 36px 28px; position:relative;">

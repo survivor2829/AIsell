@@ -9,11 +9,17 @@ const { registerContactSyncIpc } = require("./contact-sync-ipc.cjs");
 const { migrateLegacyRuntimeData } = require("./runtime-data.cjs");
 const { registerTouchTaskIpc } = require("./touch-task-ipc.cjs");
 const { createRuntimeCoordinator } = require("./runtime-coordinator.cjs");
-const { createDeepSeekClient, createDeepSeekKeyStore } = require("./deepseek-api.cjs");
+const { DEEPSEEK_MODEL, createDeepSeekClient, createDeepSeekKeyStore } = require("./deepseek-api.cjs");
 const { registerDeepSeekApiIpc } = require("./deepseek-api-ipc.cjs");
 const { configureDiagnostics, diagnostics } = require("./diagnostics.cjs");
 const { registerDiagnosticsIpc } = require("./diagnostics-ipc.cjs");
 const { developmentEdition, pilotEdition, editionLabel, preloadFile, rendererDir } = require("./edition.cjs");
+const {
+  createProductDetailAiSettingsStore
+} = require("./product-detail-ai-settings.cjs");
+const {
+  registerProductDetailAiSettingsIpc
+} = require("./product-detail-ai-settings-ipc.cjs");
 const { createProductDetailSidecar } = require("./product-detail-sidecar.cjs");
 const { registerProductDetailIpc } = require("./product-detail-ipc.cjs");
 const { createContentEngineSidecar } = require("./content-engine-sidecar.cjs");
@@ -33,6 +39,14 @@ let contentEngineController = null;
 let contentEngineIpcRegistration = null;
 let quitCleanupStarted = false;
 let quitCleanupComplete = false;
+
+const PRODUCT_DETAIL_PROVIDER_RESTART_STATES = new Set(["ready", "starting", "failed"]);
+
+function restartProductDetailForProviderChange() {
+  const state = productDetailController?.status().state;
+  if (!PRODUCT_DETAIL_PROVIDER_RESTART_STATES.has(state)) return undefined;
+  return productDetailController.restart();
+}
 
 function productDetailRuntimePath() {
   if (app.isPackaged) {
@@ -200,6 +214,24 @@ if (!gotSingleInstanceLock) {
     const deepSeekKeyStore = createDeepSeekKeyStore({ rootDir: runtime.rootDir, safeStorage });
     const deepSeekClient = createDeepSeekClient({ keyStore: deepSeekKeyStore });
     const aiExpertStore = createAiExpertStore({ rootDir: runtime.rootDir });
+    const productDetailDataDir = path.join(app.getPath("userData"), "product-detail");
+    const productDetailAiSettingsStore = createProductDetailAiSettingsStore({
+      rootDir: productDetailDataDir,
+      safeStorage
+    });
+    const getProductDetailProviderEnvironment = () => {
+      const providerEnvironment = { DEEPSEEK_MODEL };
+      if (deepSeekKeyStore.status().configured) {
+        providerEnvironment.DEEPSEEK_API_KEY = deepSeekKeyStore.read();
+      }
+      const refineStatus = productDetailAiSettingsStore.status();
+      if (refineStatus.ready) {
+        const refine = productDetailAiSettingsStore.runtimeConfig();
+        providerEnvironment.REFINE_API_KEY = refine.apiKey;
+        providerEnvironment.REFINE_API_BASE_URL = refine.baseUrl;
+      }
+      return providerEnvironment;
+    };
     coordinator.initialize();
     configureActiveTouchRuntime({ dataDir: runtime.activeTouchDir, coordinator });
     const internalRealSend = developmentEdition || pilotEdition ? require("../../rpa/active_touch/state_machine.dev.cjs") : null;
@@ -223,15 +255,24 @@ if (!gotSingleInstanceLock) {
     }
     if (internalRealSend) disarmRealSend = () => internalRealSend.setRealSendArm(runtime.activeTouchDir, false);
     registerContactSyncIpc({ dataDir: runtime.contactSyncDir, activeTouchDir: runtime.activeTouchDir, coordinator });
-    registerDeepSeekApiIpc({ keyStore: deepSeekKeyStore, client: deepSeekClient });
     registerDiagnosticsIpc();
     productDetailController = createProductDetailSidecar({
       runtimePath: productDetailRuntimePath(),
-      dataDir: path.join(app.getPath("userData"), "product-detail")
+      dataDir: productDetailDataDir,
+      getProviderEnvironment: getProductDetailProviderEnvironment
     });
     productDetailIpcRegistration = registerProductDetailIpc({
       controller: productDetailController,
       getMainWindow: () => mainWindow
+    });
+    registerDeepSeekApiIpc({
+      keyStore: deepSeekKeyStore,
+      client: deepSeekClient,
+      onChanged: restartProductDetailForProviderChange
+    });
+    registerProductDetailAiSettingsIpc({
+      store: productDetailAiSettingsStore,
+      onChanged: restartProductDetailForProviderChange
     });
     contentEngineController = createContentEngineSidecar({
       runtimePath: contentEngineRuntimePath(),

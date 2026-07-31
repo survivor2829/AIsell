@@ -324,6 +324,18 @@ def _generate_one_block(
             )
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
+            if getattr(e, "outcome_unknown", False):
+                raise
+            if getattr(e, "do_not_retry", False):
+                return (
+                    BlockResult(
+                        block_id=bid, visual_type=vt,
+                        prompt=prompt, image_url=None,
+                        error=f"已停止自动重试: {last_err}",
+                        placeholder=False,
+                    ),
+                    0.0,
+                )
             attempts += 1
             if attempts <= max_retries:
                 print(f"[gen][{bid}] attempt {attempts} 失败, 重试: {last_err}")
@@ -434,7 +446,7 @@ def generate(
         result.errors.append(f"hero: {hero_res.error}")
         result.total_elapsed_s = round(time.time() - t_start, 2)
         raise HeroFailure(
-            f"Hero 重试 {max_retries_hero} 次后仍失败: {hero_res.error}. "
+            f"Hero 生成失败: {hero_res.error}. "
             f"PRD §7: 已生成的其它 block 不保留 (整单 fail)."
         )
 
@@ -463,6 +475,10 @@ def generate(
             try:
                 br, cost = fut.result()
             except Exception as e:
+                if getattr(e, "outcome_unknown", False):
+                    for pending in futures:
+                        pending.cancel()
+                    raise
                 # 内部已捕获, 防御: pool 本身异常
                 br = BlockResult(
                     block_id=b["block_id"], visual_type=b["visual_type"],
@@ -508,6 +524,7 @@ def generate(
 #   - 第 1 屏 (idx=1) 严格视为 hero (整单 fail), 其他屏 SP best-effort
 
 _V2_SIZE_DEFAULT = "3:4"  # PRD §阶段二: 1536×2048 锁定
+_V2_MAX_SCREENS = 15
 
 # v3 (PRD AI_refine_v3.1 §5.2): 喂 cutout 屏的 prompt 开头注入注入语,
 # 让 gpt-image-2 知道 image_urls[0] 是产品参考图, 必须保留产品 silhouette / 主色 / 关键部件.
@@ -702,6 +719,18 @@ def _generate_one_block_v2(
             )
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
+            if getattr(e, "outcome_unknown", False):
+                raise
+            if getattr(e, "do_not_retry", False):
+                return (
+                    BlockResult(
+                        block_id=bid, visual_type=vt,
+                        prompt=prompt, image_url=None,
+                        error=f"已停止自动重试: {last_err}",
+                        placeholder=False,
+                    ),
+                    0.0,
+                )
             attempts += 1
             if attempts <= max_retries:
                 print(f"[gen_v2][{bid}] attempt {attempts} 失败, 重试: {last_err}")
@@ -768,6 +797,8 @@ def generate_v2(
         raise ValueError("planning_v2 必须是非空 dict")
     if "screens" not in planning_v2 or not isinstance(planning_v2["screens"], list):
         raise ValueError("planning_v2 缺 'screens' 字段或不是 list (期望 v2 schema)")
+    if len(planning_v2["screens"]) > _V2_MAX_SCREENS:
+        raise ValueError(f"planning_v2.screens 最多允许 {_V2_MAX_SCREENS} 屏")
 
     use_key = _resolve_refine_api_key(api_key)
     if not use_key and api_call_fn is None:
@@ -874,6 +905,10 @@ def generate_v2(
             try:
                 br, cost = fut.result()
             except Exception as e:
+                if getattr(e, "outcome_unknown", False):
+                    for pending in futures:
+                        pending.cancel()
+                    raise
                 # ThreadPool 本身异常 (内部已捕获, 这里防御)
                 br = BlockResult(
                     block_id=b["block_id"],

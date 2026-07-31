@@ -244,6 +244,7 @@ def plan(
 
     payload = {
         "model": model,
+        "thinking": {"type": "disabled"},
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
@@ -513,6 +514,7 @@ def plan_v2(
 
     payload = {
         "model": model,
+        "thinking": {"type": "disabled"},
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT_V2},
             {"role": "user", "content": user_prompt},
@@ -660,6 +662,9 @@ def _inject_material_origin(planning: dict, product_category: str | None) -> dic
     existing_roles = [s.get("role") for s in screens]
     if "material_origin" in existing_roles:
         return planning  # 幂等, 不重复注入
+    if len(screens) >= _MAX_SCREEN_COUNT_V2:
+        planning["screen_count"] = len(screens)
+        return planning  # 付费生成硬上限, 不为材料来源额外扩屏
 
     # 取第一个 material 作为屏的视觉 hint 来源
     first = materials[0] if isinstance(materials[0], dict) else {}

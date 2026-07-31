@@ -1,4 +1,4 @@
-const { ipcMain } = require("electron");
+const { ipcMain: electronIpcMain } = require("electron");
 const { diagnostics } = require("./diagnostics.cjs");
 
 function errorCategory(code) {
@@ -21,17 +21,30 @@ function publicError(error) {
   return { ok: false, code, category: errorCategory(code), error: String(error?.message || "DeepSeek 请求失败，请稍后重试。") };
 }
 
-function registerDeepSeekApiIpc({ keyStore, client } = {}) {
+function registerDeepSeekApiIpc({ keyStore, client, onChanged, ipcMain = electronIpcMain } = {}) {
+  const notifyChanged = (action, configured) => {
+    if (typeof onChanged !== "function") return;
+    try {
+      const pending = onChanged({ action, configured: configured === true });
+      if (pending && typeof pending.catch === "function") pending.catch(() => undefined);
+    } catch {
+      // The Key is already saved or removed; a sidecar restart failure must not roll it back.
+    }
+  };
+
   ipcMain.handle("deepseek-api:status", () => {
     const result = { ok: true, data: keyStore.status() };
     diagnostics().event("deepseek", "key_status", { configured: result.data?.configured === true });
     return result;
   });
   ipcMain.handle("deepseek-api:save", (_event, payload = {}) => {
-    const operation = diagnostics().begin("deepseek", "key_save", { apiKey: payload.apiKey });
+    const operation = diagnostics().begin("deepseek", "key_save", {
+      supplied_key: Boolean(String(payload.apiKey || "").trim())
+    });
     try {
       const result = { ok: true, data: keyStore.write(payload.apiKey) };
       operation.end({ ok: true, configured: result.data?.configured === true });
+      notifyChanged("saved", result.data?.configured === true);
       return result;
     } catch (error) {
       operation.fail(error);
@@ -54,6 +67,7 @@ function registerDeepSeekApiIpc({ keyStore, client } = {}) {
     try {
       const result = { ok: true, data: keyStore.clear() };
       operation.end({ ok: true });
+      notifyChanged("deleted", false);
       return result;
     } catch (error) {
       operation.fail(error);

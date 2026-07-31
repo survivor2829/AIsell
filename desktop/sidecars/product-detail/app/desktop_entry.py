@@ -35,6 +35,7 @@ if BUNDLED_PLAYWRIGHT_DIR.is_dir():
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(BUNDLED_PLAYWRIGHT_DIR))
 _MUTABLE_STATIC_ROOTS = {"uploads", "outputs", "cache", "ai_refine_v2"}
 _TOKEN_MIN_LENGTH = 32
+_AI_REFINE_CONFIRMATION_TTL_SECONDS = 120
 
 
 @dataclass(frozen=True)
@@ -237,7 +238,7 @@ def _install_desktop_contract(
     shutdown_callback: Callable[[], None],
     capabilities: dict[str, bool],
 ) -> DesktopContract:
-    from flask import abort, jsonify, redirect, request, url_for
+    from flask import abort, g, jsonify, redirect, request, url_for
     from flask_login import current_user, login_user
 
     app_module = sys.modules["app"]
@@ -260,17 +261,115 @@ def _install_desktop_contract(
         if not _is_loopback_address(request.remote_addr):
             abort(403)
 
-    disabled_paid_endpoints = {
+    always_disabled_paid_endpoints = {
         "generate_ai_images",
         "generate_ai_detail",
         "generate_ai_detail_html",
         "regenerate_block_api",
-        "ai_refine_v2_execute",
     }
-    for endpoint in disabled_paid_endpoints:
+    paid_ai_ready = bool(contract.capabilities.get("paid_ai_ready"))
+    csrf_exempt_endpoints = set(always_disabled_paid_endpoints)
+    if not paid_ai_ready:
+        csrf_exempt_endpoints.add("ai_refine_v2_execute")
+    for endpoint in csrf_exempt_endpoints:
         view = flask_app.view_functions.get(endpoint)
         if view is not None:
             csrf.exempt(view)
+
+    ledger_path = config.data_dir / "database" / "desktop-ai-refine-ledger.json"
+    ledger_lock = threading.RLock()
+    confirmation_lock = threading.Lock()
+    confirmation_tickets: dict[str, dict[str, float | int]] = {}
+
+    def prune_confirmation_tickets(now: float) -> None:
+        expired = [
+            digest
+            for digest, ticket in confirmation_tickets.items()
+            if float(ticket['expires_at']) <= now
+        ]
+        for digest in expired:
+            confirmation_tickets.pop(digest, None)
+
+    def issue_confirmation_ticket(user_id: int) -> str:
+        token = secrets.token_urlsafe(32)
+        digest = hashlib.sha256(token.encode('utf-8')).hexdigest()
+        now = time.monotonic()
+        with confirmation_lock:
+            prune_confirmation_tickets(now)
+            confirmation_tickets[digest] = {
+                'user_id': int(user_id),
+                'expires_at': now + _AI_REFINE_CONFIRMATION_TTL_SECONDS,
+            }
+        return token
+
+    def consume_confirmation_ticket(token: str, user_id: int) -> bool:
+        normalized = str(token or '').strip()
+        if not normalized:
+            return False
+        digest = hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+        now = time.monotonic()
+        with confirmation_lock:
+            prune_confirmation_tickets(now)
+            ticket = confirmation_tickets.get(digest)
+            if ticket is None or int(ticket['user_id']) != int(user_id):
+                return False
+            confirmation_tickets.pop(digest, None)
+            return True
+
+    def unreadable_refine_ledger() -> dict:
+        return {
+            "state": "outcome_unknown",
+            "reason": "ledger_unreadable",
+        }
+
+    def read_refine_ledger() -> dict:
+        with ledger_lock:
+            try:
+                value = json.loads(ledger_path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return {}
+            except (OSError, json.JSONDecodeError):
+                return unreadable_refine_ledger()
+            return value if isinstance(value, dict) else unreadable_refine_ledger()
+
+    def write_refine_ledger(value: dict) -> None:
+        with ledger_lock:
+            ledger_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = ledger_path.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(value, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            os.replace(temporary, ledger_path)
+
+    def task_state(task_id: str) -> dict | None:
+        if not task_id:
+            return None
+        from ai_refine_v2 import pipeline_runner
+        return pipeline_runner.get_task_status(task_id)
+
+    def refresh_refine_ledger() -> dict:
+        with ledger_lock:
+            ledger = read_refine_ledger()
+            if ledger.get("state") != "pending":
+                return ledger
+            current = task_state(str(ledger.get("task_id") or ""))
+            if current and current.get("status") in {"success", "failed", "outcome_unknown"}:
+                ledger["state"] = str(current["status"])
+                ledger["finished_at"] = int(time.time())
+                write_refine_ledger(ledger)
+            elif ledger.get("task_id") and current is None:
+                ledger["state"] = "outcome_unknown"
+                write_refine_ledger(ledger)
+            return ledger
+
+    startup_ledger = read_refine_ledger()
+    if startup_ledger.get("state") == "pending" and not startup_ledger.get("task_id"):
+        startup_ledger["state"] = "outcome_unknown"
+        write_refine_ledger(startup_ledger)
+    @flask_app.context_processor
+    def desktop_template_contract():
+        return {"desktop_capabilities": dict(contract.capabilities)}
 
     @flask_app.before_request
     def desktop_enforce_boundaries():
@@ -281,7 +380,15 @@ def _install_desktop_contract(
 
         request_path = request.path
         if request_path.startswith("/static/ai_refine_v2/"):
-            abort(404)
+            if not current_user.is_authenticated:
+                abort(401)
+            task_id = request_path[len("/static/ai_refine_v2/"):].split("/", 1)[0]
+            state = task_state(task_id)
+            if state is None:
+                abort(404)
+            owner_id = state.get("user_id")
+            if owner_id != current_user.id and not current_user.is_admin:
+                abort(403)
         if request_path.startswith("/static/uploads/batches/"):
             abort(404)
 
@@ -299,17 +406,110 @@ def _install_desktop_contract(
         if request_path.startswith("/static/cache/") and not current_user.is_authenticated:
             abort(401)
 
-        if endpoint in disabled_paid_endpoints:
+        if endpoint in always_disabled_paid_endpoints:
             if not current_user.is_authenticated:
                 abort(401)
             return jsonify(
                 {
                     "ok": False,
                     "code": "DESKTOP_PAID_ACTION_DISABLED",
-                    "error": "该付费 AI 操作尚未完成费用确认与安全队列接入。",
+                    "error": "该旧版付费 AI 操作未向桌面版开放。",
                 }
             ), 503
+
+        if endpoint == "ai_refine_v2_execute" and not paid_ai_ready:
+            if not current_user.is_authenticated:
+                abort(401)
+            return jsonify(
+                {
+                    "ok": False,
+                    "code": "DESKTOP_AI_REFINE_NOT_CONFIGURED",
+                    "error": "请先配置 DeepSeek 和 APIMart 后重启产品详情图服务。",
+                }
+            ), 503
+        if endpoint == "ai_refine_v2_execute":
+            if not current_user.is_authenticated:
+                abort(401)
+            with ledger_lock:
+                ledger = refresh_refine_ledger()
+                if ledger.get("state") == "pending":
+                    return jsonify(
+                        {
+                            "ok": False,
+                            "code": "DESKTOP_AI_REFINE_ALREADY_RUNNING",
+                            "error": "已有 AI 精修任务正在运行，请等待当前任务结束。",
+                            "task_id": ledger.get("task_id") or "",
+                        }
+                    ), 409
+                if ledger.get("state") == "outcome_unknown":
+                    return jsonify(
+                        {
+                            "ok": False,
+                            "code": "DESKTOP_AI_REFINE_OUTCOME_UNKNOWN",
+                            "error": "上次付费任务结果不明。为避免重复扣费，已停止新建任务。",
+                            "task_id": ledger.get("task_id") or "",
+                        }
+                    ), 409
+                execute_payload = request.get_json(silent=True) or {}
+                if not consume_confirmation_ticket(
+                    execute_payload.get('confirmation_token', ''),
+                    current_user.id,
+                ):
+                    return jsonify(
+                        {
+                            'ok': False,
+                            'code': 'DESKTOP_AI_REFINE_CONFIRMATION_REQUIRED',
+                            'error': '费用确认已缺失、过期或使用过，请重新确认后提交。',
+                        }
+                    ), 428
+                request_bytes = request.get_data(cache=True) or b""
+                write_refine_ledger(
+                    {
+                        "state": "pending",
+                        "task_id": "",
+                        "request_fingerprint": hashlib.sha256(request_bytes).hexdigest(),
+                        "started_at": int(time.time()),
+                    }
+                )
+                g.xiaoxi_ai_refine_started = True
         return None
+
+    @flask_app.after_request
+    def desktop_track_ai_refine(response):
+        endpoint = request.endpoint or ""
+        if endpoint == "ai_refine_v2_execute" and getattr(
+            g, "xiaoxi_ai_refine_started", False
+        ):
+            with ledger_lock:
+                ledger = read_refine_ledger()
+                if 200 <= response.status_code < 300:
+                    payload = response.get_json(silent=True) or {}
+                    task_id = str(payload.get("task_id") or "")
+                    if task_id and payload.get("mode") == "real":
+                        ledger["task_id"] = task_id
+                        ledger["state"] = "pending"
+                    else:
+                        ledger["state"] = "outcome_unknown"
+                    write_refine_ledger(ledger)
+                elif 400 <= response.status_code < 500:
+                    ledger["state"] = "failed"
+                    ledger["reason"] = "not_started"
+                    ledger["finished_at"] = int(time.time())
+                    write_refine_ledger(ledger)
+                else:
+                    ledger["state"] = "outcome_unknown"
+                    ledger["reason"] = "server_error_after_admission"
+                    write_refine_ledger(ledger)
+        elif endpoint == "ai_refine_v2_status" and response.status_code == 200:
+            payload = response.get_json(silent=True) or {}
+            if payload.get("status") in {"success", "failed", "outcome_unknown"}:
+                with ledger_lock:
+                    ledger = read_refine_ledger()
+                    if str(ledger.get("task_id") or "") == str(payload.get("task_id") or ""):
+                        ledger["state"] = str(payload["status"])
+                        ledger["finished_at"] = int(time.time())
+                        write_refine_ledger(ledger)
+        return response
 
     def internal_health():
         require_loopback()
@@ -365,6 +565,49 @@ def _install_desktop_contract(
             contract.bootstrap_in_progress = False
         return redirect(url_for("index"))
 
+    def ai_refine_estimate():
+        require_loopback()
+        if not current_user.is_authenticated:
+            abort(401)
+        if not paid_ai_ready:
+            return jsonify(
+                {
+                    "ok": False,
+                    "code": "DESKTOP_AI_REFINE_NOT_CONFIGURED",
+                    "error": "请先配置 DeepSeek 和 APIMart。",
+                }
+            ), 503
+        confirmation_token = issue_confirmation_ticket(current_user.id)
+        return jsonify(
+            {
+                "ok": True,
+                "provider": "apimart",
+                "model": "gpt-image-2",
+                "resolution": "1k",
+                "images": {"min": 8, "max": 15},
+                "unit": {"amount": 0.085, "currency": "credits"},
+                "total": {"min": 0.68, "max": 1.275, "currency": "credits"},
+                "disclaimer": "仅为参考估算，实际费用以 APIMart 账单为准。",
+                "confirmation_token": confirmation_token,
+                "confirmation_expires_in_seconds": _AI_REFINE_CONFIRMATION_TTL_SECONDS,
+            }
+        )
+
+    def resolve_ai_refine_unknown():
+        require_loopback()
+        if not current_user.is_authenticated:
+            abort(401)
+        data = request.get_json(silent=True) or {}
+        if data.get("confirm_new_task") is not True:
+            return jsonify({"ok": False, "error": "需要明确确认后才能解除。"}), 400
+        with ledger_lock:
+            ledger = refresh_refine_ledger()
+            if ledger.get("state") != "outcome_unknown":
+                return jsonify({"ok": False, "error": "当前没有结果不明的任务。"}), 409
+            ledger["state"] = "resolved_unknown"
+            ledger["resolved_at"] = int(time.time())
+            write_refine_ledger(ledger)
+        return jsonify({"ok": True, "status": "resolved_unknown"})
     def internal_shutdown():
         require_loopback()
         supplied = request.headers.get("x-xiaoxi-control-token", "")
@@ -384,6 +627,18 @@ def _install_desktop_contract(
         endpoint="xiaoxi_desktop_bootstrap",
         view_func=desktop_bootstrap,
         methods=["GET"],
+    )
+    flask_app.add_url_rule(
+        "/desktop/ai-refine-v2/estimate",
+        endpoint="xiaoxi_ai_refine_estimate",
+        view_func=ai_refine_estimate,
+        methods=["GET"],
+    )
+    flask_app.add_url_rule(
+        "/desktop/ai-refine-v2/resolve-unknown",
+        endpoint="xiaoxi_ai_refine_resolve_unknown",
+        view_func=resolve_ai_refine_unknown,
+        methods=["POST"],
     )
     flask_app.add_url_rule(
         "/internal/shutdown",

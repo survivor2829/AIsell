@@ -78,6 +78,7 @@ def run():
     console_errors = []
     page_errors = []
     dialogs = []
+    failed_responses = []
     result = {
         "ok": False,
         "phase": phase,
@@ -86,6 +87,7 @@ def run():
         "console_errors": console_errors,
         "page_errors": page_errors,
         "dialogs": dialogs,
+        "failed_responses": failed_responses,
     }
 
     try:
@@ -93,7 +95,7 @@ def run():
             browser = playwright.chromium.launch(headless=True)
             context = browser.new_context(
                 accept_downloads=True,
-                viewport={"width": 1440, "height": 1000},
+                viewport=config.get("viewport", {"width": 1440, "height": 1000}),
             )
 
             def handle_route(route):
@@ -108,6 +110,18 @@ def run():
             page = context.new_page()
             page.set_default_timeout(30_000)
             page.on("request", lambda request: requests.append(clean_url(request.url)))
+
+            def handle_response(response):
+                if response.status < 400:
+                    return
+                failed_responses.append(
+                    {
+                        "status": response.status,
+                        "url": clean_url(response.url),
+                        "resource_type": response.request.resource_type,
+                    }
+                )
+            page.on("response", handle_response)
             page.on(
                 "console",
                 lambda message: console_errors.append(message.text)
@@ -146,9 +160,14 @@ def run():
                   return {
                     hostHeight: hostRect.height,
                     hostClientHeight: host.clientHeight,
+                    hostWidth: hostRect.width,
+                    hostClientWidth: host.clientWidth,
                     frameHeight: frameRect.height,
                     topDelta: Math.abs(frameRect.top - hostRect.top),
                     bottomDelta: Math.abs(frameRect.bottom - hostRect.bottom),
+                    frameWidth: frameRect.width,
+                    leftDelta: Math.abs(frameRect.left - hostRect.left),
+                    rightDelta: Math.abs(frameRect.right - hostRect.right),
                   };
                 }"""
             )
@@ -157,12 +176,45 @@ def run():
                 or abs(host_fit["frameHeight"] - host_fit["hostClientHeight"]) > 1
                 or host_fit["topDelta"] > 1
                 or host_fit["bottomDelta"] > 1
+                or abs(host_fit["frameWidth"] - host_fit["hostClientWidth"]) > 1
+                or host_fit["leftDelta"] > 1
+                or host_fit["rightDelta"] > 1
             ):
                 raise AssertionError(f"iframe does not fill product-detail host: {host_fit}")
             result["host_fit"] = host_fit
             if "/auth/login" in embedded_frame.url:
                 raise AssertionError("desktop bootstrap fell back to the login page")
+            embedded_frame.wait_for_timeout(300)
 
+            expected_frame_width = config.get("expected_frame_width")
+            if (
+                expected_frame_width is not None
+                and abs(host_fit["frameWidth"] - expected_frame_width) > 2
+            ):
+                raise AssertionError(
+                    "unexpected simulated Electron iframe width: "
+                    f"expected {expected_frame_width}, got {host_fit['frameWidth']}"
+                )
+            layout_state = embedded_frame.evaluate(
+                """() => {
+                  const workspace = document.querySelector('.workspace');
+                  const center = document.querySelector('.panel-center');
+                  return {
+                    viewportWidth: window.innerWidth,
+                    workspaceWidth: workspace?.getBoundingClientRect().width || 0,
+                    centerWidth: center?.getBoundingClientRect().width || 0,
+                    layout: ['edit', 'balance', 'preview'].find(name =>
+                      workspace?.classList.contains('layout-' + name)) || '',
+                  };
+                }"""
+            )
+            expected_layout = config.get("expected_layout")
+            if expected_layout and layout_state["layout"] != expected_layout:
+                raise AssertionError(
+                    f"expected {expected_layout} layout, got {layout_state}"
+                )
+            result["viewport"] = config.get("viewport")
+            result["layout_state"] = layout_state
             if phase == "produce":
                 workspace.locator("#upload_product input[type=file]").set_input_files(
                     config["fixture_path"]
@@ -219,6 +271,11 @@ def run():
                     or fit_state["containerRight"] > fit_state["wrapperRight"] + 1
                 ):
                     raise AssertionError(f"preview overflows center panel: {fit_state}")
+                minimum_scale = float(config.get("minimum_preview_scale", 0))
+                if fit_state["scale"] < minimum_scale:
+                    raise AssertionError(
+                        f"preview scale is below {minimum_scale}: {fit_state}"
+                    )
 
                 ai_button = workspace.locator("#btn_ai_html_v2")
                 if not ai_button.is_disabled():
@@ -345,11 +402,23 @@ def run():
                 )
                 if not (0 < restore_scale <= 1):
                     raise AssertionError(f"restored preview did not fit center panel: {restore_scale}")
+                minimum_scale = float(config.get("minimum_preview_scale", 0))
+                if restore_scale < minimum_scale:
+                    raise AssertionError(
+                        f"restored preview scale is below {minimum_scale}: {restore_scale}"
+                    )
                 result["module_count"] = module_count
+                result["restore_scale"] = restore_scale
             else:
                 raise AssertionError(f"unsupported phase: {phase}")
 
-            paid_markers = ("generate-ai", "ai-refine", "regenerate-block")
+            paid_markers = (
+                "/api/ai-refine-v2/execute",
+                "/api/generate-ai-images",
+                "/api/generate-ai-detail",
+                "/regenerate-block",
+                "/ai-refine-start",
+            )
             paid_requests = [
                 value
                 for value in requests
@@ -360,9 +429,10 @@ def run():
                     "non-loopback browser requests were attempted: "
                     + ", ".join(sorted(set(blocked)))
                 )
+            result["failed_responses"] = failed_responses
             if console_errors:
                 raise AssertionError(
-                    "browser console errors were observed: "
+                    f"browser console errors were observed; HTTP failures={failed_responses}: "
                     + ", ".join(console_errors)
                 )
             if page_errors:
@@ -429,16 +499,27 @@ function createEmbedHost({ dataDir, bootstrapUrl, phase }) {
       "<!doctype html>",
       '<meta charset="utf-8">',
       "<style>",
+      "*{box-sizing:border-box}",
       "html,body{width:100%;height:100%;margin:0;overflow:hidden}",
+      ".test-app-shell{width:100vw;height:100vh;display:grid;grid-template-columns:236px minmax(0,1fr)}",
+      ".test-sidebar{height:100vh}",
+      ".test-workspace{height:100vh;min-width:0;padding:42px 36px 26px 0}",
+      ".test-content-card{width:100%;height:calc(100vh - 68px);min-width:0}",
+      ".test-page{height:100%;padding:22px 38px 34px}",
       productDetailCss,
       "</style>",
-      '<section class="product-detail-page">',
+      '<div class="test-app-shell">',
+      '<aside class="test-sidebar"></aside>',
+      '<main class="test-workspace"><div class="test-content-card">',
+      '<section class="test-page product-detail-page">',
       '<div class="product-detail-head" style="height:64px;flex:0 0 auto"></div>',
       '<div class="product-detail-state" style="height:68px;box-sizing:border-box;flex:0 0 auto"></div>',
       '<div class="product-detail-workspace">',
       `<iframe id="product-detail-frame" name="product-detail-frame" src="${escapedBootstrapUrl}" sandbox="allow-forms allow-scripts allow-same-origin allow-downloads" referrerpolicy="no-referrer"></iframe>`,
       "</div>",
-      "</section>"
+      "</section>",
+      "</div></main>",
+      "</div>"
     ].join("\n"),
     "utf8"
   );
@@ -744,8 +825,12 @@ async function main() {
       phase: "produce",
       origin: server.origin,
       host_url: createEmbedHost({ dataDir, bootstrapUrl: server.bootstrapUrl, phase: "produce" }),
+      viewport: { width: 1440, height: 900 },
+      expected_frame_width: 1090,
+      expected_layout: "preview",
+      minimum_preview_scale: 0.68,
       fixture_path: fixturePath,
-      download_path: downloadPath
+      download_path: downloadPath,
     });
     await stopSidecar(server);
     server = null;
@@ -763,7 +848,11 @@ async function main() {
     evidence.phases.restore = await runBrowserPhase({
       phase: "restore",
       origin: server.origin,
-      host_url: createEmbedHost({ dataDir, bootstrapUrl: server.bootstrapUrl, phase: "restore" })
+      host_url: createEmbedHost({ dataDir, bootstrapUrl: server.bootstrapUrl, phase: "restore" }),
+      viewport: { width: 1920, height: 1080 },
+      expected_frame_width: 1570,
+      expected_layout: "preview",
+      minimum_preview_scale: 0.99
     });
     await stopSidecar(server);
     server = null;

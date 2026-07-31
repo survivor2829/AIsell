@@ -101,9 +101,8 @@ def get_task_status(task_id: str) -> dict | None:
     2026-05-07 v2_1778126382035_b3cca1: 8 屏 success + assembled.png 13MB
     在磁盘但 _TASKS 内存丢, 用户被迫重跑浪费 ¥5.6.
 
-    P4 §A.6 兼容: 磁盘 fallback 重建的 task user_id=None, 端点 ai_refine_v2_status
-    校验 owner_id != current_user.id 且非 admin 时 abort(403). 即历史任务仅 admin 可读,
-    与现有 P4 owner check 一致.
+    桌面任务把 user_id 持久化到 _summary.json，重启后仍可执行 owner 校验。
+    早期没有 user_id 的历史任务继续只允许 admin 读取。
     """
     with _TASKS_LOCK:
         st = _TASKS.get(task_id)
@@ -126,7 +125,7 @@ def get_task_status(task_id: str) -> dict | None:
     )
     return {
         "task_id": task_id,
-        "user_id": None,  # 历史任务无 owner 标记 → 仅 admin 可读 (P4 §A.6)
+        "user_id": data.get("user_id"),  # 旧 summary 无 owner 时仍为 None
         "status": "success",  # _summary.json 落盘等于任务已完成
         "mode": data.get("mode", "unknown"),
         "progress_pct": 100,
@@ -799,6 +798,7 @@ def _worker_v1(task_id: str, product_text: str, product_image_url: str,
 
         # Summary (含 raw_urls, 便于离线救图脚本使用 _summary.json)
         summary = {
+            "user_id": (get_task_status(task_id) or {}).get("user_id"),
             "product": planning.get("product_meta", {}).get("name", ""),
             "mode": mode,
             "total_cost_rmb": cost,
@@ -819,9 +819,12 @@ def _worker_v1(task_id: str, product_text: str, product_image_url: str,
 
     except Exception as e:
         tb = traceback.format_exc()
-        print(f"[pipeline] task {task_id} failed:\n{tb}")
-        _set(task_id, status="failed", error=str(e), error_trace=tb,
-             progress_msg=f"失败: {e}")
+        outcome_unknown = bool(getattr(e, "outcome_unknown", False))
+        terminal_status = "outcome_unknown" if outcome_unknown else "failed"
+        print(f"[pipeline] task {task_id} {terminal_status}:\n{tb}")
+        _set(task_id, status=terminal_status, error=str(e), error_trace=tb,
+             progress_msg=(f"结果不明，已停止自动重提: {e}"
+                           if outcome_unknown else f"失败: {e}"))
 
 
 def _worker_v2(task_id: str, product_text: str, product_image_url: str,
@@ -896,6 +899,7 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
              progress_msg=f"{len(blocks)} 张图就绪, 开始 PIL 拼接...")
 
         summary = {
+            "user_id": (get_task_status(task_id) or {}).get("user_id"),
             "product": planning.get("product_meta", {}).get("name", ""),
             "mode": actual_mode,
             "schema_mode": "v2",
@@ -916,9 +920,12 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
 
     except Exception as e:
         tb = traceback.format_exc()
-        print(f"[pipeline_v2] task {task_id} failed:\n{tb}")
-        _set(task_id, status="failed", error=str(e), error_trace=tb,
-             progress_msg=f"失败: {e}")
+        outcome_unknown = bool(getattr(e, "outcome_unknown", False))
+        terminal_status = "outcome_unknown" if outcome_unknown else "failed"
+        print(f"[pipeline_v2] task {task_id} {terminal_status}:\n{tb}")
+        _set(task_id, status=terminal_status, error=str(e), error_trace=tb,
+             progress_msg=(f"结果不明，已停止自动重提: {e}"
+                           if outcome_unknown else f"失败: {e}"))
 
 
 # ─────────────────────────────────────────────────────────────

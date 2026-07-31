@@ -148,7 +148,18 @@ export function ProductDetailPage() {
   }, []);
 
   const displayState = loadingStatus ? "starting" : status.state;
-  const copy = STATE_COPY[displayState];
+  const paidAiReady = status.capabilities.paid_ai_ready === true;
+  const copy = displayState === "ready"
+    ? paidAiReady
+      ? {
+        title: "服务已就绪，AI 精修已配置",
+        description: "DeepSeek 与 APIMart 配置已经接入下方工作台；实际生图前仍会由工作台显示任务并确认。"
+      }
+      : {
+        title: "服务已就绪，AI 精修尚未配置",
+        description: "普通上传、排版和导出可以使用；如需 AI 精修，请前往“API密钥”填写 DeepSeek 与 APIMart Key。"
+      }
+    : STATE_COPY[displayState];
   const canShowWorkspace = status.state === "ready" && Boolean(status.bootstrapUrl);
 
   return (

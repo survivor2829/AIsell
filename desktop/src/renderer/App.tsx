@@ -274,6 +274,24 @@ type TouchTaskResult = {
   error?: string;
 };
 type DeepSeekApiResult = { ok: boolean; data?: { configured?: boolean; maskedKey?: string; code?: string; error?: string }; code?: string; category?: string; error?: string };
+type ProductDetailAiSettingsResult = {
+  ok: boolean;
+  data?: {
+    provider?: "apimart";
+    enabled?: boolean;
+    configured?: boolean;
+    ready?: boolean;
+    baseUrl?: string;
+    model?: string;
+    secureStorageAvailable?: boolean;
+    valid?: boolean;
+    paidCallPerformed?: false;
+    code?: string;
+    error?: string;
+  };
+  code?: string;
+  error?: string;
+};
 
 declare global {
   interface Window {
@@ -325,6 +343,12 @@ declare global {
       save: (payload: { apiKey: string }) => Promise<DeepSeekApiResult>;
       test: (payload?: { apiKey?: string }) => Promise<DeepSeekApiResult>;
       remove: () => Promise<DeepSeekApiResult>;
+    };
+    xiaoxiProductDetailAiSettings?: {
+      status: () => Promise<ProductDetailAiSettingsResult>;
+      save: (payload: { apiKey: string }) => Promise<ProductDetailAiSettingsResult>;
+      delete: () => Promise<ProductDetailAiSettingsResult>;
+      validate: (payload?: { apiKey?: string }) => Promise<ProductDetailAiSettingsResult>;
     };
   }
 }
@@ -1185,7 +1209,10 @@ function ApiKeyPage({ onConfiguredChange }: { onConfiguredChange: (configured: b
           <p>配置 AI 服务所需的 API Key，密钥仅在当前 Windows 用户下加密保存。</p>
         </div>
       </div>
-      <DeepSeekApiSettings onConfiguredChange={onConfiguredChange} />
+      <div className="api-settings-grid">
+        <DeepSeekApiSettings onConfiguredChange={onConfiguredChange} />
+        <ApiMartSettings />
+      </div>
     </section>
   );
 }
@@ -1255,7 +1282,7 @@ function DeepSeekApiSettings({
       <div className="deepseek-settings-head">
         <div>
           <div className="deepseek-title">DeepSeek API</div>
-          <p>密钥仅在当前 Windows 用户下加密保存。</p>
+          <p>用于产品资料分析、脚本和模块文案，也供现有自动回复等功能使用。</p>
         </div>
         <div className="deepseek-head-actions">
           <span className={`deepseek-config-state ${maskedKey ? "is-configured" : ""}`}>
@@ -1283,6 +1310,142 @@ function DeepSeekApiSettings({
               测试连接
             </button>
             <button className="danger-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.remove(), "已删除 DeepSeek API Key，AI 文案调用已停止。", true)} disabled={busy || !maskedKey}>
+              <Trash2 size={16} />
+              删除
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const APIMART_BASE_URL = "https://api.apimart.ai/v1";
+const APIMART_MODEL = "gpt-image-2";
+
+function ApiMartSettings() {
+  const [apiKey, setApiKey] = useState("");
+  const [configured, setConfigured] = useState(false);
+  const [baseUrl, setBaseUrl] = useState(APIMART_BASE_URL);
+  const [model, setModel] = useState(APIMART_MODEL);
+  const [status, setStatus] = useState("正在读取已保存的设置…");
+  const [statusTone, setStatusTone] = useState<"neutral" | "success" | "error">("neutral");
+  const [busy, setBusy] = useState(false);
+
+  const applyConfiguration = (result: ProductDetailAiSettingsResult) => {
+    if (result.data?.baseUrl) setBaseUrl(result.data.baseUrl);
+    if (result.data?.model) setModel(result.data.model);
+    if (typeof result.data?.configured === "boolean") {
+      setConfigured(result.data.configured);
+    }
+  };
+
+  const refresh = () => {
+    const api = window.xiaoxiProductDetailAiSettings;
+    if (!api) {
+      setStatusTone("error");
+      return setStatus("当前环境未连接产品详情图 AI 设置。");
+    }
+    void api.status().then((result) => {
+      applyConfiguration(result);
+      const statusError = result.data?.error || result.error;
+      if (statusError) {
+        setStatusTone("error");
+        return setStatus(statusError);
+      }
+      if (result.data?.secureStorageAvailable === false) {
+        setStatusTone("error");
+        return setStatus("当前 Windows 用户无法使用加密存储，请检查系统后重试。");
+      }
+      if (result.data?.ready) {
+        setStatusTone("success");
+        return setStatus("已保存并启用，产品详情图 AI 精修可以读取此配置。");
+      }
+      setStatusTone("neutral");
+      return setStatus("尚未保存 APIMart API Key。");
+    }).catch(() => {
+      setStatusTone("error");
+      setStatus("读取 APIMart 设置失败。");
+    });
+  };
+  useEffect(refresh, []);
+
+  const run = (
+    operation: () => Promise<ProductDetailAiSettingsResult>,
+    success: string,
+    options: { clearInput?: boolean; updateConfiguration?: boolean } = {}
+  ) => {
+    setBusy(true);
+    void operation().then((result) => {
+      if (options.updateConfiguration !== false) applyConfiguration(result);
+      if (!result.ok) {
+        setStatusTone("error");
+        return setStatus(result.error || "操作失败，请稍后重试。");
+      }
+      if (options.clearInput) setApiKey("");
+      setStatusTone("success");
+      setStatus(success);
+    }).catch(() => {
+      setStatusTone("error");
+      setStatus("操作失败，请稍后重试。");
+    }).finally(() => setBusy(false));
+  };
+
+  const validateAndSave = async (): Promise<ProductDetailAiSettingsResult> => {
+    const api = window.xiaoxiProductDetailAiSettings!;
+    const value = apiKey.trim();
+    const checked = await api.validate({ apiKey: value });
+    if (!checked.ok) return checked;
+    if (checked.data?.paidCallPerformed !== false) {
+      return { ok: false, error: "配置检查结果异常，已取消保存。" };
+    }
+    return api.save({ apiKey: value });
+  };
+
+  const validateOnly = () => {
+    const api = window.xiaoxiProductDetailAiSettings!;
+    const value = apiKey.trim();
+    return value ? api.validate({ apiKey: value }) : api.validate();
+  };
+
+  return (
+    <div className="table-panel deepseek-settings provider-settings-card">
+      <div className="deepseek-settings-head">
+        <div>
+          <div className="deepseek-title">APIMart 生图 API</div>
+          <p>用于产品详情图的 AI 精修；API 地址和模型已内置，您只需要填写 Key。</p>
+        </div>
+        <div className="deepseek-head-actions">
+          <span className={`deepseek-config-state ${configured ? "is-configured" : ""}`}>
+            <span className="deepseek-state-dot" />
+            {configured ? "已配置" : "未配置"}
+          </span>
+        </div>
+      </div>
+      <div className="deepseek-settings-body">
+        <div className="provider-readonly-grid" aria-label="APIMart 固定配置">
+          <div><span>API 地址</span><strong>{baseUrl}</strong></div>
+          <div><span>生图模型</span><strong>{model}</strong></div>
+        </div>
+        <label className="field deepseek-key-field">
+          <span>{configured ? "APIMart API Key（已安全保存）" : "APIMart API Key"}</span>
+          <div className="deepseek-key-row">
+            <input type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={configured ? "填写新 Key 以替换" : "请输入您的 APIMart API Key"} />
+            <button className="primary-button" onClick={() => run(validateAndSave, "已安全保存并启用。配置检查未联网、未产生费用。", { clearInput: true })} disabled={busy || !apiKey.trim()}>
+              <Save size={16} />
+              保存并启用
+            </button>
+          </div>
+        </label>
+        <div className="provider-cost-note">“检查配置”只检查本地格式和加密存储，不连接 APIMart，也不会生成图片或产生费用。</div>
+        <div className="deepseek-settings-footer">
+          <div className={`deepseek-status is-${statusTone}`} aria-live="polite">{status}</div>
+          <div className="actions deepseek-actions">
+            <button className="secondary-button" onClick={() => run(validateOnly, "配置检查通过：未联网、未产生费用。", { updateConfiguration: false })} disabled={busy || (!apiKey.trim() && !configured)}>
+              <RefreshCw size={16} />
+              检查配置
+            </button>
+            <button className="danger-button" onClick={() => run(() => window.xiaoxiProductDetailAiSettings!.delete(), "已删除 APIMart API Key，AI 精修已关闭。", { clearInput: true })} disabled={busy || !configured}>
               <Trash2 size={16} />
               删除
             </button>

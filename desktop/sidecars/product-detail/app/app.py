@@ -3046,6 +3046,8 @@ def _call_deepseek_parse(raw_text: str, product_type: str = "设备类", api_key
             ],
             "temperature": 0.1,
             "max_tokens": 8192,
+            "thinking": {"type": "disabled"},
+            "response_format": {"type": "json_object"},
         },
         proxies={"http": None, "https": None},  # DeepSeek 国内API，不走代理
         timeout=180,
@@ -3055,7 +3057,6 @@ def _call_deepseek_parse(raw_text: str, product_type: str = "设备类", api_key
     raw = (msg.get("content") or "").strip()
 
     print(f"[DeepSeek] 原始响应长度={len(raw)}")
-    print(f"[DeepSeek] 响应前200字: {raw[:200]}")
 
     if "```" in raw:
         m = re.search(r"```(?:json)?\s*([\s\S]+?)```", raw)
@@ -3068,10 +3069,8 @@ def _call_deepseek_parse(raw_text: str, product_type: str = "设备类", api_key
             raw = raw[start:]
 
     parsed = json.loads(raw.strip())
-    print(f"[DeepSeek] 解析成功，字段: {list(parsed.keys())}")
+    print(f"[DeepSeek] 解析成功，字段数={len(parsed)}")
     adv = parsed.get("advantages", [])
-    print(f"[DeepSeek] advantages数量={len(adv)}，前3项={adv[:3]}")
-    print(f"[DeepSeek] story_title_1={parsed.get('story_title_1','(无)')}")
 
     # ── 极限词过滤 ──
     for _field in ["slogan", "sub_slogan", "category_line", "hero_subtitle",
@@ -3204,7 +3203,7 @@ def parse_text_for_build(product_type):
     if product_title:
         raw_text = f"【产品标题】{product_title}\n\n{raw_text}"
 
-    if _DESKTOP_MODE:
+    if _DESKTOP_MODE and not os.environ.get("DEEPSEEK_API_KEY", "").strip():
         mapped = _parse_text_for_desktop(raw_text, product_type, product_title)
         if not mapped:
             return jsonify({
@@ -3232,16 +3231,14 @@ def parse_text_for_build(product_type):
     try:
         parsed = _call_deepseek_parse(raw_text, product_type, api_key=api_key)
     except Exception as e:
-        import traceback
         print(f"[DeepSeek] ❌ API调用失败: {e}")
-        traceback.print_exc()
         # DeepSeek 失败时降级到模板解析（不含卖点生成）
         parsed = _extract_json_object(raw_text)
         if not isinstance(parsed, dict):
             parsed = _parse_text_by_template(raw_text)
         if not isinstance(parsed, dict) or not parsed:
             return jsonify({"error": f"AI 解析失败: {e}"}), 500
-        print(f"[DeepSeek] ⚠️ 降级到模板解析，字段: {list(parsed.keys())[:10]}")
+        print(f"[DeepSeek] ⚠️ 降级到模板解析，字段数={len(parsed)}")
 
     # 记录生成日志
     log = GenerationLog(
@@ -3254,16 +3251,9 @@ def parse_text_for_build(product_type):
     db.session.add(log)
     db.session.commit()
 
-    # 完整 AI 返回调试
-    import pprint
-    _debug_keys = ["brand","brand_en","model","product_name","product_type","slogan","sub_slogan",
-                   "category_line","hero_subtitle","main_title","advantages","vs_comparison",
-                   "story_title_1","tech_items","scenes","kpis","faqs","cert_badges"]
-    _debug_out = {k: parsed.get(k, '(缺失)') for k in _debug_keys}
-    _dp = parsed.get("detail_params", {})
-    _debug_out["detail_params_count"] = len(_dp)
-    print(f"[AI完整返回] {_debug_out}")
-    print(f"[AI参数明细] {dict(list(_dp.items())[:30]) if isinstance(_dp, dict) else _dp}")
+    _detail_params = parsed.get("detail_params", {})
+    _detail_count = len(_detail_params) if isinstance(_detail_params, dict) else 0
+    print(f"[DeepSeek] 映射准备完成，字段数={len(parsed)}，参数数={_detail_count}")
 
     # 如果 AI 没返回 brand/model/product_name，用产品标题兜底
     if product_title:
@@ -4890,6 +4880,34 @@ _BLOCK_LIST_KEYS = {
     "block_x": "metrics",
 }
 
+_BLOCK_CONTENT_KEYS = {
+    "block_b3": ("header_line1", "header_line2"),
+    "block_f": (
+        "title_line1",
+        "title_line1_red",
+        "title_line2",
+        "title_line2_red",
+        "vs_left_title",
+        "vs_right_title",
+        "vs_rows",
+    ),
+    "block_g": ("brand_stats", "brand_story_lines"),
+    "block_t": ("cases", "client_logos", "client_count"),
+    "block_w": ("video_title", "cover_image", "qr_image"),
+    "block_y": ("calc_items", "cost_per_use", "coverage_text", "dilution_ratio"),
+}
+
+
+def _has_visible_block_value(value):
+    """Return whether a template value contains something users can actually see."""
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return any(_has_visible_block_value(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_has_visible_block_value(item) for item in value)
+    return value is not None and value is not False
+
 
 def _is_block_empty(block_id, block_data):
     """判断模块是否缺少有效数据——没有数据的模块不渲染。"""
@@ -4898,38 +4916,12 @@ def _is_block_empty(block_id, block_data):
     if block_id in _BLOCK_ALWAYS_SHOW:
         return False
     if block_id in _BLOCK_LIST_KEYS:
-        items = block_data.get(_BLOCK_LIST_KEYS[block_id], [])
-        return not (isinstance(items, list) and len(items) > 0)
+        return not _has_visible_block_value(block_data.get(_BLOCK_LIST_KEYS[block_id]))
 
-    # 需要特殊判断的模块
-    if block_id == "block_b3":
-        return not (block_data.get("header_line1", "").strip() or
-                    block_data.get("header_line2", "").strip())
-    if block_id == "block_f":
-        return not (
-            _to_str(block_data.get("vs_left_title", ""))
-            or _to_str(block_data.get("title_line1_red", ""))
-        )
-    if block_id == "block_g":
-        return not (block_data.get("brand_stats") or block_data.get("brand_story_lines"))
-    if block_id == "block_t":
-        return not (
-            block_data.get("cases")
-            or block_data.get("client_logos")
-            or _to_str(block_data.get("client_count", ""))
-        )
-    if block_id == "block_y":
-        return not (
-            block_data.get("calc_items")
-            or _to_str(block_data.get("cost_per_use", ""))
-            or _to_str(block_data.get("coverage_text", ""))
-            or _to_str(block_data.get("dilution_ratio", ""))
-        )
-    if block_id == "block_w":
-        return not (
-            _to_str(block_data.get("video_title", ""))
-            or _to_str(block_data.get("cover_image", ""))
-            or _to_str(block_data.get("qr_image", ""))
+    if block_id in _BLOCK_CONTENT_KEYS:
+        return not any(
+            _has_visible_block_value(block_data.get(key))
+            for key in _BLOCK_CONTENT_KEYS[block_id]
         )
 
     # 默认：任何非空字符串或非空列表即视为有数据

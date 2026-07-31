@@ -127,13 +127,14 @@ class TestWorkspaceFrontendPersistenceHooks:
         assert "container.style.zoom = scale.toFixed(4)" in content
         assert "new ResizeObserver(queuePreviewFit)" in content
         assert "if (tab === 'detail') queuePreviewFit()" in content
-        assert "const defaultLayout = window.innerWidth >= 1280 ? 'preview' : 'balance'" in content
+        assert "const defaultLayout = window.innerWidth >= 1024 ? 'preview' : 'balance'" in content
+        assert "name === 'preview' && window.innerWidth < 1280" not in content
         assert "initPreviewFit()" in content
 
     def test_desktop_paid_ai_control_is_explained_and_disabled(self):
         content = WORKSPACE_HTML.read_text(encoding="utf-8")
         assert "{% if desktop_mode %}" in content
         assert 'data-desktop-paid-disabled="true"' in content
-        assert "DeepSeek / APIMart" in content
+        assert "DeepSeek 与 APIMart" in content
         assert "{% else %}" in content
         assert "{% endif %}" in content

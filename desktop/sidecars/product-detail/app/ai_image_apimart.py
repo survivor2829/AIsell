@@ -19,9 +19,13 @@ API key: REFINE_API_KEY (优先) / GPT_IMAGE_API_KEY (兼容 fallback)
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
+import threading
 import time
+import uuid
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -40,6 +44,33 @@ _UA = (
     "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 )
+_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+_UPLOAD_CACHE_TTL_S = 71 * 60 * 60
+_UPLOAD_CACHE: dict[str, tuple[float, str]] = {}
+_UPLOAD_CACHE_LOCK = threading.Lock()
+
+
+class APIMartError(RuntimeError):
+    """Known APIMart failure that must not be retried by the image generator."""
+
+    do_not_retry = True
+    outcome_unknown = False
+
+
+class APIMartOutcomeUnknown(APIMartError):
+    """A generation was submitted, but its final billable outcome is unknown."""
+
+    outcome_unknown = True
+
+    def __init__(self, task_id: str, message: str):
+        self.task_id = task_id
+        suffix = f" task_id={task_id}" if task_id else ""
+        super().__init__(f"{message}.{suffix} 请先核对 APIMart 任务，禁止自动重提")
+
+
+class APIMartTaskFailed(APIMartError):
+    """APIMart explicitly reported a terminal failed/cancelled task."""
+
 
 
 def _apimart_base() -> str:
@@ -98,65 +129,201 @@ def _http_get_json(url: str, api_key: str, timeout: int = 30) -> dict:
 
 # ── APIMart submit / poll ──────────────────────────────────────
 
+def _safe_error_detail(body: Any) -> str:
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            value = error.get("message") or error.get("type") or "provider_error"
+        else:
+            value = body.get("message") or body.get("code") or "provider_error"
+    else:
+        value = "provider_error"
+    return str(value)[:300]
+
+
+def _http_post_image_upload(url: str, image_bytes: bytes, mime: str,
+                            filename: str, api_key: str,
+                            timeout: int = 60) -> tuple[int, Any]:
+    boundary = f"----xiaoxi-apimart-{uuid.uuid4().hex}"
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        f"Content-Type: {mime}\r\n\r\n"
+    ).encode("ascii") + image_bytes + f"\r\n--{boundary}--\r\n".encode("ascii")
+    request = urllib.request.Request(
+        url,
+        method="POST",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "User-Agent": _UA,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+            try:
+                return response.status, json.loads(raw)
+            except json.JSONDecodeError:
+                return response.status, raw
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            return exc.code, json.loads(raw)
+        except json.JSONDecodeError:
+            return exc.code, raw
+
+
+def _decode_data_url(value: str) -> tuple[bytes, str, str]:
+    header, separator, encoded = value.partition(",")
+    if not separator or not header.startswith("data:image/") or ";base64" not in header:
+        raise APIMartError("APIMart 参考图必须是受支持的图片 data URL")
+    mime = header[5:].split(";", 1)[0].lower()
+    extension_by_mime = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/webp": "webp",
+        "image/gif": "gif",
+    }
+    extension = extension_by_mime.get(mime)
+    if not extension:
+        raise APIMartError(f"APIMart 不支持参考图类型: {mime}")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise APIMartError("参考图 base64 数据无效") from exc
+    if not raw or len(raw) > _MAX_UPLOAD_BYTES:
+        raise APIMartError("参考图为空或超过 APIMart 20MB 上传上限")
+    return raw, mime, f"reference.{extension}"
+
+
+def upload_data_url(value: str, api_key: str) -> str:
+    """Upload a data URL once and cache the provider URL for its 72-hour lifetime."""
+    raw, mime, filename = _decode_data_url(value)
+    digest = hashlib.sha256(raw).hexdigest()
+    now = time.time()
+    with _UPLOAD_CACHE_LOCK:
+        cached = _UPLOAD_CACHE.get(digest)
+        if cached and cached[0] > now:
+            return cached[1]
+        for attempt in range(2):
+            code, body = _http_post_image_upload(
+                f"{_apimart_base()}/uploads/images", raw, mime, filename, api_key,
+            )
+            if code == 200 and isinstance(body, dict) and body.get("url"):
+                url = str(body["url"])
+                _UPLOAD_CACHE[digest] = (now + _UPLOAD_CACHE_TTL_S, url)
+                return url
+            if code == 503 and attempt == 0:
+                time.sleep(1)
+                continue
+            raise APIMartError(
+                f"APIMart 参考图上传失败 HTTP {code}: {_safe_error_detail(body)}"
+            )
+    raise APIMartError("APIMart 参考图上传失败")
+
+
+def prepare_reference_urls(
+    image_data_url: Optional[str | list[str]], api_key: str,
+) -> list[str]:
+    if not image_data_url:
+        return []
+    values = image_data_url if isinstance(image_data_url, list) else [image_data_url]
+    prepared: list[str] = []
+    for raw_value in values:
+        value = str(raw_value or "").strip()
+        if value.startswith("data:image/"):
+            prepared.append(upload_data_url(value, api_key))
+        elif value.startswith(("https://", "http://")):
+            prepared.append(value)
+        else:
+            raise APIMartError("APIMart 参考图必须是图片 data URL 或公开 URL")
+    return prepared
+
+
+def _submit_task_id(body: Any) -> str:
+    if not isinstance(body, dict):
+        return ""
+    data = body.get("data") or []
+    nodes = data if isinstance(data, list) else [data]
+    for node in nodes:
+        if isinstance(node, dict):
+            task_id = node.get("task_id") or node.get("id")
+            if task_id:
+                return str(task_id)
+    return ""
+
+
 def submit_image_task(prompt: str,
                       image_data_url: Optional[str | list[str]],
                       api_key: str,
                       thinking: str = "medium",
                       size: str = _SIZE_DEFAULT) -> str:
-    """提交 gpt-image-2 生图任务, 返回 task_id."""
+    """Submit one billable task exactly once; uncertain responses must not be retried."""
     payload: dict[str, Any] = {
         "model": T2I_MODEL,
         "prompt": prompt,
         "n": 1,
         "size": size,
-        "thinking": thinking,
-        "reasoning_effort": thinking,
+        "resolution": "1k",
     }
-    if image_data_url:
-        if isinstance(image_data_url, list):
-            payload["image_urls"] = image_data_url
-        else:
-            payload["image_urls"] = [image_data_url]
+    reference_urls = prepare_reference_urls(image_data_url, api_key)
+    if reference_urls:
+        payload["image_urls"] = reference_urls
 
-    code, body = _http_post_json(
-        f"{_apimart_base()}/images/generations", payload, api_key,
+    try:
+        code, body = _http_post_json(
+            f"{_apimart_base()}/images/generations", payload, api_key,
+        )
+    except Exception as exc:
+        raise APIMartOutcomeUnknown("", "APIMart 提交响应未确认") from exc
+    task_id = _submit_task_id(body)
+    if task_id:
+        return task_id
+    if 400 <= code < 500:
+        raise APIMartError(
+            f"APIMart 明确拒绝提交 HTTP {code}: {_safe_error_detail(body)}"
+        )
+    raise APIMartOutcomeUnknown(
+        "", f"APIMart 提交结果不明 HTTP {code}: {_safe_error_detail(body)}"
     )
-    if code != 200 or not isinstance(body, dict) or body.get("code") != 200:
-        raise RuntimeError(f"APIMart submit HTTP {code}: {body}")
-    tasks = body.get("data") or []
-    if not tasks or not tasks[0].get("task_id"):
-        raise RuntimeError(f"APIMart 响应缺 task_id: {body}")
-    return tasks[0]["task_id"]
 
 
 def poll_image_task(task_id: str, api_key: str,
                     poll_interval: int = _POLL_INTERVAL_S,
                     poll_timeout: int = _POLL_TIMEOUT_S) -> str:
-    """轮询 task 直到 completed, 返回 image_url. 失败/超时抛异常."""
-    t0 = time.time()
+    """Poll the existing task only; any uncertain result stops without resubmission."""
+    started_at = time.time()
     while True:
-        elapsed = time.time() - t0
-        if elapsed > poll_timeout:
-            raise TimeoutError(
-                f"APIMart 轮询超时 {poll_timeout}s, task_id={task_id}"
+        if time.time() - started_at > poll_timeout:
+            raise APIMartOutcomeUnknown(task_id, "APIMart 轮询超时，结果不明")
+        try:
+            data = _http_get_json(
+                f"{_apimart_base()}/tasks/{task_id}?language=en", api_key,
             )
-        data = _http_get_json(
-            f"{_apimart_base()}/tasks/{task_id}?language=en", api_key,
-        )
+        except Exception as exc:
+            raise APIMartOutcomeUnknown(task_id, "APIMart 轮询连接失败，结果不明") from exc
         node = data.get("data") or data
-        status = node.get("status")
+        if not isinstance(node, dict):
+            raise APIMartOutcomeUnknown(task_id, "APIMart 状态响应无效，结果不明")
+        status = str(node.get("status") or "").lower()
         if status == "completed":
             images = (node.get("result") or {}).get("images") or []
             if not images:
-                raise RuntimeError(f"APIMart completed 但无 images: {node}")
-            url = images[0].get("url")
+                raise APIMartOutcomeUnknown(task_id, "APIMart 已完成但结果图片缺失")
+            url = images[0].get("url") if isinstance(images[0], dict) else ""
             if isinstance(url, list):
-                url = url[0] if url else None
+                url = url[0] if url else ""
             if not url:
-                raise RuntimeError(f"APIMart completed 但无 url: {images}")
-            return url
+                raise APIMartOutcomeUnknown(task_id, "APIMart 已完成但结果 URL 缺失")
+            return str(url)
         if status in ("failed", "cancelled"):
-            raise RuntimeError(f"APIMart 任务 {status}: {node}")
+            raise APIMartTaskFailed(
+                f"APIMart 任务 {status}: {_safe_error_detail(node)} task_id={task_id}"
+            )
+        if status not in ("submitted", "queued", "processing", "in_progress"):
+            raise APIMartOutcomeUnknown(task_id, f"APIMart 返回未知状态 {status!r}")
         time.sleep(poll_interval)
 
 
@@ -165,16 +332,11 @@ def default_api_call(prompt: str,
                      api_key: str,
                      thinking: str = "medium",
                      size: str = _SIZE_DEFAULT) -> str:
-    """submit + poll 一次到位. ai_refine_v2 注入此函数到 api_call_fn 钩子.
-
-    签名约束 (ApiCallFn 兼容):
-        (prompt, image_data_url, api_key, thinking, size) -> image_url
-    """
+    """Upload references, submit once, then poll that same task to completion."""
     task_id = submit_image_task(
         prompt, image_data_url, api_key, thinking=thinking, size=size,
     )
     return poll_image_task(task_id, api_key)
-
 
 # ── Router 兼容接口 ────────────────────────────────────────────
 

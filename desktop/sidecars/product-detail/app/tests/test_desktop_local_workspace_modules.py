@@ -4,6 +4,7 @@ import json
 from unittest import mock
 
 import pytest
+from flask import render_template
 
 from app import (
     _get_labor_reference_image,
@@ -62,12 +63,23 @@ def test_desktop_parser_reuses_explicit_scenes_and_numeric_specs_without_network
 @pytest.mark.parametrize(
     ("block_id", "block_data", "expected_empty"),
     [
+        ("block_f", {"title_line1": "comparison"}, False),
         ("block_f", {"vs_left_title": "product"}, False),
+        ("block_f", {"vs_rows": [{"label": "speed", "left": "fast", "right": "slow"}]}, False),
+        ("block_f", {"vs_rows": [{}]}, True),
         ("block_g", {"brand_title": "brand only"}, True),
         ("block_g", {"brand_stats": [{"value": "10", "label": "years"}]}, False),
+        ("block_g", {"brand_story_lines": [{"year": "2020", "text": "started"}]}, False),
         ("block_t", {"client_logos": [{"name": "client", "image": ""}]}, False),
+        ("block_t", {"client_logos": [{}]}, True),
+        ("block_t", {"cases": [{"client_name": "client"}]}, False),
+        ("block_t", {"client_count": "5000+"}, False),
         ("block_y", {"cost_per_use": "0.5"}, False),
+        ("block_y", {"items": [{"label": "wrong legacy key"}]}, True),
+        ("block_y", {"calc_items": [{"label": "single use", "value": "0.5"}]}, False),
         ("block_w", {"cover_image": "/local/cover.png"}, False),
+        ("block_w", {"section_title": "cover without media"}, True),
+        ("block_h", {"scenes": [{}]}, True),
     ],
 )
 def test_block_visibility_matches_supported_template_data(block_id, block_data, expected_empty):
@@ -79,3 +91,57 @@ def test_value_calculation_module_is_present_in_workspace_render_order():
         modules = _render_preview_modules({"block_y": {"cost_per_use": "0.5"}})
 
     assert [module["id"] for module in modules] == ["block_y"]
+
+
+@pytest.mark.parametrize(
+    ("block_id", "block_data", "expected_text"),
+    [
+        (
+            "block_f",
+            {"vs_rows": [{"label": "speed", "left": "2600", "right": "500"}]},
+            "2600",
+        ),
+        (
+            "block_g",
+            {"brand_stats": [{"value": "200+", "label": "clients"}]},
+            "200+",
+        ),
+        (
+            "block_t",
+            {"client_logos": [{"name": "ACME", "image": ""}]},
+            "ACME",
+        ),
+        ("block_y", {"cost_per_use": "0.5 per use"}, "0.5 per use"),
+        ("block_w", {"cover_image": "/local/cover.png"}, "/local/cover.png"),
+    ],
+)
+def test_supported_module_data_survives_workspace_render(block_id, block_data, expected_text):
+    with app.app_context():
+        modules = _render_preview_modules({block_id: block_data})
+
+    assert [module["id"] for module in modules] == [block_id]
+    assert expected_text in modules[0]["html"]
+
+def test_device_assembled_template_keeps_brand_stats_and_vs_rows():
+    context = {
+        "block_a": {},
+        "block_b2": {},
+        "block_e": {},
+        "block_n": {},
+        "block_o": {},
+        "block_f": {
+            "vs_rows": [{"label": "speed", "left": "2600", "right": "500"}],
+        },
+        "block_g": {
+            "brand_stats": [{"value": "200+", "label": "clients"}],
+        },
+        "export_mode": True,
+    }
+
+    with app.app_context():
+        html = render_template("设备类/assembled.html", **context)
+
+    assert 'id="screen_f"' in html
+    assert "2600" in html
+    assert 'id="screen_g"' in html
+    assert "200+" in html

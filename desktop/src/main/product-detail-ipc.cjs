@@ -18,6 +18,7 @@ const PUBLIC_ERRORS = Object.freeze({
   PRODUCT_DETAIL_RUNTIME_UNAVAILABLE: "产品详情图服务尚未安装或未配置。",
   PRODUCT_DETAIL_DATA_DIR_INVALID: "产品详情图数据目录配置无效。",
   PRODUCT_DETAIL_DATA_DIR_FAILED: "产品详情图数据目录无法创建。",
+  PRODUCT_DETAIL_PROVIDER_CONFIG_FAILED: "产品详情图 AI 配置无法读取，请在 API密钥 页面重新保存。",
   PRODUCT_DETAIL_SPAWN_FAILED: "产品详情图服务启动失败，请重试。",
   PRODUCT_DETAIL_READY_INVALID: "产品详情图服务返回了无效的启动信息。",
   PRODUCT_DETAIL_START_TIMEOUT: "产品详情图服务启动超时，请重试。",

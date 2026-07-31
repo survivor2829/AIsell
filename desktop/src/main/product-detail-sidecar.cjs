@@ -6,13 +6,23 @@ const path = require("node:path");
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 const MAX_READY_LINE_BYTES = 64 * 1024;
-const DESKTOP_BLOCKED_PROVIDER_ENV_KEYS = Object.freeze([
+const DESKTOP_PROVIDER_ENV_KEYS = Object.freeze([
   "DEEPSEEK_API_KEY",
+  "DEEPSEEK_MODEL",
   "REFINE_API_KEY",
   "REFINE_API_BASE_URL",
   "GPT_IMAGE_API_KEY",
   "ARK_API_KEY",
-  "DASHSCOPE_API_KEY"
+  "DASHSCOPE_API_KEY",
+  "DEFAULT_REFINE_ENGINE",
+  "V2_ALLOW_REAL_API",
+  "FLASK_ENV"
+]);
+const DESKTOP_ALLOWED_PROVIDER_ENV_KEYS = new Set([
+  "DEEPSEEK_API_KEY",
+  "DEEPSEEK_MODEL",
+  "REFINE_API_KEY",
+  "REFINE_API_BASE_URL"
 ]);
 
 function tokenFrom(randomBytes) {
@@ -49,6 +59,18 @@ function parseReadyLine(line) {
   };
 }
 
+function sanitizeProviderEnvironment(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const sanitized = {};
+  for (const [key, rawValue] of Object.entries(value)) {
+    if (!DESKTOP_ALLOWED_PROVIDER_ENV_KEYS.has(key)) continue;
+    if (typeof rawValue !== "string") continue;
+    const normalized = rawValue.trim();
+    if (!normalized || normalized.length > 16 * 1024) continue;
+    sanitized[key] = normalized;
+  }
+  return sanitized;
+}
 function defaultShutdownRequest({ url, controlToken, timeoutMs }) {
   return new Promise((resolve, reject) => {
     const target = new URL(url);
@@ -95,6 +117,9 @@ function createProductDetailSidecar(options = {}) {
   const spawnProcess = options.spawnProcess || spawn;
   const randomBytes = options.randomBytes || crypto.randomBytes;
   const requestShutdown = options.requestShutdown || defaultShutdownRequest;
+  const getProviderEnvironment = typeof options.getProviderEnvironment === "function"
+    ? options.getProviderEnvironment
+    : () => options.providerEnvironment;
   const startupTimeoutMs = Math.max(1, Number(options.startupTimeoutMs) || 30_000);
   const stopTimeoutMs = Math.max(1, Number(options.stopTimeoutMs) || 3_000);
   const listeners = new Set();
@@ -193,7 +218,7 @@ function createProductDetailSidecar(options = {}) {
     }
   }
 
-  function beginStart() {
+  async function beginStart() {
     if (disposed) return Promise.resolve(setTerminalState("stopped"));
     if (!runtimeIsAvailable()) {
       return Promise.resolve(setTerminalState(
@@ -240,13 +265,23 @@ function createProductDetailSidecar(options = {}) {
       code: ""
     });
 
+    let providerEnvironment;
+    try {
+      providerEnvironment = sanitizeProviderEnvironment(
+        await Promise.resolve(getProviderEnvironment())
+      );
+    } catch {
+      return setTerminalState("failed", "PRODUCT_DETAIL_PROVIDER_CONFIG_FAILED");
+    }
+
     return new Promise((resolve) => {
       let child;
       try {
         const childEnvironment = { ...environment };
-        for (const key of DESKTOP_BLOCKED_PROVIDER_ENV_KEYS) {
+        for (const key of DESKTOP_PROVIDER_ENV_KEYS) {
           childEnvironment[key] = "";
         }
+        Object.assign(childEnvironment, providerEnvironment);
         child = spawnProcess(runtimePath, args, {
           windowsHide: true,
           shell: false,
@@ -465,5 +500,6 @@ function createProductDetailSidecar(options = {}) {
 module.exports = {
   createProductDetailSidecar,
   defaultShutdownRequest,
-  parseReadyLine
+  parseReadyLine,
+  sanitizeProviderEnvironment
 };

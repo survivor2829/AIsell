@@ -88,11 +88,15 @@ async function main() {
         env: {
           ...process.env,
           DEEPSEEK_API_KEY: "must-not-leak",
+          DEEPSEEK_MODEL: "must-not-leak",
           REFINE_API_KEY: "must-not-leak",
           REFINE_API_BASE_URL: "https://paid.invalid/v1",
           GPT_IMAGE_API_KEY: "must-not-leak",
           ARK_API_KEY: "must-not-leak",
-          DASHSCOPE_API_KEY: "must-not-leak"
+          DASHSCOPE_API_KEY: "must-not-leak",
+          DEFAULT_REFINE_ENGINE: "must-not-leak",
+          V2_ALLOW_REAL_API: "true",
+          FLASK_ENV: "development"
         },
         startupTimeoutMs: 100,
         randomBytes: (size) => Buffer.alloc(size, ++randomCall),
@@ -116,11 +120,15 @@ async function main() {
       assert.equal(spawnCalls[0].options.shell, false);
       for (const key of [
         "DEEPSEEK_API_KEY",
+        "DEEPSEEK_MODEL",
         "REFINE_API_KEY",
         "REFINE_API_BASE_URL",
         "GPT_IMAGE_API_KEY",
         "ARK_API_KEY",
-        "DASHSCOPE_API_KEY"
+        "DASHSCOPE_API_KEY",
+        "DEFAULT_REFINE_ENGINE",
+        "V2_ALLOW_REAL_API",
+        "FLASK_ENV"
       ]) {
         assert.equal(spawnCalls[0].options.env[key], "", `${key} must not reach the desktop sidecar`);
       }
@@ -155,6 +163,56 @@ async function main() {
       controller.dispose();
     }
 
+    {
+      let child;
+      let spawnOptions;
+      let providerReads = 0;
+      const controller = createProductDetailSidecar({
+        runtimePath,
+        dataDir,
+        env: {
+          ...process.env,
+          ARK_API_KEY: "inherited-secret-must-stay-blocked",
+          GPT_IMAGE_API_KEY: "inherited-secret-must-stay-blocked"
+        },
+        getProviderEnvironment: async () => {
+          providerReads += 1;
+          return {
+            DEEPSEEK_API_KEY: " desktop-deepseek-key ",
+            DEEPSEEK_MODEL: " deepseek-v4-flash ",
+            REFINE_API_KEY: " desktop-apimart-key ",
+            REFINE_API_BASE_URL: " https://api.apimart.ai/v1 ",
+            ARK_API_KEY: "must-be-ignored",
+            PATH: "must-be-ignored"
+          };
+        },
+        startupTimeoutMs: 100,
+        stopTimeoutMs: 5,
+        spawnProcess: (_command, _args, options) => {
+          child = new FakeChild();
+          spawnOptions = options;
+          return child;
+        },
+        requestShutdown: async () => {
+          throw new Error("force fallback");
+        }
+      });
+      const started = controller.start();
+      await waitFor(() => Boolean(child));
+      assert.equal(providerReads, 1);
+      assert.equal(spawnOptions.env.DEEPSEEK_API_KEY, "desktop-deepseek-key");
+      assert.equal(spawnOptions.env.DEEPSEEK_MODEL, "deepseek-v4-flash");
+      assert.equal(spawnOptions.env.REFINE_API_KEY, "desktop-apimart-key");
+      assert.equal(spawnOptions.env.REFINE_API_BASE_URL, "https://api.apimart.ai/v1");
+      assert.equal(spawnOptions.env.ARK_API_KEY, "");
+      assert.equal(spawnOptions.env.GPT_IMAGE_API_KEY, "");
+      assert.notEqual(spawnOptions.env.PATH, "must-be-ignored");
+      ready(child, { capabilities: { paid_ai_ready: true } });
+      const status = await started;
+      assert.equal(status.capabilities.paid_ai_ready, true);
+      assert.equal(JSON.stringify(status).includes("desktop-apimart-key"), false);
+      await controller.dispose();
+    }
     {
       let child;
       const controller = createProductDetailSidecar({
