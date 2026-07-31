@@ -406,6 +406,16 @@ def create_desktop_application(
     capabilities = detect_capabilities()
     with contextlib.redirect_stdout(sys.stderr):
         app_module = importlib.import_module("app")
+    app_module.app.config.update(
+        # The packaged renderer is file:// and embeds this loopback service.
+        # A partitioned cookie keeps the desktop login session available in
+        # that iframe without weakening the application's CSRF protection.
+        SESSION_COOKIE_NAME="xiaoxi_product_detail_session",
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="None",
+        SESSION_COOKIE_SECURE=True,
+        SESSION_COOKIE_PARTITIONED=True,
+    )
     contract = _install_desktop_contract(
         app_module.app,
         config=config,

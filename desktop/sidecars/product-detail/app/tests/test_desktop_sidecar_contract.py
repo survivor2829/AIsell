@@ -214,7 +214,14 @@ def test_server_bootstrap_is_one_time_and_shutdown_is_authenticated(tmp_path):
         assert control_token not in ready_line
 
         base_url = f"http://127.0.0.1:{ready['port']}"
-        cookies = http.cookiejar.CookieJar()
+        cookies = http.cookiejar.CookieJar(
+            policy=http.cookiejar.DefaultCookiePolicy(
+                # Chromium treats loopback origins as trustworthy and accepts
+                # Secure partitioned cookies there. Mirror that localhost
+                # behavior in this HTTP-only contract client.
+                secure_protocols=("http", "https", "wss"),
+            )
+        )
         opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(cookies),
             _NoRedirect(),
@@ -266,6 +273,12 @@ def test_server_bootstrap_is_one_time_and_shutdown_is_authenticated(tmp_path):
         assert status == 302
         assert headers["Location"].endswith("/")
         assert bootstrap_token.encode() not in body
+        session_cookie = headers.get("Set-Cookie", "").lower()
+        assert session_cookie.startswith("xiaoxi_product_detail_session=")
+        assert "httponly" in session_cookie
+        assert "secure" in session_cookie
+        assert "samesite=none" in session_cookie
+        assert "partitioned" in session_cookie
 
         status, body, headers = _request(opener, bootstrap_url)
         assert status == 302

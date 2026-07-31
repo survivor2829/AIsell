@@ -90,6 +90,26 @@ function assertMainLifecycleAndNavigation() {
   assert.match(source, /quitCleanupComplete/, "quit cleanup must guard the recursive app.quit call");
 }
 
+function assertEmbeddedSessionContract() {
+  const source = read("sidecars/product-detail/app/desktop_entry.py");
+  const requirements = read("sidecars/product-detail/app/requirements.txt");
+  assert.match(
+    requirements,
+    /^flask>=3\.1,<4$/m,
+    "partitioned session cookies require Flask 3.1 or newer"
+  );
+  assert.match(source, /SESSION_COOKIE_NAME="xiaoxi_product_detail_session"/);
+  assert.match(source, /SESSION_COOKIE_HTTPONLY=True/);
+  assert.match(source, /SESSION_COOKIE_SAMESITE="None"/);
+  assert.match(source, /SESSION_COOKIE_SECURE=True/);
+  assert.match(source, /SESSION_COOKIE_PARTITIONED=True/);
+  assert.doesNotMatch(
+    source,
+    /csrf\.exempt\(desktop_bootstrap\)/,
+    "desktop bootstrap must not weaken CSRF protection"
+  );
+}
+
 function assertRendererContract() {
   const app = read("src/renderer/App.tsx");
   const page = read("src/renderer/ProductDetailPage.tsx");
@@ -135,6 +155,7 @@ function assertRendererContract() {
 assertPreloadApiContract();
 assertPreloadExposure();
 assertMainLifecycleAndNavigation();
+assertEmbeddedSessionContract();
 assertRendererContract();
 
 console.log("product-detail desktop integration self-check passed");

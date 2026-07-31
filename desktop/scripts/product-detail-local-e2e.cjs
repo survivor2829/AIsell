@@ -4,6 +4,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 
 const desktopDir = path.resolve(__dirname, "..");
 const repositoryRoot = path.resolve(desktopDir, "..");
@@ -53,8 +54,10 @@ def clean_url(value):
     return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
 
 
-def allowed_url(value, origin):
+def allowed_url(value, origin, host_url):
     parts = urlsplit(value)
+    if parts.scheme == "file":
+        return value == host_url
     if parts.scheme in ("data", "blob"):
         return True
     if parts.scheme not in ("http", "https"):
@@ -95,7 +98,7 @@ def run():
 
             def handle_route(route):
                 request_url = route.request.url
-                if allowed_url(request_url, config["origin"]):
+                if allowed_url(request_url, config["origin"], config["host_url"]):
                     route.continue_()
                     return
                 blocked.append(clean_url(request_url))
@@ -119,28 +122,35 @@ def run():
 
             page.on("dialog", handle_dialog)
             response = page.goto(
-                config["bootstrap_url"],
+                config["host_url"],
                 wait_until="domcontentloaded",
                 timeout=120_000,
             )
-            if response is None or response.status >= 400:
-                status = "no response" if response is None else response.status
-                raise AssertionError(f"bootstrap navigation failed: {status}")
-            page.wait_for_selector("#btn_generate", state="visible", timeout=60_000)
+            if response is not None and response.status >= 400:
+                raise AssertionError(f"embed host navigation failed: {response.status}")
+            page.wait_for_selector("#product-detail-frame", state="attached")
+            workspace = page.frame_locator("#product-detail-frame")
+            workspace.locator("#btn_generate").wait_for(
+                state="visible", timeout=60_000
+            )
+            embedded_frame = page.frame(name="product-detail-frame")
+            if embedded_frame is None:
+                raise AssertionError("product-detail iframe was not created")
+            result["frame_url"] = clean_url(embedded_frame.url)
+            if "/auth/login" in embedded_frame.url:
+                raise AssertionError("desktop bootstrap fell back to the login page")
 
             if phase == "produce":
-                page.locator("#upload_product input[type=file]").set_input_files(
+                workspace.locator("#upload_product input[type=file]").set_input_files(
                     config["fixture_path"]
                 )
-                page.wait_for_selector(
-                    "#upload_product .upload-preview img",
-                    state="visible",
-                    timeout=60_000,
+                workspace.locator("#upload_product .upload-preview img").wait_for(
+                    state="visible", timeout=60_000
                 )
-                page.locator("#product_title_input").fill(
+                workspace.locator("#product_title_input").fill(
                     "小犀牛 X50 智能洗地机"
                 )
-                page.locator("#text_input").fill(
+                workspace.locator("#text_input").fill(
                     "\n".join(
                         [
                             "品牌：小犀牛",
@@ -153,20 +163,18 @@ def run():
                         ]
                     )
                 )
-                page.locator("#btn_generate").click()
-                page.wait_for_selector(
-                    ".module-wrapper",
-                    state="visible",
-                    timeout=120_000,
+                workspace.locator("#btn_generate").click()
+                workspace.locator(".module-wrapper").first.wait_for(
+                    state="visible", timeout=120_000
                 )
-                module_count = page.locator(".module-wrapper").count()
+                module_count = workspace.locator(".module-wrapper").count()
                 if module_count < 1:
                     raise AssertionError("generation returned no preview modules")
 
                 download_path = Path(config["download_path"])
                 download_path.parent.mkdir(parents=True, exist_ok=True)
                 with page.expect_download(timeout=300_000) as download_info:
-                    page.locator("#btn_export_png").click()
+                    workspace.locator("#btn_export_png").click()
                 download = download_info.value
                 download.save_as(str(download_path))
                 if download.failure():
@@ -187,12 +195,10 @@ def run():
                     }
                 )
             elif phase == "restore":
-                page.wait_for_selector(
-                    ".module-wrapper",
-                    state="visible",
-                    timeout=60_000,
+                workspace.locator(".module-wrapper").first.wait_for(
+                    state="visible", timeout=60_000
                 )
-                module_count = page.locator(".module-wrapper").count()
+                module_count = workspace.locator(".module-wrapper").count()
                 if module_count < 1:
                     raise AssertionError("restart did not restore preview modules")
                 if not any("/latest-preview" in value for value in requests):
@@ -254,6 +260,26 @@ function requireDirectory(target, label) {
 
 function createToken() {
   return crypto.randomBytes(32).toString("hex");
+}
+function createEmbedHost({ dataDir, bootstrapUrl, phase }) {
+  const hostPath = path.join(
+    dataDir,
+    `product-detail-${phase}-embed-host.html`
+  );
+  const escapedBootstrapUrl = bootstrapUrl
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;");
+  fs.writeFileSync(
+    hostPath,
+    [
+      "<!doctype html>",
+      '<meta charset="utf-8">',
+      "<style>html,body,iframe{width:100%;height:100%;margin:0;border:0}</style>",
+      `<iframe id="product-detail-frame" name="product-detail-frame" src="${escapedBootstrapUrl}" sandbox="allow-forms allow-scripts allow-same-origin allow-downloads" referrerpolicy="no-referrer"></iframe>`
+    ].join("\n"),
+    "utf8"
+  );
+  return pathToFileURL(hostPath).href;
 }
 
 function waitForExit(child, timeoutMs, label) {
@@ -554,7 +580,7 @@ async function main() {
     evidence.phases.produce = await runBrowserPhase({
       phase: "produce",
       origin: server.origin,
-      bootstrap_url: server.bootstrapUrl,
+      host_url: createEmbedHost({ dataDir, bootstrapUrl: server.bootstrapUrl, phase: "produce" }),
       fixture_path: fixturePath,
       download_path: downloadPath
     });
@@ -574,7 +600,7 @@ async function main() {
     evidence.phases.restore = await runBrowserPhase({
       phase: "restore",
       origin: server.origin,
-      bootstrap_url: server.bootstrapUrl
+      host_url: createEmbedHost({ dataDir, bootstrapUrl: server.bootstrapUrl, phase: "restore" })
     });
     await stopSidecar(server);
     server = null;
