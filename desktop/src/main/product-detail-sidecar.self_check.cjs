@@ -85,6 +85,15 @@ async function main() {
       const controller = createProductDetailSidecar({
         runtimePath,
         dataDir,
+        env: {
+          ...process.env,
+          DEEPSEEK_API_KEY: "must-not-leak",
+          REFINE_API_KEY: "must-not-leak",
+          REFINE_API_BASE_URL: "https://paid.invalid/v1",
+          GPT_IMAGE_API_KEY: "must-not-leak",
+          ARK_API_KEY: "must-not-leak",
+          DASHSCOPE_API_KEY: "must-not-leak"
+        },
         startupTimeoutMs: 100,
         randomBytes: (size) => Buffer.alloc(size, ++randomCall),
         spawnProcess: (command, args, options) => {
@@ -105,6 +114,16 @@ async function main() {
       assert.equal(spawnCalls[0].command, runtimePath);
       assert.equal(spawnCalls[0].options.windowsHide, true);
       assert.equal(spawnCalls[0].options.shell, false);
+      for (const key of [
+        "DEEPSEEK_API_KEY",
+        "REFINE_API_KEY",
+        "REFINE_API_BASE_URL",
+        "GPT_IMAGE_API_KEY",
+        "ARK_API_KEY",
+        "DASHSCOPE_API_KEY"
+      ]) {
+        assert.equal(spawnCalls[0].options.env[key], "", `${key} must not reach the desktop sidecar`);
+      }
       assert.deepEqual(spawnCalls[0].args.slice(0, 6), [
         "--host", "127.0.0.1",
         "--port", "0",

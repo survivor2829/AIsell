@@ -292,6 +292,9 @@ def test_server_bootstrap_is_one_time_and_shutdown_is_authenticated(tmp_path):
 
         status, workspace_body, _ = _request(opener, base_url + "/")
         assert status == 200
+        assert b'data-desktop-paid-disabled="true"' in workspace_body
+        assert b'onclick="generateAiHtmlV2()"' not in workspace_body
+
         csrf_match = re.search(
             rb'<meta name="csrf-token" content="([^"]+)"', workspace_body
         )

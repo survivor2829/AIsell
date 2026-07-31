@@ -280,7 +280,7 @@ try {
     assert.equal(liveMomentsProbe.posts.length >= 1, true);
     assert.equal(typeof liveMomentsProbe.posts[0].runtimeId, "string");
   } else {
-    assert.equal(["moments_window_not_found", "moments_window_ambiguous", "moments_window_identity_mismatch", "moments_feed_not_found", "moments_post_not_found", "moments_post_ambiguous", "moments_post_changed", "moments_post_identity_missing", "powershell_timeout"].includes(liveMomentsProbe.reason), true);
+    assert.equal(["moments_window_not_found", "moments_window_ambiguous", "moments_window_identity_mismatch", "moments_feed_not_found", "moments_post_not_found", "moments_post_ambiguous", "moments_post_changed", "moments_post_identity_missing", "powershell_timeout", "powershell_failed"].includes(liveMomentsProbe.reason), true);
   }
   const momentsSource = fs.readFileSync(path.join(__dirname, "moments_dry_run.dev.cjs"), "utf8");
   assert.match(momentsSource, /const MOMENTS_STRUCTURAL_PROBE_TIMEOUT_MS = 5_000;/u);

@@ -6,6 +6,14 @@ const path = require("node:path");
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 const MAX_READY_LINE_BYTES = 64 * 1024;
+const DESKTOP_BLOCKED_PROVIDER_ENV_KEYS = Object.freeze([
+  "DEEPSEEK_API_KEY",
+  "REFINE_API_KEY",
+  "REFINE_API_BASE_URL",
+  "GPT_IMAGE_API_KEY",
+  "ARK_API_KEY",
+  "DASHSCOPE_API_KEY"
+]);
 
 function tokenFrom(randomBytes) {
   return randomBytes(32).toString("hex");
@@ -235,11 +243,15 @@ function createProductDetailSidecar(options = {}) {
     return new Promise((resolve) => {
       let child;
       try {
+        const childEnvironment = { ...environment };
+        for (const key of DESKTOP_BLOCKED_PROVIDER_ENV_KEYS) {
+          childEnvironment[key] = "";
+        }
         child = spawnProcess(runtimePath, args, {
           windowsHide: true,
           shell: false,
           stdio: ["ignore", "pipe", "pipe"],
-          env: { ...environment }
+          env: childEnvironment
         });
       } catch {
         resolve(setTerminalState("failed", "PRODUCT_DETAIL_SPAWN_FAILED"));

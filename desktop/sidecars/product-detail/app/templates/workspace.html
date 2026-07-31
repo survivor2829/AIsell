@@ -226,6 +226,7 @@
     #preview_wrapper {
       display: none; padding: 24px; flex: 1;
       background: #f8f8fa;
+      overflow-x: hidden;
     }
     #preview_container {
       width: 750px; margin: 0 auto;
@@ -238,7 +239,7 @@
     .module-wrapper { position: relative; transition: all 0.2s; }
     .module-wrapper:hover { outline: 2px dashed var(--color-primary); outline-offset: 2px; }
     .module-toolbar {
-      position: absolute; top: -36px; left: 0; right: 0;
+      position: absolute; top: 8px; left: 8px; right: 8px;
       display: none; align-items: center; justify-content: space-between;
       background: #fff; border: 1px solid var(--color-border);
       border-radius: 8px; padding: 4px 12px; z-index: 10;
@@ -258,13 +259,39 @@
     .module-ghost { opacity: 0.4; outline: 2px dashed var(--color-primary); }
 
     .module-wrapper.module-hidden .module-content { display: none; }
-    .module-wrapper.module-hidden .module-toolbar { display: flex; }
+    .module-wrapper.module-hidden .module-toolbar { display: none; }
     .module-hidden-placeholder {
       display: none; align-items: center; justify-content: center; gap: 8px;
       padding: 12px; background: var(--color-bg-subtle); border-radius: 8px;
       color: var(--color-text-muted); font-size: 13px;
     }
     .module-wrapper.module-hidden .module-hidden-placeholder { display: flex; }
+    .module-hidden-placeholder button {
+      margin-left: 6px; padding: 5px 10px;
+      border: 1px solid var(--color-primary); border-radius: 6px;
+      background: #fff; color: var(--color-primary);
+      font: inherit; font-weight: 600; cursor: pointer;
+    }
+    .module-hidden-placeholder button:hover { background: var(--color-primary-light); }
+
+    .hidden-modules-bar {
+      display: none; align-items: center; justify-content: space-between; gap: 12px;
+      position: sticky; top: 47px; z-index: 39;
+      padding: 9px 14px; border-bottom: 1px solid #fed7aa;
+      background: #fff7ed; color: #9a3412; font-size: 13px;
+    }
+    .hidden-modules-bar.visible { display: flex; }
+    .hidden-modules-bar button {
+      padding: 5px 10px; border: 1px solid #fb923c; border-radius: 6px;
+      background: #fff; color: #c2410c; font: inherit; font-weight: 600; cursor: pointer;
+    }
+    .hidden-modules-bar button:hover { background: #ffedd5; }
+    .module-generation-note {
+      display: none; padding: 9px 14px; border-bottom: 1px solid #dbeafe;
+      background: #eff6ff; color: #1e40af; font-size: 12px; line-height: 1.55;
+    }
+    .module-generation-note.visible { display: block; }
+
 
     /* ── Export Bar ─────────────────────────────────────────── */
     #export_bar {
@@ -373,6 +400,7 @@
     #main_img_wrapper {
       display: none; padding: 24px; flex: 1;
       background: #f8f8fa;
+      overflow-x: hidden;
     }
     .main-img-viewer {
       width: 750px; margin: 0 auto;
@@ -608,6 +636,16 @@
       </button>
       <p class="text-hint" style="margin-top:8px;">Jinja 模板秒出 HTML 预览,中央区直接看效果</p>
 
+      {% if desktop_mode %}
+      <button class="btn-generate" id="btn_ai_html_v2" type="button" disabled aria-disabled="true" data-desktop-paid-disabled="true" style="margin-top:14px; background:#d1d5db; border:none; box-shadow:none; cursor:not-allowed;">
+        &#127912; AI&#31934;&#20462;&#65288;&#26700;&#38754;&#29256;&#26242;&#26410;&#24320;&#25918;&#65289;
+      </button>
+      <p class="text-hint" style="margin-top:8px; color:#92400e;">&#36825;&#19981;&#26159;&#36134;&#21495;&#25110;&#31649;&#29702;&#21592;&#26435;&#38480;&#38382;&#39064;&#12290;&#26700;&#38754;&#29256;&#23578;&#26410;&#25509;&#20837; DeepSeek / APIMart &#23494;&#38053;&#12289;&#36153;&#29992;&#30830;&#35748;&#21644;&#23433;&#20840;&#20219;&#21153;&#38431;&#21015;&#12290;</p>
+      <div style="margin-top:8px; padding:8px 10px; background:#fffbeb; border:1px solid #fde68a; border-radius:6px; color:#92400e; font-size:12px; line-height:1.6;">
+        &#30446;&#21069;&#21487;&#20197;&#27491;&#24120;&#20351;&#29992;&#8220;&#19968;&#38190;&#29983;&#25104;&#35814;&#24773;&#39029;&#8221;&#65307;&#25171;&#24320;&#39029;&#38754;&#19981;&#20250;&#35843;&#29992;&#20184;&#36153; API&#12290;
+      </div>
+      {% else %}
+
       <button class="btn-generate" id="btn_ai_html_v2" onclick="generateAiHtmlV2()" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(5,150,105,0.28);">
         🎨 AI精修（专业版）
       </button>
@@ -616,6 +654,7 @@
         <span id="ark_key_label" style="color:#6b7280;">⚙️ 豆包 Key: 未配置</span>
         <a href="#" onclick="setupArkKey(); return false;" style="color:#10b981; text-decoration:underline; font-size:12px;">设置</a>
       </div>
+      {% endif %}
     </div>
 
   </aside>
@@ -629,6 +668,16 @@
       <button class="center-tab" data-tab="main_img" onclick="switchCenterTab('main_img')">模块主图</button>
       <button class="center-tab" data-tab="ai_img" onclick="switchCenterTab('ai_img')">AI精修版</button>
     </div>
+    <div id="hidden_modules_bar" class="hidden-modules-bar" aria-live="polite" aria-hidden="true">
+      <span>&#24403;&#21069;&#26377; <strong id="hidden_modules_count">0</strong> &#20010;&#27169;&#22359;&#24050;&#38544;&#34255;</span>
+      <button type="button" onclick="showAllModules()">&#20840;&#37096;&#24674;&#22797;&#26174;&#31034;</button>
+    </div>
+    <div id="module_generation_note" class="module-generation-note" aria-live="polite">
+      &#35828;&#26126;&#65306;&#39029;&#38754;&#21482;&#26174;&#31034;&#26412;&#27425;&#26377;&#36164;&#26009;&#21487;&#29983;&#25104;&#30340;&#27169;&#22359;&#12290;&#27809;&#26377;&#20986;&#29616;&#30340;&#27169;&#26495;&#23646;&#20110;&#8220;&#36164;&#26009;&#19981;&#36275;&#26410;&#29983;&#25104;&#8221;&#65292;&#19981;&#26159;&#34987;&#38544;&#34255;&#65307;&#34917;&#20805;&#23545;&#24212;&#36164;&#26009;&#21518;&#37325;&#26032;&#29983;&#25104;&#21363;&#21487;&#12290;
+    </div>
+
+
+
 
     <!-- Empty State -->
     <div id="empty_state">
@@ -775,6 +824,12 @@
   let currentEcomData = null;    // {listing_title, listing_keywords, ...}
   let moduleDataMap = {};        // block_id → block_data (for editing)
   let editingModuleId = null;    // currently editing block_id
+  const PREVIEW_CANVAS_WIDTH = 750;
+  let previewFitFrame = 0;
+  let previewResizeObserver = null;
+  let mainImageFitFrame = 0;
+  let mainImageResizeObserver = null;
+  const DESKTOP_MODE = {{ desktop_mode|tojson }};
 
   /* e2e 测试钩子 — 让 Playwright 脚本能直接注入 parsed_data 绕过 AI 解析流程 */
   window.__TEST_setBuildData = (parsed, themeId, productImageUrl) => {
@@ -946,6 +1001,66 @@
     }
   }
 
+  function fitPreviewToPanel() {
+    const wrapper = document.getElementById('preview_wrapper');
+    const container = document.getElementById('preview_container');
+    if (!wrapper || !container || getComputedStyle(wrapper).display === 'none') return;
+    const style = getComputedStyle(wrapper);
+    const horizontalPadding = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+    const availableWidth = Math.max(0, wrapper.clientWidth - horizontalPadding);
+    if (!availableWidth) return;
+    const scale = Math.min(1, availableWidth / PREVIEW_CANVAS_WIDTH);
+    container.style.zoom = scale.toFixed(4);
+    container.dataset.previewScale = scale.toFixed(4);
+  }
+
+  function queuePreviewFit() {
+    if (previewFitFrame) cancelAnimationFrame(previewFitFrame);
+    previewFitFrame = requestAnimationFrame(() => {
+      previewFitFrame = 0;
+      fitPreviewToPanel();
+    });
+  }
+
+  function fitMainImageToPanel() {
+    const wrapper = document.getElementById('main_img_wrapper');
+    const viewer = wrapper?.querySelector('.main-img-viewer');
+    if (!wrapper || !viewer || getComputedStyle(wrapper).display === 'none') return;
+    const style = getComputedStyle(wrapper);
+    const horizontalPadding = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+    const availableWidth = Math.max(0, wrapper.clientWidth - horizontalPadding);
+    if (!availableWidth) return;
+    const scale = Math.min(1, availableWidth / PREVIEW_CANVAS_WIDTH);
+    viewer.style.zoom = scale.toFixed(4);
+    viewer.dataset.previewScale = scale.toFixed(4);
+  }
+
+  function queueMainImageFit() {
+    if (mainImageFitFrame) cancelAnimationFrame(mainImageFitFrame);
+    mainImageFitFrame = requestAnimationFrame(() => {
+      mainImageFitFrame = 0;
+      fitMainImageToPanel();
+    });
+  }
+
+  function initPreviewFit() {
+    const wrapper = document.getElementById('preview_wrapper');
+    const mainWrapper = document.getElementById('main_img_wrapper');
+    if (wrapper && typeof ResizeObserver === 'function') {
+      previewResizeObserver = new ResizeObserver(queuePreviewFit);
+      previewResizeObserver.observe(wrapper);
+    }
+    if (mainWrapper && typeof ResizeObserver === 'function') {
+      mainImageResizeObserver = new ResizeObserver(queueMainImageFit);
+      mainImageResizeObserver.observe(mainWrapper);
+    }
+    window.addEventListener('resize', queuePreviewFit);
+    window.addEventListener('resize', queueMainImageFit);
+  }
+
+
+
+
   /* ── 布局预设(三档:edit/balance/preview)───────────────────── */
   const LAYOUT_KEY = 'workspace_layout_v1';
   const VALID_LAYOUTS = ['edit', 'balance', 'preview'];
@@ -960,10 +1075,13 @@
     document.querySelectorAll('.layout-toggle button').forEach(b =>
       b.classList.toggle('active', b.dataset.layout === name));
     if (!opts.silent) localStorage.setItem(LAYOUT_KEY, name);
+    queuePreviewFit();
+    queueMainImageFit();
   }
 
   function initLayout() {
-    setLayout(localStorage.getItem(LAYOUT_KEY) || 'balance', { silent: true });
+    const defaultLayout = window.innerWidth >= 1280 ? 'preview' : 'balance';
+    setLayout(localStorage.getItem(LAYOUT_KEY) || defaultLayout, { silent: true });
   }
 
   /* ── Generate Preview ───────────────────────────────────────── */
@@ -1007,6 +1125,7 @@
       document.getElementById('preview_wrapper').style.display = 'block';
       document.getElementById('export_bar').style.display = 'flex';
       document.getElementById('center_tabs').classList.add('visible');
+      queuePreviewFit();
 
       applyTheme(currentThemeId);
 
@@ -1053,11 +1172,28 @@
         <div class="module-content">${mod.html}</div>
         <div class="module-hidden-placeholder">
           <span>📦 ${mod.name}</span><span style="opacity:0.6">已隐藏</span>
+          <button type="button" onclick="showModule(this, '${mod.id}')">&#24674;&#22797;&#26174;&#31034;</button>
         </div>
       `;
+      if (DESKTOP_MODE) {
+        const paidModuleButton = wrapper.querySelector('[onclick^="regenerateModule"]');
+        if (paidModuleButton) {
+          paidModuleButton.disabled = true;
+          paidModuleButton.hidden = true;
+          paidModuleButton.dataset.desktopPaidDisabled = 'true';
+          paidModuleButton.removeAttribute('onclick');
+        }
+      }
       container.appendChild(wrapper);
     });
+    const generationNote = document.getElementById('module_generation_note');
+    if (generationNote) {
+      generationNote.dataset.hasModules = modules.length > 0 ? 'true' : 'false';
+      generationNote.classList.toggle('visible', modules.length > 0);
+    }
     initSortable();
+    updateHiddenModulesBar();
+    queuePreviewFit();
   }
 
   /* ── Sortable ───────────────────────────────────────────────── */
@@ -1082,8 +1218,43 @@
   /* ── Module Actions ─────────────────────────────────────────── */
   function toggleModule(btn, moduleId) {
     const wrapper = document.querySelector(`[data-module-id="${moduleId}"]`);
+    if (!wrapper) return;
     wrapper.classList.toggle('module-hidden');
     btn.style.opacity = wrapper.classList.contains('module-hidden') ? '0.3' : '1';
+    updateHiddenModulesBar();
+    queuePreviewFit();
+  }
+
+  function showModule(btn, moduleId) {
+    const wrapper = btn.closest('.module-wrapper') || document.querySelector(`[data-module-id="${moduleId}"]`);
+    if (!wrapper) return;
+    wrapper.classList.remove('module-hidden');
+    const toggle = wrapper.querySelector('.mod-toggle');
+    if (toggle) toggle.style.opacity = '1';
+    updateHiddenModulesBar();
+    queuePreviewFit();
+  }
+
+  function showAllModules() {
+    document.querySelectorAll('.module-wrapper.module-hidden').forEach(wrapper => {
+      wrapper.classList.remove('module-hidden');
+      const toggle = wrapper.querySelector('.mod-toggle');
+      if (toggle) toggle.style.opacity = '1';
+    });
+    updateHiddenModulesBar();
+    queuePreviewFit();
+  }
+
+  function updateHiddenModulesBar() {
+    const bar = document.getElementById('hidden_modules_bar');
+    const count = document.getElementById('hidden_modules_count');
+    if (!bar || !count) return;
+    const hiddenCount = document.querySelectorAll('.module-wrapper.module-hidden').length;
+    count.textContent = String(hiddenCount);
+    const activeTab = document.querySelector('.center-tab.active')?.dataset.tab;
+    const visible = hiddenCount > 0 && activeTab === 'detail';
+    bar.classList.toggle('visible', visible);
+    bar.setAttribute('aria-hidden', visible ? 'false' : 'true');
   }
 
   // Fields to show in edit panel per block type
@@ -1218,6 +1389,7 @@
   }
 
   async function regenerateModule(moduleId) {
+    if (DESKTOP_MODE) return;
     if (!currentBuildData || !currentBuildData.parsed) { showError('没有产品数据'); return; }
     const wrapper = document.querySelector(`[data-module-id="${moduleId}"]`);
     const btn = wrapper.querySelector('[title="AI重新生成"]');
@@ -1300,6 +1472,11 @@
     document.getElementById('main_img_wrapper').style.display = tab === 'main_img' ? 'block' : 'none';
     document.getElementById('main_img_export_bar').style.display = tab === 'main_img' ? 'flex' : 'none';
     document.getElementById('ai_img_wrapper').style.display = tab === 'ai_img' ? 'block' : 'none';
+    updateHiddenModulesBar();
+    const generationNote = document.getElementById('module_generation_note');
+    generationNote?.classList.toggle('visible', tab === 'detail' && generationNote.dataset.hasModules === 'true');
+    if (tab === 'detail') queuePreviewFit();
+    if (tab === 'main_img') queueMainImageFit();
   }
 
   /* ── 豆包 API Key 用户自管(只存浏览器 localStorage,不上传服务器存储) ─── */
@@ -1513,6 +1690,7 @@
     currentMainImgIndex = 0;
     showMainImage(0);
     renderMainImgStrip();
+    queueMainImageFit();
   }
 
   function showMainImage(index) {
@@ -1669,6 +1847,7 @@
       document.getElementById('preview_wrapper').style.display = 'block';
       document.getElementById('export_bar').style.display = 'flex';
       document.getElementById('center_tabs').classList.add('visible');
+      queuePreviewFit();
       applyTheme(currentThemeId);
       renderMainImages(extractMainBlocksFromModules(data.modules));
     } catch (err) {
@@ -1679,6 +1858,7 @@
   document.addEventListener('DOMContentLoaded', async () => {
     initLayout();           // 必须最先,从 localStorage 恢复布局档,避免 loadThemes 后才切档导致闪烁
     await loadThemes();
+    initPreviewFit();
     renderArkKeyStatus();   // 显示用户已配置的豆包 Key 状态(末4位)
     // 产品图走自动抠图 — 否则 AI 精修合成时原图背景 + 原图水印文字会穿透到模板
     initUploadBox('upload_product', url => { productImageUrl = url; }, { autoRembg: true });

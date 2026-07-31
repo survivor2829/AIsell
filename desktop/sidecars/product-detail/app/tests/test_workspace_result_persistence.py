@@ -91,3 +91,49 @@ class TestWorkspaceFrontendPersistenceHooks:
         content = WORKSPACE_HTML.read_text(encoding="utf-8")
         assert "product_category:" in content
         assert "currentProductType" in content
+
+    def test_hidden_modules_have_direct_and_global_recovery_controls(self):
+        content = WORKSPACE_HTML.read_text(encoding="utf-8")
+        assert 'id="hidden_modules_bar"' in content
+        assert 'onclick="showAllModules()"' in content
+        assert "function showModule(btn, moduleId)" in content
+        assert "function showAllModules()" in content
+        assert "function updateHiddenModulesBar()" in content
+
+    def test_missing_data_is_explained_separately_from_hidden_modules(self):
+        content = WORKSPACE_HTML.read_text(encoding="utf-8")
+        assert 'id="module_generation_note"' in content
+        assert "module_generation_note')?.classList.toggle" not in content
+        assert "generationNote.dataset.hasModules" in content
+
+    def test_main_image_preview_fits_the_available_center_panel(self):
+        content = WORKSPACE_HTML.read_text(encoding="utf-8")
+        assert "function fitMainImageToPanel()" in content
+        assert "viewer.style.zoom = scale.toFixed(4)" in content
+        assert "new ResizeObserver(queueMainImageFit)" in content
+        assert "if (tab === 'main_img') queueMainImageFit()" in content
+
+    def test_desktop_module_paid_controls_are_not_actionable(self):
+        content = WORKSPACE_HTML.read_text(encoding="utf-8")
+        assert "const DESKTOP_MODE = {{ desktop_mode|tojson }}" in content
+        assert "paidModuleButton.dataset.desktopPaidDisabled = 'true'" in content
+        assert "paidModuleButton.removeAttribute('onclick')" in content
+        assert "paidModuleButton.hidden = true" in content
+        assert "if (DESKTOP_MODE) return;" in content
+
+    def test_detail_preview_fits_the_available_center_panel(self):
+        content = WORKSPACE_HTML.read_text(encoding="utf-8")
+        assert "const PREVIEW_CANVAS_WIDTH = 750" in content
+        assert "container.style.zoom = scale.toFixed(4)" in content
+        assert "new ResizeObserver(queuePreviewFit)" in content
+        assert "if (tab === 'detail') queuePreviewFit()" in content
+        assert "const defaultLayout = window.innerWidth >= 1280 ? 'preview' : 'balance'" in content
+        assert "initPreviewFit()" in content
+
+    def test_desktop_paid_ai_control_is_explained_and_disabled(self):
+        content = WORKSPACE_HTML.read_text(encoding="utf-8")
+        assert "{% if desktop_mode %}" in content
+        assert 'data-desktop-paid-disabled="true"' in content
+        assert "DeepSeek / APIMart" in content
+        assert "{% else %}" in content
+        assert "{% endif %}" in content

@@ -137,6 +137,29 @@ def run():
             if embedded_frame is None:
                 raise AssertionError("product-detail iframe was not created")
             result["frame_url"] = clean_url(embedded_frame.url)
+            host_fit = page.evaluate(
+                """() => {
+                  const host = document.querySelector('.product-detail-workspace');
+                  const frame = document.getElementById('product-detail-frame');
+                  const hostRect = host.getBoundingClientRect();
+                  const frameRect = frame.getBoundingClientRect();
+                  return {
+                    hostHeight: hostRect.height,
+                    hostClientHeight: host.clientHeight,
+                    frameHeight: frameRect.height,
+                    topDelta: Math.abs(frameRect.top - hostRect.top),
+                    bottomDelta: Math.abs(frameRect.bottom - hostRect.bottom),
+                  };
+                }"""
+            )
+            if (
+                host_fit["hostHeight"] < 360
+                or abs(host_fit["frameHeight"] - host_fit["hostClientHeight"]) > 1
+                or host_fit["topDelta"] > 1
+                or host_fit["bottomDelta"] > 1
+            ):
+                raise AssertionError(f"iframe does not fill product-detail host: {host_fit}")
+            result["host_fit"] = host_fit
             if "/auth/login" in embedded_frame.url:
                 raise AssertionError("desktop bootstrap fell back to the login page")
 
@@ -171,6 +194,108 @@ def run():
                 if module_count < 1:
                     raise AssertionError("generation returned no preview modules")
 
+                embedded_frame.wait_for_function(
+                    "() => Boolean(document.querySelector('#preview_container')?.dataset.previewScale)"
+                )
+                fit_state = embedded_frame.evaluate(
+                    """() => {
+                      const wrapper = document.getElementById('preview_wrapper');
+                      const container = document.getElementById('preview_container');
+                      const wrapperRect = wrapper.getBoundingClientRect();
+                      const containerRect = container.getBoundingClientRect();
+                      return {
+                        scale: Number(container.dataset.previewScale || '0'),
+                        wrapperLeft: wrapperRect.left,
+                        wrapperRight: wrapperRect.right,
+                        containerLeft: containerRect.left,
+                        containerRight: containerRect.right,
+                      };
+                    }"""
+                )
+                if not (0 < fit_state["scale"] <= 1):
+                    raise AssertionError(f"invalid preview scale: {fit_state}")
+                if (
+                    fit_state["containerLeft"] < fit_state["wrapperLeft"] - 1
+                    or fit_state["containerRight"] > fit_state["wrapperRight"] + 1
+                ):
+                    raise AssertionError(f"preview overflows center panel: {fit_state}")
+
+                ai_button = workspace.locator("#btn_ai_html_v2")
+                if not ai_button.is_disabled():
+                    raise AssertionError("desktop paid AI control must stay disabled")
+                module_paid_state = embedded_frame.evaluate(
+                    """() => Array.from(document.querySelectorAll('.module-wrapper [data-desktop-paid-disabled="true"]'))
+                      .map(button => ({
+                        disabled: button.disabled,
+                        hidden: button.hidden,
+                        hasOnclick: button.hasAttribute('onclick'),
+                      }))"""
+                )
+                if len(module_paid_state) != module_count:
+                    raise AssertionError("desktop module paid controls were not all marked")
+                if any(not item["disabled"] or not item["hidden"] or item["hasOnclick"] for item in module_paid_state):
+                    raise AssertionError(f"desktop module paid control stayed actionable: {module_paid_state}")
+                generation_note = workspace.locator("#module_generation_note")
+                if not generation_note.is_visible():
+                    raise AssertionError("module generation explanation is not visible")
+
+                first_module = workspace.locator(".module-wrapper").first
+                first_module.hover()
+                first_toggle = first_module.locator(".mod-toggle")
+                first_toggle.click()
+                hidden_bar = workspace.locator("#hidden_modules_bar")
+                hidden_bar.wait_for(state="visible")
+                if workspace.locator("#hidden_modules_count").text_content() != "1":
+                    raise AssertionError("single hidden module was not counted")
+                workspace.locator(".module-hidden-placeholder button").first.click()
+                hidden_bar.wait_for(state="hidden")
+
+                global_recovery_count = 0
+                if module_count >= 2:
+                    first_module.hover()
+                    first_module.locator(".mod-toggle").click()
+                    second_module = workspace.locator(".module-wrapper").nth(1)
+                    second_module.hover()
+                    second_module.locator(".mod-toggle").click()
+                    embedded_frame.wait_for_function(
+                        "() => document.querySelectorAll('.module-wrapper.module-hidden').length === 2"
+                    )
+                    hidden_bar.locator("button").click()
+                    hidden_bar.wait_for(state="hidden")
+                    if workspace.locator(".module-wrapper.module-hidden").count() != 0:
+                        raise AssertionError("global hidden-module recovery did not restore all modules")
+                    global_recovery_count = 2
+
+                workspace.locator('[data-tab="main_img"]').click()
+                workspace.locator(".main-img-large > *").first.wait_for(
+                    state="visible", timeout=30_000
+                )
+                embedded_frame.wait_for_function(
+                    "() => Boolean(document.querySelector('.main-img-viewer')?.dataset.previewScale)"
+                )
+                main_fit = embedded_frame.evaluate(
+                    """() => {
+                      const wrapper = document.getElementById('main_img_wrapper');
+                      const viewer = wrapper.querySelector('.main-img-viewer');
+                      const wrapperRect = wrapper.getBoundingClientRect();
+                      const viewerRect = viewer.getBoundingClientRect();
+                      return {
+                        scale: Number(viewer.dataset.previewScale || '0'),
+                        wrapperLeft: wrapperRect.left,
+                        wrapperRight: wrapperRect.right,
+                        viewerLeft: viewerRect.left,
+                        viewerRight: viewerRect.right,
+                      };
+                    }"""
+                )
+                if not (0 < main_fit["scale"] <= 1):
+                    raise AssertionError(f"invalid main-image scale: {main_fit}")
+                if (
+                    main_fit["viewerLeft"] < main_fit["wrapperLeft"] - 1
+                    or main_fit["viewerRight"] > main_fit["wrapperRight"] + 1
+                ):
+                    raise AssertionError(f"main image overflows center panel: {main_fit}")
+                workspace.locator('[data-tab="detail"]').click()
                 download_path = Path(config["download_path"])
                 download_path.parent.mkdir(parents=True, exist_ok=True)
                 with page.expect_download(timeout=300_000) as download_info:
@@ -189,6 +314,13 @@ def run():
                 result.update(
                     {
                         "module_count": module_count,
+                        "preview_fit": fit_state,
+                        "main_image_fit": main_fit,
+                        "module_paid_controls_disabled": len(module_paid_state),
+                        "module_generation_note_visible": generation_note.is_visible(),
+                        "single_hidden_recovery": True,
+                        "global_hidden_recovery_count": global_recovery_count,
+                        "desktop_paid_ai_disabled": ai_button.is_disabled(),
                         "download_path": str(download_path),
                         "download_bytes": len(payload),
                         "download_name": download.suggested_filename,
@@ -205,6 +337,14 @@ def run():
                     raise AssertionError(
                         "workspace did not request the latest-preview restore endpoint"
                     )
+                embedded_frame.wait_for_function(
+                    "() => Boolean(document.querySelector('#preview_container')?.dataset.previewScale)"
+                )
+                restore_scale = embedded_frame.evaluate(
+                    "() => Number(document.querySelector('#preview_container').dataset.previewScale || '0')"
+                )
+                if not (0 < restore_scale <= 1):
+                    raise AssertionError(f"restored preview did not fit center panel: {restore_scale}")
                 result["module_count"] = module_count
             else:
                 raise AssertionError(f"unsupported phase: {phase}")
@@ -219,6 +359,16 @@ def run():
                 raise AssertionError(
                     "non-loopback browser requests were attempted: "
                     + ", ".join(sorted(set(blocked)))
+                )
+            if console_errors:
+                raise AssertionError(
+                    "browser console errors were observed: "
+                    + ", ".join(console_errors)
+                )
+            if page_errors:
+                raise AssertionError(
+                    "browser page errors were observed: "
+                    + ", ".join(page_errors)
                 )
             if paid_requests:
                 raise AssertionError(
@@ -269,13 +419,26 @@ function createEmbedHost({ dataDir, bootstrapUrl, phase }) {
   const escapedBootstrapUrl = bootstrapUrl
     .replaceAll("&", "&amp;")
     .replaceAll('"', "&quot;");
+  const productDetailCss = fs.readFileSync(
+    path.join(desktopDir, "src", "renderer", "ProductDetailPage.css"),
+    "utf8"
+  ).replaceAll("</style>", "<\\/style>");
   fs.writeFileSync(
     hostPath,
     [
       "<!doctype html>",
       '<meta charset="utf-8">',
-      "<style>html,body,iframe{width:100%;height:100%;margin:0;border:0}</style>",
-      `<iframe id="product-detail-frame" name="product-detail-frame" src="${escapedBootstrapUrl}" sandbox="allow-forms allow-scripts allow-same-origin allow-downloads" referrerpolicy="no-referrer"></iframe>`
+      "<style>",
+      "html,body{width:100%;height:100%;margin:0;overflow:hidden}",
+      productDetailCss,
+      "</style>",
+      '<section class="product-detail-page">',
+      '<div class="product-detail-head" style="height:64px;flex:0 0 auto"></div>',
+      '<div class="product-detail-state" style="height:68px;box-sizing:border-box;flex:0 0 auto"></div>',
+      '<div class="product-detail-workspace">',
+      `<iframe id="product-detail-frame" name="product-detail-frame" src="${escapedBootstrapUrl}" sandbox="allow-forms allow-scripts allow-same-origin allow-downloads" referrerpolicy="no-referrer"></iframe>`,
+      "</div>",
+      "</section>"
     ].join("\n"),
     "utf8"
   );

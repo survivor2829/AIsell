@@ -113,6 +113,7 @@ function assertEmbeddedSessionContract() {
 function assertRendererContract() {
   const app = read("src/renderer/App.tsx");
   const page = read("src/renderer/ProductDetailPage.tsx");
+  const styles = read("src/renderer/ProductDetailPage.css");
   assert.match(app, /\| "product-detail"/, "product-detail must have its own ModuleKey");
   assert.match(
     app,
@@ -135,6 +136,21 @@ function assertRendererContract() {
   );
   assert.match(page, /sandbox="allow-forms allow-scripts allow-same-origin allow-downloads"/);
   assert.match(page, /referrerPolicy="no-referrer"/);
+  assert.match(
+    styles,
+    /\.product-detail-page\s*\{[^}]*height:\s*100%;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s,
+    "product-detail page must fill the content card without creating a second scroll surface"
+  );
+  assert.match(
+    styles,
+    /\.product-detail-workspace\s*\{[^}]*position:\s*relative;[^}]*flex:\s*1;[^}]*overflow:\s*hidden;/s,
+    "product-detail workspace must consume the remaining page height"
+  );
+  assert.match(
+    styles,
+    /\.product-detail-workspace iframe\s*\{[^}]*height:\s*100%;[^}]*position:\s*absolute;[^}]*inset:\s*0;/s,
+    "embedded workspace must fill its bounded host"
+  );
   for (const copy of [
     "运行组件未配置",
     "服务未启动",

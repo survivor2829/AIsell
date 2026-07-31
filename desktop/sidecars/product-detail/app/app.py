@@ -403,6 +403,14 @@ def _parse_advantages_text(value: str) -> list:
     return [p.strip(" -·.。;；,，") for p in parts if p.strip(" -·.。;；,，")]
 
 
+def _parse_explicit_list_text(value: str) -> list[str]:
+    """Split an explicit user-provided list without inventing new items."""
+    text = _to_str(value)
+    if not text:
+        return []
+    parts = re.split(r"[\uFF0C,\uFF1B;\u3001|\n]+", text)
+    return [p.strip(" -\u00b7.\u3002;\uFF1B,\uFF0C") for p in parts if p.strip(" -\u00b7.\u3002;\uFF1B,\uFF0C")]
+
 def _parse_text_by_template(raw_text: str) -> dict:
     """按固定字段模板快速解析（不调用AI）"""
     lines = [ln.strip() for ln in _to_str(raw_text).replace("\r\n", "\n").split("\n")]
@@ -447,6 +455,7 @@ def _parse_text_by_template(raw_text: str) -> dict:
         "core_params": {}, "detail_params": {},
         "advantages": [],
         "dimensions": {"length": "", "width": "", "height": ""},
+        "scenes": [],
     }
 
     kv_pattern = re.compile(r"^([^:：]{1,40})\s*[:：]\s*(.+)$")
@@ -470,6 +479,12 @@ def _parse_text_by_template(raw_text: str) -> dict:
             continue
 
         d_key = detail_key_alias.get(raw_key) or detail_key_alias.get(raw_key.replace("：", "").strip())
+        if raw_key in {"\u9002\u7528\u573a\u666f", "\u5e94\u7528\u573a\u666f", "\u4f7f\u7528\u573a\u666f"}:
+            result["scenes"] = [
+                {"name": item, "desc": ""}
+                for item in _parse_explicit_list_text(raw_val)[:8]
+            ]
+            continue
         if d_key:
             result["detail_params"][d_key] = raw_val
             continue
@@ -1154,14 +1169,18 @@ def get_themes():
 @app.route("/")
 @login_required
 def index():
-    return render_template("workspace.html")
+    return render_template("workspace.html", desktop_mode=_DESKTOP_MODE)
 
 
 @app.route("/workspace/<product_type>")
 @login_required
 def build_redirect(product_type):
     _validate_product_type(product_type)
-    return render_template("workspace.html", initial_product_type=product_type)
+    return render_template(
+        "workspace.html",
+        initial_product_type=product_type,
+        desktop_mode=_DESKTOP_MODE,
+    )
 
 
 # ── 用户设置页 (P3 砍刀流后仅展示账号信息, 不再有 API Key 配置) ──
@@ -3144,6 +3163,25 @@ def _parse_text_for_desktop(raw_text: str, product_type: str, product_title: str
     if product_title:
         parsed.setdefault("product_name", product_title)
         parsed.setdefault("main_title", product_title)
+    if not parsed.get("kpis"):
+        detail_params = parsed.get("detail_params", {})
+        if isinstance(detail_params, dict):
+            kpis = []
+            for label, value in detail_params.items():
+                raw_value = _to_str(value)
+                if not re.search(r"\d", raw_value):
+                    continue
+                if not _is_valid_spec_value(raw_value, max_len=24):
+                    continue
+                number, unit = _split_value_unit(raw_value)
+                kpis.append({
+                    "label": _to_str(label),
+                    "value": number or raw_value,
+                    "unit": unit,
+                    "note": "",
+                })
+            if kpis:
+                parsed["kpis"] = kpis[:6]
     mapped = _map_parsed_to_form_fields(parsed, product_category=product_type)
     mapped["_raw_parsed"] = parsed
     return mapped
@@ -4562,6 +4600,15 @@ def _postprocess_extra_blocks(extra_blocks, product_type: str = ""):
     _clean_kpis(extra_blocks.get("block_i", {}).get("kpis", []))
 
 
+def _get_labor_reference_image():
+    """Never call the paid image provider from the desktop offline workspace."""
+    if _DESKTOP_MODE:
+        return ""
+    return ai_bg_cache.get_labor_reference_image(
+        api_key=os.environ.get("ARK_API_KEY", "")
+    )
+
+
 def _assemble_all_blocks(product_type, mapped_fields, images, cfg):
     """
     Assemble all block data from mapped fields and images.
@@ -4702,9 +4749,7 @@ def _assemble_all_blocks(product_type, mapped_fields, images, cfg):
         if _v:
             block_f[_f] = _v
     block_f["product_image"] = product_image
-    block_f["labor_image"] = ai_bg_cache.get_labor_reference_image(
-        api_key=os.environ.get("ARK_API_KEY", "")
-    )
+    block_f["labor_image"] = _get_labor_reference_image()
     _vs_rows_json = field("f_vs_rows_json", "")
     if _vs_rows_json:
         try:
@@ -4840,11 +4885,9 @@ _BLOCK_LIST_KEYS = {
     "block_q": "comparisons",
     "block_r": "package_items",
     "block_s": "faqs",
-    "block_t": "cases",
     "block_u": "promises",
     "block_v": "models",
     "block_x": "metrics",
-    "block_y": "items",
 }
 
 
@@ -4863,14 +4906,31 @@ def _is_block_empty(block_id, block_data):
         return not (block_data.get("header_line1", "").strip() or
                     block_data.get("header_line2", "").strip())
     if block_id == "block_f":
-        return not (block_data.get("vs_left_bottom", "").strip() or
-                    block_data.get("title_line1_red", "").strip())
+        return not (
+            _to_str(block_data.get("vs_left_title", ""))
+            or _to_str(block_data.get("title_line1_red", ""))
+        )
     if block_id == "block_g":
-        return not (block_data.get("brand_title", "").strip() or
-                    (block_data.get("brand_stats") and len(block_data["brand_stats"]) > 0) or
-                    (block_data.get("brand_story_lines") and len(block_data["brand_story_lines"]) > 0))
+        return not (block_data.get("brand_stats") or block_data.get("brand_story_lines"))
+    if block_id == "block_t":
+        return not (
+            block_data.get("cases")
+            or block_data.get("client_logos")
+            or _to_str(block_data.get("client_count", ""))
+        )
+    if block_id == "block_y":
+        return not (
+            block_data.get("calc_items")
+            or _to_str(block_data.get("cost_per_use", ""))
+            or _to_str(block_data.get("coverage_text", ""))
+            or _to_str(block_data.get("dilution_ratio", ""))
+        )
     if block_id == "block_w":
-        return not block_data.get("video_title", "").strip()
+        return not (
+            _to_str(block_data.get("video_title", ""))
+            or _to_str(block_data.get("cover_image", ""))
+            or _to_str(block_data.get("qr_image", ""))
+        )
 
     # 默认：任何非空字符串或非空列表即视为有数据
     return not any(
@@ -5205,9 +5265,7 @@ def build_submit_generic(product_type):
         if _v:
             block_f[_field] = _v
     block_f["product_image"] = product_image
-    block_f["labor_image"] = ai_bg_cache.get_labor_reference_image(
-        api_key=os.environ.get("ARK_API_KEY", "")
-    )
+    block_f["labor_image"] = _get_labor_reference_image()
     _vs_rows_json = form_text("f_vs_rows_json", "")
     if _vs_rows_json:
         try:
@@ -5309,7 +5367,7 @@ def _render_preview_modules(all_data: dict) -> list[dict]:
     """Render persisted preview data into the public workspace module DTO."""
     render_order = [
         "block_a", "block_b2", "block_b3", "block_g", "block_h", "block_i",
-        "block_j", "block_f", "block_x", "block_w", "block_v",
+        "block_j", "block_f", "block_x", "block_y", "block_w", "block_v",
         "block_e", "block_k", "block_l", "block_m", "block_t", "block_u",
         "block_s", "block_p", "block_q", "block_r", "block_n", "block_o",
     ]
