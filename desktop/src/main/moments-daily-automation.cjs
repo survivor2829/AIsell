@@ -3,6 +3,7 @@ const DEFAULT_DAILY_START_TIME = "09:00";
 const DAILY_BUSY_RETRY_MS = 60_000;
 const DAILY_FAILURE_RETRY_MS = 30 * 60_000;
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
+const STARTUP_RESUME_PENDING_REASON = "daily_startup_resume_pending";
 
 function localDayKey(value = new Date()) {
   const date = value instanceof Date ? value : new Date(value);
@@ -128,6 +129,7 @@ function createMomentsDailyAutomation(options = {}) {
     const today = localDayKey(now());
     if (!state.enabled) return "disabled";
     if (state.completed_count >= state.target) return "completed";
+    if (state.blocked_reason === STARTUP_RESUME_PENDING_REASON) return "pending_resume";
     if (state.suppressed_date === today) return "paused";
     if (campaign.status === "running" && campaign.daily_tracking) return "running";
     return "waiting";
@@ -496,9 +498,93 @@ function createMomentsDailyAutomation(options = {}) {
 
   function initialize() {
     safeRecord("daily.initialize");
-    return evaluate({ allowRecovery: true });
-  }
+    try {
+      persistDateResetIfNeeded();
+      clearTimer();
+      const state = currentState();
+      if (!state.enabled) {
+        persistIfChanged({ next_run_at: "", last_reason: "daily_disabled" });
+        return { ok: true, state: responseState() };
+      }
 
+      const current = now();
+      const today = localDayKey(current);
+      if (state.completed_count >= state.target) {
+        scheduleEvaluation(
+          nextStartAfter(current, state.start_time),
+          "daily_waiting_next_day",
+          { blocked_reason: "" }
+        );
+        return { ok: true, state: responseState() };
+      }
+      if (state.suppressed_date === today) {
+        const startupResumePending = state.blocked_reason === STARTUP_RESUME_PENDING_REASON;
+        scheduleEvaluation(
+          startTimeOnDate(current, state.start_time, 1),
+          startupResumePending ? "daily_startup_deferred" : "daily_paused_until_tomorrow",
+          startupResumePending
+            ? {
+                blocked_reason: STARTUP_RESUME_PENDING_REASON,
+                suppressed_date: today
+              }
+            : {}
+        );
+        return {
+          ok: true,
+          deferred: startupResumePending,
+          reason: startupResumePending ? STARTUP_RESUME_PENDING_REASON : undefined,
+          state: responseState()
+        };
+      }
+
+      const persistedNextRun = new Date(state.next_run_at);
+      if (
+        state.next_run_at
+        && !Number.isNaN(persistedNextRun.getTime())
+        && persistedNextRun.getTime() > current.getTime()
+      ) {
+        scheduleEvaluation(persistedNextRun, "daily_startup_timer_restored");
+        safeRecord("daily.timer_restored", {
+          next_run_at: persistedNextRun.toISOString()
+        });
+        return { ok: true, restored: true, state: responseState() };
+      }
+
+      const dueAt = startTimeOnDate(current, state.start_time);
+      if (current.getTime() < dueAt.getTime()) {
+        scheduleEvaluation(dueAt, "daily_waiting_for_start_time");
+        return { ok: true, state: responseState() };
+      }
+
+      const nextRunAt = startTimeOnDate(current, state.start_time, 1);
+      scheduleEvaluation(nextRunAt, "daily_startup_deferred", {
+        blocked_reason: STARTUP_RESUME_PENDING_REASON,
+        suppressed_date: today
+      });
+      safeRecord("daily.startup_deferred", {
+        date: state.date,
+        completed_count: state.completed_count,
+        remaining_count: Math.max(0, state.target - state.completed_count),
+        next_run_at: nextRunAt.toISOString()
+      });
+      return {
+        ok: true,
+        deferred: true,
+        reason: STARTUP_RESUME_PENDING_REASON,
+        state: responseState()
+      };
+    } catch (error) {
+      clearTimer();
+      safeRecord("daily.initialize_failed", {
+        reason: String(error?.code || error?.message || "moments_daily_initialize_failed")
+      }, "error");
+      return {
+        ok: false,
+        reason: "moments_daily_initialize_failed",
+        state: responseState()
+      };
+    }
+  }
   return {
     buildProgressPatch,
     configure,

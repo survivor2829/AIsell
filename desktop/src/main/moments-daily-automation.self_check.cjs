@@ -215,7 +215,15 @@ async function runChecks() {
     schedule: nextDayClock.schedule,
     scrollMoments: async () => ({ ok: true })
   });
-  nextDayController.initialize();
+  const nextDayInitialized = nextDayController.initialize();
+  assert.equal(nextDayInitialized.ok, true);
+  assert.equal(nextDayInitialized.deferred, true);
+  const nextDayPending = nextDayController.status().state;
+  assert.equal(nextDayAcquireCount, 0, "a late app start must not open Moments");
+  assert.equal(nextDayPending.daily_automation.date, "2026-07-30");
+  assert.equal(nextDayPending.daily_automation.status, "pending_resume");
+  assert.equal(nextDayPending.daily_automation.completed_count, 0);
+  assert.equal(nextDayController.runDailyNow().ok, true);
   const nextDayCompleted = await waitFor(
     () => nextDayController.status().state,
     (state) => state.daily_automation.date === "2026-07-30"
@@ -224,7 +232,6 @@ async function runChecks() {
   assert.equal(nextDayAcquireCount, 1);
   assert.equal(nextDayCompleted.daily_automation.checked_count, 2);
   nextDayController.dispose();
-
   const missedRoot = createTempDir("moments-daily-missed-");
   const missedClock = createFakeClock("2026-07-29T08:00:00+08:00");
   const missedSetup = createMomentsCampaignController({
@@ -246,6 +253,7 @@ async function runChecks() {
 
   await missedClock.advanceTo("2026-07-29T10:00:00+08:00");
   let missedAcquireCount = 0;
+  let missedOpenCount = 0;
   const missedDriver = createSuccessfulDriver(["d".repeat(64)]);
   const missedController = createMomentsCampaignController({
     baseDir: missedRoot,
@@ -259,19 +267,32 @@ async function runChecks() {
     },
     logger: { event: () => undefined },
     now: missedClock.now,
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => {
+      missedOpenCount += 1;
+      return { ok: true };
+    },
     runStep: missedDriver.runStep,
     schedule: missedClock.schedule,
     scrollMoments: async () => ({ ok: true })
   });
-  missedController.initialize();
+  const missedInitialized = missedController.initialize();
+  assert.equal(missedInitialized.ok, true);
+  assert.equal(missedInitialized.deferred, true);
+  const missedPending = missedController.status().state;
+  assert.equal(missedAcquireCount, 0, "startup hydration must not acquire the WeChat runtime");
+  assert.equal(missedOpenCount, 0, "startup hydration must not open Moments");
+  assert.equal(missedPending.daily_automation.status, "pending_resume");
+  assert.equal(missedPending.daily_automation.suppressed_date, "2026-07-29");
+  assert.equal(missedPending.daily_automation.blocked_reason, "daily_startup_resume_pending");
+  assert.equal(localDayKey(new Date(missedPending.daily_automation.next_run_at)), "2026-07-30");
+  assert.equal(missedController.runDailyNow().ok, true);
   const missedCompleted = await waitFor(
     () => missedController.status().state,
     (state) => state.daily_automation.completed_count === 1
   );
-  assert.equal(missedAcquireCount, 1, "missed daily time should run once on next app start");
+  assert.equal(missedAcquireCount, 1, "manual resume should start exactly one campaign");
+  assert.equal(missedOpenCount, 1);
   assert.equal(missedCompleted.daily_automation.status, "completed");
-
   const busyRoot = createTempDir("moments-daily-busy-");
   const busyClock = createFakeClock("2026-07-29T10:00:00+08:00");
   const busyDriver = createSuccessfulDriver(["e".repeat(64)]);
@@ -655,7 +676,7 @@ async function runChecks() {
   appCloseController.dispose();
   assert.equal(appCloseClock.pending().length, 0, "dispose must clear the scheduled retry timer");
 
-  await appCloseClock.advanceTo("2026-07-29T11:00:00+08:00");
+  await appCloseClock.advanceTo("2026-07-29T10:10:00+08:00");
   const appCloseRestartDriver = createSuccessfulDriver(["q".repeat(64)]);
   let appCloseRestartAcquireCount = 0;
   const appCloseRestartController = createMomentsCampaignController({
@@ -675,7 +696,20 @@ async function runChecks() {
     schedule: appCloseClock.schedule,
     scrollMoments: async () => ({ ok: true })
   });
-  appCloseRestartController.initialize();
+  const appCloseRestartInitialized = appCloseRestartController.initialize();
+  assert.equal(appCloseRestartInitialized.ok, true);
+  assert.equal(appCloseRestartInitialized.restored, true);
+  assert.equal(
+    appCloseRestartAcquireCount,
+    0,
+    "restoring a future retry must not acquire or foreground WeChat during startup"
+  );
+  assert.equal(
+    appCloseRestartController.status().state.daily_automation.next_run_at,
+    appClosed.daily_automation.next_run_at,
+    "a future retry must keep its persisted execution time"
+  );
+  await appCloseClock.advanceTo("2026-07-29T10:30:01+08:00");
   const appCloseRestartCompleted = await waitFor(
     () => appCloseRestartController.status().state,
     (state) => state.daily_automation.completed_count === 1
@@ -684,11 +718,10 @@ async function runChecks() {
   assert.equal(
     appCloseRestartAcquireCount,
     1,
-    "the first launch after a missed run must start exactly one catch-up campaign"
+    "the restored retry should start exactly once when its timer becomes due"
   );
   assert.equal(appCloseRestartCompleted.daily_automation.status, "completed");
   appCloseRestartController.dispose();
-
   const dedupRoot = createTempDir("moments-daily-dedup-restart-");
   const dedupClock = createFakeClock("2026-07-29T10:00:00+08:00");
   const fingerprintA = "r".repeat(64);
@@ -706,11 +739,15 @@ async function runChecks() {
     completed_posts: [fingerprintA]
   });
   const dedupDriver = createSuccessfulDriver([fingerprintA, fingerprintB], [0]);
+  let dedupAcquireCount = 0;
   const dedupController = createMomentsCampaignController({
     baseDir: dedupRoot,
     cancelSchedule: dedupClock.cancel,
     coordinator: {
-      acquire: () => ({ ok: true, lock: { owner: "dedup-owner" } }),
+      acquire: () => {
+        dedupAcquireCount += 1;
+        return { ok: true, lock: { owner: "dedup-owner" } };
+      },
       release: () => undefined
     },
     logger: { event: () => undefined },
@@ -720,11 +757,15 @@ async function runChecks() {
     schedule: dedupClock.schedule,
     scrollMoments: async () => ({ ok: true })
   });
-  dedupController.initialize();
+  const dedupInitialized = dedupController.initialize();
+  assert.equal(dedupInitialized.deferred, true);
+  assert.equal(dedupAcquireCount, 0, "restart must preserve dedup state without opening Moments");
+  assert.equal(dedupController.runDailyNow().ok, true);
   const dedupCompleted = await waitFor(
     () => dedupController.status().state,
     (state) => state.daily_automation.completed_count === 2
   );
+  assert.equal(dedupAcquireCount, 1);
   assert.equal(dedupCompleted.processed_count, 2);
   assert.equal(dedupCompleted.daily_automation.checked_count, 3);
   const dedupPersisted = JSON.parse(fs.readFileSync(path.join(dedupRoot, "state.json"), "utf8"));
@@ -734,7 +775,55 @@ async function runChecks() {
     "an already-counted fingerprint must not consume the remaining quota after restart"
   );
   dedupController.dispose();
-
+  const crashRoot = createTempDir("moments-daily-crash-recovery-");
+  const crashClock = createFakeClock("2026-07-29T10:00:00+08:00");
+  writeDailyState(crashRoot, {
+    enabled: true,
+    target: 2,
+    start_time: "09:00",
+    like_enabled: true,
+    comment_enabled: false,
+    date: "2026-07-29",
+    completed_count: 1,
+    checked_count: 1,
+    completed_posts: ["u".repeat(64)]
+  }, {
+    status: "running",
+    current_post: 2,
+    automated_run: true,
+    daily_tracking: true
+  });
+  let crashAcquireCount = 0;
+  let crashOpenCount = 0;
+  const crashController = createMomentsCampaignController({
+    baseDir: crashRoot,
+    cancelSchedule: crashClock.cancel,
+    coordinator: {
+      acquire: () => {
+        crashAcquireCount += 1;
+        return { ok: true, lock: { owner: "crash-owner" } };
+      },
+      release: () => undefined
+    },
+    logger: { event: () => undefined },
+    now: crashClock.now,
+    openMoments: async () => {
+      crashOpenCount += 1;
+      return { ok: true };
+    },
+    runStep: createSuccessfulDriver(["v".repeat(64)]).runStep,
+    schedule: crashClock.schedule,
+    scrollMoments: async () => ({ ok: true })
+  });
+  const crashInitialized = crashController.initialize();
+  assert.equal(crashInitialized.deferred, true);
+  const crashRecovered = crashController.status().state;
+  assert.equal(crashRecovered.status, "partial");
+  assert.equal(crashRecovered.last_reason, "app_restarted_pending_resume");
+  assert.equal(crashRecovered.daily_automation.status, "pending_resume");
+  assert.equal(crashAcquireCount, 0);
+  assert.equal(crashOpenCount, 0);
+  crashController.dispose();
   const writeFailureRoot = createTempDir("moments-daily-write-failure-");
   const writeFailureClock = createFakeClock("2026-07-29T08:00:00+08:00");
   writeDailyState(writeFailureRoot, {

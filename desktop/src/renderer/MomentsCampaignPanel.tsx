@@ -150,7 +150,9 @@ const REASON_LABELS: Record<string, string> = {
   moments_campaign_already_running: "朋友圈任务正在运行，请稍后再试",
   wechat_operation_busy: "微信正在执行其他任务，稍后会自动再试",
   runtime_coordinator_failed: "微信任务协调器暂时不可用",
-  moments_daily_evaluate_failed: "每日计划调度失败，已记录诊断日志"
+  moments_daily_evaluate_failed: "每日计划调度失败，已记录诊断日志",
+  moments_daily_initialize_failed: "每日计划状态恢复失败，已记录诊断日志",
+  daily_startup_resume_pending: "已恢复今日进度；为避免启动时抢占微信，请确认后续跑今日剩余"
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -165,6 +167,7 @@ const STATUS_LABELS: Record<string, string> = {
 const DAILY_STATUS_LABELS: Record<string, string> = {
   disabled: "未启用",
   waiting: "等待执行",
+  pending_resume: "待续跑",
   running: "正在执行",
   completed: "今日已完成",
   paused: "今日已暂停"
@@ -400,7 +403,7 @@ export default function MomentsCampaignPanel() {
           )}
         </div>
         <p>
-          保存后无需每天再点按钮；下方点赞、AI评论和评论偏好同时用于每日计划。错过时间时，下次打开程序会补跑今日剩余额度。
+          保持程序运行时会按计划自动执行；重新打开程序只恢复今日进度，不会立刻打开微信或朋友圈。错过时间或中断后，可点击“立即执行今日剩余”继续。
         </p>
       </div>
       <div className="dev-control-row moments-campaign-controls">
