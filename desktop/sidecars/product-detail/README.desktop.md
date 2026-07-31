@@ -86,4 +86,4 @@ node scripts/product-detail-runtime.integration.cjs
 
 ## 当前固定运行时边界
 
-2026-07-31 已按用户授权把旧固定运行时移入 `.build/backups/`，并从干净提交重新生成 `.build/product-detail-runtime/`。新 manifest 记录并复核本仓库实际输入的 Git commit、scoped dirty 状态和确定性源码树哈希；默认开发启动与正式发布前置检查都会拒绝缺少这些证明或与当前提交不一致的 runtime。新 PyInstaller EXE 已通过随机端口、health、一次性 bootstrap、私有资源、付费接口禁用和正常关闭集成测试，并使用打包内置浏览器完成真实 PNG 上传、4 个模块生成、约 1.06 MB PNG 导出与重启恢复；同提交测试便携包也已通过解压、整树哈希、隐私扫描和包内自检。当前结论仍限于开发机测试包，用户界面验收、无 Python/Docker 净机复验和正式交付状态统一以 `PROJECT_STATUS.md` 为准。
+2026-07-31 已按用户授权把旧固定运行时移入 `.build/backups/`，并从干净提交重新生成 `.build/product-detail-runtime/`。新 manifest 记录并复核本仓库实际输入的 Git commit、scoped dirty 状态和确定性源码树哈希；默认开发启动与正式发布前置检查都会拒绝缺少这些证明或与当前提交不一致的 runtime。新 PyInstaller EXE 已通过随机端口、health、一次性 bootstrap、私有资源、付费接口禁用和正常关闭集成测试，并使用打包内置浏览器完成真实 PNG 上传、4 个模块生成、约 1.06 MB PNG 导出与重启恢复；同提交正式便携包和覆盖升级安装程序也已通过构建及包内自检。冻结源码已包含 `deepseek-v4-flash` 和 APIMart `gpt-image-2`/`https://api.apimart.ai/v1` 配置，但桌面入口当前仍统一禁用付费 AI 路由，安装包也不含真实 Key；因此本轮只验证离线上传、排版、导出和历史恢复。用户覆盖安装、无 Python/Docker 净机复验、付费 AI 开放和正式验收状态统一以 `PROJECT_STATUS.md` 为准。
