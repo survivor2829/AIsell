@@ -468,6 +468,53 @@ def _validate_schema_v2(parsed: dict) -> list[str]:
     return w
 
 
+def _repair_duplicate_roles_v2(parsed: dict) -> dict:
+    """删除后续重复屏型；仅在修复结果完整合规时采用。
+
+    DeepSeek 偶尔会给两个屏幕相同的 role，但第二个屏幕的 prompt 仍然是
+    独立内容。直接把它改名会让 role 与画面构图不一致，因此这里只保留首次
+    出现的合法 role，并重排 idx。若删除后少于最小屏数，或仍有其他 schema
+    问题，则返回原结果，继续走既有的反馈重试路径。
+    """
+    if not isinstance(parsed, dict):
+        return parsed
+
+    screens = parsed.get("screens")
+    if not isinstance(screens, list):
+        return parsed
+
+    seen_roles: set[str] = set()
+    repaired_screens: list = []
+    removed_duplicate = False
+
+    for screen in screens:
+        if isinstance(screen, dict):
+            role = screen.get("role")
+            if isinstance(role, str) and role in _VALID_ROLES_V2:
+                if role in seen_roles:
+                    removed_duplicate = True
+                    continue
+                seen_roles.add(role)
+        repaired_screens.append(screen)
+
+    if not removed_duplicate:
+        return parsed
+    if not (_MIN_SCREEN_COUNT_V2 <= len(repaired_screens) <= _MAX_SCREEN_COUNT_V2):
+        return parsed
+
+    normalized_screens = [
+        {**screen, "idx": idx} if isinstance(screen, dict) else screen
+        for idx, screen in enumerate(repaired_screens, start=1)
+    ]
+    repaired = {
+        **parsed,
+        "screen_count": len(normalized_screens),
+        "screens": normalized_screens,
+    }
+
+    return repaired if not _validate_schema_v2(repaired) else parsed
+
+
 def plan_v2(
     product_text: str,
     product_image_url: Optional[str] = None,
@@ -550,6 +597,7 @@ def plan_v2(
             resp = post_fn(current_payload, use_key)
             raw_content = resp["choices"][0]["message"]["content"]
             parsed = _extract_json(raw_content)
+            parsed = _repair_duplicate_roles_v2(parsed)
             schema_warnings = _validate_schema_v2(parsed)
             if schema_warnings:
                 last_err = f"v2 schema 不合规: {schema_warnings}"

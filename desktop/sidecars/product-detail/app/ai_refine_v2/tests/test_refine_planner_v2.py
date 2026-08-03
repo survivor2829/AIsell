@@ -471,6 +471,122 @@ class TestPlanV2RetryLogic(unittest.TestCase):
         self.assertEqual(_validate_schema_v2(result), [])
         self.assertEqual(calls["n"], 2)
 
+    def test_repairs_duplicate_value_story_without_retry(self):
+        """重复屏型应在本地删除, 不额外调用 DeepSeek."""
+        duplicate = _v2_sample(screen_count=12)
+        duplicate["screens"][10]["role"] = "value_story"  # FAQ 缺失, value_story 重复
+        duplicate["screens"][10]["title"] = "保留的第一个价值屏"
+        duplicate["screens"][11]["title"] = "应删除的第二个价值屏"
+        calls = {"n": 0}
+
+        def _duplicate(payload, key):
+            calls["n"] += 1
+            return _mock_http(duplicate)(payload, key)
+
+        result = plan_v2(
+            product_text="dummy",
+            api_key="k",
+            http_fn=_duplicate,
+            max_retries=0,
+        )
+
+        roles = [screen["role"] for screen in result["screens"]]
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(result["screen_count"], 11)
+        self.assertEqual(
+            [screen["idx"] for screen in result["screens"]],
+            list(range(1, 12)),
+        )
+        self.assertEqual(len(roles), len(set(roles)))
+        self.assertNotIn("FAQ", roles)
+        self.assertIn("保留的第一个价值屏", [screen["title"] for screen in result["screens"]])
+        self.assertNotIn("应删除的第二个价值屏", [screen["title"] for screen in result["screens"]])
+        self.assertEqual(_validate_schema_v2(result), [])
+
+    def test_drops_duplicate_when_all_planner_roles_are_used(self):
+        """13 屏含 12 种屏型加 1 个重复时, 应删除重复屏并修正编号."""
+        duplicate = _v2_sample(screen_count=13)
+        calls = {"n": 0}
+
+        def _duplicate(payload, key):
+            calls["n"] += 1
+            return _mock_http(duplicate)(payload, key)
+
+        result = plan_v2(
+            product_text="dummy",
+            api_key="k",
+            http_fn=_duplicate,
+            max_retries=0,
+        )
+
+        roles = [screen["role"] for screen in result["screens"]]
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(result["screen_count"], 12)
+        self.assertEqual([screen["idx"] for screen in result["screens"]], list(range(1, 13)))
+        self.assertEqual(len(roles), len(set(roles)))
+        self.assertEqual(_validate_schema_v2(result), [])
+
+    def test_keeps_retry_path_when_dedup_would_drop_below_minimum(self):
+        """8 屏中的重复项不能删成 7 屏, 应保留原有失败/重试路径."""
+        duplicate = _v2_sample(screen_count=8)
+        duplicate["screens"][1]["role"] = "scenario"
+        calls = {"n": 0}
+
+        def _duplicate(payload, key):
+            calls["n"] += 1
+            return _mock_http(duplicate)(payload, key)
+
+        with self.assertRaises(PlannerError) as ctx:
+            plan_v2(
+                product_text="dummy",
+                api_key="k",
+                http_fn=_duplicate,
+                max_retries=0,
+            )
+
+        self.assertEqual(calls["n"], 1)
+        self.assertIn("屏型重复", str(ctx.exception))
+
+    def test_duplicate_repair_does_not_hide_missing_required_role(self):
+        """去重后若仍缺必出屏型, 不能把不合规方案当成成功."""
+        duplicate = _v2_sample(screen_count=9)
+        duplicate["screens"][0]["role"] = "feature_wall"
+
+        with self.assertRaises(PlannerError) as ctx:
+            plan_v2(
+                product_text="dummy",
+                api_key="k",
+                http_fn=_mock_http(duplicate),
+                max_retries=0,
+            )
+
+        self.assertIn("必出屏型缺失", str(ctx.exception))
+        self.assertIn("屏型重复", str(ctx.exception))
+
+    def test_repairs_multiple_duplicate_roles_together(self):
+        """一份方案中的多组重复屏型应一次性安全删除."""
+        duplicate = _v2_sample(screen_count=12)
+        duplicate["screens"][8]["role"] = "feature_wall"
+        duplicate["screens"][9]["role"] = "scenario"
+        calls = {"n": 0}
+
+        def _duplicate(payload, key):
+            calls["n"] += 1
+            return _mock_http(duplicate)(payload, key)
+
+        result = plan_v2(
+            product_text="dummy",
+            api_key="k",
+            http_fn=_duplicate,
+            max_retries=0,
+        )
+
+        roles = [screen["role"] for screen in result["screens"]]
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(result["screen_count"], 10)
+        self.assertEqual(len(roles), len(set(roles)))
+        self.assertEqual(_validate_schema_v2(result), [])
+
 
 # ──────────────────────────────────────────────────────────────────
 # C: v1 / v2 互不污染验证
