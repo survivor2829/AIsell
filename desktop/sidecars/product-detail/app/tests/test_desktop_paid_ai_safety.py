@@ -69,14 +69,6 @@ def post(client, token, path, payload):
     )
 
 
-def confirmation_token(client):
-    response = client.get("/desktop/ai-refine-v2/estimate")
-    assert response.status_code == 200, response.data
-    token = response.get_json().get("confirmation_token")
-    assert token
-    return token
-
-
 client_one, csrf_one = authenticated_client()
 client_two, csrf_two = authenticated_client()
 ledger_path = config.data_dir / "database" / "desktop-ai-refine-ledger.json"
@@ -108,24 +100,8 @@ resolved = post(
 )
 assert resolved.status_code == 200, resolved.data
 
-missing_confirmation = post(
-    client_one, csrf_one, "/api/ai-refine-v2/execute", payload
-)
-assert missing_confirmation.status_code == 428, missing_confirmation.data
-assert (
-    missing_confirmation.get_json()["code"]
-    == "DESKTOP_AI_REFINE_CONFIRMATION_REQUIRED"
-)
-assert start_calls == []
-
-payload_one = {
-    **payload,
-    "confirmation_token": confirmation_token(client_one),
-}
-payload_two = {
-    **payload,
-    "confirmation_token": confirmation_token(client_two),
-}
+payload_one = dict(payload)
+payload_two = dict(payload)
 
 # The check + pending write is atomic: while request one is admitted, request two is blocked.
 entered = threading.Event()
@@ -186,6 +162,12 @@ assert unknown_poll.status_code == 200, unknown_poll.data
 assert unknown_poll.get_json()["task_id"] == "task-atomic-1"
 assert unknown_poll.get_json()["status"] == "outcome_unknown"
 assert json.loads(ledger_path.read_text(encoding="utf-8"))["state"] == "outcome_unknown"
+blocked_unknown = post(
+    client_one, csrf_one, "/api/ai-refine-v2/execute", payload
+)
+assert blocked_unknown.status_code == 409, blocked_unknown.data
+assert blocked_unknown.get_json()["code"] == "DESKTOP_AI_REFINE_OUTCOME_UNKNOWN"
+assert len(start_calls) == 1
 resolved_again = post(
     client_one,
     csrf_one,
@@ -194,10 +176,24 @@ resolved_again = post(
 )
 assert resolved_again.status_code == 200, resolved_again.data
 
-replayed = post(client_one, csrf_one, "/api/ai-refine-v2/execute", payload_one)
-assert replayed.status_code == 428, replayed.data
-assert replayed.get_json()["code"] == "DESKTOP_AI_REFINE_CONFIRMATION_REQUIRED"
-assert len(start_calls) == 1
+pipeline_runner.start_task = lambda **kwargs: start_calls.append(kwargs) or "task-direct-2"
+direct_after_resolve = post(
+    client_one, csrf_one, "/api/ai-refine-v2/execute", payload
+)
+assert direct_after_resolve.status_code == 200, direct_after_resolve.data
+assert direct_after_resolve.get_json()["task_id"] == "task-direct-2"
+assert len(start_calls) == 2
+
+pipeline_runner.get_task_status = lambda task_id: {
+    "task_id": task_id,
+    "user_id": user_id,
+    "status": "failed",
+    "progress_pct": 100,
+    "error": "synthetic completed failure",
+}
+closed = client_one.get("/api/ai-refine-v2/status/task-direct-2")
+assert closed.status_code == 200, closed.data
+assert closed.get_json()["status"] == "failed"
 
 # A server failure after admission is outcome_unknown, never safe-to-retry.
 server_calls = []
@@ -206,11 +202,7 @@ def crash_after_admission(**kwargs):
     raise RuntimeError("synthetic post-admission failure")
 
 pipeline_runner.start_task = crash_after_admission
-crash_payload = {
-    **payload,
-    "confirmation_token": confirmation_token(client_one),
-}
-failed = post(client_one, csrf_one, "/api/ai-refine-v2/execute", crash_payload)
+failed = post(client_one, csrf_one, "/api/ai-refine-v2/execute", payload)
 assert failed.status_code == 500, failed.data
 ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
 assert ledger["state"] == "outcome_unknown"
@@ -222,9 +214,9 @@ assert len(server_calls) == 1
 
 print(json.dumps({
     "corrupt": corrupt.status_code,
-    "missing_confirmation": missing_confirmation.status_code,
     "concurrent": second.status_code,
-    "replay": replayed.status_code,
+    "blocked_unknown": blocked_unknown.status_code,
+    "direct_after_resolve": direct_after_resolve.status_code,
     "poll_task_id": poll.get_json()["task_id"],
     "poll_status": poll.get_json()["status"],
     "post_admission": failed.status_code,
@@ -261,9 +253,9 @@ print(json.dumps({
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result == {
         "corrupt": 409,
-        "missing_confirmation": 428,
         "concurrent": 409,
-        "replay": 428,
+        "blocked_unknown": 409,
+        "direct_after_resolve": 200,
         "poll_task_id": "task-atomic-1",
         "poll_status": "running_generator",
         "post_admission": 500,

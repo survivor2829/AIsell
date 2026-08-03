@@ -35,7 +35,6 @@ if BUNDLED_PLAYWRIGHT_DIR.is_dir():
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(BUNDLED_PLAYWRIGHT_DIR))
 _MUTABLE_STATIC_ROOTS = {"uploads", "outputs", "cache", "ai_refine_v2"}
 _TOKEN_MIN_LENGTH = 32
-_AI_REFINE_CONFIRMATION_TTL_SECONDS = 120
 
 
 @dataclass(frozen=True)
@@ -278,44 +277,6 @@ def _install_desktop_contract(
 
     ledger_path = config.data_dir / "database" / "desktop-ai-refine-ledger.json"
     ledger_lock = threading.RLock()
-    confirmation_lock = threading.Lock()
-    confirmation_tickets: dict[str, dict[str, float | int]] = {}
-
-    def prune_confirmation_tickets(now: float) -> None:
-        expired = [
-            digest
-            for digest, ticket in confirmation_tickets.items()
-            if float(ticket['expires_at']) <= now
-        ]
-        for digest in expired:
-            confirmation_tickets.pop(digest, None)
-
-    def issue_confirmation_ticket(user_id: int) -> str:
-        token = secrets.token_urlsafe(32)
-        digest = hashlib.sha256(token.encode('utf-8')).hexdigest()
-        now = time.monotonic()
-        with confirmation_lock:
-            prune_confirmation_tickets(now)
-            confirmation_tickets[digest] = {
-                'user_id': int(user_id),
-                'expires_at': now + _AI_REFINE_CONFIRMATION_TTL_SECONDS,
-            }
-        return token
-
-    def consume_confirmation_ticket(token: str, user_id: int) -> bool:
-        normalized = str(token or '').strip()
-        if not normalized:
-            return False
-        digest = hashlib.sha256(normalized.encode('utf-8')).hexdigest()
-        now = time.monotonic()
-        with confirmation_lock:
-            prune_confirmation_tickets(now)
-            ticket = confirmation_tickets.get(digest)
-            if ticket is None or int(ticket['user_id']) != int(user_id):
-                return False
-            confirmation_tickets.pop(digest, None)
-            return True
-
     def unreadable_refine_ledger() -> dict:
         return {
             "state": "outcome_unknown",
@@ -450,18 +411,6 @@ def _install_desktop_contract(
                             "task_id": ledger.get("task_id") or "",
                         }
                     ), 409
-                execute_payload = request.get_json(silent=True) or {}
-                if not consume_confirmation_ticket(
-                    execute_payload.get('confirmation_token', ''),
-                    current_user.id,
-                ):
-                    return jsonify(
-                        {
-                            'ok': False,
-                            'code': 'DESKTOP_AI_REFINE_CONFIRMATION_REQUIRED',
-                            'error': '费用确认已缺失、过期或使用过，请重新确认后提交。',
-                        }
-                    ), 428
                 request_bytes = request.get_data(cache=True) or b""
                 write_refine_ledger(
                     {
@@ -565,34 +514,6 @@ def _install_desktop_contract(
             contract.bootstrap_in_progress = False
         return redirect(url_for("index"))
 
-    def ai_refine_estimate():
-        require_loopback()
-        if not current_user.is_authenticated:
-            abort(401)
-        if not paid_ai_ready:
-            return jsonify(
-                {
-                    "ok": False,
-                    "code": "DESKTOP_AI_REFINE_NOT_CONFIGURED",
-                    "error": "请先配置 DeepSeek 和 APIMart。",
-                }
-            ), 503
-        confirmation_token = issue_confirmation_ticket(current_user.id)
-        return jsonify(
-            {
-                "ok": True,
-                "provider": "apimart",
-                "model": "gpt-image-2",
-                "resolution": "1k",
-                "images": {"min": 8, "max": 15},
-                "unit": {"amount": 0.085, "currency": "credits"},
-                "total": {"min": 0.68, "max": 1.275, "currency": "credits"},
-                "disclaimer": "仅为参考估算，实际费用以 APIMart 账单为准。",
-                "confirmation_token": confirmation_token,
-                "confirmation_expires_in_seconds": _AI_REFINE_CONFIRMATION_TTL_SECONDS,
-            }
-        )
-
     def resolve_ai_refine_unknown():
         require_loopback()
         if not current_user.is_authenticated:
@@ -626,12 +547,6 @@ def _install_desktop_contract(
         "/desktop/bootstrap",
         endpoint="xiaoxi_desktop_bootstrap",
         view_func=desktop_bootstrap,
-        methods=["GET"],
-    )
-    flask_app.add_url_rule(
-        "/desktop/ai-refine-v2/estimate",
-        endpoint="xiaoxi_ai_refine_estimate",
-        view_func=ai_refine_estimate,
         methods=["GET"],
     )
     flask_app.add_url_rule(

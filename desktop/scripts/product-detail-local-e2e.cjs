@@ -107,7 +107,7 @@ def run():
                     request_url, config["origin"], config["host_url"]
                 )
                 if (
-                    phase == "ai_confirmation"
+                    phase == "ai_direct"
                     and request_is_allowed
                     and request_path == "/api/ai-refine-v2/execute"
                 ):
@@ -115,20 +115,36 @@ def run():
                         execute_payload = json.loads(route.request.post_data or "{}")
                     except (TypeError, ValueError):
                         execute_payload = {}
-                    confirmation_token = execute_payload.get("confirmation_token")
                     if route.request.method != "POST":
                         route_violations.append("AI execute request was not POST")
                         route.abort()
                         return
-                    if not isinstance(confirmation_token, str) or not confirmation_token.strip():
+                    if "confirmation_token" in execute_payload:
                         route_violations.append(
-                            "AI execute request omitted confirmation_token"
+                            "AI execute request still included a confirmation_token"
+                        )
+                        route.abort()
+                        return
+                    required_fields = (
+                        "product_text",
+                        "product_image_url",
+                        "product_title",
+                        "product_category",
+                    )
+                    missing_fields = [
+                        field for field in required_fields
+                        if not str(execute_payload.get(field) or "").strip()
+                    ]
+                    if missing_fields or execute_payload.get("schema_mode") != "v2":
+                        route_violations.append(
+                            "AI execute request omitted required fields: "
+                            + ",".join(missing_fields)
                         )
                         route.abort()
                         return
                     validated_execute_requests.append({
                         "method": route.request.method,
-                        "confirmation_token_present": True,
+                        "direct": True,
                     })
                     route.fulfill(
                         status=200,
@@ -141,7 +157,7 @@ def run():
                     )
                     return
                 if (
-                    phase == "ai_confirmation"
+                    phase == "ai_direct"
                     and request_is_allowed
                     and request_path
                     == "/api/ai-refine-v2/status/LOCAL_E2E_INTERCEPTED"
@@ -296,10 +312,25 @@ def run():
                         ]
                     )
                 )
-                workspace.locator("#btn_generate").click()
+                embedded_frame.evaluate(
+                    "document.querySelector('#btn_generate').click(); document.querySelector('#btn_generate').click();"
+                )
                 workspace.locator(".module-wrapper").first.wait_for(
                     state="visible", timeout=120_000
                 )
+                parse_count = sum(
+                    "/parse-text" in value
+                    for value in requests
+                )
+                render_count = sum(
+                    "/render-preview" in value
+                    for value in requests
+                )
+                if parse_count != 1 or render_count != 1:
+                    raise AssertionError(
+                        "one-click generation submitted duplicate work: "
+                        f"parse={parse_count}, render={render_count}"
+                    )
                 module_count = workspace.locator(".module-wrapper").count()
                 if module_count < 1:
                     raise AssertionError("generation returned no preview modules")
@@ -429,6 +460,8 @@ def run():
                 result.update(
                     {
                         "module_count": module_count,
+                        "parse_requests": parse_count,
+                        "render_requests": render_count,
                         "preview_fit": fit_state,
                         "main_image_fit": main_fit,
                         "module_paid_controls_disabled": len(module_paid_state),
@@ -467,7 +500,7 @@ def run():
                     )
                 result["module_count"] = module_count
                 result["restore_scale"] = restore_scale
-            elif phase == "ai_confirmation":
+            elif phase == "ai_direct":
                 workspace.locator("#upload_product input[type=file]").set_input_files(
                     config["fixture_path"]
                 )
@@ -482,38 +515,14 @@ def run():
 
                 embedded_frame.evaluate("generateAiHtmlV2(); generateAiHtmlV2();")
                 confirmation_dialog = workspace.locator("#ai_refine_confirm_dialog")
-                confirmation_dialog.wait_for(state="visible")
                 if not ai_button.is_disabled():
                     raise AssertionError("AI refine button was not locked while busy")
-                confirmation_dialog.locator('button[value="cancel"]').click()
-                confirmation_dialog.wait_for(state="hidden")
-                embedded_frame.wait_for_function(
-                    "() => !document.querySelector('#btn_ai_html_v2')?.disabled"
-                )
-                first_estimate_count = sum(
-                    "/desktop/ai-refine-v2/estimate" in value
-                    for value in requests
-                )
-                first_execute_count = sum(
-                    "/api/ai-refine-v2/execute" in value
-                    for value in requests
-                )
-                if dialogs:
-                    raise AssertionError(f"native browser dialogs were used: {dialogs}")
-                if first_estimate_count != 1:
-                    raise AssertionError(
-                        f"cancel path issued {first_estimate_count} estimates"
-                    )
-                if first_execute_count != 0:
-                    raise AssertionError("cancel path submitted a paid AI request")
-
-                ai_button.click()
-                confirmation_dialog.wait_for(state="visible")
-                confirmation_dialog.locator('button[value="confirm"]').click()
-                confirmation_dialog.wait_for(state="hidden")
                 embedded_frame.wait_for_function(
                     "() => document.querySelector('#ai_img_results')?.textContent.includes('LOCAL_E2E_INTERCEPTED')",
                     timeout=30_000,
+                )
+                embedded_frame.wait_for_function(
+                    "() => !document.querySelector('#btn_ai_html_v2')?.disabled"
                 )
                 estimate_count = sum(
                     "/desktop/ai-refine-v2/estimate" in value
@@ -523,15 +532,17 @@ def run():
                     "/api/ai-refine-v2/execute" in value
                     for value in requests
                 )
+                if dialogs:
+                    raise AssertionError(f"native browser dialogs were used: {dialogs}")
                 if confirmation_dialog.is_visible():
-                    raise AssertionError("custom confirmation dialog stayed open")
-                if estimate_count != 2:
+                    raise AssertionError("AI refine opened an extra confirmation dialog")
+                if estimate_count != 0:
                     raise AssertionError(
-                        f"expected 2 cost estimates, got {estimate_count}"
+                        f"direct path issued {estimate_count} cost estimates"
                     )
                 if execute_count != 1:
                     raise AssertionError(
-                        f"confirmed path submitted {execute_count} paid AI requests"
+                        f"direct double-click submitted {execute_count} paid AI requests"
                     )
                 if route_violations:
                     raise AssertionError(
@@ -539,11 +550,11 @@ def run():
                     )
                 if len(validated_execute_requests) != 1:
                     raise AssertionError(
-                        "confirmed path did not submit one token-validated request"
+                        "direct path did not submit exactly one validated request"
                     )
                 result.update(
                     {
-                        "confirmation_views": 2,
+                        "confirmation_views": 0,
                         "estimate_requests": estimate_count,
                         "execute_requests": execute_count,
                         "validated_execute_requests": len(validated_execute_requests),
@@ -581,7 +592,7 @@ def run():
                     "browser page errors were observed: "
                     + ", ".join(page_errors)
                 )
-            if paid_requests and phase != "ai_confirmation":
+            if paid_requests and phase != "ai_direct":
                 raise AssertionError(
                     "paid endpoints were called: "
                     + ", ".join(sorted(set(paid_requests)))
@@ -1007,16 +1018,16 @@ async function main() {
     assert.equal(
       server.ready.capabilities.paid_ai_ready,
       true,
-      "AI confirmation phase must expose the configured paid control"
+      "AI direct phase must expose the configured paid control"
     );
     evidence.third_ready = {
       version: server.ready.version,
       capabilities: server.ready.capabilities
     };
-    evidence.phases.ai_confirmation = await runBrowserPhase({
-      phase: "ai_confirmation",
+    evidence.phases.ai_direct = await runBrowserPhase({
+      phase: "ai_direct",
       origin: server.origin,
-      host_url: createEmbedHost({ dataDir, bootstrapUrl: server.bootstrapUrl, phase: "ai-confirmation" }),
+      host_url: createEmbedHost({ dataDir, bootstrapUrl: server.bootstrapUrl, phase: "ai-direct" }),
       viewport: { width: 1440, height: 900 },
       expected_frame_width: 1090,
       expected_layout: "preview",

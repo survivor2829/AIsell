@@ -39,6 +39,14 @@ _SIZE_DEFAULT = "1:1"
 _POLL_INTERVAL_S = 3
 # 480s = 8min, 给 v2 Hero 12 屏 + APIMart 偶发 503 重试边界, env 可覆盖
 _POLL_TIMEOUT_S = int(os.environ.get("REFINE_POLL_TIMEOUT_S", "480"))
+_MAX_CONSECUTIVE_POLL_ERRORS = 3
+_ACTIVE_TASK_STATUSES = frozenset({
+    "submitted",
+    "pending",
+    "queued",
+    "processing",
+    "in_progress",
+})
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 "
@@ -295,6 +303,7 @@ def poll_image_task(task_id: str, api_key: str,
                     poll_timeout: int = _POLL_TIMEOUT_S) -> str:
     """Poll the existing task only; any uncertain result stops without resubmission."""
     started_at = time.time()
+    consecutive_poll_errors = 0
     while True:
         if time.time() - started_at > poll_timeout:
             raise APIMartOutcomeUnknown(task_id, "APIMart 轮询超时，结果不明")
@@ -303,26 +312,41 @@ def poll_image_task(task_id: str, api_key: str,
                 f"{_apimart_base()}/tasks/{task_id}?language=en", api_key,
             )
         except Exception as exc:
-            raise APIMartOutcomeUnknown(task_id, "APIMart 轮询连接失败，结果不明") from exc
+            consecutive_poll_errors += 1
+            if consecutive_poll_errors >= _MAX_CONSECUTIVE_POLL_ERRORS:
+                raise APIMartOutcomeUnknown(
+                    task_id, "APIMart 连续轮询连接失败，结果不明"
+                ) from exc
+            time.sleep(poll_interval)
+            continue
+        consecutive_poll_errors = 0
+        if not isinstance(data, dict):
+            raise APIMartOutcomeUnknown(task_id, "APIMart 状态响应无效，结果不明")
         node = data.get("data") or data
         if not isinstance(node, dict):
             raise APIMartOutcomeUnknown(task_id, "APIMart 状态响应无效，结果不明")
         status = str(node.get("status") or "").lower()
         if status == "completed":
-            images = (node.get("result") or {}).get("images") or []
-            if not images:
+            result = node.get("result") or {}
+            if not isinstance(result, dict):
+                raise APIMartOutcomeUnknown(task_id, "APIMart 已完成但结果结构无效")
+            images = result.get("images") or []
+            if not isinstance(images, list) or not images:
                 raise APIMartOutcomeUnknown(task_id, "APIMart 已完成但结果图片缺失")
             url = images[0].get("url") if isinstance(images[0], dict) else ""
             if isinstance(url, list):
-                url = url[0] if url else ""
-            if not url:
+                url = url[0] if url and isinstance(url[0], str) else ""
+            if not isinstance(url, str):
+                url = ""
+            url = url.strip()
+            if not url.startswith(("https://", "http://")):
                 raise APIMartOutcomeUnknown(task_id, "APIMart 已完成但结果 URL 缺失")
-            return str(url)
+            return url
         if status in ("failed", "cancelled"):
             raise APIMartTaskFailed(
                 f"APIMart 任务 {status}: {_safe_error_detail(node)} task_id={task_id}"
             )
-        if status not in ("submitted", "queued", "processing", "in_progress"):
+        if status not in _ACTIVE_TASK_STATUSES:
             raise APIMartOutcomeUnknown(task_id, f"APIMart 返回未知状态 {status!r}")
         time.sleep(poll_interval)
 

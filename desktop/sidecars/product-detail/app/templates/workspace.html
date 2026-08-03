@@ -641,7 +641,7 @@
       <button class="btn-generate" id="btn_ai_html_v2" type="button" onclick="generateAiHtmlV2()" data-desktop-paid-ready="true" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(5,150,105,0.28);">
         🎨 AI精修（专业版）
       </button>
-      <p class="text-hint" style="margin-top:8px; color:#047857;">DeepSeek 与 APIMart 已配置。点击后会先展示张数和费用参考，确认后才提交付费任务。</p>
+      <p class="text-hint" style="margin-top:8px; color:#047857;">DeepSeek 与 APIMart 已配置。点击后直接生成，运行中无需重复点击；实际费用以 APIMart 账单为准。</p>
       {% else %}
       <button class="btn-generate" id="btn_ai_html_v2" type="button" disabled aria-disabled="true" data-desktop-paid-disabled="true" style="margin-top:14px; background:#d1d5db; border:none; box-shadow:none; cursor:not-allowed;">
         🎨 AI精修（尚未配置）
@@ -703,7 +703,7 @@
       <div id="ai_img_loading" style="display:none; text-align:center; padding:60px 20px;">
         <div style="font-size:48px; margin-bottom:20px;">🎨</div>
         <div style="font-size:18px; font-weight:600; color:#10b981;">AI 正在生成高质量详情图...</div>
-        <div style="font-size:14px; color:#888; margin-top:8px;">豆包 Seedream 生成 AI 背景 + HTML/CSS 排版 + Chromium 截图,约 10-20 秒</div>
+        <div style="font-size:14px; color:#888; margin-top:8px;">DeepSeek 分析内容 + APIMart 生成图片 + Chromium 自动排版，通常需要几分钟</div>
         <div style="margin-top:20px; width:200px; height:4px; background:#e5e7eb; border-radius:2px; margin-left:auto; margin-right:auto; overflow:hidden;">
           <div id="ai_progress_bar" style="width:0%; height:100%; background:linear-gradient(90deg,#6366f1,#8b5cf6); border-radius:2px; transition:width 0.5s;"></div>
         </div>
@@ -804,14 +804,14 @@
     </div>
   </div>
 </div>
-<!-- In-workspace confirmation for the sandboxed desktop iframe. -->
+<!-- Exceptional recovery confirmation for the sandboxed desktop iframe. -->
 <dialog id="ai_refine_confirm_dialog" aria-labelledby="ai_refine_confirm_title" style="width:min(520px,calc(100vw - 40px)); padding:0; border:none; border-radius:14px; box-shadow:0 24px 70px rgba(0,0,0,.24); color:var(--color-text);">
   <form method="dialog" style="padding:24px; margin:0; background:#fff;">
-    <div id="ai_refine_confirm_title" style="font-size:18px; font-weight:700; color:var(--color-title);">AI &#31934;&#20462;&#36153;&#29992;&#30830;&#35748;</div>
+    <div id="ai_refine_confirm_title" style="font-size:18px; font-weight:700; color:var(--color-title);">&#35831;&#30830;&#35748;</div>
     <pre id="ai_refine_confirm_message" style="margin:16px 0 22px; white-space:pre-wrap; font:14px/1.7 var(--font-sans); color:var(--color-text-secondary);"></pre>
     <div style="display:flex; justify-content:flex-end; gap:10px;">
       <button value="cancel" style="padding:9px 18px; border:1px solid var(--color-border); border-radius:8px; background:#fff; color:var(--color-text); cursor:pointer;">&#21462;&#28040;</button>
-      <button id="ai_refine_confirm_submit" value="confirm" style="padding:9px 18px; border:none; border-radius:8px; background:#059669; color:#fff; font-weight:600; cursor:pointer;">&#30830;&#35748;&#24182;&#32487;&#32493;</button>
+      <button id="ai_refine_confirm_submit" value="confirm" style="padding:9px 18px; border:none; border-radius:8px; background:#059669; color:#fff; font-weight:600; cursor:pointer;">&#30830;&#35748;</button>
     </div>
   </form>
 </dialog>
@@ -909,9 +909,9 @@
       return false;
     }
     if (dialog.open) dialog.close('cancel');
-    title.textContent = options.title || 'AI \u7cbe\u4fee\u8d39\u7528\u786e\u8ba4';
+    title.textContent = options.title || '\u8bf7\u786e\u8ba4';
     messageNode.textContent = String(message || '');
-    submit.textContent = options.confirmLabel || '\u786e\u8ba4\u5e76\u7ee7\u7eed';
+    submit.textContent = options.confirmLabel || '\u786e\u8ba4';
     dialog.returnValue = 'cancel';
     return new Promise((resolve) => {
       const handleClose = () => resolve(dialog.returnValue === 'confirm');
@@ -1623,28 +1623,6 @@
     }
   }
 
-  async function confirmAiRefineCost() {
-    const resp = await fetch('/desktop/ai-refine-v2/estimate');
-    const estimate = await resp.json().catch(() => ({}));
-    if (!resp.ok || !estimate.ok) {
-      const failure = new Error(estimate.error || '无法读取 AI 精修费用参考');
-      failure.code = estimate.code || '';
-      throw failure;
-    }
-    const count = estimate.images || {};
-    const total = estimate.total || {};
-    const unit = estimate.unit || {};
-    const message = [
-      `预计生成 ${count.min}–${count.max} 张（${estimate.resolution || '1k'}）`,
-      `参考单价约 ${unit.amount} ${unit.currency || 'credits'}/张`,
-      `参考合计约 ${total.min}–${total.max} ${total.currency || 'credits'}`,
-      estimate.disclaimer || '实际费用以 APIMart 账单为准。',
-      '',
-      '确认后才会提交付费任务。是否继续？',
-    ].join('\n');
-    const confirmed = await confirmInWorkspace(message);
-    return confirmed ? (estimate.confirmation_token || '') : '';
-  }
   /* ── AI 精修（专业版）: DeepSeek planner + GPT-image-2 重绘 + Playwright 拼装 ─── */
   let aiRefineBusy = false;
 
@@ -1673,14 +1651,6 @@
       return;
     }
 
-    let confirmationToken = '';
-    try {
-      confirmationToken = await confirmAiRefineCost();
-    } catch (error) {
-      showError(error.message || '无法读取 AI 精修费用参考');
-      return;
-    }
-    if (!confirmationToken) return;
     switchCenterTab('ai_img');
     document.getElementById('empty_state').style.display = 'none';
 
@@ -1708,7 +1678,6 @@
         product_title:     productTitle,
         schema_mode:       'v2',
         product_category:  currentProductType,
-        confirmation_token: confirmationToken,
       });
       const taskId = startResp.task_id;
       const mode = startResp.mode;
@@ -1770,11 +1739,14 @@
     } catch (e) {
       loading.style.display = 'none';
       if (e.code === 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN') {
-        const confirmed = await confirmInWorkspace(`${e.message}\n\n只有在你已核对 APIMart、确认没有正在生成或待扣费任务时，才能解除。现在解除吗？`);
+        const confirmed = await confirmInWorkspace(
+          `${e.message}\n\n只有在你已核对 APIMart、确认没有正在生成或待扣费任务时，才能解除。`,
+          { title: '核对 APIMart 任务', confirmLabel: '我已核对，解除锁定' },
+        );
         if (confirmed) {
           try {
             await postJson('/desktop/ai-refine-v2/resolve-unknown', { confirm_new_task: true });
-            results.innerHTML = '<div style="text-align:center; color:#92400e; padding:40px;">结果不明状态已由你确认解除。为避免误扣费，本次不会自动重提；如需生成，请重新点击 AI 精修并再次确认费用。</div>';
+            results.innerHTML = '<div style="text-align:center; color:#92400e; padding:40px;">结果不明状态已解除。本次不会自动重提；如需重新生成，请再次点击 AI 精修。</div>';
             return;
           } catch (resolveError) {
             e = resolveError;
