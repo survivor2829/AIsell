@@ -11,6 +11,7 @@
     "check:edition-boundaries": "node scripts/customer-edition.self_check.cjs",
     "check:deepseek-api": "node src/main/deepseek-api.self_check.cjs",
     "check:self": "node scripts/run-self-checks.cjs",
+    "check:product-detail-e2e": "node scripts/product-detail-local-e2e.cjs --cleanup-on-success",
     "dev": "vite --host 127.0.0.1",
     "desktop": "node scripts/dev-electron.cjs",
     "build": "npm run build:delivery",
@@ -19,9 +20,9 @@
     "build:test": "node scripts/build-renderer.cjs test",
     "build:delivery": "node scripts/build-renderer.cjs delivery",
     "build:helper": "node scripts/build-contact-helper.cjs",
-    "release:test": "npm run check:self && npm run check:clean-runtime && npm run build:test && node scripts/build-portable-release.cjs test",
-    "release:delivery": "npm run check:self && npm run check:clean-runtime && npm run build:delivery && node scripts/build-portable-release.cjs delivery",
-    "release:installer": "npm run check:self && npm run check:clean-runtime && npm run build:delivery && node scripts/build-portable-release.cjs delivery && node scripts/build-installer-release.cjs",
+    "release:test": "npm run check:self && npm run check:product-detail-e2e && npm run check:clean-runtime && npm run build:test && node scripts/build-portable-release.cjs test",
+    "release:delivery": "npm run check:self && npm run check:product-detail-e2e && npm run check:clean-runtime && npm run build:delivery && node scripts/build-portable-release.cjs delivery",
+    "release:installer": "npm run check:self && npm run check:product-detail-e2e && npm run check:clean-runtime && npm run build:delivery && node scripts/build-portable-release.cjs delivery && node scripts/build-installer-release.cjs",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

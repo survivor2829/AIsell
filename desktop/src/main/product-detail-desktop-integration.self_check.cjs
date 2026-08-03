@@ -25,6 +25,7 @@ function assertPreloadApiContract() {
 
   const api = createPreloadApis(ipcRenderer).productDetail;
   assert.deepEqual(Object.keys(api).sort(), [
+    "onDownloadUpdate",
     "onUpdate",
     "restart",
     "start",
@@ -48,6 +49,13 @@ function assertPreloadApiContract() {
   assert.deepEqual(updates, [{ state: "ready" }]);
   unsubscribe();
   assert.equal(listeners.has("product-detail:update"), false);
+
+  const downloadUpdates = [];
+  const unsubscribeDownload = api.onDownloadUpdate((payload) => downloadUpdates.push(payload));
+  listeners.get("product-detail:download-update")({}, { state: "completed", filename: "详情图.png" });
+  assert.deepEqual(downloadUpdates, [{ state: "completed", filename: "详情图.png" }]);
+  unsubscribeDownload();
+  assert.equal(listeners.has("product-detail:download-update"), false);
 }
 
 function assertPreloadExposure() {
@@ -65,6 +73,8 @@ function assertMainLifecycleAndNavigation() {
   const source = read("src/main/main.cjs");
   assert.match(source, /createProductDetailSidecar/, "main must create the sidecar in every edition");
   assert.match(source, /registerProductDetailIpc/, "main must register product-detail IPC in every edition");
+  assert.match(source, /registerProductDetailDownloads/, "main must own product-detail file saving");
+  assert.match(source, /app\.getPath\("desktop"\)/, "product-detail downloads must use the Windows desktop path");
   assert.match(source, /XIAOXI_PRODUCT_DETAIL_SIDECAR/, "development runtime must be configured by environment");
   assert.match(
     source,
@@ -157,6 +167,14 @@ function assertRendererContract() {
   assert.match(workspace, /aiRefineButton\.disabled = true;/);
   assert.match(workspace, /finally \{/);
   assert.match(workspace, /aiRefineButton\.disabled = false;/);
+  assert.match(workspace, /async function downloadAiRefineResult\(/);
+  assert.match(workspace, /fetch\(downloadUrl, \{ credentials: ['"]include['"] \}\)/);
+  assert.match(workspace, /setTimeout\(\(\) => URL\.revokeObjectURL\(url\)/);
+  assert.doesNotMatch(
+    workspace,
+    /<a href="\$\{escapeHtml\(downloadUrl\)\}" download/,
+    "AI result download must not re-request a protected static URL through DownloadManager"
+  );
   assert.match(page, /referrerPolicy="no-referrer"/);
   assert.match(
     styles,
@@ -190,10 +208,29 @@ function assertRendererContract() {
   }
 }
 
+function assertReleaseDownloadGate() {
+  const packageJson = JSON.parse(read("package.json"));
+  assert.equal(
+    packageJson.scripts["check:product-detail-e2e"],
+    "node scripts/product-detail-local-e2e.cjs --cleanup-on-success"
+  );
+  for (const scriptName of ["release:test", "release:delivery", "release:installer"]) {
+    assert.match(
+      packageJson.scripts[scriptName],
+      /npm run check:product-detail-e2e/,
+      `${scriptName} must exercise the production workspace download button`
+    );
+  }
+  const e2e = read("scripts/product-detail-local-e2e.cjs");
+  assert.match(e2e, /\[data-ai-refine-download\]/);
+  assert.match(e2e, /suggested_filename\)\.suffix\.lower\(\) != "\.png"/);
+}
+
 assertPreloadApiContract();
 assertPreloadExposure();
 assertMainLifecycleAndNavigation();
 assertEmbeddedSessionContract();
 assertRendererContract();
+assertReleaseDownloadGate();
 
 console.log("product-detail desktop integration self-check passed");

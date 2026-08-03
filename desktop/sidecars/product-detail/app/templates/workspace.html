@@ -1478,6 +1478,17 @@
     return [...document.querySelectorAll('.module-wrapper.module-hidden')].map(w => w.dataset.moduleId);
   }
 
+  function triggerBlobDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5_000);
+  }
+
   /* ── Export ─────────────────────────────────────────────────── */
   async function doExport(format = 'png') {
     const fmt = format === 'jpg' ? 'jpg' : 'png';
@@ -1505,12 +1516,7 @@
         throw new Error(err.error || '导出失败');
       }
       const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${currentProductType}_详情页.${fmt}`;
-      a.click();
-      URL.revokeObjectURL(url);
+      triggerBlobDownload(blob, `${currentProductType}_详情页.${fmt}`);
     } catch (err) {
       showError('导出失败：' + err.message);
     } finally {
@@ -1566,6 +1572,27 @@
     return div.innerHTML;
   }
 
+  async function downloadAiRefineResult(downloadUrl, button) {
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = '下载中...';
+    try {
+      const response = await fetch(downloadUrl, { credentials: 'include' });
+      if (!response.ok) throw new Error(`下载失败 (${response.status})`);
+      const blob = await response.blob();
+      triggerBlobDownload(blob, `${currentProductType}_AI精修详情图.png`);
+      button.textContent = '已提交保存';
+    } catch (error) {
+      showError('下载详情图失败：' + error.message);
+      button.textContent = '下载失败，请重试';
+    } finally {
+      setTimeout(() => {
+        button.disabled = false;
+        button.textContent = originalText;
+      }, 2000);
+    }
+  }
+
   function renderAiRefineResult(result, options = {}) {
     const results = document.getElementById('ai_img_results');
     const imageUrl = result.image_url || result.assembled_url;
@@ -1584,16 +1611,19 @@
     results.innerHTML = `
       <div style="text-align:center; margin-bottom:16px;">
         <span style="font-size:14px; color:#555; margin-right:12px;">${escapeHtml(info)}</span>
-        <a href="${escapeHtml(downloadUrl)}" download
+        <button type="button" data-ai-refine-download
           style="padding:6px 16px; background:#10b981; color:#fff;
-          border:none; border-radius:6px; font-size:13px; text-decoration:none;">
+          border:none; border-radius:6px; font-size:13px; cursor:pointer;">
           下载详情图
-        </a>
+        </button>
       </div>
       <div style="position:relative; width:375px; border-radius:8px; overflow:hidden;
         box-shadow:0 4px 18px rgba(0,0,0,0.12);">
         <img src="${escapeHtml(displayUrl)}" style="width:100%; display:block;" />
       </div>`;
+    results.querySelector('[data-ai-refine-download]')?.addEventListener('click', (event) => {
+      downloadAiRefineResult(downloadUrl, event.currentTarget);
+    });
   }
 
   async function rememberAiRefineResult(taskId) {
@@ -1908,12 +1938,7 @@
       const cd = resp.headers.get('Content-Disposition') || '';
       const m = cd.match(/filename\*?=(?:UTF-8'')?["']?([^;"']+)/i);
       const fallbackName = `${currentProductType}_主图.${isZip ? 'zip' : 'png'}`;
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = m ? decodeURIComponent(m[1]) : fallbackName;
-      a.click();
-      URL.revokeObjectURL(url);
+      triggerBlobDownload(blob, m ? decodeURIComponent(m[1]) : fallbackName);
     } catch (err) { showError('主图导出失败：' + err.message); }
     finally { btn.disabled = false; btn.textContent = '📦 导出全部主图 ZIP'; }
   }

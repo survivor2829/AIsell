@@ -21,6 +21,10 @@ const {
   registerProductDetailAiSettingsIpc
 } = require("./product-detail-ai-settings-ipc.cjs");
 const { createProductDetailSidecar } = require("./product-detail-sidecar.cjs");
+const {
+  isAllowedProductDetailUrl,
+  registerProductDetailDownloads
+} = require("./product-detail-download.cjs");
 const { registerProductDetailIpc } = require("./product-detail-ipc.cjs");
 const { createContentEngineSidecar } = require("./content-engine-sidecar.cjs");
 const { registerContentEngineIpc } = require("./content-engine-ipc.cjs");
@@ -35,6 +39,7 @@ let autoReplyController = null;
 let momentsCampaignController = null;
 let productDetailController = null;
 let productDetailIpcRegistration = null;
+let productDetailDownloadRegistration = null;
 let contentEngineController = null;
 let contentEngineIpcRegistration = null;
 let quitCleanupStarted = false;
@@ -76,12 +81,7 @@ function contentEngineRuntimePath() {
 
 function isAllowedProductDetailFrameNavigation(targetUrl) {
   const sidecarOrigin = productDetailController?.status().origin;
-  if (!sidecarOrigin) return false;
-  try {
-    return new URL(targetUrl).origin === new URL(sidecarOrigin).origin;
-  } catch {
-    return false;
-  }
+  return isAllowedProductDetailUrl(targetUrl, sidecarOrigin);
 }
 
 function rendererBuildInfo() {
@@ -317,6 +317,13 @@ if (!gotSingleInstanceLock) {
       onPause: disarmRealSend || undefined
     });
     createWindow();
+    productDetailDownloadRegistration = registerProductDetailDownloads({
+      session: mainWindow.webContents.session,
+      getMainWindow: () => mainWindow,
+      getProductDetailOrigin: () => productDetailController?.status().origin || "",
+      getDesktopPath: () => app.getPath("desktop"),
+      diagnostics: logger
+    });
     momentsCampaignController?.initialize();
     logger.event("app", "ready", { window_created: true });
 
@@ -345,6 +352,7 @@ if (!gotSingleInstanceLock) {
       cleanupTimeout
     ]).catch(() => undefined).finally(() => {
       productDetailIpcRegistration?.dispose();
+      productDetailDownloadRegistration?.dispose();
       contentEngineIpcRegistration?.dispose();
       momentsCampaignController?.dispose();
       quitCleanupComplete = true;

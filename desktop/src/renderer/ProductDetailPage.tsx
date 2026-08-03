@@ -21,12 +21,19 @@ type ProductDetailResult = {
   error?: string;
 };
 
+type ProductDetailDownloadUpdate = {
+  state: "started" | "completed" | "failed";
+  filename: string;
+  code?: string;
+};
+
 type ProductDetailApi = {
   status: () => Promise<ProductDetailResult>;
   start: () => Promise<ProductDetailResult>;
   restart: () => Promise<ProductDetailResult>;
   stop: () => Promise<ProductDetailResult>;
   onUpdate: (callback: (status: ProductDetailStatus) => void) => () => void;
+  onDownloadUpdate: (callback: (update: ProductDetailDownloadUpdate) => void) => () => void;
 };
 
 declare global {
@@ -141,9 +148,20 @@ export function ProductDetailPage() {
         setNotice("");
       }
     });
+    const unsubscribeDownload = api.onDownloadUpdate((update) => {
+      if (!active) return;
+      if (update.state === "started") {
+        setNotice(`正在保存到桌面：${update.filename}`);
+      } else if (update.state === "completed") {
+        setNotice(`已保存到桌面：${update.filename}`);
+      } else {
+        setNotice(`下载失败，请重试：${update.filename}`);
+      }
+    });
     return () => {
       active = false;
       unsubscribe();
+      unsubscribeDownload();
     };
   }, []);
 

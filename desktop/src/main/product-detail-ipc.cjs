@@ -3,7 +3,8 @@ const PRODUCT_DETAIL_CHANNELS = Object.freeze({
   start: "product-detail:start",
   restart: "product-detail:restart",
   stop: "product-detail:stop",
-  update: "product-detail:update"
+  update: "product-detail:update",
+  downloadUpdate: "product-detail:download-update"
 });
 
 const PUBLIC_STATES = new Set([

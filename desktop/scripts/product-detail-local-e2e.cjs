@@ -166,12 +166,27 @@ def run():
                         status=200,
                         content_type="application/json",
                         body=json.dumps({
-                            "status": "failed",
+                            "status": "success",
                             "task_id": "LOCAL_E2E_INTERCEPTED",
                             "progress_pct": 100,
-                            "progress_msg": "LOCAL_E2E_INTERCEPTED",
-                            "error": "LOCAL_E2E_INTERCEPTED",
+                            "progress_msg": "LOCAL_E2E_COMPLETED",
+                            "assembled_url": "/static/e2e/ai-result.png",
+                            "blocks_count": 1,
+                            "elapsed_s": 1,
+                            "cost_rmb": 0,
                         }),
+                    )
+                    return
+                if (
+                    phase == "ai_direct"
+                    and request_is_allowed
+                    and request_path
+                    == "/api/workspace-results/ai-refine-v2/LOCAL_E2E_INTERCEPTED"
+                ):
+                    route.fulfill(
+                        status=200,
+                        content_type="application/json",
+                        body=json.dumps({"ok": True}),
                     )
                     return
                 if request_is_allowed:
@@ -517,13 +532,29 @@ def run():
                 confirmation_dialog = workspace.locator("#ai_refine_confirm_dialog")
                 if not ai_button.is_disabled():
                     raise AssertionError("AI refine button was not locked while busy")
-                embedded_frame.wait_for_function(
-                    "() => document.querySelector('#ai_img_results')?.textContent.includes('LOCAL_E2E_INTERCEPTED')",
-                    timeout=30_000,
-                )
+                download_button = workspace.locator("[data-ai-refine-download]")
+                download_button.wait_for(state="visible", timeout=30_000)
                 embedded_frame.wait_for_function(
                     "() => !document.querySelector('#btn_ai_html_v2')?.disabled"
                 )
+                ai_download_path = Path(config["ai_download_path"])
+                ai_download_path.parent.mkdir(parents=True, exist_ok=True)
+                with page.expect_download(timeout=60_000) as download_info:
+                    download_button.click()
+                ai_download = download_info.value
+                ai_download.save_as(str(ai_download_path))
+                if ai_download.failure():
+                    raise AssertionError(
+                        f"AI result download failed: {ai_download.failure()}"
+                    )
+                if Path(ai_download.suggested_filename).suffix.lower() != ".png":
+                    raise AssertionError(
+                        "AI result download must suggest an allowed .png filename: "
+                        + ai_download.suggested_filename
+                    )
+                ai_payload = ai_download_path.read_bytes()
+                if not ai_payload.startswith(b"\x89PNG\r\n\x1a\n"):
+                    raise AssertionError("AI result download is not a PNG")
                 estimate_count = sum(
                     "/desktop/ai-refine-v2/estimate" in value
                     for value in requests
@@ -559,6 +590,8 @@ def run():
                         "execute_requests": execute_count,
                         "validated_execute_requests": len(validated_execute_requests),
                         "paid_ai_enabled": not ai_button.is_disabled(),
+                        "ai_download_bytes": len(ai_payload),
+                        "ai_download_name": ai_download.suggested_filename,
                     }
                 )
             else:
@@ -954,12 +987,14 @@ async function main() {
     path.join(tempRoot, `xiaoxi-product-detail-local-e2e-${process.pid}-`)
   );
   const downloadPath = path.join(dataDir, "evidence", "generated-detail.png");
+  const aiDownloadPath = path.join(dataDir, "evidence", "generated-ai-detail.png");
   const evidencePath = path.join(dataDir, "e2e-evidence.json");
   const evidence = {
     data_dir: dataDir,
     fixture_path: fixturePath,
     phases: {}
   };
+  const cleanupOnSuccess = process.argv.includes("--cleanup-on-success");
 
   let server = null;
   try {
@@ -1008,6 +1043,9 @@ async function main() {
     });
     await stopSidecar(server);
     server = null;
+    const aiResultPath = path.join(dataDir, "static", "e2e", "ai-result.png");
+    fs.mkdirSync(path.dirname(aiResultPath), { recursive: true });
+    fs.copyFileSync(fixturePath, aiResultPath);
     server = await startSidecar({
       dataDir,
       bootstrapToken: createToken(),
@@ -1031,7 +1069,8 @@ async function main() {
       viewport: { width: 1440, height: 900 },
       expected_frame_width: 1090,
       expected_layout: "preview",
-      fixture_path: fixturePath
+      fixture_path: fixturePath,
+      ai_download_path: aiDownloadPath
     });
     await stopSidecar(server);
     server = null;
@@ -1063,7 +1102,17 @@ async function main() {
       `${evidence.phases.restore.module_count} restored modules, ` +
       `${evidence.png.bytes} byte PNG`
     );
-    console.log(`evidence kept at ${evidencePath}`);
+    if (cleanupOnSuccess) {
+      const resolvedTempRoot = path.resolve(tempRoot).toLowerCase() + path.sep;
+      const resolvedDataDir = path.resolve(dataDir);
+      if (!resolvedDataDir.toLowerCase().startsWith(resolvedTempRoot)) {
+        throw new Error(`refusing to clean E2E data outside ${tempRoot}`);
+      }
+      fs.rmSync(resolvedDataDir, { recursive: true, force: true });
+      console.log("product-detail local E2E evidence cleaned");
+    } else {
+      console.log(`evidence kept at ${evidencePath}`);
+    }
   } catch (error) {
     evidence.ok = false;
     evidence.error = error instanceof Error ? error.message : String(error);

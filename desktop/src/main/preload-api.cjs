@@ -1,4 +1,5 @@
 const { randomUUID } = require("node:crypto");
+const { PRODUCT_DETAIL_CHANNELS } = require("./product-detail-ipc.cjs");
 
 function createTrustedClickGate(selector) {
   let trustedClick = "";
@@ -177,14 +178,19 @@ function createPreloadApis(ipcRenderer) {
       export: () => ipcRenderer.invoke("diagnostics:export")
     },
     productDetail: {
-      status: () => ipcRenderer.invoke("product-detail:status"),
-      start: () => ipcRenderer.invoke("product-detail:start"),
-      restart: () => ipcRenderer.invoke("product-detail:restart"),
-      stop: () => ipcRenderer.invoke("product-detail:stop"),
+      status: () => ipcRenderer.invoke(PRODUCT_DETAIL_CHANNELS.status),
+      start: () => ipcRenderer.invoke(PRODUCT_DETAIL_CHANNELS.start),
+      restart: () => ipcRenderer.invoke(PRODUCT_DETAIL_CHANNELS.restart),
+      stop: () => ipcRenderer.invoke(PRODUCT_DETAIL_CHANNELS.stop),
       onUpdate: (callback) => {
         const handler = (_event, payload) => callback(payload);
-        ipcRenderer.on("product-detail:update", handler);
-        return () => ipcRenderer.removeListener("product-detail:update", handler);
+        ipcRenderer.on(PRODUCT_DETAIL_CHANNELS.update, handler);
+        return () => ipcRenderer.removeListener(PRODUCT_DETAIL_CHANNELS.update, handler);
+      },
+      onDownloadUpdate: (callback) => {
+        const handler = (_event, payload) => callback(payload);
+        ipcRenderer.on(PRODUCT_DETAIL_CHANNELS.downloadUpdate, handler);
+        return () => ipcRenderer.removeListener(PRODUCT_DETAIL_CHANNELS.downloadUpdate, handler);
       }
     },
     productDetailAiSettings: {
