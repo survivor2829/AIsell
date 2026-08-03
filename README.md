@@ -59,7 +59,7 @@ npm.cmd run release:installer
 
 安装器按当前 Windows 用户安装到 `%LOCALAPPDATA%\Programs\AI获客`。后续拿到新安装器后直接双击即可覆盖升级，不需要先卸载或删除旧目录。程序文件与 `%APPDATA%\xiaoxi-active-touch-delivery\data` 中的 API Key、联系人、AI 专家资料、任务状态和诊断日志相互独立；覆盖升级不会删除这些数据，控制面板中的普通卸载也默认保留这些数据。`product-detail/` 和 `content-engine/` 同样保存在该 edition 的用户目录中，不写入安装目录。
 
-产品详情图运行时已包含 `deepseek-v4-flash` 和 APIMart `gpt-image-2`/`https://api.apimart.ai/v1` 配置，用户在桌面“API 密钥”中分别填写两把 Key 后，可单击直接执行一键生成和 AI 精修；真实 Key 不会进入安装包。2026-08-03 用户真实生成已经验收通过，详细边界以 `PROJECT_STATUS.md` 为准。
+产品详情图运行时已包含 `deepseek-v4-flash` 和 APIMart `gpt-image-2`/`https://api.apimart.ai/v1` 配置，用户在桌面“API 密钥”中分别填写两把 Key 后，可单击直接执行一键生成和 AI 精修；真实 Key 不会进入安装包。2026-08-03 用户已完成真实生成和结果下载到桌面的验收，详细边界以 `PROJECT_STATUS.md` 为准。
 
 当前安装器尚未购买商业代码签名证书，Windows 可能显示“未知发布者”；分发前应同时提供安装器版本清单和 SHA256，验收人员核对后再运行。
 
