@@ -79,6 +79,8 @@ def run():
     page_errors = []
     dialogs = []
     failed_responses = []
+    validated_execute_requests = []
+    route_violations = []
     result = {
         "ok": False,
         "phase": phase,
@@ -100,7 +102,63 @@ def run():
 
             def handle_route(route):
                 request_url = route.request.url
-                if allowed_url(request_url, config["origin"], config["host_url"]):
+                request_path = urlsplit(request_url).path
+                request_is_allowed = allowed_url(
+                    request_url, config["origin"], config["host_url"]
+                )
+                if (
+                    phase == "ai_confirmation"
+                    and request_is_allowed
+                    and request_path == "/api/ai-refine-v2/execute"
+                ):
+                    try:
+                        execute_payload = json.loads(route.request.post_data or "{}")
+                    except (TypeError, ValueError):
+                        execute_payload = {}
+                    confirmation_token = execute_payload.get("confirmation_token")
+                    if route.request.method != "POST":
+                        route_violations.append("AI execute request was not POST")
+                        route.abort()
+                        return
+                    if not isinstance(confirmation_token, str) or not confirmation_token.strip():
+                        route_violations.append(
+                            "AI execute request omitted confirmation_token"
+                        )
+                        route.abort()
+                        return
+                    validated_execute_requests.append({
+                        "method": route.request.method,
+                        "confirmation_token_present": True,
+                    })
+                    route.fulfill(
+                        status=200,
+                        content_type="application/json",
+                        body=json.dumps({
+                            "ok": True,
+                            "task_id": "LOCAL_E2E_INTERCEPTED",
+                            "mode": "real",
+                        }),
+                    )
+                    return
+                if (
+                    phase == "ai_confirmation"
+                    and request_is_allowed
+                    and request_path
+                    == "/api/ai-refine-v2/status/LOCAL_E2E_INTERCEPTED"
+                ):
+                    route.fulfill(
+                        status=200,
+                        content_type="application/json",
+                        body=json.dumps({
+                            "status": "failed",
+                            "task_id": "LOCAL_E2E_INTERCEPTED",
+                            "progress_pct": 100,
+                            "progress_msg": "LOCAL_E2E_INTERCEPTED",
+                            "error": "LOCAL_E2E_INTERCEPTED",
+                        }),
+                    )
+                    return
+                if request_is_allowed:
                     route.continue_()
                     return
                 blocked.append(clean_url(request_url))
@@ -409,6 +467,89 @@ def run():
                     )
                 result["module_count"] = module_count
                 result["restore_scale"] = restore_scale
+            elif phase == "ai_confirmation":
+                workspace.locator("#upload_product input[type=file]").set_input_files(
+                    config["fixture_path"]
+                )
+                workspace.locator("#upload_product .upload-preview img").wait_for(
+                    state="visible", timeout=60_000
+                )
+                workspace.locator("#product_title_input").fill("LOCAL E2E PRODUCT")
+                workspace.locator("#text_input").fill("LOCAL E2E PRODUCT DESCRIPTION")
+                ai_button = workspace.locator("#btn_ai_html_v2")
+                if ai_button.is_disabled():
+                    raise AssertionError("desktop paid AI control must be enabled")
+
+                embedded_frame.evaluate("generateAiHtmlV2(); generateAiHtmlV2();")
+                confirmation_dialog = workspace.locator("#ai_refine_confirm_dialog")
+                confirmation_dialog.wait_for(state="visible")
+                if not ai_button.is_disabled():
+                    raise AssertionError("AI refine button was not locked while busy")
+                confirmation_dialog.locator('button[value="cancel"]').click()
+                confirmation_dialog.wait_for(state="hidden")
+                embedded_frame.wait_for_function(
+                    "() => !document.querySelector('#btn_ai_html_v2')?.disabled"
+                )
+                first_estimate_count = sum(
+                    "/desktop/ai-refine-v2/estimate" in value
+                    for value in requests
+                )
+                first_execute_count = sum(
+                    "/api/ai-refine-v2/execute" in value
+                    for value in requests
+                )
+                if dialogs:
+                    raise AssertionError(f"native browser dialogs were used: {dialogs}")
+                if first_estimate_count != 1:
+                    raise AssertionError(
+                        f"cancel path issued {first_estimate_count} estimates"
+                    )
+                if first_execute_count != 0:
+                    raise AssertionError("cancel path submitted a paid AI request")
+
+                ai_button.click()
+                confirmation_dialog.wait_for(state="visible")
+                confirmation_dialog.locator('button[value="confirm"]').click()
+                confirmation_dialog.wait_for(state="hidden")
+                embedded_frame.wait_for_function(
+                    "() => document.querySelector('#ai_img_results')?.textContent.includes('LOCAL_E2E_INTERCEPTED')",
+                    timeout=30_000,
+                )
+                estimate_count = sum(
+                    "/desktop/ai-refine-v2/estimate" in value
+                    for value in requests
+                )
+                execute_count = sum(
+                    "/api/ai-refine-v2/execute" in value
+                    for value in requests
+                )
+                if confirmation_dialog.is_visible():
+                    raise AssertionError("custom confirmation dialog stayed open")
+                if estimate_count != 2:
+                    raise AssertionError(
+                        f"expected 2 cost estimates, got {estimate_count}"
+                    )
+                if execute_count != 1:
+                    raise AssertionError(
+                        f"confirmed path submitted {execute_count} paid AI requests"
+                    )
+                if route_violations:
+                    raise AssertionError(
+                        "invalid intercepted request: " + ", ".join(route_violations)
+                    )
+                if len(validated_execute_requests) != 1:
+                    raise AssertionError(
+                        "confirmed path did not submit one token-validated request"
+                    )
+                result.update(
+                    {
+                        "confirmation_views": 2,
+                        "estimate_requests": estimate_count,
+                        "execute_requests": execute_count,
+                        "validated_execute_requests": len(validated_execute_requests),
+                        "paid_ai_enabled": not ai_button.is_disabled(),
+                    }
+                )
             else:
                 raise AssertionError(f"unsupported phase: {phase}")
 
@@ -440,7 +581,7 @@ def run():
                     "browser page errors were observed: "
                     + ", ".join(page_errors)
                 )
-            if paid_requests:
+            if paid_requests and phase != "ai_confirmation":
                 raise AssertionError(
                     "paid endpoints were called: "
                     + ", ".join(sorted(set(paid_requests)))
@@ -597,7 +738,7 @@ function parseLastJsonLine(output, label) {
   throw new Error(`${label} did not emit a JSON result`);
 }
 
-function startSidecar({ dataDir, bootstrapToken, controlToken }) {
+function startSidecar({ dataDir, bootstrapToken, controlToken, paidAiConfigured = false }) {
   return new Promise((resolve, reject) => {
     const env = {
       ...process.env,
@@ -605,10 +746,10 @@ function startSidecar({ dataDir, bootstrapToken, controlToken }) {
       PLAYWRIGHT_BROWSERS_PATH: browserPath,
       PYTHONUTF8: "1",
       PYTHONUNBUFFERED: "1",
-      DEEPSEEK_API_KEY: "",
-      REFINE_API_KEY: "",
+      DEEPSEEK_API_KEY: paidAiConfigured ? "local-e2e-deepseek-placeholder" : "",
+      REFINE_API_KEY: paidAiConfigured ? "local-e2e-refine-placeholder" : "",
       GPT_IMAGE_API_KEY: "",
-      REFINE_API_BASE_URL: "",
+      REFINE_API_BASE_URL: paidAiConfigured ? "http://127.0.0.1:9/v1" : "",
       ARK_API_KEY: ""
     };
     const child = spawn(
@@ -734,13 +875,12 @@ async function stopSidecar(server) {
 }
 
 async function runBrowserPhase(config) {
-  const encodedDriver = Buffer.from(browserDriver, "utf8").toString("base64");
   const child = spawn(
     pythonPath,
     [
       "-u",
       "-c",
-      "import base64;exec(base64.b64decode('" + encodedDriver + "'))"
+      "import sys;exec(compile(sys.stdin.buffer.read(),'<browserDriver>','exec'))"
     ],
     {
       cwd: repositoryRoot,
@@ -752,9 +892,10 @@ async function runBrowserPhase(config) {
         XIAOXI_PRODUCT_DETAIL_E2E_CONFIG: JSON.stringify(config)
       },
       windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"]
     }
   );
+  child.stdin.end(browserDriver, "utf8");
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8");
@@ -856,6 +997,44 @@ async function main() {
     });
     await stopSidecar(server);
     server = null;
+    server = await startSidecar({
+      dataDir,
+      bootstrapToken: createToken(),
+      controlToken: createToken(),
+      paidAiConfigured: true
+    });
+    await verifyHealth(server);
+    assert.equal(
+      server.ready.capabilities.paid_ai_ready,
+      true,
+      "AI confirmation phase must expose the configured paid control"
+    );
+    evidence.third_ready = {
+      version: server.ready.version,
+      capabilities: server.ready.capabilities
+    };
+    evidence.phases.ai_confirmation = await runBrowserPhase({
+      phase: "ai_confirmation",
+      origin: server.origin,
+      host_url: createEmbedHost({ dataDir, bootstrapUrl: server.bootstrapUrl, phase: "ai-confirmation" }),
+      viewport: { width: 1440, height: 900 },
+      expected_frame_width: 1090,
+      expected_layout: "preview",
+      fixture_path: fixturePath
+    });
+    await stopSidecar(server);
+    server = null;
+    const ledgerPath = path.join(
+      dataDir,
+      "database",
+      "desktop-ai-refine-ledger.json"
+    );
+    assert.equal(
+      fs.existsSync(ledgerPath),
+      false,
+      "browser interception must prevent the paid AI ledger from being created"
+    );
+    evidence.ai_refine_ledger_created = false;
 
     evidence.ok = true;
     evidence.png = {

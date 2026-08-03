@@ -114,6 +114,7 @@ function assertRendererContract() {
   const app = read("src/renderer/App.tsx");
   const page = read("src/renderer/ProductDetailPage.tsx");
   const styles = read("src/renderer/ProductDetailPage.css");
+  const workspace = read("sidecars/product-detail/app/templates/workspace.html");
   assert.match(app, /\| "product-detail"/, "product-detail must have its own ModuleKey");
   assert.match(
     app,
@@ -134,7 +135,28 @@ function assertRendererContract() {
     false,
     "mounting the page must never start or restart the sidecar"
   );
-  assert.match(page, /sandbox="allow-forms allow-scripts allow-same-origin allow-downloads"/);
+  assert.match(
+    page,
+    /sandbox="allow-forms allow-scripts allow-same-origin allow-downloads"/,
+    "the embedded workspace must retain its least-privilege sandbox"
+  );
+  assert.doesNotMatch(
+    page,
+    /sandbox="[^"]*\b(?:allow-modals|allow-popups|allow-top-navigation|allow-popups-to-escape-sandbox)\b[^"]*"/,
+    "AI confirmation must not broaden the iframe sandbox"
+  );
+  assert.match(
+    workspace,
+    /id="ai_refine_confirm_dialog"/,
+    "AI refine must provide an in-workspace cost confirmation"
+  );
+  assert.match(workspace, /async function confirmInWorkspace\(/);
+  assert.doesNotMatch(workspace, /window\.confirm\(/);
+  assert.match(workspace, /let aiRefineBusy = false;/);
+  assert.match(workspace, /if \(aiRefineBusy\) return;/);
+  assert.match(workspace, /aiRefineButton\.disabled = true;/);
+  assert.match(workspace, /finally \{/);
+  assert.match(workspace, /aiRefineButton\.disabled = false;/);
   assert.match(page, /referrerPolicy="no-referrer"/);
   assert.match(
     styles,

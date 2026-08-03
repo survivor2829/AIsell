@@ -804,6 +804,20 @@
     </div>
   </div>
 </div>
+<!-- In-workspace confirmation for the sandboxed desktop iframe. -->
+<dialog id="ai_refine_confirm_dialog" aria-labelledby="ai_refine_confirm_title" style="width:min(520px,calc(100vw - 40px)); padding:0; border:none; border-radius:14px; box-shadow:0 24px 70px rgba(0,0,0,.24); color:var(--color-text);">
+  <form method="dialog" style="padding:24px; margin:0; background:#fff;">
+    <div id="ai_refine_confirm_title" style="font-size:18px; font-weight:700; color:var(--color-title);">AI &#31934;&#20462;&#36153;&#29992;&#30830;&#35748;</div>
+    <pre id="ai_refine_confirm_message" style="margin:16px 0 22px; white-space:pre-wrap; font:14px/1.7 var(--font-sans); color:var(--color-text-secondary);"></pre>
+    <div style="display:flex; justify-content:flex-end; gap:10px;">
+      <button value="cancel" style="padding:9px 18px; border:1px solid var(--color-border); border-radius:8px; background:#fff; color:var(--color-text); cursor:pointer;">&#21462;&#28040;</button>
+      <button id="ai_refine_confirm_submit" value="confirm" style="padding:9px 18px; border:none; border-radius:8px; background:#059669; color:#fff; font-weight:600; cursor:pointer;">&#30830;&#35748;&#24182;&#32487;&#32493;</button>
+    </div>
+  </form>
+</dialog>
+<div id="workspace_notice" role="alert" hidden
+  style="position:fixed; left:50%; bottom:24px; transform:translateX(-50%); z-index:10001; max-width:min(560px,calc(100vw - 40px)); padding:12px 16px; border:1px solid #fecaca; border-radius:9px; background:#fef2f2; color:#b91c1c; box-shadow:0 8px 24px rgba(0,0,0,.12); font-size:13px; line-height:1.6;">
+</div>
 
 <!-- ─── Progress Overlay ─────────────────────────────────────────── -->
 <div id="progress_overlay" style="display:none; position:fixed; inset:0; z-index:9999; background:rgba(255,255,255,0.75); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); flex-direction:column; align-items:center; justify-content:center;">
@@ -877,7 +891,39 @@
   }
 
   function showError(msg) {
-    alert(msg);
+    const notice = document.getElementById('workspace_notice');
+    if (!notice) return;
+    notice.textContent = String(msg || '\u64cd\u4f5c\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5');
+    notice.hidden = false;
+    window.clearTimeout(showError.timer);
+    showError.timer = window.setTimeout(() => { notice.hidden = true; }, 6000);
+  }
+
+  async function confirmInWorkspace(message, options = {}) {
+    const dialog = document.getElementById('ai_refine_confirm_dialog');
+    const title = document.getElementById('ai_refine_confirm_title');
+    const messageNode = document.getElementById('ai_refine_confirm_message');
+    const submit = document.getElementById('ai_refine_confirm_submit');
+    if (!dialog || !title || !messageNode || !submit || typeof dialog.showModal !== 'function') {
+      showError('\u5f53\u524d\u9875\u9762\u65e0\u6cd5\u663e\u793a\u786e\u8ba4\u7a97\u53e3\uff0c\u8bf7\u91cd\u542f\u670d\u52a1\u540e\u91cd\u8bd5');
+      return false;
+    }
+    if (dialog.open) dialog.close('cancel');
+    title.textContent = options.title || 'AI \u7cbe\u4fee\u8d39\u7528\u786e\u8ba4';
+    messageNode.textContent = String(message || '');
+    submit.textContent = options.confirmLabel || '\u786e\u8ba4\u5e76\u7ee7\u7eed';
+    dialog.returnValue = 'cancel';
+    return new Promise((resolve) => {
+      const handleClose = () => resolve(dialog.returnValue === 'confirm');
+      dialog.addEventListener('close', handleClose, { once: true });
+      try {
+        dialog.showModal();
+      } catch {
+        dialog.removeEventListener('close', handleClose);
+        showError('\u786e\u8ba4\u7a97\u53e3\u6253\u5f00\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5');
+        resolve(false);
+      }
+    });
   }
 
   /* ── Category Selection ─────────────────────────────────────── */
@@ -1596,11 +1642,26 @@
       '',
       '确认后才会提交付费任务。是否继续？',
     ].join('\n');
-    const confirmed = window.confirm(message);
+    const confirmed = await confirmInWorkspace(message);
     return confirmed ? (estimate.confirmation_token || '') : '';
   }
   /* ── AI 精修（专业版）: DeepSeek planner + GPT-image-2 重绘 + Playwright 拼装 ─── */
+  let aiRefineBusy = false;
+
   async function generateAiHtmlV2() {
+    if (aiRefineBusy) return;
+    const aiRefineButton = document.getElementById('btn_ai_html_v2');
+    aiRefineBusy = true;
+    if (aiRefineButton) aiRefineButton.disabled = true;
+    try {
+      await runAiHtmlV2();
+    } finally {
+      aiRefineBusy = false;
+      if (aiRefineButton) aiRefineButton.disabled = false;
+    }
+  }
+
+  async function runAiHtmlV2() {
     if (!productImageUrl) {
       showError('请先上传产品主图');
       return;
@@ -1709,7 +1770,7 @@
     } catch (e) {
       loading.style.display = 'none';
       if (e.code === 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN') {
-        const confirmed = window.confirm(`${e.message}\n\n只有在你已核对 APIMart、确认没有正在生成或待扣费任务时，才能解除。现在解除吗？`);
+        const confirmed = await confirmInWorkspace(`${e.message}\n\n只有在你已核对 APIMart、确认没有正在生成或待扣费任务时，才能解除。现在解除吗？`);
         if (confirmed) {
           try {
             await postJson('/desktop/ai-refine-v2/resolve-unknown', { confirm_new_task: true });
