@@ -91,4 +91,4 @@ node scripts/product-detail-runtime.integration.cjs
 
 ## 当前固定运行时边界
 
-2026-07-31 已按用户授权把旧固定运行时移入 `.build/backups/`，并从干净提交重新生成 `.build/product-detail-runtime/`。manifest 会复核 Git commit、scoped dirty 状态和确定性源码树哈希；默认开发启动与正式发布前置检查都会拒绝缺少这些证明或与当前提交不一致的 runtime。2026-08-03 源码已改为单击直接生成，并修复 APIMart `pending` 正常排队态误判；状态查询发生短暂断线时只会有界重查同一 task，不会重新 POST 生图。同提交固定运行时、便携包和安装程序已重新生成，并通过包内 sidecar 自检与发布包检查。安装包不含真实 Key，用户覆盖安装、无 Python/Docker 净机复验和本人 Key 在线验收状态统一以 `PROJECT_STATUS.md` 为准。
+2026-07-31 已按用户授权把旧固定运行时移入 `.build/backups/`，并从干净提交重新生成 `.build/product-detail-runtime/`。manifest 会复核 Git commit、scoped dirty 状态和确定性源码树哈希；默认开发启动与正式发布前置检查都会拒绝缺少这些证明或与当前提交不一致的 runtime。2026-08-03 源码已改为单击直接生成，并修复 APIMart `pending` 正常排队态误判；状态查询发生短暂断线时只会有界重查同一 task，不会重新 POST 生图。同提交固定运行时、便携包和安装程序已重新生成，并通过包内 sidecar 自检与发布包检查。安装包不含真实 Key；用户已使用本人 DeepSeek/APIMart Key 成功生成 AI 精修结果并确认整体流程验收通过。无 Python/Docker 净机复验属于非阻断工程补充，状态统一以 `PROJECT_STATUS.md` 为准。
