@@ -14,11 +14,20 @@ const {
   openWechatMoments,
   scrollWechatMomentsFeed
 } = require("../../rpa/active_touch/moments_navigation.dev.cjs");
+const {
+  normalizeExpectedMomentsSurface
+} = require("../../rpa/active_touch/moments_surface_profile.dev.cjs");
+const {
+  momentsPostDisplacementMatches,
+  momentsPostTextOverlap,
+  stableMomentsPostIdentityText
+} = require("../../rpa/active_touch/moments_dry_run.dev.cjs");
 
 const DEFAULT_MAX_POSTS = 10;
 const MAX_POSTS_PER_RUN = 50;
 const DAILY_BUSY_RETRY_MS = 60_000;
 const DAILY_FAILURE_RETRY_MS = 30 * 60_000;
+const AUTOMATED_WINDOW_IDLE_MS = 15_000;
 
 function readJson(file, fallback = {}) {
   try {
@@ -141,6 +150,166 @@ function sanitizeMomentsMenuDiagnostics(value) {
   }
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;
 }
+
+function commentSourceFromPostSnapshot(snapshot) {
+  const identityText = normalizedMomentsReadingText(
+    snapshot?.identity_text
+    || snapshot?.label
+    || snapshot?.preview
+    || ""
+  );
+  if (!identityText) {
+    return { ok: false, reason: "moments_comment_content_incomplete" };
+  }
+  const source = String(snapshot?.source || "");
+  const stableAnchorText = normalizedMomentsReadingText(snapshot?.stable_anchor_text);
+  if (source.startsWith("visual:") && !stableAnchorText) {
+    return { ok: false, reason: "moments_comment_content_incomplete" };
+  }
+  return { ok: true, text: identityText };
+}
+
+function normalizedMomentsReadingText(value) {
+  return String(value || "").normalize("NFKC").replace(/\s+/gu, " ").trim();
+}
+
+function momentsReadingTextOverlap(first, second) {
+  return momentsPostTextOverlap(first, second);
+}
+
+function momentsReadingDisplacementMatches(first, second, scrollDelta) {
+  return momentsPostDisplacementMatches(first, second, scrollDelta);
+}
+
+function momentsReadingSnapshotMatch(first, second, scrollDelta = 0) {
+  const firstFingerprint = String(first?.post_fingerprint || "");
+  const secondFingerprint = String(second?.post_fingerprint || "");
+  const visualSources = String(first?.source || "").startsWith("visual:")
+    && String(second?.source || "").startsWith("visual:");
+  if (!visualSources && firstFingerprint && firstFingerprint === secondFingerprint) {
+    return { matched: true, mode: "exact_fingerprint" };
+  }
+  const firstRuntimeId = String(first?.runtime_id || "");
+  const secondRuntimeId = String(second?.runtime_id || "");
+  if (firstRuntimeId && firstRuntimeId === secondRuntimeId) {
+    return { matched: true, mode: "runtime_id" };
+  }
+  const stableAvatar = /^[0-9a-f]{64}$/u.test(String(first?.avatar_hash || ""))
+    && String(first.avatar_hash) === String(second?.avatar_hash || "");
+  const structured = first?.structure_verified === true && second?.structure_verified === true;
+  const stableIdentity = stableMomentsPostIdentityText(
+    first?.identity_text,
+    second?.identity_text,
+    first?.stable_anchor_text,
+    second?.stable_anchor_text
+  );
+  const displacement = momentsReadingDisplacementMatches(first, second, scrollDelta);
+  if (visualSources && stableAvatar && structured && stableIdentity && displacement) {
+    return { matched: true, mode: "visual_text_displacement" };
+  }
+  return { matched: false, mode: "" };
+}
+
+function mergeMomentsReadingFragments(snapshots = []) {
+  const fragments = [];
+  for (const snapshot of snapshots) {
+    if (!normalizedMomentsReadingText(snapshot?.stable_anchor_text)) continue;
+    const text = normalizedMomentsReadingText(snapshot?.identity_text);
+    if (!text || fragments.some((fragment) => fragment === text || fragment.includes(text))) continue;
+    for (let index = fragments.length - 1; index >= 0; index -= 1) {
+      if (text.includes(fragments[index])) fragments.splice(index, 1);
+    }
+    fragments.push(text);
+  }
+  return fragments.join("\n");
+}
+
+function createMomentsReadingSession(snapshot, window) {
+  return {
+    rootFingerprint: String(snapshot?.post_fingerprint || ""),
+    snapshots: [snapshot],
+    lastSnapshot: snapshot,
+    window,
+    microScrollCount: 0,
+    lastScrollDelta: 0
+  };
+}
+
+function appendMomentsReadingSnapshot(session, snapshot, window) {
+  const match = momentsReadingSnapshotMatch(
+    session?.lastSnapshot,
+    snapshot,
+    session?.lastScrollDelta
+  );
+  if (!match.matched) return match;
+  session.snapshots.push(snapshot);
+  session.lastSnapshot = snapshot;
+  session.window = window || session.window;
+  session.lastScrollDelta = 0;
+  return match;
+}
+
+function momentsTargetPostArgs(snapshot, expectedScrollDelta = 0) {
+  const source = String(snapshot?.source || "");
+  const runtimeId = String(snapshot?.runtime_id || "");
+  const identityText = normalizedMomentsReadingText(snapshot?.identity_text);
+  const avatarHash = String(snapshot?.avatar_hash || "");
+  const visualTarget = source.startsWith("visual:")
+    && snapshot?.structure_verified === true
+    && identityText
+    && /^[0-9a-f]{64}$/u.test(avatarHash);
+  if (!visualTarget && !runtimeId) return [];
+  const scrollDelta = Number(expectedScrollDelta);
+  const targetPost = {
+    post_fingerprint: String(snapshot?.post_fingerprint || ""),
+    source,
+    runtime_id: runtimeId,
+    structure_verified: snapshot?.structure_verified === true,
+    identity_text: identityText,
+    stable_anchor_text: normalizedMomentsReadingText(snapshot?.stable_anchor_text),
+    avatar_hash: avatarHash,
+    bounds: snapshot?.bounds,
+    menu_bounds: snapshot?.menu_bounds,
+    avatar_bounds: snapshot?.avatar_bounds,
+    expected_scroll_delta: Number.isFinite(scrollDelta) ? scrollDelta : 0
+  };
+  return [
+    "--target-post-base64",
+    Buffer.from(JSON.stringify(targetPost), "utf8").toString("base64")
+  ];
+}
+
+function campaignPostMarker(snapshot) {
+  return {
+    fingerprint: String(snapshot?.post_fingerprint || ""),
+    source: String(snapshot?.source || ""),
+    identityText: String(snapshot?.identity_text || ""),
+    stableAnchorText: String(snapshot?.stable_anchor_text || ""),
+    avatarHash: String(snapshot?.avatar_hash || "")
+  };
+}
+
+function findProcessedPostMatch(markers, snapshot) {
+  const current = campaignPostMarker(snapshot);
+  for (const marker of markers) {
+    if (marker.fingerprint && marker.fingerprint === current.fingerprint) {
+      return { matched: true, mode: "exact_fingerprint" };
+    }
+    const visualSources = marker.source.startsWith("visual:") && current.source.startsWith("visual:");
+    const stableAvatar = /^[0-9a-f]{64}$/u.test(marker.avatarHash)
+      && marker.avatarHash === current.avatarHash;
+    if (visualSources && stableAvatar && stableMomentsPostIdentityText(
+      marker.identityText,
+      current.identityText,
+      marker.stableAnchorText,
+      current.stableAnchorText
+    )) {
+      return { matched: true, mode: "stable_visual_identity" };
+    }
+  }
+  return { matched: false, mode: "" };
+}
+
 function createMomentsCampaignController(options = {}) {
   const baseDir = String(options.baseDir || "");
   const stateFile = path.join(baseDir, "state.json");
@@ -308,25 +477,140 @@ function createMomentsCampaignController(options = {}) {
   async function executeLoop(lockOwner) {
     try {
       record("campaign.open_started");
-      const opened = await openMoments();
+      const opened = await openMoments({
+        allowIntegrated: true,
+        minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0
+      });
       record("campaign.open_finished", { result: opened }, opened?.ok ? "info" : "warn");
       if (!opened?.ok) {
         finish("paused", opened?.reason || "moments_open_failed");
         return;
       }
+      const openedSurface = normalizeExpectedMomentsSurface(opened);
+      if (!openedSurface) {
+        finish("paused", "moments_window_identity_mismatch");
+        return;
+      }
+      const expectedSurfaceBase64 = Buffer.from(JSON.stringify(openedSurface), "utf8").toString("base64");
+      const withExpectedSurface = (args) => [
+        ...args,
+        "--expected-window-base64",
+        expectedSurfaceBase64
+      ];
+      const recoverLockedSurfaceForeground = async (reason) => {
+        record("campaign.foreground_recovery_started", {
+          reason,
+          surface_mode: openedSurface.surfaceMode,
+          pid: openedSurface.pid,
+          hWnd: openedSurface.hWnd
+        }, "warn");
+        const recovered = await openMoments({
+          expectedWindow: opened,
+          minIdleMs: 0
+        });
+        const recoveredSurface = normalizeExpectedMomentsSurface(recovered);
+        const sameLockedSurface = recovered?.ok === true
+          && recoveredSurface
+          && String(recoveredSurface.surfaceMode || "") === String(openedSurface.surfaceMode || "")
+          && Number(recoveredSurface.pid) === Number(openedSurface.pid)
+          && String(recoveredSurface.hWnd || "") === String(openedSurface.hWnd || "");
+        if (!sameLockedSurface) {
+          const recoveryReason = recovered?.reason || "moments_window_identity_mismatch";
+          record("campaign.foreground_recovery_failed", {
+            reason: recoveryReason,
+            surface_mode: openedSurface.surfaceMode,
+            pid: openedSurface.pid,
+            hWnd: openedSurface.hWnd
+          }, "warn");
+          return { ok: false, reason: recoveryReason };
+        }
+        record("campaign.foreground_recovered", {
+          reason,
+          surface_mode: openedSurface.surfaceMode,
+          pid: openedSurface.pid,
+          hWnd: openedSurface.hWnd
+        });
+        return { ok: true };
+      };
 
-      const processedFingerprints = new Set();
+      const processedPostMarkers = [];
       const alignedPartialFingerprints = new Set();
+      let readingSession = null;
       let emptyScans = 0;
       let repeatedFingerprintScans = 0;
       let candidateChecks = 0;
       const candidateLimit = state.max_posts * 5;
+
+      const recordReadingSkip = (reason, failureStage) => {
+        if (!readingSession) return;
+        const snapshots = readingSession.snapshots.slice();
+        for (const snapshot of snapshots) {
+          processedPostMarkers.push(campaignPostMarker(snapshot));
+        }
+        writeState({
+          processed_count: state.processed_count + 1,
+          comment_skipped_count: state.comment_skipped_count + 1,
+          skipped_count: state.skipped_count + 1,
+          last_reason: reason
+        }, null);
+        record("campaign.reading_skipped", {
+          reason,
+          failure_stage: failureStage,
+          post_fingerprint: readingSession.rootFingerprint,
+          fragment_count: snapshots.filter((snapshot) => normalizedMomentsReadingText(snapshot?.stable_anchor_text)).length,
+          content_length: mergeMomentsReadingFragments(snapshots).length,
+          micro_scroll_count: readingSession.microScrollCount
+        }, "warn");
+        readingSession = null;
+      };
+
+      const scrollForReading = async (mode) => {
+        if (!readingSession || readingSession.microScrollCount >= 3) {
+          return { ok: false, reason: "moments_reading_alignment_exhausted" };
+        }
+        persist({
+          last_reason: mode === "read_post_up" ? "reading_post_body" : "locating_interaction_menu"
+        });
+        const scrolled = await scrollMoments({
+          expectedWindow: readingSession.window,
+          minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0,
+          scrollMode: mode,
+          shouldContinue: () => !stopRequested && !pendingPauseReason
+        });
+        record("campaign.reading_scroll_finished", {
+          post_fingerprint: readingSession.rootFingerprint,
+          intent: mode,
+          delta: Number(scrolled?.delta) || 0,
+          micro_scroll_count: readingSession.microScrollCount + 1,
+          result: scrolled
+        }, scrolled?.ok ? "info" : "warn");
+        if (!scrolled?.ok) return scrolled;
+        const scrollDelta = Number(scrolled.delta);
+        if (!Number.isFinite(scrollDelta)) {
+          return { ok: false, reason: "moments_scroll_result_invalid" };
+        }
+        readingSession.microScrollCount += 1;
+        readingSession.lastScrollDelta += scrollDelta;
+        persist({
+          scroll_count: state.scroll_count + 1,
+          last_reason: mode === "read_post_up" ? "reading_post_body" : "locating_interaction_menu"
+        });
+        return scrolled;
+      };
+
       while (successfulPostCount() < state.max_posts && candidateChecks < candidateLimit) {
         if (shouldStop()) return;
         persist({ current_post: state.processed_count + 1, last_reason: "observing_post" });
-        const observed = await runStep(
-          ["moments-dry-run", "--mode", "random", "--like"],
-          {
+        const observationArgs = ["moments-dry-run", "--mode", "random", "--like"];
+        if (state.comment_enabled) observationArgs.push("--allow-body-only");
+        if (readingSession) {
+          observationArgs.push(...momentsTargetPostArgs(
+            readingSession.lastSnapshot,
+            readingSession.lastScrollDelta
+          ));
+        }
+        const runObservation = () => runStep(
+          withExpectedSurface(observationArgs), {
             cliName: "moments_dry_run_cli.dev.cjs",
             dataDir: baseDir,
             owner: lockOwner,
@@ -334,6 +618,16 @@ function createMomentsCampaignController(options = {}) {
             timeoutMs: 45_000
           }
         );
+        let observed = await runObservation();
+        const initialObservationReason = String(
+          observed?.blocked_reason || observed?.reason || ""
+        );
+        if (!observed?.ok && initialObservationReason === "moments_window_not_foreground") {
+          const recovered = await recoverLockedSurfaceForeground(initialObservationReason);
+          observed = recovered.ok
+            ? await runObservation()
+            : { ok: false, reason: recovered.reason };
+        }
         candidateChecks += 1;
         const directPositionDiagnostics = sanitizeMomentsPositionDiagnostics(observed?.diagnostics);
         const positionDiagnostics = Object.keys(directPositionDiagnostics).length > 0
@@ -348,6 +642,32 @@ function createMomentsCampaignController(options = {}) {
 
         if (!observed?.ok) {
           const reason = String(observed?.blocked_reason || observed?.reason || "moments_observation_failed");
+          if (readingSession && ["moments_post_not_found", "moments_post_position_unsafe"].includes(reason)) {
+            if (readingSession.microScrollCount < 3) {
+              const recovered = await scrollForReading("seek_post_menu_down");
+              if (!recovered?.ok) {
+                if (shouldStop()) return;
+                finish("paused", recovered?.reason || "moments_scroll_failed");
+                return;
+              }
+              continue;
+            }
+            const skippedWindow = readingSession.window;
+            recordReadingSkip("moments_comment_content_incomplete", "locate_interaction_menu");
+            const advanced = await scrollMoments({
+              expectedWindow: skippedWindow,
+              minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0,
+              scrollMode: "advance_feed",
+              shouldContinue: () => !stopRequested && !pendingPauseReason
+            });
+            if (!advanced?.ok) {
+              if (shouldStop()) return;
+              finish("paused", advanced?.reason || "moments_scroll_failed");
+              return;
+            }
+            persist({ scroll_count: state.scroll_count + 1, last_reason: "scrolled" });
+            continue;
+          }
           if (reason === "moments_post_position_unsafe") {
             emptyScans = 0;
             persist({ last_reason: reason });
@@ -366,17 +686,48 @@ function createMomentsCampaignController(options = {}) {
             return;
           }
 
+          if (readingSession) {
+            const readingMatch = appendMomentsReadingSnapshot(
+              readingSession,
+              observed.post_snapshot,
+              observed.window
+            );
+            if (!readingMatch.matched) {
+              recordReadingSkip("moments_post_changed_while_reading", "lock_post");
+              continue;
+            }
+            const fragmentCount = readingSession.snapshots.filter(
+              (snapshot) => normalizedMomentsReadingText(snapshot?.stable_anchor_text)
+            ).length;
+            const contentLength = mergeMomentsReadingFragments(readingSession.snapshots).length;
+            record(fragmentCount > 0
+              ? "campaign.reading_fragment_collected"
+              : "campaign.reading_alignment_confirmed", {
+              post_fingerprint: readingSession.rootFingerprint,
+              match_mode: readingMatch.mode,
+              fragment_count: fragmentCount,
+              content_length: contentLength
+            });
+          }
+
           if (
             observed.plan?.target_partial_visible === true
+            && !state.comment_enabled
             && !alignedPartialFingerprints.has(fingerprint)
           ) {
             alignedPartialFingerprints.add(fingerprint);
-            const aligned = await scrollMoments();
+            const aligned = await scrollMoments({
+              expectedWindow: observed.window,
+              minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0,
+              scrollMode: "seek_post_menu_down",
+              shouldContinue: () => !stopRequested && !pendingPauseReason
+            });
             record("campaign.partial_alignment_finished", {
               fingerprint,
               result: aligned
             }, aligned?.ok ? "info" : "warn");
             if (!aligned?.ok) {
+              if (shouldStop()) return;
               finish("paused", aligned?.reason || "moments_scroll_failed");
               return;
             }
@@ -387,8 +738,54 @@ function createMomentsCampaignController(options = {}) {
             continue;
           }
 
-          if (!processedFingerprints.has(fingerprint)) {
+          const processedMatch = findProcessedPostMatch(processedPostMarkers, observed.post_snapshot);
+          if (!processedMatch.matched) {
             repeatedFingerprintScans = 0;
+            let accumulatedCommentSource = null;
+            if (state.comment_enabled) {
+              const directCommentSource = commentSourceFromPostSnapshot(observed.post_snapshot);
+              const needsMoreReading = !directCommentSource.ok
+                || observed.plan?.target_partial_visible === true;
+              if (needsMoreReading && !readingSession) {
+                readingSession = createMomentsReadingSession(observed.post_snapshot, observed.window);
+              }
+              if (readingSession) {
+                const mergedText = mergeMomentsReadingFragments(readingSession.snapshots);
+                if (mergedText) accumulatedCommentSource = { ok: true, text: mergedText };
+              }
+              if (needsMoreReading) {
+                if (readingSession.microScrollCount < 3) {
+                  const intent = directCommentSource.ok
+                    ? "seek_post_menu_down"
+                    : "read_post_up";
+                  const readScroll = await scrollForReading(intent);
+                  if (!readScroll?.ok) {
+                    if (shouldStop()) return;
+                    finish("paused", readScroll?.reason || "moments_scroll_failed");
+                    return;
+                  }
+                  continue;
+                }
+                const skippedWindow = readingSession.window;
+                recordReadingSkip(
+                  directCommentSource.ok ? "moments_interaction_menu_not_found" : directCommentSource.reason,
+                  directCommentSource.ok ? "locate_interaction_menu" : "read_post_body"
+                );
+                const advanced = await scrollMoments({
+                  expectedWindow: skippedWindow,
+                  minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0,
+                  scrollMode: "advance_feed",
+                  shouldContinue: () => !stopRequested && !pendingPauseReason
+                });
+                if (!advanced?.ok) {
+                  if (shouldStop()) return;
+                  finish("paused", advanced?.reason || "moments_scroll_failed");
+                  return;
+                }
+                persist({ scroll_count: state.scroll_count + 1, last_reason: "scrolled" });
+                continue;
+              }
+            }
             let prepared = observed;
             let preparedObservationId = observationId;
             let commentText = "";
@@ -396,32 +793,42 @@ function createMomentsCampaignController(options = {}) {
             let lastReason = "post_processed";
 
             if (state.comment_enabled) {
-              persist({ last_reason: "generating_comment" });
-              try {
-                const generated = await generateComment({
-                  postText: String(
-                    observed.post_snapshot?.identity_text
-                    || observed.post_snapshot?.label
-                    || observed.post_snapshot?.preview
-                    || ""
-                  ),
-                  guidance: state.comment_guidance
-                });
-                commentText = String(generated?.comment || "").trim();
-                if (!commentText) {
-                  commentSkipped = true;
-                  lastReason = "moments_comment_ai_empty";
-                }
-              } catch (error) {
+              const commentSource = accumulatedCommentSource
+                || commentSourceFromPostSnapshot(observed.post_snapshot);
+              if (!commentSource.ok) {
                 commentSkipped = true;
-                lastReason = String(error?.code || "moments_comment_ai_failed");
-                record("campaign.comment_generation_failed", {
+                lastReason = commentSource.reason;
+                record("campaign.comment_content_rejected", {
                   reason: lastReason,
-                  post_fingerprint: fingerprint
+                  post_fingerprint: fingerprint,
+                  source: String(observed.post_snapshot?.source || ""),
+                  identity_length: String(observed.post_snapshot?.identity_text || "").length,
+                  stable_anchor_length: String(observed.post_snapshot?.stable_anchor_text || "").length
                 }, "warn");
+              } else {
+                persist({ last_reason: "generating_comment" });
+                try {
+                  const generated = await generateComment({
+                    postText: commentSource.text,
+                    guidance: state.comment_guidance
+                  });
+                  commentText = String(generated?.comment || "").trim();
+                  if (!commentText) {
+                    commentSkipped = true;
+                    lastReason = "moments_comment_ai_empty";
+                  }
+                } catch (error) {
+                  commentSkipped = true;
+                  lastReason = String(error?.code || "moments_comment_ai_failed");
+                  record("campaign.comment_generation_failed", {
+                    reason: lastReason,
+                    post_fingerprint: fingerprint
+                  }, "warn");
+                }
               }
 
               if (commentText) {
+                persist({ last_reason: "locating_interaction_menu" });
                 const prepareArgs = ["moments-dry-run", "--mode", "random"];
                 if (state.like_enabled) prepareArgs.push("--like");
                 prepareArgs.push(
@@ -429,7 +836,11 @@ function createMomentsCampaignController(options = {}) {
                   "--comment-text-base64",
                   Buffer.from(commentText, "utf8").toString("base64")
                 );
-                prepared = await runStep(prepareArgs, {
+                prepareArgs.push(...momentsTargetPostArgs(
+                  readingSession?.lastSnapshot || observed.post_snapshot,
+                  0
+                ));
+                prepared = await runStep(withExpectedSurface(prepareArgs), {
                   cliName: "moments_dry_run_cli.dev.cjs",
                   dataDir: baseDir,
                   owner: lockOwner,
@@ -438,10 +849,18 @@ function createMomentsCampaignController(options = {}) {
                 });
                 const preparedFingerprint = String(prepared?.post_snapshot?.post_fingerprint || "");
                 preparedObservationId = String(prepared?.post_snapshot?.observation_id || "");
-                if (!prepared?.ok || !preparedObservationId || preparedFingerprint !== fingerprint) {
+                const preparedPostMatch = prepared?.ok
+                  ? momentsReadingSnapshotMatch(
+                      readingSession?.lastSnapshot || observed.post_snapshot,
+                      prepared.post_snapshot,
+                      0
+                    )
+                  : { matched: false, mode: "" };
+                if (!prepared?.ok || !preparedObservationId
+                  || (preparedFingerprint !== fingerprint && !preparedPostMatch.matched)) {
                   commentSkipped = true;
                   commentText = "";
-                  lastReason = preparedFingerprint && preparedFingerprint !== fingerprint
+                  lastReason = preparedFingerprint && preparedFingerprint !== fingerprint && !preparedPostMatch.matched
                     ? "moments_post_changed_before_comment"
                     : String(prepared?.blocked_reason || prepared?.reason || "moments_comment_prepare_failed");
                   record("campaign.comment_prepare_failed", {
@@ -452,7 +871,16 @@ function createMomentsCampaignController(options = {}) {
                   preparedObservationId = "";
                   if (state.like_enabled) {
                     const likePrepared = await runStep(
-                      ["moments-dry-run", "--mode", "random", "--like"],
+                      withExpectedSurface([
+                        "moments-dry-run",
+                        "--mode",
+                        "random",
+                        "--like",
+                        ...momentsTargetPostArgs(
+                          readingSession?.lastSnapshot || observed.post_snapshot,
+                          0
+                        )
+                      ]),
                       {
                         cliName: "moments_dry_run_cli.dev.cjs",
                         dataDir: baseDir,
@@ -463,7 +891,12 @@ function createMomentsCampaignController(options = {}) {
                     );
                     if (
                       likePrepared?.ok
-                      && String(likePrepared.post_snapshot?.post_fingerprint || "") === fingerprint
+                      && (String(likePrepared.post_snapshot?.post_fingerprint || "") === fingerprint
+                        || momentsReadingSnapshotMatch(
+                          readingSession?.lastSnapshot || observed.post_snapshot,
+                          likePrepared.post_snapshot,
+                          0
+                        ).matched)
                     ) {
                       prepared = likePrepared;
                       preparedObservationId = String(likePrepared.post_snapshot?.observation_id || "");
@@ -476,6 +909,7 @@ function createMomentsCampaignController(options = {}) {
             let likedCount = 0;
             let alreadyLikedCount = 0;
             let itemSkipped = 0;
+            const menuOnlyTarget = prepared?.post_snapshot?.menu_only === true;
             if (state.like_enabled && preparedObservationId) {
               const liked = await runStep(
                 ["moments-like", "--observation-id", preparedObservationId],
@@ -534,9 +968,14 @@ function createMomentsCampaignController(options = {}) {
                   return;
                 }
               } else {
-                likedCount = liked.no_op ? 0 : 1;
-                alreadyLikedCount = liked.no_op ? 1 : 0;
-                lastReason = liked.no_op ? "already_liked" : "liked_verified";
+                if (liked.no_op && menuOnlyTarget) {
+                  itemSkipped = 1;
+                  lastReason = "menu_only_already_liked";
+                } else {
+                  likedCount = liked.no_op ? 0 : 1;
+                  alreadyLikedCount = liked.no_op ? 1 : 0;
+                  lastReason = liked.no_op ? "already_liked" : "liked_verified";
+                }
               }
             } else if (state.like_enabled) {
               itemSkipped = 1;
@@ -544,7 +983,7 @@ function createMomentsCampaignController(options = {}) {
 
             let commentedCount = 0;
             if (state.comment_enabled && commentText) {
-              persist({ last_reason: "sending_comment" });
+              persist({ last_reason: "executing_comment" });
               const commented = await runStep(
                 [
                   "moments-comment",
@@ -609,7 +1048,13 @@ function createMomentsCampaignController(options = {}) {
               }
             }
 
-            processedFingerprints.add(fingerprint);
+            const completedReadingSnapshots = readingSession?.snapshots?.length
+              ? readingSession.snapshots
+              : [observed.post_snapshot];
+            for (const snapshot of completedReadingSnapshots) {
+              processedPostMarkers.push(campaignPostMarker(snapshot));
+            }
+            readingSession = null;
             const likeSucceededForPost = !state.like_enabled || likedCount + alreadyLikedCount > 0;
             const commentSucceededForPost = !state.comment_enabled || commentedCount > 0;
             const completedPostCount = likeSucceededForPost && commentSucceededForPost ? 1 : 0;
@@ -642,6 +1087,10 @@ function createMomentsCampaignController(options = {}) {
           } else {
             repeatedFingerprintScans += 1;
             persist({ last_reason: "post_already_processed_in_run" });
+            record("campaign.post_already_processed", {
+              post_fingerprint: fingerprint,
+              match_mode: processedMatch.mode
+            });
             if (repeatedFingerprintScans >= 3) {
               finish("partial", "target_not_reached");
               return;
@@ -650,9 +1099,14 @@ function createMomentsCampaignController(options = {}) {
         }
 
         if (successfulPostCount() >= state.max_posts || candidateChecks >= candidateLimit || shouldStop()) break;
-        const scrolled = await scrollMoments();
+        const scrolled = await scrollMoments({
+          expectedWindow: observed?.window,
+          minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0,
+          shouldContinue: () => !stopRequested && !pendingPauseReason
+        });
         record("campaign.scroll_finished", { result: scrolled }, scrolled?.ok ? "info" : "warn");
         if (!scrolled?.ok) {
+          if (shouldStop()) return;
           finish("paused", scrolled?.reason || "moments_scroll_failed");
           return;
         }
@@ -860,6 +1314,8 @@ module.exports = {
   DEFAULT_MAX_POSTS,
   MAX_POSTS_PER_RUN,
   createMomentsCampaignController,
+  mergeMomentsReadingFragments,
+  momentsReadingSnapshotMatch,
   publicState,
   registerMomentsCampaignIpc
 };

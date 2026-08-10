@@ -1,10 +1,10 @@
-# AI获客
+# AI获客 V1.0版本
 
-Windows Electron 桌面应用。当前唯一验收目标是个人微信 `4.1.11.54`；能力是否可用、是否经过本机或异机实测，以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。正式交付优先使用 `release/AI获客-安装程序.exe`；`release/AI获客.zip` 只作为免安装备用包。
+Windows Electron 桌面应用。当前唯一验收目标是个人微信 `4.1.11.55`；能力是否可用、是否经过本机或异机实测，以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。正式交付优先使用 `release/AI获客 V1.0版本-安装程序.exe`；`release/AI获客 V1.0版本.zip` 只作为免安装备用包。
 
 ## 本地运行
 
-环境要求：Windows 10/11 x64、Node.js、已安装并登录的个人微信 `4.1.11.54`。
+环境要求：Windows 10/11 x64、Node.js、已安装并登录的个人微信 `4.1.11.55`。
 
 ```powershell
 cd desktop
@@ -49,7 +49,7 @@ npm.cmd run release:test
 npm.cmd run release:delivery
 ```
 
-交给用户覆盖旧正式安装版时使用 `release/AI获客-安装程序.exe`，并同时核对 `release/AI获客-安装程序-版本清单.json`。收尾后的 `release/` 只保留当前安装器和清单；需要内部便携包时从当前源码重新运行发布命令，不再长期堆放旧 ZIP 和解压目录。
+交给用户覆盖旧正式安装版时使用 `release/AI获客 V1.0版本-安装程序.exe`，并同时核对 `release/AI获客 V1.0版本-安装程序-版本清单.json`。收尾后的 `release/` 只保留当前安装器和清单；需要内部便携包时从当前源码重新运行发布命令，不再长期堆放旧 ZIP 和解压目录。
 
 生成正式离线安装器：
 

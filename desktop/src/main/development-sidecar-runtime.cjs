@@ -1,6 +1,9 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const {
+  productDetailChangedSourceFiles
+} = require("./product-detail-source-scope.cjs");
 
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 const RUNTIME_SPECS = Object.freeze({
@@ -8,7 +11,8 @@ const RUNTIME_SPECS = Object.freeze({
     runtimeParts: [".build", "product-detail-runtime", "product-detail-server.exe"],
     manifestParts: [".build", "product-detail-runtime.manifest.json"],
     sourceParts: ["sidecars", "product-detail", "app"],
-    provenanceKey: "desktopSource"
+    provenanceKey: "desktopSource",
+    relevantChanges: productDetailChangedSourceFiles
   }),
   "content-engine": Object.freeze({
     runtimeParts: [".build", "content-engine-runtime", "content-engine-worker.exe"],
@@ -34,6 +38,13 @@ function isFile(fsImpl, candidate) {
   return fsImpl.existsSync(candidate) && fsImpl.statSync(candidate).isFile();
 }
 
+function hasRelevantChanges(spec, output, relativeScope) {
+  const changes = String(output || "").trim();
+  if (!changes) return false;
+  if (typeof spec.relevantChanges !== "function") return true;
+  return spec.relevantChanges(changes, relativeScope).length > 0;
+}
+
 function resolveDefaultDevelopmentSidecarRuntime(kind, options = {}) {
   const spec = RUNTIME_SPECS[kind];
   if (!spec) return "";
@@ -53,14 +64,25 @@ function resolveDefaultDevelopmentSidecarRuntime(kind, options = {}) {
     const manifestCommit = String(provenance?.commit || "").trim().toLowerCase();
     if (!COMMIT_PATTERN.test(manifestCommit) || provenance?.dirty !== false) return "";
 
-    const head = String(readGit(projectDir, ["rev-parse", "HEAD"]) || "")
-      .trim()
-      .toLowerCase();
-    if (!COMMIT_PATTERN.test(head) || manifestCommit !== head) return "";
-
     const relativeScope = path.relative(projectDir, sourceDir).replaceAll("\\", "/");
     if (!relativeScope || relativeScope === ".." || relativeScope.startsWith("../")) {
       return "";
+    }
+
+    const head = String(readGit(projectDir, ["rev-parse", "HEAD"]) || "")
+      .trim()
+      .toLowerCase();
+    if (!COMMIT_PATTERN.test(head)) return "";
+    if (manifestCommit !== head) {
+      readGit(projectDir, ["merge-base", "--is-ancestor", manifestCommit, head]);
+      const committedChanges = String(readGit(projectDir, [
+        "diff",
+        "--name-only",
+        `${manifestCommit}..${head}`,
+        "--",
+        relativeScope
+      ]) || "").trim();
+      if (hasRelevantChanges(spec, committedChanges, relativeScope)) return "";
     }
     const dirty = String(readGit(projectDir, [
       "status",
@@ -69,7 +91,7 @@ function resolveDefaultDevelopmentSidecarRuntime(kind, options = {}) {
       "--",
       relativeScope
     ]) || "").trim();
-    return dirty ? "" : runtimePath;
+    return hasRelevantChanges(spec, dirty, relativeScope) ? "" : runtimePath;
   } catch {
     return "";
   }

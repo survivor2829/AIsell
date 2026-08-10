@@ -7,10 +7,12 @@ const { treeSha256 } = require("./release-tree-hash.cjs");
 const desktopDir = path.resolve(__dirname, "..");
 const projectDir = path.resolve(desktopDir, "..");
 const releaseDir = path.join(projectDir, "release");
-const portableDir = path.join(releaseDir, "AI获客");
+const productBrand = require("../product-brand.json");
+const PRODUCT_NAME = productBrand.displayName;
+const portableDir = path.join(releaseDir, PRODUCT_NAME);
 const portableManifestFile = path.join(portableDir, "版本清单.json");
-const installerName = "AI获客-安装程序.exe";
-const installerManifestName = "AI获客-安装程序-版本清单.json";
+const installerName = `${PRODUCT_NAME}-安装程序.exe`;
+const installerManifestName = `${PRODUCT_NAME}-安装程序-版本清单.json`;
 
 function sha256(file) {
   const hash = crypto.createHash("sha256");
@@ -35,7 +37,7 @@ function assertInstallerSource() {
   if (gitText(["status", "--porcelain"])) {
     throw new Error("Refusing to build an installer from a dirty worktree");
   }
-  if (!fs.existsSync(path.join(portableDir, "AI获客.exe"))) {
+  if (!fs.existsSync(path.join(portableDir, `${PRODUCT_NAME}.exe`))) {
     throw new Error("Verified portable application is missing; build it first");
   }
   if (!fs.existsSync(portableManifestFile)) {
@@ -114,16 +116,16 @@ function buildInstaller() {
     if (size < 20 * 1024 * 1024) throw new Error("Installer is unexpectedly small");
 
     const installerManifest = {
-      product: "AI获客",
+      product: PRODUCT_NAME,
       artifact: installerName,
       version: portableManifest.version,
       buildId: portableManifest.buildId,
       commit,
       architecture: "x64",
       installationScope: "current-user",
-      appId: "com.aihuoke.desktop",
-      installDirectory: "%LOCALAPPDATA%\\Programs\\AI获客",
-      userDataDirectory: "%APPDATA%\\xiaoxi-active-touch-delivery\\data",
+      appId: productBrand.stableAppId,
+      installDirectory: `%LOCALAPPDATA%\\Programs\\${productBrand.stableInstallDirectoryName}`,
+      userDataDirectory: `%APPDATA%\\${productBrand.stableDeliveryDataDirectoryName}\\data`,
       upgradeMode: "offline-full-overwrite",
       uninstallPreservesUserData: true,
       signed: false,

@@ -3,11 +3,17 @@ const path = require("node:path");
 
 const desktopDir = path.resolve(__dirname, "..");
 const releaseDir = path.resolve(desktopDir, "..", "release");
+const productBrand = require("../product-brand.json");
 const isPackagedApp = path.basename(desktopDir).toLowerCase() === "app" && path.basename(path.dirname(desktopDir)).toLowerCase() === "resources";
-const releaseAppDirs = isPackagedApp ? [desktopDir] : [
-  path.resolve(desktopDir, "..", "release", "AI获客-测试版", "resources", "app"),
-  path.resolve(desktopDir, "..", "release", "AI获客", "resources", "app")
+const releaseProductNames = [
+  productBrand.displayName,
+  `${productBrand.displayName}-测试版`,
+  productBrand.stableInstallDirectoryName,
+  `${productBrand.stableInstallDirectoryName}-测试版`
 ];
+const releaseAppDirs = isPackagedApp ? [desktopDir] : [...new Set(releaseProductNames)].map((productName) =>
+  path.resolve(desktopDir, "..", "release", productName, "resources", "app")
+);
 const relativeRuntimeFiles = [
   path.join("ai-expert.json"),
   path.join("auto-reply-state.json"),

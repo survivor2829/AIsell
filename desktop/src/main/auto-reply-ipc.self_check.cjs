@@ -140,6 +140,7 @@ async function main() {
     },
     verifyIncoming: () => ({ ok: verifyAllowed }),
     send: async (options) => {
+      assert.equal(options.windowMinIdleMs, 15_000, "background auto-reply must not arrange WeChat while the user is active");
       sent.push(options.frozenContact.name);
       sentAttemptIds.push(options.attemptId);
       sentBindings.push({
@@ -973,6 +974,46 @@ async function main() {
   assert.match(transientFenceLog, /"code":"latest_message_role_unresolved"/);
   assert.doesNotMatch(transientFenceLog, /"code":"unknown_scan_reason"/, "known transient fences must remain diagnosable instead of being collapsed into an unknown status");
   transientFenceController.pause();
+
+  const safeWindowDelayDir = path.join(root, "safe_window_delay_reasons");
+  const safeWindowPrimeResults = [
+    { ok: false, reason: "wechat_user_active" },
+    { ok: false, reason: "wechat_window_identity_mismatch" }
+  ];
+  let safeWindowDelayAiCalls = 0;
+  let safeWindowDelaySendCalls = 0;
+  const safeWindowDelayController = createAutoReplyController({
+    dataDir: safeWindowDelayDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => { safeWindowDelayAiCalls += 1; return "must not reply"; }
+    },
+    scanIncoming: () => { throw new Error("a deferred prime must retry before scanning"); },
+    primeIncoming: () => safeWindowPrimeResults.shift() || { ok: false, reason: "wechat_user_active" },
+    verifyIncoming: () => ({ ok: false }),
+    send: async () => { safeWindowDelaySendCalls += 1; return { ok: true }; },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await safeWindowDelayController.start()).ok, true, "active desktop use must defer startup instead of becoming fatal");
+  assert.equal(safeWindowDelayController.status().status, "running");
+  assert.equal(safeWindowDelayController.status().last_scan_reason, "wechat_user_active");
+  await safeWindowDelayController.runOnce();
+  assert.equal(safeWindowDelayController.status().status, "running", "a stale exact HWND must remain retryable while the driver resets its binding");
+  assert.equal(safeWindowDelayController.status().last_scan_reason, "wechat_window_identity_mismatch");
+  assert.equal(safeWindowDelayAiCalls, 0);
+  assert.equal(safeWindowDelaySendCalls, 0);
+  const safeWindowDelayLog = fs.readFileSync(path.join(safeWindowDelayDir, "auto-reply-diagnostics.jsonl"), "utf8");
+  assert.match(safeWindowDelayLog, /"code":"wechat_user_active"/);
+  assert.match(safeWindowDelayLog, /"code":"wechat_window_identity_mismatch"/);
+  assert.doesNotMatch(safeWindowDelayLog, /"code":"unknown_scan_reason"/);
+  safeWindowDelayController.pause();
 
   const pendingHealthController = createAutoReplyController({
     dataDir: path.join(root, "scan_pending_health"),

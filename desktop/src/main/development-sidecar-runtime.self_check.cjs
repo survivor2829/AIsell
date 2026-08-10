@@ -43,6 +43,38 @@ function cleanGit(expectedScope, head = HEAD) {
   };
 }
 
+function unchangedSinceBuildGit(expectedScope, manifestCommit, head = HEAD) {
+  return (projectDir, args) => {
+    assert.equal(path.basename(projectDir).startsWith("xiaoxi-runtime-gate-"), true);
+    if (args[0] === "rev-parse") {
+      assert.deepEqual(args, ["rev-parse", "HEAD"]);
+      return head;
+    }
+    if (args[0] === "merge-base") {
+      assert.deepEqual(args, ["merge-base", "--is-ancestor", manifestCommit, head]);
+      return "";
+    }
+    if (args[0] === "diff") {
+      assert.deepEqual(args, [
+        "diff",
+        "--name-only",
+        `${manifestCommit}..${head}`,
+        "--",
+        expectedScope
+      ]);
+      return "";
+    }
+    assert.deepEqual(args, [
+      "status",
+      "--porcelain",
+      "--untracked-files=all",
+      "--",
+      expectedScope
+    ]);
+    return "";
+  };
+}
+
 function resolveFixture(fixture, readGit) {
   return resolveDefaultDevelopmentSidecarRuntime(fixture.kind, {
     desktopDir: fixture.desktopDir,
@@ -98,8 +130,60 @@ for (const [kind, expectedScope] of [
   });
   try {
     assert.equal(
-      resolveFixture(fixture, cleanGit("desktop/sidecars/content-engine")),
-      ""
+      resolveFixture(fixture, unchangedSinceBuildGit(
+        "desktop/sidecars/content-engine",
+        "b".repeat(40)
+      )),
+      fixture.runtimePath,
+      "unrelated repository commits must not invalidate an unchanged sidecar runtime"
+    );
+  } finally {
+    removeFixture(fixture);
+  }
+}
+
+{
+  const manifestCommit = "b".repeat(40);
+  const fixture = createFixture("scope-changed", "content-engine", {
+    commit: manifestCommit,
+    dirty: false
+  });
+  try {
+    const readGit = (projectDir, args) => {
+      if (args[0] === "rev-parse") return HEAD;
+      if (args[0] === "merge-base") return "";
+      if (args[0] === "diff") return "desktop/sidecars/content-engine/worker.py";
+      return "";
+    };
+    assert.equal(
+      resolveFixture(fixture, readGit),
+      "",
+      "a runtime must remain unavailable when its own committed source changed"
+    );
+  } finally {
+    removeFixture(fixture);
+  }
+}
+
+{
+  const manifestCommit = "b".repeat(40);
+  const fixture = createFixture("committed-docs-only", "product-detail", {
+    commit: manifestCommit,
+    dirty: false
+  });
+  try {
+    const readGit = (projectDir, args) => {
+      if (args[0] === "rev-parse") return HEAD;
+      if (args[0] === "merge-base") return "";
+      if (args[0] === "diff") {
+        return "desktop/sidecars/product-detail/app/docs/PRD_AI_refine_v2/readme.md";
+      }
+      return "";
+    };
+    assert.equal(
+      resolveFixture(fixture, readGit),
+      fixture.runtimePath,
+      "committed documentation changes must not invalidate the product-detail runtime"
     );
   } finally {
     removeFixture(fixture);
@@ -124,6 +208,26 @@ for (const [kind, expectedScope] of [
       return "?? desktop/sidecars/product-detail/app/new.py";
     };
     assert.equal(resolveFixture(fixture, readGit), "");
+  } finally {
+    removeFixture(fixture);
+  }
+}
+
+{
+  const fixture = createFixture("docs-only-dirty", "product-detail", {
+    commit: HEAD,
+    dirty: false
+  });
+  try {
+    const readGit = (projectDir, args) => {
+      if (args[0] === "rev-parse") return HEAD;
+      return " D desktop/sidecars/product-detail/app/docs/assets/readme-hero-ai.png";
+    };
+    assert.equal(
+      resolveFixture(fixture, readGit),
+      fixture.runtimePath,
+      "documentation-only changes must not invalidate the product-detail runtime"
+    );
   } finally {
     removeFixture(fixture);
   }
@@ -174,12 +278,5 @@ assertMainBoundary(
   "XIAOXI_CONTENT_ENGINE_SIDECAR",
   "content-engine"
 );
-
-const helperSource = fs.readFileSync(
-  path.join(__dirname, "development-sidecar-runtime.cjs"),
-  "utf8"
-);
-assert.equal(helperSource.includes("treeSha256"), false);
-assert.equal(helperSource.includes("createHash"), false);
 
 console.log("development sidecar runtime self-check passed");

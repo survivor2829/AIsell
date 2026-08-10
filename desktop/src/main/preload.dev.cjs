@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 const {
   createMomentsCampaignApi,
+  createMomentsPublishApi,
   createPreloadApis,
   createTrustedClickGate
 } = require("./preload-api.cjs");
@@ -49,6 +50,7 @@ const activeTouch = {
 };
 
 const momentsCampaign = createMomentsCampaignApi(ipcRenderer);
+const momentsPublish = createMomentsPublishApi(ipcRenderer);
 
 contextBridge.exposeInMainWorld("xiaoxiActiveTouch", activeTouch);
 contextBridge.exposeInMainWorld("xiaoxiAutoReply", apis.autoReply);
@@ -61,3 +63,4 @@ contextBridge.exposeInMainWorld("xiaoxiProductDetail", apis.productDetail);
 contextBridge.exposeInMainWorld("xiaoxiProductDetailAiSettings", apis.productDetailAiSettings);
 contextBridge.exposeInMainWorld("xiaoxiTouchTask", apis.touchTask);
 contextBridge.exposeInMainWorld("xiaoxiMomentsCampaign", momentsCampaign);
+contextBridge.exposeInMainWorld("xiaoxiMomentsPublish", momentsPublish);

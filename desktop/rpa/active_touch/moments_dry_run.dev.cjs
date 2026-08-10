@@ -6,6 +6,10 @@ const {
 } = require("./state_machine.cjs");
 const { runPowerShell } = require("./wechat_window_driver.cjs");
 const { probeVisualWechatMomentsWindow } = require("./moments_visual_dry_run.dev.cjs");
+const {
+  normalizeExpectedMomentsSurface,
+  validMomentsSurfaceRoot
+} = require("./moments_surface_profile.dev.cjs");
 
 const MAX_MOMENTS_COMMENT_LENGTH = 500;
 const MOMENTS_STRUCTURAL_PROBE_TIMEOUT_MS = 5_000;
@@ -99,6 +103,66 @@ function stableMomentsPostIdentityText(firstIdentity, secondIdentity, firstAncho
   return stableMomentsContentSimilarity(firstAnchor, secondAnchor);
 }
 
+function normalizedMomentsPostText(value) {
+  return String(value ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
+}
+
+function momentsPostTextOverlap(first, second) {
+  const left = normalizedMomentsPostText(first).toLowerCase();
+  const right = normalizedMomentsPostText(second).toLowerCase();
+  if (!left || !right) return false;
+  if (left.includes(right) || right.includes(left)) return true;
+  const grams = (value) => {
+    const compact = value.replace(/[\p{P}\p{S}\s]+/gu, "");
+    const result = new Set();
+    for (let index = 0; index < compact.length - 1; index += 1) {
+      result.add(compact.slice(index, index + 2));
+    }
+    for (const token of value.split(/[^\p{L}\p{N}]+/gu)) {
+      if (token.length >= 2) result.add(token);
+    }
+    return result;
+  };
+  const leftGrams = grams(left);
+  const rightGrams = grams(right);
+  if (leftGrams.size === 0 || rightGrams.size === 0) return false;
+  let shared = 0;
+  for (const gram of leftGrams) {
+    if (rightGrams.has(gram)) shared += 1;
+  }
+  return shared / Math.min(leftGrams.size, rightGrams.size) >= 0.3;
+}
+
+function momentsPostBound(value, key) {
+  const aliases = {
+    bounds: ["bounds"],
+    menu_bounds: ["menu_bounds", "menuBounds"],
+    avatar_bounds: ["avatar_bounds", "avatarBounds"]
+  };
+  for (const alias of aliases[key] ?? []) {
+    if (strictBounds(value?.[alias])) return value[alias];
+  }
+  return null;
+}
+
+function momentsPostDisplacementMatches(first, second, scrollDelta) {
+  const expectedDelta = Number(scrollDelta);
+  if (!Number.isFinite(expectedDelta)) return false;
+  const tolerance = Math.max(72, Math.abs(expectedDelta) * 0.6);
+  const pairs = ["bounds", "menu_bounds", "avatar_bounds"]
+    .map((key) => [
+      Number(momentsPostBound(first, key)?.top),
+      Number(momentsPostBound(second, key)?.top)
+    ])
+    .filter(([firstTop, secondTop]) => Number.isFinite(firstTop) && Number.isFinite(secondTop));
+  if (pairs.length === 0) return false;
+  let matching = 0;
+  for (const [firstTop, secondTop] of pairs) {
+    if (Math.abs((secondTop - firstTop) - expectedDelta) <= tolerance) matching += 1;
+  }
+  return matching >= Math.min(2, pairs.length);
+}
+
 const MOMENTS_BLOCK_ERRORS = Object.freeze({
   moments_action_missing: "请至少选择点赞或评论",
   moments_mode_invalid: "朋友圈预演模式无效",
@@ -112,6 +176,7 @@ const MOMENTS_BLOCK_ERRORS = Object.freeze({
   moments_render_pane_not_found: "新版微信朋友圈渲染区域无法确认",
   moments_render_pane_ambiguous: "新版微信朋友圈渲染区域不唯一",
   moments_render_pane_bounds_invalid: "新版微信朋友圈渲染区域越界",
+  moments_integrated_surface_not_proven: "当前微信主窗口无法唯一确认已进入朋友圈，系统未执行任何操作",
   moments_visual_capture_failed: "朋友圈视觉快照获取失败",
   moments_visual_ocr_unavailable: "本机简体中文视觉识别不可用",
   moments_visual_ocr_failed: "朋友圈文字识别失败",
@@ -148,6 +213,16 @@ public static class Win32WechatMomentsProbe {
 function Write-Result($value) {
   $value | ConvertTo-Json -Compress -Depth 6
   exit
+}
+
+function Get-ExpectedMomentsSurface {
+  try {
+    if ([string]::IsNullOrWhiteSpace([string]$env:XIAOXI_MOMENTS_EXPECTED_SURFACE_BASE64)) { return $null }
+    $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$env:XIAOXI_MOMENTS_EXPECTED_SURFACE_BASE64))
+    return $json | ConvertFrom-Json
+  } catch {
+    return $null
+  }
 }
 
 function Get-ElementText([System.Windows.Automation.AutomationElement]$element) {
@@ -260,6 +335,7 @@ function Test-PostSequence($first, $second) {
 }
 
 $processNames = @("Weixin", "WeChat")
+$expectedSurface = Get-ExpectedMomentsSurface
 $script:matches = @()
 $callback = [Win32WechatMomentsProbe+EnumWindowsProc]{
   param([IntPtr]$hWnd, [IntPtr]$lParam)
@@ -271,10 +347,15 @@ $callback = [Win32WechatMomentsProbe+EnumWindowsProc]{
   $title = $titleText.ToString().Trim()
   $className = $classText.ToString().Trim()
   if ($title -ne "朋友圈") { return $true }
+  if ($expectedSurface -ne $null -and
+    ([string]$expectedSurface.hWnd -cne [string]$hWnd.ToInt64() -or
+      [string]$expectedSurface.title -cne $title -or
+      [string]$expectedSurface.className -cne $className)) { return $true }
   [uint32]$windowProcessId = 0
   [void][Win32WechatMomentsProbe]::GetWindowThreadProcessId($hWnd, [ref]$windowProcessId)
   $process = Get-Process -Id $windowProcessId -ErrorAction SilentlyContinue
   if ($process -eq $null -or $processNames -notcontains $process.ProcessName) { return $true }
+  if ($expectedSurface -ne $null -and [int]$expectedSurface.pid -ne [int]$windowProcessId) { return $true }
   $rect = New-Object Win32WechatMomentsProbe+RECT
   if (-not [Win32WechatMomentsProbe]::GetWindowRect($hWnd, [ref]$rect)) { return $true }
   $width = $rect.Right - $rect.Left
@@ -324,6 +405,7 @@ if ($firstRead.feedRuntimeId -cne $secondRead.feedRuntimeId -or [bool]$firstRead
   -not (Test-PostSequence $firstRead.posts $secondRead.posts)) { Write-Result @{ ok = $false; reason = "moments_post_changed" } }
 $identityMode = if ($rootAutomationId -ceq "SNSWindow") { "automation_id" } else { "structural_sns_feed" }
 $matched["automationId"] = $rootAutomationId
+$matched["surfaceMode"] = "standalone"
 $matched["identityMode"] = $identityMode
 $matched["rootName"] = $rootName
 $matched["rootControlType"] = $rootControlType
@@ -339,8 +421,13 @@ $matched["posts"] = $posts
 Write-Result $matched
 `;
 
-function probeWechatMomentsWindow() {
-  return runPowerShell(MOMENTS_WINDOW_PROBE_SCRIPT, {}, {
+function probeWechatMomentsWindow(expectedWindow) {
+  const expectedSurface = normalizeExpectedMomentsSurface(expectedWindow);
+  return runPowerShell(MOMENTS_WINDOW_PROBE_SCRIPT, {
+    XIAOXI_MOMENTS_EXPECTED_SURFACE_BASE64: expectedSurface
+      ? Buffer.from(JSON.stringify(expectedSurface), "utf8").toString("base64")
+      : ""
+  }, {
     ensure: false,
     timeout: MOMENTS_STRUCTURAL_PROBE_TIMEOUT_MS
   });
@@ -359,6 +446,45 @@ function normalizeMomentsWindow(windowResult) {
   const validBounds = Object.values(bounds).every(Number.isFinite) && bounds.width >= 300 && bounds.height >= 300;
   if (!Number.isInteger(pid) || pid <= 0 || !validHandle || !validBounds) return null;
   return { pid, hWnd, ...bounds };
+}
+
+function momentsWindowSnapshot(windowResult, verifiedWindow) {
+  return {
+    surfaceMode: windowResult.surfaceMode,
+    title: windowResult.title,
+    className: windowResult.className,
+    automationId: windowResult.automationId,
+    identityMode: windowResult.identityMode,
+    rootName: windowResult.rootName,
+    rootControlType: windowResult.rootControlType,
+    rootProcessId: windowResult.rootProcessId,
+    feedAutomationId: windowResult.feedAutomationId,
+    feedRuntimeId: windowResult.feedRuntimeId,
+    feedCount: windowResult.feedCount,
+    renderPaneName: windowResult.renderPaneName,
+    renderPaneAutomationId: windowResult.renderPaneAutomationId,
+    renderPaneControlType: windowResult.renderPaneControlType,
+    renderPaneProcessId: windowResult.renderPaneProcessId,
+    renderPaneRuntimeId: windowResult.renderPaneRuntimeId,
+    renderPaneBounds: windowResult.renderPaneBounds,
+    processName: windowResult.processName,
+    pid: verifiedWindow.pid,
+    hWnd: verifiedWindow.hWnd,
+    left: verifiedWindow.left,
+    top: verifiedWindow.top,
+    width: verifiedWindow.width,
+    height: verifiedWindow.height
+  };
+}
+
+function momentsSurfaceMatchesExpected(windowResult, expectedSurface) {
+  return !expectedSurface || (
+    windowResult?.surfaceMode === expectedSurface.surfaceMode
+    && Number(windowResult?.pid) === expectedSurface.pid
+    && String(windowResult?.hWnd) === expectedSurface.hWnd
+    && windowResult?.title === expectedSurface.title
+    && windowResult?.className === expectedSurface.className
+  );
 }
 
 function strictBounds(bounds, minimumWidth = 0, minimumHeight = 0) {
@@ -510,7 +636,64 @@ function rankVisibleMomentsPosts(posts, viewportBounds) {
     || left.index - right.index);
 }
 
-function selectVisibleMomentsPost(posts, viewportBounds) {
+function normalizeMomentsTargetPost(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = String(value.source ?? "").trim();
+  const runtimeId = String(value.runtime_id ?? "").trim();
+  const identityText = normalizedMomentsPostText(value.identity_text);
+  const stableAnchorText = normalizedMomentsPostText(value.stable_anchor_text);
+  const avatarHash = String(value.avatar_hash ?? "").trim();
+  const expectedScrollDelta = Number(value.expected_scroll_delta ?? 0);
+  const structured = value.structure_verified === true;
+  const bounds = momentsPostBound(value, "bounds");
+  const visual = source.startsWith("visual:");
+  if (!Number.isFinite(expectedScrollDelta) || Math.abs(expectedScrollDelta) > 2_000 || !bounds) return null;
+  if (runtimeId && !visual) {
+    return { ...value, source, runtime_id: runtimeId, expected_scroll_delta: expectedScrollDelta };
+  }
+  if (!visual || !structured || !identityText || !/^[0-9a-f]{64}$/u.test(avatarHash)) return null;
+  return {
+    ...value,
+    source,
+    identity_text: identityText,
+    stable_anchor_text: stableAnchorText,
+    avatar_hash: avatarHash,
+    expected_scroll_delta: expectedScrollDelta
+  };
+}
+
+function momentsTargetPostMatches(targetPost, candidate) {
+  const target = normalizeMomentsTargetPost(targetPost);
+  if (!target) return false;
+  const runtimeId = String(candidate?.runtimeId ?? "").trim();
+  if (target.runtime_id && runtimeId) return target.runtime_id === runtimeId;
+  const candidateAvatarHash = String(candidate?.avatarHash ?? "").trim();
+  const stableAvatar = /^[0-9a-f]{64}$/u.test(candidateAvatarHash)
+    && candidateAvatarHash === target.avatar_hash;
+  const structured = candidate?.structureVerified === true;
+  const textOverlap = stableMomentsPostIdentityText(
+    target.identity_text,
+    candidate?.identityText,
+    target.stable_anchor_text,
+    candidate?.stableAnchorText
+  ) || momentsPostTextOverlap(target.identity_text, candidate?.identityText)
+    || momentsPostTextOverlap(target.stable_anchor_text, candidate?.stableAnchorText);
+  return stableAvatar
+    && structured
+    && textOverlap
+    && momentsPostDisplacementMatches(target, candidate, target.expected_scroll_delta);
+}
+
+function selectLockedMomentsPost(posts, targetPost) {
+  const target = normalizeMomentsTargetPost(targetPost);
+  if (!target) return { ok: false, reason: "moments_post_identity_missing", matchedCount: 0 };
+  const matches = posts.filter((post) => momentsTargetPostMatches(target, post));
+  if (matches.length === 0) return { ok: false, reason: "moments_post_not_found", matchedCount: 0 };
+  if (matches.length > 1) return { ok: false, reason: "moments_post_ambiguous", matchedCount: matches.length };
+  return { ok: true, post: matches[0], matchedCount: 1 };
+}
+
+function selectVisibleMomentsPost(posts, viewportBounds, targetPost = null) {
   if (!Array.isArray(posts) || posts.length === 0) {
     return { ok: false, reason: "moments_post_not_found", acceptedCount: 0 };
   }
@@ -535,22 +718,45 @@ function selectVisibleMomentsPost(posts, viewportBounds) {
   if (unambiguous.length === 0) {
     return { ok: false, reason: "moments_post_ambiguous", acceptedCount: 0, diagnostics: baseDiagnostics };
   }
-  const selected = rankVisibleMomentsPosts(unambiguous.map((entry) => entry.post), viewportBounds)[0]?.post;
+  let selected;
+  let targetDiagnostics = {};
+  if (targetPost) {
+    const locked = selectLockedMomentsPost(unambiguous.map((entry) => entry.post), targetPost);
+    targetDiagnostics = { target_locked: true, target_matched_count: locked.matchedCount };
+    if (!locked.ok) {
+      return {
+        ok: false,
+        reason: locked.reason,
+        acceptedCount: 0,
+        diagnostics: { ...baseDiagnostics, ...targetDiagnostics }
+      };
+    }
+    selected = locked.post;
+  } else {
+    selected = rankVisibleMomentsPosts(unambiguous.map((entry) => entry.post), viewportBounds)[0]?.post;
+  }
   const assessment = unambiguous.find((entry) => entry.post === selected);
-  return { ok: true, post: selected, partialVisible: assessment?.partialVisible === true, acceptedCount: unambiguous.length, diagnostics: { ...baseDiagnostics, accepted_count: unambiguous.length, ...(assessment?.position ?? {}) } };
+  return { ok: true, post: selected, partialVisible: assessment?.partialVisible === true, acceptedCount: unambiguous.length, diagnostics: { ...baseDiagnostics, accepted_count: unambiguous.length, ...targetDiagnostics, ...(assessment?.position ?? {}) } };
 }
 
-function preferredVisibleMomentsPost(posts, viewportBounds) {
+function preferredVisibleMomentsPost(posts, viewportBounds, targetPost = null) {
   if (!Array.isArray(posts) || posts.length === 0) return null;
+  if (targetPost) {
+    const locked = selectLockedMomentsPost(posts, targetPost);
+    return locked.ok ? locked.post : null;
+  }
   return rankVisibleMomentsPosts(posts, viewportBounds)[0]?.post ?? null;
 }
 
 function validMomentsWindowIdentity(windowResult) {
   const automationId = String(windowResult?.automationId ?? "");
   const identityMode = String(windowResult?.identityMode ?? "");
-  const commonRoot = windowResult?.title === "朋友圈"
+  const surfaceMode = String(windowResult?.surfaceMode ?? "");
+  const surfaceRoot = validMomentsSurfaceRoot(windowResult);
+  const commonRoot = surfaceRoot
     && ["Weixin", "WeChat"].includes(windowResult?.processName)
-    && windowResult?.rootName === "朋友圈"
+    && typeof windowResult?.className === "string"
+    && Boolean(windowResult.className.trim())
     && windowResult?.rootControlType === "ControlType.Window"
     && Number(windowResult?.rootProcessId) === Number(windowResult?.pid);
   if (!commonRoot) return false;
@@ -578,11 +784,193 @@ function validMomentsWindowIdentity(windowResult) {
     && boundsWithin(windowResult?.renderPaneBounds, windowBounds);
 }
 
-function visualMomentsPostSnapshot(windowResult, verifiedWindow) {
+function visualMomentsPostSnapshot(windowResult, verifiedWindow, options = {}) {
   const posts = Array.isArray(windowResult?.posts) ? windowResult.posts : [];
-  if (posts.length === 0) return { ok: false, reason: "moments_post_not_found", error: MOMENTS_BLOCK_ERRORS.moments_post_not_found };
+  if (posts.length === 0) {
+    const readingPosts = Array.isArray(windowResult?.readingPosts) ? windowResult.readingPosts : [];
+    if (options.allowBodyOnly === true && readingPosts.length > 0) {
+      const renderPaneBounds = windowResult?.renderPaneBounds;
+      const validReadingPosts = readingPosts.filter((post) => {
+        const identityText = String(post?.identityText ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
+        const stableAnchorText = String(post?.stableAnchorText ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
+        return post?.bodyOnly === true
+          && post?.structureVerified === true
+          && identityText.length >= 16
+          && identityText.length <= 2000
+          && stableAnchorText.length >= 16
+          && stableAnchorText.length <= 2000
+          && [post?.regionHash, post?.avatarHash, post?.layoutHash]
+            .every((value) => /^[0-9a-f]{64}$/u.test(String(value ?? "")))
+          && boundsWithin(post?.bounds, renderPaneBounds)
+          && boundsWithin(post?.avatarBounds, renderPaneBounds);
+      });
+      const post = preferredVisibleMomentsPost(validReadingPosts, renderPaneBounds, options.targetPost);
+      if (post) {
+        const label = String(post.text).normalize("NFKC").replace(/\s+/gu, " ").trim();
+        const identityText = String(post.identityText).normalize("NFKC").replace(/\s+/gu, " ").trim();
+        const stableAnchorText = String(post.stableAnchorText).normalize("NFKC").replace(/\s+/gu, " ").trim();
+        const postFingerprint = momentsPostFingerprint(identityText);
+        const bounds = post.bounds;
+        const avatarBounds = post.avatarBounds;
+        const observationPayload = JSON.stringify({
+          version: 7,
+          surfaceMode: String(windowResult.surfaceMode ?? ""),
+          pid: Number(windowResult.pid),
+          hWnd: String(windowResult.hWnd),
+          source: "visual:windows_media_ocr_body",
+          structureVerified: true,
+          regionHash: String(post.regionHash),
+          avatarHash: String(post.avatarHash),
+          layoutHash: String(post.layoutHash),
+          identityText,
+          stableAnchorText,
+          postFingerprint,
+          bounds,
+          avatarBounds
+        });
+        return {
+          ok: true,
+          visiblePostCount: validReadingPosts.length,
+          partialVisible: true,
+          diagnostics: {
+            candidate_count: readingPosts.length,
+            accepted_count: validReadingPosts.length,
+            position_zone: "body_only"
+          },
+          snapshot: {
+            observation_id: crypto.createHash("sha256").update(observationPayload, "utf8").digest("hex"),
+            post_fingerprint: postFingerprint,
+            source: "visual:windows_media_ocr_body",
+            identity_scope: "window_session_only",
+            structure_verified: true,
+            ocr_provider: "windows_media_ocr",
+            ocr_language: "zh-Hans-CN",
+            region_hash: String(post.regionHash),
+            avatar_hash: String(post.avatarHash),
+            layout_hash: String(post.layoutHash),
+            label,
+            identity_text: identityText,
+            stable_anchor_text: stableAnchorText,
+            preview: label.length > 160 ? `${label.slice(0, 157)}...` : label,
+            bounds,
+            avatar_bounds: avatarBounds,
+            body_only: true,
+            like_state: "unknown",
+            comment_state: "unknown"
+          }
+        };
+      }
+      if (options.targetPost) {
+        return {
+          ok: false,
+          reason: "moments_post_not_found",
+          error: MOMENTS_BLOCK_ERRORS.moments_post_not_found,
+          diagnostics: {
+            candidate_count: readingPosts.length,
+            accepted_count: validReadingPosts.length,
+            target_locked: true,
+            target_matched_count: 0
+          }
+        };
+      }
+    }
+    const menuOnlyMenus = Array.isArray(windowResult?.menuOnlyMenus) ? windowResult.menuOnlyMenus : [];
+    if (options.targetPost || options.allowMenuOnly !== true || menuOnlyMenus.length === 0) {
+      return { ok: false, reason: "moments_post_not_found", error: MOMENTS_BLOCK_ERRORS.moments_post_not_found };
+    }
+    const menuOnly = [...menuOnlyMenus]
+      .filter((entry) => /^[0-9a-f]{64}$/u.test(String(entry?.menuHash ?? "")))
+      .sort((left, right) => Number(right?.menuBounds?.top) - Number(left?.menuBounds?.top))[0];
+    const menuBounds = menuOnly?.menuBounds;
+    const windowBounds = {
+      left: verifiedWindow.left,
+      top: verifiedWindow.top,
+      width: verifiedWindow.width,
+      height: verifiedWindow.height
+    };
+    if (!menuOnly || !boundsWithin(windowResult?.renderPaneBounds, windowBounds)
+      || !boundsWithin(menuBounds, windowResult?.renderPaneBounds)) {
+      return { ok: false, reason: "moments_post_identity_missing", error: MOMENTS_BLOCK_ERRORS.moments_post_identity_missing };
+    }
+    const menuHash = String(menuOnly.menuHash);
+    const identityText = `visible-menu:${menuHash}:${Math.round(Number(menuBounds.left))}:${Math.round(Number(menuBounds.top))}`;
+    const label = identityText;
+    const postFingerprint = momentsPostFingerprint(identityText);
+    const layoutHash = crypto.createHash("sha256").update(`menu-only-layout:${menuHash}`, "utf8").digest("hex");
+    const avatarBounds = { left: 0, top: 0, width: 0, height: 0 };
+    const observationPayload = JSON.stringify({
+      version: 6,
+      surfaceMode: String(windowResult.surfaceMode ?? ""),
+      className: String(windowResult.className ?? ""),
+      pid: Number(windowResult.pid),
+      hWnd: String(windowResult.hWnd),
+      windowBounds,
+      windowAutomationId: String(windowResult.automationId ?? ""),
+      windowIdentityMode: String(windowResult.identityMode ?? ""),
+      windowRootName: String(windowResult.rootName ?? ""),
+      windowRootControlType: String(windowResult.rootControlType ?? ""),
+      windowRootProcessId: Number(windowResult.rootProcessId),
+      windowFeedAutomationId: String(windowResult.feedAutomationId ?? ""),
+      windowFeedRuntimeId: String(windowResult.feedRuntimeId ?? ""),
+      windowFeedCount: Number(windowResult.feedCount),
+      windowRenderPaneName: String(windowResult.renderPaneName ?? ""),
+      windowRenderPaneAutomationId: String(windowResult.renderPaneAutomationId ?? ""),
+      windowRenderPaneControlType: String(windowResult.renderPaneControlType ?? ""),
+      windowRenderPaneProcessId: Number(windowResult.renderPaneProcessId),
+      windowRenderPaneRuntimeId: String(windowResult.renderPaneRuntimeId ?? ""),
+      windowRenderPaneBounds: {
+        left: Number(windowResult.renderPaneBounds?.left),
+        top: Number(windowResult.renderPaneBounds?.top),
+        width: Number(windowResult.renderPaneBounds?.width),
+        height: Number(windowResult.renderPaneBounds?.height)
+      },
+      source: "visual:windows_media_ocr",
+      identityScope: "window_session_only",
+      structureVerified: true,
+      ocrProvider: "windows_media_ocr",
+      ocrLanguage: "zh-Hans-CN",
+      regionHash: menuHash,
+      avatarHash: "",
+      layoutHash,
+      label,
+      identityText,
+      postFingerprint,
+      bounds: menuBounds,
+      menuBounds,
+      avatarBounds
+    });
+    return {
+      ok: true,
+      visiblePostCount: 1,
+      partialVisible: false,
+      diagnostics: { candidate_count: 1, accepted_count: 1, position_zone: "menu_only" },
+      snapshot: {
+        observation_id: crypto.createHash("sha256").update(observationPayload, "utf8").digest("hex"),
+        post_fingerprint: postFingerprint,
+        source: "visual:windows_media_ocr",
+        identity_scope: "window_session_only",
+        structure_verified: true,
+        ocr_provider: "windows_media_ocr",
+        ocr_language: "zh-Hans-CN",
+        region_hash: menuHash,
+        menu_hash: menuHash,
+        avatar_hash: "",
+        layout_hash: layoutHash,
+        label,
+        identity_text: identityText,
+        stable_anchor_text: "",
+        preview: "可见朋友圈互动菜单",
+        bounds: menuBounds,
+        menu_bounds: menuBounds,
+        avatar_bounds: avatarBounds,
+        menu_only: true,
+        like_state: "unknown",
+        comment_state: "unknown"
+      }
+    };
+  }
   const renderPaneBounds = windowResult?.renderPaneBounds;
-  const selection = selectVisibleMomentsPost(posts, renderPaneBounds);
+  const selection = selectVisibleMomentsPost(posts, renderPaneBounds, options.targetPost);
   if (!selection.ok) return { ok: false, reason: selection.reason, error: MOMENTS_BLOCK_ERRORS[selection.reason], diagnostics: selection.diagnostics };
   const post = selection.post;
   const label = String(post.text ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
@@ -608,7 +996,9 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow) {
     return { ok: false, reason: "moments_post_identity_missing", error: MOMENTS_BLOCK_ERRORS.moments_post_identity_missing };
   }
   const observationPayload = JSON.stringify({
-    version: 5,
+    version: 6,
+    surfaceMode: String(windowResult.surfaceMode ?? ""),
+    className: String(windowResult.className ?? ""),
     pid: Number(windowResult.pid),
     hWnd: String(windowResult.hWnd),
     windowBounds,
@@ -691,13 +1081,13 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow) {
   };
 }
 
-function momentsPostSnapshot(windowResult, verifiedWindow) {
+function momentsPostSnapshot(windowResult, verifiedWindow, options = {}) {
   if (windowResult?.identityMode === "visual_mmui_render") {
-    return visualMomentsPostSnapshot(windowResult, verifiedWindow);
+    return visualMomentsPostSnapshot(windowResult, verifiedWindow, options);
   }
   const posts = Array.isArray(windowResult?.posts) ? windowResult.posts : [];
   if (posts.length === 0) return { ok: false, reason: "moments_post_not_found", error: MOMENTS_BLOCK_ERRORS.moments_post_not_found };
-  const selection = selectVisibleMomentsPost(posts, verifiedWindow);
+  const selection = selectVisibleMomentsPost(posts, verifiedWindow, options.targetPost);
   if (!selection.ok) return { ok: false, reason: selection.reason, error: MOMENTS_BLOCK_ERRORS[selection.reason], diagnostics: selection.diagnostics };
   const post = selection.post;
   const runtimeId = String(post.runtimeId ?? "").trim();
@@ -801,13 +1191,35 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
   if (commentEnabled && !commentText) return momentsDryRunBlock(baseDir, state, "moments_comment_missing", MOMENTS_BLOCK_ERRORS.moments_comment_missing, plan);
   if (commentText.length > MAX_MOMENTS_COMMENT_LENGTH) return momentsDryRunBlock(baseDir, state, "moments_comment_too_long", `评论文案不能超过 ${MAX_MOMENTS_COMMENT_LENGTH} 个字符`, plan);
 
-  let windowResult = driver();
+  const targetPostRequired = payload.targetPostRequired === true
+    || Object.prototype.hasOwnProperty.call(payload, "targetPost");
+  const targetPost = normalizeMomentsTargetPost(payload.targetPost);
+  if (targetPostRequired && !targetPost) {
+    return momentsDryRunBlock(baseDir, state, "moments_post_identity_missing", MOMENTS_BLOCK_ERRORS.moments_post_identity_missing, plan);
+  }
+
+  const expectedWindowRequired = payload.expectedWindowRequired === true
+    || Object.prototype.hasOwnProperty.call(payload, "expectedWindow");
+  const expectedSurface = normalizeExpectedMomentsSurface(payload.expectedWindow);
+  if (expectedWindowRequired && !expectedSurface) {
+    return momentsDryRunBlock(
+      baseDir,
+      state,
+      "moments_window_identity_mismatch",
+      MOMENTS_BLOCK_ERRORS.moments_window_identity_mismatch,
+      plan
+    );
+  }
+  const visualProbeOptions = { allowBodyOnly: payload.allowBodyOnly === true };
+  let windowResult = driver === probeWechatMomentsWindow && expectedSurface?.surfaceMode === "integrated"
+    ? probeVisualWechatMomentsWindow(expectedSurface, visualProbeOptions)
+    : driver(expectedSurface);
   if (
     driver === probeWechatMomentsWindow
     && windowResult?.ok === false
-    && ["moments_feed_not_found", "powershell_timeout"].includes(windowResult?.reason)
+    && ["moments_feed_not_found", "moments_window_not_found", "powershell_timeout"].includes(windowResult?.reason)
   ) {
-    windowResult = probeVisualWechatMomentsWindow();
+    windowResult = probeVisualWechatMomentsWindow(expectedSurface, visualProbeOptions);
   }
   if (!windowResult?.ok) {
     const reason = windowResult?.reason || "moments_probe_failed";
@@ -815,13 +1227,36 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
     const safeDiagnostics = windowResult?.diagnostics && typeof windowResult.diagnostics === "object"
       ? { visual_diagnostics: windowResult.diagnostics }
       : {};
-    return momentsDryRunBlock(baseDir, state, reason, error, { ...plan, ...safeDiagnostics });
+    const blocked = momentsDryRunBlock(baseDir, state, reason, error, { ...plan, ...safeDiagnostics });
+    const provenSurface = reason === "moments_post_not_found" ? windowResult?.surface : null;
+    const provenWindow = validMomentsWindowIdentity(provenSurface)
+      && momentsSurfaceMatchesExpected(provenSurface, expectedSurface)
+      ? normalizeMomentsWindow(provenSurface)
+      : null;
+    return provenWindow
+      ? { ...blocked, window: momentsWindowSnapshot(provenSurface, provenWindow) }
+      : blocked;
   }
   const windowVerified = validMomentsWindowIdentity(windowResult);
   const verifiedWindow = normalizeMomentsWindow(windowResult);
   if (!windowVerified || !verifiedWindow) return momentsDryRunBlock(baseDir, state, "moments_window_identity_mismatch", MOMENTS_BLOCK_ERRORS.moments_window_identity_mismatch, plan);
-  const snapshotResult = momentsPostSnapshot(windowResult, verifiedWindow);
-  if (!snapshotResult.ok) return momentsDryRunBlock(baseDir, state, snapshotResult.reason, snapshotResult.error, { ...plan, position_diagnostics: snapshotResult.diagnostics }, snapshotResult.diagnostics);
+  if (!momentsSurfaceMatchesExpected(windowResult, expectedSurface)) {
+    return momentsDryRunBlock(baseDir, state, "moments_window_identity_mismatch", MOMENTS_BLOCK_ERRORS.moments_window_identity_mismatch, plan);
+  }
+  const window = momentsWindowSnapshot(windowResult, verifiedWindow);
+  const snapshotResult = momentsPostSnapshot(windowResult, verifiedWindow, {
+    // A generic three-dot crop is not a post identity. It may be reused for
+    // read-only diagnostics, but it must never authorize a real Like.
+    allowMenuOnly: false,
+    allowBodyOnly: payload.allowBodyOnly === true && commentEnabled,
+    targetPost
+  });
+  if (!snapshotResult.ok) {
+    return {
+      ...momentsDryRunBlock(baseDir, state, snapshotResult.reason, snapshotResult.error, { ...plan, position_diagnostics: snapshotResult.diagnostics }, snapshotResult.diagnostics),
+      window
+    };
+  }
   const postSnapshot = snapshotResult.snapshot;
   const visiblePostCount = snapshotResult.visiblePostCount;
 
@@ -834,31 +1269,6 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
     target_partial_visible: snapshotResult.partialVisible === true,
     position_diagnostics: snapshotResult.diagnostics,
     verification_level: windowResult.identityMode === "visual_mmui_render" ? "visual_post_snapshot_only" : "post_snapshot_only"
-  };
-  const window = {
-    title: windowResult.title,
-    className: windowResult.className,
-    automationId: windowResult.automationId,
-    identityMode: windowResult.identityMode,
-    rootName: windowResult.rootName,
-    rootControlType: windowResult.rootControlType,
-    rootProcessId: windowResult.rootProcessId,
-    feedAutomationId: windowResult.feedAutomationId,
-    feedRuntimeId: windowResult.feedRuntimeId,
-    feedCount: windowResult.feedCount,
-    renderPaneName: windowResult.renderPaneName,
-    renderPaneAutomationId: windowResult.renderPaneAutomationId,
-    renderPaneControlType: windowResult.renderPaneControlType,
-    renderPaneProcessId: windowResult.renderPaneProcessId,
-    renderPaneRuntimeId: windowResult.renderPaneRuntimeId,
-    renderPaneBounds: windowResult.renderPaneBounds,
-    processName: windowResult.processName,
-    pid: verifiedWindow.pid,
-    hWnd: verifiedWindow.hWnd,
-    left: verifiedWindow.left,
-    top: verifiedWindow.top,
-    width: verifiedWindow.width,
-    height: verifiedWindow.height
   };
   const nextState = {
     ...state,
@@ -888,6 +1298,8 @@ module.exports = {
   MAX_MOMENTS_COMMENT_LENGTH,
   momentsPostIdentityPrefix,
   momentsPostFingerprint,
+  momentsPostDisplacementMatches,
+  momentsPostTextOverlap,
   prepareMomentsDryRun,
   preferredVisibleMomentsPost,
   probeWechatMomentsWindow,

@@ -5,6 +5,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const desktopDir = path.resolve(__dirname, "..");
+const productBrand = require("../product-brand.json");
 const {
   runTransactionalRelease,
   scanRelease,
@@ -73,7 +74,7 @@ function assertStageWorkflowContract() {
   assert.match(source, /\{ key: "agent", label: "微信拓客", icon: UsersRound, children: agentChildren \}/, "the personal WeChat group must use the 微信拓客 product name");
   assert.equal(source.includes("个微Agent"), false, "the retired 个微Agent name must not remain in the UI");
   assert.equal(source.includes("小玺AI员工"), false, "the retired app name must not remain in the UI");
-  assert.match(source, /<span>AI获客/, "the app brand must use AI获客");
+  assert.match(source, /productBrand\.displayName/, "the app brand must use the shared V1.0 product name");
   assert.match(source, /<MomentsOperations \/>/, "the unified moments entry must render its own page");
   const moduleAvailability = source.match(/function moduleIsAvailable\(key: ModuleKey\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
   assert.match(moduleAvailability, /"moments"/, "moments operations must not render together with the placeholder page");
@@ -92,10 +93,11 @@ function assertMomentsActionEditionBoundary() {
   const deliveryMain = ["active-touch-ipc.cjs", "preload.cjs", "preload-api.cjs"]
     .map((name) => read(path.join(desktopDir, "src", "main", name)))
     .join("\n");
-  const campaignMain = ["main.cjs", "moments-campaign-ipc.cjs", "preload-api.cjs", "preload.cjs"]
+  const campaignMain = ["main.cjs", "moments-campaign-ipc.cjs", "moments-publish-ipc.cjs", "preload-api.cjs", "preload.cjs"]
     .map((name) => read(path.join(desktopDir, "src", "main", name)))
     .join("\n");
   assert.match(campaignMain, /moments-campaign:start/, "delivery must expose the scoped Moments campaign bridge");
+  assert.match(campaignMain, /moments-publish:confirm/, "delivery must expose the double-confirmed Moments publish bridge");
   for (const marker of momentsActionIpcMarkers) {
     assert.equal(developmentMain.includes(marker), true, `test-only main process must contain ${marker}`);
     assert.equal(deliveryMain.includes(marker), false, `delivery main process must not contain ${marker}`);
@@ -107,8 +109,10 @@ function assertMomentsActionEditionBoundary() {
   }
   const app = read(path.join(desktopDir, "src", "renderer", "App.tsx"));
   assert.match(app, /const MomentsCampaignPanel = REAL_SEND_EDITION \? lazy/, "Moments campaign UI must be available in pilot and development editions");
+  assert.match(app, /const MomentsPublishPanel = REAL_SEND_EDITION \? lazy/, "Moments publish UI must be available in pilot and development editions");
   assert.match(app, /const MomentsDryRunPanel = DEVELOPMENT_EDITION \? lazy/, "single-post Moments controls must remain behind the test-edition build gate");
   assert.match(read(path.join(desktopDir, "src", "main", "main.cjs")), /developmentEdition \|\| pilotEdition\s+\? require\("\.\/moments-campaign-ipc\.cjs"\)/, "pilot main process must register Moments campaign IPC");
+  assert.match(read(path.join(desktopDir, "src", "main", "main.cjs")), /developmentEdition \|\| pilotEdition\s+\? require\("\.\/moments-publish-ipc\.cjs"\)/, "pilot main process must register Moments publish IPC");
   const panel = read(path.join(desktopDir, "src", "renderer", "MomentsDryRunPanel.tsx"));
   for (const marker of momentsActionUiMarkers) assert.equal(panel.includes(marker), true, `test-only Moments panel must contain ${marker}`);
 }
@@ -137,6 +141,9 @@ assert.match(read(path.join(desktopDir, "scripts", "build-portable-release.cjs")
 for (const name of [
   "moments_dry_run.dev.cjs",
   "moments_navigation.dev.cjs",
+  "moments_surface_profile.dev.cjs",
+  "moments_surface_evidence.dev.cjs",
+  "moments_publish_driver.dev.cjs",
   "moments_dry_run_cli.dev.cjs",
   "moments_action.dev.cjs",
   "moments_action_cli.dev.cjs",
@@ -173,9 +180,14 @@ assert.equal(read(path.join(desktopDir, "package.json")).includes("build:test"),
 assert.equal(read(path.join(desktopDir, "package.json")).includes("build:delivery"), true);
 assert.equal(read(path.join(desktopDir, "package.json")).includes("build:customer"), false);
 const packageMetadata = JSON.parse(read(path.join(desktopDir, "package.json")));
-assert.equal(packageMetadata.productName, "AI获客");
-assert.equal(packageMetadata.version, "0.2.0");
+assert.equal(packageMetadata.productName, productBrand.displayName);
+assert.equal(packageMetadata.version, "1.0.0");
 const portableBuilderSource = read(path.join(desktopDir, "scripts", "build-portable-release.cjs"));
+assert.match(
+  portableBuilderSource,
+  /copyFileSync\(path\.join\(desktopDir, "product-brand\.json"\), path\.join\(appDir, "product-brand\.json"\)\)/,
+  "portable releases must include the shared product brand configuration"
+);
 assert.equal(portableBuilderSource.includes("localeCompare"), false, "release ordering must not depend on the host locale");
 assert.equal(portableBuilderSource.includes("removeLegacyProducts"), false, "ordinary releases must not delete other editions or retired brands");
 assert.match(read(path.join(desktopDir, "scripts", "portable-release.self_check.cjs")), /parsePortableArguments/);
@@ -237,9 +249,10 @@ assert.throws(() => verifyPortableArchive({
 
 const portablePathFixture = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-portable-paths-"));
 try {
+  const testProductName = `${productBrand.displayName}-测试版`;
   const stagingRoot = path.join(portablePathFixture, ".staging-test-fixture");
-  const target = path.join(stagingRoot, "AI获客-测试版");
-  const zip = path.join(stagingRoot, "AI获客-测试版.zip");
+  const target = path.join(stagingRoot, testProductName);
+  const zip = path.join(stagingRoot, `${testProductName}.zip`);
   fs.mkdirSync(target, { recursive: true });
   fs.writeFileSync(zip, "fixture", "utf8");
   const resolved = resolvePortablePaths({
@@ -248,11 +261,11 @@ try {
     zipOption: zip,
     releaseRoot: portablePathFixture
   });
-  assert.equal(resolved.productName, "AI获客-测试版");
+  assert.equal(resolved.productName, testProductName);
   const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-portable-outside-"));
   try {
-    const outsideTarget = path.join(outsideRoot, "AI获客-测试版");
-    const outsideZip = path.join(outsideRoot, "AI获客-测试版.zip");
+    const outsideTarget = path.join(outsideRoot, testProductName);
+    const outsideZip = path.join(outsideRoot, `${testProductName}.zip`);
     fs.mkdirSync(outsideTarget);
     fs.writeFileSync(outsideZip, "fixture", "utf8");
     assert.throws(() => resolvePortablePaths({
@@ -267,7 +280,7 @@ try {
   assert.throws(() => resolvePortablePaths({
     edition: "test",
     targetOption: target,
-    zipOption: path.join(portablePathFixture, "AI获客-测试版.zip"),
+    zipOption: path.join(portablePathFixture, `${testProductName}.zip`),
     releaseRoot: portablePathFixture
   }), /same parent directory|does not exist/);
 } finally {

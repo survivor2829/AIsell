@@ -10,13 +10,27 @@ const {
 const { AUTO_REPLY_VISUAL_SCRIPT } = require("./wechat_auto_reply_visual_driver.dev.cjs");
 const {
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
-  WECHAT_STABLE_WINDOW_LAYOUT,
+  WECHAT_RPA_BACKGROUND_MIN_IDLE_MS,
+  WECHAT_RPA_WINDOW_LAYOUT_MODE,
   focusWechatWindowAsync,
   normalizeWechatMainWindowAsync,
+  prepareWechatRpaWindowAsync,
   runPowerShellAsync
 } = require("./wechat_window_driver.cjs");
 
-const normalizedWindow = { ok: true, normalized: true, pid: 81, hWnd: "91", x: 0, y: 0, width: 1100, height: 700, dpi: 120 };
+const normalizedWindow = {
+  ok: true,
+  normalized: true,
+  layoutMode: "stable_target",
+  focused: true,
+  pid: 81,
+  hWnd: "91",
+  x: 0,
+  y: 0,
+  width: 1100,
+  height: 700,
+  dpi: 120
+};
 function createWechatAutoReplyDriver(powerShellRunner, windowNormalizer = async () => normalizedWindow) {
   return createWechatAutoReplyDriverWithWindowLayout(powerShellRunner, windowNormalizer);
 }
@@ -32,25 +46,123 @@ assert.equal(normalized.ok, true);
 assert.equal(layoutCalls[0].script, NORMALIZE_WECHAT_WINDOW_SCRIPT);
 assert.equal(layoutCalls[0].env.XIAOXI_EXPECTED_PID, "81");
 assert.equal(layoutCalls[0].env.XIAOXI_EXPECTED_HWND, "91");
-assert.equal(layoutCalls[0].env.XIAOXI_WECHAT_WINDOW_WIDTH, String(WECHAT_STABLE_WINDOW_LAYOUT.width));
-assert.equal(layoutCalls[0].env.XIAOXI_WECHAT_WINDOW_HEIGHT, String(WECHAT_STABLE_WINDOW_LAYOUT.height));
-assert.deepEqual(WECHAT_STABLE_WINDOW_LAYOUT, { width: 880, height: 560 }, "the shared layout must be expressed in logical pixels");
+assert.equal(layoutCalls[0].env.XIAOXI_WECHAT_WINDOW_WIDTH, undefined);
+assert.equal(layoutCalls[0].env.XIAOXI_WECHAT_WINDOW_HEIGHT, undefined);
+assert.equal(layoutCalls[0].env.XIAOXI_WECHAT_MIN_IDLE_MS, "0", "legacy normalization stays best-effort unless a caller opts into an idle gate");
+assert.equal(WECHAT_RPA_WINDOW_LAYOUT_MODE, "stable_target");
+assert.equal(WECHAT_RPA_BACKGROUND_MIN_IDLE_MS, 15_000);
 assert.equal(layoutCalls[0].options.ensure, false, "the canonical normalizer must not run a second legacy window detector first");
-assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /SetWindowPos/);
+assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /SetWindowPos\(\$hWnd, \[IntPtr\]::Zero, \$workArea\.Left, \$workArea\.Top, \$width, \$height, 0x0014\)/);
+assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /IsZoomed/);
+assert.doesNotMatch(NORMALIZE_WECHAT_WINDOW_SCRIPT, /ShowWindowAsync\(\$hWnd, 3\)/, "the shared chat layout must not maximize WeChat");
+assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /\$targetWidth = 1120[\s\S]*\$targetHeight = 760/u);
+assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /\[System\.Windows\.Forms\.Screen\]::FromHandle\(\$hWnd\)\.WorkingArea/);
 assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /SetThreadDpiAwarenessContext/);
 assert.doesNotMatch(NORMALIZE_WECHAT_WINDOW_SCRIPT, /SetProcessDPIAware/);
 assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /GetDpiForWindow/);
-assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /\$targetWidth \* \$dpiScale/);
-assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /PrimaryScreen\.WorkingArea/);
-assert.ok(NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("$movedToTargetDisplay") < NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("GetDpiForWindow($hWnd)"), "mixed-DPI layout must move to the target display before reading its DPI");
+assert.doesNotMatch(NORMALIZE_WECHAT_WINDOW_SCRIPT, /PrimaryScreen\.WorkingArea/);
 assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /wechat_window_ambiguous/);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /\$expectedHandleWasProvided -and -not \$expectedHandleIsValid[\s\S]*wechat_window_identity_mismatch/u,
+  "an invalid exact HWND must fail before enumerating or arranging a different WeChat window"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /\$hiddenMainRecoveryEligible = -not \$visible[\s\S]*\$hasMainRenderChild[\s\S]*QWindowIcon[\s\S]*0x00040000[\s\S]*0x00000080/u,
+  "a tray-hidden WeChat main window must require its render child plus geometry, class, owner and Win32 style evidence"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /if \(-not \$exactExpectedHandle -and -not \$visible -and -not \$hiddenMainRecoveryEligible\) \{ return \$null \}/u,
+  "enumeration must retain only strongly evidenced hidden main windows instead of rejecting all hidden HWNDs"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /if \(-not \$expectedHandleIsValid\)[\s\S]*\$structuredMainMatches = @\(\$matches\.ToArray\(\) \| Where-Object \{ \$_\.hasMainRenderChild \}\)[\s\S]*\$structuredMainMatches\.Count -gt 0[\s\S]*\$matches\.Add\(\$structuredMainMatch\)/u,
+  "the main render child must outrank a visible auxiliary WeChat window"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /if \(\$structuredMainMatches\.Count -eq 0\)[\s\S]*\$matches = New-Object System\.Collections\.Generic\.List\[object\][\s\S]*elseif \(\$structuredMainMatches\.Count -gt 0\)/u,
+  "automatic discovery must fail closed instead of moving a visible auxiliary window when no structured main window exists"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /if \(\$matches\.Count -gt 1 -and @\(\$matches\.ToArray\(\) \| Where-Object \{ \$_\.hasMainRenderChild \}\)\.Count -gt 0\)[\s\S]*reason = "wechat_window_ambiguous"/u,
+  "multiple structurally valid personal WeChat main windows must fail closed instead of being selected by area"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /function Test-MatchedWechatWindowIdentity[\s\S]*if \(-not \(Test-MatchedWechatWindowIdentity \$hWnd \$matched\)\)[\s\S]*\$wasIconic = \[Win32WechatWindow\]::IsIconic\(\$hWnd\)[\s\S]*if \(\$wasIconic\) \{[\s\S]*ShowWindowAsync\(\$hWnd, 9\)[\s\S]*elseif \(-not \(Request-PersonalWechatActivation \$matched\)\)[\s\S]*for \(\$restoreAttempt = 0; \$restoreAttempt -lt 20; \$restoreAttempt\+\+\)[\s\S]*\$restoredIdentity = Test-MatchedWechatWindowIdentity \$hWnd \$matched/u,
+  "tray recovery must re-prove the exact main-window identity before and after its first UI side effect"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /processPath = \[string\]\$proc\.Path/u,
+  "the exact matched WeChat executable must be retained for native activation"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /function Request-PersonalWechatActivation\(\[object\]\$window\)[\s\S]*Test-Path -LiteralPath \$path -PathType Leaf[\s\S]*Start-Process -FilePath \$path -ArgumentList "--scene=startmenu"/u,
+  "a tray-hidden Qt main window must be restored through WeChat's installed start-menu activation contract"
+);
+const nativeActivationStart = NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("function Request-PersonalWechatActivation");
+const nativeActivationEnd = NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("function Request-ExactWechatForeground", nativeActivationStart);
+const nativeActivationSource = NORMALIZE_WECHAT_WINDOW_SCRIPT.slice(nativeActivationStart, nativeActivationEnd);
+assert.doesNotMatch(
+  nativeActivationSource,
+  /XIAOXI_WECHAT_EXE/u,
+  "native activation must never fall back from the matched process path to another installed WeChat"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /function Request-ExactWechatForeground\(\[IntPtr\]\$hWnd, \[object\]\$window, \[bool\]\$nativeActivationAlreadyRequested\)[\s\S]*if \(-not \$nativeActivationAlreadyRequested -and \(Request-PersonalWechatActivation \$window\)\)[\s\S]*GetForegroundWindow\(\) -eq \$hWnd[\s\S]*AttachThreadInput/u,
+  "foreground handoff must let WeChat reconcile its own Qt state before using the Win32 fallback"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /\$nativeActivationRequested = \$false[\s\S]*Request-PersonalWechatActivation \$matched[\s\S]*\$nativeActivationRequested = \$true[\s\S]*Request-ExactWechatForeground \$hWnd \$matched \$nativeActivationRequested/u,
+  "one window-preparation transaction must request WeChat native activation at most once"
+);
+assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /GetLastInputInfo/u);
+assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /wechat_user_active/u);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /\$matched = \$matches\[0\][\s\S]*?if \(-not \(Test-XiaoxiUserIdle\)\) \{ Stop-ForActiveUser \$matched\.pid \$hWnd; exit \}/u,
+  "a background preflight must defer while the user is active even when WeChat already has the target geometry"
+);
+assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /AttachThreadInput/u);
+assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /BringWindowToTop/u);
+assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /GetForegroundWindow\(\) -eq \$hWnd/u, "foreground success must be proven against the exact HWND");
 const windowDriverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.cjs"), "utf8");
 assert.doesNotMatch(windowDriverSource, /D:\\\\微信\\\\Weixin\\\\Weixin\.exe/u, "the launcher must not embed this development machine's WeChat path");
 assert.doesNotMatch(windowDriverSource, /(?:Left|Top) -gt -1000/u, "valid windows on a left-side monitor must not be rejected by coordinate magic numbers");
 await focusWechatWindowAsync({ expectedPid: 81, expectedHWnd: "91" }, layoutRunner);
-assert.equal(layoutCalls[1].script, NORMALIZE_WECHAT_WINDOW_SCRIPT, "active-touch focus must use the same stable window layout contract");
+assert.equal(layoutCalls[1].script, NORMALIZE_WECHAT_WINDOW_SCRIPT, "active-touch focus must use the same maximized work-area contract");
+
+const prepared = await prepareWechatRpaWindowAsync({
+  expectedPid: 81,
+  expectedHWnd: "91",
+  minIdleMs: WECHAT_RPA_BACKGROUND_MIN_IDLE_MS,
+  requireFocused: true
+}, layoutRunner);
+assert.equal(prepared.ok, true);
+assert.equal(layoutCalls[2].env.XIAOXI_WECHAT_MIN_IDLE_MS, "15000");
+assert.equal((await prepareWechatRpaWindowAsync({}, async () => ({
+  ...normalizedWindow,
+  normalized: false,
+  layoutMode: "current_usable"
+}))).reason, "wechat_window_not_ready");
+assert.equal((await prepareWechatRpaWindowAsync({ requireFocused: true }, async () => ({
+  ...normalizedWindow,
+  focused: false
+}))).reason, "wechat_window_not_foreground");
+assert.equal((await prepareWechatRpaWindowAsync({ expectedHWnd: "92" }, async () => normalizedWindow)).reason, "wechat_window_identity_mismatch");
+assert.equal((await prepareWechatRpaWindowAsync({}, async () => ({ ok: false, reason: "wechat_user_active" }))).reason, "wechat_user_active");
 
 const executionOrder = [];
+const executionPrepareContexts = [];
 const normalizedDriver = createWechatAutoReplyDriverWithWindowLayout(
   (script, env) => {
     executionOrder.push(env.XIAOXI_AUTO_REPLY_MODE);
@@ -60,8 +172,9 @@ const normalizedDriver = createWechatAutoReplyDriverWithWindowLayout(
     }
     return { ok: false, reason: "no_unread_message", pid: 81, hWnd: 91, window: { x: 0, y: 0, width: 1100, height: 700 }, dpi: 120 };
   },
-  async () => {
+  async (context) => {
     executionOrder.push("normalize");
+    executionPrepareContexts.push(context);
     return normalizedWindow;
   }
 );
@@ -72,10 +185,39 @@ assert.equal(
 );
 assert.deepEqual(executionOrder, ["normalize", "prime"], "the first scan must normalize once and establish a visual baseline");
 await normalizedDriver.scanWechatIncoming(["layout-cache-contact"]);
-assert.deepEqual(executionOrder, ["normalize", "prime", "scan"], "a stable WeChat identity must not be normalized again on every poll");
+assert.deepEqual(executionOrder, ["normalize", "prime", "normalize", "scan"], "every background poll must pass the shared strict window preflight");
+assert.equal(executionPrepareContexts[0].minIdleMs, WECHAT_RPA_BACKGROUND_MIN_IDLE_MS);
+assert.deepEqual(executionPrepareContexts[1], {
+  expectedPid: 81,
+  expectedHWnd: "91",
+  minIdleMs: WECHAT_RPA_BACKGROUND_MIN_IDLE_MS,
+  requireFocused: true
+}, "the next poll must freeze the exact PID/HWND learned by the first preflight");
+
+const retryPrepareContexts = [];
+const deferredPrimeDriver = createWechatAutoReplyDriverWithWindowLayout(
+  (script, env) => {
+    assert.equal(script, AUTO_REPLY_VISUAL_SCRIPT);
+    assert.equal(env.XIAOXI_AUTO_REPLY_MODE, "prime");
+    return { ok: false, reason: "history_ocr_failed" };
+  },
+  async (context) => {
+    retryPrepareContexts.push(context);
+    return normalizedWindow;
+  }
+);
+assert.equal((await deferredPrimeDriver.primeWechatSession(["deferred-prime-contact"])).reason, "history_ocr_failed");
+assert.equal((await deferredPrimeDriver.primeWechatSession(["deferred-prime-contact"])).reason, "history_ocr_failed");
+assert.equal(retryPrepareContexts[0].minIdleMs, 0);
+assert.equal(
+  retryPrepareContexts[1].minIdleMs,
+  WECHAT_RPA_BACKGROUND_MIN_IDLE_MS,
+  "a deferred prime retry runs in the background and must not steal an actively used desktop"
+);
 
 let movedScanCalls = 0;
 let movedNormalizeCalls = 0;
+const movedPrepareContexts = [];
 const movedWindowDriver = createWechatAutoReplyDriverWithWindowLayout(
   (script, env) => {
     assert.equal(script, AUTO_REPLY_VISUAL_SCRIPT);
@@ -94,16 +236,86 @@ const movedWindowDriver = createWechatAutoReplyDriverWithWindowLayout(
       dpi: 120
     };
   },
-  async () => {
+  async (context) => {
     movedNormalizeCalls += 1;
+    movedPrepareContexts.push(context);
     return normalizedWindow;
   }
 );
 assert.equal((await movedWindowDriver.primeWechatSession(["layout-change-contact"])).primed, true);
 assert.equal((await movedWindowDriver.scanWechatIncoming(["layout-change-contact"])).reason, "no_unread_message");
-assert.equal(movedNormalizeCalls, 1);
+assert.equal(movedNormalizeCalls, 2);
 assert.equal((await movedWindowDriver.scanWechatIncoming(["layout-change-contact"])).reason, "wechat_window_changed");
-assert.equal(movedNormalizeCalls, 2, "a material window rectangle change must trigger one new normalization");
+assert.equal(movedNormalizeCalls, 3, "a changed rectangle is rejected in-place; repair is deferred to the next transaction entry");
+assert.deepEqual(movedPrepareContexts[0], { minIdleMs: 0, requireFocused: true }, "a user-started initial prime may arrange the explicitly requested WeChat window immediately");
+assert.equal(movedPrepareContexts[1].expectedPid, 81);
+assert.equal(movedPrepareContexts[1].expectedHWnd, "91");
+assert.equal(movedPrepareContexts[1].minIdleMs, WECHAT_RPA_BACKGROUND_MIN_IDLE_MS, "each background scan waits until the user has been idle");
+assert.equal(movedPrepareContexts[1].requireFocused, true);
+assert.equal(movedPrepareContexts[2].expectedPid, 81);
+assert.equal(movedPrepareContexts[2].expectedHWnd, "91");
+assert.equal(movedPrepareContexts[2].minIdleMs, WECHAT_RPA_BACKGROUND_MIN_IDLE_MS);
+
+let blockedBackgroundScannerCalls = 0;
+let blockedBackgroundPrepareCalls = 0;
+const blockedBackgroundScan = createWechatAutoReplyDriverWithWindowLayout(
+  (script, env) => {
+    blockedBackgroundScannerCalls += 1;
+    assert.equal(env.XIAOXI_AUTO_REPLY_MODE, "prime");
+    return { ok: true, source: "session_prime", pid: 81, hWnd: 91 };
+  },
+  async () => {
+    blockedBackgroundPrepareCalls += 1;
+    return blockedBackgroundPrepareCalls === 1
+      ? normalizedWindow
+      : { ok: false, reason: "wechat_user_active" };
+  }
+);
+assert.equal((await blockedBackgroundScan.primeWechatSession(["background-idle-contact"])).primed, true);
+assert.equal((await blockedBackgroundScan.scanWechatIncoming(["background-idle-contact"])).reason, "wechat_user_active");
+assert.equal(blockedBackgroundScannerCalls, 1, "an active user must stop the poll before any scan script can focus or input");
+
+const restartedPrepareContexts = [];
+const restartedScannerModes = [];
+let restartedPrepareAttempt = 0;
+const restartedWindowDriver = createWechatAutoReplyDriverWithWindowLayout(
+  (script, env) => {
+    restartedScannerModes.push(env.XIAOXI_AUTO_REPLY_MODE);
+    return {
+      ok: true,
+      source: "session_prime",
+      pid: restartedScannerModes.length === 1 ? 81 : 82,
+      hWnd: restartedScannerModes.length === 1 ? 91 : 92
+    };
+  },
+  async (context) => {
+    restartedPrepareContexts.push(context);
+    restartedPrepareAttempt += 1;
+    if (restartedPrepareAttempt === 2) return { ok: false, reason: "wechat_window_identity_mismatch" };
+    return restartedPrepareAttempt === 1
+      ? normalizedWindow
+      : { ...normalizedWindow, pid: 82, hWnd: "92" };
+  }
+);
+assert.equal((await restartedWindowDriver.primeWechatSession(["restarted-window-contact"])).primed, true);
+assert.equal(
+  (await restartedWindowDriver.scanWechatIncoming(["restarted-window-contact"])).reason,
+  "wechat_window_identity_mismatch",
+  "the first poll after a restart must reset the stale exact binding without scanning"
+);
+assert.deepEqual(restartedScannerModes, ["prime"]);
+assert.equal(
+  (await restartedWindowDriver.scanWechatIncoming(["restarted-window-contact"])).reason,
+  "current_session_baselined",
+  "the next idle poll may discover the replacement HWND but must establish a fresh baseline before emitting a candidate"
+);
+assert.deepEqual(restartedScannerModes, ["prime", "prime"]);
+assert.equal(restartedPrepareContexts[1].expectedPid, 81);
+assert.equal(restartedPrepareContexts[1].expectedHWnd, "91");
+assert.equal(restartedPrepareContexts[1].minIdleMs, WECHAT_RPA_BACKGROUND_MIN_IDLE_MS);
+assert.equal(restartedPrepareContexts[2].expectedPid, undefined);
+assert.equal(restartedPrepareContexts[2].expectedHWnd, undefined);
+assert.equal(restartedPrepareContexts[2].minIdleMs, WECHAT_RPA_BACKGROUND_MIN_IDLE_MS);
 let blockedScanCalls = 0;
 const blockedByLayout = createWechatAutoReplyDriverWithWindowLayout(
   () => { blockedScanCalls += 1; return { ok: true }; },
@@ -111,6 +323,21 @@ const blockedByLayout = createWechatAutoReplyDriverWithWindowLayout(
 );
 assert.equal((await blockedByLayout.primeWechatSession(["张总"])).reason, "wechat_window_not_ready");
 assert.equal(blockedScanCalls, 0, "a failed window layout must stop before the auto-reply scanner runs");
+
+const blockedByBestEffortLayout = createWechatAutoReplyDriverWithWindowLayout(
+  () => { throw new Error("scanner must not run"); },
+  async () => ({ ...normalizedWindow, normalized: false, layoutMode: "current_usable" })
+);
+assert.equal(
+  (await blockedByBestEffortLayout.primeWechatSession(["strict-layout-contact"])).reason,
+  "wechat_window_not_ready",
+  "auto-reply execution must not accept the legacy best-effort layout result"
+);
+const blockedByMissingFocus = createWechatAutoReplyDriverWithWindowLayout(
+  () => { throw new Error("scanner must not run"); },
+  async () => ({ ...normalizedWindow, focused: false })
+);
+assert.equal((await blockedByMissingFocus.primeWechatSession(["strict-focus-contact"])).reason, "wechat_window_not_foreground");
 
 assert.equal(classifyAvatarSide({ leftAvatar: true, rightAvatar: false, textWidth: 80 }), "user", "short incoming text must use the left avatar");
 assert.equal(classifyAvatarSide({ leftAvatar: true, rightAvatar: false, textWidth: 760 }), "user", "long incoming text must not become outgoing");
@@ -221,6 +448,10 @@ assert.equal(calls[0].options.sta, true);
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("$automationId.StartsWith(\"session_item_\""), true, "current WeChat session items must match by their exact automation-id prefix and allowed name");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("\\[[1-9][0-9]*条\\]"), true, "current WeChat unread count must be recognized from the session item name");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("selection.Select(); Start-Sleep -Milliseconds 400; return $true"), false, "selection hints must not bypass the click fallback");
+assert.doesNotMatch(AUTO_REPLY_SCAN_SCRIPT, /ShowWindowAsync|SetForegroundWindow|AppActivate/u, "the exact scan transaction must never steal foreground after its shared preflight");
+assert.match(AUTO_REPLY_SCAN_SCRIPT, /function Test-ExactPointOwned[\s\S]*WindowFromPoint[\s\S]*GetAncestor[\s\S]*GetWindowThreadProcessId/u, "the fallback click must prove exact HWND and PID ownership");
+assert.match(AUTO_REPLY_SCAN_SCRIPT, /function Open-Session[\s\S]*Test-ExactForeground[\s\S]*SelectionItemPattern[\s\S]*Test-ExactForeground[\s\S]*InvokePattern[\s\S]*Test-ExactForeground[\s\S]*mouse_event/u, "session opening must recheck the exact foreground around every input path");
+assert.match(AUTO_REPLY_SCAN_SCRIPT, /Test-ExactForeground \$hWnd[^]*SetScrollPercent[^]*Test-ExactForeground \$hWnd[^]*SetScrollPercent/u, "history inspection must not scroll after the exact window loses foreground");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("chat_message_list.qt_scrollarea_viewport.chat_bubble_item_view"), true, "current WeChat message bubbles must be accepted by exact automation id");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("function Get-SessionPreview"), true, "the unread session preview must prove which bubble is incoming");
 assert.equal(AUTO_REPLY_SCAN_SCRIPT.includes("unread_preview_mismatch"), true, "preview and latest bubble mismatch must fail closed");
@@ -473,7 +704,7 @@ assert.equal(processChangeCalls[1].XIAOXI_EXPECTED_PID, "81");
 assert.equal(processChangeCalls[1].XIAOXI_EXPECTED_HWND, "91");
 assert.equal(processChangeCalls[2].XIAOXI_EXPECTED_PID, "82");
 assert.equal(processChangeCalls[2].XIAOXI_EXPECTED_HWND, "92");
-assert.equal(processChangeNormalizeCalls, 2, "a dead visual window identity must cause exactly one new normalization");
+assert.equal(processChangeNormalizeCalls, 3, "each scan must preflight, including the fresh-baseline transaction after a dead visual window identity");
 
 const visualFencePreview0 = "1".repeat(64);
 const visualFencePreview1 = "2".repeat(64);

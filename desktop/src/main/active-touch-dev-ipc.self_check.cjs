@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const Module = require("node:module");
 const path = require("node:path");
 const { MAX_MOMENTS_COMMENT_LENGTH } = require("../../rpa/active_touch/moments_dry_run.dev.cjs");
@@ -8,6 +9,9 @@ const runnerCalls = [];
 const armCalls = [];
 const executeCalls = [];
 const coordinatorEvents = [];
+const momentsOpenCalls = [];
+const momentsContextCalls = [];
+const diagnosticEvents = [];
 let coordinatorBusy = false;
 let coordinatorOwner = 0;
 let coordinatorActiveOwner = "";
@@ -18,6 +22,40 @@ let runBehavior = async (args, options) => {
 let executeBehavior = async (options) => {
   executeCalls.push(options);
   return { ok: true, action: "send", state: { real_send_status: "sent_verified" } };
+};
+let momentsOpenBehavior = async (options) => {
+  momentsOpenCalls.push(options);
+  return {
+    ok: true,
+    action: "moments-open",
+    surfaceMode: "integrated",
+    pid: 42,
+    hWnd: "84",
+    title: "微信",
+    className: "mmui::MainWindow",
+    x: 0,
+    y: 0,
+    width: 1064,
+    height: 686,
+    dpi: 96,
+    focused: true,
+    normalized: true,
+    layoutMode: "stable_target"
+  };
+};
+let momentsContextBehavior = (baseDir, observationId) => {
+  momentsContextCalls.push({ baseDir, observationId });
+  return {
+    ok: true,
+    expectedWindow: {
+      pid: 42,
+      hWnd: "84",
+      left: 0,
+      top: 0,
+      width: 1064,
+      height: 686
+    }
+  };
 };
 
 const originalLoad = Module._load;
@@ -34,6 +72,15 @@ Module._load = function load(request, parent, isMain) {
     };
   }
   if (request === "../../rpa/active_touch/moments_dry_run.dev.cjs") return { MAX_MOMENTS_COMMENT_LENGTH };
+  if (request === "../../rpa/active_touch/moments_action.dev.cjs") {
+    return { loadMomentsActionContext: (baseDir, observationId) => momentsContextBehavior(baseDir, observationId) };
+  }
+  if (request === "../../rpa/active_touch/moments_navigation.dev.cjs") {
+    return { openWechatMoments: (options) => momentsOpenBehavior(options) };
+  }
+  if (request === "./diagnostics.cjs") {
+    return { diagnostics: () => ({ event: (...args) => diagnosticEvents.push(args) }) };
+  }
   return originalLoad.call(this, request, parent, isMain);
 };
 
@@ -107,21 +154,39 @@ const momentsComment = handlers.get("active-touch:dev-moments-comment");
   assert.equal(mainWindowFocusCalls, 0, "preview must not refocus before its worker settles");
   resolveDryRun({ ok: true, action: "moments-dry-run" });
   assert.equal((await pendingDryRun).ok, true);
-  assert.equal(mainWindowShowCalls, 1, "preview must restore the main window after its worker settles");
-  assert.equal(mainWindowFocusCalls, 1, "preview must restore focus after its worker settles");
-  assert.deepEqual(runnerCalls, [{
-    args: [
-      "moments-dry-run",
-      "--mode",
-      "targeted",
-      "--like",
-      "--comment-enabled",
-      "--comment-text-base64",
-      Buffer.from("您好", "utf8").toString("base64")
-    ],
-    options: { cliName: "moments_dry_run_cli.dev.cjs", dataDir: "moments-data", timeoutMs: 45000 }
-  }]);
+  assert.equal(mainWindowShowCalls, 0, "preview completion must not steal the user's foreground window");
+  assert.equal(mainWindowFocusCalls, 0, "preview completion must not steal focus");
+  assert.equal(momentsOpenCalls.length, 1);
+  assert.deepEqual(momentsOpenCalls[0], { allowIntegrated: true, minIdleMs: 0 });
+  assert.equal(runnerCalls.length, 1);
+  assert.deepEqual(runnerCalls[0].args.slice(0, 7), [
+    "moments-dry-run",
+    "--mode",
+    "targeted",
+    "--like",
+    "--comment-enabled",
+    "--comment-text-base64",
+    Buffer.from("您好", "utf8").toString("base64")
+  ]);
+  assert.equal(runnerCalls[0].args[7], "--expected-window-base64");
+  const expectedWindow = JSON.parse(Buffer.from(runnerCalls[0].args[8], "base64").toString("utf8"));
+  assert.equal(expectedWindow.surfaceMode, "integrated");
+  assert.equal(expectedWindow.pid, 42);
+  assert.equal(expectedWindow.hWnd, "84");
+  assert.equal(expectedWindow.normalized, true);
+  momentsOpenCalls.length = 0;
+  assert.deepEqual(runnerCalls[0].options, {
+    cliName: "moments_dry_run_cli.dev.cjs",
+    dataDir: "moments-data",
+    owner: "moments-owner-1",
+    phase: "developer:moments-dry-run",
+    timeoutMs: 45000
+  });
+  assert.equal(coordinatorEvents[0][1].phase, "developer:moments-dry-run");
+  assert.deepEqual(coordinatorEvents[1], ["release", "moments-owner-1"]);
   runnerCalls.length = 0;
+  coordinatorEvents.length = 0;
+  coordinatorOwner = 0;
   runBehavior = async (args, options) => {
     runnerCalls.push({ args, options });
     return { ok: true, action: args[0] };
@@ -150,6 +215,19 @@ const momentsComment = handlers.get("active-touch:dev-moments-comment");
 
   const inspectToken = "moments-inspect:inspect-1";
   assert.equal((await momentsInspect({ sender: webContents }, { observationId, clickToken: inspectToken })).ok, true);
+  assert.deepEqual(momentsContextCalls[0], { baseDir: "moments-data", observationId });
+  assert.deepEqual(momentsOpenCalls[0], {
+    allowIntegrated: true,
+    minIdleMs: 0,
+    expectedWindow: {
+      pid: 42,
+      hWnd: "84",
+      left: 0,
+      top: 0,
+      width: 1064,
+      height: 686
+    }
+  });
   assert.deepEqual(runnerCalls, [{
     args: ["moments-inspect-menu", "--observation-id", observationId],
     options: {
@@ -162,8 +240,8 @@ const momentsComment = handlers.get("active-touch:dev-moments-comment");
   }]);
   assert.equal(coordinatorEvents[0][1].phase, "developer:moments-inspect-menu");
   assert.deepEqual(coordinatorEvents[1], ["release", "moments-owner-1"]);
-  assert.equal(mainWindowShowCalls, 2);
-  assert.equal(mainWindowFocusCalls, 2);
+  assert.equal(mainWindowShowCalls, 0, "menu inspection completion must not show the app over the user's work");
+  assert.equal(mainWindowFocusCalls, 0, "menu inspection completion must not steal focus");
   assert.equal((await momentsInspect({ sender: webContents }, { observationId, clickToken: inspectToken })).blocked_reason, "trusted_user_click_required");
 
   coordinatorBusy = true;
@@ -254,8 +332,8 @@ const momentsComment = handlers.get("active-touch:dev-moments-comment");
   });
   assert.equal(timedOutInspect.status, "blocked");
   assert.equal(timedOutInspect.real_action_attempted, false);
-  assert.equal(mainWindowShowCalls, 3);
-  assert.equal(mainWindowFocusCalls, 3);
+  assert.equal(mainWindowShowCalls, 0, "inspection timeout must remain passive");
+  assert.equal(mainWindowFocusCalls, 0, "inspection timeout must not steal focus");
   const timedOutComment = await momentsComment({ sender: webContents }, {
     observationId,
     clickToken: "moments-comment:timeout",
@@ -302,6 +380,96 @@ const momentsComment = handlers.get("active-touch:dev-moments-comment");
   assert.equal(crashedSend.send_attempted, null);
   assert.deepEqual(armCalls.at(-1), ["test-data", false]);
 
+  const runnerCallsBeforeNavigationBlock = runnerCalls.length;
+  const refocusCallsBeforeNavigationBlock = mainWindowFocusCalls;
+  momentsOpenBehavior = async (options) => {
+    momentsOpenCalls.push(options);
+    return { ok: false, reason: "wechat_user_active" };
+  };
+  const navigationBlockedDryRun = await momentsDryRun({}, {
+    mode: "targeted",
+    likeEnabled: true
+  });
+  assert.equal(navigationBlockedDryRun.blocked_reason, "wechat_user_active");
+  assert.equal(navigationBlockedDryRun.real_action_attempted, false);
+  assert.equal(runnerCalls.length, runnerCallsBeforeNavigationBlock, "blocked navigation must not start the dry-run worker");
+  assert.equal(coordinatorActiveOwner, "", "blocked navigation must release the WeChat runtime lock");
+  assert.equal(mainWindowFocusCalls, refocusCallsBeforeNavigationBlock, "blocked navigation must not steal the user's screen");
+
+  diagnosticEvents.length = 0;
+  momentsOpenBehavior = async (options) => {
+    momentsOpenCalls.push(options);
+    return {
+      ok: false,
+      reason: "moments_discover_entry_not_found",
+      diagnostics: {
+        discover: {
+          dpi: 120,
+          scale: 1.25,
+          region: { left: 8, top: 80, width: 44, height: 260 },
+          activePixelCount: 412,
+          candidateCount: 4,
+          exactMatchCount: 0,
+          selectedMatchCount: 0,
+          screenshot_base64: "must-not-survive",
+          ocr_text: "must-not-survive",
+          candidates: [{
+            bounds: { left: 24, top: 310, width: 26, height: 26 },
+            centerX: 37,
+            centerY: 323,
+            activePixelCount: 178,
+            fillRatio: 0.424,
+            aspectRatio: 1.05,
+            cornerRatio: 0.029,
+            ringRatio: 0.636,
+            diagonalContrast: 0.243,
+            greenRatio: 0,
+            matched: false,
+            selected: false,
+            raw_pixels: "must-not-survive",
+            contact_name: "must-not-survive"
+          }]
+        },
+        raw_pixels: "must-not-survive"
+      }
+    };
+  };
+  const diagnosticBlockedDryRun = await momentsDryRun({}, { mode: "targeted", likeEnabled: true });
+  assert.equal(diagnosticBlockedDryRun.blocked_reason, "moments_discover_entry_not_found");
+  assert.deepEqual(diagnosticBlockedDryRun.diagnostics, {
+    discover: {
+      dpi: 120,
+      scale: 1.25,
+      region: { left: 8, top: 80, width: 44, height: 260 },
+      activePixelCount: 412,
+      candidateCount: 4,
+      exactMatchCount: 0,
+      selectedMatchCount: 0,
+      candidates: [{
+        bounds: { left: 24, top: 310, width: 26, height: 26 },
+        centerX: 37,
+        centerY: 323,
+        activePixelCount: 178,
+        fillRatio: 0.424,
+        aspectRatio: 1.05,
+        cornerRatio: 0.029,
+        ringRatio: 0.636,
+        diagonalContrast: 0.243,
+        greenRatio: 0,
+        matched: false,
+        selected: false
+      }]
+    }
+  });
+  assert.equal(JSON.stringify(diagnosticBlockedDryRun).includes("must-not-survive"), false);
+  assert.equal(diagnosticEvents.length, 1);
+  assert.equal(diagnosticEvents[0][0], "wechat_adapter");
+  assert.equal(diagnosticEvents[0][1], "moments_navigation_blocked");
+  assert.deepEqual(diagnosticEvents[0][2].diagnostics, diagnosticBlockedDryRun.diagnostics);
+  assert.equal(JSON.stringify(diagnosticEvents[0]).includes("must-not-survive"), false);
+  assert.equal(diagnosticEvents[0][3].code, "moments_discover_entry_not_found");
+  assert.equal(coordinatorActiveOwner, "", "diagnostic navigation block must release the WeChat runtime lock");
+
   const callsBeforeMissingCoordinator = runnerCalls.length;
   registerActiveTouchDevIpc({ activeTouchDir: "test-data", momentsDir: "moments-data", getMainWindow: () => mainWindow });
   const missingCoordinatorInspect = handlers.get("active-touch:dev-moments-inspect-menu");
@@ -312,6 +480,11 @@ const momentsComment = handlers.get("active-touch:dev-moments-comment");
   assert.equal(missingCoordinator.blocked_reason, "runtime_coordinator_unavailable");
   assert.equal(missingCoordinator.real_action_attempted, false);
   assert.equal(runnerCalls.length, callsBeforeMissingCoordinator);
+
+  const ipcSource = fs.readFileSync(modulePath, "utf8");
+  assert.equal(ipcSource.includes("refocusMainWindow"), false);
+  assert.equal(ipcSource.includes("mainWindow.show()"), false);
+  assert.equal(ipcSource.includes("mainWindow.focus()"), false);
 
   console.log("active-touch-dev-ipc self-check passed");
 })().catch((error) => {

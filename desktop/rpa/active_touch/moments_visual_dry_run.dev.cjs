@@ -1,5 +1,11 @@
 const { runPowerShell } = require("./wechat_window_driver.cjs");
 const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require("./moments_visual_probe.dev.cjs");
+const {
+  normalizeExpectedMomentsSurface
+} = require("./moments_surface_profile.dev.cjs");
+const {
+  MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL
+} = require("./moments_surface_evidence.dev.cjs");
 
 const MOMENTS_VISUAL_STABILITY_TOLERANCE_PX = 12;
 
@@ -21,10 +27,12 @@ public static class Win32WechatMomentsVisualProbe {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int maxCount);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
 }
 "@
 
 ${MOMENTS_VISUAL_READONLY_POWERSHELL}
+${MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL}
 
 function Write-Result($value) {
   $value | ConvertTo-Json -Compress -Depth 10
@@ -62,35 +70,59 @@ function Test-VisualBoundsInside($inner, $outer) {
     ($inner.top + $inner.height) -le ($outer.top + $outer.height)
 }
 
-function Test-VisualMenuSequence($first, $second) {
-  $left = @($first)
-  $right = @($second)
-  if ($left.Count -ne $right.Count) { return $false }
-  for ($index = 0; $index -lt $left.Count; $index++) {
-    if ([Math]::Abs([double]$left[$index].centerX - [double]$right[$index].centerX) -gt $script:momentsVisualStabilityTolerancePx -or
-      [Math]::Abs([double]$left[$index].centerY - [double]$right[$index].centerY) -gt $script:momentsVisualStabilityTolerancePx) { return $false }
-  }
-  return $true
-}
-
-function Test-VisualPostSequence($first, $second) {
-  $left = @($first)
-  $right = @($second)
-  if ($left.Count -ne $right.Count) { return $false }
-  for ($index = 0; $index -lt $left.Count; $index++) {
-    if (-not (Test-MomentsStablePostIdentityText ([string]$left[$index].identityText) ([string]$right[$index].identityText) ([string]$left[$index].stableAnchorText) ([string]$right[$index].stableAnchorText)) -or
-      [string]$left[$index].avatarHash -cne [string]$right[$index].avatarHash -or
-      [bool]$left[$index].partialVisible -ne [bool]$right[$index].partialVisible) { return $false }
-    foreach ($boundsField in @("bounds", "menuBounds", "avatarBounds")) {
-      foreach ($coordinate in @("left", "top", "width", "height")) {
-        if ([Math]::Abs([double]$left[$index].$boundsField.$coordinate - [double]$right[$index].$boundsField.$coordinate) -gt $script:momentsVisualStabilityTolerancePx) { return $false }
+function Test-VisualStableBoundsFields($left, $right, $boundsFields) {
+  foreach ($boundsField in @($boundsFields)) {
+    foreach ($coordinate in @("left", "top", "width", "height")) {
+      if ([Math]::Abs([double]$left.$boundsField.$coordinate - [double]$right.$boundsField.$coordinate) -gt $script:momentsVisualStabilityTolerancePx) {
+        return $false
       }
     }
   }
   return $true
 }
 
+function Test-VisualStableCandidate($left, $right, [string]$kind) {
+  if ($kind -ceq "menu") {
+    return [Math]::Abs([double]$left.centerX - [double]$right.centerX) -le $script:momentsVisualStabilityTolerancePx -and
+      [Math]::Abs([double]$left.centerY - [double]$right.centerY) -le $script:momentsVisualStabilityTolerancePx -and
+      (Test-VisualStableBoundsFields $left $right @("bounds"))
+  }
+  if (@("post", "reading") -notcontains $kind) { return $false }
+  if (-not (Test-MomentsStablePostIdentityText ([string]$left.identityText) ([string]$right.identityText) ([string]$left.stableAnchorText) ([string]$right.stableAnchorText)) -or
+    [string]$left.avatarHash -cne [string]$right.avatarHash) { return $false }
+  if ($kind -ceq "post" -and [bool]$left.partialVisible -ne [bool]$right.partialVisible) { return $false }
+  $boundsFields = $(if ($kind -ceq "post") { @("bounds", "menuBounds", "avatarBounds") } else { @("bounds", "avatarBounds") })
+  return Test-VisualStableBoundsFields $left $right $boundsFields
+}
+
+function Get-UniqueStableVisualCandidates($first, $second, [string]$kind) {
+  $left = @($first)
+  $right = @($second)
+  $stable = New-Object System.Collections.Generic.List[object]
+  foreach ($candidate in $right) {
+    $leftMatches = @($left | Where-Object { Test-VisualStableCandidate $_ $candidate $kind })
+    if ($leftMatches.Count -ne 1) { continue }
+    $source = $leftMatches[0]
+    $rightMatches = @($right | Where-Object { Test-VisualStableCandidate $source $_ $kind })
+    if ($rightMatches.Count -ne 1) { continue }
+    [void]$stable.Add($candidate)
+  }
+  return @($stable.ToArray() | Sort-Object { [double]$_.bounds.top })
+}
+
+function Get-ExpectedMomentsSurface {
+  try {
+    if ([string]::IsNullOrWhiteSpace([string]$env:XIAOXI_MOMENTS_EXPECTED_SURFACE_BASE64)) { return $null }
+    $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$env:XIAOXI_MOMENTS_EXPECTED_SURFACE_BASE64))
+    return $json | ConvertFrom-Json
+  } catch {
+    return $null
+  }
+}
+
 $processNames = @("Weixin", "WeChat")
+$expectedSurface = Get-ExpectedMomentsSurface
+$allowBodyOnly = [string]$env:XIAOXI_MOMENTS_ALLOW_BODY_ONLY -ceq "1"
 $script:matches = @()
 $callback = [Win32WechatMomentsVisualProbe+EnumWindowsProc]{
   param([IntPtr]$hWnd, [IntPtr]$lParam)
@@ -100,11 +132,16 @@ $callback = [Win32WechatMomentsVisualProbe+EnumWindowsProc]{
   [void][Win32WechatMomentsVisualProbe]::GetWindowText($hWnd, $titleText, $titleText.Capacity)
   [void][Win32WechatMomentsVisualProbe]::GetClassName($hWnd, $classText, $classText.Capacity)
   $title = $titleText.ToString().Trim()
-  if ($title -cne "朋友圈") { return $true }
+  $className = $classText.ToString().Trim()
+  if ($expectedSurface -ne $null) {
+    if ([string]$expectedSurface.hWnd -cne [string]$hWnd.ToInt64() -or
+      [string]$expectedSurface.title -cne $title -or [string]$expectedSurface.className -cne $className) { return $true }
+  } elseif (@("朋友圈", "微信") -notcontains $title) { return $true }
   [uint32]$windowProcessId = 0
   [void][Win32WechatMomentsVisualProbe]::GetWindowThreadProcessId($hWnd, [ref]$windowProcessId)
   $process = Get-Process -Id $windowProcessId -ErrorAction SilentlyContinue
   if ($process -eq $null -or $processNames -notcontains $process.ProcessName) { return $true }
+  if ($expectedSurface -ne $null -and [int]$expectedSurface.pid -ne [int]$windowProcessId) { return $true }
   $rect = New-Object Win32WechatMomentsVisualProbe+RECT
   if (-not [Win32WechatMomentsVisualProbe]::GetWindowRect($hWnd, [ref]$rect)) { return $true }
   $width = $rect.Right - $rect.Left
@@ -112,7 +149,8 @@ $callback = [Win32WechatMomentsVisualProbe+EnumWindowsProc]{
   if ($width -lt 300 -or $height -lt 300) { return $true }
   $script:matches += @{
     title = $title
-    className = $classText.ToString().Trim()
+    className = $className
+    surfaceMode = $(if ($title -ceq "朋友圈") { "standalone" } else { "integrated" })
     processName = $process.ProcessName
     pid = [int]$windowProcessId
     hWnd = [string]$hWnd.ToInt64()
@@ -126,6 +164,58 @@ $callback = [Win32WechatMomentsVisualProbe+EnumWindowsProc]{
 }
 [void][Win32WechatMomentsVisualProbe]::EnumWindows($callback, [IntPtr]::Zero)
 if ($matches.Count -eq 0) { Write-Result @{ ok = $false; reason = "moments_window_not_found" } }
+
+$surfaceMatches = New-Object System.Collections.Generic.List[object]
+$surfaceFailureReason = "moments_window_identity_mismatch"
+foreach ($candidate in @($matches)) {
+  $candidateHWnd = [IntPtr][int64]$candidate.hWnd
+  try { $candidateRoot = [System.Windows.Automation.AutomationElement]::FromHandle($candidateHWnd) } catch { $candidateRoot = $null }
+  if ($candidateRoot -eq $null) { continue }
+  try {
+    $candidateRootAutomationId = [string]$candidateRoot.Current.AutomationId
+    $candidateRootName = [string]$candidateRoot.Current.Name
+    $candidateRootControlType = [string]$candidateRoot.Current.ControlType.ProgrammaticName
+    $candidateRootProcessId = [int]$candidateRoot.Current.ProcessId
+  } catch { continue }
+  $expectedRootName = $(if ([string]$candidate.surfaceMode -ceq "integrated") { "微信" } else { "朋友圈" })
+  if ($candidateRootAutomationId -cne "" -or $candidateRootName -cne $expectedRootName -or
+    $candidateRootControlType -cne "ControlType.Window" -or $candidateRootProcessId -ne [int]$candidate.pid) { continue }
+  $candidateFeeds = $candidateRoot.FindAll(
+    [System.Windows.Automation.TreeScope]::Descendants,
+    [System.Windows.Automation.PropertyCondition]::new(
+      [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+      "sns_list"
+    )
+  )
+  if ($candidateFeeds.Count -ne 0) { $surfaceFailureReason = "moments_visual_profile_conflict"; continue }
+  $candidatePane = Get-MomentsRenderPaneEvidence $candidateRoot $candidate.pid
+  if (-not $candidatePane.ok) { $surfaceFailureReason = [string]$candidatePane.reason; continue }
+  $candidateWindowBounds = @{ left = $candidate.left; top = $candidate.top; width = $candidate.width; height = $candidate.height }
+  if (-not (Test-VisualBoundsInside $candidatePane.pane.bounds $candidateWindowBounds)) {
+    $surfaceFailureReason = "moments_render_pane_bounds_invalid"
+    continue
+  }
+  if ([string]$candidate.surfaceMode -ceq "integrated") {
+    [uint32]$dpi = 96
+    try {
+      $observedDpi = [Win32WechatMomentsVisualProbe]::GetDpiForWindow($candidateHWnd)
+      if ($observedDpi -ge 72 -and $observedDpi -le 480) { $dpi = $observedDpi }
+    } catch {}
+    $candidateFrame = Get-MomentsVisualFrame $candidateHWnd $candidate.rect $candidate.pid $false
+    if (-not $candidateFrame.ok) { $surfaceFailureReason = [string]$candidateFrame.reason; Close-MomentsVisualFrame $candidateFrame; continue }
+    try {
+      $candidateRelativePane = ConvertTo-RelativeVisualBounds $candidatePane.pane.bounds $candidate.left $candidate.top
+      $candidateSurfaceBounds = @{ left = 0.0; top = 0.0; width = [double]$candidate.width; height = [double]$candidate.height }
+      $headerProof = Test-IntegratedMomentsSurface $candidateFrame $candidateSurfaceBounds ([double]$dpi / 96.0)
+      if (-not $headerProof.ok) { $surfaceFailureReason = [string]$headerProof.reason; continue }
+    } finally {
+      Close-MomentsVisualFrame $candidateFrame
+    }
+  }
+  [void]$surfaceMatches.Add($candidate)
+}
+$matches = @($surfaceMatches.ToArray())
+if ($matches.Count -eq 0) { Write-Result @{ ok = $false; reason = $surfaceFailureReason } }
 if ($matches.Count -ne 1) { Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; count = $matches.Count } }
 
 $matched = $matches[0]
@@ -138,7 +228,8 @@ try {
   $rootControlType = [string]$root.Current.ControlType.ProgrammaticName
   $rootProcessId = [int]$root.Current.ProcessId
 } catch { Write-Result @{ ok = $false; reason = "moments_window_identity_mismatch" } }
-if ($rootAutomationId -cne "" -or $rootName -cne "朋友圈" -or $rootControlType -cne "ControlType.Window" -or $rootProcessId -ne $matched.pid) {
+$expectedRootName = $(if ([string]$matched.surfaceMode -ceq "integrated") { "微信" } else { "朋友圈" })
+if ($rootAutomationId -cne "" -or $rootName -cne $expectedRootName -or $rootControlType -cne "ControlType.Window" -or $rootProcessId -ne $matched.pid) {
   Write-Result @{ ok = $false; reason = "moments_window_identity_mismatch" }
 }
 $feedCondition = [System.Windows.Automation.PropertyCondition]::new(
@@ -154,23 +245,146 @@ if (-not (Test-VisualBoundsInside $renderEvidence.pane.bounds $windowBounds)) {
   Write-Result @{ ok = $false; reason = "moments_render_pane_bounds_invalid" }
 }
 $relativeRenderPaneBounds = ConvertTo-RelativeVisualBounds $renderEvidence.pane.bounds $matched.left $matched.top
+[uint32]$dpi = 96
+try {
+  $observedDpi = [Win32WechatMomentsVisualProbe]::GetDpiForWindow($hWnd)
+  if ($observedDpi -ge 72 -and $observedDpi -le 480) { $dpi = $observedDpi }
+} catch {}
+$scale = [double]$dpi / 96.0
+$surfaceScanBounds = @{ left = 0.0; top = 0.0; width = [double]$matched.width; height = [double]$matched.height }
+$surfaceResult = @{
+  ok = $true
+  surfaceMode = $matched.surfaceMode
+  title = $matched.title
+  className = $matched.className
+  processName = $matched.processName
+  pid = $matched.pid
+  hWnd = $matched.hWnd
+  left = $matched.left
+  top = $matched.top
+  width = $matched.width
+  height = $matched.height
+  automationId = ""
+  identityMode = "visual_mmui_render"
+  rootName = $rootName
+  rootControlType = $rootControlType
+  rootProcessId = $rootProcessId
+  feedAutomationId = ""
+  feedRuntimeId = ""
+  feedCount = 0
+  renderPaneName = $renderEvidence.pane.name
+  renderPaneAutomationId = $renderEvidence.pane.automationId
+  renderPaneControlType = $renderEvidence.pane.controlType
+  renderPaneProcessId = $renderEvidence.pane.processId
+  renderPaneRuntimeId = $renderEvidence.pane.runtimeId
+  renderPaneBounds = $renderEvidence.pane.bounds
+}
 
-$firstFrame = Get-MomentsVisualFrame $hWnd $matched.rect $matched.pid $true
+$firstFrame = Get-MomentsVisualFrame $hWnd $matched.rect $matched.pid $false
 if (-not $firstFrame.ok) { Close-And-Write $firstFrame }
-$firstRead = Get-MomentsVisualPostCandidates $firstFrame $relativeRenderPaneBounds
+$firstHeader = $(if ([string]$matched.surfaceMode -ceq "integrated") { Test-IntegratedMomentsSurface $firstFrame $surfaceScanBounds $scale } else { @{ ok = $true } })
+if (-not $firstHeader.ok) { Close-And-Write $firstHeader $firstFrame }
+$firstViewport = Get-MomentsVisualViewportBounds $relativeRenderPaneBounds $firstHeader ([string]$matched.surfaceMode)
+if (-not $firstViewport.ok) { Close-And-Write $firstViewport $firstFrame }
+$firstRead = Get-MomentsVisualPostCandidates $firstFrame $firstViewport.bounds
+$firstReading = @()
 Start-Sleep -Milliseconds 180
 $secondFrame = Get-MomentsVisualFrame $hWnd $matched.rect $matched.pid $false
 if (-not $secondFrame.ok) { Close-And-Write $secondFrame $firstFrame }
-$secondRead = Get-MomentsVisualPostCandidates $secondFrame $relativeRenderPaneBounds
-if (-not (Test-VisualMenuSequence $firstRead.menus $secondRead.menus) -or -not (Test-VisualPostSequence $firstRead.posts $secondRead.posts)) {
-  Close-And-Write @{ ok = $false; reason = "moments_post_changed" } $firstFrame $secondFrame
+$secondHeader = $(if ([string]$matched.surfaceMode -ceq "integrated") { Test-IntegratedMomentsSurface $secondFrame $surfaceScanBounds $scale } else { @{ ok = $true } })
+if (-not $secondHeader.ok) { Close-And-Write $secondHeader $firstFrame $secondFrame }
+$secondViewport = Get-MomentsVisualViewportBounds $relativeRenderPaneBounds $secondHeader ([string]$matched.surfaceMode)
+if (-not $secondViewport.ok) { Close-And-Write $secondViewport $firstFrame $secondFrame }
+if ([Math]::Abs([double]$firstViewport.bounds.left - [double]$secondViewport.bounds.left) -gt $script:momentsVisualStabilityTolerancePx -or
+  [Math]::Abs([double]$firstViewport.bounds.width - [double]$secondViewport.bounds.width) -gt $script:momentsVisualStabilityTolerancePx) {
+  Close-And-Write @{
+    ok = $false
+    reason = "moments_post_changed"
+    diagnostics = @{ changeStage = "viewport_geometry" }
+  } $firstFrame $secondFrame
 }
-$posts = @($secondRead.posts)
+$secondRead = Get-MomentsVisualPostCandidates $secondFrame $secondViewport.bounds
+$secondReading = @()
+$stableMenus = @(Get-UniqueStableVisualCandidates $firstRead.menus $secondRead.menus "menu")
+$stablePosts = @(Get-UniqueStableVisualCandidates $firstRead.posts $secondRead.posts "post")
+$stableReading = @()
+if ($allowBodyOnly -and $stablePosts.Count -eq 0) {
+  $firstReading = @(Get-MomentsVisualReadingCandidates $firstFrame $firstViewport.bounds ($firstRead.visibleAvatars))
+  $secondReading = @(Get-MomentsVisualReadingCandidates $secondFrame $secondViewport.bounds ($secondRead.visibleAvatars))
+  $stableReading = @(Get-UniqueStableVisualCandidates $firstReading $secondReading "reading")
+}
+$observedCandidateCount = @($firstRead.menus).Count + @($secondRead.menus).Count +
+  @($firstRead.posts).Count + @($secondRead.posts).Count + @($firstReading).Count + @($secondReading).Count
+if ($observedCandidateCount -gt 0 -and $stableMenus.Count -eq 0 -and $stablePosts.Count -eq 0 -and $stableReading.Count -eq 0) {
+  Close-And-Write @{
+    ok = $false
+    reason = "moments_post_changed"
+    diagnostics = @{
+      changeStage = "candidate_stability"
+      firstMenuCount = @($firstRead.menus).Count
+      secondMenuCount = @($secondRead.menus).Count
+      stableMenuCount = $stableMenus.Count
+      firstPostCount = @($firstRead.posts).Count
+      secondPostCount = @($secondRead.posts).Count
+      stablePostCount = $stablePosts.Count
+      firstReadingCount = @($firstReading).Count
+      secondReadingCount = @($secondReading).Count
+      stableReadingCount = $stableReading.Count
+    }
+  } $firstFrame $secondFrame
+}
+$posts = @($stablePosts)
 if ($posts.Count -eq 0) {
+  if ($allowBodyOnly -and $stableReading.Count -gt 0) {
+    $absoluteReadingPosts = New-Object System.Collections.Generic.List[object]
+    foreach ($post in @($stableReading)) {
+      $absoluteBounds = ConvertTo-AbsoluteVisualBounds $post.bounds $matched.left $matched.top
+      $absoluteAvatarBounds = ConvertTo-AbsoluteVisualBounds $post.avatarBounds $matched.left $matched.top
+      if (-not (Test-VisualBoundsInside $absoluteBounds $renderEvidence.pane.bounds) -or
+        -not (Test-VisualBoundsInside $absoluteAvatarBounds $renderEvidence.pane.bounds)) { continue }
+      [void]$absoluteReadingPosts.Add(@{
+        text = [string]$post.text
+        identityText = [string]$post.identityText
+        stableAnchorText = [string]$post.stableAnchorText
+        structureVerified = $true
+        regionHash = [string]$post.regionHash
+        avatarHash = [string]$post.avatarHash
+        layoutHash = [string]$post.layoutHash
+        bounds = $absoluteBounds
+        avatarBounds = $absoluteAvatarBounds
+        partialVisible = $true
+        bodyOnly = $true
+      })
+    }
+    if ($absoluteReadingPosts.Count -gt 0) {
+      $readingResult = $surfaceResult.Clone()
+      $readingResult["posts"] = @()
+      $readingResult["readingPosts"] = @($absoluteReadingPosts.ToArray())
+      Close-And-Write $readingResult $firstFrame $secondFrame
+    }
+  }
+  $menuOnlyMenus = New-Object System.Collections.Generic.List[object]
+  foreach ($menu in @($stableMenus)) {
+    $absoluteMenuBounds = ConvertTo-AbsoluteVisualBounds $menu.bounds $matched.left $matched.top
+    $menuHash = Get-MomentsPixelHash $secondFrame $menu.bounds
+    if (-not $menuHash -or -not (Test-VisualBoundsInside $absoluteMenuBounds $renderEvidence.pane.bounds)) { continue }
+    [void]$menuOnlyMenus.Add(@{
+      menuHash = [string]$menuHash
+      menuBounds = $absoluteMenuBounds
+    })
+  }
+  if ($menuOnlyMenus.Count -gt 0) {
+    $menuOnlyResult = $surfaceResult.Clone()
+    $menuOnlyResult["posts"] = @()
+    $menuOnlyResult["menuOnlyMenus"] = @($menuOnlyMenus.ToArray())
+    Close-And-Write $menuOnlyResult $firstFrame $secondFrame
+  }
   Close-And-Write @{
     ok = $false
     reason = "moments_post_not_found"
+    surface = $surfaceResult
     diagnostics = @{
+      visualViewport = $secondViewport.bounds
       menuCenters = @($secondRead.menus | ForEach-Object { @([Math]::Round($_.centerX, 1), [Math]::Round($_.centerY, 1)) })
       postAnchors = @()
     }
@@ -200,38 +414,23 @@ foreach ($post in $posts) {
     partialVisible = [bool]$post.partialVisible
   })
 }
-$result = @{
-  ok = $true
-  title = $matched.title
-  className = $matched.className
-  processName = $matched.processName
-  pid = $matched.pid
-  hWnd = $matched.hWnd
-  left = $matched.left
-  top = $matched.top
-  width = $matched.width
-  height = $matched.height
-  automationId = ""
-  identityMode = "visual_mmui_render"
-  rootName = $rootName
-  rootControlType = $rootControlType
-  rootProcessId = $rootProcessId
-  feedAutomationId = ""
-  feedRuntimeId = ""
-  feedCount = 0
-  renderPaneName = $renderEvidence.pane.name
-  renderPaneAutomationId = $renderEvidence.pane.automationId
-  renderPaneControlType = $renderEvidence.pane.controlType
-  renderPaneProcessId = $renderEvidence.pane.processId
-  renderPaneRuntimeId = $renderEvidence.pane.runtimeId
-  renderPaneBounds = $renderEvidence.pane.bounds
-  posts = @($absolutePosts.ToArray())
-}
+$result = $surfaceResult.Clone()
+$result["posts"] = @($absolutePosts.ToArray())
 Close-And-Write $result $firstFrame $secondFrame
 `;
 
-function probeVisualWechatMomentsWindow() {
-  return runPowerShell(MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT, {}, { ensure: false, sta: true, timeout: 30000, diagnostics: true });
+function probeVisualWechatMomentsWindow(expectedWindow, options = {}) {
+  const expectedSurface = normalizeExpectedMomentsSurface(expectedWindow);
+  return runPowerShell(
+    MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT,
+    {
+      XIAOXI_MOMENTS_EXPECTED_SURFACE_BASE64: expectedSurface
+        ? Buffer.from(JSON.stringify(expectedSurface), "utf8").toString("base64")
+        : "",
+      XIAOXI_MOMENTS_ALLOW_BODY_ONLY: options.allowBodyOnly === true ? "1" : ""
+    },
+    { ensure: false, sta: true, timeout: 30000, diagnostics: true }
+  );
 }
 
 module.exports = {

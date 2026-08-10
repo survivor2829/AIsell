@@ -2,6 +2,10 @@ const crypto = require("node:crypto");
 const path = require("node:path");
 const { momentsPostFingerprint } = require("./moments_dry_run.dev.cjs");
 const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require("./moments_visual_probe.dev.cjs");
+const { validMomentsSurfaceRoot } = require("./moments_surface_profile.dev.cjs");
+const {
+  MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL
+} = require("./moments_surface_evidence.dev.cjs");
 const { runPowerShell, runPowerShellAsync } = require("./wechat_window_driver.cjs");
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
@@ -11,7 +15,7 @@ const COMMENT_SEND_MARKER_DIRECTORY = "moments_comment_send_markers";
 // still requiring exactly one content/avatar/geometry match before any click.
 const MOMENTS_VISUAL_POST_RELOCK_TOLERANCE_PX = 12;
 const VISUAL_ACTION_TIMEOUT_CAP_MS = Object.freeze({
-  inspect: 20_000,
+  inspect: 30_000,
   like: 30_000,
   comment_occurrence_check: 45_000,
   comment_check: 85_000
@@ -122,7 +126,9 @@ function validCommentReadbackSeed(seed, context = {}) {
 
 function expectedVisualObservationId(window, snapshot) {
   const payload = JSON.stringify({
-    version: 5,
+    version: 6,
+    surfaceMode: String(window.surfaceMode ?? ""),
+    className: String(window.className ?? ""),
     pid: Number(window.pid),
     hWnd: String(window.hWnd),
     windowBounds: {
@@ -194,11 +200,12 @@ function validVisualContext(context = {}) {
     height: window.height
   };
   const observationId = String(context.observationId ?? "");
-  const windowValid = window.title === "朋友圈"
+  const windowValid = validMomentsSurfaceRoot(window)
     && ["Weixin", "WeChat"].includes(window.processName)
+    && typeof window.className === "string"
+    && Boolean(window.className.trim())
     && window.automationId === ""
     && window.identityMode === "visual_mmui_render"
-    && window.rootName === "朋友圈"
     && window.rootControlType === "ControlType.Window"
     && Number.isInteger(window.pid)
     && window.pid > 0
@@ -216,13 +223,12 @@ function validVisualContext(context = {}) {
     && Boolean(window.renderPaneRuntimeId.trim())
     && validBounds(windowBounds, 299, 299)
     && boundsWithin(window.renderPaneBounds, windowBounds);
-  const snapshotValid = snapshot.source === "visual:windows_media_ocr"
+  const snapshotCommonValid = snapshot.source === "visual:windows_media_ocr"
     && snapshot.identity_scope === "window_session_only"
     && snapshot.structure_verified === true
     && snapshot.ocr_provider === "windows_media_ocr"
     && snapshot.ocr_language === "zh-Hans-CN"
     && SHA256_PATTERN.test(String(snapshot.region_hash ?? ""))
-    && SHA256_PATTERN.test(String(snapshot.avatar_hash ?? ""))
     && SHA256_PATTERN.test(String(snapshot.layout_hash ?? ""))
     && typeof snapshot.label === "string"
     && Boolean(snapshot.label.trim())
@@ -235,8 +241,15 @@ function validVisualContext(context = {}) {
     && SHA256_PATTERN.test(String(snapshot.post_fingerprint ?? ""))
     && momentsPostFingerprint(snapshot.identity_text) === snapshot.post_fingerprint
     && boundsWithin(snapshot.bounds, window.renderPaneBounds)
-    && boundsWithin(snapshot.menu_bounds, window.renderPaneBounds)
-    && boundsWithin(snapshot.avatar_bounds, window.renderPaneBounds);
+    && boundsWithin(snapshot.menu_bounds, window.renderPaneBounds);
+  const snapshotValid = snapshotCommonValid && (
+    (snapshot.menu_only === true
+      && snapshot.avatar_hash === ""
+      && SHA256_PATTERN.test(String(snapshot.menu_hash ?? "")))
+    || (snapshot.menu_only !== true
+      && SHA256_PATTERN.test(String(snapshot.avatar_hash ?? ""))
+      && boundsWithin(snapshot.avatar_bounds, window.renderPaneBounds))
+  );
   return windowValid
     && snapshotValid
     && SHA256_PATTERN.test(observationId)
@@ -302,6 +315,7 @@ public static class Win32WechatMomentsVisualAction {
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
   [DllImport("user32.dll")] private static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
   [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern uint SendInput(uint count, INPUT[] inputs, int size);
   private const uint CfText = 1;
   private const uint CfOemText = 7;
@@ -674,6 +688,7 @@ public static class Win32WechatMomentsVisualAction {
 [void][Win32WechatMomentsVisualAction]::SetThreadDpiAwarenessContext([IntPtr](-4))
 
 ${MOMENTS_VISUAL_READONLY_POWERSHELL}
+${MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL}
 
 $script:visualActionAttempted = $false
 $script:visualMenuOpen = $false
@@ -934,8 +949,13 @@ function Get-VisualContext {
 
 function Get-LockedVisualRoot($context) {
   $expected = $context.expectedWindow
+  $surfaceMode = [string]$expected.surfaceMode
+  $surfaceIdentityValid = ($surfaceMode -ceq "standalone" -and
+      [string]$expected.title -ceq "朋友圈" -and [string]$expected.rootName -ceq "朋友圈") -or
+    ($surfaceMode -ceq "integrated" -and
+      [string]$expected.title -ceq "微信" -and [string]$expected.rootName -ceq "微信")
   if ($expected -eq $null -or [string]$expected.identityMode -cne "visual_mmui_render" -or
-    [string]$expected.title -cne "朋友圈" -or [string]$expected.rootName -cne "朋友圈" -or
+    -not $surfaceIdentityValid -or [string]::IsNullOrWhiteSpace([string]$expected.className) -or
     [string]$expected.rootControlType -cne "ControlType.Window" -or [string]$expected.automationId -cne "" -or
     [string]$expected.feedAutomationId -cne "" -or [string]$expected.feedRuntimeId -cne "" -or
     [int]$expected.feedCount -ne 0 -or [string]$expected.renderPaneName -cne "MMUIRenderSubWindowHW" -or
@@ -967,7 +987,12 @@ function Get-LockedVisualRoot($context) {
   }
   $titleText = New-Object System.Text.StringBuilder 128
   [void][Win32WechatMomentsVisualAction]::GetWindowText($hWnd, $titleText, $titleText.Capacity)
-  if ($titleText.ToString().Trim() -cne "朋友圈") { return @{ ok = $false; reason = "moments_window_identity_mismatch" } }
+  $classText = New-Object System.Text.StringBuilder 256
+  [void][Win32WechatMomentsVisualAction]::GetClassName($hWnd, $classText, $classText.Capacity)
+  if ($titleText.ToString().Trim() -cne [string]$expected.title -or
+    $classText.ToString().Trim() -cne [string]$expected.className) {
+    return @{ ok = $false; reason = "moments_window_identity_mismatch" }
+  }
   $actualRect = New-Object Win32WechatMomentsVisualAction+RECT
   if (-not [Win32WechatMomentsVisualAction]::GetWindowRect($hWnd, [ref]$actualRect)) {
     return @{ ok = $false; reason = "moments_window_identity_mismatch" }
@@ -989,7 +1014,7 @@ function Get-LockedVisualRoot($context) {
     $rootControlType = [string]$root.Current.ControlType.ProgrammaticName
     $rootProcessId = [int]$root.Current.ProcessId
   } catch { return @{ ok = $false; reason = "moments_window_identity_mismatch" } }
-  if ($rootAutomationId -cne "" -or $rootName -cne "朋友圈" -or $rootControlType -cne "ControlType.Window" -or
+  if ($rootAutomationId -cne "" -or $rootName -cne [string]$expected.rootName -or $rootControlType -cne "ControlType.Window" -or
     $rootProcessId -ne $expectedPid) {
     return @{ ok = $false; reason = "moments_window_identity_mismatch" }
   }
@@ -1009,6 +1034,26 @@ function Get-LockedVisualRoot($context) {
     -not (Test-VisualBoundsNear $paneEvidence.pane.bounds $expected.renderPaneBounds 1.5)) {
     return @{ ok = $false; reason = "moments_render_pane_changed" }
   }
+  [uint32]$dpi = 96
+  try {
+    $observedDpi = [Win32WechatMomentsVisualAction]::GetDpiForWindow($hWnd)
+    if ($observedDpi -ge 72 -and $observedDpi -le 480) { $dpi = $observedDpi }
+  } catch {}
+  $relativePaneBounds = ConvertTo-RelativeVisualBounds $paneEvidence.pane.bounds $actualBounds
+  $surfaceProof = @{ ok = $true }
+  if ($surfaceMode -ceq "integrated") {
+    $surfaceFrame = Get-MomentsVisualFrame $hWnd $actualRect $expectedPid $false
+    if (-not $surfaceFrame.ok) { return @{ ok = $false; reason = [string]$surfaceFrame.reason } }
+    try {
+      $surfaceScanBounds = @{ left = 0.0; top = 0.0; width = [double]$actualBounds.width; height = [double]$actualBounds.height }
+      $surfaceProof = Test-IntegratedMomentsSurface $surfaceFrame $surfaceScanBounds ([double]$dpi / 96.0)
+      if (-not $surfaceProof.ok) { return @{ ok = $false; reason = [string]$surfaceProof.reason } }
+    } finally {
+      Close-MomentsVisualFrame $surfaceFrame
+    }
+  }
+  $visualViewport = Get-MomentsVisualViewportBounds $relativePaneBounds $surfaceProof $surfaceMode
+  if (-not $visualViewport.ok) { return @{ ok = $false; reason = [string]$visualViewport.reason } }
   return @{
     ok = $true
     hWnd = $hWnd
@@ -1016,6 +1061,14 @@ function Get-LockedVisualRoot($context) {
     root = $root
     windowRect = $actualRect
     windowBounds = $actualBounds
+    renderPaneBounds = $paneEvidence.pane.bounds
+    relativeRenderPaneBounds = $relativePaneBounds
+    relativeVisualViewportBounds = $visualViewport.bounds
+    title = [string]$expected.title
+    className = [string]$expected.className
+    surfaceMode = $surfaceMode
+    dpi = $dpi
+    scale = [double]$dpi / 96.0
   }
 }
 
@@ -1023,15 +1076,36 @@ function Test-MomentsStablePostIdentity($post, $snapshot) {
   return Test-MomentsStablePostIdentityText ([string]$post.identityText) ([string]$snapshot.identity_text) ([string]$post.stableAnchorText) ([string]$snapshot.stable_anchor_text)
 }
 
-function Get-CurrentLockedVisualPost($lock, $context, [bool]$activate = $true) {
+function Get-CurrentLockedVisualPost($lock, $context, [bool]$activate = $false) {
   $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $activate $false
   if (-not $frame.ok) { return @{ ok = $false; reason = $frame.reason } }
   try {
-    $expectedRenderPaneBounds = ConvertTo-RelativeVisualBounds $context.expectedWindow.renderPaneBounds $context.expectedWindow
-    $read = Get-MomentsVisualPostCandidates $frame $expectedRenderPaneBounds
+    $read = Get-MomentsVisualPostCandidates $frame $lock.relativeVisualViewportBounds
+    $snapshot = $context.postSnapshot
+    if ([bool]$snapshot.menu_only) {
+      $expectedMenuBounds = ConvertTo-RelativeVisualBounds $snapshot.menu_bounds $context.expectedWindow
+      $menuResolution = Resolve-VisualMenuAnchor $read.menus $expectedMenuBounds $script:momentsVisualPostRelockTolerancePx
+      if (-not $menuResolution.ok) {
+        return @{ ok = $false; reason = $menuResolution.reason; diagnostics = $menuResolution.diagnostics; frame = $frame }
+      }
+      $menuHash = Get-MomentsPixelHash $frame $menuResolution.menu.bounds
+      if (-not $menuHash -or [string]$menuHash -cne [string]$snapshot.menu_hash) {
+        return @{ ok = $false; reason = "moments_post_changed"; frame = $frame }
+      }
+      return @{
+        ok = $true
+        frame = $frame
+        post = @{ bounds = (ConvertTo-RelativeVisualBounds $snapshot.bounds $context.expectedWindow) }
+        menu = $menuResolution.menu
+        menuHash = $menuHash
+        avatarHash = ""
+        expectedMenuBounds = $expectedMenuBounds
+        expectedAvatarBounds = $null
+        nextPostTop = $null
+      }
+    }
     $posts = @($read.posts)
     if ($posts.Count -eq 0) { return @{ ok = $false; reason = "moments_post_not_found"; frame = $frame } }
-    $snapshot = $context.postSnapshot
     $expectedBounds = ConvertTo-RelativeVisualBounds $snapshot.bounds $context.expectedWindow
     $expectedMenuBounds = ConvertTo-RelativeVisualBounds $snapshot.menu_bounds $context.expectedWindow
     $expectedAvatarBounds = ConvertTo-RelativeVisualBounds $snapshot.avatar_bounds $context.expectedWindow
@@ -1131,8 +1205,11 @@ function Get-FreshVisualMenuAnchor($lock, $expectedMenuBounds, [string]$expected
 function Test-VisualOwnedHitDetailed([IntPtr]$hit, [int]$screenX, [int]$screenY, $lock, $allowedPopupBounds = $null) {
   $diagnostics = @{
     pointInsideSurface = $false
+    pointInsidePane = $false
     surfaceInsidePopup = $false
     surfaceInsideWindow = $false
+    surfaceInsidePane = $false
+    popupOwnedByWindow = $false
   }
   if ($hit -eq [IntPtr]::Zero) {
     return @{ ok = $false; reason = "moments_click_target_missing"; diagnostics = $diagnostics }
@@ -1160,8 +1237,12 @@ function Test-VisualOwnedHitDetailed([IntPtr]$hit, [int]$screenX, [int]$screenY,
     width = [double]($lock.windowRect.Right - $lock.windowRect.Left)
     height = [double]($lock.windowRect.Bottom - $lock.windowRect.Top)
   }
+  $paneBounds = $lock.renderPaneBounds
+  $diagnostics.pointInsidePane = $paneBounds -ne $null -and
+    $screenX -ge [double]$paneBounds.left -and $screenX -le ([double]$paneBounds.left + [double]$paneBounds.width) -and
+    $screenY -ge [double]$paneBounds.top -and $screenY -le ([double]$paneBounds.top + [double]$paneBounds.height)
   if ($allowedPopupBounds -eq $null) {
-    if ($hitRoot -ne $lock.hWnd) {
+    if ($hitRoot -ne $lock.hWnd -or -not $diagnostics.pointInsidePane) {
       return @{ ok = $false; reason = "moments_click_popup_surface_missing"; diagnostics = $diagnostics }
     }
     $diagnostics.pointInsideSurface = $true
@@ -1178,7 +1259,12 @@ function Test-VisualOwnedHitDetailed([IntPtr]$hit, [int]$screenX, [int]$screenY,
   }
   if ($hitRoot -eq $lock.hWnd) {
     $popupBounds = $lockedBounds
+    $diagnostics.popupOwnedByWindow = $true
   } else {
+    $diagnostics.popupOwnedByWindow = [Win32WechatMomentsVisualAction]::GetWindow($hitRoot, 4) -eq $lock.hWnd
+    if (-not $diagnostics.popupOwnedByWindow) {
+      return @{ ok = $false; reason = "moments_click_popup_owner_changed"; diagnostics = $diagnostics }
+    }
     $popupRect = New-Object Win32WechatMomentsVisualAction+RECT
     if (-not [Win32WechatMomentsVisualAction]::GetWindowRect($hitRoot, [ref]$popupRect)) {
       return @{ ok = $false; reason = "moments_click_popup_bounds_unavailable"; diagnostics = $diagnostics }
@@ -1199,6 +1285,7 @@ function Test-VisualOwnedHitDetailed([IntPtr]$hit, [int]$screenX, [int]$screenY,
     $screenY -ge ([double]$expectedSurface.top - 2.0) -and
     $screenY -le ([double]$expectedSurface.top + [double]$expectedSurface.height + 2.0)
   $diagnostics.surfaceInsideWindow = Test-VisualBoundsInside $expectedSurface $lockedBounds
+  $diagnostics.surfaceInsidePane = Test-VisualBoundsInside $expectedSurface $paneBounds
   if (-not $diagnostics.surfaceInsideWindow) {
     return @{ ok = $false; reason = "moments_click_surface_outside_window"; root = $hitRoot; diagnostics = $diagnostics }
   }
@@ -1207,6 +1294,9 @@ function Test-VisualOwnedHitDetailed([IntPtr]$hit, [int]$screenX, [int]$screenY,
   }
   if (-not $diagnostics.pointInsideSurface) {
     return @{ ok = $false; reason = "moments_click_point_outside_surface"; root = $hitRoot; diagnostics = $diagnostics }
+  }
+  if (-not $diagnostics.pointInsidePane -or -not $diagnostics.surfaceInsidePane) {
+    return @{ ok = $false; reason = "moments_click_surface_outside_render_pane"; root = $hitRoot; diagnostics = $diagnostics }
   }
   return @{ ok = $true; root = $hitRoot; diagnostics = $diagnostics }
 }
@@ -1909,11 +1999,14 @@ function Invoke-VisualNeutralTitleBarClick($lock, [uint32]$expectedInputTick = [
     $currentRect = New-Object Win32WechatMomentsVisualAction+RECT
     [uint32]$currentPid = 0
     $currentTitle = New-Object System.Text.StringBuilder 128
+    $currentClass = New-Object System.Text.StringBuilder 256
     if (-not [Win32WechatMomentsVisualAction]::GetWindowRect($lock.hWnd, [ref]$currentRect) -or
       [Win32WechatMomentsVisualAction]::GetWindowThreadProcessId($lock.hWnd, [ref]$currentPid) -eq 0 -or
       [int]$currentPid -ne [int]$lock.pid -or
       [Win32WechatMomentsVisualAction]::GetWindowText($lock.hWnd, $currentTitle, $currentTitle.Capacity) -le 0 -or
-      $currentTitle.ToString().Trim() -cne "朋友圈" -or
+      [Win32WechatMomentsVisualAction]::GetClassName($lock.hWnd, $currentClass, $currentClass.Capacity) -le 0 -or
+      $currentTitle.ToString().Trim() -cne [string]$lock.title -or
+      $currentClass.ToString().Trim() -cne [string]$lock.className -or
       $currentRect.Left -ne $lock.windowRect.Left -or $currentRect.Top -ne $lock.windowRect.Top -or
       $currentRect.Right -ne $lock.windowRect.Right -or $currentRect.Bottom -ne $lock.windowRect.Bottom) { return $false }
     $width = [double]($currentRect.Right - $currentRect.Left)
@@ -1974,45 +2067,57 @@ function Resolve-VisualOpenMenuHorizontalSegment(
   [object[]]$segments,
   [double]$frameWidth,
   [double]$menuCenterX,
-  [string]$requestedAction
+  [string]$requestedAction,
+  [double]$scale = 1.0
 ) {
+  $effectiveScale = $(if ($scale -ge 0.75 -and $scale -le 4.0) { $scale } else { 1.0 })
+  $strictMinimumWidth = 150.0 * $effectiveScale
+  $strictMaximumWidth = 330.0 * $effectiveScale
+  $fallbackMinimumWidth = 110.0 * $effectiveScale
+  $fallbackMaximumWidth = 360.0 * $effectiveScale
   $segmentCount = @($segments).Count
   $strictMatches = @($segments | Where-Object {
     $width = [double]$_.right - [double]$_.left + 1.0
-    $width -ge [Math]::Max(150.0, $frameWidth * 0.30) -and
-      $width -le [Math]::Min(330.0, $frameWidth * 0.62) -and
-      [double]$_.left -lt ($menuCenterX - 120.0) -and
-      [double]$_.right -ge ($menuCenterX - 72.0) -and
-      [double]$_.right -le ($menuCenterX - 8.0)
+    $width -ge $strictMinimumWidth -and
+      $width -le $strictMaximumWidth -and
+      [double]$_.left -lt ($menuCenterX - (120.0 * $effectiveScale)) -and
+      [double]$_.right -ge ($menuCenterX - (72.0 * $effectiveScale)) -and
+      [double]$_.right -le ($menuCenterX - (8.0 * $effectiveScale))
   })
   $diagnostics = @{
     requestedAction = [string]$requestedAction
+    viewportWidth = $frameWidth
+    menuCenterX = $menuCenterX
+    scale = $effectiveScale
     segmentCount = $segmentCount
+    segmentMeasurements = @($segments | ForEach-Object {
+      @{
+        left = [double]$_.left
+        right = [double]$_.right
+        width = [double]$_.right - [double]$_.left + 1.0
+      }
+    })
     strictCandidateCount = $strictMatches.Count
     fallbackCandidateCount = 0
+    strictMinimumWidth = $strictMinimumWidth
+    strictMaximumWidth = $strictMaximumWidth
+    fallbackMinimumWidth = $fallbackMinimumWidth
+    fallbackMaximumWidth = $fallbackMaximumWidth
   }
   if ($strictMatches.Count -eq 1) {
     return @{ ok = $true; segment = $strictMatches[0]; geometryFallback = $false; diagnostics = $diagnostics }
   }
-  if ($requestedAction -cne "comment") {
-    return @{
-      ok = $false
-      reason = "moments_menu_surface_ambiguous"
-      candidateCount = $strictMatches.Count
-      diagnostics = $diagnostics
-    }
-  }
 
-  # Comment-only mode already owns the unique three-dot anchor. Some DPI/theme
-  # combinations render the popup narrower than the strict like-state detector.
-  # Accept one nearby dark horizontal surface, then use its right-hand cell.
+  # The popup is a fixed-DIP WeChat control; its width must not grow with the
+  # feed viewport. Accept one nearby surface at the current DPI, then let the
+  # requested cell's OCR/signature proof authorize any real click.
   $fallbackMatches = @($segments | Where-Object {
     $width = [double]$_.right - [double]$_.left + 1.0
-    $width -ge [Math]::Max(110.0, $frameWidth * 0.22) -and
-      $width -le [Math]::Min(360.0, $frameWidth * 0.70) -and
-      [double]$_.left -lt ($menuCenterX - 80.0) -and
-      [double]$_.right -ge ($menuCenterX - 110.0) -and
-      [double]$_.right -le ($menuCenterX + 4.0)
+    $width -ge $fallbackMinimumWidth -and
+      $width -le $fallbackMaximumWidth -and
+      [double]$_.left -lt ($menuCenterX - (80.0 * $effectiveScale)) -and
+      [double]$_.right -ge ($menuCenterX - (110.0 * $effectiveScale)) -and
+      [double]$_.right -le ($menuCenterX + (4.0 * $effectiveScale))
   })
   $diagnostics.fallbackCandidateCount = $fallbackMatches.Count
   if ($fallbackMatches.Count -ne 1) {
@@ -2026,28 +2131,43 @@ function Resolve-VisualOpenMenuHorizontalSegment(
   return @{ ok = $true; segment = $fallbackMatches[0]; geometryFallback = $true; diagnostics = $diagnostics }
 }
 
-function Get-VisualOpenMenuBounds($frame, $menu, [string]$requestedAction = "") {
+function Get-VisualOpenMenuBounds($frame, $menu, [string]$requestedAction = "", [double]$scale = 1.0) {
+  $effectiveScale = $(if ($scale -ge 0.75 -and $scale -le 4.0) { $scale } else { 1.0 })
+  $viewport = $script:momentsVisualViewportBounds
+  if (-not (Test-VisualBounds $viewport 120 120)) {
+    $viewport = @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
+  }
+  $viewportRight = [double]$viewport.left + [double]$viewport.width
+  $viewportBottom = [double]$viewport.top + [double]$viewport.height
   $scanY = [int][Math]::Round([double]$menu.centerY)
-  $scanLeft = [int][Math]::Max(0, [Math]::Floor([double]$menu.centerX - [Math]::Min(340.0, [double]$frame.width * 0.64)))
-  $scanRight = [int][Math]::Min($frame.width - 1, [Math]::Ceiling([double]$menu.centerX - 10.0))
+  $scanLeft = [int][Math]::Max([double]$viewport.left, [Math]::Floor([double]$menu.centerX - [Math]::Min(340.0 * $effectiveScale, [double]$viewport.width * 0.90)))
+  $scanRight = [int][Math]::Min($viewportRight - 1.0, [Math]::Ceiling([double]$menu.centerX - (8.0 * $effectiveScale)))
   $segments = New-Object System.Collections.Generic.List[object]
   $runLeft = -1
   $lastDark = -1
   for ($x = $scanLeft; $x -le $scanRight; $x++) {
     if (-not (Test-MomentsDarkNeutralPixel (Get-MomentsPixel $frame $x $scanY))) { continue }
-    if ($runLeft -lt 0 -or ($x - $lastDark) -gt [Math]::Max(18.0, [double]$frame.width * 0.05)) {
+    if ($runLeft -lt 0 -or ($x - $lastDark) -gt (18.0 * $effectiveScale)) {
       if ($runLeft -ge 0) { [void]$segments.Add(@{ left = $runLeft; right = $lastDark }) }
       $runLeft = $x
     }
     $lastDark = $x
   }
   if ($runLeft -ge 0) { [void]$segments.Add(@{ left = $runLeft; right = $lastDark }) }
-  $segmentResolution = Resolve-VisualOpenMenuHorizontalSegment (@($segments.ToArray())) ([double]$frame.width) ([double]$menu.centerX) $requestedAction
+  $segmentResolution = Resolve-VisualOpenMenuHorizontalSegment (@($segments.ToArray())) ([double]$viewport.width) ([double]$menu.centerX) $requestedAction $effectiveScale
   $diagnostics = @{
     requestedAction = [string]$requestedAction
+    viewportWidth = [double]$segmentResolution.diagnostics.viewportWidth
+    menuCenterX = [double]$segmentResolution.diagnostics.menuCenterX
+    scale = [double]$segmentResolution.diagnostics.scale
     segmentCount = [int]$segmentResolution.diagnostics.segmentCount
+    segmentMeasurements = @($segmentResolution.diagnostics.segmentMeasurements)
     strictCandidateCount = [int]$segmentResolution.diagnostics.strictCandidateCount
     fallbackCandidateCount = [int]$segmentResolution.diagnostics.fallbackCandidateCount
+    strictMinimumWidth = [double]$segmentResolution.diagnostics.strictMinimumWidth
+    strictMaximumWidth = [double]$segmentResolution.diagnostics.strictMaximumWidth
+    fallbackMinimumWidth = [double]$segmentResolution.diagnostics.fallbackMinimumWidth
+    fallbackMaximumWidth = [double]$segmentResolution.diagnostics.fallbackMaximumWidth
   }
   if (-not $segmentResolution.ok) {
     return @{
@@ -2061,12 +2181,12 @@ function Get-VisualOpenMenuBounds($frame, $menu, [string]$requestedAction = "") 
   $right = [int]$segmentResolution.segment.right + 1
   $sampleX = [int][Math]::Min($right - 2, $left + [Math]::Max(6.0, ($right - $left) * 0.06))
   $top = $scanY
-  while ($top -gt 0 -and (Test-MomentsDarkNeutralPixel (Get-MomentsPixel $frame $sampleX ($top - 1)))) { $top -= 1 }
+  while ($top -gt [int]$viewport.top -and (Test-MomentsDarkNeutralPixel (Get-MomentsPixel $frame $sampleX ($top - 1)))) { $top -= 1 }
   $bottom = $scanY + 1
-  while ($bottom -lt $frame.height -and (Test-MomentsDarkNeutralPixel (Get-MomentsPixel $frame $sampleX $bottom))) { $bottom += 1 }
+  while ($bottom -lt [int]$viewportBottom -and (Test-MomentsDarkNeutralPixel (Get-MomentsPixel $frame $sampleX $bottom))) { $bottom += 1 }
   $bounds = @{ left = [double]$left; top = [double]$top; width = [double]($right - $left); height = [double]($bottom - $top) }
-  $minimumSurfaceWidth = $(if ($segmentResolution.geometryFallback) { 110 } else { 149 })
-  if (-not (Test-VisualBounds $bounds $minimumSurfaceWidth 31) -or [double]$bounds.height -gt 82.0 -or
+  $minimumSurfaceWidth = $(if ($segmentResolution.geometryFallback) { 110.0 * $effectiveScale } else { 149.0 * $effectiveScale })
+  if (-not (Test-VisualBounds $bounds $minimumSurfaceWidth (31.0 * $effectiveScale)) -or -not (Test-VisualBoundsInside $bounds $viewport) -or [double]$bounds.height -gt (82.0 * $effectiveScale) -or
     [double]$menu.centerY -lt [double]$bounds.top -or
     [double]$menu.centerY -gt ([double]$bounds.top + [double]$bounds.height)) {
     return @{ ok = $false; reason = "moments_menu_surface_ambiguous"; bounds = $bounds; diagnostics = $diagnostics }
@@ -2229,12 +2349,10 @@ function Resolve-VisualLikeMenuState(
     if ([bool]$likeSignature.horizontalEdgeClear -and
       $widthRatio -ge 0.42 -and $widthRatio -le 0.60) {
       $visualState = "赞"
-    } elseif ($widthRatio -ge 0.78 -and $widthRatio -le 1.42 -and
-      ([bool]$likeSignature.horizontalEdgeClear -or $normalizedProofPurpose -ceq "verify_outcome")) {
-      # After a real click the business question is whether the menu changed to
-      # the wider two-character "取消" state. A narrow OCR crop may touch its
-      # horizontal edge, so only outcome verification may use this fallback,
-      # and the reader must corroborate it with a second passive observation.
+    } elseif ($widthRatio -ge 0.78 -and $widthRatio -le 1.42) {
+      # The wider two-character "取消" state can touch a narrow OCR crop edge.
+      # It is safe before a click only when a second passive frame confirms the
+      # same label geometry; that path records an already-liked no-op.
       $visualState = "取消"
       $requiresStability = -not [bool]$likeSignature.horizontalEdgeClear
     }
@@ -2274,7 +2392,7 @@ function Read-OpenVisualMenuOnce(
   if (-not $frame.ok) { return @{ ok = $false; reason = $frame.reason } }
   try {
     $allowedLike = @("赞", "取消", "取消赞")
-    $surface = Get-VisualOpenMenuBounds $frame $menu $requestedAction
+    $surface = Get-VisualOpenMenuBounds $frame $menu $requestedAction ([double]$lock.scale)
     if (-not $surface.ok) { return $surface }
     $cellWidth = [double]$surface.bounds.width / 2.0
     $likeRegion = @{
@@ -2323,7 +2441,11 @@ function Read-OpenVisualMenuOnce(
     $widthRatio = [double]$likeResolution.widthRatio
     $heightRatio = [double]$likeResolution.heightRatio
     $menuDiagnostics = @{
+      viewportWidth = [double]$surface.diagnostics.viewportWidth
+      menuCenterX = [double]$surface.diagnostics.menuCenterX
+      scale = [double]$surface.diagnostics.scale
       segmentCount = [int]$surface.diagnostics.segmentCount
+      segmentMeasurements = @($surface.diagnostics.segmentMeasurements)
       strictCandidateCount = [int]$surface.diagnostics.strictCandidateCount
       fallbackCandidateCount = [int]$surface.diagnostics.fallbackCandidateCount
       likeOcrMatched = [bool]$likeOcrMatched
@@ -2391,10 +2513,8 @@ function Read-OpenVisualMenu(
   $first = Read-OpenVisualMenuOnce $lock $menu $requestedAction $normalizedProofPurpose
   $firstReason = $(if ($first.ok) { "" } else { [string]$first.reason })
   $firstRequiresStability = [bool]$first.diagnostics.requiresStability
-  $retryForOutcomeStability = $first.ok -and
-    $normalizedProofPurpose -ceq "verify_outcome" -and
-    $firstRequiresStability
-  if (($first.ok -and -not $retryForOutcomeStability) -or
+  $retryForStableEvidence = $first.ok -and $firstRequiresStability
+  if (($first.ok -and -not $retryForStableEvidence) -or
     (-not $first.ok -and [string]$first.reason -notin @("moments_menu_surface_ambiguous", "moments_menu_ambiguous"))) {
     $first.diagnostics = @{
       menuReadRetryCount = 0
@@ -2407,6 +2527,14 @@ function Read-OpenVisualMenu(
       outcomeObservationCount = $(if ($first.ok) { 1 } else { 0 })
       firstSegmentCount = [int]$first.diagnostics.segmentCount
       secondSegmentCount = 0
+      firstSegmentMeasurements = @($first.diagnostics.segmentMeasurements)
+      secondSegmentMeasurements = @()
+      firstViewportWidth = [double]$first.diagnostics.viewportWidth
+      secondViewportWidth = 0.0
+      firstMenuCenterX = [double]$first.diagnostics.menuCenterX
+      secondMenuCenterX = 0.0
+      firstScale = [double]$first.diagnostics.scale
+      secondScale = 0.0
       firstStrictCandidateCount = [int]$first.diagnostics.strictCandidateCount
       secondStrictCandidateCount = 0
       firstFallbackCandidateCount = [int]$first.diagnostics.fallbackCandidateCount
@@ -2443,13 +2571,13 @@ function Read-OpenVisualMenu(
   $second = Read-OpenVisualMenuOnce $lock $menu $requestedAction $normalizedProofPurpose
   $secondWasOk = [bool]$second.ok
   $secondRequiresStability = [bool]$second.diagnostics.requiresStability
-  $stableOutcome = $retryForOutcomeStability -and
+  $stableEvidence = $retryForStableEvidence -and
     $second.ok -and
     @("取消", "取消赞") -contains [string]$first.menuState -and
     @("取消", "取消赞") -contains [string]$second.menuState -and
     (Test-VisualBoundsNear $first.menuSurface $second.menuSurface 3.0) -and
     (Test-VisualBoundsNear $first.like.bounds $second.like.bounds 3.0)
-  if (($retryForOutcomeStability -and -not $stableOutcome) -or
+  if (($retryForStableEvidence -and -not $stableEvidence) -or
     (-not $first.ok -and $second.ok -and $secondRequiresStability)) {
     $second.ok = $false
     $second.reason = "moments_menu_ambiguous"
@@ -2462,9 +2590,17 @@ function Read-OpenVisualMenu(
     proofPurpose = $normalizedProofPurpose
     firstRequiresStability = $firstRequiresStability
     secondRequiresStability = $secondRequiresStability
-    outcomeObservationCount = $(if ($stableOutcome) { 2 } elseif ($secondWasOk) { 1 } else { 0 })
+    outcomeObservationCount = $(if ($stableEvidence) { 2 } elseif ($secondWasOk) { 1 } else { 0 })
     firstSegmentCount = [int]$first.diagnostics.segmentCount
     secondSegmentCount = [int]$second.diagnostics.segmentCount
+    firstSegmentMeasurements = @($first.diagnostics.segmentMeasurements)
+    secondSegmentMeasurements = @($second.diagnostics.segmentMeasurements)
+    firstViewportWidth = [double]$first.diagnostics.viewportWidth
+    secondViewportWidth = [double]$second.diagnostics.viewportWidth
+    firstMenuCenterX = [double]$first.diagnostics.menuCenterX
+    secondMenuCenterX = [double]$second.diagnostics.menuCenterX
+    firstScale = [double]$first.diagnostics.scale
+    secondScale = [double]$second.diagnostics.scale
     firstStrictCandidateCount = [int]$first.diagnostics.strictCandidateCount
     secondStrictCandidateCount = [int]$second.diagnostics.strictCandidateCount
     firstFallbackCandidateCount = [int]$first.diagnostics.fallbackCandidateCount
@@ -2498,7 +2634,7 @@ function Read-OpenVisualMenu(
 }
 
 function Open-LockedVisualMenu($lock, $context) {
-  $current = Get-CurrentLockedVisualPost $lock $context $true
+  $current = Get-CurrentLockedVisualPost $lock $context $false
   if (-not $current.ok) {
     Close-MomentsVisualFrame $current.frame
     return @{ ok = $false; reason = $current.reason; diagnostics = $current.diagnostics }
@@ -2557,16 +2693,20 @@ function Get-PostActionMenuAnchor($lock, $expectedMenuBounds, $expectedAvatarBou
   $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $false
   if (-not $frame.ok) { return @{ ok = $false; reason = $frame.reason } }
   try {
-    $avatarHash = Get-MomentsPixelHash $frame $expectedAvatarBounds
-    if (-not $avatarHash -or $avatarHash -cne $expectedAvatarHash) {
-      return @{ ok = $false; reason = "moments_post_anchor_changed" }
+    $avatarHashMatched = $null
+    if ($expectedAvatarBounds -ne $null -and $expectedAvatarHash) {
+      $avatarHash = Get-MomentsPixelHash $frame $expectedAvatarBounds
+      $avatarHashMatched = [bool]($avatarHash -and $avatarHash -ceq $expectedAvatarHash)
     }
     $menus = @(Find-MomentsMenuDots $frame)
     $resolution = Resolve-VisualMenuAnchor $menus $expectedMenuBounds 2.5
+    $diagnostics = $resolution.diagnostics
+    if ($diagnostics -eq $null) { $diagnostics = @{} }
+    $diagnostics.avatarHashMatched = $avatarHashMatched
     if (-not $resolution.ok) {
-      return @{ ok = $false; reason = $resolution.reason; diagnostics = $resolution.diagnostics }
+      return @{ ok = $false; reason = $resolution.reason; diagnostics = $diagnostics }
     }
-    return @{ ok = $true; menu = $resolution.menu; diagnostics = $resolution.diagnostics }
+    return @{ ok = $true; menu = $resolution.menu; diagnostics = $diagnostics }
   } finally {
     Close-MomentsVisualFrame $frame
   }
@@ -2578,13 +2718,19 @@ function Test-VisualWechatGreenPixel($pixel) {
 }
 
 function Get-VisualCommentComposer($frame, $menu) {
-  $scanLeft = [int][Math]::Max(0, [Math]::Floor([double]$menu.centerX - ([double]$frame.width * 0.80)))
-  $scanRight = [int][Math]::Min($frame.width - 1, [Math]::Ceiling([double]$menu.centerX + ([double]$frame.width * 0.055)))
-  $scanTop = [int][Math]::Max(0, [Math]::Floor([double]$menu.centerY + 6.0))
+  $viewport = $script:momentsVisualViewportBounds
+  if (-not (Test-VisualBounds $viewport 120 120)) {
+    $viewport = @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
+  }
+  $viewportRight = [double]$viewport.left + [double]$viewport.width
+  $viewportBottom = [double]$viewport.top + [double]$viewport.height
+  $scanLeft = [int][Math]::Max([double]$viewport.left, [Math]::Floor([double]$menu.centerX - ([double]$viewport.width * 0.80)))
+  $scanRight = [int][Math]::Min($viewportRight - 1.0, [Math]::Ceiling([double]$menu.centerX + ([double]$viewport.width * 0.055)))
+  $scanTop = [int][Math]::Max([double]$viewport.top, [Math]::Floor([double]$menu.centerY + 6.0))
   # A reaction row can push the composer below the former 19%-of-window cap.
   # Scan the remaining visible feed, while component isolation below prevents
   # unrelated reaction pixels from being merged with the composer border.
-  $scanBottom = [int][Math]::Max($scanTop, $frame.height - 12)
+  $scanBottom = [int][Math]::Max($scanTop, $viewportBottom - 12.0)
   $scanWidth = $scanRight - $scanLeft + 1
   $scanHeight = $scanBottom - $scanTop + 1
   if ($scanWidth -lt 1 -or $scanHeight -lt 1) {
@@ -2654,14 +2800,15 @@ function Get-VisualCommentComposer($frame, $menu) {
         width = [double]($maximumX - $minimumX + 1)
         height = [double]($maximumY - $minimumY + 1)
       }
-      if ([double]$bounds.width -gt ([double]$frame.width * 0.45) -and
+      if ([double]$bounds.width -gt ([double]$viewport.width * 0.45) -and
         [double]$bounds.height -gt 40.0 -and [double]$bounds.height -le 240.0 -and
         [double]$bounds.top -gt [double]$menu.centerY) {
         $potentialCandidateCount += 1
       }
       if ($componentPixelCount -lt 180) { continue }
-      if (-not (Test-VisualBounds $bounds ([double]$frame.width * 0.54) 64) -or
-        [double]$bounds.width -gt ([double]$frame.width * 0.86) -or
+      if (-not (Test-VisualBounds $bounds ([double]$viewport.width * 0.54) 64) -or
+        -not (Test-VisualBoundsInside $bounds $viewport) -or
+        [double]$bounds.width -gt ([double]$viewport.width * 0.86) -or
         [double]$bounds.height -gt 205.0 -or
         [double]$bounds.top -le [double]$menu.centerY) { continue }
       $topEdge = 0
@@ -2720,6 +2867,10 @@ function Get-VisualCommentComposer($frame, $menu) {
 function Get-VisualSendButton($frame, $composer, [bool]$includeOcr = $true) {
   if (-not $composer.ok) { return @{ ok = $false; reason = "moments_comment_composer_not_found" } }
   $bounds = $composer.bounds
+  $viewport = $script:momentsVisualViewportBounds
+  if (-not (Test-VisualBounds $viewport 120 120) -or -not (Test-VisualBoundsInside $bounds $viewport)) {
+    return @{ ok = $false; reason = "moments_comment_composer_outside_render_pane" }
+  }
   $scanLeft = [int][Math]::Max(0, [Math]::Floor([double]$bounds.left + ([double]$bounds.width * 0.58)))
   $scanRight = [int][Math]::Ceiling([double]$bounds.left + [double]$bounds.width - 1.0)
   $scanTop = [int][Math]::Max(0, [Math]::Floor([double]$bounds.top + ([double]$bounds.height * 0.38)))
@@ -2818,7 +2969,8 @@ function Get-VisualSendButton($frame, $composer, [bool]$includeOcr = $true) {
         $fillRatio -lt 0.50 -or
         $centerX -lt ([double]$bounds.left + ([double]$bounds.width * 0.58)) -or
         $centerY -lt ([double]$bounds.top + ([double]$bounds.height * 0.38)) -or
-        -not (Test-VisualBoundsInside $componentBounds $bounds)) { continue }
+        -not (Test-VisualBoundsInside $componentBounds $bounds) -or
+        -not (Test-VisualBoundsInside $componentBounds $viewport)) { continue }
       [void]$validCandidates.Add(@{
         bounds = $componentBounds
         centerX = $centerX
@@ -4146,6 +4298,25 @@ function Get-VisualPostSendCommentState(
   }
 }
 
+function Start-VisualPostSendSettleWindow($context) {
+  [int64]$nowMs = Get-VisualEpochMs
+  [int64]$contextLimitMs = [int64]$context.deadlineMs - 500
+  if ($contextLimitMs -le $nowMs) {
+    return @{ ok = $false; reason = "moments_comment_readback_seed_timeout" }
+  }
+  [int64]$settleDeadlineMs = [Math]::Min(
+    $nowMs + [int64]$script:visualPostSendSettleMs,
+    $contextLimitMs
+  )
+  if ($settleDeadlineMs -le $nowMs) {
+    return @{ ok = $false; reason = "moments_comment_readback_seed_timeout" }
+  }
+  # Sending is irreversible. Give its passive confirmation a fresh stage-local
+  # budget instead of reusing time already spent reading and composing.
+  $script:visualWorkerSoftDeadlineMs = $settleDeadlineMs
+  return @{ ok = $true; settleDeadlineMs = $settleDeadlineMs }
+}
+
 function Test-VisualPostSendBudget($context, [int64]$settleDeadlineMs) {
   [int64]$nowMs = Get-VisualEpochMs
   return $settleDeadlineMs -gt 0 -and
@@ -4949,6 +5120,7 @@ if (-not (Test-VisualDeadline ([int64]$context.deadlineMs))) {
 try {
   $lock = Get-LockedVisualRoot $context
   if (-not $lock.ok) { Write-VisualResult @{ ok = $false; status = "blocked"; reason = $lock.reason; actionAttempted = $false } }
+  $script:momentsVisualViewportBounds = $lock.relativeVisualViewportBounds
   if ([string]$env:XIAOXI_MOMENTS_VISUAL_ACTION -ceq "comment_readback") {
     $readback = Invoke-VisualCommentReadback $lock $context
     Write-VisualResult $readback
@@ -4959,7 +5131,7 @@ try {
       Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_missing"; actionAttempted = $false }
     }
     Set-VisualActionStage "comment_occurrence_check_started"
-    $firstOccurrencePost = Get-CurrentLockedVisualPost $lock $context $true
+    $firstOccurrencePost = Get-CurrentLockedVisualPost $lock $context $false
     if (-not $firstOccurrencePost.ok) {
       if ($firstOccurrencePost.frame) { Close-MomentsVisualFrame $firstOccurrencePost.frame }
       Write-VisualResult @{
@@ -4980,7 +5152,7 @@ try {
     }
 
     Start-Sleep -Milliseconds 160
-    $secondOccurrencePost = Get-CurrentLockedVisualPost $lock $context $true
+    $secondOccurrencePost = Get-CurrentLockedVisualPost $lock $context $false
     if (-not $secondOccurrencePost.ok) {
       if ($secondOccurrencePost.frame) { Close-MomentsVisualFrame $secondOccurrencePost.frame }
       Write-VisualResult @{
@@ -5058,7 +5230,7 @@ try {
     if (-not $commentText -or $commentText.Length -gt 500) {
       Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_missing"; actionAttempted = $false }
     }
-    $beforePost = Get-CurrentLockedVisualPost $lock $context $true
+    $beforePost = Get-CurrentLockedVisualPost $lock $context $false
     if (-not $beforePost.ok) {
       if ($beforePost.frame) { Close-MomentsVisualFrame $beforePost.frame }
       Write-VisualResult @{ ok = $false; status = "blocked"; reason = $beforePost.reason; actionAttempted = $false; diagnostics = $beforePost.diagnostics }
@@ -5457,20 +5629,17 @@ try {
         normalizedOcrCountBefore = $normalizedOcrCountBefore
       }
     }
-    [int64]$nowAfterClickMs = Get-VisualEpochMs
-    [int64]$settleDeadlineMs = [Math]::Min(
-      $nowAfterClickMs + $script:visualPostSendSettleMs,
-      [Math]::Min([int64]$script:visualWorkerSoftDeadlineMs, ([int64]$context.deadlineMs - 500))
-    )
-    if ($settleDeadlineMs -le $nowAfterClickMs) {
+    $settleWindow = Start-VisualPostSendSettleWindow $context
+    if (-not $settleWindow.ok) {
       Write-VisualResult @{
         ok = $false
         status = "outcome_unknown"
-        reason = "moments_comment_readback_seed_timeout"
+        reason = [string]$settleWindow.reason
         actionAttempted = $true
         normalizedOcrCountBefore = $normalizedOcrCountBefore
       }
     }
+    [int64]$settleDeadlineMs = [int64]$settleWindow.settleDeadlineMs
     $seedResult = Wait-VisualCommentReadbackSeed $context $opened $settleDeadlineMs
     if (-not $seedResult.ok) {
       Write-VisualResult @{
@@ -5660,5 +5829,6 @@ module.exports = {
   commentReadback,
   inspectCommentDraft,
   inspectMenu,
-  like
+  like,
+  validVisualContext
 };

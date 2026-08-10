@@ -1,6 +1,7 @@
 const { app, BrowserWindow, dialog, safeStorage, screen, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
+const productBrand = require("../../product-brand.json");
 const { configureActiveTouchRuntime, runActiveTouch } = require("./active-touch-ipc.cjs");
 const { registerAutoReplyIpc } = require("./auto-reply-ipc.cjs");
 const { createAiExpertStore } = require("./ai-expert.cjs");
@@ -37,6 +38,7 @@ let disarmRealSend = null;
 let touchTaskController = null;
 let autoReplyController = null;
 let momentsCampaignController = null;
+let momentsPublishController = null;
 let productDetailController = null;
 let productDetailIpcRegistration = null;
 let productDetailDownloadRegistration = null;
@@ -108,7 +110,7 @@ function createWindow() {
     minHeight: 760,
     autoHideMenuBar: true,
     backgroundColor: "#f8d9df",
-    title: ["AI获客", editionLabel].filter(Boolean).join(" "),
+    title: [productBrand.displayName, editionLabel].filter(Boolean).join(" "),
     webPreferences: {
       preload: path.join(__dirname, preloadFile),
       sandbox: false,
@@ -239,6 +241,9 @@ if (!gotSingleInstanceLock) {
     const momentsCampaign = developmentEdition || pilotEdition
       ? require("./moments-campaign-ipc.cjs")
       : null;
+    const momentsPublish = developmentEdition || pilotEdition
+      ? require("./moments-publish-ipc.cjs")
+      : null;
     if (developmentRealSend) developmentRealSend.registerActiveTouchDevIpc({
       activeTouchDir: runtime.activeTouchDir,
       momentsDir: runtime.momentsDir,
@@ -252,6 +257,16 @@ if (!gotSingleInstanceLock) {
         deepSeekClient,
         getMainWindow: () => mainWindow
       });
+    }
+    if (momentsPublish) {
+      momentsPublishController = momentsPublish.registerMomentsPublishIpc({
+        baseDir: runtime.momentsDir,
+        coordinator,
+        dialog,
+        logger,
+        getMainWindow: () => mainWindow
+      });
+      momentsPublishController.initialize();
     }
     if (internalRealSend) disarmRealSend = () => internalRealSend.setRealSendArm(runtime.activeTouchDir, false);
     registerContactSyncIpc({ dataDir: runtime.contactSyncDir, activeTouchDir: runtime.activeTouchDir, coordinator });
@@ -347,7 +362,8 @@ if (!gotSingleInstanceLock) {
     Promise.race([
       Promise.allSettled([
         Promise.resolve(productDetailController?.dispose()),
-        Promise.resolve(contentEngineController?.dispose())
+        Promise.resolve(contentEngineController?.dispose()),
+        Promise.resolve(momentsPublishController?.dispose())
       ]),
       cleanupTimeout
     ]).catch(() => undefined).finally(() => {

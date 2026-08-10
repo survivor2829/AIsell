@@ -851,19 +851,8 @@ function New-AutoReplyVisualPrintWindowFrame([IntPtr]$hWnd, [int]$width, [int]$h
 }
 
 function New-AutoReplyVisualScreenFrame([IntPtr]$hWnd, $windowRect, [int]$width, [int]$height, [bool]$allowForegroundFallback) {
-  $previousForeground = [Win32WechatMomentsVisualReadOnly]::GetForegroundWindow()
-  $restoreForeground = $previousForeground -ne $hWnd
-  if ($restoreForeground) {
-    if (-not $allowForegroundFallback) { return @{ ok = $false; reason = "visual_capture_failed" } }
-    [void][Win32WechatMomentsVisualReadOnly]::ShowWindowAsync($hWnd, 9)
-    [void][Win32WechatMomentsVisualReadOnly]::SetForegroundWindow($hWnd)
-    Start-Sleep -Milliseconds 90
-    if ([Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -ne $hWnd) {
-      if ($previousForeground -ne [IntPtr]::Zero -and [Win32WechatAutoReplyVisual]::IsWindow($previousForeground)) {
-        [void][Win32WechatMomentsVisualReadOnly]::SetForegroundWindow($previousForeground)
-      }
-      return @{ ok = $false; reason = "wechat_focus_failed" }
-    }
+  if ([Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -ne $hWnd) {
+    return @{ ok = $false; reason = "wechat_window_not_foreground" }
   }
   $bitmap = $null; $graphics = $null
   try {
@@ -882,12 +871,6 @@ function New-AutoReplyVisualScreenFrame([IntPtr]$hWnd, $windowRect, [int]$width,
     return @{ ok = $false; reason = "visual_capture_failed" }
   } finally {
     if ($graphics) { $graphics.Dispose() }
-    if ($restoreForeground -and $previousForeground -ne [IntPtr]::Zero -and
-        [Win32WechatAutoReplyVisual]::IsWindow($previousForeground)) {
-      # A periodic live freshness check may briefly focus WeChat. Put the user
-      # back where they were; Windows may reject the request, so this is best-effort.
-      [void][Win32WechatMomentsVisualReadOnly]::SetForegroundWindow($previousForeground)
-    }
   }
 }
 
@@ -902,9 +885,8 @@ function Get-AutoReplyVisualFrame([IntPtr]$hWnd, $windowRect, [int]$expectedProc
     $printed = New-AutoReplyVisualPrintWindowFrame $hWnd $width $height
     if ($printed.ok) { return $printed }
   }
-  # Screen-copy is allowed without focus only when WeChat is already foreground.
-  # A focus-changing fallback is reserved for an opened unread transaction or
-  # an explicit verify/recover pass; passive five-second polling never steals it.
+  # Screen-copy is allowed only while the exact preflight-bound HWND remains
+  # foreground. A user focus change always aborts instead of being reversed.
   return New-AutoReplyVisualScreenFrame $hWnd $windowRect $width $height $allowForegroundFallback
 }
 
@@ -919,14 +901,14 @@ function Test-AutoReplyVisualPointOwned([int]$screenX, [int]$screenY, [IntPtr]$e
   [void][Win32WechatMomentsVisualReadOnly]::GetWindowThreadProcessId($hit, [ref]$hitPid)
   [uint32]$rootPid = 0
   [void][Win32WechatMomentsVisualReadOnly]::GetWindowThreadProcessId($hitRoot, [ref]$rootPid)
-  return [int]$hitPid -eq $expectedPid -and [int]$rootPid -eq $expectedPid -and [Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -eq $expectedHWnd
+  return $hitRoot -eq $expectedHWnd -and [int]$hitPid -eq $expectedPid -and [int]$rootPid -eq $expectedPid -and
+    [Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -eq $expectedHWnd
 }
 
 function Open-AutoReplyVisualConversation($row, [IntPtr]$hWnd, [int]$expectedProcessId, $windowRect) {
-  [void][Win32WechatMomentsVisualReadOnly]::ShowWindowAsync($hWnd, 9)
-  [void][Win32WechatMomentsVisualReadOnly]::SetForegroundWindow($hWnd)
-  Start-Sleep -Milliseconds 120
-  if ([Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -ne $hWnd) { return $false }
+  if ([Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -ne $hWnd) {
+    return @{ ok = $false; reason = "wechat_window_not_foreground" }
+  }
   if ([bool]$row.badgeOnly) {
     # OCR may fail to read the row title on another PC. Clicking WeChat's own
     # unread badge still selects that row; the opened chat title is allowlist
@@ -940,19 +922,33 @@ function Open-AutoReplyVisualConversation($row, [IntPtr]$hWnd, [int]$expectedPro
     $localY = [int][Math]::Round([double]$row.nameBounds.top + ([double]$row.nameBounds.height * 0.5))
   }
   $screenX = [int]$windowRect.Left + $localX; $screenY = [int]$windowRect.Top + $localY
-  if (-not (Test-AutoReplyVisualPointOwned $screenX $screenY $hWnd $expectedProcessId)) { return $false }
+  if (-not (Test-AutoReplyVisualPointOwned $screenX $screenY $hWnd $expectedProcessId)) {
+    return @{ ok = $false; reason = "conversation_click_not_owned" }
+  }
   $oldPoint = New-Object Win32WechatAutoReplyVisual+POINT
   [void][Win32WechatAutoReplyVisual]::GetCursorPos([ref]$oldPoint)
   try {
+    if (-not (Test-AutoReplyVisualPointOwned $screenX $screenY $hWnd $expectedProcessId)) {
+      return @{ ok = $false; reason = "conversation_click_not_owned" }
+    }
     [void][Win32WechatAutoReplyVisual]::SetCursorPos($screenX, $screenY)
+    if (-not (Test-AutoReplyVisualPointOwned $screenX $screenY $hWnd $expectedProcessId)) {
+      return @{ ok = $false; reason = "conversation_click_not_owned" }
+    }
     [Win32WechatAutoReplyVisual]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 45
+    Start-Sleep -Milliseconds 25
+    $releaseOwned = Test-AutoReplyVisualPointOwned $screenX $screenY $hWnd $expectedProcessId
     [Win32WechatAutoReplyVisual]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    if (-not $releaseOwned) { return @{ ok = $false; reason = "wechat_window_not_foreground" } }
     Start-Sleep -Milliseconds 430
-  } finally {
+    if ([Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -ne $hWnd) {
+      return @{ ok = $false; reason = "wechat_window_not_foreground" }
+    }
     [void][Win32WechatAutoReplyVisual]::SetCursorPos($oldPoint.X, $oldPoint.Y)
+  } catch {
+    return @{ ok = $false; reason = "conversation_open_failed" }
   }
-  return [Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -eq $hWnd
+  return @{ ok = $true }
 }
 
 function Get-AutoReplyVisualHeaderCandidates($lines, [double]$sidebarRight, [double]$frameWidth) {
@@ -1921,8 +1917,9 @@ try {
   Close-MomentsVisualFrame $frame
 }
 
-if (-not (Open-AutoReplyVisualConversation $candidate $hWnd ([int]$process.Id) $windowRect)) {
-  Write-AutoReplyVisualResult @{ ok = $false; reason = "conversation_open_failed"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
+$openedConversation = Open-AutoReplyVisualConversation $candidate $hWnd ([int]$process.Id) $windowRect
+if (-not $openedConversation.ok) {
+  Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$openedConversation.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd }
 }
 $openedObservation = Get-AutoReplyVisualObservation $hWnd ([int]$process.Id) $windowRect $true
 if (-not $openedObservation.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$openedObservation.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
@@ -2694,6 +2691,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       // An unstable two-frame transition is a run-level safety fence. Never
       // let an older retry candidate hide it and continue toward AI/send.
       if (result?.reason === "wechat_focus_failed"
+        || result?.reason === "wechat_window_not_foreground"
         || result?.reason === "chat_boundary_unresolved"
         || result?.reason === "latest_message_role_unresolved"
         || result?.reason === "current_transition_unresolved"

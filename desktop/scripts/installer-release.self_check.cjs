@@ -9,22 +9,24 @@ const {
 } = require("./build-installer-release.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
+const productBrand = require("../product-brand.json");
 const packageMetadata = JSON.parse(fs.readFileSync(path.join(desktopDir, "package.json"), "utf8"));
 const config = fs.readFileSync(path.join(desktopDir, "electron-builder-installer.yml"), "utf8");
 const nsis = fs.readFileSync(path.join(desktopDir, "build", "installer.nsh"), "utf8");
 const builder = fs.readFileSync(path.join(desktopDir, "scripts", "build-installer-release.cjs"), "utf8");
 
-assert.equal(packageMetadata.productName, "AI获客");
+assert.equal(packageMetadata.productName, productBrand.displayName);
+assert.equal(packageMetadata.version, "1.0.0");
 assert.match(packageMetadata.scripts["release:installer"], /build-portable-release\.cjs delivery/);
 assert.match(packageMetadata.scripts["release:installer"], /build-installer-release\.cjs/);
 assert.match(config, /^appId: com\.aihuoke\.desktop$/m);
-assert.match(config, /^productName: AI获客$/m);
+assert.match(config, new RegExp(`^productName: ${productBrand.displayName.replace(".", "\\.")}$`, "m"));
 assert.match(config, /^\s+perMachine: false$/m);
 assert.match(config, /^\s+include: build\/installer\.nsh$/m);
 assert.match(config, /^\s+deleteAppDataOnUninstall: false$/m);
 assert.match(config, /^\s+createDesktopShortcut: always$/m);
 assert.match(config, /^\s+createStartMenuShortcut: true$/m);
-assert.match(config, /^  artifactName: AI获客-安装程序\.\$\{ext\}$/m);
+assert.match(config, new RegExp(`^  artifactName: ${productBrand.displayName.replace(".", "\\.")}-安装程序\\.\\$\\{ext\\}$`, "m"));
 assert.match(builder, /Refusing to build an installer from a dirty worktree/);
 assert.match(builder, /Portable build commit does not match the current clean commit/);
 assert.match(builder, /require\.resolve\("electron-builder\/out\/cli\/cli\.js"\)/);
@@ -34,10 +36,12 @@ assert.match(builder, /"--prepackaged",\s+installerInputDir/);
 assert.match(builder, /treeSha256\(portableDir\) !== portableTreeHash/);
 assert.match(builder, /Portable application changed while building the installer/);
 assert.doesNotMatch(builder, /"--prepackaged",\s+portableDir/);
-assert.match(builder, /%APPDATA%\\\\xiaoxi-active-touch-delivery\\\\data/);
+assert.match(builder, /productBrand\.stableDeliveryDataDirectoryName/);
+assert.equal(productBrand.stableDeliveryDataDirectoryName, "xiaoxi-active-touch-delivery");
+assert.equal(productBrand.stableInstallDirectoryName, "AI获客");
 assert.match(nsis, /StrCpy \$INSTDIR "\$LocalAppData\\Programs\\AI获客"/);
-assert.equal(installerName, "AI获客-安装程序.exe");
-assert.equal(installerManifestName, "AI获客-安装程序-版本清单.json");
+assert.equal(installerName, `${productBrand.displayName}-安装程序.exe`);
+assert.equal(installerManifestName, `${productBrand.displayName}-安装程序-版本清单.json`);
 
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "aihuoke-installer-publish-"));
 try {

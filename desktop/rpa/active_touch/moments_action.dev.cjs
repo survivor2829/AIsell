@@ -7,6 +7,7 @@ const {
   stableMomentsPostIdentityText
 } = require("./moments_dry_run.dev.cjs");
 const { loadState, saveState } = require("./state_machine.cjs");
+const { validMomentsSurfaceRoot } = require("./moments_surface_profile.dev.cjs");
 const {
   COMMENT_READBACK_VERIFICATION_MODE,
   sanitizeCommentReadbackProof,
@@ -555,9 +556,10 @@ function boundsWithin(inner, outer) {
 }
 
 function lockedWindowIdentityKind(window) {
-  const commonRoot = window?.title === "朋友圈"
+  const commonRoot = validMomentsSurfaceRoot(window)
     && ["Weixin", "WeChat"].includes(window?.processName)
-    && window?.rootName === "朋友圈"
+    && typeof window?.className === "string"
+    && Boolean(window.className.trim())
     && window?.rootControlType === "ControlType.Window"
     && Number(window?.rootProcessId) === Number(window?.pid);
   if (!commonRoot) return "";
@@ -565,8 +567,8 @@ function lockedWindowIdentityKind(window) {
   const uiaFeed = window?.feedAutomationId === "sns_list"
     && window?.feedCount === 1
     && Boolean(String(window?.feedRuntimeId ?? "").trim());
-  if (uiaFeed && window.identityMode === "automation_id" && window.automationId === "SNSWindow") return "uia";
-  if (uiaFeed && window.identityMode === "structural_sns_feed" && window.automationId === "") return "uia";
+  if (window.surfaceMode === "standalone" && uiaFeed && window.identityMode === "automation_id" && window.automationId === "SNSWindow") return "uia";
+  if (window.surfaceMode === "standalone" && uiaFeed && window.identityMode === "structural_sns_feed" && window.automationId === "") return "uia";
 
   const visualWindowBounds = {
     left: window?.left,
@@ -601,7 +603,9 @@ function validLockedWindowIdentity(window) {
 function expectedObservationId(window, snapshot) {
   if (window?.identityMode === "visual_mmui_render" && snapshot?.source === "visual:windows_media_ocr") {
     const payload = JSON.stringify({
-      version: 5,
+      version: 6,
+      surfaceMode: String(window.surfaceMode ?? ""),
+      className: String(window.className ?? ""),
       pid: Number(window.pid),
       hWnd: String(window.hWnd),
       windowBounds: {
@@ -748,15 +752,13 @@ function loadLockedContext(baseDir, suppliedObservationId) {
     width: window?.width,
     height: window?.height
   };
-  const visualSnapshotValid = snapshot.source === "visual:windows_media_ocr"
+  const visualSnapshotCommonValid = snapshot.source === "visual:windows_media_ocr"
     && snapshot.identity_scope === "window_session_only"
     && snapshot.structure_verified === true
     && snapshot.ocr_provider === "windows_media_ocr"
     && snapshot.ocr_language === "zh-Hans-CN"
     && typeof snapshot.region_hash === "string"
     && OBSERVATION_ID_PATTERN.test(snapshot.region_hash)
-    && typeof snapshot.avatar_hash === "string"
-    && OBSERVATION_ID_PATTERN.test(snapshot.avatar_hash)
     && typeof snapshot.layout_hash === "string"
     && OBSERVATION_ID_PATTERN.test(snapshot.layout_hash)
     && typeof snapshot.label === "string"
@@ -770,9 +772,21 @@ function loadLockedContext(baseDir, suppliedObservationId) {
     && typeof snapshot.post_fingerprint === "string"
     && OBSERVATION_ID_PATTERN.test(snapshot.post_fingerprint)
     && momentsPostFingerprint(snapshot.identity_text) === snapshot.post_fingerprint
-    && boundsWithin(snapshot.bounds, visualWindowBounds)
-    && boundsWithin(snapshot.menu_bounds, visualWindowBounds)
-    && boundsWithin(snapshot.avatar_bounds, visualWindowBounds);
+    && boundsWithin(window.renderPaneBounds, visualWindowBounds)
+    && boundsWithin(snapshot.bounds, window.renderPaneBounds)
+    && boundsWithin(snapshot.menu_bounds, window.renderPaneBounds);
+  const visualSnapshotValid = visualSnapshotCommonValid && (
+    (snapshot.menu_only === true
+      && snapshot.avatar_hash === ""
+      && typeof snapshot.menu_hash === "string"
+      && OBSERVATION_ID_PATTERN.test(snapshot.menu_hash))
+    || (
+      snapshot.menu_only !== true
+      && typeof snapshot.avatar_hash === "string"
+      && OBSERVATION_ID_PATTERN.test(snapshot.avatar_hash)
+      && boundsWithin(snapshot.avatar_bounds, window.renderPaneBounds)
+    )
+  );
   const snapshotValid = identityKind === "uia"
     ? uiaSnapshotValid
     : identityKind === "visual" && visualSnapshotValid;
@@ -790,6 +804,10 @@ function loadLockedContext(baseDir, suppliedObservationId) {
     expectedWindow: JSON.parse(JSON.stringify(window)),
     postSnapshot: JSON.parse(JSON.stringify(snapshot))
   };
+}
+
+function loadMomentsActionContext(baseDir, suppliedObservationId) {
+  return loadLockedContext(baseDir, suppliedObservationId);
 }
 
 function resolveDriver(injectedDriver, context) {
@@ -1956,5 +1974,6 @@ module.exports = {
   createMomentsAttemptKey,
   executeMomentsComment,
   executeMomentsLike,
-  inspectMomentsMenu
+  inspectMomentsMenu,
+  loadMomentsActionContext
 };

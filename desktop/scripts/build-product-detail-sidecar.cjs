@@ -4,6 +4,13 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
+const {
+  PRODUCT_DETAIL_SOURCE_DIRECTORIES,
+  PRODUCT_DETAIL_SOURCE_EXCLUDED_DIRECTORIES,
+  isProductDetailSourceFile,
+  productDetailChangedSourceFiles,
+  sourcePathParts
+} = require("../src/main/product-detail-source-scope.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 
@@ -152,39 +159,6 @@ function findBuildPython(paths, env = process.env) {
   );
 }
 
-const PRODUCT_DETAIL_SOURCE_DIRECTORIES = new Set([
-  "ai_refine_v2",
-  "pubsub",
-  "static",
-  "templates"
-]);
-const PRODUCT_DETAIL_SOURCE_EXCLUDED_DIRECTORIES = new Set([
-  ".pytest_cache",
-  "__pycache__",
-  "test_batch_input",
-  "tests"
-]);
-const PRODUCT_DETAIL_MODULE_EXTENSIONS = new Set([".j2", ".py", ".yaml", ".yml"]);
-
-function sourcePathParts(relativePath) {
-  return String(relativePath || "").replaceAll("\\", "/").split("/").filter(Boolean);
-}
-
-function isProductDetailSourceFile(relativePath) {
-  const parts = sourcePathParts(relativePath);
-  if (parts.length === 0) return false;
-  if (parts.some((part) => PRODUCT_DETAIL_SOURCE_EXCLUDED_DIRECTORIES.has(part))) return false;
-  const extension = path.extname(parts.at(-1)).toLowerCase();
-  if (extension === ".pyc" || extension === ".pyo") return false;
-  if (parts.length === 1) {
-    return extension === ".py" && parts[0] !== "conftest.py";
-  }
-  if (parts[0] === "static" || parts[0] === "templates") return true;
-  if (parts[0] === "pubsub") return extension === ".py";
-  if (parts[0] === "ai_refine_v2") return PRODUCT_DETAIL_MODULE_EXTENSIONS.has(extension);
-  return false;
-}
-
 function productDetailSourceFiles(paths) {
   if (!fs.existsSync(paths.sourceDir) || !fs.statSync(paths.sourceDir).isDirectory()) {
     throw new Error(`Product-detail source directory is missing: ${paths.sourceDir}`);
@@ -253,15 +227,16 @@ function desktopSourceProvenance(paths, readGit = gitText) {
   if (!/^[0-9a-f]{40}$/.test(commit)) {
     throw new Error("Product-detail desktop build requires a full Git source commit");
   }
+  const workingChanges = readGit(paths.projectDir, [
+    "status",
+    "--porcelain",
+    "--untracked-files=all",
+    "--",
+    relativeSource
+  ]);
   return {
     commit,
-    dirty: Boolean(readGit(paths.projectDir, [
-      "status",
-      "--porcelain",
-      "--untracked-files=all",
-      "--",
-      relativeSource
-    ])),
+    dirty: productDetailChangedSourceFiles(workingChanges, relativeSource).length > 0,
     treeSha256: productDetailSourceTreeSha256(paths)
   };
 }

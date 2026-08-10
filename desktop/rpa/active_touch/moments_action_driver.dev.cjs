@@ -19,11 +19,10 @@ public static class Win32WechatMomentsAction {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int command);
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int maxCount);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
   [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint command);
@@ -121,6 +120,12 @@ function Get-TopLevelFeedItemDepth(
 function Get-TargetContext {
   $expectedPid = [int]$env:XIAOXI_MOMENTS_EXPECTED_PID
   $expectedHandleText = [string]$env:XIAOXI_MOMENTS_EXPECTED_HWND
+  $expectedTitle = Decode-Base64 $env:XIAOXI_MOMENTS_EXPECTED_TITLE_BASE64
+  $expectedClassName = Decode-Base64 $env:XIAOXI_MOMENTS_EXPECTED_CLASS_BASE64
+  [int]$expectedLeft = 0
+  [int]$expectedTop = 0
+  [int]$expectedWidth = 0
+  [int]$expectedHeight = 0
   $expectedRuntimeId = [string]$env:XIAOXI_MOMENTS_RUNTIME_ID
   $expectedRootAutomationId = [string]$env:XIAOXI_MOMENTS_ROOT_AUTOMATION_ID
   $expectedIdentityMode = [string]$env:XIAOXI_MOMENTS_IDENTITY_MODE
@@ -132,7 +137,13 @@ function Get-TargetContext {
   $expectedPrefix = Normalize-Text (Decode-Base64 $env:XIAOXI_MOMENTS_LABEL_PREFIX_BASE64)
   $expectedIdentityValid = ($expectedIdentityMode -ceq "automation_id" -and $expectedRootAutomationId -ceq "SNSWindow") -or
     ($expectedIdentityMode -ceq "structural_sns_feed" -and $expectedRootAutomationId -ceq "")
-  if ($expectedPid -le 0 -or $expectedHandleText -notmatch '^[1-9][0-9]*$' -or [string]::IsNullOrWhiteSpace($expectedRuntimeId) -or
+  if ($expectedPid -le 0 -or $expectedHandleText -notmatch '^[1-9][0-9]*$' -or
+    [string]::IsNullOrWhiteSpace($expectedTitle) -or [string]::IsNullOrWhiteSpace($expectedClassName) -or
+    -not [int]::TryParse([string]$env:XIAOXI_MOMENTS_EXPECTED_LEFT, [ref]$expectedLeft) -or
+    -not [int]::TryParse([string]$env:XIAOXI_MOMENTS_EXPECTED_TOP, [ref]$expectedTop) -or
+    -not [int]::TryParse([string]$env:XIAOXI_MOMENTS_EXPECTED_WIDTH, [ref]$expectedWidth) -or $expectedWidth -lt 300 -or
+    -not [int]::TryParse([string]$env:XIAOXI_MOMENTS_EXPECTED_HEIGHT, [ref]$expectedHeight) -or $expectedHeight -lt 300 -or
+    [string]::IsNullOrWhiteSpace($expectedRuntimeId) -or
     -not $expectedIdentityValid -or $expectedRootName -cne "朋友圈" -or $expectedRootControlType -cne "ControlType.Window" -or
     $expectedFeedAutomationId -cne "sns_list" -or [string]::IsNullOrWhiteSpace($expectedFeedRuntimeId) -or $expectedFeedCount -ne 1) {
     return @{ ok = $false; reason = "moments_target_lock_invalid" }
@@ -147,13 +158,23 @@ function Get-TargetContext {
   }
   $titleText = New-Object System.Text.StringBuilder 128
   [void][Win32WechatMomentsAction]::GetWindowText($hWnd, $titleText, $titleText.Capacity)
-  if ($titleText.ToString().Trim() -ne "朋友圈") { return @{ ok = $false; reason = "moments_window_identity_mismatch" } }
+  $classText = New-Object System.Text.StringBuilder 256
+  [void][Win32WechatMomentsAction]::GetClassName($hWnd, $classText, $classText.Capacity)
+  if ($titleText.ToString().Trim() -cne $expectedTitle -or $classText.ToString().Trim() -cne $expectedClassName) {
+    return @{ ok = $false; reason = "moments_window_identity_mismatch" }
+  }
   $windowWin32Rect = New-Object Win32WechatMomentsAction+RECT
   if (-not [Win32WechatMomentsAction]::GetWindowRect($hWnd, [ref]$windowWin32Rect)) { return @{ ok = $false; reason = "moments_window_identity_mismatch" } }
   $windowWin32Width = [double]($windowWin32Rect.Right - $windowWin32Rect.Left)
   $windowWin32Height = [double]($windowWin32Rect.Bottom - $windowWin32Rect.Top)
   if ($windowWin32Width -lt 300 -or $windowWin32Height -lt 300) {
     return @{ ok = $false; reason = "moments_window_identity_mismatch" }
+  }
+  if ([Math]::Abs($windowWin32Rect.Left - $expectedLeft) -gt 3 -or
+    [Math]::Abs($windowWin32Rect.Top - $expectedTop) -gt 3 -or
+    [Math]::Abs($windowWin32Width - $expectedWidth) -gt 3 -or
+    [Math]::Abs($windowWin32Height - $expectedHeight) -gt 3) {
+    return @{ ok = $false; reason = "moments_window_geometry_changed" }
   }
   try { $root = [System.Windows.Automation.AutomationElement]::FromHandle($hWnd) } catch { $root = $null }
   if ($root -eq $null) {
@@ -204,9 +225,6 @@ function Get-TargetContext {
     [void]$matches.Add(@{ element = $item; rect = $itemRect; text = $text })
   }
   if ($matches.Count -ne 1) { return @{ ok = $false; reason = "moments_post_changed" } }
-  [void][Win32WechatMomentsAction]::ShowWindowAsync($hWnd, 9)
-  [void][Win32WechatMomentsAction]::SetForegroundWindow($hWnd)
-  Start-Sleep -Milliseconds 120
   if ([Win32WechatMomentsAction]::GetForegroundWindow() -ne $hWnd) { return @{ ok = $false; reason = "moments_window_not_foreground" } }
   return @{
     ok = $true
@@ -1479,6 +1497,12 @@ function actionEnvironment(action, context = {}) {
     XIAOXI_MOMENTS_ACTION: action,
     XIAOXI_MOMENTS_EXPECTED_PID: String(window.pid ?? ""),
     XIAOXI_MOMENTS_EXPECTED_HWND: String(window.hWnd ?? ""),
+    XIAOXI_MOMENTS_EXPECTED_TITLE_BASE64: Buffer.from(String(window.title ?? ""), "utf8").toString("base64"),
+    XIAOXI_MOMENTS_EXPECTED_CLASS_BASE64: Buffer.from(String(window.className ?? ""), "utf8").toString("base64"),
+    XIAOXI_MOMENTS_EXPECTED_LEFT: String(window.left ?? ""),
+    XIAOXI_MOMENTS_EXPECTED_TOP: String(window.top ?? ""),
+    XIAOXI_MOMENTS_EXPECTED_WIDTH: String(window.width ?? ""),
+    XIAOXI_MOMENTS_EXPECTED_HEIGHT: String(window.height ?? ""),
     XIAOXI_MOMENTS_RUNTIME_ID: String(snapshot.runtime_id ?? snapshot.runtimeId ?? ""),
     XIAOXI_MOMENTS_ROOT_AUTOMATION_ID: String(window.automationId ?? ""),
     XIAOXI_MOMENTS_IDENTITY_MODE: String(window.identityMode ?? ""),

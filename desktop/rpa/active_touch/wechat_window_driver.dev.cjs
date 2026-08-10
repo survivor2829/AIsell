@@ -247,14 +247,10 @@ if (-not $windowExists -or -not $windowVisible -or $windowThreadId -eq 0 -or [st
 }
 $text = New-Object System.Text.StringBuilder 512
 [void][Win32WechatSendMessage]::GetWindowText($expectedHWnd, $text, $text.Capacity)
-[void][Win32WechatSendMessage]::ShowWindowAsync($expectedHWnd, 9)
-$focused = [Win32WechatSendMessage]::SetForegroundWindow($expectedHWnd)
-if (-not $focused) { try { $focused = (New-Object -ComObject WScript.Shell).AppActivate([int]$windowProcessId) } catch {} }
-Start-Sleep -Milliseconds 200
 $focused = [Win32WechatSendMessage]::GetForegroundWindow() -eq $expectedHWnd
 $matched = @{ title = $text.ToString().Trim(); focused = $focused; processName = $proc.ProcessName; pid = $windowProcessId; hWnd = $expectedHWnd.ToInt64() }
 if (-not $matched.focused) {
-  @{ ok = $false; reason = "wechat_focus_failed"; title = $matched.title; processName = $matched.processName; sendAttempted = $false } | ConvertTo-Json -Compress
+  @{ ok = $false; reason = "wechat_window_not_foreground"; title = $matched.title; processName = $matched.processName; sendAttempted = $false } | ConvertTo-Json -Compress
   exit
 }
 $root = $null
@@ -287,7 +283,32 @@ $sendAttempted = $false
 try {
   $inputX = [int]($windowRect.Left + ($windowRect.Width * $(if ($inputPointAvailable) { $inputXRatio } else { 0.65 })))
   $inputY = $(if ($inputPointAvailable) { [int]($windowRect.Top + ($windowRect.Height * $inputYRatio)) } else { [int]($windowRect.Bottom - 105) })
+  $inputPoint = New-Object Win32WechatSendMessage+POINT
+  $inputPoint.X = $inputX
+  $inputPoint.Y = $inputY
+  $inputPointWindow = [Win32WechatSendMessage]::WindowFromPoint($inputPoint)
+  [uint32]$inputPointPid = 0
+  $inputPointThreadId = $(if ($inputPointWindow -ne [IntPtr]::Zero) { [Win32WechatSendMessage]::GetWindowThreadProcessId($inputPointWindow, [ref]$inputPointPid) } else { 0 })
+  $inputPointOwned = $inputPointThreadId -ne 0 -and
+    $inputPointPid -eq [uint32][int]$expectedPid -and
+    [Win32WechatSendMessage]::GetAncestor($inputPointWindow, 2).ToInt64() -eq [int64]$matched.hWnd
+  if ([Win32WechatSendMessage]::GetForegroundWindow().ToInt64() -ne [int64]$matched.hWnd -or -not $inputPointOwned) {
+    @{ ok = $false; reason = $(if (-not $inputPointOwned) { "atomic_composer_point_obscured" } else { "atomic_wechat_focus_changed" }); conversationVerified = $conversationVerified; sendAttempted = $false } | ConvertTo-Json -Compress
+    exit
+  }
   [void][Win32WechatSendMessage]::SetCursorPos($inputX, $inputY)
+  $inputCursor = New-Object Win32WechatSendMessage+POINT
+  $inputCursorVerified = [Win32WechatSendMessage]::GetCursorPos([ref]$inputCursor) -and
+    [Math]::Abs($inputCursor.X - $inputX) -le 1 -and [Math]::Abs($inputCursor.Y - $inputY) -le 1
+  $inputCursorWindow = $(if ($inputCursorVerified) { [Win32WechatSendMessage]::WindowFromPoint($inputCursor) } else { [IntPtr]::Zero })
+  [uint32]$inputCursorPid = 0
+  $inputCursorThreadId = $(if ($inputCursorWindow -ne [IntPtr]::Zero) { [Win32WechatSendMessage]::GetWindowThreadProcessId($inputCursorWindow, [ref]$inputCursorPid) } else { 0 })
+  if (-not $inputCursorVerified -or $inputCursorThreadId -eq 0 -or $inputCursorPid -ne [uint32][int]$expectedPid -or
+      [Win32WechatSendMessage]::GetAncestor($inputCursorWindow, 2).ToInt64() -ne [int64]$matched.hWnd -or
+      [Win32WechatSendMessage]::GetForegroundWindow().ToInt64() -ne [int64]$matched.hWnd) {
+    @{ ok = $false; reason = "atomic_composer_point_obscured"; conversationVerified = $conversationVerified; sendAttempted = $false } | ConvertTo-Json -Compress
+    exit
+  }
   [Win32WechatSendMessage]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 35
   [Win32WechatSendMessage]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
@@ -299,7 +320,15 @@ try {
   }
   $probe = "__XIAOXI_ATOMIC_SEND_" + [Guid]::NewGuid().ToString("N")
   Set-Clipboard -Value $probe
+  if ([Win32WechatSendMessage]::GetForegroundWindow().ToInt64() -ne [int64]$matched.hWnd) {
+    @{ ok = $false; reason = "atomic_wechat_focus_changed"; conversationVerified = $conversationVerified; draftVerified = $false; sendAttempted = $false } | ConvertTo-Json -Compress
+    exit
+  }
   [System.Windows.Forms.SendKeys]::SendWait("^a")
+  if ([Win32WechatSendMessage]::GetForegroundWindow().ToInt64() -ne [int64]$matched.hWnd) {
+    @{ ok = $false; reason = "atomic_wechat_focus_changed"; conversationVerified = $conversationVerified; draftVerified = $false; sendAttempted = $false } | ConvertTo-Json -Compress
+    exit
+  }
   [System.Windows.Forms.SendKeys]::SendWait("^c")
   Start-Sleep -Milliseconds 120
   $copiedDraft = [string](Get-Clipboard -Raw -ErrorAction Stop)
@@ -401,6 +430,19 @@ try {
       exit
     }
   }
+  $finalPoint = New-Object Win32WechatSendMessage+POINT
+  $finalCursorVerified = [Win32WechatSendMessage]::GetCursorPos([ref]$finalPoint) -and
+    [Math]::Abs($finalPoint.X - $sendX) -le 1 -and [Math]::Abs($finalPoint.Y - $sendY) -le 1
+  $finalPointWindow = $(if ($finalCursorVerified) { [Win32WechatSendMessage]::WindowFromPoint($finalPoint) } else { [IntPtr]::Zero })
+  [uint32]$finalPointPid = 0
+  $finalPointThreadId = $(if ($finalPointWindow -ne [IntPtr]::Zero) { [Win32WechatSendMessage]::GetWindowThreadProcessId($finalPointWindow, [ref]$finalPointPid) } else { 0 })
+  $finalPointOwned = $finalPointThreadId -ne 0 -and $finalPointPid -eq [uint32][int]$expectedPid -and
+    [Win32WechatSendMessage]::GetAncestor($finalPointWindow, 2).ToInt64() -eq [int64]$matched.hWnd
+  if (-not $finalCursorVerified -or -not $finalPointOwned -or
+      [Win32WechatSendMessage]::GetForegroundWindow().ToInt64() -ne [int64]$matched.hWnd) {
+    @{ ok = $false; reason = "wechat_send_point_obscured"; conversationVerified = $conversationVerified; draftVerified = $draftVerified; sendAttempted = $false } | ConvertTo-Json -Compress
+    exit
+  }
   $sendAttempted = $true
   [Win32WechatSendMessage]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
   Start-Sleep -Milliseconds 35
@@ -459,11 +501,9 @@ if ($process -eq $null -or @("Weixin", "WeChat") -notcontains $process.ProcessNa
   @{ ok = $false; reason = "real_send_session_changed"; expectedHWnd = [int64]$expectedHWnd; expectedPid = [int]$expectedPid; processName = [string]$process.ProcessName; windowExists = $expectedWindowExists; windowVisible = $expectedWindowVisible; windowThreadId = $expectedWindowThreadId; observedWindowPid = $observedWindowPid } | ConvertTo-Json -Compress
   exit
 }
-$focused = [Win32WechatConversationObservation]::SetForegroundWindow($expectedHWnd)
-Start-Sleep -Milliseconds 160
 $focused = [Win32WechatConversationObservation]::GetForegroundWindow() -eq $expectedHWnd
 if (-not $focused) {
-  @{ ok = $false; reason = "wechat_focus_failed"; pid = $process.Id; hWnd = [int64]$expectedHWnd } | ConvertTo-Json -Compress
+  @{ ok = $false; reason = "wechat_window_not_foreground"; pid = $process.Id; hWnd = [int64]$expectedHWnd } | ConvertTo-Json -Compress
   exit
 }
 $windowRect = [pscustomobject]@{
@@ -678,7 +718,7 @@ function detectActiveWechatAccount(context = {}) {
     XIAOXI_EXPECTED_PID: String(context.pid),
     XIAOXI_EXPECTED_ACCOUNT_ID: String(context.expectedAccountId ?? ""),
     XIAOXI_WECHAT_ROOT: String(context.wechatRoot ?? "")
-  });
+  }, { ensure: false });
 }
 
 function detectActiveWechatAccountAsync(context = {}) {
@@ -757,6 +797,8 @@ public static class Win32WechatMessageProof {
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
+  [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
 }
 "@
@@ -812,32 +854,73 @@ $inputPointAvailable = [double]::TryParse($inputXText, [ref]$inputXRatio) -and [
 
 function Read-InputDraft {
   $sameWindow = [Win32WechatMessageProof]::GetForegroundWindow().ToInt64() -eq [int64]$expectedHandle
-  if (-not $sameWindow) { return @{ ok = $false; sameWindow = $false; isEmpty = $false; text = "" } }
+  if (-not $sameWindow) { return @{ ok = $false; reason = "wechat_window_not_foreground"; sameWindow = $false; isEmpty = $false; text = "" } }
   $oldPoint = New-Object Win32WechatMessageProof+POINT
   [void][Win32WechatMessageProof]::GetCursorPos([ref]$oldPoint)
   $oldClipboard = ""
   try { $oldClipboard = Get-Clipboard -Raw -ErrorAction SilentlyContinue } catch {}
-  $result = @{ ok = $false; sameWindow = $true; isEmpty = $false; text = "" }
+  $clipboardOwned = $false
+  $result = @{ ok = $false; reason = "input_draft_read_failed"; sameWindow = $true; isEmpty = $false; text = "" }
   try {
     $x = [int]($windowRect.Left + ($windowWidth * $(if ($inputPointAvailable) { $inputXRatio } else { 0.65 })))
     $y = $(if ($inputPointAvailable) { [int]($windowRect.Top + ($windowHeight * $inputYRatio)) } else { [int]($windowRect.Bottom - 105) })
+    $targetPoint = New-Object Win32WechatMessageProof+POINT
+    $targetPoint.X = $x
+    $targetPoint.Y = $y
+    $targetWindow = [Win32WechatMessageProof]::WindowFromPoint($targetPoint)
+    [uint32]$targetPid = 0
+    $targetThread = $(if ($targetWindow -ne [IntPtr]::Zero) { [Win32WechatMessageProof]::GetWindowThreadProcessId($targetWindow, [ref]$targetPid) } else { 0 })
+    if ($targetThread -eq 0 -or [int]$targetPid -ne [int]$expectedPid -or
+        [Win32WechatMessageProof]::GetAncestor($targetWindow, 2) -ne $expectedHWnd -or
+        [Win32WechatMessageProof]::GetForegroundWindow() -ne $expectedHWnd) {
+      return @{ ok = $false; reason = "input_draft_target_not_owned"; sameWindow = $false; isEmpty = $false; text = "" }
+    }
     [void][Win32WechatMessageProof]::SetCursorPos($x, $y)
+    $cursorPoint = New-Object Win32WechatMessageProof+POINT
+    $cursorVerified = [Win32WechatMessageProof]::GetCursorPos([ref]$cursorPoint) -and
+      [Math]::Abs($cursorPoint.X - $x) -le 1 -and [Math]::Abs($cursorPoint.Y - $y) -le 1
+    $cursorWindow = $(if ($cursorVerified) { [Win32WechatMessageProof]::WindowFromPoint($cursorPoint) } else { [IntPtr]::Zero })
+    [uint32]$cursorPid = 0
+    $cursorThread = $(if ($cursorWindow -ne [IntPtr]::Zero) { [Win32WechatMessageProof]::GetWindowThreadProcessId($cursorWindow, [ref]$cursorPid) } else { 0 })
+    if (-not $cursorVerified -or $cursorThread -eq 0 -or [int]$cursorPid -ne [int]$expectedPid -or
+        [Win32WechatMessageProof]::GetAncestor($cursorWindow, 2) -ne $expectedHWnd -or
+        [Win32WechatMessageProof]::GetForegroundWindow() -ne $expectedHWnd) {
+      return @{ ok = $false; reason = "input_draft_target_not_owned"; sameWindow = $false; isEmpty = $false; text = "" }
+    }
     [Win32WechatMessageProof]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 50
     [Win32WechatMessageProof]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 120
+    if ([Win32WechatMessageProof]::GetForegroundWindow() -ne $expectedHWnd) {
+      return @{ ok = $false; reason = "wechat_window_not_foreground"; sameWindow = $false; isEmpty = $false; text = "" }
+    }
     $sentinel = "__XIAOXI_EMPTY_DRAFT_" + [Guid]::NewGuid().ToString("N")
     Set-Clipboard -Value $sentinel
+    $clipboardOwned = $true
+    if ([Win32WechatMessageProof]::GetForegroundWindow() -ne $expectedHWnd) {
+      return @{ ok = $false; reason = "wechat_window_not_foreground"; sameWindow = $false; isEmpty = $false; text = "" }
+    }
     [System.Windows.Forms.SendKeys]::SendWait("^a")
     Start-Sleep -Milliseconds 50
+    if ([Win32WechatMessageProof]::GetForegroundWindow() -ne $expectedHWnd) {
+      return @{ ok = $false; reason = "wechat_window_not_foreground"; sameWindow = $false; isEmpty = $false; text = "" }
+    }
     [System.Windows.Forms.SendKeys]::SendWait("^c")
     Start-Sleep -Milliseconds 180
+    if ([Win32WechatMessageProof]::GetForegroundWindow() -ne $expectedHWnd) {
+      return @{ ok = $false; reason = "wechat_window_not_foreground"; sameWindow = $false; isEmpty = $false; text = "" }
+    }
     $copied = [string](Get-Clipboard -Raw -ErrorAction Stop)
     $isEmpty = $copied -ceq $sentinel
-    $result = @{ ok = $true; sameWindow = $true; isEmpty = $isEmpty; text = $(if ($isEmpty) { "" } else { $copied }) }
-  } catch {}
-  try { Set-Clipboard -Value $oldClipboard } catch {}
-  [void][Win32WechatMessageProof]::SetCursorPos($oldPoint.X, $oldPoint.Y)
+    $result = @{ ok = $true; reason = ""; sameWindow = $true; isEmpty = $isEmpty; text = $(if ($isEmpty) { "" } else { $copied }) }
+  } catch {
+    $result = @{ ok = $false; reason = "input_draft_read_failed"; sameWindow = ([Win32WechatMessageProof]::GetForegroundWindow() -eq $expectedHWnd); isEmpty = $false; text = "" }
+  } finally {
+    if ([Win32WechatMessageProof]::GetForegroundWindow() -eq $expectedHWnd) {
+      if ($clipboardOwned) { try { Set-Clipboard -Value $oldClipboard } catch {} }
+      [void][Win32WechatMessageProof]::SetCursorPos($oldPoint.X, $oldPoint.Y)
+    }
+  }
   return $result
 }
 
@@ -905,6 +988,10 @@ $snapshot = @{
 }
 if ($phase -eq "before") {
   $draftBefore = Read-InputDraft
+  if (-not $draftBefore.ok) {
+    @{ ok = $false; reason = $draftBefore.reason } | ConvertTo-Json -Compress
+    exit
+  }
   $snapshot.draftExact = $draftBefore.ok -and -not $draftBefore.isEmpty -and (Normalize-WechatProofText $draftBefore.text) -ceq $normalizedMessage
   @{
     ok = $true
@@ -940,7 +1027,11 @@ $outgoing = $selected -ne $null -and $selected.outgoing -eq $true
 $countIncreased = $outgoingExact.Count -gt $beforeExactCount
 $isNew = $selected -ne $null -and $beforeKeys -notcontains $selected.key -and $countIncreased
 $isLatest = $selected -ne $null -and $latestOutgoing -ne $null -and $selected.bottom -ge ($latestOutgoing.bottom - 2)
-$draftAfter = Read-InputDraft
+$bubbleVerified = $exactMatch -and $outgoing -and $isLatest -and $isNew
+$draftAfter = @{ ok = $false; reason = "draft_read_not_needed"; sameWindow = ([Win32WechatMessageProof]::GetForegroundWindow() -eq $expectedHWnd); isEmpty = $false; text = "" }
+if (-not $bubbleVerified -and $beforeSnapshot.draftExact -eq $true) {
+  $draftAfter = Read-InputDraft
+}
 $draftConsumed = $beforeSnapshot.draftExact -eq $true -and $draftAfter.ok -and $draftAfter.sameWindow -and $draftAfter.isEmpty
 $verificationMode = $(if ($exactMatch -and $outgoing -and $isLatest -and $isNew) { "message_bubble" } elseif ($draftConsumed) { "draft_consumed" } else { "" })
 $windowText = New-Object System.Text.StringBuilder 512

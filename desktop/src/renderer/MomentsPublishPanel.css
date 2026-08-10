@@ -1,0 +1,241 @@
+.moments-publish-card {
+  margin-top: 16px;
+}
+
+.moments-publish-content {
+  padding: 16px;
+}
+
+.moments-publish-content textarea {
+  min-height: 128px;
+}
+
+.moments-publish-content textarea:disabled {
+  cursor: not-allowed;
+  background: #f7f8fa;
+  color: #667085;
+}
+
+.moments-publish-content small {
+  align-self: flex-end;
+  color: #98a2b3;
+}
+
+.moments-publish-media {
+  margin: 0 16px 16px;
+  padding: 14px;
+  border: 1px solid #e8eaf0;
+  border-radius: 10px;
+  background: #fafbfc;
+}
+
+.moments-publish-media-head,
+.moments-publish-media-head > div,
+.moments-publish-step,
+.moments-publish-confirmation-head,
+.moments-publish-final-action,
+.moments-publish-unknown-actions,
+.moments-publish-finished,
+.moments-publish-status-line {
+  display: flex;
+  align-items: center;
+}
+
+.moments-publish-media-head,
+.moments-publish-step,
+.moments-publish-confirmation-head,
+.moments-publish-final-action {
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.moments-publish-media-head > div {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.moments-publish-media-head span,
+.moments-publish-step p,
+.moments-publish-empty {
+  margin: 0;
+  color: #667085;
+  font-size: 13px;
+}
+
+.moments-publish-file-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.moments-publish-file-list li {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.moments-publish-file-list li > span {
+  overflow: hidden;
+  color: #344054;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.moments-publish-file-list small {
+  flex: 0 0 auto;
+  color: #98a2b3;
+}
+
+.moments-publish-empty {
+  margin-top: 12px;
+}
+
+.moments-publish-step {
+  margin: 0 16px 16px;
+  padding: 14px;
+  border: 1px dashed #cfd5df;
+  border-radius: 10px;
+}
+
+.moments-publish-step p {
+  margin-top: 4px;
+}
+
+.moments-publish-confirmation {
+  margin: 0 16px 16px;
+  padding: 16px;
+  border: 1px solid #f3b4bc;
+  border-radius: 12px;
+  background: #fff7f8;
+}
+
+.moments-publish-confirmation.is-finished {
+  border-color: #a6d8bd;
+  background: #f3fbf7;
+}
+
+.moments-publish-confirmation-head > span {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #ffe7ea;
+  color: #a81631;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.moments-publish-confirmation dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.moments-publish-confirmation dl > div {
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.moments-publish-confirmation dt {
+  color: #667085;
+  font-size: 12px;
+}
+
+.moments-publish-confirmation dd {
+  margin: 4px 0 0;
+  color: #1d2939;
+  font-weight: 800;
+}
+
+.moments-publish-confirmation code {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
+.moments-publish-final-action {
+  padding-top: 14px;
+  border-top: 1px solid #f3ccd1;
+}
+
+.moments-publish-final-action p {
+  margin: 0;
+  color: #7a2432;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.moments-publish-finished {
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid #cce8d8;
+  color: #147a42;
+  font-weight: 700;
+}
+
+.moments-publish-reset-row {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 16px 16px;
+}
+
+.moments-publish-unknown {
+  margin: 16px;
+  padding: 16px;
+  border: 1px solid #f0b4a8;
+  border-radius: 12px;
+  background: #fff6f3;
+}
+
+.moments-publish-warning-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #a3321d;
+}
+
+.moments-publish-unknown p {
+  margin: 10px 0 14px;
+  color: #7c3f33;
+  line-height: 1.65;
+}
+
+.moments-publish-unknown-actions {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.moments-publish-status-line {
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 16px 12px;
+}
+
+.moments-publish-status-line span {
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: #f2f4f7;
+  color: #475467;
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .moments-publish-step,
+  .moments-publish-final-action {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .moments-publish-confirmation dl {
+    grid-template-columns: 1fr;
+  }
+}

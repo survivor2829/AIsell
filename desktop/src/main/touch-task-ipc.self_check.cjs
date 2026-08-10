@@ -106,9 +106,45 @@ Module._load = function load(request, parent, isMain) {
 let currentFrozenContact = null;
 const modulePath = path.join(__dirname, "touch-task-ipc.cjs");
 delete require.cache[require.resolve(modulePath)];
-const { registerTouchTaskIpc } = require(modulePath);
+const {
+  classifyTaskTransitionDiagnostic,
+  registerTouchTaskIpc
+} = require(modulePath);
 Module._load = originalLoad;
-const { authorizeNextBatch, classifyContacts, createTask, isBatchAuthorized, recoverInterruptedTask, saveTaskState } = require("../../rpa/active_touch/touch_task_state.cjs");
+const { authorizeNextBatch, classifyContacts, createTask, isBatchAuthorized, markPreviousBuildTask, recoverInterruptedTask, saveTaskState } = require("../../rpa/active_touch/touch_task_state.cjs");
+
+assert.deepEqual(
+  classifyTaskTransitionDiagnostic(
+    { status: "running", pause_reason: "" },
+    { status: "generated", ai_status: "fallback", ai_error_code: "API_KEY_MISSING" }
+  ),
+  { level: "info", code: "" },
+  "a successful fixed-script fallback must remain an informational transition"
+);
+assert.deepEqual(
+  classifyTaskTransitionDiagnostic(
+    { status: "paused", pause_reason: "用户已暂停" },
+    { status: "generated", ai_error_code: "API_KEY_MISSING" }
+  ),
+  { level: "info", code: "" },
+  "a user pause must not be reported as an operational failure"
+);
+assert.deepEqual(
+  classifyTaskTransitionDiagnostic(
+    { status: "paused", pause_reason: "窗口未找到" },
+    { status: "blocked", reason: "wechat_window_not_found", ai_error_code: "API_KEY_MISSING" }
+  ),
+  { level: "error", code: "wechat_window_not_found" },
+  "the actual workflow blocker must take precedence over an AI fallback code"
+);
+assert.deepEqual(
+  classifyTaskTransitionDiagnostic(
+    { status: "paused", pause_reason: "发送结果无法确认" },
+    { status: "outcome_unknown", reason: "发送结果无法确认", ai_error_code: "API_KEY_MISSING" }
+  ),
+  { level: "error", code: "outcome_unknown" },
+  "an unknown send outcome must remain visible as a real error"
+);
 
 function contacts(count) {
   return Array.from({ length: count }, (_, index) => ({
@@ -143,6 +179,7 @@ async function waitFor(read, predicate, timeoutMs = 3000) {
     let pauseCallbacks = 0;
     const waitedDeadlines = [];
     let executorBehavior = async (options) => {
+      assert.equal(options.windowMinIdleMs, 15_000, "background active-touch must wait for an idle desktop before arranging WeChat");
       sends += 1;
       currentFrozenContact = options.frozenContact;
       options.onTransition("prepared", { real_send_attempt_key: `attempt-${options.contactId}` });
@@ -166,6 +203,7 @@ async function waitFor(read, predicate, timeoutMs = 3000) {
       random: () => 0,
       onPause: () => { pauseCallbacks += 1; },
       realSendExecutor: (options) => executorBehavior(options),
+      buildId: "build-current",
       verifyRealSendSession: () => {
         const result = sessionVerificationResult;
         if (result.ok && result.pid && result.hWnd) {
@@ -216,6 +254,29 @@ async function waitFor(read, predicate, timeoutMs = 3000) {
     assert.equal(completed.task.results.filter((result) => result.status === "sent_verified").length, 51);
     assert.ok(waitedDeadlines.length > 0);
     assert.ok(Number.isFinite(Date.parse(completed.task.next_send_not_before)));
+
+    fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
+    fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
+    let previousBuildTask = createTask("跨版本续跑", contacts(3), "2026-07-11T00:00:00.000Z", {
+      executionMode: "real_send",
+      sourceBuildId: "build-previous"
+    });
+    previousBuildTask.results[0].status = "sent_verified";
+    previousBuildTask.results[0].retry_blocked = true;
+    previousBuildTask.current_index = 1;
+    previousBuildTask.status = "paused";
+    previousBuildTask.phase = "paused";
+    previousBuildTask = markPreviousBuildTask(previousBuildTask, "build-current").task;
+    saveTaskState(dir, previousBuildTask);
+    const sendsBeforePreviousBuildResume = sends;
+    const previousBuildResume = await resume({}, { clickToken: "trusted-previous-build-resume" });
+    assert.notEqual(previousBuildResume.blocked_reason, "previous_build_task", "a compatible frozen task must remain resumable after an app update");
+    const previousBuildCompleted = await waitFor(status, (value) => value.task?.status === "completed");
+    assert.equal(previousBuildCompleted.task.id, previousBuildTask.id, "an app update must continue the same frozen task instead of rebuilding it");
+    assert.equal(previousBuildCompleted.task.current_index, 3);
+    assert.equal(previousBuildCompleted.task.previous_build_task, false);
+    assert.equal(previousBuildCompleted.task.source_build_id, "build-current");
+    assert.equal(sends, sendsBeforePreviousBuildResume + 2, "contacts completed before the update must not be sent again");
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });

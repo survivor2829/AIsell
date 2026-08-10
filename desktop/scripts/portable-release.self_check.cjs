@@ -22,6 +22,8 @@ const {
 
 const desktopDir = path.resolve(__dirname, "..");
 const projectDir = path.resolve(desktopDir, "..");
+const productBrand = require("../product-brand.json");
+const PRODUCT_NAME = productBrand.displayName;
 
 function parsePortableArguments(argv) {
   const args = [...argv];
@@ -65,7 +67,7 @@ function assertRealPathInside(root, target, label) {
 }
 
 function resolvePortablePaths({ edition, targetOption, zipOption, releaseRoot = path.join(projectDir, "release") }) {
-  const productName = edition === "test" ? "AI获客-测试版" : "AI获客";
+  const productName = edition === "test" ? `${PRODUCT_NAME}-测试版` : PRODUCT_NAME;
   const target = path.resolve(targetOption || path.join(releaseRoot, productName));
   const zip = path.resolve(zipOption || path.join(releaseRoot, `${productName}.zip`));
   if (path.basename(target) !== productName) throw new Error(`Portable target basename must be ${productName}`);
@@ -186,6 +188,9 @@ const databaseDecryptor = path.join(nativeLibDir, "xiaoxi-db-decrypt.exe");
 const internalAutoReplyCli = path.join(appDir, "rpa", "active_touch", "active_touch_cli.dev.cjs");
 const momentsDryRunModule = path.join(appDir, "rpa", "active_touch", "moments_dry_run.dev.cjs");
 const momentsNavigation = path.join(appDir, "rpa", "active_touch", "moments_navigation.dev.cjs");
+const momentsSurfaceProfile = path.join(appDir, "rpa", "active_touch", "moments_surface_profile.dev.cjs");
+const momentsSurfaceEvidence = path.join(appDir, "rpa", "active_touch", "moments_surface_evidence.dev.cjs");
+const momentsPublishDriver = path.join(appDir, "rpa", "active_touch", "moments_publish_driver.dev.cjs");
 const momentsDryRunCli = path.join(appDir, "rpa", "active_touch", "moments_dry_run_cli.dev.cjs");
 const momentsActionModule = path.join(appDir, "rpa", "active_touch", "moments_action.dev.cjs");
 const momentsActionCli = path.join(appDir, "rpa", "active_touch", "moments_action_cli.dev.cjs");
@@ -200,6 +205,9 @@ const momentsActionSelfCheck = path.join(appDir, "rpa", "active_touch", "moments
 const momentsRuntimeNames = [
   "moments_dry_run.dev.cjs",
   "moments_navigation.dev.cjs",
+  "moments_surface_profile.dev.cjs",
+  "moments_surface_evidence.dev.cjs",
+  "moments_publish_driver.dev.cjs",
   "moments_dry_run_cli.dev.cjs",
   "moments_action.dev.cjs",
   "moments_action_cli.dev.cjs",
@@ -239,6 +247,15 @@ const momentsCampaignSourceMarkers = [
   "xiaoxiMomentsCampaign"
 ];
 const momentsCampaignUiMarkers = ["data-xiaoxi-moments-campaign-start"];
+const momentsPublishSourceMarkers = [
+  "moments-publish:confirm",
+  "xiaoxiMomentsPublish",
+  "moments_publish_outcome_unknown"
+];
+const momentsPublishUiMarkers = [
+  "data-xiaoxi-moments-publish-prepare",
+  "data-xiaoxi-moments-publish-confirm"
+];
 const databaseFilePattern = /\.(?:db(?:-wal|-shm)?|sqlite3?)$/i;
 const blockedNames = new Set(["python.exe", "dump_data.exe", "wechat-dump-rs.exe", "ai-expert.json", "auto-reply-state.json", "auto-reply-diagnostics.jsonl", "contacts.json", "touch_task.json", "touch_task.json.bak", "run_logs.jsonl", "state.json", "deepseek-api-key.bin"]);
 
@@ -292,18 +309,18 @@ assert.equal(fs.existsSync(databaseDecryptor), true, "database decryptor must be
 const manifest = JSON.parse(fs.readFileSync(path.join(target, "版本清单.json"), "utf8"));
 const declaredCapabilities = JSON.parse(fs.readFileSync(path.join(desktopDir, "release-capabilities.json"), "utf8"));
 assert.equal(manifest.edition, edition);
-assert.equal(manifest.product, "AI获客");
+assert.equal(manifest.product, PRODUCT_NAME);
 assert.match(manifest.buildId, /^\d{8}T\d{4}Z$/, "portable release must expose an unambiguous build id");
 assert.equal(manifest.architecture, "x64");
-assert.equal(manifest.releaseStage, "wechat-4.1.11.54-stabilization");
-assert.deepEqual(manifest.targetWeixin, ["4.1.11.54"]);
+assert.equal(manifest.releaseStage, "wechat-4.1.11.55-integrated-moments-adaptation");
+assert.deepEqual(manifest.targetWeixin, ["4.1.11.55"]);
 assert.deepEqual(manifest.capabilityMatrix, declaredCapabilities.capabilities, "portable manifest must match the single source capability matrix");
 assert.equal(manifest.capabilityMatrix?.contactSync?.implementation, "implemented");
 assert.equal(manifest.capabilityMatrix?.autoReply?.localLiveVerification, "verified");
 assert.equal(manifest.capabilityMatrix?.activeTouch?.localLiveVerification, "verified");
 assert.equal(manifest.capabilityMatrix?.moments?.implementation, "implemented");
 assert.equal(manifest.capabilityMatrix?.moments?.localLiveVerification, "partial");
-assert.equal(manifest.capabilityMatrix?.moments?.workflows?.perPostInteraction?.localLiveVerification, "verified");
+assert.equal(manifest.capabilityMatrix?.moments?.workflows?.perPostInteraction?.localLiveVerification, "partial");
 assert.equal(manifest.capabilityMatrix?.moments?.workflows?.dailyAutomation?.localLiveVerification, "pending");
 assert.deepEqual(manifest.capabilityMatrix?.moments?.packagedEditions, ["test", "delivery"]);
 assert.equal(manifest.verifiedWeixin, undefined, "a global verified version list must not overclaim every capability");
@@ -507,6 +524,9 @@ const activeDir = path.join(appDir, "rpa", "active_touch");
 assert.equal(fs.existsSync(path.join(activeDir, "state_machine.dev.cjs")), true);
 assert.equal(fs.existsSync(path.join(activeDir, "wechat_window_driver.dev.cjs")), true);
 assert.equal(fs.existsSync(momentsNavigation), true);
+assert.equal(fs.existsSync(momentsSurfaceProfile), true);
+assert.equal(fs.existsSync(momentsSurfaceEvidence), true);
+assert.equal(fs.existsSync(momentsPublishDriver), true);
 assert.equal(fs.existsSync(momentsDryRunModule), true);
 assert.equal(fs.existsSync(momentsDryRunCli), true);
 assert.equal(fs.existsSync(momentsActionModule), true);
@@ -519,6 +539,32 @@ assert.equal(fs.existsSync(momentsVisualActionDriver), true);
 assert.equal(fs.existsSync(visualAutoReplyDriver), true);
 assert.equal(fs.existsSync(visualAutoReplySend), true);
 assert.equal(fs.existsSync(momentsActionSelfCheck), false, "Moments action self-check must not be packaged");
+const packagedRequireTargets = [
+  momentsNavigation,
+  path.join(mainDir, "moments-campaign-ipc.cjs"),
+  path.join(mainDir, "moments-publish-ipc.cjs"),
+  momentsPublishDriver
+];
+const packagedRequireSmoke = spawnSync(executable, [
+  "-e",
+  "const Module=require('node:module');const originalLoad=Module._load;Module._load=function(request,parent,isMain){if(request==='electron')return {ipcMain:{handle(){}}};return originalLoad.call(this,request,parent,isMain)};const targets=JSON.parse(process.argv[1]);for(const target of targets)require(target);process.stdout.write(JSON.stringify({ok:true,loaded:targets.length}));",
+  JSON.stringify(packagedRequireTargets)
+], {
+  encoding: "utf8",
+  windowsHide: true,
+  timeout: 30000,
+  env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }
+});
+assert.equal(
+  packagedRequireSmoke.status,
+  0,
+  packagedRequireSmoke.stderr || packagedRequireSmoke.stdout || "packaged Moments dependency smoke test failed"
+);
+assert.deepEqual(
+  JSON.parse(packagedRequireSmoke.stdout.trim()),
+  { ok: true, loaded: packagedRequireTargets.length },
+  "packaged Moments navigation/campaign/publish entries must load with their transitive dependencies"
+);
 const activeTouchSources = fs.readdirSync(activeDir)
   .filter((name) => name.endsWith(".cjs"))
   .map((name) => fs.readFileSync(path.join(activeDir, name), "utf8"))
@@ -550,6 +596,12 @@ for (const marker of momentsCampaignSourceMarkers) {
 }
 for (const marker of momentsCampaignUiMarkers) {
   assert.equal(renderer.includes(marker), true, `every edition must contain campaign UI marker ${marker}`);
+}
+for (const marker of momentsPublishSourceMarkers) {
+  assert.equal(packagedSources.includes(marker), true, `every edition must contain publish source marker ${marker}`);
+}
+for (const marker of momentsPublishUiMarkers) {
+  assert.equal(renderer.includes(marker), true, `every edition must contain publish UI marker ${marker}`);
 }
 for (const marker of momentsActionIpcMarkers) {
   assert.equal(packagedSources.includes(marker), edition === "test", `only test-edition source may contain ${marker}`);

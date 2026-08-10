@@ -74,7 +74,7 @@ assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /greenRatio -ge 0\.35[\s\S]*co
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /WindowFromPoint[\s\S]*GetAncestor/u);
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /Get-MomentsVisualFrame \$lock\.hWnd \$lock\.rect \$lock\.pid \$false \$false/u, "auto-reply capture must skip the Moments-only nine-point viewport ownership gate");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-MomentsVisualFrame\([\s\S]*\[bool\]\$requireFullViewportOwnership = \$true[\s\S]*if \(\$requireFullViewportOwnership -and/u, "Moments capture must keep full-viewport ownership as its default");
-assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$sendAttempted = \$true[\s\S]*mouse_event\(0x0002[\s\S]*mouse_event\(0x0004/u);
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$sendAttempted = \$true[\s\S]*AtomicMouseClick\(\$screenX, \$screenY\)[\s\S]*Update-VisualSendInputLease/u);
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /draft_consumed_same_header/u);
 assert.match(createVisualAutoReplySender.toString(), /catch \{[\s\S]*visual_send_outcome_unknown[\s\S]*sendAttempted: true/u, "a rejected final send phase must be fenced as possibly clicked");
 
@@ -661,21 +661,23 @@ const sender = createVisualAutoReplySender({
   });
   assert.equal(rejectedSendCalls, 1, "a rejected final send phase must become terminal unknown, never an automatic retry");
 
-  const visualPhases = [];
+  const visualEnvironments = [];
   const visualDraft = await createVisualAutoReplySender({
     powerShellRunner: async (_script, env) => {
-      visualPhases.push(env.XIAOXI_VISUAL_SEND_PHASE);
+      visualEnvironments.push(env);
       if (env.XIAOXI_VISUAL_SEND_PHASE === "preflight") {
         return { ok: true, sendAttempted: false, conversationVerified: true, incomingVerified: true };
       }
       if (env.XIAOXI_VISUAL_SEND_PHASE === "draft") {
-        return { ok: true, sendAttempted: false, conversationVerified: true, draftVerified: true };
+        return { ok: true, sendAttempted: false, conversationVerified: true, draftVerified: true, inputTick: 322 };
       }
       return { ok: true, sendAttempted: true, conversationVerified: true, draftVerified: true, verificationMode: "draft_consumed_same_header" };
     }
-  })({ pid: 5, hWnd: 6, conversation: "A测试客户", incomingMessage: "仍是这一条", reply: "视觉同 DPI 输入" });
+  })({ pid: 5, hWnd: 6, conversation: "A测试客户", incomingMessage: "仍是这一条", reply: "视觉同 DPI 输入", expectedInputTick: 321 });
   assert.equal(visualDraft.ok, true);
-  assert.deepEqual(visualPhases, ["draft", "send"], "production visual send must not run duplicate full-frame preflight OCR");
+  assert.deepEqual(visualEnvironments.map((env) => env.XIAOXI_VISUAL_SEND_PHASE), ["draft", "send"], "production visual send must not run duplicate full-frame preflight OCR");
+  assert.equal(visualEnvironments[0].XIAOXI_VISUAL_SEND_EXPECTED_INPUT_TICK, "321", "the draft process must inherit the inspector input lease");
+  assert.equal(visualEnvironments[1].XIAOXI_VISUAL_SEND_EXPECTED_INPUT_TICK, "322", "the send process must inherit the draft's final input lease");
 
   let mismatchDraftCalls = 0;
   const mismatch = await createVisualAutoReplySender({

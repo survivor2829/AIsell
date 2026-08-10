@@ -12,6 +12,15 @@ function drivers(overrides = {}) {
       message: "【需人工跟进】\n客户：张总\n请人工跟进",
       expectedPid: 81,
       sourceWindowHandle: "91",
+      windowPreflight: async () => ({
+        ok: true,
+        normalized: true,
+        layoutMode: "stable_target",
+        focused: true,
+        pid: 81,
+        hWnd: "91",
+        processName: "Weixin"
+      }),
       openConversation: (name, context) => { calls.push(["open", name, context]); return { ok: true, pid: 81, hWnd: "91", processName: "Weixin" }; },
       verifyConversation: (name, context) => { calls.push(["verify", name, context]); return { ok: true, title: name, pid: 81, hWnd: "91", processName: "Weixin" }; },
       inputDraft: (message, context) => { calls.push(["draft", message, context]); return { ok: true, draftVerified: true, draftPoint: { xRatio: 0.75, yRatio: 0.82 } }; },
@@ -47,6 +56,25 @@ async function main() {
   assert.equal(success.calls.find(([name]) => name === "send").at(1).expectedConversation, "文件传输助手");
   assert.equal(success.calls.find(([name]) => name === "send").at(1).expectedMessage, success.options.message);
   assert.equal(success.calls.filter(([name]) => name === "send").length, 1);
+
+  let preflightContext;
+  const activeDesktop = drivers({
+    windowPreflight: async (context) => {
+      preflightContext = context;
+      return { ok: false, reason: "wechat_user_active", pid: 81, hWnd: "91", processName: "Weixin" };
+    }
+  });
+  const activeDesktopResult = await executeVerifiedFileHelperSend(activeDesktop.options);
+  assert.equal(activeDesktopResult.blocked_reason, "wechat_user_active");
+  assert.equal(activeDesktopResult.binding_valid, true);
+  assert.equal(activeDesktopResult.send_attempted, false);
+  assert.equal(activeDesktop.calls.length, 0, "an active desktop must block before opening File Transfer Assistant");
+  assert.deepEqual(preflightContext, {
+    expectedPid: 81,
+    expectedHWnd: "91",
+    minIdleMs: 15_000,
+    requireFocused: true
+  });
 
   const normalizedProof = drivers({
     bubbleVerifier: (_message, context) => context.phase === "before"

@@ -3,7 +3,72 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { createMomentsCampaignController } = require("./moments-campaign-ipc.cjs");
+const {
+  createMomentsCampaignController,
+  mergeMomentsReadingFragments,
+  momentsReadingSnapshotMatch
+} = require("./moments-campaign-ipc.cjs");
+
+const firstReadingFrame = {
+  source: "visual:windows_media_ocr",
+  structure_verified: true,
+  post_fingerprint: "1".repeat(64),
+  avatar_hash: "a".repeat(64),
+  identity_text: "robot owner new store deployment",
+  stable_anchor_text: "robot owner new store",
+  bounds: { left: 400, top: 100, width: 500, height: 420 },
+  menu_bounds: { left: 840, top: 460, width: 40, height: 28 },
+  avatar_bounds: { left: 410, top: 120, width: 48, height: 48 }
+};
+const sameReadingFrameAfterUp = {
+  ...firstReadingFrame,
+  post_fingerprint: "2".repeat(64),
+  identity_text: "robot owner new store deployment completed today",
+  stable_anchor_text: firstReadingFrame.stable_anchor_text,
+  bounds: { ...firstReadingFrame.bounds, top: 340 },
+  menu_bounds: { ...firstReadingFrame.menu_bounds, top: 700 },
+  avatar_bounds: { ...firstReadingFrame.avatar_bounds, top: 360 }
+};
+assert.equal(momentsReadingSnapshotMatch(firstReadingFrame, sameReadingFrameAfterUp, 240).matched, true);
+assert.equal(momentsReadingSnapshotMatch(firstReadingFrame, {
+  ...sameReadingFrameAfterUp,
+  post_fingerprint: firstReadingFrame.post_fingerprint
+}, 240).mode, "visual_text_displacement", "visual fingerprints must not bypass geometry binding");
+assert.equal(momentsReadingSnapshotMatch(firstReadingFrame, {
+  ...sameReadingFrameAfterUp,
+  post_fingerprint: firstReadingFrame.post_fingerprint,
+  bounds: { ...sameReadingFrameAfterUp.bounds, top: 110 },
+  menu_bounds: { ...sameReadingFrameAfterUp.menu_bounds, top: 470 },
+  avatar_bounds: { ...sameReadingFrameAfterUp.avatar_bounds, top: 130 }
+}, 240).matched, false, "adjacent visual posts with identical text must not collapse into one reading session");
+assert.equal(momentsReadingSnapshotMatch(firstReadingFrame, {
+  ...sameReadingFrameAfterUp,
+  identity_text: "a different post from the same author",
+  stable_anchor_text: "different post unrelated body"
+}, 240).matched, false, "avatar equality alone must never bind adjacent posts from the same author");
+assert.equal(momentsReadingSnapshotMatch(firstReadingFrame, {
+  ...sameReadingFrameAfterUp,
+  identity_text: "robot owner new store deployment but this is another customer",
+  stable_anchor_text: "robot owner different customer"
+}, 240).matched, false, "overlapping boilerplate from the same author must not relock another post");
+assert.equal(momentsReadingSnapshotMatch({ runtime_id: "42.8.9", source: "uia:sns_list" }, {
+  runtime_id: "42.8.9",
+  source: "uia:sns_list"
+}, 0).matched, true);
+assert.equal(mergeMomentsReadingFragments([
+  firstReadingFrame,
+  sameReadingFrameAfterUp,
+  { ...sameReadingFrameAfterUp, identity_text: sameReadingFrameAfterUp.identity_text }
+]), "robot owner new store deployment completed today");
+assert.equal(mergeMomentsReadingFragments([
+  { identity_text: "robot owner first body segment", stable_anchor_text: "first body segment" },
+  { identity_text: "body segment continues with maintenance details", stable_anchor_text: "maintenance details" },
+  { identity_text: "final segment explains rental service", stable_anchor_text: "rental service" }
+]), [
+  "robot owner first body segment",
+  "body segment continues with maintenance details",
+  "final segment explains rental service"
+].join("\n"), "two to three long-post fragments must be retained without duplicate frames");
 
 async function waitFor(read, predicate, timeoutMs = 3000) {
   const started = Date.now();
@@ -15,12 +80,81 @@ async function waitFor(read, predicate, timeoutMs = 3000) {
   throw new Error("moments campaign self-check timed out");
 }
 
+const INTEGRATED_OPEN_RESULT = Object.freeze({
+  ok: true,
+  surfaceMode: "integrated",
+  pid: 42,
+  hWnd: "84",
+  title: "微信",
+  className: "mmui::MainWindow",
+  processName: "Weixin",
+  x: 0,
+  y: 0,
+  width: 1400,
+  height: 950,
+  dpi: 120
+});
+
+const INTEGRATED_EXPECTED_SURFACE = Object.freeze({
+  surfaceMode: "integrated",
+  pid: 42,
+  hWnd: "84",
+  title: "微信",
+  className: "mmui::MainWindow"
+});
+
+const INTEGRATED_OBSERVED_WINDOW = Object.freeze({
+  ...INTEGRATED_EXPECTED_SURFACE,
+  processName: "Weixin",
+  rootName: "微信",
+  rootControlType: "ControlType.Window",
+  rootProcessId: 42,
+  identityMode: "visual_mmui_render",
+  automationId: "",
+  feedAutomationId: "",
+  feedRuntimeId: "",
+  feedCount: 0,
+  renderPaneName: "MMUIRenderSubWindowHW",
+  renderPaneAutomationId: "",
+  renderPaneControlType: "ControlType.Pane",
+  renderPaneProcessId: 42,
+  renderPaneRuntimeId: "42.9.render",
+  renderPaneBounds: Object.freeze({ left: 374, top: 40, width: 690, height: 646 })
+});
+
+const STANDALONE_OPEN_RESULT = Object.freeze({
+  ok: true,
+  surfaceMode: "standalone",
+  pid: 43,
+  hWnd: "86",
+  title: "朋友圈",
+  className: "Qt51514QWindowIcon"
+});
+
+const STANDALONE_EXPECTED_SURFACE = Object.freeze({
+  surfaceMode: "standalone",
+  pid: 43,
+  hWnd: "86",
+  title: "朋友圈",
+  className: "Qt51514QWindowIcon"
+});
+
+function expectedWindowFromArgs(args) {
+  const flagIndex = args.lastIndexOf("--expected-window-base64");
+  assert.notEqual(flagIndex, -1, "every Moments dry-run must receive the exact opened surface");
+  assert.equal(typeof args[flagIndex + 1], "string");
+  return JSON.parse(Buffer.from(args[flagIndex + 1], "base64").toString("utf8"));
+}
+
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-"));
   const observations = ["a".repeat(64), "b".repeat(64)];
   let observationIndex = 0;
   let scrolls = 0;
   let releases = 0;
+  const openOptions = [];
+  const scrollOptions = [];
+  const expectedSurfaces = [];
   const events = [];
   const controller = createMomentsCampaignController({
     baseDir: root,
@@ -29,17 +163,23 @@ async function main() {
       release: () => { releases += 1; }
     },
     logger: { event: (module, event) => events.push(`${module}:${event}`) },
-    openMoments: async () => ({ ok: true }),
-    scrollMoments: async () => {
+    openMoments: async (options) => {
+      openOptions.push(options);
+      return INTEGRATED_OPEN_RESULT;
+    },
+    scrollMoments: async (options) => {
       scrolls += 1;
+      scrollOptions.push(options);
       return { ok: true };
     },
     runStep: async (args) => {
       if (args[0] === "moments-dry-run") {
+        expectedSurfaces.push(expectedWindowFromArgs(args));
         const fingerprint = observations[Math.min(observationIndex, observations.length - 1)];
         observationIndex += 1;
         return {
           ok: true,
+          window: INTEGRATED_OBSERVED_WINDOW,
           post_snapshot: {
             observation_id: fingerprint,
             post_fingerprint: fingerprint
@@ -68,9 +208,164 @@ async function main() {
   assert.equal(scrolls, 1);
   assert.equal(releases, 1);
   assert.equal(events.includes("moments:campaign.completed"), true);
+  assert.deepEqual(openOptions, [{ allowIntegrated: true, minIdleMs: 0 }]);
+  assert.deepEqual(expectedSurfaces, [INTEGRATED_EXPECTED_SURFACE, INTEGRATED_EXPECTED_SURFACE]);
+  assert.equal(scrollOptions.length, 1);
+  assert.deepEqual(
+    { ...scrollOptions[0], shouldContinue: undefined },
+    { expectedWindow: INTEGRATED_OBSERVED_WINDOW, minIdleMs: 0, shouldContinue: undefined }
+  );
+  assert.equal(typeof scrollOptions[0].shouldContinue, "function");
+  assert.equal(await scrollOptions[0].shouldContinue(), true);
 
   const persisted = JSON.parse(fs.readFileSync(path.join(root, "state.json"), "utf8"));
   assert.equal(persisted.moments_campaign.status, "completed");
+
+  const menuOnlyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-menu-only-"));
+  let menuOnlyObservationIndex = 0;
+  let menuOnlyScrolls = 0;
+  const menuOnlyController = createMomentsCampaignController({
+    baseDir: menuOnlyRoot,
+    coordinator: {
+      acquire: () => ({ ok: true, lock: { owner: "menu-only-owner" } }),
+      release: () => undefined
+    },
+    logger: { event: () => undefined },
+    openMoments: async () => INTEGRATED_OPEN_RESULT,
+    scrollMoments: async () => {
+      menuOnlyScrolls += 1;
+      return { ok: true };
+    },
+    runStep: async (args) => {
+      if (args[0] === "moments-dry-run") {
+        const first = menuOnlyObservationIndex === 0;
+        menuOnlyObservationIndex += 1;
+        const fingerprint = (first ? "1" : "2").repeat(64);
+        return {
+          ok: true,
+          window: INTEGRATED_OBSERVED_WINDOW,
+          post_snapshot: {
+            observation_id: fingerprint,
+            post_fingerprint: fingerprint,
+            menu_only: first
+          },
+          plan: { visible_post_count: 1 }
+        };
+      }
+      return {
+        ok: true,
+        status: "verified",
+        no_op: menuOnlyObservationIndex === 1,
+        real_action_attempted: menuOnlyObservationIndex !== 1
+      };
+    }
+  });
+  assert.equal(menuOnlyController.start({ maxPosts: 1 }).ok, true);
+  const menuOnlyCompleted = await waitFor(
+    () => menuOnlyController.status().state,
+    (state) => state.status === "completed"
+  );
+  assert.equal(menuOnlyCompleted.liked_count, 1, "an already-liked menu-only fallback must not satisfy the target");
+  assert.equal(menuOnlyCompleted.already_liked_count, 0);
+  assert.equal(menuOnlyCompleted.skipped_count, 1);
+  assert.equal(menuOnlyScrolls, 1);
+
+  const standaloneRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-standalone-"));
+  const standaloneOpenOptions = [];
+  const standaloneExpectedSurfaces = [];
+  const standaloneController = createMomentsCampaignController({
+    baseDir: standaloneRoot,
+    coordinator: {
+      acquire: () => ({ ok: true, lock: { owner: "standalone-owner" } }),
+      release: () => undefined
+    },
+    logger: { event: () => undefined },
+    openMoments: async (options) => {
+      standaloneOpenOptions.push(options);
+      return STANDALONE_OPEN_RESULT;
+    },
+    scrollMoments: async () => {
+      throw new Error("a one-post standalone campaign must not scroll");
+    },
+    runStep: async (args) => {
+      if (args[0] === "moments-dry-run") {
+        standaloneExpectedSurfaces.push(expectedWindowFromArgs(args));
+        return {
+          ok: true,
+          window: {
+            ...STANDALONE_EXPECTED_SURFACE,
+            processName: "Weixin",
+            rootName: "朋友圈",
+            identityMode: "automation_id"
+          },
+          post_snapshot: {
+            observation_id: "f".repeat(64),
+            post_fingerprint: "f".repeat(64)
+          },
+          plan: { visible_post_count: 1 }
+        };
+      }
+      return {
+        ok: true,
+        status: "verified",
+        no_op: false,
+        real_action_attempted: true
+      };
+    }
+  });
+  assert.equal(standaloneController.start({ maxPosts: 1 }).ok, true);
+  const standaloneCompleted = await waitFor(
+    () => standaloneController.status().state,
+    (state) => state.status === "completed"
+  );
+  assert.equal(standaloneCompleted.processed_count, 1);
+  assert.equal(standaloneCompleted.liked_count, 1);
+  assert.deepEqual(standaloneOpenOptions, [{ allowIntegrated: true, minIdleMs: 0 }]);
+  assert.deepEqual(standaloneExpectedSurfaces, [STANDALONE_EXPECTED_SURFACE]);
+
+  const invalidSurfaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-invalid-surface-"));
+  let invalidSurfaceRunSteps = 0;
+  let invalidSurfaceScrolls = 0;
+  let invalidSurfaceActions = 0;
+  let invalidSurfaceReleases = 0;
+  const invalidSurfaceController = createMomentsCampaignController({
+    baseDir: invalidSurfaceRoot,
+    coordinator: {
+      acquire: () => ({ ok: true, lock: { owner: "invalid-surface-owner" } }),
+      release: () => { invalidSurfaceReleases += 1; }
+    },
+    logger: { event: () => undefined },
+    openMoments: async () => ({
+      ok: true,
+      surfaceMode: "integrated",
+      pid: 42,
+      hWnd: "84",
+      title: "微信"
+    }),
+    scrollMoments: async () => {
+      invalidSurfaceScrolls += 1;
+      return { ok: true };
+    },
+    runStep: async (args) => {
+      invalidSurfaceRunSteps += 1;
+      if (args[0] === "moments-like" || args[0] === "moments-comment") {
+        invalidSurfaceActions += 1;
+      }
+      return { ok: true };
+    }
+  });
+  assert.equal(invalidSurfaceController.start({ maxPosts: 1 }).ok, true);
+  const invalidSurfacePaused = await waitFor(
+    () => invalidSurfaceController.status().state,
+    (state) => state.status === "paused"
+  );
+  assert.equal(invalidSurfacePaused.last_reason, "moments_window_identity_mismatch");
+  assert.equal(invalidSurfacePaused.processed_count, 0);
+  assert.equal(invalidSurfacePaused.scroll_count, 0);
+  assert.equal(invalidSurfaceRunSteps, 0);
+  assert.equal(invalidSurfaceScrolls, 0);
+  assert.equal(invalidSurfaceActions, 0);
+  assert.equal(invalidSurfaceReleases, 1);
 
   const likeRecognitionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-like-recognition-"));
   const likeRecognitionEvents = [];
@@ -81,7 +376,7 @@ async function main() {
       release: () => undefined
     },
     logger: { event: (module, event, details) => likeRecognitionEvents.push({ module, event, details }) },
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => STANDALONE_OPEN_RESULT,
     scrollMoments: async () => ({ ok: true }),
     runStep: async (args) => {
       if (args[0] === "moments-dry-run") {
@@ -201,7 +496,7 @@ async function main() {
       release: () => undefined
     },
     logger: { event: (module, event, details) => topPositionEvents.push({ module, event, details }) },
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => STANDALONE_OPEN_RESULT,
     scrollMoments: async () => {
       topPositionScrolls += 1;
       return { ok: true };
@@ -262,7 +557,7 @@ async function main() {
       release: () => undefined
     },
     logger: { event: () => undefined },
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => STANDALONE_OPEN_RESULT,
     scrollMoments: async () => ({ ok: true }),
     runStep: async (args) => args[0] === "moments-dry-run"
       ? {
@@ -296,7 +591,7 @@ async function main() {
       release: () => undefined
     },
     logger: { event: () => undefined },
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => STANDALONE_OPEN_RESULT,
     scrollMoments: async () => ({ ok: true }),
     runStep: async (args) => args[0] === "moments-dry-run"
       ? {
@@ -328,6 +623,7 @@ async function main() {
   let partialObservations = 0;
   let partialLikes = 0;
   let partialScrolls = 0;
+  const partialScrollOptions = [];
   const partialController = createMomentsCampaignController({
     baseDir: partialRoot,
     coordinator: {
@@ -335,9 +631,10 @@ async function main() {
       release: () => undefined
     },
     logger: { event: () => undefined },
-    openMoments: async () => ({ ok: true }),
-    scrollMoments: async () => {
+    openMoments: async () => INTEGRATED_OPEN_RESULT,
+    scrollMoments: async (options) => {
       partialScrolls += 1;
+      partialScrollOptions.push(options);
       return { ok: true };
     },
     runStep: async (args) => {
@@ -345,6 +642,7 @@ async function main() {
         partialObservations += 1;
         return {
           ok: true,
+          window: INTEGRATED_OBSERVED_WINDOW,
           plan: { target_partial_visible: partialObservations === 1 },
           post_snapshot: {
             observation_id: `${partialObservations}`.repeat(64),
@@ -371,6 +669,17 @@ async function main() {
   assert.equal(partialObservations, 2);
   assert.equal(partialLikes, 1);
   assert.equal(partialScrolls, 1);
+  assert.equal(partialScrollOptions.length, 1);
+  assert.deepEqual(
+    { ...partialScrollOptions[0], shouldContinue: undefined },
+    {
+      expectedWindow: INTEGRATED_OBSERVED_WINDOW,
+      minIdleMs: 0,
+      scrollMode: "seek_post_menu_down",
+      shouldContinue: undefined
+    }
+  );
+  assert.equal(typeof partialScrollOptions[0].shouldContinue, "function");
 
   const commentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-comment-"));
   const commentFingerprint = "d".repeat(64);
@@ -388,7 +697,7 @@ async function main() {
         commentEvents.push({ module, event, details, options });
       }
     },
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => INTEGRATED_OPEN_RESULT,
     scrollMoments: async () => ({ ok: true }),
     generateComment: async ({ postText, guidance }) => {
       assert.equal(postText, "今天完成了新门店的设备安装");
@@ -444,6 +753,13 @@ async function main() {
   assert.equal(commentCompleted.commented_count, 1);
   assert.equal(commentCompleted.comment_skipped_count, 0);
   assert.equal(commentCommands.filter((args) => args[0] === "moments-dry-run").length, 2);
+  assert.deepEqual(
+    commentCommands
+      .filter((args) => args[0] === "moments-dry-run")
+      .map(expectedWindowFromArgs),
+    [INTEGRATED_EXPECTED_SURFACE, INTEGRATED_EXPECTED_SURFACE],
+    "initial and comment-preparation dry-runs must remain bound to the exact integrated host"
+  );
   assert.equal(
     commentCommands.some((args) => args.includes("--comment-enabled")),
     true,
@@ -463,6 +779,288 @@ async function main() {
   assert.equal(Object.prototype.hasOwnProperty.call(commentFinished[0].details, "comment_text"), false);
   assert.equal(Object.prototype.hasOwnProperty.call(commentFinished[0].details, "result"), false);
 
+  const incompleteVisualRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-incomplete-visual-comment-"));
+  const incompleteVisualPosts = [
+    {
+      observation_id: "1".repeat(64),
+      post_fingerprint: "1".repeat(64),
+      source: "visual:windows_media_ocr",
+      structure_verified: true,
+      identity_text: "author new store 14 hours ago",
+      stable_anchor_text: "",
+      avatar_hash: "a".repeat(64),
+      bounds: { left: 400, top: 100, width: 500, height: 420 },
+      menu_bounds: { left: 840, top: 460, width: 40, height: 28 },
+      avatar_bounds: { left: 410, top: 120, width: 48, height: 48 }
+    },
+    {
+      observation_id: "2".repeat(64),
+      post_fingerprint: "2".repeat(64),
+      source: "visual:windows_media_ocr",
+      structure_verified: true,
+      identity_text: "author complete body about a new store installation",
+      stable_anchor_text: "author complete body new store installation",
+      avatar_hash: "a".repeat(64),
+      bounds: { left: 400, top: 100, width: 500, height: 420 },
+      menu_bounds: { left: 840, top: 460, width: 40, height: 28 },
+      avatar_bounds: { left: 410, top: 120, width: 48, height: 48 }
+    }
+  ];
+  let incompleteVisualObservationIndex = 0;
+  let incompleteVisualCurrentPost = incompleteVisualPosts[0];
+  let incompleteVisualGenerations = 0;
+  let incompleteVisualComments = 0;
+  let incompleteVisualScrolls = 0;
+  const incompleteVisualScrollOptions = [];
+  const incompleteVisualController = createMomentsCampaignController({
+    baseDir: incompleteVisualRoot,
+    coordinator: {
+      acquire: () => ({ ok: true, lock: { owner: "incomplete-visual-owner" } }),
+      release: () => undefined
+    },
+    logger: { event: () => undefined },
+    openMoments: async () => INTEGRATED_OPEN_RESULT,
+    scrollMoments: async (options) => {
+      incompleteVisualScrolls += 1;
+      incompleteVisualScrollOptions.push(options);
+      return {
+        ok: true,
+        delta: options.scrollMode === "read_post_up" ? 240 : -240
+      };
+    },
+    generateComment: async ({ postText }) => {
+      incompleteVisualGenerations += 1;
+      assert.equal(postText, incompleteVisualPosts[1].identity_text);
+      return { comment: "relevant complete-content comment" };
+    },
+    runStep: async (args, runOptions) => {
+      if (args[0] === "moments-dry-run") {
+        if (runOptions.phase === "moments:observe") {
+          const readingStep = incompleteVisualObservationIndex;
+          incompleteVisualObservationIndex += 1;
+          if (readingStep === 1) {
+            return {
+              ok: false,
+              blocked_reason: "moments_post_not_found",
+              real_action_attempted: false
+            };
+          }
+          incompleteVisualCurrentPost = incompleteVisualPosts[readingStep === 0 ? 0 : 1];
+        }
+        return {
+          ok: true,
+          window: INTEGRATED_OBSERVED_WINDOW,
+          post_snapshot: incompleteVisualCurrentPost,
+          plan: { visible_post_count: 1 }
+        };
+      }
+      assert.equal(args[0], "moments-comment");
+      incompleteVisualComments += 1;
+      return { ok: true, status: "verified", real_action_attempted: true };
+    }
+  });
+  assert.equal(incompleteVisualController.start({
+    maxPosts: 1,
+    likeEnabled: false,
+    commentEnabled: true
+  }).ok, true);
+  const incompleteVisualCompleted = await waitFor(
+    () => incompleteVisualController.status().state,
+    (state) => state.status === "completed"
+  );
+  assert.equal(incompleteVisualGenerations, 1, "visual UI fragments must not be sent to the AI as post content");
+  assert.equal(incompleteVisualComments, 1);
+  assert.equal(incompleteVisualScrolls, 2);
+  assert.equal(incompleteVisualScrollOptions[0].scrollMode, "read_post_up");
+  assert.equal(incompleteVisualScrollOptions[1].scrollMode, "seek_post_menu_down");
+  assert.equal(incompleteVisualCompleted.processed_count, 2,
+    "an incomplete anchor must be skipped before the newly bound complete post is processed");
+  assert.equal(incompleteVisualCompleted.commented_count, 1);
+  assert.equal(incompleteVisualCompleted.comment_skipped_count, 1);
+  assert.equal(incompleteVisualCompleted.skipped_count, 1);
+
+  const bodyOnlyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-body-only-menu-search-"));
+  const bodyOnlyEvents = [];
+  const bodyOnlyPosts = [{
+    observation_id: "6".repeat(64),
+    post_fingerprint: "6".repeat(64),
+    source: "visual:windows_media_ocr_body",
+    structure_verified: true,
+    identity_text: "author shared a complete robot maintenance lesson",
+    stable_anchor_text: "author complete robot maintenance lesson",
+    avatar_hash: "b".repeat(64),
+    bounds: { left: 400, top: 340, width: 500, height: 420 },
+    avatar_bounds: { left: 410, top: 360, width: 48, height: 48 },
+    body_only: true
+  }, {
+    observation_id: "7".repeat(64),
+    post_fingerprint: "7".repeat(64),
+    source: "visual:windows_media_ocr",
+    structure_verified: true,
+    identity_text: "author shared a complete robot maintenance lesson with deployment details",
+    stable_anchor_text: "author complete robot maintenance lesson",
+    avatar_hash: "b".repeat(64),
+    bounds: { left: 400, top: 100, width: 500, height: 420 },
+    menu_bounds: { left: 840, top: 460, width: 40, height: 28 },
+    avatar_bounds: { left: 410, top: 120, width: 48, height: 48 }
+  }];
+  let bodyOnlyObservationIndex = 0;
+  let bodyOnlyCurrentPost = bodyOnlyPosts[0];
+  let bodyOnlyComments = 0;
+  const bodyOnlyScrollModes = [];
+  const bodyOnlyController = createMomentsCampaignController({
+    baseDir: bodyOnlyRoot,
+    coordinator: {
+      acquire: () => ({ ok: true, lock: { owner: "body-only-owner" } }),
+      release: () => undefined
+    },
+    logger: { event: (module, event, details) => bodyOnlyEvents.push({ module, event, details }) },
+    openMoments: async () => INTEGRATED_OPEN_RESULT,
+    scrollMoments: async (options) => {
+      bodyOnlyScrollModes.push(options.scrollMode);
+      return { ok: true, delta: -240 };
+    },
+    generateComment: async ({ postText }) => {
+      assert.equal(postText, bodyOnlyPosts[1].identity_text);
+      return { comment: "relevant maintenance comment" };
+    },
+    runStep: async (args, runOptions) => {
+      if (args[0] === "moments-dry-run") {
+        if (runOptions.phase === "moments:observe") {
+          assert.equal(args.includes("--allow-body-only"), true);
+          if (bodyOnlyObservationIndex > 0) {
+            const targetIndex = args.indexOf("--target-post-base64");
+            assert.notEqual(targetIndex, -1, "reading retries must ask the probe to reacquire the locked post");
+            const target = JSON.parse(Buffer.from(args[targetIndex + 1], "base64").toString("utf8"));
+            assert.equal(target.post_fingerprint, bodyOnlyPosts[0].post_fingerprint);
+            assert.equal(target.expected_scroll_delta, -240);
+          }
+          bodyOnlyCurrentPost = bodyOnlyPosts[Math.min(bodyOnlyObservationIndex, 1)];
+          bodyOnlyObservationIndex += 1;
+        } else if (runOptions.phase === "moments:prepare-comment") {
+          const targetIndex = args.indexOf("--target-post-base64");
+          assert.notEqual(targetIndex, -1, "comment preparation must stay bound to the accumulated reading session");
+          const target = JSON.parse(Buffer.from(args[targetIndex + 1], "base64").toString("utf8"));
+          assert.equal(target.post_fingerprint, bodyOnlyPosts[1].post_fingerprint);
+          assert.equal(target.expected_scroll_delta, 0);
+        }
+        return {
+          ok: true,
+          window: INTEGRATED_OBSERVED_WINDOW,
+          post_snapshot: bodyOnlyCurrentPost,
+          plan: {
+            visible_post_count: 1,
+            target_partial_visible: bodyOnlyCurrentPost.body_only === true
+          }
+        };
+      }
+      assert.equal(args[0], "moments-comment");
+      bodyOnlyComments += 1;
+      return { ok: true, status: "verified", real_action_attempted: true };
+    }
+  });
+  assert.equal(bodyOnlyController.start({
+    maxPosts: 1,
+    likeEnabled: false,
+    commentEnabled: true
+  }).ok, true);
+  const bodyOnlyCompleted = await waitFor(
+    () => bodyOnlyController.status().state,
+    (state) => state.status === "completed"
+  );
+  assert.deepEqual(bodyOnlyScrollModes, ["seek_post_menu_down"]);
+  assert.equal(bodyOnlyComments, 1);
+  assert.equal(bodyOnlyCompleted.commented_count, 1);
+  assert.equal(bodyOnlyCompleted.comment_skipped_count, 0);
+  assert.equal(bodyOnlyEvents.some(({ event }) => event === "campaign.reading_skipped"), false);
+
+  const visualJitterRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-visual-jitter-duplicate-"));
+  const visualJitterPosts = [
+    {
+      observation_id: "3".repeat(64),
+      post_fingerprint: "3".repeat(64),
+      source: "visual:windows_media_ocr",
+      identity_text: "author today completed the first robot deployment batch",
+      stable_anchor_text: "author completed first robot deployment",
+      avatar_hash: "c".repeat(64)
+    },
+    {
+      observation_id: "4".repeat(64),
+      post_fingerprint: "4".repeat(64),
+      source: "visual:windows_media_ocr",
+      identity_text: "author today completed the first robot deployment batoh",
+      stable_anchor_text: "author completed first robot deployrnent",
+      avatar_hash: "c".repeat(64)
+    },
+    {
+      observation_id: "5".repeat(64),
+      post_fingerprint: "5".repeat(64),
+      source: "visual:windows_media_ocr",
+      identity_text: "different author shared a new cleaning robot field report",
+      stable_anchor_text: "different author new cleaning robot report",
+      avatar_hash: "d".repeat(64)
+    }
+  ];
+  let visualJitterObservationIndex = 0;
+  let visualJitterCurrentPost = visualJitterPosts[0];
+  let visualJitterScrolls = 0;
+  let visualJitterComments = 0;
+  const visualJitterGeneratedFrom = [];
+  const visualJitterController = createMomentsCampaignController({
+    baseDir: visualJitterRoot,
+    coordinator: {
+      acquire: () => ({ ok: true, lock: { owner: "visual-jitter-owner" } }),
+      release: () => undefined
+    },
+    logger: { event: () => undefined },
+    openMoments: async () => INTEGRATED_OPEN_RESULT,
+    scrollMoments: async () => {
+      visualJitterScrolls += 1;
+      return { ok: true };
+    },
+    generateComment: async ({ postText }) => {
+      visualJitterGeneratedFrom.push(postText);
+      return { comment: `comment ${visualJitterGeneratedFrom.length}` };
+    },
+    runStep: async (args, runOptions) => {
+      if (args[0] === "moments-dry-run") {
+        if (runOptions.phase === "moments:observe") {
+          visualJitterCurrentPost = visualJitterPosts[Math.min(
+            visualJitterObservationIndex,
+            visualJitterPosts.length - 1
+          )];
+          visualJitterObservationIndex += 1;
+        }
+        return {
+          ok: true,
+          window: INTEGRATED_OBSERVED_WINDOW,
+          post_snapshot: visualJitterCurrentPost,
+          plan: { visible_post_count: 1 }
+        };
+      }
+      assert.equal(args[0], "moments-comment");
+      visualJitterComments += 1;
+      return { ok: true, status: "verified", real_action_attempted: true };
+    }
+  });
+  assert.equal(visualJitterController.start({
+    maxPosts: 2,
+    likeEnabled: false,
+    commentEnabled: true
+  }).ok, true);
+  const visualJitterCompleted = await waitFor(
+    () => visualJitterController.status().state,
+    (state) => state.status === "completed"
+  );
+  assert.deepEqual(visualJitterGeneratedFrom, [
+    visualJitterPosts[0].identity_text,
+    visualJitterPosts[2].identity_text
+  ], "OCR jitter on the same avatar and stable body must not turn one post into two comment targets");
+  assert.equal(visualJitterComments, 2);
+  assert.equal(visualJitterScrolls, 2);
+  assert.equal(visualJitterCompleted.processed_count, 2);
+  assert.equal(visualJitterCompleted.commented_count, 2);
+
   const commentSkipThenSuccessRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-comment-skip-then-success-"));
   const skipThenSuccessFingerprints = ["6".repeat(64), "7".repeat(64)];
   let skipThenSuccessObservation = 0;
@@ -480,7 +1078,7 @@ async function main() {
         skipThenSuccessEvents.push({ module, event, details, options });
       }
     },
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => STANDALONE_OPEN_RESULT,
     scrollMoments: async () => ({ ok: true }),
     generateComment: async () => ({ comment: "一条新的测试评论" }),
     runStep: async (args) => {
@@ -565,7 +1163,7 @@ async function main() {
         unknownEvents.push({ module, event, details, options });
       }
     },
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => STANDALONE_OPEN_RESULT,
     scrollMoments: async () => ({ ok: true }),
     generateComment: async () => ({ comment: "一条结果未知测试评论" }),
     runStep: async (args) => {
@@ -626,7 +1224,7 @@ async function main() {
       release: () => undefined
     },
     logger: { event: () => undefined },
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => STANDALONE_OPEN_RESULT,
     scrollMoments: async () => ({ ok: true }),
     generateComment: async () => {
       const error = new Error("temporary failure");
@@ -667,7 +1265,7 @@ async function main() {
       release: () => undefined
     },
     logger: { event: () => undefined },
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => STANDALONE_OPEN_RESULT,
     scrollMoments: async () => ({ ok: true }),
     generateComment: async () => ({ comment: "crossed status test" }),
     runStep: async (args) => {
@@ -716,7 +1314,7 @@ async function main() {
       release: () => undefined
     },
     logger: { event: () => undefined },
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => STANDALONE_OPEN_RESULT,
     scrollMoments: async () => {
       combinedScrolls += 1;
       return combinedScrolls === 1 ? { ok: true } : { ok: false, reason: "combined_test_end" };
@@ -782,7 +1380,7 @@ async function main() {
       release: () => undefined
     },
     logger: { event: () => undefined },
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => STANDALONE_OPEN_RESULT,
     scrollMoments: async () => {
       partialAlignmentScrolls += 1;
       return { ok: true };
@@ -810,6 +1408,175 @@ async function main() {
   assert.equal(partialAlignmentScans, 55);
   assert.equal(partialAlignmentScrolls, 55);
 
+  const exhaustedReadingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-reading-exhausted-"));
+  const exhaustedReadingEvents = [];
+  let exhaustedReadingScans = 0;
+  let exhaustedReadScrolls = 0;
+  let exhaustedAdvanced = false;
+  let exhaustedComments = 0;
+  const exhaustedSnapshot = {
+    observation_id: "e".repeat(64),
+    post_fingerprint: "e".repeat(64),
+    source: "visual:windows_media_ocr",
+    structure_verified: true,
+    identity_text: "author 14 hours ago",
+    stable_anchor_text: "",
+    avatar_hash: "e".repeat(64),
+    bounds: { left: 400, top: 200, width: 500, height: 420 },
+    menu_bounds: { left: 840, top: 560, width: 40, height: 28 },
+    avatar_bounds: { left: 410, top: 220, width: 48, height: 48 }
+  };
+  const afterExhaustedSnapshot = {
+    observation_id: "f".repeat(64),
+    post_fingerprint: "f".repeat(64),
+    source: "visual:windows_media_ocr",
+    structure_verified: true,
+    identity_text: "next author shared a complete cleaning robot field report",
+    stable_anchor_text: "next author cleaning robot field report",
+    avatar_hash: "f".repeat(64),
+    bounds: { left: 400, top: 180, width: 500, height: 420 },
+    menu_bounds: { left: 840, top: 540, width: 40, height: 28 },
+    avatar_bounds: { left: 410, top: 200, width: 48, height: 48 }
+  };
+  const exhaustedReadingController = createMomentsCampaignController({
+    baseDir: exhaustedReadingRoot,
+    coordinator: {
+      acquire: () => ({ ok: true, lock: { owner: "reading-exhausted-owner" } }),
+      release: () => undefined
+    },
+    logger: {
+      event: (module, event, details) => exhaustedReadingEvents.push({ module, event, details })
+    },
+    openMoments: async () => INTEGRATED_OPEN_RESULT,
+    scrollMoments: async (options) => {
+      if (options.scrollMode === "read_post_up") exhaustedReadScrolls += 1;
+      if (options.scrollMode === "advance_feed") exhaustedAdvanced = true;
+      return {
+        ok: true,
+        delta: options.scrollMode === "read_post_up" ? 240 : -480
+      };
+    },
+    generateComment: async ({ postText }) => {
+      assert.equal(postText, afterExhaustedSnapshot.identity_text);
+      return { comment: "next-post-only comment" };
+    },
+    runStep: async (args, runOptions) => {
+      if (args[0] !== "moments-dry-run") {
+        assert.equal(args[0], "moments-comment");
+        exhaustedComments += 1;
+        return { ok: true, status: "verified", real_action_attempted: true };
+      }
+      if (runOptions.phase === "moments:observe") exhaustedReadingScans += 1;
+      const current = exhaustedAdvanced
+        ? afterExhaustedSnapshot
+        : {
+          ...exhaustedSnapshot,
+          bounds: { ...exhaustedSnapshot.bounds, top: exhaustedSnapshot.bounds.top + (exhaustedReadScrolls * 240) },
+          menu_bounds: { ...exhaustedSnapshot.menu_bounds, top: exhaustedSnapshot.menu_bounds.top + (exhaustedReadScrolls * 240) },
+          avatar_bounds: { ...exhaustedSnapshot.avatar_bounds, top: exhaustedSnapshot.avatar_bounds.top + (exhaustedReadScrolls * 240) }
+        };
+      return {
+        ok: true,
+        window: INTEGRATED_OBSERVED_WINDOW,
+        post_snapshot: current,
+        plan: { visible_post_count: 1 }
+      };
+    }
+  });
+  assert.equal(exhaustedReadingController.start({
+    maxPosts: 1,
+    likeEnabled: false,
+    commentEnabled: true
+  }).ok, true);
+  const exhaustedReadingDone = await waitFor(
+    () => exhaustedReadingController.status().state,
+    (state) => state.status === "completed"
+  );
+  assert.equal(exhaustedReadingDone.processed_count, 2);
+  assert.equal(exhaustedReadingDone.comment_skipped_count, 1);
+  assert.equal(exhaustedReadingDone.skipped_count, 1);
+  assert.equal(exhaustedReadingDone.commented_count, 1);
+  assert.equal(exhaustedComments, 1, "the skipped incomplete post must not receive a repeated comment");
+  assert.equal(
+    exhaustedReadingEvents.filter(({ event }) => event === "campaign.reading_skipped").length,
+    1,
+    "three failed alignments must produce one terminal skip for the locked post"
+  );
+  assert.equal(
+    exhaustedReadingEvents.some(({ event, details }) => event === "campaign.reading_fragment_collected"
+      && details.fragment_count === 0),
+    false,
+    "an identity-only alignment must not be reported as collected post content"
+  );
+  assert.equal(
+    exhaustedReadingEvents.some(({ event }) => event === "campaign.reading_alignment_confirmed"),
+    true
+  );
+  assert.equal(exhaustedReadScrolls, 3);
+  assert.equal(exhaustedAdvanced, true);
+  assert.ok(exhaustedReadingScans <= 6);
+
+  const foregroundRecoveryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-foreground-recovery-"));
+  const foregroundRecoveryEvents = [];
+  const foregroundOpenCalls = [];
+  let foregroundObservationCalls = 0;
+  let foregroundLikeCalls = 0;
+  const foregroundRecoveryController = createMomentsCampaignController({
+    baseDir: foregroundRecoveryRoot,
+    coordinator: {
+      acquire: () => ({ ok: true, lock: { owner: "foreground-recovery-owner" } }),
+      release: () => undefined
+    },
+    logger: {
+      event: (module, event, details) => foregroundRecoveryEvents.push({ module, event, details })
+    },
+    openMoments: async (options) => {
+      foregroundOpenCalls.push(options);
+      return INTEGRATED_OPEN_RESULT;
+    },
+    scrollMoments: async () => ({ ok: true, delta: -480 }),
+    runStep: async (args) => {
+      if (args[0] === "moments-dry-run") {
+        foregroundObservationCalls += 1;
+        if (foregroundObservationCalls === 1) {
+          return { ok: false, reason: "moments_window_not_foreground" };
+        }
+        return {
+          ok: true,
+          window: INTEGRATED_OBSERVED_WINDOW,
+          post_snapshot: {
+            observation_id: "9".repeat(64),
+            post_fingerprint: "9".repeat(64),
+            identity_text: "foreground recovery test post"
+          },
+          plan: { visible_post_count: 1 }
+        };
+      }
+      assert.equal(args[0], "moments-like");
+      foregroundLikeCalls += 1;
+      return { ok: true, status: "verified", no_op: false, real_action_attempted: true };
+    }
+  });
+  assert.equal(foregroundRecoveryController.start({
+    maxPosts: 1,
+    likeEnabled: true,
+    commentEnabled: false
+  }).ok, true);
+  const foregroundRecoveryDone = await waitFor(
+    () => foregroundRecoveryController.status().state,
+    (state) => state.status === "completed"
+  );
+  assert.equal(foregroundRecoveryDone.completed_post_count, 1);
+  assert.equal(foregroundObservationCalls, 2);
+  assert.equal(foregroundLikeCalls, 1);
+  assert.equal(foregroundOpenCalls.length, 2);
+  assert.deepEqual(foregroundOpenCalls[1].expectedWindow, INTEGRATED_OPEN_RESULT);
+  assert.equal(
+    foregroundRecoveryEvents.some(({ event, details }) => event === "campaign.foreground_recovered"
+      && details.reason === "moments_window_not_foreground"),
+    true
+  );
+
   const rejectedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-rejected-"));
   const rejectedEvents = [];
   const rejectedController = createMomentsCampaignController({
@@ -829,18 +1596,25 @@ async function main() {
   assert.equal(rejectedEvents[0].details.reason, "invalid_runtime_state");
 
   fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(standaloneRoot, { recursive: true, force: true });
+  fs.rmSync(invalidSurfaceRoot, { recursive: true, force: true });
   fs.rmSync(likeRecognitionRoot, { recursive: true, force: true });
   fs.rmSync(topPositionRoot, { recursive: true, force: true });
   fs.rmSync(duplicateRoot, { recursive: true, force: true });
   fs.rmSync(duplicateUnknownRoot, { recursive: true, force: true });
   fs.rmSync(partialRoot, { recursive: true, force: true });
   fs.rmSync(commentRoot, { recursive: true, force: true });
+  fs.rmSync(incompleteVisualRoot, { recursive: true, force: true });
+  fs.rmSync(bodyOnlyRoot, { recursive: true, force: true });
+  fs.rmSync(visualJitterRoot, { recursive: true, force: true });
   fs.rmSync(commentSkipThenSuccessRoot, { recursive: true, force: true });
   fs.rmSync(commentUnknownRoot, { recursive: true, force: true });
   fs.rmSync(aiFailureRoot, { recursive: true, force: true });
   fs.rmSync(crossedStatusRoot, { recursive: true, force: true });
   fs.rmSync(combinedRoot, { recursive: true, force: true });
   fs.rmSync(partialAlignmentRoot, { recursive: true, force: true });
+  fs.rmSync(exhaustedReadingRoot, { recursive: true, force: true });
+  fs.rmSync(foregroundRecoveryRoot, { recursive: true, force: true });
   fs.rmSync(rejectedRoot, { recursive: true, force: true });
   console.log("moments campaign IPC self-check passed");
 }

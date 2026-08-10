@@ -6,6 +6,7 @@ const {
   focusWechatWindow,
   inputWechatMessageDraft,
   inputWechatSearchQuery,
+  isPreparedWechatRpaLayout,
   openWechatSearchResult,
   verifyWechatCurrentConversation
 } = require("./wechat_window_driver.cjs");
@@ -282,6 +283,8 @@ function wechatWindowReason(result) {
   if ([
     "wechat_login_required",
     "wechat_focus_failed",
+    "wechat_window_not_foreground",
+    "wechat_user_active",
     "wechat_window_not_ready",
     "wechat_window_ambiguous",
     "wechat_window_identity_mismatch",
@@ -295,6 +298,8 @@ function wechatWindowReason(result) {
 function wechatWindowBlockText(reason) {
   if (reason === "wechat_login_required") return "已阻断：微信需要完成登录确认";
   if (reason === "wechat_focus_failed") return "已阻断：微信窗口未获得前台焦点";
+  if (reason === "wechat_window_not_foreground") return "已停止：你已切换到其他窗口，系统不会把微信抢回前台";
+  if (reason === "wechat_user_active") return "已延后：检测到你正在使用鼠标或键盘，本次没有操作微信";
   if (reason === "wechat_window_not_ready") return "已阻断：已找到微信窗口，但当前窗口尺寸不可操作";
   if (reason === "wechat_window_ambiguous") return "已阻断：检测到多个个人微信主窗口";
   if (reason === "wechat_window_identity_mismatch") return "已阻断：微信窗口在操作过程中发生变化";
@@ -626,7 +631,8 @@ function clickSearchResultDryRun(
   baseDir = __dirname,
   openResultDriver = openWechatSearchResult,
   titleReader = readWindowTitles,
-  conversationVerifier = verifyWechatCurrentConversation
+  conversationVerifier = verifyWechatCurrentConversation,
+  windowContext = {}
 ) {
   const operationStartedAt = Date.now();
   const state = loadState(baseDir);
@@ -638,11 +644,22 @@ function clickSearchResultDryRun(
   }
 
   const openStartedAt = Date.now();
-  const inputResult = openResultDriver(searchQuery);
+  const exactWindow = {
+    pid: Number(windowContext.pid) || undefined,
+    hWnd: String(windowContext.hWnd || "").trim() || undefined,
+    minIdleMs: Number(windowContext.minIdleMs) || 0
+  };
+  const inputResult = openResultDriver(searchQuery, exactWindow);
   const openResultMs = Date.now() - openStartedAt;
   if (!inputResult.ok) {
     const reason = wechatWindowReason(inputResult);
     return block(baseDir, "点击搜索结果 dry-run", clearConversationState(state, reason), reason, wechatWindowBlockText(reason));
+  }
+
+  if ((exactWindow.pid && Number(inputResult.pid) !== exactWindow.pid)
+    || (exactWindow.hWnd && String(inputResult.hWnd || "") !== exactWindow.hWnd)) {
+    const reason = "wechat_window_identity_mismatch";
+    return block(baseDir, "click search result dry-run", clearConversationState(state, reason), reason, wechatWindowBlockText(reason));
   }
 
   const wechatId = String(state.selected_customer?.wechatId ?? "").trim();
@@ -668,11 +685,22 @@ function clickSearchResultDryRun(
     };
   } else {
     const titleReadStartedAt = Date.now();
-    const titles = [inputResult.title, ...titleReader()].filter(Boolean);
+    const titles = [
+      inputResult.title,
+      ...(exactWindow.pid && exactWindow.hWnd ? [] : titleReader())
+    ].filter(Boolean);
     titleReadMs = Date.now() - titleReadStartedAt;
     matchedTitle = titles.find((item) => item.includes(customerName)) || "";
     const verifyStartedAt = Date.now();
-    verifiedConversation = matchedTitle ? { ok: true, title: matchedTitle } : conversationVerifier(customerName);
+    verifiedConversation = matchedTitle
+      ? {
+          ok: true,
+          title: matchedTitle,
+          processName: inputResult.processName,
+          pid: inputResult.pid,
+          hWnd: inputResult.hWnd
+        }
+      : conversationVerifier(customerName, exactWindow);
     conversationVerifyMs = Date.now() - verifyStartedAt;
   }
   const timings = {
@@ -697,7 +725,12 @@ function clickSearchResultDryRun(
       reason === "contact_unavailable" ? "联系人已停用，自动跳过" : "已阻断：未打开匹配客户会话"
     );
   }
-  const title = matchedTitle ?? verifiedConversation.title ?? customerName;
+  if ((exactWindow.pid && Number(verifiedConversation.pid) !== exactWindow.pid)
+    || (exactWindow.hWnd && String(verifiedConversation.hWnd || "") !== exactWindow.hWnd)) {
+    const reason = "wechat_window_identity_mismatch";
+    return block(baseDir, "点击搜索结果 dry-run", clearConversationState(state, reason), reason, wechatWindowBlockText(reason));
+  }
+  const title = matchedTitle || verifiedConversation.title || customerName;
 
   const nextState = {
     ...state,
@@ -813,7 +846,8 @@ function queueDryRun(
   openResultDriver = openWechatSearchResult,
   inputDriver = inputWechatMessageDraft,
   titleReader = readWindowTitles,
-  conversationVerifier = verifyWechatCurrentConversation
+  conversationVerifier = verifyWechatCurrentConversation,
+  windowContext = {}
 ) {
   const state = loadState(baseDir);
   const ids = (Array.isArray(customerIds) ? customerIds : String(customerIds).split(","))
@@ -847,6 +881,16 @@ function queueDryRun(
     return block(baseDir, "小批量 dry-run 队列", state, "queue_customer_not_allowed", "已阻断：队列里有非白名单客户");
   }
 
+  const exactWindow = {
+    pid: Number(windowContext.pid),
+    hWnd: String(windowContext.hWnd || "").trim(),
+    minIdleMs: Number(windowContext.minIdleMs) || 0
+  };
+  if (!Number.isSafeInteger(exactWindow.pid) || exactWindow.pid <= 0 || !/^[1-9]\d*$/u.test(exactWindow.hWnd)
+    || !isPreparedWechatRpaLayout(windowContext)) {
+    return block(baseDir, "小批量 dry-run 队列", state, "wechat_window_identity_missing", "已阻断：队列执行缺少已最大化的微信窗口身份");
+  }
+
   const results = [];
   let nextState = { ...state, queue_dry_run_passed: false, queue_dry_run_results: [] };
 
@@ -856,7 +900,7 @@ function queueDryRun(
       return block(baseDir, "小批量 dry-run 队列", state, "queue_customer_search_query_missing", "已阻断：队列里有客户缺少可搜索字段");
     }
 
-    const openResult = openResultDriver(searchQuery);
+    const openResult = openResultDriver(searchQuery, exactWindow);
     if (!openResult.ok) {
       const reason = wechatWindowReason(openResult);
       const blockedState = clearConversationState(nextState, reason, {
@@ -867,10 +911,16 @@ function queueDryRun(
       });
       return block(baseDir, "小批量 dry-run 队列", blockedState, reason, reason === "wechat_login_required" ? `已阻断：第 ${index + 1} 位需要完成微信登录确认` : `已阻断：第 ${index + 1} 位未找到微信窗口`);
     }
+    if (Number(openResult.pid) !== exactWindow.pid || String(openResult.hWnd || "") !== exactWindow.hWnd) {
+      const reason = "wechat_window_identity_mismatch";
+      return block(baseDir, "小批量 dry-run 队列", clearConversationState(nextState, reason), reason, wechatWindowBlockText(reason));
+    }
 
-    const titles = [openResult.title, ...titleReader()].filter(Boolean);
+    const titles = [openResult.title].filter(Boolean);
     const matchedTitle = titles.find((item) => item.includes(customer.name));
-    const verifiedConversation = matchedTitle ? { ok: true, title: matchedTitle } : conversationVerifier(customer.name);
+    const verifiedConversation = matchedTitle
+      ? { ok: true, title: matchedTitle, pid: openResult.pid, hWnd: openResult.hWnd }
+      : conversationVerifier(customer.name, exactWindow);
     if (!verifiedConversation.ok) {
       const blockedState = clearConversationState(nextState, "queue_conversation_not_verified", {
         selected_customer: customer,
@@ -884,8 +934,12 @@ function queueDryRun(
       });
       return block(baseDir, "小批量 dry-run 队列", blockedState, "queue_conversation_not_verified", `已阻断：第 ${index + 1} 位未打开匹配会话`);
     }
+    if (Number(verifiedConversation.pid) !== exactWindow.pid || String(verifiedConversation.hWnd || "") !== exactWindow.hWnd) {
+      const reason = "wechat_window_identity_mismatch";
+      return block(baseDir, "小批量 dry-run 队列", clearConversationState(nextState, reason), reason, wechatWindowBlockText(reason));
+    }
 
-    const inputResult = inputDriver(draft);
+    const inputResult = inputDriver(draft, exactWindow);
     if (!inputResult.ok || inputResult.draftVerified !== true) {
       const blockedState = {
         ...nextState,

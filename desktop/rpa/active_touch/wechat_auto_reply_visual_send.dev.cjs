@@ -9,10 +9,17 @@ using System;
 using System.Text;
 using System.Runtime.InteropServices;
 public static class Win32WechatVisualAutoReply {
+  [StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
+  [StructLayout(LayoutKind.Sequential)] public struct MOUSEINPUT { public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public UIntPtr extraInfo; }
+  [StructLayout(LayoutKind.Explicit)] public struct INPUT {
+    [FieldOffset(0)] public uint type;
+    [FieldOffset(8)] public MOUSEINPUT mouseInput;
+  }
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
   [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int command);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -24,6 +31,27 @@ public static class Win32WechatVisualAutoReply {
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extraInfo);
+  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+  [DllImport("user32.dll")] public static extern uint SendInput(uint count, INPUT[] inputs, int size);
+  public static uint GetLastInputTick() {
+    LASTINPUTINFO info = new LASTINPUTINFO();
+    info.cbSize = (uint)Marshal.SizeOf(info);
+    return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue;
+  }
+  public static bool AtomicMouseClick(int screenX, int screenY) {
+    int left = GetSystemMetrics(76), top = GetSystemMetrics(77);
+    int width = GetSystemMetrics(78), height = GetSystemMetrics(79);
+    if (width <= 1 || height <= 1 || screenX < left || screenY < top || screenX >= left + width || screenY >= top + height) return false;
+    int dx = (int)Math.Round((screenX - left) * 65535.0 / (width - 1));
+    int dy = (int)Math.Round((screenY - top) * 65535.0 / (height - 1));
+    uint common = 0x0001u | 0x4000u | 0x8000u;
+    INPUT[] inputs = new INPUT[2];
+    inputs[0].type = 0;
+    inputs[0].mouseInput = new MOUSEINPUT { dx = dx, dy = dy, mouseData = 0, dwFlags = common | 0x0002u, time = 0, extraInfo = UIntPtr.Zero };
+    inputs[1].type = 0;
+    inputs[1].mouseInput = new MOUSEINPUT { dx = dx, dy = dy, mouseData = 0, dwFlags = common | 0x0004u, time = 0, extraInfo = UIntPtr.Zero };
+    return SendInput(2, inputs, Marshal.SizeOf(typeof(INPUT))) == 2;
+  }
 }
 "@
 
@@ -39,7 +67,9 @@ $expectedIncoming = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_IN
 $expectedIncomingSignature = ([string][Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_INCOMING_SIGNATURE")).Trim().ToLowerInvariant()
 $expectedReply = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_REPLY")
 $phase = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_PHASE")
+$expectedInputTickText = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_EXPECTED_INPUT_TICK")
 $script:VisualSendOcrDownscale = 1
+$script:VisualSendExpectedInputTick = [uint32]::MaxValue
 
 function Write-VisualSendResult($value) {
   $value | ConvertTo-Json -Compress -Depth 8
@@ -161,16 +191,6 @@ function Get-VisualSendLock {
   if (-not [Win32WechatVisualAutoReply]::GetWindowRect($hWnd, [ref]$rect) -or
     ($rect.Right - $rect.Left) -lt 500 -or ($rect.Bottom - $rect.Top) -lt 400) {
     return @{ ok = $false; reason = "visual_send_window_geometry_invalid" }
-  }
-  [void][Win32WechatVisualAutoReply]::ShowWindowAsync($hWnd, 9)
-  $focused = [Win32WechatVisualAutoReply]::SetForegroundWindow($hWnd)
-  if (-not $focused) {
-    try { $focused = (New-Object -ComObject WScript.Shell).AppActivate([int]$expectedPid) } catch {}
-  }
-  Start-Sleep -Milliseconds 180
-  if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $hWnd) {
-    try { [void](New-Object -ComObject WScript.Shell).AppActivate([int]$expectedPid) } catch {}
-    Start-Sleep -Milliseconds 180
   }
   if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $hWnd) {
     return @{ ok = $false; reason = "visual_send_window_not_foreground" }
@@ -765,29 +785,80 @@ function Test-VisualSendOwnedPoint($lock, [int]$x, [int]$y) {
   return [int]$hitPid -eq $lock.pid
 }
 
+function Test-VisualSendInputLease {
+  return $script:VisualSendExpectedInputTick -ne [uint32]::MaxValue -and
+    [Win32WechatVisualAutoReply]::GetLastInputTick() -eq $script:VisualSendExpectedInputTick
+}
+
+function Update-VisualSendInputLease {
+  $script:VisualSendExpectedInputTick = [Win32WechatVisualAutoReply]::GetLastInputTick()
+  return $script:VisualSendExpectedInputTick -ne [uint32]::MaxValue
+}
+
+function Set-VisualSendOwnedCursor($lock, [int]$relativeX, [int]$relativeY) {
+  if (-not (Test-VisualSendInputLease) -or
+      [Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
+      -not (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)) { return $false }
+  $screenX = [int]($lock.rect.Left + $relativeX)
+  $screenY = [int]($lock.rect.Top + $relativeY)
+  if (-not [Win32WechatVisualAutoReply]::SetCursorPos($screenX, $screenY)) { return $false }
+  $actual = New-Object Win32WechatVisualAutoReply+POINT
+  $cursorVerified = [Win32WechatVisualAutoReply]::GetCursorPos([ref]$actual) -and
+    [Math]::Abs($actual.X - $screenX) -le 1 -and [Math]::Abs($actual.Y - $screenY) -le 1 -and
+    [Win32WechatVisualAutoReply]::GetForegroundWindow() -eq $lock.hWnd -and
+    (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)
+  return $cursorVerified -and (Test-VisualSendInputLease)
+}
+
+function Invoke-VisualSendComposerClick($lock, [int]$relativeX, [int]$relativeY) {
+  if (-not (Set-VisualSendOwnedCursor $lock $relativeX $relativeY) -or
+      -not (Test-VisualSendInputLease) -or
+      [Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
+      -not (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)) { return $false }
+  $screenX = [int]($lock.rect.Left + $relativeX)
+  $screenY = [int]($lock.rect.Top + $relativeY)
+  if (-not [Win32WechatVisualAutoReply]::AtomicMouseClick($screenX, $screenY) -or
+      -not (Update-VisualSendInputLease)) { return $false }
+  Start-Sleep -Milliseconds 90
+  return (Test-VisualSendInputLease) -and
+    [Win32WechatVisualAutoReply]::GetForegroundWindow() -eq $lock.hWnd -and
+    (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)
+}
+
+function Invoke-VisualSendKeys($lock, [int]$relativeX, [int]$relativeY, [string]$keys) {
+  if (-not (Test-VisualSendInputLease) -or
+      [Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
+      -not (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)) { return $false }
+  [System.Windows.Forms.SendKeys]::SendWait($keys)
+  if (-not (Update-VisualSendInputLease)) { return $false }
+  Start-Sleep -Milliseconds 25
+  return (Test-VisualSendInputLease) -and
+    [Win32WechatVisualAutoReply]::GetForegroundWindow() -eq $lock.hWnd -and
+    (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)
+}
+
 function Read-VisualSendDraft($lock) {
   $width = [double]($lock.rect.Right - $lock.rect.Left)
   $height = [double]($lock.rect.Bottom - $lock.rect.Top)
   $relativeX = [int]($width * 0.64)
   $relativeY = [int]($height * 0.87)
-  if (-not (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)) {
+  if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
+      -not (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)) {
     return @{ ok = $false; empty = $false; exact = $false }
   }
-  $x = [int]($lock.rect.Left + $relativeX)
-  $y = [int]($lock.rect.Top + $relativeY)
   $oldClipboard = ""
   try { $oldClipboard = [string](Get-Clipboard -Raw -ErrorAction SilentlyContinue) } catch {}
   $sentinel = "__XIAOXI_VISUAL_EMPTY_" + [Guid]::NewGuid().ToString("N")
+  $clipboardOwned = $false
   try {
-    [void][Win32WechatVisualAutoReply]::SetCursorPos($x, $y)
-    [Win32WechatVisualAutoReply]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 35
-    [Win32WechatVisualAutoReply]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 90
+    if (-not (Invoke-VisualSendComposerClick $lock $relativeX $relativeY)) { return @{ ok = $false; empty = $false; exact = $false } }
+    if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
+        -not (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)) { return @{ ok = $false; empty = $false; exact = $false } }
     Set-Clipboard -Value $sentinel
-    [System.Windows.Forms.SendKeys]::SendWait("^a")
+    $clipboardOwned = $true
+    if (-not (Invoke-VisualSendKeys $lock $relativeX $relativeY "^a")) { return @{ ok = $false; empty = $false; exact = $false } }
     Start-Sleep -Milliseconds 45
-    [System.Windows.Forms.SendKeys]::SendWait("^c")
+    if (-not (Invoke-VisualSendKeys $lock $relativeX $relativeY "^c")) { return @{ ok = $false; empty = $false; exact = $false } }
     Start-Sleep -Milliseconds 150
     $copied = [string](Get-Clipboard -Raw -ErrorAction Stop)
     return @{
@@ -798,7 +869,11 @@ function Read-VisualSendDraft($lock) {
   } catch {
     return @{ ok = $false; empty = $false; exact = $false }
   } finally {
-    try { Set-Clipboard -Value $oldClipboard } catch {}
+    if ($clipboardOwned -and (Test-VisualSendInputLease) -and
+        [Win32WechatVisualAutoReply]::GetForegroundWindow() -eq $lock.hWnd -and
+        (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)) {
+      try { Set-Clipboard -Value $oldClipboard } catch {}
+    }
   }
 }
 
@@ -815,21 +890,25 @@ function Write-VisualSendDraft($lock) {
   $y = [int]($lock.rect.Top + $relativeY)
   $oldClipboard = ""
   try { $oldClipboard = [string](Get-Clipboard -Raw -ErrorAction SilentlyContinue) } catch {}
+  $clipboardOwned = $false
   try {
-    [void][Win32WechatVisualAutoReply]::SetCursorPos($x, $y)
-    [Win32WechatVisualAutoReply]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 35
-    [Win32WechatVisualAutoReply]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 90
-    [System.Windows.Forms.SendKeys]::SendWait("^a")
+    if (-not (Invoke-VisualSendComposerClick $lock $relativeX $relativeY)) { return @{ ok = $false; exact = $false } }
+    if (-not (Invoke-VisualSendKeys $lock $relativeX $relativeY "^a")) { return @{ ok = $false; exact = $false } }
+    if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
+        -not (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)) { return @{ ok = $false; exact = $false } }
     Set-Clipboard -Value $expectedReply
+    $clipboardOwned = $true
     Start-Sleep -Milliseconds 60
-    [System.Windows.Forms.SendKeys]::SendWait("^v")
+    if (-not (Invoke-VisualSendKeys $lock $relativeX $relativeY "^v")) { return @{ ok = $false; exact = $false } }
     Start-Sleep -Milliseconds 260
   } catch {
     return @{ ok = $false; exact = $false }
   } finally {
-    try { Set-Clipboard -Value $oldClipboard } catch {}
+    if ($clipboardOwned -and (Test-VisualSendInputLease) -and
+        [Win32WechatVisualAutoReply]::GetForegroundWindow() -eq $lock.hWnd -and
+        (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)) {
+      try { Set-Clipboard -Value $oldClipboard } catch {}
+    }
   }
   if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd) {
     return @{ ok = $false; exact = $false }
@@ -846,13 +925,9 @@ function Clear-VisualSendDraft($lock) {
   $relativeY = [int]($height * 0.87)
   if (-not (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)) { return $false }
   try {
-    [void][Win32WechatVisualAutoReply]::SetCursorPos([int]($lock.rect.Left + $relativeX), [int]($lock.rect.Top + $relativeY))
-    [Win32WechatVisualAutoReply]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 35
-    [Win32WechatVisualAutoReply]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 70
-    [System.Windows.Forms.SendKeys]::SendWait("^a")
-    [System.Windows.Forms.SendKeys]::SendWait("{BACKSPACE}")
+    if (-not (Invoke-VisualSendComposerClick $lock $relativeX $relativeY)) { return $false }
+    if (-not (Invoke-VisualSendKeys $lock $relativeX $relativeY "^a")) { return $false }
+    if (-not (Invoke-VisualSendKeys $lock $relativeX $relativeY "{BACKSPACE}")) { return $false }
     Start-Sleep -Milliseconds 120
     $readback = Read-VisualSendDraft $lock
     return $readback.ok -and $readback.empty
@@ -887,6 +962,16 @@ $lock = Get-VisualSendLock
 if (-not $lock.ok) {
   Write-VisualSendResult @{ ok = $false; reason = $lock.reason; sendAttempted = $false; conversationVerified = $false; draftVerified = $false }
 }
+$currentInputTick = [Win32WechatVisualAutoReply]::GetLastInputTick()
+[uint32]$providedInputTick = 0
+if (@("draft", "send") -contains $phase -and [uint32]::TryParse($expectedInputTickText, [ref]$providedInputTick)) {
+  $script:VisualSendExpectedInputTick = $providedInputTick
+  if (-not (Test-VisualSendInputLease)) {
+    Write-VisualSendResult @{ ok = $false; reason = "visual_send_external_input_detected"; sendAttempted = $false; conversationVerified = $false; draftVerified = $false; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+  }
+} else {
+  $script:VisualSendExpectedInputTick = $currentInputTick
+}
 $frame = Get-VisualSendFrame $lock
 if (-not $frame.ok) {
   Write-VisualSendResult @{ ok = $false; reason = $frame.reason; sendAttempted = $false; conversationVerified = $false; draftVerified = $false; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
@@ -908,14 +993,14 @@ try {
     }
   }
   if ($phase -ceq "preflight") {
-    Write-VisualSendResult @{ ok = $true; sendAttempted = $false; conversationVerified = $true; conversationState = [string]$binding.headerState; incomingVerified = $true; draftVerified = $false; verificationMode = $("visual_preflight_{0}" -f $binding.proof); pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+    Write-VisualSendResult @{ ok = $true; sendAttempted = $false; conversationVerified = $true; conversationState = [string]$binding.headerState; incomingVerified = $true; draftVerified = $false; verificationMode = $("visual_preflight_{0}" -f $binding.proof); inputTick = [Win32WechatVisualAutoReply]::GetLastInputTick(); pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
   }
   if ($phase -ceq "draft") {
     $written = Write-VisualSendDraft $lock
     if (-not $written.ok) {
       Write-VisualSendResult @{ ok = $false; reason = "visual_send_draft_input_failed"; sendAttempted = $false; conversationVerified = $true; conversationState = [string]$binding.headerState; draftVerified = $false; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
     }
-    Write-VisualSendResult @{ ok = $true; sendAttempted = $false; conversationVerified = $true; conversationState = [string]$binding.headerState; incomingVerified = $true; draftVerified = $true; verificationMode = $("visual_draft_{0}" -f $binding.proof); pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+    Write-VisualSendResult @{ ok = $true; sendAttempted = $false; conversationVerified = $true; conversationState = [string]$binding.headerState; incomingVerified = $true; draftVerified = $true; verificationMode = $("visual_draft_{0}" -f $binding.proof); inputTick = [Win32WechatVisualAutoReply]::GetLastInputTick(); pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
   }
 } finally {
   Close-MomentsVisualFrame $frame
@@ -952,7 +1037,8 @@ try {
   Close-MomentsVisualFrame $fresh
 }
 
-if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
+if (-not (Test-VisualSendInputLease) -or
+    [Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
   -not (Test-VisualSendOwnedPoint $lock ([int]$button.point.x) ([int]$button.point.y))) {
   [void](Clear-VisualSendDraft $lock)
   Write-VisualSendResult @{ ok = $false; reason = "visual_send_button_not_owned"; sendAttempted = $false; conversationVerified = $true; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
@@ -973,11 +1059,20 @@ if (-not $cursorExact -or [Win32WechatVisualAutoReply]::GetForegroundWindow() -n
   Write-VisualSendResult @{ ok = $false; reason = "visual_send_cursor_not_verified"; sendAttempted = $false; conversationVerified = $true; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
 }
 
+if (-not (Test-VisualSendInputLease) -or
+    [Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
+    -not (Test-VisualSendOwnedPoint $lock ([int]$button.point.x) ([int]$button.point.y))) {
+  [void](Clear-VisualSendDraft $lock)
+  Write-VisualSendResult @{ ok = $false; reason = "visual_send_button_not_owned"; sendAttempted = $false; conversationVerified = $true; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+}
 $sendAttempted = $true
-[Win32WechatVisualAutoReply]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-Start-Sleep -Milliseconds 35
-[Win32WechatVisualAutoReply]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-[void][Win32WechatVisualAutoReply]::SetCursorPos($oldPoint.X, $oldPoint.Y)
+if (-not [Win32WechatVisualAutoReply]::AtomicMouseClick($screenX, $screenY) -or
+    -not (Update-VisualSendInputLease)) {
+  Write-VisualSendResult @{ ok = $false; reason = "visual_send_outcome_unknown"; outcomeUnknown = $true; sendAttempted = $true; conversationVerified = $true; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+}
+if ((Test-VisualSendInputLease) -and [Win32WechatVisualAutoReply]::GetForegroundWindow() -eq $lock.hWnd) {
+  [void][Win32WechatVisualAutoReply]::SetCursorPos($oldPoint.X, $oldPoint.Y)
+}
 Start-Sleep -Milliseconds 550
 
 $postLock = Get-VisualSendLock
@@ -1019,7 +1114,8 @@ function visualSendEnvironment(options, phase) {
     XIAOXI_VISUAL_SEND_INCOMING: String(options.incomingMessage ?? ""),
     XIAOXI_VISUAL_SEND_INCOMING_SIGNATURE: String(options.incomingMessageSignature ?? ""),
     XIAOXI_VISUAL_SEND_REPLY: String(options.reply ?? ""),
-    XIAOXI_VISUAL_SEND_PHASE: phase
+    XIAOXI_VISUAL_SEND_PHASE: phase,
+    XIAOXI_VISUAL_SEND_EXPECTED_INPUT_TICK: String(options.expectedInputTick ?? "")
   };
 }
 
@@ -1112,6 +1208,7 @@ function createVisualAutoReplySender({
         diagnostics: { phase: "draft", timings }
       }, request);
     }
+    request.expectedInputTick = Number.isInteger(Number(draft.inputTick)) ? Number(draft.inputTick) : undefined;
 
     const beforeSendStartedAt = Date.now();
     if (typeof options.beforeSend === "function") {

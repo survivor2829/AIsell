@@ -186,6 +186,16 @@ try {
     "--",
     "desktop/sidecars/product-detail/app"
   ]);
+  const docsOnlyDesktopSource = desktopSourceProvenance(fixturePaths, (projectDir, args) => (
+    args[0] === "rev-parse"
+      ? "d".repeat(40)
+      : " D desktop/sidecars/product-detail/app/docs/assets/readme-hero-ai.png"
+  ));
+  assert.equal(
+    docsOnlyDesktopSource.dirty,
+    false,
+    "documentation-only changes must not mark the packaged product-detail source dirty"
+  );
   const cleanDesktopSource = { ...dirtyDesktopSource, dirty: false };
 
   const runtimeDir = path.join(fixtureRoot, "runtime");

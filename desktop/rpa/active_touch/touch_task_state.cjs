@@ -102,7 +102,7 @@ function contactIdentityIndex(contacts) {
   };
 }
 
-function contactIdentityError(contacts, contact, index = contactIdentityIndex(contacts)) {
+function contactIdentityError(contacts, contact, index = contactIdentityIndex(contacts), options = {}) {
   const name = contactName(contact);
   const wechatId = String(contact?.wechatId ?? "").trim();
   const accountId = String(contact?.wechatAccountId ?? "").trim();
@@ -110,7 +110,7 @@ function contactIdentityError(contacts, contact, index = contactIdentityIndex(co
   if (!String(contact?.id ?? "").trim() || !touchSearchName(contact)) return "contact_identity_missing";
   if (!wechatId) return "wechat_id_missing";
   if (!accountId) return "wechat_account_identity_missing";
-  if (index.names.get(name) !== 1) return "contact_name_not_unique";
+  if (options.requireUniqueName !== false && index.names.get(name) !== 1) return "contact_name_not_unique";
   if (index.wechatIds.get(wechatId) !== 1) return "contact_identity_not_unique";
   if (index.ids.get(String(contact?.id ?? "").trim()) !== 1) return "contact_identity_not_unique";
   if (index.accounts.size !== 1 || !index.accounts.has(accountId)) return "wechat_account_ambiguous";
@@ -134,7 +134,7 @@ function classifyContacts(contacts = [], options = {}) {
   };
   const identityIndex = contactIdentityIndex(rows);
   for (const contact of rows) {
-    const reasonCode = contactIdentityError(rows, contact, identityIndex);
+    const reasonCode = contactIdentityError(rows, contact, identityIndex, { requireUniqueName: false });
     if (reasonCode) excluded.push({ contact: publicContact(contact), reason_code: reasonCode, reason: labels[reasonCode] || reasonCode });
     else if (userExcludedIds.has(String(contact?.id ?? "").trim())) excluded.push({ contact: publicContact(contact), reason_code: "user_excluded", reason: labels.user_excluded });
     else eligible.push(contact);
@@ -580,7 +580,7 @@ function markPreviousBuildTask(task, currentBuildId) {
   normalized.phase = "paused";
   normalized.previous_build_task = true;
   normalized.batch_authorization = null;
-  normalized.pause_reason = "检测到上一版本未完成的触达任务。为避免跨版本误发，不会自动继续；请先核对并结束旧任务，再启动新任务。";
+  normalized.pause_reason = `检测到上一版本未完成的触达任务，已停在 ${normalized.current_index}/${normalized.total}。点击继续任务后将沿用原冻结名单和发送进度，不会从头重建。`;
   normalized.updated_at = nowIso();
   return { changed: true, task: normalized };
 }

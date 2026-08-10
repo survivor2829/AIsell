@@ -2,6 +2,9 @@ const { ipcMain } = require("electron");
 const { runActiveTouchDev } = require("./active-touch-ipc.cjs");
 const { executeVerifiedContactSend, setRealSendArm } = require("../../rpa/active_touch/state_machine.dev.cjs");
 const { MAX_MOMENTS_COMMENT_LENGTH } = require("../../rpa/active_touch/moments_dry_run.dev.cjs");
+const { loadMomentsActionContext } = require("../../rpa/active_touch/moments_action.dev.cjs");
+const { openWechatMoments } = require("../../rpa/active_touch/moments_navigation.dev.cjs");
+const { diagnostics } = require("./diagnostics.cjs");
 
 const MOMENTS_DRY_RUN_TIMEOUT_MS = 45_000;
 const MOMENTS_INSPECT_TIMEOUT_MS = 125_000;
@@ -55,30 +58,200 @@ function trustedFocusedClick(event, payload, clickIntent) {
   return clickToken;
 }
 
-function blockedMomentsAction(action, blockedReason, error, attempted = false) {
+function finiteNumber(value, minimum, maximum) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= minimum && numeric <= maximum ? numeric : undefined;
+}
+
+function finiteInteger(value, minimum, maximum) {
+  const numeric = finiteNumber(value, minimum, maximum);
+  return numeric === undefined ? undefined : Math.round(numeric);
+}
+
+function sanitizeMomentsBounds(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const left = finiteNumber(value.left, -100_000, 100_000);
+  const top = finiteNumber(value.top, -100_000, 100_000);
+  const width = finiteNumber(value.width, 0, 100_000);
+  const height = finiteNumber(value.height, 0, 100_000);
+  if ([left, top, width, height].some((entry) => entry === undefined)) return undefined;
+  return { left, top, width, height };
+}
+
+function sanitizeMomentsDiscoverCandidate(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const bounds = sanitizeMomentsBounds(value.bounds);
+  const centerX = finiteNumber(value.centerX, -100_000, 100_000);
+  const centerY = finiteNumber(value.centerY, -100_000, 100_000);
+  const activePixelCount = finiteInteger(value.activePixelCount, 0, 1_000_000);
+  const fillRatio = finiteNumber(value.fillRatio, 0, 1);
+  const aspectRatio = finiteNumber(value.aspectRatio, 0, 100);
+  const cornerRatio = finiteNumber(value.cornerRatio, 0, 1);
+  const ringRatio = finiteNumber(value.ringRatio, 0, 1);
+  const diagonalContrast = finiteNumber(value.diagonalContrast, 0, 1);
+  const greenRatio = finiteNumber(value.greenRatio, 0, 1);
+  if (!bounds || [centerX, centerY, activePixelCount, fillRatio, aspectRatio, cornerRatio, ringRatio,
+    diagonalContrast, greenRatio].some((entry) => entry === undefined)) return undefined;
+  return {
+    bounds,
+    centerX,
+    centerY,
+    activePixelCount,
+    fillRatio,
+    aspectRatio,
+    cornerRatio,
+    ringRatio,
+    diagonalContrast,
+    greenRatio,
+    matched: value.matched === true,
+    selected: value.selected === true
+  };
+}
+
+function sanitizeMomentsNavigationDiagnostics(value) {
+  const source = value?.discover;
+  if (!source || typeof source !== "object" || Array.isArray(source)) return undefined;
+  const region = sanitizeMomentsBounds(source.region);
+  const dpi = finiteInteger(source.dpi, 72, 480);
+  const scale = finiteNumber(source.scale, 0.75, 5);
+  const activePixelCount = finiteInteger(source.activePixelCount, 0, 2_000_000);
+  const candidateCount = finiteInteger(source.candidateCount, 0, 100);
+  const exactMatchCount = finiteInteger(source.exactMatchCount, 0, 100);
+  const selectedMatchCount = finiteInteger(source.selectedMatchCount, 0, 100);
+  const candidates = Array.isArray(source.candidates)
+    ? source.candidates.slice(0, 8).map(sanitizeMomentsDiscoverCandidate).filter(Boolean)
+    : [];
+  if (!region || [dpi, scale, activePixelCount, candidateCount, exactMatchCount, selectedMatchCount]
+    .some((entry) => entry === undefined)) return undefined;
+  return {
+    discover: {
+      dpi,
+      scale,
+      region,
+      activePixelCount,
+      candidateCount,
+      exactMatchCount,
+      selectedMatchCount,
+      candidates
+    }
+  };
+}
+
+function recordMomentsNavigationBlock(action, phase, reason, rawDiagnostics) {
+  const safeDiagnostics = sanitizeMomentsNavigationDiagnostics(rawDiagnostics);
+  diagnostics().event("wechat_adapter", "moments_navigation_blocked", {
+    action,
+    reason,
+    real_action_attempted: false,
+    ...(safeDiagnostics ? { diagnostics: safeDiagnostics } : {})
+  }, { level: "warn", code: reason, phase });
+  return safeDiagnostics;
+}
+
+function blockedMomentsAction(action, blockedReason, error, attempted = false, rawDiagnostics) {
+  const safeDiagnostics = sanitizeMomentsNavigationDiagnostics(rawDiagnostics);
   return {
     ok: false,
     action,
     status: attempted === null ? "outcome_unknown" : "blocked",
     blocked_reason: blockedReason,
     error,
-    real_action_attempted: attempted
+    real_action_attempted: attempted,
+    ...(safeDiagnostics ? { diagnostics: safeDiagnostics } : {})
   };
 }
 
-function refocusMainWindow() {
-  const mainWindow = getMainWindow();
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  try {
-    if (typeof mainWindow.show === "function") mainWindow.show();
-    if (typeof mainWindow.focus === "function") mainWindow.focus();
-  } catch {
-    // The read-only result remains authoritative if the window closes during cleanup.
-  }
+function blockedMomentsDryRun(blockedReason, error, rawDiagnostics) {
+  return {
+    ...blockedMomentsAction("moments-dry-run", blockedReason, error, false, rawDiagnostics),
+    dry_run: true
+  };
 }
 
-function refocusMainWindowAfterInspect(definition) {
-  if (definition === MOMENTS_ACTIONS.inspect) refocusMainWindow();
+function momentsNavigationError(reason) {
+  const messages = {
+    wechat_user_active: "检测到你正在使用鼠标或键盘，本次预演已停止；方便时重新点击即可",
+    wechat_window_not_ready: "微信窗口暂时无法固定到左上角，请确认微信已登录且主窗口可见",
+    wechat_window_not_foreground: "微信窗口未能取得前台焦点，本次没有继续操作",
+    moments_discover_entry_ambiguous: "新版微信中识别到多个“发现”入口，为避免点错已停止",
+    moments_discover_entry_not_found: "未能唯一识别新版微信侧栏的“发现”图标，本次没有点击",
+    moments_discover_entry_not_owned: "识别到的“发现”图标不属于已绑定微信窗口，本次没有点击",
+    moments_discover_open_timeout: "已打开“发现”，但未能在时限内唯一识别“朋友圈”；尚未执行后续动作",
+    moments_entry_ambiguous: "新版微信中识别到多个朋友圈入口，为避免点错已停止",
+    moments_entry_not_found: "未能唯一识别新版微信的朋友圈入口，本次没有点击"
+  };
+  return messages[reason] || `朋友圈导航预检未通过：${reason}`;
+}
+
+async function runMomentsDryRun(payload = {}) {
+  const args = ["moments-dry-run", "--mode", String(payload.mode ?? "")];
+  if (payload.likeEnabled === true) args.push("--like");
+  if (payload.commentEnabled === true) {
+    const commentText = String(payload.commentText ?? "").trim();
+    if (commentText.length > MAX_MOMENTS_COMMENT_LENGTH) {
+      return blockedMomentsDryRun(
+        "moments_comment_too_long",
+        `已阻断：评论文案不能超过 ${MAX_MOMENTS_COMMENT_LENGTH} 个字符`
+      );
+    }
+    args.push("--comment-enabled", "--comment-text-base64", Buffer.from(commentText, "utf8").toString("base64"));
+  }
+  if (momentsActionInFlight) {
+    return blockedMomentsDryRun("moments_action_in_flight", "已阻断：另一项朋友圈操作正在执行");
+  }
+  if (typeof runtimeCoordinator?.acquire !== "function" || typeof runtimeCoordinator?.release !== "function") {
+    return blockedMomentsDryRun("runtime_coordinator_unavailable", "已阻断：微信运行锁不可用");
+  }
+  let lock;
+  try {
+    lock = runtimeCoordinator.acquire({
+      state: "preparing_campaign",
+      taskId: "",
+      account: "unknown",
+      phase: "developer:moments-dry-run"
+    });
+  } catch {
+    return blockedMomentsDryRun("runtime_coordinator_failed", "已阻断：微信运行锁获取失败");
+  }
+  if (!lock?.ok || !lock.lock?.owner) {
+    return blockedMomentsDryRun(
+      lock?.error || "wechat_operation_busy",
+      "已阻断：当前正在执行联系人同步、主动触达或自动回复"
+    );
+  }
+
+  momentsActionInFlight = true;
+  try {
+    const opened = await openWechatMoments({ allowIntegrated: true, minIdleMs: 0 });
+    if (!opened?.ok) {
+      const reason = String(opened?.reason || opened?.blocked_reason || "moments_window_not_found");
+      recordMomentsNavigationBlock("moments-dry-run", "developer:moments-dry-run", reason, opened?.diagnostics);
+      return blockedMomentsDryRun(reason, momentsNavigationError(reason), opened?.diagnostics);
+    }
+    args.push(
+      "--expected-window-base64",
+      Buffer.from(JSON.stringify(opened), "utf8").toString("base64")
+    );
+    return await runActiveTouchDev(args, {
+      cliName: "moments_dry_run_cli.dev.cjs",
+      dataDir: momentsDataDir,
+      owner: lock.lock.owner,
+      phase: "developer:moments-dry-run",
+      timeoutMs: MOMENTS_DRY_RUN_TIMEOUT_MS
+    });
+  } catch (error) {
+    return blockedMomentsDryRun(
+      "moments_dry_run_failed",
+      error instanceof Error ? error.message : "朋友圈安全预演执行失败"
+    );
+  } finally {
+    momentsActionInFlight = false;
+    try {
+      runtimeCoordinator.release(lock.lock.owner);
+    } catch {
+      // Keep the read-only result authoritative; a stale lock fails closed later.
+    }
+  }
 }
 
 async function runMomentsAction(event, payload, definition) {
@@ -126,6 +299,24 @@ async function runMomentsAction(event, payload, definition) {
   }
   momentsActionInFlight = true;
   try {
+    const actionContext = loadMomentsActionContext(momentsDataDir, observationId);
+    if (!actionContext?.ok) {
+      return blockedMomentsAction(
+        definition.action,
+        String(actionContext?.reason || "moments_observation_required"),
+        "已阻断：朋友圈安全预演已失效，请重新检查并生成预演"
+      );
+    }
+    const handedOff = await openWechatMoments({
+      allowIntegrated: true,
+      minIdleMs: 0,
+      expectedWindow: actionContext.expectedWindow
+    });
+    if (!handedOff?.ok) {
+      const reason = String(handedOff?.reason || handedOff?.blocked_reason || "moments_window_not_found");
+      recordMomentsNavigationBlock(definition.action, `developer:${definition.action}`, reason, handedOff?.diagnostics);
+      return blockedMomentsAction(definition.action, reason, momentsNavigationError(reason), false, handedOff?.diagnostics);
+    }
     const args = [definition.action, "--observation-id", observationId];
     if (definition === MOMENTS_ACTIONS.comment) {
       args.push("--comment-text-base64", Buffer.from(options.commentText, "utf8").toString("base64"));
@@ -161,7 +352,6 @@ async function runMomentsAction(event, payload, definition) {
     } catch {
       // Keep the action result authoritative; a stale lock fails closed for later work.
     }
-    refocusMainWindowAfterInspect(definition);
   }
 }
 
@@ -171,26 +361,7 @@ function registerActiveTouchDevIpc(options = {}) {
   runtimeCoordinator = options.coordinator ?? null;
   getMainWindow = typeof options.getMainWindow === "function" ? options.getMainWindow : () => null;
   ipcMain.handle("active-touch:dev-calibrate", () => runActiveTouchDev(["calibrate"]));
-  ipcMain.handle("active-touch:dev-moments-dry-run", (_event, payload = {}) => {
-    const args = ["moments-dry-run", "--mode", String(payload.mode ?? "")];
-    if (payload.likeEnabled === true) args.push("--like");
-    if (payload.commentEnabled === true) {
-      const commentText = String(payload.commentText ?? "").trim();
-      if (commentText.length > MAX_MOMENTS_COMMENT_LENGTH) {
-        return {
-          ok: false,
-          action: "moments-dry-run",
-          blocked_reason: "moments_comment_too_long",
-          dry_run: true,
-          error: `已阻断：评论文案不能超过 ${MAX_MOMENTS_COMMENT_LENGTH} 个字符`,
-          real_action_attempted: false
-        };
-      }
-      args.push("--comment-enabled", "--comment-text-base64", Buffer.from(commentText, "utf8").toString("base64"));
-    }
-    return runActiveTouchDev(args, { cliName: "moments_dry_run_cli.dev.cjs", dataDir: momentsDataDir, timeoutMs: MOMENTS_DRY_RUN_TIMEOUT_MS })
-      .finally(refocusMainWindow);
-  });
+  ipcMain.handle("active-touch:dev-moments-dry-run", (_event, payload = {}) => runMomentsDryRun(payload));
   Object.values(MOMENTS_ACTIONS).forEach((definition) => {
     ipcMain.handle(definition.channel, (event, payload = {}) => runMomentsAction(event, payload, definition));
   });

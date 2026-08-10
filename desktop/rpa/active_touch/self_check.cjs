@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
+const { EventEmitter } = require("node:events");
 const {
   calibrate,
   clickSearchResultDryRun,
@@ -46,6 +47,19 @@ const {
 const { main: runActiveTouchCli } = require("./active_touch_cli.cjs");
 const { runPowerShell } = require("./wechat_window_driver.cjs");
 
+function preparedWechatWindow(pid = 81, hWnd = 91) {
+  return {
+    ok: true,
+    inspectionOnly: true,
+    normalized: true,
+    layoutMode: "stable_target",
+    focused: true,
+    pid,
+    hWnd,
+    inputTick: 1234
+  };
+}
+
 (async () => {
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-active-touch-"));
 
@@ -67,6 +81,7 @@ try {
   };
   const momentsWindow = {
     ok: true,
+    surfaceMode: "standalone",
     title: "朋友圈",
     className: "Qt51514QWindowIcon",
     automationId: "SNSWindow",
@@ -103,6 +118,15 @@ try {
   assert.equal(momentsAmbiguous.blocked_reason, "moments_window_ambiguous");
   assert.match(momentsAmbiguous.error, /多个朋友圈窗口/);
   assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ...momentsWindow, automationId: "OtherWindow" })).blocked_reason, "moments_window_identity_mismatch");
+  let invalidExpectedWindowProbeCalls = 0;
+  const invalidExpectedWindow = prepareMomentsDryRun(
+    dir,
+    { mode: "targeted", likeEnabled: true, expectedWindow: { surfaceMode: "integrated", title: "微信" } },
+    () => { invalidExpectedWindowProbeCalls += 1; return momentsWindow; }
+  );
+  assert.equal(invalidExpectedWindow.blocked_reason, "moments_window_identity_mismatch");
+  assert.equal(invalidExpectedWindow.real_action_attempted, false);
+  assert.equal(invalidExpectedWindowProbeCalls, 0, "an explicitly supplied invalid window lock must never fall back to wildcard discovery");
   assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ...momentsWindow, pid: 0 })).blocked_reason, "moments_window_identity_mismatch");
   assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ...momentsWindow, pid: undefined })).blocked_reason, "moments_window_identity_mismatch");
   assert.equal(prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => ({ ...momentsWindow, hWnd: "0" })).blocked_reason, "moments_window_identity_mismatch");
@@ -141,6 +165,38 @@ try {
     renderPaneBounds: { left: 50, top: 70, width: 880, height: 680 },
     posts: [visualPartialPost]
   };
+  const integratedExpectedSurface = {
+    surfaceMode: "integrated",
+    pid: 42,
+    hWnd: "84",
+    title: "微信",
+    className: "mmui::MainWindow"
+  };
+  const integratedMomentsWindow = {
+    ...visualMomentsWindow,
+    ...integratedExpectedSurface,
+    rootName: "微信"
+  };
+  let receivedIntegratedExpectedSurface = null;
+  const integratedMoments = prepareMomentsDryRun(
+    dir,
+    { mode: "targeted", likeEnabled: true, expectedWindow: integratedExpectedSurface },
+    (expectedWindow) => {
+      receivedIntegratedExpectedSurface = expectedWindow;
+      return integratedMomentsWindow;
+    }
+  );
+  assert.deepEqual(receivedIntegratedExpectedSurface, integratedExpectedSurface, "the exact integrated host surface must reach the probe");
+  assert.equal(integratedMoments.ok, true);
+  assert.equal(integratedMoments.window.surfaceMode, "integrated");
+  assert.equal(integratedMoments.window.className, integratedExpectedSurface.className);
+  const integratedHostMismatch = prepareMomentsDryRun(
+    dir,
+    { mode: "targeted", likeEnabled: true, expectedWindow: integratedExpectedSurface },
+    () => ({ ...integratedMomentsWindow, hWnd: "85" })
+  );
+  assert.equal(integratedHostMismatch.blocked_reason, "moments_window_identity_mismatch");
+  assert.equal(integratedHostMismatch.real_action_attempted, false);
   const visualPartialMoments = prepareMomentsDryRun(dir, { mode: "targeted", likeEnabled: true }, () => visualMomentsWindow);
   assert.equal(visualPartialMoments.ok, true, "a bottom-clipped visual post with complete identity, avatar, and menu anchors must prepare");
   assert.equal(visualPartialMoments.plan.target_partial_visible, true);
@@ -284,13 +340,13 @@ try {
   }
   const momentsSource = fs.readFileSync(path.join(__dirname, "moments_dry_run.dev.cjs"), "utf8");
   assert.match(momentsSource, /const MOMENTS_STRUCTURAL_PROBE_TIMEOUT_MS = 5_000;/u);
-  assert.match(momentsSource, /\["moments_feed_not_found", "powershell_timeout"\]\.includes\(windowResult\?\.reason\)/u);
-  assert.match(momentsSource, /function preferredVisibleMomentsPost\(posts, viewportBounds\)/u);
+  assert.match(momentsSource, /\["moments_feed_not_found", "moments_window_not_found", "powershell_timeout"\]\.includes\(windowResult\?\.reason\)/u);
+  assert.match(momentsSource, /function preferredVisibleMomentsPost\(posts, viewportBounds, targetPost = null\)/u);
   assert.match(momentsSource, /\$fullyVisible = \$rect\.Left[\s\S]*?if \(-not \$fullyVisible\) \{ continue \}/u);
   assert.match(momentsSource, /\$hadIdentityMissing = \$false/u);
   assert.match(momentsSource, /if \(\[string\]::IsNullOrWhiteSpace\(\$runtimeId\)\) \{ \$hadIdentityMissing = \$true; continue \}/u);
   assert.doesNotMatch(momentsSource, /IsNullOrWhiteSpace\(\$runtimeId\)\) \{ return @\{ ok = \$false; reason = "moments_post_identity_missing"/u);
-  assert.match(momentsSource, /selectVisibleMomentsPost\(posts, renderPaneBounds\)/u);
+  assert.match(momentsSource, /selectVisibleMomentsPost\(posts, renderPaneBounds, options\.targetPost\)/u);
   assert.match(momentsSource, /target_partial_visible: snapshotResult\.partialVisible === true/u);
   assert.doesNotMatch(momentsSource, /请调整到只完整显示一条/u);
   assert.doesNotMatch(momentsSource, /未找到可安全锁定的完整可见朋友圈内容/u);
@@ -468,10 +524,16 @@ try {
     { ...validContacts[1], id: "missing-wechat", wxid: "missing-wechat", name: "空微信号", remark: "空微信号", wechatId: "" },
     { ...validContacts[2], id: "disabled", wxid: "disabled", name: "已停用", remark: "已停用", wechatId: "disabled", allowed: false }
   ]);
-  assert.equal(classified.eligible.length, 50);
-  assert.equal(classified.excluded.filter((row) => row.reason_code === "contact_name_not_unique").length, 2);
+  assert.equal(classified.eligible.length, 52, "duplicate display names remain safe when each contact has a unique exact WeChat ID");
+  assert.equal(classified.excluded.filter((row) => row.reason_code === "contact_name_not_unique").length, 0);
   assert.equal(classified.excluded.some((row) => row.reason_code === "wechat_id_missing"), true);
   assert.equal(classified.excluded.some((row) => row.reason_code === "contact_disabled"), true);
+  const duplicateWechatIds = classifyContacts([
+    validContacts[0],
+    { ...validContacts[1], wechatId: validContacts[0].wechatId }
+  ]);
+  assert.equal(duplicateWechatIds.eligible.length, 0);
+  assert.equal(duplicateWechatIds.excluded.filter((row) => row.reason_code === "contact_identity_not_unique").length, 2);
 
   const batchTask = createTask("批量测试", validContacts, "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
   const currentBuildTask = createTask("当前版本", validContacts.slice(0, 1), "2026-07-11T00:00:00.000Z", {
@@ -693,6 +755,7 @@ try {
   const sharedSteps = [];
   const sharedTransitions = [];
   const sharedSessionContexts = [];
+  const sharedWindowPreflights = [];
   let sharedClicks = 0;
   const sharedResult = await executeVerifiedContactSend({
     baseDir: sharedDir,
@@ -703,8 +766,15 @@ try {
     expectedIncomingRuntimeId: "incoming-runtime-1",
     frozenContact: sharedContact,
     authorized: true,
-    runStep: async (command) => {
+    windowPreflight: async (context) => {
+      sharedWindowPreflights.push(context);
+      return preparedWechatWindow();
+    },
+    runStep: async (command, args = []) => {
       sharedSteps.push(command);
+      if (command === "click-search-result-dry-run") {
+        assert.deepEqual(args, ["--expected-pid", "81", "--expected-hwnd", "91", "--min-idle-ms", "0"]);
+      }
       return { ok: true, state: { selected_customer: sharedContact } };
     },
     sessionDriver: (_title, context) => {
@@ -726,9 +796,14 @@ try {
       : { ok: true, exactMatch: true, outgoing: true, isLatest: true, isNew: true, messageText: "共享事务消息" },
     onTransition: (status) => sharedTransitions.push(status)
   });
-  assert.equal(sharedResult.ok, true);
+  assert.equal(
+    sharedResult.ok,
+    true,
+    `the shared chat preflight must accept the stable_target layout (${sharedResult.blocked_reason || sharedResult.reason || "unknown"})`
+  );
   assert.equal(sharedResult.send_result, "sent_verified");
   assert.deepEqual(sharedSteps, ["select-customer", "calibrate", "click-search-result-dry-run", "input-message-dry-run", "send"]);
+  assert.deepEqual(sharedWindowPreflights, [{ minIdleMs: 0, requireFocused: true }]);
   assert.deepEqual(sharedTransitions, ["prepared", "clicked", "sent_verified"]);
   assert.deepEqual(sharedSessionContexts.map((context) => context?.wechatRoot), ["D:\\wechat-data\\xwechat_files", "D:\\wechat-data\\xwechat_files"], "real-send account verification must reuse the successful contact-sync root before input and before send");
   assert.deepEqual(sharedSessionContexts.map((context) => context?.expectedAccountId), ["account-a", "account-a"]);
@@ -751,6 +826,18 @@ try {
     conversationToken: "conversation:v2:81:91:title:shared-title"
   }));
   assert.equal(titleBackedConversation.ok, true, "an exact visible UIA title may promote the frozen search session to a stable title token");
+  const changedBoundSession = refreshRealSendSession(sharedDir, () => ({
+    ok: true,
+    pid: 82,
+    hWnd: "92",
+    processName: "Weixin",
+    title: sharedContact.name,
+    accountId: "account-a",
+    accountVerified: true
+  }));
+  assert.equal(changedBoundSession.reason, "wechat_window_identity_mismatch");
+  assert.equal(loadState(sharedDir).window_pid, 81);
+  assert.equal(loadState(sharedDir).window_handle, "91");
   const firstIncomingAttemptKey = crypto.createHash("sha256")
     .update(`incoming-turn-1\n${sharedContact.id}\n共享事务消息`)
     .digest("hex");
@@ -772,6 +859,7 @@ try {
     expectedIncomingMessage: "你是谁",
     expectedIncomingRuntimeId: `visual:v1:${"a".repeat(64)}`,
     expectedIncomingMessageSignature: "b".repeat(64),
+    windowInspector: async () => preparedWechatWindow(),
     beforeDraft: ({ session }) => {
       visualBeforeDraftCalls += 1;
       assert.equal(session.title, "A测试客户");
@@ -789,6 +877,7 @@ try {
         incomingMessage: request.incomingMessage,
         incomingMessageSignature: request.incomingMessageSignature,
         incomingVerified: request.incomingVerified,
+        expectedInputTick: request.expectedInputTick,
         reply: request.reply
       }, {
         pid: 81,
@@ -799,6 +888,7 @@ try {
         conversationEvidence: "visual-contact-evidence",
         conversationAliases: ["visual-contact-a", "visual-contact-b"],
         incomingVerified: true,
+        expectedInputTick: 1234,
         reply: "视觉自动回复"
       });
       assert.equal(await request.beforeSend(), true);
@@ -821,6 +911,7 @@ try {
     expectedPid: 81,
     expectedHWnd: "91",
     expectedConversation: "A测试客户",
+    windowInspector: async () => preparedWechatWindow(),
     visualSendDriver: async () => ({ ok: false, send_attempted: true, outcomeUnknown: true, reason: "visual_send_outcome_unknown" })
   });
   assert.equal(visualUnknownResult.ok, false);
@@ -836,6 +927,7 @@ try {
     expectedPid: 81,
     expectedHWnd: "91",
     expectedConversation: "A测试客户",
+    windowInspector: async () => preparedWechatWindow(),
     visualSendDriver: async () => { throw new Error("timeout after a possible click"); }
   });
   assert.equal(visualThrowResult.ok, false);
@@ -851,6 +943,7 @@ try {
     expectedPid: 81,
     expectedHWnd: "91",
     expectedConversation: "A测试客户",
+    windowInspector: async () => preparedWechatWindow(),
     visualSendDriver: async () => ({ ok: false, outcomeUnknown: true, reason: "visual_send_outcome_unknown" })
   });
   assert.equal(visualMissingAttemptResult.send_attempted, null, "an outcome-unknown result without an explicit attempt flag must remain unknown instead of becoming retryable");
@@ -911,6 +1004,7 @@ try {
     message: "共享事务消息",
     frozenContact: sharedContact,
     authorized: true,
+    windowPreflight: async () => preparedWechatWindow(),
     runStep: async (command) => {
       guardedSteps.push(command);
       return { ok: true, state: { selected_customer: sharedContact } };
@@ -922,6 +1016,22 @@ try {
   });
   assert.equal(guardedSend.blocked_reason, "incoming_message_changed");
   assert.deepEqual(guardedSteps, ["select-customer", "calibrate", "click-search-result-dry-run"]);
+
+  let preflightFailureSteps = 0;
+  const preflightFailure = await executeVerifiedContactSend({
+    baseDir: sharedDir,
+    contactId: sharedContact.id,
+    message: "共享事务消息",
+    authorized: true,
+    windowPreflight: async () => ({ ok: false, reason: "wechat_window_not_foreground" }),
+    runStep: async () => {
+      preflightFailureSteps += 1;
+      return { ok: true };
+    }
+  });
+  assert.equal(preflightFailure.blocked_reason, "wechat_window_not_foreground");
+  assert.equal(preflightFailure.send_attempted, false);
+  assert.equal(preflightFailureSteps, 2, "window preparation failure may follow local state setup but must block before search or input");
 
   saveState(sharedDir, {
     ...loadState(sharedDir),
@@ -940,6 +1050,7 @@ try {
     frozenContact: sharedContact,
     authorized: true,
     shouldContinue: () => ++cancellationChecks < 3,
+    windowPreflight: async () => preparedWechatWindow(),
     runStep: async (command) => {
       cancelledSteps.push(command);
       return { ok: true, state: { selected_customer: sharedContact } };
@@ -967,6 +1078,7 @@ try {
     message: "共享事务消息",
     frozenContact: sharedContact,
     authorized: true,
+    windowPreflight: async () => preparedWechatWindow(),
     runStep: async () => ({ ok: true, state: { selected_customer: sharedContact } }),
     sessionDriver: () => ({ ok: true, pid: 81, hWnd: "91", processName: "Weixin", title: sharedContact.name, accountId: "account-a", accountVerified: true }),
     sendDriver: () => { sharedClicks += 1; return { ok: true }; },
@@ -1068,17 +1180,21 @@ try {
   assert.equal(clickMismatch.state.conversation_located, false);
   let exactTitleReads = 0;
   let exactConversationVerifications = 0;
+  let exactOpenContext;
   const clickExactWechatIdFallback = clickSearchResultDryRun(
     dir,
-    () => ({
-      ok: true,
-      title: "微信",
-      processName: "Weixin",
-      pid: 11,
-      hWnd: "22",
-      exactSearchOpened: true,
-      searchQuery: "internal-test-001"
-    }),
+    (_query, context) => {
+      exactOpenContext = context;
+      return {
+        ok: true,
+        title: "微信",
+        processName: "Weixin",
+        pid: 11,
+        hWnd: "22",
+        exactSearchOpened: true,
+        searchQuery: "internal-test-001"
+      };
+    },
     () => {
       exactTitleReads += 1;
       return ["微信"];
@@ -1086,17 +1202,35 @@ try {
     () => {
       exactConversationVerifications += 1;
       return { ok: false };
-    }
+    },
+    { pid: 11, hWnd: "22" }
   );
   assert.equal(clickExactWechatIdFallback.ok, true);
   assert.equal(clickExactWechatIdFallback.state.conversation_verification_mode, "exact_wechat_id_search");
   assert.equal(clickExactWechatIdFallback.state.window_pid, 11);
   assert.equal(clickExactWechatIdFallback.state.window_handle, "22");
+  assert.deepEqual(exactOpenContext, { pid: 11, hWnd: "22", minIdleMs: 0 });
   assert.equal(exactTitleReads, 0, "an exact WeChat-ID result must not repeat title discovery");
   assert.equal(exactConversationVerifications, 0, "an exact WeChat-ID result must not repeat conversation verification");
   assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.open_result_ms), true);
   assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.title_read_ms), true);
   assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.conversation_verify_ms), true);
+  const changedWindow = clickSearchResultDryRun(
+    dir,
+    () => ({ ok: true, pid: 11, hWnd: "99" }),
+    () => [],
+    () => ({ ok: false }),
+    { pid: 11, hWnd: "22" }
+  );
+  assert.equal(changedWindow.blocked_reason, "wechat_window_identity_mismatch");
+  const verifierChangedWindow = clickSearchResultDryRun(
+    dir,
+    () => ({ ok: true, title: "微信", processName: "Weixin", pid: 11, hWnd: "22" }),
+    () => [],
+    () => ({ ok: true, title: "测试客户", processName: "Weixin", pid: 11, hWnd: "99" }),
+    { pid: 11, hWnd: "22" }
+  );
+  assert.equal(verifierChangedWindow.blocked_reason, "wechat_window_identity_mismatch");
   const unavailableContact = clickSearchResultDryRun(
     dir,
     () => ({ ok: true, title: "微信" }),
@@ -1150,8 +1284,33 @@ try {
     window_pid: 11,
     window_handle: "22"
   });
-  const refreshedUnknownSession = refreshRealSendSession(dir, () => ({ ok: true, pid: 21, hWnd: "32", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }));
+  let recoverySessionContext;
+  const refreshedUnknownSession = refreshRealSendSession(
+    dir,
+    (_title, context) => {
+      recoverySessionContext = context;
+      return { ok: true, pid: 21, hWnd: "32", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true };
+    },
+    () => ({ ok: true, inspectionOnly: true, normalized: true, layoutMode: "stable_target", focused: true, pid: 21, hWnd: "32" })
+  );
   assert.equal(refreshedUnknownSession.ok, true);
+  assert.equal(recoverySessionContext.expectedPid, 21);
+  assert.equal(recoverySessionContext.expectedHWnd, "32");
+  assert.equal(recoverySessionContext.allowExactSearchFallback, false, "a rebound window must require an exact visible conversation title instead of reusing the old visual fallback");
+  saveState(dir, {
+    ...loadState(dir),
+    real_send_status: "outcome_unknown",
+    window_pid: 21,
+    window_handle: "32"
+  });
+  const mismatchedRecovery = refreshRealSendSession(
+    dir,
+    () => ({ ok: true, pid: 31, hWnd: "42", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }),
+    () => ({ ok: true, inspectionOnly: true, normalized: true, layoutMode: "stable_target", focused: true, pid: 21, hWnd: "32" })
+  );
+  assert.equal(mismatchedRecovery.reason, "wechat_window_identity_mismatch");
+  assert.equal(loadState(dir).window_pid, 21);
+  assert.equal(loadState(dir).window_handle, "32");
   assert.equal(loadState(dir).window_pid, 21);
   assert.equal(loadState(dir).window_handle, "32");
   assert.equal(loadState(dir).real_send_status, "outcome_unknown");
@@ -1162,19 +1321,19 @@ try {
   assert.equal((await sendReal(dir, { message: "hello" })).blocked_reason, "real_send_explicit_allow_missing");
   assert.equal(verifyMessageBubble(dir, () => ({ ok: true })).blocked_reason, "real_send_not_clicked");
   assert.equal(send(dir, { dryRun: true, message: "hello" }).state.send_gate_status, "dry_run_passed");
-  assert.equal(verifyRealSendSession(dir, () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true })).ok, true);
+  assert.equal(verifyRealSendSession(dir, () => ({ ok: true, pid: 21, hWnd: "32", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true })).ok, true);
   assert.equal(send(dir, { dryRun: true, message: "hello" }).state.send_gate_status, "dry_run_passed");
   assert.equal(setRealSendArm(dir, true).state.real_send_armed, true);
   assert.equal((await sendReal(dir, { message: "hello", allowRealSend: true })).blocked_reason, "real_send_final_confirmation_missing");
   send(dir, { dryRun: true, message: "hello" });
-  verifyRealSendSession(dir, () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }));
+  verifyRealSendSession(dir, () => ({ ok: true, pid: 21, hWnd: "32", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }));
   setRealSendArm(dir, true);
   let legacySendCalls = 0;
   const legacyBubbleResult = await sendReal(
     dir,
     { message: "hello", allowRealSend: true, userConfirmed: true },
     () => { legacySendCalls += 1; return { ok: true }; },
-    () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }),
+    () => ({ ok: true, pid: 21, hWnd: "32", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }),
     () => ({ ok: true })
   );
   assert.equal(legacyBubbleResult.blocked_reason, "message_snapshot_unavailable");
@@ -1225,6 +1384,7 @@ try {
     message: "retry",
     frozenContact: loadState(retryDir).selected_customer,
     authorized: true,
+    windowPreflight: async () => preparedWechatWindow(),
     runStep: async () => ({ ok: true, state: { selected_customer: loadState(retryDir).selected_customer } }),
     sessionDriver: retrySession
   });
@@ -1241,7 +1401,7 @@ try {
   assert.equal(repeatedAfterStatusReset.send_attempted, null, "attempt history must remain fail-closed after contact setup resets the top-level status");
 
   send(dir, { dryRun: true, message: "hello" });
-  verifyRealSendSession(dir, () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }));
+  verifyRealSendSession(dir, () => ({ ok: true, pid: 21, hWnd: "32", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }));
   setRealSendArm(dir, true);
   const bubblePhases = [];
   const sent = await sendReal(
@@ -1252,7 +1412,7 @@ try {
       assert.deepEqual(loadState(dir).message_bubble_snapshot_before, { lastMessageId: "before-1" });
       return { ok: true, title: "测试客户 - 微信", conversationVerified: true, draftVerified: true };
     },
-    () => ({ ok: true, pid: 11, hWnd: "22", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }),
+    () => ({ ok: true, pid: 21, hWnd: "32", processName: "Weixin", title: "测试客户", accountId: "internal-account", accountVerified: true }),
     (message, context) => {
       bubblePhases.push(context.phase);
       if (context.phase === "before") return { ok: true, snapshot: { lastMessageId: "before-1" } };
@@ -1347,6 +1507,16 @@ try {
   send(dir, { dryRun: true, message: "duplicate" });
   verifyRealSendSession(dir, () => ({ ok: true, pid: 13, hWnd: "24", processName: "Weixin", title: "同名客户", accountId: "internal-account", accountVerified: true }));
   assert.equal(setRealSendArm(dir, true).blocked_reason, "contact_name_not_unique");
+  saveState(dir, {
+    ...loadState(dir),
+    send_gate_status: "dry_run_passed",
+    blocked_reason: "",
+    real_send_status: "not_sent",
+    conversation_verification_mode: "exact_wechat_id_search",
+    search_query: "internal-test-003"
+  });
+  assert.equal(setRealSendArm(dir, true).ok, true, "an exact unique WeChat-ID search may safely disambiguate duplicate display names");
+  setRealSendArm(dir, false);
   saveState(dir, { ...loadState(dir), real_send_armed: false, real_send_status: "prepared", real_send_attempts: { crash_attempt: "prepared" } });
   assert.equal(setRealSendArm(dir, true).blocked_reason, "real_send_already_attempted");
   assert.equal(setRealSendArm(dir, false).state.real_send_armed, false);
@@ -1377,10 +1547,11 @@ try {
       dir,
       ["q1"],
       "hello",
-      () => ({ ok: true, title: "微信" }),
+      (query) => ({ ok: true, title: `${query} - 微信`, pid: 81, hWnd: "91" }),
       () => ({ ok: true, title: "微信", draftVerified: false }),
       () => ["Queue A - 微信"],
-      () => ({ ok: true })
+      () => ({ ok: true, pid: 81, hWnd: "91" }),
+      { pid: 81, hWnd: "91", normalized: true, layoutMode: "stable_target" }
     ).blocked_reason,
     "queue_message_input_failed"
   );
@@ -1388,10 +1559,11 @@ try {
     dir,
     ["q1", "q2"],
     "hello",
-    () => ({ ok: true, title: "微信" }),
+    (query) => ({ ok: true, title: `${query} - 微信`, pid: 81, hWnd: "91" }),
     () => ({ ok: true, title: "微信", draftVerified: true }),
     () => ["Queue A - 微信", "Queue B - 微信"],
-    () => ({ ok: true })
+    () => ({ ok: true, pid: 81, hWnd: "91" }),
+    { pid: 81, hWnd: "91", normalized: true, layoutMode: "stable_target" }
   );
   assert.equal(queueResult.state.queue_dry_run_passed, true);
   assert.equal(queueResult.state.queue_dry_run_count, 2);
@@ -1402,6 +1574,7 @@ try {
   const driverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.cjs"), "utf8");
   const safeStateMachineSource = fs.readFileSync(path.join(__dirname, "state_machine.cjs"), "utf8");
   const messageDraftSource = driverSource.split("const MESSAGE_DRAFT_SCRIPT = `")[1].split("`;")[0];
+  const searchSource = driverSource.split("const SEARCH_SCRIPT = `")[1].split("`;")[0];
   const developmentDriverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.dev.cjs"), "utf8");
   const sendMessageSource = developmentDriverSource.split("const SEND_MESSAGE_SCRIPT = `")[1].split("`;")[0];
   const observeConversationSource = developmentDriverSource.split("const OBSERVE_CONVERSATION_SCRIPT = `")[1].split("`;")[0];
@@ -1428,13 +1601,28 @@ try {
   assert.match(messageDraftSource, /wechat_focus_lost_after_paste/);
   assert.match(messageDraftSource, /message_input_empty_or_copy_blocked/);
   assert.match(messageDraftSource, /message_input_content_mismatch/);
+  assert.match(messageDraftSource, /function Restore-DraftClipboardIfOwned/);
+  assert.match(messageDraftSource, /\$currentClipboard -ceq \[string\]\$script:draftOwnedClipboardValue/);
+  assert.match(messageDraftSource, /function Rebase-ExactDraftInputLease/);
+  assert.match(messageDraftSource, /\$script:draftInputLeaseActive -and \[Win32WechatMessageDraft\]::GetLastInputTick\(\) -ne \$script:draftInputLeaseTick/);
+  assert.match(messageDraftSource, /ContainsImage\(\)[\s\S]*ContainsFileDropList\(\)[\s\S]*wechat_clipboard_restore_unsupported/);
+  assert.match(messageDraftSource, /draftOldClipboardKind -eq "empty"[\s\S]*Clipboard\]::Clear\(\)/);
+  assert.doesNotMatch(messageDraftSource, /try \{ Set-Clipboard -Value \$oldClipboard \} catch \{\}/);
+  assert.match(searchSource, /function Restore-SearchClipboardIfOwned/);
+  assert.match(searchSource, /\$currentClipboard -ceq \[string\]\$script:clipboardOwnedValue/);
+  assert.match(searchSource, /function Rebase-ExactSearchInputLease/);
+  assert.match(searchSource, /\$script:inputLeaseActive -and \[Win32WechatWindowSearch\]::GetLastInputTick\(\) -ne \$script:inputLeaseTick/);
+  assert.match(searchSource, /ContainsImage\(\)[\s\S]*ContainsFileDropList\(\)[\s\S]*wechat_clipboard_restore_unsupported/);
+  assert.match(searchSource, /oldClipboardKind -eq "empty"[\s\S]*Clipboard\]::Clear\(\)/);
+  assert.doesNotMatch(searchSource, /try \{ Set-Clipboard -Value \$oldClipboard \} catch \{\}/);
   assert.match(developmentDriverSource, /function clickWechatSendButton/);
   assert.match(developmentDriverSource, /atomic_conversation_changed/);
   assert.match(developmentDriverSource, /atomic_draft_changed/);
   assert.match(developmentDriverSource, /function Normalize-WechatDraftText/);
   assert.match(sendMessageSource, /\$conversationBefore = Get-ConversationObservation[\s\S]*\$draftVerified = \(Normalize-WechatDraftText \$copiedDraft\) -ceq \$normalizedExpectedMessage[\s\S]*\$conversationAfterDraft = Get-ConversationObservation/);
   assert.match(sendMessageSource, /atomic_expected_window_not_found/);
-  assert.match(sendMessageSource, /reason = "wechat_focus_failed";[^\r\n]*sendAttempted = \$false/);
+  assert.match(sendMessageSource, /reason = "wechat_window_not_foreground";[^\r\n]*sendAttempted = \$false/);
+  assert.doesNotMatch(sendMessageSource, /SetForegroundWindow\(\$expectedHWnd\)/, "an exact final-send driver must never steal foreground after the entry preflight");
   assert.match(sendMessageSource, /reason = "atomic_send_context_missing";[^\r\n]*sendAttempted = \$false/);
   assert.match(sendMessageSource, /reason = "atomic_conversation_changed";[\s\S]*sendAttempted = \$false/);
   assert.equal((sendMessageSource.match(/\$sendAttempted = \$true/g) || []).length, 1);
@@ -1478,8 +1666,19 @@ try {
   assert.match(clickSendSource, /normalizeAtomicSendResult\(runPowerShell\(SEND_MESSAGE_SCRIPT,[\s\S]*\{ ensure: false \}\)\)/);
   assert.match(bubbleVerifierSource, /\}, \{ ensure: false \}\);/);
   assert.match(driverSource, /"powershell_timeout"/);
+  assert.match(driverSource, /options\.spawnProcess/u, "async PowerShell termination must be testable without launching a real process");
+  assert.match(driverSource, /powershell_termination_unconfirmed/u);
+  assert.match(driverSource, /actionAttempted: true/u);
+  assert.match(driverSource, /Win32XiaoxiParentGuard[\s\S]*OpenProcess[\s\S]*WaitForSingleObject/u,
+    "every PowerShell worker must exit when its exact parent process handle is signaled");
+  assert.match(driverSource, /XIAOXI_PARENT_PID: String\(process\.pid\)/u);
   assert.match(driverSource, /"powershell_failed"/);
   assert.match(driverSource, /"powershell_output_invalid"/);
+  assert.doesNotMatch(
+    driverSource,
+    /function Stop-ForActiveUser\(\[int\]\$pid/u,
+    "PowerShell's read-only $PID automatic variable must not be used as a function parameter"
+  );
   assert.match(developmentDriverSource, /context\.phase === "after" \? "after" : "before"/);
   assert.match(developmentDriverSource, /beforeSnapshot/);
   assert.match(developmentDriverSource, /exactMatch/);
@@ -1547,9 +1746,18 @@ try {
     simpleEnsureSource.indexOf("ShowWindowAsync($hWnd, 9)") < simpleEnsureSource.indexOf("$visible = $rectAvailable"),
     "a minimized main window must be restored before its live geometry is verified"
   );
-  assert.match(driverSource, /\$usableCurrentLayout = \$rectAvailable/);
+  assert.match(driverSource, /main: Object\.freeze\(\{ width: 1120, height: 760, layoutMode: "stable_target" \}\)/,
+    "the chat main-window contract must retain one DPI-scaled shared target");
+  assert.match(driverSource, /momentsStandalone: Object\.freeze\(\{ layoutMode: "preserve_native_moments_popup" \}\)/,
+    "the standalone Moments popup must preserve its captured native geometry");
+  assert.match(driverSource, /const WECHAT_RPA_WINDOW_LAYOUT_MODE = WECHAT_STABLE_WINDOW_LAYOUT\.layoutMode/);
+  assert.match(driverSource, /\$dpiScale = \[double\]\$dpi \/ 96\.0[\s\S]*\$targetWidth \* \$dpiScale[\s\S]*\$targetHeight \* \$dpiScale/,
+    "the stable chat target must remain 1120x760 DIP across DPI values");
+  assert.match(driverSource, /SetWindowPos\(\$hWnd, \[IntPtr\]::Zero, \$workArea\.Left, \$workArea\.Top, \$width, \$height/,
+    "the shared adapter must place deterministic targets at the active monitor work-area origin");
   assert.match(driverSource, /layoutMode = \$\(if \(\$targetLayoutVerified\) \{ "stable_target" \} else \{ "current_usable" \}\)/);
-  assert.doesNotMatch(driverSource, /if \(-not \$layoutVerified\)/, "a usable current WeChat layout must not be rejected only because fixed positioning failed");
+  assert.doesNotMatch(driverSource, /ShowWindowAsync\(\$hWnd, 3\)/,
+    "the shared chat adapter must not replace its stable target with an OS maximize operation");
   assert.equal(driverSource.includes("XIAOXI_EXPECTED_ACCOUNT"), false);
   const taskIpcSource = fs.readFileSync(path.join(__dirname, "../../src/main/touch-task-ipc.cjs"), "utf8");
   assert.match(taskIpcSource, /function shouldSkipBlockedContact\([^)]*\)[\s\S]*contact_unavailable/);
@@ -1565,6 +1773,12 @@ try {
   assert.equal(developmentPreloadSource.includes("sendReal:"), false);
   assert.equal(developmentPreloadSource.includes("real-send-hold"), false);
   const developmentCliSource = fs.readFileSync(path.join(__dirname, "active_touch_cli.dev.cjs"), "utf8");
+  const productionCliSource = fs.readFileSync(path.join(__dirname, "active_touch_cli.cjs"), "utf8");
+  assert.match(
+    productionCliSource,
+    /clickSearchResultDryRun\(baseDir, undefined, undefined, undefined, \{[\s\S]*pid: optionalValueAfter\(args, "--expected-pid"\)[\s\S]*hWnd: optionalValueAfter\(args, "--expected-hwnd"\)[\s\S]*minIdleMs: optionalValueAfter\(args, "--min-idle-ms"\)/u,
+    "the production batch CLI must preserve the shared exact maximized-window binding"
+  );
   assert.equal(developmentCliSource.includes('args.includes("--real")'), false);
   assert.equal(developmentCliSource.includes("--user-confirmed"), false);
   const developmentIpcSource = fs.readFileSync(path.join(__dirname, "../../src/main/active-touch-dev-ipc.cjs"), "utf8");
@@ -1576,6 +1790,8 @@ try {
   assert.match(sharedTransactionSource, /async function sendReal[\s\S]*clickWechatSendButtonAsync[\s\S]*verifyWechatCurrentConversationAsync[\s\S]*verifyWechatMessageBubbleAsync/);
   assert.match(sharedTransactionSource, /async function executeVerifiedFileHelperSend[\s\S]*openWechatSearchResultAsync[\s\S]*inputWechatMessageDraftAsync/);
   assert.match(driverSource, /function openWechatSearchResultAsync[\s\S]*runPowerShellAsync/);
+  assert.match(driverSource, /function verifyWechatCurrentConversation\([^]*?context\.expectedPid \?\? context\.pid[^]*?\{ ensure: false \}/u);
+  assert.match(driverSource, /function verifyWechatCurrentConversationAsync\([^]*?context\.expectedHWnd \?\? context\.hWnd/u);
   assert.match(developmentDriverSource, /function clickWechatSendButtonAsync[\s\S]*runPowerShellAsync/);
   assert.match(sharedTransactionSource, /beforeDraft/);
   assert.match(sharedTransactionSource, /inputPoint: state\.message_input_point/);
@@ -1618,6 +1834,15 @@ try {
     normalizerSource.indexOf("ShowWindowAsync($hWnd, 9)") < normalizerSource.indexOf("$restoredMainLayout ="),
     "the canonical adapter must restore a minimized window before validating its live main-window geometry"
   );
+  assert.ok(
+    normalizerSource.indexOf('Start-Process -FilePath $path -ArgumentList "--scene=startmenu"') < normalizerSource.indexOf("$restoredMainLayout ="),
+    "the canonical adapter must use WeChat's native activation contract for a tray-hidden Qt window"
+  );
+  assert.match(
+    normalizerSource,
+    /if \(\$wasIconic\) \{[\s\S]*ShowWindowAsync\(\$hWnd, 9\)[\s\S]*elseif \(-not \(Request-PersonalWechatActivation \$matched\)\)/u,
+    "raw Win32 restore must be limited to a genuinely minimized window"
+  );
   assert.match(normalizerSource, /\$restoredMainLayout = [\s\S]*IsWindowVisible\(\$hWnd\)[\s\S]*-not \[Win32WechatWindow\]::IsIconic\(\$hWnd\)[\s\S]*-ge 600[\s\S]*-ge 500/);
 
   let asyncPowerShellYielded = false;
@@ -1630,6 +1855,126 @@ try {
     await runPowerShellAsync("exit 0", {}, { ensure: false }),
     { ok: false, reason: "powershell_output_invalid" }
   );
+
+  function fakePowerShellChild(killResult = true) {
+    const child = new EventEmitter();
+    child.stdin = new EventEmitter();
+    child.stdin.end = () => undefined;
+    child.stdout = new EventEmitter();
+    child.stdout.setEncoding = () => undefined;
+    child.stderr = new EventEmitter();
+    child.stderr.setEncoding = () => undefined;
+    child.killCalls = 0;
+    child.kill = () => {
+      child.killCalls += 1;
+      return killResult;
+    };
+    return child;
+  }
+
+  let timedOutChild;
+  let timedOutSettled = false;
+  const timedOutPowerShell = runPowerShellAsync("", {}, {
+    ensure: false,
+    timeout: 10,
+    terminationGraceMs: 250,
+    spawnProcess: () => {
+      timedOutChild = fakePowerShellChild();
+      return timedOutChild;
+    }
+  });
+  timedOutPowerShell.then(() => { timedOutSettled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(timedOutChild.killCalls, 1);
+  assert.equal(timedOutSettled, false, "timeout must remain pending until the child close event confirms termination");
+  timedOutChild.emit("close", null);
+  assert.deepEqual(await timedOutPowerShell, { ok: false, reason: "powershell_timeout" });
+
+  let abortedChild;
+  let abortedSettled = false;
+  const abortController = new AbortController();
+  const abortedPowerShell = runPowerShellAsync("", {}, {
+    ensure: false,
+    timeout: false,
+    terminationGraceMs: 250,
+    signal: abortController.signal,
+    spawnProcess: () => {
+      abortedChild = fakePowerShellChild();
+      return abortedChild;
+    }
+  });
+  abortedPowerShell.then(() => { abortedSettled = true; });
+  abortController.abort();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(abortedChild.killCalls, 1);
+  assert.equal(abortedSettled, false, "abort must remain pending until the child close event confirms termination");
+  abortedChild.emit("close", null);
+  assert.deepEqual(await abortedPowerShell, { ok: false, reason: "powershell_aborted" });
+
+  let killFailedChild;
+  const killFailedPowerShell = runPowerShellAsync("", {}, {
+    ensure: false,
+    timeout: 5,
+    terminationGraceMs: 250,
+    spawnProcess: () => {
+      killFailedChild = fakePowerShellChild(false);
+      return killFailedChild;
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  killFailedChild.emit("close", null);
+  assert.deepEqual(await killFailedPowerShell, {
+    ok: false,
+    reason: "powershell_termination_unconfirmed",
+    actionAttempted: true
+  });
+
+  let lateCloseChild;
+  let lateCloseSettled = false;
+  const lateClosePowerShell = runPowerShellAsync("", {}, {
+    ensure: false,
+    timeout: 5,
+    terminationGraceMs: 15,
+    spawnProcess: () => {
+      lateCloseChild = fakePowerShellChild(true);
+      return lateCloseChild;
+    }
+  });
+  lateClosePowerShell.then(() => { lateCloseSettled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(lateCloseSettled, true, "the termination grace deadline must settle even if the child never emits close");
+  assert.deepEqual(await lateClosePowerShell, {
+    ok: false,
+    reason: "powershell_termination_unconfirmed",
+    actionAttempted: true
+  });
+  let quarantinedSpawnCalls = 0;
+  assert.deepEqual(await runPowerShellAsync("", {}, {
+    ensure: false,
+    timeout: false,
+    spawnProcess: () => {
+      quarantinedSpawnCalls += 1;
+      return fakePowerShellChild();
+    }
+  }), {
+    ok: false,
+    reason: "powershell_runtime_quarantined",
+    actionAttempted: true
+  });
+  assert.equal(quarantinedSpawnCalls, 0, "an unconfirmed worker must quarantine later RPA instead of allowing concurrent actions");
+  lateCloseChild.emit("close", null);
+  let recoveredChild;
+  const recoveredPowerShell = runPowerShellAsync("", {}, {
+    ensure: false,
+    timeout: false,
+    spawnProcess: () => {
+      recoveredChild = fakePowerShellChild();
+      return recoveredChild;
+    }
+  });
+  recoveredChild.stdout.emit("data", '{"ok":true,"recovered":true}');
+  recoveredChild.emit("close", 0);
+  assert.deepEqual(await recoveredPowerShell, { ok: true, recovered: true }, "a confirmed late close must release the PowerShell quarantine");
 
   saveState(dir, { ...loadState(dir), self_check_marker: true });
   assert.equal(fs.readdirSync(dir).some((name) => name.includes("state.json.tmp")), false);

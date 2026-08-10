@@ -5,6 +5,7 @@ const { generateFixedScriptFallback, generatePersonalizedDraft } = require("./ai
 const { runActiveTouch } = require("./active-touch-ipc.cjs");
 const { preloadFile, rendererDir = "dist" } = require("./edition.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
+const { WECHAT_RPA_BACKGROUND_MIN_IDLE_MS } = require("../../rpa/active_touch/wechat_window_driver.cjs");
 const {
   authorizeTask,
   classifyContacts,
@@ -78,6 +79,8 @@ function resultReason(result, fallback) {
     wechat_window_not_found: "未找到微信聊天主窗口，已尝试自动拉起；若停在登录确认，请先完成微信登录",
     wechat_login_required: "微信已自动拉起，请在手机上确认登录后继续",
     wechat_focus_failed: "微信窗口没有切到前台，请点一下微信窗口后再继续",
+    wechat_window_not_foreground: "你已切换到其他窗口，本次已安全暂停，不会把微信抢回前台",
+    wechat_user_active: "检测到你正在使用鼠标或键盘，本次已安全延后；方便时可继续任务",
     wechat_window_not_ready: "已找到微信主窗口，但当前尺寸不可操作；请展开微信窗口后继续",
     wechat_window_ambiguous: "检测到多个个人微信主窗口，请只保留一个可见主窗口后继续",
     wechat_window_identity_mismatch: "微信窗口在操作过程中发生变化，请保持当前微信窗口后继续",
@@ -214,6 +217,25 @@ function compactTaskPayload(task = loadTaskState(activeTouchDir())) {
   };
 }
 
+function stableTaskTransitionCode(value) {
+  const normalized = String(value || "").trim();
+  return /^[a-z0-9_.:-]{1,120}$/iu.test(normalized) ? normalized : "";
+}
+
+function classifyTaskTransitionDiagnostic(task, current) {
+  const currentStatus = String(current?.status || "").trim();
+  const isOperationalFailure = task?.status === "paused"
+    && new Set(["blocked", "outcome_unknown"]).has(currentStatus);
+  if (!isOperationalFailure) return { level: "info", code: "" };
+  return {
+    level: "error",
+    code: stableTaskTransitionCode(current?.blocked_reason)
+      || stableTaskTransitionCode(current?.reason)
+      || currentStatus
+      || "task_paused"
+  };
+}
+
 function emitTaskUpdate(task) {
   const payload = compactTaskPayload(task || loadTaskState(activeTouchDir()));
   const current = payload.task?.current_result;
@@ -235,9 +257,10 @@ function emitTaskUpdate(task) {
   const signature = JSON.stringify(diagnosticSnapshot);
   if (signature !== lastDiagnosticTaskSignature) {
     lastDiagnosticTaskSignature = signature;
+    const diagnostic = classifyTaskTransitionDiagnostic(payload.task, current);
     diagnostics().event("active_touch", "task_transition", diagnosticSnapshot, {
-      level: payload.task?.status === "paused" && Boolean(payload.task?.pause_reason) ? "error" : "info",
-      code: current?.ai_error_code || (payload.task?.status === "paused" ? current?.status || "task_paused" : "")
+      level: diagnostic.level,
+      code: diagnostic.code
     });
   }
   BrowserWindow.getAllWindows().forEach((window) => {
@@ -537,6 +560,7 @@ async function runRealContact(task, current, index) {
     message: current.message,
     frozenContact: current.contact,
     authorized: true,
+    windowMinIdleMs: WECHAT_RPA_BACKGROUND_MIN_IDLE_MS,
     isExecutionAllowed,
     runStep: async (command, args = []) => {
       const latest = loadTaskState(activeTouchDir());
@@ -738,9 +762,6 @@ function buildRunnableTask(script, excludedContactIds = []) {
   const existingCurrent = existing.results[existing.current_index];
   const unknownNeedsResolution = existingCurrent?.status === "outcome_unknown" && (existingCurrent?.awaiting_resolution || existingCurrent?.outcome_unknown_retry_count >= 1);
   const existingUnfinished = !["idle", "completed", "stopped"].includes(existing.status) && existing.current_index < existing.total;
-  if (existingUnfinished && existing.previous_build_task) {
-    return { ok: false, blocked_reason: "previous_build_task", error: existing.pause_reason };
-  }
   if (existingUnfinished && (["prepared", "clicked"].includes(existingCurrent?.status) || existingCurrent?.retry_blocked === true || unknownNeedsResolution)) {
     return { ok: false, blocked_reason: "outcome_unknown", error: "当前联系人可能已经执行发送，任务不会自动重试" };
   }
@@ -751,6 +772,11 @@ function buildRunnableTask(script, excludedContactIds = []) {
     }
     if (existing.status === "running") return { ok: true, task: existing };
     if (existing.status !== "paused") return { ok: false, blocked_reason: "unfinished_task_state_invalid", error: "当前未完成任务状态异常，请先结束该任务" };
+    if (existing.previous_build_task) {
+      existing.previous_build_task = false;
+      existing.source_build_id = currentBuildId;
+      existing.recovery_notice = "continued_after_build_update";
+    }
     const current = existing.results[existing.current_index];
     existing.status = "running";
     existing.pause_reason = "";
@@ -863,9 +889,6 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     const task = loadTaskState(activeTouchDir());
     if (task.status !== "paused") return publicTaskState(task);
     if (task.integrity_error) return publicTaskState(task);
-    if (task.previous_build_task) {
-      return { ok: false, blocked_reason: "previous_build_task", error: task.pause_reason };
-    }
     if (executionMode === "real_send" && task.version < 3) {
       return { ok: false, blocked_reason: "legacy_draft_task", error: "检测到旧版草稿任务，已阻断自动升级为真实发送；请先结束旧任务" };
     }
@@ -882,6 +905,12 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     runnerOwner = lock?.lock.owner || "";
     pauseRequested = false;
     stopRequested = false;
+    const continuedAfterBuildUpdate = task.previous_build_task === true;
+    if (continuedAfterBuildUpdate) {
+      task.previous_build_task = false;
+      task.source_build_id = currentBuildId;
+      task.recovery_notice = "continued_after_build_update";
+    }
     const resumed = authorizeTask(task);
     resumed.status = "running";
     resumed.pause_reason = "";
@@ -894,6 +923,14 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     else if (current?.status === "generated") resumed.phase = "sending_batch";
     else if (recoverableUnknown) resumed.phase = "sending_batch";
     saveTaskState(activeTouchDir(), resumed);
+    if (continuedAfterBuildUpdate) {
+      diagnostics().event("active_touch", "previous_build_task_continued", {
+        task_id: resumed.id,
+        current_build_id: currentBuildId,
+        current_index: resumed.current_index,
+        total: resumed.total
+      });
+    }
     createFloatingWindow();
     if (recoverableUnknown) {
       try {
@@ -997,4 +1034,7 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
   return { pause: requestPause };
 }
 
-module.exports = { registerTouchTaskIpc };
+module.exports = {
+  classifyTaskTransitionDiagnostic,
+  registerTouchTaskIpc
+};

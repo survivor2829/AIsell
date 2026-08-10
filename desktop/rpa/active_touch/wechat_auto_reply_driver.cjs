@@ -1,4 +1,9 @@
-const { normalizeWechatMainWindowAsync, runPowerShellAsync } = require("./wechat_window_driver.cjs");
+const {
+  WECHAT_RPA_BACKGROUND_MIN_IDLE_MS,
+  isPreparedWechatRpaLayout,
+  prepareWechatRpaWindowAsync,
+  runPowerShellAsync
+} = require("./wechat_window_driver.cjs");
 const { gzipSync } = require("node:zlib");
 
 function classifyAvatarSide({ leftAvatar = false, rightAvatar = false } = {}) {
@@ -56,8 +61,6 @@ using System;
 using System.Runtime.InteropServices;
 public static class Win32WechatAutoReply {
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
-  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
@@ -770,30 +773,67 @@ function Get-CurrentBaseline($baselines, [string]$key) {
   return ""
 }
 
-function Open-Session([System.Windows.Automation.AutomationElement]$item, [IntPtr]$hWnd) {
-  [void][Win32WechatAutoReply]::ShowWindowAsync($hWnd, 9)
-  [void][Win32WechatAutoReply]::SetForegroundWindow($hWnd)
-  Start-Sleep -Milliseconds 150
+function Test-ExactForeground([IntPtr]$hWnd) {
+  return [Win32WechatAutoReply]::GetForegroundWindow() -eq $hWnd
+}
+
+function Test-ExactPointOwned([int]$x, [int]$y, [IntPtr]$hWnd, [int]$expectedPid) {
+  $point = New-Object Win32WechatAutoReply+POINT
+  $point.X = $x
+  $point.Y = $y
+  $pointWindow = [Win32WechatAutoReply]::WindowFromPoint($point)
+  if ($pointWindow -eq [IntPtr]::Zero) { return $false }
+  if ([Win32WechatAutoReply]::GetAncestor($pointWindow, 2) -ne $hWnd) { return $false }
+  $pointPid = [uint32]0
+  [void][Win32WechatAutoReply]::GetWindowThreadProcessId($pointWindow, [ref]$pointPid)
+  return [int]$pointPid -eq $expectedPid
+}
+
+function Open-Session([System.Windows.Automation.AutomationElement]$item, [IntPtr]$hWnd, [int]$expectedPid) {
+  if (-not (Test-ExactForeground $hWnd)) { return @{ ok = $false; reason = "wechat_window_not_foreground" } }
   try {
+    if (-not (Test-ExactForeground $hWnd)) { return @{ ok = $false; reason = "wechat_window_not_foreground" } }
     $selection = $item.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
-    if ($selection) { $selection.Select(); Start-Sleep -Milliseconds 150 }
+    if ($selection) {
+      $selection.Select()
+      Start-Sleep -Milliseconds 150
+      if (-not (Test-ExactForeground $hWnd)) { return @{ ok = $false; reason = "wechat_window_not_foreground" } }
+    }
   } catch {}
   try {
+    if (-not (Test-ExactForeground $hWnd)) { return @{ ok = $false; reason = "wechat_window_not_foreground" } }
     $invoke = $item.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-    if ($invoke) { $invoke.Invoke(); Start-Sleep -Milliseconds 150 }
+    if ($invoke) {
+      $invoke.Invoke()
+      Start-Sleep -Milliseconds 150
+      if (-not (Test-ExactForeground $hWnd)) { return @{ ok = $false; reason = "wechat_window_not_foreground" } }
+    }
   } catch {}
   try {
     $rect = $item.Current.BoundingRectangle
+    $clickX = [int](($rect.Left + $rect.Right) / 2)
+    $clickY = [int](($rect.Top + $rect.Bottom) / 2)
+    if (-not (Test-ExactForeground $hWnd)) { return @{ ok = $false; reason = "wechat_window_not_foreground" } }
+    if (-not (Test-ExactPointOwned $clickX $clickY $hWnd $expectedPid)) {
+      return @{ ok = $false; reason = "conversation_click_not_owned" }
+    }
     $point = New-Object Win32WechatAutoReply+POINT
     [void][Win32WechatAutoReply]::GetCursorPos([ref]$point)
-    [void][Win32WechatAutoReply]::SetCursorPos([int](($rect.Left + $rect.Right) / 2), [int](($rect.Top + $rect.Bottom) / 2))
+    if (-not (Test-ExactForeground $hWnd)) { return @{ ok = $false; reason = "wechat_window_not_foreground" } }
+    [void][Win32WechatAutoReply]::SetCursorPos($clickX, $clickY)
+    if (-not (Test-ExactForeground $hWnd) -or -not (Test-ExactPointOwned $clickX $clickY $hWnd $expectedPid)) {
+      return @{ ok = $false; reason = "conversation_click_not_owned" }
+    }
     [Win32WechatAutoReply]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 50
+    Start-Sleep -Milliseconds 25
+    $releaseOwned = (Test-ExactForeground $hWnd) -and (Test-ExactPointOwned $clickX $clickY $hWnd $expectedPid)
     [Win32WechatAutoReply]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    if (-not $releaseOwned) { return @{ ok = $false; reason = "wechat_window_not_foreground" } }
     Start-Sleep -Milliseconds 450
+    if (-not (Test-ExactForeground $hWnd)) { return @{ ok = $false; reason = "wechat_window_not_foreground" } }
     [void][Win32WechatAutoReply]::SetCursorPos($point.X, $point.Y)
-    return $true
-  } catch { return $false }
+    return @{ ok = $true }
+  } catch { return @{ ok = $false; reason = "conversation_open_failed" } }
 }
 
 $mode = [Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_MODE")
@@ -835,7 +875,8 @@ if ($mode -eq "scan" -and $sessionPreviewPrimed) {
     Write-Result @{ ok = $false; reason = "wechat_window_changed"; pid = [int]$process.Id; hWnd = [int64]$process.MainWindowHandle }
   }
 }
-if ($mode -eq "verify") {
+if ($expectedPid -or $expectedHwnd) {
+  if (-not $expectedPid -or -not $expectedHwnd) { Write-Result @{ ok = $false; reason = "wechat_window_identity_mismatch" } }
   if ($expectedPid -and [int]$expectedPid -ne $process.Id) { Write-Result @{ ok = $false; reason = "wechat_process_changed" } }
   if ($expectedHwnd -and [int64]$expectedHwnd -ne [int64]$process.MainWindowHandle) { Write-Result @{ ok = $false; reason = "wechat_window_changed" } }
 }
@@ -933,7 +974,8 @@ if ($mode -eq "scan") {
   } else {
     if (-not $matchChanged -and [string]::IsNullOrWhiteSpace([string]$match.preview)) { Write-Result @{ ok = $false; reason = "unread_preview_missing" } }
     $script:pendingSessionConversation = [string]$match.name
-    if (-not (Open-Session $match.item $hWnd)) { Write-Result @{ ok = $false; reason = "conversation_open_failed" } }
+    $openedSession = Open-Session $match.item $hWnd $process.Id
+    if (-not $openedSession.ok) { Write-Result @{ ok = $false; reason = [string]$openedSession.reason } }
     $expectedConversation = $match.name
     $candidateSource = $(if ($matchChanged) { "preview_change" } else { "unread" })
     $expectedMessage = $(if ($candidateSource -eq "unread") { [string]$match.preview } else { "" })
@@ -951,9 +993,6 @@ for ($index = 0; $index -lt $all.Count; $index++) {
 }
 if (-not $titleFound) { Write-Result @{ ok = $false; reason = "conversation_title_mismatch" } }
 
-[void][Win32WechatAutoReply]::ShowWindowAsync($hWnd, 9)
-[void][Win32WechatAutoReply]::SetForegroundWindow($hWnd)
-Start-Sleep -Milliseconds 180
 if ([Win32WechatAutoReply]::GetForegroundWindow() -ne $hWnd) { Write-Result @{ ok = $false; reason = "history_window_not_foreground" } }
 $chatList = Get-ChatList $root
 if ($chatList -eq $null) { Write-Result @{ ok = $false; reason = "history_viewport_missing" } }
@@ -979,6 +1018,7 @@ if ($mode -eq "scan" -and $currentItems.Count -lt 12 -and $scrollPattern) {
       $previousPage = $null
       $scrollFailure = ""
       try {
+        if (-not (Test-ExactForeground $hWnd)) { Write-Result @{ ok = $false; reason = "history_window_not_foreground" } }
         $scrollPattern.SetScrollPercent([System.Windows.Automation.ScrollPattern]::NoScroll, $targetPercent)
         Start-Sleep -Milliseconds 280
         $afterPercent = [double]$scrollPattern.Current.VerticalScrollPercent
@@ -994,6 +1034,7 @@ if ($mode -eq "scan" -and $currentItems.Count -lt 12 -and $scrollPattern) {
       $restoreOk = $true
       $restoredPage = $null
       try {
+        if (-not (Test-ExactForeground $hWnd)) { Write-Result @{ ok = $false; reason = "history_window_not_foreground" } }
         $scrollPattern.SetScrollPercent([System.Windows.Automation.ScrollPattern]::NoScroll, $beforePercent)
         Start-Sleep -Milliseconds 280
         $restoredPercent = [double]$scrollPattern.Current.VerticalScrollPercent
@@ -1053,7 +1094,10 @@ Invoke-Expression ([IO.StreamReader]::new($g).ReadToEnd())
 
 const AUTO_REPLY_RUN_SCRIPT = compressedPowerShell(AUTO_REPLY_SCAN_SCRIPT);
 
-function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, windowNormalizer = normalizeWechatMainWindowAsync) {
+function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, windowNormalizer = null) {
+  const windowPreparer = typeof windowNormalizer === "function"
+    ? windowNormalizer
+    : (context) => prepareWechatRpaWindowAsync(context, powerShellRunner);
   const currentSessionBaselines = new Map();
   const sessionPreviewBaselines = new Map();
   const retryCandidates = [];
@@ -1064,8 +1108,8 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
   let sessionPreviewProcess = null;
   let needsReprime = false;
   let normalizedWindowIdentity = null;
-  let windowNormalized = false;
   let normalizedForReprime = false;
+  let windowPreflightAttempted = false;
   // WeChat 4.1.x exposes only a compositor pane through UIA on many machines.
   // Pick one adapter for the whole run instead of probing UIA and then silently
   // switching baselines underneath the visual scanner.
@@ -1075,7 +1119,8 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
   const scanFenceReasons = new Set([
     "chat_boundary_unresolved",
     "latest_message_role_unresolved",
-    "wechat_focus_failed"
+    "wechat_focus_failed",
+    "wechat_window_not_foreground"
   ]);
 
   function scanFenceResult(result) {
@@ -1164,31 +1209,40 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     normalizedForReprime = windowAlreadyNormalized;
   }
 
-  async function normalizeWindowForExecution(expectedIdentity = null) {
+  async function normalizeWindowForExecution(expectedIdentity = null, { background = false } = {}) {
+    const useBackgroundIdleGate = background || windowPreflightAttempted;
+    windowPreflightAttempted = true;
     let normalized;
     try {
-      normalized = await Promise.resolve(windowNormalizer(expectedIdentity ? {
-        expectedPid: expectedIdentity.pid,
-        expectedHWnd: expectedIdentity.hWnd
-      } : {}));
+      normalized = await Promise.resolve(windowPreparer({
+        ...(expectedIdentity ? {
+          expectedPid: expectedIdentity.pid,
+          expectedHWnd: expectedIdentity.hWnd
+        } : {}),
+        minIdleMs: useBackgroundIdleGate ? WECHAT_RPA_BACKGROUND_MIN_IDLE_MS : 0,
+        requireFocused: true
+      }));
     } catch {
       return { ok: false, reason: "wechat_window_not_ready" };
     }
     if (normalized?.ok !== true) return normalized?.reason ? normalized : { ok: false, reason: "wechat_window_not_ready" };
+    if (!isPreparedWechatRpaLayout(normalized)) {
+      return { ok: false, reason: "wechat_window_not_ready" };
+    }
+    if (normalized.focused !== true) return { ok: false, reason: "wechat_window_not_foreground" };
     normalizedWindowIdentity = windowIdentity(normalized);
-    windowNormalized = true;
+    if (!normalizedWindowIdentity) return { ok: false, reason: "wechat_window_not_ready" };
     return null;
   }
 
-  async function normalizeChangedWindow(result) {
+  function rejectChangedWindow(result) {
     const observed = windowIdentity(result);
     if (!observed || !normalizedWindowIdentity
       || observed.pid !== normalizedWindowIdentity.pid
       || observed.hWnd !== normalizedWindowIdentity.hWnd
       || !materiallyChangedWindow(normalizedWindowIdentity, observed)) return false;
-    const failure = await normalizeWindowForExecution(observed);
-    resetSessionIdentityForReprime({ windowAlreadyNormalized: !failure });
-    return failure || { ok: false, reason: "wechat_window_changed", pid: observed.pid, hWnd: observed.hWnd };
+    resetSessionIdentityForReprime();
+    return { ok: false, reason: "wechat_window_changed", pid: observed.pid, hWnd: observed.hWnd };
   }
 
   function applySessionBaselines(result, allowed, { priming = false } = {}) {
@@ -1222,9 +1276,10 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
   async function primeWechatSession(names) {
     const allowed = allowedNames(names);
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
+    const background = needsReprime;
     if (normalizedForReprime) normalizedForReprime = false;
     else {
-      const windowFailure = await normalizeWindowForExecution();
+      const windowFailure = await normalizeWindowForExecution(null, { background });
       if (windowFailure) return windowFailure;
     }
     if (activeScanMode === "visual") {
@@ -1237,7 +1292,9 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
       XIAOXI_ALLOWED_NAMES: JSON.stringify(allowed),
       XIAOXI_SESSION_BASELINES: JSON.stringify(Object.fromEntries(sessionPreviewBaselines)),
       XIAOXI_SESSION_PRIMED: "false",
-      XIAOXI_SESSION_PRIMED_AT: "0"
+      XIAOXI_SESSION_PRIMED_AT: "0",
+      XIAOXI_EXPECTED_PID: String(normalizedWindowIdentity?.pid || ""),
+      XIAOXI_EXPECTED_HWND: String(normalizedWindowIdentity?.hWnd || "")
     }, { ensure: false }));
     if (activeBaselineEpoch !== baselineEpoch) return { ok: false, reason: "baseline_epoch_changed" };
     if (result?.reason === "session_probe_unsupported") return switchToVisualPrime(allowed, result);
@@ -1266,13 +1323,26 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
   async function scanWechatIncoming(names) {
     const allowed = allowedNames(names);
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
+    const scanWindowFailure = await normalizeWindowForExecution(
+      normalizedWindowIdentity || sessionPreviewProcess,
+      { background: true }
+    );
+    if (scanWindowFailure) {
+      if (new Set([
+        "wechat_window_identity_mismatch",
+        "wechat_process_changed",
+        "wechat_window_changed",
+        "wechat_window_missing"
+      ]).has(String(scanWindowFailure.reason || ""))) {
+        normalizedWindowIdentity = null;
+        resetSessionIdentityForReprime();
+      }
+      return scanWindowFailure;
+    }
     if (needsReprime) {
+      normalizedForReprime = true;
       const primed = await primeWechatSession(allowed);
       return primed?.ok === true ? { ok: false, reason: "current_session_baselined" } : primed;
-    }
-    if (!windowNormalized) {
-      const windowFailure = await normalizeWindowForExecution();
-      if (windowFailure) return windowFailure;
     }
     if (activeScanMode === "visual") {
       const driver = getVisualDriver();
@@ -1283,10 +1353,9 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
         // normalizer identity too; otherwise the next prime would be forced
         // back onto the dead HWND forever.
         normalizedWindowIdentity = null;
-        windowNormalized = false;
         return result;
       }
-      const changedWindow = await normalizeChangedWindow(result);
+      const changedWindow = rejectChangedWindow(result);
       if (changedWindow) return changedWindow;
       const fenced = scanFenceResult(result);
       if (!fenced) return result;
@@ -1306,15 +1375,17 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
       XIAOXI_SESSION_BASELINES: JSON.stringify(Object.fromEntries(sessionPreviewBaselines)),
       XIAOXI_SESSION_PRIMED: sessionPreviewPrimed ? "true" : "false",
       XIAOXI_SESSION_PRIMED_AT: String(sessionPreviewPrimedAt || 0),
-      XIAOXI_SESSION_EXPECTED_PID: String(sessionPreviewProcess?.pid || 0),
-      XIAOXI_SESSION_EXPECTED_HWND: String(sessionPreviewProcess?.hWnd || 0)
+      XIAOXI_SESSION_EXPECTED_PID: String(normalizedWindowIdentity?.pid || sessionPreviewProcess?.pid || 0),
+      XIAOXI_SESSION_EXPECTED_HWND: String(normalizedWindowIdentity?.hWnd || sessionPreviewProcess?.hWnd || 0),
+      XIAOXI_EXPECTED_PID: String(normalizedWindowIdentity?.pid || ""),
+      XIAOXI_EXPECTED_HWND: String(normalizedWindowIdentity?.hWnd || "")
     }, { ensure: false }));
     if (activeBaselineEpoch !== baselineEpoch) return { ok: false, reason: "baseline_epoch_changed" };
     if (result?.reason === "session_probe_unsupported") {
       const primed = await switchToVisualPrime(allowed, result);
       return primed?.ok === true ? { ok: false, reason: "current_session_baselined" } : primed;
     }
-    const changedWindow = await normalizeChangedWindow(result);
+    const changedWindow = rejectChangedWindow(result);
     if (changedWindow) return changedWindow;
     const fenced = scanFenceResult(result);
     if (fenced) return fenced;
@@ -1323,9 +1394,8 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
       sessionPreviewProcess.pid !== observedIdentity.pid || sessionPreviewProcess.hWnd !== observedIdentity.hWnd
     );
     if (identityChanged || result?.reason === "wechat_process_changed" || result?.reason === "wechat_window_changed") {
-      const observed = windowIdentity(result);
-      const windowFailure = observed ? await normalizeWindowForExecution(observed) : null;
-      resetSessionIdentityForReprime({ windowAlreadyNormalized: Boolean(observed) && !windowFailure });
+      normalizedWindowIdentity = null;
+      resetSessionIdentityForReprime();
       return result?.reason === "wechat_window_changed" ? result : { ...result, ok: false, reason: "wechat_process_changed" };
     }
     applySessionBaselines(result, allowed);
@@ -1418,7 +1488,6 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     sessionPreviewProcess = null;
     needsReprime = false;
     normalizedWindowIdentity = null;
-    windowNormalized = false;
     normalizedForReprime = false;
     visualDriver?.scanWechatIncoming?.resetBaselines?.();
   };

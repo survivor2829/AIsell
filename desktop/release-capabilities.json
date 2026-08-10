@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "targetWeixin": [
-    "4.1.11.54"
+    "4.1.11.55"
   ],
   "capabilities": {
     "contactSync": {
@@ -28,9 +28,14 @@
         "delivery"
       ],
       "workflows": {
+        "publishing": {
+          "implementation": "implemented",
+          "localLiveVerification": "pending",
+          "portableVerification": "pending"
+        },
         "perPostInteraction": {
           "implementation": "implemented",
-          "localLiveVerification": "verified",
+          "localLiveVerification": "partial",
           "portableVerification": "pending"
         },
         "dailyAutomation": {

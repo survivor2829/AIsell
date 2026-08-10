@@ -7,13 +7,25 @@ const path = require("node:path");
 const probeFile = path.join(__dirname, "moments_visual_probe.dev.cjs");
 const dryRunFile = path.join(__dirname, "moments_visual_dry_run.dev.cjs");
 const actionFile = path.join(__dirname, "moments_visual_action_driver.dev.cjs");
+const surfaceProfileFile = path.join(__dirname, "moments_surface_profile.dev.cjs");
+const surfaceEvidenceFile = path.join(__dirname, "moments_surface_evidence.dev.cjs");
 const windowDriverFile = path.join(__dirname, "wechat_window_driver.cjs");
 const probeSource = fs.readFileSync(probeFile, "utf8");
 const dryRunSource = fs.readFileSync(dryRunFile, "utf8");
 const actionSource = fs.readFileSync(actionFile, "utf8").replace(/\r\n?/gu, "\n");
+const surfaceProfileSource = fs.readFileSync(surfaceProfileFile, "utf8");
+const surfaceEvidenceSource = fs.readFileSync(surfaceEvidenceFile, "utf8");
 const windowDriverSource = fs.readFileSync(windowDriverFile, "utf8");
 const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require(probeFile);
 const { MOMENTS_VISUAL_STABILITY_TOLERANCE_PX, MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT } = require(dryRunFile);
+const {
+  MOMENTS_SURFACE_PROFILE,
+  normalizeExpectedMomentsSurface,
+  validMomentsSurfaceRoot
+} = require(surfaceProfileFile);
+const {
+  MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL
+} = require(surfaceEvidenceFile);
 const visualActionDriver = require(actionFile);
 const {
   MOMENTS_VISUAL_ACTION_POWERSHELL,
@@ -28,6 +40,8 @@ assert.equal(MOMENTS_VISUAL_STABILITY_TOLERANCE_PX, 12);
 assert.equal(typeof MOMENTS_VISUAL_ACTION_POWERSHELL, "string");
 assert.ok(MOMENTS_VISUAL_ACTION_POWERSHELL.length > 10_000);
 assert.equal(MOMENTS_VISUAL_POST_RELOCK_TOLERANCE_PX, 12);
+assert.ok(MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT.includes(MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL));
+assert.ok(MOMENTS_VISUAL_ACTION_POWERSHELL.includes(MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL));
 assert.match(probeSource, /SetThreadDpiAwarenessContext\(IntPtr dpiContext\)/u);
 assert.match(probeSource, /SetThreadDpiAwarenessContext\(\[IntPtr\]\(-4\)\)/u);
 assert.doesNotMatch(probeSource, /SetProcessDPIAware/u);
@@ -49,6 +63,50 @@ const parsedVisualDryRun = spawnSync("powershell.exe", ["-NoProfile", "-NonInter
   encoding: "utf8"
 });
 assert.equal(parsedVisualDryRun.status, 0, parsedVisualDryRun.stderr || "visual dry-run PowerShell must parse");
+
+const ocrSingleResultProgram = `
+$ErrorActionPreference = "Stop"
+${MOMENTS_VISUAL_READONLY_POWERSHELL}
+$bitmap = [System.Drawing.Bitmap]::new(
+  64,
+  64,
+  [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
+)
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+try { $graphics.Clear([System.Drawing.Color]::White) } finally { $graphics.Dispose() }
+try {
+  $result = @(Get-MomentsOcrObservationFromBitmap $bitmap)
+  @{
+    ok = $true
+    resultCount = $result.Count
+    firstType = $(if ($result.Count -gt 0) {
+      $result[0].GetType().FullName
+    } else { "" })
+  } | ConvertTo-Json -Compress
+} finally { $bitmap.Dispose() }
+`;
+const ocrSingleResultHarness = spawnSync("powershell.exe", [
+  "-NoProfile",
+  "-STA",
+  "-NonInteractive",
+  "-Command",
+  "$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())); Invoke-Expression $source"
+], {
+  input: Buffer.from(ocrSingleResultProgram, "utf8").toString("base64"),
+  encoding: "utf8",
+  windowsHide: true,
+  timeout: 30_000
+});
+assert.equal(
+  ocrSingleResultHarness.status,
+  0,
+  ocrSingleResultHarness.stderr || "OCR success-stream harness must run"
+);
+assert.deepEqual(JSON.parse(ocrSingleResultHarness.stdout.trim()), {
+  firstType: "System.Collections.Hashtable",
+  ok: true,
+  resultCount: 1
+});
 
 const visualBoundsFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
   /function Test-VisualBounds\([^\n]+\) \{[\s\S]*?\n\}/u
@@ -127,6 +185,63 @@ assert.deepEqual(JSON.parse(visualMenuResolverHarness.stdout.trim()), {
   dedupedOk: true
 });
 
+const postActionMenuAnchorFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
+  /(function Get-PostActionMenuAnchor\([\s\S]*?\n\})\n\nfunction Test-VisualWechatGreenPixel/u
+)?.[1] ?? "";
+assert.ok(postActionMenuAnchorFunction, "post-action menu anchor should be extractable");
+const postActionMenuAnchorProgram = `
+$ErrorActionPreference = "Stop"
+${visualBoundsFunction}
+${visualBoundsNearFunction}
+${visualMenuResolverFunction}
+${postActionMenuAnchorFunction}
+function Get-MomentsVisualFrame($hWnd, $windowRect, $processId, $includeOcr) {
+  return @{ ok = $true; width = 800; height = 900 }
+}
+function Close-MomentsVisualFrame($frame) {}
+function Get-MomentsPixelHash($frame, $bounds) { return "repainted-avatar-hash" }
+function Find-MomentsMenuDots($frame) { return @($script:menus) }
+$lock = @{ hWnd = 1; windowRect = @{}; pid = 2 }
+$expectedMenu = @{ left = 400.0; top = 520.0; width = 36.0; height = 24.0 }
+$expectedAvatar = @{ left = 120.0; top = 300.0; width = 44.0; height = 44.0 }
+$script:menus = @(@{
+  centerX = 418.0
+  centerY = 532.0
+  bounds = @{ left = 400.8; top = 519.5; width = 36.0; height = 24.0 }
+})
+$repainted = Get-PostActionMenuAnchor $lock $expectedMenu $expectedAvatar "before-avatar-hash"
+$script:menus = @()
+$missing = Get-PostActionMenuAnchor $lock $expectedMenu $expectedAvatar "before-avatar-hash"
+@{
+  repaintedOk = [bool]$repainted.ok
+  repaintedAvatarMatched = [bool]$repainted.diagnostics.avatarHashMatched
+  repaintedLeft = [double]$repainted.menu.bounds.left
+  missingOk = [bool]$missing.ok
+  missingReason = [string]$missing.reason
+} | ConvertTo-Json -Compress
+`;
+const postActionMenuAnchorHarness = spawnSync("powershell.exe", [
+  "-NoProfile",
+  "-NonInteractive",
+  "-EncodedCommand",
+  Buffer.from(postActionMenuAnchorProgram, "utf16le").toString("base64"),
+], {
+  encoding: "utf8",
+  windowsHide: true,
+});
+assert.equal(
+  postActionMenuAnchorHarness.status,
+  0,
+  postActionMenuAnchorHarness.stderr || "post-action menu-anchor repaint harness must run",
+);
+assert.deepEqual(JSON.parse(postActionMenuAnchorHarness.stdout.trim()), {
+  missingOk: false,
+  missingReason: "moments_menu_not_found",
+  repaintedAvatarMatched: false,
+  repaintedLeft: 400.8,
+  repaintedOk: true,
+});
+
 const visualSendButtonFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
   /function Get-VisualSendButton\([\s\S]*?\n\}/u,
 )?.[0] ?? "";
@@ -161,7 +276,9 @@ function Add-GreenInsetBorder($frame, [int]$width, [int]$height) {
   Add-GreenRect $frame ($width - 12) 6 6 ($height - 12)
 }
 ${visualSendButtonFunction}
+$script:momentsVisualViewportBounds = @{ left = 0.0; top = 0.0; width = 420.0; height = 140.0 }
 $composer = @{ ok = $true; bounds = @{ left = 0.0; top = 0.0; width = 420.0; height = 140.0 } }
+$outsideComposer = @{ ok = $true; bounds = @{ left = -1.0; top = 0.0; width = 420.0; height = 140.0 } }
 
 $borderOnlyFrame = New-GreenFrame
 Add-GreenInsetBorder $borderOnlyFrame 420 140
@@ -184,6 +301,7 @@ $ocrEmpty = Get-VisualSendButton $ocrEmptyFrame $composer
 $nearEdgeFrame = New-GreenFrame
 Add-GreenRect $nearEdgeFrame 326 96 88 36
 $nearEdge = Get-VisualSendButton $nearEdgeFrame $composer
+$outsideViewport = Get-VisualSendButton $singleFrame $outsideComposer
 
 @{
   borderOnlyOk = [bool]$borderOnly.ok
@@ -196,6 +314,8 @@ $nearEdge = Get-VisualSendButton $nearEdgeFrame $composer
   ocrEmptyOk = [bool]$ocrEmpty.ok
   ocrEmptyLabelVerified = [bool]$ocrEmpty.labelVerified
   nearEdgeOk = [bool]$nearEdge.ok
+  outsideViewportOk = [bool]$outsideViewport.ok
+  outsideViewportReason = [string]$outsideViewport.reason
 } | ConvertTo-Json -Compress
 `;
 const visualSendButtonHarness = spawnSync("powershell.exe", [
@@ -218,6 +338,8 @@ assert.deepEqual(JSON.parse(visualSendButtonHarness.stdout.trim()), {
   nearEdgeOk: true,
   ocrEmptyLabelVerified: false,
   ocrEmptyOk: true,
+  outsideViewportOk: false,
+  outsideViewportReason: "moments_comment_composer_outside_render_pane",
   singleCandidateCount: 1,
   singleOk: true,
   twoCandidateCount: 2,
@@ -241,13 +363,55 @@ assert.equal(compiledVisualAction.status, 0, compiledVisualAction.stderr || "vis
 
 const script = MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT;
 
-// The visual profile is an exact, unique window and render-pane identity.
+// The visual profile accepts the exact standalone and integrated surface roots,
+// while rejecting cross-mode title/root combinations.
+const standaloneTitle = "\u670b\u53cb\u5708";
+const integratedTitle = "\u5fae\u4fe1";
+assert.equal(MOMENTS_SURFACE_PROFILE.modes.standalone.title, standaloneTitle);
+assert.equal(MOMENTS_SURFACE_PROFILE.modes.standalone.rootName, standaloneTitle);
+assert.equal(MOMENTS_SURFACE_PROFILE.modes.integrated.title, integratedTitle);
+assert.equal(MOMENTS_SURFACE_PROFILE.modes.integrated.rootName, integratedTitle);
+assert.deepEqual(MOMENTS_SURFACE_PROFILE.integratedPrimaryRailScanLogicalBounds, {
+  left: 8,
+  top: 80,
+  width: 44,
+  height: 260
+});
+const standaloneSurface = {
+  surfaceMode: "standalone",
+  pid: 41,
+  hWnd: "4100",
+  title: standaloneTitle,
+  className: "mmui::SNSWindow"
+};
+const integratedSurface = {
+  surfaceMode: "integrated",
+  pid: 42,
+  hWnd: "4200",
+  title: integratedTitle,
+  className: "Chrome_WidgetWin_0"
+};
+assert.deepEqual(normalizeExpectedMomentsSurface(standaloneSurface), standaloneSurface);
+assert.deepEqual(normalizeExpectedMomentsSurface(integratedSurface), integratedSurface);
+assert.equal(normalizeExpectedMomentsSurface({ ...standaloneSurface, title: integratedTitle }), null);
+assert.equal(normalizeExpectedMomentsSurface({ ...integratedSurface, surfaceMode: "standalone" }), null);
+assert.equal(validMomentsSurfaceRoot({ ...standaloneSurface, rootName: standaloneTitle }), true);
+assert.equal(validMomentsSurfaceRoot({ ...integratedSurface, rootName: integratedTitle }), true);
+assert.equal(validMomentsSurfaceRoot({ ...standaloneSurface, rootName: integratedTitle }), false);
+assert.equal(validMomentsSurfaceRoot({ ...integratedSurface, rootName: standaloneTitle }), false);
+assert.match(surfaceProfileSource, /modes: Object\.freeze\(\{[\s\S]*standalone:[\s\S]*integrated:/u);
+assert.match(dryRunSource, /normalizeExpectedMomentsSurface\(expectedWindow\)/u);
 assert.match(script, /\$processNames = @\("Weixin", "WeChat"\)/u);
-assert.match(script, /\$title -cne "朋友圈"/u);
+assert.ok(script.includes(`@("${standaloneTitle}", "${integratedTitle}") -notcontains $title`));
+assert.ok(script.includes(`$title -ceq "${standaloneTitle}"`));
+assert.match(script, /surfaceMode = \$\(if \(\$title -ceq [^\n]+\) \{ "standalone" \} else \{ "integrated" \}\)/u);
+assert.match(script, /\$expectedRootName = \$\(if \(\[string\]\$candidate\.surfaceMode -ceq "integrated"\)/u);
+assert.match(script, /\$expectedRootName = \$\(if \(\[string\]\$matched\.surfaceMode -ceq "integrated"\)/u);
+assert.doesNotMatch(script, /\$title\s+-cne\s+"/u);
 const windowSelection = script.match(/\[void\]\[Win32WechatMomentsVisualProbe\]::EnumWindows\(\$callback, \[IntPtr\]::Zero\)([\s\S]*?)\$matched = \$matches\[0\]/u)?.[1] ?? "";
 assert.ok(windowSelection);
 assert.match(windowSelection, /\$matches\.Count -ne 1[\s\S]*moments_window_ambiguous/u);
-assert.match(script, /\$rootAutomationId -cne ""[\s\S]*\$rootName -cne "朋友圈"[\s\S]*\$rootControlType -cne "ControlType\.Window"[\s\S]*\$rootProcessId -ne \$matched\.pid/u);
+assert.match(script, /\$rootAutomationId -cne ""[\s\S]*\$rootName -cne \$expectedRootName[\s\S]*\$rootControlType -cne "ControlType\.Window"[\s\S]*\$rootProcessId -ne \$matched\.pid/u);
 const renderPaneEvidence = script.match(/function Get-MomentsRenderPaneEvidence\([^\n]+\) \{([\s\S]*?)\n\}/u)?.[1] ?? "";
 assert.ok(renderPaneEvidence);
 assert.match(renderPaneEvidence, /\$root\.FindAll\(\[System\.Windows\.Automation\.TreeScope\]::Children, \$paneType\)/u);
@@ -255,6 +419,473 @@ assert.match(renderPaneEvidence, /\$pane\.Current\.Name -cne "MMUIRenderSubWindo
 assert.match(renderPaneEvidence, /\$controlType -cne "ControlType\.Pane"/u);
 assert.match(renderPaneEvidence, /\$matches\.Count -ne 1[\s\S]*moments_render_pane_ambiguous/u);
 assert.doesNotMatch(script, /\$title\s+-(?:like|match)\b/iu);
+assert.match(script, /Test-VisualBoundsInside \$candidatePane\.pane\.bounds \$candidateWindowBounds/u);
+assert.match(script, /\$candidate\.surfaceMode -ceq "integrated"[\s\S]*Test-IntegratedMomentsSurface \$candidateFrame \$candidateSurfaceBounds/u);
+assert.match(script, /\$matched\.surfaceMode -ceq "integrated"[\s\S]*Test-IntegratedMomentsSurface \$firstFrame \$surfaceScanBounds/u);
+assert.match(script, /\$matched\.surfaceMode -ceq "integrated"[\s\S]*Test-IntegratedMomentsSurface \$secondFrame \$surfaceScanBounds/u);
+
+// Integrated mode needs both an exact sidebar OCR label and exactly one green
+// selected band. A plain WeChat window or duplicate selected rows fails closed.
+assert.match(surfaceEvidenceSource, /function Get-MomentsSelectedGreenRatio/u);
+assert.match(surfaceEvidenceSource, /function Get-IntegratedDiscoverEntryEvidence/u);
+assert.match(surfaceEvidenceSource, /Test-MomentsNavigationGlyphPixel/u);
+assert.match(surfaceEvidenceSource, /discoverShapeFillRatio/u);
+assert.match(surfaceEvidenceSource, /diagonalContrast -ge 0\.08/u);
+assert.match(surfaceEvidenceSource, /function Test-MomentsSelectedDiscoverRecoveryMatch[\s\S]*greenRatio -ge 0\.80[\s\S]*cornerRatio -le 0\.12/u);
+assert.match(surfaceEvidenceSource, /if \(\$entries\.Count -eq 0\)[\s\S]*Test-MomentsSelectedDiscoverRecoveryMatch/u);
+const discoverShapeMatchSource = surfaceEvidenceSource.match(
+  /function Test-MomentsDiscoverShapeMatch\([^\n]+\) \{[\s\S]*?\n\}/u
+)?.[0] ?? "";
+assert.ok(discoverShapeMatchSource);
+assert.doesNotMatch(discoverShapeMatchSource, /ringRatio|expectedCenterX|centerTolerance/u);
+assert.match(surfaceEvidenceSource, /selected = \$greenRatio -ge 0\.55/u);
+assert.match(surfaceEvidenceSource, /\$greenRatio -ge 0\.42/u);
+const integratedPageSurfaceSource = surfaceEvidenceSource.match(
+  /function Test-IntegratedMomentsSurface\([^\n]+\) \{[\s\S]*?\n\}/u
+)?.[0] ?? "";
+assert.ok(integratedPageSurfaceSource);
+assert.doesNotMatch(
+  integratedPageSurfaceSource,
+  /Get-IntegratedDiscoverEntryEvidence|selectedDiscoverMatches/u,
+  "an already-open Moments page must not be rejected by the separate navigation-icon adapter"
+);
+assert.match(integratedPageSurfaceSource, /\$evidence\.exactMatchCount -ne 1[\s\S]*\$selectedMatches\.Count -ne 1/u);
+assert.match(surfaceEvidenceSource, /integrated_selected_moments/u);
+const integratedSurfaceProofProgram = `
+$ErrorActionPreference = "Stop"
+function Get-MomentsPixel($frame, [int]$x, [int]$y) {
+  if ($frame.ContainsKey("glyph")) {
+    if ($frame.ContainsKey("neutralGlyph") -and $frame.neutralGlyph.ContainsKey("$x,$y")) {
+      return @{ r = 88; g = 92; b = 94 }
+    }
+    if ($frame.glyph.ContainsKey("$x,$y")) {
+      return $(if ([bool]$frame.discoverSelected) { @{ r = 20; g = 170; b = 80 } } else { @{ r = 88; g = 92; b = 94 } })
+    }
+    if ([bool]$frame.momentsSelected -and $y -le 100) {
+      foreach ($run in @($frame.momentsRuns)) {
+        if ($x -ge [int]$run.left -and $x -le [int]$run.right) {
+          return @{ r = 20; g = 170; b = 80 }
+        }
+      }
+    }
+    if ($frame.ContainsKey("navigationBackground")) {
+      return $frame.navigationBackground
+    }
+    return @{ r = 220; g = 230; b = 238 }
+  }
+  return @{ r = 232; g = 232; b = 232 }
+}
+function Get-MomentsOcrObservation($frame, $region) {
+  # WinRT returns short CJK labels with inter-character whitespace on the live
+  # WeChat 4.1.11.55 surface. Keep that shape in the resolver regression.
+  $line = @{ compact = "◉ 朋 友 圈 >"; bounds = @{ left = 40.0; top = 30.0; width = 96.0; height = 24.0 } }
+  $lines = $(if ([bool]$frame.nativeMiss) { @() } elseif ([bool]$frame.duplicate) { @($line, $line) } else { @($line) })
+  return @{ ok = $true; lines = $lines }
+}
+function Get-MomentsScaledOcrObservation($frame, $region, [int]$scale = 3) {
+  $line = @{ compact = "◉ 朋 友 圈 >"; bounds = @{ left = 40.0; top = 30.0; width = 96.0; height = 24.0 } }
+  $lines = $(if ([bool]$frame.duplicate) { @($line, $line) } else { @($line) })
+  return @{ ok = $true; lines = $lines }
+}
+${MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL}
+function New-DiscoverFrame(
+  [double]$scale,
+  [string]$shape = "compass",
+  [bool]$discoverSelected = $false,
+  [bool]$momentsSelected = $false,
+  [bool]$duplicate = $false,
+  [double]$centerYLogical = 258.0,
+  [bool]$fixedPixelGlyph = $false,
+  [bool]$secondCompass = $false,
+  [double]$centerXLogical = 30.0
+) {
+  $frame = @{
+    ok = $true
+    width = 700
+    height = 500
+    glyph = @{}
+    discoverSelected = $discoverSelected
+    momentsSelected = $momentsSelected
+    momentsRuns = @(@{ left = 70; right = 310 })
+    duplicate = $duplicate
+    nativeMiss = $false
+  }
+  [int]$centerX = [Math]::Round($centerXLogical * $scale)
+  [int]$radius = $(if ($fixedPixelGlyph) { 10 } else { [Math]::Round(10.0 * $scale) })
+  [int]$edge = $(if ($fixedPixelGlyph) { 2 } else { [Math]::Max(1, [Math]::Round(1.5 * $scale)) })
+  $centerRows = New-Object System.Collections.Generic.List[int]
+  [void]$centerRows.Add([Math]::Round($centerYLogical * $scale))
+  if ($secondCompass) { [void]$centerRows.Add([Math]::Round(180.0 * $scale)) }
+  foreach ($centerY in $centerRows) {
+    [int]$solidRadius = $(if ($fixedPixelGlyph) { 14 } else { [Math]::Round(14.0 * $scale) })
+    [int]$left = $centerX - $(if ($shape -ceq "solid") { $solidRadius } else { $radius })
+    [int]$top = $centerY - $(if ($shape -ceq "solid") { $solidRadius } else { $radius })
+    [int]$right = $centerX + $(if ($shape -ceq "solid") { $solidRadius } else { $radius })
+    [int]$bottom = $centerY + $(if ($shape -ceq "solid") { $solidRadius } else { $radius })
+    for ($y = $top; $y -le $bottom; $y++) {
+      for ($x = $left; $x -le $right; $x++) {
+        $deltaX = $x - $centerX
+        $deltaY = $y - $centerY
+        $distance = [Math]::Sqrt(($deltaX * $deltaX) + ($deltaY * $deltaY))
+        $ringShape = $distance -le $radius -and $distance -ge ($radius - (2 * $edge))
+        $ring = ($shape -cne "sparse" -and $shape -cne "live_sparse") -and $ringShape
+        $sparseRing = $shape -ceq "sparse" -and $ringShape -and
+          (([Math]::Abs($x + $y) % 3) -lt 2)
+        $liveSparseRing = $shape -ceq "live_sparse" -and $ringShape -and
+          (([Math]::Abs($x + $y) % 2) -eq 0)
+        $positiveDiagonal = [Math]::Abs($deltaX + $deltaY) -le $edge -and $distance -le $radius
+        $selectedDisk = $discoverSelected -and $distance -le $radius -and -not $positiveDiagonal
+        $unselectedDiagonal = -not $discoverSelected -and $positiveDiagonal
+        $dense = $shape -ceq "dense" -and (($x + $y) % 2) -eq 0
+        $solid = $shape -ceq "solid"
+        if ($solid -or $dense -or $ring -or $sparseRing -or $liveSparseRing -or $unselectedDiagonal -or $selectedDisk) {
+          $frame.glyph["$x,$y"] = $true
+        }
+      }
+    }
+  }
+  return $frame
+}
+$discoverBounds = @{ left = 0.0; top = 0.0; width = 700.0; height = 500.0 }
+$discover100 = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.0) $discoverBounds 1.0
+$discover125 = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.25) $discoverBounds 1.25
+$discover150 = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.5) $discoverBounds 1.5
+$discoverShiftedTop = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.25 "compass" $false $false $false 220.0) $discoverBounds 1.25
+$discoverShiftedBottom = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.25 "compass" $false $false $false 290.0) $discoverBounds 1.25
+$discoverFixedPixel125 = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.25 "compass" $false $false $false 258.0 $true) $discoverBounds 1.25
+$discoverDouble = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.0 "compass" $false $false $false 258.0 $false $true) $discoverBounds 1.0
+$discoverSelected = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.0 "compass" $true) $discoverBounds 1.0
+$discoverGrayRailFrame = New-DiscoverFrame 1.25 "compass" $false
+$discoverGrayRailFrame.navigationBackground = @{ r = 188; g = 188; b = 188 }
+$discoverGrayRail = Get-IntegratedDiscoverEntryEvidence $discoverGrayRailFrame $discoverBounds 1.25
+$discoverMergedRailFrame = New-DiscoverFrame 1.25 "compass" $true
+$discoverMergedRailFrame.neutralGlyph = @{}
+foreach ($neutralRange in @(@{ top = 100; bottom = 306 }, @{ top = 339; bottom = 420 })) {
+  for ($neutralY = [int]$neutralRange.top; $neutralY -le [int]$neutralRange.bottom; $neutralY++) {
+    $discoverMergedRailFrame.neutralGlyph["37,$neutralY"] = $true
+  }
+}
+$discoverMergedRail = Get-IntegratedDiscoverEntryEvidence $discoverMergedRailFrame $discoverBounds 1.25
+$discoverDense = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.0 "dense") $discoverBounds 1.0
+$discoverSparse = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.25 "sparse") $discoverBounds 1.25
+$discoverLiveSparse = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.25 "live_sparse") $discoverBounds 1.25
+$discoverOutsideRail = Get-IntegratedDiscoverEntryEvidence (
+  New-DiscoverFrame 1.25 "compass" $false $false $false 258.0 $false $false 75.0
+) $discoverBounds 1.25
+$discoverMissing = Get-IntegratedDiscoverEntryEvidence @{ ok = $true; width = 700; height = 500; glyph = @{} } $discoverBounds 1.0
+$discoverSolid = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.0 "solid") $discoverBounds 1.0
+$latestScale = 1.25
+$latestChatCandidate = @{
+  activePixelCount = 106; bounds = @{ width = 24.0; height = 22.0 }; centerX = 47.0
+  fillRatio = 0.20076; aspectRatio = 1.0909; cornerRatio = 0.0625
+  ringRatio = 0.38258; diagonalContrast = 0.02222
+}
+$latestContactsCandidate = @{
+  activePixelCount = 367; bounds = @{ width = 28.0; height = 24.0 }; centerX = 47.0
+  fillRatio = 0.54613; aspectRatio = 1.1667; cornerRatio = 0.296875
+  ringRatio = 0.5625; diagonalContrast = 0.10526
+}
+$latestCubeCandidate = @{
+  activePixelCount = 135; bounds = @{ width = 22.0; height = 24.0 }; centerX = 47.0
+  fillRatio = 0.25568; aspectRatio = 0.9167; cornerRatio = 0.08333
+  ringRatio = 0.35985; diagonalContrast = 0.0
+}
+$latestDiscoverCandidate = @{
+  activePixelCount = 128; bounds = @{ width = 24.0; height = 24.0 }; centerX = 47.0
+  fillRatio = 0.22222; aspectRatio = 1.0; cornerRatio = 0.0
+  ringRatio = 0.32609; diagonalContrast = 0.19298
+}
+$latestSelectedDiscoverCandidate = @{
+  activePixelCount = 490; bounds = @{ width = 31.0; height = 26.0 }; centerX = 49.5
+  fillRatio = 0.60794; aspectRatio = 1.1923; cornerRatio = 0.02778
+  ringRatio = 0.60459; diagonalContrast = 0.01429; greenRatio = 0.96122
+}
+$latestSelectedChatCandidate = @{
+  activePixelCount = 451; bounds = @{ width = 26.0; height = 23.0 }; centerX = 47.0
+  fillRatio = 0.75418; aspectRatio = 1.13043; cornerRatio = 0.04808
+  ringRatio = 0.80068; diagonalContrast = 0.01961; greenRatio = 0.99335
+}
+$latestChatPageDiscoverCandidate = @{
+  activePixelCount = 239; bounds = @{ width = 26.0; height = 26.0 }; centerX = 47.0
+  fillRatio = 0.35355; aspectRatio = 1.0; cornerRatio = 0.0
+  ringRatio = 0.54573; diagonalContrast = 0.21774; greenRatio = 0.0
+}
+$pane = @{ left = 0.0; top = 0.0; width = 700.0; height = 400.0 }
+$selectedEntryEvidence = Get-IntegratedMomentsEntryEvidence (New-DiscoverFrame 1.0 "compass" $true $true) $pane 1.0
+$selected = Test-IntegratedMomentsSurface (New-DiscoverFrame 1.0 "compass" $true $true) $pane 1.0
+$integratedViewport = Get-MomentsVisualViewportBounds $pane $selected "integrated"
+$standalonePane = @{ left = 37.0; top = 41.0; width = 603.0; height = 319.0 }
+$standaloneViewport = Get-MomentsVisualViewportBounds $standalonePane $null "standalone"
+$beforePaneViewport = Get-MomentsVisualViewportBounds $standalonePane @{ ok = $true; contentLeft = 20.0 } "integrated"
+$invalidViewport = Get-MomentsVisualViewportBounds $pane @{ ok = $true; contentLeft = 700.0 } "integrated"
+$doubleBandFrame = New-DiscoverFrame 1.0 "compass" $true $true
+$doubleBandFrame.momentsRuns = @(@{ left = 70; right = 250 }, @{ left = 300; right = 470 })
+$doubleBand = Test-IntegratedMomentsSurface $doubleBandFrame $pane 1.0
+$outOfBoundsBandFrame = New-DiscoverFrame 1.0 "compass" $true $true
+$outOfBoundsBandFrame.momentsRuns = @(@{ left = 70; right = 695 })
+$outOfBoundsBand = Test-IntegratedMomentsSurface $outOfBoundsBandFrame $pane 1.0
+$scaledSelectedFrame = New-DiscoverFrame 1.0 "compass" $true $true
+$scaledSelectedFrame.nativeMiss = $true
+$scaledSelectedEntryEvidence = Get-IntegratedMomentsEntryEvidence $scaledSelectedFrame $pane 1.0
+$scaledSelected = Test-IntegratedMomentsSurface $scaledSelectedFrame $pane 1.0
+$unselected = Test-IntegratedMomentsSurface (New-DiscoverFrame 1.0 "compass" $true $false) $pane 1.0
+$discoverUnselected = Test-IntegratedMomentsSurface (New-DiscoverFrame 1.0 "compass" $false $true) $pane 1.0
+$discoverShapeMismatchSurface = Test-IntegratedMomentsSurface (New-DiscoverFrame 1.0 "dense" $false $true) $pane 1.0
+$duplicate = Test-IntegratedMomentsSurface (New-DiscoverFrame 1.0 "compass" $true $true $true) $pane 1.0
+$scaledDuplicateFrame = New-DiscoverFrame 1.0 "compass" $true $true $true
+$scaledDuplicateFrame.nativeMiss = $true
+$scaledDuplicate = Test-IntegratedMomentsSurface $scaledDuplicateFrame $pane 1.0
+$doubleDiscoverSurface = Test-IntegratedMomentsSurface (
+  New-DiscoverFrame 1.0 "compass" $true $true $false 258.0 $false $true
+) $pane 1.0
+@{
+  selectedOk = [bool]$selected.ok
+  selectedMode = [string]$selected.mode
+  selectedGreenRatio = [double]$selected.greenRatio
+  selectedContentLeft = [double]$selected.contentLeft
+  selectedGreenRunLeft = [double]$selected.selectedGreenRunBounds.left
+  selectedGreenRunWidth = [double]$selected.selectedGreenRunBounds.width
+  integratedViewportOk = [bool]$integratedViewport.ok
+  integratedViewportLeft = [double]$integratedViewport.bounds.left
+  integratedViewportWidth = [double]$integratedViewport.bounds.width
+  standaloneViewportOk = [bool]$standaloneViewport.ok
+  standaloneViewportLeft = [double]$standaloneViewport.bounds.left
+  standaloneViewportTop = [double]$standaloneViewport.bounds.top
+  standaloneViewportWidth = [double]$standaloneViewport.bounds.width
+  standaloneViewportHeight = [double]$standaloneViewport.bounds.height
+  beforePaneViewportOk = [bool]$beforePaneViewport.ok
+  beforePaneViewportReason = [string]$beforePaneViewport.reason
+  invalidViewportOk = [bool]$invalidViewport.ok
+  invalidViewportReason = [string]$invalidViewport.reason
+  doubleBandOk = [bool]$doubleBand.ok
+  doubleBandReason = [string]$doubleBand.reason
+  doubleBandBoundaryReason = [string]$doubleBand.boundaryReason
+  outOfBoundsBandOk = [bool]$outOfBoundsBand.ok
+  outOfBoundsBandReason = [string]$outOfBoundsBand.reason
+  outOfBoundsBandBoundaryReason = [string]$outOfBoundsBand.boundaryReason
+  selectedEntryOcrMode = [string]$selectedEntryEvidence.entries[0].ocrMode
+  scaledSelectedOk = [bool]$scaledSelected.ok
+  scaledSelectedEntryOcrMode = [string]$scaledSelectedEntryEvidence.entries[0].ocrMode
+  unselectedOk = [bool]$unselected.ok
+  unselectedReason = [string]$unselected.reason
+  duplicateOk = [bool]$duplicate.ok
+  duplicateReason = [string]$duplicate.reason
+  scaledDuplicateOk = [bool]$scaledDuplicate.ok
+  scaledDuplicateReason = [string]$scaledDuplicate.reason
+  doubleDiscoverSurfaceOk = [bool]$doubleDiscoverSurface.ok
+  doubleDiscoverSurfaceReason = [string]$doubleDiscoverSurface.reason
+  discover100Count = [int]$discover100.exactMatchCount
+  discover125Count = [int]$discover125.exactMatchCount
+  discover150Count = [int]$discover150.exactMatchCount
+  discoverShiftedTopCount = [int]$discoverShiftedTop.exactMatchCount
+  discoverShiftedBottomCount = [int]$discoverShiftedBottom.exactMatchCount
+  discoverFixedPixel125Count = [int]$discoverFixedPixel125.exactMatchCount
+  discoverDoubleCount = [int]$discoverDouble.exactMatchCount
+  discoverSelectedCount = [int]$discoverSelected.selectedMatchCount
+  discoverGrayRailCount = [int]$discoverGrayRail.exactMatchCount
+  discoverGrayRailCandidateCount = [int]$discoverGrayRail.candidateCount
+  discoverMergedRailCount = [int]$discoverMergedRail.exactMatchCount
+  discoverMergedRailSelectedCount = [int]$discoverMergedRail.selectedMatchCount
+  discoverMergedRailRecovered = [bool](@($discoverMergedRail.candidateDiagnostics | Where-Object {
+    [string]$_.source -ceq "selected_green_recovery" -and [bool]$_.matched
+  }).Count -eq 1)
+  discoverDenseCount = [int]$discoverDense.exactMatchCount
+  discoverDenseCandidateCount = [int]$discoverDense.candidateCount
+  discoverDenseDiagnosticCount = @($discoverDense.candidateDiagnostics).Count
+  discoverDenseMatched = [bool]$discoverDense.candidateDiagnostics[0].matched
+  discoverSparseCount = [int]$discoverSparse.exactMatchCount
+  discoverSparseNearLiveRing = [bool](
+    [double]$discoverSparse.candidateDiagnostics[0].ringRatio -gt 0.50 -and
+    [double]$discoverSparse.candidateDiagnostics[0].ringRatio -lt 0.52
+  )
+  discoverLiveSparseCount = [int]$discoverLiveSparse.exactMatchCount
+  discoverLiveSparseLowRing = [bool](
+    [double]$discoverLiveSparse.candidateDiagnostics[0].ringRatio -ge 0.25 -and
+    [double]$discoverLiveSparse.candidateDiagnostics[0].ringRatio -lt 0.50
+  )
+  discoverLiveSparseTopology = [bool](
+    [double]$discoverLiveSparse.candidateDiagnostics[0].cornerRatio -le 0.12 -and
+    [double]$discoverLiveSparse.candidateDiagnostics[0].diagonalContrast -ge 0.08
+  )
+  discoverOutsideRailCount = [int]$discoverOutsideRail.exactMatchCount
+  discoverOutsideRailCandidateCount = [int]$discoverOutsideRail.candidateCount
+  discoverMissingCount = [int]$discoverMissing.exactMatchCount
+  discoverMissingDiagnosticCount = @($discoverMissing.candidateDiagnostics).Count
+  discoverSolidCount = [int]$discoverSolid.exactMatchCount
+  latestChatMatched = [bool](Test-MomentsDiscoverShapeMatch $latestChatCandidate $latestScale)
+  latestContactsMatched = [bool](Test-MomentsDiscoverShapeMatch $latestContactsCandidate $latestScale)
+  latestCubeMatched = [bool](Test-MomentsDiscoverShapeMatch $latestCubeCandidate $latestScale)
+  latestDiscoverMatched = [bool](Test-MomentsDiscoverShapeMatch $latestDiscoverCandidate $latestScale)
+  latestSelectedDiscoverMatched = [bool](Test-MomentsDiscoverShapeMatch $latestSelectedDiscoverCandidate $latestScale)
+  latestSelectedDiscoverRecoveryMatched = [bool](Test-MomentsSelectedDiscoverRecoveryMatch $latestSelectedDiscoverCandidate $latestScale)
+  latestSelectedChatMatched = [bool](Test-MomentsDiscoverShapeMatch $latestSelectedChatCandidate $latestScale)
+  latestChatPageDiscoverMatched = [bool](Test-MomentsDiscoverShapeMatch $latestChatPageDiscoverCandidate $latestScale)
+  discoverUnselectedSurfaceOk = [bool]$discoverUnselected.ok
+  discoverShapeMismatchSurfaceOk = [bool]$discoverShapeMismatchSurface.ok
+} | ConvertTo-Json -Compress
+`;
+const integratedSurfaceProofHarness = spawnSync("powershell.exe", [
+  "-NoProfile",
+  "-NonInteractive",
+  "-Command",
+  "$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())); Invoke-Expression $source"
+], {
+  input: Buffer.from(integratedSurfaceProofProgram, "utf8").toString("base64"),
+  encoding: "utf8",
+  windowsHide: true
+});
+assert.equal(
+  integratedSurfaceProofHarness.status,
+  0,
+  integratedSurfaceProofHarness.stderr || "integrated Moments surface proof harness must run"
+);
+assert.deepEqual(JSON.parse(integratedSurfaceProofHarness.stdout.trim()), {
+  beforePaneViewportOk: false,
+  beforePaneViewportReason: "moments_integrated_content_boundary_not_proven",
+  discover100Count: 1,
+  discover125Count: 1,
+  discover150Count: 1,
+  discoverShiftedTopCount: 1,
+  discoverShiftedBottomCount: 1,
+  discoverFixedPixel125Count: 1,
+  discoverDoubleCount: 2,
+  discoverSelectedCount: 1,
+  discoverGrayRailCount: 1,
+  discoverGrayRailCandidateCount: 1,
+  discoverMergedRailCount: 1,
+  discoverMergedRailSelectedCount: 1,
+  discoverMergedRailRecovered: true,
+  discoverDenseCount: 0,
+  discoverDenseCandidateCount: 1,
+  discoverDenseDiagnosticCount: 1,
+  discoverDenseMatched: false,
+  discoverSparseCount: 1,
+  discoverSparseNearLiveRing: true,
+  discoverLiveSparseCount: 1,
+  discoverLiveSparseLowRing: true,
+  discoverLiveSparseTopology: true,
+  discoverOutsideRailCount: 0,
+  discoverOutsideRailCandidateCount: 0,
+  discoverMissingCount: 0,
+  discoverMissingDiagnosticCount: 0,
+  discoverSolidCount: 0,
+  latestChatMatched: false,
+  latestContactsMatched: false,
+  latestCubeMatched: false,
+  latestDiscoverMatched: true,
+  latestSelectedDiscoverMatched: false,
+  latestSelectedDiscoverRecoveryMatched: true,
+  latestSelectedChatMatched: false,
+  latestChatPageDiscoverMatched: true,
+  discoverUnselectedSurfaceOk: true,
+  discoverShapeMismatchSurfaceOk: true,
+  duplicateOk: false,
+  duplicateReason: "moments_integrated_surface_not_proven",
+  scaledDuplicateOk: false,
+  scaledDuplicateReason: "moments_integrated_surface_not_proven",
+  doubleDiscoverSurfaceOk: true,
+  doubleDiscoverSurfaceReason: "",
+  doubleBandBoundaryReason: "moments_integrated_content_boundary_not_proven",
+  doubleBandOk: false,
+  doubleBandReason: "moments_integrated_surface_not_proven",
+  integratedViewportLeft: 311,
+  integratedViewportOk: true,
+  integratedViewportWidth: 389,
+  invalidViewportOk: false,
+  invalidViewportReason: "moments_integrated_content_boundary_not_proven",
+  outOfBoundsBandBoundaryReason: "moments_integrated_content_boundary_not_proven",
+  outOfBoundsBandOk: false,
+  outOfBoundsBandReason: "moments_integrated_surface_not_proven",
+  selectedContentLeft: 311,
+  selectedGreenRatio: 1,
+  selectedGreenRunLeft: 70,
+  selectedGreenRunWidth: 241,
+  selectedEntryOcrMode: "native",
+  selectedMode: "integrated_selected_moments",
+  selectedOk: true,
+  scaledSelectedEntryOcrMode: "scaled",
+  scaledSelectedOk: true,
+  standaloneViewportHeight: 319,
+  standaloneViewportLeft: 37,
+  standaloneViewportOk: true,
+  standaloneViewportTop: 41,
+  standaloneViewportWidth: 603,
+  unselectedOk: false,
+  unselectedReason: "moments_integrated_surface_not_proven"
+});
+
+// Exercise the real menu -> avatar -> post reader with an in-memory frame.
+// This catches the integrated-layout regression where the menu was visible but
+// avatar geometry was still calculated from the full WeChat window.
+const feedViewportReaderProgram = `${MOMENTS_VISUAL_READONLY_POWERSHELL}
+function Set-FixtureRect($frame, [int]$left, [int]$top, [int]$right, [int]$bottom, [byte]$value) {
+  for ($y = $top; $y -le $bottom; $y++) {
+    for ($x = $left; $x -le $right; $x++) {
+      $offset = ($y * $frame.stride) + ($x * 4)
+      $frame.bytes[$offset] = $value
+      $frame.bytes[$offset + 1] = $value
+      $frame.bytes[$offset + 2] = $value
+      $frame.bytes[$offset + 3] = 255
+    }
+  }
+}
+function Get-MomentsOcrObservation($frame, $rect) {
+  return @{
+    ok = $true
+    text = "作者测试账号朋友圈正文稳定识别测试"
+    layoutHash = ("a" * 64)
+    lines = @(
+      @{ compact = "作者测试账号"; bounds = @{ left = 55.0; top = 8.0; width = 100.0; height = 12.0 } },
+      @{ compact = "朋友圈正文稳定识别测试"; bounds = @{ left = 55.0; top = 25.0; width = 180.0; height = 14.0 } }
+    )
+  }
+}
+$width = 700
+$height = 400
+$bytes = New-Object byte[] ($width * $height * 4)
+for ($offset = 0; $offset -lt $bytes.Length; $offset += 4) {
+  $bytes[$offset] = 240
+  $bytes[$offset + 1] = 240
+  $bytes[$offset + 2] = 240
+  $bytes[$offset + 3] = 255
+}
+$frame = @{ width = $width; height = $height; stride = $width * 4; bytes = $bytes }
+Set-FixtureRect $frame 655 220 658 223 80
+Set-FixtureRect $frame 664 220 667 223 80
+Set-FixtureRect $frame 332 80 366 114 50
+$viewport = @{ left = 311.0; top = 0.0; width = 389.0; height = 400.0 }
+$read = Get-MomentsVisualPostCandidates $frame $viewport
+$posts = @($read.posts)
+$post = $(if ($posts.Count -eq 1) { $posts[0] } else { $null })
+@{
+  menuCount = @($read.menus).Count
+  postCount = $posts.Count
+  avatarInExpectedColumn = [bool]($post -and [Math]::Abs([double]$post.avatarBounds.left - 332.0) -le 9.0)
+  postStartsWithAvatar = [bool]($post -and [Math]::Abs([double]$post.bounds.left - ([double]$post.avatarBounds.left - 6.0)) -le 0.5)
+  allInside = [bool]($post -and
+    (Test-MomentsVisualBoundsInside $post.bounds $viewport) -and
+    (Test-MomentsVisualBoundsInside $post.menuBounds $viewport) -and
+    (Test-MomentsVisualBoundsInside $post.avatarBounds $viewport))
+} | ConvertTo-Json -Compress
+`;
+const feedViewportReaderHarness = spawnSync("powershell.exe", [
+  "-NoProfile",
+  "-NonInteractive",
+  "-Command",
+  "$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())); Invoke-Expression $source"
+], {
+  input: Buffer.from(feedViewportReaderProgram, "utf8").toString("base64"),
+  encoding: "utf8",
+  windowsHide: true
+});
+assert.equal(feedViewportReaderHarness.status, 0, feedViewportReaderHarness.stderr || "feed viewport reader harness must run");
+assert.deepEqual(JSON.parse(feedViewportReaderHarness.stdout.trim()), {
+  allInside: true,
+  avatarInExpectedColumn: true,
+  menuCount: 1,
+  postCount: 1,
+  postStartsWithAvatar: true
+});
 
 // This fallback must conflict with, rather than overlap, the UIA sns_list profile.
 assert.match(script, /AutomationIdProperty,[\s\S]*"sns_list"/u);
@@ -262,33 +893,130 @@ assert.match(script, /\$feeds = \$root\.FindAll\(\[System\.Windows\.Automation\.
 assert.match(script, /\$feeds\.Count -ne 0[\s\S]*moments_visual_profile_conflict/u);
 
 // Two independently captured observations must agree before a post is accepted.
-const foregroundRecovery = script.match(
-  /function Request-MomentsVisualForeground\([^\n]+\) \{([\s\S]*?)\n\}/u,
-)?.[1] ?? "";
-assert.ok(foregroundRecovery, "visual capture should have bounded foreground recovery");
-assert.match(foregroundRecovery, /foreach \(\$delayMs in @\(80, 140, 220, 320\)\)/u);
-assert.match(foregroundRecovery, /SetForegroundWindow\(\$hWnd\)[\s\S]*Start-Sleep -Milliseconds \$delayMs/u);
-assert.match(
-  script,
-  /\$foregroundReady = Request-MomentsVisualForeground \$hWnd[\s\S]*if \(-not \$foregroundReady\)[\s\S]*moments_window_not_foreground/u,
-);
-assert.match(script, /\$firstFrame = Get-MomentsVisualFrame \$hWnd \$matched\.rect \$matched\.pid \$true/u);
+assert.doesNotMatch(script, /Request-MomentsVisualForeground|SetForegroundWindow|ShowWindowAsync/u,
+  "visual observation and action helpers must never steal foreground");
+assert.match(script, /if \(\$activate\)[\s\S]*moments_foreground_handoff_not_allowed/u);
+assert.match(script, /\$firstFrame = Get-MomentsVisualFrame \$hWnd \$matched\.rect \$matched\.pid \$false/u);
 assert.match(script, /\$secondFrame = Get-MomentsVisualFrame \$hWnd \$matched\.rect \$matched\.pid \$false/u);
+assert.doesNotMatch(script, /Get-MomentsVisualFrame[^\r\n]*\$true/u);
 assert.match(script, /Start-Sleep -Milliseconds 180/u);
-assert.match(script, /Test-VisualMenuSequence \$firstRead\.menus \$secondRead\.menus/u);
-assert.match(script, /Test-VisualPostSequence \$firstRead\.posts \$secondRead\.posts/u);
+assert.match(script, /Get-UniqueStableVisualCandidates \$firstRead\.menus \$secondRead\.menus "menu"/u);
+assert.match(script, /Get-UniqueStableVisualCandidates \$firstRead\.posts \$secondRead\.posts "post"/u);
+assert.match(script, /Get-UniqueStableVisualCandidates \$firstReading \$secondReading "reading"/u);
+assert.match(script, /\$posts = @\(\$stablePosts\)/u);
+assert.match(script, /foreach \(\$post in @\(\$stableReading\)\)/u);
+assert.match(script, /foreach \(\$menu in @\(\$stableMenus\)\)/u);
+assert.match(script, /changeStage = "candidate_stability"/u);
 assert.match(script, /\$script:momentsVisualStabilityTolerancePx = 12\.0/u);
-assert.doesNotMatch(script, /Test-Visual(?:Menu|Post)Sequence[\s\S]*?-gt 1\.5/u);
-assert.match(script, /Test-MomentsStablePostIdentityText \(\[string\]\$left\[\$index\]\.identityText\) \(\[string\]\$right\[\$index\]\.identityText\) \(\[string\]\$left\[\$index\]\.stableAnchorText\) \(\[string\]\$right\[\$index\]\.stableAnchorText\)/u);
-assert.match(script, /\[string\]\$left\[\$index\]\.avatarHash -cne \[string\]\$right\[\$index\]\.avatarHash/u);
-assert.match(script, /foreach \(\$boundsField in @\("bounds", "menuBounds", "avatarBounds"\)\)/u);
+assert.match(script, /Test-MomentsStablePostIdentityText \(\[string\]\$left\.identityText\) \(\[string\]\$right\.identityText\) \(\[string\]\$left\.stableAnchorText\) \(\[string\]\$right\.stableAnchorText\)/u);
+assert.match(script, /\[string\]\$left\.avatarHash -cne \[string\]\$right\.avatarHash/u);
+assert.match(script, /@\("bounds", "menuBounds", "avatarBounds"\)/u);
 assert.match(script, /Close-And-Write \$result \$firstFrame \$secondFrame/u);
-const visualPostSelection = script.match(/\$posts = @\(\$secondRead\.posts\)([\s\S]*?)\$result = @\{/u)?.[1] ?? "";
+
+const stableVisualCandidateFunctions = script.match(
+  /(function Test-VisualStableBoundsFields[\s\S]*?\n\})\n\nfunction Get-ExpectedMomentsSurface/u
+)?.[1] ?? "";
+const stableIdentityFunctions = MOMENTS_VISUAL_READONLY_POWERSHELL.match(
+  /(function Normalize-MomentsStableContentText[\s\S]*?\n\})\n\nfunction Get-MomentsPixel/u
+)?.[1] ?? "";
+assert.ok(
+  stableVisualCandidateFunctions && stableIdentityFunctions,
+  "stable visual candidate and identity resolvers should be extractable"
+);
+const stableVisualCandidateProgram = `${stableIdentityFunctions}
+${stableVisualCandidateFunctions}
+$script:momentsVisualStabilityTolerancePx = 12.0
+function New-ReadingCandidate($text, $avatarHash, [double]$top) {
+  return @{
+    identityText = $text
+    stableAnchorText = $text
+    avatarHash = $avatarHash
+    bounds = @{ left = 320.0; top = $top; width = 480.0; height = 180.0 }
+    avatarBounds = @{ left = 326.0; top = ($top + 6.0); width = 48.0; height = 48.0 }
+  }
+}
+function New-PostCandidate($text, $avatarHash, [double]$top) {
+  $candidate = New-ReadingCandidate $text $avatarHash $top
+  $candidate.partialVisible = $false
+  $candidate.menuBounds = @{ left = 760.0; top = ($top + 150.0); width = 36.0; height = 24.0 }
+  return $candidate
+}
+function New-MenuCandidate([double]$top) {
+  return @{
+    centerX = 778.0
+    centerY = ($top + 12.0)
+    bounds = @{ left = 760.0; top = $top; width = 36.0; height = 24.0 }
+  }
+}
+$alpha = "客户现场清洁机器人部署记录与后续维护计划"
+$beta = "另一条完全不同的朋友圈内容用于候选变化测试"
+$firstReading = @(
+  (New-ReadingCandidate $alpha "avatar-alpha" 120.0),
+  (New-ReadingCandidate $beta "avatar-beta" 420.0)
+)
+$secondReading = @(
+  (New-ReadingCandidate $alpha "avatar-alpha" 126.0),
+  (New-ReadingCandidate "新加载的边缘朋友圈候选" "avatar-new" 650.0)
+)
+$stableReading = @(Get-UniqueStableVisualCandidates $firstReading $secondReading "reading")
+$wrongAvatar = @(Get-UniqueStableVisualCandidates @($firstReading[0]) @(
+  (New-ReadingCandidate $alpha "avatar-other" 126.0)
+) "reading")
+$ambiguousReading = @(Get-UniqueStableVisualCandidates @($firstReading[0]) @(
+  (New-ReadingCandidate $alpha "avatar-alpha" 124.0),
+  (New-ReadingCandidate $alpha "avatar-alpha" 128.0)
+) "reading")
+$stablePosts = @(Get-UniqueStableVisualCandidates @(
+  (New-PostCandidate $alpha "avatar-alpha" 120.0),
+  (New-PostCandidate $beta "avatar-beta" 420.0)
+) @(
+  (New-PostCandidate $alpha "avatar-alpha" 126.0)
+) "post")
+$stableMenus = @(Get-UniqueStableVisualCandidates @(
+  (New-MenuCandidate 270.0),
+  (New-MenuCandidate 570.0)
+) @(
+  (New-MenuCandidate 276.0),
+  (New-MenuCandidate 760.0)
+) "menu")
+@{
+  stableReadingCount = $stableReading.Count
+  stableReadingAvatar = $(if ($stableReading.Count -eq 1) { $stableReading[0].avatarHash } else { "" })
+  wrongAvatarCount = $wrongAvatar.Count
+  ambiguousReadingCount = $ambiguousReading.Count
+  stablePostCount = $stablePosts.Count
+  stableMenuCount = $stableMenus.Count
+} | ConvertTo-Json -Compress`;
+const stableVisualCandidateHarness = spawnSync("powershell.exe", [
+  "-NoProfile",
+  "-STA",
+  "-NonInteractive",
+  "-EncodedCommand",
+  Buffer.from(stableVisualCandidateProgram, "utf16le").toString("base64")
+], {
+  encoding: "utf8",
+  windowsHide: true,
+  timeout: 30_000
+});
+assert.equal(
+  stableVisualCandidateHarness.status,
+  0,
+  stableVisualCandidateHarness.stderr || "stable visual candidate resolver harness must run"
+);
+assert.deepEqual(JSON.parse(stableVisualCandidateHarness.stdout.trim()), {
+  ambiguousReadingCount: 0,
+  stableMenuCount: 1,
+  stablePostCount: 1,
+  stableReadingAvatar: "avatar-alpha",
+  stableReadingCount: 1,
+  wrongAvatarCount: 0
+});
+const visualPostSelection = script.match(/\$posts = @\(\$stablePosts\)([\s\S]*?)\$result = \$surfaceResult\.Clone\(\)/u)?.[1] ?? "";
 assert.ok(visualPostSelection, "visual post selection should be present");
 assert.doesNotMatch(visualPostSelection, /moments_post_ambiguous/u);
 assert.match(visualPostSelection, /foreach \(\$post in \$posts\)/u);
 assert.match(visualPostSelection, /\$absolutePosts\.Add\(/u);
-assert.match(script, /posts = @\(\$absolutePosts\.ToArray\(\)\)/u);
+assert.match(script, /\$result\["posts"\] = @\(\$absolutePosts\.ToArray\(\)\)/u);
 
 // Relative-time presentation changes and one-character OCR jitter are accepted,
 // while a genuinely different post remains rejected.
@@ -365,19 +1093,27 @@ assert.deepEqual(JSON.parse(stableAnchorHarness.stdout.trim()), {
   anchor: "author stable fixed body line"
 });
 assert.match(probeSource, /function Get-MomentsVisualPostCandidates\(\$frame, \$viewportBounds\)/u);
-assert.match(probeSource, /Find-MomentsMenuDots \$frame \| Where-Object \{ Test-MomentsVisualBoundsInside \$_\.bounds \$viewportBounds \}/u);
-assert.match(probeSource, /Find-MomentsAvatarForMenu \$frame \$menus \$index \$viewportBounds/u);
+assert.match(probeSource, /\$visibleAvatars = @\(Find-MomentsVisibleAvatars \$frame \$viewportBounds\)/u);
+assert.match(probeSource, /Find-MomentsMenuDots \$frame \$viewportBounds \$visibleAvatars \| Where-Object \{ Test-MomentsVisualBoundsInside \$_\.bounds \$viewportBounds \}/u);
+assert.match(probeSource, /Find-MomentsAvatarForMenu \$frame \$menus \$index \$viewportBounds \$visibleAvatars/u);
 assert.match(probeSource, /\$postBottom = \[Math\]::Min\(\$viewportBottom, \$unclippedPostBottom\)/u);
 assert.match(probeSource, /partialVisible = \$unclippedPostBottom -gt \$viewportBottom/u);
 assert.doesNotMatch(probeSource, /\$postBottom -gt \$safeBottom/u);
 assert.match(script, /function Test-VisualBoundsInside\(\$inner, \$outer\)/u);
 assert.match(script, /Test-VisualBoundsInside \$renderEvidence\.pane\.bounds \$windowBounds/u);
-assert.match(script, /Get-MomentsVisualPostCandidates \$firstFrame \$relativeRenderPaneBounds/u);
-assert.match(script, /Get-MomentsVisualPostCandidates \$secondFrame \$relativeRenderPaneBounds/u);
+assert.match(script, /Get-MomentsVisualViewportBounds \$relativeRenderPaneBounds \$firstHeader/u);
+assert.match(script, /Get-MomentsVisualPostCandidates \$firstFrame \$firstViewport\.bounds/u);
+assert.match(script, /Get-MomentsVisualReadingCandidates \$firstFrame \$firstViewport\.bounds \(\$firstRead\.visibleAvatars\)/u);
+assert.match(script, /Get-MomentsVisualViewportBounds \$relativeRenderPaneBounds \$secondHeader/u);
+assert.match(script, /Get-MomentsVisualPostCandidates \$secondFrame \$secondViewport\.bounds/u);
+assert.match(script, /Get-MomentsVisualReadingCandidates \$secondFrame \$secondViewport\.bounds \(\$secondRead\.visibleAvatars\)/u);
 assert.match(script, /Test-VisualBoundsInside \$absoluteBounds \$renderEvidence\.pane\.bounds/u);
 assert.match(script, /Test-VisualBoundsInside \$absoluteMenuBounds \$renderEvidence\.pane\.bounds/u);
 assert.match(script, /Test-VisualBoundsInside \$absoluteAvatarBounds \$renderEvidence\.pane\.bounds/u);
-assert.match(actionSource, /Get-MomentsVisualPostCandidates \$frame \$expectedRenderPaneBounds/u);
+assert.match(script, /menuOnlyMenus/u, "the visual probe should preserve stable menu-only frames for tall posts");
+assert.match(actionSource, /Get-MomentsVisualPostCandidates \$frame \$lock\.relativeVisualViewportBounds/u);
+assert.match(actionSource, /\$snapshot\.menu_only/u, "the action relock should support an exact visible-menu target without inventing an avatar");
+assert.match(actionSource, /if \(\$expectedAvatarBounds -ne \$null -and \$expectedAvatarHash\)/u);
 assert.match(actionSource, /boundsWithin\(snapshot\.menu_bounds, window\.renderPaneBounds\)/u);
 assert.match(actionSource, /boundsWithin\(snapshot\.avatar_bounds, window\.renderPaneBounds\)/u);
 for (const field of ["bounds", "menuBounds", "avatarBounds"]) {
@@ -386,7 +1122,7 @@ for (const field of ["bounds", "menuBounds", "avatarBounds"]) {
 
 // The current render profile uses exactly two substantial dots. Three tiny text
 // ellipsis components are rejected by the per-dot size and pixel-count floor.
-const menuMorphology = script.match(/function Find-MomentsMenuDots\(\$frame\) \{([\s\S]*?)\n\}/u)?.[1] ?? "";
+const menuMorphology = script.match(/function Find-MomentsMenuDots\(\$frame, \$viewportBounds = \$null, \$avatarCandidates = \$null\) \{([\s\S]*?)\n\}/u)?.[1] ?? "";
 assert.ok(menuMorphology);
 assert.match(menuMorphology, /for \(\$firstIndex = 0; \$firstIndex -lt \$ordered\.Count; \$firstIndex\+\+\)/u);
 assert.match(menuMorphology, /for \(\$secondIndex = \$firstIndex \+ 1; \$secondIndex -lt \$ordered\.Count; \$secondIndex\+\+\)/u);
@@ -447,7 +1183,7 @@ assert.doesNotMatch(MOMENTS_VISUAL_READONLY_POWERSHELL, /\.Save\s*\(\s*\$(?:path
 // The Node wrapper keeps PowerShell non-installing, STA, bounded, and diagnostic.
 assert.match(
   dryRunSource,
-  /runPowerShell\(MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT, \{\}, \{ ensure: false, sta: true, timeout: 30000, diagnostics: true \}\)/u
+  /runPowerShell\([\s\S]*MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT,[\s\S]*XIAOXI_MOMENTS_EXPECTED_SURFACE_BASE64: expectedSurface[\s\S]*Buffer\.from\(JSON\.stringify\(expectedSurface\), "utf8"\)[\s\S]*\{ ensure: false, sta: true, timeout: 30000, diagnostics: true \}/u
 );
 assert.doesNotMatch(dryRunSource, /runPowerShell\([^\n]+ensure: true/u);
 assert.match(probeSource, /module\.exports = \{ MOMENTS_VISUAL_READONLY_POWERSHELL \}/u);
@@ -466,13 +1202,50 @@ for (const name of ["comment", "commentOccurrenceCheck", "commentReadback", "ins
   assert.equal(result.actionAttempted, false);
 }
 assert.match(actionSource, /identityMode === "visual_mmui_render"/u);
-assert.match(actionSource, /version: 5/u);
+assert.match(actionSource, /version: 6/u);
+assert.match(actionSource, /surfaceMode: String\(window\.surfaceMode \?\? ""\)/u);
+assert.match(actionSource, /validMomentsSurfaceRoot\(window\)/u);
+assert.match(actionSource, /require\("\.\/moments_surface_profile\.dev\.cjs"\)/u);
+assert.match(actionSource, /require\("\.\/moments_surface_evidence\.dev\.cjs"\)/u);
 assert.match(actionSource, /avatarHash: String\(snapshot\.avatar_hash \?\? ""\)/u);
 assert.match(actionSource, /SHA256_PATTERN\.test\(String\(snapshot\.avatar_hash \?\? ""\)\)/u);
 assert.match(actionSource, /identityText: String\(snapshot\.identity_text \?\? ""\)/u);
 assert.match(actionSource, /stableAnchorText: String\(snapshot\.stable_anchor_text\)/u);
 assert.match(actionSource, /momentsPostFingerprint\(snapshot\.identity_text\) === snapshot\.post_fingerprint/u);
 assert.match(actionSource, /post\.identityText[\s\S]*snapshot\.identity_text/u);
+
+// Every action rebinds the exact HWND/root/render pane first. Integrated mode
+// additionally re-proves the selected Moments sidebar before any action branch,
+// and all relative visual work is constrained to that rebound render pane.
+const lockedVisualRoot = actionSource.match(
+  /function Get-LockedVisualRoot\([\s\S]*?\n\}\n\nfunction Test-MomentsStablePostIdentity/u
+)?.[0] ?? "";
+assert.ok(lockedVisualRoot, "locked visual surface rebinding should be present");
+assert.ok(lockedVisualRoot.includes('$surfaceMode -ceq "standalone"'));
+assert.ok(lockedVisualRoot.includes(`$expected.title -ceq "${standaloneTitle}"`));
+assert.ok(lockedVisualRoot.includes(`$expected.rootName -ceq "${standaloneTitle}"`));
+assert.ok(lockedVisualRoot.includes('$surfaceMode -ceq "integrated"'));
+assert.ok(lockedVisualRoot.includes(`$expected.title -ceq "${integratedTitle}"`));
+assert.ok(lockedVisualRoot.includes(`$expected.rootName -ceq "${integratedTitle}"`));
+assert.match(lockedVisualRoot, /GetWindowText\(\$hWnd[\s\S]*GetClassName\(\$hWnd[\s\S]*moments_window_identity_mismatch/u);
+assert.match(lockedVisualRoot, /GetWindowRect\(\$hWnd[\s\S]*Test-VisualBoundsNear \$actualBounds \$windowBounds 0\.1[\s\S]*moments_window_changed/u);
+assert.match(lockedVisualRoot, /Get-MomentsRenderPaneEvidence \$root \$expectedPid/u);
+assert.match(lockedVisualRoot, /pane\.runtimeId -cne \[string\]\$expected\.renderPaneRuntimeId[\s\S]*Test-VisualBoundsNear \$paneEvidence\.pane\.bounds \$expected\.renderPaneBounds 1\.5/u);
+assert.match(lockedVisualRoot, /\$surfaceMode -ceq "integrated"[\s\S]*Get-MomentsVisualFrame[\s\S]*Test-IntegratedMomentsSurface \$surfaceFrame \$surfaceScanBounds/u);
+assert.match(lockedVisualRoot, /Get-MomentsVisualViewportBounds \$relativePaneBounds \$surfaceProof \$surfaceMode[\s\S]*renderPaneBounds = \$paneEvidence\.pane\.bounds[\s\S]*relativeRenderPaneBounds = \$relativePaneBounds[\s\S]*relativeVisualViewportBounds = \$visualViewport\.bounds/u);
+const surfaceProofIndex = lockedVisualRoot.indexOf("Test-IntegratedMomentsSurface $surfaceFrame");
+const successfulLockIndex = lockedVisualRoot.indexOf("ok = $true", surfaceProofIndex);
+assert.ok(surfaceProofIndex >= 0 && successfulLockIndex > surfaceProofIndex, "integrated proof must precede a successful action lock");
+const actionEntryIndex = actionSource.indexOf("$lock = Get-LockedVisualRoot $context");
+const actionViewportIndex = actionSource.indexOf("$script:momentsVisualViewportBounds = $lock.relativeVisualViewportBounds", actionEntryIndex);
+const firstActionBranchIndex = actionSource.indexOf('if ([string]$env:XIAOXI_MOMENTS_VISUAL_ACTION -ceq "comment_readback")', actionEntryIndex);
+assert.ok(
+  actionEntryIndex >= 0 && actionViewportIndex > actionEntryIndex && firstActionBranchIndex > actionViewportIndex,
+  "surface rebinding and viewport setup must precede every action branch"
+);
+assert.match(visualSendButtonFunction, /Test-VisualBoundsInside \$bounds \$viewport[\s\S]*moments_comment_composer_outside_render_pane/u);
+assert.match(actionSource, /\$paneBounds = \$lock\.renderPaneBounds[\s\S]*\$diagnostics\.pointInsidePane/u);
+assert.match(actionSource, /if \(-not \$diagnostics\.pointInsidePane -or -not \$diagnostics\.surfaceInsidePane\)[\s\S]*moments_click_surface_outside_render_pane/u);
 const stablePostIdentityFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
   /function Test-MomentsStablePostIdentity\([^\n]+\) \{[\s\S]*?\n\}/u
 )?.[0] ?? "";
@@ -517,6 +1290,8 @@ assert.match(
   /Get-MomentsVisualFrame \$lock\.hWnd \$lock\.windowRect \$lock\.pid \$activate \$false/u,
   "action relock should rely on the exact target checks instead of whole-window ownership"
 );
+assert.doesNotMatch(currentPostLock, /ConvertTo-RelativeVisualBounds \$context\.expectedWindow\.renderPaneBounds \$context\.expectedWindow/u);
+assert.match(currentPostLock, /Get-MomentsVisualPostCandidates \$frame \$lock\.relativeVisualViewportBounds/u);
 assert.doesNotMatch(currentPostLock, /regionHash|region_hash/u);
 assert.doesNotMatch(currentPostLock, /\$posts\.Count -ne 1/u);
 assert.match(currentPostLock, /Test-MomentsStablePostIdentity \$post \$snapshot/u);
@@ -645,6 +1420,7 @@ $croppedTargetedOcr = Resolve-VisualLikeMenuState $ocrEntry @{
   croppedLikeVerifyMode = [string]$croppedLikeVerify.mode
   croppedCancelAuthorizeHasEntry = ($croppedCancelAuthorize.entry -ne $null)
   croppedCancelAuthorizeMode = [string]$croppedCancelAuthorize.mode
+  croppedCancelAuthorizeRequiresStability = [bool]$croppedCancelAuthorize.requiresStability
   croppedCancelVerifyOk = ([string]$croppedCancelVerify.entry.text -ceq "取消")
   croppedCancelVerifyMode = [string]$croppedCancelVerify.mode
   croppedCancelVerifyRequiresStability = [bool]$croppedCancelVerify.requiresStability
@@ -690,10 +1466,11 @@ assert.deepEqual(JSON.parse(visualLikeMenuStateHarness.stdout.trim()), {
   cancelMode: "visual_signature",
   cancelOcrOk: true,
   cancelOcrMode: "ocr",
-  croppedCancelAuthorizeHasEntry: false,
-  croppedCancelAuthorizeMode: "ambiguous",
+  croppedCancelAuthorizeHasEntry: true,
+  croppedCancelAuthorizeMode: "visual_signature",
+  croppedCancelAuthorizeRequiresStability: true,
   croppedCancelUnknownPurpose: "authorize_action",
-  croppedCancelUnknownPurposeHasEntry: false,
+  croppedCancelUnknownPurposeHasEntry: true,
   croppedCancelVerifyMode: "visual_signature",
   croppedCancelVerifyOk: true,
   croppedCancelVerifyRequiresStability: true,
@@ -730,7 +1507,7 @@ ${visualLikeMenuStateFunction}
 ${openMenuReadOnceSource}
 $script:readerScenario = ""
 function Get-MomentsVisualFrame { return @{ ok = $true; width = 600; height = 800 } }
-function Get-VisualOpenMenuBounds {
+function Get-VisualOpenMenuBounds($frame, $menu, [string]$requestedAction = "", [double]$scale = 1.0) {
   return @{
     ok = $true
     bounds = @{ left = 200.0; top = 100.0; width = 200.0; height = 44.0 }
@@ -884,10 +1661,10 @@ assert.deepEqual(JSON.parse(visualLikeMenuReaderHarness.stdout.trim()), [
   {
     scenario: "cancel_cropped",
     proofPurpose: "authorize_action",
-    ok: false,
-    expectedState: false,
-    resolutionMode: "ambiguous",
-    requiresStability: false,
+    ok: true,
+    expectedState: true,
+    resolutionMode: "visual_signature",
+    requiresStability: true,
     likeOcrMatched: false,
     likeBaseOcrMatched: false,
     targetedLikeOcrAttempted: true,
@@ -929,6 +1706,14 @@ for (const field of [
   "outcomeObservationCount",
   "firstSegmentCount",
   "secondSegmentCount",
+  "firstSegmentMeasurements",
+  "secondSegmentMeasurements",
+  "firstViewportWidth",
+  "secondViewportWidth",
+  "firstMenuCenterX",
+  "secondMenuCenterX",
+  "firstScale",
+  "secondScale",
   "firstStrictCandidateCount",
   "secondStrictCandidateCount",
   "firstFallbackCandidateCount",
@@ -1127,7 +1912,7 @@ function Read-OpenVisualMenuOnce($lock, $menu, [string]$requestedAction, [string
 }
 function Invoke-OutcomeStabilityCase([string]$scenario) {
   $script:outcomeReadCount = 0
-  if ($scenario -ceq "stable") {
+  if (@("stable", "stable_authorize") -contains $scenario) {
     $script:outcomeFrames = @(
       (New-OutcomeFrame $true "取消" $true 100.0),
       (New-OutcomeFrame $true "取消" $true 101.0)
@@ -1148,7 +1933,8 @@ function Invoke-OutcomeStabilityCase([string]$scenario) {
       (New-OutcomeFrame $true "赞" $false 100.0)
     )
   }
-  $result = Read-OpenVisualMenu @{} @{} "like" "verify_outcome"
+  $proofPurpose = $(if ($scenario -ceq "stable_authorize") { "authorize_action" } else { "verify_outcome" })
+  $result = Read-OpenVisualMenu @{} @{} "like" $proofPurpose
   return [pscustomobject]@{
     scenario = $scenario
     ok = [bool]$result.ok
@@ -1159,6 +1945,7 @@ function Invoke-OutcomeStabilityCase([string]$scenario) {
   }
 }
 @(
+  (Invoke-OutcomeStabilityCase "stable_authorize"),
   (Invoke-OutcomeStabilityCase "stable"),
   (Invoke-OutcomeStabilityCase "drift"),
   (Invoke-OutcomeStabilityCase "single_weak"),
@@ -1176,6 +1963,14 @@ assert.equal(
   outcomeStabilityProbe.stderr || "post-click outcome stability probe must run",
 );
 assert.deepEqual(JSON.parse(outcomeStabilityProbe.stdout.trim()), [
+  {
+    scenario: "stable_authorize",
+    ok: true,
+    reason: "",
+    reads: 2,
+    proofPurpose: "authorize_action",
+    observationCount: 2,
+  },
   {
     scenario: "stable",
     ok: true,
@@ -1351,7 +2146,8 @@ const openMenuSegmentResolverSource = actionSource.match(
 )?.[0] ?? "";
 assert.ok(openMenuSegmentResolverSource, "open menu segment resolver should be present");
 assert.match(openMenuSegmentResolverSource, /\$strictMatches[\s\S]*\$strictMatches\.Count -eq 1[\s\S]*geometryFallback = \$false/u);
-assert.match(openMenuSegmentResolverSource, /\$requestedAction -cne "comment"[\s\S]*\$fallbackMatches[\s\S]*\$fallbackMatches\.Count -ne 1[\s\S]*geometryFallback = \$true/u);
+assert.match(openMenuSegmentResolverSource, /\$effectiveScale[\s\S]*\$fallbackMatches[\s\S]*\$fallbackMatches\.Count -ne 1[\s\S]*geometryFallback = \$true/u);
+assert.doesNotMatch(openMenuSegmentResolverSource, /\$frameWidth \* 0\.(?:22|30|62|70)/u, "popup width must not scale with the feed viewport");
 const openMenuSegmentResolverProbeSource = `
 $ErrorActionPreference = "Stop"
 ${openMenuSegmentResolverSource}
@@ -1359,8 +2155,14 @@ $strict = Resolve-VisualOpenMenuHorizontalSegment @(@{ left = 310; right = 499 }
 if (-not $strict.ok -or $strict.geometryFallback) { throw "strict popup segment must pass without fallback" }
 $commentFallback = Resolve-VisualOpenMenuHorizontalSegment @(@{ left = 355; right = 499 }) 568 520 "comment"
 if (-not $commentFallback.ok -or -not $commentFallback.geometryFallback) { throw "narrow unique comment popup must use geometry fallback" }
-$likeBlocked = Resolve-VisualOpenMenuHorizontalSegment @(@{ left = 355; right = 499 }) 568 520 "like"
-if ($likeBlocked.ok -or $likeBlocked.reason -cne "moments_menu_surface_ambiguous") { throw "like mode must retain strict popup proof" }
+$likeFallback = Resolve-VisualOpenMenuHorizontalSegment @(@{ left = 355; right = 499 }) 568 520 "like"
+if (-not $likeFallback.ok -or -not $likeFallback.geometryFallback) { throw "like mode must reach semantic proof through the unique DPI-scaled popup" }
+$maximized = Resolve-VisualOpenMenuHorizontalSegment @(@{ left = 1310; right = 1499 }) 1748 1520 "like"
+if (-not $maximized.ok -or $maximized.geometryFallback) { throw "the same fixed-DIP popup must remain valid in a maximized viewport" }
+$anchorOnly = Resolve-VisualOpenMenuHorizontalSegment @(@{ left = 484; right = 519 }) 568 520 "like"
+if ($anchorOnly.ok -or $anchorOnly.reason -cne "moments_menu_surface_ambiguous") { throw "the three-dot anchor alone must never authorize a popup" }
+$scaled = Resolve-VisualOpenMenuHorizontalSegment @(@{ left = 270; right = 499 }) 1748 520 "like" 1.25
+if (-not $scaled.ok) { throw "a 125-percent DPI popup must pass independently of viewport width" }
 $ambiguous = Resolve-VisualOpenMenuHorizontalSegment @(
   @{ left = 355; right = 499 },
   @{ left = 360; right = 505 }
@@ -1383,7 +2185,7 @@ assert.match(
   /function Read-OpenVisualMenuOnce\([\s\S]*\[string\]\$requestedAction,[\s\S]*\[string\]\$proofPurpose = "authorize_action"[\s\S]*\)/u,
   "menu reading should separate the requested action from the evidence purpose",
 );
-assert.match(openMenuReadOnceSource, /Get-VisualOpenMenuBounds \$frame \$menu \$requestedAction/u);
+assert.match(openMenuReadOnceSource, /Get-VisualOpenMenuBounds \$frame \$menu \$requestedAction \(\[double\]\$lock\.scale\)/u);
 assert.match(
   openMenuReadOnceSource,
   /\$requestedAction -ceq "comment"[\s\S]*\$commentEntry -eq \$null[\s\S]*centerX = \[double\]\$surface\.bounds\.left \+ \(\$cellWidth \* 1\.5\)/u,
@@ -1574,7 +2376,7 @@ assert.ok(
 );
 const commentOccurrenceSource = actionSource.slice(commentOccurrenceStart, commentOccurrenceEnd);
 assert.equal(
-  (commentOccurrenceSource.match(/Get-CurrentLockedVisualPost \$lock \$context \$true/gu) ?? []).length,
+  (commentOccurrenceSource.match(/Get-CurrentLockedVisualPost \$lock \$context \$false/gu) ?? []).length,
   2,
   "comment occurrence proof must capture and relock exactly two visual frames",
 );
@@ -2219,6 +3021,57 @@ assert.match(postSendCommentStateSource, /Get-LockedVisualRoot \$context[\s\S]*G
 assert.match(postSendCommentStateSource, /\$composerClosed = -not \$composer\.ok[\s\S]*\$sendInactive = \$composer\.ok -and -not \$send\.ok[\s\S]*\$composerCompleted = \$composerClosed -or \$sendInactive/u);
 assert.match(postSendCommentStateSource, /Get-VisualSendButton \$frame \$composer \$false[\s\S]*ok = \[bool\]\$composerCompleted/u);
 assert.doesNotMatch(postSendCommentStateSource, /Find-MomentsMenuDots|Resolve-VisualMenuAnchor|Get-MomentsPixelHash|Find-VisualCommentCandidate/u);
+const postSendSettleWindowSource = actionSource.match(
+  /function Start-VisualPostSendSettleWindow\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.ok(postSendSettleWindowSource, "post-send verification should receive a fresh bounded settle window");
+const postSendSettleWindowProbeSource = `
+${postSendSettleWindowSource}
+$script:visualPostSendSettleMs = 6000
+$script:visualWorkerSoftDeadlineMs = 90000
+$script:nowMs = 100000
+function Get-VisualEpochMs { return [int64]$script:nowMs }
+$fresh = Start-VisualPostSendSettleWindow @{ deadlineMs = 200000 }
+$freshSoftDeadline = [int64]$script:visualWorkerSoftDeadlineMs
+$clipped = Start-VisualPostSendSettleWindow @{ deadlineMs = 103000 }
+$clippedSoftDeadline = [int64]$script:visualWorkerSoftDeadlineMs
+$expired = Start-VisualPostSendSettleWindow @{ deadlineMs = 100400 }
+@{
+  freshOk = [bool]$fresh.ok
+  freshDeadline = [int64]$fresh.settleDeadlineMs
+  freshSoftDeadline = $freshSoftDeadline
+  clippedOk = [bool]$clipped.ok
+  clippedDeadline = [int64]$clipped.settleDeadlineMs
+  clippedSoftDeadline = $clippedSoftDeadline
+  expiredOk = [bool]$expired.ok
+  expiredReason = [string]$expired.reason
+} | ConvertTo-Json -Compress
+`;
+const postSendSettleWindowProbe = spawnSync(
+  "powershell.exe",
+  [
+    "-NoProfile",
+    "-NonInteractive",
+    "-EncodedCommand",
+    Buffer.from(postSendSettleWindowProbeSource, "utf16le").toString("base64"),
+  ],
+  { encoding: "utf8", windowsHide: true },
+);
+assert.equal(
+  postSendSettleWindowProbe.status,
+  0,
+  postSendSettleWindowProbe.stderr || "post-send settle-window probe must run",
+);
+assert.deepEqual(JSON.parse(postSendSettleWindowProbe.stdout.trim()), {
+  clippedDeadline: 102500,
+  clippedOk: true,
+  clippedSoftDeadline: 102500,
+  expiredOk: false,
+  expiredReason: "moments_comment_readback_seed_timeout",
+  freshDeadline: 106000,
+  freshOk: true,
+  freshSoftDeadline: 106000,
+});
 const postSendSurfaceSettleSource = actionSource.match(
   /function Wait-VisualPostSendSurfaceSettled\([\s\S]*?\n\}/u,
 )?.[0] ?? "";
@@ -2374,14 +3227,16 @@ const visualCommentComposerSource = actionSource.match(
   /function Get-VisualCommentComposer\(\$frame, \$menu\) \{[\s\S]*?\n\}/u,
 )?.[0] ?? "";
 assert.ok(visualCommentComposerSource, "visual comment composer detector should be present");
-assert.match(visualCommentComposerSource, /\$scanBottom = \[int\]\[Math\]::Max\(\$scanTop, \$frame\.height - 12\)/u);
+assert.match(visualCommentComposerSource, /\$viewport = \$script:momentsVisualViewportBounds/u);
+assert.match(visualCommentComposerSource, /\$scanBottom = \[int\]\[Math\]::Max\(\$scanTop, \$viewportBottom - 12\.0\)/u);
 assert.doesNotMatch(visualCommentComposerSource, /\$frame\.height \* 0\.19/u);
 assert.match(visualCommentComposerSource, /\$mask = New-Object bool\[\]/u);
 assert.match(visualCommentComposerSource, /System\.Collections\.Generic\.Queue\[int\]/u);
 assert.match(visualCommentComposerSource, /for \(\$deltaY = -1; \$deltaY -le 1; \$deltaY\+\+\)[\s\S]*for \(\$deltaX = -1; \$deltaX -le 1; \$deltaX\+\+\)/u);
 assert.match(visualCommentComposerSource, /\$componentPixelCount -lt 180/u);
 assert.match(visualCommentComposerSource, /\$potentialCandidateCount \+= 1/u);
-assert.match(visualCommentComposerSource, /Test-VisualBounds \$bounds \(\[double\]\$frame\.width \* 0\.54\) 64/u);
+assert.match(visualCommentComposerSource, /Test-VisualBounds \$bounds \(\[double\]\$viewport\.width \* 0\.54\) 64/u);
+assert.match(visualCommentComposerSource, /Test-VisualBoundsInside \$bounds \$viewport/u);
 assert.match(visualCommentComposerSource, /\$topEdge -lt \(\[double\]\$bounds\.width \* 0\.42\)[\s\S]*\$rightEdge -lt \(\[double\]\$bounds\.height \* 0\.35\)/u);
 assert.match(visualCommentComposerSource, /\$validCandidates\.Count -ne 1/u);
 assert.match(visualCommentComposerSource, /\$validCandidates\.Count -eq 0 -and \$potentialCandidateCount -eq 0[\s\S]*moments_comment_composer_not_found/u);
@@ -2590,7 +3445,8 @@ assert.match(neutralTitleBarSource, /GetForegroundWindow\(\) -ne \$lock\.hWnd/u)
 assert.match(neutralTitleBarSource, /GetWindowRect\(\$lock\.hWnd, \[ref\]\$currentRect\)/u);
 assert.match(neutralTitleBarSource, /\$currentRect\.Left -ne \$lock\.windowRect\.Left[\s\S]*\$currentRect\.Bottom -ne \$lock\.windowRect\.Bottom/u);
 assert.match(neutralTitleBarSource, /GetWindowThreadProcessId\(\$lock\.hWnd, \[ref\]\$currentPid\)[\s\S]*\[int\]\$currentPid -ne \[int\]\$lock\.pid/u);
-assert.match(neutralTitleBarSource, /GetWindowText\(\$lock\.hWnd, \$currentTitle[\s\S]*Trim\(\) -cne "朋友圈"/u);
+assert.match(neutralTitleBarSource, /GetWindowText\(\$lock\.hWnd, \$currentTitle[\s\S]*Trim\(\) -cne \[string\]\$lock\.title/u);
+assert.match(neutralTitleBarSource, /GetClassName\(\$lock\.hWnd, \$currentClass[\s\S]*Trim\(\) -cne \[string\]\$lock\.className/u);
 assert.match(neutralTitleBarSource, /WindowFromPoint\(\$neutralPoint\)/u);
 assert.match(neutralTitleBarSource, /GetAncestor\(\$actualNeutralHit, 2\) -ne \$lock\.hWnd/u);
 assert.match(neutralTitleBarSource, /GetWindowRect\(\$lock\.hWnd, \[ref\]\$confirmedRect\)[\s\S]*\$confirmedRect\.Left -ne \$currentRect\.Left[\s\S]*\$confirmedRect\.Bottom -ne \$currentRect\.Bottom/u);
@@ -2655,9 +3511,10 @@ assert.doesNotMatch(actionSource, /\{ESC\}/u);
 assert.match(actionSource, /moments_comment_draft_close_unverified/u);
 
 // The broad and targeted OCR passes may both miss the isolated like glyph.
-// A complete narrow glyph may authorize a like. A cropped wide cancel label is
-// outcome-only evidence and must request a second stable passive observation.
-assert.match(actionSource, /\$x - \$lastDark\) -gt \[Math\]::Max\(18\.0, \[double\]\$frame\.width \* 0\.05\)/u);
+// A complete narrow glyph may authorize a like. A cropped wide cancel label
+// may only produce an already-liked no-op after a second stable passive frame.
+assert.match(actionSource, /\$x - \$lastDark\) -gt \(18\.0 \* \$effectiveScale\)/u);
+assert.doesNotMatch(actionSource, /\$x - \$lastDark\)[^\r\n]*\$viewport\.width/u, "dark-segment continuity must not loosen on a wide viewport");
 assert.match(actionSource, /Get-VisualMenuTargetedOcrRegion[\s\S]*Get-MomentsHighContrastOcrObservation \$frame \$targetedLikeRegion 5/u);
 assert.match(
   actionSource,
@@ -2666,8 +3523,9 @@ assert.match(
 assert.doesNotMatch(actionSource, /\$widthRatio -ge 0\.32 -and \$widthRatio -le 0\.68\) \{ \$visualState = "赞" \}/u);
 assert.match(
   actionSource,
-  /\$widthRatio -ge 0\.78 -and \$widthRatio -le 1\.42[\s\S]*?\$normalizedProofPurpose -ceq "verify_outcome"[\s\S]*?\$visualState = "取消"[\s\S]*?\$requiresStability = -not \[bool\]\$likeSignature\.horizontalEdgeClear/u,
+  /\$widthRatio -ge 0\.78 -and \$widthRatio -le 1\.42[\s\S]*?\$visualState = "取消"[\s\S]*?\$requiresStability = -not \[bool\]\$likeSignature\.horizontalEdgeClear/u,
 );
+assert.match(actionSource, /\$retryForStableEvidence = \$first\.ok -and \$firstRequiresStability/u);
 assert.match(actionSource, /\[string\]\$proofPurpose = "authorize_action"/u);
 assert.doesNotMatch(actionSource, /0\.885714/u);
 const visualActionTimeoutCapsSource = actionSource.match(
@@ -2676,7 +3534,7 @@ const visualActionTimeoutCapsSource = actionSource.match(
 assert.ok(visualActionTimeoutCapsSource, "visual action timeout caps should be present");
 assert.match(
   visualActionTimeoutCapsSource,
-  /inspect: 20_000[\s\S]*like: 30_000[\s\S]*comment_occurrence_check: 45_000[\s\S]*comment_check: 85_000/u,
+  /inspect: 30_000[\s\S]*like: 30_000[\s\S]*comment_occurrence_check: 45_000[\s\S]*comment_check: 85_000/u,
 );
 assert.doesNotMatch(visualActionTimeoutCapsSource, /\bcomment:|\bcomment_readback:/u);
 assert.doesNotMatch(actionSource, /comment_check: 35_000/u);

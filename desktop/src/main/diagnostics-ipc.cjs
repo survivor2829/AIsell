@@ -2,6 +2,7 @@ const { app, dialog, ipcMain, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const productBrand = require("../../product-brand.json");
 const { diagnostics } = require("./diagnostics.cjs");
 
 function buildInfo() {
@@ -34,8 +35,8 @@ function runPowerShell(script, environment = {}) {
 async function exportBundle() {
   const logger = diagnostics();
   const selected = await dialog.showSaveDialog({
-    title: "导出 AI获客 诊断包",
-    defaultPath: path.join(app.getPath("downloads"), `AI获客-诊断日志-${new Date().toISOString().replace(/[:.]/g, "-")}.zip`),
+    title: `导出 ${productBrand.displayName} 诊断包`,
+    defaultPath: path.join(app.getPath("downloads"), `${productBrand.displayName}-诊断日志-${new Date().toISOString().replace(/[:.]/g, "-")}.zip`),
     filters: [{ name: "ZIP 压缩包", extensions: ["zip"] }]
   });
   if (selected.canceled || !selected.filePath) return { ok: true, canceled: true };

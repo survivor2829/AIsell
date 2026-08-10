@@ -6,6 +6,14 @@ const path = require("node:path");
 const { createMomentsCampaignController } = require("./moments-campaign-ipc.cjs");
 const { localDayKey } = require("./moments-daily-automation.cjs");
 const tempDirs = new Set();
+const OPENED_SURFACE = Object.freeze({
+  ok: true,
+  surfaceMode: "standalone",
+  pid: 42,
+  hWnd: "84",
+  title: "朋友圈",
+  className: "Qt51514QWindowIcon"
+});
 
 function createTempDir(prefix) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -117,6 +125,7 @@ async function runChecks() {
   const fingerprints = ["a".repeat(64), "b".repeat(64), "c".repeat(64)];
   const driver = createSuccessfulDriver(fingerprints, [0]);
   let acquireCount = 0;
+  const dailyOpenOptions = [];
 
   const controller = createMomentsCampaignController({
     baseDir: root,
@@ -130,7 +139,10 @@ async function runChecks() {
     },
     logger: { event: () => undefined },
     now: clock.now,
-    openMoments: async () => ({ ok: true }),
+    openMoments: async (options) => {
+      dailyOpenOptions.push(options);
+      return OPENED_SURFACE;
+    },
     runStep: driver.runStep,
     schedule: clock.schedule,
     scrollMoments: async () => ({ ok: true })
@@ -161,6 +173,7 @@ async function runChecks() {
   assert.equal(completed.processed_count, 3);
   assert.equal(completed.already_liked_count, 1);
   assert.equal(completed.daily_automation.completed_count, 2);
+  assert.deepEqual(dailyOpenOptions, [{ allowIntegrated: true, minIdleMs: 15_000 }]);
   assert.equal(
     completed.daily_automation.checked_count,
     3,
@@ -183,7 +196,7 @@ async function runChecks() {
     },
     logger: { event: () => undefined },
     now: clock.now,
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => OPENED_SURFACE,
     runStep: async () => {
       throw new Error("completed daily target must not restart on the same day");
     },
@@ -210,7 +223,7 @@ async function runChecks() {
     },
     logger: { event: () => undefined },
     now: nextDayClock.now,
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => OPENED_SURFACE,
     runStep: nextDayDriver.runStep,
     schedule: nextDayClock.schedule,
     scrollMoments: async () => ({ ok: true })
@@ -269,7 +282,7 @@ async function runChecks() {
     now: missedClock.now,
     openMoments: async () => {
       missedOpenCount += 1;
-      return { ok: true };
+      return OPENED_SURFACE;
     },
     runStep: missedDriver.runStep,
     schedule: missedClock.schedule,
@@ -313,7 +326,7 @@ async function runChecks() {
     },
     logger: { event: () => undefined },
     now: busyClock.now,
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => OPENED_SURFACE,
     runStep: busyDriver.runStep,
     schedule: busyClock.schedule,
     scrollMoments: async () => ({ ok: true })
@@ -353,7 +366,7 @@ async function runChecks() {
     },
     logger: { event: () => undefined },
     now: unknownClock.now,
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => OPENED_SURFACE,
     runStep: async (args) => {
       if (args[0] === "moments-dry-run") {
         return {
@@ -424,7 +437,7 @@ async function runChecks() {
     },
     logger: { event: () => undefined },
     now: pauseClock.now,
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => OPENED_SURFACE,
     runStep: async () => {
       await observationGate;
       return {
@@ -484,7 +497,7 @@ async function runChecks() {
     },
     logger: { event: () => undefined },
     now: manualClock.now,
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => OPENED_SURFACE,
     runStep: manualDriver.runStep,
     schedule: manualClock.schedule,
     scrollMoments: async () => ({ ok: true })
@@ -541,7 +554,7 @@ async function runChecks() {
     },
     logger: { event: () => undefined },
     now: midnightClock.now,
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => OPENED_SURFACE,
     runStep: midnightDriver.runStep,
     schedule: midnightClock.schedule,
     scrollMoments: async () => ({ ok: true })
@@ -573,7 +586,7 @@ async function runChecks() {
     },
     logger: { event: () => undefined },
     now: crossMidnightClock.now,
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => OPENED_SURFACE,
     runStep: async (args) => {
       if (args[0] === "moments-dry-run") {
         return {
@@ -639,7 +652,7 @@ async function runChecks() {
     },
     logger: { event: () => undefined },
     now: appCloseClock.now,
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => OPENED_SURFACE,
     runStep: async () => {
       await appCloseGate;
       return {
@@ -691,7 +704,7 @@ async function runChecks() {
     },
     logger: { event: () => undefined },
     now: appCloseClock.now,
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => OPENED_SURFACE,
     runStep: appCloseRestartDriver.runStep,
     schedule: appCloseClock.schedule,
     scrollMoments: async () => ({ ok: true })
@@ -752,7 +765,7 @@ async function runChecks() {
     },
     logger: { event: () => undefined },
     now: dedupClock.now,
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => OPENED_SURFACE,
     runStep: dedupDriver.runStep,
     schedule: dedupClock.schedule,
     scrollMoments: async () => ({ ok: true })
@@ -809,7 +822,7 @@ async function runChecks() {
     now: crashClock.now,
     openMoments: async () => {
       crashOpenCount += 1;
-      return { ok: true };
+      return OPENED_SURFACE;
     },
     runStep: createSuccessfulDriver(["v".repeat(64)]).runStep,
     schedule: crashClock.schedule,
@@ -849,7 +862,7 @@ async function runChecks() {
     },
     logger: { event: () => undefined },
     now: writeFailureClock.now,
-    openMoments: async () => ({ ok: true }),
+    openMoments: async () => OPENED_SURFACE,
     runStep: createSuccessfulDriver(["t".repeat(64)]).runStep,
     schedule: writeFailureClock.schedule,
     scrollMoments: async () => ({ ok: true }),

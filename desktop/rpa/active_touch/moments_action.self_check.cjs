@@ -31,6 +31,7 @@ const {
   executeMomentsLike,
   inspectMomentsMenu
 } = require("./moments_action.dev.cjs");
+const { validVisualContext } = require("./moments_visual_action_driver.dev.cjs");
 
 const COMMENT_TEXT = "自动化测试，请忽略（0717-1）";
 const COMMENT_DRAFT_CHECK_VERIFICATION_MODE = "targeted_uia_value_roundtrip_and_unique_enabled_button_transition";
@@ -48,6 +49,7 @@ const MOMENTS_POST = {
 };
 const MOMENTS_WINDOW = {
   ok: true,
+  surfaceMode: "standalone",
   title: "朋友圈",
   className: "Qt51514QWindowIcon",
   automationId: "SNSWindow",
@@ -70,6 +72,10 @@ const MOMENTS_WINDOW = {
 
 const VISUAL_WINDOW = {
   ...MOMENTS_WINDOW,
+  surfaceMode: "integrated",
+  title: "微信",
+  className: "mmui::MainWindow",
+  rootName: "微信",
   automationId: "",
   identityMode: "visual_mmui_render",
   feedAutomationId: "",
@@ -91,7 +97,9 @@ const VISUAL_WINDOW = {
 
 function visualObservationPayload(window, snapshot) {
   return JSON.stringify({
-    version: 5,
+    version: 6,
+    surfaceMode: String(window.surfaceMode ?? ""),
+    className: String(window.className ?? ""),
     pid: Number(window.pid),
     hWnd: String(window.hWnd),
     windowBounds: {
@@ -571,8 +579,13 @@ async function main() {
         }
       })
     });
-    assert.equal(visualResult.ok, true, "a complete visual v5 observation must reach the driver");
+    assert.equal(visualResult.ok, true, "a complete integrated visual v6 observation must reach the injected driver");
     assert.equal(visualDriverCalls, 1);
+    const visualPreparedState = loadState(visualFixture.baseDir).moments_dry_run;
+    assert.equal(visualPreparedState.window.surfaceMode, "integrated");
+    assert.equal(visualPreparedState.window.title, "微信");
+    assert.equal(visualPreparedState.window.className, "mmui::MainWindow");
+    assert.equal(visualPreparedState.window.rootName, "微信");
 
     const legacyObservationFixture = visualPreparedDirectory(root, "visual-observation-legacy-without-anchor");
     const legacyObservationState = loadState(legacyObservationFixture.baseDir);
@@ -690,11 +703,165 @@ async function main() {
         }
       }
     });
-    assert.equal(generatedVisualResult.ok, true, "dry-run and action must agree on the visual v5 payload");
+    assert.equal(generatedVisualResult.ok, true, "dry-run and action must agree on the integrated visual v6 payload");
     assert.equal(generatedVisualDriverCalls, 1);
 
+    const menuOnlyVisualDir = path.join(root, "visual-menu-only-like");
+    const menuOnlyVisualDryRun = prepareMomentsDryRun(menuOnlyVisualDir, {
+      mode: "random",
+      likeEnabled: true,
+      commentEnabled: false,
+      commentText: ""
+    }, () => ({
+      ...VISUAL_WINDOW,
+      renderPaneBounds: {
+        left: 60,
+        width: 840,
+        top: 80,
+        height: 640
+      },
+      posts: [],
+      menuOnlyMenus: [{
+        menuHash: "a".repeat(64),
+        menuBounds: { left: 760, top: 430, width: 28, height: 20 }
+      }]
+    }));
+    assert.equal(menuOnlyVisualDryRun.blocked_reason, "moments_post_not_found",
+      "a generic visible menu must not authorize a real Like without post identity");
+
+    const menuOnlyCommentBlocked = prepareMomentsDryRun(path.join(root, "visual-menu-only-comment-blocked"), {
+      mode: "random",
+      likeEnabled: false,
+      commentEnabled: true,
+      commentText: COMMENT_TEXT
+    }, () => ({
+      ...VISUAL_WINDOW,
+      posts: [],
+      menuOnlyMenus: [{
+        menuHash: "b".repeat(64),
+        menuBounds: { left: 760, top: 430, width: 28, height: 20 }
+      }]
+    }));
+    assert.equal(menuOnlyCommentBlocked.blocked_reason, "moments_post_not_found", "menu-only fallback must never comment without post text");
+
+    const bodyOnlyDriverResult = {
+      ...VISUAL_WINDOW,
+      renderPaneBounds: { left: 60, width: 840, top: 80, height: 640 },
+      posts: [],
+      readingPosts: [{
+        text: stableVisualIdentity,
+        identityText: stableVisualIdentity,
+        stableAnchorText: stableVisualIdentity,
+        structureVerified: true,
+        regionHash: "c".repeat(64),
+        avatarHash: "d".repeat(64),
+        layoutHash: "e".repeat(64),
+        bounds: { left: 140, top: 180, width: 620, height: 320 },
+        avatarBounds: { left: 82, top: 190, width: 48, height: 48 },
+        partialVisible: true,
+        bodyOnly: true
+      }]
+    };
+    const bodyOnlyBlocked = prepareMomentsDryRun(path.join(root, "visual-body-only-disabled"), {
+      mode: "random",
+      likeEnabled: true,
+      commentEnabled: true,
+      commentText: COMMENT_TEXT
+    }, () => bodyOnlyDriverResult);
+    assert.equal(bodyOnlyBlocked.blocked_reason, "moments_post_not_found");
+    const bodyOnlyPrepared = prepareMomentsDryRun(path.join(root, "visual-body-only-reading"), {
+      mode: "random",
+      likeEnabled: true,
+      commentEnabled: true,
+      commentText: COMMENT_TEXT,
+      allowBodyOnly: true
+    }, () => bodyOnlyDriverResult);
+    assert.equal(bodyOnlyPrepared.ok, true, "comment reading may retain a strictly bound body fragment before its menu is visible");
+    assert.equal(bodyOnlyPrepared.post_snapshot.body_only, true);
+    assert.equal(bodyOnlyPrepared.plan.target_partial_visible, true);
+    assert.equal(bodyOnlyPrepared.post_snapshot.avatar_hash, "d".repeat(64));
+
+    const lockedPostBeforeScroll = {
+      text: "locked author shared a robot deployment lesson",
+      identityText: "locked author shared a robot deployment lesson",
+      stableAnchorText: "locked author robot deployment lesson",
+      structureVerified: true,
+      regionHash: "1".repeat(64),
+      avatarHash: "2".repeat(64),
+      layoutHash: "3".repeat(64),
+      bounds: { left: 140, top: 120, width: 620, height: 200 },
+      menuBounds: { left: 760, top: 280, width: 80, height: 30 },
+      avatarBounds: { left: 82, top: 130, width: 48, height: 48 }
+    };
+    const lockedPostInitial = prepareMomentsDryRun(path.join(root, "visual-locked-target-initial"), {
+      mode: "random",
+      likeEnabled: false,
+      commentEnabled: true,
+      commentText: COMMENT_TEXT
+    }, () => ({ ...VISUAL_WINDOW, posts: [lockedPostBeforeScroll] }));
+    assert.equal(lockedPostInitial.ok, true);
+    const centerDecoyAfterScroll = {
+      text: "different author shared an unrelated store update",
+      identityText: "different author shared an unrelated store update",
+      stableAnchorText: "different author unrelated store update",
+      structureVerified: true,
+      regionHash: "4".repeat(64),
+      avatarHash: "5".repeat(64),
+      layoutHash: "6".repeat(64),
+      bounds: { left: 140, top: 300, width: 620, height: 200 },
+      menuBounds: { left: 760, top: 460, width: 80, height: 30 },
+      avatarBounds: { left: 82, top: 310, width: 48, height: 48 }
+    };
+    const lockedPostAfterScroll = {
+      ...lockedPostBeforeScroll,
+      text: "locked author shared a robot deployment lesson with maintenance details",
+      identityText: "locked author shared a robot deployment lesson with maintenance details",
+      stableAnchorText: "locked author robot deployment lesson",
+      regionHash: "7".repeat(64),
+      layoutHash: "8".repeat(64),
+      bounds: { ...lockedPostBeforeScroll.bounds, top: 360 },
+      menuBounds: { ...lockedPostBeforeScroll.menuBounds, top: 520 },
+      avatarBounds: { ...lockedPostBeforeScroll.avatarBounds, top: 370 }
+    };
+    const lockedPostReacquired = prepareMomentsDryRun(path.join(root, "visual-locked-target-after-scroll"), {
+      mode: "random",
+      likeEnabled: false,
+      commentEnabled: true,
+      commentText: COMMENT_TEXT,
+      targetPost: {
+        ...lockedPostInitial.post_snapshot,
+        expected_scroll_delta: 240
+      }
+    }, () => ({
+      ...VISUAL_WINDOW,
+      posts: [centerDecoyAfterScroll, lockedPostAfterScroll]
+    }));
+    assert.equal(lockedPostReacquired.ok, true);
+    assert.equal(
+      lockedPostReacquired.post_snapshot.identity_text,
+      lockedPostAfterScroll.identityText,
+      "a reading retry must reacquire the locked post instead of switching to the new center candidate"
+    );
+    const lockedPostMissing = prepareMomentsDryRun(path.join(root, "visual-locked-target-missing"), {
+      mode: "random",
+      likeEnabled: false,
+      commentEnabled: true,
+      commentText: COMMENT_TEXT,
+      targetPost: {
+        ...lockedPostInitial.post_snapshot,
+        expected_scroll_delta: 240
+      }
+    }, () => ({ ...VISUAL_WINDOW, posts: [centerDecoyAfterScroll] }));
+    assert.equal(
+      lockedPostMissing.blocked_reason,
+      "moments_post_not_found",
+      "a missing locked post must stop instead of falling back to an unrelated center candidate"
+    );
+
     const visualTamperCases = [
+      ["window.surfaceMode", "standalone"],
       ["window.title", "其他窗口"],
+      ["window.className", "Chrome_WidgetWin_0"],
       ["window.processName", "OtherProcess"],
       ["window.pid", 43],
       ["window.hWnd", "85"],
@@ -2931,6 +3098,10 @@ async function main() {
     assert.doesNotMatch(dryRunSource, /\$feed = \$root\.FindFirst/u);
 
     const driverSource = fs.readFileSync(path.join(__dirname, "moments_action_driver.dev.cjs"), "utf8");
+    assert.doesNotMatch(driverSource, /ShowWindowAsync|SetForegroundWindow|AppActivate/u,
+      "the action driver must fail on focus loss instead of stealing foreground");
+    assert.match(driverSource, /XIAOXI_MOMENTS_EXPECTED_LEFT[\s\S]*moments_window_geometry_changed/u,
+      "the standalone action driver must retain the frozen top-left geometry");
     assert.match(driverSource, /GetAncestor\(IntPtr hWnd, uint flags\)/u);
     assert.match(driverSource, /GetWindow\(IntPtr hWnd, uint command\)/u);
     assert.match(driverSource, /GetCursorPos\(out POINT point\)/u);

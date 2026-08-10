@@ -26,6 +26,7 @@ import {
   X
 } from "lucide-react";
 import { lazy, Suspense, type ComponentType, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import productBrand from "../../product-brand.json";
 import { AiExpert } from "./AiExpert";
 import { AutoReply } from "./AutoReply";
 import { Diagnostics } from "./Diagnostics";
@@ -367,6 +368,7 @@ const DEFAULT_ACTIVE_MODULE: ModuleKey = PILOT_EDITION ? "touch" : "reply";
 const EDITION_LABEL = DEVELOPMENT_EDITION ? "测试版" : "";
 const DevelopmentAcceptance = DEVELOPMENT_EDITION ? lazy(() => import("./DevelopmentAcceptance")) : null;
 const MomentsDryRunPanel = DEVELOPMENT_EDITION ? lazy(() => import("./MomentsDryRunPanel")) : null;
+const MomentsPublishPanel = REAL_SEND_EDITION ? lazy(() => import("./MomentsPublishPanel")) : null;
 const MomentsCampaignPanel = REAL_SEND_EDITION ? lazy(() => import("./MomentsCampaignPanel")) : null;
 
 const agentChildren: NavItem[] = [
@@ -580,7 +582,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    document.title = ["AI获客", EDITION_LABEL, BUILD_ID].filter(Boolean).join(" ");
+    document.title = [productBrand.displayName, EDITION_LABEL, BUILD_ID].filter(Boolean).join(" ");
   }, []);
 
   const activeTitle = useMemo(() => navItems.find((item) => item.key === active)?.label ?? "自动回复", [active]);
@@ -829,7 +831,7 @@ export default function App() {
         <div className="brand">
           <div className="brand-mark">玺</div>
           <div className="brand-copy">
-            <span>AI获客{EDITION_LABEL ? ` · ${EDITION_LABEL}` : ""}</span>
+            <span>{productBrand.displayName}{EDITION_LABEL ? ` · ${EDITION_LABEL}` : ""}</span>
             {BUILD_ID && <small title={`构建编号 ${BUILD_ID}`}>{BUILD_ID}</small>}
           </div>
         </div>
@@ -977,7 +979,7 @@ function LoginScreen({ onLogin }: { onLogin: (account: string) => void }) {
         <div className="login-brand">
           <div className="brand-mark login-logo">玺</div>
           <div>
-            <h1>AI获客</h1>
+            <h1>{productBrand.displayName}</h1>
             <p>登录一次后会记住账号，下次直接进入工作台</p>
           </div>
         </div>
@@ -1159,7 +1161,7 @@ function AccountManagement() {
 
 function MomentsOperations() {
   const features = [
-    { title: "朋友圈发布", description: "编辑并发布业务微信的朋友圈内容。", icon: Send, status: "下一阶段" },
+    { title: "朋友圈发布", description: "编辑并发布业务微信的朋友圈内容。", icon: Send, status: REAL_SEND_EDITION ? "单条发布" : "下一阶段" },
     { title: "点赞评论", description: REAL_SEND_EDITION ? "自动打开朋友圈，逐帖点赞并可生成 AI 定制评论。" : "统一处理朋友圈点赞与评论互动，下一阶段开放。", icon: ThumbsUp, status: REAL_SEND_EDITION ? "连续互动" : "下一阶段" }
   ];
 
@@ -1186,6 +1188,11 @@ function MomentsOperations() {
           );
         })}
       </div>
+      {MomentsPublishPanel && (
+        <Suspense fallback={null}>
+          <MomentsPublishPanel />
+        </Suspense>
+      )}
       {MomentsCampaignPanel && (
         <Suspense fallback={null}>
           <MomentsCampaignPanel />

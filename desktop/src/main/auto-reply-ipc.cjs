@@ -3,6 +3,7 @@ const { diagnostics } = require("./diagnostics.cjs");
 const fs = require("node:fs");
 const path = require("node:path");
 const { readContacts } = require("../../rpa/active_touch/state_machine.cjs");
+const { WECHAT_RPA_BACKGROUND_MIN_IDLE_MS } = require("../../rpa/active_touch/wechat_window_driver.cjs");
 const { writeFileAtomic, writeJsonAtomic } = require("./atomic-file.cjs");
 
 const POLL_INTERVAL_MS = 5_000;
@@ -117,8 +118,10 @@ const KNOWN_SCAN_REASONS = new Set([
   "wechat_operation_busy",
   "wechat_focus_failed",
   "wechat_process_changed",
+  "wechat_user_active",
   "wechat_window_ambiguous",
   "wechat_window_changed",
+  "wechat_window_identity_mismatch",
   "wechat_window_missing",
   "wechat_window_not_foreground",
   "wechat_window_not_ready",
@@ -1886,6 +1889,7 @@ function createAutoReplyController(options = {}) {
         baseDir: dataDir,
         contactsDir: activeTouchDir,
         authorized: true,
+        windowMinIdleMs: WECHAT_RPA_BACKGROUND_MIN_IDLE_MS,
         contactId: contact.id,
         frozenContact: contact,
         message: reply,

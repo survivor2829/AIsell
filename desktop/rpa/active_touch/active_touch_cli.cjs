@@ -112,7 +112,13 @@ function execute(command, baseDir, args) {
   if (command === "locate-conversation") return locateConversation(baseDir);
   if (command === "open-conversation-dry-run") return openConversationDryRun(baseDir);
   if (command === "search-conversation-dry-run") return searchConversationDryRun(baseDir);
-  if (command === "click-search-result-dry-run") return clickSearchResultDryRun(baseDir);
+  if (command === "click-search-result-dry-run") {
+    return clickSearchResultDryRun(baseDir, undefined, undefined, undefined, {
+      pid: optionalValueAfter(args, "--expected-pid"),
+      hWnd: optionalValueAfter(args, "--expected-hwnd"),
+      minIdleMs: optionalValueAfter(args, "--min-idle-ms")
+    });
+  }
   if (command === "input-message-dry-run") return inputMessageDryRun(baseDir, valueAfter(args, "--message"));
   if (command === "queue-dry-run") return queueDryRun(baseDir, valueAfter(args, "--ids").split(",").filter(Boolean), valueAfter(args, "--message"));
   if (command === "verify-send-result-dry-run") return verifySendResultDryRun(baseDir);

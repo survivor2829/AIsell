@@ -16,8 +16,6 @@ public static class Win32WechatMomentsVisualReadOnly {
   [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int command);
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
@@ -101,31 +99,20 @@ function Test-MomentsVisualViewportOwned($windowRect, [IntPtr]$expectedHWnd, [in
   return $true
 }
 
-function Request-MomentsVisualForeground([IntPtr]$hWnd) {
-  if ([Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -eq $hWnd) { return $true }
-  [void][Win32WechatMomentsVisualReadOnly]::ShowWindowAsync($hWnd, 9)
-  foreach ($delayMs in @(80, 140, 220, 320)) {
-    [void][Win32WechatMomentsVisualReadOnly]::SetForegroundWindow($hWnd)
-    Start-Sleep -Milliseconds $delayMs
-    if ([Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -eq $hWnd) { return $true }
-  }
-  return $false
-}
-
 function Get-MomentsVisualFrame(
   [IntPtr]$hWnd,
   $windowRect,
   [int]$expectedPid,
-  [bool]$activate = $true,
+  [bool]$activate = $false,
   [bool]$requireFullViewportOwnership = $true
 ) {
   if (-not [Win32WechatMomentsVisualReadOnly]::IsWindowVisible($hWnd) -or [Win32WechatMomentsVisualReadOnly]::IsIconic($hWnd)) {
     return @{ ok = $false; reason = "moments_window_not_found" }
   }
-  $foregroundReady = [Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -eq $hWnd
   if ($activate) {
-    $foregroundReady = Request-MomentsVisualForeground $hWnd
+    return @{ ok = $false; reason = "moments_foreground_handoff_not_allowed" }
   }
+  $foregroundReady = [Win32WechatMomentsVisualReadOnly]::GetForegroundWindow() -eq $hWnd
   if (-not $foregroundReady) {
     return @{
       ok = $false
@@ -292,16 +279,107 @@ function Get-MomentsPatchLightRatio($frame, [int]$left, [int]$top, [int]$right, 
   return [double]$light / [double]$total
 }
 
-function Find-MomentsMenuDots($frame) {
+function Get-MomentsVisualFeedScanProfile($viewportBounds, $avatarCandidates = $null) {
+  $viewportRight = [double]$viewportBounds.left + [double]$viewportBounds.width
+  $avatarSize = [int][Math]::Max(32, [Math]::Min(52, [Math]::Round([double]$viewportBounds.width * 0.09)))
+  $anchorCandidates = New-Object System.Collections.Generic.List[double]
+  [void]$anchorCandidates.Add([double]$viewportBounds.left + ([double]$viewportBounds.width * 0.055))
+  [void]$anchorCandidates.Add(
+    [double]$viewportBounds.left + ([double]$viewportBounds.width / 2.0) - ($avatarSize * 5.0)
+  )
+  foreach ($avatar in @($avatarCandidates)) {
+    if ($avatar -ne $null -and [double]$avatar.width -gt 0 -and [double]$avatar.height -gt 0) {
+      [void]$anchorCandidates.Add([double]$avatar.left)
+    }
+  }
+
+  $anchors = New-Object System.Collections.Generic.List[double]
+  foreach ($candidate in @($anchorCandidates.ToArray())) {
+    $clamped = [Math]::Max(
+      [double]$viewportBounds.left,
+      [Math]::Min($viewportRight - $avatarSize, [double]$candidate)
+    )
+    $duplicate = $false
+    foreach ($existing in $anchors) {
+      if ([Math]::Abs([double]$existing - $clamped) -le 2.0) { $duplicate = $true; break }
+    }
+    if (-not $duplicate) { [void]$anchors.Add($clamped) }
+  }
+
+  $avatarXPositions = New-Object System.Collections.Generic.HashSet[int]
+  foreach ($anchor in $anchors) {
+    for ($offset = -$avatarSize; $offset -le $avatarSize; $offset += 4) {
+      $x = [int][Math]::Round([Math]::Max(
+        [double]$viewportBounds.left,
+        [Math]::Min($viewportRight - $avatarSize, [double]$anchor + $offset)
+      ))
+      [void]$avatarXPositions.Add($x)
+    }
+    foreach ($offset in @(-2, 0, 2)) {
+      $x = [int][Math]::Round([Math]::Max(
+        [double]$viewportBounds.left,
+        [Math]::Min($viewportRight - $avatarSize, [double]$anchor + $offset)
+      ))
+      [void]$avatarXPositions.Add($x)
+    }
+  }
+
+  $menuBands = New-Object System.Collections.Generic.List[object]
+  $rightGutterLeft = [Math]::Floor([double]$viewportBounds.left + ([double]$viewportBounds.width * 0.86))
+  $rightGutterRight = [Math]::Ceiling([double]$viewportBounds.left + ([double]$viewportBounds.width * 0.95))
+  if (($rightGutterRight - $rightGutterLeft) -ge 12.0) {
+    [void]$menuBands.Add(@{ left = [double]$rightGutterLeft; right = [double]$rightGutterRight })
+  }
+  foreach ($anchor in $anchors) {
+    $bandLeft = [Math]::Max([double]$viewportBounds.left, [double]$anchor + ($avatarSize * 6.5))
+    $bandRight = [Math]::Min($viewportRight, [double]$anchor + ($avatarSize * 12.5))
+    if (($bandRight - $bandLeft) -ge 12.0) {
+      [void]$menuBands.Add(@{ left = $bandLeft; right = $bandRight })
+    }
+  }
+
+  return @{
+    avatarSize = $avatarSize
+    avatarXPositions = @($avatarXPositions | Sort-Object)
+    menuBands = @($menuBands.ToArray())
+  }
+}
+
+function Find-MomentsMenuDots($frame, $viewportBounds = $null, $avatarCandidates = $null) {
   # The interaction button lives in a dedicated right gutter. We classify the
   # icon by connected components: this WeChat render profile draws the menu
   # as two compact, separated dots on one baseline. Text ellipses use three
   # much smaller components, while a disclosure chevron is one component.
-  $xStart = [int][Math]::Floor($frame.width * 0.86)
-  $xEnd = [int][Math]::Ceiling($frame.width * 0.95)
+  $frameBounds = @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
+  $scanViewport = $viewportBounds
+  if (-not (Test-MomentsVisualBoundsInside $scanViewport $frameBounds)) {
+    $scanViewport = $script:momentsVisualViewportBounds
+  }
+  if (-not (Test-MomentsVisualBoundsInside $scanViewport $frameBounds)) {
+    $scanViewport = $frameBounds
+  }
+  $viewportRight = [double]$scanViewport.left + [double]$scanViewport.width
+  $viewportBottom = [double]$scanViewport.top + [double]$scanViewport.height
+  $scanProfile = Get-MomentsVisualFeedScanProfile $scanViewport $avatarCandidates
+  $scanBands = @($scanProfile.menuBands)
+  if ($scanBands.Count -eq 0) { return @() }
+  $xStart = [int][Math]::Max(
+    [double]$scanViewport.left,
+    [Math]::Floor(($scanBands | ForEach-Object { [double]$_.left } | Measure-Object -Minimum).Minimum)
+  )
+  $xEnd = [int][Math]::Min(
+    $viewportRight,
+    [Math]::Ceiling(($scanBands | ForEach-Object { [double]$_.right } | Measure-Object -Maximum).Maximum)
+  )
   $gutterWidth = $xEnd - $xStart
-  $yStart = [int][Math]::Max(48, [Math]::Floor($frame.height * 0.04))
-  $yEnd = [int][Math]::Min($frame.height - 12, [Math]::Ceiling($frame.height * 0.99))
+  $yStart = [int][Math]::Max(
+    [double]$scanViewport.top,
+    [double]$scanViewport.top + [Math]::Max(48.0, [Math]::Floor([double]$scanViewport.height * 0.04))
+  )
+  $yEnd = [int][Math]::Min(
+    $viewportBottom - 12.0,
+    [double]$scanViewport.top + [Math]::Ceiling([double]$scanViewport.height * 0.99)
+  )
   $gutterHeight = $yEnd - $yStart
   if ($gutterWidth -lt 12 -or $gutterHeight -lt 40) { return @() }
   $mask = New-Object bool[] ($gutterWidth * $gutterHeight)
@@ -309,6 +387,14 @@ function Find-MomentsMenuDots($frame) {
     $y = $yStart + $localY
     for ($localX = 0; $localX -lt $gutterWidth; $localX++) {
       $x = $xStart + $localX
+      $insideScanBand = $false
+      foreach ($band in $scanBands) {
+        if ($x -ge [int][Math]::Floor([double]$band.left) -and $x -lt [int][Math]::Ceiling([double]$band.right)) {
+          $insideScanBand = $true
+          break
+        }
+      }
+      if (-not $insideScanBand) { continue }
       $offset = ($y * $frame.stride) + ($x * 4)
       $blue = [int]$frame.bytes[$offset]
       $green = [int]$frame.bytes[$offset + 1]
@@ -443,24 +529,26 @@ function Test-MomentsVisualBoundsInside($inner, $outer) {
     ([double]$inner.top + [double]$inner.height) -le ([double]$outer.top + [double]$outer.height)
 }
 
-function Find-MomentsAvatarForMenu($frame, $menus, [int]$menuIndex, $viewportBounds) {
+function Find-MomentsAvatarForMenu($frame, $menus, [int]$menuIndex, $viewportBounds, $visibleAvatars = $null) {
   $menu = $menus[$menuIndex]
-  $size = [int][Math]::Max(32, [Math]::Min(52, [Math]::Round([double]$viewportBounds.width * 0.09)))
-  $viewportRight = [double]$viewportBounds.left + [double]$viewportBounds.width
+  $profile = Get-MomentsVisualFeedScanProfile $viewportBounds $visibleAvatars
+  $size = [int]$profile.avatarSize
   $viewportBottom = [double]$viewportBounds.top + [double]$viewportBounds.height
-  $x = [int][Math]::Max([double]$viewportBounds.left, [Math]::Min($viewportRight - $size, [double]$viewportBounds.left + ([double]$viewportBounds.width * 0.055)))
   $previousMenuY = if ($menuIndex -gt 0) { [double]$menus[$menuIndex - 1].centerY } else { [double]$viewportBounds.top }
   $yStart = [int][Math]::Max([double]$viewportBounds.top, [Math]::Round($previousMenuY + ($size * 0.45)))
   $yEnd = [int][Math]::Min($viewportBottom - $size, [Math]::Floor($menu.centerY - ($size * 1.6)))
   if ($yEnd -lt $yStart) { return @{ ok = $false; reason = "moments_visual_avatar_not_found" } }
-  $peaks = New-Object System.Collections.Generic.List[object]
-  for ($y = $yStart; $y -le $yEnd; $y += 4) {
-    $measure = Measure-MomentsAvatarBox $frame $x $y $size
-    if (-not $measure.ok) { continue }
-    [void]$peaks.Add(@{ left = $x; top = $y; size = $size; score = [double]$measure.score })
+  if ($visibleAvatars -ne $null) {
+    $avatars = @($visibleAvatars)
+  } else {
+    $avatars = @(Find-MomentsVisibleAvatars $frame $viewportBounds)
   }
-  if ($peaks.Count -eq 0) { return @{ ok = $false; reason = "moments_visual_avatar_not_found" } }
-  $ordered = @($peaks.ToArray() | Sort-Object @{ Expression = "score"; Descending = $true }, @{ Expression = "top"; Descending = $true })
+  $candidates = @($avatars | Where-Object {
+    [double]$_.top -ge $yStart -and [double]$_.top -le $yEnd -and
+      ([double]$_.left + [double]$_.width) -lt ([double]$menu.centerX - ($size * 1.5))
+  })
+  if ($candidates.Count -eq 0) { return @{ ok = $false; reason = "moments_visual_avatar_not_found" } }
+  $ordered = @($candidates | Sort-Object @{ Expression = "score"; Descending = $true }, @{ Expression = "top"; Descending = $true })
   $best = $ordered[0]
   foreach ($other in $ordered | Select-Object -Skip 1) {
     if (($best.score - $other.score) -gt 0.035) { break }
@@ -469,6 +557,39 @@ function Find-MomentsAvatarForMenu($frame, $menus, [int]$menuIndex, $viewportBou
     }
   }
   return @{ ok = $true; bounds = @{ left = [double]$best.left; top = [double]$best.top; width = [double]$size; height = [double]$size }; score = $best.score }
+}
+
+function Find-MomentsVisibleAvatars($frame, $viewportBounds) {
+  $profile = Get-MomentsVisualFeedScanProfile $viewportBounds
+  $size = [int]$profile.avatarSize
+  $viewportBottom = [double]$viewportBounds.top + [double]$viewportBounds.height
+  $peaks = New-Object System.Collections.Generic.List[object]
+  foreach ($x in @($profile.avatarXPositions)) {
+    for ($y = [int][Math]::Ceiling([double]$viewportBounds.top); $y -le [int][Math]::Floor($viewportBottom - $size); $y += 4) {
+      $measure = Measure-MomentsAvatarBox $frame ([int]$x) $y $size
+      if ($measure.ok) {
+        [void]$peaks.Add(@{ left = [int]$x; top = $y; size = $size; score = [double]$measure.score })
+      }
+    }
+  }
+  $avatars = New-Object System.Collections.Generic.List[object]
+  foreach ($peak in @($peaks.ToArray() | Sort-Object @{ Expression = "score"; Descending = $true }, @{ Expression = "top"; Descending = $false })) {
+    $duplicate = $false
+    foreach ($existing in $avatars) {
+      if ([Math]::Abs([double]$existing.left - [double]$peak.left) -le ($size * 0.9) -and
+        [Math]::Abs([double]$existing.top - [double]$peak.top) -le ($size * 1.15)) { $duplicate = $true; break }
+    }
+    if (-not $duplicate) {
+      [void]$avatars.Add(@{
+        left = [double]$peak.left
+        top = [double]$peak.top
+        width = [double]$size
+        height = [double]$size
+        score = [double]$peak.score
+      })
+    }
+  }
+  return @($avatars.ToArray() | Sort-Object { [double]$_.top }, { [double]$_.left })
 }
 
 function Get-MomentsPixelHash($frame, $rect) {
@@ -514,7 +635,7 @@ function Get-MomentsOcrObservationFromBitmap($crop) {
     $writer.WriteBytes($bytes)
     [void](Wait-MomentsWinRt ($writer.StoreAsync()) ([uint32]))
     [void](Wait-MomentsWinRt ($writer.FlushAsync()) ([bool]))
-    $writer.DetachStream()
+    [void]$writer.DetachStream()
     $writer.Dispose()
     $random.Seek(0)
     $decoder = Wait-MomentsWinRt ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($random)) ([Windows.Graphics.Imaging.BitmapDecoder])
@@ -795,14 +916,15 @@ function Get-MomentsPostStableAnchorText($ocr, $postRect, $avatarBounds) {
 function Get-MomentsVisualPostCandidates($frame, $viewportBounds) {
   $frameBounds = @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
   if (-not (Test-MomentsVisualBoundsInside $viewportBounds $frameBounds)) {
-    return @{ menus = @(); posts = @(); postBoundaries = @() }
+    return @{ menus = @(); posts = @(); postBoundaries = @(); visibleAvatars = @() }
   }
-  $menus = @(Find-MomentsMenuDots $frame | Where-Object { Test-MomentsVisualBoundsInside $_.bounds $viewportBounds })
+  $visibleAvatars = @(Find-MomentsVisibleAvatars $frame $viewportBounds)
+  $menus = @(Find-MomentsMenuDots $frame $viewportBounds $visibleAvatars | Where-Object { Test-MomentsVisualBoundsInside $_.bounds $viewportBounds })
   $posts = New-Object System.Collections.Generic.List[object]
   $postBoundaries = New-Object System.Collections.Generic.List[object]
   for ($index = 0; $index -lt $menus.Count; $index++) {
     $menu = $menus[$index]
-    $avatar = Find-MomentsAvatarForMenu $frame $menus $index $viewportBounds
+    $avatar = Find-MomentsAvatarForMenu $frame $menus $index $viewportBounds $visibleAvatars
     if (-not $avatar.ok -or -not (Test-MomentsVisualBoundsInside $avatar.bounds $viewportBounds)) {
       [void]$postBoundaries.Add(@{
         ok = $false
@@ -852,7 +974,52 @@ function Get-MomentsVisualPostCandidates($frame, $viewportBounds) {
     menus = $menus
     posts = @($posts.ToArray() | Sort-Object { $_.bounds.top })
     postBoundaries = @($postBoundaries.ToArray() | Sort-Object { [double]$_.menuBounds.top })
+    visibleAvatars = $visibleAvatars
   }
+}
+
+function Get-MomentsVisualReadingCandidates($frame, $viewportBounds, $visibleAvatars = $null) {
+  $frameBounds = @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
+  if (-not (Test-MomentsVisualBoundsInside $viewportBounds $frameBounds)) { return @() }
+  if ($visibleAvatars -ne $null) {
+    $avatars = @($visibleAvatars)
+  } else {
+    $avatars = @(Find-MomentsVisibleAvatars $frame $viewportBounds)
+  }
+  $viewportRight = [double]$viewportBounds.left + [double]$viewportBounds.width
+  $viewportBottom = [double]$viewportBounds.top + [double]$viewportBounds.height
+  $readingCandidates = New-Object System.Collections.Generic.List[object]
+  for ($index = 0; $index -lt $avatars.Count; $index++) {
+    $avatar = $avatars[$index]
+    $postLeft = [Math]::Max([double]$viewportBounds.left, [double]$avatar.left - 6.0)
+    $postTop = [Math]::Max([double]$viewportBounds.top, [double]$avatar.top - 6.0)
+    $nextTop = $(if ($index + 1 -lt $avatars.Count) { [double]$avatars[$index + 1].top - 12.0 } else { $viewportBottom })
+    $postRight = [Math]::Min($viewportRight, [double]$viewportBounds.left + ([double]$viewportBounds.width * 0.95))
+    $postBottom = [Math]::Min($viewportBottom, $nextTop)
+    if ($postRight -le $postLeft -or $postBottom -le ($postTop + [double]$avatar.height)) { continue }
+    $postRect = @{ left = $postLeft; top = $postTop; width = $postRight - $postLeft; height = $postBottom - $postTop }
+    $ocr = Get-MomentsOcrObservation $frame $postRect
+    if (-not $ocr.ok) { continue }
+    $stableAnchorText = Get-MomentsPostStableAnchorText $ocr $postRect $avatar
+    if (-not $stableAnchorText -or $stableAnchorText.Length -gt 2000) { continue }
+    $regionHash = Get-MomentsPixelHash $frame $postRect
+    $avatarHash = Get-MomentsPixelHash $frame $avatar
+    if (-not $regionHash -or -not $avatarHash) { continue }
+    [void]$readingCandidates.Add(@{
+      text = [string]$stableAnchorText
+      identityText = [string]$stableAnchorText
+      stableAnchorText = [string]$stableAnchorText
+      structureVerified = $true
+      regionHash = [string]$regionHash
+      avatarHash = [string]$avatarHash
+      layoutHash = [string]$ocr.layoutHash
+      bounds = $postRect
+      avatarBounds = $avatar
+      partialVisible = $true
+      bodyOnly = $true
+    })
+  }
+  return @($readingCandidates.ToArray() | Sort-Object { [double]$_.bounds.top })
 }
 `;
 

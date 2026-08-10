@@ -37,6 +37,7 @@ const fixturePath = path.join(
 const tempRoot = "C:\\tmp";
 const startupTimeoutMs = 180_000;
 const shutdownTimeoutMs = 30_000;
+const playwrightNodePath = process.env.XIAOXI_PRODUCT_DETAIL_PLAYWRIGHT_NODE || process.execPath;
 
 const browserDriver = String.raw`
 import json
@@ -788,6 +789,7 @@ function startSidecar({ dataDir, bootstrapToken, controlToken, paidAiConfigured 
       ...process.env,
       XIAOXI_PRODUCT_DETAIL_DATA_DIR: dataDir,
       PLAYWRIGHT_BROWSERS_PATH: browserPath,
+      PLAYWRIGHT_NODEJS_PATH: playwrightNodePath,
       PYTHONUTF8: "1",
       PYTHONUNBUFFERED: "1",
       DEEPSEEK_API_KEY: paidAiConfigured ? "local-e2e-deepseek-placeholder" : "",
@@ -931,6 +933,7 @@ async function runBrowserPhase(config) {
       env: {
         ...process.env,
         PLAYWRIGHT_BROWSERS_PATH: browserPath,
+        PLAYWRIGHT_NODEJS_PATH: playwrightNodePath,
         PYTHONUTF8: "1",
         PYTHONUNBUFFERED: "1",
         XIAOXI_PRODUCT_DETAIL_E2E_CONFIG: JSON.stringify(config)
@@ -970,15 +973,24 @@ async function verifyHealth(server) {
     `health returned HTTP ${response.statusCode}: ${response.body}`
   );
   const health = JSON.parse(response.body);
-  assert.equal(health.ok, true);
-  assert.equal(health.status, "ready");
-  assert.equal(health.mode, "desktop");
-  assert.equal(health.capabilities.offline_workspace, true);
-  assert.equal(health.capabilities.playwright, true);
+  assert.equal(health.ok, true, "product-detail health must report ok=true");
+  assert.equal(health.status, "ready", "product-detail health must report ready");
+  assert.equal(health.mode, "desktop", "product-detail health must report desktop mode");
+  assert.equal(
+    health.capabilities.offline_workspace,
+    true,
+    "product-detail offline workspace capability must be available"
+  );
+  assert.equal(
+    health.capabilities.playwright,
+    true,
+    `product-detail Playwright capability must be available via ${playwrightNodePath}`
+  );
 }
 
 async function main() {
   requireFile(pythonPath, "product-detail Python runtime");
+  requireFile(playwrightNodePath, "Node.js executable for product-detail Playwright");
   requireDirectory(browserPath, "product-detail Playwright browsers");
   requireFile(entryPath, "product-detail desktop entry");
   requireFile(fixturePath, "product-detail PNG fixture");

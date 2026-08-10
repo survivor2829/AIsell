@@ -18,6 +18,8 @@ const {
 const desktopDir = path.resolve(__dirname, "..");
 const projectDir = path.resolve(desktopDir, "..");
 const releaseDir = path.join(projectDir, "release");
+const productBrand = require("../product-brand.json");
+const PRODUCT_NAME = productBrand.displayName;
 const electronDir = path.join(desktopDir, "node_modules", "electron", "dist");
 const nativeLibDir = path.join(desktopDir, "rpa", "contact_sync", "libs");
 const helper = path.join(nativeLibDir, "xiaoxi-contact-helper.exe");
@@ -58,6 +60,9 @@ function sourceAllowed(source, edition) {
       "active_touch_cli.dev.cjs",
       "moments_visual_probe.dev.cjs",
       "moments_navigation.dev.cjs",
+      "moments_surface_profile.dev.cjs",
+      "moments_surface_evidence.dev.cjs",
+      "moments_publish_driver.dev.cjs",
       "moments_dry_run.dev.cjs",
       "moments_dry_run_cli.dev.cjs",
       "moments_action.dev.cjs",
@@ -110,6 +115,7 @@ function copyRuntimePackageTree(packageName, appDir, fromDir = desktopDir, copie
 function copyAppSource(appDir, edition) {
   fs.mkdirSync(appDir, { recursive: true });
   fs.copyFileSync(path.join(desktopDir, "package.json"), path.join(appDir, "package.json"));
+  fs.copyFileSync(path.join(desktopDir, "product-brand.json"), path.join(appDir, "product-brand.json"));
   const rendererSource = path.join(desktopDir, edition === "test" ? "dist-development" : "dist-pilot");
   if (!fs.existsSync(path.join(rendererSource, "build-edition.json"))) throw new Error(`Missing renderer build: ${rendererSource}`);
   fs.cpSync(rendererSource, path.join(appDir, "dist"), { recursive: true });
@@ -190,7 +196,7 @@ function assertBuildPreconditions(edition) {
 }
 
 function buildPortableStaging(edition, paths, sourceState) {
-  const productName = edition === "test" ? "AI获客-测试版" : "AI获客";
+  const productName = edition === "test" ? `${PRODUCT_NAME}-测试版` : PRODUCT_NAME;
   const { target, zip, archiveBaseDir } = paths;
   fs.mkdirSync(releaseDir, { recursive: true });
   fs.cpSync(electronDir, target, { recursive: true });
@@ -207,7 +213,7 @@ function buildPortableStaging(edition, paths, sourceState) {
   const rendererMarker = JSON.parse(fs.readFileSync(path.join(desktopDir, edition === "test" ? "dist-development" : "dist-pilot", "build-edition.json"), "utf8"));
   const capabilityMatrix = JSON.parse(fs.readFileSync(path.join(desktopDir, "release-capabilities.json"), "utf8"));
   const manifest = {
-    product: "AI获客",
+    product: PRODUCT_NAME,
     edition,
     version: packageJson.version,
     buildId: String(rendererMarker.buildId || ""),
@@ -230,20 +236,20 @@ function buildPortableStaging(edition, paths, sourceState) {
     ),
     targetWeixin: capabilityMatrix.targetWeixin,
     capabilityMatrix: capabilityMatrix.capabilities,
-    releaseStage: "wechat-4.1.11.54-stabilization",
+    releaseStage: "wechat-4.1.11.55-integrated-moments-adaptation",
     commercialReady: false,
     builtAt: new Date().toISOString(),
     signed: false
   };
   fs.writeFileSync(path.join(target, "版本清单.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   fs.writeFileSync(path.join(target, "版本标识.txt"), edition === "test"
-    ? `AI获客 测试版 ${manifest.buildId}\n朋友圈逐帖互动已完成本机验收；每日自动计划已实现但仍待真实计时验收。\n`
-    : `AI获客 ${manifest.buildId}\n当前功能验收状态以版本清单中的 capabilityMatrix 为准；朋友圈逐帖互动已进入本包，每日自动计划仍待真实计时与异机验收，本包不代表完整商品。\n`, "utf8");
+    ? `${PRODUCT_NAME} 测试版 ${manifest.buildId}\n朋友圈逐帖互动已完成本机验收；每日自动计划已实现但仍待真实计时验收。\n`
+    : `${PRODUCT_NAME} ${manifest.buildId}\n当前功能验收状态以版本清单中的 capabilityMatrix 为准；朋友圈逐帖互动已进入本包，每日自动计划仍待真实计时与异机验收，本包不代表完整商品。\n`, "utf8");
   fs.writeFileSync(path.join(target, "首次使用说明.txt"), [
-    `AI获客 ${edition === "test" ? "测试版" : ""} ${manifest.buildId}`.trim(),
+    `${PRODUCT_NAME} ${edition === "test" ? "测试版" : ""} ${manifest.buildId}`.trim(),
     "",
     "1. 完整解压 ZIP 到一个全新目录后运行同名 EXE；不要覆盖旧目录，也不要只复制 EXE。",
-    "2. 第一阶段仅验证 Windows 10/11 x64 和个人微信 Weixin.exe 4.1.11.54；微信与本软件请使用相同权限运行。",
+    "2. 当前阶段适配 Windows 10/11 x64 和个人微信 Weixin.exe 4.1.11.55；微信与本软件请使用相同权限运行。朋友圈新版内嵌布局仍需按交付清单完成实机验收。",
     "3. 每台新电脑首次使用都要重新配置 API 密钥、导入 AI 专家话术并同步联系人；这些本地数据不会写入 ZIP。",
     "4. 同步联系人时软件会重启微信，请按提示重新登录。若路径未自动识别，可在同步联系人页手动选择 Weixin.exe 和 xwechat_files。",
     "5. 演示顺序：同步联系人 -> 导入 AI 专家并配置 API 密钥 -> 自动回复 -> 主动触达 -> 朋友圈点赞评论。",
@@ -415,7 +421,7 @@ function runPortableSelfCheck(edition, target, zip) {
 
 function buildPortable(edition = "delivery") {
   if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported edition: ${edition}`);
-  const productName = edition === "test" ? "AI获客-测试版" : "AI获客";
+  const productName = edition === "test" ? `${PRODUCT_NAME}-测试版` : PRODUCT_NAME;
   const transactionId = `${process.pid}-${Date.now()}-${process.hrtime.bigint().toString(36)}`;
   const stagingRoot = path.join(releaseDir, `.staging-${edition}-${transactionId}`);
   const stagingTarget = path.join(stagingRoot, productName);

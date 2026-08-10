@@ -53,6 +53,40 @@ function createMomentsCampaignApi(ipcRenderer) {
     }
   };
 }
+
+function createMomentsPublishApi(ipcRenderer) {
+  const consumeChooseClick = createTrustedClickGate("[data-xiaoxi-moments-publish-choose]");
+  const consumePrepareClick = createTrustedClickGate("[data-xiaoxi-moments-publish-prepare]");
+  const consumeConfirmClick = createTrustedClickGate("[data-xiaoxi-moments-publish-confirm]");
+  const consumeResolveClick = createTrustedClickGate(
+    "[data-xiaoxi-moments-publish-resolve-published], [data-xiaoxi-moments-publish-resolve-not-published]"
+  );
+  return {
+    status: () => ipcRenderer.invoke("moments-publish:status"),
+    chooseMedia: () => ipcRenderer.invoke("moments-publish:choose-media", {
+      clickToken: consumeChooseClick()
+    }),
+    prepare: (payload) => ipcRenderer.invoke("moments-publish:prepare", {
+      content: String(payload?.content || ""),
+      selectionId: String(payload?.selectionId || ""),
+      clickToken: consumePrepareClick()
+    }),
+    confirm: (payload) => ipcRenderer.invoke("moments-publish:confirm", {
+      draftId: String(payload?.draftId || ""),
+      clickToken: consumeConfirmClick()
+    }),
+    reset: () => ipcRenderer.invoke("moments-publish:reset"),
+    resolveUnknown: (payload) => ipcRenderer.invoke("moments-publish:resolve-unknown", {
+      resolution: String(payload?.resolution || ""),
+      clickToken: consumeResolveClick()
+    }),
+    onUpdate: (callback) => {
+      const handler = (_event, payload) => callback(payload);
+      ipcRenderer.on("moments-publish:update", handler);
+      return () => ipcRenderer.removeListener("moments-publish:update", handler);
+    }
+  };
+}
 function createContentEngineApi(ipcRenderer) {
   return {
     status: () => ipcRenderer.invoke("content-engine:status"),
@@ -240,6 +274,7 @@ function createPreloadApis(ipcRenderer) {
 module.exports = {
   createContentEngineApi,
   createMomentsCampaignApi,
+  createMomentsPublishApi,
   createPreloadApis,
   createTrustedClickGate
 };
