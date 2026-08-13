@@ -125,8 +125,9 @@ function validCommentReadbackSeed(seed, context = {}) {
 }
 
 function expectedVisualObservationId(window, snapshot) {
+  const interactionAnchor = snapshot?.source === "visual:interaction_anchor";
   const payload = JSON.stringify({
-    version: 6,
+    version: interactionAnchor ? 7 : 6,
     surfaceMode: String(window.surfaceMode ?? ""),
     className: String(window.className ?? ""),
     pid: Number(window.pid),
@@ -164,6 +165,7 @@ function expectedVisualObservationId(window, snapshot) {
     regionHash: String(snapshot.region_hash ?? ""),
     avatarHash: String(snapshot.avatar_hash ?? ""),
     layoutHash: String(snapshot.layout_hash ?? ""),
+    ...(interactionAnchor ? { menuHash: String(snapshot.menu_hash ?? "") } : {}),
     label: String(snapshot.label ?? ""),
     identityText: String(snapshot.identity_text ?? ""),
     ...(String(snapshot.stable_anchor_text ?? "") ? { stableAnchorText: String(snapshot.stable_anchor_text) } : {}),
@@ -223,11 +225,13 @@ function validVisualContext(context = {}) {
     && Boolean(window.renderPaneRuntimeId.trim())
     && validBounds(windowBounds, 299, 299)
     && boundsWithin(window.renderPaneBounds, windowBounds);
-  const snapshotCommonValid = snapshot.source === "visual:windows_media_ocr"
+  const interactionAnchor = snapshot.source === "visual:interaction_anchor";
+  const snapshotCommonValid = ["visual:windows_media_ocr", "visual:interaction_anchor"].includes(snapshot.source)
     && snapshot.identity_scope === "window_session_only"
     && snapshot.structure_verified === true
-    && snapshot.ocr_provider === "windows_media_ocr"
-    && snapshot.ocr_language === "zh-Hans-CN"
+    && (interactionAnchor
+      ? snapshot.ocr_provider === "" && snapshot.ocr_language === ""
+      : snapshot.ocr_provider === "windows_media_ocr" && snapshot.ocr_language === "zh-Hans-CN")
     && SHA256_PATTERN.test(String(snapshot.region_hash ?? ""))
     && SHA256_PATTERN.test(String(snapshot.layout_hash ?? ""))
     && typeof snapshot.label === "string"
@@ -248,7 +252,9 @@ function validVisualContext(context = {}) {
       && SHA256_PATTERN.test(String(snapshot.menu_hash ?? "")))
     || (snapshot.menu_only !== true
       && SHA256_PATTERN.test(String(snapshot.avatar_hash ?? ""))
-      && boundsWithin(snapshot.avatar_bounds, window.renderPaneBounds))
+      && boundsWithin(snapshot.avatar_bounds, window.renderPaneBounds)
+      && (!interactionAnchor || (snapshot.interaction_only === true
+        && SHA256_PATTERN.test(String(snapshot.menu_hash ?? "")))))
   );
   return windowValid
     && snapshotValid
@@ -1077,100 +1083,16 @@ function Test-MomentsStablePostIdentity($post, $snapshot) {
 }
 
 function Get-CurrentLockedVisualPost($lock, $context, [bool]$activate = $false) {
-  $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $activate $false
-  if (-not $frame.ok) { return @{ ok = $false; reason = $frame.reason } }
-  try {
-    $read = Get-MomentsVisualPostCandidates $frame $lock.relativeVisualViewportBounds
-    $snapshot = $context.postSnapshot
-    if ([bool]$snapshot.menu_only) {
-      $expectedMenuBounds = ConvertTo-RelativeVisualBounds $snapshot.menu_bounds $context.expectedWindow
-      $menuResolution = Resolve-VisualMenuAnchor $read.menus $expectedMenuBounds $script:momentsVisualPostRelockTolerancePx
-      if (-not $menuResolution.ok) {
-        return @{ ok = $false; reason = $menuResolution.reason; diagnostics = $menuResolution.diagnostics; frame = $frame }
-      }
-      $menuHash = Get-MomentsPixelHash $frame $menuResolution.menu.bounds
-      if (-not $menuHash -or [string]$menuHash -cne [string]$snapshot.menu_hash) {
-        return @{ ok = $false; reason = "moments_post_changed"; frame = $frame }
-      }
-      return @{
-        ok = $true
-        frame = $frame
-        post = @{ bounds = (ConvertTo-RelativeVisualBounds $snapshot.bounds $context.expectedWindow) }
-        menu = $menuResolution.menu
-        menuHash = $menuHash
-        avatarHash = ""
-        expectedMenuBounds = $expectedMenuBounds
-        expectedAvatarBounds = $null
-        nextPostTop = $null
-      }
-    }
-    $posts = @($read.posts)
-    if ($posts.Count -eq 0) { return @{ ok = $false; reason = "moments_post_not_found"; frame = $frame } }
-    $expectedBounds = ConvertTo-RelativeVisualBounds $snapshot.bounds $context.expectedWindow
-    $expectedMenuBounds = ConvertTo-RelativeVisualBounds $snapshot.menu_bounds $context.expectedWindow
-    $expectedAvatarBounds = ConvertTo-RelativeVisualBounds $snapshot.avatar_bounds $context.expectedWindow
-    $matchingPosts = New-Object System.Collections.Generic.List[object]
-    foreach ($post in $posts) {
-      if (-not (Test-MomentsStablePostIdentity $post $snapshot) -or
-        [string]$post.avatarHash -cne [string]$snapshot.avatar_hash -or
-        -not (Test-VisualBoundsNear $post.bounds $expectedBounds $script:momentsVisualPostRelockTolerancePx) -or
-        -not (Test-VisualBoundsNear $post.menuBounds $expectedMenuBounds $script:momentsVisualPostRelockTolerancePx) -or
-        -not (Test-VisualBoundsNear $post.avatarBounds $expectedAvatarBounds $script:momentsVisualPostRelockTolerancePx)) { continue }
-      [void]$matchingPosts.Add($post)
-    }
-    if ($matchingPosts.Count -eq 0) { return @{ ok = $false; reason = "moments_post_changed"; frame = $frame } }
-    if ($matchingPosts.Count -ne 1) { return @{ ok = $false; reason = "moments_post_ambiguous"; frame = $frame } }
-    $post = $matchingPosts[0]
-    $menuBottom = [double]$post.menuBounds.top + [double]$post.menuBounds.height
-    # The nearest menu below the locked post determines which visual post is
-    # actually next. Its avatar may prove the boundary without requiring OCR
-    # on that post; if the nearest menu has no unique avatar, keep the region
-    # incomplete instead of skipping across it to a later OCR-readable post.
-    $followingBoundaries = @($read.postBoundaries | Where-Object {
-      [double]$_.menuBounds.top -gt ($menuBottom + 8.0)
-    } | Sort-Object { [double]$_.menuBounds.top })
-    $nextPostTop = $(if ($followingBoundaries.Count -gt 0 -and
-      [bool]$followingBoundaries[0].ok -and
-      [double]$followingBoundaries[0].top -gt ($menuBottom + 8.0)) {
-      [double]$followingBoundaries[0].top
-    } else {
-      $null
-    })
-    $menuResolution = Resolve-VisualMenuAnchor $read.menus $post.menuBounds 1.5
-    if (-not $menuResolution.ok) {
-      return @{
-        ok = $false
-        reason = $menuResolution.reason
-        diagnostics = $menuResolution.diagnostics
-        frame = $frame
-      }
-    }
-    $menuHash = Get-MomentsPixelHash $frame $menuResolution.menu.bounds
-    $avatarHash = Get-MomentsPixelHash $frame $post.avatarBounds
-    if (-not $menuHash -or -not $avatarHash) { return @{ ok = $false; reason = "moments_post_changed"; frame = $frame } }
-    return @{
-      ok = $true
-      frame = $frame
-      post = $post
-      menu = $menuResolution.menu
-      menuHash = $menuHash
-      avatarHash = $avatarHash
-      expectedMenuBounds = $expectedMenuBounds
-      expectedAvatarBounds = $expectedAvatarBounds
-      nextPostTop = $nextPostTop
-    }
-  } catch {
-    return @{ ok = $false; reason = "moments_visual_probe_failed"; frame = $frame }
-  }
-}
-
-function Get-FreshVisualMenuAnchor($lock, $expectedMenuBounds, [string]$expectedHash, [bool]$activate = $false) {
+  $snapshot = $context.postSnapshot
+  $expectedBounds = ConvertTo-RelativeVisualBounds $snapshot.bounds $context.expectedWindow
+  $expectedMenuBounds = ConvertTo-RelativeVisualBounds $snapshot.menu_bounds $context.expectedWindow
+  $expectedAvatarBounds = $(if ([bool]$snapshot.menu_only) { $null } else { ConvertTo-RelativeVisualBounds $snapshot.avatar_bounds $context.expectedWindow })
+  $expectedAvatarHash = $(if ([bool]$snapshot.menu_only) { "" } else { [string]$snapshot.avatar_hash })
   for ($attempt = 0; $attempt -lt 2; $attempt++) {
     $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $activate $false
     if (-not $frame.ok) { return @{ ok = $false; reason = $frame.reason } }
     try {
-      $menus = @(Find-MomentsMenuDots $frame)
-      $resolution = Resolve-VisualMenuAnchor $menus $expectedMenuBounds $script:momentsVisualPostRelockTolerancePx
+      $resolution = Resolve-MomentsInteractionAnchor $frame $lock.relativeVisualViewportBounds $expectedMenuBounds $expectedAvatarBounds $expectedAvatarHash $script:momentsVisualPostRelockTolerancePx
       if (-not $resolution.ok) {
         if ([string]$resolution.reason -ceq "moments_menu_not_found" -and $attempt -eq 0) {
           Close-MomentsVisualFrame $frame
@@ -1185,15 +1107,28 @@ function Get-FreshVisualMenuAnchor($lock, $expectedMenuBounds, [string]$expected
           frame = $frame
         }
       }
-      $hash = Get-MomentsPixelHash $frame $resolution.menu.bounds
-      if (-not $hash -or ($expectedHash -and $hash -cne $expectedHash)) {
+      $menuHash = Get-MomentsPixelHash $frame $resolution.menu.bounds
+      if (-not $menuHash -or
+        (-not [string]::IsNullOrWhiteSpace([string]$snapshot.menu_hash) -and $menuHash -cne [string]$snapshot.menu_hash)) {
         return @{ ok = $false; reason = "moments_menu_changed"; frame = $frame }
       }
       return @{
         ok = $true
         frame = $frame
+        post = @{
+          bounds = $expectedBounds
+          menuBounds = $resolution.menu.bounds
+          avatarBounds = $expectedAvatarBounds
+          identityText = [string]$snapshot.identity_text
+          stableAnchorText = [string]$snapshot.stable_anchor_text
+          avatarHash = [string]$resolution.avatarHash
+        }
         menu = $resolution.menu
-        menuHash = $hash
+        menuHash = $menuHash
+        avatarHash = [string]$resolution.avatarHash
+        expectedMenuBounds = $expectedMenuBounds
+        expectedAvatarBounds = $expectedAvatarBounds
+        nextPostTop = $null
         diagnostics = $resolution.diagnostics
       }
     } catch {
@@ -2639,14 +2574,8 @@ function Open-LockedVisualMenu($lock, $context) {
     Close-MomentsVisualFrame $current.frame
     return @{ ok = $false; reason = $current.reason; diagnostics = $current.diagnostics }
   }
-  $fresh = Get-FreshVisualMenuAnchor $lock $current.expectedMenuBounds $current.menuHash $false
+  $menu = $current.menu
   Close-MomentsVisualFrame $current.frame
-  if (-not $fresh.ok) {
-    Close-MomentsVisualFrame $fresh.frame
-    return @{ ok = $false; reason = $fresh.reason; diagnostics = $fresh.diagnostics }
-  }
-  $menu = $fresh.menu
-  Close-MomentsVisualFrame $fresh.frame
   $screenX = [int][Math]::Round([double]$context.expectedWindow.left + [double]$menu.centerX)
   $screenY = [int][Math]::Round([double]$context.expectedWindow.top + [double]$menu.centerY)
   if (-not (Invoke-VisualOwnedClick $screenX $screenY $lock ([int64]$context.deadlineMs) $false $true)) {
@@ -2690,25 +2619,28 @@ function Close-And-VerifyUnchanged($lock, $context) {
 }
 
 function Get-PostActionMenuAnchor($lock, $expectedMenuBounds, $expectedAvatarBounds, [string]$expectedAvatarHash) {
-  $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $false
-  if (-not $frame.ok) { return @{ ok = $false; reason = $frame.reason } }
-  try {
-    $avatarHashMatched = $null
-    if ($expectedAvatarBounds -ne $null -and $expectedAvatarHash) {
-      $avatarHash = Get-MomentsPixelHash $frame $expectedAvatarBounds
-      $avatarHashMatched = [bool]($avatarHash -and $avatarHash -ceq $expectedAvatarHash)
-    }
-    $menus = @(Find-MomentsMenuDots $frame)
-    $resolution = Resolve-VisualMenuAnchor $menus $expectedMenuBounds 2.5
-    $diagnostics = $resolution.diagnostics
-    if ($diagnostics -eq $null) { $diagnostics = @{} }
-    $diagnostics.avatarHashMatched = $avatarHashMatched
-    if (-not $resolution.ok) {
+  for ($attempt = 0; $attempt -lt 2; $attempt++) {
+    $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $false
+    if (-not $frame.ok) { return @{ ok = $false; reason = $frame.reason } }
+    try {
+      # After the side effect, avatar repainting is diagnostic rather than an
+      # authorization gate. The target was already authorized before clicking.
+      $observedAvatarHash = $(if ($expectedAvatarBounds -ne $null) { Get-MomentsPixelHash $frame $expectedAvatarBounds } else { "" })
+      $resolution = Resolve-MomentsInteractionAnchor $frame $lock.relativeVisualViewportBounds $expectedMenuBounds $expectedAvatarBounds "" $script:momentsVisualPostRelockTolerancePx
+      $diagnostics = $resolution.diagnostics
+      if ($diagnostics -eq $null) { $diagnostics = @{} }
+      $diagnostics.avatarHashMatched = [bool]($observedAvatarHash -and $observedAvatarHash -ceq $expectedAvatarHash)
+      if ($resolution.ok) {
+        return @{ ok = $true; menu = $resolution.menu; diagnostics = $diagnostics }
+      }
+      if ([string]$resolution.reason -ceq "moments_menu_not_found" -and $attempt -eq 0) {
+        Start-Sleep -Milliseconds 160
+        continue
+      }
       return @{ ok = $false; reason = $resolution.reason; diagnostics = $diagnostics }
+    } finally {
+      Close-MomentsVisualFrame $frame
     }
-    return @{ ok = $true; menu = $resolution.menu; diagnostics = $diagnostics }
-  } finally {
-    Close-MomentsVisualFrame $frame
   }
 }
 
@@ -5105,11 +5037,17 @@ function Clear-And-CloseVisualCommentDraft($lock, $menu, $expectedComposerBounds
 $script:visualWorkerSoftDeadlineMs = (Get-VisualEpochMs) + 45000
 $script:visualPostSendSettleMs = 6000
 $context = Get-VisualContext
+$visualSource = [string]$context.postSnapshot.source
+$visualAction = [string]$env:XIAOXI_MOMENTS_VISUAL_ACTION
+$visualSourceValid = @("visual:windows_media_ocr", "visual:interaction_anchor") -contains $visualSource
+$commentRequiresOcr = @("comment", "comment_check", "comment_readback", "comment_occurrence_check") -contains $visualAction
 if ($context -eq $null -or [string]$context.observationId -notmatch '^[0-9a-f]{64}$' -or
   [string]$context.postSnapshot.observation_id -cne [string]$context.observationId -or
-  [string]$context.postSnapshot.source -cne "visual:windows_media_ocr" -or
-  [string]$context.postSnapshot.ocr_provider -cne "windows_media_ocr" -or
-  [string]$context.postSnapshot.ocr_language -cne "zh-Hans-CN" -or
+  -not $visualSourceValid -or
+  ($commentRequiresOcr -and $visualSource -cne "visual:windows_media_ocr") -or
+  ($visualSource -ceq "visual:windows_media_ocr" -and
+    ([string]$context.postSnapshot.ocr_provider -cne "windows_media_ocr" -or
+      [string]$context.postSnapshot.ocr_language -cne "zh-Hans-CN")) -or
   [string]::IsNullOrWhiteSpace([string]$context.postSnapshot.identity_text)) {
   Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_visual_target_lock_invalid"; actionAttempted = $false }
 }

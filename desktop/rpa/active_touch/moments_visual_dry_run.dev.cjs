@@ -110,6 +110,55 @@ function Get-UniqueStableVisualCandidates($first, $second, [string]$kind) {
   return @($stable.ToArray() | Sort-Object { [double]$_.bounds.top })
 }
 
+function Get-LocalStableInteractionRead($frame, $viewportBounds, $firstRead) {
+  $menus = New-Object System.Collections.Generic.List[object]
+  $posts = New-Object System.Collections.Generic.List[object]
+  $rawCandidateCount = 0
+  $componentCount = 0
+  $rejectedWhitespaceCount = 0
+  $rejectedAvatarLaneCount = 0
+  foreach ($post in @($firstRead.interactionPosts)) {
+    $anchor = Resolve-MomentsInteractionAnchor $frame $viewportBounds $post.menuBounds $post.avatarBounds ([string]$post.avatarHash) $script:momentsVisualStabilityTolerancePx
+    $rawCandidateCount += [int]$anchor.diagnostics.rawCandidateCount
+    $componentCount += [int]$anchor.diagnostics.componentCount
+    $rejectedWhitespaceCount += [int]$anchor.diagnostics.rejectedWhitespaceCount
+    $rejectedAvatarLaneCount += [int]$anchor.diagnostics.rejectedAvatarLaneCount
+    if (-not $anchor.ok) { continue }
+    $menuHash = Get-MomentsPixelHash $frame $anchor.menu.bounds
+    if (-not $menuHash) { continue }
+    [void]$menus.Add($anchor.menu)
+    [void]$posts.Add(@{
+      text = ""
+      identityText = ("interaction-anchor:{0}:{1}" -f [string]$anchor.avatarHash, [string]$menuHash)
+      stableAnchorText = ""
+      structureVerified = $true
+      interactionOnly = $true
+      regionHash = [string]$menuHash
+      menuHash = [string]$menuHash
+      avatarHash = [string]$anchor.avatarHash
+      layoutHash = [string]$menuHash
+      bounds = $post.bounds
+      menuBounds = $anchor.menu.bounds
+      avatarBounds = $post.avatarBounds
+      partialVisible = [bool]$post.partialVisible
+    })
+  }
+  return @{
+    menus = @($menus.ToArray())
+    posts = @()
+    interactionPosts = @($posts.ToArray())
+    postBoundaries = @()
+    visibleAvatars = @()
+    menuDiagnostics = @{
+      componentCount = [int]$componentCount
+      rawCandidateCount = [int]$rawCandidateCount
+      acceptedCandidateCount = [int]$posts.Count
+      rejectedWhitespaceCount = [int]$rejectedWhitespaceCount
+      rejectedAvatarLaneCount = [int]$rejectedAvatarLaneCount
+    }
+  }
+}
+
 function Get-ExpectedMomentsSurface {
   try {
     if ([string]::IsNullOrWhiteSpace([string]$env:XIAOXI_MOMENTS_EXPECTED_SURFACE_BASE64)) { return $null }
@@ -121,8 +170,11 @@ function Get-ExpectedMomentsSurface {
 }
 
 $processNames = @("Weixin", "WeChat")
+$probeStopwatch = [Diagnostics.Stopwatch]::StartNew()
+$phaseTimings = @{}
 $expectedSurface = Get-ExpectedMomentsSurface
 $allowBodyOnly = [string]$env:XIAOXI_MOMENTS_ALLOW_BODY_ONLY -ceq "1"
+$interactionOnly = [string]$env:XIAOXI_MOMENTS_INTERACTION_ONLY -ceq "1"
 $script:matches = @()
 $callback = [Win32WechatMomentsVisualProbe+EnumWindowsProc]{
   param([IntPtr]$hWnd, [IntPtr]$lParam)
@@ -167,6 +219,7 @@ if ($matches.Count -eq 0) { Write-Result @{ ok = $false; reason = "moments_windo
 
 $surfaceMatches = New-Object System.Collections.Generic.List[object]
 $surfaceFailureReason = "moments_window_identity_mismatch"
+$surfaceFailureDiagnostics = $null
 foreach ($candidate in @($matches)) {
   $candidateHWnd = [IntPtr][int64]$candidate.hWnd
   try { $candidateRoot = [System.Windows.Automation.AutomationElement]::FromHandle($candidateHWnd) } catch { $candidateRoot = $null }
@@ -195,7 +248,7 @@ foreach ($candidate in @($matches)) {
     $surfaceFailureReason = "moments_render_pane_bounds_invalid"
     continue
   }
-  if ([string]$candidate.surfaceMode -ceq "integrated") {
+  if ([string]$candidate.surfaceMode -ceq "integrated" -and $expectedSurface -eq $null) {
     [uint32]$dpi = 96
     try {
       $observedDpi = [Win32WechatMomentsVisualProbe]::GetDpiForWindow($candidateHWnd)
@@ -207,7 +260,11 @@ foreach ($candidate in @($matches)) {
       $candidateRelativePane = ConvertTo-RelativeVisualBounds $candidatePane.pane.bounds $candidate.left $candidate.top
       $candidateSurfaceBounds = @{ left = 0.0; top = 0.0; width = [double]$candidate.width; height = [double]$candidate.height }
       $headerProof = Test-IntegratedMomentsSurface $candidateFrame $candidateSurfaceBounds ([double]$dpi / 96.0)
-      if (-not $headerProof.ok) { $surfaceFailureReason = [string]$headerProof.reason; continue }
+      if (-not $headerProof.ok) {
+        $surfaceFailureReason = [string]$headerProof.reason
+        $surfaceFailureDiagnostics = $headerProof
+        continue
+      }
     } finally {
       Close-MomentsVisualFrame $candidateFrame
     }
@@ -215,7 +272,7 @@ foreach ($candidate in @($matches)) {
   [void]$surfaceMatches.Add($candidate)
 }
 $matches = @($surfaceMatches.ToArray())
-if ($matches.Count -eq 0) { Write-Result @{ ok = $false; reason = $surfaceFailureReason } }
+if ($matches.Count -eq 0) { Write-Result @{ ok = $false; reason = $surfaceFailureReason; diagnostics = $surfaceFailureDiagnostics } }
 if ($matches.Count -ne 1) { Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; count = $matches.Count } }
 
 $matched = $matches[0]
@@ -279,19 +336,51 @@ $surfaceResult = @{
   renderPaneRuntimeId = $renderEvidence.pane.runtimeId
   renderPaneBounds = $renderEvidence.pane.bounds
 }
+$phaseTimings["window_lock_ms"] = [int]$probeStopwatch.ElapsedMilliseconds
 
+$phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
 $firstFrame = Get-MomentsVisualFrame $hWnd $matched.rect $matched.pid $false
 if (-not $firstFrame.ok) { Close-And-Write $firstFrame }
+$phaseTimings["first_capture_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
+$phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
 $firstHeader = $(if ([string]$matched.surfaceMode -ceq "integrated") { Test-IntegratedMomentsSurface $firstFrame $surfaceScanBounds $scale } else { @{ ok = $true } })
 if (-not $firstHeader.ok) { Close-And-Write $firstHeader $firstFrame }
+$firstSurfaceAnchorHash = $(if ([string]$matched.surfaceMode -ceq "integrated") {
+  Get-MomentsPixelHash $firstFrame $firstHeader.selectedGreenRunBounds
+} else { "" })
+if ([string]$matched.surfaceMode -ceq "integrated" -and -not $firstSurfaceAnchorHash) {
+  Close-And-Write @{ ok = $false; reason = "moments_integrated_surface_not_proven" } $firstFrame
+}
 $firstViewport = Get-MomentsVisualViewportBounds $relativeRenderPaneBounds $firstHeader ([string]$matched.surfaceMode)
 if (-not $firstViewport.ok) { Close-And-Write $firstViewport $firstFrame }
-$firstRead = Get-MomentsVisualPostCandidates $firstFrame $firstViewport.bounds
+$phaseTimings["first_surface_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
+$phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
+$firstRead = Get-MomentsVisualPostCandidates $firstFrame $firstViewport.bounds (-not $interactionOnly)
+$phaseTimings["first_candidates_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
 $firstReading = @()
+$phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
 Start-Sleep -Milliseconds 180
+$phaseTimings["stability_wait_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
+$phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
 $secondFrame = Get-MomentsVisualFrame $hWnd $matched.rect $matched.pid $false
 if (-not $secondFrame.ok) { Close-And-Write $secondFrame $firstFrame }
-$secondHeader = $(if ([string]$matched.surfaceMode -ceq "integrated") { Test-IntegratedMomentsSurface $secondFrame $surfaceScanBounds $scale } else { @{ ok = $true } })
+$phaseTimings["second_capture_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
+$phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
+$secondHeader = $(if ([string]$matched.surfaceMode -ceq "integrated") {
+  $secondSurfaceAnchorHash = Get-MomentsPixelHash $secondFrame $firstHeader.selectedGreenRunBounds
+  $secondGreenRatio = Get-MomentsSelectedGreenRatio $secondFrame $firstHeader.selectedGreenRunBounds
+  if ($secondSurfaceAnchorHash -and [string]$secondSurfaceAnchorHash -ceq [string]$firstSurfaceAnchorHash -and $secondGreenRatio -ge 0.42) {
+    @{
+      ok = $true
+      mode = "integrated_selected_moments_local_relock"
+      greenRatio = [double]$secondGreenRatio
+      contentLeft = [double]$firstHeader.contentLeft
+      selectedGreenRunBounds = $firstHeader.selectedGreenRunBounds
+    }
+  } else {
+    @{ ok = $false; reason = "moments_integrated_surface_not_proven" }
+  }
+} else { @{ ok = $true } })
 if (-not $secondHeader.ok) { Close-And-Write $secondHeader $firstFrame $secondFrame }
 $secondViewport = Get-MomentsVisualViewportBounds $relativeRenderPaneBounds $secondHeader ([string]$matched.surfaceMode)
 if (-not $secondViewport.ok) { Close-And-Write $secondViewport $firstFrame $secondFrame }
@@ -303,10 +392,21 @@ if ([Math]::Abs([double]$firstViewport.bounds.left - [double]$secondViewport.bou
     diagnostics = @{ changeStage = "viewport_geometry" }
   } $firstFrame $secondFrame
 }
-$secondRead = Get-MomentsVisualPostCandidates $secondFrame $secondViewport.bounds
+$phaseTimings["second_surface_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
+$phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
+$secondRead = $(if ($interactionOnly) {
+  Get-LocalStableInteractionRead $secondFrame $secondViewport.bounds $firstRead
+} else {
+  Get-MomentsVisualPostCandidates $secondFrame $secondViewport.bounds $true
+})
+$phaseTimings["second_candidates_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
 $secondReading = @()
 $stableMenus = @(Get-UniqueStableVisualCandidates $firstRead.menus $secondRead.menus "menu")
-$stablePosts = @(Get-UniqueStableVisualCandidates $firstRead.posts $secondRead.posts "post")
+$stablePosts = $(if ($interactionOnly) {
+  @(Get-UniqueStableVisualCandidates $firstRead.interactionPosts $secondRead.interactionPosts "post")
+} else {
+  @(Get-UniqueStableVisualCandidates $firstRead.posts $secondRead.posts "post")
+})
 $stableReading = @()
 if ($allowBodyOnly -and $stablePosts.Count -eq 0) {
   $firstReading = @(Get-MomentsVisualReadingCandidates $firstFrame $firstViewport.bounds ($firstRead.visibleAvatars))
@@ -408,6 +508,8 @@ foreach ($post in $posts) {
     regionHash = [string]$post.regionHash
     avatarHash = [string]$post.avatarHash
     layoutHash = [string]$post.layoutHash
+    menuHash = [string]$post.menuHash
+    interactionOnly = [bool]$post.interactionOnly
     bounds = $absoluteBounds
     menuBounds = $absoluteMenuBounds
     avatarBounds = $absoluteAvatarBounds
@@ -416,6 +518,15 @@ foreach ($post in $posts) {
 }
 $result = $surfaceResult.Clone()
 $result["posts"] = @($absolutePosts.ToArray())
+$result["diagnostics"] = @{
+  firstMenu = $firstRead.menuDiagnostics
+  secondMenu = $secondRead.menuDiagnostics
+  stableMenuCount = $stableMenus.Count
+  stablePostCount = $stablePosts.Count
+  secondPassMode = $(if ($interactionOnly) { "local_interaction_anchor" } else { "full_post_ocr" })
+  phaseTimings = $phaseTimings
+  totalMs = [int]$probeStopwatch.ElapsedMilliseconds
+}
 Close-And-Write $result $firstFrame $secondFrame
 `;
 
@@ -427,7 +538,8 @@ function probeVisualWechatMomentsWindow(expectedWindow, options = {}) {
       XIAOXI_MOMENTS_EXPECTED_SURFACE_BASE64: expectedSurface
         ? Buffer.from(JSON.stringify(expectedSurface), "utf8").toString("base64")
         : "",
-      XIAOXI_MOMENTS_ALLOW_BODY_ONLY: options.allowBodyOnly === true ? "1" : ""
+      XIAOXI_MOMENTS_ALLOW_BODY_ONLY: options.allowBodyOnly === true ? "1" : "",
+      XIAOXI_MOMENTS_INTERACTION_ONLY: options.interactionOnly === true ? "1" : ""
     },
     { ensure: false, sta: true, timeout: 30000, diagnostics: true }
   );

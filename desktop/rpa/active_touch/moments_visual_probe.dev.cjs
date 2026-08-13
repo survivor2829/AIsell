@@ -23,6 +23,8 @@ public static class Win32WechatMomentsVisualReadOnly {
 }
 "@
 [void][Win32WechatMomentsVisualReadOnly]::SetThreadDpiAwarenessContext([IntPtr](-4))
+$script:momentsMenuAboveWhitespaceMinimum = 0.66
+$script:momentsMenuLeftWhitespaceMinimum = 0.60
 
 function Wait-MomentsWinRt($operation, [Type]$resultType) {
   $method = [System.WindowsRuntimeSystemExtensions].GetMethods() |
@@ -325,19 +327,14 @@ function Get-MomentsVisualFeedScanProfile($viewportBounds, $avatarCandidates = $
   }
 
   $menuBands = New-Object System.Collections.Generic.List[object]
-  $rightGutterLeft = [Math]::Floor([double]$viewportBounds.left + ([double]$viewportBounds.width * 0.86))
-  $rightGutterRight = [Math]::Ceiling([double]$viewportBounds.left + ([double]$viewportBounds.width * 0.95))
+  $expandedLayout = $avatarSize -ge 48
+  $rightGutterLeftRatio = $(if ($expandedLayout) { 0.74 } else { 0.86 })
+  $rightGutterRightRatio = $(if ($expandedLayout) { 0.84 } else { 0.95 })
+  $rightGutterLeft = [Math]::Floor([double]$viewportBounds.left + ([double]$viewportBounds.width * $rightGutterLeftRatio))
+  $rightGutterRight = [Math]::Ceiling([double]$viewportBounds.left + ([double]$viewportBounds.width * $rightGutterRightRatio))
   if (($rightGutterRight - $rightGutterLeft) -ge 12.0) {
     [void]$menuBands.Add(@{ left = [double]$rightGutterLeft; right = [double]$rightGutterRight })
   }
-  foreach ($anchor in $anchors) {
-    $bandLeft = [Math]::Max([double]$viewportBounds.left, [double]$anchor + ($avatarSize * 6.5))
-    $bandRight = [Math]::Min($viewportRight, [double]$anchor + ($avatarSize * 12.5))
-    if (($bandRight - $bandLeft) -ge 12.0) {
-      [void]$menuBands.Add(@{ left = $bandLeft; right = $bandRight })
-    }
-  }
-
   return @{
     avatarSize = $avatarSize
     avatarXPositions = @($avatarXPositions | Sort-Object)
@@ -345,7 +342,25 @@ function Get-MomentsVisualFeedScanProfile($viewportBounds, $avatarCandidates = $
   }
 }
 
-function Find-MomentsMenuDots($frame, $viewportBounds = $null, $avatarCandidates = $null) {
+function Get-MomentsInteractionWhitespaceEvidence($frame, $menu, [double]$avatarSize, $viewportBounds) {
+  $aboveDepth = [Math]::Max(44.0, $avatarSize * 1.1)
+  $leftDepth = [Math]::Max(52.0, $avatarSize * 1.2)
+  $aboveTop = [int][Math]::Max([double]$viewportBounds.top, [double]$menu.centerY - $aboveDepth)
+  $aboveBottom = [int][Math]::Floor([double]$menu.centerY - 14.0)
+  $leftEdge = [int][Math]::Max([double]$viewportBounds.left, [double]$menu.centerX - $leftDepth)
+  $leftRight = [int][Math]::Floor([double]$menu.centerX - 20.0)
+  $aboveRatio = Get-MomentsPatchLightRatio $frame ([int]([double]$menu.centerX - 18.0)) $aboveTop ([int]([double]$menu.centerX + 19.0)) $aboveBottom
+  $leftRatio = Get-MomentsPatchLightRatio $frame $leftEdge ([int]([double]$menu.centerY - 12.0)) $leftRight ([int]([double]$menu.centerY + 13.0))
+  return @{
+    ok = $aboveBottom -gt $aboveTop -and $leftRight -gt $leftEdge -and
+      $aboveRatio -ge $script:momentsMenuAboveWhitespaceMinimum -and
+      $leftRatio -ge $script:momentsMenuLeftWhitespaceMinimum
+    aboveRatio = $aboveRatio
+    leftRatio = $leftRatio
+  }
+}
+
+function Find-MomentsMenuDotsDetailed($frame, $viewportBounds = $null, $avatarCandidates = $null, $localBounds = $null) {
   # The interaction button lives in a dedicated right gutter. We classify the
   # icon by connected components: this WeChat render profile draws the menu
   # as two compact, separated dots on one baseline. Text ellipses use three
@@ -362,7 +377,18 @@ function Find-MomentsMenuDots($frame, $viewportBounds = $null, $avatarCandidates
   $viewportBottom = [double]$scanViewport.top + [double]$scanViewport.height
   $scanProfile = Get-MomentsVisualFeedScanProfile $scanViewport $avatarCandidates
   $scanBands = @($scanProfile.menuBands)
-  if ($scanBands.Count -eq 0) { return @() }
+  if ($scanBands.Count -eq 0) {
+    return @{
+      menus = @()
+      diagnostics = @{
+        componentCount = 0
+        rawCandidateCount = 0
+        acceptedCandidateCount = 0
+        rejectedWhitespaceCount = 0
+        rejectedAvatarLaneCount = 0
+      }
+    }
+  }
   $xStart = [int][Math]::Max(
     [double]$scanViewport.left,
     [Math]::Floor(($scanBands | ForEach-Object { [double]$_.left } | Measure-Object -Minimum).Minimum)
@@ -371,6 +397,10 @@ function Find-MomentsMenuDots($frame, $viewportBounds = $null, $avatarCandidates
     $viewportRight,
     [Math]::Ceiling(($scanBands | ForEach-Object { [double]$_.right } | Measure-Object -Maximum).Maximum)
   )
+  if (Test-MomentsVisualBoundsInside $localBounds $scanViewport) {
+    $xStart = [int][Math]::Max($xStart, [Math]::Floor([double]$localBounds.left))
+    $xEnd = [int][Math]::Min($xEnd, [Math]::Ceiling([double]$localBounds.left + [double]$localBounds.width))
+  }
   $gutterWidth = $xEnd - $xStart
   $yStart = [int][Math]::Max(
     [double]$scanViewport.top,
@@ -380,8 +410,14 @@ function Find-MomentsMenuDots($frame, $viewportBounds = $null, $avatarCandidates
     $viewportBottom - 12.0,
     [double]$scanViewport.top + [Math]::Ceiling([double]$scanViewport.height * 0.99)
   )
+  if (Test-MomentsVisualBoundsInside $localBounds $scanViewport) {
+    $yStart = [int][Math]::Max($yStart, [Math]::Floor([double]$localBounds.top))
+    $yEnd = [int][Math]::Min($yEnd, [Math]::Ceiling([double]$localBounds.top + [double]$localBounds.height))
+  }
   $gutterHeight = $yEnd - $yStart
-  if ($gutterWidth -lt 12 -or $gutterHeight -lt 40) { return @() }
+  if ($gutterWidth -lt 12 -or $gutterHeight -lt 12) {
+    return @{ menus = @(); diagnostics = @{ componentCount = 0; rawCandidateCount = 0; acceptedCandidateCount = 0; rejectedWhitespaceCount = 0; rejectedAvatarLaneCount = 0 } }
+  }
   $mask = New-Object bool[] ($gutterWidth * $gutterHeight)
   for ($localY = 0; $localY -lt $gutterHeight; $localY++) {
     $y = $yStart + $localY
@@ -450,6 +486,9 @@ function Find-MomentsMenuDots($frame, $viewportBounds = $null, $avatarCandidates
   }
   $ordered = @($components.ToArray() | Sort-Object { [double]$_.centerY }, { [double]$_.centerX })
   $menus = New-Object System.Collections.Generic.List[object]
+  $rawCandidateCount = 0
+  $rejectedWhitespaceCount = 0
+  $rejectedAvatarLaneCount = 0
   for ($firstIndex = 0; $firstIndex -lt $ordered.Count; $firstIndex++) {
     for ($secondIndex = $firstIndex + 1; $secondIndex -lt $ordered.Count; $secondIndex++) {
       $first = $ordered[$firstIndex]; $second = $ordered[$secondIndex]
@@ -471,6 +510,19 @@ function Find-MomentsMenuDots($frame, $viewportBounds = $null, $avatarCandidates
       if ($span -lt 5 -or $span -gt 28) { continue }
       $lightRatio = Get-MomentsPatchLightRatio $frame ([int]($centerX - 18)) ([int]($centerY - 12)) ([int]($centerX + 19)) ([int]($centerY + 13))
       if ($lightRatio -lt 0.58) { continue }
+      $rawCandidateCount += 1
+      $candidateMenu = @{ centerX = $centerX; centerY = $centerY; bounds = @{ left = $centerX - 18; top = $centerY - 12; width = 36; height = 24 } }
+      $whitespace = Get-MomentsInteractionWhitespaceEvidence $frame $candidateMenu ([double]$scanProfile.avatarSize) $scanViewport
+      if (-not $whitespace.ok) { $rejectedWhitespaceCount += 1; continue }
+      if (@($avatarCandidates).Count -gt 0) {
+        $laneMatches = @($avatarCandidates | Where-Object {
+          $horizontalSpan = [double]$candidateMenu.centerX - [double]$_.left
+          [double]$_.top -le ([double]$candidateMenu.centerY - ([double]$scanProfile.avatarSize * 1.2)) -and
+            $horizontalSpan -ge ([double]$scanProfile.avatarSize * 3.0) -and
+            $horizontalSpan -le ([double]$scanViewport.width * 0.95)
+        })
+        if ($laneMatches.Count -eq 0) { $rejectedAvatarLaneCount += 1; continue }
+      }
       $duplicate = $false
       foreach ($existing in $menus) {
         if ([Math]::Abs($existing.centerX - $centerX) -le 6 -and [Math]::Abs($existing.centerY - $centerY) -le 10) { $duplicate = $true; break }
@@ -479,13 +531,81 @@ function Find-MomentsMenuDots($frame, $viewportBounds = $null, $avatarCandidates
         [void]$menus.Add(@{
           centerX = $centerX
           centerY = $centerY
-          bounds = @{ left = $centerX - 18; top = $centerY - 12; width = 36; height = 24 }
+          bounds = $candidateMenu.bounds
+          aboveWhitespaceRatio = [double]$whitespace.aboveRatio
+          leftWhitespaceRatio = [double]$whitespace.leftRatio
         })
       }
       break
     }
   }
-  return @($menus.ToArray() | Sort-Object { [double]$_.centerY }, { [double]$_.centerX })
+  $accepted = @($menus.ToArray() | Sort-Object { [double]$_.centerY }, { [double]$_.centerX })
+  return @{
+    menus = $accepted
+    diagnostics = @{
+      componentCount = [int]$components.Count
+      rawCandidateCount = [int]$rawCandidateCount
+      acceptedCandidateCount = [int]$accepted.Count
+      rejectedWhitespaceCount = [int]$rejectedWhitespaceCount
+      rejectedAvatarLaneCount = [int]$rejectedAvatarLaneCount
+    }
+  }
+}
+
+function Find-MomentsMenuDots($frame, $viewportBounds = $null, $avatarCandidates = $null) {
+  $result = Find-MomentsMenuDotsDetailed $frame $viewportBounds $avatarCandidates $null
+  return @($result.menus)
+}
+
+function Resolve-MomentsInteractionAnchor(
+  $frame,
+  $viewportBounds,
+  $expectedMenuBounds,
+  $expectedAvatarBounds,
+  [string]$expectedAvatarHash,
+  [double]$tolerance = 12.0
+) {
+  if (-not (Test-MomentsVisualBoundsInside $expectedMenuBounds $viewportBounds) -or
+    ($expectedAvatarBounds -ne $null -and -not (Test-MomentsVisualBoundsInside $expectedAvatarBounds $viewportBounds))) {
+    return @{ ok = $false; reason = "moments_visual_target_lock_invalid"; diagnostics = @{ rawCandidateCount = 0; acceptedCandidateCount = 0 } }
+  }
+  if ($expectedAvatarBounds -ne $null -and $expectedAvatarHash) {
+    $avatarHash = Get-MomentsPixelHash $frame $expectedAvatarBounds
+    if (-not $avatarHash -or [string]$avatarHash -cne $expectedAvatarHash) {
+      return @{ ok = $false; reason = "moments_post_changed"; diagnostics = @{ rawCandidateCount = 0; acceptedCandidateCount = 0 } }
+    }
+  } else {
+    $avatarHash = ""
+  }
+  $localBounds = @{
+    left = [Math]::Max([double]$viewportBounds.left, [double]$expectedMenuBounds.left - $tolerance)
+    top = [Math]::Max([double]$viewportBounds.top, [double]$expectedMenuBounds.top - $tolerance)
+    width = [double]$expectedMenuBounds.width + ($tolerance * 2.0)
+    height = [double]$expectedMenuBounds.height + ($tolerance * 2.0)
+  }
+  $viewportRight = [double]$viewportBounds.left + [double]$viewportBounds.width
+  $viewportBottom = [double]$viewportBounds.top + [double]$viewportBounds.height
+  $localBounds.width = [Math]::Min([double]$localBounds.width, $viewportRight - [double]$localBounds.left)
+  $localBounds.height = [Math]::Min([double]$localBounds.height, $viewportBottom - [double]$localBounds.top)
+  $avatars = $(if ($expectedAvatarBounds -ne $null) { @($expectedAvatarBounds) } else { @() })
+  $read = Find-MomentsMenuDotsDetailed $frame $viewportBounds $avatars $localBounds
+  $matches = @($read.menus | Where-Object {
+    [Math]::Abs([double]$_.bounds.left - [double]$expectedMenuBounds.left) -le $tolerance -and
+      [Math]::Abs([double]$_.bounds.top - [double]$expectedMenuBounds.top) -le $tolerance -and
+      [Math]::Abs([double]$_.bounds.width - [double]$expectedMenuBounds.width) -le 3.0 -and
+      [Math]::Abs([double]$_.bounds.height - [double]$expectedMenuBounds.height) -le 3.0
+  })
+  $diagnostics = @{
+    componentCount = [int]$read.diagnostics.componentCount
+    rawCandidateCount = [int]$read.diagnostics.rawCandidateCount
+    acceptedCandidateCount = [int]$matches.Count
+    rejectedWhitespaceCount = [int]$read.diagnostics.rejectedWhitespaceCount
+    rejectedAvatarLaneCount = [int]$read.diagnostics.rejectedAvatarLaneCount
+    searchBounds = $localBounds
+  }
+  if ($matches.Count -eq 0) { return @{ ok = $false; reason = "moments_menu_not_found"; diagnostics = $diagnostics } }
+  if ($matches.Count -ne 1) { return @{ ok = $false; reason = "moments_menu_ambiguous"; diagnostics = $diagnostics } }
+  return @{ ok = $true; reason = ""; menu = $matches[0]; avatarHash = $avatarHash; diagnostics = $diagnostics }
 }
 
 function Measure-MomentsAvatarBox($frame, [int]$left, [int]$top, [int]$size) {
@@ -548,11 +668,15 @@ function Find-MomentsAvatarForMenu($frame, $menus, [int]$menuIndex, $viewportBou
       ([double]$_.left + [double]$_.width) -lt ([double]$menu.centerX - ($size * 1.5))
   })
   if ($candidates.Count -eq 0) { return @{ ok = $false; reason = "moments_visual_avatar_not_found" } }
-  $ordered = @($candidates | Sort-Object @{ Expression = "score"; Descending = $true }, @{ Expression = "top"; Descending = $true })
+  $ordered = @($candidates | Sort-Object @{ Expression = {
+    [double]$menu.centerY - ([double]$_.top + [double]$_.height)
+  }; Descending = $false }, @{ Expression = "score"; Descending = $true })
   $best = $ordered[0]
-  foreach ($other in $ordered | Select-Object -Skip 1) {
-    if (($best.score - $other.score) -gt 0.035) { break }
-    if ([Math]::Abs($best.top - $other.top) -gt ($size * 0.65)) {
+  if ($ordered.Count -gt 1) {
+    $bestGap = [double]$menu.centerY - ([double]$best.top + [double]$best.height)
+    $nextGap = [double]$menu.centerY - ([double]$ordered[1].top + [double]$ordered[1].height)
+    if ([Math]::Abs($bestGap - $nextGap) -le ($size * 0.20) -and
+      [Math]::Abs([double]$best.top - [double]$ordered[1].top) -gt ($size * 0.35)) {
       return @{ ok = $false; reason = "moments_visual_avatar_ambiguous" }
     }
   }
@@ -913,14 +1037,16 @@ function Get-MomentsPostStableAnchorText($ocr, $postRect, $avatarBounds) {
   return $normalized
 }
 
-function Get-MomentsVisualPostCandidates($frame, $viewportBounds) {
+function Get-MomentsVisualPostCandidates($frame, $viewportBounds, [bool]$includeText = $true) {
   $frameBounds = @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
   if (-not (Test-MomentsVisualBoundsInside $viewportBounds $frameBounds)) {
-    return @{ menus = @(); posts = @(); postBoundaries = @(); visibleAvatars = @() }
+    return @{ menus = @(); posts = @(); interactionPosts = @(); postBoundaries = @(); visibleAvatars = @() }
   }
   $visibleAvatars = @(Find-MomentsVisibleAvatars $frame $viewportBounds)
-  $menus = @(Find-MomentsMenuDots $frame $viewportBounds $visibleAvatars | Where-Object { Test-MomentsVisualBoundsInside $_.bounds $viewportBounds })
+  $menuRead = Find-MomentsMenuDotsDetailed $frame $viewportBounds $visibleAvatars
+  $menus = @($menuRead.menus | Where-Object { Test-MomentsVisualBoundsInside $_.bounds $viewportBounds })
   $posts = New-Object System.Collections.Generic.List[object]
+  $interactionPosts = New-Object System.Collections.Generic.List[object]
   $postBoundaries = New-Object System.Collections.Generic.List[object]
   for ($index = 0; $index -lt $menus.Count; $index++) {
     $menu = $menus[$index]
@@ -948,14 +1074,32 @@ function Get-MomentsVisualPostCandidates($frame, $viewportBounds) {
     $postBottom = [Math]::Min($viewportBottom, $unclippedPostBottom)
     if ($postRight -le $postLeft -or $postBottom -le $postTop) { continue }
     $postRect = @{ left = $postLeft; top = $postTop; width = $postRight - $postLeft; height = $postBottom - $postTop }
+    $menuHash = Get-MomentsPixelHash $frame $menu.bounds
+    $avatarHash = Get-MomentsPixelHash $frame $avatar.bounds
+    if (-not $menuHash -or -not $avatarHash) { continue }
+    [void]$interactionPosts.Add(@{
+      text = ""
+      identityText = ("interaction-anchor:{0}:{1}" -f $avatarHash, $menuHash)
+      stableAnchorText = ""
+      structureVerified = $true
+      interactionOnly = $true
+      regionHash = $menuHash
+      menuHash = $menuHash
+      avatarHash = $avatarHash
+      layoutHash = $menuHash
+      bounds = $postRect
+      menuBounds = $menu.bounds
+      avatarBounds = $avatar.bounds
+      partialVisible = $unclippedPostBottom -gt $viewportBottom
+    })
+    if (-not $includeText) { continue }
     $ocr = Get-MomentsOcrObservation $frame $postRect
     if (-not $ocr.ok -or -not $ocr.text -or $ocr.text.Length -lt 8 -or $ocr.text.Length -gt 2000) { continue }
     $identityText = Get-MomentsPostIdentityText $ocr $postRect $menu.bounds
     $stableAnchorText = Get-MomentsPostStableAnchorText $ocr $postRect $avatar.bounds
     if (-not $identityText -or $identityText.Length -gt 2000) { continue }
     $regionHash = Get-MomentsPixelHash $frame $postRect
-    $avatarHash = Get-MomentsPixelHash $frame $avatar.bounds
-    if (-not $regionHash -or -not $avatarHash) { continue }
+    if (-not $regionHash) { continue }
     [void]$posts.Add(@{
       text = [string]$ocr.text
       identityText = [string]$identityText
@@ -973,6 +1117,8 @@ function Get-MomentsVisualPostCandidates($frame, $viewportBounds) {
   return @{
     menus = $menus
     posts = @($posts.ToArray() | Sort-Object { $_.bounds.top })
+    interactionPosts = @($interactionPosts.ToArray() | Sort-Object { $_.bounds.top })
+    menuDiagnostics = $menuRead.diagnostics
     postBoundaries = @($postBoundaries.ToArray() | Sort-Object { [double]$_.menuBounds.top })
     visibleAvatars = $visibleAvatars
   }

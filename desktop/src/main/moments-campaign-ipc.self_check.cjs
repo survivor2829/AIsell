@@ -448,7 +448,7 @@ async function main() {
   assert.equal(likeRecognitionPartial.processed_count, 1);
   assert.equal(likeRecognitionPartial.liked_count, 0);
   assert.equal(likeRecognitionPartial.skipped_count, 1);
-  assert.equal(likeRecognitionPartial.last_reason, "target_not_reached");
+  assert.equal(likeRecognitionPartial.last_reason, "no_progress");
   const likeRecognitionEvent = likeRecognitionEvents.find((entry) => entry.event === "campaign.like_finished");
   assert.deepEqual(likeRecognitionEvent.details.diagnostics, {
     requested_action: "like",
@@ -666,20 +666,64 @@ async function main() {
   );
   assert.equal(partialCompleted.processed_count, 1);
   assert.equal(partialCompleted.liked_count, 1);
-  assert.equal(partialObservations, 2);
+  assert.equal(partialObservations, 1);
   assert.equal(partialLikes, 1);
-  assert.equal(partialScrolls, 1);
-  assert.equal(partialScrollOptions.length, 1);
-  assert.deepEqual(
-    { ...partialScrollOptions[0], shouldContinue: undefined },
-    {
-      expectedWindow: INTEGRATED_OBSERVED_WINDOW,
-      minIdleMs: 0,
-      scrollMode: "seek_post_menu_down",
-      shouldContinue: undefined
+  assert.equal(partialScrolls, 0);
+  assert.equal(partialScrollOptions.length, 0);
+
+  const queueRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-queue-"));
+  let queueObservations = 0;
+  let queueScrolls = 0;
+  const queueActionIds = [];
+  const bottomSnapshot = {
+    observation_id: "b".repeat(64),
+    post_fingerprint: "b".repeat(64),
+    menu_bounds: { top: 520 }
+  };
+  const topSnapshot = {
+    observation_id: "a".repeat(64),
+    post_fingerprint: "a".repeat(64),
+    menu_bounds: { top: 180 }
+  };
+  const queueController = createMomentsCampaignController({
+    baseDir: queueRoot,
+    coordinator: {
+      acquire: () => ({ ok: true, lock: { owner: "queue-owner" } }),
+      release: () => undefined
+    },
+    logger: { event: () => undefined },
+    openMoments: async () => INTEGRATED_OPEN_RESULT,
+    scrollMoments: async () => {
+      queueScrolls += 1;
+      return { ok: true };
+    },
+    runStep: async (args) => {
+      if (args[0] === "moments-dry-run") {
+        queueObservations += 1;
+        return {
+          ok: true,
+          window: INTEGRATED_OBSERVED_WINDOW,
+          plan: { visible_post_count: 2 },
+          post_snapshot: bottomSnapshot,
+          post_snapshots: [topSnapshot, bottomSnapshot]
+        };
+      }
+      const observationId = args[args.indexOf("--observation-id") + 1];
+      queueActionIds.push(observationId);
+      return observationId === bottomSnapshot.observation_id
+        ? { ok: false, status: "blocked", blocked_reason: "moments_menu_not_found", real_action_attempted: false }
+        : { ok: true, status: "verified", no_op: false, real_action_attempted: true };
     }
+  });
+  assert.equal(queueController.start({ maxPosts: 1, likeEnabled: true, commentEnabled: false }).ok, true);
+  const queueCompleted = await waitFor(
+    () => queueController.status().state,
+    (state) => state.status === "completed"
   );
-  assert.equal(typeof partialScrollOptions[0].shouldContinue, "function");
+  assert.equal(queueCompleted.liked_count, 1);
+  assert.equal(queueObservations, 1, "same-screen candidates must share one observation");
+  assert.deepEqual(queueActionIds, [bottomSnapshot.observation_id, topSnapshot.observation_id]);
+  assert.equal(queueScrolls, 0, "one failed candidate must not scroll before the same-screen queue is exhausted");
 
   const commentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-comment-"));
   const commentFingerprint = "d".repeat(64);
@@ -1254,7 +1298,7 @@ async function main() {
   assert.equal(aiFailureCompleted.commented_count, 0);
   assert.equal(aiFailureCompleted.comment_skipped_count, 1);
   assert.equal(aiFailureCompleted.skipped_count, 1);
-  assert.equal(aiFailureCompleted.last_reason, "target_not_reached");
+  assert.equal(aiFailureCompleted.last_reason, "no_progress");
 
   const crossedStatusRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-crossed-status-"));
   const crossedStatusFingerprint = "9".repeat(64);
@@ -1363,12 +1407,12 @@ async function main() {
   }).ok, true);
   const combinedPaused = await waitFor(
     () => combinedController.status().state,
-    (state) => state.status === "paused"
+    (state) => state.status === "partial"
   );
   assert.equal(combinedPaused.liked_count, 1);
   assert.equal(combinedPaused.commented_count, 1);
   assert.equal(combinedPaused.completed_post_count, 0);
-  assert.equal(combinedPaused.last_reason, "combined_test_end");
+  assert.equal(combinedPaused.last_reason, "no_progress");
 
   const partialAlignmentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-partial-alignment-limit-"));
   let partialAlignmentScans = 0;
@@ -1385,7 +1429,15 @@ async function main() {
       partialAlignmentScrolls += 1;
       return { ok: true };
     },
-    runStep: async () => {
+    runStep: async (args) => {
+      if (args[0] !== "moments-dry-run") {
+        return {
+          ok: false,
+          status: "blocked",
+          blocked_reason: "moments_menu_not_found",
+          real_action_attempted: false
+        };
+      }
       partialAlignmentScans += 1;
       const fingerprint = String(partialAlignmentScans).padStart(64, "0");
       return {
@@ -1404,9 +1456,10 @@ async function main() {
     () => partialAlignmentController.status().state,
     (state) => state.status === "partial"
   );
-  assert.equal(partialAlignmentDone.processed_count, 0);
-  assert.equal(partialAlignmentScans, 55);
-  assert.equal(partialAlignmentScrolls, 55);
+  assert.equal(partialAlignmentDone.processed_count, 2);
+  assert.equal(partialAlignmentScans, 2);
+  assert.equal(partialAlignmentScrolls, 1);
+  assert.equal(partialAlignmentDone.last_reason, "no_progress");
 
   const exhaustedReadingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-reading-exhausted-"));
   const exhaustedReadingEvents = [];

@@ -706,6 +706,56 @@ async function main() {
     assert.equal(generatedVisualResult.ok, true, "dry-run and action must agree on the integrated visual v6 payload");
     assert.equal(generatedVisualDriverCalls, 1);
 
+    const interactionAnchorPost = (top, digit) => ({
+      text: "",
+      identityText: `interaction-anchor:${digit.repeat(64)}:${digit.repeat(64)}`,
+      stableAnchorText: "",
+      structureVerified: true,
+      interactionOnly: true,
+      regionHash: digit.repeat(64),
+      menuHash: digit.repeat(64),
+      avatarHash: digit.repeat(64),
+      layoutHash: digit.repeat(64),
+      bounds: { left: 82, top, width: 758, height: 180 },
+      menuBounds: { left: 760, top: top + 120, width: 80, height: 40 },
+      avatarBounds: { left: 82, top: top + 6, width: 48, height: 48 },
+      partialVisible: top === 80
+    });
+    const interactionAnchorDir = path.join(root, "visual-interaction-anchor-list");
+    const interactionAnchorDryRun = prepareMomentsDryRun(interactionAnchorDir, {
+      mode: "random",
+      likeEnabled: true,
+      commentEnabled: false,
+      commentText: ""
+    }, () => ({
+      ...VISUAL_WINDOW,
+      posts: [interactionAnchorPost(80, "a"), interactionAnchorPost(420, "b")]
+    }));
+    assert.equal(interactionAnchorDryRun.ok, true);
+    assert.equal(interactionAnchorDryRun.post_snapshots.length, 2);
+    assert.deepEqual(
+      interactionAnchorDryRun.post_snapshots.map((snapshot) => snapshot.source),
+      ["visual:interaction_anchor", "visual:interaction_anchor"]
+    );
+    assert.deepEqual(
+      interactionAnchorDryRun.post_snapshots.map((snapshot) => snapshot.menu_bounds.top),
+      [540, 200],
+      "same-screen interaction anchors must be returned bottom-to-top"
+    );
+    const secondAnchor = interactionAnchorDryRun.post_snapshots[1];
+    assert.equal(validVisualContext({
+      expectedWindow: interactionAnchorDryRun.window,
+      postSnapshot: secondAnchor,
+      observationId: secondAnchor.observation_id,
+      deadlineMs: Date.now() + 30_000
+    }), true, "the visual driver must accept a structure-only like snapshot");
+    const secondAnchorInspect = await inspectMomentsMenu({
+      baseDir: interactionAnchorDir,
+      observationId: secondAnchor.observation_id,
+      driver: verifiedDriver(secondAnchor.observation_id)
+    });
+    assert.equal(secondAnchorInspect.ok, true, "actions must load a non-primary snapshot by observation id");
+
     const menuOnlyVisualDir = path.join(root, "visual-menu-only-like");
     const menuOnlyVisualDryRun = prepareMomentsDryRun(menuOnlyVisualDir, {
       mode: "random",

@@ -970,16 +970,34 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow, options = {}) {
     };
   }
   const renderPaneBounds = windowResult?.renderPaneBounds;
-  const selection = selectVisibleMomentsPost(posts, renderPaneBounds, options.targetPost);
+  const selectedPost = options.selectedPost;
+  const selection = selectedPost
+    ? {
+        ok: posts.includes(selectedPost),
+        post: selectedPost,
+        partialVisible: selectedPost?.partialVisible === true,
+        acceptedCount: posts.length,
+        diagnostics: {
+          candidate_count: posts.length,
+          accepted_count: posts.length,
+          position_zone: selectedPost?.partialVisible === true ? "top_edge_anchor_complete" : "full"
+        }
+      }
+    : selectVisibleMomentsPost(posts, renderPaneBounds, options.targetPost);
   if (!selection.ok) return { ok: false, reason: selection.reason, error: MOMENTS_BLOCK_ERRORS[selection.reason], diagnostics: selection.diagnostics };
   const post = selection.post;
-  const label = String(post.text ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
+  const interactionOnly = post.interactionOnly === true;
+  const source = interactionOnly ? "visual:interaction_anchor" : "visual:windows_media_ocr";
+  const label = interactionOnly
+    ? "visible moments interaction anchor"
+    : String(post.text ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
   const identityText = String(post.identityText ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
   const stableAnchorText = String(post.stableAnchorText ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
   const postFingerprint = momentsPostFingerprint(identityText);
   const regionHash = String(post.regionHash ?? "").trim();
   const avatarHash = String(post.avatarHash ?? "").trim();
   const layoutHash = String(post.layoutHash ?? "").trim();
+  const menuHash = String(post.menuHash ?? regionHash).trim();
   const bounds = post.bounds;
   const menuBounds = post.menuBounds;
   const avatarBounds = post.avatarBounds;
@@ -996,7 +1014,7 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow, options = {}) {
     return { ok: false, reason: "moments_post_identity_missing", error: MOMENTS_BLOCK_ERRORS.moments_post_identity_missing };
   }
   const observationPayload = JSON.stringify({
-    version: 6,
+    version: interactionOnly ? 7 : 6,
     surfaceMode: String(windowResult.surfaceMode ?? ""),
     className: String(windowResult.className ?? ""),
     pid: Number(windowResult.pid),
@@ -1021,14 +1039,15 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow, options = {}) {
       width: Number(windowResult.renderPaneBounds?.width),
       height: Number(windowResult.renderPaneBounds?.height)
     },
-    source: "visual:windows_media_ocr",
+    source,
     identityScope: "window_session_only",
     structureVerified: true,
-    ocrProvider: "windows_media_ocr",
-    ocrLanguage: "zh-Hans-CN",
+    ocrProvider: interactionOnly ? "" : "windows_media_ocr",
+    ocrLanguage: interactionOnly ? "" : "zh-Hans-CN",
     regionHash,
     avatarHash,
     layoutHash,
+    ...(interactionOnly ? { menuHash } : {}),
     label,
     identityText,
     ...(stableAnchorText ? { stableAnchorText } : {}),
@@ -1060,18 +1079,19 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow, options = {}) {
     snapshot: {
       observation_id: crypto.createHash("sha256").update(observationPayload, "utf8").digest("hex"),
       post_fingerprint: postFingerprint,
-      source: "visual:windows_media_ocr",
+      source,
       identity_scope: "window_session_only",
       structure_verified: true,
-      ocr_provider: "windows_media_ocr",
-      ocr_language: "zh-Hans-CN",
+      ocr_provider: interactionOnly ? "" : "windows_media_ocr",
+      ocr_language: interactionOnly ? "" : "zh-Hans-CN",
       region_hash: regionHash,
       avatar_hash: avatarHash,
       layout_hash: layoutHash,
+      ...(interactionOnly ? { menu_hash: menuHash, interaction_only: true } : {}),
       label,
       identity_text: identityText,
       stable_anchor_text: stableAnchorText,
-      preview: label.length > 160 ? `${label.slice(0, 157)}...` : label,
+      preview: interactionOnly ? "可见朋友圈互动菜单" : (label.length > 160 ? `${label.slice(0, 157)}...` : label),
       bounds,
       menu_bounds: menuBounds,
       avatar_bounds: avatarBounds,
@@ -1210,7 +1230,10 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
       plan
     );
   }
-  const visualProbeOptions = { allowBodyOnly: payload.allowBodyOnly === true };
+  const visualProbeOptions = {
+    allowBodyOnly: payload.allowBodyOnly === true,
+    interactionOnly: likeEnabled && !commentEnabled && !targetPost
+  };
   let windowResult = driver === probeWechatMomentsWindow && expectedSurface?.surfaceMode === "integrated"
     ? probeVisualWechatMomentsWindow(expectedSurface, visualProbeOptions)
     : driver(expectedSurface);
@@ -1244,13 +1267,27 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
     return momentsDryRunBlock(baseDir, state, "moments_window_identity_mismatch", MOMENTS_BLOCK_ERRORS.moments_window_identity_mismatch, plan);
   }
   const window = momentsWindowSnapshot(windowResult, verifiedWindow);
-  const snapshotResult = momentsPostSnapshot(windowResult, verifiedWindow, {
+  const snapshotOptions = {
     // A generic three-dot crop is not a post identity. It may be reused for
     // read-only diagnostics, but it must never authorize a real Like.
     allowMenuOnly: false,
     allowBodyOnly: payload.allowBodyOnly === true && commentEnabled,
     targetPost
-  });
+  };
+  const interactionCandidates = windowResult.identityMode === "visual_mmui_render"
+    && likeEnabled
+    && !commentEnabled
+    && !targetPost
+    && Array.isArray(windowResult.posts)
+    && windowResult.posts.every((post) => post?.interactionOnly === true)
+    ? (Array.isArray(windowResult.posts) ? windowResult.posts : [])
+    : [];
+  const interactionResults = interactionCandidates
+    .map((selectedPost) => momentsPostSnapshot(windowResult, verifiedWindow, { ...snapshotOptions, selectedPost }))
+    .filter((result) => result.ok)
+    .sort((left, right) => Number(right.snapshot?.menu_bounds?.top) - Number(left.snapshot?.menu_bounds?.top));
+  const snapshotResult = interactionResults[0]
+    ?? momentsPostSnapshot(windowResult, verifiedWindow, snapshotOptions);
   if (!snapshotResult.ok) {
     return {
       ...momentsDryRunBlock(baseDir, state, snapshotResult.reason, snapshotResult.error, { ...plan, position_diagnostics: snapshotResult.diagnostics }, snapshotResult.diagnostics),
@@ -1258,6 +1295,9 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
     };
   }
   const postSnapshot = snapshotResult.snapshot;
+  const postSnapshots = interactionResults.length > 0
+    ? interactionResults.map((result) => result.snapshot)
+    : [postSnapshot];
   const visiblePostCount = snapshotResult.visiblePostCount;
 
   const configuredOrder = mode === "targeted" ? ["comment", "like"] : ["like", "comment"];
@@ -1275,6 +1315,7 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
     moments_dry_run: {
       ...preparedPlan,
       post_snapshot: postSnapshot,
+      post_snapshots: postSnapshots,
       status: "prepared",
       prepared_at: new Date().toISOString(),
       window
@@ -1288,8 +1329,12 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
     dry_run: true,
     plan: preparedPlan,
     post_snapshot: postSnapshot,
+    post_snapshots: postSnapshots,
     real_action_attempted: false,
-    diagnostics: snapshotResult.diagnostics,
+    diagnostics: {
+      ...snapshotResult.diagnostics,
+      ...(windowResult?.diagnostics ? { visual: windowResult.diagnostics } : {})
+    },
     window
   };
 }

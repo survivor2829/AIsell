@@ -98,10 +98,31 @@ function Invoke-TextEllipsisCase {
   }
 }
 
+function Invoke-LocalAnchorCase([bool]$occupyWhitespace) {
+  $viewport = @{ left = 384.0; top = 0.0; width = 1008.0; height = 941.0 }
+  $frame = New-FixtureFrame 1400 950
+  $avatar = @{ left = 620.0; top = 100.0; width = 52.0; height = 52.0 }
+  Set-FixtureAvatar $frame 620 100 52
+  if ($occupyWhitespace) {
+    Set-FixtureRect $frame 1167 345 1203 402 80
+  }
+  Set-FixtureMenu $frame 1179 420
+  $avatarHash = Get-MomentsPixelHash $frame $avatar
+  $resolved = Resolve-MomentsInteractionAnchor $frame $viewport @{ left = 1167.0; top = 408.0; width = 36.0; height = 24.0 } $avatar $avatarHash 12.0
+  return [pscustomobject]@{
+    ok = [bool]$resolved.ok
+    reason = [string]$resolved.reason
+    rawCandidateCount = [int]$resolved.diagnostics.rawCandidateCount
+    acceptedCandidateCount = [int]$resolved.diagnostics.acceptedCandidateCount
+  }
+}
+
 @{
+  localAnchor = Invoke-LocalAnchorCase $false
+  occupiedLocalAnchor = Invoke-LocalAnchorCase $true
   legacy = Invoke-FixtureCase 700 400 @{ left = 311.0; top = 0.0; width = 389.0; height = 400.0 } 332 80 35 655 220
   textEllipsis = Invoke-TextEllipsisCase
-  wideCentered = Invoke-FixtureCase 1400 950 @{ left = 384.0; top = 0.0; width = 1008.0; height = 941.0 } 620 100 52 1080 420
+  wideCentered = Invoke-FixtureCase 1400 950 @{ left = 384.0; top = 0.0; width = 1008.0; height = 941.0 } 620 100 52 1179 420
 } | ConvertTo-Json -Depth 6 -Compress
 `;
 
@@ -119,6 +140,12 @@ const result = spawnSync("powershell.exe", [
 
 assert.equal(result.status, 0, result.stderr || result.error?.stack || "geometry harness must run");
 assert.deepEqual(JSON.parse(result.stdout.trim()), {
+  localAnchor: {
+    acceptedCandidateCount: 1,
+    ok: true,
+    rawCandidateCount: 1,
+    reason: "",
+  },
   legacy: {
     avatarAligned: true,
     menuCount: 1,
@@ -126,6 +153,12 @@ assert.deepEqual(JSON.parse(result.stdout.trim()), {
     postCount: 1,
     providedAvatarCount: 1,
     readingPostCount: 1,
+  },
+  occupiedLocalAnchor: {
+    acceptedCandidateCount: 0,
+    ok: false,
+    rawCandidateCount: 1,
+    reason: "moments_menu_not_found",
   },
   textEllipsis: {
     menuCount: 0,

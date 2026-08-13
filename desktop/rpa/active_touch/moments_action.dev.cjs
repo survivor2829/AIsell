@@ -601,9 +601,11 @@ function validLockedWindowIdentity(window) {
 }
 
 function expectedObservationId(window, snapshot) {
-  if (window?.identityMode === "visual_mmui_render" && snapshot?.source === "visual:windows_media_ocr") {
+  if (window?.identityMode === "visual_mmui_render"
+    && ["visual:windows_media_ocr", "visual:interaction_anchor"].includes(snapshot?.source)) {
+    const interactionAnchor = snapshot.source === "visual:interaction_anchor";
     const payload = JSON.stringify({
-      version: 6,
+      version: interactionAnchor ? 7 : 6,
       surfaceMode: String(window.surfaceMode ?? ""),
       className: String(window.className ?? ""),
       pid: Number(window.pid),
@@ -641,6 +643,7 @@ function expectedObservationId(window, snapshot) {
       regionHash: String(snapshot.region_hash ?? ""),
       avatarHash: String(snapshot.avatar_hash ?? ""),
       layoutHash: String(snapshot.layout_hash ?? ""),
+      ...(interactionAnchor ? { menuHash: String(snapshot.menu_hash ?? "") } : {}),
       label: String(snapshot.label ?? ""),
       identityText: String(snapshot.identity_text ?? ""),
       ...(String(snapshot.stable_anchor_text ?? "")
@@ -712,9 +715,15 @@ function loadLockedContext(baseDir, suppliedObservationId) {
 
   const observationId = String(suppliedObservationId ?? "").trim();
   const dryRun = state.moments_dry_run;
-  const snapshot = dryRun?.post_snapshot;
+  const snapshots = Array.isArray(dryRun?.post_snapshots) && dryRun.post_snapshots.length > 0
+    ? dryRun.post_snapshots
+    : [dryRun?.post_snapshot].filter(Boolean);
+  const primarySnapshot = dryRun?.post_snapshot;
+  const snapshot = primarySnapshot?.observation_id === observationId
+    ? primarySnapshot
+    : snapshots.find((candidate) => candidate?.observation_id === observationId);
   const window = dryRun?.window;
-  if (dryRun?.status !== "prepared" || !snapshot || !window) {
+  if (dryRun?.status !== "prepared" || snapshots.length === 0 || !window) {
     return { ok: false, state, observationId, reason: "moments_dry_run_not_prepared" };
   }
   const preparedAtMs = Date.parse(String(dryRun.prepared_at ?? ""));
@@ -724,7 +733,7 @@ function loadLockedContext(baseDir, suppliedObservationId) {
   if (!OBSERVATION_ID_PATTERN.test(observationId)) {
     return { ok: false, state, observationId, reason: "moments_observation_id_invalid" };
   }
-  if (observationId !== snapshot.observation_id) {
+  if (!snapshot) {
     return { ok: false, state, observationId, reason: "moments_observation_id_mismatch" };
   }
 
@@ -752,11 +761,13 @@ function loadLockedContext(baseDir, suppliedObservationId) {
     width: window?.width,
     height: window?.height
   };
-  const visualSnapshotCommonValid = snapshot.source === "visual:windows_media_ocr"
+  const interactionAnchor = snapshot.source === "visual:interaction_anchor";
+  const visualSnapshotCommonValid = ["visual:windows_media_ocr", "visual:interaction_anchor"].includes(snapshot.source)
     && snapshot.identity_scope === "window_session_only"
     && snapshot.structure_verified === true
-    && snapshot.ocr_provider === "windows_media_ocr"
-    && snapshot.ocr_language === "zh-Hans-CN"
+    && (interactionAnchor
+      ? snapshot.ocr_provider === "" && snapshot.ocr_language === ""
+      : snapshot.ocr_provider === "windows_media_ocr" && snapshot.ocr_language === "zh-Hans-CN")
     && typeof snapshot.region_hash === "string"
     && OBSERVATION_ID_PATTERN.test(snapshot.region_hash)
     && typeof snapshot.layout_hash === "string"
@@ -785,6 +796,9 @@ function loadLockedContext(baseDir, suppliedObservationId) {
       && typeof snapshot.avatar_hash === "string"
       && OBSERVATION_ID_PATTERN.test(snapshot.avatar_hash)
       && boundsWithin(snapshot.avatar_bounds, window.renderPaneBounds)
+      && (!interactionAnchor || (snapshot.interaction_only === true
+        && typeof snapshot.menu_hash === "string"
+        && OBSERVATION_ID_PATTERN.test(snapshot.menu_hash)))
     )
   );
   const snapshotValid = identityKind === "uia"
@@ -815,7 +829,7 @@ function resolveDriver(injectedDriver, context) {
   // The real driver is test-edition-only and is intentionally loaded only when an action reaches it.
   if (
     context?.expectedWindow?.identityMode === "visual_mmui_render"
-    && context?.postSnapshot?.source === "visual:windows_media_ocr"
+    && ["visual:windows_media_ocr", "visual:interaction_anchor"].includes(context?.postSnapshot?.source)
   ) {
     return require("./moments_visual_action_driver.dev.cjs");
   }

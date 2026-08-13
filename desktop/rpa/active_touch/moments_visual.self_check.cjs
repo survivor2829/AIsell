@@ -195,13 +195,18 @@ ${visualBoundsFunction}
 ${visualBoundsNearFunction}
 ${visualMenuResolverFunction}
 ${postActionMenuAnchorFunction}
+function Resolve-MomentsInteractionAnchor($frame, $viewportBounds, $expectedMenuBounds, $expectedAvatarBounds, $expectedAvatarHash, $tolerance) {
+  $resolved = Resolve-VisualMenuAnchor @($script:menus) $expectedMenuBounds $tolerance
+  return @{ ok = $resolved.ok; reason = $resolved.reason; menu = $resolved.menu; diagnostics = $resolved.diagnostics }
+}
 function Get-MomentsVisualFrame($hWnd, $windowRect, $processId, $includeOcr) {
   return @{ ok = $true; width = 800; height = 900 }
 }
 function Close-MomentsVisualFrame($frame) {}
 function Get-MomentsPixelHash($frame, $bounds) { return "repainted-avatar-hash" }
 function Find-MomentsMenuDots($frame) { return @($script:menus) }
-$lock = @{ hWnd = 1; windowRect = @{}; pid = 2 }
+$script:momentsVisualPostRelockTolerancePx = 12.0
+$lock = @{ hWnd = 1; windowRect = @{}; pid = 2; relativeVisualViewportBounds = @{ left = 0; top = 0; width = 800; height = 900 } }
 $expectedMenu = @{ left = 400.0; top = 520.0; width = 36.0; height = 24.0 }
 $expectedAvatar = @{ left = 120.0; top = 300.0; width = 44.0; height = 44.0 }
 $script:menus = @(@{
@@ -422,10 +427,14 @@ assert.doesNotMatch(script, /\$title\s+-(?:like|match)\b/iu);
 assert.match(script, /Test-VisualBoundsInside \$candidatePane\.pane\.bounds \$candidateWindowBounds/u);
 assert.match(script, /\$candidate\.surfaceMode -ceq "integrated"[\s\S]*Test-IntegratedMomentsSurface \$candidateFrame \$candidateSurfaceBounds/u);
 assert.match(script, /\$matched\.surfaceMode -ceq "integrated"[\s\S]*Test-IntegratedMomentsSurface \$firstFrame \$surfaceScanBounds/u);
-assert.match(script, /\$matched\.surfaceMode -ceq "integrated"[\s\S]*Test-IntegratedMomentsSurface \$secondFrame \$surfaceScanBounds/u);
+assert.match(script, /\$secondSurfaceAnchorHash = Get-MomentsPixelHash \$secondFrame \$firstHeader\.selectedGreenRunBounds/u);
+assert.match(script, /\$secondGreenRatio = Get-MomentsSelectedGreenRatio \$secondFrame \$firstHeader\.selectedGreenRunBounds/u);
+assert.match(script, /\$secondSurfaceAnchorHash[\s\S]*-ceq \[string\]\$firstSurfaceAnchorHash[\s\S]*\$secondGreenRatio -ge 0\.42/u);
+assert.match(script, /Get-LocalStableInteractionRead \$secondFrame \$secondViewport\.bounds \$firstRead/u);
 
-// Integrated mode needs both an exact sidebar OCR label and exactly one green
-// selected band. A plain WeChat window or duplicate selected rows fails closed.
+// Integrated mode accepts either an exact sidebar OCR label or one unique
+// structural selected band. A plain WeChat window or duplicate selected rows
+// still fails closed.
 assert.match(surfaceEvidenceSource, /function Get-MomentsSelectedGreenRatio/u);
 assert.match(surfaceEvidenceSource, /function Get-IntegratedDiscoverEntryEvidence/u);
 assert.match(surfaceEvidenceSource, /Test-MomentsNavigationGlyphPixel/u);
@@ -454,6 +463,15 @@ assert.match(surfaceEvidenceSource, /integrated_selected_moments/u);
 const integratedSurfaceProofProgram = `
 $ErrorActionPreference = "Stop"
 function Get-MomentsPixel($frame, [int]$x, [int]$y) {
+  if ($frame.ContainsKey("bytes")) {
+    if ($x -lt 0 -or $y -lt 0 -or $x -ge [int]$frame.width -or $y -ge [int]$frame.height) { return $null }
+    $offset = ($y * [int]$frame.stride) + ($x * 4)
+    return @{
+      b = [int]$frame.bytes[$offset]
+      g = [int]$frame.bytes[$offset + 1]
+      r = [int]$frame.bytes[$offset + 2]
+    }
+  }
   if ($frame.ContainsKey("glyph")) {
     if ($frame.ContainsKey("neutralGlyph") -and $frame.neutralGlyph.ContainsKey("$x,$y")) {
       return @{ r = 88; g = 92; b = 94 }
@@ -546,6 +564,40 @@ function New-DiscoverFrame(
   }
   return $frame
 }
+function New-StructuralSelectedFrame([bool]$duplicate = $false) {
+  $width = 700
+  $height = 400
+  $stride = $width * 4
+  $bytes = New-Object byte[] ($stride * $height)
+  for ($offset = 0; $offset -lt $bytes.Length; $offset += 4) {
+    $bytes[$offset] = 238
+    $bytes[$offset + 1] = 238
+    $bytes[$offset + 2] = 238
+    $bytes[$offset + 3] = 255
+  }
+  $bands = New-Object System.Collections.Generic.List[object]
+  [void]$bands.Add(@{ top = 40; bottom = 99 })
+  if ($duplicate) { [void]$bands.Add(@{ top = 160; bottom = 219 }) }
+  foreach ($band in $bands) {
+    for ($y = [int]$band.top; $y -le [int]$band.bottom; $y++) {
+      for ($x = 70; $x -le 310; $x++) {
+        $offset = ($y * $stride) + ($x * 4)
+        $bytes[$offset] = 80
+        $bytes[$offset + 1] = 170
+        $bytes[$offset + 2] = 20
+      }
+    }
+    for ($y = [int]$band.top + 22; $y -le [int]$band.top + 38; $y++) {
+      for ($x = 120; $x -le 210; $x++) {
+        $offset = ($y * $stride) + ($x * 4)
+        $bytes[$offset] = 245
+        $bytes[$offset + 1] = 245
+        $bytes[$offset + 2] = 245
+      }
+    }
+  }
+  return @{ ok = $true; width = $width; height = $height; stride = $stride; bytes = $bytes; nativeMiss = $true; duplicate = $false }
+}
 $discoverBounds = @{ left = 0.0; top = 0.0; width = 700.0; height = 500.0 }
 $discover100 = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.0) $discoverBounds 1.0
 $discover125 = Get-IntegratedDiscoverEntryEvidence (New-DiscoverFrame 1.25) $discoverBounds 1.25
@@ -613,6 +665,9 @@ $latestChatPageDiscoverCandidate = @{
 $pane = @{ left = 0.0; top = 0.0; width = 700.0; height = 400.0 }
 $selectedEntryEvidence = Get-IntegratedMomentsEntryEvidence (New-DiscoverFrame 1.0 "compass" $true $true) $pane 1.0
 $selected = Test-IntegratedMomentsSurface (New-DiscoverFrame 1.0 "compass" $true $true) $pane 1.0
+$structuralSelectedEvidence = Get-IntegratedMomentsEntryEvidence (New-StructuralSelectedFrame) $pane 1.0
+$structuralSelected = Test-IntegratedMomentsSurface (New-StructuralSelectedFrame) $pane 1.0
+$structuralDuplicate = Test-IntegratedMomentsSurface (New-StructuralSelectedFrame $true) $pane 1.0
 $integratedViewport = Get-MomentsVisualViewportBounds $pane $selected "integrated"
 $standalonePane = @{ left = 37.0; top = 41.0; width = 603.0; height = 319.0 }
 $standaloneViewport = Get-MomentsVisualViewportBounds $standalonePane $null "standalone"
@@ -640,6 +695,11 @@ $doubleDiscoverSurface = Test-IntegratedMomentsSurface (
 ) $pane 1.0
 @{
   selectedOk = [bool]$selected.ok
+  structuralSelectedOk = [bool]$structuralSelected.ok
+  structuralSelectedMode = [string]$structuralSelectedEvidence.entries[0].ocrMode
+  structuralSelectedGroupHeight = [double]$structuralSelectedEvidence.structuralDiagnostics.groups[0].height
+  structuralDuplicateOk = [bool]$structuralDuplicate.ok
+  structuralDuplicateReason = [string]$structuralDuplicate.reason
   selectedMode = [string]$selected.mode
   selectedGreenRatio = [double]$selected.greenRatio
   selectedContentLeft = [double]$selected.contentLeft
@@ -803,6 +863,11 @@ assert.deepEqual(JSON.parse(integratedSurfaceProofHarness.stdout.trim()), {
   selectedEntryOcrMode: "native",
   selectedMode: "integrated_selected_moments",
   selectedOk: true,
+  structuralSelectedOk: true,
+  structuralSelectedMode: "structural",
+  structuralSelectedGroupHeight: 60,
+  structuralDuplicateOk: false,
+  structuralDuplicateReason: "moments_integrated_surface_not_proven",
   scaledSelectedEntryOcrMode: "scaled",
   scaledSelectedOk: true,
   standaloneViewportHeight: 319,
@@ -1092,9 +1157,10 @@ assert.deepEqual(JSON.parse(stableAnchorHarness.stdout.trim()), {
   authorOnly: "",
   anchor: "author stable fixed body line"
 });
-assert.match(probeSource, /function Get-MomentsVisualPostCandidates\(\$frame, \$viewportBounds\)/u);
+assert.match(probeSource, /function Get-MomentsVisualPostCandidates\(\$frame, \$viewportBounds, \[bool\]\$includeText = \$true\)/u);
 assert.match(probeSource, /\$visibleAvatars = @\(Find-MomentsVisibleAvatars \$frame \$viewportBounds\)/u);
-assert.match(probeSource, /Find-MomentsMenuDots \$frame \$viewportBounds \$visibleAvatars \| Where-Object \{ Test-MomentsVisualBoundsInside \$_\.bounds \$viewportBounds \}/u);
+assert.match(probeSource, /\$menuRead = Find-MomentsMenuDotsDetailed \$frame \$viewportBounds \$visibleAvatars/u);
+assert.match(probeSource, /\$menus = @\(\$menuRead\.menus \| Where-Object \{ Test-MomentsVisualBoundsInside \$_\.bounds \$viewportBounds \}\)/u);
 assert.match(probeSource, /Find-MomentsAvatarForMenu \$frame \$menus \$index \$viewportBounds \$visibleAvatars/u);
 assert.match(probeSource, /\$postBottom = \[Math\]::Min\(\$viewportBottom, \$unclippedPostBottom\)/u);
 assert.match(probeSource, /partialVisible = \$unclippedPostBottom -gt \$viewportBottom/u);
@@ -1111,9 +1177,23 @@ assert.match(script, /Test-VisualBoundsInside \$absoluteBounds \$renderEvidence\
 assert.match(script, /Test-VisualBoundsInside \$absoluteMenuBounds \$renderEvidence\.pane\.bounds/u);
 assert.match(script, /Test-VisualBoundsInside \$absoluteAvatarBounds \$renderEvidence\.pane\.bounds/u);
 assert.match(script, /menuOnlyMenus/u, "the visual probe should preserve stable menu-only frames for tall posts");
-assert.match(actionSource, /Get-MomentsVisualPostCandidates \$frame \$lock\.relativeVisualViewportBounds/u);
+assert.match(actionSource, /Resolve-MomentsInteractionAnchor \$frame \$lock\.relativeVisualViewportBounds/u);
+assert.match(actionSource, /Start-Sleep -Milliseconds 160/u);
+const currentRelockFunction = actionSource.match(
+  /function Get-CurrentLockedVisualPost\([^\n]+\) \{[\s\S]*?\n\}/u
+)?.[0] ?? "";
+assert.ok(currentRelockFunction, "the action relock should be extractable");
+assert.doesNotMatch(currentRelockFunction, /Get-MomentsVisualPostCandidates/u);
+assert.doesNotMatch(currentRelockFunction, /Get-MomentsOcrObservation/u);
+const postActionRelockFunction = actionSource.match(
+  /function Get-PostActionMenuAnchor\([\s\S]*?\n\}/u,
+)?.[0] ?? "";
+assert.ok(postActionRelockFunction, "the post-action relock should be extractable");
+assert.match(postActionRelockFunction, /Resolve-MomentsInteractionAnchor/u);
+assert.doesNotMatch(postActionRelockFunction, /Find-MomentsMenuDots|Resolve-VisualMenuAnchor/u);
+assert.match(postActionRelockFunction, /Start-Sleep -Milliseconds 160/u);
 assert.match(actionSource, /\$snapshot\.menu_only/u, "the action relock should support an exact visible-menu target without inventing an avatar");
-assert.match(actionSource, /if \(\$expectedAvatarBounds -ne \$null -and \$expectedAvatarHash\)/u);
+assert.match(postActionRelockFunction, /avatarHashMatched = \[bool\]/u);
 assert.match(actionSource, /boundsWithin\(snapshot\.menu_bounds, window\.renderPaneBounds\)/u);
 assert.match(actionSource, /boundsWithin\(snapshot\.avatar_bounds, window\.renderPaneBounds\)/u);
 for (const field of ["bounds", "menuBounds", "avatarBounds"]) {
@@ -1122,7 +1202,7 @@ for (const field of ["bounds", "menuBounds", "avatarBounds"]) {
 
 // The current render profile uses exactly two substantial dots. Three tiny text
 // ellipsis components are rejected by the per-dot size and pixel-count floor.
-const menuMorphology = script.match(/function Find-MomentsMenuDots\(\$frame, \$viewportBounds = \$null, \$avatarCandidates = \$null\) \{([\s\S]*?)\n\}/u)?.[1] ?? "";
+const menuMorphology = script.match(/function Find-MomentsMenuDotsDetailed\(\$frame, \$viewportBounds = \$null, \$avatarCandidates = \$null, \$localBounds = \$null\) \{([\s\S]*?)\n\}/u)?.[1] ?? "";
 assert.ok(menuMorphology);
 assert.match(menuMorphology, /for \(\$firstIndex = 0; \$firstIndex -lt \$ordered\.Count; \$firstIndex\+\+\)/u);
 assert.match(menuMorphology, /for \(\$secondIndex = \$firstIndex \+ 1; \$secondIndex -lt \$ordered\.Count; \$secondIndex\+\+\)/u);
@@ -1136,6 +1216,8 @@ assert.match(menuMorphology, /Abs\(\$first\.width - \$second\.width\) -gt 2/u);
 assert.match(menuMorphology, /Abs\(\$first\.height - \$second\.height\) -gt 2/u);
 assert.match(menuMorphology, /Abs\(\$first\.count - \$second\.count\) -gt 12/u);
 assert.match(menuMorphology, /\$lightRatio -lt 0\.58/u);
+assert.match(menuMorphology, /Get-MomentsInteractionWhitespaceEvidence/u);
+assert.match(menuMorphology, /rejectedWhitespaceCount/u);
 
 // Screen capture is read-only: no cursor, mouse, keyboard, clipboard, or UIA
 // input pattern may be introduced into either visual script.
@@ -1202,7 +1284,8 @@ for (const name of ["comment", "commentOccurrenceCheck", "commentReadback", "ins
   assert.equal(result.actionAttempted, false);
 }
 assert.match(actionSource, /identityMode === "visual_mmui_render"/u);
-assert.match(actionSource, /version: 6/u);
+assert.match(actionSource, /version: interactionAnchor \? 7 : 6/u);
+assert.match(actionSource, /visual:interaction_anchor/u);
 assert.match(actionSource, /surfaceMode: String\(window\.surfaceMode \?\? ""\)/u);
 assert.match(actionSource, /validMomentsSurfaceRoot\(window\)/u);
 assert.match(actionSource, /require\("\.\/moments_surface_profile\.dev\.cjs"\)/u);
@@ -1282,7 +1365,7 @@ assert.deepEqual(JSON.parse(stablePostIdentityHarness.stdout.trim()), {
   full: true
 });
 const currentPostLock = actionSource.match(
-  /function Get-CurrentLockedVisualPost\([\s\S]*?\n\}\n\nfunction Get-FreshVisualMenuAnchor/u
+  /function Get-CurrentLockedVisualPost\([\s\S]*?\n\}\n\nfunction Test-VisualOwnedHit/u
 )?.[0] ?? "";
 assert.ok(currentPostLock, "current visual post lock should be present");
 assert.match(
@@ -1291,28 +1374,14 @@ assert.match(
   "action relock should rely on the exact target checks instead of whole-window ownership"
 );
 assert.doesNotMatch(currentPostLock, /ConvertTo-RelativeVisualBounds \$context\.expectedWindow\.renderPaneBounds \$context\.expectedWindow/u);
-assert.match(currentPostLock, /Get-MomentsVisualPostCandidates \$frame \$lock\.relativeVisualViewportBounds/u);
+assert.match(currentPostLock, /Resolve-MomentsInteractionAnchor \$frame \$lock\.relativeVisualViewportBounds/u);
 assert.doesNotMatch(currentPostLock, /regionHash|region_hash/u);
-assert.doesNotMatch(currentPostLock, /\$posts\.Count -ne 1/u);
-assert.match(currentPostLock, /Test-MomentsStablePostIdentity \$post \$snapshot/u);
-assert.match(currentPostLock, /\[string\]\$post\.avatarHash -cne \[string\]\$snapshot\.avatar_hash/u);
+assert.doesNotMatch(currentPostLock, /Get-MomentsVisualPostCandidates|Get-MomentsOcrObservation/u);
+assert.match(currentPostLock, /\[string\]\$snapshot\.avatar_hash/u);
 assert.doesNotMatch(currentPostLock, /snapshot\.layout_hash/u);
-assert.match(currentPostLock, /\$matchingPosts\.Count -eq 0[\s\S]*moments_post_changed/u);
-assert.match(currentPostLock, /\$matchingPosts\.Count -ne 1[\s\S]*moments_post_ambiguous/u);
-assert.match(currentPostLock, /Test-VisualBoundsNear \$post\.bounds \$expectedBounds \$script:momentsVisualPostRelockTolerancePx/u);
-assert.match(currentPostLock, /Test-VisualBoundsNear \$post\.menuBounds \$expectedMenuBounds \$script:momentsVisualPostRelockTolerancePx/u);
-assert.match(currentPostLock, /Test-VisualBoundsNear \$post\.avatarBounds \$expectedAvatarBounds \$script:momentsVisualPostRelockTolerancePx/u);
-assert.match(currentPostLock, /Resolve-VisualMenuAnchor \$read\.menus \$post\.menuBounds 1\.5[\s\S]*diagnostics = \$menuResolution\.diagnostics/u);
-assert.match(currentPostLock, /\$avatarHash = Get-MomentsPixelHash \$frame \$post\.avatarBounds/u);
-const freshMenuLock = actionSource.match(
-  /function Get-FreshVisualMenuAnchor\([\s\S]*?\n\}\n\nfunction Test-VisualOwnedHit/u
-)?.[0] ?? "";
-assert.ok(freshMenuLock, "fresh visual menu lock should be present");
-assert.match(
-  freshMenuLock,
-  /Get-MomentsVisualFrame \$lock\.hWnd \$lock\.windowRect \$lock\.pid \$activate \$false/u,
-  "fresh menu relock should not fail on an unrelated transient overlay"
-);
+assert.match(currentPostLock, /\$attempt -lt 2/u);
+assert.match(currentPostLock, /Start-Sleep -Milliseconds 160/u);
+assert.match(currentPostLock, /moments_menu_not_found/u);
 const openMenuReader = actionSource.match(
   /function Read-OpenVisualMenu\([\s\S]*?\n\}(?=\n\nfunction Open-LockedVisualMenu)/u
 )?.[0] ?? "";
@@ -2275,9 +2344,6 @@ assert.match(
   /requestedAction: String\(context\.action \?\? action\)/u,
   "the inspect preflight must preserve whether the caller intends to like or comment",
 );
-assert.match(freshMenuLock, /Resolve-VisualMenuAnchor \$menus \$expectedMenuBounds \$script:momentsVisualPostRelockTolerancePx/u);
-assert.match(freshMenuLock, /moments_menu_not_found[\s\S]*Start-Sleep -Milliseconds 160[\s\S]*continue/u);
-assert.match(freshMenuLock, /\$expectedHash -and \$hash -cne \$expectedHash/u);
 assert.match(actionSource, /SetThreadDpiAwarenessContext\(\[IntPtr\]\(-4\)\)/u);
 const ownedHitSource = actionSource.match(
   /function Test-VisualOwnedHitDetailed\([\s\S]*?\n\}/u,
@@ -2389,11 +2455,6 @@ assert.match(
   commentOccurrenceSource,
   /Find-VisualCommentCandidate[\s\S]*?"exact" \$firstOccurrencePost\.nextPostTop[\s\S]*Find-VisualCommentCandidate[\s\S]*?"exact" \$secondOccurrencePost\.nextPostTop/u,
   "both occurrence frames must stop at the next proven post boundary",
-);
-assert.match(
-  actionSource,
-  /\$followingBoundaries = @\(\$read\.postBoundaries[\s\S]*\$followingBoundaries\[0\]\.ok[\s\S]*\$nextPostTop/u,
-  "the next post boundary must come from the nearest menu/avatar proof, not the next OCR-readable post",
 );
 assert.match(
   probeSource,

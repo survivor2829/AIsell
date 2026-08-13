@@ -534,12 +534,13 @@ function createMomentsCampaignController(options = {}) {
       };
 
       const processedPostMarkers = [];
-      const alignedPartialFingerprints = new Set();
       let readingSession = null;
       let emptyScans = 0;
       let repeatedFingerprintScans = 0;
-      let candidateChecks = 0;
-      const candidateLimit = state.max_posts * 5;
+      let noProgressScreens = 0;
+      let pendingSnapshots = [];
+      let pendingObservation = null;
+      let successfulCountAtScreenStart = 0;
 
       const recordReadingSkip = (reason, failureStage) => {
         if (!readingSession) return;
@@ -598,8 +599,10 @@ function createMomentsCampaignController(options = {}) {
         return scrolled;
       };
 
-      while (successfulPostCount() < state.max_posts && candidateChecks < candidateLimit) {
+      while (successfulPostCount() < state.max_posts) {
         if (shouldStop()) return;
+        const usingPendingSnapshot = pendingSnapshots.length > 0;
+        if (!usingPendingSnapshot) successfulCountAtScreenStart = successfulPostCount();
         persist({ current_post: state.processed_count + 1, last_reason: "observing_post" });
         const observationArgs = ["moments-dry-run", "--mode", "random", "--like"];
         if (state.comment_enabled) observationArgs.push("--allow-body-only");
@@ -618,7 +621,10 @@ function createMomentsCampaignController(options = {}) {
             timeoutMs: 45_000
           }
         );
-        let observed = await runObservation();
+        const observationStartedAt = Date.now();
+        let observed = usingPendingSnapshot
+          ? { ...pendingObservation, post_snapshot: pendingSnapshots.shift() }
+          : await runObservation();
         const initialObservationReason = String(
           observed?.blocked_reason || observed?.reason || ""
         );
@@ -628,17 +634,31 @@ function createMomentsCampaignController(options = {}) {
             ? await runObservation()
             : { ok: false, reason: recovered.reason };
         }
-        candidateChecks += 1;
         const directPositionDiagnostics = sanitizeMomentsPositionDiagnostics(observed?.diagnostics);
         const positionDiagnostics = Object.keys(directPositionDiagnostics).length > 0
           ? directPositionDiagnostics
           : sanitizeMomentsPositionDiagnostics(observed?.plan?.position_diagnostics);
-        record("campaign.observation_finished", {
-          ok: observed?.ok === true,
-          reason: observed?.blocked_reason || observed?.reason || "",
-          visible_post_count: observed?.plan?.visible_post_count || 0,
-          ...positionDiagnostics
-        }, observed?.ok ? "info" : "warn");
+        if (!usingPendingSnapshot) {
+          record("campaign.observation_finished", {
+            ok: observed?.ok === true,
+            reason: observed?.blocked_reason || observed?.reason || "",
+            visible_post_count: observed?.plan?.visible_post_count || 0,
+            candidate_count: Array.isArray(observed?.post_snapshots) ? observed.post_snapshots.length : 0,
+            duration_ms: Date.now() - observationStartedAt,
+            visual: observed?.diagnostics?.visual,
+            ...positionDiagnostics
+          }, observed?.ok ? "info" : "warn");
+          if (observed?.ok && !state.comment_enabled && Array.isArray(observed.post_snapshots)) {
+            const orderedSnapshots = observed.post_snapshots
+              .filter((snapshot) => snapshot?.observation_id)
+              .sort((left, right) => Number(right?.menu_bounds?.top) - Number(left?.menu_bounds?.top));
+            if (orderedSnapshots.length > 0) {
+              observed = { ...observed, post_snapshot: orderedSnapshots[0] };
+              pendingObservation = observed;
+              pendingSnapshots = orderedSnapshots.slice(1);
+            }
+          }
+        }
 
         if (!observed?.ok) {
           const reason = String(observed?.blocked_reason || observed?.reason || "moments_observation_failed");
@@ -708,34 +728,6 @@ function createMomentsCampaignController(options = {}) {
               fragment_count: fragmentCount,
               content_length: contentLength
             });
-          }
-
-          if (
-            observed.plan?.target_partial_visible === true
-            && !state.comment_enabled
-            && !alignedPartialFingerprints.has(fingerprint)
-          ) {
-            alignedPartialFingerprints.add(fingerprint);
-            const aligned = await scrollMoments({
-              expectedWindow: observed.window,
-              minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0,
-              scrollMode: "seek_post_menu_down",
-              shouldContinue: () => !stopRequested && !pendingPauseReason
-            });
-            record("campaign.partial_alignment_finished", {
-              fingerprint,
-              result: aligned
-            }, aligned?.ok ? "info" : "warn");
-            if (!aligned?.ok) {
-              if (shouldStop()) return;
-              finish("paused", aligned?.reason || "moments_scroll_failed");
-              return;
-            }
-            persist({
-              scroll_count: state.scroll_count + 1,
-              last_reason: "partial_post_aligned"
-            });
-            continue;
           }
 
           const processedMatch = findProcessedPostMatch(processedPostMarkers, observed.post_snapshot);
@@ -911,6 +903,7 @@ function createMomentsCampaignController(options = {}) {
             let itemSkipped = 0;
             const menuOnlyTarget = prepared?.post_snapshot?.menu_only === true;
             if (state.like_enabled && preparedObservationId) {
+              const likeStartedAt = Date.now();
               const liked = await runStep(
                 ["moments-like", "--observation-id", preparedObservationId],
                 {
@@ -936,6 +929,7 @@ function createMomentsCampaignController(options = {}) {
                 cleanup_reason: String(liked?.cleanup_reason || ""),
                 no_op: liked?.no_op === true,
                 real_action_attempted: liked?.real_action_attempted,
+                duration_ms: Date.now() - likeStartedAt,
                 ...(likeDiagnostics ? { diagnostics: likeDiagnostics } : {})
               }, liked?.ok ? "info" : "warn");
               if (
@@ -984,6 +978,7 @@ function createMomentsCampaignController(options = {}) {
             let commentedCount = 0;
             if (state.comment_enabled && commentText) {
               persist({ last_reason: "executing_comment" });
+              const commentStartedAt = Date.now();
               const commented = await runStep(
                 [
                   "moments-comment",
@@ -1021,6 +1016,7 @@ function createMomentsCampaignController(options = {}) {
                 cleanup_reason: String(commented?.cleanup_reason || ""),
                 verification_mode: String(commented?.verification_mode || ""),
                 real_action_attempted: commented?.real_action_attempted,
+                duration_ms: Date.now() - commentStartedAt,
                 diagnostics: commentDiagnostics,
                 comment_length: commentText.length
               }, commented?.ok ? "info" : "warn");
@@ -1098,7 +1094,23 @@ function createMomentsCampaignController(options = {}) {
           }
         }
 
-        if (successfulPostCount() >= state.max_posts || candidateChecks >= candidateLimit || shouldStop()) break;
+        if (successfulPostCount() >= state.max_posts || shouldStop()) break;
+        if (pendingSnapshots.length > 0) continue;
+        pendingObservation = null;
+        if (successfulPostCount() > successfulCountAtScreenStart) {
+          noProgressScreens = 0;
+        } else {
+          noProgressScreens += 1;
+          record("campaign.no_progress", {
+            consecutive_screens: noProgressScreens,
+            limit: 2,
+            reason: String(observed?.blocked_reason || observed?.reason || state.last_reason || "")
+          }, "warn");
+          if (noProgressScreens >= 2) {
+            finish("partial", "no_progress");
+            return;
+          }
+        }
         const scrolled = await scrollMoments({
           expectedWindow: observed?.window,
           minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0,

@@ -483,6 +483,111 @@ function Get-MomentsSelectedGreenRunEvidence($frame, $textBounds, $bandBounds, $
   }
 }
 
+function Get-MomentsStructuralSelectedBandEvidence($frame, $region, $relativeSurfaceBounds, [double]$scale) {
+  if ($frame -eq $null -or $frame.bytes -eq $null -or [int]$frame.stride -le 0) {
+    return @{ entries = @(); selectedRowCount = 0; groups = @(); rejectedRunCount = 0; rejectedBoundaryCount = 0; boundaryDiagnostics = @() }
+  }
+  [int]$left = [Math]::Max(0, [Math]::Floor([double]$region.left))
+  [int]$top = [Math]::Max(0, [Math]::Floor([double]$region.top))
+  [int]$right = [Math]::Min([int]$frame.width - 1, [Math]::Ceiling([double]$region.left + [double]$region.width) - 1)
+  [int]$bottom = [Math]::Min([int]$frame.height - 1, [Math]::Ceiling([double]$region.top + [double]$region.height) - 1)
+  if ($right -le $left -or $bottom -le $top) {
+    return @{ entries = @(); selectedRowCount = 0; groups = @(); rejectedRunCount = 0; rejectedBoundaryCount = 0 }
+  }
+
+  $selectedRows = New-Object System.Collections.Generic.List[int]
+  for ($y = $top; $y -le $bottom; $y++) {
+    $green = 0
+    $total = 0
+    for ($x = $left; $x -le $right; $x += 4) {
+      [int]$offset = ($y * [int]$frame.stride) + ($x * 4)
+      [int]$blue = [int]$frame.bytes[$offset]
+      [int]$greenChannel = [int]$frame.bytes[$offset + 1]
+      [int]$red = [int]$frame.bytes[$offset + 2]
+      if ($greenChannel -ge 105 -and ($greenChannel - $red) -ge 30 -and ($greenChannel - $blue) -ge 12) {
+        $green += 1
+      }
+      $total += 1
+    }
+    if ($total -gt 0 -and ([double]$green / [double]$total) -ge 0.55) {
+      [void]$selectedRows.Add($y)
+    }
+  }
+  if ($selectedRows.Count -eq 0) {
+    return @{ entries = @(); selectedRowCount = 0; groups = @(); rejectedRunCount = 0; rejectedBoundaryCount = 0 }
+  }
+
+  $groups = New-Object System.Collections.Generic.List[object]
+  [int]$groupTop = $selectedRows[0]
+  [int]$previousRow = $selectedRows[0]
+  # White label text and the Moments glyph split a solid selected row into
+  # upper/lower green projections. Merge only gaps that can fit inside one
+  # DPI-scaled navigation row; the final height and boundary checks still
+  # reject separate selected surfaces.
+  [int]$maximumRowGap = [Math]::Max(2, [Math]::Round(20.0 * $scale))
+  for ($index = 1; $index -lt $selectedRows.Count; $index++) {
+    [int]$currentRow = $selectedRows[$index]
+    if (($currentRow - $previousRow) -gt $maximumRowGap) {
+      [void]$groups.Add(@{ top = $groupTop; bottom = $previousRow })
+      $groupTop = $currentRow
+    }
+    $previousRow = $currentRow
+  }
+  [void]$groups.Add(@{ top = $groupTop; bottom = $previousRow })
+
+  $entries = New-Object System.Collections.Generic.List[object]
+  $groupDiagnostics = New-Object System.Collections.Generic.List[object]
+  $boundaryDiagnostics = New-Object System.Collections.Generic.List[object]
+  $rejectedRunCount = 0
+  $rejectedBoundaryCount = 0
+  [double]$minimumHeight = 28.0 * $scale
+  [double]$maximumHeight = 72.0 * $scale
+  foreach ($group in $groups) {
+    [double]$height = [double]$group.bottom - [double]$group.top + 1.0
+    [void]$groupDiagnostics.Add(@{ top = [double]$group.top; bottom = [double]$group.bottom; height = $height })
+    if ($height -lt $minimumHeight -or $height -gt $maximumHeight) { continue }
+    $bandBounds = @{
+      left = [double]$region.left
+      top = [double]$group.top
+      width = [double]$region.width
+      height = $height
+    }
+    $syntheticTextBounds = @{
+      left = [double]$region.left + (40.0 * $scale)
+      top = [double]$group.top
+      width = 80.0 * $scale
+      height = $height
+    }
+    $greenRun = Get-MomentsSelectedGreenRunEvidence $frame $syntheticTextBounds $bandBounds $relativeSurfaceBounds $scale
+    if (-not $greenRun.ok) { $rejectedRunCount += 1; continue }
+    [double]$runLeft = [double]$greenRun.bounds.left
+    [double]$contentLeft = [double]$greenRun.contentLeft
+    [void]$boundaryDiagnostics.Add(@{
+      runLeft = $runLeft
+      contentLeft = $contentLeft
+    })
+    if ($runLeft -gt ([double]$region.left + (24.0 * $scale))) { $rejectedBoundaryCount += 1; continue }
+    [void]$entries.Add(@{
+      textBounds = $syntheticTextBounds
+      bandBounds = $bandBounds
+      greenRatio = Get-MomentsSelectedGreenRatio $frame $bandBounds
+      selected = $true
+      contentBoundaryProven = $true
+      contentLeft = $contentLeft
+      selectedGreenRunBounds = $greenRun.bounds
+      ocrMode = "structural"
+    })
+  }
+  return @{
+    entries = @($entries.ToArray())
+    selectedRowCount = [int]$selectedRows.Count
+    groups = @($groupDiagnostics.ToArray())
+    rejectedRunCount = [int]$rejectedRunCount
+    rejectedBoundaryCount = [int]$rejectedBoundaryCount
+    boundaryDiagnostics = @($boundaryDiagnostics.ToArray())
+  }
+}
+
 function Get-MomentsVisualViewportBounds($renderPaneBounds, $surfaceProof, [string]$surfaceMode) {
   if ($renderPaneBounds -eq $null -or [double]$renderPaneBounds.width -le 0 -or [double]$renderPaneBounds.height -le 0) {
     return @{ ok = $false; reason = "moments_render_pane_bounds_invalid" }
@@ -539,6 +644,23 @@ function Get-IntegratedMomentsEntryEvidence($frame, $relativeSurfaceBounds, [dou
     top = [double]$relativeSurfaceBounds.top
     width = [Math]::Max(0.0, $sidebarWidth - $primaryRailWidth)
     height = $scanHeight
+  }
+  $structuralEvidence = Get-MomentsStructuralSelectedBandEvidence $frame $region $relativeSurfaceBounds $scale
+  if (@($structuralEvidence.entries).Count -gt 0) {
+    return @{
+      ok = $true
+      region = $region
+      exactMatchCount = @($structuralEvidence.entries).Count
+      entries = @($structuralEvidence.entries)
+      observedLabels = @()
+      structuralDiagnostics = @{
+        selectedRowCount = [int]$structuralEvidence.selectedRowCount
+        groups = @($structuralEvidence.groups)
+        rejectedRunCount = [int]$structuralEvidence.rejectedRunCount
+        rejectedBoundaryCount = [int]$structuralEvidence.rejectedBoundaryCount
+        boundaryDiagnostics = @($structuralEvidence.boundaryDiagnostics)
+      }
+    }
   }
   $ocr = Get-MomentsOcrObservation $frame $region
   if (-not $ocr.ok) { return @{ ok = $false; reason = [string]$ocr.reason; entries = @() } }
@@ -597,9 +719,16 @@ function Get-IntegratedMomentsEntryEvidence($frame, $relativeSurfaceBounds, [dou
   return @{
     ok = $true
     region = $region
-    exactMatchCount = $exactMatches.Count
+    exactMatchCount = $entries.Count
     entries = @($entries.ToArray())
     observedLabels = @($observedLabels | Select-Object -First 12)
+    structuralDiagnostics = @{
+      selectedRowCount = [int]$structuralEvidence.selectedRowCount
+      groups = @($structuralEvidence.groups)
+      rejectedRunCount = [int]$structuralEvidence.rejectedRunCount
+      rejectedBoundaryCount = [int]$structuralEvidence.rejectedBoundaryCount
+      boundaryDiagnostics = @($structuralEvidence.boundaryDiagnostics)
+    }
   }
 }
 
@@ -613,6 +742,7 @@ function Test-IntegratedMomentsSurface($frame, $relativeSurfaceBounds, [double]$
       reason = "moments_integrated_surface_not_proven"
       exactMatchCount = [int]$evidence.exactMatchCount
       selectedMatchCount = $selectedMatches.Count
+      structuralDiagnostics = $evidence.structuralDiagnostics
     }
   }
   if (-not [bool]$selectedMatches[0].contentBoundaryProven -or $null -eq $selectedMatches[0].contentLeft) {
