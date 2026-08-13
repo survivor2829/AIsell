@@ -586,6 +586,21 @@ async function executeVerifiedContactSend(options = {}) {
   } catch {
     preparedWindow = { ok: false, reason: "wechat_window_preflight_failed" };
   }
+  if (preparedWindow?.reason === "wechat_user_active" && windowMinIdleMs > 0) {
+    const waitForIdleWindow = typeof options.windowIdleWait === "function"
+      ? options.windowIdleWait
+      : (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs));
+    await waitForIdleWindow(windowMinIdleMs);
+    if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
+    try {
+      preparedWindow = await Promise.resolve(windowPreflight({
+        minIdleMs: windowMinIdleMs,
+        requireFocused: true
+      }));
+    } catch {
+      preparedWindow = { ok: false, reason: "wechat_window_preflight_failed" };
+    }
+  }
   const preparedIdentity = strictPreparedWechatWindow(preparedWindow);
   if (!preparedIdentity) {
     setRealSendArm(baseDir, false);

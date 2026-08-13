@@ -756,6 +756,7 @@ try {
   const sharedTransitions = [];
   const sharedSessionContexts = [];
   const sharedWindowPreflights = [];
+  const sharedIdleWaits = [];
   let sharedClicks = 0;
   const sharedResult = await executeVerifiedContactSend({
     baseDir: sharedDir,
@@ -766,14 +767,17 @@ try {
     expectedIncomingRuntimeId: "incoming-runtime-1",
     frozenContact: sharedContact,
     authorized: true,
+    windowMinIdleMs: 15_000,
+    windowIdleWait: async (delayMs) => { sharedIdleWaits.push(delayMs); },
     windowPreflight: async (context) => {
       sharedWindowPreflights.push(context);
+      if (sharedWindowPreflights.length === 1) return { ok: false, reason: "wechat_user_active" };
       return preparedWechatWindow();
     },
     runStep: async (command, args = []) => {
       sharedSteps.push(command);
       if (command === "click-search-result-dry-run") {
-        assert.deepEqual(args, ["--expected-pid", "81", "--expected-hwnd", "91", "--min-idle-ms", "0"]);
+        assert.deepEqual(args, ["--expected-pid", "81", "--expected-hwnd", "91", "--min-idle-ms", "15000"]);
       }
       return { ok: true, state: { selected_customer: sharedContact } };
     },
@@ -803,7 +807,11 @@ try {
   );
   assert.equal(sharedResult.send_result, "sent_verified");
   assert.deepEqual(sharedSteps, ["select-customer", "calibrate", "click-search-result-dry-run", "input-message-dry-run", "send"]);
-  assert.deepEqual(sharedWindowPreflights, [{ minIdleMs: 0, requireFocused: true }]);
+  assert.deepEqual(sharedIdleWaits, [15_000], "a trusted start click must wait for the required quiet desktop instead of failing immediately");
+  assert.deepEqual(sharedWindowPreflights, [
+    { minIdleMs: 15_000, requireFocused: true },
+    { minIdleMs: 15_000, requireFocused: true }
+  ]);
   assert.deepEqual(sharedTransitions, ["prepared", "clicked", "sent_verified"]);
   assert.deepEqual(sharedSessionContexts.map((context) => context?.wechatRoot), ["D:\\wechat-data\\xwechat_files", "D:\\wechat-data\\xwechat_files"], "real-send account verification must reuse the successful contact-sync root before input and before send");
   assert.deepEqual(sharedSessionContexts.map((context) => context?.expectedAccountId), ["account-a", "account-a"]);

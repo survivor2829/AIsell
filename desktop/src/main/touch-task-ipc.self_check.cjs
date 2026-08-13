@@ -108,7 +108,8 @@ const modulePath = path.join(__dirname, "touch-task-ipc.cjs");
 delete require.cache[require.resolve(modulePath)];
 const {
   classifyTaskTransitionDiagnostic,
-  registerTouchTaskIpc
+  registerTouchTaskIpc,
+  resultReason
 } = require(modulePath);
 Module._load = originalLoad;
 const { authorizeNextBatch, classifyContacts, createTask, isBatchAuthorized, markPreviousBuildTask, recoverInterruptedTask, saveTaskState } = require("../../rpa/active_touch/touch_task_state.cjs");
@@ -144,6 +145,14 @@ assert.deepEqual(
   ),
   { level: "error", code: "outcome_unknown" },
   "an unknown send outcome must remain visible as a real error"
+);
+assert.equal(
+  resultReason({
+    blocked_reason: "wechat_user_active",
+    error: "微信窗口未能固定到左上角并获得前台控制，本次未执行"
+  }),
+  "检测到你正在使用鼠标或键盘，本次已安全延后；方便时可继续任务",
+  "a precise active-user code must not be hidden behind a generic window-preflight message"
 );
 
 function contacts(count) {

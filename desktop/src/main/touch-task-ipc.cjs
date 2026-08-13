@@ -97,7 +97,7 @@ function resultReason(result, fallback) {
     message_not_input: "消息尚未写入草稿",
     message_draft_changed: "输入框内容与已校验草稿不一致"
   };
-  return String(result?.error || labels[code] || code || fallback || "执行失败");
+  return String(labels[code] || result?.error || code || fallback || "执行失败");
 }
 
 function getDevFloatingUrl() {
@@ -251,6 +251,7 @@ function emitTaskUpdate(task) {
     ai_status: current?.ai_status || "",
     ai_error_code: current?.ai_error_code || "",
     awaiting_resolution: current?.awaiting_resolution === true,
+    blocked_reason: current?.blocked_reason || "",
     pause_reason: payload.task?.pause_reason || "",
     result_reason: current?.reason || ""
   };
@@ -592,6 +593,8 @@ async function runRealContact(task, current, index) {
     return true;
   }
   const dangerous = ["prepared", "clicked", "outcome_unknown"].includes(result.status) || result.retry_blocked;
+  const failureCode = resultCode(response);
+  if (failureCode) result.blocked_reason = failureCode;
   pauseTask(task, dangerous ? (result.reason || "发送结果无法安全确认，已暂停且不会自动重试") : resultReason(response, "真实发送未通过安全校验"), index);
   return false;
 }
@@ -1036,5 +1039,6 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
 
 module.exports = {
   classifyTaskTransitionDiagnostic,
-  registerTouchTaskIpc
+  registerTouchTaskIpc,
+  resultReason
 };
