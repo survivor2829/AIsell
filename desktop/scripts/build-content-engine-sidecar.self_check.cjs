@@ -7,10 +7,12 @@ const {
   assertFreshOutput,
   buildManifest,
   buildPyInstallerArgs,
+  copyMediaTools,
   collectSourceProvenance,
   parseProtocolOutput,
   pythonCandidates,
   resolveBuildPaths,
+  resolveMediaToolSources,
   runRuntimeSelfCheck,
   sourceTreeSha256
 } = require("./build-content-engine-sidecar.cjs");
@@ -32,6 +34,31 @@ try {
     paths.outputExe,
     path.join(desktopDir, ".build", "content-engine-runtime", "content-engine-worker.exe")
   );
+
+  assert.deepEqual(resolveMediaToolSources({}), {
+    available: false,
+    source: "not_configured",
+    ffmpeg: "",
+    ffprobe: ""
+  });
+  assert.throws(
+    () => resolveMediaToolSources({ XIAOXI_FFMPEG_PATH: "C:\\only-one.exe" }),
+    /configured together/
+  );
+  const ffmpegFixture = path.join(root, "ffmpeg-source.exe");
+  const ffprobeFixture = path.join(root, "ffprobe-source.exe");
+  fs.writeFileSync(ffmpegFixture, "ffmpeg", "utf8");
+  fs.writeFileSync(ffprobeFixture, "ffprobe", "utf8");
+  const configuredMedia = resolveMediaToolSources({
+    XIAOXI_FFMPEG_PATH: ffmpegFixture,
+    XIAOXI_FFPROBE_PATH: ffprobeFixture
+  });
+  const mediaRuntime = path.join(root, "media-runtime");
+  fs.mkdirSync(mediaRuntime);
+  const bundledMedia = copyMediaTools(configuredMedia, mediaRuntime);
+  assert.equal(bundledMedia.bundled, true);
+  assert.equal(fs.readFileSync(path.join(mediaRuntime, "media-tools", "ffmpeg.exe"), "utf8"), "ffmpeg");
+  assert.equal(fs.readFileSync(path.join(mediaRuntime, "media-tools", "ffprobe.exe"), "utf8"), "ffprobe");
   assert.equal(
     paths.manifestFile,
     path.join(desktopDir, ".build", "content-engine-runtime.manifest.json")
@@ -137,6 +164,11 @@ try {
   assert.equal(manifest.runtime.entry, "content-engine-worker.exe");
   assert.equal(manifest.source.dirty, true);
   assert.equal(manifest.selfCheck.shutdown, true);
+  assert.deepEqual(manifest.capabilities.mixRender, {
+    available: false,
+    bundled: false,
+    source: "not_configured"
+  });
   assert.throws(() => assertFreshOutput(paths), /Refusing to overwrite/);
 
   fs.rmSync(paths.outputDir, { recursive: true, force: true });

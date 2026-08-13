@@ -9,6 +9,7 @@ const MAX_REQUEST_LINE_BYTES = 1024 * 1024;
 const MAX_RESPONSE_LINE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const IMPORT_REQUEST_TIMEOUT_MS = 30 * 60_000;
+const RENDER_REQUEST_TIMEOUT_MS = 2 * 60 * 60_000;
 
 function createError(code, message = code) {
   const error = new Error(message);
@@ -61,6 +62,10 @@ function createContentEngineSidecar(options = {}) {
   const importTimeoutMs = Math.max(
     requestTimeoutMs,
     Number(options.importTimeoutMs) || IMPORT_REQUEST_TIMEOUT_MS
+  );
+  const renderTimeoutMs = Math.max(
+    requestTimeoutMs,
+    Number(options.renderTimeoutMs) || RENDER_REQUEST_TIMEOUT_MS
   );
   const startupTimeoutMs = Math.max(1, Number(options.startupTimeoutMs) || 30_000);
   const stopTimeoutMs = Math.max(1, Number(options.stopTimeoutMs) || 3_000);
@@ -531,6 +536,10 @@ function createContentEngineSidecar(options = {}) {
 
   return {
     archiveAsset: (assetId) => request("archive_asset", { asset_id: assetId }),
+    calculateMixCombinations: (projectId) => request(
+      "calculate_mix_combinations",
+      { project_id: projectId }
+    ),
     cancelTask: (taskId) => request("update_task", {
       task_id: taskId,
       status: "cancelled"
@@ -539,11 +548,26 @@ function createContentEngineSidecar(options = {}) {
       task_type: taskType,
       payload
     }),
+    createMixProject: (name, slots, constraints) => request(
+      "create_mix_project",
+      { name, slots, constraints }
+    ),
     dispose,
     getSetting: (key, defaultValue) => request("get_setting", {
       key,
       default: defaultValue
     }),
+    getMixProject: (projectId) => request("get_mix_project", {
+      project_id: projectId
+    }),
+    generateMixCandidates: (projectId, optionsForGeneration = {}) => request(
+      "generate_mix_candidates",
+      {
+        project_id: projectId,
+        limit: optionsForGeneration.limit,
+        seed: optionsForGeneration.seed
+      }
+    ),
     importFiles: (paths) => request(
       "import_files",
       { paths },
@@ -559,6 +583,20 @@ function createContentEngineSidecar(options = {}) {
       limit: optionsForList.limit
     }),
     listFinished: (limit) => request("list_finished", { limit }),
+    listMixCandidates: (optionsForList = {}) => request("list_mix_candidates", {
+      project_id: optionsForList.projectId,
+      review_status: optionsForList.reviewStatus,
+      limit: optionsForList.limit
+    }),
+    listMixProjects: (limit) => request("list_mix_projects", { limit }),
+    listExportPackages: (optionsForList = {}) => request("list_export_packages", {
+      candidate_id: optionsForList.candidateId,
+      limit: optionsForList.limit
+    }),
+    listPublishQueue: (optionsForList = {}) => request("list_publish_queue", {
+      status: optionsForList.status,
+      limit: optionsForList.limit
+    }),
     listTasks: (optionsForList = {}) => request("list_tasks", {
       status: optionsForList.status,
       limit: optionsForList.limit
@@ -591,6 +629,28 @@ function createContentEngineSidecar(options = {}) {
     resolveFinishedPath: (finishedVideoId) => request(
       "resolve_finished_path",
       { finished_video_id: finishedVideoId }
+    ),
+    resolveExportPackagePath: (packageId) => request(
+      "resolve_export_package_path",
+      { package_id: packageId }
+    ),
+    renderMixCandidate: (candidateId, optionsForRender = {}) => request(
+      "render_mix_candidate",
+      {
+        candidate_id: candidateId,
+        platforms: optionsForRender.platforms,
+        title: optionsForRender.title,
+        description: optionsForRender.description
+      },
+      { timeoutMs: renderTimeoutMs }
+    ),
+    reviewMixCandidate: (candidateId, reviewStatus, reviewNote) => request(
+      "review_mix_candidate",
+      {
+        candidate_id: candidateId,
+        review_status: reviewStatus,
+        review_note: reviewNote
+      }
     ),
     resumeTask: async (taskId) => {
       const listed = await request("list_tasks", { limit: 2_000 });
@@ -626,6 +686,23 @@ function createContentEngineSidecar(options = {}) {
     updateAssetRights: (assetId, rightsStatus) => request(
       "update_asset_rights",
       { asset_id: assetId, rights_status: rightsStatus }
+    ),
+    updateMixProject: (projectId, changes = {}) => request(
+      "update_mix_project",
+      {
+        project_id: projectId,
+        name: changes.name,
+        slots: changes.slots,
+        constraints: changes.constraints
+      }
+    ),
+    updatePublishQueueItem: (queueItemId, statusForQueue, errorMessage) => request(
+      "update_publish_queue_item",
+      {
+        queue_item_id: queueItemId,
+        status: statusForQueue,
+        error_message: errorMessage
+      }
     ),
     start,
     status,

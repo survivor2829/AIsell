@@ -88,6 +88,47 @@ function createMomentsPublishApi(ipcRenderer) {
   };
 }
 function createContentEngineApi(ipcRenderer) {
+  const mixSlots = (value) => Array.isArray(value)
+    ? value.map((slot) => ({
+      name: String(slot?.name || ""),
+      required: slot?.required !== false,
+      assetIds: Array.isArray(slot?.assetIds)
+        ? slot.assetIds.map((assetId) => String(assetId || ""))
+        : [],
+      ...(slot?.fixedAssetId == null
+        ? {}
+        : { fixedAssetId: String(slot.fixedAssetId || "") }),
+      ...(slot?.minDurationMs == null
+        ? {}
+        : { minDurationMs: Number(slot.minDurationMs) }),
+      ...(slot?.maxDurationMs == null
+        ? {}
+        : { maxDurationMs: Number(slot.maxDurationMs) }),
+      ...(slot?.targetDurationMs == null
+        ? {}
+        : { targetDurationMs: Number(slot.targetDurationMs) })
+    }))
+    : [];
+  const mixConstraints = (value) => ({
+    ...(Object.hasOwn(value || {}, "allowRepeatedAssets")
+      ? { allowRepeatedAssets: value.allowRepeatedAssets === true }
+      : {}),
+    ...(value?.minDurationMs == null
+      ? {}
+      : { minDurationMs: Number(value.minDurationMs) }),
+    ...(value?.maxDurationMs == null
+      ? {}
+      : { maxDurationMs: Number(value.maxDurationMs) }),
+    ...(value?.scoreWeights && typeof value.scoreWeights === "object"
+      ? {
+        scoreWeights: {
+          durationFit: Number(value.scoreWeights.durationFit),
+          diversity: Number(value.scoreWeights.diversity),
+          freshness: Number(value.scoreWeights.freshness)
+        }
+      }
+      : {})
+  });
   return {
     status: () => ipcRenderer.invoke("content-engine:status"),
     restart: () => ipcRenderer.invoke("content-engine:restart"),
@@ -161,6 +202,121 @@ function createContentEngineApi(ipcRenderer) {
       updateCacheLimit: (payload) => ipcRenderer.invoke(
         "content-engine:update-cache-limit",
         { limitGb: Number(payload?.limitGb || 0) }
+      )
+    },
+    mix: {
+      createProject: (payload) => ipcRenderer.invoke(
+        "content-engine:create-mix-project",
+        {
+          name: String(payload?.name || ""),
+          slots: mixSlots(payload?.slots),
+          constraints: mixConstraints(payload?.constraints)
+        }
+      ),
+      updateProject: (payload) => ipcRenderer.invoke(
+        "content-engine:update-mix-project",
+        {
+          projectId: String(payload?.projectId || ""),
+          ...(Object.hasOwn(payload || {}, "name")
+            ? { name: String(payload.name || "") }
+            : {}),
+          ...(Object.hasOwn(payload || {}, "slots")
+            ? { slots: mixSlots(payload.slots) }
+            : {}),
+          ...(Object.hasOwn(payload || {}, "constraints")
+            ? { constraints: mixConstraints(payload.constraints) }
+            : {})
+        }
+      ),
+      getProject: (payload) => ipcRenderer.invoke(
+        "content-engine:get-mix-project",
+        { projectId: String(payload?.projectId || "") }
+      ),
+      listProjects: (payload) => ipcRenderer.invoke(
+        "content-engine:list-mix-projects",
+        { limit: Number(payload?.limit || 500) }
+      ),
+      calculateCombinations: (payload) => ipcRenderer.invoke(
+        "content-engine:calculate-mix-combinations",
+        { projectId: String(payload?.projectId || "") }
+      ),
+      generateCandidates: (payload) => ipcRenderer.invoke(
+        "content-engine:generate-mix-candidates",
+        {
+          projectId: String(payload?.projectId || ""),
+          limit: Number(payload?.limit || 20),
+          ...(payload?.seed == null ? {} : { seed: payload.seed })
+        }
+      ),
+      listCandidates: (payload) => ipcRenderer.invoke(
+        "content-engine:list-mix-candidates",
+        {
+          ...(payload?.projectId == null
+            ? {}
+            : { projectId: String(payload.projectId || "") }),
+          ...(payload?.reviewStatus == null
+            ? {}
+            : { reviewStatus: String(payload.reviewStatus || "") }),
+          limit: Number(payload?.limit || 500)
+        }
+      ),
+      reviewCandidate: (payload) => ipcRenderer.invoke(
+        "content-engine:review-mix-candidate",
+        {
+          candidateId: String(payload?.candidateId || ""),
+          reviewStatus: String(payload?.reviewStatus || ""),
+          ...(payload?.reviewNote == null
+            ? {}
+            : { reviewNote: String(payload.reviewNote || "") })
+        }
+      )
+    },
+    publishQueue: {
+      list: (payload) => ipcRenderer.invoke("content-engine:list-publish-queue", {
+        ...(payload?.status == null ? {} : { status: String(payload.status || "") }),
+        limit: Number(payload?.limit || 500)
+      }),
+      update: (payload) => ipcRenderer.invoke(
+        "content-engine:update-publish-queue-item",
+        {
+          queueItemId: String(payload?.queueItemId || ""),
+          status: String(payload?.status || ""),
+          ...(payload?.errorMessage == null
+            ? {}
+            : { errorMessage: String(payload.errorMessage || "") })
+        }
+      )
+    },
+    exportPackages: {
+      render: (payload) => ipcRenderer.invoke(
+        "content-engine:render-mix-candidate",
+        {
+          candidateId: String(payload?.candidateId || ""),
+          ...(Array.isArray(payload?.platforms)
+            ? { platforms: payload.platforms.map((item) => String(item || "")) }
+            : {}),
+          ...(payload?.title == null ? {} : { title: String(payload.title || "") }),
+          ...(payload?.description == null
+            ? {}
+            : { description: String(payload.description || "") })
+        }
+      ),
+      list: (payload) => ipcRenderer.invoke(
+        "content-engine:list-export-packages",
+        {
+          ...(payload?.candidateId == null
+            ? {}
+            : { candidateId: String(payload.candidateId || "") }),
+          limit: Number(payload?.limit || 500)
+        }
+      ),
+      open: (payload) => ipcRenderer.invoke(
+        "content-engine:open-export-package",
+        { packageId: String(payload?.packageId || "") }
+      ),
+      reveal: (payload) => ipcRenderer.invoke(
+        "content-engine:reveal-export-package",
+        { packageId: String(payload?.packageId || "") }
       )
     },
     onUpdate: (callback) => {

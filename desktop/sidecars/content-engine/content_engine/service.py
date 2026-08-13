@@ -14,6 +14,8 @@ from .instance_lock import InstanceLock
 from .public_data import redact_text, sanitize_public_value
 from .media_config import VIDEO_EXTENSIONS, classify_media
 from .media_probe import FFprobeAdapter, ProbeOutcome
+from .mix_domain import MixDomain
+from .render_mix import FFmpegMixRenderer
 
 
 FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
@@ -108,7 +110,11 @@ def _public_asset_row(row) -> dict[str, Any]:
 
 class ContentEngineService:
     def __init__(
-        self, data_dir: Path, *, media_probe: FFprobeAdapter | None = None
+        self,
+        data_dir: Path,
+        *,
+        media_probe: FFprobeAdapter | None = None,
+        mix_renderer=None,
     ):
         data_dir = Path(data_dir)
         self.media_probe = media_probe if media_probe is not None else FFprobeAdapter()
@@ -116,6 +122,13 @@ class ContentEngineService:
         self.instance_lock.acquire()
         try:
             self.database = Database(data_dir).open()
+            self.mix_renderer = mix_renderer or FFmpegMixRenderer(data_dir)
+            self.mix_domain = MixDomain(
+                self.database,
+                new_id=_new_id,
+                now=utc_now,
+                renderer=self.mix_renderer,
+            )
             self._recover_inflight_tasks()
         except Exception:
             self.instance_lock.release()
@@ -155,7 +168,104 @@ class ContentEngineService:
             "schema_migrations": migration_count,
             "storage": "sqlite",
             "media_probe": "available" if self.media_probe.available else "unavailable",
+            "mix_render": self.mix_renderer.capability,
         }
+
+    def create_mix_project(
+        self,
+        name: str,
+        slots: list[dict[str, Any]],
+        constraints: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self.mix_domain.create_project(name, slots, constraints)
+
+    def update_mix_project(
+        self,
+        project_id: str,
+        *,
+        name: str | None = None,
+        slots: list[dict[str, Any]] | None = None,
+        constraints: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self.mix_domain.update_project(
+            project_id, name=name, slots=slots, constraints=constraints
+        )
+
+    def get_mix_project(self, project_id: str) -> dict[str, Any]:
+        return self.mix_domain.get_project(project_id)
+
+    def list_mix_projects(self, *, limit: int = 500) -> dict[str, Any]:
+        return self.mix_domain.list_projects(limit=limit)
+
+    def calculate_mix_combinations(self, project_id: str) -> dict[str, Any]:
+        return self.mix_domain.calculate_combinations(project_id)
+
+    def generate_mix_candidates(
+        self,
+        project_id: str,
+        *,
+        limit: int = 20,
+        seed: str | int | None = None,
+    ) -> dict[str, Any]:
+        return self.mix_domain.generate_candidates(project_id, limit=limit, seed=seed)
+
+    def list_mix_candidates(
+        self,
+        *,
+        project_id: str | None = None,
+        review_status: str | None = None,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        return self.mix_domain.list_candidates(
+            project_id=project_id, review_status=review_status, limit=limit
+        )
+
+    def review_mix_candidate(
+        self, candidate_id: str, review_status: str, review_note: str | None = None
+    ) -> dict[str, Any]:
+        return self.mix_domain.review_candidate(
+            candidate_id, review_status, review_note
+        )
+
+    def list_publish_queue(
+        self, *, status: str | None = None, limit: int = 500
+    ) -> dict[str, Any]:
+        return self.mix_domain.list_publish_queue(status=status, limit=limit)
+
+    def update_publish_queue_item(
+        self,
+        queue_item_id: str,
+        status: str,
+        error_message: str | None = None,
+    ) -> dict[str, Any]:
+        return self.mix_domain.update_publish_queue_item(
+            queue_item_id, status, error_message
+        )
+
+    def render_mix_candidate(
+        self,
+        candidate_id: str,
+        *,
+        platforms: list[str] | None = None,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        return self.mix_domain.render_candidate(
+            candidate_id,
+            platforms=platforms,
+            title=title,
+            description=description,
+        )
+
+    def list_export_packages(
+        self, *, candidate_id: str | None = None, limit: int = 500
+    ) -> dict[str, Any]:
+        return self.mix_domain.list_export_packages(
+            candidate_id=candidate_id, limit=limit
+        )
+
+    def resolve_export_package_path(self, package_id: str) -> dict[str, Any]:
+        return self.mix_domain.resolve_export_package_path(package_id)
 
     def _validate_file_path(self, raw_path: str, *, video_only: bool = False) -> Path:
         if not isinstance(raw_path, str) or not raw_path.strip():

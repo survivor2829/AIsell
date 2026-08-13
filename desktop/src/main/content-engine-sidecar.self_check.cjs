@@ -311,6 +311,33 @@ async function main() {
       });
       assert.equal((await rights).rights_status, "licensed");
 
+      const projectId = "mix_project_44444444444444444444444444444444";
+      const candidateId = "mix_candidate_55555555555555555555555555555555";
+      const queueItemId = "publish_queue_66666666666666666666666666666666";
+      const packageId = "export_package_77777777777777777777777777777777";
+      const mixCalls = [
+        [controller.createMixProject("Launch", [{ name: "Intro" }], { allow_repeated_assets: false }), "create_mix_project", { name: "Launch", slots: [{ name: "Intro" }], constraints: { allow_repeated_assets: false } }],
+        [controller.updateMixProject(projectId, { name: "Launch 2" }), "update_mix_project", { project_id: projectId, name: "Launch 2" }],
+        [controller.getMixProject(projectId), "get_mix_project", { project_id: projectId }],
+        [controller.listMixProjects(25), "list_mix_projects", { limit: 25 }],
+        [controller.calculateMixCombinations(projectId), "calculate_mix_combinations", { project_id: projectId }],
+        [controller.generateMixCandidates(projectId, { limit: 3, seed: "campaign-7" }), "generate_mix_candidates", { project_id: projectId, limit: 3, seed: "campaign-7" }],
+        [controller.listMixCandidates({ projectId, reviewStatus: "pending", limit: 9 }), "list_mix_candidates", { project_id: projectId, review_status: "pending", limit: 9 }],
+        [controller.reviewMixCandidate(candidateId, "approved", "ready"), "review_mix_candidate", { candidate_id: candidateId, review_status: "approved", review_note: "ready" }],
+        [controller.listPublishQueue({ status: "queued", limit: 8 }), "list_publish_queue", { status: "queued", limit: 8 }],
+        [controller.updatePublishQueueItem(queueItemId, "processing", "retry"), "update_publish_queue_item", { queue_item_id: queueItemId, status: "processing", error_message: "retry" }],
+        [controller.renderMixCandidate(candidateId, { platforms: ["wechat", "douyin"], title: "", description: "" }), "render_mix_candidate", { candidate_id: candidateId, platforms: ["wechat", "douyin"], title: "", description: "" }],
+        [controller.listExportPackages({ candidateId, limit: 7 }), "list_export_packages", { candidate_id: candidateId, limit: 7 }],
+        [controller.resolveExportPackagePath(packageId), "resolve_export_package_path", { package_id: packageId }]
+      ];
+      for (const [promise, method, params] of mixCalls) {
+        await waitFor(() => children[1].stdin.writes.some((item) => item.method === method));
+        const request = children[1].stdin.writes.find((item) => item.method === method);
+        assert.deepEqual(request.params, params);
+        children[1].respond(request, {});
+        await promise;
+      }
+
       children[1].once("request", (request) => {
         assert.equal(request.method, "shutdown");
         children[1].respond(request, { status: "stopping" });

@@ -68,12 +68,64 @@ function finished(overrides = {}) {
   };
 }
 
+const mixProjectId = "mix_project_44444444444444444444444444444444";
+const mixCandidateId = "mix_candidate_55555555555555555555555555555555";
+const publishQueueId = "publish_queue_66666666666666666666666666666666";
+const exportPackageId = "export_package_88888888888888888888888888888888";
+
+function mixProject() {
+  return {
+    project_id: mixProjectId,
+    name: "Launch",
+    constraints: {
+      allow_repeated_assets: false,
+      min_duration_ms: 1000,
+      max_duration_ms: 5000,
+      score_weights: { duration_fit: 0.6, diversity: 0.25, freshness: 0.15 },
+      output_directory: "C:\\must-not-leak"
+    },
+    slots: [{
+      slot_id: "scene_slot_77777777777777777777777777777777",
+      name: "Intro",
+      position: 0,
+      required: true,
+      asset_ids: [asset().asset_id],
+      fixed_asset_id: null,
+      min_duration_ms: null,
+      max_duration_ms: 3000,
+      absolute_path: "C:\\must-not-leak\\intro.mp4"
+    }],
+    created_at: "2026-08-10T00:00:00Z",
+    updated_at: "2026-08-10T00:01:00Z",
+    absolute_path: "C:\\must-not-leak\\project.json"
+  };
+}
+
+function mixCandidate() {
+  return {
+    candidate_id: mixCandidateId,
+    project_id: mixProjectId,
+    seed: "campaign-7",
+    selection_signature: "safe-signature",
+    selections: [{ slot_id: "scene_slot_77777777777777777777777777777777", slot_name: "Intro", asset_id: asset().asset_id, omitted: false, source_path: "C:\\must-not-leak" }],
+    duration_ms: 1234,
+    score: { total: 91, duration_fit: 1, weighted_components: { duration_fit: 60 }, explanations: ["safe", "C:\\must-not-leak\\clip.mp4"] },
+    review_status: "pending",
+    review_note: null,
+    created_at: "2026-08-10T00:00:00Z",
+    updated_at: "2026-08-10T00:01:00Z",
+    render_directory: "C:\\must-not-leak"
+  };
+}
+
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-content-engine-ipc-"));
   const sourceFile = path.join(root, "课程录像.mp4");
   const finishedFile = path.join(root, "成片.mp4");
+  const exportDirectory = path.join(root, "export-package");
   fs.writeFileSync(sourceFile, "video");
   fs.writeFileSync(finishedFile, "finished");
+  fs.mkdirSync(exportDirectory);
 
   try {
     const handlers = new Map();
@@ -207,6 +259,40 @@ async function main() {
         calls.push(["setSetting", key, value]);
         return { key, value };
       },
+      createMixProject: async (name, slots, constraints) => {
+        calls.push(["createMixProject", name, slots, constraints]);
+        return mixProject();
+      },
+      updateMixProject: async (projectId, changes) => {
+        calls.push(["updateMixProject", projectId, changes]);
+        return mixProject();
+      },
+      getMixProject: async (projectId) => {
+        calls.push(["getMixProject", projectId]);
+        return mixProject();
+      },
+      listMixProjects: async (limit) => ({ items: [mixProject()], limit }),
+      calculateMixCombinations: async () => ({ project_id: mixProjectId, raw_cartesian_count: 2, combination_count: 1, constraints_applied: { required_slots: 1, fixed_slots: 0, allow_repeated_assets: false, duration_constrained: true }, path: "C:\\must-not-leak" }),
+      generateMixCandidates: async (_projectId, options) => ({ project_id: mixProjectId, seed: String(options.seed), items: [mixCandidate()], asset_usage_counts: { [asset().asset_id]: 1 }, generation_stats: { inspected_count: 2, retained_count: 1, beam_capacity: 4, source: "generated", output_path: "C:\\must-not-leak" } }),
+      listMixCandidates: async (options) => {
+        calls.push(["listMixCandidates", options]);
+        return { items: [mixCandidate()] };
+      },
+      reviewMixCandidate: async (candidateId, reviewStatus, reviewNote) => {
+        calls.push(["reviewMixCandidate", candidateId, reviewStatus, reviewNote]);
+        return mixCandidate();
+      },
+      listPublishQueue: async (options) => ({ items: [{ queue_item_id: publishQueueId, candidate_id: mixCandidateId, project_id: mixProjectId, status: "queued", error_message: null, created_at: "2026-08-10T00:00:00Z", updated_at: "2026-08-10T00:01:00Z", absolute_path: "C:\\must-not-leak" }], options }),
+      updatePublishQueueItem: async (queueItemId, status, errorMessage) => {
+        calls.push(["updatePublishQueueItem", queueItemId, status, errorMessage]);
+        return { queue_item_id: publishQueueId, candidate_id: mixCandidateId, project_id: mixProjectId, status, error_message: errorMessage, created_at: "2026-08-10T00:00:00Z", updated_at: "2026-08-10T00:01:00Z" };
+      },
+      renderMixCandidate: async (candidateId, options) => {
+        calls.push(["renderMixCandidate", candidateId, options]);
+        return { package_id: exportPackageId, candidate_id: candidateId, queue_item_id: publishQueueId, platforms: options.platforms, outputs: { wechat: "wechat.mp4" }, cover_name: "cover.jpg", manifest_name: "manifest.json", title: "", description: "", created_at: "2026-08-10T00:02:00Z", output_directory: "C:\\must-not-leak" };
+      },
+      listExportPackages: async () => ({ items: [{ package_id: exportPackageId, candidate_id: mixCandidateId, queue_item_id: publishQueueId, platforms: ["wechat"], outputs: { wechat: "wechat.mp4" }, cover_name: "cover.jpg", manifest_name: "manifest.json", title: "", description: "", created_at: "2026-08-10T00:02:00Z", output_directory: "C:\\must-not-leak" }] }),
+      resolveExportPackagePath: async () => ({ package_id: exportPackageId, absolute_path: exportDirectory }),
       onUpdate: (listener) => {
         updateListener = listener;
         return () => {
@@ -479,6 +565,61 @@ async function main() {
       ok: true,
       data: { cacheLimitGb: 100 }
     });
+
+    const createdMix = await handlers.get(CONTENT_ENGINE_CHANNELS.createMixProject)({}, {
+      name: " Launch ",
+      slots: [{ name: " Intro ", required: true, assetIds: [asset().asset_id], minDurationMs: 0, maxDurationMs: 3000 }],
+      constraints: { allowRepeatedAssets: false, minDurationMs: 1000, maxDurationMs: 5000, scoreWeights: { durationFit: 0.6, diversity: 0.25, freshness: 0.15 } }
+    });
+    assert.equal(createdMix.ok, true);
+    assert.equal(createdMix.data.projectId, mixProjectId);
+    assert.deepEqual(createdMix.data.constraints.scoreWeights, { durationFit: 0.6, diversity: 0.25, freshness: 0.15 });
+    assert.equal(JSON.stringify(createdMix).includes("must-not-leak"), false);
+    assert.deepEqual(calls.find((call) => call[0] === "createMixProject"), ["createMixProject", "Launch", [{ name: "Intro", required: true, asset_ids: [asset().asset_id], fixed_asset_id: undefined, min_duration_ms: 0, max_duration_ms: 3000 }], { allow_repeated_assets: false, min_duration_ms: 1000, max_duration_ms: 5000, score_weights: { duration_fit: 0.6, diversity: 0.25, freshness: 0.15 } }]);
+
+    assert.equal((await handlers.get(CONTENT_ENGINE_CHANNELS.updateMixProject)({}, { projectId: mixProjectId, name: " Launch 2 " })).ok, true);
+    assert.equal((await handlers.get(CONTENT_ENGINE_CHANNELS.getMixProject)({}, { projectId: mixProjectId })).data.projectId, mixProjectId);
+    assert.equal((await handlers.get(CONTENT_ENGINE_CHANNELS.listMixProjects)({}, { limit: 12 })).data.items.length, 1);
+    const combinations = await handlers.get(CONTENT_ENGINE_CHANNELS.calculateMixCombinations)({}, { projectId: mixProjectId });
+    assert.deepEqual(combinations.data.constraintsApplied, { requiredSlots: 1, fixedSlots: 0, allowRepeatedAssets: false, durationConstrained: true });
+
+    const generatedMix = await handlers.get(CONTENT_ENGINE_CHANNELS.generateMixCandidates)({}, { projectId: mixProjectId, limit: 3, seed: "campaign-7" });
+    assert.equal(generatedMix.ok, true);
+    assert.equal(generatedMix.data.items[0].candidateId, mixCandidateId);
+    assert.equal(generatedMix.data.generationStats.inspectedCount, 2);
+    assert.equal(JSON.stringify(generatedMix).includes("must-not-leak"), false);
+    assert.equal((await handlers.get(CONTENT_ENGINE_CHANNELS.listMixCandidates)({}, { projectId: mixProjectId, reviewStatus: "pending", limit: 4 })).data.items[0].candidateId, mixCandidateId);
+
+    const reviewedMix = await handlers.get(CONTENT_ENGINE_CHANNELS.reviewMixCandidate)({}, { candidateId: mixCandidateId, reviewStatus: "approved", reviewNote: " ready " });
+    assert.equal(reviewedMix.ok, true);
+    assert.deepEqual(calls.find((call) => call[0] === "reviewMixCandidate"), ["reviewMixCandidate", mixCandidateId, "approved", "ready"]);
+
+    const queue = await handlers.get(CONTENT_ENGINE_CHANNELS.listPublishQueue)({}, { status: "queued", limit: 8 });
+    assert.equal(queue.data.items[0].queueItemId, publishQueueId);
+    assert.equal(JSON.stringify(queue).includes("must-not-leak"), false);
+    const updatedQueue = await handlers.get(CONTENT_ENGINE_CHANNELS.updatePublishQueueItem)({}, { queueItemId: publishQueueId, status: "processing", errorMessage: " retry " });
+    assert.equal(updatedQueue.data.status, "processing");
+    assert.deepEqual(calls.find((call) => call[0] === "updatePublishQueueItem"), ["updatePublishQueueItem", publishQueueId, "processing", "retry"]);
+
+    const renderedPackage = await handlers.get(CONTENT_ENGINE_CHANNELS.renderMixCandidate)({}, { candidateId: mixCandidateId, platforms: ["wechat"] });
+    assert.equal(renderedPackage.data.packageId, exportPackageId);
+    assert.equal(JSON.stringify(renderedPackage).includes("must-not-leak"), false);
+    assert.equal((await handlers.get(CONTENT_ENGINE_CHANNELS.listExportPackages)({}, { limit: 8 })).data.items[0].packageId, exportPackageId);
+    assert.equal((await handlers.get(CONTENT_ENGINE_CHANNELS.openExportPackage)({}, { packageId: exportPackageId })).ok, true);
+    assert.equal((await handlers.get(CONTENT_ENGINE_CHANNELS.revealExportPackage)({}, { packageId: exportPackageId })).ok, true);
+    assert.equal(opened.includes(fs.realpathSync(exportDirectory)), true);
+    assert.equal(shown.includes(fs.realpathSync(exportDirectory)), true);
+
+    for (const [channel, payload] of [
+      [CONTENT_ENGINE_CHANNELS.getMixProject, { projectId: "C:\\bad" }],
+      [CONTENT_ENGINE_CHANNELS.generateMixCandidates, { projectId: mixProjectId, limit: 0, seed: "x" }],
+      [CONTENT_ENGINE_CHANNELS.createMixProject, { name: "bad", slots: [{ name: "x", required: true, assetIds: [asset().asset_id], path: "C:\\bad" }], constraints: {} }],
+      [CONTENT_ENGINE_CHANNELS.listMixCandidates, { reviewStatus: "maybe" }],
+      [CONTENT_ENGINE_CHANNELS.updatePublishQueueItem, { queueItemId: publishQueueId, status: "maybe" }]
+    ]) {
+      const rejected = await handlers.get(channel)({}, payload);
+      assert.equal(rejected.ok, false);
+    }
 
     dialogQueue.push({ canceled: true, filePaths: [] });
     const cancelledSelection = await handlers.get(

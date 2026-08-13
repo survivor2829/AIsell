@@ -25,9 +25,12 @@ function assertPreloadContract() {
   };
   const api = createContentEngineApi(ipcRenderer);
   assert.deepEqual(Object.keys(api).sort(), [
+    "exportPackages",
     "finished",
     "library",
+    "mix",
     "onUpdate",
+    "publishQueue",
     "restart",
     "settings",
     "status",
@@ -60,6 +63,12 @@ function assertPreloadContract() {
     "status",
     "updateCacheLimit"
   ]);
+  assert.deepEqual(Object.keys(api.mix).sort(), [
+    "calculateCombinations", "createProject", "generateCandidates", "getProject",
+    "listCandidates", "listProjects", "reviewCandidate", "updateProject"
+  ]);
+  assert.deepEqual(Object.keys(api.publishQueue).sort(), ["list", "update"]);
+  assert.deepEqual(Object.keys(api.exportPackages).sort(), ["list", "open", "render", "reveal"]);
 
   api.status();
   api.restart();
@@ -90,6 +99,20 @@ function assertPreloadContract() {
   api.settings.status();
   api.settings.chooseCacheDirectory({ path: "C:\\bad" });
   api.settings.updateCacheLimit({ limitGb: 100, path: "C:\\bad" });
+  api.mix.createProject({ name: "Launch", slots: [{ name: "Intro", required: true, assetIds: ["asset_one"], path: "C:\\bad" }], constraints: { allowRepeatedAssets: false } });
+  api.mix.updateProject({ projectId: "mix_project_one", name: "Launch 2", path: "C:\\bad" });
+  api.mix.getProject({ projectId: "mix_project_one", path: "C:\\bad" });
+  api.mix.listProjects({ limit: 12, path: "C:\\bad" });
+  api.mix.calculateCombinations({ projectId: "mix_project_one", path: "C:\\bad" });
+  api.mix.generateCandidates({ projectId: "mix_project_one", limit: 3, seed: "seven", path: "C:\\bad" });
+  api.mix.listCandidates({ projectId: "mix_project_one", reviewStatus: "pending", limit: 4, path: "C:\\bad" });
+  api.mix.reviewCandidate({ candidateId: "mix_candidate_one", reviewStatus: "approved", reviewNote: "ready", path: "C:\\bad" });
+  api.publishQueue.list({ status: "queued", limit: 8, directory: "C:\\bad" });
+  api.publishQueue.update({ queueItemId: "publish_queue_one", status: "processing", errorMessage: "retry", path: "C:\\bad" });
+  api.exportPackages.render({ candidateId: "mix_candidate_one", platforms: ["wechat", "douyin"], path: "C:\\bad" });
+  api.exportPackages.list({ candidateId: "mix_candidate_one", limit: 9, path: "C:\\bad" });
+  api.exportPackages.open({ packageId: "export_package_one", path: "C:\\bad" });
+  api.exportPackages.reveal({ packageId: "export_package_one", path: "C:\\bad" });
 
   assert.deepEqual(calls, [
     { channel: "content-engine:status", payload: undefined },
@@ -163,6 +186,62 @@ function assertPreloadContract() {
     {
       channel: "content-engine:update-cache-limit",
       payload: { limitGb: 100 }
+    },
+    {
+      channel: "content-engine:create-mix-project",
+      payload: { name: "Launch", slots: [{ name: "Intro", required: true, assetIds: ["asset_one"] }], constraints: { allowRepeatedAssets: false } }
+    },
+    {
+      channel: "content-engine:update-mix-project",
+      payload: { projectId: "mix_project_one", name: "Launch 2" }
+    },
+    {
+      channel: "content-engine:get-mix-project",
+      payload: { projectId: "mix_project_one" }
+    },
+    {
+      channel: "content-engine:list-mix-projects",
+      payload: { limit: 12 }
+    },
+    {
+      channel: "content-engine:calculate-mix-combinations",
+      payload: { projectId: "mix_project_one" }
+    },
+    {
+      channel: "content-engine:generate-mix-candidates",
+      payload: { projectId: "mix_project_one", limit: 3, seed: "seven" }
+    },
+    {
+      channel: "content-engine:list-mix-candidates",
+      payload: { projectId: "mix_project_one", reviewStatus: "pending", limit: 4 }
+    },
+    {
+      channel: "content-engine:review-mix-candidate",
+      payload: { candidateId: "mix_candidate_one", reviewStatus: "approved", reviewNote: "ready" }
+    },
+    {
+      channel: "content-engine:list-publish-queue",
+      payload: { status: "queued", limit: 8 }
+    },
+    {
+      channel: "content-engine:update-publish-queue-item",
+      payload: { queueItemId: "publish_queue_one", status: "processing", errorMessage: "retry" }
+    },
+    {
+      channel: "content-engine:render-mix-candidate",
+      payload: { candidateId: "mix_candidate_one", platforms: ["wechat", "douyin"] }
+    },
+    {
+      channel: "content-engine:list-export-packages",
+      payload: { candidateId: "mix_candidate_one", limit: 9 }
+    },
+    {
+      channel: "content-engine:open-export-package",
+      payload: { packageId: "export_package_one" }
+    },
+    {
+      channel: "content-engine:reveal-export-package",
+      payload: { packageId: "export_package_one" }
     }
   ]);
   assert.equal(JSON.stringify(calls).includes("C:\\bad"), false);

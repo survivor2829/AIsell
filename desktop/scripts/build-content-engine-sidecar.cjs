@@ -98,6 +98,45 @@ function findBuildPython(paths, env = process.env) {
   );
 }
 
+function resolveMediaToolSources(env = process.env) {
+  const ffmpeg = String(env.XIAOXI_FFMPEG_PATH || "").trim();
+  const ffprobe = String(env.XIAOXI_FFPROBE_PATH || "").trim();
+  if (!ffmpeg && !ffprobe) {
+    return { available: false, source: "not_configured", ffmpeg: "", ffprobe: "" };
+  }
+  if (!ffmpeg || !ffprobe) {
+    throw new Error(
+      "XIAOXI_FFMPEG_PATH and XIAOXI_FFPROBE_PATH must be configured together."
+    );
+  }
+  for (const [label, candidate] of [["FFmpeg", ffmpeg], ["ffprobe", ffprobe]]) {
+    let isFile = false;
+    try {
+      isFile = path.isAbsolute(candidate) && fs.statSync(candidate).isFile();
+    } catch {
+      isFile = false;
+    }
+    if (!isFile) {
+      throw new Error(`${label} executable is invalid: ${candidate}`);
+    }
+  }
+  return {
+    available: true,
+    source: "explicit",
+    ffmpeg: path.resolve(ffmpeg),
+    ffprobe: path.resolve(ffprobe)
+  };
+}
+
+function copyMediaTools(mediaTools, runtimeDir) {
+  if (!mediaTools.available) return { ...mediaTools, bundled: false };
+  const destination = path.join(runtimeDir, "media-tools");
+  fs.mkdirSync(destination, { recursive: false });
+  fs.copyFileSync(mediaTools.ffmpeg, path.join(destination, "ffmpeg.exe"));
+  fs.copyFileSync(mediaTools.ffprobe, path.join(destination, "ffprobe.exe"));
+  return { available: true, source: mediaTools.source, bundled: true };
+}
+
 function runtimeSourceFiles(paths) {
   const files = [paths.entryFile];
   if (!fs.existsSync(paths.packageDir) || !fs.statSync(paths.packageDir).isDirectory()) {
@@ -250,7 +289,8 @@ function buildManifest({
   outputExe,
   version,
   source,
-  builtAt
+  builtAt,
+  mediaTools = { available: false, source: "not_configured", bundled: false }
 }) {
   if (!fs.existsSync(outputExe) || !fs.statSync(outputExe).isFile()) {
     throw new Error(`Content-engine runtime executable is missing: ${outputExe}`);
@@ -275,6 +315,13 @@ function buildManifest({
       entry: path.basename(outputExe),
       exeSha256: sha256(outputExe),
       treeSha256: treeSha256(outputDir)
+    },
+    capabilities: {
+      mixRender: {
+        available: mediaTools.available === true,
+        bundled: mediaTools.bundled === true,
+        source: mediaTools.source === "explicit" ? "explicit" : "not_configured"
+      }
     },
     selfCheck: {
       protocolVersion: 1,
@@ -313,6 +360,7 @@ function main() {
 
   const sourceBefore = collectSourceProvenance(paths);
   const python = findBuildPython(paths);
+  const mediaToolSources = resolveMediaToolSources(process.env);
   console.log(`Building content-engine sidecar with ${python}`);
   const result = spawnSync(
     python,
@@ -346,11 +394,13 @@ function main() {
     throw new Error("Content-engine source changed while the runtime was being built");
   }
 
+  const mediaTools = copyMediaTools(mediaToolSources, paths.pyInstallerOutputDir);
   const manifest = buildManifest({
     outputDir: paths.pyInstallerOutputDir,
     outputExe: paths.pyInstallerOutputExe,
     version: session.ready.version,
-    source: sourceBefore
+    source: sourceBefore,
+    mediaTools
   });
   fs.renameSync(paths.pyInstallerOutputDir, paths.outputDir);
   fs.writeFileSync(paths.manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, {
@@ -376,12 +426,14 @@ module.exports = {
   assertFreshOutput,
   buildManifest,
   buildPyInstallerArgs,
+  copyMediaTools,
   collectSourceProvenance,
   findBuildPython,
   main,
   parseProtocolOutput,
   pythonCandidates,
   resolveBuildPaths,
+  resolveMediaToolSources,
   runRuntimeSelfCheck,
   runtimeSourceFiles,
   sourceTreeSha256

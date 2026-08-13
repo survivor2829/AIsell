@@ -142,10 +142,170 @@ def _migration_003_rights_status_scope(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_004_mix_engine_domain(connection: sqlite3.Connection) -> None:
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS mix_projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            constraints_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS scene_slots (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES mix_projects(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL CHECK (position >= 0),
+            name TEXT NOT NULL,
+            required INTEGER NOT NULL CHECK (required IN (0, 1)),
+            fixed_asset_id TEXT REFERENCES assets(id) ON DELETE RESTRICT,
+            min_duration_ms INTEGER CHECK (
+                min_duration_ms IS NULL OR min_duration_ms >= 0
+            ),
+            max_duration_ms INTEGER CHECK (
+                max_duration_ms IS NULL OR max_duration_ms >= 0
+            ),
+            UNIQUE(project_id, position)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS scene_slot_assets (
+            slot_id TEXT NOT NULL REFERENCES scene_slots(id) ON DELETE CASCADE,
+            asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE RESTRICT,
+            position INTEGER NOT NULL CHECK (position >= 0),
+            PRIMARY KEY(slot_id, asset_id),
+            UNIQUE(slot_id, position)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS mix_candidates (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES mix_projects(id) ON DELETE CASCADE,
+            seed TEXT NOT NULL,
+            selection_signature TEXT NOT NULL,
+            selection_json TEXT NOT NULL,
+            duration_ms INTEGER NOT NULL CHECK (duration_ms >= 0),
+            score_json TEXT NOT NULL,
+            review_status TEXT NOT NULL DEFAULT 'pending' CHECK (
+                review_status IN ('pending', 'approved', 'rejected')
+            ),
+            review_note TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(project_id, seed, selection_signature)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS publish_queue_items (
+            id TEXT PRIMARY KEY,
+            candidate_id TEXT NOT NULL UNIQUE
+                REFERENCES mix_candidates(id) ON DELETE CASCADE,
+            status TEXT NOT NULL DEFAULT 'queued' CHECK (
+                status IN ('queued', 'processing', 'published', 'failed', 'cancelled')
+            ),
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_scene_slots_project ON scene_slots(project_id, position)",
+        "CREATE INDEX IF NOT EXISTS idx_mix_candidates_project ON mix_candidates(project_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_mix_candidates_review ON mix_candidates(review_status)",
+        "CREATE INDEX IF NOT EXISTS idx_publish_queue_status ON publish_queue_items(status, created_at)",
+    )
+    for statement in statements:
+        connection.execute(statement)
+
+
+def _migration_005_mix_export_packages(connection: sqlite3.Connection) -> None:
+    scene_slot_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(scene_slots)")
+    }
+    if "target_duration_ms" not in scene_slot_columns:
+        connection.execute(
+            """
+            ALTER TABLE scene_slots ADD COLUMN target_duration_ms INTEGER
+            CHECK (target_duration_ms IS NULL OR target_duration_ms >= 0)
+            """
+        )
+        connection.execute(
+            """
+            UPDATE scene_slots
+            SET target_duration_ms = CASE
+                    WHEN min_duration_ms IS NOT NULL AND max_duration_ms IS NOT NULL
+                        THEN CAST((min_duration_ms + max_duration_ms) / 2 AS INTEGER)
+                    ELSE COALESCE(min_duration_ms, max_duration_ms)
+                END,
+                min_duration_ms = NULL,
+                max_duration_ms = NULL
+            WHERE min_duration_ms IS NOT NULL OR max_duration_ms IS NOT NULL
+            """
+        )
+
+    connection.execute(
+        """
+        CREATE TABLE publish_queue_items_v5 (
+            id TEXT PRIMARY KEY,
+            candidate_id TEXT NOT NULL UNIQUE
+                REFERENCES mix_candidates(id) ON DELETE CASCADE,
+            status TEXT NOT NULL DEFAULT 'queued' CHECK (
+                status IN (
+                    'queued', 'processing', 'exported', 'published', 'failed',
+                    'cancelled'
+                )
+            ),
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO publish_queue_items_v5(
+            id, candidate_id, status, error_message, created_at, updated_at
+        )
+        SELECT id, candidate_id, status, error_message, created_at, updated_at
+        FROM publish_queue_items
+        """
+    )
+    connection.execute("DROP TABLE publish_queue_items")
+    connection.execute(
+        "ALTER TABLE publish_queue_items_v5 RENAME TO publish_queue_items"
+    )
+    connection.execute(
+        """
+        CREATE TABLE export_packages (
+            id TEXT PRIMARY KEY,
+            candidate_id TEXT NOT NULL REFERENCES mix_candidates(id) ON DELETE CASCADE,
+            queue_item_id TEXT NOT NULL REFERENCES publish_queue_items(id) ON DELETE CASCADE,
+            output_directory TEXT NOT NULL UNIQUE,
+            platforms_json TEXT NOT NULL,
+            outputs_json TEXT NOT NULL,
+            cover_name TEXT NOT NULL,
+            manifest_name TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX idx_publish_queue_status ON publish_queue_items(status, created_at)"
+    )
+    connection.execute(
+        "CREATE INDEX idx_export_packages_candidate ON export_packages(candidate_id, created_at)"
+    )
+
+
 MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (1, "initial_content_engine_schema", _migration_001_initial_schema),
     (2, "asset_probe_metadata", _migration_002_asset_probe_metadata),
     (3, "rights_status_scope", _migration_003_rights_status_scope),
+    (4, "mix_engine_domain", _migration_004_mix_engine_domain),
+    (5, "mix_export_packages", _migration_005_mix_export_packages),
 )
 
 def _retry_when_locked(operation, timeout_seconds: float = 5):

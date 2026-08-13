@@ -49,7 +49,10 @@ def discover_ffprobe() -> Path | None:
             candidates.append(configured_path)
 
     if getattr(sys, "frozen", False):
-        candidates.append(Path(sys.executable).resolve().parent / "ffprobe.exe")
+        runtime_dir = Path(sys.executable).resolve().parent
+        candidates.extend(
+            (runtime_dir / "ffprobe.exe", runtime_dir / "media-tools" / "ffprobe.exe")
+        )
 
     from_path = shutil.which("ffprobe")
     if from_path:

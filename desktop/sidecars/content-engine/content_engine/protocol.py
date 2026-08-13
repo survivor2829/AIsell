@@ -89,6 +89,60 @@ METHODS = {
     "set_setting": lambda service, params: service.set_setting(
         params.get("key"), params.get("value")
     ),
+    "create_mix_project": lambda service, params: service.create_mix_project(
+        params.get("name"), params.get("slots"), params.get("constraints")
+    ),
+    "update_mix_project": lambda service, params: service.update_mix_project(
+        params.get("project_id"),
+        name=params.get("name"),
+        slots=params.get("slots"),
+        constraints=params.get("constraints"),
+    ),
+    "get_mix_project": lambda service, params: service.get_mix_project(
+        params.get("project_id")
+    ),
+    "list_mix_projects": lambda service, params: service.list_mix_projects(
+        limit=params.get("limit", 500)
+    ),
+    "calculate_mix_combinations": lambda service, params: service.calculate_mix_combinations(
+        params.get("project_id")
+    ),
+    "generate_mix_candidates": lambda service, params: service.generate_mix_candidates(
+        params.get("project_id"),
+        limit=params.get("limit", 20),
+        seed=params.get("seed"),
+    ),
+    "list_mix_candidates": lambda service, params: service.list_mix_candidates(
+        project_id=params.get("project_id"),
+        review_status=params.get("review_status"),
+        limit=params.get("limit", 500),
+    ),
+    "review_mix_candidate": lambda service, params: service.review_mix_candidate(
+        params.get("candidate_id"),
+        params.get("review_status"),
+        params.get("review_note"),
+    ),
+    "list_publish_queue": lambda service, params: service.list_publish_queue(
+        status=params.get("status"), limit=params.get("limit", 500)
+    ),
+    "update_publish_queue_item": lambda service, params: service.update_publish_queue_item(
+        params.get("queue_item_id"),
+        params.get("status"),
+        params.get("error_message"),
+    ),
+    "render_mix_candidate": lambda service, params: service.render_mix_candidate(
+        params.get("candidate_id"),
+        platforms=params.get("platforms"),
+        title=params.get("title"),
+        description=params.get("description"),
+    ),
+    "list_export_packages": lambda service, params: service.list_export_packages(
+        candidate_id=params.get("candidate_id"),
+        limit=params.get("limit", 500),
+    ),
+    "resolve_export_package_path": lambda service, params: service.resolve_export_package_path(
+        params.get("package_id")
+    ),
 }
 
 
@@ -123,6 +177,10 @@ def serve_jsonl(
                 "main_process_path_resolution": True,
                 "finished_videos": True,
                 "path_redaction": True,
+                "mix_projects": True,
+                "mix_candidate_generation": True,
+                "publish_queue": True,
+                "mix_render": bool(service.mix_renderer.capability["available"]),
             },
         },
     )

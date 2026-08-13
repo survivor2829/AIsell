@@ -42,6 +42,7 @@ const checks = [
   "src/main/content-engine-sidecar.self_check.cjs",
   "src/main/content-engine-ipc.self_check.cjs",
   "src/main/content-engine-desktop-integration.self_check.cjs",
+  "src/renderer/creative-workspace.self_check.cjs",
   "src/renderer/moments-campaign-panel.self_check.cjs",
   "src/renderer/moments-publish-panel.self_check.cjs",
   "src/renderer/moments-dry-run-panel.self_check.cjs",
