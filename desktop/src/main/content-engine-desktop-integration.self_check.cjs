@@ -1,6 +1,11 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const {
+  constants: cryptoConstants,
+  generateKeyPairSync,
+  privateDecrypt
+} = require("node:crypto");
 
 const { createContentEngineApi } = require("./preload-api.cjs");
 
@@ -10,12 +15,22 @@ function read(relativePath) {
   return fs.readFileSync(path.join(desktopDir, relativePath), "utf8");
 }
 
-function assertPreloadContract() {
+async function assertPreloadContract() {
   const calls = [];
   const listeners = new Map();
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: "spki", format: "pem" }
+  });
   const ipcRenderer = {
     invoke: (channel, payload) => {
       calls.push({ channel, payload });
+      if (channel === "content-engine:bailian-key-encryption") {
+        return Promise.resolve({
+          ok: true,
+          data: { keyId: "fixture-key", publicKey }
+        });
+      }
       return Promise.resolve({ ok: true });
     },
     on: (channel, handler) => listeners.set(channel, handler),
@@ -25,6 +40,7 @@ function assertPreloadContract() {
   };
   const api = createContentEngineApi(ipcRenderer);
   assert.deepEqual(Object.keys(api).sort(), [
+    "creative",
     "exportPackages",
     "finished",
     "library",
@@ -59,9 +75,17 @@ function assertPreloadContract() {
     "reveal"
   ]);
   assert.deepEqual(Object.keys(api.settings).sort(), [
+    "bailianKeyStatus",
     "chooseCacheDirectory",
+    "deleteBailianKey",
+    "saveBailianKey",
     "status",
     "updateCacheLimit"
+  ]);
+  assert.deepEqual(Object.keys(api.creative).sort(), [
+    "analyzeAssets", "generateCourseCuts", "generateMixBatch", "getProject",
+    "listGenerated", "listSegments", "mediaUrl", "open", "queue",
+    "regenerate", "reject", "reveal"
   ]);
   assert.deepEqual(Object.keys(api.mix).sort(), [
     "calculateCombinations", "createProject", "generateCandidates", "getProject",
@@ -99,6 +123,21 @@ function assertPreloadContract() {
   api.settings.status();
   api.settings.chooseCacheDirectory({ path: "C:\\bad" });
   api.settings.updateCacheLimit({ limitGb: 100, path: "C:\\bad" });
+  api.settings.bailianKeyStatus();
+  await api.settings.saveBailianKey({ apiKey: "sk-fixture-value", path: "C:\\bad" });
+  api.settings.deleteBailianKey();
+  api.creative.analyzeAssets({ assetIds: ["asset_one"], path: "C:\\bad" });
+  api.creative.listSegments({ assetId: "asset_one", role: "hook", limit: 20, path: "C:\\bad" });
+  api.creative.generateCourseCuts({ assetId: "asset_one", minDurationMs: 30_000, maxDurationMs: 90_000, count: 5, theme: "培训现场价值", subtitleFontSize: 42, subtitleMarginBottom: 140, path: "C:\\bad" });
+  api.creative.generateMixBatch({ assetIds: ["asset_one", "asset_two"], theme: "培训现场价值", targetCount: 30, voiceAssetId: "asset_one", path: "C:\\bad" });
+  api.creative.getProject({ projectId: "creative_project_one", path: "C:\\bad" });
+  api.creative.listGenerated({ projectId: "creative_project_one", limit: 30, path: "C:\\bad" });
+  api.creative.regenerate({ candidateId: "generated_video_one", path: "C:\\bad" });
+  api.creative.reject({ candidateId: "generated_video_one", path: "C:\\bad" });
+  api.creative.queue({ candidateIds: ["generated_video_one"], channel: "internal", path: "C:\\bad" });
+  api.creative.mediaUrl({ candidateId: "generated_video_one", variant: "video", path: "C:\\bad" });
+  api.creative.open({ candidateId: "generated_video_one", path: "C:\\bad" });
+  api.creative.reveal({ candidateId: "generated_video_one", path: "C:\\bad" });
   api.mix.createProject({ name: "Launch", slots: [{ name: "Intro", required: true, assetIds: ["asset_one"], path: "C:\\bad" }], constraints: { allowRepeatedAssets: false } });
   api.mix.updateProject({ projectId: "mix_project_one", name: "Launch 2", path: "C:\\bad" });
   api.mix.getProject({ projectId: "mix_project_one", path: "C:\\bad" });
@@ -187,6 +226,63 @@ function assertPreloadContract() {
       channel: "content-engine:update-cache-limit",
       payload: { limitGb: 100 }
     },
+    { channel: "content-engine:bailian-key-status", payload: undefined },
+    { channel: "content-engine:bailian-key-encryption", payload: undefined },
+    {
+      channel: "content-engine:save-bailian-key",
+      payload: calls.find(
+        (call) => call.channel === "content-engine:save-bailian-key"
+      ).payload
+    },
+    { channel: "content-engine:delete-bailian-key", payload: undefined },
+    {
+      channel: "content-engine:analyze-assets",
+      payload: { assetIds: ["asset_one"] }
+    },
+    {
+      channel: "content-engine:list-media-segments",
+      payload: { assetId: "asset_one", role: "hook", limit: 20 }
+    },
+    {
+      channel: "content-engine:generate-course-cuts",
+      payload: { assetId: "asset_one", minDurationMs: 30_000, maxDurationMs: 90_000, count: 5, theme: "培训现场价值", subtitleFontSize: 42, subtitleMarginBottom: 140 }
+    },
+    {
+      channel: "content-engine:generate-mix-batch",
+      payload: { assetIds: ["asset_one", "asset_two"], theme: "培训现场价值", targetCount: 30, voiceAssetId: "asset_one" }
+    },
+    {
+      channel: "content-engine:get-creative-project",
+      payload: { projectId: "creative_project_one" }
+    },
+    {
+      channel: "content-engine:list-generated-videos",
+      payload: { projectId: "creative_project_one", limit: 30 }
+    },
+    {
+      channel: "content-engine:regenerate-video",
+      payload: { candidateId: "generated_video_one" }
+    },
+    {
+      channel: "content-engine:reject-generated-video",
+      payload: { candidateId: "generated_video_one" }
+    },
+    {
+      channel: "content-engine:queue-generated-videos",
+      payload: { candidateIds: ["generated_video_one"], channel: "internal" }
+    },
+    {
+      channel: "content-engine:generated-media-url",
+      payload: { candidateId: "generated_video_one", variant: "video" }
+    },
+    {
+      channel: "content-engine:open-generated-video",
+      payload: { candidateId: "generated_video_one" }
+    },
+    {
+      channel: "content-engine:reveal-generated-video",
+      payload: { candidateId: "generated_video_one" }
+    },
     {
       channel: "content-engine:create-mix-project",
       payload: { name: "Launch", slots: [{ name: "Intro", required: true, assetIds: ["asset_one"] }], constraints: { allowRepeatedAssets: false } }
@@ -245,6 +341,22 @@ function assertPreloadContract() {
     }
   ]);
   assert.equal(JSON.stringify(calls).includes("C:\\bad"), false);
+  const encryptedKeyPayload = calls.find(
+    (call) => call.channel === "content-engine:save-bailian-key"
+  ).payload;
+  assert.equal(JSON.stringify(encryptedKeyPayload).includes("sk-fixture-value"), false);
+  assert.deepEqual(Object.keys(encryptedKeyPayload).sort(), ["ciphertext", "keyId"]);
+  assert.equal(
+    privateDecrypt(
+      {
+        key: privateKey,
+        padding: cryptoConstants.RSA_PKCS1_OAEP_PADDING,
+        oaepHash: "sha256"
+      },
+      Buffer.from(encryptedKeyPayload.ciphertext, "base64")
+    ).toString("utf8"),
+    "sk-fixture-value"
+  );
 
   const updates = [];
   const unsubscribe = api.onUpdate((payload) => updates.push(payload));
@@ -311,6 +423,9 @@ function assertMainLifecycle() {
     source,
     /resolveDefaultDevelopmentSidecarRuntime\("content-engine"\)/
   );
+  assert.match(source, /function contentEngineRuntimeArgs\(\)/);
+  assert.match(source, /XIAOXI_CONTENT_ENGINE_SIDECAR_ENTRY/);
+  assert.match(source, /runtimeArgs: contentEngineRuntimeArgs\(\)/);
   const runtimeGateSource = read("src/main/development-sidecar-runtime.cjs");
   assert.match(
     runtimeGateSource,
@@ -339,9 +454,15 @@ function assertMainLifecycle() {
   assert.match(source, /contentEngineIpcRegistration\?\.dispose\(\)/);
 }
 
-assertPreloadContract();
-assertPreloadExposure();
-assertRendererWorkflow();
-assertMainLifecycle();
+async function main() {
+  await assertPreloadContract();
+  assertPreloadExposure();
+  assertRendererWorkflow();
+  assertMainLifecycle();
+  console.log("content-engine desktop integration self-check passed");
+}
 
-console.log("content-engine desktop integration self-check passed");
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

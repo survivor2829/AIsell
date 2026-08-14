@@ -300,12 +300,129 @@ def _migration_005_mix_export_packages(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_006_creative_workbench(connection: sqlite3.Connection) -> None:
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS asset_derivatives (
+            id TEXT PRIMARY KEY,
+            asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+            derivative_kind TEXT NOT NULL CHECK (
+                derivative_kind IN ('proxy', 'audio', 'keyframe', 'thumbnail', 'srt')
+            ),
+            ordinal INTEGER NOT NULL DEFAULT 0 CHECK (ordinal >= 0),
+            config_hash TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'ready' CHECK (
+                status IN ('pending', 'ready', 'failed')
+            ),
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(asset_id, derivative_kind, ordinal, config_hash)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS media_segments (
+            id TEXT PRIMARY KEY,
+            asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+            start_ms INTEGER NOT NULL CHECK (start_ms >= 0),
+            end_ms INTEGER NOT NULL CHECK (end_ms > start_ms),
+            transcript_text TEXT NOT NULL DEFAULT '',
+            speaker TEXT NOT NULL DEFAULT '',
+            role TEXT NOT NULL DEFAULT 'general' CHECK (
+                role IN ('hook', 'process', 'result', 'general')
+            ),
+            shot_type TEXT NOT NULL DEFAULT 'unknown',
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            quality_score REAL NOT NULL DEFAULT 0 CHECK (
+                quality_score >= 0 AND quality_score <= 1
+            ),
+            thumbnail_derivative_id TEXT REFERENCES asset_derivatives(id) ON DELETE SET NULL,
+            analysis_version TEXT NOT NULL,
+            provider TEXT NOT NULL DEFAULT 'local',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(asset_id, start_ms, end_ms, analysis_version)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS creative_projects (
+            id TEXT PRIMARY KEY,
+            mode TEXT NOT NULL CHECK (mode IN ('course', 'mix')),
+            name TEXT NOT NULL,
+            theme TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'queued' CHECK (
+                status IN (
+                    'queued', 'analyzing', 'rendering', 'completed', 'failed',
+                    'paused', 'cancelled'
+                )
+            ),
+            settings_json TEXT NOT NULL DEFAULT '{}',
+            result_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS generated_videos (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES creative_projects(id) ON DELETE CASCADE,
+            task_id TEXT REFERENCES content_tasks(id) ON DELETE SET NULL,
+            kind TEXT NOT NULL CHECK (kind IN ('course', 'mix')),
+            status TEXT NOT NULL DEFAULT 'queued' CHECK (
+                status IN ('queued', 'rendering', 'completed', 'failed', 'rejected')
+            ),
+            generation INTEGER NOT NULL DEFAULT 1 CHECK (generation >= 1),
+            selection_signature TEXT NOT NULL,
+            recipe_json TEXT NOT NULL,
+            score_json TEXT NOT NULL DEFAULT '{}',
+            title TEXT NOT NULL DEFAULT '',
+            duration_ms INTEGER NOT NULL CHECK (duration_ms > 0),
+            recommended INTEGER NOT NULL DEFAULT 0 CHECK (recommended IN (0, 1)),
+            output_path TEXT,
+            thumbnail_path TEXT,
+            error_code TEXT,
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(project_id, selection_signature, generation)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS generated_publish_queue (
+            id TEXT PRIMARY KEY,
+            generated_video_id TEXT NOT NULL REFERENCES generated_videos(id) ON DELETE CASCADE,
+            channel TEXT NOT NULL CHECK (
+                channel IN ('wechat', 'douyin', 'kuaishou', 'internal')
+            ),
+            status TEXT NOT NULL DEFAULT 'queued' CHECK (
+                status IN ('queued', 'processing', 'published', 'failed', 'cancelled')
+            ),
+            error_message TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(generated_video_id, channel)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_asset_derivatives_asset ON asset_derivatives(asset_id, derivative_kind)",
+        "CREATE INDEX IF NOT EXISTS idx_media_segments_asset ON media_segments(asset_id, start_ms)",
+        "CREATE INDEX IF NOT EXISTS idx_media_segments_role ON media_segments(role, quality_score)",
+        "CREATE INDEX IF NOT EXISTS idx_creative_projects_updated ON creative_projects(updated_at)",
+        "CREATE INDEX IF NOT EXISTS idx_generated_videos_project ON generated_videos(project_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_generated_queue_status ON generated_publish_queue(status, created_at)",
+    )
+    for statement in statements:
+        connection.execute(statement)
+
+
 MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (1, "initial_content_engine_schema", _migration_001_initial_schema),
     (2, "asset_probe_metadata", _migration_002_asset_probe_metadata),
     (3, "rights_status_scope", _migration_003_rights_status_scope),
     (4, "mix_engine_domain", _migration_004_mix_engine_domain),
     (5, "mix_export_packages", _migration_005_mix_export_packages),
+    (6, "creative_workbench", _migration_006_creative_workbench),
 )
 
 def _retry_when_locked(operation, timeout_seconds: float = 5):

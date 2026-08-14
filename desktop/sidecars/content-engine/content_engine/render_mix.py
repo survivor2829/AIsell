@@ -206,6 +206,15 @@ class FFmpegMixRenderer:
     def _normalize_segment(self, segment, preset, platform_dir, index):
         source = Path(segment["path"])
         target_ms = int(segment["target_duration_ms"])
+        source_start_ms = max(0, int(segment.get("source_start_ms") or 0))
+        source_end_ms = segment.get("source_end_ms")
+        if source_end_ms is not None:
+            source_end_ms = int(source_end_ms)
+            if source_end_ms <= source_start_ms:
+                raise ContentEngineError(
+                    "invalid_duration", "Source end must be after source start."
+                )
+            target_ms = min(target_ms, source_end_ms - source_start_ms)
         output = platform_dir / f"segment-{index:04d}.mp4"
         video_filter = (
             f"scale={preset.width}:{preset.height}:force_original_aspect_ratio=increase,"
@@ -254,6 +263,8 @@ class FFmpegMixRenderer:
             command = [
                 self.ffmpeg_path,
                 "-y",
+                "-ss",
+                f"{source_start_ms / 1000:.3f}",
                 "-i",
                 str(source),
                 "-vf",
@@ -268,6 +279,8 @@ class FFmpegMixRenderer:
             command = [
                 self.ffmpeg_path,
                 "-y",
+                "-ss",
+                f"{source_start_ms / 1000:.3f}",
                 "-i",
                 str(source),
                 "-f",

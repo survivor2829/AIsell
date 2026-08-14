@@ -41,6 +41,8 @@ const checks = [
   "src/main/product-detail-desktop-integration.self_check.cjs",
   "src/main/content-engine-sidecar.self_check.cjs",
   "src/main/content-engine-ipc.self_check.cjs",
+  "src/main/bailian-api-key.self_check.cjs",
+  "src/main/content-media-protocol.self_check.cjs",
   "src/main/content-engine-desktop-integration.self_check.cjs",
   "src/renderer/creative-workspace.self_check.cjs",
   "src/renderer/moments-campaign-panel.self_check.cjs",

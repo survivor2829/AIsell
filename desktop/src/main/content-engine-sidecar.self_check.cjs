@@ -132,6 +132,7 @@ async function main() {
       const child = new FakeChild();
       const controller = createContentEngineSidecar({
         runtimePath,
+        runtimeArgs: ["worker.py"],
         dataDir,
         spawnProcess: (command, args, options) => {
           spawnCalls.push({ command, args, options });
@@ -143,7 +144,7 @@ async function main() {
       const second = controller.start();
       await waitFor(() => spawnCalls.length === 1);
       assert.equal(spawnCalls[0].command, runtimePath);
-      assert.deepEqual(spawnCalls[0].args, ["--data-dir", dataDir]);
+      assert.deepEqual(spawnCalls[0].args, ["worker.py", "--data-dir", dataDir]);
       assert.equal(spawnCalls[0].options.shell, false);
       assert.equal(spawnCalls[0].options.windowsHide, true);
       assert.equal(spawnCalls[0].options.env.PYTHONIOENCODING, "utf-8");
@@ -240,6 +241,30 @@ async function main() {
         }]
       });
       assert.equal((await resumeImport).status, "completed");
+
+      const regenerationTaskId = "task_33333333333333333333333333333333";
+      const resumeRegeneration = controller.resumeTask(regenerationTaskId);
+      await waitFor(() => child.stdin.writes.length === 8);
+      child.respond(child.stdin.writes[7], {
+        items: [{
+          task_id: regenerationTaskId,
+          task_type: "creative_regeneration",
+          status: "paused",
+          resume_from_status: "rendering"
+        }]
+      });
+      await waitFor(() => child.stdin.writes.length === 9);
+      assert.equal(child.stdin.writes[8].method, "resume_creative_task");
+      assert.deepEqual(child.stdin.writes[8].params, {
+        task_id: regenerationTaskId
+      });
+      child.respond(child.stdin.writes[8], {
+        task_id: regenerationTaskId,
+        task_type: "creative_regeneration",
+        status: "queued",
+        resume_from_status: null
+      });
+      assert.equal((await resumeRegeneration).status, "queued");
 
       child.once("request", (request) => {
         assert.equal(request.method, "shutdown");

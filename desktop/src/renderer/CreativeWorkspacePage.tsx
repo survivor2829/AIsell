@@ -2,619 +2,695 @@ import {
   Check,
   CircleAlert,
   Clapperboard,
+  FileVideo2,
   FolderOpen,
+  KeyRound,
   Layers3,
   LoaderCircle,
+  Pause,
+  Play,
   RefreshCw,
-  Save,
+  RotateCcw,
   Sparkles,
-  ThumbsDown,
-  ThumbsUp
+  Square,
+  ThumbsDown
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import "./CreativeWorkspacePage.css";
 
 type ContentResult<T> = { ok: boolean; data?: T; code?: string; error?: string };
-type EngineStatus = { state: string; available: boolean; version: string; capabilities: Record<string, boolean>; code: string };
+type EngineStatus = {
+  state: string;
+  available: boolean;
+  version: string;
+  capabilities: Record<string, boolean>;
+  code: string;
+};
 type Asset = {
   assetId: string;
   displayName: string;
   mediaKind: "video" | "image";
+  probeStatus: "pending" | "ok" | "unavailable" | "failed";
   durationMs: number | null;
+  hasAudio: boolean | null;
   archived: boolean;
   availableLocationCount: number;
 };
-type SlotDraft = {
-  clientKey: string;
-  name: string;
-  required: boolean;
-  targetDurationSeconds: number;
-  assetIds: string[];
-  fixedAssetId: string;
-};
-type MixConstraints = {
-  allowRepeatedAssets: boolean;
-  minDurationMs?: number | null;
-  maxDurationMs?: number | null;
-  scoreWeights: { durationFit: number; diversity: number; freshness: number };
-};
-type MixSlot = {
-  slotId?: string;
-  name: string;
-  required: boolean;
-  assetIds: string[];
-  fixedAssetId?: string | null;
-  minDurationMs?: number | null;
-  maxDurationMs?: number | null;
-  targetDurationMs?: number | null;
-};
-type MixProject = {
-  projectId: string;
-  name: string;
-  slots: MixSlot[];
-  constraints: MixConstraints;
-  updatedAt: string;
-};
-type CombinationCounts = { rawCartesianCount: number; combinationCount: number | null; countIsExact: boolean; countStatus: string };
-type Candidate = {
-  candidateId: string;
-  projectId: string;
-  seed: string;
-  selections: Array<{ slotId: string; slotName: string; assetId: string | null; omitted: boolean }>;
-  durationMs: number;
-  score: { total?: number; explanations?: string[] };
-  reviewStatus: "pending" | "approved" | "rejected";
-  reviewNote: string | null;
-};
-type PublishStatus = "queued" | "processing" | "exported" | "published" | "failed" | "cancelled";
-type ExportPlatform = "wechat" | "douyin" | "kuaishou";
-type QueueItem = {
-  queueItemId: string;
-  candidateId: string;
-  projectId: string;
-  status: PublishStatus;
+type TaskStatus = "queued" | "analyzing" | "rendering" | "completed" | "failed" | "paused" | "cancelled" | "ready_for_review";
+type Task = {
+  taskId: string;
+  taskType: string;
+  status: TaskStatus;
+  progress: number;
+  errorCode: string | null;
   errorMessage: string | null;
-  updatedAt: string;
 };
-type ExportPackage = {
-  packageId: string;
-  candidateId: string;
-  queueItemId: string;
-  platforms: ExportPlatform[];
-  outputs: Record<string, string>;
-  coverName: string;
-  manifestName: string;
-  createdAt: string;
+type CreativeProject = {
+  projectId: string;
+  mode: "course" | "mix";
+  name: string;
+  theme: string;
+  status: string;
+  requiredRoles: string[];
+  targetCount: number;
+  generatedCount: number;
+  maximumQualifiedCount: number | null;
+  countIsExact: boolean | null;
+  missingRoles: string[];
 };
-type MixApi = {
+type GeneratedVideo = {
+  generatedVideoId: string;
+  projectId: string;
+  taskId: string;
+  kind: "course" | "mix";
+  status: string;
+  generation: number;
+  title: string;
+  durationMs: number;
+  recommended: boolean;
+  score: {
+    total?: number;
+    openingHook?: number;
+    standaloneValue?: number;
+    contentCompleteness?: number;
+    transcriptQuality?: number;
+    diversity?: number;
+    selectionEngine?: string;
+    recommendationReason?: string[];
+  };
+  sourceStartMs: number | null;
+  sourceEndMs: number | null;
+  previewReady: boolean;
+  thumbnailReady: boolean;
+  errorCode: string | null;
+  errorMessage: string | null;
+};
+type BailianStatus = {
+  configured: boolean;
+  maskedKey: string;
+  secureStorageAvailable: boolean;
+  code: string;
+};
+type ImportResult = { items: Asset[]; createdAssets: number; skippedCount: number };
+type CreativeApi = {
   status: () => Promise<ContentResult<EngineStatus>>;
-  library: { list: (payload?: { includeArchived?: boolean; limit?: number }) => Promise<ContentResult<{ items: Asset[] }>> };
-  mix: {
-    createProject: (payload: { name: string; slots: MixSlot[]; constraints: MixConstraints }) => Promise<ContentResult<MixProject>>;
-    updateProject: (payload: { projectId: string; name: string; slots: MixSlot[]; constraints: MixConstraints }) => Promise<ContentResult<MixProject>>;
-    getProject: (payload: { projectId: string }) => Promise<ContentResult<MixProject>>;
-    listProjects: (payload?: { limit?: number }) => Promise<ContentResult<{ items: MixProject[] }>>;
-    calculateCombinations: (payload: { projectId: string }) => Promise<ContentResult<CombinationCounts>>;
-    generateCandidates: (payload: { projectId: string; limit: number; seed: string }) => Promise<ContentResult<{ items: Candidate[] }>>;
-    listCandidates: (payload?: { projectId?: string; reviewStatus?: string; limit?: number }) => Promise<ContentResult<{ items: Candidate[] }>>;
-    reviewCandidate: (payload: { candidateId: string; reviewStatus: "approved" | "rejected"; reviewNote?: string }) => Promise<ContentResult<Candidate>>;
+  library: {
+    list: (payload?: { includeArchived?: boolean; limit?: number }) => Promise<ContentResult<{ items: Asset[] }>>;
+    chooseFiles: () => Promise<ContentResult<ImportResult>>;
+    chooseFolder: (payload?: { recursive?: boolean }) => Promise<ContentResult<ImportResult>>;
+    probePending: (payload?: { limit?: number }) => Promise<ContentResult<{ items: Asset[]; processedCount: number; remainingCount: number }>>;
   };
-  publishQueue: {
-    list: (payload?: { status?: string; limit?: number }) => Promise<ContentResult<{ items: QueueItem[] }>>;
-    update: (payload: { queueItemId: string; status: string; errorMessage?: string }) => Promise<ContentResult<QueueItem>>;
+  tasks: {
+    list: (payload?: { limit?: number }) => Promise<ContentResult<{ items: Task[] }>>;
+    pause: (payload: { taskId: string }) => Promise<ContentResult<Task>>;
+    resume: (payload: { taskId: string }) => Promise<ContentResult<Task>>;
+    cancel: (payload: { taskId: string }) => Promise<ContentResult<Task>>;
   };
-  exportPackages: {
-    render: (payload: { candidateId: string; platforms?: string[] }) => Promise<ContentResult<ExportPackage>>;
-    list: (payload?: { candidateId?: string; limit?: number }) => Promise<ContentResult<{ items: ExportPackage[] }>>;
-    open: (payload: { packageId: string }) => Promise<ContentResult<{ packageId: string }>>;
-    reveal: (payload: { packageId: string }) => Promise<ContentResult<{ packageId: string }>>;
+  settings: {
+    bailianKeyStatus: () => Promise<ContentResult<BailianStatus>>;
+    saveBailianKey: (payload: { apiKey: string }) => Promise<ContentResult<BailianStatus>>;
+    deleteBailianKey: () => Promise<ContentResult<BailianStatus>>;
+  };
+  creative: {
+    analyzeAssets: (payload: { assetIds: string[] }) => Promise<ContentResult<Task>>;
+    generateCourseCuts: (payload: {
+      assetId: string;
+      minDurationMs: number;
+      maxDurationMs: number;
+      count: number;
+      theme: string;
+      subtitleFontSize: number;
+      subtitleMarginBottom: number;
+    }) => Promise<ContentResult<{ taskId: string; projectId: string }>>;
+    generateMixBatch: (payload: {
+      assetIds: string[];
+      theme: string;
+      targetCount: number;
+      voiceAssetId: string;
+    }) => Promise<ContentResult<{ taskId: string; projectId: string }>>;
+    getProject: (payload: { projectId: string }) => Promise<ContentResult<CreativeProject>>;
+    listGenerated: (payload?: { projectId?: string; limit?: number }) => Promise<ContentResult<{ items: GeneratedVideo[] }>>;
+    regenerate: (payload: { candidateId: string }) => Promise<ContentResult<{
+      taskId: string;
+      generatedVideoId: string;
+    }>>;
+    reject: (payload: { candidateId: string }) => Promise<ContentResult<GeneratedVideo>>;
+    queue: (payload: { candidateIds: string[]; channel: string }) => Promise<ContentResult<{ items: unknown[] }>>;
+    mediaUrl: (payload: { candidateId: string; variant: "video" | "thumbnail" }) => Promise<ContentResult<{ url: string }>>;
+    open: (payload: { candidateId: string }) => Promise<ContentResult<{ candidateId: string }>>;
+    reveal: (payload: { candidateId: string }) => Promise<ContentResult<{ candidateId: string }>>;
   };
 };
 
-const DEFAULT_SLOTS: SlotDraft[] = [
-  { clientKey: "default-hook", name: "开头钩子", required: true, targetDurationSeconds: 3, assetIds: [], fixedAssetId: "" },
-  { clientKey: "default-body", name: "主体信息", required: true, targetDurationSeconds: 8, assetIds: [], fixedAssetId: "" },
-  { clientKey: "default-proof", name: "产品证据", required: true, targetDurationSeconds: 6, assetIds: [], fixedAssetId: "" },
-  { clientKey: "default-cta", name: "结尾引导", required: true, targetDurationSeconds: 4, assetIds: [], fixedAssetId: "" }
-];
-const DEFAULT_WEIGHTS = { durationFit: 0.5, diversity: 0.3, freshness: 0.2 };
+const TERMINAL_TASKS = new Set<TaskStatus>(["completed", "failed", "cancelled", "paused"]);
+const GENERATED_VIDEO_ID = /^generated_video_[a-f0-9]{32}$/;
+const ROLE_LABELS: Record<string, string> = {
+  hook: "开场镜头",
+  process: "过程镜头",
+  result: "结果镜头"
+};
 
 function apiForWindow() {
-  return (window as unknown as { xiaoxiContent?: MixApi }).xiaoxiContent;
+  return (window as unknown as { xiaoxiContent?: CreativeApi }).xiaoxiContent;
 }
 
-function durationText(milliseconds: number | null | undefined) {
-  if (!milliseconds) return "静态素材";
-  return `${(milliseconds / 1000).toFixed(milliseconds >= 10000 ? 0 : 1)} 秒`;
+function formatDuration(milliseconds?: number | null) {
+  if (!milliseconds) return "—";
+  const seconds = Math.round(milliseconds / 1000);
+  const minutes = Math.floor(seconds / 60);
+  return minutes ? `${minutes}:${String(seconds % 60).padStart(2, "0")}` : `${seconds} 秒`;
 }
 
-function errorMessage(result: ContentResult<unknown>, fallback: string) {
+function failure(result: ContentResult<unknown>, fallback: string) {
   return result.error || result.code || fallback;
 }
 
-function rangeFromTarget(seconds: number, spread: number) {
-  const target = Math.max(0, Number(seconds) || 0) * 1000;
-  if (!target) return { minDurationMs: null, maxDurationMs: null };
-  return {
-    minDurationMs: Math.round(target * (1 - spread)),
-    maxDurationMs: Math.round(target * (1 + spread))
-  };
+function generatedMediaUrl(item: GeneratedVideo) {
+  return item.previewReady && GENERATED_VIDEO_ID.test(item.generatedVideoId)
+    ? `xiaoxi-content://generated/${item.generatedVideoId}/video`
+    : "";
 }
 
-function draftFromProject(project: MixProject) {
-  return project.slots.map((slot, index) => ({
-    clientKey: slot.slotId || `${project.projectId}-${index}`,
-    name: slot.name,
-    required: slot.required,
-    targetDurationSeconds: (slot.targetDurationMs || 0) / 1000,
-    assetIds: slot.assetIds || [],
-    fixedAssetId: slot.fixedAssetId || ""
-  }));
+function capacitySummary(project: CreativeProject | null) {
+  if (!project) return "";
+  const parts: string[] = [];
+  if (project.maximumQualifiedCount != null) {
+    parts.push(project.countIsExact === false
+      ? `已确认至少可生成 ${project.maximumQualifiedCount} 条合格组合（素材规模较大，仍有更多组合未计入）`
+      : `当前素材最多可生成 ${project.maximumQualifiedCount} 条合格组合`);
+  }
+  if (project.missingRoles?.length) {
+    parts.push(`缺少：${project.missingRoles.map((item) => ROLE_LABELS[item] || item).join("、")}`);
+  }
+  return parts.join("；");
 }
-
-const QUEUE_STATUS_LABELS: Record<PublishStatus, string> = {
-  queued: "等待生成",
-  processing: "正在生成",
-  exported: "成片包已就绪",
-  published: "已发布",
-  failed: "生成失败",
-  cancelled: "已取消"
-};
-
-const QUEUE_STATUS_DETAILS: Record<PublishStatus, string> = {
-  queued: "待生成成片包",
-  processing: "正在生成成片包",
-  exported: "仅本地导出，未发布",
-  published: "已发布",
-  failed: "生成失败，可重试",
-  cancelled: "已取消"
-};
 
 export function CreativeWorkspacePage() {
   const [engine, setEngine] = useState<EngineStatus | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
-  const [projects, setProjects] = useState<MixProject[]>([]);
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [queue, setQueue] = useState<QueueItem[]>([]);
-  const [exportPackages, setExportPackages] = useState<ExportPackage[]>([]);
+  const [mode, setMode] = useState<"course" | "mix">("course");
+  const [courseAssetId, setCourseAssetId] = useState("");
+  const [mixAssetIds, setMixAssetIds] = useState<string[]>([]);
+  const [voiceAssetId, setVoiceAssetId] = useState("");
+  const [theme, setTheme] = useState("培训现场价值");
+  const [courseCount, setCourseCount] = useState(5);
+  const [mixCount, setMixCount] = useState(30);
+  const [minimumSeconds, setMinimumSeconds] = useState(30);
+  const [maximumSeconds, setMaximumSeconds] = useState(90);
+  const [subtitleFontSize, setSubtitleFontSize] = useState(48);
+  const [subtitleMarginBottom, setSubtitleMarginBottom] = useState(170);
+  const [currentTaskId, setCurrentTaskId] = useState("");
+  const [currentTask, setCurrentTask] = useState<Task | null>(null);
   const [projectId, setProjectId] = useState("");
-  const [projectName, setProjectName] = useState("新品推广混剪");
-  const [slots, setSlots] = useState<SlotDraft[]>(DEFAULT_SLOTS);
-  const [allowRepeatedAssets, setAllowRepeatedAssets] = useState(false);
-  const [totalDurationSeconds, setTotalDurationSeconds] = useState(21);
-  const [outputCount, setOutputCount] = useState(10);
-  const [seed, setSeed] = useState("launch-01");
-  const [scoreWeights, setScoreWeights] = useState(DEFAULT_WEIGHTS);
-  const [counts, setCounts] = useState<CombinationCounts | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [busyAction, setBusyAction] = useState("");
-  const [reviewingId, setReviewingId] = useState("");
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const [activeView, setActiveView] = useState<"candidates" | "queue">("candidates");
+  const [project, setProject] = useState<CreativeProject | null>(null);
+  const [videos, setVideos] = useState<GeneratedVideo[]>([]);
+  const [selectedVideos, setSelectedVideos] = useState<string[]>([]);
+  const [busy, setBusy] = useState("");
+  const [notice, setNotice] = useState<{ tone: "error" | "success"; text: string } | null>(null);
+  const [keyStatus, setKeyStatus] = useState<BailianStatus | null>(null);
+  const [keyInput, setKeyInput] = useState("");
 
-  const availableAssets = useMemo(
+  const usableAssets = useMemo(
     () => assets.filter((item) => !item.archived && item.availableLocationCount > 0),
     [assets]
   );
-  const assetNames = useMemo(
-    () => new Map(assets.map((item) => [item.assetId, item.displayName])),
-    [assets]
+  const videoAssets = useMemo(
+    () => usableAssets.filter((item) => item.mediaKind === "video"),
+    [usableAssets]
   );
-  const apiAvailable = Boolean(apiForWindow()?.mix && apiForWindow()?.publishQueue && apiForWindow()?.exportPackages);
-  const controlsDisabled = loading || Boolean(busyAction) || engine?.state !== "ready";
+  const audioVideoAssets = useMemo(
+    () => videoAssets.filter((item) => item.hasAudio === true),
+    [videoAssets]
+  );
+  const selectedVoiceAssets = useMemo(
+    () => audioVideoAssets.filter((item) => mixAssetIds.includes(item.assetId)),
+    [audioVideoAssets, mixAssetIds]
+  );
+  const selectedAssetIds = mode === "course"
+    ? (courseAssetId ? [courseAssetId] : [])
+    : mixAssetIds;
 
-  const loadWorkspace = useCallback(async (preferredProjectId?: string) => {
+  const loadVideos = useCallback(async (targetProjectId?: string) => {
     const api = apiForWindow();
-    if (!api?.mix || !api.publishQueue || !api.exportPackages) {
-      setLoading(false);
-      setError("当前桌面组件未提供智能混剪能力，请更新并重启应用。");
-      return;
-    }
-    setLoading(true);
-    setError("");
-    try {
-      const [statusResult, assetsResult, projectsResult, candidatesResult, queueResult, packagesResult] = await Promise.all([
-        api.status(),
-        api.library.list({ includeArchived: false, limit: 500 }),
-        api.mix.listProjects({ limit: 500 }),
-        api.mix.listCandidates({ limit: 500 }),
-        api.publishQueue.list({ limit: 500 }),
-        api.exportPackages.list({ limit: 500 })
-      ]);
-      const failure = [statusResult, assetsResult, projectsResult, candidatesResult, queueResult, packagesResult].find((result) => !result.ok);
-      if (failure) throw new Error(errorMessage(failure, "工作台数据加载失败"));
-      setEngine(statusResult.data || null);
-      setAssets(assetsResult.data?.items || []);
-      setProjects(projectsResult.data?.items || []);
-      setCandidates(candidatesResult.data?.items || []);
-      setQueue(queueResult.data?.items || []);
-      setExportPackages(packagesResult.data?.items || []);
-      const selected = preferredProjectId || projectId;
-      if (selected) {
-        const current = projectsResult.data?.items.find((item) => item.projectId === selected);
-        if (current) setProjectId(current.projectId);
+    if (!api?.creative) return;
+    const result = await api.creative.listGenerated({
+      ...(targetProjectId ? { projectId: targetProjectId } : {}),
+      limit: 500
+    });
+    if (!result.ok || !result.data) return;
+    setVideos(result.data.items);
+  }, []);
+
+  const loadFoundation = useCallback(async () => {
+    const api = apiForWindow();
+    if (!api) return;
+    const [status, library, bailian] = await Promise.all([
+      api.status(),
+      api.library.list({ limit: 500 }),
+      api.settings.bailianKeyStatus()
+    ]);
+    if (status.ok && status.data) setEngine(status.data);
+    if (library.ok && library.data) {
+      let libraryItems = library.data.items;
+      if (libraryItems.some((item) => item.probeStatus === "pending")) {
+        const probed = await api.library.probePending({ limit: 10 });
+        if (probed.ok) {
+          const refreshed = await api.library.list({ limit: 500 });
+          if (refreshed.ok && refreshed.data) libraryItems = refreshed.data.items;
+        }
       }
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "工作台数据加载失败");
-    } finally {
-      setLoading(false);
+      setAssets(libraryItems);
+      const firstVideo = libraryItems.find(
+        (item) => item.mediaKind === "video" && item.hasAudio === true
+      );
+      if (firstVideo) {
+        setCourseAssetId((current) => current || firstVideo.assetId);
+        setVoiceAssetId((current) => current || firstVideo.assetId);
+      }
     }
-  }, [projectId]);
+    if (bailian.ok && bailian.data) setKeyStatus(bailian.data);
+  }, []);
 
   useEffect(() => {
-    void loadWorkspace();
-  }, []); // Initial desktop bridge snapshot only.
+    void loadFoundation();
+    void loadVideos();
+  }, [loadFoundation, loadVideos]);
 
-  function updateSlot(index: number, changes: Partial<SlotDraft>) {
-    setSlots((current) => current.map((slot, slotIndex) => slotIndex === index ? { ...slot, ...changes } : slot));
-    setCounts(null);
-  }
+  useEffect(() => {
+    if (mode !== "mix") return;
+    setVoiceAssetId((current) => selectedVoiceAssets.some(
+      (item) => item.assetId === current
+    ) ? current : selectedVoiceAssets[0]?.assetId || "");
+  }, [mode, selectedVoiceAssets]);
 
-  function toggleAsset(index: number, assetId: string) {
-    const slot = slots[index];
-    const selected = slot.assetIds.includes(assetId);
-    const assetIds = selected ? slot.assetIds.filter((id) => id !== assetId) : [...slot.assetIds, assetId];
-    updateSlot(index, { assetIds, fixedAssetId: selected && slot.fixedAssetId === assetId ? "" : slot.fixedAssetId });
-  }
+  useEffect(() => {
+    if (engine?.state !== "ready" || audioVideoAssets.length === 0) return;
+    setNotice((current) => current?.tone === "error"
+      && current.text === "内容引擎暂时不可用，请重试。"
+      ? null
+      : current);
+  }, [audioVideoAssets.length, engine?.state]);
 
-  function projectPayload() {
-    const totalRange = rangeFromTarget(totalDurationSeconds, 0.2);
-    return {
-      name: projectName.trim(),
-      slots: slots.map((slot) => ({
-        name: slot.name.trim(),
-        required: slot.required,
-        assetIds: slot.assetIds,
-        fixedAssetId: slot.fixedAssetId || null,
-        targetDurationMs: slot.targetDurationSeconds > 0
-          ? Math.round(slot.targetDurationSeconds * 1000)
-          : null
-      })),
-      constraints: {
-        allowRepeatedAssets,
-        ...totalRange,
-        scoreWeights
+  useEffect(() => {
+    if (!currentTaskId) return;
+    let active = true;
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      const api = apiForWindow();
+      try {
+        if (!api) return;
+        const result = await api.tasks.list({ limit: 500 });
+        const task = result.data?.items.find((item) => item.taskId === currentTaskId);
+        if (!active || !task) return;
+        setCurrentTask(task);
+        if (TERMINAL_TASKS.has(task.status)) {
+          setCurrentTaskId("");
+          setBusy("");
+          let taskProject: CreativeProject | null = null;
+          if (projectId) {
+            const projectResult = await api.creative.getProject({ projectId });
+            if (projectResult.ok && projectResult.data) {
+              taskProject = projectResult.data;
+              setProject(projectResult.data);
+            }
+          }
+          if (task.status === "completed") {
+            setNotice({ tone: "success", text: "AI 处理完成，成片已经可以播放和内部验收。" });
+            await loadVideos(projectId || undefined);
+            if (projectId) {
+              const summary = await api.creative.getProject({ projectId });
+              if (summary.ok && summary.data) setProject(summary.data);
+            }
+          } else if (task.status === "failed") {
+            setNotice({ tone: "error", text: task.errorMessage || task.errorCode || "AI 处理失败。" });
+            const shortage = capacitySummary(taskProject);
+            if (shortage) {
+              setNotice({
+                tone: "error",
+                text: `${task.errorMessage || task.errorCode || "AI 处理失败。"}；${shortage}`
+              });
+            }
+          }
+        }
+      } finally {
+        polling = false;
       }
     };
-  }
+    void poll();
+    const timer = window.setInterval(() => void poll(), 1_500);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [currentTaskId, loadVideos, projectId]);
 
-  async function saveProject() {
+  async function importAssets(kind: "files" | "folder") {
     const api = apiForWindow();
     if (!api) return;
-    if (!projectName.trim()) {
-      setError("请填写项目名称。");
-      return;
-    }
-    const incomplete = slots.find((slot) => !slot.name.trim() || (slot.required && !slot.assetIds.length && !slot.fixedAssetId));
-    if (incomplete) {
-      setError(`“${incomplete.name || "未命名槽位"}”是必选槽位，请至少勾选一个素材。`);
-      return;
-    }
-    setBusyAction("save");
-    setError("");
-    setNotice("");
-    try {
-      const payload = projectPayload();
-      const result = projectId
-        ? await api.mix.updateProject({ projectId, ...payload })
-        : await api.mix.createProject(payload);
-      if (!result.ok || !result.data) throw new Error(errorMessage(result, "项目保存失败"));
-      setProjectId(result.data.projectId);
-      const combinationResult = await api.mix.calculateCombinations({ projectId: result.data.projectId });
-      if (!combinationResult.ok || !combinationResult.data) throw new Error(errorMessage(combinationResult, "组合数计算失败"));
-      setCounts(combinationResult.data);
-      setNotice("项目已保存，组合空间已重新计算。");
-      await loadWorkspace(result.data.projectId);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "项目保存失败");
-    } finally {
-      setBusyAction("");
-    }
-  }
-
-  async function selectProject(nextProjectId: string) {
-    setProjectId(nextProjectId);
-    setCounts(null);
-    setError("");
-    if (!nextProjectId) {
-      setProjectName("新品推广混剪");
-      setSlots(DEFAULT_SLOTS);
-      setAllowRepeatedAssets(false);
-      setTotalDurationSeconds(21);
-      setScoreWeights(DEFAULT_WEIGHTS);
-      return;
-    }
-    const api = apiForWindow();
-    if (!api) return;
-    setBusyAction("project");
-    try {
-      const [projectResult, countResult] = await Promise.all([
-        api.mix.getProject({ projectId: nextProjectId }),
-        api.mix.calculateCombinations({ projectId: nextProjectId })
-      ]);
-      if (!projectResult.ok || !projectResult.data) throw new Error(errorMessage(projectResult, "项目读取失败"));
-      const project = projectResult.data;
-      setProjectName(project.name);
-      setSlots(draftFromProject(project));
-      setAllowRepeatedAssets(project.constraints.allowRepeatedAssets);
-      setTotalDurationSeconds(Math.round((((project.constraints.minDurationMs || 0) + (project.constraints.maxDurationMs || 0)) / 2) / 100) / 10);
-      setScoreWeights(project.constraints.scoreWeights || DEFAULT_WEIGHTS);
-      if (countResult.ok && countResult.data) setCounts(countResult.data);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "项目读取失败");
-    } finally {
-      setBusyAction("");
-    }
-  }
-
-  async function generateCandidates() {
-    const api = apiForWindow();
-    if (!api || !projectId) {
-      setError("请先保存项目，再生成候选。");
-      return;
-    }
-    setBusyAction("generate");
-    setError("");
-    setNotice("");
-    try {
-      const result = await api.mix.generateCandidates({ projectId, limit: outputCount, seed });
-      if (!result.ok) throw new Error(errorMessage(result, "候选生成失败"));
-      const listResult = await api.mix.listCandidates({ projectId, limit: 500 });
-      if (!listResult.ok) throw new Error(errorMessage(listResult, "候选列表刷新失败"));
-      setCandidates((current) => [
-        ...(listResult.data?.items || []),
-        ...current.filter((item) => item.projectId !== projectId)
-      ]);
-      setActiveView("candidates");
-      setNotice(`候选已生成，共返回 ${result.data?.items.length || 0} 条。`);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "候选生成失败");
-    } finally {
-      setBusyAction("");
-    }
-  }
-
-  async function reviewCandidate(candidateId: string, reviewStatus: "approved" | "rejected") {
-    const api = apiForWindow();
-    if (!api) return;
-    setReviewingId(candidateId);
-    setError("");
-    try {
-      const result = await api.mix.reviewCandidate({ candidateId, reviewStatus });
-      if (!result.ok || !result.data) throw new Error(errorMessage(result, "候选审核失败"));
-      setCandidates((current) => current.map((item) => item.candidateId === candidateId ? result.data! : item));
-      if (reviewStatus === "approved") {
-        const queueResult = await api.publishQueue.list({ limit: 500 });
-        if (!queueResult.ok) throw new Error(errorMessage(queueResult, "发布队列刷新失败"));
-        setQueue(queueResult.data?.items || []);
-        setActiveView("queue");
-        setNotice("候选已批准并进入发布队列。");
-      } else {
-        setNotice("候选已淘汰。");
+    setBusy(`import-${kind}`);
+    setNotice(null);
+    const result = kind === "files"
+      ? await api.library.chooseFiles()
+      : await api.library.chooseFolder({ recursive: true });
+    setBusy("");
+    if (!result.ok || !result.data) {
+      if (result.code !== "CONTENT_DIALOG_CANCELLED") {
+        setNotice({ tone: "error", text: failure(result, "素材导入失败。") });
       }
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "候选审核失败");
-    } finally {
-      setReviewingId("");
+      return;
+    }
+    const pendingProbe = await api.library.probePending({ limit: 10 });
+    if (!pendingProbe.ok) {
+      setNotice({ tone: "error", text: failure(pendingProbe, "素材已登记，但媒体信息读取失败。") });
+      await loadFoundation();
+      return;
+    }
+    await loadFoundation();
+    const refreshedItems = result.data.items.map((item) =>
+      pendingProbe.data?.items.find((probed) => probed.assetId === item.assetId) || item
+    );
+    const importedIds = refreshedItems.map((item) => item.assetId);
+    if (mode === "course") {
+      const firstVideo = refreshedItems.find(
+        (item) => item.mediaKind === "video" && item.hasAudio === true
+      );
+      if (firstVideo) setCourseAssetId(firstVideo.assetId);
+    } else {
+      setMixAssetIds(importedIds);
+      const firstVoice = refreshedItems.find((item) => item.mediaKind === "video" && item.hasAudio === true);
+      if (firstVoice) setVoiceAssetId(firstVoice.assetId);
+    }
+    setNotice({
+      tone: "success",
+      text: `已登记 ${result.data.items.length} 条素材；原文件仍保留在原位置。`
+    });
+  }
+
+  async function analyze() {
+    const api = apiForWindow();
+    if (!api || !selectedAssetIds.length) return;
+    setBusy("analyze");
+    setNotice(null);
+    const result = await api.creative.analyzeAssets({ assetIds: selectedAssetIds });
+    if (!result.ok || !result.data) {
+      setBusy("");
+      setNotice({ tone: "error", text: failure(result, "无法开始素材分析。") });
+      return;
+    }
+    setCurrentTaskId(result.data.taskId);
+    setCurrentTask(result.data);
+  }
+
+  async function generate() {
+    const api = apiForWindow();
+    if (!api || !selectedAssetIds.length) return;
+    setBusy("generate");
+    setNotice(null);
+    if (mode === "course" && (minimumSeconds < 30 || maximumSeconds > 90 || minimumSeconds > maximumSeconds)) {
+      setBusy("");
+      setNotice({ tone: "error", text: "课程成片时长必须在 30～90 秒之间，且最短不能大于最长。" });
+      return;
+    }
+    if (mode === "mix" && !selectedVoiceAssets.some((item) => item.assetId === voiceAssetId)) {
+      setBusy("");
+      setNotice({ tone: "error", text: "请从已选素材中选择一条带声音的视频作为老师原声。" });
+      return;
+    }
+    const result = mode === "course"
+      ? await api.creative.generateCourseCuts({
+        assetId: courseAssetId,
+        minDurationMs: minimumSeconds * 1000,
+        maxDurationMs: maximumSeconds * 1000,
+        count: courseCount,
+        theme,
+        subtitleFontSize,
+        subtitleMarginBottom
+      })
+      : await api.creative.generateMixBatch({
+        assetIds: mixAssetIds,
+        theme,
+        targetCount: mixCount,
+        voiceAssetId
+      });
+    if (!result.ok || !result.data) {
+      setBusy("");
+      setNotice({ tone: "error", text: failure(result, "无法开始生成。") });
+      return;
+    }
+    setProjectId(result.data.projectId);
+    setProject(null);
+    setVideos([]);
+    setCurrentTaskId(result.data.taskId);
+    setCurrentTask(null);
+  }
+
+  async function taskAction(action: "pause" | "resume" | "cancel") {
+    const api = apiForWindow();
+    const taskId = currentTask?.taskId || currentTaskId;
+    if (!api || !taskId) return;
+    const result = await api.tasks[action]({ taskId });
+    if (result.ok && result.data) {
+      setCurrentTask(result.data);
+      if (action === "resume") setCurrentTaskId(taskId);
+    } else {
+      setNotice({ tone: "error", text: failure(result, "任务状态更新失败。") });
     }
   }
 
-  async function cancelQueueItem(queueItemId: string) {
+  async function saveKey() {
+    const api = apiForWindow();
+    if (!api || !keyInput.trim()) return;
+    setBusy("key");
+    const result = await api.settings.saveBailianKey({ apiKey: keyInput.trim() });
+    setBusy("");
+    if (result.ok && result.data) {
+      setKeyStatus(result.data);
+      setKeyInput("");
+      setNotice({ tone: "success", text: "百炼 Key 已用当前 Windows 账户加密保存，内容引擎已重启。" });
+    } else {
+      setNotice({ tone: "error", text: failure(result, "百炼 Key 保存失败。") });
+    }
+  }
+
+  async function regenerate(item: GeneratedVideo) {
     const api = apiForWindow();
     if (!api) return;
-    setBusyAction(`queue-${queueItemId}`);
-    setError("");
-    try {
-      const result = await api.publishQueue.update({ queueItemId, status: "cancelled" });
-      if (!result.ok || !result.data) throw new Error(errorMessage(result, "队列更新失败"));
-      setQueue((current) => current.map((item) => item.queueItemId === queueItemId ? result.data! : item));
-      setNotice("已取消该待处理项目。");
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "队列更新失败");
-    } finally {
-      setBusyAction("");
+    setBusy(`regenerate-${item.generatedVideoId}`);
+    const result = await api.creative.regenerate({ candidateId: item.generatedVideoId });
+    if (!result.ok || !result.data?.taskId) {
+      setBusy("");
+      setNotice({ tone: "error", text: failure(result, "重新生成失败。") });
+      return;
     }
+    setCurrentTaskId(result.data.taskId);
+    setNotice({ tone: "info", text: "重新生成任务已开始，完成后会自动刷新成片。" });
   }
 
-  async function renderQueueItem(item: QueueItem) {
+  async function reject(item: GeneratedVideo) {
     const api = apiForWindow();
-    if (!api?.exportPackages) return;
-    setBusyAction(`render-${item.queueItemId}`);
-    setError("");
-    setNotice("");
-    try {
-      const result = await api.exportPackages.render({
-        candidateId: item.candidateId,
-        platforms: ["wechat", "douyin", "kuaishou"]
-      });
-      if (!result.ok || !result.data) throw new Error(errorMessage(result, "成片包生成失败"));
-      const [queueResult, packagesResult] = await Promise.all([
-        api.publishQueue.list({ limit: 500 }),
-        api.exportPackages.list({ limit: 500 })
-      ]);
-      if (!queueResult.ok || !packagesResult.ok) throw new Error("成片包已生成，但列表刷新失败");
-      setQueue(queueResult.data?.items || []);
-      setExportPackages(packagesResult.data?.items || []);
-      setNotice("多平台成片包已生成到本机；不会自动发布。请先检查内容。 ");
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "成片包生成失败");
-      const queueResult = await api.publishQueue.list({ limit: 500 });
-      if (queueResult.ok) setQueue(queueResult.data?.items || []);
-    } finally {
-      setBusyAction("");
-    }
+    if (!api) return;
+    const result = await api.creative.reject({ candidateId: item.generatedVideoId });
+    if (!result.ok) setNotice({ tone: "error", text: failure(result, "淘汰成片失败。") });
+    else await loadVideos(projectId || undefined);
   }
 
-  async function accessExportPackage(packageId: string, action: "open" | "reveal") {
+  async function queueSelected(ids: string[]) {
     const api = apiForWindow();
-    if (!api?.exportPackages) return;
-    setBusyAction(`${action}-${packageId}`);
-    setError("");
-    try {
-      const result = await api.exportPackages[action]({ packageId });
-      if (!result.ok) throw new Error(errorMessage(result, "无法访问成片包"));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "无法访问成片包");
-    } finally {
-      setBusyAction("");
+    if (!api || !ids.length) return;
+    const result = await api.creative.queue({ candidateIds: ids, channel: "internal" });
+    if (result.ok) {
+      setSelectedVideos([]);
+      setNotice({ tone: "success", text: `已接受 ${ids.length} 条成片并加入内部队列；不会自动发布。` });
+    } else {
+      setNotice({ tone: "error", text: failure(result, "加入内部队列失败。") });
     }
   }
 
-  const visibleCandidates = candidates.filter((item) => !projectId || item.projectId === projectId);
-  const visibleQueue = queue.filter((item) => !projectId || item.projectId === projectId);
-  const packagesByQueue = useMemo(() => {
-    const grouped = new Map<string, ExportPackage[]>();
-    for (const item of exportPackages) {
-      const group = grouped.get(item.queueItemId);
-      if (group) group.push(item);
-      else grouped.set(item.queueItemId, [item]);
-    }
-    return grouped;
-  }, [exportPackages]);
+  function toggleMixAsset(assetId: string) {
+    setMixAssetIds((current) => current.includes(assetId)
+      ? current.filter((item) => item !== assetId)
+      : [...current, assetId]);
+  }
+
+  const running = Boolean(currentTask && !TERMINAL_TASKS.has(currentTask.status));
+  const engineReady = engine?.state === "ready";
+  const generationSelectionReady = mode === "course"
+    ? audioVideoAssets.some((item) => item.assetId === courseAssetId)
+    : mixAssetIds.length > 0 && selectedVoiceAssets.some((item) => item.assetId === voiceAssetId);
 
   return (
     <section className="page creative-workspace-page">
-      <div className="page-head workspace-page-head">
+      <header className="page-header workspace-page-head">
         <div>
-          <span className="workspace-eyebrow">内容引擎 · 智能混剪</span>
+          <span className="workspace-eyebrow">AI CREATIVE STUDIO</span>
           <h1>创作工作台</h1>
-          <p>用真实素材配置镜头槽位、审核候选，并在本机生成微信、抖音、快手成片包。</p>
+          <p>选择素材与目标，AI 自动理解、选段、混剪和渲染，不需要手工时间线。</p>
         </div>
-        <div className={`workspace-engine-badge is-${engine?.state || "unknown"}`}>
-          {loading ? <LoaderCircle size={15} className="is-spinning" /> : <span />}
-          {engine?.state === "ready" ? `引擎就绪 ${engine.version || ""}` : engine?.state === "failed" ? "引擎异常" : "引擎不可用"}
+        <div className={`workspace-engine-badge ${engineReady ? "is-ready" : "is-failed"}`}>
+          <span />{engineReady ? "内容引擎已就绪" : "内容引擎未就绪"}
         </div>
+      </header>
+
+      {notice && <div className={`workspace-banner is-${notice.tone}`}>
+        {notice.tone === "success" ? <Check size={16} /> : <CircleAlert size={16} />}
+        {notice.text}
+      </div>}
+
+      <div className="workspace-mode-grid">
+        <button className={`workspace-mode-card ${mode === "course" ? "is-active" : ""}`} onClick={() => setMode("course")}>
+          <FileVideo2 size={24} /><span><strong>长课程精剪</strong><small>从口播、播客或课程中找出完整观点，生成 30～90 秒竖屏成片。</small></span>
+        </button>
+        <button className={`workspace-mode-card ${mode === "mix" ? "is-active" : ""}`} onClick={() => setMode("mix")}>
+          <Layers3 size={24} /><span><strong>AI 批量混剪</strong><small>自动组织“开场—过程—结果”，用老师原声串起现场素材。</small></span>
+        </button>
       </div>
 
-      {!apiAvailable && !loading && <div className="workspace-banner is-error"><CircleAlert size={18} />桌面组件不可用，请更新应用后重试。</div>}
-      {apiAvailable && !loading && engine?.state !== "ready" && <div className="workspace-banner is-error"><CircleAlert size={18} />内容引擎当前未就绪（{engine?.code || engine?.state || "状态未知"}），配置已锁定，请刷新或重启应用后重试。</div>}
-      {error && <div className="workspace-banner is-error"><CircleAlert size={18} />{error}</div>}
-      {notice && <div className="workspace-banner is-success"><Check size={18} />{notice}</div>}
-      {loading ? (
-        <div className="workspace-loading"><LoaderCircle className="is-spinning" />正在加载素材、项目和审核队列…</div>
-      ) : (
-        <>
-          <section className="workspace-panel workspace-project-bar">
-            <div>
-              <label htmlFor="mix-project-select">已有项目</label>
-              <select id="mix-project-select" value={projectId} onChange={(event) => void selectProject(event.target.value)} disabled={Boolean(busyAction)}>
-                <option value="">新建混剪项目</option>
-                {projects.map((project) => <option key={project.projectId} value={project.projectId}>{project.name}</option>)}
-              </select>
+      <div className="workspace-layout">
+        <main className="workspace-main-column">
+          <section className="workspace-panel workspace-material-panel">
+            <div className="workspace-section-head">
+              <div><span>01</span><h2>添加与选择素材</h2></div>
+              <div className="workspace-inline-actions">
+                <button onClick={() => void importAssets("files")} disabled={Boolean(busy)}>
+                  {busy === "import-files" ? <LoaderCircle className="is-spinning" size={15} /> : <FileVideo2 size={15} />}选择文件
+                </button>
+                <button onClick={() => void importAssets("folder")} disabled={Boolean(busy)}>
+                  {busy === "import-folder" ? <LoaderCircle className="is-spinning" size={15} /> : <FolderOpen size={15} />}选择文件夹
+                </button>
+              </div>
             </div>
-            <button className="workspace-button is-secondary" onClick={() => void loadWorkspace(projectId)} disabled={Boolean(busyAction)}>
-              <RefreshCw size={16} />刷新数据
-            </button>
+
+            {mode === "course" ? (
+              <label className="workspace-field">
+                <span>课程视频</span>
+                <select value={courseAssetId} onChange={(event) => setCourseAssetId(event.target.value)}>
+                  <option value="">请选择一个带声音的视频</option>
+                  {audioVideoAssets.map((item) => <option value={item.assetId} key={item.assetId}>
+                    {item.displayName} · {formatDuration(item.durationMs)}
+                  </option>)}
+                </select>
+              </label>
+            ) : (
+              <div className="workspace-assets">
+                {usableAssets.map((item) => <label className={mixAssetIds.includes(item.assetId) ? "is-selected" : ""} key={item.assetId}>
+                  <input type="checkbox" checked={mixAssetIds.includes(item.assetId)} onChange={() => toggleMixAsset(item.assetId)} />
+                  <span><strong>{item.displayName}</strong><small>{item.mediaKind === "video" ? formatDuration(item.durationMs) : "图片"}</small></span>
+                </label>)}
+              </div>
+            )}
+            {!usableAssets.length && <div className="workspace-empty">还没有素材。请选择实验视频或素材文件夹。</div>}
           </section>
 
-          <div className="workspace-editor-layout">
-            <main className="workspace-main-column">
-              <section className="workspace-panel">
-                <div className="workspace-section-head">
-                  <div><span>01</span><h2>项目与镜头槽位</h2></div>
-                  <small>{availableAssets.length} 个可用素材</small>
-                </div>
-                <label className="workspace-field workspace-project-name">
-                  <span>项目名称</span>
-                  <input value={projectName} onChange={(event) => setProjectName(event.target.value)} maxLength={200} disabled={controlsDisabled} />
-                </label>
+          <section className="workspace-panel workspace-generate-panel">
+            <div className="workspace-section-head"><div><span>02</span><h2>设置目标并生成</h2></div></div>
+            <div className="workspace-form-grid">
+              <label className="workspace-field workspace-theme-field"><span>主题</span><input value={theme} maxLength={100} onChange={(event) => setTheme(event.target.value)} /></label>
+              {mode === "course" ? <>
+                <label className="workspace-field"><span>最短（秒）</span><input type="number" min={30} max={90} value={minimumSeconds} onChange={(event) => setMinimumSeconds(Number(event.target.value))} /></label>
+                <label className="workspace-field"><span>最长（秒）</span><input type="number" min={30} max={90} value={maximumSeconds} onChange={(event) => setMaximumSeconds(Number(event.target.value))} /></label>
+                <label className="workspace-field"><span>候选数量</span><input type="number" min={1} max={20} value={courseCount} onChange={(event) => setCourseCount(Number(event.target.value))} /></label>
+                <label className="workspace-field"><span>字幕字号</span><select value={subtitleFontSize} onChange={(event) => setSubtitleFontSize(Number(event.target.value))}><option value={42}>小</option><option value={48}>标准</option><option value={56}>大</option></select></label>
+                <label className="workspace-field"><span>字幕位置</span><select value={subtitleMarginBottom} onChange={(event) => setSubtitleMarginBottom(Number(event.target.value))}><option value={140}>更靠下</option><option value={170}>底部安全区</option><option value={230}>偏上</option></select></label>
+              </> : <>
+                <label className="workspace-field"><span>成片数量</span><select value={mixCount} onChange={(event) => setMixCount(Number(event.target.value))}><option value={30}>30 条（首轮验收）</option><option value={100}>100 条</option><option value={200}>200 条</option><option value={300}>300 条</option></select></label>
+                <label className="workspace-field workspace-voice-field"><span>老师原声</span><select value={voiceAssetId} onChange={(event) => setVoiceAssetId(event.target.value)}><option value="">请选择带声音的视频</option>{selectedVoiceAssets.map((item) => <option value={item.assetId} key={item.assetId}>{item.displayName}</option>)}</select></label>
+              </>}
+            </div>
+            <div className="workspace-generate-actions">
+              <button className="workspace-button is-secondary" onClick={() => void analyze()} disabled={!engineReady || !selectedAssetIds.length || Boolean(busy)}>
+                {busy === "analyze" ? <LoaderCircle className="is-spinning" size={16} /> : <RefreshCw size={16} />}仅分析素材
+              </button>
+              <button className="workspace-button is-primary" onClick={() => void generate()} disabled={!engineReady || !generationSelectionReady || Boolean(busy)}>
+                {busy === "generate" ? <LoaderCircle className="is-spinning" size={16} /> : <Sparkles size={16} />}AI 自动生成
+              </button>
+            </div>
+            <p className="workspace-safety-note"><CircleAlert size={15} />首轮仅内部查看。生成按钮会自动补齐尚未完成的素材分析，不会发布到微信、抖音或快手。</p>
+          </section>
 
-                {!availableAssets.length ? (
-                  <div className="workspace-empty"><Layers3 size={28} /><strong>素材库还没有可用素材</strong><p>请先到“素材与成片”登记本机素材，确认文件仍可访问后再配置槽位。</p></div>
-                ) : (
-                  <div className="workspace-slot-grid">
-                    {slots.map((slot, index) => (
-                      <article className="workspace-slot-card" key={slot.clientKey}>
-                        <div className="workspace-slot-title">
-                          <span>{String(index + 1).padStart(2, "0")}</span>
-                          <input aria-label={`槽位 ${index + 1} 名称`} value={slot.name} onChange={(event) => updateSlot(index, { name: event.target.value })} disabled={controlsDisabled} />
-                        </div>
-                        <div className="workspace-slot-options">
-                          <label><input type="checkbox" checked={slot.required} onChange={(event) => updateSlot(index, { required: event.target.checked })} disabled={controlsDisabled} /> 必选槽位</label>
-                          <label>目标时长 <input type="number" min="0" max="3600" step="0.5" value={slot.targetDurationSeconds} onChange={(event) => updateSlot(index, { targetDurationSeconds: Number(event.target.value) })} disabled={controlsDisabled} /> 秒</label>
-                        </div>
-                        <div className="workspace-asset-list">
-                          {availableAssets.map((asset) => (
-                            <label className={slot.assetIds.includes(asset.assetId) ? "is-selected" : ""} key={asset.assetId}>
-                              <input type="checkbox" checked={slot.assetIds.includes(asset.assetId)} onChange={() => toggleAsset(index, asset.assetId)} disabled={controlsDisabled} />
-                              <span><strong>{asset.displayName}</strong><small>{asset.mediaKind === "video" ? "视频" : "图片"} · {durationText(asset.durationMs)}</small></span>
-                            </label>
-                          ))}
-                        </div>
-                        <label className="workspace-field">
-                          <span>固定素材（可选）</span>
-                          <select value={slot.fixedAssetId} onChange={(event) => updateSlot(index, { fixedAssetId: event.target.value, assetIds: event.target.value && !slot.assetIds.includes(event.target.value) ? [...slot.assetIds, event.target.value] : slot.assetIds })} disabled={controlsDisabled}>
-                            <option value="">不固定，参与组合</option>
-                            {availableAssets.map((asset) => <option key={asset.assetId} value={asset.assetId}>{asset.displayName}</option>)}
-                          </select>
-                        </label>
-                      </article>
-                    ))}
+          {(currentTask || project) && <section className="workspace-panel workspace-progress-panel">
+            <div className="workspace-progress-copy">
+              <strong>{currentTask?.status === "rendering" ? "正在渲染成片" : currentTask?.status === "analyzing" ? "正在理解素材" : currentTask?.status === "completed" ? "处理完成" : "任务处理中"}</strong>
+              <span>{Math.round((currentTask?.progress || 0) * 100)}%</span>
+            </div>
+            <div className="workspace-progress-track"><span style={{ width: `${Math.round((currentTask?.progress || 0) * 100)}%` }} /></div>
+            <div className="workspace-task-actions">
+              {running && <button onClick={() => void taskAction("pause")}><Pause size={14} />暂停</button>}
+              {currentTask?.status === "paused" && <button onClick={() => void taskAction("resume")}><Play size={14} />继续</button>}
+              {running && <button onClick={() => void taskAction("cancel")}><Square size={13} />取消</button>}
+            </div>
+            {project && <div className="workspace-capacity">
+              已生成 <b>{project.generatedCount}</b> / {project.targetCount} 条
+              {project.maximumQualifiedCount != null && <span>{project.countIsExact === false ? `已确认至少可生成 ${project.maximumQualifiedCount} 条合格组合（仍有更多组合未计入）` : `当前素材最多可生成 ${project.maximumQualifiedCount} 条合格组合`}</span>}
+              {project.missingRoles?.length > 0 && <span>缺少：{project.missingRoles.map((item) => ROLE_LABELS[item] || item).join("、")}</span>}
+            </div>}
+          </section>}
+
+          <section className="workspace-panel workspace-results-panel">
+            <div className="workspace-section-head">
+              <div><span>03</span><h2>成片验收</h2><small>{videos.length ? `${videos.length} 条` : "等待生成"}</small></div>
+              {selectedVideos.length > 0 && <button className="workspace-button is-primary" onClick={() => void queueSelected(selectedVideos)}>接受所选（{selectedVideos.length}）</button>}
+            </div>
+            {videos.length ? <div className="workspace-video-grid">
+              {videos.map((item) => {
+                const aiRecommended = item.recommended && item.score.selectionEngine === "bailian_editor";
+                const localPreselection = item.score.selectionEngine === "local_content_signals";
+                return <article className={`workspace-video-card ${aiRecommended ? "is-recommended" : ""}`} key={item.generatedVideoId}>
+                <div className="workspace-video-frame">
+                  {generatedMediaUrl(item)
+                    ? <video controls preload="metadata" src={generatedMediaUrl(item)} />
+                    : <div><Clapperboard size={28} /><span>{item.status === "failed" ? "生成失败" : "预览准备中"}</span></div>}
+                  {aiRecommended && <b>AI 推荐</b>}
+                  {localPreselection && <b className="is-local">本地预筛</b>}
+                  <label><input type="checkbox" checked={selectedVideos.includes(item.generatedVideoId)} onChange={() => setSelectedVideos((current) => current.includes(item.generatedVideoId) ? current.filter((id) => id !== item.generatedVideoId) : [...current, item.generatedVideoId])} />选择</label>
+                </div>
+                <div className="workspace-video-body">
+                  <div><strong>{item.title}</strong><span>{formatDuration(item.durationMs)}{item.score?.total != null ? ` · ${localPreselection ? "预筛 " : ""}${Math.round(item.score.total)} 分` : ""}</span></div>
+                  <small>{item.sourceStartMs != null ? `源时间码 ${formatDuration(item.sourceStartMs)}—${formatDuration(item.sourceEndMs)}` : "三段式语义混剪"}</small>
+                  {item.kind === "course" && <div className="workspace-score-breakdown">
+                    {item.score.selectionEngine === "bailian_editor" && <span>百炼主编</span>}
+                    {item.score.openingHook != null && <span>开头 {Math.round(item.score.openingHook * 100)}</span>}
+                    {item.score.standaloneValue != null && <span>价值 {Math.round(item.score.standaloneValue * 100)}</span>}
+                    {item.score.contentCompleteness != null && <span>完整 {Math.round(item.score.contentCompleteness * 100)}</span>}
+                    {item.score.diversity != null && <span>差异 {Math.round(item.score.diversity * 100)}</span>}
+                  </div>}
+                  {item.score.recommendationReason?.length ? <p className="workspace-recommendation-reason">推荐理由：{item.score.recommendationReason.join(" · ")}</p> : null}
+                  {item.errorMessage && <p>{item.errorMessage}</p>}
+                  <div className="workspace-card-actions">
+                    <button onClick={() => void queueSelected([item.generatedVideoId])}><Check size={14} />接受</button>
+                    <button onClick={() => void reject(item)}><ThumbsDown size={14} />淘汰</button>
+                    <button onClick={() => void regenerate(item)} disabled={busy === `regenerate-${item.generatedVideoId}`}>
+                      {busy === `regenerate-${item.generatedVideoId}` ? <LoaderCircle className="is-spinning" size={14} /> : <RotateCcw size={14} />}重生成
+                    </button>
+                    <button onClick={() => void apiForWindow()?.creative.reveal({ candidateId: item.generatedVideoId })}><FolderOpen size={14} />定位</button>
                   </div>
-                )}
-              </section>
-
-              <section className="workspace-panel">
-                <div className="workspace-section-head"><div><span>02</span><h2>候选与发布队列</h2></div></div>
-                <div className="workspace-tabs">
-                  <button className={activeView === "candidates" ? "is-active" : ""} onClick={() => setActiveView("candidates")}>候选方案 <span>{visibleCandidates.length}</span></button>
-                  <button className={activeView === "queue" ? "is-active" : ""} onClick={() => setActiveView("queue")}>发布队列 <span>{visibleQueue.length}</span></button>
                 </div>
-                {activeView === "candidates" ? (
-                  visibleCandidates.length ? <div className="workspace-candidate-list">
-                    {visibleCandidates.map((candidate, index) => (
-                      <article className="workspace-candidate-card" key={candidate.candidateId}>
-                        <div className="workspace-candidate-head">
-                          <div><span>方案 {String(index + 1).padStart(2, "0")}</span><strong>{durationText(candidate.durationMs)}</strong></div>
-                          <b>{Number(candidate.score?.total || 0).toFixed(1)} 分</b>
-                        </div>
-                        <div className="workspace-selection-list">
-                          {candidate.selections.map((selection) => <div key={selection.slotId}><span>{selection.slotName}</span><strong>{selection.omitted ? "已跳过" : assetNames.get(selection.assetId || "") || "素材已不可用"}</strong></div>)}
-                        </div>
-                        <div className="workspace-explanations">
-                          {(candidate.score?.explanations || ["暂无评分解释"]).map((item) => <span key={item}>{item}</span>)}
-                        </div>
-                        <div className="workspace-candidate-actions">
-                          <span className={`workspace-review-status is-${candidate.reviewStatus}`}>{candidate.reviewStatus === "approved" ? "已批准" : candidate.reviewStatus === "rejected" ? "已淘汰" : "待审核"}</span>
-                          <button onClick={() => void reviewCandidate(candidate.candidateId, "rejected")} disabled={Boolean(reviewingId) || candidate.reviewStatus === "rejected"}><ThumbsDown size={15} />淘汰</button>
-                          <button className="is-primary" onClick={() => void reviewCandidate(candidate.candidateId, "approved")} disabled={Boolean(reviewingId) || candidate.reviewStatus === "approved"}>{reviewingId === candidate.candidateId ? <LoaderCircle size={15} className="is-spinning" /> : <ThumbsUp size={15} />}批准</button>
-                        </div>
-                      </article>
-                    ))}
-                  </div> : <div className="workspace-empty"><Sparkles size={28} /><strong>还没有候选方案</strong><p>{projectId ? "保存最新配置后点击“生成候选”。" : "先保存一个项目，系统才会计算并生成真实组合。"}</p></div>
-                ) : (
-                  visibleQueue.length ? <div className="workspace-queue-list">
-                    {visibleQueue.map((item) => {
-                      const packages = packagesByQueue.get(item.queueItemId) || [];
-                      return <article key={item.queueItemId}><Clapperboard size={20} /><div><strong>{projects.find((project) => project.projectId === item.projectId)?.name || "混剪项目"}</strong><span>候选 {item.candidateId.slice(-8)} · {QUEUE_STATUS_LABELS[item.status]}</span>{item.errorMessage && <small>{item.errorMessage}</small>}{packages.map((exportPackage) => <div className="workspace-export-package" key={exportPackage.packageId}><span>{exportPackage.platforms.join(" / ")} · {exportPackage.packageId.slice(-8)}</span><button onClick={() => void accessExportPackage(exportPackage.packageId, "open")} disabled={Boolean(busyAction)}><FolderOpen size={14} />打开</button><button onClick={() => void accessExportPackage(exportPackage.packageId, "reveal")} disabled={Boolean(busyAction)}>定位</button></div>)}</div><div className="workspace-queue-state"><b>{QUEUE_STATUS_DETAILS[item.status]}</b>{(item.status === "queued" || item.status === "failed") && <button className="is-primary" onClick={() => void renderQueueItem(item)} disabled={Boolean(busyAction) || engine?.capabilities.mix_render !== true}>{busyAction === `render-${item.queueItemId}` ? <LoaderCircle size={14} className="is-spinning" /> : null}{item.status === "failed" ? "重试" : "生成成片包"}</button>}{item.status === "queued" && <button onClick={() => void cancelQueueItem(item.queueItemId)} disabled={Boolean(busyAction)}>取消排队</button>}</div></article>;
-                    })}
-                  </div> : <div className="workspace-empty"><Clapperboard size={28} /><strong>发布队列为空</strong><p>批准候选后会自动进入这里。当前仅排队，不会声称已经渲染成片。</p></div>
-                )}
-              </section>
-            </main>
+              </article>;
+              })}
+            </div> : <div className="workspace-empty workspace-empty-results"><Clapperboard size={30} /><strong>成片会出现在这里</strong><span>AI 会保留字幕、选段理由和源时间码供系统追溯。</span></div>}
+          </section>
+        </main>
 
-            <aside className="workspace-panel workspace-settings-panel">
-              <div className="workspace-section-head"><div><span>配置</span><h2>生成约束</h2></div></div>
-              <label className="workspace-switch"><span><strong>允许素材重复</strong><small>同一候选可跨槽位复用</small></span><input type="checkbox" checked={allowRepeatedAssets} onChange={(event) => { setAllowRepeatedAssets(event.target.checked); setCounts(null); }} disabled={controlsDisabled} /></label>
-              <label className="workspace-field"><span>总目标时长（秒）</span><input type="number" min="0" max="7200" value={totalDurationSeconds} onChange={(event) => { setTotalDurationSeconds(Number(event.target.value)); setCounts(null); }} disabled={controlsDisabled} /></label>
-              <label className="workspace-field"><span>输出数量</span><input type="number" min="1" max="500" value={outputCount} onChange={(event) => setOutputCount(Math.min(500, Math.max(1, Number(event.target.value))))} disabled={controlsDisabled} /></label>
-              <label className="workspace-field"><span>随机种子 seed</span><input value={seed} onChange={(event) => setSeed(event.target.value)} maxLength={200} disabled={controlsDisabled} /></label>
-              <fieldset className="workspace-weight-fields">
-                <legend>评分权重</legend>
-                {([ ["durationFit", "时长匹配"], ["diversity", "素材多样"], ["freshness", "素材新鲜"] ] as const).map(([key, label]) => <label key={key}><span>{label}</span><input type="number" min="0" max="1" step="0.05" value={scoreWeights[key]} onChange={(event) => setScoreWeights((current) => ({ ...current, [key]: Math.max(0, Number(event.target.value)) }))} disabled={controlsDisabled} /></label>)}
-              </fieldset>
-              <div className="workspace-combination-box">
-                <span>组合空间</span>
-                {counts ? <div><p><strong>{counts.rawCartesianCount.toLocaleString()}</strong> 理论组合</p><p><strong>{counts.countIsExact ? Number(counts.combinationCount || 0).toLocaleString() : "规模过大"}</strong>{counts.countStatus === "too_large" ? "候选按有界搜索生成" : "有效组合"}</p></div> : <p>保存项目后显示理论组合与有效组合数。</p>}
-              </div>
-              <button data-xiaoxi-mix-save className="workspace-button is-secondary is-wide" onClick={() => void saveProject()} disabled={controlsDisabled || !availableAssets.length}>{busyAction === "save" ? <LoaderCircle size={16} className="is-spinning" /> : <Save size={16} />}保存项目</button>
-              <button data-xiaoxi-mix-generate className="workspace-button is-primary is-wide" onClick={() => void generateCandidates()} disabled={controlsDisabled || !projectId}>{busyAction === "generate" ? <LoaderCircle size={16} className="is-spinning" /> : <Sparkles size={16} />}生成候选</button>
-              <p className="workspace-render-note"><CircleAlert size={15} />{engine?.capabilities.mix_render === true ? "成片只导出到本机，不会自动发布。" : "FFmpeg/ffprobe 未配置，当前构建不能生成成片包。"}</p>
-            </aside>
-          </div>
-        </>
-      )}
+        <aside className="workspace-sidebar">
+          <section className="workspace-panel workspace-key-panel">
+            <div className="workspace-sidebar-title"><KeyRound size={18} /><div><strong>百炼素材理解</strong><span>{keyStatus?.configured ? `已配置 ${keyStatus.maskedKey}` : "尚未配置"}</span></div></div>
+            <input type="password" value={keyInput} placeholder="sk-..." autoComplete="off" onChange={(event) => setKeyInput(event.target.value)} />
+            <button className="workspace-button is-primary" onClick={() => void saveKey()} disabled={!keyInput.trim() || busy === "key"}>{busy === "key" ? <LoaderCircle className="is-spinning" size={15} /> : <KeyRound size={15} />}加密保存</button>
+            <p>只上传压缩音频和抽取关键帧；原始视频留在本机。Key 不进入日志、数据库或导出包。</p>
+          </section>
+          <section className="workspace-panel workspace-workflow-panel">
+            <strong>自动处理流程</strong>
+            {["生成竖屏代理与 16kHz 音频", "转写、镜头切分与质量评分", "观点选段或三段式组合", "1080×1920 字幕成片"].map((text, index) => <div key={text}><span>{index + 1}</span>{text}</div>)}
+          </section>
+          <section className="workspace-panel workspace-output-panel">
+            <strong>固定输出规格</strong>
+            <span>9:16 · 1080×1920</span>
+            <span>H.264 / AAC · 30fps</span>
+            <span>优先 Intel QSV，自动回退软件编码</span>
+          </section>
+        </aside>
+      </div>
     </section>
   );
 }

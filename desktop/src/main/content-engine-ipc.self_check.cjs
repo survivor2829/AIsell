@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { constants: cryptoConstants, publicEncrypt } = require("node:crypto");
 
 const {
   CONTENT_ENGINE_CHANNELS,
@@ -72,6 +73,8 @@ const mixProjectId = "mix_project_44444444444444444444444444444444";
 const mixCandidateId = "mix_candidate_55555555555555555555555555555555";
 const publishQueueId = "publish_queue_66666666666666666666666666666666";
 const exportPackageId = "export_package_88888888888888888888888888888888";
+const generatedVideoId = "generated_video_99999999999999999999999999999999";
+const regenerationTaskId = "task_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 function mixProject() {
   return {
@@ -135,6 +138,23 @@ async function main() {
     const opened = [];
     let updateListener = null;
     let unsubscribed = false;
+    let storedBailianKey = "";
+    const bailianKeyStore = {
+      status: () => ({
+        configured: Boolean(storedBailianKey),
+        maskedKey: storedBailianKey ? "sk-***" : "",
+        secureStorageAvailable: true,
+        code: ""
+      }),
+      write: (value) => {
+        storedBailianKey = value;
+        return bailianKeyStore.status();
+      },
+      clear: () => {
+        storedBailianKey = "";
+        return bailianKeyStore.status();
+      }
+    };
     const dialogQueue = [
       { canceled: false, filePaths: [sourceFile] },
       { canceled: false, filePaths: [root] },
@@ -259,6 +279,15 @@ async function main() {
         calls.push(["setSetting", key, value]);
         return { key, value };
       },
+      regenerateVideo: async (candidateId) => {
+        calls.push(["regenerateVideo", candidateId]);
+        return {
+          task_id: regenerationTaskId,
+          generated_video_id: generatedVideoId,
+          status: "queued",
+          absolute_path: "C:\\must-not-leak\\candidate.mp4"
+        };
+      },
       createMixProject: async (name, slots, constraints) => {
         calls.push(["createMixProject", name, slots, constraints]);
         return mixProject();
@@ -325,6 +354,7 @@ async function main() {
 
     const registration = registerContentEngineIpc({
       controller,
+      bailianKeyStore,
       electron,
       getMainWindow: () => mainWindow,
       ipcMain
@@ -351,6 +381,33 @@ async function main() {
     const restartResult = await handlers.get(CONTENT_ENGINE_CHANNELS.restart)();
     assert.deepEqual(restartResult, statusResult);
     assert.deepEqual(calls.find((call) => call[0] === "restart"), ["restart"]);
+
+    const keyHandshake = await handlers.get(
+      CONTENT_ENGINE_CHANNELS.bailianKeyEncryption
+    )();
+    assert.equal(keyHandshake.ok, true);
+    const secret = "sk-fixture-must-not-cross-ipc";
+    const ciphertext = publicEncrypt(
+      {
+        key: keyHandshake.data.publicKey,
+        padding: cryptoConstants.RSA_PKCS1_OAEP_PADDING,
+        oaepHash: "sha256"
+      },
+      Buffer.from(secret, "utf8")
+    ).toString("base64");
+    const savedKey = await handlers.get(CONTENT_ENGINE_CHANNELS.saveBailianKey)(
+      {},
+      { keyId: keyHandshake.data.keyId, ciphertext }
+    );
+    assert.equal(savedKey.ok, true);
+    assert.equal(storedBailianKey, secret);
+    assert.equal(JSON.stringify({ keyId: keyHandshake.data.keyId, ciphertext }).includes(secret), false);
+    const replayedKey = await handlers.get(CONTENT_ENGINE_CHANNELS.saveBailianKey)(
+      {},
+      { keyId: keyHandshake.data.keyId, ciphertext }
+    );
+    assert.equal(replayedKey.ok, false);
+    assert.equal(replayedKey.code, "BAILIAN_KEY_ENCRYPTION_INVALID");
 
     const listed = await handlers.get(CONTENT_ENGINE_CHANNELS.listAssets)(
       {},
@@ -609,6 +666,52 @@ async function main() {
     assert.equal((await handlers.get(CONTENT_ENGINE_CHANNELS.revealExportPackage)({}, { packageId: exportPackageId })).ok, true);
     assert.equal(opened.includes(fs.realpathSync(exportDirectory)), true);
     assert.equal(shown.includes(fs.realpathSync(exportDirectory)), true);
+
+    for (const payload of [
+      { assetId: asset().asset_id, minDurationMs: 29_999, maxDurationMs: 90_000, count: 5, theme: "test" },
+      { assetId: asset().asset_id, minDurationMs: 30_000, maxDurationMs: 90_001, count: 5, theme: "test" }
+    ]) {
+      const invalidCourseDuration = await handlers.get(
+        CONTENT_ENGINE_CHANNELS.generateCourseCuts
+      )({}, payload);
+      assert.equal(invalidCourseDuration.ok, false);
+      assert.equal(invalidCourseDuration.code, "invalid_duration_range");
+    }
+    for (const payload of [
+      { assetId: asset().asset_id, minDurationMs: 30_000, maxDurationMs: 90_000, count: 5, theme: "test", subtitleFontSize: 35 },
+      { assetId: asset().asset_id, minDurationMs: 30_000, maxDurationMs: 90_000, count: 5, theme: "test", subtitleMarginBottom: 361 }
+    ]) {
+      const invalidSubtitle = await handlers.get(
+        CONTENT_ENGINE_CHANNELS.generateCourseCuts
+      )({}, payload);
+      assert.equal(invalidSubtitle.ok, false);
+      assert.match(invalidSubtitle.code, /^invalid_subtitle_/u);
+    }
+    const missingVoice = await handlers.get(
+      CONTENT_ENGINE_CHANNELS.generateMixBatch
+    )({}, {
+      assetIds: [asset().asset_id],
+      theme: "test",
+      targetCount: 30
+    });
+    assert.equal(missingVoice.ok, false);
+    assert.equal(missingVoice.code, "invalid_voice_asset");
+
+    const regeneration = await handlers.get(
+      CONTENT_ENGINE_CHANNELS.regenerateVideo
+    )({}, { candidateId: generatedVideoId });
+    assert.deepEqual(regeneration, {
+      ok: true,
+      data: {
+        taskId: regenerationTaskId,
+        generatedVideoId
+      }
+    });
+    assert.deepEqual(
+      calls.find((call) => call[0] === "regenerateVideo"),
+      ["regenerateVideo", generatedVideoId]
+    );
+    assert.equal(JSON.stringify(regeneration).includes("must-not-leak"), false);
 
     for (const [channel, payload] of [
       [CONTENT_ENGINE_CHANNELS.getMixProject, { projectId: "C:\\bad" }],

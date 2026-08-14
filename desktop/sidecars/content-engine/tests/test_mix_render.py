@@ -239,6 +239,40 @@ class MixRenderTests(unittest.TestCase):
         self.assertFalse(calls[0][1]["shell"])
         self.assertEqual("fixture-ffmpeg.exe", calls[0][0][0])
 
+    def test_video_normalization_honors_source_time_range(self):
+        calls = []
+
+        def runner(args, **options):
+            calls.append((args, options))
+            return type("Result", (), {"returncode": 0, "stderr": ""})()
+
+        renderer = FFmpegMixRenderer(
+            self.data_dir,
+            ffmpeg_path="fixture-ffmpeg.exe",
+            ffprobe_path="fixture-ffprobe.exe",
+            command_runner=runner,
+        )
+        source = self.data_dir / "source.mp4"
+        source.write_bytes(b"video")
+        output_dir = self.data_dir / "normalized"
+        output_dir.mkdir()
+        renderer._normalize_segment(
+            {
+                "path": str(source),
+                "media_kind": "video",
+                "has_audio": True,
+                "source_start_ms": 12_500,
+                "source_end_ms": 17_500,
+                "target_duration_ms": 5_000,
+            },
+            PLATFORM_PRESETS["wechat"],
+            output_dir,
+            0,
+        )
+        command = calls[0][0]
+        self.assertEqual("12.500", command[command.index("-ss") + 1])
+        self.assertEqual("5.000", command[command.index("-t") + 1])
+
 
 if __name__ == "__main__":
     unittest.main()

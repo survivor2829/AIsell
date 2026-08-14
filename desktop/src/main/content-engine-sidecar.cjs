@@ -46,11 +46,17 @@ function parseReady(value) {
 
 function createContentEngineSidecar(options = {}) {
   const environment = options.env || process.env;
+  const getProviderEnvironment = typeof options.getProviderEnvironment === "function"
+    ? options.getProviderEnvironment
+    : () => ({});
   const runtimePath = String(
     options.runtimePath
       ?? environment.XIAOXI_CONTENT_ENGINE_SIDECAR
       ?? ""
   ).trim();
+  const runtimeArgs = Array.isArray(options.runtimeArgs)
+    ? options.runtimeArgs.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
   const dataDir = String(options.dataDir || "").trim();
   const existsSync = options.existsSync || fs.existsSync;
   const mkdirSync = options.mkdirSync || fs.mkdirSync;
@@ -297,12 +303,16 @@ function createContentEngineSidecar(options = {}) {
     return new Promise((resolve) => {
       let child;
       try {
-        child = spawnProcess(runtimePath, ["--data-dir", dataDir], {
+        const providerEnvironment = getProviderEnvironment();
+        child = spawnProcess(runtimePath, [...runtimeArgs, "--data-dir", dataDir], {
           windowsHide: true,
           shell: false,
           stdio: ["pipe", "pipe", "pipe"],
           env: {
             ...environment,
+            ...(providerEnvironment && typeof providerEnvironment === "object"
+              ? providerEnvironment
+              : {}),
             PYTHONIOENCODING: "utf-8",
             PYTHONUTF8: "1"
           }
@@ -535,6 +545,10 @@ function createContentEngineSidecar(options = {}) {
   }
 
   return {
+    analyzeAssets: (assetIds, profile) => request("analyze_assets", {
+      asset_ids: assetIds,
+      profile
+    }),
     archiveAsset: (assetId) => request("archive_asset", { asset_id: assetId }),
     calculateMixCombinations: (projectId) => request(
       "calculate_mix_combinations",
@@ -568,6 +582,30 @@ function createContentEngineSidecar(options = {}) {
         seed: optionsForGeneration.seed
       }
     ),
+    generateCourseCuts: (assetId, optionsForGeneration = {}) => request(
+      "generate_course_cuts",
+      {
+        asset_id: assetId,
+        min_duration_ms: optionsForGeneration.minDurationMs,
+        max_duration_ms: optionsForGeneration.maxDurationMs,
+        count: optionsForGeneration.count,
+        theme: optionsForGeneration.theme,
+        subtitle_font_size: optionsForGeneration.subtitleFontSize,
+        subtitle_margin_bottom: optionsForGeneration.subtitleMarginBottom
+      }
+    ),
+    generateMixBatch: (assetIds, optionsForGeneration = {}) => request(
+      "generate_mix_batch",
+      {
+        asset_ids: assetIds,
+        theme: optionsForGeneration.theme,
+        target_count: optionsForGeneration.targetCount,
+        voice_asset_id: optionsForGeneration.voiceAssetId
+      }
+    ),
+    getCreativeProject: (projectId) => request("get_creative_project", {
+      project_id: projectId
+    }),
     importFiles: (paths) => request(
       "import_files",
       { paths },
@@ -583,6 +621,22 @@ function createContentEngineSidecar(options = {}) {
       limit: optionsForList.limit
     }),
     listFinished: (limit) => request("list_finished", { limit }),
+    listGeneratedVideos: (optionsForList = {}) => request(
+      "list_generated_videos",
+      {
+        project_id: optionsForList.projectId,
+        status: optionsForList.status,
+        limit: optionsForList.limit
+      }
+    ),
+    listMediaSegments: (optionsForList = {}) => request(
+      "list_media_segments",
+      {
+        asset_id: optionsForList.assetId,
+        role: optionsForList.role,
+        limit: optionsForList.limit
+      }
+    ),
     listMixCandidates: (optionsForList = {}) => request("list_mix_candidates", {
       project_id: optionsForList.projectId,
       review_status: optionsForList.reviewStatus,
@@ -605,6 +659,16 @@ function createContentEngineSidecar(options = {}) {
     pauseTask: (taskId) => request("update_task", {
       task_id: taskId,
       status: "paused"
+    }),
+    queueGeneratedVideos: (candidateIds, channel) => request(
+      "queue_generated_videos",
+      { candidate_ids: candidateIds, channel }
+    ),
+    regenerateVideo: (candidateId) => request("regenerate_video", {
+      candidate_id: candidateId
+    }),
+    rejectGeneratedVideo: (candidateId) => request("reject_generated_video", {
+      candidate_id: candidateId
     }),
     probeAsset: (assetId) => request("probe_asset", { asset_id: assetId }),
     probePending: (limit = 10) => request(
@@ -629,6 +693,10 @@ function createContentEngineSidecar(options = {}) {
     resolveFinishedPath: (finishedVideoId) => request(
       "resolve_finished_path",
       { finished_video_id: finishedVideoId }
+    ),
+    resolveGeneratedVideoPath: (candidateId, variant = "video") => request(
+      "resolve_generated_video_path",
+      { candidate_id: candidateId, variant }
     ),
     resolveExportPackagePath: (packageId) => request(
       "resolve_export_package_path",
@@ -666,6 +734,16 @@ function createContentEngineSidecar(options = {}) {
         );
         const refreshed = await request("list_tasks", { limit: 2_000 });
         return refreshed.items.find((item) => item?.task_id === taskId);
+      }
+      if ([
+        "creative_analysis",
+        "course_generation",
+        "mix_generation",
+        "creative_regeneration"
+      ].includes(
+        task.task_type
+      )) {
+        return request("resume_creative_task", { task_id: taskId });
       }
       const resumeStatus = [
         "queued",

@@ -4,9 +4,14 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import queue
+import threading
 from typing import Any, Iterable
 import uuid
 
+from .creative_analysis import FFmpegCreativeAnalyzer
+from .creative_domain import CREATIVE_TASK_TYPES, CreativeDomain
+from .creative_render import FFmpegCreativeRenderer
 from .database import Database
 from .errors import ContentEngineError
 from .identity import stable_full_sha256, stable_sampled_sha256
@@ -108,6 +113,55 @@ def _public_asset_row(row) -> dict[str, Any]:
     }
 
 
+class _CreativeJobWorker:
+    def __init__(self, data_dir: Path, *, analyzer, renderer):
+        self.data_dir = Path(data_dir)
+        self.analyzer = analyzer
+        self.renderer = renderer
+        self._queue: queue.Queue[str | None] = queue.Queue()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="xiaoxi-creative-jobs",
+            daemon=True,
+        )
+        self._started = False
+
+    def start(self) -> None:
+        if not self._started:
+            self._started = True
+            self._thread.start()
+
+    def enqueue(self, task_id: str) -> None:
+        self._queue.put(task_id)
+
+    def close(self) -> None:
+        if not self._started:
+            return
+        self._queue.put(None)
+        self._thread.join()
+
+    def _run(self) -> None:
+        database = Database(self.data_dir).open()
+        domain = CreativeDomain(
+            database,
+            new_id=_new_id,
+            now=utc_now,
+            analyzer=self.analyzer,
+            renderer=self.renderer,
+        )
+        try:
+            while True:
+                task_id = self._queue.get()
+                try:
+                    if task_id is None:
+                        return
+                    domain.run_task(task_id)
+                finally:
+                    self._queue.task_done()
+        finally:
+            database.close()
+
+
 class ContentEngineService:
     def __init__(
         self,
@@ -115,6 +169,9 @@ class ContentEngineService:
         *,
         media_probe: FFprobeAdapter | None = None,
         mix_renderer=None,
+        creative_analyzer=None,
+        creative_renderer=None,
+        start_background_jobs: bool = True,
     ):
         data_dir = Path(data_dir)
         self.media_probe = media_probe if media_probe is not None else FFprobeAdapter()
@@ -129,7 +186,28 @@ class ContentEngineService:
                 now=utc_now,
                 renderer=self.mix_renderer,
             )
+            self.creative_analyzer = creative_analyzer or FFmpegCreativeAnalyzer(data_dir)
+            self.creative_renderer = creative_renderer or FFmpegCreativeRenderer(data_dir)
+            self.creative_domain = CreativeDomain(
+                self.database,
+                new_id=_new_id,
+                now=utc_now,
+                analyzer=self.creative_analyzer,
+                renderer=self.creative_renderer,
+            )
+            self._creative_jobs = (
+                _CreativeJobWorker(
+                    data_dir,
+                    analyzer=self.creative_analyzer,
+                    renderer=self.creative_renderer,
+                )
+                if start_background_jobs
+                else None
+            )
             self._recover_inflight_tasks()
+            if self._creative_jobs is not None:
+                self._creative_jobs.start()
+                self._enqueue_recovered_creative_tasks()
         except Exception:
             self.instance_lock.release()
             raise
@@ -139,8 +217,62 @@ class ContentEngineService:
         return self.database._require_connection()
 
     def close(self) -> None:
+        if self._creative_jobs is not None:
+            self._pause_creative_tasks_for_shutdown()
+            self._creative_jobs.close()
         self.database.close()
         self.instance_lock.release()
+
+    def _pause_creative_tasks_for_shutdown(self) -> int:
+        now = utc_now()
+        placeholders = ",".join("?" for _ in CREATIVE_TASK_TYPES)
+        with self.database.transaction() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT payload_json FROM content_tasks
+                WHERE task_type IN ({placeholders})
+                  AND status IN ('queued', 'analyzing', 'rendering')
+                """,
+                tuple(CREATIVE_TASK_TYPES),
+            ).fetchall()
+            cursor = connection.execute(
+                f"""
+                UPDATE content_tasks
+                SET resume_from_status = status,
+                    status = 'paused',
+                    error_code = 'application_shutdown',
+                    error_message = '任务因应用关闭而暂停，可在下次启动后继续。',
+                    updated_at = ?
+                WHERE task_type IN ({placeholders})
+                  AND status IN ('queued', 'analyzing', 'rendering')
+                """,
+                (now, *CREATIVE_TASK_TYPES),
+            )
+            for row in rows:
+                payload = json.loads(row["payload_json"])
+                project_id = payload.get("project_id") if isinstance(payload, dict) else None
+                if project_id:
+                    connection.execute(
+                        "UPDATE creative_projects SET status = 'paused', updated_at = ? WHERE id = ?",
+                        (now, project_id),
+                    )
+        return cursor.rowcount
+
+    def _enqueue_recovered_creative_tasks(self) -> int:
+        if self._creative_jobs is None:
+            return 0
+        placeholders = ",".join("?" for _ in CREATIVE_TASK_TYPES)
+        rows = self.connection.execute(
+            f"""
+            SELECT id FROM content_tasks
+            WHERE task_type IN ({placeholders}) AND status = 'queued'
+            ORDER BY created_at, rowid
+            """,
+            tuple(CREATIVE_TASK_TYPES),
+        ).fetchall()
+        for row in rows:
+            self._creative_jobs.enqueue(row["id"])
+        return len(rows)
 
     def _recover_inflight_tasks(self) -> int:
         now = utc_now()
@@ -169,7 +301,116 @@ class ContentEngineService:
             "storage": "sqlite",
             "media_probe": "available" if self.media_probe.available else "unavailable",
             "mix_render": self.mix_renderer.capability,
+            "creative_analysis": self.creative_analyzer.capability,
+            "creative_render": self.creative_renderer.capability,
         }
+
+    def _enqueue_creative_task(self, task: dict[str, Any]) -> dict[str, Any]:
+        if self._creative_jobs is not None:
+            self._creative_jobs.enqueue(task["task_id"])
+        return task
+
+    def analyze_assets(
+        self, asset_ids: Iterable[str], profile: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        return self._enqueue_creative_task(
+            self.creative_domain.create_analysis_task(asset_ids, profile)
+        )
+
+    def list_media_segments(
+        self,
+        *,
+        asset_id: str | None = None,
+        role: str | None = None,
+        limit: int = 2_000,
+    ) -> dict[str, Any]:
+        return self.creative_domain.list_segments(
+            asset_id=asset_id, role=role, limit=limit
+        )
+
+    def generate_course_cuts(
+        self,
+        asset_id: str,
+        *,
+        min_duration_ms: int = 30_000,
+        max_duration_ms: int = 90_000,
+        count: int = 5,
+        theme: str = "培训现场价值",
+        subtitle_font_size: int = 48,
+        subtitle_margin_bottom: int = 170,
+    ) -> dict[str, Any]:
+        return self._enqueue_creative_task(
+            self.creative_domain.create_course_task(
+                asset_id,
+                min_duration_ms=min_duration_ms,
+                max_duration_ms=max_duration_ms,
+                count=count,
+                theme=theme,
+                subtitle_font_size=subtitle_font_size,
+                subtitle_margin_bottom=subtitle_margin_bottom,
+            )
+        )
+
+    def generate_mix_batch(
+        self,
+        asset_ids: Iterable[str],
+        *,
+        theme: str = "培训现场价值",
+        target_count: int = 30,
+        voice_asset_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._enqueue_creative_task(
+            self.creative_domain.create_mix_task(
+                asset_ids,
+                theme=theme,
+                target_count=target_count,
+                voice_asset_id=voice_asset_id,
+            )
+        )
+
+    def run_creative_task(self, task_id: str) -> dict[str, Any]:
+        return self.creative_domain.run_task(task_id)
+
+    def resume_creative_task(self, task_id: str) -> dict[str, Any]:
+        task = self._get_public_task(task_id)
+        if task["task_type"] not in CREATIVE_TASK_TYPES:
+            raise ContentEngineError("invalid_task_type", "This is not a creative task.")
+        if task["status"] != "paused":
+            raise ContentEngineError("invalid_transition", "Only paused tasks can resume.")
+        task = self.update_task(task_id, "queued")
+        return self._enqueue_creative_task(task)
+
+    def get_creative_project(self, project_id: str) -> dict[str, Any]:
+        return self.creative_domain.get_project(project_id)
+
+    def list_generated_videos(
+        self,
+        *,
+        project_id: str | None = None,
+        status: str | None = None,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        return self.creative_domain.list_generated(
+            project_id=project_id, status=status, limit=limit
+        )
+
+    def regenerate_video(self, candidate_id: str) -> dict[str, Any]:
+        return self._enqueue_creative_task(
+            self.creative_domain.create_regeneration_task(candidate_id)
+        )
+
+    def reject_generated_video(self, candidate_id: str) -> dict[str, Any]:
+        return self.creative_domain.reject_generated(candidate_id)
+
+    def queue_generated_videos(
+        self, candidate_ids: Iterable[str], channel: str
+    ) -> dict[str, Any]:
+        return self.creative_domain.queue_generated(candidate_ids, channel)
+
+    def resolve_generated_video_path(
+        self, candidate_id: str, variant: str = "video"
+    ) -> dict[str, Any]:
+        return self.creative_domain.resolve_generated_path(candidate_id, variant)
 
     def create_mix_project(
         self,
@@ -1053,7 +1294,8 @@ class ContentEngineService:
             raise ContentEngineError("invalid_status", "The task status is invalid.")
         row = self.connection.execute(
             """
-            SELECT status, resume_from_status, error_code, error_message
+            SELECT status, resume_from_status, error_code, error_message,
+                   task_type, payload_json
             FROM content_tasks WHERE id = ?
             """,
             (task_id,),
@@ -1134,6 +1376,18 @@ class ContentEngineService:
                 f"UPDATE content_tasks SET {', '.join(assignments)} WHERE id = ?",
                 parameters,
             )
+            if row["task_type"] in CREATIVE_TASK_TYPES and status in {
+                "queued",
+                "paused",
+                "cancelled",
+            }:
+                payload = json.loads(row["payload_json"])
+                project_id = payload.get("project_id") if isinstance(payload, dict) else None
+                if project_id:
+                    connection.execute(
+                        "UPDATE creative_projects SET status = ?, updated_at = ? WHERE id = ?",
+                        (status, utc_now(), project_id),
+                    )
         return self._get_public_task(task_id)
 
     def _get_public_task(self, task_id: str) -> dict[str, Any]:

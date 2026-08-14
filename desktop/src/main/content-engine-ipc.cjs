@@ -1,5 +1,11 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const {
+  constants: cryptoConstants,
+  generateKeyPairSync,
+  privateDecrypt,
+  randomBytes
+} = require("node:crypto");
 
 const CONTENT_ENGINE_CHANNELS = Object.freeze({
   status: "content-engine:status",
@@ -23,6 +29,22 @@ const CONTENT_ENGINE_CHANNELS = Object.freeze({
   settingsStatus: "content-engine:settings-status",
   chooseCacheDirectory: "content-engine:choose-cache-directory",
   updateCacheLimit: "content-engine:update-cache-limit",
+  bailianKeyStatus: "content-engine:bailian-key-status",
+  bailianKeyEncryption: "content-engine:bailian-key-encryption",
+  saveBailianKey: "content-engine:save-bailian-key",
+  deleteBailianKey: "content-engine:delete-bailian-key",
+  analyzeAssets: "content-engine:analyze-assets",
+  listMediaSegments: "content-engine:list-media-segments",
+  generateCourseCuts: "content-engine:generate-course-cuts",
+  generateMixBatch: "content-engine:generate-mix-batch",
+  getCreativeProject: "content-engine:get-creative-project",
+  listGeneratedVideos: "content-engine:list-generated-videos",
+  regenerateVideo: "content-engine:regenerate-video",
+  rejectGeneratedVideo: "content-engine:reject-generated-video",
+  queueGeneratedVideos: "content-engine:queue-generated-videos",
+  generatedMediaUrl: "content-engine:generated-media-url",
+  openGeneratedVideo: "content-engine:open-generated-video",
+  revealGeneratedVideo: "content-engine:reveal-generated-video",
   createMixProject: "content-engine:create-mix-project",
   updateMixProject: "content-engine:update-mix-project",
   getMixProject: "content-engine:get-mix-project",
@@ -142,6 +164,8 @@ const PUBLIC_ERRORS = Object.freeze({
   invalid_constraints: "混剪约束配置无效。",
   invalid_duration: "混剪时长参数无效。",
   invalid_duration_range: "混剪时长范围无效。",
+  invalid_subtitle_font_size: "字幕字号必须在 36～64 之间。",
+  invalid_subtitle_margin_bottom: "字幕底部距离必须在 120～360 之间。",
   invalid_score_weights: "混剪评分权重无效。",
   invalid_seed: "混剪随机种子无效。",
   invalid_review_status: "候选审核状态无效。",
@@ -159,6 +183,23 @@ const PUBLIC_ERRORS = Object.freeze({
   render_timeout: "成片渲染超时，请检查素材后重试。",
   render_failed: "成片渲染失败，请检查素材后重试。",
   task_not_completed: "只有已完成的任务才能登记成片。",
+  BAILIAN_API_KEY_MISSING: "请先保存百炼 API Key。",
+  BAILIAN_API_KEY_INVALID: "百炼 API Key 格式无效。",
+  BAILIAN_API_KEY_UNREADABLE: "已保存的百炼 API Key 无法读取，请重新保存。",
+  SECURE_STORAGE_UNAVAILABLE: "无法启用 Windows 账户加密存储。",
+  BAILIAN_KEY_ENCRYPTION_INVALID: "百炼 Key 的安全传输会话无效，请重试。",
+  creative_project_not_found: "没有找到这条创作项目。",
+  generated_video_not_found: "没有找到这条 AI 成片。",
+  generated_video_not_ready: "只有已完成的 AI 成片才能执行这项操作。",
+  generated_video_path_unavailable: "AI 成片文件尚未生成或已经不可用。",
+  analysis_required: "请先完成素材分析。",
+  transcript_required: "当前素材还没有可用转写，请配置百炼并重新分析。",
+  course_editor_unavailable: "百炼内容主编暂时不可用，本次未生成 AI 推荐，请稍后重试。",
+  insufficient_material: "素材不足，无法生成符合质量门槛的成片。",
+  invalid_generated_video_ids: "请至少选择一条成片。",
+  invalid_channel: "发布渠道无效。",
+  invalid_role: "素材片段角色无效。",
+  invalid_voice_asset: "老师原声素材必须包含在所选素材中。",
   method_not_found: "当前内容引擎版本不支持这项操作。",
   internal_error: "内容引擎暂时无法完成操作，请重试。"
 });
@@ -540,6 +581,74 @@ function publicExportPackage(value = {}) {
   });
 }
 
+function publicMediaSegment(value = {}) {
+  return camelizePublic({
+    segment_id: value.segment_id,
+    asset_id: value.asset_id,
+    start_ms: value.start_ms,
+    end_ms: value.end_ms,
+    transcript: value.transcript,
+    speaker: value.speaker,
+    role: value.role,
+    shot_type: value.shot_type,
+    tags: value.tags,
+    quality_score: value.quality_score,
+    provider: value.provider,
+    thumbnail_ready: value.thumbnail_ready
+  });
+}
+
+function publicCreativeProject(value = {}) {
+  return camelizePublic({
+    project_id: value.project_id,
+    mode: value.mode,
+    name: value.name,
+    theme: value.theme,
+    status: value.status,
+    required_roles: value.required_roles,
+    target_count: value.target_count,
+    generated_count: value.generated_count,
+    maximum_qualified_count: value.maximum_qualified_count,
+    count_is_exact: value.count_is_exact,
+    missing_roles: value.missing_roles,
+    created_at: value.created_at,
+    updated_at: value.updated_at
+  });
+}
+
+function publicGeneratedVideo(value = {}) {
+  return camelizePublic({
+    generated_video_id: value.generated_video_id,
+    project_id: value.project_id,
+    task_id: value.task_id,
+    kind: value.kind,
+    status: value.status,
+    generation: value.generation,
+    selection_signature: value.selection_signature,
+    title: value.title,
+    duration_ms: value.duration_ms,
+    recommended: value.recommended,
+    score: value.score,
+    source_start_ms: value.source_start_ms,
+    source_end_ms: value.source_end_ms,
+    preview_ready: value.preview_ready,
+    thumbnail_ready: value.thumbnail_ready,
+    error_code: value.error_code,
+    error_message: value.error_message,
+    created_at: value.created_at,
+    updated_at: value.updated_at
+  });
+}
+
+function publicBailianStatus(value = {}) {
+  return {
+    configured: value.configured === true,
+    maskedKey: safeText(value.maskedKey, 32),
+    secureStorageAvailable: value.secureStorageAvailable !== false,
+    code: safeText(value.code, 64) || ""
+  };
+}
+
 function publicDirectoryLabel(value) {
   const candidate = String(value || "");
   if (!candidate) return "";
@@ -594,6 +703,8 @@ function registerContentEngineIpc(options = {}) {
   const dialog = options.dialog || electron.dialog;
   const shell = options.shell || electron.shell;
   const controller = options.controller;
+  const bailianKeyStore = options.bailianKeyStore;
+  const bailianKeySessions = new Map();
   const getMainWindow = typeof options.getMainWindow === "function"
     ? options.getMainWindow
     : () => null;
@@ -857,6 +968,218 @@ function registerContentEngineIpc(options = {}) {
     await controller.setSetting("cache_limit_gb", limitGb);
     return { cacheLimitGb: limitGb };
   });
+  handle(CONTENT_ENGINE_CHANNELS.bailianKeyStatus, async () => {
+    if (!bailianKeyStore) invalid("CONTENT_ENGINE_CAPABILITY_UNAVAILABLE");
+    return publicBailianStatus(bailianKeyStore.status());
+  });
+  handle(CONTENT_ENGINE_CHANNELS.bailianKeyEncryption, async () => {
+    if (!bailianKeyStore) invalid("CONTENT_ENGINE_CAPABILITY_UNAVAILABLE");
+    const now = Date.now();
+    for (const [keyId, session] of bailianKeySessions) {
+      if (session.expiresAt <= now) bailianKeySessions.delete(keyId);
+    }
+    const { publicKey, privateKey } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    const keyId = randomBytes(16).toString("hex");
+    bailianKeySessions.set(keyId, { privateKey, expiresAt: now + 60_000 });
+    return { keyId, publicKey };
+  });
+  handle(CONTENT_ENGINE_CHANNELS.saveBailianKey, async (payload) => {
+    assertKeys(payload, new Set(["keyId", "ciphertext"]));
+    if (!bailianKeyStore) invalid("CONTENT_ENGINE_CAPABILITY_UNAVAILABLE");
+    const keyId = safeText(payload.keyId, 64);
+    const ciphertext = safeText(payload.ciphertext, 1_024);
+    const session = bailianKeySessions.get(keyId);
+    bailianKeySessions.delete(keyId);
+    if (!/^[a-f0-9]{32}$/.test(keyId)
+      || !/^[a-z0-9+/]+={0,2}$/i.test(ciphertext)
+      || !session
+      || session.expiresAt <= Date.now()) {
+      invalid("BAILIAN_KEY_ENCRYPTION_INVALID");
+    }
+    let plaintext;
+    try {
+      plaintext = privateDecrypt(
+        {
+          key: session.privateKey,
+          padding: cryptoConstants.RSA_PKCS1_OAEP_PADDING,
+          oaepHash: "sha256"
+        },
+        Buffer.from(ciphertext, "base64")
+      );
+      const status = publicBailianStatus(bailianKeyStore.write(plaintext.toString("utf8")));
+      await controller.restart();
+      return status;
+    } catch (error) {
+      if (error?.code?.startsWith?.("BAILIAN_") || error?.code === "SECURE_STORAGE_UNAVAILABLE") {
+        throw error;
+      }
+      invalid("BAILIAN_KEY_ENCRYPTION_INVALID");
+    } finally {
+      plaintext?.fill(0);
+    }
+  });
+  handle(CONTENT_ENGINE_CHANNELS.deleteBailianKey, async () => {
+    if (!bailianKeyStore) invalid("CONTENT_ENGINE_CAPABILITY_UNAVAILABLE");
+    const status = publicBailianStatus(bailianKeyStore.clear());
+    await controller.restart();
+    return status;
+  });
+  handle(CONTENT_ENGINE_CHANNELS.analyzeAssets, async (payload) => {
+    assertKeys(payload, new Set(["assetIds"]));
+    if (!Array.isArray(payload.assetIds) || payload.assetIds.length < 1 || payload.assetIds.length > 500) {
+      invalid("invalid_params");
+    }
+    const assetIds = [...new Set(payload.assetIds.map((item) => validateId(item, "asset")))];
+    return publicTask(await controller.analyzeAssets(assetIds, { provider: "bailian" }));
+  });
+  handle(CONTENT_ENGINE_CHANNELS.listMediaSegments, async (payload) => {
+    assertKeys(payload, new Set(["assetId", "role", "limit"]));
+    const role = payload.role == null ? undefined : String(payload.role);
+    if (role && !new Set(["hook", "process", "result", "general"]).has(role)) {
+      invalid("invalid_role");
+    }
+    const limit = payload.limit == null ? 2_000 : Number(payload.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 2_000) invalid("invalid_limit");
+    const result = await controller.listMediaSegments({
+      assetId: payload.assetId == null ? undefined : validateId(payload.assetId, "asset"),
+      role,
+      limit
+    });
+    return { items: (result?.items || []).map(publicMediaSegment) };
+  });
+  handle(CONTENT_ENGINE_CHANNELS.generateCourseCuts, async (payload) => {
+    assertKeys(payload, new Set([
+      "assetId", "minDurationMs", "maxDurationMs", "count", "theme",
+      "subtitleFontSize", "subtitleMarginBottom"
+    ]));
+    const minimum = Number(payload.minDurationMs ?? 30_000);
+    const maximum = Number(payload.maxDurationMs ?? 90_000);
+    const count = Number(payload.count ?? 5);
+    if (!Number.isInteger(minimum) || !Number.isInteger(maximum)
+      || minimum < 30_000 || maximum > 90_000 || minimum > maximum) {
+      invalid("invalid_duration_range");
+    }
+    if (!Number.isInteger(count) || count < 1 || count > 20) invalid("invalid_limit");
+    const subtitleFontSize = Number(payload.subtitleFontSize ?? 48);
+    const subtitleMarginBottom = Number(payload.subtitleMarginBottom ?? 170);
+    if (!Number.isInteger(subtitleFontSize) || subtitleFontSize < 36 || subtitleFontSize > 64) {
+      invalid("invalid_subtitle_font_size");
+    }
+    if (!Number.isInteger(subtitleMarginBottom)
+      || subtitleMarginBottom < 120 || subtitleMarginBottom > 360) {
+      invalid("invalid_subtitle_margin_bottom");
+    }
+    const result = await controller.generateCourseCuts(
+      validateId(payload.assetId, "asset"),
+      {
+        minDurationMs: minimum,
+        maxDurationMs: maximum,
+        count,
+        theme: validateText(payload.theme ?? "培训现场价值", 100, "invalid_params"),
+        subtitleFontSize,
+        subtitleMarginBottom
+      }
+    );
+    return camelizePublic({ task_id: result?.task_id, project_id: result?.project_id });
+  });
+  handle(CONTENT_ENGINE_CHANNELS.generateMixBatch, async (payload) => {
+    assertKeys(payload, new Set(["assetIds", "theme", "targetCount", "voiceAssetId"]));
+    if (!Array.isArray(payload.assetIds) || payload.assetIds.length < 1 || payload.assetIds.length > 500) {
+      invalid("invalid_params");
+    }
+    const targetCount = Number(payload.targetCount ?? 30);
+    if (!Number.isInteger(targetCount) || targetCount < 1 || targetCount > 300) {
+      invalid("invalid_limit");
+    }
+    const assetIds = [...new Set(payload.assetIds.map((item) => validateId(item, "asset")))];
+    const voiceAssetId = payload.voiceAssetId == null
+      ? null
+      : validateId(payload.voiceAssetId, "asset");
+    if (!voiceAssetId || !assetIds.includes(voiceAssetId)) invalid("invalid_voice_asset");
+    const result = await controller.generateMixBatch(assetIds, {
+      theme: validateText(payload.theme ?? "培训现场价值", 100, "invalid_params"),
+      targetCount,
+      voiceAssetId
+    });
+    return camelizePublic({ task_id: result?.task_id, project_id: result?.project_id });
+  });
+  handle(CONTENT_ENGINE_CHANNELS.getCreativeProject, async (payload) => {
+    assertKeys(payload, new Set(["projectId"]));
+    return publicCreativeProject(await controller.getCreativeProject(
+      validateId(payload.projectId, "creative_project")
+    ));
+  });
+  handle(CONTENT_ENGINE_CHANNELS.listGeneratedVideos, async (payload) => {
+    assertKeys(payload, new Set(["projectId", "status", "limit"]));
+    const result = await controller.listGeneratedVideos({
+      projectId: payload.projectId == null
+        ? undefined
+        : validateId(payload.projectId, "creative_project"),
+      status: payload.status == null ? undefined : String(payload.status),
+      limit: validateLimit(payload.limit, 500)
+    });
+    return { items: (result?.items || []).map(publicGeneratedVideo) };
+  });
+  handle(CONTENT_ENGINE_CHANNELS.regenerateVideo, async (payload) => {
+    assertKeys(payload, new Set(["candidateId"]));
+    const result = await controller.regenerateVideo(
+      validateId(payload.candidateId, "generated_video")
+    );
+    return camelizePublic({
+      task_id: result?.task_id,
+      generated_video_id: result?.generated_video_id
+    });
+  });
+  handle(CONTENT_ENGINE_CHANNELS.rejectGeneratedVideo, async (payload) => {
+    assertKeys(payload, new Set(["candidateId"]));
+    return publicGeneratedVideo(await controller.rejectGeneratedVideo(
+      validateId(payload.candidateId, "generated_video")
+    ));
+  });
+  handle(CONTENT_ENGINE_CHANNELS.queueGeneratedVideos, async (payload) => {
+    assertKeys(payload, new Set(["candidateIds", "channel"]));
+    if (!Array.isArray(payload.candidateIds) || payload.candidateIds.length < 1 || payload.candidateIds.length > 300) {
+      invalid("invalid_generated_video_ids");
+    }
+    const channel = String(payload.channel || "internal");
+    if (!new Set(["internal", "wechat", "douyin", "kuaishou"]).has(channel)) {
+      invalid("invalid_channel");
+    }
+    const result = await controller.queueGeneratedVideos(
+      [...new Set(payload.candidateIds.map((item) => validateId(item, "generated_video")))],
+      channel
+    );
+    return camelizePublic(result);
+  });
+  handle(CONTENT_ENGINE_CHANNELS.generatedMediaUrl, async (payload) => {
+    assertKeys(payload, new Set(["candidateId", "variant"]));
+    const candidateId = validateId(payload.candidateId, "generated_video");
+    const variant = payload.variant === "thumbnail" ? "thumbnail" : "video";
+    await controller.resolveGeneratedVideoPath(candidateId, variant);
+    return { url: `xiaoxi-content://generated/${candidateId}/${variant}` };
+  });
+  for (const [channel, operation] of [
+    [CONTENT_ENGINE_CHANNELS.openGeneratedVideo, "open"],
+    [CONTENT_ENGINE_CHANNELS.revealGeneratedVideo, "reveal"]
+  ]) {
+    handle(channel, async (payload) => {
+      assertKeys(payload, new Set(["candidateId"]));
+      const candidateId = validateId(payload.candidateId, "generated_video");
+      const result = await controller.resolveGeneratedVideoPath(candidateId, "video");
+      if (result?.generated_video_id !== candidateId) invalid("CONTENT_ENGINE_RESPONSE_INVALID");
+      const trustedPath = resolvedAbsolutePath(result);
+      if (operation === "open") {
+        const shellError = await shell.openPath(trustedPath);
+        if (shellError) invalid("CONTENT_ENGINE_OPEN_FAILED");
+      } else {
+        shell.showItemInFolder(trustedPath);
+      }
+      return { candidateId };
+    });
+  }
   handle(CONTENT_ENGINE_CHANNELS.createMixProject, async (payload) => {
     assertKeys(payload, new Set(["name", "slots", "constraints"]));
     return publicMixProject(await controller.createMixProject(

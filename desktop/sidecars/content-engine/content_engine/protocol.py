@@ -89,6 +89,52 @@ METHODS = {
     "set_setting": lambda service, params: service.set_setting(
         params.get("key"), params.get("value")
     ),
+    "analyze_assets": lambda service, params: service.analyze_assets(
+        params.get("asset_ids"), params.get("profile")
+    ),
+    "list_media_segments": lambda service, params: service.list_media_segments(
+        asset_id=params.get("asset_id"),
+        role=params.get("role"),
+        limit=params.get("limit", 2_000),
+    ),
+    "generate_course_cuts": lambda service, params: service.generate_course_cuts(
+        params.get("asset_id"),
+        min_duration_ms=params.get("min_duration_ms", 30_000),
+        max_duration_ms=params.get("max_duration_ms", 90_000),
+        count=params.get("count", 5),
+        theme=params.get("theme", "培训现场价值"),
+        subtitle_font_size=params.get("subtitle_font_size", 48),
+        subtitle_margin_bottom=params.get("subtitle_margin_bottom", 170),
+    ),
+    "generate_mix_batch": lambda service, params: service.generate_mix_batch(
+        params.get("asset_ids"),
+        theme=params.get("theme", "培训现场价值"),
+        target_count=params.get("target_count", 30),
+        voice_asset_id=params.get("voice_asset_id"),
+    ),
+    "resume_creative_task": lambda service, params: service.resume_creative_task(
+        params.get("task_id")
+    ),
+    "get_creative_project": lambda service, params: service.get_creative_project(
+        params.get("project_id")
+    ),
+    "list_generated_videos": lambda service, params: service.list_generated_videos(
+        project_id=params.get("project_id"),
+        status=params.get("status"),
+        limit=params.get("limit", 500),
+    ),
+    "regenerate_video": lambda service, params: service.regenerate_video(
+        params.get("candidate_id")
+    ),
+    "reject_generated_video": lambda service, params: service.reject_generated_video(
+        params.get("candidate_id")
+    ),
+    "queue_generated_videos": lambda service, params: service.queue_generated_videos(
+        params.get("candidate_ids"), params.get("channel")
+    ),
+    "resolve_generated_video_path": lambda service, params: service.resolve_generated_video_path(
+        params.get("candidate_id"), params.get("variant", "video")
+    ),
     "create_mix_project": lambda service, params: service.create_mix_project(
         params.get("name"), params.get("slots"), params.get("constraints")
     ),
@@ -181,6 +227,15 @@ def serve_jsonl(
                 "mix_candidate_generation": True,
                 "publish_queue": True,
                 "mix_render": bool(service.mix_renderer.capability["available"]),
+                "creative_analysis": bool(
+                    service.creative_analyzer.capability["available"]
+                ),
+                "creative_cloud_analysis": bool(
+                    service.creative_analyzer.capability["cloud_configured"]
+                ),
+                "creative_render": bool(
+                    service.creative_renderer.capability["available"]
+                ),
             },
         },
     )

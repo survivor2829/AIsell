@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, safeStorage, screen, shell } = require("electron");
+const { app, BrowserWindow, dialog, net, protocol, safeStorage, screen, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 const productBrand = require("../../product-brand.json");
@@ -29,6 +29,11 @@ const {
 const { registerProductDetailIpc } = require("./product-detail-ipc.cjs");
 const { createContentEngineSidecar } = require("./content-engine-sidecar.cjs");
 const { registerContentEngineIpc } = require("./content-engine-ipc.cjs");
+const { createBailianApiKeyStore } = require("./bailian-api-key.cjs");
+const {
+  registerContentMediaProtocol,
+  registerContentMediaScheme
+} = require("./content-media-protocol.cjs");
 const {
   resolveDefaultDevelopmentSidecarRuntime
 } = require("./development-sidecar-runtime.cjs");
@@ -48,6 +53,8 @@ let quitCleanupStarted = false;
 let quitCleanupComplete = false;
 
 const PRODUCT_DETAIL_PROVIDER_RESTART_STATES = new Set(["ready", "starting", "failed"]);
+
+registerContentMediaScheme(protocol);
 
 function restartProductDetailForProviderChange() {
   const state = productDetailController?.status().state;
@@ -79,6 +86,12 @@ function contentEngineRuntimePath() {
   const configuredPath = String(process.env.XIAOXI_CONTENT_ENGINE_SIDECAR || "").trim();
   if (configuredPath) return configuredPath;
   return resolveDefaultDevelopmentSidecarRuntime("content-engine");
+}
+
+function contentEngineRuntimeArgs() {
+  if (app.isPackaged) return [];
+  const entryPath = String(process.env.XIAOXI_CONTENT_ENGINE_SIDECAR_ENTRY || "").trim();
+  return entryPath ? [entryPath] : [];
 }
 
 function isAllowedProductDetailFrameNavigation(targetUrl) {
@@ -214,6 +227,10 @@ if (!gotSingleInstanceLock) {
     });
     const coordinator = createRuntimeCoordinator(runtime.rootDir);
     const deepSeekKeyStore = createDeepSeekKeyStore({ rootDir: runtime.rootDir, safeStorage });
+    const bailianKeyStore = createBailianApiKeyStore({
+      rootDir: path.join(app.getPath("userData"), "content-engine"),
+      safeStorage
+    });
     const deepSeekClient = createDeepSeekClient({ keyStore: deepSeekKeyStore });
     const aiExpertStore = createAiExpertStore({ rootDir: runtime.rootDir });
     const productDetailDataDir = path.join(app.getPath("userData"), "product-detail");
@@ -291,10 +308,20 @@ if (!gotSingleInstanceLock) {
     });
     contentEngineController = createContentEngineSidecar({
       runtimePath: contentEngineRuntimePath(),
-      dataDir: path.join(app.getPath("userData"), "content-engine")
+      runtimeArgs: contentEngineRuntimeArgs(),
+      dataDir: path.join(app.getPath("userData"), "content-engine"),
+      getProviderEnvironment: () => bailianKeyStore.status().configured
+        ? { DASHSCOPE_API_KEY: bailianKeyStore.read() }
+        : {}
+    });
+    registerContentMediaProtocol({
+      protocol,
+      net,
+      controller: contentEngineController
     });
     contentEngineIpcRegistration = registerContentEngineIpc({
       controller: contentEngineController,
+      bailianKeyStore,
       dialog,
       shell,
       getMainWindow: () => mainWindow

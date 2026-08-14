@@ -1,4 +1,8 @@
-const { randomUUID } = require("node:crypto");
+const {
+  constants: cryptoConstants,
+  publicEncrypt,
+  randomUUID
+} = require("node:crypto");
 const { PRODUCT_DETAIL_CHANNELS } = require("./product-detail-ipc.cjs");
 
 function createTrustedClickGate(selector) {
@@ -196,12 +200,137 @@ function createContentEngineApi(ipcRenderer) {
     },
     settings: {
       status: () => ipcRenderer.invoke("content-engine:settings-status"),
+      bailianKeyStatus: () => ipcRenderer.invoke(
+        "content-engine:bailian-key-status"
+      ),
+      saveBailianKey: async (payload) => {
+        const handshake = await ipcRenderer.invoke(
+          "content-engine:bailian-key-encryption"
+        );
+        if (!handshake?.ok || !handshake.data?.keyId || !handshake.data?.publicKey) {
+          return handshake;
+        }
+        try {
+          const ciphertext = publicEncrypt(
+            {
+              key: handshake.data.publicKey,
+              padding: cryptoConstants.RSA_PKCS1_OAEP_PADDING,
+              oaepHash: "sha256"
+            },
+            Buffer.from(String(payload?.apiKey || ""), "utf8")
+          ).toString("base64");
+          return ipcRenderer.invoke("content-engine:save-bailian-key", {
+            keyId: String(handshake.data.keyId),
+            ciphertext
+          });
+        } catch {
+          return {
+            ok: false,
+            code: "BAILIAN_KEY_ENCRYPTION_INVALID",
+            error: "百炼 Key 安全传输失败，请重试。"
+          };
+        }
+      },
+      deleteBailianKey: () => ipcRenderer.invoke(
+        "content-engine:delete-bailian-key"
+      ),
       chooseCacheDirectory: () => ipcRenderer.invoke(
         "content-engine:choose-cache-directory"
       ),
       updateCacheLimit: (payload) => ipcRenderer.invoke(
         "content-engine:update-cache-limit",
         { limitGb: Number(payload?.limitGb || 0) }
+      )
+    },
+    creative: {
+      analyzeAssets: (payload) => ipcRenderer.invoke(
+        "content-engine:analyze-assets",
+        {
+          assetIds: Array.isArray(payload?.assetIds)
+            ? payload.assetIds.map((item) => String(item || ""))
+            : []
+        }
+      ),
+      listSegments: (payload) => ipcRenderer.invoke(
+        "content-engine:list-media-segments",
+        {
+          ...(payload?.assetId == null
+            ? {}
+            : { assetId: String(payload.assetId || "") }),
+          ...(payload?.role == null ? {} : { role: String(payload.role || "") }),
+          limit: Number(payload?.limit || 2_000)
+        }
+      ),
+      generateCourseCuts: (payload) => ipcRenderer.invoke(
+        "content-engine:generate-course-cuts",
+        {
+          assetId: String(payload?.assetId || ""),
+          minDurationMs: Number(payload?.minDurationMs || 30_000),
+          maxDurationMs: Number(payload?.maxDurationMs || 90_000),
+          count: Number(payload?.count || 5),
+          theme: String(payload?.theme || "培训现场价值"),
+          subtitleFontSize: Number(payload?.subtitleFontSize || 48),
+          subtitleMarginBottom: Number(payload?.subtitleMarginBottom || 170)
+        }
+      ),
+      generateMixBatch: (payload) => ipcRenderer.invoke(
+        "content-engine:generate-mix-batch",
+        {
+          assetIds: Array.isArray(payload?.assetIds)
+            ? payload.assetIds.map((item) => String(item || ""))
+            : [],
+          theme: String(payload?.theme || "培训现场价值"),
+          targetCount: Number(payload?.targetCount || 30),
+          ...(payload?.voiceAssetId == null
+            ? {}
+            : { voiceAssetId: String(payload.voiceAssetId || "") })
+        }
+      ),
+      getProject: (payload) => ipcRenderer.invoke(
+        "content-engine:get-creative-project",
+        { projectId: String(payload?.projectId || "") }
+      ),
+      listGenerated: (payload) => ipcRenderer.invoke(
+        "content-engine:list-generated-videos",
+        {
+          ...(payload?.projectId == null
+            ? {}
+            : { projectId: String(payload.projectId || "") }),
+          ...(payload?.status == null ? {} : { status: String(payload.status || "") }),
+          limit: Number(payload?.limit || 500)
+        }
+      ),
+      regenerate: (payload) => ipcRenderer.invoke(
+        "content-engine:regenerate-video",
+        { candidateId: String(payload?.candidateId || "") }
+      ),
+      reject: (payload) => ipcRenderer.invoke(
+        "content-engine:reject-generated-video",
+        { candidateId: String(payload?.candidateId || "") }
+      ),
+      queue: (payload) => ipcRenderer.invoke(
+        "content-engine:queue-generated-videos",
+        {
+          candidateIds: Array.isArray(payload?.candidateIds)
+            ? payload.candidateIds.map((item) => String(item || ""))
+            : [],
+          channel: String(payload?.channel || "internal")
+        }
+      ),
+      mediaUrl: (payload) => ipcRenderer.invoke(
+        "content-engine:generated-media-url",
+        {
+          candidateId: String(payload?.candidateId || ""),
+          variant: payload?.variant === "thumbnail" ? "thumbnail" : "video"
+        }
+      ),
+      open: (payload) => ipcRenderer.invoke(
+        "content-engine:open-generated-video",
+        { candidateId: String(payload?.candidateId || "") }
+      ),
+      reveal: (payload) => ipcRenderer.invoke(
+        "content-engine:reveal-generated-video",
+        { candidateId: String(payload?.candidateId || "") }
       )
     },
     mix: {
