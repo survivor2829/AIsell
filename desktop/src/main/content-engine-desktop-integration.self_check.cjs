@@ -129,7 +129,7 @@ async function assertPreloadContract() {
   api.settings.deleteBailianKey();
   api.creative.analyzeAssets({ assetIds: ["asset_one"], path: "C:\\bad" });
   api.creative.listSegments({ assetId: "asset_one", role: "hook", limit: 20, path: "C:\\bad" });
-  api.creative.generateCourseCuts({ assetId: "asset_one", minDurationMs: 30_000, maxDurationMs: 90_000, count: 5, theme: "培训现场价值", subtitleFontSize: 42, subtitleMarginBottom: 140, path: "C:\\bad" });
+  api.creative.generateCourseCuts({ assetId: "asset_one", minDurationMs: 30_000, maxDurationMs: 90_000, count: 5, theme: "培训现场价值", subtitleFontSize: 42, subtitleMarginBottom: 140, experimentMode: "supoclip_bailian_v1", subtitlePreset: "knowledge_course", path: "C:\\bad" });
   api.creative.generateMixBatch({ assetIds: ["asset_one", "asset_two"], theme: "培训现场价值", targetCount: 30, voiceAssetId: "asset_one", path: "C:\\bad" });
   api.creative.getProject({ projectId: "creative_project_one", path: "C:\\bad" });
   api.creative.listGenerated({ projectId: "creative_project_one", limit: 30, path: "C:\\bad" });
@@ -246,7 +246,7 @@ async function assertPreloadContract() {
     },
     {
       channel: "content-engine:generate-course-cuts",
-      payload: { assetId: "asset_one", minDurationMs: 30_000, maxDurationMs: 90_000, count: 5, theme: "培训现场价值", subtitleFontSize: 42, subtitleMarginBottom: 140 }
+      payload: { assetId: "asset_one", minDurationMs: 30_000, maxDurationMs: 90_000, count: 5, theme: "培训现场价值", subtitleFontSize: 42, subtitleMarginBottom: 140, experimentMode: "supoclip_bailian_v1", subtitlePreset: "knowledge_course" }
     },
     {
       channel: "content-engine:generate-mix-batch",

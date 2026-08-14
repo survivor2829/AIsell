@@ -17,6 +17,7 @@ for (const contract of [
   /library\.probePending\(/u,
   /tasks\[action\]\(/u,
   /长课程精剪/u,
+  /百炼 × SupoClip 对照实验/u,
   /AI 批量混剪/u,
   /培训现场价值/u,
   /开场—过程—结果/u,
@@ -24,6 +25,17 @@ for (const contract of [
   /本地预筛/u,
   /字幕字号/u,
   /字幕位置/u,
+  /知识课程/u,
+  /活力口播/u,
+  /复用已完成的分析缓存/u,
+  /只增加一次百炼文本主编调用/u,
+  /传播总分/u,
+  /开场吸引/u,
+  /持续观看/u,
+  /收藏转发/u,
+  /实验推荐/u,
+  /experimentMode/u,
+  /subtitlePreset/u,
   /recommendationReason/u,
   /standaloneValue/u,
   /接受/u,
@@ -55,6 +67,7 @@ const loadVideosSource = source.slice(
 );
 assert.doesNotMatch(loadVideosSource, /creative\.mediaUrl/u);
 assert.match(styles, /workspace-mode-grid/u);
+assert.match(styles, /grid-template-columns: repeat\(3,/u);
 assert.match(styles, /workspace-video-grid/u);
 assert.match(styles, /@media \(max-width: 850px\)/u);
 assert.doesNotMatch(source, /mix\.createProject\(/u);

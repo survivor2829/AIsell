@@ -970,6 +970,27 @@ class CreativeWorkbenchTests(unittest.TestCase):
         }
         self.assertTrue(expected.issubset(METHODS))
 
+    def test_protocol_forwards_course_experiment_contract(self):
+        captured = {}
+
+        class FakeService:
+            def generate_course_cuts(self, asset_id, **options):
+                captured.update({"asset_id": asset_id, **options})
+                return {"task_id": "task_fixture"}
+
+        result = METHODS["generate_course_cuts"](
+            FakeService(),
+            {
+                "asset_id": "asset_fixture",
+                "experiment_mode": "supoclip_bailian_v1",
+                "subtitle_preset": "energetic_talking",
+            },
+        )
+
+        self.assertEqual({"task_id": "task_fixture"}, result)
+        self.assertEqual("supoclip_bailian_v1", captured["experiment_mode"])
+        self.assertEqual("energetic_talking", captured["subtitle_preset"])
+
 
 class CreativeMigrationTests(unittest.TestCase):
     def test_v6_migration_is_idempotent(self):

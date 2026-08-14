@@ -591,7 +591,9 @@ function createContentEngineSidecar(options = {}) {
         count: optionsForGeneration.count,
         theme: optionsForGeneration.theme,
         subtitle_font_size: optionsForGeneration.subtitleFontSize,
-        subtitle_margin_bottom: optionsForGeneration.subtitleMarginBottom
+        subtitle_margin_bottom: optionsForGeneration.subtitleMarginBottom,
+        experiment_mode: optionsForGeneration.experimentMode,
+        subtitle_preset: optionsForGeneration.subtitlePreset
       }
     ),
     generateMixBatch: (assetIds, optionsForGeneration = {}) => request(

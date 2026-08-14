@@ -105,6 +105,8 @@ METHODS = {
         theme=params.get("theme", "培训现场价值"),
         subtitle_font_size=params.get("subtitle_font_size", 48),
         subtitle_margin_bottom=params.get("subtitle_margin_bottom", 170),
+        experiment_mode=params.get("experiment_mode", "standard"),
+        subtitle_preset=params.get("subtitle_preset", "dynamic_clean"),
     ),
     "generate_mix_batch": lambda service, params: service.generate_mix_batch(
         params.get("asset_ids"),

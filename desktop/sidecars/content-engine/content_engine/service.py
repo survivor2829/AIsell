@@ -338,6 +338,8 @@ class ContentEngineService:
         theme: str = "培训现场价值",
         subtitle_font_size: int = 48,
         subtitle_margin_bottom: int = 170,
+        experiment_mode: str = "standard",
+        subtitle_preset: str = "dynamic_clean",
     ) -> dict[str, Any]:
         return self._enqueue_creative_task(
             self.creative_domain.create_course_task(
@@ -348,6 +350,8 @@ class ContentEngineService:
                 theme=theme,
                 subtitle_font_size=subtitle_font_size,
                 subtitle_margin_bottom=subtitle_margin_bottom,
+                experiment_mode=experiment_mode,
+                subtitle_preset=subtitle_preset,
             )
         )
 

@@ -166,6 +166,8 @@ const PUBLIC_ERRORS = Object.freeze({
   invalid_duration_range: "混剪时长范围无效。",
   invalid_subtitle_font_size: "字幕字号必须在 36～64 之间。",
   invalid_subtitle_margin_bottom: "字幕底部距离必须在 120～360 之间。",
+  invalid_experiment_mode: "课程剪辑实验模式无效。",
+  invalid_subtitle_preset: "动态字幕模板与当前剪辑模式不匹配。",
   invalid_score_weights: "混剪评分权重无效。",
   invalid_seed: "混剪随机种子无效。",
   invalid_review_status: "候选审核状态无效。",
@@ -1053,7 +1055,7 @@ function registerContentEngineIpc(options = {}) {
   handle(CONTENT_ENGINE_CHANNELS.generateCourseCuts, async (payload) => {
     assertKeys(payload, new Set([
       "assetId", "minDurationMs", "maxDurationMs", "count", "theme",
-      "subtitleFontSize", "subtitleMarginBottom"
+      "subtitleFontSize", "subtitleMarginBottom", "experimentMode", "subtitlePreset"
     ]));
     const minimum = Number(payload.minDurationMs ?? 30_000);
     const maximum = Number(payload.maxDurationMs ?? 90_000);
@@ -1072,6 +1074,15 @@ function registerContentEngineIpc(options = {}) {
       || subtitleMarginBottom < 120 || subtitleMarginBottom > 360) {
       invalid("invalid_subtitle_margin_bottom");
     }
+    const experimentMode = String(payload.experimentMode ?? "standard");
+    const subtitlePreset = String(payload.subtitlePreset ?? "dynamic_clean");
+    if (!new Set(["standard", "supoclip_bailian_v1"]).has(experimentMode)) {
+      invalid("invalid_experiment_mode");
+    }
+    const expectedPresets = experimentMode === "standard"
+      ? new Set(["dynamic_clean"])
+      : new Set(["knowledge_course", "energetic_talking"]);
+    if (!expectedPresets.has(subtitlePreset)) invalid("invalid_subtitle_preset");
     const result = await controller.generateCourseCuts(
       validateId(payload.assetId, "asset"),
       {
@@ -1080,7 +1091,9 @@ function registerContentEngineIpc(options = {}) {
         count,
         theme: validateText(payload.theme ?? "培训现场价值", 100, "invalid_params"),
         subtitleFontSize,
-        subtitleMarginBottom
+        subtitleMarginBottom,
+        experimentMode,
+        subtitlePreset
       }
     );
     return camelizePublic({ task_id: result?.task_id, project_id: result?.project_id });

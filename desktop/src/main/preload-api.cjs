@@ -270,7 +270,9 @@ function createContentEngineApi(ipcRenderer) {
           count: Number(payload?.count || 5),
           theme: String(payload?.theme || "培训现场价值"),
           subtitleFontSize: Number(payload?.subtitleFontSize || 48),
-          subtitleMarginBottom: Number(payload?.subtitleMarginBottom || 170)
+          subtitleMarginBottom: Number(payload?.subtitleMarginBottom || 170),
+          experimentMode: String(payload?.experimentMode || "standard"),
+          subtitlePreset: String(payload?.subtitlePreset || "dynamic_clean")
         }
       ),
       generateMixBatch: (payload) => ipcRenderer.invoke(

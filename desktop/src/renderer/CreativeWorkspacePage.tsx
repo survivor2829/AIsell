@@ -75,6 +75,11 @@ type GeneratedVideo = {
     contentCompleteness?: number;
     transcriptQuality?: number;
     diversity?: number;
+    hook?: number;
+    engagement?: number;
+    value?: number;
+    shareability?: number;
+    viralityTotal?: number;
     selectionEngine?: string;
     recommendationReason?: string[];
   };
@@ -121,6 +126,8 @@ type CreativeApi = {
       theme: string;
       subtitleFontSize: number;
       subtitleMarginBottom: number;
+      experimentMode: "standard" | "supoclip_bailian_v1";
+      subtitlePreset: "dynamic_clean" | "knowledge_course" | "energetic_talking";
     }) => Promise<ContentResult<{ taskId: string; projectId: string }>>;
     generateMixBatch: (payload: {
       assetIds: string[];
@@ -188,7 +195,7 @@ function capacitySummary(project: CreativeProject | null) {
 export function CreativeWorkspacePage() {
   const [engine, setEngine] = useState<EngineStatus | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
-  const [mode, setMode] = useState<"course" | "mix">("course");
+  const [mode, setMode] = useState<"course" | "course_experiment" | "mix">("course");
   const [courseAssetId, setCourseAssetId] = useState("");
   const [mixAssetIds, setMixAssetIds] = useState<string[]>([]);
   const [voiceAssetId, setVoiceAssetId] = useState("");
@@ -199,6 +206,7 @@ export function CreativeWorkspacePage() {
   const [maximumSeconds, setMaximumSeconds] = useState(90);
   const [subtitleFontSize, setSubtitleFontSize] = useState(48);
   const [subtitleMarginBottom, setSubtitleMarginBottom] = useState(170);
+  const [subtitlePreset, setSubtitlePreset] = useState<"knowledge_course" | "energetic_talking">("knowledge_course");
   const [currentTaskId, setCurrentTaskId] = useState("");
   const [currentTask, setCurrentTask] = useState<Task | null>(null);
   const [projectId, setProjectId] = useState("");
@@ -226,7 +234,7 @@ export function CreativeWorkspacePage() {
     () => audioVideoAssets.filter((item) => mixAssetIds.includes(item.assetId)),
     [audioVideoAssets, mixAssetIds]
   );
-  const selectedAssetIds = mode === "course"
+  const selectedAssetIds = mode !== "mix"
     ? (courseAssetId ? [courseAssetId] : [])
     : mixAssetIds;
 
@@ -372,7 +380,7 @@ export function CreativeWorkspacePage() {
       pendingProbe.data?.items.find((probed) => probed.assetId === item.assetId) || item
     );
     const importedIds = refreshedItems.map((item) => item.assetId);
-    if (mode === "course") {
+    if (mode !== "mix") {
       const firstVideo = refreshedItems.find(
         (item) => item.mediaKind === "video" && item.hasAudio === true
       );
@@ -408,7 +416,7 @@ export function CreativeWorkspacePage() {
     if (!api || !selectedAssetIds.length) return;
     setBusy("generate");
     setNotice(null);
-    if (mode === "course" && (minimumSeconds < 30 || maximumSeconds > 90 || minimumSeconds > maximumSeconds)) {
+    if (mode !== "mix" && (minimumSeconds < 30 || maximumSeconds > 90 || minimumSeconds > maximumSeconds)) {
       setBusy("");
       setNotice({ tone: "error", text: "课程成片时长必须在 30～90 秒之间，且最短不能大于最长。" });
       return;
@@ -418,7 +426,7 @@ export function CreativeWorkspacePage() {
       setNotice({ tone: "error", text: "请从已选素材中选择一条带声音的视频作为老师原声。" });
       return;
     }
-    const result = mode === "course"
+    const result = mode !== "mix"
       ? await api.creative.generateCourseCuts({
         assetId: courseAssetId,
         minDurationMs: minimumSeconds * 1000,
@@ -426,7 +434,9 @@ export function CreativeWorkspacePage() {
         count: courseCount,
         theme,
         subtitleFontSize,
-        subtitleMarginBottom
+        subtitleMarginBottom,
+        experimentMode: mode === "course_experiment" ? "supoclip_bailian_v1" : "standard",
+        subtitlePreset: mode === "course_experiment" ? subtitlePreset : "dynamic_clean"
       })
       : await api.creative.generateMixBatch({
         assetIds: mixAssetIds,
@@ -516,7 +526,7 @@ export function CreativeWorkspacePage() {
 
   const running = Boolean(currentTask && !TERMINAL_TASKS.has(currentTask.status));
   const engineReady = engine?.state === "ready";
-  const generationSelectionReady = mode === "course"
+  const generationSelectionReady = mode !== "mix"
     ? audioVideoAssets.some((item) => item.assetId === courseAssetId)
     : mixAssetIds.length > 0 && selectedVoiceAssets.some((item) => item.assetId === voiceAssetId);
 
@@ -542,6 +552,18 @@ export function CreativeWorkspacePage() {
         <button className={`workspace-mode-card ${mode === "course" ? "is-active" : ""}`} onClick={() => setMode("course")}>
           <FileVideo2 size={24} /><span><strong>长课程精剪</strong><small>从口播、播客或课程中找出完整观点，生成 30～90 秒竖屏成片。</small></span>
         </button>
+        <button
+          className={`workspace-mode-card ${mode === "course_experiment" ? "is-active" : ""}`}
+          onClick={() => {
+            setMode("course_experiment");
+            setCourseCount(5);
+            setSubtitleFontSize(42);
+            setSubtitleMarginBottom(140);
+            setSubtitlePreset("knowledge_course");
+          }}
+        >
+          <Sparkles size={24} /><span><strong>百炼 × SupoClip 对照实验</strong><small>百炼完成中文选段与四维评分，使用词级时间戳制作动态字幕；与现有精剪隔离。</small></span>
+        </button>
         <button className={`workspace-mode-card ${mode === "mix" ? "is-active" : ""}`} onClick={() => setMode("mix")}>
           <Layers3 size={24} /><span><strong>AI 批量混剪</strong><small>自动组织“开场—过程—结果”，用老师原声串起现场素材。</small></span>
         </button>
@@ -562,7 +584,7 @@ export function CreativeWorkspacePage() {
               </div>
             </div>
 
-            {mode === "course" ? (
+            {mode !== "mix" ? (
               <label className="workspace-field">
                 <span>课程视频</span>
                 <select value={courseAssetId} onChange={(event) => setCourseAssetId(event.target.value)}>
@@ -587,12 +609,13 @@ export function CreativeWorkspacePage() {
             <div className="workspace-section-head"><div><span>02</span><h2>设置目标并生成</h2></div></div>
             <div className="workspace-form-grid">
               <label className="workspace-field workspace-theme-field"><span>主题</span><input value={theme} maxLength={100} onChange={(event) => setTheme(event.target.value)} /></label>
-              {mode === "course" ? <>
+              {mode !== "mix" ? <>
                 <label className="workspace-field"><span>最短（秒）</span><input type="number" min={30} max={90} value={minimumSeconds} onChange={(event) => setMinimumSeconds(Number(event.target.value))} /></label>
                 <label className="workspace-field"><span>最长（秒）</span><input type="number" min={30} max={90} value={maximumSeconds} onChange={(event) => setMaximumSeconds(Number(event.target.value))} /></label>
                 <label className="workspace-field"><span>候选数量</span><input type="number" min={1} max={20} value={courseCount} onChange={(event) => setCourseCount(Number(event.target.value))} /></label>
                 <label className="workspace-field"><span>字幕字号</span><select value={subtitleFontSize} onChange={(event) => setSubtitleFontSize(Number(event.target.value))}><option value={42}>小</option><option value={48}>标准</option><option value={56}>大</option></select></label>
                 <label className="workspace-field"><span>字幕位置</span><select value={subtitleMarginBottom} onChange={(event) => setSubtitleMarginBottom(Number(event.target.value))}><option value={140}>更靠下</option><option value={170}>底部安全区</option><option value={230}>偏上</option></select></label>
+                {mode === "course_experiment" && <label className="workspace-field workspace-template-field"><span>动态字幕模板</span><select value={subtitlePreset} onChange={(event) => setSubtitlePreset(event.target.value as "knowledge_course" | "energetic_talking")}><option value="knowledge_course">知识课程</option><option value="energetic_talking">活力口播</option></select><small>{subtitlePreset === "knowledge_course" ? "稳重低位，关键词逐词高亮，适合课程与知识内容。" : "明亮强调与轻量弹入，适合节奏更快的口播。"}</small></label>}
               </> : <>
                 <label className="workspace-field"><span>成片数量</span><select value={mixCount} onChange={(event) => setMixCount(Number(event.target.value))}><option value={30}>30 条（首轮验收）</option><option value={100}>100 条</option><option value={200}>200 条</option><option value={300}>300 条</option></select></label>
                 <label className="workspace-field workspace-voice-field"><span>老师原声</span><select value={voiceAssetId} onChange={(event) => setVoiceAssetId(event.target.value)}><option value="">请选择带声音的视频</option>{selectedVoiceAssets.map((item) => <option value={item.assetId} key={item.assetId}>{item.displayName}</option>)}</select></label>
@@ -606,7 +629,7 @@ export function CreativeWorkspacePage() {
                 {busy === "generate" ? <LoaderCircle className="is-spinning" size={16} /> : <Sparkles size={16} />}AI 自动生成
               </button>
             </div>
-            <p className="workspace-safety-note"><CircleAlert size={15} />首轮仅内部查看。生成按钮会自动补齐尚未完成的素材分析，不会发布到微信、抖音或快手。</p>
+            <p className="workspace-safety-note"><CircleAlert size={15} />{mode === "course_experiment" ? "复用已完成的分析缓存；本次只增加一次百炼文本主编调用。首轮仅内部验收，不承诺传播效果，也不会自动发布。" : "首轮仅内部查看。生成按钮会自动补齐尚未完成的素材分析，不会发布到微信、抖音或快手。"}</p>
           </section>
 
           {(currentTask || project) && <section className="workspace-panel workspace-progress-panel">
@@ -636,25 +659,34 @@ export function CreativeWorkspacePage() {
               {videos.map((item) => {
                 const aiRecommended = item.recommended && item.score.selectionEngine === "bailian_editor";
                 const localPreselection = item.score.selectionEngine === "local_content_signals";
-                return <article className={`workspace-video-card ${aiRecommended ? "is-recommended" : ""}`} key={item.generatedVideoId}>
+                const experimentCandidate = item.score.selectionEngine === "supoclip_bailian_editor";
+                const recommended = aiRecommended || (item.recommended && experimentCandidate);
+                return <article className={`workspace-video-card ${recommended ? "is-recommended" : ""}`} key={item.generatedVideoId}>
                 <div className="workspace-video-frame">
                   {generatedMediaUrl(item)
                     ? <video controls preload="metadata" src={generatedMediaUrl(item)} />
                     : <div><Clapperboard size={28} /><span>{item.status === "failed" ? "生成失败" : "预览准备中"}</span></div>}
                   {aiRecommended && <b>AI 推荐</b>}
+                  {experimentCandidate && <b className="is-experiment">{item.recommended ? "实验推荐" : "对照实验"}</b>}
                   {localPreselection && <b className="is-local">本地预筛</b>}
                   <label><input type="checkbox" checked={selectedVideos.includes(item.generatedVideoId)} onChange={() => setSelectedVideos((current) => current.includes(item.generatedVideoId) ? current.filter((id) => id !== item.generatedVideoId) : [...current, item.generatedVideoId])} />选择</label>
                 </div>
                 <div className="workspace-video-body">
-                  <div><strong>{item.title}</strong><span>{formatDuration(item.durationMs)}{item.score?.total != null ? ` · ${localPreselection ? "预筛 " : ""}${Math.round(item.score.total)} 分` : ""}</span></div>
+                  <div><strong>{item.title}</strong><span>{formatDuration(item.durationMs)}{experimentCandidate && item.score.viralityTotal != null ? ` · 传播总分 ${Math.round(item.score.viralityTotal)}` : item.score?.total != null ? ` · ${localPreselection ? "预筛 " : ""}${Math.round(item.score.total)} 分` : ""}</span></div>
                   <small>{item.sourceStartMs != null ? `源时间码 ${formatDuration(item.sourceStartMs)}—${formatDuration(item.sourceEndMs)}` : "三段式语义混剪"}</small>
-                  {item.kind === "course" && <div className="workspace-score-breakdown">
+                  {item.kind === "course" && (experimentCandidate ? <div className="workspace-score-breakdown is-experiment">
+                    <span>百炼 × SupoClip</span>
+                    {item.score.hook != null && <span>开场吸引 {Math.round(item.score.hook)}/25</span>}
+                    {item.score.engagement != null && <span>持续观看 {Math.round(item.score.engagement)}/25</span>}
+                    {item.score.value != null && <span>知识价值 {Math.round(item.score.value)}/25</span>}
+                    {item.score.shareability != null && <span>收藏转发 {Math.round(item.score.shareability)}/25</span>}
+                  </div> : <div className="workspace-score-breakdown">
                     {item.score.selectionEngine === "bailian_editor" && <span>百炼主编</span>}
                     {item.score.openingHook != null && <span>开头 {Math.round(item.score.openingHook * 100)}</span>}
                     {item.score.standaloneValue != null && <span>价值 {Math.round(item.score.standaloneValue * 100)}</span>}
                     {item.score.contentCompleteness != null && <span>完整 {Math.round(item.score.contentCompleteness * 100)}</span>}
                     {item.score.diversity != null && <span>差异 {Math.round(item.score.diversity * 100)}</span>}
-                  </div>}
+                  </div>)}
                   {item.score.recommendationReason?.length ? <p className="workspace-recommendation-reason">推荐理由：{item.score.recommendationReason.join(" · ")}</p> : null}
                   {item.errorMessage && <p>{item.errorMessage}</p>}
                   <div className="workspace-card-actions">

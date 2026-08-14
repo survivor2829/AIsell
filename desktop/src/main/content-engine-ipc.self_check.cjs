@@ -687,6 +687,29 @@ async function main() {
       assert.equal(invalidSubtitle.ok, false);
       assert.match(invalidSubtitle.code, /^invalid_subtitle_/u);
     }
+    for (const payload of [
+      {
+        assetId: asset().asset_id,
+        experimentMode: "unknown",
+        subtitlePreset: "dynamic_clean"
+      },
+      {
+        assetId: asset().asset_id,
+        experimentMode: "standard",
+        subtitlePreset: "knowledge_course"
+      },
+      {
+        assetId: asset().asset_id,
+        experimentMode: "supoclip_bailian_v1",
+        subtitlePreset: "dynamic_clean"
+      }
+    ]) {
+      const invalidExperiment = await handlers.get(
+        CONTENT_ENGINE_CHANNELS.generateCourseCuts
+      )({}, payload);
+      assert.equal(invalidExperiment.ok, false);
+      assert.match(invalidExperiment.code, /^invalid_(experiment_mode|subtitle_preset)$/u);
+    }
     const missingVoice = await handlers.get(
       CONTENT_ENGINE_CHANNELS.generateMixBatch
     )({}, {

@@ -341,6 +341,26 @@ async function main() {
       const queueItemId = "publish_queue_66666666666666666666666666666666";
       const packageId = "export_package_77777777777777777777777777777777";
       const mixCalls = [
+        [controller.generateCourseCuts(assetId, {
+          minDurationMs: 30_000,
+          maxDurationMs: 90_000,
+          count: 5,
+          theme: "培训现场价值",
+          subtitleFontSize: 42,
+          subtitleMarginBottom: 140,
+          experimentMode: "supoclip_bailian_v1",
+          subtitlePreset: "knowledge_course"
+        }), "generate_course_cuts", {
+          asset_id: assetId,
+          min_duration_ms: 30_000,
+          max_duration_ms: 90_000,
+          count: 5,
+          theme: "培训现场价值",
+          subtitle_font_size: 42,
+          subtitle_margin_bottom: 140,
+          experiment_mode: "supoclip_bailian_v1",
+          subtitle_preset: "knowledge_course"
+        }],
         [controller.createMixProject("Launch", [{ name: "Intro" }], { allow_repeated_assets: false }), "create_mix_project", { name: "Launch", slots: [{ name: "Intro" }], constraints: { allow_repeated_assets: false } }],
         [controller.updateMixProject(projectId, { name: "Launch 2" }), "update_mix_project", { project_id: projectId, name: "Launch 2" }],
         [controller.getMixProject(projectId), "get_mix_project", { project_id: projectId }],

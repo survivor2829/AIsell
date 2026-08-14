@@ -9,7 +9,7 @@
 .workspace-banner { margin: 14px 0; padding: 11px 13px; display: flex; align-items: center; gap: 9px; border: 1px solid; border-radius: 9px; font-size: 13px; }
 .workspace-banner.is-error { color: #b42318; border-color: #fecaca; background: #fef3f2; }
 .workspace-banner.is-success { color: #047857; border-color: #a7f3d0; background: #ecfdf3; }
-.workspace-mode-grid { margin: 17px 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.workspace-mode-grid { margin: 17px 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .workspace-mode-card { min-height: 92px; padding: 17px; display: flex; align-items: flex-start; gap: 13px; border: 1px solid #e4e7ec; border-radius: 13px; color: #667085; background: #fff; text-align: left; cursor: pointer; box-shadow: 0 2px 7px rgba(16, 24, 40, .035); }
 .workspace-mode-card:hover { border-color: #c4b5fd; }
 .workspace-mode-card.is-active { border-color: #8b5cf6; color: #7c3aed; background: linear-gradient(145deg, #fff, #f5f3ff); box-shadow: 0 0 0 3px rgba(139, 92, 246, .1); }
@@ -40,6 +40,8 @@
 .workspace-form-grid { display: grid; grid-template-columns: 1.5fr repeat(3, minmax(100px, .5fr)); gap: 10px; }
 .workspace-theme-field { grid-column: span 1; }
 .workspace-voice-field { grid-column: span 2; }
+.workspace-template-field { grid-column: span 2; }
+.workspace-template-field small { color: #98a2b3; font-size: 10px; line-height: 1.45; }
 .workspace-generate-actions { margin-top: 15px; justify-content: flex-end; }
 .workspace-button { min-height: 36px; padding: 0 12px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid; border-radius: 8px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
 .workspace-button.is-secondary { border-color: #d0d5dd; color: #344054; background: #fff; }
@@ -63,6 +65,7 @@
 .workspace-video-frame > div { display: grid; justify-items: center; gap: 7px; font-size: 11px; }
 .workspace-video-frame > b { position: absolute; top: 8px; left: 8px; padding: 4px 7px; border-radius: 999px; color: #fff; background: #7c3aed; font-size: 9px; }
 .workspace-video-frame > b.is-local { background: #475467; }
+.workspace-video-frame > b.is-experiment { background: linear-gradient(90deg, #7c3aed, #db2777); }
 .workspace-video-frame > label { position: absolute; top: 8px; right: 8px; padding: 4px 7px; display: flex; align-items: center; gap: 4px; border-radius: 999px; color: #344054; background: rgba(255, 255, 255, .92); font-size: 9px; }
 .workspace-video-body { padding: 12px; }
 .workspace-video-body > div:first-child { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
@@ -72,6 +75,7 @@
 .workspace-video-body p { color: #b42318; font-size: 10px; }
 .workspace-score-breakdown { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
 .workspace-score-breakdown span { padding: 3px 6px; border-radius: 999px; color: #6941c6; background: #f4f3ff; font-size: 9px; font-weight: 700; }
+.workspace-score-breakdown.is-experiment span { color: #9d174d; background: #fdf2f8; }
 .workspace-video-body .workspace-recommendation-reason { margin: 7px 0 0; color: #667085; font-size: 9px; line-height: 1.5; }
 .workspace-card-actions { margin-top: 11px; flex-wrap: wrap; }
 .workspace-card-actions button:first-child { border-color: #a7f3d0; color: #047857; background: #ecfdf3; }
@@ -95,9 +99,10 @@
 @keyframes workspace-spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1050px) {
+  .workspace-mode-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .workspace-layout { grid-template-columns: minmax(0, 1fr) 250px; }
   .workspace-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .workspace-theme-field, .workspace-voice-field { grid-column: span 2; }
+  .workspace-theme-field, .workspace-voice-field, .workspace-template-field { grid-column: span 2; }
 }
 @media (max-width: 850px) {
   .workspace-layout { grid-template-columns: 1fr; }
@@ -108,5 +113,5 @@
   .workspace-mode-grid, .workspace-video-grid, .workspace-assets, .workspace-sidebar { grid-template-columns: 1fr; }
   .workspace-section-head { align-items: flex-start; flex-direction: column; }
   .workspace-form-grid { grid-template-columns: 1fr; }
-  .workspace-theme-field, .workspace-voice-field { grid-column: span 1; }
+  .workspace-theme-field, .workspace-voice-field, .workspace-template-field { grid-column: span 1; }
 }
