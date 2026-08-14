@@ -73,6 +73,8 @@ class CreativeDomain:
         theme="培训现场价值",
         subtitle_font_size=48,
         subtitle_margin_bottom=170,
+        experiment_mode=None,
+        subtitle_preset="dynamic_clean",
     ):
         asset_id = self._validate_asset_ids([asset_id], require_audio=True)[0]
         minimum, maximum = self._duration_range(min_duration_ms, max_duration_ms)
@@ -84,6 +86,17 @@ class CreativeDomain:
         subtitle_margin_bottom = self._bounded_integer(
             subtitle_margin_bottom, "subtitle_margin_bottom", 120, 360
         )
+        experiment_mode = str(experiment_mode or "").strip() or None
+        if experiment_mode not in {None, "standard", "supoclip_bailian_v1"}:
+            raise ContentEngineError("invalid_experiment_mode", "不支持的课程剪辑实验模式。")
+        if experiment_mode == "standard":
+            experiment_mode = None
+        subtitle_preset = str(subtitle_preset or "dynamic_clean").strip()
+        if experiment_mode == "supoclip_bailian_v1":
+            if subtitle_preset not in {"knowledge_course", "energetic_talking"}:
+                raise ContentEngineError("invalid_subtitle_preset", "不支持的动态字幕模板。")
+        else:
+            subtitle_preset = "dynamic_clean"
         project_id = self._new_id("creative_project")
         settings = {
             "asset_ids": [asset_id],
@@ -95,6 +108,13 @@ class CreativeDomain:
             "subtitle_margin_bottom": subtitle_margin_bottom,
             "internal_only": True,
         }
+        if experiment_mode:
+            settings.update(
+                {
+                    "experiment_mode": experiment_mode,
+                    "subtitle_preset": subtitle_preset,
+                }
+            )
         now = self._now()
         with self.database.transaction() as connection:
             connection.execute(
@@ -408,6 +428,7 @@ class CreativeDomain:
             int(payload["max_duration_ms"]),
             int(payload["count"]),
             theme=self._project_theme(project_id),
+            experiment_mode=payload.get("experiment_mode"),
         )
         if not windows:
             raise ContentEngineError("qualified_segments_missing", "没有找到满足时长与完整性要求的课程片段。")
@@ -422,6 +443,8 @@ class CreativeDomain:
                 window,
                 subtitle_font_size=int(payload.get("subtitle_font_size") or 48),
                 subtitle_margin_bottom=int(payload.get("subtitle_margin_bottom") or 170),
+                experiment_mode=payload.get("experiment_mode"),
+                subtitle_preset=payload.get("subtitle_preset") or "dynamic_clean",
             )
             video_id = self._insert_generated(
                 project_id,
@@ -802,7 +825,16 @@ class CreativeDomain:
             "absolute_path": str(path),
         }
 
-    def _course_windows(self, segments, minimum, maximum, count, *, theme=None):
+    def _course_windows(
+        self,
+        segments,
+        minimum,
+        maximum,
+        count,
+        *,
+        theme=None,
+        experiment_mode=None,
+    ):
         windows = []
         available_span = max(
             0,
@@ -915,7 +947,14 @@ class CreativeDomain:
         ranker = getattr(self.analyzer, "rank_course_windows", None)
         if theme and callable(ranker) and shortlist:
             try:
-                rankings = ranker(shortlist, theme)
+                if experiment_mode == "supoclip_bailian_v1":
+                    rankings = ranker(
+                        shortlist,
+                        theme,
+                        experiment_mode="supoclip_bailian_v1",
+                    )
+                else:
+                    rankings = ranker(shortlist, theme)
             except ContentEngineError as error:
                 raise ContentEngineError(
                     "course_editor_unavailable",
@@ -927,10 +966,63 @@ class CreativeDomain:
                 if isinstance(item, dict)
             }
             for item in shortlist:
-                ranking = ranking_by_id.get(item["signature"])
-                if not ranking:
+                ranking = ranking_by_id.get(item["signature"]) or {}
+                if not ranking and experiment_mode != "supoclip_bailian_v1":
                     continue
                 score = item["score"]
+                if experiment_mode == "supoclip_bailian_v1":
+                    local_hook = 25 * float(score["opening_hook"])
+                    local_engagement = 25 * (
+                        0.35 * float(score["opening_hook"])
+                        + 0.35 * float(score["transcript_quality"])
+                        + 0.30 * float(score["duration_fit"])
+                    )
+                    local_value = 25 * float(score["standalone_value"])
+                    visual_quality = sum(
+                        float(segment.get("quality_score") or 0)
+                        for segment in item.get("segments") or []
+                    ) / max(1, len(item.get("segments") or []))
+                    local_shareability = 25 * (
+                        0.45 * float(score["standalone_value"])
+                        + 0.25 * float(score["content_completeness"])
+                        + 0.15 * float(score["opening_hook"])
+                        + 0.15 * visual_quality
+                    )
+
+                    def dimension(name, fallback, maximum=25.0):
+                        value = ranking.get(name)
+                        if (
+                            not isinstance(value, (int, float))
+                            or isinstance(value, bool)
+                            or not math.isfinite(float(value))
+                        ):
+                            value = fallback
+                        return round(max(0.0, min(maximum, float(value))), 3)
+
+                    hook = dimension("hook", local_hook)
+                    engagement = dimension("engagement", local_engagement)
+                    value = dimension("value", local_value)
+                    shareability = dimension("shareability", local_shareability)
+                    viral_total = dimension(
+                        "total", hook + engagement + value + shareability, 100.0
+                    )
+                    score.update(
+                        {
+                            "total": viral_total,
+                            "base_content_score": viral_total,
+                            "opening_hook": round(hook / 25, 3),
+                            "standalone_value": round(value / 25, 3),
+                            "hook": hook,
+                            "engagement": engagement,
+                            "value": value,
+                            "shareability": shareability,
+                            "virality_total": viral_total,
+                            "visual_quality": round(visual_quality, 3),
+                            "selection_engine": "supoclip_bailian_editor",
+                            "editor_reason": ranking.get("reason") or [],
+                        }
+                    )
+                    continue
                 opening = float(ranking.get("opening_hook", score["opening_hook"]))
                 standalone = float(
                     ranking.get("standalone_value", score["standalone_value"])
@@ -969,6 +1061,14 @@ class CreativeDomain:
                     }
                 )
             windows.sort(key=lambda item: (-item["score"]["total"], item["start_ms"]))
+            if experiment_mode == "supoclip_bailian_v1":
+                # Only candidates actually sent through the isolated editor are
+                # eligible for this experiment. If diversity reduces capacity,
+                # returning fewer clips is safer than silently mixing engines.
+                windows = sorted(
+                    shortlist,
+                    key=lambda item: (-item["score"]["total"], item["start_ms"]),
+                )
         selected = []
         signatures = set()
         for item in windows:
@@ -1060,15 +1160,18 @@ class CreativeDomain:
         *,
         subtitle_font_size=48,
         subtitle_margin_bottom=170,
+        experiment_mode=None,
+        subtitle_preset="dynamic_clean",
     ):
-        return {
+        is_supoclip_experiment = experiment_mode == "supoclip_bailian_v1"
+        recipe = {
             "kind": "course",
             "layout": "auto_portrait",
             "subtitle_style": {
-                "preset": "dynamic_clean",
+                "preset": subtitle_preset if is_supoclip_experiment else "dynamic_clean",
                 "font_size": subtitle_font_size,
                 "margin_bottom": subtitle_margin_bottom,
-                "max_chars": 12,
+                "max_chars": 14 if subtitle_preset == "knowledge_course" else 12,
             },
             "voice_segment": {
                 "asset_id": asset_id,
@@ -1090,14 +1193,80 @@ class CreativeDomain:
                 for item in window["segments"]
             ],
             "captions": [
-                {
-                    "start_ms": item["start_ms"],
-                    "end_ms": item["end_ms"],
-                    "text": item["transcript_text"],
-                }
+                self._course_caption(item, include_words=is_supoclip_experiment)
                 for item in window["segments"]
             ],
         }
+        if is_supoclip_experiment:
+            recipe["experiment_mode"] = "supoclip_bailian_v1"
+        return recipe
+
+    @classmethod
+    def _course_caption(cls, segment, *, include_words=False):
+        caption = {
+            "start_ms": segment["start_ms"],
+            "end_ms": segment["end_ms"],
+            "text": segment["transcript_text"],
+        }
+        if include_words:
+            caption["words"] = cls._course_caption_words(segment)
+        return caption
+
+    @staticmethod
+    def _course_caption_words(segment):
+        segment_start = int(segment["start_ms"])
+        segment_end = int(segment["end_ms"])
+        speaker = str(segment.get("speaker") or "")[:80]
+        normalized = []
+        for word in (segment.get("metadata") or {}).get("words") or []:
+            if not isinstance(word, dict):
+                continue
+            text = str(word.get("text") or word.get("word") or "").strip()
+            punctuation = str(word.get("punctuation") or "").strip()
+            if punctuation and not text.endswith(punctuation):
+                text += punctuation
+            try:
+                start = int(
+                    word.get("begin_time")
+                    if word.get("begin_time") is not None
+                    else word.get("start")
+                    if word.get("start") is not None
+                    else word.get("start_ms")
+                )
+                end = int(
+                    word.get("end_time")
+                    if word.get("end_time") is not None
+                    else word.get("end")
+                    if word.get("end") is not None
+                    else word.get("end_ms")
+                )
+            except (TypeError, ValueError):
+                continue
+            if not text or start < segment_start or end > segment_end or end <= start:
+                continue
+            confidence = word.get("confidence")
+            if (
+                not isinstance(confidence, (int, float))
+                or isinstance(confidence, bool)
+                or not math.isfinite(float(confidence))
+                or not 0 <= float(confidence) <= 1
+            ):
+                confidence = None
+            else:
+                confidence = float(confidence)
+            normalized.append(
+                {
+                    "text": text[:80],
+                    "start": start,
+                    "end": end,
+                    "confidence": confidence,
+                    "speaker": str(
+                        word.get("speaker") or word.get("speaker_id") or speaker
+                    )[:80],
+                }
+            )
+        normalized.sort(key=lambda item: (item["start"], item["end"]))
+        return normalized
 
     @staticmethod
     def _course_frame_mode(segment):

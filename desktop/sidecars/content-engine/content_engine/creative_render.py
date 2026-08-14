@@ -328,11 +328,20 @@ class FFmpegCreativeRenderer:
         base = int(recipe.get("voice_segment", {}).get("start_ms") or 0)
         style = recipe.get("subtitle_style") or {}
         max_chars = max(8, min(18, int(style.get("max_chars") or 12)))
+        word_timed = (
+            recipe.get("experiment_mode") == "supoclip_bailian_v1"
+            and style.get("preset") in {"knowledge_course", "energetic_talking"}
+        )
         cues = []
         for caption in captions:
             text = str(caption.get("text") or "").strip()
             if not text:
                 continue
+            if word_timed:
+                word_cues = cls._word_caption_cues(caption, base, max_chars)
+                if word_cues:
+                    cues.extend(word_cues)
+                    continue
             start_ms = max(0, int(caption["start_ms"]) - base)
             end_ms = max(start_ms + 1, int(caption["end_ms"]) - base)
             phrases = cls._split_caption_text(text, max_chars)
@@ -358,6 +367,69 @@ class FFmpegCreativeRenderer:
                     }
                 )
         return cues
+
+    @classmethod
+    def _word_caption_cues(cls, caption, base, max_chars):
+        caption_start = int(caption.get("start_ms") or 0)
+        caption_end = int(caption.get("end_ms") or 0)
+        words = []
+        for item in caption.get("words") or []:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            try:
+                start = int(item.get("start"))
+                end = int(item.get("end"))
+            except (TypeError, ValueError):
+                continue
+            if (
+                not text
+                or start < caption_start
+                or end > caption_end
+                or end <= start
+            ):
+                continue
+            words.append({"text": text, "start_ms": start - base, "end_ms": end - base})
+        words.sort(key=lambda item: (item["start_ms"], item["end_ms"]))
+        if not words:
+            return []
+
+        groups = []
+        current = []
+        for word in words:
+            proposed = cls._join_caption_words([*current, word])
+            too_wide = current and cls._caption_width(proposed) > max_chars
+            too_long = current and word["end_ms"] - current[0]["start_ms"] > 3_200
+            if too_wide or too_long:
+                groups.append(current)
+                current = []
+            current.append(word)
+            if re.search(r"[。！？!?]$", word["text"]):
+                groups.append(current)
+                current = []
+        if current:
+            groups.append(current)
+
+        return [
+            {
+                "start_ms": max(0, group[0]["start_ms"]),
+                "end_ms": max(group[0]["start_ms"] + 1, group[-1]["end_ms"]),
+                "text": cls._join_caption_words(group),
+                "words": group,
+            }
+            for group in groups
+            if group
+        ]
+
+    @staticmethod
+    def _join_caption_words(words):
+        text = ""
+        for word in words:
+            value = str(word.get("text") or "")
+            if text and re.search(r"[A-Za-z0-9]$", text) and re.match(r"[A-Za-z0-9]", value):
+                text += " "
+            text += value
+        return text
 
     @classmethod
     def _split_caption_text(cls, text, max_chars):
@@ -400,8 +472,27 @@ class FFmpegCreativeRenderer:
         if not cues:
             return None
         style = recipe.get("subtitle_style") or {}
-        font_size = max(36, min(64, int(style.get("font_size") or 48)))
-        margin_bottom = max(120, min(360, int(style.get("margin_bottom") or 170)))
+        preset = str(style.get("preset") or "dynamic_clean")
+        is_supoclip = (
+            recipe.get("experiment_mode") == "supoclip_bailian_v1"
+            and preset in {"knowledge_course", "energetic_talking"}
+        )
+        if preset == "knowledge_course" and is_supoclip:
+            font_size = max(36, min(48, int(style.get("font_size") or 44)))
+            margin_bottom = max(120, min(260, int(style.get("margin_bottom") or 150)))
+            primary, secondary = "&H00FFFFFF", "&H003DDCFF"
+            border_style, outline, shadow = 1, 4, 1
+        elif preset == "energetic_talking" and is_supoclip:
+            font_size = max(38, min(52, int(style.get("font_size") or 48)))
+            margin_bottom = max(120, min(260, int(style.get("margin_bottom") or 145)))
+            primary, secondary = "&H00FFFFFF", "&H00FFE45C"
+            border_style, outline, shadow = 1, 5, 2
+        else:
+            font_size = max(36, min(64, int(style.get("font_size") or 48)))
+            margin_bottom = max(120, min(360, int(style.get("margin_bottom") or 170)))
+            primary, secondary = "&H00FFFFFF", "&H005CDBFF"
+            border_style, outline, shadow = 3, 3, 0
+        preset_comment = f"; Preset: {preset}\n" if is_supoclip else ""
         header = (
             "[Script Info]\n"
             "ScriptType: v4.00+\n"
@@ -409,13 +500,14 @@ class FFmpegCreativeRenderer:
             "PlayResY: 1920\n"
             "WrapStyle: 2\n"
             "ScaledBorderAndShadow: yes\n\n"
+            f"{preset_comment}"
             "[V4+ Styles]\n"
             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
             "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
             "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
             "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-            f"Style: Dynamic,Microsoft YaHei,{font_size},&H00FFFFFF,&H005CDBFF,"
-            f"&H90000000,&H78000000,-1,0,0,0,100,100,0,0,3,3,0,2,70,70,"
+            f"Style: Dynamic,Microsoft YaHei,{font_size},{primary},{secondary},"
+            f"&H90000000,&H78000000,-1,0,0,0,100,100,0,0,{border_style},{outline},{shadow},2,70,70,"
             f"{margin_bottom},1\n\n"
             "[Events]\n"
             "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
@@ -423,8 +515,18 @@ class FFmpegCreativeRenderer:
         )
         events = []
         for cue in cues:
-            text = cls._ass_emphasis(cue["text"])
-            animation = r"{\fad(70,60)\fscx104\fscy104\t(0,120,\fscx100\fscy100)}"
+            if is_supoclip and cue.get("words"):
+                text = cls._ass_karaoke(cue)
+                emoji = cls._caption_emoji(cue["text"]) if preset == "energetic_talking" else ""
+                text = f"{emoji} {text}" if emoji else text
+                animation = (
+                    r"{\fad(55,45)\fscx108\fscy108\t(0,105,\fscx100\fscy100)}"
+                    if preset == "energetic_talking"
+                    else r"{\fad(70,60)\fscx102\fscy102\t(0,130,\fscx100\fscy100)}"
+                )
+            else:
+                text = cls._ass_emphasis(cue["text"])
+                animation = r"{\fad(70,60)\fscx104\fscy104\t(0,120,\fscx100\fscy100)}"
             events.append(
                 "Dialogue: 0,"
                 f"{cls._ass_stamp(cue['start_ms'])},{cls._ass_stamp(cue['end_ms'])},"
@@ -433,9 +535,42 @@ class FFmpegCreativeRenderer:
         path.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
         return path
 
+    @classmethod
+    def _ass_karaoke(cls, cue):
+        words = cue.get("words") or []
+        parts = []
+        for index, word in enumerate(words):
+            next_start = (
+                words[index + 1]["start_ms"]
+                if index + 1 < len(words)
+                else word["end_ms"]
+            )
+            duration = max(10, int(next_start) - int(word["start_ms"]))
+            safe = cls._ass_safe_text(word.get("text") or "")
+            parts.append(r"{\kf" + str(max(1, round(duration / 10))) + "}" + safe)
+        return "".join(parts)
+
+    @staticmethod
+    def _caption_emoji(text):
+        mappings = (
+            (("注意", "不能", "错误", "避免"), "⚠"),
+            (("关键", "核心", "重点"), "💡"),
+            (("方法", "步骤"), "✓"),
+            (("结果", "完成", "成功"), "✨"),
+        )
+        value = str(text)
+        return next(
+            (emoji for markers, emoji in mappings if any(marker in value for marker in markers)),
+            "",
+        )
+
+    @staticmethod
+    def _ass_safe_text(text):
+        return str(text).replace("\\", "／").replace("{", "（").replace("}", "）")
+
     @staticmethod
     def _ass_emphasis(text):
-        safe = str(text).replace("\\", "／").replace("{", "（").replace("}", "）")
+        safe = FFmpegCreativeRenderer._ass_safe_text(text)
         pattern = re.compile(
             r"(\d+(?:\.\d+)?%?|不是|而是|关键|核心|一定|不能|必须|最重要)"
         )

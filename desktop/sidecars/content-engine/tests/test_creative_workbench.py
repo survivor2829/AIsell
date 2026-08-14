@@ -15,7 +15,11 @@ if str(SIDECAR_ROOT) not in sys.path:
     sys.path.insert(0, str(SIDECAR_ROOT))
 
 from content_engine.database import Database
-from content_engine.creative_analysis import ANALYSIS_MANIFEST_NAME, FFmpegCreativeAnalyzer
+from content_engine.creative_analysis import (
+    ANALYSIS_MANIFEST_NAME,
+    DashScopeMediaClient,
+    FFmpegCreativeAnalyzer,
+)
 from content_engine.creative_domain import CreativeDomain
 from content_engine.creative_render import FFmpegCreativeRenderer
 from content_engine.errors import ContentEngineError
@@ -128,6 +132,162 @@ class CreativeRendererRecipeTests(unittest.TestCase):
         self.assertIn(",140,1", content)
         self.assertIn(r"{\c&H005CDBFF&}不是", content)
 
+    def test_supoclip_recipe_keeps_real_word_timestamps_and_filters_invalid_words(self):
+        domain = object.__new__(CreativeDomain)
+        window = {
+            "start_ms": 10_000,
+            "end_ms": 20_000,
+            "segments": [{
+                "segment_id": "segment-1",
+                "asset_id": "asset-1",
+                "start_ms": 10_000,
+                "end_ms": 20_000,
+                "transcript_text": "关键是方法。",
+                "speaker": "teacher",
+                "media_kind": "video",
+                "shot_type": "lecturer",
+                "tags": ["培训"],
+                "metadata": {
+                    "words": [
+                        {"text": "关键", "begin_time": 10_100, "end_time": 10_600},
+                        {"text": "是", "begin_time": 10_650, "end_time": 10_900, "confidence": 0.93},
+                        {"text": "方法", "begin_time": 10_950, "end_time": 11_500, "punctuation": "。"},
+                        {"text": "越界", "begin_time": 20_100, "end_time": 20_500},
+                        {"text": "非法", "begin_time": 12_000, "end_time": 11_999},
+                    ]
+                },
+            }],
+        }
+
+        recipe = domain._course_recipe(
+            "asset-1",
+            window,
+            experiment_mode="supoclip_bailian_v1",
+            subtitle_preset="knowledge_course",
+        )
+
+        self.assertEqual("supoclip_bailian_v1", recipe["experiment_mode"])
+        self.assertEqual("knowledge_course", recipe["subtitle_style"]["preset"])
+        self.assertEqual(
+            [
+                {"text": "关键", "start": 10_100, "end": 10_600, "confidence": None, "speaker": "teacher"},
+                {"text": "是", "start": 10_650, "end": 10_900, "confidence": 0.93, "speaker": "teacher"},
+                {"text": "方法。", "start": 10_950, "end": 11_500, "confidence": None, "speaker": "teacher"},
+            ],
+            recipe["captions"][0]["words"],
+        )
+
+    def test_standard_course_recipe_remains_dynamic_clean_without_word_payload(self):
+        domain = object.__new__(CreativeDomain)
+        segment = {
+            "segment_id": "segment-1",
+            "asset_id": "asset-1",
+            "start_ms": 0,
+            "end_ms": 10_000,
+            "transcript_text": "标准字幕。",
+            "speaker": "teacher",
+            "media_kind": "video",
+            "shot_type": "lecturer",
+            "tags": [],
+            "metadata": {"words": [{"text": "标准", "begin_time": 10, "end_time": 500}]},
+        }
+
+        recipe = domain._course_recipe(
+            "asset-1", {"start_ms": 0, "end_ms": 10_000, "segments": [segment]}
+        )
+
+        self.assertEqual("dynamic_clean", recipe["subtitle_style"]["preset"])
+        self.assertNotIn("experiment_mode", recipe)
+        self.assertNotIn("words", recipe["captions"][0])
+
+    def test_supoclip_ass_presets_use_word_timing_but_srt_stays_literal(self):
+        captions = [{
+            "start_ms": 10_000,
+            "end_ms": 12_000,
+            "text": "关键方法。",
+            "words": [
+                {"text": "关键", "start": 10_000, "end": 10_700, "confidence": None, "speaker": "teacher"},
+                {"text": "方法。", "start": 10_700, "end": 12_000, "confidence": 0.98, "speaker": "teacher"},
+            ],
+        }]
+        for preset in ("knowledge_course", "energetic_talking"):
+            with self.subTest(preset=preset):
+                recipe = {
+                    "experiment_mode": "supoclip_bailian_v1",
+                    "voice_segment": {"start_ms": 10_000},
+                    "subtitle_style": {"preset": preset, "font_size": 48, "margin_bottom": 150},
+                }
+                ass_path = self.renderer._write_ass(self.root / f"{preset}.ass", captions, recipe)
+                srt_path = self.renderer._write_srt(self.root / f"{preset}.srt", captions, recipe)
+                ass = ass_path.read_text(encoding="utf-8")
+                srt = srt_path.read_text(encoding="utf-8")
+                self.assertIn(r"{\kf", ass)
+                self.assertIn(preset, ass)
+                self.assertIn("关键方法。", srt)
+                self.assertNotIn("🔥", srt)
+                self.assertNotIn("💡", srt)
+
+    def test_supoclip_caption_without_words_falls_back_to_phrase_timing(self):
+        captions = [{"start_ms": 0, "end_ms": 2_000, "text": "没有词级时间戳。"}]
+        recipe = {
+            "experiment_mode": "supoclip_bailian_v1",
+            "voice_segment": {"start_ms": 0},
+            "subtitle_style": {"preset": "knowledge_course"},
+        }
+        cues = self.renderer._caption_cues(captions, recipe)
+        subtitle = self.renderer._write_ass(self.root / "fallback.ass", captions, recipe)
+
+        self.assertTrue(cues)
+        self.assertTrue(all("words" not in cue for cue in cues))
+        self.assertNotIn(r"{\kf", subtitle.read_text(encoding="utf-8"))
+
+
+class DashScopeCourseSelectionTests(unittest.TestCase):
+    def test_supoclip_selection_sends_visual_evidence_and_clamps_four_scores(self):
+        client = DashScopeMediaClient(api_key="test-key")
+        captured = {}
+
+        def request_json(_url, **kwargs):
+            captured.update(kwargs["payload"])
+            return {
+                "choices": [{"message": {"content": json.dumps({
+                    "candidates": [{
+                        "id": "candidate-1",
+                        "hook": 40,
+                        "engagement": -3,
+                        "value": 18.5,
+                        "shareability": 21,
+                        "total": 140,
+                        "reason": ["开场给出明确问题"],
+                    }]
+                }, ensure_ascii=False)}}]
+            }
+
+        client._request_json = request_json
+        result = client.rank_course_candidates(
+            [{
+                "id": "candidate-1",
+                "duration_ms": 45_000,
+                "transcript": "如何判断培训设备是否合适？",
+                "visual": [{
+                    "shot_type": "slide",
+                    "tags": ["课件", "老师"],
+                    "quality": 0.82,
+                    "visual_caption": "老师在屏幕旁讲解参数",
+                }],
+            }],
+            "培训现场价值",
+            experiment_mode="supoclip_bailian_v1",
+        )
+
+        prompt = captured["messages"][0]["content"]
+        self.assertIn("老师在屏幕旁讲解参数", prompt)
+        self.assertEqual(25.0, result[0]["hook"])
+        self.assertEqual(0.0, result[0]["engagement"])
+        self.assertEqual(18.5, result[0]["value"])
+        self.assertEqual(21.0, result[0]["shareability"])
+        self.assertEqual(100.0, result[0]["total"])
+
 
 class FakeCreativeAnalyzer:
     def __init__(self, *, version="fixture-v1", only_role=None, on_analyze=None):
@@ -176,6 +336,23 @@ class FakeCreativeAnalyzer:
 class FailingCourseRanker(FakeCreativeAnalyzer):
     def rank_course_windows(self, _windows, _theme):
         raise ContentEngineError("cloud_request_failed", "offline")
+
+
+class SupoClipEvidenceRanker(FakeCreativeAnalyzer):
+    def rank_course_windows(self, windows, _theme, *, experiment_mode=None):
+        if experiment_mode != "supoclip_bailian_v1":
+            raise AssertionError("missing experiment mode")
+        return [
+            {
+                "id": item["signature"],
+                "hook": 999,
+                "engagement": -4,
+                # value, shareability and total intentionally omitted so the
+                # domain must derive them from the existing local evidence.
+                "reason": ["开场可直接核验"],
+            }
+            for item in windows
+        ]
 
 
 class FakeCreativeRenderer:
@@ -559,6 +736,61 @@ class CreativeWorkbenchTests(unittest.TestCase):
             [],
             self.service.list_generated_videos(project_id=task["project_id"])["items"],
         )
+
+    def test_supoclip_course_scores_use_four_bounded_dimensions_with_evidence_fallback(self):
+        asset_id = self._insert_asset("supoclip-course.mp4", duration_ms=180_000)
+        analyzer = SupoClipEvidenceRanker()
+        self.service.creative_domain.analyzer = analyzer
+        self._run(self.service.analyze_assets([asset_id])["task_id"])
+        segments = self.service.creative_domain._segments_for_assets(
+            [asset_id], transcript_only=True
+        )
+
+        windows = self.service.creative_domain._course_windows(
+            segments,
+            30_000,
+            90_000,
+            3,
+            theme="培训现场价值",
+            experiment_mode="supoclip_bailian_v1",
+        )
+
+        self.assertEqual(3, len(windows))
+        for window in windows:
+            score = window["score"]
+            self.assertEqual("supoclip_bailian_editor", score["selection_engine"])
+            self.assertEqual(25.0, score["hook"])
+            self.assertEqual(0.0, score["engagement"])
+            self.assertTrue(0 <= score["value"] <= 25)
+            self.assertTrue(0 <= score["shareability"] <= 25)
+            self.assertTrue(0 <= score["virality_total"] <= 100)
+            self.assertEqual(["开场可直接核验"], score["editor_reason"])
+
+    def test_supoclip_course_task_persists_isolated_recipe_and_finishes(self):
+        asset_id = self._insert_asset("supoclip-render.mp4", duration_ms=180_000)
+        self.service.creative_domain.analyzer = SupoClipEvidenceRanker()
+        self._run(self.service.analyze_assets([asset_id])["task_id"])
+
+        task = self.service.creative_domain.create_course_task(
+            asset_id,
+            count=2,
+            experiment_mode="supoclip_bailian_v1",
+            subtitle_preset="energetic_talking",
+        )
+        finished = self._run(task["task_id"])
+
+        self.assertEqual("completed", finished["status"])
+        rows = self.service.connection.execute(
+            "SELECT recipe_json, score_json FROM generated_videos WHERE project_id = ?",
+            (task["project_id"],),
+        ).fetchall()
+        self.assertEqual(2, len(rows))
+        for row in rows:
+            recipe = json.loads(row["recipe_json"])
+            score = json.loads(row["score_json"])
+            self.assertEqual("supoclip_bailian_v1", recipe["experiment_mode"])
+            self.assertEqual("energetic_talking", recipe["subtitle_style"]["preset"])
+            self.assertEqual("supoclip_bailian_editor", score["selection_engine"])
 
     def test_mix_batch_uses_three_roles_and_reports_quality_limited_capacity(self):
         voice_id = self._insert_asset("voice.mp4", duration_ms=180_000)

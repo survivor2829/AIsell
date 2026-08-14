@@ -4,6 +4,7 @@ import base64
 import hashlib
 import http.client
 import json
+import math
 import mimetypes
 import os
 from pathlib import Path
@@ -331,31 +332,67 @@ class DashScopeMediaClient:
         return results
 
     def rank_course_candidates(
-        self, candidates: list[dict[str, Any]], theme: str
+        self,
+        candidates: list[dict[str, Any]],
+        theme: str,
+        *,
+        experiment_mode: str | None = None,
     ) -> list[dict[str, Any]]:
         if not self.configured or not candidates:
             return []
-        safe_candidates = [
-            {
+        is_supoclip_experiment = experiment_mode == "supoclip_bailian_v1"
+        safe_candidates = []
+        for item in candidates[:48]:
+            safe_item = {
                 "id": str(item.get("id") or "")[:80],
                 "duration_seconds": round(int(item.get("duration_ms") or 0) / 1000, 1),
                 "transcript": str(item.get("transcript") or "")[:800],
             }
-            for item in candidates[:48]
-        ]
-        prompt = (
-            "你是短视频课程内容主编。只依据转写文本评价候选片段，不得虚构。"
-            "主题是：" + str(theme)[:100] + "。"
-            "请为每个候选分别给出0到1之间的 opening_hook（前5秒是否吸引人）、"
-            "standalone_value（脱离上下文仍有明确收获）、content_completeness（观点是否完整）、"
-            "language_quality（口头语少且连贯）、theme_relevance（与主题贴合度）。"
-            "不要因为文字多就给高分；从半句话开始、只有铺垫、重复内容必须降分。"
-            "reason只写1到3条可核验的中文短理由。严格返回JSON对象："
-            '{"candidates":[{"id":"...","opening_hook":0.0,'
-            '"standalone_value":0.0,"content_completeness":0.0,'
-            '"language_quality":0.0,"theme_relevance":0.0,"reason":["..."]}]}。'
-            "候选数据：" + json.dumps(safe_candidates, ensure_ascii=False, separators=(",", ":"))
-        )
+            if is_supoclip_experiment:
+                safe_item.update(
+                    {
+                        "start_ms": max(0, int(item.get("start_ms") or 0)),
+                        "end_ms": max(0, int(item.get("end_ms") or 0)),
+                        "visual": [
+                            {
+                                "shot_type": str(frame.get("shot_type") or "unknown")[:64],
+                                "tags": [str(tag)[:64] for tag in (frame.get("tags") or [])[:12]],
+                                "quality": frame.get("quality"),
+                                "visual_caption": str(frame.get("visual_caption") or "")[:300],
+                            }
+                            for frame in (item.get("visual") or [])[:12]
+                            if isinstance(frame, dict)
+                        ],
+                    }
+                )
+            safe_candidates.append(safe_item)
+        if is_supoclip_experiment:
+            prompt = (
+                "你是中文知识短视频主编。只能依据候选的真实转写和画面证据评分，"
+                "不得虚构课程效果、人物身份或学员反馈。主题是：" + str(theme)[:100] + "。"
+                "为每个候选给出四项0到25分的整数或小数：hook（前5秒的明确吸引力）、"
+                "engagement（语言节奏和持续观看动力）、value（独立且完整的知识收获）、"
+                "shareability（值得收藏或转发的程度）。total为四项综合分，范围0到100。"
+                "半句话开场、依赖上文、重复铺垫、声音或画面证据差必须降分。"
+                "reason只写1到3条可核验的中文短理由。严格返回JSON对象："
+                '{"candidates":[{"id":"...","hook":0,"engagement":0,'
+                '"value":0,"shareability":0,"total":0,"reason":["..."]}]}。'
+                "候选数据：" + json.dumps(safe_candidates, ensure_ascii=False, separators=(",", ":"))
+            )
+        else:
+            prompt = (
+                "你是短视频课程内容主编。只依据转写文本评价候选片段，不得虚构。"
+                "主题是：" + str(theme)[:100] + "。"
+                "请为每个候选分别给出0到1之间的 opening_hook（前5秒是否吸引人）、"
+                "standalone_value（脱离上下文仍有明确收获）、content_completeness（观点是否完整）、"
+                "language_quality（口头语少且连贯）、theme_relevance（与主题贴合度）。"
+                "不要因为文字多就给高分；从半句话开始、只有铺垫、重复内容必须降分。"
+                "reason只写1到3条可核验的中文短理由。严格返回JSON对象："
+                '{"candidates":[{"id":"...","opening_hook":0.0,'
+                '"standalone_value":0.0,"content_completeness":0.0,'
+                '"language_quality":0.0,"theme_relevance":0.0,"reason":["..."]}]}。'
+                "候选数据：" + json.dumps(safe_candidates, ensure_ascii=False, separators=(",", ":"))
+            )
         response = self._request_json(
             f"{self.compatible_origin}/chat/completions",
             method="POST",
@@ -376,16 +413,32 @@ class DashScopeMediaClient:
             if not isinstance(item, dict) or str(item.get("id") or "") not in allowed_ids:
                 continue
             normalized = {"id": str(item["id"])}
-            for field in (
-                "opening_hook",
-                "standalone_value",
-                "content_completeness",
-                "language_quality",
-                "theme_relevance",
-            ):
+            fields = (
+                ("hook", "engagement", "value", "shareability", "total")
+                if is_supoclip_experiment
+                else (
+                    "opening_hook",
+                    "standalone_value",
+                    "content_completeness",
+                    "language_quality",
+                    "theme_relevance",
+                )
+            )
+            for field in fields:
                 value = item.get(field)
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    normalized[field] = max(0.0, min(1.0, float(value)))
+                if (
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(float(value))
+                ):
+                    maximum = (
+                        100.0
+                        if field == "total"
+                        else 25.0
+                        if is_supoclip_experiment
+                        else 1.0
+                    )
+                    normalized[field] = max(0.0, min(maximum, float(value)))
             normalized["reason"] = [
                 str(reason).strip()[:60]
                 for reason in (item.get("reason") or [])[:3]
@@ -441,16 +494,29 @@ class FFmpegCreativeAnalyzer:
         if result.returncode != 0:
             raise ContentEngineError("analysis_failed", (result.stderr or "FFmpeg failed")[-2_000:])
 
-    def rank_course_windows(self, windows, theme):
+    def rank_course_windows(self, windows, theme, *, experiment_mode=None):
         candidates = [
             {
                 "id": item.get("signature"),
+                "start_ms": item.get("start_ms"),
+                "end_ms": item.get("end_ms"),
                 "duration_ms": item.get("duration_ms"),
                 "transcript": item.get("transcript"),
+                "visual": [
+                    {
+                        "shot_type": segment.get("shot_type"),
+                        "tags": segment.get("tags") or [],
+                        "quality": segment.get("quality_score"),
+                        "visual_caption": (segment.get("metadata") or {}).get("visual_caption"),
+                    }
+                    for segment in item.get("segments") or []
+                ],
             }
             for item in windows
         ]
-        return self.cloud_client.rank_course_candidates(candidates, theme)
+        return self.cloud_client.rank_course_candidates(
+            candidates, theme, experiment_mode=experiment_mode
+        )
 
     def analyze(self, *, asset, source_path, task_id, profile, should_stop):
         if not self.capability["available"]:
