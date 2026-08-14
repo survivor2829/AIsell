@@ -965,9 +965,19 @@ class CreativeDomain:
                 for item in rankings
                 if isinstance(item, dict)
             }
+            if experiment_mode == "supoclip_bailian_v1":
+                shortlist = [
+                    item for item in shortlist
+                    if item["signature"] in ranking_by_id
+                ]
+                if not shortlist:
+                    raise ContentEngineError(
+                        "course_editor_unavailable",
+                        "百炼内容主编没有返回有效候选，本次未使用本地评分冒充 AI 推荐，请稍后重试。",
+                    )
             for item in shortlist:
-                ranking = ranking_by_id.get(item["signature"]) or {}
-                if not ranking and experiment_mode != "supoclip_bailian_v1":
+                ranking = ranking_by_id.get(item["signature"])
+                if not ranking:
                     continue
                 score = item["score"]
                 if experiment_mode == "supoclip_bailian_v1":
@@ -1060,7 +1070,6 @@ class CreativeDomain:
                         "editor_reason": ranking.get("reason") or [],
                     }
                 )
-            windows.sort(key=lambda item: (-item["score"]["total"], item["start_ms"]))
             if experiment_mode == "supoclip_bailian_v1":
                 # Only candidates actually sent through the isolated editor are
                 # eligible for this experiment. If diversity reduces capacity,
@@ -1068,6 +1077,10 @@ class CreativeDomain:
                 windows = sorted(
                     shortlist,
                     key=lambda item: (-item["score"]["total"], item["start_ms"]),
+                )
+            else:
+                windows.sort(
+                    key=lambda item: (-item["score"]["total"], item["start_ms"])
                 )
         selected = []
         signatures = set()

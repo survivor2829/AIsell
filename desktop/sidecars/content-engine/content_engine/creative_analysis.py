@@ -495,25 +495,32 @@ class FFmpegCreativeAnalyzer:
             raise ContentEngineError("analysis_failed", (result.stderr or "FFmpeg failed")[-2_000:])
 
     def rank_course_windows(self, windows, theme, *, experiment_mode=None):
-        candidates = [
-            {
+        candidates = []
+        for item in windows[:48]:
+            candidate = {
                 "id": item.get("signature"),
-                "start_ms": item.get("start_ms"),
-                "end_ms": item.get("end_ms"),
                 "duration_ms": item.get("duration_ms"),
                 "transcript": item.get("transcript"),
-                "visual": [
-                    {
-                        "shot_type": segment.get("shot_type"),
-                        "tags": segment.get("tags") or [],
-                        "quality": segment.get("quality_score"),
-                        "visual_caption": (segment.get("metadata") or {}).get("visual_caption"),
-                    }
-                    for segment in item.get("segments") or []
-                ],
             }
-            for item in windows
-        ]
+            if experiment_mode == "supoclip_bailian_v1":
+                candidate.update(
+                    {
+                        "start_ms": item.get("start_ms"),
+                        "end_ms": item.get("end_ms"),
+                        "visual": [
+                            {
+                                "shot_type": segment.get("shot_type"),
+                                "tags": segment.get("tags") or [],
+                                "quality": segment.get("quality_score"),
+                                "visual_caption": (
+                                    segment.get("metadata") or {}
+                                ).get("visual_caption"),
+                            }
+                            for segment in (item.get("segments") or [])[:12]
+                        ],
+                    }
+                )
+            candidates.append(candidate)
         return self.cloud_client.rank_course_candidates(
             candidates, theme, experiment_mode=experiment_mode
         )

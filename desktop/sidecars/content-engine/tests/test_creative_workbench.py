@@ -355,6 +355,13 @@ class SupoClipEvidenceRanker(FakeCreativeAnalyzer):
         ]
 
 
+class EmptySupoClipRanker(FakeCreativeAnalyzer):
+    def rank_course_windows(self, _windows, _theme, *, experiment_mode=None):
+        if experiment_mode != "supoclip_bailian_v1":
+            raise AssertionError("missing experiment mode")
+        return []
+
+
 class FakeCreativeRenderer:
     def __init__(self, *, on_render=None):
         self.on_render = on_render
@@ -765,6 +772,26 @@ class CreativeWorkbenchTests(unittest.TestCase):
             self.assertTrue(0 <= score["shareability"] <= 25)
             self.assertTrue(0 <= score["virality_total"] <= 100)
             self.assertEqual(["开场可直接核验"], score["editor_reason"])
+
+    def test_supoclip_course_requires_at_least_one_bailian_ranking(self):
+        asset_id = self._insert_asset("supoclip-empty-ranking.mp4", duration_ms=180_000)
+        self.service.creative_domain.analyzer = EmptySupoClipRanker()
+        self._run(self.service.analyze_assets([asset_id])["task_id"])
+        segments = self.service.creative_domain._segments_for_assets(
+            [asset_id], transcript_only=True
+        )
+
+        with self.assertRaises(ContentEngineError) as raised:
+            self.service.creative_domain._course_windows(
+                segments,
+                30_000,
+                90_000,
+                3,
+                theme="培训现场价值",
+                experiment_mode="supoclip_bailian_v1",
+            )
+
+        self.assertEqual("course_editor_unavailable", raised.exception.code)
 
     def test_supoclip_course_task_persists_isolated_recipe_and_finishes(self):
         asset_id = self._insert_asset("supoclip-render.mp4", duration_ms=180_000)

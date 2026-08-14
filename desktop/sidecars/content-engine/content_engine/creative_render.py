@@ -96,8 +96,11 @@ class FFmpegCreativeRenderer:
             kind = recipe.get("kind")
             output = temp_dir / "video.mp4"
             captions = recipe.get("captions") or []
-            self._write_srt(temp_dir / "captions.srt", captions, recipe)
-            subtitle = self._write_ass(temp_dir / "captions.ass", captions, recipe)
+            cues = self._caption_cues(captions, recipe)
+            self._write_srt(temp_dir / "captions.srt", captions, recipe, cues=cues)
+            subtitle = self._write_ass(
+                temp_dir / "captions.ass", captions, recipe, cues=cues
+            )
             if kind == "course":
                 self._render_course(recipe, output, subtitle, resolve_asset_path)
             elif kind == "mix":
@@ -467,8 +470,8 @@ class FFmpegCreativeRenderer:
         return sum(0.55 if ord(character) < 128 else 1.0 for character in text)
 
     @classmethod
-    def _write_ass(cls, path, captions, recipe):
-        cues = cls._caption_cues(captions, recipe)
+    def _write_ass(cls, path, captions, recipe, *, cues=None):
+        cues = cls._caption_cues(captions, recipe) if cues is None else cues
         if not cues:
             return None
         style = recipe.get("subtitle_style") or {}
@@ -587,8 +590,8 @@ class FFmpegCreativeRenderer:
         return f"{hours}:{minutes:02d}:{seconds:02d}.{millis // 10:02d}"
 
     @classmethod
-    def _write_srt(cls, path, captions, recipe):
-        cues = cls._caption_cues(captions, recipe)
+    def _write_srt(cls, path, captions, recipe, *, cues=None):
+        cues = cls._caption_cues(captions, recipe) if cues is None else cues
         if not cues:
             return None
 
