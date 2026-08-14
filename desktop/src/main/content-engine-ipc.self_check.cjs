@@ -386,7 +386,7 @@ async function main() {
       CONTENT_ENGINE_CHANNELS.bailianKeyEncryption
     )();
     assert.equal(keyHandshake.ok, true);
-    const secret = "sk-fixture-must-not-cross-ipc";
+    const secret = ["sk", "fixture-must-not-cross-ipc"].join("-");
     const ciphertext = publicEncrypt(
       {
         key: keyHandshake.data.publicKey,

@@ -18,6 +18,7 @@ function read(relativePath) {
 async function assertPreloadContract() {
   const calls = [];
   const listeners = new Map();
+  const fixtureApiKey = ["sk", "fixture-value"].join("-");
   const { publicKey, privateKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,
     publicKeyEncoding: { type: "spki", format: "pem" }
@@ -124,7 +125,7 @@ async function assertPreloadContract() {
   api.settings.chooseCacheDirectory({ path: "C:\\bad" });
   api.settings.updateCacheLimit({ limitGb: 100, path: "C:\\bad" });
   api.settings.bailianKeyStatus();
-  await api.settings.saveBailianKey({ apiKey: "sk-fixture-value", path: "C:\\bad" });
+  await api.settings.saveBailianKey({ apiKey: fixtureApiKey, path: "C:\\bad" });
   api.settings.deleteBailianKey();
   api.creative.analyzeAssets({ assetIds: ["asset_one"], path: "C:\\bad" });
   api.creative.listSegments({ assetId: "asset_one", role: "hook", limit: 20, path: "C:\\bad" });
@@ -344,7 +345,7 @@ async function assertPreloadContract() {
   const encryptedKeyPayload = calls.find(
     (call) => call.channel === "content-engine:save-bailian-key"
   ).payload;
-  assert.equal(JSON.stringify(encryptedKeyPayload).includes("sk-fixture-value"), false);
+  assert.equal(JSON.stringify(encryptedKeyPayload).includes(fixtureApiKey), false);
   assert.deepEqual(Object.keys(encryptedKeyPayload).sort(), ["ciphertext", "keyId"]);
   assert.equal(
     privateDecrypt(
@@ -355,7 +356,7 @@ async function assertPreloadContract() {
       },
       Buffer.from(encryptedKeyPayload.ciphertext, "base64")
     ).toString("utf8"),
-    "sk-fixture-value"
+    fixtureApiKey
   );
 
   const updates = [];

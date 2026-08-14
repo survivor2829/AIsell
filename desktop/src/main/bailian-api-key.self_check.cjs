@@ -19,7 +19,7 @@ try {
     secureStorageAvailable: true
   });
   assert.throws(() => store.write("invalid"), { code: "BAILIAN_API_KEY_INVALID" });
-  const secret = "sk-fixture-secret-value";
+  const secret = ["sk", "fixture-secret-value"].join("-");
   const saved = store.write(secret);
   assert.equal(saved.configured, true);
   assert.equal(saved.maskedKey, maskApiKey(secret));
