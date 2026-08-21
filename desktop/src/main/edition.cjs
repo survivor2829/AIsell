@@ -1,6 +1,15 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
+function isPackagedElectron() {
+  try {
+    const electron = require("electron");
+    return electron?.app?.isPackaged === true;
+  } catch {
+    return false;
+  }
+}
+
 function packagedEdition() {
   try {
     const marker = JSON.parse(fs.readFileSync(path.join(__dirname, "../../dist/build-edition.json"), "utf8"));
@@ -10,7 +19,7 @@ function packagedEdition() {
   }
 }
 
-const environmentEdition = String(process.env.XIAOXI_EDITION || "");
+const environmentEdition = isPackagedElectron() ? "" : String(process.env.XIAOXI_EDITION || "");
 const requestedEdition = String(environmentEdition || packagedEdition() || "pilot");
 const developmentEdition = requestedEdition === "development" && fs.existsSync(path.join(__dirname, "preload.dev.cjs"));
 const pilotEdition = requestedEdition === "pilot"

@@ -16,14 +16,23 @@ const {
   isProductDetailArchivePythonSource,
   isProductDetailPythonSource,
   resolveProductDetailBuild,
+  runPackagedProductDetailLifecycleSmoke,
+  runPackagedProductDetailReleaseGate,
   runPackagedProductDetailSelfCheck,
   validateBuildManifest,
   validateReleaseDescriptor
 } = require("./product-detail-release-runtime.cjs");
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-product-detail-release-"));
+function main() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-product-detail-release-"));
+  try {
+    run(root);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
 
-try {
+function run(root) {
   const desktopDir = path.join(root, "desktop");
   const buildRoot = path.join(desktopDir, ".build");
   const runtimeDir = path.join(buildRoot, "product-detail-runtime");
@@ -188,6 +197,140 @@ try {
   assert.deepEqual(observedCall.args, ["--self-check", "--data-dir", dataDir]);
   assert.equal(observedCall.options.cwd, packagedDir);
   assert.equal(observedCall.options.env.PYTHONUTF8, "1");
+  assert.equal(payload.verifiedResourcesTreeSha256, treeSha256(resourcesDir));
+
+  const packagedAppDir = path.join(resourcesDir, "app", "src", "main");
+  const electronExecutable = path.join(releaseTarget, "fixture-electron.exe");
+  fs.mkdirSync(packagedAppDir, { recursive: true });
+  fs.writeFileSync(electronExecutable, "fixture-electron", "utf8");
+  const lifecycleDataDir = path.join(root, "lifecycle-product-detail-data");
+  const lifecycleResult = {
+    ok: true,
+    version: descriptor.version,
+    ipc: true,
+    health: true,
+    stopped: true
+  };
+  let lifecycleCall = null;
+  const lifecycleOutput = runPackagedProductDetailLifecycleSmoke({
+    releaseTarget,
+    resourcesDir,
+    descriptor,
+    dataDir: lifecycleDataDir,
+    electronExecutable,
+    verifiedResourcesTreeSha256: treeSha256(resourcesDir),
+    parentEnvironment: {
+      ELECTRON_RUN_AS_NODE: "1",
+      VITE_DEV_SERVER_URL: "http://127.0.0.1:5173",
+      XIAOXI_EDITION: "development",
+      XIAOXI_UNRELATED_VALUE: "kept"
+    },
+    spawn: (executable, args, options) => {
+      lifecycleCall = { executable, args, options };
+      assert.equal(fs.existsSync(lifecycleDataDir), false, "lifecycle smoke must pass a fresh data directory");
+      fs.mkdirSync(lifecycleDataDir, { recursive: false });
+      fs.writeFileSync(
+        path.join(lifecycleDataDir, "product-detail-release-smoke.json"),
+        JSON.stringify(lifecycleResult),
+        "utf8"
+      );
+      return { status: 0, stdout: "product-detail packaged main-process smoke passed", stderr: "" };
+    }
+  });
+  assert.deepEqual(lifecycleOutput, lifecycleResult);
+  assert.equal(lifecycleCall.executable, electronExecutable);
+  assert.deepEqual(lifecycleCall.args, []);
+  assert.equal(lifecycleCall.options.cwd, releaseTarget);
+  assert.equal(lifecycleCall.options.env.XIAOXI_PRODUCT_DETAIL_RELEASE_SMOKE, "1");
+  assert.equal(lifecycleCall.options.env.XIAOXI_PRODUCT_DETAIL_RELEASE_SMOKE_DATA_DIR, lifecycleDataDir);
+  assert.equal(Object.hasOwn(lifecycleCall.options.env, "ELECTRON_RUN_AS_NODE"), false);
+  assert.equal(Object.hasOwn(lifecycleCall.options.env, "VITE_DEV_SERVER_URL"), false);
+  assert.equal(Object.hasOwn(lifecycleCall.options.env, "XIAOXI_EDITION"), false);
+  assert.equal(lifecycleCall.options.env.XIAOXI_UNRELATED_VALUE, "kept");
+
+  const gateDataDir = path.join(root, "product-detail-release-gate");
+  const gateCalls = [];
+  const gate = runPackagedProductDetailReleaseGate({
+    releaseTarget,
+    resourcesDir,
+    descriptor,
+    electronExecutable,
+    dataDir: gateDataDir,
+    runSelfCheck: (options) => {
+      gateCalls.push({ type: "self-check", options });
+      return { version: descriptor.version, verifiedResourcesTreeSha256: "gate-tree-hash" };
+    },
+    runLifecycleSmoke: (options) => {
+      gateCalls.push({ type: "lifecycle", options });
+      return lifecycleResult;
+    }
+  });
+  assert.equal(fs.existsSync(gateDataDir), true);
+  assert.equal(gate.selfCheck.version, descriptor.version);
+  assert.deepEqual(gate.lifecycle, lifecycleResult);
+  assert.deepEqual(gateCalls.map((call) => call.type), ["self-check", "lifecycle"]);
+  assert.equal(gateCalls[0].options.dataDir, path.join(gateDataDir, "self-check"));
+  assert.equal(gateCalls[1].options.dataDir, path.join(gateDataDir, "lifecycle"));
+  assert.equal(gateCalls[1].options.verifiedResourcesTreeSha256, "gate-tree-hash");
+  assert.throws(
+    () => runPackagedProductDetailReleaseGate({
+      releaseTarget,
+      resourcesDir,
+      descriptor,
+      electronExecutable,
+      dataDir: gateDataDir
+    }),
+    /release-gate data directory must be fresh/
+  );
+
+  assert.throws(
+    () => runPackagedProductDetailLifecycleSmoke({
+      releaseTarget,
+      resourcesDir,
+      descriptor,
+      dataDir: path.join(root, "missing-result-lifecycle-product-detail-data"),
+      electronExecutable,
+      spawn: () => ({ status: 0, stdout: "", stderr: "" })
+    }),
+    /did not write a result/,
+    "a lifecycle smoke without a verified main-process result must block release"
+  );
+
+  assert.throws(
+    () => runPackagedProductDetailLifecycleSmoke({
+      releaseTarget,
+      resourcesDir,
+      descriptor,
+      dataDir: path.join(root, "failed-lifecycle-product-detail-data"),
+      electronExecutable,
+      spawn: () => ({ status: 1, stdout: "", stderr: "packaged controller failed" })
+    }),
+    /packaged controller failed/,
+    "a packaged lifecycle failure must block release"
+  );
+  assert.throws(
+    () => runPackagedProductDetailLifecycleSmoke({
+      releaseTarget,
+      resourcesDir,
+      descriptor,
+      dataDir: path.join(root, "mutating-lifecycle-product-detail-data"),
+      electronExecutable,
+      spawn: (_executable, _args, options) => {
+        const smokeDataDir = options.env.XIAOXI_PRODUCT_DETAIL_RELEASE_SMOKE_DATA_DIR;
+        fs.mkdirSync(smokeDataDir, { recursive: false });
+        fs.writeFileSync(
+          path.join(smokeDataDir, "product-detail-release-smoke.json"),
+          JSON.stringify(lifecycleResult),
+          "utf8"
+        );
+        fs.writeFileSync(path.join(resourcesDir, "mutated-lifecycle.txt"), "changed", "utf8");
+        return { status: 0, stdout: "passed", stderr: "" };
+      },
+    }),
+    /changed portable resources/,
+    "lifecycle smoke must prove that packaged resources remain immutable"
+  );
+  fs.rmSync(path.join(resourcesDir, "mutated-lifecycle.txt"), { force: true });
 
   assert.throws(
     () => runPackagedProductDetailSelfCheck({
@@ -229,6 +372,11 @@ try {
   );
 
   console.log("product-detail portable release runtime self-check passed");
-} finally {
-  fs.rmSync(root, { recursive: true, force: true });
+}
+
+try {
+  main();
+} catch (error) {
+  console.error(error);
+  process.exitCode = 1;
 }

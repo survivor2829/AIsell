@@ -327,6 +327,33 @@ async function main() {
 
     {
       let child;
+      const controller = createProductDetailSidecar({
+        runtimePath,
+        dataDir,
+        startupTimeoutMs: 100,
+        stopTimeoutMs: 5,
+        spawnProcess: () => {
+          child = new FakeChild({ closeOnKill: false });
+          return child;
+        },
+        requestShutdown: async () => {
+          throw new Error("force fallback");
+        }
+      });
+      const started = controller.start();
+      await waitFor(() => Boolean(child));
+      ready(child);
+      await started;
+      const stopped = await controller.stop();
+      assert.equal(stopped.state, "failed");
+      assert.equal(stopped.code, "PRODUCT_DETAIL_STOP_TIMEOUT");
+      assert.deepEqual(child.killedSignals, ["SIGTERM"]);
+      assert.equal(controller.status().state, "failed");
+      await controller.dispose();
+    }
+
+    {
+      let child;
       let spawnCount = 0;
       const controller = createProductDetailSidecar({
         runtimePath,
@@ -376,17 +403,15 @@ async function main() {
       await waitFor(() => children.length === 1);
       ready(children[0]);
       await first;
-      const restarted = controller.restart();
-      await waitFor(() => children.length === 2);
-      ready(children[1], { port: 43125 });
-      await restarted;
+      const stopped = await controller.stop();
+      assert.equal(stopped.code, "PRODUCT_DETAIL_STOP_TIMEOUT");
+      const restarted = await controller.restart();
+      assert.equal(restarted.code, "PRODUCT_DETAIL_STOP_TIMEOUT");
+      const startedAgain = await controller.start();
+      assert.equal(startedAgain.code, "PRODUCT_DETAIL_STOP_TIMEOUT");
+      assert.equal(children.length, 1, "a non-closing sidecar must not be replaced");
       children[0].emit("close", null, "SIGTERM");
-      await new Promise((resolve) => setImmediate(resolve));
-      assert.equal(
-        controller.status().origin,
-        "http://localhost:43125",
-        "a stale child exit must not overwrite the current ready state"
-      );
+      await waitFor(() => controller.status().state === "stopped");
       await controller.dispose();
     }
 

@@ -408,7 +408,11 @@ function createProductDetailSidecar(options = {}) {
     );
     const waitForStop = stopPromise || (hasOldRun ? stop() : Promise.resolve());
     startPromise = waitForStop
-      .then(() => beginStart())
+      .then((stopped) => {
+        if (stopped?.state && stopped.state !== "stopped") return stopped;
+        if (currentRun && !currentRun.closed) return status();
+        return beginStart();
+      })
       .finally(() => {
         startPromise = null;
       });
@@ -451,9 +455,9 @@ function createProductDetailSidecar(options = {}) {
     }
 
     if (!closed) {
-      run.closed = true;
-      settleCloseWaiters(run);
-      if (currentRun === run) currentRun = null;
+      const result = setTerminalState("failed", "PRODUCT_DETAIL_STOP_TIMEOUT");
+      if (typeof run.settleStart === "function") run.settleStart(result);
+      return result;
     }
     const result = setTerminalState("stopped");
     if (typeof run.settleStart === "function") run.settleStart(result);
@@ -469,8 +473,8 @@ function createProductDetailSidecar(options = {}) {
   }
 
   async function restart() {
-    await stop();
-    if (disposed) return status();
+    const stopped = await stop();
+    if (disposed || stopped.state !== "stopped") return stopped;
     return start();
   }
 
