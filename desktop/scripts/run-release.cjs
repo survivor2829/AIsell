@@ -1,30 +1,19 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const desktopDir = path.resolve(__dirname, "..");
-const projectDir = path.resolve(desktopDir, "..");
-
-function gitText(args) {
-  const result = spawnSync("git", args, {
-    cwd: projectDir,
-    encoding: "utf8",
-    windowsHide: true
-  });
-  if (result.error || result.status !== 0) {
-    throw new Error(result.stderr || result.error?.message || `git ${args.join(" ")} failed`);
-  }
-  return String(result.stdout || "").trim();
-}
 
 function createBuildRoot() {
-  const commit = gitText(["rev-parse", "--short=7", "HEAD"]);
-  const rootParent = path.join(desktopDir, ".build", "s");
+  // The bundled Playwright browser has a deep tree. Keep the transient build
+  // root short enough for Windows before any PyInstaller copy begins.
+  const rootParent = path.join(os.tmpdir(), "x");
   fs.mkdirSync(rootParent, { recursive: true });
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    const nonce = crypto.randomBytes(3).toString("hex");
-    const candidate = path.join(rootParent, `${commit}-${nonce}`);
+    const nonce = crypto.randomBytes(4).toString("hex");
+    const candidate = path.join(rootParent, nonce);
     if (!fs.existsSync(candidate)) return candidate;
   }
   throw new Error("Unable to allocate a fresh release staging root");

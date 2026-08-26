@@ -16,6 +16,7 @@ const {
   sourceProvenance,
   validateSelfCheckPayload
 } = require("./build-product-detail-sidecar.cjs");
+const { createBuildRoot } = require("./run-release.cjs");
 
 const paths = resolveBuildPaths();
 assert.equal(
@@ -69,6 +70,11 @@ assert.throws(
   () => assertWindowsPathBudget(tooDeepPaths),
   /staging root is too deep/,
   "the build must reject a staging path that would exceed the Windows Playwright path budget"
+);
+const releaseStagingPaths = resolveBuildPaths(undefined, { buildRoot: createBuildRoot() });
+assert.doesNotThrow(
+  () => assertWindowsPathBudget(releaseStagingPaths),
+  "release orchestration must choose a staging root that fits the bundled Playwright browser on Windows"
 );
 
 assert.equal(ensureSafeBuildTarget(paths.outputDir, paths.buildRoot), paths.outputDir);
