@@ -41,7 +41,8 @@ const sharedScanSkips = new Set(["node_modules", "dist", "dist-development", "di
 const sourceOnlyScanSkips = new Set([".build", ".pytest_cache", "__pycache__"]);
 const allowedSourceEnvExamples = new Set([
   path.join(desktopDir, "sidecars", "product-detail", "app", ".env.example")
-].map((file) => path.resolve(file)));const allowedSourceKeyFixtures = new Set([
+].map((file) => path.resolve(file)));
+const allowedSourceKeyFixtures = new Set([
   ".env.example",
   "conftest.py",
   "docs/superpowers/plans/2026-05-06-P3-key-platform-implementation.md",
@@ -57,6 +58,18 @@ const allowedSourceEnvExamples = new Set([
   "app",
   ...relative.split("/")
 )));
+
+// These synthetic key-shaped values exercise redaction and provider-security
+// behavior. They are source-only test fixtures: the portable release scan below
+// intentionally receives no exception.
+for (const fixture of [
+  path.join(desktopDir, "sidecars", "content-engine", "tests", "test_motion_director.py"),
+  path.join(desktopDir, "sidecars", "content-engine", "tests", "test_provider_security.py"),
+  path.join(desktopDir, "src", "main", "content-engine-ipc.self_check.cjs"),
+  path.join(desktopDir, "src", "main", "content-engine-sidecar.self_check.cjs")
+]) {
+  allowedSourceKeyFixtures.add(path.resolve(fixture));
+}
 
 function skipScanDirectory(name, sourceScan) {
   return sharedScanSkips.has(name) || (sourceScan && sourceOnlyScanSkips.has(name));
