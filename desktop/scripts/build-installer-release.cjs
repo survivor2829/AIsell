@@ -82,7 +82,7 @@ function replaceCanonicalFile(staged, canonical) {
     }
     throw error;
   }
-  if (backedUp && fs.existsSync(backup)) fs.rmSync(backup, { force: true });
+  return backedUp ? backup : null;
 }
 
 function buildInstaller() {
@@ -152,11 +152,14 @@ function buildInstaller() {
     };
     fs.writeFileSync(stagedManifest, `${JSON.stringify(installerManifest, null, 2)}\n`, "utf8");
 
-    replaceCanonicalFile(stagedInstaller, canonicalInstaller);
-    replaceCanonicalFile(stagedManifest, canonicalManifest);
+    const retainedBackups = [
+      replaceCanonicalFile(stagedInstaller, canonicalInstaller),
+      replaceCanonicalFile(stagedManifest, canonicalManifest)
+    ].filter(Boolean);
+    for (const backup of retainedBackups) console.warn(`installer rollback artifact retained: ${backup}`);
     console.log(`delivery installer built: ${canonicalInstaller}`);
     console.log(`sha256: ${installerManifest.sha256}`);
-    return { installer: canonicalInstaller, manifest: canonicalManifest, installerManifest };
+    return { installer: canonicalInstaller, manifest: canonicalManifest, installerManifest, retainedBackups };
   } finally {
     if (fs.existsSync(stagingDir)) fs.rmSync(stagingDir, { recursive: true, force: true });
   }

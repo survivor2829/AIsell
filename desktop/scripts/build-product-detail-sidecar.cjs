@@ -13,6 +13,7 @@ const {
 } = require("../src/main/product-detail-source-scope.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
+const WINDOWS_PATH_BUDGET = 240;
 
 function resolveBuildPaths(root = desktopDir, { buildRoot: requestedBuildRoot = null } = {}) {
   const resolvedDesktopDir = path.resolve(root);
@@ -327,6 +328,37 @@ function assertBuildInputs(paths) {
   }
 }
 
+function longestRelativeFilePath(root) {
+  let longest = "";
+  const visit = (directory, relativeDirectory = "") => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const relative = relativeDirectory ? path.join(relativeDirectory, entry.name) : entry.name;
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(absolute, relative);
+      else if (entry.isFile() && relative.length > longest.length) longest = relative;
+    }
+  };
+  visit(root);
+  return longest;
+}
+
+function assertWindowsPathBudget(paths) {
+  if (process.platform !== "win32" || !fs.existsSync(paths.playwrightBrowsersDir)) return;
+  const longestBrowserPath = longestRelativeFilePath(paths.playwrightBrowsersDir);
+  const destination = path.join(
+    paths.pyInstallerOutputDir,
+    "_internal",
+    "playwright-browsers",
+    longestBrowserPath
+  );
+  if (destination.length >= WINDOWS_PATH_BUDGET) {
+    throw new Error(
+      `Product-detail staging root is too deep for the bundled Playwright browser (${destination.length} characters). `
+      + "Set XIAOXI_SIDECAR_BUILD_ROOT to a shorter path such as desktop/.build/s/<short-id>."
+    );
+  }
+}
+
 function assertFreshOutput(paths) {
   const existing = [paths.outputDir, paths.manifestFile].filter((target) =>
     fs.existsSync(target)
@@ -355,6 +387,7 @@ function parseJsonOutput(result, label) {
 function main({ buildRoot = process.env.XIAOXI_SIDECAR_BUILD_ROOT || null } = {}) {
   const paths = resolveBuildPaths(desktopDir, { buildRoot });
   assertBuildInputs(paths);
+  assertWindowsPathBudget(paths);
   fs.mkdirSync(paths.buildRoot, { recursive: true });
   assertFreshOutput(paths);
   fs.mkdirSync(paths.specDir, { recursive: true });
@@ -435,6 +468,7 @@ if (require.main === module) {
 
 module.exports = {
   assertBuildInputs,
+  assertWindowsPathBudget,
   assertFreshOutput,
   buildManifest,
   buildPyInstallerArgs,
@@ -445,6 +479,7 @@ module.exports = {
   productDetailSourceTreeSha256,
   findBuildPython,
   main,
+  longestRelativeFilePath,
   pythonCandidates,
   removeBuildTarget,
   resolveBuildPaths,

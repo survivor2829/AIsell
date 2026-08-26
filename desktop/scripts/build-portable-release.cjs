@@ -182,9 +182,15 @@ function resolveSidecarBuildRoot(environment = process.env) {
   return configured ? path.resolve(configured) : null;
 }
 
+function resolveRemotionRuntimeRoot(environment = process.env) {
+  const configured = String(environment.XIAOXI_REMOTION_RUNTIME_ROOT || "").trim();
+  return configured ? path.resolve(configured) : null;
+}
+
 function assertBuildPreconditions(edition, {
   environment = process.env,
-  sidecarBuildRoot = resolveSidecarBuildRoot(environment)
+  sidecarBuildRoot = resolveSidecarBuildRoot(environment),
+  remotionRuntimeRoot = resolveRemotionRuntimeRoot(environment)
 } = {}) {
   if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported edition: ${edition}`);
   const artifactType = artifactTypeForEdition(edition);
@@ -201,7 +207,7 @@ function assertBuildPreconditions(edition, {
 
   const productDetailRuntime = resolveProductDetailBuild(desktopDir, { buildRoot: sidecarBuildRoot });
   const contentEngineRuntime = resolveContentEngineBuild(desktopDir, { buildRoot: sidecarBuildRoot });
-  const remotionRuntime = resolveRemotionRuntimeBuild(desktopDir, artifactType);
+  const remotionRuntime = resolveRemotionRuntimeBuild(desktopDir, artifactType, { runtimeRoot: remotionRuntimeRoot });
 
   const commit = gitText(["rev-parse", "HEAD"]);
   const dirty = Boolean(gitText(["status", "--porcelain"]));
@@ -214,7 +220,8 @@ function assertBuildPreconditions(edition, {
     productDetailRuntime,
     contentEngineRuntime,
     remotionRuntime,
-    sidecarBuildRoot
+    sidecarBuildRoot,
+    remotionRuntimeRoot
   };
 }
 
@@ -338,8 +345,7 @@ function publishStagedRelease({
   canonicalZip,
   stagingTarget,
   stagingZip,
-  transactionId,
-  cleanup = cleanupPaths
+  transactionId
 }) {
   for (const target of [canonicalTarget, canonicalZip, stagingTarget, stagingZip]) assertContained(releaseRoot, target);
   const backupTarget = path.join(releaseRoot, `.backup-target-${transactionId}`);
@@ -381,10 +387,13 @@ function publishStagedRelease({
     throw combineErrors(error, rollbackErrors, "Release publish failed and rollback was incomplete");
   }
 
-  const cleanupErrors = runCleanup(cleanup, [backupTarget, backupZip], "release backup");
   return {
     published: true,
-    cleanupWarnings: cleanupErrors.map((error) => error.message)
+    cleanupWarnings: [],
+    retainedBackups: [
+      ...(targetBackedUp ? [backupTarget] : []),
+      ...(zipBackedUp ? [backupZip] : [])
+    ]
   };
 }
 
@@ -404,7 +413,7 @@ function runTransactionalRelease({
   for (const target of [stagingRoot, stagingTarget, stagingZip, canonicalTarget, canonicalZip]) assertContained(releaseRoot, target);
   const sourceState = preflight();
   let result;
-  let publishResult = { published: false, cleanupWarnings: [] };
+  let publishResult = { published: false, cleanupWarnings: [], retainedBackups: [] };
   let primaryError = null;
   try {
     fs.mkdirSync(releaseRoot, { recursive: true });
@@ -417,8 +426,7 @@ function runTransactionalRelease({
       canonicalZip,
       stagingTarget,
       stagingZip,
-      transactionId,
-      cleanup
+      transactionId
     });
   } catch (error) {
     primaryError = error;
@@ -434,7 +442,8 @@ function runTransactionalRelease({
     target: canonicalTarget,
     zip: canonicalZip,
     published: publishResult.published,
-    cleanupWarnings
+    cleanupWarnings,
+    retainedBackups: publishResult.retainedBackups
   };
 }
 
@@ -455,7 +464,8 @@ function runPortableSelfCheck(edition, target, zip) {
 
 function buildPortable(edition = "delivery", {
   environment = process.env,
-  sidecarBuildRoot = resolveSidecarBuildRoot(environment)
+  sidecarBuildRoot = resolveSidecarBuildRoot(environment),
+  remotionRuntimeRoot = resolveRemotionRuntimeRoot(environment)
 } = {}) {
   if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported edition: ${edition}`);
   const productName = edition === "test" ? `${PRODUCT_NAME}-测试版` : PRODUCT_NAME;
@@ -473,7 +483,7 @@ function buildPortable(edition = "delivery", {
     canonicalTarget,
     canonicalZip,
     transactionId,
-    preflight: () => assertBuildPreconditions(edition, { environment, sidecarBuildRoot }),
+    preflight: () => assertBuildPreconditions(edition, { environment, sidecarBuildRoot, remotionRuntimeRoot }),
     prepare: (sourceState) => buildPortableStaging(edition, {
       target: stagingTarget,
       zip: stagingZip,
@@ -486,6 +496,9 @@ function buildPortable(edition = "delivery", {
   });
   for (const warning of result.cleanupWarnings || []) {
     console.warn(`release cleanup warning: ${warning}`);
+  }
+  for (const backup of result.retainedBackups || []) {
+    console.warn(`release rollback artifact retained: ${backup}`);
   }
   console.log(`${edition} portable release built: ${result.zip}`);
   return result;
@@ -501,6 +514,7 @@ module.exports = {
   copyRuntimePackageTree,
   publishStagedRelease,
   runTransactionalRelease,
+  resolveRemotionRuntimeRoot,
   resolveSidecarBuildRoot,
   scanRelease,
   sourceAllowed,

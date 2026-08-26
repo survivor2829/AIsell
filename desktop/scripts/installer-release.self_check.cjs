@@ -25,7 +25,7 @@ const trustVerifier = fs.readFileSync(path.join(desktopDir, "scripts", "release-
 
 assert.equal(packageMetadata.productName, productBrand.displayName);
 assert.equal(packageMetadata.version, "1.0.0");
-assert.match(packageMetadata.scripts["release:delivery"], /build-portable-release\.cjs delivery/);
+assert.match(packageMetadata.scripts["release:delivery"], /run-release\.cjs delivery/);
 assert.doesNotMatch(packageMetadata.scripts["release:installer"], /build-portable-release/u, "installer creation must follow the independent trust-record step instead of rebuilding its signed portable input");
 assert.match(packageMetadata.scripts["release:installer"], /build-installer-release\.cjs/);
 const installerScript = packageMetadata.scripts["release:installer"];
@@ -75,10 +75,11 @@ try {
   const canonical = path.join(fixture, "canonical.exe");
   fs.writeFileSync(staged, "new");
   fs.writeFileSync(canonical, "old");
-  replaceCanonicalFile(staged, canonical);
+  const backup = replaceCanonicalFile(staged, canonical);
   assert.equal(fs.readFileSync(canonical, "utf8"), "new");
   assert.equal(fs.existsSync(staged), false);
-  assert.equal(fs.readdirSync(fixture).some((name) => name.includes(".backup-")), false);
+  assert.match(backup, /\.backup-/);
+  assert.equal(fs.readFileSync(backup, "utf8"), "old");
 } finally {
   fs.rmSync(fixture, { recursive: true, force: true });
 }

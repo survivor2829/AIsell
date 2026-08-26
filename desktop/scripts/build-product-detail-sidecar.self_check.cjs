@@ -8,6 +8,7 @@ const {
   buildPyInstallerArgs,
   desktopSourceProvenance,
   ensureSafeBuildTarget,
+  assertWindowsPathBudget,
   isProductDetailSourceFile,
   productDetailSourceFiles,
   productDetailSourceTreeSha256,
@@ -60,6 +61,15 @@ assert.deepEqual(
   ["--collect-all", "playwright"]
 );
 assert.equal(args.at(-1), paths.entryFile);
+
+const tooDeepPaths = resolveBuildPaths(undefined, {
+  buildRoot: path.join(os.tmpdir(), "xiaoxi-product-detail-path-budget", "x".repeat(220))
+});
+assert.throws(
+  () => assertWindowsPathBudget(tooDeepPaths),
+  /staging root is too deep/,
+  "the build must reject a staging path that would exceed the Windows Playwright path budget"
+);
 
 assert.equal(ensureSafeBuildTarget(paths.outputDir, paths.buildRoot), paths.outputDir);
 assert.throws(

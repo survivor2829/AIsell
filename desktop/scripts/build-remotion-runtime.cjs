@@ -797,8 +797,11 @@ function verifyRemotionRuntime(runtimeRoot, { desktopDir = path.resolve(__dirnam
   return { manifest, manifestFile, manifestSha256, outputDir: root };
 }
 
-function resolveRemotionRuntimeBuild(desktopDir, artifactType) {
-  return verifyRemotionRuntime(path.join(path.resolve(desktopDir), ".build", "remotion-runtime", artifactType), {
+function resolveRemotionRuntimeBuild(desktopDir, artifactType, { runtimeRoot = null } = {}) {
+  const resolvedRuntimeRoot = runtimeRoot
+    ? path.resolve(runtimeRoot)
+    : path.join(path.resolve(desktopDir), ".build", "remotion-runtime");
+  return verifyRemotionRuntime(path.join(resolvedRuntimeRoot, artifactType), {
     desktopDir,
     expectedArtifactType: artifactType,
     requireCompositionSmoke: true

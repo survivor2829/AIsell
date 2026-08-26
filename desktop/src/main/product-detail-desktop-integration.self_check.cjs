@@ -214,13 +214,21 @@ function assertReleaseDownloadGate() {
     packageJson.scripts["check:product-detail-e2e"],
     "node scripts/product-detail-local-e2e.cjs --cleanup-on-success"
   );
-  for (const scriptName of ["release:test", "release:delivery", "release:installer"]) {
+  const releaseRunner = read("scripts/run-release.cjs");
+  for (const [scriptName, edition] of [["release:test", "test"], ["release:delivery", "delivery"]]) {
     assert.match(
       packageJson.scripts[scriptName],
-      /npm run check:product-detail-e2e/,
+      new RegExp(`run-release\\.cjs ${edition}`),
       `${scriptName} must exercise the production workspace download button`
     );
   }
+  assert.match(releaseRunner, /product-detail-local-e2e\.cjs/);
+  assert.match(releaseRunner, /--cleanup-on-success/);
+  assert.match(
+    packageJson.scripts["release:installer"],
+    /npm run check:product-detail-e2e/,
+    "release:installer must exercise the production workspace download button"
+  );
   const e2e = read("scripts/product-detail-local-e2e.cjs");
   assert.match(e2e, /\[data-ai-refine-download\]/);
   assert.match(e2e, /suggested_filename\)\.suffix\.lower\(\) != "\.png"/);

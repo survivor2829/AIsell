@@ -197,9 +197,17 @@ for (const name of [".env", ".env.ai.local", ".env.production"]) {
   assert.equal(sourceAllowed(source, "test"), false, `${name} must be excluded from the test edition`);
   assert.equal(sourceAllowed(source, "delivery"), false, `${name} must be excluded from the delivery edition`);
 }
-for (const [scriptName, buildStep] of [["release:test", "build:test"], ["release:delivery", "build:delivery"]]) {
+const releaseRunnerSource = read(path.join(desktopDir, "scripts", "run-release.cjs"));
+for (const [scriptName, edition] of [["release:test", "test"], ["release:delivery", "delivery"]]) {
   const script = packageMetadata.scripts[scriptName];
-  assert.equal(script.indexOf("check:clean-runtime") < script.indexOf(buildStep), true, `${scriptName} must check runtime residue before building`);
+  assert.match(script, new RegExp(`run-release\\.cjs ${edition}`), `${scriptName} must use the transaction-scoped release runner`);
+  assert.equal(
+    releaseRunnerSource.indexOf('runNode("clean runtime gate"') < releaseRunnerSource.indexOf("renderer build"),
+    true,
+    `${scriptName} must check runtime residue before building the renderer`
+  );
+  assert.match(releaseRunnerSource, /build-product-detail-sidecar\.cjs/, `${scriptName} must build a fresh product-detail sidecar`);
+  assert.match(releaseRunnerSource, /build-content-engine-sidecar\.cjs/, `${scriptName} must build a fresh content-engine sidecar`);
   assert.equal((script.match(/portable-release\.self_check/g) || []).length, 0, `${scriptName} must rely on the staging self-check before promotion, not revalidate after publication`);
 }
 assert.match(read(path.join(desktopDir, "scripts", "check-clean-runtime.cjs")), /\^\\\.env\(\?:\\\.|\$\)\/i/, "clean-runtime must detect environment files case-insensitively on Windows");
@@ -405,7 +413,7 @@ try {
   fs.mkdirSync(otherEdition);
   fs.writeFileSync(path.join(otherEdition, "marker.txt"), "other-good", "utf8");
   fs.writeFileSync(otherEditionZip, "other-good-zip", "utf8");
-  runTransactionalRelease({
+  const result = runTransactionalRelease({
     ...publishFixture,
     transactionId: "fixture-success",
     preflight: () => ({ commit: "a".repeat(40), dirty: false }),
@@ -419,6 +427,9 @@ try {
   });
   assert.equal(fs.readFileSync(path.join(publishFixture.canonicalTarget, "marker.txt"), "utf8"), "new-good");
   assert.equal(fs.readFileSync(publishFixture.canonicalZip, "utf8"), "new-good-zip");
+  assert.equal(result.retainedBackups.length, 2, "the prior release directory and ZIP must be retained for rollback");
+  assert.equal(fs.readFileSync(path.join(result.retainedBackups[0], "marker.txt"), "utf8"), "old-good");
+  assert.equal(fs.readFileSync(result.retainedBackups[1], "utf8"), "old-good-zip");
   assert.equal(fs.readFileSync(path.join(otherEdition, "marker.txt"), "utf8"), "other-good");
   assert.equal(fs.readFileSync(otherEditionZip, "utf8"), "other-good-zip");
 } finally {
@@ -443,7 +454,8 @@ try {
     }
   });
   assert.equal(result.published, true, "cleanup failure after promotion must not turn publication into a failure");
-  assert.equal(result.cleanupWarnings.length, 2, "backup and staging cleanup failures must remain visible");
+  assert.equal(result.cleanupWarnings.length, 1, "staging cleanup failures must remain visible while rollback artifacts are retained");
+  assert.equal(result.retainedBackups.length, 2, "rollback artifacts must not be deleted during cleanup");
   assert.equal(fs.readFileSync(path.join(cleanupWarningFixture.canonicalTarget, "marker.txt"), "utf8"), "published-despite-cleanup-warning");
   assert.equal(fs.readFileSync(cleanupWarningFixture.canonicalZip, "utf8"), "published-zip");
 } finally {
