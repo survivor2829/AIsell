@@ -1,12 +1,23 @@
 const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
-const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const electronPath = require("electron");
 
-const url = "http://127.0.0.1:5173";
 const developmentEnv = { ...process.env, XIAOXI_EDITION: "development", VITE_XIAOXI_EDITION: "development" };
+
+function resolveDevServerPort(rawValue = developmentEnv.XIAOXI_DEV_SERVER_PORT) {
+  const raw = rawValue == null ? "" : String(rawValue).trim();
+  if (!raw) return 5173;
+  if (!/^\d+$/.test(raw)) {
+    throw new Error("XIAOXI_DEV_SERVER_PORT must be an integer between 1024 and 65535.");
+  }
+  const port = Number(raw);
+  if (!Number.isSafeInteger(port) || port < 1024 || port > 65535) {
+    throw new Error("XIAOXI_DEV_SERVER_PORT must be an integer between 1024 and 65535.");
+  }
+  return port;
+}
 
 function findDevelopmentPython() {
   const candidates = [
@@ -25,37 +36,72 @@ function findDevelopmentPython() {
   return "";
 }
 
-if (!developmentEnv.XIAOXI_CONTENT_ENGINE_SIDECAR) {
-  const python = findDevelopmentPython();
-  const worker = path.join(__dirname, "..", "sidecars", "content-engine", "worker.py");
-  if (python && fs.existsSync(worker)) {
-    developmentEnv.XIAOXI_CONTENT_ENGINE_SIDECAR = python;
-    developmentEnv.XIAOXI_CONTENT_ENGINE_SIDECAR_ENTRY = worker;
+function startDesktop() {
+  const devServerPort = resolveDevServerPort();
+  const url = `http://127.0.0.1:${devServerPort}`;
+  const viteCli = path.join(path.dirname(require.resolve("vite")), "bin", "vite.js");
+  if (!developmentEnv.XIAOXI_CONTENT_ENGINE_SIDECAR) {
+    const python = findDevelopmentPython();
+    const worker = path.join(__dirname, "..", "sidecars", "content-engine", "worker.py");
+    if (python && fs.existsSync(worker)) {
+      developmentEnv.XIAOXI_CONTENT_ENGINE_SIDECAR = python;
+      developmentEnv.XIAOXI_CONTENT_ENGINE_SIDECAR_ENTRY = worker;
+    }
   }
-}
+  const vite = spawn(
+    process.execPath,
+    [viteCli, "--host", "127.0.0.1", "--port", String(devServerPort), "--strictPort"],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: developmentEnv,
+      windowsHide: true
+    }
+  );
+  let electronStarted = false;
+  let startupFailed = false;
+  let startupTimer = null;
+  let viteOutput = "";
 
-const vite = spawn(process.platform === "win32" ? "cmd" : "npm", process.platform === "win32" ? ["/c", "npm", "run", "dev"] : ["run", "dev"], {
-  stdio: "inherit",
-  env: developmentEnv
-});
-
-function waitForVite(attempt = 0) {
-  if (attempt > 80) {
-    console.error("Vite dev server did not start.");
+  function failStartup(message) {
+    if (startupFailed) return;
+    startupFailed = true;
+    if (startupTimer) clearTimeout(startupTimer);
+    console.error(message);
     vite.kill();
-    process.exit(1);
+    process.exitCode = 1;
   }
 
-  http.get(url, (res) => {
-    res.resume();
+  function startElectron() {
+    if (startupFailed || electronStarted) return;
+    electronStarted = true;
+    if (startupTimer) clearTimeout(startupTimer);
     const electron = spawn(electronPath, ["."], {
       stdio: "inherit",
       env: { ...developmentEnv, VITE_DEV_SERVER_URL: url }
     });
+    electron.once("error", (error) => failStartup(`Electron could not start: ${error.message}`));
     electron.on("exit", () => vite.kill());
-  }).on("error", () => {
-    setTimeout(() => waitForVite(attempt + 1), 250);
+  }
+
+  function observeViteOutput(chunk, stream) {
+    stream.write(chunk);
+    viteOutput = `${viteOutput}${chunk}`.slice(-4096);
+    if (viteOutput.includes(`${url}/`)) startElectron();
+  }
+
+  vite.stdout.on("data", (chunk) => observeViteOutput(chunk, process.stdout));
+  vite.stderr.on("data", (chunk) => observeViteOutput(chunk, process.stderr));
+  vite.once("error", (error) => failStartup(`Vite dev server could not start: ${error.message}`));
+  vite.once("exit", (code, signal) => {
+    if (!electronStarted && !startupFailed) {
+      failStartup(`Vite dev server stopped before Electron started (code ${code ?? "unknown"}, signal ${signal || "none"}).`);
+    }
   });
+  startupTimer = setTimeout(() => failStartup(`Vite dev server did not start at ${url}.`), 20_000);
 }
 
-waitForVite();
+if (require.main === module) {
+  startDesktop();
+}
+
+module.exports = { resolveDevServerPort };

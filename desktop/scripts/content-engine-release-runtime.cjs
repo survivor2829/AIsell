@@ -76,10 +76,10 @@ function validateBuildManifest(manifest, manifestFile) {
   return manifest;
 }
 
-function resolveContentEngineBuild(desktopDir) {
-  const buildRoot = path.join(path.resolve(desktopDir), ".build");
-  const runtimeDir = path.join(buildRoot, "content-engine-runtime");
-  const manifestFile = path.join(buildRoot, "content-engine-runtime.manifest.json");
+function resolveContentEngineBuild(desktopDir, { buildRoot = null } = {}) {
+  const paths = resolveBuildPaths(desktopDir, { buildRoot });
+  const runtimeDir = paths.outputDir;
+  const manifestFile = paths.manifestFile;
   assertDirectory(runtimeDir, "Content-engine PyInstaller runtime");
   assertFile(manifestFile, "Content-engine runtime manifest");
   const manifest = validateBuildManifest(

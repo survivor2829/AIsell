@@ -5,6 +5,7 @@
 **/dist-pilot/
 desktop/.build/
 desktop/.vite/
+/.build/
 
 # Local secrets, certificates and temporary plaintext
 .env
@@ -41,3 +42,32 @@ desktop/.vite/
 # Generated portable app and its runtime data
 release/
 .codex-runtime-*/
+
+# Local assistant state and registered worktrees. These are never application source.
+/.impeccable/
+/.workbuddy/
+/.worktrees/
+
+# Ephemeral render/test evidence. Keep it on disk until an explicit cleanup,
+# but never let it enter a source commit or block a release preflight.
+/pytest-cache-files-*/
+desktop/pytest-cache-files-*/
+desktop/sidecars/content-engine/.auto-mix-audio-check-*/
+desktop/sidecars/content-engine/.auto-mix-test-temp-*/
+desktop/sidecars/content-engine/.xiaoxi-auto-mix-v2-migration-*/
+desktop/sidecars/content-engine/.xiaoxi-product-voice-*/
+desktop/sidecars/content-engine/.xiaoxi-visual-signals-*/
+desktop/sidecars/content-engine/creative-frame-*/
+desktop/sidecars/content-engine/tmp*/
+desktop/sidecars/content-engine/xiaoxi-cover-*/
+desktop/sidecars/content-engine/xiaoxi-creative-migration-*/
+desktop/sidecars/content-engine/xiaoxi-creative-renderer-*/
+desktop/sidecars/content-engine/xiaoxi-creative-test-*/
+desktop/sidecars/content-engine/xiaoxi-source-*/
+desktop/sidecars/content-engine/xiaoxi-standard-karaoke-*/
+desktop/sidecars/content-engine/xiaoxi-visual-only-*/
+desktop/sidecars/product-detail/app/instance/
+desktop/sidecars/product-detail/app/output/
+desktop/sidecars/product-detail/app/static/ai_refine_v2/
+desktop/sidecars/product-detail/app/static/outputs/
+desktop/sidecars/product-detail/app/static/uploads/

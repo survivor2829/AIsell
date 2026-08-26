@@ -4,13 +4,27 @@ const {
   randomUUID
 } = require("node:crypto");
 const { PRODUCT_DETAIL_CHANNELS } = require("./product-detail-ipc.cjs");
+const { CONTENT_ENGINE_CHANNELS } = require("./content-engine-ipc.cjs");
 
-function createTrustedClickGate(selector) {
+const AUTO_MIX_TRUSTED_CLICK_CHANNELS = Object.freeze({
+  create: CONTENT_ENGINE_CHANNELS.createAutoMixV2,
+  prepare: CONTENT_ENGINE_CHANNELS.prepareGuidedAutoMixV2,
+  generateGuidedScript: CONTENT_ENGINE_CHANNELS.generateGuidedAutoMixScriptV2,
+  generateSupplementalImage: CONTENT_ENGINE_CHANNELS.createGuidedAutoMixSupplementalImageV2,
+  regenerate: CONTENT_ENGINE_CHANNELS.regenerateAutoMixLayer,
+  importMusic: CONTENT_ENGINE_CHANNELS.importMusicCatalogTrack,
+  designVoice: CONTENT_ENGINE_CHANNELS.designAutoMixVoicePersona,
+  previewVoice: CONTENT_ENGINE_CHANNELS.previewAutoMixVoicePersona,
+  approveVoice: CONTENT_ENGINE_CHANNELS.approveAutoMixVoicePersona
+});
+
+function createTrustedClickGate(selector, operation = "") {
   let trustedClick = "";
   if (typeof window !== "undefined") {
     window.addEventListener("click", (event) => {
       if (!event.isTrusted || !event.target?.closest?.(selector)) return;
-      const token = randomUUID();
+      const uuid = randomUUID();
+      const token = operation ? `${operation}:${uuid}` : uuid;
       trustedClick = token;
       setTimeout(() => {
         if (trustedClick === token) trustedClick = "";
@@ -91,7 +105,58 @@ function createMomentsPublishApi(ipcRenderer) {
     }
   };
 }
+
+function visualRendererPayload(value) {
+  if (value == null) return {};
+  return {
+    visualRenderer: {
+      requestedEngine: String(value.requestedEngine || ""),
+      ...(value.visualStyleId == null
+        ? {}
+        : { visualStyleId: String(value.visualStyleId || "") }),
+      requestedStyleVersion: Number(value.requestedStyleVersion),
+      allowFallback: value.allowFallback !== false
+    }
+  };
+}
+
 function createContentEngineApi(ipcRenderer) {
+  const consumeAutoMixCreateClick = createTrustedClickGate(
+    "[data-xiaoxi-auto-mix-create]",
+    AUTO_MIX_TRUSTED_CLICK_CHANNELS.create
+  );
+  const consumeAutoMixPrepareClick = createTrustedClickGate(
+    "[data-xiaoxi-auto-mix-prepare]",
+    AUTO_MIX_TRUSTED_CLICK_CHANNELS.prepare
+  );
+  const consumeAutoMixGenerateScriptClick = createTrustedClickGate(
+    "[data-xiaoxi-auto-mix-script]",
+    AUTO_MIX_TRUSTED_CLICK_CHANNELS.generateGuidedScript
+  );
+  const consumeAutoMixSupplementalImageClick = createTrustedClickGate(
+    "[data-xiaoxi-auto-mix-supplemental-image]",
+    AUTO_MIX_TRUSTED_CLICK_CHANNELS.generateSupplementalImage
+  );
+  const consumeAutoMixRegenerateClick = createTrustedClickGate(
+    "[data-xiaoxi-auto-mix-regenerate]",
+    AUTO_MIX_TRUSTED_CLICK_CHANNELS.regenerate
+  );
+  const consumeAutoMixMusicImportClick = createTrustedClickGate(
+    "[data-xiaoxi-auto-mix-music-import]",
+    AUTO_MIX_TRUSTED_CLICK_CHANNELS.importMusic
+  );
+  const consumeAutoMixVoicePreviewClick = createTrustedClickGate(
+    "[data-xiaoxi-auto-mix-voice-preview]",
+    AUTO_MIX_TRUSTED_CLICK_CHANNELS.previewVoice
+  );
+  const consumeAutoMixVoiceDesignClick = createTrustedClickGate(
+    "[data-xiaoxi-auto-mix-voice-design]",
+    AUTO_MIX_TRUSTED_CLICK_CHANNELS.designVoice
+  );
+  const consumeAutoMixVoiceApproveClick = createTrustedClickGate(
+    "[data-xiaoxi-auto-mix-voice-approve]",
+    AUTO_MIX_TRUSTED_CLICK_CHANNELS.approveVoice
+  );
   const mixSlots = (value) => Array.isArray(value)
     ? value.map((slot) => ({
       name: String(slot?.name || ""),
@@ -196,6 +261,9 @@ function createContentEngineApi(ipcRenderer) {
       }),
       reveal: (payload) => ipcRenderer.invoke("content-engine:reveal-finished", {
         finishedVideoId: String(payload?.finishedVideoId || "")
+      }),
+      download: (payload) => ipcRenderer.invoke("content-engine:download-finished", {
+        finishedVideoId: String(payload?.finishedVideoId || "")
       })
     },
     settings: {
@@ -219,9 +287,11 @@ function createContentEngineApi(ipcRenderer) {
             },
             Buffer.from(String(payload?.apiKey || ""), "utf8")
           ).toString("base64");
+          const apiHost = String(payload?.apiHost || "").trim();
           return ipcRenderer.invoke("content-engine:save-bailian-key", {
             keyId: String(handshake.data.keyId),
-            ciphertext
+            ciphertext,
+            ...(apiHost ? { apiHost } : {})
           });
         } catch {
           return {
@@ -271,8 +341,18 @@ function createContentEngineApi(ipcRenderer) {
           theme: String(payload?.theme || "培训现场价值"),
           subtitleFontSize: Number(payload?.subtitleFontSize || 48),
           subtitleMarginBottom: Number(payload?.subtitleMarginBottom || 170),
-          experimentMode: String(payload?.experimentMode || "standard"),
-          subtitlePreset: String(payload?.subtitlePreset || "dynamic_clean")
+          experimentMode: "standard",
+          subtitlePreset: "dynamic_clean",
+          packagingMode: String(payload?.packagingMode || "auto"),
+          ...(payload?.packagingPresetId == null
+            ? {}
+            : { packagingPresetId: String(payload.packagingPresetId || "") }),
+          ...(payload?.brandProfileId == null
+            ? {}
+            : { brandProfileId: String(payload.brandProfileId || "") }),
+          coverMode: String(payload?.coverMode || "ai_generate"),
+          ...(payload?.confirmPaidCalls === true ? { confirmPaidCalls: true } : {}),
+          ...visualRendererPayload(payload?.visualRenderer)
         }
       ),
       generateMixBatch: (payload) => ipcRenderer.invoke(
@@ -285,8 +365,310 @@ function createContentEngineApi(ipcRenderer) {
           targetCount: Number(payload?.targetCount || 30),
           ...(payload?.voiceAssetId == null
             ? {}
-            : { voiceAssetId: String(payload.voiceAssetId || "") })
+            : { voiceAssetId: String(payload.voiceAssetId || "") }),
+          ...(payload?.pilotMode === true ? { pilotMode: true } : {}),
+          packagingMode: String(payload?.packagingMode || "auto"),
+          ...(payload?.packagingPresetId == null
+            ? {}
+            : { packagingPresetId: String(payload.packagingPresetId || "") }),
+          ...(payload?.brandProfileId == null
+            ? {}
+            : { brandProfileId: String(payload.brandProfileId || "") }),
+          coverMode: String(payload?.coverMode || "ai_generate"),
+          ...(payload?.confirmPaidCalls === true ? { confirmPaidCalls: true } : {}),
+          ...visualRendererPayload(payload?.visualRenderer)
         }
+      ),
+      createOneClickProject: (payload) => ipcRenderer.invoke(
+        "content-engine:create-one-click-project",
+        {
+          name: String(payload?.name || "商品展示一键成片"),
+          assetIds: Array.isArray(payload?.assetIds)
+            ? payload.assetIds.map((item) => String(item || ""))
+            : [],
+          options: {
+            brief: payload?.brief && typeof payload.brief === "object" ? payload.brief : {},
+            ratio: String(payload?.ratio || "9:16"),
+            durationMs: Number(payload?.durationMs || 75_000),
+            targetCount: Number(payload?.targetCount || 3),
+            coverMode: String(payload?.coverMode || "ai_generate"),
+            ...(payload?.bgmAssetId == null ? {} : { bgmAssetId: String(payload.bgmAssetId || "") })
+          }
+        }
+      ),
+      createAutoMixV2: (payload) => {
+        const base = {
+          specVersion: String(payload?.specVersion || ""),
+          clickToken: consumeAutoMixCreateClick()
+        };
+        const request = payload?.guidedSessionId == null
+          ? {
+            ...base,
+            assetIds: Array.isArray(payload?.assetIds)
+              ? payload.assetIds.map((item) => String(item || ""))
+              : [],
+            title: String(payload?.title || ""),
+            copyFramework: String(payload?.copyFramework || "")
+          }
+          : {
+            ...base,
+            guidedSessionId: String(payload.guidedSessionId || ""),
+            scriptRevision: Number(payload?.scriptRevision || 0)
+          };
+        return ipcRenderer.invoke(AUTO_MIX_TRUSTED_CLICK_CHANNELS.create, request);
+      },
+      prepareGuidedAutoMixV2: (payload) => ipcRenderer.invoke(
+        AUTO_MIX_TRUSTED_CLICK_CHANNELS.prepare,
+        {
+          assetIds: Array.isArray(payload?.assetIds)
+            ? payload.assetIds.map((item) => String(item || ""))
+            : [],
+          clickToken: consumeAutoMixPrepareClick()
+        }
+      ),
+      getGuidedAutoMixSessionV2: (payload) => ipcRenderer.invoke(
+        CONTENT_ENGINE_CHANNELS.getGuidedAutoMixSessionV2,
+        payload?.sessionId == null
+          ? { taskId: String(payload?.taskId || "") }
+          : { sessionId: String(payload.sessionId || "") }
+      ),
+      generateGuidedAutoMixScriptV2: (payload) => ipcRenderer.invoke(
+        AUTO_MIX_TRUSTED_CLICK_CHANNELS.generateGuidedScript,
+        {
+          sessionId: String(payload?.sessionId || ""),
+          ...(payload?.analysisTaskId
+            ? { analysisTaskId: String(payload.analysisTaskId) }
+            : {}),
+          title: String(payload?.title || ""),
+          answers: {
+            companyName: String(payload?.answers?.companyName || ""),
+            productName: String(payload?.answers?.productName || ""),
+            targetScene: String(payload?.answers?.targetScene || ""),
+            keyMessage: String(payload?.answers?.keyMessage || ""),
+            extraNotes: String(payload?.answers?.extraNotes || "")
+          },
+          clickToken: consumeAutoMixGenerateScriptClick()
+        }
+      ),
+      getGuidedAutoMixSupplementalImageV2: (payload) => ipcRenderer.invoke(
+        CONTENT_ENGINE_CHANNELS.getGuidedAutoMixSupplementalImageV2,
+        {
+          sessionId: String(payload?.sessionId || ""),
+          scriptRevision: Number(payload?.scriptRevision || 0)
+        }
+      ),
+      createGuidedAutoMixSupplementalImageV2: (payload) => ipcRenderer.invoke(
+        AUTO_MIX_TRUSTED_CLICK_CHANNELS.generateSupplementalImage,
+        {
+          sessionId: String(payload?.sessionId || ""),
+          scriptRevision: Number(payload?.scriptRevision || 0),
+          draftHash: String(payload?.draftHash || ""),
+          confirmPaidCalls: payload?.confirmPaidCalls === true,
+          clickToken: consumeAutoMixSupplementalImageClick()
+        }
+      ),
+      getAutoMixPlanV2: (payload) => ipcRenderer.invoke(
+        "content-engine:get-auto-mix-plan-v2",
+        {
+          ...(payload?.projectId == null
+            ? {}
+            : { projectId: String(payload.projectId || "") }),
+          ...(payload?.runId == null ? {} : { runId: String(payload.runId || "") })
+        }
+      ),
+      regenerateAutoMixLayer: (payload) => ipcRenderer.invoke(
+        AUTO_MIX_TRUSTED_CLICK_CHANNELS.regenerate,
+        {
+          projectId: String(payload?.projectId || ""),
+          ...(payload?.expectedRunId == null
+            ? {}
+            : { expectedRunId: String(payload.expectedRunId || "") }),
+          layer: String(payload?.layer || ""),
+          clickToken: consumeAutoMixRegenerateClick()
+        }
+      ),
+      importMusicCatalogTrack: (payload) => ipcRenderer.invoke(
+        AUTO_MIX_TRUSTED_CLICK_CHANNELS.importMusic,
+        {
+          displayName: String(payload?.displayName || ""),
+          source: String(payload?.source || ""),
+          commercialScope: String(payload?.commercialScope || ""),
+          commercialUseAllowed: payload?.commercialUseAllowed === true,
+          licenseStatus: String(payload?.licenseStatus || "unknown"),
+          expiresAt: payload?.expiresAt == null ? null : String(payload.expiresAt || ""),
+          credentialReference: String(payload?.credentialReference || ""),
+          bpm: payload?.bpm == null ? null : Number(payload.bpm),
+          moods: Array.isArray(payload?.moods)
+            ? payload.moods.map((item) => String(item || ""))
+            : [],
+          energy: Number(payload?.energy ?? 0.5),
+          loopStartMs: payload?.loopStartMs == null ? null : Number(payload.loopStartMs),
+          loopEndMs: payload?.loopEndMs == null ? null : Number(payload.loopEndMs),
+          clickToken: consumeAutoMixMusicImportClick()
+        }
+      ),
+      listMusicCatalogTracks: () => ipcRenderer.invoke(
+        "content-engine:list-music-catalog-tracks",
+        {}
+      ),
+      listAutoMixVoicePersonas: () => ipcRenderer.invoke(
+        "content-engine:list-auto-mix-voice-personas",
+        {}
+      ),
+      designAutoMixVoicePersona: (payload) => ipcRenderer.invoke(
+        AUTO_MIX_TRUSTED_CLICK_CHANNELS.designVoice,
+        {
+          voicePersonaId: String(payload?.voicePersonaId || ""),
+          clickToken: consumeAutoMixVoiceDesignClick()
+        }
+      ),
+      previewAutoMixVoicePersona: (payload) => ipcRenderer.invoke(
+        AUTO_MIX_TRUSTED_CLICK_CHANNELS.previewVoice,
+        {
+          voicePersonaId: String(payload?.voicePersonaId || ""),
+          clickToken: consumeAutoMixVoicePreviewClick()
+        }
+      ),
+      approveAutoMixVoicePersona: (payload) => ipcRenderer.invoke(
+        AUTO_MIX_TRUSTED_CLICK_CHANNELS.approveVoice,
+        {
+          voicePersonaId: String(payload?.voicePersonaId || ""),
+          clickToken: consumeAutoMixVoiceApproveClick()
+        }
+      ),
+      analyzeProductAssets: (payload) => ipcRenderer.invoke(
+        "content-engine:analyze-product-assets",
+        { projectId: String(payload?.projectId || "") }
+      ),
+      generateProductCopy: (payload) => ipcRenderer.invoke(
+        "content-engine:generate-product-copy",
+        {
+          projectId: String(payload?.projectId || ""),
+          brief: payload?.brief && typeof payload.brief === "object" ? payload.brief : {}
+        }
+      ),
+      generateProductVoice: (payload) => ipcRenderer.invoke(
+        "content-engine:generate-product-voice",
+        {
+          projectId: String(payload?.projectId || ""),
+          ...(payload?.scriptId == null ? {} : { scriptId: String(payload.scriptId || "") })
+        }
+      ),
+      generateOneClickCandidates: (payload) => ipcRenderer.invoke(
+        "content-engine:generate-one-click-candidates",
+        {
+          projectId: String(payload?.projectId || ""),
+          options: {
+            targetCount: Number(payload?.targetCount || 3),
+            durationMs: Number(payload?.durationMs || 75_000),
+            coverMode: String(payload?.coverMode || "ai_generate")
+          }
+        }
+      ),
+      listOneClickCandidates: (payload) => ipcRenderer.invoke(
+        "content-engine:list-one-click-candidates",
+        {
+          projectId: String(payload?.projectId || ""),
+          limit: Number(payload?.limit || 20)
+        }
+      ),
+      listPackagingPresets: (payload) => ipcRenderer.invoke(
+        "content-engine:list-packaging-presets",
+        payload?.kind ? { kind: String(payload.kind) } : {}
+      ),
+      listBrandProfiles: () => ipcRenderer.invoke(
+        "content-engine:list-brand-profiles",
+        {}
+      ),
+      saveBrandProfile: (payload) => ipcRenderer.invoke(
+        "content-engine:save-brand-profile",
+        {
+          ...(payload?.brandProfileId == null
+            ? {}
+            : { brandProfileId: String(payload.brandProfileId || "") }),
+          name: String(payload?.name || ""),
+          ...(payload?.logoAssetId == null ? {} : { logoAssetId: String(payload.logoAssetId || "") }),
+          primaryColor: String(payload?.primaryColor || ""),
+          accentColor: String(payload?.accentColor || ""),
+          fontPreset: String(payload?.fontPreset || ""),
+          ...(payload?.referenceAssetId == null
+            ? {}
+            : { referenceAssetId: String(payload.referenceAssetId || "") }),
+          outroText: String(payload?.outroText || "")
+        }
+      ),
+      getPackagingCostEstimate: (payload) => ipcRenderer.invoke(
+        "content-engine:get-packaging-cost-estimate",
+        {
+          candidateIds: Array.isArray(payload?.candidateIds)
+            ? payload.candidateIds.map((item) => String(item || ""))
+            : [],
+          coverMode: String(payload?.coverMode || "ai_generate"),
+          ...(payload?.packagingMode == null
+            ? {}
+            : { packagingMode: String(payload.packagingMode || "") }),
+          ...(payload?.plannedCount == null ? {} : { plannedCount: Number(payload.plannedCount) }),
+          ...(payload?.assetIds == null ? {} : { assetIds: payload.assetIds.map((item) => String(item || "")) }),
+          ...(payload?.generationKind == null ? {} : { generationKind: String(payload.generationKind || "") })
+        }
+      ),
+      recordMediaReview: (payload) => ipcRenderer.invoke(
+        "content-engine:record-media-review",
+        {
+          candidateId: String(payload?.candidateId || ""),
+          device: String(payload?.device || "phone"),
+          verdict: String(payload?.verdict || "pass"),
+          reason: String(payload?.reason || ""),
+          reviewer: String(payload?.reviewer || "")
+        }
+      ),
+      listMediaReviews: (payload) => ipcRenderer.invoke(
+        "content-engine:list-media-reviews",
+        { candidateId: String(payload?.candidateId || "") }
+      ),
+      packageGeneratedVideos: (payload) => ipcRenderer.invoke(
+        "content-engine:package-generated-videos",
+        {
+          candidateIds: Array.isArray(payload?.candidateIds)
+            ? payload.candidateIds.map((item) => String(item || ""))
+            : [],
+          packagingMode: String(payload?.packagingMode || "auto"),
+          ...(payload?.packagingPresetId == null
+            ? {}
+            : { packagingPresetId: String(payload.packagingPresetId || "") }),
+          ...(payload?.brandProfileId == null
+            ? {}
+            : { brandProfileId: String(payload.brandProfileId || "") }),
+          coverMode: String(payload?.coverMode || "ai_generate"),
+          reuseCover: payload?.reuseCover !== false
+        }
+      ),
+      repackageVideo: (payload) => ipcRenderer.invoke(
+        "content-engine:repackage-video",
+        {
+          candidateId: String(payload?.candidateId || ""),
+          packagingMode: String(payload?.packagingMode || "auto"),
+          ...(payload?.packagingPresetId == null
+            ? {}
+            : { packagingPresetId: String(payload.packagingPresetId || "") }),
+          ...(payload?.brandProfileId == null
+            ? {}
+            : { brandProfileId: String(payload.brandProfileId || "") }),
+          coverMode: String(payload?.coverMode || "ai_generate"),
+          reuseCover: true
+        }
+      ),
+      preflightVisualComparison: (payload) => ipcRenderer.invoke(
+        "content-engine:preflight-visual-comparison",
+        { candidateId: String(payload?.candidateId || "") }
+      ),
+      createVisualComparisonTask: (payload) => ipcRenderer.invoke(
+        "content-engine:create-visual-comparison-task",
+        { candidateId: String(payload?.candidateId || "") }
+      ),
+      regenerateCover: (payload) => ipcRenderer.invoke(
+        "content-engine:regenerate-cover",
+        { candidateId: String(payload?.candidateId || "") }
       ),
       getProject: (payload) => ipcRenderer.invoke(
         "content-engine:get-creative-project",
@@ -328,6 +710,14 @@ function createContentEngineApi(ipcRenderer) {
       ),
       open: (payload) => ipcRenderer.invoke(
         "content-engine:open-generated-video",
+        { candidateId: String(payload?.candidateId || "") }
+      ),
+      exportCandidate: (payload) => ipcRenderer.invoke(
+        "content-engine:export-candidate",
+        { candidateId: String(payload?.candidateId || "") }
+      ),
+      downloadCandidate: (payload) => ipcRenderer.invoke(
+        "content-engine:download-candidate",
         { candidateId: String(payload?.candidateId || "") }
       ),
       reveal: (payload) => ipcRenderer.invoke(

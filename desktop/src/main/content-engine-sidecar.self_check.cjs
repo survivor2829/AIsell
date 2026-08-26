@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
 const { EventEmitter } = require("node:events");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -134,6 +135,15 @@ async function main() {
         runtimePath,
         runtimeArgs: ["worker.py"],
         dataDir,
+        getTrustedRuntimeEnvironment: () => ({
+          XIAOXI_REMOTION_NODE_PATH: "C:\\trusted\\node.exe",
+          XIAOXI_REMOTION_WORKER_PATH: "C:\\trusted\\worker.mjs",
+          XIAOXI_REMOTION_BUNDLE_PATH: "C:\\trusted\\bundle",
+          XIAOXI_REMOTION_BROWSER_PATH: "C:\\trusted\\browser.exe",
+          XIAOXI_REMOTION_ELECTRON_RUN_AS_NODE: "1",
+          DASHSCOPE_API_KEY: "runtime-key-canary",
+          PATH: "runtime-path-canary"
+        }),
         spawnProcess: (command, args, options) => {
           spawnCalls.push({ command, args, options });
           return child;
@@ -149,6 +159,13 @@ async function main() {
       assert.equal(spawnCalls[0].options.windowsHide, true);
       assert.equal(spawnCalls[0].options.env.PYTHONIOENCODING, "utf-8");
       assert.equal(spawnCalls[0].options.env.PYTHONUTF8, "1");
+      assert.equal(
+        spawnCalls[0].options.env.XIAOXI_REMOTION_WORKER_PATH,
+        "C:\\trusted\\worker.mjs"
+      );
+      assert.equal(spawnCalls[0].options.env.XIAOXI_REMOTION_ELECTRON_RUN_AS_NODE, "1");
+      assert.notEqual(spawnCalls[0].options.env.DASHSCOPE_API_KEY, "runtime-key-canary");
+      assert.notEqual(spawnCalls[0].options.env.PATH, "runtime-path-canary");
       child.ready();
       const [firstStatus, secondStatus] = await Promise.all([first, second]);
       assert.deepEqual(secondStatus, firstStatus);
@@ -266,6 +283,33 @@ async function main() {
       });
       assert.equal((await resumeRegeneration).status, "queued");
 
+      for (const [taskType, taskId] of [
+        ["creative_packaging", "task_44444444444444444444444444444444"],
+        ["creative_cover", "task_55555555555555555555555555555555"]
+      ]) {
+        const requestCount = child.stdin.writes.length;
+        const resumed = controller.resumeTask(taskId);
+        await waitFor(() => child.stdin.writes.length === requestCount + 1);
+        child.respond(child.stdin.writes[requestCount], {
+          items: [{
+            task_id: taskId,
+            task_type: taskType,
+            status: "paused",
+            resume_from_status: "rendering"
+          }]
+        });
+        await waitFor(() => child.stdin.writes.length === requestCount + 2);
+        assert.equal(child.stdin.writes[requestCount + 1].method, "resume_creative_task");
+        assert.deepEqual(child.stdin.writes[requestCount + 1].params, { task_id: taskId });
+        child.respond(child.stdin.writes[requestCount + 1], {
+          task_id: taskId,
+          task_type: taskType,
+          status: "queued",
+          resume_from_status: null
+        });
+        assert.equal((await resumed).status, "queued");
+      }
+
       child.once("request", (request) => {
         assert.equal(request.method, "shutdown");
         child.respond(request, { status: "stopping" });
@@ -340,6 +384,10 @@ async function main() {
       const candidateId = "mix_candidate_55555555555555555555555555555555";
       const queueItemId = "publish_queue_66666666666666666666666666666666";
       const packageId = "export_package_77777777777777777777777777777777";
+      const generatedVideoId = "generated_video_88888888888888888888888888888888";
+      const brandProfileId = "brand_profile_99999999999999999999999999999999";
+      const creativeProjectId = "creative_project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      const autoMixRunId = "auto_mix_run_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
       const mixCalls = [
         [controller.generateCourseCuts(assetId, {
           minDurationMs: 30_000,
@@ -348,8 +396,18 @@ async function main() {
           theme: "培训现场价值",
           subtitleFontSize: 42,
           subtitleMarginBottom: 140,
-          experimentMode: "supoclip_bailian_v1",
-          subtitlePreset: "knowledge_course"
+          experimentMode: "standard",
+          subtitlePreset: "dynamic_clean",
+          packagingMode: "preset",
+          packagingPresetId: "knowledge_focus",
+          brandProfileId,
+          visualRenderer: {
+            requestedEngine: "remotion",
+            visualStyleId: "tech_motion",
+            requestedStyleVersion: 1,
+            allowFallback: true
+          },
+          coverMode: "local_frame"
         }), "generate_course_cuts", {
           asset_id: assetId,
           min_duration_ms: 30_000,
@@ -358,9 +416,116 @@ async function main() {
           theme: "培训现场价值",
           subtitle_font_size: 42,
           subtitle_margin_bottom: 140,
-          experiment_mode: "supoclip_bailian_v1",
-          subtitle_preset: "knowledge_course"
+          experiment_mode: "standard",
+          subtitle_preset: "dynamic_clean",
+          packaging_mode: "preset",
+          packaging_preset_id: "knowledge_focus",
+          brand_profile_id: brandProfileId,
+          visual_renderer: {
+            requestedEngine: "remotion",
+            visualStyleId: "tech_motion",
+            requestedStyleVersion: 1,
+            allowFallback: true
+          },
+          cover_mode: "local_frame"
         }],
+        [controller.generateMixBatch([assetId], {
+          theme: "培训现场价值", targetCount: 30, voiceAssetId: assetId,
+          packagingMode: "auto", brandProfileId, coverMode: "local_frame",
+          visualRenderer: {
+            requestedEngine: "remotion", requestedStyleVersion: 1,
+            allowFallback: true
+          }
+        }), "generate_mix_batch", {
+          asset_ids: [assetId], theme: "培训现场价值", target_count: 30,
+          voice_asset_id: assetId, packaging_mode: "auto",
+          brand_profile_id: brandProfileId, cover_mode: "local_frame",
+          visual_renderer: {
+            requestedEngine: "remotion", requestedStyleVersion: 1,
+            allowFallback: true
+          }
+        }],
+        [controller.createAutoMixV2({
+          specVersion: "2",
+          assetIds: [assetId],
+          title: "产品标题",
+          copyFramework: "真实素材，真实表达。"
+        }), "create_auto_mix_v2", {
+          specVersion: "2",
+          assetIds: [assetId],
+          title: "产品标题",
+          copyFramework: "真实素材，真实表达。"
+        }],
+        [controller.getAutoMixPlanV2({ runId: autoMixRunId }), "get_auto_mix_plan_v2", {
+          run_id: autoMixRunId
+        }],
+        [controller.regenerateAutoMixLayer(creativeProjectId, "music", autoMixRunId), "regenerate_auto_mix_layer", {
+          project_id: creativeProjectId,
+          layer: "music",
+          expected_run_id: autoMixRunId
+        }],
+        [controller.importMusicCatalogTrack({
+          sourcePath: "C:\\fixtures\\licensed.wav",
+          displayName: "稳健节奏",
+          source: "用户授权曲库",
+          commercialScope: "commercial social media",
+          commercialUseAllowed: true,
+          licenseStatus: "valid",
+          expiresAt: null,
+          credentialReference: "license-record-001",
+          evidencePath: "C:\\fixtures\\license.txt",
+          bpm: 104,
+          moods: ["steady", "credible"],
+          energy: 0.56,
+          loopStartMs: null,
+          loopEndMs: null
+        }), "import_music_catalog_track", {
+          sourcePath: "C:\\fixtures\\licensed.wav",
+          displayName: "稳健节奏",
+          source: "用户授权曲库",
+          commercialScope: "commercial social media",
+          commercialUseAllowed: true,
+          licenseStatus: "valid",
+          expiresAt: null,
+          credentialReference: "license-record-001",
+          evidencePath: "C:\\fixtures\\license.txt",
+          bpm: 104,
+          moods: ["steady", "credible"],
+          energy: 0.56,
+          loopStartMs: null,
+          loopEndMs: null
+        }],
+        [controller.listMusicCatalogTracks(), "list_music_catalog_tracks", {}],
+        [controller.listAutoMixVoicePersonas(), "list_auto_mix_voice_personas", {}],
+        [controller.designAutoMixVoicePersona("natural-life@1"), "design_auto_mix_voice_persona", {
+          voice_persona_id: "natural-life@1"
+        }],
+        [controller.previewAutoMixVoicePersona("natural-life@1"), "preview_auto_mix_voice_persona", {
+          voice_persona_id: "natural-life@1"
+        }],
+        [controller.approveAutoMixVoicePersona("natural-life@1"), "approve_auto_mix_voice_persona", {
+          voice_persona_id: "natural-life@1"
+        }],
+        [controller.listPackagingPresets("course"), "list_packaging_presets", { kind: "course" }],
+        [controller.listBrandProfiles(), "list_brand_profiles", {}],
+        [controller.saveBrandProfile({ name: "轻品牌" }), "save_brand_profile", { profile: { name: "轻品牌" } }],
+        [controller.getPackagingCostEstimate([generatedVideoId], "ai_generate"), "get_packaging_cost_estimate", { candidate_ids: [generatedVideoId], cover_mode: "ai_generate" }],
+        [controller.packageGeneratedVideos([generatedVideoId], {
+          packagingMode: "auto", brandProfileId, coverMode: "local_frame", reuseCover: true
+        }), "package_generated_videos", {
+          candidate_ids: [generatedVideoId],
+          options: { packaging_mode: "auto", brand_profile_id: brandProfileId, cover_mode: "local_frame", reuse_cover: true }
+        }],
+        [controller.repackageVideo(generatedVideoId, {
+          packagingMode: "preset", packagingPresetId: "slide_teacher",
+          coverMode: "local_frame", reuseCover: true
+        }), "repackage_video", {
+          candidate_id: generatedVideoId,
+          options: { packaging_mode: "preset", packaging_preset_id: "slide_teacher", cover_mode: "local_frame", reuse_cover: true }
+        }],
+        [controller.regenerateCover(generatedVideoId), "regenerate_cover", { candidate_id: generatedVideoId }],
+        [controller.preflightVisualComparison(generatedVideoId), "preflight_visual_comparison", { candidate_id: generatedVideoId }],
+        [controller.createVisualComparisonTask(generatedVideoId), "create_visual_comparison_task", { candidate_id: generatedVideoId }],
         [controller.createMixProject("Launch", [{ name: "Intro" }], { allow_repeated_assets: false }), "create_mix_project", { name: "Launch", slots: [{ name: "Intro" }], constraints: { allow_repeated_assets: false } }],
         [controller.updateMixProject(projectId, { name: "Launch 2" }), "update_mix_project", { project_id: projectId, name: "Launch 2" }],
         [controller.getMixProject(projectId), "get_mix_project", { project_id: projectId }],
@@ -382,6 +547,15 @@ async function main() {
         children[1].respond(request, {});
         await promise;
       }
+
+      const presetRequestCount = children[1].stdin.writes.length;
+      const allPackagingPresets = controller.listPackagingPresets();
+      await waitFor(() => children[1].stdin.writes.length === presetRequestCount + 1);
+      const allPresetsRequest = children[1].stdin.writes.at(-1);
+      assert.equal(allPresetsRequest.method, "list_packaging_presets");
+      assert.deepEqual(allPresetsRequest.params, {});
+      children[1].respond(allPresetsRequest, { items: [] });
+      await allPackagingPresets;
 
       children[1].once("request", (request) => {
         assert.equal(request.method, "shutdown");
@@ -475,6 +649,64 @@ async function main() {
       const controller = createContentEngineSidecar({
         runtimePath,
         dataDir,
+        requestTimeoutMs: 100,
+        voiceDesignTimeoutMs: 10,
+        spawnProcess: () => child
+      });
+      const start = controller.start();
+      await waitFor(() => child.stdout.listenerCount("data") === 1);
+      child.ready();
+      await start;
+      await assert.rejects(
+        controller.designAutoMixVoicePersona("natural-life@1"),
+        (error) => error.code === "auto_mix_voice_design_outcome_unknown"
+      );
+      assert.equal(
+        child.stdin.writes[0].method,
+        "design_auto_mix_voice_persona"
+      );
+      child.respond(child.stdin.writes[0], { provisioningStatus: "ready" });
+      child.emit("close", 0, null);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    {
+      const child = new FakeChild();
+      const controller = createContentEngineSidecar({
+        runtimePath,
+        dataDir,
+        startupTimeoutMs: 100,
+        spawnProcess: () => child
+      });
+      const start = controller.start();
+      await waitFor(() => child.stdout.listenerCount("data") === 1);
+      child.ready();
+      await start;
+      const request = controller.listAssets({ limit: 10 });
+      await waitFor(() => child.stdin.writes.length === 1);
+      child.stdout.emit("data", Buffer.from(`${JSON.stringify({
+        id: child.stdin.writes[0].id,
+        ok: false,
+        error: {
+          code: "cloud_request_failed",
+          message: "百炼请求被拒绝（HTTP 401），sk-secret-value C:\\private\\source.mp4"
+        }
+      })}\n`, "utf8"));
+      await assert.rejects(
+        request,
+        (error) => error.code === "cloud_request_failed"
+          && error.message.includes("HTTP 401")
+          && !error.message.includes("sk-secret-value")
+          && !error.message.includes("C:\\private\\source.mp4")
+      );
+      await controller.stop();
+    }
+
+    {
+      const child = new FakeChild();
+      const controller = createContentEngineSidecar({
+        runtimePath,
+        dataDir,
         startupTimeoutMs: 10,
         spawnProcess: () => child
       });
@@ -482,6 +714,79 @@ async function main() {
       assert.equal(result.state, "failed");
       assert.equal(result.code, "CONTENT_ENGINE_START_TIMEOUT");
       assert.deepEqual(child.killedSignals, ["SIGTERM"]);
+    }
+
+    {
+      const workerSource = fs.readFileSync(
+        path.join(__dirname, "remotion-render-worker.mjs"),
+        "utf8"
+      );
+      assert.match(workerSource, /listen\(0, "127\.0\.0\.1"/u);
+      assert.match(workerSource, /normalizeMotionManifest/u);
+      assert.match(workerSource, /audioCodec: null/u);
+      assert.match(workerSource, /muted: true/u);
+      assert.match(workerSource, /connect-src 'self'/u);
+      assert.match(workerSource, /sourceToken/u);
+      assert.match(workerSource, /output_reparse_rejected/u);
+      assert.match(workerSource, /hashTree\(digest, bundleRoot\)/u);
+      for (const contractAsset of [
+        "contract.cjs",
+        "effect-registry.json",
+        "layout-grid.json",
+        "style-packs.json"
+      ]) {
+        assert.equal(workerSource.includes(contractAsset), true);
+      }
+      assert.doesNotMatch(workerSource, /--no-sandbox/u);
+      assert.doesNotMatch(workerSource, /disableWebSecurity: true/u);
+      assert.doesNotMatch(workerSource, /\bbundle\s*\(/u);
+
+      const invalidId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      const closeId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+      const workerCheck = spawnSync(
+        process.execPath,
+        [path.join(__dirname, "remotion-render-worker.mjs")],
+        {
+          input: `${JSON.stringify({
+            version: 1,
+            id: invalidId,
+            method: "render",
+            private: {
+              bundlePath: "\\\\network-canary\\bundle",
+              browserPath: "C:\\browser-canary.exe",
+              sourcePath: "C:\\source-canary.mp4",
+              outputPath: "C:\\output-canary.mp4"
+            },
+            publicProps: {}
+          })}\n${JSON.stringify({
+            version: 1,
+            id: closeId,
+            method: "close"
+          })}\n`,
+          encoding: "utf8",
+          timeout: 5_000,
+          windowsHide: true,
+          env: {
+            SystemRoot: process.env.SystemRoot,
+            WINDIR: process.env.WINDIR,
+            TEMP: process.env.TEMP,
+            TMP: process.env.TMP
+          }
+        }
+      );
+      assert.equal(workerCheck.status, 0, workerCheck.stderr);
+      assert.equal(workerCheck.stderr, "");
+      const responses = workerCheck.stdout.trim().split(/\r?\n/u).map(JSON.parse);
+      assert.deepEqual(responses[0], {
+        version: 1,
+        id: invalidId,
+        ok: false,
+        failureClass: "security",
+        code: "bundle_unavailable"
+      });
+      assert.equal(JSON.stringify(responses).includes("network-canary"), false);
+      assert.equal(responses.at(-1).id, closeId);
+      assert.equal(responses.at(-1).ok, true);
     }
 
     console.log("content-engine sidecar self-check passed");

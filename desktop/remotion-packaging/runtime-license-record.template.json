@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "useType": "internal-evaluation",
+  "entity": {
+    "name": "",
+    "type": "individual",
+    "employeeCount": null,
+    "employeeCountAsOf": null,
+    "licenseBasis": "evaluation",
+    "evidenceReference": ""
+  },
+  "remotion": {
+    "version": "4.0.512",
+    "usage": "non-commercial-internal-evaluation",
+    "confirmedBy": "",
+    "confirmedDate": ""
+  },
+  "browser": {
+    "product": "",
+    "version": "",
+    "source": "",
+    "sourceUrl": "",
+    "sha256": "",
+    "terms": "",
+    "termsUrl": "",
+    "internalRedistributionBasis": "",
+    "commercialRedistributionBasis": "",
+    "confirmedBy": "",
+    "confirmedDate": ""
+  }
+}

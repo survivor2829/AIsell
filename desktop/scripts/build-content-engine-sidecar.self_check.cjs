@@ -26,6 +26,9 @@ try {
   fs.writeFileSync(paths.entryFile, "print('fixture')\n", "utf8");
   fs.writeFileSync(path.join(paths.packageDir, "__init__.py"), "__version__ = '0.1.0'\n", "utf8");
   fs.writeFileSync(path.join(paths.packageDir, "service.py"), "VALUE = 1\n", "utf8");
+  fs.mkdirSync(path.join(paths.assetDir, "fonts"), { recursive: true });
+  fs.writeFileSync(paths.assetManifest, '{"bundle_version":1,"assets":[]}\n', "utf8");
+  fs.writeFileSync(paths.bundledFont, "font-fixture", "utf8");
   fs.mkdirSync(path.join(paths.packageDir, "__pycache__"), { recursive: true });
   fs.writeFileSync(path.join(paths.packageDir, "__pycache__", "service.pyc"), "ignored", "utf8");
 
@@ -68,6 +71,10 @@ try {
   assert.equal(args.includes("--noupx"), true);
   assert.equal(args.at(-1), paths.entryFile);
   assert.equal(args[args.indexOf("--name") + 1], "content-engine-worker");
+  assert.equal(
+    args[args.indexOf("--add-data") + 1],
+    `${paths.assetDir}${path.delimiter}content_engine/assets`
+  );
 
   const sourceHash = sourceTreeSha256(paths);
   assert.match(sourceHash, /^[0-9a-f]{64}$/);
@@ -75,6 +82,13 @@ try {
   assert.equal(sourceTreeSha256(paths), sourceHash, "cache files must not change source identity");
   fs.writeFileSync(path.join(paths.packageDir, "service.py"), "VALUE = 2\n", "utf8");
   assert.notEqual(sourceTreeSha256(paths), sourceHash, "runtime source edits must change source identity");
+  const sourceHashAfterCode = sourceTreeSha256(paths);
+  fs.writeFileSync(paths.bundledFont, "changed-font-fixture", "utf8");
+  assert.notEqual(
+    sourceTreeSha256(paths),
+    sourceHashAfterCode,
+    "bundled asset edits must change source identity"
+  );
 
   const gitCalls = [];
   const provenance = collectSourceProvenance(paths, (projectDir, args) => {

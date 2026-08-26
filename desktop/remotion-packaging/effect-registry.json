@@ -1,0 +1,203 @@
+{
+  "version": 1,
+  "policy": {
+    "maxConcurrent": 2,
+    "recentWindow": 1,
+    "maxSameComponentInWindow": 2,
+    "maxSameVariantInWindow": 1
+  },
+  "semanticPresets": {
+    "knowledge_focus": {
+      "eventComponents": {
+        "hook": ["elastic_heading"],
+        "keyword": ["keyword_sticker", "svg_callout"],
+        "emphasis": ["svg_callout", "keyword_sticker"],
+        "step": ["numeric_step_card"],
+        "scene": ["chapter_bar"],
+        "result": ["elastic_heading", "chapter_bar"],
+        "warning": ["svg_callout"],
+        "quote": ["keyword_sticker", "chapter_bar"]
+      },
+      "focusComponents": ["focus_frame"]
+    },
+    "slide_teacher": {
+      "eventComponents": {
+        "hook": ["elastic_heading"],
+        "keyword": ["svg_callout", "keyword_sticker"],
+        "emphasis": ["svg_callout"],
+        "step": ["numeric_step_card"],
+        "scene": ["zoom_transition", "chapter_bar"],
+        "result": ["chapter_bar", "elastic_heading"],
+        "warning": ["svg_callout"],
+        "quote": ["chapter_bar"]
+      },
+      "focusComponents": ["focus_frame"]
+    },
+    "classroom_value": {
+      "eventComponents": {
+        "hook": ["elastic_heading"],
+        "keyword": ["keyword_sticker", "svg_callout"],
+        "emphasis": ["svg_callout"],
+        "step": ["numeric_step_card"],
+        "scene": ["chapter_bar", "zoom_transition"],
+        "result": ["elastic_heading", "chapter_bar"],
+        "warning": ["svg_callout"],
+        "quote": ["keyword_sticker"]
+      },
+      "focusComponents": ["focus_frame"]
+    },
+    "hook_impact": {
+      "eventComponents": {
+        "hook": ["elastic_heading"],
+        "keyword": ["keyword_sticker"],
+        "emphasis": ["svg_callout", "keyword_sticker"],
+        "step": ["numeric_step_card"],
+        "scene": ["zoom_transition"],
+        "result": ["elastic_heading", "chapter_bar"],
+        "warning": ["svg_callout"],
+        "quote": ["elastic_heading"]
+      },
+      "focusComponents": ["focus_frame"]
+    },
+    "process_rhythm": {
+      "eventComponents": {
+        "hook": ["elastic_heading"],
+        "keyword": ["keyword_sticker"],
+        "emphasis": ["svg_callout"],
+        "step": ["numeric_step_card", "svg_callout"],
+        "scene": ["zoom_transition", "chapter_bar"],
+        "result": ["numeric_step_card", "elastic_heading"],
+        "warning": ["svg_callout"],
+        "quote": ["chapter_bar"]
+      },
+      "focusComponents": ["focus_frame"]
+    },
+    "result_close": {
+      "eventComponents": {
+        "hook": ["elastic_heading"],
+        "keyword": ["keyword_sticker"],
+        "emphasis": ["svg_callout"],
+        "step": ["numeric_step_card"],
+        "scene": ["chapter_bar"],
+        "result": ["elastic_heading", "chapter_bar", "numeric_step_card"],
+        "warning": ["svg_callout"],
+        "quote": ["chapter_bar", "keyword_sticker"]
+      },
+      "focusComponents": ["focus_frame"]
+    }
+  },
+  "components": [
+    {
+      "id": "elastic_heading",
+      "target": "event",
+      "renderer": "elasticHeading",
+      "eventTypes": ["hook", "result", "quote"],
+      "sizes": ["hero", "card", "chip"],
+      "zones": ["top_banner", "upper_left", "upper_right", "middle_left", "middle_right"],
+      "variants": [
+        { "id": "social_spring_stack", "styles": ["social_pop"], "motion": "spring", "surface": "stack" },
+        { "id": "social_elastic_punch", "styles": ["social_pop"], "motion": "elastic", "surface": "solid" },
+        { "id": "editorial_mask_column", "styles": ["neo_editorial"], "motion": "mask", "surface": "column" },
+        { "id": "editorial_rule_sweep", "styles": ["neo_editorial"], "motion": "sweep", "surface": "rule" },
+        { "id": "tech_signal_lock", "styles": ["tech_motion"], "motion": "lock", "surface": "glass" },
+        { "id": "tech_data_reveal", "styles": ["tech_motion"], "motion": "reveal", "surface": "outline" }
+      ]
+    },
+    {
+      "id": "keyword_sticker",
+      "target": "event",
+      "renderer": "keywordSticker",
+      "eventTypes": ["keyword", "emphasis", "scene", "quote"],
+      "sizes": ["card", "chip"],
+      "zones": ["upper_left", "upper_right", "middle_left", "middle_right", "top_banner"],
+      "variants": [
+        { "id": "social_pill_pop", "styles": ["social_pop"], "motion": "pop", "surface": "pill" },
+        { "id": "social_tape_tag", "styles": ["social_pop"], "motion": "tilt", "surface": "tape" },
+        { "id": "editorial_cutout", "styles": ["neo_editorial"], "motion": "slide", "surface": "cutout" },
+        { "id": "editorial_underline", "styles": ["neo_editorial"], "motion": "wipe", "surface": "underline" },
+        { "id": "tech_glass_chip", "styles": ["tech_motion"], "motion": "scan", "surface": "glass" },
+        { "id": "tech_cursor_tag", "styles": ["tech_motion"], "motion": "blink", "surface": "outline" }
+      ]
+    },
+    {
+      "id": "svg_callout",
+      "target": "event",
+      "renderer": "svgCallout",
+      "eventTypes": ["keyword", "emphasis", "step", "scene", "warning"],
+      "sizes": ["card", "chip"],
+      "zones": ["upper_left", "upper_right", "middle_left", "middle_right", "top_banner"],
+      "variants": [
+        { "id": "social_burst_callout", "styles": ["social_pop"], "motion": "burst", "surface": "solid" },
+        { "id": "social_arrow_callout", "styles": ["social_pop"], "motion": "draw", "surface": "outline" },
+        { "id": "editorial_margin_callout", "styles": ["neo_editorial"], "motion": "slide", "surface": "rule" },
+        { "id": "editorial_bracket_callout", "styles": ["neo_editorial"], "motion": "wipe", "surface": "bracket" },
+        { "id": "tech_target_callout", "styles": ["tech_motion"], "motion": "lock", "surface": "glass" },
+        { "id": "tech_vector_callout", "styles": ["tech_motion"], "motion": "trace", "surface": "outline" }
+      ]
+    },
+    {
+      "id": "numeric_step_card",
+      "target": "event",
+      "renderer": "numericStepCard",
+      "eventTypes": ["step", "result"],
+      "sizes": ["hero", "card", "chip"],
+      "zones": ["top_banner", "upper_left", "upper_right", "middle_left", "middle_right"],
+      "variants": [
+        { "id": "social_counter_card", "styles": ["social_pop"], "motion": "count", "surface": "solid" },
+        { "id": "social_split_step", "styles": ["social_pop"], "motion": "split", "surface": "pill" },
+        { "id": "editorial_folio_step", "styles": ["neo_editorial"], "motion": "mask", "surface": "column" },
+        { "id": "editorial_index_step", "styles": ["neo_editorial"], "motion": "sweep", "surface": "rule" },
+        { "id": "tech_node_step", "styles": ["tech_motion"], "motion": "pulse", "surface": "glass" },
+        { "id": "tech_sequence_step", "styles": ["tech_motion"], "motion": "scan", "surface": "outline" }
+      ]
+    },
+    {
+      "id": "chapter_bar",
+      "target": "event",
+      "renderer": "chapterBar",
+      "eventTypes": ["scene", "result", "quote"],
+      "sizes": ["hero", "card", "chip"],
+      "zones": ["top_banner", "upper_left", "upper_right", "middle_left", "middle_right"],
+      "variants": [
+        { "id": "social_ribbon_chapter", "styles": ["social_pop"], "motion": "stretch", "surface": "solid" },
+        { "id": "social_tab_chapter", "styles": ["social_pop"], "motion": "pop", "surface": "pill" },
+        { "id": "editorial_masthead", "styles": ["neo_editorial"], "motion": "mask", "surface": "rule" },
+        { "id": "editorial_section_bar", "styles": ["neo_editorial"], "motion": "wipe", "surface": "column" },
+        { "id": "tech_channel_bar", "styles": ["tech_motion"], "motion": "scan", "surface": "glass" },
+        { "id": "tech_status_bar", "styles": ["tech_motion"], "motion": "reveal", "surface": "outline" }
+      ]
+    },
+    {
+      "id": "focus_frame",
+      "target": "focus",
+      "renderer": "focusFrame",
+      "eventTypes": [],
+      "sizes": [],
+      "zones": [],
+      "variants": [
+        { "id": "social_soft_focus", "styles": ["social_pop"], "motion": "spring", "surface": "solid" },
+        { "id": "social_marker_focus", "styles": ["social_pop"], "motion": "draw", "surface": "outline" },
+        { "id": "editorial_crop_focus", "styles": ["neo_editorial"], "motion": "mask", "surface": "rule" },
+        { "id": "editorial_window_focus", "styles": ["neo_editorial"], "motion": "wipe", "surface": "outline" },
+        { "id": "tech_target_focus", "styles": ["tech_motion"], "motion": "lock", "surface": "glass" },
+        { "id": "tech_scan_focus", "styles": ["tech_motion"], "motion": "scan", "surface": "outline" }
+      ]
+    },
+    {
+      "id": "zoom_transition",
+      "target": "event",
+      "renderer": "zoomTransition",
+      "eventTypes": ["emphasis", "scene", "result"],
+      "sizes": ["hero", "card", "chip"],
+      "zones": ["top_banner", "upper_left", "upper_right", "middle_left", "middle_right"],
+      "variants": [
+        { "id": "social_snap_zoom", "styles": ["social_pop"], "motion": "snap", "surface": "pill" },
+        { "id": "social_push_zoom", "styles": ["social_pop"], "motion": "push", "surface": "solid" },
+        { "id": "editorial_crop_zoom", "styles": ["neo_editorial"], "motion": "crop", "surface": "rule" },
+        { "id": "editorial_page_zoom", "styles": ["neo_editorial"], "motion": "page", "surface": "column" },
+        { "id": "tech_scope_zoom", "styles": ["tech_motion"], "motion": "scope", "surface": "glass" },
+        { "id": "tech_depth_zoom", "styles": ["tech_motion"], "motion": "depth", "surface": "outline" }
+      ]
+    }
+  ]
+}

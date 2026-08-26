@@ -111,6 +111,27 @@ if _DESKTOP_MODE:
 app = Flask(__name__, **_flask_kwargs)
 app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+
+
+def _positive_int_env(name, default):
+    """Read a positive integer limit without making a bad env value fatal."""
+    try:
+        value = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+# 参数单图会把客户端当前编辑的 block_e 再次交给 Jinja 和 Chromium。集中限制
+# 它的规模与字段范围，既避免单次导出耗尽渲染资源，也不让额外字段混入模板上下文。
+app.config["PARAMETER_EXPORT_LIMITS"] = {
+    "spec_count": _positive_int_env("PARAMETER_EXPORT_MAX_SPECS", 48),
+    "spec_name_length": _positive_int_env("PARAMETER_EXPORT_MAX_SPEC_NAME_LENGTH", 80),
+    "spec_value_length": _positive_int_env("PARAMETER_EXPORT_MAX_SPEC_VALUE_LENGTH", 240),
+    "text_length": _positive_int_env("PARAMETER_EXPORT_MAX_TEXT_LENGTH", 200),
+    "image_url_length": _positive_int_env("PARAMETER_EXPORT_MAX_IMAGE_URL_LENGTH", 2048),
+}
+
 # ── P4 §A.1 修复: SECRET_KEY 必填, 不再有公开默认值兜底 ──
 # 原 bug: `_secret_key or "dev-change-me-in-production"` 在生产环境 SECRET_KEY
 # 缺失时会静默用公开字符串, 攻击者可伪造 session cookie 接管账号.
@@ -282,6 +303,100 @@ def _to_str(value):
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _validate_parameter_export_specs(raw_specs):
+    """Normalize parameter rows and reject payloads that are unsafe to render."""
+    if not isinstance(raw_specs, list):
+        return None, "没有有效产品参数，请补充参数后重新生成"
+
+    limits = app.config["PARAMETER_EXPORT_LIMITS"]
+    if len(raw_specs) > limits["spec_count"]:
+        return None, (
+            f"产品参数最多支持 {limits['spec_count']} 条，"
+            f"当前为 {len(raw_specs)} 条，请精简后重新导出"
+        )
+
+    normalized = []
+    for index, spec in enumerate(raw_specs, start=1):
+        if not isinstance(spec, dict):
+            continue
+
+        raw_name = spec.get("name")
+        raw_value = spec.get("value")
+        if isinstance(raw_name, (dict, list)) or isinstance(raw_value, (dict, list)):
+            return None, f"第 {index} 条产品参数的名称和值必须是文本"
+
+        name = _to_str(raw_name)
+        value = _to_str(raw_value)
+        if not name or not value:
+            continue
+        if len(name) > limits["spec_name_length"]:
+            return None, (
+                f"第 {index} 条产品参数名称超过 {limits['spec_name_length']} 个字符，"
+                "请缩短后重新导出"
+            )
+        if len(value) > limits["spec_value_length"]:
+            return None, (
+                f"第 {index} 条产品参数值超过 {limits['spec_value_length']} 个字符，"
+                "请缩短后重新导出"
+            )
+        normalized.append({"name": name, "value": value})
+
+    if not normalized:
+        return None, "没有有效产品参数，请补充参数后重新生成"
+    return normalized, None
+
+
+_PARAMETER_EXPORT_TEXT_FIELDS = (
+    "title",
+    "subtitle",
+    "red_bar_text",
+    "dim_height",
+    "dim_width",
+    "dim_length",
+    "footnote",
+)
+
+
+def _sanitize_parameter_export_data(block_e):
+    """Whitelist and bound the editable block_e fields used by the template."""
+    specs, error = _validate_parameter_export_specs(block_e.get("specs"))
+    if error:
+        return None, error
+
+    limits = app.config["PARAMETER_EXPORT_LIMITS"]
+    parameter_data = {"specs": specs}
+    for field in _PARAMETER_EXPORT_TEXT_FIELDS:
+        raw_value = block_e.get(field)
+        if isinstance(raw_value, (dict, list)):
+            return None, f"产品参数图字段 {field} 必须是文本"
+        value = _to_str(raw_value)
+        if len(value) > limits["text_length"]:
+            return None, (
+                f"产品参数图字段 {field} 超过 {limits['text_length']} 个字符，"
+                "请缩短后重新导出"
+            )
+        parameter_data[field] = value
+
+    raw_image = block_e.get("product_image")
+    if isinstance(raw_image, (dict, list)):
+        return None, "产品图片来源无效，请重新上传产品图"
+    image_url = _to_str(raw_image)
+    if len(image_url) > limits["image_url_length"]:
+        return None, "产品图片地址过长，请重新上传产品图"
+    if image_url:
+        image_path = unquote(image_url.split("?", 1)[0].split("#", 1)[0]).replace("\\", "/")
+        if not image_path.startswith("/static/"):
+            return None, "产品图片来源无效，请重新上传产品图"
+        try:
+            static_root = (BASE_DIR / "static").resolve()
+            image_file = (static_root / image_path[len("/static/"):]).resolve()
+            image_file.relative_to(static_root)
+        except (OSError, ValueError):
+            return None, "产品图片来源无效，请重新上传产品图"
+    parameter_data["product_image"] = image_url
+    return parameter_data, None
 
 
 def _fallback_text(value, default=""):
@@ -5780,6 +5895,7 @@ def export_generic(product_type):
     req_data = request.get_json(silent=True) or {}
     module_order = req_data.get("module_order", [])
     hidden_modules = set(req_data.get("hidden_modules", []))
+    parameter_only = req_data.get("scope") == "parameter"
     theme_id = req_data.get("theme_id", "classic-red")
     # 导出格式: png (无损,默认,~5MB) | jpg (quality 90,~1.5-2MB,适合电商上传)
     export_format = (req_data.get("format") or "png").lower()
@@ -5799,6 +5915,19 @@ def export_generic(product_type):
                 break
     css_vars_str = "; ".join(f"{k}:{v}" for k, v in theme_vars.items()) if theme_vars else ""
 
+    if parameter_only:
+        requested_parameter_data = req_data.get("parameter_data")
+        block_e = requested_parameter_data if isinstance(requested_parameter_data, dict) else data.get("block_e")
+        block_e = block_e if isinstance(block_e, dict) else {}
+        parameter_data, validation_error = _sanitize_parameter_export_data(block_e)
+        if validation_error:
+            return jsonify({"error": validation_error}), 400
+
+        data = dict(data)
+        data["block_e"] = parameter_data
+        module_order = ["block_e"]
+        hidden_modules = set()
+
     if module_order:
         # Render blocks individually in user-specified order, skipping hidden
         block_htmls = []
@@ -5809,17 +5938,27 @@ def export_generic(product_type):
             html = _render_single_block(bid, block_data)
             if html and html.strip():
                 block_htmls.append(html)
+        if parameter_only and not block_htmls:
+            return jsonify({"error": "产品参数图渲染失败，请重新生成"}), 500
 
-        # Also render fixed selling images
+        # 参数图必须保持单图；普通详情导出继续附带固定销售图。
         fixed_imgs_html = ""
-        for img_url in data.get("fixed_selling_images", []):
+        fixed_selling_images = [] if parameter_only else data.get("fixed_selling_images", [])
+        for img_url in fixed_selling_images:
             if img_url:
                 fixed_imgs_html += f'<div class="screen"><img style="width:750px;display:block;" src="{img_url}" alt=""></div>'
+
+        rendered_blocks_html = "".join(block_htmls)
+        if parameter_only:
+            rendered_blocks_html = (
+                '<div id="parameter-export-root" style="width:750px;overflow:hidden;">'
+                f'{rendered_blocks_html}</div>'
+            )
 
         html_content = f'''<!DOCTYPE html><html><head><meta charset="UTF-8">
         <style>*{{margin:0;padding:0;box-sizing:border-box;}} body{{width:750px;background:#fff;}}</style>
         </head><body style="{css_vars_str}">
-        {"".join(block_htmls)}
+        {rendered_blocks_html}
         {fixed_imgs_html}
         </body></html>'''
     else:
@@ -5841,8 +5980,9 @@ def export_generic(product_type):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     # 服务端文件名含时间戳避免同型号重复导出覆盖;下载文件名只给用户看产品名
     ext = "jpg" if is_jpg else "png"
-    server_filename = f"{product_type}_{model_name}_{timestamp}.{ext}"
-    download_filename = f"{_safe_download_name(model_name, product_type)}.{ext}"
+    scope_suffix = "_产品参数" if parameter_only else ""
+    server_filename = f"{product_type}_{model_name}{scope_suffix}_{timestamp}.{ext}"
+    download_filename = f"{_safe_download_name(model_name, product_type)}{scope_suffix}.{ext}"
     _user_outputs = STATIC_OUTPUTS / str(current_user.id)
     _user_outputs.mkdir(parents=True, exist_ok=True)
     out_path = _user_outputs / server_filename
@@ -5860,11 +6000,16 @@ def export_generic(product_type):
             page = ctx.new_page()
             page.goto(temp_html.as_uri(), wait_until="networkidle", timeout=30000)
             page.wait_for_timeout(2000)
+            screenshot_options = {"path": str(out_path)}
             if is_jpg:
                 # quality 90: 肉眼几乎无损,750x3000 长图约 1.5-2MB,适合电商上传
-                page.screenshot(path=str(out_path), full_page=True, type="jpeg", quality=90)
+                screenshot_options.update({"type": "jpeg", "quality": 90})
+            if parameter_only:
+                parameter_root = page.locator("#parameter-export-root")
+                parameter_root.wait_for(state="visible")
+                parameter_root.screenshot(**screenshot_options)
             else:
-                page.screenshot(path=str(out_path), full_page=True)
+                page.screenshot(full_page=True, **screenshot_options)
             browser.close()
     except Exception as exc:
         import traceback; traceback.print_exc()

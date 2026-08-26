@@ -19,6 +19,10 @@ const {
   isContentEnginePythonSource,
   runPackagedContentEngineSelfCheck
 } = require("./content-engine-release-runtime.cjs");
+const {
+  artifactTypeForEdition,
+  verifyPackagedRemotionRuntime
+} = require("./build-remotion-runtime.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const projectDir = path.resolve(desktopDir, "..");
@@ -309,6 +313,7 @@ assert.equal(fs.existsSync(databaseDecryptor), true, "database decryptor must be
 const manifest = JSON.parse(fs.readFileSync(path.join(target, "版本清单.json"), "utf8"));
 const declaredCapabilities = JSON.parse(fs.readFileSync(path.join(desktopDir, "release-capabilities.json"), "utf8"));
 assert.equal(manifest.edition, edition);
+assert.equal(manifest.artifactType, artifactTypeForEdition(edition));
 assert.equal(manifest.product, PRODUCT_NAME);
 assert.match(manifest.buildId, /^\d{8}T\d{4}Z$/, "portable release must expose an unambiguous build id");
 assert.equal(manifest.architecture, "x64");
@@ -335,9 +340,20 @@ assert.equal(manifest.productDetailSidecar?.desktopSourceDirty, false, "product-
 assert.equal(manifest.contentEngineSidecar?.buildCommit, manifest.commit, "content-engine runtime must be pinned to the portable release commit");
 assert.equal(manifest.contentEngineSidecar?.sourceCommit, manifest.commit, "content-engine source must match the portable release commit");
 assert.equal(manifest.contentEngineSidecar?.sourceDirty, false, "content-engine runtime must come from a clean source tree");
+assert.equal(manifest.remotionRuntime?.artifactType, manifest.artifactType, "Remotion runtime must match the portable artifact type");
+assert.equal(manifest.remotionRuntime?.compositionSmokeStatus, "passed", "portable Remotion runtime must have selected the fixed composition with an explicit browser");
+assert.match(manifest.remotionRuntime?.manifestSha256 || "", /^[0-9a-f]{64}$/, "portable manifest must bind the Remotion runtime manifest digest");
+assert.match(manifest.remotionRuntime?.runtimeHash || "", /^[0-9a-f]{64}$/, "portable manifest must bind the worker runtime hash");
+if (edition === "delivery") {
+  assert.equal(manifest.remotionRuntime?.commercialLicenseConfirmed, true, "delivery requires a confirmed Remotion commercial basis");
+}
+assert.doesNotThrow(() => verifyPackagedRemotionRuntime(target, manifest.remotionRuntime));
+const packagedBuildInfo = JSON.parse(fs.readFileSync(path.join(appDir, "dist", "build-edition.json"), "utf8"));
+assert.equal(packagedBuildInfo.artifactType, manifest.artifactType, "packaged renderer build info must expose the immutable artifact type");
 const releaseLabel = fs.readFileSync(path.join(target, "版本标识.txt"), "utf8");
 assert.equal(releaseLabel.includes("朋友圈逐帖互动已"), true);
 assert.equal(releaseLabel.includes("每日自动计划"), true);
+assert.equal(releaseLabel.includes(`制品类型：${manifest.artifactType}`), true);
 assert.equal(edition !== "delivery" || releaseLabel.includes("capabilityMatrix"), true);
 assert.equal(edition !== "delivery" || releaseLabel.includes("本包不代表完整商品"), true);
 const firstUseGuide = fs.readFileSync(path.join(target, "首次使用说明.txt"), "utf8");
@@ -384,6 +400,20 @@ assert.equal(
   true,
   "portable ZIP must contain the content-engine executable at the runtime root"
 );
+for (const relative of [
+  "resources/content-engine/remotion-render-worker.mjs",
+  "resources/content-engine/remotion-bundle/index.html",
+  "resources/content-engine/remotion-runtime-manifest.json",
+  "resources/content-engine/remotion-sbom.json",
+  "resources/content-engine/THIRD_PARTY_LICENSES.md",
+  "resources/content-engine/browser/chrome.exe",
+  "remotion-packaging/LICENSES.md",
+  "remotion-packaging/effect-registry.json",
+  "remotion-packaging/layout-grid.json",
+  "remotion-packaging/style-packs.json"
+]) {
+  assert.equal(archiveEntries.some((entry) => entry.replaceAll("\\", "/").endsWith(`/${relative}`)), true, `portable ZIP must contain ${relative}`);
+}
 for (const name of momentsRuntimeNames) {
   assert.equal(archiveEntries.some((entry) => entry.replaceAll("\\", "/").endsWith(`/rpa/active_touch/${name}`)), true, `${name} must be present in every portable ZIP`);
 }
@@ -514,6 +544,29 @@ const mainDir = path.join(appDir, "src", "main");
 const packagedMammoth = path.join(appDir, "node_modules", "mammoth");
 assert.equal(fs.existsSync(path.join(packagedMammoth, "package.json")), true, "Mammoth must be packaged for .docx AI expert imports");
 assert.equal(typeof require(packagedMammoth).extractRawText, "function", "packaged Mammoth dependency tree must be loadable");
+const packagedRemotionRenderer = path.join(resourcesDir, "content-engine", "node_modules", "@remotion", "renderer");
+const packagedRemotionLoad = spawnSync(executable, [
+  "-e",
+  "const renderer=require(process.argv[1]);process.stdout.write(JSON.stringify({ok:true,selectComposition:typeof renderer.selectComposition,renderMedia:typeof renderer.renderMedia}));",
+  packagedRemotionRenderer
+], {
+  encoding: "utf8",
+  windowsHide: true,
+  timeout: 30_000,
+  env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }
+});
+assert.equal(packagedRemotionLoad.status, 0, packagedRemotionLoad.stderr || packagedRemotionLoad.stdout || "packaged Remotion renderer dependency load failed");
+assert.deepEqual(JSON.parse(packagedRemotionLoad.stdout.trim()), { ok: true, renderMedia: "function", selectComposition: "function" });
+const packagedWorkerSyntax = spawnSync(executable, [
+  "--check",
+  path.join(resourcesDir, "content-engine", "remotion-render-worker.mjs")
+], {
+  encoding: "utf8",
+  windowsHide: true,
+  timeout: 30_000,
+  env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }
+});
+assert.equal(packagedWorkerSyntax.status, 0, packagedWorkerSyntax.stderr || packagedWorkerSyntax.stdout || "packaged Remotion worker syntax check failed");
 assert.equal(fs.existsSync(path.join(mainDir, "active-touch-dev-ipc.cjs")), edition === "test");
 assert.equal(fs.existsSync(path.join(mainDir, "preload.dev.cjs")), edition === "test");
 assert.equal(fs.readFileSync(path.join(mainDir, "preload.cjs"), "utf8").includes("sendReal"), false);

@@ -33,6 +33,8 @@ import { Diagnostics } from "./Diagnostics";
 import { ProductDetailPage } from "./ProductDetailPage";
 import { FinishedVideoCenterPage, MaterialsLibraryPage } from "./ContentFoundationPage";
 import { CreativeWorkspacePage } from "./CreativeWorkspacePage";
+import { CreativeStudioPage } from "./CreativeStudioPage";
+import { ProductOneClickPage } from "./ProductOneClickPage";
 
 type ModuleKey =
   | "agent"
@@ -552,6 +554,12 @@ export default function App() {
 
   const [user, setUser] = useState<UserProfile | null>(() => readStoredUser());
   const [active, setActive] = useState<ModuleKey>(DEFAULT_ACTIVE_MODULE);
+  const [legacyWorkspace, setLegacyWorkspace] = useState(false);
+  const [creativeView, setCreativeView] = useState<"studio" | "product">("studio");
+  const [creativeResumeTarget, setCreativeResumeTarget] = useState<{
+    taskId: string;
+    projectId?: string | null;
+  } | null>(null);
   const [openGroups, setOpenGroups] = useState<Record<GroupKey, boolean>>({ agent: true, production: true, operations: true });
   const [contactRows, setContactRows] = useState<ContactRow[]>([]);
   const [contactSyncBusy, setContactSyncBusy] = useState(false);
@@ -601,6 +609,11 @@ export default function App() {
 
   const selectChild = (groupKey: GroupKey, key: ModuleKey) => {
     setOpenGroups((current) => ({ ...current, [groupKey]: true }));
+    if (key === "workspace") {
+      setLegacyWorkspace(false);
+      setCreativeView("studio");
+      setCreativeResumeTarget(null);
+    }
     setActive(key);
   };
 
@@ -916,7 +929,32 @@ export default function App() {
           {active === "accounts" && <AccountManagement />}
           {active === "product-detail" && <ProductDetailPage />}
           {active === "materials" && <MaterialsLibraryPage />}
-          {active === "workspace" && <CreativeWorkspacePage />}
+          {active === "workspace" && (legacyWorkspace
+            ? <CreativeWorkspacePage onBackToProduct={() => { setLegacyWorkspace(false); setCreativeView("studio"); }} />
+            : creativeView === "product"
+              ? <ProductOneClickPage
+                initialTaskId={creativeResumeTarget?.taskId}
+                initialProjectId={creativeResumeTarget?.projectId}
+                onOpenLegacy={() => setLegacyWorkspace(true)}
+                onBackToStudio={() => {
+                  setCreativeResumeTarget(null);
+                  setCreativeView("studio");
+                }}
+              />
+              : <CreativeStudioPage
+                onOpenProduct={() => {
+                  setCreativeResumeTarget(null);
+                  setCreativeView("product");
+                }}
+                onContinueProduct={(taskId, projectId) => {
+                  setCreativeResumeTarget({ taskId, projectId });
+                  setCreativeView("product");
+                }}
+                onOpenLegacy={() => setLegacyWorkspace(true)}
+                onOpenMaterials={() => setActive("materials")}
+                onOpenFinished={() => setActive("finished")}
+                onOpenDiagnostics={() => setActive("diagnostics")}
+              />)}
           {active === "finished" && <FinishedVideoCenterPage />}
           {active === "api-key" && <ApiKeyPage onConfiguredChange={setDeepSeekConfigured} />}
           {active === "diagnostics" && <Diagnostics />}

@@ -37,6 +37,9 @@ const {
 const {
   resolveDefaultDevelopmentSidecarRuntime
 } = require("./development-sidecar-runtime.cjs");
+const {
+  resolveRemotionRuntimeEnvironment
+} = require("./remotion-runtime-environment.cjs");
 
 let mainWindow = null;
 let disarmRealSend = null;
@@ -52,13 +55,13 @@ let contentEngineIpcRegistration = null;
 let quitCleanupStarted = false;
 let quitCleanupComplete = false;
 
-const PRODUCT_DETAIL_PROVIDER_RESTART_STATES = new Set(["ready", "starting", "failed"]);
+const PROVIDER_CONSUMER_RESTART_STATES = new Set(["ready", "starting", "failed"]);
 
 registerContentMediaScheme(protocol);
 
 function restartProductDetailForProviderChange() {
   const state = productDetailController?.status().state;
-  if (!PRODUCT_DETAIL_PROVIDER_RESTART_STATES.has(state)) return undefined;
+  if (!PROVIDER_CONSUMER_RESTART_STATES.has(state)) return undefined;
   return productDetailController.restart();
 }
 
@@ -88,10 +91,29 @@ function contentEngineRuntimePath() {
   return resolveDefaultDevelopmentSidecarRuntime("content-engine");
 }
 
+function restartImageProviderConsumers() {
+  const restarts = [restartProductDetailForProviderChange()];
+  const contentState = contentEngineController?.status().state;
+  if (PROVIDER_CONSUMER_RESTART_STATES.has(contentState)) {
+    restarts.push(contentEngineController.restart());
+  }
+  return Promise.all(restarts.filter(Boolean));
+}
+
 function contentEngineRuntimeArgs() {
   if (app.isPackaged) return [];
   const entryPath = String(process.env.XIAOXI_CONTENT_ENGINE_SIDECAR_ENTRY || "").trim();
   return entryPath ? [entryPath] : [];
+}
+
+function remotionRuntimeEnvironment() {
+  return resolveRemotionRuntimeEnvironment({
+    environment: process.env,
+    executablePath: process.execPath,
+    isPackaged: app.isPackaged,
+    moduleDir: __dirname,
+    resourcesPath: process.resourcesPath
+  });
 }
 
 function isAllowedProductDetailFrameNavigation(targetUrl) {
@@ -304,15 +326,28 @@ if (!gotSingleInstanceLock) {
     });
     registerProductDetailAiSettingsIpc({
       store: productDetailAiSettingsStore,
-      onChanged: restartProductDetailForProviderChange
+      onChanged: restartImageProviderConsumers
     });
     contentEngineController = createContentEngineSidecar({
       runtimePath: contentEngineRuntimePath(),
       runtimeArgs: contentEngineRuntimeArgs(),
       dataDir: path.join(app.getPath("userData"), "content-engine"),
-      getProviderEnvironment: () => bailianKeyStore.status().configured
-        ? { DASHSCOPE_API_KEY: bailianKeyStore.read() }
-        : {}
+      getTrustedRuntimeEnvironment: remotionRuntimeEnvironment,
+      getProviderEnvironment: () => {
+        const providerEnvironment = {};
+        if (bailianKeyStore.status().configured) {
+          providerEnvironment.DASHSCOPE_API_KEY = bailianKeyStore.read();
+          const apiHost = bailianKeyStore.status().apiHost;
+          if (apiHost) providerEnvironment.XIAOXI_BAILIAN_API_HOST = apiHost;
+        }
+        if (productDetailAiSettingsStore.status().ready) {
+          const imageProvider = productDetailAiSettingsStore.runtimeConfig();
+          providerEnvironment.APIMART_API_KEY = imageProvider.apiKey;
+          providerEnvironment.APIMART_API_BASE_URL = imageProvider.baseUrl;
+          providerEnvironment.APIMART_IMAGE_MODEL = imageProvider.model;
+        }
+        return providerEnvironment;
+      }
     });
     registerContentMediaProtocol({
       protocol,

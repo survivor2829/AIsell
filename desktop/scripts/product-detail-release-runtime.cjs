@@ -70,10 +70,10 @@ function validateBuildManifest(manifest, manifestFile) {
   return manifest;
 }
 
-function resolveProductDetailBuild(desktopDir) {
-  const buildRoot = path.join(path.resolve(desktopDir), ".build");
-  const runtimeDir = path.join(buildRoot, "product-detail-runtime");
-  const manifestFile = path.join(buildRoot, "product-detail-runtime.manifest.json");
+function resolveProductDetailBuild(desktopDir, { buildRoot = null } = {}) {
+  const paths = resolveBuildPaths(desktopDir, { buildRoot });
+  const runtimeDir = paths.outputDir;
+  const manifestFile = paths.manifestFile;
   assertDirectory(runtimeDir, "Product-detail PyInstaller runtime");
   assertFile(manifestFile, "Product-detail runtime manifest");
   const manifest = validateBuildManifest(

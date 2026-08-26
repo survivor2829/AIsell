@@ -107,12 +107,131 @@ METHODS = {
         subtitle_margin_bottom=params.get("subtitle_margin_bottom", 170),
         experiment_mode=params.get("experiment_mode", "standard"),
         subtitle_preset=params.get("subtitle_preset", "dynamic_clean"),
+        packaging_mode=params.get("packaging_mode", "auto"),
+        packaging_preset_id=params.get("packaging_preset_id"),
+        brand_profile_id=params.get("brand_profile_id"),
+        cover_mode=params.get("cover_mode", "auto"),
+        visual_renderer=params.get("visual_renderer"),
+        confirm_paid_calls=params.get("confirm_paid_calls", False),
     ),
     "generate_mix_batch": lambda service, params: service.generate_mix_batch(
         params.get("asset_ids"),
         theme=params.get("theme", "培训现场价值"),
         target_count=params.get("target_count", 30),
         voice_asset_id=params.get("voice_asset_id"),
+        pilot_mode=params.get("pilot_mode", False),
+        packaging_mode=params.get("packaging_mode", "auto"),
+        packaging_preset_id=params.get("packaging_preset_id"),
+        brand_profile_id=params.get("brand_profile_id"),
+        cover_mode=params.get("cover_mode", "auto"),
+        visual_renderer=params.get("visual_renderer"),
+        confirm_paid_calls=params.get("confirm_paid_calls", False),
+    ),
+    "create_one_click_project": lambda service, params: service.create_one_click_project(
+        params.get("name"),
+        params.get("asset_ids"),
+        params.get("options"),
+    ),
+    "create_auto_mix_v2": lambda service, params: service.create_auto_mix_v2(params),
+    "prepare_guided_auto_mix_v2": lambda service, params: service.prepare_guided_auto_mix_v2(
+        params.get("asset_ids")
+    ),
+    "get_guided_auto_mix_session_v2": lambda service, params: service.get_guided_auto_mix_session_v2(
+        session_id=params.get("session_id"), task_id=params.get("task_id")
+    ),
+    "generate_guided_auto_mix_script_v2": lambda service, params: service.generate_guided_auto_mix_script_v2(
+        params.get("session_id"), params.get("title"), params.get("answers")
+    ),
+    "get_guided_auto_mix_supplemental_image_v2": lambda service, params: service.get_guided_auto_mix_supplemental_image_v2(
+        params.get("session_id"), params.get("script_revision")
+    ),
+    "create_guided_auto_mix_supplemental_image_v2": lambda service, params: service.create_guided_auto_mix_supplemental_image_v2(
+        params.get("session_id"),
+        params.get("script_revision"),
+        params.get("draft_hash"),
+        confirm_paid_calls=params.get("confirm_paid_calls", False),
+    ),
+    "get_auto_mix_plan_v2": lambda service, params: service.get_auto_mix_plan_v2(
+        project_id=params.get("project_id"), run_id=params.get("run_id")
+    ),
+    "regenerate_auto_mix_layer": lambda service, params: service.regenerate_auto_mix_layer(
+        params.get("project_id"),
+        params.get("layer"),
+        expected_run_id=params.get("expected_run_id"),
+    ),
+    "import_music_catalog_track": lambda service, params: service.import_music_catalog_track(
+        params
+    ),
+    "list_music_catalog_tracks": lambda service, params: service.list_music_catalog_tracks(),
+    "list_auto_mix_voice_personas": lambda service, params: service.list_auto_mix_voice_personas(),
+    "design_auto_mix_voice_persona": lambda service, params: service.design_auto_mix_voice_persona(
+        params.get("voice_persona_id")
+    ),
+    "preview_auto_mix_voice_persona": lambda service, params: service.preview_auto_mix_voice_persona(
+        params.get("voice_persona_id")
+    ),
+    "approve_auto_mix_voice_persona": lambda service, params: service.approve_auto_mix_voice_persona(
+        params.get("voice_persona_id")
+    ),
+    "analyze_product_assets": lambda service, params: service.analyze_product_assets(
+        params.get("project_id")
+    ),
+    "generate_product_copy": lambda service, params: service.generate_product_copy(
+        params.get("project_id"), params.get("brief")
+    ),
+    "generate_product_voice": lambda service, params: service.generate_product_voice(
+        params.get("project_id"), params.get("script_id")
+    ),
+    "generate_one_click_candidates": lambda service, params: service.generate_one_click_candidates(
+        params.get("project_id"), params.get("options")
+    ),
+    "list_one_click_candidates": lambda service, params: service.list_one_click_candidates(
+        params.get("project_id"), params.get("limit", 20)
+    ),
+    "list_packaging_presets": lambda service, params: service.list_packaging_presets(
+        params.get("kind")
+    ),
+    "list_brand_profiles": lambda service, params: service.list_brand_profiles(),
+    "save_brand_profile": lambda service, params: service.save_brand_profile(
+        params.get("profile")
+    ),
+    "package_generated_videos": lambda service, params: service.package_generated_videos(
+        params.get("candidate_ids"), params.get("options")
+    ),
+    "repackage_video": lambda service, params: service.repackage_video(
+        params.get("candidate_id"), params.get("options")
+    ),
+    "preflight_visual_comparison": lambda service, params: service.preflight_visual_comparison(
+        params.get("candidate_id")
+    ),
+    "create_visual_comparison_task": lambda service, params: service.create_visual_comparison_task(
+        params.get("candidate_id")
+    ),
+    "get_packaging_cost_estimate": lambda service, params: service.get_packaging_cost_estimate(
+        params.get("candidate_ids"),
+        cover_mode=params.get("cover_mode", "auto"),
+        planned_count=params.get("planned_count"),
+        asset_ids=params.get("asset_ids"),
+        generation_kind=params.get("generation_kind"),
+    ),
+    "record_media_review": lambda service, params: service.record_media_review(
+        params.get("candidate_id"),
+        device=params.get("device", "phone"),
+        verdict=params.get("verdict", "pass"),
+        reason=params.get("reason", ""),
+        reviewer=params.get("reviewer", ""),
+    ),
+    "list_media_reviews": lambda service, params: service.list_media_reviews(
+        params.get("candidate_id")
+    ),
+    "regenerate_cover": lambda service, params: service.regenerate_cover(
+        params.get("candidate_id")
+    ),
+    "update_cover_operation": lambda service, params: service.update_cover_operation(
+        params.get("cover_operation_id"),
+        params.get("status"),
+        external_task_id=params.get("external_task_id"),
+        error_code=params.get("error_code"),
     ),
     "resume_creative_task": lambda service, params: service.resume_creative_task(
         params.get("task_id")
@@ -136,6 +255,9 @@ METHODS = {
     ),
     "resolve_generated_video_path": lambda service, params: service.resolve_generated_video_path(
         params.get("candidate_id"), params.get("variant", "video")
+    ),
+    "resolve_guided_auto_mix_supplemental_image_path": lambda service, params: service.resolve_guided_auto_mix_supplemental_image_path(
+        params.get("operation_id")
     ),
     "create_mix_project": lambda service, params: service.create_mix_project(
         params.get("name"), params.get("slots"), params.get("constraints")
@@ -209,6 +331,7 @@ def serve_jsonl(
 ) -> None:
     input_stream = input_stream or sys.stdin
     output_stream = output_stream or sys.stdout
+    visual_capability = service.creative_domain._visual_comparison_capability()
     _write_json_line(
         output_stream,
         {
@@ -236,8 +359,19 @@ def serve_jsonl(
                     service.creative_analyzer.capability["cloud_configured"]
                 ),
                 "creative_render": bool(
-                    service.creative_renderer.capability["available"]
+                    visual_capability["renderer_available"]
                 ),
+                "creative_packaging": True,
+                "brand_profiles": True,
+                "creative_cover": bool(service.creative_cover_client.configured),
+                "remotion_packaging_v1": bool(
+                    visual_capability["remotion_available"]
+                ),
+                "visual_comparison_v1": bool(
+                    visual_capability["available"]
+                ),
+                "auto_mix_v2": True,
+                "licensed_music_catalog_v1": True,
             },
         },
     )

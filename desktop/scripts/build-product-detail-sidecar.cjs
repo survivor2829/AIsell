@@ -14,9 +14,10 @@ const {
 
 const desktopDir = path.resolve(__dirname, "..");
 
-function resolveBuildPaths(root = desktopDir) {
+function resolveBuildPaths(root = desktopDir, { buildRoot: requestedBuildRoot = null } = {}) {
   const resolvedDesktopDir = path.resolve(root);
-  const buildRoot = path.join(resolvedDesktopDir, ".build");
+  const defaultBuildRoot = path.join(resolvedDesktopDir, ".build");
+  const buildRoot = requestedBuildRoot ? path.resolve(requestedBuildRoot) : defaultBuildRoot;
   const sourceRoot = path.join(resolvedDesktopDir, "sidecars", "product-detail");
   const sourceDir = path.join(sourceRoot, "app");
   const outputDir = path.join(buildRoot, "product-detail-runtime");
@@ -26,6 +27,7 @@ function resolveBuildPaths(root = desktopDir) {
     desktopDir: resolvedDesktopDir,
     projectDir: path.resolve(resolvedDesktopDir, ".."),
     buildRoot,
+    defaultBuildRoot,
     sourceRoot,
     sourceDir,
     entryFile: path.join(sourceDir, "desktop_entry.py"),
@@ -33,7 +35,7 @@ function resolveBuildPaths(root = desktopDir) {
     staticDir: path.join(sourceDir, "static"),
     screenTypesFile: path.join(sourceDir, "ai_refine_v2", "screen_types.yaml"),
     snapshotFile: path.join(sourceRoot, "source-snapshot.json"),
-    playwrightBrowsersDir: path.join(buildRoot, "product-detail-playwright"),
+    playwrightBrowsersDir: path.join(defaultBuildRoot, "product-detail-playwright"),
     outputDir,
     outputExe: path.join(outputDir, "product-detail-server.exe"),
     manifestFile: path.join(buildRoot, "product-detail-runtime.manifest.json"),
@@ -137,7 +139,7 @@ function pythonCandidates(paths, env = process.env) {
   const candidates = [
     env.XIAOXI_PRODUCT_DETAIL_BUILD_PYTHON,
     env.XIAOXI_BUILD_PYTHON,
-    path.join(paths.buildRoot, "product-detail-venv", "Scripts", "python.exe"),
+    path.join(paths.defaultBuildRoot, "product-detail-venv", "Scripts", "python.exe"),
     codexPython,
     ...(fromPath.status === 0 ? fromPath.stdout.split(/\r?\n/) : [])
   ];
@@ -350,8 +352,8 @@ function parseJsonOutput(result, label) {
   }
 }
 
-function main() {
-  const paths = resolveBuildPaths();
+function main({ buildRoot = process.env.XIAOXI_SIDECAR_BUILD_ROOT || null } = {}) {
+  const paths = resolveBuildPaths(desktopDir, { buildRoot });
   assertBuildInputs(paths);
   fs.mkdirSync(paths.buildRoot, { recursive: true });
   assertFreshOutput(paths);

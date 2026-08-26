@@ -416,6 +416,442 @@ def _migration_006_creative_workbench(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def _migration_007_creative_packaging(connection: sqlite3.Connection) -> None:
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS brand_profiles (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            logo_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+            reference_portrait_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+            primary_color TEXT NOT NULL DEFAULT '#6D5DFB',
+            accent_color TEXT NOT NULL DEFAULT '#FFE45C',
+            font_preset TEXT NOT NULL DEFAULT 'microsoft_yahei',
+            outro_text TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS cover_generation_ledger (
+            id TEXT PRIMARY KEY,
+            generated_video_id TEXT NOT NULL
+                REFERENCES generated_videos(id) ON DELETE CASCADE,
+            request_key TEXT NOT NULL UNIQUE,
+            provider TEXT NOT NULL DEFAULT 'apimart_gpt_image_2',
+            status TEXT NOT NULL DEFAULT 'planned' CHECK (
+                status IN (
+                    'planned', 'submitted', 'completed', 'failed',
+                    'outcome_unknown', 'cancelled'
+                )
+            ),
+            estimated_calls INTEGER NOT NULL DEFAULT 1 CHECK (estimated_calls >= 0),
+            external_task_id TEXT,
+            error_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_brand_profiles_updated ON brand_profiles(updated_at)",
+        "CREATE INDEX IF NOT EXISTS idx_cover_ledger_video ON cover_generation_ledger(generated_video_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_cover_ledger_status ON cover_generation_ledger(status, created_at)",
+    )
+    for statement in statements:
+        connection.execute(statement)
+
+
+def _migration_008_creative_acceptance(connection: sqlite3.Connection) -> None:
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS creative_media_reviews (
+            id TEXT PRIMARY KEY,
+            generated_video_id TEXT NOT NULL
+                REFERENCES generated_videos(id) ON DELETE CASCADE,
+            device TEXT NOT NULL CHECK (device IN ('desktop', 'phone')),
+            verdict TEXT NOT NULL CHECK (verdict IN ('pass', 'fail')),
+            reason TEXT NOT NULL DEFAULT '',
+            reviewer TEXT NOT NULL DEFAULT '',
+            media_digest TEXT NOT NULL,
+            reviewed_at TEXT NOT NULL,
+            UNIQUE(generated_video_id, device)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_creative_reviews_video ON creative_media_reviews(generated_video_id, reviewed_at)",
+    )
+    for statement in statements:
+        connection.execute(statement)
+
+
+def _migration_009_auto_mix_v2(connection: sqlite3.Connection) -> None:
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS auto_mix_runs_v2 (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL
+                REFERENCES creative_projects(id) ON DELETE CASCADE,
+            task_id TEXT REFERENCES content_tasks(id) ON DELETE SET NULL,
+            parent_run_id TEXT
+                REFERENCES auto_mix_runs_v2(id) ON DELETE RESTRICT,
+            generation INTEGER NOT NULL DEFAULT 1 CHECK (generation >= 1),
+            spec_version TEXT NOT NULL,
+            input_hash TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (
+                status IN (
+                    'analyzing', 'planned', 'synthesizing',
+                    'verifying_voice', 'selecting_music', 'rendering',
+                    'quality_check', 'completed', 'needs_attention',
+                    'failed', 'outcome_unknown'
+                )
+            ),
+            asset_ids_json TEXT NOT NULL,
+            title TEXT NOT NULL,
+            copy_framework TEXT NOT NULL,
+            public_plan_json TEXT NOT NULL DEFAULT '{}',
+            private_state_json TEXT NOT NULL DEFAULT '{}',
+            quality_warnings_json TEXT NOT NULL DEFAULT '[]',
+            selected_voice_persona_id TEXT,
+            selected_music_track_id TEXT,
+            generated_video_id TEXT
+                REFERENCES generated_videos(id) ON DELETE SET NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(input_hash, generation)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS auto_mix_stage_artifacts_v2 (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL
+                REFERENCES auto_mix_runs_v2(id) ON DELETE CASCADE,
+            stage TEXT NOT NULL,
+            cache_key TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (
+                status IN (
+                    'pending', 'submitted', 'completed', 'failed',
+                    'outcome_unknown', 'invalidated'
+                )
+            ),
+            relative_path TEXT,
+            public_metadata_json TEXT NOT NULL DEFAULT '{}',
+            private_metadata_json TEXT NOT NULL DEFAULT '{}',
+            external_task_id TEXT,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(run_id, stage, cache_key, revision)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS music_catalog_tracks_v1 (
+            id TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            managed_relative_path TEXT NOT NULL UNIQUE,
+            fingerprint TEXT NOT NULL UNIQUE,
+            source TEXT NOT NULL,
+            commercial_scope TEXT NOT NULL,
+            license_status TEXT NOT NULL CHECK (
+                license_status IN ('valid', 'expired', 'restricted', 'unknown')
+            ),
+            expires_at TEXT,
+            credential_reference TEXT NOT NULL,
+            evidence_digest TEXT NOT NULL,
+            managed_evidence_relative_path TEXT,
+            duration_ms INTEGER NOT NULL DEFAULT 0 CHECK (duration_ms >= 0),
+            bpm INTEGER CHECK (bpm IS NULL OR (bpm >= 20 AND bpm <= 300)),
+            moods_json TEXT NOT NULL DEFAULT '[]',
+            energy REAL NOT NULL DEFAULT 0.5 CHECK (energy >= 0 AND energy <= 1),
+            integrated_lufs REAL,
+            true_peak_dbtp REAL,
+            loop_start_ms INTEGER CHECK (loop_start_ms IS NULL OR loop_start_ms >= 0),
+            loop_end_ms INTEGER CHECK (loop_end_ms IS NULL OR loop_end_ms >= 0),
+            analysis_status TEXT NOT NULL DEFAULT 'pending' CHECK (
+                analysis_status IN ('pending', 'ready', 'failed')
+            ),
+            analysis_error_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS voice_personas_v1 (
+            id TEXT PRIMARY KEY,
+            version INTEGER NOT NULL CHECK (version >= 1),
+            display_name TEXT NOT NULL,
+            style TEXT NOT NULL,
+            catalog_version TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            provider_model TEXT NOT NULL,
+            provider_voice_id TEXT NOT NULL,
+            instruction TEXT NOT NULL DEFAULT '',
+            catalog_source TEXT NOT NULL DEFAULT 'manual' CHECK (
+                catalog_source IN ('manual', 'configured')
+            ),
+            approved_at TEXT,
+            active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(display_name, version)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_auto_mix_runs_project ON auto_mix_runs_v2(project_id, generation)",
+        "CREATE INDEX IF NOT EXISTS idx_auto_mix_runs_status ON auto_mix_runs_v2(status, updated_at)",
+        "CREATE INDEX IF NOT EXISTS idx_auto_mix_stage_cache ON auto_mix_stage_artifacts_v2(stage, cache_key, status)",
+        "CREATE INDEX IF NOT EXISTS idx_music_catalog_license ON music_catalog_tracks_v1(license_status, expires_at, analysis_status)",
+        "CREATE INDEX IF NOT EXISTS idx_voice_personas_active ON voice_personas_v1(active, approved_at, updated_at)",
+    )
+    for statement in statements:
+        connection.execute(statement)
+
+
+def _migration_010_music_commercial_entitlement(
+    connection: sqlite3.Connection,
+) -> None:
+    columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(music_catalog_tracks_v1)"
+        ).fetchall()
+    }
+    if "commercial_use_allowed" not in columns:
+        connection.execute(
+            """
+            ALTER TABLE music_catalog_tracks_v1
+            ADD COLUMN commercial_use_allowed INTEGER NOT NULL DEFAULT 0
+                CHECK (commercial_use_allowed IN (0, 1))
+            """
+        )
+
+
+def _migration_011_auto_mix_voice_previews(
+    connection: sqlite3.Connection,
+) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS auto_mix_voice_previews_v1 (
+            persona_id TEXT PRIMARY KEY
+                REFERENCES voice_personas_v1(id) ON DELETE CASCADE,
+            cache_key TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (
+                status IN ('submitted', 'completed', 'failed', 'outcome_unknown')
+            ),
+            managed_relative_path TEXT,
+            audio_digest TEXT,
+            error_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_auto_mix_voice_previews_status
+        ON auto_mix_voice_previews_v1(status, updated_at)
+        """
+    )
+
+
+def _migration_012_managed_music_license_evidence(
+    connection: sqlite3.Connection,
+) -> None:
+    columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(music_catalog_tracks_v1)"
+        ).fetchall()
+    }
+    if "managed_evidence_relative_path" not in columns:
+        connection.execute(
+            """
+            ALTER TABLE music_catalog_tracks_v1
+            ADD COLUMN managed_evidence_relative_path TEXT
+            """
+        )
+
+
+def _migration_013_voice_persona_catalog_source(
+    connection: sqlite3.Connection,
+) -> None:
+    columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(voice_personas_v1)"
+        ).fetchall()
+    }
+    if "catalog_source" not in columns:
+        connection.execute(
+            """
+            ALTER TABLE voice_personas_v1
+            ADD COLUMN catalog_source TEXT NOT NULL DEFAULT 'manual' CHECK (
+                catalog_source IN ('manual', 'configured')
+            )
+            """
+        )
+        # Before this marker existed, the only application-managed CosyVoice
+        # rows were created from the private Bailian catalog. Mark them before
+        # startup synchronization runs so a catalog removal can revoke both
+        # activity and approval instead of preserving the DEFAULT 'manual'.
+        connection.execute(
+            """
+            UPDATE voice_personas_v1
+            SET catalog_source = 'configured'
+            WHERE provider = 'bailian'
+              AND provider_model = 'cosyvoice-v3.5-plus'
+            """
+        )
+
+
+def _migration_014_auto_mix_voice_design(
+    connection: sqlite3.Connection,
+) -> None:
+    columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(voice_personas_v1)"
+        ).fetchall()
+    }
+    if "voice_prompt" not in columns:
+        connection.execute(
+            """
+            ALTER TABLE voice_personas_v1
+            ADD COLUMN voice_prompt TEXT NOT NULL DEFAULT ''
+            """
+        )
+    if "voice_prefix" not in columns:
+        connection.execute(
+            """
+            ALTER TABLE voice_personas_v1
+            ADD COLUMN voice_prefix TEXT NOT NULL DEFAULT ''
+            """
+        )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS auto_mix_voice_designs_v1 (
+            persona_id TEXT PRIMARY KEY
+                REFERENCES voice_personas_v1(id) ON DELETE CASCADE,
+            design_key TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (
+                status IN ('submitted', 'completed', 'failed', 'outcome_unknown')
+            ),
+            managed_relative_path TEXT,
+            audio_digest TEXT,
+            error_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_auto_mix_voice_designs_status
+        ON auto_mix_voice_designs_v1(status, updated_at)
+        """
+    )
+
+
+def _migration_015_guided_auto_mix_sessions(
+    connection: sqlite3.Connection,
+) -> None:
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS guided_auto_mix_sessions_v1 (
+            id TEXT PRIMARY KEY,
+            analysis_task_id TEXT
+                REFERENCES content_tasks(id) ON DELETE SET NULL,
+            draft_task_id TEXT
+                REFERENCES content_tasks(id) ON DELETE SET NULL,
+            status TEXT NOT NULL CHECK (
+                status IN (
+                    'analyzing', 'ready_for_answers', 'drafting',
+                    'ready_for_render', 'failed', 'outcome_unknown'
+                )
+            ),
+            asset_ids_json TEXT NOT NULL,
+            asset_snapshot_json TEXT NOT NULL,
+            analysis_profile_json TEXT NOT NULL,
+            analysis_versions_json TEXT NOT NULL DEFAULT '{}',
+            analysis_summary_json TEXT NOT NULL DEFAULT '{}',
+            answers_json TEXT NOT NULL DEFAULT '{}',
+            draft_json TEXT NOT NULL DEFAULT '{}',
+            draft_hash TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_guided_auto_mix_sessions_status
+        ON guided_auto_mix_sessions_v1(status, updated_at)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_guided_auto_mix_sessions_analysis_task
+        ON guided_auto_mix_sessions_v1(analysis_task_id)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_guided_auto_mix_sessions_draft_task
+        ON guided_auto_mix_sessions_v1(draft_task_id)
+        """,
+    )
+    for statement in statements:
+        connection.execute(statement)
+
+
+def _migration_016_guided_auto_mix_supplemental_images(
+    connection: sqlite3.Connection,
+) -> None:
+    """Persist paid, optional guided-V2 supplementary-image admissions.
+
+    This is deliberately separate from ``cover_generation_ledger``: a
+    supplementary image is not a generated-video cover, not a source asset,
+    and must not inherit a video's lifecycle or evidence semantics.
+    """
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS guided_auto_mix_supplemental_images_v1 (
+            id TEXT PRIMARY KEY,
+            guided_session_id TEXT NOT NULL
+                REFERENCES guided_auto_mix_sessions_v1(id) ON DELETE CASCADE,
+            script_revision INTEGER NOT NULL CHECK (script_revision >= 1),
+            draft_hash TEXT NOT NULL,
+            request_key TEXT NOT NULL UNIQUE,
+            provider TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
+            prompt_hash TEXT NOT NULL,
+            prompt_text TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (
+                status IN (
+                    'planned', 'submitted', 'completed', 'failed',
+                    'outcome_unknown', 'cancelled'
+                )
+            ),
+            estimated_calls INTEGER NOT NULL DEFAULT 1
+                CHECK (estimated_calls = 1),
+            external_task_id TEXT,
+            managed_relative_path TEXT,
+            image_digest TEXT,
+            mime_type TEXT,
+            error_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(
+                guided_session_id, script_revision, draft_hash, provider,
+                prompt_version
+            )
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_guided_auto_mix_supplemental_images_session
+        ON guided_auto_mix_supplemental_images_v1(
+            guided_session_id, script_revision, updated_at
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_guided_auto_mix_supplemental_images_status
+        ON guided_auto_mix_supplemental_images_v1(status, updated_at)
+        """,
+    )
+    for statement in statements:
+        connection.execute(statement)
+
+
 MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (1, "initial_content_engine_schema", _migration_001_initial_schema),
     (2, "asset_probe_metadata", _migration_002_asset_probe_metadata),
@@ -423,6 +859,16 @@ MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (4, "mix_engine_domain", _migration_004_mix_engine_domain),
     (5, "mix_export_packages", _migration_005_mix_export_packages),
     (6, "creative_workbench", _migration_006_creative_workbench),
+    (7, "creative_packaging", _migration_007_creative_packaging),
+    (8, "creative_acceptance", _migration_008_creative_acceptance),
+    (9, "auto_mix_v2", _migration_009_auto_mix_v2),
+    (10, "music_commercial_entitlement", _migration_010_music_commercial_entitlement),
+    (11, "auto_mix_voice_previews", _migration_011_auto_mix_voice_previews),
+    (12, "managed_music_license_evidence", _migration_012_managed_music_license_evidence),
+    (13, "voice_persona_catalog_source", _migration_013_voice_persona_catalog_source),
+    (14, "auto_mix_voice_design", _migration_014_auto_mix_voice_design),
+    (15, "guided_auto_mix_sessions", _migration_015_guided_auto_mix_sessions),
+    (16, "guided_auto_mix_supplemental_images", _migration_016_guided_auto_mix_supplemental_images),
 )
 
 def _retry_when_locked(operation, timeout_seconds: float = 5):
@@ -464,7 +910,10 @@ class Database:
             _retry_when_locked(
                 lambda: connection.execute("PRAGMA journal_mode = WAL").fetchone()
             )
-            connection.execute("PRAGMA synchronous = NORMAL")
+            # Paid-operation admission and provider task IDs share this database.
+            # FULL keeps those one-way state transitions durable across power loss,
+            # preventing recovery from submitting an already-admitted cover again.
+            connection.execute("PRAGMA synchronous = FULL")
             _retry_when_locked(self._apply_migrations)
             return self
         except Exception:

@@ -1,0 +1,80 @@
+{
+  "social_pop": {
+    "id": "social_pop",
+    "kind": "design_system",
+    "version": 1,
+    "displayName": "社交弹跳",
+    "motionGrammar": "spring-pop",
+    "video": {
+      "scale": 1.045,
+      "pulse": 0.006,
+      "pulseDivisor": 13,
+      "overlay": "linear-gradient(180deg, rgba(10,8,15,.06) 10%, rgba(10,8,15,.62) 100%)"
+    },
+    "palette": {
+      "ink": "#151318",
+      "paper": "#FFFDF8",
+      "accent": "#FFE24A",
+      "secondary": "#FF4FA3",
+      "signal": "#77F2C1"
+    },
+    "caption": {
+      "maxWordsPerPage": 8,
+      "placement": "low-bubble",
+      "activeScale": 1.2
+    },
+    "supportedEvents": ["hook", "keyword", "emphasis", "step", "scene", "result", "warning", "quote"]
+  },
+  "neo_editorial": {
+    "id": "neo_editorial",
+    "kind": "design_system",
+    "version": 1,
+    "displayName": "新锐杂志",
+    "motionGrammar": "mask-slide",
+    "video": {
+      "scale": 1.01,
+      "pulse": 0,
+      "pulseDivisor": 13,
+      "overlay": "linear-gradient(180deg, rgba(0,0,0,.02), rgba(0,0,0,.56))"
+    },
+    "palette": {
+      "ink": "#0B0B0C",
+      "paper": "#F4F1E9",
+      "accent": "#B7FF3C",
+      "secondary": "#FF6B4A",
+      "signal": "#F4F1E9"
+    },
+    "caption": {
+      "maxWordsPerPage": 10,
+      "placement": "editorial-line",
+      "activeScale": 1.06
+    },
+    "supportedEvents": ["hook", "keyword", "emphasis", "step", "scene", "result", "warning", "quote"]
+  },
+  "tech_motion": {
+    "id": "tech_motion",
+    "kind": "design_system",
+    "version": 1,
+    "displayName": "未来信息流",
+    "motionGrammar": "hud-scan",
+    "video": {
+      "scale": 1.025,
+      "pulse": 0,
+      "pulseDivisor": 13,
+      "overlay": "linear-gradient(180deg, rgba(0,20,32,.08), rgba(3,15,27,.7))"
+    },
+    "palette": {
+      "ink": "#07131C",
+      "paper": "#EAFBFF",
+      "accent": "#43E8FF",
+      "secondary": "#8B6CFF",
+      "signal": "#69FFB5"
+    },
+    "caption": {
+      "maxWordsPerPage": 9,
+      "placement": "glass-console",
+      "activeScale": 1.1
+    },
+    "supportedEvents": ["hook", "keyword", "emphasis", "step", "scene", "result", "warning", "quote"]
+  }
+}

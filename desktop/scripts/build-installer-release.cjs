@@ -1,8 +1,9 @@
-const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
-const { treeSha256 } = require("./release-tree-hash.cjs");
+const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
+const { verifyPackagedRemotionRuntime } = require("./build-remotion-runtime.cjs");
+const { verifyReleaseTrustRecord } = require("./release-trust-record.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const projectDir = path.resolve(desktopDir, "..");
@@ -13,12 +14,6 @@ const portableDir = path.join(releaseDir, PRODUCT_NAME);
 const portableManifestFile = path.join(portableDir, "版本清单.json");
 const installerName = `${PRODUCT_NAME}-安装程序.exe`;
 const installerManifestName = `${PRODUCT_NAME}-安装程序-版本清单.json`;
-
-function sha256(file) {
-  const hash = crypto.createHash("sha256");
-  hash.update(fs.readFileSync(file));
-  return hash.digest("hex");
-}
 
 function gitText(args) {
   const result = spawnSync("git", args, {
@@ -32,7 +27,7 @@ function gitText(args) {
   return result.stdout.trim();
 }
 
-function assertInstallerSource() {
+function assertInstallerSource(environment = process.env) {
   const commit = gitText(["rev-parse", "HEAD"]);
   if (gitText(["status", "--porcelain"])) {
     throw new Error("Refusing to build an installer from a dirty worktree");
@@ -44,13 +39,32 @@ function assertInstallerSource() {
     throw new Error("Portable version manifest is missing");
   }
   const portableManifest = JSON.parse(fs.readFileSync(portableManifestFile, "utf8"));
-  if (portableManifest.edition !== "delivery" || portableManifest.dirty !== false) {
+  if (
+    portableManifest.edition !== "delivery"
+    || portableManifest.artifactType !== "delivery"
+    || portableManifest.dirty !== false
+  ) {
     throw new Error("Installer source must be a clean delivery portable build");
   }
+  if (portableManifest.remotionRuntime?.commercialLicenseConfirmed !== true) {
+    throw new Error("Installer source lacks a confirmed Remotion commercial license basis");
+  }
+  if (portableManifest.remotionRuntime?.compositionSmokeStatus !== "passed") {
+    throw new Error("Installer source lacks the explicit-browser Remotion composition smoke proof");
+  }
+  verifyPackagedRemotionRuntime(portableDir, portableManifest.remotionRuntime);
   if (portableManifest.commit !== commit) {
     throw new Error("Portable build commit does not match the current clean commit");
   }
-  return { commit, portableManifest };
+  const releaseTrust = verifyReleaseTrustRecord({
+    environment,
+    portableManifest,
+    portableManifestSha256: sha256(portableManifestFile),
+    portableTreeSha256: treeSha256(portableDir),
+    product: PRODUCT_NAME,
+    releaseDir
+  });
+  return { commit, portableManifest, releaseTrust };
 }
 
 function replaceCanonicalFile(staged, canonical) {
@@ -72,8 +86,8 @@ function replaceCanonicalFile(staged, canonical) {
 }
 
 function buildInstaller() {
-  const { commit, portableManifest } = assertInstallerSource();
-  const portableTreeHash = treeSha256(portableDir);
+  const { commit, portableManifest, releaseTrust } = assertInstallerSource();
+  const portableTreeHash = releaseTrust.portableTreeSha256;
   const transactionId = `${process.pid}-${Date.now()}`;
   const stagingDir = path.join(releaseDir, `.installer-staging-${transactionId}`);
   const installerInputDir = path.join(stagingDir, "portable-input");
@@ -118,6 +132,7 @@ function buildInstaller() {
     const installerManifest = {
       product: PRODUCT_NAME,
       artifact: installerName,
+      artifactType: "delivery",
       version: portableManifest.version,
       buildId: portableManifest.buildId,
       commit,
@@ -129,6 +144,8 @@ function buildInstaller() {
       upgradeMode: "offline-full-overwrite",
       uninstallPreservesUserData: true,
       signed: false,
+      sourceTrust: releaseTrust,
+      remotionRuntimeManifestSha256: portableManifest.remotionRuntime.manifestSha256,
       sha256: sha256(stagedInstaller),
       size,
       builtAt: new Date().toISOString()

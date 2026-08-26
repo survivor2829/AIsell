@@ -1,0 +1,7 @@
+{
+  "top_banner": { "x": 0.05, "y": 0.06, "width": 0.9, "height": 0.18 },
+  "upper_left": { "x": 0.05, "y": 0.19, "width": 0.44, "height": 0.22 },
+  "upper_right": { "x": 0.51, "y": 0.19, "width": 0.44, "height": 0.22 },
+  "middle_left": { "x": 0.05, "y": 0.4, "width": 0.44, "height": 0.22 },
+  "middle_right": { "x": 0.51, "y": 0.4, "width": 0.44, "height": 0.22 }
+}

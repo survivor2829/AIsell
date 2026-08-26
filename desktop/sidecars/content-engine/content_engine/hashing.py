@@ -1,12 +1,27 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 import struct
+from typing import Any
 
 
 DEFAULT_SAMPLE_BYTES = 1024 * 1024
 open_file = open
+
+
+def canonical_json_sha256(value: Any) -> str:
+    """Hash a JSON value with the repository's stable canonical encoding."""
+
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def sampled_sha256(path: Path, sample_bytes: int = DEFAULT_SAMPLE_BYTES) -> str:

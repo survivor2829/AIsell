@@ -2,20 +2,23 @@ import {
   Archive,
   CircleAlert,
   CircleCheck,
+  Download,
   ExternalLink,
   FilePlus2,
   FolderOpen,
+  Image as ImageIcon,
   LoaderCircle,
   Pause,
   Play,
   RefreshCw,
   RotateCcw,
   Save,
+  Search,
   Settings2,
   Square,
   Video
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import "./ContentFoundationPage.css";
 
 type ContentEngineState = "unavailable" | "stopped" | "starting" | "ready" | "failed";
@@ -67,6 +70,7 @@ type FinishedVideoItem = {
   sizeBytes: number;
   metadata: Record<string, unknown>;
   createdAt: string;
+  available: boolean;
 };
 
 type ContentTaskStatus = "queued" | "analyzing" | "ready_for_review" | "rendering" | "completed" | "failed" | "cancelled" | "paused";
@@ -123,6 +127,7 @@ type ContentApi = {
     chooseAndRegister: (payload?: { title?: string; taskId?: string }) => Promise<ContentResult<FinishedVideoItem>>;
     open: (payload: { finishedVideoId: string }) => Promise<ContentResult<{ opened: boolean }>>;
     reveal: (payload: { finishedVideoId: string }) => Promise<ContentResult<{ available: boolean }>>;
+    download: (payload: { finishedVideoId: string }) => Promise<ContentResult<{ finishedVideoId: string; canceled: boolean; filename?: string }>>;
   };
   settings: {
     status: () => Promise<ContentResult<ContentSettings>>;
@@ -261,8 +266,8 @@ function ContentEngineBanner({ status, loading }: { status: ContentEngineStatus;
   const mediaProbeAvailable = status.capabilities.asset_media_probe === true;
   const copy = restartError || (ready
     ? mediaProbeAvailable
-      ? "本地素材索引和媒体信息分析已就绪。原始文件保留在现有硬盘位置，不会重复复制。"
-      : "本地素材索引已就绪；当前未检测到媒体分析组件，仍可登记素材和版权/使用权状态。"
+      ? "媒体信息可分析；原文件保留在原位置，不会重复复制。"
+      : "未安装媒体分析组件，仍可登记素材和维护使用权。"
     : state === "starting"
       ? "正在启动本地素材索引，请稍候。"
       : state === "failed"
@@ -287,14 +292,14 @@ function ContentEngineBanner({ status, loading }: { status: ContentEngineStatus;
   };
 
   return (
-    <div className={`content-engine-banner is-${state}`} aria-live="polite">
+    <div className={`content-engine-banner is-${state}${ready ? " is-compact" : ""}`} aria-live="polite">
       {state === "starting"
         ? <LoaderCircle className="content-spin" size={21} />
         : ready
           ? <CircleCheck size={21} />
           : <CircleAlert size={21} />}
       <div>
-        <strong>{ready ? "素材底座已连接" : "素材底座未就绪"}</strong>
+        <strong>{ready ? "素材索引已就绪" : "素材底座未就绪"}</strong>
         <p>{copy}</p>
       </div>
       {canRestart && (
@@ -315,6 +320,7 @@ export function MaterialsLibraryPage() {
   const [taskBusy, setTaskBusy] = useState("");
   const [rightsBusy, setRightsBusy] = useState("");
   const [notice, setNotice] = useState("");
+  const [query, setQuery] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [settings, setSettings] = useState<ContentSettings>({});
   const [cacheLimitDraft, setCacheLimitDraft] = useState("100");
@@ -491,7 +497,19 @@ export function MaterialsLibraryPage() {
     setTaskBusy("");
   };
 
-  const importTasks = tasks.filter((task) => task.taskType === "asset_import").slice(0, 5);
+  const importTasks = tasks
+    .filter((task) => task.taskType === "asset_import" && task.status !== "completed" && task.status !== "cancelled")
+    .slice(0, 5);
+  const filteredItems = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    if (!normalizedQuery) return items;
+    return items.filter((item) => {
+      const rightsLabel = ASSET_RIGHTS_OPTIONS.find((option) => option.value === item.rightsStatus)?.label || "";
+      const mediaKindLabel = item.mediaKind === "video" ? "视频" : "图片";
+      return [item.displayName, item.extension, mediaKindLabel, rightsLabel, formatMediaDetails(item)]
+        .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
+    });
+  }, [items, query]);
   const ready = status.state === "ready";
   const mediaProbeAvailable = status.capabilities.asset_media_probe === true;
   return (
@@ -502,14 +520,6 @@ export function MaterialsLibraryPage() {
           <p>登记视频和图片的位置，建立可恢复索引；不重复复制几十 GB 原片。</p>
         </div>
         <div className="actions content-page-actions">
-          <button className="secondary-button" onClick={() => void analyzePending()} disabled={!ready || !mediaProbeAvailable || Boolean(busy)}>
-            <RefreshCw className={busy === "probe-pending" ? "content-spin" : ""} size={17} />
-            {mediaProbeAvailable ? "分析待处理素材" : "媒体分析组件未安装"}
-          </button>
-          <button className="secondary-button" onClick={() => void chooseCacheDirectory()} disabled={!ready || Boolean(busy)}>
-            <Settings2 size={17} />
-            缓存位置
-          </button>
           <button className="secondary-button" onClick={() => void importMedia("folder")} disabled={!ready || Boolean(busy)}>
             <FolderOpen size={17} />
             添加文件夹
@@ -522,26 +532,41 @@ export function MaterialsLibraryPage() {
       </div>
 
       <ContentEngineBanner status={status} loading={loading} />
-      <div className="content-cache-summary">
-        <span>缓存位置：{settings.cacheDirectoryLabel || "尚未选择"}</span>
-        <label>
-          上限
-          <input
-            type="number"
-            min="1"
-            max="2048"
-            step="1"
-            value={cacheLimitDraft}
-            onChange={(event) => setCacheLimitDraft(event.target.value)}
-            disabled={!ready || Boolean(busy)}
-          />
-          GB
-        </label>
-        <button className="text-button" onClick={() => void saveCacheLimit()} disabled={!ready || Boolean(busy)}>
-          <Save size={14} />
-          保存
-        </button>
-      </div>
+      <details className="content-settings">
+        <summary>
+          <span><Settings2 size={15} />仓库设置</span>
+          <small>缓存：{settings.cacheDirectoryLabel || "默认位置"} · 上限 {settings.cacheLimitGb || cacheLimitDraft} GB</small>
+        </summary>
+        <div className="content-cache-summary">
+          <div className="content-cache-location">
+            <span>缓存位置</span>
+            <strong title={settings.cacheDirectoryLabel || "尚未选择"}>{settings.cacheDirectoryLabel || "尚未选择"}</strong>
+            <button className="secondary-button" onClick={() => void chooseCacheDirectory()} disabled={!ready || Boolean(busy)}>
+              <FolderOpen size={15} />
+              选择位置
+            </button>
+          </div>
+          <label>
+            缓存上限
+            <span>
+              <input
+                type="number"
+                min="1"
+                max="2048"
+                step="1"
+                value={cacheLimitDraft}
+                onChange={(event) => setCacheLimitDraft(event.target.value)}
+                disabled={!ready || Boolean(busy)}
+              />
+              GB
+            </span>
+          </label>
+          <button className="secondary-button" onClick={() => void saveCacheLimit()} disabled={!ready || Boolean(busy)}>
+            <Save size={14} />
+            保存上限
+          </button>
+        </div>
+      </details>
       {notice && <div className="touch-notice" role="status">{notice}</div>}
 
       {importTasks.length > 0 && (
@@ -594,47 +619,91 @@ export function MaterialsLibraryPage() {
       )}
 
       <div className="content-list-toolbar">
-        <label>
+        <div className="content-library-summary">
+          <strong>全部素材</strong>
+          <span>{query.trim() ? `${filteredItems.length} 个匹配结果` : `共 ${items.length} 个`}</span>
+        </div>
+        <label className="content-library-search">
+          <Search size={16} aria-hidden="true" />
           <input
-            type="checkbox"
-            checked={showArchived}
-            onChange={(event) => setShowArchived(event.target.checked)}
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索名称、格式或状态"
+            aria-label="搜索素材"
           />
-          显示已归档素材
         </label>
-        <button className="text-button" onClick={() => void refresh()} disabled={!ready || Boolean(busy)}>
-          <RefreshCw size={15} />
-          刷新
-        </button>
+        <div className="content-toolbar-actions">
+          {mediaProbeAvailable && (
+            <button className="secondary-button" onClick={() => void analyzePending()} disabled={!ready || Boolean(busy)}>
+              <RefreshCw className={busy === "probe-pending" ? "content-spin" : ""} size={15} />
+              分析待处理
+            </button>
+          )}
+          <label className="content-archive-toggle">
+            <input
+              type="checkbox"
+              checked={showArchived}
+              onChange={(event) => setShowArchived(event.target.checked)}
+            />
+            显示已归档
+          </label>
+          <button
+            className="content-icon-button"
+            aria-label="刷新素材列表"
+            title="刷新素材列表"
+            onClick={() => void refresh()}
+            disabled={!ready || Boolean(busy)}
+          >
+            <RefreshCw className={busy === "refresh" ? "content-spin" : ""} size={16} />
+          </button>
+        </div>
       </div>
 
       <div className="content-table-wrap">
         <table className="content-table">
+          <colgroup>
+            <col />
+            <col className="content-col-status" />
+            <col className="content-col-rights" />
+            <col className="content-col-actions" />
+          </colgroup>
           <thead>
             <tr>
-              <th>素材</th>
-              <th>类型</th>
-              <th>媒体信息</th>
-              <th>大小</th>
+              <th>素材信息</th>
               <th>文件状态</th>
-              <th>版权/使用权状态</th>
-              <th>登记时间</th>
+              <th>版权/使用权</th>
               <th aria-label="操作" />
             </tr>
           </thead>
           <tbody>
-            {items.map((item) => (
+            {filteredItems.map((item) => {
+              const mediaDetails = formatMediaDetails(item);
+              const MediaIcon = item.mediaKind === "video" ? Video : ImageIcon;
+              return (
               <tr key={item.assetId} className={item.archived ? "is-archived" : ""}>
                 <td>
-                  <strong>{item.displayName}</strong>
-                  <small>{item.extension || "—"} · {item.locationCount} 个位置</small>
+                  <div className="content-asset-cell">
+                    <span className={`content-asset-icon is-${item.mediaKind}`} aria-hidden="true">
+                      <MediaIcon size={19} />
+                    </span>
+                    <div className="content-asset-copy">
+                      <strong title={item.displayName}>{item.displayName}</strong>
+                      <div className={`content-asset-metadata is-${item.probeStatus}`} title={mediaDetails}>
+                        <span>{item.mediaKind === "video" ? "视频" : "图片"}</span>
+                        <span>{mediaDetails}</span>
+                        <span>{formatBytes(item.sizeBytes)}</span>
+                      </div>
+                      <small>{item.extension || "—"} · {item.locationCount} 个位置 · 登记于 {formatDate(item.createdAt)}</small>
+                    </div>
+                  </div>
                 </td>
-                <td>{item.mediaKind === "video" ? "视频" : "图片"}</td>
-                <td className={`content-media-info is-${item.probeStatus}`}>{formatMediaDetails(item)}</td>
-                <td>{formatBytes(item.sizeBytes)}</td>
                 <td>
-                  <span className={`content-status-dot ${item.availableLocationCount > 0 ? "is-ok" : "is-missing"}`} />
-                  {item.availableLocationCount > 0 ? "可用" : "原文件未找到"}
+                  <span className={`content-file-status ${item.availableLocationCount > 0 ? "is-ok" : "is-missing"}`}>
+                    <span className="content-status-dot" />
+                    {item.availableLocationCount > 0 ? "可用" : "原文件未找到"}
+                  </span>
+                  {item.archived && <small className="content-archived-label">已归档</small>}
                 </td>
                 <td>
                   <select
@@ -649,35 +718,47 @@ export function MaterialsLibraryPage() {
                     ))}
                   </select>
                 </td>
-                <td>{formatDate(item.createdAt)}</td>
                 <td>
                   <div className="content-row-actions">
                     <button
                       title="重新分析媒体信息"
+                      aria-label={`重新分析“${item.displayName}”的媒体信息`}
                       onClick={() => void analyzeAsset(item)}
                       disabled={!ready || !mediaProbeAvailable || Boolean(busy) || item.availableLocationCount === 0}
                     >
                       <RefreshCw className={busy === `probe:${item.assetId}` ? "content-spin" : ""} size={16} />
                     </button>
-                    <button title="在资源管理器中显示" onClick={() => void revealAsset(item)} disabled={!ready}>
+                    <button
+                      title="在资源管理器中显示"
+                      aria-label={`在资源管理器中显示“${item.displayName}”`}
+                      onClick={() => void revealAsset(item)}
+                      disabled={!ready}
+                    >
                       <ExternalLink size={16} />
                     </button>
                     {!item.archived && (
-                      <button title="从素材库归档（不删除原片）" onClick={() => void archiveAsset(item)} disabled={!ready}>
+                      <button
+                        title="从素材库归档（不删除原片）"
+                        aria-label={`从素材库归档“${item.displayName}”（不删除原片）`}
+                        onClick={() => void archiveAsset(item)}
+                        disabled={!ready}
+                      >
                         <Archive size={16} />
                       </button>
                     )}
                   </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
-        {!items.length && (
+        {!filteredItems.length && (
           <div className="content-empty">
-            <FolderOpen size={34} />
-            <strong>{ready ? "还没有登记素材" : "素材底座尚未就绪"}</strong>
-            <p>{ready ? "选择文件或文件夹即可开始，原片仍留在原来的硬盘位置。" : "运行组件就绪后，才能安全建立本地素材索引。"}</p>
+            {query.trim() ? <Search size={34} /> : <FolderOpen size={34} />}
+            <strong>{query.trim() ? `没有找到“${query.trim()}”` : ready ? "还没有登记素材" : "素材底座尚未就绪"}</strong>
+            <p>{query.trim() ? "可以换一个名称、格式或状态再搜索。" : ready ? "选择文件或文件夹即可开始，原片仍留在原来的硬盘位置。" : "运行组件就绪后，才能安全建立本地素材索引。"}</p>
+            {query.trim() && <button className="secondary-button" onClick={() => setQuery("")}>清除搜索</button>}
           </div>
         )}
       </div>
@@ -685,29 +766,75 @@ export function MaterialsLibraryPage() {
   );
 }
 
+const FINISHED_PAGE_SIZE = 12;
+const GENERATED_VIDEO_ID = /^generated_video_[a-f0-9]{32}$/i;
+
+function finishedVideoTitle(item: FinishedVideoItem) {
+  return item.title || item.displayName || "未命名成片";
+}
+
+function finishedVideoAvailable(item: FinishedVideoItem) {
+  return item.available !== false;
+}
+
+function finishedVideoGeneratedId(item: FinishedVideoItem) {
+  const value = item.metadata?.generated_video_id ?? item.metadata?.generatedVideoId;
+  return typeof value === "string" && GENERATED_VIDEO_ID.test(value) ? value : "";
+}
+
 export function FinishedVideoCenterPage() {
   const { status, loading } = useContentEngineStatus();
   const [items, setItems] = useState<FinishedVideoItem[]>([]);
   const [busy, setBusy] = useState(false);
+  const [downloadingId, setDownloadingId] = useState("");
   const [notice, setNotice] = useState("");
+  const [query, setQuery] = useState("");
+  const [view, setView] = useState<"available" | "deleted">("available");
+  const [visibleCount, setVisibleCount] = useState(FINISHED_PAGE_SIZE);
+  const [brokenCovers, setBrokenCovers] = useState<Record<string, boolean>>({});
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options?: { silent?: boolean; announce?: boolean }) => {
     const api = window.xiaoxiContent;
     if (!api) return;
-    setBusy(true);
+    if (!options?.silent) setBusy(true);
     const result = await api.finished.list({ limit: 500 });
     if (result.ok && result.data) {
       setItems(result.data.items);
-      setNotice("");
-    } else {
+      setBrokenCovers({});
+      if (options?.announce) setNotice("成片列表已刷新，已同步本地文件状态。");
+    } else if (!options?.silent) {
       setNotice(result.error || "读取成片列表失败，请重试。");
     }
-    setBusy(false);
+    if (!options?.silent) setBusy(false);
   }, []);
 
   useEffect(() => {
     if (status.state === "ready") void refresh();
   }, [refresh, status.state]);
+
+  useEffect(() => {
+    if (status.state !== "ready") return undefined;
+    const handleFocus = () => void refresh({ silent: true });
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, [refresh, status.state]);
+
+  useEffect(() => {
+    setVisibleCount(FINISHED_PAGE_SIZE);
+  }, [query, view]);
+
+  const availableCount = useMemo(() => items.filter(finishedVideoAvailable).length, [items]);
+  const deletedCount = items.length - availableCount;
+  const filteredItems = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    return items.filter((item) => {
+      const matchesStatus = view === "available" ? finishedVideoAvailable(item) : !finishedVideoAvailable(item);
+      if (!matchesStatus) return false;
+      if (!normalizedQuery) return true;
+      return `${finishedVideoTitle(item)} ${item.displayName}`.toLocaleLowerCase().includes(normalizedQuery);
+    });
+  }, [items, query, view]);
+  const visibleItems = filteredItems.slice(0, visibleCount);
 
   const registerVideo = async () => {
     const result = await window.xiaoxiContent?.finished.chooseAndRegister();
@@ -721,25 +848,62 @@ export function FinishedVideoCenterPage() {
 
   const openVideo = async (item: FinishedVideoItem) => {
     const result = await window.xiaoxiContent?.finished.open({ finishedVideoId: item.finishedVideoId });
-    if (!result?.ok) setNotice(result?.error || "当前无法打开这条成片。");
+    if (!result?.ok) {
+      setNotice(result?.error || "当前无法打开这条成片，文件可能已被移动或删除。");
+      await refresh({ silent: true });
+    }
   };
 
   const revealVideo = async (item: FinishedVideoItem) => {
     const result = await window.xiaoxiContent?.finished.reveal({ finishedVideoId: item.finishedVideoId });
-    if (!result?.ok) setNotice(result?.error || "当前无法定位这条成片。");
+    if (!result?.ok || result.data?.available === false) {
+      setNotice(result?.error || "当前无法定位这条成片，文件可能已被移动或删除。");
+      await refresh({ silent: true });
+    }
+  };
+
+  const downloadVideo = async (item: FinishedVideoItem) => {
+    const api = window.xiaoxiContent;
+    if (!api?.finished.download) {
+      setNotice("下载功能尚未加载，请重启软件后再试。");
+      return;
+    }
+    setDownloadingId(item.finishedVideoId);
+    const result = await api.finished.download({ finishedVideoId: item.finishedVideoId });
+    setDownloadingId("");
+    if (result.ok && result.data) {
+      if (!result.data.canceled) setNotice(`已保存成片：${result.data.filename || finishedVideoTitle(item)}`);
+      return;
+    }
+    setNotice(result.error || "成片没有保存成功，请确认原文件仍然存在。");
+    await refresh({ silent: true });
   };
 
   const ready = status.state === "ready";
+  const showInitialSkeleton = ready && busy && items.length === 0;
+  const emptyTitle = query.trim()
+    ? `没有找到“${query.trim()}”`
+    : view === "deleted"
+      ? "没有已删除记录"
+      : deletedCount > 0
+        ? "当前没有可用成片"
+        : "还没有成片";
+  const emptyDescription = query.trim()
+    ? "可以换一个标题或文件名再搜索。"
+    : view === "deleted"
+      ? "文件被删除或无法访问后，会统一出现在这里，不会混入可用成片。"
+      : "剪辑任务完成后会自动登记，也可以手动登记已有视频。";
+
   return (
     <section className="page content-foundation-page">
       <div className="page-head content-page-head">
         <div>
           <h1>成片中心</h1>
-          <p>课程拆条、智能混剪和后续 AI 生成视频统一进入这里。</p>
+          <p>一键成片、课程拆条和智能混剪的结果统一在这里查看与下载。</p>
         </div>
         <div className="actions content-page-actions">
-          <button className="secondary-button" onClick={() => void refresh()} disabled={!ready || busy}>
-            <RefreshCw size={17} />
+          <button className="secondary-button" onClick={() => void refresh({ announce: true })} disabled={!ready || busy}>
+            <RefreshCw className={busy ? "content-spin" : ""} size={17} />
             刷新
           </button>
           <button className="primary-button" onClick={() => void registerVideo()} disabled={!ready || busy}>
@@ -749,39 +913,116 @@ export function FinishedVideoCenterPage() {
         </div>
       </div>
 
-      <ContentEngineBanner status={status} loading={loading} />
+      {!ready && <ContentEngineBanner status={status} loading={loading} />}
       {notice && <div className="touch-notice" role="status">{notice}</div>}
 
+      {ready && (
+        <div className="finished-toolbar" aria-label="成片筛选">
+          <label className="finished-search">
+            <Search size={17} aria-hidden="true" />
+            <input
+              aria-label="搜索成片"
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索标题或文件名"
+            />
+          </label>
+          <div className="finished-filter-tabs">
+            <button className={view === "available" ? "is-active" : ""} aria-pressed={view === "available"} onClick={() => setView("available")}>
+              可用成片 <span>{availableCount}</span>
+            </button>
+            <button className={view === "deleted" ? "is-active" : ""} aria-pressed={view === "deleted"} onClick={() => setView("deleted")}>
+              已删除 <span>{deletedCount}</span>
+            </button>
+          </div>
+          <span className="finished-result-count">共 {filteredItems.length} 条</span>
+        </div>
+      )}
+
       <div className="finished-grid">
-        {items.map((item) => (
-          <article key={item.finishedVideoId} className="finished-card">
-            <div className="finished-card-cover">
-              <Video size={34} />
-            </div>
-            <div className="finished-card-body">
-              <strong>{item.title || item.displayName}</strong>
-              <span>{formatBytes(item.sizeBytes)} · {formatDate(item.createdAt)}</span>
-              <div className="finished-card-actions">
-                <button className="primary-button" onClick={() => void openVideo(item)} disabled={!ready}>
-                  <Play size={15} />
-                  播放
-                </button>
-                <button className="secondary-button" onClick={() => void revealVideo(item)} disabled={!ready}>
-                  <FolderOpen size={15} />
-                  定位文件
-                </button>
-              </div>
-            </div>
-          </article>
+        {showInitialSkeleton && Array.from({ length: 6 }, (_, index) => (
+          <div key={index} className="finished-card finished-card-skeleton" aria-hidden="true">
+            <div className="finished-card-cover" />
+            <div className="finished-card-body"><i /><i /><i /></div>
+          </div>
         ))}
-        {!items.length && (
+        {!showInitialSkeleton && visibleItems.map((item) => {
+          const available = finishedVideoAvailable(item);
+          const generatedVideoId = finishedVideoGeneratedId(item);
+          const title = finishedVideoTitle(item);
+          const coverReady = Boolean(generatedVideoId && !brokenCovers[item.finishedVideoId]);
+          return (
+            <article key={item.finishedVideoId} className={`finished-card${available ? "" : " is-unavailable"}`}>
+              <div className="finished-card-cover">
+                {coverReady ? (
+                  <img
+                    className="finished-card-cover-image"
+                    src={`xiaoxi-content://generated/${generatedVideoId}/thumbnail`}
+                    alt={`${title}封面`}
+                    loading="lazy"
+                    decoding="async"
+                    onError={() => setBrokenCovers((current) => ({ ...current, [item.finishedVideoId]: true }))}
+                  />
+                ) : (
+                  <div className="finished-card-cover-fallback">
+                    <Video size={30} />
+                    <span>暂无封面</span>
+                  </div>
+                )}
+                <span className={`finished-card-status ${available ? "is-available" : "is-deleted"}`}>
+                  {available ? "可用" : "文件已删除"}
+                </span>
+                {available && (
+                  <button className="finished-card-play" aria-label={`播放${title}`} onClick={() => void openVideo(item)} disabled={!ready}>
+                    <Play size={19} fill="currentColor" />
+                  </button>
+                )}
+              </div>
+              <div className="finished-card-body">
+                <strong title={title}>{title}</strong>
+                <span>{formatBytes(item.sizeBytes)} · {formatDate(item.createdAt)}</span>
+                {available ? (
+                  <div className="finished-card-actions">
+                    <button
+                      className="primary-button finished-download-button"
+                      onClick={() => void downloadVideo(item)}
+                      disabled={!ready || Boolean(downloadingId)}
+                    >
+                      <Download size={15} />
+                      {downloadingId === item.finishedVideoId ? "保存中…" : "下载到…"}
+                    </button>
+                    <button className="secondary-button" onClick={() => void revealVideo(item)} disabled={!ready || Boolean(downloadingId)}>
+                      <FolderOpen size={15} />
+                      定位文件
+                    </button>
+                  </div>
+                ) : (
+                  <p className="finished-card-missing">本地文件已删除或不可访问，已从可用成片中移出。</p>
+                )}
+              </div>
+            </article>
+          );
+        })}
+        {!showInitialSkeleton && !visibleItems.length && (
           <div className="content-empty finished-empty">
             <Video size={36} />
-            <strong>{ready ? "还没有成片" : "成片底座尚未就绪"}</strong>
-            <p>{ready ? "后续剪辑任务完成后会自动登记，也可以先登记已有视频。" : "运行组件就绪后，成片会统一在这里管理。"}</p>
+            <strong>{ready ? emptyTitle : "成片底座尚未就绪"}</strong>
+            <p>{ready ? emptyDescription : "运行组件就绪后，成片会统一在这里管理。"}</p>
+            {ready && query.trim() && <button className="secondary-button" onClick={() => setQuery("")}>清除搜索</button>}
+            {ready && !query.trim() && view === "available" && deletedCount > 0 && (
+              <button className="secondary-button" onClick={() => setView("deleted")}>查看已删除</button>
+            )}
           </div>
         )}
       </div>
+
+      {visibleItems.length > 0 && filteredItems.length > visibleItems.length && (
+        <div className="finished-load-more">
+          <span>已显示 {visibleItems.length} / {filteredItems.length} 条</span>
+          <button className="secondary-button" onClick={() => setVisibleCount((count) => count + FINISHED_PAGE_SIZE)}>加载更多</button>
+        </div>
+      )}
     </section>
   );
 }

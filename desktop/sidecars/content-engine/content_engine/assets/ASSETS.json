@@ -1,0 +1,42 @@
+{
+  "bundle_version": 1,
+  "assets": [
+    {
+      "id": "noto_sans_sc_variable",
+      "type": "font",
+      "file": "fonts/NotoSansSC-Variable.ttf",
+      "sha256": "a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da",
+      "source": "https://github.com/google/fonts/tree/main/ofl/notosanssc",
+      "license": "OFL-1.1",
+      "license_file": "licenses/OFL-1.1.txt"
+    },
+    {
+      "id": "xiaoxi_semantic_stickers_v1",
+      "type": "sticker",
+      "implementation": "creative_render.py",
+      "source": "original procedural cards and labels",
+      "license": "LicenseRef-Xiaoxi-Original"
+    },
+    {
+      "id": "xiaoxi_mix_bgm_v1",
+      "type": "bgm",
+      "implementation": "creative_render.py",
+      "source": "original procedural waveform",
+      "license": "LicenseRef-Xiaoxi-Original"
+    },
+    {
+      "id": "xiaoxi_prompt_sfx_v1",
+      "type": "sfx",
+      "implementation": "creative_render.py",
+      "source": "original procedural waveform",
+      "license": "LicenseRef-Xiaoxi-Original"
+    },
+    {
+      "id": "xiaoxi_auto_mix_voice_personas_v1",
+      "type": "voice_persona_catalog",
+      "file": "auto-mix-voice-personas.v1.json",
+      "source": "original voice-design prompts",
+      "license": "LicenseRef-Xiaoxi-Original"
+    }
+  ]
+}

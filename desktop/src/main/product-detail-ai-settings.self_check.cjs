@@ -186,13 +186,18 @@ async function main() {
     assert.match(mainSource, /DEEPSEEK_API_KEY = deepSeekKeyStore\.read\(\)/u);
     assert.match(mainSource, /REFINE_API_KEY = refine\.apiKey/u);
     assert.match(mainSource, /REFINE_API_BASE_URL = refine\.baseUrl/u);
+    assert.match(mainSource, /APIMART_API_KEY = imageProvider\.apiKey/u);
+    assert.match(mainSource, /APIMART_API_BASE_URL = imageProvider\.baseUrl/u);
+    assert.match(mainSource, /APIMART_IMAGE_MODEL = imageProvider\.model/u);
+    assert.match(mainSource, /function restartImageProviderConsumers\(\)/u);
+    assert.match(mainSource, /onChanged: restartImageProviderConsumers/u);
     assert.match(
       mainSource,
-      /PRODUCT_DETAIL_PROVIDER_RESTART_STATES = new Set\(\["ready", "starting", "failed"\]\)/u
+      /PROVIDER_CONSUMER_RESTART_STATES = new Set\(\["ready", "starting", "failed"\]\)/u
     );
     assert.doesNotMatch(
       mainSource,
-      /PRODUCT_DETAIL_PROVIDER_RESTART_STATES = new Set\([^\n]*stopped/u
+      /PROVIDER_CONSUMER_RESTART_STATES = new Set\([^\n]*stopped/u
     );
     assert.match(mainSource, /registerProductDetailAiSettingsIpc/u);
     assert.match(mainSource, /onChanged: restartProductDetailForProviderChange/u);

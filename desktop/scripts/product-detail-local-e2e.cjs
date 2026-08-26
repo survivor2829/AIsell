@@ -457,6 +457,76 @@ def run():
                     or main_fit["viewerRight"] > main_fit["wrapperRight"] + 1
                 ):
                     raise AssertionError(f"main image overflows center panel: {main_fit}")
+
+                embedded_frame.evaluate(
+                    "document.querySelector('#btn_generate_parameter').click(); document.querySelector('#btn_generate_parameter').click();"
+                )
+                workspace.locator("#parameter_wrapper").wait_for(
+                    state="visible", timeout=120_000
+                )
+                workspace.locator("#parameter_container > div").first.wait_for(
+                    state="visible", timeout=120_000
+                )
+                parameter_text = workspace.locator("#parameter_container").inner_text()
+                if "未识别到有效产品参数" in parameter_text:
+                    raise AssertionError("parameter-sheet generation did not produce valid specs")
+                parse_count = sum("/parse-text" in value for value in requests)
+                render_count = sum("/render-preview" in value for value in requests)
+                if parse_count != 2 or render_count != 2:
+                    raise AssertionError(
+                        "parameter-sheet generation submitted duplicate work: "
+                        f"parse={parse_count}, render={render_count}"
+                    )
+                embedded_frame.wait_for_function(
+                    "() => Boolean(document.querySelector('#parameter_container')?.dataset.previewScale)"
+                )
+                parameter_fit = embedded_frame.evaluate(
+                    """() => {
+                      const wrapper = document.getElementById('parameter_wrapper');
+                      const container = document.getElementById('parameter_container');
+                      const wrapperRect = wrapper.getBoundingClientRect();
+                      const containerRect = container.getBoundingClientRect();
+                      return {
+                        scale: Number(container.dataset.previewScale || '0'),
+                        wrapperLeft: wrapperRect.left,
+                        wrapperRight: wrapperRect.right,
+                        containerLeft: containerRect.left,
+                        containerRight: containerRect.right,
+                      };
+                    }"""
+                )
+                if not (0 < parameter_fit["scale"] <= 1):
+                    raise AssertionError(f"invalid parameter-sheet scale: {parameter_fit}")
+                if (
+                    parameter_fit["containerLeft"] < parameter_fit["wrapperLeft"] - 1
+                    or parameter_fit["containerRight"] > parameter_fit["wrapperRight"] + 1
+                ):
+                    raise AssertionError(
+                        f"parameter sheet overflows center panel: {parameter_fit}"
+                    )
+                parameter_download_path = Path(config["parameter_download_path"])
+                parameter_download_path.parent.mkdir(parents=True, exist_ok=True)
+                with page.expect_download(timeout=300_000) as parameter_download_info:
+                    workspace.locator("#btn_parameter_export_png").click()
+                parameter_download = parameter_download_info.value
+                parameter_download.save_as(str(parameter_download_path))
+                if parameter_download.failure():
+                    raise AssertionError(
+                        f"parameter PNG download failed: {parameter_download.failure()}"
+                    )
+                parameter_payload = parameter_download_path.read_bytes()
+                if not parameter_payload.startswith(b"\x89PNG\r\n\x1a\n"):
+                    raise AssertionError("parameter download does not have a PNG signature")
+                if len(parameter_payload) <= 1024:
+                    raise AssertionError(
+                        "downloaded parameter PNG is unexpectedly small: "
+                        f"{len(parameter_payload)} bytes"
+                    )
+                if "产品参数" not in parameter_download.suggested_filename:
+                    raise AssertionError(
+                        "parameter PNG did not preserve the parameter-sheet filename: "
+                        + parameter_download.suggested_filename
+                    )
                 workspace.locator('[data-tab="detail"]').click()
                 download_path = Path(config["download_path"])
                 download_path.parent.mkdir(parents=True, exist_ok=True)
@@ -480,6 +550,7 @@ def run():
                         "render_requests": render_count,
                         "preview_fit": fit_state,
                         "main_image_fit": main_fit,
+                        "parameter_fit": parameter_fit,
                         "module_paid_controls_disabled": len(module_paid_state),
                         "module_generation_note_visible": generation_note.is_visible(),
                         "single_hidden_recovery": True,
@@ -488,6 +559,9 @@ def run():
                         "download_path": str(download_path),
                         "download_bytes": len(payload),
                         "download_name": download.suggested_filename,
+                        "parameter_download_path": str(parameter_download_path),
+                        "parameter_download_bytes": len(parameter_payload),
+                        "parameter_download_name": parameter_download.suggested_filename,
                     }
                 )
             elif phase == "restore":
@@ -999,6 +1073,7 @@ async function main() {
     path.join(tempRoot, `xiaoxi-product-detail-local-e2e-${process.pid}-`)
   );
   const downloadPath = path.join(dataDir, "evidence", "generated-detail.png");
+  const parameterDownloadPath = path.join(dataDir, "evidence", "generated-parameter.png");
   const aiDownloadPath = path.join(dataDir, "evidence", "generated-ai-detail.png");
   const evidencePath = path.join(dataDir, "e2e-evidence.json");
   const evidence = {
@@ -1030,6 +1105,7 @@ async function main() {
       minimum_preview_scale: 0.68,
       fixture_path: fixturePath,
       download_path: downloadPath,
+      parameter_download_path: parameterDownloadPath,
     });
     await stopSidecar(server);
     server = null;

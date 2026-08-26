@@ -10,11 +10,38 @@ const MAX_RESPONSE_LINE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const IMPORT_REQUEST_TIMEOUT_MS = 30 * 60_000;
 const RENDER_REQUEST_TIMEOUT_MS = 2 * 60 * 60_000;
+const VOICE_DESIGN_REQUEST_TIMEOUT_MS = 6 * 60_000;
+const TRUSTED_REMOTION_ENV_KEYS = new Set([
+  "XIAOXI_REMOTION_NODE_PATH",
+  "XIAOXI_REMOTION_WORKER_PATH",
+  "XIAOXI_REMOTION_BUNDLE_PATH",
+  "XIAOXI_REMOTION_BROWSER_PATH",
+  "XIAOXI_REMOTION_ELECTRON_RUN_AS_NODE"
+]);
 
 function createError(code, message = code) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function safeErrorMessage(value, fallback = "内容引擎请求失败") {
+  const text = String(value || "")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/\b(?:sk|ak)(?:-[a-z0-9._-]{8,})\b/giu, "[已隐藏密钥]")
+    .replace(/[a-z]:[\\/][^\r\n\t"'<>|]*/giu, "[已隐藏本地路径]")
+    .replace(/\\\\[^\\/\s]+[\\/][^\r\n\t"'<>|]*/gu, "[已隐藏本地路径]")
+    .trim()
+    .slice(0, 500);
+  return text || fallback;
+}
+
+function generatedVideoId(value) {
+  const candidateId = String(value || "");
+  if (!/^generated_video_[a-f0-9]{32}$/.test(candidateId)) {
+    throw createError("invalid_id");
+  }
+  return candidateId;
 }
 
 function sanitizeCapabilities(value) {
@@ -49,6 +76,9 @@ function createContentEngineSidecar(options = {}) {
   const getProviderEnvironment = typeof options.getProviderEnvironment === "function"
     ? options.getProviderEnvironment
     : () => ({});
+  const getTrustedRuntimeEnvironment = typeof options.getTrustedRuntimeEnvironment === "function"
+    ? options.getTrustedRuntimeEnvironment
+    : () => ({});
   const runtimePath = String(
     options.runtimePath
       ?? environment.XIAOXI_CONTENT_ENGINE_SIDECAR
@@ -72,6 +102,10 @@ function createContentEngineSidecar(options = {}) {
   const renderTimeoutMs = Math.max(
     requestTimeoutMs,
     Number(options.renderTimeoutMs) || RENDER_REQUEST_TIMEOUT_MS
+  );
+  const voiceDesignTimeoutMs = Math.max(
+    requestTimeoutMs,
+    Number(options.voiceDesignTimeoutMs) || VOICE_DESIGN_REQUEST_TIMEOUT_MS
   );
   const startupTimeoutMs = Math.max(1, Number(options.startupTimeoutMs) || 30_000);
   const stopTimeoutMs = Math.max(1, Number(options.stopTimeoutMs) || 3_000);
@@ -204,7 +238,10 @@ function createContentEngineSidecar(options = {}) {
     const safeCode = /^[a-z0-9_-]{1,64}$/i.test(suppliedCode)
       ? suppliedCode
       : "internal_error";
-    pending.reject(createError(safeCode));
+    pending.reject(createError(
+      safeCode,
+      safeErrorMessage(payload.error.message, safeCode)
+    ));
   }
 
   function handleStdout(run, chunk) {
@@ -304,6 +341,15 @@ function createContentEngineSidecar(options = {}) {
       let child;
       try {
         const providerEnvironment = getProviderEnvironment();
+        const suppliedRuntimeEnvironment = getTrustedRuntimeEnvironment();
+        const trustedRuntimeEnvironment = {};
+        if (suppliedRuntimeEnvironment && typeof suppliedRuntimeEnvironment === "object") {
+          for (const [key, value] of Object.entries(suppliedRuntimeEnvironment)) {
+            if (!TRUSTED_REMOTION_ENV_KEYS.has(key)) continue;
+            const normalized = String(value || "").trim();
+            if (normalized) trustedRuntimeEnvironment[key] = normalized;
+          }
+        }
         child = spawnProcess(runtimePath, [...runtimeArgs, "--data-dir", dataDir], {
           windowsHide: true,
           shell: false,
@@ -313,6 +359,7 @@ function createContentEngineSidecar(options = {}) {
             ...(providerEnvironment && typeof providerEnvironment === "object"
               ? providerEnvironment
               : {}),
+            ...trustedRuntimeEnvironment,
             PYTHONIOENCODING: "utf-8",
             PYTHONUTF8: "1"
           }
@@ -593,7 +640,15 @@ function createContentEngineSidecar(options = {}) {
         subtitle_font_size: optionsForGeneration.subtitleFontSize,
         subtitle_margin_bottom: optionsForGeneration.subtitleMarginBottom,
         experiment_mode: optionsForGeneration.experimentMode,
-        subtitle_preset: optionsForGeneration.subtitlePreset
+        subtitle_preset: optionsForGeneration.subtitlePreset,
+        packaging_mode: optionsForGeneration.packagingMode,
+        packaging_preset_id: optionsForGeneration.packagingPresetId,
+        brand_profile_id: optionsForGeneration.brandProfileId,
+        cover_mode: optionsForGeneration.coverMode,
+        visual_renderer: optionsForGeneration.visualRenderer,
+        ...(optionsForGeneration.confirmPaidCalls === true
+          ? { confirm_paid_calls: true }
+          : {})
       }
     ),
     generateMixBatch: (assetIds, optionsForGeneration = {}) => request(
@@ -602,8 +657,168 @@ function createContentEngineSidecar(options = {}) {
         asset_ids: assetIds,
         theme: optionsForGeneration.theme,
         target_count: optionsForGeneration.targetCount,
-        voice_asset_id: optionsForGeneration.voiceAssetId
+        voice_asset_id: optionsForGeneration.voiceAssetId,
+        ...(optionsForGeneration.pilotMode === true ? { pilot_mode: true } : {}),
+        packaging_mode: optionsForGeneration.packagingMode,
+        packaging_preset_id: optionsForGeneration.packagingPresetId,
+        brand_profile_id: optionsForGeneration.brandProfileId,
+        cover_mode: optionsForGeneration.coverMode,
+        visual_renderer: optionsForGeneration.visualRenderer,
+        ...(optionsForGeneration.confirmPaidCalls === true
+          ? { confirm_paid_calls: true }
+          : {})
       }
+    ),
+    createOneClickProject: (name, assetIds, options = {}) => request(
+      "create_one_click_project",
+      {
+        name: String(name || "商品展示一键成片"),
+        asset_ids: assetIds,
+        options: {
+          brief: options.brief,
+          ratio: options.ratio,
+          duration_ms: options.durationMs,
+          target_count: options.targetCount,
+          cover_mode: options.coverMode,
+          bgm_asset_id: options.bgmAssetId
+        }
+      }
+    ),
+    createAutoMixV2: (input = {}) => request(
+      "create_auto_mix_v2",
+      input.guidedSessionId
+        ? {
+          specVersion: input.specVersion,
+          guidedSessionId: input.guidedSessionId,
+          scriptRevision: input.scriptRevision
+        }
+        : {
+          specVersion: input.specVersion,
+          assetIds: input.assetIds,
+          title: input.title,
+          copyFramework: input.copyFramework
+        }
+    ),
+    prepareGuidedAutoMixV2: (assetIds) => request(
+      "prepare_guided_auto_mix_v2",
+      { asset_ids: assetIds }
+    ),
+    getGuidedAutoMixSessionV2: (input = {}) => request(
+      "get_guided_auto_mix_session_v2",
+      {
+        session_id: input.sessionId,
+        task_id: input.taskId
+      }
+    ),
+    generateGuidedAutoMixScriptV2: (input = {}) => request(
+      "generate_guided_auto_mix_script_v2",
+      {
+        session_id: input.sessionId,
+        title: input.title,
+        answers: input.answers
+      }
+    ),
+    getGuidedAutoMixSupplementalImageV2: (input = {}) => request(
+      "get_guided_auto_mix_supplemental_image_v2",
+      {
+        session_id: input.sessionId,
+        script_revision: input.scriptRevision
+      }
+    ),
+    createGuidedAutoMixSupplementalImageV2: (input = {}) => request(
+      "create_guided_auto_mix_supplemental_image_v2",
+      {
+        session_id: input.sessionId,
+        script_revision: input.scriptRevision,
+        draft_hash: input.draftHash,
+        confirm_paid_calls: input.confirmPaidCalls === true
+      }
+    ),
+    getAutoMixPlanV2: (options = {}) => request(
+      "get_auto_mix_plan_v2",
+      {
+        project_id: options.projectId,
+        run_id: options.runId
+      }
+    ),
+    regenerateAutoMixLayer: (projectId, layer, expectedRunId) => request(
+      "regenerate_auto_mix_layer",
+      {
+        project_id: projectId,
+        layer,
+        ...(expectedRunId ? { expected_run_id: expectedRunId } : {})
+      }
+    ),
+    importMusicCatalogTrack: (input = {}) => request(
+      "import_music_catalog_track",
+      {
+        sourcePath: input.sourcePath,
+        displayName: input.displayName,
+        source: input.source,
+        commercialScope: input.commercialScope,
+        commercialUseAllowed: input.commercialUseAllowed === true,
+        licenseStatus: input.licenseStatus,
+        expiresAt: input.expiresAt,
+        credentialReference: input.credentialReference,
+        evidencePath: input.evidencePath,
+        bpm: input.bpm,
+        moods: input.moods,
+        energy: input.energy,
+        loopStartMs: input.loopStartMs,
+        loopEndMs: input.loopEndMs
+      }
+    ),
+    listMusicCatalogTracks: () => request("list_music_catalog_tracks", {}),
+    listAutoMixVoicePersonas: () => request(
+      "list_auto_mix_voice_personas", {}
+    ),
+    designAutoMixVoicePersona: async (voicePersonaId) => {
+      try {
+        return await request(
+          "design_auto_mix_voice_persona",
+          { voice_persona_id: voicePersonaId },
+          { timeoutMs: voiceDesignTimeoutMs }
+        );
+      } catch (error) {
+        if (error?.code === "CONTENT_ENGINE_REQUEST_TIMEOUT") {
+          throw createError(
+            "auto_mix_voice_design_outcome_unknown",
+            "声音设计结果暂时无法确认；为避免重复创建，不会自动重提。"
+          );
+        }
+        throw error;
+      }
+    },
+    previewAutoMixVoicePersona: (voicePersonaId) => request(
+      "preview_auto_mix_voice_persona",
+      { voice_persona_id: voicePersonaId }
+    ),
+    approveAutoMixVoicePersona: (voicePersonaId) => request(
+      "approve_auto_mix_voice_persona",
+      { voice_persona_id: voicePersonaId }
+    ),
+    analyzeProductAssets: (projectId) => request(
+      "analyze_product_assets", { project_id: projectId }
+    ),
+    generateProductCopy: (projectId, brief) => request(
+      "generate_product_copy", { project_id: projectId, brief }
+    ),
+    generateProductVoice: (projectId, scriptId) => request(
+      "generate_product_voice", { project_id: projectId, script_id: scriptId }
+    ),
+    generateOneClickCandidates: (projectId, options = {}) => request(
+      "generate_one_click_candidates",
+      {
+        project_id: projectId,
+        options: {
+          target_count: options.targetCount,
+          duration_ms: options.durationMs,
+          cover_mode: options.coverMode
+        }
+      }
+    ),
+    listOneClickCandidates: (projectId, limit = 20) => request(
+      "list_one_click_candidates", { project_id: projectId, limit }
     ),
     getCreativeProject: (projectId) => request("get_creative_project", {
       project_id: projectId
@@ -631,6 +846,73 @@ function createContentEngineSidecar(options = {}) {
         limit: optionsForList.limit
       }
     ),
+    listPackagingPresets: (kind) => request(
+      "list_packaging_presets",
+      kind == null ? {} : { kind }
+    ),
+    listBrandProfiles: () => request("list_brand_profiles", {}),
+    saveBrandProfile: (profile) => request("save_brand_profile", { profile }),
+    getPackagingCostEstimate: (candidateIds, coverMode, plannedCount, optionsForEstimate = {}) => request(
+      "get_packaging_cost_estimate",
+      {
+        candidate_ids: candidateIds,
+        cover_mode: coverMode,
+        planned_count: plannedCount,
+        asset_ids: optionsForEstimate.assetIds,
+        generation_kind: optionsForEstimate.generationKind
+      }
+    ),
+    recordMediaReview: (candidateId, optionsForReview = {}) => request(
+      "record_media_review",
+      {
+        candidate_id: candidateId,
+        device: optionsForReview.device,
+        verdict: optionsForReview.verdict,
+        reason: optionsForReview.reason,
+        reviewer: optionsForReview.reviewer
+      }
+    ),
+    listMediaReviews: (candidateId) => request(
+      "list_media_reviews",
+      { candidate_id: candidateId }
+    ),
+    packageGeneratedVideos: (candidateIds, optionsForPackaging = {}) => request(
+      "package_generated_videos",
+      {
+        candidate_ids: candidateIds,
+        options: {
+          packaging_mode: optionsForPackaging.packagingMode,
+          packaging_preset_id: optionsForPackaging.packagingPresetId,
+          brand_profile_id: optionsForPackaging.brandProfileId,
+          cover_mode: optionsForPackaging.coverMode,
+          reuse_cover: optionsForPackaging.reuseCover
+        }
+      }
+    ),
+    repackageVideo: (candidateId, optionsForPackaging = {}) => request(
+      "repackage_video",
+      {
+        candidate_id: candidateId,
+        options: {
+          packaging_mode: optionsForPackaging.packagingMode,
+          packaging_preset_id: optionsForPackaging.packagingPresetId,
+          brand_profile_id: optionsForPackaging.brandProfileId,
+          cover_mode: optionsForPackaging.coverMode,
+          reuse_cover: optionsForPackaging.reuseCover
+        }
+      }
+    ),
+    preflightVisualComparison: (candidateId) => request(
+      "preflight_visual_comparison",
+      { candidate_id: generatedVideoId(candidateId) }
+    ),
+    createVisualComparisonTask: (candidateId) => request(
+      "create_visual_comparison_task",
+      { candidate_id: generatedVideoId(candidateId) }
+    ),
+    regenerateCover: (candidateId) => request("regenerate_cover", {
+      candidate_id: candidateId
+    }),
     listMediaSegments: (optionsForList = {}) => request(
       "list_media_segments",
       {
@@ -700,6 +982,10 @@ function createContentEngineSidecar(options = {}) {
       "resolve_generated_video_path",
       { candidate_id: candidateId, variant }
     ),
+    resolveGuidedAutoMixSupplementalImagePath: (operationId) => request(
+      "resolve_guided_auto_mix_supplemental_image_path",
+      { operation_id: operationId }
+    ),
     resolveExportPackagePath: (packageId) => request(
       "resolve_export_package_path",
       { package_id: packageId }
@@ -741,7 +1027,19 @@ function createContentEngineSidecar(options = {}) {
         "creative_analysis",
         "course_generation",
         "mix_generation",
-        "creative_regeneration"
+        "creative_regeneration",
+        "creative_packaging",
+        "creative_cover",
+        "creative_visual_comparison",
+        "product_asset_analysis",
+        "product_copy",
+        "product_voice",
+        "product_generation",
+        "auto_mix_v2_generation",
+        "auto_mix_v2_regeneration",
+        "guided_auto_mix_analysis",
+        "guided_auto_mix_draft",
+        "guided_auto_mix_supplemental_image"
       ].includes(
         task.task_type
       )) {

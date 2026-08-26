@@ -14,6 +14,11 @@ const {
   isContentEnginePythonSource,
   resolveContentEngineBuild
 } = require("./content-engine-release-runtime.cjs");
+const {
+  artifactTypeForEdition,
+  copyRemotionRuntime,
+  resolveRemotionRuntimeBuild
+} = require("./build-remotion-runtime.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const projectDir = path.resolve(desktopDir, "..");
@@ -172,8 +177,17 @@ function scanRelease(target) {
   if (blocked.length) throw new Error(`Release contains blocked files or secrets:\n${blocked.join("\n")}`);
 }
 
-function assertBuildPreconditions(edition) {
+function resolveSidecarBuildRoot(environment = process.env) {
+  const configured = String(environment.XIAOXI_SIDECAR_BUILD_ROOT || "").trim();
+  return configured ? path.resolve(configured) : null;
+}
+
+function assertBuildPreconditions(edition, {
+  environment = process.env,
+  sidecarBuildRoot = resolveSidecarBuildRoot(environment)
+} = {}) {
   if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported edition: ${edition}`);
+  const artifactType = artifactTypeForEdition(edition);
   if (!fs.existsSync(path.join(electronDir, "electron.exe"))) throw new Error("Electron portable runtime is missing; run npm ci first");
   if (!fs.existsSync(helper) || sha256(helper) !== CONTACT_HELPER_SHA256) throw new Error("Pinned contact helper is missing or has the wrong hash");
   for (const [name, expectedHash] of Object.entries(NATIVE_LIBRARY_SHA256)) {
@@ -185,14 +199,23 @@ function assertBuildPreconditions(edition) {
     throw new Error(`${DATABASE_DECRYPTOR_NAME} is missing or has the wrong hash`);
   }
 
-  const productDetailRuntime = resolveProductDetailBuild(desktopDir);
-  const contentEngineRuntime = resolveContentEngineBuild(desktopDir);
+  const productDetailRuntime = resolveProductDetailBuild(desktopDir, { buildRoot: sidecarBuildRoot });
+  const contentEngineRuntime = resolveContentEngineBuild(desktopDir, { buildRoot: sidecarBuildRoot });
+  const remotionRuntime = resolveRemotionRuntimeBuild(desktopDir, artifactType);
 
   const commit = gitText(["rev-parse", "HEAD"]);
   const dirty = Boolean(gitText(["status", "--porcelain"]));
   if (dirty) throw new Error("Refusing to build a portable release from a dirty worktree");
 
-  return { commit, dirty, productDetailRuntime, contentEngineRuntime };
+  return {
+    artifactType,
+    commit,
+    dirty,
+    productDetailRuntime,
+    contentEngineRuntime,
+    remotionRuntime,
+    sidecarBuildRoot
+  };
 }
 
 function buildPortableStaging(edition, paths, sourceState) {
@@ -205,16 +228,29 @@ function buildPortableStaging(edition, paths, sourceState) {
   const appDir = path.join(target, "resources", "app");
   fs.rmSync(appDir, { recursive: true, force: true });
   copyAppSource(appDir, edition);
+  const packagedBuildInfoFile = path.join(appDir, "dist", "build-edition.json");
+  const packagedBuildInfo = JSON.parse(fs.readFileSync(packagedBuildInfoFile, "utf8"));
+  fs.writeFileSync(packagedBuildInfoFile, `${JSON.stringify({
+    ...packagedBuildInfo,
+    artifactType: sourceState.artifactType
+  }, null, 2)}\n`, "utf8");
   copyProductDetailRuntime(sourceState.productDetailRuntime, target);
   copyContentEngineRuntime(sourceState.contentEngineRuntime, target);
+  const remotionRuntime = copyRemotionRuntime(sourceState.remotionRuntime, target);
 
   const packageJson = JSON.parse(fs.readFileSync(path.join(desktopDir, "package.json"), "utf8"));
   const electronPackage = JSON.parse(fs.readFileSync(path.join(desktopDir, "node_modules", "electron", "package.json"), "utf8"));
   const rendererMarker = JSON.parse(fs.readFileSync(path.join(desktopDir, edition === "test" ? "dist-development" : "dist-pilot", "build-edition.json"), "utf8"));
   const capabilityMatrix = JSON.parse(fs.readFileSync(path.join(desktopDir, "release-capabilities.json"), "utf8"));
+  const contentEngineSidecar = createContentEngineReleaseDescriptor(
+    sourceState.contentEngineRuntime,
+    sourceState.commit
+  );
+  contentEngineSidecar.treeSha256 = treeSha256(path.join(target, "resources", "content-engine"));
   const manifest = {
     product: PRODUCT_NAME,
     edition,
+    artifactType: sourceState.artifactType,
     version: packageJson.version,
     buildId: String(rendererMarker.buildId || ""),
     commit: sourceState.commit,
@@ -230,10 +266,8 @@ function buildPortableStaging(edition, paths, sourceState) {
       sourceState.productDetailRuntime,
       sourceState.commit
     ),
-    contentEngineSidecar: createContentEngineReleaseDescriptor(
-      sourceState.contentEngineRuntime,
-      sourceState.commit
-    ),
+    contentEngineSidecar,
+    remotionRuntime,
     targetWeixin: capabilityMatrix.targetWeixin,
     capabilityMatrix: capabilityMatrix.capabilities,
     releaseStage: "wechat-4.1.11.55-integrated-moments-adaptation",
@@ -243,8 +277,8 @@ function buildPortableStaging(edition, paths, sourceState) {
   };
   fs.writeFileSync(path.join(target, "版本清单.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   fs.writeFileSync(path.join(target, "版本标识.txt"), edition === "test"
-    ? `${PRODUCT_NAME} 测试版 ${manifest.buildId}\n朋友圈逐帖互动已完成本机验收；每日自动计划已实现但仍待真实计时验收。\n`
-    : `${PRODUCT_NAME} ${manifest.buildId}\n当前功能验收状态以版本清单中的 capabilityMatrix 为准；朋友圈逐帖互动已进入本包，每日自动计划仍待真实计时与异机验收，本包不代表完整商品。\n`, "utf8");
+    ? `${PRODUCT_NAME} 测试版 ${manifest.buildId}\n制品类型：internal-evaluation（仅限内部评估，不可包装为商业安装程序）。\n朋友圈逐帖互动已完成本机验收；每日自动计划已实现但仍待真实计时验收。\n`
+    : `${PRODUCT_NAME} ${manifest.buildId}\n制品类型：delivery；其 Remotion 与浏览器许可依据见受信清单摘要。\n当前功能验收状态以版本清单中的 capabilityMatrix 为准；朋友圈逐帖互动已进入本包，每日自动计划仍待真实计时与异机验收，本包不代表完整商品。\n`, "utf8");
   fs.writeFileSync(path.join(target, "首次使用说明.txt"), [
     `${PRODUCT_NAME} ${edition === "test" ? "测试版" : ""} ${manifest.buildId}`.trim(),
     "",
@@ -419,7 +453,10 @@ function runPortableSelfCheck(edition, target, zip) {
   }
 }
 
-function buildPortable(edition = "delivery") {
+function buildPortable(edition = "delivery", {
+  environment = process.env,
+  sidecarBuildRoot = resolveSidecarBuildRoot(environment)
+} = {}) {
   if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported edition: ${edition}`);
   const productName = edition === "test" ? `${PRODUCT_NAME}-测试版` : PRODUCT_NAME;
   const transactionId = `${process.pid}-${Date.now()}-${process.hrtime.bigint().toString(36)}`;
@@ -436,7 +473,7 @@ function buildPortable(edition = "delivery") {
     canonicalTarget,
     canonicalZip,
     transactionId,
-    preflight: () => assertBuildPreconditions(edition),
+    preflight: () => assertBuildPreconditions(edition, { environment, sidecarBuildRoot }),
     prepare: (sourceState) => buildPortableStaging(edition, {
       target: stagingTarget,
       zip: stagingZip,
@@ -458,11 +495,13 @@ if (require.main === module) buildPortable(process.argv[2] || "delivery");
 
 module.exports = {
   PORTABLE_SELF_CHECK_TIMEOUT_MS,
+  assertBuildPreconditions,
   buildPortable,
   cleanupPaths,
   copyRuntimePackageTree,
   publishStagedRelease,
   runTransactionalRelease,
+  resolveSidecarBuildRoot,
   scanRelease,
   sourceAllowed,
   treeSha256

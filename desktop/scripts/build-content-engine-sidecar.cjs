@@ -9,9 +9,10 @@ const desktopDir = path.resolve(__dirname, "..");
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 
-function resolveBuildPaths(root = desktopDir) {
+function resolveBuildPaths(root = desktopDir, { buildRoot: requestedBuildRoot = null } = {}) {
   const resolvedDesktopDir = path.resolve(root);
-  const buildRoot = path.join(resolvedDesktopDir, ".build");
+  const defaultBuildRoot = path.join(resolvedDesktopDir, ".build");
+  const buildRoot = requestedBuildRoot ? path.resolve(requestedBuildRoot) : defaultBuildRoot;
   const sourceDir = path.join(resolvedDesktopDir, "sidecars", "content-engine");
   const outputDir = path.join(buildRoot, "content-engine-runtime");
   const sessionPrefix = `ce-${process.pid}-${Date.now()}-${process.hrtime.bigint().toString(36)}`;
@@ -20,8 +21,12 @@ function resolveBuildPaths(root = desktopDir) {
     desktopDir: resolvedDesktopDir,
     projectDir: path.resolve(resolvedDesktopDir, ".."),
     buildRoot,
+    defaultBuildRoot,
     sourceDir,
     packageDir: path.join(sourceDir, "content_engine"),
+    assetDir: path.join(sourceDir, "content_engine", "assets"),
+    assetManifest: path.join(sourceDir, "content_engine", "assets", "ASSETS.json"),
+    bundledFont: path.join(sourceDir, "content_engine", "assets", "fonts", "NotoSansSC-Variable.ttf"),
     entryFile: path.join(sourceDir, "worker.py"),
     outputDir,
     outputExe: path.join(outputDir, "content-engine-worker.exe"),
@@ -49,6 +54,8 @@ function buildPyInstallerArgs(paths) {
     "content-engine-worker",
     "--paths",
     paths.sourceDir,
+    "--add-data",
+    `${paths.assetDir}${path.delimiter}content_engine/assets`,
     "--distpath",
     paths.distDir,
     "--workpath",
@@ -76,7 +83,7 @@ function pythonCandidates(paths, env = process.env) {
   const candidates = [
     env.XIAOXI_CONTENT_ENGINE_BUILD_PYTHON,
     env.XIAOXI_BUILD_PYTHON,
-    path.join(paths.buildRoot, "product-detail-venv", "Scripts", "python.exe"),
+    path.join(paths.defaultBuildRoot, "product-detail-venv", "Scripts", "python.exe"),
     codexPython,
     ...(fromPath.status === 0 ? fromPath.stdout.split(/\r?\n/) : [])
   ];
@@ -147,7 +154,10 @@ function runtimeSourceFiles(paths) {
       const file = path.join(directory, entry.name);
       if (entry.isDirectory()) {
         if (entry.name !== "__pycache__") visit(file);
-      } else if (entry.isFile() && entry.name.endsWith(".py")) {
+      } else if (
+        entry.isFile()
+        && (entry.name.endsWith(".py") || file.startsWith(`${paths.assetDir}${path.sep}`))
+      ) {
         files.push(file);
       }
     }
@@ -333,7 +343,13 @@ function buildManifest({
 }
 
 function assertBuildInputs(paths) {
-  for (const required of [paths.entryFile, paths.packageDir]) {
+  for (const required of [
+    paths.entryFile,
+    paths.packageDir,
+    paths.assetDir,
+    paths.assetManifest,
+    paths.bundledFont
+  ]) {
     if (!fs.existsSync(required)) {
       throw new Error(`Missing content-engine build input: ${required}`);
     }
@@ -351,8 +367,8 @@ function assertFreshOutput(paths) {
   }
 }
 
-function main() {
-  const paths = resolveBuildPaths();
+function main({ buildRoot = process.env.XIAOXI_SIDECAR_BUILD_ROOT || null } = {}) {
+  const paths = resolveBuildPaths(desktopDir, { buildRoot });
   assertBuildInputs(paths);
   fs.mkdirSync(paths.buildRoot, { recursive: true });
   assertFreshOutput(paths);

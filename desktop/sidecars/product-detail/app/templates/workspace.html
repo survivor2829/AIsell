@@ -217,12 +217,14 @@
     }
 
     /* ── Preview Wrapper ────────────────────────────────────── */
-    #preview_wrapper {
+    #preview_wrapper,
+    #parameter_wrapper {
       display: none; padding: 24px; flex: 1;
       background: #f8f8fa;
       overflow-x: hidden;
     }
-    #preview_container {
+    #preview_container,
+    #parameter_container {
       width: 750px; margin: 0 auto;
       background: #fff;
       box-shadow: 0 2px 8px rgba(0,0,0,0.06), 0 12px 32px rgba(0,0,0,0.08);
@@ -253,7 +255,8 @@
     .module-ghost { opacity: 0.4; outline: 2px dashed var(--color-primary); }
 
     .module-wrapper.module-hidden .module-content { display: none; }
-    .module-wrapper.module-hidden .module-toolbar { display: none; }
+    .module-wrapper.module-hidden .module-toolbar,
+    .module-wrapper.module-hidden:hover .module-toolbar { display: none; }
     .module-hidden-placeholder {
       display: none; align-items: center; justify-content: center; gap: 8px;
       padding: 12px; background: var(--color-bg-subtle); border-radius: 8px;
@@ -288,7 +291,8 @@
 
 
     /* ── Export Bar ─────────────────────────────────────────── */
-    #export_bar {
+    #export_bar,
+    #parameter_export_bar {
       display: none; align-items: center; justify-content: center;
       gap: 12px;
       padding: 12px 24px;
@@ -636,6 +640,11 @@
       </button>
       <p class="text-hint" style="margin-top:8px;">Jinja 模板秒出 HTML 预览,中央区直接看效果</p>
 
+      <button class="btn-generate" id="btn_generate_parameter" type="button" onclick="generateParameterSheet()" style="margin-top:14px; background:linear-gradient(135deg,#ef4444,#dc2626); border:none;">
+        📋 一键生成产品参数图
+      </button>
+      <p class="text-hint" style="margin-top:8px;">复用已上传产品图和参数文案，只输出产品参数图</p>
+
       {% if desktop_mode %}
       {% if desktop_capabilities.get('paid_ai_ready') %}
       <button class="btn-generate" id="btn_ai_html_v2" type="button" onclick="generateAiHtmlV2()" data-desktop-paid-ready="true" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(5,150,105,0.28);">
@@ -674,6 +683,7 @@
       <button class="center-tab active" data-tab="detail" onclick="switchCenterTab('detail')">一键生成版</button>
       <button class="center-tab" data-tab="main_img" onclick="switchCenterTab('main_img')">模块主图</button>
       <button class="center-tab" data-tab="ai_img" onclick="switchCenterTab('ai_img')">AI精修版</button>
+      <button class="center-tab" data-tab="parameter" onclick="switchCenterTab('parameter')">产品参数</button>
     </div>
     <div id="hidden_modules_bar" class="hidden-modules-bar" aria-live="polite" aria-hidden="true">
       <span>&#24403;&#21069;&#26377; <strong id="hidden_modules_count">0</strong> &#20010;&#27169;&#22359;&#24050;&#38544;&#34255;</span>
@@ -690,12 +700,17 @@
     <div id="empty_state">
       <div class="empty-icon">📋</div>
       <div class="empty-title">上传产品图 → 粘贴文案 → 一键生成</div>
-      <div class="empty-subtitle">生成后可在「一键生成版」「主图」「AI精修版」之间切换对比</div>
+      <div class="empty-subtitle">生成后可在「一键生成版」「主图」「AI精修版」「产品参数」之间切换对比</div>
     </div>
 
     <!-- Detail Tab: Preview Wrapper -->
     <div id="preview_wrapper">
       <div id="preview_container"></div>
+    </div>
+
+    <!-- Parameter Tab: reuse the existing block_e without extra modules -->
+    <div id="parameter_wrapper">
+      <div id="parameter_container"></div>
     </div>
 
     <!-- AI Image Tab -->
@@ -734,6 +749,16 @@
     <div id="main_img_export_bar">
       <button class="btn-export" onclick="exportMainImagesZip()">
         📦 导出全部主图 ZIP
+      </button>
+    </div>
+
+    <!-- Export Bar (parameter sheet) -->
+    <div id="parameter_export_bar">
+      <button class="btn-export" id="btn_parameter_export_png" onclick="doParameterExport('png')">
+        📥 导出参数图 PNG
+      </button>
+      <button class="btn-export btn-export-secondary" id="btn_parameter_export_jpg" onclick="doParameterExport('jpg')">
+        📥 导出参数图 JPG
       </button>
     </div>
 
@@ -848,8 +873,12 @@
   const PREVIEW_CANVAS_WIDTH = 750;
   let previewFitFrame = 0;
   let previewResizeObserver = null;
+  let parameterFitFrame = 0;
+  let parameterResizeObserver = null;
   let mainImageFitFrame = 0;
   let mainImageResizeObserver = null;
+  let workspaceGenerationInFlight = false;
+  let workspaceRenderVersion = 0;
   const DESKTOP_MODE = {{ desktop_mode|tojson }};
 
   /* e2e 测试钩子 — 让 Playwright 脚本能直接注入 parsed_data 绕过 AI 解析流程 */
@@ -926,16 +955,54 @@
     });
   }
 
+  function nextWorkspaceRenderVersion() {
+    workspaceRenderVersion += 1;
+    return workspaceRenderVersion;
+  }
+
+  function isCurrentWorkspaceRender(productType, version) {
+    return currentProductType === productType && workspaceRenderVersion === version;
+  }
+
+  function clearGeneratedWorkspace() {
+    nextWorkspaceRenderVersion();
+    currentBuildData = null;
+    moduleDataMap = {};
+    mainImageHtmls = [];
+    currentMainImgIndex = 0;
+    currentEcomData = null;
+    editingModuleId = null;
+
+    ['preview_container', 'parameter_container', 'main_img_large', 'main_img_strip']
+      .forEach(id => { document.getElementById(id).innerHTML = ''; });
+    ['preview_wrapper', 'parameter_wrapper', 'main_img_wrapper',
+      'export_bar', 'parameter_export_bar', 'main_img_export_bar']
+      .forEach(id => { document.getElementById(id).style.display = 'none'; });
+    document.getElementById('center_tabs').classList.remove('visible');
+    document.querySelectorAll('.center-tab').forEach(tab => {
+      tab.classList.toggle('active', tab.dataset.tab === 'detail');
+    });
+    document.getElementById('empty_state').style.display = 'flex';
+    document.getElementById('ecom_content').style.display = 'none';
+    document.getElementById('edit_modal').style.display = 'none';
+    const generationNote = document.getElementById('module_generation_note');
+    if (generationNote) generationNote.dataset.hasModules = 'false';
+    updateHiddenModulesBar();
+  }
+
   /* ── Category Selection ─────────────────────────────────────── */
   function selectCategory(type) {
+    const categoryChanged = type !== currentProductType;
     currentProductType = type;
     document.querySelectorAll('.cat-pill').forEach(p => {
       const isActive = p.dataset.type === type;
       p.classList.toggle('active', isActive);
     });
+    if (categoryChanged) clearGeneratedWorkspace();
     // Auto-select default theme for this category
     const defaultTheme = allThemes.find(t => t.default_for && t.default_for.includes(type));
     if (defaultTheme) applyTheme(defaultTheme.id);
+    if (categoryChanged) void restoreLatestLocalPreview();
   }
 
   /* ── Image Upload ───────────────────────────────────────────── */
@@ -1040,22 +1107,17 @@
     const theme = allThemes.find(t => t.id === themeId);
     if (!theme) return;
     currentThemeId = themeId;
-    const container = document.getElementById('preview_container');
-    if (container && theme.vars) {
-      Object.entries(theme.vars).forEach(([key, value]) => {
-        container.style.setProperty(key, value);
-      });
-    }
+    ['preview_container', 'parameter_container', 'main_img_large'].forEach(id => {
+      const container = document.getElementById(id);
+      if (container && theme.vars) {
+        Object.entries(theme.vars).forEach(([key, value]) => {
+          container.style.setProperty(key, value);
+        });
+      }
+    });
     document.querySelectorAll('.theme-card').forEach(card => {
       card.classList.toggle('selected', card.dataset.themeId === themeId);
     });
-    // Also apply to main image viewer
-    const mainLarge = document.getElementById('main_img_large');
-    if (mainLarge && theme && theme.vars) {
-      Object.entries(theme.vars).forEach(([key, value]) => {
-        mainLarge.style.setProperty(key, value);
-      });
-    }
   }
 
   function fitPreviewToPanel() {
@@ -1076,6 +1138,27 @@
     previewFitFrame = requestAnimationFrame(() => {
       previewFitFrame = 0;
       fitPreviewToPanel();
+    });
+  }
+
+  function fitParameterToPanel() {
+    const wrapper = document.getElementById('parameter_wrapper');
+    const container = document.getElementById('parameter_container');
+    if (!wrapper || !container || getComputedStyle(wrapper).display === 'none') return;
+    const style = getComputedStyle(wrapper);
+    const horizontalPadding = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+    const availableWidth = Math.max(0, wrapper.clientWidth - horizontalPadding);
+    if (!availableWidth) return;
+    const scale = Math.min(1, availableWidth / PREVIEW_CANVAS_WIDTH);
+    container.style.zoom = scale.toFixed(4);
+    container.dataset.previewScale = scale.toFixed(4);
+  }
+
+  function queueParameterFit() {
+    if (parameterFitFrame) cancelAnimationFrame(parameterFitFrame);
+    parameterFitFrame = requestAnimationFrame(() => {
+      parameterFitFrame = 0;
+      fitParameterToPanel();
     });
   }
 
@@ -1102,16 +1185,22 @@
 
   function initPreviewFit() {
     const wrapper = document.getElementById('preview_wrapper');
+    const parameterWrapper = document.getElementById('parameter_wrapper');
     const mainWrapper = document.getElementById('main_img_wrapper');
     if (wrapper && typeof ResizeObserver === 'function') {
       previewResizeObserver = new ResizeObserver(queuePreviewFit);
       previewResizeObserver.observe(wrapper);
+    }
+    if (parameterWrapper && typeof ResizeObserver === 'function') {
+      parameterResizeObserver = new ResizeObserver(queueParameterFit);
+      parameterResizeObserver.observe(parameterWrapper);
     }
     if (mainWrapper && typeof ResizeObserver === 'function') {
       mainImageResizeObserver = new ResizeObserver(queueMainImageFit);
       mainImageResizeObserver.observe(mainWrapper);
     }
     window.addEventListener('resize', queuePreviewFit);
+    window.addEventListener('resize', queueParameterFit);
     window.addEventListener('resize', queueMainImageFit);
   }
 
@@ -1131,6 +1220,7 @@
       b.classList.toggle('active', b.dataset.layout === name));
     if (!opts.silent) localStorage.setItem(LAYOUT_KEY, name);
     queuePreviewFit();
+    queueParameterFit();
     queueMainImageFit();
   }
 
@@ -1140,10 +1230,11 @@
   }
 
   /* ── Generate Preview ───────────────────────────────────────── */
-  async function generatePreview() {
-    if (!productImageUrl) { showError('请先上传产品主图'); return; }
+  async function generatePreview(options = {}) {
+    if (workspaceGenerationInFlight) return false;
+    if (!productImageUrl) { showError('请先上传产品主图'); return false; }
     const rawText = document.getElementById('text_input').value.trim();
-    if (!rawText) { showError('请粘贴产品资料文案'); return; }
+    if (!rawText) { showError('请粘贴产品资料文案'); return false; }
     originalRawText = rawText;
     const productTitle = (document.getElementById('product_title_input').value || '').trim();
     if (!productTitle) {
@@ -1153,18 +1244,29 @@
       setTimeout(() => { hint.style.borderColor = ''; hint.setAttribute('placeholder', '输入产品标题，如：德威莱克DZ50X驾驶式洗地机'); }, 5000);
     }
 
-    const btn = document.getElementById('btn_generate');
+    const buttonId = options.buttonId || 'btn_generate';
+    const btn = document.getElementById(buttonId);
+    if (!btn) return false;
+    const idleText = options.idleText || '✨ 一键生成详情页';
+    const loadingText = options.loadingText || '正在生成...';
+    const renderProductType = currentProductType;
+    const renderVersion = nextWorkspaceRenderVersion();
+    const generationButtons = ['btn_generate', 'btn_generate_parameter']
+      .map(id => document.getElementById(id))
+      .filter(Boolean);
     const progress = document.getElementById('progress_overlay');
-    btn.disabled = true;
-    btn.innerHTML = '<span style="display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,0.4);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:6px;"></span>正在生成...';
+    workspaceGenerationInFlight = true;
+    generationButtons.forEach(button => { button.disabled = true; });
+    btn.innerHTML = `<span style="display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,0.4);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:6px;"></span>${loadingText}`;
     progress.style.display = 'flex';
 
     try {
       updateProgress('正在分析产品参数...');
-      const parsed = await postJson(`/api/build/${encodeURIComponent(currentProductType)}/parse-text`, { text: rawText, product_title: productTitle });
+      const parsed = await postJson(`/api/build/${encodeURIComponent(renderProductType)}/parse-text`, { text: rawText, product_title: productTitle });
+      if (!isCurrentWorkspaceRender(renderProductType, renderVersion)) return false;
 
       updateProgress('正在组装详情页模块...');
-      const preview = await postJson(`/api/build/${encodeURIComponent(currentProductType)}/render-preview`, {
+      const preview = await postJson(`/api/build/${encodeURIComponent(renderProductType)}/render-preview`, {
         parsed_data: parsed,
         product_image: productImageUrl,
         scene_image: sceneImageUrl || '',
@@ -1172,9 +1274,11 @@
         qr_image: qrImageUrl || '',
         theme_id: currentThemeId
       });
+      if (!isCurrentWorkspaceRender(renderProductType, renderVersion)) return false;
 
       renderModules(preview.modules);
-      currentBuildData = { parsed, productType: currentProductType, themeId: currentThemeId, modules: preview.modules };
+      const hasParameterSheet = renderParameterSheet(preview.modules);
+      currentBuildData = { parsed, productType: renderProductType, themeId: currentThemeId, modules: preview.modules };
 
       document.getElementById('empty_state').style.display = 'none';
       document.getElementById('preview_wrapper').style.display = 'block';
@@ -1190,13 +1294,31 @@
       // 模块主图：直接从详情图 modules 里摘指定 5 个 block，不再单独渲染
       renderMainImages(extractMainBlocksFromModules(preview.modules));
 
+      if (options.targetTab) switchCenterTab(options.targetTab);
+      if (options.targetTab === 'parameter' && !hasParameterSheet) {
+        showError('未识别到有效产品参数，请补充参数后重新生成');
+      }
+      return options.targetTab === 'parameter' ? hasParameterSheet : true;
     } catch (err) {
-      showError('生成失败：' + err.message);
+      if (isCurrentWorkspaceRender(renderProductType, renderVersion)) {
+        showError('生成失败：' + err.message);
+      }
+      return false;
     } finally {
-      btn.disabled = false;
-      btn.innerHTML = '✨ 一键生成详情页';
+      workspaceGenerationInFlight = false;
+      generationButtons.forEach(button => { button.disabled = false; });
+      btn.innerHTML = idleText;
       progress.style.display = 'none';
     }
+  }
+
+  function generateParameterSheet() {
+    return generatePreview({
+      buttonId: 'btn_generate_parameter',
+      loadingText: '正在生成参数图...',
+      idleText: '📋 一键生成产品参数图',
+      targetTab: 'parameter'
+    });
   }
 
   function updateProgress(text) {
@@ -1249,6 +1371,40 @@
     initSortable();
     updateHiddenModulesBar();
     queuePreviewFit();
+  }
+
+  function renderParameterSheet(modules) {
+    const container = document.getElementById('parameter_container');
+    const parameterModule = (modules || []).find(mod => mod.id === 'block_e');
+    const specs = parameterModule && parameterModule.data && Array.isArray(parameterModule.data.specs)
+      ? parameterModule.data.specs
+      : [];
+    const hasValidSpecs = specs.some(spec =>
+      spec && String(spec.name || '').trim() && String(spec.value || '').trim()
+    );
+    container.innerHTML = hasValidSpecs && parameterModule.html
+      ? parameterModule.html
+      : '<div style="padding:60px 24px;text-align:center;color:#667085;">未识别到有效产品参数，请补充参数后重新生成。</div>';
+    queueParameterFit();
+    return hasValidSpecs;
+  }
+
+  function updateRenderedModule(moduleId, html, data) {
+    const wrapper = document.querySelector(`[data-module-id="${moduleId}"]`);
+    if (wrapper) wrapper.querySelector('.module-content').innerHTML = html;
+    if (data) moduleDataMap[moduleId] = data;
+
+    const moduleData = data || moduleDataMap[moduleId] || {};
+    if (currentBuildData && Array.isArray(currentBuildData.modules)) {
+      const currentModule = currentBuildData.modules.find(module => module.id === moduleId);
+      if (currentModule) {
+        currentModule.html = html;
+        currentModule.data = moduleData;
+      }
+    }
+    if (moduleId === 'block_e') {
+      renderParameterSheet([{ id: moduleId, html, data: moduleData }]);
+    }
   }
 
   /* ── Sortable ───────────────────────────────────────────────── */
@@ -1431,12 +1587,7 @@
         block_id: editingModuleId,
         block_data: data,
       });
-      // Update module HTML in preview
-      const wrapper = document.querySelector(`[data-module-id="${editingModuleId}"]`);
-      if (wrapper) {
-        wrapper.querySelector('.module-content').innerHTML = result.html;
-      }
-      moduleDataMap[editingModuleId] = data;
+      updateRenderedModule(editingModuleId, result.html, data);
       closeEditModal();
     } catch (err) {
       showError('保存失败：' + err.message);
@@ -1445,13 +1596,18 @@
 
   async function regenerateModule(moduleId) {
     if (DESKTOP_MODE) return;
-    if (!currentBuildData || !currentBuildData.parsed) { showError('没有产品数据'); return; }
+    if (!currentBuildData || !currentBuildData.parsed || currentBuildData.productType !== currentProductType) {
+      showError('没有当前品类的产品数据');
+      return;
+    }
+    const renderProductType = currentProductType;
+    const renderVersion = workspaceRenderVersion;
     const wrapper = document.querySelector(`[data-module-id="${moduleId}"]`);
-    const btn = wrapper.querySelector('[title="AI重新生成"]');
+    const btn = wrapper?.querySelector('[title="AI重新生成"]');
     if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
 
     try {
-      const result = await postJson(`/api/build/${encodeURIComponent(currentProductType)}/regenerate-block`, {
+      const result = await postJson(`/api/build/${encodeURIComponent(renderProductType)}/regenerate-block`, {
         block_id: moduleId,
         parsed_data: currentBuildData.parsed,
         product_image: productImageUrl,
@@ -1459,10 +1615,8 @@
         effect_image: effectImageUrl || '',
         qr_image: qrImageUrl || '',
       });
-      if (wrapper) {
-        wrapper.querySelector('.module-content').innerHTML = result.html;
-      }
-      if (result.data) moduleDataMap[moduleId] = result.data;
+      if (!isCurrentWorkspaceRender(renderProductType, renderVersion)) return;
+      updateRenderedModule(moduleId, result.html, result.data);
     } catch (err) {
       showError('AI重新生成失败：' + err.message);
     } finally {
@@ -1490,39 +1644,66 @@
   }
 
   /* ── Export ─────────────────────────────────────────────────── */
-  async function doExport(format = 'png') {
+  async function downloadWorkspaceExport(format = 'png', options = {}) {
+    if (options.scope === 'parameter' &&
+        (!currentBuildData || currentBuildData.productType !== currentProductType)) {
+      showError('当前品类还没有可导出的参数图，请先生成或等待恢复完成');
+      return false;
+    }
     const fmt = format === 'jpg' ? 'jpg' : 'png';
-    // 双按钮: 点哪个 disable 哪个, 另一个保持可点 (避免误锁)
-    const btnPng = document.getElementById('btn_export_png');
-    const btnJpg = document.getElementById('btn_export_jpg');
+    const productType = currentProductType;
+    const btnPng = document.getElementById(options.pngButtonId || 'btn_export_png');
+    const btnJpg = document.getElementById(options.jpgButtonId || 'btn_export_jpg');
     const activeBtn = fmt === 'jpg' ? btnJpg : btnPng;
+    if (!activeBtn) return false;
     const originalText = activeBtn.innerHTML;
     activeBtn.disabled = true;
     activeBtn.textContent = '导出中...';
     try {
-      const resp = await fetch(`/export/${encodeURIComponent(currentProductType)}`, {
+      const payload = {
+        module_order: getCurrentModuleOrder(),
+        hidden_modules: getHiddenModuleIds(),
+        theme_id: currentThemeId,
+        build_data: currentBuildData,
+        format: fmt
+      };
+      if (options.scope === 'parameter') {
+        payload.scope = 'parameter';
+        payload.parameter_data = moduleDataMap.block_e || null;
+      }
+      const resp = await fetch(`/export/${encodeURIComponent(productType)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
-        body: JSON.stringify({
-          module_order: getCurrentModuleOrder(),
-          hidden_modules: getHiddenModuleIds(),
-          theme_id: currentThemeId,
-          build_data: currentBuildData,
-          format: fmt
-        })
+        body: JSON.stringify(payload)
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: '导出失败' }));
         throw new Error(err.error || '导出失败');
       }
       const blob = await resp.blob();
-      triggerBlobDownload(blob, `${currentProductType}_详情页.${fmt}`);
+      triggerBlobDownload(blob, `${productType}_${options.filenameSuffix || '详情页'}.${fmt}`);
+      return true;
     } catch (err) {
-      showError('导出失败：' + err.message);
+      showError((options.errorPrefix || '导出失败') + '：' + err.message);
+      return false;
     } finally {
       activeBtn.disabled = false;
       activeBtn.innerHTML = originalText;
     }
+  }
+
+  function doExport(format = 'png') {
+    return downloadWorkspaceExport(format);
+  }
+
+  function doParameterExport(format = 'png') {
+    return downloadWorkspaceExport(format, {
+      scope: 'parameter',
+      pngButtonId: 'btn_parameter_export_png',
+      jpgButtonId: 'btn_parameter_export_jpg',
+      filenameSuffix: '产品参数',
+      errorPrefix: '参数图导出失败'
+    });
   }
 
   /* ── Center Tab Switching ────────────────────────────────────── */
@@ -1533,10 +1714,13 @@
     document.getElementById('main_img_wrapper').style.display = tab === 'main_img' ? 'block' : 'none';
     document.getElementById('main_img_export_bar').style.display = tab === 'main_img' ? 'flex' : 'none';
     document.getElementById('ai_img_wrapper').style.display = tab === 'ai_img' ? 'block' : 'none';
+    document.getElementById('parameter_wrapper').style.display = tab === 'parameter' ? 'block' : 'none';
+    document.getElementById('parameter_export_bar').style.display = tab === 'parameter' ? 'flex' : 'none';
     updateHiddenModulesBar();
     const generationNote = document.getElementById('module_generation_note');
     generationNote?.classList.toggle('visible', tab === 'detail' && generationNote.dataset.hasModules === 'true');
     if (tab === 'detail') queuePreviewFit();
+    if (tab === 'parameter') queueParameterFit();
     if (tab === 'main_img') queueMainImageFit();
   }
 
@@ -1944,18 +2128,22 @@
   }
 
   async function restoreLatestLocalPreview() {
+    const restoreProductType = currentProductType;
+    const restoreVersion = workspaceRenderVersion;
     try {
-      const resp = await fetch(`/api/build/${encodeURIComponent(currentProductType)}/latest-preview`, {
+      const resp = await fetch(`/api/build/${encodeURIComponent(restoreProductType)}/latest-preview`, {
         headers: { 'X-CSRFToken': csrfToken }
       });
       if (!resp.ok) return;
       const data = await resp.json();
+      if (!isCurrentWorkspaceRender(restoreProductType, restoreVersion)) return;
       if (!data.available || !Array.isArray(data.modules) || !data.modules.length) return;
       if (data.theme_id) currentThemeId = data.theme_id;
       renderModules(data.modules);
+      renderParameterSheet(data.modules);
       currentBuildData = {
         parsed: {},
-        productType: currentProductType,
+        productType: restoreProductType,
         themeId: currentThemeId,
         modules: data.modules,
         restored: true

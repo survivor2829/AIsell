@@ -9,9 +9,10 @@ import threading
 from typing import Any, Iterable
 import uuid
 
+from .apimart_cover import APIMartCoverClient
 from .creative_analysis import FFmpegCreativeAnalyzer
 from .creative_domain import CREATIVE_TASK_TYPES, CreativeDomain
-from .creative_render import FFmpegCreativeRenderer
+from .creative_render import HybridCreativeRenderer
 from .database import Database
 from .errors import ContentEngineError
 from .identity import stable_full_sha256, stable_sampled_sha256
@@ -114,10 +115,11 @@ def _public_asset_row(row) -> dict[str, Any]:
 
 
 class _CreativeJobWorker:
-    def __init__(self, data_dir: Path, *, analyzer, renderer):
+    def __init__(self, data_dir: Path, *, analyzer, renderer, cover_client):
         self.data_dir = Path(data_dir)
         self.analyzer = analyzer
         self.renderer = renderer
+        self.cover_client = cover_client
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._thread = threading.Thread(
             target=self._run,
@@ -125,6 +127,9 @@ class _CreativeJobWorker:
             daemon=True,
         )
         self._started = False
+        self._closing = threading.Event()
+        self._active_lock = threading.Lock()
+        self._active_task_id: str | None = None
 
     def start(self) -> None:
         if not self._started:
@@ -132,13 +137,25 @@ class _CreativeJobWorker:
             self._thread.start()
 
     def enqueue(self, task_id: str) -> None:
+        if self._closing.is_set():
+            return
         self._queue.put(task_id)
 
     def close(self) -> None:
         if not self._started:
             return
+        self._closing.set()
         self._queue.put(None)
         self._thread.join()
+
+    def cancel_task(self, task_id: str) -> None:
+        with self._active_lock:
+            is_active = self._active_task_id == task_id
+        if not is_active:
+            return
+        cancel = getattr(self.renderer, "cancel", None)
+        if callable(cancel):
+            cancel()
 
     def _run(self) -> None:
         database = Database(self.data_dir).open()
@@ -148,6 +165,7 @@ class _CreativeJobWorker:
             now=utc_now,
             analyzer=self.analyzer,
             renderer=self.renderer,
+            cover_client=self.cover_client,
         )
         try:
             while True:
@@ -155,7 +173,18 @@ class _CreativeJobWorker:
                 try:
                     if task_id is None:
                         return
-                    domain.run_task(task_id)
+                    if self._closing.is_set():
+                        continue
+                    begin_task = getattr(self.renderer, "begin_task", None)
+                    if callable(begin_task):
+                        begin_task()
+                    with self._active_lock:
+                        self._active_task_id = task_id
+                    try:
+                        domain.run_task(task_id)
+                    finally:
+                        with self._active_lock:
+                            self._active_task_id = None
                 finally:
                     self._queue.task_done()
         finally:
@@ -171,6 +200,7 @@ class ContentEngineService:
         mix_renderer=None,
         creative_analyzer=None,
         creative_renderer=None,
+        creative_cover_client=None,
         start_background_jobs: bool = True,
     ):
         data_dir = Path(data_dir)
@@ -187,19 +217,22 @@ class ContentEngineService:
                 renderer=self.mix_renderer,
             )
             self.creative_analyzer = creative_analyzer or FFmpegCreativeAnalyzer(data_dir)
-            self.creative_renderer = creative_renderer or FFmpegCreativeRenderer(data_dir)
+            self.creative_renderer = creative_renderer or HybridCreativeRenderer(data_dir)
+            self.creative_cover_client = creative_cover_client or APIMartCoverClient()
             self.creative_domain = CreativeDomain(
                 self.database,
                 new_id=_new_id,
                 now=utc_now,
                 analyzer=self.creative_analyzer,
                 renderer=self.creative_renderer,
+                cover_client=self.creative_cover_client,
             )
             self._creative_jobs = (
                 _CreativeJobWorker(
                     data_dir,
                     analyzer=self.creative_analyzer,
                     renderer=self.creative_renderer,
+                    cover_client=self.creative_cover_client,
                 )
                 if start_background_jobs
                 else None
@@ -219,7 +252,13 @@ class ContentEngineService:
     def close(self) -> None:
         if self._creative_jobs is not None:
             self._pause_creative_tasks_for_shutdown()
+            cancel = getattr(self.creative_renderer, "cancel", None)
+            if callable(cancel):
+                cancel()
             self._creative_jobs.close()
+        close_renderer = getattr(self.creative_renderer, "close", None)
+        if callable(close_renderer):
+            close_renderer(timeout_seconds=3.0)
         self.database.close()
         self.instance_lock.release()
 
@@ -229,7 +268,7 @@ class ContentEngineService:
         with self.database.transaction() as connection:
             rows = connection.execute(
                 f"""
-                SELECT payload_json FROM content_tasks
+                SELECT id, task_type, status, payload_json FROM content_tasks
                 WHERE task_type IN ({placeholders})
                   AND status IN ('queued', 'analyzing', 'rendering')
                 """,
@@ -250,6 +289,9 @@ class ContentEngineService:
             )
             for row in rows:
                 payload = json.loads(row["payload_json"])
+                self._sync_guided_task_interruption(
+                    connection, row, "paused", now
+                )
                 project_id = payload.get("project_id") if isinstance(payload, dict) else None
                 if project_id:
                     connection.execute(
@@ -257,6 +299,141 @@ class ContentEngineService:
                         (now, project_id),
                     )
         return cursor.rowcount
+
+    @staticmethod
+    def _guided_session_id_from_task_payload(row) -> str:
+        try:
+            payload = json.loads(row["payload_json"])
+        except (KeyError, TypeError, ValueError):
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        return str(payload.get("session_id") or "").strip()
+
+    def _sync_guided_task_interruption(self, connection, row, next_status, now) -> None:
+        """Keep a guided session in the same transaction as a stopped task.
+
+        A draft can have crossed the external AI request boundary.  Once its
+        worker is stopped, a later completion must not turn that unknown result
+        into a new usable script.  Queued tasks have not crossed that boundary,
+        so cancelling them returns the user to the preceding local step.
+        """
+        task_type = str(row["task_type"] or "")
+        if task_type == "guided_auto_mix_supplemental_image":
+            try:
+                payload = json.loads(row["payload_json"])
+            except (KeyError, TypeError, ValueError):
+                return
+            operation_id = (
+                str(payload.get("operation_id") or "").strip()
+                if isinstance(payload, dict)
+                else ""
+            )
+            if not operation_id:
+                return
+            operation = connection.execute(
+                """
+                SELECT status, external_task_id
+                FROM guided_auto_mix_supplemental_images_v1
+                WHERE id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            if operation is None:
+                return
+            # A planned operation has not crossed the provider boundary.  A
+            # submitted one with a provider ID can resume by polling only.
+            # The tiny durable-admission window without an ID is ambiguous and
+            # must never be sent again automatically.
+            if next_status == "cancelled" and operation["status"] == "planned":
+                connection.execute(
+                    """
+                    UPDATE guided_auto_mix_supplemental_images_v1
+                    SET status = 'cancelled', error_code = 'task_cancelled', updated_at = ?
+                    WHERE id = ? AND status = 'planned'
+                    """,
+                    (now, operation_id),
+                )
+            elif (
+                str(row["status"] or "") in {"analyzing", "rendering"}
+                and operation["status"] == "submitted"
+                and not str(operation["external_task_id"] or "").strip()
+            ):
+                connection.execute(
+                    """
+                    UPDATE guided_auto_mix_supplemental_images_v1
+                    SET status = 'outcome_unknown', error_code = 'submission_interrupted', updated_at = ?
+                    WHERE id = ? AND status = 'submitted' AND (external_task_id IS NULL OR external_task_id = '')
+                    """,
+                    (now, operation_id),
+                )
+            return
+        if task_type not in {"guided_auto_mix_analysis", "guided_auto_mix_draft"}:
+            return
+        session_id = self._guided_session_id_from_task_payload(row)
+        if not session_id:
+            return
+        previous_status = str(row["status"] or "")
+        if previous_status in {"analyzing", "rendering"}:
+            session_status = "outcome_unknown"
+        elif next_status == "cancelled" and task_type == "guided_auto_mix_draft":
+            session_status = "ready_for_answers"
+        elif next_status == "cancelled" and task_type == "guided_auto_mix_analysis":
+            session_status = "failed"
+        else:
+            return
+        task_column = (
+            "analysis_task_id"
+            if task_type == "guided_auto_mix_analysis"
+            else "draft_task_id"
+        )
+        expected_session_status = (
+            "analyzing"
+            if task_type == "guided_auto_mix_analysis"
+            else "drafting"
+        )
+        connection.execute(
+            f"""
+            UPDATE guided_auto_mix_sessions_v1
+            SET status = ?, updated_at = ?
+            WHERE id = ? AND {task_column} = ? AND status = ?
+            """,
+            (
+                session_status,
+                now,
+                session_id,
+                row["id"],
+                expected_session_status,
+            ),
+        )
+
+    def _complete_paused_guided_task(self, task_id: str) -> dict[str, Any]:
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE content_tasks
+                SET status = 'completed', progress = 1, resume_from_status = NULL,
+                    error_code = NULL, error_message = NULL, updated_at = ?
+                WHERE id = ? AND status = 'paused'
+                  AND task_type IN ('guided_auto_mix_analysis', 'guided_auto_mix_draft')
+                """,
+                (utc_now(), task_id),
+            )
+        return self._get_public_task(task_id)
+
+    def _complete_paused_guided_supplemental_image_task(self, task_id: str) -> dict[str, Any]:
+        with self.database.transaction() as connection:
+            connection.execute(
+                """
+                UPDATE content_tasks
+                SET status = 'completed', progress = 1, resume_from_status = NULL,
+                    error_code = NULL, error_message = NULL, updated_at = ?
+                WHERE id = ? AND status = 'paused'
+                  AND task_type = 'guided_auto_mix_supplemental_image'
+                """,
+                (utc_now(), task_id),
+            )
+        return self._get_public_task(task_id)
 
     def _enqueue_recovered_creative_tasks(self) -> int:
         if self._creative_jobs is None:
@@ -277,6 +454,12 @@ class ContentEngineService:
     def _recover_inflight_tasks(self) -> int:
         now = utc_now()
         with self.database.transaction() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, task_type, status, payload_json FROM content_tasks
+                WHERE status IN ('analyzing', 'rendering')
+                """
+            ).fetchall()
             cursor = connection.execute(
                 """
                 UPDATE content_tasks
@@ -289,6 +472,8 @@ class ContentEngineService:
                 """,
                 (now,),
             )
+            for row in rows:
+                self._sync_guided_task_interruption(connection, row, "paused", now)
         return cursor.rowcount
 
     def health(self) -> dict[str, Any]:
@@ -303,6 +488,10 @@ class ContentEngineService:
             "mix_render": self.mix_renderer.capability,
             "creative_analysis": self.creative_analyzer.capability,
             "creative_render": self.creative_renderer.capability,
+            "creative_cover": {
+                "available": bool(self.creative_cover_client.configured),
+                "provider": "apimart_gpt_image_2",
+            },
         }
 
     def _enqueue_creative_task(self, task: dict[str, Any]) -> dict[str, Any]:
@@ -340,6 +529,12 @@ class ContentEngineService:
         subtitle_margin_bottom: int = 170,
         experiment_mode: str = "standard",
         subtitle_preset: str = "dynamic_clean",
+        packaging_mode: str = "auto",
+        packaging_preset_id: str | None = None,
+        brand_profile_id: str | None = None,
+        cover_mode: str = "auto",
+        visual_renderer: dict[str, Any] | None = None,
+        confirm_paid_calls: bool = False,
     ) -> dict[str, Any]:
         return self._enqueue_creative_task(
             self.creative_domain.create_course_task(
@@ -352,6 +547,12 @@ class ContentEngineService:
                 subtitle_margin_bottom=subtitle_margin_bottom,
                 experiment_mode=experiment_mode,
                 subtitle_preset=subtitle_preset,
+                packaging_mode=packaging_mode,
+                packaging_preset_id=packaging_preset_id,
+                brand_profile_id=brand_profile_id,
+                cover_mode=cover_mode,
+                visual_renderer=visual_renderer,
+                confirm_paid_calls=confirm_paid_calls,
             )
         )
 
@@ -362,6 +563,13 @@ class ContentEngineService:
         theme: str = "培训现场价值",
         target_count: int = 30,
         voice_asset_id: str | None = None,
+        pilot_mode: bool = False,
+        packaging_mode: str = "auto",
+        packaging_preset_id: str | None = None,
+        brand_profile_id: str | None = None,
+        cover_mode: str = "auto",
+        visual_renderer: dict[str, Any] | None = None,
+        confirm_paid_calls: bool = False,
     ) -> dict[str, Any]:
         return self._enqueue_creative_task(
             self.creative_domain.create_mix_task(
@@ -369,10 +577,239 @@ class ContentEngineService:
                 theme=theme,
                 target_count=target_count,
                 voice_asset_id=voice_asset_id,
+                pilot_mode=pilot_mode,
+                packaging_mode=packaging_mode,
+                packaging_preset_id=packaging_preset_id,
+                brand_profile_id=brand_profile_id,
+                cover_mode=cover_mode,
+                visual_renderer=visual_renderer,
+                confirm_paid_calls=confirm_paid_calls,
             )
         )
 
+    def create_one_click_project(self, name, asset_ids, options=None):
+        options = options if isinstance(options, dict) else {}
+        return self.creative_domain.create_one_click_project(
+            name,
+            asset_ids,
+            brief=options.get("brief"),
+            ratio=options.get("ratio", "9:16"),
+            duration_ms=options.get("duration_ms", 75_000),
+            target_count=options.get("target_count", 3),
+            cover_mode=options.get("cover_mode", "ai_generate"),
+            bgm_asset_id=options.get("bgm_asset_id"),
+        )
+
+    def create_auto_mix_v2(self, request):
+        task = self.creative_domain.create_auto_mix_v2(request)
+        self._enqueue_creative_task(task)
+        return self.creative_domain.get_auto_mix_plan_v2(
+            run_id=task["run_id"]
+        )
+
+    def prepare_guided_auto_mix_v2(self, asset_ids):
+        session = self.creative_domain.prepare_guided_auto_mix_v2(asset_ids)
+        task = session.get("analysis_task") or {}
+        if task.get("task_id"):
+            self._enqueue_creative_task(task)
+        return session
+
+    def get_guided_auto_mix_session_v2(self, *, session_id=None, task_id=None):
+        return self.creative_domain.get_guided_auto_mix_session_v2(
+            session_id=session_id, task_id=task_id
+        )
+
+    def generate_guided_auto_mix_script_v2(self, session_id, title, answers):
+        session = self.creative_domain.generate_guided_auto_mix_script_v2(
+            session_id, title, answers
+        )
+        task = session.get("draft_task") or {}
+        if task.get("task_id"):
+            self._enqueue_creative_task(task)
+        return session
+
+    def get_guided_auto_mix_supplemental_image_v2(self, session_id, script_revision):
+        return self.creative_domain.get_guided_auto_mix_supplemental_image(
+            session_id, script_revision
+        )
+
+    def create_guided_auto_mix_supplemental_image_v2(
+        self, session_id, script_revision, draft_hash, *, confirm_paid_calls=False
+    ):
+        task = self.creative_domain.create_guided_auto_mix_supplemental_image(
+            session_id,
+            script_revision,
+            draft_hash,
+            confirm_paid_calls,
+        )
+        return self._enqueue_creative_task(task)
+
+    def resolve_guided_auto_mix_supplemental_image_path(self, operation_id):
+        result = self.creative_domain.resolve_guided_auto_mix_supplemental_image_path(
+            operation_id
+        )
+        return {**result, "variant": "image"}
+
+    def get_auto_mix_plan_v2(self, *, project_id=None, run_id=None):
+        return self.creative_domain.get_auto_mix_plan_v2(
+            project_id=project_id, run_id=run_id
+        )
+
+    def regenerate_auto_mix_layer(self, project_id, layer, *, expected_run_id=None):
+        task = self.creative_domain.regenerate_auto_mix_layer(
+            project_id,
+            layer,
+            expected_run_id=expected_run_id,
+        )
+        self._enqueue_creative_task(task)
+        return self.creative_domain.get_auto_mix_plan_v2(
+            run_id=task["run_id"]
+        )
+
+    def import_music_catalog_track(self, request):
+        return self.creative_domain.import_music_catalog_track(request)
+
+    def list_music_catalog_tracks(self):
+        return self.creative_domain.list_music_catalog_tracks()
+
+    def list_auto_mix_voice_personas(self):
+        return self.creative_domain.list_auto_mix_voice_personas()
+
+    def design_auto_mix_voice_persona(self, voice_persona_id):
+        return self.creative_domain.design_auto_mix_voice_persona(
+            voice_persona_id
+        )
+
+    def preview_auto_mix_voice_persona(self, voice_persona_id):
+        return self.creative_domain.preview_auto_mix_voice_persona(
+            voice_persona_id
+        )
+
+    def approve_auto_mix_voice_persona(self, voice_persona_id):
+        return self.creative_domain.approve_auto_mix_voice_persona(
+            voice_persona_id
+        )
+
+    def analyze_product_assets(self, project_id):
+        return self._enqueue_creative_task(
+            self.creative_domain.create_product_asset_analysis_task(project_id)
+        )
+
+    def generate_product_copy(self, project_id, brief=None):
+        return self._enqueue_creative_task(
+            self.creative_domain.create_product_copy_task(project_id, brief)
+        )
+
+    def generate_product_voice(self, project_id, script_id=None):
+        return self._enqueue_creative_task(
+            self.creative_domain.create_product_voice_task(project_id, script_id)
+        )
+
+    def generate_one_click_candidates(self, project_id, options=None):
+        return self._enqueue_creative_task(
+            self.creative_domain.create_product_generation_task(project_id, options)
+        )
+
+    def list_one_click_candidates(self, project_id, limit=20):
+        project = self.creative_domain._product_project_settings(project_id)
+        result = self.creative_domain.list_generated(project_id=project_id, limit=limit)
+        result["workflow"] = "product_one_click"
+        return result
+
+    def list_packaging_presets(self, kind: str | None = None) -> dict[str, Any]:
+        return self.creative_domain.list_packaging_presets(kind)
+
+    def list_brand_profiles(self) -> dict[str, Any]:
+        return self.creative_domain.list_brand_profiles()
+
+    def save_brand_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
+        return self.creative_domain.save_brand_profile(profile)
+
+    def package_generated_videos(
+        self, candidate_ids: Iterable[str], options: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        return self._enqueue_creative_task(
+            self.creative_domain.create_packaging_task(
+                list(candidate_ids) if candidate_ids is not None else None, options
+            )
+        )
+
+    def repackage_video(
+        self, candidate_id: str, options: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        return self._enqueue_creative_task(
+            self.creative_domain.create_repackage_task(candidate_id, options)
+        )
+
+    def preflight_visual_comparison(self, candidate_id: str) -> dict[str, Any]:
+        return self.creative_domain.preflight_visual_comparison(candidate_id)
+
+    def create_visual_comparison_task(self, candidate_id: str) -> dict[str, Any]:
+        return self._enqueue_creative_task(
+            self.creative_domain.create_visual_comparison_task(candidate_id)
+        )
+
+    def get_packaging_cost_estimate(
+        self,
+        candidate_ids: Iterable[str],
+        *,
+        cover_mode: str = "auto",
+        planned_count: int | None = None,
+        asset_ids: Iterable[str] | None = None,
+        generation_kind: str | None = None,
+    ) -> dict[str, Any]:
+        return self.creative_domain.get_packaging_cost_estimate(
+            list(candidate_ids) if candidate_ids is not None else None,
+            cover_mode=cover_mode,
+            planned_count=planned_count,
+            asset_ids=list(asset_ids) if asset_ids is not None else None,
+            generation_kind=generation_kind,
+        )
+
+    def record_media_review(
+        self,
+        candidate_id: str,
+        *,
+        device: str = "phone",
+        verdict: str = "pass",
+        reason: str = "",
+        reviewer: str = "",
+    ) -> dict[str, Any]:
+        return self.creative_domain.record_media_review(
+            candidate_id,
+            device=device,
+            verdict=verdict,
+            reason=reason,
+            reviewer=reviewer,
+        )
+
+    def list_media_reviews(self, candidate_id: str) -> dict[str, Any]:
+        return self.creative_domain.list_media_reviews(candidate_id)
+
+    def regenerate_cover(self, candidate_id: str) -> dict[str, Any]:
+        return self._enqueue_creative_task(
+            self.creative_domain.regenerate_cover(candidate_id)
+        )
+
+    def update_cover_operation(
+        self,
+        operation_id: str,
+        status: str,
+        *,
+        external_task_id: str | None = None,
+        error_code: str | None = None,
+    ) -> dict[str, Any]:
+        return self.creative_domain.update_cover_operation(
+            operation_id,
+            status,
+            external_task_id=external_task_id,
+            error_code=error_code,
+        )
+
     def run_creative_task(self, task_id: str) -> dict[str, Any]:
+        begin_task = getattr(self.creative_renderer, "begin_task", None)
+        if callable(begin_task):
+            begin_task()
         return self.creative_domain.run_task(task_id)
 
     def resume_creative_task(self, task_id: str) -> dict[str, Any]:
@@ -381,6 +818,62 @@ class ContentEngineService:
             raise ContentEngineError("invalid_task_type", "This is not a creative task.")
         if task["status"] != "paused":
             raise ContentEngineError("invalid_transition", "Only paused tasks can resume.")
+        if task["task_type"] in {
+            "guided_auto_mix_analysis",
+            "guided_auto_mix_draft",
+        }:
+            session = self.creative_domain.get_guided_auto_mix_session_v2(
+                task_id=task_id
+            )
+            session_status = session["status"]
+            if session_status == "outcome_unknown":
+                raise ContentEngineError(
+                    "guided_auto_mix_outcome_unknown",
+                    "引导任务的外部结果暂时无法确认，不能自动重新提交。请重新解析素材后再继续。",
+                )
+            if session_status in {"ready_for_answers", "ready_for_render"}:
+                return self._complete_paused_guided_task(task_id)
+            expected_status = (
+                "analyzing"
+                if task["task_type"] == "guided_auto_mix_analysis"
+                else "drafting"
+            )
+            if session_status != expected_status:
+                raise ContentEngineError(
+                    "guided_auto_mix_task_stale",
+                    "这次引导任务已不是可继续状态，请重新解析素材后再操作。",
+                )
+        if task["task_type"] == "guided_auto_mix_supplemental_image":
+            raw_task = self.creative_domain._task_row(task_id)
+            try:
+                payload = json.loads(raw_task["payload_json"])
+            except (TypeError, ValueError) as error:
+                raise ContentEngineError(
+                    "guided_auto_mix_supplemental_image_task_invalid",
+                    "AI 补图任务记录无效。",
+                ) from error
+            operation_id = str(payload.get("operation_id") or "")
+            operation = self.creative_domain._guided_auto_mix_supplemental_image_operation_row(
+                operation_id
+            )
+            status = str(operation["status"] or "")
+            if status == "completed":
+                return self._complete_paused_guided_supplemental_image_task(task_id)
+            if status == "outcome_unknown":
+                raise ContentEngineError(
+                    "guided_auto_mix_supplemental_image_outcome_unknown",
+                    "本次 AI 补图结果暂时无法确认，系统不会自动重复提交。",
+                )
+            if status in {"failed", "cancelled"}:
+                raise ContentEngineError(
+                    f"guided_auto_mix_supplemental_image_{status}",
+                    "这次 AI 补图已结束，请重新生成脚本后再创建新的补图。",
+                )
+            if status != "planned" and not str(operation["external_task_id"] or "").strip():
+                raise ContentEngineError(
+                    "guided_auto_mix_supplemental_image_outcome_unknown",
+                    "AI 补图可能已提交，但没有可恢复的服务任务标识。",
+                )
         task = self.update_task(task_id, "queued")
         return self._enqueue_creative_task(task)
 
@@ -1296,21 +1789,6 @@ class ContentEngineService:
         _validate_id(task_id, "task_id")
         if status not in TASK_STATES:
             raise ContentEngineError("invalid_status", "The task status is invalid.")
-        row = self.connection.execute(
-            """
-            SELECT status, resume_from_status, error_code, error_message,
-                   task_type, payload_json
-            FROM content_tasks WHERE id = ?
-            """,
-            (task_id,),
-        ).fetchone()
-        if row is None:
-            raise ContentEngineError("task_not_found", "The task was not found.")
-        if status != row["status"] and status not in TASK_TRANSITIONS[row["status"]]:
-            raise ContentEngineError(
-                "invalid_transition",
-                f"The transition from {row['status']} to {status} is not allowed.",
-            )
         if progress is not None and (
             isinstance(progress, bool)
             or not isinstance(progress, (int, float))
@@ -1326,73 +1804,158 @@ class ContentEngineService:
             raise ContentEngineError("invalid_error", "error_code must be text.")
         if error_message is not None and not isinstance(error_message, str):
             raise ContentEngineError("invalid_error", "error_message must be text.")
-        if status == "paused":
-            resume_from_status = (
-                row["resume_from_status"]
-                if row["status"] == "paused"
-                else row["status"]
-            )
-            next_error_code = redact_text(error_code) if error_code else row["error_code"]
-            next_error_message = (
-                redact_text(error_message)
-                if error_message is not None
-                else row["error_message"]
-            )
-        elif status == "failed":
-            resume_from_status = None
-            next_error_code = redact_text(error_code) if error_code else None
-            next_error_message = (
-                redact_text(error_message) if error_message is not None else None
-            )
-        else:
-            resume_from_status = None
-            next_error_code = None
-            next_error_message = None
-
         result_json = (
             json.dumps(result, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
             if result is not None
             else None
         )
-        assignments = [
-            "status = ?",
-            "resume_from_status = ?",
-            "error_code = ?",
-            "error_message = ?",
-            "updated_at = ?",
-        ]
-        parameters: list[Any] = [
-            status,
-            resume_from_status,
-            next_error_code,
-            next_error_message,
-            utc_now(),
-        ]
-        if progress is not None:
-            assignments.append("progress = ?")
-            parameters.append(progress)
-        if result_json is not None:
-            assignments.append("result_json = ?")
-            parameters.append(result_json)
-        parameters.append(task_id)
         with self.database.transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT id, status, resume_from_status, error_code, error_message,
+                       task_type, payload_json
+                FROM content_tasks WHERE id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                raise ContentEngineError("task_not_found", "The task was not found.")
+            requested_status = status
+            payload = json.loads(row["payload_json"])
+            if (
+                requested_status == "cancelled"
+                and row["task_type"] in CREATIVE_TASK_TYPES
+                and self._task_has_submitted_cover(
+                    connection, task_id, row["task_type"], payload
+                )
+            ):
+                status = "paused"
+                error_code = error_code or "cover_submission_inflight"
+                error_message = error_message or (
+                    "补图已提交到 APIMart；任务已暂停并保留原任务编号，继续时只会查询原任务。"
+                    if row["task_type"] == "guided_auto_mix_supplemental_image"
+                    else "封面已提交到 APIMart；任务已暂停并保留原任务编号，继续时不会重复提交。"
+                )
+            if status != row["status"] and status not in TASK_TRANSITIONS[row["status"]]:
+                raise ContentEngineError(
+                    "invalid_transition",
+                    f"The transition from {row['status']} to {status} is not allowed.",
+                )
+            if status == "paused":
+                resume_from_status = (
+                    row["resume_from_status"]
+                    if row["status"] == "paused"
+                    else row["status"]
+                )
+                next_error_code = (
+                    redact_text(error_code) if error_code else row["error_code"]
+                )
+                next_error_message = (
+                    redact_text(error_message)
+                    if error_message is not None
+                    else row["error_message"]
+                )
+            elif status == "failed":
+                resume_from_status = None
+                next_error_code = redact_text(error_code) if error_code else None
+                next_error_message = (
+                    redact_text(error_message) if error_message is not None else None
+                )
+            else:
+                resume_from_status = None
+                next_error_code = None
+                next_error_message = None
+            updated_at = utc_now()
+            assignments = [
+                "status = ?",
+                "resume_from_status = ?",
+                "error_code = ?",
+                "error_message = ?",
+                "updated_at = ?",
+            ]
+            parameters: list[Any] = [
+                status,
+                resume_from_status,
+                next_error_code,
+                next_error_message,
+                updated_at,
+            ]
+            if progress is not None:
+                assignments.append("progress = ?")
+                parameters.append(progress)
+            if result_json is not None:
+                assignments.append("result_json = ?")
+                parameters.append(result_json)
+            parameters.append(task_id)
             connection.execute(
                 f"UPDATE content_tasks SET {', '.join(assignments)} WHERE id = ?",
                 parameters,
             )
+            if status in {"paused", "cancelled"}:
+                self._sync_guided_task_interruption(
+                    connection, row, status, updated_at
+                )
             if row["task_type"] in CREATIVE_TASK_TYPES and status in {
                 "queued",
                 "paused",
                 "cancelled",
             }:
-                payload = json.loads(row["payload_json"])
                 project_id = payload.get("project_id") if isinstance(payload, dict) else None
                 if project_id:
                     connection.execute(
                         "UPDATE creative_projects SET status = ?, updated_at = ? WHERE id = ?",
                         (status, utc_now(), project_id),
                     )
+        if row["task_type"] in CREATIVE_TASK_TYPES and status in {
+            "paused",
+            "cancelled",
+        }:
+            cancel_task = getattr(self._creative_jobs, "cancel_task", None)
+            if callable(cancel_task):
+                cancel_task(task_id)
         return self._get_public_task(task_id)
+
+    @staticmethod
+    def _task_has_submitted_cover(connection, task_id, task_type, payload) -> bool:
+        if task_type == "guided_auto_mix_supplemental_image":
+            operation_id = (
+                payload.get("operation_id") if isinstance(payload, dict) else None
+            )
+            if not operation_id:
+                return False
+            row = connection.execute(
+                """
+                SELECT 1 FROM guided_auto_mix_supplemental_images_v1
+                WHERE id = ? AND status = 'submitted'
+                """,
+                (operation_id,),
+            ).fetchone()
+            return row is not None
+        if task_type == "creative_cover":
+            operation_id = (
+                payload.get("cover_operation_id")
+                if isinstance(payload, dict)
+                else None
+            )
+            if not operation_id:
+                return False
+            row = connection.execute(
+                "SELECT 1 FROM cover_generation_ledger WHERE id = ? AND status = 'submitted'",
+                (operation_id,),
+            ).fetchone()
+            return row is not None
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM cover_generation_ledger ledger
+            JOIN generated_videos video
+              ON video.id = ledger.generated_video_id
+            WHERE video.task_id = ? AND ledger.status = 'submitted'
+            LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+        return row is not None
 
     def _get_public_task(self, task_id: str) -> dict[str, Any]:
         row = self.connection.execute(
@@ -1400,6 +1963,8 @@ class ContentEngineService:
         ).fetchone()
         if row is None:
             raise ContentEngineError("task_not_found", "The task was not found.")
+        if row["task_type"] in CREATIVE_TASK_TYPES:
+            return self.creative_domain._public_task(row)
         return _public_task_row(row)
 
     def list_tasks(
@@ -1423,7 +1988,20 @@ class ContentEngineService:
             """,
             parameters,
         ).fetchall()
-        return {"items": [_public_task_row(row) for row in rows]}
+        visual_capability = self.creative_domain._visual_comparison_capability_snapshot()
+        candidate_lookup = self.creative_domain._comparison_candidate_lookup(rows)
+        return {
+            "items": [
+                self.creative_domain._public_task(
+                    row,
+                    capability=visual_capability,
+                    candidate_lookup=candidate_lookup,
+                )
+                if row["task_type"] in CREATIVE_TASK_TYPES
+                else _public_task_row(row)
+                for row in rows
+            ]
+        }
 
     def register_finished(
         self,
@@ -1509,7 +2087,11 @@ class ContentEngineService:
             raise ContentEngineError(
                 "finished_video_not_found", "The finished video was not found."
             )
-        return _public_finished_row(row)
+        path = Path(row["output_path"])
+        return _public_finished_row(
+            row,
+            available=path.is_file() and not has_unsafe_component(path),
+        )
 
     def list_finished(self, *, limit: int = 500) -> dict[str, Any]:
         rows = self.connection.execute(
@@ -1520,7 +2102,16 @@ class ContentEngineService:
             """,
             (_validate_limit(limit),),
         ).fetchall()
-        return {"items": [_public_finished_row(row) for row in rows]}
+        items = []
+        for row in rows:
+            path = Path(row["output_path"])
+            items.append(
+                _public_finished_row(
+                    row,
+                    available=path.is_file() and not has_unsafe_component(path),
+                )
+            )
+        return {"items": items}
 
 
     def resolve_finished_path(self, finished_video_id: str) -> dict[str, Any]:
@@ -1591,7 +2182,7 @@ def _public_task_row(row) -> dict[str, Any]:
     }
 
 
-def _public_finished_row(row) -> dict[str, Any]:
+def _public_finished_row(row, *, available: bool = True) -> dict[str, Any]:
     return {
         "finished_video_id": row["id"],
         "task_id": row["task_id"],
@@ -1599,6 +2190,7 @@ def _public_finished_row(row) -> dict[str, Any]:
         "title": row["title"],
         "size_bytes": row["size_bytes"],
         "metadata": sanitize_public_value(json.loads(row["metadata_json"])),
+        "available": bool(available),
         "created_at": row["created_at"],
     }
 

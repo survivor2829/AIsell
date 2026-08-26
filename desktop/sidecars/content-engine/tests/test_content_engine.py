@@ -286,8 +286,15 @@ class ServiceTests(unittest.TestCase):
 
         self.assertEqual(registered["finished_video_id"], listed["items"][0]["finished_video_id"])
         self.assertEqual("课程精华", listed["items"][0]["title"])
+        self.assertTrue(registered["available"])
+        self.assertTrue(listed["items"][0]["available"])
         assert_public_payload(self, registered, [output.resolve()])
         assert_public_payload(self, listed, [output.resolve()])
+
+        output.unlink()
+        missing = self.service.list_finished()
+        self.assertEqual(registered["finished_video_id"], missing["items"][0]["finished_video_id"])
+        self.assertFalse(missing["items"][0]["available"])
 
 
 

@@ -17,24 +17,31 @@
     "build": "npm run build:delivery",
     "build:product-detail": "node scripts/build-product-detail-sidecar.cjs",
     "build:content-engine": "node scripts/build-content-engine-sidecar.cjs",
+    "build:remotion-runtime": "node scripts/build-remotion-runtime.cjs development",
+    "build:remotion-runtime:internal-evaluation": "node scripts/build-remotion-runtime.cjs internal-evaluation",
+    "build:remotion-runtime:delivery": "node scripts/build-remotion-runtime.cjs delivery",
+    "check:remotion-runtime": "node scripts/portable-runtime-dependencies.self_check.cjs",
     "build:test": "node scripts/build-renderer.cjs test",
     "build:delivery": "node scripts/build-renderer.cjs delivery",
     "build:helper": "node scripts/build-contact-helper.cjs",
-    "release:test": "npm run check:self && npm run check:product-detail-e2e && npm run check:clean-runtime && npm run build:test && node scripts/build-portable-release.cjs test",
-    "release:delivery": "npm run check:self && npm run check:product-detail-e2e && npm run check:clean-runtime && npm run build:delivery && node scripts/build-portable-release.cjs delivery",
-    "release:installer": "npm run check:self && npm run check:product-detail-e2e && npm run check:clean-runtime && npm run build:delivery && node scripts/build-portable-release.cjs delivery && node scripts/build-installer-release.cjs",
+    "release:test": "npm run check:self && npm run check:product-detail-e2e && npm run check:clean-runtime && npm run build:test && npm run build:remotion-runtime:internal-evaluation && node scripts/build-portable-release.cjs test",
+    "release:delivery": "npm run check:self && npm run check:product-detail-e2e && npm run check:clean-runtime && npm run build:delivery && npm run build:remotion-runtime:delivery && node scripts/build-portable-release.cjs delivery",
+    "release:installer": "npm run check:self && npm run check:product-detail-e2e && npm run check:clean-runtime && node scripts/build-installer-release.cjs",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
-    "mammoth": "^1.12.0"
+    "@remotion/renderer": "4.0.512",
+    "mammoth": "^1.12.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.512"
   },
   "devDependencies": {
+    "@remotion/bundler": "4.0.512",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^32.3.3",
     "electron-builder": "^26.15.3",
     "lucide-react": "^0.468.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
   }

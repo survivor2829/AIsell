@@ -16,6 +16,7 @@ try {
   assert.deepEqual(store.status(), {
     configured: false,
     maskedKey: "",
+    apiHost: "",
     secureStorageAvailable: true
   });
   assert.throws(() => store.write("invalid"), { code: "BAILIAN_API_KEY_INVALID" });
@@ -29,6 +30,20 @@ try {
   assert.equal(JSON.stringify(saved).includes(secret), false);
   assert.equal(store.clear().configured, false);
   assert.equal(fs.existsSync(path.join(root, "bailian-api-key.bin")), false);
+
+  const modernSecret = "sk-ws-fixture.segment.value";
+  const modernSaved = store.write(modernSecret, {
+    apiHost: "llm-fixture.cn-beijing.maas.aliyuncs.com"
+  });
+  assert.equal(modernSaved.configured, true);
+  assert.equal(store.read(), modernSecret);
+  assert.equal(modernSaved.maskedKey, maskApiKey(modernSecret));
+  assert.equal(modernSaved.apiHost, "https://llm-fixture.cn-beijing.maas.aliyuncs.com");
+  assert.equal(store.status().apiHost, modernSaved.apiHost);
+  assert.throws(() => store.write(modernSecret, { apiHost: "http://not-allowed.example" }), {
+    code: "BAILIAN_API_HOST_INVALID"
+  });
+  store.clear();
 
   const unavailable = createBailianApiKeyStore({
     rootDir: root,

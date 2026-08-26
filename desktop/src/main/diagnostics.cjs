@@ -6,18 +6,35 @@ const { replaceWithRetry, writeJsonAtomic } = require("./atomic-file.cjs");
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const MAX_ARCHIVES = 5;
-const MAX_DEPTH = 6;
-const MAX_ARRAY = 40;
+const MAX_DEPTH = 4;
+const MAX_ARRAY = 20;
+const MAX_OBJECT_KEYS = 40;
 const MAX_STRING = 800;
-const SECRET_PATTERN = /\b(?:sk|ak)-[a-z0-9_-]{8,}\b/giu;
-const SENSITIVE_KEYS = /(?:api.?key|secret|token|password|clipboard|prompt|expert|message|content|script|draft|contact.?(?:name|id)|nickname|remark|wechat.?id|wxid|conversation(?:.?title|.?name)?|ocr.?text|raw.?text|recognized.?text)/iu;
+const MAX_DETAILS_BYTES = 4 * 1024;
+const MAX_SANITIZE_NODES = 160;
+const MAX_SUMMARY_INPUT = MAX_STRING;
+const MAX_DEDUPE_MODULES = 64;
+const ACTIONABLE_LEVELS = new Set(["warn", "error", "fatal"]);
+const SECRET_PATTERN = /(?<![a-z0-9])(?:(?:sk|ak)[-_][a-z0-9_-]{6,}|ltai[a-z0-9]{8,})/giu;
+const SECRET_LIKE_PATTERN = /(?<![a-z0-9])(?:(?:sk|ak)[-_][a-z0-9_-]{6,}|ltai[a-z0-9]{8,})/iu;
+const LOCATION_PATTERN = /(?:https?:\/\/|file:\/\/|\\\\|[a-z]:[\\/]|\/(?:users|home|var|tmp|etc|opt)\/)/iu;
+const SAFE_IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9_.:-]{0,119}$/iu;
+const SAFE_DETAIL_KEY_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/iu;
+const SAFE_DETAIL_STRING_KEYS = /^(?:(?:.*_)?(?:action|arch|code|engine|extension|kind|mode|phase|platform|provider|reason|release|stage|state|status|type|version|zone))$/iu;
+const SENSITIVE_KEYS = /(?:api.?key|secret|token|password|clipboard|prompt|expert|message|content|script|draft|contact.?(?:name|id)|(?:user|account|customer).?id|phone|mobile|nickname|remark|wechat.?id|wxid|conversation(?:.?title|.?name)?|ocr.?text|raw.?text|recognized.?text|^(?:error|description|stack|url|uri|host)$)/iu;
 const PATH_KEYS = /(?:path|dir|file|cwd|executable)/iu;
 
 let activeLogger = null;
 
 function code(value, fallback = "") {
-  const normalized = String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9_.:-]+/g, "_").slice(0, 120);
-  return normalized || fallback;
+  const candidate = String(value ?? "").trim();
+  if (
+    !candidate
+    || SECRET_LIKE_PATTERN.test(candidate)
+    || LOCATION_PATTERN.test(candidate)
+    || !SAFE_IDENTIFIER_PATTERN.test(candidate)
+  ) return fallback;
+  return candidate.toLowerCase();
 }
 
 function scrubSecrets(value) {
@@ -28,44 +45,76 @@ function digest(value, salt = "") {
   return crypto.createHash("sha256").update(`${salt}\n${String(value ?? "")}`).digest("hex").slice(0, 16);
 }
 
-function safePath(value) {
-  const text = scrubSecrets(value);
-  if (!text) return "";
-  const home = os.homedir();
-  return home && text.toLowerCase().startsWith(home.toLowerCase())
-    ? `%USERPROFILE%${text.slice(home.length)}`
-    : text;
-}
-
 function summarizeSensitive(value, salt) {
-  const text = scrubSecrets(value);
+  const raw = typeof value === "string" ? value : String(value ?? "");
+  const sample = scrubSecrets(raw.slice(0, MAX_SUMMARY_INPUT));
   return {
-    present: Boolean(text),
-    length: text.length,
-    sha256_16: text ? digest(text, salt) : ""
+    present: Boolean(raw),
+    length: raw.length,
+    sha256_16: raw ? digest(`${raw.length}:${sample}`, salt) : "",
+    truncated: raw.length > MAX_SUMMARY_INPUT || undefined
   };
 }
 
 function sanitizeValue(value, context = {}) {
   const { depth = 0, key = "", salt = "" } = context;
+  const budget = context.budget || { remainingNodes: MAX_SANITIZE_NODES };
+  if (budget.remainingNodes <= 0) return "[BUDGET_EXCEEDED]";
+  budget.remainingNodes -= 1;
+  const protectedKey = SENSITIVE_KEYS.test(key) || PATH_KEYS.test(key);
   if (value === null || value === undefined || typeof value === "boolean") return value;
-  if (typeof value === "number") return Number.isFinite(value) ? value : String(value);
-  if (typeof value === "bigint") return String(value);
+  if (typeof value === "number") {
+    if (protectedKey) return summarizeSensitive(value, salt);
+    return Number.isFinite(value) ? value : String(value);
+  }
+  if (typeof value === "bigint") {
+    if (protectedKey) return summarizeSensitive(value, salt);
+    return String(value);
+  }
   if (value instanceof Error) return sanitizeError(value, salt);
   if (typeof value === "string") {
-    if (SENSITIVE_KEYS.test(key)) return summarizeSensitive(value, salt);
-    const safe = PATH_KEYS.test(key) ? safePath(value) : scrubSecrets(value);
-    return safe.length > MAX_STRING ? `${safe.slice(0, MAX_STRING)}…[${safe.length}]` : safe;
+    if (value.length > MAX_STRING) return summarizeSensitive(value, salt);
+    const text = scrubSecrets(value);
+    if (
+      protectedKey
+      || SECRET_LIKE_PATTERN.test(value)
+      || LOCATION_PATTERN.test(value)
+      || !SAFE_DETAIL_STRING_KEYS.test(key)
+      || !SAFE_IDENTIFIER_PATTERN.test(text)
+    ) return summarizeSensitive(value, salt);
+    return text.slice(0, MAX_STRING);
   }
   if (depth >= MAX_DEPTH) return "[MAX_DEPTH]";
   if (Array.isArray(value)) {
-    return value.slice(0, MAX_ARRAY).map((item) => sanitizeValue(item, { depth: depth + 1, key, salt }));
+    const result = [];
+    for (let index = 0; index < value.length && index < MAX_ARRAY && budget.remainingNodes > 0; index += 1) {
+      result.push(sanitizeValue(value[index], { depth: depth + 1, key, salt, budget }));
+    }
+    return result;
   }
   if (typeof value === "object") {
     const result = {};
-    for (const [childKey, childValue] of Object.entries(value).slice(0, 100)) {
+    let acceptedKeys = 0;
+    for (const childKey in value) {
+      if (!Object.prototype.hasOwnProperty.call(value, childKey)) continue;
+      if (acceptedKeys >= MAX_OBJECT_KEYS || budget.remainingNodes <= 0) break;
+      if (
+        !SAFE_DETAIL_KEY_PATTERN.test(childKey)
+        || (SENSITIVE_KEYS.test(childKey) && childKey.toLowerCase() !== "error")
+        || SECRET_LIKE_PATTERN.test(childKey)
+        || LOCATION_PATTERN.test(childKey)
+      ) continue;
+      let childValue;
+      try {
+        childValue = value[childKey];
+      } catch {
+        result[childKey] = "[UNREADABLE]";
+        acceptedKeys += 1;
+        continue;
+      }
       if (childValue === undefined || typeof childValue === "function") continue;
-      result[childKey] = sanitizeValue(childValue, { depth: depth + 1, key: childKey, salt });
+      result[childKey] = sanitizeValue(childValue, { depth: depth + 1, key: childKey, salt, budget });
+      acceptedKeys += 1;
     }
     return result;
   }
@@ -73,19 +122,40 @@ function sanitizeValue(value, context = {}) {
 }
 
 function sanitizeError(error, salt = "") {
-  const supplied = error instanceof Error ? error : new Error(String(error ?? "unknown_error"));
-  const stack = scrubSecrets(supplied.stack || "")
-    .split(/\r?\n/)
-    .slice(0, 12)
-    .map((line) => safePath(line.trim()))
-    .filter(Boolean);
-  return {
-    name: code(supplied.name, "error"),
-    code: code(supplied.code, ""),
-    message: scrubSecrets(supplied.message || "unknown_error").slice(0, MAX_STRING),
-    message_ref: digest(scrubSecrets(supplied.message || "unknown_error"), salt),
-    stack
-  };
+  try {
+    const supplied = error instanceof Error ? error : new Error(String(error ?? "unknown_error"));
+    const message = String(supplied.message || "unknown_error");
+    const summary = summarizeSensitive(message, salt);
+    return {
+      name: code(supplied.name, "error"),
+      code: code(supplied.code, "unknown_error"),
+      message_length: summary.length,
+      message_ref: summary.sha256_16
+    };
+  } catch {
+    return {
+      name: "error",
+      code: "unknown_error",
+      message_length: 0,
+      message_ref: digest("unreadable_error", salt)
+    };
+  }
+}
+
+function boundedDetails(details, salt) {
+  try {
+    const sanitized = sanitizeValue(details, { salt });
+    const serialized = JSON.stringify(sanitized);
+    const bytes = Buffer.byteLength(serialized, "utf8");
+    if (bytes <= MAX_DETAILS_BYTES) return sanitized;
+    return {
+      truncated: true,
+      original_bytes: bytes,
+      details_ref: digest(serialized, salt)
+    };
+  } catch {
+    return { unavailable: true };
+  }
 }
 
 function rotate(file) {
@@ -129,32 +199,75 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
   const salt = digest(installId);
   let sequence = 0;
   let writesFailed = 0;
+  const lastFaultByModule = new Map();
+
+  function recover(moduleName) {
+    try {
+      lastFaultByModule.delete(code(moduleName, "app"));
+    } catch {}
+  }
+
+  function rememberFault(moduleName, signature) {
+    lastFaultByModule.delete(moduleName);
+    lastFaultByModule.set(moduleName, signature);
+    if (lastFaultByModule.size > MAX_DEDUPE_MODULES) {
+      lastFaultByModule.delete(lastFaultByModule.keys().next().value);
+    }
+  }
 
   function event(moduleName, eventName, details = {}, options = {}) {
-    const entry = {
-      v: 1,
-      ts: clock().toISOString(),
-      run_id: runId,
-      seq: ++sequence,
-      level: code(options.level, "info"),
-      module: code(moduleName, "app"),
-      event: code(eventName, "event"),
-      trace_id: code(options.traceId, ""),
-      phase: code(options.phase || details?.phase, ""),
-      code: code(options.code || details?.blocked_reason || details?.code || details?.reason, ""),
-      duration_ms: Number.isFinite(Number(options.durationMs)) ? Math.max(0, Math.round(Number(options.durationMs))) : undefined,
-      details: sanitizeValue(details, { salt })
-    };
-    for (const key of Object.keys(entry)) {
-      if (entry[key] === "" || entry[key] === undefined) delete entry[key];
-    }
     try {
+      const requestedLevel = code(options?.level, "info");
+      const level = requestedLevel === "warning" ? "warn" : requestedLevel;
+      const module = code(moduleName, "app");
+      const eventCode = code(eventName, "event");
+      if (options?.cancelled === true) {
+        recover(module);
+        return null;
+      }
+      if (!ACTIONABLE_LEVELS.has(level)) {
+        if (
+          options?.recover === true
+          || eventCode === "responsive"
+          || eventCode.endsWith(".finished")
+          || eventCode.endsWith(".recovered")
+        ) recover(module);
+        return null;
+      }
+      const errorCode = code(
+        options?.code || details?.blocked_reason || details?.code || details?.reason,
+        "unknown_error"
+      );
+      const dedupeKey = code(options?.dedupeKey, "");
+      const faultSignature = `${eventCode}\u0000${errorCode}\u0000${level}\u0000${dedupeKey}`;
+      if (lastFaultByModule.get(module) === faultSignature) return null;
+      const duration = Number(options?.durationMs);
+      const entry = {
+        v: 1,
+        ts: clock().toISOString(),
+        run_id: runId,
+        seq: sequence + 1,
+        level,
+        module,
+        event: eventCode,
+        trace_id: code(options?.traceId, ""),
+        phase: code(options?.phase || details?.phase, ""),
+        code: errorCode,
+        duration_ms: Number.isFinite(duration) ? Math.max(0, Math.round(duration)) : undefined,
+        details: boundedDetails(details, salt)
+      };
+      for (const key of Object.keys(entry)) {
+        if (entry[key] === "" || entry[key] === undefined) delete entry[key];
+      }
       rotate(logFile);
       fs.appendFileSync(logFile, `${JSON.stringify(entry)}\n`, "utf8");
+      sequence += 1;
+      rememberFault(module, faultSignature);
+      return entry;
     } catch {
       writesFailed += 1;
+      return null;
     }
-    return entry;
   }
 
   function begin(moduleName, eventName, details = {}) {
@@ -164,21 +277,42 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
     return {
       traceId,
       end(result = {}, options = {}) {
-        const ok = options.ok ?? result?.ok;
-        return event(moduleName, `${eventName}.${ok === false ? "failed" : "finished"}`, result, {
-          traceId,
-          phase: options.phase || "finish",
-          level: options.level || (ok === false ? "error" : "info"),
-          code: options.code,
-          durationMs: Date.now() - startedAt
-        });
+        try {
+          const cancelled = options?.cancelled === true || result?.cancelled === true;
+          const ok = options?.ok ?? result?.ok;
+          return event(moduleName, `${eventName}.${cancelled ? "cancelled" : ok === false ? "failed" : "finished"}`, result, {
+            traceId,
+            phase: options?.phase || (cancelled ? "cancel" : "finish"),
+            level: options?.level || (cancelled ? "info" : ok === false ? "error" : "info"),
+            code: options?.code,
+            cancelled,
+            durationMs: Date.now() - startedAt
+          });
+        } catch {
+          writesFailed += 1;
+          return null;
+        }
       },
       fail(error, details = {}) {
-        return event(moduleName, `${eventName}.exception`, { ...details, error }, {
+        try {
+          return event(moduleName, `${eventName}.exception`, { ...details, error }, {
+            traceId,
+            phase: "exception",
+            level: "error",
+            code: error?.code || "exception",
+            durationMs: Date.now() - startedAt
+          });
+        } catch {
+          writesFailed += 1;
+          return null;
+        }
+      },
+      cancel(details = {}) {
+        return event(moduleName, `${eventName}.cancelled`, details, {
           traceId,
-          phase: "exception",
-          level: "error",
-          code: error?.code || "exception",
+          phase: "cancel",
+          level: "info",
+          cancelled: true,
           durationMs: Date.now() - startedAt
         });
       }
@@ -224,7 +358,7 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
     });
   }
 
-  return { begin, environment, event, logFile, logsDir, readRecent: (limit) => readRecent(logFile, limit), runId, status, writeJsonAtomic };
+  return { begin, environment, event, logFile, logsDir, readRecent: (limit) => readRecent(logFile, limit), recover, runId, status, writeJsonAtomic };
 }
 
 function configureDiagnostics(options) {
@@ -237,6 +371,7 @@ function diagnostics() {
     begin: () => ({ traceId: "", end: () => undefined, fail: () => undefined }),
     environment: () => undefined,
     event: () => undefined,
+    recover: () => undefined,
     status: () => ({ ok: false, error: "diagnostics_not_configured" })
   };
 }

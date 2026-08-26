@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xiaoxi.local/schemas/remotion-runtime-license-record-v1.json",
+  "title": "Xiaoxi Remotion runtime license record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "useType", "entity", "remotion", "browser"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "useType": { "enum": ["internal-evaluation", "commercial-delivery"] },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "employeeCount", "employeeCountAsOf", "licenseBasis", "evidenceReference"],
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "enum": ["individual", "for-profit", "non-profit", "not-for-profit"] },
+        "employeeCount": { "type": ["integer", "null"], "minimum": 0 },
+        "employeeCountAsOf": { "type": ["string", "null"] },
+        "licenseBasis": { "enum": ["evaluation", "free-individual", "free-small-company", "free-nonprofit", "company-license"] },
+        "evidenceReference": { "type": "string" }
+      }
+    },
+    "remotion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "usage", "confirmedBy", "confirmedDate"],
+      "properties": {
+        "version": { "const": "4.0.512" },
+        "usage": { "enum": ["non-commercial-internal-evaluation", "commercial-delivery"] },
+        "confirmedBy": { "type": "string" },
+        "confirmedDate": { "type": "string" }
+      }
+    },
+    "browser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product", "version", "source", "sourceUrl", "sha256", "terms", "termsUrl", "internalRedistributionBasis", "commercialRedistributionBasis", "confirmedBy", "confirmedDate"],
+      "properties": {
+        "product": { "type": "string" },
+        "version": { "type": "string" },
+        "source": { "type": "string" },
+        "sourceUrl": { "type": "string" },
+        "sha256": { "type": "string" },
+        "terms": { "type": "string" },
+        "termsUrl": { "type": "string" },
+        "internalRedistributionBasis": { "type": "string" },
+        "commercialRedistributionBasis": { "type": "string" },
+        "confirmedBy": { "type": "string" },
+        "confirmedDate": { "type": "string" }
+      }
+    }
+  }
+}
