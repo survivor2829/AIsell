@@ -12,6 +12,14 @@ const productBrand = require("../product-brand.json");
 const PRODUCT_NAME = productBrand.displayName;
 const installerName = `${PRODUCT_NAME}-安装程序.exe`;
 const installerManifestName = `${PRODUCT_NAME}-安装程序-版本清单.json`;
+const TEST_PORTABLE_REUSE_PATHS = new Set([
+  "desktop/build/installer-test.nsh",
+  "desktop/electron-builder-test-installer.yml",
+  "desktop/package.json",
+  "desktop/product-brand.json",
+  "desktop/scripts/build-installer-release.cjs",
+  "desktop/scripts/installer-release.self_check.cjs"
+]);
 
 function resolveInstallerTarget(edition = "delivery") {
   if (edition === "delivery") {
@@ -58,6 +66,25 @@ function gitText(args) {
   return result.stdout.trim();
 }
 
+function assertTestPortableReuse(portableCommit, currentCommit) {
+  const ancestry = spawnSync("git", ["merge-base", "--is-ancestor", portableCommit, currentCommit], {
+    cwd: projectDir,
+    encoding: "utf8",
+    windowsHide: true
+  });
+  if (ancestry.status !== 0) {
+    throw new Error("Test portable commit is not an ancestor of the installer build commit");
+  }
+  const changedPaths = gitText(["diff", "--name-only", `${portableCommit}..${currentCommit}`])
+    .split(/\r?\n/u)
+    .filter(Boolean);
+  const unexpectedPaths = changedPaths.filter((file) => !TEST_PORTABLE_REUSE_PATHS.has(file));
+  if (unexpectedPaths.length) {
+    throw new Error(`Test portable must be rebuilt after application changes:\n${unexpectedPaths.join("\n")}`);
+  }
+  return changedPaths;
+}
+
 function assertInstallerSource(edition = "delivery", environment = process.env) {
   const target = resolveInstallerTarget(edition);
   const portableDir = path.join(releaseDir, target.productName);
@@ -80,10 +107,17 @@ function assertInstallerSource(edition = "delivery", environment = process.env) 
     throw new Error("Installer source lacks the explicit-browser Remotion composition smoke proof");
   }
   verifyPackagedRemotionRuntime(portableDir, portableManifest.remotionRuntime);
-  if (portableManifest.commit !== commit) {
-    throw new Error("Portable build commit does not match the current clean commit");
+  const portableCommit = String(portableManifest.commit || "").trim();
+  let reusedInstallerOnlyPaths = [];
+  if (portableCommit !== commit) {
+    if (target.edition !== "test") {
+      throw new Error("Portable build commit does not match the current clean commit");
+    }
+    reusedInstallerOnlyPaths = assertTestPortableReuse(portableCommit, commit);
   }
-  if (!target.requiresCommercialTrust) return { commit, portableDir, portableManifest, target, releaseTrust: null };
+  if (!target.requiresCommercialTrust) {
+    return { commit, portableCommit, portableDir, portableManifest, target, reusedInstallerOnlyPaths, releaseTrust: null };
+  }
   if (portableManifest.remotionRuntime?.commercialLicenseConfirmed !== true) {
     throw new Error("Installer source lacks a confirmed Remotion commercial license basis");
   }
@@ -95,7 +129,7 @@ function assertInstallerSource(edition = "delivery", environment = process.env) 
     product: PRODUCT_NAME,
     releaseDir
   });
-  return { commit, portableDir, portableManifest, target, releaseTrust };
+  return { commit, portableCommit, portableDir, portableManifest, target, reusedInstallerOnlyPaths, releaseTrust };
 }
 
 function replaceCanonicalFile(staged, canonical) {
@@ -117,7 +151,7 @@ function replaceCanonicalFile(staged, canonical) {
 }
 
 function buildInstaller(edition = "delivery") {
-  const { commit, portableDir, portableManifest, target, releaseTrust } = assertInstallerSource(edition);
+  const { commit, portableCommit, portableDir, portableManifest, target, reusedInstallerOnlyPaths, releaseTrust } = assertInstallerSource(edition);
   const portableTreeHash = releaseTrust?.portableTreeSha256 || treeSha256(portableDir);
   const transactionId = `${process.pid}-${Date.now()}`;
   const stagingDir = path.join(releaseDir, `.installer-staging-${transactionId}`);
@@ -167,7 +201,8 @@ function buildInstaller(edition = "delivery") {
       artifactType: target.artifactType,
       version: portableManifest.version,
       buildId: portableManifest.buildId,
-      commit,
+      commit: portableCommit,
+      installerBuildCommit: commit,
       architecture: "x64",
       installationScope: "current-user",
       appId: target.appId,
@@ -177,6 +212,7 @@ function buildInstaller(edition = "delivery") {
       uninstallPreservesUserData: true,
       signed: false,
       commercialReady: target.requiresCommercialTrust,
+      ...(reusedInstallerOnlyPaths.length ? { reusedInstallerOnlyPaths } : {}),
       ...(releaseTrust ? { sourceTrust: releaseTrust } : {}),
       remotionRuntimeManifestSha256: portableManifest.remotionRuntime.manifestSha256,
       sha256: sha256(stagedInstaller),

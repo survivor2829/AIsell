@@ -49,6 +49,9 @@ assert.match(config, /^\s+createStartMenuShortcut: true$/m);
 assert.match(config, new RegExp(`^  artifactName: ${productBrand.displayName.replace(".", "\\.")}-安装程序\\.\\$\\{ext\\}$`, "m"));
 assert.match(builder, /Refusing to build an installer from a dirty worktree/);
 assert.match(builder, /Portable build commit does not match the current clean commit/);
+assert.match(builder, /TEST_PORTABLE_REUSE_PATHS/);
+assert.match(builder, /assertTestPortableReuse/);
+assert.match(builder, /target\.edition !== "test"/);
 assert.match(builder, /portableManifest\.artifactType !== target\.artifactType/);
 assert.match(builder, /requiresCommercialTrust/);
 assert.match(builder, /commercialLicenseConfirmed !== true/);
@@ -56,6 +59,7 @@ assert.match(builder, /verifyPackagedRemotionRuntime\(portableDir, portableManif
 assert.match(builder, /verifyReleaseTrustRecord/);
 assert.match(builder, /sourceTrust: releaseTrust/);
 assert.match(builder, /artifactType: target\.artifactType/);
+assert.match(builder, /installerBuildCommit/);
 assert.match(builder, /signed: false/);
 assert.doesNotMatch(builder, /signed: true/);
 assert.match(trustVerifier, /crypto\.verify\("RSA-SHA256"/);
