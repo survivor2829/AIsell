@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xiaoxi.local/schemas/content-engine-media-tools-license-record-v1.json",
+  "title": "Xiaoxi content-engine media tools license record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "useType", "tool", "runtime", "notices"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "useType": { "enum": ["internal-evaluation", "commercial-delivery"] },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product", "version", "sourceUrl", "sourceArtifactPath", "sourceArtifactSha256", "terms", "termsUrl", "internalRedistributionBasis", "commercialRedistributionBasis", "confirmedBy", "confirmedDate"],
+      "properties": {
+        "product": { "type": "string" },
+        "version": { "type": "string" },
+        "sourceUrl": { "type": "string" },
+        "sourceArtifactPath": { "type": "string" },
+        "sourceArtifactSha256": { "type": "string" },
+        "terms": { "type": "string" },
+        "termsUrl": { "type": "string" },
+        "internalRedistributionBasis": { "type": "string" },
+        "commercialRedistributionBasis": { "type": "string" },
+        "confirmedBy": { "type": "string" },
+        "confirmedDate": { "type": "string" }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files", "treeSha256"],
+      "properties": {
+        "files": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sourcePath", "targetPath", "sha256"],
+            "properties": {
+              "sourcePath": { "type": "string" },
+              "targetPath": { "type": "string" },
+              "sha256": { "type": "string" }
+            }
+          }
+        },
+        "treeSha256": { "type": "string" }
+      }
+    },
+    "notices": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sourcePath", "sha256"],
+        "properties": {
+          "sourcePath": { "type": "string" },
+          "sha256": { "type": "string" }
+        }
+      }
+    }
+  }
+}

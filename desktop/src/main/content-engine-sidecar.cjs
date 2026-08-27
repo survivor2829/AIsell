@@ -11,7 +11,9 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const IMPORT_REQUEST_TIMEOUT_MS = 30 * 60_000;
 const RENDER_REQUEST_TIMEOUT_MS = 2 * 60 * 60_000;
 const VOICE_DESIGN_REQUEST_TIMEOUT_MS = 6 * 60_000;
-const TRUSTED_REMOTION_ENV_KEYS = new Set([
+const TRUSTED_RUNTIME_ENV_KEYS = new Set([
+  "XIAOXI_FFMPEG_PATH",
+  "XIAOXI_FFPROBE_PATH",
   "XIAOXI_REMOTION_NODE_PATH",
   "XIAOXI_REMOTION_WORKER_PATH",
   "XIAOXI_REMOTION_BUNDLE_PATH",
@@ -345,7 +347,7 @@ function createContentEngineSidecar(options = {}) {
         const trustedRuntimeEnvironment = {};
         if (suppliedRuntimeEnvironment && typeof suppliedRuntimeEnvironment === "object") {
           for (const [key, value] of Object.entries(suppliedRuntimeEnvironment)) {
-            if (!TRUSTED_REMOTION_ENV_KEYS.has(key)) continue;
+            if (!TRUSTED_RUNTIME_ENV_KEYS.has(key)) continue;
             const normalized = String(value || "").trim();
             if (normalized) trustedRuntimeEnvironment[key] = normalized;
           }

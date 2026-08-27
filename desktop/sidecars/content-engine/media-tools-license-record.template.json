@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "useType": "internal-evaluation",
+  "tool": {
+    "product": "",
+    "version": "",
+    "sourceUrl": "",
+    "sourceArtifactPath": "",
+    "sourceArtifactSha256": "",
+    "terms": "",
+    "termsUrl": "",
+    "internalRedistributionBasis": "",
+    "commercialRedistributionBasis": "",
+    "confirmedBy": "",
+    "confirmedDate": ""
+  },
+  "runtime": {
+    "files": [
+      {
+        "sourcePath": "bin/ffmpeg.exe",
+        "targetPath": "ffmpeg.exe",
+        "sha256": ""
+      },
+      {
+        "sourcePath": "bin/ffprobe.exe",
+        "targetPath": "ffprobe.exe",
+        "sha256": ""
+      }
+    ],
+    "treeSha256": ""
+  },
+  "notices": [
+    {
+      "sourcePath": "LICENSE",
+      "sha256": ""
+    }
+  ]
+}

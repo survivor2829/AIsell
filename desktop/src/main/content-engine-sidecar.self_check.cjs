@@ -9,6 +9,9 @@ const {
   createContentEngineSidecar,
   parseReady
 } = require("./content-engine-sidecar.cjs");
+const {
+  resolveContentEngineMediaToolsEnvironment
+} = require("./content-engine-media-tools.cjs");
 
 class FakeChild extends EventEmitter {
   constructor({ closeOnKill = true } = {}) {
@@ -102,6 +105,19 @@ async function main() {
   const runtimePath = path.join(root, "content-engine-worker.exe");
   const dataDir = path.join(root, "data");
   fs.writeFileSync(runtimePath, "");
+  assert.deepEqual(
+    resolveContentEngineMediaToolsEnvironment({ runtimePath, isPackaged: false }),
+    {},
+    "development workers must keep their explicit media tool configuration"
+  );
+  assert.deepEqual(
+    resolveContentEngineMediaToolsEnvironment({ runtimePath, isPackaged: true }),
+    {
+      XIAOXI_FFMPEG_PATH: path.join(root, "media-tools", "ffmpeg.exe"),
+      XIAOXI_FFPROBE_PATH: path.join(root, "media-tools", "ffprobe.exe")
+    },
+    "packaged workers must use their adjacent bundled media tools"
+  );
 
   try {
     {
@@ -132,10 +148,16 @@ async function main() {
       const updates = [];
       const child = new FakeChild();
       const controller = createContentEngineSidecar({
+        env: {
+          XIAOXI_FFMPEG_PATH: "C:\\untrusted\\ffmpeg.exe",
+          XIAOXI_FFPROBE_PATH: "C:\\untrusted\\ffprobe.exe"
+        },
         runtimePath,
         runtimeArgs: ["worker.py"],
         dataDir,
         getTrustedRuntimeEnvironment: () => ({
+          XIAOXI_FFMPEG_PATH: "C:\\trusted\\media-tools\\ffmpeg.exe",
+          XIAOXI_FFPROBE_PATH: "C:\\trusted\\media-tools\\ffprobe.exe",
           XIAOXI_REMOTION_NODE_PATH: "C:\\trusted\\node.exe",
           XIAOXI_REMOTION_WORKER_PATH: "C:\\trusted\\worker.mjs",
           XIAOXI_REMOTION_BUNDLE_PATH: "C:\\trusted\\bundle",
@@ -159,6 +181,14 @@ async function main() {
       assert.equal(spawnCalls[0].options.windowsHide, true);
       assert.equal(spawnCalls[0].options.env.PYTHONIOENCODING, "utf-8");
       assert.equal(spawnCalls[0].options.env.PYTHONUTF8, "1");
+      assert.equal(
+        spawnCalls[0].options.env.XIAOXI_FFMPEG_PATH,
+        "C:\\trusted\\media-tools\\ffmpeg.exe"
+      );
+      assert.equal(
+        spawnCalls[0].options.env.XIAOXI_FFPROBE_PATH,
+        "C:\\trusted\\media-tools\\ffprobe.exe"
+      );
       assert.equal(
         spawnCalls[0].options.env.XIAOXI_REMOTION_WORKER_PATH,
         "C:\\trusted\\worker.mjs"

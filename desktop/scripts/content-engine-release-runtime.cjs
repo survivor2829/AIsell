@@ -4,9 +4,15 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
 const {
+  resolveContentEngineMediaToolsEnvironment
+} = require("../src/main/content-engine-media-tools.cjs");
+const {
   parseProtocolOutput,
   resolveBuildPaths,
-  sourceTreeSha256
+  sourceTreeSha256,
+  validateMediaToolsManifest,
+  verifyBundledMediaToolFiles,
+  verifyBundledMediaTools
 } = require("./build-content-engine-sidecar.cjs");
 
 const CONTENT_ENGINE_RELEASE_PATH = "resources/content-engine";
@@ -35,7 +41,7 @@ function assertDirectory(directory, label) {
 }
 
 function validateBuildManifest(manifest, manifestFile) {
-  if (manifest?.schemaVersion !== 1) {
+  if (manifest?.schemaVersion !== 2) {
     throw new Error(`Content-engine runtime manifest has an unsupported schema: ${manifestFile}`);
   }
   if (!String(manifest.version || "").trim()) {
@@ -64,6 +70,14 @@ function validateBuildManifest(manifest, manifestFile) {
   }
   if (!Number.isFinite(Date.parse(String(manifest.builtAt || "")))) {
     throw new Error(`Content-engine runtime manifest has an invalid build time: ${manifestFile}`);
+  }
+  const mediaTools = validateMediaToolsManifest(manifest.mediaTools);
+  if (
+    manifest.capabilities?.mixRender?.available !== mediaTools.verified
+    || manifest.capabilities?.mixRender?.bundled !== mediaTools.bundled
+    || manifest.capabilities?.mixRender?.source !== mediaTools.source
+  ) {
+    throw new Error(`Content-engine runtime manifest media tools capability is inconsistent: ${manifestFile}`);
   }
   if (
     manifest.selfCheck?.protocolVersion !== 1
@@ -98,6 +112,7 @@ function resolveContentEngineBuild(desktopDir, { buildRoot = null } = {}) {
   if (treeSha256(runtimeDir) !== manifest.runtime.treeSha256) {
     throw new Error("Content-engine runtime tree hash does not match its build manifest");
   }
+  verifyBundledMediaToolFiles(runtimeDir, manifest.mediaTools);
   return {
     runtimeDir,
     manifestFile,
@@ -128,15 +143,22 @@ function copyContentEngineRuntime(build, releaseTarget) {
   return destination;
 }
 
-function createReleaseDescriptor(build, buildCommit) {
+function createReleaseDescriptor(build, buildCommit, artifactType) {
   if (!COMMIT_PATTERN.test(String(buildCommit || ""))) {
     throw new Error("Content-engine release descriptor requires the release build commit");
+  }
+  if (!new Set(["internal-evaluation", "delivery"]).has(artifactType)) {
+    throw new Error("Content-engine release descriptor requires an artifact type");
   }
   if (build.manifest.source.dirty) {
     throw new Error("Refusing to package a content-engine runtime built from dirty source");
   }
   if (build.manifest.source.commit !== buildCommit) {
     throw new Error("Content-engine runtime source commit does not match the portable release commit");
+  }
+  const mediaTools = validateMediaToolsManifest(build.manifest.mediaTools, { artifactType });
+  if (!mediaTools.bundled || !mediaTools.verified) {
+    throw new Error("Portable releases require a verified bundled media tools runtime");
   }
   return {
     path: CONTENT_ENGINE_RELEASE_PATH,
@@ -149,6 +171,8 @@ function createReleaseDescriptor(build, buildCommit) {
     sourceDirty: build.manifest.source.dirty,
     sourceTreeSha256: build.manifest.source.treeSha256,
     builtAt: build.manifest.builtAt,
+    artifactType,
+    mediaTools,
     selfCheck: {
       verified: true,
       protocolVersion: 1,
@@ -193,6 +217,15 @@ function validateReleaseDescriptor(descriptor) {
   if (!Number.isFinite(Date.parse(String(descriptor.builtAt || "")))) {
     throw new Error("Portable manifest has an invalid content-engine build time");
   }
+  if (!new Set(["internal-evaluation", "delivery"]).has(descriptor.artifactType)) {
+    throw new Error("Portable manifest has an invalid content-engine artifact type");
+  }
+  const mediaTools = validateMediaToolsManifest(descriptor.mediaTools, {
+    artifactType: descriptor.artifactType
+  });
+  if (!mediaTools.bundled || !mediaTools.verified) {
+    throw new Error("Portable manifest requires verified bundled media tools");
+  }
   assert.equal(
     descriptor.selfCheck?.verified,
     true,
@@ -214,11 +247,11 @@ function validateReleaseDescriptor(descriptor) {
   ) {
     throw new Error("Portable manifest has the wrong content-engine self-check contract");
   }
-  return descriptor;
+  return { ...descriptor, mediaTools };
 }
 
 function resolvePackagedContentEngine(releaseTarget, descriptor) {
-  validateReleaseDescriptor(descriptor);
+  const validated = validateReleaseDescriptor(descriptor);
   const runtimeDir = path.join(path.resolve(releaseTarget), ...descriptor.path.split("/"));
   const executable = path.join(runtimeDir, descriptor.executable);
   assertDirectory(runtimeDir, "Packaged content-engine runtime");
@@ -229,7 +262,8 @@ function resolvePackagedContentEngine(releaseTarget, descriptor) {
   if (treeSha256(runtimeDir) !== descriptor.treeSha256) {
     throw new Error("Packaged content-engine tree hash does not match the portable manifest");
   }
-  return { runtimeDir, executable };
+  verifyBundledMediaToolFiles(runtimeDir, validated.mediaTools);
+  return { runtimeDir, executable, mediaTools: validated.mediaTools };
 }
 
 function runPackagedContentEngineSelfCheck({
@@ -237,13 +271,30 @@ function runPackagedContentEngineSelfCheck({
   resourcesDir,
   descriptor,
   dataDir,
-  spawn = spawnSync
+  spawn = spawnSync,
+  mediaToolsSpawn = spawn
 }) {
   if (fs.existsSync(dataDir)) {
     throw new Error(`Content-engine self-check data directory must be fresh: ${dataDir}`);
   }
   const packaged = resolvePackagedContentEngine(releaseTarget, descriptor);
+  const mediaToolsSession = verifyBundledMediaTools(
+    packaged.runtimeDir,
+    {
+      available: packaged.mediaTools.bundled,
+      runtime: packaged.mediaTools.runtime,
+      toolVersion: packaged.mediaTools.licenseRecord.version
+    },
+    { spawn: mediaToolsSpawn }
+  );
+  if (mediaToolsSession.status !== "passed") {
+    throw new Error("Content-engine packaged media tools self-check was skipped");
+  }
   const resourcesHashBefore = treeSha256(resourcesDir);
+  const mediaToolsEnvironment = resolveContentEngineMediaToolsEnvironment({
+    runtimePath: packaged.executable,
+    isPackaged: true
+  });
   const input = [
     JSON.stringify({ id: "build-health", method: "health", params: {} }),
     JSON.stringify({ id: "build-shutdown", method: "shutdown", params: {} }),
@@ -257,6 +308,7 @@ function runPackagedContentEngineSelfCheck({
       encoding: "utf8",
       env: {
         ...process.env,
+        ...mediaToolsEnvironment,
         PYTHONUTF8: "1",
         PYTHONDONTWRITEBYTECODE: "1"
       },

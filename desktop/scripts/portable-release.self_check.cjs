@@ -340,6 +340,14 @@ assert.equal(manifest.productDetailSidecar?.desktopSourceDirty, false, "product-
 assert.equal(manifest.contentEngineSidecar?.buildCommit, manifest.commit, "content-engine runtime must be pinned to the portable release commit");
 assert.equal(manifest.contentEngineSidecar?.sourceCommit, manifest.commit, "content-engine source must match the portable release commit");
 assert.equal(manifest.contentEngineSidecar?.sourceDirty, false, "content-engine runtime must come from a clean source tree");
+assert.equal(manifest.contentEngineSidecar?.artifactType, manifest.artifactType, "content-engine media tools evidence must match the portable artifact type");
+assert.equal(manifest.contentEngineSidecar?.mediaTools?.bundled, true, "portable release must carry its media tools runtime");
+assert.equal(manifest.contentEngineSidecar?.mediaTools?.verified, true, "portable release must carry a media tools self-check proof");
+assert.equal(manifest.contentEngineSidecar?.mediaTools?.selfCheck?.status, "passed", "portable release must record a passed media tools self-check");
+assert.match(manifest.contentEngineSidecar?.mediaTools?.licenseRecord?.sha256 || "", /^[0-9a-f]{64}$/, "portable release must bind the media tools license record");
+if (edition === "delivery") {
+  assert.equal(manifest.contentEngineSidecar?.mediaTools?.licenseRecord?.useType, "commercial-delivery", "delivery requires commercial media tools evidence");
+}
 assert.equal(manifest.remotionRuntime?.artifactType, manifest.artifactType, "Remotion runtime must match the portable artifact type");
 assert.equal(manifest.remotionRuntime?.compositionSmokeStatus, "passed", "portable Remotion runtime must have selected the fixed composition with an explicit browser");
 assert.match(manifest.remotionRuntime?.manifestSha256 || "", /^[0-9a-f]{64}$/, "portable manifest must bind the Remotion runtime manifest digest");
@@ -401,6 +409,10 @@ assert.equal(
   "portable ZIP must contain the content-engine executable at the runtime root"
 );
 for (const relative of [
+  "resources/content-engine/media-tools/ffmpeg.exe",
+  "resources/content-engine/media-tools/ffprobe.exe",
+  "resources/content-engine/media-tools/licenses/license-record.json",
+  "resources/content-engine/media-tools/licenses/project/MEDIA_TOOLS_LICENSES.md",
   "resources/content-engine/remotion-render-worker.mjs",
   "resources/content-engine/remotion-bundle/index.html",
   "resources/content-engine/remotion-runtime-manifest.json",

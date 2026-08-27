@@ -40,6 +40,9 @@ const {
 const {
   resolveRemotionRuntimeEnvironment
 } = require("./remotion-runtime-environment.cjs");
+const {
+  resolveContentEngineMediaToolsEnvironment
+} = require("./content-engine-media-tools.cjs");
 
 let mainWindow = null;
 let disarmRealSend = null;
@@ -114,6 +117,16 @@ function remotionRuntimeEnvironment() {
     moduleDir: __dirname,
     resourcesPath: process.resourcesPath
   });
+}
+
+function contentEngineRuntimeEnvironment(runtimePath) {
+  return {
+    ...remotionRuntimeEnvironment(),
+    ...resolveContentEngineMediaToolsEnvironment({
+      runtimePath,
+      isPackaged: app.isPackaged
+    })
+  };
 }
 
 function isAllowedProductDetailFrameNavigation(targetUrl) {
@@ -328,11 +341,12 @@ if (!gotSingleInstanceLock) {
       store: productDetailAiSettingsStore,
       onChanged: restartImageProviderConsumers
     });
+    const contentEnginePath = contentEngineRuntimePath();
     contentEngineController = createContentEngineSidecar({
-      runtimePath: contentEngineRuntimePath(),
+      runtimePath: contentEnginePath,
       runtimeArgs: contentEngineRuntimeArgs(),
       dataDir: path.join(app.getPath("userData"), "content-engine"),
-      getTrustedRuntimeEnvironment: remotionRuntimeEnvironment,
+      getTrustedRuntimeEnvironment: () => contentEngineRuntimeEnvironment(contentEnginePath),
       getProviderEnvironment: () => {
         const providerEnvironment = {};
         if (bailianKeyStore.status().configured) {

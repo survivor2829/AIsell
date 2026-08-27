@@ -251,7 +251,8 @@ function buildPortableStaging(edition, paths, sourceState) {
   const capabilityMatrix = JSON.parse(fs.readFileSync(path.join(desktopDir, "release-capabilities.json"), "utf8"));
   const contentEngineSidecar = createContentEngineReleaseDescriptor(
     sourceState.contentEngineRuntime,
-    sourceState.commit
+    sourceState.commit,
+    sourceState.artifactType
   );
   contentEngineSidecar.treeSha256 = treeSha256(path.join(target, "resources", "content-engine"));
   const manifest = {

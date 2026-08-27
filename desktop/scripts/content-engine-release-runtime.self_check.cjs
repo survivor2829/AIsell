@@ -8,8 +8,13 @@ const {
 } = require("./build-portable-release.cjs");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
 const {
+  buildManifest,
+  copyMediaTools,
+  mediaToolRuntimeTreeSha256,
   resolveBuildPaths,
-  sourceTreeSha256
+  resolveMediaToolSources,
+  sourceTreeSha256,
+  verifyBundledMediaToolFiles
 } = require("./build-content-engine-sidecar.cjs");
 const {
   CONTENT_ENGINE_EXECUTABLE,
@@ -53,8 +58,107 @@ try {
     "fixture_dependency = True\n",
     "utf8"
   );
-  const manifest = {
+  const fixtureFont = path.join(runtimeDir, "_internal", "content_engine", "assets", "fonts", "NotoSansSC-Variable.ttf");
+  fs.mkdirSync(path.dirname(fixtureFont), { recursive: true });
+  fs.writeFileSync(fixtureFont, "font fixture", "utf8");
+  const mediaSourceRoot = path.join(root, "media-source");
+  const mediaBin = path.join(mediaSourceRoot, "bin");
+  fs.mkdirSync(mediaBin, { recursive: true });
+  const ffmpegSource = path.join(mediaBin, "ffmpeg-source.exe");
+  const ffprobeSource = path.join(mediaBin, "ffprobe-source.exe");
+  const dllSource = path.join(mediaBin, "avcodec-fixture.dll");
+  const licenseSource = path.join(mediaSourceRoot, "LICENSE");
+  fs.writeFileSync(ffmpegSource, "ffmpeg", "utf8");
+  fs.writeFileSync(ffprobeSource, "ffprobe", "utf8");
+  fs.writeFileSync(dllSource, "dll", "utf8");
+  fs.writeFileSync(licenseSource, "license fixture", "utf8");
+  const sourceArtifact = path.join(mediaSourceRoot, "fixture-media-tools.zip");
+  fs.writeFileSync(sourceArtifact, "media tools source artifact", "utf8");
+  const mediaRuntimeFiles = [
+    { file: ffmpegSource, targetPath: "ffmpeg.exe" },
+    { file: ffprobeSource, targetPath: "ffprobe.exe" },
+    { file: dllSource, targetPath: "avcodec-fixture.dll" }
+  ];
+  const mediaRecord = {
     schemaVersion: 1,
+    useType: "internal-evaluation",
+    tool: {
+      product: "fixture media tools",
+      version: "fixture-0.1.0",
+      sourceUrl: "https://example.test/media-tools.zip",
+      sourceArtifactPath: "fixture-media-tools.zip",
+      sourceArtifactSha256: sha256(sourceArtifact),
+      terms: "fixture terms",
+      termsUrl: "https://example.test/terms",
+      internalRedistributionBasis: "fixture internal approval",
+      commercialRedistributionBasis: "",
+      confirmedBy: "fixture maintainer",
+      confirmedDate: "2026-08-27"
+    },
+    runtime: {
+      files: [
+        { sourcePath: "bin/ffmpeg-source.exe", targetPath: "ffmpeg.exe", sha256: sha256(ffmpegSource) },
+        { sourcePath: "bin/ffprobe-source.exe", targetPath: "ffprobe.exe", sha256: sha256(ffprobeSource) },
+        { sourcePath: "bin/avcodec-fixture.dll", targetPath: "avcodec-fixture.dll", sha256: sha256(dllSource) }
+      ],
+      treeSha256: mediaToolRuntimeTreeSha256(mediaRuntimeFiles)
+    },
+    notices: [{ sourcePath: "LICENSE", sha256: sha256(licenseSource) }]
+  };
+  const mediaRecordFile = path.join(root, "media-tools-license-record.json");
+  fs.writeFileSync(mediaRecordFile, `${JSON.stringify(mediaRecord, null, 2)}\n`, "utf8");
+  const mediaSpawn = (_executable, args) => {
+    if (args.includes("-show_program_version")) {
+      return { status: 0, stdout: JSON.stringify({ program_version: { version: "fixture-0.1.0" } }), stderr: "" };
+    }
+    if (args.includes("-show_entries")) {
+      if (String(args.at(-1)).endsWith(".jpg")) {
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            format: { format_name: "image2" },
+            streams: [{ codec_type: "video", codec_name: "mjpeg" }]
+          }),
+          stderr: ""
+        };
+      }
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          format: { format_name: "mov,mp4,m4a,3gp,3g2,mj2", duration: "0.2" },
+          streams: [
+            { codec_type: "video", codec_name: "h264" },
+            { codec_type: "audio", codec_name: "aac" }
+          ]
+        }),
+        stderr: ""
+      };
+    }
+    if (args.includes("-encoders")) return { status: 0, stdout: "libx264\naac\nmjpeg\npcm_s16le\nrawvideo\n", stderr: "" };
+    if (args.includes("-muxers")) return { status: 0, stdout: "hash\nimage2\nmp4\nnull\nrawvideo\nwav\n", stderr: "" };
+    if (args.includes("-demuxers")) return { status: 0, stdout: "concat\n", stderr: "" };
+    if (args.includes("-decoders")) return { status: 0, stdout: "aac\nh264\nmjpeg\npcm_s16le\n", stderr: "" };
+    if (args.includes("-filters")) return { status: 0, stdout: "acompressor\nadelay\naevalsrc\nafftdn\nafade\nalimiter\nametadata\namix\nanull\nanullsrc\napad\naresample\nasetpts\nasplit\natrim\nboxblur\ncolor\ncolorchannelmixer\nconcat\ncrop\ndrawbox\ndrawtext\nebur128\nformat\nfps\nhighpass\nlowpass\nloudnorm\noverlay\npad\nscale\nsetpts\nsetsar\nsidechaincompress\nsine\nsplit\nsubtitles\ntestsrc2\nvolume\nzoompan\n", stderr: "" };
+    if (args.includes("-bsfs")) return { status: 0, stdout: "h264_metadata\n", stderr: "" };
+    if (args.includes("-version")) return { status: 0, stdout: "ffmpeg version fixture-0.1.0\n", stderr: "" };
+    const output = args.at(-1);
+    if (/\.(?:jpg|mp4|raw|wav)$/iu.test(String(output))) {
+      fs.writeFileSync(output, "fixture-mp4", "utf8");
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    if (String(output) === "-" && args.includes("hash")) return { status: 0, stdout: "SHA256=fixture\n", stderr: "" };
+    if (String(output) === "-") return { status: 0, stdout: "", stderr: "" };
+    throw new Error(`Unexpected media tools command: ${args.join(" ")}`);
+  };
+  const bundledMediaTools = copyMediaTools(resolveMediaToolSources({
+    XIAOXI_FFMPEG_PATH: ffmpegSource,
+    XIAOXI_FFPROBE_PATH: ffprobeSource,
+    XIAOXI_MEDIA_TOOLS_ROOT: mediaSourceRoot,
+    XIAOXI_MEDIA_TOOLS_LICENSE_RECORD: mediaRecordFile
+  }), runtimeDir, { spawn: mediaSpawn, tempRoot: root });
+  const manifest = buildManifest({
+    outputDir: runtimeDir,
+    outputExe: path.join(runtimeDir, CONTENT_ENGINE_EXECUTABLE),
     version: "0.1.0-fixture",
     builtAt: "2026-07-30T00:00:00.000Z",
     source: {
@@ -62,19 +166,8 @@ try {
       dirty: false,
       treeSha256: fixtureSourceTreeSha256
     },
-    runtime: {
-      kind: "pyinstaller-onedir",
-      entry: CONTENT_ENGINE_EXECUTABLE,
-      exeSha256: sha256(path.join(runtimeDir, CONTENT_ENGINE_EXECUTABLE)),
-      treeSha256: treeSha256(runtimeDir)
-    },
-    selfCheck: {
-      protocolVersion: 1,
-      ready: true,
-      health: true,
-      shutdown: true
-    }
-  };
+    mediaTools: bundledMediaTools
+  });
   fs.writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 
   const build = resolveContentEngineBuild(desktopDir);
@@ -118,12 +211,16 @@ try {
   );
 
   const buildCommit = manifest.source.commit;
-  const descriptor = createReleaseDescriptor(build, buildCommit);
+  const descriptor = createReleaseDescriptor(build, buildCommit, "internal-evaluation");
   validateReleaseDescriptor(descriptor);
   assert.equal(descriptor.buildCommit, buildCommit);
   assert.equal(descriptor.sourceCommit, manifest.source.commit);
   assert.equal(descriptor.sourceDirty, false);
   assert.equal(descriptor.sourceTreeSha256, manifest.source.treeSha256);
+  assert.throws(
+    () => createReleaseDescriptor(build, buildCommit, "delivery"),
+    /commercial media tools redistribution record/
+  );
   assert.throws(
     () => createReleaseDescriptor({
       ...build,
@@ -131,11 +228,11 @@ try {
         ...build.manifest,
         source: { ...build.manifest.source, dirty: true }
       }
-    }, buildCommit),
+    }, buildCommit, "internal-evaluation"),
     /dirty source/
   );
   assert.throws(
-    () => createReleaseDescriptor(build, "3".repeat(40)),
+    () => createReleaseDescriptor(build, "3".repeat(40), "internal-evaluation"),
     /does not match the portable release commit/
   );
   assert.equal(isContentEnginePythonSource("resources/content-engine/_internal/module.py"), true);
@@ -204,14 +301,48 @@ try {
       assert.equal(fs.existsSync(dataDir), false, "worker must own fresh data-dir creation");
       fs.mkdirSync(dataDir, { recursive: false });
       return { status: 0, stdout, stderr: "" };
-    }
+    },
+    mediaToolsSpawn: mediaSpawn
   });
   assert.equal(session.health.result.status, "ok");
   assert.equal(observedCall.executable, path.join(packagedDir, CONTENT_ENGINE_EXECUTABLE));
   assert.deepEqual(observedCall.args, ["--data-dir", dataDir]);
   assert.equal(observedCall.options.cwd, packagedDir);
+  assert.equal(
+    observedCall.options.env.XIAOXI_FFMPEG_PATH,
+    path.join(packagedDir, "media-tools", "ffmpeg.exe")
+  );
+  assert.equal(
+    observedCall.options.env.XIAOXI_FFPROBE_PATH,
+    path.join(packagedDir, "media-tools", "ffprobe.exe")
+  );
   assert.match(observedCall.options.input, /"method":"health"/);
   assert.match(observedCall.options.input, /"method":"shutdown"/);
+
+  const packagedRecordFile = path.join(packagedDir, "media-tools", "licenses", "license-record.json");
+  const originalPackagedRecord = fs.readFileSync(packagedRecordFile, "utf8");
+  const mismatchedRuntimeRecord = JSON.parse(originalPackagedRecord);
+  mismatchedRuntimeRecord.runtime.treeSha256 = "f".repeat(64);
+  fs.writeFileSync(packagedRecordFile, `${JSON.stringify(mismatchedRuntimeRecord, null, 2)}\n`, "utf8");
+  const mismatchedRuntimeMediaTools = JSON.parse(JSON.stringify(descriptor.mediaTools));
+  mismatchedRuntimeMediaTools.licenseRecord.sha256 = sha256(packagedRecordFile);
+  assert.throws(
+    () => verifyBundledMediaToolFiles(packagedDir, mismatchedRuntimeMediaTools),
+    /runtime closure does not match its license record/,
+    "packaged media runtime closure must be bound to its license record"
+  );
+
+  const mismatchedNoticeRecord = JSON.parse(originalPackagedRecord);
+  mismatchedNoticeRecord.notices[0].sha256 = "e".repeat(64);
+  fs.writeFileSync(packagedRecordFile, `${JSON.stringify(mismatchedNoticeRecord, null, 2)}\n`, "utf8");
+  const mismatchedNoticeMediaTools = JSON.parse(JSON.stringify(descriptor.mediaTools));
+  mismatchedNoticeMediaTools.licenseRecord.sha256 = sha256(packagedRecordFile);
+  assert.throws(
+    () => verifyBundledMediaToolFiles(packagedDir, mismatchedNoticeMediaTools),
+    /notice closure does not match its license record/,
+    "packaged media notices must be bound to their license record"
+  );
+  fs.writeFileSync(packagedRecordFile, originalPackagedRecord, "utf8");
 
   assert.throws(
     () => runPackagedContentEngineSelfCheck({
@@ -223,7 +354,8 @@ try {
         fs.mkdirSync(args[1], { recursive: false });
         fs.writeFileSync(path.join(resourcesDir, "mutated.txt"), "changed", "utf8");
         return { status: 0, stdout, stderr: "" };
-      }
+      },
+      mediaToolsSpawn: mediaSpawn
     }),
     /changed portable resources/,
     "packaged self-check must prove immutable resources"
@@ -236,7 +368,8 @@ try {
       resourcesDir,
       descriptor,
       dataDir,
-      spawn: () => ({ status: 0, stdout, stderr: "" })
+      spawn: () => ({ status: 0, stdout, stderr: "" }),
+      mediaToolsSpawn: mediaSpawn
     }),
     /must be fresh/
   );
