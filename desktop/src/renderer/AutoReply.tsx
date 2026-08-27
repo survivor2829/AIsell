@@ -2,6 +2,20 @@ import { Check, Pause, Play } from "lucide-react";
 import { useEffect, useState } from "react";
 
 type ScanHealth = "unknown" | "checking" | "healthy" | "warning" | "degraded" | "waiting";
+type AutoReplyFailureContext = {
+  phase?: string;
+  code?: string;
+  send_phase?: string;
+  send_attempted?: boolean;
+  send_result?: "not_attempted" | "sent_verified" | "outcome_unknown";
+  draft_phase_started?: boolean;
+  recovery_action?: string;
+  retry_attempt?: number;
+  retry_polls_remaining?: number;
+  required_idle_ms?: number;
+  observed_idle_ms?: number;
+  preflight_ms?: number;
+};
 type AutoReplyState = {
   status: string;
   reply_count: number;
@@ -16,6 +30,7 @@ type AutoReplyState = {
   last_scan_reason?: string;
   consecutive_scan_failures?: number;
   pending_retry_count?: number;
+  last_failure_context?: AutoReplyFailureContext | null;
 };
 type AutoReplyResult = { ok: boolean; state?: Partial<AutoReplyState>; error?: string };
 
@@ -43,7 +58,8 @@ const EMPTY_STATE: AutoReplyState = {
   last_scan_success_at: "",
   last_scan_reason: "",
   consecutive_scan_failures: 0,
-  pending_retry_count: 0
+  pending_retry_count: 0,
+  last_failure_context: null
 };
 
 const SCAN_HEALTH_LABELS: Record<ScanHealth, string> = {
@@ -66,6 +82,7 @@ const SCAN_REASON_LABELS: Record<string, string> = {
   current_transition_unresolved: "新消息证据暂不稳定，已保留并继续后台复核",
   current_conversation_ambiguous: "当前聊天标题识别不唯一，正在等待下一轮重新识别",
   current_conversation_changed: "扫描期间当前聊天发生变化，已取消本轮处理",
+  wechat_user_active: "检测到鼠标或键盘仍在使用，等待电脑连续空闲后继续",
   current_sidebar_row_unresolved: "当前聊天与左侧会话行暂时无法对应，正在等待下一轮重新识别",
   latest_message_not_incoming: "最近一条不是客户新消息",
   latest_message_role_unresolved: "最新消息的发送方向暂时无法可靠确认，已跳过本轮并等待重试",
@@ -140,7 +157,32 @@ const CONTROL_EVENT_LABELS: Record<string, string> = {
   recovered_after_restart: "应用重启后按安全策略保持暂停，请重新启动",
   state_upgraded_paused: "运行状态升级后已安全暂停，请重新启动",
   start_failed: "启动检查未通过",
-  current_transition_unresolved_paused: "新消息证据不一致，已安全暂停"
+  current_transition_unresolved_paused: "新消息证据不一致，已安全暂停",
+  waiting_for_user_idle: "检测到电脑仍在操作，已等待空闲后继续",
+  manual_intervention_required: "检测到微信中可能有人为操作，当前消息已停止自动重试"
+};
+
+const RECOVERY_ACTION_LABELS: Record<string, string> = {
+  wait_for_idle: "正在等待电脑空闲",
+  wait_for_idle_and_retry: "已保留本条回复，等待空闲后重试",
+  retry_waiting: "本条回复正在退避后复核",
+  retry_pending: "本条回复将重新校验后重试",
+  manual_review_required: "已停止自动重试，等待人工确认",
+  manual_check_required: "发送结果待人工确认"
+};
+
+const FAILURE_PHASE_LABELS: Record<string, string> = {
+  prime: "启动检查",
+  scan: "扫描微信消息",
+  send: "回复发送"
+};
+
+const SEND_PHASE_LABELS: Record<string, string> = {
+  preflight: "发送前空闲校验",
+  draft: "写入草稿前",
+  before_send: "点击发送前",
+  send: "发送校验",
+  completed: "发送完成"
 };
 
 function normalizeScanHealth(value: AutoReplyState["scan_health"]): ScanHealth {
@@ -158,6 +200,34 @@ function formatScanTime(value?: string) {
 function scanReasonLabel(reason?: string) {
   if (!reason) return "尚无扫描结果";
   return SCAN_REASON_LABELS[reason] || "未识别扫描状态";
+}
+
+function formatDuration(value?: number) {
+  const milliseconds = Math.max(0, Number(value) || 0);
+  if (!Number.isFinite(milliseconds)) return "";
+  if (milliseconds < 1000) return `${Math.round(milliseconds)} 毫秒`;
+  return `${(milliseconds / 1000).toFixed(milliseconds >= 10_000 ? 0 : 1)} 秒`;
+}
+
+function recoverySummary(context: AutoReplyFailureContext) {
+  switch (context.recovery_action) {
+    case "wait_for_idle":
+      return "检测到电脑仍在使用，已跳过本轮扫描；监听会在电脑空闲后继续。";
+    case "wait_for_idle_and_retry":
+      return context.draft_phase_started
+        ? "本条回复尚未点击发送；系统会先保持输入框安全，再在电脑空闲后重新校验。"
+        : "本条回复尚未写入草稿，也没有点击发送；系统已保留它，电脑空闲后会重新校验。";
+    case "retry_waiting":
+      return "本条回复尚未发出，正在等待下一次安全复核，不会重复调用 AI 或直接补发。";
+    case "retry_pending":
+      return "本条回复尚未发出，系统会先重新确认微信状态，再决定是否继续。";
+    case "manual_review_required":
+      return "检测到微信输入框可能有人为操作；为避免覆盖你的内容，这条消息不再自动重试。";
+    case "manual_check_required":
+      return "发送是否完成无法确认；为避免重复发送，系统已停止对同一条消息自动补发。";
+    default:
+      return "本次运行已保留诊断信息，系统不会把未确认的发送当作成功。";
+  }
 }
 
 export function AutoReply() {
@@ -212,7 +282,17 @@ export function AutoReply() {
   const scanFailures = Math.max(0, Number(state.consecutive_scan_failures) || 0);
   const pendingRetries = Math.max(0, Number(state.pending_retry_count) || 0);
   const controlStatus = !scanning ? CONTROL_EVENT_LABELS[state.last_event] || "" : "";
-  const visibleError = error || pollError || state.last_error;
+  const recoveryContext = state.last_failure_context || null;
+  const recoveryAction = recoveryContext?.recovery_action || "";
+  const recoveryTitle = RECOVERY_ACTION_LABELS[recoveryAction] || "已保留本次诊断信息";
+  const failurePhase = recoveryContext?.send_phase
+    ? SEND_PHASE_LABELS[recoveryContext.send_phase] || recoveryContext.send_phase
+    : FAILURE_PHASE_LABELS[recoveryContext?.phase || ""] || recoveryContext?.phase || "运行检查";
+  const isManualRecovery = recoveryAction === "manual_review_required" || recoveryAction === "manual_check_required";
+  const visibleError = error || pollError || (!recoveryContext ? state.last_error : "");
+  const scanReasonTitle = recoveryContext?.phase === "send" && scanHealth === "waiting"
+    ? "当前等待原因"
+    : scanning ? "最近扫描结果" : "停止前最近扫描结果";
 
   return (
     <section className="page agent-page auto-reply-page">
@@ -251,7 +331,21 @@ export function AutoReply() {
       {controlStatus && <div className="auto-reply-control-note">当前状态：{controlStatus}</div>}
       {state.last_scan_reason && (
         <div className={`auto-reply-reason ${scanHealth === "degraded" ? "is-degraded" : scanHealth === "warning" || scanHealth === "waiting" ? "is-warning" : ""}`}>
-          {scanning ? "最近扫描结果" : "停止前最近扫描结果"}：{scanReasonLabel(state.last_scan_reason)}（{state.last_scan_reason}）
+          {scanReasonTitle}：{scanReasonLabel(state.last_scan_reason)}（{state.last_scan_reason}）
+        </div>
+      )}
+      {recoveryContext && (
+        <div className={`auto-reply-recovery ${isManualRecovery ? "is-manual" : ""}`} role={isManualRecovery ? "alert" : "status"}>
+          <strong>{recoveryTitle}</strong>
+          <p>{recoverySummary(recoveryContext)}</p>
+          <div className="auto-reply-recovery-meta">
+            <span>拦截阶段：{failurePhase}</span>
+            {recoveryContext.send_attempted === false && <span>{recoveryContext.draft_phase_started ? "未点击发送，已停止自动覆盖输入框" : "未写入草稿，也未点击发送"}</span>}
+            {recoveryContext.required_idle_ms !== undefined && <span>需连续空闲：{formatDuration(recoveryContext.required_idle_ms)}</span>}
+            {recoveryContext.observed_idle_ms !== undefined && <span>本次空闲：{formatDuration(recoveryContext.observed_idle_ms)}</span>}
+            {recoveryContext.retry_attempt !== undefined && <span>重试次数：{recoveryContext.retry_attempt}</span>}
+            {recoveryContext.code && <span>诊断码：{recoveryContext.code}</span>}
+          </div>
         </div>
       )}
       {running && pendingRetries > 0 && (

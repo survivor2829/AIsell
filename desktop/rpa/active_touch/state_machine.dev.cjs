@@ -461,6 +461,7 @@ async function executeVerifiedContactSend(options = {}) {
     const windowMinIdleMs = Number.isFinite(requestedWindowIdleMs)
       ? Math.max(0, Math.min(60_000, Math.floor(requestedWindowIdleMs)))
       : 0;
+    const visualPreflightStartedAt = Date.now();
     if (windowMinIdleMs > 0) {
       const waitForIdleWindow = typeof options.windowIdleWait === "function"
         ? options.windowIdleWait
@@ -476,11 +477,18 @@ async function executeVerifiedContactSend(options = {}) {
     }
     const inspectedIdentity = strictPreparedWechatWindow(inspectedWindow);
     if (!inspectedIdentity || inspectedIdentity.pid !== pid || inspectedIdentity.hWnd !== String(hWnd)) {
+      const observedIdleMs = Number(inspectedWindow?.observedIdleMs ?? inspectedWindow?.observed_idle_ms);
       return withSendAttempted({
         ok: false,
         action: "send",
         blocked_reason: String(inspectedWindow?.reason || "wechat_window_not_ready"),
-        error: "微信窗口已失焦或不再位于左上角，本次回复已安全取消"
+        error: "微信窗口已失焦或不再位于左上角，本次回复已安全取消",
+        send_diagnostics: {
+          phase: "preflight",
+          required_idle_ms: windowMinIdleMs,
+          ...(Number.isFinite(observedIdleMs) && observedIdleMs >= 0 ? { observed_idle_ms: Math.floor(observedIdleMs) } : {}),
+          timings: { preflight_ms: Date.now() - visualPreflightStartedAt }
+        }
       });
     }
     const inspectedInputTick = Number(inspectedWindow.inputTick);

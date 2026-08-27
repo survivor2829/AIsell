@@ -15,6 +15,18 @@ const MAX_STATE_ENTRIES = 1_000;
 const SCAN_DEGRADED_AFTER = 3;
 const DIAGNOSTIC_LOG_MAX_BYTES = 512 * 1024;
 const DIAGNOSTIC_LOG_MAX_LINES = 500;
+const USER_IDLE_WAIT_REASON = "wechat_user_active";
+const RECOVERY_ACTIONS = new Set([
+  "wait_for_idle",
+  "wait_for_idle_and_retry",
+  "retry_waiting",
+  "retry_pending",
+  "manual_review_required",
+  "manual_check_required"
+]);
+const MANUAL_REVIEW_SEND_REASONS = new Set([
+  "visual_send_external_input_detected"
+]);
 const SCAN_HEALTH_VALUES = new Set(["unknown", "checking", "healthy", "warning", "degraded", "waiting"]);
 const HEALTHY_SCAN_REASONS = new Set([
   "no_unread_message",
@@ -462,6 +474,33 @@ function normalizePendingObservation(value, current = new Date()) {
   };
 }
 
+function normalizeFailureContext(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const phase = diagnosticCode(value.phase, "");
+  const code = diagnosticCode(value.code, "");
+  if (!phase || !code) return null;
+  const result = { phase, code };
+  const sendPhase = diagnosticCode(value.send_phase, "");
+  if (sendPhase) result.send_phase = sendPhase;
+  if (typeof value.send_attempted === "boolean") result.send_attempted = value.send_attempted;
+  if (typeof value.draft_phase_started === "boolean") result.draft_phase_started = value.draft_phase_started;
+  const sendResult = diagnosticCode(value.send_result, "");
+  if (new Set(["not_attempted", "sent_verified", "outcome_unknown"]).has(sendResult)) result.send_result = sendResult;
+  const recoveryAction = diagnosticCode(value.recovery_action, "");
+  if (RECOVERY_ACTIONS.has(recoveryAction)) result.recovery_action = recoveryAction;
+  for (const [field, maximum] of Object.entries({
+    retry_attempt: 100,
+    retry_polls_remaining: 100,
+    required_idle_ms: 60_000,
+    observed_idle_ms: 86_400_000,
+    preflight_ms: 300_000
+  })) {
+    const numeric = Math.floor(Number(value[field]));
+    if (Number.isSafeInteger(numeric) && numeric >= 0 && numeric <= maximum) result[field] = numeric;
+  }
+  return result;
+}
+
 function createDefaultState() {
   return {
     version: AUTO_REPLY_STATE_VERSION,
@@ -477,6 +516,7 @@ function createDefaultState() {
     pending_observation: null,
     last_event: "",
     last_error: "",
+    last_failure_context: null,
     last_ai_warning_code: "",
     last_ai_warning: "",
     scan_health: "unknown",
@@ -611,6 +651,7 @@ function migrateState(raw, current) {
     next.last_scan_reason = upgrading ? "" : normalizeText(raw.last_scan_reason) ? scanReason(raw.last_scan_reason).code : "";
     next.last_ai_warning_code = normalizeAiWarningCode(raw.last_ai_warning_code);
     next.last_ai_warning = normalizeText(raw.last_ai_warning).slice(0, 300);
+    next.last_failure_context = upgrading ? null : normalizeFailureContext(raw.last_failure_context);
     next.consecutive_scan_failures = upgrading ? 0 : Math.max(0, Math.floor(Number(raw.consecutive_scan_failures) || 0));
     if (handoffNeedsConfirmation(next.pending_handoff)) {
       next.status = "paused";
@@ -831,6 +872,7 @@ function createAutoReplyController(options = {}) {
     || rawState.status === "starting"
     || Object.values(rawState.processed || {}).some((entry) => normalizeText(entry?.status) === "sending")
     || JSON.stringify(rawState.reply_guards || {}) !== JSON.stringify(state.reply_guards || {})
+    || JSON.stringify(rawState.last_failure_context || null) !== JSON.stringify(state.last_failure_context || null)
     || rawState.daily_date !== state.daily_date
     || Number(rawState.reply_count) !== state.reply_count
     || Boolean(rawState.pending_handoff) && (
@@ -894,6 +936,17 @@ function createAutoReplyController(options = {}) {
     }
   }
 
+  function setFailureContext(details) {
+    state.last_failure_context = normalizeFailureContext(details);
+  }
+
+  function clearRecoveredScanFailureContext() {
+    const context = normalizeFailureContext(state.last_failure_context);
+    if (context && new Set(["scan", "prime"]).has(context.phase) && context.recovery_action === "wait_for_idle") {
+      state.last_failure_context = null;
+    }
+  }
+
   function appendDiagnostic(event, details = {}) {
     const phase = diagnosticCode(details.phase, "runtime");
     const code = diagnosticCode(details.code || state.last_scan_reason, "");
@@ -923,6 +976,21 @@ function createAutoReplyController(options = {}) {
       const duration = Math.floor(Number(details[field]));
       if (Number.isSafeInteger(duration) && duration >= 0) entry[field] = duration;
     }
+    for (const [field, maximum] of Object.entries({
+      required_idle_ms: 60_000,
+      observed_idle_ms: 86_400_000,
+      retry_attempt: 100,
+      retry_polls_remaining: 100
+    })) {
+      const numeric = Math.floor(Number(details[field]));
+      if (Number.isSafeInteger(numeric) && numeric >= 0 && numeric <= maximum) entry[field] = numeric;
+    }
+    if (typeof details.send_attempted === "boolean") entry.send_attempted = details.send_attempted;
+    if (typeof details.draft_phase_started === "boolean") entry.draft_phase_started = details.draft_phase_started;
+    const sendResult = diagnosticCode(details.send_result, "");
+    if (new Set(["not_attempted", "sent_verified", "outcome_unknown"]).has(sendResult)) entry.send_result = sendResult;
+    const recoveryAction = diagnosticCode(details.recovery_action, "");
+    if (RECOVERY_ACTIONS.has(recoveryAction)) entry.recovery_action = recoveryAction;
     const sendPhase = diagnosticCode(details.send_phase, "");
     if (sendPhase) entry.send_phase = sendPhase;
     const verificationMode = diagnosticCode(details.verification_mode, "");
@@ -930,11 +998,14 @@ function createAutoReplyController(options = {}) {
     if (code === "session_probe_unsupported") Object.assign(entry, sanitizeSessionProbe(details.sessionProbe));
     Object.assign(entry, sanitizeStructuredScanDiagnostics(details));
     appendDiagnosticLine(diagnosticLogFile, entry);
+    const waitingDiagnostic = entry.code === USER_IDLE_WAIT_REASON
+      || new Set(["scan_waiting", "reply_retry_enqueued", "reply_retry_waiting", "reply_manual_review_required"]).has(entry.event);
+    const failedSendDiagnostic = entry.event === "reply_send_finished" && entry.code !== "sent_verified";
     diagnostics().event("auto_reply", entry.event, {
       ...entry,
       legacy_diagnostic_run_id: entry.run_id
     }, {
-      level: /failed|exception|blocked/u.test(entry.event) ? "error" : "info",
+      level: waitingDiagnostic ? "warn" : /failed|exception|blocked/u.test(entry.event) || failedSendDiagnostic ? "error" : "info",
       code: entry.code || "",
       phase: entry.phase || ""
     });
@@ -961,12 +1032,26 @@ function createAutoReplyController(options = {}) {
 
     const neutral = reason === "baseline_epoch_changed" || reason === "unread_preview_pending" || phase === "prime" && reason === "no_current_conversation";
     const successful = result?.ok === true || HEALTHY_SCAN_REASONS.has(reason);
-    if (neutral) {
+    const waitingForUserIdle = reason === USER_IDLE_WAIT_REASON;
+    if (waitingForUserIdle) {
+      state.scan_health = "waiting";
+      state.consecutive_scan_failures = 0;
+      if (normalizeFailureContext(state.last_failure_context)?.phase !== "send") {
+        setFailureContext({
+          phase: phase === "prime" ? "prime" : "scan",
+          code: reason,
+          recovery_action: "wait_for_idle",
+          required_idle_ms: result?.requiredIdleMs ?? result?.required_idle_ms,
+          observed_idle_ms: result?.observedIdleMs ?? result?.observed_idle_ms
+        });
+      }
+    } else if (neutral) {
       if (!SCAN_HEALTH_VALUES.has(state.scan_health) || state.scan_health === "unknown") state.scan_health = "checking";
     } else if (successful) {
       state.scan_health = "healthy";
       state.last_scan_success_at = observedAt;
       state.consecutive_scan_failures = 0;
+      clearRecoveredScanFailureContext();
     } else {
       state.consecutive_scan_failures = Math.max(0, Math.floor(Number(state.consecutive_scan_failures) || 0)) + 1;
       state.scan_health = state.consecutive_scan_failures >= SCAN_DEGRADED_AFTER ? "degraded" : "warning";
@@ -975,9 +1060,9 @@ function createAutoReplyController(options = {}) {
     const changed = previousHealth !== state.scan_health || previousReason !== reason;
     const recovered = successful && (previousFailures > 0 || previousHealth === "warning" || previousHealth === "degraded");
     const becameHealthy = successful && previousHealth !== "healthy";
-    const faultChanged = !successful && !neutral && changed;
-    if (neutral && changed || recovered || becameHealthy || faultChanged) {
-      appendDiagnostic(neutral ? phase === "prime" ? "prime_skipped" : "scan_cancelled" : recovered ? "scan_recovered" : successful ? "scan_healthy" : "scan_failed", {
+    const faultChanged = !successful && !neutral && !waitingForUserIdle && changed;
+    if (waitingForUserIdle && changed || neutral && changed || recovered || becameHealthy || faultChanged) {
+      appendDiagnostic(waitingForUserIdle ? "scan_waiting" : neutral ? phase === "prime" ? "prime_skipped" : "scan_cancelled" : recovered ? "scan_recovered" : successful ? "scan_healthy" : "scan_failed", {
         phase,
         code: reason,
         reasonRef: normalizedReason.ref,
@@ -989,10 +1074,12 @@ function createAutoReplyController(options = {}) {
         window: result?.window,
         dpi: result?.dpi ?? result?.DPI ?? result?.windowDpi,
         counts: result?.counts,
-        diagnostics: result?.diagnostics
+        diagnostics: result?.diagnostics,
+        required_idle_ms: result?.requiredIdleMs ?? result?.required_idle_ms,
+        observed_idle_ms: result?.observedIdleMs ?? result?.observed_idle_ms
       });
     }
-    return successful || neutral;
+    return successful || neutral || waitingForUserIdle;
   }
 
   function publicState() {
@@ -1003,6 +1090,7 @@ function createAutoReplyController(options = {}) {
       reply_count: state.reply_count,
       last_event: showManualWarning ? "handoff_manual_followup_required" : state.last_event,
       last_error: showManualWarning ? manualWarning : state.last_error,
+      last_failure_context: normalizeFailureContext(state.last_failure_context),
       last_ai_warning_code: state.last_ai_warning_code,
       last_ai_warning: state.last_ai_warning,
       scan_health: state.scan_health,
@@ -1404,8 +1492,10 @@ function createAutoReplyController(options = {}) {
           if (primed?.ok !== true) {
             // OCR, foreground, viewport and window discovery can flicker at
             // startup. The next regular scan re-primes when no baseline exists.
-            state.scan_health = "checking";
-            state.consecutive_scan_failures = 0;
+            if (state.last_scan_reason !== USER_IDLE_WAIT_REASON) {
+              state.scan_health = "checking";
+              state.consecutive_scan_failures = 0;
+            }
             primeRetryNeeded = true;
             appendDiagnostic("prime_deferred", {
               phase: "prime",
@@ -1619,8 +1709,10 @@ function createAutoReplyController(options = {}) {
         recordScanResult(primed, "prime");
         recordOutgoingObservation(primed, contacts, current);
         if (primed?.ok !== true) {
-          state.scan_health = "checking";
-          state.consecutive_scan_failures = 0;
+          if (state.last_scan_reason !== USER_IDLE_WAIT_REASON) {
+            state.scan_health = "checking";
+            state.consecutive_scan_failures = 0;
+          }
           state.last_event = state.last_scan_reason || "prime_deferred";
           state.last_error = "";
           save();
@@ -1644,6 +1736,21 @@ function createAutoReplyController(options = {}) {
       }
       if (!candidate?.ok) {
         const candidateReason = normalizeText(candidate?.reason);
+        if (candidateReason === USER_IDLE_WAIT_REASON) {
+          if (normalizeFailureContext(state.last_failure_context)?.phase !== "send") {
+            setFailureContext({
+              phase: "scan",
+              code: candidateReason,
+              recovery_action: "wait_for_idle",
+              required_idle_ms: candidate?.requiredIdleMs ?? candidate?.required_idle_ms,
+              observed_idle_ms: candidate?.observedIdleMs ?? candidate?.observed_idle_ms
+            });
+          }
+          state.last_event = "waiting_for_user_idle";
+          state.last_error = "";
+          save();
+          return publicState();
+        }
         if (PENDING_OBSERVATION_REASONS.has(candidateReason)) {
           const retained = retainPendingObservation(candidate, current);
           state.last_event = retained ? "unread_preview_pending" : "unread_preview_unresolved";
@@ -1797,8 +1904,29 @@ function createAutoReplyController(options = {}) {
         remember(fingerprint, { status: "retryable", ...processedMetadata, conversation, at: current.toISOString() });
         if (requeueCandidate(candidate)) {
           state.last_event = "send_retry_waiting";
-          state.last_error = "回复尚未发出，正在退避后重试";
+          const previousFailure = normalizeFailureContext(state.last_failure_context);
+          if (previousFailure) {
+            setFailureContext({
+              ...previousFailure,
+              recovery_action: "retry_waiting",
+              retry_attempt: retryEntry.attempts,
+              retry_polls_remaining: retryEntry.pollsRemaining
+            });
+          }
+          state.last_error = previousFailure?.code === USER_IDLE_WAIT_REASON ? "" : "回复尚未发出，正在退避后重试";
+          appendDiagnostic("reply_retry_waiting", {
+            phase: "send",
+            code: previousFailure?.code || "send_retry_waiting",
+            send_attempted: previousFailure?.send_attempted,
+            send_result: previousFailure?.send_result,
+            draft_phase_started: previousFailure?.draft_phase_started,
+            recovery_action: "retry_waiting",
+            retry_attempt: retryEntry.attempts,
+            retry_polls_remaining: retryEntry.pollsRemaining
+          });
         } else {
+          const previousFailure = normalizeFailureContext(state.last_failure_context);
+          if (previousFailure) setFailureContext({ ...previousFailure, recovery_action: "manual_check_required" });
           pauseWithError("send_retry_queue_paused", "回复尚未发出，但安全重试队列不可用，请人工检查后再启动");
         }
         save();
@@ -1917,11 +2045,16 @@ function createAutoReplyController(options = {}) {
         duration_ms: Date.now() - sendStartedAt,
         send_phase: result?.send_diagnostics?.phase || "",
         verification_mode: result?.verification_mode || "",
+        send_attempted: result?.send_attempted,
+        send_result: result?.send_result,
+        draft_phase_started: draftPhaseStarted,
         preflight_ms: sendTimings.preflight_ms,
         draft_ms: sendTimings.draft_ms,
         before_send_ms: sendTimings.before_send_ms,
         send_ms: sendTimings.send_ms,
         total_ms: sendTimings.total_ms,
+        required_idle_ms: result?.send_diagnostics?.required_idle_ms,
+        observed_idle_ms: result?.send_diagnostics?.observed_idle_ms,
         pid: result?.pid || candidate.pid,
         hWnd: result?.hWnd || candidate.hWnd
       });
@@ -1962,6 +2095,7 @@ function createAutoReplyController(options = {}) {
         retryGenerations.delete(fingerprint);
         state.processed[fingerprint].status = "cancelled";
         clearPendingObservation(candidate);
+        state.last_failure_context = null;
         state.last_event = "manual_reply_or_message_changed";
         state.last_error = "";
         save();
@@ -1969,16 +2103,103 @@ function createAutoReplyController(options = {}) {
       }
       if (!result?.ok) {
         if (result?.send_attempted === false) {
-          const attempts = Number(retryEntry?.attempts || 0) + 1;
-          retryGenerations.set(fingerprint, { generated, attempts, pollsRemaining: retryPolls(attempts) });
-          if (retryGenerations.size > MAX_STATE_ENTRIES) retryGenerations.delete(retryGenerations.keys().next().value);
-          state.processed[fingerprint].status = "retryable";
-          const retryQueued = requeueCandidate(candidate);
-          if (retryQueued) {
-            state.last_event = "send_retry_pending";
-            state.last_error = `本次回复尚未发出，将自动重试：${normalizeText(result?.blocked_reason || result?.error) || "发送前校验未通过"}`;
+          const sendCode = normalizeText(result?.blocked_reason || result?.error) || "send_failed";
+          const sendDiagnostics = result?.send_diagnostics || {};
+          // `beforeDraft` marks the point at which the visual sender can take
+          // ownership of the WeChat input. From that point forward we cannot
+          // prove that no text was selected, pasted, or edited by the user.
+          // Never retry such a result automatically: the next sender attempt
+          // uses Ctrl+A and could overwrite a handwritten draft.
+          const requiresManualReview = draftPhaseStarted || MANUAL_REVIEW_SEND_REASONS.has(sendCode);
+          if (requiresManualReview) {
+            retryGenerations.delete(fingerprint);
+            state.processed[fingerprint].status = "cancelled";
+            clearPendingObservation(candidate);
+            state.last_event = "manual_intervention_required";
+            state.last_error = "";
+            setFailureContext({
+              phase: "send",
+              code: sendCode,
+              send_phase: sendDiagnostics.phase,
+              send_attempted: false,
+              send_result: result?.send_result,
+              draft_phase_started: draftPhaseStarted,
+              recovery_action: "manual_review_required",
+              required_idle_ms: sendDiagnostics.required_idle_ms,
+              observed_idle_ms: sendDiagnostics.observed_idle_ms,
+              preflight_ms: sendDiagnostics.timings?.preflight_ms
+            });
+            appendDiagnostic("reply_manual_review_required", {
+              phase: "send",
+              code: sendCode,
+              send_phase: sendDiagnostics.phase,
+              send_attempted: false,
+              send_result: result?.send_result,
+              draft_phase_started: draftPhaseStarted,
+              recovery_action: "manual_review_required",
+              required_idle_ms: sendDiagnostics.required_idle_ms,
+              observed_idle_ms: sendDiagnostics.observed_idle_ms
+            });
           } else {
-            pauseWithError("send_retry_queue_paused", "回复尚未发出，但安全重试队列不可用，请人工检查后再启动");
+            const attempts = Number(retryEntry?.attempts || 0) + 1;
+            retryGenerations.set(fingerprint, { generated, attempts, pollsRemaining: retryPolls(attempts) });
+            if (retryGenerations.size > MAX_STATE_ENTRIES) retryGenerations.delete(retryGenerations.keys().next().value);
+            state.processed[fingerprint].status = "retryable";
+            const retryQueued = requeueCandidate(candidate);
+            if (retryQueued) {
+              state.last_event = "send_retry_pending";
+              const waitingForUserIdle = sendCode === USER_IDLE_WAIT_REASON;
+              if (waitingForUserIdle) {
+                state.scan_health = "waiting";
+                state.last_scan_reason = USER_IDLE_WAIT_REASON;
+                state.consecutive_scan_failures = 0;
+              }
+              setFailureContext({
+                phase: "send",
+                code: sendCode,
+                send_phase: sendDiagnostics.phase,
+                send_attempted: false,
+                send_result: result?.send_result,
+                draft_phase_started: draftPhaseStarted,
+                recovery_action: waitingForUserIdle ? "wait_for_idle_and_retry" : "retry_pending",
+                retry_attempt: attempts,
+                retry_polls_remaining: retryPolls(attempts),
+                required_idle_ms: sendDiagnostics.required_idle_ms,
+                observed_idle_ms: sendDiagnostics.observed_idle_ms,
+                preflight_ms: sendDiagnostics.timings?.preflight_ms
+              });
+              state.last_error = waitingForUserIdle ? "" : `本次回复尚未发出，将自动重试：${sendCode}`;
+              appendDiagnostic("reply_retry_enqueued", {
+                phase: "send",
+                code: sendCode,
+                send_phase: sendDiagnostics.phase,
+                send_attempted: false,
+                send_result: result?.send_result,
+                draft_phase_started: draftPhaseStarted,
+                recovery_action: waitingForUserIdle ? "wait_for_idle_and_retry" : "retry_pending",
+                retry_attempt: attempts,
+                retry_polls_remaining: retryPolls(attempts),
+                required_idle_ms: sendDiagnostics.required_idle_ms,
+                observed_idle_ms: sendDiagnostics.observed_idle_ms,
+                preflight_ms: sendDiagnostics.timings?.preflight_ms,
+                pid: result?.pid || candidate.pid,
+                hWnd: result?.hWnd || candidate.hWnd
+              });
+            } else {
+              setFailureContext({
+                phase: "send",
+                code: sendCode,
+                send_phase: sendDiagnostics.phase,
+                send_attempted: false,
+                send_result: result?.send_result,
+                draft_phase_started: draftPhaseStarted,
+                recovery_action: "manual_check_required",
+                required_idle_ms: sendDiagnostics.required_idle_ms,
+                observed_idle_ms: sendDiagnostics.observed_idle_ms,
+                preflight_ms: sendDiagnostics.timings?.preflight_ms
+              });
+              pauseWithError("send_retry_queue_paused", "回复尚未发出，但安全重试队列不可用，请人工检查后再启动");
+            }
           }
         } else {
           retryGenerations.delete(fingerprint);
@@ -1986,6 +2207,18 @@ function createAutoReplyController(options = {}) {
           const turnEpoch = noteVisualSendAttempt(candidate, result, true);
           recordReplyGuard(contact, candidate, fingerprint, incomingEvidence, now(), "outcome_unknown", turnEpoch);
           clearPendingObservation(candidate);
+          setFailureContext({
+            phase: "send",
+            code: normalizeText(result?.blocked_reason || result?.error) || "send_outcome_unknown",
+            send_phase: result?.send_diagnostics?.phase,
+            send_attempted: result?.send_attempted,
+            send_result: result?.send_result,
+            draft_phase_started: draftPhaseStarted,
+            recovery_action: "manual_check_required",
+            required_idle_ms: result?.send_diagnostics?.required_idle_ms,
+            observed_idle_ms: result?.send_diagnostics?.observed_idle_ms,
+            preflight_ms: result?.send_diagnostics?.timings?.preflight_ms
+          });
           pauseWithError("send_outcome_unknown_paused", result?.blocked_reason || result?.error || "自动回复发送结果无法确认");
         }
         save();
@@ -2003,6 +2236,7 @@ function createAutoReplyController(options = {}) {
       clearPendingObservation(candidate);
       state.last_event = "reply_sent_verified";
       state.last_error = "";
+      state.last_failure_context = null;
       state.last_ai_warning_code = normalizeAiWarningCode(generated?.aiWarningCode);
       state.last_ai_warning = normalizeText(generated?.aiWarning).slice(0, 300);
       const pauseReason = generated?.pauseAfterHandoff === true

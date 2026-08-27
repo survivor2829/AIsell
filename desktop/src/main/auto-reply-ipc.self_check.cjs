@@ -501,11 +501,12 @@ async function main() {
     scanIncoming: () => retryableCandidate,
     verifyIncoming: () => ({ ok: true }),
     send: async (options) => {
-      assert.equal(await options.beforeDraft(), true);
       retryableSendCalls += 1;
-      return retryableSendCalls === 1
-        ? { ok: false, error: "generic_visual_error", blocked_reason: "atomic_draft_changed", send_attempted: false }
-        : { ok: true, send_attempted: true };
+      if (retryableSendCalls === 1) {
+        return { ok: false, error: "generic_visual_error", blocked_reason: "atomic_draft_changed", send_attempted: false };
+      }
+      assert.equal(await options.beforeDraft(), true);
+      return { ok: true, send_attempted: true };
     },
     sendHandoff: async () => ({ ok: true }),
     runStep: async () => ({ ok: true }),
@@ -531,6 +532,154 @@ async function main() {
   assert.equal(Object.values(JSON.parse(fs.readFileSync(path.join(retryableDataDir, "auto-reply-state.json"), "utf8")).processed).at(-1).status, "sent_verified");
   retryableController.pause();
 
+  const userIdleRecoveryCandidate = {
+    ...retryableCandidate,
+    message: "电脑空闲后再安全发送",
+    runtimeId: "pre-send-user-idle-1",
+    context: [{ role: "user", content: "电脑空闲后再安全发送", key: "pre-send-user-idle-1" }]
+  };
+  const userIdleRecoveryDir = path.join(root, "pre_send_user_idle_recovery");
+  let userIdleRecoveryAiCalls = 0;
+  let userIdleRecoverySendCalls = 0;
+  const userIdleRecoveryController = createAutoReplyController({
+    dataDir: userIdleRecoveryDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => { userIdleRecoveryAiCalls += 1; return { reply: "好的，稍后继续处理。", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }; }
+    },
+    scanIncoming: () => userIdleRecoveryCandidate,
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => {
+      userIdleRecoverySendCalls += 1;
+      if (userIdleRecoverySendCalls === 1) {
+        return {
+          ok: false,
+          blocked_reason: "wechat_user_active",
+          send_attempted: false,
+          send_result: "not_attempted",
+          send_diagnostics: {
+            phase: "preflight",
+            required_idle_ms: 15_000,
+            observed_idle_ms: 281,
+            timings: { preflight_ms: 15_147 }
+          }
+        };
+      }
+      assert.equal(await options.beforeDraft(), true);
+      return { ok: true, send_attempted: true, send_result: "sent_verified" };
+    },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await userIdleRecoveryController.start()).ok, true);
+  await userIdleRecoveryController.runOnce();
+  const userIdleRecoveryState = userIdleRecoveryController.status();
+  assert.equal(userIdleRecoveryState.status, "running", "a pre-draft idle gate must preserve the listener");
+  assert.equal(userIdleRecoveryState.scan_health, "waiting", "a pre-send idle gate is recoverable waiting, not a scan error");
+  assert.equal(userIdleRecoveryState.last_scan_reason, "wechat_user_active");
+  assert.equal(userIdleRecoveryState.consecutive_scan_failures, 0);
+  assert.deepEqual(userIdleRecoveryState.last_failure_context, {
+    phase: "send",
+    code: "wechat_user_active",
+    send_phase: "preflight",
+    send_attempted: false,
+    send_result: "not_attempted",
+    draft_phase_started: false,
+    recovery_action: "wait_for_idle_and_retry",
+    retry_attempt: 1,
+    retry_polls_remaining: 1,
+    required_idle_ms: 15_000,
+    observed_idle_ms: 281,
+    preflight_ms: 15_147
+  });
+  const userIdleRecoveryDiagnostics = fs.readFileSync(path.join(userIdleRecoveryDir, "auto-reply-diagnostics.jsonl"), "utf8")
+    .trim()
+    .split(/\r?\n/u)
+    .map((line) => JSON.parse(line));
+  const userIdleSendFinished = userIdleRecoveryDiagnostics.find((entry) => entry.event === "reply_send_finished");
+  assert.deepEqual({
+    code: userIdleSendFinished.code,
+    send_phase: userIdleSendFinished.send_phase,
+    send_attempted: userIdleSendFinished.send_attempted,
+    send_result: userIdleSendFinished.send_result,
+    required_idle_ms: userIdleSendFinished.required_idle_ms,
+    observed_idle_ms: userIdleSendFinished.observed_idle_ms,
+    preflight_ms: userIdleSendFinished.preflight_ms
+  }, {
+    code: "wechat_user_active",
+    send_phase: "preflight",
+    send_attempted: false,
+    send_result: "not_attempted",
+    required_idle_ms: 15_000,
+    observed_idle_ms: 281,
+    preflight_ms: 15_147
+  });
+  assert.equal(userIdleRecoveryDiagnostics.some((entry) => entry.event === "reply_retry_enqueued" && entry.recovery_action === "wait_for_idle_and_retry"), true);
+  await userIdleRecoveryController.runOnce();
+  assert.equal(userIdleRecoverySendCalls, 1, "the next poll must back off before another send attempt");
+  assert.equal(userIdleRecoveryController.status().last_failure_context?.recovery_action, "retry_waiting");
+  await userIdleRecoveryController.runOnce();
+  assert.equal(userIdleRecoverySendCalls, 2, "the retained reply must retry after a safe idle gate");
+  assert.equal(userIdleRecoveryAiCalls, 1, "a safe retry must reuse the original AI reply");
+  assert.equal(userIdleRecoveryController.status().reply_count, 1);
+  assert.equal(userIdleRecoveryController.status().last_failure_context, null, "verified delivery must clear the stale recovery notice");
+  userIdleRecoveryController.pause();
+
+  let manualInputRequeues = 0;
+  const manualInputCandidate = {
+    ...userIdleRecoveryCandidate,
+    message: "人工正在编辑时不要覆盖",
+    runtimeId: "manual-input-1",
+    context: [{ role: "user", content: "人工正在编辑时不要覆盖", key: "manual-input-1" }]
+  };
+  const manualInputScan = () => manualInputCandidate;
+  manualInputScan.requeue = () => { manualInputRequeues += 1; return true; };
+  const manualInputController = createAutoReplyController({
+    dataDir: path.join(root, "manual_input_review"),
+    activeTouchDir,
+    coordinator,
+    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    deepSeekClient: { assertAvailable: () => true, reply: async () => ({ reply: "好的，我会保留你的输入。", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }) },
+    scanIncoming: manualInputScan,
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      return {
+        ok: false,
+        blocked_reason: "wechat_user_active",
+        send_attempted: false,
+        send_result: "not_attempted",
+        send_diagnostics: {
+          phase: "draft",
+          required_idle_ms: 15_000,
+          observed_idle_ms: 281,
+          timings: { draft_ms: 20 }
+        }
+      };
+    },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await manualInputController.start()).ok, true);
+  await manualInputController.runOnce();
+  assert.equal(manualInputController.status().status, "running", "manual review of one chat must not stop later monitoring");
+  assert.equal(manualInputController.status().last_event, "manual_intervention_required");
+  assert.equal(manualInputRequeues, 0, "a possible handwritten WeChat draft must never be automatically overwritten on retry");
+  assert.equal(manualInputController.status().last_failure_context?.recovery_action, "manual_review_required");
+  assert.equal(manualInputController.status().last_failure_context?.code, "wechat_user_active", "draft-stage user activity must never enter automatic idle recovery");
+  assert.equal(manualInputController.status().last_failure_context?.draft_phase_started, true);
+  assert.equal(manualInputController.status().last_failure_context?.send_attempted, false);
+  manualInputController.pause();
+
   const rejectedRetryScan = () => ({ ...retryableCandidate, runtimeId: "queue-full-1", context: [{ role: "user", content: retryableCandidate.message, key: "queue-full-1" }] });
   rejectedRetryScan.requeue = () => false;
   const rejectedRetryController = createAutoReplyController({
@@ -541,7 +690,7 @@ async function main() {
     deepSeekClient: { assertAvailable: () => true, reply: async () => ({ reply: "收到。", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }) },
     scanIncoming: rejectedRetryScan,
     verifyIncoming: () => ({ ok: true }),
-    send: async (options) => { assert.equal(await options.beforeDraft(), true); return { ok: false, blocked_reason: "atomic_draft_changed", send_attempted: false }; },
+    send: async () => ({ ok: false, blocked_reason: "atomic_draft_changed", send_attempted: false }),
     sendHandoff: async () => ({ ok: true }),
     runStep: async () => ({ ok: true }),
     schedule: () => 1,
@@ -1004,6 +1153,8 @@ async function main() {
   assert.equal((await safeWindowDelayController.start()).ok, true, "active desktop use must defer startup instead of becoming fatal");
   assert.equal(safeWindowDelayController.status().status, "running");
   assert.equal(safeWindowDelayController.status().last_scan_reason, "wechat_user_active");
+  assert.equal(safeWindowDelayController.status().scan_health, "waiting", "active keyboard or mouse use must be presented as a recoverable wait, not a scan fault");
+  assert.equal(safeWindowDelayController.status().consecutive_scan_failures, 0, "an idle gate must not accumulate scan failures");
   await safeWindowDelayController.runOnce();
   assert.equal(safeWindowDelayController.status().status, "running", "a stale exact HWND must remain retryable while the driver resets its binding");
   assert.equal(safeWindowDelayController.status().last_scan_reason, "wechat_window_identity_mismatch");
@@ -2776,6 +2927,7 @@ async function main() {
     "last_scan_at",
     "last_scan_reason",
     "last_scan_success_at",
+    "last_failure_context",
     "pending_retry_count",
     "reply_count",
     "scan_health",

@@ -612,6 +612,49 @@ button:focus-visible {
   background: #f8fafc;
 }
 
+.auto-reply-recovery {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 16px;
+  padding: 13px 16px;
+  border: 1px solid #fed7aa;
+  border-radius: 10px;
+  background: #fffaf0;
+  color: #92400e;
+}
+
+.auto-reply-recovery strong {
+  font-size: 14px;
+}
+
+.auto-reply-recovery p {
+  margin: 0;
+  color: #78350f;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.auto-reply-recovery-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  color: #9a3412;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.auto-reply-recovery.is-manual {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b42318;
+}
+
+.auto-reply-recovery.is-manual p,
+.auto-reply-recovery.is-manual .auto-reply-recovery-meta {
+  color: #991b1b;
+}
+
 .auto-reply-reason.is-warning {
   border-color: #fed7aa;
   background: #fff7ed;

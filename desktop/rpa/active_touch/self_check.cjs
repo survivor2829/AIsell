@@ -851,6 +851,39 @@ try {
     .digest("hex");
   assert.equal(loadState(sharedDir).real_send_attempt_key, firstIncomingAttemptKey, "verified contact sends must scope idempotency to the incoming turn");
 
+  const visualIdleWaits = [];
+  let blockedVisualBeforeDraftCalls = 0;
+  let blockedVisualSenderCalls = 0;
+  const visualIdleGateResult = await executeVerifiedContactSend({
+    baseDir: sharedDir,
+    contactId: sharedContact.id,
+    message: "发送前等待空闲",
+    authorized: true,
+    visualMode: "visual_render_v1",
+    expectedPid: 81,
+    expectedHWnd: "91",
+    expectedConversation: "A测试客户",
+    windowMinIdleMs: 15_000,
+    windowIdleWait: async (delayMs) => { visualIdleWaits.push(delayMs); },
+    windowInspector: async () => ({ ok: false, reason: "wechat_user_active", requiredIdleMs: 15_000, observedIdleMs: 281 }),
+    beforeDraft: () => { blockedVisualBeforeDraftCalls += 1; return true; },
+    visualSendDriver: async () => { blockedVisualSenderCalls += 1; return { ok: true, send_attempted: true }; }
+  });
+  assert.equal(visualIdleGateResult.ok, false);
+  assert.equal(visualIdleGateResult.blocked_reason, "wechat_user_active");
+  assert.equal(visualIdleGateResult.send_attempted, false, "a busy desktop must stop before any draft or click");
+  assert.equal(visualIdleGateResult.send_result, "not_attempted");
+  assert.deepEqual(visualIdleWaits, [15_000]);
+  assert.equal(blockedVisualBeforeDraftCalls, 0);
+  assert.equal(blockedVisualSenderCalls, 0);
+  assert.deepEqual(visualIdleGateResult.send_diagnostics, {
+    phase: "preflight",
+    required_idle_ms: 15_000,
+    observed_idle_ms: 281,
+    timings: { preflight_ms: visualIdleGateResult.send_diagnostics.timings.preflight_ms }
+  });
+  assert.ok(visualIdleGateResult.send_diagnostics.timings.preflight_ms >= 0);
+
   let visualBeforeDraftCalls = 0;
   let visualSenderCalls = 0;
   const visualSendResult = await executeVerifiedContactSend({

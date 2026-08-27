@@ -501,11 +501,19 @@ $minimumIdleMs = 0
 if (-not [int]::TryParse($minimumIdleMsText, [ref]$minimumIdleMs) -or $minimumIdleMs -lt 0) { $minimumIdleMs = 0 }
 function Test-XiaoxiUserIdle {
   if ($minimumIdleMs -le 0) { return $true }
+  $idleMs = Get-XiaoxiUserIdleMilliseconds
+  return $null -ne $idleMs -and [uint64]$idleMs -ge [uint64]$minimumIdleMs
+}
+function Get-XiaoxiUserIdleMilliseconds {
   $idleMs = [Win32WechatWindow]::GetLastInputIdleMilliseconds()
-  return $idleMs -ne [uint32]::MaxValue -and [uint64]$idleMs -ge [uint64]$minimumIdleMs
+  if ($idleMs -eq [uint32]::MaxValue) { return $null }
+  return [int64]$idleMs
 }
 function Stop-ForActiveUser([int]$processId, [IntPtr]$hWnd) {
-  @{ ok = $false; reason = "wechat_user_active"; pid = $processId; hWnd = $hWnd.ToInt64() } | ConvertTo-Json -Compress
+  $result = @{ ok = $false; reason = "wechat_user_active"; pid = $processId; hWnd = $hWnd.ToInt64(); requiredIdleMs = $minimumIdleMs }
+  $idleMs = Get-XiaoxiUserIdleMilliseconds
+  if ($null -ne $idleMs) { $result.observedIdleMs = $idleMs }
+  $result | ConvertTo-Json -Compress
 }
 function Test-StableWechatTarget([object]$rect, [object]$workArea, [int]$width, [int]$height) {
   if ($rect -eq $null -or $workArea -eq $null) { return $false }
