@@ -6,7 +6,8 @@ const path = require("node:path");
 const {
   installerManifestName,
   installerName,
-  replaceCanonicalFile
+  replaceCanonicalFile,
+  resolveInstallerTarget
 } = require("./build-installer-release.cjs");
 const {
   canonicalJson,
@@ -20,6 +21,8 @@ const productBrand = require("../product-brand.json");
 const packageMetadata = JSON.parse(fs.readFileSync(path.join(desktopDir, "package.json"), "utf8"));
 const config = fs.readFileSync(path.join(desktopDir, "electron-builder-installer.yml"), "utf8");
 const nsis = fs.readFileSync(path.join(desktopDir, "build", "installer.nsh"), "utf8");
+const testConfig = fs.readFileSync(path.join(desktopDir, "electron-builder-test-installer.yml"), "utf8");
+const testNsis = fs.readFileSync(path.join(desktopDir, "build", "installer-test.nsh"), "utf8");
 const builder = fs.readFileSync(path.join(desktopDir, "scripts", "build-installer-release.cjs"), "utf8");
 const trustVerifier = fs.readFileSync(path.join(desktopDir, "scripts", "release-trust-record.cjs"), "utf8");
 
@@ -28,6 +31,7 @@ assert.equal(packageMetadata.version, "1.0.0");
 assert.match(packageMetadata.scripts["release:delivery"], /run-release\.cjs delivery/);
 assert.doesNotMatch(packageMetadata.scripts["release:installer"], /build-portable-release/u, "installer creation must follow the independent trust-record step instead of rebuilding its signed portable input");
 assert.match(packageMetadata.scripts["release:installer"], /build-installer-release\.cjs/);
+assert.match(packageMetadata.scripts["release:installer:test"], /build-installer-release\.cjs test/);
 const installerScript = packageMetadata.scripts["release:installer"];
 assert.equal(
   installerScript.indexOf("check:product-detail-e2e") < installerScript.indexOf("build-installer-release.cjs"),
@@ -45,12 +49,13 @@ assert.match(config, /^\s+createStartMenuShortcut: true$/m);
 assert.match(config, new RegExp(`^  artifactName: ${productBrand.displayName.replace(".", "\\.")}-安装程序\\.\\$\\{ext\\}$`, "m"));
 assert.match(builder, /Refusing to build an installer from a dirty worktree/);
 assert.match(builder, /Portable build commit does not match the current clean commit/);
-assert.match(builder, /portableManifest\.artifactType !== "delivery"/);
+assert.match(builder, /portableManifest\.artifactType !== target\.artifactType/);
+assert.match(builder, /requiresCommercialTrust/);
 assert.match(builder, /commercialLicenseConfirmed !== true/);
 assert.match(builder, /verifyPackagedRemotionRuntime\(portableDir, portableManifest\.remotionRuntime\)/);
 assert.match(builder, /verifyReleaseTrustRecord/);
 assert.match(builder, /sourceTrust: releaseTrust/);
-assert.match(builder, /artifactType: "delivery"/);
+assert.match(builder, /artifactType: target\.artifactType/);
 assert.match(builder, /signed: false/);
 assert.doesNotMatch(builder, /signed: true/);
 assert.match(trustVerifier, /crypto\.verify\("RSA-SHA256"/);
@@ -65,9 +70,28 @@ assert.doesNotMatch(builder, /"--prepackaged",\s+portableDir/);
 assert.match(builder, /productBrand\.stableDeliveryDataDirectoryName/);
 assert.equal(productBrand.stableDeliveryDataDirectoryName, "xiaoxi-active-touch-delivery");
 assert.equal(productBrand.stableInstallDirectoryName, "AI获客");
+assert.equal(productBrand.testAppId, "com.aihuoke.desktop.test");
+assert.equal(productBrand.testInstallDirectoryName, "AI获客-测试版");
+assert.equal(productBrand.testDataDirectoryName, "xiaoxi-active-touch-test");
 assert.match(nsis, /StrCpy \$INSTDIR "\$LocalAppData\\Programs\\AI获客"/);
 assert.equal(installerName, `${productBrand.displayName}-安装程序.exe`);
 assert.equal(installerManifestName, `${productBrand.displayName}-安装程序-版本清单.json`);
+assert.match(testConfig, /^appId: com\.aihuoke\.desktop\.test$/m);
+assert.match(testConfig, /^productName: AI获客 V1\.0版本-测试版$/m);
+assert.match(testConfig, /^  artifactName: AI获客 V1\.0版本-测试版-安装程序\.\$\{ext\}$/m);
+assert.match(testNsis, /StrCpy \$INSTDIR "\$LocalAppData\\Programs\\AI获客-测试版"/);
+assert.deepEqual(resolveInstallerTarget("test"), {
+  edition: "test",
+  artifactType: "internal-evaluation",
+  productName: `${productBrand.displayName}-测试版`,
+  installerName: `${productBrand.displayName}-测试版-安装程序.exe`,
+  installerManifestName: `${productBrand.displayName}-测试版-安装程序-版本清单.json`,
+  configFile: "electron-builder-test-installer.yml",
+  appId: productBrand.testAppId,
+  installDirectoryName: productBrand.testInstallDirectoryName,
+  dataDirectoryName: productBrand.testDataDirectoryName,
+  requiresCommercialTrust: false
+});
 
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "aihuoke-installer-publish-"));
 try {

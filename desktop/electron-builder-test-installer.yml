@@ -1,0 +1,23 @@
+appId: com.aihuoke.desktop.test
+productName: AI获客 V1.0版本-测试版
+compression: normal
+directories:
+  output: ../release/.installer-output
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  executableName: AI获客 V1.0版本-测试版
+  artifactName: AI获客 V1.0版本-测试版-安装程序.${ext}
+nsis:
+  include: build/installer-test.nsh
+  oneClick: true
+  perMachine: false
+  runAfterFinish: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: AI获客 V1.0版本-测试版
+  uninstallDisplayName: AI获客 V1.0版本-测试版
+  deleteAppDataOnUninstall: false
+  differentialPackage: false

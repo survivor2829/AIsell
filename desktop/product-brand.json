@@ -2,5 +2,8 @@
   "displayName": "AI获客 V1.0版本",
   "stableAppId": "com.aihuoke.desktop",
   "stableInstallDirectoryName": "AI获客",
-  "stableDeliveryDataDirectoryName": "xiaoxi-active-touch-delivery"
+  "stableDeliveryDataDirectoryName": "xiaoxi-active-touch-delivery",
+  "testAppId": "com.aihuoke.desktop.test",
+  "testInstallDirectoryName": "AI获客-测试版",
+  "testDataDirectoryName": "xiaoxi-active-touch-test"
 }

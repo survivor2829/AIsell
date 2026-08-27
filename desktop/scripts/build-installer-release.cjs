@@ -10,10 +10,41 @@ const projectDir = path.resolve(desktopDir, "..");
 const releaseDir = path.join(projectDir, "release");
 const productBrand = require("../product-brand.json");
 const PRODUCT_NAME = productBrand.displayName;
-const portableDir = path.join(releaseDir, PRODUCT_NAME);
-const portableManifestFile = path.join(portableDir, "版本清单.json");
 const installerName = `${PRODUCT_NAME}-安装程序.exe`;
 const installerManifestName = `${PRODUCT_NAME}-安装程序-版本清单.json`;
+
+function resolveInstallerTarget(edition = "delivery") {
+  if (edition === "delivery") {
+    return {
+      edition,
+      artifactType: "delivery",
+      productName: PRODUCT_NAME,
+      installerName,
+      installerManifestName,
+      configFile: "electron-builder-installer.yml",
+      appId: productBrand.stableAppId,
+      installDirectoryName: productBrand.stableInstallDirectoryName,
+      dataDirectoryName: productBrand.stableDeliveryDataDirectoryName,
+      requiresCommercialTrust: true
+    };
+  }
+  if (edition === "test") {
+    const productName = `${PRODUCT_NAME}-测试版`;
+    return {
+      edition,
+      artifactType: "internal-evaluation",
+      productName,
+      installerName: `${productName}-安装程序.exe`,
+      installerManifestName: `${productName}-安装程序-版本清单.json`,
+      configFile: "electron-builder-test-installer.yml",
+      appId: productBrand.testAppId,
+      installDirectoryName: productBrand.testInstallDirectoryName,
+      dataDirectoryName: productBrand.testDataDirectoryName,
+      requiresCommercialTrust: false
+    };
+  }
+  throw new Error(`Unsupported installer edition: ${edition}`);
+}
 
 function gitText(args) {
   const result = spawnSync("git", args, {
@@ -27,27 +58,23 @@ function gitText(args) {
   return result.stdout.trim();
 }
 
-function assertInstallerSource(environment = process.env) {
+function assertInstallerSource(edition = "delivery", environment = process.env) {
+  const target = resolveInstallerTarget(edition);
+  const portableDir = path.join(releaseDir, target.productName);
+  const portableManifestFile = path.join(portableDir, "版本清单.json");
   const commit = gitText(["rev-parse", "HEAD"]);
   if (gitText(["status", "--porcelain"])) {
     throw new Error("Refusing to build an installer from a dirty worktree");
   }
-  if (!fs.existsSync(path.join(portableDir, `${PRODUCT_NAME}.exe`))) {
+  if (!fs.existsSync(path.join(portableDir, `${target.productName}.exe`))) {
     throw new Error("Verified portable application is missing; build it first");
   }
   if (!fs.existsSync(portableManifestFile)) {
     throw new Error("Portable version manifest is missing");
   }
   const portableManifest = JSON.parse(fs.readFileSync(portableManifestFile, "utf8"));
-  if (
-    portableManifest.edition !== "delivery"
-    || portableManifest.artifactType !== "delivery"
-    || portableManifest.dirty !== false
-  ) {
-    throw new Error("Installer source must be a clean delivery portable build");
-  }
-  if (portableManifest.remotionRuntime?.commercialLicenseConfirmed !== true) {
-    throw new Error("Installer source lacks a confirmed Remotion commercial license basis");
+  if (portableManifest.edition !== target.edition || portableManifest.artifactType !== target.artifactType || portableManifest.dirty !== false) {
+    throw new Error(`Installer source must be a clean ${target.edition} portable build`);
   }
   if (portableManifest.remotionRuntime?.compositionSmokeStatus !== "passed") {
     throw new Error("Installer source lacks the explicit-browser Remotion composition smoke proof");
@@ -55,6 +82,10 @@ function assertInstallerSource(environment = process.env) {
   verifyPackagedRemotionRuntime(portableDir, portableManifest.remotionRuntime);
   if (portableManifest.commit !== commit) {
     throw new Error("Portable build commit does not match the current clean commit");
+  }
+  if (!target.requiresCommercialTrust) return { commit, portableDir, portableManifest, target, releaseTrust: null };
+  if (portableManifest.remotionRuntime?.commercialLicenseConfirmed !== true) {
+    throw new Error("Installer source lacks a confirmed Remotion commercial license basis");
   }
   const releaseTrust = verifyReleaseTrustRecord({
     environment,
@@ -64,7 +95,7 @@ function assertInstallerSource(environment = process.env) {
     product: PRODUCT_NAME,
     releaseDir
   });
-  return { commit, portableManifest, releaseTrust };
+  return { commit, portableDir, portableManifest, target, releaseTrust };
 }
 
 function replaceCanonicalFile(staged, canonical) {
@@ -85,16 +116,16 @@ function replaceCanonicalFile(staged, canonical) {
   return backedUp ? backup : null;
 }
 
-function buildInstaller() {
-  const { commit, portableManifest, releaseTrust } = assertInstallerSource();
-  const portableTreeHash = releaseTrust.portableTreeSha256;
+function buildInstaller(edition = "delivery") {
+  const { commit, portableDir, portableManifest, target, releaseTrust } = assertInstallerSource(edition);
+  const portableTreeHash = releaseTrust?.portableTreeSha256 || treeSha256(portableDir);
   const transactionId = `${process.pid}-${Date.now()}`;
   const stagingDir = path.join(releaseDir, `.installer-staging-${transactionId}`);
   const installerInputDir = path.join(stagingDir, "portable-input");
-  const stagedInstaller = path.join(stagingDir, installerName);
-  const stagedManifest = path.join(stagingDir, installerManifestName);
-  const canonicalInstaller = path.join(releaseDir, installerName);
-  const canonicalManifest = path.join(releaseDir, installerManifestName);
+  const stagedInstaller = path.join(stagingDir, target.installerName);
+  const stagedManifest = path.join(stagingDir, target.installerManifestName);
+  const canonicalInstaller = path.join(releaseDir, target.installerName);
+  const canonicalManifest = path.join(releaseDir, target.installerManifestName);
   fs.mkdirSync(stagingDir, { recursive: false });
 
   try {
@@ -108,7 +139,7 @@ function buildInstaller() {
       "--prepackaged",
       installerInputDir,
       "--config",
-      path.join(desktopDir, "electron-builder-installer.yml"),
+      path.join(desktopDir, target.configFile),
       `--config.directories.output=${stagingDir}`
     ], {
       cwd: desktopDir,
@@ -131,20 +162,22 @@ function buildInstaller() {
 
     const installerManifest = {
       product: PRODUCT_NAME,
-      artifact: installerName,
-      artifactType: "delivery",
+      edition: target.edition,
+      artifact: target.installerName,
+      artifactType: target.artifactType,
       version: portableManifest.version,
       buildId: portableManifest.buildId,
       commit,
       architecture: "x64",
       installationScope: "current-user",
-      appId: productBrand.stableAppId,
-      installDirectory: `%LOCALAPPDATA%\\Programs\\${productBrand.stableInstallDirectoryName}`,
-      userDataDirectory: `%APPDATA%\\${productBrand.stableDeliveryDataDirectoryName}\\data`,
+      appId: target.appId,
+      installDirectory: `%LOCALAPPDATA%\\Programs\\${target.installDirectoryName}`,
+      userDataDirectory: `%APPDATA%\\${target.dataDirectoryName}\\data`,
       upgradeMode: "offline-full-overwrite",
       uninstallPreservesUserData: true,
       signed: false,
-      sourceTrust: releaseTrust,
+      commercialReady: target.requiresCommercialTrust,
+      ...(releaseTrust ? { sourceTrust: releaseTrust } : {}),
       remotionRuntimeManifestSha256: portableManifest.remotionRuntime.manifestSha256,
       sha256: sha256(stagedInstaller),
       size,
@@ -157,7 +190,7 @@ function buildInstaller() {
       replaceCanonicalFile(stagedManifest, canonicalManifest)
     ].filter(Boolean);
     for (const backup of retainedBackups) console.warn(`installer rollback artifact retained: ${backup}`);
-    console.log(`delivery installer built: ${canonicalInstaller}`);
+    console.log(`${target.edition} installer built: ${canonicalInstaller}`);
     console.log(`sha256: ${installerManifest.sha256}`);
     return { installer: canonicalInstaller, manifest: canonicalManifest, installerManifest, retainedBackups };
   } finally {
@@ -165,12 +198,13 @@ function buildInstaller() {
   }
 }
 
-if (require.main === module) buildInstaller();
+if (require.main === module) buildInstaller(process.argv[2] || "delivery");
 
 module.exports = {
   assertInstallerSource,
   buildInstaller,
   installerManifestName,
   installerName,
-  replaceCanonicalFile
+  replaceCanonicalFile,
+  resolveInstallerTarget
 };
