@@ -89,6 +89,7 @@ function assertStageWorkflowContract() {
   assert.match(source, /xiaoxiTouchTask\.start\(\{ script: messageDraft, excludedContactIds \}\)/, "start must freeze the user exclusion list");
   assert.match(source, /未进入本次任务/u, "contacts excluded before task creation must not be presented as send failures");
   assert.match(source, /不算触达失败/u, "the exclusion summary must explain that pre-task exclusions do not count as task failures");
+  assert.match(source, /const exclusionTaskSize = hasFrozenSnapshot\s*\? \(touchTask\.total \|\| eligibleCount\)\s*: eligibleCount;/u, "the exclusion summary count must come from the same frozen or preview snapshot as its reasons");
   assert.equal(source.includes("未触达原因"), false, "a completed 4/4 task must not label pre-task exclusions as failed touches");
   assert.match(source, /下一阶段开放/, "future modules must stay visible as next-stage placeholders");
   assert.match(source, /结束本次任务/, "unfinished tasks must expose permanent end with confirmation");

@@ -1593,6 +1593,9 @@ function ActiveTouch({
       label: excludedContacts.find((entry) => entry.reason_code === reasonCode)?.reason
         || (reasonCode === "user_excluded" ? "\u5df2\u624b\u52a8\u79fb\u51fa\u672c\u6b21\u89e6\u8fbe" : reasonCode)
     }));
+  const exclusionTaskSize = hasFrozenSnapshot
+    ? (touchTask.total || eligibleCount)
+    : eligibleCount;
   const syncStatusLabel = contactSyncState.status === "synced"
     ? `已同步 ${contacts.length || contactSyncState.contact_count} 人`
     : contactSyncState.status === "capturing"
@@ -1620,7 +1623,7 @@ function ActiveTouch({
       {exclusionSummary.length > 0 && (
         <div className="exclusion-summary">
           <strong>未进入本次任务</strong>
-          <p>{`以下联系人在启动前已排除，未进入本次 ${touchTask.total || eligibleCount} 人触达任务，不算触达失败。`}</p>
+          <p>{`以下联系人在启动前已排除，未进入本次 ${exclusionTaskSize} 人触达任务，不算触达失败。`}</p>
           <div>
             {exclusionSummary.map((item) => (
               <span key={item.reasonCode}>{item.label} <b>{item.count}</b></span>
