@@ -1,6 +1,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { replaceWithRetry } = require("../src/main/atomic-file.cjs");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
 
 const ARTIFACT_TYPES = Object.freeze(["development", "internal-evaluation", "delivery"]);
@@ -722,10 +723,14 @@ async function buildRemotionRuntime({
     const manifestText = canonicalJson(manifest);
     fs.writeFileSync(path.join(staging, "runtime-manifest.json"), manifestText, "utf8");
     fs.writeFileSync(path.join(staging, "runtime-manifest.sha256"), `${sha256Text(manifestText)}  runtime-manifest.json\n`, "utf8");
-    fs.renameSync(staging, output);
+    replaceWithRetry(staging, output, { attempts: 24, retryDelayMs: 100 });
     return verifyRemotionRuntime(output, { desktopDir: root, expectedArtifactType: artifactType });
   } catch (error) {
-    if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true });
+    try {
+      if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true, maxRetries: 24, retryDelay: 100 });
+    } catch (cleanupError) {
+      error.message = `${error.message}\nRemotion staging cleanup also failed: ${cleanupError.message}`;
+    }
     throw error;
   }
 }
