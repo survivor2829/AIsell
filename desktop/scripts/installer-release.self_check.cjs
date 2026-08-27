@@ -18,6 +18,7 @@ const { sha256: fileSha256, treeSha256 } = require("./release-tree-hash.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const productBrand = require("../product-brand.json");
+const installerTargets = require("../installer-targets.json");
 const packageMetadata = JSON.parse(fs.readFileSync(path.join(desktopDir, "package.json"), "utf8"));
 const config = fs.readFileSync(path.join(desktopDir, "electron-builder-installer.yml"), "utf8");
 const nsis = fs.readFileSync(path.join(desktopDir, "build", "installer.nsh"), "utf8");
@@ -31,7 +32,6 @@ assert.equal(packageMetadata.version, "1.0.0");
 assert.match(packageMetadata.scripts["release:delivery"], /run-release\.cjs delivery/);
 assert.doesNotMatch(packageMetadata.scripts["release:installer"], /build-portable-release/u, "installer creation must follow the independent trust-record step instead of rebuilding its signed portable input");
 assert.match(packageMetadata.scripts["release:installer"], /build-installer-release\.cjs/);
-assert.match(packageMetadata.scripts["release:installer:test"], /build-installer-release\.cjs test/);
 const installerScript = packageMetadata.scripts["release:installer"];
 assert.equal(
   installerScript.indexOf("check:product-detail-e2e") < installerScript.indexOf("build-installer-release.cjs"),
@@ -54,6 +54,8 @@ assert.match(builder, /assertTestPortableReuse/);
 assert.match(builder, /target\.edition !== "test"/);
 assert.match(builder, /portableManifest\.artifactType !== target\.artifactType/);
 assert.match(builder, /requiresCommercialTrust/);
+assert.match(builder, /Portable application source tree does not match its version manifest/);
+assert.doesNotMatch(builder.match(/const TEST_PORTABLE_REUSE_PATHS = new Set\(\[[\s\S]*?\]\);/u)?.[0] || "", /desktop\/(package\.json|product-brand\.json)/u);
 assert.match(builder, /commercialLicenseConfirmed !== true/);
 assert.match(builder, /verifyPackagedRemotionRuntime\(portableDir, portableManifest\.remotionRuntime\)/);
 assert.match(builder, /verifyReleaseTrustRecord/);
@@ -74,9 +76,11 @@ assert.doesNotMatch(builder, /"--prepackaged",\s+portableDir/);
 assert.match(builder, /productBrand\.stableDeliveryDataDirectoryName/);
 assert.equal(productBrand.stableDeliveryDataDirectoryName, "xiaoxi-active-touch-delivery");
 assert.equal(productBrand.stableInstallDirectoryName, "AI获客");
-assert.equal(productBrand.testAppId, "com.aihuoke.desktop.test");
-assert.equal(productBrand.testInstallDirectoryName, "AI获客-测试版");
-assert.equal(productBrand.testDataDirectoryName, "xiaoxi-active-touch-test");
+assert.deepEqual(installerTargets.test, {
+  appId: "com.aihuoke.desktop.test",
+  installDirectoryName: "AI获客-测试版",
+  dataDirectoryName: "xiaoxi-active-touch-test"
+});
 assert.match(nsis, /StrCpy \$INSTDIR "\$LocalAppData\\Programs\\AI获客"/);
 assert.equal(installerName, `${productBrand.displayName}-安装程序.exe`);
 assert.equal(installerManifestName, `${productBrand.displayName}-安装程序-版本清单.json`);
@@ -91,9 +95,9 @@ assert.deepEqual(resolveInstallerTarget("test"), {
   installerName: `${productBrand.displayName}-测试版-安装程序.exe`,
   installerManifestName: `${productBrand.displayName}-测试版-安装程序-版本清单.json`,
   configFile: "electron-builder-test-installer.yml",
-  appId: productBrand.testAppId,
-  installDirectoryName: productBrand.testInstallDirectoryName,
-  dataDirectoryName: productBrand.testDataDirectoryName,
+  appId: installerTargets.test.appId,
+  installDirectoryName: installerTargets.test.installDirectoryName,
+  dataDirectoryName: installerTargets.test.dataDirectoryName,
   requiresCommercialTrust: false
 });
 

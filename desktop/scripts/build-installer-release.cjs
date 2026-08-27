@@ -9,14 +9,14 @@ const desktopDir = path.resolve(__dirname, "..");
 const projectDir = path.resolve(desktopDir, "..");
 const releaseDir = path.join(projectDir, "release");
 const productBrand = require("../product-brand.json");
+const installerTargets = require("../installer-targets.json");
 const PRODUCT_NAME = productBrand.displayName;
 const installerName = `${PRODUCT_NAME}-安装程序.exe`;
 const installerManifestName = `${PRODUCT_NAME}-安装程序-版本清单.json`;
 const TEST_PORTABLE_REUSE_PATHS = new Set([
   "desktop/build/installer-test.nsh",
   "desktop/electron-builder-test-installer.yml",
-  "desktop/package.json",
-  "desktop/product-brand.json",
+  "desktop/installer-targets.json",
   "desktop/scripts/build-installer-release.cjs",
   "desktop/scripts/installer-release.self_check.cjs"
 ]);
@@ -37,6 +37,10 @@ function resolveInstallerTarget(edition = "delivery") {
     };
   }
   if (edition === "test") {
+    const testTarget = installerTargets.test;
+    if (!testTarget?.appId || !testTarget?.installDirectoryName || !testTarget?.dataDirectoryName) {
+      throw new Error("Test installer target configuration is incomplete");
+    }
     const productName = `${PRODUCT_NAME}-测试版`;
     return {
       edition,
@@ -45,9 +49,9 @@ function resolveInstallerTarget(edition = "delivery") {
       installerName: `${productName}-安装程序.exe`,
       installerManifestName: `${productName}-安装程序-版本清单.json`,
       configFile: "electron-builder-test-installer.yml",
-      appId: productBrand.testAppId,
-      installDirectoryName: productBrand.testInstallDirectoryName,
-      dataDirectoryName: productBrand.testDataDirectoryName,
+      appId: testTarget.appId,
+      installDirectoryName: testTarget.installDirectoryName,
+      dataDirectoryName: testTarget.dataDirectoryName,
       requiresCommercialTrust: false
     };
   }
@@ -105,6 +109,10 @@ function assertInstallerSource(edition = "delivery", environment = process.env) 
   }
   if (portableManifest.remotionRuntime?.compositionSmokeStatus !== "passed") {
     throw new Error("Installer source lacks the explicit-browser Remotion composition smoke proof");
+  }
+  const portableAppDir = path.join(portableDir, "resources", "app");
+  if (!portableManifest.sourceTreeSha256 || treeSha256(portableAppDir) !== portableManifest.sourceTreeSha256) {
+    throw new Error("Portable application source tree does not match its version manifest");
   }
   verifyPackagedRemotionRuntime(portableDir, portableManifest.remotionRuntime);
   const portableCommit = String(portableManifest.commit || "").trim();
