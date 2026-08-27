@@ -71,11 +71,12 @@ function preflightReleaseInputs(edition, environment = process.env) {
 
 function runRelease(edition = "delivery", environment = process.env) {
   if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported release edition: ${edition}`);
-  const { artifactType: remotionArtifactType } = preflightReleaseInputs(edition, environment);
+  const { artifactType: remotionArtifactType, remotion } = preflightReleaseInputs(edition, environment);
   const sidecarBuildRoot = createBuildRoot();
   const remotionRuntimeRoot = path.join(sidecarBuildRoot, "r");
   const releaseEnvironment = {
     ...environment,
+    XIAOXI_PRODUCT_DETAIL_BROWSER_PATH: remotion.resolvedBrowser,
     XIAOXI_SIDECAR_BUILD_ROOT: sidecarBuildRoot,
     XIAOXI_REMOTION_RUNTIME_ROOT: remotionRuntimeRoot
   };

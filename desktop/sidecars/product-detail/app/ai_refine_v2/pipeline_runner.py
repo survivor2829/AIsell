@@ -33,6 +33,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
 
+from browser_runtime import launch_chromium
+
 _RESOURCE_ROOT = Path(
     os.environ.get(
         "XIAOXI_PRODUCT_DETAIL_RESOURCE_DIR",
@@ -649,7 +651,7 @@ def _run_assembler(task_dir: Path, blocks: list[dict],
     out_png = task_dir / "assembled.png"
     from playwright.sync_api import sync_playwright
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(args=[
+        browser = launch_chromium(pw, args=[
             "--allow-file-access-from-files",
         ])
         ctx = browser.new_context(

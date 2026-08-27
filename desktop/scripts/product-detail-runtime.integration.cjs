@@ -17,6 +17,7 @@ const runtimePath = path.join(
 );
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 const SESSION_COOKIE_NAME = "xiaoxi_product_detail_session";
+const sharedBrowserPath = String(process.env.XIAOXI_PRODUCT_DETAIL_BROWSER_PATH || "").trim();
 
 function request(url, { method = "GET", headers = {} } = {}) {
   return new Promise((resolve, reject) => {
@@ -103,6 +104,9 @@ async function main() {
       "Product-detail runtime is missing; run npm.cmd run build:product-detail first"
     );
   }
+  if (sharedBrowserPath && (!path.isAbsolute(sharedBrowserPath) || !fs.existsSync(sharedBrowserPath))) {
+    throw new Error("XIAOXI_PRODUCT_DETAIL_BROWSER_PATH must be an existing absolute chrome.exe path");
+  }
 
   fs.mkdirSync(buildRoot, { recursive: true });
   const dataDir = fs.mkdtempSync(
@@ -114,6 +118,9 @@ async function main() {
     dataDir,
     startupTimeoutMs: 120_000,
     stopTimeoutMs: 15_000,
+    getTrustedRuntimeEnvironment: () => sharedBrowserPath
+      ? { XIAOXI_PRODUCT_DETAIL_BROWSER_PATH: sharedBrowserPath }
+      : {},
     spawnProcess: (command, args, options) => {
       child = spawn(command, args, options);
       return child;
@@ -127,7 +134,7 @@ async function main() {
     assert.equal(ready.available, true);
     assert.match(ready.version, /^[a-z0-9._+-]+$/i);
     assert.equal(ready.capabilities.offline_workspace, true);
-    assert.equal(ready.capabilities.playwright, true);
+    assert.equal(ready.capabilities.playwright, Boolean(sharedBrowserPath));
 
     const origin = new URL(ready.origin);
     assert.equal(origin.protocol, "http:");
@@ -143,7 +150,7 @@ async function main() {
     assert.equal(health.mode, "desktop");
     assert.equal(health.version, ready.version);
     assert.equal(health.capabilities.offline_workspace, true);
-    assert.equal(health.capabilities.playwright, true);
+    assert.equal(health.capabilities.playwright, Boolean(sharedBrowserPath));
 
     const privateResponse = await request(
       `${ready.origin}/static/uploads/1/private.png`

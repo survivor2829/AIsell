@@ -134,13 +134,13 @@ try {
         stderr: ""
       };
     }
-    if (args.includes("-encoders")) return { status: 0, stdout: "libx264\naac\nmjpeg\npcm_s16le\nrawvideo\n", stderr: "" };
+    if (args.includes("-encoders")) return { status: 0, stdout: "h264_mf\naac\nmjpeg\npcm_s16le\nrawvideo\n", stderr: "" };
     if (args.includes("-muxers")) return { status: 0, stdout: "hash\nimage2\nmp4\nnull\nrawvideo\nwav\n", stderr: "" };
     if (args.includes("-demuxers")) return { status: 0, stdout: "concat\n", stderr: "" };
     if (args.includes("-decoders")) return { status: 0, stdout: "aac\nh264\nmjpeg\npcm_s16le\n", stderr: "" };
-    if (args.includes("-filters")) return { status: 0, stdout: "acompressor\nadelay\naevalsrc\nafftdn\nafade\nalimiter\nametadata\namix\nanull\nanullsrc\napad\naresample\nasetpts\nasplit\natrim\nboxblur\ncolor\ncolorchannelmixer\nconcat\ncrop\ndrawbox\ndrawtext\nebur128\nformat\nfps\nhighpass\nlowpass\nloudnorm\noverlay\npad\nscale\nsetpts\nsetsar\nsidechaincompress\nsine\nsplit\nsubtitles\ntestsrc2\nvolume\nzoompan\n", stderr: "" };
+    if (args.includes("-filters")) return { status: 0, stdout: "acompressor\nadelay\naevalsrc\nafftdn\nafade\nalimiter\nametadata\namix\nanull\nanullsrc\napad\naresample\nasetpts\nasplit\natrim\ngblur\ncolor\ncolorchannelmixer\nconcat\ncrop\ndrawbox\ndrawtext\nebur128\nformat\nfps\nhighpass\nlowpass\nloudnorm\noverlay\npad\nscale\nsetpts\nsetsar\nsidechaincompress\nsine\nsplit\nsubtitles\ntestsrc2\nvolume\nzoompan\n", stderr: "" };
     if (args.includes("-bsfs")) return { status: 0, stdout: "h264_metadata\n", stderr: "" };
-    if (args.includes("-version")) return { status: 0, stdout: "ffmpeg version fixture-0.1.0\n", stderr: "" };
+    if (args.includes("-version")) return { status: 0, stdout: "ffmpeg version fixture-0.1.0\nconfiguration: --enable-shared --disable-gpl --disable-libx264\n", stderr: "" };
     const output = args.at(-1);
     if (/\.(?:jpg|mp4|raw|wav)$/iu.test(String(output))) {
       fs.writeFileSync(output, "fixture-mp4", "utf8");

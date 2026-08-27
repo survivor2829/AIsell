@@ -223,8 +223,9 @@ def _render_product_preview(
         # 4) Playwright 截图 → preview.png
         preview_png_path = product_dir / "preview.png"
         from playwright.sync_api import sync_playwright
+        from browser_runtime import launch_chromium
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(args=[
+            browser = launch_chromium(pw, args=[
                 "--allow-file-access-from-files",
             ])
             ctx = browser.new_context(

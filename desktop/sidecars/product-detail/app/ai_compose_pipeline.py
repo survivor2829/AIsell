@@ -24,6 +24,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from PIL import Image
 from playwright.sync_api import sync_playwright
+from browser_runtime import launch_chromium
 
 
 RESOURCE_BASE = Path(
@@ -130,7 +131,8 @@ def render_screens(ctxs: dict, order: list[str], out_dir: Path,
 
     segments = []
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(
+        browser = launch_chromium(
+            pw,
             args=["--allow-file-access-from-files"],
         )
         page = browser.new_page(device_scale_factor=2)

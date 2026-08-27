@@ -426,6 +426,11 @@ for (const relative of [
 ]) {
   assert.equal(archiveEntries.some((entry) => entry.replaceAll("\\", "/").endsWith(`/${relative}`)), true, `portable ZIP must contain ${relative}`);
 }
+assert.equal(
+  fs.existsSync(path.join(target, "resources", "product-detail", "_internal", "playwright-browsers")),
+  false,
+  "portable product-detail runtime must use the shared Chromium rather than embed a duplicate depot"
+);
 for (const name of momentsRuntimeNames) {
   assert.equal(archiveEntries.some((entry) => entry.replaceAll("\\", "/").endsWith(`/rpa/active_touch/${name}`)), true, `${name} must be present in every portable ZIP`);
 }
@@ -463,6 +468,7 @@ try {
     dataDir: path.join(tempDir, "product-detail")
   });
   assert.equal(productDetailPayload.version, manifest.productDetailSidecar.version);
+  assert.equal(productDetailPayload.capabilities.playwright, true, "product-detail must launch the shared Chromium runtime");
 
   const contentEngineSession = runPackagedContentEngineSelfCheck({
     releaseTarget: target,

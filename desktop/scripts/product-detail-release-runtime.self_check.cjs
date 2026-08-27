@@ -62,7 +62,7 @@ try {
     runtime: {
       kind: "pyinstaller-onedir",
       entry: PRODUCT_DETAIL_EXECUTABLE,
-      bundledPlaywright: true,
+      bundledPlaywright: false,
       exeSha256: sha256(path.join(runtimeDir, PRODUCT_DETAIL_EXECUTABLE)),
       treeSha256: treeSha256(runtimeDir)
     }
@@ -93,6 +93,9 @@ try {
   const releaseTarget = path.join(root, "portable", "AI获客");
   const resourcesDir = path.join(releaseTarget, "resources");
   fs.mkdirSync(resourcesDir, { recursive: true });
+  const sharedBrowser = path.join(resourcesDir, "content-engine", "browser", "chrome.exe");
+  fs.mkdirSync(path.dirname(sharedBrowser), { recursive: true });
+  fs.writeFileSync(sharedBrowser, "fixture-browser", "utf8");
   const packagedDir = copyProductDetailRuntime(build, releaseTarget);
   assert.equal(
     packagedDir,
@@ -177,7 +180,8 @@ try {
         stdout: JSON.stringify({
           ok: true,
           mode: "desktop",
-          version: descriptor.version
+          version: descriptor.version,
+          capabilities: { playwright: true }
         }),
         stderr: ""
       };
@@ -188,6 +192,7 @@ try {
   assert.deepEqual(observedCall.args, ["--self-check", "--data-dir", dataDir]);
   assert.equal(observedCall.options.cwd, packagedDir);
   assert.equal(observedCall.options.env.PYTHONUTF8, "1");
+  assert.equal(observedCall.options.env.XIAOXI_PRODUCT_DETAIL_BROWSER_PATH, sharedBrowser);
 
   assert.throws(
     () => runPackagedProductDetailSelfCheck({
@@ -202,7 +207,8 @@ try {
           stdout: JSON.stringify({
             ok: true,
             mode: "desktop",
-            version: descriptor.version
+            version: descriptor.version,
+            capabilities: { playwright: true }
           }),
           stderr: ""
         };

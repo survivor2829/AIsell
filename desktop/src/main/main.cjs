@@ -94,6 +94,22 @@ function contentEngineRuntimePath() {
   return resolveDefaultDevelopmentSidecarRuntime("content-engine");
 }
 
+function productDetailRuntimeEnvironment() {
+  if (app.isPackaged) {
+    return {
+      XIAOXI_PRODUCT_DETAIL_BROWSER_PATH: path.join(
+        process.resourcesPath,
+        "content-engine",
+        "browser",
+        "chrome.exe"
+      )
+    };
+  }
+  const configured = String(process.env.XIAOXI_PRODUCT_DETAIL_BROWSER_PATH || "").trim();
+  if (configured) return { XIAOXI_PRODUCT_DETAIL_BROWSER_PATH: configured };
+  return {};
+}
+
 function restartImageProviderConsumers() {
   const restarts = [restartProductDetailForProviderChange()];
   const contentState = contentEngineController?.status().state;
@@ -326,6 +342,7 @@ if (!gotSingleInstanceLock) {
     productDetailController = createProductDetailSidecar({
       runtimePath: productDetailRuntimePath(),
       dataDir: productDetailDataDir,
+      getTrustedRuntimeEnvironment: productDetailRuntimeEnvironment,
       getProviderEnvironment: getProductDetailProviderEnvironment
     });
     productDetailIpcRegistration = registerProductDetailIpc({

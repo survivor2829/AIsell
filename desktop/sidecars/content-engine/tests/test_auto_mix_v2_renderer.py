@@ -278,7 +278,7 @@ class AutoMixV2RendererTests(unittest.TestCase):
         self.assertIn("-an", bounded_call)
         self.assertNotIn("crop=1080:1920:(in_w-1080)", " ".join(bounded_call))
         self.assertIn("split=2", visual_canvas)
-        self.assertIn("boxblur=18:2", visual_canvas)
+        self.assertIn("gblur=sigma=18:steps=2", visual_canvas)
         self.assertIn("force_original_aspect_ratio=decrease", visual_canvas)
         self.assertIn("overlay=(W-w)/2:(H-h)/2", visual_canvas)
         self.assertIn("-shortest", all_args)
@@ -776,9 +776,13 @@ class AutoMixV2RendererTests(unittest.TestCase):
                 "-t",
                 "1.2",
                 "-c:v",
-                "libx264",
-                "-preset",
-                "ultrafast",
+                "h264_mf",
+                "-rate_control",
+                "quality",
+                "-quality",
+                "75",
+                "-scenario",
+                "archive",
                 "-pix_fmt",
                 "yuv420p",
                 str(source),
@@ -833,7 +837,7 @@ class AutoMixV2RendererTests(unittest.TestCase):
             timeout_seconds=120,
         )
         renderer._encoder_checked = True
-        renderer._preferred_encoder = "libx264"
+        renderer._preferred_encoder = "h264_mf"
         stage = self.root / "real-stage"
         stage.mkdir()
         output = self.root / "real-v2-mezzanine.mp4"

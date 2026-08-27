@@ -207,7 +207,7 @@ class MixRenderTests(unittest.TestCase):
         for preset in PLATFORM_PRESETS.values():
             self.assertEqual((1080, 1920), (preset.width, preset.height))
             self.assertEqual(30, preset.fps)
-            self.assertEqual("libx264", preset.video_codec)
+            self.assertEqual("h264_mf", preset.video_codec)
             self.assertEqual("aac", preset.audio_codec)
             self.assertEqual("yuv420p", preset.pixel_format)
             self.assertTrue(preset.faststart)
@@ -272,6 +272,10 @@ class MixRenderTests(unittest.TestCase):
         command = calls[0][0]
         self.assertEqual("12.500", command[command.index("-ss") + 1])
         self.assertEqual("5.000", command[command.index("-t") + 1])
+        self.assertEqual("h264_mf", command[command.index("-c:v") + 1])
+        self.assertEqual("quality", command[command.index("-rate_control") + 1])
+        self.assertEqual("75", command[command.index("-quality") + 1])
+        self.assertNotIn("libx264", command)
 
 
 if __name__ == "__main__":

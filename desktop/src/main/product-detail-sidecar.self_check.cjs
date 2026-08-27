@@ -49,8 +49,11 @@ async function waitFor(predicate, timeoutMs = 200) {
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-product-detail-sidecar-"));
   const runtimePath = path.join(root, "product-detail-sidecar.exe");
+  const browserPath = path.join(root, "browser", "chrome.exe");
   const dataDir = path.join(root, "data");
   fs.writeFileSync(runtimePath, "");
+  fs.mkdirSync(path.dirname(browserPath), { recursive: true });
+  fs.writeFileSync(browserPath, "");
 
   try {
     {
@@ -186,6 +189,10 @@ async function main() {
             PATH: "must-be-ignored"
           };
         },
+        getTrustedRuntimeEnvironment: () => ({
+          XIAOXI_PRODUCT_DETAIL_BROWSER_PATH: browserPath,
+          PATH: "must-be-ignored"
+        }),
         startupTimeoutMs: 100,
         stopTimeoutMs: 5,
         spawnProcess: (_command, _args, options) => {
@@ -207,6 +214,7 @@ async function main() {
       assert.equal(spawnOptions.env.ARK_API_KEY, "");
       assert.equal(spawnOptions.env.GPT_IMAGE_API_KEY, "");
       assert.notEqual(spawnOptions.env.PATH, "must-be-ignored");
+      assert.equal(spawnOptions.env.XIAOXI_PRODUCT_DETAIL_BROWSER_PATH, browserPath);
       ready(child, { capabilities: { paid_ai_ready: true } });
       const status = await started;
       assert.equal(status.capabilities.paid_ai_ready, true);

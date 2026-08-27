@@ -15,11 +15,7 @@ const pythonPath = path.join(
   "Scripts",
   "python.exe"
 );
-const browserPath = path.join(
-  desktopDir,
-  ".build",
-  "product-detail-playwright"
-);
+const browserPath = String(process.env.XIAOXI_PRODUCT_DETAIL_BROWSER_PATH || "").trim();
 const applicationDir = path.join(
   desktopDir,
   "sidecars",
@@ -95,7 +91,10 @@ def run():
 
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = playwright.chromium.launch(
+                headless=True,
+                executable_path=config["browser_path"],
+            )
             context = browser.new_context(
                 accept_downloads=True,
                 viewport=config.get("viewport", {"width": 1440, "height": 1000}),
@@ -862,7 +861,7 @@ function startSidecar({ dataDir, bootstrapToken, controlToken, paidAiConfigured 
     const env = {
       ...process.env,
       XIAOXI_PRODUCT_DETAIL_DATA_DIR: dataDir,
-      PLAYWRIGHT_BROWSERS_PATH: browserPath,
+      XIAOXI_PRODUCT_DETAIL_BROWSER_PATH: browserPath,
       PLAYWRIGHT_NODEJS_PATH: playwrightNodePath,
       PYTHONUTF8: "1",
       PYTHONUNBUFFERED: "1",
@@ -1006,11 +1005,10 @@ async function runBrowserPhase(config) {
       cwd: repositoryRoot,
       env: {
         ...process.env,
-        PLAYWRIGHT_BROWSERS_PATH: browserPath,
         PLAYWRIGHT_NODEJS_PATH: playwrightNodePath,
         PYTHONUTF8: "1",
         PYTHONUNBUFFERED: "1",
-        XIAOXI_PRODUCT_DETAIL_E2E_CONFIG: JSON.stringify(config)
+        XIAOXI_PRODUCT_DETAIL_E2E_CONFIG: JSON.stringify({ ...config, browser_path: browserPath })
       },
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"]
@@ -1065,7 +1063,7 @@ async function verifyHealth(server) {
 async function main() {
   requireFile(pythonPath, "product-detail Python runtime");
   requireFile(playwrightNodePath, "Node.js executable for product-detail Playwright");
-  requireDirectory(browserPath, "product-detail Playwright browsers");
+  requireFile(browserPath, "audited shared Chromium executable");
   requireFile(entryPath, "product-detail desktop entry");
   requireFile(fixturePath, "product-detail PNG fixture");
   fs.mkdirSync(tempRoot, { recursive: true });

@@ -104,7 +104,10 @@ class CreativeVisualSignalTests(unittest.TestCase):
         )
 
     def test_analysis_populates_every_segment_with_measured_visual_signals(self):
+        calls = []
+
         def fake_ffmpeg(args, **_kwargs):
+            calls.append(list(args))
             output = Path(args[-1])
             output.parent.mkdir(parents=True, exist_ok=True)
             if "rawvideo" in args:
@@ -142,6 +145,10 @@ class CreativeVisualSignalTests(unittest.TestCase):
 
         self.assertGreater(len(outcome["segments"]), 0)
         self.assertEqual(6, len(outcome["segments"]))
+        proxy_command = next(command for command in calls if command[-1].endswith("proxy.mp4"))
+        self.assertEqual("h264_mf", proxy_command[proxy_command.index("-c:v") + 1])
+        self.assertEqual("50", proxy_command[proxy_command.index("-quality") + 1])
+        self.assertNotIn("libx264", proxy_command)
         for segment in outcome["segments"]:
             metadata = segment["metadata"]
             self.assertEqual(LOCAL_VISUAL_SIGNAL_VERSION, metadata["visual_signal_version"])

@@ -22,7 +22,7 @@ class PlatformPreset:
     width: int = 1080
     height: int = 1920
     fps: int = 30
-    video_codec: str = "libx264"
+    video_codec: str = "h264_mf"
     audio_codec: str = "aac"
     pixel_format: str = "yuv420p"
     faststart: bool = True
@@ -226,6 +226,12 @@ class FFmpegMixRenderer:
             f"{target_ms / 1000:.3f}",
             "-c:v",
             preset.video_codec,
+            "-rate_control",
+            "quality",
+            "-quality",
+            "75",
+            "-scenario",
+            "archive",
             "-pix_fmt",
             preset.pixel_format,
             "-r",

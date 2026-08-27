@@ -8,7 +8,6 @@ const {
   buildPyInstallerArgs,
   desktopSourceProvenance,
   ensureSafeBuildTarget,
-  assertWindowsPathBudget,
   isProductDetailSourceFile,
   productDetailSourceFiles,
   productDetailSourceTreeSha256,
@@ -16,7 +15,6 @@ const {
   sourceProvenance,
   validateSelfCheckPayload
 } = require("./build-product-detail-sidecar.cjs");
-const { createBuildRoot } = require("./run-release.cjs");
 
 const paths = resolveBuildPaths();
 assert.equal(
@@ -54,28 +52,14 @@ assert.ok(
   "static assets must be bundled beside the frozen entry module"
 );
 assert.ok(
-  args.some((value) => value === `${paths.playwrightBrowsersDir}${path.delimiter}playwright-browsers`),
-  "the controlled Playwright browser must be bundled"
+  !args.some((value) => String(value).includes("playwright-browsers")),
+  "the product-detail sidecar must not embed a second Chromium depot"
 );
 assert.deepEqual(
   args.slice(args.indexOf("--collect-all"), args.indexOf("--collect-all") + 2),
   ["--collect-all", "playwright"]
 );
 assert.equal(args.at(-1), paths.entryFile);
-
-const tooDeepPaths = resolveBuildPaths(undefined, {
-  buildRoot: path.join(os.tmpdir(), "xiaoxi-product-detail-path-budget", "x".repeat(220))
-});
-assert.throws(
-  () => assertWindowsPathBudget(tooDeepPaths),
-  /staging root is too deep/,
-  "the build must reject a staging path that would exceed the Windows Playwright path budget"
-);
-const releaseStagingPaths = resolveBuildPaths(undefined, { buildRoot: createBuildRoot() });
-assert.doesNotThrow(
-  () => assertWindowsPathBudget(releaseStagingPaths),
-  "release orchestration must choose a staging root that fits the bundled Playwright browser on Windows"
-);
 
 assert.equal(ensureSafeBuildTarget(paths.outputDir, paths.buildRoot), paths.outputDir);
 assert.throws(
@@ -225,13 +209,12 @@ try {
     version: "2.0.0-desktop",
     source: provenance,
     desktopSource: cleanDesktopSource,
-    bundledPlaywright: true,
     builtAt: "2026-07-30T00:00:00.000Z"
   });
   assert.equal(manifest.schemaVersion, 1);
   assert.equal(manifest.runtime.kind, "pyinstaller-onedir");
   assert.equal(manifest.runtime.entry, "product-detail-server.exe");
-  assert.equal(manifest.runtime.bundledPlaywright, true);
+  assert.equal(manifest.runtime.bundledPlaywright, false);
   assert.match(manifest.runtime.exeSha256, /^[a-f0-9]{64}$/);
   assert.match(manifest.runtime.treeSha256, /^[a-f0-9]{64}$/);
   assert.equal(manifest.version, "2.0.0-desktop");

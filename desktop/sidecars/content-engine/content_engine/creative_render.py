@@ -63,15 +63,28 @@ class FFmpegCreativeRenderer:
         self.font_paths = self._discover_font_paths()
         self.font_path = self.font_paths["microsoft_yahei"]
         self._encoder_checked = False
-        self._preferred_encoder = "libx264"
+        self._preferred_encoder = "h264_mf"
 
     @property
     def capability(self):
-        available = bool(self.ffmpeg_path and self.ffprobe_path)
+        if not self.ffmpeg_path or not self.ffprobe_path:
+            return {
+                "available": False,
+                "code": "media_tools_unavailable",
+                "hardware_encoder": False,
+            }
+        try:
+            self._encoder()
+        except ContentEngineError as error:
+            return {
+                "available": False,
+                "code": error.code,
+                "hardware_encoder": False,
+            }
         return {
-            "available": available,
-            "code": "ready" if available else "media_tools_unavailable",
-            "hardware_encoder": self._preferred_encoder == "h264_qsv",
+            "available": True,
+            "code": "ready",
+            "hardware_encoder": False,
         }
 
     @staticmethod
@@ -229,16 +242,24 @@ class FFmpegCreativeRenderer:
                 pass
 
     def _encoder(self):
-        if self._encoder_checked or not self.ffmpeg_path:
+        if self._encoder_checked:
             return self._preferred_encoder
-        self._encoder_checked = True
+        if not self.ffmpeg_path:
+            raise ContentEngineError(
+                "media_encoder_unavailable",
+                "未找到 Windows H.264 Media Foundation 编码器。",
+            )
         result = self._command(
             [self.ffmpeg_path, "-hide_banner", "-encoders"],
             timeout=30,
             allow_failure=True,
         )
-        if result.returncode == 0 and "h264_qsv" in (result.stdout or ""):
-            self._preferred_encoder = "h264_qsv"
+        if result.returncode != 0 or "h264_mf" not in (result.stdout or ""):
+            raise ContentEngineError(
+                "media_encoder_unavailable",
+                "当前 FFmpeg 未提供 Windows H.264 Media Foundation 编码器。",
+            )
+        self._encoder_checked = True
         return self._preferred_encoder
 
     def render(
@@ -420,35 +441,25 @@ class FFmpegCreativeRenderer:
         )
 
     def _encode_mezzanine(self, input_args, output, *, audio=True, cwd=None):
-        encoders = [self._encoder()]
-        if encoders[0] != "libx264":
-            encoders.append("libx264")
-        last_error = None
-        for encoder in encoders:
-            command = [self.ffmpeg_path, "-y", *input_args, "-c:v", encoder]
-            if encoder == "libx264":
-                command.extend(("-preset", "medium", "-crf", "18"))
-            else:
-                command.extend(("-global_quality", "18", "-look_ahead", "0"))
-            command.extend(
-                (
-                    "-pix_fmt", "yuv420p", "-r", "30", "-fps_mode", "cfr",
-                    "-color_primaries", "bt709", "-color_trc", "bt709",
-                    "-colorspace", "bt709",
-                    "-bsf:v",
-                    "h264_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1",
-                )
+        command = [self.ffmpeg_path, "-y", *input_args, "-c:v", self._encoder()]
+        command.extend(
+            (
+                "-rate_control", "quality", "-quality", "80", "-scenario", "archive",
+                "-pix_fmt", "yuv420p", "-r", "30", "-fps_mode", "cfr",
+                "-color_primaries", "bt709", "-color_trc", "bt709",
+                "-colorspace", "bt709",
+                "-bsf:v",
+                "h264_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1",
             )
-            if audio:
-                command.extend(("-c:a", "aac", "-ar", "48000", "-ac", "2"))
-            command.extend(("-movflags", "+faststart", str(output)))
-            result = self._command(command, cwd=cwd, allow_failure=True)
-            if result.returncode == 0:
-                self._preferred_encoder = encoder
-                return
-            last_error = result.stderr
+        )
+        if audio:
+            command.extend(("-c:a", "aac", "-ar", "48000", "-ac", "2"))
+        command.extend(("-movflags", "+faststart", str(output)))
+        result = self._command(command, cwd=cwd, allow_failure=True)
+        if result.returncode == 0:
+            return
         raise ContentEngineError(
-            "render_failed", str(last_error or "FFmpeg failed")[-2_000:]
+            "render_failed", str(result.stderr or "FFmpeg failed")[-2_000:]
         )
 
     def mux_visual_with_mezzanine_audio(
@@ -1113,26 +1124,20 @@ class FFmpegCreativeRenderer:
             self._encode_with_fallback(args, output)
 
     def _encode_with_fallback(self, input_args, output, *, audio=True):
-        encoders = [self._encoder()]
-        if encoders[0] != "libx264":
-            encoders.append("libx264")
-        last_error = None
-        for encoder in encoders:
-            command = [self.ffmpeg_path, "-y", *input_args, "-c:v", encoder]
-            if encoder == "libx264":
-                command.extend(("-preset", "medium", "-crf", "20"))
-            else:
-                command.extend(("-global_quality", "20", "-look_ahead", "0"))
-            command.extend(("-pix_fmt", "yuv420p", "-r", "30"))
-            if audio:
-                command.extend(("-c:a", "aac", "-ar", "48000", "-ac", "2"))
-            command.extend(("-movflags", "+faststart", str(output)))
-            result = self._command(command, allow_failure=True)
-            if result.returncode == 0:
-                self._preferred_encoder = encoder
-                return
-            last_error = result.stderr
-        raise ContentEngineError("render_failed", str(last_error or "FFmpeg failed")[-2_000:])
+        command = [self.ffmpeg_path, "-y", *input_args, "-c:v", self._encoder()]
+        command.extend(
+            (
+                "-rate_control", "quality", "-quality", "75", "-scenario", "archive",
+                "-pix_fmt", "yuv420p", "-r", "30",
+            )
+        )
+        if audio:
+            command.extend(("-c:a", "aac", "-ar", "48000", "-ac", "2"))
+        command.extend(("-movflags", "+faststart", str(output)))
+        result = self._command(command, allow_failure=True)
+        if result.returncode == 0:
+            return
+        raise ContentEngineError("render_failed", str(result.stderr or "FFmpeg failed")[-2_000:])
 
     @staticmethod
     def _audio_filter(recipe):
@@ -1890,7 +1895,7 @@ class FFmpegCreativeRenderer:
         return (
             "[0:v]setpts=PTS-STARTPTS,split=2[auto_mix_bg_src][auto_mix_fg_src];"
             "[auto_mix_bg_src]scale=1080:1920:force_original_aspect_ratio=increase,"
-            "crop=1080:1920:(iw-1080)/2:(ih-1920)/2,boxblur=18:2,setsar=1,fps=30[auto_mix_bg];"
+            "crop=1080:1920:(iw-1080)/2:(ih-1920)/2,gblur=sigma=18:steps=2,setsar=1,fps=30[auto_mix_bg];"
             "[auto_mix_fg_src]scale=1080:1920:force_original_aspect_ratio=decrease:"
             "force_divisible_by=2,setsar=1,fps=30[auto_mix_fg];"
             "[auto_mix_bg][auto_mix_fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[auto_mix_vout]"
@@ -1960,7 +1965,7 @@ class FFmpegCreativeRenderer:
                 "[0:v]split=3[teacher_source][wide_background_source][wide_source];"
                 f"[teacher_source]{self._portrait_base_filter()}[teacher];"
                 "[wide_background_source]scale=1080:1920:force_original_aspect_ratio=increase,"
-                "crop=1080:1920,boxblur=18:2,fps=30[wide_background];"
+                "crop=1080:1920,gblur=sigma=18:steps=2,fps=30[wide_background];"
                 "[wide_source]scale=990:1680:force_original_aspect_ratio=decrease,"
                 "pad=990:1680:(ow-iw)/2:(oh-ih)/2:black,fps=30[wide_foreground];"
                 "[wide_background][wide_foreground]overlay=(W-w)/2:(H-h)/2[wide];"

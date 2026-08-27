@@ -31,7 +31,7 @@ const MEDIA_TOOL_REQUIRED_FILTERS = Object.freeze([
   "asetpts",
   "asplit",
   "atrim",
-  "boxblur",
+  "gblur",
   "color",
   "colorchannelmixer",
   "concat",
@@ -57,7 +57,7 @@ const MEDIA_TOOL_REQUIRED_FILTERS = Object.freeze([
   "volume",
   "zoompan"
 ]);
-const MEDIA_TOOL_REQUIRED_ENCODERS = Object.freeze(["aac", "libx264", "mjpeg", "pcm_s16le", "rawvideo"]);
+const MEDIA_TOOL_REQUIRED_ENCODERS = Object.freeze(["aac", "h264_mf", "mjpeg", "pcm_s16le", "rawvideo"]);
 const MEDIA_TOOL_REQUIRED_MUXERS = Object.freeze(["hash", "image2", "mp4", "null", "rawvideo", "wav"]);
 const MEDIA_TOOL_REQUIRED_DEMUXERS = Object.freeze(["concat"]);
 const MEDIA_TOOL_REQUIRED_DECODERS = Object.freeze(["aac", "h264", "mjpeg", "pcm_s16le"]);
@@ -471,9 +471,18 @@ function requireToolToken(output, token, label) {
 }
 
 function ffmpegVersionToken(output, label) {
-  const match = String(output || "").match(/(?:^|\r?\n)ffmpeg version ([^\s]+)/iu);
-  if (!match) throw new Error(`${label} is missing the FFmpeg version token`);
+  const match = String(output || "").match(/(?:^|\r?\n)ff(?:mpeg|probe) version ([^\s]+)/iu);
+  if (!match) throw new Error(`${label} is missing the media tool version token`);
   return match[1];
+}
+
+function assertRedistributableFfmpegConfiguration(output, label) {
+  const normalized = String(output || "").toLowerCase();
+  for (const forbidden of ["--enable-gpl", "--enable-libx264", "--enable-libx265"]) {
+    if (normalized.includes(forbidden)) {
+      throw new Error(`${label} is GPL-enabled and cannot be bundled in this release runtime: ${forbidden}`);
+    }
+  }
 }
 
 function requireToolVersion(actual, version, label) {
@@ -541,10 +550,18 @@ function verifyBundledMediaTools(runtimeDir, mediaTools, { spawn = spawnSync, te
   if (!expectedVersion) throw new Error("Packaged media tools self-check is missing the recorded tool version.");
   const ffmpegVersion = runMediaToolCommand(ffmpeg, ["-hide_banner", "-version"], "Packaged FFmpeg", { spawn, env });
   requireToolToken(ffmpegVersion, "ffmpeg", "Packaged FFmpeg version output");
+  assertRedistributableFfmpegConfiguration(ffmpegVersion, "Packaged FFmpeg version output");
   requireToolVersion(
     ffmpegVersionToken(ffmpegVersion, "Packaged FFmpeg version output"),
     expectedVersion,
     "Packaged FFmpeg version output"
+  );
+  const ffprobeDistributionVersion = runMediaToolCommand(ffprobe, ["-hide_banner", "-version"], "Packaged ffprobe version", { spawn, env });
+  assertRedistributableFfmpegConfiguration(ffprobeDistributionVersion, "Packaged ffprobe version output");
+  requireToolVersion(
+    ffmpegVersionToken(ffprobeDistributionVersion, "Packaged ffprobe version output"),
+    expectedVersion,
+    "Packaged ffprobe version output"
   );
   const ffprobeVersion = runMediaToolCommand(ffprobe, ["-v", "error", "-show_program_version", "-of", "json"], "Packaged ffprobe", { spawn, env });
   let ffprobeVersionPayload;
@@ -615,11 +632,14 @@ function verifyBundledMediaTools(runtimeDir, mediaTools, { spawn = spawnSync, te
       "-f", "lavfi", "-i", "testsrc2=s=64x64:r=25:d=0.2",
       "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono",
       "-filter_complex",
-      `[0:v]setpts=PTS-STARTPTS,split=2[bg_src][fg_src];[bg_src]scale=72:128:force_original_aspect_ratio=increase,crop=72:128:(iw-72)/2:(ih-128)/2,boxblur=1:1,setsar=1,fps=25[bg];[fg_src]scale=72:128:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1,fps=25[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p,setpts=PTS-STARTPTS,subtitles=filename='${ffmpegFilterPath(smokeSubtitle)}':fontsdir='${ffmpegFilterPath(path.dirname(font))}'[vout]`,
+      `[0:v]setpts=PTS-STARTPTS,split=2[bg_src][fg_src];[bg_src]scale=72:128:force_original_aspect_ratio=increase,crop=72:128:(iw-72)/2:(ih-128)/2,gblur=sigma=1:steps=1,setsar=1,fps=25[bg];[fg_src]scale=72:128:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1,fps=25[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p,setpts=PTS-STARTPTS,subtitles=filename='${ffmpegFilterPath(smokeSubtitle)}':fontsdir='${ffmpegFilterPath(path.dirname(font))}'[vout]`,
       "-map", "[vout]",
       "-map", "1:a:0",
       "-t", "0.2",
-      "-c:v", "libx264",
+      "-c:v", "h264_mf",
+      "-rate_control", "quality",
+      "-quality", "80",
+      "-scenario", "archive",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
       "-shortest",
@@ -1373,6 +1393,7 @@ if (require.main === module) {
 
 module.exports = {
   assertBuildInputs,
+  assertRedistributableFfmpegConfiguration,
   assertFreshOutput,
   buildManifest,
   buildPyInstallerArgs,

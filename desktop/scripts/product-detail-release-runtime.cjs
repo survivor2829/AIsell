@@ -46,6 +46,9 @@ function validateBuildManifest(manifest, manifestFile) {
   if (manifest.runtime?.entry !== PRODUCT_DETAIL_EXECUTABLE) {
     throw new Error(`Product-detail runtime manifest has an unexpected entry: ${manifestFile}`);
   }
+  if (manifest.runtime?.bundledPlaywright !== false) {
+    throw new Error(`Product-detail runtime must use the shared Chromium runtime: ${manifestFile}`);
+  }
   if (!SHA256_PATTERN.test(String(manifest.runtime?.exeSha256 || ""))) {
     throw new Error(`Product-detail runtime manifest has an invalid EXE hash: ${manifestFile}`);
   }
@@ -88,6 +91,9 @@ function resolveProductDetailBuild(desktopDir, { buildRoot = null } = {}) {
   }
   const executable = path.join(runtimeDir, PRODUCT_DETAIL_EXECUTABLE);
   assertFile(executable, "Product-detail runtime executable");
+  if (fs.existsSync(path.join(runtimeDir, "_internal", "playwright-browsers"))) {
+    throw new Error("Product-detail runtime must not embed a second Chromium depot");
+  }
   if (sha256(executable) !== manifest.runtime.exeSha256) {
     throw new Error("Product-detail runtime EXE hash does not match its build manifest");
   }
@@ -246,6 +252,8 @@ function runPackagedProductDetailSelfCheck({
     throw new Error(`Product-detail self-check data directory must be fresh: ${dataDir}`);
   }
   const packaged = resolvePackagedProductDetail(releaseTarget, descriptor);
+  const sharedBrowser = path.join(path.resolve(resourcesDir), "content-engine", "browser", "chrome.exe");
+  assertFile(sharedBrowser, "Shared Chromium runtime");
   const resourcesHashBefore = treeSha256(resourcesDir);
   fs.mkdirSync(dataDir, { recursive: false });
   const result = spawn(
@@ -256,6 +264,7 @@ function runPackagedProductDetailSelfCheck({
       encoding: "utf8",
       env: {
         ...process.env,
+        XIAOXI_PRODUCT_DETAIL_BROWSER_PATH: sharedBrowser,
         PYTHONUTF8: "1"
       },
       maxBuffer: 16 * 1024 * 1024,
@@ -269,6 +278,9 @@ function runPackagedProductDetailSelfCheck({
   }
   if (payload.version !== descriptor.version) {
     throw new Error("Product-detail packaged self-check version does not match the portable manifest");
+  }
+  if (payload?.capabilities?.playwright !== true) {
+    throw new Error("Product-detail packaged self-check could not launch the shared Chromium runtime");
   }
   if (treeSha256(resourcesDir) !== resourcesHashBefore) {
     throw new Error("Product-detail packaged self-check changed portable resources");

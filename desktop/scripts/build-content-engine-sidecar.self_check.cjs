@@ -6,6 +6,7 @@ const { sha256 } = require("./release-tree-hash.cjs");
 const {
   assertBuildInputs,
   assertFreshOutput,
+  assertRedistributableFfmpegConfiguration,
   buildManifest,
   buildPyInstallerArgs,
   copyMediaTools,
@@ -20,6 +21,15 @@ const {
   validateMediaToolsManifest,
   verifyBundledMediaTools
 } = require("./build-content-engine-sidecar.cjs");
+
+assert.throws(
+  () => assertRedistributableFfmpegConfiguration(
+    "ffmpeg version fixture\nconfiguration: --enable-gpl --enable-libx264",
+    "fixture FFmpeg"
+  ),
+  /GPL-enabled/,
+  "the release builder must reject a GPL-enabled FFmpeg runtime"
+);
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-content-engine-build-"));
 
@@ -147,13 +157,13 @@ try {
         stderr: ""
       };
     }
-    if (spawnArgs.includes("-encoders")) return { status: 0, stdout: "libx264\naac\nmjpeg\npcm_s16le\nrawvideo\n", stderr: "" };
+    if (spawnArgs.includes("-encoders")) return { status: 0, stdout: "h264_mf\naac\nmjpeg\npcm_s16le\nrawvideo\n", stderr: "" };
     if (spawnArgs.includes("-muxers")) return { status: 0, stdout: "hash\nimage2\nmp4\nnull\nrawvideo\nwav\n", stderr: "" };
     if (spawnArgs.includes("-demuxers")) return { status: 0, stdout: "concat\n", stderr: "" };
     if (spawnArgs.includes("-decoders")) return { status: 0, stdout: "aac\nh264\nmjpeg\npcm_s16le\n", stderr: "" };
-    if (spawnArgs.includes("-filters")) return { status: 0, stdout: "acompressor\nadelay\naevalsrc\nafftdn\nafade\nalimiter\nametadata\namix\nanull\nanullsrc\napad\naresample\nasetpts\nasplit\natrim\nboxblur\ncolor\ncolorchannelmixer\nconcat\ncrop\ndrawbox\ndrawtext\nebur128\nformat\nfps\nhighpass\nlowpass\nloudnorm\noverlay\npad\nscale\nsetpts\nsetsar\nsidechaincompress\nsine\nsplit\nsubtitles\ntestsrc2\nvolume\nzoompan\n", stderr: "" };
+    if (spawnArgs.includes("-filters")) return { status: 0, stdout: "acompressor\nadelay\naevalsrc\nafftdn\nafade\nalimiter\nametadata\namix\nanull\nanullsrc\napad\naresample\nasetpts\nasplit\natrim\ngblur\ncolor\ncolorchannelmixer\nconcat\ncrop\ndrawbox\ndrawtext\nebur128\nformat\nfps\nhighpass\nlowpass\nloudnorm\noverlay\npad\nscale\nsetpts\nsetsar\nsidechaincompress\nsine\nsplit\nsubtitles\ntestsrc2\nvolume\nzoompan\n", stderr: "" };
     if (spawnArgs.includes("-bsfs")) return { status: 0, stdout: "h264_metadata\n", stderr: "" };
-    if (spawnArgs.includes("-version")) return { status: 0, stdout: "ffmpeg version fixture-0.1.0\n", stderr: "" };
+    if (spawnArgs.includes("-version")) return { status: 0, stdout: "ffmpeg version fixture-0.1.0\nconfiguration: --enable-shared --disable-gpl --disable-libx264\n", stderr: "" };
     const output = spawnArgs.at(-1);
     if (/\.(?:jpg|mp4|raw|wav)$/iu.test(String(output))) {
       fs.writeFileSync(output, "fixture-mp4", "utf8");
@@ -189,7 +199,7 @@ try {
   assert.equal(mediaToolCalls.every((call) => call.options.env.PATH === [path.join(mediaRuntime, "media-tools"), "C:\\Windows\\System32", "C:\\Windows"].join(path.delimiter)), true);
   assert.equal(mediaToolCalls.every((call) => !call.options.env.PATH.includes(mediaSourceRoot) && call.options.env.Path === undefined), true);
   const graphs = mediaToolCalls.filter((call) => call.spawnArgs.includes("-filter_complex")).map((call) => call.spawnArgs[call.spawnArgs.indexOf("-filter_complex") + 1]);
-  assert.equal(graphs.some((graph) => graph.includes("split=2") && graph.includes("subtitles=") && graph.includes("boxblur=")), true);
+  assert.equal(graphs.some((graph) => graph.includes("split=2") && graph.includes("subtitles=") && graph.includes("gblur=")), true);
   assert.equal(graphs.some((graph) => graph.includes("afftdn=") && graph.includes("sidechaincompress=") && graph.includes("amix=")), true);
   assert.equal(mediaToolCalls.some((call) => call.spawnArgs.includes("h264_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1")), true);
   assert.equal(mediaToolCalls.some((call) => call.spawnArgs.includes("concat")), true);
@@ -207,7 +217,7 @@ try {
   assert.throws(
     () => copyMediaTools(configuredMedia, missingFilterRuntime, {
       spawn: (executable, spawnArgs, options) => spawnArgs.includes("-filters")
-        ? { status: 0, stdout: "acompressor\nadelay\naevalsrc\nafftdn\nafade\nalimiter\nametadata\namix\nanullsrc\napad\naresample\nasetpts\nasplit\natrim\nboxblur\ncolor\ncolorchannelmixer\nconcat\ncrop\ndrawbox\ndrawtext\nebur128\nformat\nfps\nhighpass\nlowpass\nloudnorm\noverlay\npad\nscale\nsetpts\nsetsar\nsidechaincompress\nsine\nsplit\nsubtitles\ntestsrc2\nvolume\nzoompan\n", stderr: "" }
+        ? { status: 0, stdout: "acompressor\nadelay\naevalsrc\nafftdn\nafade\nalimiter\nametadata\namix\nanullsrc\napad\naresample\nasetpts\nasplit\natrim\ngblur\ncolor\ncolorchannelmixer\nconcat\ncrop\ndrawbox\ndrawtext\nebur128\nformat\nfps\nhighpass\nlowpass\nloudnorm\noverlay\npad\nscale\nsetpts\nsetsar\nsidechaincompress\nsine\nsplit\nsubtitles\ntestsrc2\nvolume\nzoompan\n", stderr: "" }
         : mediaSpawn(executable, spawnArgs, options),
       tempRoot: root
     }),

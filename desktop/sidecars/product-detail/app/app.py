@@ -25,6 +25,7 @@ import batch_upload as batch_upload_mod
 import batch_queue as batch_queue_mod
 import batch_processor as batch_processor_mod
 import batch_pubsub as batch_pubsub_mod
+from browser_runtime import launch_chromium
 
 # 加载 .env 文件（本地开发用，生产环境靠系统环境变量）
 load_dotenv(Path(__file__).parent / ".env")
@@ -5785,7 +5786,8 @@ def export_main_images_zip(product_type):
         from PIL import Image
         from playwright.sync_api import sync_playwright
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(
+            browser = launch_chromium(
+                pw,
                 args=["--allow-file-access-from-files"]
             )
             ctx = browser.new_context(
@@ -5990,7 +5992,8 @@ def export_generic(product_type):
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(
+            browser = launch_chromium(
+                pw,
                 args=["--allow-file-access-from-files"]
             )
             ctx = browser.new_context(

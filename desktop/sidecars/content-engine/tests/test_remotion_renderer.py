@@ -359,7 +359,8 @@ class FFmpegMezzanineContractTests(unittest.TestCase):
                 ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
                 "-f", "lavfi", "-i", "testsrc2=size=360x640:rate=30",
                 "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
-                "-t", "6.5", "-c:v", "libx264", "-preset", "ultrafast",
+                "-t", "6.5", "-c:v", "h264_mf", "-rate_control", "quality",
+                "-quality", "75", "-scenario", "archive",
                 "-pix_fmt", "yuv420p", "-c:a", "aac", str(source),
             ],
             check=True,
@@ -370,7 +371,7 @@ class FFmpegMezzanineContractTests(unittest.TestCase):
             timeout_seconds=120,
         )
         renderer._encoder_checked = True
-        renderer._preferred_encoder = "libx264"
+        renderer._preferred_encoder = "h264_mf"
         stage = self.root / "real-stage"
         stage.mkdir()
         recipe = course_recipe()
@@ -414,7 +415,7 @@ class FFmpegMezzanineContractTests(unittest.TestCase):
         subprocess.run(
             [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
              "-i", "testsrc2=size=360x640:rate=30", "-t", "4", "-an",
-             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(source)],
+             "-c:v", "h264_mf", "-rate_control", "quality", "-quality", "75", "-scenario", "archive", "-pix_fmt", "yuv420p", str(source)],
             check=True, timeout=60,
         )
         voice = self.root / "product-voice.wav"
@@ -439,7 +440,7 @@ class FFmpegMezzanineContractTests(unittest.TestCase):
             self.root, ffmpeg_path=ffmpeg, ffprobe_path=ffprobe, timeout_seconds=120
         )
         renderer._encoder_checked = True
-        renderer._preferred_encoder = "libx264"
+        renderer._preferred_encoder = "h264_mf"
         stage = self.root / "product-real-stage"
         stage.mkdir()
         output = stage / "product-mezzanine.mp4"
@@ -471,7 +472,8 @@ class FFmpegMezzanineContractTests(unittest.TestCase):
                 ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
                 "-f", "lavfi", "-i", f"testsrc2=size=360x640:rate={fps}",
                 "-f", "lavfi", "-i", f"sine=frequency={440 + index * 80}:sample_rate=48000",
-                "-t", "4", "-c:v", "libx264", "-preset", "ultrafast",
+                "-t", "4", "-c:v", "h264_mf", "-rate_control", "quality",
+                "-quality", "75", "-scenario", "archive",
                 "-pix_fmt", "yuv420p", "-r", str(fps),
                 "-c:a", "aac", "-ar", "48000", "-ac", "2",
             ]
@@ -505,7 +507,7 @@ class FFmpegMezzanineContractTests(unittest.TestCase):
             self.root, ffmpeg_path=ffmpeg, ffprobe_path=ffprobe, timeout_seconds=120
         )
         renderer._encoder_checked = True
-        renderer._preferred_encoder = "libx264"
+        renderer._preferred_encoder = "h264_mf"
         stage = self.root / "mixed-source-stage"
         stage.mkdir()
         output = stage / "mixed-source-mezzanine.mp4"

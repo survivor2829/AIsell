@@ -72,7 +72,7 @@ $env:PYTHONDONTWRITEBYTECODE = "1"
 - 原项目中允许客户端传密钥、文件路径或直接触发费用的旧 AI 接口继续返回 `DESKTOP_PAID_ACTION_DISABLED`。新的 AI 精修只有在 DeepSeek 与 APIMart 两把 Key 均可用时才开放；用户点击“AI精修”后直接开始，不再增加费用估算和二次确认步骤。按钮旁明确说明会调用 APIMart，打开页面本身仍不会发起付费请求。
 - 付费任务使用持久化单任务账本；并发请求会被阻止，提交或轮询结果不明时状态写为 `outcome_unknown`，在用户核对 APIMart 并明确解除前不得自动重提。
 - SortableJS 1.15.6 与 JSZip 3.10.1 已固定版本并附许可证放入 `static/vendor/`；Google Fonts 网络引用已移除。
-- Chromium 保持沙箱和 Web 安全开启；打包运行时内置受控 Playwright 浏览器。
+- Chromium 保持沙箱和 Web 安全开启；产品详情图复用便携包 `resources/content-engine/browser/chrome.exe` 这一份受控 Chromium，不再在 Python sidecar 内重复携带浏览器。
 
 ## 构建与真实运行验收
 
@@ -84,7 +84,7 @@ node scripts/product-detail-runtime.integration.cjs
 ```
 
 构建输出位于忽略目录 `.build/product-detail-runtime/`，根目录包含
-`product-detail-server.exe`；同级 manifest 记录 EXE、整树哈希、冻结源版本和浏览器能力。
+`product-detail-server.exe`；同级 manifest 记录 EXE、整树哈希和冻结源版本。上述独立集成检查验证 sidecar 启停；完整的 Chromium 启动验证由 `npm.cmd run release:test` 在便携包内执行。若要在独立检查中同时验证浏览器，先显式设置 `XIAOXI_PRODUCT_DETAIL_BROWSER_PATH` 为经审计的绝对 `chrome.exe` 路径。
 构建脚本采用 fresh-build：发现已有固定输出时拒绝覆盖，也不会自动删除任何旧构建目录。
 
 当前产品详情图 Python 全量回归为 `550 passed, 1 skipped, 134 subtests passed`；APIMart 状态与单任务账本专项 `20 passed`。本地无头 Chromium 在 `1440px` 宿主下测得 iframe 内容宽 `1090px`、缩放 `0.7053`，在 `1920px` 宿主下测得 iframe 内容宽 `1570px`、缩放为 `1`；单个隐藏恢复、全部恢复、重启恢复和 PNG 导出均通过。“一键生成”连续触发两次仍只有一次解析和一次排版；“AI精修”连续触发两次仍只有一次提交、零费用弹窗、零费用估算请求。导出 PNG 为 `2,196,564` bytes，SHA256 为 `d6a7d882bac2a0fd8183658957ad1ade4f2ca372c09abe691d9842ebbf52b901`。本轮浏览器证据拦截了付费接口，没有使用真实 Key 调用模型。

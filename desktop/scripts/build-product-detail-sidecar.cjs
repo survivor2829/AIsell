@@ -13,8 +13,6 @@ const {
 } = require("../src/main/product-detail-source-scope.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
-const WINDOWS_PATH_BUDGET = 240;
-
 function resolveBuildPaths(root = desktopDir, { buildRoot: requestedBuildRoot = null } = {}) {
   const resolvedDesktopDir = path.resolve(root);
   const defaultBuildRoot = path.join(resolvedDesktopDir, ".build");
@@ -36,7 +34,6 @@ function resolveBuildPaths(root = desktopDir, { buildRoot: requestedBuildRoot = 
     staticDir: path.join(sourceDir, "static"),
     screenTypesFile: path.join(sourceDir, "ai_refine_v2", "screen_types.yaml"),
     snapshotFile: path.join(sourceRoot, "source-snapshot.json"),
-    playwrightBrowsersDir: path.join(defaultBuildRoot, "product-detail-playwright"),
     outputDir,
     outputExe: path.join(outputDir, "product-detail-server.exe"),
     manifestFile: path.join(buildRoot, "product-detail-runtime.manifest.json"),
@@ -93,12 +90,6 @@ function buildPyInstallerArgs(paths) {
     "--add-data",
     `${paths.screenTypesFile}${path.delimiter}ai_refine_v2`
   ];
-  if (fs.existsSync(paths.playwrightBrowsersDir)) {
-    dataArgs.push(
-      "--add-data",
-      `${paths.playwrightBrowsersDir}${path.delimiter}playwright-browsers`
-    );
-  }
   return [
     "--noconfirm",
     "--onedir",
@@ -279,8 +270,7 @@ function buildManifest({
   version,
   source,
   desktopSource,
-  builtAt,
-  bundledPlaywright = false
+  builtAt
 }) {
   if (!fs.existsSync(outputExe)) {
     throw new Error(`Product-detail runtime executable is missing: ${outputExe}`);
@@ -307,7 +297,7 @@ function buildManifest({
     runtime: {
       kind: "pyinstaller-onedir",
       entry: path.basename(outputExe),
-      bundledPlaywright: Boolean(bundledPlaywright),
+      bundledPlaywright: false,
       exeSha256: sha256(outputExe),
       treeSha256: treeSha256(outputDir)
     }
@@ -325,37 +315,6 @@ function assertBuildInputs(paths) {
     if (!fs.existsSync(required)) {
       throw new Error(`Missing product-detail build input: ${required}`);
     }
-  }
-}
-
-function longestRelativeFilePath(root) {
-  let longest = "";
-  const visit = (directory, relativeDirectory = "") => {
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-      const relative = relativeDirectory ? path.join(relativeDirectory, entry.name) : entry.name;
-      const absolute = path.join(directory, entry.name);
-      if (entry.isDirectory()) visit(absolute, relative);
-      else if (entry.isFile() && relative.length > longest.length) longest = relative;
-    }
-  };
-  visit(root);
-  return longest;
-}
-
-function assertWindowsPathBudget(paths) {
-  if (process.platform !== "win32" || !fs.existsSync(paths.playwrightBrowsersDir)) return;
-  const longestBrowserPath = longestRelativeFilePath(paths.playwrightBrowsersDir);
-  const destination = path.join(
-    paths.pyInstallerOutputDir,
-    "_internal",
-    "playwright-browsers",
-    longestBrowserPath
-  );
-  if (destination.length >= WINDOWS_PATH_BUDGET) {
-    throw new Error(
-      `Product-detail staging root is too deep for the bundled Playwright browser (${destination.length} characters). `
-      + "Set XIAOXI_SIDECAR_BUILD_ROOT to a shorter writable path such as %TEMP%\\x\\<short-id>."
-    );
   }
 }
 
@@ -387,7 +346,6 @@ function parseJsonOutput(result, label) {
 function main({ buildRoot = process.env.XIAOXI_SIDECAR_BUILD_ROOT || null } = {}) {
   const paths = resolveBuildPaths(desktopDir, { buildRoot });
   assertBuildInputs(paths);
-  assertWindowsPathBudget(paths);
   fs.mkdirSync(paths.buildRoot, { recursive: true });
   assertFreshOutput(paths);
   fs.mkdirSync(paths.specDir, { recursive: true });
@@ -448,8 +406,7 @@ function main({ buildRoot = process.env.XIAOXI_SIDECAR_BUILD_ROOT || null } = {}
     outputExe: paths.outputExe,
     version: selfCheck.version,
     source: sourceProvenance(snapshot),
-    desktopSource: desktopSourceBefore,
-    bundledPlaywright: fs.existsSync(paths.playwrightBrowsersDir)
+    desktopSource: desktopSourceBefore
   });
   fs.writeFileSync(paths.manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   console.log(`Product-detail sidecar built and verified: ${paths.outputExe}`);
@@ -468,7 +425,6 @@ if (require.main === module) {
 
 module.exports = {
   assertBuildInputs,
-  assertWindowsPathBudget,
   assertFreshOutput,
   buildManifest,
   buildPyInstallerArgs,
@@ -479,7 +435,6 @@ module.exports = {
   productDetailSourceTreeSha256,
   findBuildPython,
   main,
-  longestRelativeFilePath,
   pythonCandidates,
   removeBuildTarget,
   resolveBuildPaths,

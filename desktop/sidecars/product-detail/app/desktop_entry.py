@@ -25,14 +25,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
 
+from browser_runtime import playwright_available
+
 from werkzeug.serving import WSGIRequestHandler, make_server
 
 
 VERSION = "2.0.0-desktop"
 RESOURCE_DIR = Path(__file__).resolve().parent
-BUNDLED_PLAYWRIGHT_DIR = RESOURCE_DIR / "playwright-browsers"
-if BUNDLED_PLAYWRIGHT_DIR.is_dir():
-    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(BUNDLED_PLAYWRIGHT_DIR))
 _MUTABLE_STATIC_ROOTS = {"uploads", "outputs", "cache", "ai_refine_v2"}
 _TOKEN_MIN_LENGTH = 32
 
@@ -155,20 +154,10 @@ def prepare_runtime_paths(data_dir: str | os.PathLike[str] | Path) -> RuntimePat
     return paths
 
 
-def _playwright_available() -> bool:
-    if importlib.util.find_spec("playwright.sync_api") is None:
-        return False
-    try:
-        from playwright.sync_api import sync_playwright
-
-        with sync_playwright() as playwright:
-            return Path(playwright.chromium.executable_path).is_file()
-    except Exception:
-        return False
-
-
 def detect_capabilities(
     environ: Mapping[str, str] | None = None,
+    *,
+    verify_browser: bool = False,
 ) -> dict[str, bool]:
     values = environ or os.environ
     deepseek = bool(values.get("DEEPSEEK_API_KEY", "").strip())
@@ -191,7 +180,7 @@ def detect_capabilities(
         "rembg_installed": rembg_installed,
         "rembg_model": rembg_model,
         "rembg": rembg_installed and rembg_model,
-        "playwright": _playwright_available(),
+        "playwright": playwright_available(verify_launch=verify_browser),
     }
 
 
@@ -573,7 +562,10 @@ def create_desktop_application(
     config = _validate_config(config)
     paths = prepare_runtime_paths(config.data_dir)
     _configure_environment(paths)
-    capabilities = detect_capabilities()
+    # A packaged sidecar must prove the shared Chromium can start before it
+    # advertises browser features. Merely finding chrome.exe lets a partial
+    # portable extraction fail later during an export.
+    capabilities = detect_capabilities(verify_browser=True)
     with contextlib.redirect_stdout(sys.stderr):
         app_module = importlib.import_module("app")
     app_module.app.config.update(
@@ -608,7 +600,7 @@ def self_check(data_dir: Path) -> dict:
         "mutable_paths": {
             name: str(path) for name, path in paths.mutable_paths().items()
         },
-        "capabilities": detect_capabilities(),
+        "capabilities": detect_capabilities(verify_browser=True),
     }
 
 

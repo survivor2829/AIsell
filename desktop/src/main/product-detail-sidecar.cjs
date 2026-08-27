@@ -24,6 +24,9 @@ const DESKTOP_ALLOWED_PROVIDER_ENV_KEYS = new Set([
   "REFINE_API_KEY",
   "REFINE_API_BASE_URL"
 ]);
+const TRUSTED_RUNTIME_ENV_KEYS = new Set([
+  "XIAOXI_PRODUCT_DETAIL_BROWSER_PATH"
+]);
 
 function tokenFrom(randomBytes) {
   return randomBytes(32).toString("hex");
@@ -120,6 +123,9 @@ function createProductDetailSidecar(options = {}) {
   const getProviderEnvironment = typeof options.getProviderEnvironment === "function"
     ? options.getProviderEnvironment
     : () => options.providerEnvironment;
+  const getTrustedRuntimeEnvironment = typeof options.getTrustedRuntimeEnvironment === "function"
+    ? options.getTrustedRuntimeEnvironment
+    : () => ({});
   const startupTimeoutMs = Math.max(1, Number(options.startupTimeoutMs) || 30_000);
   const stopTimeoutMs = Math.max(1, Number(options.stopTimeoutMs) || 3_000);
   const listeners = new Set();
@@ -266,10 +272,21 @@ function createProductDetailSidecar(options = {}) {
     });
 
     let providerEnvironment;
+    let trustedRuntimeEnvironment;
     try {
       providerEnvironment = sanitizeProviderEnvironment(
         await Promise.resolve(getProviderEnvironment())
       );
+      const supplied = await Promise.resolve(getTrustedRuntimeEnvironment());
+      trustedRuntimeEnvironment = {};
+      if (supplied && typeof supplied === "object" && !Array.isArray(supplied)) {
+        for (const [key, value] of Object.entries(supplied)) {
+          if (!TRUSTED_RUNTIME_ENV_KEYS.has(key)) continue;
+          const candidate = String(value || "").trim();
+          if (!candidate || !path.isAbsolute(candidate) || !existsSync(candidate)) continue;
+          trustedRuntimeEnvironment[key] = candidate;
+        }
+      }
     } catch {
       return setTerminalState("failed", "PRODUCT_DETAIL_PROVIDER_CONFIG_FAILED");
     }
@@ -281,7 +298,10 @@ function createProductDetailSidecar(options = {}) {
         for (const key of DESKTOP_PROVIDER_ENV_KEYS) {
           childEnvironment[key] = "";
         }
-        Object.assign(childEnvironment, providerEnvironment);
+        for (const key of TRUSTED_RUNTIME_ENV_KEYS) {
+          childEnvironment[key] = "";
+        }
+        Object.assign(childEnvironment, providerEnvironment, trustedRuntimeEnvironment);
         child = spawnProcess(runtimePath, args, {
           windowsHide: true,
           shell: false,

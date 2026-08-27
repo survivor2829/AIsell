@@ -78,6 +78,16 @@ function assertMainLifecycleAndNavigation() {
   assert.match(source, /XIAOXI_PRODUCT_DETAIL_SIDECAR/, "development runtime must be configured by environment");
   assert.match(
     source,
+    /getTrustedRuntimeEnvironment:\s*productDetailRuntimeEnvironment/,
+    "main must inject the audited shared Chromium path into the product-detail sidecar"
+  );
+  assert.match(
+    source,
+    /content-engine[\s\S]*?browser[\s\S]*?chrome\.exe/,
+    "packaged product-detail must consume the shared content-engine Chromium"
+  );
+  assert.match(
+    source,
     /process\.resourcesPath[\s\S]*?"product-detail"[\s\S]*?"product-detail-server\.exe"/,
     "packaged runtime must resolve below process.resourcesPath"
   );
