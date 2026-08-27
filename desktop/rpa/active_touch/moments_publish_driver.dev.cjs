@@ -23,6 +23,8 @@ const MOMENTS_PUBLISH_CAMERA_PROFILE = Object.freeze({
   logicalHeaderHeight: 80
 });
 const PUBLISH_VISIBLE_ANCHOR_CHARACTERS = 24;
+const PUBLISH_POSTVERIFY_TIMEOUT_MS = 12_000;
+const PUBLISH_POSTVERIFY_INTERVAL_MS = 500;
 
 function verificationToken(content) {
   const normalized = String(content ?? "")
@@ -2027,14 +2029,31 @@ try {
   }
 
   $script:publishStage = "postpublish_verification"
-  for ($attempt = 0; $attempt -lt 4; $attempt++) {
-    Start-Sleep -Milliseconds 350
+  $verificationTimeoutMs = ${PUBLISH_POSTVERIFY_TIMEOUT_MS}
+  $verificationIntervalMs = ${PUBLISH_POSTVERIFY_INTERVAL_MS}
+  $verificationStopwatch = [Diagnostics.Stopwatch]::StartNew()
+  $verificationAttempts = 0
+  $lastVerificationReason = ""
+  while ($verificationStopwatch.ElapsedMilliseconds -lt $verificationTimeoutMs) {
+    $remainingMs = $verificationTimeoutMs - [int]$verificationStopwatch.ElapsedMilliseconds
+    if ($remainingMs -le 0) { break }
+    Start-Sleep -Milliseconds ([Math]::Min($verificationIntervalMs, $remainingMs))
+    $verificationAttempts++
     $currentLock = Get-PublishWindowLock $context
-    if (-not $currentLock.ok) { continue }
+    if (-not $currentLock.ok) {
+      $lastVerificationReason = [string]$currentLock.reason
+      if (-not $lastVerificationReason) { $lastVerificationReason = "moments_publish_window_lock_failed" }
+      continue
+    }
     $after = Get-PublishFullObservation $currentLock $true $true
-    if (-not $after.ok) { continue }
+    if (-not $after.ok) {
+      $lastVerificationReason = [string]$after.reason
+      if (-not $lastVerificationReason) { $lastVerificationReason = "moments_publish_observation_failed" }
+      continue
+    }
     $verified = Test-PublishVerified $after $currentLock ([string]$focusedTarget.runtimeId) $expectedContentCompact $finalManifestProof $mediaEvidence ([string]$baseline.pixelHash)
     if ($verified.ok) {
+      $verificationStopwatch.Stop()
       Write-PublishResult @{
         ok = $true
         status = "verified"
@@ -2042,14 +2061,24 @@ try {
         verified = $true
         verificationMode = [string]$verified.verificationMode
         verificationCandidateKey = [string]$verified.candidateKey
+        verificationAttempts = [int]$verificationAttempts
+        verificationElapsedMs = [int]$verificationStopwatch.ElapsedMilliseconds
+        lastVerificationReason = [string]$lastVerificationReason
       }
     }
+    $lastVerificationReason = [string]$verified.reason
+    if (-not $lastVerificationReason) { $lastVerificationReason = "moments_publish_verification_failed" }
   }
+  $verificationStopwatch.Stop()
+  if (-not $lastVerificationReason) { $lastVerificationReason = "moments_publish_verification_timed_out" }
   Write-PublishResult @{
     ok = $false
     status = "outcome_unknown"
     reason = "moments_publish_outcome_unknown"
     verified = $false
+    verificationAttempts = [int]$verificationAttempts
+    verificationElapsedMs = [int]$verificationStopwatch.ElapsedMilliseconds
+    lastVerificationReason = [string]$lastVerificationReason
   }
 } catch {
   $exceptionType = ""

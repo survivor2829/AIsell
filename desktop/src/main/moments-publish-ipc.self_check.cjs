@@ -168,7 +168,14 @@ async function main() {
       assert.equal(path.dirname(request.markerPath), path.join(verifiedRoot, "publish_markers"));
       verifiedMarkerPath = request.markerPath;
       fs.writeFileSync(request.markerPath, JSON.stringify({ actionAttempted: true }));
-      return { ok: true, status: "verified", actionAttempted: true };
+      return {
+        ok: true,
+        status: "verified",
+        actionAttempted: true,
+        verificationAttempts: 5,
+        verificationElapsedMs: 2460,
+        lastVerificationReason: "moments_publish_feed_unchanged"
+      };
     }
   });
   assert.equal(verifiedController.initialize().ok, true);
@@ -195,6 +202,9 @@ async function main() {
   assert.equal(verified.ok, true, JSON.stringify(verified));
   assert.equal(verified.verified, true);
   assert.equal(verified.state.status, "verified");
+  assert.equal(verified.state.verification_attempts, 5);
+  assert.equal(verified.state.verification_elapsed_ms, 2460);
+  assert.equal(verified.state.last_verification_reason, "moments_publish_feed_unchanged");
   assert.equal(openCalls, 1);
   assert.equal(driverCalls, 1);
   assert.equal(verifiedLock.calls.acquire, 1);
@@ -204,6 +214,10 @@ async function main() {
   const verifiedDisk = fs.readFileSync(path.join(verifiedRoot, "publish-state.json"), "utf8");
   assert.equal(verifiedDisk.includes(privateContent), false);
   assert.equal(verifiedDisk.includes(firstImage), false);
+  const verifiedDiskState = JSON.parse(verifiedDisk);
+  assert.equal(verifiedDiskState.attempts.at(-1).verification_attempts, 5);
+  assert.equal(verifiedDiskState.attempts.at(-1).verification_elapsed_ms, 2460);
+  assert.equal(verifiedDiskState.attempts.at(-1).last_verification_reason, "moments_publish_feed_unchanged");
 
   const duplicateChosen = await verifiedController.chooseMedia([firstImage, secondImage]);
   assert.equal(duplicateChosen.ok, true);
@@ -278,13 +292,26 @@ async function main() {
 
   const publishedResolutionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-publish-resolved-published-"));
   const publishedResolutionImage = writeMedia(publishedResolutionRoot, "published.jpg", Buffer.from("published-image"));
+  const publishedResolutionEvents = [];
   const publishedResolutionController = createMomentsPublishController({
     baseDir: publishedResolutionRoot,
     coordinator: makeCoordinator("resolved-owner").coordinator,
     now: createClock(),
+    logger: {
+      event: (domain, event, fields, options) => {
+        publishedResolutionEvents.push({ domain, event, fields, options });
+      }
+    },
     openMoments: async () => ({ ok: true }),
     publishDriver: async () => {
-      return { ok: false, reason: "verification_timed_out", actionAttempted: true };
+      return {
+        ok: false,
+        reason: "moments_publish_outcome_unknown",
+        actionAttempted: true,
+        verificationAttempts: 18,
+        verificationElapsedMs: 12024,
+        lastVerificationReason: "moments_publish_post_not_found"
+      };
     }
   });
   publishedResolutionController.initialize();
@@ -297,6 +324,18 @@ async function main() {
     confirmationId: publishedResolutionPrepared.confirmation.confirmationId
   });
   assert.equal(publishedResolutionUnknown.state.outcome_unknown, true);
+  assert.equal(publishedResolutionUnknown.state.verification_attempts, 18);
+  assert.equal(publishedResolutionUnknown.state.verification_elapsed_ms, 12024);
+  assert.equal(publishedResolutionUnknown.state.last_verification_reason, "moments_publish_post_not_found");
+  const publishedResolutionUnknownEvent = publishedResolutionEvents.find(
+    (entry) => entry.event === "publish.outcome_unknown"
+  );
+  assert.equal(publishedResolutionUnknownEvent.fields.verification_attempts, 18);
+  assert.equal(publishedResolutionUnknownEvent.fields.verification_elapsed_ms, 12024);
+  assert.equal(
+    publishedResolutionUnknownEvent.fields.last_verification_reason,
+    "moments_publish_post_not_found"
+  );
   assert.equal(publishedResolutionController.resolveUnknown({
     fingerprint: publishedResolutionUnknown.state.fingerprint,
     resolution: "published"

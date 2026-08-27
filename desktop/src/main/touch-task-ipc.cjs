@@ -5,7 +5,6 @@ const { generateFixedScriptFallback, generatePersonalizedDraft } = require("./ai
 const { runActiveTouch } = require("./active-touch-ipc.cjs");
 const { preloadFile, rendererDir = "dist" } = require("./edition.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
-const { WECHAT_RPA_BACKGROUND_MIN_IDLE_MS } = require("../../rpa/active_touch/wechat_window_driver.cjs");
 const {
   authorizeTask,
   classifyContacts,
@@ -617,7 +616,7 @@ async function runRealContact(task, current, index) {
       message: current.message,
       frozenContact: current.contact,
       authorized: true,
-      windowMinIdleMs: WECHAT_RPA_BACKGROUND_MIN_IDLE_MS,
+      windowMinIdleMs: 0,
       isExecutionAllowed,
       runStep: async (command, args = []) => {
         const latest = loadTaskState(activeTouchDir());

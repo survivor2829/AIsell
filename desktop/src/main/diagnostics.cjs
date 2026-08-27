@@ -199,6 +199,7 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
   const salt = digest(installId);
   let sequence = 0;
   let writesFailed = 0;
+  let environmentSnapshot = {};
   const lastFaultByModule = new Map();
 
   function recover(moduleName) {
@@ -226,12 +227,37 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
         return null;
       }
       if (!ACTIONABLE_LEVELS.has(level)) {
-        if (
+        const recoveryRequested = (
           options?.recover === true
           || eventCode === "responsive"
           || eventCode.endsWith(".finished")
           || eventCode.endsWith(".recovered")
-        ) recover(module);
+        );
+        const previousFault = recoveryRequested ? lastFaultByModule.get(module) : "";
+        if (recoveryRequested) recover(module);
+        if (previousFault) {
+          const [recoveredEvent = "", recoveredCode = ""] = previousFault.split("\u0000");
+          const entry = {
+            v: 1,
+            ts: clock().toISOString(),
+            run_id: runId,
+            seq: sequence + 1,
+            level: "info",
+            module,
+            event: eventCode,
+            code: "recovered",
+            phase: code(options?.phase || details?.phase, "recover"),
+            details: boundedDetails({
+              ...details,
+              recovered_event: recoveredEvent,
+              recovered_code: recoveredCode
+            }, salt)
+          };
+          rotate(logFile);
+          fs.appendFileSync(logFile, `${JSON.stringify(entry)}\n`, "utf8");
+          sequence += 1;
+          return entry;
+        }
         return null;
       }
       const errorCode = code(
@@ -332,6 +358,7 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
         recentCount: rows.length,
         recentErrorCount: errors.length,
         writesFailed,
+        environment: environmentSnapshot,
         latest: rows.slice(0, 20),
         latestErrors: errors.slice(0, 20)
       }
@@ -339,7 +366,7 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
   }
 
   function environment(extra = {}) {
-    event("app", "environment.snapshot", {
+    environmentSnapshot = boundedDetails({
       app: appInfo,
       platform: process.platform,
       arch: process.arch,
@@ -355,7 +382,7 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
       chrome: process.versions.chrome,
       node: process.versions.node,
       ...extra
-    });
+    }, salt);
   }
 
   return { begin, environment, event, logFile, logsDir, readRecent: (limit) => readRecent(logFile, limit), recover, runId, status, writeJsonAtomic };

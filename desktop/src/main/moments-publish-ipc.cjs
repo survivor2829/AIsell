@@ -212,6 +212,24 @@ function lastFailureBreadcrumb(value = {}) {
   };
 }
 
+function normalizeVerificationDiagnostics(value = {}) {
+  return {
+    verification_attempts: boundedInteger(
+      value.verification_attempts ?? value.verificationAttempts,
+      0,
+      100
+    ),
+    verification_elapsed_ms: boundedInteger(
+      value.verification_elapsed_ms ?? value.verificationElapsedMs,
+      0,
+      300_000
+    ),
+    last_verification_reason: safeReason(
+      value.last_verification_reason ?? value.lastVerificationReason
+    )
+  };
+}
+
 function normalizeAttempt(value = {}) {
   return {
     attempt_id: String(value.attempt_id || "").replace(/[^a-zA-Z0-9-]/gu, "").slice(0, 80),
@@ -223,7 +241,8 @@ function normalizeAttempt(value = {}) {
     started_at: safeIso(value.started_at),
     finished_at: safeIso(value.finished_at),
     resolved_at: safeIso(value.resolved_at),
-    ...normalizeFailureBreadcrumb(value)
+    ...normalizeFailureBreadcrumb(value),
+    ...normalizeVerificationDiagnostics(value)
   };
 }
 
@@ -252,6 +271,7 @@ function normalizeState(value = {}) {
     status: safeReason(value.status, "idle"),
     last_reason: safeReason(value.last_reason),
     ...lastFailureBreadcrumb(value),
+    ...normalizeVerificationDiagnostics(value),
     fingerprint: safeFingerprint(value.fingerprint),
     attempt_id: String(value.attempt_id || "").replace(/[^a-zA-Z0-9-]/gu, "").slice(0, 80),
     marker_name: path.basename(String(value.marker_name || "")).slice(0, 120),
@@ -280,6 +300,9 @@ function publicState(value = {}, selection = null, preparedDraft = null) {
     last_failure_kind: state.last_failure_kind,
     last_exception_category: state.last_exception_category,
     last_exception_type: state.last_exception_type,
+    verification_attempts: state.verification_attempts,
+    verification_elapsed_ms: state.verification_elapsed_ms,
+    last_verification_reason: state.last_verification_reason,
     fingerprint: state.fingerprint,
     media_count: state.media_count,
     media_kind: state.media_type,
@@ -697,11 +720,13 @@ function createMomentsPublishController(options = {}) {
     const finishedAt = isoNow();
     const fingerprint = state.fingerprint;
     const breadcrumb = normalizeFailureBreadcrumb(rawBreadcrumb);
+    const verification = normalizeVerificationDiagnostics(rawBreadcrumb);
     clearSecrets();
     persist({
       status: "outcome_unknown",
       last_reason: safeReason(reason, "moments_publish_outcome_unknown"),
       ...lastFailureBreadcrumb(breadcrumb),
+      ...verification,
       action_attempted: true,
       outcome_unknown: true,
       fingerprints: addFingerprintStatus(fingerprint, "outcome_unknown", attemptId, finishedAt),
@@ -710,6 +735,7 @@ function createMomentsPublishController(options = {}) {
         action_attempted: true,
         reason: safeReason(reason, "moments_publish_outcome_unknown"),
         ...breadcrumb,
+        ...verification,
         finished_at: finishedAt
       })
     });
@@ -717,15 +743,17 @@ function createMomentsPublishController(options = {}) {
       attempt_id: attemptId,
       fingerprint,
       reason: state.last_reason,
-      ...breadcrumb
+      ...breadcrumb,
+      ...verification
     }, "warn");
     return { ok: false, reason: state.last_reason, actionAttempted: true, state: snapshot() };
   }
 
-  function finishVerified(attemptId) {
+  function finishVerified(attemptId, rawVerification = {}) {
     const verifiedAt = isoNow();
     const fingerprint = state.fingerprint;
     const completedMarkerName = state.marker_name;
+    const verification = normalizeVerificationDiagnostics(rawVerification);
     clearSecrets();
     persist({
       status: "verified",
@@ -734,6 +762,7 @@ function createMomentsPublishController(options = {}) {
       last_failure_kind: "",
       last_exception_category: "",
       last_exception_type: "",
+      ...verification,
       action_attempted: true,
       outcome_unknown: false,
       verified_at: verifiedAt,
@@ -746,10 +775,11 @@ function createMomentsPublishController(options = {}) {
         failure_kind: "",
         exception_category: "",
         exception_type: "",
+        ...verification,
         finished_at: verifiedAt
       })
     });
-    record("publish.verified", { attempt_id: attemptId, fingerprint });
+    record("publish.verified", { attempt_id: attemptId, fingerprint, ...verification });
     removeMarker(completedMarkerName);
     return { ok: true, verified: true, actionAttempted: true, state: snapshot() };
   }
@@ -802,7 +832,7 @@ function createMomentsPublishController(options = {}) {
       const verified = driverResult?.ok === true
         && (driverResult?.verified === true || driverResult?.status === "verified")
         && durableMarkerWritten;
-      if (verified) return finishVerified(attemptId);
+      if (verified) return finishVerified(attemptId, driverResult);
       const reason = driverResult?.reason
         || driverResult?.blocked_reason
         || (actionAttempted ? "moments_publish_outcome_unknown" : "moments_publish_failed_before_action");
@@ -908,6 +938,9 @@ function createMomentsPublishController(options = {}) {
         last_failure_kind: "",
         last_exception_category: "",
         last_exception_type: "",
+        verification_attempts: 0,
+        verification_elapsed_ms: 0,
+        last_verification_reason: "",
         attempted_at: attemptedAt,
         attempts: [...state.attempts, attempt].slice(-MAX_ATTEMPT_HISTORY)
       });
@@ -996,6 +1029,9 @@ function createMomentsPublishController(options = {}) {
       last_failure_kind: "",
       last_exception_category: "",
       last_exception_type: "",
+      verification_attempts: 0,
+      verification_elapsed_ms: 0,
+      last_verification_reason: "",
       prepared_at: "",
       attempted_at: "",
       verified_at: "",

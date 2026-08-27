@@ -113,6 +113,13 @@ function executeContactSync(args) {
         blocked_reason: result?.blocked_reason || "",
         error: result?.error || "",
         stage: result?.state?.last_stage || "",
+        wx_hook_stage: result?.state?.wx_hook_stage || "",
+        wx_hook_error_code: /^[a-z][a-z0-9_.:-]{0,119}$/iu.test(String(result?.state?.wx_hook_error || "").trim())
+          ? String(result.state.wx_hook_error).trim().toLowerCase()
+          : result?.state?.wx_hook_error ? "wx_hook_error_present" : "",
+        helper_configured: result?.state?.helper_configured === true,
+        wechat_exe_configured: Boolean(settings.wechatExePath || result?.state?.wechat_exe_path),
+        wechat_root_configured: Boolean(settings.wechatRoot || result?.state?.wechat_root),
         contact_count: Array.isArray(result?.contacts) ? result.contacts.length : Number(result?.state?.contact_count) || 0,
         process_pid: child.pid || 0,
         exit_code: exitCode,

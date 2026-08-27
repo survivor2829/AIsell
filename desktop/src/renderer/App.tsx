@@ -1619,7 +1619,8 @@ function ActiveTouch({
       </div>
       {exclusionSummary.length > 0 && (
         <div className="exclusion-summary">
-          <strong>{"\u672a\u89e6\u8fbe\u539f\u56e0"}</strong>
+          <strong>未进入本次任务</strong>
+          <p>{`以下联系人在启动前已排除，未进入本次 ${touchTask.total || eligibleCount} 人触达任务，不算触达失败。`}</p>
           <div>
             {exclusionSummary.map((item) => (
               <span key={item.reasonCode}>{item.label} <b>{item.count}</b></span>

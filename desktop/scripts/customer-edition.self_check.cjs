@@ -87,6 +87,9 @@ function assertStageWorkflowContract() {
   assert.match(source, /title: "朋友圈发布"/, "moments operations must expose publishing");
   assert.match(source, /title: "点赞评论"/, "moments operations must retain engagement");
   assert.match(source, /xiaoxiTouchTask\.start\(\{ script: messageDraft, excludedContactIds \}\)/, "start must freeze the user exclusion list");
+  assert.match(source, /未进入本次任务/u, "contacts excluded before task creation must not be presented as send failures");
+  assert.match(source, /不算触达失败/u, "the exclusion summary must explain that pre-task exclusions do not count as task failures");
+  assert.equal(source.includes("未触达原因"), false, "a completed 4/4 task must not label pre-task exclusions as failed touches");
   assert.match(source, /下一阶段开放/, "future modules must stay visible as next-stage placeholders");
   assert.match(source, /结束本次任务/, "unfinished tasks must expose permanent end with confirmation");
   assert.match(preload, /resolveUnknown: \(payload\) => ipcRenderer\.invoke\("touch-task:resolve-unknown", payload\)/, "unknown send outcomes must expose only the scoped resolution API");

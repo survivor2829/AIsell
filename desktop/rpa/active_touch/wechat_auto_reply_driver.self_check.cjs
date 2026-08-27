@@ -186,13 +186,13 @@ assert.equal(
 assert.deepEqual(executionOrder, ["normalize", "prime"], "the first scan must normalize once and establish a visual baseline");
 await normalizedDriver.scanWechatIncoming(["layout-cache-contact"]);
 assert.deepEqual(executionOrder, ["normalize", "prime", "normalize", "scan"], "every background poll must pass the shared strict window preflight");
-assert.equal(executionPrepareContexts[0].minIdleMs, WECHAT_RPA_BACKGROUND_MIN_IDLE_MS);
+assert.equal(executionPrepareContexts[0].minIdleMs, 0);
 assert.deepEqual(executionPrepareContexts[1], {
   expectedPid: 81,
   expectedHWnd: "91",
-  minIdleMs: WECHAT_RPA_BACKGROUND_MIN_IDLE_MS,
+  minIdleMs: 0,
   requireFocused: true
-}, "the next poll must freeze the exact PID/HWND learned by the first preflight");
+}, "the next poll must freeze the exact PID/HWND without waiting on a session-wide idle timer");
 
 const retryPrepareContexts = [];
 const deferredPrimeDriver = createWechatAutoReplyDriverWithWindowLayout(
@@ -211,8 +211,8 @@ assert.equal((await deferredPrimeDriver.primeWechatSession(["deferred-prime-cont
 assert.equal(retryPrepareContexts[0].minIdleMs, 0);
 assert.equal(
   retryPrepareContexts[1].minIdleMs,
-  WECHAT_RPA_BACKGROUND_MIN_IDLE_MS,
-  "a deferred prime retry runs in the background and must not steal an actively used desktop"
+  0,
+  "a deferred prime retry must not mistake recent automation input for an active user"
 );
 
 let movedScanCalls = 0;
@@ -250,30 +250,30 @@ assert.equal(movedNormalizeCalls, 3, "a changed rectangle is rejected in-place; 
 assert.deepEqual(movedPrepareContexts[0], { minIdleMs: 0, requireFocused: true }, "a user-started initial prime may arrange the explicitly requested WeChat window immediately");
 assert.equal(movedPrepareContexts[1].expectedPid, 81);
 assert.equal(movedPrepareContexts[1].expectedHWnd, "91");
-assert.equal(movedPrepareContexts[1].minIdleMs, WECHAT_RPA_BACKGROUND_MIN_IDLE_MS, "each background scan waits until the user has been idle");
+assert.equal(movedPrepareContexts[1].minIdleMs, 0, "each background scan proceeds without a session-wide idle delay");
 assert.equal(movedPrepareContexts[1].requireFocused, true);
 assert.equal(movedPrepareContexts[2].expectedPid, 81);
 assert.equal(movedPrepareContexts[2].expectedHWnd, "91");
-assert.equal(movedPrepareContexts[2].minIdleMs, WECHAT_RPA_BACKGROUND_MIN_IDLE_MS);
+assert.equal(movedPrepareContexts[2].minIdleMs, 0);
 
-let blockedBackgroundScannerCalls = 0;
-let blockedBackgroundPrepareCalls = 0;
-const blockedBackgroundScan = createWechatAutoReplyDriverWithWindowLayout(
+let blockedExternalInputScannerCalls = 0;
+let blockedExternalInputPrepareCalls = 0;
+const blockedExternalInputScan = createWechatAutoReplyDriverWithWindowLayout(
   (script, env) => {
-    blockedBackgroundScannerCalls += 1;
+    blockedExternalInputScannerCalls += 1;
     assert.equal(env.XIAOXI_AUTO_REPLY_MODE, "prime");
     return { ok: true, source: "session_prime", pid: 81, hWnd: 91 };
   },
   async () => {
-    blockedBackgroundPrepareCalls += 1;
-    return blockedBackgroundPrepareCalls === 1
+    blockedExternalInputPrepareCalls += 1;
+    return blockedExternalInputPrepareCalls === 1
       ? normalizedWindow
-      : { ok: false, reason: "wechat_user_active" };
+      : { ok: false, reason: "wechat_external_input_detected" };
   }
 );
-assert.equal((await blockedBackgroundScan.primeWechatSession(["background-idle-contact"])).primed, true);
-assert.equal((await blockedBackgroundScan.scanWechatIncoming(["background-idle-contact"])).reason, "wechat_user_active");
-assert.equal(blockedBackgroundScannerCalls, 1, "an active user must stop the poll before any scan script can focus or input");
+assert.equal((await blockedExternalInputScan.primeWechatSession(["external-input-contact"])).primed, true);
+assert.equal((await blockedExternalInputScan.scanWechatIncoming(["external-input-contact"])).reason, "wechat_external_input_detected");
+assert.equal(blockedExternalInputScannerCalls, 1, "input detected during the critical window transaction must stop before the scanner runs");
 
 const restartedPrepareContexts = [];
 const restartedScannerModes = [];
@@ -312,10 +312,10 @@ assert.equal(
 assert.deepEqual(restartedScannerModes, ["prime", "prime"]);
 assert.equal(restartedPrepareContexts[1].expectedPid, 81);
 assert.equal(restartedPrepareContexts[1].expectedHWnd, "91");
-assert.equal(restartedPrepareContexts[1].minIdleMs, WECHAT_RPA_BACKGROUND_MIN_IDLE_MS);
+assert.equal(restartedPrepareContexts[1].minIdleMs, 0);
 assert.equal(restartedPrepareContexts[2].expectedPid, undefined);
 assert.equal(restartedPrepareContexts[2].expectedHWnd, undefined);
-assert.equal(restartedPrepareContexts[2].minIdleMs, WECHAT_RPA_BACKGROUND_MIN_IDLE_MS);
+assert.equal(restartedPrepareContexts[2].minIdleMs, 0);
 let blockedScanCalls = 0;
 const blockedByLayout = createWechatAutoReplyDriverWithWindowLayout(
   () => { blockedScanCalls += 1; return { ok: true }; },

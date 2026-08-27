@@ -1577,6 +1577,7 @@ function runPowerShellAsync(script, env = {}, options = {}) {
   const terminationGraceMs = Number(options.terminationGraceMs) > 0
     ? Number(options.terminationGraceMs)
     : 2_000;
+  const startedAt = Date.now();
   const signal = options.signal;
   const spawnProcess = typeof options.spawnProcess === "function" ? options.spawnProcess : spawn;
   const shellArgs = ["-NoProfile"];
@@ -1616,10 +1617,20 @@ function runPowerShellAsync(script, env = {}, options = {}) {
     let terminationKillAccepted = false;
     let terminationGraceExceeded = false;
     let quarantineRegistered = false;
+    const terminationDiagnostics = (reason) => options.diagnostics === true ? {
+      timeout_ms: timeout,
+      elapsed_ms: Math.max(0, Date.now() - startedAt),
+      termination_reason: reason,
+      kill_accepted: terminationKillAccepted,
+      grace_exceeded: terminationGraceExceeded,
+      stdout_bytes: Buffer.byteLength(stdout),
+      stderr_bytes: Buffer.byteLength(stderr)
+    } : undefined;
     const unconfirmedTermination = () => ({
       ok: false,
       reason: "powershell_termination_unconfirmed",
-      actionAttempted: true
+      actionAttempted: true,
+      ...(options.diagnostics === true ? { diagnostics: terminationDiagnostics(terminationReason || "powershell_termination_unconfirmed") } : {})
     });
     const finish = (value) => {
       if (settled) return;
@@ -1664,7 +1675,11 @@ function runPowerShellAsync(script, env = {}, options = {}) {
       if (settled) return;
       if (terminationReason) {
         return finish(terminationKillAccepted && !terminationGraceExceeded
-          ? { ok: false, reason: terminationReason }
+          ? {
+              ok: false,
+              reason: terminationReason,
+              ...(options.diagnostics === true ? { diagnostics: terminationDiagnostics(terminationReason) } : {})
+            }
           : unconfirmedTermination());
       }
       if (status !== 0) {

@@ -2548,7 +2548,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       XIAOXI_ALLOW_FOCUS_FALLBACK: "",
       XIAOXI_FORCE_SCREEN_CAPTURE: "",
       ...extra
-    }, { ensure: false, sta: true, timeout: 45_000 })).then((result) => ({
+    }, { ensure: false, sta: true, timeout: 45_000, diagnostics: true })).then((result) => ({
       ...result,
       diagnostics: {
         ...(result?.diagnostics && typeof result.diagnostics === "object" ? result.diagnostics : {}),

@@ -188,7 +188,7 @@ async function waitFor(read, predicate, timeoutMs = 10_000) {
     let pauseCallbacks = 0;
     const waitedDeadlines = [];
     let executorBehavior = async (options) => {
-      assert.equal(options.windowMinIdleMs, 15_000, "background active-touch must wait for an idle desktop before arranging WeChat");
+      assert.equal(options.windowMinIdleMs, 0, "active-touch must not wait on a session-wide idle timer before an authorized send");
       sends += 1;
       currentFrozenContact = options.frozenContact;
       options.onTransition("prepared", { real_send_attempt_key: `attempt-${options.contactId}` });

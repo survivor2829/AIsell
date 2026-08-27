@@ -1980,6 +1980,26 @@ try {
   timedOutChild.emit("close", null);
   assert.deepEqual(await timedOutPowerShell, { ok: false, reason: "powershell_timeout" });
 
+  let diagnosedTimeoutChild;
+  const diagnosedTimeout = runPowerShellAsync("", {}, {
+    ensure: false,
+    timeout: 10,
+    terminationGraceMs: 250,
+    diagnostics: true,
+    spawnProcess: () => {
+      diagnosedTimeoutChild = fakePowerShellChild();
+      return diagnosedTimeoutChild;
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  diagnosedTimeoutChild.emit("close", null);
+  const diagnosedTimeoutResult = await diagnosedTimeout;
+  assert.equal(diagnosedTimeoutResult.reason, "powershell_timeout");
+  assert.equal(diagnosedTimeoutResult.diagnostics.timeout_ms, 10);
+  assert.equal(diagnosedTimeoutResult.diagnostics.termination_reason, "powershell_timeout");
+  assert.equal(diagnosedTimeoutResult.diagnostics.kill_accepted, true);
+  assert.equal(diagnosedTimeoutResult.diagnostics.elapsed_ms >= 10, true);
+
   let abortedChild;
   let abortedSettled = false;
   const abortController = new AbortController();

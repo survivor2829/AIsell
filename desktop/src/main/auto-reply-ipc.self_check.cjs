@@ -140,7 +140,7 @@ async function main() {
     },
     verifyIncoming: () => ({ ok: verifyAllowed }),
     send: async (options) => {
-      assert.equal(options.windowMinIdleMs, 15_000, "background auto-reply must not arrange WeChat while the user is active");
+      assert.equal(options.windowMinIdleMs, 0, "auto-reply must not mistake recent session input for an active user before sending");
       sent.push(options.frozenContact.name);
       sentAttemptIds.push(options.attemptId);
       sentBindings.push({

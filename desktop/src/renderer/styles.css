@@ -2024,10 +2024,15 @@ td .text-button {
 .exclusion-summary {
   margin: 12px 0 18px;
   padding: 12px 14px;
-  border: 1px solid #fed7aa;
+  border: 1px solid #ddd6fe;
   border-radius: 10px;
-  background: #fff7ed;
-  color: #7c2d12;
+  background: #f5f3ff;
+  color: #4c1d95;
+}
+
+.exclusion-summary > p {
+  margin: 4px 0 0;
+  font-size: 13px;
 }
 
 .exclusion-summary > div {
@@ -2040,7 +2045,7 @@ td .text-button {
 .exclusion-summary span {
   padding: 5px 9px;
   border-radius: 999px;
-  background: #ffedd5;
+  background: #ede9fe;
   font-size: 12px;
 }
 

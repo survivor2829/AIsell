@@ -3,7 +3,6 @@ const { diagnostics } = require("./diagnostics.cjs");
 const fs = require("node:fs");
 const path = require("node:path");
 const { readContacts } = require("../../rpa/active_touch/state_machine.cjs");
-const { WECHAT_RPA_BACKGROUND_MIN_IDLE_MS } = require("../../rpa/active_touch/wechat_window_driver.cjs");
 const { writeFileAtomic, writeJsonAtomic } = require("./atomic-file.cjs");
 
 const POLL_INTERVAL_MS = 5_000;
@@ -1007,7 +1006,8 @@ function createAutoReplyController(options = {}) {
     }, {
       level: waitingDiagnostic ? "warn" : /failed|exception|blocked/u.test(entry.event) || failedSendDiagnostic ? "error" : "info",
       code: entry.code || "",
-      phase: entry.phase || ""
+      phase: entry.phase || "",
+      recover: entry.event === "scan_healthy" || entry.code === "sent_verified"
     });
   }
 
@@ -2017,7 +2017,7 @@ function createAutoReplyController(options = {}) {
         baseDir: dataDir,
         contactsDir: activeTouchDir,
         authorized: true,
-        windowMinIdleMs: WECHAT_RPA_BACKGROUND_MIN_IDLE_MS,
+        windowMinIdleMs: 0,
         contactId: contact.id,
         frozenContact: contact,
         message: reply,

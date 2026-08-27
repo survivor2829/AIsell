@@ -1268,10 +1268,23 @@ assert.equal(publishVerificationResult.unchanged.reason, "moments_publish_feed_u
 assert.equal(publishVerificationResult.missingMedia.reason, "moments_publish_post_media_not_proven");
 assert.equal(publishVerificationResult.composerPresent.reason, "moments_publish_composer_still_present");
 assert.equal(publishVerificationResult.uiaWithoutPost.reason, "moments_publish_post_not_found");
+const postPublishVerificationSource = flowSource.slice(
+  flowSource.indexOf('$script:publishStage = "postpublish_verification"')
+);
 assert.match(
-  flowSource,
-  /for \(\$attempt = 0; \$attempt -lt 4; \$attempt\+\+\)[\s\S]*Start-Sleep -Milliseconds 350[\s\S]*Test-PublishVerified[\s\S]*verificationMode = \[string\]\$verified\.verificationMode/u,
-  "fresh-post readback must remain bounded and must return the exact verification mode"
+  postPublishVerificationSource,
+  /\$verificationTimeoutMs = 12000[\s\S]*\$verificationIntervalMs = 500[\s\S]*\[Diagnostics\.Stopwatch\]::StartNew\(\)[\s\S]*while \(\$verificationStopwatch\.ElapsedMilliseconds -lt \$verificationTimeoutMs\)[\s\S]*Test-PublishVerified/u,
+  "fresh-post readback must poll exact evidence for a bounded cross-device window"
+);
+assert.match(
+  postPublishVerificationSource,
+  /verificationAttempts = \[int\]\$verificationAttempts[\s\S]*verificationElapsedMs = \[int\]\$verificationStopwatch\.ElapsedMilliseconds[\s\S]*lastVerificationReason = \[string\]\$lastVerificationReason/u,
+  "exact readback must return attempts, elapsed time and the last failed verification reason"
+);
+assert.doesNotMatch(
+  postPublishVerificationSource,
+  /Test-PublishClientAccepted|Invoke-PublishOwnedClick|AtomicMouseClick|SendInput/u,
+  "post-publish polling must never weaken the receipt or perform a second publish action"
 );
 
 const fingerprint = "a".repeat(64);

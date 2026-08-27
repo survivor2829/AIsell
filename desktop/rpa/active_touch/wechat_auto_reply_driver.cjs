@@ -1,5 +1,4 @@
 const {
-  WECHAT_RPA_BACKGROUND_MIN_IDLE_MS,
   isPreparedWechatRpaLayout,
   prepareWechatRpaWindowAsync,
   runPowerShellAsync
@@ -1109,7 +1108,6 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
   let needsReprime = false;
   let normalizedWindowIdentity = null;
   let normalizedForReprime = false;
-  let windowPreflightAttempted = false;
   // WeChat 4.1.x exposes only a compositor pane through UIA on many machines.
   // Pick one adapter for the whole run instead of probing UIA and then silently
   // switching baselines underneath the visual scanner.
@@ -1209,9 +1207,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     normalizedForReprime = windowAlreadyNormalized;
   }
 
-  async function normalizeWindowForExecution(expectedIdentity = null, { background = false } = {}) {
-    const useBackgroundIdleGate = background || windowPreflightAttempted;
-    windowPreflightAttempted = true;
+  async function normalizeWindowForExecution(expectedIdentity = null) {
     let normalized;
     try {
       normalized = await Promise.resolve(windowPreparer({
@@ -1219,7 +1215,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
           expectedPid: expectedIdentity.pid,
           expectedHWnd: expectedIdentity.hWnd
         } : {}),
-        minIdleMs: useBackgroundIdleGate ? WECHAT_RPA_BACKGROUND_MIN_IDLE_MS : 0,
+        minIdleMs: 0,
         requireFocused: true
       }));
     } catch {
@@ -1276,10 +1272,9 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
   async function primeWechatSession(names) {
     const allowed = allowedNames(names);
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
-    const background = needsReprime;
     if (normalizedForReprime) normalizedForReprime = false;
     else {
-      const windowFailure = await normalizeWindowForExecution(null, { background });
+      const windowFailure = await normalizeWindowForExecution();
       if (windowFailure) return windowFailure;
     }
     if (activeScanMode === "visual") {
@@ -1323,10 +1318,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
   async function scanWechatIncoming(names) {
     const allowed = allowedNames(names);
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
-    const scanWindowFailure = await normalizeWindowForExecution(
-      normalizedWindowIdentity || sessionPreviewProcess,
-      { background: true }
-    );
+    const scanWindowFailure = await normalizeWindowForExecution(normalizedWindowIdentity || sessionPreviewProcess);
     if (scanWindowFailure) {
       if (new Set([
         "wechat_window_identity_mismatch",
