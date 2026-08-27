@@ -1,11 +1,26 @@
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
-const { spawnSync } = require("node:child_process");
+const { spawnSync: nativeSpawnSync } = require("node:child_process");
 const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require("./moments_visual_probe.dev.cjs");
 const {
   AUTO_REPLY_VISUAL_SCRIPT,
   createWechatVisualAutoReplyDriver
 } = require("./wechat_auto_reply_visual_driver.dev.cjs");
+
+function spawnSync(command, args, options) {
+  const encodedCommandIndex = command === "powershell.exe" && Array.isArray(args)
+    ? args.indexOf("-EncodedCommand")
+    : -1;
+  if (encodedCommandIndex < 0) return nativeSpawnSync(command, args, options);
+
+  const originalProgram = Buffer.from(String(args[encodedCommandIndex + 1] || ""), "base64").toString("utf16le");
+  const encodedArgs = [...args];
+  encodedArgs[encodedCommandIndex + 1] = Buffer.from(
+    `$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n${originalProgram}`,
+    "utf16le"
+  ).toString("base64");
+  return nativeSpawnSync(command, encodedArgs, options);
+}
 
 async function main() {
 assert.equal(typeof AUTO_REPLY_VISUAL_SCRIPT, "string");
