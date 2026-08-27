@@ -8,6 +8,7 @@ if (!process.versions.electron) {
   const electronPath = require("electron");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-product-download-electron-"));
   let result;
+  let cleanupError;
   try {
     result = spawnSync(electronPath, [__filename, "--electron-child"], {
       cwd: path.resolve(__dirname, ".."),
@@ -18,7 +19,11 @@ if (!process.versions.electron) {
       windowsHide: true
     });
   } finally {
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
+    try {
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 16, retryDelay: 200 });
+    } catch (error) {
+      cleanupError = error;
+    }
   }
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -26,6 +31,7 @@ if (!process.versions.electron) {
     process.stderr.write(result.stderr || "");
     process.exit(result.status || 1);
   }
+  if (cleanupError) throw cleanupError;
   assert.match(result.stdout, /product-detail Electron download self-check passed/);
   process.stdout.write(result.stdout);
   process.exit(0);
