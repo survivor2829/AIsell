@@ -651,12 +651,11 @@ async function buildRemotionRuntime({
     });
     fs.rmSync(publicDir, { recursive: true, force: true });
 
-    let smokeBrowser = resolvedBrowser;
-    if (artifactType !== "development") {
-      smokeBrowser = copyBrowserRuntime(resolvedBrowser, path.join(staging, "browser"), browser);
-    }
     let smoke = { reason: "No explicit browser composition smoke was requested", status: "not-run" };
-    if (!skipCompositionSmoke && smokeBrowser) smoke = await compositionSmoke(serveUrl, smokeBrowser);
+    if (!skipCompositionSmoke && resolvedBrowser) smoke = await compositionSmoke(serveUrl, resolvedBrowser);
+    if (artifactType !== "development") {
+      copyBrowserRuntime(resolvedBrowser, path.join(staging, "browser"), browser);
+    }
 
     const allPackages = new Map();
     for (const item of builderClosure) allPackages.set(item.lockPath, item);
