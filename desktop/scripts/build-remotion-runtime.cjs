@@ -39,6 +39,7 @@ const SOUND_FILES = Object.freeze(["sfx-click.wav", "sfx-pop.wav", "sfx-whoosh.w
 const HASH_PATTERN = /^[0-9a-f]{64}$/u;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
 const URL_PATTERN = /^https:\/\/\S+$/u;
+const REMOTION_COMPOSITION_SMOKE_TIMEOUT_MS = 45_000;
 
 function canonicalJson(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
@@ -547,7 +548,11 @@ async function compositionSmoke(serveUrl, browserPath) {
       protectedRects: []
     },
     browserExecutable: browserPath,
-    logLevel: "error"
+    // Current full Chrome releases require the modern headless launch mode.
+    // Keep the release smoke aligned with the packaged render worker.
+    chromeMode: "chrome-for-testing",
+    logLevel: "error",
+    timeoutInMilliseconds: REMOTION_COMPOSITION_SMOKE_TIMEOUT_MS
   });
   if (composition.id !== "DynamicPackaging" || composition.width !== 1080 || composition.height !== 1920 || composition.fps !== 30) {
     throw new Error("Selected Remotion composition does not match the fixed contract");

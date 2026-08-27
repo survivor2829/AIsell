@@ -12,6 +12,7 @@ const require = createRequire(import.meta.url);
 const { STYLE_IDS, normalizeMotionManifest, publicFilenameForSource } = require("../remotion-packaging/contract.cjs");
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopDir = path.resolve(scriptDir, "..");
+const EXPLICIT_CHROME_MODE = "chrome-for-testing";
 
 function readArgs(argv) {
   const values = {};
@@ -101,6 +102,8 @@ try {
       id: "DynamicPackaging",
       inputProps,
       browserExecutable: chrome || undefined,
+      chromeMode: EXPLICIT_CHROME_MODE,
+      timeoutInMilliseconds: 45_000,
       logLevel: "warn"
     });
     const outputLocation = path.join(outputDir, `${styleId}.mp4`);
@@ -117,6 +120,7 @@ try {
         outputLocation: temporaryOutput,
         inputProps,
         browserExecutable: chrome || undefined,
+        chromeMode: EXPLICIT_CHROME_MODE,
         concurrency: 2,
         overwrite: true,
         logLevel: "warn",
