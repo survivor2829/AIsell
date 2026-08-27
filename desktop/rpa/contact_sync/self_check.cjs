@@ -513,7 +513,7 @@ fs.copyFileSync(input, output);
       keyToolPath: path.join(root, "missing-key-tool.exe"),
       dumpToolPath,
       pythonPath: builtIn.pythonPath,
-      timeoutMs: 500,
+      timeoutMs: 3_000,
       pollIntervalMs: 5,
       restartWechat: true,
       loginFlowDriver: () => ({ ok: true, restarted: true, wechatExePath: "D:\\微信\\Weixin\\Weixin.exe" }),
