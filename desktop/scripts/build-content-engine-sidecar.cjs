@@ -609,7 +609,7 @@ function verifyBundledMediaTools(runtimeDir, mediaTools, { spawn = spawnSync, te
   const smokeSubtitle = path.join(smokeDirectory, "v2-smoke.srt");
   const measurementFile = path.join(smokeDirectory, "v2-meter.txt");
   try {
-    fs.writeFileSync(smokeSubtitle, "1\n00:00:00,000 --> 00:00:00,120\nOK\n", "utf8");
+    fs.writeFileSync(smokeSubtitle, "1\n00:00:00,000 --> 00:00:00,120\n字幕\n", "utf8");
     runMediaToolCommand(ffmpeg, [
       "-hide_banner",
       "-loglevel", "error",
