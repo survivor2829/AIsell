@@ -354,7 +354,7 @@ function assertWindowsPathBudget(paths) {
   if (destination.length >= WINDOWS_PATH_BUDGET) {
     throw new Error(
       `Product-detail staging root is too deep for the bundled Playwright browser (${destination.length} characters). `
-      + "Set XIAOXI_SIDECAR_BUILD_ROOT to a shorter path such as desktop/.build/s/<short-id>."
+      + "Set XIAOXI_SIDECAR_BUILD_ROOT to a shorter writable path such as %TEMP%\\x\\<short-id>."
     );
   }
 }
