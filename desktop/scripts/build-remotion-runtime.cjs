@@ -462,6 +462,30 @@ function licenseSummary(record, recordSha256) {
   };
 }
 
+function verifyRuntimeLicenseRecord(licenseRoot, manifest, label) {
+  const summary = manifest?.licenseRecord;
+  if (!summary || typeof summary !== "object" || Array.isArray(summary)) {
+    throw new Error(`${label} license record summary is missing`);
+  }
+  const recordFile = path.join(licenseRoot, "license-record.json");
+  const rawRecord = summary.present === true
+    ? readJson(assertFile(recordFile, `${label} license record`), `${label} license record`)
+    : null;
+  if (summary.present !== true && fs.existsSync(recordFile)) {
+    throw new Error(`${label} license record is present without a manifest summary`);
+  }
+  const record = validateLicenseRecord(rawRecord, manifest.artifactType);
+  const recordSha256 = record ? sha256Text(canonicalJson(record)) : null;
+  if (record && sha256(recordFile) !== recordSha256) {
+    throw new Error(`${label} license record is not canonical evidence`);
+  }
+  const expectedSummary = licenseSummary(record, recordSha256);
+  if (canonicalJson(summary) !== canonicalJson(expectedSummary)) {
+    throw new Error(`${label} license record summary does not match its evidence`);
+  }
+  return { record, summary: expectedSummary };
+}
+
 function browserSummary(artifactType, browserPath, record) {
   if (!browserPath) return { packaged: false, requiredAtRuntime: true };
   const hash = sha256(browserPath);
@@ -822,10 +846,7 @@ function verifyRemotionRuntime(runtimeRoot, { desktopDir = path.resolve(__dirnam
     if (sha256(browser) !== manifest.browser.sha256) throw new Error("Browser hash mismatch");
     if (treeSha256(browserRoot) !== manifest.browser.treeSha256) throw new Error("Browser runtime tree hash mismatch");
   } else if (fs.existsSync(path.join(root, "browser"))) throw new Error("Development runtime must not package a browser");
-  if (manifest.licenseRecord.present) {
-    const record = assertFile(path.join(root, "licenses", "license-record.json"), "Runtime license record");
-    if (sha256(record) !== manifest.licenseRecord.sha256) throw new Error("Runtime license record hash mismatch");
-  }
+  verifyRuntimeLicenseRecord(path.join(root, "licenses"), manifest, "Runtime");
   const sbomFile = assertFile(path.join(root, manifest.sbom.path), "Remotion SBOM");
   if (sha256(sbomFile) !== manifest.sbom.sha256) throw new Error("Remotion SBOM hash mismatch");
   verifyLicenseInventory(assertDirectory(path.join(root, "licenses"), "Remotion license inventory"), readJson(sbomFile, "Remotion SBOM"));
@@ -928,16 +949,15 @@ function verifyPackagedRemotionRuntime(releaseTarget, descriptor) {
   }
   if (treeSha256(browserRoot) !== manifest.browser.treeSha256) throw new Error("Packaged browser runtime tree hash mismatch");
   const licenseRoot = assertDirectory(path.join(contentEngineRoot, "remotion-licenses"), "Packaged Remotion licenses");
-  if (manifest.licenseRecord.present) {
-    const record = assertFile(path.join(licenseRoot, "license-record.json"), "Packaged license record");
-    if (sha256(record) !== manifest.licenseRecord.sha256 || sha256(record) !== descriptor.licenseRecordSha256) throw new Error("Packaged license record hash mismatch");
+  const verifiedLicense = verifyRuntimeLicenseRecord(licenseRoot, manifest, "Packaged Remotion");
+  if (verifiedLicense.summary.sha256 !== descriptor.licenseRecordSha256) {
+    throw new Error("Packaged Remotion license record descriptor mismatch");
   }
   const sbom = assertFile(path.join(contentEngineRoot, "remotion-sbom.json"), "Packaged Remotion SBOM");
   if (sha256(sbom) !== manifest.sbom.sha256 || sha256(sbom) !== descriptor.sbomSha256) throw new Error("Packaged Remotion SBOM hash mismatch");
   verifyLicenseInventory(licenseRoot, readJson(sbom, "Packaged Remotion SBOM"));
   if (hashWorkerRuntime(bundle, packaging, worker) !== manifest.runtimeHash) throw new Error("Packaged Remotion runtime hash mismatch");
   if (manifest.compositionSmoke.status !== descriptor.compositionSmokeStatus) throw new Error("Packaged Remotion smoke status mismatch");
-  if (manifest.artifactType === "delivery" && !manifest.licenseRecord.commercialConfirmed) throw new Error("Packaged delivery lacks a commercial Remotion license basis");
   return { manifest, manifestFile };
 }
 
@@ -992,6 +1012,7 @@ module.exports = {
   copyBrowserRuntime,
   copyRemotionRuntime,
   hashWorkerRuntime,
+  licenseSummary,
   readPackageState,
   resolveLockClosure,
   resolveRemotionRuntimeBuild,
@@ -999,5 +1020,6 @@ module.exports = {
   validateRemotionBuildInputs,
   verifyCurrentRuntimeSources,
   verifyPackagedRemotionRuntime,
-  verifyRemotionRuntime
+  verifyRemotionRuntime,
+  verifyRuntimeLicenseRecord
 };

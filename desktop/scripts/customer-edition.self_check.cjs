@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -19,6 +20,10 @@ const {
   resolvePortablePaths,
   verifyPortableArchive
 } = require("./portable-release.self_check.cjs");
+const {
+  licenseSummary,
+  verifyRuntimeLicenseRecord
+} = require("./build-remotion-runtime.cjs");
 const blockedChannels = [
   "active-touch:send-real",
   "active-touch:set-real-send-arm",
@@ -204,8 +209,85 @@ assert.equal(isCommercialDeliveryReady({
 assert.equal(isCommercialDeliveryReady({
   artifactType: "delivery",
   remotionRuntime: { manifest: { licenseRecord: { commercialConfirmed: true } } },
+  contentEngineRuntime: { manifest: { mediaTools: { licenseRecord: { useType: "internal-evaluation" } } } }
+}), false, "delivery must require commercial media-tools evidence");
+assert.equal(isCommercialDeliveryReady({
+  artifactType: "delivery",
+  remotionRuntime: { manifest: { licenseRecord: { commercialConfirmed: true } } },
   contentEngineRuntime: { manifest: { mediaTools: { licenseRecord: { useType: "commercial-delivery" } } } }
 }), true, "delivery must record commercial readiness only when both runtime evidence chains are commercial");
+const remotionLicenseFixture = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-remotion-license-"));
+try {
+  const licenseRoot = path.join(remotionLicenseFixture, "licenses");
+  fs.mkdirSync(licenseRoot);
+  const record = {
+    schemaVersion: 1,
+    useType: "commercial-delivery",
+    entity: {
+      name: "Fixture Release Entity",
+      type: "for-profit",
+      employeeCount: 4,
+      employeeCountAsOf: "2026-08-27",
+      licenseBasis: "company-license",
+      evidenceReference: "fixture-commercial-license"
+    },
+    remotion: {
+      version: "4.0.512",
+      usage: "commercial-delivery",
+      confirmedBy: "fixture-reviewer",
+      confirmedDate: "2026-08-27"
+    },
+    browser: {
+      product: "Chrome",
+      version: "fixture",
+      source: "fixture-source",
+      sourceUrl: "https://example.com/chrome",
+      sha256: "a".repeat(64),
+      terms: "fixture-terms",
+      termsUrl: "https://example.com/terms",
+      internalRedistributionBasis: "fixture-internal-basis",
+      commercialRedistributionBasis: "fixture-commercial-basis",
+      confirmedBy: "fixture-reviewer",
+      confirmedDate: "2026-08-27"
+    }
+  };
+  const writeRecord = (value) => {
+    const text = `${JSON.stringify(value, null, 2)}\n`;
+    fs.writeFileSync(path.join(licenseRoot, "license-record.json"), text, "utf8");
+    return crypto.createHash("sha256").update(text, "utf8").digest("hex");
+  };
+  const recordSha256 = writeRecord(record);
+  const manifest = {
+    artifactType: "delivery",
+    licenseRecord: licenseSummary(record, recordSha256)
+  };
+  assert.deepEqual(
+    verifyRuntimeLicenseRecord(licenseRoot, manifest, "Fixture Remotion").summary,
+    manifest.licenseRecord,
+    "delivery evidence must derive the stored summary from the raw record"
+  );
+  const summaryMismatch = JSON.parse(JSON.stringify(manifest));
+  summaryMismatch.licenseRecord.commercialConfirmed = false;
+  assert.throws(
+    () => verifyRuntimeLicenseRecord(licenseRoot, summaryMismatch, "Fixture Remotion"),
+    /summary does not match/u,
+    "a delivery manifest must not claim a commercial summary that differs from its raw record"
+  );
+  const malformedRecord = JSON.parse(JSON.stringify(record));
+  malformedRecord.browser.commercialRedistributionBasis = "";
+  const malformedSha256 = writeRecord(malformedRecord);
+  const malformedManifest = {
+    artifactType: "delivery",
+    licenseRecord: { ...licenseSummary(record, recordSha256), sha256: malformedSha256 }
+  };
+  assert.throws(
+    () => verifyRuntimeLicenseRecord(licenseRoot, malformedManifest, "Fixture Remotion"),
+    /commercial redistribution basis/u,
+    "a malformed commercial raw record must not be accepted through its cached manifest summary"
+  );
+} finally {
+  fs.rmSync(remotionLicenseFixture, { recursive: true, force: true });
+}
 assert.match(read(path.join(desktopDir, "scripts", "portable-release.self_check.cjs")), /parsePortableArguments/);
 assert.match(read(path.join(desktopDir, "scripts", "portable-release.self_check.cjs")), /resolvePortablePaths/);
 for (const name of [".env", ".env.ai.local", ".env.production"]) {
