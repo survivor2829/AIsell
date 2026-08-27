@@ -3,6 +3,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const { artifactTypeForEdition, validateRemotionBuildInputs } = require("./build-remotion-runtime.cjs");
+const { resolveMediaToolSources } = require("./build-content-engine-sidecar.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 
@@ -31,8 +33,45 @@ function runNode(label, script, args, environment) {
   if (result.status !== 0) throw new Error(`${label} failed with status ${result.status}`);
 }
 
+function preflightReleaseInputs(edition, environment = process.env) {
+  const artifactType = artifactTypeForEdition(edition);
+  const failures = [];
+  let remotion = null;
+  let mediaTools = null;
+  try {
+    remotion = validateRemotionBuildInputs({
+      artifactType,
+      browserPath: environment.XIAOXI_REMOTION_BROWSER_SOURCE_PATH || null,
+      licenseRecordPath: environment.XIAOXI_REMOTION_LICENSE_RECORD || null
+    });
+  } catch (error) {
+    failures.push(`Remotion/browser: ${error.message}`);
+  }
+  try {
+    mediaTools = resolveMediaToolSources(environment);
+    if (!mediaTools.available) {
+      failures.push("Media tools: Portable releases require declared FFmpeg and ffprobe source files plus a versioned media-tools license record.");
+    } else if (
+      artifactType === "delivery"
+      && mediaTools.licenseRecord.record.useType !== "commercial-delivery"
+    ) {
+      failures.push("Media tools: Delivery requires a commercial media-tools redistribution record.");
+    }
+  } catch (error) {
+    failures.push(`Media tools: ${error.message}`);
+  }
+  if (failures.length) {
+    throw new Error([
+      `Release input preflight failed for ${edition}; no build output was created.`,
+      ...failures.map((failure) => `- ${failure}`)
+    ].join("\n"));
+  }
+  return { artifactType, mediaTools, remotion };
+}
+
 function runRelease(edition = "delivery", environment = process.env) {
   if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported release edition: ${edition}`);
+  const { artifactType: remotionArtifactType } = preflightReleaseInputs(edition, environment);
   const sidecarBuildRoot = createBuildRoot();
   const remotionRuntimeRoot = path.join(sidecarBuildRoot, "r");
   const releaseEnvironment = {
@@ -40,7 +79,6 @@ function runRelease(edition = "delivery", environment = process.env) {
     XIAOXI_SIDECAR_BUILD_ROOT: sidecarBuildRoot,
     XIAOXI_REMOTION_RUNTIME_ROOT: remotionRuntimeRoot
   };
-  const remotionArtifactType = edition === "test" ? "internal-evaluation" : "delivery";
   runNode("source self-check", "run-self-checks.cjs", [], releaseEnvironment);
   runNode("product-detail local E2E", "product-detail-local-e2e.cjs", ["--cleanup-on-success"], releaseEnvironment);
   runNode("clean runtime gate", "check-clean-runtime.cjs", [], releaseEnvironment);
@@ -68,5 +106,6 @@ if (require.main === module) {
 
 module.exports = {
   createBuildRoot,
+  preflightReleaseInputs,
   runRelease
 };

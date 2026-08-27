@@ -12,6 +12,7 @@ const {
   readPackageState,
   resolveLockClosure,
   validateLicenseRecord,
+  validateRemotionBuildInputs,
   verifyCurrentRuntimeSources,
   verifyPackagedRemotionRuntime,
   verifyRemotionRuntime
@@ -92,6 +93,11 @@ async function main() {
     assert.equal(runtimeClosure.some((item) => item.name === "@remotion/bundler" || item.name === "@rspack/core" || item.name === "esbuild"), false);
 
     assert.throws(() => validateLicenseRecord(null, "delivery"), /license record is required/u);
+    assert.throws(
+      () => validateRemotionBuildInputs({ artifactType: "internal-evaluation" }),
+      /license record is required/u,
+      "release input preflight must reject a missing Remotion record before creating a runtime"
+    );
     assert.throws(
       () => validateLicenseRecord(fixtureLicenseRecord("0".repeat(64)), "delivery"),
       /commercial/u

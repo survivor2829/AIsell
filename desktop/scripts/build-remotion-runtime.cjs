@@ -485,6 +485,35 @@ function browserSummary(artifactType, browserPath, record) {
   };
 }
 
+function validateRemotionBuildInputs({
+  artifactType = "development",
+  browserPath = null,
+  licenseRecordPath = null
+} = {}) {
+  if (!ARTIFACT_TYPES.includes(artifactType)) {
+    throw new Error(`Unsupported Remotion artifact type: ${artifactType}`);
+  }
+  const rawLicenseRecord = licenseRecordPath
+    ? readJson(assertFile(path.resolve(licenseRecordPath), "License record"), "License record")
+    : null;
+  const licenseRecord = validateLicenseRecord(rawLicenseRecord, artifactType);
+  const resolvedBrowser = browserPath
+    ? assertFile(path.resolve(browserPath), "Explicit browser executable")
+    : null;
+  if (artifactType !== "development" && !resolvedBrowser) {
+    throw new Error(`${artifactType} requires an explicit browser source executable`);
+  }
+  if (artifactType !== "development" && path.basename(resolvedBrowser).toLowerCase() !== "chrome.exe") {
+    throw new Error("Packaged Remotion runtime requires a Chrome chrome.exe source");
+  }
+  return {
+    artifactType,
+    browser: browserSummary(artifactType, resolvedBrowser, licenseRecord),
+    licenseRecord,
+    resolvedBrowser
+  };
+}
+
 function copyBrowserRuntime(browserPath, targetRoot, browser) {
   const sourceRoot = path.dirname(assertFile(browserPath, "Explicit browser executable"));
   if (path.basename(browserPath).toLowerCase() !== "chrome.exe") throw new Error("Packaged Remotion runtime requires a Chrome chrome.exe source");
@@ -573,11 +602,11 @@ async function buildRemotionRuntime({
   const root = path.resolve(desktopDir);
   const output = path.resolve(outputDir);
   const packageState = readPackageState(root);
-  const rawLicenseRecord = licenseRecordPath ? readJson(assertFile(path.resolve(licenseRecordPath), "License record"), "License record") : null;
-  const licenseRecord = validateLicenseRecord(rawLicenseRecord, artifactType);
-  const resolvedBrowser = browserPath ? assertFile(path.resolve(browserPath), "Explicit browser executable") : null;
-  if (artifactType !== "development" && !resolvedBrowser) throw new Error(`${artifactType} requires an explicit browser source executable`);
-  const browser = browserSummary(artifactType, resolvedBrowser, licenseRecord);
+  const { browser, licenseRecord, resolvedBrowser } = validateRemotionBuildInputs({
+    artifactType,
+    browserPath,
+    licenseRecordPath
+  });
   if (fs.existsSync(output)) {
     const existing = verifyRemotionRuntime(output, { desktopDir: root, expectedArtifactType: artifactType });
     const expectedRecordHash = licenseRecord ? sha256Text(canonicalJson(licenseRecord)) : null;
@@ -963,6 +992,7 @@ module.exports = {
   resolveLockClosure,
   resolveRemotionRuntimeBuild,
   validateLicenseRecord,
+  validateRemotionBuildInputs,
   verifyCurrentRuntimeSources,
   verifyPackagedRemotionRuntime,
   verifyRemotionRuntime
