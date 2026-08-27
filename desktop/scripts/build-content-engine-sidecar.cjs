@@ -599,7 +599,7 @@ function verifyBundledMediaTools(runtimeDir, mediaTools, { spawn = spawnSync, te
   const smokeSubtitle = path.join(smokeDirectory, "v2-smoke.srt");
   const measurementFile = path.join(smokeDirectory, "v2-meter.txt");
   try {
-    fs.writeFileSync(smokeSubtitle, "1\\n00:00:00,000 --> 00:00:00,120\\nOK\\n", "utf8");
+    fs.writeFileSync(smokeSubtitle, "1\n00:00:00,000 --> 00:00:00,120\nOK\n", "utf8");
     runMediaToolCommand(ffmpeg, [
       "-hide_banner",
       "-loglevel", "error",
@@ -696,7 +696,7 @@ function verifyBundledMediaTools(runtimeDir, mediaTools, { spawn = spawnSync, te
     ], "Packaged FFmpeg V2 cover smoke", { spawn, env });
     assertNonEmptyMediaOutput(coverImage, "Packaged FFmpeg V2 cover smoke");
 
-    fs.writeFileSync(concatList, "file 'v2-canvas-bt709.mp4'\\nfile 'v2-canvas-bt709.mp4'\\n", "utf8");
+    fs.writeFileSync(concatList, "file 'v2-canvas-bt709.mp4'\nfile 'v2-canvas-bt709.mp4'\n", "utf8");
     runMediaToolCommand(ffmpeg, [
       "-hide_banner",
       "-loglevel", "error",
@@ -733,8 +733,9 @@ function verifyBundledMediaTools(runtimeDir, mediaTools, { spawn = spawnSync, te
       coverImage
     ], "Packaged ffprobe V2 cover smoke", { spawn, env });
     const coverProbe = parseMediaToolJson(coverProbeOutput, "Packaged ffprobe V2 cover smoke");
-    if (!String(coverProbe?.format?.format_name || "").split(",").includes("image2")) {
-      throw new Error("Packaged FFmpeg V2 cover smoke did not produce an image2 container");
+    const coverFormatNames = String(coverProbe?.format?.format_name || "").split(",");
+    if (!coverFormatNames.some((name) => ["image2", "jpeg_pipe"].includes(name))) {
+      throw new Error("Packaged FFmpeg V2 cover smoke did not produce a supported JPEG image container");
     }
     if (!(Array.isArray(coverProbe?.streams) ? coverProbe.streams : []).some((stream) => stream.codec_type === "video" && stream.codec_name === "mjpeg")) {
       throw new Error("Packaged FFmpeg V2 cover smoke is missing MJPEG video");

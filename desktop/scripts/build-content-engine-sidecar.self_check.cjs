@@ -139,7 +139,7 @@ try {
         return {
           status: 0,
           stdout: JSON.stringify({
-            format: { format_name: "image2" },
+            format: { format_name: "jpeg_pipe" },
             streams: [{ codec_type: "video", codec_name: "mjpeg" }]
           }),
           stderr: ""
