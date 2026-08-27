@@ -10,6 +10,7 @@ const {
   runTransactionalRelease,
   scanRelease,
   sourceAllowed,
+  isCommercialDeliveryReady,
   treeSha256
 } = require("./build-portable-release.cjs");
 const {
@@ -190,6 +191,21 @@ assert.match(
 );
 assert.equal(portableBuilderSource.includes("localeCompare"), false, "release ordering must not depend on the host locale");
 assert.equal(portableBuilderSource.includes("removeLegacyProducts"), false, "ordinary releases must not delete other editions or retired brands");
+assert.equal(isCommercialDeliveryReady({
+  artifactType: "internal-evaluation",
+  remotionRuntime: { manifest: { licenseRecord: { commercialConfirmed: true } } },
+  contentEngineRuntime: { manifest: { mediaTools: { licenseRecord: { useType: "commercial-delivery" } } } }
+}), false, "internal evaluation must never be marked commercial-ready");
+assert.equal(isCommercialDeliveryReady({
+  artifactType: "delivery",
+  remotionRuntime: { manifest: { licenseRecord: { commercialConfirmed: false } } },
+  contentEngineRuntime: { manifest: { mediaTools: { licenseRecord: { useType: "commercial-delivery" } } } }
+}), false, "delivery must require commercial Remotion evidence");
+assert.equal(isCommercialDeliveryReady({
+  artifactType: "delivery",
+  remotionRuntime: { manifest: { licenseRecord: { commercialConfirmed: true } } },
+  contentEngineRuntime: { manifest: { mediaTools: { licenseRecord: { useType: "commercial-delivery" } } } }
+}), true, "delivery must record commercial readiness only when both runtime evidence chains are commercial");
 assert.match(read(path.join(desktopDir, "scripts", "portable-release.self_check.cjs")), /parsePortableArguments/);
 assert.match(read(path.join(desktopDir, "scripts", "portable-release.self_check.cjs")), /resolvePortablePaths/);
 for (const name of [".env", ".env.ai.local", ".env.production"]) {

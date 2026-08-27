@@ -187,6 +187,12 @@ function resolveRemotionRuntimeRoot(environment = process.env) {
   return configured ? path.resolve(configured) : null;
 }
 
+function isCommercialDeliveryReady(sourceState) {
+  return sourceState?.artifactType === "delivery"
+    && sourceState.remotionRuntime?.manifest?.licenseRecord?.commercialConfirmed === true
+    && sourceState.contentEngineRuntime?.manifest?.mediaTools?.licenseRecord?.useType === "commercial-delivery";
+}
+
 function assertBuildPreconditions(edition, {
   environment = process.env,
   sidecarBuildRoot = resolveSidecarBuildRoot(environment),
@@ -213,7 +219,7 @@ function assertBuildPreconditions(edition, {
   const dirty = Boolean(gitText(["status", "--porcelain"]));
   if (dirty) throw new Error("Refusing to build a portable release from a dirty worktree");
 
-  return {
+  const sourceState = {
     artifactType,
     commit,
     dirty,
@@ -223,6 +229,10 @@ function assertBuildPreconditions(edition, {
     sidecarBuildRoot,
     remotionRuntimeRoot
   };
+  if (edition === "delivery" && !isCommercialDeliveryReady(sourceState)) {
+    throw new Error("Delivery requires commercial Remotion and media-tools release evidence");
+  }
+  return sourceState;
 }
 
 function buildPortableStaging(edition, paths, sourceState) {
@@ -279,7 +289,7 @@ function buildPortableStaging(edition, paths, sourceState) {
     targetWeixin: capabilityMatrix.targetWeixin,
     capabilityMatrix: capabilityMatrix.capabilities,
     releaseStage: "wechat-4.1.11.55-integrated-moments-adaptation",
-    commercialReady: false,
+    commercialReady: isCommercialDeliveryReady(sourceState),
     builtAt: new Date().toISOString(),
     signed: false
   };
@@ -513,6 +523,7 @@ module.exports = {
   buildPortable,
   cleanupPaths,
   copyRuntimePackageTree,
+  isCommercialDeliveryReady,
   publishStagedRelease,
   runTransactionalRelease,
   resolveRemotionRuntimeRoot,

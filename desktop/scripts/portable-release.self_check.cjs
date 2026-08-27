@@ -329,7 +329,7 @@ assert.equal(manifest.capabilityMatrix?.moments?.workflows?.perPostInteraction?.
 assert.equal(manifest.capabilityMatrix?.moments?.workflows?.dailyAutomation?.localLiveVerification, "pending");
 assert.deepEqual(manifest.capabilityMatrix?.moments?.packagedEditions, ["test", "delivery"]);
 assert.equal(manifest.verifiedWeixin, undefined, "a global verified version list must not overclaim every capability");
-assert.equal(manifest.commercialReady, false);
+assert.equal(manifest.commercialReady, edition === "delivery", "portable commercial readiness must match the verified delivery evidence");
 assert.equal(manifest.dirty, false, "portable release must come from a clean worktree");
 assert.match(manifest.commit, /^[0-9a-f]{40}$/, "portable release must record a full git commit");
 assert.match(manifest.sourceTreeSha256, /^[0-9a-f]{64}$/, "portable release must record the packaged source tree hash");
