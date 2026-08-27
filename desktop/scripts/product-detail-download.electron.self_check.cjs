@@ -18,7 +18,7 @@ if (!process.versions.electron) {
       windowsHide: true
     });
   } finally {
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
   }
   if (result.error) throw result.error;
   if (result.status !== 0) {
