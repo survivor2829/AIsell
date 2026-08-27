@@ -750,6 +750,7 @@ function verifyWechatCurrentConversation(expectedTitle, context = {}) {
     ...result,
     accountId: account.ok ? String(account.accountId ?? "") : "",
     accountVerified: account.ok === true,
+    accountBindingMode: account.ok ? "storage_inferred" : "",
     accountReason: account.ok ? "" : String(account.reason ?? "wechat_account_not_verified")
   };
 }
@@ -774,6 +775,7 @@ async function verifyWechatCurrentConversationAsync(expectedTitle, context = {})
     ...result,
     accountId: account.ok ? String(account.accountId ?? "") : "",
     accountVerified: account.ok === true,
+    accountBindingMode: account.ok ? "storage_inferred" : "",
     accountReason: account.ok ? "" : String(account.reason ?? "wechat_account_not_verified")
   };
 }

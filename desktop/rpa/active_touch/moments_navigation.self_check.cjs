@@ -157,7 +157,8 @@ assert.match(surfaceInspectorSource, /SetWindowPos/u,
   "the exact popup handoff must normalize the locked standalone Moments window");
 assert.doesNotMatch(surfaceInspectorSource, /Start-Process/u,
   "the exact popup handoff must never launch a replacement process");
-assert.match(surfaceInspectorSource, /GetLastInputTick\(\) -ne \$inputTick/u,
+assert.match(surfaceInspectorSource, /\[uint32\]\$finalObservedInputTick = \[Win32WechatRpaSurfaceInspector\]::GetLastInputTick\(\)/u);
+assert.match(surfaceInspectorSource, /\$finalObservedInputTick -ne \$inputTick/u,
   "the exact popup handoff must recheck its input lease at the final success boundary");
 
 assert.equal(typeof openWechatMoments, "function");

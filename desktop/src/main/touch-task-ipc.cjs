@@ -40,6 +40,7 @@ let lastDiagnosticTaskSignature = "";
 let currentBuildId = "";
 const consumedBatchTokens = new Set();
 const DRAFT_GENERATION_CONCURRENCY = 3;
+const PRE_DRAFT_INPUT_RECOVERY_ATTEMPTS = 3;
 
 function consumeBatchAuthorization(payload = {}) {
   if (executionMode !== "real_send") return true;
@@ -79,15 +80,18 @@ function resultReason(result, fallback) {
     wechat_window_not_found: "未找到微信聊天主窗口，已尝试自动拉起；若停在登录确认，请先完成微信登录",
     wechat_login_required: "微信已自动拉起，请在手机上确认登录后继续",
     wechat_focus_failed: "微信窗口没有切到前台，请点一下微信窗口后再继续",
-    wechat_window_not_foreground: "你已切换到其他窗口，本次已安全暂停，不会把微信抢回前台",
-    wechat_user_active: "检测到你正在使用鼠标或键盘，本次已安全延后；方便时可继续任务",
+    wechat_window_not_foreground: "微信窗口未保持前台焦点，本次已安全暂停，不会强行抢回窗口",
+    wechat_user_active: "电脑尚未达到连续空闲的安全条件，文案未写入微信，正在等待后恢复",
+    wechat_external_input_detected: "微信写入前检测到输入状态变化，文案未写入微信，正在等待后恢复",
+    wechat_input_lease_unavailable: "无法锁定电脑输入状态，消息未写入微信；请稍后重试",
+    wechat_target_changed: "微信目标窗口发生变化，消息未写入微信；请确认当前微信窗口后继续",
     wechat_window_not_ready: "已找到微信主窗口，但当前尺寸不可操作；请展开微信窗口后继续",
     wechat_window_ambiguous: "检测到多个个人微信主窗口，请只保留一个可见主窗口后继续",
     wechat_window_identity_mismatch: "微信窗口在操作过程中发生变化，请保持当前微信窗口后继续",
     personal_wechat_main_window_not_found: "当前进程中未识别到个人微信主窗口",
     powershell_timeout: "微信窗口适配程序执行超时，请检查电脑负载或安全软件",
     powershell_failed: "微信窗口适配程序启动失败，请确认AI获客与微信权限一致，并检查安全软件拦截",
-    exact_search_result_not_found: "未找到该联系人的精确微信号搜索结果，已隔离并跳过当前联系人",
+    exact_search_result_not_found: "未找到该联系人的精确公开微信号搜索结果，已隔离并跳过当前联系人",
     search_result_not_opened: "未打开匹配联系人会话，已隔离并跳过当前联系人",
     customer_conversation_not_found: "未定位到客户会话，已隔离并跳过当前联系人",
     contact_unavailable: "该联系人已停用，已自动跳过",
@@ -98,6 +102,55 @@ function resultReason(result, fallback) {
     message_draft_changed: "输入框内容与已校验草稿不一致"
   };
   return String(labels[code] || result?.error || code || fallback || "执行失败");
+}
+
+function safeDiagnosticInteger(value) {
+  const numeric = Number(value);
+  return Number.isSafeInteger(numeric) && numeric >= 0 ? numeric : undefined;
+}
+
+function executionFailureContext(response, recoveryAttempt = 0) {
+  const source = response?.send_diagnostics && typeof response.send_diagnostics === "object"
+    ? response.send_diagnostics
+    : response?.safety_diagnostics && typeof response.safety_diagnostics === "object"
+      ? response.safety_diagnostics
+      : response?.state?.send_diagnostics && typeof response.state.send_diagnostics === "object"
+        ? response.state.send_diagnostics
+        : {};
+  const context = {
+    action: String(response?.action || "unknown").slice(0, 80),
+    phase: String(source.phase || response?.action || "unknown").slice(0, 80),
+    reason_code: resultCode(response) || "unknown",
+    send_attempted: response?.send_attempted === true ? true : response?.send_attempted === false ? false : null
+  };
+  for (const [key, value] of [
+    ["required_idle_ms", source.required_idle_ms ?? source.requiredIdleMs],
+    ["observed_idle_ms", source.observed_idle_ms ?? source.observedIdleMs],
+    ["expected_input_tick", source.expected_input_tick],
+    ["current_input_tick", source.current_input_tick],
+    ["expected_hWnd", source.expected_hWnd ?? response?.hWnd],
+    ["foreground_hWnd", source.foreground_hWnd]
+  ]) {
+    const numeric = safeDiagnosticInteger(value);
+    if (numeric !== undefined) context[key] = numeric;
+  }
+  if (recoveryAttempt > 0) context.recovery_attempt = recoveryAttempt;
+  return context;
+}
+
+function isRecoverablePreDraftInputBlock(response, result) {
+  if (response?.send_attempted !== false) return false;
+  if (["prepared", "clicked", "outcome_unknown"].includes(String(result?.status || "")) || result?.retry_blocked === true) return false;
+  const code = resultCode(response);
+  if (code !== "wechat_external_input_detected") return false;
+  return String(response?.action || "") === "click-search-result-dry-run";
+}
+
+function preDraftRecoveryReason(response, attempt) {
+  const detail = resultCode(response) === "wechat_external_input_detected"
+    ? "微信写入前检测到电脑输入状态变化"
+    : "电脑尚未达到连续空闲的安全条件";
+  return `${detail}；消息未写入微信，文案已保留，正在等待后自动恢复（第 ${attempt} 次）`;
 }
 
 function getDevFloatingUrl() {
@@ -546,56 +599,95 @@ async function runRealContact(task, current, index) {
       && isBatchAuthorized(latest);
   };
   if (!isExecutionAllowed()) return false;
+  let recoveryAttempts = 0;
+  while (isExecutionAllowed()) {
+    task = loadTaskState(activeTouchDir());
+    const sending = task.results[index];
+    if (!sending || task.current_index !== index) return false;
+    sending.status = "sending";
+    sending.reason = "正在重新验证微信窗口和当前会话";
+    sending.updated_at = new Date().toISOString();
+    task.phase = "sending_batch";
+    const saved = saveTaskState(activeTouchDir(), task);
+    emitTaskUpdate(saved);
 
-  task = loadTaskState(activeTouchDir());
-  const sending = task.results[index];
-  sending.status = "sending";
-  sending.reason = "正在重新验证微信窗口和当前会话";
-  sending.updated_at = new Date().toISOString();
-  const saved = saveTaskState(activeTouchDir(), task);
-  emitTaskUpdate(saved);
+    const response = await realSendExecutor({
+      baseDir: activeTouchDir(),
+      contactId: current.id,
+      message: current.message,
+      frozenContact: current.contact,
+      authorized: true,
+      windowMinIdleMs: WECHAT_RPA_BACKGROUND_MIN_IDLE_MS,
+      isExecutionAllowed,
+      runStep: async (command, args = []) => {
+        const latest = loadTaskState(activeTouchDir());
+        const latestResult = latest.results[index];
+        const step = await runStep(latest, latestResult, command, args, "微信操作未通过安全校验");
+        return step.ok ? step.result : { ...step.result, ok: false, error: step.reason };
+      },
+      onTransition: (status, executionState) => persistRealSendTransition(index, status, executionState)
+    });
 
-  const response = await realSendExecutor({
-    baseDir: activeTouchDir(),
-    contactId: current.id,
-    message: current.message,
-    frozenContact: current.contact,
-    authorized: true,
-    windowMinIdleMs: WECHAT_RPA_BACKGROUND_MIN_IDLE_MS,
-    isExecutionAllowed,
-    runStep: async (command, args = []) => {
-      const latest = loadTaskState(activeTouchDir());
-      const latestResult = latest.results[index];
-      const step = await runStep(latest, latestResult, command, args, "微信操作未通过安全校验");
-      return step.ok ? step.result : { ...step.result, ok: false, error: step.reason };
-    },
-    onTransition: (status, executionState) => persistRealSendTransition(index, status, executionState)
-  });
+    task = loadTaskState(activeTouchDir());
+    const result = task.results[index];
+    if (!result) return false;
+    if (response?.ok && response?.state?.real_send_status === "sent_verified") {
+      return finishVerifiedContact(index, response.state);
+    }
+    if (result.status === "outcome_unknown" || response?.state?.real_send_status === "outcome_unknown" || resultCode(response) === "outcome_unknown") {
+      const verification = await verifyUnknownOutcome(index);
+      if (verification.verified) return true;
+      if (verification.blocked) return false;
+      requireUnknownResolution(loadTaskState(activeTouchDir()), index);
+      return false;
+    }
+    if (isIdentitySkip(response)) {
+      result.status = "identity_skipped";
+      result.reason = resultReason(response, "联系人身份无法唯一确认，已跳过");
+      result.updated_at = new Date().toISOString();
+      const advanced = advanceTask(task, index);
+      emitTaskUpdate(advanced);
+      return true;
+    }
 
-  task = loadTaskState(activeTouchDir());
-  const result = task.results[index];
-  if (response?.ok && response?.state?.real_send_status === "sent_verified") {
-    return finishVerifiedContact(index, response.state);
-  }
-  if (result?.status === "outcome_unknown" || response?.state?.real_send_status === "outcome_unknown" || resultCode(response) === "outcome_unknown") {
-    const verification = await verifyUnknownOutcome(index);
-    if (verification.verified) return true;
-    if (verification.blocked) return false;
-    requireUnknownResolution(loadTaskState(activeTouchDir()), index);
+    const failureCode = resultCode(response);
+    if (isRecoverablePreDraftInputBlock(response, result) && recoveryAttempts < PRE_DRAFT_INPUT_RECOVERY_ATTEMPTS) {
+      recoveryAttempts += 1;
+      const failureContext = {
+        ...executionFailureContext(response, recoveryAttempts),
+        recovery_action: "wait_for_idle_then_retry"
+      };
+      result.status = "generated";
+      result.reason = preDraftRecoveryReason(response, recoveryAttempts);
+      result.blocked_reason = failureCode;
+      result.last_failure_context = failureContext;
+      result.updated_at = new Date().toISOString();
+      task.phase = "waiting_for_idle";
+      task.pause_reason = "";
+      const waiting = saveTaskState(activeTouchDir(), task);
+      diagnostics().event("active_touch", "pre_draft_input_recovery", {
+        task_id: waiting.id,
+        contact_id: result.id,
+        current_index: index,
+        ...failureContext
+      }, { level: "warning", code: failureCode });
+      emitTaskUpdate(waiting);
+      continue;
+    }
+
+    const failureContext = executionFailureContext(response, recoveryAttempts);
+    if (failureCode) result.blocked_reason = failureCode;
+    result.last_failure_context = failureContext;
+    diagnostics().event("active_touch", "execution_blocked", {
+      task_id: task.id,
+      contact_id: result.id,
+      current_index: index,
+      ...failureContext
+    }, { level: "warning", code: failureCode || "active_touch_execution_blocked" });
+    const dangerous = ["prepared", "clicked", "outcome_unknown"].includes(result.status) || result.retry_blocked;
+    pauseTask(task, dangerous ? (result.reason || "发送结果无法安全确认，已暂停且不会自动重试") : resultReason(response, "真实发送未通过安全校验"), index);
     return false;
   }
-  if (isIdentitySkip(response)) {
-    result.status = "identity_skipped";
-    result.reason = resultReason(response, "联系人身份无法唯一确认，已跳过");
-    result.updated_at = new Date().toISOString();
-    const saved = advanceTask(task, index);
-    emitTaskUpdate(saved);
-    return true;
-  }
-  const dangerous = ["prepared", "clicked", "outcome_unknown"].includes(result.status) || result.retry_blocked;
-  const failureCode = resultCode(response);
-  if (failureCode) result.blocked_reason = failureCode;
-  pauseTask(task, dangerous ? (result.reason || "发送结果无法安全确认，已暂停且不会自动重试") : resultReason(response, "真实发送未通过安全校验"), index);
   return false;
 }
 

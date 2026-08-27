@@ -285,6 +285,9 @@ function wechatWindowReason(result) {
     "wechat_focus_failed",
     "wechat_window_not_foreground",
     "wechat_user_active",
+    "wechat_external_input_detected",
+    "wechat_input_lease_unavailable",
+    "wechat_target_changed",
     "wechat_window_not_ready",
     "wechat_window_ambiguous",
     "wechat_window_identity_mismatch",
@@ -299,7 +302,10 @@ function wechatWindowBlockText(reason) {
   if (reason === "wechat_login_required") return "已阻断：微信需要完成登录确认";
   if (reason === "wechat_focus_failed") return "已阻断：微信窗口未获得前台焦点";
   if (reason === "wechat_window_not_foreground") return "已停止：你已切换到其他窗口，系统不会把微信抢回前台";
-  if (reason === "wechat_user_active") return "已延后：检测到你正在使用鼠标或键盘，本次没有操作微信";
+  if (reason === "wechat_user_active") return "已延后：电脑尚未达到连续空闲的安全条件，本次没有操作微信";
+  if (reason === "wechat_external_input_detected") return "已延后：操作期间检测到输入状态变化，本次没有操作微信";
+  if (reason === "wechat_input_lease_unavailable") return "已阻断：无法锁定电脑输入状态，本次没有操作微信";
+  if (reason === "wechat_target_changed") return "已阻断：点击目标窗口发生变化，本次没有操作微信";
   if (reason === "wechat_window_not_ready") return "已阻断：已找到微信窗口，但当前窗口尺寸不可操作";
   if (reason === "wechat_window_ambiguous") return "已阻断：检测到多个个人微信主窗口";
   if (reason === "wechat_window_identity_mismatch") return "已阻断：微信窗口在操作过程中发生变化";
@@ -653,7 +659,14 @@ function clickSearchResultDryRun(
   const openResultMs = Date.now() - openStartedAt;
   if (!inputResult.ok) {
     const reason = wechatWindowReason(inputResult);
-    return block(baseDir, "点击搜索结果 dry-run", clearConversationState(state, reason), reason, wechatWindowBlockText(reason));
+    return block(
+      baseDir,
+      "点击搜索结果 dry-run",
+      clearConversationState(state, reason),
+      reason,
+      wechatWindowBlockText(reason),
+      { safety_diagnostics: inputResult?.safety_diagnostics || null }
+    );
   }
 
   if ((exactWindow.pid && Number(inputResult.pid) !== exactWindow.pid)

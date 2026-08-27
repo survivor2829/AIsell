@@ -1003,6 +1003,13 @@ td {
   margin-bottom: 20px;
 }
 
+.wechat-account-note {
+  margin: -4px 0 18px;
+  color: #667085;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .deepseek-head-actions {
   display: flex;
   align-items: center;
@@ -1916,6 +1923,11 @@ td .text-button {
 
 .touch-sync-card small {
   color: #9a3412;
+}
+
+.touch-sync-card small.sync-account-hint {
+  color: #667085;
+  font-weight: 500;
 }
 
 .touch-sync-actions {

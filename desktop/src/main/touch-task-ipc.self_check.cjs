@@ -146,14 +146,14 @@ assert.deepEqual(
   { level: "error", code: "outcome_unknown" },
   "an unknown send outcome must remain visible as a real error"
 );
-assert.equal(
-  resultReason({
-    blocked_reason: "wechat_user_active",
-    error: "微信窗口未能固定到左上角并获得前台控制，本次未执行"
-  }),
-  "检测到你正在使用鼠标或键盘，本次已安全延后；方便时可继续任务",
-  "a precise active-user code must not be hidden behind a generic window-preflight message"
-);
+  assert.equal(
+    resultReason({
+      blocked_reason: "wechat_user_active",
+      error: "微信窗口未能固定到左上角并获得前台控制，本次未执行"
+    }),
+    "电脑尚未达到连续空闲的安全条件，文案未写入微信，正在等待后恢复",
+    "an idle preflight must not blame the user for every window-side observation"
+  );
 
 function contacts(count) {
   return Array.from({ length: count }, (_, index) => ({
@@ -304,6 +304,41 @@ async function waitFor(read, predicate, timeoutMs = 10_000) {
     assert.equal(isolatedFailure.task.results[0].status, "identity_skipped");
     assert.equal(isolatedFailure.task.results[1].status, "sent_verified");
     assert.equal(contactScopedAttempts, 2, "one contact-scoped search failure must not pause the remaining task");
+
+    fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
+    fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
+    fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify(contacts(1)), "utf8");
+    let preDraftRecoveryAttempts = 0;
+    const updatesBeforePreDraftRecovery = taskUpdates.length;
+    executorBehavior = async (options) => {
+      preDraftRecoveryAttempts += 1;
+      if (preDraftRecoveryAttempts === 1) {
+        return {
+          ok: false,
+          action: "click-search-result-dry-run",
+          blocked_reason: "wechat_external_input_detected",
+          send_attempted: false,
+          send_result: "not_attempted",
+          safety_diagnostics: {
+            phase: "click_search_result",
+            expected_input_tick: 101,
+            current_input_tick: 102,
+            expected_hWnd: 81,
+            foreground_hWnd: 81
+          }
+        };
+      }
+      sends += 1;
+      options.onTransition("sent_verified", { real_send_attempt_key: "recovered-before-draft" });
+      return { ok: true, state: { real_send_status: "sent_verified", real_send_attempt_key: "recovered-before-draft" } };
+    };
+    await start({}, { script: "输入变化恢复测试", clickToken: "trusted-pre-draft-recovery" });
+    const recoveredBeforeDraft = await waitFor(status, (value) => value.task?.status === "completed");
+    assert.equal(preDraftRecoveryAttempts, 2, "a confirmed pre-draft input interruption must retry once without rebuilding or resending the task");
+    assert.equal(recoveredBeforeDraft.task.results[0].status, "sent_verified");
+    assert.equal(recoveredBeforeDraft.task.results[0].last_failure_context?.recovery_action, "wait_for_idle_then_retry");
+    assert.equal(recoveredBeforeDraft.task.results[0].last_failure_context?.current_input_tick, 102);
+    assert.equal(taskUpdates.slice(updatesBeforePreDraftRecovery).some((payload) => payload.task?.phase === "waiting_for_idle"), true);
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });

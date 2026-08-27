@@ -125,7 +125,7 @@ function classifyContacts(contacts = [], options = {}) {
   const labels = {
     contact_disabled: "联系人已停用或禁止触达",
     contact_identity_missing: "联系人身份或搜索名称缺失",
-    wechat_id_missing: "微信号为空",
+    wechat_id_missing: "该联系人未公开微信号，无法安全精确搜索，已跳过",
     wechat_account_identity_missing: "联系人未绑定同步微信账号",
     contact_name_not_unique: "联系人姓名重复",
     contact_identity_not_unique: "联系人微信号或身份不唯一",

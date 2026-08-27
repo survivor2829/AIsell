@@ -527,6 +527,7 @@ try {
   assert.equal(classified.eligible.length, 52, "duplicate display names remain safe when each contact has a unique exact WeChat ID");
   assert.equal(classified.excluded.filter((row) => row.reason_code === "contact_name_not_unique").length, 0);
   assert.equal(classified.excluded.some((row) => row.reason_code === "wechat_id_missing"), true);
+  assert.match(classified.excluded.find((row) => row.reason_code === "wechat_id_missing").reason, /未公开微信号/);
   assert.equal(classified.excluded.some((row) => row.reason_code === "contact_disabled"), true);
   const duplicateWechatIds = classifyContacts([
     validContacts[0],
@@ -772,12 +773,13 @@ try {
     windowPreflight: async (context) => {
       sharedWindowPreflights.push(context);
       if (sharedWindowPreflights.length === 1) return { ok: false, reason: "wechat_user_active" };
+      if (sharedWindowPreflights.length === 2) return { ok: false, reason: "wechat_external_input_detected" };
       return preparedWechatWindow();
     },
     runStep: async (command, args = []) => {
       sharedSteps.push(command);
       if (command === "click-search-result-dry-run") {
-        assert.deepEqual(args, ["--expected-pid", "81", "--expected-hwnd", "91", "--min-idle-ms", "15000"]);
+        assert.deepEqual(args, ["--expected-pid", "81", "--expected-hwnd", "91", "--min-idle-ms", "0"]);
       }
       return { ok: true, state: { selected_customer: sharedContact } };
     },
@@ -807,8 +809,9 @@ try {
   );
   assert.equal(sharedResult.send_result, "sent_verified");
   assert.deepEqual(sharedSteps, ["select-customer", "calibrate", "click-search-result-dry-run", "input-message-dry-run", "send"]);
-  assert.deepEqual(sharedIdleWaits, [15_000], "a trusted start click must wait for the required quiet desktop instead of failing immediately");
+  assert.deepEqual(sharedIdleWaits, [15_000, 15_000], "a trusted start click must wait again when input changes before any draft is written");
   assert.deepEqual(sharedWindowPreflights, [
+    { minIdleMs: 15_000, requireFocused: true },
     { minIdleMs: 15_000, requireFocused: true },
     { minIdleMs: 15_000, requireFocused: true }
   ]);
@@ -1074,6 +1077,33 @@ try {
   assert.equal(preflightFailure.send_attempted, false);
   assert.equal(preflightFailureSteps, 2, "window preparation failure may follow local state setup but must block before search or input");
 
+  const clickExternalInputFailure = await executeVerifiedContactSend({
+    baseDir: sharedDir,
+    contactId: sharedContact.id,
+    message: "共享事务消息",
+    authorized: true,
+    windowPreflight: async () => preparedWechatWindow(),
+    runStep: async (command) => command === "click-search-result-dry-run"
+      ? {
+        ok: false,
+        action: "点击搜索结果 dry-run",
+        blocked_reason: "wechat_external_input_detected",
+        safety_diagnostics: {
+          phase: "click_search_result",
+          expected_input_tick: 101,
+          current_input_tick: 102,
+          expected_hWnd: 91,
+          foreground_hWnd: 91
+        }
+      }
+      : { ok: true }
+  });
+  assert.equal(clickExternalInputFailure.action, "click-search-result-dry-run");
+  assert.equal(clickExternalInputFailure.step_action, "点击搜索结果 dry-run");
+  assert.equal(clickExternalInputFailure.blocked_reason, "wechat_external_input_detected");
+  assert.equal(clickExternalInputFailure.safety_diagnostics?.current_input_tick, 102);
+  assert.equal(clickExternalInputFailure.send_attempted, false);
+
   saveState(sharedDir, {
     ...loadState(sharedDir),
     real_send_status: "not_sent",
@@ -1216,6 +1246,25 @@ try {
   const clickNoWindow = clickSearchResultDryRun(dir, () => ({ ok: false }), () => []);
   assert.equal(clickNoWindow.blocked_reason, "wechat_window_not_found");
   assert.equal(clickNoWindow.state.conversation_located, false);
+  const clickExternalInput = clickSearchResultDryRun(
+    dir,
+    () => ({
+      ok: false,
+      reason: "wechat_external_input_detected",
+      pid: 11,
+      hWnd: "22",
+      safety_diagnostics: {
+        phase: "click_search_result",
+        expected_input_tick: 101,
+        current_input_tick: 102,
+        expected_hWnd: 22,
+        foreground_hWnd: 22
+      }
+    }),
+    () => []
+  );
+  assert.equal(clickExternalInput.blocked_reason, "wechat_external_input_detected");
+  assert.equal(clickExternalInput.safety_diagnostics?.current_input_tick, 102);
   const clickMismatch = clickSearchResultDryRun(dir, () => ({ ok: true, title: "企业微信" }), () => ["企业微信"], () => ({ ok: false }));
   assert.equal(clickMismatch.blocked_reason, "search_result_not_opened");
   assert.equal(clickMismatch.state.conversation_located, false);

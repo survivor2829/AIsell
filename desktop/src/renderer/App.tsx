@@ -519,6 +519,7 @@ function touchTaskStatusLabel(task: TouchTaskState) {
   const phaseLabels: Record<string, string> = {
     preparing_batch: "准备触达文案",
     sending_batch: "发送中",
+    waiting_for_idle: "等待电脑空闲",
     awaiting_unknown_resolution: "等待确认发送结果"
   };
   return phaseLabels[task.phase ?? ""] ?? taskStatusLabel(task.status);
@@ -1099,9 +1100,10 @@ function ContactSyncPage({
       <div className="status-strip">
         <StatusCard label="同步状态" value={statusLabel} good={syncState.status === "synced"} />
         <StatusCard label="通讯录人数" value={`${contacts.length || syncState.contact_count}人`} good={(contacts.length || syncState.contact_count) > 0} />
-        <StatusCard label="微信账号" value={syncState.account_name || "未识别"} good={Boolean(syncState.account_name)} />
+        <StatusCard label="同步账号标识" value={syncState.account_name || "未识别"} good={Boolean(syncState.account_name)} />
         <StatusCard label="最近同步" value={lastSynced} good={Boolean(syncState.last_synced_at)} />
       </div>
+      <p className="wechat-account-note">同步账号标识来自本机微信数据目录，不是公开微信号；切换登录微信后请重新同步。</p>
       {locked && <div className="touch-notice">当前任务名单已经冻结。请先完成或结束本次任务，再重新同步联系人。</div>}
       <div className="wechat-path-panel">
         <div className="wechat-path-row">
@@ -1136,7 +1138,7 @@ function ContactSyncPage({
               <th>称呼</th>
               <th>备注</th>
               <th>昵称</th>
-              <th>微信号</th>
+              <th>联系人公开微信号</th>
               <th>来源</th>
             </tr>
           </thead>
@@ -1631,7 +1633,8 @@ function ActiveTouch({
         <div className="table-panel touch-sync-card">
           <div>
             <strong>微信联系人</strong>
-            <span>{syncStatusLabel}{contactSyncState.account_name ? ` · ${contactSyncState.account_name}` : ""}</span>
+            <span>{syncStatusLabel}{contactSyncState.account_name ? ` · 同步账号标识 ${contactSyncState.account_name}` : ""}</span>
+            <small className="sync-account-hint">账号标识来自本机微信数据目录；切换登录微信后请重新同步。</small>
             {(contactSyncError || contactSyncState.last_error) && <small>{contactSyncError || contactSyncState.last_error}</small>}
           </div>
           <div className="touch-sync-actions">
@@ -1679,7 +1682,7 @@ function ActiveTouch({
       <details className="debug-panel contact-preview-panel" open>
         <summary>联系人预览 · {hasFrozenSnapshot ? "任务冻结快照" : "同步预检"}</summary>
         <div className="contact-list-toolbar">
-          <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索称呼、备注、昵称或微信号" />
+          <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索称呼、备注、昵称或公开微信号" />
           <span>{hasFrozenSnapshot ? "名单已冻结" : `本次将触达 ${eligibleCount} 人`}</span>
         </div>
         <div className="table-panel flat-table-panel contact-table-scroll">
@@ -1689,7 +1692,7 @@ function ActiveTouch({
                 <th>称呼</th>
                 <th>备注</th>
                 <th>昵称</th>
-                <th>微信号</th>
+                <th>联系人公开微信号</th>
                 <th>状态</th>
                 <th>文案 / 原因</th>
                 <th>本次操作</th>

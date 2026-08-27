@@ -20,6 +20,8 @@ const {
 const { appendLog, block, blockMessageBubble, blockSendGate, loadState, output, readContacts, saveState } = require("./state_machine.cjs");
 const { contactIdentityError, identityKey } = require("./touch_task_state.cjs");
 
+const IDLE_WINDOW_RECOVERY_ATTEMPTS = 3;
+
 function attemptKey(state, message, attemptId = "") {
   const taskId = String(attemptId || state.task_context?.task_id || "single-contact");
   const contactId = String(state.selected_customer?.id ?? "");
@@ -203,6 +205,33 @@ function strictPreparedWechatWindow(result) {
   return { pid, hWnd: String(hWnd) };
 }
 
+function safeDiagnosticInteger(value) {
+  const numeric = Number(value);
+  return Number.isSafeInteger(numeric) && numeric >= 0 ? numeric : undefined;
+}
+
+function preflightDiagnostics(result, fallbackPhase, requiredIdleMs, recoveryAttempts = 0) {
+  const source = result?.safety_diagnostics && typeof result.safety_diagnostics === "object"
+    ? result.safety_diagnostics
+    : {};
+  const diagnostic = {
+    phase: String(source.phase || fallbackPhase || "preflight").slice(0, 80),
+    required_idle_ms: Math.max(0, Math.floor(Number(requiredIdleMs) || 0)),
+    recovery_attempts: Math.max(0, Math.floor(Number(recoveryAttempts) || 0))
+  };
+  for (const [target, value] of [
+    ["observed_idle_ms", source.observed_idle_ms ?? result?.observedIdleMs ?? result?.observed_idle_ms],
+    ["expected_input_tick", source.expected_input_tick],
+    ["current_input_tick", source.current_input_tick],
+    ["expected_hWnd", source.expected_hWnd ?? result?.hWnd],
+    ["foreground_hWnd", source.foreground_hWnd]
+  ]) {
+    const numeric = safeDiagnosticInteger(value);
+    if (numeric !== undefined) diagnostic[target] = numeric;
+  }
+  return diagnostic;
+}
+
 function sendAttemptedFromState(state, attemptKey = "") {
   const attemptStatus = attemptKey ? state?.real_send_attempts?.[attemptKey] : state?.real_send_status;
   if (["clicked", "sent_verified"].includes(attemptStatus)) return true;
@@ -270,7 +299,7 @@ function verifyRealSendSession(baseDir = __dirname, driver = verifyWechatCurrent
   if (!result.ok) return blockSendGate(baseDir, state, result.reason || "session_not_verified", "已阻断：微信账号、主窗口或当前会话未重新验证");
   const nextState = refreshedSessionState(state, result);
   saveState(baseDir, nextState);
-  appendLog(baseDir, "真实发送会话验证", "已验证个人微信进程、PID、窗口句柄和当前会话");
+  appendLog(baseDir, "真实发送会话验证", "已核验个人微信窗口、当前会话与本机同步账号标识");
   return output(true, "verify-real-send-session", nextState, { baseDir });
 }
 
@@ -280,7 +309,7 @@ async function verifyRealSendSessionAsync(baseDir = __dirname, driver = verifyWe
   if (!result.ok) return blockSendGate(baseDir, state, result.reason || "session_not_verified", "已阻断：微信账号、主窗口或当前会话未重新验证");
   const nextState = refreshedSessionState(state, result);
   saveState(baseDir, nextState);
-  appendLog(baseDir, "真实发送会话验证", "已验证个人微信进程、PID、窗口句柄和当前会话");
+  appendLog(baseDir, "真实发送会话验证", "已核验个人微信窗口、当前会话与本机同步账号标识");
   return output(true, "verify-real-send-session", nextState, { baseDir });
 }
 
@@ -288,6 +317,7 @@ function refreshedSessionState(state, result) {
   return {
     ...state,
     wechat_account_id: String(result.accountId),
+    wechat_account_binding_mode: String(result.accountBindingMode || "storage_inferred"),
     window_pid: Number(result.pid),
     window_handle: String(result.hWnd),
     window_process_name: result.processName,
@@ -594,7 +624,11 @@ async function executeVerifiedContactSend(options = {}) {
   } catch {
     preparedWindow = { ok: false, reason: "wechat_window_preflight_failed" };
   }
-  if (preparedWindow?.reason === "wechat_user_active" && windowMinIdleMs > 0) {
+  let preflightRecoveryAttempts = 0;
+  while (["wechat_user_active", "wechat_external_input_detected"].includes(String(preparedWindow?.reason || ""))
+    && windowMinIdleMs > 0
+    && preflightRecoveryAttempts < IDLE_WINDOW_RECOVERY_ATTEMPTS) {
+    preflightRecoveryAttempts += 1;
     const waitForIdleWindow = typeof options.windowIdleWait === "function"
       ? options.windowIdleWait
       : (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -616,7 +650,8 @@ async function executeVerifiedContactSend(options = {}) {
       ok: false,
       action: "prepare-wechat-window",
       blocked_reason: String(preparedWindow?.reason || "wechat_window_not_ready"),
-      error: "微信窗口未能固定到左上角并获得前台控制，本次未执行"
+      error: "微信窗口未能固定到左上角并获得前台控制，本次未执行",
+      send_diagnostics: preflightDiagnostics(preparedWindow, "prepare_wechat_window", windowMinIdleMs, preflightRecoveryAttempts)
     });
   }
   if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
@@ -626,11 +661,17 @@ async function executeVerifiedContactSend(options = {}) {
     "--expected-hwnd",
     preparedIdentity.hWnd,
     "--min-idle-ms",
-    String(windowMinIdleMs)
+    "0"
   ];
   const openedConversation = await options.runStep("click-search-result-dry-run", exactWindowArgs);
   if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
-  if (!openedConversation?.ok) return withSendAttempted(openedConversation);
+  if (!openedConversation?.ok) {
+    return withSendAttempted({
+      ...openedConversation,
+      action: "click-search-result-dry-run",
+      step_action: String(openedConversation?.action || "")
+    });
+  }
 
   if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
   const session = await verifyRealSendSessionAsync(baseDir, options.sessionDriver || verifyWechatCurrentConversationAsync);

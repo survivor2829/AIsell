@@ -1008,14 +1008,18 @@ if ($focusExact) {
   }
   if ($minimumIdleMs -gt 0) {
     $idleMs = [Win32WechatRpaSurfaceInspector]::GetLastInputIdleMilliseconds()
-    if ($idleMs -eq [uint32]::MaxValue -or [uint64]$idleMs -lt [uint64]$minimumIdleMs) {
-      @{ ok = $false; reason = "wechat_user_active"; pid = $expectedPid; hWnd = $expectedHWnd } | ConvertTo-Json -Compress
+    if ($idleMs -eq [uint32]::MaxValue) {
+      @{ ok = $false; reason = "wechat_input_lease_unavailable"; pid = $expectedPid; hWnd = $expectedHWnd; safety_diagnostics = @{ phase = "prepare_wechat_window"; input_lease = "unavailable"; expected_hWnd = [int64]$expectedHWnd; foreground_hWnd = [int64]([Win32WechatRpaSurfaceInspector]::GetForegroundWindow().ToInt64()) } } | ConvertTo-Json -Compress
+      exit
+    }
+    if ([uint64]$idleMs -lt [uint64]$minimumIdleMs) {
+      @{ ok = $false; reason = "wechat_user_active"; pid = $expectedPid; hWnd = $expectedHWnd; safety_diagnostics = @{ phase = "prepare_wechat_window"; required_idle_ms = [int64]$minimumIdleMs; observed_idle_ms = [int64]$idleMs; expected_hWnd = [int64]$expectedHWnd; foreground_hWnd = [int64]([Win32WechatRpaSurfaceInspector]::GetForegroundWindow().ToInt64()) } } | ConvertTo-Json -Compress
       exit
     }
   }
   [uint32]$inputTick = [Win32WechatRpaSurfaceInspector]::GetLastInputTick()
   if ($inputTick -eq [uint32]::MaxValue) {
-    @{ ok = $false; reason = "wechat_user_active"; pid = $expectedPid; hWnd = $expectedHWnd } | ConvertTo-Json -Compress
+    @{ ok = $false; reason = "wechat_input_lease_unavailable"; pid = $expectedPid; hWnd = $expectedHWnd; safety_diagnostics = @{ phase = "prepare_wechat_window"; input_lease = "unavailable"; expected_hWnd = [int64]$expectedHWnd; foreground_hWnd = [int64]([Win32WechatRpaSurfaceInspector]::GetForegroundWindow().ToInt64()) } } | ConvertTo-Json -Compress
     exit
   }
   if ([Win32WechatRpaSurfaceInspector]::GetForegroundWindow() -ne $hWnd) {
@@ -1042,8 +1046,13 @@ if ($focusExact) {
     }
     Start-Sleep -Milliseconds 120
   }
-  if ([Win32WechatRpaSurfaceInspector]::GetLastInputTick() -ne $inputTick) {
-    @{ ok = $false; reason = "wechat_user_active"; pid = $expectedPid; hWnd = $expectedHWnd } | ConvertTo-Json -Compress
+  [uint32]$currentInputTick = [Win32WechatRpaSurfaceInspector]::GetLastInputTick()
+  if ($currentInputTick -eq [uint32]::MaxValue) {
+    @{ ok = $false; reason = "wechat_input_lease_unavailable"; pid = $expectedPid; hWnd = $expectedHWnd; safety_diagnostics = @{ phase = "prepare_wechat_window"; input_lease = "unavailable"; expected_hWnd = [int64]$expectedHWnd; foreground_hWnd = [int64]([Win32WechatRpaSurfaceInspector]::GetForegroundWindow().ToInt64()) } } | ConvertTo-Json -Compress
+    exit
+  }
+  if ($currentInputTick -ne $inputTick) {
+    @{ ok = $false; reason = "wechat_external_input_detected"; pid = $expectedPid; hWnd = $expectedHWnd; safety_diagnostics = @{ phase = "prepare_wechat_window"; expected_input_tick = [uint64]$inputTick; current_input_tick = [uint64]$currentInputTick; expected_hWnd = [int64]$expectedHWnd; foreground_hWnd = [int64]([Win32WechatRpaSurfaceInspector]::GetForegroundWindow().ToInt64()) } } | ConvertTo-Json -Compress
     exit
   }
 }
@@ -1107,9 +1116,16 @@ if (-not $normalized) {
   @{ ok = $false; reason = "wechat_window_not_ready"; pid = $expectedPid; hWnd = $expectedHWnd } | ConvertTo-Json -Compress
   exit
 }
-if ($focusExact -and [Win32WechatRpaSurfaceInspector]::GetLastInputTick() -ne $inputTick) {
-  @{ ok = $false; reason = "wechat_user_active"; pid = $expectedPid; hWnd = $expectedHWnd } | ConvertTo-Json -Compress
-  exit
+if ($focusExact) {
+  [uint32]$finalObservedInputTick = [Win32WechatRpaSurfaceInspector]::GetLastInputTick()
+  if ($finalObservedInputTick -eq [uint32]::MaxValue) {
+    @{ ok = $false; reason = "wechat_input_lease_unavailable"; pid = $expectedPid; hWnd = $expectedHWnd; safety_diagnostics = @{ phase = "prepare_wechat_window"; input_lease = "unavailable"; expected_hWnd = [int64]$expectedHWnd; foreground_hWnd = [int64]([Win32WechatRpaSurfaceInspector]::GetForegroundWindow().ToInt64()) } } | ConvertTo-Json -Compress
+    exit
+  }
+  if ($finalObservedInputTick -ne $inputTick) {
+    @{ ok = $false; reason = "wechat_external_input_detected"; pid = $expectedPid; hWnd = $expectedHWnd; safety_diagnostics = @{ phase = "prepare_wechat_window"; expected_input_tick = [uint64]$inputTick; current_input_tick = [uint64]$finalObservedInputTick; expected_hWnd = [int64]$expectedHWnd; foreground_hWnd = [int64]([Win32WechatRpaSurfaceInspector]::GetForegroundWindow().ToInt64()) } } | ConvertTo-Json -Compress
+    exit
+  }
 }
 if ($focusExact -and [Win32WechatRpaSurfaceInspector]::GetForegroundWindow() -ne $hWnd) {
   @{ ok = $false; reason = "wechat_window_not_foreground"; pid = $expectedPid; hWnd = $expectedHWnd } | ConvertTo-Json -Compress
@@ -1364,20 +1380,46 @@ function Restore-SearchClipboardIfOwned {
 }
 function Stop-SearchForActiveUser {
   Restore-SearchClipboardIfOwned
-  @{ ok = $false; reason = "wechat_user_active"; pid = $matched.pid; hWnd = $matched.hWnd } | ConvertTo-Json -Compress
+  @{ ok = $false; reason = "wechat_user_active"; pid = $matched.pid; hWnd = $matched.hWnd; safety_diagnostics = @{ phase = "click_search_result"; required_idle_ms = [int64]$minimumIdleMs; observed_idle_ms = [int64]$idleMs; expected_hWnd = [int64]$matched.hWnd; foreground_hWnd = [int64]([Win32WechatWindowSearch]::GetForegroundWindow().ToInt64()) } } | ConvertTo-Json -Compress
+  exit
+}
+function Stop-SearchForExternalInput([uint32]$expectedInputTick, [uint32]$currentInputTick) {
+  Restore-SearchClipboardIfOwned
+  @{ ok = $false; reason = "wechat_external_input_detected"; pid = $matched.pid; hWnd = $matched.hWnd; safety_diagnostics = @{ phase = "click_search_result"; expected_input_tick = [uint64]$expectedInputTick; current_input_tick = [uint64]$currentInputTick; expected_hWnd = [int64]$matched.hWnd; foreground_hWnd = [int64]([Win32WechatWindowSearch]::GetForegroundWindow().ToInt64()) } } | ConvertTo-Json -Compress
+  exit
+}
+function Stop-SearchForInputLeaseUnavailable {
+  Restore-SearchClipboardIfOwned
+  @{ ok = $false; reason = "wechat_input_lease_unavailable"; pid = $matched.pid; hWnd = $matched.hWnd; safety_diagnostics = @{ phase = "click_search_result"; expected_hWnd = [int64]$matched.hWnd; foreground_hWnd = [int64]([Win32WechatWindowSearch]::GetForegroundWindow().ToInt64()) } } | ConvertTo-Json -Compress
+  exit
+}
+function Stop-SearchForWindowNotForeground {
+  Restore-SearchClipboardIfOwned
+  @{ ok = $false; reason = "wechat_window_not_foreground"; pid = $matched.pid; hWnd = $matched.hWnd; safety_diagnostics = @{ phase = "click_search_result"; expected_hWnd = [int64]$matched.hWnd; foreground_hWnd = [int64]([Win32WechatWindowSearch]::GetForegroundWindow().ToInt64()) } } | ConvertTo-Json -Compress
+  exit
+}
+function Stop-SearchForTargetChanged {
+  Restore-SearchClipboardIfOwned
+  @{ ok = $false; reason = "wechat_target_changed"; pid = $matched.pid; hWnd = $matched.hWnd; safety_diagnostics = @{ phase = "click_search_result"; expected_hWnd = [int64]$matched.hWnd; foreground_hWnd = [int64]([Win32WechatWindowSearch]::GetForegroundWindow().ToInt64()) } } | ConvertTo-Json -Compress
   exit
 }
 function Assert-ExactSearchForeground {
-  if ($exactWindowBinding -and (
-      [Win32WechatWindowSearch]::GetForegroundWindow() -ne [IntPtr]$matched.hWnd -or
-      ($script:inputLeaseActive -and [Win32WechatWindowSearch]::GetLastInputTick() -ne $script:inputLeaseTick))) {
-    Stop-SearchForActiveUser
+  if (-not $exactWindowBinding) { return }
+  if ([Win32WechatWindowSearch]::GetForegroundWindow() -ne [IntPtr]$matched.hWnd) {
+    Stop-SearchForWindowNotForeground
+  }
+  if ($script:inputLeaseActive) {
+    [uint32]$currentInputTick = [Win32WechatWindowSearch]::GetLastInputTick()
+    if ($currentInputTick -eq [uint32]::MaxValue) { Stop-SearchForInputLeaseUnavailable }
+    if ($currentInputTick -ne $script:inputLeaseTick) {
+      Stop-SearchForExternalInput $script:inputLeaseTick $currentInputTick
+    }
   }
 }
 function Rebase-ExactSearchInputLease {
   if ($exactWindowBinding) {
     $script:inputLeaseTick = [Win32WechatWindowSearch]::GetLastInputTick()
-    if ($script:inputLeaseTick -eq [uint32]::MaxValue) { Stop-SearchForActiveUser }
+    if ($script:inputLeaseTick -eq [uint32]::MaxValue) { Stop-SearchForInputLeaseUnavailable }
     $script:inputLeaseActive = $true
   }
 }
@@ -1414,16 +1456,17 @@ if (-not $matched.focused) {
   exit
 }
 $idleMs = [Win32WechatWindowSearch]::GetLastInputIdleMilliseconds()
-if (($minimumIdleMs -gt 0 -and ($idleMs -eq [uint32]::MaxValue -or [uint64]$idleMs -lt [uint64]$minimumIdleMs))) {
-  @{ ok = $false; reason = "wechat_user_active"; pid = $matched.pid; hWnd = $matched.hWnd } | ConvertTo-Json -Compress
-  exit
+if ($minimumIdleMs -gt 0) {
+  if ($idleMs -eq [uint32]::MaxValue) { Stop-SearchForInputLeaseUnavailable }
+  if ([uint64]$idleMs -lt [uint64]$minimumIdleMs) { Stop-SearchForActiveUser }
 }
 $expectedInputTick = [Win32WechatWindowSearch]::GetLastInputTick()
+if ($expectedInputTick -eq [uint32]::MaxValue) { Stop-SearchForInputLeaseUnavailable }
 Start-Sleep -Milliseconds 300
 $currentInputTick = [Win32WechatWindowSearch]::GetLastInputTick()
-if ($expectedInputTick -eq [uint32]::MaxValue -or $currentInputTick -ne $expectedInputTick -or [Win32WechatWindowSearch]::GetForegroundWindow() -ne [IntPtr]$matched.hWnd) {
-  Stop-SearchForActiveUser
-}
+if ($currentInputTick -eq [uint32]::MaxValue) { Stop-SearchForInputLeaseUnavailable }
+if ($currentInputTick -ne $expectedInputTick) { Stop-SearchForExternalInput $expectedInputTick $currentInputTick }
+if ([Win32WechatWindowSearch]::GetForegroundWindow() -ne [IntPtr]$matched.hWnd) { Stop-SearchForWindowNotForeground }
 $script:inputLeaseTick = $currentInputTick
 $script:inputLeaseActive = $exactWindowBinding
 try {
@@ -1485,7 +1528,7 @@ if (-not [string]::IsNullOrWhiteSpace($resultAutomationId)) {
         $hitRoot = [Win32WechatWindowSearch]::GetAncestor($hit, 2)
         [uint32]$hitPid = 0
         [void][Win32WechatWindowSearch]::GetWindowThreadProcessId($hit, [ref]$hitPid)
-        if ($hitRoot -ne [IntPtr]$matched.hWnd -or [int]$hitPid -ne [int]$matched.pid) { Stop-SearchForActiveUser }
+        if ($hitRoot -ne [IntPtr]$matched.hWnd -or [int]$hitPid -ne [int]$matched.pid) { Stop-SearchForTargetChanged }
         Assert-ExactSearchForeground
         [Win32WechatWindowSearch]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
         [Win32WechatWindowSearch]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
