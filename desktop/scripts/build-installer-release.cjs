@@ -172,6 +172,14 @@ function buildInstaller(edition = "delivery") {
 
   try {
     fs.cpSync(portableDir, installerInputDir, { recursive: true, errorOnExist: true });
+    const stagedAppDir = path.join(installerInputDir, "resources", "app");
+    if (treeSha256(installerInputDir) !== portableTreeHash) {
+      throw new Error("Installer input does not match the verified portable application");
+    }
+    if (treeSha256(stagedAppDir) !== portableManifest.sourceTreeSha256) {
+      throw new Error("Installer input source tree does not match the portable version manifest");
+    }
+    verifyPackagedRemotionRuntime(installerInputDir, portableManifest.remotionRuntime);
     const builder = require.resolve("electron-builder/out/cli/cli.js");
     const result = spawnSync(process.execPath, [
       builder,
