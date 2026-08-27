@@ -135,12 +135,13 @@ function remotionRuntimeEnvironment() {
   });
 }
 
-function contentEngineRuntimeEnvironment(runtimePath) {
+function contentEngineRuntimeEnvironment(runtimePath, dataDir) {
   return {
     ...remotionRuntimeEnvironment(),
     ...resolveContentEngineMediaToolsEnvironment({
       runtimePath,
-      isPackaged: app.isPackaged
+      isPackaged: app.isPackaged,
+      dataDir
     })
   };
 }
@@ -359,11 +360,15 @@ if (!gotSingleInstanceLock) {
       onChanged: restartImageProviderConsumers
     });
     const contentEnginePath = contentEngineRuntimePath();
+    const contentEngineDataDir = path.join(app.getPath("userData"), "content-engine");
     contentEngineController = createContentEngineSidecar({
       runtimePath: contentEnginePath,
       runtimeArgs: contentEngineRuntimeArgs(),
-      dataDir: path.join(app.getPath("userData"), "content-engine"),
-      getTrustedRuntimeEnvironment: () => contentEngineRuntimeEnvironment(contentEnginePath),
+      dataDir: contentEngineDataDir,
+      getTrustedRuntimeEnvironment: () => contentEngineRuntimeEnvironment(
+        contentEnginePath,
+        contentEngineDataDir
+      ),
       getProviderEnvironment: () => {
         const providerEnvironment = {};
         if (bailianKeyStore.status().configured) {

@@ -293,7 +293,8 @@ function runPackagedContentEngineSelfCheck({
   const resourcesHashBefore = treeSha256(resourcesDir);
   const mediaToolsEnvironment = resolveContentEngineMediaToolsEnvironment({
     runtimePath: packaged.executable,
-    isPackaged: true
+    isPackaged: true,
+    dataDir
   });
   const input = [
     JSON.stringify({ id: "build-health", method: "health", params: {} }),

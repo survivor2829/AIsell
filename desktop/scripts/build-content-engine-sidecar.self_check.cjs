@@ -197,6 +197,17 @@ try {
   assert.equal(mediaToolCalls.every((call) => call.executable.startsWith(path.join(mediaRuntime, "media-tools"))), true);
   assert.equal(mediaToolCalls.every((call) => call.options.cwd === path.join(mediaRuntime, "media-tools")), true);
   assert.equal(mediaToolCalls.every((call) => call.options.env.PATH === [path.join(mediaRuntime, "media-tools"), "C:\\Windows\\System32", "C:\\Windows"].join(path.delimiter)), true);
+  const fontConfigCalls = mediaToolCalls.filter((call) => call.spawnArgs.some((argument) => (
+    String(argument).includes("subtitles=") || String(argument).includes("drawtext=")
+  )));
+  assert.equal(fontConfigCalls.length, 2);
+  assert.equal(fontConfigCalls.every((call) => (
+    path.basename(call.options.env.FONTCONFIG_FILE || "") === "fontconfig.conf"
+    && path.dirname(call.options.env.FONTCONFIG_FILE || "") === call.options.env.FONTCONFIG_PATH
+  )), true);
+  assert.equal(mediaToolCalls.filter((call) => !fontConfigCalls.includes(call)).every((call) => (
+    call.options.env.FONTCONFIG_FILE === undefined && call.options.env.FONTCONFIG_PATH === undefined
+  )), true);
   assert.equal(mediaToolCalls.every((call) => !call.options.env.PATH.includes(mediaSourceRoot) && call.options.env.Path === undefined), true);
   const graphs = mediaToolCalls.filter((call) => call.spawnArgs.includes("-filter_complex")).map((call) => call.spawnArgs[call.spawnArgs.indexOf("-filter_complex") + 1]);
   assert.equal(graphs.some((graph) => graph.includes("split=2") && graph.includes("subtitles=") && graph.includes("gblur=")), true);

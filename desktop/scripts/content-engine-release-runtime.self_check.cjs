@@ -298,8 +298,13 @@ try {
     dataDir,
     spawn: (executable, args, options) => {
       observedCall = { executable, args, options };
-      assert.equal(fs.existsSync(dataDir), false, "worker must own fresh data-dir creation");
-      fs.mkdirSync(dataDir, { recursive: false });
+      assert.equal(fs.existsSync(dataDir), true, "trusted Fontconfig setup must initialize the fresh data directory");
+      assert.equal(
+        fs.existsSync(path.join(dataDir, "fontconfig", "fonts.conf")),
+        true,
+        "packaged worker must receive a generated Fontconfig configuration"
+      );
+      fs.writeFileSync(path.join(dataDir, "worker-ready.txt"), "fixture", "utf8");
       return { status: 0, stdout, stderr: "" };
     },
     mediaToolsSpawn: mediaSpawn
@@ -315,6 +320,14 @@ try {
   assert.equal(
     observedCall.options.env.XIAOXI_FFPROBE_PATH,
     path.join(packagedDir, "media-tools", "ffprobe.exe")
+  );
+  assert.equal(
+    observedCall.options.env.FONTCONFIG_FILE,
+    path.join(dataDir, "fontconfig", "fonts.conf")
+  );
+  assert.equal(
+    observedCall.options.env.FONTCONFIG_PATH,
+    path.join(dataDir, "fontconfig")
   );
   assert.match(observedCall.options.input, /"method":"health"/);
   assert.match(observedCall.options.input, /"method":"shutdown"/);
@@ -351,7 +364,7 @@ try {
       descriptor,
       dataDir: path.join(root, "mutating-content-engine-data"),
       spawn: (_executable, args) => {
-        fs.mkdirSync(args[1], { recursive: false });
+        fs.writeFileSync(path.join(args[1], "worker-ready.txt"), "fixture", "utf8");
         fs.writeFileSync(path.join(resourcesDir, "mutated.txt"), "changed", "utf8");
         return { status: 0, stdout, stderr: "" };
       },

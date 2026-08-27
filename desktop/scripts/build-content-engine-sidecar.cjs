@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
+const { writeContentEngineFontconfig } = require("../src/main/content-engine-media-tools.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -429,27 +430,36 @@ function resolveMediaToolSources(env = process.env) {
   };
 }
 
-function isolatedMediaToolEnvironment(toolDir, inherited = process.env) {
+function isolatedMediaToolEnvironment(toolDir, inherited = process.env, fontConfig = null) {
   const systemRoot = String(inherited.SystemRoot || process.env.SystemRoot || "C:\\Windows").trim();
   if (!path.isAbsolute(systemRoot)) throw new Error("Media tools self-check requires an absolute SystemRoot.");
   const system32 = path.join(systemRoot, "System32");
+  const tempDirectory = String(inherited.TEMP || os.tmpdir()).trim();
+  const configuredFontConfig = String(fontConfig || "").trim();
+  const resolvedFontConfig = configuredFontConfig
+    ? assertReadableFile(path.resolve(configuredFontConfig), "Media tools Fontconfig configuration")
+    : "";
   return {
     ComSpec: String(inherited.ComSpec || path.join(system32, "cmd.exe")),
     PATH: [toolDir, system32, systemRoot].join(path.delimiter),
     PATHEXT: String(inherited.PATHEXT || ".COM;.EXE;.BAT;.CMD"),
     SystemDrive: String(inherited.SystemDrive || path.parse(systemRoot).root),
     SystemRoot: systemRoot,
-    TEMP: String(inherited.TEMP || os.tmpdir()),
-    TMP: String(inherited.TMP || inherited.TEMP || os.tmpdir())
+    TEMP: tempDirectory,
+    TMP: String(inherited.TMP || tempDirectory),
+    ...(resolvedFontConfig ? {
+      FONTCONFIG_FILE: resolvedFontConfig,
+      FONTCONFIG_PATH: path.dirname(resolvedFontConfig)
+    } : {})
   };
 }
 
-function runMediaToolCommand(executable, args, label, { spawn = spawnSync, env = process.env } = {}) {
+function runMediaToolCommand(executable, args, label, { spawn = spawnSync, env = process.env, fontConfig = null } = {}) {
   const toolDir = path.dirname(path.resolve(executable));
   const result = spawn(executable, args, {
     cwd: toolDir,
     encoding: "utf8",
-    env: isolatedMediaToolEnvironment(toolDir, env),
+    env: isolatedMediaToolEnvironment(toolDir, env, fontConfig),
     maxBuffer: 8 * 1024 * 1024,
     timeout: 30_000,
     windowsHide: true
@@ -625,6 +635,12 @@ function verifyBundledMediaTools(runtimeDir, mediaTools, { spawn = spawnSync, te
     assertNonEmptyMediaOutput(voiceWave, "Packaged FFmpeg V2 voice smoke");
 
     const font = resolveBundledCreativeFont(runtimeDir);
+    const fontConfig = writeContentEngineFontconfig({
+      file: path.join(smokeDirectory, "fontconfig.conf"),
+      fontDirectory: path.dirname(font),
+      cacheDirectory: path.join(smokeDirectory, "fontconfig-cache")
+    });
+    const fontOptions = { spawn, env, fontConfig };
     runMediaToolCommand(ffmpeg, [
       "-hide_banner",
       "-loglevel", "error",
@@ -644,7 +660,7 @@ function verifyBundledMediaTools(runtimeDir, mediaTools, { spawn = spawnSync, te
       "-c:a", "aac",
       "-shortest",
       canvasVideo
-    ], "Packaged FFmpeg V2 canvas smoke", { spawn, env });
+    ], "Packaged FFmpeg V2 canvas smoke", fontOptions);
     assertNonEmptyMediaOutput(canvasVideo, "Packaged FFmpeg V2 canvas smoke");
 
     runMediaToolCommand(ffmpeg, [
@@ -688,12 +704,12 @@ function verifyBundledMediaTools(runtimeDir, mediaTools, { spawn = spawnSync, te
       "-loglevel", "error",
       "-y",
       "-f", "lavfi", "-i", "color=c=black:s=72x128:r=25:d=0.2",
-      "-vf", `scale=72:128,crop=72:128,drawbox=x=4:y=4:w=64:h=120:color=white@0.3:t=fill,drawtext=fontfile='${ffmpegFilterPath(font)}':text='OK':fontcolor=white:fontsize=18:x=8:y=52`,
+      "-vf", `scale=72:128,crop=72:128,drawbox=x=4:y=4:w=64:h=120:color=white@0.3:t=fill,drawtext=fontfile='${ffmpegFilterPath(font)}':text='字幕':fontcolor=white:fontsize=18:x=8:y=52`,
       "-frames:v", "1",
       "-c:v", "mjpeg",
       "-f", "image2",
       coverImage
-    ], "Packaged FFmpeg V2 cover smoke", { spawn, env });
+    ], "Packaged FFmpeg V2 cover smoke", fontOptions);
     assertNonEmptyMediaOutput(coverImage, "Packaged FFmpeg V2 cover smoke");
 
     fs.writeFileSync(concatList, "file 'v2-canvas-bt709.mp4'\nfile 'v2-canvas-bt709.mp4'\n", "utf8");

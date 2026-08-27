@@ -104,7 +104,11 @@ async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-content-engine-sidecar-"));
   const runtimePath = path.join(root, "content-engine-worker.exe");
   const dataDir = path.join(root, "data");
+  const fontconfigDataDir = path.join(root, "fontconfig-data");
+  const bundledFontDirectory = path.join(root, "_internal", "content_engine", "assets", "fonts");
   fs.writeFileSync(runtimePath, "");
+  fs.mkdirSync(bundledFontDirectory, { recursive: true });
+  fs.writeFileSync(path.join(bundledFontDirectory, "NotoSansSC-Variable.ttf"), "font-fixture");
   assert.deepEqual(
     resolveContentEngineMediaToolsEnvironment({ runtimePath, isPackaged: false }),
     {},
@@ -116,7 +120,24 @@ async function main() {
       XIAOXI_FFMPEG_PATH: path.join(root, "media-tools", "ffmpeg.exe"),
       XIAOXI_FFPROBE_PATH: path.join(root, "media-tools", "ffprobe.exe")
     },
-    "packaged workers must use their adjacent bundled media tools"
+    "packaged workers must use their adjacent bundled media tools before a data directory is available"
+  );
+  const packagedMediaEnvironment = resolveContentEngineMediaToolsEnvironment({
+    runtimePath,
+    isPackaged: true,
+    dataDir: fontconfigDataDir
+  });
+  assert.deepEqual(packagedMediaEnvironment, {
+    XIAOXI_FFMPEG_PATH: path.join(root, "media-tools", "ffmpeg.exe"),
+    XIAOXI_FFPROBE_PATH: path.join(root, "media-tools", "ffprobe.exe"),
+    FONTCONFIG_FILE: path.join(fontconfigDataDir, "fontconfig", "fonts.conf"),
+    FONTCONFIG_PATH: path.join(fontconfigDataDir, "fontconfig")
+  });
+  assert.equal(
+    fs.readFileSync(packagedMediaEnvironment.FONTCONFIG_FILE, "utf8").includes(
+      bundledFontDirectory.split(path.sep).join("/")
+    ),
+    true
   );
 
   try {
@@ -150,7 +171,9 @@ async function main() {
       const controller = createContentEngineSidecar({
         env: {
           XIAOXI_FFMPEG_PATH: "C:\\untrusted\\ffmpeg.exe",
-          XIAOXI_FFPROBE_PATH: "C:\\untrusted\\ffprobe.exe"
+          XIAOXI_FFPROBE_PATH: "C:\\untrusted\\ffprobe.exe",
+          FONTCONFIG_FILE: "C:\\untrusted\\fontconfig.conf",
+          FONTCONFIG_PATH: "C:\\untrusted"
         },
         runtimePath,
         runtimeArgs: ["worker.py"],
@@ -158,6 +181,8 @@ async function main() {
         getTrustedRuntimeEnvironment: () => ({
           XIAOXI_FFMPEG_PATH: "C:\\trusted\\media-tools\\ffmpeg.exe",
           XIAOXI_FFPROBE_PATH: "C:\\trusted\\media-tools\\ffprobe.exe",
+          FONTCONFIG_FILE: "C:\\trusted\\media-tools\\fontconfig.conf",
+          FONTCONFIG_PATH: "C:\\trusted\\media-tools",
           XIAOXI_REMOTION_NODE_PATH: "C:\\trusted\\node.exe",
           XIAOXI_REMOTION_WORKER_PATH: "C:\\trusted\\worker.mjs",
           XIAOXI_REMOTION_BUNDLE_PATH: "C:\\trusted\\bundle",
@@ -188,6 +213,13 @@ async function main() {
       assert.equal(
         spawnCalls[0].options.env.XIAOXI_FFPROBE_PATH,
         "C:\\trusted\\media-tools\\ffprobe.exe"
+      );
+      assert.equal(
+        spawnCalls[0].options.env.FONTCONFIG_FILE,
+        "C:\\trusted\\media-tools\\fontconfig.conf"
+      );
+      assert.equal(
+        spawnCalls[0].options.env.FONTCONFIG_PATH, "C:\\trusted\\media-tools"
       );
       assert.equal(
         spawnCalls[0].options.env.XIAOXI_REMOTION_WORKER_PATH,
