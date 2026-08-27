@@ -296,15 +296,19 @@ try {
     resourcesDir,
     descriptor,
     dataDir,
+    fontconfigTemporaryDirectory: root,
     spawn: (executable, args, options) => {
       observedCall = { executable, args, options };
-      assert.equal(fs.existsSync(dataDir), true, "trusted Fontconfig setup must initialize the fresh data directory");
+      assert.equal(fs.existsSync(dataDir), false, "worker must own fresh data-dir creation");
       assert.equal(
-        fs.existsSync(path.join(dataDir, "fontconfig", "fonts.conf")),
+        fs.existsSync(options.env.FONTCONFIG_FILE),
         true,
         "packaged worker must receive a generated Fontconfig configuration"
       );
-      fs.writeFileSync(path.join(dataDir, "worker-ready.txt"), "fixture", "utf8");
+      assert.equal(path.dirname(options.env.FONTCONFIG_FILE), options.env.FONTCONFIG_PATH);
+      assert.equal(path.dirname(options.env.XIAOXI_CREATIVE_FONT_PATH), path.join(options.env.FONTCONFIG_PATH, "fonts"));
+      assert.equal(options.env.FONTCONFIG_PATH.startsWith(path.join(root, "xiaoxi-fontconfig")), true);
+      fs.mkdirSync(dataDir, { recursive: false });
       return { status: 0, stdout, stderr: "" };
     },
     mediaToolsSpawn: mediaSpawn
@@ -321,14 +325,7 @@ try {
     observedCall.options.env.XIAOXI_FFPROBE_PATH,
     path.join(packagedDir, "media-tools", "ffprobe.exe")
   );
-  assert.equal(
-    observedCall.options.env.FONTCONFIG_FILE,
-    path.join(dataDir, "fontconfig", "fonts.conf")
-  );
-  assert.equal(
-    observedCall.options.env.FONTCONFIG_PATH,
-    path.join(dataDir, "fontconfig")
-  );
+  assert.equal(path.basename(observedCall.options.env.FONTCONFIG_FILE), "fonts.conf");
   assert.match(observedCall.options.input, /"method":"health"/);
   assert.match(observedCall.options.input, /"method":"shutdown"/);
 
@@ -363,8 +360,9 @@ try {
       resourcesDir,
       descriptor,
       dataDir: path.join(root, "mutating-content-engine-data"),
+      fontconfigTemporaryDirectory: root,
       spawn: (_executable, args) => {
-        fs.writeFileSync(path.join(args[1], "worker-ready.txt"), "fixture", "utf8");
+        fs.mkdirSync(args[1], { recursive: false });
         fs.writeFileSync(path.join(resourcesDir, "mutated.txt"), "changed", "utf8");
         return { status: 0, stdout, stderr: "" };
       },

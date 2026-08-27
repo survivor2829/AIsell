@@ -1,4 +1,6 @@
+const crypto = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 function isDirectory(candidate) {
@@ -7,6 +9,18 @@ function isDirectory(candidate) {
   } catch {
     return false;
   }
+}
+
+function isFile(candidate) {
+  try {
+    return fs.statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isAsciiPath(candidate) {
+  return /^[\x20-\x7e]+$/u.test(String(candidate || ""));
 }
 
 function fontconfigPath(value) {
@@ -22,17 +36,49 @@ function escapeFontconfigXml(value) {
     .replaceAll("'", "&apos;");
 }
 
-function resolveContentEngineFontDirectory(runtimePath) {
+function resolveContentEngineBundledFont(runtimePath) {
   const runtimeDirectory = path.dirname(path.resolve(runtimePath));
   const candidates = [
-    path.join(runtimeDirectory, "_internal", "content_engine", "assets", "fonts"),
-    path.join(runtimeDirectory, "content_engine", "assets", "fonts")
+    path.join(runtimeDirectory, "_internal", "content_engine", "assets", "fonts", "NotoSansSC-Variable.ttf"),
+    path.join(runtimeDirectory, "content_engine", "assets", "fonts", "NotoSansSC-Variable.ttf")
   ];
-  const directory = candidates.find(isDirectory);
-  if (!directory) {
-    throw new Error("Packaged content-engine Fontconfig requires the bundled font directory");
+  const font = candidates.find(isFile);
+  if (!font) {
+    throw new Error("Packaged content-engine Fontconfig requires the bundled Noto font");
+  }
+  return font;
+}
+
+function resolveFontconfigRuntimeDirectory({ runtimePath, dataDir, temporaryDirectory = os.tmpdir() }) {
+  const configuredTemporaryDirectory = String(temporaryDirectory || "").trim();
+  if (!configuredTemporaryDirectory || !path.isAbsolute(configuredTemporaryDirectory)) {
+    throw new Error("Packaged content-engine Fontconfig requires an absolute temporary directory");
+  }
+  const dataIdentity = String(dataDir || "").trim();
+  if (!dataIdentity || !path.isAbsolute(dataIdentity)) {
+    throw new Error("Packaged content-engine Fontconfig requires an absolute data directory");
+  }
+  const runtimeRoot = path.resolve(configuredTemporaryDirectory);
+  const identity = crypto.createHash("sha256")
+    .update(`${path.resolve(runtimePath)}\u0000${path.resolve(dataIdentity)}`, "utf8")
+    .digest("hex")
+    .slice(0, 24);
+  const directory = path.join(runtimeRoot, "xiaoxi-fontconfig", identity);
+  if (!isAsciiPath(directory)) {
+    throw new Error("Packaged content-engine Fontconfig requires an ASCII-safe temporary directory");
   }
   return directory;
+}
+
+function materializeContentEngineFont(runtimePath, fontDirectory) {
+  const source = resolveContentEngineBundledFont(runtimePath);
+  const destinationDirectory = path.resolve(fontDirectory);
+  const destination = path.join(destinationDirectory, path.basename(source));
+  fs.mkdirSync(destinationDirectory, { recursive: true });
+  if (!isFile(destination) || fs.statSync(destination).size !== fs.statSync(source).size) {
+    fs.copyFileSync(source, destination);
+  }
+  return destination;
 }
 
 function writeContentEngineFontconfig({ file, fontDirectory, cacheDirectory }) {
@@ -62,7 +108,12 @@ function writeContentEngineFontconfig({ file, fontDirectory, cacheDirectory }) {
   return configFile;
 }
 
-function resolveContentEngineMediaToolsEnvironment({ runtimePath, isPackaged, dataDir = "" }) {
+function resolveContentEngineMediaToolsEnvironment({
+  runtimePath,
+  isPackaged,
+  dataDir = "",
+  temporaryDirectory = os.tmpdir()
+}) {
   if (!isPackaged) return {};
   const executable = String(runtimePath || "").trim();
   if (!path.isAbsolute(executable)) {
@@ -75,13 +126,16 @@ function resolveContentEngineMediaToolsEnvironment({ runtimePath, isPackaged, da
   };
   const runtimeDataDirectory = String(dataDir || "").trim();
   if (!runtimeDataDirectory) return environment;
-  if (!path.isAbsolute(runtimeDataDirectory)) {
-    throw new Error("Packaged content-engine Fontconfig requires an absolute data directory");
-  }
-  const fontconfigDirectory = path.join(path.resolve(runtimeDataDirectory), "fontconfig");
+  const fontconfigDirectory = resolveFontconfigRuntimeDirectory({
+    runtimePath: executable,
+    dataDir: runtimeDataDirectory,
+    temporaryDirectory
+  });
+  const fontDirectory = path.join(fontconfigDirectory, "fonts");
+  environment.XIAOXI_CREATIVE_FONT_PATH = materializeContentEngineFont(executable, fontDirectory);
   environment.FONTCONFIG_FILE = writeContentEngineFontconfig({
     file: path.join(fontconfigDirectory, "fonts.conf"),
-    fontDirectory: resolveContentEngineFontDirectory(executable),
+    fontDirectory,
     cacheDirectory: path.join(fontconfigDirectory, "cache")
   });
   environment.FONTCONFIG_PATH = fontconfigDirectory;

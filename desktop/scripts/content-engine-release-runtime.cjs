@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
@@ -271,6 +272,7 @@ function runPackagedContentEngineSelfCheck({
   resourcesDir,
   descriptor,
   dataDir,
+  fontconfigTemporaryDirectory = os.tmpdir(),
   spawn = spawnSync,
   mediaToolsSpawn = spawn
 }) {
@@ -294,7 +296,8 @@ function runPackagedContentEngineSelfCheck({
   const mediaToolsEnvironment = resolveContentEngineMediaToolsEnvironment({
     runtimePath: packaged.executable,
     isPackaged: true,
-    dataDir
+    dataDir,
+    temporaryDirectory: fontconfigTemporaryDirectory
   });
   const input = [
     JSON.stringify({ id: "build-health", method: "health", params: {} }),

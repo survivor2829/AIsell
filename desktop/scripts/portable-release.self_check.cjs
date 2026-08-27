@@ -474,7 +474,8 @@ try {
     releaseTarget: target,
     resourcesDir,
     descriptor: manifest.contentEngineSidecar,
-    dataDir: path.join(tempDir, "content-engine")
+    dataDir: path.join(tempDir, "content-engine"),
+    fontconfigTemporaryDirectory: path.join(tempDir, "fontconfig")
   });
   assert.equal(contentEngineSession.ready.version, manifest.contentEngineSidecar.version);
 

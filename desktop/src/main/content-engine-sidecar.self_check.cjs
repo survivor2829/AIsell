@@ -105,6 +105,7 @@ async function main() {
   const runtimePath = path.join(root, "content-engine-worker.exe");
   const dataDir = path.join(root, "data");
   const fontconfigDataDir = path.join(root, "fontconfig-data");
+  const fontconfigTemporaryDirectory = path.join(root, "fontconfig-temp");
   const bundledFontDirectory = path.join(root, "_internal", "content_engine", "assets", "fonts");
   fs.writeFileSync(runtimePath, "");
   fs.mkdirSync(bundledFontDirectory, { recursive: true });
@@ -125,17 +126,25 @@ async function main() {
   const packagedMediaEnvironment = resolveContentEngineMediaToolsEnvironment({
     runtimePath,
     isPackaged: true,
-    dataDir: fontconfigDataDir
+    dataDir: fontconfigDataDir,
+    temporaryDirectory: fontconfigTemporaryDirectory
   });
-  assert.deepEqual(packagedMediaEnvironment, {
-    XIAOXI_FFMPEG_PATH: path.join(root, "media-tools", "ffmpeg.exe"),
-    XIAOXI_FFPROBE_PATH: path.join(root, "media-tools", "ffprobe.exe"),
-    FONTCONFIG_FILE: path.join(fontconfigDataDir, "fontconfig", "fonts.conf"),
-    FONTCONFIG_PATH: path.join(fontconfigDataDir, "fontconfig")
-  });
+  assert.equal(packagedMediaEnvironment.XIAOXI_FFMPEG_PATH, path.join(root, "media-tools", "ffmpeg.exe"));
+  assert.equal(packagedMediaEnvironment.XIAOXI_FFPROBE_PATH, path.join(root, "media-tools", "ffprobe.exe"));
+  assert.equal(path.dirname(packagedMediaEnvironment.FONTCONFIG_FILE), packagedMediaEnvironment.FONTCONFIG_PATH);
+  assert.equal(path.basename(packagedMediaEnvironment.FONTCONFIG_FILE), "fonts.conf");
+  assert.equal(
+    path.dirname(packagedMediaEnvironment.XIAOXI_CREATIVE_FONT_PATH),
+    path.join(packagedMediaEnvironment.FONTCONFIG_PATH, "fonts")
+  );
+  assert.equal(
+    packagedMediaEnvironment.FONTCONFIG_PATH.startsWith(path.join(fontconfigTemporaryDirectory, "xiaoxi-fontconfig")),
+    true
+  );
+  assert.equal(fs.readFileSync(packagedMediaEnvironment.XIAOXI_CREATIVE_FONT_PATH, "utf8"), "font-fixture");
   assert.equal(
     fs.readFileSync(packagedMediaEnvironment.FONTCONFIG_FILE, "utf8").includes(
-      bundledFontDirectory.split(path.sep).join("/")
+      path.dirname(packagedMediaEnvironment.XIAOXI_CREATIVE_FONT_PATH).split(path.sep).join("/")
     ),
     true
   );
@@ -172,6 +181,7 @@ async function main() {
         env: {
           XIAOXI_FFMPEG_PATH: "C:\\untrusted\\ffmpeg.exe",
           XIAOXI_FFPROBE_PATH: "C:\\untrusted\\ffprobe.exe",
+          XIAOXI_CREATIVE_FONT_PATH: "C:\\untrusted\\NotoSansSC-Variable.ttf",
           FONTCONFIG_FILE: "C:\\untrusted\\fontconfig.conf",
           FONTCONFIG_PATH: "C:\\untrusted"
         },
@@ -181,6 +191,7 @@ async function main() {
         getTrustedRuntimeEnvironment: () => ({
           XIAOXI_FFMPEG_PATH: "C:\\trusted\\media-tools\\ffmpeg.exe",
           XIAOXI_FFPROBE_PATH: "C:\\trusted\\media-tools\\ffprobe.exe",
+          XIAOXI_CREATIVE_FONT_PATH: "C:\\trusted\\fontconfig\\fonts\\NotoSansSC-Variable.ttf",
           FONTCONFIG_FILE: "C:\\trusted\\media-tools\\fontconfig.conf",
           FONTCONFIG_PATH: "C:\\trusted\\media-tools",
           XIAOXI_REMOTION_NODE_PATH: "C:\\trusted\\node.exe",
@@ -213,6 +224,10 @@ async function main() {
       assert.equal(
         spawnCalls[0].options.env.XIAOXI_FFPROBE_PATH,
         "C:\\trusted\\media-tools\\ffprobe.exe"
+      );
+      assert.equal(
+        spawnCalls[0].options.env.XIAOXI_CREATIVE_FONT_PATH,
+        "C:\\trusted\\fontconfig\\fonts\\NotoSansSC-Variable.ttf"
       );
       assert.equal(
         spawnCalls[0].options.env.FONTCONFIG_FILE,

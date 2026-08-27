@@ -634,10 +634,14 @@ function verifyBundledMediaTools(runtimeDir, mediaTools, { spawn = spawnSync, te
     ], "Packaged FFmpeg V2 voice smoke", { spawn, env });
     assertNonEmptyMediaOutput(voiceWave, "Packaged FFmpeg V2 voice smoke");
 
-    const font = resolveBundledCreativeFont(runtimeDir);
+    const bundledFont = resolveBundledCreativeFont(runtimeDir);
+    const fontDirectory = path.join(smokeDirectory, "fonts");
+    const font = path.join(fontDirectory, path.basename(bundledFont));
+    fs.mkdirSync(fontDirectory, { recursive: true });
+    fs.copyFileSync(bundledFont, font);
     const fontConfig = writeContentEngineFontconfig({
       file: path.join(smokeDirectory, "fontconfig.conf"),
-      fontDirectory: path.dirname(font),
+      fontDirectory,
       cacheDirectory: path.join(smokeDirectory, "fontconfig-cache")
     });
     const fontOptions = { spawn, env, fontConfig };
@@ -648,7 +652,7 @@ function verifyBundledMediaTools(runtimeDir, mediaTools, { spawn = spawnSync, te
       "-f", "lavfi", "-i", "testsrc2=s=64x64:r=25:d=0.2",
       "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono",
       "-filter_complex",
-      `[0:v]setpts=PTS-STARTPTS,split=2[bg_src][fg_src];[bg_src]scale=72:128:force_original_aspect_ratio=increase,crop=72:128:(iw-72)/2:(ih-128)/2,gblur=sigma=1:steps=1,setsar=1,fps=25[bg];[fg_src]scale=72:128:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1,fps=25[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p,setpts=PTS-STARTPTS,subtitles=filename='${ffmpegFilterPath(smokeSubtitle)}':fontsdir='${ffmpegFilterPath(path.dirname(font))}'[vout]`,
+      `[0:v]setpts=PTS-STARTPTS,split=2[bg_src][fg_src];[bg_src]scale=72:128:force_original_aspect_ratio=increase,crop=72:128:(iw-72)/2:(ih-128)/2,gblur=sigma=1:steps=1,setsar=1,fps=25[bg];[fg_src]scale=72:128:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1,fps=25[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p,setpts=PTS-STARTPTS,subtitles=filename='${ffmpegFilterPath(smokeSubtitle)}':fontsdir='${ffmpegFilterPath(fontDirectory)}'[vout]`,
       "-map", "[vout]",
       "-map", "1:a:0",
       "-t", "0.2",
