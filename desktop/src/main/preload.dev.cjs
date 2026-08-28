@@ -18,6 +18,7 @@ function momentsClickToken(intent, consumeClick) {
 }
 
 const activeTouch = {
+  status: () => ipcRenderer.invoke("active-touch:dev-status"),
   calibrate: () => ipcRenderer.invoke("active-touch:dev-calibrate"),
   momentsDryRun: (payload) => ipcRenderer.invoke("active-touch:dev-moments-dry-run", payload),
   momentsInspectMenu: (payload) => ipcRenderer.invoke("active-touch:dev-moments-inspect-menu", {

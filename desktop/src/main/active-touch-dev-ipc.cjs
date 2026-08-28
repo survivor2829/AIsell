@@ -1,6 +1,7 @@
 const { ipcMain } = require("electron");
 const { runActiveTouchDev } = require("./active-touch-ipc.cjs");
 const { executeVerifiedContactSend, setRealSendArm } = require("../../rpa/active_touch/state_machine.dev.cjs");
+const { loadState } = require("../../rpa/active_touch/state_machine.cjs");
 const { MAX_MOMENTS_COMMENT_LENGTH } = require("../../rpa/active_touch/moments_dry_run.dev.cjs");
 const { loadMomentsActionContext } = require("../../rpa/active_touch/moments_action.dev.cjs");
 const { openWechatMoments } = require("../../rpa/active_touch/moments_navigation.dev.cjs");
@@ -16,6 +17,40 @@ let momentsDataDir = "";
 let runtimeCoordinator = null;
 let getMainWindow = () => null;
 const consumedClickTokens = new Set();
+
+function activeTouchDevStatus() {
+  if (!activeTouchDataDir) {
+    return {
+      ok: false,
+      action: "status",
+      blocked_reason: "active_touch_data_unavailable",
+      error: "主动触达运行目录未初始化"
+    };
+  }
+  try {
+    const state = loadState(activeTouchDataDir);
+    return {
+      ok: true,
+      action: "status",
+      state: {
+        selected_customer: state.selected_customer ? { id: String(state.selected_customer.id || "") } : null,
+        message_draft: String(state.message_draft || ""),
+        real_send_status: String(state.real_send_status || ""),
+        real_send_reason: String(state.real_send_reason || ""),
+        post_send_verified: state.post_send_verified === true,
+        post_send_status: String(state.post_send_status || ""),
+        post_send_reason: String(state.post_send_reason || "")
+      }
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      action: "status",
+      blocked_reason: "active_touch_status_unavailable",
+      error: error instanceof Error ? error.message : "主动触达状态读取失败"
+    };
+  }
+}
 
 const MOMENTS_ACTIONS = {
   inspect: {
@@ -360,6 +395,7 @@ function registerActiveTouchDevIpc(options = {}) {
   momentsDataDir = String(options.momentsDir ?? activeTouchDataDir);
   runtimeCoordinator = options.coordinator ?? null;
   getMainWindow = typeof options.getMainWindow === "function" ? options.getMainWindow : () => null;
+  ipcMain.handle("active-touch:dev-status", () => activeTouchDevStatus());
   ipcMain.handle("active-touch:dev-calibrate", () => runActiveTouchDev(["calibrate"], { dataDir: activeTouchDataDir }));
   ipcMain.handle("active-touch:dev-moments-dry-run", (_event, payload = {}) => runMomentsDryRun(payload));
   Object.values(MOMENTS_ACTIONS).forEach((definition) => {

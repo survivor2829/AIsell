@@ -1,13 +1,27 @@
 import { Send, ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 type Contact = { id: string; name: string; remark?: string; nickname?: string; wechatId?: string; allowed: boolean };
-type Result = { ok: boolean; error?: string; blocked_reason?: string; send_attempted?: boolean | null; state?: { real_send_reason?: string } };
+type Result = {
+  ok: boolean;
+  error?: string;
+  blocked_reason?: string;
+  send_attempted?: boolean | null;
+  state?: {
+    selected_customer?: { id?: string } | null;
+    message_draft?: string;
+    real_send_status?: string;
+    real_send_reason?: string;
+  };
+};
+type PendingSend = { contactId: string; message: string };
+const SEND_STATUS_RECONCILE_DELAY_MS = 15_000;
 
 export default function DevelopmentAcceptance({ contacts, message }: { contacts: Contact[]; message: string }) {
   const [selectedId, setSelectedId] = useState("");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("选择一位内部测试联系人，点击一次即可打开会话并直接发送。");
+  const pendingSendRef = useRef<PendingSend | null>(null);
   const selected = contacts.find((contact) => contact.id === selectedId) ?? null;
   const eligibleContacts = contacts.filter((contact) => contact.allowed && contact.wechatId && contacts.filter((other) => other.name === contact.name).length === 1 && contacts.filter((other) => other.wechatId === contact.wechatId).length === 1);
   const identityReady = Boolean(selected?.wechatId && selected.name && contacts.filter((contact) => contact.name === selected.name).length === 1 && contacts.filter((contact) => contact.wechatId === selected.wechatId).length === 1);
@@ -34,18 +48,44 @@ export default function DevelopmentAcceptance({ contacts, message }: { contacts:
   };
 
   const select = (id: string) => {
+    pendingSendRef.current = null;
     setSelectedId(id);
     if (!id) return;
     void run(() => window.xiaoxiActiveTouch!.selectCustomer({ id }), "已选择联系人；点击按钮将直接发送。");
   };
 
+  const reconcileSentStatus = async (pending: PendingSend) => {
+    if (pendingSendRef.current !== pending || !window.xiaoxiActiveTouch?.status) return;
+    try {
+      const result = await window.xiaoxiActiveTouch.status();
+      const state = result.state;
+      const sameContact = state?.selected_customer?.id === pending.contactId;
+      const sameMessage = String(state?.message_draft || "").trim() === pending.message;
+      if (!sameContact || !sameMessage || state?.real_send_status !== "sent_verified") return;
+      if (pendingSendRef.current !== pending) return;
+      pendingSendRef.current = null;
+      setStatus("发送成功，已验证最新消息气泡和完整文案。");
+      setBusy(false);
+    } catch {
+      // The original request remains authoritative; this is only a read-only recovery path.
+    }
+  };
+
   const sendSelectedContact = () => {
     if (!selected) return;
+    const pending = { contactId: selected.id, message: resolvedMessage.trim() };
+    pendingSendRef.current = pending;
     setStatus("正在打开微信、验证会话并发送，请稍候……");
-    void run(
+    const request = run(
       () => window.xiaoxiActiveTouch!.sendSelectedContact({ contactId: selected.id, message: resolvedMessage }),
       "发送成功，已验证最新消息气泡和完整文案。"
     );
+    void request.finally(() => {
+      if (pendingSendRef.current === pending) pendingSendRef.current = null;
+    });
+    window.setTimeout(() => {
+      void reconcileSentStatus(pending);
+    }, SEND_STATUS_RECONCILE_DELAY_MS);
   };
 
   return (

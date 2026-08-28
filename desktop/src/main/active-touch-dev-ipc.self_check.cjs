@@ -12,6 +12,15 @@ const coordinatorEvents = [];
 const momentsOpenCalls = [];
 const momentsContextCalls = [];
 const diagnosticEvents = [];
+let activeTouchState = {
+  selected_customer: { id: "c1", name: "测试客户" },
+  message_draft: "hello",
+  real_send_status: "sent_verified",
+  real_send_reason: "",
+  post_send_verified: true,
+  post_send_status: "draft_consumed_verified",
+  post_send_reason: ""
+};
 let coordinatorBusy = false;
 let coordinatorOwner = 0;
 let coordinatorActiveOwner = "";
@@ -71,6 +80,7 @@ Module._load = function load(request, parent, isMain) {
       }
     };
   }
+  if (request === "../../rpa/active_touch/state_machine.cjs") return { loadState: () => activeTouchState };
   if (request === "../../rpa/active_touch/moments_dry_run.dev.cjs") return { MAX_MOMENTS_COMMENT_LENGTH };
   if (request === "../../rpa/active_touch/moments_action.dev.cjs") {
     return { loadMomentsActionContext: (baseDir, observationId) => momentsContextBehavior(baseDir, observationId) };
@@ -122,6 +132,7 @@ registerActiveTouchDevIpc({
   getMainWindow: () => mainWindow
 });
 const sendSelected = handlers.get("active-touch:send-selected-contact");
+const status = handlers.get("active-touch:dev-status");
 const calibrate = handlers.get("active-touch:dev-calibrate");
 const selectCustomer = handlers.get("active-touch:dev-select-customer");
 const clickSearchResult = handlers.get("active-touch:dev-click-search-result");
@@ -137,6 +148,20 @@ const momentsComment = handlers.get("active-touch:dev-moments-comment");
 
 (async () => {
   const observationId = "a".repeat(64);
+
+  assert.deepEqual(status(), {
+    ok: true,
+    action: "status",
+    state: {
+      selected_customer: { id: "c1" },
+      message_draft: "hello",
+      real_send_status: "sent_verified",
+      real_send_reason: "",
+      post_send_verified: true,
+      post_send_status: "draft_consumed_verified",
+      post_send_reason: ""
+    }
+  });
 
   const oversizedDryRun = await momentsDryRun({}, {
     mode: "targeted",
