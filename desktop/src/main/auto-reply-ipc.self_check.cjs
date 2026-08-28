@@ -26,6 +26,13 @@ fs.writeFileSync(path.join(activeTouchDir, "contacts.json"), JSON.stringify([
   { id: "disabled", name: "已停用", allowed: false, wechatAccountId: "wx-a", wechatId: "disabled" }
 ]), "utf8");
 
+function writeContactsFixture(name, contacts) {
+  const fixtureDir = path.join(root, name);
+  fs.mkdirSync(fixtureDir, { recursive: true });
+  fs.writeFileSync(path.join(fixtureDir, "contacts.json"), JSON.stringify(contacts), "utf8");
+  return fixtureDir;
+}
+
 async function main() {
   assert.equal(isReplyableText("你好，方便介绍一下吗？"), true);
   assert.equal(isReplyableText("发票怎么开？"), true);
@@ -3266,6 +3273,318 @@ async function main() {
   assert.equal(messageDrivenSend?.expectedConversation, "OCR title far from the contact name");
   assert.equal(messageDrivenController.status().reply_count, 1, "a red-dot incoming message must not require contact-name authorization");
   messageDrivenController.pause();
+
+  const strictScopeCandidates = [
+    {
+      ok: true,
+      conversation: "李经理",
+      message: "This must stay outside the selected test scope.",
+      runtimeId: "strict-other-contact",
+      pid: 81,
+      hWnd: "91",
+      context: [{ role: "user", content: "This must stay outside the selected test scope.", key: "strict-other-contact" }]
+    },
+    {
+      ok: true,
+      conversation: "OCR title far from the contact name",
+      conversationEvidence: "visual-unread-row:strict",
+      messageDriven: true,
+      message: "This must not bypass the selected test scope.",
+      runtimeId: `visual:v2:${"f".repeat(64)}`,
+      messageSignature: "a".repeat(64),
+      visualMode: "visual_render_v1",
+      pid: 81,
+      hWnd: "91",
+      context: [{ role: "user", content: "This must not bypass the selected test scope.", key: `visual:v2:${"f".repeat(64)}` }]
+    },
+    {
+      ok: true,
+      conversation: "张总",
+      conversationEvidence: "张忐",
+      message: "A fuzzy visual title must not be promoted into the selected test contact.",
+      runtimeId: `visual:v2:${"e".repeat(64)}`,
+      messageSignature: "b".repeat(64),
+      visualMode: "visual_render_v1",
+      pid: 81,
+      hWnd: "91",
+      context: [{ role: "user", content: "A fuzzy visual title must not be promoted into the selected test contact.", key: `visual:v2:${"e".repeat(64)}` }]
+    },
+    {
+      ok: true,
+      conversation: "张总",
+      message: "This is the one selected test contact.",
+      runtimeId: "strict-selected-contact",
+      pid: 81,
+      hWnd: "91",
+      context: [{ role: "user", content: "This is the one selected test contact.", key: "strict-selected-contact" }]
+    }
+  ];
+  const strictScopeScans = [];
+  const strictScopePrimes = [];
+  const strictScopeScanOptions = [];
+  const strictScopePrimeOptions = [];
+  const strictScopeVerifyOptions = [];
+  let strictScopeReplies = 0;
+  let strictScopeSends = 0;
+  const strictScopeDir = path.join(root, "strict_test_scope");
+  const strictScopeController = createAutoReplyController({
+    dataDir: strictScopeDir,
+    activeTouchDir,
+    singleContactScopeRequired: true,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => {
+        strictScopeReplies += 1;
+        return { reply: "Only the selected contact receives this.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" };
+      }
+    },
+    primeIncoming: (aliases, matchOptions) => {
+      strictScopePrimes.push([...aliases]);
+      strictScopePrimeOptions.push(matchOptions);
+      return { ok: true, source: "session_prime", primed: true, latestRole: "assistant" };
+    },
+    scanIncoming: (aliases, matchOptions) => {
+      strictScopeScans.push([...aliases]);
+      strictScopeScanOptions.push(matchOptions);
+      return strictScopeCandidates.shift() || { ok: false, reason: "no_unread_message" };
+    },
+    verifyIncoming: (_candidate, matchOptions) => {
+      strictScopeVerifyOptions.push(matchOptions);
+      return { ok: true };
+    },
+    send: async (options) => {
+      strictScopeSends += 1;
+      assert.equal(options.contactId, "c1");
+      assert.equal(options.messageDriven, false);
+      assert.equal(options.exactConversationMatch, true);
+      assert.equal(await options.beforeDraft(), true);
+      return { ok: true };
+    },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-15T10:00:00+08:00")
+  });
+  assert.equal((await strictScopeController.start()).ok, false, "the test edition must reject a start without an explicitly selected contact");
+  assert.equal(strictScopePrimes.length, 0, "a missing test scope must not prime WeChat");
+  assert.equal(strictScopeScans.length, 0, "a missing test scope must not scan WeChat");
+  assert.equal(strictScopeReplies, 0, "a missing test scope must not call AI");
+  assert.equal(strictScopeSends, 0, "a missing test scope must not send");
+  const testScopeOptions = strictScopeController.status().test_scope?.available_contacts || [];
+  assert.equal(testScopeOptions.find((contact) => contact.id === "c1")?.label, "共同备注（会话：张总）", "the test selector must show a globally unique alias when remarks collide");
+  assert.equal(testScopeOptions.find((contact) => contact.id === "c2")?.label, "共同备注（会话：李经理）", "the test selector must distinguish contacts with the same remark");
+  assert.equal((await strictScopeController.start({ contactId: "c1" })).ok, true);
+  assert.deepEqual(strictScopePrimes[0].sort(), ["张总", "阿张"].sort(), "a selected test contact must retain only aliases that are globally unique across all synced contacts");
+  assert.equal(strictScopePrimeOptions[0]?.exactConversationMatch, true, "strict scope must prime with exact conversation matching");
+  await strictScopeController.runOnce();
+  assert.equal(strictScopeReplies, 0, "a different synced contact must not reach AI in the selected test scope");
+  assert.equal(strictScopeSends, 0, "a different synced contact must not receive a reply in the selected test scope");
+  assert.equal(strictScopeController.status().last_event, "conversation_not_eligible");
+  await strictScopeController.runOnce();
+  assert.equal(strictScopeReplies, 0, "an unmapped unread badge must not bypass the selected test scope");
+  assert.equal(strictScopeSends, 0, "an unmapped unread badge must not send in the selected test scope");
+  await strictScopeController.runOnce();
+  assert.equal(strictScopeReplies, 0, "a fuzzy visual title must not bypass the selected test scope");
+  assert.equal(strictScopeSends, 0, "a fuzzy visual title must not send in the selected test scope");
+  assert.equal(strictScopeScanOptions.at(-1)?.exactConversationMatch, true, "strict scope must scan with exact conversation matching");
+  await strictScopeController.runOnce();
+  assert.equal(strictScopeReplies, 1);
+  assert.equal(strictScopeSends, 1);
+  assert.equal(strictScopeVerifyOptions.at(-1)?.exactConversationMatch, true, "strict scope must verify with exact conversation matching");
+  strictScopeController.pause();
+  assert.equal((await strictScopeController.start()).ok, false, "pausing must clear the test selection before another start");
+  const strictScopeState = JSON.parse(fs.readFileSync(path.join(strictScopeDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(Object.hasOwn(strictScopeState, "test_contact_scope"), false, "the selected test contact must never persist in auto-reply state");
+
+  let restartScopeSourcePrimes = 0;
+  const restartScopeDir = path.join(root, "strict_test_scope_restart");
+  const restartScopeSource = createAutoReplyController({
+    dataDir: restartScopeDir,
+    activeTouchDir,
+    singleContactScopeRequired: true,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: { assertAvailable: () => true, reply: async () => ({ reply: "Must not send.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }) },
+    primeIncoming: () => { restartScopeSourcePrimes += 1; return { ok: true, source: "session_prime", primed: true }; },
+    scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => ({ ok: true }),
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-15T10:00:00+08:00")
+  });
+  assert.equal((await restartScopeSource.start({ contactId: "c1" })).ok, true);
+  assert.equal(restartScopeSourcePrimes, 1);
+  let restartScopePrimes = 0;
+  let restartScopeScans = 0;
+  let restartScopeReplies = 0;
+  let restartScopeSends = 0;
+  const restartedScopeController = createAutoReplyController({
+    dataDir: restartScopeDir,
+    activeTouchDir,
+    singleContactScopeRequired: true,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: { assertAvailable: () => true, reply: async () => { restartScopeReplies += 1; return { reply: "Must not send.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }; } },
+    primeIncoming: () => { restartScopePrimes += 1; return { ok: true, source: "session_prime", primed: true }; },
+    scanIncoming: () => { restartScopeScans += 1; return { ok: false, reason: "no_unread_message" }; },
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => { restartScopeSends += 1; return { ok: true }; },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-15T10:00:00+08:00")
+  });
+  assert.equal(restartedScopeController.status().test_scope?.enforced, false, "a reconstructed controller must not inherit the prior test selection");
+  assert.equal((await restartedScopeController.start()).code, "test_contact_required");
+  assert.deepEqual([restartScopePrimes, restartScopeScans, restartScopeReplies, restartScopeSends], [0, 0, 0, 0], "restart without a new selection must not touch WeChat, AI or send");
+
+  for (const windowReason of ["wechat_window_changed", "wechat_window_identity_mismatch", "wechat_window_missing"]) {
+    let changedWindowScopeScans = 0;
+    let changedWindowScopeSends = 0;
+    const changedWindowScopeController = createAutoReplyController({
+      dataDir: path.join(root, `strict_test_scope_${windowReason}`),
+      activeTouchDir,
+      singleContactScopeRequired: true,
+      coordinator,
+      expertStore: { read: () => ({ text: "Reply briefly." }) },
+      deepSeekClient: { assertAvailable: () => true, reply: async () => ({ reply: "Must not send.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }) },
+      primeIncoming: () => ({ ok: true, source: "session_prime", primed: true }),
+      scanIncoming: () => { changedWindowScopeScans += 1; return { ok: false, reason: windowReason }; },
+      verifyIncoming: () => ({ ok: true }),
+      send: async () => { changedWindowScopeSends += 1; return { ok: true }; },
+      sendHandoff: async () => ({ ok: true }),
+      runStep: async () => ({ ok: true }),
+      schedule: () => 1,
+      cancelSchedule: () => undefined,
+      now: () => new Date("2026-07-15T10:00:00+08:00")
+    });
+    assert.equal((await changedWindowScopeController.start({ contactId: "c1" })).ok, true);
+    await changedWindowScopeController.runOnce();
+    const changedWindowScopeState = changedWindowScopeController.status();
+    assert.equal(changedWindowScopeState.status, "paused", `${windowReason} must require a new test-contact selection`);
+    assert.equal(changedWindowScopeState.last_event, "test_scope_window_changed");
+    assert.equal(changedWindowScopeState.test_scope?.enforced, false, "a paused test scope must not retain the prior contact selection");
+    assert.equal(changedWindowScopeSends, 0, "a changed WeChat window must stop before sending");
+    const scansBeforeBlockedRerun = changedWindowScopeScans;
+    await changedWindowScopeController.runOnce();
+    assert.equal(changedWindowScopeScans, scansBeforeBlockedRerun, "the strict scope must stay paused until a new contact is selected");
+  }
+
+  const unboundCollisionContacts = writeContactsFixture("strict_test_scope_unbound_collision_contacts", [
+    { id: "target", name: "同一会话", allowed: true, wechatAccountId: "wx-target" },
+    { id: "unbound", name: "同一会话", allowed: true }
+  ]);
+  let unboundCollisionPrimeCalls = 0;
+  let unboundCollisionScanCalls = 0;
+  let unboundCollisionReplyCalls = 0;
+  let unboundCollisionSendCalls = 0;
+  const unboundCollisionController = createAutoReplyController({
+    dataDir: path.join(root, "strict_test_scope_unbound_collision"),
+    activeTouchDir: unboundCollisionContacts,
+    singleContactScopeRequired: true,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: { assertAvailable: () => true, reply: async () => { unboundCollisionReplyCalls += 1; return { reply: "Must not send.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }; } },
+    primeIncoming: () => { unboundCollisionPrimeCalls += 1; return { ok: true, source: "session_prime", primed: true }; },
+    scanIncoming: () => { unboundCollisionScanCalls += 1; return { ok: false, reason: "no_unread_message" }; },
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => { unboundCollisionSendCalls += 1; return { ok: true }; },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-15T10:00:00+08:00")
+  });
+  assert.equal(unboundCollisionController.status().test_scope?.available_contacts.some((contact) => contact.id === "target"), false, "an unbound colliding alias must make the target unavailable");
+  assert.equal((await unboundCollisionController.start({ contactId: "target" })).code, "test_contact_alias_ambiguous");
+  assert.deepEqual([unboundCollisionPrimeCalls, unboundCollisionScanCalls, unboundCollisionReplyCalls, unboundCollisionSendCalls], [0, 0, 0, 0]);
+
+  const duplicateIdContacts = writeContactsFixture("strict_test_scope_duplicate_id_contacts", [
+    { id: "duplicate-id", name: "甲联系人", allowed: true, wechatAccountId: "wx-a" },
+    { id: "duplicate-id", name: "乙联系人", allowed: true, wechatAccountId: "wx-b" }
+  ]);
+  let duplicateIdPrimeCalls = 0;
+  let duplicateIdScanCalls = 0;
+  let duplicateIdReplyCalls = 0;
+  let duplicateIdSendCalls = 0;
+  const duplicateIdController = createAutoReplyController({
+    dataDir: path.join(root, "strict_test_scope_duplicate_id"),
+    activeTouchDir: duplicateIdContacts,
+    singleContactScopeRequired: true,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: { assertAvailable: () => true, reply: async () => { duplicateIdReplyCalls += 1; return { reply: "Must not send.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }; } },
+    primeIncoming: () => { duplicateIdPrimeCalls += 1; return { ok: true, source: "session_prime", primed: true }; },
+    scanIncoming: () => { duplicateIdScanCalls += 1; return { ok: false, reason: "no_unread_message" }; },
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => { duplicateIdSendCalls += 1; return { ok: true }; },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-15T10:00:00+08:00")
+  });
+  assert.equal(duplicateIdController.status().test_scope?.available_contacts.some((contact) => contact.id === "duplicate-id"), false, "ambiguous IDs must not become selectable");
+  assert.equal((await duplicateIdController.start({ contactId: "duplicate-id" })).code, "test_contact_id_ambiguous");
+  assert.deepEqual([duplicateIdPrimeCalls, duplicateIdScanCalls, duplicateIdReplyCalls, duplicateIdSendCalls], [0, 0, 0, 0]);
+
+  let invalidatedScopeScans = 0;
+  let invalidatedScopeSends = 0;
+  const invalidatedScopeController = createAutoReplyController({
+    dataDir: path.join(root, "strict_test_scope_invalidated"),
+    activeTouchDir,
+    singleContactScopeRequired: true,
+    coordinator,
+    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    deepSeekClient: { assertAvailable: () => true, reply: async () => ({ reply: "Must not send.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }) },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true }),
+    scanIncoming: () => { invalidatedScopeScans += 1; return { ok: false, reason: "no_unread_message" }; },
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => { invalidatedScopeSends += 1; return { ok: true }; },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-15T10:00:00+08:00")
+  });
+  assert.equal((await invalidatedScopeController.start({ contactId: "c1" })).ok, true);
+  const changedScopeContacts = JSON.parse(fs.readFileSync(path.join(activeTouchDir, "contacts.json"), "utf8"));
+  changedScopeContacts.find((contact) => contact.id === "c1").wechatAccountId = "wx-b";
+  fs.writeFileSync(path.join(activeTouchDir, "contacts.json"), JSON.stringify(changedScopeContacts), "utf8");
+  await invalidatedScopeController.runOnce();
+  assert.equal(invalidatedScopeController.status().status, "paused", "a changed synced account binding must stop the selected test scope");
+  assert.equal(invalidatedScopeController.status().last_event, "test_contact_scope_changed");
+  assert.equal(invalidatedScopeScans, 0, "a changed selected scope must stop before another WeChat scan");
+  assert.equal(invalidatedScopeSends, 0, "a changed selected scope must stop before sending");
+
+  const strictIpcHandlers = new Map();
+  registerAutoReplyIpc({
+    dataDir: path.join(root, "strict_test_scope_ipc"),
+    activeTouchDir,
+    singleContactScopeRequired: true,
+    coordinator,
+    expertStore: { read: () => ({ text: "test" }) },
+    deepSeekClient: { assertAvailable: () => true },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true }),
+    scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => ({ ok: true }),
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    getMainWindow: () => ({ isDestroyed: () => false, isFocused: () => true, webContents }),
+    ipcMain: { handle: (channel, handler) => strictIpcHandlers.set(channel, handler) }
+  });
+  assert.equal((await strictIpcHandlers.get("auto-reply:start")({ sender: webContents }, { clickToken: "strict-missing-contact" })).ok, false, "the trusted test IPC must still reject a missing contact ID");
+  assert.equal((await strictIpcHandlers.get("auto-reply:start")({ sender: webContents }, { clickToken: "strict-selected-contact", contactId: "c1" })).ok, true, "the trusted test IPC must forward the selected contact ID to the controller");
   console.log("auto-reply v3 self-check passed");
 }
 

@@ -63,6 +63,12 @@ const TERMINAL_PENDING_OBSERVATION_REASONS = new Set([
   "wechat_process_changed",
   "wechat_window_changed"
 ]);
+const STRICT_SCOPE_WINDOW_RESET_REASONS = new Set([
+  "wechat_process_changed",
+  "wechat_window_changed",
+  "wechat_window_identity_mismatch",
+  "wechat_window_missing"
+]);
 const KNOWN_SCAN_REASONS = new Set([
   ...HEALTHY_SCAN_REASONS,
   "automation_root_missing",
@@ -736,6 +742,100 @@ function eligibleContacts(activeTouchDir) {
   return contacts.filter((contact) => allowedContacts.has(contact));
 }
 
+function testContactLabel(contact) {
+  return normalizeText(contact?.remark)
+    || normalizeText(contact?.nickname)
+    || normalizeText(contact?.name)
+    || "已同步联系人";
+}
+
+function testContactUniverse(activeTouchDir) {
+  // Disabled contacts still participate in the global alias index. Otherwise a
+  // selected contact could be promoted to a falsely unique name after its
+  // colliding record is disabled in the contact table.
+  return readContacts(activeTouchDir)
+    .filter((contact) => !isSystemContact(contact));
+}
+
+function testContactIdCounts(contacts) {
+  const counts = new Map();
+  for (const contact of contacts) {
+    const id = normalizeText(contact?.id);
+    if (id) counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  return counts;
+}
+
+function uniqueAliasesForTestContact(contact, aliasIndex) {
+  return [...aliasIndex.values()]
+    .filter((entry) => entry.contacts.length === 1 && entry.contacts[0] === contact)
+    .map((entry) => entry.alias)
+    .filter(Boolean);
+}
+
+function testContactScopeLabel(contact, aliases) {
+  const contactLabel = testContactLabel(contact);
+  const uniqueAlias = aliases[0] || contactLabel;
+  return contactLabel === uniqueAlias ? contactLabel : `${contactLabel}（会话：${uniqueAlias}）`;
+}
+
+function testContactScopeOptions(activeTouchDir) {
+  const contactUniverse = testContactUniverse(activeTouchDir);
+  const aliasIndex = contactAliasIndex(contactUniverse);
+  const contactIdCounts = testContactIdCounts(contactUniverse);
+  return contactUniverse.reduce((options, contact) => {
+    const id = normalizeText(contact?.id);
+    if (!id || contactIdCounts.get(id) !== 1 || !normalizeText(contact?.wechatAccountId) || contact.allowed === false) return options;
+    const aliases = uniqueAliasesForTestContact(contact, aliasIndex);
+    if (!aliases.length) return options;
+    options.push({ id, label: testContactScopeLabel(contact, aliases) });
+    return options;
+  }, []);
+}
+
+function resolveTestContactScope(activeTouchDir, contactId) {
+  const selectedContactId = normalizeText(contactId);
+  if (!selectedContactId) {
+    return { ok: false, code: "test_contact_required", error: "测试版请先选择一位已同步联系人" };
+  }
+  const contactUniverse = testContactUniverse(activeTouchDir);
+  const matchingContacts = contactUniverse.filter((contact) => normalizeText(contact?.id) === selectedContactId);
+  if (matchingContacts.length !== 1) {
+    return { ok: false, code: "test_contact_id_ambiguous", error: "所选测试联系人身份不唯一，请重新同步后选择" };
+  }
+  const selected = matchingContacts[0];
+  if (!normalizeText(selected?.wechatAccountId) || selected.allowed === false) {
+    return { ok: false, code: "test_contact_invalid", error: "所选测试联系人已失效，请重新同步后选择" };
+  }
+  const aliases = uniqueAliasesForTestContact(selected, contactAliasIndex(contactUniverse));
+  if (!aliases.length) {
+    return { ok: false, code: "test_contact_alias_ambiguous", error: "所选测试联系人没有可唯一识别的会话名称" };
+  }
+  const binding = crypto.createHash("sha256")
+    .update(JSON.stringify({
+      id: selected.id,
+      account: normalizeText(selected.wechatAccountId),
+      wxid: normalizeText(selected.wxid),
+      wechatId: normalizeText(selected.wechatId),
+      name: normalizeText(selected.name),
+      remark: normalizeText(selected.remark),
+      nickname: normalizeText(selected.nickname),
+      aliases: [...aliases].sort()
+    }))
+    .digest("hex");
+  return {
+    ok: true,
+    scope: {
+      binding,
+      contact: selected,
+      contactId: selected.id,
+      contactLabel: testContactScopeLabel(selected, aliases),
+      aliases,
+      aliasKeys: new Set(aliases.map((alias) => compactConversationAlias(alias)).filter(Boolean))
+    }
+  };
+}
+
 function normalizedContext(candidate) {
   if (!Array.isArray(candidate?.context)) return [];
   const context = candidate.context
@@ -862,6 +962,7 @@ function createAutoReplyController(options = {}) {
   const cancelSchedule = options.cancelSchedule || clearTimeout;
   const now = options.now || (() => new Date());
   const onStateChange = typeof options.onStateChange === "function" ? options.onStateChange : null;
+  const singleContactScopeRequired = options.singleContactScopeRequired === true;
   const rawState = readJson(stateFile, null);
   let state = migrateState(rawState, now());
   let diagnosticSequence = 0;
@@ -889,6 +990,7 @@ function createAutoReplyController(options = {}) {
   let runEpoch = 0;
   let starting = false;
   let primeRetryNeeded = false;
+  let activeTestContactScope = null;
   const pendingHandoffQueue = [];
   const retryGenerations = new Map();
   // Customer text stays in memory only. Durable state keeps opaque occurrence
@@ -1099,7 +1201,70 @@ function createAutoReplyController(options = {}) {
       last_scan_reason: state.last_scan_reason,
       consecutive_scan_failures: state.consecutive_scan_failures,
       pending_retry_count: Math.max(0, Number(state.pending_observation?.attempts) || 0),
+      ...(singleContactScopeRequired ? {
+        test_scope: {
+          required: true,
+          enforced: Boolean(activeTestContactScope),
+          contact_label: activeTestContactScope?.contactLabel || "",
+          available_contacts: testContactScopeOptions(activeTouchDir),
+          reset_on_restart: true
+        }
+      } : {}),
       updated_at: state.updated_at
+    };
+  }
+
+  function discardTestScopeRuntimeState() {
+    state.pending_observation = null;
+    primeRetryNeeded = false;
+    retryGenerations.clear();
+    conversationHistories.clear();
+    try {
+      scanIncoming.resetBaselines?.();
+    } catch {}
+  }
+
+  function clearTestContactScope() {
+    if (!singleContactScopeRequired) return;
+    activeTestContactScope = null;
+    discardTestScopeRuntimeState();
+  }
+
+  function resolveContactScope() {
+    if (!singleContactScopeRequired) {
+      const contacts = eligibleContacts(activeTouchDir);
+      return {
+        ok: true,
+        strict: false,
+        contacts,
+        aliases: autoReplyConversationAliases(contacts),
+        resolveContact: (candidate) => contactForAutoReplyConversation(contacts, candidate)
+      };
+    }
+    if (!activeTestContactScope) {
+      return { ok: false, code: "test_contact_required", error: "测试版请先选择一位已同步联系人" };
+    }
+    const refreshed = resolveTestContactScope(activeTouchDir, activeTestContactScope.contactId);
+    if (!refreshed.ok) return refreshed;
+    if (refreshed.scope.binding !== activeTestContactScope.binding) {
+      return { ok: false, code: "test_contact_scope_changed", error: "所选测试联系人资料已变化，请重新选择" };
+    }
+    const scope = refreshed.scope;
+    return {
+      ok: true,
+      strict: true,
+      scopeBinding: scope.binding,
+      contacts: [scope.contact],
+      aliases: scope.aliases,
+      driverOptions: { exactConversationMatch: true },
+      resolveContact: (candidate) => {
+        if (candidate?.messageDriven === true) return null;
+        const conversation = normalizeText(candidate?.conversation || candidate?.currentConversation);
+        const conversationEvidence = compactConversationAlias(candidate?.conversationEvidence);
+        if (normalizeText(candidate?.visualMode) === "visual_render_v1"
+          && (!conversationEvidence || conversationEvidence !== compactConversationAlias(conversation))) return null;
+        return conversation && scope.aliasKeys.has(compactConversationAlias(conversation)) ? scope.contact : null;
+      }
     };
   }
 
@@ -1161,15 +1326,20 @@ function createAutoReplyController(options = {}) {
     syncPendingHandoffHead();
   }
 
+  function addManualFollowup(metadata) {
+    const key = pendingHandoffKey(metadata);
+    state.manual_followups ||= [];
+    if (state.manual_followups.some((item) => pendingHandoffKey(item) === key)) return false;
+    state.manual_followups.push({ ...metadata, key, delivery_state: "manual_required" });
+    if (state.manual_followups.length > MAX_STATE_ENTRIES) state.manual_followups.shift();
+    return true;
+  }
+
   function movePendingHandoffToManual(key) {
     const pending = (state.pending_handoffs || []).find((item) => pendingHandoffKey(item) === key)
       || pendingHandoffQueue.find((item) => item.metadata.key === key)?.metadata;
     if (!pending) return;
-    state.manual_followups ||= [];
-    if (!state.manual_followups.some((item) => pendingHandoffKey(item) === key)) {
-      state.manual_followups.push({ ...pending, key, delivery_state: "manual_required" });
-      if (state.manual_followups.length > MAX_STATE_ENTRIES) state.manual_followups.shift();
-    }
+    addManualFollowup({ ...pending, key });
     removePendingHandoff(key);
   }
 
@@ -1235,6 +1405,7 @@ function createAutoReplyController(options = {}) {
     runEpoch += 1;
     if (timer) cancelSchedule(timer);
     timer = null;
+    clearTestContactScope();
     if (state.pending_handoff && handoffConfirmationRequired) pauseForFailure("handoff_confirmation_required", "");
     else {
       state.status = "paused";
@@ -1287,7 +1458,7 @@ function createAutoReplyController(options = {}) {
     }
   }
 
-  function recordOutgoingObservation(candidate, contacts, observedAt) {
+  function recordOutgoingObservation(candidate, observedAt, resolveContact) {
     const isScanObservation = normalizeText(candidate?.reason) === "latest_message_not_incoming";
     const isPrimeObservation = candidate?.ok === true
       && (normalizeText(candidate?.source) === "session_prime" || candidate?.primed === true);
@@ -1296,7 +1467,7 @@ function createAutoReplyController(options = {}) {
     const conversation = normalizeText(baseline?.conversation || candidate?.conversation || candidate?.currentConversation);
     const signature = normalizeText(baseline?.signature || candidate?.messageSignature || candidate?.currentMessageSignature).toLowerCase();
     if (!conversation || !/^[a-f0-9]{64}$/u.test(signature)) return false;
-    const contact = contactForAutoReplyConversation(contacts, candidate);
+    const contact = typeof resolveContact === "function" ? resolveContact(candidate) : null;
     const guard = contact ? state.reply_guards?.[contact.id] : null;
     if (!guard || normalizeText(guard.turn_state) !== "awaiting_outgoing_observation") return false;
     guard.turn_state = "outgoing_observed";
@@ -1404,26 +1575,46 @@ function createAutoReplyController(options = {}) {
     if (pendingObservationMatches(candidate)) state.pending_observation = null;
   }
 
-  async function start() {
+  function rejectedStart(error, code) {
+    clearTestContactScope();
+    return {
+      ok: false,
+      error,
+      ...(code ? { code } : {}),
+      state: publicState()
+    };
+  }
+
+  async function start(payload = {}) {
     if (state.status === "running") return { ok: true, state: publicState() };
     if (starting) return { ok: false, error: "自动回复正在启动，请稍候" };
-    const contacts = eligibleContacts(activeTouchDir);
-    if (!contacts.length) return { ok: false, error: "没有可安全识别的已同步一对一联系人" };
-    const conversationAliases = autoReplyConversationAliases(contacts);
-    if (!conversationAliases.length) return { ok: false, error: "已同步联系人没有唯一可识别的会话名称" };
+    if (singleContactScopeRequired) {
+      const selectedScope = resolveTestContactScope(activeTouchDir, payload?.contactId);
+      if (!selectedScope.ok) return rejectedStart(selectedScope.error, selectedScope.code);
+      activeTestContactScope = selectedScope.scope;
+      // A prior test run may have kept an unsent observation in memory or on
+      // disk. Never restore it into a newly selected contact scope.
+      discardTestScopeRuntimeState();
+    }
+    const contactScope = resolveContactScope();
+    if (!contactScope.ok) return rejectedStart(contactScope.error, contactScope.code);
+    const contacts = contactScope.contacts;
+    if (!contacts.length) return rejectedStart("没有可安全识别的已同步一对一联系人");
+    const conversationAliases = contactScope.aliases;
+    if (!conversationAliases.length) return rejectedStart("已同步联系人没有唯一可识别的会话名称");
     try {
       deepSeekClient?.assertAvailable();
       const expert = expertStore?.read();
-      if (!normalizeText(expert?.text)) return { ok: false, error: "请先在 AI专家 导入自动回复话术文件" };
+      if (!normalizeText(expert?.text)) return rejectedStart("请先在 AI专家 导入自动回复话术文件");
     } catch (error) {
-      return { ok: false, error: String(error?.message || error), code: error?.code };
+      return rejectedStart(String(error?.message || error), error?.code);
     }
     if (typeof send !== "function" || typeof sendHandoff !== "function" || typeof runStep !== "function") {
-      return { ok: false, error: "当前版本未启用经校验的自动回复执行器" };
+      return rejectedStart("当前版本未启用经校验的自动回复执行器");
     }
-    acknowledgePendingHandoff();
+    if (!contactScope.strict) acknowledgePendingHandoff();
     let recoveredHandoffWarning = "";
-    if (state.pending_handoff && !pendingHandoffQueue.length && handoffNeedsConfirmation(state.pending_handoff)) {
+    if (!contactScope.strict && state.pending_handoff && !pendingHandoffQueue.length && handoffNeedsConfirmation(state.pending_handoff)) {
       handoffConfirmationRequired = handoffNeedsConfirmation(state.pending_handoff);
       pauseForFailure("handoff_confirmation_required", "还有未确认的人工提醒");
       save();
@@ -1443,7 +1634,8 @@ function createAutoReplyController(options = {}) {
     try {
       await waitForScanIdle();
       if (runEpoch !== startEpoch || state.status !== "starting") return { ok: false, error: "自动回复启动已取消", state: publicState() };
-      const pendingObservation = state.pending_observation;
+      const pendingObservation = contactScope.strict ? null : state.pending_observation;
+      if (contactScope.strict) state.pending_observation = null;
       let pendingRestored = false;
       let pendingRestoreDeferred = false;
       if (pendingObservation && typeof scanIncoming.restorePendingObservation === "function") {
@@ -1479,13 +1671,13 @@ function createAutoReplyController(options = {}) {
         if (typeof primeIncoming === "function") {
           let primed;
           try {
-            primed = await Promise.resolve(primeIncoming(conversationAliases));
+            primed = await Promise.resolve(primeIncoming(conversationAliases, contactScope.driverOptions));
           } catch {
             primed = { ok: false, reason: "scan_exception" };
           }
           if (runEpoch !== startEpoch || state.status !== "starting") return { ok: false, error: "自动回复启动已取消", state: publicState() };
           recordScanResult(primed, "prime");
-          recordOutgoingObservation(primed, contacts, now());
+          recordOutgoingObservation(primed, now(), contactScope.resolveContact);
           if (primed?.ok !== true && FATAL_STARTUP_PRIME_REASONS.has(normalizeText(primed?.reason))) {
             throw new Error(state.last_scan_reason || "微信当前会话基线初始化失败");
           }
@@ -1517,11 +1709,17 @@ function createAutoReplyController(options = {}) {
         state.last_error = "";
       }
       if (runEpoch !== startEpoch || state.status !== "starting") return { ok: false, error: "自动回复启动已取消", state: publicState() };
+      if (contactScope.strict) {
+        const refreshedScope = resolveContactScope();
+        if (!refreshedScope.ok || refreshedScope.scopeBinding !== contactScope.scopeBinding) {
+          throw new Error(refreshedScope.error || "所选测试联系人资料已变化，请重新选择");
+        }
+      }
       deepSeekClient?.assertAvailable();
       const latestExpert = expertStore?.read();
       if (!normalizeText(latestExpert?.text)) throw new Error("请先在 AI专家 导入自动回复话术文件");
-      recoveredHandoffWarning = recoverKnownUnsentHandoffs();
-      if (handoffNeedsConfirmation(state.pending_handoff)) {
+      if (!contactScope.strict) recoveredHandoffWarning = recoverKnownUnsentHandoffs();
+      if (!contactScope.strict && handoffNeedsConfirmation(state.pending_handoff)) {
         handoffConfirmationRequired = true;
         pauseForFailure("handoff_confirmation_required", "还有发送结果未确认的人工提醒");
         save();
@@ -1539,6 +1737,7 @@ function createAutoReplyController(options = {}) {
       return { ok: true, state: publicState() };
     } catch (error) {
       if (runEpoch === startEpoch && state.status === "starting") {
+        clearTestContactScope();
         state.status = "paused";
         state.last_event = "start_failed";
         state.last_error = String(error?.message || error || "自动回复启动失败");
@@ -1552,6 +1751,7 @@ function createAutoReplyController(options = {}) {
   }
 
   function pauseWithError(event, error) {
+    clearTestContactScope();
     state.status = "paused";
     state.last_event = event;
     state.last_error = String(error || "自动回复已暂停");
@@ -1559,6 +1759,7 @@ function createAutoReplyController(options = {}) {
 
   function pauseForFailure(event, error) {
     if (!state.pending_handoff || !handoffConfirmationRequired) return pauseWithError(event, error);
+    clearTestContactScope();
     state.status = "paused";
     state.last_event = "handoff_confirmation_required";
     const detail = normalizeText(error);
@@ -1671,9 +1872,27 @@ function createAutoReplyController(options = {}) {
 
   async function runOnce() {
     if (scanActive || state.status !== "running") return publicState();
+    const contactScope = resolveContactScope();
+    if (!contactScope.ok) {
+      if (singleContactScopeRequired) {
+        pauseWithError(contactScope.code || "test_contact_scope_invalid", contactScope.error || "测试联系人范围无法确认");
+        appendDiagnostic("test_scope_invalid", { phase: "scope", code: contactScope.code || "test_contact_scope_invalid" });
+        saveBestEffort();
+      }
+      return publicState();
+    }
     scanActive = true;
     const activeEpoch = runEpoch;
-    const isCurrentRun = () => state.status === "running" && runEpoch === activeEpoch;
+    const isCurrentRun = () => {
+      if (state.status !== "running" || runEpoch !== activeEpoch) return false;
+      if (!contactScope.strict) return true;
+      const refreshedScope = resolveContactScope();
+      if (refreshedScope.ok && refreshedScope.scopeBinding === contactScope.scopeBinding) return true;
+      pauseWithError(refreshedScope.code || "test_contact_scope_invalid", refreshedScope.error || "测试联系人范围无法确认");
+      appendDiagnostic("test_scope_invalid", { phase: "scope", code: refreshedScope.code || "test_contact_scope_invalid" });
+      saveBestEffort();
+      return false;
+    };
     let lock;
     try {
       const current = now();
@@ -1692,22 +1911,23 @@ function createAutoReplyController(options = {}) {
         return publicState();
       }
 
-      const handoffDelivery = await deliverPendingHandoff(lock, isCurrentRun);
+      if (!isCurrentRun()) return publicState();
+      const handoffDelivery = contactScope.strict ? "none" : await deliverPendingHandoff(lock, isCurrentRun);
       const handoffRetryError = ["retryable", "deferred"].includes(handoffDelivery) ? state.last_error : "";
       if (handoffDelivery === "handled") return publicState();
 
-      const contacts = eligibleContacts(activeTouchDir);
-      const conversationAliases = autoReplyConversationAliases(contacts);
+      const contacts = contactScope.contacts;
+      const conversationAliases = contactScope.aliases;
       if (primeRetryNeeded && typeof primeIncoming === "function") {
         let primed;
         try {
-          primed = await Promise.resolve(primeIncoming(conversationAliases));
+          primed = await Promise.resolve(primeIncoming(conversationAliases, contactScope.driverOptions));
         } catch {
           primed = { ok: false, reason: "scan_exception" };
         }
         if (!isCurrentRun()) return publicState();
         recordScanResult(primed, "prime");
-        recordOutgoingObservation(primed, contacts, current);
+        recordOutgoingObservation(primed, current, contactScope.resolveContact);
         if (primed?.ok !== true) {
           if (state.last_scan_reason !== USER_IDLE_WAIT_REASON) {
             state.scan_health = "checking";
@@ -1722,7 +1942,7 @@ function createAutoReplyController(options = {}) {
       }
       let candidate;
       try {
-        candidate = await Promise.resolve(scanIncoming(conversationAliases));
+        candidate = await Promise.resolve(scanIncoming(conversationAliases, contactScope.driverOptions));
       } catch (error) {
         if (isCurrentRun()) recordScanResult({ ok: false, reason: "scan_exception" }, "scan");
         throw error;
@@ -1736,6 +1956,12 @@ function createAutoReplyController(options = {}) {
       }
       if (!candidate?.ok) {
         const candidateReason = normalizeText(candidate?.reason);
+        if (contactScope.strict && STRICT_SCOPE_WINDOW_RESET_REASONS.has(candidateReason)) {
+          pauseWithError("test_scope_window_changed", "检测到微信窗口变化，已暂停测试自动回复，请重新选择测试联系人");
+          appendDiagnostic("test_scope_window_changed", { phase: "scope", code: candidateReason });
+          save();
+          return publicState();
+        }
         if (candidateReason === USER_IDLE_WAIT_REASON) {
           if (normalizeFailureContext(state.last_failure_context)?.phase !== "send") {
             setFailureContext({
@@ -1790,6 +2016,7 @@ function createAutoReplyController(options = {}) {
         }
         const terminalPendingReason = TERMINAL_PENDING_OBSERVATION_REASONS.has(candidateReason);
         if (state.pending_observation
+          && !contactScope.strict
           && new Set(["wechat_process_changed", "wechat_window_changed"]).has(candidateReason)
           && rebindPendingObservation(candidate, current)) {
           state.last_event = "pending_observation_rebound";
@@ -1800,7 +2027,7 @@ function createAutoReplyController(options = {}) {
         if (terminalPendingReason && (pendingObservationMatches(candidate)
           || candidateReason === "wechat_process_changed"
           || candidateReason === "wechat_window_changed")) state.pending_observation = null;
-        const outgoingObserved = recordOutgoingObservation(candidate, contacts, current);
+        const outgoingObserved = recordOutgoingObservation(candidate, current, contactScope.resolveContact);
         if (handoffDelivery !== "none") {
           save();
           return publicState();
@@ -1811,8 +2038,9 @@ function createAutoReplyController(options = {}) {
         return publicState();
       }
 
+      if (contactScope.strict && candidate && typeof candidate === "object") candidate.exactConversationMatch = true;
       const conversation = normalizeText(candidate.conversation);
-      const contact = contactForAutoReplyConversation(contacts, candidate);
+      const contact = contactScope.resolveContact(candidate);
       if (!contact) {
         clearPendingObservation(candidate);
         state.last_event = "conversation_not_eligible";
@@ -1981,7 +2209,7 @@ function createAutoReplyController(options = {}) {
           incomingStillCurrent = false;
           return false;
         }
-        const verification = await Promise.resolve(verifyIncoming(candidate));
+        const verification = await Promise.resolve(verifyIncoming(candidate, contactScope.driverOptions));
         incomingStillCurrent = verification?.ok === true;
         return incomingStillCurrent;
       };
@@ -2031,6 +2259,7 @@ function createAutoReplyController(options = {}) {
         expectedConversation: candidate.conversation,
         expectedConversationEvidence: candidate.conversationEvidence || candidate.conversation,
         expectedConversationAliases: conversationAliases,
+        exactConversationMatch: contactScope.strict,
         messageDriven: candidate.messageDriven === true,
         beforeDraft,
         shouldContinue,
@@ -2251,16 +2480,22 @@ function createAutoReplyController(options = {}) {
           .digest("hex");
         if (!state.handoff_notified?.[handoffKey] && !state.manual_followups?.some((item) => pendingHandoffKey(item) === handoffKey)) {
           const metadata = { key: handoffKey, contact_id: contact.id, conversation, at: sentAt.toISOString() };
-          handoffCreated = enqueueHandoff(metadata, {
-            message: buildHandoffMessage({ conversation, reason, latest: incoming, at: sentAt }),
-            expectedPid: candidate.pid,
-            sourceWindowHandle: candidate.hWnd,
-            successEvent: generated.intent === true ? "intent_handoff_sent" : "human_handoff_sent",
-            pauseReason,
-            attempts: 0,
-            pollsRemaining: 0
-          });
-          if (handoffCreated) state.last_event = "handoff_pending";
+          if (contactScope.strict) {
+            addManualFollowup(metadata);
+            state.last_event = "handoff_manual_followup_required";
+            state.last_error = manualFollowupMessage(state.manual_followups);
+          } else {
+            handoffCreated = enqueueHandoff(metadata, {
+              message: buildHandoffMessage({ conversation, reason, latest: incoming, at: sentAt }),
+              expectedPid: candidate.pid,
+              sourceWindowHandle: candidate.hWnd,
+              successEvent: generated.intent === true ? "intent_handoff_sent" : "human_handoff_sent",
+              pauseReason,
+              attempts: 0,
+              pollsRemaining: 0
+            });
+            if (handoffCreated) state.last_event = "handoff_pending";
+          }
         }
       }
       save();
@@ -2335,7 +2570,7 @@ function registerAutoReplyIpc(options = {}) {
     if (!consumeTrustedClick(event, payload)) {
       return { ok: false, error: "请在主窗口中手动点击启动自动回复" };
     }
-    return controller.start();
+    return controller.start({ contactId: String(payload?.contactId || "") });
   });
   ipcMain.handle("auto-reply:acknowledge-manual-followup", (event, payload = {}) => {
     if (!consumeTrustedClick(event, payload)) return { ok: false, error: "请在主窗口中手动确认人工提醒已处理" };

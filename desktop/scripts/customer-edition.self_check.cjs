@@ -127,6 +127,17 @@ function assertMomentsActionEditionBoundary() {
   for (const marker of momentsActionUiMarkers) assert.equal(panel.includes(marker), true, `test-only Moments panel must contain ${marker}`);
 }
 
+function assertAutoReplyTestScopeBoundary() {
+  const autoReply = read(path.join(desktopDir, "src", "renderer", "AutoReply.tsx"));
+  const main = read(path.join(desktopDir, "src", "main", "main.cjs"));
+  const preload = read(path.join(desktopDir, "src", "main", "preload-api.cjs"));
+  assert.match(autoReply, /const DEVELOPMENT_EDITION = import\.meta\.env\.VITE_XIAOXI_EDITION === "development"/, "single-contact test controls must use the test-edition build marker");
+  assert.match(autoReply, /\{DEVELOPMENT_EDITION && \(/, "single-contact test controls must not render in the delivery edition");
+  assert.match(autoReply, /auto-reply-test-scope/, "test renderer must make the limited-contact scope visible before starting");
+  assert.match(main, /singleContactScopeRequired: developmentEdition/, "only the test main process may require a single-contact auto-reply scope");
+  assert.match(preload, /contactId: String\(payload\?\.contactId \|\| ""\)/, "the trusted start bridge must pass only a contact ID to the main process");
+}
+
 function assertPackagedEditionUsesCopiedRenderer() {
   const editionSource = read(path.join(desktopDir, "src", "main", "edition.cjs"));
   assert.match(editionSource, /const rendererDir = environmentEdition === "development"/, "local edition builds must load their edition-specific renderer");
@@ -144,6 +155,7 @@ assertPreloadCompatibility(path.join(desktopDir, "src", "main", "touch-task-ipc.
 assertContactSyncUiRecoversFromBusyErrors();
 assertStageWorkflowContract();
 assertMomentsActionEditionBoundary();
+assertAutoReplyTestScopeBoundary();
 assertPackagedEditionUsesCopiedRenderer();
 assert.equal(read(path.join(desktopDir, "src", "main", "main.cjs")).includes("active-touch-dev-ipc.cjs"), true);
 assert.equal(read(path.join(desktopDir, "rpa", "active_touch", "state_machine.dev.cjs")).includes("wechat_window_driver.dev.cjs"), true);

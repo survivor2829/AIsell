@@ -135,6 +135,7 @@ function Test-AutoReplyVisualConversationMatch([string]$expected, [string]$obser
   $expected = Normalize-AutoReplyVisualText $expected; $observed = Normalize-AutoReplyVisualText $observed
   if (-not $expected -or -not $observed) { return $false }
   if ($expected -ceq $observed) { return $true }
+  if ($script:AutoReplyVisualExactConversationMatch) { return $false }
   $maximumLength = [Math]::Max($expected.Length, $observed.Length)
   if ([Math]::Min($expected.Length, $observed.Length) -lt 4 -or [Math]::Abs($expected.Length - $observed.Length) -gt 2) { return $false }
   if ($expected[0] -cne $observed[0] -or $expected.Substring($expected.Length - 2) -cne $observed.Substring($observed.Length - 2)) { return $false }
@@ -189,6 +190,9 @@ function Resolve-AutoReplyVisualAllowedConversation([string]$observed, $allowedS
   }
   if ($exactMatches.Count -gt 1) {
     return @{ ok = $false; ambiguous = $true; conversation = ""; observed = $observed; exact = $false }
+  }
+  if ($script:AutoReplyVisualExactConversationMatch) {
+    return @{ ok = $false; ambiguous = $false; conversation = ""; observed = $observed; exact = $false }
   }
   $fuzzyMatches = @($allowedSet | Where-Object {
     Test-AutoReplyVisualConversationMatch ([string]$_) $observed
@@ -278,6 +282,7 @@ function Get-AutoReplyVisualLines($ocr) {
 function Test-AutoReplyVisualSidebarNameLine([string]$lineText, [string]$name) {
   if ([string]::IsNullOrWhiteSpace($lineText) -or [string]::IsNullOrWhiteSpace($name)) { return $false }
   if (-not $lineText.StartsWith($name, [StringComparison]::Ordinal)) {
+    if ($script:AutoReplyVisualExactConversationMatch) { return $false }
     return Test-AutoReplyVisualConversationMatch $name $lineText
   }
   $suffix = $lineText.Substring($name.Length)
@@ -299,6 +304,9 @@ function Resolve-AutoReplyVisualSidebarConversation([string]$observed, $allowedS
   }
   if ($strongMatches.Count -gt 1) {
     return @{ ok = $false; ambiguous = $true; conversation = ""; observed = $observed; exact = $false }
+  }
+  if ($script:AutoReplyVisualExactConversationMatch) {
+    return @{ ok = $false; ambiguous = $false; conversation = ""; observed = $observed; exact = $false }
   }
   $fuzzyMatches = @($allowedSet | Where-Object {
     Test-AutoReplyVisualSidebarNameLine $observed ([string]$_)
@@ -1484,7 +1492,7 @@ function Get-AutoReplyVisualCurrentTransitionSnapshot(
     # A compositor-only WeChat window can omit its title from one OCR frame.
     # That is uncertainty, not proof that the chat changed. Only an explicitly
     # different title blocks the already-bound HWND + conversation observation.
-    if (-not $header.ok -and [string]$header.state -eq "different") {
+    if (-not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
       return @{
         ok = $false
         reason = [string]$header.reason
@@ -1518,6 +1526,7 @@ function Get-AutoReplyVisualCurrentTransitionSnapshot(
 }
 
 $mode = [Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_MODE")
+$script:AutoReplyVisualExactConversationMatch = [Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_EXACT_CONVERSATION_MATCH") -eq "1"
 try { $allowed = @(([Environment]::GetEnvironmentVariable("XIAOXI_ALLOWED_NAMES") | ConvertFrom-Json)) } catch { Write-AutoReplyVisualResult @{ ok = $false; reason = "whitelist_invalid" } }
 $allowedSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 foreach ($name in $allowed) {
@@ -1664,7 +1673,7 @@ try {
       $header = @{ ok = $true; state = "message_driven"; headerCandidateCount = 0; headerCandidateHashes = @() }
     } else {
       $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet
-      if (-not $header.ok -and [string]$header.state -eq "different") {
+      if (-not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
         Write-AutoReplyVisualResult @{ ok = $false; reason = "conversation_title_mismatch"; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = "different"; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
       }
     }
@@ -1706,7 +1715,7 @@ try {
       $header = @{ ok = $true; state = "message_driven"; headerCandidateCount = 0; headerCandidateHashes = @() }
     } else {
       $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet
-      if (-not $header.ok -and [string]$header.state -eq "different") {
+      if (-not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
         Write-AutoReplyVisualResult @{ ok = $false; reason = "conversation_title_mismatch"; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = "different"; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
       }
     }
@@ -1947,7 +1956,7 @@ try {
   } else {
     $header = Get-AutoReplyVisualHeader $openedObservation.lines $conversation $sidebarRight ([double]$openedFrame.width) $allowedSet
   }
-  if (-not [bool]$candidate.badgeOnly -and -not $header.ok -and [string]$header.state -eq "different") {
+  if (-not [bool]$candidate.badgeOnly -and -not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
     Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
   }
   if ([bool]$candidate.badgeOnly) {
@@ -2221,7 +2230,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     return true;
   }
 
-  function decorateCandidate(result, identity, predecessorSignature) {
+  function decorateCandidate(result, identity, predecessorSignature, matchOptions = {}) {
     const evidenceRuntimeId = String(result?.runtimeId || "").trim();
     const conversation = compactContactName(result?.conversation);
     const previewSignature = String(result?.previewSignature || "").trim().toLowerCase();
@@ -2269,6 +2278,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       runtimeId,
       visualEvidenceRuntimeId: evidenceRuntimeId,
       visualMode: "visual_render_v1",
+      ...(matchOptions?.exactConversationMatch === true ? { exactConversationMatch: true } : {}),
       context
     };
   }
@@ -2385,7 +2395,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     if (turnBoundaries.get(conversation)?.pending !== true) observeMessageSignature(conversation, signature);
   }
 
-  async function recoverPendingObservation(nameIdentity, allowed) {
+  async function recoverPendingObservation(nameIdentity, allowed, matchOptions = {}) {
     const pending = restoredPendingObservation;
     if (!pending) return null;
     if (!allowed.includes(pending.conversation)) {
@@ -2398,7 +2408,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       XIAOXI_EXPECTED_MESSAGE_SIGNATURE: pending.messageSignature,
       XIAOXI_EXPECTED_PID: String(pending.pid),
       XIAOXI_EXPECTED_HWND: pending.hWnd
-    });
+    }, matchOptions);
     const identity = processIdentity(result);
     if (identity && (identity.pid !== pending.pid || identity.hWnd !== pending.hWnd)) {
       restoredPendingObservation = null;
@@ -2429,7 +2439,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     }
     restoredPendingObservation = null;
     const predecessor = isSha256(pending.predecessorMessageSignature) ? pending.predecessorMessageSignature : "";
-    const decorated = decorateCandidate(result, nameIdentity, predecessor);
+    const decorated = decorateCandidate(result, nameIdentity, predecessor, matchOptions);
     previewBaselines.set(pending.conversation, pending.previewSignature);
     observeMessageSignature(pending.conversation, pending.messageSignature);
     return decorated;
@@ -2473,7 +2483,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     };
   }
 
-  async function settlePendingOpenedUnread(nameIdentity, allowed) {
+  async function settlePendingOpenedUnread(nameIdentity, allowed, matchOptions = {}) {
     const pending = pendingOpenedUnread;
     if (!pending) return null;
     if (pending?.messageDriven !== true && !allowed.includes(pending.conversation)) {
@@ -2484,7 +2494,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       ...pending,
       visualMode: "visual_render_v1",
       visualEvidenceRuntimeId: pending.runtimeId
-    });
+    }, matchOptions);
     const identity = processIdentity(verification);
     if (identity && primedProcess && (identity.pid !== primedProcess.pid || identity.hWnd !== primedProcess.hWnd)) {
       const processChanged = identity.pid !== primedProcess.pid;
@@ -2527,13 +2537,13 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     }
     pendingOpenedUnread = null;
     const predecessorSignature = messageBaselines.get(pending.conversation) || "";
-    const decorated = decorateCandidate(pending, nameIdentity, predecessorSignature);
+    const decorated = decorateCandidate(pending, nameIdentity, predecessorSignature, matchOptions);
     previewBaselines.set(pending.conversation, pending.previewSignature);
     observeMessageSignature(pending.conversation, pending.messageSignature);
     return decorated;
   }
 
-  function invoke(mode, allowed, extra = {}) {
+  function invoke(mode, allowed, extra = {}, matchOptions = {}) {
     const sharedWindow = typeof windowIdentityProvider === "function" ? windowIdentityProvider() : null;
     const startedAt = Date.now();
     return Promise.resolve(powerShellRunner(AUTO_REPLY_VISUAL_SCRIPT, {
@@ -2545,6 +2555,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       XIAOXI_STARTUP_UNREAD_BOUNDARIES: JSON.stringify(Object.fromEntries(startupUnreadBoundaries)),
       XIAOXI_EXPECTED_PID: String(sharedWindow?.pid || ""),
       XIAOXI_EXPECTED_HWND: String(sharedWindow?.hWnd || ""),
+      XIAOXI_AUTO_REPLY_EXACT_CONVERSATION_MATCH: matchOptions?.exactConversationMatch === true ? "1" : "",
       XIAOXI_ALLOW_FOCUS_FALLBACK: "",
       XIAOXI_FORCE_SCREEN_CAPTURE: "",
       ...extra
@@ -2560,14 +2571,14 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     }));
   }
 
-  async function primeWechatSession(names) {
+  async function primeWechatSession(names, matchOptions = {}) {
     const nameIdentity = allowedNameIdentity(names);
     const allowed = nameIdentity.compactNames;
     if (nameIdentity.ambiguous) return { ok: false, reason: "whitelist_name_ambiguous" };
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
-    let result = await invoke("prime", allowed);
+    let result = await invoke("prime", allowed, {}, matchOptions);
     if (result?.ok !== true && shouldForceScreenCapture(result)) {
-      result = await invoke("prime", allowed, { XIAOXI_ALLOW_FOCUS_FALLBACK: "1", XIAOXI_FORCE_SCREEN_CAPTURE: "1" });
+      result = await invoke("prime", allowed, { XIAOXI_ALLOW_FOCUS_FALLBACK: "1", XIAOXI_FORCE_SCREEN_CAPTURE: "1" }, matchOptions);
     }
     if (result?.ok !== true) return result;
     const process = processIdentity(result);
@@ -2600,7 +2611,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
           .filter(([conversation, value]) => allowed.includes(conversation) && value.message
             && !(turnBoundaries.get(conversation)?.pending === true && unreadAtBoundary.get(conversation) === true)))
       };
-      const boundaryResult = await scanWechatIncoming(names);
+      const boundaryResult = await scanWechatIncoming(names, matchOptions);
       if (boundaryResult?.reason === "wechat_process_changed" || boundaryResult?.reason === "wechat_window_changed") return boundaryResult;
       if (boundaryResult?.ok === true) startupBoundaryCandidate = boundaryResult;
     }
@@ -2618,13 +2629,13 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     };
   }
 
-  async function scanWechatIncoming(names) {
+  async function scanWechatIncoming(names, matchOptions = {}) {
     const nameIdentity = allowedNameIdentity(names);
     const allowed = nameIdentity.compactNames;
     if (nameIdentity.ambiguous) return { ok: false, reason: "whitelist_name_ambiguous" };
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
     if (!primedProcess) {
-      const prime = await primeWechatSession(names);
+      const prime = await primeWechatSession(names, matchOptions);
       return prime?.ok === true ? { ...prime, ok: false, reason: "current_session_baselined" } : prime;
     }
     if (startupBoundaryCandidate) {
@@ -2632,9 +2643,9 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       startupBoundaryCandidate = null;
       return candidate;
     }
-    const restoredResult = await recoverPendingObservation(nameIdentity, allowed);
+    const restoredResult = await recoverPendingObservation(nameIdentity, allowed, matchOptions);
     if (restoredResult) return restoredResult;
-    const pendingResult = await settlePendingOpenedUnread(nameIdentity, allowed);
+    const pendingResult = await settlePendingOpenedUnread(nameIdentity, allowed, matchOptions);
     if (pendingResult) return pendingResult;
     const boundary = startupBoundary;
     startupBoundary = null;
@@ -2647,13 +2658,13 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
         XIAOXI_STARTUP_MESSAGES: JSON.stringify(boundary.messages)
       } : {})
     };
-    let result = await invoke(scanMode, allowed, scanEnvironment);
+    let result = await invoke(scanMode, allowed, scanEnvironment, matchOptions);
     if (result?.ok !== true && shouldForceScreenCapture(result)) {
       result = await invoke(scanMode, allowed, {
         ...scanEnvironment,
         XIAOXI_ALLOW_FOCUS_FALLBACK: "1",
         XIAOXI_FORCE_SCREEN_CAPTURE: "1"
-      });
+      }, matchOptions);
     }
     const identity = processIdentity(result);
     if (identity && (identity.pid !== primedProcess.pid || identity.hWnd !== primedProcess.hWnd)) {
@@ -2711,7 +2722,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     if ((!messageDriven && !allowed.includes(conversation)) || !message) return { ok: false, reason: "incoming_message_missing" };
     if (!/^visual:v1:[a-f0-9]{64}$/u.test(runtimeId) || !isSha256(messageSignature)) return { ok: false, reason: "incoming_identity_missing" };
     const predecessorSignature = messageBaselines.get(conversation) || "";
-    const decorated = decorateCandidate({ ...result, discoveredConversation: false, messageDriven }, nameIdentity, predecessorSignature);
+    const decorated = decorateCandidate({ ...result, discoveredConversation: false, messageDriven }, nameIdentity, predecessorSignature, matchOptions);
     startupUnreadBoundaries.delete(conversation);
     const turn = turnBoundaries.get(conversation);
     if (turn?.pending === true) turnBoundaries.set(conversation, { ...turn, pending: false });
@@ -2720,12 +2731,13 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     return decorated;
   }
 
-  async function verifyWechatIncoming(candidate = {}) {
+  async function verifyWechatIncoming(candidate = {}, matchOptions = {}) {
     const nameIdentity = allowedNameIdentity([candidate.conversation]);
     const conversation = nameIdentity.compactNames[0] || "";
     const message = String(candidate.message || "").normalize("NFKC").replace(/\s+/gu, "").trim();
     const runtimeId = String(candidate.runtimeId || "").trim();
     const evidenceRuntimeId = String(candidate.visualEvidenceRuntimeId || runtimeId).trim();
+    const exactConversationMatch = candidate?.exactConversationMatch === true || matchOptions?.exactConversationMatch === true;
     if (!conversation || !message) return { ok: false, reason: "incoming_message_missing" };
     if (!/^visual:v[12]:[a-f0-9]{64}$/u.test(runtimeId) || !/^visual:v1:[a-f0-9]{64}$/u.test(evidenceRuntimeId)) return { ok: false, reason: "incoming_identity_missing" };
     const result = await invoke("verify", [conversation], {
@@ -2736,7 +2748,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       XIAOXI_AUTO_REPLY_MESSAGE_DRIVEN: candidate.messageDriven === true ? "1" : "",
       XIAOXI_EXPECTED_PID: String(candidate.pid || ""),
       XIAOXI_EXPECTED_HWND: String(candidate.hWnd || "")
-    });
+    }, { exactConversationMatch });
     return result?.ok === true
       ? {
           ...result,

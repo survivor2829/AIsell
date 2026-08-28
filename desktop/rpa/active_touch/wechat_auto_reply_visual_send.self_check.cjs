@@ -9,6 +9,17 @@ const {
   createVisualAutoReplySender
 } = require("./wechat_auto_reply_visual_send.dev.cjs");
 
+function runPowerShellProgram(program, name) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-visual-send-self-check-"));
+  const scriptFile = path.join(tempDir, name + ".ps1");
+  try {
+    fs.writeFileSync(scriptFile, "\uFEFF" + program, "utf8");
+    return spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptFile], { encoding: "utf8" });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /GetWindowThreadProcessId\(\$hWnd, \[ref\]\$actualPid\)[\s\S]*\[int\]\$actualPid -ne \$expectedPid[\s\S]*@\("Weixin", "WeChat"\) -notcontains \$process\.ProcessName/u);
 const visualSendLock = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(
   WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Get-VisualSendLock"),
@@ -93,11 +104,15 @@ $line = @{ text = "bubble-ocr"; width = 80.0; height = 16.0 }
   assistant = Get-VisualSendIncomingEvidenceSignature $line "assistant" 96.0
 } | ConvertTo-Json -Compress
 `;
-const evidenceProbe = spawnSync("powershell.exe", [
-  "-NoProfile",
-  "-EncodedCommand",
-  Buffer.from(evidenceProgram, "utf16le").toString("base64")
-], { encoding: "utf8" });
+const evidenceTemp = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-visual-send-evidence-"));
+const evidenceFile = path.join(evidenceTemp, "evidence.ps1");
+let evidenceProbe;
+try {
+  fs.writeFileSync(evidenceFile, evidenceProgram, "utf8");
+  evidenceProbe = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", evidenceFile], { encoding: "utf8" });
+} finally {
+  fs.rmSync(evidenceTemp, { recursive: true, force: true });
+}
 assert.equal(evidenceProbe.status, 0, evidenceProbe.stderr || evidenceProbe.stdout);
 const evidenceResult = JSON.parse(evidenceProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1));
 assert.equal(evidenceResult.user96, createHash("sha256").update("visual-message-semantic-v1\nbubble-ocr\nuser", "utf8").digest("hex"));
@@ -111,11 +126,7 @@ ${WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(normalizeStart, lockStart)}
   unrelated = Test-VisualSendConversationMatch ("A" + [char]27979 + [char]35797 + [char]23458 + [char]25143) ("B" + [char]27979 + [char]35797 + [char]23458 + [char]25143)
 } | ConvertTo-Json -Compress
 `;
-const conversationMatchProbe = spawnSync("powershell.exe", [
-  "-NoProfile",
-  "-EncodedCommand",
-  Buffer.from(conversationMatchProgram, "utf16le").toString("base64")
-], { encoding: "utf8" });
+const conversationMatchProbe = runPowerShellProgram(conversationMatchProgram, "conversation-match");
 assert.equal(conversationMatchProbe.status, 0, conversationMatchProbe.stderr || conversationMatchProbe.stdout);
 assert.deepEqual(JSON.parse(conversationMatchProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1)), {
   drift: true,
@@ -129,24 +140,29 @@ $expectedConversationEvidence = "A3ZZ"
 ${WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(normalizeStart, lockStart)}
 $ambiguous = Resolve-VisualSendAllowedConversation "A3ZZ"
 $exact = Resolve-VisualSendAllowedConversation "A1ZZ"
+$strictConversationMatch = $true
+$script:VisualSendAllowedNames = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+[void]$script:VisualSendAllowedNames.Add("A1ZZ")
+$strictFuzzy = Resolve-VisualSendAllowedConversation "A3ZZ"
+$strictExact = Resolve-VisualSendAllowedConversation "A1ZZ"
 @{
   ambiguous = [bool]$ambiguous.ambiguous
   ambiguousOk = [bool]$ambiguous.ok
   exact = [string]$exact.conversation
   exactOk = [bool]$exact.ok
+  strictFuzzyOk = [bool]$strictFuzzy.ok
+  strictExactOk = [bool]$strictExact.ok
 } | ConvertTo-Json -Compress
 `;
-const uniqueConversationProbe = spawnSync("powershell.exe", [
-  "-NoProfile",
-  "-EncodedCommand",
-  Buffer.from(uniqueConversationProgram, "utf16le").toString("base64")
-], { encoding: "utf8" });
+const uniqueConversationProbe = runPowerShellProgram(uniqueConversationProgram, "unique-conversation");
 assert.equal(uniqueConversationProbe.status, 0, uniqueConversationProbe.stderr || uniqueConversationProbe.stdout);
 assert.deepEqual(JSON.parse(uniqueConversationProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1)), {
   ambiguous: true,
   ambiguousOk: false,
   exact: "A1ZZ",
-  exactOk: true
+  exactOk: true,
+  strictExactOk: true,
+  strictFuzzyOk: false
 });
 
 const conversationProbeStart = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Test-VisualSendConversation($frame)");
@@ -193,11 +209,7 @@ $script:headerCase = "failed"; $failed = Test-VisualSendConversation $frame
   failed = $failed.state
 } | ConvertTo-Json -Compress
 `;
-const conversationStateProbe = spawnSync("powershell.exe", [
-  "-NoProfile",
-  "-EncodedCommand",
-  Buffer.from(conversationStateProgram, "utf16le").toString("base64")
-], { encoding: "utf8" });
+const conversationStateProbe = runPowerShellProgram(conversationStateProgram, "conversation-state");
 assert.equal(conversationStateProbe.status, 0, conversationStateProbe.stderr || conversationStateProbe.stdout);
 assert.deepEqual(JSON.parse(conversationStateProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1)), {
   ambiguous: "unresolved",
@@ -230,11 +242,7 @@ $draft = [pscustomobject]@{ text = "[草稿]你好"; bounds = @{ left = 80.0; to
   ambiguous = Test-VisualSendSelectedSidebarPreview $frame @($name, $name, $matching) 300.0 1.0
 } | ConvertTo-Json -Compress
 `;
-const previewHelperProbe = spawnSync("powershell.exe", [
-  "-NoProfile",
-  "-EncodedCommand",
-  Buffer.from(previewHelperProgram, "utf16le").toString("base64")
-], { encoding: "utf8" });
+const previewHelperProbe = runPowerShellProgram(previewHelperProgram, "preview-helper");
 assert.equal(previewHelperProbe.status, 0, previewHelperProbe.stderr || previewHelperProbe.stdout);
 assert.deepEqual(JSON.parse(previewHelperProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1)), {
   ambiguous: false,
@@ -339,11 +347,7 @@ const sidebarProgram = `${sidebarFunction}
   wide125 = Get-VisualSendSidebarRight 1100 120
   wide150 = Get-VisualSendSidebarRight 1320 144
 } | ConvertTo-Json -Compress`;
-const sidebarProbe = spawnSync("powershell.exe", [
-  "-NoProfile",
-  "-EncodedCommand",
-  Buffer.from(sidebarProgram, "utf16le").toString("base64")
-], { encoding: "utf8" });
+const sidebarProbe = runPowerShellProgram(sidebarProgram, "sidebar");
 assert.equal(sidebarProbe.status, 0, sidebarProbe.stderr || sidebarProbe.stdout);
 assert.deepEqual(JSON.parse(sidebarProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1)), {
   narrow100: 297,
@@ -412,11 +416,7 @@ $fallback = Get-VisualSendChatBottom $noDividerFrame 150.0
   excludesComposerDraft = [bool](249 -gt $detected)
 } | ConvertTo-Json -Compress
 `;
-const chatProbe = spawnSync("powershell.exe", [
-  "-NoProfile",
-  "-EncodedCommand",
-  Buffer.from(chatProgram, "utf16le").toString("base64")
-], { encoding: "utf8" });
+const chatProbe = runPowerShellProgram(chatProgram, "chat");
 assert.equal(chatProbe.status, 0, chatProbe.stderr || chatProbe.stdout);
 const chatResult = JSON.parse(chatProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1));
 assert.equal(chatResult.detected, 246);
@@ -492,11 +492,7 @@ $historyNonGreenLines = @(
   historicalSameLatestNonGreen = Test-VisualSendOutgoingLineEvidence $historyNonGreenFrame $historyNonGreenLines "target" $sidebar
 } | ConvertTo-Json -Compress
 `;
-const greenRoleProbe = spawnSync("powershell.exe", [
-  "-NoProfile",
-  "-EncodedCommand",
-  Buffer.from(greenRoleProgram, "utf16le").toString("base64")
-], { encoding: "utf8" });
+const greenRoleProbe = runPowerShellProgram(greenRoleProgram, "green-role");
 assert.equal(greenRoleProbe.status, 0, greenRoleProbe.stderr || greenRoleProbe.stdout);
 assert.deepEqual(JSON.parse(greenRoleProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1)), {
   bottomShortBubble: true,
@@ -544,6 +540,7 @@ const sender = createVisualAutoReplySender({
     pid: 77,
     hWnd: 88,
     conversation: "A测试客户",
+    exactConversationMatch: true,
     incomingMessage: "你是谁",
     reply: "你好，这是本机视觉发送自检",
     beforeSend: async (context) => {
@@ -570,6 +567,7 @@ const sender = createVisualAutoReplySender({
   assert.equal(calls[0].env.XIAOXI_VISUAL_SEND_CONVERSATION_EVIDENCE, calls[0].env.XIAOXI_VISUAL_SEND_CONVERSATION);
   assert.deepEqual(JSON.parse(calls[0].env.XIAOXI_VISUAL_SEND_ALLOWED_NAMES), [calls[0].env.XIAOXI_VISUAL_SEND_CONVERSATION]);
   assert.equal(calls[0].env.XIAOXI_VISUAL_SEND_CONVERSATION, "A测试客户");
+  assert.equal(calls[0].env.XIAOXI_VISUAL_SEND_EXACT_CONVERSATION_MATCH, "1");
   assert.equal(calls[0].env.XIAOXI_VISUAL_SEND_INCOMING, "你是谁");
   assert.equal(calls[0].options.sta, true);
   assert.deepEqual(calls[1], { kind: "draft", message: "你好，这是本机视觉发送自检", context: { pid: 77, hWnd: 88 } });

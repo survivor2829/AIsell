@@ -855,7 +855,10 @@ function createPreloadApis(ipcRenderer) {
     content: createContentEngineApi(ipcRenderer),
     autoReply: {
       status: () => ipcRenderer.invoke("auto-reply:status"),
-      start: () => ipcRenderer.invoke("auto-reply:start", { clickToken: consumeAutoReplyClick() }),
+      start: (payload = {}) => ipcRenderer.invoke("auto-reply:start", {
+        clickToken: consumeAutoReplyClick(),
+        contactId: String(payload?.contactId || "")
+      }),
       pause: () => ipcRenderer.invoke("auto-reply:pause"),
       acknowledgeManualFollowup: () => ipcRenderer.invoke("auto-reply:acknowledge-manual-followup", { clickToken: consumeAutoReplyClick() }),
       onUpdate: (callback) => {

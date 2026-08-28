@@ -31,14 +31,25 @@ type AutoReplyState = {
   consecutive_scan_failures?: number;
   pending_retry_count?: number;
   last_failure_context?: AutoReplyFailureContext | null;
+  test_scope?: {
+    required?: boolean;
+    enforced?: boolean;
+    contact_label?: string;
+    available_contacts?: TestScopeContact[];
+    reset_on_restart?: boolean;
+  };
 };
-type AutoReplyResult = { ok: boolean; state?: Partial<AutoReplyState>; error?: string };
+type AutoReplyResult = { ok: boolean; state?: Partial<AutoReplyState>; error?: string; code?: string };
+type TestScopeContact = {
+  id: string;
+  label: string;
+};
 
 declare global {
   interface Window {
     xiaoxiAutoReply?: {
       status: () => Promise<AutoReplyResult>;
-      start: () => Promise<AutoReplyResult>;
+      start: (payload?: { contactId?: string }) => Promise<AutoReplyResult>;
       pause: () => Promise<AutoReplyResult>;
       acknowledgeManualFollowup: () => Promise<AutoReplyResult>;
       onUpdate?: (callback: (result: AutoReplyResult) => void) => () => void;
@@ -61,6 +72,8 @@ const EMPTY_STATE: AutoReplyState = {
   pending_retry_count: 0,
   last_failure_context: null
 };
+
+const DEVELOPMENT_EDITION = import.meta.env.VITE_XIAOXI_EDITION === "development";
 
 const SCAN_HEALTH_LABELS: Record<ScanHealth, string> = {
   unknown: "暂无数据",
@@ -157,6 +170,7 @@ const CONTROL_EVENT_LABELS: Record<string, string> = {
   recovered_after_restart: "应用重启后按安全策略保持暂停，请重新启动",
   state_upgraded_paused: "运行状态升级后已安全暂停，请重新启动",
   start_failed: "启动检查未通过",
+  test_scope_window_changed: "检测到微信窗口变化，已暂停测试自动回复，请重新选择联系人",
   current_transition_unresolved_paused: "新消息证据不一致，已安全暂停",
   waiting_for_user_idle: "检测到电脑仍在操作，已等待空闲后继续",
   manual_intervention_required: "检测到微信中可能有人为操作，当前消息已停止自动重试"
@@ -235,10 +249,14 @@ export function AutoReply() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [pollError, setPollError] = useState("");
+  const [selectedTestContactId, setSelectedTestContactId] = useState("");
 
   const applyResult = (result: AutoReplyResult, clearOperationError = true) => {
     if (result.state) setState((current) => ({ ...current, ...result.state }));
-    if (!result.ok) setError(result.error || "自动回复操作失败");
+    if (!result.ok) {
+      if (DEVELOPMENT_EDITION && result.code?.startsWith("test_contact")) setSelectedTestContactId("");
+      setError(result.error || "自动回复操作失败");
+    }
     else if (clearOperationError) setError("");
   };
 
@@ -264,10 +282,21 @@ export function AutoReply() {
     };
   }, []);
 
-  const run = (operation: () => Promise<AutoReplyResult>, failure: string) => {
+  const run = (operation: () => Promise<AutoReplyResult>, failure: string, onSuccess?: () => void) => {
     setBusy(true);
     setError("");
-    void operation().then(applyResult).catch(() => setError(failure)).finally(() => setBusy(false));
+    void operation().then((result) => {
+      applyResult(result);
+      if (result.ok) onSuccess?.();
+    }).catch(() => setError(failure)).finally(() => setBusy(false));
+  };
+
+  const pause = () => {
+    if (!window.xiaoxiAutoReply) {
+      setError("当前版本未连接自动回复执行器");
+      return;
+    }
+    run(() => window.xiaoxiAutoReply!.pause(), "暂停自动回复失败", () => setSelectedTestContactId(""));
   };
 
   const running = state.status === "running";
@@ -293,6 +322,30 @@ export function AutoReply() {
   const scanReasonTitle = recoveryContext?.phase === "send" && scanHealth === "waiting"
     ? "当前等待原因"
     : scanning ? "最近扫描结果" : "停止前最近扫描结果";
+  const testContacts = state.test_scope?.available_contacts || [];
+  const selectedTestContact = testContacts.find((contact) => contact.id === selectedTestContactId) || null;
+  const testScopeReady = Boolean(state.test_scope?.required);
+  const testScopeLabel = state.test_scope?.contact_label || selectedTestContact?.label || "已同步联系人";
+  const testScopeNotice = running
+    ? `正在仅自动回复：${testScopeLabel}。其他联系人不会回复。`
+    : !testScopeReady
+      ? "测试版保护未就绪，已禁止启动自动回复"
+      : !testContacts.length
+        ? "请先同步联系人，并确认测试联系人有唯一可识别的会话名称。"
+        : selectedTestContact
+          ? `本次仅自动回复：${selectedTestContact.label}；其他联系人不会回复。`
+          : "请选择一位已同步联系人后，才能启动自动回复。";
+
+  useEffect(() => {
+    if (DEVELOPMENT_EDITION && state.test_scope?.required && !state.test_scope.enforced) setSelectedTestContactId("");
+  }, [state.test_scope?.required, state.test_scope?.enforced]);
+  const startTestAutoReply = () => {
+    if (!window.xiaoxiAutoReply || !selectedTestContactId) {
+      setError("请选择一位已同步联系人后再启动自动回复");
+      return;
+    }
+    run(() => window.xiaoxiAutoReply!.start({ contactId: selectedTestContactId }), "启动自动回复失败");
+  };
 
   return (
     <section className="page agent-page auto-reply-page">
@@ -308,16 +361,51 @@ export function AutoReply() {
             </button>
           )}
           {running ? (
-            <button className="danger-button" onClick={() => window.xiaoxiAutoReply && run(() => window.xiaoxiAutoReply!.pause(), "暂停自动回复失败")} disabled={busy}>
+            <button className="danger-button" onClick={pause} disabled={busy}>
               <Pause size={17} />暂停自动回复
             </button>
-          ) : (
+          ) : !DEVELOPMENT_EDITION && (
             <button data-xiaoxi-auto-reply-start className="primary-button" onClick={() => window.xiaoxiAutoReply ? run(() => window.xiaoxiAutoReply!.start(), "启动自动回复失败") : setError("当前版本未连接自动回复执行器")} disabled={busy || starting}>
               <Play size={17} />{confirmationRequired ? "确认已检查并启动" : "启动自动回复"}
             </button>
           )}
         </div>
       </div>
+
+      {DEVELOPMENT_EDITION && (
+        <section className="auto-reply-test-scope" aria-labelledby="auto-reply-test-scope-title">
+          <div className="auto-reply-test-scope-head">
+            <div>
+              <h2 id="auto-reply-test-scope-title">内部测试保护</h2>
+              <p>为避免误回复，本次只能选择 1 位已同步联系人。关闭或重启应用后需要重新选择。</p>
+            </div>
+            <span>仅测试版</span>
+          </div>
+          <div className="auto-reply-test-scope-controls">
+            <label htmlFor="auto-reply-test-contact">测试联系人</label>
+            <select
+              id="auto-reply-test-contact"
+              value={selectedTestContactId}
+              onChange={(event) => setSelectedTestContactId(event.target.value)}
+              disabled={running || busy || !testScopeReady}
+            >
+              <option value="">请选择一位已同步联系人</option>
+              {testContacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.label}</option>)}
+            </select>
+            {!running && (
+              <button
+                data-xiaoxi-auto-reply-start
+                className="primary-button"
+                onClick={startTestAutoReply}
+                disabled={busy || starting || !selectedTestContact || !testScopeReady}
+              >
+                <Play size={17} />{confirmationRequired ? "确认已检查并仅回复此联系人" : "开始仅回复此联系人"}
+              </button>
+            )}
+          </div>
+          <p className="auto-reply-test-scope-status" aria-live="polite">{testScopeNotice}</p>
+        </section>
+      )}
 
       <div className="status-strip auto-reply-status">
         <div className="status-card"><span>运行状态</span><strong className={starting ? "warn" : ""}>{statusLabel}</strong></div>

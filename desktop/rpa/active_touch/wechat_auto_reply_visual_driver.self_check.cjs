@@ -641,12 +641,18 @@ $ambiguousAllowed = [System.Collections.Generic.HashSet[string]]::new([StringCom
 [void]$ambiguousAllowed.Add(("A" + [char]27979 + [char]35797 + [char]23458 + [char]25143))
 [void]$ambiguousAllowed.Add(("B" + [char]27979 + [char]35797 + [char]23458 + [char]25143))
 $ambiguous = Resolve-AutoReplyVisualAllowedConversation ("C" + [char]27979 + [char]35797 + [char]23458 + [char]25143) $ambiguousAllowed
+$script:AutoReplyVisualExactConversationMatch = $true
+$strictNearest = Resolve-AutoReplyVisualAllowedConversation ("A" + [char]27979 + [char]35797 + [char]23458 + [char]23608) $singleAllowed
+$strictExact = Resolve-AutoReplyVisualAllowedConversation ("A" + [char]27979 + [char]35797 + [char]23458 + [char]25143) $singleAllowed
+$script:AutoReplyVisualExactConversationMatch = $false
 @{
   drift = Test-AutoReplyVisualConversationMatch ("A" + [char]27979 + [char]35797 + [char]23458 + [char]25143) ("A" + [char]27701 + [char]21017 + [char]35797 + [char]23458 + [char]25143)
   unrelated = Test-AutoReplyVisualConversationMatch ("A" + [char]27979 + [char]35797 + [char]23458 + [char]25143) ("B" + [char]27979 + [char]35797 + [char]23458 + [char]25143)
   nearest = [bool]$nearest.ok
   nearestName = [string]$nearest.conversation
   ambiguous = [bool]$ambiguous.ambiguous
+  strictNearest = [bool]$strictNearest.ok
+  strictExact = [bool]$strictExact.ok
 } | ConvertTo-Json -Compress
 `;
 const conversationMatchProbe = spawnSync("powershell.exe", [
@@ -660,6 +666,8 @@ assert.deepEqual(JSON.parse(conversationMatchProbe.stdout.trim().split(/\r?\n/u)
   drift: true,
   nearest: true,
   nearestName: "A测试客户",
+  strictExact: true,
+  strictNearest: false,
   unrelated: false
 });
 
@@ -1210,26 +1218,31 @@ const driver = createWechatVisualAutoReplyDriver((script, env, options) => {
   return results.shift();
 });
 
-assert.deepEqual(await driver.primeWechatSession([" A 测试客户 "]), {
+const exactMatchOptions = { exactConversationMatch: true };
+assert.deepEqual(await driver.primeWechatSession([" A 测试客户 "], exactMatchOptions), {
   ok: true,
   primed: true,
   pid: 81,
   hWnd: "91"
 });
-const candidate = await driver.scanWechatIncoming(["A 测试客户"]);
+const candidate = await driver.scanWechatIncoming(["A 测试客户"], exactMatchOptions);
 assert.equal(candidate.ok, true);
 assert.equal(candidate.conversation, "A 测试客户");
 assert.equal(candidate.message, "你是谁");
 assert.match(candidate.runtimeId, /^visual:v2:[a-f0-9]{64}$/u);
 assert.equal(candidate.visualEvidenceRuntimeId, runtimeId);
 assert.equal(candidate.visualMode, "visual_render_v1");
+assert.equal(candidate.exactConversationMatch, true);
 assert.deepEqual(candidate.context, [{ role: "user", content: "你是谁", key: candidate.runtimeId }]);
-const verified = await driver.verifyWechatIncoming(candidate);
+const verified = await driver.verifyWechatIncoming(candidate, exactMatchOptions);
 assert.equal(verified.ok, true);
 assert.equal(verified.conversation, "A 测试客户");
 assert.equal(verified.runtimeId, candidate.runtimeId);
 assert.equal(verified.visualEvidenceRuntimeId, runtimeId);
 assert.deepEqual(verified.context, [{ role: "user", content: "你是谁", key: candidate.runtimeId }]);
+assert.equal(calls[0].env.XIAOXI_AUTO_REPLY_EXACT_CONVERSATION_MATCH, "1");
+assert.equal(calls[1].env.XIAOXI_AUTO_REPLY_EXACT_CONVERSATION_MATCH, "1");
+assert.equal(calls[2].env.XIAOXI_AUTO_REPLY_EXACT_CONVERSATION_MATCH, "1");
 
 assert.equal(driver.scanWechatIncoming.requeue(candidate), true);
 assert.equal(driver.scanWechatIncoming.requeue(candidate), true, "retry deduplication must be idempotent");

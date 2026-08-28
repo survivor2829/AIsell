@@ -407,6 +407,7 @@ if (!gotSingleInstanceLock) {
         coordinator,
         deepSeekClient,
         expertStore: aiExpertStore,
+        singleContactScopeRequired: developmentEdition,
         send: internalRealSend.executeVerifiedContactSend,
         sendHandoff: internalRealSend.executeVerifiedFileHelperSend,
         runStep: (command, args, owner) => runActiveTouch([command, ...args], {

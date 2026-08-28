@@ -591,6 +591,84 @@ button:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.auto-reply-test-scope {
+  display: grid;
+  gap: 14px;
+  max-width: 1080px;
+  margin: 0 0 16px;
+  padding: 16px;
+  border: 1px solid #dbe3ee;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.auto-reply-test-scope-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.auto-reply-test-scope h2 {
+  margin: 0 0 4px;
+  color: #172033;
+  font-size: 16px;
+}
+
+.auto-reply-test-scope-head p,
+.auto-reply-test-scope-status {
+  margin: 0;
+  color: #526075;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.auto-reply-test-scope-head span {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #e8f0ff;
+  color: #245bce;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.auto-reply-test-scope-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+}
+
+.auto-reply-test-scope-controls label {
+  color: #344054;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.auto-reply-test-scope-controls select {
+  width: min(360px, 100%);
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #172033;
+}
+
+.auto-reply-test-scope-controls select:focus-visible {
+  outline: 2px solid #9bbcff;
+  outline-offset: 2px;
+  border-color: #4f7ee8;
+}
+
+.auto-reply-test-scope .primary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+  box-shadow: none;
+}
+
 .auto-reply-reason {
   margin: -4px 0 16px;
   padding: 10px 14px;
@@ -2146,5 +2224,16 @@ td .text-button {
 
   .touch-sync-actions {
     justify-content: flex-start;
+  }
+
+  .auto-reply-test-scope-head,
+  .auto-reply-test-scope-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .auto-reply-test-scope-controls select,
+  .auto-reply-test-scope-controls .primary-button {
+    width: 100%;
   }
 }

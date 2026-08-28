@@ -1154,10 +1154,10 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
       || /^visual:v1:[a-f0-9]{64}$/u.test(evidenceRuntimeId);
   }
 
-  async function switchToVisualPrime(allowed, fallbackResult) {
+  async function switchToVisualPrime(allowed, fallbackResult, matchOptions = {}) {
     const driver = getVisualDriver();
     if (!driver) return fallbackResult;
-    const primed = await driver.primeWechatSession(allowed);
+    const primed = await driver.primeWechatSession(allowed, matchOptions);
     if (primed?.ok === true) activeScanMode = "visual";
     return primed;
   }
@@ -1269,7 +1269,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     return null;
   }
 
-  async function primeWechatSession(names) {
+  async function primeWechatSession(names, matchOptions = {}) {
     const allowed = allowedNames(names);
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
     if (normalizedForReprime) normalizedForReprime = false;
@@ -1279,7 +1279,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     }
     if (activeScanMode === "visual") {
       const driver = getVisualDriver();
-      return driver ? driver.primeWechatSession(allowed) : { ok: false, reason: "visual_driver_missing" };
+      return driver ? driver.primeWechatSession(allowed, matchOptions) : { ok: false, reason: "visual_driver_missing" };
     }
     const activeBaselineEpoch = baselineEpoch;
     const result = await Promise.resolve(powerShellRunner(AUTO_REPLY_RUN_SCRIPT, {
@@ -1292,7 +1292,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
       XIAOXI_EXPECTED_HWND: String(normalizedWindowIdentity?.hWnd || "")
     }, { ensure: false }));
     if (activeBaselineEpoch !== baselineEpoch) return { ok: false, reason: "baseline_epoch_changed" };
-    if (result?.reason === "session_probe_unsupported") return switchToVisualPrime(allowed, result);
+    if (result?.reason === "session_probe_unsupported") return switchToVisualPrime(allowed, result, matchOptions);
     if (result?.ok !== true) return result;
     const identity = processIdentity(result);
     if (!identity) return { ok: false, reason: "incoming_identity_missing" };
@@ -1315,7 +1315,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     return { ok: true, primed: true };
   }
 
-  async function scanWechatIncoming(names) {
+  async function scanWechatIncoming(names, matchOptions = {}) {
     const allowed = allowedNames(names);
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
     const scanWindowFailure = await normalizeWindowForExecution(normalizedWindowIdentity || sessionPreviewProcess);
@@ -1333,13 +1333,13 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     }
     if (needsReprime) {
       normalizedForReprime = true;
-      const primed = await primeWechatSession(allowed);
+      const primed = await primeWechatSession(allowed, matchOptions);
       return primed?.ok === true ? { ok: false, reason: "current_session_baselined" } : primed;
     }
     if (activeScanMode === "visual") {
       const driver = getVisualDriver();
       if (!driver) return { ok: false, reason: "visual_driver_missing" };
-      const result = visualCandidate(await driver.scanWechatIncoming(allowed));
+      const result = visualCandidate(await driver.scanWechatIncoming(allowed, matchOptions));
       if (result?.reason === "wechat_process_changed" || result?.reason === "wechat_window_changed") {
         // The visual adapter has dropped its old binding. Drop the shared
         // normalizer identity too; otherwise the next prime would be forced
@@ -1374,7 +1374,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     }, { ensure: false }));
     if (activeBaselineEpoch !== baselineEpoch) return { ok: false, reason: "baseline_epoch_changed" };
     if (result?.reason === "session_probe_unsupported") {
-      const primed = await switchToVisualPrime(allowed, result);
+      const primed = await switchToVisualPrime(allowed, result, matchOptions);
       return primed?.ok === true ? { ok: false, reason: "current_session_baselined" } : primed;
     }
     const changedWindow = rejectChangedWindow(result);
@@ -1413,7 +1413,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     return result;
   }
 
-  async function verifyWechatIncoming(candidate = {}) {
+  async function verifyWechatIncoming(candidate = {}, matchOptions = {}) {
     const conversation = String(candidate.conversation || "").trim();
     const message = String(candidate.message || "").trim();
     const runtimeId = String(candidate.runtimeId || "").trim();
@@ -1421,7 +1421,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     if (!runtimeId) return { ok: false, reason: "incoming_identity_missing" };
     if (isVisualCandidate(candidate)) {
       const driver = getVisualDriver();
-      return driver ? driver.verifyWechatIncoming(candidate) : { ok: false, reason: "visual_driver_missing" };
+      return driver ? driver.verifyWechatIncoming(candidate, matchOptions) : { ok: false, reason: "visual_driver_missing" };
     }
     return Promise.resolve(powerShellRunner(AUTO_REPLY_RUN_SCRIPT, {
       XIAOXI_AUTO_REPLY_MODE: "verify",

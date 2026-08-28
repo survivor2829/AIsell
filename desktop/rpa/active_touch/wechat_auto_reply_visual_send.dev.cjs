@@ -61,6 +61,7 @@ $expectedPidText = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_PID
 $expectedHWndText = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_HWND")
 $expectedConversation = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_CONVERSATION")
 $expectedConversationEvidence = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_CONVERSATION_EVIDENCE")
+$strictConversationMatch = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_EXACT_CONVERSATION_MATCH") -eq "1"
 $messageDriven = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_MESSAGE_DRIVEN") -eq "1"
 try { $allowedConversationNames = @(([Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_ALLOWED_NAMES") | ConvertFrom-Json)) } catch { $allowedConversationNames = @() }
 $expectedIncoming = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_SEND_INCOMING")
@@ -133,6 +134,9 @@ function Resolve-VisualSendAllowedConversation([string]$observed) {
   if ($exactMatches.Count -gt 1) {
     return @{ ok = $false; ambiguous = $true; conversation = ""; observed = $observed; exact = $false }
   }
+  if ($strictConversationMatch) {
+    return @{ ok = $false; ambiguous = $false; conversation = ""; observed = $observed; exact = $false }
+  }
   $fuzzyMatches = @($script:VisualSendAllowedNames | Where-Object {
     Test-VisualSendConversationMatch ([string]$_) $observed
   })
@@ -150,6 +154,9 @@ function Resolve-VisualSendAllowedConversation([string]$observed) {
 
 function Test-VisualSendFrozenConversationEvidence([string]$observed) {
   if (-not $expectedConversationEvidence) { return $false }
+  if ($strictConversationMatch) {
+    return $expectedConversationEvidence -ceq (Normalize-VisualSendText $observed)
+  }
   return Test-VisualSendConversationMatch $expectedConversationEvidence (Normalize-VisualSendText $observed)
 }
 
@@ -310,7 +317,10 @@ function Test-VisualSendSidebarNameLine([string]$lineText, [string]$name) {
   $line = Normalize-VisualSendText $lineText
   $wanted = Normalize-VisualSendText $name
   if (-not $line -or -not $wanted) { return $false }
-  if (-not $line.StartsWith($wanted, [StringComparison]::Ordinal)) { return Test-VisualSendConversationMatch $wanted $line }
+  if (-not $line.StartsWith($wanted, [StringComparison]::Ordinal)) {
+    if ($strictConversationMatch) { return $false }
+    return Test-VisualSendConversationMatch $wanted $line
+  }
   $suffix = $line.Substring($wanted.Length)
   return -not $suffix -or (Test-VisualSendTimeText $suffix)
 }
@@ -330,6 +340,9 @@ function Resolve-VisualSendSidebarConversation([string]$observed) {
   }
   if ($strongMatches.Count -gt 1) {
     return @{ ok = $false; ambiguous = $true; conversation = ""; observed = $observed; exact = $false }
+  }
+  if ($strictConversationMatch) {
+    return @{ ok = $false; ambiguous = $false; conversation = ""; observed = $observed; exact = $false }
   }
   $fuzzyMatches = @($script:VisualSendAllowedNames | Where-Object {
     Test-VisualSendSidebarNameLine $observed ([string]$_)
@@ -591,6 +604,9 @@ function Test-VisualSendSelectedSidebarConversation($frame, [double]$sidebarRigh
 
 function Get-VisualSendConversationBinding($frame, [double]$sidebarRight, [double]$dpi) {
   if ($messageDriven) {
+    if ($strictConversationMatch) {
+      return @{ ok = $false; reason = "visual_send_message_driven_disallowed"; headerState = "message_driven"; selectedRow = $null }
+    }
     return @{ ok = $true; proof = "message_driven"; headerState = "not_required"; selectedRow = $null }
   }
   $header = Test-VisualSendConversation $frame
@@ -1109,6 +1125,7 @@ function visualSendEnvironment(options, phase) {
     XIAOXI_VISUAL_SEND_HWND: String(options.hWnd ?? ""),
     XIAOXI_VISUAL_SEND_CONVERSATION: String(options.conversation ?? ""),
     XIAOXI_VISUAL_SEND_CONVERSATION_EVIDENCE: String(options.conversationEvidence ?? options.conversation ?? ""),
+    XIAOXI_VISUAL_SEND_EXACT_CONVERSATION_MATCH: options.exactConversationMatch === true ? "1" : "",
     XIAOXI_VISUAL_SEND_MESSAGE_DRIVEN: options.messageDriven === true ? "1" : "",
     XIAOXI_VISUAL_SEND_ALLOWED_NAMES: JSON.stringify(Array.isArray(options.conversationAliases) ? options.conversationAliases : [options.conversation].filter(Boolean)),
     XIAOXI_VISUAL_SEND_INCOMING: String(options.incomingMessage ?? ""),
