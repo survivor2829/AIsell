@@ -122,6 +122,14 @@ registerActiveTouchDevIpc({
   getMainWindow: () => mainWindow
 });
 const sendSelected = handlers.get("active-touch:send-selected-contact");
+const calibrate = handlers.get("active-touch:dev-calibrate");
+const selectCustomer = handlers.get("active-touch:dev-select-customer");
+const clickSearchResult = handlers.get("active-touch:dev-click-search-result");
+const inputMessage = handlers.get("active-touch:dev-input-message");
+const sendDryRun = handlers.get("active-touch:dev-send-dry-run");
+const setRealSendArm = handlers.get("active-touch:set-real-send-arm");
+const failConversation = handlers.get("active-touch:fail-conversation");
+const verifyRealSendSession = handlers.get("active-touch:verify-real-send-session");
 const momentsDryRun = handlers.get("active-touch:dev-moments-dry-run");
 const momentsInspect = handlers.get("active-touch:dev-moments-inspect-menu");
 const momentsLike = handlers.get("active-touch:dev-moments-like");
@@ -348,6 +356,26 @@ const momentsComment = handlers.get("active-touch:dev-moments-comment");
   };
   runnerCalls.length = 0;
 
+  await calibrate();
+  await selectCustomer({}, { id: "c1" });
+  await clickSearchResult();
+  await inputMessage({}, { message: "hello" });
+  await sendDryRun({}, { message: "hello" });
+  await setRealSendArm({}, { enabled: true });
+  await failConversation();
+  await verifyRealSendSession();
+  assert.deepEqual(runnerCalls, [
+    { args: ["calibrate"], options: { dataDir: "test-data" } },
+    { args: ["select-customer", "--id", "c1"], options: { dataDir: "test-data" } },
+    { args: ["click-search-result-dry-run"], options: { dataDir: "test-data" } },
+    { args: ["input-message-dry-run", "--message", "hello"], options: { dataDir: "test-data" } },
+    { args: ["send", "--dry-run", "--message", "hello"], options: { dataDir: "test-data" } },
+    { args: ["set-real-send-arm", "--on"], options: { dataDir: "test-data" } },
+    { args: ["fail-conversation"], options: { dataDir: "test-data" } },
+    { args: ["verify-real-send-session"], options: { dataDir: "test-data" } }
+  ]);
+  runnerCalls.length = 0;
+
   assert.equal((await sendSelected({ sender: webContents }, {
     clickToken: "",
     contactId: "c1",
@@ -367,8 +395,9 @@ const momentsComment = handlers.get("active-touch:dev-moments-comment");
   assert.equal(executeCalls[0].contactId, "c1");
   assert.equal(executeCalls[0].message, "hello");
   assert.equal(executeCalls[0].authorized, true);
+  assert.equal(executeCalls[0].baseDir, "test-data");
   await executeCalls[0].runStep("calibrate", []);
-  assert.deepEqual(runnerCalls, [{ args: ["calibrate"], options: undefined }]);
+  assert.deepEqual(runnerCalls, [{ args: ["calibrate"], options: { dataDir: "test-data" } }]);
 
   executeBehavior = async () => { throw new Error("send driver crashed"); };
   const crashedSend = await sendSelected({ sender: webContents }, {

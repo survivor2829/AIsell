@@ -20,6 +20,25 @@ const {
   verifyWindowTitle
 } = require("./state_machine.cjs");
 const { loadTaskState } = require("./touch_task_state.cjs");
+const { absoluteDataDirError } = require("./active_touch_data_dir.cjs");
+
+const STATEFUL_COMMANDS = new Set([
+  "status",
+  "calibrate",
+  "focus-wechat-window",
+  "clear-customer",
+  "select-customer",
+  "verify-conversation",
+  "locate-conversation",
+  "open-conversation-dry-run",
+  "search-conversation-dry-run",
+  "click-search-result-dry-run",
+  "input-message-dry-run",
+  "queue-dry-run",
+  "verify-send-result-dry-run",
+  "verify-window-title",
+  "send"
+]);
 
 function valueAfter(args, flag) {
   const index = args.indexOf(flag);
@@ -130,7 +149,12 @@ function execute(command, baseDir, args) {
 
 function main(argv) {
   const [command = "status", ...args] = argv.slice(2);
+  if (!STATEFUL_COMMANDS.has(command)) {
+    return { ok: false, action: command, error: `Unknown command: ${command}`, logs: [] };
+  }
   const baseDir = optionalValueAfter(args, "--data-dir");
+  const dataDirError = absoluteDataDirError(command, baseDir);
+  if (dataDirError) return dataDirError;
 
   if (command === "status") return execute(command, baseDir, args);
   const validated = validateTaskContext(command, baseDir, args);

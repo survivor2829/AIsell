@@ -360,20 +360,20 @@ function registerActiveTouchDevIpc(options = {}) {
   momentsDataDir = String(options.momentsDir ?? activeTouchDataDir);
   runtimeCoordinator = options.coordinator ?? null;
   getMainWindow = typeof options.getMainWindow === "function" ? options.getMainWindow : () => null;
-  ipcMain.handle("active-touch:dev-calibrate", () => runActiveTouchDev(["calibrate"]));
+  ipcMain.handle("active-touch:dev-calibrate", () => runActiveTouchDev(["calibrate"], { dataDir: activeTouchDataDir }));
   ipcMain.handle("active-touch:dev-moments-dry-run", (_event, payload = {}) => runMomentsDryRun(payload));
   Object.values(MOMENTS_ACTIONS).forEach((definition) => {
     ipcMain.handle(definition.channel, (event, payload = {}) => runMomentsAction(event, payload, definition));
   });
   ipcMain.handle("active-touch:dev-select-customer", (_event, payload = {}) =>
-    runActiveTouchDev(["select-customer", "--id", String(payload.id ?? "")])
+    runActiveTouchDev(["select-customer", "--id", String(payload.id ?? "")], { dataDir: activeTouchDataDir })
   );
-  ipcMain.handle("active-touch:dev-click-search-result", () => runActiveTouchDev(["click-search-result-dry-run"]));
+  ipcMain.handle("active-touch:dev-click-search-result", () => runActiveTouchDev(["click-search-result-dry-run"], { dataDir: activeTouchDataDir }));
   ipcMain.handle("active-touch:dev-input-message", (_event, payload = {}) =>
-    runActiveTouchDev(["input-message-dry-run", "--message", String(payload.message ?? "")])
+    runActiveTouchDev(["input-message-dry-run", "--message", String(payload.message ?? "")], { dataDir: activeTouchDataDir })
   );
   ipcMain.handle("active-touch:dev-send-dry-run", (_event, payload = {}) =>
-    runActiveTouchDev(["send", "--dry-run", "--message", String(payload.message ?? "")])
+    runActiveTouchDev(["send", "--dry-run", "--message", String(payload.message ?? "")], { dataDir: activeTouchDataDir })
   );
   ipcMain.handle("active-touch:send-selected-contact", async (event, payload = {}) => {
     const mainWindow = getMainWindow();
@@ -393,7 +393,7 @@ function registerActiveTouchDevIpc(options = {}) {
         contactId,
         message,
         authorized: true,
-        runStep: (command, args = []) => runActiveTouchDev([command, ...args])
+        runStep: (command, args = []) => runActiveTouchDev([command, ...args], { dataDir: activeTouchDataDir })
       });
     } catch (error) {
       setRealSendArm(activeTouchDataDir, false);
@@ -403,10 +403,10 @@ function registerActiveTouchDevIpc(options = {}) {
     }
   });
   ipcMain.handle("active-touch:set-real-send-arm", (_event, payload = {}) =>
-    runActiveTouchDev(["set-real-send-arm", payload.enabled ? "--on" : "--off"])
+    runActiveTouchDev(["set-real-send-arm", payload.enabled ? "--on" : "--off"], { dataDir: activeTouchDataDir })
   );
-  ipcMain.handle("active-touch:fail-conversation", () => runActiveTouchDev(["fail-conversation"]));
-  ipcMain.handle("active-touch:verify-real-send-session", () => runActiveTouchDev(["verify-real-send-session"]));
+  ipcMain.handle("active-touch:fail-conversation", () => runActiveTouchDev(["fail-conversation"], { dataDir: activeTouchDataDir }));
+  ipcMain.handle("active-touch:verify-real-send-session", () => runActiveTouchDev(["verify-real-send-session"], { dataDir: activeTouchDataDir }));
 }
 
 function disarmRealSend(dataDir) {

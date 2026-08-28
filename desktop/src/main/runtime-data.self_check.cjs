@@ -1,9 +1,14 @@
 const assert = require("node:assert");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { migrateLegacyRuntimeData, resolveRuntimePaths } = require("./runtime-data.cjs");
 const { hasUnfinishedPausedTask, loadTaskState } = require("../../rpa/active_touch/touch_task_state.cjs");
+
+function sha256(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-runtime-data-"));
 
@@ -61,9 +66,21 @@ try {
   assert.equal(fs.existsSync(path.join(appPath, ".env.ai.local")), false);
   assert.equal(fs.existsSync(path.join(legacyActiveTouch, "contacts.json")), false);
 
-  fs.writeFileSync(path.join(legacyActiveTouch, "contacts.json"), '[{"id":"bundled-contact"}]', "utf8");
-  migrateLegacyRuntimeData({ appPath, userDataDir, userHome });
+  const conflictingContacts = '[{"id":"bundled-contact"}]';
+  const conflictingContactsHash = sha256(conflictingContacts);
+  const conflictingContactsArchive = path.join(paths.runtimeArchiveDir, `legacy-contacts-${conflictingContactsHash}.json`);
+  fs.writeFileSync(path.join(legacyActiveTouch, "contacts.json"), conflictingContacts, "utf8");
+  const conflictMigration = migrateLegacyRuntimeData({ appPath, userDataDir, userHome });
   assert.equal(fs.readFileSync(path.join(paths.activeTouchDir, "contacts.json"), "utf8"), '[{"id":"test-contact"}]');
+  assert.equal(fs.existsSync(path.join(legacyActiveTouch, "contacts.json")), false);
+  assert.deepEqual(conflictMigration.archived, [conflictingContactsArchive]);
+  assert.equal(fs.readFileSync(conflictingContactsArchive, "utf8"), conflictingContacts);
+  assert.equal(sha256(fs.readFileSync(conflictingContactsArchive)), conflictingContactsHash);
+
+  fs.writeFileSync(path.join(legacyActiveTouch, "contacts.json"), '[{"id":"test-contact"}]', "utf8");
+  const deduplicatedMigration = migrateLegacyRuntimeData({ appPath, userDataDir, userHome });
+  assert.deepEqual(deduplicatedMigration.archived, []);
+  assert.deepEqual(deduplicatedMigration.keptExisting, [path.join(paths.activeTouchDir, "contacts.json")]);
   assert.equal(fs.existsSync(path.join(legacyActiveTouch, "contacts.json")), false);
 
   const foreignAppPath = path.join(root, "Program Files", "xiaoxi", "resources", "app");

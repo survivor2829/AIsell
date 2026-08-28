@@ -5,6 +5,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 const { EventEmitter } = require("node:events");
+const Module = require("node:module");
 const {
   calibrate,
   clickSearchResultDryRun,
@@ -45,7 +46,44 @@ const {
   taskBackupPath
 } = require("./touch_task_state.cjs");
 const { main: runActiveTouchCli } = require("./active_touch_cli.cjs");
+const { main: runActiveTouchDevCli } = require("./active_touch_cli.dev.cjs");
 const { runPowerShell } = require("./wechat_window_driver.cjs");
+
+function loadActiveTouchCliWithMockedState() {
+  const cliPath = require.resolve("./active_touch_cli.cjs");
+  const cachedModule = require.cache[cliPath];
+  const originalLoad = Module._load;
+  const calls = [];
+  const taskContextCalls = [];
+  try {
+    delete require.cache[cliPath];
+    Module._load = function load(request, parent, isMain) {
+      if (request === "./state_machine.cjs") {
+        return {
+          status: (baseDir) => {
+            calls.push(baseDir);
+            return { ok: true, action: "status" };
+          }
+        };
+      }
+      if (request === "./touch_task_state.cjs") {
+        return {
+          loadTaskState: (baseDir) => {
+            taskContextCalls.push(baseDir);
+            return {};
+          }
+        };
+      }
+      return originalLoad.call(this, request, parent, isMain);
+    };
+    const { main } = require(cliPath);
+    return { calls, main, taskContextCalls };
+  } finally {
+    Module._load = originalLoad;
+    delete require.cache[cliPath];
+    if (cachedModule) require.cache[cliPath] = cachedModule;
+  }
+}
 
 function preparedWechatWindow(pid = 81, hWnd = 91) {
   return {
@@ -64,6 +102,54 @@ function preparedWechatWindow(pid = 81, hWnd = 91) {
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-active-touch-"));
 
 try {
+  const isolatedCli = loadActiveTouchCliWithMockedState();
+  assert.equal(
+    isolatedCli.main(["node", "active_touch_cli.cjs", "status"]).blocked_reason,
+    "data_dir_required"
+  );
+  assert.deepEqual(isolatedCli.calls, [], "a missing data directory must not reach the state machine");
+  assert.equal(
+    isolatedCli.main(["node", "active_touch_cli.cjs", "status", "--data-dir", "relative-data"]).blocked_reason,
+    "data_dir_not_absolute"
+  );
+  assert.deepEqual(isolatedCli.calls, [], "a relative data directory must not reach the state machine");
+  const isolatedAbsoluteDataDir = path.join(dir, "isolated-cli-runtime");
+  assert.equal(
+    isolatedCli.main(["node", "active_touch_cli.cjs", "status", "--data-dir", isolatedAbsoluteDataDir]).ok,
+    true
+  );
+  assert.deepEqual(isolatedCli.calls, [isolatedAbsoluteDataDir]);
+  const sourceTreeDataDir = path.join(__dirname, "test-runtime");
+  assert.equal(
+    isolatedCli.main(["node", "active_touch_cli.cjs", "status", "--data-dir", sourceTreeDataDir]).blocked_reason,
+    "data_dir_inside_application"
+  );
+  assert.deepEqual(isolatedCli.calls, [isolatedAbsoluteDataDir], "an in-tree data directory must not reach the state machine");
+  const appDataRuntimeDir = path.join(process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"), "xiaoxi-active-touch-test", "active_touch");
+  assert.equal(
+    isolatedCli.main(["node", "active_touch_cli.cjs", "status", "--data-dir", appDataRuntimeDir]).ok,
+    true
+  );
+  assert.deepEqual(isolatedCli.calls, [isolatedAbsoluteDataDir, appDataRuntimeDir]);
+  const unknownCommand = isolatedCli.main([
+    "node", "active_touch_cli.cjs", "unknown-command",
+    "--task-id", "task-1", "--contact-id", "contact-1", "--current-index", "0"
+  ]);
+  assert.equal(unknownCommand.error, "Unknown command: unknown-command");
+  assert.deepEqual(isolatedCli.taskContextCalls, [], "an unknown command must not load task state");
+  assert.equal(
+    runActiveTouchDevCli(["node", "active_touch_cli.dev.cjs", "status"]).blocked_reason,
+    "data_dir_required"
+  );
+  assert.equal(
+    runActiveTouchDevCli(["node", "active_touch_cli.dev.cjs", "status", "--data-dir", sourceTreeDataDir]).blocked_reason,
+    "data_dir_inside_application"
+  );
+  assert.equal(
+    runActiveTouchDevCli(["node", "active_touch_cli.dev.cjs", "set-real-send-arm", "--data-dir", "relative-data"]).blocked_reason,
+    "data_dir_not_absolute"
+  );
+
   assert.equal(normalizeAtomicSendResult({ ok: false, sendAttempted: false }).sendResult, "not_attempted");
   assert.equal(normalizeAtomicSendResult({ ok: true, sendAttempted: true }).sendResult, "outcome_unknown");
   assert.equal(normalizeAtomicSendResult({ ok: true, sendResult: "sent_verified" }).sendResult, "sent_verified");

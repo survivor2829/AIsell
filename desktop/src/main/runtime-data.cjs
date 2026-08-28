@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { writeFileAtomic, writeJsonAtomic } = require("./atomic-file.cjs");
 
 function resolveRuntimePaths(userDataDir) {
@@ -21,23 +22,60 @@ function isInside(parentDir, childDir) {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function migrateFile(source, destination) {
-  if (!fs.existsSync(source)) return "missing";
+function sha256File(file) {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function removeVerifiedFile(file, expectedHash) {
+  if (sha256File(file) !== expectedHash) throw new Error("runtime data migration source changed before cleanup");
+  fs.rmSync(file, { force: true });
+}
+
+function conflictArchiveFile(runtimeArchiveDir, source, sourceHash) {
+  const extension = path.extname(source);
+  const filename = path.basename(source, extension);
+  return path.join(runtimeArchiveDir, `legacy-${filename}-${sourceHash}${extension}`);
+}
+
+function archiveConflictingFile(source, runtimeArchiveDir, sourceHash) {
+  const archiveFile = conflictArchiveFile(runtimeArchiveDir, source, sourceHash);
+  fs.mkdirSync(runtimeArchiveDir, { recursive: true });
+  if (!fs.existsSync(archiveFile)) {
+    try {
+      fs.copyFileSync(source, archiveFile, fs.constants.COPYFILE_EXCL);
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+  }
+  if (sha256File(archiveFile) !== sourceHash) throw new Error("runtime data migration archive verification failed");
+  return archiveFile;
+}
+
+function migrateFile(source, destination, runtimeArchiveDir) {
+  if (!fs.existsSync(source)) return { status: "missing" };
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   if (fs.existsSync(destination)) {
-    fs.rmSync(source, { force: true });
-    return "kept-existing";
+    const sourceHash = sha256File(source);
+    if (sourceHash !== sha256File(destination)) {
+      const archiveFile = archiveConflictingFile(source, runtimeArchiveDir, sourceHash);
+      removeVerifiedFile(source, sourceHash);
+      return { status: "kept-existing", archiveFile };
+    }
+    removeVerifiedFile(source, sourceHash);
+    return { status: "kept-existing" };
   }
-  copyVerifiedFile(source, destination);
-  fs.rmSync(source, { force: true });
-  return "migrated";
+  const sourceHash = copyVerifiedFile(source, destination);
+  removeVerifiedFile(source, sourceHash);
+  return { status: "migrated" };
 }
 
 function copyVerifiedFile(source, destination) {
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   const content = fs.readFileSync(source);
-  if (fs.statSync(source).size !== content.length) throw new Error("runtime data migration verification failed");
+  const sourceHash = crypto.createHash("sha256").update(content).digest("hex");
   writeFileAtomic(destination, content);
+  if (sha256File(destination) !== sourceHash) throw new Error("runtime data migration verification failed");
+  return sourceHash;
 }
 
 function splitLegacyMomentsState(paths, result) {
@@ -98,9 +136,10 @@ function migrateLegacyRuntimeData({ appPath, userDataDir, userHome = os.homedir(
   ];
 
   for (const [source, destination] of files) {
-    const status = migrateFile(source, destination);
-    if (status === "migrated") result.migrated.push(destination);
-    if (status === "kept-existing") result.keptExisting.push(destination);
+    const migration = migrateFile(source, destination, paths.runtimeArchiveDir);
+    if (migration.status === "migrated") result.migrated.push(destination);
+    if (migration.status === "kept-existing") result.keptExisting.push(destination);
+    if (migration.archiveFile) result.archived.push(migration.archiveFile);
   }
   splitLegacyMomentsState(paths, result);
   // ponytail: delete the obsolete local AI secret instead of maintaining a second migration path.
