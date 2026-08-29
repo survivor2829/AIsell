@@ -20,15 +20,19 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import unquote
 from dotenv import load_dotenv
+
+# Load local configuration before importing image providers.  The APIMart
+# adapter snapshots the user's proxy route at import time so it remains
+# available even when the DashScope provider later clears proxy variables for
+# its own SDK.
+load_dotenv(Path(__file__).parent / ".env")
+
 import ai_bg_cache
 import batch_upload as batch_upload_mod
 import batch_queue as batch_queue_mod
 import batch_processor as batch_processor_mod
 import batch_pubsub as batch_pubsub_mod
 from browser_runtime import launch_chromium
-
-# 加载 .env 文件（本地开发用，生产环境靠系统环境变量）
-load_dotenv(Path(__file__).parent / ".env")
 
 RESOURCE_DIR = Path(
     os.environ.get("XIAOXI_PRODUCT_DETAIL_RESOURCE_DIR", Path(__file__).parent)

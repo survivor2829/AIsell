@@ -52,6 +52,119 @@ def test_data_url_upload_is_reused_and_generation_uses_provider_url(monkeypatch)
     assert value not in str(payload)
 
 
+def test_reference_upload_keeps_saved_proxy_route_then_falls_back_to_direct(monkeypatch):
+    attempts = []
+
+    class FakeResponse:
+        status = 200
+
+        def read(self):
+            return b'{"url":"https://cdn.invalid/reference.png"}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class FakeOpener:
+        def __init__(self, route):
+            self.route = route
+
+        def open(self, _request, timeout):
+            attempts.append((self.route, timeout))
+            if self.route == "system-proxy":
+                raise urllib.error.URLError(OSError(10060, "synthetic connect timeout"))
+            return FakeResponse()
+
+    def fake_build_opener(proxy_handler):
+        route = "system-proxy" if proxy_handler.proxies else "direct"
+        return FakeOpener(route)
+
+    monkeypatch.setattr(adapter, "_APIMART_PROXY_SETTINGS", {
+        "https": "http://proxy.invalid:7890",
+    })
+    monkeypatch.setattr(adapter.urllib.request, "build_opener", fake_build_opener)
+
+    assert adapter.upload_data_url(_png_data_url(), "secret") == "https://cdn.invalid/reference.png"
+    assert attempts == [("system-proxy", 60), ("direct", 60)]
+
+
+def test_reference_upload_transport_failure_does_not_submit_generation(monkeypatch):
+    attempts = []
+    generation_calls = []
+
+    class FailingOpener:
+        def __init__(self, route):
+            self.route = route
+
+        def open(self, _request, timeout):
+            attempts.append((self.route, timeout))
+            raise urllib.error.URLError(OSError(10060, "synthetic connect timeout"))
+
+    def fake_build_opener(proxy_handler):
+        route = "system-proxy" if proxy_handler.proxies else "direct"
+        return FailingOpener(route)
+
+    def unexpected_generation(*_args, **_kwargs):
+        generation_calls.append(True)
+        raise AssertionError("generation must not be submitted after upload failure")
+
+    monkeypatch.setattr(adapter, "_APIMART_PROXY_SETTINGS", {
+        "https": "http://proxy.invalid:7890",
+    })
+    monkeypatch.setattr(adapter.urllib.request, "build_opener", fake_build_opener)
+    monkeypatch.setattr(adapter, "_http_post_json", unexpected_generation)
+
+    with pytest.raises(adapter.APIMartReferenceUploadTransportError) as caught:
+        adapter.submit_image_task("prompt", _png_data_url(), "secret")
+
+    assert "未提交生图任务" in str(caught.value)
+    assert attempts == [("system-proxy", 60), ("direct", 60)]
+    assert generation_calls == []
+
+
+def test_direct_reference_route_is_reused_for_submit_and_poll(monkeypatch):
+    calls = []
+
+    def fake_upload(url, image_bytes, mime, filename, api_key, timeout=60, *, direct=False):
+        calls.append(("upload", direct))
+        if not direct:
+            raise urllib.error.URLError(OSError(10060, "synthetic proxy timeout"))
+        return 200, {"url": "https://cdn.invalid/reference.png"}
+
+    def fake_post(url, payload, api_key, timeout=30, *, direct=False):
+        calls.append(("submit", direct))
+        return 200, {"data": {"task_id": "task-direct-route-1"}}
+
+    def fake_get(url, api_key, timeout=30, *, direct=False):
+        calls.append(("poll", direct))
+        return {
+            "data": {
+                "status": "completed",
+                "result": {"images": [{"url": "https://cdn.invalid/result.png"}]},
+            }
+        }
+
+    monkeypatch.setattr(adapter, "_APIMART_PROXY_SETTINGS", {
+        "https": "http://proxy.invalid:7890",
+    })
+    monkeypatch.setattr(adapter, "_http_post_image_upload", fake_upload)
+    monkeypatch.setattr(adapter, "_http_post_json", fake_post)
+    monkeypatch.setattr(adapter, "_http_get_json", fake_get)
+
+    assert (
+        adapter.default_api_call("prompt", _png_data_url(), "secret")
+        == "https://cdn.invalid/result.png"
+    )
+    assert calls == [
+        ("upload", False),
+        ("upload", True),
+        ("submit", True),
+        ("poll", True),
+    ]
+
+
 def test_submit_503_is_outcome_unknown_without_retry(monkeypatch):
     calls = []
 

@@ -54,8 +54,29 @@ _UA = (
 )
 _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 _UPLOAD_CACHE_TTL_S = 71 * 60 * 60
-_UPLOAD_CACHE: dict[str, tuple[float, str]] = {}
+_UPLOAD_CACHE: dict[str, tuple[float, str, bool]] = {}
 _UPLOAD_CACHE_LOCK = threading.Lock()
+
+
+def _snapshot_apimart_proxy_settings() -> dict[str, str]:
+    """Keep APIMart on the proxy route selected when the sidecar starts.
+
+    Other image providers run in the same Python process and may change proxy
+    environment variables for their own SDKs. APIMart must not silently switch
+    from the user's working system proxy to direct networking midway through a
+    reference upload.
+    """
+    discovered = urllib.request.getproxies()
+    fallback = str(discovered.get("all") or "").strip()
+    settings: dict[str, str] = {}
+    for scheme in ("http", "https"):
+        value = str(discovered.get(scheme) or fallback).strip()
+        if value:
+            settings[scheme] = value
+    return settings
+
+
+_APIMART_PROXY_SETTINGS = _snapshot_apimart_proxy_settings()
 
 
 class APIMartError(RuntimeError):
@@ -80,6 +101,10 @@ class APIMartTaskFailed(APIMartError):
     """APIMart explicitly reported a terminal failed/cancelled task."""
 
 
+class APIMartReferenceUploadTransportError(APIMartError):
+    """The reference image never reached a confirmed upload response."""
+
+
 
 def _apimart_base() -> str:
     """读 REFINE_API_BASE_URL. 启动时 app.py:_REQUIRED_PLATFORM_KEYS 已保证非空."""
@@ -99,8 +124,17 @@ def _resolve_api_key(api_key: str = "") -> str:
 
 # ── HTTP 工具 ──────────────────────────────────────────────────
 
+def _build_apimart_opener(*, direct: bool = False):
+    """Create an isolated APIMart transport without inheriting global opener state."""
+    proxy_settings = {} if direct else _APIMART_PROXY_SETTINGS
+    return urllib.request.build_opener(urllib.request.ProxyHandler(proxy_settings))
+
+
+def _open_apimart(request: urllib.request.Request, *, timeout: int, direct: bool = False):
+    return _build_apimart_opener(direct=direct).open(request, timeout=timeout)
+
 def _http_post_json(url: str, payload: dict, api_key: str,
-                    timeout: int = 30) -> tuple[int, Any]:
+                    timeout: int = 30, *, direct: bool = False) -> tuple[int, Any]:
     """POST JSON, 返回 (status_code, parsed_body | raw_text). HTTPError 不 raise."""
     req = urllib.request.Request(
         url, method="POST",
@@ -112,7 +146,7 @@ def _http_post_json(url: str, payload: dict, api_key: str,
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _open_apimart(req, timeout=timeout, direct=direct) as r:
             body = r.read().decode("utf-8")
             try:
                 return r.status, json.loads(body)
@@ -126,12 +160,13 @@ def _http_post_json(url: str, payload: dict, api_key: str,
             return e.code, body
 
 
-def _http_get_json(url: str, api_key: str, timeout: int = 30) -> dict:
+def _http_get_json(url: str, api_key: str, timeout: int = 30,
+                   *, direct: bool = False) -> dict:
     req = urllib.request.Request(
         url, method="GET",
         headers={"Authorization": f"Bearer {api_key}", "User-Agent": _UA},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _open_apimart(req, timeout=timeout, direct=direct) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
@@ -151,7 +186,7 @@ def _safe_error_detail(body: Any) -> str:
 
 def _http_post_image_upload(url: str, image_bytes: bytes, mime: str,
                             filename: str, api_key: str,
-                            timeout: int = 60) -> tuple[int, Any]:
+                            timeout: int = 60, *, direct: bool = False) -> tuple[int, Any]:
     boundary = f"----xiaoxi-apimart-{uuid.uuid4().hex}"
     body = (
         f"--{boundary}\r\n"
@@ -169,7 +204,7 @@ def _http_post_image_upload(url: str, image_bytes: bytes, mime: str,
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _open_apimart(request, timeout=timeout, direct=direct) as response:
             raw = response.read().decode("utf-8")
             try:
                 return response.status, json.loads(raw)
@@ -181,6 +216,53 @@ def _http_post_image_upload(url: str, image_bytes: bytes, mime: str,
             return exc.code, json.loads(raw)
         except json.JSONDecodeError:
             return exc.code, raw
+
+
+def _upload_reference_with_transport_fallback(
+    url: str,
+    image_bytes: bytes,
+    mime: str,
+    filename: str,
+    api_key: str,
+    *,
+    direct: bool = False,
+) -> tuple[int, Any, bool]:
+    """Try the saved system route once, then direct only before model submission.
+
+    This is deliberately limited to `/uploads/images`: an upload timeout occurs
+    before `/images/generations` can create a billable task.  The selected route
+    is returned so submit and poll can keep using the same proven connection.
+    """
+    if direct:
+        try:
+            code, body = _http_post_image_upload(
+                url, image_bytes, mime, filename, api_key, direct=True,
+            )
+            return code, body, True
+        except (urllib.error.URLError, TimeoutError, OSError) as direct_error:
+            raise APIMartReferenceUploadTransportError(
+                "APIMart 参考图上传连接失败，未提交生图任务。"
+                "请检查网络后重新发起。"
+            ) from direct_error
+    try:
+        code, body = _http_post_image_upload(url, image_bytes, mime, filename, api_key)
+        return code, body, False
+    except (urllib.error.URLError, TimeoutError, OSError) as system_error:
+        if not _APIMART_PROXY_SETTINGS:
+            raise APIMartReferenceUploadTransportError(
+                "APIMart 参考图上传连接失败，未提交生图任务。"
+                "请检查网络后重新发起。"
+            ) from system_error
+        try:
+            code, body = _http_post_image_upload(
+                url, image_bytes, mime, filename, api_key, direct=True,
+            )
+            return code, body, True
+        except (urllib.error.URLError, TimeoutError, OSError) as direct_error:
+            raise APIMartReferenceUploadTransportError(
+                "APIMart 参考图上传连接失败，已尝试系统代理和直连，未提交生图任务。"
+                "请检查网络或代理后重新发起。"
+            ) from direct_error
 
 
 def _decode_data_url(value: str) -> tuple[bytes, str, str]:
@@ -206,23 +288,26 @@ def _decode_data_url(value: str) -> tuple[bytes, str, str]:
     return raw, mime, f"reference.{extension}"
 
 
-def upload_data_url(value: str, api_key: str) -> str:
-    """Upload a data URL once and cache the provider URL for its 72-hour lifetime."""
+def _upload_data_url_for_route(
+    value: str, api_key: str, *, direct: bool = False,
+) -> tuple[str, bool]:
+    """Upload one reference while retaining the route for the enclosing task."""
     raw, mime, filename = _decode_data_url(value)
     digest = hashlib.sha256(raw).hexdigest()
     now = time.time()
     with _UPLOAD_CACHE_LOCK:
         cached = _UPLOAD_CACHE.get(digest)
         if cached and cached[0] > now:
-            return cached[1]
+            return cached[1], direct or cached[2]
         for attempt in range(2):
-            code, body = _http_post_image_upload(
+            code, body, selected_direct = _upload_reference_with_transport_fallback(
                 f"{_apimart_base()}/uploads/images", raw, mime, filename, api_key,
+                direct=direct,
             )
             if code == 200 and isinstance(body, dict) and body.get("url"):
                 url = str(body["url"])
-                _UPLOAD_CACHE[digest] = (now + _UPLOAD_CACHE_TTL_S, url)
-                return url
+                _UPLOAD_CACHE[digest] = (now + _UPLOAD_CACHE_TTL_S, url, selected_direct)
+                return url, selected_direct
             if code == 503 and attempt == 0:
                 time.sleep(1)
                 continue
@@ -232,21 +317,38 @@ def upload_data_url(value: str, api_key: str) -> str:
     raise APIMartError("APIMart 参考图上传失败")
 
 
-def prepare_reference_urls(
+def upload_data_url(value: str, api_key: str) -> str:
+    """Upload a data URL once and cache the provider URL for its 72-hour lifetime."""
+    url, _selected_direct = _upload_data_url_for_route(value, api_key)
+    return url
+
+
+def _prepare_reference_urls_for_route(
     image_data_url: Optional[str | list[str]], api_key: str,
-) -> list[str]:
+) -> tuple[list[str], bool]:
     if not image_data_url:
-        return []
+        return [], False
     values = image_data_url if isinstance(image_data_url, list) else [image_data_url]
     prepared: list[str] = []
+    selected_direct = False
     for raw_value in values:
         value = str(raw_value or "").strip()
         if value.startswith("data:image/"):
-            prepared.append(upload_data_url(value, api_key))
+            url, selected_direct = _upload_data_url_for_route(
+                value, api_key, direct=selected_direct,
+            )
+            prepared.append(url)
         elif value.startswith(("https://", "http://")):
             prepared.append(value)
         else:
             raise APIMartError("APIMart 参考图必须是图片 data URL 或公开 URL")
+    return prepared, selected_direct
+
+
+def prepare_reference_urls(
+    image_data_url: Optional[str | list[str]], api_key: str,
+) -> list[str]:
+    prepared, _selected_direct = _prepare_reference_urls_for_route(image_data_url, api_key)
     return prepared
 
 
@@ -263,12 +365,12 @@ def _submit_task_id(body: Any) -> str:
     return ""
 
 
-def submit_image_task(prompt: str,
-                      image_data_url: Optional[str | list[str]],
-                      api_key: str,
-                      thinking: str = "medium",
-                      size: str = _SIZE_DEFAULT) -> str:
-    """Submit one billable task exactly once; uncertain responses must not be retried."""
+def _submit_image_task_for_route(prompt: str,
+                                 image_data_url: Optional[str | list[str]],
+                                 api_key: str,
+                                 thinking: str = "medium",
+                                 size: str = _SIZE_DEFAULT) -> tuple[str, bool]:
+    """Submit once and retain the proven route for polling the same task."""
     payload: dict[str, Any] = {
         "model": T2I_MODEL,
         "prompt": prompt,
@@ -276,19 +378,24 @@ def submit_image_task(prompt: str,
         "size": size,
         "resolution": "1k",
     }
-    reference_urls = prepare_reference_urls(image_data_url, api_key)
+    reference_urls, selected_direct = _prepare_reference_urls_for_route(image_data_url, api_key)
     if reference_urls:
         payload["image_urls"] = reference_urls
 
     try:
-        code, body = _http_post_json(
-            f"{_apimart_base()}/images/generations", payload, api_key,
-        )
+        if selected_direct:
+            code, body = _http_post_json(
+                f"{_apimart_base()}/images/generations", payload, api_key, direct=True,
+            )
+        else:
+            code, body = _http_post_json(
+                f"{_apimart_base()}/images/generations", payload, api_key,
+            )
     except Exception as exc:
         raise APIMartOutcomeUnknown("", "APIMart 提交响应未确认") from exc
     task_id = _submit_task_id(body)
     if task_id:
-        return task_id
+        return task_id, selected_direct
     if 400 <= code < 500:
         raise APIMartError(
             f"APIMart 明确拒绝提交 HTTP {code}: {_safe_error_detail(body)}"
@@ -298,9 +405,22 @@ def submit_image_task(prompt: str,
     )
 
 
+def submit_image_task(prompt: str,
+                      image_data_url: Optional[str | list[str]],
+                      api_key: str,
+                      thinking: str = "medium",
+                      size: str = _SIZE_DEFAULT) -> str:
+    """Submit one billable task exactly once; uncertain responses must not be retried."""
+    task_id, _selected_direct = _submit_image_task_for_route(
+        prompt, image_data_url, api_key, thinking=thinking, size=size,
+    )
+    return task_id
+
+
 def poll_image_task(task_id: str, api_key: str,
                     poll_interval: int = _POLL_INTERVAL_S,
-                    poll_timeout: int = _POLL_TIMEOUT_S) -> str:
+                    poll_timeout: int = _POLL_TIMEOUT_S,
+                    *, direct: bool = False) -> str:
     """Poll the existing task only; any uncertain result stops without resubmission."""
     started_at = time.time()
     consecutive_poll_errors = 0
@@ -308,9 +428,14 @@ def poll_image_task(task_id: str, api_key: str,
         if time.time() - started_at > poll_timeout:
             raise APIMartOutcomeUnknown(task_id, "APIMart 轮询超时，结果不明")
         try:
-            data = _http_get_json(
-                f"{_apimart_base()}/tasks/{task_id}?language=en", api_key,
-            )
+            if direct:
+                data = _http_get_json(
+                    f"{_apimart_base()}/tasks/{task_id}?language=en", api_key, direct=True,
+                )
+            else:
+                data = _http_get_json(
+                    f"{_apimart_base()}/tasks/{task_id}?language=en", api_key,
+                )
         except Exception as exc:
             consecutive_poll_errors += 1
             if consecutive_poll_errors >= _MAX_CONSECUTIVE_POLL_ERRORS:
@@ -357,10 +482,10 @@ def default_api_call(prompt: str,
                      thinking: str = "medium",
                      size: str = _SIZE_DEFAULT) -> str:
     """Upload references, submit once, then poll that same task to completion."""
-    task_id = submit_image_task(
+    task_id, selected_direct = _submit_image_task_for_route(
         prompt, image_data_url, api_key, thinking=thinking, size=size,
     )
-    return poll_image_task(task_id, api_key)
+    return poll_image_task(task_id, api_key, direct=selected_direct)
 
 # ── Router 兼容接口 ────────────────────────────────────────────
 
