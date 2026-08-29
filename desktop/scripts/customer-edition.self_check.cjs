@@ -81,6 +81,10 @@ function assertStageWorkflowContract() {
   assert.equal(source.includes("个微Agent"), false, "the retired 个微Agent name must not remain in the UI");
   assert.equal(source.includes("小玺AI员工"), false, "the retired app name must not remain in the UI");
   assert.match(source, /productBrand\.displayName/, "the app brand must use the shared V1.0 product name");
+  assert.equal(source.includes('name: "2829347524"'), false, "packaged editions must not expose a developer account identifier as the default profile");
+  assert.match(source, /DEFAULT_USER_PROFILE: UserProfile = \{ name: "本机用户", avatar: "用" \}/u, "packaged editions must use a neutral local profile before onboarding");
+  assert.match(source, /DEFAULT_TOUCH_MESSAGE = DEVELOPMENT_EDITION\s*\?/u, "business-specific outreach copy must be limited to the development edition");
+  assert.equal(source.includes('<button className="guide">'), false, "the shell must not expose a non-functional onboarding button");
   assert.match(source, /<MomentsOperations \/>/, "the unified moments entry must render its own page");
   const moduleAvailability = source.match(/function moduleIsAvailable\(key: ModuleKey\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
   assert.match(moduleAvailability, /"moments"/, "moments operations must not render together with the placeholder page");

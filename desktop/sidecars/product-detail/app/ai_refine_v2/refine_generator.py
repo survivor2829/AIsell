@@ -29,7 +29,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 from ai_refine_v2.color_extractor import ColorAnchor, extract_color_anchor  # v3.2.2
 from ai_refine_v2.prompts.generator import render
@@ -119,6 +119,8 @@ def _default_api_call(
     api_key: str,
     thinking: str = "medium",
     size: str = _APIMART_SIZE_DEFAULT,
+    *,
+    lifecycle_callback: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> str:
     """生产默认: 委托给 ai_image_router 找当前 engine 的实现.
 
@@ -132,12 +134,37 @@ def _default_api_call(
         (prompt, image_data_url, api_key, thinking, size) -> image_url
     """
     import ai_image_router  # 延迟 import 避免冷启动循环依赖
-    return ai_image_router.get_refine_call_fn()(
-        prompt, image_data_url, api_key, thinking=thinking, size=size,
-    )
+    call_fn = ai_image_router.get_refine_call_fn()
+    if lifecycle_callback is not None:
+        return call_fn(
+            prompt,
+            image_data_url,
+            api_key,
+            thinking=thinking,
+            size=size,
+            lifecycle_callback=lifecycle_callback,
+        )
+    return call_fn(prompt, image_data_url, api_key, thinking=thinking, size=size)
 
 
-ApiCallFn = Callable[[str, Optional[str], str, str, str], str]
+ApiCallFn = Callable[..., str]
+
+
+def _emit_lifecycle_best_effort(
+    lifecycle_callback: Optional[Callable[[str, dict[str, Any]], None]],
+    block_id: str,
+    event: dict[str, Any],
+) -> None:
+    """Record secondary lifecycle context without replacing the paid outcome."""
+    if lifecycle_callback is None:
+        return
+    try:
+        lifecycle_callback(block_id, event)
+    except Exception as callback_error:
+        print(
+            f"[gen][{block_id}] lifecycle checkpoint best-effort failure: "
+            f"{type(callback_error).__name__}: {callback_error}"
+        )
 
 
 # ── 工具: 产品图 → data URL ────────────────────────────────────
@@ -272,6 +299,7 @@ def _generate_one_block(
     max_retries: int,
     thinking: str,
     size: str,
+    lifecycle_callback: Optional[Callable[[str, dict[str, Any]], None]] = None,
 ) -> tuple[BlockResult, float]:
     """生成单个 block, 内部做重试. 返回 (BlockResult, 实际累计成本).
 
@@ -313,7 +341,17 @@ def _generate_one_block(
     attempts = 0
     while attempts <= max_retries:
         try:
-            url = api_call_fn(prompt, image_data_url, api_key, thinking, size)
+            if lifecycle_callback is None:
+                url = api_call_fn(prompt, image_data_url, api_key, thinking, size)
+            else:
+                url = api_call_fn(
+                    prompt,
+                    image_data_url,
+                    api_key,
+                    thinking,
+                    size,
+                    lifecycle_callback=lambda event: lifecycle_callback(bid, event),
+                )
             return (
                 BlockResult(
                     block_id=bid, visual_type=vt,
@@ -325,6 +363,11 @@ def _generate_one_block(
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
             if getattr(e, "outcome_unknown", False):
+                _emit_lifecycle_best_effort(lifecycle_callback, bid, {
+                    "event": "outcome_unknown",
+                    "provider_task_id": str(getattr(e, "task_id", "") or ""),
+                    "error": str(e),
+                })
                 raise
             if getattr(e, "do_not_retry", False):
                 return (
@@ -367,6 +410,7 @@ def generate(
     max_retries_sp: int = 1,
     api_call_fn: Optional[ApiCallFn] = None,
     cost_per_call_rmb: float = _COST_PER_CALL_RMB,
+    lifecycle_callback: Optional[Callable[[str, dict[str, Any]], None]] = None,
 ) -> GenerationResult:
     """planning JSON → 一组 gpt-image-2 图片 URL.
 
@@ -414,6 +458,15 @@ def generate(
 
     call_fn: ApiCallFn = api_call_fn or _default_api_call
 
+    # 调用者明确给了参考图时，必须在任何付费调用前先读取成功。
+    # 否则继续纯文生会丢失产品外观，还会产生无效费用。
+    prepared_product_cutout_url = product_cutout_url
+    if product_cutout_url:
+        try:
+            prepared_product_cutout_url = _to_data_url(product_cutout_url)
+        except Exception as exc:
+            raise ValueError(f"产品参考图读取/转换失败: {exc}") from exc
+
     result = GenerationResult()
     t_start = time.time()
 
@@ -435,8 +488,9 @@ def generate(
     # ── Step 1: Hero 同步 + 重试 ─────────────
     print(f"[gen] Hero 开始 (重试上限 {max_retries_hero})...")
     hero_res, hero_cost = _generate_one_block(
-        blocks[0], planning, product_cutout_url,
+        blocks[0], planning, prepared_product_cutout_url,
         use_key, call_fn, max_retries_hero, thinking, size,
+        lifecycle_callback,
     )
     result.blocks.append(hero_res)
     result.total_cost_rmb += hero_cost * scale
@@ -465,20 +519,33 @@ def generate(
         futures = {
             pool.submit(
                 _generate_one_block,
-                b, planning, product_cutout_url, use_key, call_fn,
+                b, planning, prepared_product_cutout_url, use_key, call_fn,
                 max_retries_sp, thinking, size,
+                lifecycle_callback,
             ): b
             for b in sp_blocks
         }
+        first_unknown: Exception | None = None
         for fut in concurrent.futures.as_completed(futures):
             b = futures[fut]
+            if fut.cancelled():
+                continue
             try:
                 br, cost = fut.result()
             except Exception as e:
                 if getattr(e, "outcome_unknown", False):
-                    for pending in futures:
-                        pending.cancel()
-                    raise
+                    if first_unknown is None:
+                        first_unknown = e
+                        for pending, pending_block in futures.items():
+                            if pending is not fut:
+                                if pending.cancel():
+                                    _emit_lifecycle_best_effort(
+                                        lifecycle_callback,
+                                        pending_block["block_id"], {
+                                        "event": "cancelled",
+                                        "provider_task_id": "",
+                                    })
+                    continue
                 # 内部已捕获, 防御: pool 本身异常
                 br = BlockResult(
                     block_id=b["block_id"], visual_type=b["visual_type"],
@@ -495,6 +562,9 @@ def generate(
 
             result.blocks.append(br)
             result.total_cost_rmb += cost * scale
+
+        if first_unknown is not None:
+            raise first_unknown
 
     # 按 block_order 重排 (ThreadPool 完成顺序乱)
     order_map = {b["block_id"]: i for i, b in enumerate(blocks)}
@@ -520,10 +590,10 @@ def generate(
 # v2 区别:
 #   - 不 _build_blocks 按 visual_type 分流, 不 _render_prompt_for_block 渲染模板
 #   - 直接用 plan_v2 给的 screens[i].prompt (已是导演视角完整 prompt)
-#   - size 固定 "3:4" (1536×2048 @ 2k), 不是 v1 的 "1:1"
+#   - size 固定 "3:4"；当前 provider 输出档位为 1K
 #   - 第 1 屏 (idx=1) 严格视为 hero (整单 fail), 其他屏 SP best-effort
 
-_V2_SIZE_DEFAULT = "3:4"  # PRD §阶段二: 1536×2048 锁定
+_V2_SIZE_DEFAULT = "3:4"  # provider 真实合同: 1K + 3:4
 _V2_MAX_SCREENS = 15
 
 # v3 (PRD AI_refine_v3.1 §5.2): 喂 cutout 屏的 prompt 开头注入注入语,
@@ -641,6 +711,7 @@ def _generate_one_block_v2(
     thinking: str,
     size: str,
     color_anchor: Optional[ColorAnchor] = None,  # v3.2.2 新增
+    lifecycle_callback: Optional[Callable[[str, dict[str, Any]], None]] = None,
 ) -> tuple[BlockResult, float]:
     """v2 单 block 生成. prompt 直接用 plan_v2 已渲染好的, 不再模板化.
 
@@ -708,7 +779,19 @@ def _generate_one_block_v2(
     attempts = 0
     while attempts <= max_retries:
         try:
-            url = api_call_fn(effective_prompt, effective_image_urls, api_key, thinking, size)
+            if lifecycle_callback is None:
+                url = api_call_fn(
+                    effective_prompt, effective_image_urls, api_key, thinking, size,
+                )
+            else:
+                url = api_call_fn(
+                    effective_prompt,
+                    effective_image_urls,
+                    api_key,
+                    thinking,
+                    size,
+                    lifecycle_callback=lambda event: lifecycle_callback(bid, event),
+                )
             return (
                 BlockResult(
                     block_id=bid, visual_type=vt,
@@ -720,6 +803,11 @@ def _generate_one_block_v2(
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
             if getattr(e, "outcome_unknown", False):
+                _emit_lifecycle_best_effort(lifecycle_callback, bid, {
+                    "event": "outcome_unknown",
+                    "provider_task_id": str(getattr(e, "task_id", "") or ""),
+                    "error": str(e),
+                })
                 raise
             if getattr(e, "do_not_retry", False):
                 return (
@@ -761,13 +849,14 @@ def generate_v2(
     api_call_fn: Optional[ApiCallFn] = None,
     cost_per_call_rmb: float = _COST_PER_CALL_RMB,
     cutout_whitelist: Optional[set[str]] = None,  # v3 (PRD AI_refine_v3.1)
+    lifecycle_callback: Optional[Callable[[str, dict[str, Any]], None]] = None,
 ) -> GenerationResult:
-    """v2 schema (plan_v2 输出) → 一组 1536×2048 gpt-image-2 PNG.
+    """v2 schema (plan_v2 输出) → 一组 1K、3:4 的 gpt-image-2 PNG.
 
     跟 v1 generate() 的核心区别:
       - 接收 v2 schema (planning_v2["screens"]), 不用 selling_points + visual_type
       - 不渲染 prompt, 直接用 screens[i].prompt (导演视角完整 prompt)
-      - size 默认 "3:4" (1536×2048 @ 2k)
+      - size 默认 "3:4"，当前 provider 输出档位为 1K
 
     保持跟 v1 一致:
       - HeroFailure 整单 fail (PRD §7), max_retries_hero 重试上限
@@ -815,14 +904,14 @@ def generate_v2(
     else:
         effective_whitelist = frozenset(cutout_whitelist)
 
-    # v3.2 simplify: hoist _to_data_url 出循环, 避免 N 次重复 base64 同一文件.
-    # 转换失败 → 全部 block 走纯文生 (跟旧行为一致, 单 block 失败 print warning 即可).
+    # hoist _to_data_url 出循环，避免 N 次重复 base64 同一文件。
+    # 显式传入参考图却读取失败时 fail-closed，不许降级为付费纯文生图。
     base_image_data_url: Optional[str] = None
     if product_cutout_url:
         try:
             base_image_data_url = _to_data_url(product_cutout_url)
         except Exception as e:
-            print(f"[gen_v2] 参考图转 data URL 失败, 全部 block 降级纯文生: {e}")
+            raise ValueError(f"产品参考图读取/转换失败: {e}") from e
 
     # v3.2.2: PIL 抽 cutout 主色 → hex 锚 + 色卡 PNG bytes (12 屏共享一次)
     # 失败返 None, 调用方走 v3.2.1 fallback (单图 + LEGACY prefix).
@@ -865,6 +954,7 @@ def generate_v2(
         hero_block, _cutout_for(hero_block), use_key, call_fn,
         max_retries_hero, thinking, size,
         color_anchor=color_anchor,
+        lifecycle_callback=lifecycle_callback,
     )
     result.blocks.append(hero_res)
     result.total_cost_rmb += hero_cost * scale
@@ -897,18 +987,31 @@ def generate_v2(
                 b, _cutout_for(b), use_key, call_fn,
                 max_retries_sp, thinking, size,
                 color_anchor=color_anchor,
+                lifecycle_callback=lifecycle_callback,
             ): b
             for b in sp_blocks
         }
+        first_unknown: Exception | None = None
         for fut in concurrent.futures.as_completed(futures):
             b = futures[fut]
+            if fut.cancelled():
+                continue
             try:
                 br, cost = fut.result()
             except Exception as e:
                 if getattr(e, "outcome_unknown", False):
-                    for pending in futures:
-                        pending.cancel()
-                    raise
+                    if first_unknown is None:
+                        first_unknown = e
+                        for pending, pending_block in futures.items():
+                            if pending is not fut:
+                                if pending.cancel():
+                                    _emit_lifecycle_best_effort(
+                                        lifecycle_callback,
+                                        pending_block["block_id"], {
+                                        "event": "cancelled",
+                                        "provider_task_id": "",
+                                    })
+                    continue
                 # ThreadPool 本身异常 (内部已捕获, 这里防御)
                 br = BlockResult(
                     block_id=b["block_id"],
@@ -927,6 +1030,9 @@ def generate_v2(
 
             result.blocks.append(br)
             result.total_cost_rmb += cost * scale
+
+        if first_unknown is not None:
+            raise first_unknown
 
     # 按 screens.idx 顺序重排 (ThreadPool 完成顺序乱)
     order_map = {b["block_id"]: i for i, b in enumerate(blocks)}

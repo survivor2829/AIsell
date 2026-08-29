@@ -282,6 +282,48 @@ def test_default_api_call_polls_pending_task_to_completion_without_resubmit(monk
     ]
 
 
+def test_default_api_call_checkpoints_task_id_before_poll_and_completed_url(monkeypatch):
+    events = []
+
+    def fake_post(url, payload, api_key, timeout=30):
+        return 200, {"data": {"task_id": "task-checkpoint-1"}}
+
+    def fake_get(url, api_key, timeout=30):
+        assert events == [
+            {
+                "event": "submitted",
+                "provider_task_id": "task-checkpoint-1",
+                "route": "system",
+            }
+        ]
+        return {
+            "data": {
+                "status": "completed",
+                "result": {"images": [{"url": "https://cdn.invalid/final.png"}]},
+            }
+        }
+
+    monkeypatch.setattr(adapter, "_http_post_json", fake_post)
+    monkeypatch.setattr(adapter, "_http_get_json", fake_get)
+
+    assert adapter.default_api_call(
+        "prompt", None, "secret", lifecycle_callback=events.append,
+    ) == "https://cdn.invalid/final.png"
+    assert events == [
+        {
+            "event": "submitted",
+            "provider_task_id": "task-checkpoint-1",
+            "route": "system",
+        },
+        {
+            "event": "completed",
+            "provider_task_id": "task-checkpoint-1",
+            "raw_url": "https://cdn.invalid/final.png",
+            "route": "system",
+        },
+    ]
+
+
 def test_poll_recovers_from_transient_connection_failure_on_same_task(monkeypatch):
     calls = []
 

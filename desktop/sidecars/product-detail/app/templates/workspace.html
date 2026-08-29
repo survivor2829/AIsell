@@ -613,6 +613,7 @@
         id="product_title_input"
         type="text"
         class="text-area text-area--single"
+        maxlength="120"
         placeholder="输入产品标题，如：德威莱克DZ50X驾驶式洗地机">
       <p class="text-hint">用于首屏大标题和电商标题生成</p>
     </div>
@@ -623,6 +624,9 @@
       <textarea
         id="text_input"
         class="text-area"
+        maxlength="20000"
+        required
+        aria-required="true"
         placeholder="粘贴产品资料、参数表、电商文案..."></textarea>
       {% if desktop_mode and desktop_capabilities.get('deepseek_api') %}
       <p class="text-hint">已配置 DeepSeek：一键生成会调用 DeepSeek 分析；打开页面本身不调用 API</p>
@@ -647,10 +651,10 @@
 
       {% if desktop_mode %}
       {% if desktop_capabilities.get('paid_ai_ready') %}
-      <button class="btn-generate" id="btn_ai_html_v2" type="button" onclick="generateAiHtmlV2()" data-desktop-paid-ready="true" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(5,150,105,0.28);">
+      <button class="btn-generate" id="btn_ai_html_v2" type="button" onclick="generateAiHtmlV2()" data-desktop-paid-ready="true" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(15,23,42,0.18);">
         🎨 AI精修（专业版）
       </button>
-      <p class="text-hint" style="margin-top:8px; color:#047857;">DeepSeek 与 APIMart 已配置。点击后直接生成，运行中无需重复点击；实际费用以 APIMart 账单为准。</p>
+      <p class="text-hint" style="margin-top:8px; color:#047857;">DeepSeek 与 APIMart 已配置。开始前会确认预计 8–15 屏；实际费用以 APIMart 账单为准，失败或结果不明时不会自动重提。</p>
       {% else %}
       <button class="btn-generate" id="btn_ai_html_v2" type="button" disabled aria-disabled="true" data-desktop-paid-disabled="true" style="margin-top:14px; background:#d1d5db; border:none; box-shadow:none; cursor:not-allowed;">
         🎨 AI精修（尚未配置）
@@ -662,10 +666,10 @@
       {% endif %}
       {% else %}
 
-      <button class="btn-generate" id="btn_ai_html_v2" onclick="generateAiHtmlV2()" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(5,150,105,0.28);">
+      <button class="btn-generate" id="btn_ai_html_v2" onclick="generateAiHtmlV2()" style="margin-top:14px; background:linear-gradient(135deg,#10b981,#059669); border:none; box-shadow:0 2px 6px rgba(15,23,42,0.18);">
         🎨 AI精修（专业版）
       </button>
-      <p class="text-hint" style="margin-top:8px;">DeepSeek 分析文案 + GPT-image-2 真·AI 重绘 6 张图 → Playwright 拼装长图,约 3-5 分钟。服务端缺 key 会自动降级占位图。</p>
+      <p class="text-hint" style="margin-top:8px;">DeepSeek 分析文案 + GPT-image-2 生成预计 8–15 屏，再自动拼装长图。开始前会确认；实际费用以账单为准，失败或结果不明时不会自动重提。</p>
       <div id="ark_key_status" style="margin-top:8px; padding:8px 10px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; font-size:12px; display:flex; align-items:center; justify-content:space-between; gap:8px;">
         <span id="ark_key_label" style="color:#6b7280;">⚙️ 豆包 Key: 未配置</span>
         <a href="#" onclick="setupArkKey(); return false;" style="color:#10b981; text-decoration:underline; font-size:12px;">设置</a>
@@ -685,7 +689,7 @@
       <button class="center-tab" data-tab="ai_img" onclick="switchCenterTab('ai_img')">AI精修版</button>
       <button class="center-tab" data-tab="parameter" onclick="switchCenterTab('parameter')">产品参数</button>
     </div>
-    <div id="hidden_modules_bar" class="hidden-modules-bar" aria-live="polite" aria-hidden="true">
+    <div id="hidden_modules_bar" class="hidden-modules-bar" aria-live="polite" aria-hidden="true" inert>
       <span>&#24403;&#21069;&#26377; <strong id="hidden_modules_count">0</strong> &#20010;&#27169;&#22359;&#24050;&#38544;&#34255;</span>
       <button type="button" onclick="showAllModules()">&#20840;&#37096;&#24674;&#22797;&#26174;&#31034;</button>
     </div>
@@ -720,7 +724,7 @@
         <div style="font-size:18px; font-weight:600; color:#10b981;">AI 正在生成高质量详情图...</div>
         <div style="font-size:14px; color:#888; margin-top:8px;">DeepSeek 分析内容 + APIMart 生成图片 + Chromium 自动排版，通常需要几分钟</div>
         <div style="margin-top:20px; width:200px; height:4px; background:#e5e7eb; border-radius:2px; margin-left:auto; margin-right:auto; overflow:hidden;">
-          <div id="ai_progress_bar" style="width:0%; height:100%; background:linear-gradient(90deg,#6366f1,#8b5cf6); border-radius:2px; transition:width 0.5s;"></div>
+          <div id="ai_progress_bar" style="width:0%; height:100%; background:linear-gradient(90deg,#6366f1,#8b5cf6); border-radius:2px;"></div>
         </div>
       </div>
       <div id="ai_img_results" style="display:flex; flex-direction:column; align-items:center; gap:12px; padding:20px;"></div>
@@ -902,6 +906,137 @@
   /* ── Helpers ────────────────────────────────────────────────── */
   const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
   const desktopMode = {{ desktop_mode|tojson }};
+  const AI_REFINE_ACTIVE_TASK_KEY = 'xiaoxi.ai-refine-v2.active-task.v1';
+  const AI_REFINE_NON_RETRYABLE_POLL_STATUSES = new Set([400, 401, 403, 409, 429]);
+  const AI_REFINE_TERMINAL_STATUSES = new Set([
+    'success', 'partial_success', 'failed', 'recovery_required', 'outcome_unknown'
+  ]);
+
+  function buildAiRefineTaskMeta(productText, productTitle) {
+    const source = JSON.stringify([
+      String(productText || ''),
+      String(productTitle || ''),
+      String(productImageUrl || ''),
+      String(currentProductType || '')
+    ]);
+    let hash = 2166136261;
+    for (let i = 0; i < source.length; i++) {
+      hash ^= source.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return {
+      input_digest: `v1-${(hash >>> 0).toString(16).padStart(8, '0')}`,
+      input_summary: {
+        product_title: String(productTitle || '').slice(0, 120),
+        product_category: String(currentProductType || ''),
+        product_text_length: String(productText || '').length,
+        product_image_configured: Boolean(productImageUrl),
+      },
+    };
+  }
+
+  function aiRefineStorages() {
+    const storages = [];
+    try { storages.push(sessionStorage); } catch (_) {}
+    try { storages.push(localStorage); } catch (_) {}
+    return storages;
+  }
+
+  function persistAiRefineTask(task) {
+    if (!task || !task.task_id) return null;
+    const record = {
+      ...task,
+      task_id: String(task.task_id),
+      status: task.status || 'submitted',
+      started_at: task.started_at || Date.now(),
+      last_seen_at: Date.now(),
+    };
+    const serialized = JSON.stringify(record);
+    aiRefineStorages().forEach((storage) => {
+      try { storage.setItem(AI_REFINE_ACTIVE_TASK_KEY, serialized); } catch (_) {}
+    });
+    return record;
+  }
+
+  function loadPersistedAiRefineTask() {
+    for (const storage of aiRefineStorages()) {
+      try {
+        const record = JSON.parse(storage.getItem(AI_REFINE_ACTIVE_TASK_KEY) || 'null');
+        if (record && typeof record.task_id === 'string' && record.task_id.length <= 256) {
+          return record;
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  function clearPersistedAiRefineTask() {
+    for (const storage of aiRefineStorages()) {
+      try { storage.removeItem(AI_REFINE_ACTIVE_TASK_KEY); } catch (_) {}
+    }
+  }
+
+  function sanitizeAiRefineTechnicalDetail(detail) {
+    return String(detail || '')
+      .replace(/[A-Za-z]:\\[^\r\n]*/g, '[本机路径已隐藏]')
+      .replace(/file:\/\/\/[^\s<]+/gi, '[本机路径已隐藏]')
+      .replace(/((?:api[_-]?key|authorization)\s*[:=]\s*)[^\s,;]+/gi, '$1[已隐藏]')
+      .slice(0, 2000);
+  }
+
+  function aiRefineUserMessage(error) {
+    const code = String(error?.code || '');
+    const status = Number(error?.httpStatus || 0);
+    if (code === 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN') {
+      return '付费任务结果暂时无法确认。系统已停止新建任务，避免重复扣费。';
+    }
+    if (code === 'AI_REFINE_RECOVERY_REQUIRED') {
+      return '图片已经生成，但本机下载或拼装尚未完成。请恢复原任务，不要重新下单。';
+    }
+    if (code === 'AI_REFINE_POLL_DEFERRED') {
+      return '任务仍可能在后台生成。系统已记住任务，可稍后继续检查原任务。';
+    }
+    if (code === 'DESKTOP_AI_REFINE_NOT_CONFIGURED') {
+      return 'AI 精修尚未配置完成。请在桌面软件“API密钥”中配置 DeepSeek 与 APIMart 后重启服务。';
+    }
+    if (status === 401 || status === 403) {
+      return '当前登录状态已失效或无权查看该任务。请重启产品详情图服务后继续检查原任务。';
+    }
+    if (status === 429) {
+      return '服务当前请求过多。原任务已保留，请稍后继续检查，不要重新下单。';
+    }
+    if (status === 400) {
+      if (code.startsWith('AI_REFINE_POLL_HTTP_')) {
+        return '原任务状态请求未通过校验。任务编号已保留，请重启服务后继续检查。';
+      }
+      return '任务信息未通过服务校验。系统没有提交新的付费任务，请检查输入后重试。';
+    }
+    if (code === 'AI_REFINE_TASK_NOT_FOUND') {
+      return '暂时找不到原任务。系统已保留任务编号，请重启服务或前往日志诊断排查。';
+    }
+    return 'AI 精修没有完成。系统没有自动重提，请前往日志诊断查看原因。';
+  }
+
+  function renderAiRefineError(error, target = null) {
+    const results = target || document.getElementById('ai_img_results');
+    if (!results) return;
+    const taskId = String(error?.taskId || '');
+    const detailParts = [error?.technicalDetail || error?.message || ''];
+    if (taskId) detailParts.push(`task_id=${taskId}`);
+    const detail = sanitizeAiRefineTechnicalDetail(detailParts.filter(Boolean).join('\n'));
+    const technicalDetails = detail ? `
+      <details style="margin-top:14px; text-align:left; color:#6b7280;">
+        <summary style="cursor:pointer;">技术详情</summary>
+        <pre style="white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0; font:12px/1.6 ui-monospace,monospace;">${escapeHtml(detail)}</pre>
+      </details>` : '';
+    results.innerHTML = `
+      <div style="width:min(560px,100%); color:#991b1b; background:#fef2f2; border:1px solid #fecaca; border-radius:10px; padding:20px; line-height:1.7;">
+        <div style="font-weight:700;">${escapeHtml(aiRefineUserMessage(error))}</div>
+        <div style="margin-top:6px; color:#7f1d1d; font-size:13px;">失败或结果不明时不会自动重提。</div>
+        <div style="color:#7f1d1d; font-size:13px;">任务已保留时，再次点击“AI 精修”只会继续检查原任务。</div>
+        ${technicalDetails}
+      </div>`;
+  }
 
   async function postJson(url, data) {
     const resp = await fetch(url, {
@@ -914,6 +1049,8 @@
       const failure = new Error(err.error || `HTTP ${resp.status}`);
       failure.code = err.code || '';
       failure.taskId = err.task_id || '';
+      failure.httpStatus = resp.status;
+      failure.technicalDetail = err.error || `HTTP ${resp.status}`;
       throw failure;
     }
     return resp.json();
@@ -1097,8 +1234,8 @@
     const grid = document.getElementById('theme_grid');
     grid.innerHTML = allThemes.map(t => `
       <div class="theme-card ${t.id === currentThemeId ? 'selected' : ''}" data-theme-id="${t.id}" onclick="applyTheme('${t.id}')">
-        <img src="/static/themes/${t.thumbnail}" alt="${t.name}">
-        <div class="theme-card-name">${t.name}</div>
+        <img src="/static/themes/${t.thumbnail}" alt="${escapeHtml(t.name)}模板预览">
+        <div class="theme-card-name">${escapeHtml(t.name)}</div>
       </div>
     `).join('');
   }
@@ -1466,6 +1603,7 @@
     const visible = hiddenCount > 0 && activeTab === 'detail';
     bar.classList.toggle('visible', visible);
     bar.setAttribute('aria-hidden', visible ? 'false' : 'true');
+    bar.inert = !visible;
   }
 
   // Fields to show in edit panel per block type
@@ -1785,12 +1923,26 @@
     const downloadUrl = result.assembled_url || imageUrl;
     const sep = imageUrl.includes('?') ? '&' : '?';
     const displayUrl = `${imageUrl}${sep}t=${Date.now()}`;
-    const blocksCount = Number(result.blocks_count || (Array.isArray(result.blocks) ? result.blocks.length : 0));
+    const blocks = Array.isArray(result.blocks) ? result.blocks : [];
+    const successCount = Number(
+      result.success_count ?? result.blocks_count ??
+      blocks.filter(block => block && block.success !== false).length
+    );
+    const totalCount = Number(
+      result.planned_count ?? result.blocks_count ?? blocks.length
+    );
     const elapsed = Number(result.elapsed_s || 0);
     const cost = Number(result.cost_rmb || 0);
     const restored = options.restored ? '上次生成 · ' : '';
     const billedInfo = desktopMode ? '实际费用以 APIMart 账单为准' : `¥${cost.toFixed(2)}`;
-    const info = `${restored}AI 精修版 · ${blocksCount} 屏 · ${elapsed}s · ${billedInfo}`;
+    const isPartial = result.status === 'partial_success' || Number(result.failed_count || 0) > 0;
+    const screenInfo = isPartial
+      ? `成功 ${successCount}/${totalCount} 屏`
+      : `${successCount || totalCount} 屏`;
+    const info = `${restored}AI 精修版 · ${screenInfo} · ${elapsed}s · ${billedInfo}`;
+    const partialHint = isPartial
+      ? '<div style="margin:8px 0 0; color:#92400e; font-size:13px;">部分屏生成成功，未成功屏不会自动补单。</div>'
+      : '';
 
     results.innerHTML = `
       <div style="text-align:center; margin-bottom:16px;">
@@ -1800,13 +1952,36 @@
           border:none; border-radius:6px; font-size:13px; cursor:pointer;">
           下载详情图
         </button>
+        ${partialHint}
       </div>
       <div style="position:relative; width:375px; border-radius:8px; overflow:hidden;
         box-shadow:0 4px 18px rgba(0,0,0,0.12);">
-        <img src="${escapeHtml(displayUrl)}" style="width:100%; display:block;" />
+        <img src="${escapeHtml(displayUrl)}" alt="AI 精修详情长图预览" style="width:100%; display:block;" />
       </div>`;
     results.querySelector('[data-ai-refine-download]')?.addEventListener('click', (event) => {
       downloadAiRefineResult(downloadUrl, event.currentTarget);
+    });
+  }
+
+  function renderAiRefineRecoveryRequired(state, taskRecord) {
+    const recoveryError = new Error(state.error || state.progress_msg || 'local recovery required');
+    recoveryError.code = 'AI_REFINE_RECOVERY_REQUIRED';
+    recoveryError.taskId = state.task_id || taskRecord.task_id;
+    recoveryError.technicalDetail = state.technical_detail || state.error || '';
+    renderAiRefineError(recoveryError);
+    const results = document.getElementById('ai_img_results');
+    if (!results) return;
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex; flex-wrap:wrap; justify-content:center; gap:10px; margin-top:12px;';
+    actions.innerHTML = `
+      <button type="button" data-ai-refine-resume
+        style="padding:8px 16px; border:none; border-radius:7px; background:#059669; color:#fff; cursor:pointer;">
+        继续检查原任务
+      </button>
+      <span style="align-self:center; color:#6b7280; font-size:12px;">如仍无法恢复，请返回桌面软件“日志诊断”导出报告。</span>`;
+    results.appendChild(actions);
+    actions.querySelector('[data-ai-refine-resume]')?.addEventListener('click', () => {
+      resumeAiRefineTask(taskRecord, true);
     });
   }
 
@@ -1815,8 +1990,10 @@
       await postJson(`/api/workspace-results/ai-refine-v2/${encodeURIComponent(taskId)}`, {
         product_category: currentProductType,
       });
+      return true;
     } catch (err) {
       console.warn('[workspace-results] save failed', err);
+      return false;
     }
   }
 
@@ -1840,135 +2017,279 @@
   /* ── AI 精修（专业版）: DeepSeek planner + GPT-image-2 重绘 + Playwright 拼装 ─── */
   let aiRefineBusy = false;
 
-  async function generateAiHtmlV2() {
+  function prepareAiRefineWorkspace(statusText = '提交中…') {
+    switchCenterTab('ai_img');
+    document.getElementById('empty_state').style.display = 'none';
+    const loading = document.getElementById('ai_img_loading');
+    const results = document.getElementById('ai_img_results');
+    const bar = document.getElementById('ai_progress_bar');
+    const loadingText = loading?.querySelector('div:nth-child(2)');
+    const subText = loading?.querySelector('div:nth-child(3)');
+    if (loading) loading.style.display = 'block';
+    if (results) results.innerHTML = '';
+    if (loadingText) loadingText.textContent = '正在生成 AI 精修版详情页…';
+    if (subText) subText.textContent = statusText;
+    if (bar) bar.style.width = '0%';
+    return { loading, results, bar, subText };
+  }
+
+  function aiRefineModeBadge(mode) {
+    if (mode === 'real') return '✅ 真实 API (DeepSeek + GPT-image-2)';
+    if (mode === 'partial-mock') return '⚠️ 部分占位 (缺 DEEPSEEK_API_KEY)';
+    if (mode === 'mock') return '⚠️ 全占位 (服务端未配置 key, UI 自检模式)';
+    return '正在接管原任务';
+  }
+
+  async function pollAiRefineTask(initialTask, ui) {
+    let taskRecord = initialTask;
+    const taskId = taskRecord.task_id;
+    const modeBadge = aiRefineModeBadge(taskRecord.mode);
+    // 保留 10 分钟当前页面主动轮询窗口；超时后任务仍持久化，可继续接管，绝不自动重提。
+    const maxIter = 300;
+    let finalState = null;
+    let consecutiveNotFound = 0;
+
+    for (let i = 0; i < maxIter; i++) {
+      let state;
+      try {
+        const resp = await fetch(`/api/ai-refine-v2/status/${encodeURIComponent(taskId)}`);
+        if (resp.status === 404) {
+          consecutiveNotFound++;
+          if (consecutiveNotFound > 30) {
+            const missing = new Error(`task ${taskId} 连续 ${consecutiveNotFound} 次返回 404`);
+            missing.code = 'AI_REFINE_TASK_NOT_FOUND';
+            missing.taskId = taskId;
+            missing.httpStatus = 404;
+            missing.nonRetryable = true;
+            throw missing;
+          }
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+        if (AI_REFINE_NON_RETRYABLE_POLL_STATUSES.has(resp.status)) {
+          const payload = await resp.json().catch(() => ({}));
+          const rejected = new Error(payload.error || `HTTP ${resp.status}`);
+          rejected.code = payload.code || `AI_REFINE_POLL_HTTP_${resp.status}`;
+          rejected.taskId = payload.task_id || taskId;
+          rejected.httpStatus = resp.status;
+          rejected.technicalDetail = payload.error || `HTTP ${resp.status}`;
+          rejected.nonRetryable = true;
+          throw rejected;
+        }
+        if (!resp.ok) {
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+        state = await resp.json();
+        consecutiveNotFound = 0;
+      } catch (err) {
+        if (err.nonRetryable) throw err;
+        await new Promise(r => setTimeout(r, 2000));
+        continue;
+      }
+
+      if (ui.bar) ui.bar.style.width = `${Number(state.progress_pct || 0)}%`;
+      if (ui.subText) ui.subText.textContent = `${modeBadge} · ${state.progress_msg || state.status}`;
+      if (taskRecord.status !== state.status) {
+        taskRecord = persistAiRefineTask({ ...taskRecord, status: state.status }) || taskRecord;
+      }
+      if (state.status === 'outcome_unknown') {
+        finalState = state;
+        break;
+      }
+      if (AI_REFINE_TERMINAL_STATUSES.has(state.status)) {
+        finalState = state;
+        break;
+      }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+
+    if (!finalState) {
+      const deferred = new Error('前端主动轮询达到 10 分钟，原任务仍被保留');
+      deferred.code = 'AI_REFINE_POLL_DEFERRED';
+      deferred.taskId = taskId;
+      throw deferred;
+    }
+
+    taskRecord = persistAiRefineTask({ ...taskRecord, status: finalState.status }) || taskRecord;
+    if (finalState.status === 'outcome_unknown') {
+      if (ui.loading) ui.loading.style.display = 'none';
+      renderAiRefineRecoveryRequired(finalState, taskRecord);
+      return finalState;
+    }
+    if (finalState.status === 'recovery_required') {
+      if (ui.loading) ui.loading.style.display = 'none';
+      renderAiRefineRecoveryRequired(finalState, taskRecord);
+      return finalState;
+    }
+    if (finalState.status === 'failed') {
+      clearPersistedAiRefineTask(taskId);
+      const failed = new Error(finalState.error || 'pipeline failed');
+      failed.code = finalState.code || 'AI_REFINE_FAILED';
+      failed.taskId = finalState.task_id || taskId;
+      failed.technicalDetail = finalState.technical_detail || finalState.error || '';
+      throw failed;
+    }
+    if (!(finalState.image_url || finalState.assembled_url)) {
+      const incompleteState = { ...finalState, status: 'recovery_required' };
+      taskRecord = persistAiRefineTask({ ...taskRecord, status: 'recovery_required' }) || taskRecord;
+      if (ui.loading) ui.loading.style.display = 'none';
+      renderAiRefineRecoveryRequired(incompleteState, taskRecord);
+      return incompleteState;
+    }
+
+    if (ui.loading) ui.loading.style.display = 'none';
+    renderAiRefineResult(finalState);
+    const remembered = await rememberAiRefineResult(taskId);
+    if (remembered) clearPersistedAiRefineTask(taskId);
+    return finalState;
+  }
+
+  async function generateAiHtmlV2(options = {}) {
     if (aiRefineBusy) return;
     const aiRefineButton = document.getElementById('btn_ai_html_v2');
     aiRefineBusy = true;
     if (aiRefineButton) aiRefineButton.disabled = true;
     try {
-      await runAiHtmlV2();
+      await runAiHtmlV2(options);
     } finally {
       aiRefineBusy = false;
       if (aiRefineButton) aiRefineButton.disabled = false;
     }
   }
 
-  async function runAiHtmlV2() {
-    if (!productImageUrl) {
-      showError('请先上传产品主图');
-      return;
+  function resumeAiRefineTask(taskRecord, recoverOriginal = false) {
+    return generateAiHtmlV2({ resumeTask: taskRecord, recoverOriginal });
+  }
+
+  function resumePersistedAiRefineTask() {
+    const taskRecord = loadPersistedAiRefineTask();
+    if (!taskRecord) return false;
+    void resumeAiRefineTask(taskRecord);
+    return true;
+  }
+
+  async function runAiHtmlV2(options = {}) {
+    let taskRecord = options.resumeTask || null;
+    let productText = '';
+    let productTitle = '';
+    let inputMeta = null;
+    if (!taskRecord?.task_id) {
+      if (!productImageUrl) {
+        showError('请先上传产品主图');
+        return;
+      }
+      productText = (document.getElementById('text_input')?.value || '').trim();
+      productTitle = (document.getElementById('product_title_input')?.value || '').trim();
+      if (!productText) {
+        showError('请填写产品文案（最多 20000 字）');
+        return;
+      }
+      inputMeta = buildAiRefineTaskMeta(productText, productTitle);
+      const confirmed = await confirmInWorkspace(
+        `预计生成 8–15 屏，可能产生多次 APIMart 计费。\n` +
+        `实际费用以 APIMart 账单为准。\n` +
+        `失败或结果不明时不会自动重提。\n\n` +
+        `产品：${productTitle || '未填写标题'}\n品类：${currentProductType}\n文案：${productText.length} 字`,
+        { title: '确认 AI 精修任务', confirmLabel: '开始付费生成' },
+      );
+      if (!confirmed) return;
     }
-    const productText = (document.getElementById('text_input')?.value || '').trim();
-    const productTitle = (document.getElementById('product_title_input')?.value || '').trim();
-    if (!productText && !productTitle) {
-      showError('请填产品文案或产品标题');
-      return;
-    }
 
-    switchCenterTab('ai_img');
-    document.getElementById('empty_state').style.display = 'none';
-
-    const loading = document.getElementById('ai_img_loading');
-    const results = document.getElementById('ai_img_results');
-    loading.style.display = 'block';
-    results.innerHTML = '';
-
-    const loadingText = loading.querySelector('div:nth-child(2)');
-    const subText = loading.querySelector('div:nth-child(3)');
-    if (loadingText) loadingText.textContent = '正在生成 AI 精修版详情页…';
-    if (subText) subText.textContent = '提交中…';
-
-    const bar = document.getElementById('ai_progress_bar');
-    bar.style.width = '0%';
+    const ui = prepareAiRefineWorkspace(
+      taskRecord ? '正在接管上次付费任务，不会创建新订单…' : '提交中…'
+    );
 
     try {
-      // 1. POST /execute → task_id + mode
-      // schema_mode='v2' (PRD v3.2): 走 plan_v2 (DeepSeek 12 屏型 + 大疆风高级灰
-      // + lifestyle_demo 必出 + 商业承诺法律合规 + 产品色保真) → generate_v2.
-      // 不传 schema_mode 后端默认 v1, 走老的 selling_points + visual_type 路径.
-      const startResp = await postJson('/api/ai-refine-v2/execute', {
-        product_text:      productText,
-        product_image_url: productImageUrl,
-        product_title:     productTitle,
-        schema_mode:       'v2',
-        product_category:  currentProductType,
-      });
-      const taskId = startResp.task_id;
-      const mode = startResp.mode;
-      const modeBadge = mode === 'real' ? '✅ 真实 API (DeepSeek + GPT-image-2)'
-        : mode === 'partial-mock' ? '⚠️ 部分占位 (缺 DEEPSEEK_API_KEY)'
-        : '⚠️ 全占位 (服务端未配置 key, UI 自检模式)';
-
-      // 2. 轮询 /status (2s/次, 最多 10 分钟)
-      // 容错: 如果 status 端点返回 404 / 5xx (gunicorn 多 worker _TASKS 不共享
-      // 可能命中没有该任务的 worker), 视为 transient 跳过本轮, 下一轮重试.
-      // 本是 2026-04-29 现场踩坑诊断后加的防御层.
-      // 2026-05-07: 6 min → 10 min (180 → 300). 12 屏 task + APIMart 503 重试
-      // 实际跑 ~6 min, 边界踩死. PR #17 disk fallback 兜底"task done 但内存丢"
-      // 场景, 但需要等磁盘 _summary.json 落盘. 多 4 min 让 fallback 生效.
-      const maxIter = 300;
-      let finalState = null;
-      let consecutiveNotFound = 0;
-      for (let i = 0; i < maxIter; i++) {
-        await new Promise(r => setTimeout(r, 2000));
-        let state;
+      if (!taskRecord) {
         try {
-          const resp = await fetch(`/api/ai-refine-v2/status/${taskId}`);
-          if (resp.status === 404) {
-            consecutiveNotFound++;
-            if (consecutiveNotFound > 30) {  // 连续 1 分钟拿不到 = 真挂了
-              throw new Error(`task ${taskId} 在所有 worker 都查不到 (连续 ${consecutiveNotFound} 次 404)`);
+          const startResp = await postJson('/api/ai-refine-v2/execute', {
+            product_text: productText,
+            product_image_url: productImageUrl,
+            product_title: productTitle,
+            schema_mode: 'v2',
+            product_category: currentProductType,
+          });
+          taskRecord = persistAiRefineTask({
+            task_id: startResp.task_id,
+            mode: startResp.mode,
+            status: 'submitted',
+            ...inputMeta,
+            started_at: Date.now(),
+          });
+        } catch (startError) {
+          if ([
+            'DESKTOP_AI_REFINE_ALREADY_RUNNING', 'DESKTOP_AI_REFINE_RECOVERY_REQUIRED',
+            'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN'
+          ].includes(startError.code) && startError.taskId) {
+            const previous = loadPersistedAiRefineTask();
+            taskRecord = persistAiRefineTask({
+              task_id: startError.taskId,
+              mode: previous?.mode || '',
+              status: previous?.status || 'running',
+              input_digest: previous?.input_digest || '',
+              input_summary: previous?.input_summary || {
+                product_category: currentProductType,
+                recovered_from_server: true,
+              },
+              started_at: previous?.started_at || Date.now(),
+            });
+            if (ui.subText) ui.subText.textContent = '已接管正在运行的原任务，不会创建新订单…';
+          } else {
+            if (startError.httpStatus >= 500 && ![
+              'DESKTOP_AI_REFINE_NOT_CONFIGURED', 'DESKTOP_PAID_ACTION_DISABLED'
+            ].includes(startError.code)) {
+              startError.code = 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN';
             }
-            continue;
+            throw startError;
           }
-          if (!resp.ok) continue;  // 5xx / 网络错 → 下一轮
-          state = await resp.json();
-          consecutiveNotFound = 0;
-        } catch (err) {
-          // JSON parse / network — transient, 下一轮重试
-          if (err.message && err.message.includes('在所有 worker 都查不到')) throw err;
-          continue;
-        }
-        bar.style.width = (state.progress_pct || 0) + '%';
-        if (subText) subText.textContent = `${modeBadge} · ${state.progress_msg || state.status}`;
-        if (state.status === 'success' || state.status === 'failed' || state.status === 'outcome_unknown') {
-          finalState = state;
-          break;
         }
       }
-      if (!finalState) throw new Error('轮询超时 (>10 分钟)');
-      if (finalState.status === 'outcome_unknown') {
-        const unknown = new Error(finalState.error || 'APIMart 任务结果不明，已停止自动重提');
-        unknown.code = 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN';
-        unknown.taskId = finalState.task_id || taskId;
-        throw unknown;
+      if (!taskRecord) {
+        const missingTask = new Error('服务未返回可接管的 task_id');
+        missingTask.code = 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN';
+        throw missingTask;
       }
-      if (finalState.status === 'failed') {
-        throw new Error(finalState.error || 'pipeline failed');
-      }
-
-      loading.style.display = 'none';
-      renderAiRefineResult(finalState);
-      await rememberAiRefineResult(taskId);
-    } catch (e) {
-      loading.style.display = 'none';
-      if (e.code === 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN') {
-        const confirmed = await confirmInWorkspace(
-          `${e.message}\n\n只有在你已核对 APIMart、确认没有正在生成或待扣费任务时，才能解除。`,
-          { title: '核对 APIMart 任务', confirmLabel: '我已核对，解除锁定' },
+      if (options.recoverOriginal) {
+        if (ui.subText) ui.subText.textContent = '正在继续检查原任务，不会创建新订单…';
+        const recovered = await postJson(
+          `/api/ai-refine-v2/recover/${encodeURIComponent(taskRecord.task_id)}`,
+          {},
         );
-        if (confirmed) {
-          try {
-            await postJson('/desktop/ai-refine-v2/resolve-unknown', { confirm_new_task: true });
-            results.innerHTML = '<div style="text-align:center; color:#92400e; padding:40px;">结果不明状态已解除。本次不会自动重提；如需重新生成，请再次点击 AI 精修。</div>';
-            return;
-          } catch (resolveError) {
-            e = resolveError;
+        taskRecord = persistAiRefineTask({
+          ...taskRecord,
+          status: recovered.status || taskRecord.status,
+        }) || taskRecord;
+      }
+      await pollAiRefineTask(taskRecord, ui);
+    } catch (error) {
+      if (ui.loading) ui.loading.style.display = 'none';
+      await handleAiRefineRunError(error, ui.results);
+    }
+  }
+
+  async function handleAiRefineRunError(error, results) {
+    let activeError = error;
+    if (activeError.code === 'DESKTOP_AI_REFINE_OUTCOME_UNKNOWN') {
+      const confirmed = await confirmInWorkspace(
+        `付费任务结果暂时无法确认，系统已经停止新建任务。\n\n` +
+        `只有在你已核对 APIMart、确认没有正在生成或待扣费任务时，才能解除锁定。`,
+        { title: '核对 APIMart 任务', confirmLabel: '我已核对，解除锁定' },
+      );
+      if (confirmed) {
+        try {
+          await postJson('/desktop/ai-refine-v2/resolve-unknown', { confirm_new_task: true });
+          clearPersistedAiRefineTask(activeError.taskId || '');
+          if (results) {
+            results.innerHTML = '<div style="text-align:center; color:#92400e; padding:40px;">结果不明状态已解除。本次没有自动重提；如需重新生成，请重新核对文案并再次确认。</div>';
           }
+          return;
+        } catch (resolveError) {
+          activeError = resolveError;
         }
       }
-      results.innerHTML = `<div style="text-align:center; color:#ef4444; padding:40px;">AI 精修失败: ${escapeHtml(e.message)}</div>`;
     }
+    renderAiRefineError(activeError, results);
   }
 
   /* ── Module Main Image Display ─────────────────────────────── */
@@ -2159,8 +2480,39 @@
       console.warn('[workspace] latest local preview restore failed');
     }
   }
+
+  function initAnnouncementAccessibility() {
+    const bindPanel = (panel) => {
+      if (!(panel instanceof HTMLElement)) return;
+      const syncPanel = () => {
+        panel.inert = panel.hidden;
+        panel.setAttribute('aria-hidden', panel.hidden ? 'true' : 'false');
+      };
+      panel.setAttribute('role', 'dialog');
+      panel.setAttribute('aria-label', '更新公告');
+      syncPanel();
+      if (panel.dataset.a11yBound === 'true') return;
+      panel.dataset.a11yBound = 'true';
+      new MutationObserver(syncPanel).observe(panel, {
+        attributes: true,
+        attributeFilter: ['hidden'],
+      });
+    };
+    document.querySelectorAll('.xx-ann-panel').forEach(bindPanel);
+    new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        mutation.addedNodes.forEach((node) => {
+          if (!(node instanceof HTMLElement)) return;
+          if (node.matches('.xx-ann-panel')) bindPanel(node);
+          node.querySelectorAll?.('.xx-ann-panel').forEach(bindPanel);
+        });
+      });
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+
   /* ── Init ───────────────────────────────────────────────────── */
   document.addEventListener('DOMContentLoaded', async () => {
+    initAnnouncementAccessibility();
     initLayout();           // 必须最先,从 localStorage 恢复布局档,避免 loadThemes 后才切档导致闪烁
     await loadThemes();
     initPreviewFit();
@@ -2172,7 +2524,7 @@
     initUploadBox('upload_qr', url => { qrImageUrl = url; });
     selectCategory(currentProductType);
     await restoreLatestLocalPreview();
-    restoreLatestAiResult();
+    if (!resumePersistedAiRefineTask()) restoreLatestAiResult();
   });
 </script>
 <script src="/static/js/announcement.js" defer></script>

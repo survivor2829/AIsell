@@ -79,6 +79,17 @@ def _normalize_record(
         raise ValueError("workspace result requires image_url or assembled_url")
 
     task_id = str(record.get("task_id") or "").strip()
+    blocks_count = int(record.get("blocks_count") or 0)
+    planned_value = record.get("planned_count")
+    planned_count = int(blocks_count if planned_value is None else planned_value)
+    success_value = record.get("success_count")
+    success_count = int(blocks_count if success_value is None else success_value)
+    failed_value = record.get("failed_count")
+    failed_count = int(
+        max(planned_count - success_count, 0)
+        if failed_value is None
+        else failed_value
+    )
     result = {
         "kind": kind,
         "user_id": int(user_id),
@@ -88,7 +99,10 @@ def _normalize_record(
         "mode": str(record.get("mode") or "").strip(),
         "product_title": str(record.get("product_title") or "").strip(),
         "product_category": str(record.get("product_category") or "").strip(),
-        "blocks_count": int(record.get("blocks_count") or 0),
+        "blocks_count": blocks_count,
+        "planned_count": planned_count,
+        "success_count": success_count,
+        "failed_count": failed_count,
         "elapsed_s": float(record.get("elapsed_s") or 0.0),
         "cost_rmb": float(record.get("cost_rmb") or 0.0),
         "created_at": _timestamp(now),

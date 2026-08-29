@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 import json
+import os
 from pathlib import Path
 import pytest
 
@@ -47,13 +48,19 @@ class TestGetTaskStatusDiskFallback:
     """守护: 内存无 state + 磁盘有 _summary.json → fallback 重建 status='success'."""
 
     def _write_summary(self, task_dir: Path, **overrides):
-        """工具: 创建一个真实形态的 _summary.json + assembled.png placeholder."""
+        """工具: 创建一个真实形态的终态 summary + 可解码 assembled.png."""
+        from PIL import Image
+
         task_dir.mkdir(parents=True, exist_ok=True)
         summary = {
             "product": "测试产品",
             "mode": "real",
             "schema_mode": "v2",
             "total_cost_rmb": 5.6,
+            "terminal_status": "success",
+            "planned_count": 2,
+            "success_count": 2,
+            "failed_count": 0,
             "raw_urls": [
                 "https://upload.apimart.ai/f/image/abc-1.png",
                 "https://upload.apimart.ai/f/image/abc-2.png",
@@ -85,8 +92,8 @@ class TestGetTaskStatusDiskFallback:
         (task_dir / "_summary.json").write_text(
             json.dumps(summary, ensure_ascii=False), encoding="utf-8"
         )
-        # assembled.png placeholder (只验证存在, 不验证内容)
-        (task_dir / "assembled.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        image = Image.frombytes("RGB", (400, 800), os.urandom(400 * 800 * 3))
+        image.save(task_dir / "assembled.png", "PNG")
 
     def test_disk_fallback_returns_success(self, isolated_tasks_dir):
         from ai_refine_v2 import pipeline_runner
@@ -101,6 +108,40 @@ class TestGetTaskStatusDiskFallback:
             "_summary.json 存在等于任务已完成, status 必须是 'success'"
         )
         assert result["task_id"] == task_id
+
+    def test_corrupt_assembled_png_never_recovers_as_success(self, isolated_tasks_dir):
+        """summary 不是成功凭证；assembled.png 必须可完整解码。"""
+        from ai_refine_v2 import pipeline_runner
+        task_id = "v2_disk_corrupt"
+        task_dir = isolated_tasks_dir / task_id
+        self._write_summary(task_dir)
+        (task_dir / "assembled.png").write_bytes(
+            b"not-a-png" + (b"\0" * 200_000)
+        )
+
+        result = pipeline_runner.get_task_status(task_id)
+
+        assert result is not None
+        assert result["status"] != "success"
+        assert result["raw_urls"], "损坏终态仍应保留已付费结果 URL 供恢复"
+
+    def test_disk_fallback_preserves_result_counts(self, isolated_tasks_dir):
+        from ai_refine_v2 import pipeline_runner
+        task_id = "v2_disk_counts"
+        self._write_summary(
+            isolated_tasks_dir / task_id,
+            terminal_status="partial_success",
+            planned_count=8,
+            success_count=5,
+            failed_count=3,
+        )
+
+        result = pipeline_runner.get_task_status(task_id)
+
+        assert result["status"] == "partial_success"
+        assert result["planned_count"] == 8
+        assert result["success_count"] == 5
+        assert result["failed_count"] == 3
 
     def test_disk_fallback_blocks_preserved(self, isolated_tasks_dir):
         from ai_refine_v2 import pipeline_runner
@@ -177,6 +218,74 @@ class TestGetTaskStatusBothMissing:
         assert result is None, (
             "任务中崩了 (无 _summary.json) 也应返 None, 不假装 success"
         )
+
+    def test_recovery_checkpoint_returns_recovery_required(self, isolated_tasks_dir):
+        """付费 URL 已落盘但还没有终态 summary 时，重启后必须可恢复。"""
+        from ai_refine_v2 import pipeline_runner
+        task_id = "v2_paid_recovery"
+        task_dir = isolated_tasks_dir / task_id
+        task_dir.mkdir()
+        recovery = {
+            "task_id": task_id,
+            "user_id": 42,
+            "status": "recovery_required",
+            "planned_count": 3,
+            "success_count": 1,
+            "failed_count": 2,
+            "total_cost_rmb": 2.1,
+            "raw_urls": ["https://cdn.invalid/hero.png"],
+            "blocks": [{
+                "block_id": "screen_01_hero",
+                "raw_url": "https://cdn.invalid/hero.png",
+                "success": True,
+            }],
+            "error": "synthetic download failure",
+        }
+        (task_dir / "_recovery.json").write_text(
+            json.dumps(recovery, ensure_ascii=False), encoding="utf-8"
+        )
+
+        result = pipeline_runner.get_task_status(task_id)
+
+        assert result is not None
+        assert result["status"] == "recovery_required"
+        assert result["user_id"] == 42
+        assert result["raw_urls"] == ["https://cdn.invalid/hero.png"]
+        assert result["planned_count"] == 3
+
+    def test_stale_running_recovery_checkpoint_is_resumable_after_restart(
+        self, isolated_tasks_dir,
+    ):
+        """磁盘上的 running_recovery 没有活 worker，重启后不能永久假装仍在运行。"""
+        from ai_refine_v2 import pipeline_runner
+
+        task_id = "v2_stale_running_recovery"
+        task_dir = isolated_tasks_dir / task_id
+        task_dir.mkdir()
+        recovery = {
+            "task_id": task_id,
+            "user_id": 42,
+            "status": "running_recovery",
+            "planned_count": 1,
+            "success_count": 0,
+            "failed_count": 1,
+            "raw_urls": [],
+            "blocks": [{
+                "block_id": "screen_01_hero",
+                "provider_task_id": "provider-hero",
+                "raw_url": "",
+                "success": False,
+            }],
+        }
+        (task_dir / "_recovery.json").write_text(
+            json.dumps(recovery, ensure_ascii=False), encoding="utf-8"
+        )
+
+        result = pipeline_runner.get_task_status(task_id)
+
+        assert result is not None
+        assert result["status"] == "recovery_required"
+        assert result["blocks"][0]["provider_task_id"] == "provider-hero"
 
 
 class TestInMemoryPriorityOverDisk:

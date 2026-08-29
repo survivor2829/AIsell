@@ -357,8 +357,6 @@ declare global {
 }
 
 const USER_STORAGE_KEY = "xiaoxi-user-profile";
-const DEFAULT_USER_PROFILE: UserProfile = { name: "2829347524", avatar: "2" };
-const DEFAULT_TOUCH_MESSAGE = "{称呼}，您好，我们这边有清洁设备短租和会员特惠方案，想了解一下您近期是否需要降本增效？";
 const CONTACT_PAGE_SIZE = 50;
 const CONTACT_RENDER_LIMIT = 50;
 const XIAOXI_EDITION = import.meta.env.VITE_XIAOXI_EDITION;
@@ -368,6 +366,13 @@ const PILOT_EDITION = XIAOXI_EDITION === "pilot";
 const REAL_SEND_EDITION = DEVELOPMENT_EDITION || PILOT_EDITION;
 const DEFAULT_ACTIVE_MODULE: ModuleKey = PILOT_EDITION ? "touch" : "reply";
 const EDITION_LABEL = DEVELOPMENT_EDITION ? "测试版" : "";
+const DEFAULT_USER_PROFILE: UserProfile = { name: "本机用户", avatar: "用" };
+const DEFAULT_TOUCH_MESSAGE = DEVELOPMENT_EDITION
+  ? "{称呼}，您好，我们这边有清洁设备短租和会员特惠方案，想了解一下您近期是否需要降本增效？"
+  : "";
+const TOUCH_MESSAGE_PLACEHOLDER = DEVELOPMENT_EDITION
+  ? DEFAULT_TOUCH_MESSAGE
+  : "请输入本次触达话术，发送前请核对联系人和内容";
 const DevelopmentAcceptance = DEVELOPMENT_EDITION ? lazy(() => import("./DevelopmentAcceptance")) : null;
 const MomentsDryRunPanel = DEVELOPMENT_EDITION ? lazy(() => import("./MomentsDryRunPanel")) : null;
 const MomentsPublishPanel = REAL_SEND_EDITION ? lazy(() => import("./MomentsPublishPanel")) : null;
@@ -900,10 +905,6 @@ export default function App() {
         <header className="topbar">
           <div />
           <div className="top-actions">
-            <button className="guide">
-              <CircleHelp size={14} />
-              新手引导
-            </button>
             <div className="avatar">{currentUser.avatar}</div>
             <button className="account-name">{currentUser.name}</button>
           </div>
@@ -1663,11 +1664,11 @@ function ActiveTouch({
 
       <div className="simple-touch-panel">
         <label className="script-field">
-          <span>触达话术（已填默认文案，可直接修改）</span>
+          <span>{DEVELOPMENT_EDITION ? "触达话术（测试默认文案，可修改）" : "触达话术（发送前请填写并确认）"}</span>
           <textarea
             value={messageDraft}
             onChange={(event) => onMessageDraftChange(event.target.value)}
-            placeholder={DEFAULT_TOUCH_MESSAGE}
+            placeholder={TOUCH_MESSAGE_PLACEHOLDER}
             disabled={locked}
           />
         </label>

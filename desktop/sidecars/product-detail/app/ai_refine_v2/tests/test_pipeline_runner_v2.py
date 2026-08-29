@@ -156,16 +156,16 @@ class TestV2RunRealGeneratorGuards(unittest.TestCase):
     def setUp(self):
         self.src = (_REPO / "ai_refine_v2" / "pipeline_runner.py").read_text(encoding="utf-8")
 
-    def test_v2_a_guard_uses_noproxy_opener_in_source(self):
-        """A 刀 (源码 grep): _run_real_generator_v2 必须用 _build_noproxy_opener."""
+    def test_v2_a_guard_uses_provider_route_download_in_source(self):
+        """A 刀: v2 必须复用先落盘、后按 provider 路由下载的共享实现。"""
         v2_section = self.src.split("def _run_real_generator_v2")[1].split("\ndef ")[0]
         self.assertIn(
-            "_build_noproxy_opener", v2_section,
-            "_run_real_generator_v2 必须复用 v1 的绕代理 opener (A 刀)",
+            "_download_generation_results", v2_section,
+            "_run_real_generator_v2 必须复用原子 checkpoint + provider 路由下载",
         )
         self.assertIn(
-            "_download_image", v2_section,
-            "_run_real_generator_v2 必须用 _download_image (绕代理 + 重试)",
+            "schema_mode=\"v2\"", v2_section,
+            "v2 recovery checkpoint 必须标出 schema_mode",
         )
 
     def test_v2_b_guard_download_failure_raises(self):
@@ -173,14 +173,11 @@ class TestV2RunRealGeneratorGuards(unittest.TestCase):
         fake_result = _fake_v2_result(n=3)
         planning = _planning_v2_for_n(3)
 
-        class _StubOpener:
-            def open(self, url, timeout=None):
-                raise ConnectionError("mock dns fail")
-
         with tempfile.TemporaryDirectory() as td:
             task_dir = Path(td) / "task_v2_b"
             with mock.patch.object(
-                pipeline_runner, "_build_noproxy_opener", return_value=_StubOpener(),
+                pipeline_runner, "_download_image",
+                side_effect=ConnectionError("mock dns fail"),
             ), mock.patch(
                 "ai_refine_v2.refine_generator.generate_v2",
                 side_effect=_fake_generate_v2_factory(fake_result),
@@ -196,7 +193,8 @@ class TestV2RunRealGeneratorGuards(unittest.TestCase):
                         task_dir=task_dir,
                         progress_cb=lambda p, m: None,
                     )
-        self.assertIn("v2 下载", str(ctx.exception))
+        self.assertTrue(getattr(ctx.exception, "recovery_required", False))
+        self.assertIn("本地下载", str(ctx.exception))
         self.assertIn("3/3", str(ctx.exception))
 
     def test_v2_d_guard_raw_url_preserved(self):
@@ -204,22 +202,18 @@ class TestV2RunRealGeneratorGuards(unittest.TestCase):
         fake_result = _fake_v2_result(n=3)
         planning = _planning_v2_for_n(3)
 
-        class _OkOpener:
-            def open(self, url, timeout=None):
-                return _FakeResp(url)
+        def _fake_download(_url, dst, **_kwargs):
+            from PIL import Image
 
-        class _FakeResp:
-            def __init__(self, url): self._url = url
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-            def read(self):
-                # > 1KB payload, 让 _download_image 的 size guard 通过
-                return b"\x89PNG\r\n" + (b"\0" * 2048)
+            Image.frombytes(
+                "RGB", (64, 64), os.urandom(64 * 64 * 3),
+            ).save(dst, "JPEG", quality=95)
+            return "direct"
 
         with tempfile.TemporaryDirectory() as td:
             task_dir = Path(td) / "task_v2_d"
             with mock.patch.object(
-                pipeline_runner, "_build_noproxy_opener", return_value=_OkOpener(),
+                pipeline_runner, "_download_image", side_effect=_fake_download,
             ), mock.patch(
                 "ai_refine_v2.refine_generator.generate_v2",
                 side_effect=_fake_generate_v2_factory(fake_result),
@@ -396,12 +390,88 @@ class TestV2MockMode(unittest.TestCase):
                 self.assertTrue(all(b.get("placeholder") for b in state.blocks),
                                 "全 mock 模式下所有 blocks 应 placeholder=True")
                 self.assertEqual(state.cost_rmb, 0.0, "mock 模式下 cost=0")
+                self.assertEqual(state.planned_count, 8)
+                self.assertEqual(state.success_count, 8)
+                self.assertEqual(state.failed_count, 0)
                 # assembled.png 真存在
                 assembled = Path(td) / task_id / "assembled.png"
                 self.assertTrue(assembled.is_file(),
                                 f"v2 assembled.png 应存在: {assembled}")
                 self.assertGreater(assembled.stat().st_size, 100_000,
                                    "v2 mock 拼接结果应通过 E 刀阈值")
+        finally:
+            pipeline_runner._TASKS.pop(task_id, None)
+
+    def test_worker_v2_reports_partial_success_counts_instead_of_full_success(self):
+        """只有 Hero 成功时可保留结果，但绝不能冒充完整多屏成功。"""
+        from PIL import Image
+
+        task_id = f"test_v2_partial_{uuid.uuid4().hex[:6]}"
+        pipeline_runner._TASKS[task_id] = pipeline_runner.TaskState(task_id=task_id)
+        planning = {
+            "product_meta": {"name": "Partial"},
+            "screen_count": 3,
+            "screens": [
+                {"idx": 1, "role": "hero", "block_id": "screen_01_hero"},
+                {"idx": 2, "role": "brand_quality", "block_id": "screen_02_brand"},
+                {"idx": 3, "role": "faq", "block_id": "screen_03_faq"},
+            ],
+        }
+        blocks = [
+            {
+                "block_id": "screen_01_hero", "visual_type": "hero",
+                "is_hero": True, "file": "hero.png", "image_url": "/hero.png",
+                "raw_url": "https://cdn.invalid/hero.png",
+                "success": True, "placeholder": False,
+            },
+            {
+                "block_id": "screen_02_brand", "visual_type": "brand_quality",
+                "is_hero": False, "file": "brand.png", "image_url": "/brand.png",
+                "raw_url": "", "success": False, "placeholder": True,
+            },
+            {
+                "block_id": "screen_03_faq", "visual_type": "faq",
+                "is_hero": False, "file": "faq.png", "image_url": "/faq.png",
+                "raw_url": "", "success": False, "placeholder": True,
+            },
+        ]
+
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                task_dir = Path(td) / task_id
+
+                def assemble(_task_dir, _blocks):
+                    image = Image.frombytes(
+                        "RGB", (400, 800), os.urandom(400 * 800 * 3),
+                    )
+                    image.save(_task_dir / "assembled.png", "PNG")
+                    return f"/static/ai_refine_v2/{task_id}/assembled.png"
+
+                with mock.patch.object(pipeline_runner, "_OUTPUT_BASE", Path(td)), \
+                     mock.patch.object(pipeline_runner, "_load_mock_planning_v2", return_value=planning), \
+                     mock.patch.object(pipeline_runner, "_run_real_generator_v2", return_value=(blocks, 0.7)), \
+                     mock.patch.object(pipeline_runner, "_run_assembler_v2", side_effect=assemble):
+                    pipeline_runner._worker_v2(
+                        task_id=task_id,
+                        product_text="x",
+                        product_image_url="p",
+                        product_title="Partial",
+                        deepseek_key="",
+                        gpt_image_key="fake",
+                    )
+
+                state = pipeline_runner._TASKS[task_id]
+                self.assertEqual(state.status, "partial_success")
+                self.assertEqual(state.planned_count, 3)
+                self.assertEqual(state.success_count, 1)
+                self.assertEqual(state.failed_count, 2)
+                summary = json.loads(
+                    (task_dir / "_summary.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(summary["terminal_status"], "partial_success")
+                self.assertEqual(summary["planned_count"], 3)
+                self.assertEqual(summary["success_count"], 1)
+                self.assertEqual(summary["failed_count"], 2)
         finally:
             pipeline_runner._TASKS.pop(task_id, None)
 

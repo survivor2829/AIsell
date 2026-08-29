@@ -55,11 +55,65 @@ _UA = "ai-refine-v2-planner/1.0"
 _VALID_CATEGORIES = ("设备类", "耗材类", "配件类", "工具类")
 _VALID_VISUAL_TYPES = ("product_in_scene", "product_closeup", "concept_visual")
 _VALID_PRIORITIES = ("high", "medium", "low")
+MAX_PRODUCT_TEXT_CHARS = 20_000
+MAX_PRODUCT_TITLE_CHARS = 120
 
 
 # ── 异常 ────────────────────────────────────────────────────────
 class PlannerError(RuntimeError):
     """规划层失败 (API / 解析 / schema 验证 超过重试次数)."""
+
+
+class ProductInputError(PlannerError):
+    """Code-bearing input error shared by HTTP and planner boundaries."""
+
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
+
+
+def validate_product_inputs(
+    product_text: str,
+    product_title: Optional[str] = None,
+) -> tuple[str, str]:
+    """校验并规范 planner 输入，避免超长或非文本数据进入 LLM。"""
+    if not isinstance(product_text, str) or not product_text.strip():
+        raise ProductInputError(
+            "AI_REFINE_PRODUCT_TEXT_REQUIRED",
+            "产品文案不能为空，请填写产品文案；仅填产品标题不能启动 AI 精修",
+        )
+    clean_text = product_text.strip()
+    if len(clean_text) > MAX_PRODUCT_TEXT_CHARS:
+        raise ProductInputError(
+            "AI_REFINE_PRODUCT_TEXT_TOO_LONG",
+            f"产品文案最多 {MAX_PRODUCT_TEXT_CHARS} 个字符",
+        )
+    if any(ord(ch) < 32 and ch not in "\r\n\t" for ch in clean_text):
+        raise ProductInputError(
+            "AI_REFINE_PRODUCT_TEXT_INVALID",
+            "产品文案含不支持的控制字符",
+        )
+
+    if product_title is None:
+        clean_title = ""
+    elif not isinstance(product_title, str):
+        raise ProductInputError(
+            "AI_REFINE_PRODUCT_TITLE_INVALID",
+            "产品标题必须是文本",
+        )
+    else:
+        clean_title = product_title.strip()
+    if len(clean_title) > MAX_PRODUCT_TITLE_CHARS:
+        raise ProductInputError(
+            "AI_REFINE_PRODUCT_TITLE_TOO_LONG",
+            f"产品标题最多 {MAX_PRODUCT_TITLE_CHARS} 个字符",
+        )
+    if any(ord(ch) < 32 for ch in clean_title):
+        raise ProductInputError(
+            "AI_REFINE_PRODUCT_TITLE_INVALID",
+            "产品标题含不支持的控制字符",
+        )
+    return clean_text, clean_title
 
 
 # ── HTTP 客户端 (urllib + 显式关代理 - DeepSeek 国内 API 禁走 Clash) ──
@@ -209,8 +263,8 @@ def plan(
 
     Args:
         product_text: 产品文案原文 (不能为空)
-        product_image_url: 产品图 URL, 可选. W1 不用, 仅在 prompt 里提 hint;
-                           W2 接 gpt-image-2 时才真用.
+        product_image_url: 产品图 URL/路径, 可选. 只向 DeepSeek 传有/无语义;
+                           原值不进入 prompt.
         user_opts: {"force_vs": bool, "force_scenes": bool, "force_specs": bool}
         api_key: DeepSeek API key. None 时从 env DEEPSEEK_API_KEY 读.
         model: DeepSeek 模型名, 默认 DEEPSEEK_MODEL / deepseek-v4-flash
@@ -224,18 +278,21 @@ def plan(
     Raises:
         PlannerError: 参数非法 / 超过 max_retries 仍失败
     """
-    if not product_text or not product_text.strip():
-        raise PlannerError("product_text 不能为空")
+    clean_product_text, _ = validate_product_inputs(product_text)
 
     use_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if not use_key:
         raise PlannerError("未配置 DEEPSEEK_API_KEY (传参或设 env var)")
 
     opts = user_opts or {}
-    image_hint = product_image_url or "(暂无, 请从文案和品类推断视觉特征)"
+    image_hint = (
+        "已提供产品参考图（仅表示有图，不向 DeepSeek 传递本机路径）"
+        if product_image_url
+        else "未提供产品参考图"
+    )
 
     user_prompt = USER_PROMPT_TEMPLATE.format(
-        product_text=product_text.strip(),
+        product_text=json.dumps(clean_product_text, ensure_ascii=False),
         product_image_hint=image_hint,
         force_vs=str(opts.get("force_vs", False)).lower(),
         force_scenes=str(opts.get("force_scenes", False)).lower(),
@@ -325,8 +382,208 @@ _REQUIRED_ROLES_V2 = frozenset({
 # v3 SCOTT_OVERRIDE 默认屏型 (deliberate_dna_divergence 必须 true)
 _SCOTT_OVERRIDE_ROLES_V2 = frozenset({"spec_table", "FAQ"})
 
+_NEGATIVE_GUARD_PARTS_V2 = (
+    "do not invent any brand logos, company names, trademarks, certifications",
+    "preserve all existing labels, stickers, model markings, printed text exactly",
+    "no 「」-quoted headlines should be added onto the product surface itself",
+)
 
-def _validate_schema_v2(parsed: dict) -> list[str]:
+_LAYOUT_HINTS_V2: dict[str, tuple[str, ...]] = {
+    "hero": ("single focal point", "centered hero shot"),
+    "feature_wall": ("grid layout", "card arrangement", "tile mosaic"),
+    "scenario": ("triptych", "split-panel composition", "side-by-side scenes"),
+    "scenario_grid_2x3": (
+        "6-scene application grid",
+        "real-world deployment showcase",
+        "2x3 photo grid with captions",
+    ),
+    "vs_compare": (
+        "side-by-side card comparison",
+        "two-column comparison table with checkmarks",
+    ),
+    "detail_zoom": (
+        "macro close-up overlaid with annotation cards",
+        "zoom + callouts",
+    ),
+    "icon_grid_radial": (
+        "radial icon grid",
+        "configuration showcase",
+        "centered product with peripheral icon callouts",
+    ),
+    "spec_table": (
+        "product hero shot on top half, spec table on bottom half",
+        "industrial spec sheet with product portrait header",
+    ),
+    "value_story": (
+        "hud overlays on photo background",
+        "data viz layered on neutral cool gray gradient",
+    ),
+    "brand_quality": ("single focal point", "heroic centered composition"),
+    "FAQ": ("faq card grid", "q&a panel layout", "2x3 q&a grid with frosted glass cards"),
+    "lifestyle_demo": (
+        "real-world demo with operator",
+        "engineer using product in scene",
+        "natural light environmental portrait",
+    ),
+    "material_origin": (
+        "documentary process triptych",
+        "raw-material journey card sequence",
+    ),
+}
+
+_POSITIVE_LOGO_INSTRUCTION_RE = re.compile(
+    r"(?:\b(?:add|invent|create|design|draw)\b.{0,80}\b(?:logo|trademark)\b"
+    r"|(?:添加|生成|设计|绘制|编造).{0,40}(?:logo|商标|品牌标识))",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_NUMERIC_COMMERCIAL_CLAIM_RE = re.compile(
+    r"(?:全国\s*)?(?P<value>\d+(?:\.\d+)?)\s*(?P<plus>\+?)\s*"
+    r"(?P<unit>(?:售后)?网点|万台|万家|个月|小时|分钟|年|月|天|%|％|家|处|客户|企业|用户|台)"
+    r"(?:品牌|质保|保修|保证|响应|上门|续航|作业|好评|售后)?",
+    re.IGNORECASE,
+)
+
+_CERTIFICATION_CLAIM_RE = re.compile(
+    r"(?<![A-Za-z])(?:ISO\s*\d+|CCC|CE|FDA)(?![A-Za-z])\s*(?:认证)?",
+    re.IGNORECASE,
+)
+
+_NUMERIC_CLAIM_SEMANTICS = (
+    ("endurance", ("续航",)),
+    ("warranty", ("质保", "保修")),
+    ("response", ("响应",)),
+    ("onsite_service", ("上门",)),
+    ("service_network", ("售后", "网点")),
+    ("operation", ("作业", "工作时长")),
+    ("rating", ("好评", "满意率")),
+    ("customer_scale", ("客户", "用户", "企业")),
+    ("brand_history", ("品牌", "成立", "创立")),
+    ("guarantee", ("保证",)),
+    ("return", ("退货",)),
+    (
+        "performance_rate",
+        ("效率", "准确率", "成功率", "通过率", "故障率", "节省", "提升", "降低"),
+    ),
+)
+
+_CLAIM_CONTEXT_BOUNDARIES = ",，。.;；!?！？\r\n、"
+_NUMERIC_UNIT_ALIASES = {"％": "%", "个月": "月", "售后网点": "网点"}
+
+_FIXED_COMMERCIAL_CLAIMS = (
+    "行业领先",
+    "国家专利",
+    "国标",
+    "军工标准",
+    "全国包邮",
+    "终身质保",
+    "免费安装",
+    "无理由退货",
+)
+
+
+def _normalize_claim_text(value: str) -> str:
+    return re.sub(r"[\s,，。.;；:：'\"「」()（）\-_/]", "", value).lower()
+
+
+def _claim_semantic_category(text: str, match: re.Match) -> str:
+    """取数值承诺最近的语义类别，避免只靠整段字面顺序判定。"""
+    left = max(
+        (text.rfind(ch, 0, match.start()) for ch in _CLAIM_CONTEXT_BOUNDARIES),
+        default=-1,
+    ) + 1
+    right_candidates = [
+        pos
+        for ch in _CLAIM_CONTEXT_BOUNDARIES
+        if (pos := text.find(ch, match.end())) >= 0
+    ]
+    right = min(right_candidates, default=len(text))
+    context = text[left:right]
+
+    nearest: Optional[tuple[int, int, str]] = None
+    for category_index, (category, keywords) in enumerate(_NUMERIC_CLAIM_SEMANTICS):
+        for keyword in keywords:
+            offset = context.find(keyword)
+            while offset >= 0:
+                keyword_start = left + offset
+                keyword_end = keyword_start + len(keyword)
+                distance = max(
+                    match.start() - keyword_end,
+                    keyword_start - match.end(),
+                    0,
+                )
+                candidate = (distance, category_index, category)
+                if nearest is None or candidate < nearest:
+                    nearest = candidate
+                offset = context.find(keyword, offset + 1)
+    if nearest is not None:
+        return nearest[2]
+
+    unit = _NUMERIC_UNIT_ALIASES.get(match.group("unit"), match.group("unit"))
+    if unit in {"年", "月", "天", "小时", "分钟"}:
+        return "duration"
+    if unit == "%":
+        return "ratio"
+    if unit in {"家", "万家", "客户", "企业", "用户"}:
+        return "organization_count"
+    if unit in {"处", "网点"}:
+        return "location_count"
+    return "unit_count"
+
+
+def _numeric_claim_key(text: str, match: re.Match) -> tuple[str, str, bool, str]:
+    whole, separator, fraction = match.group("value").partition(".")
+    whole = whole.lstrip("0") or "0"
+    fraction = fraction.rstrip("0")
+    value = whole + (f".{fraction}" if separator and fraction else "")
+    unit = _NUMERIC_UNIT_ALIASES.get(match.group("unit"), match.group("unit"))
+    return (
+        value,
+        unit,
+        bool(match.group("plus")),
+        _claim_semantic_category(text, match),
+    )
+
+
+def _find_unbacked_commercial_claims(prompt: str, product_text: str) -> list[str]:
+    """返回 prompt 中出现、但产品原文没有的可验证商业承诺。"""
+    source_normalized = _normalize_claim_text(product_text)
+    source_numeric_claims = {
+        _numeric_claim_key(product_text, match)
+        for match in _NUMERIC_COMMERCIAL_CLAIM_RE.finditer(product_text)
+    }
+
+    unbacked: list[str] = []
+    for match in _NUMERIC_COMMERCIAL_CLAIM_RE.finditer(prompt):
+        claim = match.group(0)
+        normalized = _normalize_claim_text(claim)
+        is_backed = normalized in source_normalized or (
+            _numeric_claim_key(prompt, match) in source_numeric_claims
+        )
+        if normalized and not is_backed and claim not in unbacked:
+            unbacked.append(claim)
+
+    strict_candidates = [
+        match.group(0) for match in _CERTIFICATION_CLAIM_RE.finditer(prompt)
+    ]
+    strict_candidates.extend(
+        claim for claim in _FIXED_COMMERCIAL_CLAIMS if claim in prompt
+    )
+    for claim in strict_candidates:
+        normalized = _normalize_claim_text(claim)
+        if (
+            normalized
+            and normalized not in source_normalized
+            and claim not in unbacked
+        ):
+            unbacked.append(claim)
+    return unbacked
+
+
+def _validate_schema_v2(
+    parsed: dict,
+    product_text: Optional[str] = None,
+) -> list[str]:
     """v2 schema 校验. 返回 warning list (空 = 合规, 非空 = 触发重试).
 
     必检字段:
@@ -429,6 +686,44 @@ def _validate_schema_v2(parsed: dict) -> list[str]:
                     f"合法 = {sorted(_VALID_ROLES_V2)}"
                 )
 
+            # 不把 prompt 约束只交给模型“自觉”：在任何付费生图前确定性验证。
+            if isinstance(p, str) and p.strip():
+                prompt_lower = p.lower()
+                prompt_tail = " ".join(prompt_lower[-1600:].split())
+                missing_negative_parts = [
+                    part
+                    for part in _NEGATIVE_GUARD_PARTS_V2
+                    if part not in prompt_tail
+                ]
+                if missing_negative_parts:
+                    w.append(
+                        f"screens[{i}].prompt 缺完整 negative guard "
+                        f"({len(missing_negative_parts)} 段未出现在末尾)"
+                    )
+
+                if _POSITIVE_LOGO_INSTRUCTION_RE.search(p):
+                    w.append(
+                        f"screens[{i}].prompt 含主动新增 logo/商标的指令"
+                    )
+
+                layout_hints = _LAYOUT_HINTS_V2.get(role, ())
+                if layout_hints and not any(
+                    hint.lower() in prompt_lower for hint in layout_hints
+                ):
+                    w.append(
+                        f"screens[{i}].prompt 缺 role={role!r} 对应 layout 关键词"
+                    )
+
+                if isinstance(product_text, str):
+                    unbacked_claims = _find_unbacked_commercial_claims(
+                        p, product_text
+                    )
+                    if unbacked_claims:
+                        w.append(
+                            f"screens[{i}].prompt 含产品原文未提供的商业承诺: "
+                            f"{unbacked_claims}"
+                        )
+
             # v3: SCOTT_OVERRIDE 屏型 (spec_table / FAQ) 必须显式 deliberate_dna_divergence=true
             if role in _SCOTT_OVERRIDE_ROLES_V2:
                 if s.get("deliberate_dna_divergence") is not True:
@@ -529,7 +824,7 @@ def plan_v2(
 
     Args:
         product_text:       产品文案原文 (不能空)
-        product_image_url:  产品图 URL, 可选 (DeepSeek 看 URL 文本作 hint)
+        product_image_url:  产品图 URL/路径, 可选 (DeepSeek 只接收有/无语义)
         product_title:      产品标题, 可选 (UI 上的标题字段)
         api_key:            DeepSeek key, None 时从 env DEEPSEEK_API_KEY 读
         model:              DeepSeek 模型名, 默认 DEEPSEEK_MODEL / deepseek-v4-flash
@@ -546,17 +841,26 @@ def plan_v2(
         PlannerError: 参数非法 / API 网络挂 / JSON 解析失败 / schema 不合规
                       超过 max_retries 仍失败
     """
-    if not product_text or not product_text.strip():
-        raise PlannerError("product_text 不能为空")
+    clean_product_text, clean_product_title = validate_product_inputs(
+        product_text,
+        product_title,
+    )
 
     use_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if not use_key:
         raise PlannerError("未配置 DEEPSEEK_API_KEY (传参或设 env var)")
 
     user_prompt = USER_PROMPT_TEMPLATE_V2.format(
-        product_text=product_text.strip(),
-        product_title_hint=(product_title or "(未填, 从文案推断)").strip(),
-        product_image_hint=(product_image_url or "(暂无, 从文案+品类推断视觉特征)"),
+        product_text=json.dumps(clean_product_text, ensure_ascii=False),
+        product_title_hint=json.dumps(
+            clean_product_title or "(未填, 从文案推断)",
+            ensure_ascii=False,
+        ),
+        product_image_hint=(
+            "已提供产品参考图（仅表示有图，不向 DeepSeek 传递本机路径）"
+            if product_image_url
+            else "未提供产品参考图"
+        ),
     )
 
     payload = {
@@ -598,7 +902,10 @@ def plan_v2(
             raw_content = resp["choices"][0]["message"]["content"]
             parsed = _extract_json(raw_content)
             parsed = _repair_duplicate_roles_v2(parsed)
-            schema_warnings = _validate_schema_v2(parsed)
+            schema_warnings = _validate_schema_v2(
+                parsed,
+                product_text=clean_product_text,
+            )
             if schema_warnings:
                 last_err = f"v2 schema 不合规: {schema_warnings}"
                 last_schema_warnings = schema_warnings

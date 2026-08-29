@@ -29,7 +29,7 @@ import uuid
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 
 T2I_MODEL = "gpt-image-2"
@@ -56,6 +56,8 @@ _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 _UPLOAD_CACHE_TTL_S = 71 * 60 * 60
 _UPLOAD_CACHE: dict[str, tuple[float, str, bool]] = {}
 _UPLOAD_CACHE_LOCK = threading.Lock()
+_RESULT_ROUTE_BY_URL: dict[str, bool] = {}
+_RESULT_ROUTE_LOCK = threading.Lock()
 
 
 def _snapshot_apimart_proxy_settings() -> dict[str, str]:
@@ -105,6 +107,12 @@ class APIMartReferenceUploadTransportError(APIMartError):
     """The reference image never reached a confirmed upload response."""
 
 
+class APIMartResultDownloadError(APIMartError):
+    """A paid result exists remotely but could not be persisted locally."""
+
+    recovery_required = True
+
+
 
 def _apimart_base() -> str:
     """读 REFINE_API_BASE_URL. 启动时 app.py:_REQUIRED_PLATFORM_KEYS 已保证非空."""
@@ -132,6 +140,97 @@ def _build_apimart_opener(*, direct: bool = False):
 
 def _open_apimart(request: urllib.request.Request, *, timeout: int, direct: bool = False):
     return _build_apimart_opener(direct=direct).open(request, timeout=timeout)
+
+
+def _remember_result_route(url: str, direct: bool) -> None:
+    """Associate a completed result URL with the route that polled it."""
+    if not url:
+        return
+    with _RESULT_ROUTE_LOCK:
+        if len(_RESULT_ROUTE_BY_URL) >= 512:
+            _RESULT_ROUTE_BY_URL.pop(next(iter(_RESULT_ROUTE_BY_URL)))
+        _RESULT_ROUTE_BY_URL[url] = bool(direct)
+
+
+def get_result_route(url: str) -> str:
+    """Return ``system``, ``direct`` or ``unknown`` for a result URL."""
+    with _RESULT_ROUTE_LOCK:
+        direct = _RESULT_ROUTE_BY_URL.get(url)
+    if direct is None:
+        return "unknown"
+    return "direct" if direct else "system"
+
+
+def _result_download_routes(preferred_route: str) -> list[bool]:
+    preferred = str(preferred_route or "unknown").strip().lower()
+    if preferred == "direct":
+        routes = [True]
+        if _APIMART_PROXY_SETTINGS:
+            routes.append(False)
+        return routes
+    if preferred == "system":
+        routes = [False]
+        if _APIMART_PROXY_SETTINGS:
+            routes.append(True)
+        return routes
+    routes = [False]
+    if _APIMART_PROXY_SETTINGS:
+        routes.append(True)
+    return routes
+
+
+def download_result_image(
+    url: str,
+    destination: str | Path,
+    *,
+    preferred_route: str = "unknown",
+    timeout: int = 60,
+    retries: int = 2,
+) -> str:
+    """Download one completed result without ever submitting a new task.
+
+    The route proven during reference upload / submit / poll is tried first.
+    Because GET is non-billable, the alternate route is a safe fallback. Bytes
+    are atomically replaced so a process crash cannot leave a partial image at
+    the final path. The selected route is returned for durable checkpoints.
+    """
+    if not str(url or "").startswith(("https://", "http://")):
+        raise APIMartResultDownloadError("APIMart 结果 URL 无效，已保留任务供恢复")
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    last_error: Exception | None = None
+    for direct in _result_download_routes(preferred_route):
+        for attempt in range(max(0, int(retries)) + 1):
+            temp_path = destination.with_name(
+                f".{destination.name}.{uuid.uuid4().hex}.tmp"
+            )
+            try:
+                request = urllib.request.Request(url, headers={"User-Agent": _UA})
+                with _open_apimart(request, timeout=timeout, direct=direct) as response:
+                    payload = response.read()
+                if len(payload) < 1024:
+                    raise RuntimeError(
+                        f"下载内容 < 1KB ({len(payload)} 字节)，视作失败"
+                    )
+                with temp_path.open("wb") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temp_path, destination)
+                selected = "direct" if direct else "system"
+                _remember_result_route(url, direct)
+                return selected
+            except Exception as exc:
+                last_error = exc
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                if attempt < max(0, int(retries)):
+                    time.sleep(1)
+    raise APIMartResultDownloadError(
+        f"APIMart 已生成结果但本地下载失败，原始 URL 已保留供恢复: {last_error}"
+    ) from last_error
 
 def _http_post_json(url: str, payload: dict, api_key: str,
                     timeout: int = 30, *, direct: bool = False) -> tuple[int, Any]:
@@ -480,12 +579,41 @@ def default_api_call(prompt: str,
                      image_data_url: Optional[str | list[str]],
                      api_key: str,
                      thinking: str = "medium",
-                     size: str = _SIZE_DEFAULT) -> str:
+                     size: str = _SIZE_DEFAULT,
+                     *,
+                     lifecycle_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+                     ) -> str:
     """Upload references, submit once, then poll that same task to completion."""
     task_id, selected_direct = _submit_image_task_for_route(
         prompt, image_data_url, api_key, thinking=thinking, size=size,
     )
-    return poll_image_task(task_id, api_key, direct=selected_direct)
+    route = "direct" if selected_direct else "system"
+    if lifecycle_callback is not None:
+        try:
+            lifecycle_callback({
+                "event": "submitted",
+                "provider_task_id": task_id,
+                "route": route,
+            })
+        except Exception as exc:
+            raise APIMartOutcomeUnknown(
+                task_id, "APIMart 任务已提交但本地断点保存失败",
+            ) from exc
+    result_url = poll_image_task(task_id, api_key, direct=selected_direct)
+    _remember_result_route(result_url, selected_direct)
+    if lifecycle_callback is not None:
+        try:
+            lifecycle_callback({
+                "event": "completed",
+                "provider_task_id": task_id,
+                "raw_url": result_url,
+                "route": route,
+            })
+        except Exception as exc:
+            raise APIMartOutcomeUnknown(
+                task_id, "APIMart 已返回结果但本地断点保存失败",
+            ) from exc
+    return result_url
 
 # ── Router 兼容接口 ────────────────────────────────────────────
 
@@ -553,10 +681,12 @@ def download_image(url: str, save_dir, filename: str = "") -> str:
     local = save_dir / fname
 
     try:
-        # APIMart 返回 CDN URL (cloudflare / oss / etc), 不走代理
-        req = urllib.request.Request(url, headers={"User-Agent": _UA})
-        with urllib.request.urlopen(req, timeout=60) as r:
-            local.write_bytes(r.read())
+        download_result_image(
+            url,
+            local,
+            preferred_route=get_result_route(url),
+            timeout=60,
+        )
         return str(local)
     except Exception as e:
         print(f"[apimart] download 失败 {url}: {e}")

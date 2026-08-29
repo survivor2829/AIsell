@@ -1,8 +1,8 @@
 """AI 精修 v2 · 端到端管线 runner · 供 /api/ai-refine-v2/execute 调用.
 
 职责:
-  Planner (DeepSeek)  →  6 个 block 的 planning
-  Generator (APIMart) →  6 张 AI 精修图
+  Planner (DeepSeek)  →  动态多屏 planning
+  Generator (APIMart) →  对应 AI 精修图
   Assembler (Jinja + Playwright) → assembled.png
 
 特性:
@@ -14,8 +14,9 @@
     - REFINE_API_KEY 缺 → 跳过真 API 调用, 复用 static/smoke_output_v2/block_*.jpg
 
 任务状态机:
-  pending → running_planner → running_generator → running_assembler → success
-                                                                   ↘ failed
+  pending → running_planner → running_generator → running_assembler
+                                                   ↳ success | partial_success
+                                                   ↳ recovery_required | failed
 
 Why not Celery/RQ:
   单机 Flask 项目, 无需消息队列. 内存 dict 够用, 重启全清.
@@ -25,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import concurrent.futures
 import threading
 import time
 import traceback
@@ -58,7 +60,7 @@ class TaskState:
     task_id: str
     # P4 §A.6: owner 标记防 IDOR. None = 历史任务 (无 owner) → 仅 admin 可读.
     user_id: int | None = None
-    status: str = "pending"  # pending | running_planner | running_generator | running_assembler | success | failed
+    status: str = "pending"  # running_* | success | partial_success | recovery_required | failed | outcome_unknown
     mode: str = "unknown"     # real | mock | partial-mock
     progress_pct: int = 0     # 0-100
     progress_msg: str = "排队中..."
@@ -72,6 +74,9 @@ class TaskState:
     # 不然 blocks[i].image_url 会被 pipeline 覆盖成本地 /static/... 路径, 原 URL 丢失.
     raw_urls: list[str] = field(default_factory=list)
     assembled_url: str = ""
+    planned_count: int = 0
+    success_count: int = 0
+    failed_count: int = 0
     # 错误
     error: str = ""
     error_trace: str = ""
@@ -82,6 +87,15 @@ class TaskState:
 
 _TASKS: dict[str, TaskState] = {}
 _TASKS_LOCK = threading.Lock()
+_RECOVERY_TASK_IDS: set[str] = set()
+
+
+class PaidResultRecoveryRequired(RuntimeError):
+    """Paid provider results exist and must be recovered, never resubmitted."""
+
+    do_not_retry = True
+    outcome_unknown = False
+    recovery_required = True
 
 
 def _set(task_id: str, **fields):
@@ -92,6 +106,148 @@ def _set(task_id: str, **fields):
         for k, v in fields.items():
             setattr(st, k, v)
         st.elapsed_s = round(time.time() - st.started_at, 1)
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """Write JSON through a same-directory temporary file and atomic replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temp_path.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _result_counts(blocks: list[dict], planned_count: int) -> tuple[int, int, int]:
+    planned = max(int(planned_count or 0), len(blocks))
+    success = sum(1 for block in blocks if bool(block.get("success")))
+    failed = max(planned - success, 0)
+    return planned, success, failed
+
+
+def _task_identity(task_id: str) -> tuple[int | None, str]:
+    with _TASKS_LOCK:
+        state = _TASKS.get(task_id)
+        if state is None:
+            return None, "unknown"
+        return state.user_id, state.mode
+
+
+def _persist_recovery(
+    task_dir: Path,
+    blocks: list[dict],
+    total_cost_rmb: float,
+    planned_count: int,
+    *,
+    status: str,
+    error: str = "",
+    schema_mode: str = "",
+) -> dict:
+    """Persist provider URLs and local download state before terminal assembly."""
+    planned, success, failed = _result_counts(blocks, planned_count)
+    user_id, mode = _task_identity(task_dir.name)
+    payload = {
+        "schema_version": 1,
+        "task_id": task_dir.name,
+        "user_id": user_id,
+        "mode": mode,
+        "schema_mode": schema_mode,
+        "status": status,
+        "planned_count": planned,
+        "success_count": success,
+        "failed_count": failed,
+        "total_cost_rmb": float(total_cost_rmb or 0.0),
+        "raw_urls": [str(block.get("raw_url") or "") for block in blocks],
+        "blocks": blocks,
+        "error": str(error or ""),
+        "updated_at": time.time(),
+    }
+    _atomic_write_json(task_dir / "_recovery.json", payload)
+    return payload
+
+
+def _read_json(path: Path) -> dict | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _status_from_record(task_id: str, data: dict, *, terminal: bool) -> dict:
+    blocks = data.get("blocks", []) or []
+    raw_urls = data.get("raw_urls", []) or []
+    inferred_planned, inferred_success, inferred_failed = _result_counts(
+        blocks, int(data.get("planned_count", 0) or len(raw_urls) or len(blocks)),
+    )
+    planned = int(data.get("planned_count", inferred_planned) or inferred_planned)
+    success = int(data.get("success_count", inferred_success) or 0)
+    failed = int(data.get("failed_count", inferred_failed) or 0)
+    planned = max(planned, len(blocks), success + failed)
+    failed = max(failed, planned - success)
+    if terminal:
+        status = str(data.get("terminal_status") or "").strip()
+        if status not in {"success", "partial_success"}:
+            status = "success" if failed == 0 else "partial_success"
+        if status == "success" and failed:
+            status = "partial_success"
+        progress_pct = 100
+        progress_msg = (
+            "已完成 (从磁盘恢复)"
+            if status == "success"
+            else f"部分完成 {success}/{planned} (从磁盘恢复)"
+        )
+    else:
+        recorded_status = str(data.get("status") or "").strip()
+        # A persisted recovery worker disappears when the process exits.  Do not
+        # expose that stale disk marker as a live worker after restart; make the
+        # original task recoverable again instead.
+        if recorded_status == "running_recovery":
+            recorded_status = "recovery_required"
+        status = (
+            recorded_status
+            if recorded_status in {
+                "outcome_unknown", "recovery_required", "failed",
+            }
+            else "recovery_required"
+        )
+        progress_pct = 100 if status == "failed" else 90
+        progress_msg = (
+            "原付费任务结果仍不确定，已停止自动重提"
+            if status == "outcome_unknown"
+            else (
+                "原任务已明确失败，未自动重提"
+                if status == "failed"
+                else "已保留付费结果，等待恢复下载/拼装"
+            )
+        )
+    return {
+        "task_id": task_id,
+        "user_id": data.get("user_id"),
+        "status": status,
+        "mode": data.get("mode", "unknown"),
+        "progress_pct": progress_pct,
+        "progress_msg": progress_msg,
+        "started_at": 0.0,
+        "elapsed_s": 0.0,
+        "cost_rmb": float(data.get("total_cost_rmb", 0.0) or 0.0),
+        "planning": None,
+        "blocks": blocks,
+        "raw_urls": raw_urls,
+        "assembled_url": "",
+        "planned_count": planned,
+        "success_count": success,
+        "failed_count": failed,
+        "error": str(data.get("error") or ""),
+        "error_trace": "",
+    }
 
 
 def get_task_status(task_id: str) -> dict | None:
@@ -111,37 +267,38 @@ def get_task_status(task_id: str) -> dict | None:
         if st:
             return st.to_dict()
 
-    # Fallback: 内存丢失但磁盘有任务产物
-    summary_file = _OUTPUT_BASE / task_id / "_summary.json"
-    if not summary_file.is_file():
-        return None
-    try:
-        data = json.loads(summary_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
+    # Fallback: only a decodable assembled image plus terminal summary is success.
+    task_dir = _OUTPUT_BASE / task_id
+    summary_data = _read_json(task_dir / "_summary.json")
+    if summary_data is not None:
+        result = _status_from_record(task_id, summary_data, terminal=True)
+        try:
+            _validate_assembled_png(task_dir / "assembled.png")
+        except Exception as exc:
+            result["status"] = (
+                "recovery_required" if any(result["raw_urls"]) else "failed"
+            )
+            result["progress_pct"] = 90
+            result["progress_msg"] = "成品校验失败，已保留原始结果"
+            result["error"] = f"assembled.png 校验失败: {exc}"
+            return result
+        result["assembled_url"] = f"/static/ai_refine_v2/{task_id}/assembled.png"
+        return result
 
-    assembled_file = _OUTPUT_BASE / task_id / "assembled.png"
-    assembled_url = (
-        f"/static/ai_refine_v2/{task_id}/assembled.png"
-        if assembled_file.is_file() else ""
-    )
-    return {
-        "task_id": task_id,
-        "user_id": data.get("user_id"),  # 旧 summary 无 owner 时仍为 None
-        "status": "success",  # _summary.json 落盘等于任务已完成
-        "mode": data.get("mode", "unknown"),
-        "progress_pct": 100,
-        "progress_msg": "已完成 (从磁盘恢复)",
-        "started_at": 0.0,
-        "elapsed_s": 0.0,
-        "cost_rmb": float(data.get("total_cost_rmb", 0.0) or 0.0),
-        "planning": None,
-        "blocks": data.get("blocks", []) or [],
-        "raw_urls": data.get("raw_urls", []) or [],
-        "assembled_url": assembled_url,
-        "error": "",
-        "error_trace": "",
-    }
+    recovery_data = _read_json(task_dir / "_recovery.json")
+    if recovery_data is not None and (
+        recovery_data.get("status") in {
+            "outcome_unknown", "recovery_required", "running_recovery", "failed",
+        }
+        or any(recovery_data.get("raw_urls", []) or [])
+        or any(
+            str(block.get("provider_task_id") or "")
+            for block in (recovery_data.get("blocks", []) or [])
+            if isinstance(block, dict)
+        )
+    ):
+        return _status_from_record(task_id, recovery_data, terminal=False)
+    return None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -264,6 +421,11 @@ def _load_mock_planning_v2(product_text: str, product_title: str) -> dict:
     每屏 prompt ≥200 字符, 让 generate_v2 不会因空 prompt 跳过.
     第一版用硬编码 fallback; 未来可选从 stage1_eval_output/ 加载真样本.
     """
+    from ai_refine_v2.refine_planner import (
+        _LAYOUT_HINTS_V2,
+        _NEGATIVE_GUARD_PARTS_V2,
+    )
+
     name = product_title or "MockProduct 测试产品"
     base_prompt = (
         "Mock planning v2 screen prompt with cinematic low-angle shot, "
@@ -276,12 +438,17 @@ def _load_mock_planning_v2(product_text: str, product_title: str) -> dict:
     roles = ["hero", "feature_wall", "scenario", "vs_compare",
              "detail_zoom", "lifestyle_demo", "brand_quality", "spec_table"]
     screens = []
+    negative_guard = ". ".join(_NEGATIVE_GUARD_PARTS_V2) + "."
     for i, role in enumerate(roles, start=1):
+        layout_hint = (_LAYOUT_HINTS_V2.get(role) or ("editorial layout",))[0]
         screen = {
             "idx": i,
             "role": role,
             "title": f"屏 {i} · {role}",
-            "prompt": f"Screen {i} ({role}): {base_prompt}",
+            "prompt": (
+                f"Screen {i} ({role}): {base_prompt} "
+                f"Layout contract: {layout_hint}. {negative_guard}"
+            ),
         }
         # v3: SCOTT_OVERRIDE 屏 (spec_table / FAQ) 必须设 deliberate_dna_divergence=True
         if role in ("spec_table", "FAQ"):
@@ -350,53 +517,201 @@ def _copy_mock_images_v2(task_dir: Path, n: int) -> list[dict]:
 # ─────────────────────────────────────────────────────────────
 # 真 Generator (REFINE_API_KEY 已配时)
 # ─────────────────────────────────────────────────────────────
-def _build_noproxy_opener():
-    """独立 opener: 绕代理 (ProxyHandler({})) + 设浏览器 UA (防 CDN 403).
-
-    [绕代理 — 4 刀 A 原由] APIMart 的图 URL 在国外 CDN, Flask 进程可能继承
-    shell 里的 Clash 代理 (127.0.0.1:7890); urllib 默认会读 env, 走代理后挂/
-    超时 (见 2026-04-24 那次 ¥3.50 白烧). ProxyHandler({}) 显式空掉
-    HTTP(S)_PROXY env, 直走外网.
-
-    [浏览器 UA — 2026-04-27 阶段五第 1 关验证补加] APIMart upload.apimart.ai
-    CDN 拒绝 urllib 默认 UA 'Python-urllib/3.x', 直接 HTTP 403 Forbidden
-    (见 stage5 step1 真测: ¥0.70 出图成功但下载挂; curl -A Mozilla 试下来
-    200 OK 验证根因). 用 Chrome desktop UA 模拟浏览器请求, 通过 CDN 反爬虫.
-    """
-    import urllib.request
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    opener.addheaders = [
-        ("User-Agent",
-         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-         "AppleWebKit/537.36 (KHTML, like Gecko) "
-         "Chrome/120.0.0.0 Safari/537.36"),
-    ]
-    return opener
-
-
 def _download_image(url: str, dst: Path, retries: int = 2,
-                    timeout: int = 30, opener=None) -> None:
-    """下载一张图到 dst, 绕代理, 失败重试 retries 次. 总失败则 raise RuntimeError.
+                    timeout: int = 30,
+                    preferred_route: str = "unknown") -> str:
+    """沿用 APIMart 已验证路由下载结果；该路径绝不提交新生图任务。"""
+    import ai_image_apimart
 
-    不吞异常 — 调用方收到后应该让整单 pipeline fail, 不要走 placeholder 静默路径
-    (不然 user 看到假成功 + 白 PNG + 仍被扣钱).
-    """
-    op = opener or _build_noproxy_opener()
-    last_err: Optional[Exception] = None
-    for attempt in range(retries + 1):
-        try:
-            with op.open(url, timeout=timeout) as r:
-                dst.write_bytes(r.read())
-            if dst.stat().st_size < 1024:
-                raise RuntimeError(
-                    f"下载内容 < 1KB ({dst.stat().st_size} 字节), 视作失败"
+    return ai_image_apimart.download_result_image(
+        url,
+        dst,
+        preferred_route=preferred_route,
+        timeout=timeout,
+        retries=retries,
+    )
+
+
+def _make_provider_checkpoint(
+    task_dir: Path,
+    provider_blocks: list[dict],
+    planned_count: int,
+    *,
+    schema_mode: str,
+):
+    """Return a block-bound callback that durably records every provider event."""
+    checkpoint_lock = threading.Lock()
+    blocks: list[dict] = []
+    for idx, source in enumerate(provider_blocks):
+        block_id = str(source.get("block_id") or f"block_{idx + 1}")
+        safe_bid = block_id.replace("/", "_").replace("\\", "_")
+        filename = f"block_{idx + 1:02d}_{safe_bid}.jpg"
+        blocks.append({
+            "block_id": block_id,
+            "visual_type": str(source.get("visual_type") or "screen"),
+            "is_hero": bool(source.get("is_hero") or idx == 0),
+            "file": filename,
+            "image_url": f"/static/ai_refine_v2/{task_dir.name}/{filename}",
+            "raw_url": "",
+            "provider_task_id": "",
+            "download_route": "unknown",
+            "success": False,
+            "placeholder": False,
+            "error": "",
+        })
+    by_id = {block["block_id"]: block for block in blocks}
+    _persist_recovery(
+        task_dir,
+        blocks,
+        0.0,
+        planned_count,
+        status="submitting",
+        schema_mode=schema_mode,
+    )
+
+    def checkpoint(block_id: str, event: dict) -> None:
+        with checkpoint_lock:
+            block = by_id.get(str(block_id))
+            if block is None:
+                raise RuntimeError(f"未知 provider block_id: {block_id}")
+            provider_task_id = str(event.get("provider_task_id") or "").strip()
+            if provider_task_id:
+                block["provider_task_id"] = provider_task_id
+            route = str(event.get("route") or "").strip()
+            if route in {"system", "direct"}:
+                block["download_route"] = route
+            raw_url = str(event.get("raw_url") or "").strip()
+            if raw_url:
+                block["raw_url"] = raw_url
+            block["provider_status"] = str(event.get("event") or "")
+            if event.get("error"):
+                block["error"] = str(event["error"])
+            _persist_recovery(
+                task_dir,
+                blocks,
+                0.0,
+                planned_count,
+                status="generating",
+                schema_mode=schema_mode,
+            )
+            _set(
+                task_dir.name,
+                blocks=blocks,
+                raw_urls=[str(item.get("raw_url") or "") for item in blocks],
+                planned_count=planned_count,
+            )
+
+    return checkpoint
+
+
+def _download_generation_results(
+    result_blocks,
+    task_dir: Path,
+    total_cost_rmb: float,
+    planned_count: int,
+    *,
+    schema_mode: str,
+    is_v2: bool,
+) -> list[dict]:
+    """Checkpoint every provider URL, then download without any resubmission."""
+    import ai_image_apimart
+
+    checkpoint = _read_json(task_dir / "_recovery.json") or {}
+    checkpoint_by_id = {
+        str(block.get("block_id") or ""): block
+        for block in (checkpoint.get("blocks", []) or [])
+        if isinstance(block, dict)
+    }
+    blocks: list[dict] = []
+    for idx, provider_block in enumerate(result_blocks):
+        safe_bid = str(provider_block.block_id).replace("/", "_").replace("\\", "_")
+        filename = f"block_{idx + 1:02d}_{safe_bid}.jpg"
+        raw_url = str(provider_block.image_url or "")
+        provider_failed = bool(provider_block.placeholder or not raw_url)
+        prior = checkpoint_by_id.get(str(provider_block.block_id), {})
+        blocks.append({
+            "block_id": provider_block.block_id,
+            "visual_type": provider_block.visual_type,
+            "is_hero": (idx == 0) if is_v2 else (provider_block.block_id == "hero"),
+            "file": filename,
+            "image_url": f"/static/ai_refine_v2/{task_dir.name}/{filename}",
+            "raw_url": raw_url,
+            "provider_task_id": str(prior.get("provider_task_id") or ""),
+            "download_route": str(
+                prior.get("download_route")
+                or ai_image_apimart.get_result_route(raw_url)
+            ),
+            "success": False,
+            "placeholder": provider_failed,
+            "error": str(provider_block.error or ""),
+        })
+
+    # This write is deliberately before the first network GET. A crash or CDN
+    # outage can no longer erase URLs for already-billed provider results.
+    _persist_recovery(
+        task_dir,
+        blocks,
+        total_cost_rmb,
+        planned_count,
+        status="results_ready",
+        schema_mode=schema_mode,
+    )
+
+    download_errors: list[str] = []
+    for block in blocks:
+        raw_url = block["raw_url"]
+        if raw_url and not block["placeholder"]:
+            try:
+                destination = task_dir / block["file"]
+                selected_route = _download_image(
+                    raw_url,
+                    destination,
+                    retries=2,
+                    preferred_route=block["download_route"],
                 )
-            return
-        except Exception as e:
-            last_err = e
-            if attempt < retries:
-                time.sleep(1)
-    raise RuntimeError(f"下载失败 (重试 {retries} 次): {last_err}")
+                if not _valid_local_image(destination):
+                    raise PaidResultRecoveryRequired(
+                        f"下载后的图片无法解码: {block['block_id']}"
+                    )
+                block["download_route"] = selected_route or block["download_route"]
+                block["success"] = True
+            except Exception as exc:
+                block["placeholder"] = True
+                block["error"] = str(exc)
+                download_errors.append(f"{block['block_id']}: {exc}")
+            _persist_recovery(
+                task_dir,
+                blocks,
+                total_cost_rmb,
+                planned_count,
+                status="downloading",
+                schema_mode=schema_mode,
+            )
+    if download_errors:
+        message = (
+            f"本地下载 {len(download_errors)}/{len(blocks)} 张付费结果失败: "
+            f"{download_errors}. 原始 URL 已原子保存，禁止重新提交生图任务."
+        )
+        _persist_recovery(
+            task_dir,
+            blocks,
+            total_cost_rmb,
+            planned_count,
+            status="recovery_required",
+            error=message,
+            schema_mode=schema_mode,
+        )
+        raise PaidResultRecoveryRequired(message)
+
+    _persist_recovery(
+        task_dir,
+        blocks,
+        total_cost_rmb,
+        planned_count,
+        status="ready_for_assembly",
+        schema_mode=schema_mode,
+    )
+    return blocks
 
 
 def _run_real_generator(planning: dict, product_image_url: str,
@@ -422,12 +737,25 @@ def _run_real_generator(planning: dict, product_image_url: str,
     # 真实 block 总数以 planning.block_order 为准, 不硬编码 6
     plan_section = planning.get("planning") or {}
     total = len(plan_section.get("block_order") or []) or 6
+    provider_checkpoint = _make_provider_checkpoint(
+        task_dir,
+        refine_generator._build_blocks(planning),
+        total,
+        schema_mode="v1",
+    )
 
     completed = {"count": 0}
 
-    def wrapped_api_call(prompt, image_data_url, api_key, thinking, size):
+    def wrapped_api_call(
+        prompt, image_data_url, api_key, thinking, size, *, lifecycle_callback=None,
+    ):
         url = refine_generator._default_api_call(
-            prompt, image_data_url, api_key, thinking=thinking, size=size
+            prompt,
+            image_data_url,
+            api_key,
+            thinking=thinking,
+            size=size,
+            lifecycle_callback=lifecycle_callback,
         )
         completed["count"] += 1
         # 进度窗口 20-80 (前 20 给 planner, 后 20 给 assembler), 均摊到 total 张
@@ -444,47 +772,17 @@ def _run_real_generator(planning: dict, product_image_url: str,
         concurrency=3,
         max_retries_hero=2,
         max_retries_sp=1,
+        lifecycle_callback=provider_checkpoint,
     )
 
-    # result.blocks: list[BlockResult]. block_id 是 "hero"/"selling_point_N"/...
-    # 字符串, 不能 :02d. 用位置序号给文件编号, 再带 block_id 做后缀便于识别.
-    opener = _build_noproxy_opener()
-    blocks: list[dict] = []
-    dl_errors: list[str] = []
-    for idx, br in enumerate(result.blocks):
-        safe_bid = str(br.block_id).replace("/", "_").replace("\\", "_")
-        fn = f"block_{idx+1:02d}_{safe_bid}.jpg"
-        dst = task_dir / fn
-        raw_url = br.image_url or ""
-
-        download_ok = False
-        if raw_url and not br.placeholder:
-            try:
-                _download_image(raw_url, dst, retries=2, opener=opener)
-                download_ok = True
-            except Exception as e:
-                dl_errors.append(f"{br.block_id}: {e}")
-                print(f"[pipeline] 下载 block_{br.block_id} 失败: {e}")
-
-        blocks.append({
-            "block_id": br.block_id,
-            "visual_type": br.visual_type,
-            "is_hero": (br.block_id == "hero"),
-            "file": fn,
-            "image_url": f"/static/ai_refine_v2/{task_dir.name}/{fn}",
-            # D: 原始 APIMart CDN URL, 用于故障救图 (代理好了可手动绕过重下)
-            "raw_url": raw_url,
-            "success": download_ok,
-            "placeholder": (not download_ok),
-        })
-
-    # B: 任何下载失败都抛出, 让 pipeline 走 failed. 假成功 > 真失败.
-    if dl_errors:
-        raise RuntimeError(
-            f"下载 {len(dl_errors)}/{len(blocks)} 张图失败 (绕代理后仍挂): "
-            f"{dl_errors}. 原始 APIMart URL 已存 raw_url 字段供救图."
-        )
-
+    blocks = _download_generation_results(
+        result.blocks,
+        task_dir,
+        result.total_cost_rmb,
+        total,
+        schema_mode="v1",
+        is_v2=False,
+    )
     return blocks, result.total_cost_rmb
 
 
@@ -510,12 +808,25 @@ def _run_real_generator_v2(planning_v2: dict, product_image_url: str,
     # v2 总屏数从 screens 数组算 (跟 _run_real_generator 用 block_order 等价)
     screens = planning_v2.get("screens") or []
     total = len(screens) or 6
+    provider_checkpoint = _make_provider_checkpoint(
+        task_dir,
+        refine_generator._build_blocks_v2(planning_v2),
+        total,
+        schema_mode="v2",
+    )
 
     completed = {"count": 0}
 
-    def wrapped_api_call(prompt, image_data_url, api_key, thinking, size):
+    def wrapped_api_call(
+        prompt, image_data_url, api_key, thinking, size, *, lifecycle_callback=None,
+    ):
         url = refine_generator._default_api_call(
-            prompt, image_data_url, api_key, thinking=thinking, size=size,
+            prompt,
+            image_data_url,
+            api_key,
+            thinking=thinking,
+            size=size,
+            lifecycle_callback=lifecycle_callback,
         )
         completed["count"] += 1
         # 进度窗口 20-80 (前 20 给 planner, 后 20 给 assembler)
@@ -532,56 +843,30 @@ def _run_real_generator_v2(planning_v2: dict, product_image_url: str,
         concurrency=3,
         max_retries_hero=2,
         max_retries_sp=1,
+        lifecycle_callback=provider_checkpoint,
     )
 
-    # A 刀: 下载绕代理, 复用 v1 的 opener 实现
-    opener = _build_noproxy_opener()
-    blocks: list[dict] = []
-    dl_errors: list[str] = []
-    for idx, br in enumerate(result.blocks):
-        # block_id 已是 "screen_NN_role" (generate_v2 给的), 文件系统安全
-        safe_bid = str(br.block_id).replace("/", "_").replace("\\", "_")
-        fn = f"block_{idx + 1:02d}_{safe_bid}.jpg"
-        dst = task_dir / fn
-        raw_url = br.image_url or ""
-
-        download_ok = False
-        if raw_url and not br.placeholder:
-            try:
-                # B 刀: _download_image 失败重试耗尽会 raise (不静默)
-                _download_image(raw_url, dst, retries=2, opener=opener)
-                download_ok = True
-            except Exception as e:
-                dl_errors.append(f"{br.block_id}: {e}")
-                print(f"[pipeline_v2] 下载 block_{br.block_id} 失败: {e}")
-
-        blocks.append({
-            "block_id": br.block_id,
-            "visual_type": br.visual_type,
-            "is_hero": (idx == 0),  # v2 第 1 屏 (idx 0) 严格视为 hero
-            "file": fn,
-            "image_url": f"/static/ai_refine_v2/{task_dir.name}/{fn}",
-            # D 刀: 原始 APIMart CDN URL 持久化 (代理炸了可手动救图)
-            "raw_url": raw_url,
-            "success": download_ok,
-            "placeholder": (not download_ok),
-        })
-
-    # B 刀: 任何下载失败汇总抛 RuntimeError, 让 _worker_v2 走 failed 分支
-    if dl_errors:
-        raise RuntimeError(
-            f"v2 下载 {len(dl_errors)}/{len(blocks)} 张图失败 (绕代理后仍挂): "
-            f"{dl_errors}. 原始 APIMart URL 已存 raw_url 字段供救图."
-        )
-
+    blocks = _download_generation_results(
+        result.blocks,
+        task_dir,
+        result.total_cost_rmb,
+        total,
+        schema_mode="v2",
+        is_v2=True,
+    )
     return blocks, result.total_cost_rmb
 
 
 # ─────────────────────────────────────────────────────────────
 # Assembler (Jinja + Playwright 截图)
 # ─────────────────────────────────────────────────────────────
-def _validate_assembled_png(path: Path, min_bytes: int = 100_000) -> None:
-    """检查 assembled.png 体积合理. < min_bytes 视作源图缺失导致的纯白 PNG, raise.
+def _validate_assembled_png(
+    path: Path,
+    min_bytes: int = 100_000,
+    min_width: int = 100,
+    min_height: int = 100,
+) -> tuple[int, int]:
+    """检查 assembled.png 可完整解码、尺寸合理且不是微小空壳.
 
     2026-04-24 案例: 5 张 block 图下载失败 → Playwright 截 HTML 时 <img> 全 broken
     → 截出 1500×1800 纯白 PNG, 仅 11841 字节. 正常成品应 > 1MB.
@@ -595,6 +880,116 @@ def _validate_assembled_png(path: Path, min_bytes: int = 100_000) -> None:
             f"assembled.png 太小 ({size} 字节 < {min_bytes}), "
             f"疑源图缺失导致纯白 PNG. 请查上游 block 下载."
         )
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            if image.format != "PNG":
+                raise RuntimeError(f"格式不是 PNG: {image.format!r}")
+            image.load()
+            width, height = image.size
+    except Exception as exc:
+        raise RuntimeError(f"assembled.png 无法完整解码: {exc}") from exc
+    if width < min_width or height < min_height:
+        raise RuntimeError(
+            f"assembled.png 尺寸异常 ({width}x{height}), "
+            f"至少需要 {min_width}x{min_height}"
+        )
+    return width, height
+
+
+def _write_terminal_summary(
+    task_id: str,
+    task_dir: Path,
+    planning: dict,
+    mode: str,
+    blocks: list[dict],
+    total_cost_rmb: float,
+    planned_count: int,
+    assembled_url: str,
+    *,
+    schema_mode: str,
+) -> tuple[str, int, int, int]:
+    """Validate the assembled asset, then atomically publish its terminal marker."""
+    width, height = _validate_assembled_png(task_dir / "assembled.png")
+    planned, success, failed = _result_counts(blocks, planned_count)
+    terminal_status = "success" if failed == 0 else "partial_success"
+    payload = {
+        "schema_version": 2,
+        "user_id": _task_identity(task_id)[0],
+        "product": planning.get("product_meta", {}).get("name", ""),
+        "mode": mode,
+        "schema_mode": schema_mode,
+        "terminal_status": terminal_status,
+        "total_cost_rmb": float(total_cost_rmb or 0.0),
+        "planned_count": planned,
+        "success_count": success,
+        "failed_count": failed,
+        "raw_urls": [str(block.get("raw_url") or "") for block in blocks],
+        "blocks": blocks,
+        "assembled_url": assembled_url,
+        "assembled_width": width,
+        "assembled_height": height,
+        "assembled_bytes": (task_dir / "assembled.png").stat().st_size,
+        "completed_at": time.time(),
+    }
+    # _summary.json is the terminal marker and therefore must be written last.
+    _atomic_write_json(task_dir / "_summary.json", payload)
+    return terminal_status, planned, success, failed
+
+
+def _record_worker_exception(
+    task_id: str,
+    task_dir: Path,
+    exc: Exception,
+    *,
+    log_prefix: str,
+) -> None:
+    tb = traceback.format_exc()
+    outcome_unknown = bool(getattr(exc, "outcome_unknown", False))
+    recovery = _read_json(task_dir / "_recovery.json")
+    provider_evidence = bool(
+        recovery
+        and any(
+            str(block.get("raw_url") or block.get("provider_task_id") or "")
+            for block in (recovery.get("blocks", []) or [])
+            if isinstance(block, dict)
+        )
+    )
+    if recovery is not None and (outcome_unknown or provider_evidence):
+        recovery.update(
+            status="outcome_unknown" if outcome_unknown else "recovery_required",
+            error=str(exc),
+            updated_at=time.time(),
+        )
+        _atomic_write_json(task_dir / "_recovery.json", recovery)
+        _set(
+            task_id,
+            blocks=recovery.get("blocks", []) or [],
+            raw_urls=recovery.get("raw_urls", []) or [],
+            cost_rmb=float(recovery.get("total_cost_rmb", 0.0) or 0.0),
+            planned_count=int(recovery.get("planned_count", 0) or 0),
+            success_count=int(recovery.get("success_count", 0) or 0),
+            failed_count=int(recovery.get("failed_count", 0) or 0),
+        )
+    recoverable = bool(recovery and provider_evidence)
+    if outcome_unknown:
+        terminal_status = "outcome_unknown"
+        progress_msg = f"结果不明，已停止自动重提: {exc}"
+    elif recoverable:
+        terminal_status = "recovery_required"
+        progress_msg = f"付费结果已保存，禁止重新生图，等待恢复: {exc}"
+    else:
+        terminal_status = "failed"
+        progress_msg = f"失败: {exc}"
+    print(f"[{log_prefix}] task {task_id} {terminal_status}:\n{tb}")
+    _set(
+        task_id,
+        status=terminal_status,
+        error=str(exc),
+        error_trace=tb,
+        progress_msg=progress_msg,
+    )
 
 
 def _run_assembler(task_dir: Path, blocks: list[dict],
@@ -792,41 +1187,62 @@ def _worker_v1(task_id: str, product_text: str, product_image_url: str,
             cost = 0.0
             time.sleep(1.0)
 
+        planned_count = (
+            len((planning.get("planning") or {}).get("block_order") or [])
+            or len(blocks)
+        )
+        planned_count, success_count, failed_count = _result_counts(
+            blocks, planned_count,
+        )
         # D: 抽一份原始 APIMart URL 存到 TaskState — 代理炸了还能从这救图.
         raw_urls = [b.get("raw_url", "") for b in blocks]
         _set(task_id, blocks=blocks, cost_rmb=cost, raw_urls=raw_urls,
+             planned_count=planned_count, success_count=success_count,
+             failed_count=failed_count,
              progress_pct=80,
-             progress_msg="6 张图就绪, 开始拼装长图...")
-
-        # Summary (含 raw_urls, 便于离线救图脚本使用 _summary.json)
-        summary = {
-            "user_id": (get_task_status(task_id) or {}).get("user_id"),
-            "product": planning.get("product_meta", {}).get("name", ""),
-            "mode": mode,
-            "total_cost_rmb": cost,
-            "raw_urls": raw_urls,
-            "blocks": blocks,
-        }
-        (task_dir / "_summary.json").write_text(
-            json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+             progress_msg=f"已就绪 {success_count}/{planned_count} 张, 开始拼装长图...")
 
         # ── Stage 3: Assembler ──
         _set(task_id, status="running_assembler", progress_pct=85,
              progress_msg="Playwright 截图中...")
         assembled_url = _run_assembler(task_dir, blocks,
                                         planning.get("product_meta", {}))
+        terminal_status, planned_count, success_count, failed_count = (
+            _write_terminal_summary(
+                task_id,
+                task_dir,
+                planning,
+                mode,
+                blocks,
+                cost,
+                planned_count,
+                assembled_url,
+                schema_mode="v1",
+            )
+        )
 
-        _set(task_id, status="success", progress_pct=100,
-             progress_msg="完成", assembled_url=assembled_url)
+        _set(
+            task_id,
+            status=terminal_status,
+            progress_pct=100,
+            progress_msg=(
+                "完成"
+                if terminal_status == "success"
+                else f"部分完成 {success_count}/{planned_count}"
+            ),
+            assembled_url=assembled_url,
+            planned_count=planned_count,
+            success_count=success_count,
+            failed_count=failed_count,
+        )
 
     except Exception as e:
-        tb = traceback.format_exc()
-        outcome_unknown = bool(getattr(e, "outcome_unknown", False))
-        terminal_status = "outcome_unknown" if outcome_unknown else "failed"
-        print(f"[pipeline] task {task_id} {terminal_status}:\n{tb}")
-        _set(task_id, status=terminal_status, error=str(e), error_trace=tb,
-             progress_msg=(f"结果不明，已停止自动重提: {e}"
-                           if outcome_unknown else f"失败: {e}"))
+        _record_worker_exception(
+            task_id,
+            task_dir,
+            e,
+            log_prefix="pipeline",
+        )
 
 
 def _worker_v2(task_id: str, product_text: str, product_image_url: str,
@@ -894,40 +1310,331 @@ def _worker_v2(task_id: str, product_text: str, product_image_url: str,
             cost = 0.0
             time.sleep(1.0)
 
+        planned_count, success_count, failed_count = _result_counts(
+            blocks, n_screens or len(blocks),
+        )
         # D 刀: raw_url 存 TaskState (v1/v2 共用机制)
         raw_urls = [b.get("raw_url", "") for b in blocks]
         _set(task_id, blocks=blocks, cost_rmb=cost, raw_urls=raw_urls,
+             planned_count=planned_count, success_count=success_count,
+             failed_count=failed_count,
              progress_pct=80,
-             progress_msg=f"{len(blocks)} 张图就绪, 开始 PIL 拼接...")
-
-        summary = {
-            "user_id": (get_task_status(task_id) or {}).get("user_id"),
-            "product": planning.get("product_meta", {}).get("name", ""),
-            "mode": actual_mode,
-            "schema_mode": "v2",
-            "total_cost_rmb": cost,
-            "raw_urls": raw_urls,
-            "blocks": blocks,
-        }
-        (task_dir / "_summary.json").write_text(
-            json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+             progress_msg=f"已就绪 {success_count}/{planned_count} 张, 开始 PIL 拼接...")
 
         # ── Stage 3: Assembler (PIL stub, PRD §阶段三正式) ──
         _set(task_id, status="running_assembler", progress_pct=85,
              progress_msg="PIL 拼接长图中...")
         assembled_url = _run_assembler_v2(task_dir, blocks)
+        terminal_status, planned_count, success_count, failed_count = (
+            _write_terminal_summary(
+                task_id,
+                task_dir,
+                planning,
+                actual_mode,
+                blocks,
+                cost,
+                planned_count,
+                assembled_url,
+                schema_mode="v2",
+            )
+        )
 
-        _set(task_id, status="success", progress_pct=100,
-             progress_msg="完成", assembled_url=assembled_url)
+        _set(
+            task_id,
+            status=terminal_status,
+            progress_pct=100,
+            progress_msg=(
+                "完成"
+                if terminal_status == "success"
+                else f"部分完成 {success_count}/{planned_count}"
+            ),
+            assembled_url=assembled_url,
+            planned_count=planned_count,
+            success_count=success_count,
+            failed_count=failed_count,
+        )
 
     except Exception as e:
-        tb = traceback.format_exc()
-        outcome_unknown = bool(getattr(e, "outcome_unknown", False))
-        terminal_status = "outcome_unknown" if outcome_unknown else "failed"
-        print(f"[pipeline_v2] task {task_id} {terminal_status}:\n{tb}")
-        _set(task_id, status=terminal_status, error=str(e), error_trace=tb,
-             progress_msg=(f"结果不明，已停止自动重提: {e}"
-                           if outcome_unknown else f"失败: {e}"))
+        _record_worker_exception(
+            task_id,
+            task_dir,
+            e,
+            log_prefix="pipeline_v2",
+        )
+
+
+def _valid_local_image(path: Path) -> bool:
+    if not path.is_file() or path.stat().st_size < 1024:
+        return False
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            image.verify()
+        with Image.open(path) as image:
+            image.load()
+        return True
+    except Exception:
+        return False
+
+
+def _recover_task(task_id: str, gpt_image_key: str) -> dict:
+    """Resume only known provider tasks/URLs; never submit or generate again."""
+    import ai_image_apimart
+
+    current = get_task_status(task_id)
+    current_status = str((current or {}).get("status") or "")
+    if current_status not in {
+        "outcome_unknown", "recovery_required", "running_recovery",
+    }:
+        raise ValueError(f"任务 {task_id} 当前状态不可恢复: {current_status or 'missing'}")
+    task_dir = _OUTPUT_BASE / task_id
+    record = _read_json(task_dir / "_recovery.json")
+    if record is None:
+        state = get_task_status(task_id)
+        if state and state.get("status") in {"success", "partial_success"}:
+            return state
+        raise ValueError(f"任务 {task_id} 没有可恢复断点")
+    blocks = record.get("blocks", []) or []
+    if not isinstance(blocks, list) or not blocks:
+        raise ValueError(f"任务 {task_id} 的恢复断点无效")
+    planning = _read_json(task_dir / "_planning.json") or {}
+    planned_count = int(record.get("planned_count", 0) or len(blocks))
+    schema_mode = str(record.get("schema_mode") or "v2")
+
+    with _TASKS_LOCK:
+        state = _TASKS.get(task_id)
+        if state is None:
+            state = TaskState(
+                task_id=task_id,
+                user_id=record.get("user_id"),
+                mode=str(record.get("mode") or "real"),
+            )
+            _TASKS[task_id] = state
+        state.status = "running_recovery"
+        state.progress_pct = 90
+        state.progress_msg = "正在继续检查原付费任务..."
+        state.planning = planning
+
+    def persist(status: str, error: str = "") -> dict:
+        snapshot = _persist_recovery(
+            task_dir,
+            blocks,
+            float(record.get("total_cost_rmb", 0.0) or 0.0),
+            planned_count,
+            status=status,
+            error=error,
+            schema_mode=schema_mode,
+        )
+        planned, success, failed = _result_counts(blocks, planned_count)
+        _set(
+            task_id,
+            status=status,
+            progress_pct=100 if status == "failed" else 90,
+            progress_msg=(
+                "原任务仍无法确认，未自动重提"
+                if status == "outcome_unknown"
+                else (
+                    "原任务已明确失败，未自动重提"
+                    if status == "failed"
+                    else "已保留原任务结果，等待继续恢复"
+                )
+            ),
+            blocks=blocks,
+            raw_urls=snapshot["raw_urls"],
+            cost_rmb=float(snapshot["total_cost_rmb"]),
+            planned_count=planned,
+            success_count=success,
+            failed_count=failed,
+            error=error,
+        )
+        return get_task_status(task_id) or {}
+
+    persist("running_recovery")
+    unknown_errors: list[str] = []
+    poll_candidates: list[dict] = []
+    for block in blocks:
+        if str(block.get("raw_url") or "").strip():
+            continue
+        provider_task_id = str(block.get("provider_task_id") or "").strip()
+        provider_status = str(block.get("provider_status") or "").strip()
+        if provider_status == "cancelled":
+            block["placeholder"] = True
+            block["error"] = "结果不明后已在提交前取消，未创建该屏任务"
+            persist("running_recovery")
+            continue
+        if not provider_task_id:
+            if provider_status == "outcome_unknown":
+                unknown_errors.append(
+                    f"{block.get('block_id')}: 提交响应不明且没有 provider_task_id"
+                )
+            else:
+                block["placeholder"] = True
+                block["error"] = "该屏没有 provider 任务断点，按未提交处理"
+            persist("running_recovery")
+            continue
+        poll_candidates.append(block)
+
+    def poll(block: dict):
+        provider_task_id = str(block.get("provider_task_id") or "")
+        try:
+            raw_url = ai_image_apimart.poll_image_task(
+                provider_task_id,
+                gpt_image_key,
+                direct=str(block.get("download_route") or "") == "direct",
+            )
+            return block, raw_url, None
+        except Exception as exc:
+            return block, "", exc
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [pool.submit(poll, block) for block in poll_candidates]
+        for future in concurrent.futures.as_completed(futures):
+            block, raw_url, error = future.result()
+            if error is None:
+                block["raw_url"] = raw_url
+                block["provider_status"] = "completed"
+                block["error"] = ""
+            else:
+                block["error"] = str(error)
+                if getattr(error, "outcome_unknown", False):
+                    block["provider_status"] = "outcome_unknown"
+                    unknown_errors.append(f"{block.get('block_id')}: {error}")
+                else:
+                    block["provider_status"] = "failed"
+                    block["placeholder"] = True
+            persist("running_recovery")
+
+    def download(block: dict):
+        destination = task_dir / str(block.get("file") or "")
+        if _valid_local_image(destination):
+            return block, str(block.get("download_route") or "unknown"), None
+        try:
+            route = _download_image(
+                str(block.get("raw_url") or ""),
+                destination,
+                preferred_route=str(block.get("download_route") or "unknown"),
+            )
+            if not _valid_local_image(destination):
+                raise PaidResultRecoveryRequired(
+                    f"恢复下载后的图片无法解码: {block.get('block_id')}"
+                )
+            return block, route, None
+        except Exception as exc:
+            return block, "", exc
+
+    candidates = [block for block in blocks if str(block.get("raw_url") or "").strip()]
+    download_errors: list[str] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [pool.submit(download, block) for block in candidates]
+        for future in concurrent.futures.as_completed(futures):
+            block, route, error = future.result()
+            if error is None:
+                block["download_route"] = route or block.get("download_route") or "unknown"
+                block["success"] = True
+                block["placeholder"] = False
+                block["error"] = ""
+            else:
+                block["success"] = False
+                block["error"] = str(error)
+                download_errors.append(f"{block.get('block_id')}: {error}")
+            persist("running_recovery")
+
+    if unknown_errors:
+        return persist("outcome_unknown", "; ".join(unknown_errors))
+    if download_errors:
+        return persist("recovery_required", "; ".join(download_errors))
+
+    successful = [block for block in blocks if block.get("success")]
+    if not successful or not blocks[0].get("success"):
+        return persist("failed", "原任务没有可拼装的 Hero 结果")
+    try:
+        if schema_mode == "v2":
+            assembled_url = _run_assembler_v2(task_dir, blocks)
+        else:
+            assembled_url = _run_assembler(
+                task_dir, successful, planning.get("product_meta", {}),
+            )
+        terminal_status, planned, success, failed = _write_terminal_summary(
+            task_id,
+            task_dir,
+            planning,
+            str(record.get("mode") or "real"),
+            blocks,
+            float(record.get("total_cost_rmb", 0.0) or 0.0),
+            planned_count,
+            assembled_url,
+            schema_mode=schema_mode,
+        )
+    except Exception as exc:
+        return persist("recovery_required", f"恢复拼装失败: {exc}")
+
+    _set(
+        task_id,
+        status=terminal_status,
+        progress_pct=100,
+        progress_msg=(
+            "完成" if terminal_status == "success" else f"部分完成 {success}/{planned}"
+        ),
+        assembled_url=assembled_url,
+        blocks=blocks,
+        raw_urls=[str(block.get("raw_url") or "") for block in blocks],
+        planned_count=planned,
+        success_count=success,
+        failed_count=failed,
+        error="",
+    )
+    return get_task_status(task_id) or {}
+
+
+def _recovery_worker(task_id: str, gpt_image_key: str) -> None:
+    try:
+        _recover_task(task_id, gpt_image_key)
+    except Exception as exc:
+        _record_worker_exception(
+            task_id,
+            _OUTPUT_BASE / task_id,
+            exc,
+            log_prefix="pipeline_recovery",
+        )
+    finally:
+        with _TASKS_LOCK:
+            _RECOVERY_TASK_IDS.discard(task_id)
+
+
+def start_task_recovery(task_id: str, gpt_image_key: str) -> dict:
+    """Start one idempotent non-billable recovery worker for a blocked task."""
+    state = get_task_status(task_id)
+    if state is None:
+        raise ValueError(f"任务不存在或已过期: {task_id}")
+    status = str(state.get("status") or "")
+    if status not in {"outcome_unknown", "recovery_required", "running_recovery"}:
+        raise ValueError(f"任务 {task_id} 当前状态不可恢复: {status}")
+    with _TASKS_LOCK:
+        if task_id in _RECOVERY_TASK_IDS:
+            return _TASKS[task_id].to_dict()
+        current = _TASKS.get(task_id)
+        if current is not None and current.status.startswith("running_") \
+                and current.status != "running_recovery":
+            raise ValueError("原任务仍在运行，不能并行启动恢复")
+        if current is None:
+            current = TaskState(
+                task_id=task_id,
+                user_id=state.get("user_id"),
+                mode=str(state.get("mode") or "real"),
+            )
+            _TASKS[task_id] = current
+        current.status = "running_recovery"
+        current.progress_pct = 90
+        current.progress_msg = "正在继续检查原付费任务..."
+        _RECOVERY_TASK_IDS.add(task_id)
+        response = current.to_dict()
+    threading.Thread(
+        target=_recovery_worker,
+        args=(task_id, gpt_image_key),
+        daemon=True,
+    ).start()
+    return response
 
 
 # ─────────────────────────────────────────────────────────────

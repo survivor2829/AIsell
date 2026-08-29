@@ -22,9 +22,6 @@ from unittest import mock
 from ai_refine_v2 import pipeline_runner
 from ai_refine_v2.refine_generator import BlockResult, GenerationResult
 
-_REPO = Path(__file__).resolve().parents[2]
-
-
 def _fake_generation_result(n: int = 3) -> GenerationResult:
     """n 个 block, image_url 带 APIMart 前缀便于断言."""
     ids = ["hero"] + [f"selling_point_{i}" for i in range(1, n)]
@@ -60,78 +57,10 @@ def _fake_generate(result: GenerationResult):
 
 
 # ────────────────────────────────────────────────────────────────
-# A: 下载绕代理 (静态验证源码)
-# ────────────────────────────────────────────────────────────────
-class TestDownloadProxyBypass(unittest.TestCase):
-    """A 验证: pipeline_runner 源码里下载路径必须用 ProxyHandler({}) 空代理 opener."""
-
-    def setUp(self):
-        self.src = (_REPO / "ai_refine_v2" / "pipeline_runner.py").read_text(encoding="utf-8")
-
-    def test_source_uses_proxyhandler_empty(self):
-        self.assertIn("ProxyHandler({})", self.src,
-                      "下载路径必须 ProxyHandler({}) 显式空掉 env 代理")
-
-    def test_source_uses_build_opener(self):
-        self.assertIn("build_opener", self.src,
-                      "下载必须通过 build_opener, 不能用默认 urlretrieve")
-
-    def test_no_legacy_urlretrieve(self):
-        # 老实现是 urllib.request.urlretrieve(br.image_url, ...), 会读 env 代理
-        self.assertNotIn("urlretrieve(br.image_url", self.src,
-                         "仍残留老的 urlretrieve 调用, 不会绕代理")
-
-    def test_noproxy_opener_addheaders_contains_browser_user_agent(self):
-        """A 刀延伸: opener 必须设浏览器 UA, 防 APIMart CDN 403.
-
-        2026-04-27 stage5 step1 真测验证: urllib 默认 'Python-urllib/3.x' UA
-        被 upload.apimart.ai 直接 403; curl -A Mozilla 试下来 200 OK.
-        修法: _build_noproxy_opener 在 build_opener 后调 .addheaders 设 UA.
-        """
-        opener = pipeline_runner._build_noproxy_opener()
-        headers = dict(opener.addheaders)
-        self.assertIn("User-Agent", headers,
-                      "opener 必须通过 addheaders 设 User-Agent (默认 UA 会被 CDN 挡)")
-        ua = headers["User-Agent"]
-        self.assertIn("Mozilla", ua, f"UA 必须像浏览器, 实际 {ua!r}")
-        self.assertNotIn("Python-urllib", ua,
-                         "UA 不能是 urllib 默认 'Python-urllib/3.x' (会被 APIMart CDN 403)")
-
-    def test_source_documents_browser_ua_rationale(self):
-        """A 刀延伸: 源码注释必须解释 UA 选择 (防未来误删 addheaders 那行).
-
-        Mozilla / CDN 关键词同时出现 = 注释里说清楚了"为啥要 UA + 不设会被 CDN 挡".
-        """
-        self.assertIn("Mozilla", self.src,
-                      "_build_noproxy_opener 源码应含 Mozilla UA 字符串")
-        self.assertIn("CDN", self.src,
-                      "源码注释应解释 'CDN 拒绝 urllib 默认 UA' 用意")
-
-
-# ────────────────────────────────────────────────────────────────
 # B: 下载失败 → RuntimeError, 不再 placeholder 静默
 # ────────────────────────────────────────────────────────────────
 class TestDownloadFailureRaises(unittest.TestCase):
-    """B 验证: _download_image 重试耗尽 raise; _run_real_generator 再汇总 raise."""
-
-    def test_download_image_retries_then_raises(self):
-        calls = {"n": 0}
-
-        class _StubOpener:
-            def open(self, url, timeout=None):
-                calls["n"] += 1
-                raise ConnectionError("ECONNREFUSED (mock)")
-
-        with tempfile.TemporaryDirectory() as td:
-            dst = Path(td) / "x.jpg"
-            with self.assertRaises(RuntimeError) as ctx:
-                pipeline_runner._download_image(
-                    "https://apimart.test/x.jpg", dst,
-                    retries=2, opener=_StubOpener(),
-                )
-        self.assertIn("下载失败", str(ctx.exception))
-        # retries=2 → 1 + 2 次重试 = 3 次调用
-        self.assertEqual(calls["n"], 3)
+    """付费结果下载失败必须进入 recovery_required。"""
 
     def test_run_real_generator_bubbles_download_error(self):
         fake_result = _fake_generation_result(n=3)
@@ -142,14 +71,11 @@ class TestDownloadFailureRaises(unittest.TestCase):
             },
         }
 
-        class _StubOpener:
-            def open(self, url, timeout=None):
-                raise ConnectionError("mock dns fail")
-
         with tempfile.TemporaryDirectory() as td:
             task_dir = Path(td) / "task_b"
             with mock.patch.object(
-                pipeline_runner, "_build_noproxy_opener", return_value=_StubOpener(),
+                pipeline_runner, "_download_image",
+                side_effect=ConnectionError("mock dns fail"),
             ), mock.patch(
                 "ai_refine_v2.refine_generator.generate",
                 side_effect=_fake_generate(fake_result),
@@ -170,6 +96,245 @@ class TestDownloadFailureRaises(unittest.TestCase):
         msg = str(ctx.exception)
         self.assertIn("下载", msg)
         self.assertIn("3/3", msg)  # 3 张全挂
+        self.assertTrue(
+            getattr(ctx.exception, "recovery_required", False),
+            "付费结果 URL 已返回后，本地下载失败必须进入可恢复状态，不能是普通 failed",
+        )
+
+    def test_run_real_generator_rejects_non_image_download(self):
+        """HTTP 下载成功不等于图片成功；HTML/损坏内容必须进入恢复态。"""
+        fake_result = _fake_generation_result(n=1)
+        planning = {
+            "planning": {"block_order": ["hero"], "total_blocks": 1},
+        }
+
+        def fake_download(_url, destination, **_kwargs):
+            destination.write_bytes(b"<html>provider error</html>" + (b"x" * 2048))
+            return "system"
+
+        with tempfile.TemporaryDirectory() as td:
+            task_dir = Path(td) / "task_invalid_image"
+            with mock.patch.object(
+                pipeline_runner, "_download_image", side_effect=fake_download,
+            ), mock.patch(
+                "ai_refine_v2.refine_generator.generate",
+                side_effect=_fake_generate(fake_result),
+            ), mock.patch(
+                "ai_refine_v2.refine_generator._default_api_call",
+                return_value="https://apimart.test/mocked.jpg",
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    pipeline_runner._run_real_generator(
+                        planning=planning,
+                        product_image_url="p",
+                        gpt_image_key="fake",
+                        task_dir=task_dir,
+                        progress_cb=lambda _p, _m: None,
+                    )
+
+            recovery = json.loads(
+                (task_dir / "_recovery.json").read_text(encoding="utf-8")
+            )
+
+        self.assertTrue(getattr(ctx.exception, "recovery_required", False))
+        self.assertIn("无法解码", str(ctx.exception))
+        self.assertEqual(recovery["status"], "recovery_required")
+        self.assertFalse(recovery["blocks"][0]["success"])
+
+
+class TestProviderResultDownloadRoute(unittest.TestCase):
+    """CDN 下载沿用 APIMart submit/poll 已验证路由，且不产生新提交。"""
+
+    def test_default_api_call_remembers_route_for_result_url(self):
+        import ai_image_apimart as adapter
+
+        with mock.patch.object(
+            adapter, "_submit_image_task_for_route", return_value=("task-1", True),
+        ), mock.patch.object(
+            adapter, "poll_image_task", return_value="https://cdn.invalid/result.png",
+        ):
+            url = adapter.default_api_call("prompt", None, "secret")
+
+        self.assertEqual(adapter.get_result_route(url), "direct")
+
+    def test_download_result_uses_remembered_route_without_resubmit(self):
+        import ai_image_apimart as adapter
+
+        calls = []
+
+        class _Response:
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self): return b"\x89PNG\r\n" + (b"x" * 2048)
+
+        def fake_open(_request, *, timeout, direct=False):
+            calls.append((timeout, direct))
+            return _Response()
+
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(
+            adapter, "_open_apimart", side_effect=fake_open,
+        ), mock.patch.object(adapter, "_http_post_json") as submit:
+            dst = Path(td) / "result.png"
+            selected = adapter.download_result_image(
+                "https://cdn.invalid/result.png",
+                dst,
+                preferred_route="direct",
+                retries=0,
+            )
+
+        self.assertEqual(selected, "direct")
+        self.assertEqual(calls, [(60, True)])
+        submit.assert_not_called()
+
+
+class TestProviderCheckpointAndRecovery(unittest.TestCase):
+    def test_restart_preserves_outcome_unknown_with_completed_url_and_provider_task(self):
+        task_id = f"unknown_{uuid.uuid4().hex[:8]}"
+        pipeline_runner._TASKS[task_id] = pipeline_runner.TaskState(
+            task_id=task_id, user_id=7, mode="real",
+        )
+        try:
+            with tempfile.TemporaryDirectory() as td, mock.patch.object(
+                pipeline_runner, "_OUTPUT_BASE", Path(td),
+            ):
+                task_dir = Path(td) / task_id
+                pipeline_runner._persist_recovery(
+                    task_dir,
+                    [
+                        {
+                            "block_id": "hero",
+                            "file": "block_01_hero.jpg",
+                            "raw_url": "https://cdn.invalid/hero.png",
+                            "provider_task_id": "provider-hero",
+                            "success": False,
+                            "placeholder": False,
+                        },
+                        {
+                            "block_id": "selling_point_1",
+                            "file": "block_02_sp.jpg",
+                            "raw_url": "",
+                            "provider_task_id": "provider-unknown",
+                            "success": False,
+                            "placeholder": False,
+                        },
+                    ],
+                    0.7,
+                    2,
+                    status="outcome_unknown",
+                    error="synthetic poll timeout",
+                    schema_mode="v1",
+                )
+                pipeline_runner._TASKS.pop(task_id, None)
+
+                restored = pipeline_runner.get_task_status(task_id)
+
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored["status"], "outcome_unknown")
+            self.assertEqual(restored["raw_urls"], ["https://cdn.invalid/hero.png", ""])
+            self.assertEqual(
+                restored["blocks"][1]["provider_task_id"], "provider-unknown",
+            )
+        finally:
+            pipeline_runner._TASKS.pop(task_id, None)
+
+    def test_nonbillable_recovery_polls_known_task_and_never_submits(self):
+        import ai_image_apimart as adapter
+        from PIL import Image
+
+        task_id = f"recover_{uuid.uuid4().hex[:8]}"
+        pipeline_runner._TASKS[task_id] = pipeline_runner.TaskState(
+            task_id=task_id, user_id=9, mode="real", status="outcome_unknown",
+        )
+        try:
+            with tempfile.TemporaryDirectory() as td, mock.patch.object(
+                pipeline_runner, "_OUTPUT_BASE", Path(td),
+            ):
+                task_dir = Path(td) / task_id
+                task_dir.mkdir(parents=True)
+                (task_dir / "_planning.json").write_text(
+                    json.dumps({"product_meta": {"name": "T"}, "screens": [{}, {}, {}]}),
+                    encoding="utf-8",
+                )
+                pipeline_runner._persist_recovery(
+                    task_dir,
+                    [
+                        {
+                            "block_id": "screen_01_hero", "visual_type": "hero",
+                            "is_hero": True, "file": "block_01_hero.jpg",
+                            "image_url": f"/static/ai_refine_v2/{task_id}/block_01_hero.jpg",
+                            "raw_url": "https://cdn.invalid/hero.png",
+                            "provider_task_id": "provider-hero",
+                            "download_route": "system", "success": False,
+                            "placeholder": False, "error": "",
+                        },
+                        {
+                            "block_id": "screen_02_feature", "visual_type": "feature",
+                            "is_hero": False, "file": "block_02_feature.jpg",
+                            "image_url": f"/static/ai_refine_v2/{task_id}/block_02_feature.jpg",
+                            "raw_url": "", "provider_task_id": "provider-feature",
+                            "download_route": "direct", "success": False,
+                            "placeholder": False, "error": "",
+                        },
+                        {
+                            "block_id": "screen_03_cancelled", "visual_type": "feature",
+                            "is_hero": False, "file": "block_03_cancelled.jpg",
+                            "image_url": f"/static/ai_refine_v2/{task_id}/block_03_cancelled.jpg",
+                            "raw_url": "", "provider_task_id": "",
+                            "provider_status": "cancelled",
+                            "download_route": "unknown", "success": False,
+                            "placeholder": False, "error": "",
+                        },
+                    ],
+                    1.4,
+                    3,
+                    status="outcome_unknown",
+                    schema_mode="v2",
+                )
+
+                def fake_download(_url, destination, **_kwargs):
+                    Image.new("RGB", (400, 400), (30, 60, 90)).save(destination, "JPEG")
+                    return "system"
+
+                def fake_assemble(directory, _blocks):
+                    image = Image.frombytes(
+                        "RGB", (400, 800), os.urandom(400 * 800 * 3),
+                    )
+                    image.save(directory / "assembled.png", "PNG")
+                    return f"/static/ai_refine_v2/{task_id}/assembled.png"
+
+                with mock.patch.object(
+                    adapter, "poll_image_task",
+                    return_value="https://cdn.invalid/feature.png",
+                ) as poll, mock.patch.object(
+                    pipeline_runner, "_download_image", side_effect=fake_download,
+                ), mock.patch.object(
+                    pipeline_runner, "_run_assembler_v2", side_effect=fake_assemble,
+                ), mock.patch.object(
+                    adapter, "default_api_call",
+                    side_effect=AssertionError("recovery must not generate"),
+                ) as generate, mock.patch.object(
+                    adapter, "submit_image_task",
+                    side_effect=AssertionError("recovery must not submit"),
+                ) as submit:
+                    recovered = pipeline_runner._recover_task(task_id, "secret")
+
+                self.assertEqual(recovered["status"], "partial_success")
+                self.assertEqual(recovered["failed_count"], 1)
+                poll.assert_called_once_with(
+                    "provider-feature", "secret", direct=True,
+                )
+                generate.assert_not_called()
+                submit.assert_not_called()
+                checkpoint = json.loads(
+                    (task_dir / "_recovery.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    checkpoint["blocks"][1]["raw_url"],
+                    "https://cdn.invalid/feature.png",
+                )
+                self.assertTrue((task_dir / "_summary.json").is_file())
+        finally:
+            pipeline_runner._TASKS.pop(task_id, None)
 
 
 # ────────────────────────────────────────────────────────────────
@@ -187,22 +352,18 @@ class TestRawUrlsPreserved(unittest.TestCase):
             },
         }
 
-        class _OkOpener:
-            def open(self, url, timeout=None):
-                return _FakeResp(url)
+        def _fake_download(_url, dst, **_kwargs):
+            from PIL import Image
 
-        class _FakeResp:
-            def __init__(self, url): self._url = url
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-            def read(self):
-                # 返回 > 1KB payload 让 _download_image 的尺寸 guard 通过
-                return b"\x89PNG\r\n" + (b"\0" * 2048)
+            Image.frombytes(
+                "RGB", (64, 64), os.urandom(64 * 64 * 3),
+            ).save(dst, "JPEG", quality=95)
+            return "direct"
 
         with tempfile.TemporaryDirectory() as td:
             task_dir = Path(td) / "task_d"
             with mock.patch.object(
-                pipeline_runner, "_build_noproxy_opener", return_value=_OkOpener(),
+                pipeline_runner, "_download_image", side_effect=_fake_download,
             ), mock.patch(
                 "ai_refine_v2.refine_generator.generate",
                 side_effect=_fake_generate(fake_result),
@@ -228,6 +389,57 @@ class TestRawUrlsPreserved(unittest.TestCase):
             self.assertTrue(b["success"])
             self.assertFalse(b["placeholder"])
 
+    def test_all_raw_urls_are_atomically_checkpointed_before_first_download(self):
+        """拿到 provider 结果后，必须先一次性落盘，再开始任何 CDN 下载。"""
+        fake_result = _fake_generation_result(n=3)
+        planning = {
+            "planning": {
+                "block_order": ["hero", "selling_point_1", "selling_point_2"],
+                "total_blocks": 3,
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as td:
+            task_dir = Path(td) / "task_checkpoint"
+
+            def assert_checkpoint_then_download(_url, dst, **_kwargs):
+                from PIL import Image
+
+                recovery_path = task_dir / "_recovery.json"
+                self.assertTrue(recovery_path.is_file())
+                recovery = json.loads(recovery_path.read_text(encoding="utf-8"))
+                self.assertEqual(len(recovery["raw_urls"]), 3)
+                self.assertTrue(all(recovery["raw_urls"]))
+                Image.frombytes(
+                    "RGB", (64, 64), os.urandom(64 * 64 * 3),
+                ).save(dst, "JPEG", quality=95)
+
+            with mock.patch(
+                "ai_refine_v2.refine_generator.generate",
+                side_effect=_fake_generate(fake_result),
+            ), mock.patch(
+                "ai_refine_v2.refine_generator._default_api_call",
+                return_value="https://apimart.test/mocked.jpg",
+            ), mock.patch.object(
+                pipeline_runner, "_download_image",
+                side_effect=assert_checkpoint_then_download,
+            ):
+                blocks, _cost = pipeline_runner._run_real_generator(
+                    planning=planning,
+                    product_image_url="p",
+                    gpt_image_key="fake",
+                    task_dir=task_dir,
+                    progress_cb=lambda p, m: None,
+                )
+
+            recovery = json.loads(
+                (task_dir / "_recovery.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(recovery["status"], "ready_for_assembly")
+            self.assertEqual(recovery["success_count"], 3)
+            self.assertEqual(recovery["failed_count"], 0)
+            self.assertEqual(len(blocks), 3)
+
     def test_worker_writes_raw_urls_to_state_and_summary(self):
         """端到端 _worker: 断言 TaskState.raw_urls + _summary.json 都有完整 URL 列表."""
         task_id = f"test_d_{uuid.uuid4().hex[:6]}"
@@ -250,13 +462,22 @@ class TestRawUrlsPreserved(unittest.TestCase):
             "planning": {"block_order": ["hero", "selling_point_1"], "total_blocks": 2},
         }
 
+        def _fake_assembler(task_dir, _blocks, _product_meta):
+            from PIL import Image
+
+            image = Image.frombytes(
+                "RGB", (400, 800), os.urandom(400 * 800 * 3),
+            )
+            image.save(task_dir / "assembled.png", "PNG")
+            return f"/static/ai_refine_v2/{task_dir.name}/assembled.png"
+
         with tempfile.TemporaryDirectory() as td:
             with mock.patch.object(pipeline_runner, "_OUTPUT_BASE", Path(td)), \
                  mock.patch.object(pipeline_runner, "_load_mock_planning", return_value=fake_planning), \
-                 mock.patch.object(pipeline_runner, "_run_real_generator",
-                                   return_value=(fake_blocks, 1.40)), \
-                 mock.patch.object(pipeline_runner, "_run_assembler",
-                                   return_value="/static/ai_refine_v2/x/assembled.png"):
+                  mock.patch.object(pipeline_runner, "_run_real_generator",
+                                    return_value=(fake_blocks, 1.40)), \
+                  mock.patch.object(pipeline_runner, "_run_assembler",
+                                    side_effect=_fake_assembler):
                 pipeline_runner._worker(
                     task_id=task_id,
                     product_text="x",
@@ -309,13 +530,18 @@ class TestAssembledSizeGuard(unittest.TestCase):
             self.assertIn("不存在", str(ctx.exception))
 
     def test_normal_png_passes(self):
+        from PIL import Image
+
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "ok.png"
-            p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 200_000)  # 200KB > 100KB
+            image = Image.frombytes(
+                "RGB", (400, 400), os.urandom(400 * 400 * 3),
+            )
+            image.save(p, "PNG")
             pipeline_runner._validate_assembled_png(p)  # 不 raise 就 pass
 
     def test_assembled_png_raises_in_worker(self):
-        """端到端: _worker 拼装出小 PNG → status=failed."""
+        """端到端: 付费结果拼装失败 → recovery_required 且无 summary."""
         task_id = f"test_e_{uuid.uuid4().hex[:6]}"
         pipeline_runner._TASKS[task_id] = pipeline_runner.TaskState(task_id=task_id)
 
@@ -338,11 +564,22 @@ class TestAssembledSizeGuard(unittest.TestCase):
             pipeline_runner._validate_assembled_png(out_png)  # 应该 raise
             return "/x"
 
+        def _fake_paid_generation(_planning, _image, _key, task_dir, _progress):
+            pipeline_runner._persist_recovery(
+                task_dir,
+                fake_blocks,
+                0.70,
+                1,
+                status="ready_for_assembly",
+                schema_mode="v1",
+            )
+            return fake_blocks, 0.70
+
         with tempfile.TemporaryDirectory() as td:
             with mock.patch.object(pipeline_runner, "_OUTPUT_BASE", Path(td)), \
                  mock.patch.object(pipeline_runner, "_load_mock_planning", return_value=fake_planning), \
-                 mock.patch.object(pipeline_runner, "_run_real_generator",
-                                   return_value=(fake_blocks, 0.70)), \
+                  mock.patch.object(pipeline_runner, "_run_real_generator",
+                                    side_effect=_fake_paid_generation), \
                  mock.patch.object(pipeline_runner, "_run_assembler",
                                    side_effect=_real_assembler_but_tiny_png):
                 pipeline_runner._worker(
@@ -352,9 +589,13 @@ class TestAssembledSizeGuard(unittest.TestCase):
                 )
 
             state = pipeline_runner._TASKS[task_id]
-            self.assertEqual(state.status, "failed",
-                             f"应 failed, 实际 {state.status}; error={state.error}")
+            self.assertEqual(state.status, "recovery_required",
+                             f"付费 checkpoint 存在时应可恢复, 实际 {state.status}; error={state.error}")
             self.assertIn("太小", state.error)
+            self.assertFalse(
+                (Path(td) / task_id / "_summary.json").exists(),
+                "assembled.png 校验失败前不能留下会被磁盘 fallback 当成功的 summary",
+            )
         pipeline_runner._TASKS.pop(task_id, None)
 
 

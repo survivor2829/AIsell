@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 import time
+import threading
 import unittest
 from unittest import mock
 
@@ -83,7 +84,7 @@ class TestPublicAPIShapeV2(unittest.TestCase):
         self.assertTrue(issubclass(HeroFailure, RuntimeError))
 
     def test_v2_default_size_is_3_4(self):
-        """PRD §阶段二: 1536×2048 锁定. _V2_SIZE_DEFAULT 必须是 '3:4'."""
+        """Provider 合同锁定为 1K、3:4. _V2_SIZE_DEFAULT 必须是 '3:4'."""
         self.assertEqual(_V2_SIZE_DEFAULT, "3:4")
 
 
@@ -190,7 +191,7 @@ class TestGenerateV2HappyPath(unittest.TestCase):
             max_retries_hero=0, max_retries_sp=0,
         )
         self.assertEqual(set(captured["sizes"]), {"3:4"},
-                         "v2 应锁定 size='3:4' (1536×2048)")
+                         "v2 应锁定 provider 的 1K、size='3:4'")
 
     def test_cost_tracking_default_per_call(self):
         """默认 cost_per_call_rmb=¥0.70 × N."""
@@ -366,6 +367,24 @@ class TestGenerateV2InputValidation(unittest.TestCase):
             generate_v2(bad, api_key="x", api_call_fn=lambda *a, **kw: "x")
         self.assertIn("无屏可生成", str(ctx.exception))
 
+    def test_missing_reference_file_fails_before_any_generation_call(self):
+        calls = []
+
+        def _should_not_run(*args, **kwargs):
+            calls.append((args, kwargs))
+            return "https://fake/should-not-exist.png"
+
+        with self.assertRaises(ValueError) as ctx:
+            generate_v2(
+                _v2_planning(n=2),
+                product_cutout_url=r"C:\missing\product-reference.png",
+                api_key="x",
+                api_call_fn=_should_not_run,
+            )
+
+        self.assertIn("参考图", str(ctx.exception))
+        self.assertEqual(calls, [], "参考图读取失败时不得调用任何生图 API")
+
 
 # ──────────────────────────────────────────────────────────────────
 # F: v1 ↔ v2 schema isolation
@@ -408,6 +427,20 @@ class TestV1V2SchemaIsolation(unittest.TestCase):
         # v2 planning 含 product_meta + style_dna + screens, 缺 selling_points 和 planning
         msg = str(ctx.exception).lower()
         self.assertTrue("selling_points" in msg or "planning" in msg)
+
+    def test_v1_missing_reference_file_fails_before_generation_call(self):
+        calls = []
+
+        with self.assertRaises(ValueError) as ctx:
+            generate(
+                self._v1_planning(),
+                product_cutout_url=r"C:\missing\product-reference.png",
+                api_key="x",
+                api_call_fn=lambda *args, **kwargs: calls.append((args, kwargs)),
+            )
+
+        self.assertIn("参考图", str(ctx.exception))
+        self.assertEqual(calls, [])
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -756,6 +789,88 @@ class TestToDataUrlResize(unittest.TestCase):
                 f"长边应 ≤ max_dim=512, 实际 {img.size}")
             self.assertLess(len(decoded), p.stat().st_size,
                 "resize 后体积应小于原图")
+
+
+class TestProviderLifecycle(unittest.TestCase):
+    def test_outcome_unknown_survives_secondary_checkpoint_failure(self):
+        """记录 unknown 事件失败时，仍必须抛出原 provider 结果不明异常。"""
+        class Unknown(RuntimeError):
+            outcome_unknown = True
+
+            def __init__(self):
+                self.task_id = "provider-unknown"
+                super().__init__("synthetic provider outcome unknown")
+
+        def api_call(*_args, **_kwargs):
+            raise Unknown()
+
+        def broken_lifecycle(_block_id, _event):
+            raise OSError("synthetic checkpoint failure")
+
+        with self.assertRaises(Unknown) as ctx:
+            generate_v2(
+                _v2_planning(1),
+                api_key="test",
+                api_call_fn=api_call,
+                lifecycle_callback=broken_lifecycle,
+                max_retries_hero=0,
+            )
+
+        self.assertEqual(ctx.exception.task_id, "provider-unknown")
+
+    def test_unknown_block_waits_for_running_peer_checkpoint_before_raising(self):
+        class Unknown(RuntimeError):
+            outcome_unknown = True
+
+            def __init__(self, task_id):
+                self.task_id = task_id
+                super().__init__("synthetic unknown")
+
+        barrier = threading.Barrier(2)
+        events = []
+
+        def lifecycle(block_id, event):
+            events.append((block_id, dict(event)))
+
+        def api_call(prompt, _image, _key, _thinking, _size, *, lifecycle_callback):
+            screen = "1" if "Screen 1" in prompt else ("2" if "Screen 2" in prompt else "3")
+            task_id = f"provider-{screen}"
+            lifecycle_callback({"event": "submitted", "provider_task_id": task_id})
+            if screen == "1":
+                lifecycle_callback({
+                    "event": "completed", "provider_task_id": task_id,
+                    "raw_url": "https://cdn.invalid/1.png",
+                })
+                return "https://cdn.invalid/1.png"
+            barrier.wait(timeout=2)
+            if screen == "2":
+                raise Unknown(task_id)
+            time.sleep(0.02)
+            lifecycle_callback({
+                "event": "completed", "provider_task_id": task_id,
+                "raw_url": "https://cdn.invalid/3.png",
+            })
+            return "https://cdn.invalid/3.png"
+
+        with self.assertRaises(Unknown):
+            generate_v2(
+                _v2_planning(3),
+                api_key="test",
+                api_call_fn=api_call,
+                lifecycle_callback=lifecycle,
+                max_retries_hero=0,
+                max_retries_sp=0,
+                concurrency=2,
+            )
+
+        self.assertTrue(any(
+            block_id.startswith("screen_02_") and event.get("event") == "outcome_unknown"
+            for block_id, event in events
+        ))
+        self.assertTrue(any(
+            block_id.startswith("screen_03_") and event.get("event") == "completed"
+            for block_id, event in events
+        ))
 
 
 if __name__ == "__main__":

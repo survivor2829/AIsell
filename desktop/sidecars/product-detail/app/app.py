@@ -5082,15 +5082,35 @@ def _get_block_display_name(block_id):
 @login_required
 def ai_refine_v2_execute():
     """启动 v2 精修管线 (后台线程跑 3-5 分钟), 立即返回 task_id 供前端轮询."""
-    data = request.get_json(silent=True) or {}
-    product_text = (data.get("product_text") or "").strip()
-    product_image_url = (data.get("product_image_url") or "").strip()
-    product_title = (data.get("product_title") or "").strip()
+    from ai_refine_v2.refine_planner import ProductInputError, validate_product_inputs
+
+    def _input_error(code, message):
+        return jsonify({"ok": False, "code": code, "error": message}), 400
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return _input_error("AI_REFINE_REQUEST_INVALID", "请求体必须是 JSON 对象")
+
+    try:
+        product_text, product_title = validate_product_inputs(
+            data.get("product_text"), data.get("product_title", ""),
+        )
+    except ProductInputError as exc:
+        return _input_error(exc.code, str(exc))
+
+    raw_product_image_url = data.get("product_image_url")
+    if not isinstance(raw_product_image_url, str):
+        return _input_error(
+            "AI_REFINE_PRODUCT_IMAGE_REQUIRED",
+            "缺少 product_image_url (产品主图)",
+        )
+    product_image_url = raw_product_image_url.strip()
 
     if not product_image_url:
-        return jsonify({"error": "缺少 product_image_url (产品主图)"}), 400
-    if not product_text and not product_title:
-        return jsonify({"error": "product_text 和 product_title 至少给一个"}), 400
+        return _input_error(
+            "AI_REFINE_PRODUCT_IMAGE_REQUIRED",
+            "缺少 product_image_url (产品主图)",
+        )
 
     # v3.2 fix (2026-04-29): 前端传的是 Web URL path (/static/uploads/xxx.png),
     # 但 _to_data_url 当 filesystem path 读 — docker 容器内真实路径是 /app/static/...
@@ -5098,13 +5118,47 @@ def ai_refine_v2_execute():
     # 这才是 v3.2 上生产后用户报"产品形态跟参考图不一样"的根因.
     if product_image_url.startswith("/static/"):
         rel = product_image_url[len("/static/"):]
-        fs_path = Path(app.static_folder) / rel
+        static_root = Path(app.static_folder).resolve()
+        fs_path = (static_root / rel).resolve()
+        try:
+            fs_path.relative_to(static_root)
+        except ValueError:
+            return _input_error(
+                "AI_REFINE_PRODUCT_IMAGE_INVALID",
+                "产品主图路径无效，请重新上传",
+            )
         if fs_path.is_file():
             product_image_url = str(fs_path)
         else:
-            return jsonify({
-                "error": f"产品主图文件不存在: {fs_path} (URL: {data.get('product_image_url')!r}). 请重新上传."
-            }), 400
+            return _input_error(
+                "AI_REFINE_PRODUCT_IMAGE_NOT_FOUND",
+                "产品主图文件不存在，请重新上传",
+            )
+
+    # PRD §阶段二·任务 2.2: 前端可显式传 schema_mode='v2' 走新路径; 默认 'v1' 兼容.
+    raw_schema_mode = data.get("schema_mode", "v1")
+    if not isinstance(raw_schema_mode, str):
+        return _input_error(
+            "AI_REFINE_SCHEMA_MODE_INVALID",
+            "schema_mode 必须是 'v1' 或 'v2'",
+        )
+    schema_mode = raw_schema_mode.strip().lower()
+    if schema_mode not in ("v1", "v2"):
+        return _input_error(
+            "AI_REFINE_SCHEMA_MODE_INVALID",
+            f"schema_mode 必须 'v1' 或 'v2', 实际 {schema_mode!r}",
+        )
+
+    # PR A (2026-05-07): 透传 product_category 给 v2 worker 用于 post-planning reorder
+    # (耗材/配件类 lifestyle_demo 屏强制提到 idx=2). 缺则 None=不重排.
+    raw_product_category = data.get("product_category", "")
+    product_category = (
+        raw_product_category.strip() or None
+        if isinstance(raw_product_category, str)
+        else None
+    )
+    if product_category and product_category not in ALLOWED_PRODUCT_TYPES:
+        product_category = None  # 不合法的品类 → 静默降级不重排
 
     from ai_refine_v2 import pipeline_runner
     # PR C (2026-05-07): 二级 key 模式 — paid/admin 用 platform, else 用 user 自配
@@ -5113,16 +5167,6 @@ def ai_refine_v2_execute():
         gpt_image_key, _ = _get_gpt_image_key(current_user)
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 503
-    # PRD §阶段二·任务 2.2: 前端可显式传 schema_mode='v2' 走新路径; 默认 'v1' 兼容.
-    schema_mode = (data.get("schema_mode") or "v1").strip().lower()
-    if schema_mode not in ("v1", "v2"):
-        return jsonify({"error": f"schema_mode 必须 'v1' 或 'v2', 实际 {schema_mode!r}"}), 400
-
-    # PR A (2026-05-07): 透传 product_category 给 v2 worker 用于 post-planning reorder
-    # (耗材/配件类 lifestyle_demo 屏强制提到 idx=2). 缺则 None=不重排.
-    product_category = (data.get("product_category") or "").strip() or None
-    if product_category and product_category not in ALLOWED_PRODUCT_TYPES:
-        product_category = None  # 不合法的品类 → 静默降级不重排
 
     task_id = pipeline_runner.start_task(
         product_text=product_text,
@@ -5169,6 +5213,30 @@ def ai_refine_v2_status(task_id: str):
     return jsonify(state)
 
 
+@app.route("/api/ai-refine-v2/recover/<task_id>", methods=["POST"])
+@login_required
+def ai_refine_v2_recover(task_id: str):
+    """Continue the original provider tasks/URLs without creating a new order."""
+    from ai_refine_v2 import pipeline_runner
+
+    state = pipeline_runner.get_task_status(task_id)
+    if state is None:
+        return jsonify({"error": f"任务不存在或已过期: {task_id}"}), 404
+    owner_id = state.get("user_id")
+    if owner_id != current_user.id and not current_user.is_admin:
+        abort(403)
+    if state.get("status") in {"success", "partial_success"}:
+        return jsonify({"ok": True, **state})
+    try:
+        gpt_image_key, _ = _get_gpt_image_key(current_user)
+        recovered = pipeline_runner.start_task_recovery(task_id, gpt_image_key)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 409
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
+    return jsonify({"ok": True, **recovered}), 202
+
+
 @app.route("/api/workspace-results/ai-refine-v2/<task_id>", methods=["POST"])
 @login_required
 def workspace_result_save_ai_refine_v2(task_id: str):
@@ -5181,7 +5249,8 @@ def workspace_result_save_ai_refine_v2(task_id: str):
     owner_id = state.get("user_id")
     if owner_id != current_user.id and not current_user.is_admin:
         abort(403)
-    if state.get("status") != "success":
+    terminal_status = str(state.get("status") or "").strip()
+    if terminal_status not in {"success", "partial_success"}:
         return jsonify({"error": "任务尚未成功完成，不能保存到首页历史"}), 400
 
     image_url = (state.get("assembled_url") or "").strip()
@@ -5193,6 +5262,22 @@ def workspace_result_save_ai_refine_v2(task_id: str):
     if product_category not in ALLOWED_PRODUCT_TYPES:
         product_category = ""
     blocks = state.get("blocks") or []
+    blocks_count = len(blocks) if isinstance(blocks, list) else 0
+    planned_count = int(state.get("planned_count") or blocks_count)
+    success_count = int(
+        state.get("success_count")
+        if state.get("success_count") is not None
+        else sum(
+            1
+            for block in blocks
+            if isinstance(block, dict) and block.get("success")
+        )
+    )
+    failed_count = int(
+        state.get("failed_count")
+        if state.get("failed_count") is not None
+        else max(planned_count - success_count, 0)
+    )
     record = {
         "kind": "ai_refine_v2",
         "task_id": task_id,
@@ -5201,7 +5286,10 @@ def workspace_result_save_ai_refine_v2(task_id: str):
         "mode": state.get("mode") or "",
         "product_title": "",
         "product_category": product_category,
-        "blocks_count": len(blocks) if isinstance(blocks, list) else 0,
+        "blocks_count": blocks_count,
+        "planned_count": planned_count,
+        "success_count": success_count,
+        "failed_count": failed_count,
         "elapsed_s": state.get("elapsed_s") or 0,
         "cost_rmb": state.get("cost_rmb") or 0,
     }

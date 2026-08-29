@@ -576,11 +576,14 @@ print(json.dumps({
     assert control_token not in combined
 
 
-def test_runtime_path_builder_keeps_resources_read_only(tmp_path):
+def test_runtime_path_builder_syncs_immutable_assets_and_preserves_mutable_data(tmp_path):
     data_dir = tmp_path / "desktop-data"
-    preserved_asset = data_dir / "static" / "css" / "design-system.css"
-    preserved_asset.parent.mkdir(parents=True)
-    preserved_asset.write_text("user-preserved", encoding="utf-8")
+    immutable_asset = data_dir / "static" / "css" / "design-system.css"
+    immutable_asset.parent.mkdir(parents=True)
+    immutable_asset.write_text("stale-packaged-asset", encoding="utf-8")
+    preserved_upload = data_dir / "static" / "uploads" / "user-product.png"
+    preserved_upload.parent.mkdir(parents=True)
+    preserved_upload.write_bytes(b"user-preserved")
     paths = desktop_entry.prepare_runtime_paths(data_dir)
 
     assert paths.resource_dir == APP_ROOT
@@ -591,7 +594,10 @@ def test_runtime_path_builder_keeps_resources_read_only(tmp_path):
         path == paths.data_dir or paths.data_dir in path.parents
         for path in paths.mutable_paths().values()
     )
-    assert preserved_asset.read_text(encoding="utf-8") == "user-preserved"
+    assert immutable_asset.read_bytes() == (
+        APP_ROOT / "static" / "css" / "design-system.css"
+    ).read_bytes()
+    assert preserved_upload.read_bytes() == b"user-preserved"
 
 
 def test_packaged_workspace_has_no_runtime_cdn_dependencies():

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import filecmp
 import hashlib
 import hmac
 import importlib
@@ -115,8 +116,8 @@ def _is_loopback_address(value: str | None) -> bool:
     return address.is_loopback
 
 
-def _copy_missing_static_assets(source: Path, destination: Path) -> None:
-    """Copy packaged static assets once without overwriting user data."""
+def _sync_packaged_static_assets(source: Path, destination: Path) -> None:
+    """Version immutable packaged assets while preserving user-owned runtime data."""
 
     destination.mkdir(parents=True, exist_ok=True)
     if not source.is_dir():
@@ -128,9 +129,20 @@ def _copy_missing_static_assets(source: Path, destination: Path) -> None:
         destination_path = destination / relative
         if source_path.is_dir():
             destination_path.mkdir(parents=True, exist_ok=True)
-        elif source_path.is_file() and not destination_path.exists():
+        elif source_path.is_file():
             destination_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_path, destination_path)
+            if destination_path.exists() and filecmp.cmp(
+                source_path, destination_path, shallow=False
+            ):
+                continue
+            temporary_path = destination_path.with_name(
+                f".{destination_path.name}.sync-{os.getpid()}"
+            )
+            try:
+                shutil.copy2(source_path, temporary_path)
+                os.replace(temporary_path, destination_path)
+            finally:
+                temporary_path.unlink(missing_ok=True)
 
 
 def prepare_runtime_paths(data_dir: str | os.PathLike[str] | Path) -> RuntimePaths:
@@ -150,7 +162,7 @@ def prepare_runtime_paths(data_dir: str | os.PathLike[str] | Path) -> RuntimePat
     )
     for path in paths.mutable_paths().values():
         path.mkdir(parents=True, exist_ok=True)
-    _copy_missing_static_assets(RESOURCE_DIR / "static", paths.static_dir)
+    _sync_packaged_static_assets(RESOURCE_DIR / "static", paths.static_dir)
     return paths
 
 
@@ -266,6 +278,8 @@ def _install_desktop_contract(
 
     ledger_path = config.data_dir / "database" / "desktop-ai-refine-ledger.json"
     ledger_lock = threading.RLock()
+    refine_terminal_states = {"success", "partial_success", "failed"}
+    refine_blocking_states = {"outcome_unknown", "recovery_required"}
     def unreadable_refine_ledger() -> dict:
         return {
             "state": "outcome_unknown",
@@ -301,12 +315,21 @@ def _install_desktop_contract(
     def refresh_refine_ledger() -> dict:
         with ledger_lock:
             ledger = read_refine_ledger()
-            if ledger.get("state") != "pending":
+            if ledger.get("state") not in {
+                "pending", "outcome_unknown", "recovery_required",
+            }:
                 return ledger
             current = task_state(str(ledger.get("task_id") or ""))
-            if current and current.get("status") in {"success", "failed", "outcome_unknown"}:
+            if current and current.get("status") in {
+                *refine_terminal_states,
+                *refine_blocking_states,
+            }:
                 ledger["state"] = str(current["status"])
-                ledger["finished_at"] = int(time.time())
+                ledger[
+                    "finished_at"
+                    if current["status"] in refine_terminal_states
+                    else "updated_at"
+                ] = int(time.time())
                 write_refine_ledger(ledger)
             elif ledger.get("task_id") and current is None:
                 ledger["state"] = "outcome_unknown"
@@ -400,6 +423,15 @@ def _install_desktop_contract(
                             "task_id": ledger.get("task_id") or "",
                         }
                     ), 409
+                if ledger.get("state") == "recovery_required":
+                    return jsonify(
+                        {
+                            "ok": False,
+                            "code": "DESKTOP_AI_REFINE_RECOVERY_REQUIRED",
+                            "error": "上次付费任务已有结果，但本地下载或拼装尚未完成。请恢复原任务，不要重复提交。",
+                            "task_id": ledger.get("task_id") or "",
+                        }
+                    ), 409
                 request_bytes = request.get_data(cache=True) or b""
                 write_refine_ledger(
                     {
@@ -415,6 +447,31 @@ def _install_desktop_contract(
     @flask_app.after_request
     def desktop_track_ai_refine(response):
         endpoint = request.endpoint or ""
+        if (
+            endpoint == "ai_refine_v2_status"
+            and response.status_code == 404
+            and current_user.is_authenticated
+        ):
+            task_id = str((request.view_args or {}).get("task_id") or "")
+            with ledger_lock:
+                ledger = read_refine_ledger()
+                ledger_task_id = str(ledger.get("task_id") or "")
+            if (
+                ledger.get("state") == "outcome_unknown"
+                and task_id
+                and ledger_task_id
+                and hmac.compare_digest(task_id, ledger_task_id)
+            ):
+                safe_response = jsonify(
+                    {
+                        "ok": False,
+                        "code": "DESKTOP_AI_REFINE_OUTCOME_UNKNOWN",
+                        "error": "原付费任务的本地状态已丢失，必须先人工核对 APIMart，不能自动重提。",
+                        "task_id": task_id,
+                    }
+                )
+                safe_response.status_code = 409
+                return safe_response
         if endpoint == "ai_refine_v2_execute" and getattr(
             g, "xiaoxi_ai_refine_started", False
         ):
@@ -438,14 +495,23 @@ def _install_desktop_contract(
                     ledger["state"] = "outcome_unknown"
                     ledger["reason"] = "server_error_after_admission"
                     write_refine_ledger(ledger)
-        elif endpoint == "ai_refine_v2_status" and response.status_code == 200:
+        elif endpoint in {
+            "ai_refine_v2_status", "ai_refine_v2_recover",
+        } and response.status_code == 200:
             payload = response.get_json(silent=True) or {}
-            if payload.get("status") in {"success", "failed", "outcome_unknown"}:
+            if payload.get("status") in {
+                *refine_terminal_states,
+                *refine_blocking_states,
+            }:
                 with ledger_lock:
                     ledger = read_refine_ledger()
                     if str(ledger.get("task_id") or "") == str(payload.get("task_id") or ""):
                         ledger["state"] = str(payload["status"])
-                        ledger["finished_at"] = int(time.time())
+                        ledger[
+                            "finished_at"
+                            if payload["status"] in refine_terminal_states
+                            else "updated_at"
+                        ] = int(time.time())
                         write_refine_ledger(ledger)
         return response
 

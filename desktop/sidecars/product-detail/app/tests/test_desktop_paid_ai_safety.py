@@ -162,6 +162,18 @@ assert unknown_poll.status_code == 200, unknown_poll.data
 assert unknown_poll.get_json()["task_id"] == "task-atomic-1"
 assert unknown_poll.get_json()["status"] == "outcome_unknown"
 assert json.loads(ledger_path.read_text(encoding="utf-8"))["state"] == "outcome_unknown"
+
+# If the sidecar loses task files after recording this exact unknown task, status
+# must enter the existing manual APIMart verification flow. A different/missing
+# task remains an ordinary 404 and can never unlock the ledger.
+pipeline_runner.get_task_status = lambda task_id: None
+lost_unknown = client_one.get("/api/ai-refine-v2/status/task-atomic-1")
+assert lost_unknown.status_code == 409, lost_unknown.data
+assert lost_unknown.get_json()["code"] == "DESKTOP_AI_REFINE_OUTCOME_UNKNOWN"
+assert lost_unknown.get_json()["task_id"] == "task-atomic-1"
+ordinary_missing = client_one.get("/api/ai-refine-v2/status/task-not-in-ledger")
+assert ordinary_missing.status_code == 404, ordinary_missing.data
+assert ordinary_missing.get_json().get("code") != "DESKTOP_AI_REFINE_OUTCOME_UNKNOWN"
 blocked_unknown = post(
     client_one, csrf_one, "/api/ai-refine-v2/execute", payload
 )
@@ -175,6 +187,9 @@ resolved_again = post(
     {"confirm_new_task": True},
 )
 assert resolved_again.status_code == 200, resolved_again.data
+resolved_missing = client_one.get("/api/ai-refine-v2/status/task-atomic-1")
+assert resolved_missing.status_code == 404, resolved_missing.data
+assert resolved_missing.get_json().get("code") != "DESKTOP_AI_REFINE_OUTCOME_UNKNOWN"
 
 pipeline_runner.start_task = lambda **kwargs: start_calls.append(kwargs) or "task-direct-2"
 direct_after_resolve = post(
@@ -195,6 +210,25 @@ closed = client_one.get("/api/ai-refine-v2/status/task-direct-2")
 assert closed.status_code == 200, closed.data
 assert closed.get_json()["status"] == "failed"
 
+# Partial success is terminal: it closes pending so a later confirmed job is admissible.
+pipeline_runner.start_task = lambda **kwargs: start_calls.append(kwargs) or "task-partial-3"
+partial_started = post(client_one, csrf_one, "/api/ai-refine-v2/execute", payload)
+assert partial_started.status_code == 200, partial_started.data
+pipeline_runner.get_task_status = lambda task_id: {
+    "task_id": task_id,
+    "user_id": user_id,
+    "status": "partial_success",
+    "progress_pct": 100,
+    "planned_count": 10,
+    "success_count": 8,
+    "failed_count": 2,
+    "assembled_url": f"/static/ai_refine_v2/{task_id}/assembled.png",
+}
+partial_poll = client_one.get("/api/ai-refine-v2/status/task-partial-3")
+assert partial_poll.status_code == 200, partial_poll.data
+assert partial_poll.get_json()["status"] == "partial_success"
+assert json.loads(ledger_path.read_text(encoding="utf-8"))["state"] == "partial_success"
+
 # A server failure after admission is outcome_unknown, never safe-to-retry.
 server_calls = []
 def crash_after_admission(**kwargs):
@@ -212,6 +246,38 @@ assert blocked.status_code == 409, blocked.data
 assert blocked.get_json()["code"] == "DESKTOP_AI_REFINE_OUTCOME_UNKNOWN"
 assert len(server_calls) == 1
 
+# Recovery-required keeps the original paid task locked and never starts a replacement.
+resolved_after_crash = post(
+    client_one,
+    csrf_one,
+    "/desktop/ai-refine-v2/resolve-unknown",
+    {"confirm_new_task": True},
+)
+assert resolved_after_crash.status_code == 200, resolved_after_crash.data
+pipeline_runner.start_task = lambda **kwargs: start_calls.append(kwargs) or "task-recovery-4"
+recovery_started = post(client_one, csrf_one, "/api/ai-refine-v2/execute", payload)
+assert recovery_started.status_code == 200, recovery_started.data
+pipeline_runner.get_task_status = lambda task_id: {
+    "task_id": task_id,
+    "user_id": user_id,
+    "status": "recovery_required",
+    "progress_pct": 90,
+    "planned_count": 10,
+    "success_count": 8,
+    "failed_count": 2,
+    "error": "synthetic local assembly failure",
+    "raw_urls": ["https://provider.invalid/result-1.png"],
+}
+recovery_poll = client_one.get("/api/ai-refine-v2/status/task-recovery-4")
+assert recovery_poll.status_code == 200, recovery_poll.data
+assert recovery_poll.get_json()["status"] == "recovery_required"
+blocked_recovery = post(
+    client_one, csrf_one, "/api/ai-refine-v2/execute", payload
+)
+assert blocked_recovery.status_code == 409, blocked_recovery.data
+assert blocked_recovery.get_json()["task_id"] == "task-recovery-4"
+assert len(start_calls) == 4
+
 print(json.dumps({
     "corrupt": corrupt.status_code,
     "concurrent": second.status_code,
@@ -219,8 +285,14 @@ print(json.dumps({
     "direct_after_resolve": direct_after_resolve.status_code,
     "poll_task_id": poll.get_json()["task_id"],
     "poll_status": poll.get_json()["status"],
+    "lost_unknown": lost_unknown.status_code,
+    "ordinary_missing": ordinary_missing.status_code,
+    "partial_status": partial_poll.get_json()["status"],
+    "partial_ledger": "partial_success",
     "post_admission": failed.status_code,
-    "final_ledger": ledger["state"],
+    "recovery_status": recovery_poll.get_json()["status"],
+    "recovery_blocked": blocked_recovery.status_code,
+    "recovery_task_id": blocked_recovery.get_json()["task_id"],
 }))
 '''
     env = os.environ.copy()
@@ -258,6 +330,12 @@ print(json.dumps({
         "direct_after_resolve": 200,
         "poll_task_id": "task-atomic-1",
         "poll_status": "running_generator",
+        "lost_unknown": 409,
+        "ordinary_missing": 404,
+        "partial_status": "partial_success",
+        "partial_ledger": "partial_success",
         "post_admission": 500,
-        "final_ledger": "outcome_unknown",
+        "recovery_status": "recovery_required",
+        "recovery_blocked": 409,
+        "recovery_task_id": "task-recovery-4",
     }
