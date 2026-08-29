@@ -606,6 +606,19 @@ def run():
                 confirmation_dialog = workspace.locator("#ai_refine_confirm_dialog")
                 if not ai_button.is_disabled():
                     raise AssertionError("AI refine button was not locked while busy")
+                confirmation_dialog.wait_for(state="visible", timeout=10_000)
+                confirmation_message = workspace.locator(
+                    "#ai_refine_confirm_message"
+                ).inner_text()
+                if "8–15" not in confirmation_message or "APIMart" not in confirmation_message:
+                    raise AssertionError(
+                        "AI refine preflight must disclose screen count and APIMart billing"
+                    )
+                confirm_button = workspace.locator("#ai_refine_confirm_submit")
+                if confirm_button.inner_text().strip() != "开始付费生成":
+                    raise AssertionError("AI refine preflight confirmation label is incorrect")
+                confirm_button.click()
+                confirmation_dialog.wait_for(state="hidden", timeout=10_000)
                 download_button = workspace.locator("[data-ai-refine-download]")
                 download_button.wait_for(state="visible", timeout=30_000)
                 embedded_frame.wait_for_function(
