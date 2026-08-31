@@ -7,6 +7,8 @@ const productBrand = require("../../product-brand.json");
 const { replaceWithRetry, uniqueTemporaryPath } = require("./atomic-file.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
 
+const AUTO_REPLY_DIAGNOSTIC_FILE = /^auto-reply-diagnostics\.jsonl(?:\.[1-9]\d*)?$/u;
+
 function buildInfo(appRuntime = app) {
   const candidates = [
     path.join(appRuntime.getAppPath(), "dist", "build-edition.json"),
@@ -48,6 +50,39 @@ function collectDiagnosticFiles(logsDir) {
         sha256: sha256(content)
       };
     });
+}
+
+function collectAutoReplyDiagnosticFiles(autoReplyDir) {
+  if (typeof autoReplyDir !== "string" || !autoReplyDir.trim()) return [];
+  const lockedDirectory = path.resolve(autoReplyDir);
+  let directoryEntries;
+  try {
+    directoryEntries = fs.readdirSync(lockedDirectory, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return [];
+    throw error;
+  }
+
+  const files = [];
+  for (const entry of directoryEntries) {
+    if (!entry.isFile() || !AUTO_REPLY_DIAGNOSTIC_FILE.test(entry.name)) continue;
+    const source = path.resolve(lockedDirectory, entry.name);
+    if (path.dirname(source) !== lockedDirectory) continue;
+    let content;
+    try {
+      content = fs.readFileSync(source);
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+    files.push({
+      name: path.posix.join("auto_reply", entry.name),
+      content,
+      size_bytes: content.length,
+      sha256: sha256(content)
+    });
+  }
+  return files.sort((left, right) => left.name.localeCompare(right.name, "en"));
 }
 
 async function createZipArchive(entries) {
@@ -101,6 +136,7 @@ async function exportBundle(options = {}) {
   const appRuntime = options.app || app;
   const dialogRuntime = options.dialog || dialog;
   const logger = options.logger || diagnostics();
+  const autoReplyDir = options.autoReplyDir;
   const createArchive = options.createArchive || createZipArchive;
   const selected = await dialogRuntime.showSaveDialog({
     title: `导出 ${productBrand.displayName} 诊断包`,
@@ -113,7 +149,9 @@ async function exportBundle(options = {}) {
   const operation = logger.begin("diagnostics", "bundle_export", { destination });
   try {
     const diagnosticFiles = collectDiagnosticFiles(logger.logsDir);
-    const includedFiles = diagnosticFiles.map(({ name, size_bytes, sha256: digest }) => ({
+    const autoReplyDiagnosticFiles = collectAutoReplyDiagnosticFiles(autoReplyDir);
+    const collectedFiles = [...diagnosticFiles, ...autoReplyDiagnosticFiles];
+    const includedFiles = collectedFiles.map(({ name, size_bytes, sha256: digest }) => ({
       name,
       size_bytes,
       sha256: digest
@@ -126,7 +164,7 @@ async function exportBundle(options = {}) {
       privacy: "不包含 DeepSeek Key、客户消息原文、联系人明文、AI专家资料原文。"
     }, null, 2)}\n`, "utf8");
     const entries = [
-      ...diagnosticFiles.map(({ name, content }) => ({ name, content })),
+      ...collectedFiles.map(({ name, content }) => ({ name, content })),
       { name: "summary.json", content: summary }
     ];
     const archive = await createArchive(entries);
@@ -139,7 +177,7 @@ async function exportBundle(options = {}) {
   }
 }
 
-function registerDiagnosticsIpc() {
+function registerDiagnosticsIpc(options = {}) {
   ipcMain.handle("diagnostics:status", () => diagnostics().status());
   ipcMain.handle("diagnostics:open-folder", async () => {
     const result = await shell.openPath(diagnostics().logsDir);
@@ -147,7 +185,7 @@ function registerDiagnosticsIpc() {
     diagnostics().event("diagnostics", "folder_opened");
     return { ok: true };
   });
-  ipcMain.handle("diagnostics:export", () => exportBundle());
+  ipcMain.handle("diagnostics:export", () => exportBundle({ autoReplyDir: options.autoReplyDir }));
 }
 
 module.exports = { exportBundle, registerDiagnosticsIpc };

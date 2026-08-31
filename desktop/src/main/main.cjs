@@ -422,7 +422,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     }
     if (internalRealSend) disarmRealSend = () => internalRealSend.setRealSendArm(runtime.activeTouchDir, false);
     registerContactSyncIpc({ dataDir: runtime.contactSyncDir, activeTouchDir: runtime.activeTouchDir, coordinator });
-    registerDiagnosticsIpc();
+    registerDiagnosticsIpc({ autoReplyDir: runtime.autoReplyDir });
     registerDeepSeekApiIpc({
       keyStore: deepSeekKeyStore,
       client: deepSeekClient,
