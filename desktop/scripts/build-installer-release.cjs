@@ -1,9 +1,14 @@
+const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
 const { verifyPackagedRemotionRuntime } = require("./build-remotion-runtime.cjs");
 const { verifyReleaseTrustRecord } = require("./release-trust-record.cjs");
+const {
+  runPackagedProductDetailReleaseGate
+} = require("./product-detail-release-runtime.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 const projectDir = path.resolve(desktopDir, "..");
@@ -20,6 +25,7 @@ const TEST_PORTABLE_REUSE_PATHS = new Set([
   "desktop/scripts/build-installer-release.cjs",
   "desktop/scripts/installer-release.self_check.cjs"
 ]);
+const ELECTRON_BUILDER_ELEVATE_HELPER = "resources/elevate.exe";
 
 function resolveInstallerTarget(edition = "delivery") {
   if (edition === "delivery") {
@@ -89,7 +95,188 @@ function assertTestPortableReuse(portableCommit, currentCommit) {
   return changedPaths;
 }
 
-function assertInstallerSource(edition = "delivery", environment = process.env) {
+function assertPortableAppTreeMatchesManifest({ portableManifest, releaseTarget } = {}) {
+  const expectedHash = String(portableManifest?.sourceTreeSha256 || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(expectedHash)) {
+    throw new Error("Verified portable app tree hash is missing");
+  }
+  const appDir = path.join(releaseTarget, "resources", "app");
+  if (!fs.existsSync(appDir) || !fs.statSync(appDir).isDirectory()) {
+    throw new Error("Verified portable application tree is missing");
+  }
+  if (treeSha256(appDir) !== expectedHash) {
+    throw new Error("Verified portable application tree does not match its manifest");
+  }
+  return appDir;
+}
+
+function installerArchiveTool() {
+  try {
+    return require.resolve("electron-winstaller/vendor/7z.exe");
+  } catch {
+    throw new Error("Installer archive verifier is unavailable");
+  }
+}
+
+function extractInstallerArchive({ archiveTool, archive, destination, spawn = spawnSync }) {
+  const result = spawn(archiveTool, ["x", "-y", `-o${destination}`, archive], {
+    cwd: path.dirname(archive),
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 240_000,
+    maxBuffer: 16 * 1024 * 1024
+  });
+  if (result.status !== 0) {
+    throw new Error(result.error?.message || result.stderr || result.stdout || `Failed to extract ${path.basename(archive)}`);
+  }
+}
+
+function releaseTreeEntries(root) {
+  const absoluteRoot = path.resolve(root);
+  const entries = new Map();
+  const visit = (current) => {
+    const children = fs.readdirSync(current, { withFileTypes: true })
+      .sort((left, right) => Buffer.compare(Buffer.from(left.name), Buffer.from(right.name)));
+    for (const child of children) {
+      const absolute = path.join(current, child.name);
+      const relative = path.relative(absoluteRoot, absolute).replaceAll("\\", "/");
+      if (child.isDirectory()) {
+        entries.set(relative, { kind: "directory" });
+        visit(absolute);
+      } else if (child.isFile()) {
+        entries.set(relative, {
+          kind: "file",
+          size: fs.statSync(absolute).size,
+          sha256: sha256(absolute)
+        });
+      } else {
+        throw new Error(`Unsupported installer payload entry: ${relative}`);
+      }
+    }
+  };
+  visit(absoluteRoot);
+  return entries;
+}
+
+function assertInstallerInputMatchesPortable({ portableTarget, installerInput } = {}) {
+  const expectedEntries = releaseTreeEntries(portableTarget);
+  const actualEntries = releaseTreeEntries(installerInput);
+  const extraElevateHelper = actualEntries.get(ELECTRON_BUILDER_ELEVATE_HELPER);
+  if (!expectedEntries.has(ELECTRON_BUILDER_ELEVATE_HELPER) && extraElevateHelper) {
+    if (extraElevateHelper.kind !== "file") {
+      throw new Error("Installer payload has an invalid Electron Builder elevate helper");
+    }
+    actualEntries.delete(ELECTRON_BUILDER_ELEVATE_HELPER);
+  }
+  const paths = new Set([...expectedEntries.keys(), ...actualEntries.keys()]);
+  for (const relative of paths) {
+    const expected = expectedEntries.get(relative);
+    const actual = actualEntries.get(relative);
+    if (!expected || !actual || expected.kind !== actual.kind) {
+      throw new Error(`Installer payload differs from the verified portable application at ${relative}`);
+    }
+    if (
+      expected.kind === "file"
+      && (expected.size !== actual.size || expected.sha256 !== actual.sha256)
+    ) {
+      throw new Error(`Installer payload differs from the verified portable application at ${relative}`);
+    }
+  }
+}
+
+function verifyInstallerPayload({
+  installerFile,
+  portableManifest,
+  expectedPayloadTreeHash,
+  productName = PRODUCT_NAME,
+  releaseGate = runPackagedProductDetailReleaseGate,
+  archiveTool = installerArchiveTool(),
+  spawn = spawnSync
+} = {}) {
+  const expectedHash = String(expectedPayloadTreeHash || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(expectedHash)) {
+    throw new Error("Installer verification requires the packed payload tree hash");
+  }
+  if (!fs.existsSync(installerFile) || !fs.statSync(installerFile).isFile()) {
+    throw new Error("Installer payload is missing");
+  }
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-installer-verify-"));
+  const installerContentsDir = path.join(tempDir, "installer-contents");
+  const extractedTarget = path.join(tempDir, "installed-app");
+  try {
+    fs.mkdirSync(installerContentsDir, { recursive: false });
+    fs.mkdirSync(extractedTarget, { recursive: false });
+    extractInstallerArchive({
+      archiveTool,
+      archive: installerFile,
+      destination: installerContentsDir,
+      spawn
+    });
+    const appArchive = path.join(installerContentsDir, "$PLUGINSDIR", "app-64.7z");
+    if (!fs.existsSync(appArchive) || !fs.statSync(appArchive).isFile()) {
+      throw new Error("Installer payload is missing the packaged application archive");
+    }
+    extractInstallerArchive({
+      archiveTool,
+      archive: appArchive,
+      destination: extractedTarget,
+      spawn
+    });
+    if (treeSha256(extractedTarget) !== expectedHash) {
+      throw new Error("Installer payload differs from the packed installer input");
+    }
+    const extractedManifestFile = path.join(extractedTarget, "版本清单.json");
+    const extractedManifest = JSON.parse(fs.readFileSync(extractedManifestFile, "utf8"));
+    assert.deepEqual(
+      extractedManifest,
+      portableManifest,
+      "Installer payload version manifest does not match the verified portable manifest"
+    );
+    assertPortableAppTreeMatchesManifest({
+      portableManifest,
+      releaseTarget: extractedTarget
+    });
+    releaseGate({
+      releaseTarget: extractedTarget,
+      resourcesDir: path.join(extractedTarget, "resources"),
+      descriptor: portableManifest.productDetailSidecar,
+      electronExecutable: path.join(extractedTarget, `${productName}.exe`),
+      dataDir: path.join(tempDir, "product-detail-gate")
+    });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function verifyPortableProductDetailRuntime({
+  portableManifest,
+  releaseTarget,
+  productName = PRODUCT_NAME,
+  runReleaseGate = runPackagedProductDetailReleaseGate
+} = {}) {
+  const descriptor = portableManifest?.productDetailSidecar;
+  if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor)) {
+    throw new Error("Verified portable product-detail descriptor is missing");
+  }
+  const resourcesDir = path.join(releaseTarget, "resources");
+  const electronExecutable = path.join(releaseTarget, `${productName}.exe`);
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-installer-product-detail-"));
+  try {
+    runReleaseGate({
+      releaseTarget,
+      resourcesDir,
+      descriptor,
+      electronExecutable,
+      dataDir: path.join(tempDir, "product-detail-gate")
+    });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function assertInstallerSource(edition = "delivery", environment = process.env, {
+  verifyProductDetailRuntime = verifyPortableProductDetailRuntime
+} = {}) {
   const target = resolveInstallerTarget(edition);
   const portableDir = path.join(releaseDir, target.productName);
   const portableManifestFile = path.join(portableDir, "版本清单.json");
@@ -110,11 +297,13 @@ function assertInstallerSource(edition = "delivery", environment = process.env) 
   if (portableManifest.remotionRuntime?.compositionSmokeStatus !== "passed") {
     throw new Error("Installer source lacks the explicit-browser Remotion composition smoke proof");
   }
-  const portableAppDir = path.join(portableDir, "resources", "app");
-  if (!portableManifest.sourceTreeSha256 || treeSha256(portableAppDir) !== portableManifest.sourceTreeSha256) {
-    throw new Error("Portable application source tree does not match its version manifest");
-  }
+  assertPortableAppTreeMatchesManifest({ portableManifest, releaseTarget: portableDir });
   verifyPackagedRemotionRuntime(portableDir, portableManifest.remotionRuntime);
+  verifyProductDetailRuntime({
+    portableManifest,
+    releaseTarget: portableDir,
+    productName: target.productName
+  });
   const portableCommit = String(portableManifest.commit || "").trim();
   let reusedInstallerOnlyPaths = [];
   if (portableCommit !== commit) {
@@ -158,8 +347,12 @@ function replaceCanonicalFile(staged, canonical) {
   return backedUp ? backup : null;
 }
 
-function buildInstaller(edition = "delivery") {
-  const { commit, portableCommit, portableDir, portableManifest, target, reusedInstallerOnlyPaths, releaseTrust } = assertInstallerSource(edition);
+function buildInstaller(edition = "delivery", options = {}) {
+  const { commit, portableCommit, portableDir, portableManifest, target, reusedInstallerOnlyPaths, releaseTrust } = assertInstallerSource(
+    edition,
+    process.env,
+    options
+  );
   const portableTreeHash = releaseTrust?.portableTreeSha256 || treeSha256(portableDir);
   const transactionId = `${process.pid}-${Date.now()}`;
   const stagingDir = path.join(releaseDir, `.installer-staging-${transactionId}`);
@@ -209,6 +402,16 @@ function buildInstaller(edition = "delivery") {
     }
     const size = fs.statSync(stagedInstaller).size;
     if (size < 20 * 1024 * 1024) throw new Error("Installer is unexpectedly small");
+    assertInstallerInputMatchesPortable({
+      portableTarget: portableDir,
+      installerInput: installerInputDir
+    });
+    verifyInstallerPayload({
+      installerFile: stagedInstaller,
+      portableManifest,
+      expectedPayloadTreeHash: treeSha256(installerInputDir),
+      productName: target.productName
+    });
 
     const installerManifest = {
       product: PRODUCT_NAME,
@@ -254,9 +457,14 @@ if (require.main === module) buildInstaller(process.argv[2] || "delivery");
 
 module.exports = {
   assertInstallerSource,
+  assertPortableAppTreeMatchesManifest,
+  assertInstallerInputMatchesPortable,
   buildInstaller,
+  extractInstallerArchive,
   installerManifestName,
   installerName,
   replaceCanonicalFile,
-  resolveInstallerTarget
+  resolveInstallerTarget,
+  verifyInstallerPayload,
+  verifyPortableProductDetailRuntime
 };

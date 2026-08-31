@@ -10,7 +10,7 @@ const {
   PRODUCT_DETAIL_RELEASE_PATH,
   isProductDetailArchivePythonSource,
   isProductDetailPythonSource,
-  runPackagedProductDetailSelfCheck
+  runPackagedProductDetailReleaseGate
 } = require("./product-detail-release-runtime.cjs");
 const {
   CONTENT_ENGINE_EXECUTABLE,
@@ -461,14 +461,22 @@ assert.equal(JSON.parse(wxKeyLoad.stdout.trim()).stage, "dll_loaded", "packaged 
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-portable-self-check-"));
 try {
-  const productDetailPayload = runPackagedProductDetailSelfCheck({
+  const productDetailGate = runPackagedProductDetailReleaseGate({
     releaseTarget: target,
     resourcesDir,
     descriptor: manifest.productDetailSidecar,
-    dataDir: path.join(tempDir, "product-detail")
+    electronExecutable: executable,
+    dataDir: path.join(tempDir, "product-detail-gate")
   });
-  assert.equal(productDetailPayload.version, manifest.productDetailSidecar.version);
-  assert.equal(productDetailPayload.capabilities.playwright, true, "product-detail must launch the shared Chromium runtime");
+  assert.equal(productDetailGate.selfCheck.version, manifest.productDetailSidecar.version);
+  assert.equal(
+    productDetailGate.selfCheck.capabilities.playwright,
+    true,
+    "product-detail must launch the shared Chromium runtime"
+  );
+  assert.equal(productDetailGate.lifecycle.ipc, true, "product-detail lifecycle smoke must exercise IPC");
+  assert.equal(productDetailGate.lifecycle.health, true, "product-detail lifecycle smoke must verify health");
+  assert.equal(productDetailGate.lifecycle.stopped, true, "product-detail lifecycle smoke must stop the sidecar");
 
   const contentEngineSession = runPackagedContentEngineSelfCheck({
     releaseTarget: target,
@@ -663,6 +671,11 @@ const renderer = fs.readdirSync(path.join(appDir, "dist", "assets"))
   .join("\n");
 assert.equal(renderer.includes("内部测试"), edition === "test");
 assert.equal(renderer.includes(edition === "test" ? "测试版" : "交付版"), edition === "test");
+if (edition === "delivery") {
+  assert.equal(renderer.includes("产品详情图组件不可用"), true, "delivery renderer must show a customer recovery message");
+  assert.equal(renderer.includes("完整安装程序重新安装"), true, "delivery renderer must explain how to recover a damaged installation");
+  assert.equal(renderer.includes("XIAOXI_PRODUCT_DETAIL_SIDECAR"), false, "delivery renderer must not expose a development runtime variable");
+}
 for (const marker of momentsCampaignSourceMarkers) {
   assert.equal(packagedSources.includes(marker), true, `every edition must contain campaign source marker ${marker}`);
 }

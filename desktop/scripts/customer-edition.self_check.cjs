@@ -144,8 +144,11 @@ function assertAutoReplyTestScopeBoundary() {
 
 function assertPackagedEditionUsesCopiedRenderer() {
   const editionSource = read(path.join(desktopDir, "src", "main", "edition.cjs"));
+  const mainSource = read(path.join(desktopDir, "src", "main", "main.cjs"));
   assert.match(editionSource, /const rendererDir = environmentEdition === "development"/, "local edition builds must load their edition-specific renderer");
   assert.match(editionSource, /: environmentEdition === "pilot" \? "dist-pilot" : "dist";/, "portable builds must load the selected renderer copied to app\/dist");
+  assert.match(editionSource, /electron\?\.app\?\.isPackaged === true/, "packaged apps must ignore development-edition environment overrides");
+  assert.match(mainSource, /if \(!app\.isPackaged && process\.env\.VITE_DEV_SERVER_URL\)/, "packaged apps must ignore a development renderer URL");
 }
 
 assertNoBlockedContent(path.join(desktopDir, "src", "main", "preload.cjs"));

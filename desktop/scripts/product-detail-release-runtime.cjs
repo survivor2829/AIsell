@@ -282,10 +282,110 @@ function runPackagedProductDetailSelfCheck({
   if (payload?.capabilities?.playwright !== true) {
     throw new Error("Product-detail packaged self-check could not launch the shared Chromium runtime");
   }
-  if (treeSha256(resourcesDir) !== resourcesHashBefore) {
+  const resourcesHashAfter = treeSha256(resourcesDir);
+  if (resourcesHashAfter !== resourcesHashBefore) {
     throw new Error("Product-detail packaged self-check changed portable resources");
   }
-  return payload;
+  return { ...payload, verifiedResourcesTreeSha256: resourcesHashAfter };
+}
+
+function runPackagedProductDetailLifecycleSmoke({
+  releaseTarget,
+  resourcesDir,
+  descriptor,
+  dataDir,
+  electronExecutable,
+  verifiedResourcesTreeSha256 = "",
+  parentEnvironment = process.env,
+  spawn = spawnSync
+}) {
+  if (fs.existsSync(dataDir)) {
+    throw new Error(`Product-detail lifecycle smoke data directory must be fresh: ${dataDir}`);
+  }
+  const packaged = resolvePackagedProductDetail(releaseTarget, descriptor);
+  const appDir = path.join(path.resolve(resourcesDir), "app");
+  assertDirectory(appDir, "Packaged Electron app");
+  if (!String(electronExecutable || "").trim()) {
+    throw new Error("Product-detail lifecycle smoke requires the packaged Electron executable");
+  }
+  assertFile(electronExecutable, "Packaged Electron executable");
+  const resourcesHashBefore = String(verifiedResourcesTreeSha256 || "").trim() || treeSha256(resourcesDir);
+  const environment = { ...parentEnvironment };
+  delete environment.ELECTRON_RUN_AS_NODE;
+  delete environment.VITE_DEV_SERVER_URL;
+  delete environment.XIAOXI_EDITION;
+  environment.XIAOXI_PRODUCT_DETAIL_RELEASE_SMOKE = "1";
+  environment.XIAOXI_PRODUCT_DETAIL_RELEASE_SMOKE_DATA_DIR = dataDir;
+  const result = spawn(
+    electronExecutable,
+    [],
+    {
+      cwd: path.resolve(releaseTarget),
+      encoding: "utf8",
+      env: environment,
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: 180_000,
+      windowsHide: true
+    }
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      String(result.stderr || "").trim()
+      || String(result.stdout || "").trim()
+      || `Product-detail packaged lifecycle smoke failed with status ${result.status}`
+    );
+  }
+  const resultFile = path.join(dataDir, "product-detail-release-smoke.json");
+  let smokeResult;
+  try {
+    smokeResult = JSON.parse(fs.readFileSync(resultFile, "utf8"));
+  } catch {
+    throw new Error("Product-detail packaged lifecycle smoke did not write a result");
+  }
+  if (
+    smokeResult?.ok !== true
+    || smokeResult.version !== descriptor.version
+    || smokeResult.ipc !== true
+    || smokeResult.health !== true
+    || smokeResult.stopped !== true
+  ) {
+    throw new Error("Product-detail packaged lifecycle smoke returned an unexpected result");
+  }
+  if (treeSha256(resourcesDir) !== resourcesHashBefore) {
+    throw new Error("Product-detail packaged lifecycle smoke changed portable resources");
+  }
+  return smokeResult;
+}
+
+function runPackagedProductDetailReleaseGate({
+  releaseTarget,
+  resourcesDir,
+  descriptor,
+  electronExecutable,
+  dataDir,
+  runSelfCheck = runPackagedProductDetailSelfCheck,
+  runLifecycleSmoke = runPackagedProductDetailLifecycleSmoke
+}) {
+  if (fs.existsSync(dataDir)) {
+    throw new Error(`Product-detail release-gate data directory must be fresh: ${dataDir}`);
+  }
+  fs.mkdirSync(dataDir, { recursive: false });
+  const selfCheck = runSelfCheck({
+    releaseTarget,
+    resourcesDir,
+    descriptor,
+    dataDir: path.join(dataDir, "self-check")
+  });
+  const lifecycle = runLifecycleSmoke({
+    releaseTarget,
+    resourcesDir,
+    descriptor,
+    electronExecutable,
+    verifiedResourcesTreeSha256: selfCheck.verifiedResourcesTreeSha256,
+    dataDir: path.join(dataDir, "lifecycle")
+  });
+  return { selfCheck, lifecycle };
 }
 
 function normalizeReleaseRelativePath(value) {
@@ -318,6 +418,8 @@ module.exports = {
   isProductDetailPythonSource,
   resolvePackagedProductDetail,
   resolveProductDetailBuild,
+  runPackagedProductDetailLifecycleSmoke,
+  runPackagedProductDetailReleaseGate,
   runPackagedProductDetailSelfCheck,
   validateBuildManifest,
   validateReleaseDescriptor

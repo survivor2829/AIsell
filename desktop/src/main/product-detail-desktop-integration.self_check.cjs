@@ -187,6 +187,13 @@ function assertRendererContract() {
   );
   assert.match(page, /referrerPolicy="no-referrer"/);
   assert.match(
+    page,
+    /const DEVELOPMENT_EDITION = import\.meta\.env\.VITE_XIAOXI_EDITION === "development"/,
+    "product-detail recovery copy must distinguish development from formal builds"
+  );
+  assert.match(page, /title: "产品详情图组件不可用"/);
+  assert.match(page, /完整安装程序重新安装/);
+  assert.match(
     styles,
     /\.product-detail-page\s*\{[^}]*height:\s*100%;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s,
     "product-detail page must fill the content card without creating a second scroll surface"
@@ -209,7 +216,8 @@ function assertRendererContract() {
     "服务已就绪",
     "重新启动",
     "停止服务",
-    "XIAOXI_PRODUCT_DETAIL_SIDECAR"
+    "XIAOXI_PRODUCT_DETAIL_SIDECAR",
+    "产品详情图组件不可用"
   ]) {
     assert.equal(page.includes(copy), true, `product-detail page must explain state/action: ${copy}`);
   }
@@ -244,11 +252,39 @@ function assertReleaseDownloadGate() {
   assert.match(e2e, /suggested_filename\)\.suffix\.lower\(\) != "\.png"/);
 }
 
+function assertPackagedLifecycleGate() {
+  const portableCheck = read("scripts/portable-release.self_check.cjs");
+  const releaseRuntime = read("scripts/product-detail-release-runtime.cjs");
+  const main = read("src/main/main.cjs");
+  const smoke = read("src/main/product-detail-release-smoke.cjs");
+  assert.match(
+    portableCheck,
+    /runPackagedProductDetailReleaseGate\(\{[\s\S]*?electronExecutable: executable,[\s\S]*?dataDir: path\.join\(tempDir, "product-detail-gate"\)/,
+    "every portable release must exercise the packaged product-detail lifecycle"
+  );
+  assert.match(releaseRuntime, /delete environment\.ELECTRON_RUN_AS_NODE/);
+  assert.match(releaseRuntime, /XIAOXI_PRODUCT_DETAIL_RELEASE_SMOKE = "1"/);
+  assert.match(releaseRuntime, /XIAOXI_PRODUCT_DETAIL_RELEASE_SMOKE_DATA_DIR = dataDir/);
+  assert.match(releaseRuntime, /product-detail-release-smoke\.json/);
+  assert.match(releaseRuntime, /function runPackagedProductDetailReleaseGate/);
+  assert.match(main, /const productDetailReleaseSmokeMode = app\.isPackaged/);
+  assert.match(main, /productDetailReleaseSmokeMode[\s\S]*?app\.setPath\("userData", productDetailReleaseSmokeDataDir\)/);
+  assert.match(main, /function productDetailWebPreferences\(\)/);
+  assert.match(main, /runProductDetailReleaseSmoke/);
+  assert.match(main, /if \(productDetailReleaseSmokeMode\) \{\s*completeProductDetailReleaseSmoke\(\);\s*return;/);
+  assert.match(main, /getProviderEnvironment: productDetailReleaseSmokeMode\s*\? \(\) => \(\{\}\)/);
+  assert.match(smoke, /window\.xiaoxiProductDetail/);
+  assert.match(smoke, /requestProductDetailSmokeHealth/);
+  assert.match(smoke, /show: false/);
+  assert.match(smoke, /skipTaskbar: true/);
+}
+
 assertPreloadApiContract();
 assertPreloadExposure();
 assertMainLifecycleAndNavigation();
 assertEmbeddedSessionContract();
 assertRendererContract();
 assertReleaseDownloadGate();
+assertPackagedLifecycleGate();
 
 console.log("product-detail desktop integration self-check passed");

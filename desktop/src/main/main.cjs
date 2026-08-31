@@ -7,7 +7,7 @@ const { registerAutoReplyIpc } = require("./auto-reply-ipc.cjs");
 const { createAiExpertStore } = require("./ai-expert.cjs");
 const { registerAiExpertIpc } = require("./ai-expert-ipc.cjs");
 const { registerContactSyncIpc } = require("./contact-sync-ipc.cjs");
-const { migrateLegacyRuntimeData } = require("./runtime-data.cjs");
+const { migrateLegacyRuntimeData, resolveRuntimePaths } = require("./runtime-data.cjs");
 const { registerTouchTaskIpc } = require("./touch-task-ipc.cjs");
 const { createRuntimeCoordinator } = require("./runtime-coordinator.cjs");
 const { DEEPSEEK_MODEL, createDeepSeekClient, createDeepSeekKeyStore } = require("./deepseek-api.cjs");
@@ -27,6 +27,7 @@ const {
   registerProductDetailDownloads
 } = require("./product-detail-download.cjs");
 const { registerProductDetailIpc } = require("./product-detail-ipc.cjs");
+const { runProductDetailReleaseSmoke } = require("./product-detail-release-smoke.cjs");
 const { createContentEngineSidecar } = require("./content-engine-sidecar.cjs");
 const { registerContentEngineIpc } = require("./content-engine-ipc.cjs");
 const { createBailianApiKeyStore } = require("./bailian-api-key.cjs");
@@ -59,6 +60,19 @@ let quitCleanupStarted = false;
 let quitCleanupComplete = false;
 
 const PROVIDER_CONSUMER_RESTART_STATES = new Set(["ready", "starting", "failed"]);
+const productDetailReleaseSmokeMode = app.isPackaged
+  && process.env.XIAOXI_PRODUCT_DETAIL_RELEASE_SMOKE === "1";
+const productDetailReleaseSmokeDataDirRaw = String(
+  process.env.XIAOXI_PRODUCT_DETAIL_RELEASE_SMOKE_DATA_DIR || ""
+).trim();
+const productDetailReleaseSmokeDataDir = productDetailReleaseSmokeDataDirRaw
+  ? path.resolve(productDetailReleaseSmokeDataDirRaw)
+  : "";
+const productDetailReleaseSmokeDataDirIsValid = !productDetailReleaseSmokeMode
+  || (
+    path.isAbsolute(productDetailReleaseSmokeDataDirRaw)
+    && productDetailReleaseSmokeDataDir !== path.parse(productDetailReleaseSmokeDataDir).root
+  );
 
 registerContentMediaScheme(protocol);
 
@@ -160,10 +174,25 @@ function rendererBuildInfo() {
 }
 
 // ponytail: keep test data separate from the delivery profile.
-if (developmentEdition) app.setPath("userData", path.join(app.getPath("appData"), "xiaoxi-active-touch-test"));
-if (pilotEdition) app.setPath("userData", path.join(app.getPath("appData"), "xiaoxi-active-touch-delivery"));
+if (productDetailReleaseSmokeMode && productDetailReleaseSmokeDataDirIsValid) {
+  app.setPath("userData", productDetailReleaseSmokeDataDir);
+} else if (developmentEdition) {
+  app.setPath("userData", path.join(app.getPath("appData"), "xiaoxi-active-touch-test"));
+} else if (pilotEdition) {
+  app.setPath("userData", path.join(app.getPath("appData"), "xiaoxi-active-touch-delivery"));
+}
 
-const gotSingleInstanceLock = app.requestSingleInstanceLock();
+const gotSingleInstanceLock = productDetailReleaseSmokeMode || app.requestSingleInstanceLock();
+
+function productDetailWebPreferences() {
+  return {
+    preload: path.join(__dirname, preloadFile),
+    sandbox: false,
+    contextIsolation: true,
+    nodeIntegration: false,
+    backgroundThrottling: false
+  };
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -176,13 +205,7 @@ function createWindow() {
     autoHideMenuBar: true,
     backgroundColor: "#f8d9df",
     title: [productBrand.displayName, editionLabel].filter(Boolean).join(" "),
-    webPreferences: {
-      preload: path.join(__dirname, preloadFile),
-      sandbox: false,
-      contextIsolation: true,
-      nodeIntegration: false,
-      backgroundThrottling: false
-    }
+    webPreferences: productDetailWebPreferences()
   });
 
   mainWindow.setMenu(null);
@@ -220,14 +243,40 @@ function createWindow() {
     mainWindow = null;
   });
 
-  if (process.env.VITE_DEV_SERVER_URL) {
+  if (!app.isPackaged && process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
     mainWindow.loadFile(path.join(__dirname, `../../${rendererDir}/index.html`));
   }
 }
 
-if (!gotSingleInstanceLock) {
+function completeProductDetailReleaseSmoke() {
+  void runProductDetailReleaseSmoke({
+    BrowserWindow,
+    controller: productDetailController,
+    dataDir: productDetailReleaseSmokeDataDir,
+    preloadPath: path.join(__dirname, preloadFile),
+    webPreferences: productDetailWebPreferences()
+  }).then(
+    () => {
+      console.log("product-detail packaged main-process smoke passed");
+      process.exitCode = 0;
+      app.quit();
+    },
+    (error) => {
+      console.error(`product-detail packaged main-process smoke failed: ${error instanceof Error ? error.message : "unknown failure"}`);
+      process.exitCode = 1;
+      app.quit();
+    }
+  );
+}
+
+if (!productDetailReleaseSmokeDataDirIsValid) {
+  console.error("product-detail packaged main-process smoke requires an absolute fresh data directory");
+  process.exitCode = 1;
+  app.exit(1);
+} else if (!gotSingleInstanceLock) {
+  if (productDetailReleaseSmokeMode) process.exitCode = 1;
   app.quit();
 } else {
   app.on("second-instance", () => {
@@ -241,10 +290,28 @@ if (!gotSingleInstanceLock) {
   app.whenReady().then(() => {
     let runtime;
     try {
-      runtime = migrateLegacyRuntimeData({ appPath: app.getAppPath(), userDataDir: app.getPath("userData") });
+      if (productDetailReleaseSmokeMode) {
+        runtime = {
+          ...resolveRuntimePaths(app.getPath("userData")),
+          migrated: [],
+          keptExisting: [],
+          archived: [],
+          splitState: [],
+          skippedForeignInstall: true
+        };
+        fs.mkdirSync(runtime.rootDir, { recursive: true });
+      } else {
+        runtime = migrateLegacyRuntimeData({ appPath: app.getAppPath(), userDataDir: app.getPath("userData") });
+      }
     } catch {
-      dialog.showErrorBox("数据迁移失败", "旧版本联系人或任务未能安全迁移，程序已停止启动；原数据不会被删除。");
-      app.quit();
+      if (productDetailReleaseSmokeMode) {
+        console.error("product-detail packaged main-process smoke failed: isolated runtime setup failed");
+        process.exitCode = 1;
+        app.exit(1);
+      } else {
+        dialog.showErrorBox("数据迁移失败", "旧版本联系人或任务未能安全迁移，程序已停止启动；原数据不会被删除。");
+        app.quit();
+      }
       return;
     }
     const build = rendererBuildInfo();
@@ -304,6 +371,22 @@ if (!gotSingleInstanceLock) {
       return providerEnvironment;
     };
     coordinator.initialize();
+    productDetailController = createProductDetailSidecar({
+      runtimePath: productDetailRuntimePath(),
+      dataDir: productDetailDataDir,
+      getTrustedRuntimeEnvironment: productDetailRuntimeEnvironment,
+      getProviderEnvironment: productDetailReleaseSmokeMode
+        ? () => ({})
+        : getProductDetailProviderEnvironment
+    });
+    productDetailIpcRegistration = registerProductDetailIpc({
+      controller: productDetailController,
+      getMainWindow: () => mainWindow
+    });
+    if (productDetailReleaseSmokeMode) {
+      completeProductDetailReleaseSmoke();
+      return;
+    }
     configureActiveTouchRuntime({ dataDir: runtime.activeTouchDir, coordinator });
     const internalRealSend = developmentEdition || pilotEdition ? require("../../rpa/active_touch/state_machine.dev.cjs") : null;
     const developmentRealSend = developmentEdition ? require("./active-touch-dev-ipc.cjs") : null;
@@ -340,16 +423,6 @@ if (!gotSingleInstanceLock) {
     if (internalRealSend) disarmRealSend = () => internalRealSend.setRealSendArm(runtime.activeTouchDir, false);
     registerContactSyncIpc({ dataDir: runtime.contactSyncDir, activeTouchDir: runtime.activeTouchDir, coordinator });
     registerDiagnosticsIpc();
-    productDetailController = createProductDetailSidecar({
-      runtimePath: productDetailRuntimePath(),
-      dataDir: productDetailDataDir,
-      getTrustedRuntimeEnvironment: productDetailRuntimeEnvironment,
-      getProviderEnvironment: getProductDetailProviderEnvironment
-    });
-    productDetailIpcRegistration = registerProductDetailIpc({
-      controller: productDetailController,
-      getMainWindow: () => mainWindow
-    });
     registerDeepSeekApiIpc({
       keyStore: deepSeekKeyStore,
       client: deepSeekClient,

@@ -52,11 +52,20 @@ const EMPTY_STATUS: ProductDetailStatus = {
   code: "PRODUCT_DETAIL_RUNTIME_UNAVAILABLE"
 };
 
-const STATE_COPY: Record<ProductDetailState, { title: string; description: string }> = {
-  unavailable: {
+const DEVELOPMENT_EDITION = import.meta.env.VITE_XIAOXI_EDITION === "development";
+
+const UNAVAILABLE_COPY = DEVELOPMENT_EDITION
+  ? {
     title: "运行组件未配置",
     description: "当前桌面版没有找到产品详情图运行组件，因此不会启动任何本地服务。"
-  },
+  }
+  : {
+    title: "产品详情图组件不可用",
+    description: "安装文件可能不完整，或运行组件已被安全软件隔离。请按下方方式恢复。"
+  };
+
+const STATE_COPY: Record<ProductDetailState, { title: string; description: string }> = {
+  unavailable: UNAVAILABLE_COPY,
   stopped: {
     title: "服务未启动",
     description: "产品详情图已安装。点击启动后才会打开本地工作台，不会在进入页面时自动运行。"
@@ -188,7 +197,7 @@ export function ProductDetailPage() {
           <p>在本机完成产品图片上传、排版和导出；打开页面不会自动调用付费 API。</p>
         </div>
         <div className="actions product-detail-actions">
-          {status.state === "unavailable" && (
+          {status.state === "unavailable" && DEVELOPMENT_EDITION && (
             <button className="secondary-button" onClick={() => run("status")} disabled={busy}>
               <RefreshCw size={17} />
               重新检测
@@ -245,12 +254,22 @@ export function ProductDetailPage() {
 
       {status.state === "unavailable" && !loadingStatus && (
         <div className="product-detail-setup">
-          <h2>接入说明</h2>
-          <p>
-            开发调试时，请设置环境变量 <code>XIAOXI_PRODUCT_DETAIL_SIDECAR</code>
-            指向已打包的运行程序；正式安装包需要由交付流程内置该组件。
-          </p>
-          <p>当前状态只代表桌面入口已经接通，不代表原有项目已经完成净机打包或测试恢复。</p>
+          {DEVELOPMENT_EDITION ? (
+            <>
+              <h2>开发接入说明</h2>
+              <p>
+                开发调试时，请设置环境变量 <code>XIAOXI_PRODUCT_DETAIL_SIDECAR</code>
+                指向已打包的运行程序；正式安装包需要由交付流程内置该组件。
+              </p>
+              <p>当前状态只代表桌面入口已经接通，不代表原有项目已经完成净机打包或测试恢复。</p>
+            </>
+          ) : (
+            <>
+              <h2>恢复方式</h2>
+              <p>请关闭软件后使用完整安装程序重新安装；如果使用压缩包，请完整解压后再运行，不要只复制主程序。</p>
+              <p>仍无法恢复时，请在“日志诊断”导出报告并联系支持。</p>
+            </>
+          )}
         </div>
       )}
 

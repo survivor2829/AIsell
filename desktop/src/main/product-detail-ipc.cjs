@@ -23,6 +23,7 @@ const PUBLIC_ERRORS = Object.freeze({
   PRODUCT_DETAIL_SPAWN_FAILED: "产品详情图服务启动失败，请重试。",
   PRODUCT_DETAIL_READY_INVALID: "产品详情图服务返回了无效的启动信息。",
   PRODUCT_DETAIL_START_TIMEOUT: "产品详情图服务启动超时，请重试。",
+  PRODUCT_DETAIL_STOP_TIMEOUT: "产品详情图服务停止超时，请重试。",
   PRODUCT_DETAIL_EXITED: "产品详情图服务已意外停止，请重试。"
 });
 
