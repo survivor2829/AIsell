@@ -444,13 +444,6 @@ def _prepare_reference_urls_for_route(
     return prepared, selected_direct
 
 
-def prepare_reference_urls(
-    image_data_url: Optional[str | list[str]], api_key: str,
-) -> list[str]:
-    prepared, _selected_direct = _prepare_reference_urls_for_route(image_data_url, api_key)
-    return prepared
-
-
 def _submit_task_id(body: Any) -> str:
     if not isinstance(body, dict):
         return ""

@@ -99,7 +99,7 @@ for (const question of ["公司名称（可选）", "介绍的产品或服务", 
 }
 assert.match(page, /固定生成 1 条/u, "V2 页面必须明确只有一条输出");
 assert.match(page, /<h1>一键成片<\/h1>/u, "主界面标题必须直接说明一键成片");
-assert.match(page, /const createButtonLabel = planRunning[\s\S]+"正在生成成片…"[\s\S]+"请先查询当前结果"[\s\S]+"请先继续当前成片"[\s\S]+"修改后重新生成"[\s\S]+"一键生成"/u, "主操作必须使用当前状态对应的用户可理解文案");
+assert.match(page, /let createButtonLabel = "一键生成";[\s\S]+if \(planRunning\) \{[\s\S]+createButtonLabel = "正在生成成片…";[\s\S]+else if \(plan\?\.state === "outcome_unknown"\)[\s\S]+createButtonLabel = "请先查询当前结果";[\s\S]+else if \(canContinueFromIssue\)[\s\S]+createButtonLabel = "请先继续当前成片";[\s\S]+else if \(planCanBeRevised\)[\s\S]+createButtonLabel = "修改后重新生成";/u, "主操作必须使用当前状态对应的用户可理解文案");
 assert.match(page, /const planRequiresResolution = Boolean\([\s\S]+"outcome_unknown" \|\| canContinueFromIssue/u, "可原地恢复或结果未知的任务必须阻止顶部重复提交");
 assert.match(page, /disabled=\{Boolean\(busy\) \|\| planRunning \|\| planRequiresResolution[\s\S]+guidedSession\?\.status !== "ready_for_render"/u, "成片必须等待已确认的引导脚本");
 assert.match(page, /canContinueFromIssue[\s\S]+"请先继续当前成片"/u, "顶部按钮必须把用户引导到唯一的恢复入口");

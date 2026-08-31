@@ -715,9 +715,10 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
     }
   }, [compatiblePresets, packagingMode, packagingPresetId]);
 
-  useEffect(() => {
-    if (packagingMode === "none") setHighQualityPackaging(false);
-  }, [packagingMode]);
+  const handlePackagingModeChange = (nextMode: PackagingMode) => {
+    setPackagingMode(nextMode);
+    if (nextMode === "none") setHighQualityPackaging(false);
+  };
 
   useEffect(() => {
     invalidateComparisonPreflight();
@@ -1677,7 +1678,7 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
             <div className="workspace-packaging-box">
               <div className="workspace-section-head"><div><Sparkles size={17} /><h3>一键网感包装</h3></div><small>字幕、动效、构图和音频均在本机完成</small></div>
               <div className="workspace-form-grid">
-                <label className="workspace-field"><span>包装方式</span><select value={packagingMode} onChange={(event) => setPackagingMode(event.target.value as PackagingMode)} disabled={Boolean(busy)}><option value="auto">智能分散模板</option><option value="preset">指定模板</option><option value="none">不加包装</option></select></label>
+                <label className="workspace-field"><span>包装方式</span><select value={packagingMode} onChange={(event) => handlePackagingModeChange(event.target.value as PackagingMode)} disabled={Boolean(busy)}><option value="auto">智能分散模板</option><option value="preset">指定模板</option><option value="none">不加包装</option></select></label>
                 {packagingMode === "preset" && <label className="workspace-field"><span>模板</span><select value={packagingPresetId} onChange={(event) => setPackagingPresetId(event.target.value)} disabled={Boolean(busy)}>{compatiblePresets.map((item) => <option value={item.presetId} key={item.presetId}>{item.displayName}</option>)}</select></label>}
                 <label className="workspace-field"><span>品牌包</span><select value={brandProfileId} onChange={(event) => setBrandProfileId(event.target.value)} disabled={Boolean(busy)}><option value="">中性模板</option>{brandProfiles.map((item) => <option value={item.brandProfileId} key={item.brandProfileId}>{item.name}</option>)}</select></label>
                 <label className="workspace-field"><span>封面</span><select value={effectiveCoverMode} disabled><option value="ai_generate">AI 封面（固定）</option><option value="none">不加包装时无封面</option></select></label>

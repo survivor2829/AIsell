@@ -525,23 +525,24 @@ export function ProductOneClickPage({
     && !canContinueFromIssue
   );
   const formLocked = planRunning || planRequiresResolution || guidedRunning;
-  const scriptGenerateDisabledReason = busy === "script"
-    ? "正在提交脚本，请勿重复点击。"
-    : busy
-      ? "当前正在处理其他操作，请稍候。"
-      : guidedRunning
-        ? "正在解析素材，完成后会自动预填。"
-        : planRunning
-          ? "当前成片任务仍在运行，请等待它结束后再生成脚本。"
-          : planRequiresResolution
-            ? "当前成片任务需要处理，请先在任务状态中完成处理。"
-            : !guidedSession?.sessionId
-              ? "当前素材解析会话尚未连接，请等待状态刷新或重新打开任务。"
-              : !title.trim()
-                ? "请先确认视频标题。"
-                : !guidedAnswers.productName.trim()
-                ? "请先确认产品或服务。"
-                  : "";
+  let scriptGenerateDisabledReason = "";
+  if (busy === "script") {
+    scriptGenerateDisabledReason = "正在提交脚本，请勿重复点击。";
+  } else if (busy) {
+    scriptGenerateDisabledReason = "当前正在处理其他操作，请稍候。";
+  } else if (guidedRunning) {
+    scriptGenerateDisabledReason = "正在解析素材，完成后会自动预填。";
+  } else if (planRunning) {
+    scriptGenerateDisabledReason = "当前成片任务仍在运行，请等待它结束后再生成脚本。";
+  } else if (planRequiresResolution) {
+    scriptGenerateDisabledReason = "当前成片任务需要处理，请先在任务状态中完成处理。";
+  } else if (!guidedSession?.sessionId) {
+    scriptGenerateDisabledReason = "当前素材解析会话尚未连接，请等待状态刷新或重新打开任务。";
+  } else if (!title.trim()) {
+    scriptGenerateDisabledReason = "请先确认视频标题。";
+  } else if (!guidedAnswers.productName.trim()) {
+    scriptGenerateDisabledReason = "请先确认产品或服务。";
+  }
   const draftDurationPlan = guidedSession?.draft?.durationPlan || null;
   const analysisDurationPlan = guidedSession?.analysis?.durationPlan || null;
   const draftSpokenPhrases = (guidedSession?.draft?.spokenPhrases || [])
@@ -571,15 +572,16 @@ export function ProductOneClickPage({
   );
   const formalPreviewReady = Boolean(formalEvidenceReady && candidate?.previewReady);
   const regenerationLayers = plan?.state === "completed" ? AUTO_MIX_LAYERS : [];
-  const createButtonLabel = planRunning
-    ? "正在生成成片…"
-    : plan?.state === "outcome_unknown"
-      ? "请先查询当前结果"
-      : canContinueFromIssue
-        ? "请先继续当前成片"
-        : planCanBeRevised
-          ? "修改后重新生成"
-          : "一键生成";
+  let createButtonLabel = "一键生成";
+  if (planRunning) {
+    createButtonLabel = "正在生成成片…";
+  } else if (plan?.state === "outcome_unknown") {
+    createButtonLabel = "请先查询当前结果";
+  } else if (canContinueFromIssue) {
+    createButtonLabel = "请先继续当前成片";
+  } else if (planCanBeRevised) {
+    createButtonLabel = "修改后重新生成";
+  }
 
   const hydrateAutoMixPlan = useCallback((restored: AutoMixPlan) => {
     candidateEpochRef.current += 1;

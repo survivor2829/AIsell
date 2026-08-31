@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
+const { canonicalJson } = require("./release-trust-record.cjs");
 const { writeContentEngineFontconfig } = require("../src/main/content-engine-media-tools.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
@@ -158,10 +159,6 @@ function findBuildPython(paths, env = process.env) {
   throw new Error(
     "Missing Python 3.10+ with PyInstaller. Set XIAOXI_CONTENT_ENGINE_BUILD_PYTHON."
   );
-}
-
-function canonicalJson(value) {
-  return `${JSON.stringify(value, null, 2)}\n`;
 }
 
 function readJson(file, label) {

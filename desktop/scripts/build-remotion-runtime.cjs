@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { replaceWithRetry } = require("../src/main/atomic-file.cjs");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
+const { canonicalJson, sha256Text } = require("./release-trust-record.cjs");
 
 const ARTIFACT_TYPES = Object.freeze(["development", "internal-evaluation", "delivery"]);
 const REMOTION_VERSION = "4.0.512";
@@ -41,14 +42,6 @@ const HASH_PATTERN = /^[0-9a-f]{64}$/u;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
 const URL_PATTERN = /^https:\/\/\S+$/u;
 const REMOTION_COMPOSITION_SMOKE_TIMEOUT_MS = 45_000;
-
-function canonicalJson(value) {
-  return `${JSON.stringify(value, null, 2)}\n`;
-}
-
-function sha256Text(value) {
-  return crypto.createHash("sha256").update(String(value), "utf8").digest("hex");
-}
 
 function readJson(file, label) {
   try {

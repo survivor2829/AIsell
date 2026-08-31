@@ -744,12 +744,6 @@ function requireFile(target, label) {
   }
 }
 
-function requireDirectory(target, label) {
-  if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) {
-    throw new Error(`${label} is missing: ${target}`);
-  }
-}
-
 function createToken() {
   return crypto.randomBytes(32).toString("hex");
 }
