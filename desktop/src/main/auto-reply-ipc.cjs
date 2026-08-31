@@ -4,6 +4,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { readContacts } = require("../../rpa/active_touch/state_machine.cjs");
 const { writeFileAtomic, writeJsonAtomic } = require("./atomic-file.cjs");
+const {
+  AUTO_REPLY_ACTIONS,
+  AUTO_REPLY_REASON_CODES,
+  isAutoReplyActionReason
+} = require("./auto-reply-decision.cjs");
 
 const POLL_INTERVAL_MS = 5_000;
 const FAST_RECHECK_MS = 750;
@@ -24,23 +29,6 @@ const RECOVERY_ACTIONS = new Set([
   "manual_check_required",
   "fix_ai_and_restart"
 ]);
-const AUTO_REPLY_ACTIONS = new Set(["answer", "clarify", "handoff", "silent"]);
-const AUTO_REPLY_REASON_CODES = new Set([
-  "business_knowledge",
-  "general_guidance",
-  "company_fact_unavailable",
-  "missing_detail",
-  "explicit_human_request",
-  "transaction_commitment",
-  "after_sales_action",
-  "no_reply_needed"
-]);
-const ACTION_REASON_CODES = Object.freeze({
-  answer: new Set(["business_knowledge", "general_guidance", "company_fact_unavailable"]),
-  clarify: new Set(["missing_detail"]),
-  handoff: new Set(["explicit_human_request", "transaction_commitment", "after_sales_action"]),
-  silent: new Set(["no_reply_needed"])
-});
 const MANUAL_REVIEW_SEND_REASONS = new Set([
   "visual_send_external_input_detected"
 ]);
@@ -294,11 +282,10 @@ function codedError(code, message) {
 }
 
 function expertDocuments(store) {
-  const status = store?.status?.();
   const expert = store?.read?.();
   const expertRules = String(expert?.expertRules?.text || "").trim();
   const businessKnowledge = String(expert?.businessKnowledge?.text || "").trim();
-  if (status?.ready !== true || expert?.ready !== true || !expertRules || !businessKnowledge) {
+  if (expert?.ready !== true || !expertRules || !businessKnowledge) {
     throw codedError("AI_EXPERT_NOT_READY", "请先在 AI专家 中补齐专家规则和业务知识");
   }
   return { expertRules, businessKnowledge };
@@ -313,7 +300,7 @@ function normalizeAutoReplyDecision(value, { clarificationAllowed = true } = {})
   const action = normalizeText(value?.action).toLowerCase();
   const reasonCode = normalizeText(value?.reasonCode).toLowerCase();
   const reply = normalizeText(value?.reply);
-  if (!AUTO_REPLY_ACTIONS.has(action) || !AUTO_REPLY_REASON_CODES.has(reasonCode) || !ACTION_REASON_CODES[action]?.has(reasonCode)) {
+  if (!AUTO_REPLY_ACTIONS.has(action) || !AUTO_REPLY_REASON_CODES.has(reasonCode) || !isAutoReplyActionReason(action, reasonCode)) {
     throw codedError("AI_DECISION_INVALID", "DeepSeek 返回的自动回复动作无效");
   }
   if (action === "silent") {
@@ -342,8 +329,7 @@ function systemErrorCategory(code) {
 }
 
 function sanitizeSystemError(error) {
-  const rawCode = String(error?.code || "AI_REQUEST_FAILED").trim().toUpperCase();
-  const code = /^[A-Z][A-Z0-9_]{0,63}$/u.test(rawCode) ? rawCode : "AI_REQUEST_FAILED";
+  const code = normalizeAiWarningCode(error?.code) || "AI_REQUEST_FAILED";
   const messages = {
     API_KEY_MISSING: "DeepSeek API Key 未配置，请保存后重新启动自动回复。",
     API_KEY_UNREADABLE: "DeepSeek API Key 无法读取，请重新保存后启动。",
@@ -1262,13 +1248,15 @@ function createAutoReplyController(options = {}) {
   }
 
   function heldContacts() {
-    const contactsById = new Map(readContacts(activeTouchDir).map((contact) => [normalizeText(contact?.id), contact]));
-    return Object.entries(state.contact_states || {})
+    const heldContactIds = Object.entries(state.contact_states || {})
       .filter(([, value]) => value?.human_owned === true)
-      .map(([contactId]) => ({
-        id: contactId,
-        label: contactsById.has(contactId) ? testContactLabel(contactsById.get(contactId)) : `客户 ${crypto.createHash("sha256").update(contactId).digest("hex").slice(0, 6)}`
-      }));
+      .map(([contactId]) => contactId);
+    if (!heldContactIds.length) return [];
+    const contactsById = new Map(readContacts(activeTouchDir).map((contact) => [normalizeText(contact?.id), contact]));
+    return heldContactIds.map((contactId) => ({
+      id: contactId,
+      label: contactsById.has(contactId) ? testContactLabel(contactsById.get(contactId)) : `客户 ${crypto.createHash("sha256").update(contactId).digest("hex").slice(0, 6)}`
+    }));
   }
 
   function mergedConversationContext(contactId, observedContext) {
@@ -2210,8 +2198,7 @@ function createAutoReplyController(options = {}) {
     removePendingHandoff(pending.key);
     handoffConfirmationRequired = false;
     trimMap(state.handoff_notified);
-    if (payload.pauseReason) pauseWithError("ai_configuration_paused", payload.pauseReason);
-    else if (!currentRun && state.last_event === "handoff_confirmation_required") {
+    if (!currentRun && state.last_event === "handoff_confirmation_required") {
       state.last_event = "paused_by_user";
       state.last_error = "";
     }
@@ -2220,7 +2207,7 @@ function createAutoReplyController(options = {}) {
       state.last_error = "";
     }
     else {
-      state.last_event = payload.successEvent;
+      state.last_event = "human_handoff_sent";
       state.last_error = "";
     }
     save();
@@ -2932,8 +2919,6 @@ function createAutoReplyController(options = {}) {
               message: buildHandoffMessage({ conversation, reason, latest: incoming, at: sentAt }),
               expectedPid: candidate.pid,
               sourceWindowHandle: candidate.hWnd,
-              successEvent: "human_handoff_sent",
-              pauseReason: "",
               attempts: 0,
               pollsRemaining: 0
             });

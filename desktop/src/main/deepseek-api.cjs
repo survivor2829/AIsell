@@ -3,24 +3,18 @@ const path = require("node:path");
 const { sanitizeAiMessage } = require("./ai-draft.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
 const { writeFileAtomic } = require("./atomic-file.cjs");
+const { isAutoReplyActionReason } = require("./auto-reply-decision.cjs");
 
 const DEEPSEEK_ORIGIN = "https://api.deepseek.com";
 const DEEPSEEK_MODEL = "deepseek-v4-flash";
 const REQUEST_TIMEOUT_MS = 25_000;
-const REPLY_OUTPUT_FAILURES = new Set([
+const RECOVERABLE_OUTPUT_FAILURES = new Set([
   "AI_RESPONSE_EMPTY",
   "AI_RESPONSE_TRUNCATED",
   "AI_RESPONSE_INCOMPLETE",
   "AI_RESPONSE_INVALID",
   "AI_RESPONSE_LENGTH_INVALID"
 ]);
-const ACTION_REASON_CODES = Object.freeze({
-  answer: new Set(["business_knowledge", "general_guidance", "company_fact_unavailable"]),
-  clarify: new Set(["missing_detail"]),
-  handoff: new Set(["explicit_human_request", "transaction_commitment", "after_sales_action"]),
-  silent: new Set(["no_reply_needed"])
-});
-
 class DeepSeekApiError extends Error {
   constructor(code, message) {
     super(message);
@@ -214,7 +208,7 @@ function parseReplyDecision(value, { clarificationAllowed = true } = {}) {
   }
   const action = parsed.action.trim();
   const reasonCode = parsed.reasonCode.trim();
-  if (!ACTION_REASON_CODES[action]?.has(reasonCode)) {
+  if (!isAutoReplyActionReason(action, reasonCode)) {
     throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 返回的动作与原因不兼容");
   }
   if (action === "clarify" && clarificationAllowed === false) {
@@ -345,13 +339,7 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
         return { draft: parsePlainPayload(payload, "DeepSeek 未返回可用文案。") };
       } catch (error) {
         lastError = error;
-        const recoverable = [
-          "AI_RESPONSE_EMPTY",
-          "AI_RESPONSE_TRUNCATED",
-          "AI_RESPONSE_INCOMPLETE",
-          "AI_RESPONSE_INVALID",
-          "AI_RESPONSE_LENGTH_INVALID"
-        ].includes(String(error?.code || ""));
+        const recoverable = RECOVERABLE_OUTPUT_FAILURES.has(String(error?.code || ""));
         if (!recoverable || maxTokens === 600) throw error;
       }
     }
@@ -389,7 +377,7 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
       } catch (error) {
         lastError = error;
         const code = String(error?.code || "");
-        if (!(error instanceof DeepSeekApiError) || !REPLY_OUTPUT_FAILURES.has(code) || index === attempts.length - 1) {
+        if (!(error instanceof DeepSeekApiError) || !RECOVERABLE_OUTPUT_FAILURES.has(code) || index === attempts.length - 1) {
           throw error;
         }
       }
@@ -410,13 +398,7 @@ function createDeepSeekClient({ keyStore, fetchImpl = global.fetch, requestTimeo
         return { comment: parseMomentsCommentPayload(payload) };
       } catch (error) {
         lastError = error;
-        const recoverable = [
-          "AI_RESPONSE_EMPTY",
-          "AI_RESPONSE_TRUNCATED",
-          "AI_RESPONSE_INCOMPLETE",
-          "AI_RESPONSE_INVALID",
-          "AI_RESPONSE_LENGTH_INVALID"
-        ].includes(String(error?.code || ""));
+        const recoverable = RECOVERABLE_OUTPUT_FAILURES.has(String(error?.code || ""));
         if (!recoverable || maxTokens === 240) throw error;
       }
     }

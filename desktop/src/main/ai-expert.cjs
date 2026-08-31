@@ -5,11 +5,11 @@ const { writeJsonAtomic } = require("./atomic-file.cjs");
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TEXT_CHARS = 50_000;
 const SUPPORTED_EXTENSIONS = new Set([".txt", ".md", ".docx"]);
-const AI_EXPERT_KINDS = Object.freeze(["expert_rules", "business_knowledge"]);
 const KIND_TO_FIELD = Object.freeze({
   expert_rules: "expertRules",
   business_knowledge: "businessKnowledge"
 });
+const AI_EXPERT_KINDS = Object.freeze(Object.keys(KIND_TO_FIELD));
 
 class AiExpertError extends Error {
   constructor(code, message) {
