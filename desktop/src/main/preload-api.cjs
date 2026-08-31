@@ -850,7 +850,7 @@ function createContentEngineApi(ipcRenderer) {
 }
 function createPreloadApis(ipcRenderer) {
   const consumeBatchClick = createTrustedClickGate("[data-xiaoxi-batch-authorize]");
-  const consumeAutoReplyClick = createTrustedClickGate("[data-xiaoxi-auto-reply-start], [data-xiaoxi-auto-reply-acknowledge]");
+  const consumeAutoReplyClick = createTrustedClickGate("[data-xiaoxi-auto-reply-start], [data-xiaoxi-auto-reply-acknowledge], [data-xiaoxi-auto-reply-resume]");
   return {
     content: createContentEngineApi(ipcRenderer),
     autoReply: {
@@ -861,6 +861,10 @@ function createPreloadApis(ipcRenderer) {
       }),
       pause: () => ipcRenderer.invoke("auto-reply:pause"),
       acknowledgeManualFollowup: () => ipcRenderer.invoke("auto-reply:acknowledge-manual-followup", { clickToken: consumeAutoReplyClick() }),
+      resumeContact: (contactId) => ipcRenderer.invoke("auto-reply:resume-contact", {
+        clickToken: consumeAutoReplyClick(),
+        contactId: String(contactId || "")
+      }),
       onUpdate: (callback) => {
         const handler = (_event, payload) => callback(payload);
         ipcRenderer.on("auto-reply:update", handler);

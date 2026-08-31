@@ -644,6 +644,101 @@ button:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.auto-reply-system-error,
+.auto-reply-held {
+  width: min(1080px, 100%);
+  margin: 0 0 16px;
+  border-radius: 10px;
+}
+
+.auto-reply-system-error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.auto-reply-system-error p {
+  margin: 5px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.auto-reply-system-error > span {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #fee2e2;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.auto-reply-held {
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+}
+
+.auto-reply-held-head,
+.auto-reply-held li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 16px;
+}
+
+.auto-reply-held-head {
+  align-items: flex-start;
+  border-bottom: 1px solid #eef0f4;
+  background: #f8fafc;
+}
+
+.auto-reply-held h2,
+.auto-reply-held p {
+  margin: 0;
+}
+
+.auto-reply-held h2 {
+  color: #172033;
+  font-size: 16px;
+}
+
+.auto-reply-held p {
+  margin-top: 4px;
+  color: #667085;
+  font-size: 13px;
+}
+
+.auto-reply-held-head > span {
+  flex: 0 0 auto;
+  color: #b42318;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.auto-reply-held ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.auto-reply-held li + li {
+  border-top: 1px solid #f1f2f5;
+}
+
+.auto-reply-held li strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #344054;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .auto-reply-test-scope {
   display: grid;
   gap: 14px;
@@ -2280,7 +2375,9 @@ td .text-button {
   }
 
   .auto-reply-test-scope-head,
-  .auto-reply-test-scope-controls {
+  .auto-reply-test-scope-controls,
+  .auto-reply-system-error,
+  .auto-reply-held li {
     align-items: stretch;
     flex-direction: column;
   }

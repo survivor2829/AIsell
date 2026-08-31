@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -10,6 +11,7 @@ const {
   isSafeReplyText,
   registerAutoReplyIpc
 } = require("./auto-reply-ipc.cjs");
+const { createPreloadApis } = require("./preload-api.cjs");
 const { createWechatVisualAutoReplyDriver } = require("../../rpa/active_touch/wechat_auto_reply_visual_driver.dev.cjs");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-auto-reply-v3-"));
@@ -32,6 +34,22 @@ function writeContactsFixture(name, contacts) {
   fs.writeFileSync(path.join(fixtureDir, "contacts.json"), JSON.stringify(contacts), "utf8");
   return fixtureDir;
 }
+
+function readyExpert(expertRules = "礼貌、准确地回答。", businessKnowledge = "业务信息：设备短租，提供工业设备相关产品。") {
+  return {
+    status: () => ({ ready: true }),
+    read: () => ({
+      ready: true,
+      expertRules: { text: expertRules },
+      businessKnowledge: { text: businessKnowledge }
+    })
+  };
+}
+
+const answerDecision = (reply, reasonCode = "general_guidance") => ({ action: "answer", reply, reasonCode });
+const handoffDecision = (reply, reasonCode = "transaction_commitment") => ({ action: "handoff", reply, reasonCode });
+const clarifyDecision = (reply) => ({ action: "clarify", reply, reasonCode: "missing_detail" });
+const silentDecision = () => ({ action: "silent", reply: "", reasonCode: "no_reply_needed" });
 
 async function main() {
   assert.equal(isReplyableText("你好，方便介绍一下吗？"), true);
@@ -107,9 +125,9 @@ async function main() {
     }
   ];
   const decisions = [
-    { reply: "我先根据场景继续帮您缩小范围。", intent: true, intentReason: "客户初步询价", needsHuman: false, handoffReason: "" },
-    { reply: "收到，我继续帮您确认第二个方案。", intent: false, intentReason: "", needsHuman: false, handoffReason: "" },
-    { reply: "我帮您确认一下，稍后回复您。", intent: false, intentReason: "", needsHuman: true, handoffReason: "资料未覆盖" }
+    answerDecision("我先根据场景继续帮您缩小范围。"),
+    answerDecision("收到，我继续帮您确认第二个方案。"),
+    handoffDecision("我帮您确认一下，稍后回复您。")
   ];
   const scannedNames = [];
   const sent = [];
@@ -126,18 +144,381 @@ async function main() {
     update: () => ({ ok: true }),
     release: () => ({ ok: true })
   };
+  const twoDocumentGateController = createAutoReplyController({
+    dataDir: path.join(root, "two_document_gate"),
+    activeTouchDir,
+    coordinator,
+    expertStore: readyExpert("只问一个关键问题。", "设备适用于工业场景。"),
+    deepSeekClient: { assertAvailable: () => true },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true }),
+    scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => ({ ok: true }),
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await twoDocumentGateController.start()).ok, true, "two ready expert documents must allow auto-reply to start");
+  twoDocumentGateController.pause();
+
+  const incompleteExpertController = createAutoReplyController({
+    dataDir: path.join(root, "incomplete_expert_gate"),
+    activeTouchDir,
+    coordinator,
+    expertStore: {
+      status: () => ({ ready: false }),
+      read: () => ({
+        ready: false,
+        expertRules: { text: "礼貌回答。" },
+        businessKnowledge: { text: "" }
+      })
+    },
+    deepSeekClient: { assertAvailable: () => true },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true }),
+    scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => ({ ok: true }),
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  const incompleteExpertStart = await incompleteExpertController.start();
+  assert.equal(incompleteExpertStart.ok, false);
+  assert.equal(incompleteExpertStart.code, "AI_EXPERT_NOT_READY");
+  assert.match(incompleteExpertStart.error, /专家规则和业务知识/);
+
+  const fourStateCandidates = [
+    { runtimeId: "four-answer", message: "环氧地坪有铁屑怎么处理" },
+    { runtimeId: "four-clarify", message: "现场有些粉尘" },
+    { runtimeId: "four-after-clarify", message: "面积大约 500 平方" },
+    { runtimeId: "four-silent", message: "好的，谢谢" }
+  ];
+  const clarificationFlags = [];
+  const fourStateSends = [];
+  let fourStateHandoffs = 0;
+  const fourStateController = createAutoReplyController({
+    dataDir: path.join(root, "four_state_contract"),
+    activeTouchDir,
+    coordinator,
+    expertStore: readyExpert("一般技术问题默认回答；只追问一个关键问题。", "正式报价和售后执行由人工处理。"),
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async ({ context, expert, clarificationAllowed }) => {
+        clarificationFlags.push(clarificationAllowed);
+        assert.match(expert.expertRules, /只追问一个/);
+        assert.match(expert.businessKnowledge, /正式报价/);
+        const message = context.at(-1).content;
+        if (message === "环氧地坪有铁屑怎么处理") return answerDecision("先清除松散铁屑并打磨除锈，再根据基层含水率选择底涂；正式施工前请做小面积测试。");
+        if (message === "现场有些粉尘") return clarifyDecision("现场面积大约多少平方米？");
+        if (message === "面积大约 500 平方") return answerDecision("500 平方可先分区吸尘和打磨，再处理锈点并做底涂附着测试。");
+        return silentDecision();
+      }
+    },
+    scanIncoming: () => {
+      const candidate = fourStateCandidates.shift();
+      return candidate ? {
+        ok: true,
+        conversation: "张总",
+        message: candidate.message,
+        runtimeId: candidate.runtimeId,
+        pid: 81,
+        hWnd: "91",
+        context: [{ role: "user", content: candidate.message, key: candidate.runtimeId }]
+      } : { ok: false, reason: "no_unread_message" };
+    },
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      fourStateSends.push(options.message);
+      return { ok: true, send_attempted: true, send_result: "sent_verified" };
+    },
+    sendHandoff: async () => { fourStateHandoffs += 1; return { ok: true }; },
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await fourStateController.start()).ok, true);
+  await fourStateController.runOnce();
+  await fourStateController.runOnce();
+  await fourStateController.runOnce();
+  await fourStateController.runOnce();
+  assert.deepEqual(clarificationFlags, [true, true, false, true], "the customer turn after one clarification must disable another clarification");
+  assert.equal(fourStateSends.length, 3, "silent must not send or increase the verified reply count");
+  assert.equal(fourStateController.status().reply_count, 3);
+  assert.equal(fourStateHandoffs, 0, "a difficult general question must not manufacture a handoff");
+  assert.equal(fourStateController.status().last_event, "silent_processed");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, "four_state_contract", "auto-reply-state.json"), "utf8")).contact_states.c1, undefined);
+  fourStateController.pause();
+
+  const repeatedClarifyCandidates = [
+    { runtimeId: "clarify-limit-1", message: "现场情况不确定" },
+    { runtimeId: "clarify-limit-2", message: "目前只能确认有粉尘" }
+  ];
+  let repeatedClarifySends = 0;
+  let repeatedClarifyHandoffs = 0;
+  const repeatedClarifyController = createAutoReplyController({
+    dataDir: path.join(root, "clarify_limit"),
+    activeTouchDir,
+    coordinator,
+    expertStore: readyExpert(),
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => clarifyDecision("还需要再确认现场面积吗？")
+    },
+    scanIncoming: () => {
+      const candidate = repeatedClarifyCandidates.shift();
+      return candidate ? { ok: true, conversation: "张总", message: candidate.message, runtimeId: candidate.runtimeId, pid: 81, hWnd: "91", context: [{ role: "user", content: candidate.message, key: candidate.runtimeId }] } : { ok: false, reason: "no_unread_message" };
+    },
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => { assert.equal(await options.beforeDraft(), true); repeatedClarifySends += 1; return { ok: true, send_attempted: true }; },
+    sendHandoff: async () => { repeatedClarifyHandoffs += 1; return { ok: true }; },
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await repeatedClarifyController.start()).ok, true);
+  await repeatedClarifyController.runOnce();
+  await repeatedClarifyController.runOnce();
+  assert.equal(repeatedClarifySends, 1, "a second clarification must never be sent");
+  assert.equal(repeatedClarifyHandoffs, 0);
+  assert.equal(repeatedClarifyController.status().status, "paused");
+  assert.equal(repeatedClarifyController.status().system_error.code, "AI_CLARIFY_LIMIT_EXCEEDED");
+
+  const clarifyUnknownCandidates = [
+    { runtimeId: "clarify-unknown-1", message: "现场情况需要确认" },
+    { runtimeId: "clarify-unknown-2", message: "面积是 300 平方" }
+  ];
+  const clarifyUnknownFlags = [];
+  let clarifyUnknownSendCalls = 0;
+  const clarifyUnknownController = createAutoReplyController({
+    dataDir: path.join(root, "clarify_outcome_unknown"),
+    activeTouchDir,
+    coordinator,
+    expertStore: readyExpert(),
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async ({ context, clarificationAllowed }) => {
+        clarifyUnknownFlags.push(clarificationAllowed);
+        return context.at(-1).content === "现场情况需要确认"
+          ? clarifyDecision("现场面积大约多少平方米？")
+          : answerDecision("300 平方可先做分区清理和小面积测试。");
+      }
+    },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true }),
+    scanIncoming: () => {
+      const candidate = clarifyUnknownCandidates.shift();
+      return candidate ? { ok: true, conversation: "张总", message: candidate.message, runtimeId: candidate.runtimeId, pid: 81, hWnd: "91", context: [{ role: "user", content: candidate.message, key: candidate.runtimeId }] } : { ok: false, reason: "no_unread_message" };
+    },
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      clarifyUnknownSendCalls += 1;
+      return clarifyUnknownSendCalls === 1
+        ? { ok: false, blocked_reason: "send_outcome_unknown", send_attempted: null, send_result: "outcome_unknown" }
+        : { ok: true, send_attempted: true, send_result: "sent_verified" };
+    },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await clarifyUnknownController.start()).ok, true);
+  await clarifyUnknownController.runOnce();
+  assert.equal(clarifyUnknownController.status().status, "paused");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, "clarify_outcome_unknown", "auto-reply-state.json"), "utf8")).contact_states.c1.clarify_pending, true, "an outcome-unknown clarification must conservatively count as already asked");
+  assert.equal((await clarifyUnknownController.start()).ok, true);
+  await clarifyUnknownController.runOnce();
+  assert.deepEqual(clarifyUnknownFlags, [true, false]);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, "clarify_outcome_unknown", "auto-reply-state.json"), "utf8")).contact_states.c1, undefined, "a verified answer after clarification must clear the pending flag");
+  clarifyUnknownController.pause();
+
+  const unsentAnswerCandidates = [
+    { runtimeId: "unsent-answer-clarify", message: "需要确认现场" },
+    { runtimeId: "unsent-answer-reply", message: "面积是 200 平方" }
+  ];
+  let unsentAnswerCalls = 0;
+  const unsentAnswerController = createAutoReplyController({
+    dataDir: path.join(root, "answer_not_attempted"),
+    activeTouchDir,
+    coordinator,
+    expertStore: readyExpert(),
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async ({ context }) => context.at(-1).content === "需要确认现场"
+        ? clarifyDecision("现场面积大约多少平方米？")
+        : answerDecision("200 平方可先做基层清理。")
+    },
+    scanIncoming: () => {
+      const candidate = unsentAnswerCandidates.shift();
+      return candidate ? { ok: true, conversation: "张总", message: candidate.message, runtimeId: candidate.runtimeId, pid: 81, hWnd: "91", context: [{ role: "user", content: candidate.message, key: candidate.runtimeId }] } : { ok: false, reason: "no_unread_message" };
+    },
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      unsentAnswerCalls += 1;
+      return unsentAnswerCalls === 1
+        ? { ok: true, send_attempted: true }
+        : { ok: false, blocked_reason: "draft_not_sent", send_attempted: false, send_result: "not_attempted" };
+    },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await unsentAnswerController.start()).ok, true);
+  await unsentAnswerController.runOnce();
+  await unsentAnswerController.runOnce();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, "answer_not_attempted", "auto-reply-state.json"), "utf8")).contact_states.c1.clarify_pending, true, "a proven-unsent answer must not clear the earlier clarification boundary");
+  unsentAnswerController.pause();
+
+  let invalidMatrixSends = 0;
+  let invalidMatrixHandoffs = 0;
+  const invalidMatrixController = createAutoReplyController({
+    dataDir: path.join(root, "invalid_action_reason_matrix"),
+    activeTouchDir,
+    coordinator,
+    expertStore: readyExpert(),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => ({ action: "handoff", reply: "我来继续说明。", reasonCode: "general_guidance" }) },
+    scanIncoming: () => ({ ok: true, conversation: "张总", message: "普通问题", runtimeId: "invalid-matrix-1", pid: 81, hWnd: "91", context: [{ role: "user", content: "普通问题", key: "invalid-matrix-1" }] }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => { invalidMatrixSends += 1; return { ok: true }; },
+    sendHandoff: async () => { invalidMatrixHandoffs += 1; return { ok: true }; },
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await invalidMatrixController.start()).ok, true);
+  await invalidMatrixController.runOnce();
+  assert.deepEqual([invalidMatrixSends, invalidMatrixHandoffs], [0, 0]);
+  assert.equal(invalidMatrixController.status().system_error.code, "AI_DECISION_INVALID");
+
+  const ownershipCandidates = [
+    { runtimeId: "owner-handoff", conversation: "张总", message: "请人工给我正式报价" },
+    { runtimeId: "owner-backlog", conversation: "张总", message: "这是人工处理期间的旧消息" },
+    { runtimeId: "owner-other", conversation: "李经理", message: "普通技术问题" },
+    { runtimeId: "owner-resumed", conversation: "张总", message: "恢复后的新问题" }
+  ];
+  const ownershipAiMessages = [];
+  const ownershipContexts = [];
+  let ownershipSends = 0;
+  let ownershipHandoffs = 0;
+  let ownershipBaselineResets = 0;
+  let ownershipPrimeCalls = 0;
+  const ownershipScan = () => {
+    const candidate = ownershipCandidates.shift();
+    return candidate ? { ok: true, conversation: candidate.conversation, message: candidate.message, runtimeId: candidate.runtimeId, pid: 81, hWnd: "91", context: [{ role: "user", content: candidate.message, key: candidate.runtimeId }] } : { ok: false, reason: "no_unread_message" };
+  };
+  ownershipScan.resetBaselines = () => { ownershipBaselineResets += 1; };
+  const ownershipController = createAutoReplyController({
+    dataDir: path.join(root, "contact_ownership_resume"),
+    activeTouchDir,
+    coordinator,
+    expertStore: readyExpert(),
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async ({ context }) => {
+        const message = context.at(-1).content;
+        ownershipAiMessages.push(message);
+        ownershipContexts.push(context.map((item) => ({ ...item })));
+        return message === "请人工给我正式报价"
+          ? handoffDecision("收到，员工会继续处理正式报价。")
+          : answerDecision("这个问题可以继续由 AI 处理。");
+      }
+    },
+    primeIncoming: () => { ownershipPrimeCalls += 1; return { ok: true, source: "session_prime", primed: true }; },
+    scanIncoming: ownershipScan,
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => { assert.equal(await options.beforeDraft(), true); ownershipSends += 1; return { ok: true, send_attempted: true }; },
+    sendHandoff: async () => { ownershipHandoffs += 1; return { ok: true, send_attempted: true }; },
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await ownershipController.start()).ok, true);
+  const resetsAfterOwnershipStart = ownershipBaselineResets;
+  await ownershipController.runOnce();
+  assert.deepEqual(ownershipController.status().held_contacts.map((item) => item.id), ["c1"]);
+  await ownershipController.runOnce();
+  assert.equal(ownershipAiMessages.includes("这是人工处理期间的旧消息"), false, "messages observed while human-owned must be consumed without AI");
+  await ownershipController.runOnce();
+  assert.equal(ownershipAiMessages.includes("普通技术问题"), true, "another customer must keep receiving AI service");
+  assert.equal(ownershipController.resumeContact("c1").ok, true);
+  assert.equal(ownershipBaselineResets, resetsAfterOwnershipStart, "resuming one customer must not reset every customer's scan baseline");
+  assert.equal(ownershipPrimeCalls, 1, "resuming one customer must not re-prime all contacts");
+  await ownershipController.runOnce();
+  assert.equal(ownershipSends, 3);
+  assert.equal(ownershipHandoffs, 1);
+  assert.deepEqual(ownershipController.status().held_contacts, []);
+  const resumedContext = ownershipContexts.find((context) => context.at(-1)?.content === "恢复后的新问题");
+  assert.deepEqual(resumedContext, [{ role: "user", content: "恢复后的新问题", key: "owner-resumed" }], "resume must clear that customer's old AI context");
+  ownershipController.pause();
+
+  const cancelledRetryDir = path.join(root, "resume_cancels_old_retry");
+  fs.mkdirSync(cancelledRetryDir, { recursive: true });
+  const cancelledRetryMessage = "人工期间留下的旧重试消息";
+  const cancelledRetryRuntimeId = "resume-old-retry";
+  const cancelledRetryFingerprint = crypto.createHash("sha256")
+    .update(JSON.stringify(["wx-a", "c1", cancelledRetryRuntimeId, cancelledRetryMessage]))
+    .digest("hex");
+  fs.writeFileSync(path.join(cancelledRetryDir, "auto-reply-state.json"), JSON.stringify({
+    version: 4,
+    status: "paused",
+    daily_date: "2026-07-14",
+    contact_states: { c1: { clarify_pending: true, human_owned: true } },
+    processed: {
+      [cancelledRetryFingerprint]: { status: "retryable", contact_id: "c1", at: "2026-07-14T02:00:00.000Z" },
+      other_customer_retry: { status: "retryable", contact_id: "c2", at: "2026-07-14T02:00:00.000Z" }
+    }
+  }), "utf8");
+  let cancelledRetryAiCalls = 0;
+  let cancelledRetrySends = 0;
+  const cancelledRetryController = createAutoReplyController({
+    dataDir: cancelledRetryDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: readyExpert(),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => { cancelledRetryAiCalls += 1; return answerDecision("不应发送"); } },
+    primeIncoming: () => ({ ok: true, source: "session_prime", primed: true }),
+    scanIncoming: () => ({ ok: true, conversation: "张总", message: cancelledRetryMessage, runtimeId: cancelledRetryRuntimeId, pid: 81, hWnd: "91", context: [{ role: "user", content: cancelledRetryMessage, key: cancelledRetryRuntimeId }] }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => { cancelledRetrySends += 1; return { ok: true }; },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal(cancelledRetryController.resumeContact("c1").ok, true);
+  const cancelledRetryState = JSON.parse(fs.readFileSync(path.join(cancelledRetryDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(cancelledRetryState.processed[cancelledRetryFingerprint].status, "cancelled_after_handoff");
+  assert.equal(cancelledRetryState.processed.other_customer_retry.status, "retryable", "resuming c1 must not alter c2 retry state");
+  assert.equal((await cancelledRetryController.start()).ok, true);
+  await cancelledRetryController.runOnce();
+  assert.deepEqual([cancelledRetryAiCalls, cancelledRetrySends], [0, 0], "a resumed customer's old retry occurrence must remain terminal and never be regenerated");
+  cancelledRetryController.pause();
+
   const controller = createAutoReplyController({
     dataDir: autoReplyDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "业务信息：设备短租。意向判定：客户继续了解方案。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
       reply: async ({ context, expert }) => {
         replyCalls += 1;
         replyContexts.push(context.map((item) => ({ ...item })));
         assert.equal(context.at(-1).role, "user");
-        assert.match(expert, /设备短租/);
+        assert.match(expert.businessKnowledge, /设备短租/);
         return decisions.shift();
       }
     },
@@ -236,10 +617,10 @@ async function main() {
     dataDir: path.join(root, "recycled_runtime_id"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => ({ reply: "Acknowledged.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })
+      reply: async () => (answerDecision("Acknowledged."))
     },
     scanIncoming: () => recycledCandidates.shift() || { ok: false, reason: "no_unread_message" },
     verifyIncoming: () => ({ ok: true }),
@@ -302,12 +683,12 @@ async function main() {
     send,
     verifyIncoming = verifiedVisualCandidate,
     primeIncoming,
-    deepSeekClient = { assertAvailable: () => true, reply: async () => ({ reply: "Acknowledged.", needsHuman: false }) }
+    deepSeekClient = { assertAvailable: () => true, reply: async () => (answerDecision("Acknowledged.")) }
   }) => ({
     dataDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    expertStore: readyExpert(),
     deepSeekClient,
     scanIncoming,
     primeIncoming,
@@ -332,7 +713,7 @@ async function main() {
     scanIncoming: () => duplicateEvidenceCandidates.shift() || { ok: false, reason: "no_unread_message" },
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => { duplicateEvidenceAiCalls += 1; return { reply: "Acknowledged.", needsHuman: false }; }
+      reply: async () => { duplicateEvidenceAiCalls += 1; return answerDecision("Acknowledged."); }
     },
     send: async (options) => {
       assert.equal(await options.beforeDraft(), true);
@@ -500,10 +881,10 @@ async function main() {
     dataDir: retryableDataDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => { retryableAiCalls += 1; return { reply: "好的，我再试一次。", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }; }
+      reply: async () => { retryableAiCalls += 1; return answerDecision("好的，我再试一次。"); }
     },
     scanIncoming: () => retryableCandidate,
     verifyIncoming: () => ({ ok: true }),
@@ -552,10 +933,10 @@ async function main() {
     dataDir: userIdleRecoveryDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => { userIdleRecoveryAiCalls += 1; return { reply: "好的，稍后继续处理。", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }; }
+      reply: async () => { userIdleRecoveryAiCalls += 1; return answerDecision("好的，稍后继续处理。"); }
     },
     scanIncoming: () => userIdleRecoveryCandidate,
     verifyIncoming: () => ({ ok: true }),
@@ -651,8 +1032,8 @@ async function main() {
     dataDir: path.join(root, "manual_input_review"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
-    deepSeekClient: { assertAvailable: () => true, reply: async () => ({ reply: "好的，我会保留你的输入。", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }) },
+    expertStore: readyExpert(),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => (answerDecision("好的，我会保留你的输入。")) },
     scanIncoming: manualInputScan,
     verifyIncoming: () => ({ ok: true }),
     send: async (options) => {
@@ -693,8 +1074,8 @@ async function main() {
     dataDir: path.join(root, "rejected_retry_queue"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
-    deepSeekClient: { assertAvailable: () => true, reply: async () => ({ reply: "收到。", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }) },
+    expertStore: readyExpert(),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => (answerDecision("收到。")) },
     scanIncoming: rejectedRetryScan,
     verifyIncoming: () => ({ ok: true }),
     send: async () => ({ ok: false, blocked_reason: "atomic_draft_changed", send_attempted: false }),
@@ -732,10 +1113,10 @@ async function main() {
     dataDir: unknownSendDataDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => ({ reply: "收到。", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })
+      reply: async () => (answerDecision("收到。"))
     },
     scanIncoming: () => ({ ...retryableCandidate, message: "结果未知不能重发", runtimeId: "unknown-send-1", context: [{ role: "user", content: "结果未知不能重发", key: "unknown-send-1" }] }),
     verifyIncoming: () => ({ ok: true }),
@@ -854,7 +1235,7 @@ async function main() {
     dataDir: path.join(root, "startup_prime"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
     primeIncoming: async () => {
@@ -886,7 +1267,7 @@ async function main() {
     dataDir: noCurrentDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
     primeIncoming: async () => ({ ok: false, reason: "no_current_conversation" }),
@@ -915,7 +1296,7 @@ async function main() {
     dataDir: cancelledPrimeDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
     primeIncoming: async () => { enterCancelledPrime(); return cancelledPrimeGate; },
@@ -941,7 +1322,7 @@ async function main() {
     dataDir: path.join(root, "startup_prime_scrolled"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     scanIncoming: () => { scrolledScanCalls += 1; return { ok: false, reason: "no_unread_message" }; },
     primeIncoming: async () => {
@@ -974,7 +1355,7 @@ async function main() {
     dataDir: path.join(root, "startup_session_probe_unsupported"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
     primeIncoming: async () => ({
@@ -1027,7 +1408,7 @@ async function main() {
     dataDir: visualDiagnosticDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "test" }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     scanIncoming: () => ({
       ok: false,
@@ -1083,7 +1464,7 @@ async function main() {
     dataDir: transientFenceDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
       reply: async () => { transientFenceAiCalls += 1; return "不应生成"; }
@@ -1142,7 +1523,7 @@ async function main() {
     dataDir: safeWindowDelayDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
       reply: async () => { safeWindowDelayAiCalls += 1; return "must not reply"; }
@@ -1177,7 +1558,7 @@ async function main() {
     dataDir: path.join(root, "scan_pending_health"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true, reply: async () => { throw new Error("AI must wait for pending visual evidence"); } },
     scanIncoming: () => ({ ok: false, reason: "unread_preview_pending", pid: 81, hWnd: "91" }),
     verifyIncoming: () => ({ ok: false }),
@@ -1199,7 +1580,7 @@ async function main() {
     dataDir: path.join(root, "scan_consumed_visual_drift"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true, reply: async () => { throw new Error("consumed visual drift must not call AI"); } },
     scanIncoming: () => ({ ok: false, reason: "current_visual_drift_consumed", pid: 81, hWnd: "91" }),
     verifyIncoming: () => ({ ok: false }),
@@ -1222,7 +1603,7 @@ async function main() {
     dataDir: path.join(root, "scan_current_outgoing_settling"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true, reply: async () => { throw new Error("outgoing settling must not call AI"); } },
     scanIncoming: () => ({ ok: false, reason: "current_outgoing_settling", pid: 81, hWnd: "91", latestRole: "assistant" }),
     verifyIncoming: () => ({ ok: false }),
@@ -1245,7 +1626,7 @@ async function main() {
     dataDir: path.join(root, "scan_unresolved_health"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     scanIncoming: () => ({ ok: false, reason: "unread_preview_unresolved", pid: 81, hWnd: "91" }),
     verifyIncoming: () => ({ ok: false }),
@@ -1267,7 +1648,7 @@ async function main() {
     dataDir: path.join(root, "scan_current_transition_unresolved"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     scanIncoming: () => ({
       ok: false,
@@ -1325,7 +1706,7 @@ async function main() {
     dataDir: path.join(root, "scan_current_transition_fences_retry"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
       reply: async () => { fencedRetryAiCalls += 1; return "不应生成"; }
@@ -1367,7 +1748,7 @@ async function main() {
     dataDir: pendingRestartDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     scanIncoming: pendingFirstScan,
     primeIncoming: async () => ({ ok: true, primed: true }),
@@ -1413,8 +1794,8 @@ async function main() {
     dataDir: pendingRestartDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
-    deepSeekClient: { assertAvailable: () => true, reply: async () => ({ reply: "收到。", needsHuman: false }) },
+    expertStore: readyExpert(),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => (answerDecision("收到。")) },
     scanIncoming: pendingRestartScan,
     primeIncoming: async () => { restartPrimeCalls += 1; return { ok: true, primed: true }; },
     verifyIncoming: () => ({ ok: true }),
@@ -1446,8 +1827,8 @@ async function main() {
     dataDir: pendingRestartDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
-    deepSeekClient: { assertAvailable: () => true, reply: async () => ({ reply: "Acknowledged.", needsHuman: false }) },
+    expertStore: readyExpert(),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => (answerDecision("Acknowledged.")) },
     scanIncoming: pendingCrashRestartScan,
     primeIncoming: async () => { restartPrimeCalls += 1; return { ok: true, primed: true }; },
     verifyIncoming: () => ({ ok: true }),
@@ -1505,7 +1886,7 @@ async function main() {
   const generationRecoveryController = createAutoReplyController(guardedControllerOptions({
     dataDir: generationCrashDir,
     scanIncoming: generationRecoveryScan,
-    deepSeekClient: { assertAvailable: () => true, reply: async () => ({ reply: "Recovered once.", needsHuman: false }) },
+    deepSeekClient: { assertAvailable: () => true, reply: async () => (answerDecision("Recovered once.")) },
     send: async (options) => {
       assert.equal(await options.beforeDraft(), true);
       generationCrashSends += 1;
@@ -1600,7 +1981,7 @@ async function main() {
   const stalePendingDir = path.join(root, "stale_pending_window");
   fs.mkdirSync(stalePendingDir, { recursive: true });
   fs.writeFileSync(path.join(stalePendingDir, "auto-reply-state.json"), JSON.stringify({
-    version: 3,
+    version: 4,
     status: "paused",
     daily_date: "2026-07-14",
     pending_observation: {
@@ -1624,7 +2005,7 @@ async function main() {
     dataDir: stalePendingDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     scanIncoming: stalePendingScan,
     primeIncoming: () => { stalePendingPrimeCalls += 1; return { ok: true, reason: "baseline_ready" }; },
@@ -1646,7 +2027,7 @@ async function main() {
   const reboundPendingDir = path.join(root, "pending_observation_window_rebind");
   fs.mkdirSync(reboundPendingDir, { recursive: true });
   fs.writeFileSync(path.join(reboundPendingDir, "auto-reply-state.json"), JSON.stringify({
-    version: 3,
+    version: 4,
     status: "paused",
     daily_date: "2026-07-14",
     pending_observation: {
@@ -1705,7 +2086,7 @@ async function main() {
   const boundedRebindDir = path.join(root, "pending_observation_rebind_bounded");
   fs.mkdirSync(boundedRebindDir, { recursive: true });
   fs.writeFileSync(path.join(boundedRebindDir, "auto-reply-state.json"), JSON.stringify({
-    version: 3,
+    version: 4,
     status: "paused",
     daily_date: "2026-07-14",
     pending_observation: {
@@ -1751,10 +2132,10 @@ async function main() {
     dataDir: repeatedOccurrenceDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => { repeatedOccurrenceAiCalls += 1; return { reply: "只回复一次。", needsHuman: false }; }
+      reply: async () => { repeatedOccurrenceAiCalls += 1; return answerDecision("只回复一次。"); }
     },
     scanIncoming: () => repeatedOccurrence,
     verifyIncoming: () => ({ ok: true }),
@@ -1798,7 +2179,7 @@ async function main() {
     dataDir: healthDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true, reply: async () => { throw new Error("AI must not run in scan health checks"); } },
     scanIncoming: () => healthResults.shift(),
     verifyIncoming: () => ({ ok: true }),
@@ -1851,7 +2232,7 @@ async function main() {
     dataDir: rotationDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
     verifyIncoming: () => ({ ok: true }),
@@ -1880,7 +2261,7 @@ async function main() {
       update: () => ({ ok: true }),
       release: () => ({ ok: true })
     },
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     scanIncoming: () => { busyScanCalls += 1; return { ok: false, reason: "no_unread_message" }; },
     verifyIncoming: () => ({ ok: true }),
@@ -1907,7 +2288,7 @@ async function main() {
     dataDir: path.join(root, "cached_retry_without_probe"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     scanIncoming: () => ({
       ok: true,
@@ -1936,7 +2317,7 @@ async function main() {
     dataDir: path.join(root, "scan_exception"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     scanIncoming: () => { throw new Error("scanner exploded"); },
     verifyIncoming: () => ({ ok: true }),
@@ -1958,13 +2339,13 @@ async function main() {
     dataDir: path.join(root, "risky_history"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "不得处理敏感信息。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
       reply: async ({ context }) => {
         safeHistoryAiCalls += 1;
         assert.deepEqual(context, [{ role: "user", content: "发票怎么开？", key: "safe-latest" }]);
-        return { reply: "合同和发票都可以处理，付款后我帮您跟进。", intent: false, intentReason: "", needsHuman: false, handoffReason: "" };
+        return answerDecision("合同和发票都可以处理，付款后我帮您跟进。");
       }
     },
     scanIncoming: () => ({
@@ -2002,10 +2383,10 @@ async function main() {
     dataDir: path.join(root, "unsafe_ai_reply"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "不得索取敏感信息或要求客户直接付款。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => ({ reply: "请先支付定金", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })
+      reply: async () => (answerDecision("请先支付定金"))
     },
     scanIncoming: () => ({
       ok: true,
@@ -2037,10 +2418,10 @@ async function main() {
     dataDir: latestSecretDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "不得处理敏感信息。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => { latestSecretAiCalls += 1; return { reply: "收到。", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }; }
+      reply: async () => { latestSecretAiCalls += 1; return answerDecision("收到。"); }
     },
     scanIncoming: () => ({
       ok: true,
@@ -2077,10 +2458,10 @@ async function main() {
     dataDir: path.join(root, "takeover_after_draft"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => ({ reply: "好的，我来说明。", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })
+      reply: async () => (answerDecision("好的，我来说明。"))
     },
     scanIncoming: () => ({
       ok: true,
@@ -2117,10 +2498,10 @@ async function main() {
     dataDir: path.join(root, "visual_post_draft_reflow"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply politely." }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => ({ reply: "Understood.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })
+      reply: async () => (answerDecision("Understood."))
     },
     scanIncoming: () => ({
       ok: true,
@@ -2160,10 +2541,10 @@ async function main() {
     dataDir: path.join(root, "pause_during_send"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => ({ reply: "收到。", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })
+      reply: async () => (answerDecision("收到。"))
     },
     scanIncoming: () => ({
       ok: true,
@@ -2235,11 +2616,18 @@ async function main() {
     dataDir: path.join(root, "stale_run_epoch"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: expertText }) },
+    expertStore: {
+      status: () => ({ ready: true }),
+      read: () => ({
+        ready: true,
+        expertRules: { text: expertText },
+        businessKnowledge: { text: "工业设备业务知识" }
+      })
+    },
     deepSeekClient: {
       assertAvailable: () => true,
       reply: async ({ expert }) => {
-        assert.equal(expert, "旧话术");
+        assert.equal(expert.expertRules, "旧话术");
         markOldReplyStarted();
         return oldReply;
       }
@@ -2267,7 +2655,7 @@ async function main() {
   staleRunController.pause();
   expertText = "新话术";
   const staleRestart = staleRunController.start();
-  resolveOldReply({ reply: "旧话术生成的回复", intent: false, intentReason: "", needsHuman: false, handoffReason: "" });
+  resolveOldReply(answerDecision("旧话术生成的回复"));
   await staleRun;
   assert.equal((await staleRestart).ok, true);
   assert.equal(staleSendCalls, 0, "pause, expert replacement, and restart must invalidate the old generation epoch");
@@ -2289,16 +2677,16 @@ async function main() {
     dataDir: handoffDataDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "人工提醒：客户明确要求正式报价或下单时提醒人工。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => ({ reply: "收到，我把正式报价需求交给同事确认。", intent: true, intentReason: "客户准备下单", needsHuman: true, handoffReason: "需要正式报价" })
+      reply: async () => (handoffDecision("收到，我把正式报价需求交给同事确认。"))
     },
     scanIncoming: () => handoffCandidates.shift() || { ok: false, reason: "no_unread_message" },
     verifyIncoming: () => ({ ok: true }),
     send: async (options) => (await options.beforeDraft()) ? { ok: true } : { ok: false },
     sendHandoff: async ({ message }) => {
-      assert.match(message, /原因：需要正式报价/);
+      assert.match(message, /原因：需要处理下单、合同或履约/);
       deduplicatedHandoffs += 1;
       return { ok: true };
     },
@@ -2310,8 +2698,9 @@ async function main() {
   assert.equal((await handoffController.start()).ok, true);
   await handoffController.runOnce();
   await handoffController.runOnce();
-  assert.equal(handoffController.status().reply_count, 2);
-  assert.equal(deduplicatedHandoffs, 1, "the same intent context must alert only once");
+  assert.equal(handoffController.status().reply_count, 1, "a human-owned customer must not receive another AI reply");
+  assert.equal(deduplicatedHandoffs, 1, "the same human-owned customer must alert only once");
+  assert.equal(handoffController.status().held_contacts.length, 1);
   assert.equal(JSON.parse(fs.readFileSync(path.join(handoffDataDir, "auto-reply-state.json"), "utf8")).pending_handoff, null, "a verified handoff must clear its pending identity");
   handoffController.pause();
 
@@ -2323,10 +2712,10 @@ async function main() {
     dataDir: retryHandoffDataDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "明确意向后提醒人工。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => ({ reply: "收到，我先帮您登记。", intent: true, intentReason: "客户准备下单", needsHuman: true, handoffReason: "需要正式报价" })
+      reply: async () => (handoffDecision("收到，我先帮您登记。"))
     },
     scanIncoming: () => {
       if (!retryHandoffCandidateAvailable) return { ok: false, reason: "no_unread_message" };
@@ -2372,12 +2761,12 @@ async function main() {
   assert.equal(retryHandoffCalls, 2);
   assert.equal(retryHandoffCustomerSends, 1, "retrying the file-helper handoff must not resend the customer reply");
   assert.equal(JSON.parse(fs.readFileSync(path.join(retryHandoffDataDir, "auto-reply-state.json"), "utf8")).pending_handoff, null);
-  assert.equal(retryHandoffController.status().last_event, "intent_handoff_sent");
+  assert.equal(retryHandoffController.status().last_event, "human_handoff_sent");
   retryHandoffController.pause();
 
   const fairnessCandidates = [
-    { runtimeId: "fairness-1", message: "这个需求请人工确认" },
-    { runtimeId: "fairness-2", message: "另一个普通问题" }
+    { runtimeId: "fairness-1", conversation: "张总", message: "这个需求请人工确认" },
+    { runtimeId: "fairness-2", conversation: "李经理", message: "另一个普通问题" }
   ];
   let fairnessCustomerSends = 0;
   let fairnessHandoffCalls = 0;
@@ -2386,21 +2775,21 @@ async function main() {
     dataDir: path.join(root, "handoff_retry_fairness"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "需要时提醒人工，其他问题直接回答。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
       reply: async () => {
         fairnessAiCalls += 1;
         return fairnessAiCalls === 1
-          ? { reply: "收到，我请同事确认。", intent: false, intentReason: "", needsHuman: true, handoffReason: "需要人工确认" }
-          : { reply: "这个普通问题可以直接处理。", intent: false, intentReason: "", needsHuman: false, handoffReason: "" };
+          ? handoffDecision("收到，我请同事确认。")
+          : answerDecision("这个普通问题可以直接处理。");
       }
     },
     scanIncoming: () => {
       const candidate = fairnessCandidates.shift();
       return candidate ? {
         ok: true,
-        conversation: "张总",
+        conversation: candidate.conversation,
         message: candidate.message,
         runtimeId: candidate.runtimeId,
         pid: 81,
@@ -2429,8 +2818,8 @@ async function main() {
   fairnessController.pause();
 
   const retryThenErrorCandidates = [
-    { runtimeId: "retry-error-1", message: "先提醒人工" },
-    { runtimeId: "retry-error-2", message: "随后触发另一个错误" }
+    { runtimeId: "retry-error-1", conversation: "张总", message: "先提醒人工" },
+    { runtimeId: "retry-error-2", conversation: "李经理", message: "随后触发另一个错误" }
   ];
   let retryThenErrorAiCalls = 0;
   let retryThenErrorHandoffCalls = 0;
@@ -2440,20 +2829,20 @@ async function main() {
     dataDir: retryThenErrorDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "需要时提醒人工。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
       reply: async () => {
         retryThenErrorAiCalls += 1;
         if (retryThenErrorAiCalls > 1) throw new Error("另一个客户生成失败");
-        return { reply: "收到，我请同事确认。", intent: false, intentReason: "", needsHuman: true, handoffReason: "需要人工确认" };
+        return handoffDecision("收到，我请同事确认。");
       }
     },
     scanIncoming: () => {
       const candidate = retryThenErrorCandidates.shift();
       return candidate ? {
         ok: true,
-        conversation: "张总",
+        conversation: candidate.conversation,
         message: candidate.message,
         runtimeId: candidate.runtimeId,
         pid: 81,
@@ -2478,7 +2867,7 @@ async function main() {
   await retryThenErrorController.runOnce();
   await retryThenErrorController.runOnce();
   assert.equal(retryThenErrorController.status().status, "paused");
-  assert.equal(retryThenErrorController.status().last_event, "auto_reply_error_paused", "an unrelated failure must not relabel a proven-unsent handoff as outcome unknown");
+  assert.equal(retryThenErrorController.status().last_event, "system_error_paused", "a model failure for another customer must remain a system error, not a handoff");
   assert.ok(JSON.parse(fs.readFileSync(path.join(retryThenErrorDir, "auto-reply-state.json"), "utf8")).pending_handoff);
   assert.equal((await retryThenErrorController.start()).ok, true);
   await retryThenErrorController.runOnce();
@@ -2488,7 +2877,10 @@ async function main() {
   retryThenErrorController.pause();
 
   const restartQueueDir = path.join(root, "handoff_queue_restart");
-  const restartQueueCandidates = ["restart-handoff-1", "restart-handoff-2"];
+  const restartQueueCandidates = [
+    { runtimeId: "restart-handoff-1", conversation: "张总" },
+    { runtimeId: "restart-handoff-2", conversation: "李经理" }
+  ];
   const deliveredRestartHandoffs = [];
   let deliverRestartHandoffs = false;
   let restartQueueCustomerSends = 0;
@@ -2496,20 +2888,16 @@ async function main() {
     dataDir: restartQueueDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "都需要人工提醒。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async ({ context }) => ({
-        reply: "收到，我请同事确认。",
-        intent: false,
-        intentReason: "",
-        needsHuman: !context.at(-1).content.startsWith("fresh-after-backlog"),
-        handoffReason: "需要人工确认"
-      })
+      reply: async ({ context }) => context.at(-1).content.startsWith("fresh-after-backlog")
+        ? answerDecision("这个普通问题可以直接处理。")
+        : handoffDecision("收到，我请同事确认。")
     },
     scanIncoming: () => {
-      const runtimeId = restartQueueCandidates.shift();
-      return runtimeId ? { ok: true, conversation: "张总", message: runtimeId, runtimeId, pid: 81, hWnd: "91", context: [{ role: "user", content: runtimeId, key: runtimeId }] } : { ok: false, reason: "no_unread_message" };
+      const candidate = restartQueueCandidates.shift();
+      return candidate ? { ok: true, conversation: candidate.conversation, message: candidate.runtimeId, runtimeId: candidate.runtimeId, pid: 81, hWnd: "91", context: [{ role: "user", content: candidate.runtimeId, key: candidate.runtimeId }] } : { ok: false, reason: "no_unread_message" };
     },
     verifyIncoming: () => ({ ok: true }),
     send: async (options) => { assert.equal(await options.beforeDraft(), true); restartQueueCustomerSends += 1; return { ok: true, send_attempted: true }; },
@@ -2531,7 +2919,10 @@ async function main() {
   assert.deepEqual(queuedBeforeRestart.pending_handoffs.map((item) => item.delivery_state), ["not_attempted", "queued"]);
   assert.equal(JSON.stringify(queuedBeforeRestart.pending_handoffs).includes("请同事"), false, "handoff message bodies must remain memory-only");
   deliverRestartHandoffs = true;
-  restartQueueCandidates.push("fresh-after-backlog-1", "fresh-after-backlog-2");
+  restartQueueCandidates.push(
+    { runtimeId: "fresh-after-backlog-1", conversation: "已停用" },
+    { runtimeId: "fresh-after-backlog-2", conversation: "已停用" }
+  );
   await restartQueueController.runOnce();
   await restartQueueController.runOnce();
   assert.match(deliveredRestartHandoffs[0], /restart-handoff-1/);
@@ -2546,7 +2937,7 @@ async function main() {
     dataDir: restartQueueDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "有效话术" }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
     primeIncoming: () => restoredQueuePrimeOk ? { ok: true } : { ok: false, reason: "history_not_at_bottom" },
@@ -2590,10 +2981,10 @@ async function main() {
     dataDir: pauseDuringHandoffDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "需要人工跟进。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => ({ reply: "这个问题我帮您确认一下，稍后回复您。", intent: false, intentReason: "", needsHuman: true, handoffReason: "需要人工确认" })
+      reply: async () => (handoffDecision("这个问题我帮您确认一下，稍后回复您。"))
     },
     scanIncoming: () => ({
       ok: true,
@@ -2643,10 +3034,10 @@ async function main() {
     dataDir: unknownDataDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "无法回答：我帮您确认一下，稍后回复您。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => ({ reply: "这个问题我帮您确认一下，稍后回复您。", intent: false, intentReason: "模型附带的次要解释", needsHuman: true, handoffReason: "资料未覆盖" })
+      reply: async () => (handoffDecision("这个问题我帮您确认一下，稍后回复您。"))
     },
     scanIncoming: () => ({
       ok: true,
@@ -2660,7 +3051,7 @@ async function main() {
     verifyIncoming: () => ({ ok: true }),
     send: async (options) => (await options.beforeDraft()) ? { ok: true } : { ok: false },
     sendHandoff: async ({ message }) => {
-      assert.match(message, /原因：资料未覆盖/, "unknown-problem handoffs must prefer handoffReason over an unrelated intentReason");
+      assert.match(message, /原因：需要处理下单、合同或履约/, "handoff notifications must use the fixed reason code label");
       const persisted = JSON.parse(fs.readFileSync(path.join(unknownDataDir, "auto-reply-state.json"), "utf8"));
       assert.equal(persisted.reply_count, 1, "verified customer reply must be durable before handoff I/O");
       assert.equal(Object.values(persisted.processed).at(-1).status, "sent_verified");
@@ -2678,49 +3069,14 @@ async function main() {
   assert.equal((await unknownController.start()).ok, true);
   await unknownController.runOnce();
   assert.equal(unknownController.status().reply_count, 1, "safe placeholder is sent before handoff");
-  assert.equal(unknownController.status().status, "paused");
-  assert.equal(unknownController.status().last_event, "handoff_confirmation_required");
-  assert.match(unknownController.status().last_error, /文件传输助手人工检查，确认后点击确认按钮继续/);
-
-  const pendingBeforeRestart = JSON.parse(fs.readFileSync(path.join(unknownDataDir, "auto-reply-state.json"), "utf8")).pending_handoff;
-  const blockedPendingController = createAutoReplyController({
-    dataDir: unknownDataDir,
-    activeTouchDir,
-    coordinator,
-    expertStore: { read: () => ({ text: "有效话术" }) },
-    deepSeekClient: { assertAvailable: () => { throw new Error("依赖预检失败"); } },
-    send: async () => ({ ok: true }),
-    sendHandoff: async () => ({ ok: true }),
-    runStep: async () => ({ ok: true }),
-    scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
-    schedule: () => 1,
-    cancelSchedule: () => undefined,
-    now: () => new Date("2026-07-14T10:00:00+08:00")
-  });
-  assert.equal(blockedPendingController.status().last_event, "handoff_confirmation_required", "a pending handoff must remain confirmation-required after controller reconstruction");
-  assert.equal((await blockedPendingController.start()).ok, false, "failed dependency preflight must not acknowledge a pending handoff");
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(unknownDataDir, "auto-reply-state.json"), "utf8")).pending_handoff, pendingBeforeRestart);
-
-  const confirmedPendingController = createAutoReplyController({
-    dataDir: unknownDataDir,
-    activeTouchDir,
-    coordinator,
-    expertStore: { read: () => ({ text: "有效话术" }) },
-    deepSeekClient: { assertAvailable: () => true },
-    send: async () => ({ ok: true }),
-    sendHandoff: async () => ({ ok: true }),
-    runStep: async () => ({ ok: true }),
-    scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
-    schedule: () => 1,
-    cancelSchedule: () => undefined,
-    now: () => new Date("2026-07-14T10:00:00+08:00")
-  });
-  assert.equal(confirmedPendingController.status().last_event, "handoff_confirmation_required");
-  assert.equal((await confirmedPendingController.start()).ok, true, "the trusted start action is the explicit manual acknowledgement");
-  const acknowledgedPendingState = JSON.parse(fs.readFileSync(path.join(unknownDataDir, "auto-reply-state.json"), "utf8"));
-  assert.equal(acknowledgedPendingState.pending_handoff, null);
-  assert.equal(acknowledgedPendingState.handoff_notified[pendingBeforeRestart.key].status, "manual_acknowledged");
-  confirmedPendingController.pause();
+  assert.equal(unknownController.status().status, "running", "an uncertain employee notification must not pause other customers");
+  assert.equal(unknownController.status().last_event, "handoff_manual_followup_required");
+  assert.equal(unknownController.status().held_contacts.length, 1);
+  const unknownHandoffState = JSON.parse(fs.readFileSync(path.join(unknownDataDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(unknownHandoffState.pending_handoff, null, "an outcome-unknown notification must be removed from the automatic retry queue");
+  assert.equal(unknownHandoffState.manual_followups.length, 1);
+  assert.equal(Object.values(unknownHandoffState.handoff_notified).at(-1).status, "outcome_unknown");
+  unknownController.pause();
 
   const aiConfigFailureDir = path.join(root, "ai_configuration_failure");
   let aiConfigFailureSends = 0;
@@ -2729,20 +3085,14 @@ async function main() {
     dataDir: aiConfigFailureDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "业务信息：工业清洁设备。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => ({
-        reply: "这个问题我帮您确认一下，稍后回复您。",
-        intent: false,
-        intentReason: "",
-        needsHuman: true,
-        handoffReason: "DeepSeek(API_KEY_INVALID)需要人工跟进",
-        aiWarningCode: "API_KEY_INVALID",
-        aiWarning: "DeepSeek 本次未生成可靠回复，已发送兜底消息并提醒人工。",
-        pauseAfterHandoff: true,
-        pauseReason: "DeepSeek API Key 无效"
-      })
+      reply: async () => {
+        const error = new Error("secret-bearing upstream response must not be exposed");
+        error.code = "API_KEY_INVALID";
+        throw error;
+      }
     },
     scanIncoming: () => ({
       ok: true,
@@ -2770,14 +3120,18 @@ async function main() {
   });
   assert.equal((await aiConfigFailureController.start()).ok, true);
   await aiConfigFailureController.runOnce();
-  assert.equal(aiConfigFailureSends, 1, "persistent AI failures must not lose the already-scanned incoming message");
-  assert.equal(aiConfigFailureHandoffs, 1, "persistent AI failures must alert a human before pausing");
-  assert.equal(aiConfigFailureController.status().reply_count, 1);
+  assert.equal(aiConfigFailureSends, 0, "model failures must never send a customer fallback");
+  assert.equal(aiConfigFailureHandoffs, 0, "model failures must not manufacture a human handoff");
+  assert.equal(aiConfigFailureController.status().reply_count, 0);
   assert.equal(aiConfigFailureController.status().status, "paused");
-  assert.equal(aiConfigFailureController.status().last_event, "ai_configuration_paused");
+  assert.equal(aiConfigFailureController.status().last_event, "system_error_paused");
   assert.match(aiConfigFailureController.status().last_error, /API Key 无效/);
-  assert.equal(aiConfigFailureController.status().last_ai_warning_code, "API_KEY_INVALID");
-  assert.match(aiConfigFailureController.status().last_ai_warning, /已发送兜底消息并提醒人工/);
+  assert.deepEqual(aiConfigFailureController.status().system_error, {
+    code: "API_KEY_INVALID",
+    category: "configuration",
+    message: "DeepSeek API Key 无效或已失效，请检查后重新启动。"
+  });
+  assert.doesNotMatch(JSON.stringify(aiConfigFailureController.status()), /secret-bearing upstream/);
 
   const rateCases = [
     {
@@ -2795,8 +3149,8 @@ async function main() {
       dataDir: rateDir,
       activeTouchDir,
       coordinator,
-      expertStore: { read: () => ({ text: "安全话术" }) },
-      deepSeekClient: { assertAvailable: () => true, reply: async () => { rateAiCalls += 1; return { reply: "Continue.", needsHuman: false }; } },
+      expertStore: readyExpert(),
+      deepSeekClient: { assertAvailable: () => true, reply: async () => { rateAiCalls += 1; return answerDecision("Continue."); } },
       scanIncoming: () => ({
         ok: true,
         conversation: "张总",
@@ -2847,7 +3201,7 @@ async function main() {
       dataDir: path.join(root, `coordinator_${coordinatorFailure.name}_failure`),
       activeTouchDir,
       coordinator: coordinatorFailure.coordinator,
-      expertStore: { read: () => ({ text: "有效话术" }) },
+      expertStore: readyExpert(),
       deepSeekClient: { assertAvailable: () => true },
       send: async () => ({ ok: true }),
       sendHandoff: async () => ({ ok: true }),
@@ -2874,7 +3228,7 @@ async function main() {
     dataDir: path.join(root, "ipc_auto_reply"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "test" }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     send: async () => ({ ok: true }),
     sendHandoff: async () => ({ ok: true }),
@@ -2886,13 +3240,23 @@ async function main() {
     getMainWindow: () => ({ isDestroyed: () => false, isFocused: () => true, webContents }),
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) }
   });
-  assert.deepEqual([...handlers.keys()].sort(), ["auto-reply:acknowledge-manual-followup", "auto-reply:pause", "auto-reply:start", "auto-reply:status"]);
+  assert.deepEqual([...handlers.keys()].sort(), ["auto-reply:acknowledge-manual-followup", "auto-reply:pause", "auto-reply:resume-contact", "auto-reply:start", "auto-reply:status"]);
   assert.equal((await handlers.get("auto-reply:start")({ sender: webContents }, {})).ok, false);
   assert.equal((await handlers.get("auto-reply:start")({ sender: webContents }, { clickToken: "trusted" })).ok, true);
   assert.equal(autoReplyUpdates.at(-1).channel, "auto-reply:update");
   assert.equal(autoReplyUpdates.at(-1).payload.state.status, "running", "successful start must push authoritative state without waiting for renderer polling");
   assert.equal((await handlers.get("auto-reply:acknowledge-manual-followup")({ sender: webContents }, {})).ok, false);
   assert.equal((await handlers.get("auto-reply:acknowledge-manual-followup")({ sender: webContents }, { clickToken: "trusted-ack" })).ok, true);
+  assert.equal((await handlers.get("auto-reply:resume-contact")({ sender: webContents }, { contactId: "c1" })).ok, false);
+  assert.equal((await handlers.get("auto-reply:resume-contact")({ sender: webContents }, { clickToken: "trusted-resume", contactId: "c1" })).ok, false, "a trusted resume must still reject a customer who is not human-owned");
+  const preloadInvocations = [];
+  const preloadAutoReply = createPreloadApis({
+    invoke: (channel, payload) => { preloadInvocations.push({ channel, payload }); return Promise.resolve({ ok: true }); },
+    on: () => undefined,
+    removeListener: () => undefined
+  }).autoReply;
+  await preloadAutoReply.resumeContact("c1");
+  assert.deepEqual(preloadInvocations.at(-1), { channel: "auto-reply:resume-contact", payload: { clickToken: "", contactId: "c1" } });
   await handlers.get("auto-reply:pause")({ sender: webContents }, {});
   assert.equal(autoReplyUpdates.at(-1).payload.state.status, "paused", "pause must push state immediately");
   assert.match(fs.readFileSync(path.join(__dirname, "preload-api.cjs"), "utf8"), /auto-reply:update[\s\S]*removeListener/u, "preload must expose a removable auto-reply state subscription");
@@ -2904,7 +3268,7 @@ async function main() {
     dataDir: recoveryDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "test" }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     send: async () => ({ ok: true }),
     sendHandoff: async () => ({ ok: true }),
@@ -2914,7 +3278,7 @@ async function main() {
     now: () => new Date("2026-07-14T10:00:00+08:00")
   });
   const migratedState = JSON.parse(fs.readFileSync(path.join(recoveryDir, "auto-reply-state.json"), "utf8"));
-  assert.equal(migratedState.version, 3);
+  assert.equal(migratedState.version, 4);
   assert.deepEqual(migratedState.processed, {}, "legacy fingerprints must be discarded during v1 migration");
   assert.equal("contact_ids" in migratedState, false, "legacy whitelist state must be discarded during v1 migration");
   assert.equal(recovered.status().status, "paused");
@@ -2927,6 +3291,7 @@ async function main() {
   assert.equal(recovered.status().consecutive_scan_failures, 0);
   assert.deepEqual(Object.keys(recovered.status()).sort(), [
     "consecutive_scan_failures",
+    "held_contacts",
     "last_error",
     "last_event",
     "last_ai_warning",
@@ -2939,8 +3304,9 @@ async function main() {
     "reply_count",
     "scan_health",
     "status",
+    "system_error",
     "updated_at"
-  ].sort(), "public v2 state must expose only the documented control and scan-health fields");
+  ].sort(), "public v4 state must expose only the documented control, handoff, and scan-health fields");
 
   const runningRecoveryDir = path.join(root, "running_recovery_auto_reply");
   fs.mkdirSync(runningRecoveryDir, { recursive: true });
@@ -2960,7 +3326,7 @@ async function main() {
     const internalReasonDir = path.join(root, `internal_reason_${internalReason}`);
     fs.mkdirSync(internalReasonDir, { recursive: true });
     fs.writeFileSync(path.join(internalReasonDir, "auto-reply-state.json"), JSON.stringify({
-      version: 3,
+      version: 4,
       status: "paused",
       daily_date: "2026-07-14",
       scan_health: internalReason === "wechat_operation_busy" ? "waiting" : "healthy",
@@ -3084,7 +3450,7 @@ async function main() {
     dataDir: mixedRecoveryDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "有效话术" }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     send: async () => ({ ok: true }),
     sendHandoff: async () => ({ ok: true }),
@@ -3125,10 +3491,10 @@ async function main() {
     dataDir: crossingDir,
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "礼貌回复。" }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => ({ reply: "新的一天收到。", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })
+      reply: async () => (answerDecision("新的一天收到。"))
     },
     scanIncoming: () => ({
       ok: true,
@@ -3163,10 +3529,10 @@ async function main() {
     dataDir: path.join(root, "discovered_alias"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => ({ reply: "Received.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })
+      reply: async () => (answerDecision("Received."))
     },
     scanIncoming: () => ({
       ok: true,
@@ -3201,10 +3567,10 @@ async function main() {
     dataDir: path.join(root, "arbitrary_discovery_rejected"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => ({ reply: "Must not send.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })
+      reply: async () => (answerDecision("Must not send."))
     },
     scanIncoming: () => ({
       ok: true,
@@ -3235,10 +3601,10 @@ async function main() {
     dataDir: path.join(root, "message_driven_unread"),
     activeTouchDir,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
-      reply: async () => ({ reply: "Message-driven reply.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })
+      reply: async () => (answerDecision("Message-driven reply."))
     },
     scanIncoming: () => ({
       ok: true,
@@ -3332,12 +3698,12 @@ async function main() {
     activeTouchDir,
     singleContactScopeRequired: true,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
+    expertStore: readyExpert(),
     deepSeekClient: {
       assertAvailable: () => true,
       reply: async () => {
         strictScopeReplies += 1;
-        return { reply: "Only the selected contact receives this.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" };
+        return answerDecision("Only the selected contact receives this.");
       }
     },
     primeIncoming: (aliases, matchOptions) => {
@@ -3406,8 +3772,8 @@ async function main() {
     activeTouchDir,
     singleContactScopeRequired: true,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
-    deepSeekClient: { assertAvailable: () => true, reply: async () => ({ reply: "Must not send.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }) },
+    expertStore: readyExpert(),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => (answerDecision("Must not send.")) },
     primeIncoming: () => { restartScopeSourcePrimes += 1; return { ok: true, source: "session_prime", primed: true }; },
     scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
     verifyIncoming: () => ({ ok: true }),
@@ -3429,8 +3795,8 @@ async function main() {
     activeTouchDir,
     singleContactScopeRequired: true,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
-    deepSeekClient: { assertAvailable: () => true, reply: async () => { restartScopeReplies += 1; return { reply: "Must not send.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }; } },
+    expertStore: readyExpert(),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => { restartScopeReplies += 1; return answerDecision("Must not send."); } },
     primeIncoming: () => { restartScopePrimes += 1; return { ok: true, source: "session_prime", primed: true }; },
     scanIncoming: () => { restartScopeScans += 1; return { ok: false, reason: "no_unread_message" }; },
     verifyIncoming: () => ({ ok: true }),
@@ -3453,8 +3819,8 @@ async function main() {
       activeTouchDir,
       singleContactScopeRequired: true,
       coordinator,
-      expertStore: { read: () => ({ text: "Reply briefly." }) },
-      deepSeekClient: { assertAvailable: () => true, reply: async () => ({ reply: "Must not send.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }) },
+      expertStore: readyExpert(),
+      deepSeekClient: { assertAvailable: () => true, reply: async () => (answerDecision("Must not send.")) },
       primeIncoming: () => ({ ok: true, source: "session_prime", primed: true }),
       scanIncoming: () => { changedWindowScopeScans += 1; return { ok: false, reason: windowReason }; },
       verifyIncoming: () => ({ ok: true }),
@@ -3490,8 +3856,8 @@ async function main() {
     activeTouchDir: unboundCollisionContacts,
     singleContactScopeRequired: true,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
-    deepSeekClient: { assertAvailable: () => true, reply: async () => { unboundCollisionReplyCalls += 1; return { reply: "Must not send.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }; } },
+    expertStore: readyExpert(),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => { unboundCollisionReplyCalls += 1; return answerDecision("Must not send."); } },
     primeIncoming: () => { unboundCollisionPrimeCalls += 1; return { ok: true, source: "session_prime", primed: true }; },
     scanIncoming: () => { unboundCollisionScanCalls += 1; return { ok: false, reason: "no_unread_message" }; },
     verifyIncoming: () => ({ ok: true }),
@@ -3519,8 +3885,8 @@ async function main() {
     activeTouchDir: duplicateIdContacts,
     singleContactScopeRequired: true,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
-    deepSeekClient: { assertAvailable: () => true, reply: async () => { duplicateIdReplyCalls += 1; return { reply: "Must not send.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }; } },
+    expertStore: readyExpert(),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => { duplicateIdReplyCalls += 1; return answerDecision("Must not send."); } },
     primeIncoming: () => { duplicateIdPrimeCalls += 1; return { ok: true, source: "session_prime", primed: true }; },
     scanIncoming: () => { duplicateIdScanCalls += 1; return { ok: false, reason: "no_unread_message" }; },
     verifyIncoming: () => ({ ok: true }),
@@ -3542,8 +3908,8 @@ async function main() {
     activeTouchDir,
     singleContactScopeRequired: true,
     coordinator,
-    expertStore: { read: () => ({ text: "Reply briefly." }) },
-    deepSeekClient: { assertAvailable: () => true, reply: async () => ({ reply: "Must not send.", intent: false, intentReason: "", needsHuman: false, handoffReason: "" }) },
+    expertStore: readyExpert(),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => (answerDecision("Must not send.")) },
     primeIncoming: () => ({ ok: true, source: "session_prime", primed: true }),
     scanIncoming: () => { invalidatedScopeScans += 1; return { ok: false, reason: "no_unread_message" }; },
     verifyIncoming: () => ({ ok: true }),
@@ -3570,7 +3936,7 @@ async function main() {
     activeTouchDir,
     singleContactScopeRequired: true,
     coordinator,
-    expertStore: { read: () => ({ text: "test" }) },
+    expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true },
     primeIncoming: () => ({ ok: true, source: "session_prime", primed: true }),
     scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
@@ -3585,7 +3951,7 @@ async function main() {
   });
   assert.equal((await strictIpcHandlers.get("auto-reply:start")({ sender: webContents }, { clickToken: "strict-missing-contact" })).ok, false, "the trusted test IPC must still reject a missing contact ID");
   assert.equal((await strictIpcHandlers.get("auto-reply:start")({ sender: webContents }, { clickToken: "strict-selected-contact", contactId: "c1" })).ok, true, "the trusted test IPC must forward the selected contact ID to the controller");
-  console.log("auto-reply v3 self-check passed");
+  console.log("auto-reply v4 self-check passed");
 }
 
 main().finally(() => fs.rmSync(root, { recursive: true, force: true })).catch((error) => {

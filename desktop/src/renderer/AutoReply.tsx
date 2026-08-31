@@ -31,6 +31,12 @@ type AutoReplyState = {
   consecutive_scan_failures?: number;
   pending_retry_count?: number;
   last_failure_context?: AutoReplyFailureContext | null;
+  system_error?: {
+    code: string;
+    category: string;
+    message: string;
+  } | null;
+  held_contacts?: Array<{ id: string; label: string }>;
   test_scope?: {
     required?: boolean;
     enforced?: boolean;
@@ -52,6 +58,7 @@ declare global {
       start: (payload?: { contactId?: string }) => Promise<AutoReplyResult>;
       pause: () => Promise<AutoReplyResult>;
       acknowledgeManualFollowup: () => Promise<AutoReplyResult>;
+      resumeContact: (contactId: string) => Promise<AutoReplyResult>;
       onUpdate?: (callback: (result: AutoReplyResult) => void) => () => void;
     };
   }
@@ -70,7 +77,9 @@ const EMPTY_STATE: AutoReplyState = {
   last_scan_reason: "",
   consecutive_scan_failures: 0,
   pending_retry_count: 0,
-  last_failure_context: null
+  last_failure_context: null,
+  system_error: null,
+  held_contacts: []
 };
 
 const DEVELOPMENT_EDITION = import.meta.env.VITE_XIAOXI_EDITION === "development";
@@ -173,7 +182,11 @@ const CONTROL_EVENT_LABELS: Record<string, string> = {
   test_scope_window_changed: "检测到微信窗口变化，已暂停测试自动回复，请重新选择联系人",
   current_transition_unresolved_paused: "新消息证据不一致，已安全暂停",
   waiting_for_user_idle: "检测到电脑仍在操作，已等待空闲后继续",
-  manual_intervention_required: "检测到微信中可能有人为操作，当前消息已停止自动重试"
+  manual_intervention_required: "检测到微信中可能有人为操作，当前消息已停止自动重试",
+  system_error_paused: "AI 服务故障，客户消息未发送，自动回复已暂停",
+  human_owned_contact_skipped: "该客户已由人工接管，本轮未自动回复",
+  contact_ai_resumed: "已恢复该客户的 AI 自动回复",
+  silent_processed: "本条消息无需回复，已静默处理"
 };
 
 const RECOVERY_ACTION_LABELS: Record<string, string> = {
@@ -182,13 +195,15 @@ const RECOVERY_ACTION_LABELS: Record<string, string> = {
   retry_waiting: "本条回复正在退避后复核",
   retry_pending: "本条回复将重新校验后重试",
   manual_review_required: "已停止自动重试，等待人工确认",
-  manual_check_required: "发送结果待人工确认"
+  manual_check_required: "发送结果待人工确认",
+  fix_ai_and_restart: "AI 服务故障，修复后重新启动"
 };
 
 const FAILURE_PHASE_LABELS: Record<string, string> = {
   prime: "启动检查",
   scan: "扫描微信消息",
-  send: "回复发送"
+  send: "回复发送",
+  generate: "生成 AI 回复"
 };
 
 const SEND_PHASE_LABELS: Record<string, string> = {
@@ -239,6 +254,8 @@ function recoverySummary(context: AutoReplyFailureContext) {
       return "检测到微信输入框可能有人为操作；为避免覆盖你的内容，这条消息不再自动重试。";
     case "manual_check_required":
       return "发送是否完成无法确认；为避免重复发送，系统已停止对同一条消息自动补发。";
+    case "fix_ai_and_restart":
+      return "模型调用未产生可用业务动作，系统没有向客户发送消息，也没有创建虚假的人工接管。请修复后手动重新启动。";
     default:
       return "本次运行已保留诊断信息，系统不会把未确认的发送当作成功。";
   }
@@ -302,7 +319,7 @@ export function AutoReply() {
   const running = state.status === "running";
   const starting = state.status === "starting";
   const confirmationRequired = state.last_event === "handoff_confirmation_required";
-  const manualFollowupRequired = state.last_event === "handoff_manual_followup_required";
+  const heldContacts = state.held_contacts || [];
   const statusLabel = running ? "运行中" : starting ? "启动中" : state.status === "paused" ? "已暂停" : "未启动";
   const scanHealth = normalizeScanHealth(state.scan_health);
   const scanning = running || starting;
@@ -355,11 +372,6 @@ export function AutoReply() {
           <p>启动后监听新消息，并使用已导入的 AI 专家资料生成回复。</p>
         </div>
         <div className="actions">
-          {manualFollowupRequired && (
-            <button data-xiaoxi-auto-reply-acknowledge className="primary-button" onClick={() => window.xiaoxiAutoReply ? run(() => window.xiaoxiAutoReply!.acknowledgeManualFollowup(), "确认人工提醒失败") : setError("当前版本未连接自动回复执行器")} disabled={busy}>
-              <Check size={17} />确认当前已处理
-            </button>
-          )}
           {running ? (
             <button className="danger-button" onClick={pause} disabled={busy}>
               <Pause size={17} />暂停自动回复
@@ -371,6 +383,46 @@ export function AutoReply() {
           )}
         </div>
       </div>
+
+      {state.system_error && (
+        <section className="auto-reply-system-error" role="alert" aria-labelledby="auto-reply-system-error-title">
+          <div>
+            <strong id="auto-reply-system-error-title">AI 服务故障，自动回复已暂停</strong>
+            <p>{state.system_error.message}</p>
+          </div>
+          <span>{state.system_error.category} · {state.system_error.code}</span>
+        </section>
+      )}
+
+      {heldContacts.length > 0 && (
+        <section className="auto-reply-held" aria-labelledby="auto-reply-held-title">
+          <div className="auto-reply-held-head">
+            <div>
+              <h2 id="auto-reply-held-title">待人工客户</h2>
+              <p>这些客户已单独暂停 AI，其他客户仍继续自动服务。</p>
+            </div>
+            <span>{heldContacts.length} 位</span>
+          </div>
+          <ul>
+            {heldContacts.map((contact) => (
+              <li key={contact.id}>
+                <strong>{contact.label}</strong>
+                <button
+                  type="button"
+                  data-xiaoxi-auto-reply-resume
+                  className="secondary-button"
+                  disabled={busy}
+                  onClick={() => window.xiaoxiAutoReply
+                    ? run(() => window.xiaoxiAutoReply!.resumeContact(contact.id), "恢复该客户 AI 回复失败")
+                    : setError("当前版本未连接自动回复执行器")}
+                >
+                  <Check size={16} />已处理，恢复 AI
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {DEVELOPMENT_EDITION && (
         <section className="auto-reply-test-scope" aria-labelledby="auto-reply-test-scope-title">
