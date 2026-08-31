@@ -5,11 +5,10 @@ import heapq
 import itertools
 import json
 import math
-import os
 from pathlib import Path
 import re
 import shutil
-from typing import Any, Iterable
+from typing import Any
 import wave
 
 from .apimart_cover import (
@@ -4234,10 +4233,14 @@ class CreativeDomain:
             for index, phrase in enumerate(phrases):
                 phrase_id = str(phrase.get("phraseId") or f"phrase-{index + 1}")
                 evidence_ref = assigned_refs.get(phrase_id)
-                candidate_refs = {
-                    str(reference or "").split(":", 1)[0]
+                full_evidence_refs = [
+                    str(reference or "").strip()
                     for reference in phrase.get("evidenceRefs") or []
                     if str(reference or "").strip()
+                ]
+                candidate_refs = {
+                    reference.split(":", 1)[0]
+                    for reference in full_evidence_refs
                 }
                 caption = captions_by_phrase.get(phrase_id)
                 if (
@@ -4272,7 +4275,11 @@ class CreativeDomain:
                 resolved_phrases.append(
                     {
                         **phrase,
-                        "evidenceRefs": [evidence_ref],
+                        "evidenceRefs": [
+                            reference
+                            for reference in full_evidence_refs
+                            if reference.split(":", 1)[0] == evidence_ref
+                        ],
                     }
                 )
             references = evidence_references(resolved_phrases)

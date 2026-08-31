@@ -18,6 +18,7 @@ if str(SIDECAR_ROOT) not in sys.path:
 
 
 from content_engine.auto_mix_v2 import (
+    AUTO_MIX_CAPTION_CHARS,
     AUTO_MIX_SPEC_VERSION,
     AutoMixV2ContractError,
     align_material_timeline_to_captions,
@@ -688,17 +689,17 @@ class AutoMixV2ContractTests(unittest.TestCase):
             }
         )
 
+        source_text = "先看自动清洁机器人的真实素材。画面来自工厂车间的实际片段。"
+        spoken_texts = [item["text"] for item in tracks["spoken_phrases"]]
         self.assertEqual(
-            [
-                "先看自动清洁机器人的真实素材。",
-                "画面来自工厂车间的实际片段。",
-            ],
-            [item["text"] for item in tracks["spoken_phrases"]],
+            source_text,
+            "".join(spoken_texts),
         )
         self.assertTrue(
             all(re.search(r"[A-Za-z0-9\u4e00-\u9fff]", item["text"])
                 for item in tracks["spoken_phrases"])
         )
+        self.assertTrue(all(len(item) <= AUTO_MIX_CAPTION_CHARS for item in spoken_texts))
 
     def test_normalized_spoken_tracks_do_not_leave_tiny_tts_tails(self):
         source = (
@@ -2454,6 +2455,11 @@ class AutoMixV2ServiceTests(unittest.TestCase):
 
         self.assertEqual("completed", recovered_task["status"])
         self.assertEqual("completed", recovered_plan["state"])
+        self.assertEqual(["segment-v2:text"], first_text[0]["evidenceRefs"])
+        self.assertEqual(
+            ["segment-v2:text"],
+            recovered_plan["spokenPhrases"][0]["evidenceRefs"],
+        )
         self.assertEqual(first_text, recovered_plan["spokenPhrases"])
         self.assertEqual(
             first_plan["voicePersona"]["voicePersonaId"],
@@ -3545,6 +3551,9 @@ class GuidedAutoMixSupplementalImageTests(unittest.TestCase):
         draft = {
             "revision": 1,
             "title": "工厂清扫现场",
+            "duration_plan": self.service.creative_domain._guided_auto_mix_duration_plan(
+                {"selected_duration_ms": 18_000}
+            ),
             "script": {
                 "hook": "无人清洁机器人正在现场作业",
                 "voiceover": "从现场画面看清洁流程。",
