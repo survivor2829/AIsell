@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const {
   DEEPSEEK_MODEL,
+  DeepSeekApiError,
   createDeepSeekClient,
   createDeepSeekKeyStore,
   maskApiKey,
@@ -106,14 +107,24 @@ async function main() {
   assert.match(messages[0].content, /不得连续堆叠/);
   assert.equal(messages[1].content, "客户称呼：张总，您好\n基础话术：张总，您好，我们这边有清洁设备短租方案。");
   assert.equal(prompt({ salutation: "", script: "{称呼}，您好，欢迎了解。" })[1].content, "客户称呼：您好\n基础话术：您好，欢迎了解。");
-  const replyPolicy = replyPrompt({
-    expert: "意向判定：客户初步询价属于意向，但先继续判断需求。",
+  const expert = {
+    expertRules: "回答要专业、简洁；只有真实成交或售后动作才转人工。",
+    businessKnowledge: "设备短租适用于临时施工；具体价格以正式报价为准。"
+  };
+  const replyMessages = replyPrompt({
+    expert,
+    clarificationAllowed: false,
     context: [{ role: "user", content: "工厂一千平，粉尘多。" }]
-  })[0].content;
-  assert.match(replyPolicy, /intent与needsHuman分别判断/);
-  assert.doesNotMatch(replyPolicy, /有意向时intent和needsHuman都为true/);
-  assert.match(replyPolicy, /可以通过一个关键问题继续判断时.*needsHuman为false/);
-  assert.match(replyPolicy, /明确要求实时报价、下单、实时库存或必须人工承诺时.*needsHuman为true/);
+  });
+  const replyPolicy = replyMessages[0].content;
+  assert.match(replyPolicy, /answer.*默认动作/s);
+  assert.match(replyPolicy, /不能因为问题困难、知识缺失.*handoff/s);
+  assert.match(replyPolicy, /公司价格、参数、库存、政策或承诺.*业务知识/s);
+  assert.match(replyPolicy, /一般行业知识.*通用技术建议/s);
+  assert.match(replyPolicy, /本轮禁止再次选择clarify/);
+  assert.match(replyMessages[1].content, /专家规则[\s\S]*只有真实成交或售后动作才转人工/);
+  assert.match(replyMessages[2].content, /业务知识[\s\S]*设备短租适用于临时施工/);
+  assert.equal(replyMessages.at(-1).content, "工厂一千平，粉尘多。");
   const requests = [];
   const client = createDeepSeekClient({ keyStore: store, fetchImpl: async (_url, request) => {
     const body = JSON.parse(request.body);
@@ -122,7 +133,7 @@ async function main() {
     assert.match(request.headers.authorization, /^Bearer /);
     const isReply = body.messages[0].content.includes("微信一对一客服回复助手");
     const content = isReply
-      ? JSON.stringify({ reply: "收到，我把正式报价需求交给同事核实。", intent: true, intentReason: "客户准备下单", needsHuman: true, handoffReason: "需要正式报价" })
+      ? JSON.stringify({ action: "handoff", reply: "收到，我把正式报价需求交给同事核实。", reasonCode: "transaction_commitment" })
       : "您好，欢迎了解我们的服务。";
     return { ok: true, json: async () => ({ choices: [{ finish_reason: "stop", message: { content } }] }) };
   } });
@@ -175,48 +186,63 @@ async function main() {
   assert.match(momentsBodies[0].messages[1].content, /新门店的设备安装/);
   const requestsBeforeReply = requests.length;
   const decision = await client.reply({
-    expert: "业务信息：设备短租。人工提醒：明确要求正式报价或下单时提醒人工。",
+    expert,
     context: [
       { role: "assistant", content: "您好，想了解哪方面？" },
       { role: "user", content: "请给我正式报价，我准备下单。" }
     ]
   });
   assert.deepEqual(decision, {
+    action: "handoff",
     reply: "收到，我把正式报价需求交给同事核实。",
-    intent: true,
-    intentReason: "客户准备下单",
-    needsHuman: true,
-    handoffReason: "需要正式报价"
+    reasonCode: "transaction_commitment"
   });
   assert.deepEqual(requests.at(-1).response_format, { type: "json_object" }, "auto-reply must use DeepSeek JSON mode");
   assert.deepEqual(requests.at(-1).thinking, { type: "disabled" }, "structured auto-reply must disable thinking mode");
   assert.equal(requests.length, requestsBeforeReply + 1, "a valid structured response must not trigger a retry");
-  assert.deepEqual(parseReplyDecision("```json\n{\"reply\":\"稍等，我帮您确认。\",\"intent\":false,\"intentReason\":\"\",\"needsHuman\":true,\"handoffReason\":\"资料未覆盖\"}\n```"), {
-    reply: "稍等，我帮您确认。",
-    intent: false,
-    intentReason: "",
-    needsHuman: true,
-    handoffReason: "资料未覆盖"
-  });
+  const validDecisions = [
+    { action: "answer", reply: "设备短租适合临时施工。", reasonCode: "business_knowledge" },
+    { action: "answer", reply: "可以先清理表面铁屑，再检查涂层是否划伤。", reasonCode: "general_guidance" },
+    { action: "answer", reply: "目前资料没有公司库存信息，我可以先介绍一般选型方法。", reasonCode: "company_fact_unavailable" },
+    { action: "clarify", reply: "铁屑只是散落在表面，还是已经嵌入涂层？", reasonCode: "missing_detail" },
+    { action: "handoff", reply: "好的，我为您转接人工同事。", reasonCode: "explicit_human_request" },
+    { action: "handoff", reply: "收到，我请同事继续处理正式下单。", reasonCode: "transaction_commitment" },
+    { action: "handoff", reply: "收到，我请售后同事继续处理退款。", reasonCode: "after_sales_action" },
+    { action: "silent", reply: "", reasonCode: "no_reply_needed" }
+  ];
+  for (const expected of validDecisions) {
+    assert.deepEqual(parseReplyDecision(`\`\`\`json\n${JSON.stringify(expected)}\n\`\`\``), expected);
+  }
   assert.throws(() => parseReplyDecision("not-json"), (error) => error.code === "AI_RESPONSE_INVALID");
-  assert.throws(() => parseReplyDecision(JSON.stringify({ reply: "收到", intent: false })), (error) => error.code === "AI_RESPONSE_INVALID");
-  assert.throws(() => parseReplyDecision(JSON.stringify({ reply: "收到", intent: "false", intentReason: "", needsHuman: false, handoffReason: "" })), (error) => error.code === "AI_RESPONSE_INVALID");
-  assert.throws(() => parseReplyDecision(JSON.stringify({ reply: "   ", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })), (error) => error.code === "AI_RESPONSE_INVALID");
+  assert.throws(() => parseReplyDecision(JSON.stringify({ action: "answer", reply: "收到" })), (error) => error.code === "AI_RESPONSE_INVALID");
+  assert.throws(() => parseReplyDecision(JSON.stringify({ action: "answer", reply: "收到", reasonCode: "missing_detail" })), (error) => error.code === "AI_RESPONSE_INVALID", "action/reason pairs must be compatible");
+  assert.throws(() => parseReplyDecision(JSON.stringify({ action: "silent", reply: "收到", reasonCode: "no_reply_needed" })), (error) => error.code === "AI_RESPONSE_INVALID");
+  assert.throws(() => parseReplyDecision(JSON.stringify({ action: "answer", reply: "", reasonCode: "general_guidance" })), (error) => error.code === "AI_RESPONSE_INVALID");
+  assert.throws(() => parseReplyDecision(JSON.stringify({ action: "clarify", reply: "请问具体面积？", reasonCode: "missing_detail" }), { clarificationAllowed: false }), (error) => error.code === "AI_RESPONSE_INVALID", "a second clarification must be rejected as structured output");
+  assert.throws(() => parseReplyDecision(JSON.stringify({ action: "answer", reply: "收到", reasonCode: "general_guidance", extra: true })), (error) => error.code === "AI_RESPONSE_INVALID", "the decision contract must contain exactly three fields");
   assert.equal(parsePlainPayload({ choices: [{ finish_reason: "stop", message: { content: "连接正常" } }] }, "missing"), "连接正常");
   assert.throws(() => parsePlainPayload({ choices: [{ finish_reason: "stop", message: { content: "" } }] }, "missing"), (error) => error.code === "AI_RESPONSE_EMPTY");
   assert.throws(() => parsePlainPayload({}, "missing"), (error) => error.code === "AI_RESPONSE_INVALID", "a malformed provider envelope must not be reported as empty content");
   assert.throws(() => parsePlainPayload({ choices: [{ finish_reason: "stop", message: { content: null } }] }, "missing"), (error) => error.code === "AI_RESPONSE_EMPTY", "an explicit null completion is empty content");
   assert.throws(() => parsePlainPayload({ choices: [{ finish_reason: "stop", message: { content: "长".repeat(261) } }] }, "missing"), (error) => error.code === "AI_RESPONSE_LENGTH_INVALID");
-  assert.throws(() => parseReplyDecision(JSON.stringify({ reply: "长".repeat(261), intent: false, intentReason: "", needsHuman: false, handoffReason: "" })), (error) => error.code === "AI_RESPONSE_LENGTH_INVALID");
+  assert.throws(() => parseReplyDecision(JSON.stringify({ action: "answer", reply: "长".repeat(261), reasonCode: "general_guidance" })), (error) => error.code === "AI_RESPONSE_LENGTH_INVALID");
   assert.throws(() => parsePlainPayload({ choices: [{ finish_reason: "length", message: { content: "未完成" } }] }, "missing"), (error) => error.code === "AI_RESPONSE_TRUNCATED");
-  assert.equal(parseReplyDecision(JSON.stringify({ reply: "收到", intent: true, intentReason: "有意向", needsHuman: false, handoffReason: "" })).needsHuman, false, "interest alone must not force a human handoff");
   assert.equal(JSON.stringify(requests.at(-1)).includes("张总"), false, "auto-reply request must not include the contact name");
-  assert.equal(JSON.stringify(requests.at(-1)).includes("设备短租"), true);
+  assert.equal(JSON.stringify(requests.at(-1)).includes(expert.expertRules), true);
+  assert.equal(JSON.stringify(requests.at(-1)).includes(expert.businessKnowledge), true);
   assert.equal(JSON.stringify(requests.at(-1)).includes("请给我正式报价"), true);
   const retryInput = {
-    expert: "业务信息：工业清洁设备。",
+    expert,
     context: [{ role: "user", content: "工厂粉尘多，想了解高压清洗机。" }]
   };
+  let missingExpertFetches = 0;
+  const missingExpertClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => {
+    missingExpertFetches += 1;
+    throw new Error("must not call fetch");
+  } });
+  await assert.rejects(() => missingExpertClient.reply({ ...retryInput, expert: { expertRules: expert.expertRules, businessKnowledge: "" } }), (error) => error.code === "AI_EXPERT_MISSING");
+  await assert.rejects(() => missingExpertClient.reply({ ...retryInput, expert: { expertRules: "", businessKnowledge: expert.businessKnowledge } }), (error) => error.code === "AI_EXPERT_MISSING");
+  assert.equal(missingExpertFetches, 0, "auto-reply must require both expert documents before calling DeepSeek");
   const draftRetryBodies = [];
   const draftRetryPayloads = [
     { choices: [{ finish_reason: "length", message: { content: "" } }] },
@@ -229,7 +255,7 @@ async function main() {
   assert.equal((await draftRetryClient.draft({ task: { script: "测试服务" }, result: { salutation: { type: "generic", value: "" } } })).draft, "您好，这是恢复后的完整测试文案。");
   assert.deepEqual(draftRetryBodies.map((body) => body.max_tokens), [300, 600]);
   assert.equal(draftRetryBodies.every((body) => body.thinking?.type === "disabled"), true);
-  const validRetryContent = JSON.stringify({ reply: "粉尘主要在开阔地面，还是设备周边和边角？", intent: true, intentReason: "客户正在选型", needsHuman: false, handoffReason: "" });
+  const validRetryContent = JSON.stringify({ action: "answer", reply: "粉尘较多时可以先按作业面积和角落占比选择设备。", reasonCode: "general_guidance" });
   const emptyRetryBodies = [];
   const emptyRetryPayloads = [
     { id: "req-empty-json", choices: [{ finish_reason: "stop", message: { content: "" } }] },
@@ -239,7 +265,7 @@ async function main() {
     emptyRetryBodies.push(JSON.parse(request.body));
     return { ok: true, json: async () => emptyRetryPayloads.shift() };
   } });
-  assert.equal((await emptyRetryClient.reply(retryInput)).reply, "粉尘主要在开阔地面，还是设备周边和边角？");
+  assert.equal((await emptyRetryClient.reply(retryInput)).action, "answer");
   assert.equal(emptyRetryBodies.length, 2, "an empty structured response must retry exactly once before sending");
   assert.equal(emptyRetryBodies[0].max_tokens, 300);
   assert.equal(emptyRetryBodies[1].max_tokens, 600, "the retry must allow a complete JSON response");
@@ -254,7 +280,7 @@ async function main() {
       ? { choices: [{ finish_reason: "length", message: { content: "{\"reply\":\"已截断" } }] }
       : { choices: [{ finish_reason: "stop", message: { content: validRetryContent } }] })
   }) });
-  assert.equal((await truncatedRetryClient.reply(retryInput)).needsHuman, false);
+  assert.equal((await truncatedRetryClient.reply(retryInput)).action, "answer");
   assert.equal(truncatedCalls, 2, "a truncated structured response must retry exactly once");
   let invalidCalls = 0;
   const invalidRetryClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => ({
@@ -263,30 +289,29 @@ async function main() {
       ? { choices: [{ finish_reason: "stop", message: { content: "not-json" } }] }
       : { choices: [{ finish_reason: "stop", message: { content: validRetryContent } }] })
   }) });
-  assert.equal((await invalidRetryClient.reply(retryInput)).intent, true);
+  assert.equal((await invalidRetryClient.reply(retryInput)).action, "answer");
   assert.equal(invalidCalls, 2, "invalid JSON must retry exactly once");
-  let recoveredCalls = 0;
-  const finalRecoveryBodies = [];
-  const finalRecoveryClient = createDeepSeekClient({ keyStore: store, fetchImpl: async (_url, request) => {
-    finalRecoveryBodies.push(JSON.parse(request.body));
-    return {
-      ok: true,
-      json: async () => {
-        recoveredCalls += 1;
-        if (recoveredCalls === 1) return { choices: [{ finish_reason: "stop", message: { content: "" } }] };
-        if (recoveredCalls === 2) return { choices: [{ finish_reason: "stop", message: { content: "收到，我先了解一下您的使用面积。" } }] };
-        return { choices: [{ finish_reason: "stop", message: { content: validRetryContent } }] };
-      }
-    };
+  let lengthCalls = 0;
+  const lengthRetryClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => ({
+    ok: true,
+    json: async () => (++lengthCalls === 1
+      ? { choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ action: "answer", reply: "长".repeat(261), reasonCode: "general_guidance" }) } }] }
+      : { choices: [{ finish_reason: "stop", message: { content: validRetryContent } }] })
+  }) });
+  assert.equal((await lengthRetryClient.reply(retryInput)).action, "answer");
+  assert.equal(lengthCalls, 2, "an unusable reply length must retry exactly once");
+  let noSecondClarifyCalls = 0;
+  const noSecondClarifyClient = createDeepSeekClient({ keyStore: store, fetchImpl: async (_url, request) => {
+    noSecondClarifyCalls += 1;
+    const body = JSON.parse(request.body);
+    if (noSecondClarifyCalls === 2) assert.match(body.messages[0].content, /结构化恢复请求/);
+    const content = noSecondClarifyCalls === 1
+      ? JSON.stringify({ action: "clarify", reply: "请问具体面积？", reasonCode: "missing_detail" })
+      : validRetryContent;
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: "stop", message: { content } }] }) };
   } });
-  assert.equal((await finalRecoveryClient.reply(retryInput)).needsHuman, true, "two failed structured attempts must use the bounded fallback");
-  assert.equal(recoveredCalls, 2, "reply generation must never exceed one recovery call");
-  assert.deepEqual(finalRecoveryBodies.map((body) => [body.max_tokens, body.response_format?.type || "plain"]), [
-    [300, "json_object"],
-    [600, "json_object"]
-  ], "the recovery must keep JSON mode and use the larger completion budget");
-  assert.equal(finalRecoveryBodies.every((body) => body.thinking?.type === "disabled"), true, "every reply attempt must keep thinking disabled");
-  assert.notEqual(finalRecoveryBodies[0].messages[0].content, finalRecoveryBodies[1].messages[0].content, "recovery attempts must strengthen the reply contract");
+  assert.equal((await noSecondClarifyClient.reply({ ...retryInput, clarificationAllowed: false })).action, "answer");
+  assert.equal(noSecondClarifyCalls, 2, "a forbidden second clarification must use the one structured recovery attempt");
   const privateModelOutput = "RAW_PRIVATE_MODEL_OUTPUT";
   const privateReasoning = "RAW_PRIVATE_REASONING";
   let exhaustedCalls = 0;
@@ -296,20 +321,17 @@ async function main() {
       ? { id: "req-length", usage: { completion_tokens: 300, completion_tokens_details: { reasoning_tokens: 123 } }, choices: [{ finish_reason: "length", message: { content: privateModelOutput, reasoning_content: privateReasoning } }] }
       : { id: "req-empty", usage: { completion_tokens: 0, completion_tokens_details: { reasoning_tokens: 0 } }, choices: [{ finish_reason: "stop", message: { content: "", reasoning_content: `${privateReasoning}-2` } }] } };
   } });
-  const exhausted = await exhaustedClient.reply(retryInput);
-  assert.equal(exhausted.reply, "这个问题我帮您确认一下，稍后回复您。");
-  assert.equal(exhausted.intent, false);
-  assert.equal(exhausted.needsHuman, true, "two invalid responses must use the existing human handoff path");
-  assert.equal(exhausted.aiWarningCode, "AI_RESPONSE_EMPTY");
-  assert.match(exhausted.aiWarning, /已发送兜底消息并提醒人工/);
-  assert.match(exhausted.handoffReason, /AI_RESPONSE_TRUNCATED/);
-  assert.match(exhausted.handoffReason, /AI_RESPONSE_EMPTY/);
-  assert.doesNotMatch(exhausted.handoffReason, /finish=|content=|tokens=|id=/, "file-helper handoff must stay short and business-readable");
-  assert.equal(exhausted.handoffReason.includes(privateModelOutput), false, "provider diagnostics must not expose raw model output");
-  assert.equal(exhausted.handoffReason.includes(privateReasoning), false, "provider diagnostics must not expose raw model reasoning");
-  assert.equal(exhausted.handoffReason.includes(retryInput.context[0].content), false, "provider diagnostics must not repeat customer messages");
-  assert.equal(exhausted.handoffReason.includes("test-customer-key"), false, "provider diagnostics must not expose the API key");
-  assert.equal(exhaustedCalls, 2, "one recovery attempt must fall back instead of retrying again");
+  await assert.rejects(() => exhaustedClient.reply(retryInput), (error) => {
+    assert.equal(error instanceof DeepSeekApiError, true);
+    assert.equal(error.code, "AI_RESPONSE_EMPTY");
+    assert.equal(error.message.includes(privateModelOutput), false);
+    assert.equal(error.message.includes(privateReasoning), false);
+    assert.equal(error.message.includes(retryInput.context[0].content), false);
+    assert.equal(error.message.includes(expert.expertRules), false);
+    assert.equal(error.message.includes("test-customer-key"), false);
+    return true;
+  }, "two invalid outputs must throw instead of synthesizing customer text");
+  assert.equal(exhaustedCalls, 2, "reply generation must never exceed one recovery call");
   let incompleteCalls = 0;
   const incompleteRetryClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => ({
     ok: true,
@@ -317,63 +339,41 @@ async function main() {
       ? { choices: [{ finish_reason: "insufficient_system_resource", message: { content: "" } }] }
       : { choices: [{ finish_reason: "stop", message: { content: validRetryContent } }] })
   }) });
-  assert.equal((await incompleteRetryClient.reply(retryInput)).intent, true);
+  assert.equal((await incompleteRetryClient.reply(retryInput)).action, "answer");
   assert.equal(incompleteCalls, 2, "an incomplete generation must retry exactly once");
   let filteredCalls = 0;
   const filteredClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => {
     filteredCalls += 1;
     return { ok: true, json: async () => ({ id: "req-filtered", choices: [{ finish_reason: "content_filter", message: { content: "" } }] }) };
   } });
-  const filtered = await filteredClient.reply(retryInput);
-  assert.equal(filtered.needsHuman, true);
-  assert.match(filtered.handoffReason, /AI_CONTENT_FILTERED/);
-  assert.doesNotMatch(filtered.handoffReason, /req-filtered/, "operator reminders must not include provider request ids");
-  assert.equal(filteredCalls, 1, "content-filtered output must hand off without retrying");
+  await assert.rejects(() => filteredClient.reply(retryInput), (error) => error.code === "AI_CONTENT_FILTERED");
+  assert.equal(filteredCalls, 1, "content-filtered output must fail immediately without retrying");
   let networkCalls = 0;
   const networkFailureClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => {
     networkCalls += 1;
     throw new Error("offline");
   } });
-  const networkFallback = await networkFailureClient.reply(retryInput);
-  assert.equal(networkFallback.needsHuman, true, "temporary transport failures must use the human handoff path instead of pausing the listener");
-  assert.match(networkFallback.handoffReason, /AI_NETWORK_ERROR/);
-  assert.equal(networkCalls, 1, "transport failures must hand off without an automatic retry");
-  let recoveryNetworkCalls = 0;
-  const recoveryNetworkClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => {
-    recoveryNetworkCalls += 1;
-    if (recoveryNetworkCalls === 1) return { ok: true, json: async () => ({ id: "req-before-network", choices: [{ finish_reason: "stop", message: { content: "" } }] }) };
-    throw new Error("offline during recovery");
-  } });
-  const recoveryNetworkFallback = await recoveryNetworkClient.reply(retryInput);
-  assert.equal(recoveryNetworkFallback.needsHuman, true);
-  assert.match(recoveryNetworkFallback.handoffReason, /AI_RESPONSE_EMPTY/);
-  assert.match(recoveryNetworkFallback.handoffReason, /AI_NETWORK_ERROR/, "the final handoff must retain both the provider-output and recovery-transport failures");
-  assert.equal(recoveryNetworkCalls, 2);
+  await assert.rejects(() => networkFailureClient.reply(retryInput), (error) => error.code === "AI_NETWORK_ERROR");
+  assert.equal(networkCalls, 1, "transport failures must fail immediately without an automatic retry");
   const invalidKeyClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => ({ ok: false, status: 401, json: async () => ({}) }) });
-  const invalidKeyFallback = await invalidKeyClient.reply(retryInput);
-  assert.equal(invalidKeyFallback.needsHuman, true);
-  assert.equal(invalidKeyFallback.pauseAfterHandoff, true, "persistent configuration failures must pause only after the scanned message is safely handed off");
-  assert.match(invalidKeyFallback.pauseReason, /API Key 无效/);
-  assert.match(invalidKeyFallback.handoffReason, /API_KEY_INVALID/);
+  await assert.rejects(() => invalidKeyClient.reply(retryInput), (error) => error.code === "API_KEY_INVALID");
   for (const temporaryResponse of [
     { status: 408, body: {}, code: "AI_REQUEST_TIMEOUT" },
     { status: 429, body: {}, code: "AI_RATE_LIMITED" },
     { status: 500, body: { error: "load balancer unavailable" }, code: "AI_REQUEST_FAILED" }
   ]) {
     const temporaryClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => ({ ok: false, status: temporaryResponse.status, json: async () => temporaryResponse.body }) });
-    const temporaryFallback = await temporaryClient.reply(retryInput);
-    assert.equal(temporaryFallback.needsHuman, true);
-    assert.equal(temporaryFallback.pauseAfterHandoff, undefined, `HTTP ${temporaryResponse.status} must not pause the listener`);
-    assert.match(temporaryFallback.handoffReason, new RegExp(temporaryResponse.code));
+    await assert.rejects(() => temporaryClient.reply(retryInput), (error) => error.code === temporaryResponse.code);
   }
   const rejectedRequestClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => ({ ok: false, status: 400, json: async () => ({ error: "invalid request" }) }) });
-  const rejectedRequestFallback = await rejectedRequestClient.reply(retryInput);
-  assert.equal(rejectedRequestFallback.pauseAfterHandoff, true, "persistent request errors must hand off the current customer and then pause for correction");
-  assert.match(rejectedRequestFallback.handoffReason, /AI_REQUEST_REJECTED/);
+  await assert.rejects(() => rejectedRequestClient.reply(retryInput), (error) => error.code === "AI_REQUEST_REJECTED");
   const balanceClient = createDeepSeekClient({ keyStore: store, fetchImpl: async () => ({ ok: false, status: 402, json: async () => ({}) }) });
-  const balanceFallback = await balanceClient.reply(retryInput);
-  assert.equal(balanceFallback.pauseAfterHandoff, true);
-  assert.match(balanceFallback.handoffReason, /AI_BALANCE_INSUFFICIENT/);
+  await assert.rejects(() => balanceClient.reply(retryInput), (error) => error.code === "AI_BALANCE_INSUFFICIENT");
+  const unreadableReplyClient = createDeepSeekClient({
+    keyStore: { read: () => { throw new DeepSeekApiError("API_KEY_UNREADABLE", "已保存的 DeepSeek API Key 无法读取，请重新填写。"); } },
+    fetchImpl: async () => { throw new Error("must not call fetch"); }
+  });
+  await assert.rejects(() => unreadableReplyClient.reply(retryInput), (error) => error.code === "API_KEY_UNREADABLE", "reply() must propagate key-store failures");
   const stalledClient = createDeepSeekClient({
     keyStore: store,
     requestTimeoutMs: 5,
@@ -382,9 +382,9 @@ async function main() {
       json: () => new Promise((_resolve, reject) => request.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true }))
     })
   });
-  assert.equal(parseReplyDecision(JSON.stringify({ reply: "您好，丫子，有什么可以帮您的吗？", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })).reply, "您好，有什么可以帮您的吗？");
-  assert.equal(parseReplyDecision(JSON.stringify({ reply: "张总，您好，请问想了解哪类设备？", intent: false, intentReason: "", needsHuman: false, handoffReason: "" })).reply, "您好，请问想了解哪类设备？");
-  await assert.rejects(() => stalledClient.test(), (error) => error.code === "AI_REQUEST_TIMEOUT");
+  assert.equal(parseReplyDecision(JSON.stringify({ action: "answer", reply: "您好，丫子，有什么可以帮您的吗？", reasonCode: "general_guidance" })).reply, "您好，有什么可以帮您的吗？");
+  assert.equal(parseReplyDecision(JSON.stringify({ action: "answer", reply: "张总，您好，请问想了解哪类设备？", reasonCode: "general_guidance" })).reply, "您好，请问想了解哪类设备？");
+  await assert.rejects(() => stalledClient.reply(retryInput), (error) => error.code === "AI_REQUEST_TIMEOUT");
   const invalidPayloadClient = createDeepSeekClient({
     keyStore: store,
     fetchImpl: async () => ({ ok: true, json: async () => { throw new SyntaxError("invalid json"); } })
