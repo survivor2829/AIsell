@@ -199,12 +199,15 @@ async function main() {
   ];
   const clarificationFlags = [];
   const fourStateSends = [];
+  const fourStateFingerprints = [];
   let fourStateHandoffs = 0;
+  const traceExpertRules = "一般技术问题默认回答；只追问一个关键问题。trace-expert-rules-canary";
+  const traceBusinessKnowledge = "正式报价和售后执行由人工处理。trace-business-knowledge-canary";
   const fourStateController = createAutoReplyController({
     dataDir: path.join(root, "four_state_contract"),
     activeTouchDir,
     coordinator,
-    expertStore: readyExpert("一般技术问题默认回答；只追问一个关键问题。", "正式报价和售后执行由人工处理。"),
+    expertStore: readyExpert(traceExpertRules, traceBusinessKnowledge),
     deepSeekClient: {
       assertAvailable: () => true,
       reply: async ({ context, expert, clarificationAllowed }) => {
@@ -234,6 +237,7 @@ async function main() {
     send: async (options) => {
       assert.equal(await options.beforeDraft(), true);
       fourStateSends.push(options.message);
+      fourStateFingerprints.push(options.attemptId);
       return { ok: true, send_attempted: true, send_result: "sent_verified" };
     },
     sendHandoff: async () => { fourStateHandoffs += 1; return { ok: true }; },
@@ -253,6 +257,43 @@ async function main() {
   assert.equal(fourStateHandoffs, 0, "a difficult general question must not manufacture a handoff");
   assert.equal(fourStateController.status().last_event, "silent_processed");
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, "four_state_contract", "auto-reply-state.json"), "utf8")).contact_states.c1, undefined);
+  const fourStateLog = fs.readFileSync(path.join(root, "four_state_contract", "auto-reply-diagnostics.jsonl"), "utf8");
+  const fourStateDiagnostics = fourStateLog.trim().split(/\r?\n/u).map((line) => JSON.parse(line));
+  const fourStateCandidatesDetected = fourStateDiagnostics.filter((entry) => entry.event === "reply_candidate_detected");
+  assert.equal(fourStateCandidatesDetected.length, 4, "every eligible occurrence must receive one anonymous trace");
+  assert.equal(fourStateCandidatesDetected.every((entry) => /^[a-f0-9]{24}$/u.test(entry.trace_id)), true);
+  assert.notEqual(fourStateCandidatesDetected[0].trace_id, fourStateCandidatesDetected[1].trace_id, "different occurrences must not share a trace");
+  const firstTrace = fourStateCandidatesDetected[0].trace_id;
+  const firstTraceEvents = fourStateDiagnostics.filter((entry) => entry.trace_id === firstTrace);
+  for (const event of ["reply_candidate_detected", "reply_generation_started", "reply_decision", "reply_send_started", "reply_send_finished"]) {
+    assert.equal(firstTraceEvents.some((entry) => entry.event === event), true, `the answer trace must include ${event}`);
+  }
+  const firstDecisionDiagnostic = firstTraceEvents.find((entry) => entry.event === "reply_decision");
+  assert.equal(firstDecisionDiagnostic.action, "answer");
+  assert.equal(firstDecisionDiagnostic.reason_code, "general_guidance");
+  assert.equal(Number.isSafeInteger(firstDecisionDiagnostic.duration_ms) && firstDecisionDiagnostic.duration_ms >= 0, true);
+  for (const event of ["reply_send_started", "reply_send_finished"]) {
+    const sendDiagnostic = firstTraceEvents.find((entry) => entry.event === event);
+    assert.equal(sendDiagnostic.action, "answer");
+    assert.equal(sendDiagnostic.reason_code, "general_guidance");
+    assert.equal(sendDiagnostic.delivery_attempt, 1);
+  }
+  const silentTrace = fourStateCandidatesDetected.at(-1).trace_id;
+  const silentTraceEvents = fourStateDiagnostics.filter((entry) => entry.trace_id === silentTrace);
+  assert.equal(silentTraceEvents.some((entry) => entry.event === "reply_send_started"), false);
+  assert.deepEqual(
+    (({ action, reason_code, send_attempted, send_result }) => ({ action, reason_code, send_attempted, send_result }))(silentTraceEvents.find((entry) => entry.event === "reply_send_skipped")),
+    { action: "silent", reason_code: "no_reply_needed", send_attempted: false, send_result: "not_attempted" }
+  );
+  for (const secret of [
+    "张总",
+    "环氧地坪有铁屑怎么处理",
+    "four-answer",
+    traceExpertRules,
+    traceBusinessKnowledge,
+    ...fourStateFingerprints
+  ]) assert.equal(fourStateLog.includes(secret), false, `diagnostics must not contain ${secret}`);
+  assert.equal(fourStateLog.includes('"contact_id":"c1"'), false);
   fourStateController.pause();
 
   const repeatedClarifyCandidates = [
@@ -891,7 +932,7 @@ async function main() {
     send: async (options) => {
       retryableSendCalls += 1;
       if (retryableSendCalls === 1) {
-        return { ok: false, error: "generic_visual_error", blocked_reason: "atomic_draft_changed", send_attempted: false };
+        return { ok: false, error: "raw-send-error-canary", blocked_reason: "raw-send-reason-canary", send_attempted: false };
       }
       assert.equal(await options.beforeDraft(), true);
       return { ok: true, send_attempted: true };
@@ -906,8 +947,8 @@ async function main() {
   await retryableController.runOnce();
   assert.equal(retryableController.status().status, "running", "a proven pre-send failure must not pause all contacts");
   assert.equal(retryableController.status().reply_count, 0);
-  assert.match(retryableController.status().last_error, /atomic_draft_changed/, "the actionable visual block reason must take priority over a generic sender error");
-  assert.doesNotMatch(retryableController.status().last_error, /generic_visual_error/);
+  assert.match(retryableController.status().last_error, /raw-send-reason-canary/, "the actionable visual block reason must take priority over a generic sender error");
+  assert.doesNotMatch(retryableController.status().last_error, /raw-send-error-canary/);
   assert.equal(Object.values(JSON.parse(fs.readFileSync(path.join(retryableDataDir, "auto-reply-state.json"), "utf8")).processed).at(-1).status, "retryable");
   retryableController.pause();
   assert.equal((await retryableController.start()).ok, true);
@@ -918,6 +959,19 @@ async function main() {
   assert.equal(retryableAiCalls, 1, "a send retry must reuse the verified AI result instead of paying to regenerate it");
   assert.equal(retryableController.status().reply_count, 1);
   assert.equal(Object.values(JSON.parse(fs.readFileSync(path.join(retryableDataDir, "auto-reply-state.json"), "utf8")).processed).at(-1).status, "sent_verified");
+  const retryDiagnosticsText = fs.readFileSync(path.join(retryableDataDir, "auto-reply-diagnostics.jsonl"), "utf8");
+  const retryDiagnostics = retryDiagnosticsText.trim().split(/\r?\n/u).map((line) => JSON.parse(line));
+  const retryTraceIds = new Set(retryDiagnostics.filter((entry) => entry.event.startsWith("reply_") && entry.trace_id).map((entry) => entry.trace_id));
+  assert.equal(retryTraceIds.size, 1, "candidate, decision, failed send, waiting and retry must keep one occurrence trace");
+  for (const entry of retryDiagnostics.filter((item) => ["reply_send_started", "reply_send_finished", "reply_retry_enqueued", "reply_retry_waiting"].includes(item.event))) {
+    assert.equal(entry.action, "answer");
+    assert.equal(entry.reason_code, "general_guidance");
+  }
+  assert.deepEqual(retryDiagnostics.filter((entry) => entry.event === "reply_send_started").map((entry) => entry.delivery_attempt), [1, 2]);
+  assert.deepEqual(retryDiagnostics.filter((entry) => entry.event === "reply_send_finished").map((entry) => entry.delivery_attempt), [1, 2]);
+  const unknownSendDiagnostic = retryDiagnostics.find((entry) => entry.event === "reply_send_finished" && entry.code === "unknown_send_reason");
+  assert.match(unknownSendDiagnostic.reason_ref, /^[a-f0-9]{12}$/u);
+  assert.doesNotMatch(retryDiagnosticsText, /raw-send-error-canary|raw-send-reason-canary/, "raw sender errors and unknown reasons must not enter diagnostics");
   retryableController.pause();
 
   const userIdleRecoveryCandidate = {
@@ -1418,11 +1472,11 @@ async function main() {
       conversation: "visual-contact-canary",
       message: "visual-message-canary",
       context: [{ role: "user", content: "visual-context-canary", key: "visual-key-canary" }],
-      transitionDetail: "current_identity_invalid",
+      transitionDetail: { reason: "current_identity_invalid", detail: "nested-diagnostic-canary", action: "unresolved", phase: "scan" },
       nestedReason: "conversation_title_unresolved",
       window: { x: -1200, y: 0, width: 1100, height: 700, title: "window-title-canary", key: "window-key-canary" },
       DPI: 120,
-      counts: { bubble_count: 3, ocr_rows: 8, message_text: "count-message-canary", runtime_key: "count-key-canary" }
+      counts: { bubble_count: 3, ocr_rows: 8, romanized_contact_canary: 1, message_text: "count-message-canary", runtime_key: "count-key-canary" }
     }),
     verifyIncoming: () => ({ ok: true }),
     send: async () => ({ ok: true }),
@@ -1437,12 +1491,12 @@ async function main() {
   assert.equal(visualDiagnosticController.status().last_scan_reason, "visual_sidebar_match_ambiguous", "known visual scan failures must remain actionable");
   const visualDiagnosticLog = fs.readFileSync(path.join(visualDiagnosticDir, "auto-reply-diagnostics.jsonl"), "utf8");
   assert.match(visualDiagnosticLog, /"code":"visual_sidebar_match_ambiguous"/);
-  assert.match(visualDiagnosticLog, /"transitionDetail":"current_identity_invalid"/);
+  assert.match(visualDiagnosticLog, /"transitionDetail":\{"reason":"current_identity_invalid","action":"unresolved","phase":"scan"\}/);
   assert.match(visualDiagnosticLog, /"nestedReason":"conversation_title_unresolved"/);
   assert.match(visualDiagnosticLog, /"window":\{"x":-1200,"y":0,"width":1100,"height":700\}/);
   assert.match(visualDiagnosticLog, /"DPI":120/);
   assert.match(visualDiagnosticLog, /"counts":\{"bubble_count":3,"ocr_rows":8\}/);
-  assert.doesNotMatch(visualDiagnosticLog, /visual-contact-canary|visual-message-canary|visual-context-canary|visual-key-canary|window-title-canary|window-key-canary|count-message-canary|count-key-canary/, "visual scan diagnostics must preserve only structured content-free fields");
+  assert.doesNotMatch(visualDiagnosticLog, /visual-contact-canary|visual-message-canary|visual-context-canary|visual-key-canary|window-title-canary|window-key-canary|count-message-canary|count-key-canary|nested-diagnostic-canary|romanized_contact_canary/, "visual scan diagnostics must preserve only structured content-free fields");
   visualDiagnosticController.pause();
 
   const transientFenceDir = path.join(root, "scan_transient_fences");
@@ -3089,7 +3143,7 @@ async function main() {
     deepSeekClient: {
       assertAvailable: () => true,
       reply: async () => {
-        const error = new Error("secret-bearing upstream response must not be exposed");
+        const error = new Error("secret-bearing upstream response with sk-trace-key-canary must not be exposed");
         error.code = "API_KEY_INVALID";
         throw error;
       }
@@ -3132,6 +3186,16 @@ async function main() {
     message: "DeepSeek API Key 无效或已失效，请检查后重新启动。"
   });
   assert.doesNotMatch(JSON.stringify(aiConfigFailureController.status()), /secret-bearing upstream/);
+  const aiFailureDiagnosticText = fs.readFileSync(path.join(aiConfigFailureDir, "auto-reply-diagnostics.jsonl"), "utf8");
+  const aiFailureDiagnostics = aiFailureDiagnosticText.trim().split(/\r?\n/u).map((line) => JSON.parse(line));
+  const aiFailureCandidate = aiFailureDiagnostics.find((entry) => entry.event === "reply_candidate_detected");
+  const aiFailureSystemError = aiFailureDiagnostics.find((entry) => entry.event === "system_error");
+  assert.match(aiFailureCandidate.trace_id, /^[a-f0-9]{24}$/u);
+  assert.equal(aiFailureSystemError.trace_id, aiFailureCandidate.trace_id);
+  assert.equal(aiFailureSystemError.error_code, "API_KEY_INVALID");
+  assert.equal(Number.isSafeInteger(aiFailureSystemError.duration_ms) && aiFailureSystemError.duration_ms >= 0, true);
+  assert.equal(aiFailureDiagnostics.some((entry) => entry.trace_id === aiFailureCandidate.trace_id && entry.event === "reply_send_started"), false);
+  assert.doesNotMatch(aiFailureDiagnosticText, /secret-bearing upstream|想了解清洁设备|张总|ai-failure-retry-1|trace-key-canary/);
 
   const rateCases = [
     {

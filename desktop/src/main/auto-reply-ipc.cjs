@@ -166,6 +166,106 @@ const KNOWN_SCAN_REASONS = new Set([
   "whitelist_name_ambiguous",
   "conversation_title_unresolved"
 ]);
+const KNOWN_SEND_DIAGNOSTIC_REASONS = new Set([
+  "atomic_draft_changed",
+  "atomic_send_not_verified",
+  "batch_authorization_missing",
+  "batch_cancelled",
+  "contact_or_message_missing",
+  "contact_snapshot_changed",
+  "conversation_mismatch",
+  "conversation_not_verified",
+  "conversation_token_missing",
+  "draft_not_sent",
+  "incoming_message_changed",
+  "message_bubble_not_new_latest_exact",
+  "message_bubble_verifier_failed",
+  "message_snapshot_unavailable",
+  "outcome_unknown",
+  "personal_wechat_main_window_not_found",
+  "real_send_already_attempted",
+  "real_send_explicit_allow_missing",
+  "real_send_final_confirmation_missing",
+  "real_send_gate_failed",
+  "real_send_not_armed",
+  "real_send_not_clicked",
+  "real_send_session_changed",
+  "real_send_session_not_verified",
+  "send_driver_exception",
+  "send_gate_not_passed",
+  "send_not_attempted",
+  "send_outcome_unknown",
+  "visual_send_before_send_failed",
+  "visual_send_button_not_owned",
+  "visual_send_button_not_unique",
+  "visual_send_cancelled",
+  "visual_send_context_invalid",
+  "visual_send_conversation_ambiguous",
+  "visual_send_conversation_different",
+  "visual_send_conversation_not_bound",
+  "visual_send_conversation_unresolved",
+  "visual_send_cursor_not_verified",
+  "visual_send_draft_input_failed",
+  "visual_send_draft_not_verified",
+  "visual_send_driver_exception",
+  "visual_send_external_input_detected",
+  "visual_send_header_ocr_unresolved",
+  "visual_send_incoming_changed",
+  "visual_send_message_driven_disallowed",
+  "visual_send_not_verified",
+  "visual_send_outcome_unknown",
+  "visual_send_phase_invalid",
+  "visual_send_sidebar_contact_ambiguous",
+  "visual_send_sidebar_contact_not_selected",
+  "visual_send_sidebar_contact_unresolved",
+  "visual_send_sidebar_ocr_unresolved",
+  "visual_send_window_geometry_invalid",
+  "visual_send_window_identity_mismatch",
+  "visual_send_window_not_foreground",
+  "visual_send_window_not_visible",
+  "wechat_account_changed",
+  "wechat_account_identity_missing",
+  "wechat_account_not_verified",
+  "wechat_external_input_detected",
+  "wechat_input_lease_unavailable",
+  "wechat_user_active",
+  "wechat_window_identity_mismatch",
+  "wechat_window_inspection_failed",
+  "wechat_window_not_foreground",
+  "wechat_window_not_ready",
+  "wechat_window_preflight_failed"
+]);
+const STRUCTURED_SCAN_DETAIL_CODES = new Set([
+  ...KNOWN_SCAN_REASONS,
+  "boundary",
+  "candidate",
+  "current_identity_invalid",
+  "current_message_identity_invalid",
+  "first_frame_identity_invalid",
+  "first_frame_invalid",
+  "latest_role_unresolved",
+  "message_evidence_invalid",
+  "none",
+  "prime",
+  "scan",
+  "second_frame_invalid",
+  "second_frame_unstable",
+  "settle",
+  "uia",
+  "unresolved",
+  "visual"
+]);
+const STRUCTURED_SCAN_COUNT_FIELDS = new Set([
+  "bubble_count",
+  "component_count",
+  "conversation_candidate_count",
+  "header_candidate_count",
+  "match_count",
+  "ocr_rows",
+  "sidebar_row_count",
+  "unread_count",
+  "visible_row_count"
+]);
 const consumedClickTokens = new Set();
 const SYSTEM_IDS = new Set([
   "filehelper",
@@ -321,6 +421,15 @@ function diagnosticCode(value, fallback = "unknown") {
   return /^[a-z0-9][a-z0-9_.:-]{0,80}$/.test(code) ? code : fallback;
 }
 
+function sendDiagnosticReason(value) {
+  const raw = normalizeText(value).toLowerCase();
+  if (KNOWN_SEND_DIAGNOSTIC_REASONS.has(raw)) return { code: raw, ref: "" };
+  return {
+    code: "unknown_send_reason",
+    ref: crypto.createHash("sha256").update(raw || "missing_send_reason").digest("hex").slice(0, 12)
+  };
+}
+
 function normalizeAiWarningCode(value) {
   const code = String(value || "").trim().toUpperCase();
   return /^[A-Z][A-Z0-9_]{0,63}$/u.test(code) ? code : "";
@@ -386,20 +495,23 @@ function sanitizeStructuredScanDiagnostics(value) {
   const sanitizeCounts = (rawCounts) => {
     if (!rawCounts || typeof rawCounts !== "object" || Array.isArray(rawCounts)) return null;
     const counts = {};
-    for (const [field, rawCount] of Object.entries(rawCounts).slice(0, 50)) {
-      if (!/^[a-z][a-z0-9_]{0,63}$/iu.test(field) || /(?:message|text|content|key|title)/iu.test(field)) continue;
+    for (const [field, rawCount] of Object.entries(rawCounts)) {
+      if (!STRUCTURED_SCAN_COUNT_FIELDS.has(field)) continue;
       const count = Number(rawCount);
       if (Number.isSafeInteger(count) && count >= 0 && count <= 10_000_000) counts[field] = count;
     }
     return Object.keys(counts).length ? counts : null;
   };
   const sanitizeDetail = (rawDetail, depth = 0) => {
-    if (typeof rawDetail === "string") return diagnosticCode(rawDetail, "") || null;
+    if (typeof rawDetail === "string") {
+      const code = diagnosticCode(rawDetail, "");
+      return STRUCTURED_SCAN_DETAIL_CODES.has(code) ? code : null;
+    }
     if (!rawDetail || typeof rawDetail !== "object" || Array.isArray(rawDetail) || depth > 2) return null;
     const detail = {};
     for (const field of ["reason", "detail", "action", "phase"]) {
       const code = diagnosticCode(rawDetail[field], "");
-      if (code) detail[field] = code;
+      if (STRUCTURED_SCAN_DETAIL_CODES.has(code)) detail[field] = code;
     }
     const childReason = sanitizeDetail(rawDetail.nestedReason, depth + 1);
     if (childReason) detail.nestedReason = childReason;
@@ -1074,6 +1186,7 @@ function createAutoReplyController(options = {}) {
   const stateFile = path.join(dataDir, "auto-reply-state.json");
   const diagnosticLogFile = path.join(dataDir, "auto-reply-diagnostics.jsonl");
   const diagnosticRunId = crypto.randomBytes(8).toString("hex");
+  const diagnosticTraceSecret = crypto.randomBytes(32);
   const coordinator = options.coordinator;
   const deepSeekClient = options.deepSeekClient;
   const expertStore = options.expertStore;
@@ -1207,6 +1320,12 @@ function createAutoReplyController(options = {}) {
     }
   }
 
+  function occurrenceTraceId(fingerprint) {
+    const occurrence = normalizeText(fingerprint);
+    if (!occurrence) return "";
+    return crypto.createHmac("sha256", diagnosticTraceSecret).update(occurrence).digest("hex").slice(0, 24);
+  }
+
   function appendDiagnostic(event, details = {}) {
     const phase = diagnosticCode(details.phase, "runtime");
     const code = diagnosticCode(details.code || state.last_scan_reason, "");
@@ -1222,6 +1341,14 @@ function createAutoReplyController(options = {}) {
       consecutive_scan_failures: Math.max(0, Math.floor(Number(state.consecutive_scan_failures) || 0))
     };
     if (code) entry.code = code;
+    const traceId = String(details.trace_id || details.traceId || "").trim().toLowerCase();
+    if (/^[a-f0-9]{24}$/u.test(traceId)) entry.trace_id = traceId;
+    const action = normalizeText(details.action).toLowerCase();
+    if (AUTO_REPLY_ACTIONS.has(action)) entry.action = action;
+    const reasonCode = normalizeText(details.reason_code || details.reasonCode).toLowerCase();
+    if (AUTO_REPLY_REASON_CODES.has(reasonCode)) entry.reason_code = reasonCode;
+    const errorCode = normalizeAiWarningCode(details.error_code || details.errorCode);
+    if (errorCode) entry.error_code = errorCode;
     const pid = Math.floor(Number(details.pid));
     if (Number.isSafeInteger(pid) && pid > 0) entry.wechat_pid = pid;
     const windowHandle = String(details.hWnd || "").trim();
@@ -1245,6 +1372,8 @@ function createAutoReplyController(options = {}) {
       const numeric = Math.floor(Number(details[field]));
       if (Number.isSafeInteger(numeric) && numeric >= 0 && numeric <= maximum) entry[field] = numeric;
     }
+    const deliveryAttempt = Math.floor(Number(details.delivery_attempt));
+    if (Number.isSafeInteger(deliveryAttempt) && deliveryAttempt >= 1 && deliveryAttempt <= 100) entry.delivery_attempt = deliveryAttempt;
     if (typeof details.send_attempted === "boolean") entry.send_attempted = details.send_attempted;
     if (typeof details.draft_phase_started === "boolean") entry.draft_phase_started = details.draft_phase_started;
     const sendResult = diagnosticCode(details.send_result, "");
@@ -1927,7 +2056,7 @@ function createAutoReplyController(options = {}) {
     state.last_error = detail ? `${confirmation}（${detail}）` : confirmation;
   }
 
-  function pauseForSystemError(error) {
+  function pauseForSystemError(error, { traceId = "", durationMs } = {}) {
     const failure = sanitizeSystemError(error);
     state.status = "paused";
     state.last_event = "system_error_paused";
@@ -1943,6 +2072,9 @@ function createAutoReplyController(options = {}) {
     appendDiagnostic("system_error", {
       phase: "generate",
       code: failure.code,
+      traceId,
+      errorCode: failure.code,
+      duration_ms: durationMs,
       send_attempted: false,
       send_result: "not_attempted",
       recovery_action: "fix_ai_and_restart"
@@ -2358,6 +2490,15 @@ function createAutoReplyController(options = {}) {
         }
       }
 
+      const traceId = occurrenceTraceId(fingerprint);
+      appendDiagnostic("reply_candidate_detected", {
+        phase: "candidate",
+        code: "candidate_accepted",
+        traceId,
+        context_turn_count: context.length,
+        user_turn_count: context.filter((item) => item.role === "user").length,
+        assistant_turn_count: context.filter((item) => item.role === "assistant").length
+      });
       const retryEntry = retryGenerations.get(fingerprint);
       if (retryEntry?.pollsRemaining > 0) {
         retryEntry.pollsRemaining -= 1;
@@ -2375,9 +2516,17 @@ function createAutoReplyController(options = {}) {
             });
           }
           state.last_error = previousFailure?.code === USER_IDLE_WAIT_REASON ? "" : "回复尚未发出，正在退避后重试";
+          const previousDiagnosticReason = previousFailure
+            ? sendDiagnosticReason(previousFailure.code)
+            : { code: "send_retry_waiting", ref: "" };
           appendDiagnostic("reply_retry_waiting", {
             phase: "send",
-            code: previousFailure?.code || "send_retry_waiting",
+            code: previousDiagnosticReason.code,
+            reasonRef: previousDiagnosticReason.ref,
+            traceId,
+            action: retryEntry.generated?.action,
+            reasonCode: retryEntry.generated?.reasonCode,
+            delivery_attempt: Number(retryEntry.attempts || 0) + 1,
             send_attempted: previousFailure?.send_attempted,
             send_result: previousFailure?.send_result,
             draft_phase_started: previousFailure?.draft_phase_started,
@@ -2399,30 +2548,40 @@ function createAutoReplyController(options = {}) {
       save();
       let generated = retryEntry?.generated;
       const clarificationAllowed = contactState(contact.id).clarify_pending !== true;
+      let generationStartedAt = null;
       try {
         if (!generated) {
+          generationStartedAt = Date.now();
           const expert = expertDocuments(expertStore);
           coordinator.update(lock.lock.owner, "generate-reply");
           appendDiagnostic("reply_generation_started", {
             phase: "generate",
             code: "context_ready",
+            traceId,
             context_turn_count: context.length,
             user_turn_count: context.filter((item) => item.role === "user").length,
             assistant_turn_count: context.filter((item) => item.role === "assistant").length
           });
-          const generationStartedAt = Date.now();
           generated = await deepSeekClient.reply({ context, expert, clarificationAllowed });
-          appendDiagnostic("reply_generation_finished", {
+        }
+        generated = normalizeAutoReplyDecision(generated, { clarificationAllowed });
+        if (generationStartedAt !== null) {
+          appendDiagnostic("reply_decision", {
             phase: "generate",
             code: "reply_ready",
+            traceId,
+            action: generated.action,
+            reasonCode: generated.reasonCode,
             duration_ms: Date.now() - generationStartedAt
           });
         }
-        generated = normalizeAutoReplyDecision(generated, { clarificationAllowed });
       } catch (error) {
         if (isCurrentRun()) {
           state.processed[fingerprint].status = "generating";
-          pauseForSystemError(error);
+          pauseForSystemError(error, {
+            traceId,
+            durationMs: generationStartedAt === null ? undefined : Date.now() - generationStartedAt
+          });
           saveBestEffort();
         }
         return publicState();
@@ -2436,6 +2595,15 @@ function createAutoReplyController(options = {}) {
       }
       const reply = normalizeText(generated?.reply);
       if (generated.action === "silent") {
+        appendDiagnostic("reply_send_skipped", {
+          phase: "send",
+          code: "no_reply_needed",
+          traceId,
+          action: generated.action,
+          reasonCode: generated.reasonCode,
+          send_attempted: false,
+          send_result: "not_attempted"
+        });
         retryGenerations.delete(fingerprint);
         state.processed[fingerprint].status = "silent";
         if (generated.reasonCode === "no_reply_needed") updateContactState(contact.id, { clarify_pending: false });
@@ -2487,10 +2655,15 @@ function createAutoReplyController(options = {}) {
         return draftPhaseStarted && !isVisualCandidate ? verifyCurrent() : true;
       };
       coordinator.update(lock.lock.owner, "send-reply");
+      const deliveryAttempt = Math.min(100, Math.max(1, Number(retryEntry?.attempts || 0) + 1));
       const sendStartedAt = Date.now();
       appendDiagnostic("reply_send_started", {
         phase: "send",
         code: isVisualCandidate ? "visual_send_started" : "send_started",
+        traceId,
+        action: generated.action,
+        reasonCode: generated.reasonCode,
+        delivery_attempt: deliveryAttempt,
         pid: candidate.pid,
         hWnd: candidate.hWnd
       });
@@ -2519,11 +2692,17 @@ function createAutoReplyController(options = {}) {
         runStep: (command, args) => runStep(command, args, lock.lock.owner)
       });
       const sendTimings = result?.send_diagnostics?.timings || {};
+      const sendDiagnostic = result?.ok === true
+        ? { code: "sent_verified", ref: "" }
+        : sendDiagnosticReason(result?.blocked_reason);
       appendDiagnostic("reply_send_finished", {
         phase: "send",
-        code: result?.ok === true
-          ? "sent_verified"
-          : normalizeText(result?.blocked_reason || result?.error) || "send_failed",
+        code: sendDiagnostic.code,
+        reasonRef: sendDiagnostic.ref,
+        traceId,
+        action: generated.action,
+        reasonCode: generated.reasonCode,
+        delivery_attempt: deliveryAttempt,
         duration_ms: Date.now() - sendStartedAt,
         send_phase: result?.send_diagnostics?.phase || "",
         verification_mode: result?.verification_mode || "",
@@ -2615,7 +2794,12 @@ function createAutoReplyController(options = {}) {
             });
             appendDiagnostic("reply_manual_review_required", {
               phase: "send",
-              code: sendCode,
+              code: sendDiagnostic.code,
+              reasonRef: sendDiagnostic.ref,
+              traceId,
+              action: generated.action,
+              reasonCode: generated.reasonCode,
+              delivery_attempt: deliveryAttempt,
               send_phase: sendDiagnostics.phase,
               send_attempted: false,
               send_result: result?.send_result,
@@ -2655,7 +2839,12 @@ function createAutoReplyController(options = {}) {
               state.last_error = waitingForUserIdle ? "" : `本次回复尚未发出，将自动重试：${sendCode}`;
               appendDiagnostic("reply_retry_enqueued", {
                 phase: "send",
-                code: sendCode,
+                code: sendDiagnostic.code,
+                reasonRef: sendDiagnostic.ref,
+                traceId,
+                action: generated.action,
+                reasonCode: generated.reasonCode,
+                delivery_attempt: deliveryAttempt,
                 send_phase: sendDiagnostics.phase,
                 send_attempted: false,
                 send_result: result?.send_result,
