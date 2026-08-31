@@ -420,6 +420,47 @@ async function main() {
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, "answer_not_attempted", "auto-reply-state.json"), "utf8")).contact_states.c1.clarify_pending, true, "a proven-unsent answer must not clear the earlier clarification boundary");
   unsentAnswerController.pause();
 
+  let manualHandoffCalls = 0;
+  const manualHandoffDir = path.join(root, "handoff_draft_manual_review");
+  const manualHandoffController = createAutoReplyController({
+    dataDir: manualHandoffDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: readyExpert(),
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => handoffDecision("收到，员工会继续处理正式报价。")
+    },
+    scanIncoming: () => ({
+      ok: true,
+      conversation: "张总",
+      message: "请人工给我正式报价",
+      runtimeId: "manual-handoff-draft-1",
+      pid: 81,
+      hWnd: "91",
+      context: [{ role: "user", content: "请人工给我正式报价", key: "manual-handoff-draft-1" }]
+    }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      return { ok: false, blocked_reason: "atomic_draft_changed", send_attempted: false, send_result: "not_attempted" };
+    },
+    sendHandoff: async () => { manualHandoffCalls += 1; return { ok: true, send_attempted: true }; },
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await manualHandoffController.start()).ok, true);
+  await manualHandoffController.runOnce();
+  const manualHandoffState = JSON.parse(fs.readFileSync(path.join(manualHandoffDir, "auto-reply-state.json"), "utf8"));
+  assert.deepEqual(manualHandoffState.contact_states.c1, { clarify_pending: false, human_owned: true });
+  assert.equal(manualHandoffState.manual_followups.length, 1, "a handoff draft that needs manual review must keep an employee followup task");
+  assert.equal(manualHandoffState.pending_handoffs.length, 0);
+  assert.equal(manualHandoffCalls, 0, "the employee handoff bridge must not send after the customer draft becomes uncertain");
+  assert.deepEqual(manualHandoffController.status().held_contacts.map((item) => item.id), ["c1"]);
+  manualHandoffController.pause();
+
   let invalidMatrixSends = 0;
   let invalidMatrixHandoffs = 0;
   const invalidMatrixController = createAutoReplyController({
@@ -3083,6 +3124,54 @@ async function main() {
   assert.equal(JSON.parse(fs.readFileSync(path.join(pauseDuringHandoffDir, "auto-reply-state.json"), "utf8")).pending_handoff, null);
   pauseDuringHandoffController.pause();
 
+  const resumeDuringHandoffDir = path.join(root, "resume_during_handoff");
+  let resolveResumedHandoff;
+  let markResumedHandoffStarted;
+  const resumedHandoffStarted = new Promise((resolve) => { markResumedHandoffStarted = resolve; });
+  const resumedHandoffResult = new Promise((resolve) => { resolveResumedHandoff = resolve; });
+  const resumeDuringHandoffController = createAutoReplyController({
+    dataDir: resumeDuringHandoffDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: readyExpert(),
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => handoffDecision("收到，员工会继续处理正式报价。")
+    },
+    scanIncoming: () => ({
+      ok: true,
+      conversation: "张总",
+      message: "请人工给我正式报价",
+      runtimeId: "resume-during-handoff-1",
+      pid: 81,
+      hWnd: "91",
+      context: [{ role: "user", content: "请人工给我正式报价", key: "resume-during-handoff-1" }]
+    }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => (await options.beforeDraft()) ? { ok: true, send_attempted: true } : { ok: false },
+    sendHandoff: async () => {
+      markResumedHandoffStarted();
+      return resumedHandoffResult;
+    },
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await resumeDuringHandoffController.start()).ok, true);
+  const resumeDuringHandoffRun = resumeDuringHandoffController.runOnce();
+  await resumedHandoffStarted;
+  assert.equal(resumeDuringHandoffController.resumeContact("c1").ok, true);
+  resolveResumedHandoff({ ok: true, send_attempted: true });
+  await assert.doesNotReject(resumeDuringHandoffRun);
+  const resumedDuringHandoffState = JSON.parse(fs.readFileSync(path.join(resumeDuringHandoffDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(resumedDuringHandoffState.contact_states.c1, undefined);
+  assert.equal(resumedDuringHandoffState.pending_handoff, null);
+  assert.equal(resumedDuringHandoffState.pending_handoffs.length, 0);
+  assert.equal(resumedDuringHandoffState.manual_followups.length, 0);
+  assert.equal(resumeDuringHandoffController.status().held_contacts.some((item) => item.id === "c1"), false);
+  resumeDuringHandoffController.pause();
+
   const unknownDataDir = path.join(root, "unknown_handoff");
   const unknownController = createAutoReplyController({
     dataDir: unknownDataDir,
@@ -3421,12 +3510,14 @@ async function main() {
   const interruptedSendDir = path.join(root, "interrupted_send_recovery");
   fs.mkdirSync(interruptedSendDir, { recursive: true });
   fs.writeFileSync(path.join(interruptedSendDir, "auto-reply-state.json"), JSON.stringify({
-    version: 2,
+    version: 4,
     status: "paused",
     daily_date: "2026-07-14",
     processed: {
-      interrupted: { status: "sending", contact_id: "c1", at: "2026-07-14T02:00:00.000Z" },
-      verified: { status: "sent_verified", contact_id: "c2", at: "2026-07-14T01:00:00.000Z" }
+      interrupted: { status: "sending", action: "clarify", contact_id: "c1", at: "2026-07-14T02:00:00.000Z" },
+      interrupted_handoff: { status: "sending", action: "handoff", contact_id: "c2", conversation: "李经理", at: "2026-07-14T02:01:00.000Z" },
+      legacy_interrupted: { status: "sending", contact_id: "dup-1", conversation: "客户甲", at: "2026-07-14T02:02:00.000Z" },
+      verified: { status: "sent_verified", contact_id: "dup-2", at: "2026-07-14T01:00:00.000Z" }
     },
     last_event: "paused_by_user",
     last_error: ""
@@ -3442,10 +3533,17 @@ async function main() {
   assert.match(interruptedSendRecovery.status().last_error, /发送结果无法确认/);
   const interruptedSendState = JSON.parse(fs.readFileSync(path.join(interruptedSendDir, "auto-reply-state.json"), "utf8"));
   assert.equal(interruptedSendState.processed.interrupted.status, "outcome_unknown", "a persisted sending attempt must not remain a silent terminal state after restart");
+  assert.equal(interruptedSendState.processed.interrupted_handoff.status, "outcome_unknown");
+  assert.equal(interruptedSendState.processed.legacy_interrupted.status, "outcome_unknown");
   assert.equal(interruptedSendState.processed.verified.status, "sent_verified", "restart recovery must not rewrite completed sends");
   assert.equal(interruptedSendState.reply_guards.c1.delivery_status, "outcome_unknown", "an interrupted send must recover a persistent occurrence fence");
   assert.equal(interruptedSendState.reply_guards.c1.turn_state, "awaiting_outgoing_observation");
-  assert.equal(interruptedSendState.reply_guards.c2, undefined, "an unrelated historical sent_verified entry without occurrence evidence must not migrate into a blocking contact fence");
+  assert.equal(interruptedSendState.reply_guards["dup-2"], undefined, "an unrelated historical sent_verified entry without occurrence evidence must not migrate into a blocking contact fence");
+  assert.deepEqual(interruptedSendState.contact_states.c1, { clarify_pending: true, human_owned: false }, "a possibly-sent clarification must remain consumed after restart");
+  assert.deepEqual(interruptedSendState.contact_states.c2, { clarify_pending: false, human_owned: true }, "a possibly-sent handoff must keep that customer under employee ownership after restart");
+  assert.deepEqual(interruptedSendState.contact_states["dup-1"], { clarify_pending: false, human_owned: true }, "a legacy v4 send without action must recover conservatively under employee ownership");
+  assert.equal(interruptedSendState.manual_followups.length, 2, "interrupted and legacy-unknown handoffs must remain visible as employee followups after restart");
+  assert.deepEqual(interruptedSendState.manual_followups.map((item) => [item.contact_id, item.conversation]), [["c2", "李经理"], ["dup-1", "客户甲"]]);
 
   const legacyRawGuardDir = path.join(root, "legacy_raw_sent_guard");
   fs.mkdirSync(legacyRawGuardDir, { recursive: true });
@@ -3660,7 +3758,25 @@ async function main() {
   assert.equal(arbitraryDiscoveryController.status().last_event, "conversation_not_eligible");
   arbitraryDiscoveryController.pause();
 
-  let messageDrivenSend;
+  const messageDrivenCandidates = [
+    {
+      conversationEvidence: "visual-unread-row:128",
+      message: "New customer message",
+      runtimeId: `visual:v2:${"d".repeat(64)}`,
+      messageSignature: "e".repeat(64),
+      pid: 81,
+      hWnd: "91"
+    },
+    {
+      conversationEvidence: "visual-unread-row:256",
+      message: "Another customer message",
+      runtimeId: `visual:v2:${"f".repeat(64)}`,
+      messageSignature: "a".repeat(64),
+      pid: 82,
+      hWnd: "92"
+    }
+  ];
+  const messageDrivenSends = [];
   const messageDrivenController = createAutoReplyController({
     dataDir: path.join(root, "message_driven_unread"),
     activeTouchDir,
@@ -3670,23 +3786,26 @@ async function main() {
       assertAvailable: () => true,
       reply: async () => (answerDecision("Message-driven reply."))
     },
-    scanIncoming: () => ({
-      ok: true,
-      conversation: "OCR title far from the contact name",
-      conversationEvidence: "visual-unread-row:128",
-      messageDriven: true,
-      source: "unread_badge",
-      message: "New customer message",
-      runtimeId: `visual:v2:${"d".repeat(64)}`,
-      messageSignature: "e".repeat(64),
-      visualMode: "visual_render_v1",
-      pid: 81,
-      hWnd: "91",
-      context: [{ role: "user", content: "New customer message", key: `visual:v2:${"d".repeat(64)}` }]
-    }),
+    scanIncoming: () => {
+      const candidate = messageDrivenCandidates.shift();
+      return candidate ? {
+        ok: true,
+        conversation: "OCR title far from the contact name",
+        conversationEvidence: candidate.conversationEvidence,
+        messageDriven: true,
+        source: "unread_badge",
+        message: candidate.message,
+        runtimeId: candidate.runtimeId,
+        messageSignature: candidate.messageSignature,
+        visualMode: "visual_render_v1",
+        pid: candidate.pid,
+        hWnd: candidate.hWnd,
+        context: [{ role: "user", content: candidate.message, key: candidate.runtimeId }]
+      } : { ok: false, reason: "no_unread_message" };
+    },
     verifyIncoming: () => ({ ok: true }),
     send: async (options) => {
-      messageDrivenSend = options;
+      messageDrivenSends.push(options);
       assert.equal(options.messageDriven, true);
       assert.match(options.contactId, /^visual-inbound-/u);
       assert.equal(options.frozenContact.name, "");
@@ -3700,8 +3819,11 @@ async function main() {
   });
   assert.equal((await messageDrivenController.start()).ok, true);
   await messageDrivenController.runOnce();
-  assert.equal(messageDrivenSend?.expectedConversation, "OCR title far from the contact name");
-  assert.equal(messageDrivenController.status().reply_count, 1, "a red-dot incoming message must not require contact-name authorization");
+  await messageDrivenController.runOnce();
+  assert.equal(messageDrivenSends[0]?.expectedConversation, "OCR title far from the contact name");
+  assert.equal(messageDrivenSends.length, 2, "each distinct red-dot message must remain replyable");
+  assert.equal(new Set(messageDrivenSends.map((item) => item.contactId)).size, 1, "transient visual evidence must not split one conversation into multiple customer states");
+  assert.equal(messageDrivenController.status().reply_count, 2, "a red-dot incoming message must not require contact-name authorization");
   messageDrivenController.pause();
 
   const strictScopeCandidates = [

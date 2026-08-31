@@ -734,14 +734,28 @@ function createDefaultState() {
 function recoverInterruptedProcessedSends(processed) {
   const entries = processed && typeof processed === "object" && !Array.isArray(processed) ? processed : {};
   let recovered = false;
+  const recoveredDecisions = [];
   const result = Object.fromEntries(Object.entries(entries).map(([key, value]) => {
     if (!value || typeof value !== "object" || Array.isArray(value) || normalizeText(value.status) !== "sending") {
       return [key, value];
     }
     recovered = true;
+    const contactId = normalizeText(value.contact_id);
+    const action = normalizeText(value.action);
+    if (contactId) {
+      recoveredDecisions.push({
+        fingerprint: key,
+        contactId,
+        // Older v4 state did not persist the decision. Keep that contact under
+        // manual control until the operator checks the unknown send outcome.
+        action: ["clarify", "handoff"].includes(action) ? action : "unknown",
+        conversation: normalizeText(value.conversation).slice(0, 200),
+        at: normalizeText(value.at)
+      });
+    }
     return [key, { ...value, status: "outcome_unknown" }];
   }));
-  return { processed: result, recovered };
+  return { processed: result, recovered, recoveredDecisions };
 }
 
 function normalizeReplyGuard(value) {
@@ -821,6 +835,13 @@ function migrateState(raw, current) {
         human_owned: value?.human_owned === true
       }])
       .filter(([contactId, value]) => contactId && (value.clarify_pending || value.human_owned)));
+    for (const { contactId, action } of processedRecovery.recoveredDecisions) {
+      const previous = next.contact_states[contactId] || { clarify_pending: false, human_owned: false };
+      next.contact_states[contactId] = ["handoff", "unknown"].includes(action)
+        ? { clarify_pending: false, human_owned: true }
+        : { ...previous, clarify_pending: true };
+    }
+    next.contact_states = Object.fromEntries(Object.entries(next.contact_states).slice(-MAX_STATE_ENTRIES));
     next.handoff_notified = raw.handoff_notified && typeof raw.handoff_notified === "object" ? raw.handoff_notified : {};
     next.manual_followups = Array.isArray(raw.manual_followups)
       ? raw.manual_followups
@@ -828,6 +849,20 @@ function migrateState(raw, current) {
         .slice(0, MAX_STATE_ENTRIES)
         .map((item) => ({ ...item, key: pendingHandoffKey(item), delivery_state: "manual_required" }))
       : [];
+    for (const recovered of processedRecovery.recoveredDecisions.filter((item) => ["handoff", "unknown"].includes(item.action))) {
+      const metadata = {
+        key: crypto.createHash("sha256").update(`recovered-${recovered.action}\n${recovered.fingerprint}`).digest("hex"),
+        contact_id: recovered.contactId,
+        conversation: recovered.conversation,
+        at: recovered.at || current.toISOString(),
+        delivery_state: "manual_required"
+      };
+      if (!next.handoff_notified[metadata.key]
+        && !next.manual_followups.some((item) => pendingHandoffKey(item) === metadata.key)) {
+        next.manual_followups.push(metadata);
+      }
+    }
+    next.manual_followups = next.manual_followups.slice(-MAX_STATE_ENTRIES);
     const pendingHandoffs = Array.isArray(raw.pending_handoffs) && raw.pending_handoffs.length
       ? raw.pending_handoffs
       : raw.pending_handoff && typeof raw.pending_handoff === "object" ? [raw.pending_handoff] : [];
@@ -1086,15 +1121,15 @@ function contactForAutoReplyConversation(contacts, candidate) {
   const entry = contactAliasIndex(contacts, { includeOpaqueWechatId: true }).get(compactConversationAlias(conversation));
   if (entry?.contacts?.length === 1) return entry.contacts[0];
   if (candidate?.messageDriven !== true) return null;
-  const visualIdentity = [
-    normalizeText(candidate?.conversationEvidence) || conversation,
-    String(candidate?.pid || ""),
-    String(candidate?.hWnd || "")
-  ].join("\n");
+  const accountIds = [...new Set((Array.isArray(contacts) ? contacts : [])
+    .map((contact) => normalizeText(contact?.wechatAccountId))
+    .filter(Boolean))];
+  if (accountIds.length !== 1) return null;
+  const visualIdentity = JSON.stringify([accountIds[0], compactConversationAlias(conversation)]);
   const identity = crypto.createHash("sha256").update(visualIdentity).digest("hex").slice(0, 24);
   return {
     id: `visual-inbound-${identity}`,
-    wechatAccountId: `visual-window-${String(candidate?.pid || "unknown")}`,
+    wechatAccountId: accountIds[0],
     name: "",
     remark: "",
     nickname: "",
@@ -1164,6 +1199,13 @@ function handoffReasonLabel(reasonCode) {
     transaction_commitment: "需要处理下单、合同或履约",
     after_sales_action: "需要处理退款、投诉或售后执行"
   }[reasonCode] || "需要人工跟进";
+}
+
+function handoffMetadata({ contactId, context, conversation, at }) {
+  const key = crypto.createHash("sha256")
+    .update(`${contactId}\n${context.map((item) => `${item.role}:${item.key || item.content}`).join("\n")}`)
+    .digest("hex");
+  return { key, contact_id: contactId, conversation, at: at.toISOString() };
 }
 
 function createAutoReplyController(options = {}) {
@@ -2129,6 +2171,7 @@ function createAutoReplyController(options = {}) {
   async function deliverPendingHandoff(lock, isCurrentRun) {
     const payload = pendingHandoffQueue[0];
     if (!state.pending_handoff || !payload) return "none";
+    const handoffKey = payload.metadata.key;
     if (payload.pollsRemaining > 0) {
       payload.pollsRemaining -= 1;
       state.last_event = "handoff_retry_waiting";
@@ -2146,6 +2189,11 @@ function createAutoReplyController(options = {}) {
       expectedPid: payload.expectedPid,
       sourceWindowHandle: payload.sourceWindowHandle
     });
+    if (pendingHandoffQueue[0] !== payload || pendingHandoffKey(state.pending_handoff) !== handoffKey) {
+      handoffConfirmationRequired = handoffNeedsConfirmation(state.pending_handoff);
+      save();
+      return "handled";
+    }
     const currentRun = isCurrentRun();
     if (!result?.ok) {
       if (result?.send_attempted === false) {
@@ -2171,8 +2219,8 @@ function createAutoReplyController(options = {}) {
         save();
         return currentRun ? "retryable" : "handled";
       } else {
-        updateHandoffDeliveryState(payload.metadata.key, "outcome_unknown");
-        const unknown = state.pending_handoff;
+        updateHandoffDeliveryState(handoffKey, "outcome_unknown");
+        const unknown = payload.metadata;
         state.handoff_notified ||= {};
         state.handoff_notified[unknown.key] = {
           contact_id: unknown.contact_id,
@@ -2189,7 +2237,7 @@ function createAutoReplyController(options = {}) {
       save();
       return currentRun && state.status === "running" ? "manual" : "handled";
     }
-    const pending = state.pending_handoff;
+    const pending = payload.metadata;
     state.handoff_notified ||= {};
     state.handoff_notified[pending.key] = {
       contact_id: pending.contact_id,
@@ -2580,6 +2628,10 @@ function createAutoReplyController(options = {}) {
         save();
         return publicState();
       }
+      Object.assign(state.processed[fingerprint], {
+        action: generated.action,
+        reason_code: generated.reasonCode
+      });
       const reply = normalizeText(generated?.reply);
       if (generated.action === "silent") {
         appendDiagnostic("reply_send_skipped", {
@@ -2765,8 +2817,16 @@ function createAutoReplyController(options = {}) {
             retryGenerations.delete(fingerprint);
             state.processed[fingerprint].status = "cancelled";
             clearPendingObservation(candidate);
-            state.last_event = "manual_intervention_required";
-            state.last_error = "";
+            if (generated.action === "handoff") {
+              applyTerminalDecisionState(contact.id, generated.action);
+              const metadata = handoffMetadata({ contactId: contact.id, context: rawContext, conversation, at: now() });
+              if (!state.handoff_notified?.[metadata.key]) addManualFollowup(metadata);
+              state.last_event = "handoff_manual_followup_required";
+              state.last_error = manualFollowupMessage(state.manual_followups);
+            } else {
+              state.last_event = "manual_intervention_required";
+              state.last_error = "";
+            }
             setFailureContext({
               phase: "send",
               code: sendCode,
@@ -2905,11 +2965,9 @@ function createAutoReplyController(options = {}) {
       let handoffCreated = false;
       if (generated.action === "handoff") {
         const reason = handoffReasonLabel(generated.reasonCode);
-        const handoffKey = crypto.createHash("sha256")
-          .update(`${contact.id}\n${rawContext.map((item) => `${item.role}:${item.key || item.content}`).join("\n")}`)
-          .digest("hex");
+        const metadata = handoffMetadata({ contactId: contact.id, context: rawContext, conversation, at: sentAt });
+        const handoffKey = metadata.key;
         if (!state.handoff_notified?.[handoffKey] && !state.manual_followups?.some((item) => pendingHandoffKey(item) === handoffKey)) {
-          const metadata = { key: handoffKey, contact_id: contact.id, conversation, at: sentAt.toISOString() };
           if (contactScope.strict) {
             addManualFollowup(metadata);
             state.last_event = "handoff_manual_followup_required";
