@@ -67,6 +67,24 @@ assert.match(builder, /commercialLicenseConfirmed !== true/);
 assert.match(builder, /verifyPackagedRemotionRuntime\(portableDir, portableManifest\.remotionRuntime\)/);
 assert.match(builder, /verifyReleaseTrustRecord/);
 assert.match(builder, /sourceTrust: releaseTrust/);
+const releaseTrustCall = builder.indexOf("releaseTrust = verifyReleaseTrustRecord({");
+const testReuseCall = builder.indexOf("reusedInstallerOnlyPaths = assertTestPortableReuse(");
+const remotionRuntimeGateCall = builder.indexOf("verifyPackagedRemotionRuntime(portableDir");
+const productDetailRuntimeGateCall = builder.indexOf("verifyProductDetailRuntime({");
+assert.equal(releaseTrustCall >= 0, true, "delivery installer must verify its independent trust record");
+assert.equal(testReuseCall >= 0, true, "test installer must verify portable ancestry and changed paths");
+assert.equal(remotionRuntimeGateCall >= 0, true, "installer must verify the packaged Remotion runtime");
+assert.equal(productDetailRuntimeGateCall >= 0, true, "installer must verify the packaged product-detail runtime");
+assert.equal(
+  releaseTrustCall < remotionRuntimeGateCall && releaseTrustCall < productDetailRuntimeGateCall,
+  true,
+  "delivery trust verification must finish before any packaged runtime is executed"
+);
+assert.equal(
+  testReuseCall < remotionRuntimeGateCall && testReuseCall < productDetailRuntimeGateCall,
+  true,
+  "test portable ancestry and path checks must finish before any packaged runtime is executed"
+);
 assert.match(builder, /artifactType: target\.artifactType/);
 assert.match(builder, /installerBuildCommit/);
 assert.match(builder, /signed: false/);

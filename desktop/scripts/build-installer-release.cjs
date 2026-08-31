@@ -298,12 +298,6 @@ function assertInstallerSource(edition = "delivery", environment = process.env, 
     throw new Error("Installer source lacks the explicit-browser Remotion composition smoke proof");
   }
   assertPortableAppTreeMatchesManifest({ portableManifest, releaseTarget: portableDir });
-  verifyPackagedRemotionRuntime(portableDir, portableManifest.remotionRuntime);
-  verifyProductDetailRuntime({
-    portableManifest,
-    releaseTarget: portableDir,
-    productName: target.productName
-  });
   const portableCommit = String(portableManifest.commit || "").trim();
   let reusedInstallerOnlyPaths = [];
   if (portableCommit !== commit) {
@@ -312,19 +306,25 @@ function assertInstallerSource(edition = "delivery", environment = process.env, 
     }
     reusedInstallerOnlyPaths = assertTestPortableReuse(portableCommit, commit);
   }
-  if (!target.requiresCommercialTrust) {
-    return { commit, portableCommit, portableDir, portableManifest, target, reusedInstallerOnlyPaths, releaseTrust: null };
+  let releaseTrust = null;
+  if (target.requiresCommercialTrust) {
+    if (portableManifest.remotionRuntime?.commercialLicenseConfirmed !== true) {
+      throw new Error("Installer source lacks a confirmed Remotion commercial license basis");
+    }
+    releaseTrust = verifyReleaseTrustRecord({
+      environment,
+      portableManifest,
+      portableManifestSha256: sha256(portableManifestFile),
+      portableTreeSha256: treeSha256(portableDir),
+      product: PRODUCT_NAME,
+      releaseDir
+    });
   }
-  if (portableManifest.remotionRuntime?.commercialLicenseConfirmed !== true) {
-    throw new Error("Installer source lacks a confirmed Remotion commercial license basis");
-  }
-  const releaseTrust = verifyReleaseTrustRecord({
-    environment,
+  verifyPackagedRemotionRuntime(portableDir, portableManifest.remotionRuntime);
+  verifyProductDetailRuntime({
     portableManifest,
-    portableManifestSha256: sha256(portableManifestFile),
-    portableTreeSha256: treeSha256(portableDir),
-    product: PRODUCT_NAME,
-    releaseDir
+    releaseTarget: portableDir,
+    productName: target.productName
   });
   return { commit, portableCommit, portableDir, portableManifest, target, reusedInstallerOnlyPaths, releaseTrust };
 }

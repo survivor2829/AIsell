@@ -182,7 +182,10 @@ async function main() {
 
     const mainSource = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
     assert.match(mainSource, /createProductDetailAiSettingsStore/u);
-    assert.match(mainSource, /getProviderEnvironment: getProductDetailProviderEnvironment/u);
+    assert.match(
+      mainSource,
+      /getProviderEnvironment: productDetailReleaseSmokeMode\s*\? \(\) => \(\{\}\)\s*: getProductDetailProviderEnvironment/u
+    );
     assert.match(mainSource, /DEEPSEEK_API_KEY = deepSeekKeyStore\.read\(\)/u);
     assert.match(mainSource, /REFINE_API_KEY = refine\.apiKey/u);
     assert.match(mainSource, /REFINE_API_BASE_URL = refine\.baseUrl/u);
