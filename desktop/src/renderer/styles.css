@@ -483,7 +483,7 @@ button:focus-visible {
 }
 
 .ai-expert-card {
-  width: min(900px, 100%);
+  width: min(980px, 100%);
 }
 
 .ai-expert-card-head {
@@ -494,6 +494,44 @@ button:focus-visible {
   gap: 20px;
   padding: 22px 24px;
   border-bottom: 1px solid #eef0f4;
+}
+
+.ai-expert-overview > div {
+  min-width: 0;
+}
+
+.ai-expert-overview > div > strong {
+  color: #111827;
+  font-size: 18px;
+}
+
+.ai-expert-overview p {
+  margin: 7px 0 0;
+  color: #667085;
+  font-size: 13px;
+}
+
+.ai-expert-document-list {
+  display: grid;
+  padding: 0 24px;
+}
+
+.ai-expert-document-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(300px, 1.25fr) minmax(260px, 0.85fr) auto;
+  align-items: center;
+  gap: 20px;
+  padding: 22px 0;
+  border-bottom: 1px solid #eef0f4;
+}
+
+.ai-expert-document-head {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
 }
 
 .ai-expert-file {
@@ -550,9 +588,9 @@ button:focus-visible {
 
 .ai-expert-details {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 16px;
-  padding: 22px 24px;
+  align-content: start;
 }
 
 .ai-expert-details > div {
@@ -573,13 +611,28 @@ button:focus-visible {
   font-size: 14px;
 }
 
+.ai-expert-document-file-name {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.45;
+}
+
 .ai-expert-actions {
   justify-content: flex-end;
-  padding: 0 24px 24px;
+  padding: 0;
 }
 
 .ai-expert-error {
   margin: 0 24px 20px;
+}
+
+.ai-expert-footnote {
+  margin: 0;
+  padding: 0 24px 22px;
+  color: #8a8f99;
+  font-size: 12px;
 }
 
 .status-strip.auto-reply-status {
@@ -2235,5 +2288,13 @@ td .text-button {
   .auto-reply-test-scope-controls select,
   .auto-reply-test-scope-controls .primary-button {
     width: 100%;
+  }
+
+  .ai-expert-document-row {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-expert-actions {
+    justify-content: flex-start;
   }
 }

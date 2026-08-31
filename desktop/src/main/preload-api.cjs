@@ -869,8 +869,8 @@ function createPreloadApis(ipcRenderer) {
     },
     aiExpert: {
       status: () => ipcRenderer.invoke("ai-expert:status"),
-      chooseAndImport: () => ipcRenderer.invoke("ai-expert:choose-and-import"),
-      remove: () => ipcRenderer.invoke("ai-expert:remove")
+      chooseAndImport: (kind) => ipcRenderer.invoke("ai-expert:choose-and-import", String(kind || "")),
+      remove: (kind) => ipcRenderer.invoke("ai-expert:remove", String(kind || ""))
     },
     contactSync: {
       status: () => ipcRenderer.invoke("contact-sync:status"),
