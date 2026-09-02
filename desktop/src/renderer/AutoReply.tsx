@@ -1,4 +1,4 @@
-import { Check, Pause, Play } from "lucide-react";
+import { Check, Pause, Play, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 type ScanHealth = "unknown" | "checking" | "healthy" | "warning" | "degraded" | "waiting";
@@ -16,13 +16,21 @@ type AutoReplyFailureContext = {
   observed_idle_ms?: number;
   preflight_ms?: number;
 };
+type AutoReplyActivity = {
+  phase?: string;
+  phase_started_at?: string;
+  contact_label?: string;
+  action?: "answer" | "clarify" | "handoff" | "silent";
+  reason_code?: string;
+  trace_id?: string;
+  delivery_status?: "not_attempted" | "prepared" | "clicked" | "sent_verified" | "outcome_unknown";
+  detail_code?: string;
+};
 type AutoReplyState = {
   status: string;
   reply_count: number;
   last_event: string;
   last_error: string;
-  last_ai_warning_code?: string;
-  last_ai_warning?: string;
   updated_at?: string;
   scan_health?: ScanHealth;
   last_scan_at?: string;
@@ -36,6 +44,7 @@ type AutoReplyState = {
     category: string;
     message: string;
   } | null;
+  activity?: AutoReplyActivity | null;
   held_contacts?: Array<{ id: string; label: string }>;
   test_scope?: {
     required?: boolean;
@@ -59,6 +68,7 @@ declare global {
       pause: () => Promise<AutoReplyResult>;
       acknowledgeManualFollowup: () => Promise<AutoReplyResult>;
       resumeContact: (contactId: string) => Promise<AutoReplyResult>;
+      showMain: () => Promise<AutoReplyResult>;
       onUpdate?: (callback: (result: AutoReplyResult) => void) => () => void;
     };
   }
@@ -69,8 +79,6 @@ const EMPTY_STATE: AutoReplyState = {
   reply_count: 0,
   last_event: "",
   last_error: "",
-  last_ai_warning_code: "",
-  last_ai_warning: "",
   scan_health: "unknown",
   last_scan_at: "",
   last_scan_success_at: "",
@@ -184,9 +192,70 @@ const CONTROL_EVENT_LABELS: Record<string, string> = {
   waiting_for_user_idle: "检测到电脑仍在操作，已等待空闲后继续",
   manual_intervention_required: "检测到微信中可能有人为操作，当前消息已停止自动重试",
   system_error_paused: "AI 服务故障，客户消息未发送，自动回复已暂停",
+  progress_window_load_failed: "进度窗口加载失败，任务已暂停并返回主页面",
   human_owned_contact_skipped: "该客户已由人工接管，本轮未自动回复",
   contact_ai_resumed: "已恢复该客户的 AI 自动回复",
   silent_processed: "本条消息无需回复，已静默处理"
+};
+
+const ACTIVITY_PHASE_LABELS: Record<string, string> = {
+  idle: "等待启动",
+  starting: "启动检查",
+  prime: "建立消息基线",
+  listening: "监听新消息",
+  scanning: "扫描微信消息",
+  scan: "扫描微信消息",
+  candidate: "发现客户消息",
+  generating: "生成 AI 回复",
+  generate: "生成 AI 回复",
+  decision_ready: "回复决策完成",
+  preparing_send: "准备安全发送",
+  sending: "写入并发送",
+  send: "写入并发送",
+  prepared: "草稿已准备",
+  clicked: "已点击，正在核验",
+  verifying: "核验发送结果",
+  retrying: "回复尚未发出，正在重新尝试",
+  manual_review: "检测到人工输入，当前消息交由人工",
+  sent_verified: "发送结果已核验",
+  silent: "本条消息静默处理",
+  waiting: "等待电脑空闲",
+  paused: "自动回复已暂停",
+  error: "自动回复发生故障"
+};
+
+const ACTION_LABELS: Record<string, string> = {
+  answer: "直接回答",
+  clarify: "追问一个关键信息",
+  handoff: "已转人工接管",
+  silent: "无需发送消息"
+};
+
+const DELIVERY_STATUS_LABELS: Record<string, string> = {
+  not_attempted: "尚未尝试发送",
+  prepared: "草稿已准备",
+  clicked: "已点击发送，正在核验",
+  sent_verified: "发送成功并已核验",
+  outcome_unknown: "发送结果无法确认"
+};
+
+const ACTIVITY_DETAIL_LABELS: Record<string, string> = {
+  context_ready: "已读取本轮对话",
+  visual_preflight: "正在核验当前会话",
+  visual_send_started: "正在写入微信输入框",
+  send_started: "正在准备发送",
+  sent_verified: "发送成功并已核验",
+  handoff_reply_sent: "已发送人工衔接消息",
+  wechat_user_active: "检测到电脑仍在使用，回复已保留",
+  powershell_failed: "微信输入执行器未启动，回复尚未发出",
+  powershell_timeout: "微信输入执行超时，回复尚未发出",
+  powershell_output_invalid: "微信输入执行结果无效，回复尚未发出",
+  powershell_runtime_quarantined: "微信输入执行器暂不可用，回复尚未发出",
+  visual_send_draft_input_failed: "微信输入框写入失败，回复尚未发出",
+  visual_send_external_input_detected: "检测到微信输入框有人为输入，当前消息交由人工",
+  unread_preview_pending: "已读消息正在复核，尚未丢弃",
+  unread_preview_unresolved: "已读消息正在继续复核，尚未丢弃",
+  send_retry_waiting: "回复尚未发出，正在退避后重试"
 };
 
 const RECOVERY_ACTION_LABELS: Record<string, string> = {
@@ -231,11 +300,75 @@ function scanReasonLabel(reason?: string) {
   return SCAN_REASON_LABELS[reason] || "未识别扫描状态";
 }
 
+function activityDetailLabel(detailCode?: string) {
+  if (!detailCode) return "";
+  return ACTIVITY_DETAIL_LABELS[detailCode] || "正在更新本轮执行状态";
+}
+
 function formatDuration(value?: number) {
   const milliseconds = Math.max(0, Number(value) || 0);
   if (!Number.isFinite(milliseconds)) return "";
   if (milliseconds < 1000) return `${Math.round(milliseconds)} 毫秒`;
   return `${(milliseconds / 1000).toFixed(milliseconds >= 10_000 ? 0 : 1)} 秒`;
+}
+
+function autoReplyActivityPhase(state: AutoReplyState) {
+  const explicit = String(state.activity?.phase || "").trim();
+  if (state.system_error) return "error";
+  if (explicit) return explicit;
+  if (state.status === "starting") return "starting";
+  if (state.status === "paused") return "paused";
+  if (state.last_event === "generating_reply") return "generating";
+  if (state.last_event === "reply_sent_verified") return "sent_verified";
+  if (state.last_event === "silent_processed") return "silent";
+  if (state.scan_health === "waiting") return "waiting";
+  if (state.last_scan_reason === "candidate_detected") return "candidate";
+  if (state.status === "running") return "listening";
+  return "idle";
+}
+
+function autoReplyPhaseLabel(phase: string) {
+  return ACTIVITY_PHASE_LABELS[phase] || "自动回复运行中";
+}
+
+function autoReplyPhaseProgress(phase: string) {
+  if (["candidate", "generating", "generate"].includes(phase)) return 1;
+  if (["decision_ready", "preparing_send", "sending", "send", "prepared", "retrying", "manual_review"].includes(phase)) return 2;
+  if (["clicked", "verifying"].includes(phase)) return 3;
+  if (["sent_verified", "silent"].includes(phase)) return 4;
+  if (["paused", "error", "idle"].includes(phase)) return -1;
+  return 0;
+}
+
+function formatPhaseElapsed(value: string | undefined, currentTime: number) {
+  const startedAt = Date.parse(String(value || ""));
+  if (!Number.isFinite(startedAt) || startedAt > currentTime) return "--";
+  const seconds = Math.max(0, Math.floor((currentTime - startedAt) / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  if (minutes < 60) return `${minutes} 分 ${remainder} 秒`;
+  return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
+}
+
+function autoReplyContactLabel(state: AutoReplyState) {
+  const label = String(state.activity?.contact_label || state.test_scope?.contact_label || "").trim();
+  if (label) return label;
+  return state.test_scope?.required ? "等待选择测试联系人" : "全部已启用联系人";
+}
+
+function autoReplyRecentResult(state: AutoReplyState) {
+  if (state.system_error) return `未进入微信输入阶段：${state.system_error.message}（${state.system_error.category} · ${state.system_error.code}）`;
+  if (state.last_error) return state.last_error;
+  const delivery = String(state.activity?.delivery_status || "");
+  if (delivery && delivery !== "not_attempted" && DELIVERY_STATUS_LABELS[delivery]) return DELIVERY_STATUS_LABELS[delivery];
+  const detail = activityDetailLabel(String(state.activity?.detail_code || "").trim());
+  if (detail) return detail;
+  const action = String(state.activity?.action || "");
+  if (action && ACTION_LABELS[action]) return `本轮决定：${ACTION_LABELS[action]}`;
+  if (state.last_event && CONTROL_EVENT_LABELS[state.last_event]) return CONTROL_EVENT_LABELS[state.last_event];
+  if (state.last_scan_reason) return scanReasonLabel(state.last_scan_reason);
+  return state.status === "running" ? "正在监听客户新消息" : "尚无运行结果";
 }
 
 function recoverySummary(context: AutoReplyFailureContext) {
@@ -255,7 +388,7 @@ function recoverySummary(context: AutoReplyFailureContext) {
     case "manual_check_required":
       return "发送是否完成无法确认；为避免重复发送，系统已停止对同一条消息自动补发。";
     case "fix_ai_and_restart":
-      return "模型调用未产生可用业务动作，系统没有向客户发送消息，也没有创建虚假的人工接管。请修复后手动重新启动。";
+      return "模型没有生成可发送内容，系统因此未点击微信输入框、未发送消息，也没有创建虚假的人工接管。请修复后手动重新启动。";
     default:
       return "本次运行已保留诊断信息，系统不会把未确认的发送当作成功。";
   }
@@ -480,11 +613,17 @@ export function AutoReply() {
           <p>{recoverySummary(recoveryContext)}</p>
           <div className="auto-reply-recovery-meta">
             <span>拦截阶段：{failurePhase}</span>
-            {recoveryContext.send_attempted === false && <span>{recoveryContext.draft_phase_started ? "未点击发送，已停止自动覆盖输入框" : "未写入草稿，也未点击发送"}</span>}
+            {recoveryContext.send_attempted === false && <span>{
+              recoveryAction === "manual_review_required"
+                ? "未点击发送，已交由人工处理"
+                : recoveryContext.draft_phase_started
+                  ? "未点击发送，已保留待重试"
+                  : "未写入草稿，也未点击发送"
+            }</span>}
             {recoveryContext.required_idle_ms !== undefined && <span>需连续空闲：{formatDuration(recoveryContext.required_idle_ms)}</span>}
             {recoveryContext.observed_idle_ms !== undefined && <span>本次空闲：{formatDuration(recoveryContext.observed_idle_ms)}</span>}
             {recoveryContext.retry_attempt !== undefined && <span>重试次数：{recoveryContext.retry_attempt}</span>}
-            {recoveryContext.code && <span>诊断码：{recoveryContext.code}</span>}
+            {recoveryContext.code && <span>诊断：{activityDetailLabel(recoveryContext.code)}（{recoveryContext.code}）</span>}
           </div>
         </div>
       )}
@@ -494,7 +633,155 @@ export function AutoReply() {
         </div>
       )}
       {visibleError && <div className="touch-notice" role="alert">{visibleError}</div>}
-      {state.last_ai_warning && <div className="touch-notice" role="status">{state.last_ai_warning}{state.last_ai_warning_code ? `（${state.last_ai_warning_code}）` : ""}</div>}
     </section>
+  );
+}
+
+export function FloatingAutoReplyWindow() {
+  const [state, setState] = useState<AutoReplyState>(EMPTY_STATE);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+
+  const applyResult = (result: AutoReplyResult) => {
+    if (result.state) setState((current) => ({ ...current, ...result.state }));
+    setError(result.ok ? "" : result.error || "读取自动回复状态失败");
+  };
+
+  useEffect(() => {
+    if (!window.xiaoxiAutoReply) {
+      setError("当前版本未连接自动回复执行器");
+      return undefined;
+    }
+    let pushedRevision = 0;
+    let refreshRevision = 0;
+    const applyPushedResult = (result: AutoReplyResult) => {
+      pushedRevision += 1;
+      applyResult(result);
+    };
+    const refresh = () => {
+      const requestRevision = ++refreshRevision;
+      const startingPushRevision = pushedRevision;
+      void window.xiaoxiAutoReply!.status()
+        .then((result) => {
+          if (requestRevision !== refreshRevision || startingPushRevision !== pushedRevision) return;
+          applyResult(result);
+        })
+        .catch(() => {
+          if (requestRevision === refreshRevision && startingPushRevision === pushedRevision) {
+            setError("读取自动回复状态失败");
+          }
+        });
+    };
+    const unsubscribe = window.xiaoxiAutoReply.onUpdate?.(applyPushedResult);
+    refresh();
+    const refreshTimer = window.setInterval(refresh, 30_000);
+    return () => {
+      unsubscribe?.();
+      window.clearInterval(refreshTimer);
+    };
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setCurrentTime(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const run = (operation: () => Promise<AutoReplyResult>, failure: string) => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    void operation()
+      .then(applyResult)
+      .catch(() => setError(failure))
+      .finally(() => setBusy(false));
+  };
+
+  const pause = () => {
+    if (!window.xiaoxiAutoReply) {
+      setError("当前版本未连接自动回复执行器");
+      return;
+    }
+    run(() => window.xiaoxiAutoReply!.pause(), "暂停自动回复失败");
+  };
+
+  const showMain = () => {
+    if (!window.xiaoxiAutoReply?.showMain) {
+      setError("当前版本暂不支持返回主页面");
+      return;
+    }
+    run(() => window.xiaoxiAutoReply!.showMain(), "返回主页面失败");
+  };
+
+  const phase = autoReplyActivityPhase(state);
+  const phaseLabel = autoReplyPhaseLabel(phase);
+  const phaseProgress = autoReplyPhaseProgress(phase);
+  const elapsed = formatPhaseElapsed(state.activity?.phase_started_at, currentTime);
+  const contactLabel = autoReplyContactLabel(state);
+  const recentResult = autoReplyRecentResult(state);
+  const systemErrorMessage = state.system_error ? `未进入微信输入阶段：${state.system_error.message}` : "";
+  const visibleError = error || systemErrorMessage || state.last_error;
+  const visibleErrorTitle = error
+    ? error
+    : state.system_error
+      ? `${systemErrorMessage}（${state.system_error.category} · ${state.system_error.code}）`
+      : state.last_error;
+  const canPause = state.status === "starting" || state.status === "running";
+  const pulseStatus = state.system_error ? "error" : state.status;
+
+  return (
+    <main className="floating-shell auto-reply-floating-shell">
+      <header className="floating-head">
+        <div className="floating-title">
+          <span className={`floating-pulse ${pulseStatus}`} />
+          <strong>自动回复进度</strong>
+        </div>
+        <button className="floating-close" aria-label="返回主页面" onClick={showMain} disabled={busy}>
+          <X size={16} />
+        </button>
+      </header>
+
+      <div className="floating-progress" aria-label={`本轮处理阶段：${phaseLabel}`}>
+        <div className="auto-reply-phase-track" aria-hidden="true">
+          {[0, 1, 2, 3].map((step) => (
+            <span
+              key={step}
+              className={phaseProgress >= 4 || step < phaseProgress ? "is-complete" : step === phaseProgress ? "is-active" : ""}
+            />
+          ))}
+        </div>
+        <b title="今日已回复">今日 {Math.max(0, Number(state.reply_count) || 0)} 条</b>
+      </div>
+
+      <div className="floating-info" aria-live="polite">
+        <div className="floating-row">
+          <span>监听对象</span>
+          <strong title={contactLabel}>{contactLabel}</strong>
+        </div>
+        <div className="floating-row">
+          <span>当前环节</span>
+          <strong title={phaseLabel}>{phaseLabel}{elapsed === "--" ? "" : ` · ${elapsed}`}</strong>
+        </div>
+        <div className="floating-state">
+          <span>最近结果</span>
+          <strong title={recentResult}>{recentResult}</strong>
+        </div>
+      </div>
+
+      {visibleError && (
+        <div className="floating-alert auto-reply-floating-alert" role="alert" title={visibleErrorTitle}>
+          <span>{visibleError}</span>
+          {!error && state.system_error && <b>{state.system_error.category} · {state.system_error.code}</b>}
+        </div>
+      )}
+
+      <div className="floating-actions auto-reply-floating-actions">
+        <button onClick={pause} disabled={busy || !canPause}>
+          <Pause size={15} />
+          {canPause ? "暂停" : "已暂停"}
+        </button>
+        <button onClick={showMain} disabled={busy}>主页面</button>
+      </div>
+    </main>
   );
 }

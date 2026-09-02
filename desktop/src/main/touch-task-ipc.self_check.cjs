@@ -13,7 +13,8 @@ let sessionVerificationResult = { ok: true };
 let bubbleVerificationResult = { ok: false, state: { real_send_status: "outcome_unknown" } };
 let observedBubbleHandle = "";
 class FakeWindow {
-  constructor() {
+  constructor(options) {
+    this.options = options;
     this.destroyed = false;
     this.listeners = new Map();
     this.webContents = { send(channel, payload) { if (channel === "touch-task:update") taskUpdates.push(payload); } };
@@ -24,7 +25,7 @@ class FakeWindow {
   hide() {}
   focus() {}
   setMenu() {}
-  setPosition() {}
+  setPosition(x, y) { this.position = { x, y }; }
   on(event, listener) {
     const listeners = this.listeners.get(event) || [];
     listeners.push(listener);
@@ -241,6 +242,11 @@ async function waitFor(read, predicate, timeoutMs = 10_000) {
     const stop = handlers.get("touch-task:stop");
     const resolveUnknown = handlers.get("touch-task:resolve-unknown");
     await start({}, { script: "默认触达话术", clickToken: "trusted-start" });
+    assert.deepEqual(
+      { width: windows[0].options.width, height: windows[0].options.height, position: windows[0].position },
+      { width: 292, height: 286, position: { x: 1286, y: 307 } },
+      "active touch must use the shared progress-window footprint and placement"
+    );
     const initial = await status();
     assert.equal(initial.task.results.length, 51, "status responses must retain the complete recoverable task snapshot");
     const compactUpdate = taskUpdates.find((payload) => Array.isArray(payload.task?.result_updates));

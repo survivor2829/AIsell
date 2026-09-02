@@ -571,11 +571,10 @@ function Resolve-MomentsInteractionAnchor(
   }
   if ($expectedAvatarBounds -ne $null -and $expectedAvatarHash) {
     $avatarHash = Get-MomentsPixelHash $frame $expectedAvatarBounds
-    if (-not $avatarHash -or [string]$avatarHash -cne $expectedAvatarHash) {
-      return @{ ok = $false; reason = "moments_post_changed"; diagnostics = @{ rawCandidateCount = 0; acceptedCandidateCount = 0 } }
-    }
+    $avatarHashMatched = [bool]($avatarHash -and [string]$avatarHash -ceq $expectedAvatarHash)
   } else {
     $avatarHash = ""
+    $avatarHashMatched = $true
   }
   $localBounds = @{
     left = [Math]::Max([double]$viewportBounds.left, [double]$expectedMenuBounds.left - $tolerance)
@@ -602,6 +601,7 @@ function Resolve-MomentsInteractionAnchor(
     rejectedWhitespaceCount = [int]$read.diagnostics.rejectedWhitespaceCount
     rejectedAvatarLaneCount = [int]$read.diagnostics.rejectedAvatarLaneCount
     searchBounds = $localBounds
+    avatarHashMatched = $avatarHashMatched
   }
   if ($matches.Count -eq 0) { return @{ ok = $false; reason = "moments_menu_not_found"; diagnostics = $diagnostics } }
   if ($matches.Count -ne 1) { return @{ ok = $false; reason = "moments_menu_ambiguous"; diagnostics = $diagnostics } }

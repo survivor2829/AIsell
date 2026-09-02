@@ -35,19 +35,21 @@ assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendConver
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /if \(\$messageDriven\)[\s\S]*proof = "message_driven"[\s\S]*headerState = "not_required"/u, "red-dot auto reply must bind the live incoming message without a contact-name gate");
 const postClickVerification = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(
   WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("$postLock = Get-VisualSendLock"),
-  WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("$afterDraft = Read-VisualSendDraft")
+  WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("$afterDraft = if (Test-VisualSendInputLease)")
 );
 assert.match(postClickVerification, /\$sameConversation = \$true/u, "post-click verification must retain the exact HWND already bound immediately before clicking");
-assert.doesNotMatch(postClickVerification, /Get-VisualSendFrame|Test-VisualSendConversation|Test-VisualSendOutgoingBubble|Get-MomentsOcrObservation/u, "post-click verification must not run a third full-frame OCR pass");
+assert.match(postClickVerification, /for \(\$attempt = 1;[\s\S]*Get-VisualSendFrame[\s\S]*Test-VisualSendOutgoingBubble/u, "post-click verification must poll the rendered outgoing bubble before falling back to draft consumption");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$script:VisualSendOcrDownscale = if \(\[double\]\$dpi -ge 240\.0\) \{ 2 \} else \{ 1 \}/u, "only extreme-DPI windows should use adaptive OCR downscaling");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendIncoming[\s\S]*height = \[double\]\(\$frame\.height \* 0\.69\)/u, "incoming verification must include messages immediately above the composer");
-assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendLatestIncoming[\s\S]*Get-MomentsDownscaledOcrObservation \$frame @\{ left = 0\.0; top = 0\.0; width = \[double\]\$frame\.width; height = \[double\]\$frame\.height \} \$script:VisualSendOcrDownscale/u, "the final incoming guard must reuse full-frame OCR geometry with adaptive high-DPI downscaling");
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendLatestIncomingEvidence[\s\S]*Get-MomentsDownscaledOcrObservation \$frame @\{ left = 0\.0; top = 0\.0; width = \[double\]\$frame\.width; height = \[double\]\$frame\.height \} \$script:VisualSendOcrDownscale/u, "the final incoming guard must reuse full-frame OCR geometry with adaptive high-DPI downscaling");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendIncomingEvidenceSignature[\s\S]*visual-message-semantic-v1[\s\S]*Normalize-VisualSendText[\s\S]*\$role[\s\S]*Get-VisualSendSha256/u, "the final guard must reproduce the scanner's semantic bubble identity");
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendMessageBlocks[\s\S]*Get-VisualSendMessageRows[\s\S]*Test-VisualSendMessageRowsSameBubble/u, "the final guard must aggregate every OCR line from the latest bubble before comparing it with scanner evidence");
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendLatestIncomingEvidence[\s\S]*ocr_unresolved[\s\S]*proven_different/u, "the final guard must distinguish unresolved OCR from a proven different customer occurrence");
 assert.doesNotMatch(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\/ 120\.0/u, "all Win32 DPI scaling must use the 96-DPI logical baseline");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$dpi \/ 96\.0/u);
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$expectedIncomingSignature -match "\^\[a-f0-9\]\{64\}\$"[\s\S]*Get-VisualSendIncomingEvidenceSignature/u, "a bound bubble signature must take precedence over cross-region OCR text equality");
 assert.doesNotMatch(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /incomingWasVerified|XIAOXI_VISUAL_SEND_INCOMING_VERIFIED/u, "the sender must never trust the occurrence observed before AI generation");
-assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /@\("preflight", "draft"\) -contains \$phase[\s\S]*Test-VisualSendLatestIncoming[\s\S]*visual_send_incoming_changed[\s\S]*if \(\$phase -ceq "draft"\)[\s\S]*Write-VisualSendDraft/u, "both preflight and the final pre-draft phase must bind the live latest customer bubble before writing");
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /@\("preflight", "draft"\) -contains \$phase[\s\S]*Get-VisualSendLatestIncomingEvidence[\s\S]*visual_send_incoming_changed[\s\S]*visual_send_incoming_ocr_unresolved[\s\S]*if \(\$phase -ceq "draft"\)[\s\S]*Write-VisualSendDraft/u, "both preflight and the final pre-draft phase must bind the live latest customer bubble before writing");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendSelectedSidebarConversation[\s\S]*Resolve-VisualSendSidebarConversation[\s\S]*visual_send_sidebar_contact_ambiguous[\s\S]*\$nameMatches\.Count -ne 1[\s\S]*Get-VisualSendGreenRatio[\s\S]*\$greenRatio -ge 0\.55/u, "title fallback must globally disambiguate the expected contact and prove its selected green row");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /Preview OCR is optional[\s\S]*\$previewCandidates\.Count -gt 0[\s\S]*\$nameBottom \+ \(20\.0 \* \$logicalScale\)/u, "selected-row identity must not require preview OCR");
 const latestIncomingFunction = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(
@@ -59,8 +61,8 @@ assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendMessag
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$greenRatio -ge 0\.16/u, "the final guard must reject our long green bubbles before using geometry");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /GetDpiForWindow/u);
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendSidebarRight/u);
-assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendChatBottom/u);
-assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /return \[double\]\$frame\.height \* 0\.60/u, "unknown composer geometry must fail closed above a potentially enlarged composer");
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendChatBottom[\s\S]*Get-VisualSendHorizontalEdgeStats[\s\S]*Test-VisualSendEditorArea/u, "sender and scanner must use the same proven composer-divider contract");
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$frame\.height \* 0\.74/u, "missing divider evidence must retain the scanner's normalized chat boundary");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$top -gt \$chatBottom/u, "draft text below the proven divider must be excluded");
 assert.doesNotMatch(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /frame\.width \* 0\.273|frame\.height \* 0\.88/u, "final geometry must not use one-machine fixed ratios");
 assert.doesNotMatch(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$chatMid/u, "the final guard must not infer sender from one midpoint comparison");
@@ -71,6 +73,7 @@ const sendClickPhase = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(
 assert.doesNotMatch(sendClickPhase, /Test-VisualSendLatestIncoming|visual_send_incoming_changed/u, "composer expansion must not trigger a second geometry-dependent incoming check");
 assert.match(sendClickPhase, /Get-VisualSendConversationBinding \$fresh[\s\S]*if \(-not \$freshBinding\.ok\)[\s\S]*Clear-VisualSendDraft \$lock[\s\S]*reason = \$freshBinding\.reason/u, "the final click phase must rebind the expected conversation and clear the draft if it changed");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Clear-VisualSendDraft[\s\S]*\{BACKSPACE\}[\s\S]*\$readback\.empty/u, "pre-click failures need a verified draft cleanup path");
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Write-VisualSendDraft[\s\S]*composer_focus_failed[\s\S]*clipboard_write_failed[\s\S]*draft_paste_failed[\s\S]*draft_readback_mismatch/u, "draft diagnostics must identify the failed input stage without storing customer text");
 assert.match(sendClickPhase, /Find-VisualSendButton[\s\S]*Clear-VisualSendDraft \$lock[\s\S]*visual_send_button_not_owned[\s\S]*Clear-VisualSendDraft \$lock[\s\S]*visual_send_cursor_not_verified/u, "owned pre-click failures must not leave a stale draft behind");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendOutgoingBubble[\s\S]*Get-VisualSendChatBottom \$frame \$sidebarRight[\s\S]*Test-VisualSendOutgoingLineEvidence/u, "post-send verification must inspect the dynamic bottom of the chat");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendOutgoingLineEvidence[\s\S]*\$latest = \$ordered\[-1\][\s\S]*Get-VisualSendLineGreenRatio[\s\S]*Test-VisualSendGreenBridge/u, "only the latest connected green bubble may verify a send");
@@ -89,6 +92,13 @@ assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$sendAttempted = \$true[\s\S
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /draft_consumed_same_header/u);
 assert.match(createVisualAutoReplySender.toString(), /catch \{[\s\S]*visual_send_outcome_unknown[\s\S]*sendAttempted: true/u, "a rejected final send phase must be fenced as possibly clicked");
 
+const parserCommand = "[Console]::InputEncoding=[Text.Encoding]::UTF8; $source=[Console]::In.ReadToEnd(); $tokens=$null; $errors=$null; [void][System.Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors); if($errors.Count){$errors | ForEach-Object {$_.ToString()}; exit 1}";
+const syntaxProbe = spawnSync("powershell.exe", ["-NoProfile", "-Command", parserCommand], {
+  input: WECHAT_VISUAL_AUTO_REPLY_POWERSHELL,
+  encoding: "utf8"
+});
+assert.equal(syntaxProbe.status, 0, syntaxProbe.stderr || syntaxProbe.stdout);
+
 const normalizeStart = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Normalize-VisualSendText");
 const lockStart = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Get-VisualSendLock", normalizeStart);
 const evidenceStart = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Get-VisualSendIncomingEvidenceSignature");
@@ -97,11 +107,10 @@ assert.ok(normalizeStart >= 0 && lockStart > normalizeStart && evidenceStart >= 
 const evidenceProgram = `
 ${WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(normalizeStart, lockStart)}
 ${WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(evidenceStart, evidenceEnd)}
-$line = @{ text = "bubble-ocr"; width = 80.0; height = 16.0 }
 @{
-  user96 = Get-VisualSendIncomingEvidenceSignature $line "user" 96.0
-  user144 = Get-VisualSendIncomingEvidenceSignature $line "user" 144.0
-  assistant = Get-VisualSendIncomingEvidenceSignature $line "assistant" 96.0
+  user96 = Get-VisualSendIncomingEvidenceSignature "bubble-ocr" "user" 96.0
+  user144 = Get-VisualSendIncomingEvidenceSignature "bubble-ocr" "user" 144.0
+  assistant = Get-VisualSendIncomingEvidenceSignature "bubble-ocr" "assistant" 96.0
 } | ConvertTo-Json -Compress
 `;
 const evidenceTemp = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-visual-send-evidence-"));
@@ -118,6 +127,22 @@ const evidenceResult = JSON.parse(evidenceProbe.stdout.trim().split(/\r?\n/u).fi
 assert.equal(evidenceResult.user96, createHash("sha256").update("visual-message-semantic-v1\nbubble-ocr\nuser", "utf8").digest("hex"));
 assert.equal(evidenceResult.user144, evidenceResult.user96, "DPI reflow must not change a semantic incoming occurrence");
 assert.notEqual(evidenceResult.assistant, evidenceResult.user96, "an outgoing role must never satisfy the bound incoming evidence");
+
+const chatBottomStart = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Get-VisualSendRowStats");
+const chatBottomEnd = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Get-VisualSendIncomingEvidenceSignature", chatBottomStart);
+assert.ok(chatBottomStart >= 0 && chatBottomEnd > chatBottomStart);
+const chatBottomProgram = `
+function Get-MomentsPixel($frame, [int]$x, [int]$y) { return @{ r = 0; g = 0; b = 0 } }
+${WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(chatBottomStart, chatBottomEnd)}
+$frame = @{ width = 1000; height = 1000; stride = 4000; bytes = (New-Object byte[] 4000000) }
+$bottom = Get-VisualSendChatBottom $frame 300.0 1.0
+@{ bottom = $bottom; bubbleAt68PercentEligible = (680.0 -le $bottom) } | ConvertTo-Json -Compress
+`;
+const chatBottomProbe = runPowerShellProgram(chatBottomProgram, "chat-bottom-fallback");
+assert.equal(chatBottomProbe.status, 0, chatBottomProbe.stderr || chatBottomProbe.stdout);
+const chatBottomResult = JSON.parse(chatBottomProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1));
+assert.equal(chatBottomResult.bottom, 740);
+assert.equal(chatBottomResult.bubbleAt68PercentEligible, true, "a scanner-accepted low bubble must remain eligible during the final send guard");
 
 const conversationMatchProgram = `
 ${WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(normalizeStart, lockStart)}
@@ -421,7 +446,7 @@ assert.equal(chatProbe.status, 0, chatProbe.stderr || chatProbe.stdout);
 const chatResult = JSON.parse(chatProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1));
 assert.equal(chatResult.detected, 246);
 assert.equal(chatResult.tallDetected, 193, "the final send guard must honor a manually enlarged composer");
-assert.ok(Math.abs(chatResult.fallback - 180) < 0.001, "the final send guard must fail closed when the divider is unproven");
+assert.ok(Math.abs(chatResult.fallback - 220) < 0.001, "the final send guard must use the scanner-aligned fallback when the divider is unproven");
 assert.equal(chatResult.keepsBottomBubble, true);
 assert.equal(chatResult.bottomBubbleNeedsDetection, true);
 assert.equal(chatResult.excludesComposerDraft, true);
@@ -504,13 +529,6 @@ assert.deepEqual(JSON.parse(greenRoleProbe.stdout.trim().split(/\r?\n/u).filter(
   multilineBubble: true
 });
 
-const parserCommand = "[Console]::InputEncoding=[Text.Encoding]::UTF8; $source=[Console]::In.ReadToEnd(); $tokens=$null; $errors=$null; [void][System.Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors); if($errors.Count){$errors | ForEach-Object {$_.ToString()}; exit 1}";
-const syntaxProbe = spawnSync("powershell.exe", ["-NoProfile", "-Command", parserCommand], {
-  input: WECHAT_VISUAL_AUTO_REPLY_POWERSHELL,
-  encoding: "utf8"
-});
-assert.equal(syntaxProbe.status, 0, syntaxProbe.stderr || syntaxProbe.stdout);
-
 const calls = [];
 const sender = createVisualAutoReplySender({
   powerShellRunner: async (_script, env, options) => {
@@ -536,6 +554,7 @@ const sender = createVisualAutoReplySender({
 
 (async () => {
   let beforeSendCalled = false;
+  const transitions = [];
   const result = await sender({
     pid: 77,
     hWnd: 88,
@@ -547,7 +566,8 @@ const sender = createVisualAutoReplySender({
       beforeSendCalled = true;
       assert.equal(context.conversation, "A测试客户");
       return true;
-    }
+    },
+    onTransition: (transition) => transitions.push(transition)
   });
   assert.deepEqual({ ...result, diagnostics: undefined }, {
     ok: true,
@@ -562,6 +582,7 @@ const sender = createVisualAutoReplySender({
   assert.equal(result.diagnostics.phase, "completed");
   assert.equal(Number.isFinite(result.diagnostics.timings.total_ms), true);
   assert.equal(beforeSendCalled, true);
+  assert.deepEqual(transitions, ["prepared", "clicked", "sent_verified"]);
   assert.equal(calls.length, 3);
   assert.equal(calls[0].env.XIAOXI_VISUAL_SEND_PHASE, "preflight");
   assert.equal(calls[0].env.XIAOXI_VISUAL_SEND_CONVERSATION_EVIDENCE, calls[0].env.XIAOXI_VISUAL_SEND_CONVERSATION);
@@ -570,8 +591,41 @@ const sender = createVisualAutoReplySender({
   assert.equal(calls[0].env.XIAOXI_VISUAL_SEND_EXACT_CONVERSATION_MATCH, "1");
   assert.equal(calls[0].env.XIAOXI_VISUAL_SEND_INCOMING, "你是谁");
   assert.equal(calls[0].options.sta, true);
+  assert.equal(calls[0].options.diagnostics, true);
   assert.deepEqual(calls[1], { kind: "draft", message: "你好，这是本机视觉发送自检", context: { pid: 77, hWnd: 88 } });
   assert.equal(calls[2].env.XIAOXI_VISUAL_SEND_PHASE, "send");
+  assert.equal(calls[2].options.diagnostics, true);
+
+  const workerDiagnostics = await createVisualAutoReplySender({
+    powerShellRunner: async (_script, _env, options) => {
+      assert.equal(options.diagnostics, true);
+      return {
+        ok: false,
+        reason: "powershell_failed",
+        sendAttempted: false,
+        diagnostics: {
+          exit_code: 1,
+          error_code: "EPARSE",
+          stderr: "parser reported a private implementation detail"
+        }
+      };
+    }
+  })({
+    pid: 77,
+    hWnd: 88,
+    conversation: "A测试客户",
+    incomingMessage: "本轮只验证脱敏诊断",
+    reply: "不应写入微信"
+  });
+  const workerStderr = "parser reported a private implementation detail";
+  assert.equal(workerDiagnostics.reason, "powershell_failed");
+  assert.deepEqual(workerDiagnostics.diagnostics.worker, {
+    exit_code: 1,
+    error_code: "EPARSE",
+    stderr_bytes: Buffer.byteLength(workerStderr, "utf8"),
+    stderr_sha256: createHash("sha256").update(workerStderr, "utf8").digest("hex")
+  });
+  assert.equal(JSON.stringify(workerDiagnostics.diagnostics).includes(workerStderr), false, "worker stderr must never leave the visual sender as plaintext");
 
   const staleIncomingEnvironments = [];
   let staleIncomingDraftCalls = 0;
@@ -606,6 +660,27 @@ const sender = createVisualAutoReplySender({
   assert.equal(staleIncomingEnvironments[0].XIAOXI_VISUAL_SEND_INCOMING_SIGNATURE, staleIncomingSignature);
   assert.equal("XIAOXI_VISUAL_SEND_INCOMING_VERIFIED" in staleIncomingEnvironments[0], false);
 
+  let unresolvedDraftCalls = 0;
+  const unresolvedIncoming = await createVisualAutoReplySender({
+    powerShellRunner: async () => ({
+      ok: false,
+      reason: "visual_send_incoming_ocr_unresolved",
+      sendAttempted: false,
+      incomingVerified: false,
+      incomingChangeKind: "ocr_unresolved",
+      composerTouched: false
+    }),
+    draftInput: async () => {
+      unresolvedDraftCalls += 1;
+      return { ok: true, draftVerified: true };
+    }
+  })({ pid: 77, hWnd: 88, conversation: "A测试客户", incomingMessage: "需要安全复核的消息", reply: "本轮不得写入" });
+  assert.equal(unresolvedIncoming.ok, false);
+  assert.equal(unresolvedIncoming.reason, "visual_send_incoming_ocr_unresolved");
+  assert.equal(unresolvedIncoming.incoming_change_kind, "ocr_unresolved");
+  assert.equal(unresolvedIncoming.composer_touched, false);
+  assert.equal(unresolvedDraftCalls, 0, "unresolved OCR must return before the composer is clicked or a draft is pasted");
+
   let sendRunnerCalls = 0;
   const cancelled = await createVisualAutoReplySender({
     powerShellRunner: async () => {
@@ -620,6 +695,7 @@ const sender = createVisualAutoReplySender({
   assert.equal(sendRunnerCalls, 1);
 
   let unknownCalls = 0;
+  const unknownTransitions = [];
   const unknown = await createVisualAutoReplySender({
     powerShellRunner: async (_script, env) => {
       unknownCalls += 1;
@@ -628,11 +704,19 @@ const sender = createVisualAutoReplySender({
         : { ok: false, reason: "powershell_timeout" };
     },
     draftInput: async () => ({ ok: true, draftVerified: true })
-  })({ pid: 3, hWnd: 4, conversation: "A测试客户", incomingMessage: "仍是这一条", reply: "只尝试一次" });
+  })({
+    pid: 3,
+    hWnd: 4,
+    conversation: "A测试客户",
+    incomingMessage: "仍是这一条",
+    reply: "只尝试一次",
+    onTransition: (transition) => unknownTransitions.push(transition)
+  });
   assert.equal(unknown.ok, false);
   assert.equal(unknown.send_attempted, true);
   assert.equal(unknown.outcomeUnknown, true);
   assert.equal(unknownCalls, 2);
+  assert.deepEqual(unknownTransitions, ["prepared", "outcome_unknown"]);
 
   let rejectedSendCalls = 0;
   const rejectedSend = await createVisualAutoReplySender({

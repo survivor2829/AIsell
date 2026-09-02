@@ -2,6 +2,7 @@
 
 const {
   executeMomentsComment,
+  executeMomentsExpandFullText,
   executeMomentsLike,
   inspectMomentsMenu
 } = require("./moments_action.dev.cjs");
@@ -29,7 +30,8 @@ async function main(argv) {
       ...options,
       commentText: Buffer.from(valueAfter(args, "--comment-text-base64"), "base64").toString("utf8"),
       ...(args.includes("--enhanced-readback") ? { enhancedReadback: true } : {})
-    })
+    }),
+    "moments-expand-full-text": () => executeMomentsExpandFullText(options)
   };
   if (!handlers[command]) {
     return {

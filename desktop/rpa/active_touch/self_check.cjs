@@ -975,6 +975,7 @@ try {
 
   let visualBeforeDraftCalls = 0;
   let visualSenderCalls = 0;
+  const visualTransitions = [];
   const visualSendResult = await executeVerifiedContactSend({
     baseDir: sharedDir,
     contactId: sharedContact.id,
@@ -1022,8 +1023,12 @@ try {
         reply: "视觉自动回复"
       });
       assert.equal(await request.beforeSend(), true);
+      request.onTransition("prepared");
+      request.onTransition("clicked");
+      request.onTransition("sent_verified");
       return { ok: true, send_attempted: true, verificationMode: "draft_consumed_same_header", pid: 81, hWnd: 91 };
-    }
+    },
+    onTransition: (transition) => visualTransitions.push(transition)
   });
   assert.equal(visualSendResult.ok, true);
   assert.equal(visualSendResult.send_attempted, true);
@@ -1031,6 +1036,7 @@ try {
   assert.equal(visualSendResult.verification_mode, "draft_consumed_same_header");
   assert.equal(visualBeforeDraftCalls, 1);
   assert.equal(visualSenderCalls, 1);
+  assert.deepEqual(visualTransitions, ["prepared", "clicked", "sent_verified"], "visual sends must forward real send-phase progress to the task owner");
 
   const visualUnknownResult = await executeVerifiedContactSend({
     baseDir: sharedDir,

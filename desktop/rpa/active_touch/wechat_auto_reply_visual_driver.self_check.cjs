@@ -22,6 +22,21 @@ function spawnSync(command, args, options) {
   return nativeSpawnSync(command, encodedArgs, options);
 }
 
+function runPowerShellJson(program) {
+  const encoded = Buffer.from(program, "utf16le").toString("base64");
+  const result = spawnSync("powershell.exe", [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-EncodedCommand",
+    encoded
+  ], { encoding: "utf8", windowsHide: true });
+  assert.equal(result.status, 0, String(result.stderr || result.stdout || "PowerShell fixture failed"));
+  return JSON.parse(String(result.stdout || "").trim());
+}
+
 async function main() {
 assert.equal(typeof AUTO_REPLY_VISUAL_SCRIPT, "string");
 const visualDriverSource = createWechatVisualAutoReplyDriver.toString();
@@ -41,8 +56,35 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$resolvedMessage = Resolve-AutoReplyVis
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /badgeOnly = \$true[\s\S]*source = "unread_badge"/u, "an OCR-unresolved unread badge must use the row-opening fallback");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$row\.badgeBounds\.centerX[\s\S]*\$row\.badgeBounds\.centerY/u, "the unread fallback must click WeChat's own badge geometry");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /badgeOnly = \$true[\s\S]*messageDriven = \$true/u, "a red-dot inbound event must be message-driven rather than contact-name authorized");
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Message-driven auto reply keeps the observed title only as diagnostic[\s\S]*\$conversation = \[string\]\$header\.conversation/u);
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(-not \[bool\]\$candidate\.badgeOnly\)[\s\S]*Get-AutoReplyVisualHeader \$confirmation\.lines/u, "title confirmation must remain for named paths but not block a red-dot message event");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Resolve-AutoReplyVisualStrictBadgeHeader/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(\$script:AutoReplyVisualExactConversationMatch\)[\s\S]*\$strictHeader = Resolve-AutoReplyVisualStrictBadgeHeader \$header \$allowedSet[\s\S]*\$candidate\.messageDriven = \[bool\]\$strictHeader\.messageDriven[\s\S]*\$candidate\.strictConversationVerified = \[bool\]\$strictHeader\.strictConversationVerified/u, "a strict test-scope red dot must be promoted only through the tested exact-header decision");
+const strictHeaderFunctionsStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Normalize-AutoReplyVisualText");
+const strictHeaderFunctionsEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Scale-AutoReplyVisualMetric", strictHeaderFunctionsStart);
+assert.ok(strictHeaderFunctionsStart >= 0 && strictHeaderFunctionsEnd > strictHeaderFunctionsStart);
+const strictHeaderResults = runPowerShellJson(`
+$script:AutoReplyVisualExactConversationMatch = $true
+${AUTO_REPLY_VISUAL_SCRIPT.slice(strictHeaderFunctionsStart, strictHeaderFunctionsEnd)}
+$allowed = @("张总")
+@(
+  (Resolve-AutoReplyVisualStrictBadgeHeader @{ ok = $true; conversation = "张总" } $allowed),
+  (Resolve-AutoReplyVisualStrictBadgeHeader @{ ok = $false; reason = "conversation_title_unresolved" } $allowed),
+  (Resolve-AutoReplyVisualStrictBadgeHeader @{ ok = $true; conversation = "李总" } $allowed)
+) | ConvertTo-Json -Compress -Depth 5
+`);
+assert.deepEqual(strictHeaderResults.map((result) => ({
+  ok: result.ok,
+  reason: result.reason,
+  conversation: result.conversation,
+  conversationEvidence: result.conversationEvidence,
+  messageDriven: result.messageDriven,
+  strictConversationVerified: result.strictConversationVerified
+})), [
+  { ok: true, reason: "", conversation: "张总", conversationEvidence: "张总", messageDriven: false, strictConversationVerified: true },
+  { ok: false, reason: "conversation_title_unresolved", conversation: "", conversationEvidence: "", messageDriven: true, strictConversationVerified: false },
+  { ok: false, reason: "conversation_title_mismatch", conversation: "", conversationEvidence: "", messageDriven: true, strictConversationVerified: false }
+]);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Message-driven auto reply keeps the observed title only as diagnostic[\s\S]*\$conversation = \[string\]\$header\.conversation/u, "ordinary all-contact red dots must keep the message-driven fallback");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(-not \[bool\]\$candidate\.badgeOnly -or \[bool\]\$candidate\.strictConversationVerified\)[\s\S]*Get-AutoReplyVisualHeader \$confirmation\.lines/u, "a promoted strict red-dot path must repeat the exact title check on its confirmation frame");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(\$expectedMessageDriven\)[\s\S]*state = "message_driven"[\s\S]*Get-AutoReplyVisualHeader \$observation\.lines/u, "final incoming verification must not restore the contact-title gate");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$bubbleEvidenceMatches = \$observedMessageSignature -ceq \$expectedMessageSignature -and \([\s\S]*\$expectedMessageDriven -or/u, "message-driven verification must bind the same incoming bubble without a title-derived runtime id");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualLatestMessageEvidence/u);
@@ -104,6 +146,8 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /"visual:v1:" \+ \(Get-AutoReplyVisualSha
 assert.match(visualDriverSource, /visual-occurrence-bubble-v3/u);
 assert.doesNotMatch(visualDriverSource, /randomBytes|driverSessionId|occurrenceSequence/u, "occurrence IDs must not depend on a process session or scan counter");
 assert.match(visualDriverSource, /restorePendingObservation/u, "pending evidence must have a restart recovery entry point");
+assert.doesNotMatch(visualDriverSource, /pendingVerifyAttemptLimit/u, "a consumed unread row must not be discarded after an arbitrary OCR retry count");
+assert.match(visualDriverSource, /rebindPendingOpenedUnread[\s\S]*incoming_message_changed[\s\S]*unread_preview_pending/u, "a later customer bubble in the already-open chat must rebind the pending observation instead of requiring another unread dot");
 assert.match(visualDriverSource, /active\.messageSignature === messageSignature \|\| sameObservedMessage\(active\.message, message\)[\s\S]*active\.runtimeId/u, "an active occurrence must reuse its public ID while the authoritative bubble is unchanged or has bounded OCR drift");
 assert.match(visualDriverSource, /visual-occurrence-bubble-v3[\s\S]*conversation[\s\S]*messageSignature[\s\S]*String\(turn\.epoch\)/u, "a new occurrence must include the per-contact turn epoch without using sidebar geometry");
 assert.match(visualDriverSource, /if \(outcomeUnknown\)[\s\S]*advanced: false[\s\S]*turnEpoch: previousTurn\.epoch/u, "an unknown send result must retain the current occurrence and epoch");
@@ -1152,6 +1196,18 @@ const unresolvedPendingResults = [
   { ok: false, reason: "visual_ocr_failed", pid: 75, hWnd: 76 },
   { ok: false, reason: "visual_ocr_failed", pid: 75, hWnd: 76 },
   { ok: false, reason: "visual_ocr_failed", pid: 75, hWnd: 76 },
+  {
+    ok: true,
+    conversation: "A测试客户",
+    message: "你好",
+    runtimeId: pendingEvidenceRuntimeId,
+    messageSignature: pendingBubbleSignature,
+    pid: 75,
+    hWnd: 76,
+    source: "verify",
+    latestRole: "user",
+    context: [{ role: "user", content: "你好", key: pendingEvidenceRuntimeId }]
+  },
   { ok: false, reason: "no_unread_message", pid: 75, hWnd: 76, sessionBaselines: [], sessionMessageBaselines: [] }
 ];
 const unresolvedPendingDriver = createWechatVisualAutoReplyDriver((_script, env) => {
@@ -1162,9 +1218,65 @@ assert.equal((await unresolvedPendingDriver.primeWechatSession(["A测试客户"]
 assert.equal((await unresolvedPendingDriver.scanWechatIncoming(["A测试客户"])).reason, "unread_preview_pending");
 assert.equal((await unresolvedPendingDriver.scanWechatIncoming(["A测试客户"])).reason, "unread_preview_pending");
 assert.equal((await unresolvedPendingDriver.scanWechatIncoming(["A测试客户"])).reason, "unread_preview_pending");
-assert.equal((await unresolvedPendingDriver.scanWechatIncoming(["A测试客户"])).reason, "unread_preview_unresolved", "a permanently unreadable pending event must not starve every other contact forever");
+assert.equal((await unresolvedPendingDriver.scanWechatIncoming(["A测试客户"])).reason, "unread_preview_pending");
+const recoveredAfterTransientOcrFailures = await unresolvedPendingDriver.scanWechatIncoming(["A测试客户"]);
+assert.equal(recoveredAfterTransientOcrFailures.ok, true, "a red-dot message must remain recoverable after transient OCR failures");
+assert.equal(recoveredAfterTransientOcrFailures.message, "你好");
 assert.equal((await unresolvedPendingDriver.scanWechatIncoming(["A测试客户"])).reason, "no_unread_message");
-assert.deepEqual(unresolvedPendingModes, ["prime", "scan", "verify", "verify", "verify", "scan"]);
+assert.deepEqual(unresolvedPendingModes, ["prime", "scan", "verify", "verify", "verify", "verify", "scan"]);
+
+const reboundPendingModes = [];
+const reboundMessageSignature = createHash("sha256").update("第二条", "utf8").digest("hex");
+const reboundEvidenceRuntimeId = `visual:v1:${"d".repeat(64)}`;
+const reboundPendingResults = [
+  { ok: true, source: "session_prime", pid: 77, hWnd: 78, sessionBaselines: [], sessionMessageBaselines: [] },
+  {
+    ...unresolvedPendingResult,
+    message: "第一条",
+    runtimeId: pendingEvidenceRuntimeId,
+    messageSignature: pendingBubbleSignature,
+    pid: 77,
+    hWnd: 78,
+    context: [{ role: "user", content: "第一条", key: pendingEvidenceRuntimeId }]
+  },
+  {
+    ok: false,
+    reason: "incoming_message_changed",
+    conversation: "A测试客户",
+    message: "第二条",
+    runtimeId: reboundEvidenceRuntimeId,
+    messageSignature: reboundMessageSignature,
+    latestRole: "user",
+    pid: 77,
+    hWnd: 78
+  },
+  {
+    ok: true,
+    conversation: "A测试客户",
+    message: "第二条",
+    runtimeId: reboundEvidenceRuntimeId,
+    messageSignature: reboundMessageSignature,
+    latestRole: "user",
+    pid: 77,
+    hWnd: 78,
+    source: "verify",
+    context: [{ role: "user", content: "第二条", key: reboundEvidenceRuntimeId }]
+  }
+];
+const reboundPendingDriver = createWechatVisualAutoReplyDriver((_script, env) => {
+  reboundPendingModes.push(env.XIAOXI_AUTO_REPLY_MODE);
+  return reboundPendingResults.shift();
+});
+assert.equal((await reboundPendingDriver.primeWechatSession(["A测试客户"])).ok, true);
+assert.equal((await reboundPendingDriver.scanWechatIncoming(["A测试客户"])).reason, "unread_preview_pending");
+const reboundPending = await reboundPendingDriver.scanWechatIncoming(["A测试客户"]);
+assert.equal(reboundPending.reason, "unread_preview_pending");
+assert.equal(reboundPending.pendingReason, "incoming_message_rebased");
+const reboundRecovered = await reboundPendingDriver.scanWechatIncoming(["A测试客户"]);
+assert.equal(reboundRecovered.ok, true);
+assert.equal(reboundRecovered.message, "第二条");
+assert.deepEqual(reboundRecovered.context.map((item) => item.content), ["第一条", "第二条"], "a pending rebind must preserve the customer burst for the reply layer");
+assert.deepEqual(reboundPendingModes, ["prime", "scan", "verify", "verify"]);
 
 const previewSignature = createHash("sha256").update("你是谁", "utf8").digest("hex");
 const initialMessageSignature = createHash("sha256").update("initial-message-view", "utf8").digest("hex");
@@ -1803,6 +1915,61 @@ const startupCandidate = await startupBoundaryDriver.scanWechatIncoming(["Bounda
 assert.equal(startupCandidate.ok, true, "a message appearing inside prime must be queued, not baselined away");
 assert.equal(startupCandidate.message, "new during start");
 assert.equal(startupBoundaryCalls.length, 2, "the startup occurrence must be returned before another visual scan");
+
+const startupDriftPreview = createHash("sha256").update("startup-drift-preview", "utf8").digest("hex");
+const startupDriftMessage = createHash("sha256").update("startup-drift-message", "utf8").digest("hex");
+const startupDriftRuntime = `visual:v1:${"1".repeat(64)}`;
+const startupNewAfterArmingRuntime = `visual:v1:${"2".repeat(64)}`;
+const startupDriftResults = [
+  {
+    ok: true,
+    source: "session_prime",
+    startupBoundarySupported: true,
+    pid: 113,
+    hWnd: 114,
+    sessionBaselines: [{ conversation: "DriftCustomer", signature: startupDriftPreview, preview: "原始客户问题", unread: false }],
+    sessionMessageBaselines: [{
+      conversation: "DriftCustomer",
+      signature: startupDriftMessage,
+      message: "环氧地坪有铁屑应该怎么处理",
+      latestRole: "user"
+    }]
+  },
+  { ok: false, reason: "no_unread_message", pid: 113, hWnd: 114 },
+  {
+    ok: true,
+    conversation: "DriftCustomer",
+    message: "环氧地坪有铁屑应该怎处理",
+    runtimeId: startupDriftRuntime,
+    previewSignature: startupDriftPreview,
+    messageSignature: createHash("sha256").update("startup-drift-message-after-ocr", "utf8").digest("hex"),
+    pid: 113,
+    hWnd: 114,
+    source: "current_message_change",
+    latestRole: "user",
+    context: [{ role: "user", content: "环氧地坪有铁屑应该怎处理", key: startupDriftRuntime }]
+  },
+  {
+    ok: true,
+    conversation: "DriftCustomer",
+    message: "请问你们的施工报价和工期是多少",
+    runtimeId: startupNewAfterArmingRuntime,
+    previewSignature: startupDriftPreview,
+    messageSignature: createHash("sha256").update("startup-new-message-after-arming", "utf8").digest("hex"),
+    pid: 113,
+    hWnd: 114,
+    source: "current_message_change",
+    latestRole: "user",
+    context: [{ role: "user", content: "请问你们的施工报价和工期是多少", key: startupNewAfterArmingRuntime }]
+  }
+];
+const startupDriftDriver = createWechatVisualAutoReplyDriver(() => startupDriftResults.shift());
+assert.equal((await startupDriftDriver.primeWechatSession(["DriftCustomer"])).ok, true);
+const startupDriftCandidate = await startupDriftDriver.scanWechatIncoming(["DriftCustomer"]);
+assert.equal(startupDriftCandidate.ok, false, "startup OCR drift must not enter AI as a new customer message");
+const startupAfterArmingCandidate = await startupDriftDriver.scanWechatIncoming(["DriftCustomer"]);
+assert.equal(startupAfterArmingCandidate.ok, true, "a genuinely different message after startup arming must remain eligible");
+assert.equal(startupAfterArmingCandidate.message, "请问你们的施工报价和工期是多少");
 
 const repeatedTurnSignature = "d".repeat(64);
 const repeatedTurnEvidence = `visual:v1:${"9".repeat(64)}`;

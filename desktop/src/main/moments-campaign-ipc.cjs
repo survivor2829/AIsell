@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { ipcMain } = require("electron");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
+const { floatingProgressPosition } = require("./floating-progress-window.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
 const { runActiveTouchDev } = require("./active-touch-ipc.cjs");
 const {
@@ -158,13 +159,8 @@ function commentSourceFromPostSnapshot(snapshot) {
     || snapshot?.preview
     || ""
   );
-  if (!identityText) {
-    return { ok: false, reason: "moments_comment_content_incomplete" };
-  }
-  const source = String(snapshot?.source || "");
-  const stableAnchorText = normalizedMomentsReadingText(snapshot?.stable_anchor_text);
-  if (source.startsWith("visual:") && !stableAnchorText) {
-    return { ok: false, reason: "moments_comment_content_incomplete" };
+  if (identityText.length < 2) {
+    return { ok: false, reason: "moments_comment_visible_text_missing" };
   }
   return { ok: true, text: identityText };
 }
@@ -208,75 +204,6 @@ function momentsReadingSnapshotMatch(first, second, scrollDelta = 0) {
     return { matched: true, mode: "visual_text_displacement" };
   }
   return { matched: false, mode: "" };
-}
-
-function mergeMomentsReadingFragments(snapshots = []) {
-  const fragments = [];
-  for (const snapshot of snapshots) {
-    if (!normalizedMomentsReadingText(snapshot?.stable_anchor_text)) continue;
-    const text = normalizedMomentsReadingText(snapshot?.identity_text);
-    if (!text || fragments.some((fragment) => fragment === text || fragment.includes(text))) continue;
-    for (let index = fragments.length - 1; index >= 0; index -= 1) {
-      if (text.includes(fragments[index])) fragments.splice(index, 1);
-    }
-    fragments.push(text);
-  }
-  return fragments.join("\n");
-}
-
-function createMomentsReadingSession(snapshot, window) {
-  return {
-    rootFingerprint: String(snapshot?.post_fingerprint || ""),
-    snapshots: [snapshot],
-    lastSnapshot: snapshot,
-    window,
-    microScrollCount: 0,
-    lastScrollDelta: 0
-  };
-}
-
-function appendMomentsReadingSnapshot(session, snapshot, window) {
-  const match = momentsReadingSnapshotMatch(
-    session?.lastSnapshot,
-    snapshot,
-    session?.lastScrollDelta
-  );
-  if (!match.matched) return match;
-  session.snapshots.push(snapshot);
-  session.lastSnapshot = snapshot;
-  session.window = window || session.window;
-  session.lastScrollDelta = 0;
-  return match;
-}
-
-function momentsTargetPostArgs(snapshot, expectedScrollDelta = 0) {
-  const source = String(snapshot?.source || "");
-  const runtimeId = String(snapshot?.runtime_id || "");
-  const identityText = normalizedMomentsReadingText(snapshot?.identity_text);
-  const avatarHash = String(snapshot?.avatar_hash || "");
-  const visualTarget = source.startsWith("visual:")
-    && snapshot?.structure_verified === true
-    && identityText
-    && /^[0-9a-f]{64}$/u.test(avatarHash);
-  if (!visualTarget && !runtimeId) return [];
-  const scrollDelta = Number(expectedScrollDelta);
-  const targetPost = {
-    post_fingerprint: String(snapshot?.post_fingerprint || ""),
-    source,
-    runtime_id: runtimeId,
-    structure_verified: snapshot?.structure_verified === true,
-    identity_text: identityText,
-    stable_anchor_text: normalizedMomentsReadingText(snapshot?.stable_anchor_text),
-    avatar_hash: avatarHash,
-    bounds: snapshot?.bounds,
-    menu_bounds: snapshot?.menu_bounds,
-    avatar_bounds: snapshot?.avatar_bounds,
-    expected_scroll_delta: Number.isFinite(scrollDelta) ? scrollDelta : 0
-  };
-  return [
-    "--target-post-base64",
-    Buffer.from(JSON.stringify(targetPost), "utf8").toString("base64")
-  ];
 }
 
 function campaignPostMarker(snapshot) {
@@ -534,7 +461,6 @@ function createMomentsCampaignController(options = {}) {
       };
 
       const processedPostMarkers = [];
-      let readingSession = null;
       let emptyScans = 0;
       let repeatedFingerprintScans = 0;
       let noProgressScreens = 0;
@@ -542,76 +468,12 @@ function createMomentsCampaignController(options = {}) {
       let pendingObservation = null;
       let successfulCountAtScreenStart = 0;
 
-      const recordReadingSkip = (reason, failureStage) => {
-        if (!readingSession) return;
-        const snapshots = readingSession.snapshots.slice();
-        for (const snapshot of snapshots) {
-          processedPostMarkers.push(campaignPostMarker(snapshot));
-        }
-        writeState({
-          processed_count: state.processed_count + 1,
-          comment_skipped_count: state.comment_skipped_count + 1,
-          skipped_count: state.skipped_count + 1,
-          last_reason: reason
-        }, null);
-        record("campaign.reading_skipped", {
-          reason,
-          failure_stage: failureStage,
-          post_fingerprint: readingSession.rootFingerprint,
-          fragment_count: snapshots.filter((snapshot) => normalizedMomentsReadingText(snapshot?.stable_anchor_text)).length,
-          content_length: mergeMomentsReadingFragments(snapshots).length,
-          micro_scroll_count: readingSession.microScrollCount
-        }, "warn");
-        readingSession = null;
-      };
-
-      const scrollForReading = async (mode) => {
-        if (!readingSession || readingSession.microScrollCount >= 3) {
-          return { ok: false, reason: "moments_reading_alignment_exhausted" };
-        }
-        persist({
-          last_reason: mode === "read_post_up" ? "reading_post_body" : "locating_interaction_menu"
-        });
-        const scrolled = await scrollMoments({
-          expectedWindow: readingSession.window,
-          minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0,
-          scrollMode: mode,
-          shouldContinue: () => !stopRequested && !pendingPauseReason
-        });
-        record("campaign.reading_scroll_finished", {
-          post_fingerprint: readingSession.rootFingerprint,
-          intent: mode,
-          delta: Number(scrolled?.delta) || 0,
-          micro_scroll_count: readingSession.microScrollCount + 1,
-          result: scrolled
-        }, scrolled?.ok ? "info" : "warn");
-        if (!scrolled?.ok) return scrolled;
-        const scrollDelta = Number(scrolled.delta);
-        if (!Number.isFinite(scrollDelta)) {
-          return { ok: false, reason: "moments_scroll_result_invalid" };
-        }
-        readingSession.microScrollCount += 1;
-        readingSession.lastScrollDelta += scrollDelta;
-        persist({
-          scroll_count: state.scroll_count + 1,
-          last_reason: mode === "read_post_up" ? "reading_post_body" : "locating_interaction_menu"
-        });
-        return scrolled;
-      };
-
       while (successfulPostCount() < state.max_posts) {
         if (shouldStop()) return;
         const usingPendingSnapshot = pendingSnapshots.length > 0;
         if (!usingPendingSnapshot) successfulCountAtScreenStart = successfulPostCount();
         persist({ current_post: state.processed_count + 1, last_reason: "observing_post" });
         const observationArgs = ["moments-dry-run", "--mode", "random", "--like"];
-        if (state.comment_enabled) observationArgs.push("--allow-body-only");
-        if (readingSession) {
-          observationArgs.push(...momentsTargetPostArgs(
-            readingSession.lastSnapshot,
-            readingSession.lastScrollDelta
-          ));
-        }
         const runObservation = () => runStep(
           withExpectedSurface(observationArgs), {
             cliName: "moments_dry_run_cli.dev.cjs",
@@ -662,32 +524,6 @@ function createMomentsCampaignController(options = {}) {
 
         if (!observed?.ok) {
           const reason = String(observed?.blocked_reason || observed?.reason || "moments_observation_failed");
-          if (readingSession && ["moments_post_not_found", "moments_post_position_unsafe"].includes(reason)) {
-            if (readingSession.microScrollCount < 3) {
-              const recovered = await scrollForReading("seek_post_menu_down");
-              if (!recovered?.ok) {
-                if (shouldStop()) return;
-                finish("paused", recovered?.reason || "moments_scroll_failed");
-                return;
-              }
-              continue;
-            }
-            const skippedWindow = readingSession.window;
-            recordReadingSkip("moments_comment_content_incomplete", "locate_interaction_menu");
-            const advanced = await scrollMoments({
-              expectedWindow: skippedWindow,
-              minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0,
-              scrollMode: "advance_feed",
-              shouldContinue: () => !stopRequested && !pendingPauseReason
-            });
-            if (!advanced?.ok) {
-              if (shouldStop()) return;
-              finish("paused", advanced?.reason || "moments_scroll_failed");
-              return;
-            }
-            persist({ scroll_count: state.scroll_count + 1, last_reason: "scrolled" });
-            continue;
-          }
           if (reason === "moments_post_position_unsafe") {
             emptyScans = 0;
             persist({ last_reason: reason });
@@ -706,87 +542,16 @@ function createMomentsCampaignController(options = {}) {
             return;
           }
 
-          if (readingSession) {
-            const readingMatch = appendMomentsReadingSnapshot(
-              readingSession,
-              observed.post_snapshot,
-              observed.window
-            );
-            if (!readingMatch.matched) {
-              recordReadingSkip("moments_post_changed_while_reading", "lock_post");
-              continue;
-            }
-            const fragmentCount = readingSession.snapshots.filter(
-              (snapshot) => normalizedMomentsReadingText(snapshot?.stable_anchor_text)
-            ).length;
-            const contentLength = mergeMomentsReadingFragments(readingSession.snapshots).length;
-            record(fragmentCount > 0
-              ? "campaign.reading_fragment_collected"
-              : "campaign.reading_alignment_confirmed", {
-              post_fingerprint: readingSession.rootFingerprint,
-              match_mode: readingMatch.mode,
-              fragment_count: fragmentCount,
-              content_length: contentLength
-            });
-          }
-
           const processedMatch = findProcessedPostMatch(processedPostMarkers, observed.post_snapshot);
           if (!processedMatch.matched) {
             repeatedFingerprintScans = 0;
-            let accumulatedCommentSource = null;
-            if (state.comment_enabled) {
-              const directCommentSource = commentSourceFromPostSnapshot(observed.post_snapshot);
-              const needsMoreReading = !directCommentSource.ok
-                || observed.plan?.target_partial_visible === true;
-              if (needsMoreReading && !readingSession) {
-                readingSession = createMomentsReadingSession(observed.post_snapshot, observed.window);
-              }
-              if (readingSession) {
-                const mergedText = mergeMomentsReadingFragments(readingSession.snapshots);
-                if (mergedText) accumulatedCommentSource = { ok: true, text: mergedText };
-              }
-              if (needsMoreReading) {
-                if (readingSession.microScrollCount < 3) {
-                  const intent = directCommentSource.ok
-                    ? "seek_post_menu_down"
-                    : "read_post_up";
-                  const readScroll = await scrollForReading(intent);
-                  if (!readScroll?.ok) {
-                    if (shouldStop()) return;
-                    finish("paused", readScroll?.reason || "moments_scroll_failed");
-                    return;
-                  }
-                  continue;
-                }
-                const skippedWindow = readingSession.window;
-                recordReadingSkip(
-                  directCommentSource.ok ? "moments_interaction_menu_not_found" : directCommentSource.reason,
-                  directCommentSource.ok ? "locate_interaction_menu" : "read_post_body"
-                );
-                const advanced = await scrollMoments({
-                  expectedWindow: skippedWindow,
-                  minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0,
-                  scrollMode: "advance_feed",
-                  shouldContinue: () => !stopRequested && !pendingPauseReason
-                });
-                if (!advanced?.ok) {
-                  if (shouldStop()) return;
-                  finish("paused", advanced?.reason || "moments_scroll_failed");
-                  return;
-                }
-                persist({ scroll_count: state.scroll_count + 1, last_reason: "scrolled" });
-                continue;
-              }
-            }
-            let prepared = observed;
-            let preparedObservationId = observationId;
+            const preparedObservationId = observationId;
             let commentText = "";
             let commentSkipped = false;
             let lastReason = "post_processed";
 
             if (state.comment_enabled) {
-              const commentSource = accumulatedCommentSource
-                || commentSourceFromPostSnapshot(observed.post_snapshot);
+              const commentSource = commentSourceFromPostSnapshot(observed.post_snapshot);
               if (!commentSource.ok) {
                 commentSkipped = true;
                 lastReason = commentSource.reason;
@@ -819,90 +584,14 @@ function createMomentsCampaignController(options = {}) {
                 }
               }
 
-              if (commentText) {
-                persist({ last_reason: "locating_interaction_menu" });
-                const prepareArgs = ["moments-dry-run", "--mode", "random"];
-                if (state.like_enabled) prepareArgs.push("--like");
-                prepareArgs.push(
-                  "--comment-enabled",
-                  "--comment-text-base64",
-                  Buffer.from(commentText, "utf8").toString("base64")
-                );
-                prepareArgs.push(...momentsTargetPostArgs(
-                  readingSession?.lastSnapshot || observed.post_snapshot,
-                  0
-                ));
-                prepared = await runStep(withExpectedSurface(prepareArgs), {
-                  cliName: "moments_dry_run_cli.dev.cjs",
-                  dataDir: baseDir,
-                  owner: lockOwner,
-                  phase: "moments:prepare-comment",
-                  timeoutMs: 45_000
-                });
-                const preparedFingerprint = String(prepared?.post_snapshot?.post_fingerprint || "");
-                preparedObservationId = String(prepared?.post_snapshot?.observation_id || "");
-                const preparedPostMatch = prepared?.ok
-                  ? momentsReadingSnapshotMatch(
-                      readingSession?.lastSnapshot || observed.post_snapshot,
-                      prepared.post_snapshot,
-                      0
-                    )
-                  : { matched: false, mode: "" };
-                if (!prepared?.ok || !preparedObservationId
-                  || (preparedFingerprint !== fingerprint && !preparedPostMatch.matched)) {
-                  commentSkipped = true;
-                  commentText = "";
-                  lastReason = preparedFingerprint && preparedFingerprint !== fingerprint && !preparedPostMatch.matched
-                    ? "moments_post_changed_before_comment"
-                    : String(prepared?.blocked_reason || prepared?.reason || "moments_comment_prepare_failed");
-                  record("campaign.comment_prepare_failed", {
-                    reason: lastReason,
-                    original_post_fingerprint: fingerprint,
-                    prepared_post_fingerprint: preparedFingerprint
-                  }, "warn");
-                  preparedObservationId = "";
-                  if (state.like_enabled) {
-                    const likePrepared = await runStep(
-                      withExpectedSurface([
-                        "moments-dry-run",
-                        "--mode",
-                        "random",
-                        "--like",
-                        ...momentsTargetPostArgs(
-                          readingSession?.lastSnapshot || observed.post_snapshot,
-                          0
-                        )
-                      ]),
-                      {
-                        cliName: "moments_dry_run_cli.dev.cjs",
-                        dataDir: baseDir,
-                        owner: lockOwner,
-                        phase: "moments:recover-like-context",
-                        timeoutMs: 45_000
-                      }
-                    );
-                    if (
-                      likePrepared?.ok
-                      && (String(likePrepared.post_snapshot?.post_fingerprint || "") === fingerprint
-                        || momentsReadingSnapshotMatch(
-                          readingSession?.lastSnapshot || observed.post_snapshot,
-                          likePrepared.post_snapshot,
-                          0
-                        ).matched)
-                    ) {
-                      prepared = likePrepared;
-                      preparedObservationId = String(likePrepared.post_snapshot?.observation_id || "");
-                    }
-                  }
-                }
-              }
             }
 
             let likedCount = 0;
             let alreadyLikedCount = 0;
             let itemSkipped = 0;
-            const menuOnlyTarget = prepared?.post_snapshot?.menu_only === true;
+            const menuOnlyTarget = observed.post_snapshot?.menu_only === true;
             if (state.like_enabled && preparedObservationId) {
+              persist({ last_reason: "executing_like" });
               const likeStartedAt = Date.now();
               const liked = await runStep(
                 ["moments-like", "--observation-id", preparedObservationId],
@@ -1044,13 +733,7 @@ function createMomentsCampaignController(options = {}) {
               }
             }
 
-            const completedReadingSnapshots = readingSession?.snapshots?.length
-              ? readingSession.snapshots
-              : [observed.post_snapshot];
-            for (const snapshot of completedReadingSnapshots) {
-              processedPostMarkers.push(campaignPostMarker(snapshot));
-            }
-            readingSession = null;
+            processedPostMarkers.push(campaignPostMarker(observed.post_snapshot));
             const likeSucceededForPost = !state.like_enabled || likedCount + alreadyLikedCount > 0;
             const commentSucceededForPost = !state.comment_enabled || commentedCount > 0;
             const completedPostCount = likeSucceededForPost && commentSucceededForPost ? 1 : 0;
@@ -1275,13 +958,81 @@ function createMomentsCampaignController(options = {}) {
 }
 
 function registerMomentsCampaignIpc(options = {}) {
+  const BrowserWindow = options.BrowserWindow;
+  const displayScreen = options.screen;
+  const preloadPath = String(options.preloadPath || "");
+  const rendererPath = String(options.rendererPath || "");
   const getMainWindow = typeof options.getMainWindow === "function" ? options.getMainWindow : () => null;
   const consumedTokens = new Set();
+  let floatingWindow = null;
+  let closingFloatingWindow = false;
+
+  function showMainWindow() {
+    const mainWindow = getMainWindow();
+    if (!mainWindow || mainWindow.isDestroyed?.()) return;
+    mainWindow.show?.();
+    mainWindow.focus?.();
+  }
+
+  function closeFloatingWindow() {
+    if (!floatingWindow || floatingWindow.isDestroyed?.()) return;
+    closingFloatingWindow = true;
+    try { floatingWindow.close?.(); } catch { closingFloatingWindow = false; }
+  }
+
+  function recoverFloatingLoadFailure(target) {
+    if (floatingWindow !== target || target?.isDestroyed?.()) return;
+    controller.pause("progress_window_load_failed");
+    closeFloatingWindow();
+    showMainWindow();
+  }
+
+  function createFloatingWindow() {
+    if (floatingWindow && !floatingWindow.isDestroyed?.()) {
+      floatingWindow.showInactive?.() || floatingWindow.show?.();
+      return floatingWindow;
+    }
+    if (typeof BrowserWindow !== "function" || !preloadPath || !rendererPath) return null;
+    floatingWindow = new BrowserWindow({
+      width: 292,
+      height: 286,
+      show: false,
+      alwaysOnTop: true,
+      autoHideMenuBar: true,
+      frame: false,
+      resizable: false,
+      skipTaskbar: true,
+      title: "朋友圈互动进度",
+      backgroundColor: "#ffffff",
+      webPreferences: { preload: preloadPath, sandbox: false, contextIsolation: true, nodeIntegration: false }
+    });
+    floatingWindow.setMenu?.(null);
+    const workArea = displayScreen?.getPrimaryDisplay?.()?.workArea;
+    if (workArea) {
+      const position = floatingProgressPosition(workArea);
+      floatingWindow.setPosition?.(position.x, position.y);
+    }
+    floatingWindow.once?.("close", () => {
+      if (!closingFloatingWindow) controller.pause("progress_window_closed");
+      showMainWindow();
+    });
+    floatingWindow.on?.("closed", () => { floatingWindow = null; closingFloatingWindow = false; });
+    const devUrl = process.env.VITE_DEV_SERVER_URL;
+    try {
+      const loadResult = devUrl && typeof floatingWindow.loadURL === "function"
+        ? floatingWindow.loadURL(`${devUrl}${devUrl.includes("?") ? "&" : "?"}floating=moments`)
+        : floatingWindow.loadFile?.(rendererPath, { query: { floating: "moments" } });
+      Promise.resolve(loadResult).catch(() => recoverFloatingLoadFailure(floatingWindow));
+    } catch { recoverFloatingLoadFailure(floatingWindow); }
+    return floatingWindow;
+  }
+
   const controller = createMomentsCampaignController({
     ...options,
     emit: (state) => {
       const window = getMainWindow();
       if (window && !window.isDestroyed()) window.webContents.send("moments-campaign:update", state);
+      if (floatingWindow && !floatingWindow.isDestroyed?.()) floatingWindow.webContents.send("moments-campaign:update", state);
     }
   });
 
@@ -1306,7 +1057,16 @@ function registerMomentsCampaignIpc(options = {}) {
     if (!trustedClick(event, payload.clickToken)) {
       return { ok: false, reason: "trusted_user_click_required", state: controller.status().state };
     }
-    return controller.start(payload);
+    const result = controller.start(payload);
+    if (result?.ok && result.state?.status === "running") {
+      const progressWindow = createFloatingWindow();
+      if (progressWindow && !progressWindow.isDestroyed?.()) {
+        progressWindow.webContents.send("moments-campaign:update", result.state);
+        getMainWindow()?.hide?.();
+        progressWindow.showInactive?.() || progressWindow.show?.();
+      }
+    }
+    return result;
   });
   ipcMain.handle("moments-campaign:configure-daily", (_event, payload = {}) => {
     return controller.configureDaily(payload);
@@ -1315,10 +1075,24 @@ function registerMomentsCampaignIpc(options = {}) {
     if (!trustedClick(event, payload.clickToken)) {
       return { ok: false, reason: "trusted_user_click_required", state: controller.status().state };
     }
-    return controller.runDailyNow();
+    const result = controller.runDailyNow();
+    if (result?.ok && result.state?.status === "running") {
+      const progressWindow = createFloatingWindow();
+      if (progressWindow && !progressWindow.isDestroyed?.()) {
+        progressWindow.webContents.send("moments-campaign:update", result.state);
+        getMainWindow()?.hide?.();
+        progressWindow.showInactive?.() || progressWindow.show?.();
+      }
+    }
+    return result;
   });
   ipcMain.handle("moments-campaign:pause", () => controller.pause());
   ipcMain.handle("moments-campaign:stop", () => controller.stop());
+  ipcMain.handle("moments-campaign:show-main", () => {
+    closeFloatingWindow();
+    showMainWindow();
+    return { ok: true, state: controller.status().state };
+  });
   return controller;
 }
 
@@ -1326,7 +1100,6 @@ module.exports = {
   DEFAULT_MAX_POSTS,
   MAX_POSTS_PER_RUN,
   createMomentsCampaignController,
-  mergeMomentsReadingFragments,
   momentsReadingSnapshotMatch,
   publicState,
   registerMomentsCampaignIpc

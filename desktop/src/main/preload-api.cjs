@@ -64,6 +64,7 @@ function createMomentsCampaignApi(ipcRenderer) {
     }),
     pause: () => ipcRenderer.invoke("moments-campaign:pause"),
     stop: () => ipcRenderer.invoke("moments-campaign:stop"),
+    showMain: () => ipcRenderer.invoke("moments-campaign:show-main"),
     onUpdate: (callback) => {
       const handler = (_event, payload) => callback(payload);
       ipcRenderer.on("moments-campaign:update", handler);
@@ -860,6 +861,7 @@ function createPreloadApis(ipcRenderer) {
         contactId: String(payload?.contactId || "")
       }),
       pause: () => ipcRenderer.invoke("auto-reply:pause"),
+      showMain: () => ipcRenderer.invoke("auto-reply:show-main"),
       acknowledgeManualFollowup: () => ipcRenderer.invoke("auto-reply:acknowledge-manual-followup", { clickToken: consumeAutoReplyClick() }),
       resumeContact: (contactId) => ipcRenderer.invoke("auto-reply:resume-contact", {
         clickToken: consumeAutoReplyClick(),

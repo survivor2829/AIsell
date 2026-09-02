@@ -1,5 +1,6 @@
 const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require("./moments_visual_probe.dev.cjs");
 const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
+const { createHash } = require("node:crypto");
 
 const WECHAT_VISUAL_AUTO_REPLY_POWERSHELL = String.raw`
 $OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8
@@ -407,70 +408,265 @@ function Get-VisualSendWindowDpi([IntPtr]$hWnd) {
 }
 
 function Get-VisualSendRowStats($frame, [int]$y, [int]$left, [int]$right) {
-  if ($y -lt 0 -or $y -ge $frame.height -or $right -le $left) { return @{ samples = 0; dividerRatio = 0.0; luminance = 0.0 } }
+  if ($y -lt 0 -or $y -ge $frame.height -or $right -le $left) {
+    return @{ samples = 0; luminance = 0.0; variance = 0.0; neutralRatio = 0.0; lightNeutralRatio = 0.0 }
+  }
   $samples = 0
-  $dividerPixels = 0
+  $neutralPixels = 0
+  $lightNeutralPixels = 0
   $luminanceTotal = 0.0
+  $luminanceSquaredTotal = 0.0
   for ($x = [Math]::Max(0, $left); $x -lt [Math]::Min($frame.width, $right); $x += 4) {
-    $pixel = Get-MomentsPixel $frame $x $y
-    if ($pixel -eq $null) { continue }
-    $maximum = [Math]::Max($pixel.r, [Math]::Max($pixel.g, $pixel.b))
-    $minimum = [Math]::Min($pixel.r, [Math]::Min($pixel.g, $pixel.b))
-    $luminance = ($pixel.r + $pixel.g + $pixel.b) / 3.0
-    if (($maximum - $minimum) -le 10 -and $luminance -ge 180 -and $luminance -le 244) { $dividerPixels += 1 }
+    $pixelOffset = ($y * $frame.stride) + ($x * 4)
+    $blue = [int]$frame.bytes[$pixelOffset]
+    $green = [int]$frame.bytes[$pixelOffset + 1]
+    $red = [int]$frame.bytes[$pixelOffset + 2]
+    $maximum = [Math]::Max($red, [Math]::Max($green, $blue))
+    $minimum = [Math]::Min($red, [Math]::Min($green, $blue))
+    $luminance = ($red + $green + $blue) / 3.0
+    $neutral = ($maximum - $minimum) -le 12
+    if ($neutral) { $neutralPixels += 1 }
+    if ($neutral -and $luminance -ge 238) { $lightNeutralPixels += 1 }
     $luminanceTotal += $luminance
+    $luminanceSquaredTotal += ($luminance * $luminance)
     $samples += 1
   }
-  if ($samples -eq 0) { return @{ samples = 0; dividerRatio = 0.0; luminance = 0.0 } }
+  if ($samples -eq 0) {
+    return @{ samples = 0; luminance = 0.0; variance = 0.0; neutralRatio = 0.0; lightNeutralRatio = 0.0 }
+  }
+  $mean = $luminanceTotal / [double]$samples
   return @{
     samples = $samples
-    dividerRatio = [double]$dividerPixels / [double]$samples
+    luminance = $mean
+    variance = [Math]::Max(0.0, ($luminanceSquaredTotal / [double]$samples) - ($mean * $mean))
+    neutralRatio = [double]$neutralPixels / [double]$samples
+    lightNeutralRatio = [double]$lightNeutralPixels / [double]$samples
+  }
+}
+
+function Get-VisualSendHorizontalEdgeStats($frame, [int]$y, [int]$left, [int]$right, [int]$offset) {
+  if ($y -lt $offset -or $y -ge ($frame.height - $offset) -or $right -le $left) {
+    return @{ samples = 0; edgeRatio = 0.0; luminance = 0.0 }
+  }
+  $samples = 0
+  $edgePixels = 0
+  $luminanceTotal = 0.0
+  for ($x = [Math]::Max(0, $left); $x -lt [Math]::Min($frame.width, $right); $x += 4) {
+    $centerOffset = ($y * $frame.stride) + ($x * 4)
+    $aboveOffset = (($y - $offset) * $frame.stride) + ($x * 4)
+    $belowOffset = (($y + $offset) * $frame.stride) + ($x * 4)
+    $blue = [int]$frame.bytes[$centerOffset]
+    $green = [int]$frame.bytes[$centerOffset + 1]
+    $red = [int]$frame.bytes[$centerOffset + 2]
+    $maximum = [Math]::Max($red, [Math]::Max($green, $blue))
+    $minimum = [Math]::Min($red, [Math]::Min($green, $blue))
+    $centerLuminance = ($red + $green + $blue) / 3.0
+    $aboveLuminance = ([int]$frame.bytes[$aboveOffset] + [int]$frame.bytes[$aboveOffset + 1] + [int]$frame.bytes[$aboveOffset + 2]) / 3.0
+    $belowLuminance = ([int]$frame.bytes[$belowOffset] + [int]$frame.bytes[$belowOffset + 1] + [int]$frame.bytes[$belowOffset + 2]) / 3.0
+    if (($maximum - $minimum) -le 12 -and
+        $centerLuminance -ge 180 -and $centerLuminance -le 252 -and
+        $centerLuminance -le ($aboveLuminance - 2.0) -and
+        $centerLuminance -le ($belowLuminance - 2.0)) {
+      $edgePixels += 1
+    }
+    $luminanceTotal += $centerLuminance
+    $samples += 1
+  }
+  if ($samples -eq 0) { return @{ samples = 0; edgeRatio = 0.0; luminance = 0.0 } }
+  return @{
+    samples = $samples
+    edgeRatio = [double]$edgePixels / [double]$samples
     luminance = $luminanceTotal / [double]$samples
   }
 }
 
-function Get-VisualSendChatBottom($frame, [double]$sidebarRight) {
-  $left = [int][Math]::Max(0, [Math]::Round($sidebarRight + 8.0))
-  $right = [int][Math]::Min($frame.width, [Math]::Round([double]$frame.width - 8.0))
+function Test-VisualSendEditorArea($frame, [int]$dividerY, [int]$left, [int]$right, [double]$logicalScale) {
+  $validRows = 0
+  foreach ($logicalOffset in @(4.0, 8.0, 14.0)) {
+    $rowY = $dividerY + [Math]::Max(2, [int][Math]::Round($logicalOffset * $logicalScale))
+    if ($rowY -ge $frame.height) { return $false }
+    $row = Get-VisualSendRowStats $frame $rowY $left $right
+    if ($row.samples -eq 0 -or $row.luminance -lt 238.0 -or
+        $row.neutralRatio -lt 0.88 -or $row.lightNeutralRatio -lt 0.82 -or
+        $row.variance -gt 420.0) { return $false }
+    $validRows += 1
+  }
+  return $validRows -eq 3
+}
+
+function Get-VisualSendChatBottom($frame, [double]$sidebarRight, [double]$logicalScale = 1.0) {
+  $logicalScale = [Math]::Max(0.5, [Math]::Min(4.0, $logicalScale))
+  $left = [int][Math]::Max(0, [Math]::Round($sidebarRight + (8.0 * $logicalScale)))
+  $right = [int][Math]::Min($frame.width, [Math]::Round([double]$frame.width - (8.0 * $logicalScale)))
   $startY = [int][Math]::Floor([double]$frame.height * 0.55)
   $endY = [int][Math]::Ceiling([double]$frame.height * 0.92)
   $candidateY = -1
   for ($y = $startY; $y -le $endY; $y++) {
-    $row = Get-VisualSendRowStats $frame $y $left $right
-    if ($row.samples -eq 0 -or $row.dividerRatio -lt 0.72) { continue }
-    $above = Get-VisualSendRowStats $frame ([Math]::Max(0, $y - 3)) $left $right
-    $below = Get-VisualSendRowStats $frame ([Math]::Min($frame.height - 1, $y + 3)) $left $right
-    $contrastsAbove = $row.luminance -le ($above.luminance - 3.0)
-    $contrastsBelow = $row.luminance -le ($below.luminance - 3.0)
-    if ($contrastsAbove -and $contrastsBelow -and [Math]::Abs($above.luminance - $below.luminance) -le 12.0) {
-      $candidateY = $y
-    }
+    $edge = Get-VisualSendHorizontalEdgeStats $frame $y $left $right 3
+    if ($edge.samples -eq 0 -or $edge.edgeRatio -lt 0.78) { continue }
+    if (-not (Test-VisualSendEditorArea $frame $y $left $right $logicalScale)) { continue }
+    $candidateY = $y
   }
-  if ($candidateY -ge 0) { return [double][Math]::Max(0, $candidateY - 2) }
-  return [double]$frame.height * 0.60
+  if ($candidateY -ge 0) {
+    return [double][Math]::Max(0, $candidateY - [Math]::Max(1, [int][Math]::Round($logicalScale * 2.0)))
+  }
+  return [double][Math]::Max((220.0 * $logicalScale), [Math]::Min($frame.height - (100.0 * $logicalScale), $frame.height * 0.74))
 }
 
-function Get-VisualSendIncomingEvidenceSignature($line, [string]$role, [double]$dpi) {
+function Get-VisualSendIncomingEvidenceSignature([string]$message, [string]$role, [double]$dpi) {
   # Keep the pre-click identity byte-for-byte aligned with the observer. Pixel
   # bounds are diagnostic only: DPI and text reflow must not turn the same
   # customer bubble into a different occurrence.
   $evidenceSeed = [string]::Join([char]10, @(
     "visual-message-semantic-v1",
-    (Normalize-VisualSendText ([string]$line.text)),
+    (Normalize-VisualSendText $message),
     $role
   ))
   return Get-VisualSendSha256 $evidenceSeed
 }
 
-function Test-VisualSendLatestIncoming($frame, [double]$sidebarRight, [double]$dpi) {
-  if ([string]::IsNullOrWhiteSpace($expectedIncoming) -and $expectedIncomingSignature -notmatch "^[a-f0-9]{64}$") { return $false }
+function Get-VisualSendBubbleRect($frame, $line, [double]$sidebarRight, [double]$logicalScale) {
+  $left = [Math]::Max($sidebarRight, [double]$line.left - (12.0 * $logicalScale))
+  $top = [Math]::Max(0.0, [double]$line.top - (8.0 * $logicalScale))
+  $right = [Math]::Min([double]$frame.width, [double]$line.left + [double]$line.width + (12.0 * $logicalScale))
+  $bottom = [Math]::Min([double]$frame.height, [double]$line.top + [double]$line.height + (8.0 * $logicalScale))
+  return @{
+    left = $left
+    top = $top
+    width = [Math]::Max(1.0, $right - $left)
+    height = [Math]::Max(1.0, $bottom - $top)
+  }
+}
+
+function Resolve-VisualSendRefinedBubbleText([string]$rawText, [string]$refinedText) {
+  $raw = Normalize-VisualSendText $rawText
+  $refined = Normalize-VisualSendText $refinedText
+  if (-not $raw) { return $refined }
+  if (-not $refined -or $raw -ceq $refined) { return $raw }
+  $maximumLength = [Math]::Max($raw.Length, $refined.Length)
+  if ([Math]::Min($raw.Length, $refined.Length) -lt 4 -or
+      [Math]::Abs($raw.Length - $refined.Length) -gt 2) { return $raw }
+  if ($raw[0] -cne $refined[0] -or
+      $raw.Substring($raw.Length - 2) -cne $refined.Substring($refined.Length - 2)) { return $raw }
+  $maximumDistance = [Math]::Max(1, [int][Math]::Floor($maximumLength * 0.34))
+  if ((Get-VisualSendEditDistance $raw $refined) -le $maximumDistance) { return $refined }
+  return $raw
+}
+
+function Get-VisualSendRefinedBubbleText($frame, $bubbleRect, [string]$rawText) {
+  $ocr = Get-MomentsScaledOcrObservation $frame $bubbleRect 3
+  if (-not $ocr.ok) { return Normalize-VisualSendText $rawText }
+  return Resolve-VisualSendRefinedBubbleText $rawText ([string]$ocr.text)
+}
+
+function Merge-VisualSendMessageParts($parts, [bool]$sameRow = $false) {
+  $items = @($parts)
+  if ($items.Count -eq 0) { return $null }
+  $left = [double]::PositiveInfinity
+  $top = [double]::PositiveInfinity
+  $right = 0.0
+  $bottom = 0.0
+  $partCount = 0
+  $texts = New-Object System.Collections.Generic.List[string]
+  $orderedItems = if ($sameRow) {
+    @($items | Sort-Object left, top)
+  } else {
+    @($items | Sort-Object top, left)
+  }
+  foreach ($item in $orderedItems) {
+    $itemLeft = [double]$item.left
+    $itemTop = [double]$item.top
+    $itemRight = $itemLeft + [double]$item.width
+    $itemBottom = $itemTop + [double]$item.height
+    $left = [Math]::Min($left, $itemLeft)
+    $top = [Math]::Min($top, $itemTop)
+    $right = [Math]::Max($right, $itemRight)
+    $bottom = [Math]::Max($bottom, $itemBottom)
+    [void]$texts.Add((Normalize-VisualSendText ([string]$item.text)))
+    $itemPartCount = if ($item.PSObject.Properties["partCount"] -ne $null) { [int]$item.partCount } else { 1 }
+    $partCount += [Math]::Max(1, $itemPartCount)
+  }
+  return [pscustomobject]@{
+    text = [string]::Join("", $texts.ToArray())
+    left = $left
+    top = $top
+    width = [Math]::Max(1.0, $right - $left)
+    height = [Math]::Max(1.0, $bottom - $top)
+    partCount = $partCount
+  }
+}
+
+function Get-VisualSendMessageRows($messageLines, [double]$logicalScale) {
+  $rows = New-Object System.Collections.Generic.List[object]
+  $current = New-Object System.Collections.Generic.List[object]
+  foreach ($line in @($messageLines | Sort-Object top, left)) {
+    if ($current.Count -eq 0) { [void]$current.Add($line); continue }
+    $row = Merge-VisualSendMessageParts $current.ToArray() $true
+    $rowCenter = [double]$row.top + ([double]$row.height * 0.5)
+    $lineCenter = [double]$line.top + ([double]$line.height * 0.5)
+    $centerTolerance = [Math]::Max((8.0 * $logicalScale), [Math]::Min([double]$row.height, [double]$line.height) * 0.45)
+    $rowRight = [double]$row.left + [double]$row.width
+    $lineRight = [double]$line.left + [double]$line.width
+    $horizontalSeparation = [Math]::Max(0.0, [Math]::Max([double]$row.left, [double]$line.left) - [Math]::Min($rowRight, $lineRight))
+    $sameVisualRow = [Math]::Abs($lineCenter - $rowCenter) -le $centerTolerance -and
+      $horizontalSeparation -le (40.0 * $logicalScale)
+    if ($sameVisualRow) { [void]$current.Add($line); continue }
+    [void]$rows.Add($row)
+    $current.Clear()
+    [void]$current.Add($line)
+  }
+  if ($current.Count -gt 0) { [void]$rows.Add((Merge-VisualSendMessageParts $current.ToArray() $true)) }
+  return @($rows.ToArray())
+}
+
+function Test-VisualSendMessageRowsSameBubble($frame, $block, $row, [double]$sidebarRight, [double]$logicalScale) {
+  $blockBottom = [double]$block.top + [double]$block.height
+  $verticalGap = [double]$row.top - $blockBottom
+  if ($verticalGap -lt -(2.0 * $logicalScale) -or $verticalGap -gt (10.0 * $logicalScale)) { return $false }
+  $blockLeft = [double]$block.left
+  $blockRight = $blockLeft + [double]$block.width
+  $rowLeft = [double]$row.left
+  $rowRight = $rowLeft + [double]$row.width
+  $overlap = [Math]::Max(0.0, [Math]::Min($blockRight, $rowRight) - [Math]::Max($blockLeft, $rowLeft))
+  $minimumWidth = [Math]::Max(1.0, [Math]::Min([double]$block.width, [double]$row.width))
+  $aligned = $overlap -ge ($minimumWidth * 0.20) -or
+    [Math]::Abs($blockLeft - $rowLeft) -le (24.0 * $logicalScale) -or
+    [Math]::Abs($blockRight - $rowRight) -le (24.0 * $logicalScale)
+  if (-not $aligned) { return $false }
+  $blockRole = Get-VisualSendMessageRole $frame $block $sidebarRight $logicalScale
+  $rowRole = Get-VisualSendMessageRole $frame $row $sidebarRight $logicalScale
+  return $blockRole -ceq "unknown" -or $rowRole -ceq "unknown" -or $blockRole -ceq $rowRole
+}
+
+function Get-VisualSendMessageBlocks($frame, $messageLines, [double]$sidebarRight, [double]$logicalScale) {
+  $blocks = New-Object System.Collections.Generic.List[object]
+  $currentRows = New-Object System.Collections.Generic.List[object]
+  foreach ($row in @(Get-VisualSendMessageRows $messageLines $logicalScale)) {
+    if ($currentRows.Count -eq 0) { [void]$currentRows.Add($row); continue }
+    $block = Merge-VisualSendMessageParts $currentRows.ToArray()
+    if (Test-VisualSendMessageRowsSameBubble $frame $block $row $sidebarRight $logicalScale) {
+      [void]$currentRows.Add($row)
+      continue
+    }
+    [void]$blocks.Add($block)
+    $currentRows.Clear()
+    [void]$currentRows.Add($row)
+  }
+  if ($currentRows.Count -gt 0) { [void]$blocks.Add((Merge-VisualSendMessageParts $currentRows.ToArray())) }
+  return @($blocks.ToArray())
+}
+
+function Get-VisualSendLatestIncomingEvidence($frame, [double]$sidebarRight, [double]$dpi) {
+  if ([string]::IsNullOrWhiteSpace($expectedIncoming) -and $expectedIncomingSignature -notmatch "^[a-f0-9]{64}$") {
+    return @{ state = "ocr_unresolved" }
+  }
   # Use the same full-frame OCR geometry as the scanner. A cropped OCR pass can
   # recognize the same Chinese line differently, while draft input can move the
   # line without changing its identity.
   $ocr = Get-MomentsDownscaledOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height } $script:VisualSendOcrDownscale
-  if (-not $ocr.ok) { return $false }
-  $chatBottom = Get-VisualSendChatBottom $frame $sidebarRight
+  if (-not $ocr.ok) { return @{ state = "ocr_unresolved" } }
   $logicalScale = [Math]::Max(0.5, [Math]::Min(4.0, $dpi / 96.0))
+  $chatBottom = Get-VisualSendChatBottom $frame $sidebarRight $logicalScale
   $messageLines = New-Object System.Collections.Generic.List[object]
   foreach ($line in @($ocr.lines)) {
     if ($line -eq $null -or -not (Test-VisualSendPureMessageText ([string]$line.text))) { continue }
@@ -487,27 +683,42 @@ function Test-VisualSendLatestIncoming($frame, [double]$sidebarRight, [double]$d
       height = [double]$line.bounds.height
     })
   }
-  if ($messageLines.Count -eq 0) { return $false }
-  $latest = @($messageLines.ToArray() | Sort-Object top, left | Select-Object -Last 1)[0]
+  $messageBlocks = @(Get-VisualSendMessageBlocks $frame $messageLines.ToArray() $sidebarRight $logicalScale)
+  if ($messageBlocks.Count -eq 0) { return @{ state = "ocr_unresolved" } }
+  $latest = $messageBlocks[-1]
   $latestRole = Get-VisualSendMessageRole $frame $latest $sidebarRight $logicalScale
-  if ($latestRole -cne "user") { return $false }
+  if ($latestRole -ceq "assistant") { return @{ state = "proven_different" } }
+  if ($latestRole -cne "user") { return @{ state = "ocr_unresolved" } }
+  $bubbleRect = Get-VisualSendBubbleRect $frame $latest $sidebarRight $logicalScale
+  $observedText = Get-VisualSendRefinedBubbleText $frame $bubbleRect ([string]$latest.text)
   if ($expectedIncomingSignature -match "^[a-f0-9]{64}$") {
     # Keep this identity calculation byte-for-byte aligned with the scanner.
     # The sidebar text is the semantic message, while this bubble signature is
     # the final guard against the conversation changing before the send click.
-    if ((Get-VisualSendIncomingEvidenceSignature $latest $latestRole $dpi) -ceq $expectedIncomingSignature) { return $true }
+    if ((Get-VisualSendIncomingEvidenceSignature $observedText $latestRole $dpi) -ceq $expectedIncomingSignature) {
+      return @{ state = "matched" }
+    }
   }
   $expectedText = Normalize-VisualSendText $expectedIncoming
-  $observedText = Normalize-VisualSendText ([string]$latest.text)
-  if ($observedText -ceq $expectedText) { return $true }
+  $observedText = Normalize-VisualSendText $observedText
+  if ($observedText -ceq $expectedText) { return @{ state = "matched" } }
   # The observer already accepts bounded OCR drift across two captures. Mirror
   # that contract at preflight so a single glyph such as 清/尚 does not turn a
   # proven customer bubble into an artificial send block.
-  if ([Math]::Min($expectedText.Length, $observedText.Length) -lt 4 -or
-      [Math]::Abs($expectedText.Length - $observedText.Length) -gt 1) { return $false }
   $maximumLength = [Math]::Max($expectedText.Length, $observedText.Length)
-  return (Get-VisualSendEditDistance $expectedText $observedText) -le
-    [Math]::Max(1, [int][Math]::Floor($maximumLength * 0.15))
+  $distance = Get-VisualSendEditDistance $expectedText $observedText
+  if ([Math]::Min($expectedText.Length, $observedText.Length) -ge 4 -and
+      [Math]::Abs($expectedText.Length - $observedText.Length) -le 1 -and
+      $distance -le [Math]::Max(1, [int][Math]::Floor($maximumLength * 0.15))) {
+    return @{ state = "matched" }
+  }
+  $clearlyDifferent = [Math]::Min($expectedText.Length, $observedText.Length) -ge 4 -and
+    $maximumLength -gt 0 -and ([double]$distance / [double]$maximumLength) -ge 0.55
+  return @{ state = if ($clearlyDifferent) { "proven_different" } else { "ocr_unresolved" } }
+}
+
+function Test-VisualSendLatestIncoming($frame, [double]$sidebarRight, [double]$dpi) {
+  return [string](Get-VisualSendLatestIncomingEvidence $frame $sidebarRight $dpi).state -ceq "matched"
 }
 
 function Test-VisualSendGreenPixel($frame, [int]$x, [int]$y) {
@@ -801,6 +1012,12 @@ function Test-VisualSendOwnedPoint($lock, [int]$x, [int]$y) {
   return [int]$hitPid -eq $lock.pid
 }
 
+function Test-VisualSendPointInWindow($lock, [int]$x, [int]$y) {
+  $width = [int]($lock.rect.Right - $lock.rect.Left)
+  $height = [int]($lock.rect.Bottom - $lock.rect.Top)
+  return $x -ge 0 -and $y -ge 0 -and $x -lt $width -and $y -lt $height
+}
+
 function Test-VisualSendInputLease {
   return $script:VisualSendExpectedInputTick -ne [uint32]::MaxValue -and
     [Win32WechatVisualAutoReply]::GetLastInputTick() -eq $script:VisualSendExpectedInputTick
@@ -900,7 +1117,7 @@ function Write-VisualSendDraft($lock) {
   $relativeY = [int]($height * 0.87)
   if (-not (Test-VisualSendOwnedPoint $lock $relativeX $relativeY) -or
     [Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd) {
-    return @{ ok = $false; exact = $false }
+    return @{ ok = $false; exact = $false; stage = "composer_target_not_owned" }
   }
   $x = [int]($lock.rect.Left + $relativeX)
   $y = [int]($lock.rect.Top + $relativeY)
@@ -908,17 +1125,17 @@ function Write-VisualSendDraft($lock) {
   try { $oldClipboard = [string](Get-Clipboard -Raw -ErrorAction SilentlyContinue) } catch {}
   $clipboardOwned = $false
   try {
-    if (-not (Invoke-VisualSendComposerClick $lock $relativeX $relativeY)) { return @{ ok = $false; exact = $false } }
-    if (-not (Invoke-VisualSendKeys $lock $relativeX $relativeY "^a")) { return @{ ok = $false; exact = $false } }
+    if (-not (Invoke-VisualSendComposerClick $lock $relativeX $relativeY)) { return @{ ok = $false; exact = $false; stage = "composer_focus_failed" } }
+    if (-not (Invoke-VisualSendKeys $lock $relativeX $relativeY "^a")) { return @{ ok = $false; exact = $false; stage = "composer_select_all_failed" } }
     if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
-        -not (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)) { return @{ ok = $false; exact = $false } }
-    Set-Clipboard -Value $expectedReply
+        -not (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)) { return @{ ok = $false; exact = $false; stage = "composer_focus_lost" } }
+    try { Set-Clipboard -Value $expectedReply } catch { return @{ ok = $false; exact = $false; stage = "clipboard_write_failed" } }
     $clipboardOwned = $true
     Start-Sleep -Milliseconds 60
-    if (-not (Invoke-VisualSendKeys $lock $relativeX $relativeY "^v")) { return @{ ok = $false; exact = $false } }
+    if (-not (Invoke-VisualSendKeys $lock $relativeX $relativeY "^v")) { return @{ ok = $false; exact = $false; stage = "draft_paste_failed" } }
     Start-Sleep -Milliseconds 260
   } catch {
-    return @{ ok = $false; exact = $false }
+    return @{ ok = $false; exact = $false; stage = "draft_write_exception" }
   } finally {
     if ($clipboardOwned -and (Test-VisualSendInputLease) -and
         [Win32WechatVisualAutoReply]::GetForegroundWindow() -eq $lock.hWnd -and
@@ -927,10 +1144,12 @@ function Write-VisualSendDraft($lock) {
     }
   }
   if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd) {
-    return @{ ok = $false; exact = $false }
+    return @{ ok = $false; exact = $false; stage = "composer_focus_lost" }
   }
   $readback = Read-VisualSendDraft $lock
-  return @{ ok = $readback.ok -and $readback.exact; exact = $readback.exact }
+  if (-not $readback.ok) { return @{ ok = $false; exact = $false; stage = "draft_readback_failed" } }
+  if (-not $readback.exact) { return @{ ok = $false; exact = $false; stage = "draft_readback_mismatch" } }
+  return @{ ok = $true; exact = $true; stage = "draft_verified" }
 }
 
 function Clear-VisualSendDraft($lock) {
@@ -978,14 +1197,17 @@ $lock = Get-VisualSendLock
 if (-not $lock.ok) {
   Write-VisualSendResult @{ ok = $false; reason = $lock.reason; sendAttempted = $false; conversationVerified = $false; draftVerified = $false }
 }
-$currentInputTick = [Win32WechatVisualAutoReply]::GetLastInputTick()
+[uint32]$currentInputTick = [Win32WechatVisualAutoReply]::GetLastInputTick()
 [uint32]$providedInputTick = 0
-if (@("draft", "send") -contains $phase -and [uint32]::TryParse($expectedInputTickText, [ref]$providedInputTick)) {
+if ($phase -ceq "draft" -and [uint32]::TryParse($expectedInputTickText, [ref]$providedInputTick)) {
   $script:VisualSendExpectedInputTick = $providedInputTick
   if (-not (Test-VisualSendInputLease)) {
     Write-VisualSendResult @{ ok = $false; reason = "visual_send_external_input_detected"; sendAttempted = $false; conversationVerified = $false; draftVerified = $false; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
   }
 } else {
+  # The draft and final click run in separate short-lived processes. Last-input
+  # ticks are global Windows activity, not proof that this locked WeChat chat
+  # changed. Re-check the concrete target, draft and send button below instead.
   $script:VisualSendExpectedInputTick = $currentInputTick
 }
 $frame = Get-VisualSendFrame $lock
@@ -1001,11 +1223,14 @@ try {
     Write-VisualSendResult @{ ok = $false; reason = $binding.reason; sendAttempted = $false; conversationVerified = $false; conversationState = [string]$binding.headerState; draftVerified = $false; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
   }
   if (@("preflight", "draft") -contains $phase) {
-    $liveIncomingVerified = Test-VisualSendLatestIncoming $frame $sidebarRight $dpi
+    $liveIncoming = Get-VisualSendLatestIncomingEvidence $frame $sidebarRight $dpi
+    $liveIncomingVerified = [string]$liveIncoming.state -ceq "matched"
     # Never reuse the occurrence observed before DeepSeek generation. Even a
     # matched header must still show the expected latest customer bubble now.
     if (-not $liveIncomingVerified) {
-      Write-VisualSendResult @{ ok = $false; reason = "visual_send_incoming_changed"; sendAttempted = $false; conversationVerified = $true; conversationState = [string]$binding.headerState; incomingVerified = $false; draftVerified = $false; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+      $incomingChangeKind = if ([string]$liveIncoming.state -ceq "proven_different") { "proven_different" } else { "ocr_unresolved" }
+      $incomingReason = if ($incomingChangeKind -ceq "proven_different") { "visual_send_incoming_changed" } else { "visual_send_incoming_ocr_unresolved" }
+      Write-VisualSendResult @{ ok = $false; reason = $incomingReason; incomingChangeKind = $incomingChangeKind; composerTouched = $false; sendAttempted = $false; conversationVerified = $true; conversationState = [string]$binding.headerState; incomingVerified = $false; draftVerified = $false; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
     }
   }
   if ($phase -ceq "preflight") {
@@ -1014,9 +1239,9 @@ try {
   if ($phase -ceq "draft") {
     $written = Write-VisualSendDraft $lock
     if (-not $written.ok) {
-      Write-VisualSendResult @{ ok = $false; reason = "visual_send_draft_input_failed"; sendAttempted = $false; conversationVerified = $true; conversationState = [string]$binding.headerState; draftVerified = $false; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+      Write-VisualSendResult @{ ok = $false; reason = "visual_send_draft_input_failed"; draftStage = [string]$written.stage; sendAttempted = $false; conversationVerified = $true; conversationState = [string]$binding.headerState; draftVerified = $false; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
     }
-    Write-VisualSendResult @{ ok = $true; sendAttempted = $false; conversationVerified = $true; conversationState = [string]$binding.headerState; incomingVerified = $true; draftVerified = $true; verificationMode = $("visual_draft_{0}" -f $binding.proof); inputTick = [Win32WechatVisualAutoReply]::GetLastInputTick(); pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+    Write-VisualSendResult @{ ok = $true; draftStage = [string]$written.stage; sendAttempted = $false; conversationVerified = $true; conversationState = [string]$binding.headerState; incomingVerified = $true; draftVerified = $true; verificationMode = $("visual_draft_{0}" -f $binding.proof); inputTick = [Win32WechatVisualAutoReply]::GetLastInputTick(); pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
   }
 } finally {
   Close-MomentsVisualFrame $frame
@@ -1053,9 +1278,8 @@ try {
   Close-MomentsVisualFrame $fresh
 }
 
-if (-not (Test-VisualSendInputLease) -or
-    [Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
-  -not (Test-VisualSendOwnedPoint $lock ([int]$button.point.x) ([int]$button.point.y))) {
+if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
+  -not (Test-VisualSendPointInWindow $lock ([int]$button.point.x) ([int]$button.point.y))) {
   [void](Clear-VisualSendDraft $lock)
   Write-VisualSendResult @{ ok = $false; reason = "visual_send_button_not_owned"; sendAttempted = $false; conversationVerified = $true; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
 }
@@ -1069,54 +1293,67 @@ $actualPoint = New-Object Win32WechatVisualAutoReply+POINT
 $cursorExact = $moved -and [Win32WechatVisualAutoReply]::GetCursorPos([ref]$actualPoint) -and
   [Math]::Abs($actualPoint.X - $screenX) -le 1 -and [Math]::Abs($actualPoint.Y - $screenY) -le 1
 if (-not $cursorExact -or [Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
-  -not (Test-VisualSendOwnedPoint $lock ([int]$button.point.x) ([int]$button.point.y))) {
+  -not (Test-VisualSendPointInWindow $lock ([int]$button.point.x) ([int]$button.point.y))) {
   [void][Win32WechatVisualAutoReply]::SetCursorPos($oldPoint.X, $oldPoint.Y)
   [void](Clear-VisualSendDraft $lock)
   Write-VisualSendResult @{ ok = $false; reason = "visual_send_cursor_not_verified"; sendAttempted = $false; conversationVerified = $true; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
 }
 
-if (-not (Test-VisualSendInputLease) -or
-    [Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
-    -not (Test-VisualSendOwnedPoint $lock ([int]$button.point.x) ([int]$button.point.y))) {
+if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
+    -not (Test-VisualSendPointInWindow $lock ([int]$button.point.x) ([int]$button.point.y))) {
   [void](Clear-VisualSendDraft $lock)
   Write-VisualSendResult @{ ok = $false; reason = "visual_send_button_not_owned"; sendAttempted = $false; conversationVerified = $true; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
 }
 $sendAttempted = $true
-if (-not [Win32WechatVisualAutoReply]::AtomicMouseClick($screenX, $screenY) -or
-    -not (Update-VisualSendInputLease)) {
+if (-not [Win32WechatVisualAutoReply]::AtomicMouseClick($screenX, $screenY)) {
   Write-VisualSendResult @{ ok = $false; reason = "visual_send_outcome_unknown"; outcomeUnknown = $true; sendAttempted = $true; conversationVerified = $true; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
 }
-if ((Test-VisualSendInputLease) -and [Win32WechatVisualAutoReply]::GetForegroundWindow() -eq $lock.hWnd) {
+[void](Update-VisualSendInputLease)
+if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -eq $lock.hWnd) {
   [void][Win32WechatVisualAutoReply]::SetCursorPos($oldPoint.X, $oldPoint.Y)
 }
-Start-Sleep -Milliseconds 550
+Start-Sleep -Milliseconds 350
 
 $postLock = Get-VisualSendLock
 if (-not $postLock.ok) {
-  Write-VisualSendResult @{ ok = $false; reason = "visual_send_outcome_unknown"; outcomeUnknown = $true; sendAttempted = $true; conversationVerified = $false; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+  Write-VisualSendResult @{ ok = $false; reason = "visual_send_outcome_unknown"; outcomeUnknown = $true; sendAttempted = $true; conversationVerified = $false; draftVerified = $true; verificationAttempts = 0; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
 }
-# The final phase already re-bound the exact expected HWND/conversation and
-# exact draft immediately before clicking. A post-click full-frame OCR cannot
-# prevent a wrong send; it only adds tens of seconds on high-DPI displays.
-# Retained HWND ownership plus consumed exact draft is the delivery proof.
+# Verify the result using two independent signals. We first look for the new
+# green outgoing bubble, polling briefly because WeChat renders it asynchronously.
+# Draft consumption remains the safe fallback when OCR cannot expose the bubble.
 $sameConversation = $true
 $bubbleVerified = $false
-$afterDraft = Read-VisualSendDraft $postLock
+$verificationAttempts = 0
+for ($attempt = 1; $attempt -le 4; $attempt++) {
+  $verificationAttempts = $attempt
+  if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -eq $postLock.hWnd) {
+    $verifyFrame = Get-VisualSendFrame $postLock
+    if ($verifyFrame.ok) {
+      try {
+        $verifyDpi = Get-VisualSendWindowDpi $postLock.hWnd
+        $verifySidebarRight = Get-VisualSendSidebarRight ([double]$verifyFrame.width) $verifyDpi
+        $bubbleVerified = Test-VisualSendOutgoingBubble $verifyFrame $verifySidebarRight
+      } finally {
+        Close-MomentsVisualFrame $verifyFrame
+      }
+    }
+  }
+  if ($bubbleVerified) { break }
+  if ($attempt -lt 4) { Start-Sleep -Milliseconds 250 }
+}
+$afterDraft = if (Test-VisualSendInputLease) { Read-VisualSendDraft $postLock } else { @{ ok = $false; empty = $false } }
 $draftConsumed = $afterDraft.ok -and $afterDraft.empty
-$verificationMode = if ($sameConversation -and $bubbleVerified -and $draftConsumed) {
+$verificationMode = if ($sameConversation -and $bubbleVerified) {
   "visual_message_bubble"
 } elseif ($sameConversation -and $draftConsumed) {
-  # Keep the established verification-mode value for controller compatibility;
-  # sameConversation here means the expected HWND was retained and no explicit
-  # different title was observed, even when title OCR itself was unresolved.
   "draft_consumed_same_header"
 } else {
   ""
 }
-if (-not $sameConversation -or -not $draftConsumed) {
-  Write-VisualSendResult @{ ok = $false; reason = "visual_send_outcome_unknown"; outcomeUnknown = $true; sendAttempted = $true; conversationVerified = $sameConversation; draftVerified = $true; draftConsumed = $draftConsumed; verificationMode = $verificationMode; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+if (-not $sameConversation -or (-not $bubbleVerified -and -not $draftConsumed)) {
+  Write-VisualSendResult @{ ok = $false; reason = "visual_send_outcome_unknown"; outcomeUnknown = $true; sendAttempted = $true; conversationVerified = $sameConversation; draftVerified = $true; draftConsumed = $draftConsumed; bubbleVerified = $bubbleVerified; verificationAttempts = $verificationAttempts; verificationMode = $verificationMode; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
 }
-Write-VisualSendResult @{ ok = $true; sendAttempted = $true; conversationVerified = $true; draftVerified = $true; draftConsumed = $true; bubbleVerified = $bubbleVerified; verificationMode = $verificationMode; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+Write-VisualSendResult @{ ok = $true; sendAttempted = $true; conversationVerified = $true; draftVerified = $true; draftConsumed = $draftConsumed; bubbleVerified = $bubbleVerified; verificationAttempts = $verificationAttempts; verificationMode = $verificationMode; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
 `;
 
 function visualSendEnvironment(options, phase) {
@@ -1136,18 +1373,58 @@ function visualSendEnvironment(options, phase) {
   };
 }
 
+function sanitizeVisualSendWorkerDiagnostics(value) {
+  if (!value || typeof value !== "object") return undefined;
+  const worker = {};
+  const exitCode = Number(value.exit_code);
+  if (Number.isInteger(exitCode)) worker.exit_code = exitCode;
+  const errorCode = String(value.error_code ?? "").trim();
+  if (/^[A-Za-z0-9_.:-]{1,80}$/u.test(errorCode)) worker.error_code = errorCode;
+  for (const field of ["timeout_ms", "elapsed_ms", "stdout_bytes", "stderr_bytes"]) {
+    const numericValue = Number(value[field]);
+    if (Number.isFinite(numericValue) && numericValue >= 0) worker[field] = Math.trunc(numericValue);
+  }
+  for (const field of ["kill_accepted", "grace_exceeded"]) {
+    if (typeof value[field] === "boolean") worker[field] = value[field];
+  }
+  const terminationReason = String(value.termination_reason ?? "").trim();
+  if (/^[A-Za-z0-9_.:-]{1,80}$/u.test(terminationReason)) worker.termination_reason = terminationReason;
+  if (typeof value.stderr === "string") {
+    worker.stderr_bytes = Buffer.byteLength(value.stderr, "utf8");
+    worker.stderr_sha256 = createHash("sha256").update(value.stderr, "utf8").digest("hex");
+  }
+  return Object.keys(worker).length ? worker : undefined;
+}
+
+function createVisualSendDiagnostics(phase, timings, workerResult) {
+  const worker = sanitizeVisualSendWorkerDiagnostics(workerResult?.diagnostics);
+  return {
+    phase,
+    timings,
+    ...(worker ? { worker } : {})
+  };
+}
+
 function normalizeVisualSendResult(result, fallback) {
+  const incomingChangeKind = String(result?.incomingChangeKind ?? "");
+  const draftStage = String(result?.draftStage ?? "").trim();
   return {
     ok: result?.ok === true,
     send_attempted: result?.sendAttempted === true,
     conversationVerified: result?.conversationVerified === true,
     draftVerified: result?.draftVerified === true,
     verificationMode: String(result?.verificationMode ?? ""),
+    ...(typeof result?.draftConsumed === "boolean" ? { draftConsumed: result.draftConsumed } : {}),
+    ...(typeof result?.bubbleVerified === "boolean" ? { bubbleVerified: result.bubbleVerified } : {}),
+    ...(Number.isInteger(Number(result?.verificationAttempts)) ? { verificationAttempts: Number(result.verificationAttempts) } : {}),
     pid: Number(result?.pid ?? fallback.pid),
     hWnd: Number(result?.hWnd ?? fallback.hWnd),
     ...(result?.reason ? { reason: String(result.reason) } : {}),
     ...(result?.outcomeUnknown === true ? { outcomeUnknown: true } : {}),
     ...(String(result?.conversationState ?? "") ? { conversationState: String(result.conversationState) } : {}),
+    ...(draftStage ? { draft_stage: draftStage } : {}),
+    ...(["ocr_unresolved", "proven_different"].includes(incomingChangeKind) ? { incoming_change_kind: incomingChangeKind } : {}),
+    ...(typeof result?.composerTouched === "boolean" ? { composer_touched: result.composerTouched } : {}),
     ...(result?.diagnostics && typeof result.diagnostics === "object" ? { diagnostics: result.diagnostics } : {})
   };
 }
@@ -1157,6 +1434,13 @@ function createVisualAutoReplySender({
   draftInput = null
 } = {}) {
   return async function sendVisualAutoReplyWithDependencies(options = {}) {
+    const notifyTransition = (transition) => {
+      try {
+        options.onTransition?.(transition);
+      } catch {
+        // Progress reporting is best effort and must never change send safety.
+      }
+    };
     const pid = Number(options.pid);
     const hWnd = Number(options.hWnd);
     const conversation = String(options.conversation ?? "").trim();
@@ -1197,7 +1481,7 @@ function createVisualAutoReplySender({
       const preflight = await powerShellRunner(
         WECHAT_VISUAL_AUTO_REPLY_POWERSHELL,
         visualSendEnvironment(request, "preflight"),
-        { ensure: false, sta: true, timeout: 45_000 }
+        { ensure: false, sta: true, timeout: 45_000, diagnostics: true }
       );
       timings.preflight_ms = Date.now() - preflightStartedAt;
       if (!preflight?.ok || preflight.incomingVerified !== true) {
@@ -1206,7 +1490,7 @@ function createVisualAutoReplySender({
           ok: false,
           reason: preflight?.reason || "visual_send_incoming_changed",
           conversationVerified: false,
-          diagnostics: { phase: "preflight", timings }
+          diagnostics: createVisualSendDiagnostics("preflight", timings, preflight)
         }, request);
       }
       draft = await draftInput(reply, { pid, hWnd });
@@ -1214,17 +1498,19 @@ function createVisualAutoReplySender({
       draft = await powerShellRunner(
         WECHAT_VISUAL_AUTO_REPLY_POWERSHELL,
         visualSendEnvironment(request, "draft"),
-        { ensure: false, sta: true, timeout: 45_000 }
+        { ensure: false, sta: true, timeout: 45_000, diagnostics: true }
       );
     }
     timings.draft_ms = Date.now() - draftStartedAt;
     if (!draft?.ok || draft.draftVerified !== true) {
       return normalizeVisualSendResult({
+        ...draft,
         reason: draft?.reason || draft?.draftCheck || "visual_send_draft_input_failed",
         conversationVerified: draft?.conversationVerified === true,
-        diagnostics: { phase: "draft", timings }
+        diagnostics: createVisualSendDiagnostics("draft", timings, draft)
       }, request);
     }
+    notifyTransition("prepared");
     request.expectedInputTick = Number.isInteger(Number(draft.inputTick)) ? Number(draft.inputTick) : undefined;
 
     const beforeSendStartedAt = Date.now();
@@ -1259,7 +1545,7 @@ function createVisualAutoReplySender({
       sent = await powerShellRunner(
         WECHAT_VISUAL_AUTO_REPLY_POWERSHELL,
         visualSendEnvironment(request, "send"),
-        { ensure: false, sta: true, timeout: 75_000 }
+        { ensure: false, sta: true, timeout: 75_000, diagnostics: true }
       );
     } catch {
       // The click lives inside this final phase, so a timeout/rejection cannot
@@ -1290,13 +1576,17 @@ function createVisualAutoReplySender({
         hWnd
       };
     }
-    return normalizeVisualSendResult({
+    const normalized = normalizeVisualSendResult({
       ...sent,
-      diagnostics: {
-        phase: sent?.ok === true ? "completed" : "send",
-        timings
-      }
+      diagnostics: createVisualSendDiagnostics(sent?.ok === true ? "completed" : "send", timings, sent)
     }, request);
+    if (normalized.ok) {
+      notifyTransition("clicked");
+      notifyTransition("sent_verified");
+    } else if (normalized.outcomeUnknown) {
+      notifyTransition("outcome_unknown");
+    }
+    return normalized;
   };
 }
 

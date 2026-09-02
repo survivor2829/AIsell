@@ -454,34 +454,36 @@ async function main() {
   assert.equal((await manualHandoffController.start()).ok, true);
   await manualHandoffController.runOnce();
   const manualHandoffState = JSON.parse(fs.readFileSync(path.join(manualHandoffDir, "auto-reply-state.json"), "utf8"));
-  assert.deepEqual(manualHandoffState.contact_states.c1, { clarify_pending: false, human_owned: true });
-  assert.equal(manualHandoffState.manual_followups.length, 1, "a handoff draft that needs manual review must keep an employee followup task");
+  assert.equal(manualHandoffState.contact_states.c1, undefined, "a bridge reply that was never clicked must not prematurely hand the customer to an employee");
+  assert.equal(manualHandoffState.manual_followups.length, 0, "a known-unsent bridge reply must remain retryable instead of creating an artificial manual task");
   assert.equal(manualHandoffState.pending_handoffs.length, 0);
   assert.equal(manualHandoffCalls, 0, "the employee handoff bridge must not send after the customer draft becomes uncertain");
-  assert.deepEqual(manualHandoffController.status().held_contacts.map((item) => item.id), ["c1"]);
+  assert.equal(manualHandoffController.status().last_event, "send_retry_pending");
+  assert.deepEqual(manualHandoffController.status().held_contacts.map((item) => item.id), []);
   manualHandoffController.pause();
 
-  let invalidMatrixSends = 0;
-  let invalidMatrixHandoffs = 0;
-  const invalidMatrixController = createAutoReplyController({
-    dataDir: path.join(root, "invalid_action_reason_matrix"),
+  let metadataMismatchSends = 0;
+  let metadataMismatchHandoffs = 0;
+  const metadataMismatchController = createAutoReplyController({
+    dataDir: path.join(root, "action_reason_metadata_mismatch"),
     activeTouchDir,
     coordinator,
     expertStore: readyExpert(),
-    deepSeekClient: { assertAvailable: () => true, reply: async () => ({ action: "handoff", reply: "我来继续说明。", reasonCode: "general_guidance" }) },
-    scanIncoming: () => ({ ok: true, conversation: "张总", message: "普通问题", runtimeId: "invalid-matrix-1", pid: 81, hWnd: "91", context: [{ role: "user", content: "普通问题", key: "invalid-matrix-1" }] }),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => ({ action: "answer", reply: "我来继续说明。", reasonCode: "missing_detail" }) },
+    scanIncoming: () => ({ ok: true, conversation: "张总", message: "普通问题", runtimeId: "metadata-mismatch-1", pid: 81, hWnd: "91", context: [{ role: "user", content: "普通问题", key: "metadata-mismatch-1" }] }),
     verifyIncoming: () => ({ ok: true }),
-    send: async () => { invalidMatrixSends += 1; return { ok: true }; },
-    sendHandoff: async () => { invalidMatrixHandoffs += 1; return { ok: true }; },
+    send: async () => { metadataMismatchSends += 1; return { ok: true }; },
+    sendHandoff: async () => { metadataMismatchHandoffs += 1; return { ok: true }; },
     runStep: async () => ({ ok: true }),
     schedule: () => 1,
     cancelSchedule: () => undefined,
     now: () => new Date("2026-07-14T10:00:00+08:00")
   });
-  assert.equal((await invalidMatrixController.start()).ok, true);
-  await invalidMatrixController.runOnce();
-  assert.deepEqual([invalidMatrixSends, invalidMatrixHandoffs], [0, 0]);
-  assert.equal(invalidMatrixController.status().system_error.code, "AI_DECISION_INVALID");
+  assert.equal((await metadataMismatchController.start()).ok, true);
+  await metadataMismatchController.runOnce();
+  assert.deepEqual([metadataMismatchSends, metadataMismatchHandoffs], [1, 0], "reasonCode metadata must not block action=answer");
+  assert.equal(metadataMismatchController.status().system_error, null);
+  assert.deepEqual(metadataMismatchController.status().held_contacts, []);
 
   const ownershipCandidates = [
     { runtimeId: "owner-handoff", conversation: "张总", message: "请人工给我正式报价" },
@@ -988,8 +990,9 @@ async function main() {
   await retryableController.runOnce();
   assert.equal(retryableController.status().status, "running", "a proven pre-send failure must not pause all contacts");
   assert.equal(retryableController.status().reply_count, 0);
-  assert.match(retryableController.status().last_error, /raw-send-reason-canary/, "the actionable visual block reason must take priority over a generic sender error");
-  assert.doesNotMatch(retryableController.status().last_error, /raw-send-error-canary/);
+  assert.match(retryableController.status().last_error, /回复尚未发出/, "a known-unsent failure must explain recovery without exposing a raw worker reason in the UI");
+  assert.doesNotMatch(retryableController.status().last_error, /raw-send-reason-canary|raw-send-error-canary/);
+  assert.equal(retryableController.status().last_failure_context?.code, "raw-send-reason-canary", "the precise reason stays in the diagnostic context");
   assert.equal(Object.values(JSON.parse(fs.readFileSync(path.join(retryableDataDir, "auto-reply-state.json"), "utf8")).processed).at(-1).status, "retryable");
   retryableController.pause();
   assert.equal((await retryableController.start()).ok, true);
@@ -1135,7 +1138,7 @@ async function main() {
       assert.equal(await options.beforeDraft(), true);
       return {
         ok: false,
-        blocked_reason: "wechat_user_active",
+        blocked_reason: "visual_send_external_input_detected",
         send_attempted: false,
         send_result: "not_attempted",
         send_diagnostics: {
@@ -1158,10 +1161,84 @@ async function main() {
   assert.equal(manualInputController.status().last_event, "manual_intervention_required");
   assert.equal(manualInputRequeues, 0, "a possible handwritten WeChat draft must never be automatically overwritten on retry");
   assert.equal(manualInputController.status().last_failure_context?.recovery_action, "manual_review_required");
-  assert.equal(manualInputController.status().last_failure_context?.code, "wechat_user_active", "draft-stage user activity must never enter automatic idle recovery");
+  assert.equal(manualInputController.status().last_failure_context?.code, "visual_send_external_input_detected", "only an explicit observed external input may stop automatic retry");
   assert.equal(manualInputController.status().last_failure_context?.draft_phase_started, true);
   assert.equal(manualInputController.status().last_failure_context?.send_attempted, false);
   manualInputController.pause();
+
+  const workerDraftRetryCandidate = {
+    ...retryableCandidate,
+    message: "输入执行器未启动也必须保留本条回复",
+    runtimeId: "draft-worker-retry-1",
+    context: [{ role: "user", content: "输入执行器未启动也必须保留本条回复", key: "draft-worker-retry-1" }]
+  };
+  let workerDraftRetryAiCalls = 0;
+  let workerDraftRetrySendCalls = 0;
+  const workerDraftRetryScan = () => workerDraftRetryCandidate;
+  workerDraftRetryScan.requeue = () => true;
+  const workerDraftRetryDir = path.join(root, "draft_worker_failure_recovery");
+  const workerDraftRetryController = createAutoReplyController({
+    dataDir: workerDraftRetryDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: readyExpert(),
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => { workerDraftRetryAiCalls += 1; return answerDecision("好的，我会继续处理这条消息。"); }
+    },
+    scanIncoming: workerDraftRetryScan,
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => {
+      workerDraftRetrySendCalls += 1;
+      assert.equal(await options.beforeDraft(), true);
+      if (workerDraftRetrySendCalls === 1) {
+        return {
+          ok: false,
+          blocked_reason: "powershell_failed",
+          send_attempted: false,
+          send_result: "not_attempted",
+          send_diagnostics: {
+            phase: "draft",
+            worker: {
+              exit_code: 1,
+              error_code: "powershell_failed",
+              stderr_bytes: 42,
+              stderr_sha256: "a".repeat(64)
+            }
+          }
+        };
+      }
+      return { ok: true, send_attempted: true, send_result: "sent_verified" };
+    },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await workerDraftRetryController.start()).ok, true);
+  await workerDraftRetryController.runOnce();
+  assert.equal(workerDraftRetryController.status().status, "running", "a worker failure before paste/click must not pause the listener");
+  assert.equal(workerDraftRetryController.status().last_event, "send_retry_pending");
+  assert.equal(workerDraftRetryController.status().last_failure_context?.code, "powershell_failed");
+  assert.equal(workerDraftRetryController.status().last_failure_context?.draft_phase_started, true, "controller hand-off alone must not turn a no-click failure into manual review");
+  const workerDraftRetryDiagnostics = fs.readFileSync(path.join(workerDraftRetryDir, "auto-reply-diagnostics.jsonl"), "utf8")
+    .trim().split(/\r?\n/u).map((line) => JSON.parse(line));
+  const workerDraftFailure = workerDraftRetryDiagnostics.find((entry) => entry.event === "reply_send_finished");
+  assert.equal(workerDraftFailure.code, "powershell_failed", "known worker failures must keep their real diagnostic code");
+  assert.deepEqual(workerDraftFailure.worker, {
+    exit_code: 1,
+    error_code: "powershell_failed",
+    stderr_bytes: 42,
+    stderr_sha256: "a".repeat(64)
+  }, "the durable trail may retain only structural worker diagnostics");
+  await workerDraftRetryController.runOnce();
+  assert.equal(workerDraftRetrySendCalls, 1, "the retained reply must back off before the retry");
+  await workerDraftRetryController.runOnce();
+  assert.equal(workerDraftRetrySendCalls, 2, "the same reply must retry after a pre-click worker failure");
+  assert.equal(workerDraftRetryAiCalls, 1, "the retry must reuse the already generated reply");
+  assert.equal(workerDraftRetryController.status().reply_count, 1);
+  workerDraftRetryController.pause();
 
   const rejectedRetryScan = () => ({ ...retryableCandidate, runtimeId: "queue-full-1", context: [{ role: "user", content: retryableCandidate.message, key: "queue-full-1" }] });
   rejectedRetryScan.requeue = () => false;
@@ -1201,6 +1278,157 @@ async function main() {
   await changedDuringSendController.runOnce();
   assert.equal(changedDuringSendController.status().last_event, "manual_reply_or_message_changed");
   assert.equal(changedDuringSendRequeues, 0, "a changed incoming bubble must cancel stale generated copy instead of retrying it");
+
+  const supersededContextDir = path.join(root, "visual_send_superseded_context");
+  const supersededCandidates = [
+    visualGuardCandidate({ message: "first part of customer question", runtimeChar: "a", evidenceChar: "c" }),
+    visualGuardCandidate({ message: "second part with the missing detail", runtimeChar: "b", evidenceChar: "d" })
+  ];
+  const supersededContexts = [];
+  let supersededSendCalls = 0;
+  const supersededController = createAutoReplyController(guardedControllerOptions({
+    dataDir: supersededContextDir,
+    scanIncoming: () => supersededCandidates.shift() || { ok: false, reason: "no_unread_message" },
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async ({ context }) => {
+        supersededContexts.push(context.map((item) => item.content));
+        return answerDecision("combined answer");
+      }
+    },
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      supersededSendCalls += 1;
+      if (supersededSendCalls === 1) {
+        return {
+          ok: false,
+          blocked_reason: "visual_send_incoming_changed",
+          incoming_change_kind: "proven_different",
+          composer_touched: false,
+          send_attempted: false
+        };
+      }
+      return { ok: true, send_attempted: true, verification_mode: "visual_message_bubble" };
+    }
+  }));
+  assert.equal((await supersededController.start()).ok, true);
+  await supersededController.runOnce();
+  await supersededController.runOnce();
+  assert.deepEqual(supersededContexts, [
+    ["first part of customer question"],
+    ["first part of customer question", "second part with the missing detail"]
+  ], "a newly arrived bubble must carry the earlier unsent customer turn into one combined answer");
+  assert.equal(supersededController.status().reply_count, 1);
+  const supersededDurableState = fs.readFileSync(path.join(supersededContextDir, "auto-reply-state.json"), "utf8");
+  assert.equal(supersededDurableState.includes("first part of customer question"), false, "superseded customer text must stay memory-only");
+  assert.equal(supersededDurableState.includes("second part with the missing detail"), false, "current customer text must not enter durable state");
+
+  const historicalSupersededCandidates = [
+    visualGuardCandidate({ message: "earlier completed question", runtimeChar: "d", evidenceChar: "1" }),
+    visualGuardCandidate({ message: "new question first part", runtimeChar: "e", evidenceChar: "2" }),
+    visualGuardCandidate({ message: "new question second part", runtimeChar: "f", evidenceChar: "3" })
+  ];
+  const historicalSupersededContexts = [];
+  let historicalSupersededSends = 0;
+  const historicalSupersededController = createAutoReplyController(guardedControllerOptions({
+    dataDir: path.join(root, "visual_send_superseded_context_with_history"),
+    scanIncoming: () => historicalSupersededCandidates.shift() || { ok: false, reason: "no_unread_message" },
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async ({ context }) => {
+        historicalSupersededContexts.push(context.map((item) => item.content));
+        return answerDecision(historicalSupersededContexts.length === 1 ? "earlier completed answer" : "latest combined answer");
+      }
+    },
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      historicalSupersededSends += 1;
+      if (historicalSupersededSends === 2) {
+        return {
+          ok: false,
+          blocked_reason: "visual_send_incoming_changed",
+          incoming_change_kind: "proven_different",
+          composer_touched: false,
+          send_attempted: false
+        };
+      }
+      return { ok: true, send_attempted: true, verification_mode: "visual_message_bubble" };
+    }
+  }));
+  assert.equal((await historicalSupersededController.start()).ok, true);
+  await historicalSupersededController.runOnce();
+  await historicalSupersededController.runOnce();
+  await historicalSupersededController.runOnce();
+  assert.deepEqual(historicalSupersededContexts, [
+    ["earlier completed question"],
+    ["earlier completed question", "earlier completed answer", "new question first part"],
+    ["earlier completed question", "earlier completed answer", "new question first part", "new question second part"]
+  ], "superseded carry-over must preserve prior history exactly once and keep chronological order");
+
+  let unresolvedIncomingAiCalls = 0;
+  let unresolvedIncomingSendCalls = 0;
+  let unresolvedIncomingRequeues = 0;
+  const unresolvedIncomingCandidate = visualGuardCandidate({ message: "same multiline customer bubble", runtimeChar: "7", evidenceChar: "8" });
+  const unresolvedIncomingScan = () => unresolvedIncomingCandidate;
+  unresolvedIncomingScan.requeue = () => { unresolvedIncomingRequeues += 1; return true; };
+  const unresolvedIncomingController = createAutoReplyController(guardedControllerOptions({
+    dataDir: path.join(root, "visual_send_incoming_ocr_unresolved"),
+    scanIncoming: unresolvedIncomingScan,
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => { unresolvedIncomingAiCalls += 1; return answerDecision("one generated reply"); }
+    },
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      unresolvedIncomingSendCalls += 1;
+      if (unresolvedIncomingSendCalls === 1) {
+        return {
+          ok: false,
+          blocked_reason: "visual_send_incoming_ocr_unresolved",
+          incoming_change_kind: "ocr_unresolved",
+          composer_touched: false,
+          send_attempted: false
+        };
+      }
+      return { ok: true, send_attempted: true, verification_mode: "visual_message_bubble" };
+    }
+  }));
+  assert.equal((await unresolvedIncomingController.start()).ok, true);
+  await unresolvedIncomingController.runOnce();
+  await unresolvedIncomingController.runOnce();
+  await unresolvedIncomingController.runOnce();
+  assert.equal(unresolvedIncomingAiCalls, 1, "an OCR-only uncertainty must reuse the generated reply instead of calling AI again");
+  assert.equal(unresolvedIncomingSendCalls, 2, "the untouched composer may receive one later evidence recheck");
+  assert.equal(unresolvedIncomingRequeues, 2, "the existing bounded backoff queue must own the safe recheck");
+  assert.equal(unresolvedIncomingController.status().last_event, "reply_sent_verified");
+
+  let contradictoryUnknownSends = 0;
+  let contradictoryUnknownRequeues = 0;
+  const contradictoryUnknownCandidate = visualGuardCandidate({ message: "unknown must stay terminal", runtimeChar: "c", evidenceChar: "e" });
+  const contradictoryUnknownScan = () => contradictoryUnknownCandidate;
+  contradictoryUnknownScan.requeue = () => { contradictoryUnknownRequeues += 1; return true; };
+  const contradictoryUnknownController = createAutoReplyController(guardedControllerOptions({
+    dataDir: path.join(root, "visual_send_explicit_unknown_precedence"),
+    scanIncoming: contradictoryUnknownScan,
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      contradictoryUnknownSends += 1;
+      return {
+        ok: true,
+        blocked_reason: "visual_send_outcome_unknown",
+        send_result: "outcome_unknown",
+        send_attempted: true,
+        composer_touched: false
+      };
+    }
+  }));
+  assert.equal((await contradictoryUnknownController.start()).ok, true);
+  await contradictoryUnknownController.runOnce();
+  assert.equal(contradictoryUnknownController.status().status, "paused");
+  assert.equal(contradictoryUnknownController.status().last_event, "send_outcome_unknown_paused");
+  assert.equal(contradictoryUnknownController.status().reply_count, 0, "an explicit unknown must never be counted as a verified reply even when a lower layer also reports ok");
+  assert.equal(contradictoryUnknownSends, 1);
+  assert.equal(contradictoryUnknownRequeues, 0, "an explicit outcome_unknown result must override both ok and untouched-composer evidence");
 
   let unknownSendCalls = 0;
   const unknownSendDataDir = path.join(root, "unknown_customer_send");
@@ -1649,13 +1877,23 @@ async function main() {
   assert.doesNotMatch(safeWindowDelayLog, /"code":"unknown_scan_reason"/);
   safeWindowDelayController.pause();
 
+  const pendingHealthScan = () => ({
+    ok: false,
+    reason: "unread_preview_pending",
+    conversation: "张总",
+    pid: 81,
+    hWnd: "91",
+    pendingPreviewSignature: "b".repeat(64),
+    pendingMessageSignature: "c".repeat(64),
+    visualEvidenceRuntimeId: `visual:v1:${"d".repeat(64)}`
+  });
   const pendingHealthController = createAutoReplyController({
     dataDir: path.join(root, "scan_pending_health"),
     activeTouchDir,
     coordinator,
     expertStore: readyExpert(),
     deepSeekClient: { assertAvailable: () => true, reply: async () => { throw new Error("AI must wait for pending visual evidence"); } },
-    scanIncoming: () => ({ ok: false, reason: "unread_preview_pending", pid: 81, hWnd: "91" }),
+    scanIncoming: pendingHealthScan,
     verifyIncoming: () => ({ ok: false }),
     send: async () => { throw new Error("send must wait for pending visual evidence"); },
     sendHandoff: async () => ({ ok: true }),
@@ -1669,6 +1907,11 @@ async function main() {
   assert.equal(pendingHealthController.status().scan_health, "checking", "a retained opened-unread transaction must be settling, not a false scan warning");
   assert.equal(pendingHealthController.status().consecutive_scan_failures, 0);
   assert.equal(pendingHealthController.status().last_scan_reason, "unread_preview_pending");
+  await pendingHealthController.runOnce();
+  await pendingHealthController.runOnce();
+  await pendingHealthController.runOnce();
+  assert.equal(pendingHealthController.status().pending_retry_count, 4, "a read-consumed message must remain recoverable after more than three OCR polls");
+  assert.ok(JSON.parse(fs.readFileSync(path.join(root, "scan_pending_health", "auto-reply-state.json"), "utf8")).pending_observation);
   pendingHealthController.pause();
 
   const consumedVisualDriftController = createAutoReplyController({
@@ -2043,6 +2286,7 @@ async function main() {
     scanIncoming: () => sendingCrashCandidate,
     send: async (options) => {
       assert.equal(await options.beforeDraft(), true);
+      options.onTransition("prepared");
       sendingEntered();
       return new Promise(() => undefined);
     }
@@ -3286,6 +3530,41 @@ async function main() {
   assert.equal(aiFailureDiagnostics.some((entry) => entry.trace_id === aiFailureCandidate.trace_id && entry.event === "reply_send_started"), false);
   assert.doesNotMatch(aiFailureDiagnosticText, /secret-bearing upstream|想了解清洁设备|张总|ai-failure-retry-1|trace-key-canary/);
 
+  const emptyGenerationDir = path.join(root, "empty_generation_continues");
+  let emptyGenerationSends = 0;
+  const emptyGenerationController = createAutoReplyController({
+    dataDir: emptyGenerationDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: readyExpert(),
+    deepSeekClient: {
+      assertAvailable: () => true,
+      reply: async () => { const error = new Error("empty"); error.code = "AI_RESPONSE_EMPTY"; throw error; }
+    },
+    scanIncoming: () => ({
+      ok: true,
+      conversation: "张总",
+      message: "想了解设备",
+      runtimeId: "empty-generation-1",
+      pid: 81,
+      hWnd: "91",
+      context: [{ role: "user", content: "想了解设备", key: "empty-generation-1" }]
+    }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => { emptyGenerationSends += 1; return { ok: true, send_attempted: true }; },
+    sendHandoff: async () => ({ ok: true, send_attempted: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await emptyGenerationController.start()).ok, true);
+  await emptyGenerationController.runOnce();
+  assert.equal(emptyGenerationSends, 0, "an unusable AI output must never send a customer fallback");
+  assert.equal(emptyGenerationController.status().status, "running", "one customer's unusable output must not pause the whole listener");
+  assert.equal(emptyGenerationController.status().last_event, "reply_generation_skipped");
+  assert.equal(emptyGenerationController.status().last_failure_context.recovery_action, "continue_other_contacts");
+
   const rateCases = [
     {
       name: "global",
@@ -3376,7 +3655,50 @@ async function main() {
 
   const handlers = new Map();
   const autoReplyUpdates = [];
+  const floatingUpdates = [];
+  const floatingEvents = {};
+  const floatingWebContentEvents = {};
+  let floatingOptions;
+  let floatingLoad;
+  let floatingPosition;
+  let floatingWebContents;
+  let mainHideCalls = 0;
+  let mainShowCalls = 0;
+  class FakeAutoReplyWindow {
+    constructor(options) {
+      floatingOptions = options;
+      this.webContents = {
+        send: (channel, payload) => floatingUpdates.push({ channel, payload }),
+        isLoading: () => true,
+        once: (event, handler) => { floatingWebContentEvents[event] = handler; }
+      };
+      floatingWebContents = this.webContents;
+      this.destroyed = false;
+    }
+    setMenu() {}
+    setPosition(x, y) { floatingPosition = { x, y }; }
+    show() {}
+    showInactive() {}
+    focus() {}
+    isDestroyed() { return this.destroyed; }
+    once(event, handler) { floatingEvents[event] = handler; }
+    on(event, handler) { floatingEvents[event] = handler; }
+    loadFile(file, options) { floatingLoad = { file, options }; }
+    close() {
+      floatingEvents.close?.();
+      this.destroyed = true;
+      floatingEvents.closed?.();
+    }
+  }
   const webContents = { send: (channel, payload) => autoReplyUpdates.push({ channel, payload }) };
+  const ipcMainWindow = {
+    isDestroyed: () => false,
+    isFocused: () => true,
+    webContents,
+    hide: () => { mainHideCalls += 1; },
+    show: () => { mainShowCalls += 1; },
+    focus: () => undefined
+  };
   registerAutoReplyIpc({
     dataDir: path.join(root, "ipc_auto_reply"),
     activeTouchDir,
@@ -3390,14 +3712,28 @@ async function main() {
     verifyIncoming: () => ({ ok: true }),
     schedule: () => 1,
     cancelSchedule: () => undefined,
-    getMainWindow: () => ({ isDestroyed: () => false, isFocused: () => true, webContents }),
+    getMainWindow: () => ipcMainWindow,
+    BrowserWindow: FakeAutoReplyWindow,
+    screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }) },
+    preloadPath: path.join(root, "preload.cjs"),
+    rendererPath: path.join(root, "index.html"),
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) }
   });
-  assert.deepEqual([...handlers.keys()].sort(), ["auto-reply:acknowledge-manual-followup", "auto-reply:pause", "auto-reply:resume-contact", "auto-reply:start", "auto-reply:status"]);
+  assert.deepEqual([...handlers.keys()].sort(), ["auto-reply:acknowledge-manual-followup", "auto-reply:pause", "auto-reply:resume-contact", "auto-reply:show-main", "auto-reply:start", "auto-reply:status"]);
   assert.equal((await handlers.get("auto-reply:start")({ sender: webContents }, {})).ok, false);
   assert.equal((await handlers.get("auto-reply:start")({ sender: webContents }, { clickToken: "trusted" })).ok, true);
+  assert.equal(floatingOptions.alwaysOnTop, true);
+  assert.equal(floatingOptions.show, false, "the progress window must be shown inactive so startup does not steal foreground from WeChat");
+  assert.deepEqual({ width: floatingOptions.width, height: floatingOptions.height }, { width: 292, height: 286 }, "auto reply and active touch must share one progress-window footprint");
+  assert.deepEqual(floatingPosition, { x: 1606, y: 397 }, "auto reply must use the same 22px screen edge and vertical centering as active touch");
+  assert.deepEqual(floatingLoad.options, { query: { floating: "auto-reply" } });
+  assert.equal(mainHideCalls, 1, "the progress window must be shown immediately so a transient renderer load event cannot leave the user without visible progress");
+  floatingWebContentEvents["did-finish-load"]?.();
+  assert.equal(mainHideCalls, 1, "the later renderer-ready event must not change the visible-window state");
+  assert.equal((await handlers.get("auto-reply:start")({ sender: floatingWebContents }, { clickToken: "floating-cannot-start" })).ok, false, "the floating renderer must not gain the main-window start authority");
   assert.equal(autoReplyUpdates.at(-1).channel, "auto-reply:update");
   assert.equal(autoReplyUpdates.at(-1).payload.state.status, "running", "successful start must push authoritative state without waiting for renderer polling");
+  assert.equal(floatingUpdates.at(-1).payload.state.status, "running", "the floating window must receive the same authoritative state");
   assert.equal((await handlers.get("auto-reply:acknowledge-manual-followup")({ sender: webContents }, {})).ok, false);
   assert.equal((await handlers.get("auto-reply:acknowledge-manual-followup")({ sender: webContents }, { clickToken: "trusted-ack" })).ok, true);
   assert.equal((await handlers.get("auto-reply:resume-contact")({ sender: webContents }, { contactId: "c1" })).ok, false);
@@ -3412,7 +3748,56 @@ async function main() {
   assert.deepEqual(preloadInvocations.at(-1), { channel: "auto-reply:resume-contact", payload: { clickToken: "", contactId: "c1" } });
   await handlers.get("auto-reply:pause")({ sender: webContents }, {});
   assert.equal(autoReplyUpdates.at(-1).payload.state.status, "paused", "pause must push state immediately");
+  await preloadAutoReply.showMain();
+  assert.deepEqual(preloadInvocations.at(-1), { channel: "auto-reply:show-main", payload: undefined });
+  await handlers.get("auto-reply:show-main")();
+  assert.equal(mainShowCalls, 1);
   assert.match(fs.readFileSync(path.join(__dirname, "preload-api.cjs"), "utf8"), /auto-reply:update[\s\S]*removeListener/u, "preload must expose a removable auto-reply state subscription");
+
+  const failedLoadHandlers = new Map();
+  let rejectFloatingLoad;
+  let failedLoadMainShown = 0;
+  class FailedLoadAutoReplyWindow extends FakeAutoReplyWindow {
+    loadFile() {
+      return new Promise((resolve, reject) => {
+        rejectFloatingLoad = reject;
+      });
+    }
+  }
+  const failedLoadWebContents = { send: () => undefined, once: () => undefined };
+  const failedLoadMainWindow = {
+    isDestroyed: () => false,
+    isFocused: () => true,
+    webContents: failedLoadWebContents,
+    hide: () => undefined,
+    show: () => { failedLoadMainShown += 1; },
+    focus: () => undefined
+  };
+  const failedLoadController = registerAutoReplyIpc({
+    dataDir: path.join(root, "ipc_auto_reply_failed_float"),
+    activeTouchDir,
+    coordinator,
+    expertStore: readyExpert(),
+    deepSeekClient: { assertAvailable: () => true },
+    send: async () => ({ ok: true }),
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    scanIncoming: () => ({ ok: false, reason: "no_unread_message" }),
+    verifyIncoming: () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    getMainWindow: () => failedLoadMainWindow,
+    BrowserWindow: FailedLoadAutoReplyWindow,
+    preloadPath: path.join(root, "preload.cjs"),
+    rendererPath: path.join(root, "missing-index.html"),
+    ipcMain: { handle: (channel, handler) => failedLoadHandlers.set(channel, handler) }
+  });
+  assert.equal((await failedLoadHandlers.get("auto-reply:start")({ sender: failedLoadWebContents }, { clickToken: "trusted-failed-load" })).ok, true);
+  rejectFloatingLoad(new Error("fixture renderer load failure"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(failedLoadController.status().status, "running", "a broken progress renderer must not stop the auto-reply listener");
+  assert.notEqual(failedLoadController.status().last_event, "progress_window_load_failed");
+  assert.equal(failedLoadMainShown, 1, "a broken progress renderer must restore the main window");
 
   const recoveryDir = path.join(root, "recovery_auto_reply");
   fs.mkdirSync(recoveryDir, { recursive: true });
@@ -3442,13 +3827,67 @@ async function main() {
   assert.equal(recovered.status().last_scan_success_at, "");
   assert.equal(recovered.status().last_scan_reason, "");
   assert.equal(recovered.status().consecutive_scan_failures, 0);
+
+  const legacyAiWarningDir = path.join(root, "legacy_ai_warning_recovery");
+  fs.mkdirSync(legacyAiWarningDir, { recursive: true });
+  fs.writeFileSync(path.join(legacyAiWarningDir, "auto-reply-state.json"), JSON.stringify({
+    version: 4,
+    status: "paused",
+    daily_date: "2026-07-14",
+    last_event: "app_closed",
+    last_error: "",
+    system_error: null,
+    last_ai_warning_code: "AI_RESPONSE_EMPTY",
+    last_ai_warning: "DeepSeek 本次未生成可靠回复（AI_RESPONSE_EMPTY），已发送兜底消息并提醒人工。"
+  }), "utf8");
+  const legacyAiWarningRecovery = createAutoReplyController({
+    dataDir: legacyAiWarningDir,
+    activeTouchDir,
+    coordinator,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal("last_ai_warning" in legacyAiWarningRecovery.status(), false, "resolved legacy AI warnings must not return as current page state after restart");
+  assert.equal("last_ai_warning_code" in legacyAiWarningRecovery.status(), false, "legacy AI warning codes must not return as current page state after restart");
+  const cleanedLegacyAiWarningState = JSON.parse(fs.readFileSync(path.join(legacyAiWarningDir, "auto-reply-state.json"), "utf8"));
+  assert.equal("last_ai_warning" in cleanedLegacyAiWarningState, false, "restart migration must remove the obsolete AI warning message from runtime state");
+  assert.equal("last_ai_warning_code" in cleanedLegacyAiWarningState, false, "restart migration must remove the obsolete AI warning code from runtime state");
+
+  const staleSystemErrorDir = path.join(root, "stale_system_error_recovery");
+  fs.mkdirSync(staleSystemErrorDir, { recursive: true });
+  fs.writeFileSync(path.join(staleSystemErrorDir, "auto-reply-state.json"), JSON.stringify({
+    version: 4,
+    status: "paused",
+    daily_date: "2026-07-14",
+    last_event: "paused_by_user",
+    last_error: "DeepSeek 返回格式无效，自动回复已暂停。",
+    system_error: { code: "AI_RESPONSE_INVALID", category: "invalid_response" },
+    last_failure_context: {
+      phase: "generate",
+      code: "ai_response_invalid",
+      send_attempted: false,
+      send_result: "not_attempted"
+    }
+  }), "utf8");
+  const staleSystemErrorRecovery = createAutoReplyController({
+    dataDir: staleSystemErrorDir,
+    activeTouchDir,
+    coordinator,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal(staleSystemErrorRecovery.status().system_error, null, "a previous-process AI failure must not return as a current red error after restart");
+  assert.equal(staleSystemErrorRecovery.status().last_failure_context, null);
+  assert.equal(staleSystemErrorRecovery.status().last_error, "");
+  assert.equal(staleSystemErrorRecovery.status().last_event, "paused_by_user");
+  const cleanedStaleSystemErrorState = JSON.parse(fs.readFileSync(path.join(staleSystemErrorDir, "auto-reply-state.json"), "utf8"));
+  assert.equal(cleanedStaleSystemErrorState.system_error, null, "restart must remove stale AI errors from current runtime state while diagnostics remain on disk");
+  assert.equal(cleanedStaleSystemErrorState.last_failure_context, null);
+
   assert.deepEqual(Object.keys(recovered.status()).sort(), [
+    "activity",
     "consecutive_scan_failures",
     "held_contacts",
     "last_error",
     "last_event",
-    "last_ai_warning",
-    "last_ai_warning_code",
     "last_scan_at",
     "last_scan_reason",
     "last_scan_success_at",
@@ -3459,7 +3898,17 @@ async function main() {
     "status",
     "system_error",
     "updated_at"
-  ].sort(), "public v4 state must expose only the documented control, handoff, and scan-health fields");
+  ].sort(), "public v4 state must expose only the documented control, handoff, scan-health, and live-activity fields");
+  assert.deepEqual(Object.keys(recovered.status().activity).sort(), [
+    "action",
+    "contact_label",
+    "delivery_status",
+    "detail_code",
+    "phase",
+    "phase_started_at",
+    "reason_code",
+    "trace_id"
+  ]);
 
   const runningRecoveryDir = path.join(root, "running_recovery_auto_reply");
   fs.mkdirSync(runningRecoveryDir, { recursive: true });
@@ -3864,11 +4313,16 @@ async function main() {
     {
       ok: true,
       conversation: "张总",
-      message: "This is the one selected test contact.",
-      runtimeId: "strict-selected-contact",
+      conversationEvidence: "张总",
+      messageDriven: false,
+      source: "unread_badge",
+      message: "This red-dot message belongs to the one selected test contact.",
+      runtimeId: `visual:v2:${"c".repeat(64)}`,
+      messageSignature: "d".repeat(64),
+      visualMode: "visual_render_v1",
       pid: 81,
       hWnd: "91",
-      context: [{ role: "user", content: "This is the one selected test contact.", key: "strict-selected-contact" }]
+      context: [{ role: "user", content: "This red-dot message belongs to the one selected test contact.", key: `visual:v2:${"c".repeat(64)}` }]
     }
   ];
   const strictScopeScans = [];
@@ -3935,6 +4389,8 @@ async function main() {
   assert.equal(strictScopeReplies, 0, "a different synced contact must not reach AI in the selected test scope");
   assert.equal(strictScopeSends, 0, "a different synced contact must not receive a reply in the selected test scope");
   assert.equal(strictScopeController.status().last_event, "conversation_not_eligible");
+  assert.equal(strictScopeController.status().activity?.phase, "waiting");
+  assert.equal(strictScopeController.status().activity?.detail_code, "conversation_not_eligible");
   await strictScopeController.runOnce();
   assert.equal(strictScopeReplies, 0, "an unmapped unread badge must not bypass the selected test scope");
   assert.equal(strictScopeSends, 0, "an unmapped unread badge must not send in the selected test scope");
@@ -3945,7 +4401,13 @@ async function main() {
   await strictScopeController.runOnce();
   assert.equal(strictScopeReplies, 1);
   assert.equal(strictScopeSends, 1);
-  assert.equal(strictScopeVerifyOptions.at(-1)?.exactConversationMatch, true, "strict scope must verify with exact conversation matching");
+  assert.equal(strictScopeController.status().last_event, "reply_sent_verified", "an exactly rebound red-dot occurrence must reach the selected test contact");
+  assert.equal(strictScopeController.status().activity?.phase, "sent_verified");
+  assert.match(strictScopeController.status().activity?.trace_id || "", /^[a-f0-9]{24}$/u);
+  const strictScopeDiagnosticText = fs.readFileSync(path.join(strictScopeDir, "auto-reply-diagnostics.jsonl"), "utf8");
+  const strictScopeDiagnostics = strictScopeDiagnosticText.trim().split(/\r?\n/u).map((line) => JSON.parse(line));
+  assert.equal(strictScopeDiagnostics.some((entry) => entry.event === "reply_candidate_rejected" && entry.code === "conversation_not_eligible"), true, "a clicked-but-rejected conversation must leave a visible diagnostic terminus");
+  assert.doesNotMatch(strictScopeDiagnosticText, /This must stay outside|This must not bypass|fuzzy visual title|red-dot message belongs/u, "scope diagnostics must not contain customer text");
   strictScopeController.pause();
   assert.equal((await strictScopeController.start()).ok, false, "pausing must clear the test selection before another start");
   const strictScopeState = JSON.parse(fs.readFileSync(path.join(strictScopeDir, "auto-reply-state.json"), "utf8"));

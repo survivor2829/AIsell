@@ -5,6 +5,7 @@ const { generateFixedScriptFallback, generatePersonalizedDraft } = require("./ai
 const { runActiveTouch } = require("./active-touch-ipc.cjs");
 const { preloadFile, rendererDir = "dist" } = require("./edition.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
+const { FLOATING_PROGRESS_WINDOW, floatingProgressPosition } = require("./floating-progress-window.cjs");
 const {
   authorizeTask,
   classifyContacts,
@@ -175,8 +176,8 @@ function createFloatingWindow() {
   }
 
   floatingWindow = new BrowserWindow({
-    width: 292,
-    height: 286,
+    width: FLOATING_PROGRESS_WINDOW.width,
+    height: FLOATING_PROGRESS_WINDOW.height,
     alwaysOnTop: true,
     autoHideMenuBar: true,
     frame: false,
@@ -194,7 +195,8 @@ function createFloatingWindow() {
 
   floatingWindow.setMenu(null);
   const { workArea } = screen.getPrimaryDisplay();
-  floatingWindow.setPosition(workArea.x + workArea.width - 314, workArea.y + Math.round((workArea.height - 286) / 2));
+  const position = floatingProgressPosition(workArea);
+  floatingWindow.setPosition(position.x, position.y);
   floatingWindow.once("close", () => {
     requestPauseRef?.("进度窗口已关闭，任务已暂停");
     showMainWindow();

@@ -76,6 +76,7 @@ declare global {
       runDailyNow: () => Promise<MomentsCampaignResult>;
       pause: () => Promise<MomentsCampaignResult>;
       stop: () => Promise<MomentsCampaignResult>;
+      showMain: () => Promise<MomentsCampaignResult>;
       onUpdate: (callback: (state: MomentsCampaignState) => void) => () => void;
     };
   }
@@ -126,6 +127,15 @@ const EMPTY_STATE: MomentsCampaignState = {
 
 const REASON_LABELS: Record<string, string> = {
   starting: "正在打开朋友圈",
+  moments_window_not_foreground: "朋友圈窗口失去前台，已安全暂停",
+  wechat_external_input_detected: "检测到鼠标或键盘输入变化，已安全暂停",
+  moments_window_obscured: "朋友圈窗口被其他窗口遮挡，已安全暂停",
+  moments_post_not_found: "已展示朋友圈，但未锁定到可操作帖子",
+  moments_post_ambiguous: "发现多个候选帖子，暂未唯一锁定",
+  moments_post_identity_missing: "帖子身份或互动菜单锚点不完整",
+  moments_menu_not_found: "未识别到当前帖子的互动菜单",
+  moments_menu_ambiguous: "识别到多个疑似互动菜单，已暂停保护",
+  moments_comment_visible_text_missing: "当前画面没有可用文案，已跳过本条评论",
   moments_discover_entry_ambiguous: "识别到多个“发现”入口，已停止且没有继续点击",
   moments_discover_entry_not_found: "未能唯一识别新版微信侧栏的“发现”图标，已停止",
   moments_discover_entry_not_owned: "“发现”入口不属于已绑定的微信窗口，已停止",
@@ -133,9 +143,9 @@ const REASON_LABELS: Record<string, string> = {
   moments_entry_ambiguous: "识别到多个朋友圈入口，已停止且没有继续点击",
   moments_entry_not_found: "未能唯一识别朋友圈入口，已停止",
   observing_post: "正在识别当前帖子",
-  reading_post_body: "正在读取正文",
   locating_interaction_menu: "正在定位互动菜单",
   generating_comment: "正在根据帖子正文生成评论",
+  executing_like: "已定位互动菜单，正在点赞",
   executing_comment: "正在执行评论",
   sending_comment: "正在执行评论",
   commented_verified: "评论已发送并复核",
@@ -144,9 +154,6 @@ const REASON_LABELS: Record<string, string> = {
   post_already_processed_in_run: "当前帖子本轮已经处理，正在继续下滑",
   post_already_recorded: "当前帖子历史任务已经处理，未重复操作",
   moments_post_changed_before_comment: "生成评论期间帖子位置发生变化，本条评论已跳过",
-  moments_comment_content_incomplete: "当前帖子正文采集不完整，已跳过 AI 评论并继续下滑",
-  moments_interaction_menu_not_found: "未能重新定位当前帖子的互动菜单，已跳过该帖子",
-  moments_post_changed_while_reading: "分段读取时帖子身份发生变化，已跳过原帖子",
   moments_comment_ai_failed: "本条AI评论生成失败，已跳过并继续",
   scrolled: "已下滑，正在寻找下一条",
   target_count_reached: "已完成本轮目标",
@@ -506,4 +513,58 @@ export default function MomentsCampaignPanel() {
       </div>
     </section>
   );
+}
+
+export function FloatingMomentsCampaignWindow() {
+  const api = window.xiaoxiMomentsCampaign;
+  const [state, setState] = useState<MomentsCampaignState>(EMPTY_STATE);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!api) return;
+    const unsubscribe = api.onUpdate(setState);
+    void api.status().then((result) => { if (result?.state) setState(result.state); });
+    return unsubscribe;
+  }, [api]);
+
+  const call = (action: () => Promise<MomentsCampaignResult>) => {
+    setBusy(true);
+    void action().then((result) => {
+      if (result?.state) setState(result.state);
+      setError(result?.ok ? "" : reasonLabel(result?.reason || "", "朋友圈任务操作失败"));
+    }).catch(() => setError("朋友圈任务操作失败")).finally(() => setBusy(false));
+  };
+  const total = Math.max(0, Number(state.max_posts) || 0);
+  const completed = Math.min(total, Math.max(0, Number(state.completed_post_count) || 0));
+  const progress = total ? Math.round((completed / total) * 100) : 0;
+  const phase = REASON_LABELS[state.last_reason] || state.last_reason || STATUS_LABELS[state.status] || "未启动";
+  const result = state.commented_count || state.liked_count || state.already_liked_count
+    ? `点赞 ${state.liked_count} · 评论 ${state.commented_count}`
+    : "等待首条帖子";
+  const actionable = state.status === "running";
+  return <main className="floating-shell moments-floating-shell">
+    <header className="floating-head">
+      <div className="floating-title"><span className={`floating-pulse ${state.status}`} /><strong>朋友圈互动进度</strong></div>
+      <button className="floating-close" aria-label="返回主页面" onClick={() => call(() => api!.showMain())} disabled={busy}>×</button>
+    </header>
+    <div className="floating-progress" aria-label={`已完成 ${completed} 条，共 ${total} 条`}>
+      <div className="floating-progress-bar"><span style={{ width: `${progress}%` }} /></div><b>{completed}/{total}</b>
+    </div>
+    <div className="floating-info" aria-live="polite">
+      <div className="floating-row"><span>当前环节</span><strong title={phase}>{phase}</strong></div>
+      <div className="floating-row"><span>动作</span><strong>{state.like_enabled ? "点赞" : ""}{state.like_enabled && state.comment_enabled ? " + " : ""}{state.comment_enabled ? "AI评论" : ""}</strong></div>
+      <div className="floating-state"><span>最近结果</span><strong title={result}>{result}</strong></div>
+    </div>
+    <div className="floating-submetrics">
+      <span>已扫描 {state.processed_count} 条</span>
+      <span>已下滑 {state.scroll_count} 次</span>
+      <span>跳过评论 {state.comment_skipped_count} 条</span>
+    </div>
+    {(error || (state.status !== "running" && state.last_reason)) && <div className="floating-alert" role="alert">{error || phase}</div>}
+    <div className="floating-actions moments-floating-actions">
+      <button onClick={() => call(() => api!.pause())} disabled={busy || !actionable}><Pause size={15} />{actionable ? "暂停" : "已暂停"}</button>
+      <button onClick={() => call(() => api!.showMain())} disabled={busy}>主页面</button>
+    </div>
+  </main>;
 }

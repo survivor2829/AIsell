@@ -28,7 +28,8 @@ import {
 import { lazy, Suspense, type ComponentType, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import productBrand from "../../product-brand.json";
 import { AiExpert } from "./AiExpert";
-import { AutoReply } from "./AutoReply";
+import { AutoReply, FloatingAutoReplyWindow } from "./AutoReply";
+import { FloatingMomentsCampaignWindow } from "./MomentsCampaignPanel";
 import { Diagnostics } from "./Diagnostics";
 import { ProductDetailPage } from "./ProductDetailPage";
 import { FinishedVideoCenterPage, MaterialsLibraryPage } from "./ContentFoundationPage";
@@ -555,8 +556,10 @@ function processedTouchResult(status: string) {
 }
 
 export default function App() {
-  const isFloatingWindow = new URLSearchParams(window.location.search).get("floating") === "1";
-  if (isFloatingWindow) return <FloatingTouchWindow />;
+  const floatingMode = new URLSearchParams(window.location.search).get("floating");
+  if (floatingMode === "auto-reply") return <FloatingAutoReplyWindow />;
+  if (floatingMode === "moments") return <FloatingMomentsCampaignWindow />;
+  if (floatingMode === "1" || floatingMode === "touch") return <FloatingTouchWindow />;
 
   const [user, setUser] = useState<UserProfile | null>(() => readStoredUser());
   const [active, setActive] = useState<ModuleKey>(DEFAULT_ACTIVE_MODULE);

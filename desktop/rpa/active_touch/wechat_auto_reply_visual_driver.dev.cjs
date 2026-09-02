@@ -241,6 +241,26 @@ function Resolve-AutoReplyVisualAllowedConversation([string]$observed, $allowedS
   }
 }
 
+function Resolve-AutoReplyVisualStrictBadgeHeader($header, $allowedSet) {
+  if ($null -eq $header -or -not [bool]$header.ok) {
+    $reason = if ($null -ne $header -and [string]$header.reason) { [string]$header.reason } else { "conversation_title_unresolved" }
+    return @{ ok = $false; reason = $reason; conversation = ""; conversationEvidence = ""; messageDriven = $true; strictConversationVerified = $false }
+  }
+  $resolved = Resolve-AutoReplyVisualAllowedConversation ([string]$header.conversation) $allowedSet
+  if (-not $resolved.ok) {
+    $reason = if ($resolved.ambiguous) { "conversation_title_unresolved" } else { "conversation_title_mismatch" }
+    return @{ ok = $false; reason = $reason; conversation = ""; conversationEvidence = ""; messageDriven = $true; strictConversationVerified = $false }
+  }
+  return @{
+    ok = $true
+    reason = ""
+    conversation = [string]$resolved.conversation
+    conversationEvidence = [string]$resolved.observed
+    messageDriven = $false
+    strictConversationVerified = $true
+  }
+}
+
 function Scale-AutoReplyVisualMetric([double]$value) {
   return $value * [double]$script:AutoReplyVisualScale
 }
@@ -1736,7 +1756,22 @@ try {
     )
     $messageTextMatches = Test-AutoReplyVisualMessageMatch $expectedMessage ([string]$latest.message)
     if (-not $bubbleEvidenceMatches -and -not $messageTextMatches) {
-      Write-AutoReplyVisualResult @{ ok = $false; reason = "incoming_message_changed"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
+      # The unread badge has already been consumed by opening this chat. Keep
+      # the newly observed user bubble so the JS driver can rebind the pending
+      # observation and obtain its second-frame proof without searching for a
+      # red dot that no longer exists.
+      Write-AutoReplyVisualResult @{
+        ok = $false
+        reason = "incoming_message_changed"
+        pid = [int]$process.Id
+        hWnd = [int64]$hWnd
+        conversation = $expectedConversation
+        message = [string]$latest.message
+        runtimeId = $observedRuntimeId
+        messageSignature = $observedMessageSignature
+        observedMessageSignature = $observedMessageSignature
+        latestRole = "user"
+      }
     }
     Write-AutoReplyVisualResult @{
       ok = $true
@@ -1894,6 +1929,7 @@ try {
       $candidate = [pscustomobject]@{
         badgeOnly = $true
         messageDriven = $true
+        strictConversationVerified = $false
         unread = $true
         badgeBounds = $badge
         conversationEvidence = "visual-unread-row:" + [string][Math]::Round([double]$badge.centerY)
@@ -1939,7 +1975,16 @@ try {
       Write-AutoReplyVisualResult @{ ok = $false; reason = "no_unread_message"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
     }
     $header = Get-AutoReplyVisualAnyHeader $openedObservation.lines $sidebarRight ([double]$openedFrame.width)
-    if ($header.ok) {
+    if ($script:AutoReplyVisualExactConversationMatch) {
+      $strictHeader = Resolve-AutoReplyVisualStrictBadgeHeader $header $allowedSet
+      if (-not $strictHeader.ok) {
+        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$strictHeader.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = $(if ($header.ok) { "different" } else { [string]$header.state }); headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+      }
+      $conversation = [string]$strictHeader.conversation
+      $candidate.conversationEvidence = [string]$strictHeader.conversationEvidence
+      $candidate.messageDriven = [bool]$strictHeader.messageDriven
+      $candidate.strictConversationVerified = [bool]$strictHeader.strictConversationVerified
+    } elseif ($header.ok) {
       # Message-driven auto reply keeps the observed title only as diagnostic
       # context. It is not an authorization gate.
       $conversation = [string]$header.conversation
@@ -1974,8 +2019,8 @@ try {
   }
   $latest = Get-AutoReplyVisualLatestIncoming $openedFrame $openedObservation.lines $preview $sidebarRight
   $resolvedMessage = $preview
-  if (-not $latest.ok) {
-    if ([string]$latest.reason -ceq "latest_message_not_incoming") {
+  if (-not $latest.ok -or [bool]$candidate.strictConversationVerified) {
+    if (-not $latest.ok -and [string]$latest.reason -ceq "latest_message_not_incoming") {
       Write-AutoReplyVisualResult @{
         ok = $false
         reason = "latest_message_not_incoming"
@@ -1989,7 +2034,7 @@ try {
         messageBaselineAdvance = @{ conversation = $conversation; signature = [string]$latest.evidenceSignature }
       }
     }
-    if ([string]$latest.reason -cne "unread_preview_mismatch") {
+    if (-not $latest.ok -and [string]$latest.reason -cne "unread_preview_mismatch") {
       Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$latest.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd }
     }
 
@@ -2022,10 +2067,10 @@ try {
     }
     $confirmationFrame = $confirmation.frame
     try {
-      if (-not [bool]$candidate.badgeOnly) {
+      if (-not [bool]$candidate.badgeOnly -or [bool]$candidate.strictConversationVerified) {
         $confirmationHeader = Get-AutoReplyVisualHeader $confirmation.lines $conversation $sidebarRight ([double]$confirmationFrame.width) $allowedSet
-        if (-not $confirmationHeader.ok -and [string]$confirmationHeader.state -eq "different") {
-          Write-AutoReplyVisualResult @{ ok = $false; reason = "conversation_title_mismatch"; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = "different"; headerCandidateCount = [int]$confirmationHeader.headerCandidateCount; headerCandidateHashes = @($confirmationHeader.headerCandidateHashes) }
+        if (-not $confirmationHeader.ok -and ([bool]$candidate.strictConversationVerified -or [string]$confirmationHeader.state -eq "different")) {
+          Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$confirmationHeader.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$confirmationHeader.state; headerCandidateCount = [int]$confirmationHeader.headerCandidateCount; headerCandidateHashes = @($confirmationHeader.headerCandidateHashes) }
         }
       }
       $confirmedLatest = Get-AutoReplyVisualLatestMessageEvidence $confirmationFrame $confirmation.lines $sidebarRight
@@ -2172,12 +2217,12 @@ function candidateKey(candidate) {
 }
 
 function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync, windowIdentityProvider = () => null) {
-  const pendingVerifyAttemptLimit = 3;
   const previewBaselines = new Map();
   const messageBaselines = new Map();
   const occurrenceStates = new Map();
   const turnBoundaries = new Map();
   const startupUnreadBoundaries = new Map();
+  const startupMessageBoundaries = new Map();
   const retryCandidates = [];
   let primedProcess = null;
   let pendingOpenedUnread = null;
@@ -2380,7 +2425,10 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       const conversation = compactContactName(row?.conversation);
       const signature = String(row?.signature || "").trim().toLowerCase();
       if (!allowed.includes(conversation) || !isSha256(signature)) continue;
-      if (String(row?.latestRole || "") === "assistant") observeAssistantBoundary(conversation, signature);
+      if (String(row?.latestRole || "") === "assistant") {
+        startupMessageBoundaries.delete(conversation);
+        observeAssistantBoundary(conversation, signature);
+      }
       if (turnBoundaries.get(conversation)?.pending === true) continue;
       if (missingOnly && messageBaselines.has(conversation)) continue;
       observeMessageSignature(conversation, signature);
@@ -2391,8 +2439,33 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     const conversation = compactContactName(result?.messageBaselineAdvance?.conversation);
     const signature = String(result?.messageBaselineAdvance?.signature || "").trim().toLowerCase();
     if (!allowed.includes(conversation) || !isSha256(signature)) return;
-    if (String(result?.latestRole || "") === "assistant") observeAssistantBoundary(conversation, signature);
+    if (String(result?.latestRole || "") === "assistant") {
+      startupMessageBoundaries.delete(conversation);
+      observeAssistantBoundary(conversation, signature);
+    }
     if (turnBoundaries.get(conversation)?.pending !== true) observeMessageSignature(conversation, signature);
+  }
+
+  function suppressStartupMessageDrift(result, allowed) {
+    const conversation = compactContactName(result?.conversation);
+    const boundary = startupMessageBoundaries.get(conversation);
+    if (!boundary || !allowed.includes(conversation)
+      || String(result?.source || "") !== "current_message_change"
+      || String(result?.latestRole || "user") !== "user"
+      || !sameObservedMessage(boundary.message, result?.message)) return null;
+    const messageSignature = String(result?.messageSignature || "").trim().toLowerCase();
+    const previewSignature = String(result?.previewSignature || "").trim().toLowerCase();
+    if (isSha256(messageSignature)) observeMessageSignature(conversation, messageSignature);
+    if (isSha256(previewSignature)) previewBaselines.set(conversation, previewSignature);
+    return {
+      ok: false,
+      reason: "no_unread_message",
+      startupSuppressed: true,
+      startupSuppressionCode: "visual_message_drift",
+      conversation,
+      pid: result?.pid,
+      hWnd: result?.hWnd
+    };
   }
 
   async function recoverPendingObservation(nameIdentity, allowed, matchOptions = {}) {
@@ -2483,6 +2556,32 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     };
   }
 
+  function rebindPendingOpenedUnread(pending, verification) {
+    if (String(verification?.reason || "") !== "incoming_message_changed"
+      || String(verification?.latestRole || "") !== "user") return false;
+    const conversation = compactContactName(verification?.conversation || pending?.conversation);
+    const message = compactMessageText(verification?.message);
+    const runtimeId = String(verification?.runtimeId || "").trim();
+    const messageSignature = String(verification?.messageSignature || verification?.observedMessageSignature || "").trim().toLowerCase();
+    if (!pending || conversation !== pending.conversation || !message
+      || !/^visual:v1:[a-f0-9]{64}$/u.test(runtimeId) || !isSha256(messageSignature)) return false;
+
+    // A later customer message is not a terminal condition. Preserve the
+    // already-open conversation and let the next poll establish a second frame
+    // for the latest bubble; no fresh unread badge is needed. Keeping the
+    // earlier pending text also lets the reply layer combine a short burst.
+    const context = Array.isArray(pending.context) ? pending.context.slice() : [];
+    if (!sameObservedMessage(context.at(-1)?.content, message)) {
+      context.push({ role: "user", content: message, key: runtimeId });
+    }
+    pending.message = message;
+    pending.runtimeId = runtimeId;
+    pending.messageSignature = messageSignature;
+    pending.context = context;
+    pending.pendingVerifyAttempts = 0;
+    return true;
+  }
+
   async function settlePendingOpenedUnread(nameIdentity, allowed, matchOptions = {}) {
     const pending = pendingOpenedUnread;
     if (!pending) return null;
@@ -2506,24 +2605,33 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       return { ...verification, ok: false, reason: processChanged ? "wechat_process_changed" : "wechat_window_changed" };
     }
     if (verification?.ok !== true) {
+      // Opening an unread row consumes WeChat's red dot. OCR uncertainty is
+      // therefore not evidence that the message disappeared: retain the
+      // already-open candidate and perform one fresh verification on each
+      // later poll. The only terminal facts are a proven different session,
+      // process/window replacement, or an outgoing latest bubble.
       const terminalReasons = new Set([
         "conversation_title_mismatch",
-        "incoming_message_changed",
-        "incoming_message_missing",
         "latest_message_not_incoming",
         "wechat_process_changed",
         "wechat_window_changed"
       ]);
-      if (terminalReasons.has(String(verification?.reason || ""))) pendingOpenedUnread = null;
-      else {
-        pending.pendingVerifyAttempts = Math.max(0, Math.floor(Number(pending.pendingVerifyAttempts) || 0)) + 1;
-        if (pending.pendingVerifyAttempts >= pendingVerifyAttemptLimit) pendingOpenedUnread = null;
+      const reason = String(verification?.reason || "pending_verify_failed");
+      if (terminalReasons.has(reason)) {
+        pendingOpenedUnread = null;
+        return verification;
       }
-      return pendingOpenedUnread
-        ? { ...verification, ok: false, reason: "unread_preview_pending", pendingReason: String(verification?.reason || "pending_verify_failed") }
-        : terminalReasons.has(String(verification?.reason || ""))
-          ? verification
-          : { ...verification, ok: false, reason: "unread_preview_unresolved", pendingReason: String(verification?.reason || "pending_verify_failed") };
+      const rebound = rebindPendingOpenedUnread(pending, verification);
+      if (!rebound) {
+        pending.pendingVerifyAttempts = Math.max(0, Math.floor(Number(pending.pendingVerifyAttempts) || 0)) + 1;
+      }
+      return {
+        ...verification,
+        ok: false,
+        reason: "unread_preview_pending",
+        pendingReason: rebound ? "incoming_message_rebased" : reason,
+        pendingVerifyAttempts: pending.pendingVerifyAttempts
+      };
     }
     const verifiedConversation = compactContactName(verification.conversation);
     const verifiedMessage = String(verification.message || "").normalize("NFKC").replace(/\s+/gu, "").trim();
@@ -2592,6 +2700,14 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       const primeRows = Array.isArray(result?.sessionBaselines) ? result.sessionBaselines : [];
       const unreadAtBoundary = new Map(primeRows.map((row) => [compactContactName(row?.conversation), row?.unread === true]));
       startupUnreadBoundaries.clear();
+      startupMessageBoundaries.clear();
+      for (const row of Array.isArray(result?.sessionMessageBaselines) ? result.sessionMessageBaselines : []) {
+        const conversation = compactContactName(row?.conversation);
+        const message = compactMessageText(row?.message);
+        if (allowed.includes(conversation) && message && String(row?.latestRole || "") === "user") {
+          startupMessageBoundaries.set(conversation, { message });
+        }
+      }
       for (const row of primeRows) {
         const conversation = compactContactName(row?.conversation);
         const signature = String(row?.signature || "").trim().toLowerCase();
@@ -2641,6 +2757,9 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     if (startupBoundaryCandidate) {
       const candidate = startupBoundaryCandidate;
       startupBoundaryCandidate = null;
+      const suppressed = suppressStartupMessageDrift(candidate, allowed);
+      if (suppressed) return suppressed;
+      startupMessageBoundaries.delete(compactContactName(candidate?.conversation));
       return candidate;
     }
     const restoredResult = await recoverPendingObservation(nameIdentity, allowed, matchOptions);
@@ -2721,6 +2840,9 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     const messageDriven = result?.messageDriven === true;
     if ((!messageDriven && !allowed.includes(conversation)) || !message) return { ok: false, reason: "incoming_message_missing" };
     if (!/^visual:v1:[a-f0-9]{64}$/u.test(runtimeId) || !isSha256(messageSignature)) return { ok: false, reason: "incoming_identity_missing" };
+    const startupSuppressed = suppressStartupMessageDrift(result, allowed);
+    if (startupSuppressed) return startupSuppressed;
+    startupMessageBoundaries.delete(conversation);
     const predecessorSignature = messageBaselines.get(conversation) || "";
     const decorated = decorateCandidate({ ...result, discoveredConversation: false, messageDriven }, nameIdentity, predecessorSignature, matchOptions);
     startupUnreadBoundaries.delete(conversation);
@@ -2830,6 +2952,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     turnBoundaries.set(conversation, { epoch: turnEpoch, pending: true, lastAdvancedRuntimeId: runtimeId });
     occurrenceStates.set(conversation, { ...active, active: false, boundarySignature });
     startupUnreadBoundaries.delete(conversation);
+    startupMessageBoundaries.delete(conversation);
     previewBaselines.set(conversation, boundarySignature);
     messageBaselines.set(conversation, boundarySignature);
     return { advanced: true, turnEpoch };
@@ -2859,6 +2982,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     occurrenceStates.clear();
     turnBoundaries.clear();
     startupUnreadBoundaries.clear();
+    startupMessageBoundaries.clear();
     retryCandidates.length = 0;
     pendingOpenedUnread = null;
     restoredPendingObservation = null;

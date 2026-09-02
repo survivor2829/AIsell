@@ -1365,6 +1365,27 @@ function persistenceBlockedResult(action, details) {
   });
 }
 
+async function executeMomentsExpandFullText(options = {}) {
+  const baseDir = options.baseDir || __dirname;
+  const action = "moments-expand-full-text";
+  const context = loadLockedContext(baseDir, options.observationId ?? options.observation_id);
+  if (!context.ok) return { ok: false, action, status: "blocked", reason: context.reason, real_action_attempted: false };
+  let driver;
+  try { driver = resolveDriver(options.driver, context); } catch {
+    return { ok: false, action, status: "blocked", reason: "moments_expand_driver_unavailable", real_action_attempted: false };
+  }
+  if (typeof driver.expandFullText !== "function") {
+    return { ok: false, action, status: "blocked", reason: "moments_expand_driver_unavailable", real_action_attempted: false };
+  }
+  const result = await driver.expandFullText(context);
+  return {
+    ...result,
+    action,
+    observation_id: context.observationId,
+    real_action_attempted: result?.actionAttempted === true
+  };
+}
+
 async function executeMomentsLike(options = {}) {
   const baseDir = options.baseDir || __dirname;
   const action = "moments-like";
@@ -1987,6 +2008,7 @@ module.exports = {
   VISUAL_COMMENT_VERIFICATION_MODE,
   createMomentsAttemptKey,
   executeMomentsComment,
+  executeMomentsExpandFullText,
   executeMomentsLike,
   inspectMomentsMenu,
   loadMomentsActionContext

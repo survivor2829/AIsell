@@ -5,7 +5,6 @@ const path = require("node:path");
 
 const {
   createMomentsCampaignController,
-  mergeMomentsReadingFragments,
   momentsReadingSnapshotMatch
 } = require("./moments-campaign-ipc.cjs");
 
@@ -55,20 +54,6 @@ assert.equal(momentsReadingSnapshotMatch({ runtime_id: "42.8.9", source: "uia:sn
   runtime_id: "42.8.9",
   source: "uia:sns_list"
 }, 0).matched, true);
-assert.equal(mergeMomentsReadingFragments([
-  firstReadingFrame,
-  sameReadingFrameAfterUp,
-  { ...sameReadingFrameAfterUp, identity_text: sameReadingFrameAfterUp.identity_text }
-]), "robot owner new store deployment completed today");
-assert.equal(mergeMomentsReadingFragments([
-  { identity_text: "robot owner first body segment", stable_anchor_text: "first body segment" },
-  { identity_text: "body segment continues with maintenance details", stable_anchor_text: "maintenance details" },
-  { identity_text: "final segment explains rental service", stable_anchor_text: "rental service" }
-]), [
-  "robot owner first body segment",
-  "body segment continues with maintenance details",
-  "final segment explains rental service"
-].join("\n"), "two to three long-post fragments must be retained without duplicate frames");
 
 async function waitFor(read, predicate, timeoutMs = 3000) {
   const started = Date.now();
@@ -796,18 +781,18 @@ async function main() {
   assert.equal(commentCompleted.liked_count, 0);
   assert.equal(commentCompleted.commented_count, 1);
   assert.equal(commentCompleted.comment_skipped_count, 0);
-  assert.equal(commentCommands.filter((args) => args[0] === "moments-dry-run").length, 2);
+  assert.equal(commentCommands.filter((args) => args[0] === "moments-dry-run").length, 1);
   assert.deepEqual(
     commentCommands
       .filter((args) => args[0] === "moments-dry-run")
       .map(expectedWindowFromArgs),
-    [INTEGRATED_EXPECTED_SURFACE, INTEGRATED_EXPECTED_SURFACE],
-    "initial and comment-preparation dry-runs must remain bound to the exact integrated host"
+    [INTEGRATED_EXPECTED_SURFACE],
+    "the initial observation must remain bound to the exact integrated host"
   );
   assert.equal(
     commentCommands.some((args) => args.includes("--comment-enabled")),
-    true,
-    "the generated text must be bound into a fresh dry-run before sending"
+    false,
+    "the generated text must use the initial observation instead of a second dry-run"
   );
   const commentFinished = commentEvents.filter(({ event }) => event === "campaign.comment_finished");
   assert.equal(commentFinished.length, 1);
@@ -823,39 +808,23 @@ async function main() {
   assert.equal(Object.prototype.hasOwnProperty.call(commentFinished[0].details, "comment_text"), false);
   assert.equal(Object.prototype.hasOwnProperty.call(commentFinished[0].details, "result"), false);
 
-  const incompleteVisualRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-incomplete-visual-comment-"));
-  const incompleteVisualPosts = [
-    {
-      observation_id: "1".repeat(64),
-      post_fingerprint: "1".repeat(64),
-      source: "visual:windows_media_ocr",
-      structure_verified: true,
-      identity_text: "author new store 14 hours ago",
-      stable_anchor_text: "",
-      avatar_hash: "a".repeat(64),
-      bounds: { left: 400, top: 100, width: 500, height: 420 },
-      menu_bounds: { left: 840, top: 460, width: 40, height: 28 },
-      avatar_bounds: { left: 410, top: 120, width: 48, height: 48 }
-    },
-    {
-      observation_id: "2".repeat(64),
-      post_fingerprint: "2".repeat(64),
-      source: "visual:windows_media_ocr",
-      structure_verified: true,
-      identity_text: "author complete body about a new store installation",
-      stable_anchor_text: "author complete body new store installation",
-      avatar_hash: "a".repeat(64),
-      bounds: { left: 400, top: 100, width: 500, height: 420 },
-      menu_bounds: { left: 840, top: 460, width: 40, height: 28 },
-      avatar_bounds: { left: 410, top: 120, width: 48, height: 48 }
-    }
-  ];
-  let incompleteVisualObservationIndex = 0;
-  let incompleteVisualCurrentPost = incompleteVisualPosts[0];
+  const incompleteVisualRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-partial-visual-comment-"));
+  const incompleteVisualPost = {
+    observation_id: "1".repeat(64),
+    post_fingerprint: "1".repeat(64),
+    source: "visual:windows_media_ocr",
+    structure_verified: true,
+    identity_text: "新门店设备安装顺利完成",
+    stable_anchor_text: "",
+    avatar_hash: "a".repeat(64),
+    bounds: { left: 400, top: 100, width: 500, height: 420 },
+    menu_bounds: { left: 840, top: 460, width: 40, height: 28 },
+    avatar_bounds: { left: 410, top: 120, width: 48, height: 48 }
+  };
   let incompleteVisualGenerations = 0;
+  let incompleteVisualLikes = 0;
   let incompleteVisualComments = 0;
   let incompleteVisualScrolls = 0;
-  const incompleteVisualScrollOptions = [];
   const incompleteVisualController = createMomentsCampaignController({
     baseDir: incompleteVisualRoot,
     coordinator: {
@@ -864,39 +833,27 @@ async function main() {
     },
     logger: { event: () => undefined },
     openMoments: async () => INTEGRATED_OPEN_RESULT,
-    scrollMoments: async (options) => {
+    scrollMoments: async () => {
       incompleteVisualScrolls += 1;
-      incompleteVisualScrollOptions.push(options);
-      return {
-        ok: true,
-        delta: options.scrollMode === "read_post_up" ? 240 : -240
-      };
+      return { ok: true, delta: -240 };
     },
     generateComment: async ({ postText }) => {
       incompleteVisualGenerations += 1;
-      assert.equal(postText, incompleteVisualPosts[1].identity_text);
-      return { comment: "relevant complete-content comment" };
+      assert.equal(postText, incompleteVisualPost.identity_text);
+      return { comment: "新门店顺利落地，真不错！" };
     },
     runStep: async (args, runOptions) => {
       if (args[0] === "moments-dry-run") {
-        if (runOptions.phase === "moments:observe") {
-          const readingStep = incompleteVisualObservationIndex;
-          incompleteVisualObservationIndex += 1;
-          if (readingStep === 1) {
-            return {
-              ok: false,
-              blocked_reason: "moments_post_not_found",
-              real_action_attempted: false
-            };
-          }
-          incompleteVisualCurrentPost = incompleteVisualPosts[readingStep === 0 ? 0 : 1];
-        }
         return {
           ok: true,
           window: INTEGRATED_OBSERVED_WINDOW,
-          post_snapshot: incompleteVisualCurrentPost,
+          post_snapshot: incompleteVisualPost,
           plan: { visible_post_count: 1 }
         };
+      }
+      if (args[0] === "moments-like") {
+        incompleteVisualLikes += 1;
+        return { ok: true, status: "verified", real_action_attempted: true };
       }
       assert.equal(args[0], "moments-comment");
       incompleteVisualComments += 1;
@@ -905,118 +862,22 @@ async function main() {
   });
   assert.equal(incompleteVisualController.start({
     maxPosts: 1,
-    likeEnabled: false,
+    likeEnabled: true,
     commentEnabled: true
   }).ok, true);
   const incompleteVisualCompleted = await waitFor(
     () => incompleteVisualController.status().state,
     (state) => state.status === "completed"
   );
-  assert.equal(incompleteVisualGenerations, 1, "visual UI fragments must not be sent to the AI as post content");
+  assert.equal(incompleteVisualGenerations, 1, "visible fragments should be used directly for a short comment");
+  assert.equal(incompleteVisualLikes, 1);
   assert.equal(incompleteVisualComments, 1);
-  assert.equal(incompleteVisualScrolls, 2);
-  assert.equal(incompleteVisualScrollOptions[0].scrollMode, "read_post_up");
-  assert.equal(incompleteVisualScrollOptions[1].scrollMode, "seek_post_menu_down");
-  assert.equal(incompleteVisualCompleted.processed_count, 2,
-    "an incomplete anchor must be skipped before the newly bound complete post is processed");
+  assert.equal(incompleteVisualScrolls, 0, "a visible, menu-bound post must not scroll to read its full text first");
+  assert.equal(incompleteVisualCompleted.processed_count, 1);
+  assert.equal(incompleteVisualCompleted.liked_count, 1);
   assert.equal(incompleteVisualCompleted.commented_count, 1);
-  assert.equal(incompleteVisualCompleted.comment_skipped_count, 1);
-  assert.equal(incompleteVisualCompleted.skipped_count, 1);
-
-  const bodyOnlyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-body-only-menu-search-"));
-  const bodyOnlyEvents = [];
-  const bodyOnlyPosts = [{
-    observation_id: "6".repeat(64),
-    post_fingerprint: "6".repeat(64),
-    source: "visual:windows_media_ocr_body",
-    structure_verified: true,
-    identity_text: "author shared a complete robot maintenance lesson",
-    stable_anchor_text: "author complete robot maintenance lesson",
-    avatar_hash: "b".repeat(64),
-    bounds: { left: 400, top: 340, width: 500, height: 420 },
-    avatar_bounds: { left: 410, top: 360, width: 48, height: 48 },
-    body_only: true
-  }, {
-    observation_id: "7".repeat(64),
-    post_fingerprint: "7".repeat(64),
-    source: "visual:windows_media_ocr",
-    structure_verified: true,
-    identity_text: "author shared a complete robot maintenance lesson with deployment details",
-    stable_anchor_text: "author complete robot maintenance lesson",
-    avatar_hash: "b".repeat(64),
-    bounds: { left: 400, top: 100, width: 500, height: 420 },
-    menu_bounds: { left: 840, top: 460, width: 40, height: 28 },
-    avatar_bounds: { left: 410, top: 120, width: 48, height: 48 }
-  }];
-  let bodyOnlyObservationIndex = 0;
-  let bodyOnlyCurrentPost = bodyOnlyPosts[0];
-  let bodyOnlyComments = 0;
-  const bodyOnlyScrollModes = [];
-  const bodyOnlyController = createMomentsCampaignController({
-    baseDir: bodyOnlyRoot,
-    coordinator: {
-      acquire: () => ({ ok: true, lock: { owner: "body-only-owner" } }),
-      release: () => undefined
-    },
-    logger: { event: (module, event, details) => bodyOnlyEvents.push({ module, event, details }) },
-    openMoments: async () => INTEGRATED_OPEN_RESULT,
-    scrollMoments: async (options) => {
-      bodyOnlyScrollModes.push(options.scrollMode);
-      return { ok: true, delta: -240 };
-    },
-    generateComment: async ({ postText }) => {
-      assert.equal(postText, bodyOnlyPosts[1].identity_text);
-      return { comment: "relevant maintenance comment" };
-    },
-    runStep: async (args, runOptions) => {
-      if (args[0] === "moments-dry-run") {
-        if (runOptions.phase === "moments:observe") {
-          assert.equal(args.includes("--allow-body-only"), true);
-          if (bodyOnlyObservationIndex > 0) {
-            const targetIndex = args.indexOf("--target-post-base64");
-            assert.notEqual(targetIndex, -1, "reading retries must ask the probe to reacquire the locked post");
-            const target = JSON.parse(Buffer.from(args[targetIndex + 1], "base64").toString("utf8"));
-            assert.equal(target.post_fingerprint, bodyOnlyPosts[0].post_fingerprint);
-            assert.equal(target.expected_scroll_delta, -240);
-          }
-          bodyOnlyCurrentPost = bodyOnlyPosts[Math.min(bodyOnlyObservationIndex, 1)];
-          bodyOnlyObservationIndex += 1;
-        } else if (runOptions.phase === "moments:prepare-comment") {
-          const targetIndex = args.indexOf("--target-post-base64");
-          assert.notEqual(targetIndex, -1, "comment preparation must stay bound to the accumulated reading session");
-          const target = JSON.parse(Buffer.from(args[targetIndex + 1], "base64").toString("utf8"));
-          assert.equal(target.post_fingerprint, bodyOnlyPosts[1].post_fingerprint);
-          assert.equal(target.expected_scroll_delta, 0);
-        }
-        return {
-          ok: true,
-          window: INTEGRATED_OBSERVED_WINDOW,
-          post_snapshot: bodyOnlyCurrentPost,
-          plan: {
-            visible_post_count: 1,
-            target_partial_visible: bodyOnlyCurrentPost.body_only === true
-          }
-        };
-      }
-      assert.equal(args[0], "moments-comment");
-      bodyOnlyComments += 1;
-      return { ok: true, status: "verified", real_action_attempted: true };
-    }
-  });
-  assert.equal(bodyOnlyController.start({
-    maxPosts: 1,
-    likeEnabled: false,
-    commentEnabled: true
-  }).ok, true);
-  const bodyOnlyCompleted = await waitFor(
-    () => bodyOnlyController.status().state,
-    (state) => state.status === "completed"
-  );
-  assert.deepEqual(bodyOnlyScrollModes, ["seek_post_menu_down"]);
-  assert.equal(bodyOnlyComments, 1);
-  assert.equal(bodyOnlyCompleted.commented_count, 1);
-  assert.equal(bodyOnlyCompleted.comment_skipped_count, 0);
-  assert.equal(bodyOnlyEvents.some(({ event }) => event === "campaign.reading_skipped"), false);
+  assert.equal(incompleteVisualCompleted.comment_skipped_count, 0);
+  assert.equal(incompleteVisualCompleted.skipped_count, 0);
 
   const visualJitterRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-visual-jitter-duplicate-"));
   const visualJitterPosts = [
@@ -1067,6 +928,9 @@ async function main() {
       return { comment: `comment ${visualJitterGeneratedFrom.length}` };
     },
     runStep: async (args, runOptions) => {
+      if (args[0] === "moments-expand-full-text") {
+        return { ok: true, status: "not_present", expanded: false, real_action_attempted: false };
+      }
       if (args[0] === "moments-dry-run") {
         if (runOptions.phase === "moments:observe") {
           visualJitterCurrentPost = visualJitterPosts[Math.min(
@@ -1126,10 +990,13 @@ async function main() {
     scrollMoments: async () => ({ ok: true }),
     generateComment: async () => ({ comment: "一条新的测试评论" }),
     runStep: async (args) => {
+      if (args[0] === "moments-expand-full-text") {
+        return { ok: true, status: "not_present", expanded: false, real_action_attempted: false };
+      }
       if (args[0] === "moments-dry-run") {
-        const fingerprint = skipThenSuccessFingerprints[Math.min(Math.floor(skipThenSuccessDryRuns / 2), 1)];
+        const fingerprint = skipThenSuccessFingerprints[Math.min(skipThenSuccessDryRuns, 1)];
         skipThenSuccessDryRuns += 1;
-        if (skipThenSuccessDryRuns % 2 === 1) skipThenSuccessObservation += 1;
+        skipThenSuccessObservation += 1;
         return {
           ok: true,
           post_snapshot: {
@@ -1366,7 +1233,7 @@ async function main() {
     generateComment: async () => ({ comment: "combined mode test" }),
     runStep: async (args) => {
       if (args[0] === "moments-dry-run") {
-        const fingerprint = combinedFingerprints[Math.min(Math.floor(combinedDryRuns / 2), 1)];
+        const fingerprint = combinedFingerprints[Math.min(combinedDryRuns, 1)];
         combinedDryRuns += 1;
         return {
           ok: true,
@@ -1413,6 +1280,65 @@ async function main() {
   assert.equal(combinedPaused.commented_count, 1);
   assert.equal(combinedPaused.completed_post_count, 0);
   assert.equal(combinedPaused.last_reason, "no_progress");
+
+  const directInteractionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-direct-interaction-"));
+  const directInteractionFingerprint = "c".repeat(64);
+  const directInteractionDryRuns = [];
+  let directInteractionLikes = 0;
+  let directInteractionComments = 0;
+  const directInteractionController = createMomentsCampaignController({
+    baseDir: directInteractionRoot,
+    coordinator: {
+      acquire: () => ({ ok: true, lock: { owner: "direct-interaction-owner" } }),
+      release: () => undefined
+    },
+    logger: { event: () => undefined },
+    openMoments: async () => INTEGRATED_OPEN_RESULT,
+    generateComment: async ({ postText }) => {
+      assert.equal(postText, "visible partial context is enough to comment");
+      return { comment: "direct interaction comment" };
+    },
+    runStep: async (args) => {
+      if (args[0] === "moments-dry-run") {
+        directInteractionDryRuns.push(args);
+        return {
+          ok: true,
+          window: INTEGRATED_OBSERVED_WINDOW,
+          post_snapshot: {
+            observation_id: directInteractionFingerprint,
+            post_fingerprint: directInteractionFingerprint,
+            identity_text: "visible partial context is enough to comment"
+          },
+          plan: { visible_post_count: 1 }
+        };
+      }
+      const observationIdIndex = args.indexOf("--observation-id");
+      assert.equal(args[observationIdIndex + 1], directInteractionFingerprint);
+      if (args[0] === "moments-like") {
+        directInteractionLikes += 1;
+        return { ok: true, status: "verified", real_action_attempted: true };
+      }
+      assert.equal(args[0], "moments-comment");
+      directInteractionComments += 1;
+      return { ok: true, status: "verified", real_action_attempted: true };
+    }
+  });
+  assert.equal(directInteractionController.start({
+    maxPosts: 1,
+    likeEnabled: true,
+    commentEnabled: true
+  }).ok, true);
+  const directInteractionDone = await waitFor(
+    () => directInteractionController.status().state,
+    (state) => state.status === "completed"
+  );
+  assert.equal(directInteractionDone.liked_count, 1);
+  assert.equal(directInteractionDone.commented_count, 1);
+  assert.equal(directInteractionLikes, 1);
+  assert.equal(directInteractionComments, 1);
+  assert.equal(directInteractionDryRuns.length, 1, "a visible post and menu must be observed once before direct interaction");
+  assert.equal(directInteractionDryRuns[0].includes("--comment-enabled"), false);
+  assert.equal(directInteractionDryRuns[0].includes("--target-post-fingerprint"), false);
 
   const partialAlignmentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-partial-alignment-limit-"));
   let partialAlignmentScans = 0;
@@ -1461,25 +1387,23 @@ async function main() {
   assert.equal(partialAlignmentScrolls, 1);
   assert.equal(partialAlignmentDone.last_reason, "no_progress");
 
-  const exhaustedReadingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-reading-exhausted-"));
-  const exhaustedReadingEvents = [];
-  let exhaustedReadingScans = 0;
-  let exhaustedReadScrolls = 0;
-  let exhaustedAdvanced = false;
-  let exhaustedComments = 0;
-  const exhaustedSnapshot = {
+  const visibleTextMissingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-visible-text-missing-"));
+  let visibleTextMissingAdvanced = false;
+  let visibleTextMissingLikes = 0;
+  let visibleTextMissingComments = 0;
+  const textMissingSnapshot = {
     observation_id: "e".repeat(64),
     post_fingerprint: "e".repeat(64),
     source: "visual:windows_media_ocr",
     structure_verified: true,
-    identity_text: "author 14 hours ago",
+    identity_text: "",
     stable_anchor_text: "",
     avatar_hash: "e".repeat(64),
     bounds: { left: 400, top: 200, width: 500, height: 420 },
     menu_bounds: { left: 840, top: 560, width: 40, height: 28 },
     avatar_bounds: { left: 410, top: 220, width: 48, height: 48 }
   };
-  const afterExhaustedSnapshot = {
+  const nextVisibleSnapshot = {
     observation_id: "f".repeat(64),
     post_fingerprint: "f".repeat(64),
     source: "visual:windows_media_ocr",
@@ -1491,83 +1415,55 @@ async function main() {
     menu_bounds: { left: 840, top: 540, width: 40, height: 28 },
     avatar_bounds: { left: 410, top: 200, width: 48, height: 48 }
   };
-  const exhaustedReadingController = createMomentsCampaignController({
-    baseDir: exhaustedReadingRoot,
+  const visibleTextMissingController = createMomentsCampaignController({
+    baseDir: visibleTextMissingRoot,
     coordinator: {
-      acquire: () => ({ ok: true, lock: { owner: "reading-exhausted-owner" } }),
+      acquire: () => ({ ok: true, lock: { owner: "visible-text-missing-owner" } }),
       release: () => undefined
     },
-    logger: {
-      event: (module, event, details) => exhaustedReadingEvents.push({ module, event, details })
-    },
     openMoments: async () => INTEGRATED_OPEN_RESULT,
-    scrollMoments: async (options) => {
-      if (options.scrollMode === "read_post_up") exhaustedReadScrolls += 1;
-      if (options.scrollMode === "advance_feed") exhaustedAdvanced = true;
-      return {
-        ok: true,
-        delta: options.scrollMode === "read_post_up" ? 240 : -480
-      };
+    scrollMoments: async () => {
+      visibleTextMissingAdvanced = true;
+      return { ok: true, delta: -480 };
     },
     generateComment: async ({ postText }) => {
-      assert.equal(postText, afterExhaustedSnapshot.identity_text);
+      assert.equal(postText, nextVisibleSnapshot.identity_text);
       return { comment: "next-post-only comment" };
     },
-    runStep: async (args, runOptions) => {
-      if (args[0] !== "moments-dry-run") {
-        assert.equal(args[0], "moments-comment");
-        exhaustedComments += 1;
+    runStep: async (args) => {
+      if (args[0] === "moments-like") {
+        visibleTextMissingLikes += 1;
         return { ok: true, status: "verified", real_action_attempted: true };
       }
-      if (runOptions.phase === "moments:observe") exhaustedReadingScans += 1;
-      const current = exhaustedAdvanced
-        ? afterExhaustedSnapshot
-        : {
-          ...exhaustedSnapshot,
-          bounds: { ...exhaustedSnapshot.bounds, top: exhaustedSnapshot.bounds.top + (exhaustedReadScrolls * 240) },
-          menu_bounds: { ...exhaustedSnapshot.menu_bounds, top: exhaustedSnapshot.menu_bounds.top + (exhaustedReadScrolls * 240) },
-          avatar_bounds: { ...exhaustedSnapshot.avatar_bounds, top: exhaustedSnapshot.avatar_bounds.top + (exhaustedReadScrolls * 240) }
-        };
+      if (args[0] === "moments-comment") {
+        visibleTextMissingComments += 1;
+        return { ok: true, status: "verified", real_action_attempted: true };
+      }
+      assert.equal(args[0], "moments-dry-run");
       return {
         ok: true,
         window: INTEGRATED_OBSERVED_WINDOW,
-        post_snapshot: current,
+        post_snapshot: visibleTextMissingAdvanced ? nextVisibleSnapshot : textMissingSnapshot,
         plan: { visible_post_count: 1 }
       };
     }
   });
-  assert.equal(exhaustedReadingController.start({
+  assert.equal(visibleTextMissingController.start({
     maxPosts: 1,
-    likeEnabled: false,
+    likeEnabled: true,
     commentEnabled: true
   }).ok, true);
-  const exhaustedReadingDone = await waitFor(
-    () => exhaustedReadingController.status().state,
+  const visibleTextMissingDone = await waitFor(
+    () => visibleTextMissingController.status().state,
     (state) => state.status === "completed"
   );
-  assert.equal(exhaustedReadingDone.processed_count, 2);
-  assert.equal(exhaustedReadingDone.comment_skipped_count, 1);
-  assert.equal(exhaustedReadingDone.skipped_count, 1);
-  assert.equal(exhaustedReadingDone.commented_count, 1);
-  assert.equal(exhaustedComments, 1, "the skipped incomplete post must not receive a repeated comment");
-  assert.equal(
-    exhaustedReadingEvents.filter(({ event }) => event === "campaign.reading_skipped").length,
-    1,
-    "three failed alignments must produce one terminal skip for the locked post"
-  );
-  assert.equal(
-    exhaustedReadingEvents.some(({ event, details }) => event === "campaign.reading_fragment_collected"
-      && details.fragment_count === 0),
-    false,
-    "an identity-only alignment must not be reported as collected post content"
-  );
-  assert.equal(
-    exhaustedReadingEvents.some(({ event }) => event === "campaign.reading_alignment_confirmed"),
-    true
-  );
-  assert.equal(exhaustedReadScrolls, 3);
-  assert.equal(exhaustedAdvanced, true);
-  assert.ok(exhaustedReadingScans <= 6);
+  assert.equal(visibleTextMissingDone.processed_count, 2);
+  assert.equal(visibleTextMissingDone.liked_count, 2, "missing comment text must not block the current like");
+  assert.equal(visibleTextMissingDone.comment_skipped_count, 1);
+  assert.equal(visibleTextMissingDone.commented_count, 1);
+  assert.equal(visibleTextMissingLikes, 2);
+  assert.equal(visibleTextMissingComments, 1);
+  assert.equal(visibleTextMissingAdvanced, true);
 
   const foregroundRecoveryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-foreground-recovery-"));
   const foregroundRecoveryEvents = [];
@@ -1658,7 +1554,6 @@ async function main() {
   fs.rmSync(partialRoot, { recursive: true, force: true });
   fs.rmSync(commentRoot, { recursive: true, force: true });
   fs.rmSync(incompleteVisualRoot, { recursive: true, force: true });
-  fs.rmSync(bodyOnlyRoot, { recursive: true, force: true });
   fs.rmSync(visualJitterRoot, { recursive: true, force: true });
   fs.rmSync(commentSkipThenSuccessRoot, { recursive: true, force: true });
   fs.rmSync(commentUnknownRoot, { recursive: true, force: true });
@@ -1666,7 +1561,7 @@ async function main() {
   fs.rmSync(crossedStatusRoot, { recursive: true, force: true });
   fs.rmSync(combinedRoot, { recursive: true, force: true });
   fs.rmSync(partialAlignmentRoot, { recursive: true, force: true });
-  fs.rmSync(exhaustedReadingRoot, { recursive: true, force: true });
+  fs.rmSync(visibleTextMissingRoot, { recursive: true, force: true });
   fs.rmSync(foregroundRecoveryRoot, { recursive: true, force: true });
   fs.rmSync(rejectedRoot, { recursive: true, force: true });
   console.log("moments campaign IPC self-check passed");

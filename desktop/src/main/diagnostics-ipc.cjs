@@ -8,6 +8,33 @@ const { replaceWithRetry, uniqueTemporaryPath } = require("./atomic-file.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
 
 const AUTO_REPLY_DIAGNOSTIC_FILE = /^auto-reply-diagnostics\.jsonl(?:\.[1-9]\d*)?$/u;
+const AUTO_REPLY_STATUS_LIMIT = 50;
+const AUTO_REPLY_STATUS_TAIL_BYTES = 256 * 1024;
+const AUTO_REPLY_VISIBLE_TOKEN_FIELDS = [
+  "status",
+  "phase",
+  "code",
+  "action",
+  "reason_code",
+  "error_code",
+  "send_result",
+  "send_phase",
+  "recovery_action",
+  "verification_mode"
+];
+const AUTO_REPLY_VISIBLE_INTEGER_FIELDS = [
+  "duration_ms",
+  "delivery_attempt",
+  "retry_attempt",
+  "retry_polls_remaining",
+  "context_turn_count",
+  "user_turn_count",
+  "assistant_turn_count",
+  "required_idle_ms",
+  "observed_idle_ms",
+  "preflight_ms"
+];
+const AUTO_REPLY_VISIBLE_BOOLEAN_FIELDS = ["send_attempted", "draft_phase_started"];
 
 function buildInfo(appRuntime = app) {
   const candidates = [
@@ -52,7 +79,7 @@ function collectDiagnosticFiles(logsDir) {
     });
 }
 
-function collectAutoReplyDiagnosticFiles(autoReplyDir) {
+function autoReplyDiagnosticSources(autoReplyDir) {
   if (typeof autoReplyDir !== "string" || !autoReplyDir.trim()) return [];
   const lockedDirectory = path.resolve(autoReplyDir);
   let directoryEntries;
@@ -63,11 +90,19 @@ function collectAutoReplyDiagnosticFiles(autoReplyDir) {
     throw error;
   }
 
-  const files = [];
+  const sources = [];
   for (const entry of directoryEntries) {
     if (!entry.isFile() || !AUTO_REPLY_DIAGNOSTIC_FILE.test(entry.name)) continue;
     const source = path.resolve(lockedDirectory, entry.name);
     if (path.dirname(source) !== lockedDirectory) continue;
+    sources.push({ name: entry.name, source });
+  }
+  return sources;
+}
+
+function collectAutoReplyDiagnosticFiles(autoReplyDir) {
+  const files = [];
+  for (const { name, source } of autoReplyDiagnosticSources(autoReplyDir)) {
     let content;
     try {
       content = fs.readFileSync(source);
@@ -76,13 +111,119 @@ function collectAutoReplyDiagnosticFiles(autoReplyDir) {
       throw error;
     }
     files.push({
-      name: path.posix.join("auto_reply", entry.name),
+      name: path.posix.join("auto_reply", name),
       content,
       size_bytes: content.length,
       sha256: sha256(content)
     });
   }
   return files.sort((left, right) => left.name.localeCompare(right.name, "en"));
+}
+
+function autoReplyDiagnosticOrder(name) {
+  if (name === "auto-reply-diagnostics.jsonl") return 0;
+  const suffix = Number(name.slice("auto-reply-diagnostics.jsonl.".length));
+  return Number.isSafeInteger(suffix) && suffix > 0 ? suffix : Number.MAX_SAFE_INTEGER;
+}
+
+function readUtf8Tail(source, maximumBytes = AUTO_REPLY_STATUS_TAIL_BYTES) {
+  let handle;
+  try {
+    const size = fs.statSync(source).size;
+    const start = Math.max(0, size - maximumBytes);
+    const buffer = Buffer.allocUnsafe(size - start);
+    handle = fs.openSync(source, "r");
+    const bytesRead = fs.readSync(handle, buffer, 0, buffer.length, start);
+    let text = buffer.subarray(0, bytesRead).toString("utf8");
+    if (start > 0) {
+      const firstLineEnd = text.indexOf("\n");
+      text = firstLineEnd >= 0 ? text.slice(firstLineEnd + 1) : "";
+    }
+    return text;
+  } catch (error) {
+    if (error?.code === "ENOENT") return "";
+    throw error;
+  } finally {
+    if (handle !== undefined) fs.closeSync(handle);
+  }
+}
+
+function safeDiagnosticToken(value) {
+  const token = typeof value === "string" ? value.trim() : "";
+  return /^[a-z0-9][a-z0-9_.:-]{0,119}$/iu.test(token) ? token : "";
+}
+
+function safeDiagnosticTimestamp(value) {
+  if (typeof value !== "string" || value.length > 40) return "";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString();
+}
+
+function safeDiagnosticInteger(value) {
+  const numeric = Number(value);
+  return Number.isSafeInteger(numeric) && numeric >= 0 && numeric <= 1_000_000_000 ? numeric : undefined;
+}
+
+function visibleAutoReplyEntry(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const ts = safeDiagnosticTimestamp(value.ts);
+  const event = safeDiagnosticToken(value.event);
+  if (!ts || !event) return null;
+  const visible = { ts, event };
+  for (const field of AUTO_REPLY_VISIBLE_TOKEN_FIELDS) {
+    const token = safeDiagnosticToken(value[field]);
+    if (token) visible[field] = token;
+  }
+  const traceId = typeof value.trace_id === "string" ? value.trace_id.trim().toLowerCase() : "";
+  if (/^[a-f0-9]{24}$/u.test(traceId)) visible.trace_id = traceId;
+  const reasonRef = typeof value.reason_ref === "string" ? value.reason_ref.trim().toLowerCase() : "";
+  if (/^[a-f0-9]{12}$/u.test(reasonRef)) visible.reason_ref = reasonRef;
+  for (const field of AUTO_REPLY_VISIBLE_INTEGER_FIELDS) {
+    const numeric = safeDiagnosticInteger(value[field]);
+    if (numeric !== undefined) visible[field] = numeric;
+  }
+  for (const field of AUTO_REPLY_VISIBLE_BOOLEAN_FIELDS) {
+    if (typeof value[field] === "boolean") visible[field] = value[field];
+  }
+  return visible;
+}
+
+function readRecentAutoReplyDiagnostics(autoReplyDir, limit = AUTO_REPLY_STATUS_LIMIT) {
+  const maximum = Math.max(1, Math.min(AUTO_REPLY_STATUS_LIMIT, Number(limit) || AUTO_REPLY_STATUS_LIMIT));
+  const files = autoReplyDiagnosticSources(autoReplyDir)
+    .sort((left, right) => autoReplyDiagnosticOrder(left.name) - autoReplyDiagnosticOrder(right.name));
+  const entries = [];
+  for (const file of files) {
+    for (const line of readUtf8Tail(file.source).split(/\r?\n/u).filter(Boolean).slice(-maximum)) {
+      try {
+        const visible = visibleAutoReplyEntry(JSON.parse(line));
+        if (visible) entries.push(visible);
+      } catch {}
+    }
+    if (entries.length >= maximum) break;
+  }
+  return entries
+    .sort((left, right) => right.ts.localeCompare(left.ts))
+    .slice(0, maximum);
+}
+
+function diagnosticStatus(autoReplyDir) {
+  const status = diagnostics().status();
+  if (!status?.ok || !status.data || typeof status.data !== "object") return status;
+  let autoReplyLatest = [];
+  try {
+    autoReplyLatest = readRecentAutoReplyDiagnostics(autoReplyDir);
+  } catch {
+    // A log can rotate between enumeration and reading. Keep the rest of the
+    // diagnostics page available; the next refresh will read the new file.
+  }
+  return {
+    ...status,
+    data: {
+      ...status.data,
+      autoReplyLatest
+    }
+  };
 }
 
 async function createZipArchive(entries) {
@@ -178,7 +319,7 @@ async function exportBundle(options = {}) {
 }
 
 function registerDiagnosticsIpc(options = {}) {
-  ipcMain.handle("diagnostics:status", () => diagnostics().status());
+  ipcMain.handle("diagnostics:status", () => diagnosticStatus(options.autoReplyDir));
   ipcMain.handle("diagnostics:open-folder", async () => {
     const result = await shell.openPath(diagnostics().logsDir);
     if (result) return { ok: false, error: result };

@@ -557,7 +557,8 @@ async function executeVerifiedContactSend(options = {}) {
         incomingVerified: true,
         reply: message,
         expectedInputTick: inspectedInputTick,
-        beforeSend: () => executionMayContinue(options)
+        beforeSend: () => executionMayContinue(options),
+        onTransition: options.onTransition
       }));
     } catch {
       // The visual sender owns the final click. If it throws, this caller cannot
@@ -576,6 +577,11 @@ async function executeVerifiedContactSend(options = {}) {
         blocked_reason: reason,
         error: result?.outcomeUnknown === true ? "已点击发送，但无法确认最终结果" : "视觉发送未完成",
         verification_mode: String(result?.verificationMode || ""),
+        ...(new Set(["ocr_unresolved", "proven_different"]).has(String(result?.incoming_change_kind || ""))
+          ? { incoming_change_kind: String(result.incoming_change_kind) }
+          : {}),
+        ...(typeof result?.composer_touched === "boolean" ? { composer_touched: result.composer_touched } : {}),
+        ...(String(result?.draft_stage || "") ? { draft_stage: String(result.draft_stage) } : {}),
         send_diagnostics: result?.diagnostics || null
       }, sendAttempted);
     }
@@ -586,6 +592,7 @@ async function executeVerifiedContactSend(options = {}) {
       verification_mode: String(result.verificationMode || ""),
       pid: Number(result.pid || pid),
       hWnd: String(result.hWnd || hWnd),
+      ...(String(result?.draft_stage || "") ? { draft_stage: String(result.draft_stage) } : {}),
       send_diagnostics: result?.diagnostics || null
     }, true);
   }

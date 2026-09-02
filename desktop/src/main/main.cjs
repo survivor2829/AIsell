@@ -407,7 +407,11 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         baseDir: runtime.momentsDir,
         coordinator,
         deepSeekClient,
-        getMainWindow: () => mainWindow
+        getMainWindow: () => mainWindow,
+        BrowserWindow,
+        screen,
+        preloadPath: path.join(__dirname, preloadFile),
+        rendererPath: path.join(__dirname, `../../${rendererDir}/index.html`)
       });
     }
     if (momentsPublish) {
@@ -475,6 +479,10 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     if (internalRealSend) {
       autoReplyController = registerAutoReplyIpc({
         getMainWindow: () => mainWindow,
+        BrowserWindow,
+        screen,
+        preloadPath: path.join(__dirname, preloadFile),
+        rendererPath: path.join(__dirname, `../../${rendererDir}/index.html`),
         dataDir: runtime.autoReplyDir,
         activeTouchDir: runtime.activeTouchDir,
         coordinator,

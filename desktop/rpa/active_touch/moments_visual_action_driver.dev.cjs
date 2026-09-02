@@ -1137,6 +1137,37 @@ function Get-CurrentLockedVisualPost($lock, $context, [bool]$activate = $false) 
   }
 }
 
+function Invoke-VisualExpandFullText($lock, $context) {
+  $current = Get-CurrentLockedVisualPost $lock $context $false
+  if (-not $current.ok) { return @{ ok = $false; status = "blocked"; reason = $current.reason; actionAttempted = $false } }
+  try {
+    $condition = [System.Windows.Automation.PropertyCondition]::new(
+      [System.Windows.Automation.AutomationElement]::NameProperty, "全文")
+    $matches = @($lock.root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition) | Where-Object {
+      try {
+        $b = $_.Current.BoundingRectangle
+        $b.Width -gt 0 -and $b.Height -gt 0 -and
+          $b.Left -ge ([double]$context.expectedWindow.left + [double]$current.post.bounds.left) -and
+          $b.Top -ge ([double]$context.expectedWindow.top + [double]$current.post.bounds.top) -and
+          $b.Right -le ([double]$context.expectedWindow.left + [double]$current.post.bounds.left + [double]$current.post.bounds.width) -and
+          $b.Bottom -le ([double]$context.expectedWindow.top + [double]$current.post.bounds.top + [double]$current.post.bounds.height)
+      } catch { $false }
+    })
+    if ($matches.Count -eq 0) { return @{ ok = $true; status = "not_present"; expanded = $false; actionAttempted = $false } }
+    if ($matches.Count -ne 1) { return @{ ok = $false; status = "blocked"; reason = "moments_full_text_ambiguous"; actionAttempted = $false } }
+    $b = $matches[0].Current.BoundingRectangle
+    if (-not (Invoke-VisualOwnedClick ([int][Math]::Round($b.Left + $b.Width / 2.0)) ([int][Math]::Round($b.Top + $b.Height / 2.0)) $lock ([int64]$context.deadlineMs) $false $true)) {
+      return @{ ok = $false; status = "blocked"; reason = "moments_full_text_click_blocked"; actionAttempted = $false }
+    }
+    Start-Sleep -Milliseconds 220
+    return @{ ok = $true; status = "expanded"; expanded = $true; actionAttempted = $true }
+  } catch {
+    return @{ ok = $false; status = "blocked"; reason = "moments_full_text_target_failed"; actionAttempted = $false }
+  } finally {
+    if ($current.frame) { Close-MomentsVisualFrame $current.frame }
+  }
+}
+
 function Test-VisualOwnedHitDetailed([IntPtr]$hit, [int]$screenX, [int]$screenY, $lock, $allowedPopupBounds = $null) {
   $diagnostics = @{
     pointInsideSurface = $false
@@ -5063,6 +5094,9 @@ try {
     $readback = Invoke-VisualCommentReadback $lock $context
     Write-VisualResult $readback
   }
+  if ([string]$env:XIAOXI_MOMENTS_VISUAL_ACTION -ceq "expand_full_text") {
+    Write-VisualResult (Invoke-VisualExpandFullText $lock $context)
+  }
   if ([string]$env:XIAOXI_MOMENTS_VISUAL_ACTION -ceq "comment_occurrence_check") {
     [string]$occurrenceCommentText = [string]$context.commentText
     if (-not $occurrenceCommentText -or $occurrenceCommentText.Length -gt 500) {
@@ -5710,6 +5744,10 @@ function comment(context = {}) {
   return typeof result?.then === "function" ? result.then(normalizeResult) : normalizeResult(result);
 }
 
+function expandFullText(context = {}) {
+  return runVisualAction("expand_full_text", context);
+}
+
 function commentReadback(context = {}) {
   const commentText = exactCommentText(context.commentText);
   if (!commentText || commentText.length > 500) return blocked("moments_comment_missing");
@@ -5763,6 +5801,7 @@ module.exports = {
   MOMENTS_VISUAL_POST_RELOCK_TOLERANCE_PX,
   MOMENTS_VISUAL_ACTION_POWERSHELL,
   comment,
+  expandFullText,
   commentOccurrenceCheck,
   commentReadback,
   inspectCommentDraft,

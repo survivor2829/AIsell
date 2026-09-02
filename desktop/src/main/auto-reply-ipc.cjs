@@ -4,10 +4,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { readContacts } = require("../../rpa/active_touch/state_machine.cjs");
 const { writeFileAtomic, writeJsonAtomic } = require("./atomic-file.cjs");
+const { FLOATING_PROGRESS_WINDOW, floatingProgressPosition } = require("./floating-progress-window.cjs");
 const {
   AUTO_REPLY_ACTIONS,
-  AUTO_REPLY_REASON_CODES,
-  isAutoReplyActionReason
+  AUTO_REPLY_REASON_CODES
 } = require("./auto-reply-decision.cjs");
 
 const POLL_INTERVAL_MS = 5_000;
@@ -27,12 +27,43 @@ const RECOVERY_ACTIONS = new Set([
   "retry_pending",
   "manual_review_required",
   "manual_check_required",
-  "fix_ai_and_restart"
+  "fix_ai_and_restart",
+  "continue_other_contacts"
 ]);
 const MANUAL_REVIEW_SEND_REASONS = new Set([
   "visual_send_external_input_detected"
 ]);
 const SCAN_HEALTH_VALUES = new Set(["unknown", "checking", "healthy", "warning", "degraded", "waiting"]);
+const AUTO_REPLY_ACTIVITY_PHASES = new Set([
+  "idle",
+  "starting",
+  "prime",
+  "listening",
+  "scanning",
+  "candidate",
+  "generating",
+  "decision_ready",
+  "preparing_send",
+  "sending",
+  "prepared",
+  "clicked",
+  "verifying",
+  "retrying",
+  "manual_review",
+  "sent_verified",
+  "silent",
+  "waiting",
+  "paused",
+  "error"
+]);
+const AUTO_REPLY_DELIVERY_STATES = new Set(["not_attempted", "prepared", "clicked", "sent_verified", "outcome_unknown"]);
+const CONTACT_GENERATION_FAILURES = new Set([
+  "AI_RESPONSE_EMPTY",
+  "AI_RESPONSE_INVALID",
+  "AI_RESPONSE_TRUNCATED",
+  "AI_RESPONSE_INCOMPLETE",
+  "AI_RESPONSE_LENGTH_INVALID"
+]);
 const HEALTHY_SCAN_REASONS = new Set([
   "no_unread_message",
   "current_session_baselined",
@@ -50,8 +81,12 @@ const PENDING_OBSERVATION_REASONS = new Set([
   "unread_preview_pending",
   "reply_in_flight"
 ]);
-const PENDING_OBSERVATION_MAX_ATTEMPTS = 3;
-const PENDING_OBSERVATION_MAX_AGE_MS = 2 * 60 * 1000;
+// Opening a red-dot conversation consumes the unread mark. A transient OCR
+// miss must therefore remain recoverable across as many polls as necessary;
+// only an explicit terminal observation may discard it. Keep the opaque
+// evidence long enough to survive a real UI recovery, while stale process/
+// window evidence is still rejected during restore.
+const PENDING_OBSERVATION_MAX_AGE_MS = 30 * 60 * 1000;
 const IN_FLIGHT_OBSERVATION_MAX_AGE_MS = 30 * 60 * 1000;
 const FATAL_STARTUP_PRIME_REASONS = new Set([
   "incoming_identity_missing",
@@ -171,6 +206,11 @@ const KNOWN_SEND_DIAGNOSTIC_REASONS = new Set([
   "message_snapshot_unavailable",
   "outcome_unknown",
   "personal_wechat_main_window_not_found",
+  "powershell_aborted",
+  "powershell_failed",
+  "powershell_output_invalid",
+  "powershell_runtime_quarantined",
+  "powershell_timeout",
   "real_send_already_attempted",
   "real_send_explicit_allow_missing",
   "real_send_final_confirmation_missing",
@@ -199,6 +239,7 @@ const KNOWN_SEND_DIAGNOSTIC_REASONS = new Set([
   "visual_send_external_input_detected",
   "visual_send_header_ocr_unresolved",
   "visual_send_incoming_changed",
+  "visual_send_incoming_ocr_unresolved",
   "visual_send_message_driven_disallowed",
   "visual_send_not_verified",
   "visual_send_outcome_unknown",
@@ -300,7 +341,7 @@ function normalizeAutoReplyDecision(value, { clarificationAllowed = true } = {})
   const action = normalizeText(value?.action).toLowerCase();
   const reasonCode = normalizeText(value?.reasonCode).toLowerCase();
   const reply = normalizeText(value?.reply);
-  if (!AUTO_REPLY_ACTIONS.has(action) || !AUTO_REPLY_REASON_CODES.has(reasonCode) || !isAutoReplyActionReason(action, reasonCode)) {
+  if (!AUTO_REPLY_ACTIONS.has(action) || !AUTO_REPLY_REASON_CODES.has(reasonCode)) {
     throw codedError("AI_DECISION_INVALID", "DeepSeek 返回的自动回复动作无效");
   }
   if (action === "silent") {
@@ -330,6 +371,7 @@ function systemErrorCategory(code) {
 
 function sanitizeSystemError(error) {
   const code = normalizeAiWarningCode(error?.code) || "AI_REQUEST_FAILED";
+  const detailCode = diagnosticCode(error?.diagnosticCode, "");
   const messages = {
     API_KEY_MISSING: "DeepSeek API Key 未配置，请保存后重新启动自动回复。",
     API_KEY_UNREADABLE: "DeepSeek API Key 无法读取，请重新保存后启动。",
@@ -342,14 +384,36 @@ function sanitizeSystemError(error) {
     AI_CONTENT_FILTERED: "DeepSeek 本次输出被内容策略拦截，请调整资料或问题后重新启动。",
     AI_RESPONSE_EMPTY: "DeepSeek 返回空内容，自动回复已暂停。",
     AI_RESPONSE_INVALID: "DeepSeek 返回格式无效，自动回复已暂停。",
+    AI_RESPONSE_LENGTH_INVALID: "DeepSeek 返回内容长度不符合要求，自动回复已暂停。",
+    AI_RESPONSE_TRUNCATED: "DeepSeek 返回内容被截断，自动回复已暂停。",
+    AI_RESPONSE_INCOMPLETE: "DeepSeek 本次生成未完整结束，自动回复已暂停。",
     AI_DECISION_INVALID: "DeepSeek 返回的业务动作无效，自动回复已暂停。",
     AI_REPLY_UNSAFE: "DeepSeek 返回的回复未通过安全检查，客户消息未发送。",
     AI_CLARIFY_LIMIT_EXCEEDED: "AI 已追问过一次但仍试图继续追问，自动回复已暂停。"
   };
+  const detailMessages = {
+    content_json_invalid: "DeepSeek 返回内容不是有效 JSON",
+    decision_fields_invalid: "DeepSeek 返回的 JSON 缺少 action、reply 或 reasonCode",
+    action_reason_invalid: "DeepSeek 返回的动作与原因不匹配",
+    clarify_not_allowed: "AI 已经澄清过一次但仍要求继续追问",
+    silent_reply_nonempty: "DeepSeek 的静默动作包含了回复内容",
+    reply_empty: "DeepSeek 未生成可发送的回复",
+    reply_length_invalid: "DeepSeek 回复长度不符合发送要求",
+    reply_sanitized_empty: "DeepSeek 回复经过安全清理后为空",
+    response_envelope_invalid: "DeepSeek 返回的数据缺少有效生成结果",
+    response_message_invalid: "DeepSeek 返回的数据结构不完整",
+    response_content_type_invalid: "DeepSeek 返回内容类型无效",
+    response_truncated: "DeepSeek 返回内容被截断",
+    response_incomplete: "DeepSeek 本次生成未完整结束",
+    content_empty: "DeepSeek 返回空内容"
+  };
+  const message = detailMessages[detailCode] && code.startsWith("AI_RESPONSE_")
+    ? `${detailMessages[detailCode]}，自动回复已暂停。`
+    : messages[code] || "DeepSeek 请求失败，客户消息未发送；请检查配置后重新启动自动回复。";
   return {
     code,
     category: systemErrorCategory(code),
-    message: messages[code] || "DeepSeek 请求失败，客户消息未发送；请检查配置后重新启动自动回复。"
+    message
   };
 }
 
@@ -532,6 +596,31 @@ function sanitizeStructuredScanDiagnostics(value) {
   if (Number.isSafeInteger(scanMs) && scanMs >= 0 && scanMs <= 300_000) result.scan_ms = scanMs;
   const captureMode = diagnosticCode(source.captureMode, "");
   if (new Set(["hwnd_printwindow", "foreground_screen"]).has(captureMode)) result.capture_mode = captureMode;
+  // Worker diagnostics are deliberately structural only. The visual sender
+  // hashes stderr before it gets here; never put raw PowerShell text (which
+  // can contain UI content) into the durable diagnostic trail.
+  const rawWorker = source.worker && typeof source.worker === "object" && !Array.isArray(source.worker)
+    ? source.worker
+    : null;
+  if (rawWorker) {
+    const worker = {};
+    const exitCode = Math.floor(Number(rawWorker.exit_code));
+    if (Number.isSafeInteger(exitCode) && exitCode >= -2_147_483_648 && exitCode <= 2_147_483_647) worker.exit_code = exitCode;
+    for (const field of ["timeout_ms", "elapsed_ms", "stdout_bytes", "stderr_bytes"]) {
+      const value = Math.floor(Number(rawWorker[field]));
+      if (Number.isSafeInteger(value) && value >= 0 && value <= 300_000_000) worker[field] = value;
+    }
+    for (const field of ["error_code", "termination_reason"]) {
+      const value = diagnosticCode(rawWorker[field], "");
+      if (value) worker[field] = value;
+    }
+    for (const field of ["kill_accepted", "grace_exceeded"]) {
+      if (typeof rawWorker[field] === "boolean") worker[field] = rawWorker[field];
+    }
+    const stderrHash = String(rawWorker.stderr_sha256 || "").trim().toLowerCase();
+    if (/^[a-f0-9]{64}$/u.test(stderrHash)) worker.stderr_sha256 = stderrHash;
+    if (Object.keys(worker).length) result.worker = worker;
+  }
   return result;
 }
 
@@ -642,7 +731,6 @@ function normalizePendingObservation(value, current = new Date()) {
   const firstSeenMs = new Date(firstSeenAt).getTime();
   const currentMs = current instanceof Date ? current.getTime() : new Date(current).getTime();
   if (!conversation || !pid || !hWnd || !signature("message_signature")) return null;
-  if (attempts > PENDING_OBSERVATION_MAX_ATTEMPTS) return null;
   if (rebindAttempts > 1) return null;
   const maxAgeMs = reason === "reply_in_flight"
     ? IN_FLIGHT_OBSERVATION_MAX_AGE_MS
@@ -685,6 +773,11 @@ function normalizeFailureContext(value) {
   if (sendPhase) result.send_phase = sendPhase;
   if (typeof value.send_attempted === "boolean") result.send_attempted = value.send_attempted;
   if (typeof value.draft_phase_started === "boolean") result.draft_phase_started = value.draft_phase_started;
+  if (typeof value.composer_touched === "boolean") result.composer_touched = value.composer_touched;
+  const draftStage = diagnosticCode(value.draft_stage, "");
+  if (draftStage) result.draft_stage = draftStage;
+  const incomingChangeKind = diagnosticCode(value.incoming_change_kind, "");
+  if (new Set(["ocr_unresolved", "proven_different"]).has(incomingChangeKind)) result.incoming_change_kind = incomingChangeKind;
   const sendResult = diagnosticCode(value.send_result, "");
   if (new Set(["not_attempted", "sent_verified", "outcome_unknown"]).has(sendResult)) result.send_result = sendResult;
   const recoveryAction = diagnosticCode(value.recovery_action, "");
@@ -720,8 +813,6 @@ function createDefaultState() {
     last_error: "",
     system_error: null,
     last_failure_context: null,
-    last_ai_warning_code: "",
-    last_ai_warning: "",
     scan_health: "unknown",
     last_scan_at: "",
     last_scan_success_at: "",
@@ -822,6 +913,8 @@ function migrateState(raw, current) {
     const next = { ...createDefaultState(), ...raw };
     next.version = AUTO_REPLY_STATE_VERSION;
     delete next.rate_events;
+    delete next.last_ai_warning_code;
+    delete next.last_ai_warning;
     const processedRecovery = recoverInterruptedProcessedSends(raw.processed);
     next.processed = processedRecovery.processed;
     next.reply_guards = recoverReplyGuards(raw.reply_guards, next.processed);
@@ -901,12 +994,17 @@ function migrateState(raw, current) {
     next.last_scan_at = upgrading ? "" : normalizeText(raw.last_scan_at);
     next.last_scan_success_at = upgrading ? "" : normalizeText(raw.last_scan_success_at);
     next.last_scan_reason = upgrading ? "" : normalizeText(raw.last_scan_reason) ? scanReason(raw.last_scan_reason).code : "";
-    next.last_ai_warning_code = normalizeAiWarningCode(raw.last_ai_warning_code);
-    next.last_ai_warning = normalizeText(raw.last_ai_warning).slice(0, 300);
-    next.system_error = raw.system_error && typeof raw.system_error === "object" && !Array.isArray(raw.system_error)
-      ? sanitizeSystemError({ code: raw.system_error.code })
-      : null;
+    const persistedSystemError = Boolean(raw.system_error && typeof raw.system_error === "object" && !Array.isArray(raw.system_error));
+    // AI generation/configuration failures are current-process UI state. The
+    // durable diagnostic log keeps the history; send outcomes are recovered
+    // separately below and must remain fenced across restarts.
+    next.system_error = null;
     next.last_failure_context = upgrading ? null : normalizeFailureContext(raw.last_failure_context);
+    if (persistedSystemError && next.last_failure_context?.phase !== "send") next.last_failure_context = null;
+    if (persistedSystemError) {
+      next.last_error = "";
+      if (next.last_event === "system_error_paused") next.last_event = "recovered_after_restart";
+    }
     next.consecutive_scan_failures = upgrading ? 0 : Math.max(0, Math.floor(Number(raw.consecutive_scan_failures) || 0));
     if (handoffNeedsConfirmation(next.pending_handoff)) {
       next.status = "paused";
@@ -1236,6 +1334,9 @@ function createAutoReplyController(options = {}) {
     rawState.version !== AUTO_REPLY_STATE_VERSION
     || rawState.status === "running"
     || rawState.status === "starting"
+    || Object.hasOwn(rawState, "last_ai_warning_code")
+    || Object.hasOwn(rawState, "last_ai_warning")
+    || JSON.stringify(rawState.system_error || null) !== JSON.stringify(state.system_error || null)
     || Object.values(rawState.processed || {}).some((entry) => normalizeText(entry?.status) === "sending")
     || JSON.stringify(rawState.reply_guards || {}) !== JSON.stringify(state.reply_guards || {})
     || JSON.stringify(rawState.contact_states || {}) !== JSON.stringify(state.contact_states || {})
@@ -1258,12 +1359,34 @@ function createAutoReplyController(options = {}) {
   let starting = false;
   let primeRetryNeeded = false;
   let activeTestContactScope = null;
+  const initialActivityAt = now().toISOString();
+  let availableTestContactOptions = singleContactScopeRequired ? testContactScopeOptions(activeTouchDir) : [];
+  let activity = {
+    phase: state.status === "running"
+      ? "listening"
+      : state.status === "starting"
+        ? "starting"
+        : state.status === "paused"
+          ? "paused"
+          : "idle",
+    phase_started_at: initialActivityAt,
+    contact_label: "",
+    action: "",
+    reason_code: "",
+    trace_id: "",
+    delivery_status: "not_attempted",
+    detail_code: diagnosticCode(state.last_event, state.status === "paused" ? "paused" : "")
+  };
   const pendingHandoffQueue = [];
   const retryGenerations = new Map();
   // Customer text stays in memory only. Durable state keeps opaque occurrence
   // evidence, while this cache carries preceding turns because the visual
   // adapter currently returns only the newest bubble.
   const conversationHistories = new Map();
+  // A customer may add a second bubble while the first answer is still being
+  // generated. Keep the superseded user turns in memory only so the next
+  // decision answers the combined question without persisting customer text.
+  const pendingUnsentContexts = new Map();
   let handoffConfirmationRequired = handoffNeedsConfirmation(state.pending_handoff);
 
   function contactState(contactId) {
@@ -1301,11 +1424,22 @@ function createAutoReplyController(options = {}) {
     }));
   }
 
-  function mergedConversationContext(contactId, observedContext) {
+  function mergedConversationContext(contactId, observedContext, candidate) {
     const remembered = conversationHistories.get(contactId) || [];
-    const combined = observedContext.length > 1
+    const observed = observedContext.length > 1
       ? observedContext
       : [...remembered, ...observedContext];
+    const pending = pendingUnsentContexts.get(contactId);
+    const currentRuntimeId = normalizeText(candidate?.runtimeId);
+    const includePending = pending
+      && normalizeText(pending.runtimeId)
+      && normalizeText(pending.runtimeId) !== currentRuntimeId;
+    // Multi-turn adapters already supplied their own preceding context. The
+    // memory-only carry is needed only for the visual adapter's single latest
+    // bubble; prefixing it to a multi-turn context would duplicate history.
+    const combined = includePending && observedContext.length === 1
+      ? [...pending.context, ...observedContext]
+      : observed;
     const normalized = [];
     for (const item of combined) {
       const previous = normalized.at(-1);
@@ -1325,11 +1459,22 @@ function createAutoReplyController(options = {}) {
       ...context,
       { role: "assistant", content: assistant, key: "" }
     ].slice(-12));
+    pendingUnsentContexts.delete(contactId);
   }
 
-  function save() {
-    state.updated_at = now().toISOString();
-    writeJsonAtomic(stateFile, state);
+  function retainSupersededContext(contactId, context, candidate) {
+    const runtimeId = normalizeText(candidate?.runtimeId);
+    if (!contactId || !runtimeId || !Array.isArray(context) || !context.length) return;
+    pendingUnsentContexts.set(contactId, {
+      runtimeId,
+      context: context
+        .filter((item) => item?.role && normalizeText(item?.content))
+        .map((item) => ({ role: item.role, content: normalizeText(item.content), key: normalizeText(item.key) }))
+        .slice(-12)
+    });
+  }
+
+  function notifyStateChange() {
     if (onStateChange) {
       try {
         onStateChange(publicState());
@@ -1337,6 +1482,48 @@ function createAutoReplyController(options = {}) {
         // Renderer updates are best effort; durable state remains authoritative.
       }
     }
+  }
+
+  function setActivity(phase, details = {}) {
+    // `waiting` has one precise meaning in the UI: the computer is actively
+    // being used. Never use it as a generic fallback for scanner or sender
+    // failures, otherwise a real execution fault looks like an idle gate.
+    const nextPhase = AUTO_REPLY_ACTIVITY_PHASES.has(phase) ? phase : "scanning";
+    const observedAt = now().toISOString();
+    const phaseChanged = activity.phase !== nextPhase;
+    const traceId = String(details.traceId || "").trim().toLowerCase();
+    const action = normalizeText(details.action).toLowerCase();
+    const deliveryStatus = diagnosticCode(details.deliveryStatus, "");
+    const nextActivity = {
+      ...activity,
+      phase: nextPhase,
+      phase_started_at: phaseChanged ? observedAt : activity.phase_started_at,
+      ...(Object.hasOwn(details, "contactLabel")
+        ? { contact_label: normalizeText(details.contactLabel) }
+        : {}),
+      ...(Object.hasOwn(details, "action") ? { action: AUTO_REPLY_ACTIONS.has(action) ? action : "" } : {}),
+      ...(Object.hasOwn(details, "reasonCode")
+        ? { reason_code: diagnosticCode(details.reasonCode, "") }
+        : {}),
+      ...(Object.hasOwn(details, "traceId")
+        ? { trace_id: /^[a-f0-9]{24}$/u.test(traceId) ? traceId : "" }
+        : {}),
+      ...(Object.hasOwn(details, "deliveryStatus")
+        ? { delivery_status: AUTO_REPLY_DELIVERY_STATES.has(deliveryStatus) ? deliveryStatus : "not_attempted" }
+        : {}),
+      ...(Object.hasOwn(details, "detailCode")
+        ? { detail_code: diagnosticCode(details.detailCode, "") }
+        : {})
+    };
+    if (JSON.stringify(nextActivity) === JSON.stringify(activity)) return;
+    activity = nextActivity;
+    notifyStateChange();
+  }
+
+  function save() {
+    state.updated_at = now().toISOString();
+    writeJsonAtomic(stateFile, state);
+    notifyStateChange();
   }
 
   function setFailureContext(details) {
@@ -1354,6 +1541,22 @@ function createAutoReplyController(options = {}) {
     const occurrence = normalizeText(fingerprint);
     if (!occurrence) return "";
     return crypto.createHmac("sha256", diagnosticTraceSecret).update(occurrence).digest("hex").slice(0, 24);
+  }
+
+  function candidateTraceId(candidate, fingerprint = "") {
+    const evidence = incomingEvidenceFor(candidate);
+    const strongEvidence = [
+      evidence.runtimeId ? `runtime:${evidence.runtimeId}` : "",
+      evidence.visualEvidenceRuntimeId ? `visual:${evidence.visualEvidenceRuntimeId}` : "",
+      evidence.messageSignature ? `message:${evidence.messageSignature}` : ""
+    ]
+      .filter(Boolean);
+    if (!strongEvidence.length) return occurrenceTraceId(fingerprint);
+    return occurrenceTraceId([
+      ...strongEvidence,
+      Math.max(0, Math.floor(Number(candidate?.pid) || 0)),
+      normalizeText(candidate?.hWnd)
+    ].join("\n"));
   }
 
   function appendDiagnostic(event, details = {}) {
@@ -1406,6 +1609,11 @@ function createAutoReplyController(options = {}) {
     if (Number.isSafeInteger(deliveryAttempt) && deliveryAttempt >= 1 && deliveryAttempt <= 100) entry.delivery_attempt = deliveryAttempt;
     if (typeof details.send_attempted === "boolean") entry.send_attempted = details.send_attempted;
     if (typeof details.draft_phase_started === "boolean") entry.draft_phase_started = details.draft_phase_started;
+    if (typeof details.composer_touched === "boolean") entry.composer_touched = details.composer_touched;
+    const draftStage = diagnosticCode(details.draft_stage, "");
+    if (draftStage) entry.draft_stage = draftStage;
+    const incomingChangeKind = diagnosticCode(details.incoming_change_kind, "");
+    if (new Set(["ocr_unresolved", "proven_different"]).has(incomingChangeKind)) entry.incoming_change_kind = incomingChangeKind;
     const sendResult = diagnosticCode(details.send_result, "");
     if (new Set(["not_attempted", "sent_verified", "outcome_unknown"]).has(sendResult)) entry.send_result = sendResult;
     const recoveryAction = diagnosticCode(details.recovery_action, "");
@@ -1513,20 +1721,19 @@ function createAutoReplyController(options = {}) {
       system_error: state.system_error && typeof state.system_error === "object" ? { ...state.system_error } : null,
       held_contacts: heldContacts(),
       last_failure_context: normalizeFailureContext(state.last_failure_context),
-      last_ai_warning_code: state.last_ai_warning_code,
-      last_ai_warning: state.last_ai_warning,
       scan_health: state.scan_health,
       last_scan_at: state.last_scan_at,
       last_scan_success_at: state.last_scan_success_at,
       last_scan_reason: state.last_scan_reason,
       consecutive_scan_failures: state.consecutive_scan_failures,
       pending_retry_count: Math.max(0, Number(state.pending_observation?.attempts) || 0),
+      activity: { ...activity },
       ...(singleContactScopeRequired ? {
         test_scope: {
           required: true,
           enforced: Boolean(activeTestContactScope),
           contact_label: activeTestContactScope?.contactLabel || "",
-          available_contacts: testContactScopeOptions(activeTouchDir),
+          available_contacts: availableTestContactOptions.map((contact) => ({ ...contact })),
           reset_on_restart: true
         }
       } : {}),
@@ -1539,6 +1746,7 @@ function createAutoReplyController(options = {}) {
     primeRetryNeeded = false;
     retryGenerations.clear();
     conversationHistories.clear();
+    pendingUnsentContexts.clear();
     try {
       scanIncoming.resetBaselines?.();
     } catch {}
@@ -1596,6 +1804,7 @@ function createAutoReplyController(options = {}) {
   }
 
   function status() {
+    if (singleContactScopeRequired) availableTestContactOptions = testContactScopeOptions(activeTouchDir);
     const previousDate = state.daily_date;
     resetDailyCounter(now());
     if (state.daily_date !== previousDate) save();
@@ -1725,12 +1934,14 @@ function createAutoReplyController(options = {}) {
     runEpoch += 1;
     if (timer) cancelSchedule(timer);
     timer = null;
+    pendingUnsentContexts.clear();
     clearTestContactScope();
     if (state.pending_handoff && handoffConfirmationRequired) pauseForFailure("handoff_confirmation_required", "");
     else {
       state.status = "paused";
       state.last_event = reason;
     }
+    setActivity("paused", { detailCode: state.last_event || reason });
     appendDiagnostic("paused", { phase: "control", code: state.last_event || reason });
     save();
     return { ok: true, state: publicState() };
@@ -1788,6 +1999,7 @@ function createAutoReplyController(options = {}) {
     const signature = normalizeText(baseline?.signature || candidate?.messageSignature || candidate?.currentMessageSignature).toLowerCase();
     if (!conversation || !/^[a-f0-9]{64}$/u.test(signature)) return false;
     const contact = typeof resolveContact === "function" ? resolveContact(candidate) : null;
+    if (contact) pendingUnsentContexts.delete(contact.id);
     const guard = contact ? state.reply_guards?.[contact.id] : null;
     if (!guard || normalizeText(guard.turn_state) !== "awaiting_outgoing_observation") return false;
     guard.turn_state = "outgoing_observed";
@@ -1831,7 +2043,7 @@ function createAutoReplyController(options = {}) {
       // The next driver recovery pass must observe that exact bubble in the
       // newly discovered window before it can become a reply candidate.
       rebind_attempts: Number(pending.rebind_attempts || 0) + 1,
-      attempts: Math.min(PENDING_OBSERVATION_MAX_ATTEMPTS, Number(pending.attempts || 1) + 1),
+      attempts: Number(pending.attempts || 1) + 1,
       last_seen_at: observedAt.toISOString()
     }, observedAt);
     if (!rebound) return false;
@@ -1909,6 +2121,7 @@ function createAutoReplyController(options = {}) {
     if (state.status === "running") return { ok: true, state: publicState() };
     if (starting) return { ok: false, error: "自动回复正在启动，请稍候" };
     if (singleContactScopeRequired) {
+      availableTestContactOptions = testContactScopeOptions(activeTouchDir);
       const selectedScope = resolveTestContactScope(activeTouchDir, payload?.contactId);
       if (!selectedScope.ok) return rejectedStart(selectedScope.error, selectedScope.code);
       activeTestContactScope = selectedScope.scope;
@@ -1949,6 +2162,14 @@ function createAutoReplyController(options = {}) {
     state.scan_health = "checking";
     state.consecutive_scan_failures = 0;
     resetDailyCounter(now());
+    setActivity("starting", {
+      contactLabel: activeTestContactScope?.contactLabel || (contactScope.strict ? "测试联系人" : "全部已同步联系人"),
+      action: "",
+      reasonCode: "",
+      traceId: "",
+      deliveryStatus: "not_attempted",
+      detailCode: "starting"
+    });
     appendDiagnostic("start_requested", { phase: "prime", code: "starting" });
     save();
     try {
@@ -2047,6 +2268,7 @@ function createAutoReplyController(options = {}) {
       state.status = "running";
       state.last_event = recoveredHandoffWarning ? "handoff_manual_followup_required" : "started";
       state.last_error = recoveredHandoffWarning;
+      setActivity("listening", { detailCode: state.last_scan_reason || "started" });
       appendDiagnostic("started", { phase: "prime", code: state.last_scan_reason || "started" });
       save();
       // Let the successful start IPC reach the renderer before the first OCR
@@ -2060,6 +2282,7 @@ function createAutoReplyController(options = {}) {
         state.status = "paused";
         state.last_event = "start_failed";
         state.last_error = String(error?.message || error || "自动回复启动失败");
+        setActivity("error", { detailCode: state.last_scan_reason || "start_failed" });
         appendDiagnostic("start_failed", { phase: "prime", code: state.last_scan_reason || "start_failed" });
         save();
       }
@@ -2074,6 +2297,7 @@ function createAutoReplyController(options = {}) {
     state.status = "paused";
     state.last_event = event;
     state.last_error = String(error || "自动回复已暂停");
+    setActivity("error", { detailCode: event });
   }
 
   function pauseForFailure(event, error) {
@@ -2084,6 +2308,7 @@ function createAutoReplyController(options = {}) {
     const detail = normalizeText(error);
     const confirmation = handoffInterruptedMessage(state.pending_handoff);
     state.last_error = detail ? `${confirmation}（${detail}）` : confirmation;
+    setActivity("error", { detailCode: state.last_event });
   }
 
   function pauseForSystemError(error, { traceId = "", durationMs } = {}) {
@@ -2098,6 +2323,11 @@ function createAutoReplyController(options = {}) {
       send_attempted: false,
       send_result: "not_attempted",
       recovery_action: "fix_ai_and_restart"
+    });
+    setActivity("error", {
+      traceId,
+      deliveryStatus: "not_attempted",
+      detailCode: failure.code
     });
     appendDiagnostic("system_error", {
       phase: "generate",
@@ -2118,6 +2348,7 @@ function createAutoReplyController(options = {}) {
     }
     updateContactState(key, { clarify_pending: false, human_owned: false });
     conversationHistories.delete(key);
+    pendingUnsentContexts.delete(key);
     if (state.reply_guards) delete state.reply_guards[key];
     for (const [fingerprint, entry] of Object.entries(state.processed || {})) {
       if (normalizeText(entry?.contact_id) !== key || isTerminalProcessed(entry)) continue;
@@ -2311,6 +2542,7 @@ function createAutoReplyController(options = {}) {
       const contacts = contactScope.contacts;
       const conversationAliases = contactScope.aliases;
       if (primeRetryNeeded && typeof primeIncoming === "function") {
+        setActivity("prime", { detailCode: "baseline_retry" });
         let primed;
         try {
           primed = await Promise.resolve(primeIncoming(conversationAliases, contactScope.driverOptions));
@@ -2333,6 +2565,7 @@ function createAutoReplyController(options = {}) {
         primeRetryNeeded = false;
       }
       let candidate;
+      setActivity("scanning", { detailCode: "scan_started" });
       try {
         candidate = await Promise.resolve(scanIncoming(conversationAliases, contactScope.driverOptions));
       } catch (error) {
@@ -2348,6 +2581,13 @@ function createAutoReplyController(options = {}) {
       }
       if (!candidate?.ok) {
         const candidateReason = normalizeText(candidate?.reason);
+        setActivity(candidateReason === "no_unread_message"
+          ? "listening"
+          : candidateReason === USER_IDLE_WAIT_REASON
+            ? "waiting"
+            : "scanning", {
+          detailCode: candidateReason || state.last_scan_reason || "scan_result_invalid"
+        });
         if (contactScope.strict && STRICT_SCOPE_WINDOW_RESET_REASONS.has(candidateReason)) {
           pauseWithError("test_scope_window_changed", "检测到微信窗口变化，已暂停测试自动回复，请重新选择测试联系人");
           appendDiagnostic("test_scope_window_changed", { phase: "scope", code: candidateReason });
@@ -2431,12 +2671,32 @@ function createAutoReplyController(options = {}) {
       }
 
       if (contactScope.strict && candidate && typeof candidate === "object") candidate.exactConversationMatch = true;
+      const observedTraceId = candidateTraceId(candidate);
+      setActivity("candidate", {
+        traceId: observedTraceId,
+        action: "",
+        reasonCode: "",
+        deliveryStatus: "not_attempted",
+        detailCode: "candidate_detected"
+      });
       const conversation = normalizeText(candidate.conversation);
       const contact = contactScope.resolveContact(candidate);
       if (!contact) {
         clearPendingObservation(candidate);
         state.last_event = "conversation_not_eligible";
         state.last_error = "";
+        appendDiagnostic("reply_candidate_rejected", {
+          phase: "scope",
+          code: "conversation_not_eligible",
+          traceId: observedTraceId,
+          pid: candidate?.pid,
+          hWnd: candidate?.hWnd
+        });
+        setActivity("waiting", {
+          traceId: observedTraceId,
+          deliveryStatus: "not_attempted",
+          detailCode: "conversation_not_eligible"
+        });
         save();
         return publicState();
       }
@@ -2463,6 +2723,7 @@ function createAutoReplyController(options = {}) {
         return publicState();
       }
       if (contactState(contact.id).human_owned === true) {
+        pendingUnsentContexts.delete(contact.id);
         remember(fingerprint, { status: "human_owned_skipped", ...processedMetadata, conversation, at: current.toISOString() });
         clearPendingObservation(candidate);
         state.last_event = "human_owned_contact_skipped";
@@ -2483,7 +2744,7 @@ function createAutoReplyController(options = {}) {
         save();
         return publicState();
       }
-      const context = mergedConversationContext(contact.id, rawContext);
+      const context = mergedConversationContext(contact.id, rawContext, candidate);
 
       const replyGuard = state.reply_guards?.[contact.id];
       if (replyGuard) {
@@ -2525,7 +2786,7 @@ function createAutoReplyController(options = {}) {
         }
       }
 
-      const traceId = occurrenceTraceId(fingerprint);
+      const traceId = candidateTraceId(candidate, fingerprint);
       appendDiagnostic("reply_candidate_detected", {
         phase: "candidate",
         code: "candidate_accepted",
@@ -2551,6 +2812,13 @@ function createAutoReplyController(options = {}) {
             });
           }
           state.last_error = previousFailure?.code === USER_IDLE_WAIT_REASON ? "" : "回复尚未发出，正在退避后重试";
+          setActivity(previousFailure?.code === USER_IDLE_WAIT_REASON ? "waiting" : "retrying", {
+            traceId,
+            action: retryEntry.generated?.action,
+            reasonCode: retryEntry.generated?.reasonCode,
+            deliveryStatus: "not_attempted",
+            detailCode: previousFailure?.code || "send_retry_waiting"
+          });
           const previousDiagnosticReason = previousFailure
             ? sendDiagnosticReason(previousFailure.code)
             : { code: "send_retry_waiting", ref: "" };
@@ -2580,6 +2848,11 @@ function createAutoReplyController(options = {}) {
       remember(fingerprint, { status: "generating", ...processedMetadata, conversation, at: current.toISOString() });
       state.last_event = "generating_reply";
       state.last_error = "";
+      setActivity("generating", {
+        traceId,
+        deliveryStatus: "not_attempted",
+        detailCode: "context_ready"
+      });
       save();
       let generated = retryEntry?.generated;
       const clarificationAllowed = contactState(contact.id).clarify_pending !== true;
@@ -2600,6 +2873,13 @@ function createAutoReplyController(options = {}) {
           generated = await deepSeekClient.reply({ context, expert, clarificationAllowed });
         }
         generated = normalizeAutoReplyDecision(generated, { clarificationAllowed });
+        setActivity("decision_ready", {
+          traceId,
+          action: generated.action,
+          reasonCode: generated.reasonCode,
+          deliveryStatus: "not_attempted",
+          detailCode: "reply_ready"
+        });
         if (generationStartedAt !== null) {
           appendDiagnostic("reply_decision", {
             phase: "generate",
@@ -2612,6 +2892,40 @@ function createAutoReplyController(options = {}) {
         }
       } catch (error) {
         if (isCurrentRun()) {
+          const errorCode = normalizeText(error?.code);
+          if (CONTACT_GENERATION_FAILURES.has(errorCode)) {
+            state.processed[fingerprint].status = "ai_failed";
+            retryGenerations.delete(fingerprint);
+            clearPendingObservation(candidate);
+            pendingUnsentContexts.delete(contact.id);
+            state.system_error = null;
+            state.last_event = "reply_generation_skipped";
+            state.last_error = "本条消息未生成可用回复，已跳过；自动回复继续处理其他消息。";
+            setFailureContext({
+              phase: "generate",
+              code: errorCode,
+              send_attempted: false,
+              send_result: "not_attempted",
+              recovery_action: "continue_other_contacts"
+            });
+            setActivity("error", {
+              traceId,
+              deliveryStatus: "not_attempted",
+              detailCode: errorCode
+            });
+            appendDiagnostic("reply_generation_skipped", {
+              phase: "generate",
+              code: errorCode,
+              traceId,
+              duration_ms: generationStartedAt === null ? undefined : Date.now() - generationStartedAt,
+              send_attempted: false,
+              send_result: "not_attempted",
+              recovery_action: "continue_other_contacts"
+            });
+            saveBestEffort();
+            queueNext(FAST_RECHECK_MS);
+            return publicState();
+          }
           state.processed[fingerprint].status = "generating";
           pauseForSystemError(error, {
             traceId,
@@ -2634,6 +2948,13 @@ function createAutoReplyController(options = {}) {
       });
       const reply = normalizeText(generated?.reply);
       if (generated.action === "silent") {
+        setActivity("silent", {
+          traceId,
+          action: generated.action,
+          reasonCode: generated.reasonCode,
+          deliveryStatus: "not_attempted",
+          detailCode: "no_reply_needed"
+        });
         appendDiagnostic("reply_send_skipped", {
           phase: "send",
           code: "no_reply_needed",
@@ -2644,6 +2965,7 @@ function createAutoReplyController(options = {}) {
           send_result: "not_attempted"
         });
         retryGenerations.delete(fingerprint);
+        pendingUnsentContexts.delete(contact.id);
         state.processed[fingerprint].status = "silent";
         if (generated.reasonCode === "no_reply_needed") updateContactState(contact.id, { clarify_pending: false });
         clearPendingObservation(candidate);
@@ -2656,8 +2978,9 @@ function createAutoReplyController(options = {}) {
       }
       // Generation is complete but no operation capable of sending has begun.
       // Persist that distinction so a crash here can regenerate/retry the same
-      // occurrence. The state becomes `sending` only when the sender enters its
-      // draft phase; a crash after that remains outcome-unknown on restart.
+      // occurrence. For visual sends, stay known-unsent until the sender
+      // confirms the draft was actually written; merely launching its worker
+      // must not turn a pre-click failure into an unknown delivery.
       state.processed[fingerprint].status = "ready_to_send";
       save();
 
@@ -2674,7 +2997,14 @@ function createAutoReplyController(options = {}) {
         return incomingStillCurrent;
       };
       const beforeDraft = async () => {
-        state.processed[fingerprint].status = "sending";
+        if (!isVisualCandidate) state.processed[fingerprint].status = "sending";
+        setActivity("preparing_send", {
+          traceId,
+          action: generated.action,
+          reasonCode: generated.reasonCode,
+          deliveryStatus: "not_attempted",
+          detailCode: isVisualCandidate ? "visual_preflight" : "verify_incoming"
+        });
         save();
         draftPhaseStarted = true;
         // Visual OCR geometry can drift while AI is generating. The visual
@@ -2696,6 +3026,13 @@ function createAutoReplyController(options = {}) {
       coordinator.update(lock.lock.owner, "send-reply");
       const deliveryAttempt = Math.min(100, Math.max(1, Number(retryEntry?.attempts || 0) + 1));
       const sendStartedAt = Date.now();
+      setActivity("sending", {
+        traceId,
+        action: generated.action,
+        reasonCode: generated.reasonCode,
+        deliveryStatus: "not_attempted",
+        detailCode: isVisualCandidate ? "visual_send_started" : "send_started"
+      });
       appendDiagnostic("reply_send_started", {
         phase: "send",
         code: isVisualCandidate ? "visual_send_started" : "send_started",
@@ -2726,14 +3063,51 @@ function createAutoReplyController(options = {}) {
         expectedConversationAliases: conversationAliases,
         exactConversationMatch: contactScope.strict,
         messageDriven: candidate.messageDriven === true,
+        onTransition: (transition) => {
+          const delivery = diagnosticCode(transition, "");
+          if (delivery === "prepared" && isVisualCandidate && state.processed[fingerprint]) {
+            // `prepared` is emitted only after the visual sender has verified
+            // the exact draft in WeChat. From this point a crash can leave an
+            // externally visible draft, so retain the conservative restart
+            // semantics for this one occurrence.
+            state.processed[fingerprint].status = "sending";
+            save();
+          }
+          const phase = ({
+            prepared: "prepared",
+            clicked: "clicked",
+            sent_verified: "sent_verified",
+            outcome_unknown: "error"
+          })[delivery] || "sending";
+          setActivity(phase, {
+            traceId,
+            action: generated.action,
+            reasonCode: generated.reasonCode,
+            deliveryStatus: AUTO_REPLY_DELIVERY_STATES.has(delivery) ? delivery : "not_attempted",
+            detailCode: delivery || "sending"
+          });
+        },
         beforeDraft,
         shouldContinue,
         runStep: (command, args) => runStep(command, args, lock.lock.owner)
       });
+      const explicitOutcomeUnknown = normalizeText(result?.send_result) === "outcome_unknown"
+        || result?.outcomeUnknown === true;
+      const sendVerified = result?.ok === true && !explicitOutcomeUnknown;
       const sendTimings = result?.send_diagnostics?.timings || {};
-      const sendDiagnostic = result?.ok === true
-        ? { code: "sent_verified", ref: "" }
-        : sendDiagnosticReason(result?.blocked_reason);
+      const sendWorker = result?.send_diagnostics?.worker;
+      const sendDiagnostic = explicitOutcomeUnknown
+        ? { code: "outcome_unknown", ref: "" }
+        : sendVerified
+          ? { code: "sent_verified", ref: "" }
+          : sendDiagnosticReason(result?.blocked_reason);
+      setActivity(sendVerified ? "sent_verified" : explicitOutcomeUnknown ? "error" : "sending", {
+        traceId,
+        action: generated.action,
+        reasonCode: generated.reasonCode,
+        deliveryStatus: sendVerified ? "sent_verified" : explicitOutcomeUnknown ? "outcome_unknown" : result?.send_result || "not_attempted",
+        detailCode: sendDiagnostic.code
+      });
       appendDiagnostic("reply_send_finished", {
         phase: "send",
         code: sendDiagnostic.code,
@@ -2748,6 +3122,9 @@ function createAutoReplyController(options = {}) {
         send_attempted: result?.send_attempted,
         send_result: result?.send_result,
         draft_phase_started: draftPhaseStarted,
+        composer_touched: result?.composer_touched,
+        draft_stage: result?.draft_stage,
+        incoming_change_kind: result?.incoming_change_kind,
         preflight_ms: sendTimings.preflight_ms,
         draft_ms: sendTimings.draft_ms,
         before_send_ms: sendTimings.before_send_ms,
@@ -2755,6 +3132,7 @@ function createAutoReplyController(options = {}) {
         total_ms: sendTimings.total_ms,
         required_idle_ms: result?.send_diagnostics?.required_idle_ms,
         observed_idle_ms: result?.send_diagnostics?.observed_idle_ms,
+        worker: sendWorker,
         pid: result?.pid || candidate.pid,
         hWnd: result?.hWnd || candidate.hWnd
       });
@@ -2768,7 +3146,7 @@ function createAutoReplyController(options = {}) {
       }
       if (!isCurrentRun()) {
         retryGenerations.delete(fingerprint);
-        if (result?.ok) {
+        if (sendVerified) {
           const staleSentAt = now();
           resetDailyCounter(staleSentAt);
           state.processed[fingerprint].status = "sent_verified";
@@ -2779,8 +3157,9 @@ function createAutoReplyController(options = {}) {
           recordReplyGuard(contact, candidate, fingerprint, incomingEvidence, staleSentAt, "sent_verified", turnEpoch);
           clearPendingObservation(candidate);
           pauseWithError("stale_run_send_paused", "旧运行轮次在暂停后仍完成了发送，请人工检查");
-        } else if (result?.send_attempted !== false) {
+        } else if (result?.send_attempted !== false || explicitOutcomeUnknown) {
           state.processed[fingerprint].status = "outcome_unknown";
+          pendingUnsentContexts.delete(contact.id);
           applyTerminalDecisionState(contact.id, generated.action);
           const turnEpoch = noteVisualSendAttempt(candidate, result, true);
           recordReplyGuard(contact, candidate, fingerprint, incomingEvidence, now(), "outcome_unknown", turnEpoch);
@@ -2793,8 +3172,13 @@ function createAutoReplyController(options = {}) {
         save();
         return publicState();
       }
-      if (!incomingStillCurrent || new Set(["incoming_message_changed", "visual_send_incoming_changed"]).has(normalizeText(result?.blocked_reason))) {
+      if (!explicitOutcomeUnknown && (!incomingStillCurrent || new Set(["incoming_message_changed", "visual_send_incoming_changed"]).has(normalizeText(result?.blocked_reason)))) {
         retryGenerations.delete(fingerprint);
+        if (result?.send_attempted === false
+          && result?.composer_touched === false
+          && normalizeText(result?.incoming_change_kind) === "proven_different") {
+          retainSupersededContext(contact.id, context, candidate);
+        }
         state.processed[fingerprint].status = "cancelled";
         clearPendingObservation(candidate);
         state.last_failure_context = null;
@@ -2803,18 +3187,20 @@ function createAutoReplyController(options = {}) {
         save();
         return publicState();
       }
-      if (!result?.ok) {
-        if (result?.send_attempted === false) {
+      if (!sendVerified) {
+        if (result?.send_attempted === false && !explicitOutcomeUnknown) {
           const sendCode = normalizeText(result?.blocked_reason || result?.error) || "send_failed";
           const sendDiagnostics = result?.send_diagnostics || {};
-          // `beforeDraft` marks the point at which the visual sender can take
-          // ownership of the WeChat input. From that point forward we cannot
-          // prove that no text was selected, pasted, or edited by the user.
-          // Never retry such a result automatically: the next sender attempt
-          // uses Ctrl+A and could overwrite a handwritten draft.
-          const requiresManualReview = draftPhaseStarted || MANUAL_REVIEW_SEND_REASONS.has(sendCode);
+          // `beforeDraft` only means the controller handed control to the
+          // sender; it does not prove a paste or click happened. A no-click
+          // failure remains retryable unless the sender explicitly observed
+          // somebody typing in the WeChat composer. Treating an absent
+          // composer_touched flag as manual input was the source of lost
+          // replies when the PowerShell worker failed before doing anything.
+          const requiresManualReview = MANUAL_REVIEW_SEND_REASONS.has(sendCode);
           if (requiresManualReview) {
             retryGenerations.delete(fingerprint);
+            pendingUnsentContexts.delete(contact.id);
             state.processed[fingerprint].status = "cancelled";
             clearPendingObservation(candidate);
             if (generated.action === "handoff") {
@@ -2834,6 +3220,9 @@ function createAutoReplyController(options = {}) {
               send_attempted: false,
               send_result: result?.send_result,
               draft_phase_started: draftPhaseStarted,
+              composer_touched: result?.composer_touched,
+              draft_stage: result?.draft_stage,
+              incoming_change_kind: result?.incoming_change_kind,
               recovery_action: "manual_review_required",
               required_idle_ms: sendDiagnostics.required_idle_ms,
               observed_idle_ms: sendDiagnostics.observed_idle_ms,
@@ -2851,9 +3240,20 @@ function createAutoReplyController(options = {}) {
               send_attempted: false,
               send_result: result?.send_result,
               draft_phase_started: draftPhaseStarted,
+              composer_touched: result?.composer_touched,
+              draft_stage: result?.draft_stage,
+              incoming_change_kind: result?.incoming_change_kind,
               recovery_action: "manual_review_required",
               required_idle_ms: sendDiagnostics.required_idle_ms,
-              observed_idle_ms: sendDiagnostics.observed_idle_ms
+              observed_idle_ms: sendDiagnostics.observed_idle_ms,
+              worker: sendWorker
+            });
+            setActivity("manual_review", {
+              traceId,
+              action: generated.action,
+              reasonCode: generated.reasonCode,
+              deliveryStatus: "not_attempted",
+              detailCode: sendDiagnostic.code
             });
           } else {
             const attempts = Number(retryEntry?.attempts || 0) + 1;
@@ -2876,6 +3276,9 @@ function createAutoReplyController(options = {}) {
                 send_attempted: false,
                 send_result: result?.send_result,
                 draft_phase_started: draftPhaseStarted,
+                composer_touched: result?.composer_touched,
+                draft_stage: result?.draft_stage,
+                incoming_change_kind: result?.incoming_change_kind,
                 recovery_action: waitingForUserIdle ? "wait_for_idle_and_retry" : "retry_pending",
                 retry_attempt: attempts,
                 retry_polls_remaining: retryPolls(attempts),
@@ -2883,7 +3286,14 @@ function createAutoReplyController(options = {}) {
                 observed_idle_ms: sendDiagnostics.observed_idle_ms,
                 preflight_ms: sendDiagnostics.timings?.preflight_ms
               });
-              state.last_error = waitingForUserIdle ? "" : `本次回复尚未发出，将自动重试：${sendCode}`;
+              state.last_error = waitingForUserIdle ? "" : "本次回复尚未发出，正在重新校验微信输入框后重试";
+              setActivity(waitingForUserIdle ? "waiting" : "retrying", {
+                traceId,
+                action: generated.action,
+                reasonCode: generated.reasonCode,
+                deliveryStatus: "not_attempted",
+                detailCode: sendDiagnostic.code
+              });
               appendDiagnostic("reply_retry_enqueued", {
                 phase: "send",
                 code: sendDiagnostic.code,
@@ -2896,12 +3306,16 @@ function createAutoReplyController(options = {}) {
                 send_attempted: false,
                 send_result: result?.send_result,
                 draft_phase_started: draftPhaseStarted,
+                composer_touched: result?.composer_touched,
+                draft_stage: result?.draft_stage,
+                incoming_change_kind: result?.incoming_change_kind,
                 recovery_action: waitingForUserIdle ? "wait_for_idle_and_retry" : "retry_pending",
                 retry_attempt: attempts,
                 retry_polls_remaining: retryPolls(attempts),
                 required_idle_ms: sendDiagnostics.required_idle_ms,
                 observed_idle_ms: sendDiagnostics.observed_idle_ms,
                 preflight_ms: sendDiagnostics.timings?.preflight_ms,
+                worker: sendWorker,
                 pid: result?.pid || candidate.pid,
                 hWnd: result?.hWnd || candidate.hWnd
               });
@@ -2913,10 +3327,18 @@ function createAutoReplyController(options = {}) {
                 send_attempted: false,
                 send_result: result?.send_result,
                 draft_phase_started: draftPhaseStarted,
+                draft_stage: result?.draft_stage,
                 recovery_action: "manual_check_required",
                 required_idle_ms: sendDiagnostics.required_idle_ms,
                 observed_idle_ms: sendDiagnostics.observed_idle_ms,
                 preflight_ms: sendDiagnostics.timings?.preflight_ms
+              });
+              setActivity("error", {
+                traceId,
+                action: generated.action,
+                reasonCode: generated.reasonCode,
+                deliveryStatus: "not_attempted",
+                detailCode: sendDiagnostic.code
               });
               pauseWithError("send_retry_queue_paused", "回复尚未发出，但安全重试队列不可用，请人工检查后再启动");
             }
@@ -2924,6 +3346,7 @@ function createAutoReplyController(options = {}) {
         } else {
           retryGenerations.delete(fingerprint);
           state.processed[fingerprint].status = "outcome_unknown";
+          pendingUnsentContexts.delete(contact.id);
           applyTerminalDecisionState(contact.id, generated.action);
           const turnEpoch = noteVisualSendAttempt(candidate, result, true);
           recordReplyGuard(contact, candidate, fingerprint, incomingEvidence, now(), "outcome_unknown", turnEpoch);
@@ -2960,8 +3383,13 @@ function createAutoReplyController(options = {}) {
       state.last_error = "";
       state.last_failure_context = null;
       state.system_error = null;
-      state.last_ai_warning_code = normalizeAiWarningCode(generated?.aiWarningCode);
-      state.last_ai_warning = normalizeText(generated?.aiWarning).slice(0, 300);
+      setActivity("sent_verified", {
+        traceId,
+        action: generated.action,
+        reasonCode: generated.reasonCode,
+        deliveryStatus: "sent_verified",
+        detailCode: generated.action === "handoff" ? "handoff_reply_sent" : "sent_verified"
+      });
       let handoffCreated = false;
       if (generated.action === "handoff") {
         const reason = handoffReasonLabel(generated.reasonCode);
@@ -3022,6 +3450,119 @@ function createAutoReplyController(options = {}) {
 function registerAutoReplyIpc(options = {}) {
   const ipcMain = options.ipcMain || require("electron").ipcMain;
   const getMainWindow = options.getMainWindow;
+  const BrowserWindow = options.BrowserWindow;
+  const displayScreen = options.screen;
+  const preloadPath = String(options.preloadPath || "");
+  const rendererPath = String(options.rendererPath || "");
+  let floatingWindow = null;
+  let closingFloatingWindow = false;
+
+  function sendState(target, state) {
+    if (!target || target.isDestroyed?.()) return;
+    try {
+      target.webContents?.send?.("auto-reply:update", { ok: true, state });
+    } catch {
+      // A renderer can reload between state transitions; polling remains the fallback.
+    }
+  }
+
+  function showMainWindow() {
+    const mainWindow = getMainWindow?.();
+    if (!mainWindow || mainWindow.isDestroyed?.()) return;
+    try {
+      mainWindow.show?.();
+      mainWindow.focus?.();
+    } catch {}
+  }
+
+  function createFloatingWindow() {
+    if (floatingWindow && !floatingWindow.isDestroyed?.()) {
+      if (typeof floatingWindow.showInactive === "function") floatingWindow.showInactive();
+      else floatingWindow.show?.();
+      return floatingWindow;
+    }
+    if (typeof BrowserWindow !== "function" || !preloadPath || !rendererPath) return null;
+    floatingWindow = new BrowserWindow({
+      width: FLOATING_PROGRESS_WINDOW.width,
+      height: FLOATING_PROGRESS_WINDOW.height,
+      show: false,
+      alwaysOnTop: true,
+      autoHideMenuBar: true,
+      frame: false,
+      resizable: false,
+      skipTaskbar: true,
+      title: "自动回复进度",
+      backgroundColor: "#ffffff",
+      webPreferences: {
+        preload: preloadPath,
+        sandbox: false,
+        contextIsolation: true,
+        nodeIntegration: false
+      }
+    });
+    floatingWindow.setMenu?.(null);
+    const workArea = displayScreen?.getPrimaryDisplay?.()?.workArea;
+    if (workArea) {
+      const position = floatingProgressPosition(workArea);
+      floatingWindow.setPosition?.(position.x, position.y);
+    }
+    floatingWindow.once?.("close", () => {
+      if (!closingFloatingWindow) {
+        controller.pause("progress_window_closed");
+        showMainWindow();
+      }
+    });
+    floatingWindow.on?.("closed", () => {
+      floatingWindow = null;
+      closingFloatingWindow = false;
+    });
+    const target = floatingWindow;
+    const devUrl = process.env.VITE_DEV_SERVER_URL;
+    try {
+      const loadResult = devUrl && typeof target.loadURL === "function"
+        ? target.loadURL(`${devUrl}${devUrl.includes("?") ? "&" : "?"}floating=auto-reply`)
+        : target.loadFile?.(rendererPath, { query: { floating: "auto-reply" } });
+      Promise.resolve(loadResult).catch((error) => recoverFromFloatingLoadFailure(target, {
+        errorCode: error?.errno || error?.code || "load_promise_rejected",
+        errorDescription: error?.message || "悬浮窗页面加载 Promise 被拒绝",
+        validatedURL: devUrl || rendererPath
+      }));
+    } catch {
+      recoverFromFloatingLoadFailure(target, {
+        errorCode: "load_call_threw",
+        errorDescription: "悬浮窗页面加载调用失败",
+        validatedURL: devUrl || rendererPath
+      });
+      return null;
+    }
+    return target;
+  }
+
+  function closeFloatingWindow() {
+    if (!floatingWindow || floatingWindow.isDestroyed?.()) return;
+    closingFloatingWindow = true;
+    try {
+      floatingWindow.close?.();
+    } catch {
+      closingFloatingWindow = false;
+    }
+  }
+
+  function recoverFromFloatingLoadFailure(target, details = {}) {
+    if (floatingWindow !== target || target?.isDestroyed?.()) return;
+    diagnostics().event("auto_reply", "progress_window_load_failed", {
+      error_code: diagnosticCode(details.errorCode, "load_failed"),
+      error_description: normalizeText(details.errorDescription).slice(0, 200),
+      validated_url: normalizeText(details.validatedURL).slice(0, 200)
+    }, {
+      level: "error",
+      code: "progress_window_load_failed",
+      phase: "control"
+    });
+    closeFloatingWindow();
+    showMainWindow();
+  }
+
   const controller = createAutoReplyController({
     ...options,
     onStateChange: (state) => {
@@ -3029,12 +3570,8 @@ function registerAutoReplyIpc(options = {}) {
         options.onStateChange?.(state);
       } catch {}
       const mainWindow = getMainWindow?.();
-      if (!mainWindow || mainWindow.isDestroyed?.()) return;
-      try {
-        mainWindow.webContents?.send?.("auto-reply:update", { ok: true, state });
-      } catch {
-        // The renderer may be reloading; polling remains the fallback.
-      }
+      sendState(mainWindow, state);
+      sendState(floatingWindow, state);
     }
   });
 
@@ -3048,11 +3585,22 @@ function registerAutoReplyIpc(options = {}) {
   }
 
   ipcMain.handle("auto-reply:status", () => ({ ok: true, state: controller.status() }));
-  ipcMain.handle("auto-reply:start", (event, payload = {}) => {
+  ipcMain.handle("auto-reply:start", async (event, payload = {}) => {
     if (!consumeTrustedClick(event, payload)) {
       return { ok: false, error: "请在主窗口中手动点击启动自动回复" };
     }
-    return controller.start({ contactId: String(payload?.contactId || "") });
+    const started = controller.start({ contactId: String(payload?.contactId || "") });
+    if (controller.status().status === "starting") {
+      const progressWindow = createFloatingWindow();
+      if (progressWindow && !progressWindow.isDestroyed?.()) {
+        sendState(progressWindow, controller.status());
+        const mainWindow = getMainWindow?.();
+        if (mainWindow && !mainWindow.isDestroyed?.()) mainWindow.hide?.();
+        if (typeof progressWindow.showInactive === "function") progressWindow.showInactive();
+        else progressWindow.show?.();
+      }
+    }
+    return started;
   });
   ipcMain.handle("auto-reply:acknowledge-manual-followup", (event, payload = {}) => {
     if (!consumeTrustedClick(event, payload)) return { ok: false, error: "请在主窗口中手动确认人工提醒已处理" };
@@ -3063,6 +3611,12 @@ function registerAutoReplyIpc(options = {}) {
     return controller.resumeContact(String(payload?.contactId || ""));
   });
   ipcMain.handle("auto-reply:pause", () => controller.pause());
+  ipcMain.handle("auto-reply:show-main", () => {
+    const result = controller.pause("paused_by_user");
+    closeFloatingWindow();
+    showMainWindow();
+    return result;
+  });
   return controller;
 }
 

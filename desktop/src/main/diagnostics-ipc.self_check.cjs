@@ -43,8 +43,63 @@ async function main() {
   const logger = createLogger(logsDir);
   const current = Buffer.from('{"event":"current"}\n', "utf8");
   const archived = Buffer.from('{"event":"archived"}\n', "utf8");
-  const autoReplyCurrent = Buffer.from('{"event":"poll_failed","code":"scan_timeout"}\n', "utf8");
-  const autoReplyArchived = Buffer.from('{"event":"reply_skipped","code":"handoff_required"}\n', "utf8");
+  const autoReplyCurrent = Buffer.from([
+    JSON.stringify({
+      v: 1,
+      ts: "2026-09-01T02:23:10.000Z",
+      run_id: "0123456789abcdef",
+      seq: 7,
+      event: "reply_decision",
+      status: "running",
+      phase: "generate",
+      code: "reply_ready",
+      trace_id: "0123456789abcdef01234567",
+      action: "answer",
+      reason_code: "general_guidance",
+      duration_ms: 1234,
+      customer_name: "private-contact-canary",
+      message: "private-message-canary",
+      expert_rules: "private-expert-rules-canary",
+      business_knowledge: "private-business-knowledge-canary",
+      api_key: "sk-private-key-canary"
+    }),
+    JSON.stringify({
+      v: 1,
+      ts: "2026-09-01T02:23:11.000Z",
+      run_id: "fedcba9876543210",
+      seq: 8,
+      event: "reply_send_finished",
+      status: "running",
+      phase: "send",
+      code: "sent_verified",
+      trace_id: "0123456789abcdef01234567",
+      action: "answer",
+      reason_code: "general_guidance",
+      duration_ms: 4321,
+      delivery_attempt: 1,
+      send_attempted: true,
+      send_result: "sent_verified"
+    }),
+    JSON.stringify({
+      ts: "2026-09-01T02:23:12.000Z",
+      event: "客户原文不应进入事件字段",
+      code: "sk-private-key-canary",
+      phase: "C:/Users/Scott/private",
+      trace_id: "private-contact-canary"
+    }),
+    "{invalid-tail"
+  ].join("\n") + "\n", "utf8");
+  const autoReplyArchived = Buffer.from(`${JSON.stringify({
+    v: 1,
+    ts: "2026-08-31T02:23:09.000Z",
+    run_id: "1123456789abcdef",
+    seq: 6,
+    event: "reply_candidate_detected",
+    status: "running",
+    phase: "candidate",
+    code: "candidate_accepted",
+    trace_id: "1123456789abcdef01234567"
+  })}\n`, "utf8");
   fs.mkdirSync(logsDir, { recursive: true });
   fs.mkdirSync(autoReplyDir, { recursive: true });
   fs.writeFileSync(path.join(logsDir, "diagnostics.jsonl"), current);
@@ -57,6 +112,7 @@ async function main() {
   fs.writeFileSync(path.join(root, "auto-reply-diagnostics.jsonl"), "outside-runtime-must-not-be-exported");
 
   let spawnCalls = 0;
+  const ipcHandlers = new Map();
   const electron = {
     app: {
       getAppPath: () => root,
@@ -65,7 +121,7 @@ async function main() {
     dialog: {
       showSaveDialog: async () => ({ canceled: false, filePath: destination })
     },
-    ipcMain: { handle: () => undefined },
+    ipcMain: { handle: (channel, handler) => ipcHandlers.set(channel, handler) },
     shell: { openPath: async () => "" }
   };
   const childProcess = {
@@ -104,6 +160,59 @@ async function main() {
       () => registerDiagnosticsIpc(),
       "registerDiagnosticsIpc must remain compatible with callers that pass no options"
     );
+    registerDiagnosticsIpc({ autoReplyDir });
+    const statusResult = ipcHandlers.get("diagnostics:status")();
+    assert.equal(statusResult.ok, true);
+    assert.deepEqual(statusResult.data.autoReplyLatest, [
+      {
+        ts: "2026-09-01T02:23:11.000Z",
+        event: "reply_send_finished",
+        status: "running",
+        phase: "send",
+        code: "sent_verified",
+        trace_id: "0123456789abcdef01234567",
+        action: "answer",
+        reason_code: "general_guidance",
+        duration_ms: 4321,
+        delivery_attempt: 1,
+        send_attempted: true,
+        send_result: "sent_verified"
+      },
+      {
+        ts: "2026-09-01T02:23:10.000Z",
+        event: "reply_decision",
+        status: "running",
+        phase: "generate",
+        code: "reply_ready",
+        trace_id: "0123456789abcdef01234567",
+        action: "answer",
+        reason_code: "general_guidance",
+        duration_ms: 1234
+      },
+      {
+        ts: "2026-08-31T02:23:09.000Z",
+        event: "reply_candidate_detected",
+        status: "running",
+        phase: "candidate",
+        code: "candidate_accepted",
+        trace_id: "1123456789abcdef01234567"
+      }
+    ], "diagnostics status must expose a recent allowlisted auto-reply chain independently from unified errors");
+    const visibleStatus = JSON.stringify(statusResult.data.autoReplyLatest);
+    assert.doesNotMatch(visibleStatus, /private|客户原文|Scott|sk-/iu, "visible auto-reply diagnostics must not expose customer, expert, path, or Key material");
+    const diagnosticsRenderer = fs.readFileSync(path.join(__dirname, "../renderer/Diagnostics.tsx"), "utf8");
+    assert.match(diagnosticsRenderer, /自动回复链路/u, "diagnostics UI must expose the dedicated auto-reply chain");
+    assert.match(diagnosticsRenderer, /近期异常/u, "diagnostics UI must keep a dedicated error list");
+    assert.match(diagnosticsRenderer, /近期运行事件/u, "diagnostics UI must keep normal unified events visible");
+    assert.match(diagnosticsRenderer, /diagnostics-auto-reply-table/u, "auto-reply diagnostics must use its bounded semantic table layout");
+    assert.match(diagnosticsRenderer, /colSpan=\{5\}/u, "the compact auto-reply table must keep its five-column empty state aligned");
+    assert.doesNotMatch(diagnosticsRenderer, /latestErrors\.length\s*\?\s*status\.latestErrors\s*:\s*status\?\.latest/u, "normal events must not disappear whenever an error exists");
+    const invalidAutoReplyDir = path.join(root, "auto-reply-log-is-a-file");
+    fs.writeFileSync(invalidAutoReplyDir, "fixture", "utf8");
+    registerDiagnosticsIpc({ autoReplyDir: invalidAutoReplyDir });
+    const degradedStatus = ipcHandlers.get("diagnostics:status")();
+    assert.equal(degradedStatus.ok, true, "a transient auto-reply log read failure must not hide the whole diagnostics page");
+    assert.deepEqual(degradedStatus.data.autoReplyLatest, []);
     const exported = await exportBundle({
       app: electron.app,
       dialog: electron.dialog,
