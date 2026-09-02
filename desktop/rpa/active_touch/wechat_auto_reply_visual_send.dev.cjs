@@ -1,6 +1,7 @@
 const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require("./moments_visual_probe.dev.cjs");
 const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
 const { createHash } = require("node:crypto");
+const { sanitizeVisualSendReceipt } = require("../../src/shared/visual-send-receipt.cjs");
 
 const WECHAT_VISUAL_AUTO_REPLY_POWERSHELL = String.raw`
 $OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8
@@ -1070,37 +1071,50 @@ function Invoke-VisualSendKeys($lock, [int]$relativeX, [int]$relativeY, [string]
     (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)
 }
 
-function Read-VisualSendDraft($lock) {
+function Read-VisualSendDraft($lock, [bool]$receiptOnly = $false) {
   $width = [double]($lock.rect.Right - $lock.rect.Left)
   $height = [double]($lock.rect.Bottom - $lock.rect.Top)
   $relativeX = [int]($width * 0.64)
   $relativeY = [int]($height * 0.87)
   if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
       -not (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)) {
-    return @{ ok = $false; empty = $false; exact = $false }
+    return @{ ok = $false; empty = $false; exact = $false; stage = "point_not_owned" }
   }
   $oldClipboard = ""
   try { $oldClipboard = [string](Get-Clipboard -Raw -ErrorAction SilentlyContinue) } catch {}
   $sentinel = "__XIAOXI_VISUAL_EMPTY_" + [Guid]::NewGuid().ToString("N")
   $clipboardOwned = $false
+  $readStage = "focus_failed"
   try {
-    if (-not (Invoke-VisualSendComposerClick $lock $relativeX $relativeY)) { return @{ ok = $false; empty = $false; exact = $false } }
+    if (-not (Invoke-VisualSendComposerClick $lock $relativeX $relativeY)) { return @{ ok = $false; empty = $false; exact = $false; stage = $readStage } }
     if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
-        -not (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)) { return @{ ok = $false; empty = $false; exact = $false } }
+        -not (Test-VisualSendOwnedPoint $lock $relativeX $relativeY)) { return @{ ok = $false; empty = $false; exact = $false; stage = "point_not_owned" } }
+    $readStage = "clipboard_failed"
     Set-Clipboard -Value $sentinel
     $clipboardOwned = $true
-    if (-not (Invoke-VisualSendKeys $lock $relativeX $relativeY "^a")) { return @{ ok = $false; empty = $false; exact = $false } }
+    $readStage = "select_failed"
+    if (-not (Invoke-VisualSendKeys $lock $relativeX $relativeY "^a")) { return @{ ok = $false; empty = $false; exact = $false; stage = $readStage } }
     Start-Sleep -Milliseconds 45
-    if (-not (Invoke-VisualSendKeys $lock $relativeX $relativeY "^c")) { return @{ ok = $false; empty = $false; exact = $false } }
+    $readStage = "copy_failed"
+    if (-not (Invoke-VisualSendKeys $lock $relativeX $relativeY "^c")) { return @{ ok = $false; empty = $false; exact = $false; stage = $readStage } }
     Start-Sleep -Milliseconds 150
+    if ($receiptOnly -and -not (Test-VisualSendInputLease)) {
+      return @{ ok = $false; empty = $false; exact = $false; stage = "input_lease_changed" }
+    }
+    if ($receiptOnly -and ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
+        -not (Test-VisualSendOwnedPoint $lock $relativeX $relativeY))) {
+      return @{ ok = $false; empty = $false; exact = $false; stage = "point_not_owned" }
+    }
+    $readStage = "clipboard_failed"
     $copied = [string](Get-Clipboard -Raw -ErrorAction Stop)
     return @{
       ok = $true
       empty = $copied -ceq $sentinel
       exact = (Normalize-VisualSendDraftText $copied) -ceq (Normalize-VisualSendDraftText $expectedReply)
+      stage = $(if ($copied -ceq $sentinel) { "empty" } else { "nonempty" })
     }
   } catch {
-    return @{ ok = $false; empty = $false; exact = $false }
+    return @{ ok = $false; empty = $false; exact = $false; stage = $readStage }
   } finally {
     if ($clipboardOwned -and (Test-VisualSendInputLease) -and
         [Win32WechatVisualAutoReply]::GetForegroundWindow() -eq $lock.hWnd -and
@@ -1108,6 +1122,91 @@ function Read-VisualSendDraft($lock) {
       try { Set-Clipboard -Value $oldClipboard } catch {}
     }
   }
+}
+
+function Confirm-VisualSendReceipt {
+  # Called only after the exact draft, fresh target binding and send click.
+  # Keep that short input lease: never acquire a new lease to inspect a possibly
+  # different chat. Read the consumed draft before slow full-window OCR.
+  $receipt = @{
+    stage = "window_lock"; code = "window_unavailable"; draft_read_stage = "not_started"
+    conversation_verified = $false; draft_read_ok = $false; draft_consumed = $false
+    input_lease_valid = $false; bubble_verified = $false; verification_attempts = 0
+  }
+  $result = @{ ok = $false; verificationMode = ""; receipt = $receipt }
+  try {
+    $postLock = Get-VisualSendLock
+    if (-not $postLock.ok) { return $result }
+    $receipt.stage = "draft_read"
+    $receipt.input_lease_valid = [bool](Test-VisualSendInputLease)
+    if ($receipt.input_lease_valid) {
+      $afterDraft = Read-VisualSendDraft $postLock $true
+      $receipt.input_lease_valid = [bool](Test-VisualSendInputLease)
+      $receipt.draft_read_stage = [string]$afterDraft.stage
+      $receipt.draft_read_ok = $afterDraft.ok -eq $true
+      $receipt.conversation_verified = $receipt.input_lease_valid
+      $receipt.draft_consumed = $receipt.draft_read_ok -and $afterDraft.empty -and $receipt.conversation_verified
+      if ($receipt.draft_consumed) {
+        $receipt.code = "draft_consumed"
+        $result.ok = $true
+        $result.verificationMode = "draft_consumed_same_header"
+        return $result
+      }
+    } else {
+      $receipt.draft_read_stage = "input_lease_changed"
+    }
+
+    # Secondary evidence is observation only. Losing the input lease must not
+    # authorize another click, paste or send, nor imply that sending failed.
+    $receipt.stage = "bubble_read"
+    for ($attempt = 1; $attempt -le 4; $attempt++) {
+      $receipt.verification_attempts = $attempt
+      $postLock = Get-VisualSendLock
+      if (-not $postLock.ok) { $receipt.code = "window_unavailable"; return $result }
+      $verifyFrame = Get-VisualSendFrame $postLock
+      $receipt.code = "frame_unavailable"
+      if ($verifyFrame.ok) {
+        try {
+          $verifyDpi = Get-VisualSendWindowDpi $postLock.hWnd
+          $verifySidebarRight = Get-VisualSendSidebarRight ([double]$verifyFrame.width) $verifyDpi
+          $receipt.input_lease_valid = [bool](Test-VisualSendInputLease)
+          $receipt.conversation_verified = $receipt.input_lease_valid
+          if (-not $receipt.conversation_verified) {
+            # No continuity proof: require a fresh title or selected-row proof
+            # from this same frame, never the message_driven pre-send shortcut.
+            $header = Test-VisualSendConversation $verifyFrame
+            if ([string]$header.state -ceq "different") {
+              $receipt.code = "conversation_changed"
+              return $result
+            }
+            $receipt.conversation_verified = [string]$header.state -ceq "matched"
+            if (-not $receipt.conversation_verified) {
+              $selectedRow = Test-VisualSendSelectedSidebarConversation $verifyFrame $verifySidebarRight $verifyDpi
+              $receipt.conversation_verified = $selectedRow.ok -eq $true
+            }
+          }
+          $receipt.code = "conversation_unresolved"
+          if ($receipt.conversation_verified) {
+            $receipt.bubble_verified = [bool](Test-VisualSendOutgoingBubble $verifyFrame $verifySidebarRight)
+            $receipt.code = "bubble_unresolved"
+            if ($receipt.bubble_verified) {
+              $receipt.code = "bubble_verified"
+              $result.ok = $true
+              $result.verificationMode = "visual_message_bubble"
+              return $result
+            }
+          }
+        } finally {
+          # Releasing a captured frame cannot reverse an established receipt.
+          try { Close-MomentsVisualFrame $verifyFrame } catch {}
+        }
+      }
+      if ($attempt -lt 4) { Start-Sleep -Milliseconds 250 }
+    }
+  } catch {
+    $receipt.code = "receipt_exception"
+  }
+  return $result
 }
 
 function Write-VisualSendDraft($lock) {
@@ -1306,54 +1405,27 @@ if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -ne $lock.hWnd -or
 }
 $sendAttempted = $true
 if (-not [Win32WechatVisualAutoReply]::AtomicMouseClick($screenX, $screenY)) {
-  Write-VisualSendResult @{ ok = $false; reason = "visual_send_outcome_unknown"; outcomeUnknown = $true; sendAttempted = $true; conversationVerified = $true; draftVerified = $true; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+  Write-VisualSendResult @{ ok = $false; reason = "visual_send_outcome_unknown"; outcomeUnknown = $true; sendAttempted = $true; conversationVerified = $true; draftVerified = $true; receipt = @{ stage = "click"; code = "click_incomplete" }; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
 }
 [void](Update-VisualSendInputLease)
-if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -eq $lock.hWnd) {
-  [void][Win32WechatVisualAutoReply]::SetCursorPos($oldPoint.X, $oldPoint.Y)
-}
 Start-Sleep -Milliseconds 350
-
-$postLock = Get-VisualSendLock
-if (-not $postLock.ok) {
-  Write-VisualSendResult @{ ok = $false; reason = "visual_send_outcome_unknown"; outcomeUnknown = $true; sendAttempted = $true; conversationVerified = $false; draftVerified = $true; verificationAttempts = 0; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
-}
-# Verify the result using two independent signals. We first look for the new
-# green outgoing bubble, polling briefly because WeChat renders it asynchronously.
-# Draft consumption remains the safe fallback when OCR cannot expose the bubble.
-$sameConversation = $true
-$bubbleVerified = $false
-$verificationAttempts = 0
-for ($attempt = 1; $attempt -le 4; $attempt++) {
-  $verificationAttempts = $attempt
-  if ([Win32WechatVisualAutoReply]::GetForegroundWindow() -eq $postLock.hWnd) {
-    $verifyFrame = Get-VisualSendFrame $postLock
-    if ($verifyFrame.ok) {
-      try {
-        $verifyDpi = Get-VisualSendWindowDpi $postLock.hWnd
-        $verifySidebarRight = Get-VisualSendSidebarRight ([double]$verifyFrame.width) $verifyDpi
-        $bubbleVerified = Test-VisualSendOutgoingBubble $verifyFrame $verifySidebarRight
-      } finally {
-        Close-MomentsVisualFrame $verifyFrame
-      }
-    }
+$confirmation = Confirm-VisualSendReceipt
+# Cursor restoration is cleanup, not receipt evidence. Do it after confirming,
+# and do not overwrite a cursor the operator has since taken control of.
+try {
+  if ((Test-VisualSendInputLease) -and [Win32WechatVisualAutoReply]::GetForegroundWindow() -eq $lock.hWnd) {
+    [void][Win32WechatVisualAutoReply]::SetCursorPos($oldPoint.X, $oldPoint.Y)
   }
-  if ($bubbleVerified) { break }
-  if ($attempt -lt 4) { Start-Sleep -Milliseconds 250 }
+} catch {}
+$finalResult = @{
+  ok = $confirmation.ok; sendAttempted = $true; draftVerified = $true
+  conversationVerified = $confirmation.receipt.conversation_verified
+  draftConsumed = $confirmation.receipt.draft_consumed; bubbleVerified = $confirmation.receipt.bubble_verified
+  verificationAttempts = $confirmation.receipt.verification_attempts; verificationMode = $confirmation.verificationMode
+  receipt = $confirmation.receipt; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64()
 }
-$afterDraft = if (Test-VisualSendInputLease) { Read-VisualSendDraft $postLock } else { @{ ok = $false; empty = $false } }
-$draftConsumed = $afterDraft.ok -and $afterDraft.empty
-$verificationMode = if ($sameConversation -and $bubbleVerified) {
-  "visual_message_bubble"
-} elseif ($sameConversation -and $draftConsumed) {
-  "draft_consumed_same_header"
-} else {
-  ""
-}
-if (-not $sameConversation -or (-not $bubbleVerified -and -not $draftConsumed)) {
-  Write-VisualSendResult @{ ok = $false; reason = "visual_send_outcome_unknown"; outcomeUnknown = $true; sendAttempted = $true; conversationVerified = $sameConversation; draftVerified = $true; draftConsumed = $draftConsumed; bubbleVerified = $bubbleVerified; verificationAttempts = $verificationAttempts; verificationMode = $verificationMode; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
-}
-Write-VisualSendResult @{ ok = $true; sendAttempted = $true; conversationVerified = $true; draftVerified = $true; draftConsumed = $draftConsumed; bubbleVerified = $bubbleVerified; verificationAttempts = $verificationAttempts; verificationMode = $verificationMode; pid = $lock.pid; hWnd = $lock.hWnd.ToInt64() }
+if (-not $confirmation.ok) { $finalResult.reason = "visual_send_outcome_unknown"; $finalResult.outcomeUnknown = $true }
+Write-VisualSendResult $finalResult
 `;
 
 function visualSendEnvironment(options, phase) {
@@ -1398,9 +1470,11 @@ function sanitizeVisualSendWorkerDiagnostics(value) {
 
 function createVisualSendDiagnostics(phase, timings, workerResult) {
   const worker = sanitizeVisualSendWorkerDiagnostics(workerResult?.diagnostics);
+  const receipt = sanitizeVisualSendReceipt(workerResult?.receipt);
   return {
     phase,
     timings,
+    ...(receipt ? { receipt } : {}),
     ...(worker ? { worker } : {})
   };
 }
@@ -1558,6 +1632,7 @@ function createVisualAutoReplySender({
         sendAttempted: true,
         conversationVerified: true,
         draftVerified: true,
+        receipt: { stage: "worker", code: "worker_failed" },
         pid,
         hWnd
       };
@@ -1572,6 +1647,8 @@ function createVisualAutoReplySender({
         sendAttempted: true,
         conversationVerified: true,
         draftVerified: true,
+        receipt: { stage: "worker", code: "worker_result_invalid" },
+        diagnostics: sent?.diagnostics,
         pid,
         hWnd
       };
@@ -1595,5 +1672,6 @@ const sendVisualAutoReply = createVisualAutoReplySender();
 module.exports = {
   WECHAT_VISUAL_AUTO_REPLY_POWERSHELL,
   createVisualAutoReplySender,
+  sanitizeVisualSendReceipt,
   sendVisualAutoReply
 };

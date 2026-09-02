@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { replaceWithRetry, writeJsonAtomic } = require("./atomic-file.cjs");
+const { sanitizeVisualSendReceipt } = require("../shared/visual-send-receipt.cjs");
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const MAX_ARCHIVES = 5;
@@ -23,6 +24,11 @@ const SAFE_DETAIL_KEY_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/iu;
 const SAFE_DETAIL_STRING_KEYS = /^(?:(?:.*_)?(?:action|arch|code|engine|extension|kind|mode|phase|platform|provider|reason|release|stage|state|status|type|version|zone))$/iu;
 const SENSITIVE_KEYS = /(?:api.?key|secret|token|password|clipboard|prompt|expert|message|content|script|draft|contact.?(?:name|id)|(?:user|account|customer).?id|phone|mobile|nickname|remark|wechat.?id|wxid|conversation(?:.?title|.?name)?|ocr.?text|raw.?text|recognized.?text|^(?:error|description|stack|url|uri|host)$)/iu;
 const PATH_KEYS = /(?:path|dir|file|cwd|executable)/iu;
+const RECEIPT_DIAGNOSTIC_FIELDS = [
+  "stage", "code", "draft_read_stage", "conversation_verified", "draft_read_ok",
+  "draft_consumed", "input_lease_valid", "bubble_verified", "verification_attempts"
+];
+const RECEIPT_DIAGNOSTIC_KEYS = new Set(RECEIPT_DIAGNOSTIC_FIELDS.map((field) => `receipt_${field}`));
 
 let activeLogger = null;
 
@@ -54,6 +60,17 @@ function summarizeSensitive(value, salt) {
     sha256_16: raw ? digest(`${raw.length}:${sample}`, salt) : "",
     truncated: raw.length > MAX_SUMMARY_INPUT || undefined
   };
+}
+
+function normalizeReceiptDiagnostics(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const receipt = value.receipt && typeof value.receipt === "object" && !Array.isArray(value.receipt)
+    ? value.receipt
+    : Object.fromEntries(RECEIPT_DIAGNOSTIC_FIELDS.map((field) => [field, value[`receipt_${field}`]]));
+  const safeReceipt = sanitizeVisualSendReceipt(receipt) || {};
+  return Object.fromEntries(RECEIPT_DIAGNOSTIC_FIELDS
+    .filter((field) => Object.hasOwn(safeReceipt, field))
+    .map((field) => [`receipt_${field}`, safeReceipt[field]]));
 }
 
 function sanitizeValue(value, context = {}) {
@@ -98,6 +115,20 @@ function sanitizeValue(value, context = {}) {
     for (const childKey in value) {
       if (!Object.prototype.hasOwnProperty.call(value, childKey)) continue;
       if (acceptedKeys >= MAX_OBJECT_KEYS || budget.remainingNodes <= 0) break;
+      // Receipt fields are finite enums/booleans/counters, never composer or
+      // conversation contents. Validate this exact schema before the broad
+      // draft/conversation text filter; no other sensitive field is exempt.
+      if (RECEIPT_DIAGNOSTIC_KEYS.has(childKey)) {
+        try {
+          const receipt = normalizeReceiptDiagnostics({ [childKey]: value[childKey] });
+          if (Object.hasOwn(receipt, childKey)) {
+            result[childKey] = receipt[childKey];
+            acceptedKeys += 1;
+            budget.remainingNodes -= 1;
+          }
+        } catch {}
+        continue;
+      }
       if (
         !SAFE_DETAIL_KEY_PATTERN.test(childKey)
         || (SENSITIVE_KEYS.test(childKey) && childKey.toLowerCase() !== "error")
@@ -407,6 +438,7 @@ module.exports = {
   configureDiagnostics,
   createDiagnosticLogger,
   diagnostics,
+  normalizeReceiptDiagnostics,
   readRecent,
   sanitizeError,
   sanitizeValue

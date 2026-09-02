@@ -976,6 +976,17 @@ try {
   let visualBeforeDraftCalls = 0;
   let visualSenderCalls = 0;
   const visualTransitions = [];
+  const visualVerifiedReceipt = {
+    stage: "draft_read",
+    code: "draft_consumed",
+    draft_read_stage: "empty",
+    conversation_verified: true,
+    draft_read_ok: true,
+    draft_consumed: true,
+    input_lease_valid: true,
+    bubble_verified: false,
+    verification_attempts: 1
+  };
   const visualSendResult = await executeVerifiedContactSend({
     baseDir: sharedDir,
     contactId: sharedContact.id,
@@ -1026,18 +1037,32 @@ try {
       request.onTransition("prepared");
       request.onTransition("clicked");
       request.onTransition("sent_verified");
-      return { ok: true, send_attempted: true, verificationMode: "draft_consumed_same_header", pid: 81, hWnd: 91 };
+      return { ok: true, send_attempted: true, verificationMode: "draft_consumed_same_header", pid: 81, hWnd: 91, diagnostics: { receipt: visualVerifiedReceipt } };
     },
     onTransition: (transition) => visualTransitions.push(transition)
   });
   assert.equal(visualSendResult.ok, true);
   assert.equal(visualSendResult.send_attempted, true);
+  assert.equal(visualSendResult.send_result, "sent_verified");
+  assert.deepEqual(visualSendResult.send_diagnostics.receipt, visualVerifiedReceipt, "the bridge must retain the sender's sanitized success receipt under send_diagnostics");
   assert.equal(visualSendResult.state.real_send_status, "sent_verified");
   assert.equal(visualSendResult.verification_mode, "draft_consumed_same_header");
   assert.equal(visualBeforeDraftCalls, 1);
   assert.equal(visualSenderCalls, 1);
   assert.deepEqual(visualTransitions, ["prepared", "clicked", "sent_verified"], "visual sends must forward real send-phase progress to the task owner");
 
+  let visualUnknownSenderCalls = 0;
+  const visualUnknownReceipt = {
+    stage: "bubble_read",
+    code: "receipt_unconfirmed",
+    draft_read_stage: "nonempty",
+    conversation_verified: true,
+    draft_read_ok: true,
+    draft_consumed: false,
+    input_lease_valid: true,
+    bubble_verified: false,
+    verification_attempts: 4
+  };
   const visualUnknownResult = await executeVerifiedContactSend({
     baseDir: sharedDir,
     contactId: sharedContact.id,
@@ -1048,11 +1073,17 @@ try {
     expectedHWnd: "91",
     expectedConversation: "A测试客户",
     windowInspector: async () => preparedWechatWindow(),
-    visualSendDriver: async () => ({ ok: false, send_attempted: true, outcomeUnknown: true, reason: "visual_send_outcome_unknown" })
+    visualSendDriver: async () => {
+      visualUnknownSenderCalls += 1;
+      return { ok: false, send_attempted: true, outcomeUnknown: true, reason: "visual_send_outcome_unknown", diagnostics: { receipt: visualUnknownReceipt } };
+    }
   });
   assert.equal(visualUnknownResult.ok, false);
   assert.equal(visualUnknownResult.send_attempted, true, "a visual click with an unknown outcome must never be treated as retryable");
   assert.equal(visualUnknownResult.blocked_reason, "visual_send_outcome_unknown");
+  assert.equal(visualUnknownResult.send_result, "outcome_unknown", "receipt metadata must not turn an uncertain delivery into success or not_attempted");
+  assert.equal(visualUnknownSenderCalls, 1, "the bridge must return an uncertain delivery without invoking the sender again");
+  assert.deepEqual(visualUnknownResult.send_diagnostics.receipt, visualUnknownReceipt, "failure receipt booleans, counts and codes must survive the same bridge as success receipts");
 
   const visualThrowResult = await executeVerifiedContactSend({
     baseDir: sharedDir,

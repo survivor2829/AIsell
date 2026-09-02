@@ -6,7 +6,8 @@ const os = require("node:os");
 const path = require("node:path");
 const {
   WECHAT_VISUAL_AUTO_REPLY_POWERSHELL,
-  createVisualAutoReplySender
+  createVisualAutoReplySender,
+  sanitizeVisualSendReceipt
 } = require("./wechat_auto_reply_visual_send.dev.cjs");
 
 function runPowerShellProgram(program, name) {
@@ -34,11 +35,10 @@ assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\[Math\]::Min\(\$expected\.Le
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendConversationBinding[\s\S]*state -ceq "matched"[\s\S]*Test-VisualSendSelectedSidebarConversation[\s\S]*proof = "selected_sidebar_row"[\s\S]*visual_send_conversation_not_bound/u, "conversation identity must be either a matched header or the uniquely selected expected sidebar row");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /if \(\$messageDriven\)[\s\S]*proof = "message_driven"[\s\S]*headerState = "not_required"/u, "red-dot auto reply must bind the live incoming message without a contact-name gate");
 const postClickVerification = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(
-  WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("$postLock = Get-VisualSendLock"),
-  WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("$afterDraft = if (Test-VisualSendInputLease)")
+  WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Confirm-VisualSendReceipt"),
+  WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Write-VisualSendDraft")
 );
-assert.match(postClickVerification, /\$sameConversation = \$true/u, "post-click verification must retain the exact HWND already bound immediately before clicking");
-assert.match(postClickVerification, /for \(\$attempt = 1;[\s\S]*Get-VisualSendFrame[\s\S]*Test-VisualSendOutgoingBubble/u, "post-click verification must poll the rendered outgoing bubble before falling back to draft consumption");
+assert.doesNotMatch(postClickVerification, /AtomicMouseClick|Write-VisualSendDraft|Clear-VisualSendDraft|Update-VisualSendInputLease/u, "receipt observation cannot resend, clear a draft or reacquire a lost input lease");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /\$script:VisualSendOcrDownscale = if \(\[double\]\$dpi -ge 240\.0\) \{ 2 \} else \{ 1 \}/u, "only extreme-DPI windows should use adaptive OCR downscaling");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendIncoming[\s\S]*height = \[double\]\(\$frame\.height \* 0\.69\)/u, "incoming verification must include messages immediately above the composer");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendLatestIncomingEvidence[\s\S]*Get-MomentsDownscaledOcrObservation \$frame @\{ left = 0\.0; top = 0\.0; width = \[double\]\$frame\.width; height = \[double\]\$frame\.height \} \$script:VisualSendOcrDownscale/u, "the final incoming guard must reuse full-frame OCR geometry with adaptive high-DPI downscaling");
@@ -98,6 +98,86 @@ const syntaxProbe = spawnSync("powershell.exe", ["-NoProfile", "-Command", parse
   encoding: "utf8"
 });
 assert.equal(syntaxProbe.status, 0, syntaxProbe.stderr || syntaxProbe.stdout);
+
+// Execute the production resolver with observational adapters only. The old
+// bubble-first sequence loses its lease during OCR and never reads the empty
+// draft; this fixture makes that order-dependent failure deterministic.
+const receiptProgram = `
+${postClickVerification}
+function Get-VisualSendLock { return @{ ok = $script:windowOk; hWnd = [IntPtr]2 } }
+function Test-VisualSendInputLease { return $script:lease }
+function Read-VisualSendDraft($lock, [bool]$receiptOnly) {
+  if (-not $receiptOnly) { throw "receipt mode required" }
+  $script:events += "draft"
+  if ($script:loseDuringRead) { $script:lease = $false }
+  return $script:draft
+}
+function Get-VisualSendFrame { $script:events += "frame"; return @{ ok = $true; width = 1000 } }
+function Get-VisualSendWindowDpi { return 96 }
+function Get-VisualSendSidebarRight { return 270 }
+function Test-VisualSendConversation { return @{ state = $script:header } }
+function Test-VisualSendSelectedSidebarConversation { return @{ ok = $false } }
+function Test-VisualSendOutgoingBubble {
+  $script:events += "bubble"
+  $script:lease = $false
+  return $script:bubble
+}
+function Close-MomentsVisualFrame { if ($script:cleanupFails) { throw "cleanup only" } }
+function Start-Sleep {}
+$cases = @(
+  @{ name = "immediate"; empty = $true },
+  @{ name = "bubbleFallback"; bubble = $true; cleanupFails = $true },
+  @{ name = "unconfirmed" },
+  @{ name = "leaseLost"; leaseLost = $true },
+  @{ name = "freshTargetBubble"; leaseLost = $true; bubble = $true },
+  @{ name = "differentTarget"; leaseLost = $true; bubble = $true; header = "different" },
+  @{ name = "changedDuringRead"; empty = $true; loseDuringRead = $true; header = "different" },
+  @{ name = "windowLost"; windowLost = $true }
+)
+$results = @{}
+foreach ($case in $cases) {
+  $script:events = @()
+  $script:lease = -not $case.leaseLost
+  $script:windowOk = -not $case.windowLost
+  $script:loseDuringRead = $case.loseDuringRead -eq $true
+  $script:cleanupFails = $case.cleanupFails -eq $true
+  $script:bubble = $case.bubble -eq $true
+  $script:header = if ($case.header) { $case.header } else { "matched" }
+  $script:draft = @{ ok = $true; empty = $case.empty -eq $true; stage = $(if ($case.empty) { "empty" } else { "nonempty" }) }
+  $result = Confirm-VisualSendReceipt
+  $result.events = @($script:events)
+  $results[$case.name] = $result
+}
+$results | ConvertTo-Json -Compress -Depth 5
+`;
+const receiptProbe = runPowerShellProgram(receiptProgram, "send-receipt");
+assert.equal(receiptProbe.status, 0, receiptProbe.stderr || receiptProbe.stdout);
+const receipts = JSON.parse(receiptProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1));
+assert.equal(receipts.immediate.ok, true, "empty consumed draft must confirm before an OCR delay can invalidate the input lease");
+assert.equal(receipts.immediate.verificationMode, "draft_consumed_same_header");
+assert.deepEqual(receipts.immediate.events, ["draft"]);
+assert.equal(receipts.immediate.receipt.verification_attempts, 0);
+assert.equal(receipts.bubbleFallback.ok, true, "frame cleanup failure cannot erase a verified bubble");
+assert.equal(receipts.bubbleFallback.verificationMode, "visual_message_bubble");
+assert.equal(receipts.unconfirmed.ok, false, "a click alone or nonempty draft is not send success");
+assert.equal(receipts.unconfirmed.receipt.verification_attempts, 4);
+assert.equal(receipts.unconfirmed.receipt.draft_read_stage, "nonempty");
+assert.equal(receipts.leaseLost.ok, false);
+assert.equal(receipts.leaseLost.receipt.draft_read_stage, "input_lease_changed");
+assert.equal(receipts.leaseLost.events.includes("draft"), false, "lost input lease permits observation only");
+assert.equal(receipts.freshTargetBubble.ok, true);
+assert.equal(receipts.differentTarget.ok, false);
+assert.equal(receipts.differentTarget.receipt.code, "conversation_changed");
+assert.equal(receipts.differentTarget.events.includes("bubble"), false);
+assert.equal(receipts.changedDuringRead.ok, false, "a lease lost while reading cannot prove the original draft was consumed");
+assert.equal(receipts.changedDuringRead.receipt.draft_consumed, false);
+assert.equal(receipts.windowLost.ok, false);
+assert.equal(receipts.windowLost.receipt.code, "window_unavailable");
+assert.deepEqual(sanitizeVisualSendReceipt({
+  ...receipts.immediate.receipt,
+  customer: "private-customer", reply: "private-reply", stage: "private-stage",
+  code: "private-code", draft_read_stage: "private-draft", verification_attempts: "4", draft_consumed: "true"
+}), { conversation_verified: true, draft_read_ok: true, input_lease_valid: true, bubble_verified: false });
 
 const normalizeStart = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Normalize-VisualSendText");
 const lockStart = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Get-VisualSendLock", normalizeStart);
@@ -542,6 +622,7 @@ const sender = createVisualAutoReplySender({
       conversationVerified: true,
       draftVerified: true,
       verificationMode: "draft_consumed_same_header",
+      receipt: { ...receipts.immediate.receipt, reply: "private-reply", customer: "private-customer" },
       pid: 77,
       hWnd: 88
     };
@@ -580,6 +661,7 @@ const sender = createVisualAutoReplySender({
     diagnostics: undefined
   });
   assert.equal(result.diagnostics.phase, "completed");
+  assert.deepEqual(result.diagnostics.receipt, receipts.immediate.receipt, "receipt evidence must survive sender normalization without private fields");
   assert.equal(Number.isFinite(result.diagnostics.timings.total_ms), true);
   assert.equal(beforeSendCalled, true);
   assert.deepEqual(transitions, ["prepared", "clicked", "sent_verified"]);
@@ -715,6 +797,7 @@ const sender = createVisualAutoReplySender({
   assert.equal(unknown.ok, false);
   assert.equal(unknown.send_attempted, true);
   assert.equal(unknown.outcomeUnknown, true);
+  assert.deepEqual(unknown.diagnostics.receipt, { stage: "worker", code: "worker_result_invalid" });
   assert.equal(unknownCalls, 2);
   assert.deepEqual(unknownTransitions, ["prepared", "outcome_unknown"]);
 
@@ -742,6 +825,7 @@ const sender = createVisualAutoReplySender({
     diagnostics: undefined
   });
   assert.equal(rejectedSendCalls, 1, "a rejected final send phase must become terminal unknown, never an automatic retry");
+  assert.deepEqual(rejectedSend.diagnostics.receipt, { stage: "worker", code: "worker_failed" });
 
   const visualEnvironments = [];
   const visualDraft = await createVisualAutoReplySender({

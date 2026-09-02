@@ -124,7 +124,7 @@ function copyAppSource(appDir, edition) {
   const rendererSource = path.join(desktopDir, edition === "test" ? "dist-development" : "dist-pilot");
   if (!fs.existsSync(path.join(rendererSource, "build-edition.json"))) throw new Error(`Missing renderer build: ${rendererSource}`);
   fs.cpSync(rendererSource, path.join(appDir, "dist"), { recursive: true });
-  for (const relative of ["rpa", path.join("src", "main")]) {
+  for (const relative of ["rpa", path.join("src", "main"), path.join("src", "shared")]) {
     const source = path.join(desktopDir, relative);
     fs.cpSync(source, path.join(appDir, relative), {
       recursive: true,

@@ -61,7 +61,13 @@ async function main() {
       message: "private-message-canary",
       expert_rules: "private-expert-rules-canary",
       business_knowledge: "private-business-knowledge-canary",
-      api_key: "sk-private-key-canary"
+      api_key: "sk-private-key-canary",
+      receipt_stage: "private-stage-canary",
+      receipt_code: "private-code-canary",
+      receipt_draft_read_stage: "private-read-stage-canary",
+      receipt_conversation_verified: "private-contact-canary",
+      receipt_draft_read_ok: "true",
+      receipt_verification_attempts: 5
     }),
     JSON.stringify({
       v: 1,
@@ -78,7 +84,16 @@ async function main() {
       duration_ms: 4321,
       delivery_attempt: 1,
       send_attempted: true,
-      send_result: "sent_verified"
+      send_result: "sent_verified",
+      receipt_stage: "bubble_read",
+      receipt_code: "bubble_verified",
+      receipt_draft_read_stage: "empty",
+      receipt_conversation_verified: true,
+      receipt_draft_read_ok: true,
+      receipt_draft_consumed: true,
+      receipt_input_lease_valid: false,
+      receipt_bubble_verified: true,
+      receipt_verification_attempts: 2
     }),
     JSON.stringify({
       ts: "2026-09-01T02:23:12.000Z",
@@ -140,7 +155,7 @@ async function main() {
   Module._load = function load(request, parent, isMain) {
     if (request === "electron") return electron;
     if (request === "node:child_process") return childProcess;
-    if (request === "./diagnostics.cjs") return { diagnostics: () => logger };
+    if (request === "./diagnostics.cjs") return { ...originalLoad.call(this, request, parent, isMain), diagnostics: () => logger };
     return originalLoad.call(this, request, parent, isMain);
   };
 
@@ -176,7 +191,16 @@ async function main() {
         duration_ms: 4321,
         delivery_attempt: 1,
         send_attempted: true,
-        send_result: "sent_verified"
+        send_result: "sent_verified",
+        receipt_stage: "bubble_read",
+        receipt_code: "bubble_verified",
+        receipt_draft_read_stage: "empty",
+        receipt_conversation_verified: true,
+        receipt_draft_read_ok: true,
+        receipt_draft_consumed: true,
+        receipt_input_lease_valid: false,
+        receipt_bubble_verified: true,
+        receipt_verification_attempts: 2
       },
       {
         ts: "2026-09-01T02:23:10.000Z",

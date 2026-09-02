@@ -1476,6 +1476,17 @@ async function main() {
 
   let unknownSendCalls = 0;
   const unknownSendDataDir = path.join(root, "unknown_customer_send");
+  const expectedUnknownReceipt = {
+    receipt_stage: "bubble_read",
+    receipt_code: "receipt_unconfirmed",
+    receipt_draft_read_stage: "empty",
+    receipt_conversation_verified: true,
+    receipt_draft_read_ok: true,
+    receipt_draft_consumed: true,
+    receipt_input_lease_valid: false,
+    receipt_bubble_verified: false,
+    receipt_verification_attempts: 4
+  };
   const unknownSendController = createAutoReplyController({
     dataDir: unknownSendDataDir,
     activeTouchDir,
@@ -1487,7 +1498,31 @@ async function main() {
     },
     scanIncoming: () => ({ ...retryableCandidate, message: "结果未知不能重发", runtimeId: "unknown-send-1", context: [{ role: "user", content: "结果未知不能重发", key: "unknown-send-1" }] }),
     verifyIncoming: () => ({ ok: true }),
-    send: async () => { unknownSendCalls += 1; return { ok: false, blocked_reason: "outcome_unknown", send_attempted: null }; },
+    send: async () => {
+      unknownSendCalls += 1;
+      return {
+        ok: false,
+        blocked_reason: "outcome_unknown",
+        send_attempted: null,
+        send_diagnostics: {
+          receipt: {
+            stage: "bubble_read",
+            code: "receipt_unconfirmed",
+            draft_read_stage: "empty",
+            conversation_verified: true,
+            draft_read_ok: true,
+            draft_consumed: true,
+            input_lease_valid: false,
+            bubble_verified: false,
+            verification_attempts: 4,
+            conversation: "receipt-private-contact-canary",
+            draft: "receipt-private-reply-canary",
+            body: "receipt-private-body-canary",
+            apiKey: "sk-receipt-private-key-canary"
+          }
+        }
+      };
+    },
     sendHandoff: async () => ({ ok: true }),
     runStep: async () => ({ ok: true }),
     schedule: () => 1,
@@ -1497,6 +1532,14 @@ async function main() {
   assert.equal((await unknownSendController.start()).ok, true);
   await unknownSendController.runOnce();
   assert.equal(unknownSendController.status().status, "paused");
+  const receiptFields = (value) => Object.fromEntries(Object.keys(expectedUnknownReceipt).map((field) => [field, value?.[field]]));
+  assert.deepEqual(receiptFields(unknownSendController.status().last_failure_context), expectedUnknownReceipt, "unknown delivery must preserve the bounded receipt rather than leave only outcome_unknown");
+  const unknownDiagnosticText = fs.readFileSync(path.join(unknownSendDataDir, "auto-reply-diagnostics.jsonl"), "utf8");
+  const unknownReceiptDiagnostic = unknownDiagnosticText.trim().split(/\r?\n/u).map((line) => JSON.parse(line)).find((entry) => entry.event === "reply_send_finished");
+  assert.deepEqual(receiptFields(unknownReceiptDiagnostic), expectedUnknownReceipt, "send completion logs must carry the exact sanitized receipt fields");
+  const restoredUnknownReceipt = createAutoReplyController({ dataDir: unknownSendDataDir, activeTouchDir, coordinator });
+  assert.deepEqual(receiptFields(restoredUnknownReceipt.status().last_failure_context), expectedUnknownReceipt, "receipt evidence must survive normalized state readback");
+  assert.doesNotMatch(unknownDiagnosticText + fs.readFileSync(path.join(unknownSendDataDir, "auto-reply-state.json"), "utf8"), /receipt-private|sk-receipt/, "receipt persistence must exclude customer, reply, body and Key values");
   assert.equal(Object.values(JSON.parse(fs.readFileSync(path.join(unknownSendDataDir, "auto-reply-state.json"), "utf8")).processed).at(-1).status, "outcome_unknown");
   assert.equal((await unknownSendController.start()).ok, true);
   await unknownSendController.runOnce();

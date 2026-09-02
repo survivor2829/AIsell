@@ -568,6 +568,9 @@ try {
 }
 
 const mainDir = path.join(appDir, "src", "main");
+const packagedVisualSendReceipt = path.join(appDir, "src", "shared", "visual-send-receipt.cjs");
+assert.equal(fs.existsSync(packagedVisualSendReceipt), true, "shared visual-send receipt schema must be packaged for diagnostics and auto-reply");
+assert.equal(typeof require(packagedVisualSendReceipt).sanitizeVisualSendReceipt, "function", "packaged visual-send receipt schema must be loadable");
 const packagedMammoth = path.join(appDir, "node_modules", "mammoth");
 assert.equal(fs.existsSync(path.join(packagedMammoth, "package.json")), true, "Mammoth must be packaged for .docx AI expert imports");
 assert.equal(typeof require(packagedMammoth).extractRawText, "function", "packaged Mammoth dependency tree must be loadable");

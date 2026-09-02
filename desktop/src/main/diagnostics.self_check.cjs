@@ -2,6 +2,22 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const Module = require("node:module");
+const diagnosticsPath = require.resolve("./diagnostics.cjs");
+const previousDiagnosticsModule = require.cache[diagnosticsPath];
+const originalLoad = Module._load;
+delete require.cache[diagnosticsPath];
+try {
+  Module._load = function isolatedDiagnosticLoad(request, parent, isMain) {
+    const resolved = Module._resolveFilename(request, parent, isMain);
+    if (/[\\/]rpa[\\/]|[\\/][^\\/]*_cli\.cjs$/iu.test(resolved)) throw new Error("diagnostics_imported_rpa_or_cli");
+    return originalLoad.call(this, request, parent, isMain);
+  };
+  assert.doesNotThrow(() => require("./diagnostics.cjs"), "preload diagnostics must load in isolation without any transitive RPA or CLI dependency");
+} finally {
+  Module._load = originalLoad;
+  if (previousDiagnosticsModule) require.cache[diagnosticsPath] = previousDiagnosticsModule;
+}
 const { createDiagnosticLogger, sanitizeValue } = require("./diagnostics.cjs");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-diagnostics-"));
@@ -27,13 +43,42 @@ try {
   assert.doesNotMatch(adversarialSerialized, /privateSecret|customer_private_job|wxid_scott_private/iu);
   assert.equal(adversarialSanitized.status, "ready");
 
+  const safeReceipt = {
+    receipt_stage: "bubble_read",
+    receipt_code: "receipt_unconfirmed",
+    receipt_draft_read_stage: "empty",
+    receipt_conversation_verified: true,
+    receipt_draft_read_ok: true,
+    receipt_draft_consumed: true,
+    receipt_input_lease_valid: false,
+    receipt_bubble_verified: false,
+    receipt_verification_attempts: 4
+  };
+  assert.deepEqual(sanitizeValue({
+    ...safeReceipt,
+    conversation: "receipt-private-contact-canary",
+    draft: "receipt-private-draft-canary",
+    message: "receipt-private-message-canary"
+  }), safeReceipt, "strict receipt metadata must survive unified logging without broad draft or conversation exemptions");
+  assert.deepEqual(sanitizeValue({
+    receipt_stage: "private-stage-canary",
+    receipt_code: "private-code-canary",
+    receipt_draft_read_stage: "private-draft-stage-canary",
+    receipt_conversation_verified: "private-contact-canary",
+    receipt_draft_read_ok: "true",
+    receipt_draft_consumed: 1,
+    receipt_input_lease_valid: {},
+    receipt_bubble_verified: "false",
+    receipt_verification_attempts: 5
+  }), {}, "receipt fields must reject arbitrary strings and incorrectly typed or out-of-range values");
+
   const logger = createDiagnosticLogger({ rootDir: root, appInfo: { version: "0.2.0" } });
   logger.event("app", "window_closing");
   logger.environment({ launchMode: "test" });
   const successfulOperation = logger.begin("auto_reply", "healthy_scan", { pid: 11 });
   successfulOperation.end({ ok: true });
   const operation = logger.begin("auto_reply", "scan", { message: "敏感消息", pid: 12 });
-  operation.end({ ok: false, blocked_reason: "visual_ocr_failed", diagnostics: { candidateCount: 2 } });
+  operation.end({ ok: false, blocked_reason: "visual_ocr_failed", diagnostics: { candidateCount: 2 }, ...safeReceipt });
   logger.event("renderer", "unresponsive", {}, {
     level: "warn",
     code: "renderer_unresponsive"
@@ -153,6 +198,7 @@ try {
   const rows = logger.readRecent(30);
   assert.equal(rows.length, 17);
   const failedRow = rows.find((row) => row.code === "visual_ocr_failed");
+  assert.deepEqual(Object.fromEntries(Object.keys(safeReceipt).map((key) => [key, failedRow?.details?.[key]])), safeReceipt, "unified persisted errors must retain the complete typed receipt for ZIP export");
   assert.equal(Boolean(failedRow?.trace_id), true);
   assert.equal(rows.some((row) => row.event === "window_closing"), false);
   assert.equal(rows.some((row) => row.event === "environment.snapshot"), false);

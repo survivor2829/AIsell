@@ -1,5 +1,5 @@
 const crypto = require("node:crypto");
-const { diagnostics } = require("./diagnostics.cjs");
+const { diagnostics, normalizeReceiptDiagnostics } = require("./diagnostics.cjs");
 const fs = require("node:fs");
 const path = require("node:path");
 const { readContacts } = require("../../rpa/active_touch/state_machine.cjs");
@@ -843,6 +843,7 @@ function normalizeFailureContext(value) {
     const numeric = Math.floor(Number(value[field]));
     if (Number.isSafeInteger(numeric) && numeric >= 0 && numeric <= maximum) result[field] = numeric;
   }
+  Object.assign(result, normalizeReceiptDiagnostics(value));
   return result;
 }
 
@@ -1725,6 +1726,7 @@ function createAutoReplyController(options = {}) {
     if (typeof details.send_attempted === "boolean") entry.send_attempted = details.send_attempted;
     if (typeof details.draft_phase_started === "boolean") entry.draft_phase_started = details.draft_phase_started;
     if (typeof details.composer_touched === "boolean") entry.composer_touched = details.composer_touched;
+    Object.assign(entry, normalizeReceiptDiagnostics(details));
     const draftStage = diagnosticCode(details.draft_stage, "");
     if (draftStage) entry.draft_stage = draftStage;
     const incomingChangeKind = diagnosticCode(details.incoming_change_kind, "");
@@ -3225,6 +3227,7 @@ function createAutoReplyController(options = {}) {
       const sendVerified = result?.ok === true && !explicitOutcomeUnknown;
       const sendTimings = result?.send_diagnostics?.timings || {};
       const sendWorker = result?.send_diagnostics?.worker;
+      const sendReceipt = normalizeReceiptDiagnostics({ receipt: result?.send_diagnostics?.receipt });
       const sendDiagnostic = explicitOutcomeUnknown
         ? { code: "outcome_unknown", ref: "" }
         : sendVerified
@@ -3262,6 +3265,7 @@ function createAutoReplyController(options = {}) {
         required_idle_ms: result?.send_diagnostics?.required_idle_ms,
         observed_idle_ms: result?.send_diagnostics?.observed_idle_ms,
         worker: sendWorker,
+        ...sendReceipt,
         pid: result?.pid || candidate.pid,
         hWnd: result?.hWnd || candidate.hWnd
       });
@@ -3293,6 +3297,16 @@ function createAutoReplyController(options = {}) {
           const turnEpoch = noteVisualSendAttempt(candidate, result, true);
           recordReplyGuard(contact, candidate, fingerprint, incomingEvidence, now(), "outcome_unknown", turnEpoch);
           clearPendingObservation(candidate);
+          setFailureContext({
+            phase: "send",
+            code: normalizeText(result?.blocked_reason || result?.error) || "send_outcome_unknown",
+            send_phase: result?.send_diagnostics?.phase,
+            send_attempted: result?.send_attempted,
+            send_result: result?.send_result,
+            draft_phase_started: draftPhaseStarted,
+            recovery_action: "manual_check_required",
+            ...sendReceipt
+          });
           pauseWithError("send_outcome_unknown_paused", result?.blocked_reason || result?.error || "自动回复发送结果无法确认");
         } else {
           state.processed[fingerprint].status = "cancelled";
@@ -3490,7 +3504,8 @@ function createAutoReplyController(options = {}) {
             recovery_action: "manual_check_required",
             required_idle_ms: result?.send_diagnostics?.required_idle_ms,
             observed_idle_ms: result?.send_diagnostics?.observed_idle_ms,
-            preflight_ms: result?.send_diagnostics?.timings?.preflight_ms
+            preflight_ms: result?.send_diagnostics?.timings?.preflight_ms,
+            ...sendReceipt
           });
           pauseWithError("send_outcome_unknown_paused", result?.blocked_reason || result?.error || "自动回复发送结果无法确认");
         }

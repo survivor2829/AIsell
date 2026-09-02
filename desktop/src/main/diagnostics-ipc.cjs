@@ -5,7 +5,7 @@ const path = require("node:path");
 const JSZip = require("jszip");
 const productBrand = require("../../product-brand.json");
 const { replaceWithRetry, uniqueTemporaryPath } = require("./atomic-file.cjs");
-const { diagnostics } = require("./diagnostics.cjs");
+const { diagnostics, normalizeReceiptDiagnostics } = require("./diagnostics.cjs");
 
 const AUTO_REPLY_DIAGNOSTIC_FILE = /^auto-reply-diagnostics\.jsonl(?:\.[1-9]\d*)?$/u;
 const AUTO_REPLY_STATUS_LIMIT = 50;
@@ -185,6 +185,7 @@ function visibleAutoReplyEntry(value) {
   for (const field of AUTO_REPLY_VISIBLE_BOOLEAN_FIELDS) {
     if (typeof value[field] === "boolean") visible[field] = value[field];
   }
+  Object.assign(visible, normalizeReceiptDiagnostics(value));
   return visible;
 }
 
