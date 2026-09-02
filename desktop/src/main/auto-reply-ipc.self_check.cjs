@@ -230,6 +230,18 @@ async function main() {
         runtimeId: candidate.runtimeId,
         pid: 81,
         hWnd: "91",
+        messageRead: {
+          source: "full_window+chat_contrast",
+          boundarySource: "composer_divider",
+          chatBottom: 742,
+          fullLineCount: 10,
+          recoveredLineCount: 2,
+          messageBlockCount: 5,
+          incomingBatchCount: 1,
+          latestMessageTop: 692,
+          regionOcrOk: true,
+          text: "message-read-customer-text-canary"
+        },
         context: [{ role: "user", content: candidate.message, key: candidate.runtimeId }]
       } : { ok: false, reason: "no_unread_message" };
     },
@@ -259,6 +271,11 @@ async function main() {
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, "four_state_contract", "auto-reply-state.json"), "utf8")).contact_states.c1, undefined);
   const fourStateLog = fs.readFileSync(path.join(root, "four_state_contract", "auto-reply-diagnostics.jsonl"), "utf8");
   const fourStateDiagnostics = fourStateLog.trim().split(/\r?\n/u).map((line) => JSON.parse(line));
+  const successfulReadObservation = fourStateDiagnostics.find((entry) => entry.event === "scan_observation" && entry.code === "candidate_detected");
+  assert.equal(successfulReadObservation?.message_read_source, "full_window+chat_contrast", "successful candidates must retain their structural OCR read evidence");
+  assert.equal(successfulReadObservation?.recovered_line_count, 2);
+  assert.equal(Object.hasOwn(successfulReadObservation, "current_session_bound"), false, "missing binding evidence must remain unknown rather than be logged as false");
+  assert.doesNotMatch(fourStateLog, /message-read-customer-text-canary/, "message read metadata must never serialize arbitrary OCR text");
   const fourStateCandidatesDetected = fourStateDiagnostics.filter((entry) => entry.event === "reply_candidate_detected");
   assert.equal(fourStateCandidatesDetected.length, 4, "every eligible occurrence must receive one anonymous trace");
   assert.equal(fourStateCandidatesDetected.every((entry) => /^[a-f0-9]{24}$/u.test(entry.trace_id)), true);
@@ -1325,8 +1342,33 @@ async function main() {
 
   const historicalSupersededCandidates = [
     visualGuardCandidate({ message: "earlier completed question", runtimeChar: "d", evidenceChar: "1" }),
-    visualGuardCandidate({ message: "new question first part", runtimeChar: "e", evidenceChar: "2" }),
-    visualGuardCandidate({ message: "new question second part", runtimeChar: "f", evidenceChar: "3" })
+    {
+      ...visualGuardCandidate({ message: "new question second part", runtimeChar: "e", evidenceChar: "2" }),
+      contextKind: "incoming_batch",
+      context: [
+        { role: "user", content: "new question first part", key: "batch-initial-first" },
+        { role: "user", content: "new question second part", key: "batch-initial-tail" }
+      ]
+    },
+    {
+      ...visualGuardCandidate({ message: "same repeated detail", runtimeChar: "f", evidenceChar: "3" }),
+      contextKind: "incoming_batch",
+      context: [
+        { role: "user", content: "new question first part", key: "batch-refreshed-first" },
+        { role: "user", content: "new question second part", key: "batch-refreshed-previous-tail" },
+        { role: "user", content: "same repeated detail", key: "batch-repeated-first" },
+        { role: "user", content: "same repeated detail", key: "batch-repeated-tail" }
+      ]
+    },
+    {
+      ...visualGuardCandidate({ message: "other customer second part", runtimeChar: "a", evidenceChar: "4" }),
+      conversation: "李经理",
+      contextKind: "incoming_batch",
+      context: [
+        { role: "user", content: "other customer first part", key: "other-first" },
+        { role: "user", content: "other customer second part", key: "other-tail" }
+      ]
+    }
   ];
   const historicalSupersededContexts = [];
   let historicalSupersededSends = 0;
@@ -1359,11 +1401,13 @@ async function main() {
   await historicalSupersededController.runOnce();
   await historicalSupersededController.runOnce();
   await historicalSupersededController.runOnce();
+  await historicalSupersededController.runOnce();
   assert.deepEqual(historicalSupersededContexts, [
     ["earlier completed question"],
-    ["earlier completed question", "earlier completed answer", "new question first part"],
-    ["earlier completed question", "earlier completed answer", "new question first part", "new question second part"]
-  ], "superseded carry-over must preserve prior history exactly once and keep chronological order");
+    ["earlier completed question", "earlier completed answer", "new question first part", "new question second part"],
+    ["earlier completed question", "earlier completed answer", "new question first part", "new question second part", "same repeated detail", "same repeated detail"],
+    ["other customer first part", "other customer second part"]
+  ], "incoming batches must retain remembered replies, merge superseded overlap despite changed keys, preserve repeated bubbles and stay within their customer");
 
   let unresolvedIncomingAiCalls = 0;
   let unresolvedIncomingSendCalls = 0;
@@ -1767,6 +1811,131 @@ async function main() {
   assert.match(visualDiagnosticLog, /"counts":\{"bubble_count":3,"ocr_rows":8\}/);
   assert.doesNotMatch(visualDiagnosticLog, /visual-contact-canary|visual-message-canary|visual-context-canary|visual-key-canary|window-title-canary|window-key-canary|count-message-canary|count-key-canary|nested-diagnostic-canary|romanized_contact_canary/, "visual scan diagnostics must preserve only structured content-free fields");
   visualDiagnosticController.pause();
+
+  const boundSessionRecheckDir = path.join(root, "bound_session_recheck");
+  const boundSessionRecheckSchedules = [];
+  let boundSessionExplicitBinding = true;
+  const boundSessionMessageRead = {
+    source: "full_window+chat_contrast",
+    boundarySource: "composer_divider",
+    chatBottom: 742,
+    fullLineCount: 11,
+    recoveredLineCount: 2,
+    messageBlockCount: 6,
+    incomingBatchCount: 2,
+    latestMessageTop: 704,
+    regionOcrOk: true,
+    text: "message-read-private-text-canary",
+    contact: "message-read-private-contact-canary",
+    signature: "f".repeat(64)
+  };
+  const boundSessionRecheckController = createAutoReplyController({
+    dataDir: boundSessionRecheckDir,
+    activeTouchDir,
+    coordinator,
+    expertStore: readyExpert(),
+    deepSeekClient: { assertAvailable: () => true },
+    primeIncoming: () => ({ ok: true, reason: "baseline_ready", pid: 81, hWnd: "91" }),
+    scanIncoming: () => ({
+      ok: false,
+      reason: "current_session_recheck_pending",
+      source: "untrusted-source-canary",
+      scanTrigger: "current_session_recheck",
+      activeSessionBound: boundSessionExplicitBinding,
+      activeSessionBindingHash: "b".repeat(64),
+      activeSessionMessageSignature: "c".repeat(64),
+      messageSignature: "d".repeat(64),
+      latestRole: "user",
+      pid: 81,
+      hWnd: "91",
+      captureMode: "foreground_screen",
+      messageRead: boundSessionMessageRead,
+      conversation: "current-session-contact-secret",
+      message: "current-session-message-secret",
+      context: [{ role: "user", content: "current-session-context-secret", key: "current-session-key-secret" }]
+    }),
+    verifyIncoming: () => ({ ok: true }),
+    send: async () => ({ ok: true }),
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: (callback, delay) => {
+      boundSessionRecheckSchedules.push({ callback, delay });
+      return boundSessionRecheckSchedules.length;
+    },
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await boundSessionRecheckController.start()).ok, true);
+  await boundSessionRecheckSchedules.shift().callback();
+  assert.equal(boundSessionRecheckController.status().status, "running", "a bound current-session recheck must preserve the listener");
+  assert.equal(boundSessionRecheckController.status().last_scan_reason, "current_session_recheck_pending");
+  assert.equal(boundSessionRecheckController.status().consecutive_scan_failures, 0, "a bound current-session recheck is incomplete evidence, not a scan failure");
+  assert.equal(boundSessionRecheckSchedules.at(-1).delay, 750, "a bound current-session recheck must schedule a fast follow-up poll");
+  const boundSessionRecheckLog = fs.readFileSync(path.join(boundSessionRecheckDir, "auto-reply-diagnostics.jsonl"), "utf8");
+  const boundSessionObservation = boundSessionRecheckLog.trim().split(/\r?\n/u).map((line) => JSON.parse(line))
+    .find((entry) => entry.event === "scan_observation");
+  assert.deepEqual({
+    code: boundSessionObservation.code,
+    scan_source: boundSessionObservation.scan_source,
+    scan_trigger: boundSessionObservation.scan_trigger,
+    current_session_bound: boundSessionObservation.current_session_bound,
+    latest_role: boundSessionObservation.latest_role,
+    wechat_pid: boundSessionObservation.wechat_pid,
+    wechat_window_handle: boundSessionObservation.wechat_window_handle,
+    capture_mode: boundSessionObservation.capture_mode
+  }, {
+    code: "current_session_recheck_pending",
+    scan_source: "scan_driver",
+    scan_trigger: "current_session_recheck",
+    current_session_bound: true,
+    latest_role: "user",
+    wechat_pid: 81,
+    wechat_window_handle: "91",
+    capture_mode: "foreground_screen"
+  });
+  assert.match(boundSessionObservation.observation_ref, /^[a-f0-9]{24}$/u, "diagnostics must correlate the bound session without retaining its raw hashes");
+  assert.deepEqual(Object.fromEntries([
+    "message_read_source", "boundary_source", "chat_bottom", "full_line_count", "recovered_line_count",
+    "message_block_count", "incoming_batch_count", "latest_message_top", "region_ocr_ok"
+  ].map((key) => [key, boundSessionObservation[key]])), {
+    message_read_source: "full_window+chat_contrast",
+    boundary_source: "composer_divider",
+    chat_bottom: 742,
+    full_line_count: 11,
+    recovered_line_count: 2,
+    message_block_count: 6,
+    incoming_batch_count: 2,
+    latest_message_top: 704,
+    region_ocr_ok: true
+  });
+  assert.doesNotMatch(boundSessionRecheckLog, /untrusted-source-canary|current-session-contact-secret|current-session-message-secret|current-session-context-secret|current-session-key-secret|bbbb|cccc|dddd/, "bound-session diagnostics must not persist source text, customer text, context or raw signatures");
+  const readScanObservations = () => fs.readFileSync(path.join(boundSessionRecheckDir, "auto-reply-diagnostics.jsonl"), "utf8")
+    .trim().split(/\r?\n/u).map((line) => JSON.parse(line)).filter((entry) => entry.event === "scan_observation");
+  await boundSessionRecheckController.runOnce();
+  assert.equal(readScanObservations().length, 1, "unchanged OCR observations must respect the existing log throttle");
+  boundSessionMessageRead.recoveredLineCount = 3;
+  await boundSessionRecheckController.runOnce();
+  assert.equal(readScanObservations().length, 2, "changed OCR line recovery must be logged immediately even inside the throttle window");
+  assert.equal(readScanObservations().at(-1).recovered_line_count, 3);
+  boundSessionExplicitBinding = undefined;
+  Object.assign(boundSessionMessageRead, {
+    source: "untrusted-read-source-canary",
+    boundarySource: "untrusted-boundary-source-canary",
+    chatBottom: "742",
+    fullLineCount: Infinity,
+    recoveredLineCount: 0,
+    latestMessageTop: -1,
+    regionOcrOk: false
+  });
+  await boundSessionRecheckController.runOnce();
+  const incompleteReadObservation = readScanObservations().at(-1);
+  for (const field of ["current_session_bound", "message_read_source", "boundary_source", "chat_bottom", "full_line_count", "latest_message_top"]) {
+    assert.equal(Object.hasOwn(incompleteReadObservation, field), false, `unavailable or invalid ${field} must be omitted`);
+  }
+  assert.equal(incompleteReadObservation.recovered_line_count, 0);
+  assert.equal(incompleteReadObservation.region_ocr_ok, false);
+  assert.doesNotMatch(fs.readFileSync(path.join(boundSessionRecheckDir, "auto-reply-diagnostics.jsonl"), "utf8"), /message-read-private-text-canary|message-read-private-contact-canary|untrusted-read-source-canary|untrusted-boundary-source-canary|ffff/, "OCR observations must preserve only allowlisted metadata and never raw text, contacts or signatures");
+  boundSessionRecheckController.pause();
 
   const transientFenceDir = path.join(root, "scan_transient_fences");
   const transientFenceResults = [
@@ -2622,6 +2791,63 @@ async function main() {
   assert.equal(busyController.status().scan_health, "healthy");
   assert.equal(busyScanCalls, 1);
   busyController.pause();
+
+  const concurrentCandidates = [
+    { runtimeId: "concurrent-a", conversation: "张总", message: "客户 A 的问题" },
+    { runtimeId: "concurrent-b", conversation: "李经理", message: "客户 B 的问题" }
+  ];
+  const concurrentSendOrder = [];
+  let concurrentScanCalls = 0;
+  let releaseFirstConcurrentSend;
+  let markFirstConcurrentSend;
+  const firstConcurrentSendEntered = new Promise((resolve) => { markFirstConcurrentSend = resolve; });
+  const firstConcurrentSendGate = new Promise((resolve) => { releaseFirstConcurrentSend = resolve; });
+  const concurrentController = createAutoReplyController({
+    dataDir: path.join(root, "single_flight_customer_queue"),
+    activeTouchDir,
+    coordinator,
+    expertStore: readyExpert(),
+    deepSeekClient: { assertAvailable: () => true, reply: async () => answerDecision("已收到，我来协助您。") },
+    scanIncoming: () => {
+      concurrentScanCalls += 1;
+      const candidate = concurrentCandidates.shift();
+      return candidate ? {
+        ok: true,
+        conversation: candidate.conversation,
+        message: candidate.message,
+        runtimeId: candidate.runtimeId,
+        pid: 81,
+        hWnd: "91",
+        context: [{ role: "user", content: candidate.message, key: candidate.runtimeId }]
+      } : { ok: false, reason: "no_unread_message" };
+    },
+    verifyIncoming: () => ({ ok: true }),
+    send: async (options) => {
+      assert.equal(await options.beforeDraft(), true);
+      concurrentSendOrder.push(options.contactId);
+      if (concurrentSendOrder.length === 1) {
+        markFirstConcurrentSend();
+        await firstConcurrentSendGate;
+      }
+      return { ok: true, send_attempted: true };
+    },
+    sendHandoff: async () => ({ ok: true }),
+    runStep: async () => ({ ok: true }),
+    schedule: () => 1,
+    cancelSchedule: () => undefined,
+    now: () => new Date("2026-07-14T10:00:00+08:00")
+  });
+  assert.equal((await concurrentController.start()).ok, true);
+  const firstConcurrentRun = concurrentController.runOnce();
+  await firstConcurrentSendEntered;
+  await concurrentController.runOnce();
+  assert.equal(concurrentScanCalls, 1, "while sending one customer, another scan must not take control of the WeChat window");
+  assert.deepEqual(concurrentSendOrder, ["c1"], "only the first customer may own the composer during an in-flight send");
+  releaseFirstConcurrentSend();
+  await firstConcurrentRun;
+  await concurrentController.runOnce();
+  assert.deepEqual(concurrentSendOrder, ["c1", "c2"], "the next customer's queued observation must be processed after the first send completes");
+  concurrentController.pause();
 
   const cachedRetryController = createAutoReplyController({
     dataDir: path.join(root, "cached_retry_without_probe"),
@@ -3664,6 +3890,7 @@ async function main() {
   let floatingWebContents;
   let mainHideCalls = 0;
   let mainShowCalls = 0;
+  let floatingHideCalls = 0;
   class FakeAutoReplyWindow {
     constructor(options) {
       floatingOptions = options;
@@ -3679,6 +3906,7 @@ async function main() {
     setPosition(x, y) { floatingPosition = { x, y }; }
     show() {}
     showInactive() {}
+    hide() { floatingHideCalls += 1; }
     focus() {}
     isDestroyed() { return this.destroyed; }
     once(event, handler) { floatingEvents[event] = handler; }
@@ -3699,7 +3927,7 @@ async function main() {
     show: () => { mainShowCalls += 1; },
     focus: () => undefined
   };
-  registerAutoReplyIpc({
+  const ipcController = registerAutoReplyIpc({
     dataDir: path.join(root, "ipc_auto_reply"),
     activeTouchDir,
     coordinator,
@@ -3746,12 +3974,20 @@ async function main() {
   }).autoReply;
   await preloadAutoReply.resumeContact("c1");
   assert.deepEqual(preloadInvocations.at(-1), { channel: "auto-reply:resume-contact", payload: { clickToken: "", contactId: "c1" } });
-  await handlers.get("auto-reply:pause")({ sender: webContents }, {});
-  assert.equal(autoReplyUpdates.at(-1).payload.state.status, "paused", "pause must push state immediately");
+  let floatingClosePrevented = false;
+  floatingEvents.close?.({ preventDefault: () => { floatingClosePrevented = true; } });
+  assert.equal(floatingClosePrevented, true, "closing the progress window must hide it instead of destroying the active listener");
+  assert.equal(floatingHideCalls, 1);
+  assert.equal(ipcController.status().status, "running", "closing the progress window must not pause automatic replies");
   await preloadAutoReply.showMain();
   assert.deepEqual(preloadInvocations.at(-1), { channel: "auto-reply:show-main", payload: undefined });
-  await handlers.get("auto-reply:show-main")();
-  assert.equal(mainShowCalls, 1);
+  const showMainResult = await handlers.get("auto-reply:show-main")();
+  assert.equal(showMainResult.ok, true);
+  assert.equal(ipcController.status().status, "running", "returning to the main page must not pause automatic replies");
+  assert.equal(floatingHideCalls, 2);
+  assert.equal(mainShowCalls, 2);
+  await handlers.get("auto-reply:pause")({ sender: webContents }, {});
+  assert.equal(autoReplyUpdates.at(-1).payload.state.status, "paused", "only the explicit pause control may stop automatic replies");
   assert.match(fs.readFileSync(path.join(__dirname, "preload-api.cjs"), "utf8"), /auto-reply:update[\s\S]*removeListener/u, "preload must expose a removable auto-reply state subscription");
 
   const failedLoadHandlers = new Map();

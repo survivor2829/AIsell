@@ -791,8 +791,13 @@ async function main() {
   );
   assert.equal(
     commentCommands.some((args) => args.includes("--comment-enabled")),
-    false,
-    "the generated text must use the initial observation instead of a second dry-run"
+    true,
+    "the initial observation must declare the later AI comment intent"
+  );
+  assert.equal(
+    commentCommands.some((args) => args.includes("--comment-intent-only")),
+    true,
+    "the first observation must retain one shared comment context without a second dry-run"
   );
   const commentFinished = commentEvents.filter(({ event }) => event === "campaign.comment_finished");
   assert.equal(commentFinished.length, 1);
@@ -1272,14 +1277,14 @@ async function main() {
     likeEnabled: true,
     commentEnabled: true
   }).ok, true);
-  const combinedPaused = await waitFor(
+  const combinedCompleted = await waitFor(
     () => combinedController.status().state,
-    (state) => state.status === "partial"
+    (state) => state.status === "completed"
   );
-  assert.equal(combinedPaused.liked_count, 1);
-  assert.equal(combinedPaused.commented_count, 1);
-  assert.equal(combinedPaused.completed_post_count, 0);
-  assert.equal(combinedPaused.last_reason, "no_progress");
+  assert.equal(combinedCompleted.liked_count, 1);
+  assert.equal(combinedCompleted.commented_count, 1);
+  assert.equal(combinedCompleted.completed_post_count, 1);
+  assert.equal(combinedCompleted.last_reason, "target_count_reached");
 
   const directInteractionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-direct-interaction-"));
   const directInteractionFingerprint = "c".repeat(64);
@@ -1337,7 +1342,9 @@ async function main() {
   assert.equal(directInteractionLikes, 1);
   assert.equal(directInteractionComments, 1);
   assert.equal(directInteractionDryRuns.length, 1, "a visible post and menu must be observed once before direct interaction");
-  assert.equal(directInteractionDryRuns[0].includes("--comment-enabled"), false);
+  assert.equal(directInteractionDryRuns[0].includes("--comment-enabled"), true);
+  assert.equal(directInteractionDryRuns[0].includes("--comment-intent-only"), true);
+  assert.equal(directInteractionDryRuns[0].includes("--allow-body-only"), true);
   assert.equal(directInteractionDryRuns[0].includes("--target-post-fingerprint"), false);
 
   const partialAlignmentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-partial-alignment-limit-"));
@@ -1388,20 +1395,32 @@ async function main() {
   assert.equal(partialAlignmentDone.last_reason, "no_progress");
 
   const visibleTextMissingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-visible-text-missing-"));
-  let visibleTextMissingAdvanced = false;
+  let visibleTextMissingScans = 0;
+  let visibleTextMissingScrolls = 0;
   let visibleTextMissingLikes = 0;
   let visibleTextMissingComments = 0;
   const textMissingSnapshot = {
     observation_id: "e".repeat(64),
     post_fingerprint: "e".repeat(64),
-    source: "visual:windows_media_ocr",
+    source: "visual:interaction_anchor",
     structure_verified: true,
-    identity_text: "",
+    interaction_only: true,
+    identity_text: "interaction-anchor:first-post",
     stable_anchor_text: "",
     avatar_hash: "e".repeat(64),
     bounds: { left: 400, top: 200, width: 500, height: 420 },
     menu_bounds: { left: 840, top: 560, width: 40, height: 28 },
     avatar_bounds: { left: 410, top: 220, width: 48, height: 48 }
+  };
+  const secondTextMissingSnapshot = {
+    ...textMissingSnapshot,
+    observation_id: "d".repeat(64),
+    post_fingerprint: "d".repeat(64),
+    identity_text: "interaction-anchor:second-post",
+    avatar_hash: "d".repeat(64),
+    bounds: { left: 400, top: 180, width: 500, height: 420 },
+    menu_bounds: { left: 840, top: 540, width: 40, height: 28 },
+    avatar_bounds: { left: 410, top: 200, width: 48, height: 48 }
   };
   const nextVisibleSnapshot = {
     observation_id: "f".repeat(64),
@@ -1423,7 +1442,7 @@ async function main() {
     },
     openMoments: async () => INTEGRATED_OPEN_RESULT,
     scrollMoments: async () => {
-      visibleTextMissingAdvanced = true;
+      visibleTextMissingScrolls += 1;
       return { ok: true, delta: -480 };
     },
     generateComment: async ({ postText }) => {
@@ -1440,10 +1459,13 @@ async function main() {
         return { ok: true, status: "verified", real_action_attempted: true };
       }
       assert.equal(args[0], "moments-dry-run");
+      const snapshots = [textMissingSnapshot, secondTextMissingSnapshot, nextVisibleSnapshot];
+      const postSnapshot = snapshots[Math.min(visibleTextMissingScans, snapshots.length - 1)];
+      visibleTextMissingScans += 1;
       return {
         ok: true,
         window: INTEGRATED_OBSERVED_WINDOW,
-        post_snapshot: visibleTextMissingAdvanced ? nextVisibleSnapshot : textMissingSnapshot,
+        post_snapshot: postSnapshot,
         plan: { visible_post_count: 1 }
       };
     }
@@ -1457,13 +1479,14 @@ async function main() {
     () => visibleTextMissingController.status().state,
     (state) => state.status === "completed"
   );
-  assert.equal(visibleTextMissingDone.processed_count, 2);
-  assert.equal(visibleTextMissingDone.liked_count, 2, "missing comment text must not block the current like");
-  assert.equal(visibleTextMissingDone.comment_skipped_count, 1);
+  assert.equal(visibleTextMissingDone.processed_count, 3);
+  assert.equal(visibleTextMissingDone.liked_count, 3, "missing comment text must not block the current like");
+  assert.equal(visibleTextMissingDone.comment_skipped_count, 2);
   assert.equal(visibleTextMissingDone.commented_count, 1);
-  assert.equal(visibleTextMissingLikes, 2);
+  assert.equal(visibleTextMissingLikes, 3);
   assert.equal(visibleTextMissingComments, 1);
-  assert.equal(visibleTextMissingAdvanced, true);
+  assert.equal(visibleTextMissingScans, 3);
+  assert.equal(visibleTextMissingScrolls, 2);
 
   const foregroundRecoveryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-foreground-recovery-"));
   const foregroundRecoveryEvents = [];

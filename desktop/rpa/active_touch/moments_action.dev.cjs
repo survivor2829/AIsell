@@ -1088,8 +1088,11 @@ async function inspectMomentsMenu(options = {}) {
     return persistBlocked(baseDir, context.state, action, context.observationId, "moments_menu_driver_unavailable");
   }
 
+  const commentIntentOnly = context.dryRun.comment_intent_only === true
+    && !String(context.dryRun.comment_text ?? "").trim();
+  const preparedCommentRequired = context.dryRun.comment_enabled === true && !commentIntentOnly;
   let commentText = "";
-  if (context.dryRun.comment_enabled === true) {
+  if (preparedCommentRequired) {
     commentText = String(context.dryRun.comment_text ?? "");
     if (!commentText || commentText.length > MAX_MOMENTS_COMMENT_LENGTH) {
       return persistBlocked(baseDir, context.state, action, context.observationId, "moments_comment_missing");
@@ -1109,7 +1112,7 @@ async function inspectMomentsMenu(options = {}) {
   }
 
   let commentDraftCheck = null;
-  if (context.dryRun.comment_enabled === true) {
+  if (preparedCommentRequired) {
     commentDraftCheck = await inspectCommentDraftWithDriver(driver, context, commentText);
     if (!commentDraftCheck.ok) {
       return persistBlocked(baseDir, context.state, action, context.observationId, commentDraftCheck.reason, {
@@ -1579,7 +1582,12 @@ async function executeMomentsComment(options = {}) {
   if (commentText.length > MAX_MOMENTS_COMMENT_LENGTH) {
     return persistBlocked(baseDir, context.state, action, context.observationId, "moments_comment_too_long");
   }
-  if (context.dryRun.comment_enabled !== true || context.dryRun.comment_text !== commentText) {
+  const commentIntentOnly = context.dryRun.comment_intent_only === true
+    && !String(context.dryRun.comment_text ?? "").trim();
+  if (
+    context.dryRun.comment_enabled !== true
+    || (!commentIntentOnly && context.dryRun.comment_text !== commentText)
+  ) {
     return persistBlocked(baseDir, context.state, action, context.observationId, "moments_comment_not_in_dry_run");
   }
   if (!options.driver && !requiresVisualCommentVerification(context)) {

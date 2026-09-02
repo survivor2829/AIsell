@@ -14,12 +14,11 @@ function spawnSync(command, args, options) {
   if (encodedCommandIndex < 0) return nativeSpawnSync(command, args, options);
 
   const originalProgram = Buffer.from(String(args[encodedCommandIndex + 1] || ""), "base64").toString("utf16le");
-  const encodedArgs = [...args];
-  encodedArgs[encodedCommandIndex + 1] = Buffer.from(
-    `$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n${originalProgram}`,
-    "utf16le"
-  ).toString("base64");
-  return nativeSpawnSync(command, encodedArgs, options);
+  // Production function fixtures can exceed Windows' command-line length limit.
+  // Pass their unchanged source over stdin, not a larger base64 argument.
+  const inputArgs = [...args.slice(0, encodedCommandIndex), "-Command",
+    "$OutputEncoding = [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Invoke-Expression ([Console]::In.ReadToEnd())"];
+  return nativeSpawnSync(command, inputArgs, { ...options, input: originalProgram, windowsHide: true });
 }
 
 function runPowerShellJson(program) {
@@ -147,6 +146,8 @@ assert.match(visualDriverSource, /visual-occurrence-bubble-v3/u);
 assert.doesNotMatch(visualDriverSource, /randomBytes|driverSessionId|occurrenceSequence/u, "occurrence IDs must not depend on a process session or scan counter");
 assert.match(visualDriverSource, /restorePendingObservation/u, "pending evidence must have a restart recovery entry point");
 assert.doesNotMatch(visualDriverSource, /pendingVerifyAttemptLimit/u, "a consumed unread row must not be discarded after an arbitrary OCR retry count");
+  assert.match(visualDriverSource, /stableActiveSession[\s\S]*isBoundPrintWindowNoMessage[\s\S]*current_session_recheck_pending/u, "an already verified chat must not turn a stale PrintWindow frame into a false no-message result");
+  assert.match(visualDriverSource, /XIAOXI_FORCE_SCREEN_CAPTURE: "1"[\s\S]*pendingBoundSessionScreenRecheck/u, "a bound current chat must receive one foreground screen recheck before no-message is returned");
 assert.match(visualDriverSource, /rebindPendingOpenedUnread[\s\S]*incoming_message_changed[\s\S]*unread_preview_pending/u, "a later customer bubble in the already-open chat must rebind the pending observation instead of requiring another unread dot");
 assert.match(visualDriverSource, /active\.messageSignature === messageSignature \|\| sameObservedMessage\(active\.message, message\)[\s\S]*active\.runtimeId/u, "an active occurrence must reuse its public ID while the authoritative bubble is unchanged or has bounded OCR drift");
 assert.match(visualDriverSource, /visual-occurrence-bubble-v3[\s\S]*conversation[\s\S]*messageSignature[\s\S]*String\(turn\.epoch\)/u, "a new occurrence must include the per-contact turn epoch without using sidebar geometry");
@@ -460,15 +461,19 @@ assert.ok(pureTextStart >= 0 && pureTextEnd > pureTextStart);
 const pureTextFunctions = AUTO_REPLY_VISUAL_SCRIPT.slice(pureTextStart, pureTextEnd);
 const latestEvidenceProgram = `
 ${scaleFunction}
+${messageAggregationFunctions}
 ${latestEvidenceFunction}
 ${pureTextFunctions}
 $script:AutoReplyVisualScale = 0.8
+$script:ContrastLines = @()
 function Normalize-AutoReplyVisualText([string]$value) { return $value }
 function Get-AutoReplyVisualSha256([string]$value) { return ("a" * 64) }
 function Get-MomentsPixelHash($frame, $rect) { return ("b" * 64) }
 function Get-AutoReplyVisualMessageBlocks($frame, $messageLines, [double]$sidebarRight) { return @($messageLines) }
 function Get-AutoReplyVisualBubbleRect($frame, $line, [double]$sidebarRight) { return @{ left = 0; top = 0; width = 10; height = 10 } }
-function Get-AutoReplyVisualMessageRole($frame, $line, [double]$sidebarRight, $bubbleRect) { return "user" }
+function Get-AutoReplyVisualMessageRole($frame, $line, [double]$sidebarRight, $bubbleRect) { if ($line.compact -eq "outgoing") { return "assistant" }; return "user" }
+function Get-MomentsHighContrastOcrObservation($frame, $rect, [int]$scale) { return @{ ok = $true; lines = $script:ContrastLines } }
+function Get-AutoReplyVisualLines($ocr) { return @($ocr.lines) }
 function Get-AutoReplyVisualRefinedBubbleText($frame, $bubbleRect, [string]$rawText) { return @{ message = $rawText; source = "fixture"; refined = $rawText } }
 function Get-AutoReplyVisualChatBottom($frame, [double]$sidebarRight) {
   if (-not $script:EvidenceBoundaryOk) { return @{ ok = $false; reason = "chat_boundary_unresolved"; source = "none" } }
@@ -488,7 +493,23 @@ $lines = @(
 )
 $proven = Get-AutoReplyVisualLatestMessageEvidence $normalizedFrame $lines 300.0
 $script:EvidenceBoundaryOk = $false
-$unresolved = Get-AutoReplyVisualLatestMessageEvidence $normalizedFrame $lines 300.0
+$unresolved = Get-AutoReplyVisualLatestMessageEvidence (New-EvidenceFrame 867 554) $lines 300.0
+$script:EvidenceBoundaryOk = $true
+$script:EvidenceBottom = 480.0
+# Only the OCR engines are simulated here: production region coordinate mapping,
+# spatial deduplication, role preservation and batch assembly run unchanged.
+# The separate offline screenshot replay exercises the real Windows OCR engine.
+$script:ContrastLines = @(
+  (New-EvidenceLine "outgoing" 30 136),
+  (New-EvidenceLine "same-question" 30 236),
+  (New-EvidenceLine "same-question" 30 336)
+)
+$recovered = Get-AutoReplyVisualLatestMessageEvidence (New-EvidenceFrame 867 554) @(
+  (New-EvidenceLine "old-message" 330 140),
+  (New-EvidenceLine "outgoing" 330 200),
+  (New-EvidenceLine "typed-draft" 330 500)
+) 300.0
+$recoveredRead = $script:AutoReplyVisualMessageRead
 @{
   provenOk = [bool]$proven.ok
   provenMessage = [string]$proven.message
@@ -496,6 +517,11 @@ $unresolved = Get-AutoReplyVisualLatestMessageEvidence $normalizedFrame $lines 3
   unresolvedOk = [bool]$unresolved.ok
   unresolvedReason = [string]$unresolved.reason
   unresolvedHasEvidence = [bool]$unresolved.ContainsKey("evidenceSignature")
+  recoveredRole = [string]$recovered.latestRole
+  recoveredContext = @($recovered.context | ForEach-Object { $_.content })
+  recoveredSource = [string]$recoveredRead.source
+  recoveredLineCount = [int]$recoveredRead.recoveredLineCount
+  incomingBatchCount = [int]$recoveredRead.incomingBatchCount
 } | ConvertTo-Json -Compress
 `;
 const latestEvidenceProbe = spawnSync("powershell.exe", [
@@ -510,7 +536,12 @@ assert.deepEqual(JSON.parse(latestEvidenceProbe.stdout.trim().split(/\r?\n/u).fi
   provenTop: 365,
   unresolvedHasEvidence: false,
   unresolvedOk: false,
-  unresolvedReason: "chat_boundary_unresolved"
+  unresolvedReason: "chat_boundary_unresolved",
+  recoveredRole: "user",
+  recoveredContext: ["same-question", "same-question"],
+  recoveredSource: "full_window+chat_contrast",
+  recoveredLineCount: 2,
+  incomingBatchCount: 2
 }, "a composer draft must stay excluded and an unproven frame must emit no message evidence");
 
 const messageAggregationProgram = `
@@ -1971,7 +2002,173 @@ const startupAfterArmingCandidate = await startupDriftDriver.scanWechatIncoming(
 assert.equal(startupAfterArmingCandidate.ok, true, "a genuinely different message after startup arming must remain eligible");
 assert.equal(startupAfterArmingCandidate.message, "请问你们的施工报价和工期是多少");
 
-const repeatedTurnSignature = "d".repeat(64);
+  const activeSessionOldSignature = createHash("sha256").update("active-session-old", "utf8").digest("hex");
+  const activeSessionNewSignature = createHash("sha256").update("active-session-new", "utf8").digest("hex");
+  const activeSessionPreviewSignature = createHash("sha256").update("active-session-preview", "utf8").digest("hex");
+  const activeSessionEvidenceRuntimeId = `visual:v1:${"3".repeat(64)}`;
+  const activeSessionCalls = [];
+  const activeSessionResults = [
+    {
+      ok: true,
+      source: "session_prime",
+      pid: 115,
+      hWnd: 116,
+      conversation: "A测试客户",
+      latestRole: "user",
+      messageSignature: activeSessionOldSignature,
+      sessionBaselines: [],
+      sessionMessageBaselines: [{
+        conversation: "A测试客户",
+        signature: activeSessionOldSignature,
+        latestRole: "user"
+      }]
+    },
+    {
+      ok: false,
+      reason: "no_unread_message",
+      pid: 115,
+      hWnd: 116,
+      captureMode: "hwnd_printwindow",
+      conversation: "A测试客户",
+      latestRole: "user",
+      messageSignature: activeSessionOldSignature
+    },
+    {
+      ok: true,
+      conversation: "A测试客户",
+      message: "我需要扫地机",
+      runtimeId: activeSessionEvidenceRuntimeId,
+      previewSignature: activeSessionPreviewSignature,
+      messageSignature: activeSessionNewSignature,
+      pid: 115,
+      hWnd: 116,
+      captureMode: "foreground_screen",
+      source: "current_message_change",
+      latestRole: "user",
+      context: [{ role: "user", content: "我需要扫地机", key: activeSessionEvidenceRuntimeId }]
+    }
+  ];
+  const activeSessionDriver = createWechatVisualAutoReplyDriver((_script, env) => {
+    activeSessionCalls.push(env);
+    return activeSessionResults.shift();
+  });
+  assert.equal((await activeSessionDriver.primeWechatSession(["A测试客户"])).ok, true);
+  const activeSessionCandidate = await activeSessionDriver.scanWechatIncoming(["A测试客户"]);
+  assert.equal(activeSessionCandidate.ok, true, "a screen recheck must recover an incoming bubble hidden by one stale PrintWindow frame");
+  assert.equal(activeSessionCandidate.message, "我需要扫地机");
+  assert.equal(activeSessionCalls.length, 3, "a stale no-message frame must trigger exactly one immediate screen recheck");
+  assert.equal(activeSessionCalls[2].XIAOXI_FORCE_SCREEN_CAPTURE, "1");
+  assert.equal(activeSessionCalls[2].XIAOXI_ALLOW_FOCUS_FALLBACK, "1");
+  assert.equal(activeSessionCalls[2].XIAOXI_ACTIVE_SESSION_CONVERSATION, undefined, "the session binding must remain local instead of exposing the contact through a new worker variable");
+
+  const activeSessionPendingResults = [
+    {
+      ok: true,
+      source: "session_prime",
+      pid: 117,
+      hWnd: 118,
+      conversation: "A测试客户",
+      latestRole: "user",
+      messageSignature: activeSessionOldSignature,
+      sessionBaselines: [],
+      sessionMessageBaselines: [{
+        conversation: "A测试客户",
+        signature: activeSessionOldSignature,
+        latestRole: "user"
+      }]
+    },
+    { ok: false, reason: "no_unread_message", pid: 117, hWnd: 118, captureMode: "hwnd_printwindow", conversation: "A测试客户", message: "旧内容", messageSignature: activeSessionOldSignature },
+    { ok: false, reason: "no_unread_message", pid: 117, hWnd: 118, captureMode: "foreground_screen", conversation: "A测试客户", message: "旧内容", messageSignature: activeSessionOldSignature }
+  ];
+  const activeSessionPendingDriver = createWechatVisualAutoReplyDriver(() => activeSessionPendingResults.shift());
+  assert.equal((await activeSessionPendingDriver.primeWechatSession(["A测试客户"])).ok, true);
+  const activeSessionPending = await activeSessionPendingDriver.scanWechatIncoming(["A测试客户"]);
+  assert.equal(activeSessionPending.reason, "current_session_recheck_pending", "an unconfirmed bound chat must remain retryable instead of being reported as no unread message");
+  assert.equal(activeSessionPending.activeSessionBindingHash, createHash("sha256").update("A测试客户", "utf8").digest("hex"));
+  assert.equal(activeSessionPending.activeSessionMessageSignature, activeSessionOldSignature);
+  assert.equal("conversation" in activeSessionPending, false, "the recheck diagnostic must not expose contact text");
+  assert.equal("message" in activeSessionPending, false, "the recheck diagnostic must not expose customer text");
+  assert.equal("context" in activeSessionPending, false, "the recheck diagnostic must not expose message history");
+
+  const activeSessionAssistantSignature = createHash("sha256").update("active-session-assistant", "utf8").digest("hex");
+  const activeSessionConfirmedEmptyResults = [
+    {
+      ok: true,
+      source: "session_prime",
+      pid: 119,
+      hWnd: 120,
+      conversation: "A测试客户",
+      latestRole: "user",
+      messageSignature: activeSessionOldSignature,
+      sessionBaselines: [],
+      sessionMessageBaselines: [{
+        conversation: "A测试客户",
+        signature: activeSessionOldSignature,
+        latestRole: "user"
+      }]
+    },
+    {
+      ok: false,
+      reason: "no_unread_message",
+      pid: 119,
+      hWnd: 120,
+      captureMode: "hwnd_printwindow",
+      conversation: "A测试客户",
+      latestRole: "assistant",
+      messageSignature: activeSessionAssistantSignature
+    },
+    {
+      ok: false,
+      reason: "no_unread_message",
+      pid: 119,
+      hWnd: 120,
+      captureMode: "foreground_screen",
+      conversation: "A测试客户",
+      latestRole: "assistant",
+      messageSignature: activeSessionAssistantSignature
+    }
+  ];
+  const activeSessionConfirmedEmptyDriver = createWechatVisualAutoReplyDriver(() => activeSessionConfirmedEmptyResults.shift());
+  assert.equal((await activeSessionConfirmedEmptyDriver.primeWechatSession(["A测试客户"])).ok, true);
+  const activeSessionConfirmedEmpty = await activeSessionConfirmedEmptyDriver.scanWechatIncoming(["A测试客户"]);
+  assert.equal(activeSessionConfirmedEmpty.reason, "no_unread_message", "a screen recheck that confirms the same open chat is idle must return to normal polling instead of fast-retrying forever");
+
+  const activeSessionOtherSignature = createHash("sha256").update("active-session-other-chat", "utf8").digest("hex");
+  const activeSessionSwitchCalls = [];
+  const activeSessionSwitchResults = [
+    {
+      ok: true,
+      source: "session_prime",
+      pid: 123,
+      hWnd: 124,
+      conversation: "A测试客户",
+      latestRole: "user",
+      messageSignature: activeSessionOldSignature,
+      sessionBaselines: [],
+      sessionMessageBaselines: [{
+        conversation: "A测试客户",
+        signature: activeSessionOldSignature,
+        latestRole: "user"
+      }]
+    },
+    { ok: false, reason: "no_unread_message", pid: 123, hWnd: 124, captureMode: "hwnd_printwindow", conversation: "A测试客户", latestRole: "user", messageSignature: activeSessionOldSignature },
+    { ok: false, reason: "no_unread_message", pid: 123, hWnd: 124, captureMode: "foreground_screen", conversation: "B测试客户", latestRole: "assistant", messageSignature: activeSessionOtherSignature },
+    { ok: false, reason: "no_unread_message", pid: 123, hWnd: 124, captureMode: "hwnd_printwindow", conversation: "B测试客户", latestRole: "assistant", messageSignature: activeSessionOtherSignature },
+    { ok: false, reason: "no_unread_message", pid: 123, hWnd: 124, captureMode: "foreground_screen", conversation: "B测试客户", latestRole: "assistant", messageSignature: activeSessionOtherSignature }
+  ];
+  const activeSessionSwitchDriver = createWechatVisualAutoReplyDriver((_script, env) => {
+    activeSessionSwitchCalls.push(env);
+    return activeSessionSwitchResults.shift();
+  });
+  assert.equal((await activeSessionSwitchDriver.primeWechatSession(["A测试客户", "B测试客户"])).ok, true);
+  const switchedChatIdle = await activeSessionSwitchDriver.scanWechatIncoming(["A测试客户", "B测试客户"]);
+  assert.equal(switchedChatIdle.reason, "no_unread_message", "a confirmed foreground switch from A to B must be accepted as normal idle, not trapped in a fast recheck");
+  const reboundChatIdle = await activeSessionSwitchDriver.scanWechatIncoming(["A测试客户", "B测试客户"]);
+  assert.equal(reboundChatIdle.reason, "no_unread_message");
+  assert.equal(activeSessionSwitchCalls.length, 5, "the confirmed B chat must replace the old A binding for later stale-frame protection");
+  assert.equal(activeSessionSwitchCalls[4].XIAOXI_FORCE_SCREEN_CAPTURE, "1");
+
+  const repeatedTurnSignature = "d".repeat(64);
 const repeatedTurnEvidence = `visual:v1:${"9".repeat(64)}`;
 const repeatedTurnCandidate = {
   ok: true, conversation: "RepeatCustomer", message: "same", runtimeId: repeatedTurnEvidence,
@@ -2068,6 +2265,76 @@ assert.equal(restartUnknownDriver.scanWechatIncoming.restoreTurnBoundaries([
 assert.equal((await restartUnknownDriver.primeWechatSession(["RepeatCustomer"])).ok, true);
 const afterRestartUnknownAssistant = await restartUnknownDriver.scanWechatIncoming(["RepeatCustomer"]);
 assert.notEqual(afterRestartUnknownAssistant.runtimeId, repeatedTurnIds[3], "an assistant bubble observed after a restored unknown attempt must open the next epoch instead of reviving the unknown occurrence");
+
+// JS transport tests complement the real-image PowerShell boundary fixture:
+// full batches must survive verification, pending rebind and startup clipping.
+const batchTransportRow = (content, index) => ({ role: "user", content, key: `batch-row-${index}` });
+const batchTransportResult = (messages, extra = {}) => ({
+  ok: true,
+  conversation: "BatchCustomer",
+  message: messages.at(-1),
+  runtimeId: `visual:v1:${createHash("sha256").update(messages.at(-1)).digest("hex")}`,
+  messageSignature: createHash("sha256").update(`message:${messages.at(-1)}`).digest("hex"),
+  previewSignature: "e".repeat(64),
+  pid: 141,
+  hWnd: 142,
+  source: "current_message_change",
+  latestRole: "user",
+  contextKind: "incoming_batch",
+  context: messages.map(batchTransportRow),
+  ...extra
+});
+const batchTransportPrime = { ok: true, source: "session_prime", pid: 141, hWnd: 142, sessionBaselines: [], sessionMessageBaselines: [] };
+const batchTransportResults = [
+  batchTransportPrime,
+  batchTransportResult(["处理油污", "面积一万平方米", "环氧地坪", "推荐设备"]),
+  batchTransportResult(["环氧地坪", "推荐设备"], { source: "verify" })
+];
+const batchTransportDriver = createWechatVisualAutoReplyDriver(() => batchTransportResults.shift());
+await batchTransportDriver.primeWechatSession(["BatchCustomer"]);
+const fullBatchCandidate = await batchTransportDriver.scanWechatIncoming(["BatchCustomer"]);
+const verifiedFullBatch = await batchTransportDriver.verifyWechatIncoming(fullBatchCandidate);
+assert.deepEqual(verifiedFullBatch.context.map((item) => item.content), ["处理油污", "面积一万平方米", "环氧地坪", "推荐设备"], "a verification frame showing only the batch suffix must preserve earlier observed customer facts");
+assert.equal(verifiedFullBatch.runtimeId, fullBatchCandidate.runtimeId, "carrying full context must not change the target occurrence identity");
+assert.equal(verifiedFullBatch.context.at(-1).key, fullBatchCandidate.runtimeId);
+
+const pendingBatchResults = [
+  batchTransportPrime,
+  batchTransportResult(["相同补充", "相同补充", "面积一万平方米"], { ok: false, reason: "unread_preview_pending", source: "unread" }),
+  batchTransportResult(["面积一万平方米", "环氧地坪"], { ok: false, reason: "incoming_message_changed", source: "verify" }),
+  batchTransportResult(["环氧地坪"], { source: "verify" })
+];
+const pendingBatchDriver = createWechatVisualAutoReplyDriver(() => pendingBatchResults.shift());
+await pendingBatchDriver.primeWechatSession(["BatchCustomer"]);
+assert.equal((await pendingBatchDriver.scanWechatIncoming(["BatchCustomer"])).reason, "unread_preview_pending");
+assert.equal((await pendingBatchDriver.scanWechatIncoming(["BatchCustomer"])).pendingReason, "incoming_message_rebased");
+const pendingBatchRecovered = await pendingBatchDriver.scanWechatIncoming(["BatchCustomer"]);
+assert.deepEqual(pendingBatchRecovered.context.map((item) => item.content), ["相同补充", "相同补充", "面积一万平方米", "环氧地坪"], "pending rebind must use sequence overlap, retaining genuine repeated customer bubbles");
+assert.equal(pendingBatchRecovered.contextKind, "incoming_batch");
+
+const startupBatchResults = [
+  {
+    ...batchTransportPrime,
+    startupBoundarySupported: true,
+    sessionMessageBaselines: [{ conversation: "BatchCustomer", signature: "d".repeat(64), message: "旧边界", latestRole: "user", context: ["更早问题", "旧边界"].map(batchTransportRow) }]
+  },
+  { ok: false, reason: "no_unread_message", pid: 141, hWnd: 142 },
+  batchTransportResult(["更早问题", "旧边界", "旧边界", "新问题"]),
+  batchTransportResult(["更早问题", "旧边界", "旧边界", "新问题", "再次补充"]),
+  batchTransportResult(["其他客户问题"], { conversation: "OtherBatchCustomer" })
+];
+const startupBatchDriver = createWechatVisualAutoReplyDriver(() => startupBatchResults.shift());
+await startupBatchDriver.primeWechatSession(["BatchCustomer", "OtherBatchCustomer"]);
+const startupBatchCandidate = await startupBatchDriver.scanWechatIncoming(["BatchCustomer", "OtherBatchCustomer"]);
+assert.deepEqual(startupBatchCandidate.context.map((item) => item.content), ["旧边界", "新问题"], "the ordered startup batch must be clipped once while a new duplicate remains");
+assert.ok(startupBatchCandidate.visualContextBoundary.every((hash) => /^[a-f0-9]{64}$/.test(hash)));
+const markerOnlyVerifyDriver = createWechatVisualAutoReplyDriver(() => batchTransportResult(["更早问题", "旧边界", "旧边界", "新问题"], { source: "verify" }));
+const startupBatchVerified = await markerOnlyVerifyDriver.verifyWechatIncoming(startupBatchCandidate);
+assert.deepEqual(startupBatchVerified.context.map((item) => item.content), ["旧边界", "新问题"], "verification must retain the startup clipping marker after the live startup map is cleared");
+const startupBatchRescanned = await startupBatchDriver.scanWechatIncoming(["BatchCustomer", "OtherBatchCustomer"]);
+assert.deepEqual(startupBatchRescanned.context.map((item) => item.content), ["旧边界", "新问题", "再次补充"], "a subsequent bubble before sending must retain the startup clipping boundary without suppressing new content");
+const isolatedOtherBatch = await startupBatchDriver.scanWechatIncoming(["BatchCustomer", "OtherBatchCustomer"]);
+assert.deepEqual(isolatedOtherBatch.context.map((item) => item.content), ["其他客户问题"], "batch context and startup boundaries must remain scoped to the customer");
 
 assert.equal((await driver.verifyWechatIncoming({ conversation: "", message: "" })).reason, "incoming_message_missing");
 assert.equal((await driver.verifyWechatIncoming({ conversation: "A测试客户", message: "你是谁", runtimeId: "bad" })).reason, "incoming_identity_missing");

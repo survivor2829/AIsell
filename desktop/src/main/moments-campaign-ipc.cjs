@@ -153,6 +153,12 @@ function sanitizeMomentsMenuDiagnostics(value) {
 }
 
 function commentSourceFromPostSnapshot(snapshot) {
+  if (
+    snapshot?.interaction_only === true
+    || String(snapshot?.source || "") === "visual:interaction_anchor"
+  ) {
+    return { ok: false, reason: "moments_comment_visible_text_missing" };
+  }
   const identityText = normalizedMomentsReadingText(
     snapshot?.identity_text
     || snapshot?.label
@@ -396,6 +402,7 @@ function createMomentsCampaignController(options = {}) {
   }
 
   function successfulPostCount() {
+    if (state.comment_enabled) return state.commented_count;
     return state.automated_run
       ? state.new_completed_post_count
       : state.completed_post_count;
@@ -467,13 +474,21 @@ function createMomentsCampaignController(options = {}) {
       let pendingSnapshots = [];
       let pendingObservation = null;
       let successfulCountAtScreenStart = 0;
+      let processedCountAtScreenStart = 0;
 
       while (successfulPostCount() < state.max_posts) {
         if (shouldStop()) return;
         const usingPendingSnapshot = pendingSnapshots.length > 0;
-        if (!usingPendingSnapshot) successfulCountAtScreenStart = successfulPostCount();
+        if (!usingPendingSnapshot) {
+          successfulCountAtScreenStart = successfulPostCount();
+          processedCountAtScreenStart = state.processed_count;
+        }
         persist({ current_post: state.processed_count + 1, last_reason: "observing_post" });
-        const observationArgs = ["moments-dry-run", "--mode", "random", "--like"];
+        const observationArgs = ["moments-dry-run", "--mode", "random"];
+        if (state.like_enabled) observationArgs.push("--like");
+        if (state.comment_enabled) {
+          observationArgs.push("--comment-enabled", "--comment-intent-only", "--allow-body-only");
+        }
         const runObservation = () => runStep(
           withExpectedSurface(observationArgs), {
             cliName: "moments_dry_run_cli.dev.cjs",
@@ -735,8 +750,9 @@ function createMomentsCampaignController(options = {}) {
 
             processedPostMarkers.push(campaignPostMarker(observed.post_snapshot));
             const likeSucceededForPost = !state.like_enabled || likedCount + alreadyLikedCount > 0;
-            const commentSucceededForPost = !state.comment_enabled || commentedCount > 0;
-            const completedPostCount = likeSucceededForPost && commentSucceededForPost ? 1 : 0;
+            const completedPostCount = state.comment_enabled
+              ? commentedCount
+              : (likeSucceededForPost ? 1 : 0);
             const newCompletedPostCount = completedPostCount > 0 && likedCount + commentedCount > 0 ? 1 : 0;
             const dailyPatch = dailyAutomation.buildProgressPatch(
               fingerprint,
@@ -780,7 +796,9 @@ function createMomentsCampaignController(options = {}) {
         if (successfulPostCount() >= state.max_posts || shouldStop()) break;
         if (pendingSnapshots.length > 0) continue;
         pendingObservation = null;
-        if (successfulPostCount() > successfulCountAtScreenStart) {
+        const foundNextCommentCandidate = state.comment_enabled
+          && state.processed_count > processedCountAtScreenStart;
+        if (successfulPostCount() > successfulCountAtScreenStart || foundNextCommentCandidate) {
           noProgressScreens = 0;
         } else {
           noProgressScreens += 1;

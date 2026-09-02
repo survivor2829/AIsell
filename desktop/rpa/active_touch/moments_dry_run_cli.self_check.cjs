@@ -66,8 +66,9 @@ main(["node", modulePath, "--mode", "targeted", "--like"]);
 assert.equal(Object.hasOwn(calls[2].payload, "expectedWindow"), false);
 assert.equal(Object.hasOwn(calls[2].payload, "expectedWindowRequired"), false);
 
-main(["node", modulePath, "--mode", "random", "--like", "--comment-enabled", "--allow-body-only"]);
+main(["node", modulePath, "--mode", "random", "--like", "--comment-enabled", "--comment-intent-only", "--allow-body-only"]);
 assert.equal(calls[3].payload.allowBodyOnly, true);
+assert.equal(calls[3].payload.commentIntentOnly, true);
 
 const targetPost = {
   source: "visual:windows_media_ocr",

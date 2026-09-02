@@ -110,6 +110,7 @@ const SCAN_REASON_LABELS: Record<string, string> = {
   current_outgoing_settling: "已发送消息正在稳定显示，等待下轮确认",
   current_visual_drift_consumed: "已校准当前会话的单项识别波动",
   current_transition_unresolved: "新消息证据暂不稳定，已保留并继续后台复核",
+  current_session_recheck_pending: "当前聊天已确认，正在复核最新消息，消息不会丢失",
   current_conversation_ambiguous: "当前聊天标题识别不唯一，正在等待下一轮重新识别",
   current_conversation_changed: "扫描期间当前聊天发生变化，已取消本轮处理",
   wechat_user_active: "检测到鼠标或键盘仍在使用，等待电脑连续空闲后继续",
@@ -192,7 +193,7 @@ const CONTROL_EVENT_LABELS: Record<string, string> = {
   waiting_for_user_idle: "检测到电脑仍在操作，已等待空闲后继续",
   manual_intervention_required: "检测到微信中可能有人为操作，当前消息已停止自动重试",
   system_error_paused: "AI 服务故障，客户消息未发送，自动回复已暂停",
-  progress_window_load_failed: "进度窗口加载失败，任务已暂停并返回主页面",
+  progress_window_load_failed: "进度窗口加载失败，已返回主页面，自动回复仍在运行",
   human_owned_contact_skipped: "该客户已由人工接管，本轮未自动回复",
   contact_ai_resumed: "已恢复该客户的 AI 自动回复",
   silent_processed: "本条消息无需回复，已静默处理"
@@ -255,6 +256,7 @@ const ACTIVITY_DETAIL_LABELS: Record<string, string> = {
   visual_send_external_input_detected: "检测到微信输入框有人为输入，当前消息交由人工",
   unread_preview_pending: "已读消息正在复核，尚未丢弃",
   unread_preview_unresolved: "已读消息正在继续复核，尚未丢弃",
+  current_session_recheck_pending: "当前聊天已确认，正在复核最新消息",
   send_retry_waiting: "回复尚未发出，正在退避后重试"
 };
 

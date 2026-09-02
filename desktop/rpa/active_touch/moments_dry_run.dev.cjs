@@ -1204,11 +1204,19 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
   const likeEnabled = payload.likeEnabled === true;
   const commentEnabled = payload.commentEnabled === true;
   const commentText = commentEnabled ? String(payload.commentText ?? "").trim() : "";
-  const plan = { mode, like_enabled: likeEnabled, comment_enabled: commentEnabled, comment_text: commentText, target_verified: false };
+  const commentIntentOnly = commentEnabled && payload.commentIntentOnly === true && !commentText;
+  const plan = {
+    mode,
+    like_enabled: likeEnabled,
+    comment_enabled: commentEnabled,
+    comment_intent_only: commentIntentOnly,
+    comment_text: commentText,
+    target_verified: false
+  };
 
   if (!likeEnabled && !commentEnabled) return momentsDryRunBlock(baseDir, state, "moments_action_missing", MOMENTS_BLOCK_ERRORS.moments_action_missing, plan);
   if (!["targeted", "random"].includes(mode)) return momentsDryRunBlock(baseDir, state, "moments_mode_invalid", MOMENTS_BLOCK_ERRORS.moments_mode_invalid, plan);
-  if (commentEnabled && !commentText) return momentsDryRunBlock(baseDir, state, "moments_comment_missing", MOMENTS_BLOCK_ERRORS.moments_comment_missing, plan);
+  if (commentEnabled && !commentIntentOnly && !commentText) return momentsDryRunBlock(baseDir, state, "moments_comment_missing", MOMENTS_BLOCK_ERRORS.moments_comment_missing, plan);
   if (commentText.length > MAX_MOMENTS_COMMENT_LENGTH) return momentsDryRunBlock(baseDir, state, "moments_comment_too_long", `评论文案不能超过 ${MAX_MOMENTS_COMMENT_LENGTH} 个字符`, plan);
 
   const targetPostRequired = payload.targetPostRequired === true
@@ -1271,7 +1279,7 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
     // A generic three-dot crop is not a post identity. It may be reused for
     // read-only diagnostics, but it must never authorize a real Like.
     allowMenuOnly: false,
-    allowBodyOnly: payload.allowBodyOnly === true && commentEnabled,
+    allowBodyOnly: payload.allowBodyOnly === true,
     targetPost
   };
   const interactionCandidates = windowResult.identityMode === "visual_mmui_render"

@@ -36,6 +36,7 @@ function main(argv) {
     mode: valueAfter(args, "--mode"),
     likeEnabled: args.includes("--like"),
     commentEnabled: args.includes("--comment-enabled"),
+    ...(args.includes("--comment-intent-only") ? { commentIntentOnly: true } : {}),
     commentText: Buffer.from(valueAfter(args, "--comment-text-base64"), "base64").toString("utf8"),
     ...(args.includes("--allow-body-only") ? { allowBodyOnly: true } : {}),
     ...(targetPostRequired ? { targetPostRequired: true, targetPost } : {}),

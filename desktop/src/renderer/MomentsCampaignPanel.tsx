@@ -136,6 +136,7 @@ const REASON_LABELS: Record<string, string> = {
   moments_menu_not_found: "未识别到当前帖子的互动菜单",
   moments_menu_ambiguous: "识别到多个疑似互动菜单，已暂停保护",
   moments_comment_visible_text_missing: "当前画面没有可用文案，已跳过本条评论",
+  moments_comment_not_in_dry_run: "评论上下文未准备完整，已跳过本条",
   moments_discover_entry_ambiguous: "识别到多个“发现”入口，已停止且没有继续点击",
   moments_discover_entry_not_found: "未能唯一识别新版微信侧栏的“发现”图标，已停止",
   moments_discover_entry_not_owned: "“发现”入口不属于已绑定的微信窗口，已停止",
@@ -156,6 +157,7 @@ const REASON_LABELS: Record<string, string> = {
   moments_post_changed_before_comment: "生成评论期间帖子位置发生变化，本条评论已跳过",
   moments_comment_ai_failed: "本条AI评论生成失败，已跳过并继续",
   scrolled: "已下滑，正在寻找下一条",
+  no_progress: "当前页面没有新的可处理帖子，已结束本轮",
   target_count_reached: "已完成本轮目标",
   target_not_reached: "本轮已结束，但启用的动作未全部成功",
   pause_requested: "正在完成当前步骤后暂停",
@@ -493,7 +495,7 @@ export default function MomentsCampaignPanel() {
       <div className="moments-campaign-metrics">
         <span>状态：{STATUS_LABELS[state.status] || state.status}</span>
         <span>已检查：{state.processed_count}</span>
-        <span>目标完成：{state.completed_post_count}/{state.max_posts}</span>
+        <span>{state.comment_enabled ? "评论目标" : "目标完成"}：{state.completed_post_count}/{state.max_posts}</span>
         <span>新点赞：{state.liked_count}</span>
         <span>原已点赞：{state.already_liked_count}</span>
         <span>已评论：{state.commented_count}</span>
@@ -538,7 +540,13 @@ export function FloatingMomentsCampaignWindow() {
   const total = Math.max(0, Number(state.max_posts) || 0);
   const completed = Math.min(total, Math.max(0, Number(state.completed_post_count) || 0));
   const progress = total ? Math.round((completed / total) * 100) : 0;
-  const phase = REASON_LABELS[state.last_reason] || state.last_reason || STATUS_LABELS[state.status] || "未启动";
+  const progressText = state.comment_enabled ? `评论 ${completed}/${total}` : `${completed}/${total}`;
+  const progressAriaLabel = state.comment_enabled
+    ? `已完成 ${completed} 条评论，共 ${total} 条评论`
+    : `已完成 ${completed} 条，共 ${total} 条`;
+  const phase = state.last_reason === "scrolled" && state.comment_enabled
+    ? "已下滑，正在寻找下一条可评论帖子"
+    : (REASON_LABELS[state.last_reason] || state.last_reason || STATUS_LABELS[state.status] || "未启动");
   const result = state.commented_count || state.liked_count || state.already_liked_count
     ? `点赞 ${state.liked_count} · 评论 ${state.commented_count}`
     : "等待首条帖子";
@@ -548,8 +556,8 @@ export function FloatingMomentsCampaignWindow() {
       <div className="floating-title"><span className={`floating-pulse ${state.status}`} /><strong>朋友圈互动进度</strong></div>
       <button className="floating-close" aria-label="返回主页面" onClick={() => call(() => api!.showMain())} disabled={busy}>×</button>
     </header>
-    <div className="floating-progress" aria-label={`已完成 ${completed} 条，共 ${total} 条`}>
-      <div className="floating-progress-bar"><span style={{ width: `${progress}%` }} /></div><b>{completed}/{total}</b>
+    <div className="floating-progress" aria-label={progressAriaLabel}>
+      <div className="floating-progress-bar"><span style={{ width: `${progress}%` }} /></div><b>{progressText}</b>
     </div>
     <div className="floating-info" aria-live="polite">
       <div className="floating-row"><span>当前环节</span><strong title={phase}>{phase}</strong></div>

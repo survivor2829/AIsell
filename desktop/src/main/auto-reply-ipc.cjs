@@ -77,6 +77,36 @@ const TRANSIENT_SCAN_FENCE_REASONS = new Set([
   "latest_message_role_unresolved",
   "wechat_focus_failed"
 ]);
+const RETRYABLE_CURRENT_SESSION_REASONS = new Set([
+  "current_session_recheck_pending"
+]);
+const SCAN_OBSERVATION_REASONS = new Set([
+  "no_unread_message",
+  "no_current_conversation",
+  "current_conversation_ambiguous",
+  "current_sidebar_row_unresolved",
+  "current_transition_unresolved",
+  "conversation_title_unresolved",
+  ...RETRYABLE_CURRENT_SESSION_REASONS
+]);
+const SCAN_OBSERVATION_SOURCES = new Set([
+  "current_message_change",
+  "pending_recovery",
+  "scan_driver",
+  "session_prime",
+  "unread_badge",
+  "visual_driver"
+]);
+const SCAN_OBSERVATION_TRIGGERS = new Set([
+  "current_session_recheck",
+  "poll",
+  "startup_boundary"
+]);
+const SCAN_OBSERVATION_ROLES = new Set(["assistant", "unknown", "user"]);
+const SCAN_CAPTURE_MODES = new Set(["foreground_screen", "hwnd_printwindow", "unknown"]);
+const MESSAGE_READ_SOURCES = new Set(["full_window+chat_contrast", "full_window"]);
+const MESSAGE_READ_BOUNDARY_SOURCES = new Set(["composer_divider", "normalized_window_ratio"]);
+const SCAN_OBSERVATION_INTERVAL_MS = 30_000;
 const PENDING_OBSERVATION_REASONS = new Set([
   "unread_preview_pending",
   "reply_in_flight"
@@ -122,6 +152,7 @@ const KNOWN_SCAN_REASONS = new Set([
   "conversation_title_mismatch",
   "current_conversation_ambiguous",
   "current_conversation_changed",
+  "current_session_recheck_pending",
   "current_outgoing_settling",
   "current_sidebar_row_unresolved",
   "current_transition_unresolved",
@@ -523,6 +554,26 @@ function sanitizeSessionProbe(value) {
   return result;
 }
 
+function sanitizeMessageRead(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result = {};
+  if (MESSAGE_READ_SOURCES.has(value.source)) result.message_read_source = value.source;
+  if (MESSAGE_READ_BOUNDARY_SOURCES.has(value.boundarySource)) result.boundary_source = value.boundarySource;
+  for (const [source, target] of Object.entries({
+    chatBottom: "chat_bottom",
+    fullLineCount: "full_line_count",
+    recoveredLineCount: "recovered_line_count",
+    messageBlockCount: "message_block_count",
+    incomingBatchCount: "incoming_batch_count",
+    latestMessageTop: "latest_message_top"
+  })) {
+    const number = value[source];
+    if (typeof number === "number" && Number.isFinite(number) && number >= 0 && number <= 10_000_000) result[target] = number;
+  }
+  if (typeof value.regionOcrOk === "boolean") result.region_ocr_ok = value.regionOcrOk;
+  return result;
+}
+
 function sanitizeStructuredScanDiagnostics(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const nested = value.diagnostics && typeof value.diagnostics === "object" && !Array.isArray(value.diagnostics)
@@ -595,7 +646,7 @@ function sanitizeStructuredScanDiagnostics(value) {
   const scanMs = Math.floor(Number(source.timings?.scan_ms));
   if (Number.isSafeInteger(scanMs) && scanMs >= 0 && scanMs <= 300_000) result.scan_ms = scanMs;
   const captureMode = diagnosticCode(source.captureMode, "");
-  if (new Set(["hwnd_printwindow", "foreground_screen"]).has(captureMode)) result.capture_mode = captureMode;
+  if (SCAN_CAPTURE_MODES.has(captureMode)) result.capture_mode = captureMode;
   // Worker diagnostics are deliberately structural only. The visual sender
   // hashes stderr before it gets here; never put raw PowerShell text (which
   // can contain UI content) into the durable diagnostic trail.
@@ -1330,6 +1381,7 @@ function createAutoReplyController(options = {}) {
   const rawState = readJson(stateFile, null);
   let state = migrateState(rawState, now());
   let diagnosticSequence = 0;
+  let lastScanObservation = { key: "", at: 0 };
   if (rawState && (
     rawState.version !== AUTO_REPLY_STATE_VERSION
     || rawState.status === "running"
@@ -1380,8 +1432,8 @@ function createAutoReplyController(options = {}) {
   const pendingHandoffQueue = [];
   const retryGenerations = new Map();
   // Customer text stays in memory only. Durable state keeps opaque occurrence
-  // evidence, while this cache carries preceding turns because the visual
-  // adapter currently returns only the newest bubble.
+  // evidence, while this cache carries preceding turns when the visual
+  // adapter supplies only the current incoming batch.
   const conversationHistories = new Map();
   // A customer may add a second bubble while the first answer is still being
   // generated. Keep the superseded user turns in memory only so the next
@@ -1426,30 +1478,30 @@ function createAutoReplyController(options = {}) {
 
   function mergedConversationContext(contactId, observedContext, candidate) {
     const remembered = conversationHistories.get(contactId) || [];
-    const observed = observedContext.length > 1
-      ? observedContext
-      : [...remembered, ...observedContext];
     const pending = pendingUnsentContexts.get(contactId);
     const currentRuntimeId = normalizeText(candidate?.runtimeId);
     const includePending = pending
       && normalizeText(pending.runtimeId)
       && normalizeText(pending.runtimeId) !== currentRuntimeId;
-    // Multi-turn adapters already supplied their own preceding context. The
-    // memory-only carry is needed only for the visual adapter's single latest
-    // bubble; prefixing it to a multi-turn context would duplicate history.
-    const combined = includePending && observedContext.length === 1
-      ? [...pending.context, ...observedContext]
-      : observed;
-    const normalized = [];
-    for (const item of combined) {
-      const previous = normalized.at(-1);
-      if (previous
-        && previous.role === item.role
-        && previous.content === item.content
-        && (!item.key || previous.key === item.key)) continue;
-      normalized.push(item);
+    const incomingBatch = candidate?.contextKind === "incoming_batch";
+    // Several incoming bubbles are still only the latest customer turn, not
+    // complete conversation history. Preserve earlier answered turns, then
+    // merge any overlapping unsent batch without relying on mutable OCR keys.
+    const previous = includePending ? pending.context : remembered;
+    let combined = observedContext;
+    if (incomingBatch) {
+      let overlap = Math.min(previous.length, observedContext.length);
+      while (overlap > 0 && !observedContext.slice(0, overlap).every((item, index) => {
+        const preceding = previous[previous.length - overlap + index];
+        return preceding.role === item.role && normalizeText(preceding.content) === normalizeText(item.content);
+      })) overlap -= 1;
+      combined = [...previous, ...observedContext.slice(overlap)];
+    } else if (observedContext.length === 1) {
+      // A legacy single-bubble observation is a new occurrence; equal wording
+      // alone must not erase a genuinely repeated customer message.
+      combined = [...previous, ...observedContext];
     }
-    return safeContextSuffix(normalized.slice(-12));
+    return safeContextSuffix(combined.slice(-12));
   }
 
   function rememberConversation(contactId, context, reply) {
@@ -1559,6 +1611,56 @@ function createAutoReplyController(options = {}) {
     ].join("\n"));
   }
 
+  function scanObservationReference(result) {
+    const values = [
+      result?.activeSessionBindingHash,
+      result?.activeSessionMessageSignature,
+      result?.messageSignature,
+      result?.previewSignature,
+      result?.runtimeId,
+      result?.visualEvidenceRuntimeId
+    ]
+      .map((value) => normalizeText(value).toLowerCase())
+      .filter((value) => /^[a-f0-9]{64}$/u.test(value) || /^visual:v[12]:[a-f0-9]{64}$/u.test(value));
+    if (!values.length) return "";
+    return crypto.createHmac("sha256", diagnosticTraceSecret).update(values.join("\n")).digest("hex").slice(0, 24);
+  }
+
+  function appendScanObservation(result, phase, reason) {
+    const messageRead = sanitizeMessageRead(result?.messageRead);
+    if (phase !== "scan" || !SCAN_OBSERVATION_REASONS.has(reason) && !Object.keys(messageRead).length) return;
+    const rawSource = diagnosticCode(result?.source, "");
+    const rawTrigger = diagnosticCode(result?.scanTrigger || result?.trigger, "");
+    const source = SCAN_OBSERVATION_SOURCES.has(rawSource) ? rawSource : "scan_driver";
+    const trigger = SCAN_OBSERVATION_TRIGGERS.has(rawTrigger) ? rawTrigger : "poll";
+    const latestRole = diagnosticCode(result?.latestRole, "");
+    const role = SCAN_OBSERVATION_ROLES.has(latestRole) ? latestRole : "unknown";
+    const sessionBound = [result?.activeSessionBound, result?.currentSessionBound, result?.current_session_bound]
+      .find((value) => typeof value === "boolean");
+    const observationRef = scanObservationReference(result);
+    const pid = Math.max(0, Math.floor(Number(result?.pid) || 0));
+    const hWnd = normalizeText(result?.hWnd);
+    const key = [reason, source, trigger, sessionBound, role, observationRef, pid, hWnd, result?.captureMode, JSON.stringify(messageRead)].join("\n");
+    const observedAt = now().getTime();
+    if (key === lastScanObservation.key
+      && Number.isFinite(observedAt)
+      && observedAt - lastScanObservation.at < SCAN_OBSERVATION_INTERVAL_MS) return;
+    lastScanObservation = { key, at: Number.isFinite(observedAt) ? observedAt : 0 };
+    appendDiagnostic("scan_observation", {
+      phase,
+      code: reason,
+      scanSource: source,
+      scanTrigger: trigger,
+      currentSessionBound: sessionBound,
+      latestRole: role,
+      observationRef,
+      pid: result?.pid,
+      hWnd: result?.hWnd,
+      captureMode: result?.captureMode,
+      messageRead: result?.messageRead
+    });
+  }
+
   function appendDiagnostic(event, details = {}) {
     const phase = diagnosticCode(details.phase, "runtime");
     const code = diagnosticCode(details.code || state.last_scan_reason, "");
@@ -1588,6 +1690,19 @@ function createAutoReplyController(options = {}) {
     if (/^[0-9]{1,20}$/.test(windowHandle)) entry.wechat_window_handle = windowHandle;
     const reasonRef = String(details.reasonRef || "").trim().toLowerCase();
     if (/^[a-f0-9]{12}$/.test(reasonRef)) entry.reason_ref = reasonRef;
+    const captureMode = diagnosticCode(details.capture_mode || details.captureMode, "");
+    if (SCAN_CAPTURE_MODES.has(captureMode)) entry.capture_mode = captureMode;
+    const scanSource = diagnosticCode(details.scan_source || details.scanSource, "");
+    if (SCAN_OBSERVATION_SOURCES.has(scanSource)) entry.scan_source = scanSource;
+    const scanTrigger = diagnosticCode(details.scan_trigger || details.scanTrigger, "");
+    if (SCAN_OBSERVATION_TRIGGERS.has(scanTrigger)) entry.scan_trigger = scanTrigger;
+    if (typeof details.current_session_bound === "boolean") entry.current_session_bound = details.current_session_bound;
+    else if (typeof details.currentSessionBound === "boolean") entry.current_session_bound = details.currentSessionBound;
+    const latestRole = diagnosticCode(details.latest_role || details.latestRole, "");
+    if (SCAN_OBSERVATION_ROLES.has(latestRole)) entry.latest_role = latestRole;
+    if (entry.event === "scan_observation") Object.assign(entry, sanitizeMessageRead(details.messageRead));
+    const observationRef = String(details.observation_ref || details.observationRef || "").trim().toLowerCase();
+    if (/^[a-f0-9]{24}$/.test(observationRef)) entry.observation_ref = observationRef;
     for (const field of ["context_turn_count", "user_turn_count", "assistant_turn_count"]) {
       const count = Math.floor(Number(details[field]));
       if (Number.isSafeInteger(count) && count >= 0) entry[field] = count;
@@ -1658,7 +1773,10 @@ function createAutoReplyController(options = {}) {
     state.last_scan_at = observedAt;
     state.last_scan_reason = reason;
 
-    const neutral = reason === "baseline_epoch_changed" || reason === "unread_preview_pending" || phase === "prime" && reason === "no_current_conversation";
+    const neutral = reason === "baseline_epoch_changed"
+      || reason === "unread_preview_pending"
+      || RETRYABLE_CURRENT_SESSION_REASONS.has(reason)
+      || phase === "prime" && reason === "no_current_conversation";
     const successful = result?.ok === true || HEALTHY_SCAN_REASONS.has(reason);
     const waitingForUserIdle = reason === USER_IDLE_WAIT_REASON;
     if (waitingForUserIdle) {
@@ -1689,6 +1807,7 @@ function createAutoReplyController(options = {}) {
     const recovered = successful && (previousFailures > 0 || previousHealth === "warning" || previousHealth === "degraded");
     const becameHealthy = successful && previousHealth !== "healthy";
     const faultChanged = !successful && !neutral && !waitingForUserIdle && changed;
+    appendScanObservation(result, phase, reason);
     if (waitingForUserIdle && changed || neutral && changed || recovered || becameHealthy || faultChanged) {
       appendDiagnostic(waitingForUserIdle ? "scan_waiting" : neutral ? phase === "prime" ? "prime_skipped" : "scan_cancelled" : recovered ? "scan_recovered" : successful ? "scan_healthy" : "scan_failed", {
         phase,
@@ -2637,6 +2756,16 @@ function createAutoReplyController(options = {}) {
           queueNext(FAST_RECHECK_MS);
           return publicState();
         }
+        if (RETRYABLE_CURRENT_SESSION_REASONS.has(candidateReason)) {
+          // The visual driver already rechecked both PrintWindow and the live
+          // screen for a bound chat. This is incomplete evidence, never proof
+          // that the message disappeared, so retain state and recheck quickly.
+          state.last_event = state.last_scan_reason || candidateReason;
+          state.last_error = "";
+          save();
+          queueNext(FAST_RECHECK_MS);
+          return publicState();
+        }
         if (TRANSIENT_SCAN_FENCE_REASONS.has(candidateReason)) {
           // These are incomplete live observations, not proof that the current
           // turn is empty or outgoing. Keep all reply/baseline/retry state
@@ -3506,11 +3635,13 @@ function registerAutoReplyIpc(options = {}) {
       const position = floatingProgressPosition(workArea);
       floatingWindow.setPosition?.(position.x, position.y);
     }
-    floatingWindow.once?.("close", () => {
-      if (!closingFloatingWindow) {
-        controller.pause("progress_window_closed");
-        showMainWindow();
-      }
+    floatingWindow.on?.("close", (event) => {
+      if (closingFloatingWindow) return;
+      // The progress surface is only a view of a running task. Closing it must
+      // not turn an ordinary return to the main page into a listener pause.
+      event?.preventDefault?.();
+      hideFloatingWindow();
+      showMainWindow();
     });
     floatingWindow.on?.("closed", () => {
       floatingWindow = null;
@@ -3546,6 +3677,13 @@ function registerAutoReplyIpc(options = {}) {
     } catch {
       closingFloatingWindow = false;
     }
+  }
+
+  function hideFloatingWindow() {
+    if (!floatingWindow || floatingWindow.isDestroyed?.()) return;
+    try {
+      floatingWindow.hide?.();
+    } catch {}
   }
 
   function recoverFromFloatingLoadFailure(target, details = {}) {
@@ -3612,10 +3750,9 @@ function registerAutoReplyIpc(options = {}) {
   });
   ipcMain.handle("auto-reply:pause", () => controller.pause());
   ipcMain.handle("auto-reply:show-main", () => {
-    const result = controller.pause("paused_by_user");
-    closeFloatingWindow();
+    hideFloatingWindow();
     showMainWindow();
-    return result;
+    return { ok: true, state: controller.status() };
   });
   return controller;
 }

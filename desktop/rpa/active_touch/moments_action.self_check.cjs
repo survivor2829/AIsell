@@ -1643,6 +1643,24 @@ async function main() {
     assert.equal((await executeMomentsComment({ ...commentValidationFixture, commentText: "有  两个空格", driver: verifiedDriver(commentValidationFixture.observationId) })).blocked_reason, "moments_comment_not_in_dry_run");
     assert.equal((await executeMomentsComment({ ...commentValidationFixture, commentText: "长".repeat(501), driver: verifiedDriver(commentValidationFixture.observationId) })).blocked_reason, "moments_comment_too_long");
 
+    const commentIntentOnlyBaseDir = path.join(root, "comment-intent-only");
+    const commentIntentOnlyPrepared = prepareMomentsDryRun(commentIntentOnlyBaseDir, {
+      mode: "targeted",
+      likeEnabled: true,
+      commentEnabled: true,
+      commentIntentOnly: true
+    }, () => MOMENTS_WINDOW);
+    assert.equal(commentIntentOnlyPrepared.ok, true);
+    assert.equal(loadState(commentIntentOnlyBaseDir).moments_dry_run.comment_intent_only, true);
+    const commentIntentOnly = await executeMomentsComment({
+      baseDir: commentIntentOnlyBaseDir,
+      observationId: commentIntentOnlyPrepared.post_snapshot.observation_id,
+      commentText: "本次扫描生成的评论",
+      driver: verifiedDriver(commentIntentOnlyPrepared.post_snapshot.observation_id)
+    });
+    assert.equal(commentIntentOnly.status, "verified");
+    assert.equal(commentIntentOnly.comment_text, "本次扫描生成的评论");
+
     for (const status of ["clicked", "verified", "outcome_unknown"]) {
       const fixture = preparedDirectory(root, `comment-text-lock-${status}`);
       const previousPostFingerprint = fixture.postFingerprint;
