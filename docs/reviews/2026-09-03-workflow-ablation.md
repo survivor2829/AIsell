@@ -37,15 +37,15 @@
 - 独立 `tsc --noEmit` 在消融前即失败：缺少 React 类型声明等仓库既有问题；未增加假类型或放宽配置。项目未配置独立 lint 脚本。Vite CJS 弃用和开发 Electron CSP 警告仍在。
 - 消融版未重启用户主程序、未重新实测微信、未制作安装包。手动复验：重启后加入一项小额度朋友圈互动，检查浮窗、即时点赞计数、评论输入／发送、结束状态；再检查暂停及重新打开进度。此前用户验收不自动外推到消融后的所有场景。
 
-## 待确认的清理候选（未删除）
+## 已确认并完成的临时文件清理
 
-以下路径相对于项目根目录；仅在用户阅读本报告并确认后清理：
+用户阅读本报告后回复“可以那就开始”，于 2026-09-03 完成下列 7 项清理（6 个脚本、1 个旧截图目录），合计 126,698 字节。全部移入 Windows 回收站，可从回收站恢复；不是永久删除，也不计为已释放磁盘空间。清理前核对真实路径和符号链接，清理后确认原位置不存在，09-03 原验收与消融证据、通用浮窗夹具仍保留。以下路径相对于项目根目录：
 
 - `desktop/.tmp/check-comment-composer-20260903.cjs`：本次紧凑评论框的临时像素样例。
 - `desktop/.tmp/profile-moments-entry.cjs`、`desktop/.tmp/trace-moments-open.cjs`：本次导航计时诊断，结果已收录项目状态。
 - `desktop/.tmp/inspect-app-frames.cjs`、`desktop/.tmp/inspect-running-window.cjs`：针对旧进程的临时白屏诊断。
-- `desktop/.tmp/workflow-floating-evidence-20260902/`：较早浮窗模拟截图；保留 09-03 原验收和本次消融证据后可清理。
-- `desktop/.tmp/workflow-ablation-smoke-20260903.cjs`：本次临时执行入口；依赖的通用浮窗夹具和本次报告／图片暂保留。
+- `desktop/.tmp/workflow-floating-evidence-20260902/`：较早浮窗模拟截图，已由后续证据替代。
+- `desktop/.tmp/workflow-ablation-smoke-20260903.cjs`：本次临时执行入口；通用浮窗夹具和本次报告／图片继续保留。
 
 `release/` 只有一套现存测试安装器及清单，不是多余副本；本轮没有新安装器替代，不删除。`desktop/.build/` 的内容运行时仍用于构建，不删除。真实运行目录、联系人、密钥、素材、发送账本均不在清理范围。只登记到一个 Git 工作区，没有删除分支或工作树。
 
