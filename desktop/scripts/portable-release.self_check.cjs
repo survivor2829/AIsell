@@ -250,15 +250,16 @@ const momentsCampaignSourceMarkers = [
   "moments-campaign:start",
   "xiaoxiMomentsCampaign"
 ];
-const momentsCampaignUiMarkers = ["data-xiaoxi-moments-campaign-start"];
+const momentsCampaignUiMarkers = ["data-xiaoxi-workflow-start", "data-xiaoxi-workflow-save"];
 const momentsPublishSourceMarkers = [
   "moments-publish:confirm",
   "xiaoxiMomentsPublish",
   "moments_publish_outcome_unknown"
 ];
 const momentsPublishUiMarkers = [
-  "data-xiaoxi-moments-publish-prepare",
-  "data-xiaoxi-moments-publish-confirm"
+  "data-xiaoxi-moments-publish-choose",
+  "data-xiaoxi-moments-publish-resolve-published",
+  "data-xiaoxi-moments-publish-resolve-not-published"
 ];
 const databaseFilePattern = /\.(?:db(?:-wal|-shm)?|sqlite3?)$/i;
 const blockedNames = new Set(["python.exe", "dump_data.exe", "wechat-dump-rs.exe", "ai-expert.json", "auto-reply-state.json", "auto-reply-diagnostics.jsonl", "contacts.json", "touch_task.json", "touch_task.json.bak", "run_logs.jsonl", "state.json", "deepseek-api-key.bin"]);
