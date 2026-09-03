@@ -1,6 +1,15 @@
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
 const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require("./moments_visual_probe.dev.cjs");
+const { MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT } = require("./moments_visual_dry_run.dev.cjs");
+const stableFunctions = MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT.slice(
+  MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT.indexOf("function Test-VisualBoundsInside"),
+  MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT.indexOf("function Get-LocalStableInteractionRead")
+);
+const readingSelection = MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT.slice(
+  MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT.indexOf("$stableReading = @()"),
+  MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT.indexOf("$observedCandidateCount =")
+);
 
 const program = `${MOMENTS_VISUAL_READONLY_POWERSHELL}
 function New-FixtureFrame([int]$width, [int]$height) {
@@ -117,7 +126,29 @@ function Invoke-LocalAnchorCase([bool]$occupyWhitespace) {
   }
 }
 
+${stableFunctions}
+function Invoke-TrailingBodyCase {
+  $script:momentsVisualStabilityTolerancePx = 12
+  $frame = New-FixtureFrame 700 400
+  Set-FixtureAvatar $frame 332 220 35
+  $firstFrame = $frame; $secondFrame = $frame
+  $firstViewport = @{ bounds = @{ left = 311.0; top = 0.0; width = 389.0; height = 400.0 } }
+  $secondViewport = $firstViewport
+  $firstRead = @{
+    menus = @(@{ centerY = 170.0 })
+    visibleAvatars = @(
+      @{left=332.0;top=220.0;width=35.0;height=35.0;score=0.9},
+      @{left=380.0;top=220.0;width=35.0;height=35.0;score=0.4}
+    )
+  }
+  $secondRead = $firstRead
+  $stablePosts = @(@{contentText="";identityText="8 days ago"})
+  $allowBodyOnly = $true
+  ${readingSelection}
+  return @{ fullPostCount = $stablePosts.Count; readingCount = $stableReading.Count; avatarLeft = $stableReading[0].avatarBounds.left }
+}
 @{
+  trailingBody = Invoke-TrailingBodyCase
   localAnchor = Invoke-LocalAnchorCase $false
   occupiedLocalAnchor = Invoke-LocalAnchorCase $true
   legacy = Invoke-FixtureCase 700 400 @{ left = 311.0; top = 0.0; width = 389.0; height = 400.0 } 332 80 35 655 220
@@ -141,6 +172,7 @@ const result = spawnSync("powershell.exe", [
 
 assert.equal(result.status, 0, result.stderr || result.error?.stack || "geometry harness must run");
 assert.deepEqual(JSON.parse(result.stdout.trim()), {
+  trailingBody: { fullPostCount: 0, readingCount: 1, avatarLeft: 332 },
   centeredAvatarLeftOfEstimate: {
     avatarAligned: true,
     menuCount: 1,

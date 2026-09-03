@@ -409,9 +409,18 @@ $stablePosts = $(if ($interactionOnly) {
   @(Get-UniqueStableVisualCandidates $firstRead.interactionPosts $secondRead.posts "post_geometry")
 })
 $stableReading = @()
+if ($allowBodyOnly) {
+  # A previous post's footer can still have a menu while the next post's
+  # menu is below the viewport. Footer-only OCR is not a readable full post.
+  $stablePosts = @($stablePosts | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.contentText) })
+}
 if ($allowBodyOnly -and $stablePosts.Count -eq 0) {
-  $firstReading = @(Get-MomentsVisualReadingCandidates $firstFrame $firstViewport.bounds ($firstRead.visibleAvatars))
-  $secondReading = @(Get-MomentsVisualReadingCandidates $secondFrame $secondViewport.bounds ($secondRead.visibleAvatars))
+  $firstFooter = @($firstRead.menus | Sort-Object { [double]$_.centerY } | Select-Object -Last 1)
+  $secondFooter = @($secondRead.menus | Sort-Object { [double]$_.centerY } | Select-Object -Last 1)
+  $firstReadingAvatars = @($firstRead.visibleAvatars | Where-Object { $firstFooter.Count -eq 0 -or [double]$_.top -gt [double]$firstFooter[0].centerY })
+  $secondReadingAvatars = @($secondRead.visibleAvatars | Where-Object { $secondFooter.Count -eq 0 -or [double]$_.top -gt [double]$secondFooter[0].centerY })
+  $firstReading = @(Get-MomentsVisualReadingCandidates $firstFrame $firstViewport.bounds $firstReadingAvatars)
+  $secondReading = @(Get-MomentsVisualReadingCandidates $secondFrame $secondViewport.bounds $secondReadingAvatars)
   $stableReading = @(Get-UniqueStableVisualCandidates $firstReading $secondReading "reading")
 }
 $observedCandidateCount = @($firstRead.menus).Count + @($secondRead.menus).Count +

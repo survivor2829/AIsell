@@ -1171,6 +1171,12 @@ function Get-MomentsVisualReadingCandidates($frame, $viewportBounds, $visibleAva
   $readingCandidates = New-Object System.Collections.Generic.List[object]
   for ($index = 0; $index -lt $avatars.Count; $index++) {
     $avatar = $avatars[$index]
+    # Author text beside a real avatar is not a second post on the same row.
+    $strongerSameRow = @($avatars | Where-Object {
+      [Math]::Abs([double]$_.top - [double]$avatar.top) -lt ([double]$avatar.height / 2.0) -and
+      [double]$_.score -gt [double]$avatar.score
+    })
+    if ($strongerSameRow.Count -gt 0) { continue }
     $postLeft = [Math]::Max([double]$viewportBounds.left, [double]$avatar.left - 6.0)
     $postTop = [Math]::Max([double]$viewportBounds.top, [double]$avatar.top - 6.0)
     # Text and thumbnails beside the avatar must not split a reading region.
