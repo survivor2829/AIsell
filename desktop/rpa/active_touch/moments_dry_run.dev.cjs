@@ -865,6 +865,7 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow, options = {}) {
             bounds,
             avatar_bounds: avatarBounds,
             body_only: true,
+            ...(typeof post.contentText === "string" ? { content_text: post.contentText } : {}),
             like_state: "unknown",
             comment_state: "unknown"
           }
@@ -1101,6 +1102,7 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow, options = {}) {
       label,
       identity_text: identityText,
       stable_anchor_text: stableAnchorText,
+      ...(typeof post.contentText === "string" ? { content_text: post.contentText } : {}),
       preview: interactionOnly ? "可见朋友圈互动菜单" : (label.length > 160 ? `${label.slice(0, 157)}...` : label),
       bounds,
       menu_bounds: menuBounds,

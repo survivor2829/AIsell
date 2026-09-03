@@ -164,10 +164,7 @@ function commentSourceFromPostSnapshot(snapshot) {
     return { ok: false, reason: "moments_comment_visible_text_missing" };
   }
   const identityText = normalizedMomentsReadingText(
-    snapshot?.identity_text
-    || snapshot?.label
-    || snapshot?.preview
-    || ""
+    snapshot?.content_text ?? (snapshot?.identity_text || snapshot?.label || snapshot?.preview || "")
   );
   if (identityText.length < 2) {
     return { ok: false, reason: "moments_comment_visible_text_missing" };
@@ -518,8 +515,8 @@ function createMomentsCampaignController(options = {}) {
         if (state.comment_enabled) {
           observationArgs.push("--comment-enabled", "--comment-intent-only", "--allow-body-only");
         }
-        const runObservation = () => runStep(
-          withExpectedSurface(observationArgs), {
+        const runObservation = (extraArgs = []) => runStep(
+          withExpectedSurface([...observationArgs, ...extraArgs]), {
             cliName: "moments_dry_run_cli.dev.cjs",
             dataDir: baseDir,
             owner: lockOwner,
@@ -551,6 +548,43 @@ function createMomentsCampaignController(options = {}) {
           observed = recovered.ok
             ? await runObservation()
             : { ok: false, reason: recovered.reason };
+        }
+        // Reading-only observations are not executable. Keep this post while
+        // bringing its footer into view; never count it as an attempted action.
+        if (observed?.ok && observed.post_snapshot?.body_only === true) {
+          const reading = observed.post_snapshot;
+          persist({ last_reason: "locating_interaction_menu" });
+          const scrolled = await scrollMoments({
+            expectedWindow: observed.window,
+            scrollMode: "seek_post_menu_down",
+            minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0,
+            shouldContinue: () => !stopRequested && !pendingPauseReason
+          });
+          if (shouldStop()) return;
+          if (!scrolled?.ok) {
+            finish("paused", scrolled?.reason || "moments_scroll_failed");
+            return;
+          }
+          persist({ scroll_count: state.scroll_count + 1 });
+          const target = { ...reading, expected_scroll_delta: Number(scrolled.delta) || 0 };
+          observed = await runObservation([
+            "--target-post-base64",
+            Buffer.from(JSON.stringify(target), "utf8").toString("base64")
+          ]);
+          record("campaign.reading_menu_resolved", {
+            ok: observed?.ok === true && observed.post_snapshot?.body_only !== true,
+            reason: observed?.reason || observed?.blocked_reason || "",
+            visual: observed?.diagnostics?.visual
+          }, observed?.ok && observed.post_snapshot?.body_only !== true ? "info" : "warn");
+          if (!observed?.ok || observed.post_snapshot?.body_only === true) {
+            finish("paused", observed?.reason || observed?.blocked_reason || "moments_menu_not_found");
+            return;
+          }
+          // The targeted observation has already matched this post, so use the
+          // richer visible content without replacing its executable identity.
+          if (String(reading.content_text || "").length > String(observed.post_snapshot.content_text || "").length) {
+            observed.post_snapshot.content_text = reading.content_text;
+          }
         }
         const directPositionDiagnostics = sanitizeMomentsPositionDiagnostics(observed?.diagnostics);
         const positionDiagnostics = Object.keys(directPositionDiagnostics).length > 0

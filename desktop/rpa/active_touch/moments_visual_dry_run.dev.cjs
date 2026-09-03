@@ -40,6 +40,19 @@ function Write-Result($value) {
 }
 
 function Close-And-Write($value, $firstFrame = $null, $secondFrame = $null) {
+  if ($secondRead) {
+    if (-not $value.diagnostics) { $value["diagnostics"] = @{} }
+    $value.diagnostics["firstMenu"] = $firstRead.menuDiagnostics
+    $value.diagnostics["secondMenu"] = $secondRead.menuDiagnostics
+    $value.diagnostics["avatarCount"] = @($secondRead.visibleAvatars).Count
+    $value.diagnostics["pairedPostCount"] = @($secondRead.interactionPosts).Count
+    $value.diagnostics["ocrPostCount"] = @($secondRead.posts).Count
+    $value.diagnostics["stablePostCount"] = @($stablePosts).Count
+    $value.diagnostics["readingPostCount"] = @($stableReading).Count
+    $value.diagnostics["postBoundaries"] = $secondRead.postBoundaries
+    $value.diagnostics["phaseTimings"] = $phaseTimings
+    $value.diagnostics["totalMs"] = [int]$probeStopwatch.ElapsedMilliseconds
+  }
   Close-MomentsVisualFrame $firstFrame
   Close-MomentsVisualFrame $secondFrame
   Write-Result $value
@@ -87,11 +100,11 @@ function Test-VisualStableCandidate($left, $right, [string]$kind) {
       [Math]::Abs([double]$left.centerY - [double]$right.centerY) -le $script:momentsVisualStabilityTolerancePx -and
       (Test-VisualStableBoundsFields $left $right @("bounds"))
   }
-  if (@("post", "reading") -notcontains $kind) { return $false }
-  if (-not (Test-MomentsStablePostIdentityText ([string]$left.identityText) ([string]$right.identityText) ([string]$left.stableAnchorText) ([string]$right.stableAnchorText)) -or
-    [string]$left.avatarHash -cne [string]$right.avatarHash) { return $false }
-  if ($kind -ceq "post" -and [bool]$left.partialVisible -ne [bool]$right.partialVisible) { return $false }
-  $boundsFields = $(if ($kind -ceq "post") { @("bounds", "menuBounds", "avatarBounds") } else { @("bounds", "avatarBounds") })
+  if (@("post", "reading", "post_geometry") -notcontains $kind) { return $false }
+  if ([string]$left.avatarHash -cne [string]$right.avatarHash) { return $false }
+  if ($kind -cne "post_geometry" -and -not (Test-MomentsStablePostIdentityText ([string]$left.identityText) ([string]$right.identityText) ([string]$left.stableAnchorText) ([string]$right.stableAnchorText))) { return $false }
+  if ($kind -cne "reading" -and [bool]$left.partialVisible -ne [bool]$right.partialVisible) { return $false }
+  $boundsFields = $(if ($kind -cne "reading") { @("bounds", "menuBounds", "avatarBounds") } else { @("bounds", "avatarBounds") })
   return Test-VisualStableBoundsFields $left $right $boundsFields
 }
 
@@ -343,7 +356,7 @@ $firstViewport = Get-MomentsVisualViewportBounds $relativeRenderPaneBounds $firs
 if (-not $firstViewport.ok) { Close-And-Write $firstViewport $firstFrame }
 $phaseTimings["first_surface_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
 $phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
-$firstRead = Get-MomentsVisualPostCandidates $firstFrame $firstViewport.bounds (-not $interactionOnly)
+$firstRead = Get-MomentsVisualPostCandidates $firstFrame $firstViewport.bounds $false
 $phaseTimings["first_candidates_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
 $firstReading = @()
 $phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
@@ -393,7 +406,7 @@ $stableMenus = @(Get-UniqueStableVisualCandidates $firstRead.menus $secondRead.m
 $stablePosts = $(if ($interactionOnly) {
   @(Get-UniqueStableVisualCandidates $firstRead.interactionPosts $secondRead.interactionPosts "post")
 } else {
-  @(Get-UniqueStableVisualCandidates $firstRead.posts $secondRead.posts "post")
+  @(Get-UniqueStableVisualCandidates $firstRead.interactionPosts $secondRead.posts "post_geometry")
 })
 $stableReading = @()
 if ($allowBodyOnly -and $stablePosts.Count -eq 0) {
@@ -433,6 +446,7 @@ if ($posts.Count -eq 0) {
       [void]$absoluteReadingPosts.Add(@{
         text = [string]$post.text
         identityText = [string]$post.identityText
+        contentText = [string]$post.contentText
         stableAnchorText = [string]$post.stableAnchorText
         structureVerified = $true
         regionHash = [string]$post.regionHash
@@ -491,6 +505,7 @@ foreach ($post in $posts) {
   [void]$absolutePosts.Add(@{
     text = [string]$post.text
     identityText = [string]$post.identityText
+    contentText = [string]$post.contentText
     stableAnchorText = [string]$post.stableAnchorText
     structureVerified = $true
     regionHash = [string]$post.regionHash

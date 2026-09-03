@@ -206,6 +206,54 @@ async function main() {
   const persisted = JSON.parse(fs.readFileSync(path.join(root, "state.json"), "utf8"));
   assert.equal(persisted.moments_campaign.status, "completed");
 
+  let readingCalls = 0;
+  let readingActions = 0;
+  const readingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-reading-menu-"));
+  const readingController = createMomentsCampaignController({
+    baseDir: readingRoot,
+    coordinator: { acquire: () => ({ ok: true, lock: { owner: "reading" } }), release() {} },
+    logger: { event() {} },
+    openMoments: async () => INTEGRATED_OPEN_RESULT,
+    scrollMoments: async (options) => {
+      assert.equal(options.scrollMode, "seek_post_menu_down");
+      assert.equal(readingActions, 0, "a body-only snapshot must never reach an action");
+      return { ok: true, delta: -240 };
+    },
+    generateComment: async ({ postText }) => {
+      assert.equal(postText, "机器人培训圆满收官，现场实操收获很多。".normalize("NFKC"), "use body content, not author/footer identity");
+      return { comment: "现场实操很充实！" };
+    },
+    runStep: async (args) => {
+      if (args[0] === "moments-dry-run") {
+        readingCalls += 1;
+        if (readingCalls === 2) {
+          const target = JSON.parse(Buffer.from(args[args.indexOf("--target-post-base64") + 1], "base64"));
+          assert.equal(target.expected_scroll_delta, -240);
+          assert.equal(target.observation_id, "reading-only");
+        }
+        return {
+          ok: true, window: INTEGRATED_OBSERVED_WINDOW,
+          post_snapshot: {
+            ...firstReadingFrame,
+            observation_id: readingCalls === 1 ? "reading-only" : "ready",
+            body_only: readingCalls === 1,
+            identity_text: "作者昵称 会员超市 12小时前",
+            content_text: "机器人培训圆满收官，现场实操收获很多。"
+          }
+        };
+      }
+      readingActions += 1;
+      assert.ok(args.includes("ready"));
+      return { ok: true, status: "verified", real_action_attempted: true };
+    }
+  });
+  assert.equal(readingController.start({ maxPosts: 1, commentEnabled: true }).ok, true);
+  const readingFinished = await waitFor(() => readingController.status().state, (s) => s.status === "completed");
+  assert.equal(readingCalls, 2);
+  assert.equal(readingActions, 2);
+  assert.equal(readingFinished.comment_skipped_count, 0);
+  assert.equal(readingFinished.commented_count, 1);
+
   const surfaceRetryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-surface-retry-"));
   let surfaceRetryObservationCalls = 0;
   const surfaceRetryController = createMomentsCampaignController({
@@ -1732,6 +1780,7 @@ async function main() {
   }
 
   fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(readingRoot, { recursive: true, force: true });
   fs.rmSync(standaloneRoot, { recursive: true, force: true });
   fs.rmSync(invalidSurfaceRoot, { recursive: true, force: true });
   fs.rmSync(likeRecognitionRoot, { recursive: true, force: true });

@@ -123,6 +123,7 @@ function Invoke-LocalAnchorCase([bool]$occupyWhitespace) {
   legacy = Invoke-FixtureCase 700 400 @{ left = 311.0; top = 0.0; width = 389.0; height = 400.0 } 332 80 35 655 220
   textEllipsis = Invoke-TextEllipsisCase
   wideCentered = Invoke-FixtureCase 1400 950 @{ left = 384.0; top = 0.0; width = 1008.0; height = 941.0 } 620 100 52 1179 420
+  centeredAvatarLeftOfEstimate = Invoke-FixtureCase 1381 940 @{ left = 374.0; top = 0.0; width = 1007.0; height = 940.0 } 554 136 52 1168 502
 } | ConvertTo-Json -Depth 6 -Compress
 `;
 
@@ -140,6 +141,14 @@ const result = spawnSync("powershell.exe", [
 
 assert.equal(result.status, 0, result.stderr || result.error?.stack || "geometry harness must run");
 assert.deepEqual(JSON.parse(result.stdout.trim()), {
+  centeredAvatarLeftOfEstimate: {
+    avatarAligned: true,
+    menuCount: 1,
+    menuAligned: true,
+    postCount: 1,
+    providedAvatarCount: 1,
+    readingPostCount: 1,
+  },
   localAnchor: {
     acceptedCandidateCount: 1,
     ok: true,

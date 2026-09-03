@@ -310,7 +310,9 @@ function Get-MomentsVisualFeedScanProfile($viewportBounds, $avatarCandidates = $
 
   $avatarXPositions = New-Object System.Collections.Generic.HashSet[int]
   foreach ($anchor in $anchors) {
-    for ($offset = -$avatarSize; $offset -le $avatarSize; $offset += 4) {
+    # Centered feeds can put the avatar a full text-column gap left of the
+    # estimated anchor. Include that lane instead of scanning only the body.
+    for ($offset = -($avatarSize * 2); $offset -le $avatarSize; $offset += 4) {
       $x = [int][Math]::Round([Math]::Max(
         [double]$viewportBounds.left,
         [Math]::Min($viewportRight - $avatarSize, [double]$anchor + $offset)
@@ -619,24 +621,36 @@ function Measure-MomentsAvatarBox($frame, [int]$left, [int]$top, [int]$size) {
       $insideTotal += 1
     }
   }
+  if ($insideTotal -eq 0) { return @{ ok = $false; score = 0.0 } }
+  $foregroundRatio = [double]$insideForeground / [double]$insideTotal
+  if ($foregroundRatio -lt 0.16 -or $foregroundRatio -gt 0.98) { return @{ ok = $false; score = 0.0 } }
   $ringLight = 0
   $ringTotal = 0
+  $sideLight = @(0, 0, 0, 0)
+  $sideTotal = @(0, 0, 0, 0)
   $ring = [Math]::Max(3, [int][Math]::Round($size * 0.1))
   for ($y = $top - $ring; $y -lt ($top + $size + $ring); $y += 4) {
     for ($x = $left - $ring; $x -lt ($left + $size + $ring); $x += 4) {
       $inside = $x -ge $left -and $x -lt ($left + $size) -and $y -ge $top -and $y -lt ($top + $size)
       if ($inside) { continue }
+      $side = if ($y -lt $top) { 0 } elseif ($y -ge ($top + $size)) { 1 } elseif ($x -lt $left) { 2 } else { 3 }
+      $sideTotal[$side] += 1
       if ($x -ge 0 -and $y -ge 0 -and $x -lt $frame.width -and $y -lt $frame.height) {
         $offset = ($y * $frame.stride) + ($x * 4)
-        if ([int]$frame.bytes[$offset + 2] -ge 218 -and [int]$frame.bytes[$offset + 1] -ge 218 -and [int]$frame.bytes[$offset] -ge 218) { $ringLight += 1 }
+        if ([int]$frame.bytes[$offset + 2] -ge 218 -and [int]$frame.bytes[$offset + 1] -ge 218 -and [int]$frame.bytes[$offset] -ge 218) { $ringLight += 1; $sideLight[$side] += 1 }
       }
       $ringTotal += 1
     }
   }
-  if ($insideTotal -eq 0 -or $ringTotal -eq 0) { return @{ ok = $false; score = 0.0 } }
-  $foregroundRatio = [double]$insideForeground / [double]$insideTotal
+  if ($ringTotal -eq 0) { return @{ ok = $false; score = 0.0 } }
   $ringLightRatio = [double]$ringLight / [double]$ringTotal
-  $ok = $foregroundRatio -ge 0.16 -and $foregroundRatio -le 0.98 -and $ringLightRatio -ge 0.50
+  # A real avatar is an isolated square. A patch on a photo/text edge may
+  # have a light ring on average while still touching content on one side.
+  $isolated = $true
+  for ($side = 0; $side -lt 4; $side++) {
+    if ($sideTotal[$side] -eq 0 -or ([double]$sideLight[$side] / $sideTotal[$side]) -lt 0.50) { $isolated = $false; break }
+  }
+  $ok = $isolated
   return @{ ok = $ok; score = (($foregroundRatio * 0.68) + ($ringLightRatio * 0.32)); foregroundRatio = $foregroundRatio; ringLightRatio = $ringLightRatio }
 }
 
@@ -668,9 +682,11 @@ function Find-MomentsAvatarForMenu($frame, $menus, [int]$menuIndex, $viewportBou
       ([double]$_.left + [double]$_.width) -lt ([double]$menu.centerX - ($size * 1.5))
   })
   if ($candidates.Count -eq 0) { return @{ ok = $false; reason = "moments_visual_avatar_not_found" } }
-  $ordered = @($candidates | Sort-Object @{ Expression = {
+  # Prefer the isolated avatar evidence, not the image/text patch nearest
+  # the footer. Distance is only a tie-breaker within the same post interval.
+  $ordered = @($candidates | Sort-Object @{ Expression = { [double]$_.score }; Descending = $true }, @{ Expression = {
     [double]$menu.centerY - ([double]$_.top + [double]$_.height)
-  }; Descending = $false }, @{ Expression = "score"; Descending = $true })
+  }; Descending = $false })
   $best = $ordered[0]
   if ($ordered.Count -gt 1) {
     $bestGap = [double]$menu.centerY - ([double]$best.top + [double]$best.height)
@@ -697,7 +713,7 @@ function Find-MomentsVisibleAvatars($frame, $viewportBounds) {
     }
   }
   $avatars = New-Object System.Collections.Generic.List[object]
-  foreach ($peak in @($peaks.ToArray() | Sort-Object @{ Expression = "score"; Descending = $true }, @{ Expression = "top"; Descending = $false })) {
+  foreach ($peak in @($peaks.ToArray() | Sort-Object @{ Expression = { [double]$_.score }; Descending = $true }, @{ Expression = { [double]$_.top }; Descending = $false })) {
     $duplicate = $false
     foreach ($existing in $avatars) {
       if ([Math]::Abs([double]$existing.left - [double]$peak.left) -le ($size * 0.9) -and
@@ -787,13 +803,13 @@ function Get-MomentsOcrObservationFromBitmap($crop) {
         $lineBottom = [Math]::Max($lineBottom, [double]($box.Y + $box.Height))
         [void]$words.Add(@{
           text = $wordText
-          compact = [Text.RegularExpressions.Regex]::Replace($wordText, "\\s+", "")
+          compact = [Text.RegularExpressions.Regex]::Replace($wordText, "\s+", "")
           bounds = @{ left = [double]$box.X; top = [double]$box.Y; width = [double]$box.Width; height = [double]$box.Height }
         })
       }
       if ($lineParts.Count -eq 0) { continue }
       $lineText = [string]::Join(" ", $lineParts.ToArray())
-      $compact = [Text.RegularExpressions.Regex]::Replace($lineText, "\\s+", "")
+      $compact = [Text.RegularExpressions.Regex]::Replace($lineText, "\s+", "")
       [void]$lines.Add(@{
         text = $lineText
         compact = $compact
@@ -801,7 +817,7 @@ function Get-MomentsOcrObservationFromBitmap($crop) {
       })
     }
     $normalizedText = [string]::Join(" ", @($lines.ToArray() | ForEach-Object { $_.compact }))
-    $normalizedText = [Text.RegularExpressions.Regex]::Replace($normalizedText.Normalize([Text.NormalizationForm]::FormKC), "\\s+", " ").Trim()
+    $normalizedText = [Text.RegularExpressions.Regex]::Replace($normalizedText.Normalize([Text.NormalizationForm]::FormKC), "\s+", " ").Trim()
     $layoutRows = @($lines.ToArray() | ForEach-Object {
       @($_.compact, [Math]::Round($_.bounds.left, 1), [Math]::Round($_.bounds.top, 1), [Math]::Round($_.bounds.width, 1), [Math]::Round($_.bounds.height, 1))
     })
@@ -1037,6 +1053,23 @@ function Get-MomentsPostStableAnchorText($ocr, $postRect, $avatarBounds) {
   return $normalized
 }
 
+function Get-MomentsPostContentText($ocr, $postRect, $avatarBounds, $menuBounds = $null) {
+  $bodyTop = [double]$avatarBounds.top + ([double]$avatarBounds.height / 2.0) - [double]$postRect.top
+  $bodyBottom = if ($menuBounds) { [double]$menuBounds.top - [double]$postRect.top } else { [double]$postRect.height }
+  if (-not $menuBounds) {
+    $footer = @($ocr.lines | Where-Object {
+      ([string]$_.compact -match '^(刚刚|昨天|前天|今天|\d+(分钟|小时|天)前|\d{1,2}月\d{1,2}日)') -and
+      [double]$_.bounds.top -gt $bodyTop
+    } | Sort-Object { [double]$_.bounds.top } | Select-Object -First 1)
+    if ($footer.Count -gt 0) { $bodyBottom = [double]$footer[0].bounds.top }
+  }
+  $lines = @($ocr.lines | Where-Object {
+    $centerY = [double]$_.bounds.top + ([double]$_.bounds.height / 2.0)
+    $centerY -gt $bodyTop -and $centerY -lt $bodyBottom -and [string]$_.compact -notmatch '^(全文|收起)$'
+  } | Sort-Object { [double]$_.bounds.top }, { [double]$_.bounds.left })
+  return [string]::Join([Environment]::NewLine, @($lines | ForEach-Object { [string]$_.compact }))
+}
+
 function Get-MomentsVisualPostCandidates($frame, $viewportBounds, [bool]$includeText = $true) {
   $frameBounds = @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
   if (-not (Test-MomentsVisualBoundsInside $viewportBounds $frameBounds)) {
@@ -1112,6 +1145,7 @@ function Get-MomentsVisualPostCandidates($frame, $viewportBounds, [bool]$include
       avatarBounds = $avatar.bounds
       partialVisible = $unclippedPostBottom -gt $viewportBottom
       ocrLines = $ocr.lines
+      contentText = Get-MomentsPostContentText $ocr $postRect $avatar.bounds $menu.bounds
     })
   }
   return @{
@@ -1139,7 +1173,14 @@ function Get-MomentsVisualReadingCandidates($frame, $viewportBounds, $visibleAva
     $avatar = $avatars[$index]
     $postLeft = [Math]::Max([double]$viewportBounds.left, [double]$avatar.left - 6.0)
     $postTop = [Math]::Max([double]$viewportBounds.top, [double]$avatar.top - 6.0)
-    $nextTop = $(if ($index + 1 -lt $avatars.Count) { [double]$avatars[$index + 1].top - 12.0 } else { $viewportBottom })
+    # Text and thumbnails beside the avatar must not split a reading region.
+    $nextTop = $viewportBottom
+    foreach ($candidate in $avatars) {
+      if ([double]$candidate.top -gt ([double]$avatar.top + [double]$avatar.height) -and
+        [Math]::Abs([double]$candidate.left - [double]$avatar.left) -le ([double]$avatar.width * 0.35)) {
+        $nextTop = [Math]::Min($nextTop, [double]$candidate.top - 12.0)
+      }
+    }
     $postRight = [Math]::Min($viewportRight, [double]$viewportBounds.left + ([double]$viewportBounds.width * 0.95))
     $postBottom = [Math]::Min($viewportBottom, $nextTop)
     if ($postRight -le $postLeft -or $postBottom -le ($postTop + [double]$avatar.height)) { continue }
@@ -1152,8 +1193,9 @@ function Get-MomentsVisualReadingCandidates($frame, $viewportBounds, $visibleAva
     $avatarHash = Get-MomentsPixelHash $frame $avatar
     if (-not $regionHash -or -not $avatarHash) { continue }
     [void]$readingCandidates.Add(@{
-      text = [string]$stableAnchorText
-      identityText = [string]$stableAnchorText
+      text = [string]$ocr.text
+      identityText = [string]$ocr.text
+      contentText = Get-MomentsPostContentText $ocr $postRect $avatar
       stableAnchorText = [string]$stableAnchorText
       structureVerified = $true
       regionHash = [string]$regionHash
