@@ -97,6 +97,7 @@ CREATIVE_TASK_TYPES = frozenset(
         "guided_auto_mix_analysis",
         "guided_auto_mix_draft",
         "guided_auto_mix_supplemental_image",
+        "narrated_batch_v1",
     }
 )
 AUTO_MIX_REUSE_SELECTED_VOICE_RECOVERY_CODES = frozenset(
@@ -3389,6 +3390,9 @@ class CreativeDomain:
                 )
             raise
 
+        if private_state.get("narrated_batch_v1"):
+            from .narrated_batch import NarratedBatchDomain
+            NarratedBatchDomain(self).validate_actual_timeline(private_state, voice_bundle["timeline"])
         public_plan.update(
             {
                 "spokenPhrases": voice_bundle["phrases"],
@@ -3691,6 +3695,10 @@ class CreativeDomain:
     def _ensure_auto_mix_planned(
         self, task_id, row, public_plan, private_state
     ):
+        if private_state.get("narrated_batch_v1"):
+            from .narrated_batch import NarratedBatchDomain
+            NarratedBatchDomain(self).validate_pinned_plan(private_state)
+            return public_plan, private_state
         warnings = list(public_plan.get("qualityWarnings") or [])
         asset_ids = json.loads(row["asset_ids_json"] or "[]")
         analysis_profile = self._auto_mix_v2_analysis_profile()
@@ -4410,6 +4418,8 @@ class CreativeDomain:
             bounded_phrases.append(phrase)
             estimated_ms = next_estimate
         if len(bounded_phrases) < len(phrases):
+            if private_state.get("narrated_batch_v1"):
+                raise ContentEngineError("narrated_copy_too_long", "解说无法完整对应镜头，请缩短后重做这一条。")
             if guided_duration_plan is not None:
                 raise ContentEngineError(
                     "guided_auto_mix_script_duration_invalid",
@@ -4452,6 +4462,8 @@ class CreativeDomain:
                 "合格素材不足以承载第一句真实配音，请缩短文案或补充素材。",
             )
         if accepted < len(phrases):
+            if private_state.get("narrated_batch_v1"):
+                raise ContentEngineError("narrated_copy_too_long", "实际配音过长，已停止本条制作；请缩短解说。")
             if guided_duration_plan is not None:
                 raise ContentEngineError(
                     "guided_auto_mix_script_duration_invalid",
@@ -5682,6 +5694,9 @@ class CreativeDomain:
                 },
             },
         }
+        if private_state.get("narrated_brand"):
+            recipe["packaging"]["brand"] = private_state["narrated_brand"]
+            recipe["packaging"]["brand_profile_id"] = private_state["narrated_brand"].get("brand_profile_id")
         if supplemental_image is not None:
             recipe["supplemental_image"] = supplemental_image
         recipe["skeleton_id"] = self._skeleton_id(recipe)
@@ -6324,7 +6339,10 @@ class CreativeDomain:
         ):
             return self._public_task(self._task_row(task_id))
         try:
-            if task["task_type"] == "creative_analysis":
+            if task["task_type"] == "narrated_batch_v1":
+                from .narrated_batch import NarratedBatchDomain
+                result = NarratedBatchDomain(self).run(task_id, payload)
+            elif task["task_type"] == "creative_analysis":
                 result = self._run_analysis(task_id, payload)
             elif task["task_type"] == "guided_auto_mix_analysis":
                 result = self._run_guided_auto_mix_analysis(task_id, payload)
@@ -10460,6 +10478,10 @@ class CreativeDomain:
                     "recommended": bool(row["recommended"]),
                     "internal_only": True,
                 }
+                batch_row = connection.execute("SELECT id,state_json FROM narrated_batches_v1 WHERE project_id=?", (project_id,)).fetchone()
+                if batch_row:
+                    batch_state = self._json_object(batch_row["state_json"])
+                    metadata.update(narrated_batch_id=batch_row["id"], batch_title=batch_state.get("title", ""))
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO finished_videos(

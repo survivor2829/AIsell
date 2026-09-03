@@ -601,6 +601,24 @@ function createContentEngineSidecar(options = {}) {
       asset_ids: assetIds,
       profile
     }),
+    listAssetCollections: () => request("list_asset_collections", {}),
+    saveAssetCollection: (payload) => request("save_asset_collection", payload),
+    listNarratedBatches: () => request("list_narrated_batches", {}),
+    saveNarratedBatch: (payload) => request("save_narrated_batch", payload),
+    getNarratedBatch: (batchId) => request("get_narrated_batch", { batch_id: batchId }),
+    getNarratedBatchStatus: (batchId) => request("get_narrated_batch_status", { batch_id: batchId }),
+    recommendNarratedBatch: (batchId) => request("recommend_narrated_batch", { batch_id: batchId }),
+    generateNarratedSamples: (batchId) => request("generate_narrated_samples", { batch_id: batchId }),
+    continueNarratedBatch: (batchId) => request("continue_narrated_batch", { batch_id: batchId }),
+    updateNarratedCandidate: (payload) => request("update_narrated_candidate", payload),
+    resolveAssetPreview: async (assetId, variant) => {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const result = await request("resolve_asset_preview", { asset_id: assetId, variant });
+        if (!result.pending) return result;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      throw createError("asset_preview_failed");
+    },
     archiveAsset: (assetId) => request("archive_asset", { asset_id: assetId }),
     calculateMixCombinations: (projectId) => request(
       "calculate_mix_combinations",

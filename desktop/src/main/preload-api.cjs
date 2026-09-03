@@ -126,6 +126,10 @@ function visualRendererPayload(value) {
 }
 
 function createContentEngineApi(ipcRenderer) {
+  const batchChannels = require("./narrated-batch-ipc.cjs").CHANNELS;
+  const batchClicks = Object.fromEntries(["recommend", "samples", "continue"].map((action) => [
+    action, createTrustedClickGate(`[data-batch-action="${action}"]`, batchChannels[action])
+  ]));
   const consumeAutoMixCreateClick = createTrustedClickGate(
     "[data-xiaoxi-auto-mix-create]",
     AUTO_MIX_TRUSTED_CLICK_CHANNELS.create
@@ -205,6 +209,10 @@ function createContentEngineApi(ipcRenderer) {
   });
   return {
     status: () => ipcRenderer.invoke("content-engine:status"),
+    batch: Object.fromEntries(Object.entries(batchChannels).map(([action, channel]) => [
+      action, (payload = {}) => ipcRenderer.invoke(channel, batchClicks[action]
+        ? { ...payload, clickToken: batchClicks[action]() } : payload)
+    ])),
     restart: () => ipcRenderer.invoke("content-engine:restart"),
     library: {
       list: (payload) => ipcRenderer.invoke("content-engine:list-assets", {

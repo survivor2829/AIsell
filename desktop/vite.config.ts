@@ -11,6 +11,10 @@ export default defineConfig({
   },
   server: {
     host: "127.0.0.1",
-    port: 5173
+    port: 5173,
+    watch: {
+      // Electron caches and generated media can be exclusively locked on Windows.
+      ignored: ["**/.build/**", "**/sidecars/**", "**/dist*/**"]
+    }
   }
 });

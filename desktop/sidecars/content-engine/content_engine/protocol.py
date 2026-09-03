@@ -25,6 +25,17 @@ def _validate_json_numbers(value):
 
 
 METHODS = {
+    "list_asset_collections": lambda service, params: service.list_asset_collections(),
+    "save_asset_collection": lambda service, params: service.save_asset_collection(params),
+    "list_narrated_batches": lambda service, params: service.list_narrated_batches(),
+    "save_narrated_batch": lambda service, params: service.save_narrated_batch(params),
+    "get_narrated_batch": lambda service, params: service.get_narrated_batch(params.get("batch_id")),
+    "get_narrated_batch_status": lambda service, params: service.get_narrated_batch_status(params.get("batch_id")),
+    "recommend_narrated_batch": lambda service, params: service.recommend_narrated_batch(params.get("batch_id")),
+    "generate_narrated_samples": lambda service, params: service.generate_narrated_samples(params.get("batch_id")),
+    "continue_narrated_batch": lambda service, params: service.continue_narrated_batch(params.get("batch_id")),
+    "update_narrated_candidate": lambda service, params: service.update_narrated_candidate(params),
+    "resolve_asset_preview": lambda service, params: service.resolve_asset_preview(params.get("asset_id"), params.get("variant", "thumbnail")),
     "health": lambda service, params: service.health(),
     "import_files": lambda service, params: service.import_files(params.get("paths")),
     "import_folder": lambda service, params: service.import_folder(

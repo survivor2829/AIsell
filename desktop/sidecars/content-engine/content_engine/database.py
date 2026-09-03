@@ -852,6 +852,12 @@ def _migration_016_guided_auto_mix_supplemental_images(
         connection.execute(statement)
 
 
+def _migration_017_narrated_batches(connection):
+    connection.execute("CREATE TABLE asset_collections_v1 (id TEXT PRIMARY KEY, state_json TEXT NOT NULL, updated_at TEXT NOT NULL)")
+    connection.execute("CREATE TABLE narrated_batches_v1 (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES creative_projects(id), state_json TEXT NOT NULL, updated_at TEXT NOT NULL)")
+    connection.execute("CREATE TABLE narrated_history_v1 (candidate_id TEXT PRIMARY KEY, batch_id TEXT NOT NULL REFERENCES narrated_batches_v1(id), shots_json TEXT NOT NULL)")
+
+
 MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (1, "initial_content_engine_schema", _migration_001_initial_schema),
     (2, "asset_probe_metadata", _migration_002_asset_probe_metadata),
@@ -869,6 +875,7 @@ MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (14, "auto_mix_voice_design", _migration_014_auto_mix_voice_design),
     (15, "guided_auto_mix_sessions", _migration_015_guided_auto_mix_sessions),
     (16, "guided_auto_mix_supplemental_images", _migration_016_guided_auto_mix_supplemental_images),
+    (17, "narrated_batches", _migration_017_narrated_batches),
 )
 
 def _retry_when_locked(operation, timeout_seconds: float = 5):

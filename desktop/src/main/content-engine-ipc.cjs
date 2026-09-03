@@ -7,8 +7,10 @@ const {
   randomBytes
 } = require("node:crypto");
 const { diagnostics } = require("./diagnostics.cjs");
+const { CHANNELS: BATCH_CHANNELS, ERRORS: BATCH_ERRORS, registerNarratedBatchIpc } = require("./narrated-batch-ipc.cjs");
 
 const CONTENT_ENGINE_CHANNELS = Object.freeze({
+  ...Object.fromEntries(Object.entries(BATCH_CHANNELS).map(([name, channel]) => [`batch_${name}`, channel])),
   status: "content-engine:status",
   restart: "content-engine:restart",
   listAssets: "content-engine:list-assets",
@@ -198,6 +200,7 @@ const MUSIC_IMPORT_FIELDS = new Set([
 ]);
 
 const PUBLIC_ERRORS = Object.freeze({
+  ...BATCH_ERRORS,
   CONTENT_ENGINE_RUNTIME_UNAVAILABLE: "内容引擎尚未安装或未配置。",
   CONTENT_ENGINE_DATA_DIR_INVALID: "内容引擎数据目录配置无效。",
   CONTENT_ENGINE_DATA_DIR_FAILED: "内容引擎数据目录无法创建。",
@@ -2156,6 +2159,7 @@ function registerContentEngineIpc(options = {}) {
   }
 
   handle(CONTENT_ENGINE_CHANNELS.status, () => publicStatus(controller.status()));
+  registerNarratedBatchIpc({ handle, controller, validateId, validateVoicePersonaId, assertKeys, invalid, openDialog, requireTrustedAutoMixClick });
   handle(CONTENT_ENGINE_CHANNELS.restart, async () => publicStatus(
     await controller.restart()
   ));

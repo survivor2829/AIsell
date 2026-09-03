@@ -256,6 +256,9 @@ class ContentEngineService:
             if callable(cancel):
                 cancel()
             self._creative_jobs.close()
+        previews = getattr(self, "_asset_preview_executor", None)
+        if previews is not None:
+            previews.shutdown(wait=False, cancel_futures=True)
         close_renderer = getattr(self.creative_renderer, "close", None)
         if callable(close_renderer):
             close_renderer(timeout_seconds=3.0)
@@ -606,6 +609,110 @@ class ContentEngineService:
         return self.creative_domain.get_auto_mix_plan_v2(
             run_id=task["run_id"]
         )
+
+    def _narrated_batches(self):
+        from .narrated_batch import NarratedBatchDomain
+        return NarratedBatchDomain(self.creative_domain)
+
+    def list_asset_collections(self):
+        return self._narrated_batches().collections()
+
+    def save_asset_collection(self, request):
+        return self._narrated_batches().save_collection(request)
+
+    def list_narrated_batches(self):
+        return self._narrated_batches().list_batches()
+
+    def save_narrated_batch(self, request):
+        return self._narrated_batches().save(request)
+
+    def get_narrated_batch(self, batch_id):
+        return self._narrated_batches().get(batch_id)
+
+    def get_narrated_batch_status(self, batch_id):
+        return self._narrated_batches().status(batch_id)
+
+    def update_narrated_candidate(self, request):
+        return self._narrated_batches().update_candidate(request)
+
+    def _start_narrated_batch(self, batch_id, action):
+        result = self._narrated_batches().start(batch_id, action)
+        self._enqueue_creative_task({"task_id": result["task_id"]})
+        return result
+
+    def recommend_narrated_batch(self, batch_id):
+        return self._start_narrated_batch(batch_id, "recommend")
+
+    def generate_narrated_samples(self, batch_id):
+        return self._start_narrated_batch(batch_id, "samples")
+
+    def continue_narrated_batch(self, batch_id):
+        return self._start_narrated_batch(batch_id, "continue")
+
+    def resolve_asset_preview(self, asset_id, variant="thumbnail"):
+        import subprocess
+        from .auto_mix_v2 import canonical_hash
+        if variant not in {"thumbnail", "preview"}:
+            raise ContentEngineError("invalid_asset_preview", "素材预览类型无效。")
+        source = Path(self.resolve_asset_path(asset_id)["absolute_path"])
+        asset = self.creative_domain._asset_row(asset_id)
+        # Native supported files are served only through main's controlled
+        # protocol. Other formats use a local cached proxy, never cloud upload.
+        if (source.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+                or variant == "preview" and source.suffix.lower() == ".webm"):
+            import mimetypes
+            return {"asset_id": asset_id, "variant": variant, "absolute_path": str(source),
+                    "mime_type": mimetypes.guess_type(source.name)[0] or "application/octet-stream"}
+        ffmpeg = getattr(self.creative_analyzer, "ffmpeg_path", None)
+        if not ffmpeg:
+            raise ContentEngineError("ffmpeg_unavailable", "本地媒体工具不可用。")
+        directory = self.database.data_dir / "asset-previews"
+        if has_unsafe_component(directory if directory.exists() else directory.parent):
+            raise ContentEngineError("asset_path_unavailable", "素材缓存目录不可用。")
+        directory.mkdir(parents=True, exist_ok=True)
+        if has_unsafe_component(directory):
+            raise ContentEngineError("asset_path_unavailable", "素材缓存目录不可用。")
+        digest = canonical_hash([asset_id, source.stat().st_size, source.stat().st_mtime_ns, variant])
+        extension = ".jpg" if variant == "thumbnail" or asset["media_kind"] == "image" else ".mp4"
+        destination = directory / (digest + extension)
+        if destination.exists() and has_unsafe_component(destination):
+            raise ContentEngineError("asset_path_unavailable", "素材预览缓存不可用。")
+        if not destination.is_file():
+            temporary = directory / (digest + ".part" + extension)
+            if temporary.exists() and has_unsafe_component(temporary):
+                raise ContentEngineError("asset_path_unavailable", "素材预览缓存不可用。")
+            command = [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y", "-i", str(source)]
+            if extension == ".jpg":
+                command += ["-frames:v", "1", "-vf", "scale=480:480:force_original_aspect_ratio=decrease", "-q:v", "3"]
+            else:
+                command += ["-vf", "scale=960:960:force_original_aspect_ratio=decrease:force_divisible_by=2",
+                            "-c:v", "h264_mf", "-rate_control", "quality", "-quality", "50",
+                            "-scenario", "archive", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart"]
+            command.append(str(temporary))
+            if not hasattr(self, "_asset_preview_executor"):
+                from concurrent.futures import ThreadPoolExecutor
+                self._asset_preview_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="asset-preview")
+                self._asset_preview_jobs = {}
+            job = self._asset_preview_jobs.get(digest)
+            if job is None:
+                def generate():
+                    try:
+                        completed = subprocess.run(command, capture_output=True, timeout=90, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                        if completed.returncode or not temporary.is_file():
+                            raise ContentEngineError("asset_preview_failed", "无法生成该素材的预览。")
+                        temporary.replace(destination)
+                    except subprocess.TimeoutExpired as error:
+                        raise ContentEngineError("asset_preview_failed", "素材预览耗时较长，请稍后重试。") from error
+                job = self._asset_preview_executor.submit(generate)
+                self._asset_preview_jobs[digest] = job
+            if not job.done():
+                return {"asset_id": asset_id, "variant": variant, "pending": True}
+            self._asset_preview_jobs.pop(digest, None)
+            job.result()
+        elif hasattr(self, "_asset_preview_jobs"):
+            self._asset_preview_jobs.pop(digest, None)
+        return {"asset_id": asset_id, "variant": variant, "absolute_path": str(destination.resolve()),
+                "mime_type": "image/jpeg" if extension == ".jpg" else "video/mp4"}
 
     def prepare_guided_auto_mix_v2(self, asset_ids):
         session = self.creative_domain.prepare_guided_auto_mix_v2(asset_ids)

@@ -33,9 +33,12 @@ import { AutoReply, FloatingAutoReplyWindow } from "./AutoReply";
 import { FloatingMomentsCampaignWindow } from "./MomentsCampaignPanel";
 import { Diagnostics } from "./Diagnostics";
 import { ProductDetailPage } from "./ProductDetailPage";
-import { FinishedVideoCenterPage, MaterialsLibraryPage } from "./ContentFoundationPage";
+import { FinishedVideoCenterPage } from "./ContentFoundationPage";
 import { CreativeWorkspacePage } from "./CreativeWorkspacePage";
 import { CreativeStudioPage } from "./CreativeStudioPage";
+import { BatchCreativePage, BatchFinishedOverview } from "./BatchCreativePage";
+import { MaterialsCollectionsPage } from "./BatchAssets";
+import type { Collection } from "./batch-studio-api";
 import { ProductOneClickPage } from "./ProductOneClickPage";
 import { FloatingWorkflowWindow, useWechatWorkflow, WechatWorkflowPage, WorkflowLauncher } from "./WechatWorkflow";
 
@@ -556,7 +559,8 @@ export default function App() {
   const workflow = useWechatWorkflow();
   const [active, setActive] = useState<ModuleKey>(DEFAULT_ACTIVE_MODULE);
   const [legacyWorkspace, setLegacyWorkspace] = useState(false);
-  const [creativeView, setCreativeView] = useState<"studio" | "product">("studio");
+  const [creativeView, setCreativeView] = useState<"studio" | "product" | "history">("studio");
+  const [batchInitial, setBatchInitial] = useState<{ assetIds?: string[]; collection?: Collection; batchId?: string }>();
   const [creativeResumeTarget, setCreativeResumeTarget] = useState<{
     taskId: string;
     projectId?: string | null;
@@ -825,7 +829,9 @@ export default function App() {
           {active === "expert" && <AiExpert />}
           {active === "accounts" && <AccountManagement />}
           {active === "product-detail" && <ProductDetailPage />}
-          {active === "materials" && <MaterialsLibraryPage />}
+          {active === "materials" && <MaterialsCollectionsPage onCreate={(assetIds, collection) => {
+            setBatchInitial({ assetIds, collection }); setLegacyWorkspace(false); setCreativeView("studio"); setActive("workspace");
+          }} />}
           {active === "workspace" && (legacyWorkspace
             ? <CreativeWorkspacePage onBackToProduct={() => { setLegacyWorkspace(false); setCreativeView("studio"); }} />
             : creativeView === "product"
@@ -838,7 +844,7 @@ export default function App() {
                   setCreativeView("studio");
                 }}
               />
-              : <CreativeStudioPage
+              : creativeView === "history" ? <><button className="button-secondary" onClick={() => setCreativeView("studio")}>返回批量创作</button><CreativeStudioPage
                 onOpenProduct={() => {
                   setCreativeResumeTarget(null);
                   setCreativeView("product");
@@ -851,8 +857,13 @@ export default function App() {
                 onOpenMaterials={() => setActive("materials")}
                 onOpenFinished={() => setActive("finished")}
                 onOpenDiagnostics={() => setActive("diagnostics")}
-              />)}
-          {active === "finished" && <FinishedVideoCenterPage />}
+              /></> : <BatchCreativePage initial={batchInitial}
+                onOpenProduct={() => { setCreativeResumeTarget(null); setCreativeView("product"); }}
+                onOpenLegacy={() => setLegacyWorkspace(true)} onOpenHistory={() => setCreativeView("history")}
+                onOpenMaterials={() => setActive("materials")} />)}
+          {active === "finished" && <><BatchFinishedOverview onOpen={(batchId) => {
+            setBatchInitial({ batchId }); setLegacyWorkspace(false); setCreativeView("studio"); setActive("workspace");
+          }} /><FinishedVideoCenterPage /></>}
           {active === "api-key" && <ApiKeyPage onConfiguredChange={setDeepSeekConfigured} />}
           {active === "diagnostics" && <Diagnostics />}
           {active === "touch" && DevelopmentAcceptance && (
