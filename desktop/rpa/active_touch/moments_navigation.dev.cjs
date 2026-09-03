@@ -287,7 +287,9 @@ function Get-IntegratedMomentsEntryState($window, [bool]$requireDiscoverEvidence
     $discoverEvidence = @{ ok = $true; entries = @(); exactMatchCount = 0; candidateCount = 0; candidateDiagnostics = @(); activePixelCount = 0 }
     if ($requireDiscoverEvidence -or -not (Test-IntegratedMomentsAlreadyOpen $entryEvidence)) {
       [Console]::Error.WriteLine("moments_navigation_stage:discover_entry")
+      $discoverTimer = [System.Diagnostics.Stopwatch]::StartNew()
       $discoverEvidence = Get-IntegratedDiscoverEntryEvidence $frame $surfaceScanBounds ([double]$dpi / 96.0)
+      [Console]::Error.WriteLine(("moments_discover_scan:elapsed_ms={0},candidates={1},matches={2}" -f $discoverTimer.ElapsedMilliseconds, [int]$discoverEvidence.candidateCount, [int]$discoverEvidence.exactMatchCount))
       if (-not $discoverEvidence.ok) { return $discoverEvidence }
     }
     $selectedDiscoverMatches = @($discoverEvidence.entries | Where-Object { [bool]$_.selected })

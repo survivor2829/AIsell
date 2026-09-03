@@ -444,6 +444,26 @@ function Get-MomentsScaledOcrObservation($frame, $region, [int]$scale = 3) {
   return @{ ok = $true; lines = $lines }
 }
 ${MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL}
+# The navigation detector reads production BGRA buffers, not procedural pixels.
+$script:originalDiscoverEntry = (Get-Command Get-IntegratedDiscoverEntryEvidence).ScriptBlock
+function Get-IntegratedDiscoverEntryEvidence($frame, $bounds, [double]$scale) {
+  if (-not $frame.ContainsKey("bytes")) {
+    $raster = $frame.Clone()
+    $raster.stride = [int]$frame.width * 4
+    $raster.bytes = New-Object byte[] ($raster.stride * [int]$frame.height)
+    for ($y = 0; $y -lt [int]$frame.height; $y++) {
+      for ($x = 0; $x -lt [Math]::Min([int]$frame.width, [Math]::Ceiling(80 * $scale)); $x++) {
+        $pixel = Get-MomentsPixel $frame $x $y
+        $offset = $y * $raster.stride + $x * 4
+        $raster.bytes[$offset] = $pixel.b
+        $raster.bytes[$offset + 1] = $pixel.g
+        $raster.bytes[$offset + 2] = $pixel.r
+      }
+    }
+    $frame = $raster
+  }
+  return & $script:originalDiscoverEntry $frame $bounds $scale
+}
 # Rasterize legacy procedural fixtures for the production bitmap fast path.
 $script:originalGreenRun = (Get-Command Get-MomentsSelectedGreenRunEvidence).ScriptBlock
 function Get-MomentsSelectedGreenRunEvidence($frame, $textBounds, $bandBounds, $surfaceBounds, [double]$scale) {

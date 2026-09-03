@@ -1617,6 +1617,8 @@ function runPowerShellAsync(script, env = {}, options = {}) {
     let terminationKillAccepted = false;
     let terminationGraceExceeded = false;
     let quarantineRegistered = false;
+    const discoverScans = () => Array.from(stderr.matchAll(/moments_discover_scan:elapsed_ms=(\d+),candidates=(\d+),matches=(\d+)/g))
+      .slice(-12).map((match) => ({ elapsed_ms: Number(match[1]), candidates: Number(match[2]), matches: Number(match[3]) }));
     const terminationDiagnostics = (reason) => options.diagnostics === true ? {
       timeout_ms: timeout,
       elapsed_ms: Math.max(0, Date.now() - startedAt),
@@ -1626,7 +1628,8 @@ function runPowerShellAsync(script, env = {}, options = {}) {
       stdout_bytes: Buffer.byteLength(stdout),
       stderr_bytes: Buffer.byteLength(stderr),
       // Only expose our fixed stage tokens, never arbitrary stderr content.
-      navigation_stage: Array.from(stderr.matchAll(/moments_navigation_stage:([a-z_]+)/g)).at(-1)?.[1] || ""
+      navigation_stage: Array.from(stderr.matchAll(/moments_navigation_stage:([a-z_]+)/g)).at(-1)?.[1] || "",
+      discover_scans: discoverScans()
     } : undefined;
     const unconfirmedTermination = () => ({
       ok: false,
@@ -1694,6 +1697,9 @@ function runPowerShellAsync(script, env = {}, options = {}) {
         const output = stdout.trim();
         if (!output) return finish({ ok: false, reason: ensureResult?.reason || "powershell_output_invalid" });
         const parsed = JSON.parse(output);
+        if (options.diagnostics === true && discoverScans().length > 0) {
+          parsed.diagnostics = { ...parsed.diagnostics, discover_scans: discoverScans() };
+        }
         if (!parsed.ok && !parsed.reason) return finish({ ...parsed, reason: ensureResult?.reason || "powershell_output_invalid" });
         return finish(parsed);
       } catch {

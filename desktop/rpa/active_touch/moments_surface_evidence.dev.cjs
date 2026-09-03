@@ -28,20 +28,19 @@ function Get-MomentsNavigationBackgroundEvidence(
   $totalPixelCount = 0
   for ($y = $top; $y -lt $bottom; $y++) {
     for ($x = $left; $x -lt $right; $x++) {
-      $pixel = Get-MomentsPixel $frame $x $y
-      if ($pixel -eq $null) { continue }
-      $redBucket = [Math]::Floor([int]$pixel.r / 16.0)
-      $greenBucket = [Math]::Floor([int]$pixel.g / 16.0)
-      $blueBucket = [Math]::Floor([int]$pixel.b / 16.0)
-      $key = "{0}:{1}:{2}" -f $redBucket, $greenBucket, $blueBucket
+      $offset = $y * [int]$frame.stride + $x * 4
+      $red = [int]$frame.bytes[$offset + 2]
+      $green = [int]$frame.bytes[$offset + 1]
+      $blue = [int]$frame.bytes[$offset]
+      $key = (($red -shr 4) -shl 8) -bor (($green -shr 4) -shl 4) -bor ($blue -shr 4)
       if (-not $buckets.ContainsKey($key)) {
         $buckets[$key] = @{ count = 0; redTotal = [long]0; greenTotal = [long]0; blueTotal = [long]0 }
       }
       $bucket = $buckets[$key]
       $bucket.count = [int]$bucket.count + 1
-      $bucket.redTotal = [long]$bucket.redTotal + [int]$pixel.r
-      $bucket.greenTotal = [long]$bucket.greenTotal + [int]$pixel.g
-      $bucket.blueTotal = [long]$bucket.blueTotal + [int]$pixel.b
+      $bucket.redTotal = [long]$bucket.redTotal + $red
+      $bucket.greenTotal = [long]$bucket.greenTotal + $green
+      $bucket.blueTotal = [long]$bucket.blueTotal + $blue
       $totalPixelCount += 1
     }
   }
@@ -263,7 +262,22 @@ function Get-IntegratedDiscoverEntryEvidence($frame, $relativeSurfaceBounds, [do
   for ($y = $top; $y -lt $bottom; $y++) {
     $rowActive = $false
     for ($x = $left; $x -lt $right; $x++) {
-      if (Test-MomentsNavigationForegroundPixel (Get-MomentsPixel $frame $x $y) $backgroundEvidence) {
+      # Scan the frozen BGRA buffer directly: no per-pixel PowerShell calls or
+      # pixel hashtables. Keep the existing colour/contrast thresholds intact.
+      $offset = $y * [int]$frame.stride + $x * 4
+      $red = [int]$frame.bytes[$offset + 2]
+      $green = [int]$frame.bytes[$offset + 1]
+      $blue = [int]$frame.bytes[$offset]
+      $isGreen = $green -ge 100 -and ($green - $red) -ge 25 -and ($green - $blue) -ge 10
+      $maximum = [Math]::Max($red, [Math]::Max($green, $blue))
+      $minimum = [Math]::Min($red, [Math]::Min($green, $blue))
+      $sum = $red + $green + $blue
+      $neutral = ($maximum - $minimum) -le 32 -and $sum -ge 84 -and $sum -le 615
+      $contrast = -not [bool]$backgroundEvidence.ok -or
+        [Math]::Abs($red - [int]$backgroundEvidence.pixel.r) -ge 24 -or
+        [Math]::Abs($green - [int]$backgroundEvidence.pixel.g) -ge 24 -or
+        [Math]::Abs($blue - [int]$backgroundEvidence.pixel.b) -ge 24
+      if ($isGreen -or ($neutral -and $contrast)) {
         $rowActive = $true
         $totalActivePixelCount += 1
       }
@@ -316,7 +330,10 @@ function Get-IntegratedDiscoverEntryEvidence($frame, $relativeSurfaceBounds, [do
     for ($y = $top; $y -lt $bottom; $y++) {
       $rowGreen = $false
       for ($x = $left; $x -lt $right; $x++) {
-        if (Test-MomentsWechatGreenGlyphPixel (Get-MomentsPixel $frame $x $y)) {
+        $offset = $y * [int]$frame.stride + $x * 4
+        $green = [int]$frame.bytes[$offset + 1]
+        if ($green -ge 100 -and ($green - [int]$frame.bytes[$offset + 2]) -ge 25 -and
+          ($green - [int]$frame.bytes[$offset]) -ge 10) {
           $rowGreen = $true
           break
         }
