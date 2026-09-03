@@ -164,6 +164,19 @@ assert.match(surfaceInspectorSource, /\$finalObservedInputTick -ne \$inputTick/u
 assert.equal(typeof openWechatMoments, "function");
 assert.equal(typeof scrollWechatMomentsFeed, "function");
 assert.equal(typeof resolveMomentsScrollPlan, "function");
+const chatRailResolver = MOMENTS_NAVIGATION_POWERSHELL.slice(
+  MOMENTS_NAVIGATION_POWERSHELL.indexOf("function Resolve-MomentsChatRailTarget"),
+  MOMENTS_NAVIGATION_POWERSHELL.indexOf("function Return-MomentsToChat")
+);
+const chatRailProbe = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+  Buffer.from(`${chatRailResolver}
+$rows = @(0..3 | ForEach-Object { @{ centerX = 30; centerY = 114 + 48 * $_; bounds = @{ width = 22; height = 22 }; matched = ($_ -eq 3); selected = ($_ -eq 3) } })
+$found = Resolve-MomentsChatRailTarget @{ scale = 1; discoverCandidateDiagnostics = $rows }
+$missing = Resolve-MomentsChatRailTarget @{ scale = 1; discoverCandidateDiagnostics = @($rows[1], $rows[2], $rows[3]) }
+@{ chatY = $found.centerY; missingRejected = ($null -eq $missing) } | ConvertTo-Json -Compress
+`, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true });
+assert.equal(chatRailProbe.status, 0, chatRailProbe.stderr || "chat rail resolver must run");
+assert.deepEqual(JSON.parse(chatRailProbe.stdout.trim()), { chatY: 114, missingRejected: true });
 assert.deepEqual(resolveMomentsScrollPlan({ renderPaneBounds: { height: 720 } }, "read_post_up"), {
   mode: "read_post_up",
   viewportHeight: 720,

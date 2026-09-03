@@ -1775,13 +1775,14 @@ function Test-PublishVerified(
   }
   $matching = New-Object System.Collections.Generic.List[object]
   foreach ($post in @($observation.posts)) {
-    if ([bool]$post.partialVisible) { continue }
+    # A tall post may be cropped below its media. The visible anchor and fresh
+    # footer, not the entire card height, are the receipt for this publish.
     $identityCompact = Normalize-PublishText ([string]$post.identityText)
     if (-not $expectedVisibleAnchor -or
       $identityCompact.IndexOf($expectedVisibleAnchor, [StringComparison]::Ordinal) -lt 0 -or
       [string]$post.regionHash -notmatch "^[a-f0-9]{64}$") { continue }
     $freshLines = @($post.ocrLines | Where-Object {
-      (Normalize-PublishText ([string]$_.compact)) -ceq "刚刚"
+      (Normalize-PublishText ([string]$_.compact)) -match "^(刚刚|1分钟前)(删除)?$"
     })
     if ($freshLines.Count -lt 1) { continue }
     $candidateKey = Get-PublishPostCandidateKey $post
@@ -2051,7 +2052,9 @@ try {
       if (-not $lastVerificationReason) { $lastVerificationReason = "moments_publish_observation_failed" }
       continue
     }
-    $verified = Test-PublishVerified $after $currentLock ([string]$focusedTarget.runtimeId) $expectedContentCompact $finalManifestProof $mediaEvidence ([string]$baseline.pixelHash)
+    # $token is the visible prefix already checked absent from the pre-publish
+    # feed. Full content was proven in the composer before the publish click.
+    $verified = Test-PublishVerified $after $currentLock ([string]$focusedTarget.runtimeId) $token $finalManifestProof $mediaEvidence ([string]$baseline.pixelHash)
     if ($verified.ok) {
       $verificationStopwatch.Stop()
       Write-PublishResult @{
@@ -2067,6 +2070,13 @@ try {
       }
     }
     $lastVerificationReason = [string]$verified.reason
+    if ($lastVerificationReason -ceq "moments_publish_post_not_found") {
+      $visible = Normalize-PublishText ([string]$after.viewportCompact)
+      $lastVerificationReason = $(if (-not $visible) { "moments_publish_feed_text_missing" }
+        elseif ($visible.IndexOf($token, [StringComparison]::Ordinal) -lt 0) { "moments_publish_visible_anchor_missing" }
+        elseif ($visible.IndexOf($token, [StringComparison]::Ordinal) -ne $visible.LastIndexOf($token, [StringComparison]::Ordinal)) { "moments_publish_visible_anchor_ambiguous" }
+        else { "moments_publish_fresh_post_not_proven" })
+    }
     if (-not $lastVerificationReason) { $lastVerificationReason = "moments_publish_verification_failed" }
   }
   $verificationStopwatch.Stop()

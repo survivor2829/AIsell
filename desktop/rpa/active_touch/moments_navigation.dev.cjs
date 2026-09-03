@@ -1123,6 +1123,27 @@ function Scroll-Moments {
   Write-Result @{ ok = $true; action = "moments-scroll"; pid = $window.pid; hWnd = [string]$window.hWnd; delta = $wheelDelta; scrollMode = $scrollMode }
 }
 
+function Resolve-MomentsChatRailTarget($entryState) {
+  # In the supported integrated layout, Chat / Contacts / Favorites precede
+  # Discover. Use observed glyphs, not an absolute screen coordinate. This is
+  # navigation only; the chat scanner still verifies the selected conversation.
+  $scale = [double]$entryState.scale
+  $discover = @($entryState.discoverCandidateDiagnostics | Where-Object { $_.matched -and $_.selected })
+  if ($discover.Count -ne 1) { return $null }
+  $rows = @($entryState.discoverCandidateDiagnostics | Where-Object {
+    $_.centerY -lt $discover[0].centerY -and
+    [Math]::Abs($_.centerX - $discover[0].centerX) -le (8.0 * $scale) -and
+    $_.bounds.width -ge (12.0 * $scale) -and $_.bounds.width -le (32.0 * $scale) -and
+    $_.bounds.height -ge (12.0 * $scale) -and $_.bounds.height -le (32.0 * $scale)
+  } | Sort-Object { [double]$_.centerY })
+  if ($rows.Count -ne 3) { return $null }
+  $gap = [double]$rows[1].centerY - [double]$rows[0].centerY
+  if ($gap -lt (32.0 * $scale) -or $gap -gt (64.0 * $scale) -or
+    [Math]::Abs(($rows[2].centerY - $rows[1].centerY) - $gap) -gt (8.0 * $scale) -or
+    [Math]::Abs(($discover[0].centerY - $rows[2].centerY) - $gap) -gt (8.0 * $scale)) { return $null }
+  return $rows[0]
+}
+
 function Return-MomentsToChat {
   $resolved = Resolve-ExpectedMomentsHost
   if (-not $resolved.ok) { Write-Result $resolved }
@@ -1155,20 +1176,21 @@ function Return-MomentsToChat {
   }
   if ($matches.Count -gt 1) { Write-Result @{ ok = $false; reason = "wechat_chat_entry_ambiguous" } }
   $target = $(if ($matches.Count -eq 1) { $matches[0] } else { $null })
+  if ($target -eq $null) { $target = Resolve-MomentsChatRailTarget $entryState }
   if ($target -eq $null) {
     # MMUI exposes no named buttons. Reuse the observed rail glyph bounds and
     # require a newly appeared exact Chat tooltip before clicking any glyph.
     $candidates = @($entryState.discoverCandidateDiagnostics | Where-Object {
       [double]$_.bounds.width -ge (8.0 * $scale) -and [double]$_.bounds.width -le (48.0 * $scale) -and
       [double]$_.bounds.height -ge (8.0 * $scale) -and [double]$_.bounds.height -le (48.0 * $scale)
-    } | Sort-Object centerY, centerX)
+    } | Sort-Object { [double]$_.centerY }, { [double]$_.centerX })
     if ($candidates.Count -gt 20) { Write-Result @{ ok = $false; reason = "wechat_chat_entry_ambiguous" } }
     foreach ($candidate in $candidates) {
       if (-not (Test-MomentsWindowStable $window)) { Write-Result @{ ok = $false; reason = "wechat_window_changed" } }
       $region = @{
-        left = [double]$rail.left + [double]$rail.width
+        left = [double]$rail.left
         top = [Math]::Max(0.0, [double]$candidate.centerY - (30.0 * $scale))
-        width = [Math]::Min(160.0 * $scale, [double]$window.width - ([double]$rail.left + [double]$rail.width))
+        width = [Math]::Min(200.0 * $scale, [double]$window.width - [double]$rail.left)
         height = [Math]::Min(60.0 * $scale, [double]$window.height - [Math]::Max(0.0, [double]$candidate.centerY - (30.0 * $scale)))
       }
       $before = Get-MomentsVisualFrame ([IntPtr]$window.hWnd) $window.rect $window.pid $false

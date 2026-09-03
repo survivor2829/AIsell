@@ -142,6 +142,10 @@ const STRICT_SCOPE_WINDOW_RESET_REASONS = new Set([
   "wechat_window_missing"
 ]);
 const KNOWN_SCAN_REASONS = new Set([
+  "wechat_chat_entry_not_found",
+  "wechat_chat_entry_ambiguous",
+  "wechat_chat_entry_not_owned",
+  "wechat_chat_surface_unverified",
   ...HEALTHY_SCAN_REASONS,
   "automation_root_missing",
   "baseline_ready",
@@ -1465,6 +1469,7 @@ function createAutoReplyController(options = {}) {
   let workflowStepActive = false;
   let workflowStartPending = true;
   let workflowHandled = false;
+  let workflowProgress = null;
   const initialActivityAt = now().toISOString();
   let availableTestContactOptions = singleContactScopeRequired ? testContactScopeOptions(activeTouchDir) : [];
   let activity = {
@@ -1591,6 +1596,13 @@ function createAutoReplyController(options = {}) {
   }
 
   function setActivity(phase, details = {}) {
+    const progressText = {
+      prime: "正在建立消息读取基线", scanning: "正在检查客户消息",
+      candidate: "已发现客户消息", generating: "正在生成客户回复",
+      preparing_send: "正在定位客户输入框", sending: "正在发送客户回复",
+      sent_verified: "客户回复已发送", listening: "本次未发现待回复消息"
+    }[phase];
+    if (workflowMode && progressText) workflowProgress?.(progressText);
     // `waiting` has one precise meaning in the UI: the computer is actively
     // being used. Never use it as a generic fallback for scanner or sender
     // failures, otherwise a real execution fault looks like an idle gate.
@@ -1933,7 +1945,10 @@ function createAutoReplyController(options = {}) {
   }
 
   function resolveContactScope() {
-    if (workflowMode) return resolveWorkflowContactScope(activeTouchDir, workflowRecipients);
+    if (workflowMode) {
+      const scope = resolveWorkflowContactScope(activeTouchDir, workflowRecipients);
+      return { ...scope, driverOptions: { ...scope.driverOptions, onProgress: workflowProgress } };
+    }
     if (!singleContactScopeRequired) {
       const contacts = eligibleContacts(activeTouchDir);
       return {
@@ -2736,7 +2751,7 @@ function createAutoReplyController(options = {}) {
         recordScanResult(primed, "prime");
         recordOutgoingObservation(primed, current, contactScope.resolveContact);
         if (primed?.ok !== true) {
-          if (state.last_scan_reason !== USER_IDLE_WAIT_REASON) {
+          if (!workflowMode && state.last_scan_reason !== USER_IDLE_WAIT_REASON) {
             state.scan_health = "checking";
             state.consecutive_scan_failures = 0;
           }
@@ -3673,6 +3688,7 @@ function createAutoReplyController(options = {}) {
     if (workflowStepActive) return { handled: false, status: "busy" };
     if (!enabled()) return { handled: false, status: "paused" };
     workflowStepActive = true;
+    workflowProgress = typeof input.onProgress === "function" ? input.onProgress : null;
     try {
       if (!workflowMode) {
         // Stop the legacy polling loop before the workflow becomes its sole
@@ -3704,6 +3720,11 @@ function createAutoReplyController(options = {}) {
         return { handled: false, status: "needs_attention", error: "接待名单与当前微信账号不一致，请重新同步" };
       }
       if (!enabled()) return { handled: false, status: "paused" };
+      if (state.last_event === "workflow_chat_navigation_failed") {
+        workflowStartPending = true;
+        primeRetryNeeded = true;
+        state.consecutive_scan_failures = 0;
+      }
       if (workflowStartPending) {
         deepSeekClient?.assertAvailable();
         expertDocuments(expertStore);
@@ -3722,8 +3743,16 @@ function createAutoReplyController(options = {}) {
       }
       workflowHandled = false;
       await runOnce();
+      if (state.consecutive_scan_failures >= 3 && state.last_scan_reason.startsWith("wechat_chat_")) {
+        pauseWithError("workflow_chat_navigation_failed", "无法返回聊天页面，尚未读取客户消息；请切回微信聊天页后重新启动");
+      }
       return {
         handled: workflowHandled,
+        ...(state.consecutive_scan_failures > 0 ? {
+          progressText: state.last_scan_reason.startsWith("wechat_chat_")
+            ? `返回聊天失败，尚未读取消息（${state.consecutive_scan_failures}/3）`
+            : "本次读取消息失败，尚未回复"
+        } : {}),
         status: !enabled() ? "paused" : state.status === "paused" ? "needs_attention" : "running",
         ...(enabled() && state.status === "paused" ? { error: state.last_error || "自动回复需要处理" } : {})
       };
@@ -3731,6 +3760,7 @@ function createAutoReplyController(options = {}) {
       return { handled: false, status: "needs_attention", error: String(error?.message || "自动回复启动失败") };
     } finally {
       workflowStepActive = false;
+      workflowProgress = null;
     }
   }
 

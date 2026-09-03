@@ -1229,6 +1229,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     normalizedWindowIdentity = windowIdentity(normalized);
     if (!normalizedWindowIdentity) return { ok: false, reason: "wechat_window_not_ready" };
     if (matchOptions.restoreChatSurface === true) {
+      matchOptions.onProgress?.("正在从朋友圈返回聊天页面");
       // Main-window focus restores a standalone Moments window, but an embedded
       // Moments page needs an owned navigation step before reading chat rows.
       const { returnWechatFromMomentsToChat } = require("./moments_navigation.dev.cjs");
@@ -1239,6 +1240,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
         return { ok: false, reason: "wechat_window_identity_mismatch" };
       }
     }
+    matchOptions.onProgress?.("正在读取聊天列表和客户消息");
     return null;
   }
 

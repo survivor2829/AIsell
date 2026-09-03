@@ -152,7 +152,8 @@ export function workflowStatusText(state: WorkflowState) {
   if (state.phase === "waiting_for_idle") return "等待电脑空闲";
   const task = state.tasks.find((item) => item.id === state.currentTaskId);
   if (state.replyError && !task) return "自动回复需处理";
-  if (state.phase === "replying") return "正在回复客户";
+  if (state.phase === "replying") return state.replyStatus || "正在检查客户消息";
+  if (state.phase === "listening") return state.replyStatus || "监听新消息";
   if (task) return `正在${TASK_LABELS[task.type]}`;
   if (state.phase === "scheduled") return "等待已安排的执行时间";
   if (state.phase === "queued") return "准备执行下一项";

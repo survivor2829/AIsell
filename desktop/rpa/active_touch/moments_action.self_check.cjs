@@ -2906,7 +2906,7 @@ async function main() {
     const fuzzyVerifiedCurrent = updateVisualFixtureIdentity(fuzzyVerifiedFixture, {
       identityText: fuzzyVerifiedCurrentIdentity,
       stableAnchorText: `${fuzzyVerifiedSnapshot.stable_anchor_text.slice(0, -1)}Y`,
-      avatarHash: fuzzyVerifiedSnapshot.avatar_hash,
+      avatarHash: "a".repeat(64),
       commentText: fuzzyVerifiedNewComment
     });
     let fuzzyVerifiedDriverCalls = 0;
@@ -3045,7 +3045,8 @@ async function main() {
       })
     });
     assert.equal(differentAvatarResult.status, "blocked");
-    assert.equal(differentAvatarDriverCalls, 1);
+    assert.equal(differentAvatarDriverCalls, 0, "avatar pixel drift must not retry a similar post with an unknown send outcome");
+    assert.equal(differentAvatarResult.blocked_reason, "moments_comment_post_already_attempted");
 
     const ambiguousMarkerSeed = visualPreparedDirectory(root, "comment-marker-ambiguous");
     const ambiguousMarkerFixture = updateVisualFixtureIdentity(ambiguousMarkerSeed, {

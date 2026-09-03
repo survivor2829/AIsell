@@ -733,6 +733,7 @@ function createMomentsCampaignController(options = {}) {
             }
 
             let commentedCount = 0;
+            let alreadyCommented = false;
             // A verified like is a completed action even when the subsequent
             // comment fails. Publish and persist it before opening the editor.
             persist({ liked_count: state.liked_count + likedCount,
@@ -796,7 +797,9 @@ function createMomentsCampaignController(options = {}) {
                 finish("paused", "moments_comment_outcome_unknown", { outcomeUnknown: true });
                 return;
               } else if (commented?.real_action_attempted === false) {
-                commentSkipped = true;
+                alreadyCommented = commented?.previous_status === "verified"
+                  && ["moments_comment_text_already_attempted", "moments_comment_post_already_attempted"].includes(commentPrimaryReason);
+                commentSkipped = !alreadyCommented;
                 lastReason = commentPrimaryReason || "moments_comment_skipped";
               } else {
                 finish(
@@ -811,7 +814,7 @@ function createMomentsCampaignController(options = {}) {
             processedPostMarkers.push(campaignPostMarker(observed.post_snapshot));
             const likeSucceededForPost = !state.like_enabled || likedCount + alreadyLikedCount > 0;
             const completedPostCount = state.comment_enabled
-              ? commentedCount
+              ? (commentedCount || (alreadyCommented && likeSucceededForPost ? 1 : 0))
               : (likeSucceededForPost ? 1 : 0);
             const newCompletedPostCount = completedPostCount > 0 && likedCount + commentedCount > 0 ? 1 : 0;
             if (workflowContext) {

@@ -1182,24 +1182,21 @@ function commentAttemptMatchesPost(attempt, context) {
   return attempt?.post_fingerprint === context.postFingerprint;
 }
 
-function fuzzyVerifiedCommentAttempts(context) {
+function similarCommentAttempts(context) {
   if (!requiresVisualCommentVerification(context)) return [];
-  const currentAvatarHash = String(context.postSnapshot?.avatar_hash ?? "");
-  if (!OBSERVATION_ID_PATTERN.test(currentAvatarHash)) return [];
   const matches = [];
   for (const [attemptKey, attempt] of Object.entries(actionState(context.state).attempts).reverse()) {
     if (
       attempt?.action !== "moments-comment"
-      || attempt.status !== "verified"
+      || !commentAttemptBlocksRetry(attempt)
       || attempt.real_action_attempted !== true
       || attempt.post_fingerprint === context.postFingerprint
-      || attempt.post_avatar_hash !== currentAvatarHash
       || !String(attempt.comment_text ?? "").trim()
       || !stableMomentsPostIdentityText(
         attempt.post_identity_text,
         context.postSnapshot?.identity_text,
-        "",
-        ""
+        attempt.post_stable_anchor_text,
+        context.postSnapshot?.stable_anchor_text
       )
     ) continue;
     matches.push({ attemptKey, attempt });
@@ -1677,7 +1674,13 @@ async function executeMomentsComment(options = {}) {
   if (previousPostComment) {
     return duplicateCommentPostResult(baseDir, context, action, attemptKey, previousPostComment);
   }
-  const fuzzyPreviousComments = fuzzyVerifiedCommentAttempts(context);
+  const fuzzyPreviousComments = similarCommentAttempts(context);
+  // Pixel hashes change with cropping/DPI. Text selects historical candidates;
+  // the existing read-only comment check decides presence on the current post.
+  const uncertainPrevious = fuzzyPreviousComments.find(({ attempt }) => attempt.status !== "verified");
+  if (uncertainPrevious) {
+    return duplicateCommentPostResult(baseDir, context, action, attemptKey, uncertainPrevious);
+  }
 
   let driver;
   try {

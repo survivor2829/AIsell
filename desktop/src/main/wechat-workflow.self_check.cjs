@@ -87,7 +87,11 @@ async function main() {
   const options = {
     rootDir, autoReplyDir: path.join(rootDir, "auto_reply"), activeTouchDir: path.join(rootDir, "active_touch"), momentsDir: path.join(rootDir, "moments"),
     now: () => clock, getAccount: () => account, executors, autoSchedule: false,
-    reply: { runWorkflowStep: async () => { if (customerWaiting) { calls.push("reply"); customerWaiting = false; return { handled: true }; } return { handled: false }; } }
+    reply: { runWorkflowStep: async ({ onProgress }) => {
+      onProgress("正在从朋友圈返回聊天页面");
+      if (customerWaiting) { calls.push("reply"); customerWaiting = false; onProgress("客户回复已发送"); return { handled: true }; }
+      return { handled: false };
+    } }
   };
   const control = createWechatWorkflowController(options);
   const first = await control.addTask({ type: "touch", title: "touch", payload: { contactIds: ["a", "b"], script: "hello" } });
@@ -102,6 +106,7 @@ async function main() {
   customerWaiting = true;
   await control.tick();
   assert.deepEqual(calls, ["reply"], "customer reply wins over due publication");
+  assert.equal(control.status().replyStatus, "客户回复已发送", "workflow must forward the executor's actual progress");
   await control.tick();
   await control.tick();
   customerWaiting = true;

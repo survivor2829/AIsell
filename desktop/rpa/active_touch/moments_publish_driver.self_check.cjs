@@ -1182,13 +1182,14 @@ assert.match(
 assert.match(verificationSource, /\$post\.bounds\.left[\s\S]*\$post\.menuBounds\.top[\s\S]*\$avatarHash \+ "\|" \+ \$identity \+ "\|" \+ \$geometry/u,
   "the candidate key must bind identity, avatar and stable on-screen geometry");
 assert.match(verificationSource, /Test-PublishComposerAbsent \$lock \$editorRuntimeId/u);
-assert.match(verificationSource, /foreach \(\$post in @\(\$observation\.posts\)\)[\s\S]*\$post\.partialVisible/u);
+assert.doesNotMatch(verificationSource, /if \(\[bool\]\$post\.partialVisible\) \{ continue \}/u,
+  "visible content and a fresh footer can verify a tall post without its full card");
 assert.match(
   verificationSource,
   /\$identityCompact = Normalize-PublishText \(\[string\]\$post\.identityText\)[\s\S]*\$identityCompact\.IndexOf\(\$expectedVisibleAnchor, \[StringComparison\]::Ordinal\) -lt 0/u,
   "post verification must use the pre-existing-checked visible content anchor so folded long posts remain verifiable"
 );
-assert.match(verificationSource, /\$post\.ocrLines[\s\S]*-ceq "刚刚"/u);
+assert.match(verificationSource, /\$post\.ocrLines[\s\S]*刚刚\|1分钟前/u);
 assert.match(
   verificationSource,
   /\$matching\.Count -eq 0 -and \$preclickMediaProofMode -ceq "visual_presence_only"[\s\S]*\$observation\.viewportCompact[\s\S]*IndexOf\(\$expectedVisibleAnchor[\s\S]*LastIndexOf\(\$expectedVisibleAnchor[\s\S]*\$observation\.viewportHash[\s\S]*unique_visible_anchor_receipt/u,
@@ -1207,7 +1208,7 @@ assert.doesNotMatch(verificationSource, /\$observation\.compact -notlike|\$obser
 assert.match(flowSource, /Get-PublishFullObservation \$currentLock \$true \$true/u);
 assert.match(
   flowSource,
-  /\$finalManifestProof = Test-PublishMediaManifest \$context[\s\S]*\$finalContentProof = Test-PublishComposerContentFinal[\s\S]*Invoke-PublishOwnedClick[\s\S]*Test-PublishVerified[\s\S]*\$expectedContentCompact[\s\S]*\$finalManifestProof[\s\S]*\$mediaEvidence/u,
+  /\$finalManifestProof = Test-PublishMediaManifest \$context[\s\S]*\$finalContentProof = Test-PublishComposerContentFinal[\s\S]*Invoke-PublishOwnedClick[\s\S]*Test-PublishVerified[\s\S]*\$token[\s\S]*\$finalManifestProof[\s\S]*\$mediaEvidence/u,
   "exact content and media must be proven before the click and rebound to one fresh post afterwards"
 );
 assert.doesNotMatch(flowSource, /Test-PublishClientAccepted \$after/u,

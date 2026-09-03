@@ -203,15 +203,18 @@ function createWechatWorkflowController(options) {
     for (const task of store.tasks) if (task.type === "touch" && !task.enrolled) enroll(task, readPayload(task));
     if (!enabled || mutating) return;
     const people = store.replyEnabled === false ? [] : accountRecipients();
-    if (people.length && options.reply?.runWorkflowStep) {
+    if (people.length && options.reply?.runWorkflowStep && !replyError) {
       phase = "replying";
       replyStatus = "正在检查客户消息";
       emit();
-      const reply = await options.reply.runWorkflowStep({ recipients: people, accountName: getAccount(), isEnabled: () => enabled });
+      const reply = await options.reply.runWorkflowStep({
+        recipients: people, accountName: getAccount(), isEnabled: () => enabled,
+        onProgress: (text) => { if (enabled) { replyStatus = text; emit(); } }
+      });
       replyError = reply.error || "";
-      replyStatus = reply.error || (reply.handled ? "已回复客户" : "正在接待客户");
+      replyStatus = reply.error || reply.progressText || (reply.handled ? replyStatus : "本次未发现待回复消息");
       if (reply.handled || reply.busy || reply.status === "busy") return;
-    } else {
+    } else if (!replyError) {
       replyError = people.length ? "自动回复执行器不可用" : "";
       replyStatus = people.length ? "自动回复执行器不可用" : "暂无接待客户";
     }
