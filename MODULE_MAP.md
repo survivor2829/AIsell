@@ -15,7 +15,7 @@
 | `desktop/scripts/` | self-check、renderer 构建、便携包生成和包内检查 | 保存运行数据或作为 live 验收凭证 |
 | `release/` | 从源码生成的便携目录与 ZIP | 手工修改后回灌源码或作为唯一真相 |
 
-朋友圈主进程内部继续分两层：`moments-campaign-ipc.cjs` 只编排单轮逐帖动作，`moments-daily-automation.cjs` 只管理每日目标、时间、跨日状态和下一次调度；每日层复用单轮控制器，不复制微信识别或点击逻辑。
+正常入口由 `wechat-workflow.cjs` 统一安排触达、朋友圈发布／互动和客户回复优先级，`wechat-workflow-ipc.cjs` 管理统一进度浮窗。各业务执行器完成一个工作单元后交还调度权，不把业务发送账本搬进协调层。朋友圈的 `moments-daily-automation.cjs` 仅保留旧独立模式；统一工作流接管时停止其调度，避免双重执行。
 
 ## 共享微信适配边界
 
@@ -44,10 +44,13 @@
 | `active_touch/` | 主动触达任务快照、联系人清单、发送事务、结果账本和运行日志 |
 | `auto_reply/` | 状态 v3、稳定消息 occurrence、exactly-once 去重、未知发送 occurrence 隔离和诊断；旧包 OCR 临时观察与频率事件不跨版本继承 |
 | `moments/` | 朋友圈观察、帖子稳定标识、动作尝试、去重账本及独立的每日计划状态 |
+| `wechat_workflow/` | 跨模块任务编号、排序、执行时间、汇总进度与最后展示任务；不保存正文、联系人快照或发送凭证 |
 | `wechat_adapter/` | 共享微信窗口与 adapter 配置，不含业务结果 |
 | `runtime_archive/` | 数据拆分或迁移前的证据归档，不作为现役状态读取 |
 
 各业务只能读取共享联系人或适配证据，不能读取另一业务的成功账本来决定自己的动作。迁移旧状态时先归档，再拆分；不得把朋友圈字段继续写回主动触达的 `state.json`。
+
+计划正文和冻结素材保存在对应业务目录的 `planned_tasks/`、`planned_runs/`；接待范围保存在 `auto_reply/workflow-recipients.json`。统一界面仅投影各执行器返回的进度，不自行推测发送成功。
 
 内容生产使用独立的 `product-detail/` 与 `content-engine/` 数据目录。前者保存产品详情图的数据库、上传、输出和缓存；后者保存素材索引、任务、成片登记和缓存设置。原始视频和图片只由素材索引记录位置、指纹、媒体信息与版权/使用权状态，始终留在用户原有磁盘位置。
 

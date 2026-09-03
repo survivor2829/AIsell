@@ -268,7 +268,7 @@ function createMomentsCampaignController(options = {}) {
   let stopRequested = false;
   let loopPromise = null;
   let workflowContext = null;
-  let workflowManaged = options.workflowManaged === true;
+  const workflowManaged = options.workflowManaged === true;
   let dailyAutomation = null;
   const initialRoot = readJson(stateFile);
   let state = publicState(initialRoot.moments_campaign);
@@ -1149,11 +1149,6 @@ function createMomentsCampaignController(options = {}) {
       && ["liked_count", "commented_count", "processed_count"].every((key) => stored.metrics[key] === 0));
   }
 
-  function setWorkflowManaged(value) {
-    workflowManaged = value === true;
-    if (workflowManaged) dailyAutomation.dispose();
-    return { ok: true, state: snapshot() };
-  }
 
   return {
     configureDaily: (payload) => workflowManaged
@@ -1170,7 +1165,6 @@ function createMomentsCampaignController(options = {}) {
       ? { ok: false, reason: "workflow_managed", state: snapshot() }
       : dailyAutomation.runNow(),
     runWorkflowStep,
-    setWorkflowManaged,
     start,
     status: () => ({ ok: true, state: snapshot() }),
     stop

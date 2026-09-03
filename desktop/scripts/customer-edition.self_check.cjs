@@ -72,8 +72,9 @@ function assertContactSyncUiRecoversFromBusyErrors() {
 
 function assertStageWorkflowContract() {
   const source = read(path.join(desktopDir, "src", "renderer", "App.tsx"));
+  const workflow = read(path.join(desktopDir, "src", "renderer", "WechatWorkflow.tsx"));
   const preload = read(path.join(desktopDir, "src", "main", "preload-api.cjs"));
-  assert.match(source, /DEFAULT_ACTIVE_MODULE: ModuleKey = PILOT_EDITION \? "touch" : "reply"/, "delivery must open on active touch");
+  assert.match(source, /DEFAULT_ACTIVE_MODULE: ModuleKey = "workflow"/, "the app must open on today's unified plan");
   const momentsNavEntries = source.match(/\{ key: "moments", label: "[^"]+", icon: [A-Za-z]+ \}/g) ?? [];
   assert.equal(momentsNavEntries.length, 1, "moments publishing and engagement must share exactly one sidebar entry");
   assert.equal(momentsNavEntries[0], "{ key: \"moments\", label: \"朋友圈运营\", icon: ThumbsUp }", "the unified moments entry must use the product name");
@@ -85,18 +86,18 @@ function assertStageWorkflowContract() {
   assert.match(source, /DEFAULT_USER_PROFILE: UserProfile = \{ name: "本机用户", avatar: "用" \}/u, "packaged editions must use a neutral local profile before onboarding");
   assert.match(source, /DEFAULT_TOUCH_MESSAGE = DEVELOPMENT_EDITION\s*\?/u, "business-specific outreach copy must be limited to the development edition");
   assert.equal(source.includes('<button className="guide">'), false, "the shell must not expose a non-functional onboarding button");
-  assert.match(source, /<MomentsOperations \/>/, "the unified moments entry must render its own page");
+  assert.match(source, /<WechatWorkflowPage/, "Moments must use the unified task page");
+  assert.match(source, /mode=\{active === "touch" \? "touch" : active === "moments" \? "moments" : "home"\}/, "the shared page must select the requested task category");
   const moduleAvailability = source.match(/function moduleIsAvailable\(key: ModuleKey\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
   assert.match(moduleAvailability, /"moments"/, "moments operations must not render together with the placeholder page");
-  assert.match(source, /title: "朋友圈发布"/, "moments operations must expose publishing");
-  assert.match(source, /title: "点赞评论"/, "moments operations must retain engagement");
-  assert.match(source, /xiaoxiTouchTask\.start\(\{ script: messageDraft, excludedContactIds \}\)/, "start must freeze the user exclusion list");
-  assert.match(source, /未进入本次任务/u, "contacts excluded before task creation must not be presented as send failures");
-  assert.match(source, /不算触达失败/u, "the exclusion summary must explain that pre-task exclusions do not count as task failures");
-  assert.match(source, /const exclusionTaskSize = hasFrozenSnapshot\s*\? \(touchTask\.total \|\| eligibleCount\)\s*: eligibleCount;/u, "the exclusion summary count must come from the same frozen or preview snapshot as its reasons");
+  assert.match(workflow, /mode === "moments" \? \["publish", "interact"\]/, "Moments must expose publishing and interaction");
+  assert.match(workflow, /contacts\.filter\(\(contact\) => contact\.allowed\)/, "the picker must exclude disallowed contacts before creating tasks");
+  assert.match(workflow, /contactIds: selectedIds, script: script\.trim\(\)/, "only selected contacts and confirmed script enter a task");
+  assert.match(workflow, /task\.progress\.done\}\/\{task\.progress\.total\}/, "completion must use the actual task snapshot, not the whole address book");
   assert.equal(source.includes("未触达原因"), false, "a completed 4/4 task must not label pre-task exclusions as failed touches");
   assert.match(source, /下一阶段开放/, "future modules must stay visible as next-stage placeholders");
-  assert.match(source, /结束本次任务/, "unfinished tasks must expose permanent end with confirmation");
+  assert.match(workflow, /api\.cancelTask\(task\.id\)/, "unfinished plans must expose scoped cancellation");
+  assert.match(workflow, /const canCancel = !planLocked/, "running tasks must not be cancelled through plan editing");
   assert.match(preload, /resolveUnknown: \(payload\) => ipcRenderer\.invoke\("touch-task:resolve-unknown", payload\)/, "unknown send outcomes must expose only the scoped resolution API");
 }
 
@@ -122,9 +123,8 @@ function assertMomentsActionEditionBoundary() {
     assert.equal(sourceAllowed(source, "delivery"), false, `${name} must be excluded from the delivery edition`);
   }
   const app = read(path.join(desktopDir, "src", "renderer", "App.tsx"));
-  assert.match(app, /const MomentsCampaignPanel = REAL_SEND_EDITION \? lazy/, "Moments campaign UI must be available in pilot and development editions");
-  assert.match(app, /const MomentsPublishPanel = REAL_SEND_EDITION \? lazy/, "Moments publish UI must be available in pilot and development editions");
-  assert.match(app, /const MomentsDryRunPanel = DEVELOPMENT_EDITION \? lazy/, "single-post Moments controls must remain behind the test-edition build gate");
+  assert.match(app, /<WechatWorkflowPage/, "Moments actions must use the unified task UI");
+  assert.doesNotMatch(app, /import\("\.\/MomentsDryRunPanel"\)/, "the retired single-post tool must not be reachable from the app");
   assert.match(read(path.join(desktopDir, "src", "main", "main.cjs")), /developmentEdition \|\| pilotEdition\s+\? require\("\.\/moments-campaign-ipc\.cjs"\)/, "pilot main process must register Moments campaign IPC");
   assert.match(read(path.join(desktopDir, "src", "main", "main.cjs")), /developmentEdition \|\| pilotEdition\s+\? require\("\.\/moments-publish-ipc\.cjs"\)/, "pilot main process must register Moments publish IPC");
   const panel = read(path.join(desktopDir, "src", "renderer", "MomentsDryRunPanel.tsx"));
@@ -136,7 +136,7 @@ function assertAutoReplyTestScopeBoundary() {
   const main = read(path.join(desktopDir, "src", "main", "main.cjs"));
   const preload = read(path.join(desktopDir, "src", "main", "preload-api.cjs"));
   assert.match(autoReply, /const DEVELOPMENT_EDITION = import\.meta\.env\.VITE_XIAOXI_EDITION === "development"/, "single-contact test controls must use the test-edition build marker");
-  assert.match(autoReply, /\{DEVELOPMENT_EDITION && \(/, "single-contact test controls must not render in the delivery edition");
+  assert.match(autoReply, /\{DEVELOPMENT_EDITION && !workflow && \(/, "single-contact test controls must remain limited to standalone development mode");
   assert.match(autoReply, /auto-reply-test-scope/, "test renderer must make the limited-contact scope visible before starting");
   assert.match(main, /singleContactScopeRequired: developmentEdition/, "only the test main process may require a single-contact auto-reply scope");
   assert.match(preload, /contactId: String\(payload\?\.contactId \|\| ""\)/, "the trusted start bridge must pass only a contact ID to the main process");

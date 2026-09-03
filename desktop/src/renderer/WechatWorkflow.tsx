@@ -239,7 +239,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", syncBusy
   const availableTypes: WorkflowTaskType[] = mode === "touch" ? ["touch"] : mode === "moments" ? ["publish", "interact"] : ["touch", "publish", "interact"];
   const tasks = state.tasks.filter((task) => availableTypes.includes(task.type));
   const activeTasks = tasks.filter((task) => !["completed", "cancelled"].includes(task.status));
-  const history = tasks.filter((task) => ["completed", "cancelled"].includes(task.status)).slice().reverse();
+  const history = tasks.filter((task) => ["completed", "cancelled"].includes(task.status)).reverse();
   const current = state.tasks.find((task) => task.id === state.currentTaskId);
   const next = state.tasks.find((task) => task.id === state.nextTaskId);
   const waitingForSchedule = state.tasks.some((task) => task.status === "pending" && !task.accountMismatch && (task.repeat === "daily" || Boolean(task.scheduledAt && Date.parse(task.scheduledAt) > Date.now())));

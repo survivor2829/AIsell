@@ -41,7 +41,8 @@ assert.match(
 );
 assert.match(preload, /exposeInMainWorld\("xiaoxiMomentsCampaign"/u);
 assert.match(developmentPreload, /createMomentsCampaignApi\(ipcRenderer\)/u);
-assert.match(app, /const MomentsCampaignPanel = REAL_SEND_EDITION \? lazy/u);
-assert.match(app, /const MomentsDryRunPanel = DEVELOPMENT_EDITION \? lazy/u);
+assert.match(app, /<WechatWorkflowPage/u);
+assert.match(app, /floatingMode === "moments"\) return <FloatingMomentsCampaignWindow/u);
+assert.doesNotMatch(app, /import\("\.\/MomentsDryRunPanel"\)/u);
 
 console.log("Moments campaign panel self-check passed");

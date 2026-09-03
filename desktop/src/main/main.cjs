@@ -532,7 +532,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       executors: {
         touch: {
           prepareWorkflowTask: (_id, payload) => touchTaskController.prepareWorkflowTask(payload),
-          runWorkflowStep: (task, context) => touchTaskController.runWorkflowStep(task, context)
+          runWorkflowStep: touchTaskController.runWorkflowStep
         },
         publish: momentsPublishController,
         interact: momentsCampaignController
