@@ -882,7 +882,8 @@ async function runChecks() {
     () => writeFailureClock.advanceTo("2026-07-29T09:00:01+08:00"),
     "a scheduled persistence failure must not escape the timer callback"
   );
-  assert.equal(writeAttemptCount, 2);
+  assert.equal(writeAttemptCount, 3,
+    "initial schedule, failed start, and failed retry-state persistence each attempt one write");
   assert.equal(
     writeFailureClock.pending().length,
     1,
