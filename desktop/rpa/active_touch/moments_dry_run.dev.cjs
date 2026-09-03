@@ -104,7 +104,7 @@ function stableMomentsPostIdentityText(firstIdentity, secondIdentity, firstAncho
 }
 
 // Duplicate suppression only, never proof authorizing a click or a send.
-// A longer OCR crop can prepend/append text without changing the underlying post.
+// A longer recognized crop can prepend/append text without changing the underlying post.
 function momentsCommentTextContainsPrevious(first, second) {
   const left = normalizeMomentsStableContentText(first);
   const right = normalizeMomentsStableContentText(second);

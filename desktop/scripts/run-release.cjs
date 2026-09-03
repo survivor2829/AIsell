@@ -34,7 +34,7 @@ function runNode(label, script, args, environment) {
 }
 
 function preflightReleaseInputs(edition, environment = process.env) {
-  const artifactType = artifactTypeForEdition(edition);
+  const artifactType = artifactTypeForEdition(edition, environment);
   const failures = [];
   let remotion = null;
   let mediaTools = null;
@@ -70,6 +70,14 @@ function preflightReleaseInputs(edition, environment = process.env) {
 }
 
 function runRelease(edition = "delivery", environment = process.env) {
+  const internalUpgrade = edition === "upgrade";
+  if (!internalUpgrade && environment.XIAOXI_INTERNAL_UPGRADE) {
+    throw new Error("Internal upgrade flag requires the explicit upgrade entry point");
+  }
+  if (internalUpgrade) {
+    edition = "delivery";
+    environment = { ...environment, XIAOXI_INTERNAL_UPGRADE: "1" };
+  }
   if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported release edition: ${edition}`);
   const { artifactType: remotionArtifactType, remotion } = preflightReleaseInputs(edition, environment);
   const sidecarBuildRoot = createBuildRoot();
@@ -92,6 +100,7 @@ function runRelease(edition = "delivery", environment = process.env) {
     path.join(remotionRuntimeRoot, remotionArtifactType)
   ], releaseEnvironment);
   runNode("portable application build", "build-portable-release.cjs", [edition], releaseEnvironment);
+  if (internalUpgrade) runNode("in-place upgrade installer", "build-installer-release.cjs", ["upgrade"], releaseEnvironment);
   return { remotionRuntimeRoot, sidecarBuildRoot };
 }
 

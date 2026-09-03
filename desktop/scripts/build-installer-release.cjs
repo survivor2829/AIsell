@@ -28,10 +28,12 @@ const TEST_PORTABLE_REUSE_PATHS = new Set([
 const ELECTRON_BUILDER_ELEVATE_HELPER = "resources/elevate.exe";
 
 function resolveInstallerTarget(edition = "delivery") {
+  const internalUpgrade = edition === "upgrade";
+  if (internalUpgrade) edition = "delivery";
   if (edition === "delivery") {
     return {
       edition,
-      artifactType: "delivery",
+      artifactType: internalUpgrade ? "internal-evaluation" : "delivery",
       productName: PRODUCT_NAME,
       installerName,
       installerManifestName,
@@ -39,7 +41,7 @@ function resolveInstallerTarget(edition = "delivery") {
       appId: productBrand.stableAppId,
       installDirectoryName: productBrand.stableInstallDirectoryName,
       dataDirectoryName: productBrand.stableDeliveryDataDirectoryName,
-      requiresCommercialTrust: true
+      requiresCommercialTrust: !internalUpgrade
     };
   }
   if (edition === "test") {

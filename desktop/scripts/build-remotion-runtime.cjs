@@ -76,9 +76,11 @@ function assertExactKeys(value, keys, label) {
   }
 }
 
-function artifactTypeForEdition(edition) {
+function artifactTypeForEdition(edition, environment = {}) {
+  const internalUpgrade = environment.XIAOXI_INTERNAL_UPGRADE;
+  if (internalUpgrade && internalUpgrade !== "1") throw new Error("Invalid internal upgrade flag");
   if (edition === "test") return "internal-evaluation";
-  if (edition === "delivery") return "delivery";
+  if (edition === "delivery") return internalUpgrade === "1" ? "internal-evaluation" : "delivery";
   throw new Error(`Unsupported portable edition: ${edition}`);
 }
 

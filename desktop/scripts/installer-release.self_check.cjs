@@ -116,6 +116,17 @@ assert.deepEqual(installerTargets.test, {
 assert.match(nsis, /StrCpy \$INSTDIR "\$LocalAppData\\Programs\\AI获客"/);
 assert.equal(installerName, `${productBrand.displayName}-安装程序.exe`);
 assert.equal(installerManifestName, `${productBrand.displayName}-安装程序-版本清单.json`);
+assert.deepEqual(resolveInstallerTarget("upgrade"), {
+  ...resolveInstallerTarget("delivery"),
+  artifactType: "internal-evaluation",
+  requiresCommercialTrust: false
+}, "internal upgrades must retain the installed app identity and user-data directory");
+assert.equal(resolveInstallerTarget("delivery").requiresCommercialTrust, true);
+assert.throws(
+  () => require("./run-release.cjs").runRelease("delivery", { XIAOXI_INTERNAL_UPGRADE: "1" }),
+  /explicit upgrade entry point/u,
+  "ordinary delivery must not inherit the internal upgrade mode"
+);
 assert.match(testConfig, /^appId: com\.aihuoke\.desktop\.test$/m);
 assert.match(testConfig, /^productName: AI获客 V1\.0版本-测试版$/m);
 assert.match(testConfig, /^  artifactName: AI获客 V1\.0版本-测试版-安装程序\.\$\{ext\}$/m);

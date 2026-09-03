@@ -75,6 +75,8 @@ async function main() {
     assert.deepEqual(ARTIFACT_TYPES, ["development", "internal-evaluation", "delivery"]);
     assert.equal(artifactTypeForEdition("test"), "internal-evaluation");
     assert.equal(artifactTypeForEdition("delivery"), "delivery");
+    assert.equal(artifactTypeForEdition("delivery", { XIAOXI_INTERNAL_UPGRADE: "1" }), "internal-evaluation");
+    assert.throws(() => artifactTypeForEdition("delivery", { XIAOXI_INTERNAL_UPGRADE: "yes" }), /Invalid internal upgrade flag/u);
     assert.throws(() => artifactTypeForEdition("preview"), /Unsupported portable edition/u);
 
     const packageState = readPackageState(desktopDir);

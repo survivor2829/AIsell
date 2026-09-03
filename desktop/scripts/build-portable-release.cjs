@@ -199,7 +199,7 @@ function assertBuildPreconditions(edition, {
   remotionRuntimeRoot = resolveRemotionRuntimeRoot(environment)
 } = {}) {
   if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported edition: ${edition}`);
-  const artifactType = artifactTypeForEdition(edition);
+  const artifactType = artifactTypeForEdition(edition, environment);
   if (!fs.existsSync(path.join(electronDir, "electron.exe"))) throw new Error("Electron portable runtime is missing; run npm ci first");
   if (!fs.existsSync(helper) || sha256(helper) !== CONTACT_HELPER_SHA256) throw new Error("Pinned contact helper is missing or has the wrong hash");
   for (const [name, expectedHash] of Object.entries(NATIVE_LIBRARY_SHA256)) {
@@ -229,7 +229,7 @@ function assertBuildPreconditions(edition, {
     sidecarBuildRoot,
     remotionRuntimeRoot
   };
-  if (edition === "delivery" && !isCommercialDeliveryReady(sourceState)) {
+  if (artifactType === "delivery" && !isCommercialDeliveryReady(sourceState)) {
     throw new Error("Delivery requires commercial Remotion and media-tools release evidence");
   }
   return sourceState;
@@ -296,11 +296,11 @@ function buildPortableStaging(edition, paths, sourceState) {
   fs.writeFileSync(path.join(target, "版本清单.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   fs.writeFileSync(path.join(target, "版本标识.txt"), edition === "test"
     ? `${PRODUCT_NAME} 测试版 ${manifest.buildId}\n制品类型：internal-evaluation（仅限内部评估，不可包装为商业安装程序）。\n朋友圈逐帖互动已完成本机验收；每日自动计划已实现但仍待真实计时验收。\n`
-    : `${PRODUCT_NAME} ${manifest.buildId}\n制品类型：delivery；其 Remotion 与浏览器许可依据见受信清单摘要。\n当前功能验收状态以版本清单中的 capabilityMatrix 为准；朋友圈逐帖互动已进入本包，每日自动计划仍待真实计时与异机验收，本包不代表完整商品。\n`, "utf8");
+    : `${PRODUCT_NAME} ${manifest.buildId}\n制品类型：${manifest.artifactType}；${manifest.commercialReady ? "其 Remotion 与浏览器许可依据见受信清单摘要。" : "内部试用覆盖升级，保留原软件身份；不代表商用就绪。"}\n当前功能验收状态以版本清单中的 capabilityMatrix 为准；朋友圈逐帖互动已进入本包，每日自动计划仍待真实计时与异机验收，本包不代表完整商品。\n`, "utf8");
   fs.writeFileSync(path.join(target, "首次使用说明.txt"), [
     `${PRODUCT_NAME} ${edition === "test" ? "测试版" : ""} ${manifest.buildId}`.trim(),
     "",
-    "1. 完整解压 ZIP 到一个全新目录后运行同名 EXE；不要覆盖旧目录，也不要只复制 EXE。",
+    "1. 使用安装程序可覆盖升级原软件并保留本地数据。若使用 ZIP，请完整解压到全新目录；不要手工覆盖旧目录，也不要只复制 EXE。",
     "2. 当前阶段适配 Windows 10/11 x64 和个人微信 Weixin.exe 4.1.11.55；微信与本软件请使用相同权限运行。朋友圈新版内嵌布局仍需按交付清单完成实机验收。",
     "3. 每台新电脑首次使用都要重新配置 API 密钥、导入 AI 专家话术并同步联系人；这些本地数据不会写入 ZIP。",
     "4. 同步联系人时软件会重启微信，请按提示重新登录。若路径未自动识别，可在同步联系人页手动选择 Weixin.exe 和 xwechat_files。",

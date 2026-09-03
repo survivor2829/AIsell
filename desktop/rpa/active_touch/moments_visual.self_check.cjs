@@ -896,6 +896,8 @@ $frame = @{ width = $width; height = $height; stride = $width * 4; bytes = $byte
 Set-FixtureRect $frame 655 220 658 223 80
 Set-FixtureRect $frame 664 220 667 223 80
 Set-FixtureRect $frame 332 80 366 114 50
+# Give the avatar texture: the reader deliberately rejects solid-color boxes.
+Set-FixtureRect $frame 342 90 353 101 240
 $viewport = @{ left = 311.0; top = 0.0; width = 389.0; height = 400.0 }
 $read = Get-MomentsVisualPostCandidates $frame $viewport
 $posts = @($read.posts)

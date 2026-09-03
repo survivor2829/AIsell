@@ -313,7 +313,7 @@ assert.equal(fs.existsSync(databaseDecryptor), true, "database decryptor must be
 const manifest = JSON.parse(fs.readFileSync(path.join(target, "版本清单.json"), "utf8"));
 const declaredCapabilities = JSON.parse(fs.readFileSync(path.join(desktopDir, "release-capabilities.json"), "utf8"));
 assert.equal(manifest.edition, edition);
-assert.equal(manifest.artifactType, artifactTypeForEdition(edition));
+assert.equal(manifest.artifactType, artifactTypeForEdition(edition, process.env));
 assert.equal(manifest.product, PRODUCT_NAME);
 assert.match(manifest.buildId, /^\d{8}T\d{4}Z$/, "portable release must expose an unambiguous build id");
 assert.equal(manifest.architecture, "x64");
@@ -329,7 +329,7 @@ assert.equal(manifest.capabilityMatrix?.moments?.workflows?.perPostInteraction?.
 assert.equal(manifest.capabilityMatrix?.moments?.workflows?.dailyAutomation?.localLiveVerification, "pending");
 assert.deepEqual(manifest.capabilityMatrix?.moments?.packagedEditions, ["test", "delivery"]);
 assert.equal(manifest.verifiedWeixin, undefined, "a global verified version list must not overclaim every capability");
-assert.equal(manifest.commercialReady, edition === "delivery", "portable commercial readiness must match the verified delivery evidence");
+assert.equal(manifest.commercialReady, manifest.artifactType === "delivery", "portable commercial readiness must match the verified delivery evidence");
 assert.equal(manifest.dirty, false, "portable release must come from a clean worktree");
 assert.match(manifest.commit, /^[0-9a-f]{40}$/, "portable release must record a full git commit");
 assert.match(manifest.sourceTreeSha256, /^[0-9a-f]{64}$/, "portable release must record the packaged source tree hash");
@@ -345,14 +345,14 @@ assert.equal(manifest.contentEngineSidecar?.mediaTools?.bundled, true, "portable
 assert.equal(manifest.contentEngineSidecar?.mediaTools?.verified, true, "portable release must carry a media tools self-check proof");
 assert.equal(manifest.contentEngineSidecar?.mediaTools?.selfCheck?.status, "passed", "portable release must record a passed media tools self-check");
 assert.match(manifest.contentEngineSidecar?.mediaTools?.licenseRecord?.sha256 || "", /^[0-9a-f]{64}$/, "portable release must bind the media tools license record");
-if (edition === "delivery") {
+if (manifest.artifactType === "delivery") {
   assert.equal(manifest.contentEngineSidecar?.mediaTools?.licenseRecord?.useType, "commercial-delivery", "delivery requires commercial media tools evidence");
 }
 assert.equal(manifest.remotionRuntime?.artifactType, manifest.artifactType, "Remotion runtime must match the portable artifact type");
 assert.equal(manifest.remotionRuntime?.compositionSmokeStatus, "passed", "portable Remotion runtime must have selected the fixed composition with an explicit browser");
 assert.match(manifest.remotionRuntime?.manifestSha256 || "", /^[0-9a-f]{64}$/, "portable manifest must bind the Remotion runtime manifest digest");
 assert.match(manifest.remotionRuntime?.runtimeHash || "", /^[0-9a-f]{64}$/, "portable manifest must bind the worker runtime hash");
-if (edition === "delivery") {
+if (manifest.artifactType === "delivery") {
   assert.equal(manifest.remotionRuntime?.commercialLicenseConfirmed, true, "delivery requires a confirmed Remotion commercial basis");
 }
 assert.doesNotThrow(() => verifyPackagedRemotionRuntime(target, manifest.remotionRuntime));

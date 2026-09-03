@@ -26,6 +26,7 @@
     "build:helper": "node scripts/build-contact-helper.cjs",
     "release:test": "node scripts/run-release.cjs test",
     "release:delivery": "node scripts/run-release.cjs delivery",
+    "release:upgrade": "node scripts/run-release.cjs upgrade",
     "release:installer": "npm run check:self && npm run check:product-detail-e2e && npm run check:clean-runtime && node scripts/build-installer-release.cjs",
     "preview": "vite preview --host 127.0.0.1"
   },
