@@ -4,7 +4,8 @@ const path = require("node:path");
 const {
   MAX_MOMENTS_COMMENT_LENGTH,
   momentsPostFingerprint,
-  stableMomentsPostIdentityText
+  stableMomentsPostIdentityText,
+  momentsCommentTextContainsPrevious
 } = require("./moments_dry_run.dev.cjs");
 const { loadState, saveState } = require("./state_machine.cjs");
 const { validMomentsSurfaceRoot } = require("./moments_surface_profile.dev.cjs");
@@ -1192,12 +1193,13 @@ function similarCommentAttempts(context) {
       || attempt.real_action_attempted !== true
       || attempt.post_fingerprint === context.postFingerprint
       || !String(attempt.comment_text ?? "").trim()
-      || !stableMomentsPostIdentityText(
-        attempt.post_identity_text,
-        context.postSnapshot?.identity_text,
-        attempt.post_stable_anchor_text,
-        context.postSnapshot?.stable_anchor_text
-      )
+      || !(momentsCommentTextContainsPrevious(attempt.post_identity_text, context.postSnapshot?.identity_text)
+        || stableMomentsPostIdentityText(
+          attempt.post_identity_text,
+          context.postSnapshot?.identity_text,
+          attempt.post_stable_anchor_text,
+          context.postSnapshot?.stable_anchor_text
+        ))
     ) continue;
     matches.push({ attemptKey, attempt });
   }
@@ -1675,11 +1677,19 @@ async function executeMomentsComment(options = {}) {
     return duplicateCommentPostResult(baseDir, context, action, attemptKey, previousPostComment);
   }
   const fuzzyPreviousComments = similarCommentAttempts(context);
-  // Pixel hashes change with cropping/DPI. Text selects historical candidates;
-  // the existing read-only comment check decides presence on the current post.
+  // Crop/DPI changes must not override durable comment history. Only weaker
+  // fuzzy matches need the existing read-only comment occurrence check.
   const uncertainPrevious = fuzzyPreviousComments.find(({ attempt }) => attempt.status !== "verified");
   if (uncertainPrevious) {
     return duplicateCommentPostResult(baseDir, context, action, attemptKey, uncertainPrevious);
+  }
+  const containedPrevious = fuzzyPreviousComments.find(({ attempt }) =>
+    momentsCommentTextContainsPrevious(attempt.post_identity_text, context.postSnapshot?.identity_text));
+  if (containedPrevious) {
+    return duplicateCommentPostResult(baseDir, context, action, attemptKey, containedPrevious, {
+      stage: "comment_history_matched",
+      verification_mode: "persisted_comment_contained_text"
+    });
   }
 
   let driver;

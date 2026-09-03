@@ -22,7 +22,8 @@ const {
 const {
   momentsPostDisplacementMatches,
   momentsPostTextOverlap,
-  stableMomentsPostIdentityText
+  stableMomentsPostIdentityText,
+  momentsCommentTextContainsPrevious
 } = require("../../rpa/active_touch/moments_dry_run.dev.cjs");
 
 const DEFAULT_MAX_POSTS = 10;
@@ -31,7 +32,6 @@ const DAILY_BUSY_RETRY_MS = 60_000;
 const DAILY_FAILURE_RETRY_MS = 30 * 60_000;
 const AUTOMATED_WINDOW_IDLE_MS = 15_000;
 const MOMENTS_PRE_ACTION_SURFACE_RETRY_MS = 350;
-const WORKFLOW_SCAN_LIMIT = 4;
 
 function readJson(file, fallback = {}) {
   try {
@@ -233,6 +233,9 @@ function findProcessedPostMatch(markers, snapshot) {
       return { matched: true, mode: "exact_fingerprint" };
     }
     const visualSources = marker.source.startsWith("visual:") && current.source.startsWith("visual:");
+    if (visualSources && momentsCommentTextContainsPrevious(marker.identityText, current.identityText)) {
+      return { matched: true, mode: "contained_visual_text" };
+    }
     const stableAvatar = /^[0-9a-f]{64}$/u.test(marker.avatarHash)
       && marker.avatarHash === current.avatarHash;
     if (visualSources && stableAvatar && stableMomentsPostIdentityText(
@@ -493,9 +496,9 @@ function createMomentsCampaignController(options = {}) {
       };
 
       const processedPostMarkers = workflowContext ? [...workflowContext.progress.processed_posts] : [];
-      let workflowScans = 0;
       let emptyScans = 0;
       let repeatedFingerprintScans = 0;
+      let lastRepeatedPostMarker = null;
       let noProgressScreens = 0;
       let pendingSnapshots = [];
       let pendingObservation = null;
@@ -504,11 +507,6 @@ function createMomentsCampaignController(options = {}) {
 
       while (successfulPostCount() < state.max_posts) {
         if (shouldStop()) return;
-        if (workflowContext && workflowScans >= WORKFLOW_SCAN_LIMIT) {
-          finish("partial", "workflow_yielded");
-          return;
-        }
-        workflowScans += 1;
         const usingPendingSnapshot = pendingSnapshots.length > 0;
         if (!usingPendingSnapshot) {
           successfulCountAtScreenStart = successfulPostCount();
@@ -849,20 +847,18 @@ function createMomentsCampaignController(options = {}) {
                 target: dailyState.target
               });
             }
-            if (workflowContext) {
-              const reachedTarget = successfulPostCount() >= state.max_posts;
-              finish(reachedTarget ? "completed" : "partial", reachedTarget ? "target_count_reached" : "workflow_yielded");
-              return;
-            }
           } else {
-            repeatedFingerprintScans += 1;
+            repeatedFingerprintScans = lastRepeatedPostMarker
+              && findProcessedPostMatch([lastRepeatedPostMarker], observed.post_snapshot).matched
+              ? repeatedFingerprintScans + 1 : 1;
+            lastRepeatedPostMarker = campaignPostMarker(observed.post_snapshot);
             persist({ last_reason: "post_already_processed_in_run" });
             record("campaign.post_already_processed", {
               post_fingerprint: fingerprint,
               match_mode: processedMatch.mode
             });
-            if (repeatedFingerprintScans >= 3 && !workflowContext) {
-              finish("partial", "target_not_reached");
+            if (repeatedFingerprintScans >= 3) {
+              finish("partial", "moments_no_new_posts");
               return;
             }
           }
@@ -1117,7 +1113,7 @@ function createMomentsCampaignController(options = {}) {
         isEnabled,
         progress: { ...stored, done: progress.done, processed_posts: Array.isArray(stored.processed_posts) ? stored.processed_posts : [] }
       };
-      const started = start({ ...config.payload, maxPosts: 1 }, { workflow: true });
+      const started = start({ ...config.payload, maxPosts: progress.total - progress.done }, { workflow: true });
       if (!started.ok) {
         return response(started.reason === "wechat_operation_busy" ? "pending" : "needs_attention", started.reason);
       }

@@ -103,6 +103,16 @@ function stableMomentsPostIdentityText(firstIdentity, secondIdentity, firstAncho
   return stableMomentsContentSimilarity(firstAnchor, secondAnchor);
 }
 
+// Duplicate suppression only, never proof authorizing a click or a send.
+// A longer OCR crop can prepend/append text without changing the underlying post.
+function momentsCommentTextContainsPrevious(first, second) {
+  const left = normalizeMomentsStableContentText(first);
+  const right = normalizeMomentsStableContentText(second);
+  const shorter = left.length <= right.length ? left : right;
+  const longer = left.length <= right.length ? right : left;
+  return shorter.length >= 24 && shorter.length >= longer.length / 2 && longer.includes(shorter);
+}
+
 function normalizedMomentsPostText(value) {
   return String(value ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim();
 }
@@ -1358,5 +1368,6 @@ module.exports = {
   probeWechatMomentsWindow,
   stableMomentsContentSimilarity,
   stableMomentsPostIdentityText,
+  momentsCommentTextContainsPrevious,
   stableMomentsPostLabel
 };

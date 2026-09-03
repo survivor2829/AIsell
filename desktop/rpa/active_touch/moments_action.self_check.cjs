@@ -2936,6 +2936,26 @@ async function main() {
     assert.equal(fuzzyVerifiedOccurrenceChecks, 1);
     assert.equal(fuzzyVerifiedDriverCalls, 0);
 
+    const expandedComment = `${COMMENT_TEXT} expanded crop`;
+    const expandedCurrent = updateVisualFixtureIdentity(fuzzyVerifiedFixture, {
+      identityText: `new visible heading ${fuzzyVerifiedSnapshot.identity_text}`,
+      stableAnchorText: "",
+      avatarHash: "b".repeat(64),
+      commentText: expandedComment
+    });
+    let expandedDriverCalls = 0;
+    const expandedResult = await executeMomentsComment({
+      ...expandedCurrent,
+      commentText: expandedComment,
+      driver: {
+        commentOccurrenceCheck: () => { expandedDriverCalls += 1; return { ok: true, commentOccurrence: "absent" }; },
+        comment: () => { expandedDriverCalls += 1; throw new Error("expanded OCR must not resend a persisted comment"); }
+      }
+    });
+    assert.equal(expandedResult.blocked_reason, "moments_comment_post_already_attempted");
+    assert.equal(expandedResult.previous_status, "verified");
+    assert.equal(expandedDriverCalls, 0, "known comment history must survive crop changes without another send or readback gate");
+
     const fuzzyUnresolvedSeed = visualPreparedDirectory(root, "comment-fuzzy-occurrence-unresolved");
     const fuzzyUnresolvedFixture = updateVisualFixtureIdentity(fuzzyUnresolvedSeed, {
       identityText: "author stable post content 2034567890",

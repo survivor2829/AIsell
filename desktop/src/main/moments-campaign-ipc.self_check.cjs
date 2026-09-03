@@ -1333,7 +1333,10 @@ async function main() {
   assert.equal(combinedCompleted.last_reason, "target_count_reached");
 
   const workflowYieldRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-workflow-yield-"));
-  const workflowYieldFingerprints = ["f".repeat(64), "g".repeat(64)];
+  const workflowYieldFingerprints = ["f".repeat(64), "g".repeat(64), "i".repeat(64), "h".repeat(64)];
+  const continuousPostText = "workshop maintenance training and practical equipment installation";
+  let workflowOpenCalls = 0;
+  let workflowScrollCalls = 0;
   let workflowYieldDryRuns = 0;
   let workflowYieldLikeCalls = 0;
   let workflowYieldCommentCalls = 0;
@@ -1344,11 +1347,12 @@ async function main() {
       release: () => undefined
     },
     logger: { event: () => undefined },
-    openMoments: async () => STANDALONE_OPEN_RESULT,
+    openMoments: async () => { workflowOpenCalls += 1; return STANDALONE_OPEN_RESULT; },
+    scrollMoments: async () => { workflowScrollCalls += 1; return { ok: true }; },
     generateComment: async () => ({ comment: "workflow comment test" }),
     runStep: async (args) => {
       if (args[0] === "moments-dry-run") {
-        const fingerprint = workflowYieldFingerprints[Math.min(workflowYieldDryRuns, 1)];
+        const fingerprint = workflowYieldFingerprints[Math.min(workflowYieldDryRuns, 3)];
         workflowYieldDryRuns += 1;
         return {
           ok: true,
@@ -1356,7 +1360,10 @@ async function main() {
           post_snapshot: {
             observation_id: fingerprint,
             post_fingerprint: fingerprint,
-            identity_text: `workflow post ${fingerprint[0]}`
+            identity_text: fingerprint[0] === "g" ? continuousPostText
+              : fingerprint[0] === "i" ? `additional visible introduction ${continuousPostText}` : `workflow post ${fingerprint[0]}`,
+            source: "visual:mmui",
+            avatar_hash: (fingerprint[0] === "i" ? "b" : "a").repeat(64)
           },
           plan: { visible_post_count: 1 }
         };
@@ -1388,7 +1395,7 @@ async function main() {
   const workflowTask = {
     id: "workflow-yield-task",
     payload: {
-      maxPosts: 1,
+      maxPosts: 2,
       likeEnabled: true,
       commentEnabled: true
     },
@@ -1398,16 +1405,16 @@ async function main() {
     workflowTask,
     { isEnabled: () => true }
   );
-  assert.equal(workflowYieldFirst.status, "pending");
+  assert.equal(workflowYieldFirst.status, "completed");
   const workflowYieldFirstState = workflowYieldController.status().state;
-  assert.equal(workflowYieldFirstState.status, "partial");
-  assert.equal(workflowYieldFirstState.last_reason, "workflow_yielded");
-  assert.equal(workflowYieldFirstState.processed_count, 1);
-  assert.equal(workflowYieldFirstState.new_completed_post_count, 0);
-  assert.equal(workflowYieldFirstState.completed_post_count, 0);
+  assert.equal(workflowYieldFirstState.status, "completed");
+  assert.equal(workflowYieldFirstState.last_reason, "target_count_reached");
+  assert.equal(workflowYieldFirstState.processed_count, 3);
+  assert.equal(workflowYieldFirstState.new_completed_post_count, 2);
+  assert.equal(workflowYieldFirstState.completed_post_count, 2);
   assert.equal(workflowYieldFirstState.comment_skipped_count, 1);
-  assert.equal(workflowYieldFirstState.commented_count, 0);
-  assert.equal(workflowYieldFirstState.liked_count, 1);
+  assert.equal(workflowYieldFirstState.commented_count, 2);
+  assert.equal(workflowYieldFirstState.liked_count, 3);
 
   const workflowYieldSecond = await workflowYieldController.runWorkflowStep(
     workflowTask,
@@ -1417,16 +1424,18 @@ async function main() {
   const workflowYieldSecondState = workflowYieldController.status().state;
   assert.equal(workflowYieldSecondState.status, "completed");
   assert.equal(workflowYieldSecondState.last_reason, "target_count_reached");
-  assert.equal(workflowYieldSecond.progress.scanned, 2);
-  assert.equal(workflowYieldSecondState.new_completed_post_count, 1);
-  assert.equal(workflowYieldSecondState.completed_post_count, 1);
+  assert.equal(workflowYieldSecond.progress.scanned, 3);
+  assert.equal(workflowYieldSecondState.new_completed_post_count, 2);
+  assert.equal(workflowYieldSecondState.completed_post_count, 2);
   assert.equal(workflowYieldSecond.progress.skipped, 1);
-  assert.equal(workflowYieldSecond.progress.commented, 1);
-  assert.equal(workflowYieldSecond.progress.liked, 2);
-  assert.equal(workflowYieldController.workflowProgress(workflowTask).liked, 2, "persist cumulative results after yielding");
-  assert.equal(workflowYieldDryRuns, 2);
-  assert.equal(workflowYieldLikeCalls, 2);
-  assert.equal(workflowYieldCommentCalls, 2);
+  assert.equal(workflowYieldSecond.progress.commented, 2);
+  assert.equal(workflowYieldSecond.progress.liked, 3);
+  assert.equal(workflowYieldController.workflowProgress(workflowTask).liked, 3, "persist cumulative results during one continuous batch");
+  assert.equal(workflowYieldDryRuns, 4);
+  assert.equal(workflowYieldLikeCalls, 3);
+  assert.equal(workflowYieldCommentCalls, 3, "a larger OCR crop of the completed post must not cause another comment");
+  assert.equal(workflowOpenCalls, 1, "one batch must open Moments only once");
+  assert.equal(workflowScrollCalls, 3, "skip the old post and keep scrolling without yielding to chat");
 
   const directInteractionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-direct-interaction-"));
   const directInteractionFingerprint = "c".repeat(64);
