@@ -63,6 +63,8 @@ const allowedSourceKeyFixtures = new Set([
 // behavior. They are source-only test fixtures: the portable release scan below
 // intentionally receives no exception.
 for (const fixture of [
+  path.join(desktopDir, "src", "main", "auto-reply-ipc.self_check.cjs"),
+  path.join(desktopDir, "src", "main", "diagnostics-ipc.self_check.cjs"),
   path.join(desktopDir, "sidecars", "content-engine", "tests", "test_motion_director.py"),
   path.join(desktopDir, "sidecars", "content-engine", "tests", "test_provider_security.py"),
   path.join(desktopDir, "src", "main", "content-engine-ipc.self_check.cjs"),
