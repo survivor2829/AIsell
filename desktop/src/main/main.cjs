@@ -9,6 +9,7 @@ const { registerAiExpertIpc } = require("./ai-expert-ipc.cjs");
 const { registerContactSyncIpc } = require("./contact-sync-ipc.cjs");
 const { migrateLegacyRuntimeData, resolveRuntimePaths } = require("./runtime-data.cjs");
 const { registerTouchTaskIpc } = require("./touch-task-ipc.cjs");
+const { registerWechatWorkflowIpc } = require("./wechat-workflow-ipc.cjs");
 const { createRuntimeCoordinator } = require("./runtime-coordinator.cjs");
 const { DEEPSEEK_MODEL, createDeepSeekClient, createDeepSeekKeyStore } = require("./deepseek-api.cjs");
 const { registerDeepSeekApiIpc } = require("./deepseek-api-ipc.cjs");
@@ -49,6 +50,7 @@ let mainWindow = null;
 let disarmRealSend = null;
 let touchTaskController = null;
 let autoReplyController = null;
+let workflowController = null;
 let momentsCampaignController = null;
 let momentsPublishController = null;
 let productDetailController = null;
@@ -404,6 +406,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     if (momentsCampaign) {
       momentsCampaignController = momentsCampaign.registerMomentsCampaignIpc({
+        workflowManaged: true,
         baseDir: runtime.momentsDir,
         coordinator,
         deepSeekClient,
@@ -425,7 +428,10 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       momentsPublishController.initialize();
     }
     if (internalRealSend) disarmRealSend = () => internalRealSend.setRealSendArm(runtime.activeTouchDir, false);
-    registerContactSyncIpc({ dataDir: runtime.contactSyncDir, activeTouchDir: runtime.activeTouchDir, coordinator });
+    registerContactSyncIpc({
+      dataDir: runtime.contactSyncDir, activeTouchDir: runtime.activeTouchDir, coordinator,
+      withProgress: (operation, readProgress) => workflowController.runContactSync(operation, readProgress)
+    });
     registerDiagnosticsIpc({ autoReplyDir: runtime.autoReplyDir });
     registerDeepSeekApiIpc({
       keyStore: deepSeekKeyStore,
@@ -475,7 +481,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       getMainWindow: () => mainWindow
     });
     contentEngineController.start().catch(() => undefined);
-    registerAiExpertIpc({ store: aiExpertStore, isAutoReplyRunning: () => ["starting", "running"].includes(autoReplyController?.status().status) });
+    registerAiExpertIpc({ store: aiExpertStore, deepSeekClient, isAutoReplyRunning: () => ["starting", "running"].includes(autoReplyController?.status().status) });
     if (internalRealSend) {
       autoReplyController = registerAutoReplyIpc({
         getMainWindow: () => mainWindow,
@@ -511,6 +517,28 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       verifyMessageBubble: internalRealSend.verifyMessageBubble,
       onPause: disarmRealSend || undefined
     });
+    workflowController = registerWechatWorkflowIpc({
+      ...runtime,
+      logger,
+      getMomentsProgress: (task) => momentsCampaignController?.workflowProgress(task),
+      getMainWindow: () => mainWindow,
+      isQuitting: () => quitCleanupStarted,
+      preloadPath: path.join(__dirname, preloadFile),
+      rendererPath: path.join(__dirname, `../../${rendererDir}/index.html`),
+      getAccount: () => {
+        try { return String(JSON.parse(fs.readFileSync(path.join(runtime.contactSyncDir, "state.json"), "utf8")).account_name || ""); }
+        catch { return ""; }
+      },
+      executors: {
+        touch: {
+          prepareWorkflowTask: (_id, payload) => touchTaskController.prepareWorkflowTask(payload),
+          runWorkflowStep: (task, context) => touchTaskController.runWorkflowStep(task, context)
+        },
+        publish: momentsPublishController,
+        interact: momentsCampaignController
+      },
+      reply: autoReplyController
+    });
     createWindow();
     productDetailDownloadRegistration = registerProductDetailDownloads({
       session: mainWindow.webContents.session,
@@ -543,6 +571,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       Promise.allSettled([
         Promise.resolve(productDetailController?.dispose()),
         Promise.resolve(contentEngineController?.dispose()),
+        Promise.resolve(workflowController?.dispose()),
         Promise.resolve(momentsPublishController?.dispose())
       ]),
       cleanupTimeout

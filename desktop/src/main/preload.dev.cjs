@@ -7,6 +7,7 @@ const {
 } = require("./preload-api.cjs");
 
 const apis = createPreloadApis(ipcRenderer);
+contextBridge.exposeInMainWorld("xiaoxiWorkflow", apis.workflow);
 const consumeRealSendClick = createTrustedClickGate("[data-xiaoxi-real-send]");
 const consumeMomentsInspectClick = createTrustedClickGate("[data-xiaoxi-moments-inspect]");
 const consumeMomentsLikeClick = createTrustedClickGate("[data-xiaoxi-moments-like]");

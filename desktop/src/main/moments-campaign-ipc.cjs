@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { ipcMain } = require("electron");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
+const { readWorkflowJson, workflowDirectory } = require("./moments-workflow-storage.cjs");
 const { floatingProgressPosition } = require("./floating-progress-window.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
 const { runActiveTouchDev } = require("./active-touch-ipc.cjs");
@@ -29,6 +30,8 @@ const MAX_POSTS_PER_RUN = 50;
 const DAILY_BUSY_RETRY_MS = 60_000;
 const DAILY_FAILURE_RETRY_MS = 30 * 60_000;
 const AUTOMATED_WINDOW_IDLE_MS = 15_000;
+const MOMENTS_PRE_ACTION_SURFACE_RETRY_MS = 350;
+const WORKFLOW_SCAN_LIMIT = 4;
 
 function readJson(file, fallback = {}) {
   try {
@@ -50,6 +53,7 @@ function publicState(value = {}) {
     already_liked_count: Number(value.already_liked_count || 0),
     commented_count: Number(value.commented_count || 0),
     comment_skipped_count: Number(value.comment_skipped_count || 0),
+    last_comment_skip_reason: String(value.last_comment_skip_reason || ""),
     skipped_count: Number(value.skipped_count || 0),
     scroll_count: Number(value.scroll_count || 0),
     current_post: Number(value.current_post || 0),
@@ -263,6 +267,8 @@ function createMomentsCampaignController(options = {}) {
   let pendingPauseReason = "";
   let stopRequested = false;
   let loopPromise = null;
+  let workflowContext = null;
+  let workflowManaged = options.workflowManaged === true;
   let dailyAutomation = null;
   const initialRoot = readJson(stateFile);
   let state = publicState(initialRoot.moments_campaign);
@@ -278,10 +284,12 @@ function createMomentsCampaignController(options = {}) {
       max_posts: state.max_posts,
       processed_count: state.processed_count,
       completed_post_count: state.completed_post_count,
+      new_completed_post_count: state.new_completed_post_count,
       liked_count: state.liked_count,
       already_liked_count: state.already_liked_count,
       commented_count: state.commented_count,
       comment_skipped_count: state.comment_skipped_count,
+      last_comment_skip_reason: state.last_comment_skip_reason,
       skipped_count: state.skipped_count,
       scroll_count: state.scroll_count,
       current_post: state.current_post,
@@ -299,6 +307,15 @@ function createMomentsCampaignController(options = {}) {
   function writeState(campaignPatch = null, dailyPatch = null) {
     const updatedAt = now().toISOString();
     if (campaignPatch) {
+      if (workflowContext) {
+        const metrics = { ...workflowContext.progress.metrics };
+        for (const key of ["processed_count", "liked_count", "already_liked_count", "commented_count", "comment_skipped_count", "scroll_count"]) {
+          const delta = Math.max(0, Number(campaignPatch[key] ?? state[key]) - Number(state[key] || 0));
+          metrics[key] = Number(metrics[key] || 0) + delta;
+        }
+        saveWorkflowProgress({ metrics, stage: campaignPatch.last_reason || state.last_reason,
+          skip_reason: campaignPatch.last_comment_skip_reason ?? workflowContext.progress.skip_reason ?? "" });
+      }
       state = publicState({ ...state, ...campaignPatch, updated_at: updatedAt });
     }
     if (dailyPatch) {
@@ -386,10 +403,17 @@ function createMomentsCampaignController(options = {}) {
       outcome_unknown: finishOptions.outcomeUnknown === true
     });
     record(`campaign.${status}`, { reason }, status === "completed" ? "info" : "warn");
+    if (workflowContext && finishOptions.outcomeUnknown === true) {
+      saveWorkflowProgress({ outcome_unknown: true, last_reason: reason });
+    }
     if (automatedRun) dailyAutomation.planAfterCampaign(status, reason);
   }
 
   function shouldStop() {
+    if (workflowContext && !workflowContext.isEnabled()) {
+      finish("partial", "workflow_yielded");
+      return true;
+    }
     if (stopRequested) {
       finish("stopped", "stopped_by_user");
       return true;
@@ -402,6 +426,7 @@ function createMomentsCampaignController(options = {}) {
   }
 
   function successfulPostCount() {
+    if (workflowContext) return state.new_completed_post_count;
     if (state.comment_enabled) return state.commented_count;
     return state.automated_run
       ? state.new_completed_post_count
@@ -467,7 +492,8 @@ function createMomentsCampaignController(options = {}) {
         return { ok: true };
       };
 
-      const processedPostMarkers = [];
+      const processedPostMarkers = workflowContext ? [...workflowContext.progress.processed_posts] : [];
+      let workflowScans = 0;
       let emptyScans = 0;
       let repeatedFingerprintScans = 0;
       let noProgressScreens = 0;
@@ -478,6 +504,11 @@ function createMomentsCampaignController(options = {}) {
 
       while (successfulPostCount() < state.max_posts) {
         if (shouldStop()) return;
+        if (workflowContext && workflowScans >= WORKFLOW_SCAN_LIMIT) {
+          finish("partial", "workflow_yielded");
+          return;
+        }
+        workflowScans += 1;
         const usingPendingSnapshot = pendingSnapshots.length > 0;
         if (!usingPendingSnapshot) {
           successfulCountAtScreenStart = successfulPostCount();
@@ -505,6 +536,18 @@ function createMomentsCampaignController(options = {}) {
         const initialObservationReason = String(
           observed?.blocked_reason || observed?.reason || ""
         );
+        let surfaceRetryCount = 0;
+        if (!observed?.ok && initialObservationReason === "moments_integrated_surface_not_proven") {
+          persist({ last_reason: "stabilizing_moments_surface" });
+          record("campaign.observation_retry", {
+            reason: initialObservationReason,
+            retry_count: 1
+          });
+          await new Promise((resolve) => setTimeout(resolve, MOMENTS_PRE_ACTION_SURFACE_RETRY_MS));
+          if (shouldStop()) return;
+          observed = await runObservation();
+          surfaceRetryCount = 1;
+        }
         if (!observed?.ok && initialObservationReason === "moments_window_not_foreground") {
           const recovered = await recoverLockedSurfaceForeground(initialObservationReason);
           observed = recovered.ok
@@ -522,6 +565,7 @@ function createMomentsCampaignController(options = {}) {
             visible_post_count: observed?.plan?.visible_post_count || 0,
             candidate_count: Array.isArray(observed?.post_snapshots) ? observed.post_snapshots.length : 0,
             duration_ms: Date.now() - observationStartedAt,
+            surface_retry_count: surfaceRetryCount,
             visual: observed?.diagnostics?.visual,
             ...positionDiagnostics
           }, observed?.ok ? "info" : "warn");
@@ -605,6 +649,15 @@ function createMomentsCampaignController(options = {}) {
             let alreadyLikedCount = 0;
             let itemSkipped = 0;
             const menuOnlyTarget = observed.post_snapshot?.menu_only === true;
+            if (workflowContext) {
+              if (shouldStop()) return;
+              // Write before the first possible external action. On restart an
+              // unfinished post requires attention instead of repeating it.
+              saveWorkflowProgress({
+                in_flight: campaignPostMarker(observed.post_snapshot),
+                last_reason: "post_started"
+              });
+            }
             if (state.like_enabled && preparedObservationId) {
               persist({ last_reason: "executing_like" });
               const likeStartedAt = Date.now();
@@ -680,8 +733,15 @@ function createMomentsCampaignController(options = {}) {
             }
 
             let commentedCount = 0;
+            // A verified like is a completed action even when the subsequent
+            // comment fails. Publish and persist it before opening the editor.
+            persist({ liked_count: state.liked_count + likedCount,
+              already_liked_count: state.already_liked_count + alreadyLikedCount });
             if (state.comment_enabled && commentText) {
-              persist({ last_reason: "executing_comment" });
+              persist({
+                last_reason: "opening_comment_composer",
+                last_comment_skip_reason: ""
+              });
               const commentStartedAt = Date.now();
               const commented = await runStep(
                 [
@@ -754,6 +814,14 @@ function createMomentsCampaignController(options = {}) {
               ? commentedCount
               : (likeSucceededForPost ? 1 : 0);
             const newCompletedPostCount = completedPostCount > 0 && likedCount + commentedCount > 0 ? 1 : 0;
+            if (workflowContext) {
+              saveWorkflowProgress({
+                done: workflowContext.progress.done + newCompletedPostCount,
+                processed_posts: processedPostMarkers,
+                in_flight: null,
+                last_reason: lastReason
+              });
+            }
             const dailyPatch = dailyAutomation.buildProgressPatch(
               fingerprint,
               newCompletedPostCount,
@@ -763,10 +831,9 @@ function createMomentsCampaignController(options = {}) {
               processed_count: state.processed_count + 1,
               completed_post_count: state.completed_post_count + completedPostCount,
               new_completed_post_count: state.new_completed_post_count + newCompletedPostCount,
-              liked_count: state.liked_count + likedCount,
-              already_liked_count: state.already_liked_count + alreadyLikedCount,
               commented_count: state.commented_count + commentedCount,
               comment_skipped_count: state.comment_skipped_count + (commentSkipped ? 1 : 0),
+              last_comment_skip_reason: commentSkipped ? lastReason : "",
               skipped_count: state.skipped_count + itemSkipped + (!state.like_enabled && !commentedCount ? 1 : 0),
               last_reason: lastReason
             }, dailyPatch);
@@ -779,6 +846,11 @@ function createMomentsCampaignController(options = {}) {
                 target: dailyState.target
               });
             }
+            if (workflowContext) {
+              const reachedTarget = successfulPostCount() >= state.max_posts;
+              finish(reachedTarget ? "completed" : "partial", reachedTarget ? "target_count_reached" : "workflow_yielded");
+              return;
+            }
           } else {
             repeatedFingerprintScans += 1;
             persist({ last_reason: "post_already_processed_in_run" });
@@ -786,7 +858,7 @@ function createMomentsCampaignController(options = {}) {
               post_fingerprint: fingerprint,
               match_mode: processedMatch.mode
             });
-            if (repeatedFingerprintScans >= 3) {
+            if (repeatedFingerprintScans >= 3 && !workflowContext) {
               finish("partial", "target_not_reached");
               return;
             }
@@ -807,7 +879,7 @@ function createMomentsCampaignController(options = {}) {
             limit: 2,
             reason: String(observed?.blocked_reason || observed?.reason || state.last_reason || "")
           }, "warn");
-          if (noProgressScreens >= 2) {
+          if (noProgressScreens >= 2 && !workflowContext) {
             finish("partial", "no_progress");
             return;
           }
@@ -834,7 +906,9 @@ function createMomentsCampaignController(options = {}) {
       }
     } catch (error) {
       record("campaign.failed", { error }, "error");
-      finish("paused", error?.code || "moments_campaign_failed");
+      finish("paused", error?.code || "moments_campaign_failed", {
+        outcomeUnknown: Boolean(workflowContext?.progress?.in_flight)
+      });
     } finally {
       try {
         if (lockOwner) coordinator?.release?.(lockOwner);
@@ -844,6 +918,9 @@ function createMomentsCampaignController(options = {}) {
   }
 
   function start(payload = {}, runOptions = {}) {
+    if (workflowManaged && !runOptions.workflow) {
+      return { ok: false, reason: "workflow_managed", state: snapshot() };
+    }
     if (loopPromise) {
       record("campaign.start_rejected", { reason: "moments_campaign_already_running" }, "warn");
       return { ok: false, reason: "moments_campaign_already_running", state: snapshot() };
@@ -869,7 +946,7 @@ function createMomentsCampaignController(options = {}) {
     try {
       lock = coordinator?.acquire?.({
         state: "running_moments",
-        taskId: `moments-${Date.now()}`,
+        taskId: workflowContext?.taskId || `moments-${Date.now()}`,
         account: "unknown",
         phase: "moments:campaign"
       });
@@ -890,28 +967,34 @@ function createMomentsCampaignController(options = {}) {
     }
     pendingPauseReason = "";
     stopRequested = false;
-    writeState({
-      status: "running",
-      max_posts: maxPosts,
-      processed_count: 0,
-      completed_post_count: 0,
-      new_completed_post_count: 0,
-      liked_count: 0,
-      already_liked_count: 0,
-      commented_count: 0,
-      comment_skipped_count: 0,
-      skipped_count: 0,
-      scroll_count: 0,
-      current_post: 1,
-      like_enabled: likeEnabled,
-      comment_enabled: commentEnabled,
-      comment_guidance: commentGuidance,
-      automated_run: automatedRun,
-      daily_tracking: dailyTracking,
-      outcome_unknown: false,
-      last_reason: "starting",
-      started_at: now().toISOString()
-    }, automatedRun ? dailyAutomation.markRunStarted() : null);
+    try {
+      writeState({
+        status: "running",
+        max_posts: maxPosts,
+        processed_count: 0,
+        completed_post_count: 0,
+        new_completed_post_count: 0,
+        liked_count: 0,
+        already_liked_count: 0,
+        commented_count: 0,
+        comment_skipped_count: 0,
+        last_comment_skip_reason: "",
+        skipped_count: 0,
+        scroll_count: 0,
+        current_post: 1,
+        like_enabled: likeEnabled,
+        comment_enabled: commentEnabled,
+        comment_guidance: commentGuidance,
+        automated_run: automatedRun,
+        daily_tracking: dailyTracking,
+        outcome_unknown: false,
+        last_reason: "starting",
+        started_at: now().toISOString()
+      }, automatedRun ? dailyAutomation.markRunStarted() : null);
+    } catch (error) {
+      try { coordinator?.release?.(lock.lock.owner); } catch {}
+      return { ok: false, reason: error?.code || "moments_campaign_state_persist_failed", state: snapshot() };
+    }
     record("campaign.started", {
       max_posts: maxPosts,
       like_enabled: likeEnabled,
@@ -959,16 +1042,135 @@ function createMomentsCampaignController(options = {}) {
         last_reason: "app_restarted_pending_resume"
       });
     }
+    if (workflowManaged) {
+      dailyAutomation.dispose();
+      return { ok: true, state: snapshot() };
+    }
     return dailyAutomation.initialize();
   }
 
+  function saveWorkflowProgress(patch) {
+    const next = { ...workflowContext.progress, ...patch, updated_at: now().toISOString() };
+    writeStateJson(workflowContext.file, next);
+    workflowContext.progress = next;
+  }
+
+  function workflowProgress(task) {
+    const date = String(task.occurrenceDate || "once");
+    if (date !== "once" && !/^\d{4}-\d{2}-\d{2}$/u.test(date)) throw new Error("任务日期无效，请查看任务详情。");
+    const stored = workflowContext?.taskId === task.id ? workflowContext.progress
+      : readWorkflowJson(path.join(workflowDirectory(path.join(baseDir, "planned_runs"), task.id), `${date}.json`), {});
+    const metrics = stored.metrics || {};
+    return { done: Number(stored.done || 0), total: task.progress?.total || 1,
+      liked: Number(metrics.liked_count || 0), alreadyLiked: Number(metrics.already_liked_count || 0),
+      commented: Number(metrics.commented_count || 0), skipped: Number(metrics.comment_skipped_count || 0),
+      scanned: Number(metrics.processed_count || 0), scrolled: Number(metrics.scroll_count || 0),
+      stage: stored.stage || stored.last_reason || "", skipReason: stored.skip_reason || "" };
+  }
+
+  function prepareWorkflowTask(taskId, payload = {}) {
+    try {
+      workflowDirectory(path.join(baseDir, "planned_runs"), taskId);
+      const maxPosts = Math.max(1, Math.min(MAX_POSTS_PER_RUN, Math.floor(Number(payload.maxPosts ?? payload.target) || DEFAULT_MAX_POSTS)));
+      const config = {
+        maxPosts,
+        likeEnabled: payload.likeEnabled !== false,
+        commentEnabled: payload.commentEnabled === true,
+        commentGuidance: sanitizeCommentGuidance(payload.commentGuidance)
+      };
+      if (!config.likeEnabled && !config.commentEnabled) return { ok: false, reason: "moments_action_missing" };
+      if (config.commentEnabled && typeof generateComment !== "function") {
+        return { ok: false, reason: "moments_comment_ai_unavailable" };
+      }
+      return { ok: true, payload: config };
+    } catch (error) {
+      return { ok: false, reason: error?.code || "moments_workflow_config_invalid" };
+    }
+  }
+
+  async function runWorkflowStep(taskRecord, runOptions = {}) {
+    const config = prepareWorkflowTask(taskRecord.id, taskRecord.payload);
+    const isEnabled = typeof runOptions.isEnabled === "function" ? runOptions.isEnabled : () => false;
+    let progress = { done: Number(taskRecord.progress?.done || 0), total: config.payload?.maxPosts || 1 };
+    const response = (status, error = "") => ({ status, progress: { ...progress,
+      ...(workflowContext ? workflowProgress({ ...taskRecord, progress }) : {}) }, ...(error ? { error } : {}) });
+    if (!config.ok) return response("needs_attention", config.reason);
+    if (!isEnabled() || loopPromise || workflowContext) return response("pending");
+    try {
+      const date = String(taskRecord.occurrenceDate || "once");
+      if (date !== "once" && !/^\d{4}-\d{2}-\d{2}$/u.test(date)) return response("needs_attention", "workflow_occurrence_date_invalid");
+      const file = path.join(workflowDirectory(path.join(baseDir, "planned_runs"), taskRecord.id), `${date}.json`);
+      const stored = readWorkflowJson(file, { done: 0, processed_posts: [], in_flight: null });
+      progress = { ...workflowProgress(taskRecord), done: Math.max(0, Number(stored.done || 0)), total: config.payload.maxPosts };
+      if (stored.in_flight || stored.outcome_unknown) {
+        return response("needs_attention", stored.outcome_unknown
+          ? (stored.last_reason || "moments_interaction_outcome_unknown")
+          : "moments_interaction_outcome_unknown");
+      }
+      if (progress.done >= progress.total) return response("completed");
+      workflowContext = {
+        taskId: String(taskRecord.id),
+        file,
+        isEnabled,
+        progress: { ...stored, done: progress.done, processed_posts: Array.isArray(stored.processed_posts) ? stored.processed_posts : [] }
+      };
+      const started = start({ ...config.payload, maxPosts: 1 }, { workflow: true });
+      if (!started.ok) {
+        return response(started.reason === "wechat_operation_busy" ? "pending" : "needs_attention", started.reason);
+      }
+      await loopPromise;
+      progress = { done: workflowContext.progress.done, total: config.payload.maxPosts };
+      if (workflowContext.progress.in_flight || state.outcome_unknown) {
+        return response("needs_attention", state.last_reason || "moments_interaction_outcome_unknown");
+      }
+      if (progress.done >= progress.total) return response("completed");
+      if (state.status === "completed" || state.last_reason === "workflow_yielded") {
+        if (!isEnabled()) return response("pending");
+        const emptySteps = state.processed_count > 0 ? 0 : Number(stored.empty_steps || 0) + 1;
+        saveWorkflowProgress({ empty_steps: emptySteps });
+        return emptySteps >= 3 ? response("needs_attention", "moments_no_new_posts") : response("pending");
+      }
+      return response("needs_attention", state.last_reason || "moments_interaction_incomplete");
+    } catch (error) {
+      return response("needs_attention", error?.code || "moments_workflow_failed");
+    } finally {
+      workflowContext = null;
+    }
+  }
+
+  function canRetryWorkflowTask(task) {
+    if (!/^[a-f0-9-]{36}$/u.test(String(task.id)) || !/^(?:once|\d{4}-\d{2}-\d{2})$/u.test(String(task.occurrenceDate || "once"))) return false;
+    const file = path.join(baseDir, "planned_runs", task.id, `${task.occurrenceDate || "once"}.json`);
+    const stored = readWorkflowJson(file, null);
+    // Require a persisted pre-action run, not merely a zero on the progress bar.
+    return Boolean(stored && stored.metrics && Array.isArray(stored.processed_posts)
+      && stored.processed_posts.length === 0 && !stored.in_flight && !stored.outcome_unknown
+      && stored.done === 0
+      && ["liked_count", "commented_count", "processed_count"].every((key) => stored.metrics[key] === 0));
+  }
+
+  function setWorkflowManaged(value) {
+    workflowManaged = value === true;
+    if (workflowManaged) dailyAutomation.dispose();
+    return { ok: true, state: snapshot() };
+  }
+
   return {
-    configureDaily: dailyAutomation.configure,
+    configureDaily: (payload) => workflowManaged
+      ? { ok: false, reason: "workflow_managed", state: snapshot() }
+      : dailyAutomation.configure(payload),
     dispose: dailyAutomation.dispose,
     initialize,
     pause,
     pauseForAppClose,
-    runDailyNow: dailyAutomation.runNow,
+    prepareWorkflowTask,
+    workflowProgress,
+    canRetryWorkflowTask,
+    runDailyNow: () => workflowManaged
+      ? { ok: false, reason: "workflow_managed", state: snapshot() }
+      : dailyAutomation.runNow(),
+    runWorkflowStep,
+    setWorkflowManaged,
     start,
     status: () => ({ ok: true, state: snapshot() }),
     stop

@@ -428,7 +428,13 @@ function Get-MomentsSelectedGreenRunEvidence($frame, $textBounds, $bandBounds, $
     $green = 0
     $total = 0
     for ($y = $scanTop; $y -le $scanBottom; $y += 2) {
-      if (Test-MomentsSelectedGreenPixel (Get-MomentsPixel $frame $x $y)) { $green += 1 }
+      # This hot loop visits every column. Read the bitmap directly instead of
+      # allocating a pixel hashtable and invoking two functions per sample.
+      [int]$offset = ($y * [int]$frame.stride) + ($x * 4)
+      [int]$blue = $frame.bytes[$offset]
+      [int]$greenChannel = $frame.bytes[$offset + 1]
+      [int]$red = $frame.bytes[$offset + 2]
+      if ($greenChannel -ge 105 -and ($greenChannel - $red) -ge 30 -and ($greenChannel - $blue) -ge 12) { $green += 1 }
       $total += 1
     }
     $isGreenColumn = $total -gt 0 -and ([double]$green / [double]$total) -ge $minimumColumnRatio

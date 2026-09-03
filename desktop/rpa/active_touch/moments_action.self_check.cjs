@@ -2493,6 +2493,9 @@ async function main() {
           realActionAttempted: false,
           diagnostics: {
             composerCompleted: true,
+            composerComponentCount: 7,
+            composerPotentialCandidateCount: 1,
+            composerValidCandidateCount: 0,
             sendButtonLocated: false,
             sendButtonCount: 2,
             sendCandidateCount: 2,
@@ -2517,6 +2520,9 @@ async function main() {
     assert.equal(commentBlocked.verification_mode, "unique_green_component_geometry_v1");
     assert.deepEqual(commentBlocked.diagnostics, {
       composer_completed: true,
+      composer_component_count: 7,
+      composer_potential_candidate_count: 1,
+      composer_valid_candidate_count: 0,
       send_button_located: false,
       send_button_ok: false,
       send_inside_composer: false,

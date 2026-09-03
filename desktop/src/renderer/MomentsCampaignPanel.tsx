@@ -11,6 +11,7 @@ type MomentsCampaignState = {
   already_liked_count: number;
   commented_count: number;
   comment_skipped_count: number;
+  last_comment_skip_reason: string;
   skipped_count: number;
   scroll_count: number;
   current_post: number;
@@ -112,6 +113,7 @@ const EMPTY_STATE: MomentsCampaignState = {
   already_liked_count: 0,
   commented_count: 0,
   comment_skipped_count: 0,
+  last_comment_skip_reason: "",
   skipped_count: 0,
   scroll_count: 0,
   current_post: 0,
@@ -144,11 +146,16 @@ const REASON_LABELS: Record<string, string> = {
   moments_entry_ambiguous: "识别到多个朋友圈入口，已停止且没有继续点击",
   moments_entry_not_found: "未能唯一识别朋友圈入口，已停止",
   observing_post: "正在识别当前帖子",
+  stabilizing_moments_surface: "朋友圈页面正在稳定，重新识别一次",
   locating_interaction_menu: "正在定位互动菜单",
   generating_comment: "正在根据帖子正文生成评论",
+  opening_comment_composer: "正在打开评论输入框",
   executing_like: "已定位互动菜单，正在点赞",
   executing_comment: "正在执行评论",
   sending_comment: "正在执行评论",
+  moments_comment_composer_not_found: "评论输入框未出现，本条已跳过",
+  moments_comment_composer_ambiguous: "评论输入框识别不清，本条已跳过",
+  moments_observation_snapshot_invalid: "当前帖子识别已失效，本条已跳过",
   commented_verified: "评论已发送并复核",
   liked_verified: "点赞成功并已复核",
   already_liked: "当前帖子已经点赞，未重复操作",
@@ -211,6 +218,8 @@ function reasonLabel(reason: string, fallback: string) {
   return REASON_LABELS[reason] || reason || fallback;
 }
 
+export { reasonLabel as momentsProgressLabel };
+
 function campaignStateVersion(value: MomentsCampaignState) {
   const daily = value.daily_automation || EMPTY_DAILY_STATE;
   return [
@@ -220,6 +229,7 @@ function campaignStateVersion(value: MomentsCampaignState) {
     value.completed_post_count,
     value.current_post,
     value.last_reason,
+    value.last_comment_skip_reason,
     daily.updated_at,
     daily.status,
     daily.enabled,
@@ -547,9 +557,12 @@ export function FloatingMomentsCampaignWindow() {
   const phase = state.last_reason === "scrolled" && state.comment_enabled
     ? "已下滑，正在寻找下一条可评论帖子"
     : (REASON_LABELS[state.last_reason] || state.last_reason || STATUS_LABELS[state.status] || "未启动");
-  const result = state.commented_count || state.liked_count || state.already_liked_count
+  const latestCommentSkip = state.last_comment_skip_reason
+    ? reasonLabel(state.last_comment_skip_reason, "本条评论已跳过")
+    : "";
+  const result = latestCommentSkip || (state.commented_count || state.liked_count || state.already_liked_count
     ? `点赞 ${state.liked_count} · 评论 ${state.commented_count}`
-    : "等待首条帖子";
+    : "等待首条帖子");
   const actionable = state.status === "running";
   return <main className="floating-shell moments-floating-shell">
     <header className="floating-head">

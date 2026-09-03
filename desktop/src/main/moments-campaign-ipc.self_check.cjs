@@ -206,6 +206,45 @@ async function main() {
   const persisted = JSON.parse(fs.readFileSync(path.join(root, "state.json"), "utf8"));
   assert.equal(persisted.moments_campaign.status, "completed");
 
+  const surfaceRetryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-surface-retry-"));
+  let surfaceRetryObservationCalls = 0;
+  const surfaceRetryController = createMomentsCampaignController({
+    baseDir: surfaceRetryRoot,
+    coordinator: {
+      acquire: () => ({ ok: true, lock: { owner: "surface-retry-owner" } }),
+      release: () => undefined
+    },
+    logger: { event: () => undefined },
+    openMoments: async () => INTEGRATED_OPEN_RESULT,
+    scrollMoments: async () => ({ ok: true }),
+    runStep: async (args) => {
+      if (args[0] === "moments-dry-run") {
+        surfaceRetryObservationCalls += 1;
+        if (surfaceRetryObservationCalls === 1) {
+          return { ok: false, reason: "moments_integrated_surface_not_proven" };
+        }
+        return {
+          ok: true,
+          window: INTEGRATED_OBSERVED_WINDOW,
+          post_snapshot: {
+            observation_id: "surface-retry-observation",
+            post_fingerprint: "surface-retry-post"
+          },
+          plan: { visible_post_count: 1 }
+        };
+      }
+      return { ok: true, status: "verified", no_op: false, real_action_attempted: true };
+    }
+  });
+  assert.equal(surfaceRetryController.start({ maxPosts: 1 }).ok, true);
+  const surfaceRetryFinished = await waitFor(
+    () => surfaceRetryController.status().state,
+    (state) => state.status !== "running"
+  );
+  assert.equal(surfaceRetryFinished.status, "completed", "a transient pre-action surface read must retry once before pausing");
+  assert.equal(surfaceRetryObservationCalls, 2, "the integrated surface read must retry exactly once");
+  assert.equal(surfaceRetryFinished.liked_count, 1);
+
   const menuOnlyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-menu-only-"));
   let menuOnlyObservationIndex = 0;
   let menuOnlyScrolls = 0;
@@ -980,6 +1019,7 @@ async function main() {
   let skipThenSuccessDryRuns = 0;
   let skipThenSuccessComments = 0;
   const skipThenSuccessEvents = [];
+  const skipThenSuccessStates = [];
   const commentSkipThenSuccessController = createMomentsCampaignController({
     baseDir: commentSkipThenSuccessRoot,
     coordinator: {
@@ -991,6 +1031,7 @@ async function main() {
         skipThenSuccessEvents.push({ module, event, details, options });
       }
     },
+    emit: (state) => skipThenSuccessStates.push(state),
     openMoments: async () => STANDALONE_OPEN_RESULT,
     scrollMoments: async () => ({ ok: true }),
     generateComment: async () => ({ comment: "一条新的测试评论" }),
@@ -1062,6 +1103,11 @@ async function main() {
     composer_completed: true,
     send_button_count: 2
   });
+  assert.equal(
+    skipThenSuccessStates.some((state) => state.last_comment_skip_reason === "moments_comment_send_button_ambiguous"),
+    true,
+    "a skipped comment should remain visible in floating progress after the task advances",
+  );
 
   const commentUnknownRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-comment-outcome-unknown-"));
   const unknownFingerprint = "8".repeat(64);
@@ -1285,6 +1331,102 @@ async function main() {
   assert.equal(combinedCompleted.commented_count, 1);
   assert.equal(combinedCompleted.completed_post_count, 1);
   assert.equal(combinedCompleted.last_reason, "target_count_reached");
+
+  const workflowYieldRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-workflow-yield-"));
+  const workflowYieldFingerprints = ["f".repeat(64), "g".repeat(64)];
+  let workflowYieldDryRuns = 0;
+  let workflowYieldLikeCalls = 0;
+  let workflowYieldCommentCalls = 0;
+  const workflowYieldController = createMomentsCampaignController({
+    baseDir: workflowYieldRoot,
+    coordinator: {
+      acquire: () => ({ ok: true, lock: { owner: "workflow-yield-owner" } }),
+      release: () => undefined
+    },
+    logger: { event: () => undefined },
+    openMoments: async () => STANDALONE_OPEN_RESULT,
+    generateComment: async () => ({ comment: "workflow comment test" }),
+    runStep: async (args) => {
+      if (args[0] === "moments-dry-run") {
+        const fingerprint = workflowYieldFingerprints[Math.min(workflowYieldDryRuns, 1)];
+        workflowYieldDryRuns += 1;
+        return {
+          ok: true,
+          window: STANDALONE_OPEN_RESULT,
+          post_snapshot: {
+            observation_id: fingerprint,
+            post_fingerprint: fingerprint,
+            identity_text: `workflow post ${fingerprint[0]}`
+          },
+          plan: { visible_post_count: 1 }
+        };
+      }
+      if (args[0] === "moments-like") {
+        workflowYieldLikeCalls += 1;
+        return { ok: true, status: "verified", no_op: false, real_action_attempted: true };
+      }
+      assert.equal(args[0], "moments-comment");
+      workflowYieldCommentCalls += 1;
+      assert.equal(workflowYieldController.workflowProgress(workflowTask).liked, workflowYieldLikeCalls,
+        "verified likes must be visible before the comment finishes");
+      if (workflowYieldCommentCalls === 1) {
+        return {
+          ok: false,
+          status: "blocked",
+          blocked_reason: "moments_comment_send_button_ambiguous",
+          primary_reason: "moments_comment_send_button_ambiguous",
+          verification_mode: "green_component_geometry",
+          previous_status: "outcome_unknown",
+          stage: "draft_written",
+          cleanup_reason: "moments_comment_send_button_ambiguous",
+          real_action_attempted: false
+        };
+      }
+      return { ok: true, status: "verified", real_action_attempted: true };
+    }
+  });
+  const workflowTask = {
+    id: "workflow-yield-task",
+    payload: {
+      maxPosts: 1,
+      likeEnabled: true,
+      commentEnabled: true
+    },
+    occurrenceDate: "2026-09-02"
+  };
+  const workflowYieldFirst = await workflowYieldController.runWorkflowStep(
+    workflowTask,
+    { isEnabled: () => true }
+  );
+  assert.equal(workflowYieldFirst.status, "pending");
+  const workflowYieldFirstState = workflowYieldController.status().state;
+  assert.equal(workflowYieldFirstState.status, "partial");
+  assert.equal(workflowYieldFirstState.last_reason, "workflow_yielded");
+  assert.equal(workflowYieldFirstState.processed_count, 1);
+  assert.equal(workflowYieldFirstState.new_completed_post_count, 0);
+  assert.equal(workflowYieldFirstState.completed_post_count, 0);
+  assert.equal(workflowYieldFirstState.comment_skipped_count, 1);
+  assert.equal(workflowYieldFirstState.commented_count, 0);
+  assert.equal(workflowYieldFirstState.liked_count, 1);
+
+  const workflowYieldSecond = await workflowYieldController.runWorkflowStep(
+    workflowTask,
+    { isEnabled: () => true }
+  );
+  assert.equal(workflowYieldSecond.status, "completed");
+  const workflowYieldSecondState = workflowYieldController.status().state;
+  assert.equal(workflowYieldSecondState.status, "completed");
+  assert.equal(workflowYieldSecondState.last_reason, "target_count_reached");
+  assert.equal(workflowYieldSecond.progress.scanned, 2);
+  assert.equal(workflowYieldSecondState.new_completed_post_count, 1);
+  assert.equal(workflowYieldSecondState.completed_post_count, 1);
+  assert.equal(workflowYieldSecond.progress.skipped, 1);
+  assert.equal(workflowYieldSecond.progress.commented, 1);
+  assert.equal(workflowYieldSecond.progress.liked, 2);
+  assert.equal(workflowYieldController.workflowProgress(workflowTask).liked, 2, "persist cumulative results after yielding");
+  assert.equal(workflowYieldDryRuns, 2);
+  assert.equal(workflowYieldLikeCalls, 2);
+  assert.equal(workflowYieldCommentCalls, 2);
 
   const directInteractionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-direct-interaction-"));
   const directInteractionFingerprint = "c".repeat(64);
@@ -1567,6 +1709,19 @@ async function main() {
   assert.equal(rejectedEvents[0].event, "campaign.start_rejected");
   assert.equal(rejectedEvents[0].details.reason, "invalid_runtime_state");
 
+  const retryTask = { id: "11111111-1111-4111-8111-111111111111", occurrenceDate: "2026-09-03" };
+  const retryDir = path.join(rejectedRoot, "planned_runs", retryTask.id);
+  fs.mkdirSync(retryDir, { recursive: true });
+  const retryFile = path.join(retryDir, "2026-09-03.json");
+  const untouched = { done: 0, processed_posts: [], in_flight: null,
+    metrics: { processed_count: 0, liked_count: 0, commented_count: 0 } };
+  for (const [patch, expected] of [[{}, true], [{ in_flight: "post" }, false],
+    [{ outcome_unknown: true }, false], [{ processed_posts: ["post"] }, false],
+    [{ metrics: {} }, false], [{ metrics: { ...untouched.metrics, liked_count: 1 } }, false]]) {
+    fs.writeFileSync(retryFile, JSON.stringify({ ...untouched, ...patch }));
+    assert.equal(rejectedController.canRetryWorkflowTask(retryTask), expected);
+  }
+
   fs.rmSync(root, { recursive: true, force: true });
   fs.rmSync(standaloneRoot, { recursive: true, force: true });
   fs.rmSync(invalidSurfaceRoot, { recursive: true, force: true });
@@ -1576,6 +1731,7 @@ async function main() {
   fs.rmSync(duplicateUnknownRoot, { recursive: true, force: true });
   fs.rmSync(partialRoot, { recursive: true, force: true });
   fs.rmSync(commentRoot, { recursive: true, force: true });
+  fs.rmSync(workflowYieldRoot, { recursive: true, force: true });
   fs.rmSync(incompleteVisualRoot, { recursive: true, force: true });
   fs.rmSync(visualJitterRoot, { recursive: true, force: true });
   fs.rmSync(commentSkipThenSuccessRoot, { recursive: true, force: true });

@@ -7,6 +7,7 @@ const { diagnostics } = require("./diagnostics.cjs");
 let runtimeDataDir = "";
 let activeTouchRuntimeDir = "";
 let runtimeCoordinator = null;
+let runWithProgress = null;
 
 function cliPath() {
   return path.join(app.getAppPath(), "rpa", "contact_sync", "contact_sync_cli.cjs");
@@ -189,16 +190,20 @@ async function runContactSync(args) {
   const lock = runtimeCoordinator?.acquire({ state: "syncing_contacts", taskId: "", account: "unknown", phase: command });
   if (lock && !lock.ok) return { ok: false, action: command, blocked_reason: lock.error, error: "当前正在进行主动触达或其他微信操作，联系人同步已禁用", contacts: [] };
   try {
-    return await executeContactSync(args);
+    const execute = () => executeContactSync(args);
+    return await (runWithProgress
+      ? runWithProgress(execute, () => readJsonFile(path.join(runtimeDataDir, "state.json"), {}))
+      : execute());
   } finally {
     if (lock?.lock?.owner) runtimeCoordinator?.release(lock.lock.owner);
   }
 }
 
-function registerContactSyncIpc({ dataDir, activeTouchDir, coordinator } = {}) {
+function registerContactSyncIpc({ dataDir, activeTouchDir, coordinator, withProgress } = {}) {
   runtimeDataDir = String(dataDir || "");
   activeTouchRuntimeDir = String(activeTouchDir || "");
   runtimeCoordinator = coordinator;
+  runWithProgress = withProgress;
   ipcMain.handle("contact-sync:status", () => runContactSync(["status"]));
   ipcMain.handle("contact-sync:sync", () => runContactSync(["sync"]));
   ipcMain.handle("contact-sync:capture", () => runContactSync(["capture", "--restart-wechat", "--timeout", "120"]));

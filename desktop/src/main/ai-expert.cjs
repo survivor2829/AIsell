@@ -40,6 +40,7 @@ function normalizeExpertText(value) {
 
 function createAiExpertStore({ rootDir, now = () => new Date(), mammothImpl } = {}) {
   const stateFile = path.join(String(rootDir || ""), "ai-expert.json");
+  const conversationFile = path.join(String(rootDir || ""), "ai-expert-conversation.json");
 
   function storedDocument(value) {
     if (!value || typeof value.text !== "string" || !value.text) return null;
@@ -168,6 +169,7 @@ function createAiExpertStore({ rootDir, now = () => new Date(), mammothImpl } = 
         text
       }
     };
+    syncConversation(next);
     persist(next);
     return statusFrom(next);
   }
@@ -182,11 +184,50 @@ function createAiExpertStore({ rootDir, now = () => new Date(), mammothImpl } = 
       businessKnowledge: current.businessKnowledge,
       [field]: null
     };
+    syncConversation(next);
     persist(next);
     return statusFrom(next);
   }
 
-  return { importFile, read, remove, status };
+  function save({ expertRules, businessKnowledge }) {
+    const rules = normalizeExpertText(expertRules);
+    const knowledge = normalizeExpertText(businessKnowledge);
+    if (!rules || !knowledge) throw new AiExpertError("AI_EXPERT_EMPTY", "请补齐回答规则和业务知识后保存。");
+    if (rules.length + knowledge.length > MAX_TEXT_CHARS) throw new AiExpertError("AI_EXPERT_TEXT_TOO_LONG", "两份专家资料的文字合计不能超过 5 万字符");
+    const importedAt = now().toISOString();
+    const next = {
+      expertRules: { fileName: "对话建立的专家规则", importedAt, text: rules },
+      businessKnowledge: { fileName: "对话建立的业务知识", importedAt, text: knowledge }
+    };
+    syncConversation(next);
+    persist(next);
+    return statusFrom(next);
+  }
+
+  function conversation() {
+    try {
+      const value = JSON.parse(fs.readFileSync(conversationFile, "utf8"));
+      if (!Array.isArray(value.messages)) throw new Error("invalid conversation");
+      return value;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw new AiExpertError("AI_EXPERT_CONVERSATION_INVALID", "专家对话无法读取，已保留原资料，请查看日志诊断。");
+      const current = read();
+      return { messages: [], expertRules: current.expertRules.text, businessKnowledge: current.businessKnowledge.text };
+    }
+  }
+
+  function saveConversation(value) {
+    const next = { ...value, revision: Number(conversation().revision || 0) + 1 };
+    writeJsonAtomic(conversationFile, next);
+    return next;
+  }
+
+  function syncConversation(value) {
+    if (!fs.existsSync(conversationFile)) return;
+    saveConversation({ ...conversation(), expertRules: value.expertRules?.text || "", businessKnowledge: value.businessKnowledge?.text || "" });
+  }
+
+  return { importFile, read, remove, status, save, conversation, saveConversation };
 }
 
 module.exports = {

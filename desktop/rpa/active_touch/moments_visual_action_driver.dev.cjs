@@ -14,6 +14,7 @@ const COMMENT_SEND_MARKER_DIRECTORY = "moments_comment_send_markers";
 // roughly 12 px of per-axis movement. We keep that rendering tolerance while
 // still requiring exactly one content/avatar/geometry match before any click.
 const MOMENTS_VISUAL_POST_RELOCK_TOLERANCE_PX = 12;
+const MOMENTS_COMMENT_COMPOSER_OPEN_DELAY_MS = 500;
 const VISUAL_ACTION_TIMEOUT_CAP_MS = Object.freeze({
   inspect: 30_000,
   like: 30_000,
@@ -269,6 +270,7 @@ const MOMENTS_VISUAL_ACTION_POWERSHELL = String.raw`
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = "Stop"
 $script:momentsVisualPostRelockTolerancePx = ${MOMENTS_VISUAL_POST_RELOCK_TOLERANCE_PX.toFixed(1)}
+$script:momentsCommentComposerOpenDelayMs = ${MOMENTS_COMMENT_COMPOSER_OPEN_DELAY_MS}
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
@@ -1024,12 +1026,8 @@ function Get-LockedVisualRoot($context) {
     $rootProcessId -ne $expectedPid) {
     return @{ ok = $false; reason = "moments_window_identity_mismatch" }
   }
-  $feedCondition = [System.Windows.Automation.PropertyCondition]::new(
-    [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
-    "sns_list"
-  )
-  $feeds = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $feedCondition)
-  if ($feeds.Count -ne 0) { return @{ ok = $false; reason = "moments_visual_profile_conflict" } }
+  # A coexisting UIA feed is not a different target. Keep the exact window,
+  # render-pane identity and bounds checks for this visual action.
   $paneEvidence = Get-MomentsRenderPaneEvidence $root $expectedPid
   if (-not $paneEvidence.ok) { return @{ ok = $false; reason = $paneEvidence.reason } }
   if ([string]$paneEvidence.pane.name -cne [string]$expected.renderPaneName -or
@@ -2649,32 +2647,6 @@ function Close-And-VerifyUnchanged($lock, $context) {
   return @{ ok = $true }
 }
 
-function Get-PostActionMenuAnchor($lock, $expectedMenuBounds, $expectedAvatarBounds, [string]$expectedAvatarHash) {
-  for ($attempt = 0; $attempt -lt 2; $attempt++) {
-    $frame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $false
-    if (-not $frame.ok) { return @{ ok = $false; reason = $frame.reason } }
-    try {
-      # After the side effect, avatar repainting is diagnostic rather than an
-      # authorization gate. The target was already authorized before clicking.
-      $observedAvatarHash = $(if ($expectedAvatarBounds -ne $null) { Get-MomentsPixelHash $frame $expectedAvatarBounds } else { "" })
-      $resolution = Resolve-MomentsInteractionAnchor $frame $lock.relativeVisualViewportBounds $expectedMenuBounds $expectedAvatarBounds "" $script:momentsVisualPostRelockTolerancePx
-      $diagnostics = $resolution.diagnostics
-      if ($diagnostics -eq $null) { $diagnostics = @{} }
-      $diagnostics.avatarHashMatched = [bool]($observedAvatarHash -and $observedAvatarHash -ceq $expectedAvatarHash)
-      if ($resolution.ok) {
-        return @{ ok = $true; menu = $resolution.menu; diagnostics = $diagnostics }
-      }
-      if ([string]$resolution.reason -ceq "moments_menu_not_found" -and $attempt -eq 0) {
-        Start-Sleep -Milliseconds 160
-        continue
-      }
-      return @{ ok = $false; reason = $resolution.reason; diagnostics = $diagnostics }
-    } finally {
-      Close-MomentsVisualFrame $frame
-    }
-  }
-}
-
 function Test-VisualWechatGreenPixel($pixel) {
   return $pixel -ne $null -and $pixel.g -ge 130 -and
     $pixel.g -ge ($pixel.r + 45) -and $pixel.g -ge ($pixel.b + 20)
@@ -2689,7 +2661,9 @@ function Get-VisualCommentComposer($frame, $menu) {
   $viewportBottom = [double]$viewport.top + [double]$viewport.height
   $scanLeft = [int][Math]::Max([double]$viewport.left, [Math]::Floor([double]$menu.centerX - ([double]$viewport.width * 0.80)))
   $scanRight = [int][Math]::Min($viewportRight - 1.0, [Math]::Ceiling([double]$menu.centerX + ([double]$viewport.width * 0.055)))
-  $scanTop = [int][Math]::Max([double]$viewport.top, [Math]::Floor([double]$menu.centerY + 6.0))
+  # Opening the editor scrolls tall posts into view. The old menu Y no longer
+  # bounds the editor; scan the visible feed once, including above that anchor.
+  $scanTop = [int][Math]::Ceiling([double]$viewport.top)
   # A reaction row can push the composer below the former 19%-of-window cap.
   # Scan the remaining visible feed, while component isolation below prevents
   # unrelated reaction pixels from being merged with the composer border.
@@ -2705,7 +2679,11 @@ function Get-VisualCommentComposer($frame, $menu) {
     $y = $scanTop + $localY
     for ($localX = 0; $localX -lt $scanWidth; $localX++) {
       $x = $scanLeft + $localX
-      if (-not (Test-VisualWechatGreenPixel (Get-MomentsPixel $frame $x $y))) { continue }
+      # Avoid two PowerShell function calls and a hashtable allocation per pixel.
+      $offset = ($y * $frame.stride) + ($x * 4)
+      $green = [int]$frame.bytes[$offset + 1]
+      if ($green -lt 130 -or $green -lt ([int]$frame.bytes[$offset + 2] + 45) -or
+        $green -lt ([int]$frame.bytes[$offset] + 20)) { continue }
       $mask[($localY * $scanWidth) + $localX] = $true
       $pixelCount += 1
     }
@@ -2721,6 +2699,9 @@ function Get-VisualCommentComposer($frame, $menu) {
   $validCandidates = New-Object System.Collections.Generic.List[object]
   $componentCount = 0
   $potentialCandidateCount = 0
+  $geometryRejectedCount = 0
+  $edgeRejectedCount = 0
+  $candidateBounds = $null
   for ($seedY = 0; $seedY -lt $scanHeight; $seedY++) {
     for ($seedX = 0; $seedX -lt $scanWidth; $seedX++) {
       $seedIndex = ($seedY * $scanWidth) + $seedX
@@ -2763,17 +2744,18 @@ function Get-VisualCommentComposer($frame, $menu) {
         width = [double]($maximumX - $minimumX + 1)
         height = [double]($maximumY - $minimumY + 1)
       }
-      if ([double]$bounds.width -gt ([double]$viewport.width * 0.45) -and
-        [double]$bounds.height -gt 40.0 -and [double]$bounds.height -le 240.0 -and
-        [double]$bounds.top -gt [double]$menu.centerY) {
-        $potentialCandidateCount += 1
-      }
       if ($componentPixelCount -lt 180) { continue }
-      if (-not (Test-VisualBounds $bounds ([double]$viewport.width * 0.54) 64) -or
+      # The editor width belongs to the feed column, not the whole window.
+      # Use its own aspect ratio; compact editors and DPI scaling are valid.
+      if (-not (Test-VisualBounds $bounds 120 40)) { continue }
+      $potentialCandidateCount += 1
+      $candidateBounds = $bounds
+      if ([double]$bounds.width -lt ([double]$bounds.height * 1.6) -or
         -not (Test-VisualBoundsInside $bounds $viewport) -or
-        [double]$bounds.width -gt ([double]$viewport.width * 0.86) -or
-        [double]$bounds.height -gt 205.0 -or
-        [double]$bounds.top -le [double]$menu.centerY) { continue }
+        [double]$bounds.width -gt [double]$viewport.width) {
+        $geometryRejectedCount += 1
+        continue
+      }
       $topEdge = 0
       $bottomEdge = 0
       $leftEdge = 0
@@ -2796,7 +2778,10 @@ function Get-VisualCommentComposer($frame, $menu) {
         }
       }
       if ($topEdge -lt ([double]$bounds.width * 0.42) -or $bottomEdge -lt ([double]$bounds.width * 0.42) -or
-        $leftEdge -lt ([double]$bounds.height * 0.35) -or $rightEdge -lt ([double]$bounds.height * 0.35)) { continue }
+        $leftEdge -lt ([double]$bounds.height * 0.35) -or $rightEdge -lt ([double]$bounds.height * 0.35)) {
+        $edgeRejectedCount += 1
+        continue
+      }
       [void]$validCandidates.Add(@{
         bounds = $bounds
         pixelCount = $componentPixelCount
@@ -2814,6 +2799,9 @@ function Get-VisualCommentComposer($frame, $menu) {
       componentCount = $componentCount
       potentialCandidateCount = $potentialCandidateCount
       validCandidateCount = $validCandidates.Count
+      geometryRejectedCount = $geometryRejectedCount
+      edgeRejectedCount = $edgeRejectedCount
+      candidateBounds = $candidateBounds
     }
   }
   $composer = $validCandidates[0]
@@ -5288,24 +5276,16 @@ try {
     }
     $script:visualMenuOpen = $false
     Start-Sleep -Milliseconds 380
-    $afterLock = Get-LockedVisualRoot $context
-    if (-not $afterLock.ok) {
-      Write-VisualResult @{ ok = $false; status = "outcome_unknown"; reason = $afterLock.reason; actionAttempted = $true }
-    }
-    $afterAnchor = Get-PostActionMenuAnchor $afterLock $opened.expectedMenuBounds $opened.expectedAvatarBounds $opened.avatarHash
-    if (-not $afterAnchor.ok) {
-      Write-VisualResult @{ ok = $false; status = "outcome_unknown"; reason = $afterAnchor.reason; actionAttempted = $true }
-    }
-    $verifyX = [int][Math]::Round([double]$context.expectedWindow.left + [double]$afterAnchor.menu.centerX)
-    $verifyY = [int][Math]::Round([double]$context.expectedWindow.top + [double]$afterAnchor.menu.centerY)
-    if (-not (Invoke-VisualOwnedClick $verifyX $verifyY $afterLock ([int64]$context.deadlineMs) $false $false)) {
+    $verifyX = [int][Math]::Round([double]$context.expectedWindow.left + [double]$opened.menu.centerX)
+    $verifyY = [int][Math]::Round([double]$context.expectedWindow.top + [double]$opened.menu.centerY)
+    if (-not (Invoke-VisualOwnedClick $verifyX $verifyY $lock ([int64]$context.deadlineMs) $false $false)) {
       Write-VisualResult @{ ok = $false; status = "outcome_unknown"; reason = "moments_like_verification_menu_blocked"; actionAttempted = $true }
     }
     $script:visualMenuOpen = $true
     Start-Sleep -Milliseconds 240
-    $afterMenu = Read-OpenVisualMenu $afterLock $afterAnchor.menu "like" "verify_outcome"
+    $afterMenu = Read-OpenVisualMenu $lock $opened.menu "like" "verify_outcome"
     if (-not $afterMenu.ok -or @("取消", "取消赞") -notcontains [string]$afterMenu.menuState) {
-      [void](Close-VisualMenu $afterLock)
+      [void](Close-VisualMenu $lock)
       Write-VisualResult @{
         ok = $false
         status = "outcome_unknown"
@@ -5315,7 +5295,7 @@ try {
       }
     }
     $cleanupReason = ""
-    if (-not (Close-VisualMenu $afterLock)) { $cleanupReason = "moments_menu_close_blocked" }
+    if (-not (Close-VisualMenu $lock)) { $cleanupReason = "moments_menu_close_blocked" }
     Write-VisualResult @{
       ok = $true
       status = "verified"
@@ -5343,7 +5323,9 @@ try {
     }
     $script:visualMenuOpen = $false
     Set-VisualActionStage "comment_entry_clicked"
-    Start-Sleep -Milliseconds 280
+    # The native comment editor animates in after the menu click. Wait once,
+    # then inspect it once; do not re-click the menu or perform a second scan.
+    Start-Sleep -Milliseconds $script:momentsCommentComposerOpenDelayMs
     $composerFrame = Get-MomentsVisualFrame $lock.hWnd $lock.windowRect $lock.pid $false
     if (-not $composerFrame.ok) {
       Write-VisualResult @{ ok = $false; status = "blocked"; reason = $composerFrame.reason; actionAttempted = $false }
@@ -5362,7 +5344,12 @@ try {
         reason = [string]$composer.reason
         actionAttempted = $false
         diagnostics = @{
-          sendCandidateCount = [int]$sendBefore.candidateCount
+          composerComponentCount = [int]$composer.componentCount
+          composerPotentialCandidateCount = [int]$composer.potentialCandidateCount
+          composerValidCandidateCount = [int]$composer.validCandidateCount
+          composerGeometryRejectedCount = [int]$composer.geometryRejectedCount
+          composerEdgeRejectedCount = [int]$composer.edgeRejectedCount
+          candidateBounds = $composer.candidateBounds
         }
       }
     }

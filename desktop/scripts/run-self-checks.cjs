@@ -34,6 +34,7 @@ const checks = [
   "src/main/moments-publish-ipc.self_check.cjs",
   "src/main/moments-daily-automation.self_check.cjs",
   "src/main/touch-task-ipc.self_check.cjs",
+  "src/main/wechat-workflow.self_check.cjs",
   "src/main/development-sidecar-runtime.self_check.cjs",
   "src/main/product-detail-sidecar.self_check.cjs",
   "src/main/product-detail-ipc.self_check.cjs",

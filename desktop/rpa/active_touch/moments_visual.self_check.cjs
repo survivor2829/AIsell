@@ -185,68 +185,6 @@ assert.deepEqual(JSON.parse(visualMenuResolverHarness.stdout.trim()), {
   dedupedOk: true
 });
 
-const postActionMenuAnchorFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
-  /(function Get-PostActionMenuAnchor\([\s\S]*?\n\})\n\nfunction Test-VisualWechatGreenPixel/u
-)?.[1] ?? "";
-assert.ok(postActionMenuAnchorFunction, "post-action menu anchor should be extractable");
-const postActionMenuAnchorProgram = `
-$ErrorActionPreference = "Stop"
-${visualBoundsFunction}
-${visualBoundsNearFunction}
-${visualMenuResolverFunction}
-${postActionMenuAnchorFunction}
-function Resolve-MomentsInteractionAnchor($frame, $viewportBounds, $expectedMenuBounds, $expectedAvatarBounds, $expectedAvatarHash, $tolerance) {
-  $resolved = Resolve-VisualMenuAnchor @($script:menus) $expectedMenuBounds $tolerance
-  return @{ ok = $resolved.ok; reason = $resolved.reason; menu = $resolved.menu; diagnostics = $resolved.diagnostics }
-}
-function Get-MomentsVisualFrame($hWnd, $windowRect, $processId, $includeOcr) {
-  return @{ ok = $true; width = 800; height = 900 }
-}
-function Close-MomentsVisualFrame($frame) {}
-function Get-MomentsPixelHash($frame, $bounds) { return "repainted-avatar-hash" }
-function Find-MomentsMenuDots($frame) { return @($script:menus) }
-$script:momentsVisualPostRelockTolerancePx = 12.0
-$lock = @{ hWnd = 1; windowRect = @{}; pid = 2; relativeVisualViewportBounds = @{ left = 0; top = 0; width = 800; height = 900 } }
-$expectedMenu = @{ left = 400.0; top = 520.0; width = 36.0; height = 24.0 }
-$expectedAvatar = @{ left = 120.0; top = 300.0; width = 44.0; height = 44.0 }
-$script:menus = @(@{
-  centerX = 418.0
-  centerY = 532.0
-  bounds = @{ left = 400.8; top = 519.5; width = 36.0; height = 24.0 }
-})
-$repainted = Get-PostActionMenuAnchor $lock $expectedMenu $expectedAvatar "before-avatar-hash"
-$script:menus = @()
-$missing = Get-PostActionMenuAnchor $lock $expectedMenu $expectedAvatar "before-avatar-hash"
-@{
-  repaintedOk = [bool]$repainted.ok
-  repaintedAvatarMatched = [bool]$repainted.diagnostics.avatarHashMatched
-  repaintedLeft = [double]$repainted.menu.bounds.left
-  missingOk = [bool]$missing.ok
-  missingReason = [string]$missing.reason
-} | ConvertTo-Json -Compress
-`;
-const postActionMenuAnchorHarness = spawnSync("powershell.exe", [
-  "-NoProfile",
-  "-NonInteractive",
-  "-EncodedCommand",
-  Buffer.from(postActionMenuAnchorProgram, "utf16le").toString("base64"),
-], {
-  encoding: "utf8",
-  windowsHide: true,
-});
-assert.equal(
-  postActionMenuAnchorHarness.status,
-  0,
-  postActionMenuAnchorHarness.stderr || "post-action menu-anchor repaint harness must run",
-);
-assert.deepEqual(JSON.parse(postActionMenuAnchorHarness.stdout.trim()), {
-  missingOk: false,
-  missingReason: "moments_menu_not_found",
-  repaintedAvatarMatched: false,
-  repaintedLeft: 400.8,
-  repaintedOk: true,
-});
-
 const visualSendButtonFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
   /function Get-VisualSendButton\([\s\S]*?\n\}/u,
 )?.[0] ?? "";
@@ -506,6 +444,26 @@ function Get-MomentsScaledOcrObservation($frame, $region, [int]$scale = 3) {
   return @{ ok = $true; lines = $lines }
 }
 ${MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL}
+# Rasterize legacy procedural fixtures for the production bitmap fast path.
+$script:originalGreenRun = (Get-Command Get-MomentsSelectedGreenRunEvidence).ScriptBlock
+function Get-MomentsSelectedGreenRunEvidence($frame, $textBounds, $bandBounds, $surfaceBounds, [double]$scale) {
+  if (-not $frame.ContainsKey("bytes")) {
+    $raster = $frame.Clone()
+    $raster.stride = [int]$frame.width * 4
+    $raster.bytes = New-Object byte[] ($raster.stride * [int]$frame.height)
+    for ($y = [Math]::Max(0,[int][Math]::Floor($bandBounds.top)); $y -lt [Math]::Min([int]$frame.height,[int][Math]::Ceiling($bandBounds.top + $bandBounds.height)); $y++) {
+      for ($x = 0; $x -lt [int]$frame.width; $x++) {
+        $pixel = Get-MomentsPixel $frame $x $y
+        $offset = $y * $raster.stride + $x * 4
+        $raster.bytes[$offset] = $pixel.b
+        $raster.bytes[$offset + 1] = $pixel.g
+        $raster.bytes[$offset + 2] = $pixel.r
+      }
+    }
+    $frame = $raster
+  }
+  return & $script:originalGreenRun $frame $textBounds $bandBounds $surfaceBounds $scale
+}
 function New-DiscoverFrame(
   [double]$scale,
   [string]$shape = "compass",
@@ -952,10 +910,9 @@ assert.deepEqual(JSON.parse(feedViewportReaderHarness.stdout.trim()), {
   postStartsWithAvatar: true
 });
 
-// This fallback must conflict with, rather than overlap, the UIA sns_list profile.
-assert.match(script, /AutomationIdProperty,[\s\S]*"sns_list"/u);
-assert.match(script, /\$feeds = \$root\.FindAll\(\[System\.Windows\.Automation\.TreeScope\]::Descendants, \$feedCondition\)/u);
-assert.match(script, /\$feeds\.Count -ne 0[\s\S]*moments_visual_profile_conflict/u);
+// UIA and rendered content may coexist in the same verified window.
+assert.doesNotMatch(script, /moments_visual_profile_conflict/u);
+assert.doesNotMatch(MOMENTS_VISUAL_ACTION_POWERSHELL, /moments_visual_profile_conflict/u);
 
 // Two independently captured observations must agree before a post is accepted.
 assert.doesNotMatch(script, /Request-MomentsVisualForeground|SetForegroundWindow|ShowWindowAsync/u,
@@ -1185,15 +1142,8 @@ const currentRelockFunction = actionSource.match(
 assert.ok(currentRelockFunction, "the action relock should be extractable");
 assert.doesNotMatch(currentRelockFunction, /Get-MomentsVisualPostCandidates/u);
 assert.doesNotMatch(currentRelockFunction, /Get-MomentsOcrObservation/u);
-const postActionRelockFunction = actionSource.match(
-  /function Get-PostActionMenuAnchor\([\s\S]*?\n\}/u,
-)?.[0] ?? "";
-assert.ok(postActionRelockFunction, "the post-action relock should be extractable");
-assert.match(postActionRelockFunction, /Resolve-MomentsInteractionAnchor/u);
-assert.doesNotMatch(postActionRelockFunction, /Find-MomentsMenuDots|Resolve-VisualMenuAnchor/u);
-assert.match(postActionRelockFunction, /Start-Sleep -Milliseconds 160/u);
 assert.match(actionSource, /\$snapshot\.menu_only/u, "the action relock should support an exact visible-menu target without inventing an avatar");
-assert.match(postActionRelockFunction, /avatarHashMatched = \[bool\]/u);
+assert.doesNotMatch(actionSource, /function Get-PostActionMenuAnchor/u, "post-click verification must not relock the same post after the like click");
 assert.match(actionSource, /boundsWithin\(snapshot\.menu_bounds, window\.renderPaneBounds\)/u);
 assert.match(actionSource, /boundsWithin\(snapshot\.avatar_bounds, window\.renderPaneBounds\)/u);
 for (const field of ["bounds", "menuBounds", "avatarBounds"]) {
@@ -2296,8 +2246,13 @@ assert.match(
 );
 assert.match(
   likeActionSource,
-  /\$afterMenu = Read-OpenVisualMenu \$afterLock \$afterAnchor\.menu "like" "verify_outcome"[\s\S]*reason = "moments_like_verification_failed"[\s\S]*diagnostics = \$afterMenu\.diagnostics/u,
-  "a failed post-click verification must preserve the detailed menu diagnostics",
+  /\$afterMenu = Read-OpenVisualMenu \$lock \$opened\.menu "like" "verify_outcome"[\s\S]*reason = "moments_like_verification_failed"[\s\S]*diagnostics = \$afterMenu\.diagnostics/u,
+  "post-click verification must reuse the already locked menu and preserve detailed diagnostics",
+);
+assert.doesNotMatch(
+  likeActionSource,
+  /Get-PostActionMenuAnchor|\$afterAnchor|\$afterLock/u,
+  "a like click must not trigger a second same-post relock before outcome observation",
 );
 assert.match(
   alreadyLikedNoOpSource,
@@ -2306,7 +2261,7 @@ assert.match(
 );
 assert.match(
   likeActionSource,
-  /\$cleanupReason = ""[\s\S]*Close-VisualMenu \$afterLock[\s\S]*status = "verified"[\s\S]*cleanupReason = \$cleanupReason/u,
+  /\$cleanupReason = ""[\s\S]*Close-VisualMenu \$lock[\s\S]*status = "verified"[\s\S]*cleanupReason = \$cleanupReason/u,
   "post-click menu cleanup failure must remain a warning after the cancel state is verified",
 );
 assert.doesNotMatch(
@@ -2415,6 +2370,21 @@ assert.match(
 );
 assert.doesNotMatch(openedCommentComposerProofSource, /Find-MomentsMenuDots|Resolve-VisualMenuAnchor|composerMenuResolution/u);
 assert.doesNotMatch(actionSource, /if \([^\n]*\$composerAvatarHash -cne \$opened\.avatarHash/u);
+
+const commentComposerOpenTransitionSource = actionSource.match(
+  /Set-VisualActionStage "comment_entry_clicked"[\s\S]*?Set-VisualActionStage "composer_opened"/u,
+)?.[0] ?? "";
+assert.ok(commentComposerOpenTransitionSource, "comment entry should reach one settled composer read");
+assert.match(
+  commentComposerOpenTransitionSource,
+  /Start-Sleep -Milliseconds \$script:momentsCommentComposerOpenDelayMs/u,
+  "comment entry should use one named settling wait before its composer read",
+);
+assert.equal(
+  [...commentComposerOpenTransitionSource.matchAll(/Get-VisualCommentComposer/g)].length,
+  1,
+  "comment entry must inspect the composer once after the settling wait, without a second scan",
+);
 
 const duplicateCheckIndex = actionSource.indexOf("$beforeCandidate = Find-VisualCommentCandidate");
 const duplicateCountIndex = actionSource.indexOf("$normalizedOcrCountBefore = [int]$beforeCandidate.normalizedTextCount");
@@ -3296,7 +3266,8 @@ assert.match(visualCommentComposerSource, /System\.Collections\.Generic\.Queue\[
 assert.match(visualCommentComposerSource, /for \(\$deltaY = -1; \$deltaY -le 1; \$deltaY\+\+\)[\s\S]*for \(\$deltaX = -1; \$deltaX -le 1; \$deltaX\+\+\)/u);
 assert.match(visualCommentComposerSource, /\$componentPixelCount -lt 180/u);
 assert.match(visualCommentComposerSource, /\$potentialCandidateCount \+= 1/u);
-assert.match(visualCommentComposerSource, /Test-VisualBounds \$bounds \(\[double\]\$viewport\.width \* 0\.54\) 64/u);
+assert.match(visualCommentComposerSource, /Test-VisualBounds \$bounds 120 40/u);
+assert.doesNotMatch(visualCommentComposerSource, /\$bounds\.top -le \[double\]\$menu\.centerY|viewport\.width \* 0\.54/u);
 assert.match(visualCommentComposerSource, /Test-VisualBoundsInside \$bounds \$viewport/u);
 assert.match(visualCommentComposerSource, /\$topEdge -lt \(\[double\]\$bounds\.width \* 0\.42\)[\s\S]*\$rightEdge -lt \(\[double\]\$bounds\.height \* 0\.35\)/u);
 assert.match(visualCommentComposerSource, /\$validCandidates\.Count -ne 1/u);

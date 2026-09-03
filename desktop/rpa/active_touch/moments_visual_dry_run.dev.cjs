@@ -233,14 +233,8 @@ foreach ($candidate in @($matches)) {
   $expectedRootName = $(if ([string]$candidate.surfaceMode -ceq "integrated") { "微信" } else { "朋友圈" })
   if ($candidateRootAutomationId -cne "" -or $candidateRootName -cne $expectedRootName -or
     $candidateRootControlType -cne "ControlType.Window" -or $candidateRootProcessId -ne [int]$candidate.pid) { continue }
-  $candidateFeeds = $candidateRoot.FindAll(
-    [System.Windows.Automation.TreeScope]::Descendants,
-    [System.Windows.Automation.PropertyCondition]::new(
-      [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
-      "sns_list"
-    )
-  )
-  if ($candidateFeeds.Count -ne 0) { $surfaceFailureReason = "moments_visual_profile_conflict"; continue }
+  # UIA may expose sns_list alongside the rendered feed. Its presence does not
+  # invalidate visual evidence; verify the actual window and render pane below.
   $candidatePane = Get-MomentsRenderPaneEvidence $candidateRoot $candidate.pid
   if (-not $candidatePane.ok) { $surfaceFailureReason = [string]$candidatePane.reason; continue }
   $candidateWindowBounds = @{ left = $candidate.left; top = $candidate.top; width = $candidate.width; height = $candidate.height }
@@ -289,12 +283,6 @@ $expectedRootName = $(if ([string]$matched.surfaceMode -ceq "integrated") { "微
 if ($rootAutomationId -cne "" -or $rootName -cne $expectedRootName -or $rootControlType -cne "ControlType.Window" -or $rootProcessId -ne $matched.pid) {
   Write-Result @{ ok = $false; reason = "moments_window_identity_mismatch" }
 }
-$feedCondition = [System.Windows.Automation.PropertyCondition]::new(
-  [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
-  "sns_list"
-)
-$feeds = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $feedCondition)
-if ($feeds.Count -ne 0) { Write-Result @{ ok = $false; reason = "moments_visual_profile_conflict"; feedCount = $feeds.Count } }
 $renderEvidence = Get-MomentsRenderPaneEvidence $root $matched.pid
 if (-not $renderEvidence.ok) { Write-Result $renderEvidence }
 $windowBounds = @{ left = $matched.left; top = $matched.top; width = $matched.width; height = $matched.height }

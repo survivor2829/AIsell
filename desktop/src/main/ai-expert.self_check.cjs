@@ -181,7 +181,7 @@ async function main() {
     store,
     isAutoReplyRunning: () => running
   });
-  assert.deepEqual([...handlers.keys()].sort(), ["ai-expert:choose-and-import", "ai-expert:remove", "ai-expert:status"]);
+  assert.deepEqual([...handlers.keys()].sort(), ["ai-expert:chat", "ai-expert:choose-and-import", "ai-expert:conversation", "ai-expert:read", "ai-expert:remove", "ai-expert:save", "ai-expert:status"]);
   assert.equal((await handlers.get("ai-expert:choose-and-import")({}, "expert_rules")).code, "AUTO_REPLY_RUNNING");
   assert.equal((await handlers.get("ai-expert:remove")({}, "expert_rules")).code, "AUTO_REPLY_RUNNING");
   running = false;

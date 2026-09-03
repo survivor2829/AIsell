@@ -21,6 +21,7 @@ function registerAiExpertIpc(options = {}) {
   const dialog = options.dialog || require("electron").dialog;
   const store = options.store;
   const isAutoReplyRunning = options.isAutoReplyRunning || (() => false);
+  let chatting = false;
 
   function assertMutable() {
     if (isAutoReplyRunning()) {
@@ -48,6 +49,39 @@ function registerAiExpertIpc(options = {}) {
     } catch (error) {
       return publicError(error);
     }
+  });
+  ipcMain.handle("ai-expert:read", () => {
+    try { return { ok: true, data: store.read() }; } catch (error) { return publicError(error); }
+  });
+  ipcMain.handle("ai-expert:conversation", () => {
+    try { return { ok: true, data: store.conversation() }; } catch (error) { return publicError(error); }
+  });
+  ipcMain.handle("ai-expert:save", (_event, payload) => {
+    try { return { ok: true, data: store.save(payload || {}) }; } catch (error) { return publicError(error); }
+  });
+  ipcMain.handle("ai-expert:chat", async (_event, payload) => {
+    if (chatting) return { ok: false, error: "正在整理上一条回答，请稍候。" };
+    const message = String(payload?.message || "").trim();
+    if (!message || message.length > 6000) return { ok: false, error: "请输入业务情况，每条不超过 6000 字。" };
+    chatting = true;
+    try {
+      const current = store.conversation();
+      const messages = [...current.messages, { role: "user", content: message }];
+      const expertRules = typeof payload?.expertRules === "string" ? payload.expertRules : current.expertRules;
+      const businessKnowledge = typeof payload?.businessKnowledge === "string" ? payload.businessKnowledge : current.businessKnowledge;
+      if (expertRules.length + businessKnowledge.length > 50000) return { ok: false, error: "专家资料文字合计不能超过 5 万字符。" };
+      const result = await options.deepSeekClient.expertInterview({ messages, expertRules, businessKnowledge });
+      if (Number(store.conversation().revision || 0) !== Number(current.revision || 0)) {
+        return { ok: false, error: "资料已更新，本轮回答未覆盖新资料，请重新发送。" };
+      }
+      const next = store.saveConversation({
+        messages: [...messages, { role: "assistant", content: result.message }],
+        expertRules: result.expertRules, businessKnowledge: result.businessKnowledge
+      });
+      return { ok: true, data: next };
+    } catch (error) {
+      return { ok: false, code: error.code || "AI_EXPERT_CHAT_FAILED", error: error.code ? error.message : "对话暂时未完成，请稍后重试。原专家资料未修改。" };
+    } finally { chatting = false; }
   });
   ipcMain.handle("ai-expert:remove", (_event, kindValue) => {
     try {

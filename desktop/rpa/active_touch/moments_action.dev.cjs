@@ -439,7 +439,12 @@ function sanitizeCommentDriverDiagnostics(raw) {
     ["startedInputTick", "started_input_tick"],
     ["finishedInputTick", "finished_input_tick"],
     ["stableSendCandidateCount", "stable_send_candidate_count"],
-    ["settledSendCandidateCount", "settled_send_candidate_count"]
+    ["settledSendCandidateCount", "settled_send_candidate_count"],
+    ["composerComponentCount", "composer_component_count"],
+    ["composerPotentialCandidateCount", "composer_potential_candidate_count"],
+    ["composerValidCandidateCount", "composer_valid_candidate_count"],
+    ["composerGeometryRejectedCount", "composer_geometry_rejected_count"],
+    ["composerEdgeRejectedCount", "composer_edge_rejected_count"]
   ]) {
     if (Number.isSafeInteger(raw[source]) && raw[source] >= 0 && raw[source] <= 4_294_967_295) {
       sanitized[target] = raw[source];

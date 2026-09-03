@@ -6,6 +6,7 @@ const { runActiveTouch } = require("./active-touch-ipc.cjs");
 const { preloadFile, rendererDir = "dist" } = require("./edition.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
 const { FLOATING_PROGRESS_WINDOW, floatingProgressPosition } = require("./floating-progress-window.cjs");
+const { createTouchWorkflow } = require("./touch-workflow.cjs");
 const {
   authorizeTask,
   classifyContacts,
@@ -1127,7 +1128,16 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     return taskPayload();
   });
 
-  return { pause: requestPause };
+  const workflow = createTouchWorkflow({
+    dataDir: activeTouchDir(),
+    coordinator: runtimeCoordinator,
+    readContacts,
+    client: deepSeekClient,
+    execute: realSendExecutor,
+    runStep: runActiveTouch,
+    random: randomSource
+  });
+  return { pause: requestPause, ...workflow };
 }
 
 module.exports = {

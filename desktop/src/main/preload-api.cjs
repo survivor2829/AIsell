@@ -95,10 +95,14 @@ function createMomentsPublishApi(ipcRenderer) {
       clickToken: consumeConfirmClick()
     }),
     reset: () => ipcRenderer.invoke("moments-publish:reset"),
-    resolveUnknown: (payload) => ipcRenderer.invoke("moments-publish:resolve-unknown", {
-      resolution: String(payload?.resolution || ""),
-      clickToken: consumeResolveClick()
-    }),
+    resolveUnknown: async (payload) => {
+      const result = await ipcRenderer.invoke("moments-publish:resolve-unknown", {
+        resolution: String(payload?.resolution || ""),
+        clickToken: consumeResolveClick()
+      });
+      if (result?.ok) await ipcRenderer.invoke("wechat-workflow:status").catch(() => undefined);
+      return result;
+    },
     onUpdate: (callback) => {
       const handler = (_event, payload) => callback(payload);
       ipcRenderer.on("moments-publish:update", handler);
@@ -850,10 +854,31 @@ function createContentEngineApi(ipcRenderer) {
   };
 }
 function createPreloadApis(ipcRenderer) {
+  const consumeWorkflowStart = createTrustedClickGate("[data-xiaoxi-workflow-start]");
+  const consumeWorkflowSave = createTrustedClickGate("[data-xiaoxi-workflow-save]");
   const consumeBatchClick = createTrustedClickGate("[data-xiaoxi-batch-authorize]");
   const consumeAutoReplyClick = createTrustedClickGate("[data-xiaoxi-auto-reply-start], [data-xiaoxi-auto-reply-acknowledge], [data-xiaoxi-auto-reply-resume]");
   return {
     content: createContentEngineApi(ipcRenderer),
+    workflow: {
+      status: () => ipcRenderer.invoke("wechat-workflow:status"),
+      start: () => ipcRenderer.invoke("wechat-workflow:start", { clickToken: consumeWorkflowStart() }),
+      pause: () => ipcRenderer.invoke("wechat-workflow:pause"),
+      addTask: (payload) => ipcRenderer.invoke("wechat-workflow:add-task", { ...payload, clickToken: consumeWorkflowSave() }),
+      updateTask: (payload) => ipcRenderer.invoke("wechat-workflow:update-task", { ...payload, clickToken: consumeWorkflowSave() }),
+      getTask: (id) => ipcRenderer.invoke("wechat-workflow:get-task", { id: String(id || "") }),
+      cancelTask: (id) => ipcRenderer.invoke("wechat-workflow:cancel-task", { id: String(id || "") }),
+      retryTask: (id) => ipcRenderer.invoke("wechat-workflow:retry-task", { id: String(id || ""), clickToken: consumeWorkflowSave() }),
+      removeRecipient: (id) => ipcRenderer.invoke("wechat-workflow:remove-recipient", { id: String(id || "") }),
+      setReplyEnabled: (enabled) => ipcRenderer.invoke("wechat-workflow:set-reply-enabled", { enabled: enabled === true }),
+      showFloating: () => ipcRenderer.invoke("wechat-workflow:show-floating"),
+      showMain: () => ipcRenderer.invoke("wechat-workflow:show-main"),
+      onUpdate: (callback) => {
+        const handler = (_event, state) => callback(state);
+        ipcRenderer.on("wechat-workflow:update", handler);
+        return () => ipcRenderer.removeListener("wechat-workflow:update", handler);
+      }
+    },
     autoReply: {
       status: () => ipcRenderer.invoke("auto-reply:status"),
       start: (payload = {}) => ipcRenderer.invoke("auto-reply:start", {
@@ -875,6 +900,16 @@ function createPreloadApis(ipcRenderer) {
     },
     aiExpert: {
       status: () => ipcRenderer.invoke("ai-expert:status"),
+      read: () => ipcRenderer.invoke("ai-expert:read"),
+      conversation: () => ipcRenderer.invoke("ai-expert:conversation"),
+      chat: (payload) => ipcRenderer.invoke("ai-expert:chat", {
+        message: String(payload?.message || ""),
+        ...(typeof payload?.expertRules === "string" ? { expertRules: payload.expertRules } : {}),
+        ...(typeof payload?.businessKnowledge === "string" ? { businessKnowledge: payload.businessKnowledge } : {})
+      }),
+      save: (payload) => ipcRenderer.invoke("ai-expert:save", {
+        expertRules: String(payload?.expertRules || ""), businessKnowledge: String(payload?.businessKnowledge || "")
+      }),
       chooseAndImport: (kind) => ipcRenderer.invoke("ai-expert:choose-and-import", String(kind || "")),
       remove: (kind) => ipcRenderer.invoke("ai-expert:remove", String(kind || ""))
     },

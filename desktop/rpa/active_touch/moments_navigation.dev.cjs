@@ -247,7 +247,8 @@ function Test-MomentsBoundsInside($inner, $outer) {
     ([double]$inner.top + [double]$inner.height) -le ([double]$outer.top + [double]$outer.height)
 }
 
-function Get-IntegratedMomentsEntryState($window) {
+function Get-IntegratedMomentsEntryState($window, [bool]$requireDiscoverEvidence = $true) {
+  [Console]::Error.WriteLine("moments_navigation_stage:window_identity")
   try { $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$window.hWnd) } catch { $root = $null }
   if ($root -eq $null) { return @{ ok = $false; reason = "moments_window_identity_mismatch" } }
   try {
@@ -278,11 +279,18 @@ function Get-IntegratedMomentsEntryState($window) {
   if (-not $frame.ok) { Close-MomentsVisualFrame $frame; return $frame }
   try {
     $surfaceScanBounds = @{ left = 0.0; top = 0.0; width = [double]$window.width; height = [double]$window.height }
-    $discoverEvidence = Get-IntegratedDiscoverEntryEvidence $frame $surfaceScanBounds ([double]$dpi / 96.0)
-    if (-not $discoverEvidence.ok) { return $discoverEvidence }
-    $selectedDiscoverMatches = @($discoverEvidence.entries | Where-Object { [bool]$_.selected })
+    [Console]::Error.WriteLine("moments_navigation_stage:moments_entry")
     $entryEvidence = Get-IntegratedMomentsEntryEvidence $frame $surfaceScanBounds ([double]$dpi / 96.0)
     if (-not $entryEvidence.ok) { return $entryEvidence }
+    # Opening an already-selected Moments page needs no primary-rail search.
+    # Other callers (notably return-to-chat) still require that rail evidence.
+    $discoverEvidence = @{ ok = $true; entries = @(); exactMatchCount = 0; candidateCount = 0; candidateDiagnostics = @(); activePixelCount = 0 }
+    if ($requireDiscoverEvidence -or -not (Test-IntegratedMomentsAlreadyOpen $entryEvidence)) {
+      [Console]::Error.WriteLine("moments_navigation_stage:discover_entry")
+      $discoverEvidence = Get-IntegratedDiscoverEntryEvidence $frame $surfaceScanBounds ([double]$dpi / 96.0)
+      if (-not $discoverEvidence.ok) { return $discoverEvidence }
+    }
+    $selectedDiscoverMatches = @($discoverEvidence.entries | Where-Object { [bool]$_.selected })
     # Pixel recognition runs against the frozen bitmap above. Mouse activity while
     # processing that bitmap does not alter its evidence, so lease only the latest
     # input boundary for the caller's immediate guarded navigation decision.
@@ -538,6 +546,7 @@ function Invoke-MomentsSidebarFallback($main) {
 }
 
 function Open-Moments {
+  [Console]::Error.WriteLine("moments_navigation_stage:resolve_host")
   [int]$integratedTransitionVisualChecks = ${MOMENTS_INTEGRATED_TRANSITION_VISUAL_CHECKS}
   $allowIntegrated = [string]$env:XIAOXI_MOMENTS_ALLOW_INTEGRATED -ceq "1"
   $hostResolution = Resolve-ExpectedMomentsHost
@@ -611,7 +620,7 @@ function Open-Moments {
         }
       }
     }
-    $integratedEntry = Get-IntegratedMomentsEntryState $main
+    $integratedEntry = Get-IntegratedMomentsEntryState $main $false
     if (-not $integratedEntry.ok) {
       if ([string]$integratedEntry.reason -ceq "moments_window_not_foreground") {
         $latePopups = @(Get-MomentsWindow | Where-Object {
@@ -673,7 +682,7 @@ function Open-Moments {
         if (-not (Test-MomentsWindowStable $current)) {
           Write-Result @{ ok = $false; reason = "moments_window_changed" }
         }
-        $currentEntry = Get-IntegratedMomentsEntryState $current
+        $currentEntry = Get-IntegratedMomentsEntryState $current $false
         if (-not $currentEntry.ok) {
           if ([string]$currentEntry.reason -ceq "moments_window_not_foreground") {
             $latePopups = @(Get-MomentsWindow | Where-Object {
@@ -766,7 +775,7 @@ function Open-Moments {
           }
           continue
         }
-        $currentEntry = Get-IntegratedMomentsEntryState $current
+        $currentEntry = Get-IntegratedMomentsEntryState $current $false
         if (-not $currentEntry.ok) {
           if ([string]$currentEntry.reason -ceq "moments_window_not_foreground") {
             $latePopups = @(Get-MomentsWindow | Where-Object {
@@ -866,7 +875,7 @@ function Open-Moments {
           }
           continue
         }
-        $currentEntry = Get-IntegratedMomentsEntryState $current
+        $currentEntry = Get-IntegratedMomentsEntryState $current $false
         if (-not $currentEntry.ok) {
           if ([string]$currentEntry.reason -ceq "moments_window_not_foreground") {
             $latePopups = @(Get-MomentsWindow | Where-Object {
@@ -1114,11 +1123,130 @@ function Scroll-Moments {
   Write-Result @{ ok = $true; action = "moments-scroll"; pid = $window.pid; hWnd = [string]$window.hWnd; delta = $wheelDelta; scrollMode = $scrollMode }
 }
 
+function Return-MomentsToChat {
+  $resolved = Resolve-ExpectedMomentsHost
+  if (-not $resolved.ok) { Write-Result $resolved }
+  $window = $resolved.window
+  $entryState = Get-IntegratedMomentsEntryState $window
+  if (-not (Test-IntegratedMomentsAlreadyOpen $entryState)) {
+    # The existing chat scanner owns page/recipient verification. This helper
+    # never navigates an unrecognized surface or opens a contact to clear a dot.
+    Write-Result @{ ok = $true; changed = $false; pid = $window.pid; hWnd = [string]$window.hWnd }
+  }
+  $scale = [double]$entryState.scale
+  $rail = $entryState.discoverRegionBounds
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$window.hWnd)
+  $matches = New-Object System.Collections.Generic.List[object]
+  $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+  foreach ($element in $all) {
+    try {
+      if ([string]$element.Current.Name -cne "聊天" -or $element.Current.IsOffscreen -or
+        [int]$element.Current.ProcessId -ne [int]$window.pid -or
+        @("ControlType.Button", "ControlType.TabItem", "ControlType.ListItem") -notcontains [string]$element.Current.ControlType.ProgrammaticName) { continue }
+      $bounds = $element.Current.BoundingRectangle
+      $centerX = [double]$bounds.Left + ([double]$bounds.Width / 2.0) - [double]$window.left
+      $centerY = [double]$bounds.Top + ([double]$bounds.Height / 2.0) - [double]$window.top
+      if ($bounds.Width -gt 0 -and $bounds.Height -gt 0 -and
+        $centerX -ge [double]$rail.left -and $centerX -le ([double]$rail.left + [double]$rail.width) -and
+        $centerY -ge [double]$rail.top -and $centerY -le ([double]$rail.top + [double]$rail.height)) {
+        [void]$matches.Add(@{ centerX = $centerX; centerY = $centerY })
+      }
+    } catch {}
+  }
+  if ($matches.Count -gt 1) { Write-Result @{ ok = $false; reason = "wechat_chat_entry_ambiguous" } }
+  $target = $(if ($matches.Count -eq 1) { $matches[0] } else { $null })
+  if ($target -eq $null) {
+    # MMUI exposes no named buttons. Reuse the observed rail glyph bounds and
+    # require a newly appeared exact Chat tooltip before clicking any glyph.
+    $candidates = @($entryState.discoverCandidateDiagnostics | Where-Object {
+      [double]$_.bounds.width -ge (8.0 * $scale) -and [double]$_.bounds.width -le (48.0 * $scale) -and
+      [double]$_.bounds.height -ge (8.0 * $scale) -and [double]$_.bounds.height -le (48.0 * $scale)
+    } | Sort-Object centerY, centerX)
+    if ($candidates.Count -gt 20) { Write-Result @{ ok = $false; reason = "wechat_chat_entry_ambiguous" } }
+    foreach ($candidate in $candidates) {
+      if (-not (Test-MomentsWindowStable $window)) { Write-Result @{ ok = $false; reason = "wechat_window_changed" } }
+      $region = @{
+        left = [double]$rail.left + [double]$rail.width
+        top = [Math]::Max(0.0, [double]$candidate.centerY - (30.0 * $scale))
+        width = [Math]::Min(160.0 * $scale, [double]$window.width - ([double]$rail.left + [double]$rail.width))
+        height = [Math]::Min(60.0 * $scale, [double]$window.height - [Math]::Max(0.0, [double]$candidate.centerY - (30.0 * $scale)))
+      }
+      $before = Get-MomentsVisualFrame ([IntPtr]$window.hWnd) $window.rect $window.pid $false
+      if (-not $before.ok) { Close-MomentsVisualFrame $before; Write-Result $before }
+      try { $beforeText = Get-MomentsOcrObservation $before $region } finally { Close-MomentsVisualFrame $before }
+      if (-not $beforeText.ok -or @($beforeText.lines | Where-Object { [string]$_.compact -ceq "聊天" }).Count -gt 0) { continue }
+      $x = [int][Math]::Round([double]$window.left + [double]$candidate.centerX)
+      $y = [int][Math]::Round([double]$window.top + [double]$candidate.centerY)
+      $point = New-Object Win32WechatMomentsNavigation+POINT
+      $point.X = $x; $point.Y = $y
+      $hit = [Win32WechatMomentsNavigation]::WindowFromPoint($point)
+      [uint32]$hitPid = 0
+      [void][Win32WechatMomentsNavigation]::GetWindowThreadProcessId($hit, [ref]$hitPid)
+      if ([Win32WechatMomentsNavigation]::GetAncestor($hit, 2) -ne [IntPtr]$window.hWnd -or [int]$hitPid -ne [int]$window.pid) {
+        Write-Result @{ ok = $false; reason = "wechat_chat_entry_not_owned" }
+      }
+      [uint32]$hoverTick = Get-MomentsLastInputTick
+      if ($hoverTick -eq [uint32]::MaxValue -or -not (Test-MomentsWindowStable $window) -or
+        [Win32WechatMomentsNavigation]::GetLastInputTick() -ne $hoverTick -or
+        -not [Win32WechatMomentsNavigation]::SetCursorPos($x, $y)) {
+        Write-Result @{ ok = $false; reason = "moments_user_input_detected" }
+      }
+      [uint32]$settledTick = Get-MomentsSettledInputTick
+      Start-Sleep -Milliseconds 700
+      if ($settledTick -eq [uint32]::MaxValue -or (Get-MomentsLastInputTick) -ne $settledTick -or
+        -not (Test-MomentsWindowStable $window)) { Write-Result @{ ok = $false; reason = "moments_user_input_detected" } }
+      $after = Get-MomentsVisualFrame ([IntPtr]$window.hWnd) $window.rect $window.pid $false
+      if (-not $after.ok) { Close-MomentsVisualFrame $after; Write-Result $after }
+      try { $afterText = Get-MomentsOcrObservation $after $region } finally { Close-MomentsVisualFrame $after }
+      if ($afterText.ok -and @($afterText.lines | Where-Object { [string]$_.compact -ceq "聊天" }).Count -eq 1) {
+        $target = $candidate
+        break
+      }
+    }
+  }
+  if ($target -eq $null) { Write-Result @{ ok = $false; reason = "wechat_chat_entry_not_found" } }
+  $fresh = Get-IntegratedMomentsEntryState $window
+  if (-not (Test-IntegratedMomentsAlreadyOpen $fresh)) { Write-Result @{ ok = $false; reason = "wechat_chat_surface_unverified" } }
+  $targetX = [int][Math]::Round([double]$window.left + [double]$target.centerX)
+  $targetY = [int][Math]::Round([double]$window.top + [double]$target.centerY)
+  $clicked = Invoke-MomentsGuardedClick $targetX $targetY $window "wechat_chat_entry_not_owned" ([uint32]$fresh.inputTick)
+  if (-not $clicked.ok) { Write-Result $clicked }
+  for ($attempt = 0; $attempt -lt 4; $attempt++) {
+    Start-Sleep -Milliseconds 250
+    if (-not (Test-MomentsWindowStable $window) -or (Get-MomentsLastInputTick) -ne [uint32]$clicked.inputTick) {
+      Write-Result @{ ok = $false; reason = "wechat_window_changed" }
+    }
+    $afterState = Get-IntegratedMomentsEntryState $window
+    $selectedTarget = @($afterState.discoverCandidateDiagnostics | Where-Object {
+      [bool]$_.selected -and [Math]::Abs([double]$_.centerX - [double]$target.centerX) -le (4.0 * $scale) -and
+      [Math]::Abs([double]$_.centerY - [double]$target.centerY) -le (4.0 * $scale)
+    })
+    if ($afterState.ok -and -not (Test-IntegratedMomentsAlreadyOpen $afterState) -and
+      [int]$afterState.discoverSelectedMatchCount -eq 0 -and $selectedTarget.Count -eq 1) {
+      Write-Result @{ ok = $true; changed = $true; chatSelected = $true; pid = $window.pid; hWnd = [string]$window.hWnd }
+    }
+  }
+  Write-Result @{ ok = $false; reason = "wechat_chat_surface_unverified" }
+}
+
 $action = [string]$env:XIAOXI_MOMENTS_NAV_ACTION
 if ($action -ceq "open") { Open-Moments }
 if ($action -ceq "scroll") { Scroll-Moments }
+if ($action -ceq "return-chat") { Return-MomentsToChat }
 Write-Result @{ ok = $false; reason = "moments_navigation_action_invalid" }
 `;
+
+async function returnWechatFromMomentsToChat(preparedMain, runner = runPowerShellAsync) {
+  if (preparedMain?.ok !== true || preparedMain.normalized !== true
+    || preparedMain.layoutMode !== WECHAT_RPA_WINDOW_LAYOUT_MODE || preparedMain.focused !== true) {
+    return { ok: false, reason: "wechat_window_not_ready" };
+  }
+  return runner(MOMENTS_NAVIGATION_POWERSHELL, {
+    XIAOXI_MOMENTS_NAV_ACTION: "return-chat",
+    XIAOXI_MOMENTS_EXPECTED_HOST_BASE64: Buffer.from(JSON.stringify({ ...preparedMain, surfaceMode: "integrated" }), "utf8").toString("base64"),
+    XIAOXI_MOMENTS_MIN_IDLE_MS: "0"
+  }, { ensure: false, sta: true, timeout: MOMENTS_NAVIGATION_OPEN_TIMEOUT_MS });
+}
 
 async function openWechatMoments(options = {}) {
   const minIdleMs = Number.isFinite(Number(options.minIdleMs))
@@ -1331,6 +1459,7 @@ module.exports = {
   MOMENTS_NAVIGATION_OPEN_TIMEOUT_MS,
   MOMENTS_NAVIGATION_POWERSHELL,
   openWechatMoments,
+  returnWechatFromMomentsToChat,
   resolveMomentsScrollPlan,
   scrollWechatMomentsFeed
 };

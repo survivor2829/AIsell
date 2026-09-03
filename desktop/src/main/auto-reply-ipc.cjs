@@ -3,6 +3,7 @@ const { diagnostics, normalizeReceiptDiagnostics } = require("./diagnostics.cjs"
 const fs = require("node:fs");
 const path = require("node:path");
 const { readContacts } = require("../../rpa/active_touch/state_machine.cjs");
+const { identityKey } = require("../../rpa/active_touch/touch_task_state.cjs");
 const { writeFileAtomic, writeJsonAtomic } = require("./atomic-file.cjs");
 const { FLOATING_PROGRESS_WINDOW, floatingProgressPosition } = require("./floating-progress-window.cjs");
 const {
@@ -1343,6 +1344,52 @@ function buildHandoffMessage({ conversation, reason, latest, at = new Date() }) 
   ].join("\n");
 }
 
+function resolveWorkflowContactScope(activeTouchDir, recipients) {
+  const universe = testContactUniverse(activeTouchDir);
+  const aliasIndex = contactAliasIndex(universe);
+  const idCounts = testContactIdCounts(universe);
+  const contacts = [];
+  const aliases = [];
+  const aliasContacts = new Map();
+  const ids = new Set();
+  for (const frozen of recipients) {
+    const id = normalizeText(frozen?.id);
+    const contact = universe.find((item) => normalizeText(item?.id) === id);
+    if (!id || ids.has(id) || idCounts.get(id) !== 1 || !contact
+      || contact.allowed === false || contact.disabled === true || contact.active === false
+      || !normalizeText(contact.wechatAccountId) || identityKey(contact) !== identityKey(frozen)) {
+      return { ok: false, code: "workflow_recipient_changed", error: "接待名单中的联系人已变化，请重新选择" };
+    }
+    const uniqueAliases = uniqueAliasesForTestContact(contact, aliasIndex);
+    if (!uniqueAliases.length) return { ok: false, code: "workflow_recipient_ambiguous", error: "接待联系人没有唯一可识别的会话名称，请检查备注" };
+    ids.add(id);
+    contacts.push(contact);
+    for (const alias of uniqueAliases) {
+      aliases.push(alias);
+      aliasContacts.set(compactConversationAlias(alias), contact);
+    }
+  }
+  const accounts = new Set(contacts.map((contact) => normalizeText(contact.wechatAccountId)));
+  if (accounts.size !== 1) return { ok: false, code: "workflow_account_changed", error: "接待名单不属于同一微信账号" };
+  return {
+    ok: true,
+    strict: true,
+    scopeBinding: crypto.createHash("sha256").update(JSON.stringify(contacts.map(identityKey).sort())).digest("hex"),
+    contacts,
+    aliases,
+    driverOptions: { exactConversationMatch: true, restoreChatSurface: true },
+    resolveContact: (candidate) => {
+      // An anonymous red-dot identity cannot authorize a scoped workflow reply.
+      if (candidate?.messageDriven === true) return null;
+      const conversation = normalizeText(candidate?.conversation || candidate?.currentConversation);
+      const evidence = compactConversationAlias(candidate?.conversationEvidence);
+      if (normalizeText(candidate?.visualMode) === "visual_render_v1"
+        && (!evidence || evidence !== compactConversationAlias(conversation))) return null;
+      return aliasContacts.get(compactConversationAlias(conversation)) || null;
+    }
+  };
+}
+
 function handoffReasonLabel(reasonCode) {
   return {
     explicit_human_request: "客户明确要求人工",
@@ -1412,6 +1459,12 @@ function createAutoReplyController(options = {}) {
   let starting = false;
   let primeRetryNeeded = false;
   let activeTestContactScope = null;
+  let workflowMode = false;
+  let workflowRecipients = [];
+  let workflowIsEnabled = () => false;
+  let workflowStepActive = false;
+  let workflowStartPending = true;
+  let workflowHandled = false;
   const initialActivityAt = now().toISOString();
   let availableTestContactOptions = singleContactScopeRequired ? testContactScopeOptions(activeTouchDir) : [];
   let activity = {
@@ -1849,7 +1902,7 @@ function createAutoReplyController(options = {}) {
       consecutive_scan_failures: state.consecutive_scan_failures,
       pending_retry_count: Math.max(0, Number(state.pending_observation?.attempts) || 0),
       activity: { ...activity },
-      ...(singleContactScopeRequired ? {
+      ...(singleContactScopeRequired && !workflowMode ? {
         test_scope: {
           required: true,
           enforced: Boolean(activeTestContactScope),
@@ -1874,12 +1927,13 @@ function createAutoReplyController(options = {}) {
   }
 
   function clearTestContactScope() {
-    if (!singleContactScopeRequired) return;
+    if (!singleContactScopeRequired || workflowMode) return;
     activeTestContactScope = null;
     discardTestScopeRuntimeState();
   }
 
   function resolveContactScope() {
+    if (workflowMode) return resolveWorkflowContactScope(activeTouchDir, workflowRecipients);
     if (!singleContactScopeRequired) {
       const contacts = eligibleContacts(activeTouchDir);
       return {
@@ -1933,7 +1987,7 @@ function createAutoReplyController(options = {}) {
   }
 
   function queueNext(delay = POLL_INTERVAL_MS) {
-    if (timer || state.status !== "running") return;
+    if (workflowMode || timer || state.status !== "running") return;
     timer = schedule(async () => {
       timer = null;
       try {
@@ -2239,6 +2293,13 @@ function createAutoReplyController(options = {}) {
   }
 
   async function start(payload = {}) {
+    if (workflowMode) {
+      if (workflowStepActive || workflowIsEnabled()) return rejectedStart("微信拓客计划运行中，请先暂停总任务");
+      workflowMode = false;
+      workflowRecipients = [];
+      workflowStartPending = true;
+      state.status = "paused";
+    }
     if (state.status === "running") return { ok: true, state: publicState() };
     if (starting) return { ok: false, error: "自动回复正在启动，请稍候" };
     if (singleContactScopeRequired) {
@@ -2629,6 +2690,7 @@ function createAutoReplyController(options = {}) {
     const activeEpoch = runEpoch;
     const isCurrentRun = () => {
       if (state.status !== "running" || runEpoch !== activeEpoch) return false;
+      if (workflowMode && !workflowIsEnabled()) return false;
       if (!contactScope.strict) return true;
       const refreshedScope = resolveContactScope();
       if (refreshedScope.ok && refreshedScope.scopeBinding === contactScope.scopeBinding) return true;
@@ -2710,8 +2772,9 @@ function createAutoReplyController(options = {}) {
           detailCode: candidateReason || state.last_scan_reason || "scan_result_invalid"
         });
         if (contactScope.strict && STRICT_SCOPE_WINDOW_RESET_REASONS.has(candidateReason)) {
-          pauseWithError("test_scope_window_changed", "检测到微信窗口变化，已暂停测试自动回复，请重新选择测试联系人");
-          appendDiagnostic("test_scope_window_changed", { phase: "scope", code: candidateReason });
+          const event = workflowMode ? "workflow_window_changed" : "test_scope_window_changed";
+          pauseWithError(event, workflowMode ? "微信窗口已变化，请检查后重新启动任务" : "检测到微信窗口变化，已暂停测试自动回复，请重新选择测试联系人");
+          appendDiagnostic(event, { phase: "scope", code: candidateReason });
           save();
           return publicState();
         }
@@ -2918,6 +2981,7 @@ function createAutoReplyController(options = {}) {
       }
 
       const traceId = candidateTraceId(candidate, fingerprint);
+      if (workflowMode) workflowHandled = true;
       appendDiagnostic("reply_candidate_detected", {
         phase: "candidate",
         code: "candidate_accepted",
@@ -3289,7 +3353,14 @@ function createAutoReplyController(options = {}) {
           const turnEpoch = noteVisualSendAttempt(candidate, result);
           recordReplyGuard(contact, candidate, fingerprint, incomingEvidence, staleSentAt, "sent_verified", turnEpoch);
           clearPendingObservation(candidate);
-          pauseWithError("stale_run_send_paused", "旧运行轮次在暂停后仍完成了发送，请人工检查");
+          if (workflowMode) {
+            state.status = "paused";
+            state.last_event = "workflow_paused";
+            state.last_error = "";
+            setActivity("paused", { deliveryStatus: "sent_verified", detailCode: "workflow_paused" });
+          } else {
+            pauseWithError("stale_run_send_paused", "旧运行轮次在暂停后仍完成了发送，请人工检查");
+          }
         } else if (result?.send_attempted !== false || explicitOutcomeUnknown) {
           state.processed[fingerprint].status = "outcome_unknown";
           pendingUnsentContexts.delete(contact.id);
@@ -3588,7 +3659,82 @@ function createAutoReplyController(options = {}) {
     }
   }
 
-  return { acknowledgeManualFollowup, pause, resumeContact, runOnce, start, status };
+  async function pauseWorkflow(reason = "workflow_paused") {
+    workflowIsEnabled = () => false;
+    workflowStartPending = true;
+    pause(reason);
+    await waitForScanIdle();
+    while (starting) await new Promise((resolve) => setTimeout(resolve, 10));
+    return { ok: true, state: publicState() };
+  }
+
+  async function runWorkflowStep(input = {}) {
+    const enabled = typeof input.isEnabled === "function" ? input.isEnabled : () => false;
+    if (workflowStepActive) return { handled: false, status: "busy" };
+    if (!enabled()) return { handled: false, status: "paused" };
+    workflowStepActive = true;
+    try {
+      if (!workflowMode) {
+        // Stop the legacy polling loop before the workflow becomes its sole
+        // caller. Wait for any in-flight send to finish verification.
+        pause("workflow_takeover");
+        workflowMode = true;
+        await waitForScanIdle();
+        while (starting) await new Promise((resolve) => setTimeout(resolve, 10));
+        discardTestScopeRuntimeState();
+        scanIncoming.restoreTurnBoundaries?.(Object.values(state.reply_guards || {}).map((guard) => ({
+          conversation: normalizeText(guard?.conversation),
+          turnEpoch: Math.max(0, Math.floor(Number(guard?.turn_epoch) || 0)),
+          runtimeId: normalizeText(guard?.incoming_runtime_id)
+        })));
+        primeRetryNeeded = true;
+        workflowStartPending = true;
+      }
+      if (timer) cancelSchedule(timer);
+      timer = null;
+      workflowIsEnabled = () => enabled() === true;
+      workflowRecipients = Array.isArray(input.recipients)
+        ? input.recipients.map((contact) => ({ ...contact }))
+        : [];
+      if (!workflowRecipients.length) return { handled: false, status: "waiting" };
+      const scope = resolveContactScope();
+      if (!scope.ok) return { handled: false, status: "needs_attention", error: scope.error };
+      const accountName = normalizeText(input.accountName);
+      if (accountName && scope.contacts.some((contact) => normalizeText(contact.wechatAccountId) !== accountName)) {
+        return { handled: false, status: "needs_attention", error: "接待名单与当前微信账号不一致，请重新同步" };
+      }
+      if (!enabled()) return { handled: false, status: "paused" };
+      if (workflowStartPending) {
+        deepSeekClient?.assertAvailable();
+        expertDocuments(expertStore);
+        if (typeof send !== "function" || typeof runStep !== "function") throw new Error("当前版本未连接自动回复执行器");
+        runEpoch += 1;
+        state.status = "running";
+        state.last_event = "workflow_started";
+        state.last_error = "";
+        state.system_error = null;
+        workflowStartPending = false;
+        setActivity("listening", { contactLabel: `${scope.contacts.length} 位接待联系人`, detailCode: "workflow_started" });
+        save();
+      }
+      if (state.status !== "running") {
+        return { handled: false, status: "needs_attention", error: state.last_error || "自动回复已暂停，请检查后重新启动" };
+      }
+      workflowHandled = false;
+      await runOnce();
+      return {
+        handled: workflowHandled,
+        status: !enabled() ? "paused" : state.status === "paused" ? "needs_attention" : "running",
+        ...(enabled() && state.status === "paused" ? { error: state.last_error || "自动回复需要处理" } : {})
+      };
+    } catch (error) {
+      return { handled: false, status: "needs_attention", error: String(error?.message || "自动回复启动失败") };
+    } finally {
+      workflowStepActive = false;
+    }
+  }
+
+  return { acknowledgeManualFollowup, pause, pauseWorkflow, resumeContact, runOnce, runWorkflowStep, start, status };
 }
 
 function registerAutoReplyIpc(options = {}) {

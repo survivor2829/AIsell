@@ -1207,7 +1207,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     normalizedForReprime = windowAlreadyNormalized;
   }
 
-  async function normalizeWindowForExecution(expectedIdentity = null) {
+  async function normalizeWindowForExecution(expectedIdentity = null, matchOptions = {}) {
     let normalized;
     try {
       normalized = await Promise.resolve(windowPreparer({
@@ -1228,6 +1228,17 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     if (normalized.focused !== true) return { ok: false, reason: "wechat_window_not_foreground" };
     normalizedWindowIdentity = windowIdentity(normalized);
     if (!normalizedWindowIdentity) return { ok: false, reason: "wechat_window_not_ready" };
+    if (matchOptions.restoreChatSurface === true) {
+      // Main-window focus restores a standalone Moments window, but an embedded
+      // Moments page needs an owned navigation step before reading chat rows.
+      const { returnWechatFromMomentsToChat } = require("./moments_navigation.dev.cjs");
+      const restored = await returnWechatFromMomentsToChat(normalized, powerShellRunner);
+      if (restored?.ok !== true) return restored || { ok: false, reason: "wechat_chat_surface_unverified" };
+      if (Number(restored.pid) !== normalizedWindowIdentity.pid
+        || String(restored.hWnd) !== String(normalizedWindowIdentity.hWnd)) {
+        return { ok: false, reason: "wechat_window_identity_mismatch" };
+      }
+    }
     return null;
   }
 
@@ -1274,7 +1285,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
     if (normalizedForReprime) normalizedForReprime = false;
     else {
-      const windowFailure = await normalizeWindowForExecution();
+      const windowFailure = await normalizeWindowForExecution(null, matchOptions);
       if (windowFailure) return windowFailure;
     }
     if (activeScanMode === "visual") {
@@ -1318,7 +1329,7 @@ function createWechatAutoReplyDriver(powerShellRunner = runPowerShellAsync, wind
   async function scanWechatIncoming(names, matchOptions = {}) {
     const allowed = allowedNames(names);
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
-    const scanWindowFailure = await normalizeWindowForExecution(normalizedWindowIdentity || sessionPreviewProcess);
+    const scanWindowFailure = await normalizeWindowForExecution(normalizedWindowIdentity || sessionPreviewProcess, matchOptions);
     if (scanWindowFailure) {
       if (new Set([
         "wechat_window_identity_mismatch",

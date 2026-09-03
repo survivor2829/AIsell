@@ -1,5 +1,6 @@
 import { Check, Pause, Play, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { WorkflowRecipients, WorkflowToggle, workflowStatusText, type WorkflowController } from "./WechatWorkflow";
 
 type ScanHealth = "unknown" | "checking" | "healthy" | "warning" | "degraded" | "waiting";
 type AutoReplyFailureContext = {
@@ -396,7 +397,7 @@ function recoverySummary(context: AutoReplyFailureContext) {
   }
 }
 
-export function AutoReply() {
+export function AutoReply({ workflow }: { workflow?: WorkflowController } = {}) {
   const [state, setState] = useState<AutoReplyState>(EMPTY_STATE);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -504,10 +505,10 @@ export function AutoReply() {
       <div className="page-head">
         <div>
           <h1>自动回复</h1>
-          <p>启动后监听新消息，并使用已导入的 AI 专家资料生成回复。</p>
+          <p>{workflow ? "客户回复优先处理；没有其他待办时，持续使用 AI 专家资料接待客户。" : "启动后监听新消息，并使用已导入的 AI 专家资料生成回复。"}</p>
         </div>
         <div className="actions">
-          {running ? (
+          {workflow ? <WorkflowToggle workflow={workflow} /> : running ? (
             <button className="danger-button" onClick={pause} disabled={busy}>
               <Pause size={17} />暂停自动回复
             </button>
@@ -525,9 +526,15 @@ export function AutoReply() {
             <strong id="auto-reply-system-error-title">AI 服务故障，自动回复已暂停</strong>
             <p>{state.system_error.message}</p>
           </div>
-          <span>{state.system_error.category} · {state.system_error.code}</span>
+          {!workflow && <span>{state.system_error.category} · {state.system_error.code}</span>}
         </section>
       )}
+
+      {workflow && <>
+        <div className="workflow-reply-summary"><span>运行状态<strong>{workflowStatusText(workflow.state)}</strong></span><span>接待客户<strong>{workflow.state.recipients.length} 人</strong></span><span>今日已回复<strong>{state.reply_count}</strong></span></div>
+        {(workflow.error || workflow.state.replyError) && <div className="workflow-alert" role="alert">{workflow.error || workflow.state.replyError}</div>}
+        <WorkflowRecipients workflow={workflow} />
+      </>}
 
       {heldContacts.length > 0 && (
         <section className="auto-reply-held" aria-labelledby="auto-reply-held-title">
@@ -559,7 +566,7 @@ export function AutoReply() {
         </section>
       )}
 
-      {DEVELOPMENT_EDITION && (
+      {DEVELOPMENT_EDITION && !workflow && (
         <section className="auto-reply-test-scope" aria-labelledby="auto-reply-test-scope-title">
           <div className="auto-reply-test-scope-head">
             <div>
@@ -594,6 +601,7 @@ export function AutoReply() {
         </section>
       )}
 
+      <details className="workflow-details workflow-diagnostics"><summary>运行详情与诊断</summary>
       <div className="status-strip auto-reply-status">
         <div className="status-card"><span>运行状态</span><strong className={starting ? "warn" : ""}>{statusLabel}</strong></div>
         <div className="status-card"><span>扫描健康</span><strong className={healthClass}>{healthLabel}</strong></div>
@@ -634,6 +642,7 @@ export function AutoReply() {
           已保留一条尚未确认的新消息证据并后台复核（{pendingRetries} 次）；证据明确前不会发送，也不会停止其他轮询。
         </div>
       )}
+      </details>
       {visibleError && <div className="touch-notice" role="alert">{visibleError}</div>}
     </section>
   );

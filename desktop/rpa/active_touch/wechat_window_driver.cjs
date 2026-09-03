@@ -1624,7 +1624,9 @@ function runPowerShellAsync(script, env = {}, options = {}) {
       kill_accepted: terminationKillAccepted,
       grace_exceeded: terminationGraceExceeded,
       stdout_bytes: Buffer.byteLength(stdout),
-      stderr_bytes: Buffer.byteLength(stderr)
+      stderr_bytes: Buffer.byteLength(stderr),
+      // Only expose our fixed stage tokens, never arbitrary stderr content.
+      navigation_stage: Array.from(stderr.matchAll(/moments_navigation_stage:([a-z_]+)/g)).at(-1)?.[1] || ""
     } : undefined;
     const unconfirmedTermination = () => ({
       ok: false,

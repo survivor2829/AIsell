@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const { writeJsonAtomic: defaultWriteJsonAtomic } = require("./atomic-file.cjs");
+const { readWorkflowJson, workflowDirectory } = require("./moments-workflow-storage.cjs");
 const IMAGE_EXTENSIONS = new Set([".jpeg", ".jpg", ".png"]);
 const VIDEO_EXTENSIONS = new Set([".mov", ".mp4"]);
 const MAX_IMAGE_COUNT = 9;
@@ -233,6 +234,7 @@ function normalizeVerificationDiagnostics(value = {}) {
 function normalizeAttempt(value = {}) {
   return {
     attempt_id: String(value.attempt_id || "").replace(/[^a-zA-Z0-9-]/gu, "").slice(0, 80),
+    workflow_task_id: String(value.workflow_task_id || "").replace(/[^a-zA-Z0-9_-]/gu, "").slice(0, 128),
     fingerprint: safeFingerprint(value.fingerprint),
     status: safeReason(value.status, "failed"),
     action_attempted: value.action_attempted === true,
@@ -468,6 +470,7 @@ function createMomentsPublishController(options = {}) {
   const stateFile = path.join(baseDir, "publish-state.json");
   const markerDir = path.join(baseDir, "publish_markers");
   const stagingRoot = path.join(baseDir, "publish_staging");
+  const plannedMediaRoot = path.join(baseDir, "planned_media");
   const coordinator = options.coordinator;
   const openMoments = options.openMoments || (async (openOptions) => {
     const { openWechatMoments } = require("../../rpa/active_touch/moments_navigation.dev.cjs");
@@ -679,6 +682,149 @@ function createMomentsPublishController(options = {}) {
     };
   }
 
+  function plannedSnapshot(taskId) {
+    return readWorkflowJson(path.join(workflowDirectory(plannedMediaRoot, taskId), "snapshot.json"));
+  }
+
+  async function prepareWorkflowTask(taskId, payload = {}) {
+    try {
+      if (disposed) return { ok: false, reason: "moments_publish_disposed" };
+      const directory = workflowDirectory(plannedMediaRoot, taskId);
+      const source = payload.sourceTaskId ? plannedSnapshot(payload.sourceTaskId) : plannedSnapshot(taskId);
+      const content = normalizeContent(payload.content === undefined ? source?.content : payload.content);
+      if (!content) return { ok: false, reason: "moments_publish_content_required" };
+      if (content.length > MAX_CONTENT_LENGTH) return { ok: false, reason: "moments_publish_content_too_long" };
+      if (countOcrCharacters(content) < MIN_OCR_CHARACTER_COUNT) {
+        return { ok: false, reason: "moments_publish_content_too_short" };
+      }
+      let selectedMedia;
+      if (payload.selectionId) {
+        if (!currentSelection || String(payload.selectionId) !== currentSelection.selectionId) {
+          return { ok: false, reason: "moments_publish_selection_expired" };
+        }
+        selectedMedia = currentSelection.media;
+      } else {
+        selectedMedia = source?.media;
+      }
+      if (!Array.isArray(selectedMedia) || selectedMedia.length === 0) {
+        return { ok: false, reason: "moments_publish_media_required" };
+      }
+      const inspected = await inspectMediaPaths(selectedMedia.map((item) => item.path));
+      if (!inspected.ok || !mediaDescriptorsEqual(selectedMedia, inspected.media)) {
+        return { ok: false, reason: "moments_publish_media_changed" };
+      }
+      const fingerprint = buildPublishFingerprint(content, inspected.media);
+      const blockedReason = fingerprintBlockReason(fingerprint);
+      if (blockedReason) return { ok: false, reason: blockedReason };
+      // Each revision owns copies. Editing or repeating a task cannot change an
+      // earlier task's inputs, and user-selected originals are never removed.
+      const revision = crypto.randomUUID();
+      const mediaDirectory = path.join(directory, revision);
+      fs.mkdirSync(mediaDirectory, { recursive: true });
+      const copiedPaths = inspected.media.map((item, index) => {
+        const destination = path.join(mediaDirectory, `${String(index + 1).padStart(2, "0")}${item.ext}`);
+        fs.copyFileSync(item.path, destination, fs.constants.COPYFILE_EXCL);
+        return destination;
+      });
+      const copied = await inspectMediaPaths(copiedPaths);
+      if (!copied.ok || !mediaContentDescriptorsEqual(inspected.media, copied.media)) {
+        return { ok: false, reason: "moments_publish_media_changed" };
+      }
+      const saved = {
+        version: 1,
+        taskId: String(taskId),
+        revision,
+        content,
+        fingerprint,
+        kind: copied.kind,
+        media: copied.media.map((item, index) => ({ ...item, name: selectedMedia[index].name })),
+        updatedAt: isoNow()
+      };
+      writeState(path.join(directory, "snapshot.json"), saved);
+      return { ok: true, payload: { content, fingerprint, mediaRevision: revision, mediaCount: saved.media.length, mediaType: saved.kind } };
+    } catch (error) {
+      return { ok: false, reason: safeReason(error?.code, "moments_publish_snapshot_failed") };
+    }
+  }
+
+  function workflowDraft(taskId) {
+    try {
+      const saved = plannedSnapshot(taskId);
+      if (!saved) return { ok: false, reason: "moments_publish_snapshot_missing" };
+      return {
+        ok: true,
+        content: saved.content,
+        media: {
+          media_kind: saved.kind,
+          media_count: saved.media.length,
+          files: saved.media.map(({ name, size, kind }) => ({ name, size, kind }))
+        }
+      };
+    } catch (error) {
+      return { ok: false, reason: safeReason(error?.code, "moments_publish_snapshot_missing") };
+    }
+  }
+
+  function workflowOutcome(taskId) {
+    const id = String(taskId || "");
+    if (!id) return null;
+    const attempt = state.attempts.slice().reverse().find((item) => item.workflow_task_id === id);
+    if (!attempt) return null;
+    if (["verified", "resolved_published"].includes(attempt.status)) {
+      return { status: "completed", progress: { done: 1, total: 1 } };
+    }
+    if (attempt.status === "resolved_not_published") {
+      return { status: "not_published", progress: { done: 0, total: 1 } };
+    }
+    return null;
+  }
+
+  async function runWorkflowStep(taskRecord, runOptions = {}) {
+    const result = (status, error, extra = {}) => ({
+      status,
+      progress: { done: status === "completed" ? 1 : 0, total: 1 },
+      ...(error ? { error } : {}),
+      ...extra
+    });
+    const isEnabled = typeof runOptions.isEnabled === "function" ? runOptions.isEnabled : () => false;
+    if (!isEnabled()) return result("pending");
+    if (inFlight || confirmationTask) return result("pending", "wechat_operation_busy");
+    const execute = async () => {
+      try {
+        const saved = plannedSnapshot(taskRecord.id);
+        if (!saved || saved.fingerprint !== taskRecord.payload?.fingerprint
+          || saved.revision !== taskRecord.payload?.mediaRevision) {
+          return result("needs_attention", "moments_publish_snapshot_changed");
+        }
+        const completed = state.attempts.find((attempt) => attempt.workflow_task_id === String(taskRecord.id)
+          && attempt.fingerprint === saved.fingerprint
+          && ["verified", "resolved_published"].includes(attempt.status));
+        if (completed) return result("completed", "", { result: { verified: true, attemptId: completed.attempt_id } });
+        const attempted = state.attempts.find((attempt) => attempt.workflow_task_id === String(taskRecord.id)
+          && ["publishing", "outcome_unknown"].includes(attempt.status));
+        if (attempted) return result("needs_attention", "moments_publish_outcome_unknown_requires_resolution");
+        const response = await runDraft(saved, { isCurrent: isEnabled, workflowTaskId: String(taskRecord.id) });
+        if (response?.verified) {
+          return result("completed", "", { result: { verified: true, attemptId: response.state?.attempt_id } });
+        }
+        const reason = response?.reason || "moments_publish_failed";
+        const pending = ["wechat_operation_busy", "workflow_paused"].includes(reason) && response?.actionAttempted !== true;
+        return result(pending ? "pending" : "needs_attention", reason, {
+          result: { actionAttempted: response?.actionAttempted === true, outcomeUnknown: response?.state?.outcome_unknown === true }
+        });
+      } catch (error) {
+        return result("needs_attention", safeReason(error?.code, "moments_publish_workflow_failed"));
+      }
+    };
+    const task = execute();
+    confirmationTask = task;
+    try {
+      return await task;
+    } finally {
+      if (confirmationTask === task) confirmationTask = null;
+    }
+  }
+
   function finishSafeFailure(attemptId, reason, rawBreadcrumb = {}) {
     const finishedAt = isoNow();
     const breadcrumb = normalizeFailureBreadcrumb(rawBreadcrumb);
@@ -878,13 +1024,24 @@ function createMomentsPublishController(options = {}) {
       return { ok: false, reason: "moments_publish_confirmation_required", state: snapshot() };
     }
     const confirmedDraft = preparedDraft;
+    return runDraft(confirmedDraft, { isCurrent: () => preparedDraft === confirmedDraft });
+  }
+
+  async function runDraft(confirmedDraft, runOptions = {}) {
+    const isCurrent = runOptions.isCurrent || (() => true);
+    const invalidDraftReason = runOptions.workflowTaskId ? "workflow_paused" : "moments_publish_confirmation_required";
+    if (disposed) return { ok: false, reason: "moments_publish_disposed", state: snapshot() };
+    if (state.outcome_unknown) {
+      return { ok: false, reason: "moments_publish_outcome_unknown_requires_resolution", state: snapshot() };
+    }
     const blockedReason = fingerprintBlockReason(confirmedDraft.fingerprint);
     if (blockedReason) return { ok: false, reason: blockedReason, state: snapshot() };
     const refreshed = await inspectMediaPaths(confirmedDraft.media.map((item) => item.path));
     if (disposed) return { ok: false, reason: "moments_publish_disposed", state: snapshot() };
-    if (inFlight || preparedDraft !== confirmedDraft) {
+    if (inFlight) {
       return { ok: false, reason: "moments_publish_already_running", state: snapshot() };
     }
+    if (!isCurrent()) return { ok: false, reason: invalidDraftReason, state: snapshot() };
     if (!refreshed.ok || !mediaDescriptorsEqual(confirmedDraft.media, refreshed.media)) {
       clearSecrets();
       persist({ status: "failed", last_reason: "moments_publish_media_changed" });
@@ -900,7 +1057,7 @@ function createMomentsPublishController(options = {}) {
     try {
       lock = coordinator?.acquire?.({
         state: "running_moments",
-        taskId: `moments-publish-${Date.now()}`,
+        taskId: runOptions.workflowTaskId || `moments-publish-${Date.now()}`,
         account: "unknown",
         phase: "moments:publish"
       });
@@ -916,6 +1073,7 @@ function createMomentsPublishController(options = {}) {
     const attemptedAt = isoNow();
     const attempt = normalizeAttempt({
       attempt_id: attemptId,
+      workflow_task_id: runOptions.workflowTaskId || "",
       fingerprint: draft.fingerprint,
       status: "publishing",
       action_attempted: false,
@@ -932,6 +1090,9 @@ function createMomentsPublishController(options = {}) {
         fingerprint: draft.fingerprint,
         attempt_id: attemptId,
         marker_name: markerName,
+        media_count: draft.media.length,
+        media_type: refreshed.kind,
+        content_character_count: countOcrCharacters(draft.content),
         action_attempted: false,
         outcome_unknown: false,
         last_stage: "",
@@ -958,11 +1119,11 @@ function createMomentsPublishController(options = {}) {
     }
     record("publish.started", { attempt_id: attemptId, fingerprint: draft.fingerprint });
     const staged = await stageMediaForAttempt(stagingRoot, attemptId, draft.media);
-    if (!staged.ok || disposed || preparedDraft !== confirmedDraft) {
+    if (!staged.ok || disposed || !isCurrent()) {
       removeStagingAttempt(stagingRoot, attemptId);
       const reason = disposed
         ? "moments_publish_disposed"
-        : (preparedDraft !== confirmedDraft ? "moments_publish_confirmation_required" : staged.reason);
+        : (!isCurrent() ? invalidDraftReason : staged.reason);
       const result = finishSafeFailure(attemptId, reason);
       try {
         coordinator?.release?.(lock.lock.owner);
@@ -1187,10 +1348,14 @@ function createMomentsPublishController(options = {}) {
     initialize,
     markerDir,
     prepare,
+    prepareWorkflowTask,
     reset,
     resolveUnknown,
+    runWorkflowStep,
     stagingRoot,
     stateFile,
+    workflowDraft,
+    workflowOutcome,
     status: () => ({ ok: true, state: snapshot() })
   };
 }

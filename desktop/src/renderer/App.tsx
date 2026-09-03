@@ -8,6 +8,7 @@ import {
   FileText,
   Folder,
   Images,
+  ListTodo,
   Lock,
   MessageCircle,
   MonitorPlay,
@@ -36,9 +37,11 @@ import { FinishedVideoCenterPage, MaterialsLibraryPage } from "./ContentFoundati
 import { CreativeWorkspacePage } from "./CreativeWorkspacePage";
 import { CreativeStudioPage } from "./CreativeStudioPage";
 import { ProductOneClickPage } from "./ProductOneClickPage";
+import { FloatingWorkflowWindow, useWechatWorkflow, WechatWorkflowPage, WorkflowLauncher } from "./WechatWorkflow";
 
 type ModuleKey =
   | "agent"
+  | "workflow"
   | "reply"
   | "expert"
   | "contact-sync"
@@ -365,7 +368,7 @@ const BUILD_ID = import.meta.env.VITE_XIAOXI_BUILD_ID || "";
 const DEVELOPMENT_EDITION = XIAOXI_EDITION === "development";
 const PILOT_EDITION = XIAOXI_EDITION === "pilot";
 const REAL_SEND_EDITION = DEVELOPMENT_EDITION || PILOT_EDITION;
-const DEFAULT_ACTIVE_MODULE: ModuleKey = PILOT_EDITION ? "touch" : "reply";
+const DEFAULT_ACTIVE_MODULE: ModuleKey = "workflow";
 const EDITION_LABEL = DEVELOPMENT_EDITION ? "测试版" : "";
 const DEFAULT_USER_PROFILE: UserProfile = { name: "本机用户", avatar: "用" };
 const DEFAULT_TOUCH_MESSAGE = DEVELOPMENT_EDITION
@@ -380,10 +383,11 @@ const MomentsPublishPanel = REAL_SEND_EDITION ? lazy(() => import("./MomentsPubl
 const MomentsCampaignPanel = REAL_SEND_EDITION ? lazy(() => import("./MomentsCampaignPanel")) : null;
 
 const agentChildren: NavItem[] = [
+  { key: "workflow", label: "今日计划", icon: ListTodo },
   { key: "reply", label: "自动回复", icon: MessageCircle },
   { key: "expert", label: "AI专家", icon: Bot },
   { key: "contact-sync", label: "同步联系人", icon: UsersRound },
-  { key: "touch", label: "主动触达", icon: Send },
+  { key: "touch", label: "精准触达", icon: Send },
   { key: "moments", label: "朋友圈运营", icon: ThumbsUp }
 ];
 
@@ -516,7 +520,7 @@ function taskHasUnfinishedSnapshot(task: TouchTaskState) {
 }
 
 function moduleIsAvailable(key: ModuleKey) {
-  return ["reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "materials", "workspace", "finished", "api-key", "diagnostics"].includes(key);
+  return ["workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "materials", "workspace", "finished", "api-key", "diagnostics"].includes(key);
 }
 
 function touchTaskStatusLabel(task: TouchTaskState) {
@@ -557,11 +561,13 @@ function processedTouchResult(status: string) {
 
 export default function App() {
   const floatingMode = new URLSearchParams(window.location.search).get("floating");
+  if (floatingMode === "workflow") return <FloatingWorkflowWindow />;
   if (floatingMode === "auto-reply") return <FloatingAutoReplyWindow />;
   if (floatingMode === "moments") return <FloatingMomentsCampaignWindow />;
   if (floatingMode === "1" || floatingMode === "touch") return <FloatingTouchWindow />;
 
   const [user, setUser] = useState<UserProfile | null>(() => readStoredUser());
+  const workflow = useWechatWorkflow();
   const [active, setActive] = useState<ModuleKey>(DEFAULT_ACTIVE_MODULE);
   const [legacyWorkspace, setLegacyWorkspace] = useState(false);
   const [creativeView, setCreativeView] = useState<"studio" | "product">("studio");
@@ -684,8 +690,8 @@ export default function App() {
 
   const runContactSync = () => {
     if (contactSyncInFlight.current) return;
-    if (taskHasUnfinishedSnapshot(touchTask)) {
-      setContactSyncError("当前任务名单已经冻结，请完成或结束本次任务后再同步。");
+    if (workflow.state.enabled || workflow.state.phase === "pausing") {
+      setContactSyncError("请先暂停微信拓客程序，再同步联系人。");
       return;
     }
 
@@ -768,7 +774,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (user && (active === "reply" || active === "contact-sync" || active === "touch")) refreshContactSync();
+    if (user && ["workflow", "reply", "contact-sync", "touch", "moments"].includes(active)) refreshContactSync();
   }, [user, active]);
 
   useEffect(() => {
@@ -914,6 +920,18 @@ export default function App() {
         </header>
 
         <div className="content-card">
+          {["workflow", "touch", "moments"].includes(active) && (
+            <WechatWorkflowPage
+              key={active}
+              mode={active === "touch" ? "touch" : active === "moments" ? "moments" : "home"}
+              workflow={workflow}
+              contacts={contactRows}
+              syncBusy={contactSyncBusy}
+              syncError={contactSyncError || contactSyncState.last_error}
+              onSync={runContactSync}
+              onOpenSettings={setActive}
+            />
+          )}
           {active === "contact-sync" && (
             <ContactSyncPage
               contacts={contactRows}
@@ -925,12 +943,11 @@ export default function App() {
               onChooseWechatExe={chooseWechatExe}
                onChooseWechatRoot={chooseWechatRoot}
                onAutoDetectPaths={autoDetectWechatPaths}
-               locked={touchTaskLocked}
+               locked={workflow.state.enabled || workflow.state.phase === "pausing"}
              />
           )}
-          {active === "reply" && <AutoReply />}
+          {active === "reply" && <AutoReply workflow={workflow} />}
           {active === "expert" && <AiExpert />}
-          {active === "moments" && <MomentsOperations />}
           {active === "accounts" && <AccountManagement />}
           {active === "product-detail" && <ProductDetailPage />}
           {active === "materials" && <MaterialsLibraryPage />}
@@ -963,38 +980,15 @@ export default function App() {
           {active === "finished" && <FinishedVideoCenterPage />}
           {active === "api-key" && <ApiKeyPage onConfiguredChange={setDeepSeekConfigured} />}
           {active === "diagnostics" && <Diagnostics />}
-          {active === "touch" && (
-            <ActiveTouch
-              contacts={contactRows}
-              messageDraft={messageDraft}
-              touchTask={touchTask}
-              touchTaskPreview={touchTaskPreview}
-               touchTaskError={touchTaskError}
-               contactSyncState={contactSyncState}
-               contactSyncError={contactSyncError}
-               contactSyncBusy={contactSyncBusy}
-               excludedContactIds={excludedContactIds}
-               locked={touchTaskLocked}
-               onMessageDraftChange={updateMessageDraft}
-               onSync={runContactSync}
-               onOpenSync={() => setActive("contact-sync")}
-               onExclude={(contactId) => setExcludedContactIds((current) => current.includes(contactId) ? current : [...current, contactId])}
-               onRestore={(contactId) => setExcludedContactIds((current) => current.filter((id) => id !== contactId))}
-               onResolveUnknown={resolveUnknown}
-               onEndTask={endTouchTask}
-             />
-          )}
           {active === "touch" && DevelopmentAcceptance && (
-            <Suspense fallback={null}>
+            <details className="workflow-details page"><summary>内部测试工具</summary><Suspense fallback={null}>
               <DevelopmentAcceptance contacts={contactRows} message={messageDraft} />
-            </Suspense>
+            </Suspense></details>
           )}
           {!moduleIsAvailable(active) && <Placeholder title={activeTitle} />}
         </div>
 
-        {active === "touch" && <button data-xiaoxi-batch-authorize={REAL_SEND_EDITION ? (resumingTask ? "continue" : "start") : undefined} className={`launch-button ${canLaunchTouch ? "" : "disabled"}`} onClick={startTouchTask} disabled={!canLaunchTouch} title={launchTitle}>
-          {touchTaskBusy ? "处理中" : resumingTask ? <><span>继续</span><br /><span>任务</span></> : <><span>启动</span><br /><span>程序</span></>}
-        </button>}
+        {agentChildren.some((item) => item.key === active) && <WorkflowLauncher workflow={workflow} />}
       </section>
     </main>
   );
@@ -1087,7 +1081,7 @@ function ContactSyncPage({
       <div className="page-head">
         <div>
           <h1>同步微信联系人</h1>
-          <p>把当前微信通讯录同步到 AI获客，后续主动触达可直接筛选联系人。首次同步会由 AI获客重启微信，请按提示重新登录；同步不会发送消息。</p>
+          <p>同步后即可选择触达客户。首次同步会重启微信，请按提示重新登录。</p>
         </div>
         <div className="actions">
           <button className="secondary-button" onClick={onRefresh} disabled={busy}>
@@ -1101,14 +1095,15 @@ function ContactSyncPage({
         </div>
       </div>
 
-      <div className="status-strip">
-        <StatusCard label="同步状态" value={statusLabel} good={syncState.status === "synced"} />
-        <StatusCard label="通讯录人数" value={`${contacts.length || syncState.contact_count}人`} good={(contacts.length || syncState.contact_count) > 0} />
-        <StatusCard label="同步账号标识" value={syncState.account_name || "未识别"} good={Boolean(syncState.account_name)} />
-        <StatusCard label="最近同步" value={lastSynced} good={Boolean(syncState.last_synced_at)} />
+      <div className="workflow-sync-summary">
+        <span>账号<strong>{syncState.account_name || "未识别"}</strong></span>
+        <span>通讯录<strong>{contacts.length || syncState.contact_count} 人</strong></span>
+        <span>最近同步<strong>{lastSynced}</strong></span>
+        <span>状态<strong>{statusLabel}</strong></span>
       </div>
       <p className="wechat-account-note">同步账号标识来自本机微信数据目录，不是公开微信号；切换登录微信后请重新同步。</p>
-      {locked && <div className="touch-notice">当前任务名单已经冻结。请先完成或结束本次任务，再重新同步联系人。</div>}
+      {locked && <div className="touch-notice">请先暂停微信拓客程序，再同步联系人。</div>}
+      <details className="workflow-sync-details"><summary>连接设置与路径排查</summary>
       <div className="wechat-path-panel">
         <div className="wechat-path-row">
           <div>
@@ -1132,6 +1127,7 @@ function ContactSyncPage({
         </div>
         <button className="wechat-auto-detect" onClick={onAutoDetectPaths} disabled={busy || locked}>恢复自动识别</button>
       </div>
+      </details>
       {error && <div className="touch-notice">{error}</div>}
 
       <div className="table-panel contact-table-scroll">
