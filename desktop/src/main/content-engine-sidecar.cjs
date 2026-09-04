@@ -604,10 +604,12 @@ function createContentEngineSidecar(options = {}) {
     listAssetCollections: () => request("list_asset_collections", {}),
     saveAssetCollection: (payload) => request("save_asset_collection", payload),
     listNarratedBatches: () => request("list_narrated_batches", {}),
+    archiveNarratedBatch: (batchId) => request("archive_narrated_batch", { batch_id: batchId }),
     saveNarratedBatch: (payload) => request("save_narrated_batch", payload),
     getNarratedBatch: (batchId) => request("get_narrated_batch", { batch_id: batchId }),
     getNarratedBatchStatus: (batchId) => request("get_narrated_batch_status", { batch_id: batchId }),
     recommendNarratedBatch: (batchId) => request("recommend_narrated_batch", { batch_id: batchId }),
+    resolveNarratedPlanningOutcome: (payload) => request("resolve_narrated_planning_outcome", payload),
     generateNarratedSamples: (batchId) => request("generate_narrated_samples", { batch_id: batchId }),
     continueNarratedBatch: (batchId) => request("continue_narrated_batch", { batch_id: batchId }),
     updateNarratedCandidate: (payload) => request("update_narrated_candidate", payload),
@@ -1062,7 +1064,8 @@ function createContentEngineSidecar(options = {}) {
         "auto_mix_v2_regeneration",
         "guided_auto_mix_analysis",
         "guided_auto_mix_draft",
-        "guided_auto_mix_supplemental_image"
+        "guided_auto_mix_supplemental_image",
+        "narrated_batch_v1"
       ].includes(
         task.task_type
       )) {

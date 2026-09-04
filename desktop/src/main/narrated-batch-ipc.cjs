@@ -3,7 +3,7 @@ const path = require("node:path");
 const { constants } = require("node:fs");
 
 const CHANNELS = Object.freeze(Object.fromEntries([
-  "collections", "save-collection", "list", "get", "status", "save", "recommend", "samples", "continue", "edit", "export"
+  "collections", "save-collection", "list", "get", "status", "save", "recommend", "resolve", "samples", "continue", "edit", "export", "archive"
 ].map((name) => [name, `content-engine:batch-${name}`])));
 const ERRORS = {
   invalid_collection_name: "请填写素材集名称（100 字以内）。",
@@ -20,7 +20,8 @@ const ERRORS = {
   narrated_plan_empty: "AI 未返回可用方案，请补充素材或稍后重试。",
   narrated_candidate_invalid: "方案包含无效或重复镜头，请调整。",
   narrated_duplicate: "这条方案与已有作品过于相似，请更换镜头或顺序。",
-  narrated_copy_too_long: "解说超过画面的可用时长，请缩短。",
+  narrated_copy_too_long: "口播与可用画面时长不匹配，需要调整内容和镜头。",
+  narrated_duration_too_short: "口播或相关镜头不足设定的最短时长，需要补充内容后再制作。",
   invalid_narrated_shots: "请选择当前分析中的有效镜头。",
   invalid_narration: "请填写 2400 字以内的解说。",
   narrated_edit_mismatch: "解说无法对应当前镜头，请缩短解说或更换镜头。",
@@ -28,9 +29,13 @@ const ERRORS = {
   narrated_assets_changed: "素材文件已变更，请重新分析。",
   narrated_analysis_changed: "分析配置已变更，请重新分析。",
   narrated_task_stale: "任务已被新操作替代，请刷新批次。",
-  narrated_planning_outcome_unknown: "上次 AI 请求结果未知，已停止自动重复请求，请检查服务记录。"
+  narrated_planning_outcome_unknown: "上次 AI 请求结果未知，已停止自动重复请求，请检查服务记录。",
+  narrated_planning_confirmation_required: "请先核对百炼服务记录，并勾选确认。",
+  narrated_planning_note_required: "请填写本次核对依据（1000 字以内）。",
+  invalid_narrated_planning_resolution: "本次核对操作无效，请刷新后重试。",
+  narrated_planning_recovery_not_available: "当前批次没有可人工确认并重试的未知请求。"
 };
-const PUBLIC_FIELDS = new Set(("collections collection_id name description asset_ids batches batch_id project_id title status task_id task_status target_count recommended_count feasible_count count_is_exact reasons completed_count updated_at created_at groups opening middle ending cta settings voice_persona_id brand_profile_id candidates candidate_id narration angle generated_video_id duration_ms revision error actual_shots shots segment_id asset_id source_start_ms source_end_ms evidence_ref evidence_facts facts subject action quality suggested_brief preferred_groups available_shots progress approved version score rationale phrases text segment_ids role").split(" "));
+const PUBLIC_FIELDS = new Set(("activity message started_at completed total collections collection_id name description asset_ids batches batch_id project_id title status task_id task_status target_count recommended_count feasible_count count_is_exact reasons completed_count updated_at created_at groups opening middle ending cta settings voice_persona_id brand_profile_id minimum_duration_seconds candidates candidate_id narration angle generated_video_id duration_ms revision error actual_shots shots segment_id asset_id source_start_ms source_end_ms evidence_ref evidence_facts facts subject action quality suggested_brief preferred_groups available_shots progress approved version score rationale phrases text segment_ids role planning_recovery_available").split(" "));
 function publicBatch(value, depth = 0) {
   if (depth > 12) return null;
   if (Array.isArray(value)) return value.slice(0, 5000).map((item) => publicBatch(item, depth + 1));
@@ -63,8 +68,9 @@ function registerNarratedBatchIpc({ handle, controller, validateId, validateVoic
     result.description = text(p.description, 6000);
     result.cta = text(p.cta, 300);
     if (p.target_count != null && (!Number.isInteger(p.target_count) || p.target_count < 1 || p.target_count > 300)) invalid("invalid_narrated_count");
-    keys(p.settings || {}, ["voice_persona_id", "brand_profile_id"]);
+    keys(p.settings || {}, ["voice_persona_id", "brand_profile_id", "minimum_duration_seconds"]);
     result.settings = p.settings || {};
+    if (result.settings.minimum_duration_seconds != null && (!Number.isSafeInteger(result.settings.minimum_duration_seconds) || result.settings.minimum_duration_seconds < 0)) invalid("invalid_narrated_settings");
     if (result.settings.voice_persona_id) validateVoicePersonaId(result.settings.voice_persona_id);
     if (result.settings.brand_profile_id) id(result.settings.brand_profile_id, "brand_profile");
     return result;
@@ -78,9 +84,24 @@ function registerNarratedBatchIpc({ handle, controller, validateId, validateVoic
     }));
   });
   handle(CHANNELS.list, async () => publicBatch(await controller.listNarratedBatches()));
+  handle(CHANNELS.archive, async (p) => { keys(p, ["batch_id"]); return publicBatch(await controller.archiveNarratedBatch(id(p.batch_id, "narrated_batch"))); });
   handle(CHANNELS.get, async (p) => { keys(p, ["batch_id"]); return publicBatch(await controller.getNarratedBatch(id(p.batch_id, "narrated_batch"))); });
   handle(CHANNELS.status, async (p) => { keys(p, ["batch_id"]); return publicBatch(await controller.getNarratedBatchStatus(id(p.batch_id, "narrated_batch"))); });
   handle(CHANNELS.save, async (p) => publicBatch(await controller.saveNarratedBatch(draft(p))));
+  handle(CHANNELS.resolve, async (p, event) => {
+    keys(p, ["batch_id", "provider_log_checked", "resolution", "note", "clickToken"]);
+    requireTrustedAutoMixClick(event, p.clickToken, CHANNELS.resolve);
+    if (p.provider_log_checked !== true) invalid("narrated_planning_confirmation_required");
+    if (p.resolution !== "retry_planning") invalid("invalid_narrated_planning_resolution");
+    const note = text(p.note, 1000).trim();
+    if (!note) invalid("narrated_planning_note_required");
+    return publicBatch(await controller.resolveNarratedPlanningOutcome({
+      batch_id: id(p.batch_id, "narrated_batch"),
+      provider_log_checked: true,
+      resolution: "retry_planning",
+      note
+    }));
+  });
   for (const [action, method] of [["recommend", "recommendNarratedBatch"], ["samples", "generateNarratedSamples"], ["continue", "continueNarratedBatch"]]) {
     handle(CHANNELS[action], async (p, event) => {
       keys(p, ["batch_id", "draft", "clickToken"]);
@@ -91,11 +112,11 @@ function registerNarratedBatchIpc({ handle, controller, validateId, validateVoic
   }
   handle(CHANNELS.edit, async (p) => {
     keys(p, ["batch_id", "candidate_id", "title", "narration", "shots"]);
-    const result = { batch_id: id(p.batch_id, "narrated_batch"), candidate_id: id(p.candidate_id, "narrated_candidate") };
+    const result = { batch_id: id(p.batch_id, "narrated_batch"), ...(p.candidate_id ? { candidate_id: id(p.candidate_id, "narrated_candidate") } : {}) };
     if (p.title !== undefined) result.title = text(p.title, 100);
     if (p.narration !== undefined) result.narration = text(p.narration, 6000);
     if (p.shots !== undefined) {
-      if (!Array.isArray(p.shots) || p.shots.length < 1 || p.shots.length > 12 || p.shots.some((s) => !/^shot_[a-f0-9]{24}$/.test(s))) invalid();
+      if (!Array.isArray(p.shots) || p.shots.length < 1 || p.shots.length > 40 || p.shots.some((s) => !/^shot_[a-f0-9]{24}$/.test(s))) invalid();
       result.shots = p.shots;
     }
     return publicBatch(await controller.updateNarratedCandidate(result));

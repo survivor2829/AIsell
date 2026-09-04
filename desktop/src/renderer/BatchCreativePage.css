@@ -66,6 +66,12 @@
 .batch-asset input { accent-color: #e5484d; flex-shrink: 0; }
 .batch-asset .batch-remove-asset { display: block; margin: 4px 0 0 auto; padding: 5px 10px; color: #b42332; }
 .batch-remove-hint { color: #64748b; font-size: 13px; }
+.batch-live-progress { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: #475569; }
+.batch-live-progress progress { width: 140px; height: 8px; accent-color: #e5484d; }
+.batch-planning-recovery { flex: 1 1 100%; display: grid; grid-template-columns: minmax(280px, 1fr) auto; align-items: center; gap: 10px 14px; padding-top: 10px; border-top: 1px solid #e7e9ed; }
+.batch-planning-recovery > span, .batch-planning-recovery > label { grid-column: 1 / -1; }
+.batch-planning-recovery > label { display: flex; align-items: center; gap: 8px; color: #475569; }
+.batch-planning-recovery > input { width: 100%; }
 .batch-empty { text-align: center; padding: 64px 20px; color: #77808e; font-size: 14px; }
 .batch-results { margin-top: 32px; }
 .batch-result-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 18px; }
@@ -93,4 +99,4 @@
 .batch-history-list article { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid #e7e9ed; gap: 18px; }
 .batch-history-list p, .batch-finished-overview > p { color: #667080; font-size: 12px; }
 @media (max-width: 1000px) { .batch-groups { gap: 10px; } .batch-group { padding: 12px; } .batch-group-assets { grid-template-columns: 1fr; } }
-@media (max-width: 760px) { .batch-groups { grid-template-columns: 1fr; } .batch-group-assets { grid-template-columns: repeat(3, minmax(0, 1fr)); } .batch-group { min-height: 210px; } .batch-page-header, .batch-results > header { align-items: start; flex-direction: column; } .batch-count-bar { flex-wrap: wrap; } .batch-other { margin-left: 0; } }
+@media (max-width: 760px) { .batch-groups { grid-template-columns: 1fr; } .batch-group-assets { grid-template-columns: repeat(3, minmax(0, 1fr)); } .batch-group { min-height: 210px; } .batch-page-header, .batch-results > header { align-items: start; flex-direction: column; } .batch-count-bar { flex-wrap: wrap; } .batch-other { margin-left: 0; } .batch-planning-recovery { grid-template-columns: 1fr; } }

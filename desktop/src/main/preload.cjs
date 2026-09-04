@@ -6,6 +6,7 @@ const {
 } = require("./preload-api.cjs");
 
 const apis = createPreloadApis(ipcRenderer);
+contextBridge.exposeInMainWorld("xiaoxiLicenseAuth", apis.licenseAuth);
 contextBridge.exposeInMainWorld("xiaoxiWorkflow", apis.workflow);
 const momentsCampaign = createMomentsCampaignApi(ipcRenderer);
 const momentsPublish = createMomentsPublishApi(ipcRenderer);

@@ -378,6 +378,7 @@ class DashScopeMediaClient:
         parse_message: str = "百炼返回了无法解析的结果。",
         operation_label: str | None = None,
         validate: Callable[[dict[str, Any]], bool] | None = None,
+        timeout: int | None = None,
         validation_error: Callable[[dict[str, Any]], str | None] | None = None,
         validation_retry_context: (
             Callable[[str, dict[str, Any]], list[dict[str, Any]] | None] | None
@@ -436,8 +437,14 @@ class DashScopeMediaClient:
                     "response_format": {"type": "json_object"},
                 },
                 operation_label=operation_label,
+                timeout=timeout,
             )
             choices = response.get("choices") or []
+            self.last_completion_metadata = {
+                "requested_model": model,
+                "returned_model": str(response.get("model") or "")[:160],
+                "request_id": str(response.get("id") or response.get("request_id") or "")[:160],
+            }
             if not choices:
                 previous_issue = "没有返回可用结果。"
                 if attempt == 0:

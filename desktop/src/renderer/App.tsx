@@ -10,6 +10,7 @@ import {
   Images,
   ListTodo,
   Lock,
+  LogOut,
   MessageCircle,
   MonitorPlay,
   Pause,
@@ -28,6 +29,7 @@ import {
 } from "lucide-react";
 import { lazy, Suspense, type ComponentType, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import productBrand from "../../product-brand.json";
+import packageInfo from "../../package.json";
 import { AiExpert } from "./AiExpert";
 import { AutoReply, FloatingAutoReplyWindow } from "./AutoReply";
 import { FloatingMomentsCampaignWindow } from "./MomentsCampaignPanel";
@@ -41,34 +43,14 @@ import { MaterialsCollectionsPage } from "./BatchAssets";
 import type { Collection } from "./batch-studio-api";
 import { ProductOneClickPage } from "./ProductOneClickPage";
 import { FloatingWorkflowWindow, useWechatWorkflow, WechatWorkflowPage, WorkflowLauncher } from "./WechatWorkflow";
+import { AgentHome, type AgentHomeTarget, type AgentRoleKey } from "./AgentHome";
 
-type ModuleKey =
-  | "agent"
-  | "workflow"
-  | "reply"
-  | "expert"
-  | "contact-sync"
-  | "touch"
-  | "moments"
-  | "production"
-  | "operations"
-  | "accounts"
-  | "product-detail"
-  | "materials"
-  | "workspace"
-  | "finished"
-  | "ai-video"
-  | "publish"
-  | "ai-check"
-  | "leads"
-  | "data"
-  | "api-key"
-  | "diagnostics";
-
-type GroupKey = "agent" | "production" | "operations";
+type ModuleKey = AgentRoleKey | AgentHomeTarget | "api-key" | "diagnostics";
+type GroupKey = AgentRoleKey;
 type NavItem = { key: ModuleKey; label: string; icon: ComponentType<{ size?: number; strokeWidth?: number }> };
-type NavGroup = NavItem & { key: GroupKey; children: NavItem[] };
-type UserProfile = { name: string; avatar: string };
+type NavGroup = NavItem & { key: GroupKey; persona: string; children: NavItem[] };
+type WechatIdentity = { account_id: string; nickname: string; avatar_url: string; synced_at: string };
+type LicenseStatus = { authorized: boolean; licenseId?: string; expiresAt?: string; code?: string; error?: string };
 type ActiveTouchState = {
   calibrated: boolean;
   target_selected: boolean;
@@ -113,6 +95,7 @@ type ContactRow = {
   wechatAccountId?: string;
   source?: string;
   syncedAt?: string;
+  avatarUrl?: string;
 };
 type ActiveTouchResult = {
   ok: boolean;
@@ -213,6 +196,8 @@ type ContactSyncState = {
   helper_configured: boolean;
   wechat_exe_path: string;
   wechat_root: string;
+  wechat_identity?: WechatIdentity | null;
+  account_changed?: boolean;
 };
 type ContactSyncResult = {
   ok: boolean;
@@ -305,6 +290,11 @@ type ProductDetailAiSettingsResult = {
 
 declare global {
   interface Window {
+    xiaoxiLicenseAuth?: {
+      status: () => Promise<LicenseStatus>;
+      activate: (code: string) => Promise<LicenseStatus>;
+      logout: () => Promise<LicenseStatus>;
+    };
     xiaoxiActiveTouch?: {
       status: () => Promise<ActiveTouchResult>;
       calibrate: () => Promise<ActiveTouchResult>;
@@ -363,7 +353,6 @@ declare global {
   }
 }
 
-const USER_STORAGE_KEY = "xiaoxi-user-profile";
 const CONTACT_PAGE_SIZE = 50;
 const XIAOXI_EDITION = import.meta.env.VITE_XIAOXI_EDITION;
 const BUILD_ID = import.meta.env.VITE_XIAOXI_BUILD_ID || "";
@@ -372,16 +361,15 @@ const PILOT_EDITION = XIAOXI_EDITION === "pilot";
 const REAL_SEND_EDITION = DEVELOPMENT_EDITION || PILOT_EDITION;
 const DEFAULT_ACTIVE_MODULE: ModuleKey = "workflow";
 const EDITION_LABEL = DEVELOPMENT_EDITION ? "测试版" : "";
-const DEFAULT_USER_PROFILE: UserProfile = { name: "本机用户", avatar: "用" };
 const DEFAULT_TOUCH_MESSAGE = DEVELOPMENT_EDITION
   ? "{称呼}，您好，我们这边有清洁设备短租和会员特惠方案，想了解一下您近期是否需要降本增效？"
   : "";
 const DevelopmentAcceptance = DEVELOPMENT_EDITION ? lazy(() => import("./DevelopmentAcceptance")) : null;
 
 const agentChildren: NavItem[] = [
+  { key: "expert", label: "AI专家", icon: Bot },
   { key: "workflow", label: "今日计划", icon: ListTodo },
   { key: "reply", label: "自动回复", icon: MessageCircle },
-  { key: "expert", label: "AI专家", icon: Bot },
   { key: "contact-sync", label: "同步联系人", icon: UsersRound },
   { key: "touch", label: "精准触达", icon: Send },
   { key: "moments", label: "朋友圈运营", icon: ThumbsUp }
@@ -404,9 +392,9 @@ const operationsChildren: NavItem[] = [
 ];
 
 const navGroups: NavGroup[] = [
-  { key: "agent", label: "微信拓客", icon: UsersRound, children: agentChildren },
-  { key: "production", label: "内容生产", icon: Video, children: productionChildren },
-  { key: "operations", label: "渠道运营", icon: BarChart3, children: operationsChildren }
+  { key: "agent", persona: "小玺", label: "微信拓客", icon: UsersRound, children: agentChildren },
+  { key: "production", persona: "小慧", label: "内容创作", icon: Video, children: productionChildren },
+  { key: "operations", persona: "小联", label: "渠道运营", icon: BarChart3, children: operationsChildren }
 ];
 
 const apiKeyNavItem: NavItem = { key: "api-key", label: "API密钥", icon: Lock };
@@ -415,32 +403,6 @@ const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), a
 
 function nowTime() {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false });
-}
-
-function avatarFromName(name: string) {
-  if (name.includes("梁")) return "梁";
-  const chinese = name.match(/[\u4e00-\u9fff]/);
-  return (chinese?.[0] ?? name.trim().slice(0, 1) ?? "用").toUpperCase();
-}
-
-function readStoredUser() {
-  try {
-    const raw = window.localStorage.getItem(USER_STORAGE_KEY);
-    if (!raw) return DEFAULT_USER_PROFILE;
-    const value = JSON.parse(raw) as Partial<UserProfile>;
-    if (!value.name || !value.avatar) return DEFAULT_USER_PROFILE;
-    return { name: value.name, avatar: value.avatar };
-  } catch {
-    return DEFAULT_USER_PROFILE;
-  }
-}
-
-function storeUser(user: UserProfile) {
-  try {
-    window.localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user));
-  } catch {
-    // ponytail: local login still works without persistence if storage is unavailable.
-  }
 }
 
 function contactName(contact: ContactRow | null) {
@@ -509,7 +471,7 @@ function taskStatusLabel(status: string) {
 
 
 function moduleIsAvailable(key: ModuleKey) {
-  return ["workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "materials", "workspace", "finished", "api-key", "diagnostics"].includes(key);
+  return ["agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "materials", "workspace", "finished", "api-key", "diagnostics"].includes(key);
 }
 
 function touchTaskStatusLabel(task: TouchTaskState) {
@@ -555,7 +517,8 @@ export default function App() {
   if (floatingMode === "moments") return <FloatingMomentsCampaignWindow />;
   if (floatingMode === "1" || floatingMode === "touch") return <FloatingTouchWindow />;
 
-  const [user, setUser] = useState<UserProfile | null>(() => readStoredUser());
+  const [license, setLicense] = useState<LicenseStatus | null>(null);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const workflow = useWechatWorkflow();
   const [active, setActive] = useState<ModuleKey>(DEFAULT_ACTIVE_MODULE);
   const [legacyWorkspace, setLegacyWorkspace] = useState(false);
@@ -590,21 +553,25 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!window.xiaoxiLicenseAuth) {
+      setLicense({ authorized: false, code: "license_service_unavailable", error: "当前版本未连接授权服务" });
+      return;
+    }
+    void window.xiaoxiLicenseAuth.status().then(setLicense).catch(() => setLicense({ authorized: false, code: "license_status_failed" }));
+  }, []);
+
+  useEffect(() => {
     document.title = [productBrand.displayName, EDITION_LABEL, BUILD_ID].filter(Boolean).join(" ");
   }, []);
 
   const activeTitle = useMemo(() => navItems.find((item) => item.key === active)?.label ?? "自动回复", [active]);
 
-  const login = (account: string) => {
-    const name = account.trim();
-    const profile = { name, avatar: avatarFromName(name) };
-    storeUser(profile);
-    setUser(profile);
-  };
-
   const selectGroup = (groupKey: GroupKey) => {
-    setOpenGroups((current) => ({ ...current, [groupKey]: !current[groupKey] }));
-    setActive(navGroups.find((group) => group.key === groupKey)?.children[0]?.key ?? DEFAULT_ACTIVE_MODULE);
+    setOpenGroups((current) => {
+      if (active === groupKey) return { ...current, [groupKey]: !current[groupKey] };
+      return current[groupKey] ? current : { ...current, [groupKey]: true };
+    });
+    setActive(groupKey);
   };
 
   const selectChild = (groupKey: GroupKey, key: ModuleKey) => {
@@ -615,6 +582,12 @@ export default function App() {
       setCreativeResumeTarget(null);
     }
     setActive(key);
+  };
+
+  const openAgentTarget = (key: AgentHomeTarget) => {
+    const group = navGroups.find((candidate) => candidate.children.some((item) => item.key === key));
+    if (group) selectChild(group.key, key);
+    else setActive(key);
   };
 
   const applyContactSyncResult = (result: ContactSyncResult) => {
@@ -700,12 +673,8 @@ export default function App() {
 
 
   useEffect(() => {
-    if (user && ["workflow", "reply", "contact-sync", "touch", "moments"].includes(active)) refreshContactSync();
-  }, [user, active]);
-
-  useEffect(() => {
-    if (user) storeUser(user);
-  }, [user]);
+    if (license?.authorized && ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active)) refreshContactSync();
+  }, [license?.authorized, active]);
 
   useEffect(() => {
     if (!window.xiaoxiDeepSeekApi) return;
@@ -729,8 +698,12 @@ export default function App() {
 
 
 
-  if (!user && !PILOT_EDITION) return <LoginScreen onLogin={login} />;
-  const currentUser = user ?? DEFAULT_USER_PROFILE;
+  if (!license) return <main className="login-shell"><div className="login-loading">正在读取授权状态…</div></main>;
+  if (!license.authorized) return <LoginScreen initialError={license.error} onLogin={setLicense} />;
+  const identity = contactSyncState.wechat_identity;
+  const identityName = identity?.nickname || "未同步微信";
+  const identityInitial = identityName === "未同步微信" ? "微" : (identityName.match(/[\u4e00-\u9fff]/)?.[0] || identityName.slice(0, 1)).toUpperCase();
+  const activeRole = navGroups.find((group) => group.key === active)?.key;
 
   return (
     <main className="app-shell">
@@ -738,8 +711,7 @@ export default function App() {
         <div className="brand">
           <div className="brand-mark">玺</div>
           <div className="brand-copy">
-            <span>{productBrand.displayName}{EDITION_LABEL ? ` · ${EDITION_LABEL}` : ""}</span>
-            {BUILD_ID && <small title={`构建编号 ${BUILD_ID}`}>{BUILD_ID}</small>}
+            <span>{productBrand.displayName}</span>
           </div>
         </div>
         <nav className="nav-list">
@@ -751,8 +723,8 @@ export default function App() {
             return (
               <div className="nav-group" key={group.key}>
                 <button className={`nav-item ${groupActive ? "active" : ""}`} onClick={() => selectGroup(group.key)}>
-                  <GroupIcon size={20} strokeWidth={2.7} />
-                  <span>{group.label}</span>
+                  <span className={`nav-role-avatar is-${group.key}`} aria-hidden="true"><GroupIcon size={17} strokeWidth={2.5} /></span>
+                  <span className="nav-role-copy"><strong>{group.label}</strong><small>{group.persona}</small></span>
                   <span className="nav-chevron">{expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
                 </button>
                 {expanded && (
@@ -792,13 +764,29 @@ export default function App() {
       <section className="workspace">
         <header className="topbar">
           <div />
-          <div className="top-actions">
-            <div className="avatar">{currentUser.avatar}</div>
-            <button className="account-name">{currentUser.name}</button>
+          <div className="top-actions account-menu-wrap">
+            <button className="account-trigger" aria-haspopup="menu" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((open) => !open)}>
+              <span className="avatar">{identityInitial}{identity?.avatar_url && <img src={identity.avatar_url} alt="" onError={(event) => { event.currentTarget.hidden = true; }} />}</span>
+              <span className="account-name">{identityName}</span>
+              <ChevronDown size={15} />
+            </button>
+            {accountMenuOpen && <div className="account-menu" role="menu">
+              <div className="account-menu-status"><span>软件授权</span><strong>{license.licenseId || "已授权"}</strong></div>
+              <button role="menuitem" onClick={() => { setActive("contact-sync"); setAccountMenuOpen(false); }}><RefreshCw size={16} />重新同步微信</button>
+              <button role="menuitem" onClick={() => void window.xiaoxiLicenseAuth?.logout().then(setLicense)}><LogOut size={16} />退出登录</button>
+            </div>}
           </div>
         </header>
 
         <div className="content-card">
+          {activeRole && (
+            <AgentHome
+              role={activeRole}
+              workflow={workflow}
+              contactCount={Math.max(contactRows.length, contactSyncState.contact_count || 0)}
+              onOpen={openAgentTarget}
+            />
+          )}
           {["workflow", "touch", "moments"].includes(active) && (
             <WechatWorkflowPage
               key={active}
@@ -865,7 +853,7 @@ export default function App() {
             setBatchInitial({ batchId }); setLegacyWorkspace(false); setCreativeView("studio"); setActive("workspace");
           }} /><FinishedVideoCenterPage /></>}
           {active === "api-key" && <ApiKeyPage onConfiguredChange={setDeepSeekConfigured} />}
-          {active === "diagnostics" && <Diagnostics />}
+          {active === "diagnostics" && <Diagnostics appVersion={packageInfo.version} edition={EDITION_LABEL || "正式版"} buildId={BUILD_ID} />}
           {active === "touch" && DevelopmentAcceptance && (
             <details className="workflow-details page"><summary>内部测试工具</summary><Suspense fallback={null}>
               <DevelopmentAcceptance contacts={contactRows} message={messageDraft} />
@@ -880,20 +868,23 @@ export default function App() {
   );
 }
 
-function LoginScreen({ onLogin }: { onLogin: (account: string) => void }) {
-  const [account, setAccount] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+function LoginScreen({ initialError, onLogin }: { initialError?: string; onLogin: (status: LicenseStatus) => void }) {
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(initialError || "");
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!account.trim() || !password.trim()) {
-      setError("请输入账号和密码");
+    if (!code.trim()) {
+      setError("请输入授权码");
       return;
     }
-
-    setError("");
-    onLogin(account);
+    if (!window.xiaoxiLicenseAuth) return setError("当前版本未连接授权服务");
+    setBusy(true); setError("");
+    void window.xiaoxiLicenseAuth.activate(code).then((result) => {
+      if (!result.authorized) setError(result.error || "授权失败，请检查授权码");
+      else onLogin(result);
+    }).catch(() => setError("授权服务暂时不可用，请重试")).finally(() => setBusy(false));
   };
 
   return (
@@ -903,23 +894,19 @@ function LoginScreen({ onLogin }: { onLogin: (account: string) => void }) {
           <div className="brand-mark login-logo">玺</div>
           <div>
             <h1>{productBrand.displayName}</h1>
-            <p>登录一次后会记住账号，下次直接进入工作台</p>
+            <p>首次输入授权码，之后打开软件将直接进入</p>
           </div>
         </div>
 
         <form className="login-form" onSubmit={submit}>
           <label className="field">
-            <span>账号</span>
-            <input value={account} onChange={(event) => setAccount(event.target.value)} placeholder="请输入账号" />
-          </label>
-          <label className="field">
-            <span>密码</span>
-            <input value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" type="password" />
+            <span>授权码</span>
+            <input value={code} onChange={(event) => setCode(event.target.value)} placeholder="请输入您获得的授权码" autoComplete="off" />
           </label>
           {error && <div className="login-error">{error}</div>}
-          <button className="primary-button login-button" type="submit">
+          <button className="primary-button login-button" type="submit" disabled={busy}>
             <Lock size={17} />
-            登录
+            {busy ? "验证中…" : "进入系统"}
           </button>
         </form>
       </section>
@@ -988,6 +975,7 @@ function ContactSyncPage({
         <span>状态<strong>{statusLabel}</strong></span>
       </div>
       <p className="wechat-account-note">同步账号标识来自本机微信数据目录，不是公开微信号；切换登录微信后请重新同步。</p>
+      {syncState.account_changed && <div className="touch-notice">检测到微信账号已切换。当前头像、昵称和微信任务已按新账号隔离，请确认后再启动任务。</div>}
       {locked && <div className="touch-notice">请先暂停微信拓客程序，再同步联系人。</div>}
       <details className="workflow-sync-details"><summary>连接设置与路径排查</summary>
       <div className="wechat-path-panel">

@@ -7,13 +7,18 @@ async function main() {
   const handlers = new Map();
   const saved = [];
   const started = [];
+  const resolved = [];
   const sender = {};
   const batchId = `narrated_batch_${"a".repeat(32)}`;
   const assetId = `asset_${"b".repeat(32)}`;
   const controller = {
     onUpdate: () => () => {},
     saveNarratedBatch: async (p) => { saved.push(p); return { ...p, batch_id: batchId }; },
-    generateNarratedSamples: async (id) => { started.push(id); return { batch_id: id, status: "planning" }; }
+    generateNarratedSamples: async (id) => { started.push(id); return { batch_id: id, status: "planning" }; },
+    resolveNarratedPlanningOutcome: async (payload) => {
+      resolved.push(payload);
+      return { batch_id: payload.batch_id, status: "planning", planning_recovery_available: false };
+    }
   };
   const registration = registerContentEngineIpc({
     electron: {}, ipcMain: { handle: (key, handler) => handlers.set(key, handler), removeHandler: (key) => handlers.delete(key) },
@@ -30,6 +35,16 @@ async function main() {
   assert.equal((await invoke({ draft: { ...draft, target_count: 301 }, clickToken: `${CHANNELS.samples}:${randomUUID()}` })).code, "invalid_narrated_count");
   assert.equal(saved.length, 1);
   assert.equal((await invoke({ draft: { ...draft, absolute_path: "C:\\private\\input.mp4" }, clickToken: `${CHANNELS.samples}:${randomUUID()}` })).code, "invalid_params");
+  const resolve = (payload) => handlers.get(CHANNELS.resolve)({ sender }, payload);
+  assert.equal((await resolve({
+    batch_id: batchId, provider_log_checked: true, resolution: "retry_planning",
+    note: "百炼记录中未见成功返回", clickToken: `${CHANNELS.resolve}:${randomUUID()}`
+  })).ok, true);
+  assert.equal(resolved[0].note, "百炼记录中未见成功返回");
+  assert.equal((await resolve({
+    batch_id: batchId, provider_log_checked: false, resolution: "retry_planning",
+    note: "已核对", clickToken: `${CHANNELS.resolve}:${randomUUID()}`
+  })).code, "narrated_planning_confirmation_required");
   const result = publicBatch({ batch_id: batchId, absolute_path: "C:\\private\\input.mp4", candidates: [{ title: "video", _tracks: {}, shots: [{ asset_id: assetId, source_path: "C:\\private\\input.mp4" }] }] });
   assert.equal(JSON.stringify(result).includes("private"), false);
   registration.dispose();

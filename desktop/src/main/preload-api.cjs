@@ -127,7 +127,7 @@ function visualRendererPayload(value) {
 
 function createContentEngineApi(ipcRenderer) {
   const batchChannels = require("./narrated-batch-ipc.cjs").CHANNELS;
-  const batchClicks = Object.fromEntries(["recommend", "samples", "continue"].map((action) => [
+  const batchClicks = Object.fromEntries(["recommend", "resolve", "samples", "continue"].map((action) => [
     action, createTrustedClickGate(`[data-batch-action="${action}"]`, batchChannels[action])
   ]));
   const consumeAutoMixCreateClick = createTrustedClickGate(
@@ -867,6 +867,11 @@ function createPreloadApis(ipcRenderer) {
   const consumeBatchClick = createTrustedClickGate("[data-xiaoxi-batch-authorize]");
   const consumeAutoReplyClick = createTrustedClickGate("[data-xiaoxi-auto-reply-start], [data-xiaoxi-auto-reply-acknowledge], [data-xiaoxi-auto-reply-resume]");
   return {
+    licenseAuth: {
+      status: () => ipcRenderer.invoke("license-auth:status"),
+      activate: (code) => ipcRenderer.invoke("license-auth:activate", { code: String(code || "") }),
+      logout: () => ipcRenderer.invoke("license-auth:logout")
+    },
     content: createContentEngineApi(ipcRenderer),
     workflow: {
       status: () => ipcRenderer.invoke("wechat-workflow:status"),

@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import sys
+import time
 import unittest
 from unittest import mock
 import uuid
@@ -1500,8 +1501,11 @@ class AutoMixV2MigrationTests(unittest.TestCase):
 
 class AutoMixV2ServiceTests(unittest.TestCase):
     def setUp(self):
-        self.root = SIDECAR_ROOT / f".auto-mix-v2-service-{uuid.uuid4().hex}"
+        test_runs = SIDECAR_ROOT.parents[1] / ".build" / "test-runs"
+        test_runs.mkdir(parents=True, exist_ok=True)
+        self.root = test_runs / f"auto-mix-v2-service-{uuid.uuid4().hex}"
         self.root.mkdir()
+        self.addCleanup(self._cleanup_root)
         self.source = self.root / "material.mp4"
         self.source.write_bytes(b"test-material")
         with mock.patch(
@@ -1565,9 +1569,23 @@ class AutoMixV2ServiceTests(unittest.TestCase):
                 (now, now),
             )
 
-    def tearDown(self):
-        self.service.close()
-        shutil.rmtree(self.root, ignore_errors=True)
+    def _cleanup_root(self):
+        service = getattr(self, "service", None)
+        self.service = None
+        try:
+            if service is not None:
+                service.close()
+        finally:
+            for attempt in range(5):
+                try:
+                    shutil.rmtree(self.root)
+                    break
+                except FileNotFoundError:
+                    break
+                except OSError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.1 * (attempt + 1))
 
     @staticmethod
     def _request(**extra):

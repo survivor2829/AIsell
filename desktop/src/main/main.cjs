@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, net, protocol, safeStorage, screen, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, screen, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 const productBrand = require("../../product-brand.json");
@@ -15,6 +15,7 @@ const { DEEPSEEK_MODEL, createDeepSeekClient, createDeepSeekKeyStore } = require
 const { registerDeepSeekApiIpc } = require("./deepseek-api-ipc.cjs");
 const { configureDiagnostics, diagnostics } = require("./diagnostics.cjs");
 const { registerDiagnosticsIpc } = require("./diagnostics-ipc.cjs");
+const { createLicenseStore, registerLicenseAuthIpc } = require("./license-auth-ipc.cjs");
 const { developmentEdition, pilotEdition, editionLabel, preloadFile, rendererDir } = require("./edition.cjs");
 const {
   createProductDetailAiSettingsStore
@@ -347,6 +348,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       skipped_foreign_install: runtime.skippedForeignInstall
     });
     const coordinator = createRuntimeCoordinator(runtime.rootDir);
+    const licenseStore = createLicenseStore({ rootDir: runtime.rootDir, safeStorage });
+    registerLicenseAuthIpc({ ipcMain, store: licenseStore });
     const deepSeekKeyStore = createDeepSeekKeyStore({ rootDir: runtime.rootDir, safeStorage });
     const bailianKeyStore = createBailianApiKeyStore({
       rootDir: path.join(app.getPath("userData"), "content-engine"),

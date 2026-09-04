@@ -516,6 +516,7 @@ function contactAccounts(wechatRoot) {
 function normalizeContact(row, index, syncedAt, source = "wechat-silent-sync", wechatAccountId = "") {
   const remark = String(row.remark ?? "").trim();
   const nickname = String(row.nickname ?? row.nick_name ?? "").trim();
+  const avatarUrl = String(row.avatarUrl ?? row.avatar_url ?? row.small_head_url ?? row.big_head_url ?? "").trim();
   const username = String(row.username ?? row.user_name ?? row.wxid ?? "").trim();
   const alias = String(row.alias ?? row.wechat_id ?? row.wechatId ?? "").trim();
   const uniqueId = String(username || row.id || alias || "").trim();
@@ -543,6 +544,7 @@ function normalizeContact(row, index, syncedAt, source = "wechat-silent-sync", w
     name,
     remark,
     nickname,
+    avatarUrl: /^https:\/\//iu.test(avatarUrl) ? avatarUrl : "",
     wxid: username,
     wechatId,
     wechatAccountId,

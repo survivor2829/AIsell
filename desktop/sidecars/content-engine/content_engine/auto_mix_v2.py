@@ -754,9 +754,9 @@ def build_speech_captions(
     captions = []
     for index, (phrase, raw_duration) in enumerate(zip(phrases, durations)):
         duration_ms = int(raw_duration)
-        text = _clean_text(phrase.get("text"), 40)
+        text = re.sub(r"\s+", " ", str(phrase.get("text") or "")).strip()
         _contract(
-            bool(text) and 0 < duration_ms <= 120_000,
+            0 < len(text) <= 2400 and 0 < duration_ms <= 120_000,
             "auto_mix_voice_timing_invalid",
             "口播短语的真实音频时长无效。",
         )

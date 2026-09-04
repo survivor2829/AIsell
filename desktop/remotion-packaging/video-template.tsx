@@ -298,10 +298,25 @@ const CaptionTrack: React.FC<{ captions: TimedWord[]; pack: StylePack; nowMs: nu
   if (!captions.length) return null;
   const activeIndex = findActiveCaptionIndex(captions, nowMs);
   if (activeIndex < 0) return null;
-  const pageSize = pack.caption.maxWordsPerPage;
-  const pageStart = Math.floor(activeIndex / pageSize) * pageSize;
-  const page = captions.slice(pageStart, pageStart + pageSize);
   const treatment = (captionTreatments[pack.caption.placement] || captionTreatments["low-bubble"])(pack);
+  // A timed item can be a Chinese sentence, not just one word. Bound pages
+  // by display width as well as item count, and never cross a sentence end.
+  const pageWidth = Math.floor((1080 - 128 - 60) / treatment.fontSize) * 1.6;
+  let pageStart = 0;
+  let pageEnd = 0;
+  while (pageEnd <= activeIndex) {
+    pageStart = pageEnd;
+    let width = 0;
+    while (pageEnd < captions.length) {
+      const text = captions[pageEnd].text;
+      const nextWidth = Array.from(text).reduce((sum, char) => sum + (/[^\x00-\xff]/u.test(char) ? 1 : 0.55), 0) + 0.5;
+      if (pageEnd > pageStart && (width + nextWidth > pageWidth || pageEnd - pageStart >= pack.caption.maxWordsPerPage)) break;
+      width += nextWidth;
+      pageEnd += 1;
+      if (/[。！？.!?]$/u.test(text.trim())) break;
+    }
+  }
+  const page = captions.slice(pageStart, pageEnd);
   return (
     <div style={{
       position: "absolute", left: 64, right: 64, bottom: 132, display: "flex", justifyContent: "center", flexWrap: "wrap",

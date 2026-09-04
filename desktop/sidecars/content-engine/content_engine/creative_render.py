@@ -617,6 +617,38 @@ class FFmpegCreativeRenderer:
             "true_peak_dbtp": round(true_peak, 2),
         }
 
+    def calibrate_final_loudness(self, path):
+        """Calibrate the completed mix; measure both loudness and peak again."""
+        measured = self.measure_audio_quality(path)
+        if -16 <= measured["integrated_lufs"] <= -14 and measured["true_peak_dbtp"] <= -1:
+            return measured
+        gain = min(-15 - measured["integrated_lufs"], -1.1 - measured["true_peak_dbtp"])
+        audio_filter = f"volume={gain:.4f}dB"
+        if not -16 <= measured["integrated_lufs"] + gain <= -14:
+            scan = self._command([self.ffmpeg_path, "-hide_banner", "-nostats", "-i", str(path),
+                "-map", "0:a:0", "-af", "loudnorm=I=-15:LRA=8:TP=-1.5:print_format=json",
+                "-f", "null", os.devnull], timeout=180)
+            blocks = re.findall(r'\{[^{}]*"input_i"[^{}]*"input_tp"[^{}]*\}', scan.stderr or "", re.DOTALL)
+            values = json.loads(blocks[-1])
+            numbers = {key: float(values[key]) for key in ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")}
+            if not all(math.isfinite(v) for v in numbers.values()):
+                raise ContentEngineError("audio_quality_measure_failed", "混音测量无效，未修改音频。")
+            audio_filter = (f"loudnorm=I=-15:LRA=8:TP=-1.5:measured_I={numbers['input_i']}:"
+                f"measured_TP={numbers['input_tp']}:measured_LRA={numbers['input_lra']}:"
+                f"measured_thresh={numbers['input_thresh']}:offset={numbers['target_offset']}:linear=false")
+        temporary = path.with_name(path.stem + ".calibrated.mp4")
+        try:
+            self._command([self.ffmpeg_path, "-y", "-i", str(path), "-map", "0:v:0", "-map", "0:a:0",
+                           "-c:v", "copy", "-af", audio_filter, "-c:a", "aac", "-b:a", "192k",
+                           "-ar", "48000", "-movflags", "+faststart", str(temporary)])
+            verified = self.measure_audio_quality(temporary)
+            if not (-16 <= verified["integrated_lufs"] <= -14 and verified["true_peak_dbtp"] <= -1):
+                raise ContentEngineError("auto_mix_loudness_failed", "最终音频校准后仍未通过响度或峰值检查。")
+            temporary.replace(path)
+            return verified
+        finally:
+            temporary.unlink(missing_ok=True)
+
     def _measure_loudness_series(self, path):
         result = self._command(
             [
@@ -1869,6 +1901,8 @@ class FFmpegCreativeRenderer:
                 "windows": measured_windows,
             }
             report_path = self._auto_mix_margin_report_path(output)
+            if recipe.get("narrated_preserve_shot_duration"):
+                self.calibrate_final_loudness(output)
             temporary = report_path.with_name(f"{report_path.name}.tmp")
             try:
                 temporary.write_text(
@@ -3416,6 +3450,25 @@ class HybridCreativeRenderer:
             )
             if adopted:
                 paths, manifest = adopted
+                if auto_mix_v2 and recipe.get("narrated_preserve_shot_duration"):
+                    audio = manifest.get("audioQualityReport") or {}
+                    if not -16 <= float(audio.get("integrated_lufs", -100)) <= -14:
+                        video = output_dir / "video.mp4"
+                        backup = output_dir / "video.before-loudness.mp4"
+                        if backup.exists() and self._sha256_file(backup) != self._sha256_file(video):
+                            raise RemotionRenderError("output-quality", "audio_repair_backup_exists")
+                        if not backup.exists():
+                            shutil.copy2(video, backup)
+                        try:
+                            corrected = self.ffmpeg_renderer.calibrate_final_loudness(video)
+                            manifest["audioQualityReport"] = {**audio, **corrected}
+                            manifest["videoSha256"] = self._sha256_file(video)
+                            manifest["audioCalibration"] = {"previousVideoSha256": self._sha256_file(backup),
+                                                            "method": "measured_final_mix_calibration"}
+                            self._write_manifest(output_dir / self.MANIFEST_NAME, manifest)
+                        except Exception:
+                            shutil.copy2(backup, video)
+                            raise
                 if auto_mix_v2:
                     paths["audioQualityReport"] = self._normalized_audio_quality_report(
                         manifest.get("audioQualityReport")

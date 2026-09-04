@@ -13,6 +13,8 @@ CONTACT_FIELDS = {
     "alias": ["alias", "Alias", "wechat_id"],
     "remark": ["remark", "Remark", "con_remark"],
     "nick_name": ["nick_name", "NickName", "nickname", "nickName"],
+    "small_head_url": ["small_head_url", "smallHeadUrl", "SmallHeadImgUrl", "small_head_img_url"],
+    "big_head_url": ["big_head_url", "bigHeadUrl", "BigHeadImgUrl", "big_head_img_url"],
     "local_type": ["local_type", "localType", "type", "Type", "contact_type", "contactType"],
     "verify_flag": ["verify_flag", "VerifyFlag", "verifyFlag", "verifyflag"],
     "chat_room_type": ["chat_room_type", "ChatRoomType", "chatRoomType", "chatroom_type"],

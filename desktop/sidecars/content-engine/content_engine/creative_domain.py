@@ -4264,7 +4264,8 @@ class CreativeDomain:
                 cursor = int(caption.get("start_ms") or 0)
                 caption_end = int(caption.get("end_ms") or 0)
                 for segment in timeline.get("selected_segments") or []:
-                    if str(segment.get("evidence_ref") or "") != evidence_ref:
+                    allowed_refs = candidate_refs if preserve_shots else {evidence_ref}
+                    if str(segment.get("evidence_ref") or "") not in allowed_refs:
                         continue
                     segment_start = int(segment.get("timeline_start_ms") or 0)
                     segment_end = int(segment.get("timeline_end_ms") or 0)
@@ -4286,7 +4287,7 @@ class CreativeDomain:
                         "evidenceRefs": [
                             reference
                             for reference in full_evidence_refs
-                            if reference.split(":", 1)[0] == evidence_ref
+                            if preserve_shots or reference.split(":", 1)[0] == evidence_ref
                         ],
                     }
                 )
@@ -4345,6 +4346,53 @@ class CreativeDomain:
         existing_digest = str(private_state.get("voice_audio_digest") or "")
         existing_captions = public_plan.get("speechCaptions") or []
         existing_phrase_audio = private_state.get("phrase_audio") or []
+        preserve_shots = bool(private_state.get("narrated_preserve_shot_duration"))
+        def full_shot_timeline(phrases, audio):
+            segments = [dict(s) for s in analysis_timeline["selected_segments"]]
+            cursor = 0
+            position = 0
+            for index, (phrase, item) in enumerate(zip(phrases, audio)):
+                refs = phrase.get("evidenceRefs") or []
+                group = segments[position:position + len(refs)]
+                if not refs or refs != [s["evidence_ref"] for s in group]:
+                    raise ContentEngineError("narrated_voice_mapping", "口播与镜头顺序不匹配。")
+                available = sum(int(s["target_duration_ms"]) for s in group)
+                speech = int(item["duration_ms"])
+                if speech > available:
+                    raise ContentEngineError("narrated_copy_too_long", "实际配音超过对应画面的可用时长。")
+                pause = min(160, available - speech) if index < len(phrases) - 1 else 0
+                budget = speech + pause
+                accumulated = 0
+                allocated = 0
+                for s in group:
+                    original = int(s["target_duration_ms"])
+                    accumulated += original
+                    boundary = round(budget * accumulated / available)
+                    duration = boundary - allocated
+                    if duration <= 0 or duration > original:
+                        raise ContentEngineError("narrated_voice_mapping", "口播过短，无法完整展示选定镜头。")
+                    # Keep a real central interval at normal playback speed;
+                    # narration sets the edit length, not silence padding.
+                    s["source_start_ms"] += (original - duration) // 2
+                    s["source_end_ms"] = s["source_start_ms"] + duration
+                    s.update(target_duration_ms=duration, timeline_start_ms=cursor,
+                             timeline_end_ms=cursor + duration)
+                    cursor += duration
+                    allocated = boundary
+                item["tail_silence_ms"] = pause
+                position += len(group)
+            if position != len(segments):
+                raise ContentEngineError("narrated_voice_mapping", "口播没有覆盖全部镜头。")
+            minimum_ms = int(private_state.get("narrated_minimum_duration_ms") or 0)
+            if minimum_ms and sum(int(item["duration_ms"]) for item in audio) < minimum_ms + 100:
+                raise ContentEngineError("narrated_duration_too_short",
+                                         f"实际口播不足 {minimum_ms // 1000} 秒，需要补充内容和相关镜头后再制作。")
+            return {**analysis_timeline, "selected_segments": segments, "selected_duration_ms": cursor,
+                    "spoken_evidence_refs": [
+                {"phrase_id": phrase.get("phraseId") or f"phrase-{index + 1}",
+                 "evidence_ref": (phrase.get("evidenceRefs") or [""])[0]}
+                for index, phrase in enumerate(phrases)
+            ]}
         try:
             existing_duration_ms = int(existing_captions[-1]["end_ms"])
         except (IndexError, KeyError, TypeError, ValueError):
@@ -4365,6 +4413,9 @@ class CreativeDomain:
             and existing_digest
             and existing_duration_ms > 0
             and existing_captions
+            and [re.sub(r"\s+", " ", str(c.get("text") or "")).strip() for c in existing_captions]
+                == [re.sub(r"\s+", " ", str(p.get("text") or "")).strip()
+                    for p in public_plan.get("spokenPhrases") or []]
             and phrase_cache_valid
             and self._valid_managed_wav(
                 existing_relative,
@@ -4373,7 +4424,7 @@ class CreativeDomain:
             )
         ):
             phrases = public_plan.get("spokenPhrases") or []
-            timeline = align_material_timeline_to_captions(
+            timeline = full_shot_timeline(phrases, existing_phrase_audio) if preserve_shots else align_material_timeline_to_captions(
                 analysis_timeline,
                 phrases,
                 existing_captions,
@@ -4450,6 +4501,23 @@ class CreativeDomain:
             phrase_audio.append(item)
         durations = [int(item["duration_ms"]) for item in phrase_audio]
         captions = build_speech_captions(phrases, durations, pause_ms=160)
+        if preserve_shots:
+            fitted_timeline = full_shot_timeline(phrases, phrase_audio)
+            segments = fitted_timeline["selected_segments"]
+            cursor = 0
+            for phrase, item, caption in zip(phrases, phrase_audio, captions):
+                refs = phrase.get("evidenceRefs") or []
+                group = segments[cursor:cursor + len(refs)]
+                if not refs or refs != [segment["evidence_ref"] for segment in group]:
+                    raise ContentEngineError("narrated_voice_mapping", "口播与镜头顺序不匹配，已停止制作。")
+                available = sum(segment["target_duration_ms"] for segment in group)
+                if item["duration_ms"] > available:
+                    raise ContentEngineError("narrated_copy_too_long", "实际配音无法在对应镜头内完整播放，请调整口播。")
+                caption["start_ms"] = group[0]["timeline_start_ms"]
+                caption["end_ms"] = caption["start_ms"] + item["duration_ms"]
+                cursor += len(group)
+            if cursor != len(segments):
+                raise ContentEngineError("narrated_voice_mapping", "口播没有覆盖全部镜头，已停止制作。")
         accepted = 0
         for caption in captions:
             if int(caption["end_ms"]) <= available_ms:
@@ -4487,7 +4555,7 @@ class CreativeDomain:
                 "auto_mix_voice_timing_invalid",
                 "拼接配音的真实时长与字幕边界不一致。",
             )
-        timeline = align_material_timeline_to_captions(
+        timeline = fitted_timeline if preserve_shots else align_material_timeline_to_captions(
             analysis_timeline,
             phrases,
             captions,
@@ -4913,6 +4981,8 @@ class CreativeDomain:
                 "auto_mix_voice_timing_invalid",
                 "一键混剪 V2 的真实配音时长无效。",
             )
+        if recipe.get("narrated_preserve_shot_duration"):
+            expected_duration_ms = sum(int(s["target_duration_ms"]) for s in recipe["visual_segments"])
         if not self._valid_managed_wav(
             recipe.get("voice_audio_path"),
             recipe.get("voice_audio_digest"),
@@ -4992,6 +5062,7 @@ class CreativeDomain:
                         "path": item["relative_path"],
                         "duration_ms": item["duration_ms"],
                         "audio_digest": item.get("audio_digest"),
+                        **({"tail_silence_ms": item["tail_silence_ms"]} if "tail_silence_ms" in item else {}),
                     }
                     for item in phrase_audio
                 ],
@@ -5051,7 +5122,10 @@ class CreativeDomain:
                             if not chunk:
                                 break
                             stream.writeframesraw(chunk)
-                    if index < len(sources) - 1:
+                    if "tail_silence_ms" in phrase_audio[index]:
+                        frames = round(frame_rate * max(0, int(phrase_audio[index]["tail_silence_ms"])) / 1000)
+                        stream.writeframesraw(b"\x00" * frames * channels * sample_width)
+                    elif index < len(sources) - 1:
                         stream.writeframesraw(silence)
             temporary.replace(output)
         finally:
@@ -5587,6 +5661,8 @@ class CreativeDomain:
     def _auto_mix_recipe(self, run, public_plan, private_state, *, persona, music):
         timeline = private_state["material_timeline"]
         duration_ms = int(public_plan["speechCaptions"][-1]["end_ms"])
+        if private_state.get("narrated_preserve_shot_duration"):
+            duration_ms = int(timeline["selected_duration_ms"])
         visual_segments = [
             {
                 "role": item.get("role") or "process",
@@ -5635,6 +5711,7 @@ class CreativeDomain:
         music_brief = public_plan.get("musicBrief") or {}
         recipe = {
             "kind": "mix",
+            **({"narrated_preserve_shot_duration": True} if private_state.get("narrated_preserve_shot_duration") else {}),
             "layout": "product_showcase",
             "product_workflow": "one_click_v2",
             "spec_version": AUTO_MIX_SPEC_VERSION,

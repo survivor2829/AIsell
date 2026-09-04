@@ -623,6 +623,9 @@ class ContentEngineService:
     def list_narrated_batches(self):
         return self._narrated_batches().list_batches()
 
+    def archive_narrated_batch(self, batch_id):
+        return self._narrated_batches().archive(batch_id)
+
     def save_narrated_batch(self, request):
         return self._narrated_batches().save(request)
 
@@ -642,6 +645,11 @@ class ContentEngineService:
 
     def recommend_narrated_batch(self, batch_id):
         return self._start_narrated_batch(batch_id, "recommend")
+
+    def resolve_narrated_planning_outcome(self, request):
+        result = self._narrated_batches().resolve_planning_outcome(request)
+        self._enqueue_creative_task({"task_id": result["task_id"]})
+        return result
 
     def generate_narrated_samples(self, batch_id):
         return self._start_narrated_batch(batch_id, "samples")

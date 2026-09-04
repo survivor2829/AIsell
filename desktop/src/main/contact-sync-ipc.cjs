@@ -37,6 +37,46 @@ function readJsonFile(filePath, fallback) {
   }
 }
 
+function currentWechatIdentity(state, settings, contacts = []) {
+  const stableId = String(state?.account_name || "").trim();
+  if (!stableId) return null;
+  const ownWxid = stableId.match(/^(wxid_[^_]+)/u)?.[1] || stableId;
+  const ownContact = Array.isArray(contacts)
+    ? contacts.find((contact) => String(contact?.wxid || contact?.id || "").trim() === ownWxid)
+    : null;
+  const root = String(settings?.wechatRoot || state?.wechat_root || "").trim();
+  const accountDir = root ? path.join(root, stableId) : "";
+  const candidateDirectories = accountDir ? [accountDir, path.join(accountDir, "config"), path.join(accountDir, "account") ] : [];
+  const allowedNames = /^(?:avatar|head_?image|headimg)\.(?:png|jpe?g|webp)$/iu;
+  let avatarDataUrl = "";
+  for (const directory of candidateDirectories) {
+    try {
+      const fileName = fs.readdirSync(directory).find((name) => allowedNames.test(name));
+      if (!fileName) continue;
+      const file = path.join(directory, fileName);
+      const stat = fs.statSync(file);
+      if (!stat.isFile() || stat.size < 512 || stat.size > 5 * 1024 * 1024) continue;
+      const extension = path.extname(fileName).toLowerCase();
+      const mime = extension === ".png" ? "image/png" : extension === ".webp" ? "image/webp" : "image/jpeg";
+      avatarDataUrl = `data:${mime};base64,${fs.readFileSync(file).toString("base64")}`;
+      break;
+    } catch {}
+  }
+  const remoteAvatar = /^https:\/\//iu.test(String(ownContact?.avatarUrl || "")) ? String(ownContact.avatarUrl) : "";
+  return {
+    account_id: stableId,
+    nickname: String(state?.wechat_nickname || ownContact?.nickname || ownContact?.name || "微信用户"),
+    avatar_url: avatarDataUrl || remoteAvatar,
+    synced_at: String(state?.last_synced_at || "")
+  };
+}
+
+function withWechatIdentity(result, settings = readPathSettings()) {
+  if (!result || typeof result !== "object") return result;
+  const state = result.state && typeof result.state === "object" ? result.state : {};
+  return { ...result, state: { ...state, wechat_identity: currentWechatIdentity(state, settings, result.contacts) } };
+}
+
 function readCachedContactStatus() {
   const settings = readPathSettings();
   const storedState = readJsonFile(path.join(runtimeDataDir, "state.json"), {});
@@ -46,7 +86,7 @@ function readCachedContactStatus() {
   const contacts = accountName
     ? rows.map((contact) => String(contact?.wechatAccountId || "").trim() ? contact : { ...contact, wechatAccountId: accountName })
     : rows;
-  return {
+  return withWechatIdentity({
     ok: true,
     action: "status",
     state: {
@@ -65,7 +105,7 @@ function readCachedContactStatus() {
       wechat_root: settings.wechatRoot || storedState.wechat_root || ""
     },
     contacts
-  };
+  }, settings);
 }
 
 function writePathSettings(settings) {
@@ -80,6 +120,7 @@ function executeContactSync(args) {
       argument_count: args.length
     });
     const settings = readPathSettings();
+    const previousAccount = String(readJsonFile(path.join(runtimeDataDir, "state.json"), {}).account_name || "").trim();
     const runtimeArgs = [
       ...args,
       ...(runtimeDataDir ? ["--data-dir", runtimeDataDir] : []),
@@ -127,7 +168,11 @@ function executeContactSync(args) {
         stdout_bytes: Buffer.byteLength(stdout),
         stderr_bytes: Buffer.byteLength(stderr)
       }, { ok: result?.ok === true, code: result?.blocked_reason || result?.state?.last_stage || "" });
-      resolve(result);
+      const nextAccount = String(result?.state?.account_name || "").trim();
+      const accountChanged = Boolean(previousAccount && nextAccount && previousAccount !== nextAccount);
+      resolve(withWechatIdentity(accountChanged
+        ? { ...result, state: { ...result.state, account_changed: true } }
+        : result, settings));
     };
 
     child.on("error", (error) => {
