@@ -1,4 +1,7 @@
 .agent-home {
+  --agent-accent: var(--brand-red);
+  --agent-accent-strong: var(--brand-red-dark);
+  --agent-surface: var(--workspace-role-surface, var(--brand-soft));
   --agent-portrait-position: 50% 31%;
   --agent-muted: color-mix(in srgb, var(--agent-accent-strong) 12%, #596176);
   --agent-panel: color-mix(in srgb, var(--agent-surface) 18%, rgba(255, 255, 255, 0.9));
@@ -159,7 +162,7 @@
   z-index: 1;
   object-fit: cover;
   object-position: var(--agent-portrait-position);
-  filter: saturate(1.01) contrast(1.005);
+  filter: saturate(1.01) contrast(1.005) brightness(1);
   opacity: 1;
   transform: scale(1.01) translate3d(0, 0, 0);
   transform-origin: 50% 76%;
@@ -168,12 +171,12 @@
 
 .agent-portrait-stage.is-motion-active .agent-portrait-image {
   will-change: transform;
-  animation: agent-breathe 6.2s cubic-bezier(0.45, 0, 0.55, 1) 0.6s infinite;
+  animation: agent-breathe 5.2s cubic-bezier(0.42, 0, 0.58, 1) 0.5s infinite;
 }
 
 .agent-portrait-stage.is-motion-active .agent-portrait-canvas::before {
   will-change: opacity, transform;
-  animation: agent-breathe-light 6.2s cubic-bezier(0.45, 0, 0.55, 1) 0.6s infinite;
+  animation: agent-breathe-light 5.2s cubic-bezier(0.42, 0, 0.58, 1) 0.5s infinite;
 }
 
 .agent-portrait-fallback {
@@ -693,13 +696,17 @@
 }
 
 @keyframes agent-breathe {
-  0%, 100% { transform: scale(1.01) translate3d(0, 0, 0); }
-  42%, 55% { transform: scaleX(1.015) scaleY(1.018) translate3d(0, -0.8px, 0); }
+  0%, 100% {
+    transform: scale(1.01) translate3d(0, 0, 0);
+  }
+  43%, 56% {
+    transform: scaleX(1.018) scaleY(1.032) translate3d(0, -2.4px, 0);
+  }
 }
 
 @keyframes agent-breathe-light {
-  0%, 100% { opacity: 0.32; transform: scale(0.96); }
-  42%, 55% { opacity: 0.46; transform: scale(1.025); }
+  0%, 100% { opacity: 0.28; transform: scale(0.94); }
+  43%, 56% { opacity: 0.54; transform: scale(1.07); }
 }
 
 @media (max-width: 1280px) {

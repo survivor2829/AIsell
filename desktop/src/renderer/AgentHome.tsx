@@ -26,13 +26,18 @@ import {
   useMemo,
   useRef,
   useState,
-  type ComponentType,
-  type CSSProperties
+  type ComponentType
 } from "react";
 import type { WorkflowController, WorkflowTask } from "./WechatWorkflow";
 import "./AgentHome.css";
 
 export type AgentRoleKey = "agent" | "production" | "operations";
+
+export const AGENT_ROLE_IDENTITIES: Record<AgentRoleKey, { name: string; responsibility: string }> = {
+  agent: { name: "小玺", responsibility: "微信拓客" },
+  production: { name: "小惠", responsibility: "内容创作" },
+  operations: { name: "小联", responsibility: "渠道运营" }
+};
 
 export type AgentHomeTarget =
   | "workflow"
@@ -68,9 +73,6 @@ type RoleDefinition = {
   intro: string;
   primaryLabel: string;
   primaryTarget: AgentHomeTarget;
-  accent: string;
-  accentStrong: string;
-  surface: string;
   capabilities: RoleCapability[];
 };
 
@@ -83,15 +85,11 @@ const ROLE_ATMOSPHERE_ICONS: Record<AgentRoleKey, ComponentType<{ size?: number;
 const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
   agent: {
     key: "agent",
-    name: "小玺",
-    responsibility: "微信拓客",
+    ...AGENT_ROLE_IDENTITIES.agent,
     portraitKey: "xiaoxi-integrated",
     intro: "我负责把微信联系人、每日计划和客户触达串起来，让你一眼看清今天该做什么。",
     primaryLabel: "查看今日计划",
     primaryTarget: "workflow",
-    accent: "#ef4452",
-    accentStrong: "#bf2034",
-    surface: "#fbecef",
     capabilities: [
       { key: "expert", label: "AI专家", description: "协助判断下一步获客动作", icon: Bot },
       { key: "workflow", label: "今日计划", description: "查看和安排今天的任务", icon: ListTodo },
@@ -103,15 +101,11 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
   },
   production: {
     key: "production",
-    name: "小慧",
-    responsibility: "内容创作",
+    ...AGENT_ROLE_IDENTITIES.production,
     portraitKey: "xiaohui-integrated",
     intro: "我负责整理素材、发起制作任务并沉淀成片，把分散内容变成可以交付的作品。",
     primaryLabel: "开始内容创作",
     primaryTarget: "workspace",
-    accent: "#a855f7",
-    accentStrong: "#7131b7",
-    surface: "#efdef9",
     capabilities: [
       { key: "product-detail", label: "产品详情图", description: "生成商品展示内容", icon: Images },
       { key: "materials", label: "素材仓库", description: "管理图片与视频素材", icon: Folder },
@@ -122,15 +116,11 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
   },
   operations: {
     key: "operations",
-    name: "小联",
-    responsibility: "渠道运营",
+    ...AGENT_ROLE_IDENTITIES.operations,
     portraitKey: "xiaolian-integrated",
     intro: "我负责连接渠道账号、组织发布任务并回收运营结果；未接通的平台会明确标注状态。",
     primaryLabel: "管理渠道账号",
     primaryTarget: "accounts",
-    accent: "#4878e8",
-    accentStrong: "#2852b8",
-    surface: "#e5ecfc",
     capabilities: [
       { key: "accounts", label: "学员与账号", description: "查看账号与渠道连接入口", icon: UserRound },
       { key: "publish", label: "发布任务", description: "渠道发布能力尚未连接", icon: Send, available: false },
@@ -626,14 +616,9 @@ export function AgentHome({
   }, [contactCount, role, snapshot, workflowLoading, workflowState]);
   const status = roleStatus(role, workflowState, workflowLoading, snapshot);
   const RoleIcon = role === "agent" ? UsersRound : role === "production" ? Sparkles : RadioTower;
-  const style = {
-    "--agent-accent": definition.accent,
-    "--agent-accent-strong": definition.accentStrong,
-    "--agent-surface": definition.surface
-  } as CSSProperties;
 
   return (
-    <div className={`agent-home is-${role}`} style={style}>
+    <div className={`agent-home is-${role}`}>
       <AgentAtmosphere role={role} />
       <section className="agent-hero">
         <AgentPortrait key={definition.key} definition={definition} />

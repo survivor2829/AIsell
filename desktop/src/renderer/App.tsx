@@ -43,7 +43,7 @@ import { MaterialsCollectionsPage } from "./BatchAssets";
 import type { Collection } from "./batch-studio-api";
 import { ProductOneClickPage } from "./ProductOneClickPage";
 import { FloatingWorkflowWindow, useWechatWorkflow, WechatWorkflowPage, WorkflowLauncher } from "./WechatWorkflow";
-import { AgentHome, type AgentHomeTarget, type AgentRoleKey } from "./AgentHome";
+import { AGENT_ROLE_IDENTITIES, AgentHome, type AgentHomeTarget, type AgentRoleKey } from "./AgentHome";
 
 type ModuleKey = AgentRoleKey | AgentHomeTarget | "api-key" | "diagnostics";
 type GroupKey = AgentRoleKey;
@@ -392,9 +392,9 @@ const operationsChildren: NavItem[] = [
 ];
 
 const navGroups: NavGroup[] = [
-  { key: "agent", persona: "小玺", label: "微信拓客", icon: UsersRound, children: agentChildren },
-  { key: "production", persona: "小慧", label: "内容创作", icon: Video, children: productionChildren },
-  { key: "operations", persona: "小联", label: "渠道运营", icon: BarChart3, children: operationsChildren }
+  { key: "agent", persona: AGENT_ROLE_IDENTITIES.agent.name, label: AGENT_ROLE_IDENTITIES.agent.responsibility, icon: UsersRound, children: agentChildren },
+  { key: "production", persona: AGENT_ROLE_IDENTITIES.production.name, label: AGENT_ROLE_IDENTITIES.production.responsibility, icon: Video, children: productionChildren },
+  { key: "operations", persona: AGENT_ROLE_IDENTITIES.operations.name, label: AGENT_ROLE_IDENTITIES.operations.responsibility, icon: BarChart3, children: operationsChildren }
 ];
 
 const apiKeyNavItem: NavItem = { key: "api-key", label: "API密钥", icon: Lock };
@@ -703,7 +703,11 @@ export default function App() {
   const identity = contactSyncState.wechat_identity;
   const identityName = identity?.nickname || "未同步微信";
   const identityInitial = identityName === "未同步微信" ? "微" : (identityName.match(/[\u4e00-\u9fff]/)?.[0] || identityName.slice(0, 1)).toUpperCase();
-  const activeRole = navGroups.find((group) => group.key === active)?.key;
+  const activeGroup = navGroups.find(
+    (group) => group.key === active || group.children.some((item) => item.key === active)
+  );
+  const activeRole = activeGroup?.key === active ? activeGroup.key : undefined;
+  const roleThemeClass = activeGroup ? ` role-theme-${activeGroup.key}` : "";
 
   return (
     <main className="app-shell">
@@ -718,7 +722,7 @@ export default function App() {
           {navGroups.map((group) => {
             const GroupIcon = group.icon;
             const expanded = openGroups[group.key];
-            const groupActive = active === group.key || group.children.some((item) => item.key === active);
+            const groupActive = activeGroup?.key === group.key;
 
             return (
               <div className="nav-group" key={group.key}>
@@ -761,7 +765,7 @@ export default function App() {
         </div>
       </aside>
 
-      <section className="workspace">
+      <section className={`workspace${roleThemeClass}`}>
         <header className="topbar">
           <div />
           <div className="top-actions account-menu-wrap">
