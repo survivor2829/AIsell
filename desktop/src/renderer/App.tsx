@@ -27,9 +27,10 @@ import {
   Video,
   X
 } from "lucide-react";
-import { lazy, Suspense, type ComponentType, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, type ComponentType, useEffect, useMemo, useRef, useState } from "react";
 import productBrand from "../../product-brand.json";
 import packageInfo from "../../package.json";
+import { LoginScreen } from "./LoginScreen";
 import { AiExpert } from "./AiExpert";
 import { AutoReply, FloatingAutoReplyWindow } from "./AutoReply";
 import { FloatingMomentsCampaignWindow } from "./MomentsCampaignPanel";
@@ -518,6 +519,7 @@ export default function App() {
   if (floatingMode === "1" || floatingMode === "touch") return <FloatingTouchWindow />;
 
   const [license, setLicense] = useState<LicenseStatus | null>(null);
+  const [sessionEntered, setSessionEntered] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const workflow = useWechatWorkflow();
   const [active, setActive] = useState<ModuleKey>(DEFAULT_ACTIVE_MODULE);
@@ -673,8 +675,8 @@ export default function App() {
 
 
   useEffect(() => {
-    if (license?.authorized && ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active)) refreshContactSync();
-  }, [license?.authorized, active]);
+    if (sessionEntered && license?.authorized && ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active)) refreshContactSync();
+  }, [sessionEntered, license?.authorized, active]);
 
   useEffect(() => {
     if (!window.xiaoxiDeepSeekApi) return;
@@ -698,8 +700,7 @@ export default function App() {
 
 
 
-  if (!license) return <main className="login-shell"><div className="login-loading">正在读取授权状态…</div></main>;
-  if (!license.authorized) return <LoginScreen initialError={license.error} onLogin={setLicense} />;
+  if (!license?.authorized || !sessionEntered) return <LoginScreen license={license} onLogin={(status) => { setLicense(status); setSessionEntered(true); }} />;
   const identity = contactSyncState.wechat_identity;
   const identityName = identity?.nickname || "未同步微信";
   const identityInitial = identityName === "未同步微信" ? "微" : (identityName.match(/[\u4e00-\u9fff]/)?.[0] || identityName.slice(0, 1)).toUpperCase();
@@ -777,7 +778,7 @@ export default function App() {
             {accountMenuOpen && <div className="account-menu" role="menu">
               <div className="account-menu-status"><span>软件授权</span><strong>{license.licenseId || "已授权"}</strong></div>
               <button role="menuitem" onClick={() => { setActive("contact-sync"); setAccountMenuOpen(false); }}><RefreshCw size={16} />重新同步微信</button>
-              <button role="menuitem" onClick={() => void window.xiaoxiLicenseAuth?.logout().then(setLicense)}><LogOut size={16} />退出登录</button>
+              <button role="menuitem" onClick={() => { setSessionEntered(false); setAccountMenuOpen(false); }}><LogOut size={16} />退出登录</button>
             </div>}
           </div>
         </header>
@@ -867,52 +868,6 @@ export default function App() {
         </div>
 
         {agentChildren.some((item) => item.key === active) && <WorkflowLauncher workflow={workflow} />}
-      </section>
-    </main>
-  );
-}
-
-function LoginScreen({ initialError, onLogin }: { initialError?: string; onLogin: (status: LicenseStatus) => void }) {
-  const [code, setCode] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(initialError || "");
-
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!code.trim()) {
-      setError("请输入授权码");
-      return;
-    }
-    if (!window.xiaoxiLicenseAuth) return setError("当前版本未连接授权服务");
-    setBusy(true); setError("");
-    void window.xiaoxiLicenseAuth.activate(code).then((result) => {
-      if (!result.authorized) setError(result.error || "授权失败，请检查授权码");
-      else onLogin(result);
-    }).catch(() => setError("授权服务暂时不可用，请重试")).finally(() => setBusy(false));
-  };
-
-  return (
-    <main className="login-shell">
-      <section className="login-card">
-        <div className="login-brand">
-          <div className="brand-mark login-logo">玺</div>
-          <div>
-            <h1>{productBrand.displayName}</h1>
-            <p>首次输入授权码，之后打开软件将直接进入</p>
-          </div>
-        </div>
-
-        <form className="login-form" onSubmit={submit}>
-          <label className="field">
-            <span>授权码</span>
-            <input value={code} onChange={(event) => setCode(event.target.value)} placeholder="请输入您获得的授权码" autoComplete="off" />
-          </label>
-          {error && <div className="login-error">{error}</div>}
-          <button className="primary-button login-button" type="submit" disabled={busy}>
-            <Lock size={17} />
-            {busy ? "验证中…" : "进入系统"}
-          </button>
-        </form>
       </section>
     </main>
   );

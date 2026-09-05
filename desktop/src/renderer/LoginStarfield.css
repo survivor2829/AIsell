@@ -1,0 +1,35 @@
+.login-starfield {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  isolation: isolate;
+  background: #343450;
+}
+.login-starfield__canvas,
+.login-starfield__fallback {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.login-starfield__canvas { display: block; }
+.login-starfield__fallback {
+  background:
+    radial-gradient(ellipse at 17% 74%, #6486bb80, transparent 58%),
+    radial-gradient(ellipse at 86% 32%, #e1a7c878, transparent 60%),
+    linear-gradient(115deg, #192c50, #4d4c75 53%, #9e688b);
+}
+.login-starfield__fallback::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(260px circle at var(--nebula-pointer-x, 50%) var(--nebula-pointer-y, 50%), #f2cee73b, #c7d5ef14 48%, transparent 100%);
+  opacity: var(--nebula-pointer-strength, 0);
+  transition: opacity 700ms ease-out;
+}
+.login-starfield[data-renderer="webgl"] .login-starfield__fallback { visibility: hidden; }
+.login-starfield[data-renderer="fallback"] .login-starfield__canvas { visibility: hidden; }
+@media (prefers-reduced-motion: reduce) {
+  .login-starfield__fallback::after { display: none; transition: none; }
+}
