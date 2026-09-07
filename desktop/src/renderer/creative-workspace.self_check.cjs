@@ -41,7 +41,7 @@ for (const contract of [
   /neo_editorial/u,
   /tech_motion/u,
   /同内容比较三种风格/u,
-  /百炼 0 次/u,
+  /模型 0 次/u,
   /APIMart 0 次/u,
   /本地渲染 3 次/u,
   /原 FFmpeg 基线/u,
@@ -52,8 +52,8 @@ for (const contract of [
   /providerConfigured/u,
   /plannedCount/u,
   /APIMart 尚未启用/u,
-  /包装复用现有分析，不增加百炼调用/u,
-  /百炼编导/u,
+  /包装复用现有分析，不增加云端模型调用/u,
+  /AI 编导/u,
   /motionEventCount/u,
   /钩子/u,
   /参与度/u,
@@ -72,8 +72,8 @@ for (const contract of [
   assert.match(source, contract);
 }
 
-assert.match(source, /bailianKeyStatus/u);
-assert.match(source, /saveBailianKey/u);
+assert.match(source, /volcengineArkStatus/u);
+assert.match(source, /saveVolcengineArkKey/u);
 assert.match(source, /setCurrentTaskId\(""\)/u);
 assert.match(source, /trackTask\(result\.data\.taskId/u);
 assert.match(source, /重新生成任务已开始/u);

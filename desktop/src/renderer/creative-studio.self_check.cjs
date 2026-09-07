@@ -21,7 +21,7 @@ for (const contract of [
   /onContinueProduct/u,
   /content\.status\(\)/u,
   /content\.tasks\.list\(\{ limit: 50 \}\)/u,
-  /content\.settings\.bailianKeyStatus\(\)/u,
+  /content\.settings\.volcengineArkStatus\(\)/u,
   /Promise\.allSettled/u,
   /content\.tasks\.pause/u,
   /content\.tasks\.resume/u,
