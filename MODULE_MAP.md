@@ -13,6 +13,8 @@
 | `desktop/sidecars/product-detail/` | 产品详情图本地 sidecar、隔离工作台和用户数据迁移 | 向 renderer 暴露文件系统、密钥或任意本机进程能力 |
 | `desktop/sidecars/content-engine/` | 原素材原地索引、媒体探测、素材版权/使用权状态、内容任务和成片登记 | 复制或删除用户原片；调用微信自动化或绕过 Electron 主进程 |
 | `desktop/scripts/` | self-check、renderer 构建、便携包生成和包内检查 | 保存运行数据或作为 live 验收凭证 |
+| `desktop/src/main/cloud-maintenance*`、`cloud-transport.cjs` | 测试版签名更新、脱敏诊断队列及受限 IPC | 上传聊天原文或绕过正常退出流程安装 |
+| `server/maintenance/` | 测试更新分发、诊断聚合和 SSH 隧道后台 | 接管微信操作、客户密钥或计费授权 |
 | `release/` | 从源码生成的便携目录与 ZIP | 手工修改后回灌源码或作为唯一真相 |
 
 正常入口由 `wechat-workflow.cjs` 统一安排触达、朋友圈发布／互动和客户回复优先级，`wechat-workflow-ipc.cjs` 管理统一进度浮窗。各业务执行器完成一个工作单元后交还调度权，不把业务发送账本搬进协调层。朋友圈的 `moments-daily-automation.cjs` 仅保留旧独立模式；统一工作流接管时停止其调度，避免双重执行。

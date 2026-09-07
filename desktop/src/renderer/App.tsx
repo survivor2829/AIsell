@@ -35,6 +35,7 @@ import { AiExpert } from "./AiExpert";
 import { AutoReply, FloatingAutoReplyWindow } from "./AutoReply";
 import { FloatingMomentsCampaignWindow } from "./MomentsCampaignPanel";
 import { Diagnostics } from "./Diagnostics";
+import { CloudMaintenance } from "./CloudMaintenance";
 import { ProductDetailPage } from "./ProductDetailPage";
 import { FinishedVideoCenterPage } from "./ContentFoundationPage";
 import { CreativeWorkspacePage } from "./CreativeWorkspacePage";
@@ -784,6 +785,7 @@ export default function App() {
         </header>
 
         <div className="content-card">
+          {active !== "diagnostics" && <CloudMaintenance compact />}
           {activeRole && (
             <AgentHome
               role={activeRole}

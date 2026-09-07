@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AI获客 · 版本与诊断</title>
+<style>
+:root{font-family:"Segoe UI","Microsoft YaHei",sans-serif;color:#20304a;background:#f5f7fa;font-size:15px;--accent:#315ccb}*{box-sizing:border-box}body{margin:0}main{max-width:1200px;margin:0 auto;padding:40px 28px}h1{font-size:28px;margin:0 0 10px}h2{font-size:20px;margin:32px 0 16px}p{line-height:1.7;color:#526079}header,.toolbar{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}.toolbar{justify-content:flex-start;margin:24px 0}button,input,select{font:inherit;border:1px solid #b9c4d6;border-radius:7px;padding:9px 12px;background:white;color:inherit}button{cursor:pointer}button:hover{background:#e9effc}button:disabled{opacity:.6;cursor:wait}input{flex:1;min-width:200px}input:focus-visible,select:focus-visible,button:focus-visible{outline:3px solid #315ccb;outline-offset:3px}::selection{background:#d7e3ff}.table-wrap{overflow:auto;border:1px solid #dce2ed;border-radius:10px;background:white}table{width:100%;border-collapse:collapse;text-align:left;font-size:14px}th{background:#edf2fa;color:#43516a;white-space:nowrap}th,td{padding:14px 16px;border-bottom:1px solid #e6ebf2}td{max-width:300px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}tbody tr:last-child td{border:0}.muted{color:#526079}.empty{padding:30px;text-align:center;color:#526079}details{margin-top:12px;border-bottom:1px solid #dce2ed;padding:12px 0}summary{cursor:pointer;line-height:1.6}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:400px;overflow:auto;background:#eaf0f9;padding:16px;border-radius:8px;font-size:12px}#notice{min-height:24px;color:#93321c}label{display:flex;align-items:center;gap:8px}.issue-actions{display:flex;gap:6px;flex-wrap:wrap}.issue-actions input{width:105px;min-width:0}.issue-actions select{max-width:120px}@media(max-width:600px){main{padding:24px 16px}h1{font-size:24px}th,td{padding:10px}header button{width:100%}.toolbar input{width:100%}}
+</style></head><body><main>
+<header><div><h1>版本与诊断</h1><p>查看客户运行版本，定位异常，跟踪修复后的反馈。</p></div><button id="refresh">刷新数据</button></header>
+<p class="muted">此后台仅通过 SSH 隧道访问。日志保留 30 天；不包含聊天正文、联系人、密钥或截图。</p>
+<div class="toolbar"><label>版本 <select id="version"><option value="">全部版本</option></select></label><input id="search" aria-label="搜索模块或错误码" placeholder="搜索模块或错误码"></div>
+<p id="notice" role="status" aria-live="polite"></p>
+<h2>待处理异常</h2><div class="table-wrap"><table><thead><tr><th>模块 / 错误</th><th>频道</th><th>记录 / 设备</th><th>最近上报</th><th>处理进度</th></tr></thead><tbody id="issues"></tbody></table></div>
+<h2>版本运行记录</h2><p class="muted">设备数来自已开启诊断上报的客户端。同一设备运行过多个版本时会分别计入；没有新报错不等于修复已验收。</p><div class="table-wrap"><table><thead><tr><th>版本</th><th>频道</th><th>设备数</th><th>最近上报</th></tr></thead><tbody id="versions"></tbody></table></div>
+<h2>最近诊断详情</h2><div id="reports"></div>
+</main><script>
+let data={issues:[],reports:[],versions:[]};
+const $=id=>document.getElementById(id);
+const time=n=>new Date(n*1000).toLocaleString('zh-CN');
+function cell(row,text){const td=document.createElement('td');td.textContent=text;row.append(td);return td}
+function empty(id,cols,text){const tr=document.createElement('tr'),td=cell(tr,text);td.colSpan=cols;td.className='empty';$(id).append(tr)}
+function render(){
+ const v=$('version').value,q=$('search').value.trim().toLowerCase();
+ const reports=data.reports.filter(r=>(!v||r.version===v)&&(!q||JSON.stringify(r.entries).toLowerCase().includes(q)));
+ $('issues').replaceChildren();
+ for(const issue of data.issues.filter(i=>(!q||(i.module+' '+i.code).toLowerCase().includes(q))&&(!v||i.versions.split(',').includes(v)))){
+  const tr=document.createElement('tr');cell(tr,issue.module+' / '+issue.code);cell(tr,issue.channel);cell(tr,issue.occurrences+' / '+issue.installations);cell(tr,time(issue.last_seen));
+  const target=cell(tr,''),box=document.createElement('div');box.className='issue-actions';
+  const select=document.createElement('select');select.setAttribute('aria-label','处理状态');
+  for(const [value,label] of [['open','待排查'],['investigating','排查中'],['fixed','已发布修复'],['reopened','修复后复发']]){const opt=new Option(label,value);select.add(opt)}select.value=issue.status;
+  const fixed=document.createElement('input');fixed.placeholder='修复版本';fixed.setAttribute('aria-label','修复版本，例如 1.0.1');fixed.value=issue.fixed_version;
+  const save=document.createElement('button');save.textContent='保存';save.onclick=async()=>{save.disabled=true;try{const res=await fetch('/api/issues',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:issue.id,status:select.value==='reopened'?'open':select.value,fixedVersion:fixed.value.trim()})});if(!res.ok)throw Error('请填写有效修复版本，例如 1.0.1');await load()}catch(e){$('notice').textContent=e.message}finally{save.disabled=false}};
+  box.append(select,fixed,save);target.append(box);$('issues').append(tr);
+ }if(!$('issues').children.length)empty('issues',5,'当前筛选下没有异常记录。');
+ $('versions').replaceChildren();for(const row of data.versions.filter(r=>!v||r.version===v)){const tr=document.createElement('tr');[row.version,row.channel,row.installations,time(row.last_seen)].forEach(x=>cell(tr,x));$('versions').append(tr)}if(!$('versions').children.length)empty('versions',4,'尚未收到客户端运行记录。');
+ $('reports').replaceChildren();for(const report of reports){const details=document.createElement('details'),summary=document.createElement('summary'),pre=document.createElement('pre'),entry=report.entries[0];summary.textContent=report.version+' · '+entry.module+' / '+entry.event+' · '+entry.ts;pre.textContent=JSON.stringify(report,null,2);details.append(summary,pre);$('reports').append(details)}if(!reports.length){const p=document.createElement('p');p.textContent='客户端开启自动上报后，诊断记录会出现在这里。';$('reports').append(p)}
+}
+async function load(){const button=$('refresh');button.disabled=true;$('notice').textContent='正在读取…';try{const res=await fetch('/api/overview');if(!res.ok)throw Error();data=await res.json();const current=$('version').value;$('version').replaceChildren(new Option('全部版本',''));for(const v of [...new Set(data.versions.map(v=>v.version))])$('version').add(new Option(v,v));$('version').value=current;$('notice').textContent='已更新 · '+new Date().toLocaleTimeString('zh-CN');render()}catch{$('notice').textContent='无法连接后台，请确认 SSH 隧道仍在运行，然后重试。'}finally{button.disabled=false}}
+$('refresh').onclick=load;$('version').onchange=render;$('search').oninput=render;load();
+</script></body></html>

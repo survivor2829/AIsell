@@ -2,6 +2,7 @@ const { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, screen,
 const fs = require("node:fs");
 const path = require("node:path");
 const productBrand = require("../../product-brand.json");
+const installerTargets = require("../../installer-targets.json");
 const { configureActiveTouchRuntime, runActiveTouch } = require("./active-touch-ipc.cjs");
 const { registerAutoReplyIpc } = require("./auto-reply-ipc.cjs");
 const { createAiExpertStore } = require("./ai-expert.cjs");
@@ -15,6 +16,9 @@ const { DEEPSEEK_MODEL, createDeepSeekClient, createDeepSeekKeyStore } = require
 const { registerDeepSeekApiIpc } = require("./deepseek-api-ipc.cjs");
 const { configureDiagnostics, diagnostics } = require("./diagnostics.cjs");
 const { registerDiagnosticsIpc } = require("./diagnostics-ipc.cjs");
+const { cloudConfig } = require("./cloud-config.cjs");
+const { createCloudMaintenance } = require("./cloud-maintenance.cjs");
+const { registerCloudMaintenanceIpc } = require("./cloud-maintenance-ipc.cjs");
 const { createLicenseStore, registerLicenseAuthIpc } = require("./license-auth-ipc.cjs");
 const { developmentEdition, pilotEdition, editionLabel, preloadFile, rendererDir } = require("./edition.cjs");
 const {
@@ -62,6 +66,7 @@ let contentEngineController = null;
 let contentEngineIpcRegistration = null;
 let quitCleanupStarted = false;
 let quitCleanupComplete = false;
+let cloudMaintenance = null;
 
 const PROVIDER_CONSUMER_RESTART_STATES = new Set(["ready", "starting", "failed"]);
 const productDetailReleaseSmokeMode = app.isPackaged
@@ -553,6 +558,26 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       reply: autoReplyController
     });
     createWindow();
+    if (!productDetailReleaseSmokeMode) {
+      cloudMaintenance = createCloudMaintenance({
+        rootDir: runtime.rootDir, config: cloudConfig({ developmentEdition }),
+        version: app.getVersion(), buildId: build.buildId, logger,
+        canInstall: () => app.isPackaged && process.platform === "win32" && developmentEdition
+          && path.dirname(process.execPath).toLowerCase() === path.join(process.env.LOCALAPPDATA || "", "Programs", installerTargets.test.installDirectoryName).toLowerCase()
+      });
+      registerCloudMaintenanceIpc({ ipcMain, controller: cloudMaintenance, getMainWindow: () => mainWindow,
+        restart: async () => {
+          if (!await cloudMaintenance.prepareInstall()) return cloudMaintenance.status();
+          const response = await dialog.showMessageBox(mainWindow, {
+            type: "question", title: "安装更新", buttons: ["稍后", "退出并更新"], defaultId: 0, cancelId: 0,
+            message: "退出软件并安装已下载的更新？", detail: "请先保存编辑内容，并结束微信和视频制作任务。"
+          });
+          if (response.response === 1) app.quit();
+          return cloudMaintenance.status();
+        }
+      });
+      cloudMaintenance.start();
+    }
     productDetailDownloadRegistration = registerProductDetailDownloads({
       session: mainWindow.webContents.session,
       getMainWindow: () => mainWindow,
@@ -577,6 +602,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     event.preventDefault();
     if (quitCleanupStarted) return;
     quitCleanupStarted = true;
+    cloudMaintenance?.stop();
     const cleanupTimeout = new Promise((resolve) => {
       setTimeout(resolve, 8_000);
     });
@@ -588,11 +614,12 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         Promise.resolve(momentsPublishController?.dispose())
       ]),
       cleanupTimeout
-    ]).catch(() => undefined).finally(() => {
+    ]).catch(() => undefined).finally(async () => {
       productDetailIpcRegistration?.dispose();
       productDetailDownloadRegistration?.dispose();
       contentEngineIpcRegistration?.dispose();
       momentsCampaignController?.dispose();
+      await cloudMaintenance?.installOnExit();
       quitCleanupComplete = true;
       app.quit();
     });

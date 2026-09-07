@@ -1,5 +1,6 @@
 import { Download, FolderOpen, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
+import { CloudMaintenance } from "./CloudMaintenance";
 
 type DiagnosticEntry = {
   ts: string;
@@ -186,6 +187,7 @@ export function Diagnostics({ appVersion, edition, buildId }: { appVersion: stri
         </div>
       </div>
 
+      <CloudMaintenance />
       <div className="status-strip diagnostics-status">
         <div className="status-card"><span>近期事件</span><strong>{status?.recentCount ?? 0}</strong></div>
         <div className="status-card"><span>近期异常</span><strong className={(status?.recentErrorCount ?? 0) > 0 ? "warn" : "ok"}>{status?.recentErrorCount ?? 0}</strong></div>

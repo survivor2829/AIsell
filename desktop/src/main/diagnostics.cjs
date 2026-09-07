@@ -231,6 +231,10 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
   let sequence = 0;
   let writesFailed = 0;
   let environmentSnapshot = {};
+  const listeners = new Set();
+  function publish(entry) {
+    for (const listener of listeners) { try { listener(entry); } catch {} }
+  }
   const lastFaultByModule = new Map();
 
   function recover(moduleName) {
@@ -287,6 +291,7 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
           rotate(logFile);
           fs.appendFileSync(logFile, `${JSON.stringify(entry)}\n`, "utf8");
           sequence += 1;
+          publish(entry);
           return entry;
         }
         return null;
@@ -320,6 +325,7 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
       fs.appendFileSync(logFile, `${JSON.stringify(entry)}\n`, "utf8");
       sequence += 1;
       rememberFault(module, faultSignature);
+      publish(entry);
       return entry;
     } catch {
       writesFailed += 1;
@@ -416,7 +422,8 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
     }, salt);
   }
 
-  return { begin, environment, event, logFile, logsDir, readRecent: (limit) => readRecent(logFile, limit), recover, runId, status, writeJsonAtomic };
+  return { begin, environment, event, logFile, logsDir, readRecent: (limit) => readRecent(logFile, limit), recover, runId, status, writeJsonAtomic,
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 }
 
 function configureDiagnostics(options) {

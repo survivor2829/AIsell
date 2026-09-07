@@ -975,6 +975,18 @@ function createPreloadApis(ipcRenderer) {
       openFolder: () => ipcRenderer.invoke("diagnostics:open-folder"),
       export: () => ipcRenderer.invoke("diagnostics:export")
     },
+    cloudMaintenance: {
+      status: () => ipcRenderer.invoke("cloud:status"),
+      check: () => ipcRenderer.invoke("cloud:check"),
+      consent: (enabled) => ipcRenderer.invoke("cloud:consent", enabled === true),
+      upload: () => ipcRenderer.invoke("cloud:upload"),
+      restart: () => ipcRenderer.invoke("cloud:restart"),
+      onUpdate: (callback) => {
+        const handler = (_event, state) => callback(state);
+        ipcRenderer.on("cloud:update", handler);
+        return () => ipcRenderer.removeListener("cloud:update", handler);
+      }
+    },
     productDetail: {
       status: () => ipcRenderer.invoke(PRODUCT_DETAIL_CHANNELS.status),
       start: () => ipcRenderer.invoke(PRODUCT_DETAIL_CHANNELS.start),
