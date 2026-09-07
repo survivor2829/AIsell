@@ -127,7 +127,7 @@ function visualRendererPayload(value) {
 
 function createContentEngineApi(ipcRenderer) {
   const batchChannels = require("./narrated-batch-ipc.cjs").CHANNELS;
-  const batchClicks = Object.fromEntries(["recommend", "resolve", "samples", "continue"].map((action) => [
+  const batchClicks = Object.fromEntries(["recommend", "scripts", "confirm", "resolve", "samples", "continue"].map((action) => [
     action, createTrustedClickGate(`[data-batch-action="${action}"]`, batchChannels[action])
   ]));
   const consumeAutoMixCreateClick = createTrustedClickGate(
@@ -281,6 +281,42 @@ function createContentEngineApi(ipcRenderer) {
     },
     settings: {
       status: () => ipcRenderer.invoke("content-engine:settings-status"),
+      volcengineTtsStatus: () => ipcRenderer.invoke("content-engine:volcengine-tts-status"),
+      saveVolcengineTtsKey: async (payload) => {
+        const handshake = await ipcRenderer.invoke("content-engine:volcengine-tts-encryption");
+        if (!handshake?.ok || !handshake.data?.publicKey) return handshake;
+        try {
+          const bytes = Buffer.from(String(payload?.apiKey || ""), "utf8");
+          try {
+            const ciphertext = publicEncrypt({ key: handshake.data.publicKey, padding: cryptoConstants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" }, bytes).toString("base64");
+            return ipcRenderer.invoke("content-engine:save-volcengine-tts-key", { keyId: handshake.data.keyId, ciphertext });
+          } finally { bytes.fill(0); }
+        } catch { return { ok: false, code: "VOLCENGINE_TTS_KEY_ENCRYPTION_INVALID", error: "火山语音 Key 安全传输失败，请重试。" }; }
+      },
+      volcengineArkStatus: () => ipcRenderer.invoke("content-engine:volcengine-ark-status"),
+      saveVolcengineArkKey: async (payload) => {
+        const handshake = await ipcRenderer.invoke("content-engine:volcengine-ark-encryption");
+        if (!handshake?.ok || !handshake.data?.publicKey) return handshake;
+        try {
+          const bytes = Buffer.from(String(payload?.apiKey || ""), "utf8");
+          try {
+            const ciphertext = publicEncrypt({ key: handshake.data.publicKey, padding: cryptoConstants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" }, bytes).toString("base64");
+            return ipcRenderer.invoke("content-engine:save-volcengine-ark-key", { keyId: handshake.data.keyId, ciphertext });
+          } finally { bytes.fill(0); }
+        } catch { return { ok: false, code: "VOLCENGINE_TTS_KEY_ENCRYPTION_INVALID", error: "火山方舟 Key 安全传输失败，请重试。" }; }
+      },
+      volcengineAsrStatus: () => ipcRenderer.invoke("content-engine:volcengine-asr-status"),
+      saveVolcengineAsrCredentials: async (payload) => {
+        const handshake = await ipcRenderer.invoke("content-engine:volcengine-asr-encryption");
+        if (!handshake?.ok || !handshake.data?.publicKey) return handshake;
+        try {
+          const bytes = Buffer.from(JSON.stringify({ appId: String(payload?.appId || "").trim(), accessToken: String(payload?.accessToken || "").trim() }), "utf8");
+          try {
+            const ciphertext = publicEncrypt({ key: handshake.data.publicKey, padding: cryptoConstants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" }, bytes).toString("base64");
+            return ipcRenderer.invoke("content-engine:save-volcengine-asr-credentials", { keyId: handshake.data.keyId, ciphertext });
+          } finally { bytes.fill(0); }
+        } catch { return { ok: false, code: "VOLCENGINE_TTS_KEY_ENCRYPTION_INVALID", error: "火山识别 Key 安全传输失败，请重试。" }; }
+      },
       bailianKeyStatus: () => ipcRenderer.invoke(
         "content-engine:bailian-key-status"
       ),

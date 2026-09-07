@@ -635,16 +635,39 @@ class ContentEngineService:
     def get_narrated_batch_status(self, batch_id):
         return self._narrated_batches().status(batch_id)
 
+    def get_narrated_output_directory(self, batch_id):
+        return self._narrated_batches().output_directory(batch_id)
+
     def update_narrated_candidate(self, request):
         return self._narrated_batches().update_candidate(request)
 
     def _start_narrated_batch(self, batch_id, action):
-        result = self._narrated_batches().start(batch_id, action)
+        domain = self._narrated_batches()
+        batch = domain._load(batch_id)
+        domain._idle(batch)
+        # Newly imported files have not necessarily visited the library's probe
+        # action. Resolve their metadata before pinning duration-dependent plans.
+        if action in {"scripts", "recommend", "samples"}:
+            asset_ids = dict.fromkeys(asset_id for group in batch["groups"].values() for asset_id in group)
+            for asset_id in asset_ids:
+                if domain.d._asset_row(asset_id)["probe_status"] != "ok":
+                    asset = self.probe_asset(asset_id)
+                    if asset["probe_status"] != "ok":
+                        raise ContentEngineError("media_metadata_unavailable", "无法读取素材基础信息，请检查文件是否可访问、视频是否完整。")
+        result = domain.start(batch_id, action)
         self._enqueue_creative_task({"task_id": result["task_id"]})
         return result
 
     def recommend_narrated_batch(self, batch_id):
         return self._start_narrated_batch(batch_id, "recommend")
+
+    def prepare_narrated_scripts(self, batch_id):
+        return self._start_narrated_batch(batch_id, "scripts")
+
+    def confirm_narrated_script(self, request):
+        result = self._narrated_batches().confirm_script(request)
+        self._enqueue_creative_task({"task_id": result["task_id"]})
+        return result
 
     def resolve_narrated_planning_outcome(self, request):
         result = self._narrated_batches().resolve_planning_outcome(request)
@@ -655,6 +678,19 @@ class ContentEngineService:
         return self._start_narrated_batch(batch_id, "samples")
 
     def continue_narrated_batch(self, batch_id):
+        domain = self._narrated_batches()
+        batch = domain.get(batch_id)
+        if ((batch.get("settings") or {}).get("workflow_version") == 2
+                and batch.get("task_status") == "paused"):
+            state = domain._load(batch_id)
+            if state.get("_planning_inflight") or batch.get("status") == "outcome_unknown":
+                raise ContentEngineError("narrated_planning_outcome_unknown", "外部请求结果未知，请先核对服务记录。")
+            if not batch.get("script_confirmation"):
+                raise ContentEngineError("narrated_script_confirmation_required", "请先完成文案选择并确认。")
+            state["_retry_local_failures_task_id"] = batch["task_id"]
+            domain._store(state)
+            self.resume_creative_task(batch["task_id"])
+            return domain.get(batch_id)
         return self._start_narrated_batch(batch_id, "continue")
 
     def resolve_asset_preview(self, asset_id, variant="thumbnail"):
@@ -786,6 +822,9 @@ class ContentEngineService:
 
     def list_music_catalog_tracks(self):
         return self.creative_domain.list_music_catalog_tracks()
+
+    def preview_music_catalog_track(self, track_id):
+        return self.creative_domain.preview_music_catalog_track(track_id)
 
     def list_auto_mix_voice_personas(self):
         return self.creative_domain.list_auto_mix_voice_personas()

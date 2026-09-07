@@ -33,6 +33,7 @@ const { runProductDetailReleaseSmoke } = require("./product-detail-release-smoke
 const { createContentEngineSidecar } = require("./content-engine-sidecar.cjs");
 const { registerContentEngineIpc } = require("./content-engine-ipc.cjs");
 const { createBailianApiKeyStore } = require("./bailian-api-key.cjs");
+const { createVolcengineTtsKeyStore, createVolcengineAsrStore } = require("./volcengine-tts-settings.cjs");
 const {
   registerContentMediaProtocol,
   registerContentMediaScheme
@@ -356,6 +357,9 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       safeStorage
     });
     const deepSeekClient = createDeepSeekClient({ keyStore: deepSeekKeyStore });
+    const volcengineTtsKeyStore = createVolcengineTtsKeyStore({ rootDir: path.join(app.getPath("userData"), "content-engine"), safeStorage });
+    const volcengineArkKeyStore = createVolcengineTtsKeyStore({ rootDir: path.join(app.getPath("userData"), "content-engine"), safeStorage, filename: "volcengine-ark-api-key.bin" });
+    const volcengineAsrStore = createVolcengineAsrStore({ rootDir: path.join(app.getPath("userData"), "content-engine"), safeStorage });
     const aiExpertStore = createAiExpertStore({ rootDir: runtime.rootDir });
     const productDetailDataDir = path.join(app.getPath("userData"), "product-detail");
     const productDetailAiSettingsStore = createProductDetailAiSettingsStore({
@@ -457,11 +461,14 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       ),
       getProviderEnvironment: () => {
         const providerEnvironment = {};
-        if (bailianKeyStore.status().configured) {
-          providerEnvironment.DASHSCOPE_API_KEY = bailianKeyStore.read();
-          const apiHost = bailianKeyStore.status().apiHost;
-          if (apiHost) providerEnvironment.XIAOXI_BAILIAN_API_HOST = apiHost;
+        if (volcengineTtsKeyStore.status().configured) providerEnvironment.XIAOXI_VOLCENGINE_TTS_API_KEY = volcengineTtsKeyStore.read();
+        if (volcengineAsrStore.status().configured) {
+          const asr = volcengineAsrStore.read();
+          providerEnvironment.XIAOXI_VOLCENGINE_ASR_APP_ID = asr.appId;
+          providerEnvironment.XIAOXI_VOLCENGINE_ASR_ACCESS_TOKEN = asr.accessToken;
         }
+        providerEnvironment.XIAOXI_CONTENT_PROVIDER = "volcengine";
+        if (volcengineArkKeyStore.status().configured) providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_KEY = volcengineArkKeyStore.read();
         if (productDetailAiSettingsStore.status().ready) {
           const imageProvider = productDetailAiSettingsStore.runtimeConfig();
           providerEnvironment.APIMART_API_KEY = imageProvider.apiKey;
@@ -479,6 +486,9 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     contentEngineIpcRegistration = registerContentEngineIpc({
       controller: contentEngineController,
       bailianKeyStore,
+      volcengineTtsKeyStore,
+      volcengineArkKeyStore,
+      volcengineAsrStore,
       dialog,
       shell,
       getMainWindow: () => mainWindow

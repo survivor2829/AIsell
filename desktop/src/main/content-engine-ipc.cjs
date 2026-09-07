@@ -8,6 +8,7 @@ const {
 } = require("node:crypto");
 const { diagnostics } = require("./diagnostics.cjs");
 const { CHANNELS: BATCH_CHANNELS, ERRORS: BATCH_ERRORS, registerNarratedBatchIpc } = require("./narrated-batch-ipc.cjs");
+const { registerVolcengineTtsSettings } = require("./volcengine-tts-settings.cjs");
 
 const CONTENT_ENGINE_CHANNELS = Object.freeze({
   ...Object.fromEntries(Object.entries(BATCH_CHANNELS).map(([name, channel]) => [`batch_${name}`, channel])),
@@ -207,6 +208,7 @@ const PUBLIC_ERRORS = Object.freeze({
   CONTENT_ENGINE_SPAWN_FAILED: "内容引擎启动失败，请重试。",
   CONTENT_ENGINE_READY_INVALID: "内容引擎返回了无效的启动信息。",
   CONTENT_ENGINE_START_TIMEOUT: "内容引擎启动超时，请重试。",
+  CONTENT_ENGINE_STOP_TIMEOUT: "内容引擎尚未确认退出，暂时无法重新启动，请稍后重试。",
   CONTENT_ENGINE_NOT_READY: "内容引擎尚未就绪，请稍后重试。",
   CONTENT_ENGINE_REQUEST_TIMEOUT: "本次素材处理超时，请稍后重试。",
   CONTENT_ENGINE_REQUEST_TOO_LARGE: "一次选择的素材过多，请分批导入。",
@@ -293,6 +295,30 @@ const PUBLIC_ERRORS = Object.freeze({
   render_failed: "成片渲染失败，请检查素材后重试。",
   task_not_completed: "只有已完成的任务才能登记成片。",
   BAILIAN_API_KEY_MISSING: "请先保存百炼 API Key。",
+  VOLCENGINE_TTS_KEY_INVALID: "火山语音 API Key 格式无效，请复制控制台中的 API Key。",
+  VOLCENGINE_TTS_KEY_UNAVAILABLE: "请在声音设置中保存火山引擎语音 API Key。",
+  VOLCENGINE_TTS_KEY_ENCRYPTION_INVALID: "火山语音 Key 安全传输失败，请重试。",
+  VOLCENGINE_TTS_RESTART_REQUIRED: "密钥已保存，但内容引擎尚未就绪，请重新启动应用后再试听。",
+  volcengine_tts_not_configured: "请先在声音设置中配置火山引擎语音 API Key。",
+  VOLCENGINE_ASR_INVALID: "请填写正确的 APP ID 和 Access Token，不需要 Secret Key。",
+  volcengine_asr_not_configured: "请保存完整的语音识别 APP ID 和 Access Token。",
+  volcengine_ark_not_configured: "请在火山引擎设置中保存方舟 API Key。",
+  volcengine_request_rejected: "火山接口拒绝了请求，请检查对应服务的密钥与开通权限。",
+  volcengine_outcome_unknown: "火山请求中断或超时，结果不明，已停止自动重提。",
+  volcengine_response_invalid: "火山返回结果无法解析，已停止本次任务。",
+  volcengine_operation_unsupported: "该操作尚未适配火山接口，未调用百炼。",
+  music_preview_unavailable: "配乐试听文件不可用，请重新导入这个版本。",
+  auto_mix_voice_preview_normalization_unavailable: "试听音量处理运行时不可用，请检查本地 FFmpeg 配置。",
+  auto_mix_voice_preview_normalization_failed: "试听音量处理失败。已保存原始配音，重试只处理本地音频。",
+  auto_mix_voice_preview_unavailable: "声音试听文件不可用，请检查本地缓存文件。",
+  auto_mix_voice_preview_outcome_unknown: "声音试听提交结果不明；为避免重复计费，请勿重复提交。",
+  auto_mix_voice_outcome_unknown: "配音提交结果不明；为避免重复计费，请勿重复提交。",
+  auto_mix_voice_invalid: "配音音频无效，请检查返回文件及声音配置。",
+  auto_mix_voice_write_failed: "配音已返回，但本地保存失败；请检查缓存目录权限与磁盘空间，不要重复合成。",
+  auto_mix_voice_unavailable: "当前内容引擎不支持声音试听，请检查配音组件配置。",
+  auto_mix_voice_persona_invalid: "音色或模型配置无效，请检查当前声音设置。",
+  cloud_request_failed: "云端请求未成功，请检查网络、API Key、服务权限与账户额度；请勿连续重复提交。",
+  cloud_request_rejected: "云端未接受本次请求，请检查模型或音色权限、请求参数和账户额度。",
   BAILIAN_API_KEY_INVALID: "百炼 API Key 格式无效。",
   BAILIAN_API_HOST_INVALID: "百炼 API Host 必须是官方 HTTPS 地址。",
   BAILIAN_API_KEY_UNREADABLE: "已保存的百炼 API Key 无法读取，请重新保存。",
@@ -691,10 +717,28 @@ function publicFinished(item = {}) {
 function publicError(error) {
   const suppliedCode = safeText(error?.code, 64);
   if (Object.hasOwn(PUBLIC_ERRORS, suppliedCode)) {
+    let message = PUBLIC_ERRORS[suppliedCode];
+    const providerMessage = typeof error?.message === "string" ? error.message : "";
+    // Recognize only our adapter's complete fixed messages; expose digits, never provider text.
+    const businessCode = suppliedCode === "cloud_request_rejected"
+      ? providerMessage.match(/^火山语音拒绝本次合成（代码 (-?[0-9]{1,10})），请检查音色权限、服务开通状态与额度。$/u)
+      : null;
+    const httpStatus = suppliedCode === "cloud_request_failed"
+      ? providerMessage.match(/^火山语音(?:鉴权失败，请检查 API Key、服务开通与音色权限。|额度不足或请求限流，请检查用量。|未接受当前参数，请检查音色与模型是否匹配。|服务请求失败，请稍后检查服务状态。)（HTTP ([1-5][0-9]{2})）$/u)
+      : null;
+    // JavaScript's $ also matches before a final newline; require the entire input.
+    if (businessCode && businessCode[0] === providerMessage) {
+      message = `火山语音拒绝本次合成（代码 ${businessCode[1]}），请检查音色权限、服务开通状态与额度。`;
+    } else if (httpStatus && httpStatus[0] === providerMessage) {
+      message = `火山语音请求未成功（HTTP ${httpStatus[1]}），请检查 API Key、服务权限与账户额度；请勿连续重复提交。`;
+    }
+    const volcStatus = suppliedCode === "volcengine_request_rejected"
+      ? providerMessage.match(/^火山(方舟|语音识别)请求被拒绝（HTTP ([1-5][0-9]{2})），请检查对应 API Key、模型及服务权限。$/u) : null;
+    if (volcStatus && volcStatus[0] === providerMessage) message = `火山${volcStatus[1]}请求被拒绝（HTTP ${volcStatus[2]}），请检查对应 API Key、模型及服务权限。`;
     return {
       ok: false,
       code: suppliedCode,
-      error: PUBLIC_ERRORS[suppliedCode]
+      error: message
     };
   }
   return {
@@ -1365,6 +1409,10 @@ function publicAutoMixVoicePersona(value) {
       autoMixField(value, "voicePersonaId") || autoMixField(value, "personaId")
     ),
     displayName: safeAutoMixText(autoMixField(value, "displayName"), 160),
+    provider: publicAutoMixToken(autoMixField(value, "provider"), 32),
+    previewText: safeAutoMixText(autoMixField(value, "previewText"), 500),
+    evidenceNote: safeAutoMixText(autoMixField(value, "evidenceNote"), 500),
+    researchDate: safeAutoMixText(autoMixField(value, "researchDate"), 20),
     catalogVersion: publicAutoMixToken(autoMixField(value, "catalogVersion"), 64),
     category: publicAutoMixToken(autoMixField(value, "category"), 64),
     approvalStatus: AUTO_MIX_VOICE_APPROVAL_STATUSES.has(status) ? status : null,
@@ -2159,7 +2207,7 @@ function registerContentEngineIpc(options = {}) {
   }
 
   handle(CONTENT_ENGINE_CHANNELS.status, () => publicStatus(controller.status()));
-  registerNarratedBatchIpc({ handle, controller, validateId, validateVoicePersonaId, assertKeys, invalid, openDialog, requireTrustedAutoMixClick });
+  registerNarratedBatchIpc({ handle, controller, validateId, validateVoicePersonaId, assertKeys, invalid, openDialog, requireTrustedAutoMixClick, shell });
   handle(CONTENT_ENGINE_CHANNELS.restart, async () => publicStatus(
     await controller.restart()
   ));
@@ -2419,6 +2467,9 @@ function registerContentEngineIpc(options = {}) {
     await controller.setSetting("cache_limit_gb", limitGb);
     return { cacheLimitGb: limitGb };
   });
+  registerVolcengineTtsSettings({ handle, store: options.volcengineTtsKeyStore, controller, assertKeys, invalid });
+  registerVolcengineTtsSettings({ handle, store: options.volcengineAsrStore, controller, assertKeys, invalid, modulusLength: 3072, channels: { status: "content-engine:volcengine-asr-status", encryption: "content-engine:volcengine-asr-encryption", save: "content-engine:save-volcengine-asr-credentials" } });
+  registerVolcengineTtsSettings({ handle, store: options.volcengineArkKeyStore, controller, assertKeys, invalid, channels: { status: "content-engine:volcengine-ark-status", encryption: "content-engine:volcengine-ark-encryption", save: "content-engine:save-volcengine-ark-key" } });
   handle(CONTENT_ENGINE_CHANNELS.bailianKeyStatus, async () => {
     if (!bailianKeyStore) invalid("CONTENT_ENGINE_CAPABILITY_UNAVAILABLE");
     return publicBailianStatus(bailianKeyStore.status());

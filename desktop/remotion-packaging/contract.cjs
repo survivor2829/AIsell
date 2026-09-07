@@ -390,6 +390,7 @@ function normalizeMotionManifest(input) {
       model: cleanText(input.director?.model, 64) || null
     },
     captions,
+    ...(input.captionPresentation === "reference_narration" ? { captionPresentation: "reference_narration" } : {}),
     events: registeredEvents,
     focusRects,
     protectedRects

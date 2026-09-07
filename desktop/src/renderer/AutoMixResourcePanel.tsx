@@ -45,6 +45,10 @@ export type AutoMixVoicePersona = {
   approvalStatus: AutoMixVoiceApprovalStatus;
   previewStatus: AutoMixVoicePreviewStatus;
   provisioningStatus: AutoMixVoiceProvisioningStatus;
+  provider?: string;
+  previewText?: string;
+  evidenceNote?: string;
+  researchDate?: string;
 };
 
 export type AutoMixVoicePreview = {
@@ -143,7 +147,10 @@ const CATEGORY_LABELS: Record<string, string> = {
   natural_life: "自然生活",
   reliable_business: "可靠商务",
   steady_narration: "沉稳叙事",
-  playful_abstract: "轻松抽象"
+  playful_abstract: "轻松抽象",
+  candid_story: "直率讲述",
+  relaxed_story: "松弛叙事",
+  natural_explainer: "自然解说"
 };
 
 const APPROVAL_LABELS: Record<AutoMixVoiceApprovalStatus, string> = {
@@ -500,7 +507,7 @@ export function AutoMixResourcePanel({
         }
         : {
           tone: "error",
-          text: `${errorText(error, "声音生成失败")} 检查百炼配置后可以手动重新生成。`
+          text: `${errorText(error, "声音生成失败")} 检查对应声音服务配置后可以手动重新生成。`
         });
     } finally {
       setDesigningId(null);
@@ -662,7 +669,7 @@ export function AutoMixResourcePanel({
           >
             <div className="auto-mix-resource-section-head">
               <div>
-                <h3>先生成，再试听，再批准</h3>
+                <h3>试听后，固定喜欢的声音</h3>
                 <p>首次生成由你明确发起；只有试听当前版本并批准后，声音才会进入自动选择库。</p>
               </div>
               <button type="button" onClick={() => void loadVoices()} disabled={voiceLoading}>
@@ -737,9 +744,10 @@ export function AutoMixResourcePanel({
                       </div>
                       <dl className="auto-mix-resource-meta">
                         <div><dt>类型</dt><dd>{CATEGORY_LABELS[persona.category] || persona.category || "未分类"}</dd></div>
-                        <div><dt>目录</dt><dd>{persona.catalogVersion || "未标注"}</dd></div>
-                        <div><dt>人格 ID</dt><dd><code>{persona.voicePersonaId}</code></dd></div>
+                        {persona.provider !== "volcengine" && <><div><dt>目录</dt><dd>{persona.catalogVersion || "未标注"}</dd></div><div><dt>人格 ID</dt><dd><code>{persona.voicePersonaId}</code></dd></div></>}
                       </dl>
+                      {persona.evidenceNote && <p className="auto-mix-resource-voice-guidance">{persona.evidenceNote}{persona.researchDate ? ` · 核验于 ${persona.researchDate}` : ""}</p>}
+                      {persona.previewText && persona.provider === "volcengine" && <details><summary>本次统一试听文案</summary><p>{persona.previewText}</p></details>}
                       {designOutcomeUnknown ? (
                         <p
                           id={`${instanceId}-${persona.voicePersonaId}-design-state`}
@@ -755,7 +763,7 @@ export function AutoMixResourcePanel({
                         </p>
                       ) : provisioning === "failed" ? (
                         <p className="auto-mix-resource-voice-guidance is-blocked">
-                          上次生成未完成。检查百炼配置后，可由你手动重新生成。
+                          上次生成未完成。检查对应声音服务配置后，可由你手动重新生成。
                         </p>
                       ) : null}
                     </div>

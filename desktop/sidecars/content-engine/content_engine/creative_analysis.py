@@ -1186,6 +1186,10 @@ class DashScopeMediaClient:
         accepts the provider voice only in the private persona object and never
         returns that voice identifier in its metadata or error messages.
         """
+        if isinstance(persona_private, dict) and persona_private.get("provider") == "volcengine":
+            from .volcengine_tts import VolcengineTTSProvider
+            return VolcengineTTSProvider(timeout_seconds=self.timeout_seconds).synthesize_auto_mix_phrase(
+                text, output_path, persona_private)
         if not self.configured:
             raise ContentEngineError("cloud_not_configured", "请先配置百炼 API Key。")
         normalized = re.sub(r"\s+", " ", str(text or "")).strip()
@@ -1954,6 +1958,9 @@ class FFmpegCreativeAnalyzer:
         self.ffmpeg_path = ffmpeg_path or discover_media_executable(
             "ffmpeg", "XIAOXI_FFMPEG_PATH"
         )
+        if cloud_client is None and os.environ.get("XIAOXI_CONTENT_PROVIDER") == "volcengine":
+            from .volcengine_media import VolcengineMediaClient
+            cloud_client = VolcengineMediaClient()
         self.cloud_client = cloud_client or DashScopeMediaClient()
         self._run_process = command_runner
 
@@ -1962,7 +1969,7 @@ class FFmpegCreativeAnalyzer:
         return {
             "available": bool(self.ffmpeg_path),
             "cloud_configured": self.cloud_client.configured,
-            "provider": "bailian" if self.cloud_client.configured else "local_baseline",
+            "provider": getattr(self.cloud_client, "provider", "bailian") if self.cloud_client.configured else "local_baseline",
         }
 
     def _command(self, args, timeout=2 * 60 * 60):

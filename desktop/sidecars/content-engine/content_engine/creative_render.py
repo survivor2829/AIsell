@@ -14,6 +14,7 @@ import uuid
 
 from .errors import ContentEngineError
 from .hashing import canonical_json_sha256
+from .narration_alignment import reference_caption_cues
 from .remotion_render import (
     RemotionRenderError,
     RemotionWorkerClient,
@@ -2491,6 +2492,8 @@ class FFmpegCreativeRenderer:
         style = recipe.get("subtitle_style") or {}
         if style.get("preset") == "none":
             return []
+        if recipe.get("caption_presentation") == "reference_narration":
+            return cls._single_caption_lane(reference_caption_cues(captions, base))
         max_chars = max(8, min(18, int(style.get("max_chars") or 12)))
         word_timed = (
             (
@@ -2693,7 +2696,12 @@ class FFmpegCreativeRenderer:
             )
             and preset in {"knowledge_course", "energetic_talking"}
         )
-        if preset == "knowledge_course" and is_supoclip:
+        is_reference = recipe.get("caption_presentation") == "reference_narration"
+        if is_reference:
+            font_size, margin_bottom = 64, 470
+            primary, secondary = "&H00FFFFFF", "&H00FFFFFF"
+            border_style, outline, shadow = 1, 4, 1
+        elif preset == "knowledge_course" and is_supoclip:
             font_size = max(36, min(48, int(style.get("font_size") or 44)))
             margin_bottom = max(120, min(260, int(style.get("margin_bottom") or 150)))
             primary, secondary = "&H00FFFFFF", "&H003DDCFF"
@@ -2732,7 +2740,10 @@ class FFmpegCreativeRenderer:
         )
         events = []
         for cue in cues:
-            if is_supoclip and cue.get("words"):
+            if is_reference:
+                text = cls._ass_safe_text(cue["text"])
+                animation = r"{\an5\pos(540,1421)\q0}"
+            elif is_supoclip and cue.get("words"):
                 text = cls._ass_karaoke(cue)
                 emoji = cls._caption_emoji(cue["text"]) if preset == "energetic_talking" else ""
                 text = f"{emoji} {text}" if emoji else text
@@ -3237,6 +3248,8 @@ class HybridCreativeRenderer:
                 "model": str(director.get("model") or "")[:64] or None,
             },
             "captions": captions,
+            **({"captionPresentation": "reference_narration"}
+               if recipe.get("caption_presentation") == "reference_narration" else {}),
             "events": events,
             "focusRects": rectangles("focus_rects"),
             "protectedRects": rectangles("protected_rects", protected=True),

@@ -27,6 +27,7 @@ const PACKAGING_FILES = Object.freeze([
   "style-packs.json",
   "types.ts",
   "video-template.tsx",
+  "narration-emoji.json",
   "LICENSES.md",
   "runtime-license-record.schema.json",
   "runtime-license-record.template.json"

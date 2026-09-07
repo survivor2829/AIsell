@@ -37,6 +37,67 @@
       "voicePrompt": "二十多岁的中文青年声线，轻松、灵动、带一点反差幽默，像自然吐槽而不是刻意表演，节奏有弹性但不尖锐，不使用网络主播腔，数字和品牌词仍要清晰。",
       "voicePrefix": "fun26",
       "instruction": "轻松、有反差感，幽默句略快，关键信息恢复清晰稳定。"
+    },
+    {
+      "voicePersonaId": "volc-xiaohe-2@1",
+      "displayName": "小何 2.0",
+      "provider": "volcengine",
+      "providerModel": "seed-tts-2.0",
+      "providerVoiceId": "zh_female_xiaohe_uranus_bigtts",
+      "instruction": "",
+      "style": "natural_life",
+      "autoSelectPriority": 0,
+      "approvalStatus": "pending",
+      "sourceUrl": "https://www.volcengine.com/docs/6561/1257544",
+      "researchDate": "2026-09-05",
+      "evidenceNote": "豆包语音合成 2.0 官方音色；需开通语音合成 2.0。试听后可选为后续批次默认声音。",
+      "catalogVersion": "2026.09.05-volcengine-xiaohe-2"
+    },
+    {
+      "voicePersonaId": "volc-straight-yingzi@1",
+      "displayName": "直率英子",
+      "provider": "volcengine",
+      "providerModel": "seed-tts-1.0",
+      "providerVoiceId": "zh_female_naying_mars_bigtts",
+      "instruction": "",
+      "style": "candid_story",
+      "autoSelectPriority": 0,
+      "approvalStatus": "pending",
+      "sourceUrl": "https://www.volcengine.com/docs/6561/162929?lang=en",
+      "recommendationUrl": "https://www.douyin.com/video/7630418802203746213",
+      "researchDate": "2026-09-05",
+      "evidenceNote": "近期教程推荐候选；官方接口存在，尚未实测或确认参考视频同款。",
+      "catalogVersion": "2026.09.05-volcengine-candidates"
+    },
+    {
+      "voicePersonaId": "volc-soft-mianbao@1",
+      "displayName": "懒音绵宝",
+      "provider": "volcengine",
+      "providerModel": "seed-tts-1.0",
+      "providerVoiceId": "zh_male_lanxiaoyang_mars_bigtts",
+      "instruction": "",
+      "style": "relaxed_story",
+      "autoSelectPriority": 0,
+      "approvalStatus": "pending",
+      "sourceUrl": "https://www.volcengine.com/docs/6561/162929?lang=en",
+      "researchDate": "2026-09-05",
+      "evidenceNote": "官方视频配音候选；并未证实它与教程中的懒小羊是同一版本，不标热门同款。",
+      "catalogVersion": "2026.09.05-volcengine-candidates"
+    },
+    {
+      "voicePersonaId": "volc-explainer-xiaoming@1",
+      "displayName": "解说小明",
+      "provider": "volcengine",
+      "providerModel": "seed-tts-1.0",
+      "providerVoiceId": "zh_male_jieshuoxiaoming_moon_bigtts",
+      "instruction": "",
+      "style": "natural_explainer",
+      "autoSelectPriority": 0,
+      "approvalStatus": "pending",
+      "sourceUrl": "https://www.volcengine.com/docs/6561/162929?lang=en",
+      "researchDate": "2026-09-05",
+      "evidenceNote": "官方可接入替代候选，未证实近期热门；它不是解说小帅。",
+      "catalogVersion": "2026.09.05-volcengine-candidates"
     }
   ]
 }

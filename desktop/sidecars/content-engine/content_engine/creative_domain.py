@@ -49,9 +49,13 @@ from .auto_mix_resources import (
     VOICE_PREVIEW_SAMPLE,
     auto_select_voice_persona_ids,
     configured_voice_personas,
+    normalize_voice_preview,
     voice_preview_cache_key,
     voice_preview_data_url,
+    voice_preview_ffmpeg,
+    voice_preview_sample,
 )
+from .narration_alignment import align_narration, attach_narration_alignment, sentence_shot_budgets, aligned_binding_spans
 from .database import Database
 from .errors import ContentEngineError
 from .hashing import canonical_json_sha256
@@ -555,6 +559,8 @@ class CreativeDomain:
                 (persona_id,),
             )
         for persona in personas:
+            provider = persona.get("provider") or "bailian"
+            provider_model = persona.get("provider_model") or AUTO_MIX_TTS_MODEL
             version = int(persona["persona_id"].rsplit("@", 1)[1])
             # Catalog configuration can register a private provider voice, but
             # it cannot stand in for the user's preview-and-approve action.
@@ -575,9 +581,9 @@ class CreativeDomain:
                 str(previous["catalog_version"] or "")
                 != str(persona["catalog_version"] or "")
                 or str(previous["catalog_source"] or "") != "configured"
-                or str(previous["provider"] or "") != "bailian"
+                or str(previous["provider"] or "") != provider
                 or str(previous["provider_model"] or "")
-                != AUTO_MIX_TTS_MODEL
+                != provider_model
                 or (
                     bool(configured_provider_voice_id)
                     and str(previous["provider_voice_id"] or "")
@@ -604,7 +610,7 @@ class CreativeDomain:
                     provider_model, provider_voice_id, instruction, voice_prompt,
                     voice_prefix, catalog_source, approved_at, active, created_at,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, 'bailian', ?, ?, ?, ?, ?, 'configured', ?, 1, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'configured', ?, 1, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     version = excluded.version,
                     display_name = excluded.display_name,
@@ -627,7 +633,8 @@ class CreativeDomain:
                     persona["display_name"],
                     persona["style"],
                     persona["catalog_version"],
-                    AUTO_MIX_TTS_MODEL,
+                    provider,
+                    provider_model,
                     provider_voice_id,
                     persona["instruction"],
                     persona.get("voice_prompt") or "",
@@ -686,7 +693,8 @@ class CreativeDomain:
             FROM voice_personas_v1 p
             LEFT JOIN auto_mix_voice_previews_v1 v ON v.persona_id = p.id
             LEFT JOIN auto_mix_voice_designs_v1 d ON d.persona_id = p.id
-            WHERE p.active = 1 AND p.provider_model = ?
+            WHERE p.active = 1 AND ((p.provider = 'bailian' AND p.provider_model = ?)
+                OR (p.provider = 'volcengine' AND p.provider_model IN ('seed-tts-1.0', 'seed-tts-2.0')))
             ORDER BY p.approved_at IS NULL, p.updated_at DESC, p.id
             """,
             (AUTO_MIX_TTS_MODEL,),
@@ -1079,6 +1087,7 @@ class CreativeDomain:
 
     def preview_auto_mix_voice_persona(self, voice_persona_id):
         persona = self._auto_mix_voice_persona_row(voice_persona_id)
+        sample = voice_preview_sample(persona)
         if not str(persona["provider_voice_id"] or "").strip():
             raise ContentEngineError(
                 "auto_mix_voice_design_required", "请先生成当前声音，再进行试听。"
@@ -1127,10 +1136,21 @@ class CreativeDomain:
                     "audioDataUrl": voice_preview_data_url(previous_output),
                     "cacheHit": True,
                 }
+        normalize_executable = None
+        if persona["provider"] == "volcengine":
+            from .volcengine_tts import VolcengineTTSProvider
+            if not VolcengineTTSProvider().configured:
+                raise ContentEngineError("volcengine_tts_not_configured", "请先在声音设置中配置火山语音 API Key。")
+            normalize_executable = voice_preview_ffmpeg()
+        reuse_generated = bool(previous is not None and previous["cache_key"] == cache_key
+                               and previous["status"] == "failed"
+                               and previous["error_code"] in {"auto_mix_voice_preview_normalization_pending", "auto_mix_voice_preview_normalization_failed"}
+                               and self._valid_voice_preview(output, previous["audio_digest"]))
         now = self._now()
-        self.connection.execute(
-            """
-            INSERT INTO auto_mix_voice_previews_v1(
+        if not reuse_generated:
+            self.connection.execute(
+                """
+                INSERT INTO auto_mix_voice_previews_v1(
                 persona_id, cache_key, status, managed_relative_path,
                 audio_digest, error_code, created_at, updated_at
             ) VALUES (?, ?, 'submitted', NULL, NULL, NULL, ?, ?)
@@ -1141,9 +1161,9 @@ class CreativeDomain:
                 audio_digest = NULL,
                 error_code = NULL,
                 updated_at = excluded.updated_at
-            """,
-            (persona["id"], cache_key, now, now),
-        )
+                """,
+                (persona["id"], cache_key, now, now),
+            )
         synthesize = getattr(self.analyzer, "synthesize_auto_mix_phrase", None)
         if not callable(synthesize):
             self.connection.execute(
@@ -1159,16 +1179,24 @@ class CreativeDomain:
             )
         output.parent.mkdir(parents=True, exist_ok=True)
         try:
-            synthesize(
-                VOICE_PREVIEW_SAMPLE,
-                output,
-                {
-                    "provider": persona["provider"],
-                    "provider_model": persona["provider_model"],
-                    "provider_voice_id": persona["provider_voice_id"],
-                    "instruction": persona["instruction"],
-                },
-            )
+            if not reuse_generated:
+                synthesize(
+                    sample,
+                    output,
+                    {
+                        "provider": persona["provider"],
+                        "provider_model": persona["provider_model"],
+                        "provider_voice_id": persona["provider_voice_id"],
+                        "instruction": persona["instruction"],
+                    },
+                )
+                if normalize_executable:
+                    self._wav_duration_ms(output)
+                    self.connection.execute(
+                        "UPDATE auto_mix_voice_previews_v1 SET status='failed', error_code='auto_mix_voice_preview_normalization_pending', managed_relative_path=?, audio_digest=?, updated_at=? WHERE persona_id=?",
+                        (str(relative), hashlib.sha256(output.read_bytes()).hexdigest(), self._now(), persona["id"]))
+            if normalize_executable:
+                normalize_voice_preview(output, normalize_executable)
             self._wav_duration_ms(output)
             try:
                 preview_size = output.stat().st_size
@@ -3445,14 +3473,16 @@ class CreativeDomain:
                 public_plan.get("musicBrief") or {},
                 required_duration_ms=voice_bundle["duration_ms"],
                 excluded_id=str(private_state.get("excluded_music_track_id") or ""),
+                allowed_track_ids=private_state.get("music_track_ids"),
+                prefer_unused_track_ids=private_state.get("used_music_track_ids") or [],
             )
         if music is None:
             return self._pause_auto_mix(
                 task_id,
                 run_id,
                 state="needs_attention",
-                code="auto_mix_licensed_music_required",
-                message="授权曲库中没有有效且适配当前素材的音乐。",
+                code="narrated_music_pool_empty" if private_state.get("music_track_ids") == [] else "auto_mix_licensed_music_required",
+                message="请先试听并选入至少一首可导出的配乐。" if private_state.get("music_track_ids") == [] else "选定配乐库中没有授权有效且适配本条时长的音乐。",
                 public_plan=public_plan,
                 private_state=private_state,
             )
@@ -4101,7 +4131,7 @@ class CreativeDomain:
             "active = 1",
             "approved_at IS NOT NULL",
             "provider_voice_id <> ''",
-            "provider_model = ?",
+            "((provider = 'bailian' AND provider_model = ?) OR (provider = 'volcengine' AND provider_model IN ('seed-tts-1.0', 'seed-tts-2.0')))",
         ]
         if selected_id:
             clauses.append("id = ?")
@@ -4185,6 +4215,7 @@ class CreativeDomain:
             provisioning_status = "failed"
         else:
             provisioning_status = "not_created"
+        configured = next((item for item in configured_voice_personas() if item["persona_id"] == row["id"]), {})
         return {
             "voicePersonaId": row["id"],
             "displayName": row["display_name"],
@@ -4195,6 +4226,12 @@ class CreativeDomain:
             "approvalStatus": "approved" if row["approved_at"] else "pending",
             "previewStatus": preview_status,
             "provisioningStatus": provisioning_status,
+            "provider": row["provider"],
+            "previewText": voice_preview_sample(row),
+            "sourceUrl": configured.get("source_url", ""),
+            "recommendationUrl": configured.get("recommendation_url", ""),
+            "researchDate": configured.get("research_date", ""),
+            "evidenceNote": configured.get("evidence_note", ""),
         }
 
     def _auto_mix_voice_bundle(
@@ -4346,6 +4383,10 @@ class CreativeDomain:
         existing_digest = str(private_state.get("voice_audio_digest") or "")
         existing_captions = public_plan.get("speechCaptions") or []
         existing_phrase_audio = private_state.get("phrase_audio") or []
+        phrase_text = {p.get("phraseId"): p.get("text", "") for p in public_plan.get("spokenPhrases") or []}
+        for item in existing_phrase_audio:
+            self._refresh_cached_narration_alignment(item.get("verification") or {},
+                phrase_text.get(item.get("phrase_id"), ""), item.get("duration_ms", 0), item.get("audio_digest"))
         preserve_shots = bool(private_state.get("narrated_preserve_shot_duration"))
         def full_shot_timeline(phrases, audio):
             segments = [dict(s) for s in analysis_timeline["selected_segments"]]
@@ -4362,13 +4403,20 @@ class CreativeDomain:
                     raise ContentEngineError("narrated_copy_too_long", "实际配音超过对应画面的可用时长。")
                 pause = min(160, available - speech) if index < len(phrases) - 1 else 0
                 budget = speech + pause
+                observed_budgets = sentence_shot_budgets(phrase, item, group, pause)
+                item["shot_timing_source"] = "asr_sentences" if observed_budgets else "phrase"
+                item["sentence_shots"] = [
+                    {**sentence, "evidenceRefs": binding["evidenceRefs"]}
+                    for binding, sentence in zip(phrase.get("sentenceBindings") or [],
+                        aligned_binding_spans(phrase, item))
+                ] if observed_budgets else []
                 accumulated = 0
                 allocated = 0
-                for s in group:
+                for shot_index, s in enumerate(group):
                     original = int(s["target_duration_ms"])
                     accumulated += original
                     boundary = round(budget * accumulated / available)
-                    duration = boundary - allocated
+                    duration = observed_budgets[shot_index] if observed_budgets else boundary - allocated
                     if duration <= 0 or duration > original:
                         raise ContentEngineError("narrated_voice_mapping", "口播过短，无法完整展示选定镜头。")
                     # Keep a real central interval at normal playback speed;
@@ -4429,6 +4477,7 @@ class CreativeDomain:
                 phrases,
                 existing_captions,
             )
+            attach_narration_alignment(existing_captions, existing_phrase_audio)
             text_tracks = finalized_text_tracks(
                 phrases, existing_captions, timeline
             )
@@ -4560,6 +4609,7 @@ class CreativeDomain:
             phrases,
             captions,
         )
+        attach_narration_alignment(captions, phrase_audio)
         text_tracks = finalized_text_tracks(phrases, captions, timeline)
         return {
             "phrases": phrases,
@@ -4571,6 +4621,20 @@ class CreativeDomain:
             "timeline": timeline,
             "text_tracks": text_tracks,
         }
+
+    def _refresh_cached_narration_alignment(self, verification, text, duration_ms, audio_digest):
+        if not verification.get("matched") or (verification.get("alignment") or {}).get("version", 0) >= 2:
+            return
+        row = self.connection.execute(
+            "SELECT private_metadata_json FROM auto_mix_stage_artifacts_v2 "
+            "WHERE stage='voice_alignment' AND status='completed' "
+            "AND json_extract(private_metadata_json, '$.audio_digest')=? "
+            "AND json_extract(private_metadata_json, '$.expected_text')=? ORDER BY updated_at DESC LIMIT 1",
+            (audio_digest, text)).fetchone()
+        if row:
+            metadata = self._json_object(row["private_metadata_json"])
+            if metadata.get("recognized_segments"):
+                verification["alignment"] = align_narration(text, metadata["recognized_segments"], duration_ms)
 
     def _synthesize_and_verify_auto_mix_phrase(
         self, task_id, run, persona, phrase, *, critical_terms=()
@@ -4589,6 +4653,7 @@ class CreativeDomain:
                 "正式成片需要使用 ASR 回听核对每个配音短语。",
             )
         persona_private = {
+            "provider": persona["provider"],
             "provider_model": persona["provider_model"],
             "provider_voice_id": persona["provider_voice_id"],
             "instruction": persona["instruction"],
@@ -4706,6 +4771,7 @@ class CreativeDomain:
                 "voice_alignment", alignment_key
             )
             if cached_verification.get("matched") is True:
+                self._refresh_cached_narration_alignment(cached_verification, phrase["text"], duration_ms, audio_digest)
                 return {
                     "phrase_id": phrase["phraseId"],
                     "relative_path": str(relative),
@@ -4766,6 +4832,7 @@ class CreativeDomain:
                 title=run["title"],
                 critical_terms=critical_terms,
             )
+            verification["alignment"] = align_narration(phrase["text"], recognized_segments, duration_ms)
             self._record_auto_mix_artifact(
                 run["id"],
                 "voice_alignment",
@@ -4779,6 +4846,7 @@ class CreativeDomain:
                     # by loosening the gate or inventing replacement copy.
                     "expected_text": phrase["text"],
                     "recognized_text": recognized,
+                    "recognized_segments": recognized_segments,
                 },
                 revision=attempt + 1,
             )
@@ -5007,6 +5075,7 @@ class CreativeDomain:
             matching,
             {"bpmRange": [0, 999]},
             required_duration_ms=expected_duration_ms,
+            allowed_track_ids=recipe.get("music_track_ids"),
         )
         if (
             current is None
@@ -5389,6 +5458,10 @@ class CreativeDomain:
         ).fetchone()
         return self._public_music_catalog_row(row)
 
+    def preview_music_catalog_track(self, track_id):
+        from .music_preview import preview_music_catalog_track
+        return preview_music_catalog_track(self, track_id)
+
     def list_music_catalog_tracks(self):
         rows = self.connection.execute(
             "SELECT * FROM music_catalog_tracks_v1 ORDER BY updated_at DESC, id"
@@ -5450,14 +5523,16 @@ class CreativeDomain:
         )
         return result
 
-    def _select_auto_mix_music(self, brief, *, required_duration_ms, excluded_id=""):
+    def _select_auto_mix_music(self, brief, *, required_duration_ms, excluded_id="",
+                               allowed_track_ids=None, prefer_unused_track_ids=()):
         tracks = [
             item
             for item in self._music_catalog_rows()
             if not excluded_id or item["track_id"] != excluded_id
         ]
         selected = select_licensed_music(
-            tracks, brief, required_duration_ms=required_duration_ms
+            tracks, brief, required_duration_ms=required_duration_ms,
+            allowed_track_ids=allowed_track_ids, prefer_unused_track_ids=prefer_unused_track_ids,
         )
         if selected is None:
             return None
@@ -5471,13 +5546,16 @@ class CreativeDomain:
         if not isinstance(previous, dict):
             return None
         track_id = str(previous.get("track_id") or "")
-        if not track_id or private_state.get("excluded_music_track_id") == track_id:
+        allowed_ids = private_state.get("music_track_ids")
+        if (not track_id or private_state.get("excluded_music_track_id") == track_id
+                or (allowed_ids is not None and track_id not in allowed_ids)):
             return None
         matching = [
             item for item in self._music_catalog_rows() if item["track_id"] == track_id
         ]
         selected = select_licensed_music(
-            matching, brief, required_duration_ms=required_duration_ms
+            matching, brief, required_duration_ms=required_duration_ms,
+            allowed_track_ids=allowed_ids,
         )
         if selected is None:
             return None
@@ -5726,6 +5804,8 @@ class CreativeDomain:
             },
             "voice_persona_id": persona["id"],
             "music_track_id": music["track_id"],
+            **({"music_track_ids": list(private_state["music_track_ids"])}
+               if private_state.get("music_track_ids") is not None else {}),
             "voice_segment": {
                 "asset_id": visual_segments[0]["asset_id"],
                 "start_ms": 0,
@@ -5733,6 +5813,8 @@ class CreativeDomain:
             },
             "visual_segments": visual_segments,
             "captions": public_plan["speechCaptions"],
+            **({"caption_presentation": "reference_narration"}
+               if private_state.get("narrated_reference_captions") else {}),
             "subtitle_style": {
                 "preset": "dynamic_clean",
                 "font_size": 52,

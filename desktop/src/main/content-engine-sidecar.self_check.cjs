@@ -398,6 +398,66 @@ async function main() {
     }
 
     {
+      const children = [];
+      const controller = createContentEngineSidecar({
+        runtimePath,
+        dataDir,
+        startupTimeoutMs: 100,
+        stopTimeoutMs: 5,
+        spawnProcess: () => {
+          const child = new FakeChild({ closeOnKill: false });
+          child.on("request", (request) => {
+            if (request.method === "shutdown") child.respond(request, { status: "stopping" });
+          });
+          children.push(child);
+          setImmediate(() => child.ready());
+          return child;
+        }
+      });
+      assert.equal((await controller.start()).state, "ready");
+      const pending = assert.rejects(controller.listFinished(), { code: "CONTENT_ENGINE_STOP_TIMEOUT" });
+      await waitFor(() => children[0].stdin.writes.length === 1);
+
+      const stopped = await controller.stop();
+      await pending;
+      assert.equal(stopped.state, "failed", "an unconfirmed worker exit must not report stopped");
+      assert.equal(stopped.code, "CONTENT_ENGINE_STOP_TIMEOUT");
+      children[0].respond(children[0].stdin.writes[0], { items: [] });
+      assert.equal(controller.status().code, "CONTENT_ENGINE_STOP_TIMEOUT", "a late response must preserve the unconfirmed exit failure");
+      assert.equal((await controller.restart()).code, "CONTENT_ENGINE_STOP_TIMEOUT");
+      assert.equal((await controller.start()).code, "CONTENT_ENGINE_STOP_TIMEOUT");
+      assert.equal(children.length, 1, "a worker that has not exited must not be replaced");
+      assert.equal(children[0].stdin.writes.filter((request) => request.method === "list_finished").length, 1);
+
+      children[0].emit("close", null, "SIGTERM");
+      assert.equal(controller.status().state, "stopped");
+      assert.equal((await controller.start()).state, "ready");
+      assert.equal(children.length, 2, "a confirmed exit must allow a new worker");
+      children[1].emit("close", 0, null);
+      await controller.dispose();
+    }
+
+    {
+      const child = new FakeChild({ closeOnKill: false });
+      const controller = createContentEngineSidecar({
+        runtimePath,
+        dataDir,
+        stopTimeoutMs: 5,
+        spawnProcess: () => child
+      });
+      const started = controller.start();
+      await waitFor(() => child.stdout.listenerCount("data") === 1);
+      assert.equal((await controller.stop()).code, "CONTENT_ENGINE_STOP_TIMEOUT");
+      assert.equal((await started).code, "CONTENT_ENGINE_STOP_TIMEOUT");
+      child.ready();
+      assert.equal(controller.status().state, "failed", "late readiness must not revive a stopping worker");
+      assert.equal((await controller.dispose()).code, "CONTENT_ENGINE_STOP_TIMEOUT");
+      assert.equal((await controller.restart()).code, "CONTENT_ENGINE_STOP_TIMEOUT");
+      child.emit("close", null, "SIGTERM");
+      await controller.dispose();
+    }
+
+    {
       const children = [new FakeChild(), new FakeChild()];
       let spawnCount = 0;
       const controller = createContentEngineSidecar({

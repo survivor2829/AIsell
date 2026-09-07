@@ -18,3 +18,24 @@
 `runtime-license-record.template.json` 是空模板，不是许可确认。填写后通过 `--license-record` 或 `XIAOXI_REMOTION_LICENSE_RECORD` 传入；浏览器文件通过 `--browser` 或 `XIAOXI_REMOTION_BROWSER_SOURCE_PATH` 传入。记录不得包含 license key、API key、token 或其他秘密。
 
 当前仓库没有安装程序代码签名基础，`signed` 字段继续为 `false`。installer 必须在 delivery 便携包生成后、安装程序生成前，在 `release/` 之外取得独立签名的信任记录，并通过 `XIAOXI_RELEASE_TRUST_RECORD`、`XIAOXI_RELEASE_TRUST_PUBLIC_KEY` 和 `XIAOXI_RELEASE_TRUST_PUBLIC_KEY_SHA256` 指定记录、公钥和受信公钥摘要。记录同时约束便携包清单、完整目录树、Remotion runtime descriptor 和 runtime manifest 摘要；所以 `release:installer` 只消费已经签名确认的 delivery 便携包，不会在验签前重新构建它。构建脚本只验签，不生成签名，也不接触私钥；该信任记录不能描述成安装程序代码签名。
+
+
+## 本地 Noto Emoji 图像
+
+Copyright Google LLC. Source: https://github.com/googlefonts/noto-emoji
+
+本项目只内嵌 `svg/` 图像，不包含字体。固定源版本及各图 SHA-256 见 `narration-emoji.json`。图像以 Apache License 2.0 分发，图像数据未修改。
+
+Copyright 2013 Google, Inc. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.

@@ -3,6 +3,7 @@ import {
   AbsoluteFill,
   Audio,
   Easing,
+  Img,
   OffthreadVideo,
   Sequence,
   interpolate,
@@ -15,6 +16,7 @@ import {
 import effectRegistryData from "./effect-registry.json";
 import layoutGridData from "./layout-grid.json";
 import stylePackData from "./style-packs.json";
+import narrationEmoji from "./narration-emoji.json";
 import type {
   EffectRendererId,
   EffectSelection,
@@ -153,14 +155,15 @@ const effectAttributes = (effect: EffectSelection) => ({
 });
 
 const VideoBase: React.FC<{ manifest: MotionManifest; pack: StylePack; frame: number; zoomProgress: number }> = ({ manifest, pack, frame, zoomProgress }) => {
-  const scale = pack.video.scale + Math.sin(frame / pack.video.pulseDivisor) * pack.video.pulse + zoomProgress * 0.035;
+  const reference = manifest.captionPresentation === "reference_narration";
+  const scale = reference ? 1 : pack.video.scale + Math.sin(frame / pack.video.pulseDivisor) * pack.video.pulse + zoomProgress * 0.035;
   return (
     <AbsoluteFill style={{ backgroundColor: pack.palette.ink, overflow: "hidden" }}>
       <OffthreadVideo
         src={staticFile(manifest.sourceFile)}
         style={{ width: "100%", height: "100%", objectFit: "cover", transform: `scale(${scale})` }}
       />
-      <AbsoluteFill style={{ background: pack.video.overlay }} />
+      {!reference && <AbsoluteFill style={{ background: pack.video.overlay }} />}
     </AbsoluteFill>
   );
 };
@@ -309,7 +312,7 @@ const CaptionTrack: React.FC<{ captions: TimedWord[]; pack: StylePack; nowMs: nu
     let width = 0;
     while (pageEnd < captions.length) {
       const text = captions[pageEnd].text;
-      const nextWidth = Array.from(text).reduce((sum, char) => sum + (/[^\x00-\xff]/u.test(char) ? 1 : 0.55), 0) + 0.5;
+      const nextWidth = Array.from(String(text)).reduce((sum, char) => sum + (/[^\x00-\xff]/u.test(char) ? 1 : 0.55), 0) + 0.5;
       if (pageEnd > pageStart && (width + nextWidth > pageWidth || pageEnd - pageStart >= pack.caption.maxWordsPerPage)) break;
       width += nextWidth;
       pageEnd += 1;
@@ -338,6 +341,77 @@ const CaptionTrack: React.FC<{ captions: TimedWord[]; pack: StylePack; nowMs: nu
             textShadow: active ? "none" : "0 3px 8px rgba(0,0,0,.65)"
           }}>{word.text}</span>
         );
+      })}
+    </div>
+  );
+};
+
+const captionWidth = (text: string) => Array.from(text).reduce((sum, char) => sum + (/[^\x00-\xff]/u.test(char) ? 1 : 0.55), 0);
+
+// Linguistic word boundaries protect numbers, names and two-character words.
+// Long untimed fallback paragraphs remain a single caption; shrinking the
+// typography never implies that a guessed reading position is ASR evidence.
+export const referenceCaptionLines = (text: string): { lines: string[]; fontSize: number } => {
+  const clean = text.replace(/\s+/gu, " ").trim()
+    .replace(/(\p{Script=Han}) +(?=\p{Script=Han})/gu, "$1");
+  if (captionWidth(clean) <= 14.6) return { lines: [clean], fontSize: 64 };
+  const segmenter = new Intl.Segmenter("zh-CN", { granularity: "word" });
+  const breaks = Array.from(segmenter.segment(clean)).slice(1).map((segment) => segment.index)
+    .filter((index) => !/^[，。！？、；：,.!?;:\uFFFC]/u.test(clean.slice(index))
+      && captionWidth(clean.slice(0, index)) >= 2 && captionWidth(clean.slice(index)) >= 2);
+  if (!breaks.length) return { lines: [clean], fontSize: Math.min(64, 920 / Math.max(1, captionWidth(clean))) };
+  const score = (index: number) => {
+    const left = captionWidth(clean.slice(0, index));
+    const right = captionWidth(clean.slice(index));
+    const punctuationBreak = /[，。！？、；：,.!?;:]\s*$/u.test(clean.slice(0, index));
+    return Math.max(left, right) * 3 + Math.abs(left - right) - (punctuationBreak ? 3 : 0);
+  };
+  const at = breaks.reduce((best, next) => score(next) < score(best) ? next : best);
+  const lines = [clean.slice(0, at).trim(), clean.slice(at).trim()];
+  return { lines, fontSize: Math.min(64, 920 / Math.max(...lines.map(captionWidth))) };
+};
+
+type NarrationEmoji = { id: string; keywords: string[]; dataUri: string };
+const narrationEmojiAssets = narrationEmoji.images as NarrationEmoji[];
+
+const selectNarrationDecorations = (captions: TimedWord[], durationMs: number) => {
+  const maximum = Math.min(4, Math.max(2, Math.round(durationMs / 12_000)));
+  const chosen: { index: number; asset: NarrationEmoji }[] = [];
+  for (const [index, caption] of captions.entries()) {
+    const asset = narrationEmojiAssets.find((item) => item.keywords.some((keyword) => caption.text.includes(keyword)));
+    if (!asset || chosen.some((item) => Math.abs(captions[item.index].startMs - caption.startMs) < 6_000)) continue;
+    chosen.push({ index, asset });
+    if (chosen.length >= maximum) break;
+  }
+  return chosen;
+};
+
+const ReferenceCaptionTrack: React.FC<{ captions: TimedWord[]; nowMs: number; durationMs: number }> = ({ captions, nowMs, durationMs }) => {
+  const activeIndex = findActiveCaptionIndex(captions, nowMs);
+  const decorations = React.useMemo(() => selectNarrationDecorations(captions, durationMs), [captions, durationMs]);
+  if (activeIndex < 0) return null;
+  const caption = captions[activeIndex];
+  const decoration = decorations.find((item) => item.index === activeIndex);
+  const keyword = decoration?.asset.keywords.find((word) => caption.text.includes(word));
+  const insertion = keyword ? caption.text.indexOf(keyword) + keyword.length : -1;
+  // The placeholder participates in line width, but never enters narration text.
+  const displayText = insertion >= 0
+    ? `${caption.text.slice(0, insertion)}\uFFFC${caption.text.slice(insertion)}`
+    : caption.text;
+  const { lines, fontSize } = referenceCaptionLines(displayText);
+  const emphasis = caption.text.match(/不用|担心|终于|放心|省心|反复|来不及|看清楚|关键/u)?.[0];
+  return (
+    <div style={{ position: "absolute", left: 70, right: 70, top: "74%", transform: "translateY(-50%)",
+      textAlign: "center", fontFamily: baseFont, fontSize, fontWeight: 800, lineHeight: 1.28,
+      color: "#fff", WebkitTextStroke: "4px #141414", paintOrder: "stroke fill", textShadow: "0 3px 2px rgba(0,0,0,.6)" }}>
+      {lines.map((line, index) => {
+        return <div key={index} style={{ whiteSpace: "pre" }}>{line.split("\uFFFC").map((part, partIndex) => {
+          const at = emphasis ? part.indexOf(emphasis) : -1;
+          return <React.Fragment key={partIndex}>
+            {partIndex > 0 && decoration ? <Img src={decoration.asset.dataUri} style={{ display: "inline-block", width: "1em", height: "1em", verticalAlign: "-0.12em", filter: "drop-shadow(0 2px 2px rgba(0,0,0,.35))" }} /> : null}
+            {at < 0 ? part : <>{part.slice(0, at)}<span style={{ color: "#ffe88d" }}>{emphasis}</span>{part.slice(at + emphasis!.length)}</>}
+          </React.Fragment>;
+        })}</div>;
       })}
     </div>
   );
@@ -373,8 +447,8 @@ export const DynamicPackaging: React.FC<MotionManifest> = (manifest) => {
     () => registeredEvents.map(({ event }) => event),
     [registeredEvents]
   );
-  const activeEvents = registeredEvents.filter(({ event }) => activeAt(event.startMs, event.endMs, nowMs));
-  const activeFocus = registeredFocusRects.find(({ focus }) => activeAt(focus.startMs, focus.endMs, nowMs));
+  const activeEvents = manifest.captionPresentation === "reference_narration" ? [] : registeredEvents.filter(({ event }) => activeAt(event.startMs, event.endMs, nowMs));
+  const activeFocus = manifest.captionPresentation === "reference_narration" ? null : registeredFocusRects.find(({ focus }) => activeAt(focus.startMs, focus.endMs, nowMs));
   const zoomEvent = activeEvents.find(({ event }) => event.effect.renderer === "zoomTransition");
   const zoomProgress = zoomEvent ? eventProgress(zoomEvent.event, frame, fps) : 0;
   return (
@@ -384,8 +458,10 @@ export const DynamicPackaging: React.FC<MotionManifest> = (manifest) => {
       {activeEvents.map(({ event, definition }, index) => (
         <RegisteredEventEffect key={`${event.startMs}-${event.effect.variantId}-${index}`} event={event} definition={definition} pack={pack} progress={eventProgress(event, frame, fps)} />
       ))}
-      <CaptionTrack captions={manifest.captions} pack={pack} nowMs={nowMs} frame={frame} />
-      <SoundEffects events={soundEvents} fps={fps} />
+      {manifest.captionPresentation === "reference_narration"
+        ? <ReferenceCaptionTrack captions={manifest.captions} nowMs={nowMs} durationMs={manifest.durationMs} />
+        : <CaptionTrack captions={manifest.captions} pack={pack} nowMs={nowMs} frame={frame} />}
+      {manifest.captionPresentation !== "reference_narration" ? <SoundEffects events={soundEvents} fps={fps} /> : null}
     </AbsoluteFill>
   );
 };

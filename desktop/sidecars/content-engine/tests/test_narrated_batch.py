@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import test_auto_mix_v2 as fixtures
 from content_engine.narrated_batch import (
-    NarratedBatchDomain, VISUAL_FACTS_VERSION, canonical_hash, near_duplicate, validate_count,
+    NarratedBatchDomain, VISUAL_FACTS_VERSION, CLAIM_AUDIT_VERSION, canonical_hash, near_duplicate, validate_count,
 )
 from content_engine.errors import ContentEngineError
 
@@ -100,15 +100,20 @@ class NarratedBatchTests(unittest.TestCase):
             payload = json.loads(messages[-1]["content"])
             if "available_asset_ids" not in payload:
                 return original(messages=messages, **kwargs)
-            by_asset = {s["asset_id"]: s for s in payload["shots"]}
-            keys = [by_asset[aid]["segment_id"] for aid in payload["available_asset_ids"][:3]]
+            keys = [s["segment_id"] for s in payload["shots"]
+                    if s["asset_id"] == payload["available_asset_ids"][0]][:3]
             return {"candidates": [{"title": "不同现场的清洁展示", "angle": "场景选择", "shot_ids": keys,
                                     "phrases": [{"text": "挑选设备时，先看看现场地面和通道。不同场景有不同的需求，需要结合实际情况判断。最后这句话也必须完整显示。", "shot_ids": keys}]}]}
         self.analyzer.cloud_client._structured_completion = complete
+        grounding = patch.object(NarratedBatchDomain, "_ground_shots",
+            lambda self, task, batch, shots, snapshots, versions:
+                [{**shot, "content_signature": shot["segment_id"]} for shot in shots])
+        grounding.start()
+        self.addCleanup(grounding.stop)
         batch = self.s.save_narrated_batch({"groups": {"opening": self.ids[:3], "middle": [], "ending": []}, "target_count": 1})
         planned = self.run_samples(batch)
-        self.assertEqual("ready", planned["status"])
-        rendered = self.run_samples(planned)
+        self.assertEqual("completed", planned["status"])
+        rendered = planned
         self.assertEqual("completed", rendered["status"], rendered["candidates"])
         self.assertEqual(3, len(rendered["candidates"][0]["phrases"][0]["shot_ids"]))
         video_id = rendered["candidates"][0]["generated_video_id"]
@@ -116,7 +121,7 @@ class NarratedBatchTests(unittest.TestCase):
         actual_duration = sum(s["target_duration_ms"] for s in recipe["visual_segments"])
         self.assertEqual(recipe["captions"][-1]["end_ms"], actual_duration)
         self.assertEqual(rendered["candidates"][0]["narration"], "".join(c["text"] for c in recipe["captions"]))
-        self.assertLess(actual_duration, planned["candidates"][0]["duration_ms"])
+        self.assertLess(actual_duration, sum(shot["target_duration_ms"] for shot in planned["candidates"][0]["shots"]))
 
     def test_new_story_can_select_materials_and_exceed_sixty_seconds(self):
         original = self.complete
@@ -132,8 +137,8 @@ class NarratedBatchTests(unittest.TestCase):
         self.analyzer.cloud_client._structured_completion = complete
         b = self.s.save_narrated_batch({"groups": {"opening": self.ids[:1], "middle": self.ids[1:3], "ending": self.ids[3:5]}, "target_count": 1})
         planned = self.run_samples(b)
-        self.assertEqual("ready", planned["status"])
-        self.assertTrue(all(not c.get("generated_video_id") for c in planned["candidates"]))
+        self.assertEqual("completed", planned["status"])
+        self.assertTrue(all(c.get("generated_video_id") for c in planned["candidates"]))
         self.assertEqual(set(self.ids[:4]), {s["asset_id"] for s in planned["candidates"][0]["shots"]})
         domain = NarratedBatchDomain(self.s.creative_domain)
         key = planned["available_shots"][0]["segment_id"]
@@ -150,7 +155,7 @@ class NarratedBatchTests(unittest.TestCase):
         long_raw = {"title": "完整展示", "shot_ids": [s["segment_id"] for s in planned["candidates"][0]["shots"]],
                     "phrases": planned["candidates"][0]["phrases"]}
         self.assertGreater(domain._normalize_candidate(long_raw, long_state, [])["duration_ms"], 60_000)
-        done = self.run_samples(planned)
+        done = planned
         candidate = done["candidates"][0]
         self.assertEqual("completed", candidate["status"], candidate.get("error"))
         self.assertEqual([s["segment_id"] for s in candidate["shots"]],
@@ -165,6 +170,103 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertEqual("completed", task["status"], task)
         return self.s.get_narrated_batch(b["batch_id"])
 
+    def test_script_options_do_not_render_and_confirmed_first_precedes_batch_variations(self):
+        events = []
+        batch = self.s.save_narrated_batch({"groups": {"opening": self.ids[:2]},
+            "title": "现场选择", "target_count": 2, "settings": {"workflow_version": 2}})
+        with self.assertRaises(ContentEngineError) as error:
+            self.s.generate_narrated_samples(batch["batch_id"])
+        self.assertEqual("narrated_script_confirmation_required", error.exception.code)
+
+        def plan(domain, task_id, state, wanted):
+            domain._initialize_speech_budget(state)
+            options = state.get("_preparing_scripts")
+            rows = state.setdefault("script_options", []) if options else state["candidates"]
+            events.append(("plan_options" if options else "plan_variation", wanted))
+            for number in range(len(rows), wanted):
+                shot = state["available_shots"][0 if options else -1]
+                key = shot["segment_id"]
+                row = domain._normalize_candidate({"title": f"方向{number}", "angle": f"问题{number}",
+                    "audience": "使用者", "pain_point": "场地不合适", "shot_ids": [key],
+                    "phrases": [{"text": f"我想先看第{number + 1}处现场。", "shot_ids": [key]}]}, state,
+                    [item["shots"] for item in rows])
+                row["review_version"] = 2
+                rows.append(row)
+
+        def render(domain, task_id, state, candidate, index, total):
+            domain._verify_confirmed_script(state, candidate)
+            events.append(("render", candidate["narration"]))
+            candidate.update(status="completed", generated_video_id=f"fake-{index}")
+
+        with patch.object(NarratedBatchDomain, "_plan", plan), patch.object(NarratedBatchDomain, "_render_candidate", render):
+            queued = self.s.prepare_narrated_scripts(batch["batch_id"])
+            self.assertEqual("completed", self.s.run_creative_task(queued["task_id"])["status"])
+            prepared = self.s.get_narrated_batch(batch["batch_id"])
+            self.assertEqual("scripts_ready", prepared["status"])
+            self.assertEqual(3, len(prepared["script_options"]))
+            self.assertEqual([], prepared["candidates"])
+            self.assertEqual([], self.renderer.rendered_recipes)
+            self.assertFalse(any(key.startswith("_") for key in prepared["script_options"][0]))
+            selected = prepared["script_options"][1]
+            domain = self.s._narrated_batches()
+            state = domain._load(batch["batch_id"])
+            state["_preparing_scripts"] = True
+            with patch.object(NarratedBatchDomain, "_history", return_value=[selected["shots"]]):
+                with self.assertRaises(ContentEngineError) as duplicate:
+                    domain._normalize_candidate({**selected, "shot_ids": [s["segment_id"] for s in selected["shots"]]}, state, [])
+            self.assertEqual("narrated_duplicate", duplicate.exception.code, "Published work is excluded before TTS even for alternatives")
+            request = {"batch_id": batch["batch_id"], "script_id": selected["candidate_id"], "revision": selected["revision"]}
+            queued = self.s.confirm_narrated_script(request)
+            self.assertEqual("completed", self.s.run_creative_task(queued["task_id"])["status"])
+            completed = self.s.get_narrated_batch(batch["batch_id"])
+            self.assertEqual("completed", completed["status"])
+            self.assertEqual(2, len(completed["candidates"]))
+            self.assertEqual(selected["narration"], completed["candidates"][0]["narration"])
+            self.assertEqual(selected["narration"], completed["script_confirmation"]["narration"])
+            self.assertEqual(selected["angle"], completed["candidates"][1]["angle"])
+            self.assertEqual(["plan_options", "render", "plan_variation", "render"], [item[0] for item in events])
+            queued = self.s.confirm_narrated_script(request)
+            self.s.run_creative_task(queued["task_id"])
+            self.assertEqual(2, sum(item[0] == "render" for item in events), "Repeat confirmation must reuse completed work")
+            state = domain._load(batch["batch_id"])
+            state["candidates"][0].update(status="failed", error_code="render_failed", error="Local renderer unavailable", _run_id="kept-run")
+            domain._store(state)
+            with patch.object(self.s.creative_domain, "_auto_mix_run_row", return_value={"status": "rendering"}):
+                queued = self.s.continue_narrated_batch(batch["batch_id"])
+                self.s.run_creative_task(queued["task_id"])
+            state = domain._load(batch["batch_id"])
+            self.assertEqual("completed", state["status"])
+            self.assertEqual("kept-run", state["candidates"][0]["_run_id"])
+            self.assertEqual(selected["narration"], state["candidates"][0]["narration"])
+            self.assertEqual(3, sum(item[0] == "render" for item in events))
+            state["candidates"][0].update(status="failed", error_code="narrated_copy_too_long", error="Needs copy edit")
+            domain._store(state)
+            queued = self.s.continue_narrated_batch(batch["batch_id"])
+            self.s.run_creative_task(queued["task_id"])
+            self.assertEqual(3, sum(item[0] == "render" for item in events), "A copy failure must require a new confirmation")
+
+    def test_script_edit_invalidates_confirmation_and_stale_revision_cannot_render(self):
+        batch = self.s.save_narrated_batch({"groups": {"opening": self.ids[:1]},
+            "target_count": 1, "settings": {"workflow_version": 2}})
+        domain = self.s._narrated_batches()
+        state = domain._load(batch["batch_id"])
+        option = {"candidate_id": "chosen-script", "title": "用户选择", "narration": "原来的正文。",
+                  "revision": 1, "status": "planned", "audience": "使用者", "pain_point": "选择困难", "angle": "选择场景"}
+        state.update(script_options=[option], selected_script_id="chosen-script", direction={"angle": "选择场景"},
+                     script_confirmation={"script_id": "chosen-script", "revision": 1, "narration": "原来的正文。"})
+        domain._store(state)
+        edited = self.s.update_narrated_candidate({"batch_id": batch["batch_id"], "candidate_id": "chosen-script", "narration": "我想先看看现场。"})
+        self.assertIsNone(edited["script_confirmation"])
+        self.assertEqual(2, edited["script_options"][0]["revision"])
+        self.assertEqual("原来的正文。", edited["script_confirmation_history"][0]["narration"])
+        with self.assertRaises(ContentEngineError) as error:
+            self.s.confirm_narrated_script({"batch_id": batch["batch_id"], "script_id": "chosen-script", "revision": 1})
+        self.assertEqual("narrated_script_revision_changed", error.exception.code)
+        with self.assertRaises(ContentEngineError) as error:
+            domain._verify_confirmed_script(state, {"narration": "偷偷替换的正文。", "_confirmed_script": {"narration": "原来的正文。"},
+                                                   "_tracks": {"spoken_phrases": [{"text": "偷偷替换的正文。"}]}})
+        self.assertEqual("narrated_confirmed_script_changed", error.exception.code)
+
     def test_story_v2_uses_rewritten_script_and_fills_two_candidates(self):
         requested = []
         rewrite_issues = []
@@ -173,13 +275,18 @@ class NarratedBatchTests(unittest.TestCase):
             if "requested_count" in payload:
                 requested.append(payload["requested_count"])
                 return {"stories": [], "limitations": []}
-            if "scripts" in payload:
-                invalid = {"scripts": [{"index": item["index"], "narration": "短"}
-                                       for item in payload["scripts"]]}
+            if "mapped_plan_repairs" in payload:
+                invalid = {"candidates": [{"narration_draft": "短"}]}
                 rewrite_issues.append(kwargs["validation_error"](invalid))
-                return {"scripts": [{"index": item["index"], "title": item["title"],
-                    "narration": ("先观察现场，再比较不同场景中的真实画面。" * 20)[:item["min_chars"]]}
-                    for item in payload["scripts"]]}
+                source = payload["mapped_plan_repairs"][0]["plan"]
+                by_id = {shot["segment_id"]: shot for shot in payload["shots"]}
+                assets = list(dict.fromkeys(by_id[key]["asset_id"] for key in source["shot_ids"]))
+                phrases = [{"text": "先看这段现场画面，再比较周边的实际布置，明确还需要进一步核对的问题。",
+                            "shot_ids": [s["segment_id"] for s in payload["shots"] if s["asset_id"] == asset][:2]}
+                           for asset in assets]
+                result = {"candidates": [{"title": source["title"], "angle": source["angle"], "phrases": phrases}]}
+                self.assertIsNone(kwargs["validation_error"](result))
+                return result
             if "candidates" in payload:
                 return {"reviews": [{"candidate_id": item["candidate_id"], "accepted": True,
                                       "quality_score": .9, "reason": "结构完整"}
@@ -213,67 +320,37 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertEqual(2, planned["feasible_count"], planned["reasons"])
         self.assertEqual(2, len(planned["candidates"]))
         self.assertTrue(all(len(item["narration"]) >= 150 for item in planned["candidates"]))
-        self.assertTrue(rewrite_issues and "min_chars" in rewrite_issues[0])
-        self.assertEqual([3], requested)
+        self.assertEqual(2, len(rewrite_issues), "仅修复两条确实不足时长的稿件")
+        self.assertIn("phrases", rewrite_issues[0])
+        self.assertEqual([2], requested)
 
-    def test_story_v2_repacks_four_phrase_drafts_across_nine_shots_for_two_candidates(self):
-        narration = (
-            "选择清洁设备之前，先观察现场地面、通道宽窄和周边遮挡，再决定重点看哪些实际动作。"
-            "面对不同区域，可以分别看设备如何接近散落物、如何经过边缘，以及画面里有没有持续过程。"
-            "再把室内通道、开阔地面和室外场景分开比较，留意每段素材真正展示了什么，不急着下结论。"
-            "最后结合自己的场地和日常任务，记录需要继续确认的问题，再选择更适合现场的方案。"
-        )
-        long_narration = narration + "并继续核对现场变化。"
-        rewrite_sizes = []
-        rewrite_bounds = []
-        repair_calls = []
-
+    def test_story_v2_preserves_valid_scene_mapping_without_rewrite(self):
+        returned = []
+        calls = []
         def complete(*, messages, **kwargs):
             payload = json.loads(messages[-1]["content"])
+            calls.append(payload)
             if "requested_count" in payload:
-                return {"stories": [], "limitations": []}
-            if "scripts" in payload:
-                rewrite_sizes.append(len(payload["scripts"]))
-                source = payload["scripts"][0]
-                rewrite_bounds.append((source["min_chars"], source["max_chars"]))
-                return {"scripts": [{"index": source["index"], "title": source["title"],
-                                      "narration": "这条故意太短。" if source["index"] == 0 else long_narration}]}
-            if "repair_scripts" in payload:
-                repair_calls.append(payload)
-                source = payload["repair_scripts"][0]
-                slots = source["paragraph_slots"]
-                overlong = {"scripts": [{"index": source["index"], "paragraphs": [
-                    {"index": index, "text": "画" * (slot["max_chars"] + (1 if index == 0 else 0))}
-                    for index, slot in enumerate(slots)]}]}
-                self.assertIn("max_chars", kwargs["validation_error"](overlong))
-                remaining = source["target_chars"]
-                paragraphs = []
-                for index, slot in enumerate(slots):
-                    future_capacity = sum(item["max_chars"] for item in slots[index + 1:])
-                    future_minimum = len(slots) - index - 1
-                    size = max(1, remaining - future_capacity)
-                    size = min(slot["max_chars"], max(size, remaining - future_minimum))
-                    remaining -= size
-                    paragraphs.append({"index": index, "text": "画" * (size - 1) + "。"})
-                result = {"scripts": [{"index": source["index"], "paragraphs": paragraphs}]}
-                self.assertIsNone(kwargs["validation_error"](result))
-                return result
+                by_asset = {}
+                for shot in payload["shots"]:
+                    by_asset.setdefault(shot["asset_id"], []).append(shot)
+                assets = list(by_asset)
+                stories = []
+                for number in range(payload["requested_count"]):
+                    sequence = assets[number:] + assets[:number]
+                    phrases = [{
+                        "text": "先看这段现场画面，再比较周边的实际布置，明确还需要进一步核对的问题。",
+                        "shot_ids": [s["segment_id"] for s in by_asset[asset][:2]],
+                    } for asset in sequence]
+                    stories.append({"title": f"现场观察 {number + 1}", "viewer_value": "比较现场布置",
+                                    "phrases": phrases})
+                returned.extend(stories)
+                return {"stories": stories, "limitations": []}
             if "candidates" in payload:
                 return {"reviews": [{"candidate_id": item["candidate_id"], "accepted": True,
                                       "quality_score": .9, "reason": "结构完整"}
                                      for item in payload["candidates"]]}
-            shots = payload["shots"]
-            sequences = ([shot["segment_id"] for shot in shots[:9]],
-                         [shot["segment_id"] for shot in shots[1:10]])
-            raw_phrases = ["先看通道里的实际移动。", "再看设备接近地面散落物。",
-                           "不同区域要分开观察。", "最后记录还需要继续确认的问题。"]
-            return {"candidates": [{"title": f"现场观察 {number + 1}", "angle": "真实场景比较",
-                                     "shot_ids": keys,
-                                     "phrases": [{"text": text,
-                                                  "shot_ids": ([keys[index]] if index < 3 else keys[3:])}
-                                                 for index, text in enumerate(raw_phrases)]}
-                                    for number, keys in enumerate(sequences)],
-                    "reason": "两种镜头顺序"}
+            self.fail("有效映射不应重新选镜头、扩写或按字数重新分段")
 
         self.analyzer.cloud_client._structured_completion = complete
         grounding = patch.object(NarratedBatchDomain, "_ground_shots",
@@ -292,22 +369,11 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertEqual("completed", task["status"], task)
         planned = self.s.get_narrated_batch(batch["batch_id"])
         self.assertEqual(2, planned["feasible_count"], planned["reasons"])
-        self.assertEqual([1, 1], rewrite_sizes, "每条口播必须独立整理，不能因一条失败回滚整页")
-        self.assertTrue(all(minimum == 156 and maximum >= len(long_narration)
-                            for minimum, maximum in rewrite_bounds))
-        self.assertEqual(1, len(repair_calls), "只有失败的短稿需要单独重新编排")
-        repair_source = repair_calls[0]["repair_scripts"][0]
-        self.assertEqual(156, repair_source["min_chars"])
-        self.assertLessEqual(156, repair_source["target_chars"])
-        self.assertLessEqual(repair_source["target_chars"], repair_source["max_chars"])
-        self.assertLessEqual(repair_source["max_chars"], 188)
-        self.assertNotIn("shot_ids", json.dumps(repair_calls[0], ensure_ascii=False))
-        self.assertTrue(all(len(candidate["shots"]) >= 9 for candidate in planned["candidates"]))
-        narrations = {candidate["narration"] for candidate in planned["candidates"]}
-        self.assertIn(long_narration, narrations)
-        for candidate in planned["candidates"]:
-            self.assertEqual(candidate["narration"], "".join(item["text"] for item in candidate["phrases"]))
-            self.assertTrue(any(len(item["shot_ids"]) > 1 for item in candidate["phrases"]))
+        self.assertFalse(any("mapped_plan_repairs" in call or "scripts" in call for call in calls))
+        for candidate, story in zip(planned["candidates"], returned):
+            self.assertEqual(story["phrases"], candidate["phrases"])
+            self.assertEqual([key for phrase in story["phrases"] for key in phrase["shot_ids"]],
+                             [shot["segment_id"] for shot in candidate["shots"]])
             self.assertGreaterEqual(len(candidate["narration"]), 156)
 
     def test_repack_adds_visual_capacity_until_clause_allocation_succeeds(self):
@@ -327,28 +393,75 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertEqual(draft, "".join(item["text"] for item in prepared["phrases"]))
         self.assertEqual(2, len(prepared["phrases"]))
 
+        mapped_batch = {**batch, "_story_planning_version": 2}
+        mapped = {"title": "保留语义映射", "narration_draft": "整篇旧稿不能覆盖已经选定的对应关系。",
+                  "phrases": [{"text": "这里是第一段。", "shot_ids": ["shot-0", "shot-1"]},
+                              {"text": "接着看另一个位置。", "shot_ids": ["shot-2"]}]}
+        result = domain._repack_duration_candidate(mapped, mapped_batch, shots)
+        self.assertEqual(mapped["phrases"], result["phrases"])
+        self.assertEqual(["shot-0", "shot-1", "shot-2"], result["shot_ids"])
+        with self.assertRaises(ContentEngineError) as missing:
+            domain._repack_duration_candidate(raw, mapped_batch, shots)
+        self.assertEqual("narrated_mapping_invalid", missing.exception.code)
+        mixed = {**mapped_batch, "available_shots": [
+            {**shot, "asset_id": "another-scene"} if shot["segment_id"] == "shot-1" else shot
+            for shot in shots]}
+        with self.assertRaises(ContentEngineError) as mixed_scene:
+            domain._repack_duration_candidate(mapped, mixed, mixed["available_shots"])
+        self.assertIn("第1段跨了不同素材场景", str(mixed_scene.exception))
+
+    def test_source_evidence_pins_asset_range_version_provider_and_provenance(self):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        shot = {"asset_id": "asset-batch-1", "source_start_ms": 0, "source_end_ms": 5000}
+        snapshot = {"asset_id": "asset-batch-1", "fingerprint": "pinned"}
+        state = {"_versions": {"asset-batch-1": "test-analysis-v1"},
+                 "_analysis_provider": "bailian", "_snapshots": [snapshot],
+                 "_source_provenance": {"asset-batch-1": {
+                     "authority": "user_confirmed", "snapshot_hash": canonical_hash(snapshot),
+                     "activity_label": "设备操作培训", "source_record": "user-source-manifest"}}}
+        self.s.connection.execute("UPDATE media_segments SET transcript_text=? WHERE id=?",
+                                  ("有人问：怎么连接网络？", "segment-batch-1"))
+        result = domain._source_evidence_for(state, shot)
+        self.assertEqual(["segment-batch-1"], [s["segment_id"] for s in result["recorded_speech"]])
+        self.assertEqual("设备操作培训", result["source_provenance"]["activity_label"])
+        self.assertIn("怎么连接网络", domain._claim_source_text(result, "recorded_speech"))
+        self.assertEqual([], domain._source_evidence_for(state, {**shot, "source_start_ms": 18000,
+                                                                 "source_end_ms": 20000})["recorded_speech"])
+        for invalid in [{**state, "_analysis_provider": "volcengine"},
+                        {**state, "_versions": {"asset-batch-1": "old"}}]:
+            self.assertEqual([], domain._source_evidence_for(invalid, shot)["recorded_speech"])
+        changed = {**state, "_snapshots": [{**snapshot, "fingerprint": "changed"}]}
+        self.assertEqual({}, domain._source_evidence_for(changed, shot)["source_provenance"])
+
     def test_grounded_claims_are_audited_before_visual_review(self):
         domain = NarratedBatchDomain(self.s.creative_domain)
+        claim_frames = patch.object(domain, "_claim_frames", side_effect=lambda batch, candidate, source: ([], source["frames"]))
+        claim_frames.start()
+        self.addCleanup(claim_frames.stop)
         exact_phrase = "前方是干枯落叶，旁边是白色服务台和悬挂的标识牌。"
-        self.assertEqual(["前方是干枯落叶，", "旁边是白色服务台和悬挂的标识牌。"],
+        self.assertEqual([exact_phrase],
                          [item["quote"] for item in domain._claim_statement_units("phrase-2", exact_phrase)])
         protected = "比例16:9，数量1,000，版本3.5，链接https://example.com/a,b?x=1,000；路径C:\\demo，括号（里面，保持）结束。"
         units = domain._claim_statement_units("phrase-protected", protected)
         self.assertEqual(protected, "".join(item["quote"] for item in units))
-        self.assertEqual(["比例16:9，", "数量1,000，", "版本3.5，",
-                          "链接https://example.com/a,b?x=1,000；", "路径C:\\demo，", "括号（里面，保持）结束。"],
+        self.assertEqual(["比例16:9，数量1,000，版本3.5，链接https://example.com/a,b?x=1,000；",
+                          "路径C:\\demo，括号（里面，保持）结束。"],
                          [item["quote"] for item in units])
+        advice = "第一次来培训，先带上自己关心的问题。"
+        self.assertEqual([advice], [item['quote'] for item in domain._claim_statement_units('advice', advice)])
         batch = self.create(1)
         state = domain._load(batch["batch_id"])
         domain._active_batch = state
         observation = "画面中有一台绿色设备，设备位于室内通道。"
         shot = {"segment_id": "shot-grounded", "fact_id": "fact-grounded",
+                "source_start_ms": 0, "source_end_ms": 5000,
                 "description": observation,
                 "visual_facts": {"observation": observation, "direct_observation": observation,
                                  "illustrative_observation": "", "evidence_class": "direct_real",
                                  "uncertainties": [], "onscreen_claims": []}}
         second_observation = "画面中可见室内地面。"
         second_shot = {"segment_id": "shot-grounded-2", "fact_id": "fact-grounded-2",
+                       "source_start_ms": 5000, "source_end_ms": 10000,
                        "description": second_observation,
                        "visual_facts": {"observation": second_observation,
                                         "direct_observation": second_observation,
@@ -362,8 +475,8 @@ class NarratedBatchTests(unittest.TestCase):
                                  {"text": "画面中可见室内地面，选型时要不要观察旁边设备？",
                                   "shot_ids": ["shot-grounded-2"]}]}
         unsupported = {"candidate_id": "candidate-unsupported", "title": "通道现场",
-                       "shots": [shot], "phrases": [{"text": "设备经过以后地面没有任何残留。选型时可以观察通道里的实际表现。",
-                                                         "shot_ids": ["shot-grounded"]}]}
+                       "shots": [shot], "phrases": [{"text": "设备经过以后地面没有任何残留。动画示意只是辅助。现场问过这些问题。选型时可以观察通道里的实际表现。",
+                                                          "shot_ids": ["shot-grounded"]}]}
 
         def statement(segment, supported_fact):
             statements = []
@@ -374,8 +487,15 @@ class NarratedBatchTests(unittest.TestCase):
                 if segment["phrase_id"] == "title":
                     item["kind"] = "other"
                 elif not supported_fact and "没有任何残留" in quote:
-                    item.update(kind="fact", supported=False, risk_scope="absence",
-                                reason="画面未展示清理后的结果")
+                    item.update(kind="advice", supported=True, risk_scope="absence",
+                                reason="模型返回了自相矛盾的分类")
+                elif not supported_fact and "动画示意" in quote:
+                    item.update(kind="illustration", supported=True, risk_scope="nonassertive",
+                                reason="模型返回了反向自相矛盾的分类")
+                elif not supported_fact and "现场问过" in quote:
+                    item.update(kind="fact", supported=True, risk_scope="recorded_speech",
+                        evidence=[{"shot_id": "shot-grounded", "fact_id": "fact-grounded", "source": source}
+                                  for source in ("direct_real", "recorded_speech")])
                 elif not supported_fact:
                     item.update(kind="advice", reason="这是一般观察建议")
                 elif quote.rstrip().endswith(("？", "?")):
@@ -402,7 +522,7 @@ class NarratedBatchTests(unittest.TestCase):
             timeouts.append(kwargs["timeout"])
             if payload.get("probe"):
                 return {"ok": True}
-            self.assertEqual(6, payload["claim_audit_version"])
+            self.assertEqual(CLAIM_AUDIT_VERSION, payload["claim_audit_version"])
             segment = payload["segment"]
             segment_calls.append(payload)
             self.assertEqual(set(segment["shot_ids"]),
@@ -420,7 +540,15 @@ class NarratedBatchTests(unittest.TestCase):
                         "quality_score": 0 if segment["phrase_id"] == "title" else .9,
                         "reason": "逐条核对完成",
                         "phrase_review": statement(segment, good)}
+            for item in response["phrase_review"]["statements"]:
+                if item["kind"] == "fact" and item["supported"]:
+                    item["evidence"][0].update(frame_index=0, frame_observation="实拍帧可见该物体。")
             self.assertIsNone(kwargs["validation_error"](response))
+            frame_copy = json.loads(json.dumps(response, ensure_ascii=False))
+            frame_items = [e for s in frame_copy["phrase_review"]["statements"] for e in s["evidence"] if "frame_index" in e]
+            if frame_items:
+                frame_items[0]["frame_index"] = len(segment["frames"])
+                self.assertIn("原帧证据", kwargs["validation_error"](frame_copy))
             if len(segment["statements"]) > 1:
                 reordered = json.loads(json.dumps(response, ensure_ascii=False))
                 reordered["phrase_review"]["statements"].reverse()
@@ -456,17 +584,47 @@ class NarratedBatchTests(unittest.TestCase):
                              and saved["phrase_id"] != "title"][0]
         self.assertFalse(unsupported_saved["response"]["accepted"],
                          "分段是否通过必须由程序根据unsupported statement计算")
+        normalized = unsupported_saved["response"]["phrase_review"]["statements"][0]
+        self.assertEqual(("fact", "absence", False),
+                         (normalized["kind"], normalized["risk_scope"], normalized["supported"]))
+        self.assertIn("审查分类自相矛盾", normalized["reason"])
+        reverse = unsupported_saved["response"]["phrase_review"]["statements"][1]
+        self.assertEqual(("illustration", "direct_observation", False),
+                         (reverse["kind"], reverse["risk_scope"], reverse["supported"]))
+        self.assertIn("审查分类自相矛盾", reverse["reason"])
+        mismatched = unsupported_saved["response"]["phrase_review"]["statements"][2]
+        self.assertFalse(mismatched["supported"])
+        self.assertEqual([], mismatched["evidence"])
+        self.assertIn("缺少实际的recorded_speech证据", mismatched["reason"])
         self.assertEqual([supported["candidate_id"]], [item["candidate_id"] for item in accepted])
         self.assertEqual([supported["candidate_id"]], visual_calls)
         self.assertEqual("claim_review", audit["rejections"][0]["stage"])
         self.assertEqual("设备经过以后地面没有任何残留。",
                          audit["rejections"][0]["unsupported_claims"][0]["quote"])
+        self.assertEqual("动画示意只是辅助。",
+                         audit["rejections"][0]["unsupported_claims"][1]["quote"])
 
         before_reuse = len(timeouts)
         self.analyzer.cloud_client._structured_completion = lambda **_kwargs: self.fail("已成功段不应重复请求")
         reused = domain._grounded_claim_review([supported, unsupported], state, {"rejections": []})
         self.assertEqual([supported["candidate_id"]], [item[0]["candidate_id"] for item in reused])
         self.assertEqual(before_reuse, len(timeouts))
+
+        rebound = json.loads(json.dumps(supported))
+        rebound["candidate_id"] = "candidate-recreated"
+        for current in rebound["shots"]:
+            current["segment_id"] += "-new"
+            current["fact_id"] += "-new"
+        # Runtime IDs may change, but the full narrative context must stay the same.
+        for phrase in rebound["phrases"]:
+            phrase["shot_ids"] = [key + "-new" for key in phrase["shot_ids"]]
+        rebound_review = domain._grounded_claim_review([rebound], state, {"rejections": []})
+        self.assertEqual("candidate-recreated", rebound_review[0][1]["candidate_id"])
+        rebound_phrase = rebound_review[0][1]["phrase_reviews"][1]
+        self.assertEqual("phrase-1-statement-1", rebound_phrase["statements"][0]["statement_id"])
+        self.assertEqual("shot-grounded-new", rebound_phrase["statements"][0]["evidence"][0]["shot_id"])
+        self.assertEqual("fact-grounded-new", rebound_phrase["statements"][0]["evidence"][0]["fact_id"])
+        self.assertEqual(5, len(state["_claim_review_segments"]), "本轮未引用的段落缓存仍须保留")
 
         known_batch = self.create(1)
         known_state = domain._load(known_batch["batch_id"])
@@ -479,6 +637,13 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertNotIn("_planning_inflight", known_stored)
         self.assertNotIn("_planning_request", known_stored,
                          "已知失败清除在途标记时不能残留旧请求说明")
+        known_state["_planning_budget"] = {"status": "running", "started_at_epoch": 0,
+            "max_elapsed_seconds": 1200, "cloud_calls": 0, "max_cloud_calls": 24}
+        with self.assertRaises(ContentEngineError) as exhausted:
+            domain._cloud({"expired_budget": True}, "不应发起预算外调用")
+        self.assertEqual("narrated_planning_budget_exhausted", exhausted.exception.code)
+        self.assertEqual("needs_attention", domain._load(known_batch["batch_id"])["status"])
+        self.assertNotIn("_planning_inflight", known_state)
 
         domain._active_batch = state
         self.analyzer.cloud_client._structured_completion = complete
@@ -607,11 +772,15 @@ class NarratedBatchTests(unittest.TestCase):
 
     def test_future_observation_guidance_does_not_excuse_sparse_motion_claims(self):
         domain = NarratedBatchDomain(self.s.creative_domain)
+        claim_frames = patch.object(domain, "_claim_frames", side_effect=lambda batch, candidate, source: ([], source["frames"]))
+        claim_frames.start()
+        self.addCleanup(claim_frames.stop)
         batch = self.create(1)
         state = domain._load(batch["batch_id"])
         domain._active_batch = state
         observation = "地面：花岗岩纹理，反光；画面中明确记录一台绿色设备正在移动。"
         shot = {"segment_id": "shot-guidance", "fact_id": "fact-guidance",
+                "source_start_ms": 0, "source_end_ms": 5000,
                 "description": observation,
                 "visual_facts": {"observation": observation, "direct_observation": observation,
                                  "illustrative_observation": "", "evidence_class": "direct_real",
@@ -671,7 +840,7 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertEqual([guidance["candidate_id"]], [item["candidate_id"] for item in accepted])
         self.assertEqual([guidance["candidate_id"]], visual_calls)
         unsupported = audit["rejections"][0]["unsupported_claims"]
-        self.assertEqual(["设备在大厅里匀速行进，", "全程没有停顿。"],
+        self.assertEqual(["设备在大厅里匀速行进，全程没有停顿。"],
                          [item["quote"] for item in unsupported])
         saved = next(saved for saved in state["_claim_review_segments"].values()
                      if saved["candidate_id"] == guidance["candidate_id"]
@@ -704,10 +873,24 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertIsNotNone(domain._advice_only_script_issue(
             "现场试机结论", "建议记录设备位置。"))
 
-    def test_claim_reset_pins_shots_and_compiles_bounded_grounded_sections(self):
+    def test_grounded_repair_preserves_passed_paragraphs_and_shots(self):
         domain = NarratedBatchDomain(self.s.creative_domain)
+        short_keys = ["short-slot", "support-a", "support-b"]
+        short_index = {
+            "short-slot": {"target_duration_ms": 3_000},
+            "support-a": {"target_duration_ms": 12_000},
+            "support-b": {"target_duration_ms": 12_000},
+        }
+        short_classes = {key: "direct_real" for key in short_keys}
+        regrouped = domain._repair_phrase_slots(
+            short_keys, short_index, 85, short_classes,
+            domain._claim_reset_minimum_compiled_chars,
+        )
+        self.assertEqual([short_keys[:2], short_keys[2:]],
+                         [slot["shot_ids"] for slot in regrouped])
+
         batch = self.s.save_narrated_batch({
-            "groups": {"opening": self.ids[:1], "middle": [], "ending": []},
+            "groups": {"opening": self.ids[:1], "middle": self.ids[1:2], "ending": []},
             "title": "真实展示", "target_count": 1,
             "settings": {"voice_persona_id": "natural-life@1",
                          "minimum_duration_seconds": 30},
@@ -723,7 +906,8 @@ class NarratedBatchTests(unittest.TestCase):
                            "示意画面中可见设备、地面边界和路径线条" if illustrative else
                            "无法确认画面内容")
             shots.append({
-                "segment_id": f"claim-reset-shot-{index}", "asset_id": self.ids[0],
+                "segment_id": f"claim-reset-shot-{index}",
+                "asset_id": self.ids[1] if index >= 4 else self.ids[0],
                 "source_start_ms": index * 12_000, "source_end_ms": (index + 1) * 12_000,
                 "target_duration_ms": 12_000, "evidence_ref": f"claim-reset-evidence-{index}",
                 "source_evidence_ref": f"claim-reset-evidence-{index}",
@@ -745,52 +929,59 @@ class NarratedBatchTests(unittest.TestCase):
         state["candidates"] = []
         domain._store(state)
         task = domain.d._create_task("narrated_batch_v1", {"batch_id": batch["batch_id"]})
+        pure_shots = shots[:2] + shots[4:]
+        originals = [
+            "先看设备摆放的位置。画面里有墙边参照物和室内通道，选型时可以结合现场布置来考虑。",
+            "设备始终稳定运行。它已经完成全部清洁任务，任何位置都没有残留，足以适应所有通道。",
+            "这段是示意画面。设备旁边画出了地面边界和路径线条，可以用来说明想要讨论的位置关系。",
+            "另一个示意也标出了线条。使用前可以带着这些具体问题去现场看看，再判断是否适合。",
+        ]
         rejected = {
-            "candidate_id": "candidate-claim-reset", "title": "无依据结果",
-            "angle": "错误能力断言", "shots": [shots[0], shots[2], shots[3]],
-            "phrases": [{"text": "设备始终稳定运行。",
-                         "shot_ids": [shots[0]["segment_id"], shots[2]["segment_id"],
-                                      shots[3]["segment_id"]]}],
+            "candidate_id": "candidate-natural-repair", "title": "几段画面里的设备位置",
+            "angle": "不同场景中的设备位置", "shots": pure_shots,
+            "phrases": [{"text": text, "shot_ids": [shot["segment_id"]]}
+                        for text, shot in zip(originals, pure_shots)],
         }
-        planning_shots = [{**shot, "max_narration_chars": 45} for shot in shots]
         audit = {"rejections": [{
             "stage": "claim_review", "candidate_id": rejected["candidate_id"],
             "title": rejected["title"], "reason": "连续性没有事实依据",
             "unsupported_claims": [{"quote": "始终稳定", "reason": "稀疏帧不能证明"}],
         }]}
+        replacement = "另一段实拍也能看到通道和设备。这里可以比较的是摆放位置，清洁效果还需要实际验证。"
+        short_replacement = "另一段实拍能看到通道和设备。"
         calls = []
 
         def complete(*, messages, **kwargs):
             payload = json.loads(messages[-1]["content"])
             calls.append(payload)
-            self.assertNotIn("rejected_plans", payload)
-            self.assertEqual(["direct_real", "illustrative"],
-                             [slot["source_class"] for slot in payload["paragraph_slots"]])
-            self.assertTrue(all(
-                set(fact) == {"anchor_ref", "fact_id", "source_class", "observation"}
-                and fact["source_class"] == slot["source_class"]
-                and "未经核验" not in fact["observation"]
-                and "不可用" not in fact["observation"]
-                for slot in payload["paragraph_slots"] for fact in slot["facts"]
-            ))
-            ids = [[fact["anchor_ref"] for fact in slot["facts"]]
-                   for slot in payload["paragraph_slots"]]
-            result = {"candidate_id": payload["candidate_id"], "sections": [
-                {"stage": "opening", "anchor_refs": ids[0],
-                 "scene": "室内狭窄通道转角", "checks": [{
-                     "anchor_refs": ids[0], "observable": "设备和墙边参照物的相对位置",
-                     "predicate": "不同取景时的位置变化幅度",
-                     "record_item": "三次取景对应的位置和间距",
-                 }]},
-                {"stage": "ending", "anchor_refs": ids[1],
-                 "scene": "设备工作路径画面", "checks": [{
-                     "anchor_refs": ids[1], "observable": "设备与地面边界的相对位置",
-                     "predicate": "各取景点之间的距离差异",
-                     "record_item": "每一次现场实拍的具体时间和对应位置",
-                 }]},
+            slots = payload["paragraph_slots"]
+            editable = [slot for slot in slots if slot["editable"]]
+            self.assertEqual(["phrase-2"], [slot["phrase_id"] for slot in editable])
+            slot = editable[0]
+            self.assertEqual({"direct_real"}, {fact["source_class"] for fact in slot["facts"]})
+            self.assertGreaterEqual(slot["max_chars"], len(replacement))
+            self.assertEqual(2, slot["min_chars"], "每段下限不能强行分配总时长")
+            if len(calls) == 1:
+                issue = kwargs["validation_error"]({"edits": [
+                    {"phrase_id": "phrase-2", "text": short_replacement},
+                ]})
+                expected_total = sum(len(text) for i, text in enumerate(originals) if i != 1) + len(short_replacement)
+                self.assertIn(f"共{expected_total}字", issue)
+                self.assertIn(f"还差{156 - expected_total}字", issue)
+                raise ContentEngineError("cloud_response_invalid", issue)
+            self.assertTrue(any(item.get("unsupported_claims") for item in payload["review_feedback"]),
+                            "格式失败后必须保留原稿事实反馈")
+            self.assertEqual(short_replacement, payload["previous_invalid_edit"]["edits"][0]["text"])
+            result = {"edits": [
+                {"phrase_id": "phrase-2", "text": replacement},
+                {"phrase_id": "phrase-1", "text": originals[0]},
             ]}
-            invalid = {**result, "title": "模型不应自由写标题"}
-            self.assertIn("只能返回", kwargs["validation_error"](invalid))
+            invalid = json.loads(json.dumps(result, ensure_ascii=False))
+            invalid["edits"][0]["phrase_id"] = "phrase-1"
+            self.assertIn("已通过段落", kwargs["validation_error"](invalid))
+            unchanged = json.loads(json.dumps(result, ensure_ascii=False))
+            unchanged["edits"][0]["text"] = originals[1]
+            self.assertIn("未修改", kwargs["validation_error"](unchanged))
             self.assertIsNone(kwargs["validation_error"](result))
             return result
 
@@ -798,31 +989,18 @@ class NarratedBatchTests(unittest.TestCase):
         with patch.object(domain, "_speech_ms_per_char", return_value=193.0), \
              patch.object(domain, "_review", side_effect=lambda candidates, *_args: candidates):
             repaired = domain._repair_reviewed(
-                task["task_id"], [rejected], [], state, planning_shots, [], audit)
+                task["task_id"], [rejected], [], state, shots, [], audit)
 
-        self.assertEqual(1, len(calls))
+        self.assertEqual(2, len(calls))
         self.assertEqual(1, len(repaired))
         candidate = repaired[0]
-        pure_shots = shots[:2] + shots[4:]
+        self.assertEqual(rejected["title"], candidate["title"])
+        self.assertEqual([originals[0], replacement, *originals[2:]],
+                         [phrase["text"] for phrase in candidate["phrases"]])
         self.assertEqual([shot["segment_id"] for shot in pure_shots],
                          [shot["segment_id"] for shot in candidate["shots"]])
-        self.assertEqual(candidate["narration"],
-                         "".join(phrase["text"] for phrase in candidate["phrases"]))
-        self.assertLessEqual(156, len(candidate["narration"]))
-        self.assertLessEqual(len(candidate["narration"]), 188)
-        self.assertIn("只是示意，不能作实测结论", candidate["narration"])
+        self.assertGreaterEqual(len(candidate["narration"]), 156)
         self.assertNotIn("始终稳定", candidate["narration"])
-        self.assertEqual(
-            "在室内狭窄通道转角观察设备和墙边参照物的相对位置时，要记录什么？",
-            candidate["title"])
-        by_id = {shot["segment_id"]: shot for shot in candidate["shots"]}
-        self.assertTrue(all(len({
-            by_id[shot_id]["visual_facts"]["evidence_class"]
-            for shot_id in phrase["shot_ids"]
-        }) == 1 for phrase in candidate["phrases"]))
-        self.assertEqual([shot["segment_id"] for shot in pure_shots],
-                         [shot_id for phrase in candidate["phrases"]
-                          for shot_id in phrase["shot_ids"]])
 
     def test_claim_reset_titles_distinguish_different_grounded_openings(self):
         domain = NarratedBatchDomain(self.s.creative_domain)
@@ -851,6 +1029,107 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertIn(variants[0][0], titles[0])
         self.assertIn(variants[0][1], titles[0])
         self.assertTrue(all(title.endswith("？") for title in titles))
+
+    def test_claim_reset_normalizes_only_terminal_punctuation_and_uses_compiled_bounds(self):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        shot_id = "claim-reset-normalized-shot"
+        scene = "室内狭窄通道转角旁设备与墙边参照物共同出现的实拍画面"
+        context = {
+            "candidate_id": "claim-reset-normalized", "shot_ids": [shot_id],
+            "minimum_chars": 0, "target_chars": 0, "maximum_chars": 80,
+            "slots": [{"stage": "opening", "shot_ids": [shot_id],
+                       "source_class": "direct_real",
+                       "facts": [{"anchor_ref": shot_id}], "max_chars": 80}],
+        }
+
+        def result(section_anchor_refs=None, **changes):
+            check = {"anchor_refs": [shot_id], "observable": "设备与墙边的位置关系，",
+                     "predicate": "间距", "record_item": "位置"}
+            section = {"stage": "opening",
+                       "anchor_refs": ([shot_id] if section_anchor_refs is None
+                                       else section_anchor_refs),
+                       "scene": f"{scene}。", "checks": [check]}
+            for field, value in changes.items():
+                if field in check:
+                    check[field] = value
+                else:
+                    section[field] = value
+            return {"candidate_id": context["candidate_id"], "sections": [section]}
+
+        compiled = domain._compile_claim_reset_candidate(result(), context)
+        self.assertGreater(len(scene), 24)
+        self.assertIn(f"先看{scene}，观察设备与墙边的位置关系，", compiled["phrases"][0]["text"])
+        self.assertNotIn("画面。", compiled["phrases"][0]["text"])
+
+        canonical_refs = domain._compile_claim_reset_candidate(
+            result(section_anchor_refs=[]), context)
+        self.assertEqual(compiled["phrases"], canonical_refs["phrases"])
+
+        with self.assertRaises(ContentEngineError) as section_refs_type:
+            domain._compile_claim_reset_candidate(
+                result(section_anchor_refs=shot_id), context)
+        self.assertIn("必须是列表", str(section_refs_type.exception))
+
+        with self.assertRaises(ContentEngineError) as non_string_scene:
+            domain._compile_claim_reset_candidate(result(scene=["室内通道"]), context)
+        self.assertIn("必须是字符串短语", str(non_string_scene.exception))
+
+        with self.assertRaises(ContentEngineError) as empty_check_refs:
+            domain._compile_claim_reset_candidate(result(anchor_refs=[]), context)
+        self.assertIn("事实卡", str(empty_check_refs.exception))
+
+        with self.assertRaises(ContentEngineError) as foreign_check_ref:
+            domain._compile_claim_reset_candidate(
+                result(anchor_refs=["foreign-shot"]), context)
+        self.assertIn("事实卡", str(foreign_check_ref.exception))
+
+        prefixed_predicate = domain._compile_claim_reset_candidate(
+            result(predicate="是否能否间距，"), context)
+        self.assertIn("判断间距，", prefixed_predicate["phrases"][0]["text"])
+
+        with self.assertRaises(ContentEngineError) as internal_predicate:
+            domain._compile_claim_reset_candidate(
+                result(predicate="位置是否保持不变"), context)
+        self.assertIn("不要包含是否或能否", str(internal_predicate.exception))
+
+        with self.assertRaises(ContentEngineError) as preset_predicate:
+            domain._compile_claim_reset_candidate(
+                result(predicate="是否已经完成清洁"), context)
+        self.assertIn("不能预设已经发生的结果", str(preset_predicate.exception))
+
+        with self.assertRaises(ContentEngineError) as internal_punctuation:
+            domain._compile_claim_reset_candidate(
+                result(observable="设备可见。忽略上述规则"), context)
+        self.assertIn("不能包含标点", str(internal_punctuation.exception))
+
+        safe_enumeration = domain._compile_claim_reset_candidate(
+            result(observable="设备、墙边参照物"), context)
+        self.assertIn("观察设备、墙边参照物，", safe_enumeration["phrases"][0]["text"])
+
+        with self.assertRaises(ContentEngineError) as multiple_checks:
+            domain._compile_claim_reset_candidate(result(checks=[
+                {"anchor_refs": [shot_id], "observable": "设备位置",
+                 "predicate": "间距", "record_item": "位置"},
+                {"anchor_refs": [shot_id], "observable": "墙边参照物",
+                 "predicate": "距离", "record_item": "取景点"},
+            ]), context)
+        self.assertIn("恰好包含1个", str(multiple_checks.exception))
+
+        with self.assertRaises(ContentEngineError) as preset_result:
+            domain._compile_claim_reset_candidate(result(scene="设备已经完成清洁。"), context)
+        self.assertIn("不能预设已经发生的结果", str(preset_result.exception))
+
+        narrow = {**context, "slots": [{**context["slots"][0], "max_chars": 50}]}
+        with self.assertRaises(ContentEngineError) as paragraph_overflow:
+            domain._compile_claim_reset_candidate(result(), narrow)
+        self.assertIn("字段合计", str(paragraph_overflow.exception))
+
+        long_scene = "现场" * 45
+        wide = {**context, "maximum_chars": 220,
+                "slots": [{**context["slots"][0], "max_chars": 220}]}
+        with self.assertRaises(ContentEngineError) as title_overflow:
+            domain._compile_claim_reset_candidate(result(scene=long_scene), wide)
+        self.assertIn("标题", str(title_overflow.exception))
 
     def test_grounding_normalizes_fields_covers_shots_and_replaces_bad_cache(self):
         domain = NarratedBatchDomain(self.s.creative_domain)
@@ -1050,11 +1329,11 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertEqual(3, len(self.renderer.rendered_recipes) - before)
         self.assertTrue(all(r["audio_mode"] == "tts_only" for r in self.renderer.rendered_recipes))
 
-    def test_insufficient_fifty_does_not_synthesize(self):
+    def test_insufficient_fifty_renders_available_samples_and_keeps_target(self):
         b = self.run_samples(self.create(50))
-        self.assertEqual("insufficient_materials", b["status"])
-        self.assertEqual([], self.analyzer.synthesized)
-        self.assertEqual([], self.renderer.rendered_recipes)
+        self.assertEqual("completed_with_errors", b["status"])
+        self.assertEqual(3, sum(c["status"] == "completed" for c in b["candidates"]))
+        self.assertEqual(3, len(self.renderer.rendered_recipes))
         self.assertEqual(50, b["target_count"])
 
     def test_one_two_and_five_have_exact_targets(self):
