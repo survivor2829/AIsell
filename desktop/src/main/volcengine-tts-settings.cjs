@@ -3,6 +3,8 @@ const path = require("node:path");
 const { constants, generateKeyPairSync, privateDecrypt, randomBytes } = require("node:crypto");
 const { writeFileAtomic } = require("./atomic-file.cjs");
 const CHANNELS = Object.freeze({ status: "content-engine:volcengine-tts-status", encryption: "content-engine:volcengine-tts-encryption", save: "content-engine:save-volcengine-tts-key" });
+const ARK_CHANNELS = Object.freeze({ status: "content-engine:volcengine-ark-status", encryption: "content-engine:volcengine-ark-encryption", save: "content-engine:save-volcengine-ark-key" });
+const ASR_CHANNELS = Object.freeze({ status: "content-engine:volcengine-asr-status", encryption: "content-engine:volcengine-asr-encryption", save: "content-engine:save-volcengine-asr-credentials" });
 function failure(code, message) { return Object.assign(new Error(message), { code }); }
 
 function createVolcengineTtsKeyStore({ rootDir, safeStorage, filename: basename = "volcengine-tts-api-key.bin" }) {
@@ -86,4 +88,4 @@ function registerVolcengineTtsSettings({ handle, store, controller, assertKeys, 
     finally { plaintext?.fill(0); }
   });
 }
-module.exports = { CHANNELS, createVolcengineTtsKeyStore, createVolcengineAsrStore, registerVolcengineTtsSettings };
+module.exports = { CHANNELS, ARK_CHANNELS, ASR_CHANNELS, createVolcengineTtsKeyStore, createVolcengineAsrStore, registerVolcengineTtsSettings };

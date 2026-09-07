@@ -548,12 +548,6 @@ export default function App() {
   const [contactSyncError, setContactSyncError] = useState("");
   const [messageDraft, setMessageDraft] = useState(DEFAULT_TOUCH_MESSAGE);
   const [deepSeekConfigured, setDeepSeekConfigured] = useState(false);
-  const addLog = (_action: string, _result: string) => undefined;
-
-  useEffect(() => {
-    setMessageDraft((current) => current || DEFAULT_TOUCH_MESSAGE);
-  }, []);
-
   useEffect(() => {
     if (!window.xiaoxiLicenseAuth) {
       setLicense({ authorized: false, code: "license_service_unavailable", error: "当前版本未连接授权服务" });
@@ -607,7 +601,6 @@ export default function App() {
       setContactRows(result.contacts);
     }
     setContactSyncError(result.error ?? "");
-    if (result.error) addLog("同步微信联系人", result.error);
   };
 
   const applyTouchTaskResult = (result: TouchTaskResult) => {
@@ -615,7 +608,6 @@ export default function App() {
       const unfinished = (result.task.status === "running" || result.task.status === "paused") && result.task.current_index < result.task.total;
       if (unfinished && result.task.script.trim()) setMessageDraft(result.task.script);
     }
-    if (result.error) addLog("启动程序", result.error);
   };
 
   const callContactSync = async (action: string, run: () => Promise<ContactSyncResult>) => {
@@ -686,15 +678,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!window.xiaoxiTouchTask) return undefined;
-    void window.xiaoxiTouchTask.status().then(applyTouchTaskResult).catch(() => undefined);
-    return window.xiaoxiTouchTask.onUpdate(applyTouchTaskResult);
+    const api = window.xiaoxiTouchTask;
+    if (!api) return;
+    let active = true;
+    let receivedUpdate = false;
+    const unsubscribe = api.onUpdate((result) => {
+      if (!active) return;
+      receivedUpdate = true;
+      applyTouchTaskResult(result);
+    });
+    void api.status().then((result) => {
+      if (active && !receivedUpdate) applyTouchTaskResult(result);
+    }).catch(() => undefined);
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
-
-  useEffect(() => {
-    if (!window.xiaoxiTouchTask || !contactRows.length) return;
-    void window.xiaoxiTouchTask.status().then(applyTouchTaskResult).catch(() => undefined);
-  }, [contactRows]);
 
 
 

@@ -18,7 +18,10 @@ const result = spawnSync(process.execPath, [viteCli, "build"], {
   }
 });
 
-if (result.status) process.exit(result.status);
+if (result.status !== 0) {
+  console.error(result.error?.message || `Renderer build failed (${result.signal || result.status})`);
+  process.exit(result.status || 1);
+}
 
 const outputDir = path.join(__dirname, "..", edition === "development" ? "dist-development" : edition === "pilot" ? "dist-pilot" : "dist");
 fs.writeFileSync(path.join(outputDir, "build-edition.json"), `${JSON.stringify({ edition, buildId }, null, 2)}\n`);

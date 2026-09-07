@@ -8,7 +8,7 @@ const {
 } = require("node:crypto");
 const { diagnostics } = require("./diagnostics.cjs");
 const { CHANNELS: BATCH_CHANNELS, ERRORS: BATCH_ERRORS, registerNarratedBatchIpc } = require("./narrated-batch-ipc.cjs");
-const { registerVolcengineTtsSettings } = require("./volcengine-tts-settings.cjs");
+const { CHANNELS: VOLCENGINE_TTS_CHANNELS, ARK_CHANNELS, ASR_CHANNELS, registerVolcengineTtsSettings } = require("./volcengine-tts-settings.cjs");
 
 const CONTENT_ENGINE_CHANNELS = Object.freeze({
   ...Object.fromEntries(Object.entries(BATCH_CHANNELS).map(([name, channel]) => [`batch_${name}`, channel])),
@@ -34,6 +34,15 @@ const CONTENT_ENGINE_CHANNELS = Object.freeze({
   settingsStatus: "content-engine:settings-status",
   chooseCacheDirectory: "content-engine:choose-cache-directory",
   updateCacheLimit: "content-engine:update-cache-limit",
+  volcengineTtsStatus: VOLCENGINE_TTS_CHANNELS.status,
+  volcengineTtsEncryption: VOLCENGINE_TTS_CHANNELS.encryption,
+  saveVolcengineTtsKey: VOLCENGINE_TTS_CHANNELS.save,
+  volcengineArkStatus: ARK_CHANNELS.status,
+  volcengineArkEncryption: ARK_CHANNELS.encryption,
+  saveVolcengineArkKey: ARK_CHANNELS.save,
+  volcengineAsrStatus: ASR_CHANNELS.status,
+  volcengineAsrEncryption: ASR_CHANNELS.encryption,
+  saveVolcengineAsrCredentials: ASR_CHANNELS.save,
   bailianKeyStatus: "content-engine:bailian-key-status",
   bailianKeyEncryption: "content-engine:bailian-key-encryption",
   saveBailianKey: "content-engine:save-bailian-key",
@@ -2468,8 +2477,8 @@ function registerContentEngineIpc(options = {}) {
     return { cacheLimitGb: limitGb };
   });
   registerVolcengineTtsSettings({ handle, store: options.volcengineTtsKeyStore, controller, assertKeys, invalid });
-  registerVolcengineTtsSettings({ handle, store: options.volcengineAsrStore, controller, assertKeys, invalid, modulusLength: 3072, channels: { status: "content-engine:volcengine-asr-status", encryption: "content-engine:volcengine-asr-encryption", save: "content-engine:save-volcengine-asr-credentials" } });
-  registerVolcengineTtsSettings({ handle, store: options.volcengineArkKeyStore, controller, assertKeys, invalid, channels: { status: "content-engine:volcengine-ark-status", encryption: "content-engine:volcengine-ark-encryption", save: "content-engine:save-volcengine-ark-key" } });
+  registerVolcengineTtsSettings({ handle, store: options.volcengineAsrStore, controller, assertKeys, invalid, modulusLength: 3072, channels: ASR_CHANNELS });
+  registerVolcengineTtsSettings({ handle, store: options.volcengineArkKeyStore, controller, assertKeys, invalid, channels: ARK_CHANNELS });
   handle(CONTENT_ENGINE_CHANNELS.bailianKeyStatus, async () => {
     if (!bailianKeyStore) invalid("CONTENT_ENGINE_CAPABILITY_UNAVAILABLE");
     return publicBailianStatus(bailianKeyStore.status());

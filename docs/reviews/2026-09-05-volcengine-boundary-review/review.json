@@ -1,0 +1,58 @@
+{
+  "mode": "agent",
+  "status": "complete",
+  "verdict": "Ready for local integration; live provider and listening acceptance remain unverified",
+  "actionable_findings": [],
+  "resolved_findings": [
+    {
+      "id": "VOLC-001",
+      "severity": "P2",
+      "title": "Saving a key reported success when the sidecar restart returned failed",
+      "file": "desktop/src/main/volcengine-tts-settings.cjs",
+      "line": 56,
+      "confidence": 100,
+      "first_evidence": "Before the fix, the save handler discarded controller.restart()'s {state:'failed',errorCode:'CONTENT_ENGINE_STOP_TIMEOUT'} and returned {configured:true}. An offline RSA handshake and stub-controller reproduction confirmed it.",
+      "resolution": "The caller now requires restarted.state === 'ready' and otherwise returns VOLCENGINE_TTS_RESTART_REQUIRED while preserving the already-saved key.",
+      "validation": "Repeated the same offline stub against the updated file: expected VOLCENGINE_TTS_RESTART_REQUIRED, one store write, zero network calls."
+    }
+  ],
+  "coverage": {
+    "scope": "Explicit bounded independent review of the new Volcengine TTS adapter, encrypted-key main/preload/IPC route, voice provider catalog/dispatch, and a quick music preview boundary check. Unrelated dirty work ignored.",
+    "inspected_files": [
+      "desktop/sidecars/content-engine/content_engine/volcengine_tts.py",
+      "desktop/src/main/volcengine-tts-settings.cjs",
+      "desktop/sidecars/content-engine/content_engine/creative_analysis.py",
+      "desktop/sidecars/content-engine/content_engine/creative_domain.py",
+      "desktop/sidecars/content-engine/content_engine/auto_mix_resources.py",
+      "desktop/src/main/content-engine-ipc.cjs",
+      "desktop/src/main/content-engine-sidecar.cjs",
+      "desktop/src/main/preload-api.cjs",
+      "desktop/sidecars/content-engine/content_engine/music_preview.py"
+    ],
+    "confirmed_boundaries": [
+      "Provider endpoint and model/voice routing follow the official ByteDance SSE contract; PCM is requested and wrapped as mono 16-bit 24 kHz WAV.",
+      "Only valid code 0 audio is accumulated; terminal code 20000000 is required. Malformed/truncated/transport-unknown responses do not publish output.",
+      "TTS provider makes a single request and preserves unknown outcome in the domain artifact lifecycle; no automatic resubmission path found.",
+      "API key stays encrypted on disk under Electron safeStorage and is injected into the private child environment; renderer receives status/masked suffix, encrypted IPC input only.",
+      "Voice candidates remain pending user audition/approval; missing-account state fails before a provider request.",
+      "Music preview validates the managed source digest/path and calls FFmpeg without a shell."
+    ],
+    "validation": [
+      "Read-only source tracing across provider, domain/cache, IPC/preload and sidecar environment boundaries.",
+      "Offline RSA/key-save handler reproduction before and after caller's restart-state fix.",
+      "Earlier bounded adapter protocol checks covered successful PCM/WAV framing, terminal omission, rejected provider code, and no-account preflight."
+    ],
+    "limitations": [
+      "No Volcengine account, API calls, billing or actual voice/listening verification.",
+      "No new music license or user-audition acceptance claim.",
+      "No packaged-runtime or complete application build verification by this reviewer; caller owns those checks.",
+      "This is a bounded single independent review under the caller's parallel workflow, not the full multi-persona or cross-model ce-code-review pipeline.",
+      "No broad review of unrelated dirty workspace changes."
+    ],
+    "pipeline_complete": false
+  },
+  "requirement_evaluation": {
+    "source": "Approved plan plus explicit current-turn instruction to finish interfaces/flow first because the user has no Volcengine account yet.",
+    "result": "Reviewed boundaries support that limited delivery. Live samples and final voice/music selection must remain pending."
+  }
+}

@@ -1,5 +1,6 @@
 import { Check, Pause, Play, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { subscribeToStatus } from "./status-subscription";
 import { WorkflowRecipients, WorkflowToggle, workflowStatusText, type WorkflowController } from "./WechatWorkflow";
 
 type ScanHealth = "unknown" | "checking" | "healthy" | "warning" | "degraded" | "waiting";
@@ -413,26 +414,16 @@ export function AutoReply({ workflow }: { workflow?: WorkflowController } = {}) 
     else if (clearOperationError) setError("");
   };
 
-  const refresh = () => {
-    if (!window.xiaoxiAutoReply) return setPollError("当前版本未连接自动回复执行器");
-    void window.xiaoxiAutoReply.status().then((result) => {
+  useEffect(() => {
+    const api = window.xiaoxiAutoReply;
+    if (!api) {
+      setPollError("当前版本未连接自动回复执行器");
+      return;
+    }
+    return subscribeToStatus(api, (result) => {
       if (result.state) setState((current) => ({ ...current, ...result.state }));
       setPollError(result.ok ? "" : result.error || "读取自动回复状态失败");
-    }).catch(() => setPollError("读取自动回复状态失败"));
-  };
-
-  useEffect(() => {
-    const unsubscribe = window.xiaoxiAutoReply?.onUpdate?.((result) => {
-      if (result.state) setState((current) => ({ ...current, ...result.state }));
-      if (!result.ok) setPollError(result.error || "读取自动回复状态失败");
-      else setPollError("");
-    });
-    refresh();
-    const timer = window.setInterval(refresh, 15_000);
-    return () => {
-      unsubscribe?.();
-      window.clearInterval(timer);
-    };
+    }, () => setPollError("读取自动回复状态失败"), 15_000);
   }, []);
 
   const run = (operation: () => Promise<AutoReplyResult>, failure: string, onSuccess?: () => void) => {
@@ -664,33 +655,8 @@ export function FloatingAutoReplyWindow() {
       setError("当前版本未连接自动回复执行器");
       return undefined;
     }
-    let pushedRevision = 0;
-    let refreshRevision = 0;
-    const applyPushedResult = (result: AutoReplyResult) => {
-      pushedRevision += 1;
-      applyResult(result);
-    };
-    const refresh = () => {
-      const requestRevision = ++refreshRevision;
-      const startingPushRevision = pushedRevision;
-      void window.xiaoxiAutoReply!.status()
-        .then((result) => {
-          if (requestRevision !== refreshRevision || startingPushRevision !== pushedRevision) return;
-          applyResult(result);
-        })
-        .catch(() => {
-          if (requestRevision === refreshRevision && startingPushRevision === pushedRevision) {
-            setError("读取自动回复状态失败");
-          }
-        });
-    };
-    const unsubscribe = window.xiaoxiAutoReply.onUpdate?.(applyPushedResult);
-    refresh();
-    const refreshTimer = window.setInterval(refresh, 30_000);
-    return () => {
-      unsubscribe?.();
-      window.clearInterval(refreshTimer);
-    };
+    return subscribeToStatus(window.xiaoxiAutoReply, applyResult,
+      () => setError("读取自动回复状态失败"), 30_000);
   }, []);
 
   useEffect(() => {

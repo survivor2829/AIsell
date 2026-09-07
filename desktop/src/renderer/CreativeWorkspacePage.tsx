@@ -228,7 +228,6 @@ type BrandProfile = {
 type BailianStatus = {
   configured: boolean;
   maskedKey: string;
-  apiHost: string;
   secureStorageAvailable: boolean;
   code: string;
 };
@@ -249,8 +248,7 @@ type CreativeApi = {
   };
   settings: {
     volcengineArkStatus: () => Promise<ContentResult<BailianStatus>>;
-    saveVolcengineArkKey: (payload: { apiKey: string; apiHost?: string }) => Promise<ContentResult<BailianStatus>>;
-    deleteBailianKey: () => Promise<ContentResult<BailianStatus>>;
+    saveVolcengineArkKey: (payload: { apiKey: string }) => Promise<ContentResult<BailianStatus>>;
   };
   creative: {
     analyzeAssets: (payload: { assetIds: string[] }) => Promise<ContentResult<Task>>;
@@ -490,7 +488,6 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
   const [notice, setNotice] = useState<{ tone: "error" | "success" | "info"; text: string } | null>(null);
   const [keyStatus, setKeyStatus] = useState<BailianStatus | null>(null);
   const [keyInput, setKeyInput] = useState("");
-  const [apiHostInput, setApiHostInput] = useState("");
   const taskMutationRef = useRef<string>("");
   const taskGenerationRef = useRef(0);
   const activeTaskIdRef = useRef("");
@@ -660,7 +657,6 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
     }
     if (bailian.ok && bailian.data) {
       setKeyStatus(bailian.data);
-      setApiHostInput(bailian.data.apiHost || "");
     }
     setPackagingPresets(presets.data?.items || []);
     if (brands.ok && brands.data) setBrandProfiles(brands.data.items);
@@ -1211,8 +1207,7 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
     if (!api || !keyInput.trim()) return;
     setBusy("key");
     const result = await api.settings.saveVolcengineArkKey({
-      apiKey: keyInput.trim(),
-      apiHost: apiHostInput.trim()
+      apiKey: keyInput.trim()
     });
     setBusy("");
     if (result.ok && result.data) {
