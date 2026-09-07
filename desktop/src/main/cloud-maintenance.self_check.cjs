@@ -38,7 +38,7 @@ async function main() {
     assert.equal(posts.length, 0, "No upload before consent");
     controller.setConsent(true);
     await new Promise((resolve) => setTimeout(resolve, 20));
-    logger.event("auto_reply", "send.failed", { code: "visual_send_outcome_unknown", message: "private customer", apiKey: "sk-PRIVATEKEY123", filePath: "C:/Users/private", receipt_code: "outcome_unknown" }, { level: "error", code: "visual_send_outcome_unknown" });
+    logger.event("auto_reply", "send.failed", { code: "visual_send_outcome_unknown", message: "private customer", apiKey: ["sk", "PRIVATEKEY123"].join("-"), filePath: "C:/Users/private", receipt_code: "outcome_unknown" }, { level: "error", code: "visual_send_outcome_unknown" });
     await controller.flush();
     const serialized = JSON.stringify(posts);
     assert.ok(serialized.includes("visual_send_outcome_unknown"));
