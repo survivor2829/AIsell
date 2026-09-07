@@ -21,7 +21,7 @@ from .auto_mix_resources import voice_preview_sample
 from .errors import ContentEngineError
 from .public_data import redact_text
 from .narration_alignment import rebind_sentence_copy
-from . import narrated_production, narrated_script_drafts
+from . import narrated_production, narrated_script_drafts, narrated_brief
 
 GROUPS = ("opening", "middle", "ending")
 LIMIT = 300
@@ -591,6 +591,19 @@ class NarratedBatchDomain:
         require(isinstance(material_context, str) and len(material_context) <= 100,
                 "invalid_narrated_settings", "素材说明请填写100字以内的活动或来源信息。")
         material_context = material_context.strip()
+        brief_version = request.get('brief_version', b.get('brief_version') if b else None)
+        require(brief_version in (None, 1), 'invalid_narrated_settings', '创作需求版本无效。')
+        brief = {}
+        for key, limit in narrated_brief.FIELDS.items():
+            if key == 'expression' and key not in request and key not in (b or {}):
+                continue
+            value = request.get(key, b.get(key, '') if b else '')
+            require(isinstance(value, str) and len(value) <= limit,
+                    'invalid_narrated_settings', f'{key}须为{limit}字以内的文字。')
+            brief[key] = value.strip()
+        if 'expression' in request:
+            # The unified text is authoritative; cleared text must not resurrect legacy claims.
+            brief.update(advantages='', customer_pain_points='')
         cta = str(request.get("cta", b["cta"] if b else ""))[:300]
         settings = request.get("settings", b.get("settings", {}) if b else {})
         require(isinstance(settings, dict) and not set(settings) - {
@@ -604,6 +617,9 @@ class NarratedBatchDomain:
         minimum = settings.get("minimum_duration_seconds", 0)
         require(type(minimum) is int and minimum >= 0,
                 "invalid_narrated_settings", "最短时长须为非负整数秒。")
+        if brief_version == 1:
+            minimum = max(30, minimum)
+            settings = {**settings, 'minimum_duration_seconds': minimum}
         if settings.get("voice_persona_id"):
             require(self.d._approved_auto_mix_voice_persona(selected_id=settings["voice_persona_id"]) is not None,
                     "auto_mix_voice_persona_approval_required", "请选择已试听批准的声音。")
@@ -621,6 +637,8 @@ class NarratedBatchDomain:
             self.db.execute("INSERT INTO narrated_batches_v1(id,project_id,state_json,updated_at) VALUES(?,?,?,?)",
                             (b["batch_id"], b["project_id"], "{}", now))
         changed = (b.get("_story_planning_version") != 2
+                   or b.get('brief_version') != brief_version
+                   or any(b.get(key, '') != value for key, value in brief.items())
                    or (b.get("settings") or {}).get("workflow_version", 1) != settings.get("workflow_version", 1)
                    or (b.get("settings") or {}).get("minimum_duration_seconds", 0) != minimum
                    or b.get("material_context", "") != material_context
@@ -641,6 +659,7 @@ class NarratedBatchDomain:
             b.update(script_options=[], selected_script_id=None, script_confirmation=None,
                      direction=None, script_confirmation_history=confirmations)
             narrated_production.clear_selection(b)
+            b.pop('brief_suggestions', None)
         if b.get("settings") != settings:
             for c in b["candidates"]:
                 if c.get("status") == "completed" and settings.get("workflow_version") == 2:
@@ -653,7 +672,8 @@ class NarratedBatchDomain:
                 b.update(script_confirmation=None, selected_script_id=None, direction=None, status="scripts_ready")
                 narrated_production.clear_selection(b)
         b.update(groups=groups, title=title, description=description, cta=cta, material_context=material_context,
-                 target_count=target, collection_id=collection_id, settings=settings)
+                 target_count=target, collection_id=collection_id, settings=settings,
+                 brief_version=brief_version, **brief)
         b["_story_planning_version"] = 2
         self.db.execute("UPDATE creative_projects SET name=?,theme=?,updated_at=? WHERE id=?",
                         (title, title, self.d._now(), b["project_id"]))
@@ -668,6 +688,8 @@ class NarratedBatchDomain:
         require(any(b["groups"].values()), "narrated_assets_missing", "请先添加素材。")
         script_workflow = (b.get("settings") or {}).get("workflow_version") == 2
         if action == "scripts":
+            require(not narrated_brief.enabled(b) or bool(b.get('target_audience')),
+                    'narrated_audience_required', '请填写这条视频想给谁看。')
             require(script_workflow, "invalid_narrated_settings", "请使用文案确认流程创建批次。")
             require(not b.get("script_confirmation"), "narrated_script_already_confirmed", "正文已确认；修改文案后再重新选择。")
             existing = b.get('script_options') or []
@@ -694,6 +716,11 @@ class NarratedBatchDomain:
         if "selections" in request:
             return narrated_production.confirm_selections(self, request)
         b = self._load(request.get("batch_id"))
+        if narrated_brief.enabled(b):
+            require('narration' not in request, 'narrated_brief_invalid', '请先保存修改后的文案，再确认制作。')
+            return narrated_production.confirm_selections(self, {
+                **request, 'selections': [{'script_id': request.get('script_id'),
+                    'revision': request.get('revision'), 'count': b.get('target_count') or 1}]})
         self._idle(b)
         require((b.get("settings") or {}).get("workflow_version") == 2,
                 "invalid_narrated_settings", "该批次使用旧版制作流程。")
@@ -772,6 +799,9 @@ class NarratedBatchDomain:
                 "保持全文达到给定最少字数与时长；不能只缩短全文导致不足最短时长。"
                 "sentences文本按顺序拼接须与该段正文完全相同，镜头引用只用本段镜头并保持顺序；不确定就省略。"
             )
+            if narrated_brief.enabled(b):
+                payload = {**payload, 'creative_brief': narrated_brief.context(b)}
+                instruction += narrated_brief.RULES
         default_timeout = getattr(cloud, "timeout_seconds", 90)
         request_timeout = max(default_timeout, 180) if frames else default_timeout
         if timeout_seconds is not None:
@@ -1956,7 +1986,9 @@ class NarratedBatchDomain:
         if b.get("_preparing_scripts"):
             require(audience and pain_point and angle, "narrated_candidate_invalid", "每份文案必须说明受众、痛点和叙事角度。")
         return {"candidate_id": self.d._new_id("narrated_candidate"), "title": title,
-                "angle": angle, "audience": audience, "pain_point": pain_point,
+                "angle": angle, "audience": b.get('target_audience') or audience, "pain_point": pain_point,
+                **({key: direction.get(key) or raw.get(key, '') for key in ('framework', 'summary')}
+                   if narrated_brief.enabled(b) else {}),
                 "narration": "".join(p["text"] for p in tracks),
                 "shots": shots, "phrases": phrases, "status": "planned", "generated_video_id": None,
                 "duration_ms": timeline["selected_duration_ms"], "revision": 1,
@@ -2002,10 +2034,17 @@ class NarratedBatchDomain:
         else:
             provenance = {key: provenance[key] for key in
                           ("authority", "snapshot_hash", "activity_label", "source_record")}
-        return {"recorded_speech": speech, "source_provenance": provenance}
+        result = {"recorded_speech": speech, "source_provenance": provenance}
+        if narrated_brief.enabled(b) and narrated_brief.expression(b):
+            row = self.db.execute('SELECT display_name FROM assets WHERE id=?', (asset_id,)).fetchone()
+            if row:
+                result['material_name'] = row['display_name']
+        return result
 
     @staticmethod
-    def _claim_source_text(fact, source):
+    def _claim_source_text(fact, source, user_context=''):
+        if source == 'user_context':
+            return user_context
         if source == "direct_real":
             return fact["direct_observation"] if fact.get("evidence_class") == "direct_real" else ""
         if source == "illustrative":
@@ -2175,12 +2214,15 @@ class NarratedBatchDomain:
                     "title": candidate["title"],
                     "paragraphs": [str(phrase.get("text") or "") for phrase in candidate["phrases"]],
                 }
+                if narrated_brief.enabled(b):
+                    segment['user_context'] = narrated_brief.expression(b)
                 segment["segment_key"] = canonical_hash({
                     "claim_audit_version": CLAIM_AUDIT_VERSION,
                     "role": "title" if segment["phrase_id"] == "title" else "narration",
                     "text": segment["text"],
                     "narrative_context": segment["narrative_context"],
                     "material_context": segment["material_context"],
+                    "user_context": segment.get('user_context', ''),
                     "shot_ranges": [{key: shot_index[shot_id].get(key) for key in (
                         "asset_id", "source_start_ms", "source_end_ms", "content_signature")}
                         for shot_id in segment["shot_ids"] if shot_id in shot_index],
@@ -2210,7 +2252,7 @@ class NarratedBatchDomain:
             if actual_ids != expected_ids:
                 return f"候选{candidate_id}的{phrase_id}必须按原顺序逐一核对全部statement_id。"
             facts = {item["fact_id"]: item for item in source["facts"] if item.get("fact_id")}
-            source_text = self._claim_source_text
+            source_text = lambda fact, kind: self._claim_source_text(fact, kind, source.get('user_context', ''))
 
             for statement, expected in zip(statements, expected_statements):
                 if not isinstance(statement, dict):
@@ -2225,7 +2267,7 @@ class NarratedBatchDomain:
                 if type(statement.get("supported")) is not bool:
                     return f"候选{candidate_id}的{phrase_id}每项陈述都必须明确supported。"
                 risk_scope = statement.get("risk_scope")
-                risk_scopes = {"direct_observation", "recorded_speech", "source_provenance", "continuity", "absence", "causal",
+                risk_scopes = {"direct_observation", "recorded_speech", "source_provenance", "user_context", "continuity", "absence", "causal",
                                "capability", "outcome", "nonassertive"}
                 if risk_scope not in risk_scopes:
                     return f"候选{candidate_id}的{statement['statement_id']}缺少有效risk_scope。"
@@ -2253,6 +2295,7 @@ class NarratedBatchDomain:
                     if not evidence:
                         return f"事实“{quote}”声称有依据，但没有引用具体镜头事实。"
                     expected_source = {"fact": {"recorded_speech": "recorded_speech",
+                                               "user_context": "user_context",
                                                "source_provenance": "source_provenance"}.get(risk_scope, "direct_real"),
                                        "illustration": "illustrative", "onscreen_attribution": "onscreen_claim"}[kind]
                     if not any(isinstance(item, dict) and item.get("source") == expected_source for item in evidence):
@@ -2263,13 +2306,17 @@ class NarratedBatchDomain:
                                 or item["shot_id"] not in source["shot_ids"]):
                             return f"事实“{quote}”引用了不属于对应口播的镜头或fact_id。"
                         source_kind = item.get("source")
+                        if source_kind == 'user_context':
+                            user_quote = item.get('user_quote')
+                            if not isinstance(user_quote, str) or not user_quote.strip() or user_quote not in source.get('user_context', ''):
+                                return f'人物背景“{quote}”须引用你想表达什么中的原文user_quote，不能自行补写。'
                         # Speech may explain a visible ordinary action, but
                         # cannot replace pixels for a visual assertion.
                         allowed_sources = {expected_source}
-                        if kind == "fact" and risk_scope in {"direct_observation", "recorded_speech", "source_provenance"}:
+                        if kind == "fact" and risk_scope in {"direct_observation", "recorded_speech", "source_provenance", "user_context"}:
                             # Supplementary real-source context does not replace
                             # the mandatory primary source checked above.
-                            allowed_sources.update({"direct_real", "recorded_speech", "source_provenance"})
+                            allowed_sources.update({"direct_real", "recorded_speech", "source_provenance", "user_context"})
                         if source_kind not in allowed_sources:
                             # A structurally valid audit with mismatched evidence
                             # is a rejected claim, not a broken provider response.
@@ -2296,12 +2343,12 @@ class NarratedBatchDomain:
         def finalize_response(response, source):
             assertive_kinds = {"fact", "illustration", "onscreen_attribution"}
             facts = {item["fact_id"]: item for item in source["facts"] if item.get("fact_id")}
-            source_text = self._claim_source_text
+            source_text = lambda fact, kind: self._claim_source_text(fact, kind, source.get('user_context', ''))
             for statement, fixed in zip(response["phrase_review"]["statements"], source["statements"]):
                 statement["quote"] = fixed["quote"]
                 program_reason = None
                 if statement.get("kind") == "fact" and statement.get("supported") is True:
-                    if statement.get("risk_scope") not in {"direct_observation", "recorded_speech", "source_provenance"}:
+                    if statement.get("risk_scope") not in {"direct_observation", "recorded_speech", "source_provenance", "user_context"}:
                         program_reason = "当前只有稀疏取证帧，不能支持" + {
                             "continuity": "全称、速度或连续过程结论",
                             "absence": "未发生事件或跨时段否定结论",
@@ -2323,6 +2370,8 @@ class NarratedBatchDomain:
                     fact = facts[item["fact_id"]]
                     text = source_text(fact, item["source"])
                     frame_evidence = {}
+                    if item['source'] == 'user_context':
+                        frame_evidence['user_quote'] = item['user_quote']
                     if item.get("frame_observation"):
                         label = source["frames"][item["frame_index"]]
                         observation = item["frame_observation"].strip()
@@ -2437,6 +2486,11 @@ class NarratedBatchDomain:
             "只有口头指令而无对应操作画面不能认定已执行；普通菜单操作不等于联网成功、设置生效或功能验证。"
             "recorded_speech类别只能引用对应镜头recorded_speech，证明现场问过或说过某事，不能证明所说的能力、政策或效果属实；"
             "source_provenance类别只能引用对应镜头source_provenance，证明记录中明确的活动类别，不能证明人物身份、课程成效或不同片段的连续性。"
+            "segment.user_context为用户自己填写的表达资料，是独立于画面的来源；其中明确的人物姓名、身份、经历背景可以按fact、user_context引用，"
+            "evidence的source填user_context，并在user_quote逐字引用用户原文。结合facts.material_name及用户说明核对人物与素材对应关系；"
+            "对应不明时supported=false并说明缺少谁与哪份素材的对应信息，不能要求用户已明确的人物姓名必须由图片证明。"
+            "user_context不能证明用户未提供的信息，也不能将期望写成既成经历、将个案推广为普遍效果，或证明性能、收益、培训成效及连续过程。"
+            "同一句同时声称人物身份与现场动作时，分别需要用户原文和画面证据；不能仅靠人物背景证明动作发生。"
             "活动性质须核对来源，不应要求纯图片证明；上述两类信息均为独立来源，不能由文案、常识或material_context补造。"
             "illustration只能引用illustrative_observation，onscreen_attribution只能引用onscreen_claims。"
             "支持项的evidence只需逐项写出shot_id、fact_id、source，不要复制或改写画面观察文字；"
@@ -2450,8 +2504,8 @@ class NarratedBatchDomain:
             "返回JSON {candidate_id,segment_key,quality_score:0到1,reason:string,"
             "phrase_review:{phrase_id,statements:[{statement_id,"
             "kind:'fact'|'illustration'|'onscreen_attribution'|'question'|'advice'|'other',"
-            "risk_scope:'direct_observation'|'recorded_speech'|'source_provenance'|'continuity'|'absence'|'causal'|'capability'|'outcome'|'nonassertive',"
-            "supported:boolean,evidence:[{shot_id,fact_id,source:'direct_real'|'recorded_speech'|'source_provenance'|'illustrative'|'onscreen_claim'}],"
+            "risk_scope:'direct_observation'|'recorded_speech'|'source_provenance'|'user_context'|'continuity'|'absence'|'causal'|'capability'|'outcome'|'nonassertive',"
+            "supported:boolean,evidence:[{shot_id,fact_id,source:'direct_real'|'recorded_speech'|'source_provenance'|'user_context'|'illustrative'|'onscreen_claim',user_quote:仅user_context时必填的用户原文}],"
             "reason:string}]}。程序会根据每项证据判断本段是否通过，你不要返回accepted。")
         accepted = []
         for candidate, segments in prepared_candidates:
@@ -2514,7 +2568,7 @@ class NarratedBatchDomain:
                     "并仍填写对应shot_id、fact_id和source；frame_observation只描述该帧可见内容，不写推测或过程。",
                     frames=frames,
                     validation_error=current_error, timeout_seconds=180,
-                    on_success=persist_segment)
+                    on_success=persist_segment, generation_rules=False)
                 issue = current_error(response)
                 require(issue is None, "narrated_claim_review_invalid", issue or "事实审计结果格式无效。")
             if len(segment_results) != len(segments):
@@ -2561,6 +2615,21 @@ class NarratedBatchDomain:
     def _review(self, candidates, b, audit=None):
         if not candidates:
             return []
+        if narrated_brief.enabled(b):
+            valid = []
+            for candidate in candidates:
+                try:
+                    narrated_brief.review(self, candidate, b)
+                    valid.append(candidate)
+                except ContentEngineError as error:
+                    if error.code != 'narrated_brief_invalid':
+                        raise
+                    if audit is not None:
+                        audit.setdefault('rejections', []).append({'stage': 'creative_brief',
+                            'candidate_id': candidate['candidate_id'], 'title': candidate['title'], 'reason': error.message})
+            candidates = valid
+            if not candidates:
+                return []
         # Grounded batches first audit every factual statement against the
         # exact phrase/shot/fact mapping, then use actual frames as a backstop.
         if all(s.get("fact_id") for c in candidates for s in c["shots"]):
@@ -3416,6 +3485,11 @@ class NarratedBatchDomain:
                 option["narration"] = request["narration"].strip()
             if "title" in request:
                 option["title"] = str(request["title"]).strip()[:100] or b["title"]
+            error = narrated_brief.issue(option, b)
+            require(not error, 'narrated_brief_invalid', error)
+            if narrated_brief.enabled(b):
+                option['opening_example'] = narrated_brief.sentences(option['narration'])[0]
+                option.pop('_brief_review_hash', None)
             option.update(status="needs_review", revision=option["revision"] + 1,
                           estimated_duration_ms=self._estimated_speech_duration_ms(b, [option["narration"]]))
             if b.get("script_confirmation"):
@@ -3507,7 +3581,7 @@ class NarratedBatchDomain:
                              "将用户解说逐句映射到选定镜头，不改变原文、不增删镜头。返回JSON "
                              "{title,shot_ids:[],phrases:[{text,shot_ids:[]}]}。每段不超过80字，可跨多个相邻镜头，全部phrases引用按顺序拼接恰好等于shot_ids。")
         result["title"] = c["title"]
-        for key in ("audience", "pain_point", "angle"):
+        for key in ("audience", "pain_point", "angle", "framework", "summary"):
             result[key] = c.get(key, "")
         require(re.sub(r"\s+", "", "".join(str(p.get("text") or "") for p in result.get("phrases", []))) == re.sub(r"\s+", "", c["narration"]),
                 "narrated_edit_mismatch", "修改后的解说无法原样对应画面，请缩短解说或更换镜头。")
@@ -3515,10 +3589,14 @@ class NarratedBatchDomain:
                 "narrated_edit_mismatch", "修改后的镜头顺序未通过对应检查。")
         updated = self._normalize_candidate(result, b, self._history(b["batch_id"]) +
                                             [x["shots"] for x in b["candidates"] if x["candidate_id"] != c["candidate_id"]])
+        if c.get('_brief_review_hash'):
+            updated['_brief_review_hash'] = c['_brief_review_hash']
         audit = {"rejections": []}
         reviewed = self._review([updated], b, audit)
         c["_edit_review_audit"] = audit
-        require(reviewed, "narrated_edit_rejected", "修改后的解说与画面未通过复核，请调整后重试。")
+        require(reviewed, "narrated_edit_rejected", '；'.join(
+            str(item.get('reason') or '') for item in audit.get('rejections', []))[:1000]
+            or "修改后的解说与画面未通过复核，请调整后重试。")
         updated.update(candidate_id=c["candidate_id"], revision=c["revision"], narration=c["narration"])
         if c.get("_confirmed_script"):
             updated["_confirmed_script"] = copy.deepcopy(c["_confirmed_script"])
@@ -3530,6 +3608,11 @@ class NarratedBatchDomain:
 
     def _create_run(self, task_id, b, c):
         self._verify_confirmed_script(b, c)
+        narrated_brief.review(self, c, b)
+        if narrated_brief.enabled(b):
+            visual = c['_tracks']['visual_text_items']
+            c['_tracks']['visual_text_items'] = [item for item in visual if item.get('type') != 'cta'] + [
+                {'textItemId': 'visual-ending', 'type': 'cta', 'text': narrated_brief.ending(c['narration'])}]
         run_id, now = self.d._new_id("auto_mix_run"), self.d._now()
         timeline = c["_timeline"]
         public = {"outputCount": 1, "qualityWarnings": [], "cache": {},
@@ -3541,6 +3624,7 @@ class NarratedBatchDomain:
                                                   transition_points_ms=[s["timeline_start_ms"] for s in timeline["selected_segments"]],
                                                   material_signals=timeline["selected_segments"])}
         state = {"narrated_batch_v1": True, "narrated_batch_id": b["batch_id"],
+                 'narrated_brief_version': b.get('brief_version'),
                  "narrated_reference_captions": (b.get("settings") or {}).get("workflow_version") == 2,
                  "used_music_track_ids": [item["music_track_id"] for item in b["candidates"]
                                           if item.get("status") == "completed" and item.get("music_track_id")],

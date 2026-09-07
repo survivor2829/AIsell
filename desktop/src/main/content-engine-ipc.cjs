@@ -728,6 +728,7 @@ function publicError(error) {
   if (Object.hasOwn(PUBLIC_ERRORS, suppliedCode)) {
     let message = PUBLIC_ERRORS[suppliedCode];
     const providerMessage = typeof error?.message === "string" ? error.message : "";
+    if (suppliedCode === "narrated_brief_invalid") message = safePublicText(providerMessage, 500) || message;
     // Recognize only our adapter's complete fixed messages; expose digits, never provider text.
     const businessCode = suppliedCode === "cloud_request_rejected"
       ? providerMessage.match(/^火山语音拒绝本次合成（代码 (-?[0-9]{1,10})），请检查音色权限、服务开通状态与额度。$/u)

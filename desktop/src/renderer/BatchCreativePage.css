@@ -10,7 +10,7 @@
 .batch-page button:disabled, .batch-modal button:disabled { opacity: .48; cursor: not-allowed; }
 .batch-page button.batch-primary, .batch-modal button.batch-primary { color: white; background: var(--brand, #e5484d); border-color: var(--brand, #e5484d); }
 .batch-page button:focus-visible, .batch-page input:focus-visible, .batch-page select:focus-visible, .batch-modal :focus-visible { outline: 3px solid #f2b7ba; outline-offset: 2px; }
-.batch-page input:not([type=checkbox]), .batch-page select, .batch-page textarea, .batch-modal input:not([type=checkbox]), .batch-modal textarea, .batch-modal select { border: 1px solid #dfe3e9; border-radius: 7px; background: white; padding: 10px 12px; min-width: 0; max-width: 100%; color: #202631; font: inherit; font-size: 13px; }
+.batch-page input:not([type=checkbox]):not([type=radio]), .batch-page select, .batch-page textarea, .batch-modal input:not([type=checkbox]), .batch-modal textarea, .batch-modal select { border: 1px solid #dfe3e9; border-radius: 7px; background: white; padding: 10px 12px; min-width: 0; max-width: 100%; color: #202631; font: inherit; font-size: 13px; }
 .batch-page textarea, .batch-modal textarea { min-height: 112px; resize: vertical; }
 .batch-page label, .batch-modal label { font-size: 13px; }
 .batch-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 16px 0; }
@@ -144,6 +144,35 @@
 .batch-script-section input[type=checkbox] { width: 16px; height: 16px; }
 .batch-script-confirm .batch-hint { margin-top: 8px; }
 .batch-page input, .batch-page textarea { caret-color: var(--brand, #e5484d); }
+.batch-workspace-tools { margin-bottom: 16px; }
+.batch-workspace-tools > summary, .batch-duration-settings > summary { cursor: pointer; color: #596373; font-size: 13px; padding: 10px 0; }
+.batch-duration-settings { margin-right: auto; }
+.batch-creative-brief { display: grid; gap: 20px; padding-block: 28px 8px; border-top: 1px solid #e7e9ed; }
+.batch-creative-brief > label, .batch-brief-field > label { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.batch-brief-field { min-width: 0; }
+.batch-field-note { font-size: 12px; color: #596373; }
+.batch-brief-field textarea { min-height: 132px; resize: vertical; line-height: 1.7; }
+.batch-creative-brief .batch-hint { margin: 0; }
+.batch-page input::placeholder, .batch-page textarea::placeholder { color: #687180; opacity: 1; }
+.batch-inline-suggestion summary { cursor: pointer; color: #596373; }
+.batch-inline-suggestion p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.batch-inline-suggestion small { display: block; color: #596373; margin-top: 8px; }
+.batch-topic-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 20px; }
+.batch-topic-choice { border: 1px solid #dfe3e9; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 12px; cursor: pointer; line-height: 1.65; min-width: 0; overflow-wrap: anywhere; }
+.batch-topic-choice:hover { border-color: #a9b2bf; }
+.batch-topic-choice.is-selected { border-color: var(--brand, #e5484d); background: #fff7f7; }
+.batch-topic-choice:has(input:disabled) { cursor: default; }
+.batch-topic-choice strong { font-size: 16px; }
+.batch-topic-label { display: flex; gap: 8px; align-items: center; color: #596373; }
+.batch-topic-label input { margin: 0; width: 16px; height: 16px; flex-shrink: 0; accent-color: var(--brand, #e5484d); }
+.batch-topic-opening { color: #596373; }
+.batch-selected-copy { padding-block: 28px 12px; }
+.batch-selected-copy > header { display: flex; justify-content: space-between; align-items: start; gap: 16px; }
+.batch-selected-copy > header p, .batch-selected-copy small { margin: 0; font-size: 13px; color: #596373; }
+.batch-selected-copy .batch-script-body { max-width: 72ch; font-size: 15px; line-height: 1.9; white-space: pre-wrap; overflow-wrap: anywhere; }
+.batch-page ::selection { background: #f9d6d8; color: #202631; }
+@media (max-width: 900px) { .batch-topic-choices { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .batch-selected-copy > header { flex-direction: column; } }
 .batch-page textarea:focus-visible, .batch-page summary:focus-visible { outline: 3px solid #f2b7ba; outline-offset: 2px; }
 @media (max-width: 1080px) { .batch-script-options { grid-template-columns: 1fr; } .batch-script-option { padding: 20px 24px; } }
 @media (max-width: 760px) { .batch-script-confirm { flex-direction: column; align-items: stretch; } .batch-sound-row > label { min-width: 100%; } }

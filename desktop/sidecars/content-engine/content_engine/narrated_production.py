@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .errors import ContentEngineError
+from . import narrated_brief
 
 
 LOCAL_RENDER_ERRORS = frozenset({
@@ -37,7 +38,7 @@ def retryable_planning_jobs(batch):
         return []
     candidates = {c['candidate_id']: c for c in batch.get('candidates', [])}
     return [job for job in batch.get('production_jobs', [])
-            if job.get('status') == 'skipped' and job.get('error_code') in MAPPING_ERRORS | {'cloud_response_invalid'}
+            if job.get('status') == 'skipped' and job.get('error_code') in MAPPING_ERRORS | {'cloud_response_invalid', 'narrated_brief_invalid'}
             and not candidates.get(job.get('candidate_id'), {}).get('_run_id')]
 
 
@@ -60,6 +61,11 @@ def confirm_selections(domain, request):
     require(b.get('settings', {}).get('workflow_version') == 2,
             'invalid_narrated_settings', '该批次使用旧版制作流程。')
     requested = request.get('selections')
+    require(not narrated_brief.enabled(b) or isinstance(requested, list) and len(requested) == 1,
+            'invalid_narrated_selection', '请选择一个方案，可展开批量设置调整制作数量。')
+    if narrated_brief.enabled(b):
+        require(len(b.get('script_options', [])) == 3 and b['script_options'][0].get('framework') == narrated_brief.FRAMEWORK,
+                'narrated_brief_invalid', '请先补齐三个方案，其中第一个为问题解答。')
     require(isinstance(requested, list) and 1 <= len(requested) <= 3,
             'invalid_narrated_selection', '请选择一到三个文案方向。')
     options = {c['candidate_id']: c for c in b.get('script_options', [])}
@@ -73,12 +79,16 @@ def confirm_selections(domain, request):
         require(isinstance(script_id, str) and script_id in options and script_id not in seen,
                 'invalid_narrated_selection', '请选择有效且不重复的文案方向。')
         option = options[script_id]
+        issue = narrated_brief.issue(option, b)
+        require(not issue, 'narrated_brief_invalid', issue)
         require(type(item.get('revision')) is int and item['revision'] == option['revision'],
                 'narrated_script_revision_changed', '文案版本已更新，请查看最新正文后确认。')
         require(type(item.get('count')) is int and 1 <= item['count'] <= 300,
                 'invalid_narrated_count', '每个方向请填写1到300的整数。')
         selections.append({**item, 'narration': option['narration'], 'title': option['title'],
-                           'direction': {key: option.get(key, '') for key in ('audience', 'pain_point', 'angle')}})
+                           'direction': {key: option.get(key, '') for key in (
+                               ('audience', 'pain_point', 'angle', 'framework', 'summary')
+                               if narrated_brief.enabled(b) else ('audience', 'pain_point', 'angle'))}})
         seen.add(script_id)
     total = sum(item['count'] for item in selections)
     require(total <= 300, 'invalid_narrated_count', '本批合计最多生成300条。')
@@ -166,6 +176,8 @@ def complete_mapping_capacity(domain, batch, phrases):
     index = {shot['segment_id']: shot for shot in batch['available_shots']}
     phrases = copy.deepcopy(phrases)
     used = {ref for phrase in phrases for ref in phrase['shot_ids']}
+    activities = {ref: (domain._source_evidence_for(batch, shot).get('source_provenance') or {}).get('activity_label')
+                  for ref, shot in index.items()}
     changes = []
     for phrase in phrases:
         refs = phrase['shot_ids']
@@ -174,18 +186,23 @@ def complete_mapping_capacity(domain, batch, phrases):
         while capacity < required:
             anchors = [index[ref] for ref in refs]
             def distance(shot):
-                return min(min(abs(shot['source_start_ms'] - anchor['source_end_ms']),
+                return min((min(abs(shot['source_start_ms'] - anchor['source_end_ms']),
                                abs(anchor['source_start_ms'] - shot['source_end_ms']))
-                           for anchor in anchors if anchor['asset_id'] == shot['asset_id'])
+                           for anchor in anchors if anchor['asset_id'] == shot['asset_id']), default=float('inf'))
+            activity = activities[refs[0]]
+            def related(shot):
+                return any(anchor['asset_id'] == shot['asset_id'] for anchor in anchors) or (
+                    bool(activity) and all(activities[ref] == activity for ref in refs)
+                    and activities[shot['segment_id']] == activity)
             eligible = [shot for ref, shot in index.items() if ref not in used
-                        and any(anchor['asset_id'] == shot['asset_id'] for anchor in anchors)
+                        and related(shot)
                         and not any(index[other]['asset_id'] == shot['asset_id']
                             and index[other]['source_start_ms'] < shot['source_end_ms']
                             and shot['source_start_ms'] < index[other]['source_end_ms'] for other in used)]
             if not eligible:
                 donors = [(other, index[ref]) for other in phrases if other is not phrase
                           for ref in other['shot_ids']
-                          if any(anchor['asset_id'] == index[ref]['asset_id'] for anchor in anchors)
+                          if related(index[ref])
                           and sum(index[key]['target_duration_ms'] for key in other['shot_ids'] if key != ref)
                               >= domain._phrase_budget_ms(batch, other['text'])]
                 if donors:
@@ -194,11 +211,11 @@ def complete_mapping_capacity(domain, batch, phrases):
                     used.remove(returned['segment_id'])
                     eligible = [returned]
             require(eligible and len(used) < 40, 'narrated_copy_too_long',
-                    f"本段需要{required}毫秒，已选镜头只有{capacity}毫秒，且同素材没有足够未使用片段；请重新选择相关镜头。")
+                    f"本段需要{required}毫秒，已选镜头只有{capacity}毫秒，且相关素材没有足够未使用片段；请重新选择相关镜头。")
             extra = min(eligible, key=lambda shot: (distance(shot), shot['source_start_ms'], shot['segment_id']))
             same_source = [ref for ref in refs if index[ref]['asset_id'] == extra['asset_id']]
             following = next((ref for ref in same_source if index[ref]['source_start_ms'] > extra['source_start_ms']), None)
-            position = refs.index(following) if following else refs.index(same_source[-1]) + 1
+            position = refs.index(following) if following else (refs.index(same_source[-1]) + 1 if same_source else len(refs))
             refs.insert(position, extra['segment_id'])
             used.add(extra['segment_id'])
             capacity += extra['target_duration_ms']
@@ -271,7 +288,7 @@ def review_confirmed_candidate(domain, batch, candidate):
                 generation_rules=False)
             prepared = mapped(result)
             updated = domain._normalize_candidate({**prepared,
-                **{key: candidate.get(key, '') for key in ('audience', 'pain_point', 'angle')}}, batch, domain._history(batch['batch_id']))
+                **{key: candidate.get(key, '') for key in ('audience', 'pain_point', 'angle', 'framework', 'summary')}}, batch, domain._history(batch['batch_id']))
             updated.update({key: copy.deepcopy(candidate[key]) for key in
                             ('candidate_id', 'revision', 'narration', '_confirmed_script', 'source_script_id', 'production_index') if key in candidate})
             updated['status'] = 'needs_review'

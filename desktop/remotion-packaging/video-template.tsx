@@ -447,7 +447,9 @@ export const DynamicPackaging: React.FC<MotionManifest> = (manifest) => {
     () => registeredEvents.map(({ event }) => event),
     [registeredEvents]
   );
-  const activeEvents = manifest.captionPresentation === "reference_narration" ? [] : registeredEvents.filter(({ event }) => activeAt(event.startMs, event.endMs, nowMs));
+  const activeEvents = registeredEvents.filter(({ event }) =>
+    activeAt(event.startMs, event.endMs, nowMs) &&
+    (manifest.captionPresentation !== "reference_narration" || event.reason === "narrated_ending_cta"));
   const activeFocus = manifest.captionPresentation === "reference_narration" ? null : registeredFocusRects.find(({ focus }) => activeAt(focus.startMs, focus.endMs, nowMs));
   const zoomEvent = activeEvents.find(({ event }) => event.effect.renderer === "zoomTransition");
   const zoomProgress = zoomEvent ? eventProgress(zoomEvent.event, frame, fps) : 0;

@@ -70,9 +70,16 @@ async function main() {
   assert.deepEqual(multiPublic.script_selections, selections);
   assert.equal(multiPublic.export_ready, true);
   assert.equal(multiPublic._exported_candidates, undefined);
-  const scriptsResult = await handlers.get(CHANNELS.scripts)({ sender }, { draft: { ...draft, settings: { workflow_version: 2, music_track_ids: [] } }, clickToken: `${CHANNELS.scripts}:${randomUUID()}` });
+  const brief = { brief_version: 1, target_audience: "物业保洁负责人", expression: "这位学员是小陈，想介绍他在现场认识设备部件的学习过程。", advantages: "提供现场试用", customer_pain_points: "担心地面不适用" };
+  const scriptsResult = await handlers.get(CHANNELS.scripts)({ sender }, { draft: { ...draft, ...brief, settings: { workflow_version: 2, music_track_ids: [] } }, clickToken: `${CHANNELS.scripts}:${randomUUID()}` });
   assert.equal(scriptsResult.ok, true);
   assert.deepEqual(scriptsResult.data.script_options, []);
+  for (const [key, value] of Object.entries(brief)) assert.equal(saved.at(-1)[key], value);
+  const briefResult = publicBatch({ ...brief, brief_suggestions: { expression: "围绕现场演示介绍学习内容" },
+    script_options: [{ framework: "problem_solution_cta", summary: "现场试用再选型", opening_example: "担心不适用？", _brief_review_hash: "private" }] });
+  assert.equal(briefResult.script_options[0].framework, "problem_solution_cta");
+  assert.equal(briefResult.brief_suggestions.expression, "围绕现场演示介绍学习内容");
+  assert.equal(briefResult.script_options[0]._brief_review_hash, undefined);
   registration.dispose();
   console.log("narrated batch IPC self-check passed");
 }

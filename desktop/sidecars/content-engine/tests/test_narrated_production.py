@@ -350,6 +350,11 @@ class NarratedProductionTests(unittest.TestCase):
         state['available_shots'][1]['asset_id'] = 'unrelated-source'
         with self.assertRaises(ContentEngineError):
             complete_mapping_capacity(self.domain, state, phrases)
+        with patch.object(self.domain, '_source_evidence_for', return_value={
+                'source_provenance': {'activity_label': '已确认的同场培训'}}):
+            completed, _ = complete_mapping_capacity(self.domain, state, phrases)
+        self.assertEqual(['S0', 'S1'], completed[0]['shot_ids'])
+        self.assertEqual([p['text'] for p in phrases], [p['text'] for p in completed])
 
     def test_provider_retry_receives_errors_beyond_display_truncation(self):
         state = self.domain._load(self.batch['batch_id'])

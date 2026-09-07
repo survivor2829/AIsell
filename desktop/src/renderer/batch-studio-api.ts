@@ -3,10 +3,12 @@ export type Collection = { collection_id: string; name: string; description: str
 export type Group = "opening" | "middle" | "ending";
 export type Groups = Record<Group, string[]>;
 export type Shot = { segment_id: string; asset_id: string; description: string; source_start_ms: number; source_end_ms: number };
-export type Candidate = { candidate_id: string; title: string; narration: string; phrases?: { text: string }[]; angle: string; audience?: string; pain_point?: string; estimated_duration_ms?: number; status: string; generated_video_id?: string; error?: string; duration_ms?: number; shots: Shot[]; actual_shots?: Shot[]; revision: number; music_track_id?: string; source_script_id?: string; production_index?: number };
+export type Candidate = { framework?: string; summary?: string; opening_example?: string; candidate_id: string; title: string; narration: string; phrases?: { text: string }[]; angle: string; audience?: string; pain_point?: string; estimated_duration_ms?: number; status: string; generated_video_id?: string; error?: string; duration_ms?: number; shots: Shot[]; actual_shots?: Shot[]; revision: number; music_track_id?: string; source_script_id?: string; production_index?: number };
 export type ScriptSelection = { script_id: string; revision: number; count: number; title: string; narration: string; confirmed_at: string };
 export type ProductionJob = { script_id: string; ordinal: number; production_index: number; candidate_id?: string; status: string; error?: string };
 export type Batch = {
+  brief_version?: number; target_audience?: string; expression?: string; advantages?: string; customer_pain_points?: string;
+  brief_suggestions?: { expression?: string; advantages?: string; customer_pain_points?: string };
   batch_id: string; title: string; description: string; cta: string; collection_id?: string;
   groups: Groups; target_count: number | null; recommended_count: number; feasible_count: number;
   count_is_exact: boolean; reasons: string[]; status: string; task_id?: string; task_status?: string;

@@ -6,6 +6,8 @@ const CHANNELS = Object.freeze(Object.fromEntries([
   "collections", "save-collection", "list", "get", "status", "save", "recommend", "scripts", "confirm", "music-preview", "resolve", "samples", "continue", "edit", "export", "open-output", "archive"
 ].map((name) => [name, `content-engine:batch-${name}`])));
 const ERRORS = {
+  narrated_audience_required: "请填写这条视频想给谁看。",
+  narrated_brief_invalid: "文案未符合创作需求，请查看具体原因并修改。",
   invalid_narrated_selection: "请选择一到三个有效且不重复的文案方向。",
   narrated_settings_changed: "制作设置已改变，请先重新准备文案或新建批次。",
   invalid_collection_name: "请填写素材集名称（100 字以内）。",
@@ -46,6 +48,7 @@ const ERRORS = {
 const PUBLIC_FIELDS = new Set(("activity message started_at completed total collections collection_id name description asset_ids batches batch_id project_id title status task_id task_status target_count recommended_count feasible_count count_is_exact reasons completed_count updated_at created_at groups opening middle ending cta settings voice_persona_id brand_profile_id minimum_duration_seconds candidates candidate_id narration angle generated_video_id duration_ms revision error actual_shots shots segment_id asset_id source_start_ms source_end_ms evidence_ref evidence_facts facts subject action quality suggested_brief preferred_groups available_shots progress approved version score rationale phrases text segment_ids role planning_recovery_available").split(" "));
 for (const field of "workflow_version script_options selected_script_id script_confirmation script_id confirmed_at audience pain_point estimated_duration_ms direction music_track_ids music_selections music_track_id track_id display_name".split(" ")) PUBLIC_FIELDS.add(field);
 for (const field of "material_context script_selections count production_jobs ordinal production_index source_script_id export_ready exported_count export_error production_retry_available".split(" ")) PUBLIC_FIELDS.add(field);
+for (const field of "brief_version target_audience expression advantages customer_pain_points brief_suggestions framework summary opening_example".split(" ")) PUBLIC_FIELDS.add(field);
 function publicBatch(value, depth = 0) {
   if (depth > 12) return null;
   if (Array.isArray(value)) return value.slice(0, 5000).map((item) => publicBatch(item, depth + 1));
@@ -68,7 +71,7 @@ function registerNarratedBatchIpc({ handle, controller, validateId, validateVoic
     return [...new Set(values.map((v) => id(v, "asset")))];
   };
   function draft(p) {
-    keys(p, ["batch_id", "collection_id", "groups", "title", "description", "material_context", "cta", "target_count", "settings"]);
+    keys(p, ["batch_id", "collection_id", "groups", "title", "description", "material_context", "cta", "target_count", "settings", "brief_version", "target_audience", "expression", "advantages", "customer_pain_points"]);
     const result = { ...p };
     if (p.batch_id) result.batch_id = id(p.batch_id, "narrated_batch");
     if (p.collection_id) result.collection_id = id(p.collection_id, "asset_collection");
@@ -76,6 +79,10 @@ function registerNarratedBatchIpc({ handle, controller, validateId, validateVoic
     result.groups = Object.fromEntries(["opening", "middle", "ending"].map((key) => [key, ids(p.groups[key] || [])]));
     result.title = text(p.title, 100);
     result.description = text(p.description, 6000);
+    if (p.brief_version !== undefined && p.brief_version !== 1) invalid();
+    for (const [field, limit] of [["target_audience", 150], ["expression", 4000], ["advantages", 1500], ["customer_pain_points", 1500]]) {
+      if (p[field] !== undefined) result[field] = text(p[field], limit).trim();
+    }
     if (p.material_context !== undefined) result.material_context = text(p.material_context, 100);
     result.cta = text(p.cta, 300);
     if (p.target_count != null && (!Number.isInteger(p.target_count) || p.target_count < 1 || p.target_count > 300)) invalid("invalid_narrated_count");

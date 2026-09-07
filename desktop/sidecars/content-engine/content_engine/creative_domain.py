@@ -5767,6 +5767,9 @@ class CreativeDomain:
             duration_ms,
             timeline=timeline,
         )
+        if private_state.get('narrated_brief_version') == 1:
+            from .narrated_brief import align_ending_events
+            align_ending_events(visual_events, public_plan['speechCaptions'])
         if supplemental_image is not None:
             supplemental_start_ms = supplemental_image["timeline_start_ms"]
             # Callouts require real-material evidence. A generic CTA may be

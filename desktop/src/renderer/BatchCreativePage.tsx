@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AssetPicker, AssetPreview, AssetThumb } from "./BatchAssets";
 import { Asset, Batch, Candidate, Collection, Group, Groups, batchStatus, callBatch, groupNames, videoUrl } from "./batch-studio-api";
 import "./BatchCreativePage.css";
+import { BatchCreativeBrief, BatchTopicChoices, emptyCreativeBrief, expressionText } from "./BatchCreativeBrief";
 import { BatchSoundSettings } from "./BatchSoundSettings";
 
 type Props = { initial?: { assetIds?: string[]; collection?: Collection; batchId?: string }; onOpenProduct: () => void; onOpenLegacy: () => void; onOpenHistory: () => void; onOpenMaterials: () => void };
@@ -33,6 +34,7 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
   const [groups, setGroups] = useState<Groups>(emptyGroups);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [brief, setBrief] = useState(emptyCreativeBrief);
   const [materialContext, setMaterialContext] = useState("");
   const [cta, setCta] = useState("");
   const [count, setCount] = useState("");
@@ -63,10 +65,11 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
   const paused = batch?.task_status === "paused";
   const locked = busy || running || paused;
   const scriptFlow = !batch || settings.workflow_version === 2;
+  const modern = !batch || batch.brief_version === 1;
   const options = batch?.script_options || [];
   const chosen = options.filter((option) => selectedCounts[option.candidate_id] !== undefined);
   const chosenTotal = chosen.reduce((sum, option) => sum + (Number(selectedCounts[option.candidate_id]) || 0), 0);
-  const countsValid = chosen.length > 0 && chosenTotal <= 300 && chosen.every((option) => {
+  const countsValid = chosen.length > 0 && (!modern || chosen.length === 1 && options.length === 3) && chosenTotal <= 300 && chosen.every((option) => {
     const value = Number(selectedCounts[option.candidate_id]);
     return Number.isInteger(value) && value >= 1 && value <= 300;
   });
@@ -87,6 +90,7 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
   }
   async function refreshBatches() { setBatches((await callBatch<{ batches: Batch[] }>("list")).batches); }
   function load(b: Batch) {
+    setBrief({ target_audience: b.target_audience || "", expression: expressionText(b) });
     selectedId.current = b.batch_id; setBatch(b); setGroups(b.groups); setTitle(b.title); setDescription(b.description); setMaterialContext(b.material_context || ""); setCta(b.cta); setCollectionId(b.collection_id || ""); setSettings(b.settings || {});
     setSelectedCounts(b.script_selections ? Object.fromEntries(b.script_selections.map((item) => [item.script_id, String(item.count)]))
       : b.selected_script_id ? { [b.selected_script_id]: String(b.target_count || 1) } : {});
@@ -149,13 +153,14 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
   function draft() {
     const target = scriptFlow ? 1 : count.trim() ? Number(count) : null;
     if (target !== null && (!Number.isInteger(target) || target < 1 || target > 300)) throw new Error("请填写 1 到 300 的整数。");
-    return { ...(batch ? { batch_id: batch.batch_id } : {}), collection_id: collectionId || null, groups, title: title.trim() || "批量创作", description, material_context: materialContext, cta, target_count: target, settings };
+    return { ...(batch ? { batch_id: batch.batch_id } : {}), collection_id: collectionId || null, groups, title: title.trim() || "批量创作", description, material_context: materialContext, cta, target_count: target, settings, ...(modern ? { brief_version: 1, ...brief } : {}) };
   }
   async function start(action: "recommend" | "samples" | "continue" | "scripts") {
     // The call consumes the trusted click immediately; saving the draft happens
     // in the main process before starting the task, without a renderer timer race.
     setSubmitting(true);
     try { await run(async () => {
+      if (modern && action === "scripts" && !brief.target_audience.trim()) throw new Error("请填写这条视频想给谁看。");
       const payload = action === "continue" ? { batch_id: batch?.batch_id } : { draft: draft() };
       const b = await callBatch<Batch>(action, payload);
       selectedId.current = b.batch_id; setBatch(b); setDirty(false); setSoundDirty(false);
@@ -202,15 +207,16 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
   const pendingJobs = batch?.production_retry_available || (batch?.production_jobs ? batch.production_jobs.some((job) => ["queued", "processing"].includes(job.status)) : completed < (batch?.target_count || 1));
   const skippedJobs = batch?.production_jobs?.filter((job) => job.status === "skipped") || [];
   return <div className="page batch-page">
-    <header className="batch-page-header"><div><h1>批量创作</h1><p>添加素材 → 选择文案方向 → 设置数量与声音 → 收取成片</p></div><button disabled={locked} onClick={() => { selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setDirty(false); setSoundDirty(false); setSelectedCounts({}); setSettings({ ...settings, voice_persona_id: preferredVoice(settings.voice_persona_id), workflow_version: 2, music_track_ids: settings.music_track_ids || [] }); manualCount.current = false; }}>新建批次</button></header>
-    <div className="batch-toolbar"><label>当前批次<select aria-label="当前批次" value={batch?.batch_id || ""} disabled={busy} onChange={(e) => { if (e.target.value) void run(async () => load(await callBatch<Batch>("get", { batch_id: e.target.value }))); }}><option value="">新批次</option>{batches.map((b) => <option value={b.batch_id} key={b.batch_id}>{batchLabel(b)} · {batchStatus[b.status] || b.status} · {b.completed_count || 0}/{b.target_count || "—"}</option>)}</select></label>
+    <header className="batch-page-header"><div><h1>内容创作</h1><p>上传素材 → 填写需求 → 选定方案 → 确认文案 → 制作视频</p></div><button disabled={locked} onClick={() => { selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setBrief(emptyCreativeBrief()); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setDirty(false); setSoundDirty(false); setSelectedCounts({}); setSettings({ ...settings, voice_persona_id: preferredVoice(settings.voice_persona_id), workflow_version: 2, music_track_ids: settings.music_track_ids || [] }); manualCount.current = false; }}>新建批次</button></header>
+    <details className="batch-workspace-tools"><summary>历史批次与其他工具</summary><div className="batch-toolbar"><label>当前批次<select aria-label="当前批次" value={batch?.batch_id || ""} disabled={busy} onChange={(e) => { if (e.target.value) void run(async () => load(await callBatch<Batch>("get", { batch_id: e.target.value }))); }}><option value="">新批次</option>{batches.map((b) => <option value={b.batch_id} key={b.batch_id}>{batchLabel(b)} · {batchStatus[b.status] || b.status} · {b.completed_count || 0}/{b.target_count || "—"}</option>)}</select></label>
       {batch && <button disabled={locked || batch.status === "outcome_unknown"} title="仅从批次列表移除，保留本地素材和成片" onClick={() => void run(async () => {
         await callBatch("archive", { batch_id: batch.batch_id });
-        selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setSelectedCounts({}); setSoundDirty(false); setDirty(false); manualCount.current = false;
+        selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setBrief(emptyCreativeBrief()); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setSelectedCounts({}); setSoundDirty(false); setDirty(false); setSettings({ ...settings, workflow_version: 2, minimum_duration_seconds: Math.max(30, settings.minimum_duration_seconds || 30) }); manualCount.current = false;
         await refreshBatches(); setNotice("批次已从列表删除，本地素材和成片文件保留。");
       })}>删除当前批次</button>}
       <details className="batch-other"><summary>其他创作方式</summary><button onClick={onOpenProduct}>商品单片与声音／音乐资源</button><button onClick={onOpenLegacy}>课程与旧版工具</button><button onClick={onOpenHistory}>历史项目</button></details>
     </div>
+    </details>
     {notice && <p className="batch-notice" role="alert">{notice}</p>}
     {submitting && !batch && <section className="batch-progress" role="status">正在提交素材并启动任务…</section>}
     {batch && <section className="batch-progress" aria-live="polite"><strong>{submitting ? "正在提交任务" : running ? "正在处理" : batchStatus[batch.status] || "处理中"}</strong><span>{scriptFlow && !batch.script_confirmation ? `文案 ${options.length} / 3 份` : `已完成 ${completed} / ${batch.target_count || "待定"} 条`}</span>
@@ -233,8 +239,8 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
       {completed > 0 && <button disabled={busy} onClick={() => void run(async () => { const r = await callBatch<{ canceled: boolean; filename: string; count: number; incomplete: boolean }>("export", { batch_id: batch.batch_id }); if (!r.canceled) setNotice(`已导出 ${r.count} 条至 ${r.filename}${r.incomplete ? "，部分文件不可用，请查看批次清单。" : "，包含视频、封面及发布文案。"}`); })}>导出已完成作品</button>}
     </section>}
     <details className="batch-source-details" open={(!shownCandidates.length && !options.length) || dirty}>
-    <summary>素材与创作目标 · {total} 个素材</summary>
-    <fieldset disabled={locked || (scriptFlow && !!batch?.script_confirmation)} className="batch-form">
+    <summary>素材与创作需求 · {total} 个素材{modern && Object.values(batch?.brief_suggestions || {}).some(Boolean) ? " · 有 AI 建议" : ""}</summary>
+    <fieldset disabled={locked || (!modern && scriptFlow && !!batch?.script_confirmation)} className="batch-form">
       <div className="batch-brief"><label>素材集<select value={collectionId} onChange={(e) => { const c = collections.find((s) => s.collection_id === e.target.value); setCollectionId(e.target.value); if (c) { setTitle(c.name); setDescription(c.description); changeGroups({ opening: [], middle: c.asset_ids, ending: [] }); } setDirty(true); }}><option value="">自由选材</option>{collections.map((c) => <option value={c.collection_id} key={c.collection_id}>{c.name}</option>)}</select></label><label className="batch-title-input">创作主题<input value={title} maxLength={100} onChange={(e) => { setTitle(e.target.value); setDirty(true); }} placeholder="例如：展示产品的真实使用过程" /></label></div>
       {scriptFlow ? <section className="batch-materials" aria-label="本批素材">
         <div className="batch-toolbar"><button type="button" onClick={() => void importTo("middle")}>添加文件</button><button type="button" onClick={() => void importTo("middle", true)}>添加文件夹</button><button type="button" onClick={() => setPicker("middle")}>从素材仓库选择</button><span className="batch-hint">不用区分开头、中间和结尾</span></div>
@@ -261,9 +267,8 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
         {!groups[group].length && <div className="batch-group-empty">可留空，AI 会从其他素材中寻找合适镜头</div>}
         <footer><button onClick={() => void importTo(group)}>添加文件</button><button onClick={() => setPicker(group)}>从仓库选择</button></footer>
       </section>)}</div>}
+      {modern && <BatchCreativeBrief value={brief} onChange={(value) => { setBrief(value); setDirty(true); }} cta={cta} onCtaChange={(value) => { setCta(value); setDirty(true); }} suggestions={batch?.brief_suggestions} />}
       <p className="batch-hint">已选 {total} 个素材。AI 先理解画面，再从观众关心的问题出发，给出三个不同角度。</p>
-      <div className="batch-count-bar">{!scriptFlow && <label>本批生成数量<input aria-label="本批生成数量" type="number" min={1} max={300} step={1} value={count} placeholder="AI 分析后推荐" onChange={(e) => { manualCount.current = true; setCount(e.target.value); setDirty(true); }} /></label>}<label>每条最短时长（秒）<input aria-label="每条最短时长" type="number" min={0} step={1} value={settings.minimum_duration_seconds || ""} placeholder="AI 决定" onChange={(e) => { setSettings({ ...settings, minimum_duration_seconds: Number(e.target.value) }); setDirty(true); }} /></label>{scriptFlow ? <button data-batch-action="scripts" className="batch-primary" disabled={!total} onClick={() => void start("scripts")}>{options.length > 0 && options.length < 3 && !dirty ? "补齐剩余文案" : options.length ? "重新准备三个文案" : "分析素材，准备文案"}</button> : <><button data-batch-action="recommend" disabled={!total} onClick={() => void start("recommend")}>AI 推荐数量</button><button data-batch-action="samples" className="batch-primary" disabled={!total} onClick={() => void start("samples")}>生成／继续样片</button></>}</div>
-      <p className="batch-hint">{scriptFlow ? "先看完整文案，再选择方向和数量。此步骤不会生成配音或视频。" : "当前为旧批次：先做最多 3 条样片，确认后继续整批。"}</p>
       {!scriptFlow && batch && batch.feasible_count > 0 && <div className="batch-recommendation"><strong>建议生成 {batch.recommended_count} 条</strong><span>{batch.count_is_exact ? "可用方案" : "已找到可用方案"} {batch.feasible_count} 条。推荐值不是最大数量。</span><button disabled={!batch.recommended_count} onClick={() => { setCount(String(batch.recommended_count)); manualCount.current = false; setDirty(true); }}>一键采用推荐</button></div>}
       {batch?.status === "insufficient_materials" && <p className="batch-notice" role="status">素材已读取，但本次剪辑方案未通过检查，尚未开始制作。具体原因可在“项目详情”查看。</p>}
       {batch?.suggested_brief && <details className="batch-advanced"><summary>AI 从素材提取的主题与资料建议</summary><div className="batch-panel"><strong>{batch.suggested_brief.title}</strong><p>{batch.suggested_brief.description}</p><p>建议引导：{batch.suggested_brief.cta}</p><button onClick={() => {
@@ -273,27 +278,31 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
         const updated = await callBatch<Collection>("save-collection", { ...collection, description: batch.suggested_brief!.description });
         setCollections(collections.map((c) => c.collection_id === updated.collection_id ? updated : c)); setNotice("AI 提取的资料已保存到素材集，可在素材仓库继续修改。");
       })}>将建议资料保存到素材集</button>}</div></details>}
-      <details className="batch-advanced"><summary>补充资料与结尾引导{dirty ? " · 有未保存修改" : ""}</summary><div className="batch-panel">
+      <details className="batch-advanced"><summary>补充事实资料与品牌{dirty ? " · 有未保存修改" : ""}</summary><div className="batch-panel">
         <label>已确认事实与推广目标<textarea value={description} maxLength={6000} placeholder="填写产品资料、真实案例和推广目标；AI 解说只使用有依据的信息。" onChange={(e) => { setDescription(e.target.value); setDirty(true); }} /></label>
-        <label>结尾引导<input value={cta} maxLength={300} placeholder="例如：私信了解适用方案" onChange={(e) => { setCta(e.target.value); setDirty(true); }} /></label>
+        {!modern && <label>结尾引导<input value={cta} maxLength={300} placeholder="例如：私信了解适用方案" onChange={(e) => { setCta(e.target.value); setDirty(true); }} /></label>}
         <div className="batch-brief">{!scriptFlow && <label>AI 解说声音<select value={settings.voice_persona_id || ""} onChange={(e) => changeSoundSettings({ ...settings, voice_persona_id: e.target.value || undefined })}><option value="">自动选择已批准声音</option>{voices.map((v) => <option key={v.voicePersonaId} value={v.voicePersonaId}>{v.displayName || v.voicePersonaId}</option>)}</select></label>}<label>品牌<select value={settings.brand_profile_id || ""} onChange={(e) => { setSettings({ ...settings, brand_profile_id: e.target.value || undefined }); setDirty(true); }}><option value="">默认品牌</option>{brands.map((b) => <option key={b.brandProfileId} value={b.brandProfileId}>{b.name}</option>)}</select></label></div>
         <p>原视频声音静音，自动选用授权音乐。封面使用真实画面加标题。</p><button onClick={() => void run(async () => { const b = await callBatch<Batch>("save", draft()); load(b); localStorage.setItem("batch-studio-settings", JSON.stringify(settings)); await refreshBatches(); setNotice("批次草稿已保存。"); })}>保存草稿</button>
       </div></details>
+      <div className="batch-count-bar">{!scriptFlow && <label>本批生成数量<input aria-label="本批生成数量" type="number" min={1} max={300} step={1} value={count} placeholder="AI 分析后推荐" onChange={(e) => { manualCount.current = true; setCount(e.target.value); setDirty(true); }} /></label>}<details className="batch-duration-settings"><summary>视频时长 · 至少 {settings.minimum_duration_seconds || 30} 秒</summary><label>每条最短时长（秒）<input aria-label="每条最短时长" type="number" min={modern ? 30 : 0} step={1} value={settings.minimum_duration_seconds || ""} placeholder="AI 决定" onChange={(e) => { setSettings({ ...settings, minimum_duration_seconds: Number(e.target.value) }); setDirty(true); }} /></label></details>{scriptFlow ? <button data-batch-action="scripts" className="batch-primary" disabled={!total || (modern && !brief.target_audience.trim())} onClick={() => void start("scripts")}>{options.length > 0 && options.length < 3 && !dirty ? "补齐剩余文案" : options.length ? "重新准备三个选题" : "生成三个选题"}</button> : <><button data-batch-action="recommend" disabled={!total} onClick={() => void start("recommend")}>AI 推荐数量</button><button data-batch-action="samples" className="batch-primary" disabled={!total} onClick={() => void start("samples")}>生成／继续样片</button></>}</div>
+      <p className="batch-hint">{scriptFlow ? "先比较选题，选中后查看全文。此步骤不会生成配音或视频。" : "当前为旧批次：先做最多 3 条样片，确认后继续整批。"}</p>
     </fieldset>
     </details>
-    {scriptFlow && !!options.length && <section className="batch-script-section" aria-label="选择本批文案"><header><div><h2>选择文案方向与数量</h2><p>可选一到三个方向。每个方向的第一条使用确认正文，后续沿用该方向创作不同内容。</p></div>{batch?.script_confirmation && <span className="batch-confirmed-label">已确认 · 共 {batch.target_count} 条</span>}</header>
-      {dirty && <p className="batch-notice" role="status">素材或创作目标有修改，请先重新准备文案。</p>}
-      <div className="batch-script-options" role="group" aria-label="三个文案方向">{options.map((option, index) => <article key={option.candidate_id} className={`batch-script-option${selectedCounts[option.candidate_id] !== undefined ? " is-selected" : ""}`}>
+    {scriptFlow && !!options.length && <section className="batch-script-section" aria-label="选择本批文案"><header><div><h2>{modern ? "选一个方案，查看完整文案" : "选择文案方向与数量"}</h2><p>{modern ? "三个切入点，都面向你的目标客户。" : "可选一到三个方向。每个方向的第一条使用确认正文，后续沿用该方向创作不同内容。"}</p></div>{batch?.script_confirmation && <span className="batch-confirmed-label">已确认 · 共 {batch.target_count} 条</span>}</header>
+      {dirty && <p className="batch-notice" role="status">素材或创作需求有修改，请重新生成选题。</p>}
+      {modern && options.length < 3 && <p className="batch-notice" role="status">已保留 {options.length} 个合格方案，请补齐三个方案后制作。{batch?.reasons?.join("；")}</p>}
+      {modern ? <BatchTopicChoices options={options} selected={chosen[0]?.candidate_id} locked={locked || dirty} selectionLocked={!!batch?.script_confirmation} onSelect={(id) => setSelectedCounts({ [id]: "1" })} onEdit={setEditing} /> : <div className="batch-script-options" role="group" aria-label="三个文案方向">{options.map((option, index) => <article key={option.candidate_id} className={`batch-script-option${selectedCounts[option.candidate_id] !== undefined ? " is-selected" : ""}`}>
         <label className="batch-script-heading"><input type="checkbox" checked={selectedCounts[option.candidate_id] !== undefined} disabled={locked || !!batch?.script_confirmation || dirty} onChange={(e) => { const next = { ...selectedCounts }; if (e.target.checked) next[option.candidate_id] = "1"; else delete next[option.candidate_id]; setSelectedCounts(next); }} /><span>方向 {index + 1} · {option.angle || option.title}</span></label>
         <dl><div><dt>受众</dt><dd>{option.audience || "素材中的使用者"}</dd></div><div><dt>痛点</dt><dd>{option.pain_point || "请阅读正文中的问题"}</dd></div></dl>
         <h3>{option.title}</h3><p className="batch-script-body">{scriptBody(option)}</p>
         <label className="batch-direction-count">这个方向做几条<input type="number" min={1} max={300} step={1} aria-label={`方向 ${index + 1} 生成数量`} value={selectedCounts[option.candidate_id] ?? ""} placeholder="先勾选方向" disabled={locked || !!batch?.script_confirmation || dirty || selectedCounts[option.candidate_id] === undefined} onChange={(e) => setSelectedCounts({ ...selectedCounts, [option.candidate_id]: e.target.value })} /><span>条</span></label>
         <footer><small>预计 {Math.round((option.estimated_duration_ms || option.duration_ms || 0) / 1000)} 秒 · 第 {option.revision} 版</small><button disabled={locked} onClick={() => setEditing(option)}>修改正文</button></footer>
-      </article>)}</div>
-      <BatchSoundSettings settings={settings} locked={locked || !!batch?.script_confirmation} onChange={changeSoundSettings} />
+      </article>)}</div>}
+      {modern && chosen.length === 1 && <details className="batch-advanced"><summary>批量制作 · {chosenTotal || 1} 条</summary><label className="batch-direction-count">这个方向做几条<input aria-label="这个方向做几条" type="number" min={1} max={300} value={selectedCounts[chosen[0].candidate_id]} disabled={locked || !!batch?.script_confirmation || dirty} onChange={(event) => setSelectedCounts({ [chosen[0].candidate_id]: event.target.value })} />条</label><p className="batch-hint">第一条使用确认正文，其余沿用这个方向创作不同内容，最多300条。</p></details>}
+      <details className="batch-advanced"><summary>声音与配乐 · {settings.voice_persona_id && settings.music_track_ids?.length ? "已选择" : "制作前请选择"}</summary><BatchSoundSettings settings={settings} locked={locked || !!batch?.script_confirmation} onChange={changeSoundSettings} /></details>
       <p className="batch-hint">先确认完整文案；制作时自动安排并检查镜头，再配音生成视频。</p>
       {soundDirty && <p className="batch-hint">声音设置会随本次制作保存，下次可直接沿用。</p>}
-      <div className="batch-script-confirm"><div><p>{chosen.length ? `已选 ${chosen.length} 个方向，合计 ${chosenTotal} 条` : "勾选想做的方向，并填写各自的数量。"}</p><p className="batch-hint">合计最多 300 条。制作完成后自动保存到成片文件夹。</p>{chosen.length > 0 && !countsValid && <p className="batch-notice" role="alert">每个方向至少 1 条，合计不能超过 300 条。</p>}</div>
+      <div className="batch-script-confirm"><div><p>{chosen.length ? `已选 ${chosen.length} 个方向，合计 ${chosenTotal} 条` : modern ? "请先选定一个方案。" : "勾选想做的方向，并填写各自的数量。"}</p><p className="batch-hint">合计最多 300 条。制作完成后自动保存到成片文件夹。</p>{chosen.length > 0 && !countsValid && <p className="batch-notice" role="alert">每个方向至少 1 条，合计不能超过 300 条。</p>}</div>
         {!batch?.script_confirmation && <button className="batch-primary" data-batch-action="confirm" disabled={locked || dirty || !countsValid || !settings.voice_persona_id || !settings.music_track_ids?.length} onClick={() => void confirmScript()}>{submitting ? "正在提交…" : `确认文案，开始制作${countsValid ? ` ${chosenTotal} 条` : ""}`}</button>}
         {batch?.script_confirmation && pendingJobs && batch.status !== "outcome_unknown" && <button data-batch-action="continue" disabled={locked || dirty} onClick={() => void start("continue")}>继续未完成作品</button>}
       </div>{(!settings.voice_persona_id || !settings.music_track_ids?.length) && <p className="batch-hint">开始制作前，请在上方选定已试听的声音和配乐。</p>}
