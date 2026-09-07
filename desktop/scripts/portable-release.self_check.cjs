@@ -696,7 +696,7 @@ for (const marker of momentsActionIpcMarkers) {
   assert.equal(packagedSources.includes(marker), edition === "test", `only test-edition source may contain ${marker}`);
 }
 for (const marker of momentsActionUiMarkers) {
-  assert.equal(renderer.includes(marker), edition === "test", `only the test renderer may contain ${marker}`);
+  assert.equal(renderer.includes(marker), false, `the unified workflow renderer must not expose legacy action controls: ${marker}`);
 }
 if (edition === "delivery") {
   for (const marker of momentsActionIpcMarkers) assert.equal(packagedSources.includes(marker), false, `delivery source must not contain ${marker}`);
