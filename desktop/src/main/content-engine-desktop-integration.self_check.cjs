@@ -41,6 +41,7 @@ async function assertPreloadContract() {
   };
   const api = createContentEngineApi(ipcRenderer);
   assert.deepEqual(Object.keys(api).sort(), [
+    "batch",
     "creative",
     "exportPackages",
     "finished",
@@ -81,8 +82,14 @@ async function assertPreloadContract() {
     "chooseCacheDirectory",
     "deleteBailianKey",
     "saveBailianKey",
+    "saveVolcengineArkKey",
+    "saveVolcengineAsrCredentials",
+    "saveVolcengineTtsKey",
     "status",
-    "updateCacheLimit"
+    "updateCacheLimit",
+    "volcengineArkStatus",
+    "volcengineAsrStatus",
+    "volcengineTtsStatus"
   ]);
   assert.deepEqual(Object.keys(api.creative).sort(), [
     "analyzeAssets", "analyzeProductAssets", "approveAutoMixVoicePersona", "createAutoMixV2", "createGuidedAutoMixSupplementalImageV2", "createOneClickProject", "createVisualComparisonTask", "designAutoMixVoicePersona", "downloadCandidate", "exportCandidate",

@@ -78,12 +78,14 @@ function assertStageWorkflowContract() {
   const momentsNavEntries = source.match(/\{ key: "moments", label: "[^"]+", icon: [A-Za-z]+ \}/g) ?? [];
   assert.equal(momentsNavEntries.length, 1, "moments publishing and engagement must share exactly one sidebar entry");
   assert.equal(momentsNavEntries[0], "{ key: \"moments\", label: \"朋友圈运营\", icon: ThumbsUp }", "the unified moments entry must use the product name");
-  assert.match(source, /\{ key: "agent", label: "微信拓客", icon: UsersRound, children: agentChildren \}/, "the personal WeChat group must use the 微信拓客 product name");
+  assert.match(source, /\{ key: "agent", persona: AGENT_ROLE_IDENTITIES\.agent\.name, label: AGENT_ROLE_IDENTITIES\.agent\.responsibility, icon: UsersRound, children: agentChildren \}/, "the WeChat group must use the shared role identity");
+  assert.match(read(path.join(desktopDir, "src", "renderer", "AgentHome.tsx")), /agent: \{ name: "小玺", responsibility: "微信拓客" \}/, "the shared WeChat responsibility must retain the product name");
   assert.equal(source.includes("个微Agent"), false, "the retired 个微Agent name must not remain in the UI");
   assert.equal(source.includes("小玺AI员工"), false, "the retired app name must not remain in the UI");
   assert.match(source, /productBrand\.displayName/, "the app brand must use the shared V1.0 product name");
   assert.equal(source.includes('name: "2829347524"'), false, "packaged editions must not expose a developer account identifier as the default profile");
-  assert.match(source, /DEFAULT_USER_PROFILE: UserProfile = \{ name: "本机用户", avatar: "用" \}/u, "packaged editions must use a neutral local profile before onboarding");
+  assert.match(source, /if \(!license\?\.authorized \|\| !sessionEntered\) return <LoginScreen/u, "packaged editions must require an explicit login before entering the workspace");
+  assert.match(source, /identity\?\.nickname \|\| "未同步微信"/u, "unsynchronized accounts must not show an invented customer identity");
   assert.match(source, /DEFAULT_TOUCH_MESSAGE = DEVELOPMENT_EDITION\s*\?/u, "business-specific outreach copy must be limited to the development edition");
   assert.equal(source.includes('<button className="guide">'), false, "the shell must not expose a non-functional onboarding button");
   assert.match(source, /<WechatWorkflowPage/, "Moments must use the unified task page");
