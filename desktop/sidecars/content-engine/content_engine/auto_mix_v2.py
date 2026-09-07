@@ -754,9 +754,9 @@ def build_speech_captions(
     captions = []
     for index, (phrase, raw_duration) in enumerate(zip(phrases, durations)):
         duration_ms = int(raw_duration)
-        text = _clean_text(phrase.get("text"), 40)
+        text = re.sub(r"\s+", " ", str(phrase.get("text") or "")).strip()
         _contract(
-            bool(text) and 0 < duration_ms <= 120_000,
+            0 < len(text) <= 2400 and 0 < duration_ms <= 120_000,
             "auto_mix_voice_timing_invalid",
             "口播短语的真实音频时长无效。",
         )
@@ -1421,6 +1421,8 @@ def select_licensed_music(
     *,
     required_duration_ms: int,
     now: datetime | None = None,
+    allowed_track_ids: Iterable[str] | None = None,
+    prefer_unused_track_ids: Iterable[str] | None = None,
 ) -> dict[str, Any] | None:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     bpm_min, bpm_max = [int(item) for item in brief.get("bpmRange") or (0, 999)]
@@ -1441,8 +1443,12 @@ def select_licensed_music(
         if int(value) > 0
     ]
     candidates = []
+    allowed = set(allowed_track_ids) if allowed_track_ids is not None else None
+    used = set(prefer_unused_track_ids or [])
     for track in tracks:
         if not isinstance(track, dict):
+            continue
+        if allowed is not None and track.get("track_id") not in allowed:
             continue
         expires_at = _parse_utc(track.get("expires_at"))
         loop_start = int(track.get("loop_start_ms") or 0)
@@ -1452,7 +1458,8 @@ def select_licensed_music(
         has_loop = 0 <= loop_start < loop_end <= duration_ms
         if (
             track.get("license_status") != "valid"
-            or track.get("commercial_use_allowed") is not True
+            # Non-commercial local recordings require explicit batch selection.
+            or (track.get("commercial_use_allowed") is not True and allowed is None)
             or not bool(track.get("evidence_present"))
             or (expires_at is not None and expires_at <= now)
             or track.get("analysis_status") != "ready"
@@ -1493,6 +1500,14 @@ def select_licensed_music(
         )
     if not candidates:
         return None
+    # Rotate only among suitable tracks; a very poor mood match should not win
+    # merely because it has not played in this batch yet.
+    if used:
+        best_score = max(float(item["selection_score"]) for item in candidates)
+        fresh = [item for item in candidates if item.get("track_id") not in used
+                 and float(item["selection_score"]) >= best_score - 12]
+        if fresh:
+            candidates = fresh
     return max(
         candidates,
         key=lambda item: (

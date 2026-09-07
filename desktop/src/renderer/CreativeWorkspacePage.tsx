@@ -228,7 +228,6 @@ type BrandProfile = {
 type BailianStatus = {
   configured: boolean;
   maskedKey: string;
-  apiHost: string;
   secureStorageAvailable: boolean;
   code: string;
 };
@@ -248,9 +247,8 @@ type CreativeApi = {
     cancel: (payload: { taskId: string }) => Promise<ContentResult<Task>>;
   };
   settings: {
-    bailianKeyStatus: () => Promise<ContentResult<BailianStatus>>;
-    saveBailianKey: (payload: { apiKey: string; apiHost?: string }) => Promise<ContentResult<BailianStatus>>;
-    deleteBailianKey: () => Promise<ContentResult<BailianStatus>>;
+    volcengineArkStatus: () => Promise<ContentResult<BailianStatus>>;
+    saveVolcengineArkKey: (payload: { apiKey: string }) => Promise<ContentResult<BailianStatus>>;
   };
   creative: {
     analyzeAssets: (payload: { assetIds: string[] }) => Promise<ContentResult<Task>>;
@@ -490,7 +488,6 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
   const [notice, setNotice] = useState<{ tone: "error" | "success" | "info"; text: string } | null>(null);
   const [keyStatus, setKeyStatus] = useState<BailianStatus | null>(null);
   const [keyInput, setKeyInput] = useState("");
-  const [apiHostInput, setApiHostInput] = useState("");
   const taskMutationRef = useRef<string>("");
   const taskGenerationRef = useRef(0);
   const activeTaskIdRef = useRef("");
@@ -635,7 +632,7 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
     const [status, library, bailian, presets, brands] = await Promise.all([
       api.status(),
       api.library.list({ limit: 500 }),
-      api.settings.bailianKeyStatus(),
+      api.settings.volcengineArkStatus(),
       api.creative.listPackagingPresets(),
       api.creative.listBrandProfiles()
     ]);
@@ -660,7 +657,6 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
     }
     if (bailian.ok && bailian.data) {
       setKeyStatus(bailian.data);
-      setApiHostInput(bailian.data.apiHost || "");
     }
     setPackagingPresets(presets.data?.items || []);
     if (brands.ok && brands.data) setBrandProfiles(brands.data.items);
@@ -966,7 +962,7 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
       setGenerationCostEstimate(estimate.data);
       if (estimate.data.bailianCalls > 0 && !estimate.data.bailianProviderConfigured) {
         releaseTaskMutation();
-        setNotice({ tone: "error", text: "百炼尚未配置，本次没有提交云端任务。请先保存百炼 API Key。" });
+        setNotice({ tone: "error", text: "火山方舟尚未配置，本次没有提交云端任务。请先保存方舟 API Key。" });
         return;
       }
       if (estimate.data.confirmationRequired) {
@@ -1144,7 +1140,7 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
       await loadVideos(item.projectId);
       setNotice({
         tone: "info",
-        text: "已创建 1 个三风格对照任务：复用原选段、声音、编导计划与 AI 封面，不调用百炼或 APIMart。"
+        text: "已创建 1 个三风格对照任务：复用原选段、声音、编导计划与 AI 封面，不调用云端模型或 APIMart。"
       });
       window.setTimeout(() => taskStatusRef.current?.focus(), 0);
     } catch {
@@ -1210,17 +1206,16 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
     const api = apiForWindow();
     if (!api || !keyInput.trim()) return;
     setBusy("key");
-    const result = await api.settings.saveBailianKey({
-      apiKey: keyInput.trim(),
-      apiHost: apiHostInput.trim()
+    const result = await api.settings.saveVolcengineArkKey({
+      apiKey: keyInput.trim()
     });
     setBusy("");
     if (result.ok && result.data) {
       setKeyStatus(result.data);
       setKeyInput("");
-      setNotice({ tone: "success", text: "百炼 Key 已用当前 Windows 账户加密保存，内容引擎已重启。" });
+      setNotice({ tone: "success", text: "方舟 Key 已用当前 Windows 账户加密保存，内容引擎已重启。" });
     } else {
-      setNotice({ tone: "error", text: failure(result, "百炼 Key 保存失败。") });
+      setNotice({ tone: "error", text: failure(result, "方舟 Key 保存失败。") });
     }
   }
 
@@ -1267,7 +1262,7 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
         return;
       }
       trackTask(result.data.taskId, result.data);
-      setNotice({ tone: "info", text: "正在复用原选段和封面生成新包装，不会重新调用百炼或 APIMart。" });
+      setNotice({ tone: "info", text: "正在复用原选段和封面生成新包装，不会重新调用云端模型或 APIMart。" });
     } catch {
       releaseTaskMutation();
       setNotice({ tone: "error", text: "换包装失败。" });
@@ -1453,7 +1448,7 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
       tabIndex={-1}
     >
       <div className="workspace-comparison-costs">
-        <span>百炼 0 次</span>
+        <span>模型 0 次</span>
         <span>APIMart 0 次</span>
         <span>本地渲染 3 次</span>
       </div>
@@ -1526,7 +1521,7 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
       <div className="workspace-video-body">
         <div><strong>{item.title}</strong><span>{formatDuration(item.durationMs)}{item.score.viralityTotal != null ? ` · 传播参考 ${Math.round(item.score.viralityTotal)}` : item.score?.total != null ? ` · ${localPreselection ? "预筛 " : ""}${Math.round(item.score.total)} 分` : ""}</span></div>
         <small>{item.sourceStartMs != null ? `源时间码 ${formatDuration(item.sourceStartMs)}—${formatDuration(item.sourceEndMs)}` : `AI 语义混剪${item.skeletonId ? ` · 结构 ${item.skeletonId.slice(-8).toUpperCase()}` : ""}`}</small>
-        {item.packagingPresetName && <div className="workspace-packaging-meta"><span>{item.packagingPresetName}</span><span>{item.brandProfileId ? "品牌包装" : "中性包装"}</span><span>封面：{COVER_STATUS_LABELS[item.coverStatus || "local"] || item.coverStatus}</span>{item.motionDirectorProvider && <span>百炼编导 · {item.motionEventCount} 个语义事件</span>}</div>}
+        {item.packagingPresetName && <div className="workspace-packaging-meta"><span>{item.packagingPresetName}</span><span>{item.brandProfileId ? "品牌包装" : "中性包装"}</span><span>封面：{COVER_STATUS_LABELS[item.coverStatus || "local"] || item.coverStatus}</span>{item.motionDirectorProvider && <span>AI 编导 · {item.motionEventCount} 个语义事件</span>}</div>}
         <div className="workspace-render-meta">
           {item.visualRendererLegacy
             ? <span className="is-legacy">legacy FFmpeg</span>
@@ -1541,7 +1536,7 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
           已回退 FFmpeg · 原因：{FALLBACK_LABELS[item.fallbackCode || ""] || item.fallbackCode}
         </div>}
         {item.score.hook != null && <div className="workspace-score-breakdown is-experiment">
-          <span>{item.score.selectionEngine?.includes("bailian") ? "百炼内容参考" : "内容信号参考"}</span>
+          <span>{item.score.selectionEngine?.includes("bailian") ? "AI 内容参考" : "内容信号参考"}</span>
           <span>钩子 {Math.round(item.score.hook)}/25</span>
           <span>参与度 {Math.round(item.score.engagement || 0)}/25</span>
           <span>内容价值 {Math.round(item.score.value || 0)}/25</span>
@@ -1686,13 +1681,13 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
                 {highQualityPackaging && <label className="workspace-field"><span>视觉风格（HOW）</span><select value={visualStylePreference} onChange={(event) => setVisualStylePreference(event.target.value as VisualStylePreference)} disabled={Boolean(busy)}><option value="auto_disperse">自动分散（默认）</option><option value="social_pop">社交弹跳（social_pop）</option><option value="neo_editorial">新编辑部（neo_editorial）</option><option value="tech_motion">科技动势（tech_motion）</option></select></label>}
               </div>
               <p className={`workspace-cost-note ${effectiveCoverMode === "ai_generate" ? "has-cost" : ""}`}>AI 封面预计调用：<b>{effectiveCoverMode === "ai_generate" ? (mode === "course" ? courseCount : mixCount) : 0}</b> 次 APIMart。每条成片生成 1 张 AI 背景，中文标题与 Logo 仍由本地准确叠加。</p>
-              {generationCostEstimate && <p className="workspace-cost-note has-cost">云端预检：百炼预计 <b>{generationCostEstimate.bailianCalls}</b> 个阶段调用，APIMart <b>{generationCostEstimate.estimatedImageCalls}</b> 次；已缓存的识别阶段不会重复调用。点击生成后会先弹出确认。</p>}
+              {generationCostEstimate && <p className="workspace-cost-note has-cost">云端预检：云端模型预计 <b>{generationCostEstimate.bailianCalls}</b> 个阶段调用，APIMart <b>{generationCostEstimate.estimatedImageCalls}</b> 次；已缓存的识别阶段不会重复调用。点击生成后会先弹出确认。</p>}
               {mode === "mix" && <p className="workspace-cost-note">当前为试跑模式：你可以直接上传随机素材，AI 会先自动理解、分类并尽量组合；缺少完整“开场—过程—结果”时不会立刻拦截。</p>}
               {highQualityPackaging && <div className="workspace-high-quality-note" role="status" aria-live="polite">
                 <strong>{visualComparisonCapable ? "三风格对比能力可用" : "三风格对比能力不可用"}</strong>
                 <span>上方包装方式/模板决定内容放什么（WHAT）；视觉风格只决定怎么表现（HOW），两者不会互相覆盖。</span>
                 <span>{visualStylePreference === "auto_disperse" ? "普通生成会在三套视觉系统中按候选稳定分散。" : `普通生成将直接使用${VISUAL_STYLE_LABELS[visualStylePreference]}。`} 同时仍可给已有成片做三风格对比。</span>
-                <span>{remotionPackagingCapable ? "Remotion 包装运行时已就绪。" : "本机 Remotion 暂不可用时，普通生成会明确回退 FFmpeg 并在成片卡片显示原因；三风格对比仍禁用。"} 高质直出不增加百炼或 APIMart 调用。</span>
+                <span>{remotionPackagingCapable ? "Remotion 包装运行时已就绪。" : "本机 Remotion 暂不可用时，普通生成会明确回退 FFmpeg 并在成片卡片显示原因；三风格对比仍禁用。"} 高质直出不增加云端模型或 APIMart 调用。</span>
               </div>}
             </div>
             <div className="workspace-generate-actions">
@@ -1703,7 +1698,7 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
                 {busy === "generate" ? <LoaderCircle className="is-spinning" size={16} /> : <Sparkles size={16} />}AI 自动生成
               </button>
             </div>
-            <p className="workspace-safety-note"><CircleAlert size={15} />包装复用现有分析，不增加百炼调用；四维传播分只作内容参考，不承诺真实传播效果。首轮仅内部查看，不会自动发布。</p>
+            <p className="workspace-safety-note"><CircleAlert size={15} />包装复用现有分析，不增加云端模型调用；四维传播分只作内容参考，不承诺真实传播效果。首轮仅内部查看，不会自动发布。</p>
           </section>
 
           {(currentTask || project) && <section
@@ -1788,11 +1783,10 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
 
         <aside className="workspace-sidebar">
           <section className="workspace-panel workspace-key-panel">
-            <div className="workspace-sidebar-title"><KeyRound size={18} /><div><strong>百炼素材理解</strong><span>{keyStatus?.configured ? `已配置 ${keyStatus.maskedKey}` : "尚未配置"}</span></div></div>
-            <input type="password" value={keyInput} placeholder="sk-..." autoComplete="off" onChange={(event) => setKeyInput(event.target.value)} />
-            <input value={apiHostInput} placeholder="API Host（可选，如 https://llm-xxx.cn-beijing.maas.aliyuncs.com）" autoComplete="off" onChange={(event) => setApiHostInput(event.target.value)} />
+            <div className="workspace-sidebar-title"><KeyRound size={18} /><div><strong>火山方舟 · 素材理解</strong><span>{keyStatus?.configured ? `已配置 ${keyStatus.maskedKey}` : "尚未配置"}</span></div></div>
+            <input type="password" value={keyInput} placeholder="火山方舟 API Key" autoComplete="off" onChange={(event) => setKeyInput(event.target.value)} />
             <button className="workspace-button is-primary" onClick={() => void saveKey()} disabled={!keyInput.trim() || Boolean(busy)}>{busy === "key" ? <LoaderCircle className="is-spinning" size={15} /> : <KeyRound size={15} />}加密保存</button>
-            <p>新版 Key 请把创建弹窗里的 API Host 一起填入；只上传压缩音频和抽取关键帧，原始视频留在本机。Key 不进入日志、数据库或导出包。</p>
+            <p>方舟负责素材理解与文案；只上传压缩音频和抽取关键帧，原始视频留在本机。Key 不进入日志、数据库或导出包。</p>
           </section>
           <section className="workspace-panel workspace-brand-panel">
             <div className="workspace-sidebar-title"><Sparkles size={18} /><div><strong>品牌包</strong><span>可选；不选则使用中性模板</span></div></div>

@@ -1,66 +1,19 @@
 ---
 name: smoke
-description: Quick 5-step sanity check — imports, app boot, key endpoints, e2e composer test. Run after any code change to catch breakage in <30s.
-model: haiku
-allowed-tools:
-  - Bash
-  - Read
+description: Run focused offline checks for the embedded product-detail desktop sidecar and IPC contract.
 ---
 
-# Smoke Test
+# 产品详情图桌面离线检查
 
-Run these 5 steps in order. If any fails, STOP and report the failure with the offending step number.
+从仓库根的 `desktop/` 运行与改动相关的检查：
 
-## Step 1 — Module imports
+| 改动 | 命令 |
+|---|---|
+| sidecar 启停与协议 | `node src/main/product-detail-sidecar.self_check.cjs` |
+| IPC 与付费任务状态 | `node src/main/product-detail-ipc.self_check.cjs` |
+| 密钥注入 | `node src/main/product-detail-ai-settings.self_check.cjs` |
+| 下载 | `node src/main/product-detail-download.self_check.cjs` |
 
-```bash
-python -c "import ai_image, ai_image_volcengine, ai_image_router, image_composer, theme_color_flows; print('OK imports')"
-```
+Python 内部行为改动使用 [桌面运行说明](../../../../README.desktop.md) 中的虚拟环境，选择相关现有 pytest。不要启动原项目固定端口服务器或终止整机所有 Python 进程。
 
-Expected: `OK imports`. Any traceback = fail.
-
-## Step 2 — App boot
-
-```bash
-HTTPS_PROXY="" HTTP_PROXY="" python -c "import app; print('routes:', len(list(app.app.url_map.iter_rules())))"
-```
-
-Expected: `routes: N` (N >= 30). Import errors = fail.
-
-## Step 3 — Start app in background
-
-```bash
-HTTPS_PROXY="" HTTP_PROXY="" python app.py
-```
-
-Run in background. Wait 3 seconds then proceed to step 4.
-
-## Step 4 — Hit key endpoints
-
-```bash
-curl -s http://localhost:5000/ -o /dev/null -w "%{http_code}"
-curl -s http://localhost:5000/api/ai-engines -o /dev/null -w "%{http_code}"
-```
-
-Expected: both `200`. Anything else = fail.
-
-## Step 5 — E2E composer test + cleanup
-
-```bash
-python test_seamless_e2e.py
-taskkill //F //IM python.exe
-```
-
-Expected: `OK -> ... 750 x 3370`. Then kill the background app.
-
-## Report format
-
-On success:
-```
-[smoke] PASS — imports OK, app boot OK, /=200 /api/ai-engines=200, e2e=750x3370 PNG
-```
-
-On failure (example):
-```
-[smoke] FAIL at step 3 — app boot returned ImportError on `from foo import bar`
-```
+这些检查不调用真实付费 AI。检查通过只能说明离线契约通过；页面与导出须在实际桌面宿主检查。

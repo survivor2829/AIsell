@@ -228,7 +228,7 @@ type Api = {
     probe: (payload: { assetId: string }) => Promise<Result<Asset>>;
   };
   tasks: { list: (payload?: { limit?: number }) => Promise<Result<{ items: ContentTask[] }>> };
-  settings: { bailianKeyStatus: () => Promise<Result<{ configured?: boolean; secureStorageAvailable?: boolean }>> };
+  settings: { volcengineArkStatus: () => Promise<Result<{ configured?: boolean; secureStorageAvailable?: boolean }>> };
   creative: {
     createAutoMixV2: (payload:
       | { specVersion: "2"; assetIds: string[]; title: string; copyFramework: string }

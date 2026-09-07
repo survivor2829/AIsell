@@ -1,41 +1,38 @@
-# Repository Guidelines
+# 项目约定
 
-## 项目定位
+Windows Electron 微信客户运营与内容制作应用，微信验收目标为 `4.1.11.55`。能力和验证状态见 [PROJECT_STATUS.md](PROJECT_STATUS.md)，模块位置见 [MODULE_MAP.md](MODULE_MAP.md)。
 
-这是一个面向个人微信 `4.1.11.55` 的 Windows Electron 桌面应用。当前修复主线先恢复联系人同步、自动回复和主动触达的可重复验收，再继续扩展朋友圈自动化。能力与验证状态只以 `PROJECT_STATUS.md` 为准。
+## 任务范围与完成
 
-## 结构与边界
-
-- `desktop/src/renderer/`：React 界面与展示状态，不直接操作微信或读取密钥。
-- `desktop/src/main/`：Electron 主进程、IPC、运行协调、AI 与本地数据入口。
-- `desktop/rpa/`：联系人同步、微信窗口适配和业务执行器。
-- `desktop/scripts/`：self-check、构建和便携包生成。
-- `release/`：生成物，不直接编辑；只从 `desktop/` 重建。
-
-运行状态必须按业务隔离：`contact_sync/`、`active_touch/`、`auto_reply/`、`moments/` 分别保存；`wechat_adapter/` 只保存共享适配信息，不保存业务发送结果。
+- 仅要求解释、评估、审查或诊断时，完成分析并给出依据、结论和建议，不自动实施修复；若同一请求明确要求修复或优化，则完成该范围内的修改。
+- 实施任务在已授权范围内自主完成实现和适度验证，不止步于计划。普通实现选择自行判断；仅在缺少会实质影响结果且无法从现场核实的信息，或下一步超出授权范围时询问。等待答复时继续不受影响的工作。
+- 沿用当前会话中已明确、未撤回且动作与对象范围匹配的授权，不因进入下一步骤或使用 Skill 再次确认。一般的“优化/清理项目”不自动授权部署、发布、对外消息、付费调用、凭据变更或重要数据删除；工具自身的权限限制仍须遵守。
+- 保留已有未提交改动，只改本次涉及的文件和代码块；无法区分或合并同一区域的改动时先说明冲突，不覆盖或回退他人的工作。实施修改不自动包含提交、推送或发布。
+- 按任务需要选择 Skill、子 agent 或多模型协作，不为所有任务强制套用完整流程。用户明确指定的语言、模型及有效外部模型路由约定继续适用；使用这些流程不扩大修改、数据传输或外部操作的授权范围。
 
 ## 开发与验证
 
-在 `desktop/` 运行：
+在 `desktop/` 执行：
 
-```powershell
-npm.cmd install
-npm.cmd run desktop
-npm.cmd run check:self
-npm.cmd run build:test
-npm.cmd run build:delivery
-```
+- 启动：`npm.cmd run desktop`；首次安装或依赖需要同步时使用 `npm.cmd install`，不把重新安装依赖作为每次任务的前置步骤。
+- 界面构建：`npm.cmd run build:test`；正式界面使用 `npm.cmd run build:delivery`。完整源码检查为 `npm.cmd run check:self`。
 
-生成便携包前运行 `npm.cmd run release:test` 或 `npm.cmd run release:delivery`。真实微信验收不能由 self-check 或构建结果替代。
+按改动选择验证，不把命令清单当成每次必跑的流程：
 
-## 代码约定
+- 纯文档或规则调整：检查内容一致性、引用与 diff，不要求应用构建或测试。
+- 源码修改：先完成相关语法或构建检查；行为修复尽量先复现，再按风险补有价值的定向回归。难以自动复现时说明依据，并给出具体手动复验步骤，不为凑数量添加测试。
+- 已通过的检查没有对应新改动、失败或未解决疑点时不重复运行。只有影响面需要或发布流程要求时运行全量检查；打包仍遵循 [README.md](README.md)，不因日常验证简化而跳过发布检查。
+- 交付说明改了什么、验证结果和未验证项。构建、自检、安装包验证与真实微信验收分别报告；构建通过不替代任务要求的功能结果。遇到实际阻碍，说明缺口和下一步，不把未完成写成完成。
 
-TypeScript/JavaScript 使用 2 空格缩进和双引号；CSS 类名使用 kebab-case。微信/RPA 操作必须经过主进程 IPC 和本地执行器。优先复用共享适配器，避免在功能模块中散落窗口尺寸、DPI、坐标和微信版本判断。
+## 运行边界
 
-## 安全与发布
+- renderer 只处理界面；微信/RPA、密钥和本地数据经主进程 IPC。微信尺寸、DPI、坐标和版本判断复用 `desktop/rpa/` 的共享适配器。
+- `contact_sync/`、`active_touch/`、`auto_reply/`、`moments/` 隔离业务状态；`wechat_adapter/` 只存共享适配信息。
+- 真实微信操作须有用户对动作、测试账号及联系人范围的明确授权；范围未变的既有授权按上文延续，新增动作或对象须另获授权。发送仅限指定测试账号和联系人；发送结果不明时保留 `outcome_unknown`，不得自动补发或当作成功。
+- API Key 使用当前 Windows 用户的加密运行目录，不进入源码、日志或发布包。
+- `desktop/sidecars/product-detail/app/` 是桌面内嵌源码；其旧服务器部署文档属于来源项目历史，桌面运行契约见 `desktop/sidecars/product-detail/README.desktop.md`。
 
-- 未经用户明确授权，只运行 self-check、dry-run 或只读诊断；授权后的真实发送仅限明确的测试账号和联系人。
-- 发送结果不确定时不得自动补发；运行态波动应隔离当前对象，不得伪装成成功。
-- DeepSeek Key 不进入源码、Git、日志或 ZIP，只保存在当前 Windows 用户的加密运行目录。
-- 不从 dirty worktree 对外发布。提交、构建、包内 manifest 和实机验收必须指向同一版本。
-- 删除旧运行时、构建目录、旧脚本或发布物前，先提交清理候选报告并取得用户确认。
+## 发布与清理
+
+- `release/` 是生成物，只从 `desktop/` 重建。不从 dirty worktree 对外发布；提交、运行时、包内 manifest 和实机验收必须对应同一版本。
+- 旧运行时、构建目录、旧脚本和发布物先列清理候选，再按用户对候选范围的确认处理；已确认且范围未变时不重复询问。新增候选、用途不明或包含唯一内容时先说明影响并确认。源码和规则的冗余整理不等于获准删除运行数据、原始素材或回滚证据。

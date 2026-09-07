@@ -1,0 +1,19 @@
+{
+  "reviewed_at": "2026-09-05",
+  "branch": "codex/UI",
+  "base_commit": "585134992d80fd44d22f528f34a9368ef76c04aa",
+  "mode": "agent",
+  "reviewer": "/root/research_auditions",
+  "scope_kind": "explicit dirty-file subset",
+  "canonical_files_modified_by_reviewer": [],
+  "cloud_calls": 0,
+  "secrets_read_or_logged": false,
+  "artifacts": [
+    "review.json",
+    "metadata.json"
+  ],
+  "finding_counts": {
+    "open": 0,
+    "resolved": 1
+  }
+}

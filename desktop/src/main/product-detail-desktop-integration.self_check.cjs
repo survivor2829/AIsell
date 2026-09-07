@@ -135,7 +135,10 @@ function assertRendererContract() {
   const page = read("src/renderer/ProductDetailPage.tsx");
   const styles = read("src/renderer/ProductDetailPage.css");
   const workspace = read("sidecars/product-detail/app/templates/workspace.html");
-  assert.match(app, /\| "product-detail"/, "product-detail must have its own ModuleKey");
+  const moduleKey = app.match(/type ModuleKey = ([^;]+);/)?.[1] || "";
+  const homeTargets = read("src/renderer/AgentHome.tsx").match(/export type AgentHomeTarget =([\s\S]*?);/)?.[1] || "";
+  assert.match(moduleKey, /\bAgentHomeTarget\b/, "ModuleKey must include the shared navigation targets");
+  assert.match(homeTargets, /\| "product-detail"/, "product-detail must have its own navigation target");
   assert.match(
     app,
     /\{ key: "product-detail", label: "产品详情图", icon: [A-Za-z]+ \}/,

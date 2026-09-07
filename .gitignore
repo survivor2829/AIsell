@@ -7,6 +7,9 @@ desktop/.build/
 desktop/.vite/
 /.build/
 
+# Local media, screenshots and acceptance evidence; keep source/docs outside it.
+/outputs/
+
 # Local secrets, certificates and temporary plaintext
 .env
 .env.*

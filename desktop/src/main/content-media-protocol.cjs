@@ -34,6 +34,10 @@ function parseContentMediaUrl(value) {
     && new Set(["video", "thumbnail"]).has(parts[1])) {
     return { candidateId: parts[0], variant: parts[1] };
   }
+  if (url.hostname === "asset" && /^asset_[a-f0-9]{32}$/.test(parts[0])
+    && ["thumbnail", "preview"].includes(parts[1])) {
+    return { assetId: parts[0], variant: parts[1] };
+  }
   if (url.hostname === "supplemental"
     && GUIDED_SUPPLEMENTAL_IMAGE_ID.test(parts[0])
     && parts[1] === "image") {
@@ -87,10 +91,16 @@ function registerContentMediaProtocol({ protocol, net, controller }) {
     if (!target) return new Response("Not found", { status: 404 });
     try {
       const supplemental = Boolean(target.operationId);
-      const result = supplemental
+      const result = target.assetId
+        ? await controller.resolveAssetPreview(target.assetId, target.variant)
+        : supplemental
         ? await controller.resolveGuidedAutoMixSupplementalImagePath(target.operationId)
         : await controller.resolveGeneratedVideoPath(target.candidateId, target.variant);
-      if (supplemental) {
+      if (target.assetId) {
+        if (result?.asset_id !== target.assetId || result?.variant !== target.variant) {
+          return new Response("Not found", { status: 404 });
+        }
+      } else if (supplemental) {
         if (result?.operation_id !== target.operationId || result?.variant !== target.variant) {
           return new Response("Not found", { status: 404 });
         }
@@ -122,7 +132,10 @@ function registerContentMediaProtocol({ protocol, net, controller }) {
       }
       const start = range ? range.start : 0;
       const end = range ? range.end : Math.max(0, size - 1);
-      const mimeType = supplemental
+      const mimeType = target.assetId
+        ? ["image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm"].includes(result?.mime_type)
+          ? result.mime_type : "application/octet-stream"
+        : supplemental
         ? new Set(["image/png", "image/jpeg", "image/webp"]).has(String(result?.mime_type || ""))
           ? result.mime_type
           : "image/png"

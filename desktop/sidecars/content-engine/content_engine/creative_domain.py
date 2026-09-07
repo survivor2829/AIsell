@@ -49,9 +49,13 @@ from .auto_mix_resources import (
     VOICE_PREVIEW_SAMPLE,
     auto_select_voice_persona_ids,
     configured_voice_personas,
+    normalize_voice_preview,
     voice_preview_cache_key,
     voice_preview_data_url,
+    voice_preview_ffmpeg,
+    voice_preview_sample,
 )
+from .narration_alignment import align_narration, attach_narration_alignment, sentence_shot_budgets, aligned_binding_spans
 from .database import Database
 from .errors import ContentEngineError
 from .hashing import canonical_json_sha256
@@ -97,6 +101,7 @@ CREATIVE_TASK_TYPES = frozenset(
         "guided_auto_mix_analysis",
         "guided_auto_mix_draft",
         "guided_auto_mix_supplemental_image",
+        "narrated_batch_v1",
     }
 )
 AUTO_MIX_REUSE_SELECTED_VOICE_RECOVERY_CODES = frozenset(
@@ -554,6 +559,8 @@ class CreativeDomain:
                 (persona_id,),
             )
         for persona in personas:
+            provider = persona.get("provider") or "bailian"
+            provider_model = persona.get("provider_model") or AUTO_MIX_TTS_MODEL
             version = int(persona["persona_id"].rsplit("@", 1)[1])
             # Catalog configuration can register a private provider voice, but
             # it cannot stand in for the user's preview-and-approve action.
@@ -574,9 +581,9 @@ class CreativeDomain:
                 str(previous["catalog_version"] or "")
                 != str(persona["catalog_version"] or "")
                 or str(previous["catalog_source"] or "") != "configured"
-                or str(previous["provider"] or "") != "bailian"
+                or str(previous["provider"] or "") != provider
                 or str(previous["provider_model"] or "")
-                != AUTO_MIX_TTS_MODEL
+                != provider_model
                 or (
                     bool(configured_provider_voice_id)
                     and str(previous["provider_voice_id"] or "")
@@ -603,7 +610,7 @@ class CreativeDomain:
                     provider_model, provider_voice_id, instruction, voice_prompt,
                     voice_prefix, catalog_source, approved_at, active, created_at,
                     updated_at
-                ) VALUES (?, ?, ?, ?, ?, 'bailian', ?, ?, ?, ?, ?, 'configured', ?, 1, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'configured', ?, 1, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     version = excluded.version,
                     display_name = excluded.display_name,
@@ -626,7 +633,8 @@ class CreativeDomain:
                     persona["display_name"],
                     persona["style"],
                     persona["catalog_version"],
-                    AUTO_MIX_TTS_MODEL,
+                    provider,
+                    provider_model,
                     provider_voice_id,
                     persona["instruction"],
                     persona.get("voice_prompt") or "",
@@ -685,7 +693,8 @@ class CreativeDomain:
             FROM voice_personas_v1 p
             LEFT JOIN auto_mix_voice_previews_v1 v ON v.persona_id = p.id
             LEFT JOIN auto_mix_voice_designs_v1 d ON d.persona_id = p.id
-            WHERE p.active = 1 AND p.provider_model = ?
+            WHERE p.active = 1 AND ((p.provider = 'bailian' AND p.provider_model = ?)
+                OR (p.provider = 'volcengine' AND p.provider_model IN ('seed-tts-1.0', 'seed-tts-2.0')))
             ORDER BY p.approved_at IS NULL, p.updated_at DESC, p.id
             """,
             (AUTO_MIX_TTS_MODEL,),
@@ -1078,6 +1087,7 @@ class CreativeDomain:
 
     def preview_auto_mix_voice_persona(self, voice_persona_id):
         persona = self._auto_mix_voice_persona_row(voice_persona_id)
+        sample = voice_preview_sample(persona)
         if not str(persona["provider_voice_id"] or "").strip():
             raise ContentEngineError(
                 "auto_mix_voice_design_required", "请先生成当前声音，再进行试听。"
@@ -1126,10 +1136,21 @@ class CreativeDomain:
                     "audioDataUrl": voice_preview_data_url(previous_output),
                     "cacheHit": True,
                 }
+        normalize_executable = None
+        if persona["provider"] == "volcengine":
+            from .volcengine_tts import VolcengineTTSProvider
+            if not VolcengineTTSProvider().configured:
+                raise ContentEngineError("volcengine_tts_not_configured", "请先在声音设置中配置火山语音 API Key。")
+            normalize_executable = voice_preview_ffmpeg()
+        reuse_generated = bool(previous is not None and previous["cache_key"] == cache_key
+                               and previous["status"] == "failed"
+                               and previous["error_code"] in {"auto_mix_voice_preview_normalization_pending", "auto_mix_voice_preview_normalization_failed"}
+                               and self._valid_voice_preview(output, previous["audio_digest"]))
         now = self._now()
-        self.connection.execute(
-            """
-            INSERT INTO auto_mix_voice_previews_v1(
+        if not reuse_generated:
+            self.connection.execute(
+                """
+                INSERT INTO auto_mix_voice_previews_v1(
                 persona_id, cache_key, status, managed_relative_path,
                 audio_digest, error_code, created_at, updated_at
             ) VALUES (?, ?, 'submitted', NULL, NULL, NULL, ?, ?)
@@ -1140,9 +1161,9 @@ class CreativeDomain:
                 audio_digest = NULL,
                 error_code = NULL,
                 updated_at = excluded.updated_at
-            """,
-            (persona["id"], cache_key, now, now),
-        )
+                """,
+                (persona["id"], cache_key, now, now),
+            )
         synthesize = getattr(self.analyzer, "synthesize_auto_mix_phrase", None)
         if not callable(synthesize):
             self.connection.execute(
@@ -1158,16 +1179,24 @@ class CreativeDomain:
             )
         output.parent.mkdir(parents=True, exist_ok=True)
         try:
-            synthesize(
-                VOICE_PREVIEW_SAMPLE,
-                output,
-                {
-                    "provider": persona["provider"],
-                    "provider_model": persona["provider_model"],
-                    "provider_voice_id": persona["provider_voice_id"],
-                    "instruction": persona["instruction"],
-                },
-            )
+            if not reuse_generated:
+                synthesize(
+                    sample,
+                    output,
+                    {
+                        "provider": persona["provider"],
+                        "provider_model": persona["provider_model"],
+                        "provider_voice_id": persona["provider_voice_id"],
+                        "instruction": persona["instruction"],
+                    },
+                )
+                if normalize_executable:
+                    self._wav_duration_ms(output)
+                    self.connection.execute(
+                        "UPDATE auto_mix_voice_previews_v1 SET status='failed', error_code='auto_mix_voice_preview_normalization_pending', managed_relative_path=?, audio_digest=?, updated_at=? WHERE persona_id=?",
+                        (str(relative), hashlib.sha256(output.read_bytes()).hexdigest(), self._now(), persona["id"]))
+            if normalize_executable:
+                normalize_voice_preview(output, normalize_executable)
             self._wav_duration_ms(output)
             try:
                 preview_size = output.stat().st_size
@@ -3389,6 +3418,9 @@ class CreativeDomain:
                 )
             raise
 
+        if private_state.get("narrated_batch_v1"):
+            from .narrated_batch import NarratedBatchDomain
+            NarratedBatchDomain(self).validate_actual_timeline(private_state, voice_bundle["timeline"])
         public_plan.update(
             {
                 "spokenPhrases": voice_bundle["phrases"],
@@ -3441,14 +3473,16 @@ class CreativeDomain:
                 public_plan.get("musicBrief") or {},
                 required_duration_ms=voice_bundle["duration_ms"],
                 excluded_id=str(private_state.get("excluded_music_track_id") or ""),
+                allowed_track_ids=private_state.get("music_track_ids"),
+                prefer_unused_track_ids=private_state.get("used_music_track_ids") or [],
             )
         if music is None:
             return self._pause_auto_mix(
                 task_id,
                 run_id,
                 state="needs_attention",
-                code="auto_mix_licensed_music_required",
-                message="授权曲库中没有有效且适配当前素材的音乐。",
+                code="narrated_music_pool_empty" if private_state.get("music_track_ids") == [] else "auto_mix_licensed_music_required",
+                message="请先试听并选入至少一首可导出的配乐。" if private_state.get("music_track_ids") == [] else "选定配乐库中没有授权有效且适配本条时长的音乐。",
                 public_plan=public_plan,
                 private_state=private_state,
             )
@@ -3691,6 +3725,10 @@ class CreativeDomain:
     def _ensure_auto_mix_planned(
         self, task_id, row, public_plan, private_state
     ):
+        if private_state.get("narrated_batch_v1"):
+            from .narrated_batch import NarratedBatchDomain
+            NarratedBatchDomain(self).validate_pinned_plan(private_state)
+            return public_plan, private_state
         warnings = list(public_plan.get("qualityWarnings") or [])
         asset_ids = json.loads(row["asset_ids_json"] or "[]")
         analysis_profile = self._auto_mix_v2_analysis_profile()
@@ -4093,7 +4131,7 @@ class CreativeDomain:
             "active = 1",
             "approved_at IS NOT NULL",
             "provider_voice_id <> ''",
-            "provider_model = ?",
+            "((provider = 'bailian' AND provider_model = ?) OR (provider = 'volcengine' AND provider_model IN ('seed-tts-1.0', 'seed-tts-2.0')))",
         ]
         if selected_id:
             clauses.append("id = ?")
@@ -4177,6 +4215,7 @@ class CreativeDomain:
             provisioning_status = "failed"
         else:
             provisioning_status = "not_created"
+        configured = next((item for item in configured_voice_personas() if item["persona_id"] == row["id"]), {})
         return {
             "voicePersonaId": row["id"],
             "displayName": row["display_name"],
@@ -4187,6 +4226,12 @@ class CreativeDomain:
             "approvalStatus": "approved" if row["approved_at"] else "pending",
             "previewStatus": preview_status,
             "provisioningStatus": provisioning_status,
+            "provider": row["provider"],
+            "previewText": voice_preview_sample(row),
+            "sourceUrl": configured.get("source_url", ""),
+            "recommendationUrl": configured.get("recommendation_url", ""),
+            "researchDate": configured.get("research_date", ""),
+            "evidenceNote": configured.get("evidence_note", ""),
         }
 
     def _auto_mix_voice_bundle(
@@ -4256,7 +4301,8 @@ class CreativeDomain:
                 cursor = int(caption.get("start_ms") or 0)
                 caption_end = int(caption.get("end_ms") or 0)
                 for segment in timeline.get("selected_segments") or []:
-                    if str(segment.get("evidence_ref") or "") != evidence_ref:
+                    allowed_refs = candidate_refs if preserve_shots else {evidence_ref}
+                    if str(segment.get("evidence_ref") or "") not in allowed_refs:
                         continue
                     segment_start = int(segment.get("timeline_start_ms") or 0)
                     segment_end = int(segment.get("timeline_end_ms") or 0)
@@ -4278,7 +4324,7 @@ class CreativeDomain:
                         "evidenceRefs": [
                             reference
                             for reference in full_evidence_refs
-                            if reference.split(":", 1)[0] == evidence_ref
+                            if preserve_shots or reference.split(":", 1)[0] == evidence_ref
                         ],
                     }
                 )
@@ -4337,6 +4383,64 @@ class CreativeDomain:
         existing_digest = str(private_state.get("voice_audio_digest") or "")
         existing_captions = public_plan.get("speechCaptions") or []
         existing_phrase_audio = private_state.get("phrase_audio") or []
+        phrase_text = {p.get("phraseId"): p.get("text", "") for p in public_plan.get("spokenPhrases") or []}
+        for item in existing_phrase_audio:
+            self._refresh_cached_narration_alignment(item.get("verification") or {},
+                phrase_text.get(item.get("phrase_id"), ""), item.get("duration_ms", 0), item.get("audio_digest"))
+        preserve_shots = bool(private_state.get("narrated_preserve_shot_duration"))
+        def full_shot_timeline(phrases, audio):
+            segments = [dict(s) for s in analysis_timeline["selected_segments"]]
+            cursor = 0
+            position = 0
+            for index, (phrase, item) in enumerate(zip(phrases, audio)):
+                refs = phrase.get("evidenceRefs") or []
+                group = segments[position:position + len(refs)]
+                if not refs or refs != [s["evidence_ref"] for s in group]:
+                    raise ContentEngineError("narrated_voice_mapping", "口播与镜头顺序不匹配。")
+                available = sum(int(s["target_duration_ms"]) for s in group)
+                speech = int(item["duration_ms"])
+                if speech > available:
+                    raise ContentEngineError("narrated_copy_too_long", "实际配音超过对应画面的可用时长。")
+                pause = min(160, available - speech) if index < len(phrases) - 1 else 0
+                budget = speech + pause
+                observed_budgets = sentence_shot_budgets(phrase, item, group, pause)
+                item["shot_timing_source"] = "asr_sentences" if observed_budgets else "phrase"
+                item["sentence_shots"] = [
+                    {**sentence, "evidenceRefs": binding["evidenceRefs"]}
+                    for binding, sentence in zip(phrase.get("sentenceBindings") or [],
+                        aligned_binding_spans(phrase, item))
+                ] if observed_budgets else []
+                accumulated = 0
+                allocated = 0
+                for shot_index, s in enumerate(group):
+                    original = int(s["target_duration_ms"])
+                    accumulated += original
+                    boundary = round(budget * accumulated / available)
+                    duration = observed_budgets[shot_index] if observed_budgets else boundary - allocated
+                    if duration <= 0 or duration > original:
+                        raise ContentEngineError("narrated_voice_mapping", "口播过短，无法完整展示选定镜头。")
+                    # Keep a real central interval at normal playback speed;
+                    # narration sets the edit length, not silence padding.
+                    s["source_start_ms"] += (original - duration) // 2
+                    s["source_end_ms"] = s["source_start_ms"] + duration
+                    s.update(target_duration_ms=duration, timeline_start_ms=cursor,
+                             timeline_end_ms=cursor + duration)
+                    cursor += duration
+                    allocated = boundary
+                item["tail_silence_ms"] = pause
+                position += len(group)
+            if position != len(segments):
+                raise ContentEngineError("narrated_voice_mapping", "口播没有覆盖全部镜头。")
+            minimum_ms = int(private_state.get("narrated_minimum_duration_ms") or 0)
+            if minimum_ms and sum(int(item["duration_ms"]) for item in audio) < minimum_ms + 100:
+                raise ContentEngineError("narrated_duration_too_short",
+                                         f"实际口播不足 {minimum_ms // 1000} 秒，需要补充内容和相关镜头后再制作。")
+            return {**analysis_timeline, "selected_segments": segments, "selected_duration_ms": cursor,
+                    "spoken_evidence_refs": [
+                {"phrase_id": phrase.get("phraseId") or f"phrase-{index + 1}",
+                 "evidence_ref": (phrase.get("evidenceRefs") or [""])[0]}
+                for index, phrase in enumerate(phrases)
+            ]}
         try:
             existing_duration_ms = int(existing_captions[-1]["end_ms"])
         except (IndexError, KeyError, TypeError, ValueError):
@@ -4357,6 +4461,9 @@ class CreativeDomain:
             and existing_digest
             and existing_duration_ms > 0
             and existing_captions
+            and [re.sub(r"\s+", " ", str(c.get("text") or "")).strip() for c in existing_captions]
+                == [re.sub(r"\s+", " ", str(p.get("text") or "")).strip()
+                    for p in public_plan.get("spokenPhrases") or []]
             and phrase_cache_valid
             and self._valid_managed_wav(
                 existing_relative,
@@ -4365,11 +4472,12 @@ class CreativeDomain:
             )
         ):
             phrases = public_plan.get("spokenPhrases") or []
-            timeline = align_material_timeline_to_captions(
+            timeline = full_shot_timeline(phrases, existing_phrase_audio) if preserve_shots else align_material_timeline_to_captions(
                 analysis_timeline,
                 phrases,
                 existing_captions,
             )
+            attach_narration_alignment(existing_captions, existing_phrase_audio)
             text_tracks = finalized_text_tracks(
                 phrases, existing_captions, timeline
             )
@@ -4410,6 +4518,8 @@ class CreativeDomain:
             bounded_phrases.append(phrase)
             estimated_ms = next_estimate
         if len(bounded_phrases) < len(phrases):
+            if private_state.get("narrated_batch_v1"):
+                raise ContentEngineError("narrated_copy_too_long", "解说无法完整对应镜头，请缩短后重做这一条。")
             if guided_duration_plan is not None:
                 raise ContentEngineError(
                     "guided_auto_mix_script_duration_invalid",
@@ -4440,6 +4550,23 @@ class CreativeDomain:
             phrase_audio.append(item)
         durations = [int(item["duration_ms"]) for item in phrase_audio]
         captions = build_speech_captions(phrases, durations, pause_ms=160)
+        if preserve_shots:
+            fitted_timeline = full_shot_timeline(phrases, phrase_audio)
+            segments = fitted_timeline["selected_segments"]
+            cursor = 0
+            for phrase, item, caption in zip(phrases, phrase_audio, captions):
+                refs = phrase.get("evidenceRefs") or []
+                group = segments[cursor:cursor + len(refs)]
+                if not refs or refs != [segment["evidence_ref"] for segment in group]:
+                    raise ContentEngineError("narrated_voice_mapping", "口播与镜头顺序不匹配，已停止制作。")
+                available = sum(segment["target_duration_ms"] for segment in group)
+                if item["duration_ms"] > available:
+                    raise ContentEngineError("narrated_copy_too_long", "实际配音无法在对应镜头内完整播放，请调整口播。")
+                caption["start_ms"] = group[0]["timeline_start_ms"]
+                caption["end_ms"] = caption["start_ms"] + item["duration_ms"]
+                cursor += len(group)
+            if cursor != len(segments):
+                raise ContentEngineError("narrated_voice_mapping", "口播没有覆盖全部镜头，已停止制作。")
         accepted = 0
         for caption in captions:
             if int(caption["end_ms"]) <= available_ms:
@@ -4452,6 +4579,8 @@ class CreativeDomain:
                 "合格素材不足以承载第一句真实配音，请缩短文案或补充素材。",
             )
         if accepted < len(phrases):
+            if private_state.get("narrated_batch_v1"):
+                raise ContentEngineError("narrated_copy_too_long", "实际配音过长，已停止本条制作；请缩短解说。")
             if guided_duration_plan is not None:
                 raise ContentEngineError(
                     "guided_auto_mix_script_duration_invalid",
@@ -4475,11 +4604,12 @@ class CreativeDomain:
                 "auto_mix_voice_timing_invalid",
                 "拼接配音的真实时长与字幕边界不一致。",
             )
-        timeline = align_material_timeline_to_captions(
+        timeline = fitted_timeline if preserve_shots else align_material_timeline_to_captions(
             analysis_timeline,
             phrases,
             captions,
         )
+        attach_narration_alignment(captions, phrase_audio)
         text_tracks = finalized_text_tracks(phrases, captions, timeline)
         return {
             "phrases": phrases,
@@ -4491,6 +4621,20 @@ class CreativeDomain:
             "timeline": timeline,
             "text_tracks": text_tracks,
         }
+
+    def _refresh_cached_narration_alignment(self, verification, text, duration_ms, audio_digest):
+        if not verification.get("matched") or (verification.get("alignment") or {}).get("version", 0) >= 2:
+            return
+        row = self.connection.execute(
+            "SELECT private_metadata_json FROM auto_mix_stage_artifacts_v2 "
+            "WHERE stage='voice_alignment' AND status='completed' "
+            "AND json_extract(private_metadata_json, '$.audio_digest')=? "
+            "AND json_extract(private_metadata_json, '$.expected_text')=? ORDER BY updated_at DESC LIMIT 1",
+            (audio_digest, text)).fetchone()
+        if row:
+            metadata = self._json_object(row["private_metadata_json"])
+            if metadata.get("recognized_segments"):
+                verification["alignment"] = align_narration(text, metadata["recognized_segments"], duration_ms)
 
     def _synthesize_and_verify_auto_mix_phrase(
         self, task_id, run, persona, phrase, *, critical_terms=()
@@ -4509,6 +4653,7 @@ class CreativeDomain:
                 "正式成片需要使用 ASR 回听核对每个配音短语。",
             )
         persona_private = {
+            "provider": persona["provider"],
             "provider_model": persona["provider_model"],
             "provider_voice_id": persona["provider_voice_id"],
             "instruction": persona["instruction"],
@@ -4626,6 +4771,7 @@ class CreativeDomain:
                 "voice_alignment", alignment_key
             )
             if cached_verification.get("matched") is True:
+                self._refresh_cached_narration_alignment(cached_verification, phrase["text"], duration_ms, audio_digest)
                 return {
                     "phrase_id": phrase["phraseId"],
                     "relative_path": str(relative),
@@ -4686,6 +4832,7 @@ class CreativeDomain:
                 title=run["title"],
                 critical_terms=critical_terms,
             )
+            verification["alignment"] = align_narration(phrase["text"], recognized_segments, duration_ms)
             self._record_auto_mix_artifact(
                 run["id"],
                 "voice_alignment",
@@ -4699,6 +4846,7 @@ class CreativeDomain:
                     # by loosening the gate or inventing replacement copy.
                     "expected_text": phrase["text"],
                     "recognized_text": recognized,
+                    "recognized_segments": recognized_segments,
                 },
                 revision=attempt + 1,
             )
@@ -4901,6 +5049,8 @@ class CreativeDomain:
                 "auto_mix_voice_timing_invalid",
                 "一键混剪 V2 的真实配音时长无效。",
             )
+        if recipe.get("narrated_preserve_shot_duration"):
+            expected_duration_ms = sum(int(s["target_duration_ms"]) for s in recipe["visual_segments"])
         if not self._valid_managed_wav(
             recipe.get("voice_audio_path"),
             recipe.get("voice_audio_digest"),
@@ -4925,6 +5075,7 @@ class CreativeDomain:
             matching,
             {"bpmRange": [0, 999]},
             required_duration_ms=expected_duration_ms,
+            allowed_track_ids=recipe.get("music_track_ids"),
         )
         if (
             current is None
@@ -4980,6 +5131,7 @@ class CreativeDomain:
                         "path": item["relative_path"],
                         "duration_ms": item["duration_ms"],
                         "audio_digest": item.get("audio_digest"),
+                        **({"tail_silence_ms": item["tail_silence_ms"]} if "tail_silence_ms" in item else {}),
                     }
                     for item in phrase_audio
                 ],
@@ -5039,7 +5191,10 @@ class CreativeDomain:
                             if not chunk:
                                 break
                             stream.writeframesraw(chunk)
-                    if index < len(sources) - 1:
+                    if "tail_silence_ms" in phrase_audio[index]:
+                        frames = round(frame_rate * max(0, int(phrase_audio[index]["tail_silence_ms"])) / 1000)
+                        stream.writeframesraw(b"\x00" * frames * channels * sample_width)
+                    elif index < len(sources) - 1:
                         stream.writeframesraw(silence)
             temporary.replace(output)
         finally:
@@ -5303,6 +5458,10 @@ class CreativeDomain:
         ).fetchone()
         return self._public_music_catalog_row(row)
 
+    def preview_music_catalog_track(self, track_id):
+        from .music_preview import preview_music_catalog_track
+        return preview_music_catalog_track(self, track_id)
+
     def list_music_catalog_tracks(self):
         rows = self.connection.execute(
             "SELECT * FROM music_catalog_tracks_v1 ORDER BY updated_at DESC, id"
@@ -5364,14 +5523,16 @@ class CreativeDomain:
         )
         return result
 
-    def _select_auto_mix_music(self, brief, *, required_duration_ms, excluded_id=""):
+    def _select_auto_mix_music(self, brief, *, required_duration_ms, excluded_id="",
+                               allowed_track_ids=None, prefer_unused_track_ids=()):
         tracks = [
             item
             for item in self._music_catalog_rows()
             if not excluded_id or item["track_id"] != excluded_id
         ]
         selected = select_licensed_music(
-            tracks, brief, required_duration_ms=required_duration_ms
+            tracks, brief, required_duration_ms=required_duration_ms,
+            allowed_track_ids=allowed_track_ids, prefer_unused_track_ids=prefer_unused_track_ids,
         )
         if selected is None:
             return None
@@ -5385,13 +5546,16 @@ class CreativeDomain:
         if not isinstance(previous, dict):
             return None
         track_id = str(previous.get("track_id") or "")
-        if not track_id or private_state.get("excluded_music_track_id") == track_id:
+        allowed_ids = private_state.get("music_track_ids")
+        if (not track_id or private_state.get("excluded_music_track_id") == track_id
+                or (allowed_ids is not None and track_id not in allowed_ids)):
             return None
         matching = [
             item for item in self._music_catalog_rows() if item["track_id"] == track_id
         ]
         selected = select_licensed_music(
-            matching, brief, required_duration_ms=required_duration_ms
+            matching, brief, required_duration_ms=required_duration_ms,
+            allowed_track_ids=allowed_ids,
         )
         if selected is None:
             return None
@@ -5575,6 +5739,8 @@ class CreativeDomain:
     def _auto_mix_recipe(self, run, public_plan, private_state, *, persona, music):
         timeline = private_state["material_timeline"]
         duration_ms = int(public_plan["speechCaptions"][-1]["end_ms"])
+        if private_state.get("narrated_preserve_shot_duration"):
+            duration_ms = int(timeline["selected_duration_ms"])
         visual_segments = [
             {
                 "role": item.get("role") or "process",
@@ -5623,6 +5789,7 @@ class CreativeDomain:
         music_brief = public_plan.get("musicBrief") or {}
         recipe = {
             "kind": "mix",
+            **({"narrated_preserve_shot_duration": True} if private_state.get("narrated_preserve_shot_duration") else {}),
             "layout": "product_showcase",
             "product_workflow": "one_click_v2",
             "spec_version": AUTO_MIX_SPEC_VERSION,
@@ -5637,6 +5804,8 @@ class CreativeDomain:
             },
             "voice_persona_id": persona["id"],
             "music_track_id": music["track_id"],
+            **({"music_track_ids": list(private_state["music_track_ids"])}
+               if private_state.get("music_track_ids") is not None else {}),
             "voice_segment": {
                 "asset_id": visual_segments[0]["asset_id"],
                 "start_ms": 0,
@@ -5644,6 +5813,8 @@ class CreativeDomain:
             },
             "visual_segments": visual_segments,
             "captions": public_plan["speechCaptions"],
+            **({"caption_presentation": "reference_narration"}
+               if private_state.get("narrated_reference_captions") else {}),
             "subtitle_style": {
                 "preset": "dynamic_clean",
                 "font_size": 52,
@@ -5682,6 +5853,9 @@ class CreativeDomain:
                 },
             },
         }
+        if private_state.get("narrated_brand"):
+            recipe["packaging"]["brand"] = private_state["narrated_brand"]
+            recipe["packaging"]["brand_profile_id"] = private_state["narrated_brand"].get("brand_profile_id")
         if supplemental_image is not None:
             recipe["supplemental_image"] = supplemental_image
         recipe["skeleton_id"] = self._skeleton_id(recipe)
@@ -6324,7 +6498,10 @@ class CreativeDomain:
         ):
             return self._public_task(self._task_row(task_id))
         try:
-            if task["task_type"] == "creative_analysis":
+            if task["task_type"] == "narrated_batch_v1":
+                from .narrated_batch import NarratedBatchDomain
+                result = NarratedBatchDomain(self).run(task_id, payload)
+            elif task["task_type"] == "creative_analysis":
                 result = self._run_analysis(task_id, payload)
             elif task["task_type"] == "guided_auto_mix_analysis":
                 result = self._run_guided_auto_mix_analysis(task_id, payload)
@@ -10460,6 +10637,10 @@ class CreativeDomain:
                     "recommended": bool(row["recommended"]),
                     "internal_only": True,
                 }
+                batch_row = connection.execute("SELECT id,state_json FROM narrated_batches_v1 WHERE project_id=?", (project_id,)).fetchone()
+                if batch_row:
+                    batch_state = self._json_object(batch_row["state_json"])
+                    metadata.update(narrated_batch_id=batch_row["id"], batch_title=batch_state.get("title", ""))
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO finished_videos(

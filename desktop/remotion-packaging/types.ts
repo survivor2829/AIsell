@@ -93,6 +93,7 @@ export type MotionManifest = {
     model: string | null;
   };
   captions: TimedWord[];
+  captionPresentation?: "reference_narration";
   events: MotionEvent[];
   focusRects: FocusRect[];
   protectedRects: ProtectedRect[];

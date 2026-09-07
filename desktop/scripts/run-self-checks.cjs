@@ -3,6 +3,7 @@ const { spawnSync } = require("node:child_process");
 
 const desktopDir = path.resolve(__dirname, "..");
 const checks = [
+  "scripts/build-renderer.self_check.cjs",
   "rpa/active_touch/wechat_window_layout.self_check.cjs",
   "rpa/active_touch/self_check.cjs",
   "rpa/active_touch/moments_visual.self_check.cjs",
@@ -50,6 +51,7 @@ const checks = [
   "src/main/content-media-protocol.self_check.cjs",
   "src/main/content-engine-desktop-integration.self_check.cjs",
   "src/renderer/creative-workspace-concurrency.self_check.cjs",
+  "src/renderer/status-subscription.self_check.cjs",
   "src/renderer/creative-workspace.self_check.cjs",
   "src/renderer/creative-studio.self_check.cjs",
   "src/renderer/product-one-click.self_check.cjs",

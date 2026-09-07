@@ -58,6 +58,7 @@ function startDesktop() {
     }
   );
   let electronStarted = false;
+  let electronExited = false;
   let startupFailed = false;
   let startupTimer = null;
   let viteOutput = "";
@@ -80,7 +81,10 @@ function startDesktop() {
       env: { ...developmentEnv, VITE_DEV_SERVER_URL: url }
     });
     electron.once("error", (error) => failStartup(`Electron could not start: ${error.message}`));
-    electron.on("exit", () => vite.kill());
+    electron.on("exit", () => {
+      electronExited = true;
+      vite.kill();
+    });
   }
 
   function observeViteOutput(chunk, stream) {
@@ -95,6 +99,9 @@ function startDesktop() {
   vite.once("exit", (code, signal) => {
     if (!electronStarted && !startupFailed) {
       failStartup(`Vite dev server stopped before Electron started (code ${code ?? "unknown"}, signal ${signal || "none"}).`);
+    } else if (electronStarted && !electronExited && !startupFailed) {
+      console.error(`页面开发服务已停止（code ${code ?? "unknown"}, signal ${signal || "none"}），应用页面将无法加载。请查看上方错误，关闭应用后重新运行 npm.cmd run desktop。`);
+      process.exitCode = 1;
     }
   });
   startupTimer = setTimeout(() => failStartup(`Vite dev server did not start at ${url}.`), 20_000);

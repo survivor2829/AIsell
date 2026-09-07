@@ -126,6 +126,24 @@ function visualRendererPayload(value) {
 }
 
 function createContentEngineApi(ipcRenderer) {
+  async function saveEncryptedVolcengineSetting(encryptionChannel, saveChannel, serialize, error) {
+    const handshake = await ipcRenderer.invoke(encryptionChannel);
+    if (!handshake?.ok || !handshake.data?.publicKey) return handshake;
+    try {
+      const bytes = Buffer.from(serialize(), "utf8");
+      try {
+        const ciphertext = publicEncrypt({ key: handshake.data.publicKey, padding: cryptoConstants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" }, bytes).toString("base64");
+        return ipcRenderer.invoke(saveChannel, { keyId: handshake.data.keyId, ciphertext });
+      } finally { bytes.fill(0); }
+    } catch {
+      return { ok: false, code: "VOLCENGINE_TTS_KEY_ENCRYPTION_INVALID", error };
+    }
+  }
+
+  const batchChannels = require("./narrated-batch-ipc.cjs").CHANNELS;
+  const batchClicks = Object.fromEntries(["recommend", "scripts", "confirm", "resolve", "samples", "continue"].map((action) => [
+    action, createTrustedClickGate(`[data-batch-action="${action}"]`, batchChannels[action])
+  ]));
   const consumeAutoMixCreateClick = createTrustedClickGate(
     "[data-xiaoxi-auto-mix-create]",
     AUTO_MIX_TRUSTED_CLICK_CHANNELS.create
@@ -205,6 +223,10 @@ function createContentEngineApi(ipcRenderer) {
   });
   return {
     status: () => ipcRenderer.invoke("content-engine:status"),
+    batch: Object.fromEntries(Object.entries(batchChannels).map(([action, channel]) => [
+      action, (payload = {}) => ipcRenderer.invoke(channel, batchClicks[action]
+        ? { ...payload, clickToken: batchClicks[action]() } : payload)
+    ])),
     restart: () => ipcRenderer.invoke("content-engine:restart"),
     library: {
       list: (payload) => ipcRenderer.invoke("content-engine:list-assets", {
@@ -273,6 +295,22 @@ function createContentEngineApi(ipcRenderer) {
     },
     settings: {
       status: () => ipcRenderer.invoke("content-engine:settings-status"),
+      volcengineTtsStatus: () => ipcRenderer.invoke("content-engine:volcengine-tts-status"),
+      saveVolcengineTtsKey: (payload) => saveEncryptedVolcengineSetting(
+        "content-engine:volcengine-tts-encryption", "content-engine:save-volcengine-tts-key",
+        () => String(payload?.apiKey || ""), "火山语音 Key 安全传输失败，请重试。"
+      ),
+      volcengineArkStatus: () => ipcRenderer.invoke("content-engine:volcengine-ark-status"),
+      saveVolcengineArkKey: (payload) => saveEncryptedVolcengineSetting(
+        "content-engine:volcengine-ark-encryption", "content-engine:save-volcengine-ark-key",
+        () => String(payload?.apiKey || ""), "火山方舟 Key 安全传输失败，请重试。"
+      ),
+      volcengineAsrStatus: () => ipcRenderer.invoke("content-engine:volcengine-asr-status"),
+      saveVolcengineAsrCredentials: (payload) => saveEncryptedVolcengineSetting(
+        "content-engine:volcengine-asr-encryption", "content-engine:save-volcengine-asr-credentials",
+        () => JSON.stringify({ appId: String(payload?.appId || "").trim(), accessToken: String(payload?.accessToken || "").trim() }),
+        "火山识别 Key 安全传输失败，请重试。"
+      ),
       bailianKeyStatus: () => ipcRenderer.invoke(
         "content-engine:bailian-key-status"
       ),
@@ -859,6 +897,11 @@ function createPreloadApis(ipcRenderer) {
   const consumeBatchClick = createTrustedClickGate("[data-xiaoxi-batch-authorize]");
   const consumeAutoReplyClick = createTrustedClickGate("[data-xiaoxi-auto-reply-start], [data-xiaoxi-auto-reply-acknowledge], [data-xiaoxi-auto-reply-resume]");
   return {
+    licenseAuth: {
+      status: () => ipcRenderer.invoke("license-auth:status"),
+      activate: (code) => ipcRenderer.invoke("license-auth:activate", { code: String(code || "") }),
+      logout: () => ipcRenderer.invoke("license-auth:logout")
+    },
     content: createContentEngineApi(ipcRenderer),
     workflow: {
       status: () => ipcRenderer.invoke("wechat-workflow:status"),

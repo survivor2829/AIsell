@@ -256,6 +256,9 @@ class ContentEngineService:
             if callable(cancel):
                 cancel()
             self._creative_jobs.close()
+        previews = getattr(self, "_asset_preview_executor", None)
+        if previews is not None:
+            previews.shutdown(wait=False, cancel_futures=True)
         close_renderer = getattr(self.creative_renderer, "close", None)
         if callable(close_renderer):
             close_renderer(timeout_seconds=3.0)
@@ -607,6 +610,154 @@ class ContentEngineService:
             run_id=task["run_id"]
         )
 
+    def _narrated_batches(self):
+        from .narrated_batch import NarratedBatchDomain
+        return NarratedBatchDomain(self.creative_domain)
+
+    def list_asset_collections(self):
+        return self._narrated_batches().collections()
+
+    def save_asset_collection(self, request):
+        return self._narrated_batches().save_collection(request)
+
+    def list_narrated_batches(self):
+        return self._narrated_batches().list_batches()
+
+    def archive_narrated_batch(self, batch_id):
+        return self._narrated_batches().archive(batch_id)
+
+    def save_narrated_batch(self, request):
+        return self._narrated_batches().save(request)
+
+    def get_narrated_batch(self, batch_id):
+        return self._narrated_batches().get(batch_id)
+
+    def get_narrated_batch_status(self, batch_id):
+        return self._narrated_batches().status(batch_id)
+
+    def get_narrated_output_directory(self, batch_id):
+        return self._narrated_batches().output_directory(batch_id)
+
+    def update_narrated_candidate(self, request):
+        return self._narrated_batches().update_candidate(request)
+
+    def _start_narrated_batch(self, batch_id, action):
+        domain = self._narrated_batches()
+        batch = domain._load(batch_id)
+        domain._idle(batch)
+        # Newly imported files have not necessarily visited the library's probe
+        # action. Resolve their metadata before pinning duration-dependent plans.
+        if action in {"scripts", "recommend", "samples"}:
+            asset_ids = dict.fromkeys(asset_id for group in batch["groups"].values() for asset_id in group)
+            for asset_id in asset_ids:
+                if domain.d._asset_row(asset_id)["probe_status"] != "ok":
+                    asset = self.probe_asset(asset_id)
+                    if asset["probe_status"] != "ok":
+                        raise ContentEngineError("media_metadata_unavailable", "无法读取素材基础信息，请检查文件是否可访问、视频是否完整。")
+        result = domain.start(batch_id, action)
+        self._enqueue_creative_task({"task_id": result["task_id"]})
+        return result
+
+    def recommend_narrated_batch(self, batch_id):
+        return self._start_narrated_batch(batch_id, "recommend")
+
+    def prepare_narrated_scripts(self, batch_id):
+        return self._start_narrated_batch(batch_id, "scripts")
+
+    def confirm_narrated_script(self, request):
+        result = self._narrated_batches().confirm_script(request)
+        self._enqueue_creative_task({"task_id": result["task_id"]})
+        return result
+
+    def resolve_narrated_planning_outcome(self, request):
+        result = self._narrated_batches().resolve_planning_outcome(request)
+        self._enqueue_creative_task({"task_id": result["task_id"]})
+        return result
+
+    def generate_narrated_samples(self, batch_id):
+        return self._start_narrated_batch(batch_id, "samples")
+
+    def continue_narrated_batch(self, batch_id):
+        domain = self._narrated_batches()
+        batch = domain.get(batch_id)
+        if ((batch.get("settings") or {}).get("workflow_version") == 2
+                and batch.get("task_status") == "paused"):
+            state = domain._load(batch_id)
+            if state.get("_planning_inflight") or batch.get("status") == "outcome_unknown":
+                raise ContentEngineError("narrated_planning_outcome_unknown", "外部请求结果未知，请先核对服务记录。")
+            if not batch.get("script_confirmation"):
+                raise ContentEngineError("narrated_script_confirmation_required", "请先完成文案选择并确认。")
+            state["_retry_local_failures_task_id"] = batch["task_id"]
+            domain._store(state)
+            self.resume_creative_task(batch["task_id"])
+            return domain.get(batch_id)
+        return self._start_narrated_batch(batch_id, "continue")
+
+    def resolve_asset_preview(self, asset_id, variant="thumbnail"):
+        import subprocess
+        from .auto_mix_v2 import canonical_hash
+        if variant not in {"thumbnail", "preview"}:
+            raise ContentEngineError("invalid_asset_preview", "素材预览类型无效。")
+        source = Path(self.resolve_asset_path(asset_id)["absolute_path"])
+        asset = self.creative_domain._asset_row(asset_id)
+        # Native supported files are served only through main's controlled
+        # protocol. Other formats use a local cached proxy, never cloud upload.
+        if (source.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+                or variant == "preview" and source.suffix.lower() == ".webm"):
+            import mimetypes
+            return {"asset_id": asset_id, "variant": variant, "absolute_path": str(source),
+                    "mime_type": mimetypes.guess_type(source.name)[0] or "application/octet-stream"}
+        ffmpeg = getattr(self.creative_analyzer, "ffmpeg_path", None)
+        if not ffmpeg:
+            raise ContentEngineError("ffmpeg_unavailable", "本地媒体工具不可用。")
+        directory = self.database.data_dir / "asset-previews"
+        if has_unsafe_component(directory if directory.exists() else directory.parent):
+            raise ContentEngineError("asset_path_unavailable", "素材缓存目录不可用。")
+        directory.mkdir(parents=True, exist_ok=True)
+        if has_unsafe_component(directory):
+            raise ContentEngineError("asset_path_unavailable", "素材缓存目录不可用。")
+        digest = canonical_hash([asset_id, source.stat().st_size, source.stat().st_mtime_ns, variant])
+        extension = ".jpg" if variant == "thumbnail" or asset["media_kind"] == "image" else ".mp4"
+        destination = directory / (digest + extension)
+        if destination.exists() and has_unsafe_component(destination):
+            raise ContentEngineError("asset_path_unavailable", "素材预览缓存不可用。")
+        if not destination.is_file():
+            temporary = directory / (digest + ".part" + extension)
+            if temporary.exists() and has_unsafe_component(temporary):
+                raise ContentEngineError("asset_path_unavailable", "素材预览缓存不可用。")
+            command = [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y", "-i", str(source)]
+            if extension == ".jpg":
+                command += ["-frames:v", "1", "-vf", "scale=480:480:force_original_aspect_ratio=decrease", "-q:v", "3"]
+            else:
+                command += ["-vf", "scale=960:960:force_original_aspect_ratio=decrease:force_divisible_by=2",
+                            "-c:v", "h264_mf", "-rate_control", "quality", "-quality", "50",
+                            "-scenario", "archive", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart"]
+            command.append(str(temporary))
+            if not hasattr(self, "_asset_preview_executor"):
+                from concurrent.futures import ThreadPoolExecutor
+                self._asset_preview_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="asset-preview")
+                self._asset_preview_jobs = {}
+            job = self._asset_preview_jobs.get(digest)
+            if job is None:
+                def generate():
+                    try:
+                        completed = subprocess.run(command, capture_output=True, timeout=90, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                        if completed.returncode or not temporary.is_file():
+                            raise ContentEngineError("asset_preview_failed", "无法生成该素材的预览。")
+                        temporary.replace(destination)
+                    except subprocess.TimeoutExpired as error:
+                        raise ContentEngineError("asset_preview_failed", "素材预览耗时较长，请稍后重试。") from error
+                job = self._asset_preview_executor.submit(generate)
+                self._asset_preview_jobs[digest] = job
+            if not job.done():
+                return {"asset_id": asset_id, "variant": variant, "pending": True}
+            self._asset_preview_jobs.pop(digest, None)
+            job.result()
+        elif hasattr(self, "_asset_preview_jobs"):
+            self._asset_preview_jobs.pop(digest, None)
+        return {"asset_id": asset_id, "variant": variant, "absolute_path": str(destination.resolve()),
+                "mime_type": "image/jpeg" if extension == ".jpg" else "video/mp4"}
+
     def prepare_guided_auto_mix_v2(self, asset_ids):
         session = self.creative_domain.prepare_guided_auto_mix_v2(asset_ids)
         task = session.get("analysis_task") or {}
@@ -671,6 +822,9 @@ class ContentEngineService:
 
     def list_music_catalog_tracks(self):
         return self.creative_domain.list_music_catalog_tracks()
+
+    def preview_music_catalog_track(self, track_id):
+        return self.creative_domain.preview_music_catalog_track(track_id)
 
     def list_auto_mix_voice_personas(self):
         return self.creative_domain.list_auto_mix_voice_personas()

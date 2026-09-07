@@ -64,7 +64,7 @@ type ContentApi = {
     cancel: (payload: { taskId: string }) => Promise<ContentResult<ContentTask>>;
   };
   settings: {
-    bailianKeyStatus: () => Promise<ContentResult<BailianStatus>>;
+    volcengineArkStatus: () => Promise<ContentResult<BailianStatus>>;
   };
   onUpdate?: (callback: (status: EngineStatus) => void) => () => void;
 };
@@ -267,7 +267,7 @@ export function CreativeStudioPage({
     if (!content) {
       setTasksError("读取创作任务失败：当前页面没有连接到内容引擎，请重启应用后重试。");
       setEngineError("内容引擎接口不可用");
-      setBailianError("百炼配置状态读取失败");
+      setBailianError("火山方舟配置状态读取失败");
       setLoading(false);
       setRefreshing(false);
       return;
@@ -277,7 +277,7 @@ export function CreativeStudioPage({
     const [statusRequest, tasksRequest, bailianRequest] = await Promise.allSettled([
       content.status(),
       content.tasks.list({ limit: 50 }),
-      content.settings.bailianKeyStatus()
+      content.settings.volcengineArkStatus()
     ]);
 
     if (statusRequest.status === "fulfilled" && statusRequest.value.ok && statusRequest.value.data) {
@@ -307,7 +307,7 @@ export function CreativeStudioPage({
       const message = bailianRequest.status === "rejected"
         ? bailianRequest.reason instanceof Error ? bailianRequest.reason.message : "未知错误"
         : resultMessage(bailianRequest.value, "未知错误");
-      setBailianError(`百炼配置状态读取失败：${message}`);
+      setBailianError(`火山方舟配置状态读取失败：${message}`);
     }
 
     setLastUpdatedAt(new Date());
@@ -530,12 +530,12 @@ export function CreativeStudioPage({
             <div className={`studio-system-row ${bailianReady ? "is-ready" : "is-warning"}`}>
               <span className="studio-system-icon">{bailianReady ? <CircleCheck size={18} /> : <KeyRound size={18} />}</span>
               <div>
-                <strong>百炼能力</strong>
+                <strong>火山方舟 · 画面与文案</strong>
                 <p>{bailianError || (bailianReady
                   ? `已配置 ${bailianStatus?.maskedKey || "API Key"}`
                   : bailianStatus?.configured
                     ? "API Key 已配置，但 Windows 安全存储当前不可用。"
-                    : "未配置：文案、配音和语义分析暂不可用，本地素材仍可管理。")}</p>
+                    : "未配置：文案和语义分析暂不可用，本地素材仍可管理。")}</p>
               </div>
             </div>
           </div>

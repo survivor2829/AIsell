@@ -23,6 +23,9 @@ from content_engine.errors import ContentEngineError
 from content_engine.service import ContentEngineService
 from content_engine.auto_mix_resources import (
     BAILIAN_STREAMING_WAV_PLACEHOLDER_SIZES,
+    POPULAR_VOICE_PREVIEW_SAMPLE,
+    VOICE_PREVIEW_SAMPLE,
+    voice_preview_sample,
 )
 
 
@@ -173,6 +176,7 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
 
     def test_default_catalog_contains_design_templates_without_supplier_ids(self):
         values = configured_voice_personas({})
+        templates = [item for item in values if item["provider"] == "bailian"]
 
         self.assertEqual(
             {
@@ -181,9 +185,9 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
                 "steady-story@1",
                 "playful-abstract@1",
             },
-            {item["persona_id"] for item in values},
+            {item["persona_id"] for item in templates},
         )
-        for item in values:
+        for item in templates:
             self.assertEqual("", item["provider_voice_id"])
             self.assertTrue(item["voice_prompt"])
             self.assertRegex(item["voice_prefix"], r"^[A-Za-z0-9]{1,10}$")
@@ -198,6 +202,40 @@ class AutoMixVoiceResourceTests(unittest.TestCase):
                 if persona_id != "reliable-business@1"
             ),
         )
+
+    def test_volc_candidates_keep_manual_approval_and_reuse_generated_preview_after_local_failure(self):
+        domain = self.service.creative_domain
+        domain._sync_configured_voice_persona_rows(domain._now(), configured_voice_personas({}))
+        items = domain.list_auto_mix_voice_personas()["items"]
+        new = [item for item in items if item["provider"] == "volcengine"]
+        configured = {item["persona_id"]: item for item in configured_voice_personas({}) if item["provider"] == "volcengine"}
+        self.assertEqual(set(configured), {item["voicePersonaId"] for item in new})
+        self.assertEqual("seed-tts-2.0", configured["volc-xiaohe-2@1"]["provider_model"])
+        self.assertEqual("zh_female_xiaohe_uranus_bigtts", configured["volc-xiaohe-2@1"]["provider_voice_id"])
+        self.assertTrue(all(item["approvalStatus"] == "pending" for item in new))
+        self.assertTrue(all(item["previewText"] == POPULAR_VOICE_PREVIEW_SAMPLE for item in new))
+        self.assertEqual(VOICE_PREVIEW_SAMPLE, voice_preview_sample({"provider": "bailian"}))
+        self.assertTrue(all("provider_voice_id" not in item for item in new))
+        persona_id = new[0]["voicePersonaId"]
+        with mock.patch.dict("os.environ", {"XIAOXI_VOLCENGINE_TTS_API_KEY": ""}):
+            with self.assertRaises(ContentEngineError) as error:
+                domain.preview_auto_mix_voice_persona(persona_id)
+            self.assertEqual("volcengine_tts_not_configured", error.exception.code)
+        self.assertEqual([], self.analyzer.calls)
+        with mock.patch.dict("os.environ", {"XIAOXI_VOLCENGINE_TTS_API_KEY": "offline-test"}), \
+                mock.patch("content_engine.creative_domain.voice_preview_ffmpeg", return_value="fake-ffmpeg"), \
+                mock.patch("content_engine.creative_domain.normalize_voice_preview", side_effect=[
+                    ContentEngineError("auto_mix_voice_preview_normalization_failed", "local-only failure"), None]):
+            with self.assertRaises(ContentEngineError):
+                domain.preview_auto_mix_voice_persona(persona_id)
+            preview = domain.preview_auto_mix_voice_persona(persona_id)
+        self.assertEqual(1, len(self.analyzer.calls), "A local normalization retry must not submit TTS again")
+        self.assertEqual(POPULAR_VOICE_PREVIEW_SAMPLE, self.analyzer.calls[0]["text"])
+        self.assertEqual("completed", preview["previewStatus"])
+        self.assertEqual("pending", preview["voicePersona"]["approvalStatus"])
+        self.assertIsNone(domain._approved_auto_mix_voice_persona(selected_id=persona_id))
+        domain.approve_auto_mix_voice_persona(persona_id)
+        self.assertEqual(persona_id, domain._approved_auto_mix_voice_persona(selected_id=persona_id)["id"])
 
     def test_design_template_creates_private_voice_before_preview(self):
         now = "2026-08-24T00:00:00.000Z"

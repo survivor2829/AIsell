@@ -25,23 +25,9 @@
       "Bash(awk:*)",
       "Bash(sed:*)",
       "Bash(file *)",
-      "Bash(curl -s http://localhost:5000/*)",
-      "Bash(curl -s http://localhost:5000/api/*)",
-      "Bash(docker --version)",
-      "Bash(docker compose:*)",
-      "Bash(pkill -f \"python app.py\")",
-      "Bash(taskkill //F //IM python.exe)",
       "Bash(tasklist)",
       "Bash(netstat -ano)",
-      "Bash(rm -rf __pycache__/*.pyc)",
-      "Bash(rm -f ./output/_last_*_preview.json)",
-      "Bash(rm -f ./output/1/_last_*_preview.json)",
-      "Bash(find static/outputs -name \"_last_*_preview.json\" -delete)",
-      "Bash(find ./output -name \"_last_*_preview.json\" -delete)",
       "Bash(HTTPS_PROXY=\"\" HTTP_PROXY=\"\" python:*)",
-      "Bash(HTTPS_PROXY=\"\" HTTP_PROXY=\"\" timeout 5 python app.py)",
-      "Read(//c/Users/28293/.claude/**)",
-      "Read(//c/Users/28293/AppData/Local/Temp/**)",
       "Read(//tmp/**)",
       "WebFetch(domain:help.aliyun.com)",
       "WebFetch(domain:www.alibabacloud.com)",
@@ -53,10 +39,7 @@
       "WebSearch"
     ],
     "ask": [
-      "Bash(git push:*)",
-      "Bash(docker compose up:*)",
-      "Bash(docker compose down:*)",
-      "Bash(ssh tencent-prod:*)"
+      "Bash(git push:*)"
     ],
     "deny": [
       "Bash(rm -rf /:*)",

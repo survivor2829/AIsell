@@ -129,7 +129,7 @@ function UnifiedDiagnosticTable({ rows, emptyText }: { rows: DiagnosticEntry[]; 
   );
 }
 
-export function Diagnostics() {
+export function Diagnostics({ appVersion, edition, buildId }: { appVersion: string; edition: string; buildId: string }) {
   const [status, setStatus] = useState<DiagnosticStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -191,6 +191,13 @@ export function Diagnostics() {
         <div className="status-card"><span>近期异常</span><strong className={(status?.recentErrorCount ?? 0) > 0 ? "warn" : "ok"}>{status?.recentErrorCount ?? 0}</strong></div>
         <div className="status-card"><span>日志大小</span><strong>{formatBytes(status?.currentBytes ?? 0)}</strong></div>
         <div className="status-card"><span>写入失败</span><strong className={(status?.writesFailed ?? 0) > 0 ? "danger" : "ok"}>{status?.writesFailed ?? 0}</strong></div>
+      </div>
+
+      <div className="diagnostics-version" aria-label="软件版本信息">
+        <strong>软件版本</strong>
+        <span>版本 {appVersion}</span>
+        <span>{edition}</span>
+        <span title={buildId}>构建编号 {buildId || "--"}</span>
       </div>
 
       <div className="diagnostics-privacy">

@@ -398,7 +398,7 @@ function createContentEngineSidecar(options = {}) {
       currentRun = run;
 
       function fail(code) {
-        if (run.closed || run.failureCode) return;
+        if (run.closed || run.stopping || run.failureCode) return;
         run.failureCode = code;
         rejectPending(run, code);
         const result = setTerminalState("failed", code);
@@ -407,7 +407,7 @@ function createContentEngineSidecar(options = {}) {
       }
 
       child.stdout?.on("data", (chunk) => {
-        if (run.closed) return;
+        if (run.closed || (run.stopping && !run.ready)) return;
         try {
           handleStdout(run, chunk);
         } catch (error) {
@@ -465,7 +465,11 @@ function createContentEngineSidecar(options = {}) {
     const waitForStop = stopPromise
       || (oldRunNeedsStop ? stop() : Promise.resolve());
     startPromise = waitForStop
-      .then(() => beginStart())
+      .then((stopped) => {
+        if (stopped?.state && stopped.state !== "stopped") return stopped;
+        if (currentRun && !currentRun.closed) return status();
+        return beginStart();
+      })
       .finally(() => {
         startPromise = null;
       });
@@ -486,7 +490,9 @@ function createContentEngineSidecar(options = {}) {
     if (!/^[a-z][a-z0-9_]{0,63}$/.test(String(method || ""))) {
       throw createError("CONTENT_ENGINE_METHOD_INVALID");
     }
-    const run = await ensureReady();
+    const run = method === "shutdown" && currentRun?.stopping
+      ? currentRun
+      : await ensureReady();
     if (!run || run.closed || (run.stopping && method !== "shutdown")) {
       throw createError("CONTENT_ENGINE_NOT_READY");
     }
@@ -559,10 +565,10 @@ function createContentEngineSidecar(options = {}) {
       closed = await waitForClose(run, stopTimeoutMs);
     }
     if (!closed) {
-      rejectPending(run, "CONTENT_ENGINE_STOPPED");
-      run.closed = true;
-      settleCloseWaiters(run);
-      if (currentRun === run) currentRun = null;
+      rejectPending(run, "CONTENT_ENGINE_STOP_TIMEOUT");
+      const result = setTerminalState("failed", "CONTENT_ENGINE_STOP_TIMEOUT");
+      run.resolveStart(result);
+      return result;
     }
     const result = setTerminalState("stopped");
     run.resolveStart(result);
@@ -578,8 +584,9 @@ function createContentEngineSidecar(options = {}) {
   }
 
   async function restart() {
-    if (disposed) return setTerminalState("stopped");
-    await stop();
+    if (disposed) return status();
+    const stopped = await stop();
+    if (stopped.state !== "stopped") return stopped;
     return start();
   }
 
@@ -601,6 +608,30 @@ function createContentEngineSidecar(options = {}) {
       asset_ids: assetIds,
       profile
     }),
+    listAssetCollections: () => request("list_asset_collections", {}),
+    saveAssetCollection: (payload) => request("save_asset_collection", payload),
+    listNarratedBatches: () => request("list_narrated_batches", {}),
+    archiveNarratedBatch: (batchId) => request("archive_narrated_batch", { batch_id: batchId }),
+    saveNarratedBatch: (payload) => request("save_narrated_batch", payload),
+    getNarratedBatch: (batchId) => request("get_narrated_batch", { batch_id: batchId }),
+    getNarratedBatchStatus: (batchId) => request("get_narrated_batch_status", { batch_id: batchId }),
+    recommendNarratedBatch: (batchId) => request("recommend_narrated_batch", { batch_id: batchId }),
+    prepareNarratedScripts: (batchId) => request("prepare_narrated_scripts", { batch_id: batchId }),
+    confirmNarratedScript: (payload) => request("confirm_narrated_script", payload),
+    getNarratedOutputDirectory: (batchId) => request("get_narrated_output_directory", { batch_id: batchId }),
+    previewMusicCatalogTrack: (trackId) => request("preview_music_catalog_track", { track_id: trackId }),
+    resolveNarratedPlanningOutcome: (payload) => request("resolve_narrated_planning_outcome", payload),
+    generateNarratedSamples: (batchId) => request("generate_narrated_samples", { batch_id: batchId }),
+    continueNarratedBatch: (batchId) => request("continue_narrated_batch", { batch_id: batchId }),
+    updateNarratedCandidate: (payload) => request("update_narrated_candidate", payload),
+    resolveAssetPreview: async (assetId, variant) => {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const result = await request("resolve_asset_preview", { asset_id: assetId, variant });
+        if (!result.pending) return result;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      throw createError("asset_preview_failed");
+    },
     archiveAsset: (assetId) => request("archive_asset", { asset_id: assetId }),
     calculateMixCombinations: (projectId) => request(
       "calculate_mix_combinations",
@@ -1044,7 +1075,8 @@ function createContentEngineSidecar(options = {}) {
         "auto_mix_v2_regeneration",
         "guided_auto_mix_analysis",
         "guided_auto_mix_draft",
-        "guided_auto_mix_supplemental_image"
+        "guided_auto_mix_supplemental_image",
+        "narrated_batch_v1"
       ].includes(
         task.task_type
       )) {
