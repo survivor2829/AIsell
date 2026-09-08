@@ -19,6 +19,7 @@ from .auto_mix_v2 import (
 )
 from .auto_mix_resources import voice_preview_sample
 from .errors import ContentEngineError
+from .provider_usage import usage_scope
 from .public_data import redact_text
 from .narration_alignment import rebind_sentence_copy
 from . import narrated_production, narrated_script_drafts, narrated_brief
@@ -30,6 +31,37 @@ VERSION = 1
 SAFE_FAST_SPEECH_MS_PER_CHAR = 180
 VISUAL_FACTS_VERSION = 5
 CLAIM_AUDIT_VERSION = 14
+REPORTED_SPEECH_REVIEW_VERSION = 1
+CLOSING_ACTION_REVIEW_VERSION = 1
+SEMANTIC_REVIEW_VERSION = 1
+VISUAL_FINDINGS_VERSION = 1
+SEMANTIC_REVIEW_GUIDANCE = (
+    "claim_semantics是前一轮依据完整正文做出的逐句语义分类，仅帮助理解语气，不是事实来源或通过结论。"
+    "quote为原句，kind、risk_scope及reason是先前模型的解释；结合标题、完整句子和相邻段落判断，不能无条件采信。"
+    "区分假设情境、问题、主观担忧与已经发生的事实；不能仅因假设或问题提到某场景，就将其升级为该场景已发生的断言。"
+    "假设、问题无需证明其设想已经发生，但句中独立的实际事实前提、具体经历及结果承诺仍须逐项核实。"
+    "真实断言仍依据图片、绑定原声和活动来源独立检查；若不认同前轮语义解释，应指出原句中实际承诺了什么，"
+    "并说明与对应证据的具体缺口，不能将先前分类当作证据或跳过事实检查。"
+)
+CLOSING_ACTION_GUIDANCE = (
+    "closing_text是待制作视频正文的原样末句，仅用于区分收尾用途，不预先认定它没有事实承诺。"
+    "如果它只是作者向观众发出的评论、关注、联系、提问或讨论邀请，这是待制作视频的互动指令，"
+    "不是声称原素材已经发生了互动；不要求原片预先显示评论区、评论口令、关注动作或相同原声。"
+    "纯收尾互动不适用正文观察建议必须逐项对应实物画面、不能套用到其他画面的要求；"
+    "但仍应与视频主题相关，不能混入无关推广。"
+    "若末句同时含赠品、资料领取、权益、服务提供、价格、产品规格或效果承诺，"
+    "必须把这些实际承诺逐项按相应来源核实，不能因为位于结尾或含评论/关注用语就免审，"
+    "也不能把已发生事实或保证效果改判为普通互动邀请。"
+)
+REPORTED_SPEECH_GUIDANCE = (
+    "原文明确的现场讲解、介绍或说话归属可以由上文动词与冒号引出，并跨越程序分段；"
+    "先按完整引述范围核对谁讲了什么，不能把冒号后的短段脱离引述单独解释。"
+    "仅当原文已有清楚归属、该内容逐项对应本段绑定的同期原声、且没有增加推论或作者自己的保证时，"
+    "可用recorded_speech核实这段现场讲解的忠实转述，不要求图片额外鉴定所转述的每项材质或规格。"
+    "这只证明现场讲了这些内容，不证明产品规格已经独立检测属实。"
+    "没有清楚引述归属、越过引述范围或进一步推导的产品材质、性能、政策、效果等独立断言，"
+    "仍必须有与断言相符的证据，不能凭原声免审，也不能自行补一个说话人把作者断言改成转述。"
+)
 SCENE_COPY_GUIDANCE = (
     "物体细分类无法从画面可靠辨认时，使用证据支持的上位名称，不猜具体种类、品牌或材质；"
     "例如只能确认地面有待清理物时称杂物，不强行断言为某一种垃圾。连上位类别也不明确时省略该细节。"
@@ -84,6 +116,162 @@ def timeline_for(shots):
             "usable_material_duration_ms": cursor,
             "estimated_duration_range_ms": {"min": int(cursor * .65), "max": cursor},
             "padded": False, "looped": False, "shortened_to_ceiling": False}
+
+
+def compact_claim_segment(source):
+    """Remove duplicated wire text and local cache hashes, retaining all evidence.
+
+The original source still determines the audit key and validates the result;
+wire compaction therefore does not invalidate any previously reviewed section.
+"""
+    result = {**source, "facts": [{key: value for key, value in fact.items() if key != "evidence_key"}
+                                   for fact in source.get("facts", [])]}
+    context = source.get("narrative_context") or {}
+    paragraphs = context.get("paragraphs")
+    if isinstance(paragraphs, list):
+        if source.get("phrase_id") == "title" and context.get("title") == source.get("text"):
+            result["narrative_context"] = {"paragraphs": paragraphs}
+        else:
+            match = re.fullmatch(r"phrase-(\d+)", str(source.get("phrase_id") or ""))
+            index = int(match[1]) - 1 if match else -1
+            if 0 <= index < len(paragraphs) and paragraphs[index] == source.get("text"):
+                result["narrative_context"] = {"title": context.get("title"), "before": paragraphs[:index], "after": paragraphs[index + 1:]}
+    return result
+
+
+def reported_speech_context(paragraphs, index):
+    """Locate explicit colon-led speech context; this is a hint, never evidence."""
+    if not 0 <= index < len(paragraphs):
+        return None
+    text = "".join(paragraphs)
+    start = sum(len(part) for part in paragraphs[:index])
+    end = start + len(paragraphs[index])
+    # Like _claim_statement_units, keep decimal/version dots within a word.
+    sentence_end = re.compile(r"[。！？!?\n]|(?<!\w)\.|\.(?!\w)")
+    for colon in reversed(list(re.finditer(r"(?<!\d)[:：](?![\d/\\])", text[:end]))):
+        boundaries = list(sentence_end.finditer(text[:colon.start()]))
+        intro_start = boundaries[-1].end() if boundaries else 0
+        intro = text[intro_start:colon.end()]
+        if not re.search(r"讲|说|介绍|解释|提到|询问|回答|告知|表示|强调|告诉", intro):
+            continue
+        speech_start = colon.end()
+        stop = sentence_end.search(text[speech_start:])
+        speech_end = speech_start + stop.end() if stop else len(text)
+        opening = text[speech_start:speech_start + 1]
+        closing = {"“": "”", "「": "」", "『": "』", '"': '"'}.get(opening)
+        if closing:
+            quote_end = text.find(closing, speech_start + 1)
+            if quote_end >= 0:
+                speech_end = quote_end
+                speech_start += 1
+        if start < speech_end and end > speech_start:
+            return {"intro_text": intro, "reported_text": text[speech_start:speech_end]}
+    return None
+
+
+def reported_speech_cache_key(base_key, context, existing_segments):
+    # Accepted sections retain their original evidence-based key. Only an old
+    # rejection with newly explicit speech context gets one fresh review key.
+    saved = existing_segments.get(base_key) if isinstance(existing_segments, dict) else None
+    response = saved.get("response") if isinstance(saved, dict) else None
+    response = response if isinstance(response, dict) else {}
+    if not context or response.get("accepted") is True:
+        return base_key
+    return canonical_hash({"segment_key": base_key, "reported_speech_context": context,
+                           "reported_speech_review_version": REPORTED_SPEECH_REVIEW_VERSION})
+
+
+def closing_action_cache_key(base_key, closing_text, existing_reviews):
+    saved = existing_reviews.get(base_key) or {}
+    response = saved.get("response") or {}
+    if not closing_text or response.get("accepted") is True:
+        return base_key
+    # Only an old failure that actually cites this ending is affected. A fresh
+    # review gets the versioned key too, so its later failure is not retried.
+    if response and not any(closing_text.rstrip("。！？!?") in str(item)
+                            for item in response.get("unsupported_claims") or []):
+        return base_key
+    return canonical_hash({"review_key": base_key, "closing_text": closing_text,
+                           "closing_action_review_version": CLOSING_ACTION_REVIEW_VERSION})
+
+
+def compact_claim_semantics(candidate, claim_review):
+    if (not isinstance(claim_review, dict) or claim_review.get('accepted') is not True
+            or claim_review.get('candidate_id') != candidate.get('candidate_id')):
+        return []
+    return [{"quote": statement['quote'], "kind": statement['kind'],
+             "risk_scope": statement['risk_scope'], "reason": str(statement.get('reason') or '')[:240]}
+            for phrase in claim_review.get('phrase_reviews', []) for statement in phrase.get('statements', [])]
+
+
+def semantic_review_cache_key(base_key, semantics, existing_reviews):
+    saved = existing_reviews.get(base_key) or {}
+    if (semantics and (saved.get('response') or {}).get('accepted') is False
+            and not saved.get('semantic_review_version')):
+        return canonical_hash({"review_key": base_key, "semantic_review_version": SEMANTIC_REVIEW_VERSION})
+    return base_key
+
+
+def typed_visual_review_cache_key(base_key, existing_reviews):
+    saved = existing_reviews.get(base_key) or {}
+    response = saved.get('response') or {}
+    score = response.get('quality_score')
+    passed = (response.get('accepted') is True and response.get('unsupported_claims') == []
+              and type(score) in (int, float) and .65 <= score <= 1)
+    if response and not passed and not saved.get('findings_version'):
+        return canonical_hash({'review_key': base_key, 'findings_version': VISUAL_FINDINGS_VERSION})
+    return base_key
+
+
+def visual_findings_error(candidate, result):
+    """Check the typed contract without rewriting any provider conclusion."""
+    if not isinstance(result, dict) or type(result.get('accepted')) is not bool:
+        return 'accepted必须是布尔值。'
+    score = result.get('quality_score')
+    if type(score) not in (int, float) or not 0 <= score <= 1:
+        return 'quality_score必须为0到1的数值。'
+    findings = result.get('findings')
+    unsupported = result.get('unsupported_claims')
+    if (not isinstance(findings, list) or not isinstance(unsupported, list)
+            or any(not isinstance(quote, str) for quote in unsupported)):
+        return 'findings和unsupported_claims必须为数组，unsupported_claims仅放硬问题的原句。'
+    all_shots = {shot['segment_id'] for shot in candidate['shots']}
+    bindings = {candidate['title']: [all_shots]}
+    for phrase in candidate['phrases']:
+        bindings.setdefault(phrase['text'], []).append(set(phrase['shot_ids']))
+    hard_quotes = set()
+    for finding in findings:
+        if not isinstance(finding, dict) or finding.get('type') not in {
+                'unsupported_fact', 'visual_contradiction', 'editorial'}:
+            return '每个finding必须明确type为unsupported_fact、visual_contradiction或editorial。'
+        quote = finding.get('quote')
+        if not isinstance(quote, str) or quote not in bindings:
+            return 'finding.quote必须逐字复制title或某个phrases.text完整原文，不拆分或改写。'
+        if not isinstance(finding.get('reason'), str) or not finding['reason'].strip():
+            return '每个finding必须说明具体问题或编辑建议。'
+        if finding['type'] == 'editorial':
+            if finding.get('fact_quote') not in (None, ''):
+                return 'editorial的fact_quote必须为空；已指出实际断言时须按硬问题核实，不能用编辑意见标签隐藏。'
+            continue
+        fact_quote = finding.get('fact_quote')
+        if not isinstance(fact_quote, str) or not fact_quote.strip() or fact_quote not in quote:
+            return '硬问题fact_quote必须逐字引用quote内实际断言的非空片段。'
+        shot_ids = finding.get('shot_ids')
+        if (not isinstance(shot_ids, list) or not shot_ids
+                or any(not isinstance(ref, str) or ref not in all_shots for ref in shot_ids)
+                or not any(set(shot_ids) <= allowed for allowed in bindings[quote])):
+            return '硬问题shot_ids必须指向该原句绑定的已选镜头，不能引用其他段的镜头。'
+        source = finding.get('source')
+        if source not in {'frames', 'recorded_speech', 'source_provenance', 'missing_source'}:
+            return '硬问题source须明确为frames、recorded_speech、source_provenance或missing_source。'
+        if finding['type'] == 'visual_contradiction' and source == 'missing_source':
+            return 'visual_contradiction必须指出已有图片或来源中的具体矛盾；缺少来源应为unsupported_fact。'
+        hard_quotes.add(quote)
+    if set(unsupported) != hard_quotes:
+        return 'unsupported_claims必须恰好列出硬问题quote；editorial不得列入无证事实。'
+    if result['accepted'] != (not hard_quotes):
+        return 'accepted只表示是否没有硬问题，必须与findings和unsupported_claims一致；质量由quality_score表达。'
+    return None
 
 
 
@@ -833,6 +1021,12 @@ class NarratedBatchDomain:
             nonlocal full_validation_issue
             full_validation_issue = validation_error(item)
             return full_validation_issue
+        purpose = ("逐段事实审核" if "claim_audit_version" in payload else
+                   "文案与需求复核" if not generation_rules and "creative_brief" in payload else
+                   "正文与镜头映射" if "confirmed_narration" in payload else
+                   "画面事实提取" if frames and generation_rules else
+                   "画面适配复核" if frames else "创作文案规划")
+        cloud.last_completion_requests = []
         try:
             content = self.d._json(payload)
             if frames:
@@ -841,30 +1035,34 @@ class NarratedBatchDomain:
                     mime = "image/png" if frame.suffix.lower() == ".png" else "image/webp" if frame.suffix.lower() == ".webp" else "image/jpeg"
                     content.append({"type": "text", "text": f"frame index={frame_index}"})
                     content.append({"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + base64.b64encode(frame.read_bytes()).decode("ascii")}})
-            result = cloud._structured_completion(
-                messages=[{"role": "system", "content": instruction},
-                          {"role": "user", "content": content}],
-                model=cloud.vision_model if frames else cloud.selection_model, empty_code="narrated_plan_empty",
-                empty_message="AI 没有返回可用的组合方案。",
-                operation_label="画面复核" if frames else "创作规划", validate=validate, timeout=request_timeout,
-                validation_error=validate_response if validation_error else None,
-                validation_retry_context=(lambda issue, item: [
-                    {"role": "assistant", "content": json.dumps(item, ensure_ascii=False)},
-                    # The provider's diagnostic label is truncated for display.
-                    # Preserve full feedback without invoking a validator twice.
-                    {"role": "user", "content": "请修正具体错误并返回完整JSON：" + (full_validation_issue or issue)}
-                ]) if validation_error else None)
+            with usage_scope(getattr(self.d, "data_dir", None), batch_id=b.get("batch_id") if b else None,
+                             task_id=b.get("task_id") if b else None, purpose=purpose):
+                result = cloud._structured_completion(
+                    messages=[{"role": "system", "content": instruction},
+                              {"role": "user", "content": content}],
+                    model=cloud.vision_model if frames else cloud.selection_model, empty_code="narrated_plan_empty",
+                    empty_message="AI 没有返回可用的组合方案。",
+                    operation_label=purpose, validate=validate, timeout=request_timeout,
+                    validation_error=validate_response if validation_error else None,
+                    validation_retry_context=(lambda issue, item: [
+                        {"role": "assistant", "content": json.dumps(item, ensure_ascii=False, separators=(",", ":"))},
+                        # Keep the complete correction feedback; never pay to rediscover it.
+                        {"role": "user", "content": "请修正具体错误并返回完整JSON：" + (full_validation_issue or issue)}
+                    ]) if validation_error else None)
         except ContentEngineError as error:
             if b is not None and error.code != "cloud_request_failed" and "unknown" not in error.code:
                 b.pop("_planning_inflight", None)
                 b.pop("_planning_request", None)
                 self._store(b)
             raise
+        finally:
+            if b is not None and getattr(cloud, "last_completion_requests", None):
+                b.setdefault("_provider_calls", []).extend(dict(item) for item in cloud.last_completion_requests)
+                self._store(b)
         if on_success is not None:
             on_success(result)
         if b is not None:
             b.pop("_planning_inflight", None)
-            b.setdefault("_provider_calls", []).append(dict(getattr(cloud, "last_completion_metadata", {})))
             b.pop("_planning_request", None)
             self._store(b)
         return result
@@ -2081,7 +2279,7 @@ class NarratedBatchDomain:
             frames.append(path)
         return frames, labels
 
-    def _visual_review(self, candidate, b):
+    def _visual_review(self, candidate, b, claim_review=None):
         frames, labels = [], []
         cloud = self.d.analyzer.cloud_client
         # The voice fitter retains the central interval of every shot. Review
@@ -2093,10 +2291,20 @@ class NarratedBatchDomain:
         candidate["_reviewed_frame_anchors"] = anchors
         material_context = self._material_context_for(b, candidate["shots"])
         source_evidence = [{"shot_id": s["segment_id"], **self._source_evidence_for(b, s)} for s in candidate["shots"]]
+        paragraphs = [str(phrase.get("text") or "") for phrase in candidate["phrases"]]
+        attribution_contexts = [{"phrase_id": f"phrase-{index + 1}", **context}
+            for index in range(len(paragraphs)) if (context := reported_speech_context(paragraphs, index))]
         review_key = canonical_hash({"title": candidate["title"], "phrases": candidate["phrases"],
                                      "material_context": material_context,
                                      "source_evidence": source_evidence,
                                      "shots": candidate["shots"], "model": cloud.vision_model, "version": 12})
+        existing_reviews = {item.get("review_key"): item for item in b.get("_visual_reviews", []) if isinstance(item, dict)}
+        review_key = reported_speech_cache_key(review_key, attribution_contexts, existing_reviews)
+        closing_text = narrated_brief.ending(str(candidate.get("narration") or ""))
+        review_key = closing_action_cache_key(review_key, closing_text, existing_reviews)
+        semantics = compact_claim_semantics(candidate, claim_review)
+        review_key = semantic_review_cache_key(review_key, semantics, existing_reviews)
+        review_key = typed_visual_review_cache_key(review_key, existing_reviews)
         for previous in b.get("_visual_reviews", []):
             if previous.get("review_key") == review_key:
                 return previous["response"]
@@ -2121,6 +2329,9 @@ class NarratedBatchDomain:
         result = self._cloud({"title": candidate["title"], "phrases": candidate["phrases"],
                               "material_context": material_context,
                               "source_evidence": source_evidence,
+                              "attribution_contexts": attribution_contexts,
+                              "closing_text": closing_text,
+                              "claim_semantics": semantics,
                               "observations": [{"shot_id": s["segment_id"],
                                                 "description": s["description"],
                                                 "medium": (s.get("visual_facts") or {}).get("medium")}
@@ -2155,13 +2366,33 @@ class NarratedBatchDomain:
                               "疑问句中的实际事实前提仍须核实，不能用提问形式豁免虚构对象、经历或效果。"
                               "脱离这些画面仍可原样套用的泛泛建议，应判为观看价值不足。"
                               "开头、展开、收束应能让观众理解观看价值；不能只有画面报幕。"
-                             + SCENE_COPY_GUIDANCE +
+                             + SCENE_COPY_GUIDANCE + REPORTED_SPEECH_GUIDANCE + CLOSING_ACTION_GUIDANCE + SEMANTIC_REVIEW_GUIDANCE +
+                             "attribution_contexts只是原文引述范围的定位提示，不是事实证据；引号关闭或句号后新增的独立断言不得继承引述归属。"
                              "material_context是编剧的任务理解，可能有误；须结合图片独立核对，不能当作能力或结果的证据。"
-                             "返回JSON {accepted:boolean,quality_score:0到1,visible_summary:string,unsupported_claims:[口播原句],reason:string}。"
-                             "有任何实际事实缺少与其类型相符的图片、原声或活动来源证据时accepted=false，指出具体原句，不补写新事实。",
-                             frames=frames, generation_rules=False)
+                             "将事实问题与编辑相关性建议分开记录。findings的type只能是unsupported_fact、visual_contradiction或editorial。"
+                             "硬问题必须指出口播实际断言了什么、对应哪个已选镜头，以及缺少何种来源或与已有证据有何具体矛盾；"
+                             "unsupported_fact表示实际断言缺少相符证据，visual_contradiction表示实际断言与已提供画面或来源存在具体冲突。"
+                             "主体认错、不同场次冒充连续过程、虚构前后效果、实际旁白与画面明显冲突仍按硬问题核实。"
+                             "建议或疑问中包含认证、政策、身份、性能、价格、效果等真实前提时，仍逐项报事实问题；"
+                             "不能因为前轮标为nonassertive或整句使用建议/提问语气就豁免其中实际断言。"
+                             "吸引力、表达泛泛、镜头可以更贴切、未来提问或建议没有在原片实际发生，只能列editorial，不能冒充无证事实。"
+                             "quote必须逐字复制title或某一项phrases.text的完整原文，不拆分、不改写、不另造phrase_id。"
+                             "硬问题fact_quote逐字复制quote内的实际断言片段，shot_ids引用该句绑定镜头，"
+                             "source为frames、recorded_speech、source_provenance或missing_source；具体理由写reason。"
+                             "editorial只需type、quote、reason，fact_quote必须省略或为空；可标镜头位置，不要求证明建议已经发生。"
+                             "unsupported_claims只列所有硬问题的quote，不能包含纯编辑建议；accepted只表示没有硬问题。"
+                             "质量仍用quality_score独立评估。不要补写事实或为凑数量放宽核验。"
+                             "返回JSON {accepted:boolean,quality_score:0到1,visible_summary:string,unsupported_claims:[],reason:string,"
+                             "findings:[{type,quote,fact_quote,shot_ids:[],source,reason}]}。",
+                             frames=frames, generation_rules=False,
+                             validation_error=lambda response: visual_findings_error(candidate, response))
+        issue = visual_findings_error(candidate, result)
+        require(issue is None, 'cloud_response_invalid', issue or '整片审核结果格式无效。')
         b.setdefault("_visual_reviews", []).append({"candidate_id": candidate["candidate_id"],
-                                                   "review_key": review_key, "response": result})
+                                                   "review_key": review_key, "response": result,
+                                                   "findings_version": VISUAL_FINDINGS_VERSION,
+                                                   "editorial_notes": [item for item in result['findings'] if item['type'] == 'editorial'],
+                                                   **({'semantic_review_version': SEMANTIC_REVIEW_VERSION} if semantics else {})})
         self._store(b)
         return result
 
@@ -2229,6 +2460,13 @@ class NarratedBatchDomain:
                     "evidence_keys": [fact["evidence_key"] for fact in facts],
                     "statement_quotes": [item["quote"] for item in segment["statements"]],
                 })
+                if segment["phrase_id"] != "title":
+                    context = reported_speech_context(segment["narrative_context"]["paragraphs"],
+                                                      int(segment["phrase_id"].split("-")[1]) - 1)
+                    if context:
+                        segment["attribution_context"] = context
+                        segment["segment_key"] = reported_speech_cache_key(
+                            segment["segment_key"], context, b.get("_claim_review_segments") or {})
                 prepared.append({**segment, "facts": facts})
             prepared_candidates.append((candidate, prepared))
 
@@ -2454,6 +2692,7 @@ class NarratedBatchDomain:
             "程序已把原文按标点切成带statement_id和exact quote的statements。必须原样返回candidate_id、segment_key、phrase_id，"
             "并按输入顺序为每个statement_id恰好返回一次判断；不得合并、拆分、遗漏、调换或改写quote，回包无需重复quote。"
             "先结合完整段落和narrative_context判断说话范围，不能把标点切开的片语脱离其条件、假设或主观表达。"
+            "narrative_context的before和after分别为当前segment.text前后的完整段落；标题段的segment.text即全文标题。"
             "前置的行动主题与后续主观担忧构成完整句时，前置主题本身不表示说话人已参加活动或亲历过；"
             "须按全句判断，不得仅因出现动作词就声称实际行为已经发生。"
             "观众的主观烦恼、愿望、价值判断，以及明确假设中的日常困扰，不等于画中设备已产生效果；"
@@ -2559,8 +2798,13 @@ class NarratedBatchDomain:
                 frames, frame_labels = self._claim_frames(b, candidate, source)
                 source["frames"] = frame_labels
                 response = self._cloud(
-                    {"claim_audit_version": CLAIM_AUDIT_VERSION, "candidate_id": candidate["candidate_id"], "segment": source},
-                    instruction + SCENE_COPY_GUIDANCE +
+                    {"claim_audit_version": CLAIM_AUDIT_VERSION, "candidate_id": candidate["candidate_id"], "segment": compact_claim_segment(source)},
+                    instruction + SCENE_COPY_GUIDANCE + REPORTED_SPEECH_GUIDANCE +
+                    "segment.attribution_context若存在，只是从原文标出的待核对引述范围，不是事实证据或通过结论。"
+                    "reported_text以外、引号关闭或句号后新增的独立断言不得继承引述归属，即使它们与转述被分在同一段。"
+                    "核对intro_text与reported_text是否确属同一现场讲解；若逐项对应本段recorded_speech，"
+                    "忠实转述使用fact、risk_scope=recorded_speech并引用原声。材质名称本身不等于causal或capability；"
+                    "若无清楚引述归属则按独立断言检查，不得因提供了attribution_context自动通过。"
                     "segment.material_context是编剧的场景用途理解，不是任务结果的证据；与facts冲突时以facts为准。"
                     "建议将来检查某种任务结果不等于宣称结果已经发生，不要给提问附加原文未声称的能力或结果。"
                     "图片按segment.frames的index排列，来自该段对应原始素材。文字观察可能遗漏细节，应核对实际图片。"
@@ -2637,7 +2881,7 @@ class NarratedBatchDomain:
             for c, claim_review, score in self._grounded_claim_review(candidates, b, audit):
                 if b.get("task_id") and self.d._should_stop(b["task_id"]):
                     break
-                r = self._visual_review(c, b)
+                r = self._visual_review(c, b, claim_review=claim_review)
                 visual_score = r.get("quality_score", 0)
                 if (r.get("accepted") is True and r.get("unsupported_claims") == []
                         and type(visual_score) in (int, float) and .65 <= visual_score <= 1):
@@ -2648,7 +2892,11 @@ class NarratedBatchDomain:
                 elif audit is not None:
                     audit["rejections"].append({"stage": "visual_review", "candidate_id": c["candidate_id"],
                         "title": c["title"], "reason": str(r.get("reason") or "画面与口播未通过复核。"),
-                        "unsupported_claims": r.get("unsupported_claims", []), "quality_score": visual_score})
+                        "unsupported_claims": r.get("unsupported_claims", []), "quality_score": visual_score,
+                        **({'findings_version': VISUAL_FINDINGS_VERSION,
+                            'hard_findings': [item for item in r['findings'] if item['type'] != 'editorial'],
+                            'editorial_notes': [item for item in r['findings'] if item['type'] == 'editorial']}
+                           if isinstance(r.get('findings'), list) else {})})
                 self._store(b)
             return accepted
         self._activity(b, f"正在检查 {len(candidates)} 条作品的内容与画面")
@@ -3479,14 +3727,31 @@ class NarratedBatchDomain:
                        if c["candidate_id"] == request.get("candidate_id")), None)
         if option is not None and (b.get("settings") or {}).get("workflow_version") == 2:
             require("shots" not in request, "invalid_narrated_shots", "文案确认流程由系统保留已选素材对应关系。")
+            baseline = option
+            if (not option.get('phrases') or option.get('_draft_only')
+                    or ''.join(p.get('text', '') for p in option['phrases']) != option.get('narration')
+                    or [ref for p in option['phrases'] for ref in p.get('shot_ids', [])]
+                        != [shot.get('segment_id') for shot in option.get('shots', [])]):
+                baseline = next((c for c in b.get('candidates', [])
+                    if c.get('candidate_id') == option['candidate_id']
+                    and c.get('narration') == option.get('narration')
+                    and not c.get('_run_id') and c.get('status') != 'outcome_unknown'
+                    and 'unknown' not in str(c.get('error_code', ''))), option)
+            edited = copy.deepcopy(option)
             if "narration" in request:
                 require(isinstance(request["narration"], str) and 0 < len(request["narration"].strip()) <= 2400,
                         "invalid_narration", "请填写2400字以内的正文。")
-                option["narration"] = request["narration"].strip()
+                edited["narration"] = request["narration"].strip()
             if "title" in request:
-                option["title"] = str(request["title"]).strip()[:100] or b["title"]
-            error = narrated_brief.issue(option, b)
+                edited["title"] = str(request["title"]).strip()[:100] or b["title"]
+            error = narrated_brief.issue(edited, b)
             require(not error, 'narrated_brief_invalid', error)
+            preserved = narrated_production.normalize_preserved_mapping(self, b, baseline,
+                edited['narration'], edited['title'])
+            if preserved is not None:
+                narrated_production.install_preserved_mapping(edited, preserved)
+            option.clear()
+            option.update(edited)
             if narrated_brief.enabled(b):
                 option['opening_example'] = narrated_brief.sentences(option['narration'])[0]
                 option.pop('_brief_review_hash', None)

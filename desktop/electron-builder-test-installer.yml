@@ -4,6 +4,7 @@ compression: normal
 directories:
   output: ../release/.installer-output
 win:
+  icon: public/app-icon.ico
   target:
     - target: nsis
       arch:
@@ -11,6 +12,8 @@ win:
   executableName: AI获客 V1.0版本-测试版
   artifactName: AI获客 V1.0版本-测试版-安装程序.${ext}
 nsis:
+  installerIcon: public/app-icon.ico
+  uninstallerIcon: public/app-icon.ico
   include: build/installer-test.nsh
   oneClick: true
   perMachine: false

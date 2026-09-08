@@ -36,6 +36,7 @@ from .auto_mix_resources import (
 )
 from .auto_mix_v2 import guided_script_audience_copy_issue
 from .errors import ContentEngineError
+from .provider_usage import ProviderRequest, usage_scope, observe_http_error, record_response_validation
 from .product_pipeline import normalize_product_context
 from .render_mix import discover_media_executable, _windows_process_options
 
@@ -300,57 +301,59 @@ class DashScopeMediaClient:
         attempts = 2 if retry_on_timeout else 1
         label = str(operation_label or "").strip()
         timeout_value = timeout or self.timeout_seconds
+        body = payload if isinstance(payload, dict) else {}
+        kind = "llm" if "messages" in body else "tts" if "配音" in label or "声音设计" in label else "asr" if "语音识别提交" in label else "lookup"
+        submitted_text = (body.get("input") or {}).get("text") if isinstance(body.get("input"), dict) else None
         for attempt in range(attempts):
+            meter = ProviderRequest(provider=getattr(self, "provider", "bailian"), kind=kind,
+                                    model=body.get("model", ""), purpose=label, attempt=attempt + 1,
+                                    data_dir=getattr(self, "usage_data_dir", None),
+                                    requested_characters=len(submitted_text) if isinstance(submitted_text, str) else None)
             try:
-                with provider_urlopen(operation, timeout=timeout_value) as response:
-                    raw = _read_bounded(
-                        response,
-                        MAX_PROVIDER_JSON_BYTES,
-                        "cloud_response_too_large",
-                        "百炼返回的数据超过安全大小限制。",
-                    )
-                break
-            except ContentEngineError:
-                raise
-            except HTTPError as error:
-                status = int(getattr(error, "code", 0) or 0)
-                if status in {401, 403}:
-                    message = f"百炼请求被拒绝（HTTP {status}），请检查 API Key、业务空间和模型权限。"
-                elif status == 429:
-                    message = "百炼请求被限流或额度不足（HTTP 429），请检查用量与套餐。"
-                elif 400 <= status < 500:
-                    message = f"百炼请求参数未被接受（HTTP {status}），请检查接口地址和模型配置。"
-                elif status >= 500:
-                    message = f"百炼服务暂时不可用（HTTP {status}），请稍后重试。"
-                else:
-                    message = "百炼请求失败，请检查网络与配置。"
-                raise ContentEngineError("cloud_request_failed", message) from error
-            except (TimeoutError, socket.timeout) as error:
-                if attempt + 1 < attempts:
+                with meter:
+                    try:
+                        with provider_urlopen(operation, timeout=timeout_value) as response:
+                            meter.observe(headers=getattr(response, "headers", None), http_status=getattr(response, "status", 200))
+                            raw = _read_bounded(response, MAX_PROVIDER_JSON_BYTES, "cloud_response_too_large", "百炼返回的数据超过安全大小限制。")
+                        try:
+                            result = json.loads(raw.decode("utf-8"))
+                        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                            raise ContentEngineError("cloud_response_invalid", "百炼返回了无效数据。") from error
+                        if not isinstance(result, dict):
+                            raise ContentEngineError("cloud_response_invalid", "百炼返回了无效数据。")
+                        meter.observe(result)
+                        if result.get("code"):
+                            raise ContentEngineError("cloud_request_rejected", "百炼拒绝了本次分析请求。")
+                        return result
+                    except ContentEngineError:
+                        raise
+                    except HTTPError as error:
+                        observe_http_error(meter, error)
+                        status = int(getattr(error, "code", 0) or 0)
+                        if status in {401, 403}:
+                            message = f"百炼请求被拒绝（HTTP {status}），请检查 API Key、业务空间和模型权限。"
+                        elif status == 429:
+                            message = "百炼请求被限流或额度不足（HTTP 429），请检查用量与套餐。"
+                        elif 400 <= status < 500:
+                            message = f"百炼请求参数未被接受（HTTP {status}），请检查接口地址和模型配置。"
+                        elif status >= 500:
+                            message = f"百炼服务暂时不可用（HTTP {status}），请稍后重试。"
+                        else:
+                            message = "百炼请求失败，请检查网络与配置。"
+                        raise ContentEngineError("cloud_request_failed", message) from error
+                    except (TimeoutError, socket.timeout) as error:
+                        prefix = f"百炼{label}请求" if label else "百炼请求"
+                        raise ContentEngineError("cloud_request_failed", f"{prefix}超时（{timeout_value} 秒），请检查网络或稍后重试。") from error
+                    except URLError as error:
+                        raise ContentEngineError("cloud_request_failed", "无法连接阿里百炼，请检查网络、接口地址和代理设置。") from error
+                    except Exception as error:
+                        raise ContentEngineError("cloud_request_failed", "无法连接阿里百炼，请检查网络与配置。") from error
+            except ContentEngineError as error:
+                if isinstance(error.__cause__, (TimeoutError, socket.timeout)) and attempt + 1 < attempts:
                     continue
-                prefix = f"百炼{label}请求" if label else "百炼请求"
-                raise ContentEngineError(
-                    "cloud_request_failed",
-                    f"{prefix}超时（{timeout_value} 秒），请检查网络或稍后重试。",
-                ) from error
-            except URLError as error:
-                raise ContentEngineError(
-                    "cloud_request_failed",
-                    "无法连接阿里百炼，请检查网络、接口地址和代理设置。",
-                ) from error
-            except Exception as error:
-                raise ContentEngineError(
-                    "cloud_request_failed", "无法连接阿里百炼，请检查网络与配置。"
-                ) from error
-        try:
-            result = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise ContentEngineError("cloud_response_invalid", "百炼返回了无效数据。") from error
-        if not isinstance(result, dict):
-            raise ContentEngineError("cloud_response_invalid", "百炼返回了无效数据。")
-        if result.get("code"):
-            raise ContentEngineError("cloud_request_rejected", "百炼拒绝了本次分析请求。")
-        return result
+                raise
+            finally:
+                self._last_request_usage = dict(meter.record)
 
     @staticmethod
     def _message_content(message: Any) -> str:
@@ -399,6 +402,15 @@ class DashScopeMediaClient:
 
         previous_issue = ""
         previous_item: dict[str, Any] | None = None
+        operation_id = str(uuid.uuid4())
+        self.last_completion_requests = []
+        def record_validation(result_status):
+            if not self._last_request_usage:
+                return
+            record_response_validation(self._last_request_usage, result_status, getattr(self, "usage_data_dir", None))
+            if self.last_completion_requests:
+                self.last_completion_requests[-1].update(self._last_request_usage)
+            self.last_completion_metadata.update(self._last_request_usage)
         for attempt in range(2):
             request_messages = [dict(message) for message in messages]
             if attempt:
@@ -427,25 +439,33 @@ class DashScopeMediaClient:
                     else:
                         last["content"] = f"{str(content or '').rstrip()}\n\n{retry_instruction}"
                     request_messages[-1] = last
-            response = self._request_json(
-                f"{self.compatible_origin}/chat/completions",
-                method="POST",
-                payload={
-                    "model": model,
-                    "messages": request_messages,
-                    "temperature": 0.0 if attempt else 0.1,
-                    "response_format": {"type": "json_object"},
-                },
-                operation_label=operation_label,
-                timeout=timeout,
-            )
+            self._last_request_usage = None
+            try:
+                with usage_scope(operation_id=operation_id, correction_attempt=attempt + 1, purpose=operation_label):
+                    response = self._request_json(
+                        f"{self.compatible_origin}/chat/completions",
+                        method="POST",
+                        payload={
+                            "model": model,
+                            "messages": request_messages,
+                            "temperature": 0.0 if attempt else 0.1,
+                            "response_format": {"type": "json_object"},
+                        },
+                        operation_label=operation_label,
+                        timeout=timeout,
+                    )
+            finally:
+                if self._last_request_usage:
+                    self.last_completion_requests.append(dict(self._last_request_usage))
             choices = response.get("choices") or []
             self.last_completion_metadata = {
+                **(self._last_request_usage or {}),
                 "requested_model": model,
                 "returned_model": str(response.get("model") or "")[:160],
-                "request_id": str(response.get("id") or response.get("request_id") or "")[:160],
+                "request_id": str(response.get("id") or response.get("request_id") or (self._last_request_usage or {}).get("request_id") or "")[:160],
             }
             if not choices:
+                record_validation("empty_response")
                 previous_issue = "没有返回可用结果。"
                 if attempt == 0:
                     continue
@@ -457,6 +477,7 @@ class DashScopeMediaClient:
                 parsed = _safe_json_object(self._message_content(message))
             except ContentEngineError as error:
                 if error.code == "cloud_response_invalid":
+                    record_validation("invalid_json")
                     previous_issue = "返回内容不是可解析的 JSON 对象。"
                     if attempt == 0:
                         continue
@@ -466,6 +487,7 @@ class DashScopeMediaClient:
             if validation_error is not None:
                 validation_issue = validation_error(parsed)
                 if validation_issue is not None:
+                    record_validation("invalid_schema")
                     previous_issue = re.sub(r"\s+", " ", str(validation_issue)).strip()[:240]
                     previous_item = parsed
                     if not previous_issue:
@@ -476,6 +498,7 @@ class DashScopeMediaClient:
                         parse_code, failure_message(parse_message, previous_issue)
                     )
             if validate is not None and not validate(parsed):
+                record_validation("invalid_schema")
                 previous_issue = "返回内容不符合预期字段或内容要求。"
                 previous_item = parsed
                 if attempt == 0:
@@ -483,6 +506,7 @@ class DashScopeMediaClient:
                 raise ContentEngineError(
                     parse_code, failure_message(parse_message, previous_issue)
                 )
+            record_validation("accepted")
             return parsed
         raise ContentEngineError(
             parse_code, failure_message(parse_message, previous_issue)
@@ -1188,7 +1212,7 @@ class DashScopeMediaClient:
         """
         if isinstance(persona_private, dict) and persona_private.get("provider") == "volcengine":
             from .volcengine_tts import VolcengineTTSProvider
-            return VolcengineTTSProvider(timeout_seconds=self.timeout_seconds).synthesize_auto_mix_phrase(
+            return VolcengineTTSProvider(timeout_seconds=self.timeout_seconds, usage_data_dir=getattr(self, "usage_data_dir", None)).synthesize_auto_mix_phrase(
                 text, output_path, persona_private)
         if not self.configured:
             raise ContentEngineError("cloud_not_configured", "请先配置百炼 API Key。")

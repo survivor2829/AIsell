@@ -12,7 +12,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
+from feedback import FeedbackStoreMixin, FeedbackConflict, FeedbackUnauthorized, validate_feedback
 
 TOKEN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}\Z")
 HEX = re.compile(r"[a-f0-9]{64}\Z")
@@ -66,7 +67,7 @@ def validate_report(body):
         clean["entries"].append(row)
     return clean
 
-class Store:
+class Store(FeedbackStoreMixin):
     def __init__(self, root):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -81,6 +82,7 @@ class Store:
                 CREATE INDEX IF NOT EXISTS reports_issue ON reports(issue);
                 CREATE TABLE IF NOT EXISTS issues (id TEXT PRIMARY KEY, status TEXT, fixed_version TEXT);
             """)
+            self.initialize_feedback(db)
     @contextmanager
     def connect(self):
         db = sqlite3.connect(self.database, timeout=10)
@@ -108,6 +110,7 @@ class Store:
         return accepted
     def prune(self):
         with self.connect() as db:
+            db.execute("UPDATE feedback SET diagnostics=NULL WHERE diagnostics_expires <= ?", (int(time.time()),))
             db.execute("DELETE FROM reports WHERE received < ?", (int(time.time()) - 30 * 86400,))
             db.execute("DELETE FROM reports WHERE id IN (SELECT id FROM reports ORDER BY received DESC LIMIT -1 OFFSET 50000)")
             db.execute("DELETE FROM issues WHERE id NOT IN (SELECT DISTINCT issue FROM reports)")
@@ -189,6 +192,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not self.server.allowed(self.client_address[0]):
                 return self.reply(429, {"error": "rate_limit"})
+            if self.server.admin:
+                if not re.fullmatch(r"(?:127\.0\.0\.1|localhost):\d{1,5}", self.headers.get("Host", "")) or self.headers.get("Origin") != "http://" + self.headers.get("Host", ""):
+                    return self.reply(403, {"error": "origin"})
+                if self.path == "/api/feedback/status":
+                    updated = self.server.store.update_feedback(self.body())
+                    return self.reply(200 if updated else 404, {"ok": updated})
             if self.server.admin and self.path == "/api/issues":
                 # Only same-origin JSON from the loopback admin UI is accepted.
                 if self.headers.get("Origin") != "http://" + self.headers.get("Host", ""):
@@ -202,10 +211,19 @@ class Handler(BaseHTTPRequestHandler):
                 with self.server.store.connect() as db:
                     db.execute("INSERT OR REPLACE INTO issues VALUES (?,?,?)", (body["id"], body["status"], fixed))
                 return self.reply(200, {"ok": True})
+            if not self.server.admin and self.path == "/v1/feedback":
+                clean, secret = validate_feedback(self.body(), validate_report, safe_token)
+                return self.reply(200, self.server.store.insert_feedback(clean, secret))
+            if not self.server.admin and self.path == "/v1/feedback/status":
+                return self.reply(200, self.server.store.feedback_statuses(self.body()))
             if self.server.admin or self.path != "/v1/reports":
                 return self.reply(404, {"error": "not_found"})
             report = validate_report(self.body())
             return self.reply(200, {"accepted": self.server.store.insert(report)})
+        except FeedbackConflict:
+            self.reply(409, {"error": "feedback_conflict"})
+        except FeedbackUnauthorized:
+            self.reply(403, {"error": "feedback_access_denied"})
         except (ValueError, TypeError, KeyError):
             self.reply(400, {"error": "invalid_report"})
         except Exception:
@@ -217,6 +235,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(403, {"error": "host"})
             if route == "/api/overview":
                 return self.reply(200, self.server.store.overview())
+            if route == "/api/feedback":
+                raw_offset = parse_qs(urlsplit(self.path).query).get("offset", ["0"])[0]
+                if not re.fullmatch(r"\d{1,9}", raw_offset):
+                    return self.reply(400, {"error": "invalid_offset"})
+                return self.reply(200, self.server.store.feedback_overview(int(raw_offset)))
             if route == "/":
                 data = Path(__file__).with_name("admin.html").read_bytes()
                 self.send_response(200)

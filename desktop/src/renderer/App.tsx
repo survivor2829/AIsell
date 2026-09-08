@@ -34,13 +34,17 @@ import { LoginScreen } from "./LoginScreen";
 import { AiExpert } from "./AiExpert";
 import { AutoReply, FloatingAutoReplyWindow } from "./AutoReply";
 import { FloatingMomentsCampaignWindow } from "./MomentsCampaignPanel";
-import { Diagnostics } from "./Diagnostics";
+import { FeedbackCenter, type FeedbackContext } from "./FeedbackCenter";
 import { CloudMaintenance } from "./CloudMaintenance";
+import { CustomerTools } from "./CustomerTools";
+import { RoleAppearancePanel } from "./RoleAppearancePanel";
+import { appearanceFor, appearanceStyle, useRolePreferences, type RolePreference } from "./role-appearance";
+import type { ContentProduction } from "./content-production-types";
 import { ProductDetailPage } from "./ProductDetailPage";
 import { FinishedVideoCenterPage } from "./ContentFoundationPage";
 import { CreativeWorkspacePage } from "./CreativeWorkspacePage";
 import { CreativeStudioPage } from "./CreativeStudioPage";
-import { BatchCreativePage, BatchFinishedOverview } from "./BatchCreativePage";
+import { BatchCreativePage } from "./BatchCreativePage";
 import { MaterialsCollectionsPage } from "./BatchAssets";
 import type { Collection } from "./batch-studio-api";
 import { ProductOneClickPage } from "./ProductOneClickPage";
@@ -400,7 +404,7 @@ const navGroups: NavGroup[] = [
 ];
 
 const apiKeyNavItem: NavItem = { key: "api-key", label: "API密钥", icon: Lock };
-const diagnosticsNavItem: NavItem = { key: "diagnostics", label: "日志诊断", icon: FileText };
+const diagnosticsNavItem: NavItem = { key: "diagnostics", label: "吐槽中心", icon: MessageCircle };
 const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), apiKeyNavItem, diagnosticsNavItem];
 
 function nowTime() {
@@ -522,9 +526,14 @@ export default function App() {
   const [license, setLicense] = useState<LicenseStatus | null>(null);
   const [sessionEntered, setSessionEntered] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const rolePreferences = useRolePreferences();
+  const [personalizingRole, setPersonalizingRole] = useState<AgentRoleKey | null>(null);
+  const [rolePreview, setRolePreview] = useState<{ role: AgentRoleKey; value: RolePreference } | null>(null);
+  const [feedbackContext, setFeedbackContext] = useState<FeedbackContext | null>(null);
   const workflow = useWechatWorkflow();
   const [active, setActive] = useState<ModuleKey>(DEFAULT_ACTIVE_MODULE);
   const [legacyWorkspace, setLegacyWorkspace] = useState(false);
+  const [legacyResumeTarget, setLegacyResumeTarget] = useState<{ taskId?: string; projectId?: string | null } | null>(null);
   const [creativeView, setCreativeView] = useState<"studio" | "product" | "history">("studio");
   const [batchInitial, setBatchInitial] = useState<{ assetIds?: string[]; collection?: Collection; batchId?: string }>();
   const [creativeResumeTarget, setCreativeResumeTarget] = useState<{
@@ -586,6 +595,30 @@ export default function App() {
     if (group) selectChild(group.key, key);
     else setActive(key);
   };
+
+  const openFeedback = (context?: FeedbackContext) => {
+    setFeedbackContext(context || null);
+    setActive("diagnostics");
+  };
+  const openLegacy = (taskId?: string, projectId?: string | null) => {
+    setLegacyResumeTarget(taskId ? { taskId, projectId } : null);
+    setLegacyWorkspace(true);
+  };
+  const openProduction = (item: ContentProduction) => {
+    setActive("workspace");
+    setOpenGroups((current) => ({ ...current, production: true }));
+    if (item.batchId) {
+      setBatchInitial({ batchId: item.batchId }); setLegacyWorkspace(false); setCreativeView("studio");
+    } else if (item.taskId && ["course_generation", "mix_generation"].includes(item.taskType)) {
+      openLegacy(item.taskId, item.projectId);
+    } else if (item.taskId) {
+      setCreativeResumeTarget({ taskId: item.taskId, projectId: item.projectId }); setLegacyWorkspace(false); setCreativeView("product");
+    } else {
+      setLegacyWorkspace(false); setCreativeView("history");
+    }
+  };
+  const visiblePreference = (role: AgentRoleKey) => rolePreview?.role === role ? rolePreview.value : rolePreferences.preferences[role];
+  const closePersonalization = () => { setPersonalizingRole(null); setRolePreview(null); };
 
   const applyContactSyncResult = (result: ContactSyncResult) => {
     if (result.state) {
@@ -729,8 +762,8 @@ export default function App() {
             return (
               <div className="nav-group" key={group.key}>
                 <button className={`nav-item ${groupActive ? "active" : ""}`} onClick={() => selectGroup(group.key)}>
-                  <span className={`nav-role-avatar is-${group.key}`} aria-hidden="true"><GroupIcon size={17} strokeWidth={2.5} /></span>
-                  <span className="nav-role-copy"><strong>{group.label}</strong><small>{group.persona}</small></span>
+                  <span className={`nav-role-avatar is-${group.key}`} style={{ color: appearanceFor(group.key, visiblePreference(group.key).appearanceId).strong, background: appearanceFor(group.key, visiblePreference(group.key).appearanceId).surface }} aria-hidden="true"><GroupIcon size={17} strokeWidth={2.5} /></span>
+                  <span className="nav-role-copy"><strong>{group.label}</strong><small title={visiblePreference(group.key).name}>{visiblePreference(group.key).name}</small></span>
                   <span className="nav-chevron">{expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
                 </button>
                 {expanded && (
@@ -756,7 +789,7 @@ export default function App() {
           })}
         </nav>
         <div className="sidebar-system-nav">
-          <button className={`nav-item ${active === diagnosticsNavItem.key ? "active" : ""}`} onClick={() => setActive(diagnosticsNavItem.key)}>
+          <button className={`nav-item ${active === diagnosticsNavItem.key ? "active" : ""}`} onClick={() => openFeedback()}>
             <diagnosticsNavItem.icon size={20} strokeWidth={2.7} />
             <span>{diagnosticsNavItem.label}</span>
           </button>
@@ -767,7 +800,7 @@ export default function App() {
         </div>
       </aside>
 
-      <section className={`workspace${roleThemeClass}`}>
+      <section className={`workspace${roleThemeClass}`} style={activeGroup ? appearanceStyle(appearanceFor(activeGroup.key, visiblePreference(activeGroup.key).appearanceId)) : undefined}>
         <header className="topbar">
           <div />
           <div className="top-actions account-menu-wrap">
@@ -779,19 +812,29 @@ export default function App() {
             {accountMenuOpen && <div className="account-menu" role="menu">
               <div className="account-menu-status"><span>软件授权</span><strong>{license.licenseId || "已授权"}</strong></div>
               <button role="menuitem" onClick={() => { setActive("contact-sync"); setAccountMenuOpen(false); }}><RefreshCw size={16} />重新同步微信</button>
+              <button role="menuitem" onClick={() => { openFeedback(); setAccountMenuOpen(false); }}><MessageCircle size={16} />吐槽中心</button>
               <button role="menuitem" onClick={() => { setSessionEntered(false); setAccountMenuOpen(false); }}><LogOut size={16} />退出登录</button>
             </div>}
           </div>
+          <CustomerTools onNavigate={(target) => { if (target === "diagnostics") openFeedback(); else if (target === "api-key") setActive(target); else openAgentTarget(target); }} />
         </header>
+
+        {personalizingRole && <RoleAppearancePanel key={personalizingRole} role={personalizingRole} value={rolePreferences.preferences[personalizingRole]}
+          onPreview={(value) => setRolePreview({ role: personalizingRole, value })}
+          onSave={(value) => rolePreferences.save(personalizingRole, value)} onClose={closePersonalization} />}
 
         <div className="content-card">
           {active !== "diagnostics" && <CloudMaintenance compact />}
+          {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
           {activeRole && (
             <AgentHome
               role={activeRole}
               workflow={workflow}
               contactCount={Math.max(contactRows.length, contactSyncState.contact_count || 0)}
               onOpen={openAgentTarget}
+              preference={visiblePreference(activeRole)}
+              onPersonalize={() => setPersonalizingRole(activeRole)}
+              onOpenProduction={openProduction}
             />
           )}
           {["workflow", "touch", "moments"].includes(active) && (
@@ -828,18 +871,18 @@ export default function App() {
             setBatchInitial({ assetIds, collection }); setLegacyWorkspace(false); setCreativeView("studio"); setActive("workspace");
           }} />}
           {active === "workspace" && (legacyWorkspace
-            ? <CreativeWorkspacePage onBackToProduct={() => { setLegacyWorkspace(false); setCreativeView("studio"); }} />
+            ? <CreativeWorkspacePage initialTaskId={legacyResumeTarget?.taskId} initialProjectId={legacyResumeTarget?.projectId} onBackToProduct={() => { setLegacyWorkspace(false); setCreativeView("studio"); }} />
             : creativeView === "product"
               ? <ProductOneClickPage
                 initialTaskId={creativeResumeTarget?.taskId}
                 initialProjectId={creativeResumeTarget?.projectId}
-                onOpenLegacy={() => setLegacyWorkspace(true)}
+                onOpenLegacy={() => openLegacy()}
                 onBackToStudio={() => {
                   setCreativeResumeTarget(null);
                   setCreativeView("studio");
                 }}
               />
-              : creativeView === "history" ? <><button className="button-secondary" onClick={() => setCreativeView("studio")}>返回批量创作</button><CreativeStudioPage
+              : creativeView === "history" ? <><button className="secondary-button creative-history-back" onClick={() => setCreativeView("studio")}>返回批量创作</button><CreativeStudioPage
                 onOpenProduct={() => {
                   setCreativeResumeTarget(null);
                   setCreativeView("product");
@@ -848,19 +891,21 @@ export default function App() {
                   setCreativeResumeTarget({ taskId, projectId });
                   setCreativeView("product");
                 }}
-                onOpenLegacy={() => setLegacyWorkspace(true)}
+                onOpenLegacy={openLegacy}
+                onOpenBatch={(batchId) => { setBatchInitial({ batchId }); setCreativeView("studio"); setLegacyWorkspace(false); }}
                 onOpenMaterials={() => setActive("materials")}
                 onOpenFinished={() => setActive("finished")}
-                onOpenDiagnostics={() => setActive("diagnostics")}
+                onOpenDiagnostics={openFeedback}
               /></> : <BatchCreativePage initial={batchInitial}
                 onOpenProduct={() => { setCreativeResumeTarget(null); setCreativeView("product"); }}
-                onOpenLegacy={() => setLegacyWorkspace(true)} onOpenHistory={() => setCreativeView("history")}
+                onOpenLegacy={() => openLegacy()} onOpenHistory={() => setCreativeView("history")}
+                onOpenDiagnostics={openFeedback}
                 onOpenMaterials={() => setActive("materials")} />)}
-          {active === "finished" && <><BatchFinishedOverview onOpen={(batchId) => {
-            setBatchInitial({ batchId }); setLegacyWorkspace(false); setCreativeView("studio"); setActive("workspace");
-          }} /><FinishedVideoCenterPage /></>}
+          {active === "finished" && <FinishedVideoCenterPage onOpenProductions={() => {
+            setLegacyWorkspace(false); setCreativeView("history"); setActive("workspace");
+          }} />}
           {active === "api-key" && <ApiKeyPage onConfiguredChange={setDeepSeekConfigured} />}
-          {active === "diagnostics" && <Diagnostics appVersion={packageInfo.version} edition={EDITION_LABEL || "正式版"} buildId={BUILD_ID} />}
+          {active === "diagnostics" && <FeedbackCenter appVersion={packageInfo.version} edition={EDITION_LABEL || "正式版"} buildId={BUILD_ID} context={feedbackContext} />}
           {active === "touch" && DevelopmentAcceptance && (
             <details className="workflow-details page"><summary>内部测试工具</summary><Suspense fallback={null}>
               <DevelopmentAcceptance contacts={contactRows} message={messageDraft} />

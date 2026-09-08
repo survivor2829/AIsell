@@ -699,10 +699,8 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px;
-  border: 1px solid #e4e7ec;
-  border-radius: 12px;
-  background: #fff;
+  padding: 0 0 18px;
+  border-bottom: 1px solid #e4e7ec;
 }
 
 .finished-search {
@@ -818,7 +816,7 @@
 
 .finished-card-cover {
   position: relative;
-  aspect-ratio: 16 / 10;
+  height: 200px;
   overflow: hidden;
   display: grid;
   place-items: center;
@@ -830,7 +828,7 @@
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 .finished-card-cover-fallback {

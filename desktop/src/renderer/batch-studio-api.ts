@@ -7,6 +7,7 @@ export type Candidate = { framework?: string; summary?: string; opening_example?
 export type ScriptSelection = { script_id: string; revision: number; count: number; title: string; narration: string; confirmed_at: string };
 export type ProductionJob = { script_id: string; ordinal: number; production_index: number; candidate_id?: string; status: string; error?: string };
 export type Batch = {
+  archived?: boolean;
   brief_version?: number; target_audience?: string; expression?: string; advantages?: string; customer_pain_points?: string;
   brief_suggestions?: { expression?: string; advantages?: string; customer_pain_points?: string };
   batch_id: string; title: string; description: string; cta: string; collection_id?: string;
@@ -42,7 +43,7 @@ export const videoUrl = (id: string, variant = "video") => `xiaoxi-content://gen
 export const groupNames: Record<Group, string> = { opening: "开头", middle: "中间", ending: "结尾" };
 export const batchStatus: Record<string, string> = {
   draft: "待选材", planning: "正在准备文案", scripts_ready: "请选择文案", ready: "可以生成", insufficient_materials: "暂未得到合格作品",
-  rendering: "正在制作", awaiting_confirmation: "样片待确认", completed: "已完成", completed_with_errors: "部分完成",
+  rendering: "正在制作", awaiting_confirmation: "样片待确认", completed: "已完成", completed_with_errors: "有作品未完成",
   paused: "已暂停", cancelled: "已取消", needs_attention: "需要处理", outcome_unknown: "调用结果待核对",
   queued: "排队中", analyzing: "正在分析素材", planned: "待制作", needs_review: "修改待复核", failed: "制作失败"
 };

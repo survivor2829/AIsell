@@ -3,6 +3,18 @@ from content_engine.narration_alignment import align_narration, reference_captio
 
 
 class ObservedSpanTests(unittest.TestCase):
+    def test_width_break_does_not_flash_the_last_character_of_a_word(self):
+        text = '可以先对照实物把每个部件的位置、外观和基础作用问清楚，'
+        words = [{'text': char, 'start_ms': index * 120, 'end_ms': (index + 1) * 120}
+                 for index, char in enumerate(text)]
+        cues = reference_caption_cues([{'text': text, 'alignment': {'source': 'asr_words', 'words': words}}])
+        self.assertEqual([text], [cue['text'] for cue in cues])
+        self.assertEqual((0, len(text) * 120), (cues[0]['start_ms'], cues[0]['end_ms']))
+        independent = [{'text': '已经问清楚了，', 'start_ms': 0, 'end_ms': 1800},
+                       {'text': '好。', 'start_ms': 1800, 'end_ms': 2100}]
+        separate = reference_caption_cues([{'alignment': {'source': 'asr_words', 'words': independent}}])
+        self.assertEqual(['已经问清楚了，', '好。'], [cue['text'] for cue in separate])
+
     def test_small_edit_keeps_scene_binding_and_cuts_at_observed_word(self):
         old = '大厅里的落叶、机器旁的棉絮。'
         new = old.replace('落叶','杂物')

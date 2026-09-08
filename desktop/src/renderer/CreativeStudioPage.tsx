@@ -13,8 +13,10 @@ import {
   Square,
   Video
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { ContentProduction, ProductionsApi, ProductionSummary, ProductionView } from "./content-production-types";
 import "./CreativeStudioPage.css";
+import { ProviderUsageDetails } from "./ProviderUsageDetails";
 
 type ContentResult<T> = {
   ok: boolean;
@@ -57,6 +59,7 @@ type ContentTask = {
 
 type ContentApi = {
   status: () => Promise<ContentResult<EngineStatus>>;
+  productions: ProductionsApi;
   tasks: {
     list: (payload?: { limit?: number }) => Promise<ContentResult<{ items: ContentTask[] }>>;
     pause: (payload: { taskId: string }) => Promise<ContentResult<ContentTask>>;
@@ -71,11 +74,12 @@ type ContentApi = {
 
 type CreativeStudioPageProps = {
   onOpenProduct: () => void;
-  onOpenLegacy: () => void;
+  onOpenLegacy: (taskId?: string, projectId?: string | null) => void;
   onOpenMaterials: () => void;
   onOpenFinished: () => void;
-  onOpenDiagnostics: () => void;
-  onContinueProduct?: (taskId: string, projectId?: string | null) => void;
+  onOpenDiagnostics: (context?: { module: string; taskId?: string }) => void;
+  onOpenBatch?: (batchId: string) => void;
+  onContinueProduct?: (taskId: string, projectId?: string | null, runId?: string | null, sessionId?: string | null) => void;
 };
 
 type RefreshMode = "initial" | "manual" | "background";
@@ -101,7 +105,7 @@ const TASK_TYPE_LABELS: Record<string, string> = {
   guided_auto_mix_supplemental_image: "一键成片 AI 补图"
 };
 
-const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
+const TASK_STATUS_LABELS: Record<string, string> = {
   queued: "待开始",
   analyzing: "正在分析",
   ready_for_review: "等待验收",
@@ -109,11 +113,17 @@ const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
   completed: "已完成",
   failed: "失败",
   cancelled: "已取消",
-  paused: "已暂停"
+  paused: "已暂停",
+  draft: "待填写需求", planning: "正在规划", ready: "待确认方案", scripts_ready: "待确认文案",
+  ready_for_answers: "待填写需求", ready_for_render: "待确认制作", drafting: "正在生成文案",
+  planned: "待制作", synthesizing: "正在配音", verifying_voice: "正在核对配音",
+  selecting_music: "正在选择音乐", quality_check: "正在检查成片",
+  needs_attention: "需要处理", insufficient_materials: "需要调整素材",
+  outcome_unknown: "调用结果待核对", completed_with_errors: "有作品未完成",
+  samples_ready: "待确认样片"
 };
 
-const TERMINAL_STATUSES = new Set<TaskStatus>(["completed", "failed", "cancelled"]);
-const RUNNING_STATUSES = new Set<TaskStatus>(["queued", "analyzing", "ready_for_review", "rendering"]);
+const RUNNING_STATUSES = new Set(["queued", "analyzing", "rendering"]);
 const PRODUCT_TASK_TYPES = new Set([
   "product_asset_analysis",
   "product_copy",
@@ -152,52 +162,49 @@ function taskProgress(value: number) {
   return Math.min(100, Math.max(0, Math.round(value * 100)));
 }
 
-function taskUpdatedAt(task: ContentTask) {
-  const value = new Date(task.updatedAt || task.createdAt || "").getTime();
-  return Number.isNaN(value) ? 0 : value;
-}
-
-function taskTitle(task: ContentTask) {
-  return TASK_TYPE_LABELS[task.taskType] || "内容任务";
+function taskTitle(task: ContentProduction) {
+  return task.title || TASK_TYPE_LABELS[task.taskType] || "内容制作";
 }
 
 function engineDescription(status: EngineStatus | null) {
   if (!status) return "尚未读取本地引擎状态";
   if (status.available && status.state === "ready") return status.version ? `运行正常 · ${status.version}` : "运行正常";
   if (status.state === "starting") return "正在启动，请稍候";
-  if (status.state === "failed") return "启动失败，可前往日志诊断查看原因";
+  if (status.state === "failed") return "启动失败，可在吐槽中心反馈问题";
   return "暂时不可用，任务列表可能不是最新状态";
 }
 
-function taskContext(task: ContentTask) {
-  if (task.projectId) return `项目 ${task.projectId.slice(-8)}`;
-  return `任务 ${task.taskId.slice(-8)}`;
+function taskContext(task: ContentProduction) {
+  if (task.batchId) return `批次 ${task.batchId.slice(-6).toUpperCase()}`;
+  if (task.kind === "guided_session") return "引导式一键成片";
+  return TASK_TYPE_LABELS[task.taskType] || "内容制作";
 }
 
 function TaskRow({
   task,
   busy,
   onAction,
-  onOpen
+  onOpen,
+  onFeedback
 }: {
-  task: ContentTask;
+  task: ContentProduction;
   busy: boolean;
-  onAction: (task: ContentTask, action: TaskAction) => void;
-  onOpen: (task: ContentTask) => void;
+  onAction: (task: ContentProduction, action: TaskAction) => void;
+  onOpen: (task: ContentProduction) => void;
+  onFeedback: (task: ContentProduction) => void;
 }) {
   const progress = taskProgress(task.progress);
-  const canPause = RUNNING_STATUSES.has(task.status);
-  const canResume = task.status === "paused";
+  const canPause = !task.archived && task.state !== "outcome_unknown" && RUNNING_STATUSES.has(task.taskStatus || "");
+  const canResume = !task.archived && task.state !== "outcome_unknown" && task.taskStatus === "paused";
   const canCancel = canPause || canResume;
-  const failed = task.status === "failed";
-  const opensProductTask = PRODUCT_TASK_TYPES.has(task.taskType);
+  const failed = task.category === "needs_attention" && Boolean(task.errorCode || task.errorMessage);
 
   return (
-    <article className={`studio-task-row status-${task.status}`}>
+    <article className={`studio-task-row status-${task.state}`}>
       <div className="studio-task-copy">
         <div className="studio-task-title-line">
           <strong>{taskTitle(task)}</strong>
-          <span className="studio-task-status">{TASK_STATUS_LABELS[task.status]}</span>
+          <span className="studio-task-status">{task.archived ? "已归档" : TASK_STATUS_LABELS[task.state] || "需要处理"}</span>
         </div>
         <div className="studio-task-meta">
           <span>{taskContext(task)}</span>
@@ -206,9 +213,18 @@ function TaskRow({
         {failed && (
           <p className="studio-task-error">
             <CircleAlert size={14} aria-hidden="true" />
-            <span>{task.errorMessage || task.errorCode || "任务没有返回具体失败原因，请查看日志诊断。"}</span>
+            <span>{task.errorMessage || task.errorCode || "处理没有完成，可在吐槽中心反馈。"}</span>
           </p>
         )}
+        {task.stepCount > 0 && <details className="studio-production-steps">
+          <summary>处理记录 · {task.stepCount} 个步骤</summary>
+          <ol>{task.steps.map((step) => <li key={step.taskId}>
+            <span>{TASK_TYPE_LABELS[step.taskType] || "制作处理"} · {TASK_STATUS_LABELS[step.status] || step.status}</span>
+            <time>{formatDate(step.updatedAt)}</time>
+            {step.errorMessage && <p>{step.errorMessage}</p>}
+          </li>)}</ol>
+        </details>}
+        {(task.taskId || task.batchId) && <ProviderUsageDetails key={task.batchId || task.taskId} taskId={task.taskId} batchId={task.batchId} />}
       </div>
 
       <div className="studio-task-progress">
@@ -218,10 +234,9 @@ function TaskRow({
 
       <div className="studio-task-actions">
         <button className="studio-button is-quiet" type="button" onClick={() => onOpen(task)}>
-          {failed
-            ? opensProductTask ? "打开任务" : "查看原因"
-            : TERMINAL_STATUSES.has(task.status) ? "查看结果" : "打开"}
+          {task.archived ? "查看归档" : task.category === "history" ? "查看结果" : "打开制作"}
         </button>
+        {failed && <button className="studio-button is-quiet" type="button" onClick={() => onFeedback(task)}>反馈问题</button>}
         {canPause && (
           <button className="studio-icon-button" type="button" disabled={busy} onClick={() => onAction(task, "pause")} aria-label={`暂停${taskTitle(task)}`} title="暂停任务">
             <Pause size={15} aria-hidden="true" />
@@ -248,9 +263,17 @@ export function CreativeStudioPage({
   onOpenMaterials,
   onOpenFinished,
   onOpenDiagnostics,
+  onOpenBatch,
   onContinueProduct
 }: CreativeStudioPageProps) {
-  const [tasks, setTasks] = useState<ContentTask[]>([]);
+  const [tasks, setTasks] = useState<ContentProduction[]>([]);
+  const [summary, setSummary] = useState<ProductionSummary | null>(null);
+  const [view, setView] = useState<ProductionView>("pending");
+  const [offset, setOffset] = useState(0);
+  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const pageSize = 20;
+  const requestVersion = useRef(0);
   const [engineStatus, setEngineStatus] = useState<EngineStatus | null>(null);
   const [bailianStatus, setBailianStatus] = useState<BailianStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -263,8 +286,9 @@ export function CreativeStudioPage({
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
 
   const loadDashboard = useCallback(async (mode: RefreshMode = "initial") => {
+    const version = ++requestVersion.current;
     const content = apiForWindow();
-    if (!content) {
+    if (!content?.productions) {
       setTasksError("读取创作任务失败：当前页面没有连接到内容引擎，请重启应用后重试。");
       setEngineError("内容引擎接口不可用");
       setBailianError("火山方舟配置状态读取失败");
@@ -276,9 +300,10 @@ export function CreativeStudioPage({
     if (mode === "manual") setRefreshing(true);
     const [statusRequest, tasksRequest, bailianRequest] = await Promise.allSettled([
       content.status(),
-      content.tasks.list({ limit: 50 }),
+      content.productions.list({ view, offset, limit: pageSize }),
       content.settings.volcengineArkStatus()
     ]);
+    if (version !== requestVersion.current) return;
 
     if (statusRequest.status === "fulfilled" && statusRequest.value.ok && statusRequest.value.data) {
       setEngineStatus(statusRequest.value.data);
@@ -292,6 +317,10 @@ export function CreativeStudioPage({
 
     if (tasksRequest.status === "fulfilled" && tasksRequest.value.ok && tasksRequest.value.data) {
       setTasks(tasksRequest.value.data.items || []);
+      setSummary(tasksRequest.value.data.summary);
+      setTotal(tasksRequest.value.data.total);
+      setHasMore(tasksRequest.value.data.hasMore);
+      if (offset > 0 && offset >= tasksRequest.value.data.total) setOffset(Math.max(0, Math.ceil(tasksRequest.value.data.total / pageSize - 1) * pageSize));
       setTasksError("");
     } else {
       const message = tasksRequest.status === "rejected"
@@ -313,7 +342,7 @@ export function CreativeStudioPage({
     setLastUpdatedAt(new Date());
     setLoading(false);
     if (mode === "manual") setRefreshing(false);
-  }, []);
+  }, [view, offset]);
 
   useEffect(() => {
     let active = true;
@@ -327,25 +356,13 @@ export function CreativeStudioPage({
     });
     return () => {
       active = false;
+      requestVersion.current += 1;
       unsubscribe?.();
     };
   }, [loadDashboard]);
 
-  const sortedTasks = useMemo(
-    () => [...tasks].sort((left, right) => taskUpdatedAt(right) - taskUpdatedAt(left)),
-    [tasks]
-  );
-  const activeTasks = useMemo(
-    () => sortedTasks.filter((task) => !TERMINAL_STATUSES.has(task.status)),
-    [sortedTasks]
-  );
-  const recentTasks = useMemo(
-    () => sortedTasks.filter((task) => TERMINAL_STATUSES.has(task.status)).slice(0, 8),
-    [sortedTasks]
-  );
-
   useEffect(() => {
-    if (activeTasks.length === 0) return undefined;
+    if (!summary?.active) return undefined;
     let active = true;
     let timer: number | undefined;
     const poll = async () => {
@@ -357,11 +374,11 @@ export function CreativeStudioPage({
       active = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [activeTasks.length, loadDashboard]);
+  }, [summary?.active, loadDashboard]);
 
-  const runTaskAction = useCallback(async (task: ContentTask, action: TaskAction) => {
+  const runTaskAction = useCallback(async (task: ContentProduction, action: TaskAction) => {
     const content = apiForWindow();
-    if (!content) {
+    if (!content || !task.taskId) {
       setActionError("内容引擎接口不可用，无法操作任务。");
       return;
     }
@@ -376,7 +393,6 @@ export function CreativeStudioPage({
         setActionError(resultMessage(result, "任务操作失败，请稍后重试。"));
         return;
       }
-      setTasks((current) => current.map((item) => item.taskId === task.taskId ? result.data as ContentTask : item));
       void loadDashboard("background");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "任务操作失败，请稍后重试。");
@@ -385,33 +401,29 @@ export function CreativeStudioPage({
     }
   }, [loadDashboard]);
 
-  const openTask = useCallback((task: ContentTask) => {
+  const openTask = useCallback((task: ContentProduction) => {
+    if (task.batchId && onOpenBatch) {
+      onOpenBatch(task.batchId);
+      return;
+    }
     if (task.taskType === "asset_import") {
       onOpenMaterials();
       return;
     }
     if (PRODUCT_TASK_TYPES.has(task.taskType)) {
-      if (onContinueProduct) {
-        onContinueProduct(task.taskId, task.projectId);
-      } else if (task.status === "completed") {
+      if (onContinueProduct && task.taskId) {
+        onContinueProduct(task.taskId, task.projectId, task.runId, task.sessionId);
+      } else if (task.state === "completed") {
         onOpenFinished();
       } else {
         onOpenProduct();
       }
       return;
     }
-    if (task.status === "failed") {
-      onOpenDiagnostics();
-      return;
-    }
-    if (task.status === "completed") {
-      onOpenFinished();
-      return;
-    }
-    onOpenLegacy();
-  }, [onContinueProduct, onOpenDiagnostics, onOpenFinished, onOpenLegacy, onOpenMaterials, onOpenProduct]);
+    onOpenLegacy(task.taskId || undefined, task.projectId);
+  }, [onContinueProduct, onOpenBatch, onOpenFinished, onOpenLegacy, onOpenMaterials, onOpenProduct]);
 
-  const hasAnyTasks = activeTasks.length > 0 || recentTasks.length > 0;
+  const hasAnyTasks = tasks.length > 0;
   const engineReady = Boolean(engineStatus?.available && engineStatus.state === "ready");
   const bailianReady = Boolean(bailianStatus?.configured && bailianStatus.secureStorageAvailable);
 
@@ -426,8 +438,8 @@ export function CreativeStudioPage({
           <button className="studio-button is-quiet" type="button" onClick={onOpenFinished}>
             <Film size={16} aria-hidden="true" />全部成片
           </button>
-          <button className="studio-button is-quiet" type="button" onClick={onOpenDiagnostics}>
-            <CircleAlert size={16} aria-hidden="true" />日志诊断
+          <button className="studio-button is-quiet" type="button" onClick={() => onOpenDiagnostics({ module: "content_engine" })}>
+            <CircleAlert size={16} aria-hidden="true" />吐槽中心
           </button>
         </div>
       </header>
@@ -448,7 +460,7 @@ export function CreativeStudioPage({
           <div className="studio-launch-row">
             <span className="studio-launch-icon"><Video size={20} aria-hidden="true" /></span>
             <div><strong>课程精剪 / 批量混剪</strong><p>从长素材中选段，或组合多条现场素材。</p></div>
-            <button className="studio-button is-secondary" type="button" onClick={onOpenLegacy}>打开工作台<ArrowRight size={15} aria-hidden="true" /></button>
+            <button className="studio-button is-secondary" type="button" onClick={() => onOpenLegacy()}>打开工作台<ArrowRight size={15} aria-hidden="true" /></button>
           </div>
           <div className="studio-launch-row">
             <span className="studio-launch-icon"><FolderOpen size={20} aria-hidden="true" /></span>
@@ -462,13 +474,24 @@ export function CreativeStudioPage({
         <main className="studio-task-panel" aria-busy={loading || refreshing}>
           <div className="studio-section-heading">
             <div>
-              <h2>创作任务</h2>
+              <h2>制作任务</h2>
               <p>{lastUpdatedAt ? `更新于 ${formatDate(lastUpdatedAt.toISOString())}` : "正在读取任务状态"}</p>
             </div>
             <button className="studio-icon-button" type="button" disabled={refreshing} onClick={() => void loadDashboard("manual")} aria-label="刷新创作任务" title="刷新">
               <RefreshCw size={16} className={refreshing ? "is-spinning" : ""} aria-hidden="true" />
             </button>
           </div>
+
+          <nav className="studio-production-tabs" aria-label="制作任务筛选">
+            {([
+              ["pending", "待处理", summary?.pending], ["active", "进行中", summary?.active],
+              ["needs_attention", "需要处理", summary?.needsAttention],
+              ["history", "历史", summary?.history], ["archived", "已归档", summary?.archived]
+            ] as const).map(([key, label, count]) => <button key={key} type="button" aria-current={view === key ? "page" : undefined}
+              onClick={() => { if (view === key && offset === 0) return; setView(key); setOffset(0); setLoading(true); }}>
+              {label}<span>{count ?? "—"}</span>
+            </button>)}
+          </nav>
 
           <div aria-live="polite">
             {tasksError && (
@@ -493,27 +516,25 @@ export function CreativeStudioPage({
           ) : !tasksError && !hasAnyTasks ? (
             <div className="studio-empty-state">
               <Video size={24} aria-hidden="true" />
-              <strong>还没有创作任务</strong>
-              <p>从上方选择一种创作方式开始；进度、完成结果和失败原因都会显示在这里。</p>
+              <strong>{view === "pending" ? "当前没有待处理的制作" : "这个分类下暂时没有制作记录"}</strong>
+              <p>同一次制作的分析、脚本和审核记录收在详情中；素材和成片可在对应入口查看。</p>
               <button className="studio-button is-primary" type="button" onClick={onOpenProduct}>新建商品成片</button>
             </div>
           ) : (
             <>
-              <section className="studio-task-group" aria-labelledby="active-task-title">
-                <div className="studio-task-group-heading"><h3 id="active-task-title">正在进行</h3><span>{activeTasks.length} 个任务</span></div>
-                {activeTasks.length > 0 ? activeTasks.map((task) => (
-                  <TaskRow key={task.taskId} task={task} busy={busyTaskId === task.taskId} onAction={runTaskAction} onOpen={openTask} />
-                )) : <p className="studio-inline-empty">当前没有正在处理的任务。</p>}
-              </section>
-
-              <section className="studio-task-group" aria-labelledby="recent-task-title">
-                <div className="studio-task-group-heading"><h3 id="recent-task-title">最近完成</h3><span>完成、失败和取消都会保留</span></div>
-                {recentTasks.length > 0 ? recentTasks.map((task) => (
-                  <TaskRow key={task.taskId} task={task} busy={busyTaskId === task.taskId} onAction={runTaskAction} onOpen={openTask} />
-                )) : <p className="studio-inline-empty">还没有已完成的任务。</p>}
+              <section className="studio-task-group" aria-label="制作记录">
+                <div className="studio-task-group-heading"><span>共 {total} 项制作</span><span>内部处理步骤已合并</span></div>
+                {tasks.map((task) => <TaskRow key={task.productionId} task={task} busy={busyTaskId === task.taskId}
+                  onAction={runTaskAction} onOpen={openTask}
+                  onFeedback={(item) => onOpenDiagnostics({ module: "content_engine", taskId: item.taskId || undefined })} />)}
               </section>
             </>
           )}
+          {(offset > 0 || hasMore) && <div className="studio-production-pagination">
+            <button type="button" className="studio-button is-quiet" disabled={offset === 0 || loading} onClick={() => { setOffset(Math.max(0, offset - pageSize)); setLoading(true); }}>上一页</button>
+            <span>第 {Math.floor(offset / pageSize) + 1} 页 · 共 {total} 项</span>
+            <button type="button" className="studio-button is-quiet" disabled={!hasMore || loading} onClick={() => { setOffset(offset + pageSize); setLoading(true); }}>下一页</button>
+          </div>}
         </main>
 
         <aside className="studio-system-panel" aria-labelledby="studio-system-title">
@@ -525,7 +546,7 @@ export function CreativeStudioPage({
             <div className={`studio-system-row ${engineReady ? "is-ready" : "is-warning"}`}>
               <span className="studio-system-icon">{engineReady ? <CircleCheck size={18} /> : engineStatus?.state === "starting" ? <LoaderCircle size={18} /> : <CircleAlert size={18} />}</span>
               <div><strong>本地内容引擎</strong><p>{engineError || engineDescription(engineStatus)}</p></div>
-              {!engineReady && <button type="button" onClick={onOpenDiagnostics}>查看日志</button>}
+              {!engineReady && <button type="button" onClick={() => onOpenDiagnostics({ module: "content_engine" })}>反馈问题</button>}
             </div>
             <div className={`studio-system-row ${bailianReady ? "is-ready" : "is-warning"}`}>
               <span className="studio-system-icon">{bailianReady ? <CircleCheck size={18} /> : <KeyRound size={18} />}</span>

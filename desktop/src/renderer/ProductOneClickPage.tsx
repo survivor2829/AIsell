@@ -92,6 +92,7 @@ type ContentTask = {
 type Candidate = {
   generatedVideoId: string;
   projectId: string;
+  taskId?: string;
   title: string;
   durationMs: number;
   status: string;
@@ -227,7 +228,7 @@ type Api = {
     chooseFolder: (payload?: { recursive?: boolean }) => Promise<Result<{ items?: Asset[] }>>;
     probe: (payload: { assetId: string }) => Promise<Result<Asset>>;
   };
-  tasks: { list: (payload?: { limit?: number }) => Promise<Result<{ items: ContentTask[] }>> };
+  tasks: { list: (payload?: { limit?: number }) => Promise<Result<{ items: ContentTask[] }>>; get: (payload: { taskId: string }) => Promise<Result<ContentTask>> };
   settings: { volcengineArkStatus: () => Promise<Result<{ configured?: boolean; secureStorageAvailable?: boolean }>> };
   creative: {
     createAutoMixV2: (payload:
@@ -272,7 +273,7 @@ type Api = {
     approveAutoMixVoicePersona: (payload: {
       voicePersonaId: string;
     }) => Promise<Result<AutoMixVoicePersona>>;
-    listOneClickCandidates: (payload: { projectId: string; limit: number }) => Promise<Result<{ items: Candidate[] }>>;
+    listOneClickCandidates: (payload: { projectId: string; limit: number; taskId?: string }) => Promise<Result<{ items: Candidate[] }>>;
     getProject: (payload: { projectId: string }) => Promise<Result<LegacyProject>>;
     downloadCandidate?: (payload: { candidateId: string }) => Promise<Result<{ canceled?: boolean; filename?: string }>>;
   };
@@ -681,7 +682,7 @@ export function ProductOneClickPage({
     if (V1_TASK_TYPES.has(target.taskType)) {
       const [projectResult, candidateResult] = await Promise.all([
         current.creative.getProject({ projectId: target.projectId }),
-        current.creative.listOneClickCandidates({ projectId: target.projectId, limit: 20 })
+        current.creative.listOneClickCandidates({ projectId: target.projectId, taskId: target.taskId, limit: 20 })
       ]);
       if (!projectResult.ok || !projectResult.data) return false;
       setLegacyProject(projectResult.data);
@@ -711,19 +712,19 @@ export function ProductOneClickPage({
     setInitialLoading(true);
     setLoadError("");
     try {
-      const [statusResult, libraryResult, taskResult] = await Promise.all([
+      const [statusResult, libraryResult] = await Promise.all([
         current.status(),
-        current.library.list({ limit: 500 }),
-        current.tasks.list({ limit: 500 })
+        current.library.list({ limit: 500 })
       ]);
       if (statusResult.ok && statusResult.data) setEngine(statusResult.data);
       if (libraryResult.ok && libraryResult.data) setAssets(libraryResult.data.items);
-      const tasks = taskResult.ok && taskResult.data ? taskResult.data.items : [];
-      const requested = tasks.find((item) => (
-        item.taskId === initialTaskId
-        && RESTORABLE_TASK_TYPES.has(item.taskType)
-      ));
-      if (requested && await restoreTask(requested)) {
+      if (initialTaskId) {
+        const taskResult = await current.tasks.get({ taskId: initialTaskId });
+        const requested = taskResult.ok ? taskResult.data : null;
+        if (!requested || requested.taskId !== initialTaskId || (initialProjectId && requested.projectId !== initialProjectId)
+            || !RESTORABLE_TASK_TYPES.has(requested.taskType) || !await restoreTask(requested)) {
+          throw new Error("这项历史制作暂时无法打开，请返回制作记录后重试。");
+        }
         return;
       }
       if (initialProjectId) {

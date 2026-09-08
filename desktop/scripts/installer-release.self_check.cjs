@@ -32,7 +32,10 @@ const builder = fs.readFileSync(path.join(desktopDir, "scripts", "build-installe
 const trustVerifier = fs.readFileSync(path.join(desktopDir, "scripts", "release-trust-record.cjs"), "utf8");
 
 assert.equal(packageMetadata.productName, productBrand.displayName);
-assert.equal(packageMetadata.version, "1.0.0");
+assert.match(packageMetadata.version, /^\d+\.\d+\.\d+$/u);
+const packageLock = JSON.parse(fs.readFileSync(path.join(desktopDir, "package-lock.json"), "utf8"));
+assert.equal(packageLock.version, packageMetadata.version);
+assert.equal(packageLock.packages[""].version, packageMetadata.version);
 assert.match(packageMetadata.scripts["release:delivery"], /run-release\.cjs delivery/);
 assert.doesNotMatch(packageMetadata.scripts["release:installer"], /build-portable-release/u, "installer creation must follow the independent trust-record step instead of rebuilding its signed portable input");
 assert.match(packageMetadata.scripts["release:installer"], /build-installer-release\.cjs/);

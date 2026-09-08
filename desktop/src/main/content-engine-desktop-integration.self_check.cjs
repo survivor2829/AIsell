@@ -48,6 +48,7 @@ async function assertPreloadContract() {
     "library",
     "mix",
     "onUpdate",
+    "productions",
     "publishQueue",
     "restart",
     "settings",
@@ -66,10 +67,12 @@ async function assertPreloadContract() {
   ]);
   assert.deepEqual(Object.keys(api.tasks).sort(), [
     "cancel",
+    "get",
     "list",
     "pause",
     "resume"
   ]);
+  assert.deepEqual(Object.keys(api.productions).sort(), ["list", "summary", "usage"]);
   assert.deepEqual(Object.keys(api.finished).sort(), [
     "chooseAndRegister",
     "download",
@@ -633,6 +636,17 @@ async function assertPreloadContract() {
   assert.deepEqual(updates, [{ state: "ready" }]);
   unsubscribe();
   assert.equal(listeners.has("content-engine:update"), false);
+  calls.length = 0;
+  api.productions.summary();
+  api.productions.list({ view: "pending", offset: 50, limit: 25 });
+  api.productions.usage({ taskId: "task_one", limit: 20, apiKey: "must-not-pass" });
+  api.tasks.get({ taskId: "task_one" });
+  assert.deepEqual(calls, [
+    { channel: "content-engine:production-summary", payload: undefined },
+    { channel: "content-engine:list-productions", payload: { view: "pending", offset: 50, limit: 25 } },
+    { channel: "content-engine:provider-usage", payload: { taskId: "task_one", batchId: undefined, limit: 20 } },
+    { channel: "content-engine:get-task", payload: { taskId: "task_one" } }
+  ]);
 }
 
 function assertPreloadExposure() {

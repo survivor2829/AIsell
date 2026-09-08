@@ -27,6 +27,9 @@ function verifyManifest(envelope, config) {
       || m.file !== `/artifacts/${m.sha256}.exe`
       || !Number.isSafeInteger(m.sequence) || m.sequence < 1
       || typeof m.notes !== "string" || m.notes.length > 2000) fail("cloud_manifest_invalid");
+  if (m.publishedAt !== undefined && (typeof m.publishedAt !== "string"
+      || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(m.publishedAt)
+      || !Number.isFinite(Date.parse(m.publishedAt)))) fail("cloud_manifest_invalid");
   return m;
 }
 

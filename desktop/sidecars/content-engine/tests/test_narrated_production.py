@@ -1,4 +1,5 @@
 """Selected directions run through the real service/DB; only paid/media work is faked."""
+import copy
 import unittest
 import time
 from unittest.mock import patch
@@ -7,7 +8,7 @@ import test_narrated_batch as batch_fixtures
 from content_engine.errors import ContentEngineError
 from content_engine.narrated_batch import NarratedBatchDomain
 from content_engine import narrated_script_drafts
-from content_engine.narrated_production import bind_planned_candidate, export_completed, output_folder, review_confirmed_candidate, complete_mapping_capacity
+from content_engine.narrated_production import bind_planned_candidate, export_completed, output_folder, review_confirmed_candidate, complete_mapping_capacity, confirmed_narration_units, normalize_preserved_mapping, confirm_selections
 
 
 class NarratedProductionTests(unittest.TestCase):
@@ -126,6 +127,8 @@ class NarratedProductionTests(unittest.TestCase):
         result = self.run_selection(self.request(first_count=1))
         self.assertTrue(result['production_retry_available'])
         self.assertEqual('skipped', result['production_jobs'][0]['status'])
+        self.assertEqual(1, sum(kind == 'render' and value == self.options[0]['candidate_id'] for kind, value in self.events),
+                         '格式错误已用尽结构化纠错后，不得自动重进整条制作。')
         state = self.domain._load(self.batch['batch_id'])
         state['candidates'][0]['_run_id'] = 'already-started-paid-run'
         self.domain._store(state)
@@ -273,6 +276,197 @@ class NarratedProductionTests(unittest.TestCase):
         self.assertEqual(narration, candidate['narration'])
         self.assertEqual(narration, ''.join(phrase['text'] for phrase in candidate['phrases']))
 
+    def test_confirmed_units_preserve_full_sentences_and_only_split_overlong_copy(self):
+        state = self.domain._load(self.batch['batch_id'])
+        first = '现场人员说明，先观察部件位置，再核对用途；'
+        quoted = '随后提醒：“先看这个按钮，再看旁边的部件。”'
+        long_sentence = '接着补充：' + '说明部件位置，' * 15 + '最后核对。'
+        narration = first + quoted + long_sentence + '还有什么疑问？'
+        units = confirmed_narration_units(self.domain, state, narration)
+        texts = [unit['text'] for unit in units]
+        self.assertEqual(narration, ''.join(texts))
+        self.assertTrue(all(0 < len(text) <= 80 for text in texts))
+        self.assertEqual([first, quoted], texts[:2])
+        self.assertEqual(long_sentence, ''.join(texts[2:-1]))
+        self.assertGreater(len(texts[2:-1]), 1)
+        self.assertTrue(texts[2].endswith('，'))
+        self.assertEqual('还有什么疑问？', texts[-1])
+        self.assertEqual([self.domain._phrase_budget_ms(state, text) for text in texts],
+                         [unit['required_ms'] for unit in units])
+
+    def test_local_copy_edit_reuses_runtime_mapping_and_confirmation_still_requires_review(self):
+        initial = self.domain._load(self.batch['batch_id'])
+        initial['_story_planning_version'] = 2
+        refs = [shot['segment_id'] for shot in list({s['asset_id']: s for s in initial['available_shots']}.values())[:3]]
+        phrases = [{'text': text, 'shot_ids': [ref]} for text, ref in zip(
+            ('先看设备。', '这里介绍部件。', '再问使用问题。'), refs)]
+        baseline = self.domain._normalize_candidate({'title': '现场讲解', 'shot_ids': refs,
+            'phrases': phrases}, initial, [])
+        baseline.update(candidate_id=initial['script_options'][0]['candidate_id'], revision=1,
+                        status='failed', error_code='narrated_edit_rejected')
+        narration = ''.join(phrase['text'] for phrase in phrases)
+        baseline['narration'] = narration
+        edited_text = narration.replace('这里介绍部件。', '讲师说，这里介绍部件。')
+        for stale_phrases in ([], [{'text': '更早的草稿。', 'shot_ids': [refs[0]]}]):
+            with self.subTest(stale_phrases=bool(stale_phrases)):
+                state = copy.deepcopy(initial)
+                state['script_options'][0] = {**copy.deepcopy(baseline),
+                    'phrases': stale_phrases, '_draft_only': not stale_phrases}
+                state['candidates'] = [copy.deepcopy(baseline)]
+                self.domain._store(state)
+                with patch.object(self.domain, '_cloud', side_effect=AssertionError('No paid mapping')) as cloud:
+                    self.domain.update_candidate({'batch_id': state['batch_id'],
+                        'candidate_id': baseline['candidate_id'], 'narration': edited_text})
+                    saved = self.domain._load(state['batch_id'])
+                    option = saved['script_options'][0]
+                    self.assertFalse(option.get('_draft_only'))
+                    self.assertEqual(edited_text, ''.join(p['text'] for p in option['phrases']))
+                    self.assertEqual([p['shot_ids'] for p in phrases], [p['shot_ids'] for p in option['phrases']])
+                    for index in (0, 2):
+                        self.assertEqual(baseline['shots'][index], option['shots'][index])
+                    with patch.object(self.domain, 'start', return_value={'local': True}):
+                        confirm_selections(self.domain, {'batch_id': state['batch_id'], 'selections': [
+                            {'script_id': option['candidate_id'], 'revision': option['revision'], 'count': 1}]})
+                    confirmed = self.domain._load(state['batch_id'])
+                    seed = confirmed['candidates'][0]
+                    self.assertEqual(option['phrases'], seed['phrases'])
+                    self.assertEqual(edited_text, seed['_confirmed_script']['narration'])
+                    with patch.object(self.domain, '_review', side_effect=lambda candidates, batch, audit: candidates) as review:
+                        self.domain._review_edit(seed, confirmed)
+                    review.assert_called_once()
+                    cloud.assert_not_called()
+
+    def test_local_mapping_rejects_cross_paragraph_changes_and_source_range_drift(self):
+        state = self.domain._load(self.batch['batch_id'])
+        refs = [shot['segment_id'] for shot in list({s['asset_id']: s for s in state['available_shots']}.values())[:2]]
+        baseline = self.domain._normalize_candidate({'title': '现场讲解', 'shot_ids': refs,
+            'phrases': [{'text': '先看设备。', 'shot_ids': [refs[0]]},
+                        {'text': '再问问题。', 'shot_ids': [refs[1]]}]}, state, [])
+        baseline['narration'] = '先看设备。再问问题。'
+        for candidate, text in ((baseline, '先看展板。再问参数。'),
+                                ({**baseline, '_run_id': 'already-started'}, '先看设备。讲师说，再问问题。'),
+                                ({**baseline, 'status': 'outcome_unknown'}, '先看设备。讲师说，再问问题。')):
+            self.assertIsNone(normalize_preserved_mapping(self.domain, state, candidate, text, baseline['title']))
+        prepared = normalize_preserved_mapping(self.domain, state, baseline,
+            '先看设备。讲师说，再问问题。', baseline['title'])
+        self.assertEqual(1, prepared['changed_phrase'])
+        self.assertEqual('先看设备。', prepared['candidate']['phrases'][0]['text'])
+        drifted = copy.deepcopy(prepared['candidate'])
+        drifted['shots'][0]['source_end_ms'] += 1
+        with patch.object(self.domain, '_normalize_candidate', return_value=drifted):
+            self.assertIsNone(normalize_preserved_mapping(self.domain, state, baseline,
+                '先看设备。讲师说，再问问题。', baseline['title']))
+
+    def test_failed_remapping_restores_reviewed_mapping_but_success_keeps_new_shots(self):
+        for succeeds in (False, True):
+            with self.subTest(succeeds=succeeds):
+                state = self.domain._load(self.batch['batch_id'])
+                candidate = copy.deepcopy(state['script_options'][0])
+                candidate['status'] = 'needs_review'
+                state['candidates'] = [candidate]
+                original = copy.deepcopy(candidate)
+                original_error = ContentEngineError('narrated_edit_rejected', '原镜头的收尾画面需要复核')
+                reviews, mappings = [], []
+
+                def review(current, batch):
+                    reviews.append(copy.deepcopy(current['shots']))
+                    if len(reviews) > 1 and succeeds:
+                        current['status'] = 'planned'
+                        return
+                    first = len(reviews) == 1
+                    current['_edit_review_audit'] = {
+                        'claim_review_response': {'reviews': [{'candidate_id': 'temporary-review', 'accepted': first}]},
+                        'rejections': [{'candidate_id': 'temporary-review',
+                            'stage': 'visual_review' if first else 'claim_review',
+                            'reason': original_error.message if first else '新镜头缺少原声证据'}],
+                    }
+                    raise original_error if first else ContentEngineError('narrated_edit_rejected', '新镜头缺少原声证据')
+
+                def remap(payload, instruction, **kwargs):
+                    mappings.append(payload)
+                    response = {'assignments': [{'unit_ids': [unit['unit_id'] for unit in payload['narration_units']],
+                        'shot_ids': [payload['shots'][len(mappings) * 2]['shot_id']]}]}
+                    self.assertIsNone(kwargs['validation_error'](response))
+                    return response
+
+                with patch.object(self.domain, '_review_edit', side_effect=review), \
+                     patch.object(self.domain, '_cloud', side_effect=remap):
+                    if succeeds:
+                        review_confirmed_candidate(self.domain, state, candidate)
+                    else:
+                        with self.assertRaises(ContentEngineError) as failed:
+                            review_confirmed_candidate(self.domain, state, candidate)
+                        self.assertIs(failed.exception, original_error)
+                self.assertEqual(original['narration'], candidate['narration'])
+                self.assertEqual(1 if succeeds else 2, len(mappings))
+                if succeeds:
+                    self.assertEqual('planned', candidate['status'])
+                    self.assertNotEqual(original['shots'], candidate['shots'])
+                else:
+                    self.assertEqual(original['shots'], candidate['shots'])
+                    self.assertEqual(original['phrases'], candidate['phrases'])
+                    self.assertEqual(original_error.message, candidate['_edit_review_audit']['rejections'][0]['reason'])
+                    saved = self.domain._load(state['batch_id'])['candidates'][0]
+                    self.assertEqual(candidate, saved)
+
+    def test_known_format_failure_restores_mapping_without_replacing_error_or_retrying_unknown(self):
+        for code, phase in (('cloud_response_invalid', 'review'), ('cloud_response_invalid', 'mapping'),
+                            ('volcengine_request_rejected', 'review'), ('cloud_request_outcome_unknown', 'review')):
+            with self.subTest(code=code, phase=phase):
+                state = self.domain._load(self.batch['batch_id'])
+                candidate = copy.deepcopy(state['script_options'][0])
+                state['candidates'] = [candidate]
+                original = copy.deepcopy(candidate)
+                terminal_error = ContentEngineError(code, '保留真实终止错误')
+                review_count = 0
+
+                def review(current, batch):
+                    nonlocal review_count
+                    review_count += 1
+                    if review_count > 1:
+                        raise terminal_error
+                    current['_edit_review_audit'] = {
+                        'claim_review_response': {'reviews': [{'candidate_id': 'temporary', 'accepted': True}]},
+                        'rejections': [{'stage': 'visual_review', 'candidate_id': 'temporary', 'reason': '原镜头待复核'}]}
+                    raise ContentEngineError('narrated_edit_rejected', '原镜头待复核')
+
+                def remap(payload, instruction, **kwargs):
+                    if phase == 'mapping':
+                        raise terminal_error
+                    return {'assignments': [{'unit_ids': [unit['unit_id'] for unit in payload['narration_units']],
+                                             'shot_ids': [payload['shots'][2]['shot_id']]}]}
+
+                with patch.object(self.domain, '_review_edit', side_effect=review), \
+                     patch.object(self.domain, '_cloud', side_effect=remap) as requests:
+                    with self.assertRaises(ContentEngineError) as failed:
+                        review_confirmed_candidate(self.domain, state, candidate)
+                self.assertIs(failed.exception, terminal_error)
+                self.assertEqual(1, requests.call_count)
+                if code == 'cloud_response_invalid':
+                    self.assertEqual(original['shots'], candidate['shots'])
+                    self.assertEqual(original['phrases'], candidate['phrases'])
+                    self.assertEqual('原镜头待复核', candidate['_edit_review_audit']['rejections'][0]['reason'])
+                else:
+                    self.assertNotEqual(original['shots'], candidate['shots'])
+
+    def test_editorial_quality_failure_preserves_rejection_without_remapping(self):
+        state = self.domain._load(self.batch['batch_id'])
+        candidate = copy.deepcopy(state['script_options'][0])
+        state['candidates'] = [candidate]
+        error = ContentEngineError('narrated_edit_rejected', '编辑质量评分不足')
+        def review(current, batch):
+            current['_edit_review_audit'] = {
+                'claim_review_response': {'reviews': [{'candidate_id': 'temporary', 'accepted': True}]},
+                'rejections': [{'stage': 'visual_review', 'candidate_id': 'temporary', 'quality_score': .5,
+                    'reason': error.message, 'findings_version': 1, 'hard_findings': [],
+                    'editorial_notes': [{'type': 'editorial', 'reason': '表达可以更聚焦'}]}]}
+            raise error
+        with patch.object(self.domain, '_review_edit', side_effect=review), patch.object(self.domain, '_cloud') as requests:
+            with self.assertRaises(ContentEngineError) as failed:
+                review_confirmed_candidate(self.domain, state, candidate)
+        self.assertIs(failed.exception, error)
+        requests.assert_not_called()
+
     def test_training_context_can_supplement_but_not_replace_visible_action(self):
         state = self.domain._load(self.batch['batch_id'])
         self.domain._active_batch = state
@@ -344,6 +538,9 @@ class NarratedProductionTests(unittest.TestCase):
         self.assertEqual(['S0'], phrases[0]['shot_ids'])
         self.assertEqual('S1', changes[0]['added_shot_id'])
         generous = [phrases[0], {**phrases[1], 'shot_ids': ['S1', 'S2']}]
+        with self.assertRaises(ContentEngineError):
+            complete_mapping_capacity(self.domain, state, generous, changed_phrase=0, allow_donors=False)
+        self.assertEqual(['S1', 'S2'], generous[1]['shot_ids'])
         redistributed, _ = complete_mapping_capacity(self.domain, state, generous)
         self.assertEqual(['S0', 'S1'], redistributed[0]['shot_ids'])
         self.assertEqual(['S2'], redistributed[1]['shot_ids'])

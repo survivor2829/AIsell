@@ -79,7 +79,10 @@ function assertStageWorkflowContract() {
   assert.equal(momentsNavEntries.length, 1, "moments publishing and engagement must share exactly one sidebar entry");
   assert.equal(momentsNavEntries[0], "{ key: \"moments\", label: \"朋友圈运营\", icon: ThumbsUp }", "the unified moments entry must use the product name");
   assert.match(source, /\{ key: "agent", persona: AGENT_ROLE_IDENTITIES\.agent\.name, label: AGENT_ROLE_IDENTITIES\.agent\.responsibility, icon: UsersRound, children: agentChildren \}/, "the WeChat group must use the shared role identity");
-  assert.match(read(path.join(desktopDir, "src", "renderer", "AgentHome.tsx")), /agent: \{ name: "小玺", responsibility: "微信拓客" \}/, "the shared WeChat responsibility must retain the product name");
+  const roles = JSON.parse(read(path.join(desktopDir, "src", "shared", "role-appearance.json")));
+  assert.equal(roles.agent.name, "小玺");
+  assert.equal(roles.agent.responsibility, "微信拓客", "the shared WeChat responsibility must retain the product name");
+  assert.match(read(path.join(desktopDir, "src", "renderer", "AgentHome.tsx")), /export \{ AGENT_ROLE_IDENTITIES \} from "\.\/role-appearance"/u);
   assert.equal(source.includes("个微Agent"), false, "the retired 个微Agent name must not remain in the UI");
   assert.equal(source.includes("小玺AI员工"), false, "the retired app name must not remain in the UI");
   assert.match(source, /productBrand\.displayName/, "the app brand must use the shared V1.0 product name");
@@ -212,7 +215,7 @@ assert.equal(read(path.join(desktopDir, "package.json")).includes("build:deliver
 assert.equal(read(path.join(desktopDir, "package.json")).includes("build:customer"), false);
 const packageMetadata = JSON.parse(read(path.join(desktopDir, "package.json")));
 assert.equal(packageMetadata.productName, productBrand.displayName);
-assert.equal(packageMetadata.version, "1.0.0");
+assert.match(packageMetadata.version, /^\d+\.\d+\.\d+$/u);
 const portableBuilderSource = read(path.join(desktopDir, "scripts", "build-portable-release.cjs"));
 assert.match(
   portableBuilderSource,

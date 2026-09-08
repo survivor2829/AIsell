@@ -88,6 +88,15 @@ METHODS = {
     "list_tasks": lambda service, params: service.list_tasks(
         status=params.get("status"), limit=params.get("limit", 500)
     ),
+    "get_task": lambda service, params: service.get_task(params.get("task_id")),
+    "production_summary": lambda service, params: service.production_summary(),
+    "get_provider_usage": lambda service, params: service.get_provider_usage(
+        task_id=params.get("task_id"), batch_id=params.get("batch_id"), limit=params.get("limit", 100)
+    ),
+    "list_productions": lambda service, params: service.list_productions(
+        view=params.get("view", "pending"), offset=params.get("offset", 0),
+        limit=params.get("limit", 20)
+    ),
     "register_finished": lambda service, params: service.register_finished(
         params.get("output_path"),
         title=params.get("title"),
@@ -203,7 +212,7 @@ METHODS = {
         params.get("project_id"), params.get("options")
     ),
     "list_one_click_candidates": lambda service, params: service.list_one_click_candidates(
-        params.get("project_id"), params.get("limit", 20)
+        params.get("project_id"), params.get("limit", 20), params.get("task_id")
     ),
     "list_packaging_presets": lambda service, params: service.list_packaging_presets(
         params.get("kind")
@@ -258,6 +267,7 @@ METHODS = {
     ),
     "list_generated_videos": lambda service, params: service.list_generated_videos(
         project_id=params.get("project_id"),
+        task_id=params.get("task_id"),
         status=params.get("status"),
         limit=params.get("limit", 500),
     ),

@@ -8,6 +8,10 @@ from unittest.mock import patch
 import test_auto_mix_v2 as fixtures
 from content_engine.narrated_batch import (
     NarratedBatchDomain, VISUAL_FACTS_VERSION, CLAIM_AUDIT_VERSION, canonical_hash, near_duplicate, validate_count,
+    reported_speech_context, reported_speech_cache_key, compact_claim_segment,
+    closing_action_cache_key,
+    compact_claim_semantics, semantic_review_cache_key,
+    typed_visual_review_cache_key, visual_findings_error,
 )
 from content_engine.errors import ContentEngineError
 
@@ -198,9 +202,12 @@ class NarratedBatchTests(unittest.TestCase):
             events.append(("render", candidate["narration"]))
             candidate.update(status="completed", generated_video_id=f"fake-{index}")
 
-        with patch.object(NarratedBatchDomain, "_plan", plan), patch.object(NarratedBatchDomain, "_render_candidate", render):
+        with patch.object(NarratedBatchDomain, "_plan", plan), \
+                patch.object(NarratedBatchDomain, "_prepare_script_options", lambda domain, task_id, state: plan(domain, task_id, state, 3)), \
+                patch.object(NarratedBatchDomain, "_render_candidate", render):
             queued = self.s.prepare_narrated_scripts(batch["batch_id"])
-            self.assertEqual("completed", self.s.run_creative_task(queued["task_id"])["status"])
+            prepared_task = self.s.run_creative_task(queued["task_id"])
+            self.assertEqual("completed", prepared_task["status"], prepared_task)
             prepared = self.s.get_narrated_batch(batch["batch_id"])
             self.assertEqual("scripts_ready", prepared["status"])
             self.assertEqual(3, len(prepared["script_options"]))
@@ -408,7 +415,8 @@ class NarratedBatchTests(unittest.TestCase):
             for shot in shots]}
         with self.assertRaises(ContentEngineError) as mixed_scene:
             domain._repack_duration_candidate(mapped, mixed, mixed["available_shots"])
-        self.assertIn("第1段跨了不同素材场景", str(mixed_scene.exception))
+        self.assertEqual("narrated_mapping_invalid", mixed_scene.exception.code)
+        self.assertIn("第1段", str(mixed_scene.exception))
 
     def test_source_evidence_pins_asset_range_version_provider_and_provenance(self):
         domain = NarratedBatchDomain(self.s.creative_domain)
@@ -557,7 +565,7 @@ class NarratedBatchTests(unittest.TestCase):
 
         visual_calls = []
         self.analyzer.cloud_client._structured_completion = complete
-        with patch.object(domain, "_visual_review", side_effect=lambda candidate, current: (
+        with patch.object(domain, "_visual_review", side_effect=lambda candidate, current, claim_review=None: (
                 visual_calls.append(candidate["candidate_id"]) or
                 {"accepted": True, "quality_score": .95, "unsupported_claims": [], "reason": "画面复核通过"})):
             audit = {"rejections": []}
@@ -831,7 +839,7 @@ class NarratedBatchTests(unittest.TestCase):
 
         self.analyzer.cloud_client._structured_completion = complete
         visual_calls = []
-        with patch.object(domain, "_visual_review", side_effect=lambda candidate, current: (
+        with patch.object(domain, "_visual_review", side_effect=lambda candidate, current, claim_review=None: (
                 visual_calls.append(candidate["candidate_id"]) or
                 {"accepted": True, "quality_score": .9, "unsupported_claims": [], "reason": "画面复核通过"})):
             audit = {"rejections": []}
@@ -1402,6 +1410,110 @@ class NarratedBatchTests(unittest.TestCase):
             self.assertEqual(count, len(b["candidates"]))
             self.assertFalse(b["count_is_exact"])
             self.assertEqual([], self.renderer.rendered_recipes)
+
+
+class ReportedSpeechContextTests(unittest.TestCase):
+    def test_typed_visual_findings_preserve_embedded_facts_and_separate_editorial_notes(self):
+        import copy
+        candidate = {'candidate_id': 'candidate', 'title': '设备培训',
+            'shots': [{'segment_id': 'shot-1'}, {'segment_id': 'other-shot'}],
+            'phrases': [{'text': text, 'shot_ids': ['shot-1']} for text in (
+                '建议选用这台已经通过防爆认证的机器。', '这台已节省一半人工的机器，你想试试吗？',
+                '培训时可先问清部件位置。')]}
+        for phrase, fact in zip(candidate['phrases'][:2], ('已经通过防爆认证', '已节省一半人工')):
+            response = {'accepted': False, 'quality_score': .8, 'unsupported_claims': [phrase['text']],
+                'findings': [{'type': 'unsupported_fact', 'quote': phrase['text'], 'fact_quote': fact,
+                    'shot_ids': ['shot-1'], 'source': 'missing_source', 'reason': '未提供对应认证或效果证据。'}]}
+            original = copy.deepcopy(response)
+            self.assertIsNone(visual_findings_error(candidate, response))
+            self.assertFalse(response['accepted'])
+            self.assertEqual(original, response)
+            response['accepted'] = True
+            self.assertIsNotNone(visual_findings_error(candidate, response))
+            response['accepted'] = False
+            response['findings'][0]['shot_ids'] = ['other-shot']
+            self.assertIsNotNone(visual_findings_error(candidate, response))
+        editorial = {'accepted': True, 'quality_score': .75, 'unsupported_claims': [], 'findings': [
+            {'type': 'editorial', 'quote': candidate['phrases'][2]['text'], 'reason': '可以选更贴切的培训镜头。'}]}
+        self.assertIsNone(visual_findings_error(candidate, editorial))
+        hidden_fact = copy.deepcopy(editorial)
+        hidden_fact['findings'][0].update(quote=candidate['phrases'][0]['text'],
+            fact_quote='已经通过防爆认证', source='missing_source', reason='无认证资料')
+        self.assertIsNotNone(visual_findings_error(candidate, hidden_fact))
+        editorial['accepted'] = False
+        self.assertIsNotNone(visual_findings_error(candidate, editorial))
+        old = {'base': {'response': {'accepted': False, 'quality_score': .75, 'unsupported_claims': ['旧失败']}}}
+        fresh = typed_visual_review_cache_key('base', old)
+        self.assertNotEqual('base', fresh)
+        old[fresh] = {'response': old['base']['response'], 'findings_version': 1}
+        self.assertEqual(fresh, typed_visual_review_cache_key('base', old))
+        self.assertEqual(fresh, typed_visual_review_cache_key(fresh, old))
+        self.assertEqual('base', typed_visual_review_cache_key('base', {'base': {'response': {
+            'accepted': True, 'quality_score': .8, 'unsupported_claims': []}}}))
+
+    def test_visual_semantics_preserves_quotes_without_transmitting_approval(self):
+        candidate = {'candidate_id': 'candidate'}
+        quote = '如果进入新场地，还需要先了解什么？'
+        review = {'candidate_id': 'candidate', 'accepted': True, 'phrase_reviews': [{'statements': [
+            {'quote': quote, 'kind': 'question', 'risk_scope': 'nonassertive', 'reason': '假设场景下的提问。',
+             'supported': True, 'evidence': [{'source': 'not-forwarded'}]}]}]}
+        semantics = compact_claim_semantics(candidate, review)
+        self.assertEqual([{'quote': quote, 'kind': 'question', 'risk_scope': 'nonassertive',
+                           'reason': '假设场景下的提问。'}], semantics)
+        self.assertEqual([], compact_claim_semantics({'candidate_id': 'other'}, review))
+        old_failure = {'resolved': {'response': {'accepted': False}}}
+        fresh = semantic_review_cache_key('resolved', semantics, old_failure)
+        self.assertNotEqual('resolved', fresh)
+        old_failure[fresh] = {'response': {'accepted': False}, 'semantic_review_version': 1}
+        self.assertEqual(fresh, semantic_review_cache_key('resolved', semantics, old_failure))
+        for record in ({'response': {'accepted': True}},
+                       {'response': {'accepted': False}, 'semantic_review_version': 1}):
+            self.assertEqual('resolved', semantic_review_cache_key('resolved', semantics, {'resolved': record}))
+        self.assertEqual('resolved', semantic_review_cache_key('resolved', semantics, {}))
+        self.assertEqual('resolved', semantic_review_cache_key('resolved', [], old_failure))
+
+    def test_closing_review_preserves_accepted_and_unrelated_failures_without_exempting_promises(self):
+        invitation = "评论77，聊聊你想了解的培训安排。"
+        promise = "评论77，保证免费送你全套培训资料。"
+        for closing in (invitation, promise):
+            failed = {"base": {"response": {"accepted": False, "quality_score": .7,
+                                            "unsupported_claims": [closing]}}}
+            fresh = closing_action_cache_key("base", closing, failed)
+            self.assertNotEqual(fresh, "base")
+            # The context migration neither approves a promise nor erases its
+            # evidence failure; current-version failure must remain reusable.
+            self.assertFalse(failed["base"]["response"]["accepted"])
+            failed[fresh] = {"response": {"accepted": False, "unsupported_claims": [closing]}}
+            self.assertEqual(closing_action_cache_key("base", closing, failed), fresh)
+        passed = {"base": {"response": {"accepted": True, "unsupported_claims": []}}}
+        self.assertEqual(closing_action_cache_key("base", invitation, passed), "base")
+        unrelated = {"base": {"response": {"accepted": False, "unsupported_claims": ["设备保证节能。"]}}}
+        self.assertEqual(closing_action_cache_key("base", invitation, unrelated), "base")
+
+    def test_colon_scope_keeps_independent_claims_and_cached_results_separate(self):
+        paragraphs = ["培训现场是围着实物讲的：", "喷头是不锈钢材质，外面有胶垫；",
+                      "旁边这个部件是过滤器。", "所以设备保证能用十年。"]
+        context = reported_speech_context(paragraphs, 1)
+        self.assertEqual(context, {"intro_text": paragraphs[0], "reported_text": "".join(paragraphs[1:3])})
+        self.assertIsNone(reported_speech_context(paragraphs, 3))
+        same_phrase = [paragraphs[0], "采用某种结构。这样保证省电。"]
+        self.assertEqual(reported_speech_context(same_phrase, 1)["reported_text"], "采用某种结构。")
+        for stop in ("!", "?", ". "):
+            self.assertIsNone(reported_speech_context(["现场介绍：部件版本3.5" + stop, "所以保证省电。"], 1))
+        quoted = ["现场说：“采用这种结构。”", "这就一定省电。"]
+        self.assertIsNone(reported_speech_context(quoted, 1))
+        wire = compact_claim_segment({"phrase_id": "phrase-2", "text": paragraphs[1], "facts": [],
+            "narrative_context": {"title": "实物讲解", "paragraphs": paragraphs}, "attribution_context": context})
+        self.assertEqual(wire["attribution_context"], context)
+        self.assertNotIn(paragraphs[3], wire["attribution_context"]["reported_text"])
+        passed = {"base": {"response": {"accepted": True}}}
+        rejected = {"base": {"response": {"accepted": False}}}
+        self.assertEqual(reported_speech_cache_key("base", context, passed), "base")
+        fresh = reported_speech_cache_key("base", context, rejected)
+        self.assertNotEqual(fresh, "base")
+        rejected[fresh] = {"response": {"accepted": False}}
+        self.assertEqual(reported_speech_cache_key("base", context, rejected), fresh)
+        self.assertEqual(reported_speech_cache_key("base", None, rejected), "base")
 
 
 if __name__ == "__main__":

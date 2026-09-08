@@ -243,6 +243,13 @@ function buildPortableStaging(edition, paths, sourceState) {
   fs.cpSync(electronDir, target, { recursive: true });
   const electronExe = path.join(target, "electron.exe");
   fs.renameSync(electronExe, path.join(target, `${productName}.exe`));
+  // Installers consume this prepackaged executable, so stamp its icon here.
+  const iconResult = spawnSync(require.resolve("electron-winstaller/vendor/rcedit.exe"), [
+    path.join(target, `${productName}.exe`), "--set-icon", path.join(desktopDir, "public", "app-icon.ico")
+  ], { encoding: "utf8", windowsHide: true });
+  if (iconResult.status !== 0) {
+    throw new Error(iconResult.error?.message || iconResult.stderr || "Failed to embed application icon");
+  }
   const appDir = path.join(target, "resources", "app");
   fs.rmSync(appDir, { recursive: true, force: true });
   copyAppSource(appDir, edition);

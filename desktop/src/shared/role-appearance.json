@@ -1,0 +1,26 @@
+{
+  "agent": {
+    "name": "小玺", "responsibility": "微信拓客",
+    "appearances": [
+      { "id": "original", "label": "经典小玺", "portraitKey": "xiaoxi-integrated", "position": "50% 27%", "accent": "#ef4452", "strong": "#bf2034", "surface": "#faebef", "soft": "#fff3f4", "pattern": "agent-original.svg", "motifs": ["message", "users", "send", "bot", "thumbs", "list"], "layout": "routes" },
+      { "id": "welcome", "label": "热情相迎", "portraitKey": "xiaoxi-welcome", "position": "50% 29%", "accent": "#dd6457", "strong": "#a13d35", "surface": "#f8f3f1", "soft": "#fff9f6", "pattern": "agent-welcome.svg", "motifs": ["users", "send", "user", "users", "send", "user"], "layout": "orbits" },
+      { "id": "connect", "label": "随时在线", "portraitKey": "xiaoxi-connect", "position": "50% 28%", "accent": "#dc685d", "strong": "#a64038", "surface": "#f4f0ee", "soft": "#fff8f4", "pattern": "agent-connect.svg", "motifs": ["message", "user", "users", "message", "user", "message"], "layout": "network" }
+    ]
+  },
+  "production": {
+    "name": "小惠", "responsibility": "内容创作",
+    "appearances": [
+      { "id": "original", "label": "经典小惠", "portraitKey": "xiaohui-integrated", "position": "50% 31%", "accent": "#a855f7", "strong": "#7131b7", "surface": "#efdcfb", "soft": "#f5ecfb", "pattern": "production-original.svg", "motifs": ["images", "sparkles", "clapper", "video", "folder", "monitor"], "layout": "routes" },
+      { "id": "studio", "label": "灵感手记", "portraitKey": "xiaohui-studio", "position": "50% 28%", "accent": "#b7759e", "strong": "#864c76", "surface": "#f7f2ef", "soft": "#fff9f8", "pattern": "production-studio.svg", "motifs": ["camera", "image", "sparkles", "image", "camera", "sparkles"], "layout": "frames" },
+      { "id": "create", "label": "创作时刻", "portraitKey": "xiaohui-create", "position": "50% 29%", "accent": "#ad7eae", "strong": "#7b527e", "surface": "#f7f0ee", "soft": "#fffafb", "pattern": "production-create.svg", "motifs": ["aperture", "focus", "sparkles", "focus", "aperture", "sparkles"], "layout": "frames" }
+    ]
+  },
+  "operations": {
+    "name": "小联", "responsibility": "渠道运营",
+    "appearances": [
+      { "id": "original", "label": "经典小联", "portraitKey": "xiaolian-integrated", "position": "50% 31%", "accent": "#4878e8", "strong": "#2852b8", "surface": "#e3eafb", "soft": "#edf2fe", "pattern": "operations-original.svg", "motifs": ["send", "link", "radio", "chart", "user", "phone"], "layout": "routes" },
+      { "id": "growth", "label": "增长伙伴", "portraitKey": "xiaolian-growth", "position": "50% 27%", "accent": "#7976de", "strong": "#514fa8", "surface": "#f8f7f7", "soft": "#f9f9ff", "pattern": "operations-growth.svg", "motifs": ["cart", "message", "users", "chart", "trend", "users"], "layout": "growth" },
+      { "id": "channels", "label": "连接更多", "portraitKey": "xiaolian-channels", "position": "50% 27%", "accent": "#8c82d8", "strong": "#5f549f", "surface": "#f6f7fc", "soft": "#faf9ff", "pattern": "operations-channels.svg", "motifs": ["mail", "send", "users", "chart", "megaphone", "message"], "layout": "orbits" }
+    ]
+  }
+}

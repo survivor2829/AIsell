@@ -11,6 +11,7 @@ import {
   ListTodo,
   MessageCircle,
   MonitorPlay,
+  Palette,
   RadioTower,
   Send,
   Smartphone,
@@ -29,15 +30,12 @@ import {
   type ComponentType
 } from "react";
 import type { WorkflowController, WorkflowTask } from "./WechatWorkflow";
+import { AGENT_ROLE_IDENTITIES, appearanceFor, appearanceStyle, type AgentRoleKey, type RolePreference } from "./role-appearance";
+import type { ContentProduction } from "./content-production-types";
 import "./AgentHome.css";
 
-export type AgentRoleKey = "agent" | "production" | "operations";
-
-export const AGENT_ROLE_IDENTITIES: Record<AgentRoleKey, { name: string; responsibility: string }> = {
-  agent: { name: "小玺", responsibility: "微信拓客" },
-  production: { name: "小惠", responsibility: "内容创作" },
-  operations: { name: "小联", responsibility: "渠道运营" }
-};
+export { AGENT_ROLE_IDENTITIES } from "./role-appearance";
+export type { AgentRoleKey } from "./role-appearance";
 
 export type AgentHomeTarget =
   | "workflow"
@@ -74,12 +72,6 @@ type RoleDefinition = {
   primaryLabel: string;
   primaryTarget: AgentHomeTarget;
   capabilities: RoleCapability[];
-};
-
-const ROLE_ATMOSPHERE_ICONS: Record<AgentRoleKey, ComponentType<{ size?: number; strokeWidth?: number }>[]> = {
-  agent: [MessageCircle, UsersRound, Send, Bot, ThumbsUp, ListTodo],
-  production: [Images, Sparkles, Clapperboard, Video, Folder, MonitorPlay],
-  operations: [Send, Link2, RadioTower, BarChart3, UserRound, Smartphone]
 };
 
 const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
@@ -131,18 +123,13 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
   }
 };
 
-type ProductionTaskSummary = {
-  taskId: string;
-  status: ProductionTaskStatus;
-};
-
 type ProductionSnapshot = {
   assets: string | null;
   tasks: string | null;
   openTasks: string | null;
   hasOpenTasks: boolean;
   finished: string | null;
-  latestTask: ProductionTaskSummary | null;
+  latestTask: ContentProduction | null;
   loading: boolean;
   error: string;
 };
@@ -165,13 +152,11 @@ type ImportantTask = {
 
 type PortraitFrame = "idle" | "blink" | "wave";
 type DatedWorkflowTask = WorkflowTask & { completedAt?: string };
-type ProductionTaskStatus = "queued" | "analyzing" | "ready_for_review" | "rendering" | "completed" | "failed" | "cancelled" | "paused";
 type FrameAvailability = Partial<Record<PortraitFrame, boolean>>;
 
 const CONTENT_LIST_LIMIT = 500;
-const PORTRAIT_FRAMES: PortraitFrame[] = ["idle", "blink", "wave"];
+const PORTRAIT_FRAMES: PortraitFrame[] = ["idle"];
 const EMPTY_FRAME_AVAILABILITY: FrameAvailability = {};
-const OPEN_CONTENT_STATUSES = new Set<ProductionTaskStatus>(["queued", "analyzing", "ready_for_review", "rendering", "paused"]);
 const WORKFLOW_STATUS_LABELS: Record<WorkflowTask["status"], string> = {
   pending: "待执行",
   running: "进行中",
@@ -224,20 +209,6 @@ function workflowTaskDetail(task: WorkflowTask) {
   return "已加入今日计划";
 }
 
-function contentTaskStatus(status: string) {
-  const labels: Record<string, string> = {
-    queued: "等待制作",
-    analyzing: "分析素材中",
-    ready_for_review: "等待确认",
-    rendering: "正在生成",
-    completed: "已完成",
-    failed: "制作失败",
-    cancelled: "已取消",
-    paused: "已暂停"
-  };
-  return labels[status] || "状态更新中";
-}
-
 function useProductionSnapshot(enabled: boolean) {
   const [snapshot, setSnapshot] = useState<ProductionSnapshot>({
     assets: null,
@@ -262,14 +233,13 @@ function useProductionSnapshot(enabled: boolean) {
     try {
       const [assetsResult, tasksResult, finishedResult] = await Promise.all([
         api.library.list({ limit: CONTENT_LIST_LIMIT }),
-        api.tasks.list({ limit: CONTENT_LIST_LIMIT }),
+        api.productions.list({ view: "pending", limit: 1 }),
         api.finished.list({ limit: CONTENT_LIST_LIMIT })
       ]);
       const assetItems = assetsResult.ok && assetsResult.data ? assetsResult.data.items : [];
       const taskItems = tasksResult.ok && tasksResult.data ? tasksResult.data.items : [];
-      const openItems = taskItems.filter((item) => OPEN_CONTENT_STATUSES.has(item.status));
-      const priorityItems = openItems.length ? openItems : taskItems;
-      const latest = [...priorityItems].sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
+      const summary = tasksResult.ok && tasksResult.data ? tasksResult.data.summary : null;
+      const latest = taskItems[0];
       const finishedItems = finishedResult.ok && finishedResult.data ? finishedResult.data.items : [];
       const errors = [assetsResult, tasksResult, finishedResult]
         .filter((result) => !result.ok)
@@ -280,13 +250,13 @@ function useProductionSnapshot(enabled: boolean) {
         assets: assetsResult.ok && assetsResult.data
           ? boundedCount(assetItems.filter((item) => item.availableLocationCount > 0).length, assetItems.length)
           : null,
-        tasks: tasksResult.ok && tasksResult.data ? boundedCount(taskItems.length, taskItems.length) : null,
-        openTasks: tasksResult.ok && tasksResult.data ? boundedCount(openItems.length, taskItems.length) : null,
-        hasOpenTasks: openItems.length > 0,
+        tasks: summary ? String(summary.pending) : null,
+        openTasks: summary ? String(summary.needsAttention) : null,
+        hasOpenTasks: Boolean(summary?.pending),
         finished: finishedResult.ok && finishedResult.data
           ? boundedCount(finishedItems.filter((item) => item.available !== false).length, finishedItems.length)
           : null,
-        latestTask: latest ? { taskId: latest.taskId, status: latest.status } : null,
+        latestTask: latest || null,
         loading: false,
         error: errors[0] || ""
       });
@@ -375,33 +345,8 @@ function assetUrl(fileName: string) {
   return new URL(`./agent-characters/${fileName}`, document.baseURI).toString();
 }
 
-function AgentAtmosphere({ role }: { role: AgentRoleKey }) {
-  const icons = ROLE_ATMOSPHERE_ICONS[role];
-
-  return (
-    <div className="agent-atmosphere" aria-hidden="true">
-      <svg className="agent-atmosphere-lines" viewBox="0 0 1440 1000" preserveAspectRatio="none">
-        <path d="M-90 170 C180 42 330 270 590 166 S1020 64 1510 250" />
-        <path d="M-120 610 C160 470 350 704 650 574 S1110 430 1510 650" />
-        <path className="is-dashed" d="M130 1010 C280 772 520 828 700 720 S1100 650 1430 790" />
-        <circle cx="112" cy="127" r="7" />
-        <circle cx="392" cy="216" r="5" />
-        <circle cx="696" cy="132" r="8" />
-        <circle cx="1042" cy="154" r="5" />
-        <circle cx="1288" cy="584" r="8" />
-        <circle cx="574" cy="602" r="6" />
-        <circle cx="250" cy="792" r="8" />
-        <circle cx="1040" cy="746" r="6" />
-      </svg>
-      <div className="agent-atmosphere-icons">
-        {icons.map((Icon, index) => (
-          <span className={`agent-atmosphere-icon motif-${index + 1}`} key={`${role}-${index}`}>
-            <Icon size={26} strokeWidth={1.7} />
-          </span>
-        ))}
-      </div>
-    </div>
-  );
+function AgentAtmosphere() {
+  return <div className="agent-atmosphere" aria-hidden="true"><div className="agent-atmosphere-pattern" /></div>;
 }
 
 function AgentPortrait({ definition }: { definition: RoleDefinition }) {
@@ -556,17 +501,17 @@ function buildProductionView(snapshot: ProductionSnapshot) {
   const value = (count: string | null) => snapshot.loading ? "—" : count === null ? "—" : count;
   const metrics: Metric[] = [
     { label: "素材仓库", value: value(snapshot.assets), unit: snapshot.assets === null ? undefined : "份", detail: "当前可用图片与视频素材", icon: Folder },
-    { label: "制作任务", value: value(snapshot.tasks), unit: snapshot.tasks === null ? undefined : "项", detail: snapshot.openTasks === null ? "尚未读取任务状态" : `${snapshot.openTasks} 项待处理`, icon: Clapperboard },
+    { label: "待处理制作", value: value(snapshot.tasks), unit: snapshot.tasks === null ? undefined : "项", detail: snapshot.openTasks === null ? "尚未读取制作状态" : `${snapshot.openTasks} 项需要确认或处理 · 按制作批次统计`, icon: Clapperboard },
     { label: "可用成片", value: value(snapshot.finished), unit: snapshot.finished === null ? undefined : "条", detail: "本地文件仍可访问的成片", icon: Video }
   ];
   const latest = snapshot.latestTask;
   const importantTask: ImportantTask = latest
     ? {
-      title: "继续当前内容任务",
-      detail: `任务 ${latest.taskId.slice(-8)} · ${contentTaskStatus(latest.status)}`,
-      status: contentTaskStatus(latest.status),
-      target: latest.status === "completed" ? "finished" : "workspace",
-      action: latest.status === "completed" ? "查看成片" : "打开工作台"
+      title: latest.title || "继续当前内容制作",
+      detail: latest.errorMessage || (latest.category === "active" ? "制作正在进行，可以查看进度和已完成的步骤。" : "这项制作需要你的确认，可以打开查看详情。"),
+      status: latest.category === "active" ? "进行中" : "需要处理",
+      target: "workspace",
+      action: "查看这项制作"
     }
     : {
       title: "开始一项新的内容制作",
@@ -578,7 +523,7 @@ function buildProductionView(snapshot: ProductionSnapshot) {
   return { metrics, importantTask };
 }
 
-function buildOperationsView() {
+function buildOperationsView(name: string) {
   const metrics: Metric[] = [
     { label: "账号管理", value: "可使用", detail: "可进入账号管理页面", icon: UserRound },
     { label: "渠道发布", value: "待连接", detail: "当前没有已接通发布渠道", icon: Send },
@@ -586,7 +531,7 @@ function buildOperationsView() {
   ];
   const importantTask: ImportantTask = {
     title: "连接第一个渠道账号",
-    detail: "完成账号连接后，小联才能承接发布、检查与数据复盘任务。",
+    detail: `完成账号连接后，${name}才能承接发布、检查与数据复盘任务。`,
     status: "待连接",
     target: "accounts",
     action: "前往账号管理"
@@ -598,30 +543,38 @@ export function AgentHome({
   role,
   workflow,
   contactCount,
-  onOpen
+  onOpen,
+  preference,
+  onPersonalize,
+  onOpenProduction
 }: {
   role: AgentRoleKey;
   workflow: WorkflowController;
   contactCount: number;
   onOpen: (target: AgentHomeTarget) => void;
+  preference: RolePreference;
+  onPersonalize: () => void;
+  onOpenProduction: (item: ContentProduction) => void;
 }) {
-  const definition = ROLE_DEFINITIONS[role];
+  const appearance = appearanceFor(role, preference.appearanceId);
+  const definition = { ...ROLE_DEFINITIONS[role], name: preference.name, portraitKey: appearance.portraitKey };
   const { snapshot, refresh } = useProductionSnapshot(role === "production");
   const workflowState = workflow.state;
   const workflowLoading = workflow.loading;
   const view = useMemo(() => {
     if (role === "agent") return buildWechatView(workflowState, workflowLoading, contactCount);
     if (role === "production") return buildProductionView(snapshot);
-    return buildOperationsView();
-  }, [contactCount, role, snapshot, workflowLoading, workflowState]);
+    return buildOperationsView(preference.name);
+  }, [contactCount, role, snapshot, workflowLoading, workflowState, preference.name]);
   const status = roleStatus(role, workflowState, workflowLoading, snapshot);
   const RoleIcon = role === "agent" ? UsersRound : role === "production" ? Sparkles : RadioTower;
 
   return (
-    <div className={`agent-home is-${role}`}>
-      <AgentAtmosphere role={role} />
+    <div className={`agent-home is-${role}`} style={appearanceStyle(appearance)} data-appearance={appearance.id}>
+      <AgentAtmosphere />
+      <div className="agent-personalize"><button type="button" onClick={onPersonalize}><Palette size={15} />形象与名字</button></div>
       <section className="agent-hero">
-        <AgentPortrait key={definition.key} definition={definition} />
+        <AgentPortrait key={definition.portraitKey} definition={definition} />
 
         <div className="agent-introduction">
           <div className="agent-live-status" role="status">
@@ -671,7 +624,7 @@ export function AgentHome({
           {role === "production" && snapshot.error && (
             <button type="button" className="agent-text-action" onClick={() => void refresh()}>重新读取内容数据</button>
           )}
-          <button type="button" className="agent-task-action" onClick={() => onOpen(view.importantTask.target)}>
+          <button type="button" className="agent-task-action" onClick={() => role === "production" && snapshot.latestTask ? onOpenProduction(snapshot.latestTask) : onOpen(view.importantTask.target)}>
             {view.importantTask.action}<ArrowRight size={16} strokeWidth={2.4} />
           </button>
         </section>

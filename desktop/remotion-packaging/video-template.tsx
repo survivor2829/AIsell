@@ -417,6 +417,18 @@ const ReferenceCaptionTrack: React.FC<{ captions: TimedWord[]; nowMs: number; du
   );
 };
 
+const ReferenceEndingCta: React.FC<{ event: MotionEvent }> = ({ event }) => {
+  const { lines, fontSize } = referenceCaptionLines(event.text);
+  return (
+    <div style={{ position: "absolute", left: 80, right: 80, top: "52%", transform: "translateY(-50%)",
+      textAlign: "center", fontFamily: baseFont, fontSize: Math.min(52, fontSize), fontWeight: 800,
+      lineHeight: 1.35, color: "#ffe88d", WebkitTextStroke: "3px #141414", paintOrder: "stroke fill",
+      textShadow: "0 2px 2px rgba(0,0,0,.4)" }}>
+      {lines.map((line, index) => <div key={index} style={{ whiteSpace: "pre" }}>{line}</div>)}
+    </div>
+  );
+};
+
 const SoundEffects: React.FC<{ events: MotionEvent[]; fps: number }> = ({ events, fps }) => (
   <>
     {events.map((event, index) => {
@@ -458,7 +470,9 @@ export const DynamicPackaging: React.FC<MotionManifest> = (manifest) => {
       <VideoBase manifest={manifest} pack={pack} frame={frame} zoomProgress={zoomProgress} />
       {activeFocus ? <RegisteredFocusEffect focus={activeFocus.focus} definition={activeFocus.definition} pack={pack} frame={frame} /> : null}
       {activeEvents.map(({ event, definition }, index) => (
-        <RegisteredEventEffect key={`${event.startMs}-${event.effect.variantId}-${index}`} event={event} definition={definition} pack={pack} progress={eventProgress(event, frame, fps)} />
+        manifest.captionPresentation === "reference_narration"
+          ? <ReferenceEndingCta key={`${event.startMs}-${index}`} event={event} />
+          : <RegisteredEventEffect key={`${event.startMs}-${event.effect.variantId}-${index}`} event={event} definition={definition} pack={pack} progress={eventProgress(event, frame, fps)} />
       ))}
       {manifest.captionPresentation === "reference_narration"
         ? <ReferenceCaptionTrack captions={manifest.captions} nowMs={nowMs} durationMs={manifest.durationMs} />

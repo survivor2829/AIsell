@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+from difflib import SequenceMatcher
 from pathlib import Path
 from uuid import uuid4
 
@@ -38,7 +39,7 @@ def retryable_planning_jobs(batch):
         return []
     candidates = {c['candidate_id']: c for c in batch.get('candidates', [])}
     return [job for job in batch.get('production_jobs', [])
-            if job.get('status') == 'skipped' and job.get('error_code') in MAPPING_ERRORS | {'cloud_response_invalid', 'narrated_brief_invalid'}
+            if job.get('status') == 'skipped' and job.get('error_code') in MAPPING_ERRORS | {'cloud_response_invalid', 'narrated_brief_invalid', 'volcengine_request_rejected'}
             and not candidates.get(job.get('candidate_id'), {}).get('_run_id')]
 
 
@@ -156,7 +157,7 @@ def resolve_planning_job(batch):
 
 def confirmed_narration_units(domain, batch, narration):
     """Keep the approved words local and give the editor measured sentence budgets."""
-    pieces = re.findall(r'.*?[，、：。！？；,!?;:](?:[”’\"])?|.+$', narration, re.S)
+    pieces = re.findall(r'.*?[。！？；!?;](?:[”’\"])?|.+$', narration, re.S)
     units = []
     for sentence in pieces:
         while len(sentence) > 80:
@@ -171,7 +172,7 @@ def confirmed_narration_units(domain, batch, narration):
             for number, text in enumerate(units)]
 
 
-def complete_mapping_capacity(domain, batch, phrases):
+def complete_mapping_capacity(domain, batch, phrases, *, changed_phrase=None, allow_donors=True):
     """Reserve unused nearby source footage; normal fact/visual review still follows."""
     index = {shot['segment_id']: shot for shot in batch['available_shots']}
     phrases = copy.deepcopy(phrases)
@@ -179,7 +180,9 @@ def complete_mapping_capacity(domain, batch, phrases):
     activities = {ref: (domain._source_evidence_for(batch, shot).get('source_provenance') or {}).get('activity_label')
                   for ref, shot in index.items()}
     changes = []
-    for phrase in phrases:
+    for number, phrase in enumerate(phrases):
+        if changed_phrase is not None and number != changed_phrase:
+            continue
         refs = phrase['shot_ids']
         required = domain._phrase_budget_ms(batch, phrase['text'])
         capacity = sum(index[ref]['target_duration_ms'] for ref in set(refs))
@@ -199,7 +202,7 @@ def complete_mapping_capacity(domain, batch, phrases):
                         and not any(index[other]['asset_id'] == shot['asset_id']
                             and index[other]['source_start_ms'] < shot['source_end_ms']
                             and shot['source_start_ms'] < index[other]['source_end_ms'] for other in used)]
-            if not eligible:
+            if not eligible and allow_donors:
                 donors = [(other, index[ref]) for other in phrases if other is not phrase
                           for ref in other['shot_ids']
                           if related(index[ref])
@@ -223,20 +226,121 @@ def complete_mapping_capacity(domain, batch, phrases):
     return phrases, changes
 
 
+def normalize_preserved_mapping(domain, batch, baseline, narration, title):
+    """Keep one local edit within the existing exact paragraph and scene bounds."""
+    if (not isinstance(baseline, dict) or baseline.get('_draft_only') or baseline.get('_run_id')
+            or baseline.get('status') == 'outcome_unknown' or 'unknown' in str(baseline.get('error_code', ''))):
+        return None
+    phrases = baseline.get('phrases') or []
+    old_text = ''.join(phrase.get('text', '') for phrase in phrases)
+    if (not phrases or old_text != baseline.get('narration') or not narration
+            or any(not phrase.get('shot_ids') or not 0 < len(phrase.get('text', '')) <= 80 for phrase in phrases)
+            or [ref for phrase in phrases for ref in phrase['shot_ids']]
+                != [shot.get('segment_id') for shot in baseline.get('shots', [])]):
+        return None
+    operations = [op for op in SequenceMatcher(None, old_text, narration, autojunk=False).get_opcodes()
+                  if op[0] != 'equal']
+    changed_phrase = None
+    if operations:
+        cursor, owners = 0, []
+        for number, phrase in enumerate(phrases):
+            end = cursor + len(phrase['text'])
+            # A paragraph-start insertion belongs to the following paragraph;
+            # an insertion at the end of the whole copy belongs to the last one.
+            if all((cursor <= a < end or a == end == len(old_text)) if a == z
+                   else cursor <= a and z <= end for _, a, z, _, _ in operations):
+                owners.append((number, cursor, end))
+            cursor = end
+        if len(owners) != 1:
+            return None
+        changed_phrase, start, end = owners[0]
+        suffix = old_text[end:]
+        if not narration.startswith(old_text[:start]) or suffix and not narration.endswith(suffix):
+            return None
+        replacement = narration[start:len(narration) - len(suffix) if suffix else None]
+        if not 0 < len(replacement) <= 80:
+            return None
+        phrases = copy.deepcopy(phrases)
+        phrases[changed_phrase] = {'text': replacement, 'shot_ids': phrases[changed_phrase]['shot_ids']}
+    if ''.join(phrase['text'] for phrase in phrases) != narration:
+        return None
+    adjustments = []
+    if changed_phrase is not None:
+        phrases, adjustments = complete_mapping_capacity(domain, batch, phrases,
+            changed_phrase=changed_phrase, allow_donors=False)
+    ids = [ref for phrase in phrases for ref in phrase['shot_ids']]
+    prepared = domain._normalize_candidate({'title': title, 'shot_ids': ids, 'phrases': phrases,
+        **{key: baseline.get(key, '') for key in ('audience', 'pain_point', 'angle', 'framework', 'summary')}},
+        batch, domain._history(batch['batch_id']))
+    before = {shot['segment_id']: shot for shot in baseline['shots']}
+    after = {shot['segment_id']: shot for shot in prepared['shots']}
+    source_keys = ('asset_id', 'source_start_ms', 'source_end_ms', 'target_duration_ms')
+    unchanged = [ref for number, phrase in enumerate(phrases) if number != changed_phrase
+                 for ref in phrase['shot_ids']]
+    if (''.join(phrase['text'] for phrase in prepared['phrases']) != narration
+            or any(any(before[ref].get(key) != after[ref].get(key) for key in source_keys) for ref in unchanged)):
+        return None
+    return {'candidate': prepared, 'changed_phrase': changed_phrase, 'capacity_adjustments': adjustments}
+
+
+def install_preserved_mapping(candidate, prepared):
+    """Copy the normalized mapping only; it still needs the ordinary review."""
+    for key in ('shots', 'phrases', '_tracks', '_timeline', 'duration_ms', 'estimated_duration_ms'):
+        if key in prepared['candidate']:
+            candidate[key] = copy.deepcopy(prepared['candidate'][key])
+    for key in ('_draft_only', '_edit_review_audit', '_brief_review_hash', 'review_version', 'quality_score', 'review_reason'):
+        candidate.pop(key, None)
+
+
 def review_confirmed_candidate(domain, batch, candidate):
     """Repair scene selection only; the user's confirmed words remain immutable."""
+    reviewed_mapping = None
+
+    def fail(error):
+        if (reviewed_mapping and error.code in MAPPING_ERRORS | {'cloud_response_invalid'}
+                and not candidate.get('_run_id')):
+            saved, review_error = reviewed_mapping
+            candidate.clear()
+            candidate.update(saved)
+            domain._store(batch)
+            if error.code == 'cloud_response_invalid':
+                raise error
+            raise review_error
+        raise error
+
     for attempt in range(3):
+        previous_audit = candidate.get('_edit_review_audit')
         try:
             if candidate.get('_draft_only'):
                 raise ContentEngineError('narrated_mapping_invalid', '已确认完整文案，现在为正文选择并安排真实镜头。')
             domain._review_edit(candidate, batch)
             return
         except ContentEngineError as error:
-            if error.code not in MAPPING_ERRORS or attempt == 2 or candidate.get('_run_id'):
+            if candidate.get('_run_id'):
                 raise
+            if error.code == 'cloud_response_invalid':
+                fail(error)
+            if error.code not in MAPPING_ERRORS:
+                raise
+            audit = candidate.get('_edit_review_audit') or {}
+            claims = (audit.get('claim_review_response') or {}).get('reviews') or []
+            rejections = audit.get('rejections') or []
+            if (reviewed_mapping is None and error.code == 'narrated_edit_rejected'
+                    and audit is not previous_audit and len(claims) == 1 and claims[0].get('accepted') is True
+                    and rejections and all(item.get('stage') == 'visual_review'
+                        and item.get('candidate_id') == claims[0].get('candidate_id') for item in rejections)):
+                # Keep the first mapping whose facts passed, together with its
+                # own rejection. Later repairs may lose that source evidence.
+                reviewed_mapping = (copy.deepcopy(candidate), error)
+            if (rejections and all(item.get('stage') == 'visual_review'
+                    and item.get('findings_version') and not item.get('hard_findings') for item in rejections)):
+                # A low editorial score still fails the quality gate, but has
+                # no concrete footage conflict for automatic remapping to fix.
+                fail(error)
+            if attempt == 2:
+                fail(error)
             if domain.d._should_stop(batch['task_id']):
                 return
-            audit = candidate.get('_edit_review_audit') or {}
             shots = [{'shot_id': f'S{number + 1}', **{key: shot[key] for key in ('asset_id', 'source_start_ms', 'source_end_ms', 'target_duration_ms', 'description')},
                       'max_narration_chars': domain._max_narration_chars(batch, shot['target_duration_ms']),
                       'source_evidence': domain._source_evidence_for(batch, shot)}
@@ -270,25 +374,28 @@ def review_confirmed_candidate(domain, batch, candidate):
                     return str(invalid)
                 return None
             domain._activity(batch, f'正在调整镜头安排，第 {attempt + 1} 次')
-            result = domain._cloud({'confirmed_narration': candidate['narration'], 'narration_units': units,
-                'issue': error.message, 'review_feedback': domain._compact_review_feedback(audit.get('rejections', [])),
-                'shots': shots, 'speech_budget': batch.get('_speech_budget'),
-                'avoid_sequences': [[s['segment_id'] for s in previous] for previous in domain._history(batch['batch_id'])]},
-                '你是剪辑师。正文已确认并由程序保存，你只选择镜头，不返回或改写正文。'
-                'narration_units是原文在自然停顿处切开的短语。把相邻U编号组合成适合对应画面的段落，每段最多80字，'
-                '每组用unit_ids列出U编号并选择所给S编号，不能遗漏、重复或调换U编号。优先保持完整句意；'
-                '一句涉及不同素材的内容时，可以在U编号之间分组，也可选多个相关镜头共同支持，例如部件讲解和联网设置应各选对应来源。'
-                '每个短语的required_ms已由程序计算；一组所选镜头target_duration_ms之和至少覆盖这组短语所需总时长；'
-                '例如需要5900毫秒，单个5000毫秒镜头不够，须选两个相关镜头。'
-                '同一组跨asset_id时，素材必须具有同一条已确认的source_provenance.activity_label；'
-                '不得把不同场次或不同人物说成同一次连续事件。每个S编号只能使用一次。'
-                '结合画面事实、原声和拒绝原因选相关镜头，先满足长句容量，再安排其余句子，不能把镜头用在多句。'
-                '开场与已有作品有实质区别。source_evidence里的原声只证明现场说过什么。'
-                '只返回JSON {assignments:[{unit_ids:["U1","U2"],shot_ids:["S1","S2"]}]}。', validation_error=validate,
-                generation_rules=False)
-            prepared = mapped(result)
-            updated = domain._normalize_candidate({**prepared,
-                **{key: candidate.get(key, '') for key in ('audience', 'pain_point', 'angle', 'framework', 'summary')}}, batch, domain._history(batch['batch_id']))
+            try:
+                result = domain._cloud({'confirmed_narration': candidate['narration'], 'narration_units': units,
+                    'issue': error.message, 'review_feedback': domain._compact_review_feedback(audit.get('rejections', [])),
+                    'shots': shots, 'speech_budget': batch.get('_speech_budget'),
+                    'avoid_sequences': [[s['segment_id'] for s in previous] for previous in domain._history(batch['batch_id'])]},
+                    '你是剪辑师。正文已确认并由程序保存，你只选择镜头，不返回或改写正文。'
+                    'narration_units是原文在自然停顿处切开的短语。把相邻U编号组合成适合对应画面的段落，每段最多80字，'
+                    '每组用unit_ids列出U编号并选择所给S编号，不能遗漏、重复或调换U编号。优先保持完整句意；'
+                    '一句涉及不同素材的内容时，可以在U编号之间分组，也可选多个相关镜头共同支持，例如部件讲解和联网设置应各选对应来源。'
+                    '每个短语的required_ms已由程序计算；一组所选镜头target_duration_ms之和至少覆盖这组短语所需总时长；'
+                    '例如需要5900毫秒，单个5000毫秒镜头不够，须选两个相关镜头。'
+                    '同一组跨asset_id时，素材必须具有同一条已确认的source_provenance.activity_label；'
+                    '不得把不同场次或不同人物说成同一次连续事件。每个S编号只能使用一次。'
+                    '结合画面事实、原声和拒绝原因选相关镜头，先满足长句容量，再安排其余句子，不能把镜头用在多句。'
+                    '开场与已有作品有实质区别。source_evidence里的原声只证明现场说过什么。'
+                    '只返回JSON {assignments:[{unit_ids:["U1","U2"],shot_ids:["S1","S2"]}]}。', validation_error=validate,
+                    generation_rules=False)
+                prepared = mapped(result)
+                updated = domain._normalize_candidate({**prepared,
+                    **{key: candidate.get(key, '') for key in ('audience', 'pain_point', 'angle', 'framework', 'summary')}}, batch, domain._history(batch['batch_id']))
+            except ContentEngineError as repair_error:
+                fail(repair_error)
             updated.update({key: copy.deepcopy(candidate[key]) for key in
                             ('candidate_id', 'revision', 'narration', '_confirmed_script', 'source_script_id', 'production_index') if key in candidate})
             updated['status'] = 'needs_review'
@@ -374,11 +481,6 @@ def run_production(domain, task_id, batch):
                     batch.update(status='outcome_unknown', reasons=[error.message])
                     domain._store(batch)
                     raise
-                if (error.code == 'cloud_response_invalid' and not (candidate or {}).get('_run_id')
-                        and job.get('format_retries', 0) < 1):
-                    job['format_retries'] = job.get('format_retries', 0) + 1
-                    domain._store(batch)
-                    continue
                 if (error.code in LOCAL_RENDER_ERRORS and (candidate or {}).get('_run_id')
                         and job.get('render_retries', 0) < 1):
                     job['render_retries'] = job.get('render_retries', 0) + 1

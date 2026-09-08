@@ -23,6 +23,10 @@ const CONTENT_ENGINE_CHANNELS = Object.freeze({
   archiveAsset: "content-engine:archive-asset",
   revealAsset: "content-engine:reveal-asset",
   listTasks: "content-engine:list-tasks",
+  getTask: "content-engine:get-task",
+  productionSummary: "content-engine:production-summary",
+  providerUsage: "content-engine:provider-usage",
+  listProductions: "content-engine:list-productions",
   pauseTask: "content-engine:pause-task",
   resumeTask: "content-engine:resume-task",
   cancelTask: "content-engine:cancel-task",
@@ -643,6 +647,35 @@ function publicTask(item = {}) {
     remotionPackagingCapable: item.remotion_packaging_capable === true,
     visualComparisonCapable: item.visual_comparison_capable === true,
     candidates
+  };
+}
+
+function publicProductionSummary(value = {}) {
+  const count = (key) => Number.isSafeInteger(value[key]) && value[key] >= 0 ? value[key] : 0;
+  return {
+    active: count("active"), needsAttention: count("needs_attention"),
+    pending: count("pending"), history: count("history"), archived: count("archived"), total: count("total")
+  };
+}
+
+function publicProduction(item = {}) {
+  const id = (value) => typeof value === "string" && /^[a-z0-9_-]{1,160}$/i.test(value) ? value : null;
+  return {
+    productionId: safeText(item.production_id, 180),
+    kind: ["narrated_batch", "guided_session", "auto_mix_v2", "task"].includes(item.kind) ? item.kind : "task",
+    title: safePublicText(item.title, 160), state: safeText(item.state, 64),
+    category: ["active", "needs_attention", "history", "archived"].includes(item.category) ? item.category : "needs_attention",
+    archived: item.archived === true,
+    taskId: id(item.task_id), taskType: safeText(item.task_type, 64),
+    taskStatus: TASK_STATES.has(item.task_status) ? item.task_status : null,
+    progress: Number.isFinite(item.progress) ? Math.min(1, Math.max(0, item.progress)) : 0,
+    projectId: id(item.project_id), runId: publicAutoMixRunId(item.run_id),
+    batchId: id(item.batch_id), sessionId: id(item.session_id),
+    errorCode: safePublicText(item.error_code, 64) || null,
+    errorMessage: safePublicText(item.error_message, 500) || null,
+    createdAt: safeText(item.created_at, 64), updatedAt: safeText(item.updated_at, 64),
+    stepCount: Number.isSafeInteger(item.step_count) ? Math.max(0, item.step_count) : 0,
+    steps: (Array.isArray(item.steps) ? item.steps : []).map(publicTask)
   };
 }
 
@@ -2345,6 +2378,51 @@ function registerContentEngineIpc(options = {}) {
     }
     return { items };
   });
+  handle(CONTENT_ENGINE_CHANNELS.productionSummary, async () => publicProductionSummary(
+    await controller.productionSummary()
+  ));
+  handle(CONTENT_ENGINE_CHANNELS.providerUsage, async (payload) => {
+    const taskId = payload.taskId ? validateId(payload.taskId, "task") : undefined;
+    const batchId = payload.batchId ? validateId(payload.batchId, "narrated_batch") : undefined;
+    if (!taskId && !batchId) throw Object.assign(new Error("invalid id"), { code: "invalid_id" });
+    const result = await controller.getProviderUsage({ taskId, batchId, limit: validateLimit(payload.limit, 100) });
+    const metrics = ["input_tokens", "output_tokens", "cached_tokens", "total_tokens", "requested_characters", "billed_characters", "requested_audio_ms", "audio_ms", "generated_audio_ms"];
+    const fields = ["call_id", "task_id", "task_type", "project_id", "batch_id", "run_id", "session_id", "provider", "kind", "model", "requested_model", "purpose", "operation_id", "started_at", "finished_at", "elapsed_ms", "attempt", "correction_attempt", "client_request_id", "request_id", "log_id", "http_status", "provider_code", "outcome", "error_code", ...metrics];
+    const counters = ["calls", "llm_calls", "tts_calls", "asr_calls", "succeeded_calls", "rejected_calls", "failed_calls", "invalid_response_calls", "outcome_unknown_calls", ...metrics, ...metrics.map((key) => `unknown_${key}_calls`)];
+    return {
+      items: (Array.isArray(result?.items) ? result.items : []).map((row) => Object.fromEntries(fields.map((key) => [key, row[key] ?? null]))),
+      totals: Object.fromEntries(counters.map((key) => [key, Number.isFinite(result?.totals?.[key]) ? result.totals[key] : null])),
+      truncated: result?.truncated === true, amount: null, cost_status: "provider_bill_required"
+    };
+  });
+  handle(CONTENT_ENGINE_CHANNELS.getTask, async (payload) => {
+    const raw = await controller.getTask(validateId(payload.taskId, "task"));
+    const task = publicTask(raw);
+    observeTask(task, { rawStatus: String(raw?.status || "") });
+    return task;
+  });
+  handle(CONTENT_ENGINE_CHANNELS.listProductions, async (payload) => {
+    const view = payload.view ?? "pending";
+    const offset = payload.offset ?? 0;
+    const limit = payload.limit ?? 20;
+    if (!["pending", "active", "needs_attention", "history", "archived", "all"].includes(view)
+      || !Number.isSafeInteger(offset) || offset < 0
+      || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw Object.assign(new Error("invalid production pagination"), { code: "invalid_limit" });
+    }
+    const result = await controller.listProductions({ view, offset, limit });
+    const rawItems = Array.isArray(result?.items) ? result.items : [];
+    for (const item of rawItems) {
+      const current = Array.isArray(item.steps) ? item.steps.find((step) => step?.task_id === item.task_id) : null;
+      if (current && !item.archived) observeTask(publicTask(current), { rawStatus: String(current.status || "") });
+    }
+    return {
+      items: rawItems.map(publicProduction),
+      total: Number.isSafeInteger(result?.total) ? result.total : 0,
+      offset, limit, hasMore: result?.has_more === true,
+      summary: publicProductionSummary(result?.summary)
+    };
+  });
   for (const [channel, method] of [
     [CONTENT_ENGINE_CHANNELS.pauseTask, "pauseTask"],
     [CONTENT_ENGINE_CHANNELS.resumeTask, "resumeTask"],
@@ -3109,10 +3187,10 @@ function registerContentEngineIpc(options = {}) {
     return publicTask(result);
   });
   handle(CONTENT_ENGINE_CHANNELS.listOneClickCandidates, async (payload) => {
-    assertKeys(payload, new Set(["projectId", "limit"]));
+    assertKeys(payload, new Set(["projectId", "limit", "taskId"]));
     const limit = Number(payload.limit ?? 20);
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) invalid("invalid_limit");
-    const result = await controller.listOneClickCandidates(validateId(payload.projectId, "creative_project"), limit);
+    const result = await controller.listOneClickCandidates(validateId(payload.projectId, "creative_project"), limit, payload.taskId ? validateId(payload.taskId, "task") : undefined);
     return {
       workflow: "product_one_click",
       items: (result?.items || []).map(publicGeneratedVideo)
@@ -3267,8 +3345,9 @@ function registerContentEngineIpc(options = {}) {
     ));
   });
   handle(CONTENT_ENGINE_CHANNELS.listGeneratedVideos, async (payload) => {
-    assertKeys(payload, new Set(["projectId", "status", "limit"]));
+    assertKeys(payload, new Set(["projectId", "taskId", "status", "limit"]));
     const result = await controller.listGeneratedVideos({
+      taskId: payload.taskId == null ? undefined : validateId(payload.taskId, "task"),
       projectId: payload.projectId == null
         ? undefined
         : validateId(payload.projectId, "creative_project"),

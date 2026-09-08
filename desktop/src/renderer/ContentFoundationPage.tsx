@@ -104,6 +104,7 @@ type ContentSettings = {
 };
 
 type ContentApi = {
+  productions: import("./content-production-types").ProductionsApi;
   status: () => Promise<ContentResult<ContentEngineStatus>>;
   restart: () => Promise<ContentResult<ContentEngineStatus>>;
   library: {
@@ -117,6 +118,7 @@ type ContentApi = {
     reveal: (payload: { assetId: string }) => Promise<ContentResult<{ available: boolean }>>;
   };
   tasks: {
+    get: (payload: { taskId: string }) => Promise<ContentResult<ContentTaskItem>>;
     list: (payload?: { status?: ContentTaskStatus; limit?: number }) => Promise<ContentResult<{ items: ContentTaskItem[] }>>;
     pause: (payload: { taskId: string }) => Promise<ContentResult<ContentTaskItem>>;
     resume: (payload: { taskId: string }) => Promise<ContentResult<ContentTaskItem>>;
@@ -782,14 +784,13 @@ function finishedVideoGeneratedId(item: FinishedVideoItem) {
   return typeof value === "string" && GENERATED_VIDEO_ID.test(value) ? value : "";
 }
 
-export function FinishedVideoCenterPage() {
+export function FinishedVideoCenterPage({ onOpenProductions }: { onOpenProductions?: () => void }) {
   const { status, loading } = useContentEngineStatus();
   const [items, setItems] = useState<FinishedVideoItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [downloadingId, setDownloadingId] = useState("");
   const [notice, setNotice] = useState("");
   const [query, setQuery] = useState("");
-  const [view, setView] = useState<"available" | "deleted">("available");
   const [visibleCount, setVisibleCount] = useState(FINISHED_PAGE_SIZE);
   const [brokenCovers, setBrokenCovers] = useState<Record<string, boolean>>({});
 
@@ -821,19 +822,17 @@ export function FinishedVideoCenterPage() {
 
   useEffect(() => {
     setVisibleCount(FINISHED_PAGE_SIZE);
-  }, [query, view]);
+  }, [query]);
 
   const availableCount = useMemo(() => items.filter(finishedVideoAvailable).length, [items]);
-  const deletedCount = items.length - availableCount;
   const filteredItems = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
     return items.filter((item) => {
-      const matchesStatus = view === "available" ? finishedVideoAvailable(item) : !finishedVideoAvailable(item);
-      if (!matchesStatus) return false;
+      if (!finishedVideoAvailable(item)) return false;
       if (!normalizedQuery) return true;
       return `${finishedVideoTitle(item)} ${item.displayName}`.toLocaleLowerCase().includes(normalizedQuery);
     });
-  }, [items, query, view]);
+  }, [items, query]);
   const visibleItems = filteredItems.slice(0, visibleCount);
 
   const registerVideo = async () => {
@@ -881,27 +880,20 @@ export function FinishedVideoCenterPage() {
 
   const ready = status.state === "ready";
   const showInitialSkeleton = ready && busy && items.length === 0;
-  const emptyTitle = query.trim()
-    ? `没有找到“${query.trim()}”`
-    : view === "deleted"
-      ? "没有已删除记录"
-      : deletedCount > 0
-        ? "当前没有可用成片"
-        : "还没有成片";
+  const emptyTitle = query.trim() ? `没有找到“${query.trim()}”` : "还没有可用成片";
   const emptyDescription = query.trim()
     ? "可以换一个标题或文件名再搜索。"
-    : view === "deleted"
-      ? "文件被删除或无法访问后，会统一出现在这里，不会混入可用成片。"
-      : "剪辑任务完成后会自动登记，也可以手动登记已有视频。";
+    : "制作完成后，作品会自动出现在这里，也可以登记已有视频。";
 
   return (
-    <section className="page content-foundation-page">
+    <section className="page content-foundation-page finished-page">
       <div className="page-head content-page-head">
         <div>
           <h1>成片中心</h1>
-          <p>一键成片、课程拆条和智能混剪的结果统一在这里查看与下载。</p>
+          <p>查看和下载可用作品，最新成片排在前面。</p>
         </div>
         <div className="actions content-page-actions">
+          {onOpenProductions && <button className="secondary-button" onClick={onOpenProductions}>制作记录</button>}
           <button className="secondary-button" onClick={() => void refresh({ announce: true })} disabled={!ready || busy}>
             <RefreshCw className={busy ? "content-spin" : ""} size={17} />
             刷新
@@ -928,15 +920,7 @@ export function FinishedVideoCenterPage() {
               placeholder="搜索标题或文件名"
             />
           </label>
-          <div className="finished-filter-tabs">
-            <button className={view === "available" ? "is-active" : ""} aria-pressed={view === "available"} onClick={() => setView("available")}>
-              可用成片 <span>{availableCount}</span>
-            </button>
-            <button className={view === "deleted" ? "is-active" : ""} aria-pressed={view === "deleted"} onClick={() => setView("deleted")}>
-              已删除 <span>{deletedCount}</span>
-            </button>
-          </div>
-          <span className="finished-result-count">共 {filteredItems.length} 条</span>
+          <span className="finished-result-count">{query.trim() ? `找到 ${filteredItems.length} 条作品` : `${availableCount} 条可用作品`}</span>
         </div>
       )}
 
@@ -970,9 +954,6 @@ export function FinishedVideoCenterPage() {
                     <span>暂无封面</span>
                   </div>
                 )}
-                <span className={`finished-card-status ${available ? "is-available" : "is-deleted"}`}>
-                  {available ? "可用" : "文件已删除"}
-                </span>
                 {available && (
                   <button className="finished-card-play" aria-label={`播放${title}`} onClick={() => void openVideo(item)} disabled={!ready}>
                     <Play size={19} fill="currentColor" />
@@ -1010,9 +991,7 @@ export function FinishedVideoCenterPage() {
             <strong>{ready ? emptyTitle : "成片底座尚未就绪"}</strong>
             <p>{ready ? emptyDescription : "运行组件就绪后，成片会统一在这里管理。"}</p>
             {ready && query.trim() && <button className="secondary-button" onClick={() => setQuery("")}>清除搜索</button>}
-            {ready && !query.trim() && view === "available" && deletedCount > 0 && (
-              <button className="secondary-button" onClick={() => setView("deleted")}>查看已删除</button>
-            )}
+
           </div>
         )}
       </div>

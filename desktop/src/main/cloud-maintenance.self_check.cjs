@@ -7,9 +7,122 @@ const { EventEmitter } = require("node:events");
 const { createDiagnosticLogger } = require("./diagnostics.cjs");
 const { createCloudMaintenance } = require("./cloud-maintenance.cjs");
 const { verifyManifest, compareVersions } = require("../shared/cloud-contract.cjs");
+const { registerCloudMaintenanceIpc } = require("./cloud-maintenance-ipc.cjs");
+const { createPreloadApis } = require("./preload-api.cjs");
+
+async function checkAnnouncements(rootDir, config, manifest, sign, bytes) {
+  const dir = path.join(rootDir, "announcements");
+  let latest = sign({ ...manifest, publishedAt: "2026-09-08T08:30:00.000Z" }), offline = false, downloads = 0;
+  const transport = { async request(route, options = {}) {
+    if (offline) throw new Error("offline fixture");
+    if (route.endsWith("latest")) return latest;
+    downloads++; assert.fail("Metadata refresh must not download an installer");
+  }, close() {} };
+  const create = (extra = {}) => createCloudMaintenance({ rootDir: dir, config, version: manifest.version, buildId: "announcement-check", transport, ...extra });
+  let controller = create();
+  try {
+    await controller.refreshAnnouncements();
+    assert.equal(controller.status().announcements[0].notes, manifest.notes, "Already installed versions still have release notes");
+    assert.equal(controller.status().announcements[0].publishedAt, "2026-09-08T08:30:00.000Z");
+    assert.equal(controller.status().unreadAnnouncements, 1);
+    await controller.check();
+    assert.equal(controller.status().stage, "current");
+    assert.equal(controller.status().announcements[0].notes, manifest.notes);
+    controller.markAnnouncementRead(manifest.sequence);
+    controller.stop(); controller = create();
+    assert.equal(controller.status().announcements[0].read, true, "Read state survives restart");
+    offline = true; await controller.refreshAnnouncements();
+    assert.equal(controller.status().announcements[0].read, true);
+    assert.match(controller.status().announcementError, /本机记录/);
+    offline = false;
+    latest = sign({ ...manifest, sequence: 11, version: "1.0.2", notes: "第二次更新" });
+    await controller.refreshAnnouncements();
+    assert.equal(controller.status().announcements[0].publishedAt, "", "Legacy releases do not invent a publication date");
+    latest = sign({ ...manifest, sequence: 11, version: "1.0.2", notes: "冲突公告" });
+    await controller.refreshAnnouncements();
+    assert.equal(controller.status().announcements[0].notes, "第二次更新");
+    assert.ok(controller.status().announcementError, "Same-sequence different payload is rejected");
+    latest = sign({ ...manifest, sequence: 9, version: "1.0.3" });
+    await controller.refreshAnnouncements();
+    assert.equal(controller.status().announcements[0].sequence, 11, "Signed rollback is rejected");
+    latest = { ...sign({ ...manifest, sequence: 12 }), signature: "invalid" };
+    await controller.refreshAnnouncements();
+    assert.equal(controller.status().announcements.length, 2, "Invalid signatures cannot enter the cache");
+    const rename = fs.renameSync;
+    try {
+      fs.renameSync = (source, destination) => {
+        if (destination === path.join(dir, "cloud-maintenance/state.json")) throw Object.assign(new Error("fixture persistence failure"), { code: "EIO" });
+        return rename(source, destination);
+      };
+      controller.markAnnouncementRead(11);
+      assert.equal(controller.status().announcements[0].read, false, "Failed persistence must not mark an announcement read");
+      latest = sign({ ...manifest, sequence: 12 });
+      await controller.refreshAnnouncements();
+      assert.equal(controller.status().announcements[0].sequence, 11, "Failed persistence must not publish the new cache in memory");
+    } finally { fs.renameSync = rename; }
+    assert.equal(downloads, 0);
+  } finally { controller.stop(); }
+
+  const legacyDir = path.join(rootDir, "legacy-pending/cloud-maintenance");
+  fs.mkdirSync(legacyDir, { recursive: true });
+  fs.writeFileSync(path.join(legacyDir, "state.json"), JSON.stringify({ pending: sign(manifest), sequence: manifest.sequence }));
+  fs.writeFileSync(path.join(legacyDir, `${manifest.sha256}.exe`), bytes);
+  latest = sign(manifest);
+  const legacy = createCloudMaintenance({ rootDir: path.dirname(legacyDir), config, version: "1.0.0", buildId: "legacy-check", transport, canInstall: () => true });
+  try {
+    assert.equal(legacy.status().announcements[0].notes, manifest.notes, "Signed legacy pending notes are available offline after upgrade");
+    await legacy.refreshAnnouncements();
+    assert.equal((await legacy.prepareInstall()).version, manifest.version, "Announcement refresh preserves the existing pending installer");
+    await legacy.check();
+    assert.equal(legacy.status().stage, "ready");
+    latest = sign({ ...manifest, sequence: 12, version: "1.0.2" });
+    await legacy.refreshAnnouncements();
+    assert.equal(legacy.status().stage, "idle", "A newer metadata-only release clears the stale ready indicator");
+    assert.equal(await legacy.prepareInstall(), null, "A cached older installer cannot bypass the release rollback fence");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(legacyDir, "state.json"), "utf8")).pending.payload, sign(manifest).payload, "Old pending evidence remains until a new package is checked");
+    assert.equal(downloads, 0);
+  } finally { legacy.stop(); }
+
+  let finishDownload, signalDownload;
+  const downloading = new Promise((resolve) => { signalDownload = resolve; });
+  latest = sign({ ...manifest, sequence: 20 });
+  const race = createCloudMaintenance({ rootDir: path.join(rootDir, "download-race"), config, version: "1.0.0", buildId: "race-check", canInstall: () => true,
+    transport: { request(route, options = {}) {
+      if (route.endsWith("latest")) return Promise.resolve(latest);
+      return new Promise((resolve) => {
+        finishDownload = () => { fs.writeFileSync(options.destination, bytes); options.onProgress(bytes.length); resolve({ size: bytes.length }); };
+        signalDownload();
+      });
+    }, close() {} }
+  });
+  try {
+    const check = race.check(); await downloading;
+    latest = sign({ ...manifest, sequence: 21, version: "1.0.2" });
+    await race.refreshAnnouncements(); finishDownload(); await check;
+    assert.equal(race.status().announcements[0].sequence, 21);
+    assert.equal(race.status().stage, "error", "An older in-flight download cannot be announced as ready after a newer signed release");
+    assert.equal(await race.prepareInstall(), null);
+    assert.equal(fs.readdirSync(path.join(rootDir, "download-race/cloud-maintenance")).some((file) => file.endsWith(".part")), false);
+  } finally { race.stop(); }
+
+  const handlers = new Map(), mainFrame = {}, webContents = { mainFrame, send() {} };
+  let refreshes = 0, readSequence;
+  const dispose = registerCloudMaintenanceIpc({ ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) }, getMainWindow: () => ({ webContents, isDestroyed: () => false }), restart() {},
+    controller: { onUpdate: () => () => {}, refreshAnnouncements: () => { refreshes++; return {}; }, markAnnouncementRead: (sequence) => { readSequence = sequence; return {}; } } });
+  await assert.rejects(handlers.get("cloud:announcements")({ sender: {}, senderFrame: mainFrame }), /sender_invalid/);
+  await assert.rejects(handlers.get("cloud:announcements")({ sender: webContents, senderFrame: {} }), /sender_invalid/);
+  await handlers.get("cloud:announcements")({ sender: webContents, senderFrame: mainFrame });
+  await handlers.get("cloud:readAnnouncement")({ sender: webContents, senderFrame: mainFrame }, 21);
+  assert.equal(refreshes, 1); assert.equal(readSequence, 21); dispose();
+  const calls = [];
+  const api = createPreloadApis({ invoke: (...args) => { calls.push(args); }, on() {}, removeListener() {} }).cloudMaintenance;
+  api.announcements(); api.readAnnouncement(21);
+  assert.deepEqual(calls, [["cloud:announcements"], ["cloud:readAnnouncement", 21]]);
+}
 
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud-maintenance-check-"));
+  assert.equal(path.dirname(dir), path.resolve(os.tmpdir()));
   const keys = crypto.generateKeyPairSync("ed25519");
   const config = { enabled: true, appId: "com.aihuoke.desktop.test", channel: "test", signingPublicKey: keys.publicKey };
   const bytes = Buffer.from("test installer bytes; never executed");
@@ -60,7 +173,8 @@ async function main() {
     offline = false; latest = sign({ ...manifest, sequence: 9, version: "1.0.2" });
     await controller.check();
     assert.equal(controller.status().stage, "error", "Signed but stale release rejected");
-    console.log("cloud maintenance: signatures, cache integrity, consent, redaction, offline queue and install boundary passed");
+    await checkAnnouncements(dir, config, manifest, sign, bytes);
+    console.log("cloud maintenance: announcement cache/read persistence, metadata-only refresh, signatures, rollback/conflict, download race, legacy pending, IPC, consent and install boundary passed");
   } finally { controller.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

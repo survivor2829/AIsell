@@ -22,23 +22,88 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   const saved = readJson(stateFile, {});
   const state = {
     installId: UUID.test(saved.installId || "") ? saved.installId : crypto.randomUUID(),
-    consent: saved.consent === true, sequence: Number.isSafeInteger(saved.sequence) ? saved.sequence : 0,
-    lastUpload: typeof saved.lastUpload === "string" ? saved.lastUpload : "", pending: saved.pending || null
+    consent: saved.consent === true, sequence: Number.isSafeInteger(saved.sequence) && saved.sequence >= 0 ? saved.sequence : 0,
+    lastUpload: typeof saved.lastUpload === "string" ? saved.lastUpload : "", pending: saved.pending || null,
+    announcements: [],
+    lastAnnouncementsCheck: typeof saved.lastAnnouncementsCheck === "string" ? saved.lastAnnouncementsCheck : ""
   };
+  for (const item of [...(Array.isArray(saved.announcements) ? saved.announcements.slice(0, 20) : []), ...(saved.pending ? [{ envelope: saved.pending, read: false }] : [])]) {
+    try {
+      const manifest = verifyManifest(item.envelope, config);
+      state.sequence = Math.max(state.sequence, manifest.sequence);
+      if (!state.announcements.some((entry) => entry.sequence === manifest.sequence)) state.announcements.push({ sequence: manifest.sequence, envelope: item.envelope, read: item.read === true });
+    } catch {}
+  }
+  state.announcements.sort((left, right) => right.sequence - left.sequence);
+  state.announcements = state.announcements.slice(0, 20);
   const network = transport || (config?.enabled ? createTransport(config) : null);
   let queue = readJson(queueFile, []);
   if (!Array.isArray(queue)) queue = [];
   queue = queue.filter((item) => item?.report?.appId === config?.appId).slice(-200);
   if (!state.consent) queue = [];
   let checking = false, uploading = false, stopped = false, unsubscribe;
-  let retryAt = 0, attempts = 0, checkTimer, uploadTimer;
-  let view = { stage: network ? "idle" : "disabled", progress: 0, nextVersion: "", error: "", uploadError: "" };
+  let retryAt = 0, attempts = 0, checkTimer, uploadTimer, announcementTimer, latestRequest;
+  let view = { stage: network ? "idle" : "disabled", progress: 0, nextVersion: "", error: "", uploadError: "", announcementError: "", announcementsChecking: false };
   const listeners = new Set();
   function save() { writeJsonAtomic(stateFile, state); }
+  function commit(patch) {
+    const next = { ...state, ...patch };
+    writeJsonAtomic(stateFile, next);
+    Object.assign(state, next);
+  }
   function saveQueue() { writeJsonAtomic(queueFile, queue); }
-  function status() { return { ...view, enabled: Boolean(network), version, channel: config?.channel || "", consent: state.consent, queued: queue.length, lastUpload: state.lastUpload, canInstall: canInstall() }; }
+  function status() {
+    const announcements = state.announcements.map((item) => {
+      const manifest = JSON.parse(item.envelope.payload);
+      return { sequence: item.sequence, version: manifest.version, notes: manifest.notes, publishedAt: manifest.publishedAt || "", read: item.read };
+    });
+    return { ...view, enabled: Boolean(network), version, channel: config?.channel || "", consent: state.consent, queued: queue.length,
+      lastUpload: state.lastUpload, canInstall: canInstall(), announcements, unreadAnnouncements: announcements.filter((item) => !item.read).length,
+      lastAnnouncementsCheck: state.lastAnnouncementsCheck };
+  }
   function notify(patch = {}) { view = { ...view, ...patch }; for (const listener of listeners) { try { listener(status()); } catch {} } }
   save();
+  function readLatest() {
+    if (latestRequest) return latestRequest;
+    latestRequest = (async () => {
+      const envelope = await network.request(`/v1/releases/${config.channel}/latest`);
+      if (stopped) fail("cloud_stopped");
+      if (envelope.empty === true) {
+        commit({ lastAnnouncementsCheck: new Date().toISOString() }); notify({ announcementError: "" }); return null;
+      }
+      const manifest = verifyManifest(envelope, config);
+      if (manifest.sequence < state.sequence) fail("cloud_release_rollback");
+      const newerRelease = manifest.sequence > state.sequence;
+      const prior = state.announcements.find((item) => item.sequence === manifest.sequence);
+      if (prior && prior.envelope.payload !== envelope.payload) fail("cloud_release_conflict");
+      commit({ sequence: manifest.sequence,
+        announcements: [{ sequence: manifest.sequence, envelope, read: prior?.read === true }, ...state.announcements.filter((item) => item.sequence !== manifest.sequence)]
+          .sort((left, right) => right.sequence - left.sequence).slice(0, 20),
+        lastAnnouncementsCheck: new Date().toISOString() });
+      notify({ announcementError: "", ...(newerRelease && view.stage === "ready" ? { stage: "idle", progress: 0, nextVersion: "" } : {}) });
+      return { envelope, manifest };
+    })().finally(() => { latestRequest = null; });
+    return latestRequest;
+  }
+  async function refreshAnnouncements() {
+    if (!network || stopped) return status();
+    notify({ announcementsChecking: true, announcementError: "" });
+    try { await readLatest(); }
+    catch { if (!stopped) notify({ announcementError: "公告暂时刷新失败，已保留本机记录。" }); }
+    finally { notify({ announcementsChecking: false }); }
+    return status();
+  }
+  function markAnnouncementRead(sequence) {
+    if (!Number.isSafeInteger(sequence)) return status();
+    const item = state.announcements.find((candidate) => candidate.sequence === sequence);
+    if (item && !item.read) {
+      try {
+        commit({ announcements: state.announcements.map((candidate) => candidate.sequence === sequence ? { ...candidate, read: true } : candidate) });
+        notify({ announcementError: "" });
+      } catch { notify({ announcementError: "已读状态暂未保存，请稍后重试。" }); }
+    }
+    return status();
+  }
   function envelopeFor(entries) {
     return { schema: 1, appId: config.appId, channel: config.channel, installId: state.installId,
       version, buildId: token(buildId), platform: process.platform, arch: process.arch,
@@ -80,11 +145,9 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     checking = true; notify({ stage: "checking", error: "" });
     let temporary;
     try {
-      const envelope = await network.request(`/v1/releases/${config.channel}/latest`);
-      if (envelope.empty === true) { notify({ stage: "current" }); return status(); }
-      const manifest = verifyManifest(envelope, config);
-      if (manifest.sequence < state.sequence) fail("cloud_release_rollback");
-      state.sequence = manifest.sequence; save();
+      const release = await readLatest();
+      if (!release) { notify({ stage: "current" }); return status(); }
+      const { envelope, manifest } = release;
       if (compareVersions(manifest.version, version) <= 0) {
         state.pending = null; save(); notify({ stage: "current", nextVersion: "" }); return status();
       }
@@ -103,8 +166,11 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
             if (progress !== lastProgress) { lastProgress = progress; notify({ progress }); }
           } });
         if (stopped) fail("cloud_stopped");
+        if (manifest.sequence < state.sequence) fail("cloud_release_superseded");
         fs.renameSync(temporary, destination); temporary = undefined;
       }
+      if (stopped) fail("cloud_stopped");
+      if (manifest.sequence < state.sequence) fail("cloud_release_superseded");
       state.pending = envelope; save();
       notify({ stage: "ready", progress: 100 });
     } catch (error) {
@@ -150,10 +216,11 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     lifecycle("app_started", "ok");
     void check(); void flush();
     checkTimer = setInterval(() => void check(), 6 * 60 * 60_000); checkTimer.unref?.();
+    announcementTimer = setInterval(() => void refreshAnnouncements(), 30 * 60_000); announcementTimer.unref?.();
     uploadTimer = setInterval(() => void flush(), 15_000); uploadTimer.unref?.();
   }
-  function stop() { stopped = true; clearInterval(checkTimer); clearInterval(uploadTimer); unsubscribe?.(); network?.close(); }
-  return { status, check, flush, enqueue, setConsent, start, stop, prepareInstall, installOnExit,
+  function stop() { stopped = true; clearInterval(checkTimer); clearInterval(uploadTimer); clearInterval(announcementTimer); unsubscribe?.(); network?.close(); }
+  return { status, check, refreshAnnouncements, markAnnouncementRead, flush, enqueue, setConsent, start, stop, prepareInstall, installOnExit,
     onUpdate(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 }
 module.exports = { createCloudMaintenance, fileHash };

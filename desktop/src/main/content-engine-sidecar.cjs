@@ -853,8 +853,8 @@ function createContentEngineSidecar(options = {}) {
         }
       }
     ),
-    listOneClickCandidates: (projectId, limit = 20) => request(
-      "list_one_click_candidates", { project_id: projectId, limit }
+    listOneClickCandidates: (projectId, limit = 20, taskId) => request(
+      "list_one_click_candidates", { project_id: projectId, limit, ...(taskId ? { task_id: taskId } : {}) }
     ),
     getCreativeProject: (projectId) => request("get_creative_project", {
       project_id: projectId
@@ -878,6 +878,7 @@ function createContentEngineSidecar(options = {}) {
       "list_generated_videos",
       {
         project_id: optionsForList.projectId,
+        task_id: optionsForList.taskId,
         status: optionsForList.status,
         limit: optionsForList.limit
       }
@@ -973,6 +974,16 @@ function createContentEngineSidecar(options = {}) {
     }),
     listTasks: (optionsForList = {}) => request("list_tasks", {
       status: optionsForList.status,
+      limit: optionsForList.limit
+    }),
+    getTask: (taskId) => request("get_task", { task_id: taskId }),
+    productionSummary: () => request("production_summary", {}),
+    getProviderUsage: (payload = {}) => request("get_provider_usage", {
+      task_id: payload.taskId, batch_id: payload.batchId, limit: payload.limit
+    }),
+    listProductions: (optionsForList = {}) => request("list_productions", {
+      view: optionsForList.view,
+      offset: optionsForList.offset,
       limit: optionsForList.limit
     }),
     onUpdate,

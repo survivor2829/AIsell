@@ -12,6 +12,7 @@ class VolcengineMediaTests(unittest.TestCase):
         with patch("content_engine.volcengine_media.request.build_opener") as opener:
             response = opener.return_value.open.return_value.__enter__.return_value
             response.headers.get.return_value = "20000003"
+            response.read.return_value = b"{}"
             result = VolcengineMediaClient()._post("https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash", {}, {}, 1, "语音识别")
         self.assertEqual(VolcengineMediaClient.asr_sentences(result), [])
         self.assertEqual(result["speech_status"], "silent")

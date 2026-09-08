@@ -19,6 +19,9 @@ const { registerDiagnosticsIpc } = require("./diagnostics-ipc.cjs");
 const { cloudConfig } = require("./cloud-config.cjs");
 const { createCloudMaintenance } = require("./cloud-maintenance.cjs");
 const { registerCloudMaintenanceIpc } = require("./cloud-maintenance-ipc.cjs");
+const { createRolePreferences, registerRolePreferencesIpc } = require("./role-preferences.cjs");
+const { createFeedbackController } = require("./feedback-controller.cjs");
+const { registerFeedbackIpc } = require("./feedback-ipc.cjs");
 const { createLicenseStore, registerLicenseAuthIpc } = require("./license-auth-ipc.cjs");
 const { developmentEdition, pilotEdition, editionLabel, preloadFile, rendererDir } = require("./edition.cjs");
 const {
@@ -67,6 +70,7 @@ let contentEngineIpcRegistration = null;
 let quitCleanupStarted = false;
 let quitCleanupComplete = false;
 let cloudMaintenance = null;
+let feedbackController = null;
 
 const PROVIDER_CONSUMER_RESTART_STATES = new Set(["ready", "starting", "failed"]);
 const productDetailReleaseSmokeMode = app.isPackaged
@@ -213,6 +217,7 @@ function createWindow() {
     minHeight: 760,
     autoHideMenuBar: true,
     backgroundColor: "#f8d9df",
+    icon: path.join(__dirname, `../../${rendererDir}/app-icon.ico`),
     title: [productBrand.displayName, editionLabel].filter(Boolean).join(" "),
     webPreferences: productDetailWebPreferences()
   });
@@ -558,9 +563,15 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       reply: autoReplyController
     });
     createWindow();
+    registerRolePreferencesIpc({ ipcMain, controller: createRolePreferences({ rootDir: runtime.rootDir }), getMainWindow: () => mainWindow });
     if (!productDetailReleaseSmokeMode) {
+      const maintenanceConfig = cloudConfig({ developmentEdition });
+      feedbackController = createFeedbackController({ rootDir: runtime.rootDir, config: maintenanceConfig,
+        version: app.getVersion(), buildId: build.buildId, logger, safeStorage });
+      registerFeedbackIpc({ ipcMain, controller: feedbackController, getMainWindow: () => mainWindow });
+      feedbackController.start();
       cloudMaintenance = createCloudMaintenance({
-        rootDir: runtime.rootDir, config: cloudConfig({ developmentEdition }),
+        rootDir: runtime.rootDir, config: maintenanceConfig,
         version: app.getVersion(), buildId: build.buildId, logger,
         canInstall: () => app.isPackaged && process.platform === "win32" && developmentEdition
           && path.dirname(process.execPath).toLowerCase() === path.join(process.env.LOCALAPPDATA || "", "Programs", installerTargets.test.installDirectoryName).toLowerCase()
@@ -603,6 +614,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     if (quitCleanupStarted) return;
     quitCleanupStarted = true;
     cloudMaintenance?.stop();
+    feedbackController?.stop();
     const cleanupTimeout = new Promise((resolve) => {
       setTimeout(resolve, 8_000);
     });

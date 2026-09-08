@@ -429,33 +429,6 @@ button:focus-visible {
   padding: 50px 36px 26px 0;
 }
 
-.workspace.role-theme-agent {
-  --workspace-role-surface: #fbecef;
-  --brand-red: #ef4452;
-  --brand-red-bright: #f25561;
-  --brand-red-dark: #bf2034;
-  --brand-soft: #fbecef;
-  --brand-ring: rgba(239, 68, 82, 0.2);
-}
-
-.workspace.role-theme-production {
-  --workspace-role-surface: #efdef9;
-  --brand-red: #a855f7;
-  --brand-red-bright: #b66cf8;
-  --brand-red-dark: #7131b7;
-  --brand-soft: #f5ecfb;
-  --brand-ring: rgba(168, 85, 247, 0.2);
-}
-
-.workspace.role-theme-operations {
-  --workspace-role-surface: #e5ecfc;
-  --brand-red: #4878e8;
-  --brand-red-bright: #5d8cf0;
-  --brand-red-dark: #2852b8;
-  --brand-soft: #edf2fe;
-  --brand-ring: rgba(72, 120, 232, 0.2);
-}
-
 .workspace[class*="role-theme-"] {
   background: var(--workspace-role-surface);
 }
@@ -471,25 +444,11 @@ button:focus-visible {
   background-size: 100% 900px, min(58vw, 760px) min(58vw, 760px), 100% 100%;
 }
 
-.workspace.role-theme-agent .content-card {
+.workspace[class*="role-theme-"] .content-card {
   background-image:
-    url("./role-pattern-agent.svg"),
-    radial-gradient(circle at 92% 4%, rgba(239, 68, 82, 0.14), transparent 62%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.64), rgba(251, 236, 239, 0.72));
-}
-
-.workspace.role-theme-production .content-card {
-  background-image:
-    url("./role-pattern-production.svg"),
-    radial-gradient(circle at 92% 4%, rgba(168, 85, 247, 0.15), transparent 62%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.62), rgba(239, 222, 249, 0.72));
-}
-
-.workspace.role-theme-operations .content-card {
-  background-image:
-    url("./role-pattern-operations.svg"),
-    radial-gradient(circle at 92% 4%, rgba(72, 120, 232, 0.14), transparent 62%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.62), rgba(229, 236, 252, 0.74));
+    var(--role-pattern),
+    radial-gradient(circle at 92% 4%, color-mix(in srgb, var(--brand-red) 13%, transparent), transparent 62%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.62), color-mix(in srgb, var(--workspace-role-surface) 74%, transparent));
 }
 
 .workspace[class*="role-theme-"] .account-trigger:hover,

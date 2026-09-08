@@ -58,6 +58,7 @@ from .auto_mix_resources import (
 from .narration_alignment import align_narration, attach_narration_alignment, sentence_shot_budgets, aligned_binding_spans
 from .database import Database
 from .errors import ContentEngineError
+from .provider_usage import usage_scope, provider_usage_summary
 from .hashing import canonical_json_sha256
 from .packaging import (
     COVER_PROMPT_VERSION,
@@ -325,6 +326,9 @@ class CreativeDomain:
         self._new_id = new_id
         self._now = now
         self.analyzer = analyzer
+        cloud = getattr(analyzer, "cloud_client", None)
+        if cloud is not None:
+            cloud.usage_data_dir = self.data_dir
         self.renderer = renderer
         self.cover_client = cover_client
         self._visual_capability_snapshot = self._unavailable_visual_capability()
@@ -6489,6 +6493,18 @@ class CreativeDomain:
 
     def run_task(self, task_id):
         task = self._task_row(task_id)
+        payload = json.loads(task["payload_json"])
+        with usage_scope(self.data_dir, task_id=task_id, task_type=task["task_type"],
+                         **{key: payload.get(key) for key in ("batch_id", "project_id", "run_id", "session_id")}):
+            return self._run_task_with_usage(task_id)
+
+    def get_provider_usage(self, *, task_id=None, batch_id=None, limit=100):
+        if task_id is not None:
+            self._task_row(task_id)
+        return provider_usage_summary(self.data_dir, task_ids=[task_id] if task_id else None, batch_id=batch_id, limit=limit)
+
+    def _run_task_with_usage(self, task_id):
+        task = self._task_row(task_id)
         if task["task_type"] not in CREATIVE_TASK_TYPES:
             raise ContentEngineError("invalid_task_type", "This is not a creative task.")
         if task["status"] in {"completed", "failed", "cancelled"}:
@@ -9410,7 +9426,7 @@ class CreativeDomain:
             "updated_at": row["updated_at"],
         }
 
-    def list_generated(self, *, project_id=None, status=None, limit=500):
+    def list_generated(self, *, project_id=None, task_id=None, status=None, limit=500):
         limit = self._validate_count(limit, maximum=2_000)
         clauses = []
         values = []
@@ -9418,6 +9434,10 @@ class CreativeDomain:
             self._project_row(project_id)
             clauses.append("project_id = ?")
             values.append(project_id)
+        if task_id is not None:
+            self._task_row(task_id)
+            clauses.append("task_id = ?")
+            values.append(task_id)
         if status is not None:
             if status not in {"queued", "rendering", "completed", "failed", "rejected"}:
                 raise ContentEngineError("invalid_status", "The generated video status is invalid.")

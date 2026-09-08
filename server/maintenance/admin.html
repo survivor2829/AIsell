@@ -1,22 +1,43 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AI获客 · 版本与诊断</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AI获客 · 用户反馈与诊断</title>
 <style>
 :root{font-family:"Segoe UI","Microsoft YaHei",sans-serif;color:#20304a;background:#f5f7fa;font-size:15px;--accent:#315ccb}*{box-sizing:border-box}body{margin:0}main{max-width:1200px;margin:0 auto;padding:40px 28px}h1{font-size:28px;margin:0 0 10px}h2{font-size:20px;margin:32px 0 16px}p{line-height:1.7;color:#526079}header,.toolbar{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}.toolbar{justify-content:flex-start;margin:24px 0}button,input,select{font:inherit;border:1px solid #b9c4d6;border-radius:7px;padding:9px 12px;background:white;color:inherit}button{cursor:pointer}button:hover{background:#e9effc}button:disabled{opacity:.6;cursor:wait}input{flex:1;min-width:200px}input:focus-visible,select:focus-visible,button:focus-visible{outline:3px solid #315ccb;outline-offset:3px}::selection{background:#d7e3ff}.table-wrap{overflow:auto;border:1px solid #dce2ed;border-radius:10px;background:white}table{width:100%;border-collapse:collapse;text-align:left;font-size:14px}th{background:#edf2fa;color:#43516a;white-space:nowrap}th,td{padding:14px 16px;border-bottom:1px solid #e6ebf2}td{max-width:300px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}tbody tr:last-child td{border:0}.muted{color:#526079}.empty{padding:30px;text-align:center;color:#526079}details{margin-top:12px;border-bottom:1px solid #dce2ed;padding:12px 0}summary{cursor:pointer;line-height:1.6}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:400px;overflow:auto;background:#eaf0f9;padding:16px;border-radius:8px;font-size:12px}#notice{min-height:24px;color:#93321c}label{display:flex;align-items:center;gap:8px}.issue-actions{display:flex;gap:6px;flex-wrap:wrap}.issue-actions input{width:105px;min-width:0}.issue-actions select{max-width:120px}@media(max-width:600px){main{padding:24px 16px}h1{font-size:24px}th,td{padding:10px}header button{width:100%}.toolbar input{width:100%}}
+.feedback-text{white-space:pre-wrap;overflow-wrap:anywhere;color:#20304a;max-width:75ch}.feedback-meta{font-size:12px;overflow-wrap:anywhere}.feedback-summary{display:flex;gap:14px;flex-wrap:wrap}.feedback-status{font-size:13px;color:#315ccb}.feedback-progress{display:flex;gap:10px;align-items:center;margin:18px 0}.feedback-pagination{display:flex;align-items:center;gap:14px;margin:18px 0}
 </style></head><body><main>
-<header><div><h1>版本与诊断</h1><p>查看客户运行版本，定位异常，跟踪修复后的反馈。</p></div><button id="refresh">刷新数据</button></header>
-<p class="muted">此后台仅通过 SSH 隧道访问。日志保留 30 天；不包含聊天正文、联系人、密钥或截图。</p>
+<header><div><h1>用户反馈与诊断</h1><p>听听客户的想法，查看关联异常，更新处理进度。</p></div><button id="refresh">刷新数据</button></header>
+<p class="muted">此后台仅通过 SSH 隧道访问。用户主动填写的反馈与处理进度单独保留；附带的脱敏诊断保留 30 天。</p>
 <div class="toolbar"><label>版本 <select id="version"><option value="">全部版本</option></select></label><input id="search" aria-label="搜索模块或错误码" placeholder="搜索模块或错误码"></div>
 <p id="notice" role="status" aria-live="polite"></p>
+<h2>客户吐槽与建议</h2><p class="muted">每条反馈独立处理。保存后的状态会同步到客户的「我的反馈」。</p><div id="feedback"></div>
+<div class="feedback-pagination"><button id="feedback-prev">上一页</button><span id="feedback-count"></span><button id="feedback-next">下一页</button></div>
 <h2>待处理异常</h2><div class="table-wrap"><table><thead><tr><th>模块 / 错误</th><th>频道</th><th>记录 / 设备</th><th>最近上报</th><th>处理进度</th></tr></thead><tbody id="issues"></tbody></table></div>
 <h2>版本运行记录</h2><p class="muted">设备数来自已开启诊断上报的客户端。同一设备运行过多个版本时会分别计入；没有新报错不等于修复已验收。</p><div class="table-wrap"><table><thead><tr><th>版本</th><th>频道</th><th>设备数</th><th>最近上报</th></tr></thead><tbody id="versions"></tbody></table></div>
 <h2>最近诊断详情</h2><div id="reports"></div>
 </main><script>
 let data={issues:[],reports:[],versions:[]};
+let feedback={items:[],total:0},feedbackOffset=0;
 const $=id=>document.getElementById(id);
 const time=n=>new Date(n*1000).toLocaleString('zh-CN');
 function cell(row,text){const td=document.createElement('td');td.textContent=text;row.append(td);return td}
 function empty(id,cols,text){const tr=document.createElement('tr'),td=cell(tr,text);td.colSpan=cols;td.className='empty';$(id).append(tr)}
+function renderFeedback(){
+ const target=$('feedback'),q=$('search').value.trim().toLowerCase(),v=$('version').value;target.replaceChildren();
+ const labels={pending:'待处理',in_progress:'处理中',resolved:'已解决'},categories={problem:'遇到问题',suggestion:'功能建议',experience:'体验吐槽'};
+ for(const item of feedback.items.filter(i=>(!v||i.client.version===v)&&(!q||(i.text+' '+i.context.module+' '+i.context.taskId).toLowerCase().includes(q)))){
+  const details=document.createElement('details'),summary=document.createElement('summary'),heading=document.createElement('strong'),status=document.createElement('span');summary.className='feedback-summary';heading.textContent=(categories[item.category]||'用户反馈')+' · '+time(item.receivedAt);status.className='feedback-status';status.textContent=labels[item.status];summary.append(heading,status);
+  const text=document.createElement('p');text.className='feedback-text';text.textContent=item.text;
+  const meta=document.createElement('p');meta.className='feedback-meta';meta.textContent='反馈编号：'+item.id+' · 版本 '+item.client.version+' · '+item.client.channel+' · 最近更新 '+time(item.updatedAt)+(item.context.module?' · 模块 '+item.context.module:'')+(item.context.taskId?' · 任务 '+item.context.taskId:'');
+  const progress=document.createElement('div');progress.className='feedback-progress';const label=document.createElement('label');label.textContent='处理进度';const select=document.createElement('select');select.setAttribute('aria-label','反馈处理状态');for(const [value,name] of Object.entries(labels))select.add(new Option(name,value));select.value=item.status;label.append(select);
+  const save=document.createElement('button');save.textContent='保存状态';save.onclick=async()=>{save.disabled=true;try{const res=await fetch('/api/feedback/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:item.id,status:select.value})});if(!res.ok)throw Error('反馈状态未保存，请重试');item.status=select.value;status.textContent=labels[select.value];$('notice').textContent='已保存，客户刷新反馈列表后可看到新状态。'}catch(e){$('notice').textContent=e.message}finally{save.disabled=false}};progress.append(label,save);
+  details.append(summary,text,meta,progress);
+  const diagnosis=document.createElement('details'),diagnosisSummary=document.createElement('summary');diagnosisSummary.textContent=item.diagnosticsExpired?'附带诊断已超过 30 天保留期':'关联脱敏诊断 · '+item.diagnostics.length+' 条';diagnosis.append(diagnosisSummary);
+  if(item.diagnostics.length){const pre=document.createElement('pre');pre.textContent=JSON.stringify(item.diagnostics,null,2);diagnosis.append(pre)}else{const p=document.createElement('p');p.textContent=item.diagnosticsExpired?'诊断已过期，反馈正文和处理进度仍然保留。':'本条反馈没有附带诊断，可根据客户描述继续处理。';diagnosis.append(p)}details.append(diagnosis);target.append(details);
+ }
+ if(!target.children.length){const p=document.createElement('p');p.className='muted';p.textContent=feedback.total?'本页没有符合筛选条件的反馈。':'尚未收到客户反馈。';target.append(p)}
+ $('feedback-prev').disabled=feedbackOffset===0;$('feedback-next').disabled=feedbackOffset+100>=feedback.total;$('feedback-count').textContent=feedback.total?'第 '+(Math.floor(feedbackOffset/100)+1)+' 页 · 共 '+feedback.total+' 条':'0 条反馈';
+}
 function render(){
+ renderFeedback();
  const v=$('version').value,q=$('search').value.trim().toLowerCase();
  const reports=data.reports.filter(r=>(!v||r.version===v)&&(!q||JSON.stringify(r.entries).toLowerCase().includes(q)));
  $('issues').replaceChildren();
@@ -32,6 +53,7 @@ function render(){
  $('versions').replaceChildren();for(const row of data.versions.filter(r=>!v||r.version===v)){const tr=document.createElement('tr');[row.version,row.channel,row.installations,time(row.last_seen)].forEach(x=>cell(tr,x));$('versions').append(tr)}if(!$('versions').children.length)empty('versions',4,'尚未收到客户端运行记录。');
  $('reports').replaceChildren();for(const report of reports){const details=document.createElement('details'),summary=document.createElement('summary'),pre=document.createElement('pre'),entry=report.entries[0];summary.textContent=report.version+' · '+entry.module+' / '+entry.event+' · '+entry.ts;pre.textContent=JSON.stringify(report,null,2);details.append(summary,pre);$('reports').append(details)}if(!reports.length){const p=document.createElement('p');p.textContent='客户端开启自动上报后，诊断记录会出现在这里。';$('reports').append(p)}
 }
-async function load(){const button=$('refresh');button.disabled=true;$('notice').textContent='正在读取…';try{const res=await fetch('/api/overview');if(!res.ok)throw Error();data=await res.json();const current=$('version').value;$('version').replaceChildren(new Option('全部版本',''));for(const v of [...new Set(data.versions.map(v=>v.version))])$('version').add(new Option(v,v));$('version').value=current;$('notice').textContent='已更新 · '+new Date().toLocaleTimeString('zh-CN');render()}catch{$('notice').textContent='无法连接后台，请确认 SSH 隧道仍在运行，然后重试。'}finally{button.disabled=false}}
+async function load(){const button=$('refresh');button.disabled=true;$('notice').textContent='正在读取…';try{const [res,feedbackRes]=await Promise.all([fetch('/api/overview'),fetch('/api/feedback?offset='+feedbackOffset)]);if(!res.ok||!feedbackRes.ok)throw Error();data=await res.json();feedback=await feedbackRes.json();const current=$('version').value;$('version').replaceChildren(new Option('全部版本',''));for(const v of [...new Set([...data.versions.map(v=>v.version),...feedback.items.map(i=>i.client.version)])])$('version').add(new Option(v,v));$('version').value=current;$('notice').textContent='已更新 · '+new Date().toLocaleTimeString('zh-CN');render()}catch{$('notice').textContent='无法连接后台，请确认 SSH 隧道仍在运行，然后重试。'}finally{button.disabled=false}}
+$('feedback-prev').onclick=()=>{feedbackOffset=Math.max(0,feedbackOffset-100);void load()};$('feedback-next').onclick=()=>{feedbackOffset+=100;void load()};
 $('refresh').onclick=load;$('version').onchange=render;$('search').oninput=render;load();
 </script></body></html>

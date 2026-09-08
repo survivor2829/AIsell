@@ -21,6 +21,7 @@ from .public_data import redact_text, sanitize_public_value
 from .media_config import VIDEO_EXTENSIONS, classify_media
 from .media_probe import FFprobeAdapter, ProbeOutcome
 from .mix_domain import MixDomain
+from .production_summary import ProductionSummary
 from .render_mix import FFmpegMixRenderer
 
 
@@ -630,7 +631,12 @@ class ContentEngineService:
         return self._narrated_batches().save(request)
 
     def get_narrated_batch(self, batch_id):
-        return self._narrated_batches().get(batch_id)
+        result = self._narrated_batches().get(batch_id)
+        row = self.connection.execute(
+            "SELECT json_extract(state_json, '$._archived_at') FROM narrated_batches_v1 WHERE id = ?",
+            (batch_id,),
+        ).fetchone()
+        return {**result, "archived": bool(row and row[0])}
 
     def get_narrated_batch_status(self, batch_id):
         return self._narrated_batches().status(batch_id)
@@ -864,9 +870,9 @@ class ContentEngineService:
             self.creative_domain.create_product_generation_task(project_id, options)
         )
 
-    def list_one_click_candidates(self, project_id, limit=20):
+    def list_one_click_candidates(self, project_id, limit=20, task_id=None):
         project = self.creative_domain._product_project_settings(project_id)
-        result = self.creative_domain.list_generated(project_id=project_id, limit=limit)
+        result = self.creative_domain.list_generated(project_id=project_id, limit=limit, task_id=task_id)
         result["workflow"] = "product_one_click"
         return result
 
@@ -1038,11 +1044,12 @@ class ContentEngineService:
         self,
         *,
         project_id: str | None = None,
+        task_id: str | None = None,
         status: str | None = None,
         limit: int = 500,
     ) -> dict[str, Any]:
         return self.creative_domain.list_generated(
-            project_id=project_id, status=status, limit=limit
+            project_id=project_id, task_id=task_id, status=status, limit=limit
         )
 
     def regenerate_video(self, candidate_id: str) -> dict[str, Any]:
@@ -2121,6 +2128,10 @@ class ContentEngineService:
             return self.creative_domain._public_task(row)
         return _public_task_row(row)
 
+    def get_task(self, task_id):
+        _validate_id(task_id, "task_id")
+        return self._get_public_task(task_id)
+
     def list_tasks(
         self, *, status: str | None = None, limit: int = 500
     ) -> dict[str, Any]:
@@ -2156,6 +2167,21 @@ class ContentEngineService:
                 for row in rows
             ]
         }
+
+    def production_summary(self):
+        return ProductionSummary(self.connection).summary()
+
+    def get_provider_usage(self, *, task_id=None, batch_id=None, limit=100):
+        if task_id is not None:
+            self.get_task(task_id)
+        if batch_id is not None:
+            self.get_narrated_batch(batch_id)
+        if not task_id and not batch_id:
+            raise ContentEngineError("invalid_id", "请选择要查看用量的制作任务。")
+        return self.creative_domain.get_provider_usage(task_id=task_id, batch_id=batch_id, limit=limit)
+
+    def list_productions(self, *, view="pending", offset=0, limit=20):
+        return ProductionSummary(self.connection).list(view=view, offset=offset, limit=limit)
 
     def register_finished(
         self,

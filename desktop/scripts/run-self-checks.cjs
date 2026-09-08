@@ -27,6 +27,8 @@ const checks = [
   "src/main/atomic-file.self_check.cjs",
   "src/main/diagnostics.self_check.cjs",
   "src/main/cloud-maintenance.self_check.cjs",
+  "src/main/feedback.self_check.cjs",
+  "src/main/role-preferences.self_check.cjs",
   "src/main/diagnostics-ipc.self_check.cjs",
   "src/main/runtime-data.self_check.cjs",
   "src/main/runtime-coordinator.self_check.cjs",

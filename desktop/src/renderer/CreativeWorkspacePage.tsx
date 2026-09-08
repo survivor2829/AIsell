@@ -241,6 +241,7 @@ type CreativeApi = {
     probePending: (payload?: { limit?: number }) => Promise<ContentResult<{ items: Asset[]; processedCount: number; remainingCount: number }>>;
   };
   tasks: {
+    get: (payload: { taskId: string }) => Promise<ContentResult<Task>>;
     list: (payload?: { limit?: number }) => Promise<ContentResult<{ items: Task[] }>>;
     pause: (payload: { taskId: string }) => Promise<ContentResult<Task>>;
     resume: (payload: { taskId: string }) => Promise<ContentResult<Task>>;
@@ -314,7 +315,7 @@ type CreativeApi = {
     createVisualComparisonTask: (payload: { candidateId: string }) => Promise<ContentResult<Task>>;
     regenerateCover: (payload: { candidateId: string }) => Promise<ContentResult<Task>>;
     getProject: (payload: { projectId: string }) => Promise<ContentResult<CreativeProject>>;
-    listGenerated: (payload?: { projectId?: string; limit?: number }) => Promise<ContentResult<{ items: GeneratedVideo[] }>>;
+    listGenerated: (payload?: { projectId?: string; taskId?: string; limit?: number }) => Promise<ContentResult<{ items: GeneratedVideo[] }>>;
     regenerate: (payload: { candidateId: string }) => Promise<ContentResult<{
       taskId: string;
       generatedVideoId: string;
@@ -445,7 +446,11 @@ function capacitySummary(project: CreativeProject | null) {
   return parts.join("；");
 }
 
-export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: () => void } = {}) {
+export function CreativeWorkspacePage({ onBackToProduct, initialTaskId, initialProjectId }: {
+  onBackToProduct?: () => void;
+  initialTaskId?: string | null;
+  initialProjectId?: string | null;
+} = {}) {
   const [engine, setEngine] = useState<EngineStatus | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [mode, setMode] = useState<"course" | "mix">("course");
@@ -604,7 +609,7 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
     setComparisonSubmittedTaskId("");
   }, []);
 
-  const loadVideos = useCallback(async (targetProjectId?: string) => {
+  const loadVideos = useCallback(async (targetProjectId?: string, targetTaskId?: string) => {
     const api = apiForWindow();
     if (!api?.creative) return;
     const requestedProjectId = targetProjectId ?? activeProjectIdRef.current;
@@ -618,12 +623,13 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
     const requestToken = videoLoadGateRef.current.begin(requestScope);
     const result = await api.creative.listGenerated({
       ...(requestedProjectId ? { projectId: requestedProjectId } : {}),
+      ...(targetTaskId ? { taskId: targetTaskId } : {}),
       limit: 500
     });
     if (!result.ok || !result.data) return;
     const currentScope = `${activeProjectIdRef.current}|${taskGenerationRef.current}`;
     if (!videoLoadGateRef.current.accepts(requestToken, currentScope)) return;
-    setVideos(result.data.items);
+    setVideos(targetTaskId ? result.data.items.filter((item) => item.taskId === targetTaskId) : result.data.items);
   }, []);
 
   const loadFoundation = useCallback(async () => {
@@ -672,30 +678,48 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
     const recoverRecentCreativeTask = async () => {
       const api = apiForWindow();
       if (!api) return;
-      const result = await api.tasks.list({ limit: 500 });
-      if (!active || taskGenerationRef.current !== 0 || !result.ok || !result.data) return;
-      const recent = result.data.items.find((item) => (
+      const result = initialTaskId
+        ? await api.tasks.get({ taskId: initialTaskId }).then((response) => ({ ...response, data: response.data ? { items: [response.data] } : undefined }))
+        : await api.tasks.list({ limit: 500 });
+      if (!active || taskGenerationRef.current !== 0) return;
+      if (!result.ok || !result.data) {
+        if (initialTaskId) setNotice({ tone: "error", text: failure(result, "无法读取这条制作记录，请返回制作任务刷新。") });
+        return;
+      }
+      const recent = initialTaskId ? result.data.items.find((item) => item.taskId === initialTaskId) : result.data.items.find((item) => (
         RECOVERABLE_CREATIVE_TASKS.has(item.taskType)
         && RECOVERABLE_TASK_STATUSES.has(item.status)
       ));
-      if (!recent) return;
+      if (!recent) {
+        if (initialTaskId) setNotice({ tone: "error", text: "没有找到这条制作记录，请返回制作任务刷新。" });
+        return;
+      }
+      if (initialProjectId && recent.projectId !== initialProjectId) {
+        setNotice({ tone: "error", text: "制作记录与项目不匹配，请返回制作任务刷新。" });
+        return;
+      }
       if (recent.projectId) {
         trackProject(recent.projectId);
         const [projectResult] = await Promise.all([
           api.creative.getProject({ projectId: recent.projectId }),
-          loadVideos(recent.projectId)
+          loadVideos(recent.projectId, initialTaskId || undefined)
         ]);
-        if (projectResult.ok && projectResult.data) setProject(projectResult.data);
+        if (projectResult.ok && projectResult.data) {
+          setProject(projectResult.data);
+          setMode(projectResult.data.mode);
+        }
       }
       activeTaskIdRef.current = recent.taskId;
       setCurrentTask(recent);
-      if (recent.status !== "paused") trackTask(recent.taskId, recent);
+      if (!TERMINAL_TASKS.has(recent.status)) trackTask(recent.taskId, recent);
     };
-    void recoverRecentCreativeTask();
+    void recoverRecentCreativeTask().catch(() => {
+      if (active && initialTaskId) setNotice({ tone: "error", text: "读取这条制作记录失败，请返回制作任务重试。" });
+    });
     return () => {
       active = false;
     };
-  }, []);
+  }, [initialTaskId, initialProjectId]);
 
   useEffect(() => {
     if (mode !== "mix") return;
@@ -759,8 +783,8 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
       const api = apiForWindow();
       try {
         if (!api) return;
-        const result = await api.tasks.list({ limit: 500 });
-        const task = result.data?.items.find((item) => item.taskId === currentTaskId);
+        const result = await api.tasks.get({ taskId: currentTaskId });
+        const task = result.data;
         if (!isCurrent() || !task) return;
         setCurrentTask((current) => sameTaskContent(current, task) ? current : task);
         if (TERMINAL_TASKS.has(task.status)) {
@@ -800,7 +824,7 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
             setProject(null);
             setVideos([]);
           } else {
-            await loadVideos(projectId || undefined);
+            await loadVideos(projectId || undefined, initialTaskId === currentTaskId ? currentTaskId : undefined);
           }
           if (taskGenerationRef.current !== terminalGeneration) return;
           let taskProject: CreativeProject | null = null;
@@ -832,7 +856,7 @@ export function CreativeWorkspacePage({ onBackToProduct }: { onBackToProduct?: (
       active = false;
       window.clearInterval(timer);
     };
-  }, [currentTaskId, loadVideos, projectId]);
+  }, [currentTaskId, loadVideos, projectId, initialTaskId]);
 
   async function importAssets(kind: "files" | "folder") {
     const api = apiForWindow();

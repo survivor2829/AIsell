@@ -2,15 +2,19 @@ import { useEffect, useState } from "react";
 import "./cloud-maintenance.css";
 
 type CloudStage = "disabled" | "idle" | "checking" | "downloading" | "ready" | "current" | "error";
-type CloudStatus = {
+export type CloudAnnouncement = { sequence: number; version: string; notes: string; publishedAt: string; read: boolean };
+export type CloudStatus = {
   enabled: boolean; stage: CloudStage; version: string; nextVersion: string; progress: number;
   error: string; uploadError: string; consent: boolean; queued: number; lastUpload: string; canInstall: boolean;
+  announcements: CloudAnnouncement[]; unreadAnnouncements: number; lastAnnouncementsCheck: string;
+  announcementError: string; announcementsChecking: boolean;
 };
 declare global {
   interface Window {
     xiaoxiCloudMaintenance?: {
       status(): Promise<CloudStatus>; check(): Promise<CloudStatus>; upload(): Promise<CloudStatus>;
       consent(enabled: boolean): Promise<CloudStatus>; restart(): Promise<CloudStatus>;
+      announcements(): Promise<CloudStatus>; readAnnouncement(sequence: number): Promise<CloudStatus>;
       onUpdate(callback: (state: CloudStatus) => void): () => void;
     };
   }
@@ -55,7 +59,7 @@ export function CloudMaintenance({ compact = false }: { compact?: boolean }) {
     {state.stage === "downloading" && <progress value={state.progress} max={100} aria-label="更新下载进度" />}
     {!compact && <div className="cloud-reporting">
       <label><input type="checkbox" checked={state.consent} disabled={busy} onChange={(event) => void run(() => api.consent(event.target.checked))} />自动上传脱敏诊断</label>
-      <p>帮助定位软件异常。仅上传版本、匿名安装编号、错误码和必要技术信息；不上传聊天正文、联系人、密钥、截图或素材。云端保留 30 天，关闭后清空本机待传队列。</p>
+      <p>帮助定位软件异常。仅上传版本、匿名安装编号、错误码和必要技术信息；不上传聊天正文、联系人、密钥、截图或素材。云端保留 30 天，关闭后清空本机待传诊断，不影响主动提交的反馈。</p>
       {state.consent && <div className="cloud-maintenance-row"><p role="status">待上传 {state.queued} 条 · {state.lastUpload ? `最近上传 ${new Date(state.lastUpload).toLocaleString()}` : "尚未上传"}{state.uploadError && `。${state.uploadError}`}</p><button className="secondary-button" disabled={busy || !state.queued} onClick={() => void run(api.upload)}>上传待传诊断</button></div>}
     </div>}
     {error && <p role="alert">{error}</p>}

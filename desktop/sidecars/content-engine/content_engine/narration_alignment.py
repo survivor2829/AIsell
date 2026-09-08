@@ -229,6 +229,24 @@ def reference_caption_cues(captions, base=0, max_width=26):
                     current, width = [], 0.0
             if current:
                 groups.append(current)
+            # ASR may tokenize Chinese one character at a time. A width break
+            # must not turn the last character of a word into a flashing page.
+            balanced = []
+            for group in groups:
+                text = "".join(word["text"] for word in group)
+                previous = balanced[-1] if balanced else []
+                previous_text = "".join(word["text"] for word in previous)
+                combined_width = sum(0.55 if ord(char) < 128 else 1
+                                     for char in previous_text + text)
+                if (previous and not re.search(r"[，。！？；,!?;]\s*$", previous_text)
+                        and len(spoken_key(text)) <= 3
+                        and int(group[-1]["end_ms"]) - int(group[0]["start_ms"]) <= 500
+                        and 0 <= int(group[0]["start_ms"]) - int(previous[-1]["end_ms"]) <= 200
+                        and combined_width <= min(42, max_width + 3)):
+                    previous.extend(group)
+                else:
+                    balanced.append(group)
+            groups = balanced
             units = [{"text": "".join(word["text"] for word in group),
                       "start_ms": group[0]["start_ms"], "end_ms": group[-1]["end_ms"],
                       "timing_source": "asr_words"} for group in groups]

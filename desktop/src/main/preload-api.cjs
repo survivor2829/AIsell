@@ -5,6 +5,8 @@ const {
 } = require("node:crypto");
 const { PRODUCT_DETAIL_CHANNELS } = require("./product-detail-ipc.cjs");
 const { CONTENT_ENGINE_CHANNELS } = require("./content-engine-ipc.cjs");
+const { createRolePreferencesApi } = require("./role-preferences.cjs");
+const { createFeedbackApi } = require("./feedback-preload.cjs");
 
 const AUTO_MIX_TRUSTED_CLICK_CHANNELS = Object.freeze({
   create: CONTENT_ENGINE_CHANNELS.createAutoMixV2,
@@ -257,7 +259,17 @@ function createContentEngineApi(ipcRenderer) {
         assetId: String(payload?.assetId || "")
       })
     },
+    productions: {
+      summary: () => ipcRenderer.invoke("content-engine:production-summary"),
+      usage: (payload = {}) => ipcRenderer.invoke("content-engine:provider-usage", {
+        taskId: payload.taskId ? String(payload.taskId) : undefined,
+        batchId: payload.batchId ? String(payload.batchId) : undefined,
+        limit: payload.limit
+      }),
+      list: (payload = {}) => ipcRenderer.invoke("content-engine:list-productions", payload)
+    },
     tasks: {
+      get: (payload) => ipcRenderer.invoke("content-engine:get-task", payload),
       list: (payload) => ipcRenderer.invoke("content-engine:list-tasks", {
         status: payload?.status == null ? undefined : String(payload.status),
         limit: Number(payload?.limit || 200)
@@ -612,7 +624,8 @@ function createContentEngineApi(ipcRenderer) {
         "content-engine:list-one-click-candidates",
         {
           projectId: String(payload?.projectId || ""),
-          limit: Number(payload?.limit || 20)
+          limit: Number(payload?.limit || 20),
+          ...(payload?.taskId ? { taskId: String(payload.taskId) } : {})
         }
       ),
       listPackagingPresets: (payload) => ipcRenderer.invoke(
@@ -720,6 +733,7 @@ function createContentEngineApi(ipcRenderer) {
       listGenerated: (payload) => ipcRenderer.invoke(
         "content-engine:list-generated-videos",
         {
+          ...(payload?.taskId == null ? {} : { taskId: String(payload.taskId || "") }),
           ...(payload?.projectId == null
             ? {}
             : { projectId: String(payload.projectId || "") }),
@@ -975,9 +989,13 @@ function createPreloadApis(ipcRenderer) {
       openFolder: () => ipcRenderer.invoke("diagnostics:open-folder"),
       export: () => ipcRenderer.invoke("diagnostics:export")
     },
+    rolePreferences: createRolePreferencesApi(ipcRenderer),
+    feedback: createFeedbackApi(ipcRenderer),
     cloudMaintenance: {
       status: () => ipcRenderer.invoke("cloud:status"),
       check: () => ipcRenderer.invoke("cloud:check"),
+      announcements: () => ipcRenderer.invoke("cloud:announcements"),
+      readAnnouncement: (sequence) => ipcRenderer.invoke("cloud:readAnnouncement", sequence),
       consent: (enabled) => ipcRenderer.invoke("cloud:consent", enabled === true),
       upload: () => ipcRenderer.invoke("cloud:upload"),
       restart: () => ipcRenderer.invoke("cloud:restart"),
