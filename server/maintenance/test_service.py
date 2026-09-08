@@ -4,7 +4,13 @@ import threading
 import unittest
 import urllib.request
 import time
-from service import Handler, Server, Store, validate_report
+import hashlib
+import http.client
+import sqlite3
+from contextlib import closing
+from pathlib import Path
+from service import Handler, Server, Store, validate_report, safe_token
+from feedback import validate_feedback
 
 class ServiceTest(unittest.TestCase):
     def test_feedback_receipt_access_retention_and_admin_status(self):
@@ -70,10 +76,87 @@ class ServiceTest(unittest.TestCase):
                     with self.assertRaises(urllib.error.HTTPError) as denied:
                         urllib.request.urlopen(origin + route)
                     self.assertEqual(denied.exception.code, 404)
+                def get(base, route):
+                    with urllib.request.urlopen(base + route) as response:
+                        return json.load(response)
+                self.assertEqual(get(origin, "/v1/feedback/public")["total"], 0, "Legacy feedback stays private")
+                community = {**feedback, "schema": 2, "visibility": "public", "id": "12345678-1234-1234-1234-123456789099"}
+                post(origin, "/v1/feedback", community)
+                private = {**community, "visibility": "private", "id": "12345678-1234-1234-1234-123456789098"}
+                post(origin, "/v1/feedback", private)
+                visible = get(origin, "/v1/feedback/public?offset=0&limit=99")
+                self.assertEqual(visible["total"], 1)
+                self.assertEqual(set(visible["items"][0]), {"id", "text", "category", "createdAt", "receivedAt", "updatedAt", "status", "officialReply"})
+                initial_time = visible["items"][0]["updatedAt"]
+                post(admin_origin, "/api/feedback/status", {"id": community["id"], "status": "in_progress", "officialReply": "已复现，下一版修复", "hidden": False}, True)
+                visible = get(origin, "/v1/feedback/public")["items"][0]
+                self.assertEqual(visible["officialReply"], "已复现，下一版修复")
+                self.assertGreater(visible["updatedAt"], initial_time)
+                self.assertEqual(get(admin_origin, "/api/feedback?status=in_progress")["total"], 1)
+                post(admin_origin, "/api/feedback/status", {"id": community["id"], "status": "in_progress", "officialReply": "修复正在验收"}, True)
+                revised = get(origin, "/v1/feedback/public")["items"][0]
+                self.assertGreater(revised["updatedAt"], visible["updatedAt"], "Reply-only changes increment the revision")
+                self.assertEqual(revised["officialReply"], "修复正在验收")
+                for invalid in ({"officialReply": "x" * 2001}, {"hidden": "false"}):
+                    with self.assertRaises(urllib.error.HTTPError) as denied:
+                        post(admin_origin, "/api/feedback/status", {"id": community["id"], "status": "in_progress", **invalid}, True)
+                    self.assertEqual(denied.exception.code, 400)
+                post(admin_origin, "/api/feedback/status", {"id": community["id"], "status": "in_progress", "hidden": True}, True)
+                self.assertEqual(get(origin, "/v1/feedback/public")["total"], 0)
+                post(admin_origin, "/api/feedback/status", {"id": community["id"], "status": "in_progress", "hidden": False}, True)
+                author = {"id": community["id"], "receiptToken": community["receiptToken"], "visibility": "private"}
+                with self.assertRaises(urllib.error.HTTPError) as denied:
+                    post(origin, "/v1/feedback/visibility", {**author, "receiptToken": "f" * 64})
+                self.assertEqual(denied.exception.code, 403)
+                withdrawn = post(origin, "/v1/feedback/visibility", author)
+                self.assertEqual(withdrawn["visibility"], "private")
+                self.assertGreater(withdrawn["updatedAt"], visible["updatedAt"])
+                self.assertEqual(post(origin, "/v1/feedback", community), withdrawn, "An upload retry cannot republish withdrawn feedback")
+                self.assertEqual(post(origin, "/v1/feedback/visibility", author), withdrawn)
+                self.assertEqual(get(origin, "/v1/feedback/public")["total"], 0)
+                with self.assertRaises(urllib.error.HTTPError) as denied:
+                    post(origin, "/v1/feedback/visibility", {**author, "visibility": "public"})
+                self.assertEqual(denied.exception.code, 400)
+                for base, route, origin_header, expected in ((origin, "/api/feedback/status", True, 404), (admin_origin, "/api/feedback/status", False, 403)):
+                    with self.assertRaises(urllib.error.HTTPError) as denied:
+                        post(base, route, {"id": community["id"], "status": "resolved"}, origin_header)
+                    self.assertEqual(denied.exception.code, expected)
+                connection = http.client.HTTPConnection("127.0.0.1", admin.server_port)
+                try:
+                    connection.request("GET", "/api/feedback", headers={"Host": "evil.example"})
+                    self.assertEqual(connection.getresponse().status, 403)
+                finally:
+                    connection.close()
             finally:
                 for server in (public, admin):
                     server.shutdown()
                     server.server_close()
+
+    def test_legacy_database_migration_preserves_original_retry_hash(self):
+        # This fixture is the old schema and canonical object, independent of the
+        # new validator. Changing schema-1 defaults would break its saved hash.
+        with tempfile.TemporaryDirectory() as directory:
+            clean = {"schema": 1, "id": "12345678-1234-1234-1234-123456789011", "text": "旧版本反馈", "category": "problem",
+                     "createdAt": "2026-09-08T10:00:00.000Z", "client": {"schema": 1, "appId": "com.aihuoke.desktop.test", "channel": "test",
+                     "installId": "12345678-1234-1234-1234-123456789012", "version": "1.0.2", "platform": "win32", "arch": "x64", "buildId": "", "osRelease": ""},
+                     "context": {"module": "", "taskId": ""}, "diagnostics": []}
+            secret = "a" * 64
+            payload_hash = hashlib.sha256(json.dumps(clean, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+            with closing(sqlite3.connect(Path(directory) / "reports.sqlite3")) as db:
+                db.execute("CREATE TABLE feedback(id TEXT PRIMARY KEY,received INTEGER,updated INTEGER,status TEXT,token_hash TEXT,payload_hash TEXT,body TEXT,diagnostics TEXT,diagnostics_expires INTEGER)")
+                db.execute("INSERT INTO feedback VALUES (?,?,?,?,?,?,?,?,?)", (clean["id"], 1, 2, "resolved", hashlib.sha256(secret.encode()).hexdigest(), payload_hash,
+                           json.dumps({k: v for k, v in clean.items() if k != "diagnostics"}), None, 3))
+                db.commit()
+            store = Store(directory)
+            Store(directory)  # Migration may run on every service startup.
+            validated, token = validate_feedback({**clean, "receiptToken": secret}, validate_report, safe_token)
+            receipt = store.insert_feedback(validated, token)
+            self.assertEqual(receipt["status"], "resolved")
+            self.assertEqual(receipt["updatedAt"], 2)
+            self.assertEqual(receipt["visibility"], "private")
+            self.assertEqual(store.public_feedback()["total"], 0)
+            with store.connect() as db:
+                self.assertEqual(db.execute("SELECT payload_hash FROM feedback").fetchone()[0], payload_hash)
 
     def test_ingestion_dedupe_and_private_admin(self):
         with tempfile.TemporaryDirectory() as directory:
