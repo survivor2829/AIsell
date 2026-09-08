@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # Date-boundary fixtures model the application's China-based deployment.
+  TZ: Asia/Shanghai
+  PYTHONUTF8: '1'
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
