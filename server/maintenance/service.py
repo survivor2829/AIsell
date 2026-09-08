@@ -269,25 +269,48 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, self.server.store.public_feedback(int(offset), int(limit)))
             except Exception:
                 return self.reply(503, {"error": "unavailable"})
-        match = re.fullmatch(r"/v1/releases/(test|delivery|smoke)/latest", route)
+        match = re.fullmatch(r"/v([12])/releases/(test|delivery|smoke)/latest", route)
         if match:
-            file = self.server.store.root / "releases" / match[1] / "latest.json"
+            file = self.server.store.root / "releases" / match[2] / ("latest-components.json" if match[1] == "2" else "latest.json")
             if not file.exists():
                 return self.reply(200, {"empty": True})
             return self.reply(200, json.loads(file.read_text()))
-        match = re.fullmatch(r"/artifacts/([a-f0-9]{64})\.exe", route)
+        match = re.fullmatch(r"/(artifacts|components)/([a-f0-9]{64})\.(exe|zip)", route)
         if match:
-            file = self.server.store.root / "artifacts" / (match[1] + ".exe")
+            if (match[1], match[3]) not in (("artifacts", "exe"), ("components", "zip")):
+                return self.reply(404, {"error": "not_found"})
+            file = self.server.store.root / match[1] / (match[2] + "." + match[3])
             if file.is_file():
-                self.send_response(200)
+                size = file.stat().st_size
+                start, end, status = 0, size - 1, 200
+                requested = self.headers.get("Range")
+                if requested:
+                    span = re.fullmatch(r"bytes=(\d{1,20})-(\d{0,20})", requested)
+                    if span:
+                        start = int(span[1])
+                        end = min(int(span[2]), size - 1) if span[2] else size - 1
+                    if not span or start >= size or end < start:
+                        self.send_response(416)
+                        self.send_header("Content-Range", f"bytes */{size}")
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+                    status = 206
+                self.send_response(status)
                 self.send_header("Content-Type", "application/octet-stream")
-                self.send_header("Content-Length", str(file.stat().st_size))
+                self.send_header("Content-Length", str(max(0, end - start + 1)))
+                self.send_header("Accept-Ranges", "bytes")
+                if status == 206:
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.end_headers()
                 try:
                     with file.open("rb") as stream:
-                        while chunk := stream.read(256 * 1024):
+                        stream.seek(start)
+                        remaining = end - start + 1
+                        while remaining > 0 and (chunk := stream.read(min(256 * 1024, remaining))):
                             self.wfile.write(chunk)
+                            remaining -= len(chunk)
                 except (BrokenPipeError, ConnectionResetError, TimeoutError):
                     pass
                 return
