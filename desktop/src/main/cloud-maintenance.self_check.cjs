@@ -10,7 +10,7 @@ const { verifyManifest, compareVersions } = require("../shared/cloud-contract.cj
 const { registerCloudMaintenanceIpc } = require("./cloud-maintenance-ipc.cjs");
 const { createPreloadApis } = require("./preload-api.cjs");
 const { COMPONENTS } = require("../shared/component-contract.cjs");
-const { releaseNotes, matchingReleaseNotes } = require("../shared/customer-release-notes.cjs");
+const { releaseNotes, matchingReleaseNotes, bundledAnnouncements } = require("../shared/customer-release-notes.cjs");
 
 async function checkBundledAnnouncements(rootDir, config, manifest, sign) {
   const dir = path.join(rootDir, "bundled-announcements");
@@ -21,7 +21,10 @@ async function checkBundledAnnouncements(rootDir, config, manifest, sign) {
   let controller = createCloudMaintenance({ rootDir: dir, config: { ...config, enabled: false }, version });
   assert.equal(controller.status().announcements[0].notes, releaseNotes(version));
   assert.equal(controller.status().stage, "disabled");
-  controller.markAnnouncementRead(`installed:${version}`);
+  const bundledVersions = bundledAnnouncements(version).map(entry => entry.version);
+  assert.ok(bundledVersions.includes("1.1.0"), "A skipped release is still explained after a full upgrade");
+  assert.deepEqual(bundledAnnouncements("1.1.0").map(entry => entry.version), ["1.1.0"], "Do not show future bundled releases");
+  for (const entry of controller.status().announcements) controller.markAnnouncementRead(entry.id);
   controller.stop();
   controller = createCloudMaintenance({ rootDir: dir, config, version, transport: {
     async request() { return sign({ ...manifest, version, notes: releaseNotes(version) }); }, close() {}
@@ -29,7 +32,7 @@ async function checkBundledAnnouncements(rootDir, config, manifest, sign) {
   try {
     assert.equal(controller.status().unreadAnnouncements, 0, "Offline installed-version read state survives restart");
     await controller.refreshAnnouncements();
-    assert.equal(controller.status().announcements.length, 1, "Signed notes replace the display-only local fallback");
+    assert.equal(controller.status().announcements.length, bundledVersions.length, "Signed notes replace the matching local fallback without discarding older versions");
     assert.equal(controller.status().announcements[0].id, `1:${manifest.sequence}`);
     assert.equal(controller.status().unreadAnnouncements, 0, "Publication does not make the same version unread again");
     assert.equal(controller.status().stage, "idle", "Announcement fallback cannot make an update installable");

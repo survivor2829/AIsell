@@ -1,5 +1,5 @@
 const catalog = require("./customer-release-notes.json");
-const { VERSION } = require("./cloud-contract.cjs");
+const { VERSION, compareVersions } = require("./cloud-contract.cjs");
 
 function releaseNotes(version, entries = catalog) {
   const entry = entries[version];
@@ -22,4 +22,10 @@ function matchingReleaseNotes(version, supplied) {
   }
   return notes;
 }
-module.exports = { releaseNotes, matchingReleaseNotes };
+function bundledAnnouncements(version) {
+  if (!VERSION.test(version)) return [];
+  return Object.keys(catalog).filter(candidate => VERSION.test(candidate) && compareVersions(candidate, version) <= 0)
+    .sort((left, right) => compareVersions(right, left)).slice(0, 20)
+    .map(candidate => ({ version: candidate, notes: releaseNotes(candidate) }));
+}
+module.exports = { releaseNotes, matchingReleaseNotes, bundledAnnouncements };
