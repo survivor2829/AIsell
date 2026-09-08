@@ -2,7 +2,7 @@
   "name": "xiaoxi-active-touch-desktop",
   "productName": "AI获客 V1.0版本",
   "description": "AI获客 V1.0版本 Windows 微信客户运营助手",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "main": "src/main/main.cjs",
   "scripts": {
@@ -25,6 +25,8 @@
     "build:delivery": "node scripts/build-renderer.cjs delivery",
     "build:helper": "node scripts/build-contact-helper.cjs",
     "release:test": "node scripts/run-release.cjs test",
+    "release:internal": "node scripts/build-internal-release.cjs",
+    "publish:internal": "node scripts/publish-cloud-release.cjs",
     "release:delivery": "node scripts/run-release.cjs delivery",
     "release:upgrade": "node scripts/run-release.cjs upgrade",
     "release:installer": "npm run check:self && npm run check:product-detail-e2e && npm run check:clean-runtime && node scripts/build-installer-release.cjs",

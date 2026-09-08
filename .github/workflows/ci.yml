@@ -1,0 +1,68 @@
+name: Windows CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-and-renderer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install locked JavaScript dependencies
+        run: npm ci
+      - name: Source self-checks (isolated; no live WeChat operations)
+        run: npm run check:self
+      - name: Runtime and secret boundaries
+        run: npm run check:clean-runtime
+      - name: Build test renderer
+        run: npm run build:test
+      - name: Build delivery renderer
+        run: npm run build:delivery
+
+  service-and-content:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Maintenance HTTP and feedback contracts
+        working-directory: server/maintenance
+        run: python -m unittest discover -s . -p 'test_*.py'
+      - name: Confirmed production, task summaries and provider accounting
+        working-directory: desktop/sidecars/content-engine
+        run: >-
+          python -m unittest discover -s tests -p 'test_narrated*.py'
+      - name: Production summaries
+        working-directory: desktop/sidecars/content-engine
+        run: python -m unittest discover -s tests -p 'test_production_summary.py'
+      - name: Provider accounting
+        working-directory: desktop/sidecars/content-engine
+        run: python -m unittest discover -s tests -p 'test_provider_usage.py'

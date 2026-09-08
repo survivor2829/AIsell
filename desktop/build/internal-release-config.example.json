@@ -1,0 +1,9 @@
+{
+  "XIAOXI_BUILD_PYTHON": "../.build/product-detail-venv/Scripts/python.exe",
+  "XIAOXI_FFMPEG_PATH": "../.build/release-inputs/media/bin/ffmpeg.exe",
+  "XIAOXI_FFPROBE_PATH": "../.build/release-inputs/media/bin/ffprobe.exe",
+  "XIAOXI_MEDIA_TOOLS_ROOT": "../.build/release-inputs/media",
+  "XIAOXI_MEDIA_TOOLS_LICENSE_RECORD": "../.build/release-inputs/media/license-record.json",
+  "XIAOXI_REMOTION_BROWSER_SOURCE_PATH": "../.build/release-inputs/browser/chrome.exe",
+  "XIAOXI_REMOTION_LICENSE_RECORD": "../.build/release-inputs/browser/license-record.json"
+}

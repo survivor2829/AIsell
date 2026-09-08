@@ -27,6 +27,8 @@ npm.cmd run dev
 
 ## 检查与构建
 
+日常内部更新按 [内部更新标准](docs/internal-release.md) 执行：提交并通过 CI → 构建完整候选安装包 → 本机覆盖升级验收 → 部署依赖服务 → 发布测试频道。GitHub CI 与客户更新是两个独立阶段；推送代码不会自动给客户安装未经确认的版本。
+
 以下命令均在 `desktop/` 运行：
 
 ```powershell

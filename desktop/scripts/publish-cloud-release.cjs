@@ -8,10 +8,19 @@ const { fileHash } = require("../src/main/cloud-maintenance.cjs");
 const { verifyManifest, VERSION } = require("../src/shared/cloud-contract.cjs");
 
 async function publish({ installer, manifestFile, notesFile, smoke = false }) {
+  const notes = notesFile ? fs.readFileSync(notesFile, "utf8").trim() : smoke ? "更新链路隔离验证" : "";
+  if (!notes || notes.length > 2000 || (!smoke && notes === "修复与体验改进")) throw Error("请提供 1～2000 字的具体客户更新说明文件。");
   const config = cloudConfig({ developmentEdition: true });
   const metadata = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
   const appId = smoke ? "com.aihuoke.maintenance.smoke" : config.appId;
   if (metadata.appId !== appId || !VERSION.test(metadata.version) || metadata.artifactType !== "internal-evaluation") throw Error("A matching internal test installer manifest is required");
+  if (!smoke) {
+    const git = (args) => spawnSync("git", args, { cwd: path.resolve(__dirname, "../.."), encoding: "utf8", windowsHide: true });
+    const state = git(["status", "--porcelain", "--untracked-files=all"]);
+    const head = git(["rev-parse", "HEAD"]);
+    if (state.status !== 0 || head.status !== 0 || state.stdout.trim()) throw Error("Publish from the clean, reviewed release commit");
+    if (metadata.installerBuildCommit !== head.stdout.trim()) throw Error("Installer build commit differs from the current release commit");
+  }
   const sha256 = await fileHash(installer), size = fs.statSync(installer).size;
   if (metadata.sha256 !== sha256 || metadata.size !== size) throw Error("Installer does not match its version manifest");
   const keyFile = path.join(os.homedir(), ".ssh", "ai-release-signing.pem");
@@ -20,7 +29,7 @@ async function publish({ installer, manifestFile, notesFile, smoke = false }) {
     schema: 1, appId, channel: smoke ? "smoke" : config.channel,
     platform: "win32", arch: "x64", version: metadata.version,
     sequence: Date.now(), sha256, size, file: `/artifacts/${sha256}.exe`,
-    notes: notesFile ? fs.readFileSync(notesFile, "utf8").trim() : "修复与体验改进"
+    publishedAt: new Date().toISOString(), notes
   };
   const payload = JSON.stringify(manifest);
   const envelope = { payload, signature: crypto.sign(null, Buffer.from(payload), fs.readFileSync(keyFile)).toString("base64") };
