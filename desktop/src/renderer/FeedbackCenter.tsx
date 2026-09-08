@@ -15,7 +15,7 @@ type PublicItem = Pick<FeedbackItem, "id" | "text" | "category" | "createdAt" | 
 type Community = { items: PublicItem[]; total: number; offset: number; lastRefresh: string; error: string };
 type AdminItem = PublicItem & { visibility: string; hidden: boolean; diagnostics: unknown[]; diagnosticsExpired: boolean };
 type AdminPage = { items: AdminItem[]; total: number; offset: number };
-type FeedbackState = { community: Community; enabled: boolean; draft: Draft; items: FeedbackItem[]; lastRefresh: string; refreshError: string };
+type FeedbackState = { snapshotSequence?: number; community: Community; enabled: boolean; draft: Draft; items: FeedbackItem[]; lastRefresh: string; refreshError: string };
 type Result = { ok: boolean; data?: FeedbackState; error?: string };
 declare global {
   interface Window {
@@ -66,7 +66,12 @@ export function FeedbackCenter({ appVersion, edition, buildId, context }: {
   const appliedContextRef = useRef<FeedbackContext | null>();
   contextRef.current = context;
   const id = useId();
+  const latestSnapshot = useRef(-1);
   const receive = useCallback((value: FeedbackState) => {
+    if (value.snapshotSequence !== undefined) {
+      if (value.snapshotSequence <= latestSnapshot.current) return;
+      latestSnapshot.current = value.snapshotSequence;
+    } else if (latestSnapshot.current >= 0) return;
     setState(value);
     if (!draftRef.current || value.draft.id !== draftRef.current.id) {
       const next = { ...value.draft };

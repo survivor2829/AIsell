@@ -75,8 +75,9 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
   }
   commit(state);
   let community = { items: [], total: 0, offset: 0, lastRefresh: "", error: "" };
+  let snapshotSequence = 0;
   function status() {
-    return { enabled: Boolean(network), community: structuredClone(community), draft: structuredClone(state.draft), lastRefresh: state.lastRefresh,
+    return { snapshotSequence: ++snapshotSequence, enabled: Boolean(network), community: structuredClone(community), draft: structuredClone(state.draft), lastRefresh: state.lastRefresh,
       refreshError, items: state.items.slice().reverse().map((item) => ({
         id: item.payload.id, text: item.payload.text, category: item.payload.category,
         context: structuredClone(item.payload.context), createdAt: item.payload.createdAt, includeDiagnostics: item.includeDiagnostics,
