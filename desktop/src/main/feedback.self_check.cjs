@@ -29,9 +29,14 @@ async function main() {
     const receipt = (id) => ({ id, status: receiptStatus, receivedAt: 1700000000, updatedAt: 1700000000 + (receiptStatus === "resolved" ? 1 : 0) });
     return route.endsWith("/status") ? { items: body.items.map((item) => receipt(item.id)) } : receipt(body.id);
   } };
+  const diagnosticTrace = crypto.randomUUID();
   const options = { rootDir: root, config: { enabled: true, appId: "com.aihuoke.desktop.test", channel: "test" },
     version: "1.0.0", buildId: "test", safeStorage, transport, clock: () => now,
-    logger: { readRecent: () => [{ ts: new Date(now).toISOString(), run_id: crypto.randomUUID(), seq: 1, level: "error", module: "content_engine", event: "failed", code: "quota", message: "must-not-upload", details: { password: "do-not-upload", error_code: "quota" } }] } };
+    logger: { readRecent: () => [
+      { ts: new Date(now).toISOString(), run_id: crypto.randomUUID(), seq: 2, trace_id: diagnosticTrace, level: "error", module: "content_engine", event: "failed", code: "quota", message: "must-not-upload", details: { password: "do-not-upload", error_code: "quota" } },
+      { ts: new Date(now).toISOString(), run_id: crypto.randomUUID(), seq: 1, trace_id: diagnosticTrace, level: "info", module: "content_engine", event: "step", details: { stage: "prepare", elapsed_ms: 42 } },
+      { ts: new Date(now).toISOString(), run_id: crypto.randomUUID(), seq: 1, trace_id: crypto.randomUUID(), level: "info", module: "app", event: "unrelated" }
+    ] } };
   let controller = createFeedbackController(options);
   try {
     const draft = { ...controller.status().draft, text: "制作失败，想知道原因", context: { module: "content_engine", taskId: "task_1" } };
@@ -43,7 +48,9 @@ async function main() {
     assert.equal(controller.status().items.length, 1, "Double submission keeps one immutable ID");
     assert.equal(requests.length, 1, "Double submission must respect the existing retry backoff");
     const sent = requests[0].body;
-    assert.equal(sent.diagnostics.length, 1);
+    assert.equal(sent.diagnostics.length, 2);
+    assert.equal(sent.diagnostics[1].details.stage, "prepare", "Opted-in feedback retains preceding steps of the failing operation");
+    assert.equal(sent.diagnostics.some(entry => entry.event === "unrelated"), false);
     assert(!JSON.stringify(sent).includes("must-not-upload"));
     assert(!JSON.stringify(sent).includes("do-not-upload"));
     assert(!JSON.stringify(controller.status()).includes(sent.receiptToken), "Receipt token never enters renderer state");

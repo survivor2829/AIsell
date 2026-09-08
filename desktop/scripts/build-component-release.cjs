@@ -37,6 +37,7 @@ async function buildComponentRelease({ sourceRoot, outputDir, version, baseVersi
   if (outputDir === sourceRoot || outputDir.startsWith(sourceRoot + path.sep)) throw Error("component_output_inside_source");
   const sourceManifest = JSON.parse(await fsp.readFile(path.join(sourceRoot, "版本清单.json"), "utf8"));
   if (sourceManifest.version !== version || (buildCommit && sourceManifest.commit !== buildCommit)) throw Error("component_source_identity_mismatch");
+  notes = require("../src/shared/customer-release-notes.cjs").matchingReleaseNotes(version, notes);
   buildCommit = buildCommit || sourceManifest.commit || "";
   await fsp.mkdir(outputDir, { recursive: true });
   const files = await inventory(sourceRoot, layout);

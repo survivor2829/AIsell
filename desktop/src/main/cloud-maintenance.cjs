@@ -5,10 +5,12 @@ const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { createTransport } = require("./cloud-transport.cjs");
-const { compareVersions, fail, reportEntry, token, UUID, verifyManifest } = require("../shared/cloud-contract.cjs");
+const { compareVersions, fail, token, UUID, verifyManifest } = require("../shared/cloud-contract.cjs");
+const { reportEntry } = require("../shared/cloud-report.cjs");
 const { verifyComponentManifest, assertCompatible, hashFile: fileHash } = require("../shared/component-contract.cjs");
 const { createComponentStore } = require("./component-store.cjs");
 const componentPaths = require("./component-paths.cjs");
+const { releaseNotes } = require("../shared/customer-release-notes.cjs");
 
 function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; } }
 function announcementId(manifest) { return `${manifest.schema}:${manifest.sequence}`; }
@@ -19,11 +21,15 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   const stateFile = path.join(dir, "state.json");
   const queueFile = path.join(dir, "outbox.json");
   const saved = readJson(stateFile, {});
+  // Display-only bundled text; never add an unsigned entry to trusted update state.
+  let installedNotes = "";
+  try { installedNotes = releaseNotes(version); } catch {}
   const state = {
     installId: UUID.test(saved.installId || "") ? saved.installId : crypto.randomUUID(),
     consent: saved.consent === true, sequence: Number.isSafeInteger(saved.sequence) && saved.sequence >= 0 ? saved.sequence : 0,
     lastUpload: typeof saved.lastUpload === "string" ? saved.lastUpload : "", pending: saved.pending || null,
     announcements: [],
+    readAnnouncementVersions: Array.isArray(saved.readAnnouncementVersions) ? saved.readAnnouncementVersions.filter(value => typeof value === "string").slice(-100) : [],
     lastAnnouncementsCheck: typeof saved.lastAnnouncementsCheck === "string" ? saved.lastAnnouncementsCheck : "",
     componentSequence: Number.isSafeInteger(saved.componentSequence) ? saved.componentSequence : 0
   };
@@ -55,10 +61,20 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   }
   function saveQueue() { writeJsonAtomic(queueFile, queue); }
   function status() {
-    const announcements = state.announcements.map((item) => {
+    const byVersion = new Map();
+    for (const item of state.announcements) {
       const manifest = JSON.parse(item.envelope.payload);
-      return { id: item.id, sequence: item.sequence, version: manifest.version, notes: manifest.notes, publishedAt: manifest.publishedAt || "", read: item.read };
+      const existing = byVersion.get(manifest.version);
+      const read = item.read || state.readAnnouncementVersions.includes(manifest.version);
+      if (existing) { existing.read ||= read; continue; }
+      byVersion.set(manifest.version, { id: item.id, sequence: item.sequence, version: manifest.version,
+        notes: manifest.notes, publishedAt: manifest.publishedAt || "", read });
+    }
+    if (installedNotes && !byVersion.has(version)) byVersion.set(version, {
+      id: `installed:${version}`, sequence: 0, version, notes: installedNotes, publishedAt: "",
+      read: state.readAnnouncementVersions.includes(version)
     });
+    const announcements = [...byVersion.values()].sort((a, b) => compareVersions(b.version, a.version)).slice(0, 20);
     const selection = userData ? readJson(componentPaths.updatePaths(userData).selection, {}) : {};
     return { ...view, lastUpdate: selection.lastUpdate || null, updateFailure: selection.failure || "", enabled: Boolean(network), version, channel: config?.channel || "", consent: state.consent, queued: queue.length,
       lastUpload: state.lastUpload, canInstall: canInstall(), announcements, unreadAnnouncements: announcements.filter((item) => !item.read).length,
@@ -122,10 +138,13 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   }
   function markAnnouncementRead(key) {
     const id = Number.isSafeInteger(key) ? `1:${key}` : key;
-    const item = state.announcements.find((candidate) => candidate.id === id);
+    const stored = state.announcements.find(candidate => candidate.id === id);
+    const storedVersion = stored ? JSON.parse(stored.envelope.payload).version : "";
+    const item = status().announcements.find((candidate) => candidate.id === id || candidate.version === storedVersion);
     if (item && !item.read) {
       try {
-        commit({ announcements: state.announcements.map((candidate) => candidate.id === id ? { ...candidate, read: true } : candidate) });
+        commit({ readAnnouncementVersions: [...new Set([...state.readAnnouncementVersions, item.version])].slice(-100),
+          announcements: state.announcements.map((candidate) => JSON.parse(candidate.envelope.payload).version === item.version ? { ...candidate, read: true } : candidate) });
         notify({ announcementError: "" });
       } catch { notify({ announcementError: "已读状态暂未保存，请稍后重试。" }); }
     }

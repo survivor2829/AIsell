@@ -1666,9 +1666,10 @@ try {
   send(dir, { dryRun: true, message: "second" });
   verifyRealSendSession(dir, () => ({ ok: true, pid: 12, hWnd: "23", processName: "Weixin", title: "未知结果客户", accountId: "internal-account", accountVerified: true }));
   setRealSendArm(dir, true);
+  const sendTrace = [];
   const clickedUnknown = await sendReal(
     dir,
-    { message: "second", allowRealSend: true, userConfirmed: true },
+    { message: "second", allowRealSend: true, userConfirmed: true, onDiagnostic: (entry) => sendTrace.push(entry) },
     () => ({ ok: true, conversationVerified: true, draftVerified: true, sendAttempted: true }),
     () => ({ ok: true, pid: 12, hWnd: "23", processName: "Weixin", title: "未知结果客户", accountId: "internal-account", accountVerified: true }),
     (_message, context) => context.phase === "before"
@@ -1677,6 +1678,14 @@ try {
   );
   assert.equal(clickedUnknown.state.real_send_status, "outcome_unknown");
   assert.equal(clickedUnknown.send_attempted, true);
+  assert.equal(clickedUnknown.state.send_diagnostics.is_new, false);
+  assert.equal(require("../../src/shared/wechat-send-diagnostics.cjs").summarizeSendResult(clickedUnknown).is_new, false,
+    "Final main-process diagnostics must preserve proof saved inside the execution state");
+  const confirmation = sendTrace.find((entry) => entry.stage === "after_send_confirmation" && entry.phase === "finish");
+  assert.equal(confirmation.exact_match, true);
+  assert.equal(confirmation.is_new, false, "A visible old bubble must remain distinguishable from a new outgoing one");
+  assert.equal(sendTrace.some((entry) => entry.stage === "send_click" && entry.send_attempted === true), true);
+  assert.doesNotMatch(JSON.stringify(sendTrace), /second|未知结果客户|internal-account/);
   assert.equal(setRealSendArm(dir, false).state.real_send_status, "outcome_unknown");
   assert.equal(verifyMessageBubble(dir, () => ({ ok: true, messageText: "second!", exactMatch: true, outgoing: true, isLatest: true, isNew: true })).state.real_send_status, "outcome_unknown");
   assert.equal(setRealSendArm(dir, true).blocked_reason, "real_send_already_attempted");

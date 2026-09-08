@@ -3,6 +3,7 @@ const { spawn } = require("node:child_process");
 const path = require("node:path");
 const { diagnostics } = require("./diagnostics.cjs");
 const { applicationPath } = require("./component-paths.cjs");
+const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs");
 
 let runtimeDataDir = "";
 let runtimeCoordinator = null;
@@ -50,7 +51,8 @@ function executeActiveTouch(args, options = {}) {
     const childArgs = selectedDataDir ? [...args, "--data-dir", selectedDataDir] : args;
     const executable = cliPath(development, options.cliName);
     const operation = diagnostics().begin("wechat_adapter", "executor", {
-      command: args[0] ?? "status",
+      action: args[0] ?? "status",
+      parent_trace_code: options.parentTraceId || "",
       argument_count: args.length,
       development,
       timeout_ms: timeoutMs,
@@ -60,7 +62,7 @@ function executeActiveTouch(args, options = {}) {
       task_id: options.taskId || "",
       contact_id: options.contactId || "",
       current_index: Number.isFinite(Number(options.currentIndex)) ? Number(options.currentIndex) : undefined
-    });
+    }, { trace: Boolean(options.parentTraceId) });
     const child = spawn(process.execPath, [executable, ...childArgs], {
       cwd: path.dirname(executable),
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
@@ -85,8 +87,10 @@ function executeActiveTouch(args, options = {}) {
         ? result[key]
         : resultState[key];
       const blockedReason = result?.blocked_reason || resultState.blocked_reason || "";
-      const primaryReason = diagnosticValue("primary_reason") || blockedReason;
+      const sendDetail = summarizeSendResult(result);
+      const primaryReason = diagnosticValue("primary_reason") || sendDetail.reason || blockedReason;
       operation.end({
+        ...sendDetail,
         ok: result?.ok === true,
         action: result?.action || args[0] || "status",
         blocked_reason: blockedReason,

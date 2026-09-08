@@ -3,6 +3,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { generateFixedScriptFallback, generatePersonalizedDraft } = require("./ai-draft.cjs");
+const { diagnostics } = require("./diagnostics.cjs");
+const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs");
 const {
   classifyContacts,
   createTask,
@@ -152,6 +154,7 @@ function createTouchWorkflow(options = {}) {
       current.status = "sending";
       persist();
       let result;
+      const sendOperation = diagnostics().begin("active_touch", "workflow_contact_send", { task_id: id, current_index: index }, { trace: true });
       try {
         result = await options.execute({
           baseDir: taskDir,
@@ -162,6 +165,9 @@ function createTouchWorkflow(options = {}) {
           attemptId: current.request_id,
           authorized: true,
           windowMinIdleMs: 0,
+          onDiagnostic: (detail) => diagnostics().event("active_touch", "send_stage", detail, {
+            trace: true, traceId: sendOperation.traceId, phase: detail.phase, level: detail.ok === false ? "warn" : "info", code: detail.reason
+          }),
           isExecutionAllowed: enabled,
           sessionDriver: (name, sessionContext) => drivers.verifyWechatCurrentConversationAsync(name, { ...sessionContext, wechatRoot }),
           sendDriver: (key, sendContext) => enabled()
@@ -171,6 +177,7 @@ function createTouchWorkflow(options = {}) {
             "--task-id", id, "--contact-id", current.id, "--current-index", String(index)
           ], {
             dataDir: taskDir,
+            parentTraceId: sendOperation.traceId,
             owner,
             workflow: "touching",
             phase: command,
@@ -187,7 +194,10 @@ function createTouchWorkflow(options = {}) {
             persist();
           }
         });
-      } catch {
+        const detail = summarizeSendResult(result);
+        sendOperation.end(detail, { ok: result?.ok === true, code: detail.reason });
+      } catch (error) {
+        sendOperation.fail(error, { stage: "workflow_contact_send", send_attempted: null });
         task.results[index].status = "outcome_unknown";
         task.results[index].retry_blocked = true;
         return attention("执行器异常，发送结果无法确认；系统不会自动补发", { deliveryStatus: "outcome_unknown" });

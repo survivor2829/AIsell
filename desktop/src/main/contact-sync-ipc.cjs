@@ -116,9 +116,9 @@ function writePathSettings(settings) {
 function executeContactSync(args) {
   return new Promise((resolve) => {
     const operation = diagnostics().begin("contact_sync", "executor", {
-      command: args[0] ?? "status",
+      action: args[0] ?? "status",
       argument_count: args.length
-    });
+    }, { trace: args[0] !== "status" });
     const settings = readPathSettings();
     const previousAccount = String(readJsonFile(path.join(runtimeDataDir, "state.json"), {}).account_name || "").trim();
     const runtimeArgs = [
@@ -130,12 +130,13 @@ function executeContactSync(args) {
     ];
     const child = spawn(process.execPath, [cliPath(), ...runtimeArgs], {
       cwd: path.dirname(cliPath()),
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", XIAOXI_CONTACT_SYNC_TRACE: args[0] === "status" ? "" : "1" },
       windowsHide: true
     });
 
     let stdout = "";
     let stderr = "";
+    let progressBuffer = "";
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
@@ -143,6 +144,16 @@ function executeContactSync(args) {
 
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
+      progressBuffer += chunk.toString();
+      const lines = progressBuffer.split(/\r?\n/);
+      progressBuffer = lines.pop().slice(-8192);
+      for (const line of lines) {
+        if (!line.startsWith("XIAOXI_SYNC_PROGRESS ")) continue;
+        try {
+          const detail = JSON.parse(line.slice("XIAOXI_SYNC_PROGRESS ".length));
+          diagnostics().event("contact_sync", "capture_progress", detail, { trace: true, traceId: operation.traceId, phase: detail.stage });
+        } catch {}
+      }
     });
 
     let settled = false;
@@ -155,6 +166,12 @@ function executeContactSync(args) {
         blocked_reason: result?.blocked_reason || "",
         error: result?.error || "",
         stage: result?.state?.last_stage || "",
+        wechat_version: result?.state?.wechat_version || "",
+        process_count: result?.state?.process_count,
+        restart_requested: result?.state?.restart_requested,
+        had_running_process: result?.state?.had_running_process,
+        stop_verified: result?.state?.stop_verified,
+        launch_deferred: result?.state?.launch_deferred,
         wx_hook_stage: result?.state?.wx_hook_stage || "",
         wx_hook_error_code: /^[a-z][a-z0-9_.:-]{0,119}$/iu.test(String(result?.state?.wx_hook_error || "").trim())
           ? String(result.state.wx_hook_error).trim().toLowerCase()

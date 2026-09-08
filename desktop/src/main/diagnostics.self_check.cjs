@@ -242,6 +242,22 @@ try {
     code: "invalid_clock"
   }));
   assert.equal(invalidClockLogger.readRecent(10).length, 0);
+  const traceLogger = createDiagnosticLogger({ rootDir: path.join(root, "send-trace") });
+  const tracedOperation = traceLogger.begin("active_touch", "contact_send", { action: "send" }, { trace: true });
+  traceLogger.event("active_touch", "send_stage", { stage: "after_send_confirmation", is_new: false,
+    input_empty: true, input_read_reason: "empty", message: "trace-private-text" }, { trace: true, traceId: tracedOperation.traceId });
+  tracedOperation.end({ ok: false, reason: "message_bubble_not_new_latest_exact", send_attempted: null });
+  const traceRows = traceLogger.readRecent(10).reverse();
+  assert.equal(traceRows.length, 3, "Explicit operation traces must retain start, observations and result in the exported log");
+  assert.equal(traceRows.every((entry) => entry.trace_id === tracedOperation.traceId), true);
+  assert.equal(traceRows[1].details.is_new, false);
+  assert.equal(traceRows[1].details.input_empty, true);
+  assert.equal(traceRows[2].details.send_attempted, null);
+  const report = require("../shared/cloud-report.cjs").reportEntry(traceRows[1], { installId: "12345678-1234-1234-1234-123456789012" });
+  assert.equal(report.details.is_new, false, "Technical confirmation evidence must survive the cloud allowlist");
+  assert.equal(report.details.input_empty, true);
+  assert.equal(report.details.stage, "after_send_confirmation");
+  assert.doesNotMatch(JSON.stringify(traceRows), /trace-private-text/);
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

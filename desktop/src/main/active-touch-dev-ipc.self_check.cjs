@@ -89,7 +89,10 @@ Module._load = function load(request, parent, isMain) {
     return { openWechatMoments: (options) => momentsOpenBehavior(options) };
   }
   if (request === "./diagnostics.cjs") {
-    return { diagnostics: () => ({ event: (...args) => diagnosticEvents.push(args) }) };
+    return { diagnostics: () => ({ event: (...args) => diagnosticEvents.push(args),
+      begin: () => ({ traceId: "12345678-1234-1234-1234-123456789012",
+        end: (details) => diagnosticEvents.push(["active_touch", "internal_contact_send.finished", details]),
+        fail: () => {} }) }) };
   }
   return originalLoad.call(this, request, parent, isMain);
 };
@@ -422,7 +425,7 @@ const momentsComment = handlers.get("active-touch:dev-moments-comment");
   assert.equal(executeCalls[0].authorized, true);
   assert.equal(executeCalls[0].baseDir, "test-data");
   await executeCalls[0].runStep("calibrate", []);
-  assert.deepEqual(runnerCalls, [{ args: ["calibrate"], options: { dataDir: "test-data" } }]);
+  assert.deepEqual(runnerCalls, [{ args: ["calibrate"], options: { dataDir: "test-data", parentTraceId: "12345678-1234-1234-1234-123456789012" } }]);
 
   executeBehavior = async () => { throw new Error("send driver crashed"); };
   const crashedSend = await sendSelected({ sender: webContents }, {

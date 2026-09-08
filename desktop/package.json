@@ -2,7 +2,7 @@
   "name": "xiaoxi-active-touch-desktop",
   "productName": "AI获客 V1.0版本",
   "description": "AI获客 V1.0版本 Windows 微信客户运营助手",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "componentBaseVersion": "1.1.0",
   "private": true,
   "main": "src/main/bootstrap.cjs",
