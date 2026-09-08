@@ -4,7 +4,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { registerContentMediaScheme } = require("./content-media-protocol.cjs");
 
-async function check() {
+async function check(smoke = false) {
   let ready = false, registrations = 0;
   let finish;
   const result = new Promise(resolve => { finish = resolve; });
@@ -17,9 +17,14 @@ async function check() {
     requestSingleInstanceLock: () => true, getVersion: () => "1.1.2",
     quit: () => finish({ error: "unexpected quit" }), exit() {} };
   const roots = { directory: __dirname, selection: "selection" };
+  const smokeProfile = path.join(__dirname, "isolated-release-profile");
+  const expectedProfile = smoke ? smokeProfile : path.join(__dirname, "xiaoxi-active-touch-delivery");
   const paths = {
     readJson: (file, fallback) => file === "selection" ? { active: "candidate" } : fallback,
-    updatePaths: () => roots, generationPath: () => __dirname,
+    updatePaths: userData => {
+      assert.equal(userData, expectedProfile, "Release verification must select components from its isolated profile");
+      return roots;
+    }, generationPath: () => __dirname,
     verifySelected: async () => {
       await new Promise(resolve => setImmediate(resolve));
       ready = true;
@@ -27,7 +32,9 @@ async function check() {
     }, saveSelection() {}, rollbackSelection() { throw Error("unexpected rollback"); }
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "bootstrap.cjs"), "utf8"), {
-    __dirname, global: {}, process: { argv: [], env: {}, execPath: process.execPath },
+    __dirname, global: {}, process: { argv: [], env: smoke ? {
+      XIAOXI_PRODUCT_DETAIL_RELEASE_SMOKE: "1", XIAOXI_PRODUCT_DETAIL_RELEASE_SMOKE_DATA_DIR: smokeProfile
+    } : {}, execPath: process.execPath },
     require(id) {
       if (id === "electron") return { app, protocol, dialog: { showErrorBox: (_, message) => finish({ error: message }) } };
       if (id === "node:path") return path;
@@ -46,6 +53,6 @@ async function check() {
   assert.deepEqual(await result, { version: "1.1.3", ready: true },
     "An async component verification must not defer privileged protocol registration until app ready");
   assert.equal(registrations, 1, "The loaded application must reuse the bootstrap registration");
-  console.log("bootstrap self-check passed: async component verification preserves early media protocol registration");
 }
-check().catch(error => { console.error(error); process.exitCode = 1; });
+check().then(() => check(true)).then(() => console.log("bootstrap self-check passed: early media registration and isolated release profile"))
+  .catch(error => { console.error(error); process.exitCode = 1; });

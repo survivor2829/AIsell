@@ -12,7 +12,13 @@ async function boot() {
   if (!app.isPackaged) { require("./main.cjs"); return; }
   const marker = readJson(path.join(__dirname, "../../dist/build-edition.json"), {});
   const development = marker.edition === "development";
-  const userData = path.join(app.getPath("appData"), development ? "xiaoxi-active-touch-test" : "xiaoxi-active-touch-delivery");
+  const smoke = process.env.XIAOXI_PRODUCT_DETAIL_RELEASE_SMOKE === "1";
+  const smokeDirectory = String(process.env.XIAOXI_PRODUCT_DETAIL_RELEASE_SMOKE_DATA_DIR || "").trim();
+  if (smoke && (!path.isAbsolute(smokeDirectory) || path.resolve(smokeDirectory) === path.parse(smokeDirectory).root)) {
+    throw Error("release_smoke_profile_invalid");
+  }
+  const userData = smoke ? path.resolve(smokeDirectory)
+    : path.join(app.getPath("appData"), development ? "xiaoxi-active-touch-test" : "xiaoxi-active-touch-delivery");
   app.setPath("userData", userData);
   const jobFlag = process.argv.indexOf("--xiaoxi-update-job");
   if (jobFlag >= 0) {
@@ -26,7 +32,7 @@ async function boot() {
   }
   // Acquire the lock before touching a pending boot attempt. A second launch must
   // never roll back the candidate that the first process is still starting.
-  if (!process.env.XIAOXI_PRODUCT_DETAIL_RELEASE_SMOKE && !app.requestSingleInstanceLock()) { app.quit(); return; }
+  if (!smoke && !app.requestSingleInstanceLock()) { app.quit(); return; }
   global.__xiaoxiStableLock = true;
   const installedRoot = path.dirname(process.execPath);
   const config = require("./cloud-config.cjs").cloudConfig({ developmentEdition: development });
