@@ -929,7 +929,12 @@ function createPreloadApis(ipcRenderer) {
       removeRecipient: (id) => ipcRenderer.invoke("wechat-workflow:remove-recipient", { id: String(id || "") }),
       setReplyEnabled: (enabled) => ipcRenderer.invoke("wechat-workflow:set-reply-enabled", { enabled: enabled === true }),
       showFloating: () => ipcRenderer.invoke("wechat-workflow:show-floating"),
-      showMain: () => ipcRenderer.invoke("wechat-workflow:show-main"),
+      showMain: (intent) => ipcRenderer.invoke("wechat-workflow:show-main", intent),
+      onNavigate: (callback) => {
+        const handler = (_event, intent) => callback(intent);
+        ipcRenderer.on("wechat-workflow:navigate", handler);
+        return () => ipcRenderer.removeListener("wechat-workflow:navigate", handler);
+      },
       onUpdate: (callback) => {
         const handler = (_event, state) => callback(state);
         ipcRenderer.on("wechat-workflow:update", handler);

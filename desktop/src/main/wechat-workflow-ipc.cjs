@@ -36,7 +36,8 @@ function registerWechatWorkflowIpc(options) {
   const controller = createWechatWorkflowController({ ...options, onUpdate: broadcast });
 
   const active = () => controller.status().enabled || controller.status().phase === "pausing" || contactSync?.running;
-  function showMain() {
+  function showMain(intent) {
+    if (["start", "history", "tasks"].includes(intent?.view)) main()?.webContents.send("wechat-workflow:navigate", { view: intent.view });
     main()?.show(); main()?.focus();
     if (!active()) floatingWindow?.hide();
     return { ok: true, state: viewState() };

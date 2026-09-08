@@ -64,7 +64,7 @@ function createFeedbackAdmin({ config, spawnProcess = spawn }) {
       || typeof value.officialReply !== "string" || Array.from(value.officialReply).length > 2000 || typeof value.hidden !== "boolean") throw new Error("feedback_admin_invalid");
     if (!(await available()).available) throw new Error("feedback_admin_unavailable");
     const result = await request("/api/feedback/status", { id: value.id, status: value.status, officialReply: value.officialReply, hidden: value.hidden });
-    if (result?.updated !== true) throw new Error("feedback_admin_invalid");
+    if (result?.ok !== true) throw new Error("feedback_admin_invalid");
     return { updated: true };
   }
   return { available, list, update, stop() { authorized = false; for (const child of children) child.kill(); children.clear(); } };

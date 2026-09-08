@@ -48,7 +48,8 @@ import { BatchCreativePage } from "./BatchCreativePage";
 import { MaterialsCollectionsPage } from "./BatchAssets";
 import type { Collection } from "./batch-studio-api";
 import { ProductOneClickPage } from "./ProductOneClickPage";
-import { FloatingWorkflowWindow, useWechatWorkflow, WechatWorkflowPage, WorkflowLauncher } from "./WechatWorkflow";
+import { FloatingWorkflowWindow, useWechatWorkflow, WechatWorkflowPage, WorkflowLauncher, type WorkflowView, type EditorRequest } from "./WechatWorkflow";
+import { WechatGettingStarted } from "./WechatGettingStarted";
 import { AGENT_ROLE_IDENTITIES, AgentHome, type AgentHomeTarget, type AgentRoleKey } from "./AgentHome";
 
 type ModuleKey = AgentRoleKey | AgentHomeTarget | "api-key" | "diagnostics";
@@ -373,7 +374,7 @@ const DEFAULT_TOUCH_MESSAGE = DEVELOPMENT_EDITION
 const DevelopmentAcceptance = DEVELOPMENT_EDITION ? lazy(() => import("./DevelopmentAcceptance")) : null;
 
 const agentChildren: NavItem[] = [
-  { key: "expert", label: "AI专家", icon: Bot },
+  { key: "expert", label: "你的AI专家", icon: Bot },
   { key: "workflow", label: "今日计划", icon: ListTodo },
   { key: "reply", label: "自动回复", icon: MessageCircle },
   { key: "contact-sync", label: "同步联系人", icon: UsersRound },
@@ -532,6 +533,13 @@ export default function App() {
   const [feedbackContext, setFeedbackContext] = useState<FeedbackContext | null>(null);
   const workflow = useWechatWorkflow();
   const [active, setActive] = useState<ModuleKey>(DEFAULT_ACTIVE_MODULE);
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [workflowView, setWorkflowView] = useState<WorkflowView>("tasks");
+  const [workflowEditor, setWorkflowEditor] = useState<EditorRequest | null>(null);
+  const navigateWorkflow = (view: WorkflowView) => {
+    setWorkflowView(view); setWorkflowEditor(null); setGuideOpen(view === "start"); setActive("workflow");
+  };
+  useEffect(() => window.xiaoxiWorkflow?.onNavigate?.(({ view }) => navigateWorkflow(view)), []);
   const [legacyWorkspace, setLegacyWorkspace] = useState(false);
   const [legacyResumeTarget, setLegacyResumeTarget] = useState<{ taskId?: string; projectId?: string | null } | null>(null);
   const [creativeView, setCreativeView] = useState<"studio" | "product" | "history">("studio");
@@ -748,7 +756,7 @@ export default function App() {
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">玺</div>
+          <img className="brand-mark" src="./app-icon.png" alt="" />
           <div className="brand-copy">
             <span>{productBrand.displayName}</span>
           </div>
@@ -826,6 +834,10 @@ export default function App() {
         <div className="content-card">
           {active !== "diagnostics" && <CloudMaintenance compact />}
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
+          {guideOpen && ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "api-key"].includes(active) && <WechatGettingStarted active={active}
+            connected={Boolean(contactSyncState.wechat_identity?.account_id && !contactSyncState.account_changed)} aiConfigured={deepSeekConfigured} workflow={workflow}
+            onOpen={setActive} onClose={() => setGuideOpen(false)}
+            onEditor={(type) => { setWorkflowEditor({ type }); setWorkflowView("tasks"); setActive(type === "touch" ? "touch" : "moments"); }} />}
           {activeRole && (
             <AgentHome
               role={activeRole}
@@ -840,6 +852,7 @@ export default function App() {
           {["workflow", "touch", "moments"].includes(active) && (
             <WechatWorkflowPage
               key={active}
+              editorRequest={workflowEditor} view={workflowView} onNavigate={navigateWorkflow}
               mode={active === "touch" ? "touch" : active === "moments" ? "moments" : "home"}
               workflow={workflow}
               contacts={contactRows}
@@ -863,7 +876,7 @@ export default function App() {
                locked={workflow.state.enabled || workflow.state.phase === "pausing"}
              />
           )}
-          {active === "reply" && <AutoReply workflow={workflow} />}
+          {active === "reply" && <AutoReply workflow={workflow} onNavigate={navigateWorkflow} />}
           {active === "expert" && <AiExpert />}
           {active === "accounts" && <AccountManagement />}
           {active === "product-detail" && <ProductDetailPage />}
@@ -914,7 +927,7 @@ export default function App() {
           {!moduleIsAvailable(active) && <Placeholder title={activeTitle} />}
         </div>
 
-        {agentChildren.some((item) => item.key === active) && <WorkflowLauncher workflow={workflow} />}
+        {(["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active) || workflow.state.enabled || workflow.state.contactSync?.running || workflow.state.phase === "pausing") && <WorkflowLauncher workflow={workflow} onNavigate={navigateWorkflow} />}
       </section>
     </main>
   );

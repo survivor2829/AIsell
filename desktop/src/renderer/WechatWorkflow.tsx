@@ -66,7 +66,8 @@ declare global {
       start: () => Promise<WorkflowResult>;
       pause: () => Promise<WorkflowResult>;
       showFloating: () => Promise<WorkflowResult>;
-      showMain: () => Promise<WorkflowResult>;
+      showMain: (intent?: { view: WorkflowView }) => Promise<WorkflowResult>;
+      onNavigate?: (callback: (intent: { view: WorkflowView }) => void) => () => void;
       addTask: (task: WorkflowTaskInput) => Promise<WorkflowResult>;
       updateTask: (task: WorkflowTaskInput & { id: string }) => Promise<WorkflowResult>;
       cancelTask: (id: string) => Promise<WorkflowResult>;
@@ -147,7 +148,7 @@ export function workflowStatusText(state: WorkflowState) {
   if (state.phase === "pausing") return "正在暂停";
   if (state.phase === "completed") return "本轮任务已完成";
   if (state.phase === "needs_attention") return "本轮任务未完成";
-  if (state.phase === "idle") return "本轮没有待执行任务";
+  if (state.phase === "idle") return hasRunnablePlan(state) ? "计划已就绪，等待启动" : "本轮没有待执行任务";
   if (!state.enabled) return "已暂停";
   if (state.phase === "waiting_for_idle") return "等待电脑空闲";
   const task = state.tasks.find((item) => item.id === state.currentTaskId);
@@ -184,55 +185,63 @@ function formatTaskTime(task: WorkflowTask) {
   return new Date(task.scheduledAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
-function hasRunnablePlan(state: WorkflowState) {
+export function hasRunnablePlan(state: WorkflowState) {
   return state.tasks.some((task) => task.status === "pending" && !task.accountMismatch)
     || (state.replyEnabled !== false && state.recipients.length > 0);
 }
 
-export function WorkflowToggle({ workflow, compact = false }: { workflow: WorkflowController; compact?: boolean }) {
+export type WorkflowView = "start" | "history" | "tasks";
+export function workflowEntry(state: WorkflowState): "active" | "attention" | "ready" | "history" | "empty" {
+  if (state.enabled || state.contactSync?.running || state.phase === "pausing") return "active";
+  if (state.phase === "needs_attention" || state.replyError || state.tasks.some(task => task.accountMismatch || ["needs_attention", "missed"].includes(task.status))) return "attention";
+  if (hasRunnablePlan(state)) return "ready";
+  return state.tasks.length ? "history" : "empty";
+}
+const ENTRY_LABEL = { active: "查看进度", attention: "查看待处理", ready: "启动程序", history: "查看记录", empty: "带我开始" };
+function entryView(entry: ReturnType<typeof workflowEntry>): WorkflowView { return entry === "empty" ? "start" : entry === "history" ? "history" : "tasks"; }
+
+export function WorkflowToggle({ workflow, compact = false, onNavigate }: { workflow: WorkflowController; compact?: boolean; onNavigate?: (view: WorkflowView) => void }) {
   const { state, busy, loading, run } = workflow;
   const api = window.xiaoxiWorkflow;
-  const needsPlan = !state.enabled && !state.contactSync?.running && !hasRunnablePlan(state);
-  return <button
-    type="button"
-    data-xiaoxi-workflow-start={state.enabled || state.contactSync?.running || needsPlan ? undefined : "true"}
+  const entry = workflowEntry(state);
+  const navigate = () => onNavigate ? onNavigate(entryView(entry)) : api && void run(() => api.showMain({ view: entryView(entry) }));
+  return <button type="button" data-xiaoxi-workflow-start={entry === "ready" ? "true" : undefined}
     className={`${state.enabled ? "secondary-button" : "primary-button"} workflow-toggle`}
     disabled={busy || loading || state.phase === "pausing" || !api}
-    onClick={() => api && void run(() => needsPlan ? api.showMain() : state.contactSync?.running ? api.showFloating() : state.enabled ? api.pause() : api.start())}
-  >
-    {state.enabled ? <Pause size={16} /> : <Play size={16} />}
-    {busy || state.phase === "pausing" ? "处理中…" : needsPlan ? "查看任务" : state.contactSync?.running ? "查看同步进度" : state.enabled ? (compact ? "暂停" : "暂停程序") : (compact ? "启动" : "启动程序")}
+    onClick={() => { if (!api) return; if (entry !== "active" && entry !== "ready") { navigate(); return; } void run(() => state.contactSync?.running ? api.showFloating() : state.enabled ? api.pause() : api.start()); }}>
+    {state.enabled ? <Pause size={16} /> : entry === "ready" ? <Play size={16} /> : <ChevronRight size={16} />}
+    {busy || state.phase === "pausing" ? "处理中…" : state.contactSync?.running ? "查看同步进度" : state.enabled ? (compact ? "暂停" : "暂停程序") : ENTRY_LABEL[entry]}
   </button>;
 }
 
-export function WorkflowLauncher({ workflow }: { workflow: WorkflowController }) {
+export function WorkflowLauncher({ workflow, onNavigate }: { workflow: WorkflowController; onNavigate?: (view: WorkflowView) => void }) {
   const { state, busy, loading, run } = workflow;
   const api = window.xiaoxiWorkflow;
-  const active = state.enabled || state.contactSync?.running;
-  const needsPlan = !active && !hasRunnablePlan(state);
-  return <button
-    type="button"
-    data-xiaoxi-workflow-start={active || needsPlan ? undefined : "true"}
-    className="launch-button workflow-launcher"
-    aria-label={active ? "查看微信拓客运行进度" : needsPlan ? "查看待处理任务" : "启动微信拓客程序"}
+  const entry = workflowEntry(state);
+  return <button type="button" data-xiaoxi-workflow-start={entry === "ready" ? "true" : undefined}
+    className={`launch-button workflow-launcher${entry === "active" ? " is-active" : ""}`} aria-label={entry === "active" ? `微信拓客：${workflowStatusText(state)}，查看进度` : ENTRY_LABEL[entry]}
     disabled={busy || loading || state.phase === "pausing" || !api}
-    onClick={() => api && void run(() => active ? api.showFloating() : needsPlan ? api.showMain() : api.start())}
-  >{busy ? "处理中" : active ? <>查看<br />进度</> : needsPlan ? <>查看<br />任务</> : <>启动<br />程序</>}</button>;
+    onClick={() => { if (!api) return; if (entry === "active" || entry === "ready") { void run(() => entry === "active" ? api.showFloating() : api.start()); } else if (onNavigate) onNavigate(entryView(entry)); else void run(() => api.showMain({ view: entryView(entry) })); }}
+  >{busy ? "处理中" : entry === "active" ? <>微信拓客 · {workflowStatusText(state)}<ChevronRight size={14} /></> : ENTRY_LABEL[entry]}</button>;
 }
 
-type EditorRequest = { type: WorkflowTaskType; task?: WorkflowTask; repeat?: boolean };
+export type EditorRequest = { type: WorkflowTaskType; task?: WorkflowTask; repeat?: boolean };
 type WorkflowPageProps = {
   workflow: WorkflowController;
   contacts: WorkflowContact[];
   mode?: "home" | "touch" | "moments";
+  editorRequest?: EditorRequest | null;
+  view?: WorkflowView;
+  onNavigate?: (view: WorkflowView) => void;
   syncBusy?: boolean;
   syncError?: string;
   onSync: () => void;
   onOpenSettings: (key: "reply" | "expert" | "contact-sync") => void;
 };
 
-export function WechatWorkflowPage({ workflow, contacts, mode = "home", syncBusy, syncError, onSync, onOpenSettings }: WorkflowPageProps) {
+export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRequest, view, onNavigate, syncBusy, syncError, onSync, onOpenSettings }: WorkflowPageProps) {
   const [editor, setEditor] = useState<EditorRequest | null>(null);
+  useEffect(() => { if (editorRequest) setEditor(editorRequest); }, [editorRequest]);
   const [notice, setNotice] = useState("");
   const editorAnchor = useRef<HTMLDivElement>(null);
   const { state, loading, busy, error, run } = workflow;
@@ -298,7 +307,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", syncBusy
   return <section className="page workflow-page">
     <div className="page-head workflow-page-head">
       <div><h1>{title}</h1><p>{mode === "home" ? "安排好待办，启动一次。客户回复优先，其余任务依次完成。" : mode === "touch" ? "选好联系人和话术，加入计划后按顺序执行。" : "准备发布内容或安排互动，系统会接着完成下一项。"}</p></div>
-      <WorkflowToggle workflow={workflow} />
+      <WorkflowToggle workflow={workflow} onNavigate={onNavigate} />
     </div>
 
     <div className={`workflow-running-line ${state.enabled ? "is-on" : ""}`} role="status">
@@ -337,9 +346,9 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", syncBusy
     <div className="workflow-list-head"><h2>{mode === "home" ? "待办任务" : "已加入计划"}</h2><span>{activeTasks.length} 项</span></div>
     {loading ? <div className="workflow-loading" aria-label="正在读取任务"><span /><span /><span /></div> : activeTasks.length ? <ul className="workflow-task-list">{activeTasks.map(taskRow)}</ul> : <div className="workflow-empty"><ListTodo size={25} /><div><strong>还没有待办任务</strong><p>{state.recipients.length ? "有客户消息时继续自动回复；需要触达、发布或互动时，在上方添加。" : "从上方添加一项任务。任务结束后，系统会持续接待已加入范围的客户。"}</p></div></div>}
 
-    {history.length > 0 && <details className="workflow-details workflow-history"><summary>已完成与已取消 <span>{history.length} 项</span></summary><ul className="workflow-task-list">{history.map(taskRow)}</ul></details>}
+    {history.length > 0 && <details open={view === "history" ? true : undefined} className="workflow-details workflow-history"><summary>已完成与已取消 <span>{history.length} 项</span></summary><ul className="workflow-task-list">{history.map(taskRow)}</ul></details>}
 
-    {mode === "home" && <footer className="workflow-settings-links"><span>基础设置</span><button className="text-button" onClick={() => onOpenSettings("expert")}>AI 专家<ChevronRight size={14} /></button><button className="text-button" onClick={() => onOpenSettings("contact-sync")}>同步联系人<ChevronRight size={14} /></button><button className="text-button" onClick={() => onOpenSettings("reply")}>自动回复 · {state.recipients.length} 位客户<ChevronRight size={14} /></button></footer>}
+    {mode === "home" && <footer className="workflow-settings-links"><span>基础设置</span><button className="text-button" onClick={() => onOpenSettings("expert")}>你的AI专家<ChevronRight size={14} /></button><button className="text-button" onClick={() => onOpenSettings("contact-sync")}>同步联系人<ChevronRight size={14} /></button><button className="text-button" onClick={() => onOpenSettings("reply")}>自动回复 · {state.recipients.length} 位客户<ChevronRight size={14} /></button></footer>}
   </section>;
 }
 

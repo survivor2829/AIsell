@@ -1,7 +1,7 @@
 import { Check, Pause, Play, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { subscribeToStatus } from "./status-subscription";
-import { WorkflowRecipients, WorkflowToggle, workflowStatusText, type WorkflowController } from "./WechatWorkflow";
+import { WorkflowRecipients, WorkflowToggle, workflowStatusText, type WorkflowController, type WorkflowView } from "./WechatWorkflow";
 
 type ScanHealth = "unknown" | "checking" | "healthy" | "warning" | "degraded" | "waiting";
 type AutoReplyFailureContext = {
@@ -398,7 +398,7 @@ function recoverySummary(context: AutoReplyFailureContext) {
   }
 }
 
-export function AutoReply({ workflow }: { workflow?: WorkflowController } = {}) {
+export function AutoReply({ workflow, onNavigate }: { workflow?: WorkflowController; onNavigate?: (view: WorkflowView) => void } = {}) {
   const [state, setState] = useState<AutoReplyState>(EMPTY_STATE);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -499,7 +499,7 @@ export function AutoReply({ workflow }: { workflow?: WorkflowController } = {}) 
           <p>{workflow ? "客户回复优先处理；没有其他待办时，持续使用 AI 专家资料接待客户。" : "启动后监听新消息，并使用已导入的 AI 专家资料生成回复。"}</p>
         </div>
         <div className="actions">
-          {workflow ? <WorkflowToggle workflow={workflow} /> : running ? (
+          {workflow ? <WorkflowToggle workflow={workflow} onNavigate={onNavigate} /> : running ? (
             <button className="danger-button" onClick={pause} disabled={busy}>
               <Pause size={17} />暂停自动回复
             </button>
