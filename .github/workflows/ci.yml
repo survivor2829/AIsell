@@ -36,6 +36,8 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - name: Install locked JavaScript dependencies
         run: npm ci
+      - name: Align Windows and Node clocks for local-time fixtures
+        run: tzutil /s "China Standard Time"
       - name: Source self-checks (isolated; no live WeChat operations)
         run: npm run check:self
       - name: Runtime and secret boundaries
