@@ -9,7 +9,7 @@ const { reportEntry, token, UUID } = require("../shared/cloud-contract.cjs");
 const CATEGORIES = new Set(["problem", "suggestion", "experience"]);
 const STATUSES = new Set(["pending", "in_progress", "resolved"]);
 const MAX_ATTEMPTS = 5;
-const freshDraft = () => ({ id: crypto.randomUUID(), text: "", category: "problem", includeDiagnostics: true, context: null });
+const freshDraft = () => ({ id: crypto.randomUUID(), text: "", category: "problem", includeDiagnostics: true, visibility: "public", context: null });
 const validationError = (message) => Object.assign(new Error(message), { code: "feedback_validation" });
 const errorFor = (code) => ({
   cloud_http_400: "反馈内容未被服务端接受，已保留在本机。",
@@ -32,24 +32,37 @@ function validateInput(value, allowEmpty = false) {
   if (Array.from(text).length > 2000 || (!allowEmpty && !text.trim())) throw validationError("请填写 1～2000 字的反馈内容。");
   if (!CATEGORIES.has(value.category)) throw validationError("请选择反馈类型。");
   return { id: value.id, text: allowEmpty ? text : text.trim(), category: value.category,
-    includeDiagnostics: value.includeDiagnostics !== false, context: cleanContext(value.context) };
+    visibility: value.visibility === "private" ? "private" : "public", includeDiagnostics: value.includeDiagnostics !== false, context: cleanContext(value.context) };
 }
-function fingerprint(value) {
+function fingerprint(value, schema = 2) {
   return crypto.createHash("sha256").update(JSON.stringify({ text: value.text, category: value.category,
-    includeDiagnostics: value.includeDiagnostics, context: value.context })).digest("hex");
+    includeDiagnostics: value.includeDiagnostics, context: value.context, ...(schema === 2 ? { visibility: value.visibility } : {}) })).digest("hex");
 }
 function validReceipt(value, id) {
   return value?.id === id && STATUSES.has(value.status) && Number.isSafeInteger(value.receivedAt)
     && value.receivedAt > 0 && Number.isSafeInteger(value.updatedAt) && value.updatedAt >= value.receivedAt;
 }
 
+function receiptView(value) {
+  return { id: value.id, status: value.status, receivedAt: value.receivedAt, updatedAt: value.updatedAt,
+    ...(value.visibility === "public" || value.visibility === "private" ? { visibility: value.visibility } : {}),
+    hidden: value.hidden === true, officialReply: typeof value.officialReply === "string" ? value.officialReply.slice(0, 4000) : "" };
+}
+function publicView(value) {
+  if (!UUID.test(value?.id || "") || !validReceipt(value, value.id) || !CATEGORIES.has(value.category)
+    || typeof value.text !== "string" || Array.from(value.text).length > 2000 || typeof value.createdAt !== "string") throw new Error("feedback_public_invalid");
+  return { id: value.id, text: value.text, category: value.category, createdAt: value.createdAt,
+    status: value.status, receivedAt: value.receivedAt, updatedAt: value.updatedAt,
+    officialReply: typeof value.officialReply === "string" ? value.officialReply.slice(0, 4000) : "" };
+}
 function createFeedbackController({ rootDir, config, version, buildId, logger, safeStorage, transport, clock = Date.now }) {
   const filename = path.join(rootDir, "feedback", "state.json");
   let saved;
   try { saved = JSON.parse(fs.readFileSync(filename, "utf8")); }
   catch (error) { if (error.code !== "ENOENT") throw new Error("feedback_store_unreadable"); }
-  if (saved && (saved.schema !== 1 || !Array.isArray(saved.items))) throw new Error("feedback_store_invalid");
-  let state = saved || { schema: 1, installId: crypto.randomUUID(), items: [], draft: freshDraft(), lastRefresh: "" };
+  if (saved && (![1, 2].includes(saved.schema) || !Array.isArray(saved.items))) throw new Error("feedback_store_invalid");
+  let state = saved || { schema: 2, installId: crypto.randomUUID(), items: [], draft: freshDraft(), lastRefresh: "" };
+  if (state.schema === 1) state = { ...state, schema: 2, draft: { ...state.draft, visibility: "private" } };
   const network = transport || (config?.enabled ? createTransport(config) : null);
   let timer, stopped = false, flushing, refreshing, refreshError = "";
   const listeners = new Set();
@@ -61,13 +74,14 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
     item.error = errorFor("feedback_receipt_invalid");
   }
   commit(state);
+  let community = { items: [], total: 0, offset: 0, lastRefresh: "", error: "" };
   function status() {
-    return { enabled: Boolean(network), draft: structuredClone(state.draft), lastRefresh: state.lastRefresh,
+    return { enabled: Boolean(network), community: structuredClone(community), draft: structuredClone(state.draft), lastRefresh: state.lastRefresh,
       refreshError, items: state.items.slice().reverse().map((item) => ({
         id: item.payload.id, text: item.payload.text, category: item.payload.category,
         context: structuredClone(item.payload.context), createdAt: item.payload.createdAt, includeDiagnostics: item.includeDiagnostics,
         diagnosticCount: item.payload.diagnostics.length, delivery: item.delivery,
-        status: item.receipt?.status || null, receivedAt: item.receipt?.receivedAt || null,
+        visibility: item.receipt?.visibility || item.payload.visibility || "private", hidden: item.receipt?.hidden === true, officialReply: item.receipt?.officialReply || "", status: item.receipt?.status || null, receivedAt: item.receipt?.receivedAt || null,
         updatedAt: item.receipt?.updatedAt || null, error: item.error || "", retryable: item.errorCode !== "cloud_http_409"
       })) };
   }
@@ -95,7 +109,7 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
     const diagnostics = all.filter((entry) => ["warn", "error", "fatal"].includes(entry.level)
       && (!input.context?.module || entry.module === input.context.module))
       .map((entry) => reportEntry(entry, { installId: state.installId })).filter(Boolean).slice(0, 20);
-    return { schema: 1, id: input.id, text: input.text, category: input.category,
+    return { schema: 2, visibility: input.visibility, id: input.id, text: input.text, category: input.category,
       createdAt: new Date(clock()).toISOString(), context: input.context || {}, diagnostics,
       client: { schema: 1, appId: config?.appId || "com.aihuoke.desktop.test", channel: config?.channel || "test",
         installId: state.installId, version, buildId: token(buildId), platform: process.platform,
@@ -122,7 +136,7 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
         const receipt = await network.request("/v1/feedback", { body: { ...item.payload, receiptToken } });
         if (stopped) break;
         if (!validReceipt(receipt, item.payload.id)) throw Object.assign(new Error("feedback_receipt_invalid"), { code: "feedback_receipt_invalid" });
-        patch = { receipt: { id: receipt.id, status: receipt.status, receivedAt: receipt.receivedAt, updatedAt: receipt.updatedAt },
+        patch = { receipt: receiptView(receipt),
           delivery: "sent", error: "", errorCode: "", retryAt: 0 };
       } catch (error) {
         if (stopped) break;
@@ -143,7 +157,7 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
     const input = validateInput(payload);
     let item = state.items.find((candidate) => candidate.payload.id === input.id);
     if (item) {
-      if (item.inputHash !== fingerprint(input)) throw validationError("该反馈已经提交，请在新的草稿中填写补充内容。");
+      if (item.inputHash !== fingerprint(input, item.payload.schema)) throw validationError("该反馈已经提交，请在新的草稿中填写补充内容。");
     } else {
       if (input.id !== state.draft.id) throw validationError("反馈草稿已失效，请重新打开吐槽中心。");
       // Preserve the last keystrokes even when secure credential storage fails.
@@ -182,7 +196,7 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
         for (const item of chunk) {
           const receipt = result.items.find((value) => value.id === item.payload.id);
           if (receipt.receivedAt !== item.receipt.receivedAt || (receipt.updatedAt === item.receipt.updatedAt && receipt.status !== item.receipt.status)) throw new Error("feedback_status_invalid");
-          if (receipt.updatedAt > item.receipt.updatedAt) receipts.set(item.payload.id, { id: receipt.id, status: receipt.status, receivedAt: receipt.receivedAt, updatedAt: receipt.updatedAt });
+          if (receipt.updatedAt > item.receipt.updatedAt) receipts.set(item.payload.id, receiptView(receipt));
         }
       }
       commit({ ...state, lastRefresh: new Date(clock()).toISOString(), items: state.items.map((item) => receipts.has(item.payload.id)
@@ -196,13 +210,34 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
     refreshing = refreshStatuses().finally(() => { refreshing = undefined; });
     return refreshing;
   }
+  async function publicList(offset = 0) {
+    offset = Number.isSafeInteger(offset) && offset >= 0 ? offset : 0;
+    try {
+      if (!network) throw new Error("offline");
+      const result = await network.request("/v1/feedback/public?offset=" + offset + "&limit=30");
+      if (!Array.isArray(result?.items) || result.items.length > 30 || !Number.isSafeInteger(result.total) || result.total < 0) throw new Error("invalid");
+      const items = result.items.map(publicView);
+      community = { items, total: result.total, offset, lastRefresh: new Date(clock()).toISOString(), error: "" };
+    } catch { community = { ...community, error: "暂时无法刷新公开反馈，保留最近一次内容；请稍后重试。" }; }
+    notify(); return status();
+  }
+  async function withdraw(id) {
+    const item = state.items.find((value) => value.payload.id === id);
+    if (!item || item.delivery !== "sent" || (item.receipt?.visibility || item.payload.visibility) !== "public") return status();
+    if (!network) throw validationError("暂时无法撤回公开，请连接网络后重试。");
+    const receipt = await network.request("/v1/feedback/visibility", { body: { id, receiptToken: decrypt(item), visibility: "private" } });
+    if (!validReceipt(receipt, id) || receipt.visibility !== "private") throw new Error("feedback_receipt_invalid");
+    updateItem(id, { receipt: receiptView(receipt) });
+    community = { ...community, total: Math.max(0, community.total - (community.items.some((value) => value.id === id) ? 1 : 0)), items: community.items.filter((value) => value.id !== id) };
+    notify(); return status();
+  }
   function start() {
     if (timer || stopped || !network) return;
     void flush().catch(() => {});
     timer = setInterval(() => void flush().catch(() => {}), 15_000); timer.unref?.();
   }
   function stop() { stopped = true; clearInterval(timer); network?.close?.(); }
-  return { status, submit, retry, refresh, saveDraft, start, stop, flush,
+  return { status, submit, retry, refresh, publicList, withdraw, saveDraft, start, stop, flush,
     onUpdate(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 }
 module.exports = { createFeedbackController };

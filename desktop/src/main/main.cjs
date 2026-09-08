@@ -21,6 +21,7 @@ const { createCloudMaintenance } = require("./cloud-maintenance.cjs");
 const { registerCloudMaintenanceIpc } = require("./cloud-maintenance-ipc.cjs");
 const { createRolePreferences, registerRolePreferencesIpc } = require("./role-preferences.cjs");
 const { createFeedbackController } = require("./feedback-controller.cjs");
+const { createFeedbackAdmin } = require("./feedback-admin.cjs");
 const { registerFeedbackIpc } = require("./feedback-ipc.cjs");
 const { createLicenseStore, registerLicenseAuthIpc } = require("./license-auth-ipc.cjs");
 const { developmentEdition, pilotEdition, editionLabel, preloadFile, rendererDir } = require("./edition.cjs");
@@ -71,6 +72,7 @@ let quitCleanupStarted = false;
 let quitCleanupComplete = false;
 let cloudMaintenance = null;
 let feedbackController = null;
+let feedbackAdmin = null;
 
 const PROVIDER_CONSUMER_RESTART_STATES = new Set(["ready", "starting", "failed"]);
 const productDetailReleaseSmokeMode = app.isPackaged
@@ -568,7 +570,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       const maintenanceConfig = cloudConfig({ developmentEdition });
       feedbackController = createFeedbackController({ rootDir: runtime.rootDir, config: maintenanceConfig,
         version: app.getVersion(), buildId: build.buildId, logger, safeStorage });
-      registerFeedbackIpc({ ipcMain, controller: feedbackController, getMainWindow: () => mainWindow });
+      feedbackAdmin = createFeedbackAdmin({ config: maintenanceConfig });
+      registerFeedbackIpc({ ipcMain, admin: feedbackAdmin, controller: feedbackController, getMainWindow: () => mainWindow });
       feedbackController.start();
       cloudMaintenance = createCloudMaintenance({
         rootDir: runtime.rootDir, config: maintenanceConfig,
@@ -615,6 +618,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     quitCleanupStarted = true;
     cloudMaintenance?.stop();
     feedbackController?.stop();
+    feedbackAdmin?.stop();
     const cleanupTimeout = new Promise((resolve) => {
       setTimeout(resolve, 8_000);
     });

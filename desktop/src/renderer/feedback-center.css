@@ -72,3 +72,30 @@
   .feedback-submit-row button { width: 100%; }
   .feedback-draft-meta { font-size: 11px; }
 }
+
+.feedback-visibility { margin-top: 26px; margin-bottom: 0; }
+.feedback-visibility .feedback-note { flex-basis: 100%; margin: 0; padding: 0; }
+.feedback-reply { margin-top: 18px; padding: 16px 18px; background: #f2f5f8; border-radius: 8px; font-size: 13px; line-height: 1.8; }
+.feedback-reply strong { color: var(--feedback-ink); }
+.feedback-reply p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 75ch; }
+.feedback-pagination { display: flex; justify-content: center; align-items: center; gap: 18px; padding: 24px 0; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--feedback-muted); }
+.feedback-center select { font: inherit; font-size: 14px; padding: 8px 12px; color: var(--feedback-ink); background: #fff; border: 1px solid #b8c3d0; border-radius: 7px; }
+.feedback-center select:focus-visible { outline: 2px solid var(--brand-red-dark); outline-offset: 3px; }
+.feedback-admin-form { margin-top: 18px; }
+.feedback-admin-form > label { display: block; font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+.feedback-admin-form textarea { min-height: 100px; }
+.feedback-admin-actions { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; margin-top: 14px; font-size: 14px; }
+.feedback-admin-actions label { display: flex; gap: 8px; align-items: center; }
+.feedback-admin-actions button { margin-left: auto; }
+.feedback-admin-diagnostics { margin-top: 16px; font-size: 13px; color: var(--feedback-muted); }
+.feedback-admin-diagnostics summary { cursor: pointer; padding: 10px 0; }
+.feedback-admin-diagnostics pre { overflow: auto; max-height: 300px; padding: 16px; background: #f2f5f8; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.feedback-center { scrollbar-color: #a0adbb #f2f5f8; }
+.feedback-tabs { overflow-x: auto; }
+.feedback-tabs button { white-space: nowrap; }
+.feedback-tabs button:hover { color: var(--brand-red-dark); }
+@media (max-width: 650px) {
+  .feedback-tabs { gap: 20px; }
+  .feedback-admin-actions { align-items: flex-start; flex-direction: column; }
+  .feedback-admin-actions button { margin-left: 0; }
+}

@@ -109,10 +109,63 @@ async function main() {
       const handlers = new Map(), webContents = { mainFrame: {} };
       registerFeedbackIpc({ ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
         controller: { ...faults, saveDraft() { throw storageError(); } }, getMainWindow: () => ({ webContents }) });
+      for (const handler of handlers.values()) await assert.rejects(handler({ sender: {}, senderFrame: {} }, {}), /feedback_sender_invalid/);
       const result = await handlers.get("feedback:saveDraft")({ sender: webContents, senderFrame: webContents.mainFrame }, {});
       assert.equal(result.ok, false);
       assert(!result.error.includes("private"), "Filesystem errors must not expose local paths to the renderer");
     } finally { faults.stop(); fs.renameSync = rename; }
+    // Upgrades preserve old payload bytes/hash and keep the existing draft private.
+    const legacyRoot = path.join(root, "legacy");
+    fs.mkdirSync(path.join(legacyRoot, "feedback"), { recursive: true });
+    const oldItem = JSON.parse(fs.readFileSync(path.join(root, "feedback", "state.json"), "utf8")).items[0];
+    oldItem.payload.schema = 1; delete oldItem.payload.visibility;
+    oldItem.inputHash = crypto.createHash("sha256").update(JSON.stringify({ text: draft.text, category: draft.category,
+      includeDiagnostics: draft.includeDiagnostics, context: draft.context })).digest("hex");
+    oldItem.delivery = "queued"; oldItem.attempts = 0; oldItem.retryAt = 0; delete oldItem.receipt;
+    const oldDraft = { ...draft, id: crypto.randomUUID(), text: "升级前的草稿" }; delete oldDraft.visibility;
+    fs.writeFileSync(path.join(legacyRoot, "feedback", "state.json"), JSON.stringify({ schema: 1, installId: crypto.randomUUID(), items: [oldItem], draft: oldDraft }));
+    let legacyBody;
+    const legacy = createFeedbackController({ ...options, rootDir: legacyRoot, transport: { close() {}, async request(_route, { body }) {
+      legacyBody = body; return { id: body.id, status: "pending", receivedAt: 1700000000, updatedAt: 1700000000, visibility: "private" };
+    } } });
+    try {
+      assert.equal(legacy.status().draft.visibility, "private");
+      assert.equal(legacy.status().items[0].visibility, "private");
+      await legacy.submit(draft); await legacy.flush();
+      const { receiptToken: _secret, ...legacyPayload } = legacyBody;
+      assert.deepEqual(legacyPayload, oldItem.payload, "Schema 1 retries retain the original immutable snapshot");
+    } finally { legacy.stop(); }
+
+    let publicBody, currentVisibility = "public", publicOffline = false;
+    const publicId = crypto.randomUUID();
+    const publicReceipt = (id) => ({ id, status: "pending", receivedAt: 1700000000, updatedAt: currentVisibility === "public" ? 1700000000 : 1700000001, visibility: currentVisibility, hidden: false, officialReply: "已收到" });
+    const social = createFeedbackController({ ...options, rootDir: path.join(root, "social"), transport: { close() {}, async request(route, args = {}) {
+      if (route.startsWith("/v1/feedback/public")) {
+        if (publicOffline) throw new Error("offline");
+        return { items: [{ ...publicReceipt(publicId), text: "公开想法", category: "suggestion", createdAt: new Date(now).toISOString(),
+          receiptToken: "must-not-leak", client: { installId: "must-not-leak" }, diagnostics: ["must-not-leak"] }], total: 1 };
+      }
+      if (route === "/v1/feedback/visibility") currentVisibility = "private";
+      else publicBody = args.body;
+      return publicReceipt(args.body.id);
+    } } });
+    try {
+      assert.equal(social.status().draft.visibility, "public");
+      const input = { ...social.status().draft, text: "公开反馈", includeDiagnostics: false };
+      await social.submit(input); await social.flush();
+      assert.equal(publicBody.schema, 2); assert.equal(publicBody.visibility, "public");
+      const before = JSON.parse(fs.readFileSync(path.join(root, "social", "feedback", "state.json"), "utf8")).items[0];
+      await social.publicList(0);
+      assert(!JSON.stringify(social.status().community).includes("must-not-leak"));
+      publicOffline = true; await social.publicList(30);
+      assert.equal(social.status().community.items.length, 1); assert.equal(social.status().community.offset, 0);
+      assert(social.status().community.error);
+      await social.withdraw(input.id);
+      assert.equal(social.status().items[0].visibility, "private");
+      const after = JSON.parse(fs.readFileSync(path.join(root, "social", "feedback", "state.json"), "utf8")).items[0];
+      assert.deepEqual(after.payload, before.payload); assert.equal(after.inputHash, before.inputHash);
+      assert.equal(social.status().items.length, 1, "Withdraw preserves the owner's record");
+    } finally { social.stop(); }
     console.log("feedback self-check passed: immutable retries, private receipts, opt-out, restart, status ordering and atomic persistence failures");
   } finally { controller.stop(); fs.rmSync(root, { recursive: true, force: true }); }
 }
