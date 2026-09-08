@@ -10,14 +10,16 @@ const {
   PRODUCT_DETAIL_RELEASE_PATH,
   isProductDetailArchivePythonSource,
   isProductDetailPythonSource,
-  runPackagedProductDetailReleaseGate
+  runPackagedProductDetailReleaseGate,
+  validateReleaseDescriptor: validateProductDetailDescriptor
 } = require("./product-detail-release-runtime.cjs");
 const {
   CONTENT_ENGINE_EXECUTABLE,
   CONTENT_ENGINE_RELEASE_PATH,
   isContentEngineArchivePythonSource,
   isContentEnginePythonSource,
-  runPackagedContentEngineSelfCheck
+  runPackagedContentEngineSelfCheck,
+  validateReleaseDescriptor: validateContentEngineDescriptor
 } = require("./content-engine-release-runtime.cjs");
 const {
   artifactTypeForEdition,
@@ -337,10 +339,10 @@ assert.match(manifest.commit, /^[0-9a-f]{40}$/, "portable release must record a 
 assert.match(manifest.sourceTreeSha256, /^[0-9a-f]{64}$/, "portable release must record the packaged source tree hash");
 assert.equal(treeSha256(appDir), manifest.sourceTreeSha256, "packaged app tree must match the manifest source tree hash");
 assert.equal(manifest.productDetailSidecar?.buildCommit, manifest.commit, "product-detail runtime must be pinned to the portable release commit");
-assert.equal(manifest.productDetailSidecar?.desktopSourceCommit, manifest.commit, "product-detail desktop source must match the portable release commit");
+assert.doesNotThrow(() => validateProductDetailDescriptor(manifest.productDetailSidecar), "product-detail must retain valid source provenance and a matching receipt when reused");
 assert.equal(manifest.productDetailSidecar?.desktopSourceDirty, false, "product-detail runtime must come from clean desktop source");
 assert.equal(manifest.contentEngineSidecar?.buildCommit, manifest.commit, "content-engine runtime must be pinned to the portable release commit");
-assert.equal(manifest.contentEngineSidecar?.sourceCommit, manifest.commit, "content-engine source must match the portable release commit");
+assert.doesNotThrow(() => validateContentEngineDescriptor(manifest.contentEngineSidecar), "content-engine must retain valid source provenance and a matching receipt when reused");
 assert.equal(manifest.contentEngineSidecar?.sourceDirty, false, "content-engine runtime must come from a clean source tree");
 assert.equal(manifest.contentEngineSidecar?.artifactType, manifest.artifactType, "content-engine media tools evidence must match the portable artifact type");
 assert.equal(manifest.contentEngineSidecar?.mediaTools?.bundled, true, "portable release must carry its media tools runtime");
