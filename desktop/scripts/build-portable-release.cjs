@@ -242,14 +242,18 @@ function buildPortableStaging(edition, paths, sourceState) {
   fs.mkdirSync(releaseDir, { recursive: true });
   fs.cpSync(electronDir, target, { recursive: true });
   const electronExe = path.join(target, "electron.exe");
-  fs.renameSync(electronExe, path.join(target, `${productName}.exe`));
-  // Installers consume this prepackaged executable, so stamp its icon here.
+  // The bundled resource editor cannot open Chinese absolute paths. Use short
+  // relative filenames before applying the customer-facing executable name.
+  const stagingIcon = path.join(target, "app-icon.ico");
+  fs.copyFileSync(path.join(desktopDir, "public", "app-icon.ico"), stagingIcon);
   const iconResult = spawnSync(require.resolve("electron-winstaller/vendor/rcedit.exe"), [
-    path.join(target, `${productName}.exe`), "--set-icon", path.join(desktopDir, "public", "app-icon.ico")
-  ], { encoding: "utf8", windowsHide: true });
+    "electron.exe", "--set-icon", "app-icon.ico"
+  ], { cwd: target, encoding: "utf8", windowsHide: true });
+  fs.unlinkSync(stagingIcon);
   if (iconResult.status !== 0) {
     throw new Error(iconResult.error?.message || iconResult.stderr || "Failed to embed application icon");
   }
+  fs.renameSync(electronExe, path.join(target, `${productName}.exe`));
   const appDir = path.join(target, "resources", "app");
   fs.rmSync(appDir, { recursive: true, force: true });
   copyAppSource(appDir, edition);
