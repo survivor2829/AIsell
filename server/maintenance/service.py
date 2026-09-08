@@ -58,11 +58,16 @@ def validate_report(body):
         row["details"] = {}
         details = entry.get("details", {})
         if isinstance(details, dict):
-            for key in ("receipt_stage", "receipt_code", "receipt_draft_read_stage", "state", "status", "phase", "reason_code", "error_code", "stage", "wx_hook_stage", "wx_hook_error_code", "blocked_reason"):
+            for key in ("receipt_stage", "receipt_code", "receipt_draft_read_stage", "state", "status", "phase", "reason_code", "error_code", "stage", "wx_hook_stage", "wx_hook_error_code", "blocked_reason", "action", "task_kind", "reason", "send_status", "verification_mode", "input_read_reason", "exception_code", "wechat_version", "parent_trace_code"):
                 if safe_token(details.get(key)):
                     row["details"][key] = details[key]
-            for key in ("receipt_conversation_verified", "receipt_draft_read_ok", "receipt_draft_consumed", "receipt_input_lease_valid", "receipt_bubble_verified", "helper_configured", "wechat_exe_configured", "wechat_root_configured"):
+            for key in ("receipt_conversation_verified", "receipt_draft_read_ok", "receipt_draft_consumed", "receipt_input_lease_valid", "receipt_bubble_verified", "helper_configured", "wechat_exe_configured", "wechat_root_configured", "ok", "send_attempted", "send_clicked", "exact_match", "outgoing", "is_latest", "is_new", "same_window", "input_cleared", "before_exact", "input_read_ok", "input_empty", "session_verified", "composer_verified", "input_verified", "restart_requested", "had_running_process", "stop_verified", "launch_deferred", "handled", "busy", "reply_enabled"):
                 if type(details.get(key)) is bool:
+                    row["details"][key] = details[key]
+            if "send_attempted" in details and details["send_attempted"] is None:
+                row["details"]["send_attempted"] = None
+            for key in ("elapsed_ms", "duration_ms", "current_index", "done", "total", "pending_count", "process_count", "dpi", "window_width", "window_height", "candidate_count", "outgoing_exact_count", "previous_exact_count", "new_outgoing_exact_count", "receipt_verification_attempts"):
+                if type(details.get(key)) is int and 0 <= details[key] <= 86400000:
                     row["details"][key] = details[key]
         clean["entries"].append(row)
     return clean

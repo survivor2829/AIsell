@@ -269,6 +269,7 @@ function buildPortableStaging(edition, paths, sourceState) {
   const remotionRuntime = copyRemotionRuntime(sourceState.remotionRuntime, target);
 
   const packageJson = JSON.parse(fs.readFileSync(path.join(desktopDir, "package.json"), "utf8"));
+  require("../src/shared/customer-release-notes.cjs").releaseNotes(packageJson.version);
   const electronPackage = JSON.parse(fs.readFileSync(path.join(desktopDir, "node_modules", "electron", "package.json"), "utf8"));
   const rendererMarker = JSON.parse(fs.readFileSync(path.join(desktopDir, edition === "test" ? "dist-development" : "dist-pilot", "build-edition.json"), "utf8"));
   const capabilityMatrix = JSON.parse(fs.readFileSync(path.join(desktopDir, "release-capabilities.json"), "utf8"));

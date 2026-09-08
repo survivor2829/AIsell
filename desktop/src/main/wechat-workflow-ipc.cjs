@@ -1,5 +1,5 @@
 const path = require("node:path");
-const { createWechatWorkflowController } = require("./wechat-workflow.cjs");
+const { createWechatWorkflowController, workflowFailureReason } = require("./wechat-workflow.cjs");
 const { FLOATING_PROGRESS_WINDOW, floatingProgressPosition } = require("./floating-progress-window.cjs");
 
 function registerWechatWorkflowIpc(options) {
@@ -154,12 +154,17 @@ function registerWechatWorkflowIpc(options) {
   }
   function handle(name, action, click = false) {
     ipcMain.handle(`wechat-workflow:${name}`, async (event, payload) => {
+      let stage = "sender_validation";
       try {
         if (!validSender(event)) throw new Error("请从微信拓客页面操作。");
+        stage = "click_validation";
         if (click) assertClick(event, payload?.clickToken);
+        stage = "action_execute";
         const result = await action(payload);
         return result?.state ? { ...result, state: viewState(result.state) } : result;
       } catch (failure) {
+        const reason = stage === "sender_validation" ? "invalid_sender" : stage === "click_validation" ? "invalid_click" : workflowFailureReason(failure, "workflow_action_failed");
+        options.logger?.event?.("wechat_workflow", "action.failed", { action: name, stage, reason, error: failure }, { level: "warn", code: reason, trace: true });
         return { ok: false, error: failure.message || "操作未完成，请重试。", state: viewState() };
       }
     });

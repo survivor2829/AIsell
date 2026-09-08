@@ -4,7 +4,8 @@ const os = require("node:os");
 const crypto = require("node:crypto");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { createTransport } = require("./cloud-transport.cjs");
-const { reportEntry, token, UUID } = require("../shared/cloud-contract.cjs");
+const { token, UUID } = require("../shared/cloud-contract.cjs");
+const { reportEntry } = require("../shared/cloud-report.cjs");
 
 const CATEGORIES = new Set(["problem", "suggestion", "experience"]);
 const STATUSES = new Set(["pending", "in_progress", "resolved"]);
@@ -107,8 +108,11 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
   }
   function snapshot(input) {
     const all = input.includeDiagnostics ? (logger?.readRecent?.(200) || []) : [];
-    const diagnostics = all.filter((entry) => ["warn", "error", "fatal"].includes(entry.level)
-      && (!input.context?.module || entry.module === input.context.module))
+    const failures = all.filter((entry) => ["warn", "error", "fatal"].includes(entry.level)
+      && (!input.context?.module || entry.module === input.context.module));
+    const relatedTraces = new Set(failures.map(entry => entry.trace_id).filter(Boolean));
+    const diagnostics = all.filter(entry => failures.includes(entry)
+      || (entry.level === "info" && relatedTraces.has(entry.trace_id)))
       .map((entry) => reportEntry(entry, { installId: state.installId })).filter(Boolean).slice(0, 20);
     return { schema: 2, visibility: input.visibility, id: input.id, text: input.text, category: input.category,
       createdAt: new Date(clock()).toISOString(), context: input.context || {}, diagnostics,

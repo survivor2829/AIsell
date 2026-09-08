@@ -139,7 +139,27 @@ function loadState(baseDir = __dirname) {
 
 function saveState(baseDir, state) {
   writeJson(statePath(baseDir), state);
+  if (process.env.XIAOXI_CONTACT_SYNC_TRACE === "1") {
+    const details = {
+      stage: state.last_stage, status: state.status, wx_hook_stage: state.wx_hook_stage,
+      wechat_version: state.wechat_version,
+      process_count: state.process_count,
+      helper_configured: state.helper_configured,
+      restart_requested: state.restart_requested,
+      had_running_process: state.had_running_process,
+      stop_verified: state.stop_verified,
+      launch_deferred: state.launch_deferred
+    };
+    const signature = JSON.stringify(details);
+    if (signature !== lastProgressSignature) {
+      lastProgressSignature = signature;
+      try { process.stderr.write(`XIAOXI_SYNC_PROGRESS ${JSON.stringify({ ...details, elapsed_ms: Date.now() - progressStartedAt })}\n`); } catch {}
+    }
+  }
 }
+
+let lastProgressSignature = "";
+const progressStartedAt = Date.now();
 
 function readContacts(baseDir = __dirname, options = {}) {
   const raw = readJson(contactsPath(baseDir, options), []);
@@ -354,6 +374,8 @@ if (-not $exe) {
   @{ ok = $false; reason = "wechat_executable_not_found" } | ConvertTo-Json -Compress
   exit
 }
+$wechatVersion = ""
+try { $wechatVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe).FileVersion } catch {}
 $restarted = @(Get-Process Weixin -ErrorAction SilentlyContinue).Count -gt 0
 if ($restarted) {
   Get-Process Weixin -ErrorAction SilentlyContinue | ForEach-Object { try { [void]$_.CloseMainWindow() } catch {} }
@@ -368,18 +390,18 @@ if ($restarted) {
   }
 }
 if (Get-Process Weixin -ErrorAction SilentlyContinue) {
-  @{ ok = $false; reason = "wechat_stop_failed" } | ConvertTo-Json -Compress
+  @{ ok = $false; reason = "wechat_stop_failed"; wechatVersion = $wechatVersion; hadRunningProcess = $restarted; stopVerified = $false } | ConvertTo-Json -Compress
   exit
 }
 try {
   if ($env:XIAOXI_STOP_ONLY -eq "1") {
-    @{ ok = $true; restarted = $restarted; wechatExePath = $exe } | ConvertTo-Json -Compress
+    @{ ok = $true; restarted = $restarted; wechatExePath = $exe; wechatVersion = $wechatVersion; hadRunningProcess = $restarted; stopVerified = $true; launchDeferred = $true } | ConvertTo-Json -Compress
     exit
   }
   Start-Process -FilePath $exe | Out-Null
-  @{ ok = $true; restarted = $restarted; wechatExePath = $exe } | ConvertTo-Json -Compress
+  @{ ok = $true; restarted = $restarted; wechatExePath = $exe; wechatVersion = $wechatVersion; hadRunningProcess = $restarted; stopVerified = $true; launchDeferred = $false } | ConvertTo-Json -Compress
 } catch {
-  @{ ok = $false; reason = "wechat_start_failed" } | ConvertTo-Json -Compress
+  @{ ok = $false; reason = "wechat_start_failed"; wechatVersion = $wechatVersion; hadRunningProcess = $restarted; stopVerified = $true } | ConvertTo-Json -Compress
 }
 `;
 
@@ -828,7 +850,13 @@ function capture(baseDir = __dirname, options = {}) {
     last_stage: "waiting_login_window",
     helper_configured: helper.helperConfigured,
     wx_hook_stage: "",
-    wx_hook_error: ""
+    wx_hook_error: "",
+    restart_requested: options.restartWechat === true,
+    had_running_process: null,
+    stop_verified: null,
+    launch_deferred: null,
+    wechat_version: "",
+    process_count: null
   });
 
   if (!tools.keyToolPath && !hasKeyInfoReader && !hasMemoryKeyReader && !hasWxKeyReader) {
@@ -840,6 +868,12 @@ function capture(baseDir = __dirname, options = {}) {
       ...options,
       wechatExePath: findWechatExecutable({ ...options, weixinProcesses: [] }),
       stopOnly: hasWxKeyReader
+    });
+    saveState(baseDir, { ...loadState(baseDir),
+      wechat_version: /^\d+(?:\.\d+){1,3}$/u.test(String(loginFlow.wechatVersion || "").trim()) ? String(loginFlow.wechatVersion).trim() : "",
+      had_running_process: typeof loginFlow.hadRunningProcess === "boolean" ? loginFlow.hadRunningProcess : null,
+      stop_verified: typeof loginFlow.stopVerified === "boolean" ? loginFlow.stopVerified : null,
+      launch_deferred: typeof loginFlow.launchDeferred === "boolean" ? loginFlow.launchDeferred : null
     });
     if (!loginFlow.ok) {
       const reason = loginFlow.reason || "wechat_start_failed";
@@ -972,6 +1006,7 @@ function capture(baseDir = __dirname, options = {}) {
       account_name: account.accountName ?? "",
       helper_configured: helper.helperConfigured,
       wechat_exe_path: wechatExePath || restartWechatExe,
+      process_count: processes.length,
       wechat_root: wechatRoot ?? ""
     });
 

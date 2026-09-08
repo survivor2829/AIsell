@@ -6,6 +6,22 @@ const { writeJsonAtomic } = require("./atomic-file.cjs");
 const TASK_TYPES = new Set(["touch", "publish", "interact"]);
 const TITLES = { touch: "精准触达", publish: "发布朋友圈", interact: "朋友圈互动" };
 
+// Finite classifications keep diagnostic reasons readable without recording customer text.
+function workflowFailureReason(failure, fallback = "workflow_exception") {
+  const message = String(failure?.message || failure || "");
+  if (/唯一|重名/.test(message)) return "contact_identity_ambiguous";
+  if (/专家规则|业务知识|AI专家/.test(message)) return "ai_expert_not_ready";
+  if (/账号不一致|账号已变化/.test(message)) return "account_mismatch";
+  if (/联系人正在同步/.test(message)) return "contact_sync_running";
+  if (/没有待执行任务/.test(message)) return "no_pending_work";
+  if (/执行器/.test(message)) return "executor_unavailable";
+  if (/任务资料缺失/.test(message)) return "task_payload_missing";
+  if (/返回结果无法确认/.test(message)) return "invalid_task_result";
+  if (/计划资料|计划数据/.test(message)) return "workflow_data_invalid";
+  if (/程序正在退出/.test(message)) return "application_disposing";
+  return fallback;
+}
+
 function localDate(value) {
   const date = new Date(value);
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -41,6 +57,11 @@ function createWechatWorkflowController(options) {
   let mutation = Promise.resolve();
   let mutating = false;
   let revision = 0;
+  let lastReplyDiagnostic = "";
+  let lastTaskStartKey = "";
+  let lastTaskResultKey = "";
+  let cycleStage = "idle";
+  const log = (name, details, metadata) => options.logger?.event?.("wechat_workflow", name, details, { ...metadata, trace: true });
   const getAccount = () => String(options.getAccount?.() || "");
   const emit = () => { revision += 1; options.onUpdate?.(status()); };
 
@@ -197,6 +218,7 @@ function createWechatWorkflowController(options) {
   }
 
   async function runCycle() {
+    cycleStage = "queue_prepare";
     assertHealthy();
     refreshDay();
     reconcilePublishResults();
@@ -204,6 +226,8 @@ function createWechatWorkflowController(options) {
     if (!enabled || mutating) return;
     const people = store.replyEnabled === false ? [] : accountRecipients();
     if (people.length && options.reply?.runWorkflowStep && !replyError) {
+      cycleStage = "reply_step";
+      const replyStarted = Date.now();
       phase = "replying";
       replyStatus = "正在检查客户消息";
       emit();
@@ -212,16 +236,27 @@ function createWechatWorkflowController(options) {
         onProgress: (text) => { if (enabled) { replyStatus = text; emit(); } }
       });
       replyError = reply.error || "";
+      const replyReason = reply.error ? workflowFailureReason(reply.error, "reply_needs_attention") : reply.busy || reply.status === "busy" ? "reply_busy" : reply.handled ? "reply_handled" : "reply_idle";
+      // Empty scans stay quiet; unchanged busy/refusal states do not flood customer logs.
+      if (replyReason !== "reply_idle" && (reply.handled || replyReason !== lastReplyDiagnostic)) {
+        log("reply.result", { stage: cycleStage, reason: replyReason, handled: Boolean(reply.handled), busy: Boolean(reply.busy || reply.status === "busy"), error: reply.error || "", duration_ms: Date.now() - replyStarted }, { level: reply.error ? "warn" : "info", code: replyReason });
+      }
+      lastReplyDiagnostic = replyReason;
       replyStatus = reply.error || reply.progressText || (reply.handled ? replyStatus : "本次未发现待回复消息");
       if (reply.handled || reply.busy || reply.status === "busy") return;
     } else if (!replyError) {
       replyError = people.length ? "自动回复执行器不可用" : "";
       replyStatus = people.length ? "自动回复执行器不可用" : "暂无接待客户";
+      if (people.length) log("reply.blocked", { stage: "reply_step", reason: "executor_unavailable" }, { level: "warn", code: "executor_unavailable" });
     }
     if (!enabled || mutating) return;
     const task = nextTask();
     if (!task) { currentTaskId = null; settleQueue(); emit(); return; }
     const executor = executors[task.type];
+    cycleStage = "task_prepare";
+    const startKey = `${task.id}:${task.progress.done}`;
+    const operation = options.logger?.begin?.("wechat_workflow", "task_step", { task_kind: task.type, task_id: task.id, stage: cycleStage }, { trace: startKey !== lastTaskStartKey });
+    lastTaskStartKey = startKey;
     currentTaskId = task.id;
     lastTaskId = task.id;
     phase = "working";
@@ -231,7 +266,9 @@ function createWechatWorkflowController(options) {
     try {
       if (!executor?.runWorkflowStep) throw new Error("当前版本尚未连接这项任务的执行器。");
       const payload = readPayload(task);
+      cycleStage = "task_execute";
       const result = await executor.runWorkflowStep({ ...task, payload }, { isEnabled: () => enabled && !task.cancelRequested });
+      cycleStage = "task_result";
       if (!result || !["pending", "completed", "needs_attention"].includes(result.status)) throw new Error("任务返回结果无法确认，请查看任务详情。");
       task.progress = result.progress || task.progress;
       if (task.progress.done > 0) task.startedAt ||= new Date(now()).toISOString();
@@ -244,7 +281,12 @@ function createWechatWorkflowController(options) {
       }
       if (result.retryAfterMs) task.notBefore = new Date(now()).getTime() + result.retryAfterMs;
       else delete task.notBefore;
+      const reason = result.status === "needs_attention" ? workflowFailureReason(result.error, "task_needs_attention") : "task_step_returned";
+      const resultKey = JSON.stringify([task.id, task.status, task.progress.done, task.progress.total, reason]);
+      operation?.end?.({ task_kind: task.type, task_id: task.id, stage: cycleStage, status: task.status, reason, error: result.error || "", done: task.progress.done, total: task.progress.total }, { ok: result.status !== "needs_attention", code: reason, trace: resultKey !== lastTaskResultKey });
+      lastTaskResultKey = resultKey;
     } catch (failure) {
+      operation?.end?.({ task_kind: task.type, task_id: task.id, stage: cycleStage, reason: workflowFailureReason(failure), error: failure }, { ok: false, code: workflowFailureReason(failure) });
       task.status = "needs_attention";
       task.error = failure.message || "任务执行中断，请核对实际结果。";
     } finally {
@@ -259,6 +301,10 @@ function createWechatWorkflowController(options) {
     if (!enabled || disposed || inFlight) return;
     inFlight = runCycle();
     try { await inFlight; }
+    catch (failure) {
+      log("cycle.exception", { stage: cycleStage, error: failure, reason: workflowFailureReason(failure) }, { level: "error", code: workflowFailureReason(failure) });
+      throw failure;
+    }
     finally { inFlight = null; schedule(); }
   }
 
@@ -397,18 +443,29 @@ function createWechatWorkflowController(options) {
       writeJsonAtomic(recipientsFile, next); recipients = next; emit(); return { ok: true, state: status() };
     }),
     start: async () => {
-      assertHealthy();
-      if (disposed) throw new Error("程序正在退出。");
-      if (enabled || inFlight || mutating) return { ok: true, state: status() };
-      refreshDay();
-      if (!store.tasks.some((task) => task.status === "pending" && (!task.accountName || task.accountName === getAccount()))
-        && !(store.replyEnabled !== false && accountRecipients().length)) {
-        throw new Error("没有待执行任务。请将可重试任务重新加入计划；其他未完成任务请先核对结果。");
+      const operation = options.logger?.begin?.("wechat_workflow", "start", { stage: "start_preflight", pending_count: store.tasks.filter((task) => task.status === "pending").length, reply_enabled: store.replyEnabled !== false }, { trace: true });
+      try {
+        assertHealthy();
+        if (disposed) throw new Error("程序正在退出。");
+        if (enabled || inFlight || mutating) {
+          operation?.end?.({ stage: "start_preflight", reason: "already_active_or_mutating" }, { ok: true });
+          return { ok: true, state: status() };
+        }
+        refreshDay();
+        if (!store.tasks.some((task) => task.status === "pending" && (!task.accountName || task.accountName === getAccount()))
+          && !(store.replyEnabled !== false && accountRecipients().length)) {
+          throw new Error("没有待执行任务。请将可重试任务重新加入计划；其他未完成任务请先核对结果。");
+        }
+        enabled = true; error = ""; phase = "listening";
+        replyError = "";
+        replyStatus = accountRecipients().length ? "准备接待客户" : "暂无接待客户";
+        refreshDay(); settleQueue(); emit(); schedule(0);
+        operation?.end?.({ stage: "scheduled", status: phase }, { ok: true });
+        return { ok: true, state: status() };
+      } catch (failure) {
+        operation?.end?.({ stage: "start_preflight", reason: workflowFailureReason(failure), error: failure }, { ok: false, code: workflowFailureReason(failure) });
+        throw failure;
       }
-      enabled = true; error = ""; phase = "listening";
-      replyError = "";
-      replyStatus = accountRecipients().length ? "准备接待客户" : "暂无接待客户";
-      refreshDay(); settleQueue(); emit(); schedule(0); return { ok: true, state: status() };
     },
     pause: async () => {
       enabled = false; clearTimeout(timer);
@@ -427,4 +484,4 @@ function createWechatWorkflowController(options) {
   };
 }
 
-module.exports = { createWechatWorkflowController, localDate };
+module.exports = { createWechatWorkflowController, localDate, workflowFailureReason };

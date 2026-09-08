@@ -10,13 +10,38 @@ const { verifyManifest, compareVersions } = require("../shared/cloud-contract.cj
 const { registerCloudMaintenanceIpc } = require("./cloud-maintenance-ipc.cjs");
 const { createPreloadApis } = require("./preload-api.cjs");
 const { COMPONENTS } = require("../shared/component-contract.cjs");
+const { releaseNotes, matchingReleaseNotes } = require("../shared/customer-release-notes.cjs");
+
+async function checkBundledAnnouncements(rootDir, config, manifest, sign) {
+  const dir = path.join(rootDir, "bundled-announcements");
+  const version = require("../../package.json").version;
+  assert.throws(() => releaseNotes("999.999.999"), /缺少具体更新公告/);
+  assert.throws(() => matchingReleaseNotes(version, "修复与体验改进"), /不一致/);
+  assert.equal(matchingReleaseNotes(version, releaseNotes(version).replace(/\n/g, "\r\n")), releaseNotes(version));
+  let controller = createCloudMaintenance({ rootDir: dir, config: { ...config, enabled: false }, version });
+  assert.equal(controller.status().announcements[0].notes, releaseNotes(version));
+  assert.equal(controller.status().stage, "disabled");
+  controller.markAnnouncementRead(`installed:${version}`);
+  controller.stop();
+  controller = createCloudMaintenance({ rootDir: dir, config, version, transport: {
+    async request() { return sign({ ...manifest, version, notes: releaseNotes(version) }); }, close() {}
+  } });
+  try {
+    assert.equal(controller.status().unreadAnnouncements, 0, "Offline installed-version read state survives restart");
+    await controller.refreshAnnouncements();
+    assert.equal(controller.status().announcements.length, 1, "Signed notes replace the display-only local fallback");
+    assert.equal(controller.status().announcements[0].id, `1:${manifest.sequence}`);
+    assert.equal(controller.status().unreadAnnouncements, 0, "Publication does not make the same version unread again");
+    assert.equal(controller.status().stage, "idle", "Announcement fallback cannot make an update installable");
+  } finally { controller.stop(); }
+}
 
 async function checkReleaseSelection(rootDir, config, manifest, sign, bytes) {
   const baseRoot = path.join(rootDir, "component-base");
   fs.mkdirSync(baseRoot);
   fs.writeFileSync(path.join(baseRoot, "component-base.json"), JSON.stringify({ schema: 2, dataSchema: 1, base: { version: "1.1.0", fingerprint: "0".repeat(64) } }));
   // The full and component pointers advance independently, including across base upgrades.
-  for (const componentVersion of ["1.0.9", "1.1.0", "1.1.1", "1.3.0"]) {
+  for (const componentVersion of ["1.0.9", "1.1.0", "1.1.1", "1.2.0", "1.3.0"]) {
     const component = { schema: 2, appId: config.appId, channel: config.channel, platform: "win32", arch: "x64",
       version: componentVersion, sequence: 20, notes: "Component selection fixture", dataSchema: 1,
       base: { version: "1.2.0", fingerprint: "1".repeat(64) }, minBaseVersion: "1.2.0",
@@ -39,11 +64,12 @@ async function checkReleaseSelection(rootDir, config, manifest, sign, bytes) {
       assert.equal((await controller.prepareInstall()).version, "1.2.0");
       assert.ok(requests.includes("/v1/releases/test/latest"));
       assert.ok(requests.includes("/v2/releases/test/latest"));
-      assert.equal(controller.status().announcements.length, 2, "Independent protocols may share a sequence without conflict");
+      assert.equal(controller.status().announcements.length, new Set(["1.1.0", "1.2.0", componentVersion]).size, "Distinct versions remain visible across both protocols and the installed fallback");
       controller.markAnnouncementRead(20);
-      assert.equal(controller.status().announcements.find(item => item.id === "1:20").read, true);
-      assert.equal(controller.status().announcements.find(item => item.id === "2:20").read, false);
+      assert.equal(controller.status().announcements.find(item => item.version === "1.2.0").read, true);
+      if (componentVersion !== "1.2.0") assert.equal(controller.status().announcements.find(item => item.id === "2:20").read, false);
       controller.markAnnouncementRead("2:20");
+      for (const announcement of controller.status().announcements) controller.markAnnouncementRead(announcement.id);
       assert.equal(controller.status().unreadAnnouncements, 0);
     } finally { controller.stop(); }
   }
@@ -213,6 +239,7 @@ async function main() {
     await controller.check();
     assert.equal(controller.status().stage, "error", "Signed but stale release rejected");
     await checkAnnouncements(dir, config, manifest, sign, bytes);
+    await checkBundledAnnouncements(dir, config, manifest, sign);
     await checkReleaseSelection(dir, config, manifest, sign, bytes);
     console.log("cloud maintenance: announcement cache/read persistence, metadata-only refresh, signatures, rollback/conflict, download race, legacy pending, IPC, consent and install boundary passed");
   } finally { controller.stop(); fs.rmSync(dir, { recursive: true, force: true }); }

@@ -5,12 +5,12 @@ const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 const { cloudConfig } = require("../src/main/cloud-config.cjs");
 const { COMPONENTS, hashFile, validateManifest, verifyComponentManifest } = require("../src/shared/component-contract.cjs");
+const { matchingReleaseNotes } = require("../src/shared/customer-release-notes.cjs");
 async function publishComponentRelease({ metadataFile, notesFile }) {
   const metadata = JSON.parse(fs.readFileSync(metadataFile, "utf8"));
   const config = cloudConfig({ developmentEdition: true });
   const manifest = { ...metadata.manifest };
-  if (notesFile) manifest.notes = fs.readFileSync(notesFile, "utf8").trim();
-  if (!manifest.notes || manifest.notes.length > 2000) throw Error("Provide concrete customer release notes (1–2000 characters).");
+  manifest.notes = matchingReleaseNotes(manifest.version, notesFile ? fs.readFileSync(notesFile, "utf8") : manifest.notes);
   validateManifest(manifest, config);
   const git = args => spawnSync("git", args, { cwd: path.resolve(__dirname, "../.."), encoding: "utf8", windowsHide: true });
   const state = git(["status", "--porcelain", "--untracked-files=all"]), head = git(["rev-parse", "HEAD"]);

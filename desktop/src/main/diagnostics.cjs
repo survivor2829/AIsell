@@ -257,11 +257,12 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
       const level = requestedLevel === "warning" ? "warn" : requestedLevel;
       const module = code(moduleName, "app");
       const eventCode = code(eventName, "event");
-      if (options?.cancelled === true) {
+      const traced = options?.trace === true;
+      if (options?.cancelled === true && !traced) {
         recover(module);
         return null;
       }
-      if (!ACTIONABLE_LEVELS.has(level)) {
+      if (!ACTIONABLE_LEVELS.has(level) && !traced) {
         const recoveryRequested = (
           options?.recover === true
           || eventCode === "responsive"
@@ -298,11 +299,11 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
       }
       const errorCode = code(
         options?.code || details?.blocked_reason || details?.code || details?.reason,
-        "unknown_error"
+        ACTIONABLE_LEVELS.has(level) ? "unknown_error" : ""
       );
       const dedupeKey = code(options?.dedupeKey, "");
       const faultSignature = `${eventCode}\u0000${errorCode}\u0000${level}\u0000${dedupeKey}`;
-      if (lastFaultByModule.get(module) === faultSignature) return null;
+      if (!traced && lastFaultByModule.get(module) === faultSignature) return null;
       const duration = Number(options?.durationMs);
       const entry = {
         v: 1,
@@ -324,7 +325,8 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
       rotate(logFile);
       fs.appendFileSync(logFile, `${JSON.stringify(entry)}\n`, "utf8");
       sequence += 1;
-      rememberFault(module, faultSignature);
+      if (ACTIONABLE_LEVELS.has(level)) rememberFault(module, faultSignature);
+      else if (eventCode.endsWith(".finished") || options?.cancelled === true) recover(module);
       publish(entry);
       return entry;
     } catch {
@@ -333,10 +335,11 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
     }
   }
 
-  function begin(moduleName, eventName, details = {}) {
+  function begin(moduleName, eventName, details = {}, settings = {}) {
     const traceId = crypto.randomUUID();
     const startedAt = Date.now();
-    event(moduleName, `${eventName}.started`, details, { traceId, phase: "start" });
+    const trace = settings.trace === true;
+    event(moduleName, `${eventName}.started`, details, { traceId, phase: "start", trace });
     return {
       traceId,
       end(result = {}, options = {}) {
@@ -345,6 +348,7 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
           const ok = options?.ok ?? result?.ok;
           return event(moduleName, `${eventName}.${cancelled ? "cancelled" : ok === false ? "failed" : "finished"}`, result, {
             traceId,
+            trace: trace || options?.trace === true,
             phase: options?.phase || (cancelled ? "cancel" : "finish"),
             level: options?.level || (cancelled ? "info" : ok === false ? "error" : "info"),
             code: options?.code,
@@ -360,6 +364,7 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
         try {
           return event(moduleName, `${eventName}.exception`, { ...details, error }, {
             traceId,
+            trace,
             phase: "exception",
             level: "error",
             code: error?.code || "exception",
@@ -373,6 +378,7 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
       cancel(details = {}) {
         return event(moduleName, `${eventName}.cancelled`, details, {
           traceId,
+          trace,
           phase: "cancel",
           level: "info",
           cancelled: true,

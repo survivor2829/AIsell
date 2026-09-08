@@ -6,6 +6,7 @@ const { MAX_MOMENTS_COMMENT_LENGTH } = require("../../rpa/active_touch/moments_d
 const { loadMomentsActionContext } = require("../../rpa/active_touch/moments_action.dev.cjs");
 const { openWechatMoments } = require("../../rpa/active_touch/moments_navigation.dev.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
+const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs");
 
 const MOMENTS_DRY_RUN_TIMEOUT_MS = 45_000;
 const MOMENTS_INSPECT_TIMEOUT_MS = 125_000;
@@ -423,15 +424,23 @@ function registerActiveTouchDevIpc(options = {}) {
     const message = String(payload.message ?? "").trim();
     if (!contactId || !message) return { ok: false, action: "send", blocked_reason: "contact_or_message_missing", error: "已阻断：请选择联系人并填写发送文案", send_attempted: false };
     realSendInFlight = true;
+    const operation = diagnostics().begin("active_touch", "internal_contact_send", { action: "send-selected-contact" }, { trace: true });
     try {
-      return await executeVerifiedContactSend({
+      const result = await executeVerifiedContactSend({
         baseDir: activeTouchDataDir,
         contactId,
         message,
         authorized: true,
-        runStep: (command, args = []) => runActiveTouchDev([command, ...args], { dataDir: activeTouchDataDir })
+        onDiagnostic: (detail) => diagnostics().event("active_touch", "send_stage", detail, {
+          trace: true, traceId: operation.traceId, phase: detail.phase, level: detail.ok === false ? "warn" : "info", code: detail.reason
+        }),
+        runStep: (command, args = []) => runActiveTouchDev([command, ...args], { dataDir: activeTouchDataDir, parentTraceId: operation.traceId })
       });
+      const detail = summarizeSendResult(result);
+      operation.end(detail, { ok: result?.ok === true, code: detail.reason });
+      return result;
     } catch (error) {
+      operation.fail(error, { stage: "internal_contact_send", send_attempted: null });
       setRealSendArm(activeTouchDataDir, false);
       return { ok: false, action: "send", blocked_reason: "real_send_failed", error: error instanceof Error ? error.message : "真实发送执行失败", send_attempted: null };
     } finally {

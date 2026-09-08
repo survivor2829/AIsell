@@ -1047,12 +1047,22 @@ $windowText = New-Object System.Text.StringBuilder 512
   isNew = $isNew
   draftConsumed = $draftConsumed
   sameWindow = $draftAfter.sameWindow
+  proofDiagnostics = @{
+    before_exact = ($beforeSnapshot.draftExact -eq $true)
+    input_read_ok = ($draftAfter.ok -eq $true)
+    input_read_reason = [string]$draftAfter.reason
+    input_empty = ($draftAfter.isEmpty -eq $true)
+    candidate_count = $candidates.Count
+    outgoing_exact_count = $outgoingExact.Count
+    previous_exact_count = $beforeExactCount
+    new_outgoing_exact_count = $newOutgoingExact.Count
+  }
   verificationMode = $verificationMode
   title = $windowText.ToString().Trim()
   processName = $process.ProcessName
   pid = $process.Id
   hWnd = [int64]$expectedHWnd
-} | ConvertTo-Json -Compress
+} | ConvertTo-Json -Compress -Depth 4
 `;
 
 function verifyWechatMessageBubble(message, context = {}) {

@@ -9,6 +9,7 @@ const { registerWechatWorkflowIpc } = require("./wechat-workflow-ipc.cjs");
 
 async function checkFloatingProgress() {
   const windows = [];
+  const diagnosticEvents = [];
   const handlers = new Map();
   const mainWindow = {
     webContents: { send() {} }, isDestroyed: () => false,
@@ -32,6 +33,7 @@ async function checkFloatingProgress() {
   }
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-window-"));
   const control = registerWechatWorkflowIpc({
+    logger: { event: (...args) => diagnosticEvents.push(args) },
     rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
     autoSchedule: false, getAccount: () => "test-account", getMainWindow: () => mainWindow,
     executors: { interact: { prepareWorkflowTask: () => ({ payload: { maxPosts: 1 } }) } },
@@ -41,6 +43,10 @@ async function checkFloatingProgress() {
   const event = { sender: mainWindow.webContents };
   await control.addTask({ type: "interact", payload: { maxPosts: 1 } });
   const invoke = (name, payload) => handlers.get(`wechat-workflow:${name}`)(event, payload);
+  const refused = await invoke("start", { clickToken: "invalid" });
+  assert.equal(refused.ok, false);
+  assert.equal(diagnosticEvents.at(-1)[2].reason, "invalid_click");
+  assert.equal(diagnosticEvents.at(-1)[2].stage, "click_validation");
   const started = await invoke("start", { clickToken: require("node:crypto").randomUUID() });
   assert.equal(started.ok, true);
   assert.equal(windows.length, 1, "starting the unified workflow must automatically create its progress window");
@@ -60,6 +66,52 @@ async function checkFloatingProgress() {
   assert.equal(status.state.contactSync.running, false);
   assert.equal(status.state.contactSync.contactCount, 3);
   assert.equal(windows.length, 1, "all task types reuse one floating window");
+  await control.dispose();
+}
+
+async function checkWorkflowDiagnostics() {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-diagnostics-"));
+  const events = [];
+  const logger = {
+    event: (_module, name, details, metadata) => { assert.equal(metadata.trace, true); events.push({ name, ...details }); },
+    begin: (_module, name, details, metadata) => {
+      assert.equal(metadata.trace, true, "workflow operation traces must opt into info retention");
+      events.push({ name: `${name}.started`, ...details });
+      return { end: (result) => events.push({ name: `${name}.ended`, ...result }) };
+    }
+  };
+  let replyResult = { handled: false };
+  let throwReply = false;
+  const control = createWechatWorkflowController({
+    rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
+    logger, autoSchedule: false, getAccount: () => "private-account",
+    reply: {
+      prepareWorkflowRecipients: async () => [{ id: "private-customer", name: "private-name" }],
+      runWorkflowStep: async () => { if (throwReply) throw new Error("injected failure"); return replyResult; }
+    },
+    executors: { touch: {
+      prepareWorkflowTask: () => ({ contacts: [{ id: "private-customer" }], script: "private-script" }),
+      runWorkflowStep: async () => ({ status: "needs_attention", error: "无法确认发送结果" })
+    } }
+  });
+  await assert.rejects(control.start(), /没有待执行任务/);
+  assert.equal(events.at(-1).reason, "no_pending_work");
+  await control.addRecipients(["private-customer"]);
+  await control.start();
+  const beforeIdle = events.length;
+  await control.tick(); await control.tick();
+  assert.equal(events.length, beforeIdle, "ordinary empty reply polling must be quiet");
+  throwReply = true;
+  await assert.rejects(control.tick(), /injected failure/);
+  assert.equal(events.at(-1).stage, "reply_step");
+  throwReply = false;
+  await control.pause();
+  replyResult = { handled: false, status: "needs_attention", error: "所选联系人没有可唯一识别的会话名称" };
+  await control.addTask({ type: "touch", payload: {} });
+  await control.start(); await control.tick();
+  assert(events.some((event) => event.name === "reply.result" && event.reason === "contact_identity_ambiguous"));
+  assert(events.some((event) => event.name === "task_step.ended" && event.stage === "task_result" && event.reason === "task_needs_attention"));
+  assert.equal(/private-customer|private-name|private-script|private-account/.test(JSON.stringify(events)), false, "diagnostics must not receive customer payloads");
   await control.dispose();
 }
 
@@ -238,6 +290,29 @@ async function main() {
   assert.deepEqual(expert.read(), before, "interview drafts cannot silently replace live expert");
   assert.equal(expert.conversation().messages.length, 1);
   await checkFloatingProgress();
+  await checkWorkflowDiagnostics();
+  const traceRoot = path.join(rootDir, "waiting-diagnostics");
+  const traceLogger = require("./diagnostics.cjs").createDiagnosticLogger({ rootDir: traceRoot });
+  let waitingForNextStep = true;
+  const waitingControl = createWechatWorkflowController({ ...options,
+    rootDir: traceRoot, autoReplyDir: path.join(traceRoot, "reply"), logger: traceLogger,
+    executors: { interact: {
+      prepareWorkflowTask: () => ({ payload: { maxPosts: 1 } }),
+      runWorkflowStep: async () => ({ status: waitingForNextStep ? "pending" : "completed",
+        progress: { done: waitingForNextStep ? 0 : 1, total: 1 } })
+    } }
+  });
+  await waitingControl.setReplyEnabled(false);
+  await waitingControl.addTask({ type: "interact", payload: { maxPosts: 1 } });
+  await waitingControl.start(); await waitingControl.tick();
+  const waitingTraceCount = traceLogger.readRecent(100).length;
+  await waitingControl.tick(); await waitingControl.tick();
+  assert.equal(traceLogger.readRecent(100).length, waitingTraceCount, "Unchanged pending tasks must not flood diagnostic history");
+  waitingForNextStep = false;
+  await waitingControl.tick();
+  assert.equal(traceLogger.readRecent(100).some(entry => entry.event === "task_step.finished" && entry.details.status === "completed"), true,
+    "Changed results must be retained even when their repeated begin was quiet");
+  await waitingControl.dispose();
   process.stdout.write("Workflow checks passed: priority, continuation, daily reset, restart, audience, unknown result, pause, expert drafts.\n");
 }
 

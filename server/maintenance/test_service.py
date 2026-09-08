@@ -168,6 +168,7 @@ class ServiceTest(unittest.TestCase):
             report = {"schema": 1, "appId": "com.aihuoke.desktop.test", "channel": "test", "installId": "12345678-1234-1234-1234-123456789012", "version": "1.0.0", "platform": "win32", "arch": "x64", "secret": "never-store", "entries": [{"id": "a" * 64, "ts": "2026-09-07T10:00:00.000Z", "level": "error", "module": "app", "event": "test.failed", "code": "test_error", "message": "customer content", "details": {"password": "secret"}}]}
             try:
                 report["entries"][0]["details"].update(stage="capture_timeout_wx_hook", wx_hook_stage="init_failed", helper_configured=True, wechat_exe_configured=True, wechat_root_configured=False)
+                report["entries"][0]["details"].update(wechat_version="4.1.3.12", stop_verified=False, send_attempted=None, is_new=False, input_empty=True, elapsed_ms=1234, candidate_count=0, messageText="never-store-proof-text")
                 for _ in range(2):
                     request = urllib.request.Request(origin + "/v1/reports", json.dumps(report).encode(), {"Content-Type": "application/json"})
                     with urllib.request.urlopen(request) as response:
@@ -176,7 +177,8 @@ class ServiceTest(unittest.TestCase):
                 self.assertEqual(len(overview["reports"]), 1)
                 self.assertNotIn("never-store", json.dumps(overview))
                 self.assertNotIn("customer content", json.dumps(overview))
-                self.assertEqual(overview["reports"][0]["entries"][0]["details"], {"stage": "capture_timeout_wx_hook", "wx_hook_stage": "init_failed", "helper_configured": True, "wechat_exe_configured": True, "wechat_root_configured": False})
+                self.assertEqual(overview["reports"][0]["entries"][0]["details"], {"stage": "capture_timeout_wx_hook", "wx_hook_stage": "init_failed", "helper_configured": True, "wechat_exe_configured": True, "wechat_root_configured": False, "wechat_version": "4.1.3.12", "stop_verified": False, "send_attempted": None, "is_new": False, "input_empty": True, "elapsed_ms": 1234, "candidate_count": 0})
+                self.assertNotIn("never-store-proof-text", json.dumps(overview))
                 self.assertEqual(overview["issues"][0]["occurrences"], 1)
                 issue_id = overview["issues"][0]["id"]
                 with store.connect() as db:

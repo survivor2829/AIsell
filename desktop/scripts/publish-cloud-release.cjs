@@ -6,12 +6,14 @@ const { spawnSync } = require("node:child_process");
 const { cloudConfig } = require("../src/main/cloud-config.cjs");
 const { fileHash } = require("../src/main/cloud-maintenance.cjs");
 const { verifyManifest, VERSION } = require("../src/shared/cloud-contract.cjs");
+const { matchingReleaseNotes } = require("../src/shared/customer-release-notes.cjs");
 
 async function publish({ installer, manifestFile, notesFile, smoke = false }) {
-  const notes = notesFile ? fs.readFileSync(notesFile, "utf8").trim() : smoke ? "更新链路隔离验证" : "";
-  if (!notes || notes.length > 2000 || (!smoke && notes === "修复与体验改进")) throw Error("请提供 1～2000 字的具体客户更新说明文件。");
   const config = cloudConfig({ developmentEdition: true });
   const metadata = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+  const supplied = notesFile ? fs.readFileSync(notesFile, "utf8").trim() : "";
+  const notes = smoke ? supplied || "更新链路隔离验证" : matchingReleaseNotes(metadata.version, supplied);
+  if (notes.length > 2000) throw Error("请提供 1～2000 字的具体客户更新说明文件。");
   const appId = smoke ? "com.aihuoke.maintenance.smoke" : config.appId;
   if (metadata.appId !== appId || !VERSION.test(metadata.version) || metadata.artifactType !== "internal-evaluation") throw Error("A matching internal test installer manifest is required");
   if (!smoke) {
