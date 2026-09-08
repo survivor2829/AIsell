@@ -167,7 +167,9 @@ const result = spawnSync("powershell.exe", [
   input: Buffer.from(program, "utf8").toString("base64"),
   encoding: "utf8",
   windowsHide: true,
-  timeout: 30_000,
+  // Seven full-frame PowerShell fixtures are CPU-bound on hosted Windows runners.
+  // Keep the geometry assertions identical and bound the complete harness run.
+  timeout: 180_000,
 });
 
 assert.equal(result.status, 0, result.stderr || result.error?.stack || "geometry harness must run");
