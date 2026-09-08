@@ -6,15 +6,14 @@ const { spawn } = require("node:child_process");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { createTransport } = require("./cloud-transport.cjs");
 const { compareVersions, fail, reportEntry, token, UUID, verifyManifest } = require("../shared/cloud-contract.cjs");
+const { verifyComponentManifest, assertCompatible, hashFile: fileHash } = require("../shared/component-contract.cjs");
+const { createComponentStore } = require("./component-store.cjs");
+const componentPaths = require("./component-paths.cjs");
 
 function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; } }
-async function fileHash(file) {
-  const hash = crypto.createHash("sha256");
-  for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
-  return hash.digest("hex");
-}
-
-function createCloudMaintenance({ rootDir, config, version, buildId, logger, canInstall = () => false, transport, launch = spawn }) {
+function announcementId(manifest) { return `${manifest.schema}:${manifest.sequence}`; }
+function createCloudMaintenance({ rootDir, config, version, buildId, logger, canInstall = () => false, transport, launch = spawn,
+  componentBaseRoot, userData }) {
   const dir = path.join(rootDir, "cloud-maintenance");
   fs.mkdirSync(dir, { recursive: true });
   const stateFile = path.join(dir, "state.json");
@@ -25,13 +24,16 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     consent: saved.consent === true, sequence: Number.isSafeInteger(saved.sequence) && saved.sequence >= 0 ? saved.sequence : 0,
     lastUpload: typeof saved.lastUpload === "string" ? saved.lastUpload : "", pending: saved.pending || null,
     announcements: [],
-    lastAnnouncementsCheck: typeof saved.lastAnnouncementsCheck === "string" ? saved.lastAnnouncementsCheck : ""
+    lastAnnouncementsCheck: typeof saved.lastAnnouncementsCheck === "string" ? saved.lastAnnouncementsCheck : "",
+    componentSequence: Number.isSafeInteger(saved.componentSequence) ? saved.componentSequence : 0
   };
   for (const item of [...(Array.isArray(saved.announcements) ? saved.announcements.slice(0, 20) : []), ...(saved.pending ? [{ envelope: saved.pending, read: false }] : [])]) {
     try {
-      const manifest = verifyManifest(item.envelope, config);
-      state.sequence = Math.max(state.sequence, manifest.sequence);
-      if (!state.announcements.some((entry) => entry.sequence === manifest.sequence)) state.announcements.push({ sequence: manifest.sequence, envelope: item.envelope, read: item.read === true });
+      const manifest = JSON.parse(item.envelope.payload).schema === 2 ? verifyComponentManifest(item.envelope, config) : verifyManifest(item.envelope, config);
+      if (manifest.schema === 2) state.componentSequence = Math.max(state.componentSequence, manifest.sequence);
+      else state.sequence = Math.max(state.sequence, manifest.sequence);
+      const id = announcementId(manifest);
+      if (!state.announcements.some((entry) => entry.id === id)) state.announcements.push({ id, sequence: manifest.sequence, envelope: item.envelope, read: item.read === true });
     } catch {}
   }
   state.announcements.sort((left, right) => right.sequence - left.sequence);
@@ -41,9 +43,9 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   if (!Array.isArray(queue)) queue = [];
   queue = queue.filter((item) => item?.report?.appId === config?.appId).slice(-200);
   if (!state.consent) queue = [];
-  let checking = false, uploading = false, stopped = false, unsubscribe;
-  let retryAt = 0, attempts = 0, checkTimer, uploadTimer, announcementTimer, latestRequest;
-  let view = { stage: network ? "idle" : "disabled", progress: 0, nextVersion: "", error: "", uploadError: "", announcementError: "", announcementsChecking: false };
+  let checking = false, uploading = false, stopped = false, unsubscribe, updateLaunching = false;
+  let retryAt = 0, attempts = 0, checkTimer, uploadTimer, announcementTimer, latestRequest, latestComponentRequest;
+  let view = { stage: network ? "idle" : "disabled", progress: 0, downloadedBytes: 0, totalBytes: 0, nextVersion: "", error: "", uploadError: "", announcementError: "", announcementsChecking: false };
   const listeners = new Set();
   function save() { writeJsonAtomic(stateFile, state); }
   function commit(patch) {
@@ -55,9 +57,10 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   function status() {
     const announcements = state.announcements.map((item) => {
       const manifest = JSON.parse(item.envelope.payload);
-      return { sequence: item.sequence, version: manifest.version, notes: manifest.notes, publishedAt: manifest.publishedAt || "", read: item.read };
+      return { id: item.id, sequence: item.sequence, version: manifest.version, notes: manifest.notes, publishedAt: manifest.publishedAt || "", read: item.read };
     });
-    return { ...view, enabled: Boolean(network), version, channel: config?.channel || "", consent: state.consent, queued: queue.length,
+    const selection = userData ? readJson(componentPaths.updatePaths(userData).selection, {}) : {};
+    return { ...view, lastUpdate: selection.lastUpdate || null, updateFailure: selection.failure || "", enabled: Boolean(network), version, channel: config?.channel || "", consent: state.consent, queued: queue.length,
       lastUpload: state.lastUpload, canInstall: canInstall(), announcements, unreadAnnouncements: announcements.filter((item) => !item.read).length,
       lastAnnouncementsCheck: state.lastAnnouncementsCheck };
   }
@@ -74,10 +77,11 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       const manifest = verifyManifest(envelope, config);
       if (manifest.sequence < state.sequence) fail("cloud_release_rollback");
       const newerRelease = manifest.sequence > state.sequence;
-      const prior = state.announcements.find((item) => item.sequence === manifest.sequence);
+      const id = announcementId(manifest);
+      const prior = state.announcements.find((item) => item.id === id);
       if (prior && prior.envelope.payload !== envelope.payload) fail("cloud_release_conflict");
       commit({ sequence: manifest.sequence,
-        announcements: [{ sequence: manifest.sequence, envelope, read: prior?.read === true }, ...state.announcements.filter((item) => item.sequence !== manifest.sequence)]
+        announcements: [{ id, sequence: manifest.sequence, envelope, read: prior?.read === true }, ...state.announcements.filter((item) => item.id !== id)]
           .sort((left, right) => right.sequence - left.sequence).slice(0, 20),
         lastAnnouncementsCheck: new Date().toISOString() });
       notify({ announcementError: "", ...(newerRelease && view.stage === "ready" ? { stage: "idle", progress: 0, nextVersion: "" } : {}) });
@@ -85,20 +89,43 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     })().finally(() => { latestRequest = null; });
     return latestRequest;
   }
+  function readLatestComponents() {
+    if (!componentBaseRoot || !fs.existsSync(path.join(componentBaseRoot, "component-base.json"))) return Promise.resolve(null);
+    if (latestComponentRequest) return latestComponentRequest;
+    latestComponentRequest = (async () => {
+      let envelope;
+      try { envelope = await network.request(`/v2/releases/${config.channel}/latest`); }
+      catch (error) { if (error?.status === 404 || error?.statusCode === 404 || error?.code === "cloud_http_404") return null; throw error; }
+      if (stopped) fail("cloud_stopped");
+      if (envelope.empty) return null;
+      const manifest = verifyComponentManifest(envelope, config);
+      if (manifest.sequence < state.componentSequence) fail("cloud_release_rollback");
+      const newerRelease = manifest.sequence > state.componentSequence;
+      const id = announcementId(manifest);
+      const prior = state.announcements.find(item => item.id === id);
+      if (prior && prior.envelope.payload !== envelope.payload) fail("cloud_release_conflict");
+      commit({ componentSequence: manifest.sequence,
+        announcements: [{ id, sequence: manifest.sequence, envelope, read: prior?.read === true }, ...state.announcements.filter(item => item.id !== id)].sort((a, b) => b.sequence - a.sequence).slice(0, 20),
+        lastAnnouncementsCheck: new Date().toISOString() });
+      notify({ announcementError: "", ...(newerRelease && view.stage === "ready" ? { stage: "idle", progress: 0, nextVersion: "" } : {}) });
+      return { envelope, manifest };
+    })().finally(() => { latestComponentRequest = null; });
+    return latestComponentRequest;
+  }
   async function refreshAnnouncements() {
     if (!network || stopped) return status();
     notify({ announcementsChecking: true, announcementError: "" });
-    try { await readLatest(); }
+    try { await Promise.all([readLatest(), readLatestComponents()]); }
     catch { if (!stopped) notify({ announcementError: "公告暂时刷新失败，已保留本机记录。" }); }
     finally { notify({ announcementsChecking: false }); }
     return status();
   }
-  function markAnnouncementRead(sequence) {
-    if (!Number.isSafeInteger(sequence)) return status();
-    const item = state.announcements.find((candidate) => candidate.sequence === sequence);
+  function markAnnouncementRead(key) {
+    const id = Number.isSafeInteger(key) ? `1:${key}` : key;
+    const item = state.announcements.find((candidate) => candidate.id === id);
     if (item && !item.read) {
       try {
-        commit({ announcements: state.announcements.map((candidate) => candidate.sequence === sequence ? { ...candidate, read: true } : candidate) });
+        commit({ announcements: state.announcements.map((candidate) => candidate.id === id ? { ...candidate, read: true } : candidate) });
         notify({ announcementError: "" });
       } catch { notify({ announcementError: "已读状态暂未保存，请稍后重试。" }); }
     }
@@ -143,65 +170,115 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   async function check() {
     if (!network || checking || stopped) return status();
     checking = true; notify({ stage: "checking", error: "" });
-    let temporary;
+    let temporary, fullUpgradeRequired = false;
     try {
-      const release = await readLatest();
-      if (!release) { notify({ stage: "current" }); return status(); }
+      const [release, componentRelease] = await Promise.all([readLatest(), readLatestComponents()]);
+      if (componentRelease && (!release || compareVersions(componentRelease.manifest.version, release.manifest.version) >= 0)) {
+          let { envelope } = componentRelease;
+          const { manifest } = componentRelease;
+          if (compareVersions(manifest.version, version) > 0) {
+            try { assertCompatible(manifest, readJson(path.join(componentBaseRoot, "component-base.json"))); }
+            catch (error) { if (error.code !== "full_upgrade_required" && error.message !== "full_upgrade_required") throw error; envelope = null; fullUpgradeRequired = true; }
+            if (envelope) {
+              const paths = componentPaths.updatePaths(userData);
+              notify({ stage: "preparing", nextVersion: manifest.version, downloadedBytes: 0, totalBytes: 0 });
+              let lastPhase = "", lastProgressAt = 0;
+              const prepared = await createComponentStore({ rootDir: paths.directory, baseRoot: componentBaseRoot, config, transport: network,
+                onProgress: progress => {
+                  if (stopped) fail("cloud_stopped");
+                  const now = Date.now();
+                  if (progress.phase === lastPhase && now - lastProgressAt < 100 && progress.phase !== "ready") return;
+                  lastPhase = progress.phase; lastProgressAt = now;
+                  notify({ stage: progress.phase === "download" ? "downloading" : progress.phase === "ready" ? "ready" : "verifying",
+                  downloadedBytes: progress.downloadedBytes, totalBytes: progress.totalBytes,
+                  progress: progress.totalBytes ? Math.floor(progress.downloadedBytes / progress.totalBytes * 100) : 0 });
+                } }).prepare(envelope);
+              if (stopped) fail("cloud_stopped");
+              if (manifest.sequence < state.componentSequence) fail("cloud_release_superseded");
+              commit({ pending: { kind: "components", envelope, generationRoot: prepared.generationRoot } });
+              notify({ stage: "ready", progress: 100 }); return status();
+            }
+          }
+      }
+      if (!release) { if (fullUpgradeRequired) fail("full_upgrade_required"); commit({ pending: null }); notify({ stage: "current", nextVersion: "" }); return status(); }
       const { envelope, manifest } = release;
       if (compareVersions(manifest.version, version) <= 0) {
+        if (fullUpgradeRequired) fail("full_upgrade_required");
         state.pending = null; save(); notify({ stage: "current", nextVersion: "" }); return status();
       }
       const destination = path.join(dir, `${manifest.sha256}.exe`);
-      notify({ stage: "downloading", nextVersion: manifest.version, progress: 0 });
+      notify({ stage: "downloading", nextVersion: manifest.version, progress: 0, downloadedBytes: 0, totalBytes: manifest.size });
       const existing = fs.existsSync(destination) && fs.statSync(destination).size === manifest.size
         && await fileHash(destination) === manifest.sha256;
       if (!existing) {
         const free = fs.statfsSync(dir);
         if (free.bavail * free.bsize < manifest.size * 2 + 256 * 1024 ** 2) fail("cloud_disk_full");
-        temporary = path.join(dir, `${crypto.randomUUID()}.part`);
+        temporary = path.join(dir, `${manifest.sha256}.part`);
         let lastProgress = -1;
-        await network.request(manifest.file, { destination: temporary, expected: manifest, maxBytes: manifest.size,
+        await network.request(manifest.file, { destination: temporary, expected: manifest, maxBytes: manifest.size, resume: true,
           onProgress: (size) => {
             const progress = Math.floor(size / manifest.size * 100);
-            if (progress !== lastProgress) { lastProgress = progress; notify({ progress }); }
+            if (progress !== lastProgress) { lastProgress = progress; notify({ progress, downloadedBytes: size }); }
           } });
         if (stopped) fail("cloud_stopped");
         if (manifest.sequence < state.sequence) fail("cloud_release_superseded");
-        fs.renameSync(temporary, destination); temporary = undefined;
+        notify({ stage: "verifying" }); fs.renameSync(temporary, destination); temporary = undefined;
       }
       if (stopped) fail("cloud_stopped");
       if (manifest.sequence < state.sequence) fail("cloud_release_superseded");
       state.pending = envelope; save();
       notify({ stage: "ready", progress: 100 });
     } catch (error) {
-      const message = error?.code === "cloud_disk_full" ? "磁盘空间不足，请清理空间后重试。" : "更新检查或下载失败，请稍后重试。";
+      const message = ["cloud_disk_full", "component_disk_space_insufficient", "ENOSPC"].includes(error?.code) ? "磁盘空间不足，请释放空间后重试。"
+        : error?.code === "full_upgrade_required" ? "新版需要完整升级包，当前频道尚未提供。请稍后检查更新或联系开发者获取完整安装包。"
+        : error?.code === "cloud_signature_invalid" ? "更新签名校验失败，未安装此更新。请稍后重新检查。" : "更新检查或下载失败，已保留下载进度，请稍后重试。";
       notify({ stage: "error", error: message });
     } finally {
-      if (temporary) fs.rmSync(temporary, { force: true });
+      // Keep the hash-addressed partial file for a verified Range resume.
       checking = false;
     }
     return status();
   }
   async function prepareInstall() {
     if (!state.pending || !canInstall()) return null;
+    if (state.pending.kind === "components") {
+      const manifest = verifyComponentManifest(state.pending.envelope, config);
+      if (manifest.sequence < state.componentSequence || compareVersions(manifest.version, version) <= 0) return null;
+      return { ...state.pending, version: manifest.version };
+    }
     const m = verifyManifest(state.pending, config);
     if (m.sequence < state.sequence || compareVersions(m.version, version) <= 0) return null;
     const file = path.join(dir, `${m.sha256}.exe`);
     if (fs.statSync(file).size !== m.size || await fileHash(file) !== m.sha256) fail("cloud_download_invalid");
-    return { file, version: m.version };
+    return { kind: "full", file, version: m.version, envelope: state.pending };
   }
-  // Called only after the app's normal shutdown/sidecar cleanup has completed.
-  async function installOnExit() {
+  async function beginInstall() {
+    if (updateLaunching || !userData) return false;
+    updateLaunching = true;
     try {
       const prepared = await prepareInstall();
       if (!prepared) return false;
+      notify({ stage: "preparing", error: "" });
+      const { file, job } = await require("./update-helper.cjs").createUpdateJob({ userData, prepared, currentVersion: version });
       await new Promise((resolve, reject) => {
-        const child = launch(prepared.file, ["/S", "--force-run"], { detached: true, stdio: "ignore", windowsHide: true });
+        const child = launch(job.helperExecutable, ["--xiaoxi-update-job", file], { detached: true, stdio: "ignore", windowsHide: true });
         child.once("error", reject);
         child.once("spawn", () => { child.unref(); resolve(); });
       });
+      const ready = path.join(path.dirname(file), job.id + ".ready.json"), deadline = Date.now() + 30000;
+      while (!fs.existsSync(ready) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+      if (!fs.existsSync(ready)) fail("update_helper_not_ready");
+      notify({ stage: "waiting", error: "" });
       return true;
-    } catch { notify({ stage: "error", error: "更新安装未启动，下次打开后可重试。" }); return false; }
+    } catch { notify({ stage: "error", error: "更新窗口未能启动，请保留当前软件并重试。" }); return false; }
+    finally { updateLaunching = false; }
+  }
+  function installOnExit() { return false; }
+  function setInstallBlocked(message) { notify({ stage: "ready", error: message }); return status(); }
+  function acknowledgeUpdate() {
+    if (userData) { const paths = componentPaths.updatePaths(userData), selected = readJson(paths.selection, {});
+      if (selected.lastUpdate) componentPaths.saveSelection(paths, { ...selected, lastUpdate: { ...selected.lastUpdate, unread: false } }); }
+    notify(); return status();
   }
   function setConsent(enabled) {
     state.consent = enabled === true;
@@ -220,7 +297,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     uploadTimer = setInterval(() => void flush(), 15_000); uploadTimer.unref?.();
   }
   function stop() { stopped = true; clearInterval(checkTimer); clearInterval(uploadTimer); clearInterval(announcementTimer); unsubscribe?.(); network?.close(); }
-  return { status, check, refreshAnnouncements, markAnnouncementRead, flush, enqueue, setConsent, start, stop, prepareInstall, installOnExit,
+  return { status, check, refreshAnnouncements, markAnnouncementRead, flush, enqueue, setConsent, start, stop, prepareInstall, installOnExit, beginInstall, setInstallBlocked, acknowledgeUpdate, refreshLocalState: () => notify(),
     onUpdate(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 }
 module.exports = { createCloudMaintenance, fileHash };

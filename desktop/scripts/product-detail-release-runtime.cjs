@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
+const { readReuseReceipt, validateReuseReceipt } = require("./release-runtime-cache.cjs");
 const {
   productDetailSourceTreeSha256,
   resolveBuildPaths
@@ -104,7 +105,8 @@ function resolveProductDetailBuild(desktopDir, { buildRoot = null } = {}) {
     runtimeDir,
     manifestFile,
     manifest,
-    currentDesktopSourceTreeSha256
+    currentDesktopSourceTreeSha256,
+    reuseReceipt: readReuseReceipt(manifestFile, manifest, manifest.desktopSource)
   };
 }
 
@@ -137,8 +139,12 @@ function createReleaseDescriptor(build, buildCommit) {
   if (build.manifest.desktopSource.dirty) {
     throw new Error("Refusing to package a product-detail runtime built from dirty desktop source");
   }
-  if (build.manifest.desktopSource.commit !== buildCommit) {
-    throw new Error("Product-detail runtime desktop source commit does not match the portable release commit");
+  if (build.reuseReceipt || build.manifest.desktopSource.commit !== buildCommit) {
+    validateReuseReceipt(build.reuseReceipt, { buildCommit, sourceCommit: build.manifest.desktopSource.commit,
+      sourceTreeSha256: build.manifest.desktopSource.treeSha256, runtimeTreeSha256: build.manifest.runtime.treeSha256 });
+    if (build.currentDesktopSourceTreeSha256 !== build.manifest.desktopSource.treeSha256) {
+      throw new Error("Product-detail reuse requires verified current source tree");
+    }
   }
   return {
     path: PRODUCT_DETAIL_RELEASE_PATH,
@@ -152,6 +158,7 @@ function createReleaseDescriptor(build, buildCommit) {
     desktopSourceCommit: build.manifest.desktopSource.commit,
     desktopSourceDirty: build.manifest.desktopSource.dirty,
     desktopSourceTreeSha256: build.manifest.desktopSource.treeSha256,
+    ...(build.reuseReceipt ? { reuseReceipt: build.reuseReceipt } : {}),
     builtAt: build.manifest.builtAt,
     selfCheck: {
       verified: true,
@@ -189,8 +196,9 @@ function validateReleaseDescriptor(descriptor) {
   if (descriptor.desktopSourceDirty !== false) {
     throw new Error("Portable manifest product-detail desktop source must be clean");
   }
-  if (descriptor.desktopSourceCommit !== descriptor.buildCommit) {
-    throw new Error("Portable manifest product-detail desktop source commit must match its build commit");
+  if (descriptor.reuseReceipt || descriptor.desktopSourceCommit !== descriptor.buildCommit) {
+    validateReuseReceipt(descriptor.reuseReceipt, { buildCommit: descriptor.buildCommit, sourceCommit: descriptor.desktopSourceCommit,
+      sourceTreeSha256: descriptor.desktopSourceTreeSha256, runtimeTreeSha256: descriptor.treeSha256 });
   }
   if (!SHA256_PATTERN.test(String(descriptor.desktopSourceTreeSha256 || ""))) {
     throw new Error("Portable manifest has an invalid product-detail desktop source tree hash");

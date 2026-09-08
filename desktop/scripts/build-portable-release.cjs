@@ -133,6 +133,7 @@ function copyAppSource(appDir, edition) {
     });
   }
   copyRuntimePackageTree("mammoth", appDir);
+  copyRuntimePackageTree("jszip", appDir);
   const helperTarget = path.join(appDir, "rpa", "contact_sync", "xiaoxi-contact-helper.exe");
   fs.copyFileSync(helper, helperTarget);
   if (sha256(helperTarget) !== CONTACT_HELPER_SHA256) throw new Error("Packaged contact helper hash mismatch");
@@ -321,8 +322,14 @@ function buildPortableStaging(edition, paths, sourceState) {
     "",
     `界面和版本清单中的构建编号应当都是：${manifest.buildId}`
   ].join("\n") + "\n", "utf8");
+  if (edition === "test") {
+    const baseline = spawnSync(process.execPath, [path.join(__dirname, "write-component-baseline.cjs"), target, path.join(releaseDir, "components", edition)], { encoding: "utf8", windowsHide: true });
+    if (baseline.status !== 0) throw new Error(baseline.stderr || baseline.stdout || "component baseline failed");
+    console.log(baseline.stdout.trim());
+  }
   scanRelease(target);
 
+  if (paths.componentsOnly) return { target, manifest, componentsOnly: true };
   const archive = spawnSync("tar.exe", ["-a", "-c", "-f", zip, "-C", archiveBaseDir, productName], { encoding: "utf8", windowsHide: true });
   if (archive.status !== 0 || !fs.existsSync(zip)) throw new Error(archive.stderr || archive.stdout || "portable ZIP creation failed");
   return { target, zip, manifest };
@@ -470,14 +477,15 @@ function runTransactionalRelease({
   };
 }
 
-function runPortableSelfCheck(edition, target, zip) {
+function runPortableSelfCheck(edition, target, zip, componentsOnly = false) {
   const check = spawnSync(process.execPath, [
     path.join(__dirname, "portable-release.self_check.cjs"),
     edition,
     "--target",
     target,
     "--zip",
-    zip
+    zip,
+    ...(componentsOnly ? ["--directory-only"] : [])
   ], { cwd: desktopDir, encoding: "utf8", windowsHide: true, timeout: PORTABLE_SELF_CHECK_TIMEOUT_MS });
   if (check.status !== 0) throw new Error(check.stderr || check.stdout || "portable release self-check failed");
   if (String(check.stderr || "").trim()) {
@@ -487,6 +495,7 @@ function runPortableSelfCheck(edition, target, zip) {
 
 function buildPortable(edition = "delivery", {
   environment = process.env,
+  componentsOnly = false,
   sidecarBuildRoot = resolveSidecarBuildRoot(environment),
   remotionRuntimeRoot = resolveRemotionRuntimeRoot(environment)
 } = {}) {
@@ -498,6 +507,22 @@ function buildPortable(edition = "delivery", {
   const stagingZip = path.join(stagingRoot, `${productName}.zip`);
   const canonicalTarget = path.join(releaseDir, productName);
   const canonicalZip = path.join(releaseDir, `${productName}.zip`);
+  function recordComponentValidation() {
+    if (edition !== "test") return;
+    const file = path.join(releaseDir, "components", edition, "unsigned-component-release.json");
+    const metadata = JSON.parse(fs.readFileSync(file, "utf8"));
+    metadata.validation = { gate: "packaged-application", commit: metadata.buildCommit, version: metadata.manifest.version, completedAt: new Date().toISOString() };
+    fs.writeFileSync(file, JSON.stringify(metadata, null, 2));
+  }
+  if (componentsOnly) {
+    if (edition !== "test") throw new Error("Component releases currently require the internal test channel");
+    const sourceState = assertBuildPreconditions(edition, { environment, sidecarBuildRoot, remotionRuntimeRoot });
+    const result = buildPortableStaging(edition, { target: stagingTarget, zip: stagingZip, archiveBaseDir: stagingRoot, componentsOnly: true }, sourceState);
+    runPortableSelfCheck(edition, stagingTarget, stagingZip, true);
+    recordComponentValidation();
+    console.log(`Validated component application retained: ${stagingTarget}`);
+    return result;
+  }
   const result = runTransactionalRelease({
     releaseRoot: releaseDir,
     stagingRoot,
@@ -520,6 +545,7 @@ function buildPortable(edition = "delivery", {
   for (const warning of result.cleanupWarnings || []) {
     console.warn(`release cleanup warning: ${warning}`);
   }
+  recordComponentValidation();
   for (const backup of result.retainedBackups || []) {
     console.warn(`release rollback artifact retained: ${backup}`);
   }
@@ -527,7 +553,7 @@ function buildPortable(edition = "delivery", {
   return result;
 }
 
-if (require.main === module) buildPortable(process.argv[2] || "delivery");
+if (require.main === module) buildPortable(process.argv[2] || "delivery", { componentsOnly: process.argv.includes("--components-only") });
 
 module.exports = {
   PORTABLE_SELF_CHECK_TIMEOUT_MS,

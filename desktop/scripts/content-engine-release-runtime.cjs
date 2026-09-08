@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
+const { readReuseReceipt, validateReuseReceipt } = require("./release-runtime-cache.cjs");
 const {
   resolveContentEngineMediaToolsEnvironment
 } = require("../src/main/content-engine-media-tools.cjs");
@@ -118,7 +119,8 @@ function resolveContentEngineBuild(desktopDir, { buildRoot = null } = {}) {
     runtimeDir,
     manifestFile,
     manifest,
-    currentSourceTreeSha256
+    currentSourceTreeSha256,
+    reuseReceipt: readReuseReceipt(manifestFile, manifest, manifest.source)
   };
 }
 
@@ -154,8 +156,12 @@ function createReleaseDescriptor(build, buildCommit, artifactType) {
   if (build.manifest.source.dirty) {
     throw new Error("Refusing to package a content-engine runtime built from dirty source");
   }
-  if (build.manifest.source.commit !== buildCommit) {
-    throw new Error("Content-engine runtime source commit does not match the portable release commit");
+  if (build.reuseReceipt || build.manifest.source.commit !== buildCommit) {
+    validateReuseReceipt(build.reuseReceipt, { buildCommit, sourceCommit: build.manifest.source.commit,
+      sourceTreeSha256: build.manifest.source.treeSha256, runtimeTreeSha256: build.manifest.runtime.treeSha256 });
+    if (build.currentSourceTreeSha256 !== build.manifest.source.treeSha256) {
+      throw new Error("Content-engine reuse requires verified current source tree");
+    }
   }
   const mediaTools = validateMediaToolsManifest(build.manifest.mediaTools, { artifactType });
   if (!mediaTools.bundled || !mediaTools.verified) {
@@ -171,6 +177,7 @@ function createReleaseDescriptor(build, buildCommit, artifactType) {
     sourceCommit: build.manifest.source.commit,
     sourceDirty: build.manifest.source.dirty,
     sourceTreeSha256: build.manifest.source.treeSha256,
+    ...(build.reuseReceipt ? { reuseReceipt: build.reuseReceipt } : {}),
     builtAt: build.manifest.builtAt,
     artifactType,
     mediaTools,
@@ -209,8 +216,9 @@ function validateReleaseDescriptor(descriptor) {
   if (descriptor.sourceDirty !== false) {
     throw new Error("Portable manifest content-engine source must be clean");
   }
-  if (descriptor.sourceCommit !== descriptor.buildCommit) {
-    throw new Error("Portable manifest content-engine source commit must match its build commit");
+  if (descriptor.reuseReceipt || descriptor.sourceCommit !== descriptor.buildCommit) {
+    validateReuseReceipt(descriptor.reuseReceipt, { buildCommit: descriptor.buildCommit, sourceCommit: descriptor.sourceCommit,
+      sourceTreeSha256: descriptor.sourceTreeSha256, runtimeTreeSha256: descriptor.treeSha256 });
   }
   if (!SHA256_PATTERN.test(String(descriptor.sourceTreeSha256 || ""))) {
     throw new Error("Portable manifest has an invalid content-engine source tree hash");

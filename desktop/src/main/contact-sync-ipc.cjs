@@ -10,7 +10,7 @@ let runtimeCoordinator = null;
 let runWithProgress = null;
 
 function cliPath() {
-  return path.join(app.getAppPath(), "rpa", "contact_sync", "contact_sync_cli.cjs");
+  return path.join(require("./component-paths.cjs").applicationPath(app), "rpa", "contact_sync", "contact_sync_cli.cjs");
 }
 
 function settingsPath() {

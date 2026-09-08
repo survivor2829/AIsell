@@ -50,11 +50,11 @@ function reportEntry(entry, context) {
   };
   // Finite technical counters / enums useful for RPA failure diagnosis.
   result.details = {};
-  for (const key of ["receipt_stage", "receipt_code", "receipt_draft_read_stage", "state", "status", "phase", "reason_code", "error_code"]) {
+  for (const key of ["receipt_stage", "receipt_code", "receipt_draft_read_stage", "state", "status", "phase", "reason_code", "error_code", "stage", "wx_hook_stage", "wx_hook_error_code", "blocked_reason"]) {
     const value = token(entry.details?.[key]);
     if (value) result.details[key] = value;
   }
-  for (const key of ["receipt_conversation_verified", "receipt_draft_read_ok", "receipt_draft_consumed", "receipt_input_lease_valid", "receipt_bubble_verified"]) {
+  for (const key of ["receipt_conversation_verified", "receipt_draft_read_ok", "receipt_draft_consumed", "receipt_input_lease_valid", "receipt_bubble_verified", "helper_configured", "wechat_exe_configured", "wechat_root_configured"]) {
     if (typeof entry.details?.[key] === "boolean") result.details[key] = entry.details[key];
   }
   return result;

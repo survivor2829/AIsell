@@ -83,7 +83,7 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
     primaryLabel: "查看今日计划",
     primaryTarget: "workflow",
     capabilities: [
-      { key: "expert", label: "AI专家", description: "协助判断下一步获客动作", icon: Bot },
+      { key: "expert", label: "你的AI专家", description: "协助判断下一步获客动作", icon: Bot },
       { key: "workflow", label: "今日计划", description: "查看和安排今天的任务", icon: ListTodo },
       { key: "reply", label: "自动回复", description: "管理微信回复状态", icon: MessageCircle },
       { key: "contact-sync", label: "同步联系人", description: "同步当前微信通讯录", icon: UsersRound },

@@ -220,3 +220,25 @@
 @media (prefers-reduced-motion: reduce) {
   .workflow-page *, .workflow-floating-shell * { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
+
+.wechat-getting-started { padding: 22px 0; margin: 0 38px 22px; border-bottom: 1px solid var(--workflow-line, #dddfe5); color: var(--text-primary, #202631); }
+.wechat-guide-heading, .wechat-guide-next { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.wechat-guide-heading h2 { margin: 0 0 6px; font-size: 22px; }
+.wechat-guide-heading p, .wechat-guide-next p { margin: 0; color: #596371; font-size: 13px; line-height: 1.7; max-width: 65ch; }
+.wechat-guide-choices { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.wechat-guide-choices [aria-pressed="true"] { border-color: currentColor; }
+.wechat-guide-steps { display: flex; flex-wrap: wrap; gap: 12px 28px; padding-left: 20px; margin: 22px 0; font-size: 13px; color: #596371; }
+.wechat-guide-steps li { padding-left: 2px; }
+.wechat-guide-steps svg { vertical-align: middle; margin-right: 4px; }
+.wechat-guide-steps .is-done { color: #267044; }
+.wechat-guide-next strong { display: block; margin-bottom: 5px; font-size: 15px; }
+.wechat-guide-next > button { flex-shrink: 0; }
+.wechat-guide-refresh { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 12px; font-size: 13px; }
+.wechat-guide-refresh .text-button { margin: 0; padding: 6px 0; color: var(--brand-red-dark); font-size: 12px; }
+.wechat-guide-heading .icon-button { color: var(--brand-red-dark); }
+.workflow-contact-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; max-height: 240px; overflow-y: auto; padding: 16px 0; }
+.workflow-contact-options .workflow-check { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 1000px) { .wechat-guide-next { flex-direction: column; gap: 12px; } }
+
+.launch-button.workflow-launcher { padding: 0 14px; width: auto; min-width: 88px; height: 38px; border-radius: 19px; white-space: nowrap; }
+.workflow-launcher.is-active { display: flex; align-items: center; gap: 6px; width: auto; max-width: 310px; height: 38px; border-radius: 19px; padding: 0 14px; font-size: 12px; }

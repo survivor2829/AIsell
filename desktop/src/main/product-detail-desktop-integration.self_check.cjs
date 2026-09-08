@@ -88,8 +88,8 @@ function assertMainLifecycleAndNavigation() {
   );
   assert.match(
     source,
-    /process\.resourcesPath[\s\S]*?"product-detail"[\s\S]*?"product-detail-server\.exe"/,
-    "packaged runtime must resolve below process.resourcesPath"
+    /components\.resourcesPath\(\)[\s\S]*?"product-detail"[\s\S]*?"product-detail-server\.exe"/,
+    "packaged runtime must resolve below the verified component resources directory"
   );
   assert.match(
     source,

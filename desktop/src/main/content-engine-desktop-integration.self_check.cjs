@@ -700,7 +700,7 @@ function assertMainLifecycle() {
   );
   assert.match(
     source,
-    /process\.resourcesPath[\s\S]*?"content-engine"[\s\S]*?"content-engine-worker\.exe"/
+    /components\.resourcesPath\(\)[\s\S]*?"content-engine"[\s\S]*?"content-engine-worker\.exe"/
   );
   assert.match(
     source,

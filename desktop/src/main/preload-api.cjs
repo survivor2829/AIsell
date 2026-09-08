@@ -927,9 +927,15 @@ function createPreloadApis(ipcRenderer) {
       cancelTask: (id) => ipcRenderer.invoke("wechat-workflow:cancel-task", { id: String(id || "") }),
       retryTask: (id) => ipcRenderer.invoke("wechat-workflow:retry-task", { id: String(id || ""), clickToken: consumeWorkflowSave() }),
       removeRecipient: (id) => ipcRenderer.invoke("wechat-workflow:remove-recipient", { id: String(id || "") }),
+      addRecipients: (contactIds) => ipcRenderer.invoke("wechat-workflow:add-recipients", { contactIds, clickToken: consumeWorkflowSave() }),
       setReplyEnabled: (enabled) => ipcRenderer.invoke("wechat-workflow:set-reply-enabled", { enabled: enabled === true }),
       showFloating: () => ipcRenderer.invoke("wechat-workflow:show-floating"),
-      showMain: () => ipcRenderer.invoke("wechat-workflow:show-main"),
+      showMain: (intent) => ipcRenderer.invoke("wechat-workflow:show-main", intent),
+      onNavigate: (callback) => {
+        const handler = (_event, intent) => callback(intent);
+        ipcRenderer.on("wechat-workflow:navigate", handler);
+        return () => ipcRenderer.removeListener("wechat-workflow:navigate", handler);
+      },
       onUpdate: (callback) => {
         const handler = (_event, state) => callback(state);
         ipcRenderer.on("wechat-workflow:update", handler);
@@ -999,6 +1005,7 @@ function createPreloadApis(ipcRenderer) {
       consent: (enabled) => ipcRenderer.invoke("cloud:consent", enabled === true),
       upload: () => ipcRenderer.invoke("cloud:upload"),
       restart: () => ipcRenderer.invoke("cloud:restart"),
+      acknowledgeUpdate: () => ipcRenderer.invoke("cloud:acknowledgeUpdate"),
       onUpdate: (callback) => {
         const handler = (_event, state) => callback(state);
         ipcRenderer.on("cloud:update", handler);

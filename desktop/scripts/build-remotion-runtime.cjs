@@ -119,6 +119,21 @@ function readPackageState(desktopDir) {
   };
 }
 
+// Application release metadata does not enter the video runtime. Keep all other
+// package fields and every lock entry in the fingerprint, including dependencies.
+function runtimePackageHashes(packageState) {
+  const packageJson = structuredClone(packageState.packageJson);
+  const packageLock = structuredClone(packageState.packageLock);
+  delete packageJson.version;
+  delete packageLock.version;
+  if (packageLock.packages?.[""]) delete packageLock.packages[""].version;
+  return {
+    metadataHashMode: "application-version-independent-v1",
+    packageJsonSha256: sha256Text(canonicalJson(packageJson)),
+    packageLockSha256: sha256Text(canonicalJson(packageLock))
+  };
+}
+
 function packageNameFromLockKey(lockKey) {
   const marker = "node_modules/";
   const index = lockKey.lastIndexOf(marker);
@@ -731,10 +746,7 @@ async function buildRemotionRuntime({
       runtimeHash: hashWorkerRuntime(bundleDir, packagingTarget, workerTarget),
       sbom: { path: "sbom.json", sha256: sha256Text(sbomText) },
       schemaVersion: 1,
-      source: {
-        packageJsonSha256: sha256(packageState.packageJsonFile),
-        packageLockSha256: sha256(packageState.packageLockFile)
-      },
+      source: runtimePackageHashes(packageState),
       targetArchitecture: "x64",
       thirdPartyLicenses: { path: "THIRD_PARTY_LICENSES.md", sha256: sha256Text(thirdPartyText) },
       worker: { path: "remotion-render-worker.mjs", sha256: sha256(workerTarget) }
@@ -796,7 +808,10 @@ function verifyManifestCore(manifest, expectedArtifactType) {
 function verifyCurrentRuntimeSources(manifest, desktopDir) {
   const root = path.resolve(desktopDir);
   const packageState = readPackageState(root);
-  if (manifest.source.packageJsonSha256 !== sha256(packageState.packageJsonFile) || manifest.source.packageLockSha256 !== sha256(packageState.packageLockFile)) {
+  const sourceHashes = manifest.source.metadataHashMode === "application-version-independent-v1"
+    ? runtimePackageHashes(packageState)
+    : { packageJsonSha256: sha256(packageState.packageJsonFile), packageLockSha256: sha256(packageState.packageLockFile) };
+  if (manifest.source.packageJsonSha256 !== sourceHashes.packageJsonSha256 || manifest.source.packageLockSha256 !== sourceHashes.packageLockSha256) {
     throw new Error("Remotion runtime source package metadata hash drift; rebuild the runtime");
   }
   const currentWorker = assertFile(path.join(root, "src", "main", "remotion-render-worker.mjs"), "Current Remotion worker source");
@@ -1010,6 +1025,8 @@ module.exports = {
   hashWorkerRuntime,
   licenseSummary,
   readPackageState,
+  runtimePackageHashes,
+  packageTreeSha256,
   resolveLockClosure,
   resolveRemotionRuntimeBuild,
   validateLicenseRecord,

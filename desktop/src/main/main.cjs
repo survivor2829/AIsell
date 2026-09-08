@@ -1,6 +1,7 @@
 const { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, screen, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
+const components = require("./component-paths.cjs");
 const productBrand = require("../../product-brand.json");
 const installerTargets = require("../../installer-targets.json");
 const { configureActiveTouchRuntime, runActiveTouch } = require("./active-touch-ipc.cjs");
@@ -21,6 +22,7 @@ const { createCloudMaintenance } = require("./cloud-maintenance.cjs");
 const { registerCloudMaintenanceIpc } = require("./cloud-maintenance-ipc.cjs");
 const { createRolePreferences, registerRolePreferencesIpc } = require("./role-preferences.cjs");
 const { createFeedbackController } = require("./feedback-controller.cjs");
+const { createFeedbackAdmin } = require("./feedback-admin.cjs");
 const { registerFeedbackIpc } = require("./feedback-ipc.cjs");
 const { createLicenseStore, registerLicenseAuthIpc } = require("./license-auth-ipc.cjs");
 const { developmentEdition, pilotEdition, editionLabel, preloadFile, rendererDir } = require("./edition.cjs");
@@ -71,6 +73,7 @@ let quitCleanupStarted = false;
 let quitCleanupComplete = false;
 let cloudMaintenance = null;
 let feedbackController = null;
+let feedbackAdmin = null;
 
 const PROVIDER_CONSUMER_RESTART_STATES = new Set(["ready", "starting", "failed"]);
 const productDetailReleaseSmokeMode = app.isPackaged
@@ -98,7 +101,7 @@ function restartProductDetailForProviderChange() {
 function productDetailRuntimePath() {
   if (app.isPackaged) {
     return path.join(
-      process.resourcesPath,
+      components.resourcesPath(),
       "product-detail",
       "product-detail-server.exe"
     );
@@ -111,7 +114,7 @@ function productDetailRuntimePath() {
 function contentEngineRuntimePath() {
   if (app.isPackaged) {
     return path.join(
-      process.resourcesPath,
+      components.resourcesPath(),
       "content-engine",
       "content-engine-worker.exe"
     );
@@ -125,7 +128,7 @@ function productDetailRuntimeEnvironment() {
   if (app.isPackaged) {
     return {
       XIAOXI_PRODUCT_DETAIL_BROWSER_PATH: path.join(
-        process.resourcesPath,
+        components.resourcesPath(),
         "content-engine",
         "browser",
         "chrome.exe"
@@ -158,7 +161,7 @@ function remotionRuntimeEnvironment() {
     executablePath: process.execPath,
     isPackaged: app.isPackaged,
     moduleDir: __dirname,
-    resourcesPath: process.resourcesPath
+    resourcesPath: components.resourcesPath()
   });
 }
 
@@ -195,7 +198,7 @@ if (productDetailReleaseSmokeMode && productDetailReleaseSmokeDataDirIsValid) {
   app.setPath("userData", path.join(app.getPath("appData"), "xiaoxi-active-touch-delivery"));
 }
 
-const gotSingleInstanceLock = productDetailReleaseSmokeMode || app.requestSingleInstanceLock();
+const gotSingleInstanceLock = productDetailReleaseSmokeMode || global.__xiaoxiStableLock || app.requestSingleInstanceLock();
 
 function productDetailWebPreferences() {
   return {
@@ -258,9 +261,9 @@ function createWindow() {
   });
 
   if (!app.isPackaged && process.env.VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
+    mainWindow.__xiaoxiLoaded = mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    mainWindow.loadFile(path.join(__dirname, `../../${rendererDir}/index.html`));
+    mainWindow.__xiaoxiLoaded = mainWindow.loadFile(path.join(__dirname, `../../${rendererDir}/index.html`));
   }
 }
 
@@ -333,7 +336,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       rootDir: runtime.rootDir,
       appInfo: {
         name: app.getName(),
-        version: app.getVersion(),
+        version: components.businessVersion(app),
         edition: developmentEdition ? "development" : pilotEdition ? "pilot" : "unknown",
         build_id: build.buildId || process.env.XIAOXI_BUILD_ID || "",
         packaged: app.isPackaged
@@ -567,23 +570,45 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     if (!productDetailReleaseSmokeMode) {
       const maintenanceConfig = cloudConfig({ developmentEdition });
       feedbackController = createFeedbackController({ rootDir: runtime.rootDir, config: maintenanceConfig,
-        version: app.getVersion(), buildId: build.buildId, logger, safeStorage });
-      registerFeedbackIpc({ ipcMain, controller: feedbackController, getMainWindow: () => mainWindow });
+        version: components.businessVersion(app), buildId: build.buildId, logger, safeStorage });
+      feedbackAdmin = createFeedbackAdmin({ config: maintenanceConfig });
+      registerFeedbackIpc({ ipcMain, admin: feedbackAdmin, controller: feedbackController, getMainWindow: () => mainWindow });
       feedbackController.start();
       cloudMaintenance = createCloudMaintenance({
         rootDir: runtime.rootDir, config: maintenanceConfig,
-        version: app.getVersion(), buildId: build.buildId, logger,
+        version: components.businessVersion(app), buildId: build.buildId, logger,
+        componentBaseRoot: app.isPackaged ? components.currentRoot() : null, userData: app.getPath("userData"),
         canInstall: () => app.isPackaged && process.platform === "win32" && developmentEdition
           && path.dirname(process.execPath).toLowerCase() === path.join(process.env.LOCALAPPDATA || "", "Programs", installerTargets.test.installDirectoryName).toLowerCase()
       });
       registerCloudMaintenanceIpc({ ipcMain, controller: cloudMaintenance, getMainWindow: () => mainWindow,
         restart: async () => {
+          if (global.__xiaoxiUpdateHold) return cloudMaintenance.status();
           if (!await cloudMaintenance.prepareInstall()) return cloudMaintenance.status();
           const response = await dialog.showMessageBox(mainWindow, {
             type: "question", title: "安装更新", buttons: ["稍后", "退出并更新"], defaultId: 0, cancelId: 0,
             message: "退出软件并安装已下载的更新？", detail: "请先保存编辑内容，并结束微信和视频制作任务。"
           });
-          if (response.response === 1) app.quit();
+          if (response.response !== 1) return cloudMaintenance.status();
+          global.__xiaoxiUpdateHold = true;
+          let leaving = false;
+          try {
+            const workflow = workflowController?.status();
+            if (workflow?.enabled || workflow?.contactSync?.running || coordinator.status().lock) {
+              return cloudMaintenance.setInstallBlocked("微信任务仍在运行，请先暂停或完成任务，再点击退出并更新。");
+            }
+            const content = contentEngineController?.updateStatus();
+            if (content?.pending || (content?.alive && content.state !== "ready")) return cloudMaintenance.setInstallBlocked("内容任务尚未结束，请完成当前操作后再更新。");
+            const summary = content?.state === "ready" ? await contentEngineController.productionSummary() : { active: 0 };
+            const product = await productDetailController?.prepareUpdate(true);
+            if (summary.active > 0 || product?.busy) return cloudMaintenance.setInstallBlocked("还有视频或图片正在制作。已保留更新，制作完成后再点击退出并更新。");
+            leaving = await cloudMaintenance.beginInstall();
+            if (leaving) app.quit();
+          } catch {
+            cloudMaintenance.setInstallBlocked("暂时无法确认任务是否结束，尚未退出。请稍后重试更新。");
+          } finally {
+            if (!leaving) { global.__xiaoxiUpdateHold = false; await productDetailController?.prepareUpdate(false).catch(() => {}); }
+          }
           return cloudMaintenance.status();
         }
       });
@@ -598,6 +623,10 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     momentsCampaignController?.initialize();
     logger.event("app", "ready", { window_created: true });
+    const readyWindow = mainWindow;
+    Promise.resolve(readyWindow.__xiaoxiLoaded).then(() => readyWindow.webContents.executeJavaScript(
+      "new Promise(resolve => { const until = Date.now() + 15000; const check = () => { if (document.getElementById('root')?.childElementCount) resolve(true); else if (Date.now() > until) resolve(false); else setTimeout(check, 100); }; check(); })"
+    )).then(ready => { if (ready) { components.markHealthy(); cloudMaintenance?.refreshLocalState(); } }).catch(() => {});
 
     app.on("activate", () => {
       if (!mainWindow) createWindow();
@@ -615,6 +644,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     quitCleanupStarted = true;
     cloudMaintenance?.stop();
     feedbackController?.stop();
+    feedbackAdmin?.stop();
     const cleanupTimeout = new Promise((resolve) => {
       setTimeout(resolve, 8_000);
     });

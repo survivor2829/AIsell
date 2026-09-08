@@ -512,6 +512,19 @@ function createProductDetailSidecar(options = {}) {
   }
 
   return {
+    async prepareUpdate(hold) {
+      if (!currentRun || currentRun.closed) return { busy: false };
+      if (snapshot.state !== "ready") return { busy: true };
+      return new Promise((resolve, reject) => {
+        const body = JSON.stringify({ hold: hold === true });
+        const target = new URL("/internal/update-state", snapshot.origin);
+        const req = http.request(target, { method: "POST", headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body), "x-xiaoxi-control-token": currentRun.controlToken } }, res => {
+          let text = ""; res.on("data", chunk => { text += chunk; if (text.length > 16384) req.destroy(Error("update_state_invalid")); });
+          res.on("end", () => { try { if (res.statusCode !== 200) throw Error("update_state_unavailable"); resolve(JSON.parse(text)); } catch (error) { reject(error); } });
+        });
+        req.setTimeout(5000, () => req.destroy(Error("update_state_timeout"))); req.on("error", reject); req.end(body);
+      });
+    },
     dispose,
     onUpdate,
     restart,

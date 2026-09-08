@@ -125,7 +125,7 @@ export function AiExpert() {
 
   const activeSlot = tab === "expert_rules" ? status.expertRules : status.businessKnowledge;
   return <section className="page workflow-expert-page">
-    <div className="page-head workflow-page-head"><div><h1>AI 专家</h1><p>聊聊你的业务与接待方式，AI 会整理成两份可编辑的专家资料。</p></div><span className={"ai-expert-state " + (status.ready ? "is-configured" : "")}>{dirty ? "有未保存内容" : status.ready ? "专家已就绪" : "待建立"}</span></div>
+    <div className="page-head workflow-page-head"><div><h1>你的AI专家</h1><p>聊聊你的业务与接待方式，AI 会整理成两份可编辑的专家资料。</p></div><span className={"ai-expert-state " + (status.ready ? "is-configured" : "")}>{dirty ? "有未保存内容" : status.ready ? "专家已就绪" : "待建立"}</span></div>
     {(error || notice) && <div className={error ? "workflow-alert" : "workflow-notice"} role={error ? "alert" : "status"}>{!error && <Check size={16} />}{error || notice}</div>}
     <div className="workflow-expert-layout">
       <section className="workflow-expert-conversation" aria-label="建立专家的对话">

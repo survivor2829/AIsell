@@ -7,7 +7,7 @@ function registerCloudMaintenanceIpc({ ipcMain, controller, getMainWindow, resta
     status: () => controller.status(), check: () => controller.check(),
     announcements: () => controller.refreshAnnouncements(), readAnnouncement: (sequence) => controller.markAnnouncementRead(sequence),
     consent: (value) => controller.setConsent(value === true),
-    upload: () => controller.flush(), restart: () => restart()
+    upload: () => controller.flush(), restart: () => restart(), acknowledgeUpdate: () => controller.acknowledgeUpdate()
   })) {
     ipcMain.handle(`cloud:${name}`, async (event, value) => { trusted(event); return action(value); });
   }

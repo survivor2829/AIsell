@@ -1,7 +1,7 @@
 import { BookOpen, Bell, RefreshCw, ArrowRight } from "lucide-react";
 import { useEffect, useState } from "react";
 import { CustomerPanel } from "./CustomerPanel";
-import type { CloudStatus } from "./CloudMaintenance";
+import { CloudMaintenance, type CloudStatus } from "./CloudMaintenance";
 import type { AgentHomeTarget } from "./AgentHome";
 
 type TutorialTarget = AgentHomeTarget | "api-key" | "diagnostics";
@@ -24,10 +24,11 @@ const GUIDES: { title: string; heading: string; intro: string; steps: string[]; 
 ];
 
 export function CustomerTools({ onNavigate }: { onNavigate: (target: TutorialTarget) => void }) {
-  const [panel, setPanel] = useState<"announcements" | "tutorial" | null>(null);
+  const [panel, setPanel] = useState<"announcements" | "update" | "tutorial" | null>(null);
   const [state, setState] = useState<CloudStatus>();
   const [error, setError] = useState("");
   const [guideIndex, setGuideIndex] = useState(0);
+  useEffect(() => { if (state?.lastUpdate?.unread) setPanel("update"); }, [state?.lastUpdate?.completedAt, state?.lastUpdate?.unread]);
   useEffect(() => {
     const api = window.xiaoxiCloudMaintenance;
     if (!api) return;
@@ -44,7 +45,7 @@ export function CustomerTools({ onNavigate }: { onNavigate: (target: TutorialTar
     try { setState(await api.announcements()); }
     catch { setError("公告暂时刷新失败，本机记录仍可查看。"); }
   };
-  const read = (sequence: number) => {
+  const read = (sequence: string | number) => {
     if (!window.xiaoxiCloudMaintenance) return;
     void window.xiaoxiCloudMaintenance.readAnnouncement(sequence).then(setState).catch(() => setError("已读状态暂未保存，请稍后重试。"));
   };
@@ -52,11 +53,14 @@ export function CustomerTools({ onNavigate }: { onNavigate: (target: TutorialTar
   return <div className="topbar-tools">
     <button type="button" className="topbar-tool" aria-label={`更新公告${state?.unreadAnnouncements ? `，${state.unreadAnnouncements} 条未读` : ""}`} title="更新公告" aria-expanded={panel === "announcements"}
       onClick={() => { setPanel("announcements"); void refresh(); }}><Bell size={17} /><span>更新公告</span>{Boolean(state?.unreadAnnouncements) && <span className="topbar-unread" aria-hidden="true" />}</button>
+    <button type="button" className="topbar-tool" aria-label="检查更新" title="检查更新" aria-expanded={panel === "update"}
+      onClick={() => { setPanel("update"); void window.xiaoxiCloudMaintenance?.check().catch(() => setError("更新检查暂未完成，请重试。")); }}><RefreshCw size={17} /><span>检查更新</span></button>
     <button type="button" className="topbar-tool" aria-label="使用教程" title="使用教程" aria-expanded={panel === "tutorial"} onClick={() => setPanel("tutorial")}><BookOpen size={17} /><span>使用教程</span></button>
+    {panel === "update" && <CustomerPanel title="软件更新" description="查看当前版本和更新进度。" onClose={() => { setPanel(null); void window.xiaoxiCloudMaintenance?.acknowledgeUpdate().catch(() => {}); }}><CloudMaintenance updateOnly /></CustomerPanel>}
     {panel === "announcements" && <CustomerPanel title="更新公告" description="看看这次有哪些改进。" onClose={() => setPanel(null)}>
       <div className="announcement-toolbar"><span>当前版本 {state?.version || "—"}</span><button type="button" className="customer-text-button" disabled={!state?.enabled || state.announcementsChecking} onClick={() => void refresh()}><RefreshCw size={14} />{state?.announcementsChecking ? "正在刷新…" : "刷新公告"}</button></div>
-      {state?.announcements?.length ? <div className="announcement-list">{state.announcements.map((entry, index) => <details key={entry.sequence} className="announcement-entry" open={index === 0 ? true : undefined}
-        onToggle={(event) => { if (event.currentTarget.open && !entry.read) read(entry.sequence); }}>
+      {state?.announcements?.length ? <div className="announcement-list">{state.announcements.map((entry, index) => <details key={entry.id || entry.sequence} className="announcement-entry" open={index === 0 ? true : undefined}
+        onToggle={(event) => { if (event.currentTarget.open && !entry.read) read(entry.id || entry.sequence); }}>
         <summary><strong>版本 {entry.version}</strong>{!entry.read && <span className="announcement-new">新更新</span>}{entry.publishedAt && <time dateTime={entry.publishedAt}>{new Date(entry.publishedAt).toLocaleDateString("zh-CN")}</time>}</summary>
         <p>{entry.notes || "此版本尚未提供更新说明。"}</p>
       </details>)}</div> : <p className="customer-empty">{state?.enabled ? "暂时没有收到更新公告。联网后刷新即可查看。" : "当前版本尚未启用云端公告。使用教程仍可离线查看。"}</p>}

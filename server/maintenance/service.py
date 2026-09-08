@@ -13,7 +13,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
-from feedback import FeedbackStoreMixin, FeedbackConflict, FeedbackUnauthorized, validate_feedback
+from feedback import FeedbackStoreMixin, FeedbackConflict, FeedbackUnauthorized, validate_feedback, STATES
 
 TOKEN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}\Z")
 HEX = re.compile(r"[a-f0-9]{64}\Z")
@@ -58,10 +58,10 @@ def validate_report(body):
         row["details"] = {}
         details = entry.get("details", {})
         if isinstance(details, dict):
-            for key in ("receipt_stage", "receipt_code", "receipt_draft_read_stage", "state", "status", "phase", "reason_code", "error_code"):
+            for key in ("receipt_stage", "receipt_code", "receipt_draft_read_stage", "state", "status", "phase", "reason_code", "error_code", "stage", "wx_hook_stage", "wx_hook_error_code", "blocked_reason"):
                 if safe_token(details.get(key)):
                     row["details"][key] = details[key]
-            for key in ("receipt_conversation_verified", "receipt_draft_read_ok", "receipt_draft_consumed", "receipt_input_lease_valid", "receipt_bubble_verified"):
+            for key in ("receipt_conversation_verified", "receipt_draft_read_ok", "receipt_draft_consumed", "receipt_input_lease_valid", "receipt_bubble_verified", "helper_configured", "wechat_exe_configured", "wechat_root_configured"):
                 if type(details.get(key)) is bool:
                     row["details"][key] = details[key]
         clean["entries"].append(row)
@@ -216,6 +216,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, self.server.store.insert_feedback(clean, secret))
             if not self.server.admin and self.path == "/v1/feedback/status":
                 return self.reply(200, self.server.store.feedback_statuses(self.body()))
+            if not self.server.admin and self.path == "/v1/feedback/visibility":
+                return self.reply(200, self.server.store.withdraw_feedback(self.body()))
             if self.server.admin or self.path != "/v1/reports":
                 return self.reply(404, {"error": "not_found"})
             report = validate_report(self.body())
@@ -236,10 +238,14 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/overview":
                 return self.reply(200, self.server.store.overview())
             if route == "/api/feedback":
-                raw_offset = parse_qs(urlsplit(self.path).query).get("offset", ["0"])[0]
+                query = parse_qs(urlsplit(self.path).query)
+                raw_offset = query.get("offset", ["0"])[0]
+                status = query.get("status", [""])[0]
                 if not re.fullmatch(r"\d{1,9}", raw_offset):
                     return self.reply(400, {"error": "invalid_offset"})
-                return self.reply(200, self.server.store.feedback_overview(int(raw_offset)))
+                if status and status not in STATES:
+                    return self.reply(400, {"error": "invalid_status"})
+                return self.reply(200, self.server.store.feedback_overview(int(raw_offset), status))
             if route == "/":
                 data = Path(__file__).with_name("admin.html").read_bytes()
                 self.send_response(200)
@@ -252,25 +258,59 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404, {"error": "not_found"})
         if route == "/health":
             return self.reply(200, {"ok": True, "service": "maintenance", "schema": 1})
-        match = re.fullmatch(r"/v1/releases/(test|delivery|smoke)/latest", route)
+        if route == "/v1/feedback/public":
+            if not self.server.allowed(self.client_address[0]):
+                return self.reply(429, {"error": "rate_limit"})
+            query = parse_qs(urlsplit(self.path).query)
+            offset, limit = query.get("offset", ["0"])[0], query.get("limit", ["30"])[0]
+            if not re.fullmatch(r"\d{1,9}", offset) or not re.fullmatch(r"[1-9]\d{0,8}", limit):
+                return self.reply(400, {"error": "invalid_pagination"})
+            try:
+                return self.reply(200, self.server.store.public_feedback(int(offset), int(limit)))
+            except Exception:
+                return self.reply(503, {"error": "unavailable"})
+        match = re.fullmatch(r"/v([12])/releases/(test|delivery|smoke)/latest", route)
         if match:
-            file = self.server.store.root / "releases" / match[1] / "latest.json"
+            file = self.server.store.root / "releases" / match[2] / ("latest-components.json" if match[1] == "2" else "latest.json")
             if not file.exists():
                 return self.reply(200, {"empty": True})
             return self.reply(200, json.loads(file.read_text()))
-        match = re.fullmatch(r"/artifacts/([a-f0-9]{64})\.exe", route)
+        match = re.fullmatch(r"/(artifacts|components)/([a-f0-9]{64})\.(exe|zip)", route)
         if match:
-            file = self.server.store.root / "artifacts" / (match[1] + ".exe")
+            if (match[1], match[3]) not in (("artifacts", "exe"), ("components", "zip")):
+                return self.reply(404, {"error": "not_found"})
+            file = self.server.store.root / match[1] / (match[2] + "." + match[3])
             if file.is_file():
-                self.send_response(200)
+                size = file.stat().st_size
+                start, end, status = 0, size - 1, 200
+                requested = self.headers.get("Range")
+                if requested:
+                    span = re.fullmatch(r"bytes=(\d{1,20})-(\d{0,20})", requested)
+                    if span:
+                        start = int(span[1])
+                        end = min(int(span[2]), size - 1) if span[2] else size - 1
+                    if not span or start >= size or end < start:
+                        self.send_response(416)
+                        self.send_header("Content-Range", f"bytes */{size}")
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+                    status = 206
+                self.send_response(status)
                 self.send_header("Content-Type", "application/octet-stream")
-                self.send_header("Content-Length", str(file.stat().st_size))
+                self.send_header("Content-Length", str(max(0, end - start + 1)))
+                self.send_header("Accept-Ranges", "bytes")
+                if status == 206:
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.end_headers()
                 try:
                     with file.open("rb") as stream:
-                        while chunk := stream.read(256 * 1024):
+                        stream.seek(start)
+                        remaining = end - start + 1
+                        while remaining > 0 and (chunk := stream.read(min(256 * 1024, remaining))):
                             self.wfile.write(chunk)
+                            remaining -= len(chunk)
                 except (BrokenPipeError, ConnectionResetError, TimeoutError):
                     pass
                 return

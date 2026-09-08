@@ -70,7 +70,7 @@ function assertRealPathInside(root, target, label) {
   }
 }
 
-function resolvePortablePaths({ edition, targetOption, zipOption, releaseRoot = path.join(projectDir, "release") }) {
+function resolvePortablePaths({ edition, targetOption, zipOption, directoryOnly = false, releaseRoot = path.join(projectDir, "release") }) {
   const productName = edition === "test" ? `${PRODUCT_NAME}-测试版` : PRODUCT_NAME;
   const target = path.resolve(targetOption || path.join(releaseRoot, productName));
   const zip = path.resolve(zipOption || path.join(releaseRoot, `${productName}.zip`));
@@ -79,11 +79,11 @@ function resolvePortablePaths({ edition, targetOption, zipOption, releaseRoot = 
   if (!samePath(path.dirname(target), path.dirname(zip))) throw new Error("Portable target and ZIP must have the same parent directory");
   if (!fs.existsSync(releaseRoot)) throw new Error(`Project release directory does not exist: ${releaseRoot}`);
   if (!fs.existsSync(target) || !fs.statSync(target).isDirectory()) throw new Error(`Portable target directory does not exist: ${target}`);
-  if (!fs.existsSync(zip) || !fs.statSync(zip).isFile()) throw new Error(`Portable ZIP does not exist: ${zip}`);
+  if (!directoryOnly && (!fs.existsSync(zip) || !fs.statSync(zip).isFile())) throw new Error(`Portable ZIP does not exist: ${zip}`);
 
   const realReleaseRoot = fs.realpathSync(releaseRoot);
   const realTarget = fs.realpathSync(target);
-  const realZip = fs.realpathSync(zip);
+  const realZip = directoryOnly ? path.join(path.dirname(realTarget), path.basename(zip)) : fs.realpathSync(zip);
   assertRealPathInside(realReleaseRoot, realTarget, "Portable target");
   assertRealPathInside(realReleaseRoot, realZip, "Portable ZIP");
   if (path.basename(realTarget) !== productName || path.basename(realZip) !== `${productName}.zip`) {
@@ -178,7 +178,8 @@ function verifyPortableArchive({
 }
 
 function main(argv = process.argv.slice(2)) {
-const parsedArguments = parsePortableArguments(argv);
+const directoryOnly = argv.includes("--directory-only");
+const parsedArguments = { ...parsePortableArguments(argv.filter(arg => arg !== "--directory-only")), directoryOnly };
 const { edition, productName, target, zip } = resolvePortablePaths(parsedArguments);
 const resourcesDir = path.join(target, "resources");
 const appDir = path.join(resourcesDir, "app");
@@ -307,7 +308,7 @@ function sha256(file) {
 }
 
 assert.equal(fs.existsSync(executable), true, "portable executable must exist");
-assert.equal(fs.existsSync(zip), true, "portable ZIP must exist");
+if (!directoryOnly) assert.equal(fs.existsSync(zip), true, "portable ZIP must exist");
 assert.equal(fs.existsSync(helper), true, "contact helper must be packaged");
 assert.equal(fs.existsSync(wxKeyDll), true, "authorized wx_key.dll must be packaged");
 assert.equal(fs.existsSync(databaseDecryptor), true, "database decryptor must be packaged");
@@ -392,7 +393,11 @@ function walk(root) {
 walk(target);
 assertNoBlockedFiles(files, "release", { targetRoot: target });
 
-const { archiveEntries, archiveRoot } = verifyPortableArchive({
+// Component releases ship individually verified archives, not a full ZIP. Keep
+// all application/runtime gates and inspect their composed file inventory here.
+const { archiveEntries, archiveRoot } = directoryOnly ? {
+  archiveEntries: files.map(file => `${productName}/${path.relative(target, file).replaceAll("\\", "/")}`), archiveRoot: productName
+} : verifyPortableArchive({
   zip,
   target,
   productName,
@@ -702,7 +707,7 @@ if (edition === "delivery") {
   for (const marker of momentsActionIpcMarkers) assert.equal(packagedSources.includes(marker), false, `delivery source must not contain ${marker}`);
   for (const marker of momentsActionUiMarkers) assert.equal(renderer.includes(marker), false, `delivery renderer must not contain ${marker}`);
 }
-console.log(`${edition} portable release self-check passed`);
+console.log(`${edition} ${directoryOnly ? "component application" : "portable release"} self-check passed`);
 }
 
 if (require.main === module) main();

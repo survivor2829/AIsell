@@ -36,7 +36,8 @@ function registerWechatWorkflowIpc(options) {
   const controller = createWechatWorkflowController({ ...options, onUpdate: broadcast });
 
   const active = () => controller.status().enabled || controller.status().phase === "pausing" || contactSync?.running;
-  function showMain() {
+  function showMain(intent) {
+    if (["start", "history", "tasks"].includes(intent?.view)) main()?.webContents.send("wechat-workflow:navigate", { view: intent.view });
     main()?.show(); main()?.focus();
     if (!active()) floatingWindow?.hide();
     return { ok: true, state: viewState() };
@@ -173,6 +174,7 @@ function registerWechatWorkflowIpc(options) {
   handle("cancel-task", (payload) => controller.cancelTask(String(payload?.id || "")));
   handle("retry-task", (payload) => controller.retryTask(String(payload?.id || "")), true);
   handle("remove-recipient", (payload) => controller.removeRecipient(String(payload?.id || "")));
+  handle("add-recipients", (payload) => controller.addRecipients(payload?.contactIds), true);
   handle("set-reply-enabled", (payload) => controller.setReplyEnabled(payload?.enabled));
   handle("show-main", showMain);
   handle("show-floating", showFloating);

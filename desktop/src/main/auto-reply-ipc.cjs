@@ -1365,7 +1365,7 @@ function resolveWorkflowContactScope(activeTouchDir, recipients) {
       return { ok: false, code: "workflow_recipient_changed", error: "接待名单中的联系人已变化，请重新选择" };
     }
     const uniqueAliases = uniqueAliasesForTestContact(contact, aliasIndex);
-    if (!uniqueAliases.length) return { ok: false, code: "workflow_recipient_ambiguous", error: "接待联系人没有唯一可识别的会话名称，请检查备注" };
+    if (!uniqueAliases.length) return { ok: false, code: "workflow_recipient_ambiguous", error: `接待联系人“${testContactLabel(contact)}”的会话名称与其他联系人重复，请在微信中设置不同备注、重新同步后再选择` };
     ids.add(id);
     contacts.push(contact);
     for (const alias of uniqueAliases) {
@@ -2298,6 +2298,7 @@ function createAutoReplyController(options = {}) {
   }
 
   function rejectedStart(error, code) {
+    appendDiagnostic("start_blocked", { phase: "start", code: code || "start_rejected" });
     clearTestContactScope();
     return {
       ok: false,
@@ -2329,9 +2330,9 @@ function createAutoReplyController(options = {}) {
     const contactScope = resolveContactScope();
     if (!contactScope.ok) return rejectedStart(contactScope.error, contactScope.code);
     const contacts = contactScope.contacts;
-    if (!contacts.length) return rejectedStart("没有可安全识别的已同步一对一联系人");
+    if (!contacts.length) return rejectedStart("没有可安全识别的已同步一对一联系人，请先同步联系人；如已同步，请检查重名联系人的备注", "contact_scope_empty");
     const conversationAliases = contactScope.aliases;
-    if (!conversationAliases.length) return rejectedStart("已同步联系人没有唯一可识别的会话名称");
+    if (!conversationAliases.length) return rejectedStart("已同步联系人没有唯一可识别的会话名称，请为重名联系人设置不同备注后重新同步", "contact_alias_ambiguous");
     try {
       deepSeekClient?.assertAvailable();
       expertDocuments(expertStore);
@@ -3764,7 +3765,17 @@ function createAutoReplyController(options = {}) {
     }
   }
 
-  return { acknowledgeManualFollowup, pause, pauseWorkflow, resumeContact, runOnce, runWorkflowStep, start, status };
+  function prepareWorkflowRecipients(contactIds) {
+    if (!Array.isArray(contactIds) || !contactIds.length || contactIds.length > 1000) throw new Error("请选择要接待的联系人。");
+    const universe = testContactUniverse(activeTouchDir);
+    const ids = [...new Set(contactIds.map((id) => String(id).trim()))];
+    const selected = ids.map((id) => universe.find((contact) => normalizeText(contact.id) === id));
+    if (selected.some((contact) => !contact)) throw new Error("所选联系人已变化，请重新同步后选择。");
+    const scope = resolveWorkflowContactScope(activeTouchDir, selected);
+    if (!scope.ok) throw new Error(scope.error);
+    return scope.contacts.map((contact) => ({ ...contact }));
+  }
+  return { acknowledgeManualFollowup, pause, pauseWorkflow, prepareWorkflowRecipients, resumeContact, runOnce, runWorkflowStep, start, status };
 }
 
 function registerAutoReplyIpc(options = {}) {

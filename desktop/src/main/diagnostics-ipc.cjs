@@ -37,10 +37,11 @@ const AUTO_REPLY_VISIBLE_INTEGER_FIELDS = [
 const AUTO_REPLY_VISIBLE_BOOLEAN_FIELDS = ["send_attempted", "draft_phase_started"];
 
 function buildInfo(appRuntime = app) {
+  const appRoot = require("./component-paths.cjs").applicationPath(appRuntime);
   const candidates = [
-    path.join(appRuntime.getAppPath(), "dist", "build-edition.json"),
-    path.join(appRuntime.getAppPath(), "dist-pilot", "build-edition.json"),
-    path.join(appRuntime.getAppPath(), "dist-development", "build-edition.json")
+    path.join(appRoot, "dist", "build-edition.json"),
+    path.join(appRoot, "dist-pilot", "build-edition.json"),
+    path.join(appRoot, "dist-development", "build-edition.json")
   ];
   for (const file of candidates) {
     try {

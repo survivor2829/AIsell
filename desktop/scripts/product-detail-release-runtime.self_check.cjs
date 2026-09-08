@@ -147,7 +147,7 @@ function run(root) {
   );
   assert.throws(
     () => createReleaseDescriptor(build, "3".repeat(40)),
-    /desktop source commit does not match the portable release commit/
+    /reuse receipt/
   );
   assert.equal(isProductDetailPythonSource("resources/product-detail/_internal/module.py"), true);
   assert.equal(isProductDetailPythonSource("AI获客/resources/product-detail/_internal/module.py"), false);

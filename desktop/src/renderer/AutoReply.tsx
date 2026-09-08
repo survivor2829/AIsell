@@ -1,7 +1,7 @@
 import { Check, Pause, Play, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { subscribeToStatus } from "./status-subscription";
-import { WorkflowRecipients, WorkflowToggle, workflowStatusText, type WorkflowController } from "./WechatWorkflow";
+import { WorkflowRecipients, WorkflowToggle, workflowStatusText, type WorkflowController, type WorkflowView, type WorkflowContact } from "./WechatWorkflow";
 
 type ScanHealth = "unknown" | "checking" | "healthy" | "warning" | "degraded" | "waiting";
 type AutoReplyFailureContext = {
@@ -398,7 +398,7 @@ function recoverySummary(context: AutoReplyFailureContext) {
   }
 }
 
-export function AutoReply({ workflow }: { workflow?: WorkflowController } = {}) {
+export function AutoReply({ workflow, onNavigate, contacts = [] }: { workflow?: WorkflowController; onNavigate?: (view: WorkflowView) => void; contacts?: WorkflowContact[] } = {}) {
   const [state, setState] = useState<AutoReplyState>(EMPTY_STATE);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -499,7 +499,7 @@ export function AutoReply({ workflow }: { workflow?: WorkflowController } = {}) 
           <p>{workflow ? "客户回复优先处理；没有其他待办时，持续使用 AI 专家资料接待客户。" : "启动后监听新消息，并使用已导入的 AI 专家资料生成回复。"}</p>
         </div>
         <div className="actions">
-          {workflow ? <WorkflowToggle workflow={workflow} /> : running ? (
+          {workflow ? <WorkflowToggle workflow={workflow} onNavigate={onNavigate} /> : running ? (
             <button className="danger-button" onClick={pause} disabled={busy}>
               <Pause size={17} />暂停自动回复
             </button>
@@ -524,7 +524,7 @@ export function AutoReply({ workflow }: { workflow?: WorkflowController } = {}) 
       {workflow && <>
         <div className="workflow-reply-summary"><span>运行状态<strong>{workflowStatusText(workflow.state)}</strong></span><span>接待客户<strong>{workflow.state.recipients.length} 人</strong></span><span>今日已回复<strong>{state.reply_count}</strong></span></div>
         {(workflow.error || workflow.state.replyError) && <div className="workflow-alert" role="alert">{workflow.error || workflow.state.replyError}</div>}
-        <WorkflowRecipients workflow={workflow} />
+        <WorkflowRecipients workflow={workflow} contacts={contacts} />
       </>}
 
       {heldContacts.length > 0 && (

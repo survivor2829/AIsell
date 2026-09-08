@@ -332,8 +332,9 @@ for (const [scriptName, edition] of [["release:test", "test"], ["release:deliver
     true,
     `${scriptName} must check runtime residue before building the renderer`
   );
-  assert.match(releaseRunnerSource, /build-product-detail-sidecar\.cjs/, `${scriptName} must build a fresh product-detail sidecar`);
-  assert.match(releaseRunnerSource, /build-content-engine-sidecar\.cjs/, `${scriptName} must build a fresh content-engine sidecar`);
+  assert.match(releaseRunnerSource, /"product-detail", resolveProductDetailBuild/, `${scriptName} must verify the product-detail runtime`);
+  assert.match(releaseRunnerSource, /"content-engine", resolveContentEngineBuild/, `${scriptName} must verify the content-engine runtime`);
+  assert.match(releaseRunnerSource, /build-\$\{kind\}-sidecar\.cjs/, `${scriptName} must build the runtime on a verified cache miss`);
   assert.equal((script.match(/portable-release\.self_check/g) || []).length, 0, `${scriptName} must rely on the staging self-check before promotion, not revalidate after publication`);
 }
 assert.match(read(path.join(desktopDir, "scripts", "check-clean-runtime.cjs")), /\^\\\.env\(\?:\\\.|\$\)\/i/, "clean-runtime must detect environment files case-insensitively on Windows");

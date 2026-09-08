@@ -5,7 +5,7 @@ server_ip="${1:?server IP is required}"
 case "$server_ip" in *[!0-9.]*|'') exit 2;; esac
 id ai-maintenance >/dev/null 2>&1 || useradd --system --home /var/lib/ai-maintenance --shell /usr/sbin/nologin ai-maintenance
 install -d -m 755 /opt/ai-maintenance
-install -m 644 "$(dirname "$0")/service.py" "$(dirname "$0")/feedback.py" "$(dirname "$0")/admin.html" "$(dirname "$0")/promote.py" /opt/ai-maintenance/
+install -m 644 "$(dirname "$0")/service.py" "$(dirname "$0")/feedback.py" "$(dirname "$0")/admin.html" "$(dirname "$0")/promote.py" "$(dirname "$0")/promote_components.py" /opt/ai-maintenance/
 install -d -o ai-maintenance -g ai-maintenance -m 750 /var/lib/ai-maintenance
 install -d -m 750 -o root -g ai-maintenance /etc/ai-maintenance
 if [ ! -f /etc/ai-maintenance/server.key ]; then

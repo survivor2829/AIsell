@@ -5,6 +5,10 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { artifactTypeForEdition, validateRemotionBuildInputs } = require("./build-remotion-runtime.cjs");
 const { resolveMediaToolSources } = require("./build-content-engine-sidecar.cjs");
+const { cachedRuntime, runtimeFingerprint } = require("./release-runtime-cache.cjs");
+const { resolveProductDetailBuild } = require("./product-detail-release-runtime.cjs");
+const { resolveContentEngineBuild } = require("./content-engine-release-runtime.cjs");
+const { verifyRemotionRuntime } = require("./build-remotion-runtime.cjs");
 
 const desktopDir = path.resolve(__dirname, "..");
 
@@ -69,7 +73,8 @@ function preflightReleaseInputs(edition, environment = process.env) {
   return { artifactType, mediaTools, remotion };
 }
 
-function runRelease(edition = "delivery", environment = process.env) {
+function runRelease(edition = "delivery", environment = process.env, { componentsOnly = false } = {}) {
+  if (componentsOnly && edition !== "test") throw new Error("Component releases require the internal test channel");
   const internalUpgrade = edition === "upgrade";
   if (!internalUpgrade && environment.XIAOXI_INTERNAL_UPGRADE) {
     throw new Error("Internal upgrade flag requires the explicit upgrade entry point");
@@ -79,7 +84,8 @@ function runRelease(edition = "delivery", environment = process.env) {
     environment = { ...environment, XIAOXI_INTERNAL_UPGRADE: "1" };
   }
   if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported release edition: ${edition}`);
-  const { artifactType: remotionArtifactType, remotion } = preflightReleaseInputs(edition, environment);
+  const inputs = preflightReleaseInputs(edition, environment);
+  const { artifactType: remotionArtifactType, remotion } = inputs;
   const sidecarBuildRoot = createBuildRoot();
   const remotionRuntimeRoot = path.join(sidecarBuildRoot, "r");
   const releaseEnvironment = {
@@ -92,14 +98,31 @@ function runRelease(edition = "delivery", environment = process.env) {
   runNode("product-detail local E2E", "product-detail-local-e2e.cjs", ["--cleanup-on-success"], releaseEnvironment);
   runNode("clean runtime gate", "check-clean-runtime.cjs", [], releaseEnvironment);
   runNode(`${edition} renderer build`, "build-renderer.cjs", [edition], releaseEnvironment);
-  runNode("product-detail sidecar build", "build-product-detail-sidecar.cjs", [], releaseEnvironment);
-  runNode("content-engine sidecar build", "build-content-engine-sidecar.cjs", [], releaseEnvironment);
-  runNode("Remotion runtime build", "build-remotion-runtime.cjs", [
-    remotionArtifactType,
-    "--output",
-    path.join(remotionRuntimeRoot, remotionArtifactType)
-  ], releaseEnvironment);
-  runNode("portable application build", "build-portable-release.cjs", [edition], releaseEnvironment);
+  const commitResult = spawnSync("git", ["rev-parse", "HEAD"], { cwd: desktopDir, encoding: "utf8", windowsHide: true });
+  const buildCommit = String(commitResult.stdout || "").trim();
+  if (commitResult.status !== 0 || !/^[0-9a-f]{40}$/u.test(buildCommit)) throw new Error("Runtime cache requires a release source commit");
+  const cacheRoot = path.join(desktopDir, ".build", "runtime-cache");
+  for (const [kind, resolver, sourceOf] of [
+    ["product-detail", resolveProductDetailBuild, (value) => value.manifest.desktopSource],
+    ["content-engine", resolveContentEngineBuild, (value) => value.manifest.source]
+  ]) {
+    cachedRuntime({
+      cacheRoot, kind, buildCommit, destination: sidecarBuildRoot, sourceOf,
+      fingerprint: runtimeFingerprint(desktopDir, kind, remotionArtifactType, inputs, releaseEnvironment),
+      resolve: (buildRoot) => resolver(desktopDir, { buildRoot }),
+      artifacts: [`${kind}-runtime`, `${kind}-runtime.manifest.json`],
+      build: () => runNode(`${kind} sidecar build`, `build-${kind}-sidecar.cjs`, [], releaseEnvironment)
+    });
+  }
+  const remotionRelative = path.join("r", remotionArtifactType);
+  cachedRuntime({
+    cacheRoot, kind: "remotion", buildCommit, destination: sidecarBuildRoot,
+    fingerprint: runtimeFingerprint(desktopDir, "remotion", remotionArtifactType, inputs, releaseEnvironment),
+    resolve: (root) => verifyRemotionRuntime(path.join(root, remotionRelative), { desktopDir, expectedArtifactType: remotionArtifactType, requireCompositionSmoke: true }),
+    artifacts: [remotionRelative],
+    build: () => runNode("Remotion runtime build", "build-remotion-runtime.cjs", [remotionArtifactType, "--output", path.join(remotionRuntimeRoot, remotionArtifactType)], releaseEnvironment)
+  });
+  runNode("portable application build", "build-portable-release.cjs", [edition, ...(componentsOnly ? ["--components-only"] : [])], releaseEnvironment);
   if (internalUpgrade) runNode("in-place upgrade installer", "build-installer-release.cjs", ["upgrade"], releaseEnvironment);
   return { remotionRuntimeRoot, sidecarBuildRoot };
 }

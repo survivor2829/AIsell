@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "default": "base",
+  "rules": [
+    {"component":"base","prefixes":["resources/app/node_modules/","resources/app/rpa/contact_sync/libs/","resources/app/rpa/contact_sync/xiaoxi-contact-helper.exe","resources/app/src/main/bootstrap.cjs","resources/app/src/main/update-helper.cjs","resources/app/src/main/component-paths.cjs","resources/app/src/main/component-store.cjs","resources/app/src/main/atomic-file.cjs","resources/app/src/shared/component-contract.cjs","resources/app/src/shared/cloud-contract.cjs","resources/app/src/main/cloud-transport.cjs","resources/app/src/main/cloud-config.cjs","resources/app/src/main/cloud-test-ca.crt"]},
+    {"component":"video","prefixes":["resources/content-engine/remotion-bundle/","resources/content-engine/remotion-render-worker.mjs","resources/content-engine/remotion-runtime-manifest.json","resources/content-engine/remotion-runtime-manifest.sha256","resources/content-engine/remotion-sbom.json","remotion-packaging/"]},
+    {"component":"content-engine","prefixes":["resources/content-engine/content-engine-worker.exe","resources/content-engine/_internal/content_engine/"]},
+    {"component":"product-detail","prefixes":["resources/product-detail/product-detail-server.exe","resources/product-detail/_internal/ai_refine_v2/","resources/product-detail/_internal/templates/","resources/product-detail/_internal/static/"]},
+    {"component":"application","prefixes":["resources/app/","版本清单.json","版本标识.txt","首次使用说明.txt"]}
+  ]
+}
