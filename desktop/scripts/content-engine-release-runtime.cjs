@@ -173,6 +173,7 @@ function createReleaseDescriptor(build, buildCommit, artifactType) {
     executable: CONTENT_ENGINE_EXECUTABLE,
     executableSha256: build.manifest.runtime.exeSha256,
     treeSha256: build.manifest.runtime.treeSha256,
+    originalRuntimeTreeSha256: build.manifest.runtime.treeSha256,
     buildCommit,
     sourceCommit: build.manifest.source.commit,
     sourceDirty: build.manifest.source.dirty,
@@ -216,9 +217,13 @@ function validateReleaseDescriptor(descriptor) {
   if (descriptor.sourceDirty !== false) {
     throw new Error("Portable manifest content-engine source must be clean");
   }
-  if (descriptor.reuseReceipt || descriptor.sourceCommit !== descriptor.buildCommit) {
+  const reused = Boolean(descriptor.reuseReceipt || descriptor.sourceCommit !== descriptor.buildCommit);
+  if ((reused || descriptor.originalRuntimeTreeSha256 !== undefined) && !SHA256_PATTERN.test(String(descriptor.originalRuntimeTreeSha256 || ""))) {
+    throw new Error("Portable manifest has an invalid original content-engine runtime tree hash");
+  }
+  if (reused) {
     validateReuseReceipt(descriptor.reuseReceipt, { buildCommit: descriptor.buildCommit, sourceCommit: descriptor.sourceCommit,
-      sourceTreeSha256: descriptor.sourceTreeSha256, runtimeTreeSha256: descriptor.treeSha256 });
+      sourceTreeSha256: descriptor.sourceTreeSha256, runtimeTreeSha256: descriptor.originalRuntimeTreeSha256 });
   }
   if (!SHA256_PATTERN.test(String(descriptor.sourceTreeSha256 || ""))) {
     throw new Error("Portable manifest has an invalid content-engine source tree hash");
