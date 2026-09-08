@@ -1,7 +1,12 @@
-const { app, dialog } = require("electron");
+const { app, dialog, protocol } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const { readJson, updatePaths, generationPath, verifySelected, saveSelection, rollbackSelection } = require("./component-paths.cjs");
+const { registerContentMediaScheme } = require("./content-media-scheme.cjs");
+
+// Selected component verification yields to Electron's ready event. Privileged
+// schemes must be registered synchronously before that verification starts.
+registerContentMediaScheme(protocol);
 
 async function boot() {
   if (!app.isPackaged) { require("./main.cjs"); return; }

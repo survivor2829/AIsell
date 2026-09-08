@@ -2,21 +2,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { Readable } = require("node:stream");
 
-const CONTENT_MEDIA_SCHEME = "xiaoxi-content";
+const { CONTENT_MEDIA_SCHEME, registerContentMediaScheme } = require("./content-media-scheme.cjs");
 const GENERATED_VIDEO_ID = /^generated_video_[a-f0-9]{32}$/;
 const GUIDED_SUPPLEMENTAL_IMAGE_ID = /^guided_auto_mix_supplemental_image_[a-f0-9]{32}$/;
-
-function registerContentMediaScheme(protocol) {
-  protocol.registerSchemesAsPrivileged([{
-    scheme: CONTENT_MEDIA_SCHEME,
-    privileges: {
-      standard: true,
-      secure: true,
-      supportFetchAPI: true,
-      stream: true
-    }
-  }]);
-}
 
 function parseContentMediaUrl(value) {
   let url;
