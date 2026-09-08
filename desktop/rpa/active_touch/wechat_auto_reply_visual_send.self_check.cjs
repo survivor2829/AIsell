@@ -197,7 +197,7 @@ const evidenceTemp = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-visual-send-e
 const evidenceFile = path.join(evidenceTemp, "evidence.ps1");
 let evidenceProbe;
 try {
-  fs.writeFileSync(evidenceFile, evidenceProgram, "utf8");
+  fs.writeFileSync(evidenceFile, "\uFEFF" + evidenceProgram, "utf8");
   evidenceProbe = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", evidenceFile], { encoding: "utf8" });
 } finally {
   fs.rmSync(evidenceTemp, { recursive: true, force: true });
@@ -423,7 +423,7 @@ $matchedHeader = Get-VisualSendConversationBinding $frame 300.0 96.0
 `;
 const selectedRowTemp = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-visual-send-self-check-"));
 const selectedRowFile = path.join(selectedRowTemp, "selected-row.ps1");
-fs.writeFileSync(selectedRowFile, selectedRowProgram, "utf8");
+fs.writeFileSync(selectedRowFile, "\uFEFF" + selectedRowProgram, "utf8");
 let selectedRowProbe;
 try {
   selectedRowProbe = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", selectedRowFile], { encoding: "utf8" });
