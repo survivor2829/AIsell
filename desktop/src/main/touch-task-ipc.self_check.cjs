@@ -170,7 +170,9 @@ function contacts(count) {
   }));
 }
 
-async function waitFor(read, predicate, timeoutMs = 10_000) {
+// Fifty simulated contacts persist several atomic snapshots each; hosted Windows
+// disk latency must not turn a state-correctness check into a speed benchmark.
+async function waitFor(read, predicate, timeoutMs = 60_000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const value = await read();
