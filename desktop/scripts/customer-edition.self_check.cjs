@@ -423,7 +423,9 @@ try {
 
 const portableArchiveFixture = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-portable-archive-fixture-"));
 try {
-  const productName = "AI获客";
+  // This fixture checks archive/tree consistency, independently of the native
+  // tar executable's ANSI command-line encoding on English Windows runners.
+  const productName = "AIhuoke";
   const target = path.join(portableArchiveFixture, productName);
   const appDir = path.join(target, "resources", "app");
   const zip = path.join(portableArchiveFixture, `${productName}.zip`);
