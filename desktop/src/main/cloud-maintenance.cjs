@@ -280,7 +280,8 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       notify({ stage: "preparing", error: "" });
       const { file, job } = await require("./update-helper.cjs").createUpdateJob({ userData, prepared, currentVersion: version });
       await new Promise((resolve, reject) => {
-        const child = launch(job.helperExecutable, ["--xiaoxi-update-job", file], { detached: true, stdio: "ignore", windowsHide: true });
+        // This Electron helper owns the user-visible update progress window.
+        const child = launch(job.helperExecutable, ["--xiaoxi-update-job", file], { detached: true, stdio: "ignore", windowsHide: false });
         child.once("error", reject);
         child.once("spawn", () => { child.unref(); resolve(); });
       });
