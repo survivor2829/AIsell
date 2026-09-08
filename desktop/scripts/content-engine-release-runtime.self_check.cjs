@@ -24,6 +24,7 @@ const {
   isContentEngineArchivePythonSource,
   isContentEnginePythonSource,
   resolveContentEngineBuild,
+  resolvePackagedContentEngine,
   runPackagedContentEngineSelfCheck,
   validateReleaseDescriptor
 } = require("./content-engine-release-runtime.cjs");
@@ -235,6 +236,23 @@ try {
     () => createReleaseDescriptor(build, "3".repeat(40), "internal-evaluation"),
     /reuse receipt/
   );
+  const reusedDescriptor = createReleaseDescriptor({ ...build, reuseReceipt: {
+    schemaVersion: 1, verified: true, inputFingerprint: "a".repeat(64), buildCommit: "3".repeat(40),
+    sourceCommit: manifest.source.commit, sourceTreeSha256: manifest.source.treeSha256,
+    runtimeTreeSha256: manifest.runtime.treeSha256, manifestSha256: sha256(build.manifestFile), verifiedAt: new Date().toISOString()
+  } }, "3".repeat(40), "internal-evaluation");
+  const composedTarget = path.join(root, "composed-portable");
+  const composedRuntime = copyContentEngineRuntime(build, composedTarget);
+  fs.writeFileSync(path.join(composedRuntime, "video-fixture.js"), "// separately verified video runtime");
+  reusedDescriptor.treeSha256 = treeSha256(composedRuntime);
+  assert.notEqual(reusedDescriptor.treeSha256, reusedDescriptor.originalRuntimeTreeSha256);
+  assert.doesNotThrow(() => resolvePackagedContentEngine(composedTarget, reusedDescriptor), "Composed runtime and original cache provenance have distinct verified hashes");
+  assert.throws(() => validateReleaseDescriptor({ ...reusedDescriptor, originalRuntimeTreeSha256: "0".repeat(64) }), /reuse receipt/);
+  const missingOriginal = { ...reusedDescriptor, originalRuntimeTreeSha256: undefined,
+    reuseReceipt: { ...reusedDescriptor.reuseReceipt, runtimeTreeSha256: undefined } };
+  assert.throws(() => validateReleaseDescriptor(missingOriginal), /original content-engine runtime tree hash/);
+  fs.appendFileSync(path.join(composedRuntime, "video-fixture.js"), "tampered");
+  assert.throws(() => resolvePackagedContentEngine(composedTarget, reusedDescriptor), /tree hash/);
   assert.equal(isContentEnginePythonSource("resources/content-engine/_internal/module.py"), true);
   assert.equal(isContentEnginePythonSource("AI获客/resources/content-engine/_internal/module.py"), false);
   assert.equal(isContentEnginePythonSource("resources/app/module.py"), false);
