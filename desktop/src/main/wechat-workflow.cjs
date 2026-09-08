@@ -345,6 +345,20 @@ function createWechatWorkflowController(options) {
       return { ok: !loadError, state: status(), ...(loadError ? { error: loadError } : {}) };
     },
     addTask: (input) => serialize(() => saveTask(input)),
+    addRecipients: (contactIds) => serialize(async () => {
+      assertPlanEditable();
+      const account = getAccount();
+      if (!account) throw new Error("请先同步当前微信联系人。");
+      if (!options.reply?.prepareWorkflowRecipients) throw new Error("当前版本未连接接待范围设置。");
+      const selected = await options.reply.prepareWorkflowRecipients(contactIds);
+      assertPlanEditable();
+      if (account !== getAccount()) throw new Error("微信账号已变化，请重新选择联系人。");
+      const merged = new Map(accountRecipients().map((contact) => [contact.id, contact]));
+      for (const contact of selected) merged.set(contact.id, contact);
+      const next = { ...recipients, accounts: { ...recipients.accounts, [account]: [...merged.values()] } };
+      writeJsonAtomic(recipientsFile, next); recipients = next;
+      emit(); return { ok: true, state: status() };
+    }),
     setReplyEnabled: (value) => serialize(() => {
       assertPlanEditable();
       store.replyEnabled = value === true;

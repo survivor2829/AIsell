@@ -1,7 +1,7 @@
 import { Check, Pause, Play, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { subscribeToStatus } from "./status-subscription";
-import { WorkflowRecipients, WorkflowToggle, workflowStatusText, type WorkflowController, type WorkflowView } from "./WechatWorkflow";
+import { WorkflowRecipients, WorkflowToggle, workflowStatusText, type WorkflowController, type WorkflowView, type WorkflowContact } from "./WechatWorkflow";
 
 type ScanHealth = "unknown" | "checking" | "healthy" | "warning" | "degraded" | "waiting";
 type AutoReplyFailureContext = {
@@ -398,7 +398,7 @@ function recoverySummary(context: AutoReplyFailureContext) {
   }
 }
 
-export function AutoReply({ workflow, onNavigate }: { workflow?: WorkflowController; onNavigate?: (view: WorkflowView) => void } = {}) {
+export function AutoReply({ workflow, onNavigate, contacts = [] }: { workflow?: WorkflowController; onNavigate?: (view: WorkflowView) => void; contacts?: WorkflowContact[] } = {}) {
   const [state, setState] = useState<AutoReplyState>(EMPTY_STATE);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -524,7 +524,7 @@ export function AutoReply({ workflow, onNavigate }: { workflow?: WorkflowControl
       {workflow && <>
         <div className="workflow-reply-summary"><span>运行状态<strong>{workflowStatusText(workflow.state)}</strong></span><span>接待客户<strong>{workflow.state.recipients.length} 人</strong></span><span>今日已回复<strong>{state.reply_count}</strong></span></div>
         {(workflow.error || workflow.state.replyError) && <div className="workflow-alert" role="alert">{workflow.error || workflow.state.replyError}</div>}
-        <WorkflowRecipients workflow={workflow} />
+        <WorkflowRecipients workflow={workflow} contacts={contacts} />
       </>}
 
       {heldContacts.length > 0 && (

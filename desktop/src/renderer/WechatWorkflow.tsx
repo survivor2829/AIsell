@@ -74,6 +74,7 @@ declare global {
       retryTask: (id: string) => Promise<WorkflowResult>;
       getTask: (id: string) => Promise<WorkflowResult>;
       removeRecipient: (id: string) => Promise<WorkflowResult>;
+      addRecipients: (contactIds: string[]) => Promise<WorkflowResult>;
       setReplyEnabled: (enabled: boolean) => Promise<WorkflowResult>;
       onUpdate: (callback: (result: WorkflowResult) => void) => () => void;
     };
@@ -502,16 +503,26 @@ function WorkflowPublishRecovery({ workflow }: { workflow: WorkflowController })
   return <section className="workflow-publish-recovery" aria-labelledby="workflow-publish-recovery-title"><strong id="workflow-publish-recovery-title">有一条朋友圈需要核实</strong><p>请先去微信查看这条内容是否已发布，再记录结果。核实前，后续发布会等待。</p><div><button type="button" className="secondary-button" data-xiaoxi-moments-publish-resolve-published disabled={busy} onClick={() => void resolve("published")}>已核实，已经发布</button><button type="button" className="secondary-button" data-xiaoxi-moments-publish-resolve-not-published disabled={busy} onClick={() => void resolve("not_published")}>已核实，没有发布</button></div>{error && <p role="alert">{error}</p>}</section>;
 }
 
-export function WorkflowRecipients({ workflow }: { workflow: WorkflowController }) {
+export function WorkflowRecipients({ workflow, contacts = [] }: { workflow: WorkflowController; contacts?: WorkflowContact[] }) {
   const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<string[]>([]);
   const [limit, setLimit] = useState(50);
   const { state, busy, run } = workflow;
   const filtered = state.recipients.filter((contact) => contact.label.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  const available = contacts.filter((contact) => contact.allowed !== false && !state.recipients.some((item) => item.id === contact.id));
+  const choices = available.filter((contact) => contactLabel(contact).toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())).slice(0, 100);
+  const locked = busy || state.enabled || state.phase === "pausing";
   return <section className="workflow-recipients">
     <label className="workflow-check"><input type="checkbox" checked={state.replyEnabled !== false} disabled={busy || state.enabled || state.phase === "pausing"} onChange={(event) => window.xiaoxiWorkflow && void run(() => window.xiaoxiWorkflow!.setReplyEnabled(event.target.checked))} />开启自动回复（启动程序后监听新消息）</label>
     <div className="workflow-list-head"><h2>接待范围</h2><span>{state.recipients.length} 位客户</span></div>
-    <p className="workflow-small-note">加入触达计划的有效联系人都会进入接待范围，未触达到的客户也会接待；直到你手动移出。</p>
-    {state.recipients.length ? <details className="workflow-details"><summary>管理接待客户</summary><input className="workflow-recipient-search" aria-label="搜索接待客户" value={query} onChange={(event) => { setQuery(event.target.value); setLimit(50); }} placeholder="搜索客户" /><ul className="workflow-recipient-list">{filtered.slice(0, limit).map((contact) => <li key={contact.id}><span>{contact.label}</span><button className="text-button" disabled={busy || state.enabled || state.phase === "pausing"} onClick={() => window.xiaoxiWorkflow && void run(() => window.xiaoxiWorkflow!.removeRecipient(contact.id))}>移出接待</button></li>)}</ul>{!filtered.length && <p className="workflow-small-note">没有找到相关客户。</p>}{filtered.length > limit && <button className="text-button" onClick={() => setLimit((value) => value + 50)}>显示更多</button>}</details> : <p className="workflow-small-note">暂无接待客户。先添加一项精准触达任务。</p>}
+    <p className="workflow-small-note">可以直接选择接待客户，也可以从触达计划加入。保存名单后不会发送消息，启动程序才开始接待。</p>
+    <details className="workflow-details" open={state.recipients.length === 0 ? true : undefined}><summary>添加接待联系人</summary>
+      {available.length ? <><input className="workflow-recipient-search" aria-label="搜索可添加联系人" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索联系人" />
+        <div className="workflow-contact-options">{choices.map((contact) => <label className="workflow-check" key={contact.id}><input type="checkbox" disabled={locked} checked={selected.includes(contact.id)} onChange={(event) => setSelected((ids) => event.target.checked ? [...ids, contact.id] : ids.filter((id) => id !== contact.id))} />{contactLabel(contact)}</label>)}</div>
+        {!choices.length && <p className="workflow-small-note">没有匹配的联系人。</p>}
+        <button type="button" className="primary-button" data-xiaoxi-workflow-save disabled={locked || !selected.length} onClick={() => window.xiaoxiWorkflow && void run(() => window.xiaoxiWorkflow!.addRecipients(selected)).then((result) => { if (result?.ok) setSelected([]); })}>保存接待名单（{selected.length} 人）</button></> : <p className="workflow-small-note">{contacts.length ? "当前可选联系人均已加入。" : "请先同步微信联系人，再回来选择接待客户。"}</p>}
+    </details>
+    {state.recipients.length ? <details className="workflow-details"><summary>管理接待客户</summary><input className="workflow-recipient-search" aria-label="搜索接待客户" value={query} onChange={(event) => { setQuery(event.target.value); setLimit(50); }} placeholder="搜索客户" /><ul className="workflow-recipient-list">{filtered.slice(0, limit).map((contact) => <li key={contact.id}><span>{contact.label}</span><button className="text-button" disabled={locked} onClick={() => window.xiaoxiWorkflow && void run(() => window.xiaoxiWorkflow!.removeRecipient(contact.id))}>移出接待</button></li>)}</ul>{!filtered.length && <p className="workflow-small-note">没有找到相关客户。</p>}{filtered.length > limit && <button className="text-button" onClick={() => setLimit((value) => value + 50)}>显示更多</button>}</details> : <p className="workflow-small-note">尚未保存接待客户。</p>}
   </section>;
 }
 

@@ -3764,7 +3764,17 @@ function createAutoReplyController(options = {}) {
     }
   }
 
-  return { acknowledgeManualFollowup, pause, pauseWorkflow, resumeContact, runOnce, runWorkflowStep, start, status };
+  function prepareWorkflowRecipients(contactIds) {
+    if (!Array.isArray(contactIds) || !contactIds.length || contactIds.length > 1000) throw new Error("请选择要接待的联系人。");
+    const universe = testContactUniverse(activeTouchDir);
+    const ids = [...new Set(contactIds.map((id) => String(id).trim()))];
+    const selected = ids.map((id) => universe.find((contact) => normalizeText(contact.id) === id));
+    if (selected.some((contact) => !contact)) throw new Error("所选联系人已变化，请重新同步后选择。");
+    const scope = resolveWorkflowContactScope(activeTouchDir, selected);
+    if (!scope.ok) throw new Error(scope.error);
+    return scope.contacts.map((contact) => ({ ...contact }));
+  }
+  return { acknowledgeManualFollowup, pause, pauseWorkflow, prepareWorkflowRecipients, resumeContact, runOnce, runWorkflowStep, start, status };
 }
 
 function registerAutoReplyIpc(options = {}) {

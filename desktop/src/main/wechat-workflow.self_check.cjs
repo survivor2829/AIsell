@@ -94,6 +94,21 @@ async function main() {
     } }
   };
   const control = createWechatWorkflowController(options);
+  const replyOnlyRoot = path.join(rootDir, "reply-only");
+  const replyOptions = { ...options, rootDir: replyOnlyRoot, autoReplyDir: path.join(replyOnlyRoot, "reply"),
+    reply: { prepareWorkflowRecipients: (ids) => {
+      if (!Array.isArray(ids) || ids.some((id) => id !== "selected")) throw new Error("联系人无效");
+      return ids.map((id) => ({ id, name: "已选联系人", wechatAccountId: "test-account" }));
+    } } };
+  const replyOnly = createWechatWorkflowController(replyOptions);
+  await assert.rejects(replyOnly.addRecipients(["unknown"]), /联系人无效/);
+  await replyOnly.addRecipients(["selected"]);
+  assert.equal(replyOnly.status().tasks.length, 0, "Reply-only setup must not invent a touch task");
+  assert.equal(replyOnly.status().enabled, false, "Saving recipients must not start messaging");
+  await replyOnly.dispose();
+  const savedReply = createWechatWorkflowController(replyOptions);
+  assert.equal(savedReply.status().recipients[0].id, "selected", "Reply recipients persist without a touch task");
+  await savedReply.dispose();
   const first = await control.addTask({ type: "touch", title: "touch", payload: { contactIds: ["a", "b"], script: "hello" } });
   await control.addTask({ type: "publish", title: "future", scheduledAt: new Date(2026, 8, 2, 18).toISOString(), payload: { content: "future" } });
   await control.addTask({ type: "publish", title: "due", scheduledAt: new Date(2026, 8, 2, 10).toISOString(), payload: { content: "now" } });

@@ -174,6 +174,7 @@ function registerWechatWorkflowIpc(options) {
   handle("cancel-task", (payload) => controller.cancelTask(String(payload?.id || "")));
   handle("retry-task", (payload) => controller.retryTask(String(payload?.id || "")), true);
   handle("remove-recipient", (payload) => controller.removeRecipient(String(payload?.id || "")));
+  handle("add-recipients", (payload) => controller.addRecipients(payload?.contactIds), true);
   handle("set-reply-enabled", (payload) => controller.setReplyEnabled(payload?.enabled));
   handle("show-main", showMain);
   handle("show-floating", showFloating);

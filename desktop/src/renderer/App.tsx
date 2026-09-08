@@ -876,7 +876,7 @@ export default function App() {
                locked={workflow.state.enabled || workflow.state.phase === "pausing"}
              />
           )}
-          {active === "reply" && <AutoReply workflow={workflow} onNavigate={navigateWorkflow} />}
+          {active === "reply" && <AutoReply workflow={workflow} onNavigate={navigateWorkflow} contacts={contactRows} />}
           {active === "expert" && <AiExpert />}
           {active === "accounts" && <AccountManagement />}
           {active === "product-detail" && <ProductDetailPage />}
