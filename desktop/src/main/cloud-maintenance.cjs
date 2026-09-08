@@ -10,7 +10,7 @@ const { reportEntry } = require("../shared/cloud-report.cjs");
 const { verifyComponentManifest, assertCompatible, hashFile: fileHash } = require("../shared/component-contract.cjs");
 const { createComponentStore } = require("./component-store.cjs");
 const componentPaths = require("./component-paths.cjs");
-const { releaseNotes } = require("../shared/customer-release-notes.cjs");
+const { bundledAnnouncements } = require("../shared/customer-release-notes.cjs");
 
 function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; } }
 function announcementId(manifest) { return `${manifest.schema}:${manifest.sequence}`; }
@@ -22,8 +22,8 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   const queueFile = path.join(dir, "outbox.json");
   const saved = readJson(stateFile, {});
   // Display-only bundled text; never add an unsigned entry to trusted update state.
-  let installedNotes = "";
-  try { installedNotes = releaseNotes(version); } catch {}
+  let installedAnnouncements = [];
+  try { installedAnnouncements = bundledAnnouncements(version); } catch {}
   const state = {
     installId: UUID.test(saved.installId || "") ? saved.installId : crypto.randomUUID(),
     consent: saved.consent === true, sequence: Number.isSafeInteger(saved.sequence) && saved.sequence >= 0 ? saved.sequence : 0,
@@ -70,9 +70,9 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       byVersion.set(manifest.version, { id: item.id, sequence: item.sequence, version: manifest.version,
         notes: manifest.notes, publishedAt: manifest.publishedAt || "", read });
     }
-    if (installedNotes && !byVersion.has(version)) byVersion.set(version, {
-      id: `installed:${version}`, sequence: 0, version, notes: installedNotes, publishedAt: "",
-      read: state.readAnnouncementVersions.includes(version)
+    for (const entry of installedAnnouncements) if (!byVersion.has(entry.version)) byVersion.set(entry.version, {
+      id: `installed:${entry.version}`, sequence: 0, ...entry, publishedAt: "",
+      read: state.readAnnouncementVersions.includes(entry.version)
     });
     const announcements = [...byVersion.values()].sort((a, b) => compareVersions(b.version, a.version)).slice(0, 20);
     const selection = userData ? readJson(componentPaths.updatePaths(userData).selection, {}) : {};
