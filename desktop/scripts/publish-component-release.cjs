@@ -17,6 +17,8 @@ async function publishComponentRelease({ metadataFile, notesFile }) {
   if (state.status || head.status || state.stdout.trim() || metadata.buildCommit !== head.stdout.trim()
       || metadata.sourceManifest?.commit !== metadata.buildCommit || metadata.sourceManifest?.dirty !== false
       || metadata.sourceManifest?.version !== manifest.version) throw Error("Publish requires a clean checkout at the matching component build commit.");
+  if (metadata.validation?.gate !== "packaged-application" || metadata.validation.commit !== metadata.buildCommit
+      || metadata.validation.version !== manifest.version || !Number.isFinite(Date.parse(metadata.validation.completedAt))) throw Error("Component publish requires the completed packaged application release gate.");
   const archives = [];
   for (const name of COMPONENTS) {
     const component = manifest.components[name];

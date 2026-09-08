@@ -354,7 +354,7 @@ if (-not $exe) {
   @{ ok = $false; reason = "wechat_executable_not_found" } | ConvertTo-Json -Compress
   exit
 }
-$restarted = $running.Count -gt 0
+$restarted = @(Get-Process Weixin -ErrorAction SilentlyContinue).Count -gt 0
 if ($restarted) {
   Get-Process Weixin -ErrorAction SilentlyContinue | ForEach-Object { try { [void]$_.CloseMainWindow() } catch {} }
   Start-Sleep -Milliseconds 1200
@@ -366,6 +366,10 @@ if ($restarted) {
     if (-not (Get-Process Weixin -ErrorAction SilentlyContinue)) { break }
     Start-Sleep -Milliseconds 100
   }
+}
+if (Get-Process Weixin -ErrorAction SilentlyContinue) {
+  @{ ok = $false; reason = "wechat_stop_failed" } | ConvertTo-Json -Compress
+  exit
 }
 try {
   if ($env:XIAOXI_STOP_ONLY -eq "1") {
@@ -683,7 +687,7 @@ function captureKeyFromWxKeyDll(tools, options = {}, processes = [], timeoutMs =
   const parsed = readJsonFromString(result.stdout, {});
   options.onWxKeyResult?.({
     status: result.status,
-    stage: String(parsed.stage ?? ""),
+    stage: String(parsed.stage || (result.error?.code === "ETIMEDOUT" ? "helper_timeout" : result.error ? "helper_start_failed" : result.status !== 0 ? "helper_failed" : "helper_result_invalid")),
     error: String(parsed.error ?? result.error?.message ?? result.stderr ?? "").trim()
   });
   if (result.status !== 0) return "";
@@ -841,6 +845,8 @@ function capture(baseDir = __dirname, options = {}) {
       const reason = loginFlow.reason || "wechat_start_failed";
       const message = reason === "wechat_executable_not_found"
         ? "未找到个人微信 4.x 的 Weixin.exe，请安装受支持版本，或在同步联系人页手动选择微信程序"
+        : reason === "wechat_stop_failed"
+        ? "微信未能退出，尚未开始重新登录。请手动退出微信后重新同步，并确认微信与本应用使用相同的运行权限"
         : "微信未能自动重新启动";
       return block(baseDir, reason, message, { helperConfigured: helper.helperConfigured, activeTouchDir: options.activeTouchDir });
     }
@@ -1046,6 +1052,27 @@ function capture(baseDir = __dirname, options = {}) {
           });
         }
       }, hookProcesses, Math.max(1000, remainingMs - memoryReserveMs));
+      if (launchWechatExe && !wxKeyHex) {
+        const startupErrors = {
+          dll_missing: "微信同步组件缺失，尚未启动微信。请通过应用更新修复安装后重新同步",
+          dll_load_failed: "微信同步组件加载失败，尚未启动微信。请检查安全软件拦截记录，并通过应用更新修复安装",
+          wechat_exe_missing: "所选微信程序已不存在，尚未启动微信。请重新选择 Weixin.exe",
+          wechat_launch_failed: "未能启动微信，请检查所选微信程序和运行权限后重新同步",
+          helper_start_failed: "微信同步辅助程序未能启动，请检查安全软件拦截记录并修复安装",
+          helper_failed: "微信同步辅助程序异常退出，无法确认微信启动状态。请检查诊断记录后重试",
+          helper_timeout: "微信同步辅助程序未在规定时间内返回，无法确认微信启动状态。请检查微信窗口及安全软件拦截记录",
+          helper_result_invalid: "微信同步辅助程序返回无效结果，请通过应用更新修复安装后重新同步",
+          suspend_failed: "无法为微信准备登录捕获，请确认微信与本应用使用相同的运行权限",
+          resume_failed: "微信登录进程未能恢复，请手动重新打开微信后重试同步",
+          weixin_dll_timeout: "微信已启动，但核心模块未及时就绪。请确认微信能正常打开，并检查其完整版本号"
+        };
+        if (startupErrors[lastWxHookStage]) {
+          return block(baseDir, lastWxHookStage, startupErrors[lastWxHookStage], {
+            helperConfigured: helper.helperConfigured,
+            activeTouchDir: options.activeTouchDir
+          });
+        }
+      }
       if (wxKeyHex) {
         wxHookKeyCaptured = true;
         pendingWxKeyHex = wxKeyHex;

@@ -487,12 +487,14 @@ function createContentEngineSidecar(options = {}) {
   }
 
   async function request(method, params = {}, optionsForRequest = {}) {
+    if (global.__xiaoxiUpdateHold && !["shutdown", "production_summary"].includes(method)) throw createError("UPDATE_IN_PROGRESS");
     if (!/^[a-z][a-z0-9_]{0,63}$/.test(String(method || ""))) {
       throw createError("CONTENT_ENGINE_METHOD_INVALID");
     }
     const run = method === "shutdown" && currentRun?.stopping
       ? currentRun
       : await ensureReady();
+    if (global.__xiaoxiUpdateHold && !["shutdown", "production_summary"].includes(method)) throw createError("UPDATE_IN_PROGRESS");
     if (!run || run.closed || (run.stopping && method !== "shutdown")) {
       throw createError("CONTENT_ENGINE_NOT_READY");
     }
@@ -604,6 +606,7 @@ function createContentEngineSidecar(options = {}) {
   }
 
   return {
+    updateStatus: () => ({ state: snapshot.state, pending: currentRun?.pending.size || 0, alive: Boolean(currentRun && !currentRun.closed) }),
     analyzeAssets: (assetIds, profile) => request("analyze_assets", {
       asset_ids: assetIds,
       profile

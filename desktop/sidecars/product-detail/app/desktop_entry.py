@@ -278,6 +278,8 @@ def _install_desktop_contract(
 
     ledger_path = config.data_dir / "database" / "desktop-ai-refine-ledger.json"
     ledger_lock = threading.RLock()
+    update_lock = threading.RLock()
+    update_state = {"hold": False, "requests": 0}
     refine_terminal_states = {"success", "partial_success", "failed"}
     refine_blocking_states = {"outcome_unknown", "recovery_required"}
     def unreadable_refine_ledger() -> dict:
@@ -347,6 +349,12 @@ def _install_desktop_contract(
     @flask_app.before_request
     def desktop_enforce_boundaries():
         require_loopback()
+        if request.method not in ("GET", "HEAD", "OPTIONS") and not request.path.startswith("/internal/"):
+            with update_lock:
+                if update_state["hold"]:
+                    return jsonify({"ok": False, "error": "软件正在准备更新，请稍后再操作。"}), 503
+                update_state["requests"] += 1
+                g.xiaoxi_update_tracked = True
         endpoint = request.endpoint or ""
         if endpoint == "auth.register" or endpoint.startswith("admin."):
             abort(404)
@@ -514,6 +522,29 @@ def _install_desktop_contract(
                         ] = int(time.time())
                         write_refine_ledger(ledger)
         return response
+
+    @flask_app.teardown_request
+    def desktop_complete_update_request(_error):
+        if getattr(g, "xiaoxi_update_tracked", False):
+            with update_lock:
+                update_state["requests"] = max(0, update_state["requests"] - 1)
+
+    def internal_update_state():
+        require_loopback()
+        if not _token_matches(contract.control_digest, request.headers.get("x-xiaoxi-control-token", "")):
+            return jsonify({"ok": False, "error": "forbidden"}), 403
+        import batch_queue
+        with update_lock:
+            update_state["hold"] = (request.get_json(silent=True) or {}).get("hold") is True
+            pending_requests = update_state["requests"]
+        pools = batch_queue.get_pool_stats()
+        ledger = refresh_refine_ledger()
+        busy = pending_requests > 0 or any(pools[name]["active"] or pools[name]["queued"] for name in ("batch_pool", "single_pool", "refine_pool"))
+        busy = busy or ledger.get("state") in ("pending", "running", "submitting", "queued", "starting")
+        return jsonify({"ok": True, "busy": bool(busy)})
+
+    flask_app.add_url_rule("/internal/update-state", endpoint="xiaoxi_internal_update_state", view_func=internal_update_state, methods=["POST"])
+    csrf.exempt(internal_update_state)
 
     def internal_health():
         require_loopback()

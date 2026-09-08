@@ -10,20 +10,20 @@ data_dir=/var/lib/ai-maintenance
   echo 'Existing maintenance installation is required; use install.sh for first installation.' >&2
   exit 1
 }
-for file in service.py feedback.py admin.html promote.py; do
+for file in service.py feedback.py admin.html promote.py promote_components.py; do
   [ -s "$source_dir/$file" ] || { echo "Missing deployment file: $file" >&2; exit 1; }
 done
 python3 - "$source_dir" <<'PY'
 from pathlib import Path
 import sys
-for name in ('service.py', 'feedback.py', 'promote.py'):
+for name in ('service.py', 'feedback.py', 'promote.py', 'promote_components.py'):
     file = Path(sys.argv[1]) / name
     compile(file.read_text(), str(file), 'exec')
 PY
 
 backup="$data_dir/backups/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 install -d -m 700 "$backup" "$backup/code"
-for file in service.py feedback.py admin.html promote.py; do
+for file in service.py feedback.py admin.html promote.py promote_components.py; do
   if [ -f "$app_dir/$file" ]; then cp -p "$app_dir/$file" "$backup/code/$file"; fi
 done
 python3 - "$data_dir/reports.sqlite3" "$backup/reports.sqlite3" <<'PY'
@@ -41,14 +41,14 @@ chmod 600 "$backup/reports.sqlite3"
 
 rollback() {
   echo "Deployment failed; restoring previous code. Database backup: $backup" >&2
-  for file in service.py feedback.py admin.html promote.py; do
+  for file in service.py feedback.py admin.html promote.py promote_components.py; do
     if [ -f "$backup/code/$file" ]; then install -m 644 "$backup/code/$file" "$app_dir/$file"; fi
   done
   systemctl restart ai-maintenance || true
 }
 systemctl stop ai-maintenance
 trap rollback EXIT
-for file in service.py feedback.py admin.html promote.py; do
+for file in service.py feedback.py admin.html promote.py promote_components.py; do
   install -m 644 "$source_dir/$file" "$app_dir/$file"
 done
 systemctl start ai-maintenance

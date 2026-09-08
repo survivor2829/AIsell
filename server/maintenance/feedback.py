@@ -127,12 +127,15 @@ class FeedbackStoreMixin:
     def feedback_statuses(self, body):
         if not isinstance(body, dict) or not isinstance(body.get("items"), list) or not 1 <= len(body["items"]) <= 100:
             raise ValueError("feedback_query")
+        for item in body["items"]:
+            if not isinstance(item, dict) or not UUID.fullmatch(str(item.get("id", ""))) or not SECRET.fullmatch(str(item.get("receiptToken", ""))):
+                raise FeedbackUnauthorized()
+        ids = list(dict.fromkeys(item["id"] for item in body["items"]))
         results = []
         with self.connect() as db:
+            rows = {row["id"]: row for row in db.execute("SELECT * FROM feedback WHERE id IN (" + ",".join("?" for _ in ids) + ")", ids).fetchall()}
             for item in body["items"]:
-                if not isinstance(item, dict) or not UUID.fullmatch(str(item.get("id", ""))) or not SECRET.fullmatch(str(item.get("receiptToken", ""))):
-                    raise FeedbackUnauthorized()
-                row = db.execute("SELECT * FROM feedback WHERE id=?", (item["id"],)).fetchone()
+                row = rows.get(item["id"])
                 if not row or not hmac.compare_digest(row["token_hash"], hashlib.sha256(item["receiptToken"].encode()).hexdigest()):
                     raise FeedbackUnauthorized()
                 results.append(self.feedback_receipt(row))

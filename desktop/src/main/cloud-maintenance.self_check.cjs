@@ -9,6 +9,45 @@ const { createCloudMaintenance } = require("./cloud-maintenance.cjs");
 const { verifyManifest, compareVersions } = require("../shared/cloud-contract.cjs");
 const { registerCloudMaintenanceIpc } = require("./cloud-maintenance-ipc.cjs");
 const { createPreloadApis } = require("./preload-api.cjs");
+const { COMPONENTS } = require("../shared/component-contract.cjs");
+
+async function checkReleaseSelection(rootDir, config, manifest, sign, bytes) {
+  const baseRoot = path.join(rootDir, "component-base");
+  fs.mkdirSync(baseRoot);
+  fs.writeFileSync(path.join(baseRoot, "component-base.json"), JSON.stringify({ schema: 2, dataSchema: 1, base: { version: "1.1.0", fingerprint: "0".repeat(64) } }));
+  // The full and component pointers advance independently, including across base upgrades.
+  for (const componentVersion of ["1.0.9", "1.1.0", "1.1.1", "1.3.0"]) {
+    const component = { schema: 2, appId: config.appId, channel: config.channel, platform: "win32", arch: "x64",
+      version: componentVersion, sequence: 20, notes: "Component selection fixture", dataSchema: 1,
+      base: { version: "1.2.0", fingerprint: "1".repeat(64) }, minBaseVersion: "1.2.0",
+      components: Object.fromEntries(COMPONENTS.map(name => [name, { name, sha256: manifest.sha256, treeSha256: manifest.sha256,
+        file: `/components/${manifest.sha256}.zip`, size: bytes.length, expandedSize: bytes.length, fileCount: 1 }])) };
+    const requests = [];
+    const controller = createCloudMaintenance({ rootDir: path.join(rootDir, `selection-${componentVersion}`),
+      componentBaseRoot: baseRoot, config, version: "1.1.0", buildId: "selection-check", canInstall: () => true,
+      transport: { async request(route, options = {}) {
+        requests.push(route);
+        if (route.startsWith("/v2/")) return sign(component);
+        if (route.startsWith("/v1/")) return sign({ ...manifest, version: "1.2.0", sequence: 20 });
+        assert.equal(route, manifest.file);
+        fs.writeFileSync(options.destination, bytes); options.onProgress(bytes.length);
+        return { size: bytes.length };
+      }, close() {} } });
+    try {
+      await controller.check();
+      assert.equal(controller.status().stage, "ready", `Component ${componentVersion} must allow the newer full base`);
+      assert.equal((await controller.prepareInstall()).version, "1.2.0");
+      assert.ok(requests.includes("/v1/releases/test/latest"));
+      assert.ok(requests.includes("/v2/releases/test/latest"));
+      assert.equal(controller.status().announcements.length, 2, "Independent protocols may share a sequence without conflict");
+      controller.markAnnouncementRead(20);
+      assert.equal(controller.status().announcements.find(item => item.id === "1:20").read, true);
+      assert.equal(controller.status().announcements.find(item => item.id === "2:20").read, false);
+      controller.markAnnouncementRead("2:20");
+      assert.equal(controller.status().unreadAnnouncements, 0);
+    } finally { controller.stop(); }
+  }
+}
 
 async function checkAnnouncements(rootDir, config, manifest, sign, bytes) {
   const dir = path.join(rootDir, "announcements");
@@ -102,7 +141,7 @@ async function checkAnnouncements(rootDir, config, manifest, sign, bytes) {
     assert.equal(race.status().announcements[0].sequence, 21);
     assert.equal(race.status().stage, "error", "An older in-flight download cannot be announced as ready after a newer signed release");
     assert.equal(await race.prepareInstall(), null);
-    assert.equal(fs.readdirSync(path.join(rootDir, "download-race/cloud-maintenance")).some((file) => file.endsWith(".part")), false);
+    assert.equal(fs.readdirSync(path.join(rootDir, "download-race/cloud-maintenance")).some((file) => file.endsWith(".part")), true, "Verified partial evidence remains resumable without becoming installable");
   } finally { race.stop(); }
 
   const handlers = new Map(), mainFrame = {}, webContents = { mainFrame, send() {} };
@@ -161,19 +200,20 @@ async function main() {
     await controller.flush();
     assert.equal(controller.status().queued, 1, "Failed upload stays queued");
     assert.match(controller.status().uploadError, /重试/);
-    assert.equal(await controller.installOnExit(), true);
-    assert.equal(launched, 1);
+    assert.equal(await controller.installOnExit(), false, "Ordinary exit never silently starts an installer");
+    assert.equal(launched, 0);
     const prepared = await controller.prepareInstall();
     fs.writeFileSync(prepared.file, "tampered");
     await assert.rejects(controller.prepareInstall(), /cloud_download_invalid/);
     assert.equal(await controller.installOnExit(), false);
-    assert.equal(launched, 1, "Tampered cached installer cannot execute");
+    assert.equal(launched, 0, "Tampered cached installer cannot execute");
     controller.setConsent(false);
     assert.equal(controller.status().queued, 0);
     offline = false; latest = sign({ ...manifest, sequence: 9, version: "1.0.2" });
     await controller.check();
     assert.equal(controller.status().stage, "error", "Signed but stale release rejected");
     await checkAnnouncements(dir, config, manifest, sign, bytes);
+    await checkReleaseSelection(dir, config, manifest, sign, bytes);
     console.log("cloud maintenance: announcement cache/read persistence, metadata-only refresh, signatures, rollback/conflict, download race, legacy pending, IPC, consent and install boundary passed");
   } finally { controller.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
 }

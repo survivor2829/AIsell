@@ -2,6 +2,7 @@ const { app } = require("electron");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 const { diagnostics } = require("./diagnostics.cjs");
+const { applicationPath } = require("./component-paths.cjs");
 
 let runtimeDataDir = "";
 let runtimeCoordinator = null;
@@ -38,7 +39,7 @@ function parseExecutorOutput({ action = "status", status = 0, stdout = "", stder
 }
 
 function cliPath(development = false, cliName = "") {
-  return path.join(app.getAppPath(), "rpa", "active_touch", cliName || (development ? "active_touch_cli.dev.cjs" : "active_touch_cli.cjs"));
+  return path.join(applicationPath(app), "rpa", "active_touch", cliName || (development ? "active_touch_cli.dev.cjs" : "active_touch_cli.cjs"));
 }
 
 function executeActiveTouch(args, options = {}) {

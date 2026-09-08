@@ -1,5 +1,5 @@
 const crypto = require("node:crypto");
-const fs = require("node:fs");
+const fs = process.versions.electron ? require("original-fs") : require("node:fs");
 const { VERSION, compareVersions, fail } = require("./cloud-contract.cjs");
 const COMPONENTS = Object.freeze(["application", "content-engine", "product-detail", "video"]);
 const HEX = /^[a-f0-9]{64}$/;

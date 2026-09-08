@@ -233,7 +233,7 @@ try {
   );
   assert.throws(
     () => createReleaseDescriptor(build, "3".repeat(40), "internal-evaluation"),
-    /does not match the portable release commit/
+    /reuse receipt/
   );
   assert.equal(isContentEnginePythonSource("resources/content-engine/_internal/module.py"), true);
   assert.equal(isContentEnginePythonSource("AI获客/resources/content-engine/_internal/module.py"), false);

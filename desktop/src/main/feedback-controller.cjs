@@ -199,8 +199,10 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
           if (receipt.updatedAt > item.receipt.updatedAt) receipts.set(item.payload.id, receiptView(receipt));
         }
       }
-      commit({ ...state, lastRefresh: new Date(clock()).toISOString(), items: state.items.map((item) => receipts.has(item.payload.id)
-        ? { ...item, receipt: receipts.get(item.payload.id) } : item) });
+      commit({ ...state, lastRefresh: new Date(clock()).toISOString(), items: state.items.map((item) => {
+        const receipt = receipts.get(item.payload.id);
+        return receipt && receipt.updatedAt > item.receipt.updatedAt ? { ...item, receipt } : item;
+      }) });
       refreshError = "";
     } catch { refreshError = "暂时无法更新处理进度，下面保留最近一次状态。"; }
     notify(); return status();
@@ -227,7 +229,9 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
     if (!network) throw validationError("暂时无法撤回公开，请连接网络后重试。");
     const receipt = await network.request("/v1/feedback/visibility", { body: { id, receiptToken: decrypt(item), visibility: "private" } });
     if (!validReceipt(receipt, id) || receipt.visibility !== "private") throw new Error("feedback_receipt_invalid");
-    updateItem(id, { receipt: receiptView(receipt) });
+    const current = state.items.find(value => value.payload.id === id);
+    if (receipt.receivedAt !== current.receipt.receivedAt) throw new Error("feedback_receipt_invalid");
+    if (receipt.updatedAt > current.receipt.updatedAt) updateItem(id, { receipt: receiptView(receipt) });
     community = { ...community, total: Math.max(0, community.total - (community.items.some((value) => value.id === id) ? 1 : 0)), items: community.items.filter((value) => value.id !== id) };
     notify(); return status();
   }

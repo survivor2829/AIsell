@@ -6,3 +6,4 @@
 .cloud-reporting{margin-top:16px;padding-top:16px;border-top:1px solid var(--border,#d5deed)}
 .cloud-reporting label{display:flex;align-items:center;gap:8px;font-weight:600}.cloud-reporting input{accent-color:var(--primary,#315ccb);width:17px;height:17px}
 .cloud-reporting input:focus-visible{outline:2px solid var(--primary,#315ccb);outline-offset:3px}
+.cloud-download-bytes{font-variant-numeric:tabular-nums}.cloud-update-complete{margin-top:18px;padding-top:16px;border-top:1px solid var(--border,#d5deed)}.cloud-update-complete p{white-space:pre-wrap}.cloud-update-step{color:#596371}

@@ -194,8 +194,8 @@ export function hasRunnablePlan(state: WorkflowState) {
 export type WorkflowView = "start" | "history" | "tasks";
 export function workflowEntry(state: WorkflowState): "active" | "attention" | "ready" | "history" | "empty" {
   if (state.enabled || state.contactSync?.running || state.phase === "pausing") return "active";
-  if (state.phase === "needs_attention" || state.replyError || state.tasks.some(task => task.accountMismatch || ["needs_attention", "missed"].includes(task.status))) return "attention";
   if (hasRunnablePlan(state)) return "ready";
+  if (state.phase === "needs_attention" || state.replyError || state.tasks.some(task => (task.status === "pending" && task.accountMismatch) || ["needs_attention", "missed"].includes(task.status))) return "attention";
   return state.tasks.length ? "history" : "empty";
 }
 const ENTRY_LABEL = { active: "查看进度", attention: "查看待处理", ready: "启动程序", history: "查看记录", empty: "带我开始" };

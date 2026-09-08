@@ -136,14 +136,18 @@ async function main() {
       assert.deepEqual(legacyPayload, oldItem.payload, "Schema 1 retries retain the original immutable snapshot");
     } finally { legacy.stop(); }
 
-    let publicBody, currentVisibility = "public", publicOffline = false;
+    let publicBody, finishOldRefresh, currentVisibility = "public", publicOffline = false;
     const publicId = crypto.randomUUID();
-    const publicReceipt = (id) => ({ id, status: "pending", receivedAt: 1700000000, updatedAt: currentVisibility === "public" ? 1700000000 : 1700000001, visibility: currentVisibility, hidden: false, officialReply: "已收到" });
+    const publicReceipt = (id) => ({ id, status: "pending", receivedAt: 1700000000, updatedAt: currentVisibility === "public" ? 1700000000 : 1700000002, visibility: currentVisibility, hidden: false, officialReply: "已收到" });
     const social = createFeedbackController({ ...options, rootDir: path.join(root, "social"), transport: { close() {}, async request(route, args = {}) {
       if (route.startsWith("/v1/feedback/public")) {
         if (publicOffline) throw new Error("offline");
         return { items: [{ ...publicReceipt(publicId), text: "公开想法", category: "suggestion", createdAt: new Date(now).toISOString(),
           receiptToken: "must-not-leak", client: { installId: "must-not-leak" }, diagnostics: ["must-not-leak"] }], total: 1 };
+      }
+      if (route === "/v1/feedback/status") {
+        const receipt = { ...publicReceipt(args.body.items[0].id), updatedAt: 1700000001 };
+        return new Promise(resolve => { finishOldRefresh = () => resolve({ items: [receipt] }); });
       }
       if (route === "/v1/feedback/visibility") currentVisibility = "private";
       else publicBody = args.body;
@@ -160,8 +164,11 @@ async function main() {
       publicOffline = true; await social.publicList(30);
       assert.equal(social.status().community.items.length, 1); assert.equal(social.status().community.offset, 0);
       assert(social.status().community.error);
+      const oldRefresh = social.refresh();
       await social.withdraw(input.id);
+      finishOldRefresh(); await oldRefresh;
       assert.equal(social.status().items[0].visibility, "private");
+      assert.equal(social.status().items[0].updatedAt, 1700000002, "A late refresh cannot overwrite the newer withdrawal receipt");
       const after = JSON.parse(fs.readFileSync(path.join(root, "social", "feedback", "state.json"), "utf8")).items[0];
       assert.deepEqual(after.payload, before.payload); assert.equal(after.inputHash, before.inputHash);
       assert.equal(social.status().items.length, 1, "Withdraw preserves the owner's record");

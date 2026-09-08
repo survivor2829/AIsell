@@ -4,10 +4,10 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const https = require("node:https");
-const { spawnSync } = require("node:child_process");
 const { buildComponentRelease } = require("./build-component-release.cjs");
 const { createComponentStore } = require("../src/main/component-store.cjs");
 const { createTransport } = require("../src/main/cloud-transport.cjs");
+const { createCloudMaintenance } = require("../src/main/cloud-maintenance.cjs");
 const { verifyComponentManifest, treeHash, hashFile, digest } = require("../src/shared/component-contract.cjs");
 const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
 const config = { appId: "com.aihuoke.desktop.test", channel: "test", signingPublicKey: publicKey };
@@ -93,23 +93,60 @@ test("full generation matches signed target, reuses base and unchanged component
     transport: { async request(_route, options) { await fs.writeFile(options.destination, unsafe); } } });
   await assert.rejects(escaped.prepare(sign(poisoned)), /component_path_invalid/);
 });
+test("new component metadata invalidates ready and in-flight older updates", async t => {
+  const { root, source, base } = await fixture(t);
+  let latest = sign({ ...base.manifest, version: "1.1.1", sequence: 100 });
+  const controller = createCloudMaintenance({ rootDir: path.join(root, "client"), userData: path.join(root, "user-data"),
+    componentBaseRoot: source, config, version: "1.1.0", buildId: "metadata-race", canInstall: () => true,
+    transport: { async request(route) {
+      if (route.startsWith("/v1/")) return { empty: true };
+      if (route.startsWith("/v2/")) return latest;
+      assert.fail("Unchanged verified components must not download");
+    }, close() {} } });
+  t.after(() => controller.stop());
+  await controller.check();
+  assert.equal(controller.status().stage, "ready");
+  assert.equal((await controller.prepareInstall()).version, "1.1.1");
+  latest = sign({ ...base.manifest, version: "1.1.2", sequence: 101 });
+  await controller.refreshAnnouncements();
+  assert.equal(controller.status().stage, "idle", "New metadata must leave a working check-again action");
+  assert.equal(await controller.prepareInstall(), null);
+  await controller.check();
+  assert.equal(controller.status().stage, "ready");
+  assert.equal((await controller.prepareInstall()).version, "1.1.2");
+  let refreshing;
+  const unsubscribe = controller.onUpdate(state => {
+    if (state.stage !== "preparing" || refreshing) return;
+    latest = sign({ ...base.manifest, version: "1.1.3", sequence: 102 });
+    refreshing = controller.refreshAnnouncements();
+  });
+  await controller.check();
+  await refreshing;
+  unsubscribe();
+  assert.equal(controller.status().stage, "error", "An older in-flight preparation cannot reappear as ready");
+  assert.equal(await controller.prepareInstall(), null);
+});
 test("HTTPS partial download resumes with strict Range and falls back to a full response", async t => {
   const { root } = await fixture(t);
-  const python = path.resolve(__dirname, "../.build/product-detail-venv/Scripts/python.exe");
-  const generated = spawnSync(python, ["-c", `
-from cryptography import x509
-from cryptography.x509.oid import NameOID
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-import datetime,json
-key=rsa.generate_private_key(public_exponent=65537,key_size=2048)
-name=x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,'localhost')])
-now=datetime.datetime.now(datetime.timezone.utc)
-cert=x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key()).serial_number(x509.random_serial_number()).not_valid_before(now-datetime.timedelta(minutes=1)).not_valid_after(now+datetime.timedelta(days=1)).add_extension(x509.SubjectAlternativeName([x509.DNSName('localhost')]),critical=False).sign(key,hashes.SHA256())
-print(json.dumps({'key':key.private_bytes(serialization.Encoding.PEM,serialization.PrivateFormat.PKCS8,serialization.NoEncryption()).decode(),'cert':cert.public_bytes(serialization.Encoding.PEM).decode()}))
-`], { encoding: "utf8", windowsHide: true });
-  assert.equal(generated.status, 0, generated.stderr);
-  const tls = JSON.parse(generated.stdout), data = crypto.randomBytes(96 * 1024), expected = { size: data.length, sha256: digest(data) };
+  // Public localhost-only test credentials, unrelated to release signing or the
+  // production CA. Keep this check runnable after npm ci without a local Python env.
+  const tls = { key: `-----BEGIN EC PRIVATE KEY-----
+MHcCAQEEIGKBS75Giou2rvHwoCN5PWfrVdegseg0JsQ3YXuAuzOxoAoGCCqGSM49
+AwEHoUQDQgAE/8PwLSQxHyZSZKtP1Pga7mjx/cFihToIaMzyckoJCqRbWfHqHyM6
+zT74a8oRTaGqmYcuqFNPopAjXTl8OgQpMw==
+-----END EC PRIVATE KEY-----
+`, cert: `-----BEGIN CERTIFICATE-----
+MIIBXDCCAQKgAwIBAgIBATAKBggqhkjOPQQDAjAhMR8wHQYDVQQDDBZsb2NhbGhv
+c3QgdGVzdCBmaXh0dXJlMCAXDTIwMDEwMTAwMDAwMFoYDzIxMDAwMTAxMDAwMDAw
+WjAhMR8wHQYDVQQDDBZsb2NhbGhvc3QgdGVzdCBmaXh0dXJlMFkwEwYHKoZIzj0C
+AQYIKoZIzj0DAQcDQgAE/8PwLSQxHyZSZKtP1Pga7mjx/cFihToIaMzyckoJCqRb
+WfHqHyM6zT74a8oRTaGqmYcuqFNPopAjXTl8OgQpM6MpMCcwDwYDVR0TAQH/BAUw
+AwEB/zAUBgNVHREEDTALgglsb2NhbGhvc3QwCgYIKoZIzj0EAwIDSAAwRQIhAPaq
+3gymfeDzvnyPN8wPVLQ0lDgFr7LE2F82flXVVslxAiBJWZ/L6JkwxZMFJrUEMIpf
+Eo3uwSF/qcX9KawlC0ZAFA==
+-----END CERTIFICATE-----
+` };
+  const data = crypto.randomBytes(96 * 1024), expected = { size: data.length, sha256: digest(data) };
   let mode = "interrupt", requested;
   const server = https.createServer(tls, (req, res) => {
     requested = req.headers.range;

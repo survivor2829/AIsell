@@ -91,7 +91,7 @@
 .feedback-admin-diagnostics summary { cursor: pointer; padding: 10px 0; }
 .feedback-admin-diagnostics pre { overflow: auto; max-height: 300px; padding: 16px; background: #f2f5f8; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .feedback-center { scrollbar-color: #a0adbb #f2f5f8; }
-.feedback-tabs { overflow-x: auto; }
+.feedback-tabs { overflow-x: auto; overflow-y: hidden; }
 .feedback-tabs button { white-space: nowrap; }
 .feedback-tabs button:hover { color: var(--brand-red-dark); }
 @media (max-width: 650px) {

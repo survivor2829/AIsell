@@ -1,4 +1,6 @@
-const fs = require("node:fs");
+// Electron's patched fs treats *.asar as directories. Verify physical archive
+// bytes just like the Node build tool, without entering virtual ASAR contents.
+const fs = process.versions.electron ? require("original-fs") : require("node:fs");
 const fsp = fs.promises;
 const path = require("node:path");
 const crypto = require("node:crypto");

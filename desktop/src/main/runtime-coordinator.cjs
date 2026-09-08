@@ -61,6 +61,7 @@ function createRuntimeCoordinator(dataDir) {
   }
 
   function acquire({ state, taskId = "", account = "", phase = "" }) {
+    if (global.__xiaoxiUpdateHold) return { ok: false, error: "update_in_progress", state: "stopping" };
     if (!STATES.has(state) || state === "idle" || state === "paused" || state === "stopping") {
       return { ok: false, error: "invalid_runtime_state" };
     }

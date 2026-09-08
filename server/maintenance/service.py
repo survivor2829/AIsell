@@ -58,10 +58,10 @@ def validate_report(body):
         row["details"] = {}
         details = entry.get("details", {})
         if isinstance(details, dict):
-            for key in ("receipt_stage", "receipt_code", "receipt_draft_read_stage", "state", "status", "phase", "reason_code", "error_code"):
+            for key in ("receipt_stage", "receipt_code", "receipt_draft_read_stage", "state", "status", "phase", "reason_code", "error_code", "stage", "wx_hook_stage", "wx_hook_error_code", "blocked_reason"):
                 if safe_token(details.get(key)):
                     row["details"][key] = details[key]
-            for key in ("receipt_conversation_verified", "receipt_draft_read_ok", "receipt_draft_consumed", "receipt_input_lease_valid", "receipt_bubble_verified"):
+            for key in ("receipt_conversation_verified", "receipt_draft_read_ok", "receipt_draft_consumed", "receipt_input_lease_valid", "receipt_bubble_verified", "helper_configured", "wechat_exe_configured", "wechat_root_configured"):
                 if type(details.get(key)) is bool:
                     row["details"][key] = details[key]
         clean["entries"].append(row)
