@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, CalendarClock, Check, ChevronRight, Clock3, ImagePlus, ListTodo, Maximize2, Pause, Pencil, Play, Plus, Repeat2, Send, ThumbsUp, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, CalendarClock, Check, ChevronRight, Clock3, ImagePlus, ListTodo, Maximize2, Pause, Pencil, Play, Plus, Repeat2, Send, ThumbsUp, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { momentsProgressLabel } from "./MomentsCampaignPanel";
 import "./WechatWorkflow.css";
@@ -77,6 +77,7 @@ declare global {
       addTask: (task: WorkflowTaskInput) => Promise<WorkflowResult>;
       updateTask: (task: WorkflowTaskInput & { id: string }) => Promise<WorkflowResult>;
       cancelTask: (id: string) => Promise<WorkflowResult>;
+      deleteTasks: (ids: string[], unsuccessfulOnly?: boolean) => Promise<WorkflowResult>;
       retryTask: (id: string) => Promise<WorkflowResult>;
       getTask: (id: string) => Promise<WorkflowResult>;
       removeRecipient: (id: string) => Promise<WorkflowResult>;
@@ -250,6 +251,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const [editor, setEditor] = useState<EditorRequest | null>(null);
   useEffect(() => { if (editorRequest) setEditor(editorRequest); }, [editorRequest]);
   const [notice, setNotice] = useState("");
+  const [deletion, setDeletion] = useState<{ ids: string[]; bulk: boolean } | null>(null);
   const editorAnchor = useRef<HTMLDivElement>(null);
   const { state, loading, busy, error, run } = workflow;
   const api = window.xiaoxiWorkflow;
@@ -257,6 +259,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const tasks = state.tasks.filter((task) => availableTypes.includes(task.type));
   const activeTasks = tasks.filter((task) => !["completed", "cancelled"].includes(task.status));
   const history = tasks.filter((task) => ["completed", "cancelled"].includes(task.status)).reverse();
+  const unsuccessful = tasks.filter((task) => ["needs_attention", "cancelled", "missed"].includes(task.status));
   const current = state.tasks.find((task) => task.id === state.currentTaskId);
   const next = state.tasks.find((task) => task.id === state.nextTaskId);
   const waitingForSchedule = state.tasks.some((task) => task.status === "pending" && !task.accountMismatch && (task.repeat === "daily" || Boolean(task.scheduledAt && Date.parse(task.scheduledAt) > Date.now())));
@@ -275,6 +278,21 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   }, [editor]);
 
   useEffect(() => { setNotice(""); }, [state.enabled]);
+  useEffect(() => { if (state.enabled) setDeletion(null); }, [state.enabled]);
+
+  const confirmDelete = async () => {
+    if (!api || !deletion) return;
+    const result = await run(() => api.deleteTasks(deletion.ids, deletion.bulk));
+    if (result?.ok) {
+      if (editor?.task && deletion.ids.includes(editor.task.id)) setEditor(null);
+      setNotice(`已删除 ${deletion.ids.length} 项任务记录。`);
+      setDeletion(null);
+    }
+  };
+  const deletePrompt = (bulk: boolean) => <div className="workflow-delete-prompt" role="group" aria-label="确认删除任务">
+    <div><strong>{bulk ? `删除这 ${deletion?.ids.length} 项未完成任务记录？成功记录会保留。` : "删除这项任务记录？后续安排也会停止。"}</strong><p>仅从计划列表移除，不撤回已发送内容，也不移除接待客户。</p></div>
+    <div className="workflow-row-actions"><button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || planLocked} onClick={() => void confirmDelete()}><Trash2 size={14} />确认删除</button><button type="button" className="text-button workflow-muted-action" disabled={busy} onClick={() => setDeletion(null)}>保留</button></div>
+  </div>;
 
   const openExisting = async (task: WorkflowTask, repeat: boolean) => {
     if (!api) return;
@@ -307,13 +325,15 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
         {canEdit && <button className="text-button" disabled={busy} onClick={() => void openExisting(task, false)}><Pencil size={14} />{completedDaily ? "编辑后续安排" : "编辑"}</button>}
         {task.status === "completed" && !completedDaily && <button className="text-button" disabled={busy || planLocked} onClick={() => void openExisting(task, true)}><Repeat2 size={14} />再做一次</button>}
         {canCancel && <button className="text-button workflow-muted-action" disabled={busy} onClick={() => api && void run(() => api.cancelTask(task.id))}>{completedDaily ? "取消后续安排" : "取消"}</button>}
+        {task.status !== "running" && <button type="button" className="text-button workflow-muted-action" disabled={busy || planLocked} aria-label={`删除${task.title}任务记录`} onClick={() => setDeletion({ ids: [task.id], bulk: false })}><Trash2 size={14} />删除</button>}
       </div>
+      {deletion && !deletion.bulk && deletion.ids[0] === task.id && deletePrompt(false)}
     </li>;
   };
 
   return <section className="page workflow-page">
     <div className="page-head workflow-page-head">
-      <div><h1>{title}</h1><p>{mode === "home" ? "安排好待办，启动一次。客户回复优先，其余任务依次完成。" : mode === "touch" ? "选好联系人和话术，加入计划后按顺序执行。" : "准备发布内容或安排互动，系统会接着完成下一项。"}</p></div>
+      <div><h1>{title}</h1><p>{mode === "home" ? "安排好待办，启动一次。先完成当前可执行任务，空闲时自动接待客户。" : mode === "touch" ? "选好联系人和话术，加入计划后按顺序执行。" : "准备发布内容或安排互动，系统会接着完成下一项。"}</p></div>
       <WorkflowToggle workflow={workflow} onNavigate={onNavigate} />
     </div>
 
@@ -350,7 +370,8 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
       />}
     </div>
 
-    <div className="workflow-list-head"><h2>{mode === "home" ? "待办任务" : "已加入计划"}</h2><span>{activeTasks.length} 项</span></div>
+    <div className="workflow-list-head"><h2>{mode === "home" ? "待办任务" : "已加入计划"}</h2><span>{activeTasks.length} 项</span>{unsuccessful.length > 0 && <button type="button" className="text-button workflow-cleanup" disabled={busy || planLocked} onClick={() => setDeletion({ ids: unsuccessful.map((task) => task.id), bulk: true })}><Trash2 size={14} />清理失败和已取消任务（{unsuccessful.length}）</button>}</div>
+    {deletion?.bulk && deletePrompt(true)}
     {loading ? <div className="workflow-loading" aria-label="正在读取任务"><span /><span /><span /></div> : activeTasks.length ? <ul className="workflow-task-list">{activeTasks.map(taskRow)}</ul> : <div className="workflow-empty"><ListTodo size={25} /><div><strong>还没有待办任务</strong><p>{state.recipients.length ? "有客户消息时继续自动回复；需要触达、发布或互动时，在上方添加。" : "从上方添加一项任务。任务结束后，系统会持续接待已加入范围的客户。"}</p></div></div>}
 
     {history.length > 0 && <details open={view === "history" ? true : undefined} className="workflow-details workflow-history"><summary>已完成与已取消 <span>{history.length} 项</span></summary><ul className="workflow-task-list">{history.map(taskRow)}</ul></details>}

@@ -164,6 +164,24 @@ assert.match(surfaceInspectorSource, /\$finalObservedInputTick -ne \$inputTick/u
 assert.equal(typeof openWechatMoments, "function");
 assert.equal(typeof scrollWechatMomentsFeed, "function");
 assert.equal(typeof resolveMomentsScrollPlan, "function");
+const navigationNativeSource = MOMENTS_NAVIGATION_POWERSHELL.split('Add-Type @"')[1].split('"@')[0];
+const translationProbe = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+  Buffer.from(`Add-Type @"
+${navigationNativeSource}
+"@
+$width = 200; $height = 400; $stride = $width * 4
+$before = New-Object byte[] ($stride * $height)
+$after = New-Object byte[] ($stride * $height)
+$random = [Random]::new(71)
+$random.NextBytes($before)
+[Array]::Copy($before, 120 * $stride, $after, 0, 280 * $stride)
+$moved = [Win32WechatMomentsNavigation]::MeasureFeedTranslation($before, $after, $stride, $height, 10, 20, 190, 380, -1)
+$random.NextBytes($after)
+$unrelated = [Win32WechatMomentsNavigation]::MeasureFeedTranslation($before, $after, $stride, $height, 10, 20, 190, 380, -1)
+@{ moved = $moved; unrelated = $unrelated } | ConvertTo-Json -Compress
+`, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true });
+assert.equal(translationProbe.status, 0, translationProbe.stderr);
+assert.deepEqual(JSON.parse(translationProbe.stdout.trim()), { moved: -120, unrelated: 0 });
 const chatRailResolver = MOMENTS_NAVIGATION_POWERSHELL.slice(
   MOMENTS_NAVIGATION_POWERSHELL.indexOf("function Resolve-MomentsChatRailTarget"),
   MOMENTS_NAVIGATION_POWERSHELL.indexOf("function Return-MomentsToChat")

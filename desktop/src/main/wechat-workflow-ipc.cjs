@@ -189,6 +189,7 @@ function registerWechatWorkflowIpc(options) {
   handle("update-task", (payload) => controller.updateTask(payload), true);
   handle("get-task", (payload) => controller.getTask(String(payload?.id || "")));
   handle("cancel-task", (payload) => controller.cancelTask(String(payload?.id || "")));
+  handle("delete-tasks", (payload) => controller.deleteTasks(payload?.ids, payload?.unsuccessfulOnly === true), true);
   handle("retry-task", (payload) => controller.retryTask(String(payload?.id || "")), true);
   handle("remove-recipient", (payload) => controller.removeRecipient(String(payload?.id || "")));
   handle("add-recipients", (payload) => controller.addRecipients(payload?.contactIds), true);

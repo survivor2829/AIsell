@@ -60,6 +60,12 @@
 .workflow-details > summary > span { margin-left: 9px; font-size: 12px; }
 .workflow-details > summary:hover { color: var(--brand-red-dark); }
 .workflow-history { margin-top: 24px; }
+.workflow-list-head { flex-wrap: wrap; }
+.workflow-list-head .workflow-cleanup { margin-left: auto; }
+.workflow-task-row { flex-wrap: wrap; }
+.workflow-row-actions { flex-wrap: wrap; }
+.workflow-delete-prompt { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; flex-basis: 100%; padding: 14px; border: 1px solid var(--workflow-line); border-radius: 8px; background: var(--workflow-surface); color: var(--workflow-ink); font-size: 13px; }
+.workflow-delete-prompt p { margin: 5px 0 0; color: var(--workflow-muted); line-height: 1.6; }
 .workflow-settings-links { margin-top: 38px; padding-top: 20px; border-top: 1px solid var(--workflow-line); display: flex; flex-wrap: wrap; align-items: center; gap: 12px 25px; }
 .workflow-settings-links > span { font-size: 12px; color: var(--workflow-muted); }
 .workflow-editor-anchor { scroll-margin-top: 16px; }

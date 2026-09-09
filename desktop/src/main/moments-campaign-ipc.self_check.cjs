@@ -217,7 +217,7 @@ async function main() {
     scrollMoments: async (options) => {
       assert.equal(options.scrollMode, "seek_post_menu_down");
       assert.equal(readingActions, 0, "a body-only snapshot must never reach an action");
-      return { ok: true, delta: -240 };
+      return { ok: true, delta: -240, observedDelta: -180 };
     },
     generateComment: async ({ postText }) => {
       assert.equal(postText, "机器人培训圆满收官，现场实操收获很多。".normalize("NFKC"), "use body content, not author/footer identity");
@@ -226,17 +226,21 @@ async function main() {
     runStep: async (args) => {
       if (args[0] === "moments-dry-run") {
         readingCalls += 1;
-        if (readingCalls === 2) {
+        if (readingCalls > 1) {
           const target = JSON.parse(Buffer.from(args[args.indexOf("--target-post-base64") + 1], "base64"));
-          assert.equal(target.expected_scroll_delta, -240);
+          assert.equal(target.expected_scroll_delta, -180);
+          assert.equal(target.expected_scroll_unit, "observed_pixels");
           assert.equal(target.observation_id, "reading-only");
         }
         return {
           ok: true, window: INTEGRATED_OBSERVED_WINDOW,
           post_snapshot: {
             ...firstReadingFrame,
-            observation_id: readingCalls === 1 ? "reading-only" : "ready",
+            observation_id: readingCalls <= 2 ? "reading-only" : "ready",
             body_only: readingCalls === 1,
+            ...(readingCalls === 2 ? {
+              menu_bounds: { left: 700, top: INTEGRATED_OBSERVED_WINDOW.renderPaneBounds.top + INTEGRATED_OBSERVED_WINDOW.renderPaneBounds.height - 25, width: 40, height: 24 }
+            } : {}),
             identity_text: "作者昵称 会员超市 12小时前",
             content_text: "机器人培训圆满收官，现场实操收获很多。"
           }
@@ -249,7 +253,7 @@ async function main() {
   });
   assert.equal(readingController.start({ maxPosts: 1, commentEnabled: true }).ok, true);
   const readingFinished = await waitFor(() => readingController.status().state, (s) => s.status === "completed");
-  assert.equal(readingCalls, 2);
+  assert.equal(readingCalls, 3);
   assert.equal(readingActions, 2);
   assert.equal(readingFinished.comment_skipped_count, 0);
   assert.equal(readingFinished.commented_count, 1);
@@ -1663,7 +1667,7 @@ async function main() {
       visibleTextMissingScans += 1;
       return {
         ok: true,
-        window: INTEGRATED_OBSERVED_WINDOW,
+        window: { ...INTEGRATED_OBSERVED_WINDOW, renderPaneBounds: { ...INTEGRATED_OBSERVED_WINDOW.renderPaneBounds, height: 900 } },
         post_snapshot: postSnapshot,
         plan: { visible_post_count: 1 }
       };

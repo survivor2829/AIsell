@@ -12,6 +12,47 @@ Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 public static class Win32WechatMomentsVisualReadOnly {
+  // This scan runs thousands of times per frame. Keep the exact sampled pixels
+  // and isolation rules, but avoid interpreting the inner loops in PowerShell.
+  public static double[] MeasureAvatar(byte[] bytes, int stride, int width, int height, int left, int top, int size) {
+    if (size <= 0 || left < 0 || top < 0 || left + size > width || top + size > height)
+      return new double[] { 0, 0 };
+    int foreground = 0, total = 0;
+    for (int y = top; y < top + size; y += 4) {
+      for (int x = left; x < left + size; x += 4) {
+        int offset = y * stride + x * 4;
+        if (!(bytes[offset + 2] >= 218 && bytes[offset + 1] >= 218 && bytes[offset] >= 218)) foreground++;
+        total++;
+      }
+    }
+    if (total == 0) return new double[] { 0, 0 };
+    double foregroundRatio = (double)foreground / total;
+    if (foregroundRatio < 0.16 || foregroundRatio > 0.98) return new double[] { 0, 0 };
+    int ring = Math.Max(3, (int)Math.Round(size * 0.1));
+    int ringLight = 0, ringTotal = 0;
+    int[] sideLight = new int[4], sideTotal = new int[4];
+    for (int y = top - ring; y < top + size + ring; y += 4) {
+      for (int x = left - ring; x < left + size + ring; x += 4) {
+        if (x >= left && x < left + size && y >= top && y < top + size) continue;
+        int side = y < top ? 0 : y >= top + size ? 1 : x < left ? 2 : 3;
+        sideTotal[side]++;
+        if (x >= 0 && y >= 0 && x < width && y < height) {
+          int offset = y * stride + x * 4;
+          if (bytes[offset + 2] >= 218 && bytes[offset + 1] >= 218 && bytes[offset] >= 218) {
+            ringLight++; sideLight[side]++;
+          }
+        }
+        ringTotal++;
+      }
+    }
+    if (ringTotal == 0) return new double[] { 0, 0 };
+    double ringRatio = (double)ringLight / ringTotal;
+    bool isolated = true;
+    for (int side = 0; side < 4; side++) {
+      if (sideTotal[side] == 0 || (double)sideLight[side] / sideTotal[side] < 0.50) { isolated = false; break; }
+    }
+    return new double[] { isolated ? 1 : 0, foregroundRatio * 0.68 + ringRatio * 0.32, foregroundRatio, ringRatio };
+  }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
   [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
@@ -611,47 +652,9 @@ function Resolve-MomentsInteractionAnchor(
 }
 
 function Measure-MomentsAvatarBox($frame, [int]$left, [int]$top, [int]$size) {
-  $insideForeground = 0
-  $insideTotal = 0
-  for ($y = $top; $y -lt ($top + $size); $y += 4) {
-    for ($x = $left; $x -lt ($left + $size); $x += 4) {
-      $offset = ($y * $frame.stride) + ($x * 4)
-      $light = [int]$frame.bytes[$offset + 2] -ge 218 -and [int]$frame.bytes[$offset + 1] -ge 218 -and [int]$frame.bytes[$offset] -ge 218
-      if (-not $light) { $insideForeground += 1 }
-      $insideTotal += 1
-    }
-  }
-  if ($insideTotal -eq 0) { return @{ ok = $false; score = 0.0 } }
-  $foregroundRatio = [double]$insideForeground / [double]$insideTotal
-  if ($foregroundRatio -lt 0.16 -or $foregroundRatio -gt 0.98) { return @{ ok = $false; score = 0.0 } }
-  $ringLight = 0
-  $ringTotal = 0
-  $sideLight = @(0, 0, 0, 0)
-  $sideTotal = @(0, 0, 0, 0)
-  $ring = [Math]::Max(3, [int][Math]::Round($size * 0.1))
-  for ($y = $top - $ring; $y -lt ($top + $size + $ring); $y += 4) {
-    for ($x = $left - $ring; $x -lt ($left + $size + $ring); $x += 4) {
-      $inside = $x -ge $left -and $x -lt ($left + $size) -and $y -ge $top -and $y -lt ($top + $size)
-      if ($inside) { continue }
-      $side = if ($y -lt $top) { 0 } elseif ($y -ge ($top + $size)) { 1 } elseif ($x -lt $left) { 2 } else { 3 }
-      $sideTotal[$side] += 1
-      if ($x -ge 0 -and $y -ge 0 -and $x -lt $frame.width -and $y -lt $frame.height) {
-        $offset = ($y * $frame.stride) + ($x * 4)
-        if ([int]$frame.bytes[$offset + 2] -ge 218 -and [int]$frame.bytes[$offset + 1] -ge 218 -and [int]$frame.bytes[$offset] -ge 218) { $ringLight += 1; $sideLight[$side] += 1 }
-      }
-      $ringTotal += 1
-    }
-  }
-  if ($ringTotal -eq 0) { return @{ ok = $false; score = 0.0 } }
-  $ringLightRatio = [double]$ringLight / [double]$ringTotal
-  # A real avatar is an isolated square. A patch on a photo/text edge may
-  # have a light ring on average while still touching content on one side.
-  $isolated = $true
-  for ($side = 0; $side -lt 4; $side++) {
-    if ($sideTotal[$side] -eq 0 -or ([double]$sideLight[$side] / $sideTotal[$side]) -lt 0.50) { $isolated = $false; break }
-  }
-  $ok = $isolated
-  return @{ ok = $ok; score = (($foregroundRatio * 0.68) + ($ringLightRatio * 0.32)); foregroundRatio = $foregroundRatio; ringLightRatio = $ringLightRatio }
+  $measure = [Win32WechatMomentsVisualReadOnly]::MeasureAvatar($frame.bytes, $frame.stride, $frame.width, $frame.height, $left, $top, $size)
+  if ($measure.Length -lt 4) { return @{ ok = $false; score = 0.0 } }
+  return @{ ok = $measure[0] -eq 1; score = $measure[1]; foregroundRatio = $measure[2]; ringLightRatio = $measure[3] }
 }
 
 function Test-MomentsVisualBoundsInside($inner, $outer) {
@@ -748,6 +751,20 @@ function Get-MomentsPixelHash($frame, $rect) {
   $sha = [Security.Cryptography.SHA256]::Create()
   try { $digest = $sha.ComputeHash($buffer) } finally { $sha.Dispose() }
   return ([BitConverter]::ToString($digest).Replace("-", "").ToLowerInvariant())
+}
+
+function Get-MomentsAvatarAnchorHashes($frame, $rect) {
+  # Keep exact interior pixels, allowing only a one-pixel detection offset.
+  $size = [Math]::Floor([Math]::Min([double]$rect.width, [double]$rect.height)) - 8
+  if ($size -lt 24) { return @() }
+  $hashes = @()
+  for ($dy = -1; $dy -le 1; $dy++) {
+    for ($dx = -1; $dx -le 1; $dx++) {
+      $crop = @{ left=([Math]::Floor([double]$rect.left)+4+$dx); top=([Math]::Floor([double]$rect.top)+4+$dy); width=$size; height=$size }
+      $hashes += Get-MomentsPixelHash $frame $crop
+    }
+  }
+  return @($hashes | Select-Object -Unique)
 }
 
 function ConvertTo-MomentsOcrBitmap($frame, $rect) {
@@ -1146,6 +1163,7 @@ function Get-MomentsVisualPostCandidates($frame, $viewportBounds, [bool]$include
       partialVisible = $unclippedPostBottom -gt $viewportBottom
       ocrLines = $ocr.lines
       contentText = Get-MomentsPostContentText $ocr $postRect $avatar.bounds $menu.bounds
+      avatarAnchorHashes = @(Get-MomentsAvatarAnchorHashes $frame $avatar.bounds)
     })
   }
   return @{
@@ -1169,6 +1187,14 @@ function Get-MomentsVisualReadingCandidates($frame, $viewportBounds, $visibleAva
   $viewportRight = [double]$viewportBounds.left + [double]$viewportBounds.width
   $viewportBottom = [double]$viewportBounds.top + [double]$viewportBounds.height
   $readingCandidates = New-Object System.Collections.Generic.List[object]
+  # All post avatars share the leading column. Blue comment text and image
+  # details to its right can pass the coarse square detector, but are not posts.
+  if ($avatars.Count -gt 0) {
+    $leadingAvatar = @($avatars | Sort-Object { [double]$_.left })[0]
+    $avatars = @($avatars | Where-Object {
+      [Math]::Abs([double]$_.left - [double]$leadingAvatar.left) -le ([double]$leadingAvatar.width * 0.35)
+    })
+  }
   for ($index = 0; $index -lt $avatars.Count; $index++) {
     $avatar = $avatars[$index]
     # Author text beside a real avatar is not a second post on the same row.
@@ -1211,6 +1237,7 @@ function Get-MomentsVisualReadingCandidates($frame, $viewportBounds, $visibleAva
       avatarBounds = $avatar
       partialVisible = $true
       bodyOnly = $true
+      avatarAnchorHashes = @(Get-MomentsAvatarAnchorHashes $frame $avatar)
     })
   }
   return @($readingCandidates.ToArray() | Sort-Object { [double]$_.bounds.top })

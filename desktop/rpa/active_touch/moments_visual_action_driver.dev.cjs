@@ -5196,7 +5196,7 @@ try {
       Write-VisualResult @{ ok = $false; status = "blocked"; reason = $beforePost.reason; actionAttempted = $false; diagnostics = $beforePost.diagnostics }
     }
     try {
-      $beforeCandidate = Find-VisualCommentCandidate $beforePost.frame $beforePost.post.bounds $beforePost.menu $commentText "exact"
+      $beforeCandidate = Find-VisualCommentCandidate $beforePost.frame $beforePost.post.bounds $beforePost.menu $commentText "exact" $beforePost.nextPostTop
       $normalizedOcrCountBefore = [int]$beforeCandidate.normalizedTextCount
     } finally {
       Close-MomentsVisualFrame $beforePost.frame
@@ -5206,7 +5206,7 @@ try {
     }
     if ([string]$beforeCandidate.reason -eq "moments_comment_candidate_ocr_unavailable" -or
       [string]$beforeCandidate.reason -eq "moments_comment_candidate_region_invalid") {
-      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_duplicate_visual_state_unknown"; actionAttempted = $false }
+      Write-VisualResult @{ ok = $false; status = "blocked"; reason = "moments_comment_duplicate_visual_state_unknown"; actionAttempted = $false; diagnostics = @{ firstReason = [string]$beforeCandidate.reason } }
     }
     Set-VisualActionStage "post_checked"
   }

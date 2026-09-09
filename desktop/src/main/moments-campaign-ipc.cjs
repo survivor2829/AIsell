@@ -553,11 +553,24 @@ function createMomentsCampaignController(options = {}) {
         }
         // Reading-only observations are not executable. Keep this post while
         // bringing its footer into view; never count it as an attempted action.
-        if (observed?.ok && observed.post_snapshot?.body_only === true) {
+        const needsMenuRoom = (result) => {
+          if (!result?.ok) return false;
+          if (result.post_snapshot?.body_only === true) return true;
+          if (!state.comment_enabled) return false;
+          const menu = result.post_snapshot?.menu_bounds;
+          const viewport = result.window?.renderPaneBounds || result.window;
+          const height = Number(viewport?.height);
+          const scale = Number(result.window?.dpi || 96) / 96;
+          return !!menu && height > 0
+            && Number(menu.top) + Number(menu.height) + 120 * scale > Number(viewport?.top || 0) + height;
+        };
+        let menuScrolls = 0;
+        while (needsMenuRoom(observed) && menuScrolls < 3) {
           const reading = observed.post_snapshot;
           persist({ last_reason: "locating_interaction_menu" });
           const scrolled = await scrollMoments({
             expectedWindow: observed.window,
+            feedContentBounds: reading.bounds,
             scrollMode: "seek_post_menu_down",
             minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0,
             shouldContinue: () => !stopRequested && !pendingPauseReason
@@ -568,7 +581,8 @@ function createMomentsCampaignController(options = {}) {
             return;
           }
           persist({ scroll_count: state.scroll_count + 1 });
-          const target = { ...reading, expected_scroll_delta: Number(scrolled.delta) || 0 };
+          menuScrolls += 1;
+          const target = { ...reading, expected_scroll_delta: Number(scrolled.observedDelta) || 0, expected_scroll_unit: "observed_pixels" };
           observed = await runObservation([
             "--target-post-base64",
             Buffer.from(JSON.stringify(target), "utf8").toString("base64")
@@ -578,7 +592,7 @@ function createMomentsCampaignController(options = {}) {
             reason: observed?.reason || observed?.blocked_reason || "",
             visual: observed?.diagnostics?.visual
           }, observed?.ok && observed.post_snapshot?.body_only !== true ? "info" : "warn");
-          if (!observed?.ok || observed.post_snapshot?.body_only === true) {
+          if (!observed?.ok) {
             finish("paused", observed?.reason || observed?.blocked_reason || "moments_menu_not_found");
             return;
           }
@@ -588,12 +602,17 @@ function createMomentsCampaignController(options = {}) {
             observed.post_snapshot.content_text = reading.content_text;
           }
         }
+        if (needsMenuRoom(observed)) {
+          finish("paused", "moments_menu_not_found");
+          return;
+        }
         const directPositionDiagnostics = sanitizeMomentsPositionDiagnostics(observed?.diagnostics);
         const positionDiagnostics = Object.keys(directPositionDiagnostics).length > 0
           ? directPositionDiagnostics
           : sanitizeMomentsPositionDiagnostics(observed?.plan?.position_diagnostics);
         if (!usingPendingSnapshot) {
           record("campaign.observation_finished", {
+            ...require("../shared/wechat-window-diagnostics.cjs").sanitizeWechatWindowDiagnostics(observed?.diagnostics),
             ok: observed?.ok === true,
             reason: observed?.blocked_reason || observed?.reason || "",
             visible_post_count: observed?.plan?.visible_post_count || 0,

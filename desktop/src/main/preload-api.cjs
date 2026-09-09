@@ -927,6 +927,7 @@ function createPreloadApis(ipcRenderer) {
       updateTask: (payload) => ipcRenderer.invoke("wechat-workflow:update-task", { ...payload, clickToken: consumeWorkflowSave() }),
       getTask: (id) => ipcRenderer.invoke("wechat-workflow:get-task", { id: String(id || "") }),
       cancelTask: (id) => ipcRenderer.invoke("wechat-workflow:cancel-task", { id: String(id || "") }),
+      deleteTasks: (ids, unsuccessfulOnly = false) => ipcRenderer.invoke("wechat-workflow:delete-tasks", { ids, unsuccessfulOnly, clickToken: consumeWorkflowSave() }),
       retryTask: (id) => ipcRenderer.invoke("wechat-workflow:retry-task", { id: String(id || ""), clickToken: consumeWorkflowSave() }),
       removeRecipient: (id) => ipcRenderer.invoke("wechat-workflow:remove-recipient", { id: String(id || "") }),
       addRecipients: (contactIds) => ipcRenderer.invoke("wechat-workflow:add-recipients", { contactIds, clickToken: consumeWorkflowSave() }),

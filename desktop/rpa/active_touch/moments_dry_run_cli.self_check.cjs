@@ -1,6 +1,11 @@
 const assert = require("node:assert/strict");
 const Module = require("node:module");
 const path = require("node:path");
+const { readMomentsDiagnostics } = require("../../src/shared/wechat-window-diagnostics.cjs");
+assert.deepEqual(readMomentsDiagnostics("private text\nmoments_navigation_stage:bootstrap\nmoments_probe_stage:second_capture", 123, 30000),
+  { moments_stage: "second_capture", moments_elapsed_ms: 123, moments_timeout_ms: 30000 });
+assert.deepEqual(readMomentsDiagnostics("moments_probe_stage:unknown", 1, 2), {});
+assert.deepEqual(readMomentsDiagnostics("moments_probe_stage:complete", -1, 86400001), { moments_stage: "complete" });
 
 const calls = [];
 const originalLoad = Module._load;
@@ -95,4 +100,28 @@ main(["node", modulePath, "--mode", "random", "--like", "--target-post-base64", 
 assert.equal(calls[5].payload.targetPostRequired, true);
 assert.equal(calls[5].payload.targetPost, undefined);
 
+// A timed-out integrated visual probe cannot benefit from the same probe again.
+// Exercise the real planner while replacing all OS access and state writes.
+let probes = 0;
+Module._load = function(request, parent, isMain) {
+  if (request === "./state_machine.cjs") return { loadState: () => ({}), saveState() {}, appendLog() {} };
+  if (request === "./wechat_window_driver.cjs") return { runPowerShell: () => { throw new Error("unexpected structural probe"); } };
+  if (request === "./moments_visual_dry_run.dev.cjs") return { probeVisualWechatMomentsWindow: () => {
+    probes += 1;
+    return { ok: false, reason: "powershell_timeout", diagnostics: { moments_stage: "first_candidates", moments_elapsed_ms: 30000, stderr: "private text" } };
+  } };
+  return originalLoad.call(this, request, parent, isMain);
+};
+try {
+  const plannerPath = require.resolve("./moments_dry_run.dev.cjs");
+  delete require.cache[plannerPath];
+  const { prepareMomentsDryRun } = require(plannerPath);
+  const result = prepareMomentsDryRun("isolated", { mode: "random", likeEnabled: true, expectedWindow });
+  assert.equal(probes, 1, "integrated timeout must not spend a second visual-probe budget");
+  assert.equal(result.real_action_attempted, false);
+  assert.equal(result.blocked_reason, "powershell_timeout");
+  assert.deepEqual(result.diagnostics, { moments_stage: "first_candidates", moments_elapsed_ms: 30000 });
+} finally {
+  Module._load = originalLoad;
+}
 console.log("moments dry-run CLI self-check passed");

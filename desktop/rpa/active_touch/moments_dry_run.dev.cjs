@@ -155,9 +155,25 @@ function momentsPostBound(value, key) {
   return null;
 }
 
-function momentsPostDisplacementMatches(first, second, scrollDelta) {
+function momentsPostDisplacementMatches(first, second, scrollDelta, unit = "pixels") {
   const expectedDelta = Number(scrollDelta);
   if (!Number.isFinite(expectedDelta)) return false;
+  if (unit === "wheel") return false;
+  if (unit === "observed_pixels") {
+    // The navigation receipt measures the whole feed independently of this
+    // candidate, so another similar post cannot supply its own displacement.
+    const beforeAvatar = momentsPostBound(first, "avatar_bounds");
+    const afterAvatar = momentsPostBound(second, "avatar_bounds");
+    const beforePost = momentsPostBound(first, "bounds");
+    const afterPost = momentsPostBound(second, "bounds");
+    if (!beforeAvatar || !afterAvatar || !beforePost || !afterPost || expectedDelta === 0) return false;
+    const moved = afterAvatar.top - beforeAvatar.top;
+    const tolerance = Math.max(12, beforeAvatar.height * 0.25);
+    return moved * expectedDelta > 0 && Math.abs(moved - expectedDelta) <= tolerance
+      && Math.abs(afterAvatar.left - beforeAvatar.left) <= tolerance
+      && Math.abs(afterPost.left - beforePost.left) <= tolerance
+      && Math.abs((afterPost.top - beforePost.top) - moved) <= tolerance;
+  }
   const tolerance = Math.max(72, Math.abs(expectedDelta) * 0.6);
   const pairs = ["bounds", "menu_bounds", "avatar_bounds"]
     .map((key) => [
@@ -678,8 +694,12 @@ function momentsTargetPostMatches(targetPost, candidate) {
   const runtimeId = String(candidate?.runtimeId ?? "").trim();
   if (target.runtime_id && runtimeId) return target.runtime_id === runtimeId;
   const candidateAvatarHash = String(candidate?.avatarHash ?? "").trim();
-  const stableAvatar = /^[0-9a-f]{64}$/u.test(candidateAvatarHash)
-    && candidateAvatarHash === target.avatar_hash;
+  const anchorHashes = Array.isArray(target.avatar_anchor_hashes) ? target.avatar_anchor_hashes : [];
+  const candidateAnchors = Array.isArray(candidate?.avatarAnchorHashes) ? candidate.avatarAnchorHashes : [];
+  const stableAvatar = (/^[0-9a-f]{64}$/u.test(candidateAvatarHash)
+    && candidateAvatarHash === target.avatar_hash)
+    || (target.expected_scroll_unit === "observed_pixels" && anchorHashes.some((hash) =>
+      /^[0-9a-f]{64}$/u.test(hash) && candidateAnchors.includes(hash)));
   const structured = candidate?.structureVerified === true;
   const textOverlap = stableMomentsPostIdentityText(
     target.identity_text,
@@ -691,7 +711,7 @@ function momentsTargetPostMatches(targetPost, candidate) {
   return stableAvatar
     && structured
     && textOverlap
-    && momentsPostDisplacementMatches(target, candidate, target.expected_scroll_delta);
+    && momentsPostDisplacementMatches(target, candidate, target.expected_scroll_delta, target.expected_scroll_unit);
 }
 
 function selectLockedMomentsPost(posts, targetPost) {
@@ -796,6 +816,11 @@ function validMomentsWindowIdentity(windowResult) {
 
 function visualMomentsPostSnapshot(windowResult, verifiedWindow, options = {}) {
   const posts = Array.isArray(windowResult?.posts) ? windowResult.posts : [];
+  if (posts.length > 0 && options.targetPost && options.allowBodyOnly === true
+    && !posts.some((post) => momentsTargetPostMatches(options.targetPost, post))
+    && Array.isArray(windowResult?.readingPosts) && windowResult.readingPosts.length > 0) {
+    return visualMomentsPostSnapshot({ ...windowResult, posts: [] }, verifiedWindow, options);
+  }
   if (posts.length === 0) {
     const readingPosts = Array.isArray(windowResult?.readingPosts) ? windowResult.readingPosts : [];
     if (options.allowBodyOnly === true && readingPosts.length > 0) {
@@ -857,6 +882,7 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow, options = {}) {
             ocr_language: "zh-Hans-CN",
             region_hash: String(post.regionHash),
             avatar_hash: String(post.avatarHash),
+            avatar_anchor_hashes: post.avatarAnchorHashes ?? [],
             layout_hash: String(post.layoutHash),
             label,
             identity_text: identityText,
@@ -1097,6 +1123,7 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow, options = {}) {
       ocr_language: interactionOnly ? "" : "zh-Hans-CN",
       region_hash: regionHash,
       avatar_hash: avatarHash,
+      avatar_anchor_hashes: post.avatarAnchorHashes ?? [],
       layout_hash: layoutHash,
       ...(interactionOnly ? { menu_hash: menuHash, interaction_only: true } : {}),
       label,
@@ -1252,6 +1279,7 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
   }
   const visualProbeOptions = {
     allowBodyOnly: payload.allowBodyOnly === true,
+    targetPostRequired: !!targetPost,
     interactionOnly: likeEnabled && !commentEnabled && !targetPost
   };
   let windowResult = driver === probeWechatMomentsWindow && expectedSurface?.surfaceMode === "integrated"
@@ -1259,6 +1287,7 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
     : driver(expectedSurface);
   if (
     driver === probeWechatMomentsWindow
+    && expectedSurface?.surfaceMode !== "integrated"
     && windowResult?.ok === false
     && ["moments_feed_not_found", "moments_window_not_found", "powershell_timeout"].includes(windowResult?.reason)
   ) {
@@ -1270,7 +1299,8 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
     const safeDiagnostics = windowResult?.diagnostics && typeof windowResult.diagnostics === "object"
       ? { visual_diagnostics: windowResult.diagnostics }
       : {};
-    const blocked = momentsDryRunBlock(baseDir, state, reason, error, { ...plan, ...safeDiagnostics });
+    const blocked = momentsDryRunBlock(baseDir, state, reason, error, { ...plan, ...safeDiagnostics },
+      require("../../src/shared/wechat-window-diagnostics.cjs").sanitizeWechatWindowDiagnostics(windowResult?.diagnostics));
     const provenSurface = reason === "moments_post_not_found" ? windowResult?.surface : null;
     const provenWindow = validMomentsWindowIdentity(provenSurface)
       && momentsSurfaceMatchesExpected(provenSurface, expectedSurface)

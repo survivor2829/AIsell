@@ -21,6 +21,7 @@ UUID = re.compile(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\Z")
 VERSION = re.compile(r"(?:0|[1-9]\d{0,5})(?:\.(?:0|[1-9]\d{0,5})){2}\Z")
 APP_IDS = {"test": "com.aihuoke.desktop.test", "delivery": "com.aihuoke.desktop", "smoke": "com.aihuoke.maintenance.smoke"}
 WINDOW_STAGES = ("bootstrap", "compile", "process", "enumerate", "select", "shell", "selected", "restore", "focus", "verify", "complete")
+MOMENTS_STAGES = ("bootstrap", "window_identity", "moments_entry", "discover_entry", "first_capture", "first_surface", "first_candidates", "second_capture", "second_surface", "second_candidates", "complete")
 WINDOW_METRICS = ("elapsed_ms", "total_ms", "timeout_ms", "process_count", "native_count", "candidate_count", "main_count", "render_count", "hidden_count", "minimized_count", "rejected_layout_count") + tuple(f"{stage}_ms" for stage in WINDOW_STAGES)
 
 def safe_token(value):
@@ -73,6 +74,11 @@ def validate_report(body):
                     row["details"][key] = details[key]
             if details.get("window_stage") in WINDOW_STAGES:
                 row["details"]["window_stage"] = details["window_stage"]
+            if details.get("moments_stage") in MOMENTS_STAGES:
+                row["details"]["moments_stage"] = details["moments_stage"]
+            for key in ("moments_elapsed_ms", "moments_timeout_ms"):
+                if type(details.get(key)) is int and 0 <= details[key] <= 86400000:
+                    row["details"][key] = details[key]
             if details.get("window_detection_mode") in ("exact_hwnd", "render_child", "native_main", "shell_navigation"):
                 row["details"]["window_detection_mode"] = details["window_detection_mode"]
             if safe_token(details.get("window_class_code")):

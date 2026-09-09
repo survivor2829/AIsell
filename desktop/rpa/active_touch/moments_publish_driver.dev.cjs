@@ -650,7 +650,8 @@ function Get-PublishFullObservation(
   $lock,
   [bool]$requireOwnership = $true,
   [bool]$includePosts = $false,
-  [bool]$includePublishButtonCandidates = $false
+  [bool]$includePublishButtonCandidates = $false,
+  [string]$expectedVisibleAnchor = ""
 ) {
   [uint32]$evidenceInputTick = [Win32WechatMomentsPublish]::GetLastInputTick()
   if ($evidenceInputTick -eq [uint32]::MaxValue) {
@@ -687,6 +688,11 @@ function Get-PublishFullObservation(
       if (-not $visualViewport.ok) { return @{ ok = $false; reason = [string]$visualViewport.reason } }
       $read = Get-MomentsVisualPostCandidates $frame $visualViewport.bounds
       $posts = @($read.posts)
+      if ($expectedVisibleAnchor) {
+        foreach ($post in $posts) {
+          $post["publishAnchorMatched"] = Test-PublishPostAnchor $frame $post $expectedVisibleAnchor
+        }
+      }
       $viewportLines = @($ocr.lines | Where-Object {
         $lineCenterX = [double]$_.bounds.left + ([double]$_.bounds.width / 2.0)
         $lineCenterY = [double]$_.bounds.top + ([double]$_.bounds.height / 2.0)
@@ -696,6 +702,24 @@ function Get-PublishFullObservation(
           $lineCenterY -le ([double]$visualViewport.bounds.top + [double]$visualViewport.bounds.height)
       } | Sort-Object { [double]$_.bounds.top }, { [double]$_.bounds.left })
       $viewportCompact = Normalize-PublishText ([string]::Join(" ", @($viewportLines | ForEach-Object { [string]$_.compact })))
+      # Whole-window OCR can join the navigation rail and feed into one line,
+      # or lose a short caption beside an image. Read the proven feed itself.
+      # Keep exact, unique matching; an OCR retry is never a fuzzy receipt.
+      if ($expectedVisibleAnchor -and $viewportCompact.IndexOf($expectedVisibleAnchor, [StringComparison]::Ordinal) -lt 0) {
+        $feedOcr = Get-MomentsOcrObservation $frame $visualViewport.bounds
+        if ($feedOcr.ok) {
+          $feedCompact = Normalize-PublishText ([string]$feedOcr.text)
+          if ($feedCompact.IndexOf($expectedVisibleAnchor, [StringComparison]::Ordinal) -ge 0) {
+            $viewportCompact = $feedCompact
+          } elseif ([Math]::Max([double]$visualViewport.bounds.width, [double]$visualViewport.bounds.height) * 2 -le [Windows.Media.Ocr.OcrEngine]::MaxImageDimension) {
+            $scaledFeedOcr = Get-MomentsScaledOcrObservation $frame $visualViewport.bounds 2
+            if ($scaledFeedOcr.ok) {
+              $scaledCompact = Normalize-PublishText ([string]$scaledFeedOcr.text)
+              if ($scaledCompact.IndexOf($expectedVisibleAnchor, [StringComparison]::Ordinal) -ge 0) { $viewportCompact = $scaledCompact }
+            }
+          }
+        }
+      }
       $viewportHash = Get-MomentsPixelHash $frame $visualViewport.bounds
     }
     return @{
@@ -1717,6 +1741,63 @@ function Get-PublishPostCandidateKey($post) {
   return $avatarHash + "|" + $identity + "|" + $geometry
 }
 
+function Test-PublishAnchorFragments($texts, [string]$anchor) {
+  if ($anchor.Length -lt 12) { return $false }
+  $segmentCount = $(if ($anchor.Length -ge 18) { 3 } else { 2 })
+  $segmentLength = [int][Math]::Floor($anchor.Length / $segmentCount)
+  $alignments = @()
+  for ($segment = 0; $segment -lt $segmentCount; $segment++) {
+    $start = $segment * $segmentLength
+    $length = $(if ($segment -eq $segmentCount - 1) { $anchor.Length - $start } else { $segmentLength })
+    $part = $anchor.Substring($start, $length)
+    $offsets = @()
+    foreach ($text in @($texts)) {
+      $value = Normalize-PublishText ([string]$text)
+      $first = $value.IndexOf($part, [StringComparison]::Ordinal)
+      if ($first -ge 0 -and $first -eq $value.LastIndexOf($part, [StringComparison]::Ordinal)) {
+        $offsets += $first - $start
+      }
+    }
+    if ($offsets.Count -eq 0) { return $false }
+    if ($segment -eq 0) { $alignments = @($offsets | Select-Object -Unique) }
+    else {
+      $alignments = @($alignments | Where-Object {
+        $alignment = $_
+        @($offsets | Where-Object { [Math]::Abs($_ - $alignment) -le 2 }).Count -gt 0
+      })
+    }
+    if ($alignments.Count -eq 0) { return $false }
+  }
+  return $true
+}
+
+function Test-PublishPostAnchor($frame, $post, [string]$anchor) {
+  $identity = Normalize-PublishText ([string]$post.identityText)
+  if ($identity.IndexOf($anchor, [StringComparison]::Ordinal) -ge 0) { return $true }
+  if ($anchor.Length -lt 12 -or -not $post.avatarBounds -or -not $post.menuBounds) { return $false }
+  $bodyTop = [double]$post.avatarBounds.top + [double]$post.avatarBounds.height / 2.0
+  $bodyLines = @($post.ocrLines | Where-Object {
+    $center = [double]$post.bounds.top + [double]$_.bounds.top + [double]$_.bounds.height / 2.0
+    $center -gt $bodyTop -and $center -lt [double]$post.menuBounds.top
+  } | Sort-Object { [double]$_.bounds.top }, { [double]$_.bounds.left })
+  if ($bodyLines.Count -eq 0) { return $false }
+  $line = $bodyLines[0].bounds
+  $padding = [Math]::Max(4.0, [double]$line.height / 3.0)
+  $left = [Math]::Max([double]$post.bounds.left, [double]$post.bounds.left + [double]$line.left - $padding)
+  $top = [Math]::Max($bodyTop, [double]$post.bounds.top + [double]$line.top - $padding)
+  $right = [Math]::Min([double]$frame.width, [double]$post.bounds.left + [double]$line.left + [double]$line.width + $padding)
+  $bottom = [Math]::Min([double]$post.menuBounds.top, $top + [double]$line.height * 3.0)
+  $captionBounds = @{ left=$left; top=$top; width=$right-$left; height=$bottom-$top }
+  if ($captionBounds.width -le 0 -or $captionBounds.height -le 0 -or
+    [Math]::Max($captionBounds.width, $captionBounds.height) * 3 -gt [Windows.Media.Ocr.OcrEngine]::MaxImageDimension) { return $false }
+  $scaled = Get-MomentsScaledOcrObservation $frame $captionBounds 3
+  $contrast = Get-MomentsHighContrastOcrObservation $frame $captionBounds 3
+  if (-not $scaled.ok -or -not $contrast.ok) { return $false }
+  # Every part must be read exactly, uniquely and in the same order from the
+  # same caption pixels. Never combine fragments from different posts.
+  return Test-PublishAnchorFragments @([string]$post.contentText, [string]$scaled.text, [string]$contrast.text) $anchor
+}
+
 function Test-PublishClientAccepted(
   $observation,
   $lock,
@@ -1779,10 +1860,15 @@ function Test-PublishVerified(
     # footer, not the entire card height, are the receipt for this publish.
     $identityCompact = Normalize-PublishText ([string]$post.identityText)
     if (-not $expectedVisibleAnchor -or
-      $identityCompact.IndexOf($expectedVisibleAnchor, [StringComparison]::Ordinal) -lt 0 -or
+      ($identityCompact.IndexOf($expectedVisibleAnchor, [StringComparison]::Ordinal) -lt 0 -and -not [bool]$post.publishAnchorMatched) -or
       [string]$post.regionHash -notmatch "^[a-f0-9]{64}$") { continue }
     $freshLines = @($post.ocrLines | Where-Object {
-      (Normalize-PublishText ([string]$_.compact)) -match "^(刚刚|1分钟前)(删除)?$"
+      $lineCenterY = [double]$post.bounds.top + [double]$_.bounds.top + [double]$_.bounds.height / 2.0
+      $menuCenterY = [double]$post.menuBounds.top + [double]$post.menuBounds.height / 2.0
+      # The trash icon beside the time can be OCR'd as an extra character.
+      # Constrain the time to the footer row rather than naming that character.
+      (Normalize-PublishText ([string]$_.compact)) -match "^(刚刚|1分钟前).{0,2}$" -and
+        [Math]::Abs($lineCenterY - $menuCenterY) -le [double]$post.menuBounds.height
     })
     if ($freshLines.Count -lt 1) { continue }
     $candidateKey = Get-PublishPostCandidateKey $post
@@ -1790,7 +1876,7 @@ function Test-PublishVerified(
     [void]$matching.Add(@{
       key = $candidateKey + "|manifest:" + [string]$manifestProof.kind + ":" + [string]$manifestProof.count
       post = $post
-      verificationMode = "unique_fresh_post_candidate"
+      verificationMode = $(if ($identityCompact.IndexOf($expectedVisibleAnchor, [StringComparison]::Ordinal) -ge 0) { "unique_fresh_post_candidate" } else { "unique_fresh_post_multi_ocr_fragments" })
     })
   }
   if ($matching.Count -gt 1) {
@@ -1844,9 +1930,11 @@ try {
   $script:publishStage = "baseline_observation"
   $surface = Test-PublishMomentsSurface $lock
   if (-not $surface.ok) { Write-PublishResult @{ ok = $false; status = "blocked"; reason = $surface.reason; verified = $false } }
-  $baseline = Get-PublishFullObservation $lock $true
+  $baseline = Get-PublishFullObservation $lock $true $true $false $token
   if (-not $baseline.ok) { Write-PublishResult @{ ok = $false; status = "blocked"; reason = $baseline.reason; verified = $false } }
-  if (([string]$baseline.compact).IndexOf($token, [StringComparison]::Ordinal) -ge 0) {
+  if (([string]$baseline.compact).IndexOf($token, [StringComparison]::Ordinal) -ge 0 -or
+    ([string]$baseline.viewportCompact).IndexOf($token, [StringComparison]::Ordinal) -ge 0 -or
+    @($baseline.posts | Where-Object { [bool]$_.publishAnchorMatched }).Count -gt 0) {
     Write-PublishResult @{ ok = $false; status = "blocked"; reason = "moments_publish_verification_token_not_unique"; verified = $false }
   }
 
@@ -2046,7 +2134,7 @@ try {
       if (-not $lastVerificationReason) { $lastVerificationReason = "moments_publish_window_lock_failed" }
       continue
     }
-    $after = Get-PublishFullObservation $currentLock $true $true
+    $after = Get-PublishFullObservation $currentLock $true $true $false $token
     if (-not $after.ok) {
       $lastVerificationReason = [string]$after.reason
       if (-not $lastVerificationReason) { $lastVerificationReason = "moments_publish_observation_failed" }

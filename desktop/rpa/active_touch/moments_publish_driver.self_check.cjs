@@ -1221,7 +1221,17 @@ const publishVerificationHarness = spawnSync("powershell.exe", [
   "-Command",
   "$source=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()));Invoke-Expression $source"
 ], {
-  input: Buffer.from(`${normalizePublishTextSource}\n${verificationSource}\n
+  input: Buffer.from(`${normalizePublishTextSource}\n${verificationSource}\n${fullObservationSource.slice(0, fullObservationSource.indexOf("function Get-PublishButtonObservation"))}\n
+Add-Type 'public class Win32WechatMomentsPublish { public static uint GetLastInputTick() { return 1; } } namespace Windows.Media.Ocr { public class OcrEngine { public static uint MaxImageDimension = 2600; } }'
+function Get-MomentsVisualFrame { return @{ ok = $true; width = 1000; height = 800 } }
+function Close-MomentsVisualFrame { }
+function Get-MomentsVisualViewportBounds { return @{ ok = $true; bounds = @{ left = 300; top = 80; width = 700; height = 700 } } }
+function Get-MomentsVisualPostCandidates { return @{ posts = @() } }
+function Get-MomentsPixelHash { return ("b" * 64) }
+function Get-MomentsOcrObservation($frame, $rect) {
+  return @{ ok = $true; text = $(if ($rect.left -eq 300 -and $script:cropMatches) { $anchor } else { "无法识别的正文" }); lines = @() }
+}
+function Get-MomentsScaledOcrObservation { return @{ ok = $true; text = $anchor + $anchor } }
 function Test-PublishComposerAbsent($lock, [string]$runtimeId) { return [bool]$script:composerAbsent }
 function Test-PublishMomentsSurface($lock) { return @{ ok = [bool]$script:surfaceVisible; reason = "moments_publish_integrated_surface_not_proven" } }
 $anchor = "上海清洁机器人运维AI短视频实训营"
@@ -1230,6 +1240,23 @@ $media = @{ proofMode = "visual_presence_only"; evidenceKey = ("d" * 64) }
 $base = @{ ok = $true; pixelHash = ("b" * 64); viewportCompact = "前缀" + $anchor + "后缀"; viewportHash = ("c" * 64); posts = @() }
 $script:composerAbsent = $true
 $script:surfaceVisible = $true
+$fragmentAnchor = "功能测试朋友圈发布与互动验证时间2026年9月9"
+$fragmentViews = @("功能氵则试:朋友湖发布与互动验证。时间:2026年9月9日巧时", "功自刂试:朋友圈发布与互动马正。时间:2026年9月9日15时", "功能测试:朋友圈发布与互动马止。时间:2026年9月9日15时")
+$fragmentMatch = Test-PublishAnchorFragments $fragmentViews $fragmentAnchor
+$missingFragment = Test-PublishAnchorFragments @($fragmentViews[0], $fragmentViews[1]) $fragmentAnchor
+$outOfOrder = Test-PublishAnchorFragments @("2026年9月9布与互动验证时间功能测试朋友圈发") $fragmentAnchor
+$fusedPost = @{ identityText=$fragmentViews[0]; avatarHash=("e"*64); regionHash=("f"*64); publishAnchorMatched=$fragmentMatch; bounds=@{left=100;top=100;width=600;height=500}; menuBounds=@{left=650;top=490;width=36;height=24}; ocrLines=@(@{compact="1分钟前酉";bounds=@{top=400;height=16}}) }
+$fusedObservation = @{ok=$true;pixelHash=("b"*64);posts=@($fusedPost)}
+$fusedReceipt = Test-PublishVerified $fusedObservation @{} "editor" $fragmentAnchor $manifest $media ("a"*64)
+$fusedPost.ocrLines = @(@{compact="1分钟前";bounds=@{top=100;height=16}})
+$bodyTimeReceipt = Test-PublishVerified $fusedObservation @{} "editor" $fragmentAnchor $manifest $media ("a"*64)
+$script:cropMatches = $true
+$feedLock = @{ rect = @{ Left = 0; Top = 0 }; renderPane = @{ bounds = @{ left = 0; top = 0; width = 1000; height = 800 } }; surfaceMode = "standalone" }
+$cropped = Get-PublishFullObservation $feedLock $true $true $false $anchor
+$croppedVerified = Test-PublishVerified $cropped @{} "editor" $anchor $manifest $media ("a" * 64)
+$script:cropMatches = $false
+$scaledDuplicate = Get-PublishFullObservation $feedLock $true $true $false $anchor
+$scaledDuplicateVerified = Test-PublishVerified $scaledDuplicate @{} "editor" $anchor $manifest $media ("a" * 64)
 $receipt = @{ ok = $true; pixelHash = ("b" * 64); ocr = @{ text = "朋友圈内容" } }
 $accepted = Test-PublishClientAccepted $receipt @{} "editor" ("a" * 64)
 $clientError = Test-PublishClientAccepted (@{ ok = $true; pixelHash = ("b" * 64); ocr = @{ text = "发布失败 请重试" } }) @{} "editor" ("a" * 64)
@@ -1248,13 +1275,20 @@ $script:composerAbsent = $false
 $composerPresent = Test-PublishVerified $base @{} "editor" $anchor $manifest $media ("a" * 64)
 $script:composerAbsent = $true
 $uiaWithoutPost = Test-PublishVerified $base @{} "editor" $anchor $manifest @{ proofMode = "uia_one_to_one" } ("a" * 64)
-@{ accepted = $accepted; clientError = $clientError; receiptUnchanged = $receiptUnchanged; receiptComposerPresent = $receiptComposerPresent; receiptWrongSurface = $receiptWrongSurface; positive = $positive; duplicate = $duplicate; unchanged = $unchanged; missingMedia = $missingMedia; composerPresent = $composerPresent; uiaWithoutPost = $uiaWithoutPost } | ConvertTo-Json -Compress -Depth 8
+@{ fragmentMatch=$fragmentMatch;missingFragment=$missingFragment;outOfOrder=$outOfOrder;fusedReceipt=$fusedReceipt;bodyTimeReceipt=$bodyTimeReceipt;croppedVerified = $croppedVerified; scaledDuplicateVerified = $scaledDuplicateVerified; accepted = $accepted; clientError = $clientError; receiptUnchanged = $receiptUnchanged; receiptComposerPresent = $receiptComposerPresent; receiptWrongSurface = $receiptWrongSurface; positive = $positive; duplicate = $duplicate; unchanged = $unchanged; missingMedia = $missingMedia; composerPresent = $composerPresent; uiaWithoutPost = $uiaWithoutPost } | ConvertTo-Json -Compress -Depth 8
 `, "utf8").toString("base64"),
   encoding: "utf8",
   timeout: 15_000
 });
 assert.equal(publishVerificationHarness.status, 0, publishVerificationHarness.stderr || publishVerificationHarness.stdout);
 const publishVerificationResult = JSON.parse(publishVerificationHarness.stdout.trim());
+assert.equal(publishVerificationResult.fragmentMatch, true);
+assert.equal(publishVerificationResult.missingFragment, false);
+assert.equal(publishVerificationResult.outOfOrder, false);
+assert.equal(publishVerificationResult.fusedReceipt.verificationMode, "unique_fresh_post_multi_ocr_fragments");
+assert.equal(publishVerificationResult.bodyTimeReceipt.ok, false, "time written in the body is not a fresh footer");
+assert.equal(publishVerificationResult.croppedVerified.ok, true, "feed-only OCR recovers an exact anchor missed by whole-window OCR");
+assert.equal(publishVerificationResult.scaledDuplicateVerified.ok, false, "scaled OCR must still reject duplicate anchors");
 assert.equal(publishVerificationResult.accepted.ok, true);
 assert.equal(publishVerificationResult.accepted.verificationMode, "client_accepted_composer_closed_feed_changed");
 assert.equal(publishVerificationResult.clientError.reason, "moments_publish_client_rejected");

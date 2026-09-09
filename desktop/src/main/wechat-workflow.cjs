@@ -224,8 +224,13 @@ function createWechatWorkflowController(options) {
     reconcilePublishResults();
     for (const task of store.tasks) if (task.type === "touch" && !task.enrolled) enroll(task, readPayload(task));
     if (!enabled || mutating) return;
+    // Finite work owns the UI until it yields or completes. A continuously busy
+    // inbox must not starve scheduled work or switch pages between task steps.
+    const readyTask = nextTask();
     const people = store.replyEnabled === false ? [] : accountRecipients();
-    if (people.length && options.reply?.runWorkflowStep && !replyError) {
+    if (readyTask) {
+      replyStatus = store.replyEnabled === false ? "自动回复未开启" : "待当前可执行任务完成后接待客户";
+    } else if (people.length && options.reply?.runWorkflowStep && !replyError) {
       cycleStage = "reply_step";
       const replyStarted = Date.now();
       phase = "replying";
@@ -442,6 +447,24 @@ function createWechatWorkflowController(options) {
       if (task.status === "running") task.cancelRequested = true;
       else if (task.status !== "completed" || task.repeat === "daily") task.status = "cancelled";
       persist(); emit(); return { ok: true, state: status() };
+    }),
+    deleteTasks: (ids, unsuccessfulOnly = false) => serialize(() => {
+      assertHealthy();
+      assertPlanEditable();
+      if (!Array.isArray(ids) || !ids.length || ids.some((id) => typeof id !== "string")) throw new Error("请选择要删除的任务。");
+      const selected = [...new Set(ids)].map(findTask);
+      if (selected.some((task) => task.status === "running" || task.id === currentTaskId)) throw new Error("请先停止正在执行的任务。");
+      if (unsuccessfulOnly && selected.some((task) => !["needs_attention", "cancelled", "missed"].includes(task.status))) {
+        throw new Error("任务状态已变化，请重新选择要清理的任务。");
+      }
+      const removed = new Set(selected.map((task) => task.id));
+      // Remove from scheduling and display, retaining payloads and receipts.
+      // Archive metadata in the same atomic write so uncertain sends stay auditable.
+      store.removedTasks = [...(store.removedTasks || []), ...selected.map((task) => ({ ...task, removedAt: new Date(now()).toISOString() }))];
+      store.tasks = store.tasks.filter((task) => !removed.has(task.id));
+      if (removed.has(lastTaskId)) lastTaskId = null;
+      error = "";
+      persist(); emit(); return { ok: true, state: status(), deletedCount: selected.length };
     }),
     removeRecipient: (id) => serialize(() => {
       assertPlanEditable();

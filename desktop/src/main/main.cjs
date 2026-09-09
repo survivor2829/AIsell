@@ -293,8 +293,13 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
   process.exitCode = 1;
   app.exit(1);
 } else if (!gotSingleInstanceLock) {
-  if (productDetailReleaseSmokeMode) process.exitCode = 1;
-  app.quit();
+  if (!app.isPackaged && developmentEdition) {
+    dialog.showErrorBox("内部开发版未启动", "测试版程序仍在运行，占用了同一份测试数据。请先暂停任务并完全退出旧测试版，再重新运行“启动内部开发版.cmd”。刚才显示的旧窗口没有加载本次源码修复。");
+    app.exit(1);
+  } else {
+    if (productDetailReleaseSmokeMode) process.exitCode = 1;
+    app.quit();
+  }
 } else {
   app.on("second-instance", () => {
     diagnostics().event("app", "second_instance_requested");

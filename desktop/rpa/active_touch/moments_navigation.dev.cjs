@@ -17,6 +17,7 @@ const MOMENTS_INTEGRATED_TRANSITION_VISUAL_CHECKS = 6;
 const MOMENTS_NAVIGATION_POWERSHELL = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = "Stop"
+[Console]::Error.WriteLine("moments_navigation_stage:bootstrap")
 Add-Type -AssemblyName UIAutomationClient
 Add-Type @"
 using System;
@@ -63,6 +64,49 @@ public static class Win32WechatMomentsNavigation {
     mouse_event(0x0800, 0, 0, delta, UIntPtr.Zero);
     return true;
   }
+  // Match textured scanlines across the feed, independently of post identity.
+  // Repeated/flat rows cannot establish a displacement receipt.
+  public static int MeasureFeedTranslation(byte[] before, byte[] after, int stride, int height,
+      int left, int top, int right, int bottom, int direction) {
+    var first = new System.Collections.Generic.Dictionary<ulong, System.Collections.Generic.List<int>>();
+    var second = new System.Collections.Generic.Dictionary<ulong, System.Collections.Generic.List<int>>();
+    for (int frame = 0; frame < 2; frame++) {
+      byte[] data = frame == 0 ? before : after;
+      var rows = frame == 0 ? first : second;
+      for (int y = top; y < bottom; y++) {
+        ulong hash = 14695981039346656037UL;
+        int low = 255, high = 0;
+        for (int x = left; x < right; x += 4) {
+          int offset = y * stride + x * 4;
+          for (int c = 0; c < 3; c++) {
+            int value = data[offset + c];
+            low = Math.Min(low, value); high = Math.Max(high, value);
+            hash = unchecked((hash ^ (uint)value) * 1099511628211UL);
+          }
+        }
+        if (high - low < 32) continue;
+        if (!rows.ContainsKey(hash)) rows[hash] = new System.Collections.Generic.List<int>();
+        rows[hash].Add(y);
+      }
+    }
+    int[] votes = new int[height * 2 + 1];
+    int[] minY = new int[votes.Length], maxY = new int[votes.Length];
+    foreach (var row in first) {
+      System.Collections.Generic.List<int> matches;
+      if (row.Value.Count != 1 || !second.TryGetValue(row.Key, out matches) || matches.Count != 1) continue;
+      int y = row.Value[0], delta = matches[0] - y;
+      if (delta * direction <= 0) continue;
+      int index = delta + height;
+      if (votes[index] == 0) minY[index] = maxY[index] = y;
+      votes[index]++; minY[index] = Math.Min(minY[index], y); maxY[index] = Math.Max(maxY[index], y);
+    }
+    int best = height;
+    for (int i = 0; i < votes.Length; i++) if (votes[i] > votes[best]) best = i;
+    if (votes[best] < 12 || maxY[best] - minY[best] < 64) return 0;
+    for (int i = 0; i < votes.Length; i++)
+      if (Math.Abs(i - best) > 2 && votes[i] * 2 >= votes[best]) return 0;
+    return best - height;
+  }
 }
 "@
 
@@ -90,13 +134,20 @@ function Test-MomentsUserIdle([int]$minimumIdleMs) {
 
 function Get-WechatWindows {
   $windows = New-Object System.Collections.Generic.List[object]
+  $wechatProcesses = @{}
+  foreach ($wechatName in @("Weixin", "WeChat")) {
+    foreach ($wechatProcess in [Diagnostics.Process]::GetProcessesByName($wechatName)) {
+      $wechatProcesses[$wechatProcess.Id] = $wechatName
+      $wechatProcess.Dispose()
+    }
+  }
   $callback = [Win32WechatMomentsNavigation+EnumWindowsProc]{
     param([IntPtr]$hWnd, [IntPtr]$lParam)
     if (-not [Win32WechatMomentsNavigation]::IsWindowVisible($hWnd)) { return $true }
     [uint32]$windowProcessId = 0
     [void][Win32WechatMomentsNavigation]::GetWindowThreadProcessId($hWnd, [ref]$windowProcessId)
-    $process = Get-Process -Id $windowProcessId -ErrorAction SilentlyContinue
-    if ($process -eq $null -or @("Weixin", "WeChat") -notcontains $process.ProcessName) { return $true }
+    $processName = $wechatProcesses[[int]$windowProcessId]
+    if (-not $processName) { return $true }
     $rect = New-Object Win32WechatMomentsNavigation+RECT
     if (-not [Win32WechatMomentsNavigation]::GetWindowRect($hWnd, [ref]$rect)) { return $true }
     $width = $rect.Right - $rect.Left
@@ -109,7 +160,7 @@ function Get-WechatWindows {
     [void]$windows.Add(@{
       hWnd = $hWnd
       pid = [int]$windowProcessId
-      processName = $process.ProcessName
+      processName = $processName
       title = $titleText.ToString().Trim()
       className = $classText.ToString().Trim()
       dpi = [int][Win32WechatMomentsNavigation]::GetDpiForWindow($hWnd)
@@ -1115,6 +1166,14 @@ function Scroll-Moments {
   if ($expectedInputTick -eq [uint32]::MaxValue -or -not (Test-MomentsWindowStable $window)) {
     Write-Result @{ ok = $false; reason = "moments_window_changed" }
   }
+  $beforeScroll = $null
+  $afterScroll = $null
+  $observedDelta = 0
+  try {
+  if ($scrollMode -ne "advance_feed") {
+    $beforeScroll = Get-MomentsVisualFrame ([IntPtr]$window.hWnd) $window.rect $expectedPid $false
+    if (-not $beforeScroll.ok) { Write-Result $beforeScroll }
+  }
   if (-not [Win32WechatMomentsNavigation]::GuardedWheel($x, $y, $wheelDelta, $expectedInputTick)) {
     Write-Result @{ ok = $false; reason = "moments_user_input_detected" }
   }
@@ -1122,7 +1181,27 @@ function Scroll-Moments {
   if ([Win32WechatMomentsNavigation]::GetForegroundWindow() -ne [IntPtr]$window.hWnd) {
     Write-Result @{ ok = $false; reason = "moments_window_not_foreground" }
   }
-  Write-Result @{ ok = $true; action = "moments-scroll"; pid = $window.pid; hWnd = [string]$window.hWnd; delta = $wheelDelta; scrollMode = $scrollMode }
+  if ($beforeScroll) {
+    $afterScroll = Get-MomentsVisualFrame ([IntPtr]$window.hWnd) $window.rect $expectedPid $false
+    if (-not $afterScroll.ok) { Write-Result $afterScroll }
+    $left = [int][Math]::Max(0, $scrollBounds.left - $window.left + $scrollBounds.width * 0.12)
+    $right = [int][Math]::Min($beforeScroll.width, $scrollBounds.left - $window.left + $scrollBounds.width * 0.90)
+    if ($expected.feedContentBounds) {
+      $left = [int][Math]::Max(0, [double]$expected.feedContentBounds.left - $window.left)
+      $right = [int][Math]::Min($beforeScroll.width, [double]$expected.feedContentBounds.left - $window.left + [double]$expected.feedContentBounds.width)
+    }
+    if ($right - $left -lt 100) { Write-Result @{ ok = $false; reason = "moments_post_changed" } }
+    $top = [int][Math]::Max(0, $scrollBounds.top - $window.top + 80)
+    $bottom = [int][Math]::Min($beforeScroll.height, $scrollBounds.top - $window.top + $scrollBounds.height - 20)
+    $observedDelta = [Win32WechatMomentsNavigation]::MeasureFeedTranslation($beforeScroll.bytes, $afterScroll.bytes,
+      $beforeScroll.stride, $beforeScroll.height, $left, $top, $right, $bottom, [Math]::Sign($wheelDelta))
+    if ($observedDelta -eq 0) { Write-Result @{ ok = $false; reason = "moments_post_changed" } }
+  }
+  } finally {
+    Close-MomentsVisualFrame $beforeScroll
+    Close-MomentsVisualFrame $afterScroll
+  }
+  Write-Result @{ ok = $true; action = "moments-scroll"; pid = $window.pid; hWnd = [string]$window.hWnd; delta = $wheelDelta; observedDelta = $observedDelta; scrollMode = $scrollMode }
 }
 
 function Resolve-MomentsChatRailTarget($entryState) {
@@ -1470,7 +1549,7 @@ async function scrollWechatMomentsFeed(options = {}) {
       XIAOXI_MOMENTS_SCROLL_MODE: scrollPlan.mode,
       XIAOXI_MOMENTS_SCROLL_DELTA: String(scrollPlan.delta),
       XIAOXI_MOMENTS_EXPECTED_WINDOW_BASE64: Buffer.from(
-        JSON.stringify(expectedWindow),
+        JSON.stringify({ ...expectedWindow, feedContentBounds: options.feedContentBounds }),
         "utf8"
       ).toString("base64")
     },

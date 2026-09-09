@@ -1,6 +1,6 @@
 const { spawn, spawnSync } = require("node:child_process");
 const { findWechatExecutable } = require("../contact_sync/contact_sync_cli.cjs");
-const { readWechatWindowDiagnostics } = require("../../src/shared/wechat-window-diagnostics.cjs");
+const { readWechatWindowDiagnostics, readMomentsDiagnostics } = require("../../src/shared/wechat-window-diagnostics.cjs");
 
 let cachedWechatExecutable = "";
 let cachedWechatExecutableAt = 0;
@@ -374,9 +374,12 @@ function runPowerShell(script, env = {}, options = {}) {
   };
   spawnOptions.timeout = timeout;
   const result = spawnSync("powershell.exe", shellArgs, spawnOptions);
-  const withWindowDiagnostics = (value) => options.windowDiagnostics === true
-    ? { ...value, diagnostics: { ...value.diagnostics, ...readWechatWindowDiagnostics(result.stderr, Date.now() - startedAt, timeout) } }
-    : value;
+  const withWindowDiagnostics = (value) => {
+    const diagnostics = options.windowDiagnostics === true
+      ? readWechatWindowDiagnostics(result.stderr, Date.now() - startedAt, timeout)
+      : options.diagnostics === true ? readMomentsDiagnostics(result.stderr, Date.now() - startedAt, timeout) : {};
+    return Object.keys(diagnostics).length ? { ...value, diagnostics: { ...value.diagnostics, ...diagnostics } } : value;
+  };
 
   if (result.error) {
     return withWindowDiagnostics({ ok: false, reason: result.error.code === "ETIMEDOUT" ? "powershell_timeout" : "powershell_failed" });
@@ -1718,6 +1721,7 @@ function runPowerShellAsync(script, env = {}, options = {}) {
     const discoverScans = () => Array.from(stderr.matchAll(/moments_discover_scan:elapsed_ms=(\d+),candidates=(\d+),matches=(\d+)/g))
       .slice(-12).map((match) => ({ elapsed_ms: Number(match[1]), candidates: Number(match[2]), matches: Number(match[3]) }));
     const terminationDiagnostics = (reason) => options.diagnostics === true ? {
+      ...readMomentsDiagnostics(stderr, Date.now() - startedAt, timeout),
       timeout_ms: timeout,
       elapsed_ms: Math.max(0, Date.now() - startedAt),
       termination_reason: reason,

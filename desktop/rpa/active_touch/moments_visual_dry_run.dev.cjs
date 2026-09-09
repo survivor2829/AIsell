@@ -12,6 +12,7 @@ const MOMENTS_VISUAL_STABILITY_TOLERANCE_PX = 12;
 const MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = "Stop"
+[Console]::Error.WriteLine("moments_probe_stage:bootstrap")
 $script:momentsVisualStabilityTolerancePx = ${MOMENTS_VISUAL_STABILITY_TOLERANCE_PX.toFixed(1)}
 Add-Type -AssemblyName UIAutomationClient
 Add-Type @"
@@ -189,6 +190,7 @@ $expectedSurface = Get-ExpectedMomentsSurface
 $allowBodyOnly = [string]$env:XIAOXI_MOMENTS_ALLOW_BODY_ONLY -ceq "1"
 $interactionOnly = [string]$env:XIAOXI_MOMENTS_INTERACTION_ONLY -ceq "1"
 $script:matches = @()
+[Console]::Error.WriteLine("moments_probe_stage:window_identity")
 $callback = [Win32WechatMomentsVisualProbe+EnumWindowsProc]{
   param([IntPtr]$hWnd, [IntPtr]$lParam)
   if (-not [Win32WechatMomentsVisualProbe]::IsWindowVisible($hWnd)) { return $true }
@@ -340,9 +342,11 @@ $surfaceResult = @{
 $phaseTimings["window_lock_ms"] = [int]$probeStopwatch.ElapsedMilliseconds
 
 $phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
+[Console]::Error.WriteLine("moments_probe_stage:first_capture")
 $firstFrame = Get-MomentsVisualFrame $hWnd $matched.rect $matched.pid $false
 if (-not $firstFrame.ok) { Close-And-Write $firstFrame }
 $phaseTimings["first_capture_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
+[Console]::Error.WriteLine("moments_probe_stage:first_surface")
 $phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
 $firstHeader = $(if ([string]$matched.surfaceMode -ceq "integrated") { Test-IntegratedMomentsSurface $firstFrame $surfaceScanBounds $scale } else { @{ ok = $true } })
 if (-not $firstHeader.ok) { Close-And-Write $firstHeader $firstFrame }
@@ -356,6 +360,7 @@ $firstViewport = Get-MomentsVisualViewportBounds $relativeRenderPaneBounds $firs
 if (-not $firstViewport.ok) { Close-And-Write $firstViewport $firstFrame }
 $phaseTimings["first_surface_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
 $phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
+[Console]::Error.WriteLine("moments_probe_stage:first_candidates")
 $firstRead = Get-MomentsVisualPostCandidates $firstFrame $firstViewport.bounds $false
 $phaseTimings["first_candidates_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
 $firstReading = @()
@@ -363,6 +368,7 @@ $phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
 Start-Sleep -Milliseconds 180
 $phaseTimings["stability_wait_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
 $phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
+[Console]::Error.WriteLine("moments_probe_stage:second_capture")
 $secondFrame = Get-MomentsVisualFrame $hWnd $matched.rect $matched.pid $false
 if (-not $secondFrame.ok) { Close-And-Write $secondFrame $firstFrame }
 $phaseTimings["second_capture_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
@@ -395,6 +401,7 @@ if ([Math]::Abs([double]$firstViewport.bounds.left - [double]$secondViewport.bou
 }
 $phaseTimings["second_surface_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
 $phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
+[Console]::Error.WriteLine("moments_probe_stage:second_candidates")
 $secondRead = $(if ($interactionOnly) {
   Get-LocalStableInteractionRead $secondFrame $secondViewport.bounds $firstRead
 } else {
@@ -414,7 +421,7 @@ if ($allowBodyOnly) {
   # menu is below the viewport. Footer-only OCR is not a readable full post.
   $stablePosts = @($stablePosts | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.contentText) })
 }
-if ($allowBodyOnly -and $stablePosts.Count -eq 0) {
+if ($allowBodyOnly -and ($stablePosts.Count -eq 0 -or [string]$env:XIAOXI_MOMENTS_TARGET_POST_REQUIRED -ceq "1")) {
   $firstFooter = @($firstRead.menus | Sort-Object { [double]$_.centerY } | Select-Object -Last 1)
   $secondFooter = @($secondRead.menus | Sort-Object { [double]$_.centerY } | Select-Object -Last 1)
   $firstReadingAvatars = @($firstRead.visibleAvatars | Where-Object { $firstFooter.Count -eq 0 -or [double]$_.top -gt [double]$firstFooter[0].centerY })
@@ -444,9 +451,8 @@ if ($observedCandidateCount -gt 0 -and $stableMenus.Count -eq 0 -and $stablePost
   } $firstFrame $secondFrame
 }
 $posts = @($stablePosts)
-if ($posts.Count -eq 0) {
+  $absoluteReadingPosts = New-Object System.Collections.Generic.List[object]
   if ($allowBodyOnly -and $stableReading.Count -gt 0) {
-    $absoluteReadingPosts = New-Object System.Collections.Generic.List[object]
     foreach ($post in @($stableReading)) {
       $absoluteBounds = ConvertTo-AbsoluteVisualBounds $post.bounds $matched.left $matched.top
       $absoluteAvatarBounds = ConvertTo-AbsoluteVisualBounds $post.avatarBounds $matched.left $matched.top
@@ -460,6 +466,7 @@ if ($posts.Count -eq 0) {
         structureVerified = $true
         regionHash = [string]$post.regionHash
         avatarHash = [string]$post.avatarHash
+        avatarAnchorHashes = @($post.avatarAnchorHashes)
         layoutHash = [string]$post.layoutHash
         bounds = $absoluteBounds
         avatarBounds = $absoluteAvatarBounds
@@ -467,13 +474,14 @@ if ($posts.Count -eq 0) {
         bodyOnly = $true
       })
     }
-    if ($absoluteReadingPosts.Count -gt 0) {
+    if ($posts.Count -eq 0 -and $absoluteReadingPosts.Count -gt 0) {
       $readingResult = $surfaceResult.Clone()
       $readingResult["posts"] = @()
       $readingResult["readingPosts"] = @($absoluteReadingPosts.ToArray())
       Close-And-Write $readingResult $firstFrame $secondFrame
     }
   }
+if ($posts.Count -eq 0) {
   $menuOnlyMenus = New-Object System.Collections.Generic.List[object]
   foreach ($menu in @($stableMenus)) {
     $absoluteMenuBounds = ConvertTo-AbsoluteVisualBounds $menu.bounds $matched.left $matched.top
@@ -519,6 +527,7 @@ foreach ($post in $posts) {
     structureVerified = $true
     regionHash = [string]$post.regionHash
     avatarHash = [string]$post.avatarHash
+    avatarAnchorHashes = @($post.avatarAnchorHashes)
     layoutHash = [string]$post.layoutHash
     menuHash = [string]$post.menuHash
     interactionOnly = [bool]$post.interactionOnly
@@ -530,6 +539,7 @@ foreach ($post in $posts) {
 }
 $result = $surfaceResult.Clone()
 $result["posts"] = @($absolutePosts.ToArray())
+$result["readingPosts"] = @($absoluteReadingPosts.ToArray())
 $result["diagnostics"] = @{
   firstMenu = $firstRead.menuDiagnostics
   secondMenu = $secondRead.menuDiagnostics
@@ -551,6 +561,7 @@ function probeVisualWechatMomentsWindow(expectedWindow, options = {}) {
         ? Buffer.from(JSON.stringify(expectedSurface), "utf8").toString("base64")
         : "",
       XIAOXI_MOMENTS_ALLOW_BODY_ONLY: options.allowBodyOnly === true ? "1" : "",
+      XIAOXI_MOMENTS_TARGET_POST_REQUIRED: options.targetPostRequired === true ? "1" : "",
       XIAOXI_MOMENTS_INTERACTION_ONLY: options.interactionOnly === true ? "1" : ""
     },
     { ensure: false, sta: true, timeout: 30000, diagnostics: true }
