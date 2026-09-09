@@ -3,6 +3,8 @@ const path = require("node:path");
 const fs = require("node:fs");
 const { readJson, updatePaths, generationPath, verifySelected, saveSelection, rollbackSelection } = require("./component-paths.cjs");
 const { registerContentMediaScheme } = require("./content-media-scheme.cjs");
+const { compareVersions } = require("../shared/cloud-contract.cjs");
+const { verifyComponentManifest } = require("../shared/component-contract.cjs");
 
 // Selected component verification yields to Electron's ready event. Privileged
 // schemes must be registered synchronously before that verification starts.
@@ -40,7 +42,18 @@ async function boot() {
   if (selection.pending?.attempted) selection = rollbackSelection(paths, "新版上次未能完成启动，已恢复上一版本。");
   let root = generationPath(paths, selection.active, installedRoot), manifest;
   while (selection.active) {
-    try { manifest = await verifySelected(root, installedRoot, config); break; }
+    try {
+      // Check the signed business version before base compatibility: a newer
+      // full installer may intentionally replace the old component base.
+      const selected = verifyComponentManifest(readJson(path.join(root, "component-complete.json")), config);
+      if (compareVersions(selected.version, app.getVersion()) <= 0) {
+        selection = saveSelection(paths, { active: null, previous: null, pending: null, failure: "", lastUpdate: null });
+        root = installedRoot;
+        break;
+      }
+      manifest = await verifySelected(root, installedRoot, config);
+      break;
+    }
     catch {
       selection = rollbackSelection(paths, "更新文件校验失败，已恢复上一版本。");
       root = generationPath(paths, selection.active, installedRoot);
