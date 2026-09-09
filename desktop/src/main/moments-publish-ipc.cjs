@@ -853,6 +853,7 @@ function createMomentsPublishController(options = {}) {
       })
     });
     record("publish.failed_before_action", {
+      ...require("../shared/wechat-window-diagnostics.cjs").sanitizeWechatWindowDiagnostics(rawBreadcrumb.diagnostics),
       attempt_id: attemptId,
       fingerprint: state.fingerprint,
       reason: state.last_reason,
@@ -886,6 +887,7 @@ function createMomentsPublishController(options = {}) {
       })
     });
     record("publish.outcome_unknown", {
+      ...require("../shared/wechat-window-diagnostics.cjs").sanitizeWechatWindowDiagnostics(rawBreadcrumb.diagnostics),
       attempt_id: attemptId,
       fingerprint,
       reason: state.last_reason,

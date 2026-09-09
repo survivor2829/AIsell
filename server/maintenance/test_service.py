@@ -169,6 +169,8 @@ class ServiceTest(unittest.TestCase):
             try:
                 report["entries"][0]["details"].update(stage="capture_timeout_wx_hook", wx_hook_stage="init_failed", helper_configured=True, wechat_exe_configured=True, wechat_root_configured=False)
                 report["entries"][0]["details"].update(wechat_version="4.1.3.12", stop_verified=False, send_attempted=None, is_new=False, input_empty=True, elapsed_ms=1234, candidate_count=0, messageText="never-store-proof-text")
+                window_details = {"window_stage": "enumerate", "window_class_code": "mmui::MainWindow", "window_candidate_count": 2, "window_compile_ms": 200, "window_total_ms": 20001}
+                report["entries"][0]["details"].update(window_details, window_title="never-store-window-title")
                 for _ in range(2):
                     request = urllib.request.Request(origin + "/v1/reports", json.dumps(report).encode(), {"Content-Type": "application/json"})
                     with urllib.request.urlopen(request) as response:
@@ -177,7 +179,7 @@ class ServiceTest(unittest.TestCase):
                 self.assertEqual(len(overview["reports"]), 1)
                 self.assertNotIn("never-store", json.dumps(overview))
                 self.assertNotIn("customer content", json.dumps(overview))
-                self.assertEqual(overview["reports"][0]["entries"][0]["details"], {"stage": "capture_timeout_wx_hook", "wx_hook_stage": "init_failed", "helper_configured": True, "wechat_exe_configured": True, "wechat_root_configured": False, "wechat_version": "4.1.3.12", "stop_verified": False, "send_attempted": None, "is_new": False, "input_empty": True, "elapsed_ms": 1234, "candidate_count": 0})
+                self.assertEqual(overview["reports"][0]["entries"][0]["details"], {"stage": "capture_timeout_wx_hook", "wx_hook_stage": "init_failed", "helper_configured": True, "wechat_exe_configured": True, "wechat_root_configured": False, "wechat_version": "4.1.3.12", "stop_verified": False, "send_attempted": None, "is_new": False, "input_empty": True, "elapsed_ms": 1234, "candidate_count": 0, **window_details})
                 self.assertNotIn("never-store-proof-text", json.dumps(overview))
                 self.assertEqual(overview["issues"][0]["occurrences"], 1)
                 issue_id = overview["issues"][0]["id"]

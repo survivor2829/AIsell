@@ -70,7 +70,7 @@ assert.match(
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
   /\$hiddenMainRecoveryEligible = -not \$visible[\s\S]*\$hasMainRenderChild[\s\S]*QWindowIcon[\s\S]*0x00040000[\s\S]*0x00000080/u,
-  "a tray-hidden WeChat main window must require its render child plus geometry, class, owner and Win32 style evidence"
+  "a tray-hidden WeChat main window must retain geometry, class, owner and Win32 style evidence"
 );
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
@@ -79,17 +79,17 @@ assert.match(
 );
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
-  /if \(-not \$expectedHandleIsValid\)[\s\S]*\$structuredMainMatches = @\(\$matches\.ToArray\(\) \| Where-Object \{ \$_\.hasMainRenderChild \}\)[\s\S]*\$structuredMainMatches\.Count -gt 0[\s\S]*\$matches\.Add\(\$structuredMainMatch\)/u,
-  "the main render child must outrank a visible auxiliary WeChat window"
+  /\$structuredMainMatches = @\(\$matches\.ToArray\(\) \| Where-Object \{ Test-WechatMainCandidate \$_ \}\)[\s\S]*\$matches\.Add\(\$structuredMainMatch\)/u,
+  "main-shell evidence must exclude visible auxiliary WeChat windows without requiring one render class"
 );
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
-  /if \(\$structuredMainMatches\.Count -eq 0\)[\s\S]*\$matches = New-Object System\.Collections\.Generic\.List\[object\][\s\S]*elseif \(\$structuredMainMatches\.Count -gt 0\)/u,
+  /\$matches = New-Object System\.Collections\.Generic\.List\[object\][\s\S]*foreach \(\$structuredMainMatch in \$structuredMainMatches\)[\s\S]*if \(\$matches\.Count -eq 0\)[\s\S]*personal_wechat_main_window_not_found/u,
   "automatic discovery must fail closed instead of moving a visible auxiliary window when no structured main window exists"
 );
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
-  /if \(\$matches\.Count -gt 1 -and @\(\$matches\.ToArray\(\) \| Where-Object \{ \$_\.hasMainRenderChild \}\)\.Count -gt 0\)[\s\S]*reason = "wechat_window_ambiguous"/u,
+  /if \(\$matches\.Count -gt 1\)[\s\S]*reason = "wechat_window_ambiguous"/u,
   "multiple structurally valid personal WeChat main windows must fail closed instead of being selected by area"
 );
 assert.match(

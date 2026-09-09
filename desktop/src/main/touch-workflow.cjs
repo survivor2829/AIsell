@@ -5,6 +5,8 @@ const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { generateFixedScriptFallback, generatePersonalizedDraft } = require("./ai-draft.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
 const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs");
+const { normalizeTouchLink } = require("./touch-media.cjs");
+const { executeMessageSequence, messageParts, canContinueSequence } = require("./touch-message-sequence.cjs");
 const {
   classifyContacts,
   createTask,
@@ -21,10 +23,14 @@ function createTouchWorkflow(options = {}) {
   const coordinator = options.coordinator;
   const now = options.now || (() => new Date());
   let activeStep = false;
+  const workflowDirectory = (id) => path.join(contactsDir, "workflow-tasks", crypto.createHash("sha256").update(String(id)).digest("hex"));
 
   function prepareWorkflowTask(input = {}) {
     const script = String(input.script || "").trim();
     if (!script) throw new Error("请填写触达话术");
+    const link = normalizeTouchLink(input.link);
+    const imageIds = options.mediaStore ? options.mediaStore.validateIds(input.imageIds || []) : [];
+    if (!options.mediaStore && input.imageIds?.length) throw new Error("图片服务未连接，请重新打开程序。");
     if (!Array.isArray(input.contactIds) || !input.contactIds.length) throw new Error("请选择本次触达的联系人");
     const requested = new Set(input.contactIds.map((id) => String(id).trim()).filter(Boolean));
     if (!requested.size) throw new Error("请选择本次触达的联系人");
@@ -41,6 +47,7 @@ function createTouchWorkflow(options = {}) {
     });
     return {
       script,
+      ...(imageIds.length || link ? { imageIds, link } : {}),
       contacts: snapshot.results.map((result) => result.contact),
       excluded: classification.excluded.filter((entry) => requested.has(String(entry.contact.id))),
       preparedAt: now().toISOString()
@@ -59,8 +66,11 @@ function createTouchWorkflow(options = {}) {
     activeStep = true;
     let owner = "";
     let task;
-    const taskDir = path.join(contactsDir, "workflow-tasks", crypto.createHash("sha256").update(id).digest("hex"));
-    const signature = crypto.createHash("sha256").update(JSON.stringify({ script, contacts: contacts.map(identityKey) })).digest("hex");
+    const taskDir = workflowDirectory(id);
+    const imageIds = Array.isArray(payload?.imageIds) ? payload.imageIds : [];
+    const link = String(payload?.link || "");
+    const multipart = imageIds.length > 0 || Boolean(link);
+    const signature = crypto.createHash("sha256").update(JSON.stringify({ script, contacts: contacts.map(identityKey), ...(multipart ? { imageIds, link } : {}) })).digest("hex");
     const bindingFile = path.join(taskDir, "workflow-binding.json");
     const progress = () => ({ done: task?.current_index || 0, total: task?.total || contacts.length });
     const response = (status, extra = {}) => ({ status, progress: progress(), ...extra });
@@ -94,7 +104,13 @@ function createTouchWorkflow(options = {}) {
         writeJsonAtomic(bindingFile, { taskId: id, signature });
       }
       if (task.integrity_error) return response("needs_attention", { error: task.pause_reason || "触达任务进度已损坏" });
-      if (task.status === "paused") return response("needs_attention", { error: task.pause_reason || "触达任务需要处理" });
+      if (task.status === "paused") {
+        if (!multipart || !canContinueSequence(task.results[task.current_index])) return response("needs_attention", { error: task.pause_reason || "触达任务需要处理" });
+        task.status = "running";
+        task.pause_reason = "";
+        task.results[task.current_index].status = "generated";
+        persist();
+      }
       let current = task.results[task.current_index];
       // A completed receipt is authoritative even if the app exited before the
       // queue received the next index. Never send that contact a second time.
@@ -105,7 +121,7 @@ function createTouchWorkflow(options = {}) {
         return response(task.status === "completed" ? "completed" : "pending");
       }
       if (!current || task.current_index >= task.total) return response("completed");
-      if (UNCERTAIN_SEND_STATES.has(current.status) || current.retry_blocked) {
+      if ((UNCERTAIN_SEND_STATES.has(current.status) || current.retry_blocked) && !(multipart && canContinueSequence(current))) {
         return attention("上次发送结果尚未确认，请检查微信；系统不会自动补发");
       }
       if (Date.parse(task.next_send_not_before || "") > now().getTime()) {
@@ -156,44 +172,67 @@ function createTouchWorkflow(options = {}) {
       let result;
       const sendOperation = diagnostics().begin("active_touch", "workflow_contact_send", { task_id: id, current_index: index }, { trace: true });
       try {
-        result = await options.execute({
-          baseDir: taskDir,
-          contactsDir,
-          contactId: current.id,
-          message: current.message,
-          frozenContact: current.contact,
-          attemptId: current.request_id,
-          authorized: true,
-          windowMinIdleMs: 0,
-          onDiagnostic: (detail) => diagnostics().event("active_touch", "send_stage", detail, {
-            trace: true, traceId: sendOperation.traceId, phase: detail.phase, level: detail.ok === false ? "warn" : "info", code: detail.reason
-          }),
-          isExecutionAllowed: enabled,
-          sessionDriver: (name, sessionContext) => drivers.verifyWechatCurrentConversationAsync(name, { ...sessionContext, wechatRoot }),
-          sendDriver: (key, sendContext) => enabled()
-            ? drivers.clickWechatSendButtonAsync(key, sendContext)
-            : { ok: false, sendAttempted: false, reason: "workflow_paused" },
-          runStep: (command, args = []) => options.runStep([command, ...args,
-            "--task-id", id, "--contact-id", current.id, "--current-index", String(index)
-          ], {
-            dataDir: taskDir,
-            parentTraceId: sendOperation.traceId,
-            owner,
-            workflow: "touching",
-            phase: command,
-            taskId: id,
-            contactId: current.id,
-            currentIndex: index
-          }),
-          onTransition: (status, executionState = {}) => {
-            const row = task.results[index];
-            row.status = status;
-            row.attempt_key = String(executionState.real_send_attempt_key || row.attempt_key || "");
-            row.retry_blocked = ["prepared", "clicked", "sent_verified", "outcome_unknown"].includes(status);
-            row.updated_at = now().toISOString();
-            persist();
+        const executePart = async (part, partIndex, onPartTransition) => {
+          const recipientKey = crypto.createHash("sha256").update(current.request_id).digest("hex");
+          const executionDir = multipart ? path.join(taskDir, "message-parts", recipientKey, String(partIndex)) : taskDir;
+          // Every part has its own CLI transaction. A text receipt must never
+          // make the entire contact look complete while images remain unsent.
+          fs.mkdirSync(executionDir, { recursive: true });
+          if (multipart) writeJsonAtomic(path.join(executionDir, "contacts.json"), liveContacts);
+          let image;
+          if (part.kind === "image") {
+            try { image = options.mediaStore.resolve(part.imageId); }
+            catch (error) { return { ok: false, send_attempted: false, blocked_reason: "touch_image_unavailable", error: error.message }; }
           }
-        });
+          return options.execute({
+            baseDir: executionDir,
+            contactsDir,
+            contactId: current.id,
+            message: part.message || `[图片:${part.imageId}]`,
+            ...(image ? { image } : {}),
+            frozenContact: current.contact,
+            attemptId: multipart ? `${current.request_id}:${partIndex}` : current.request_id,
+            authorized: true,
+            windowMinIdleMs: 0,
+            onDiagnostic: (detail) => diagnostics().event("active_touch", "send_stage", detail, {
+              trace: true, traceId: sendOperation.traceId, phase: detail.phase, level: detail.ok === false ? "warn" : "info", code: detail.reason
+            }),
+            isExecutionAllowed: enabled,
+            sessionDriver: (name, sessionContext) => drivers.verifyWechatCurrentConversationAsync(name, { ...sessionContext, wechatRoot }),
+            sendDriver: (key, sendContext) => enabled()
+              ? drivers.clickWechatSendButtonAsync(key, sendContext)
+              : { ok: false, sendAttempted: false, reason: "workflow_paused" },
+            runStep: (command, args = []) => options.runStep([command, ...args,
+              ...(multipart ? ["--task-data-dir", taskDir] : []),
+              "--task-id", id, "--contact-id", current.id, "--current-index", String(index)
+            ], {
+              dataDir: executionDir,
+              parentTraceId: sendOperation.traceId,
+              owner,
+              workflow: "touching",
+              phase: command,
+              taskId: id,
+              contactId: current.id,
+              currentIndex: index
+            }),
+            onTransition: (status, executionState = {}) => {
+              if (multipart) { onPartTransition(status); return; }
+              const row = task.results[index];
+              row.status = status;
+              row.attempt_key = String(executionState.real_send_attempt_key || row.attempt_key || "");
+              row.retry_blocked = ["prepared", "clicked", "sent_verified", "outcome_unknown"].includes(status);
+              row.updated_at = now().toISOString();
+              persist();
+            }
+          });
+        };
+        if (multipart) {
+          current = task.results[index];
+          result = await executeMessageSequence({
+            row: current, parts: messageParts(current.message, imageIds, link), execute: executePart, isEnabled: enabled,
+            persist: () => { task.results[index] = current; persist(); }
+          });
+        } else result = await executePart({ kind: "text", message: current.message }, 0);
         const detail = summarizeSendResult(result);
         sendOperation.end(detail, { ok: result?.ok === true, code: detail.reason });
       } catch (error) {
@@ -226,7 +265,7 @@ function createTouchWorkflow(options = {}) {
       }
       current.status = "outcome_unknown";
       current.retry_blocked = true;
-      return attention("发送结果无法确认，请检查微信；系统不会自动补发", { deliveryStatus: "outcome_unknown" });
+      return attention(result?.error || "发送结果无法确认，请检查微信；系统不会自动补发", { deliveryStatus: "outcome_unknown" });
     } catch (error) {
       return { status: "needs_attention", progress: task ? progress() : fallback, error: String(error?.message || "触达任务读取失败") };
     } finally {
@@ -238,7 +277,13 @@ function createTouchWorkflow(options = {}) {
     }
   }
 
-  return { prepareWorkflowTask, runWorkflowStep };
+  function canRetryWorkflowTask(record) {
+    const task = loadTaskState(workflowDirectory(record.id));
+    return !task.integrity_error && task.status === "paused" && canContinueSequence(task.results[task.current_index]);
+  }
+  return { prepareWorkflowTask, runWorkflowStep, canRetryWorkflowTask,
+    describeImages: (ids = []) => ids.map((id) => options.mediaStore.describe(id)),
+    importImages: (paths) => options.mediaStore.importFiles(paths) };
 }
 
 module.exports = { createTouchWorkflow };

@@ -3,7 +3,11 @@ const {
   runPowerShellAsync
 } = require("./wechat_window_driver.cjs");
 
-const SEND_MESSAGE_SCRIPT = `
+const WECHAT_SEND_BUTTON_OFFSETS = { right: 64, bottom: 42 };
+// Logical pixels wholly inside the chat header; exclude the message viewport,
+// which moves when an image expands the composer. Both token producers share it.
+const WECHAT_HEADER_CAPTURE = { top: 34, bottom: 74 };
+const WECHAT_SEND_OBSERVATION_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName UIAutomationClient
@@ -113,9 +117,11 @@ function Get-ConversationObservation([IntPtr]$hWnd, [string]$expectedTitle, [str
   $visualHash = ""
   try {
     $captureLeft = [int]$headerLeft
-    $captureTop = [int]($freshRect.Top + 28)
+    $headerDpi = [Win32WechatSendMessage]::GetDpiForWindow($hWnd)
+    if ($headerDpi -le 0) { $headerDpi = 96 }
+    $captureTop = [int]($freshRect.Top + ${WECHAT_HEADER_CAPTURE.top} * $headerDpi / 96.0)
     $captureRight = [int]($freshRect.Left + ($freshRect.Width * 0.78))
-    $captureBottom = [int][Math]::Min($freshRect.Bottom - 1, $freshRect.Top + 112)
+    $captureBottom = [int][Math]::Min($freshRect.Bottom - 1, $freshRect.Top + ${WECHAT_HEADER_CAPTURE.bottom} * $headerDpi / 96.0)
     $captureWidth = $captureRight - $captureLeft
     $captureHeight = $captureBottom - $captureTop
     if ($captureWidth -ge 120 -and $captureHeight -ge 40) {
@@ -227,6 +233,8 @@ function Get-ComposerObservation([System.Windows.Automation.AutomationElement]$f
   }
   return @{ ok = $false; reason = "atomic_composer_not_verified"; diagnostics = $composerDiagnostics }
 }
+`;
+const SEND_MESSAGE_SCRIPT = `${WECHAT_SEND_OBSERVATION_SCRIPT}
 if ([string]::IsNullOrWhiteSpace($expectedPid) -or [string]::IsNullOrWhiteSpace($expectedHandle) -or [string]::IsNullOrWhiteSpace($expectedConversation) -or [string]::IsNullOrWhiteSpace($expectedMessage)) {
   @{ ok = $false; reason = "atomic_send_context_missing"; sendAttempted = $false } | ConvertTo-Json -Compress
   exit
@@ -367,8 +375,8 @@ try {
     if ($windowDpi -gt 0) { $dpi = $windowDpi }
   } catch {}
   $dpiScale = [double]$dpi / 96.0
-  $sendRightOffsetDip = 64
-  $sendBottomOffsetDip = 42
+  $sendRightOffsetDip = ${WECHAT_SEND_BUTTON_OFFSETS.right}
+  $sendBottomOffsetDip = ${WECHAT_SEND_BUTTON_OFFSETS.bottom}
   $sendX = [int]($clickRect.Right - [Math]::Round($sendRightOffsetDip * $dpiScale))
   $sendY = [int]($clickRect.Bottom - [Math]::Round($sendBottomOffsetDip * $dpiScale))
   $clickWidth = $clickRect.Width
@@ -471,6 +479,7 @@ public static class Win32WechatConversationObservation {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 }
@@ -554,9 +563,11 @@ if ($titleVisible) {
 $visualHash = ""
 try {
   $captureLeft = [int]$headerLeft
-  $captureTop = [int]($windowRect.Top + 28)
+  $headerDpi = [Win32WechatConversationObservation]::GetDpiForWindow($expectedHWnd)
+  if ($headerDpi -le 0) { $headerDpi = 96 }
+  $captureTop = [int]($windowRect.Top + ${WECHAT_HEADER_CAPTURE.top} * $headerDpi / 96.0)
   $captureRight = [int]($windowRect.Left + ($windowRect.Width * 0.78))
-  $captureBottom = [int][Math]::Min($windowRect.Bottom - 1, $windowRect.Top + 112)
+  $captureBottom = [int][Math]::Min($windowRect.Bottom - 1, $windowRect.Top + ${WECHAT_HEADER_CAPTURE.bottom} * $headerDpi / 96.0)
   $captureWidth = $captureRight - $captureLeft
   $captureHeight = $captureBottom - $captureTop
   if ($captureWidth -ge 120 -and $captureHeight -ge 40) {
@@ -1094,6 +1105,10 @@ function verifyWechatMessageBubbleAsync(message, context = {}) {
 }
 
 module.exports = {
+  SEND_MESSAGE_SCRIPT,
+  WECHAT_SEND_OBSERVATION_SCRIPT,
+  WECHAT_SEND_BUTTON_OFFSETS,
+  sendMessageEnvironment,
   clickWechatSendButton,
   clickWechatSendButtonAsync,
   detectActiveWechatAccount,

@@ -1130,6 +1130,7 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
 
   const workflow = createTouchWorkflow({
     dataDir: activeTouchDir(),
+    mediaStore: require("./touch-media.cjs").createTouchMediaStore({ dataDir: activeTouchDir(), nativeImage: require("electron").nativeImage }),
     coordinator: runtimeCoordinator,
     readContacts,
     client: deepSeekClient,

@@ -173,6 +173,18 @@ function registerWechatWorkflowIpc(options) {
   handle("status", () => controller.refresh());
   handle("start", start, true);
   handle("pause", () => controller.pause());
+  handle("choose-touch-images", async () => {
+    if (active()) throw new Error("请先暂停微信拓客，再添加图片。");
+    const { dialog } = options.electron || require("electron");
+    const selection = await dialog.showOpenDialog(main(), {
+      title: "选择要在话术后发送的图片", properties: ["openFile", "multiSelections"],
+      filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg"] }]
+    });
+    if (selection.canceled || !selection.filePaths.length) return { ok: true, canceled: true };
+    if (active()) throw new Error("微信任务已启动，请先暂停后再添加图片。");
+    try { return { ok: true, images: options.executors.touch.importImages(selection.filePaths) }; }
+    catch (error) { throw new Error(/^(请|每次|单张|图片|已保存)/.test(error.message) ? error.message : "图片无法读取，请检查文件后重新添加。"); }
+  }, true);
   handle("add-task", (payload) => controller.addTask(payload), true);
   handle("update-task", (payload) => controller.updateTask(payload), true);
   handle("get-task", (payload) => controller.getTask(String(payload?.id || "")));

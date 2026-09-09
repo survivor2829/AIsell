@@ -216,6 +216,7 @@ function preflightDiagnostics(result, fallbackPhase, requiredIdleMs, recoveryAtt
     ? result.safety_diagnostics
     : {};
   const diagnostic = {
+    ...require("../../src/shared/wechat-window-diagnostics.cjs").sanitizeWechatWindowDiagnostics(result?.diagnostics),
     phase: String(source.phase || fallbackPhase || "preflight").slice(0, 80),
     required_idle_ms: Math.max(0, Math.floor(Number(requiredIdleMs) || 0)),
     recovery_attempts: Math.max(0, Math.floor(Number(recoveryAttempts) || 0))
@@ -695,6 +696,15 @@ async function executeVerifiedContactSendCore(options = {}) {
   const session = await observeSendStage(options, "verify_session", () => verifyRealSendSessionAsync(baseDir, options.sessionDriver || verifyWechatCurrentConversationAsync));
   if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
   if (!session.ok) return withSendAttempted(session);
+  if (options.image) {
+    const state = loadState(baseDir);
+    return observeSendStage(options, "image_send", () => require("./wechat_image_send.dev.cjs").sendWechatImage({
+      baseDir, attemptId: options.attemptId,
+      image: options.image, onTransition: options.onTransition, isExecutionAllowed: options.isExecutionAllowed,
+      context: { pid: state.window_pid, hWnd: state.window_handle, expectedConversation: state.selected_customer?.name,
+        expectedConversationMode: state.conversation_verification_mode, expectedConversationToken: state.conversation_token }
+    }));
+  }
   if (typeof options.beforeDraft === "function") {
     let allowed = false;
     try {

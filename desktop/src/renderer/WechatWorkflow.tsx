@@ -1,4 +1,4 @@
-import { CalendarClock, Check, ChevronRight, Clock3, ImagePlus, ListTodo, Maximize2, Pause, Pencil, Play, Plus, Repeat2, Send, ThumbsUp, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, CalendarClock, Check, ChevronRight, Clock3, ImagePlus, ListTodo, Maximize2, Pause, Pencil, Play, Plus, Repeat2, Send, ThumbsUp, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { momentsProgressLabel } from "./MomentsCampaignPanel";
 import "./WechatWorkflow.css";
@@ -7,6 +7,8 @@ export type WorkflowTaskType = "touch" | "publish" | "interact";
 export type WorkflowPayload = {
   contactIds?: string[];
   script?: string;
+  imageIds?: string[];
+  link?: string;
   content?: string;
   selectionId?: string;
   sourceTaskId?: string;
@@ -20,6 +22,7 @@ export type WorkflowMedia = {
   media_count: number;
   files: Array<{ name: string; size: number; kind: "image" | "video" }>;
 };
+type TouchImage = { id: string; name: string; size?: number; preview: string };
 export type WorkflowTaskInput = {
   type: WorkflowTaskType;
   title?: string;
@@ -37,6 +40,8 @@ export type WorkflowTask = Omit<WorkflowTaskInput, "payload"> & {
   error?: string;
   lastCompletedDate?: string;
   media?: WorkflowMedia;
+  images?: TouchImage[];
+  imageError?: string;
   payload?: WorkflowPayload;
   accountMismatch?: boolean;
   canRetry?: boolean;
@@ -65,6 +70,7 @@ declare global {
       status: () => Promise<WorkflowResult>;
       start: () => Promise<WorkflowResult>;
       pause: () => Promise<WorkflowResult>;
+      chooseTouchImages: () => Promise<{ ok: boolean; canceled?: boolean; images?: TouchImage[]; error?: string }>;
       showFloating: () => Promise<WorkflowResult>;
       showMain: (intent?: { view: WorkflowView }) => Promise<WorkflowResult>;
       onNavigate?: (callback: (intent: { view: WorkflowView }) => void) => () => void;
@@ -292,7 +298,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
         <div className="workflow-task-meta"><span><Clock3 size={13} />{formatTaskTime(task)}</span>{task.progress?.total > 0 && <span>{task.progress.done}/{task.progress.total} {task.type === "touch" ? "人" : "条"}</span>}{task.repeat === "daily" && task.lastCompletedDate && <span>最近完成：{task.lastCompletedDate}</span>}</div>
         {task.type === "interact" && task.progress.liked !== undefined && <p className="workflow-small-note">累计点赞 {task.progress.liked} · 评论 {task.progress.commented || 0} · 跳过评论 {task.progress.skipped || 0}</p>}
         {task.error && <p className="workflow-task-error">{taskErrorText(task.error)}</p>}
-        {task.status === "needs_attention" && <p className="workflow-small-note">{task.canRetry ? "尚未执行互动，可重新加入计划，再点击启动。" : "不能直接重试，请先核对微信中的实际结果。"}</p>}
+        {task.status === "needs_attention" && <p className="workflow-small-note">{task.canRetry ? task.type === "touch" ? "可从未发送的内容继续，已发出的文字和图片不会重发。" : "尚未执行互动，可重新加入计划，再点击启动。" : "不能直接重试，请先核对微信中的实际结果。"}</p>}
         {task.accountMismatch && <p className="workflow-task-error">微信账号已切换，需切回原账号后执行。</p>}
         {task.status === "missed" && <p className="workflow-task-error">这是往日未执行的任务，请修改时间后加入，或取消。</p>}
       </div>
@@ -367,6 +373,8 @@ function WorkflowTaskEditor({ request, workflow, contacts, syncBusy, syncError, 
   const payload = task?.payload || {};
   const [title, setTitle] = useState(task?.title || "");
   const [script, setScript] = useState(payload.script || "");
+  const [images, setImages] = useState<TouchImage[]>(task?.images || []);
+  const [link, setLink] = useState(payload.link || "");
   const [content, setContent] = useState(payload.content || "");
   const [selectedIds, setSelectedIds] = useState<string[]>(payload.contactIds || []);
   const [query, setQuery] = useState("");
@@ -381,7 +389,7 @@ function WorkflowTaskEditor({ request, workflow, contacts, syncBusy, syncError, 
   const [likeEnabled, setLikeEnabled] = useState(payload.likeEnabled !== false);
   const [commentEnabled, setCommentEnabled] = useState(payload.commentEnabled === true);
   const [commentGuidance, setCommentGuidance] = useState(payload.commentGuidance || "");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(task?.imageError || "");
   const { busy, state, run } = workflow;
   const locked = busy || mediaBusy || state.enabled || state.phase === "pausing";
   const eligible = useMemo(() => contacts.filter((contact) => contact.allowed), [contacts]);
@@ -406,6 +414,26 @@ function WorkflowTaskEditor({ request, workflow, contacts, syncBusy, syncError, 
     finally { setMediaBusy(false); }
   };
 
+  const chooseTouchImages = async () => {
+    if (!window.xiaoxiWorkflow?.chooseTouchImages || locked) return;
+    setMediaBusy(true);
+    setError("");
+    try {
+      const result = await window.xiaoxiWorkflow.chooseTouchImages();
+      if (result.canceled) return;
+      if (!result.ok || !result.images) { setError(result.error || "图片未能添加，请重试。"); return; }
+      const combined = [...new Map([...images, ...result.images].map((image) => [image.id, image])).values()];
+      if (combined.length > 9) { setError("每项触达最多发送 9 张图片，请移除部分图片后再添加。"); return; }
+      setImages(combined);
+    } catch { setError("图片未能添加，请重试。"); }
+    finally { setMediaBusy(false); }
+  };
+  const moveImage = (index: number, offset: number) => setImages((current) => {
+    const next = [...current];
+    [next[index], next[index + offset]] = [next[index + offset], next[index]];
+    return next;
+  });
+
   const save = async (event: FormEvent) => {
     event.preventDefault();
     if (!window.xiaoxiWorkflow || locked) return;
@@ -421,7 +449,7 @@ function WorkflowTaskEditor({ request, workflow, contacts, syncBusy, syncError, 
       scheduledAt: scheduled && !daily ? new Date(scheduledAt).toISOString() : null,
       repeat: daily && type === "interact" ? "daily" : null,
       startTime: daily && scheduled ? startTime : null,
-      payload: type === "touch" ? { contactIds: selectedIds, script: script.trim() }
+      payload: type === "touch" ? { contactIds: selectedIds, script: script.trim(), imageIds: images.map((image) => image.id), link: link.trim() }
         : type === "publish" ? { content: content.trim(), ...(media?.selection_id ? { selectionId: media.selection_id } : duplicate && task ? { sourceTaskId: task.id } : {}) }
           : { maxPosts, likeEnabled, commentEnabled, commentGuidance: commentGuidance.trim() }
     };
@@ -446,6 +474,18 @@ function WorkflowTaskEditor({ request, workflow, contacts, syncBusy, syncError, 
       {syncError && <p className="workflow-inline-warning" role="alert">{syncError}</p>}
       {missingCount > 0 && <p className="workflow-inline-warning">{missingCount} 位联系人已失效。<button type="button" className="text-button" onClick={() => setSelectedIds((ids) => ids.filter((id) => eligible.some((contact) => contact.id === id)))}>移除失效联系人</button></p>}
       <label className="workflow-field"><span>触达话术</span><textarea value={script} onChange={(event) => setScript(event.target.value)} disabled={locked} placeholder="写下这次想对客户说的话，可用 {称呼} 自动填入联系人称呼。" rows={4} /></label>
+      <div className="workflow-media-field"><div><strong>接着发图片 <small>选填</small></strong><span>按下方顺序逐张发送 · 最多 9 张</span></div><button type="button" data-xiaoxi-touch-images className="secondary-button" disabled={locked || images.length >= 9} onClick={() => void chooseTouchImages()}><ImagePlus size={16} />{mediaBusy ? "正在添加…" : "添加图片"}</button></div>
+      {images.length > 0 && <ol className="workflow-touch-images" aria-label="图片发送顺序">{images.map((image, index) => <li key={image.id}>
+        <div className="workflow-touch-image-preview">{image.preview ? <img src={image.preview} alt={image.name} /> : <span>图片无法读取</span>}</div>
+        <div className="workflow-touch-image-name"><span>{index + 1}. {image.name}</span></div>
+        <div className="workflow-touch-image-actions">
+          <button type="button" className="workflow-icon-button" aria-label={`将${image.name}前移`} disabled={locked || index === 0} onClick={() => moveImage(index, -1)}><ArrowLeft size={15} /></button>
+          <button type="button" className="workflow-icon-button" aria-label={`将${image.name}后移`} disabled={locked || index === images.length - 1} onClick={() => moveImage(index, 1)}><ArrowRight size={15} /></button>
+          <button type="button" className="workflow-icon-button" aria-label={`移除${image.name}`} disabled={locked} onClick={() => setImages((current) => current.filter((entry) => entry.id !== image.id))}><X size={15} /></button>
+        </div>
+      </li>)}</ol>}
+      <label className="workflow-field"><span>最后发对应网址 <small>选填</small></span><input type="url" value={link} onChange={(event) => setLink(event.target.value)} disabled={locked} maxLength={2048} placeholder="https://" /><small className="workflow-touch-link-note">网址作为一条独立消息，在文字和图片之后发送。</small></label>
+      <p className="workflow-touch-order" aria-live="polite">发送顺序：话术{images.length > 0 ? ` → ${images.length} 张图片` : ""}{link.trim() ? " → 网址" : ""}</p>
       <p className="workflow-small-note">所选客户加入自动接待范围。本次触达完成后不会自动重发。</p>
     </>}
 

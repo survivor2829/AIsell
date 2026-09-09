@@ -67,7 +67,12 @@ function validateTaskContext(command, baseDir, args) {
   if (!context.taskId || !context.contactId || !Number.isInteger(context.currentIndex) || context.currentIndex < 0) {
     return { error: contextError(command, "task_context_missing", "任务执行命令缺少 taskId、contactId 或 currentIndex") };
   }
-  const task = loadTaskState(baseDir);
+  // Multipart sends keep receipts in a child directory, but must validate
+  // against the current authoritative task on every command.
+  const taskDir = optionalValueAfter(args, "--task-data-dir") || baseDir;
+  const taskDirError = absoluteDataDirError(command, taskDir);
+  if (taskDirError) return { error: taskDirError };
+  const task = loadTaskState(taskDir);
   const current = task.results?.[context.currentIndex];
   if (
     task.integrity_error ||

@@ -1806,6 +1806,7 @@ function createAutoReplyController(options = {}) {
     if (verificationMode) entry.verification_mode = verificationMode;
     if (code === "session_probe_unsupported") Object.assign(entry, sanitizeSessionProbe(details.sessionProbe));
     Object.assign(entry, sanitizeStructuredScanDiagnostics(details));
+    Object.assign(entry, require("../shared/wechat-window-diagnostics.cjs").sanitizeWechatWindowDiagnostics(details.diagnostics));
     appendDiagnosticLine(diagnosticLogFile, entry);
     const waitingDiagnostic = entry.code === USER_IDLE_WAIT_REASON
       || new Set(["scan_waiting", "reply_retry_enqueued", "reply_retry_waiting", "reply_manual_review_required"]).has(entry.event);

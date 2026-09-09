@@ -20,6 +20,8 @@ HEX = re.compile(r"[a-f0-9]{64}\Z")
 UUID = re.compile(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\Z")
 VERSION = re.compile(r"(?:0|[1-9]\d{0,5})(?:\.(?:0|[1-9]\d{0,5})){2}\Z")
 APP_IDS = {"test": "com.aihuoke.desktop.test", "delivery": "com.aihuoke.desktop", "smoke": "com.aihuoke.maintenance.smoke"}
+WINDOW_STAGES = ("bootstrap", "compile", "process", "enumerate", "select", "shell", "selected", "restore", "focus", "verify", "complete")
+WINDOW_METRICS = ("elapsed_ms", "total_ms", "timeout_ms", "process_count", "native_count", "candidate_count", "main_count", "render_count", "hidden_count", "minimized_count", "rejected_layout_count") + tuple(f"{stage}_ms" for stage in WINDOW_STAGES)
 
 def safe_token(value):
     return value if isinstance(value, str) and TOKEN.fullmatch(value) and not re.search(r"sk-|ak-|ltai", value, re.I) else ""
@@ -67,6 +69,16 @@ def validate_report(body):
             if "send_attempted" in details and details["send_attempted"] is None:
                 row["details"]["send_attempted"] = None
             for key in ("elapsed_ms", "duration_ms", "current_index", "done", "total", "pending_count", "process_count", "dpi", "window_width", "window_height", "candidate_count", "outgoing_exact_count", "previous_exact_count", "new_outgoing_exact_count", "receipt_verification_attempts"):
+                if type(details.get(key)) is int and 0 <= details[key] <= 86400000:
+                    row["details"][key] = details[key]
+            if details.get("window_stage") in WINDOW_STAGES:
+                row["details"]["window_stage"] = details["window_stage"]
+            if details.get("window_detection_mode") in ("exact_hwnd", "render_child", "native_main", "shell_navigation"):
+                row["details"]["window_detection_mode"] = details["window_detection_mode"]
+            if safe_token(details.get("window_class_code")):
+                row["details"]["window_class_code"] = details["window_class_code"]
+            for suffix in WINDOW_METRICS:
+                key = f"window_{suffix}"
                 if type(details.get(key)) is int and 0 <= details[key] <= 86400000:
                     row["details"][key] = details[key]
         clean["entries"].append(row)

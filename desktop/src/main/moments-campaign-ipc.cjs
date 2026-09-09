@@ -440,7 +440,9 @@ function createMomentsCampaignController(options = {}) {
         allowIntegrated: true,
         minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0
       });
-      record("campaign.open_finished", { result: opened }, opened?.ok ? "info" : "warn");
+      record("campaign.open_finished", { result: opened,
+        ...require("../shared/wechat-window-diagnostics.cjs").sanitizeWechatWindowDiagnostics(opened?.diagnostics)
+      }, opened?.ok ? "info" : "warn");
       if (!opened?.ok) {
         finish("paused", opened?.reason || "moments_open_failed");
         return;

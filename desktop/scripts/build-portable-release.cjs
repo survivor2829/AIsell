@@ -62,6 +62,7 @@ function sourceAllowed(source, edition) {
     const allowed = [
       "state_machine.dev.cjs",
       "wechat_window_driver.dev.cjs",
+      "wechat_image_send.dev.cjs",
       "active_touch_cli.dev.cjs",
       "moments_visual_probe.dev.cjs",
       "moments_navigation.dev.cjs",

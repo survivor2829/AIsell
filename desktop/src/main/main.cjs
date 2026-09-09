@@ -558,7 +558,10 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       executors: {
         touch: {
           prepareWorkflowTask: (_id, payload) => touchTaskController.prepareWorkflowTask(payload),
-          runWorkflowStep: touchTaskController.runWorkflowStep
+          runWorkflowStep: touchTaskController.runWorkflowStep,
+          canRetryWorkflowTask: touchTaskController.canRetryWorkflowTask,
+          describeImages: touchTaskController.describeImages,
+          importImages: touchTaskController.importImages
         },
         publish: momentsPublishController,
         interact: momentsCampaignController

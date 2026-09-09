@@ -1,6 +1,7 @@
 // Application-owned additions keep diagnostic evolution compatible with the
 // installed update base. The base validator still owns report identity/privacy.
 const { reportEntry: baseReportEntry, token } = require("./cloud-contract.cjs");
+const { sanitizeWechatWindowDiagnostics } = require("./wechat-window-diagnostics.cjs");
 
 function reportEntry(entry, context) {
   const result = baseReportEntry(entry, context);
@@ -17,6 +18,7 @@ function reportEntry(entry, context) {
     const value = entry.details?.[key];
     if (Number.isFinite(value) && value >= 0 && value <= 86400000) result.details[key] = Math.round(value);
   }
+  Object.assign(result.details, sanitizeWechatWindowDiagnostics(entry.details));
   return result;
 }
 

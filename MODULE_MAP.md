@@ -25,9 +25,13 @@
 
 正常入口由 `wechat-workflow.cjs` 统一安排触达、朋友圈发布／互动和客户回复优先级，`wechat-workflow-ipc.cjs` 管理统一进度浮窗。各业务执行器完成一个工作单元后交还调度权，不把业务发送账本搬进协调层。朋友圈的 `moments-daily-automation.cjs` 仅保留旧独立模式；统一工作流接管时停止其调度，避免双重执行。
 
+主动触达的 `touch-media.cjs` 在主进程校验并冻结图片；renderer 只接收不含路径的图片编号、文件名与缩略图。`touch-message-sequence.cjs` 编排话术、图片和网址，每段独立记录状态；`wechat_image_send.dev.cjs` 复用共享会话/输入框观察并处理图片草稿或预览。图片存入 `active_touch/message-images/`，逐段 CLI 状态和图片回执存入对应 `workflow-tasks/` 的 `message-parts/`，不与整体联系人完成记录混用。
+
 ## 共享微信适配边界
 
 自动回复和主动触达共享同一组底层动作语义：定位窗口、固定左上角、观察会话、验证输入框、写入草稿、发送前复核、执行发送和验证结果。UIA 与视觉识别是可替换 adapter；一次事务选定一种证据链，不在中途拼接两套会话基线。
+
+`wechat_window_driver.cjs` 统一筛选主窗口：微信 PID 归属、原生主窗口类/受约束渲染子窗口/已核实导航结构共同提供候选证据，多个主窗口保持歧义，不按面积任选。`src/shared/wechat-window-diagnostics.cjs` 只允许阶段、耗时、窗口类代码与数量进入日志和上报，禁止标题、联系人、路径及原始错误输出；后台接收白名单与客户端字段同步维护。
 
 共享层可以保存：
 

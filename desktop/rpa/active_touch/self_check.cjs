@@ -1798,7 +1798,7 @@ try {
   const messageDraftSource = driverSource.split("const MESSAGE_DRAFT_SCRIPT = `")[1].split("`;")[0];
   const searchSource = driverSource.split("const SEARCH_SCRIPT = `")[1].split("`;")[0];
   const developmentDriverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.dev.cjs"), "utf8");
-  const sendMessageSource = developmentDriverSource.split("const SEND_MESSAGE_SCRIPT = `")[1].split("`;")[0];
+  const sendMessageSource = require("./wechat_window_driver.dev.cjs").SEND_MESSAGE_SCRIPT;
   const observeConversationSource = developmentDriverSource.split("const OBSERVE_CONVERSATION_SCRIPT = `")[1].split("`;")[0];
   const clickSendSource = developmentDriverSource.split("function clickWechatSendButton")[1].split("const DETECT_ACTIVE_ACCOUNT_SCRIPT")[0];
   const bubbleVerifierSource = developmentDriverSource.split("function verifyWechatMessageBubble")[1].split("module.exports")[0];
@@ -1870,7 +1870,7 @@ try {
   assert.match(sendMessageSource, /Get-ComposerObservation[\s\S]*atomic_composer_not_verified[\s\S]*\$composerAfterDraft = Get-ComposerObservation/);
   assert.match(sendMessageSource, /GetClassName\(\$pointWindow[\s\S]*MMUIRender[\s\S]*visual_render_composer/, "visual-header sends must prove the composer through the owned MMUI render child when UIA exposes no editor node");
   assert.match(sendMessageSource, /StartsWith\("Qt"[\s\S]*EndsWith\("QWindowIcon"[\s\S]*visual_qt_root_composer/, "current WeChat Qt roots must be accepted without a cross-language regex escape hazard");
-  assert.match(sendMessageSource, /composer:v1:win32:\\\$\{pointClassName\}:/, "PowerShell variables followed by a colon must use braced interpolation without triggering JavaScript interpolation");
+  assert.match(sendMessageSource, /composer:v1:win32:\$\{pointClassName\}:/, "The rendered PowerShell must preserve braced variables before a colon");
   assert.equal((sendMessageSource.match(/\$headerLeft = .*Width \* 0\.36/g) || []).length, 1, "the atomic-send observation must exclude the mutable session-list draft preview");
   assert.equal((developmentDriverSource.match(/\$headerLeft = .*Width \* 0\.36/g) || []).length, 2, "both visual conversation observations must use the stable chat-header region");
   assert.match(observeConversationSource, /IsWindow\(\$expectedHWnd\)[\s\S]*IsWindowVisible\(\$expectedHWnd\)[\s\S]*GetWindowThreadProcessId\(\$expectedHWnd/, "session refresh must validate the exact visible HWND and owning PID");
@@ -2047,8 +2047,9 @@ try {
   assert.match(normalizerSource, /\$classRank = if \(\$className -ieq "mmui::MainWindow"\)/);
   assert.match(normalizerSource, /\$layoutRank = if \(\$w -ge 720[\s\S]*\$aspectRatio -ge 1\.15\)/);
   assert.match(normalizerSource, /\$styleRank = 0[\s\S]*0x00040000[\s\S]*0x00080000[\s\S]*0x00000080/);
-  assert.match(normalizerSource, /Sort-Object -Property \$sortRules/);
-  assert.match(normalizerSource, /\$_.classRank -eq \$best.classRank[\s\S]*\$_.layoutRank -eq \$best.layoutRank[\s\S]*\$_.styleRank -eq \$best.styleRank[\s\S]*\$_.area -eq \[int64\]\$best.area/);
+  assert.match(normalizerSource, /Test-WechatMainCandidate \$_/, "candidate selection must use main-shell evidence");
+  assert.doesNotMatch(normalizerSource, /Sort-Object -Property \$sortRules/, "multiple main candidates remain ambiguous rather than winning by window size");
+  assert.doesNotMatch(normalizerSource, /Get-Process -Id \$windowProcessId/, "desktop window enumeration must reuse the WeChat PID snapshot");
   assert.doesNotMatch(normalizerSource, /Sort-Object area -Descending/, "area alone must not select among unrelated WeChat top-level windows");
   assert.doesNotMatch(normalizerSource, /reason = "wechat_focus_failed"/, "successful window identity and layout must not fail merely because Windows refused foreground activation");
   assert.match(normalizerSource, /focused = \[bool\]\$focused/);
@@ -2118,11 +2119,13 @@ try {
     timeout: 10,
     terminationGraceMs: 250,
     diagnostics: true,
+    windowDiagnostics: true,
     spawnProcess: () => {
       diagnosedTimeoutChild = fakePowerShellChild();
       return diagnosedTimeoutChild;
     }
   });
+  diagnosedTimeoutChild.stderr.emit("data", 'wechat_window_diagnostic:{"window_stage":"enumerate","window_compile_ms":120,"window_process_count":2,"message":"private-window-text","stderr":"private-path"}\n');
   await new Promise((resolve) => setTimeout(resolve, 30));
   diagnosedTimeoutChild.emit("close", null);
   const diagnosedTimeoutResult = await diagnosedTimeout;
@@ -2131,6 +2134,10 @@ try {
   assert.equal(diagnosedTimeoutResult.diagnostics.termination_reason, "powershell_timeout");
   assert.equal(diagnosedTimeoutResult.diagnostics.kill_accepted, true);
   assert.equal(diagnosedTimeoutResult.diagnostics.elapsed_ms >= 10, true);
+  assert.equal(diagnosedTimeoutResult.diagnostics.window_stage, "enumerate", "timeouts must retain the last completed diagnostic breadcrumb");
+  assert.equal(diagnosedTimeoutResult.diagnostics.window_compile_ms, 120);
+  assert.equal(diagnosedTimeoutResult.diagnostics.window_process_count, 2);
+  assert.doesNotMatch(JSON.stringify(diagnosedTimeoutResult), /private-window-text|private-path/);
 
   let abortedChild;
   let abortedSettled = false;

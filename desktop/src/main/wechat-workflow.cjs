@@ -424,11 +424,17 @@ function createWechatWorkflowController(options) {
       assertHealthy();
       const task = findTask(id);
       const saved = readPayload(task);
-      const payload = task.type === "touch" ? { script: saved.script, contactIds: saved.contacts.map((contact) => contact.id) }
+      const payload = task.type === "touch" ? { script: saved.script, contactIds: saved.contacts.map((contact) => contact.id),
+        imageIds: saved.imageIds || [], link: saved.link || "" }
         : task.type === "interact" ? { maxPosts: saved.maxPosts, likeEnabled: saved.likeEnabled, commentEnabled: saved.commentEnabled, commentGuidance: saved.commentGuidance }
           : { content: saved.content, sourceTaskId: task.id };
       const media = task.type === "publish" ? (await executors.publish.workflowDraft(task.id))?.media : undefined;
-      return { ok: true, task: { ...task, payload, ...(media ? { media } : {}) } };
+      let images = [], imageError = "";
+      if (task.type === "touch" && saved.imageIds?.length) {
+        try { images = executors.touch.describeImages(saved.imageIds); }
+        catch { imageError = "已保存的图片无法读取，请移除后重新添加。"; images = saved.imageIds.map((id) => ({ id, name: "图片无法读取", preview: "" })); }
+      }
+      return { ok: true, task: { ...task, payload, ...(media ? { media } : {}), ...(task.type === "touch" ? { images, imageError } : {}) } };
     },
     cancelTask: (id) => serialize(() => {
       assertPlanEditable();

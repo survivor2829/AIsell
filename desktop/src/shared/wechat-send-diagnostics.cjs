@@ -1,11 +1,12 @@
 // Technical observations only. Never copy a conversation, message, snapshot or
 // raw driver object into the diagnostic stream.
 const { sanitizeVisualSendReceipt } = require("./visual-send-receipt.cjs");
+const { sanitizeWechatWindowDiagnostics } = require("./wechat-window-diagnostics.cjs");
 
 function summarizeSendResult(result = {}) {
   const state = result?.state || {};
   const proof = result?.proofDiagnostics || result?.send_diagnostics || state.send_diagnostics || {};
-  const detail = {};
+  const detail = sanitizeWechatWindowDiagnostics({ ...result?.diagnostics, ...proof });
   const blocked = result?.blocked_reason || state.blocked_reason;
   const reason = result?.primary_reason || result?.reason
     || (blocked === "outcome_unknown" ? state.real_send_reason || blocked : blocked || state.real_send_reason);

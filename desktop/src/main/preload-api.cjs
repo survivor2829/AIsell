@@ -908,6 +908,7 @@ function createContentEngineApi(ipcRenderer) {
 function createPreloadApis(ipcRenderer) {
   const consumeWorkflowStart = createTrustedClickGate("[data-xiaoxi-workflow-start]");
   const consumeWorkflowSave = createTrustedClickGate("[data-xiaoxi-workflow-save]");
+  const consumeTouchImages = createTrustedClickGate("[data-xiaoxi-touch-images]");
   const consumeBatchClick = createTrustedClickGate("[data-xiaoxi-batch-authorize]");
   const consumeAutoReplyClick = createTrustedClickGate("[data-xiaoxi-auto-reply-start], [data-xiaoxi-auto-reply-acknowledge], [data-xiaoxi-auto-reply-resume]");
   return {
@@ -921,6 +922,7 @@ function createPreloadApis(ipcRenderer) {
       status: () => ipcRenderer.invoke("wechat-workflow:status"),
       start: () => ipcRenderer.invoke("wechat-workflow:start", { clickToken: consumeWorkflowStart() }),
       pause: () => ipcRenderer.invoke("wechat-workflow:pause"),
+      chooseTouchImages: () => ipcRenderer.invoke("wechat-workflow:choose-touch-images", { clickToken: consumeTouchImages() }),
       addTask: (payload) => ipcRenderer.invoke("wechat-workflow:add-task", { ...payload, clickToken: consumeWorkflowSave() }),
       updateTask: (payload) => ipcRenderer.invoke("wechat-workflow:update-task", { ...payload, clickToken: consumeWorkflowSave() }),
       getTask: (id) => ipcRenderer.invoke("wechat-workflow:get-task", { id: String(id || "") }),
