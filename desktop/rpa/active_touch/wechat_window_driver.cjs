@@ -1,6 +1,7 @@
 const { spawn, spawnSync } = require("node:child_process");
 const { findWechatExecutable } = require("../contact_sync/contact_sync_cli.cjs");
 const { readWechatWindowDiagnostics, readMomentsDiagnostics } = require("../../src/shared/wechat-window-diagnostics.cjs");
+const { WECHAT_MAIN_WINDOW_VISUAL_SCRIPT } = require("./wechat_window_visual.cjs");
 
 let cachedWechatExecutable = "";
 let cachedWechatExecutableAt = 0;
@@ -445,7 +446,7 @@ function Test-WechatMainCandidate([object]$candidate) {
   if ([int64]$candidate.owner -ne 0 -or $candidate.toolWindow -or [int]$candidate.layoutRank -le 0) { return $false }
   return [bool]$candidate.hasMainRenderChild -or
     [string]$candidate.windowClass -ieq "mmui::MainWindow" -or
-    [bool]$candidate.shellNavigation
+    [bool]$candidate.shellNavigation -or [bool]$candidate.visualNavigation
 }
 `;
 
@@ -671,6 +672,7 @@ function Test-WechatShellNavigation([object]$window) {
     return $chats -and $contacts
   } catch { return $false }
 }
+${WECHAT_MAIN_WINDOW_VISUAL_SCRIPT}
 function Get-WechatWindowCandidate([IntPtr]$hWnd, [bool]$exactExpectedHandle) {
   if (-not [Win32WechatWindow]::IsWindow($hWnd)) { return $null }
   [uint32]$windowProcessId = 0
@@ -743,6 +745,7 @@ function Get-WechatWindowCandidate([IntPtr]$hWnd, [bool]$exactExpectedHandle) {
     windowClass = $className
     hasMainRenderChild = [bool]$hasMainRenderChild
     shellNavigation = $false
+    visualNavigation = $false
     toolWindow = ($exStyle -band [uint32]0x00000080) -ne 0
     owner = $owner.ToInt64()
     processName = $proc.ProcessName
@@ -793,6 +796,10 @@ function Select-WechatMainCandidates([object[]]$candidates) {
     if (Test-WechatMainCandidate $candidate) { continue }
     Set-WechatWindowStage "shell"
     $candidate.shellNavigation = Test-WechatShellNavigation $candidate
+    if (-not (Test-WechatMainCandidate $candidate)) {
+      Set-WechatWindowStage "visual"
+      $candidate.visualNavigation = Test-WechatVisualNavigation $candidate
+    }
   }
   Set-WechatWindowStage "select"
   return @($candidates | Where-Object { Test-WechatMainCandidate $_ })
@@ -887,7 +894,7 @@ if ($matches.Count -gt 1) {
 }
 $matched = $matches[0]
 $windowDiagnostic.window_class_code = $matched.windowClass
-$windowDiagnostic.window_detection_mode = $(if ($expectedHandleIsValid) { "exact_hwnd" } elseif ($matched.hasMainRenderChild) { "render_child" } elseif ($matched.shellNavigation) { "shell_navigation" } else { "native_main" })
+$windowDiagnostic.window_detection_mode = $(if ($expectedHandleIsValid) { "exact_hwnd" } elseif ($matched.hasMainRenderChild) { "render_child" } elseif ($matched.shellNavigation) { "shell_navigation" } elseif ($matched.visualNavigation) { "visual_navigation" } else { "native_main" })
 Set-WechatWindowStage "restore"
 $hWnd = [IntPtr]$matched.hWnd
 if ($inspectOnly) {

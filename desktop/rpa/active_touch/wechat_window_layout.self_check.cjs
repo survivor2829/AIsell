@@ -81,6 +81,7 @@ const selected = runPowerShell(`
 ${WECHAT_MAIN_WINDOW_RULES_SCRIPT}
 function Set-WechatWindowStage([string]$stage) {}
 function Test-WechatShellNavigation([object]$window) { return [bool]$window.shellNavigation }
+function Test-WechatVisualNavigation([object]$window) { return [bool]$window.visualNavigation }
 ${selection}
 function Select-Fixture([object[]]$windows) {
   $windowDiagnostic = @{}
@@ -96,6 +97,8 @@ $owned = $main.Clone(); $owned.hWnd=103; $owned.owner=101
 $legacy = $main.Clone(); $legacy.hWnd=104; $legacy.windowClass='QtQWindowIcon'; $legacy.classRank=0; $legacy.hasMainRenderChild=$true
 $second = $main.Clone(); $second.hWnd=105; $second.area=900000
 $shell = $other.Clone(); $shell.hWnd=106; $shell.shellNavigation=$true
+$visual = $other.Clone(); $visual.hWnd=107; $visual.visualNavigation=$true
+$ownedVisual = $visual.Clone(); $ownedVisual.owner=101
 @{
   ok=$true
   main=(Select-Fixture @($main,$other) | ConvertFrom-Json)
@@ -103,12 +106,18 @@ $shell = $other.Clone(); $shell.hWnd=106; $shell.shellNavigation=$true
   ambiguous=(Select-Fixture @($main,$second) | ConvertFrom-Json)
   legacy=(Select-Fixture @($legacy) | ConvertFrom-Json)
   shell=(Select-Fixture @($shell) | ConvertFrom-Json)
+  visual=(Select-Fixture @($visual) | ConvertFrom-Json)
+  ownedVisual=(Select-Fixture @($ownedVisual) | ConvertFrom-Json)
+  ambiguousVisual=(Select-Fixture @($visual,$main) | ConvertFrom-Json)
 } | ConvertTo-Json -Depth 5 -Compress
 `, {}, { ensure: false, timeout: 15_000 });
 assert.equal(selected.ok, true, JSON.stringify(selected));
 assert.equal(selected.main.ok, true, "A recognized main HWND must not be discarded solely because its render-child class changed");
 assert.equal(selected.main.hWnd, 101);
 assert.equal(selected.unknown.ok, false, "A large unknown Qt window or owned popup is not sufficient main-window evidence");
+assert.equal(selected.visual.hWnd, 107, "A UIA-less Qt main window needs positive visual navigation evidence");
+assert.equal(selected.ownedVisual.ok, false, "Visual evidence must not promote an owned popup");
+assert.equal(selected.ambiguousVisual.reason, "wechat_window_ambiguous", "Visual fallback must not silently choose among two main windows");
 assert.equal(selected.ambiguous.reason, "wechat_window_ambiguous", "Never choose a second main window merely because it is larger");
 assert.equal(selected.legacy.hWnd, 104, "Retain the existing render-child adapter");
 assert.equal(selected.shell.hWnd, 106, "An independently verified chat/contact navigation shell can identify the Qt main host");
@@ -157,6 +166,7 @@ trap { @{ ok=$false; error=$_.Exception.Message; line=$_.InvocationInfo.ScriptLi
 ${WECHAT_MAIN_WINDOW_RULES_SCRIPT}
 function Set-WechatWindowStage([string]$stage) {}
 function Test-WechatShellNavigation([object]$window) { return [bool]$window.shellNavigation }
+function Test-WechatVisualNavigation([object]$window) { return [bool]$window.visualNavigation }
 ${selection}
 ${recovery}
 function Start-Sleep { param([int]$Milliseconds) }

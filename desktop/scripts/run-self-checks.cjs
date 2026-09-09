@@ -6,6 +6,7 @@ const checks = [
   "scripts/artifact-retention.self_check.cjs",
   "scripts/build-renderer.self_check.cjs",
   "rpa/active_touch/wechat_window_layout.self_check.cjs",
+  "rpa/active_touch/wechat_window_visual.self_check.cjs",
   "rpa/active_touch/self_check.cjs",
   "rpa/active_touch/moments_visual.self_check.cjs",
   "rpa/active_touch/moments_visual_geometry.self_check.cjs",

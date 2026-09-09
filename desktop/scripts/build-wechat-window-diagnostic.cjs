@@ -29,6 +29,45 @@ foreach ($handle in [Win32WechatWindow]::WindowsForProcesses([int[]]@($wechatPro
     try {
       $root = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
       $bounds = $root.Current.BoundingRectangle
+      $row.rootControl = $root.Current.ControlType.ProgrammaticName
+      $row.rootClass = $root.Current.ClassName
+      $row.rootFramework = $root.Current.FrameworkId
+      $row.rootSameProcess = $root.Current.ProcessId -eq $candidate.pid
+      # Name-independent structure distinguishes renamed controls from a missing
+      # accessibility tree. Do not export arbitrary descendant names or values.
+      $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+      $row.descendantCount = $all.Count
+      $row.structure = @()
+      $row.sidebarControls = @()
+      $typeCounts = @{}
+      for ($j=0; $j -lt [Math]::Min(2000,$all.Count); $j++) {
+        $item = $all.Item($j).Current
+        $kind = [string]$item.ControlType.ProgrammaticName
+        $typeCounts[$kind] = [int]$typeCounts[$kind] + 1
+        $box = $item.BoundingRectangle
+        $metadata = @{
+          control=$kind; class=$item.ClassName; framework=$item.FrameworkId
+          hasName=-not [string]::IsNullOrWhiteSpace($item.Name)
+          offscreen=$item.IsOffscreen; sameProcess=$item.ProcessId -eq $candidate.pid
+        }
+        if ($row.structure.Count -lt 40) { $row.structure += $metadata }
+        # Only the narrow app-navigation strip below the account avatar may
+        # expose names. Exclude the conversation list, header and chat pane.
+        if (-not $item.IsOffscreen -and $item.ProcessId -eq $candidate.pid -and
+            $box.Width -gt 0 -and $box.Height -gt 0 -and
+            $box.Left -ge $bounds.Left -and $box.Right -le ($bounds.Left+$bounds.Width*0.065) -and
+            $box.Top -ge ($bounds.Top+$bounds.Height*0.11) -and
+            $box.Bottom -le ($bounds.Top+$bounds.Height*0.60) -and $row.sidebarControls.Count -lt 20) {
+          $navMetadata = $metadata.Clone()
+          $navMetadata.name = ([string]$item.Name).Substring(0,[Math]::Min(80,([string]$item.Name).Length))
+          $navMetadata.x = [Math]::Round($box.Left-$bounds.Left)
+          $navMetadata.y = [Math]::Round($box.Top-$bounds.Top)
+          $navMetadata.width = $box.Width; $navMetadata.height = $box.Height
+          $row.sidebarControls += $navMetadata
+        }
+      }
+      $row.controlTypeCounts = $typeCounts
+      $row.structureTruncated = $all.Count -gt 2000
       $names = @('聊天','通讯录','Chats','Contacts','微信','WeChat','联系人','通訊錄')
       $conditions = @($names | ForEach-Object { New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $_) })
       $condition = New-Object System.Windows.Automation.OrCondition([System.Windows.Automation.Condition[]]$conditions)
@@ -50,7 +89,7 @@ foreach ($handle in [Win32WechatWindow]::WindowsForProcesses([int[]]@($wechatPro
   }
   $windows += $row
 }
-@{ schema=1; readOnly=$true; osVersion=[Environment]::OSVersion.Version.ToString(); windows=$windows } | ConvertTo-Json -Depth 8 -Compress
+@{ schema=2; readOnly=$true; osVersion=[Environment]::OSVersion.Version.ToString(); windows=$windows } | ConvertTo-Json -Depth 8 -Compress
 `;
   const encoded = Buffer.from(probe, "utf16le").toString("base64");
   const wrapper = `$ErrorActionPreference = 'Stop'
@@ -61,7 +100,7 @@ try {
     $result = @(Receive-Job $job -ErrorAction SilentlyContinue | Where-Object { $_ -is [string] -and $_.StartsWith('{') }) | Select-Object -Last 1
     if (-not $result) { $result = '{"error":"diagnostic_failed"}' }
   } else { $result = '{"error":"diagnostic_timeout"}' }
-  $destination = Join-Path $PSScriptRoot 'wechat-window-diagnostic.json'
+  $destination = Join-Path $PSScriptRoot 'wechat-window-diagnostic-v2.json'
   [IO.File]::WriteAllText($destination, $result, (New-Object Text.UTF8Encoding($false)))
   Write-Host "Saved: $destination"
 } finally { Stop-Job $job -ErrorAction SilentlyContinue; Remove-Job $job -Force -ErrorAction SilentlyContinue }
