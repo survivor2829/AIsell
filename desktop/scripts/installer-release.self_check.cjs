@@ -9,6 +9,7 @@ const {
   installerManifestName,
   installerName,
   replaceCanonicalFile,
+  replaceCanonicalGroup,
   resolveInstallerTarget,
   verifyInstallerPayload,
   verifyPortableProductDetailRuntime
@@ -158,6 +159,12 @@ try {
   assert.equal(fs.existsSync(staged), false);
   assert.match(backup, /\.backup-/);
   assert.equal(fs.readFileSync(backup, "utf8"), "old");
+  const oldManifest = path.join(fixture, "canonical.json");
+  fs.writeFileSync(oldManifest, "old-manifest");
+  fs.writeFileSync(staged, "newer");
+  assert.throws(() => replaceCanonicalGroup([[staged, canonical], [path.join(fixture, "missing.json"), oldManifest]]), /group replacement failed/);
+  assert.equal(fs.readFileSync(canonical, "utf8"), "new", "Failed manifest replacement must restore the previous executable");
+  assert.equal(fs.readFileSync(oldManifest, "utf8"), "old-manifest");
 
   const portableFixture = path.join(fixture, productBrand.displayName);
   const resourcesFixture = path.join(portableFixture, "resources");

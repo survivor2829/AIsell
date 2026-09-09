@@ -350,6 +350,8 @@ def test_server_bootstrap_is_one_time_and_shutdown_is_authenticated(tmp_path):
         assert status == 200, body.decode("utf-8", errors="replace")
         upload_result = json.loads(body)
         assert upload_result["rembg"] is False
+        assert upload_result["cutout_status"] == "failed"
+        assert upload_result["cutout_code"] == "CUTOUT_PROCESSING_FAILED"
         assert "path" not in upload_result
         assert upload_result["url"].startswith("/static/uploads/1/")
         status, _, _ = _request(opener, base_url + upload_result["url"])
@@ -361,7 +363,9 @@ def test_server_bootstrap_is_one_time_and_shutdown_is_authenticated(tmp_path):
         owner_task = "history-owner"
         owner_dir = data_dir / "static" / "ai_refine_v2" / owner_task
         owner_dir.mkdir(parents=True)
-        (owner_dir / "assembled.png").write_bytes(b"local-history")
+        # Completed history must be a decodable PNG, not arbitrary text bytes.
+        from PIL import Image
+        Image.new("RGB", (256, 256), "white").save(owner_dir / "assembled.png", compress_level=0)
         (owner_dir / "_summary.json").write_text(
             json.dumps(
                 {

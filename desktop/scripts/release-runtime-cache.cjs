@@ -139,6 +139,7 @@ function cachedRuntime({ cacheRoot, kind, fingerprint, buildCommit, destination,
   if (sourceOf && sourceOf(verified).dirty) throw new Error("Cannot cache runtime built from dirty source");
   const root = path.join(bucket, crypto.randomBytes(8).toString("hex"));
   fs.mkdirSync(root, { recursive: true });
+  try {
   for (const relative of artifacts) {
     const target = path.join(root, relative);
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -146,6 +147,12 @@ function cachedRuntime({ cacheRoot, kind, fingerprint, buildCommit, destination,
   }
   const saved = resolve(root);
   fs.writeFileSync(path.join(root, "cache.json"), JSON.stringify({ kind, fingerprint, manifestSha256: sha256(saved.manifestFile) }), { flag: "wx" });
+  require("./artifact-retention.cjs").retainArtifacts(cacheRoot, `runtime-${kind}`, [root], 2);
+  } catch (error) {
+    try { require("./artifact-retention.cjs").removeOwned(cacheRoot, root); }
+    catch (cleanupError) { log(`Incomplete cache cleanup deferred: ${cleanupError.message}`); }
+    throw error;
+  }
   return { hit: false };
 }
 

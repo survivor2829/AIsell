@@ -3,6 +3,7 @@ const { spawnSync } = require("node:child_process");
 
 const desktopDir = path.resolve(__dirname, "..");
 const checks = [
+  "scripts/artifact-retention.self_check.cjs",
   "scripts/build-renderer.self_check.cjs",
   "rpa/active_touch/wechat_window_layout.self_check.cjs",
   "rpa/active_touch/self_check.cjs",

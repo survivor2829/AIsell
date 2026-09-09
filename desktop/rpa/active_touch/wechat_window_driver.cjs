@@ -766,6 +766,11 @@ function Get-WechatWindowCandidate([IntPtr]$hWnd, [bool]$exactExpectedHandle) {
 }
 
 function Get-WechatWindowCandidates {
+  $windowDiagnostic.window_native_count = 0
+  $windowDiagnostic.window_hidden_count = 0
+  $windowDiagnostic.window_minimized_count = 0
+  $windowDiagnostic.window_rejected_layout_count = 0
+  $windowDiagnostic.Remove("window_class_code")
   $candidates = New-Object System.Collections.Generic.List[object]
   if ($wechatProcesses.Count -le 0) { return @() }
   $processWindows = [Win32WechatWindow]::WindowsForProcesses([int[]]@($wechatProcesses.Keys))

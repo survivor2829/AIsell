@@ -501,9 +501,36 @@
     .panel-left::-webkit-scrollbar-thumb,
     .panel-center::-webkit-scrollbar-thumb,
     .panel-right::-webkit-scrollbar-thumb { background: #ddd; border-radius: 4px; }
+    /* Desktop embeds this workspace below the application's own navigation. */
+    .desktop-workspace .topbar { padding: 0 16px; background: #fff; backdrop-filter: none; }
+    .desktop-workspace .topbar-brand, .desktop-workspace .topbar-username { display: none; }
+    .desktop-workspace .topbar-right { width: 100%; gap: 16px; }
+    .desktop-workspace .layout-toggle { margin-right: auto; }
+    .desktop-workspace .layout-toggle button { min-height: 36px; font-size: 14px; color: #475467; }
+    .desktop-workspace .workspace { gap: 16px; padding: 16px; grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); }
+    .desktop-workspace .workspace.layout-edit .panel-right { display: none; }
+    .desktop-workspace .workspace.layout-balance { grid-template-columns: minmax(0, 1fr) minmax(240px, 300px); }
+    .desktop-workspace .workspace.layout-balance .panel-left { display: none; }
+    .desktop-workspace .workspace.layout-preview { grid-template-columns: minmax(0, 1fr); }
+    .desktop-workspace .workspace.layout-preview .panel-left,
+    .desktop-workspace .workspace.layout-preview .panel-right { display: none; }
+    .desktop-workspace .panel-left, .desktop-workspace .panel-right,
+    .desktop-workspace .panel-center { min-height: 0; }
+    .desktop-workspace .layout-toggle button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+    .workspace-menu summary { cursor: pointer; padding: 8px 12px; color: #475467; }
+    .workspace-menu nav { position: absolute; z-index: 110; right: 16px; top: 50px; min-width: 144px; padding: 8px; background: white; border: 1px solid var(--color-border); border-radius: 8px; display: flex; flex-direction: column; gap: 4px; }
+    .workspace-menu nav a, .workspace-menu nav form { padding: 8px; }
+    @media (max-width: 1023px) {
+      .desktop-workspace .workspace { height: calc(100vh - 54px); overflow-y: auto; grid-auto-rows: max-content; align-content: start; }
+      .desktop-workspace .layout-toggle { display: inline-flex; }
+      .desktop-workspace .panel-left, .desktop-workspace .panel-right { max-height: none; overflow: visible; }
+      .desktop-workspace .panel-center { min-height: 480px; }
+      .desktop-workspace .layout-preview .panel-center { min-height: 0; }
+      .desktop-workspace .workspace.layout-preview { overflow: hidden; grid-template-rows: minmax(0, 1fr); align-content: stretch; }
+    }
   </style>
 </head>
-<body>
+<body{% if desktop_mode %} class="desktop-workspace"{% endif %}>
 
 <!-- ─── Topbar ──────────────────────────────────────────────────── -->
 <header class="topbar">
@@ -513,10 +540,17 @@
   </a>
   <div class="topbar-right">
     <div class="layout-toggle" role="group" aria-label="布局预设">
+      {% if desktop_mode %}
+      <button type="button" data-layout="edit" onclick="setLayout('edit')">编辑资料</button>
+      <button type="button" data-layout="balance" onclick="setLayout('balance')">选择模板</button>
+      <button type="button" data-layout="preview" onclick="setLayout('preview')">查看大图</button>
+      {% else %}
       <button type="button" data-layout="edit"    onclick="setLayout('edit')"    title="编辑主导:上传/填表阶段">✏️ 编辑</button>
       <button type="button" data-layout="balance" onclick="setLayout('balance')" title="均衡(推荐)" class="active">⚖️ 均衡</button>
       <button type="button" data-layout="preview" onclick="setLayout('preview')" title="预览主导:查看生成结果">🖼️ 预览</button>
+      {% endif %}
     </div>
+    {% if desktop_mode %}<details class="workspace-menu"><summary>更多</summary><nav aria-label="工作台选项">{% endif %}
     <a href="/batch/upload">批量生成</a>
     <a href="/batch/history">历史记录</a>
     <span class="topbar-username">{{ current_user.username }}</span>
@@ -526,6 +560,7 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" style="background:none;border:none;color:inherit;cursor:pointer;font:inherit;padding:0">退出</button>
     </form>
+    {% if desktop_mode %}</nav></details>{% endif %}
   </div>
 </header>
 
@@ -1170,7 +1205,7 @@
     if (autoRembg) formData.append('auto_rembg', '1');
     // 抠图耗时 3-8s,给用户即时占位提示避免以为卡死
     if (autoRembg) {
-      preview.innerHTML = `<div style="padding:24px;color:#6366f1;font-size:13px;">AI 抠图中…约 5 秒</div>`;
+      preview.innerHTML = `<div style="padding:24px;color:#475467;font-size:13px;">正在本机去除背景，首次处理需要稍候…</div>`;
       preview.style.display = 'block';
       placeholder.style.display = 'none';
     }
@@ -1184,7 +1219,7 @@
       if (data.url) {
         const badge = data.rembg
           ? `<div style="position:absolute;top:4px;left:4px;background:#10b981;color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;">已去背景</div>`
-          : '';
+          : (autoRembg ? `<div style="padding:8px;color:#9a3412;font-size:12px;">未能去除背景，当前保留原图。可重传透明 PNG，或继续使用原图。</div>` : '');
         preview.innerHTML = `${badge}<img src="${data.url}" alt=""><button class="upload-remove" onclick="removeUpload(event, '${box.id}')">&times;</button>`;
         preview.style.display = 'block';
         placeholder.style.display = 'none';
@@ -1345,7 +1380,7 @@
 
 
   /* ── 布局预设(三档:edit/balance/preview)───────────────────── */
-  const LAYOUT_KEY = 'workspace_layout_v1';
+  const LAYOUT_KEY = DESKTOP_MODE ? 'desktop_workspace_layout_v2' : 'workspace_layout_v1';
   const VALID_LAYOUTS = ['edit', 'balance', 'preview'];
 
   function setLayout(name, opts = {}) {
@@ -1353,8 +1388,10 @@
     const ws = document.querySelector('.workspace');
     if (!ws) return;
     VALID_LAYOUTS.forEach(n => ws.classList.toggle(`layout-${n}`, n === name));
-    document.querySelectorAll('.layout-toggle button').forEach(b =>
-      b.classList.toggle('active', b.dataset.layout === name));
+    document.querySelectorAll('.layout-toggle button').forEach(b => {
+      b.classList.toggle('active', b.dataset.layout === name);
+      b.setAttribute('aria-pressed', String(b.dataset.layout === name));
+    });
     if (!opts.silent) localStorage.setItem(LAYOUT_KEY, name);
     queuePreviewFit();
     queueParameterFit();
@@ -1362,7 +1399,7 @@
   }
 
   function initLayout() {
-    const defaultLayout = window.innerWidth >= 1024 ? 'preview' : 'balance';
+    const defaultLayout = DESKTOP_MODE ? 'edit' : (window.innerWidth >= 1024 ? 'preview' : 'balance');
     setLayout(localStorage.getItem(LAYOUT_KEY) || defaultLayout, { silent: true });
   }
 

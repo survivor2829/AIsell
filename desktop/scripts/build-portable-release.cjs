@@ -515,15 +515,27 @@ function buildPortable(edition = "delivery", {
     const metadata = JSON.parse(fs.readFileSync(file, "utf8"));
     metadata.validation = { gate: "packaged-application", commit: metadata.buildCommit, version: metadata.manifest.version, completedAt: new Date().toISOString() };
     fs.writeFileSync(file, JSON.stringify(metadata, null, 2));
+    const componentRoot = path.dirname(file);
+    const artifacts = Object.entries(metadata.manifest.components).flatMap(([name, value]) => [
+      path.join(componentRoot, `${value.sha256}.zip`),
+      path.join(componentRoot, `${name}-${value.treeSha256}.json`)
+    ]);
+    require("./artifact-retention.cjs").retainArtifacts(componentRoot, "validated-components", artifacts, 2, metadata.retentionOwned || []);
+    metadata.retentionOwned = (metadata.retentionOwned || []).filter(target => fs.existsSync(target));
+    fs.writeFileSync(file, JSON.stringify(metadata, null, 2));
   }
   if (componentsOnly) {
     if (edition !== "test") throw new Error("Component releases currently require the internal test channel");
     const sourceState = assertBuildPreconditions(edition, { environment, sidecarBuildRoot, remotionRuntimeRoot });
-    const result = buildPortableStaging(edition, { target: stagingTarget, zip: stagingZip, archiveBaseDir: stagingRoot, componentsOnly: true }, sourceState);
+    try {
+    buildPortableStaging(edition, { target: stagingTarget, zip: stagingZip, archiveBaseDir: stagingRoot, componentsOnly: true }, sourceState);
     runPortableSelfCheck(edition, stagingTarget, stagingZip, true);
     recordComponentValidation();
-    console.log(`Validated component application retained: ${stagingTarget}`);
-    return result;
+    return { componentsOnly: true, stagingCleaned: true };
+    } finally {
+      try { require("./artifact-retention.cjs").removeOwned(releaseDir, stagingRoot); }
+      catch (error) { console.warn(`Component staging cleanup deferred: ${error.message}`); }
+    }
   }
   const result = runTransactionalRelease({
     releaseRoot: releaseDir,
@@ -548,6 +560,7 @@ function buildPortable(edition = "delivery", {
     console.warn(`release cleanup warning: ${warning}`);
   }
   recordComponentValidation();
+  if (result.retainedBackups?.length) require("./artifact-retention.cjs").retainArtifacts(releaseDir, `portable-${edition}`, result.retainedBackups);
   for (const backup of result.retainedBackups || []) {
     console.warn(`release rollback artifact retained: ${backup}`);
   }

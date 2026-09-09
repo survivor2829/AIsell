@@ -32,8 +32,7 @@ python app/desktop_entry.py `
 
 ## 数据边界
 
-模板与冻结静态资源从 `app/` 读取。首次运行只把缺失的静态资源复制到
-`data-dir/static/`，已有文件永不覆盖。以下可变内容全部写入 `data-dir`：
+模板与冻结静态资源从 `app/` 读取。静态资源按受控资源同步规则更新；用户上传及生成数据保留。以下可变内容全部写入 `data-dir`：
 
 - `database/wubaoyun.db`
 - `static/uploads/`
@@ -85,7 +84,14 @@ node scripts/product-detail-runtime.integration.cjs
 
 构建输出位于忽略目录 `.build/product-detail-runtime/`，根目录包含
 `product-detail-server.exe`；同级 manifest 记录 EXE、整树哈希和冻结源版本。上述独立集成检查验证 sidecar 启停；完整的 Chromium 启动验证由 `npm.cmd run release:test` 在便携包内执行。若要在独立检查中同时验证浏览器，先显式设置 `XIAOXI_PRODUCT_DETAIL_BROWSER_PATH` 为经审计的绝对 `chrome.exe` 路径。
-构建脚本采用 fresh-build：发现已有固定输出时拒绝覆盖，也不会自动删除任何旧构建目录。
+构建脚本采用 fresh-build：发现已有固定输出时拒绝覆盖。成功后清理本次生成的工作、规格及自检临时目录，已有历史构建不自动删除。
+
+### 2026-09-09 本地修复（未发布）
+
+- 桌面工作台分为编辑资料、选择模板、查看大图；窄窗口按内容高度堆叠，保留滚动入口。
+- 上传产品图使用包内 ONNX Runtime 与 ISNet 模型离线抠图；透明图片直接保留。失败时显示明确提示并保留原图，不在客户电脑下载模型。
+- 构建前运行 `node scripts/prepare-cutout-model.cjs` 下载并校验配置中固定 SHA256 的模型（约 170 MiB）。模型、运行库和许可证随组件打包，构建自检要求离线抠图能力可用。
+- 本轮实际组件已验证透明 PNG 上传结果及 1500 × 3632 PNG 导出；付费模型接口未调用。历史全量验证数字属于下述当时版本，不代表本轮重跑。
 
 当前产品详情图 Python 全量回归为 `550 passed, 1 skipped, 134 subtests passed`；APIMart 状态与单任务账本专项 `20 passed`。本地无头 Chromium 在 `1440px` 宿主下测得 iframe 内容宽 `1090px`、缩放 `0.7053`，在 `1920px` 宿主下测得 iframe 内容宽 `1570px`、缩放为 `1`；单个隐藏恢复、全部恢复、重启恢复和 PNG 导出均通过。“一键生成”连续触发两次仍只有一次解析和一次排版；“AI精修”连续触发两次仍只有一次提交、零费用弹窗、零费用估算请求。导出 PNG 为 `2,196,564` bytes，SHA256 为 `d6a7d882bac2a0fd8183658957ad1ade4f2ca372c09abe691d9842ebbf52b901`。本轮浏览器证据拦截了付费接口，没有使用真实 Key 调用模型。
 

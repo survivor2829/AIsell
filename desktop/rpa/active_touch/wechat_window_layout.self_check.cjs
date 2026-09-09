@@ -49,6 +49,34 @@ const selectionStart = NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("function Select-W
 const selectionEnd = NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("function Get-WechatWindowRecoveryCandidate", selectionStart);
 assert.ok(selectionStart >= 0 && selectionEnd > selectionStart);
 const selection = NORMALIZE_WECHAT_WINDOW_SCRIPT.slice(selectionStart, selectionEnd);
+const enumerationStart = NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("function Get-WechatWindowCandidates {");
+const enumerationEnd = NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("function Update-WechatWindowCandidateDiagnostics", enumerationStart);
+const enumeration = NORMALIZE_WECHAT_WINDOW_SCRIPT.slice(enumerationStart, enumerationEnd);
+const counts = runPowerShell(`
+Add-Type 'public static class Win32WechatWindow { public static long[] WindowsForProcesses(int[] pids) { return new long[] { 1, 2 }; } }'
+$windowDiagnostic = @{}
+$wechatProcesses = @{ 1 = $true }
+function Get-WechatWindowCandidate($h, $fallback) {
+  $windowDiagnostic.window_hidden_count += 1
+  $windowDiagnostic.window_minimized_count += 1
+  $windowDiagnostic.window_rejected_layout_count += 1
+  $windowDiagnostic.window_class_code = 'fixture'
+  return $null
+}
+${enumeration}
+$null = Get-WechatWindowCandidates
+$null = Get-WechatWindowCandidates
+$second = $windowDiagnostic.Clone()
+$wechatProcesses = @{}
+$null = Get-WechatWindowCandidates
+@{ ok=$true; second=$second; empty=$windowDiagnostic } | ConvertTo-Json -Depth 4 -Compress
+`, {}, { ensure: false, timeout: 15_000 });
+assert.equal(counts.ok, true, JSON.stringify(counts));
+for (const key of ["window_native_count", "window_hidden_count", "window_minimized_count", "window_rejected_layout_count"]) {
+  assert.equal(counts.second[key], 2, `${key} must describe one enumeration, not accumulated recovery samples`);
+  assert.equal(counts.empty[key], 0);
+}
+assert.equal(counts.empty.window_class_code, undefined);
 const selected = runPowerShell(`
 ${WECHAT_MAIN_WINDOW_RULES_SCRIPT}
 function Set-WechatWindowStage([string]$stage) {}

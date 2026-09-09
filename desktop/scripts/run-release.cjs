@@ -94,6 +94,7 @@ function runRelease(edition = "delivery", environment = process.env, { component
     XIAOXI_SIDECAR_BUILD_ROOT: sidecarBuildRoot,
     XIAOXI_REMOTION_RUNTIME_ROOT: remotionRuntimeRoot
   };
+  try {
   runNode("source self-check", "run-self-checks.cjs", [], releaseEnvironment);
   runNode("product-detail local E2E", "product-detail-local-e2e.cjs", ["--cleanup-on-success"], releaseEnvironment);
   runNode("clean runtime gate", "check-clean-runtime.cjs", [], releaseEnvironment);
@@ -124,13 +125,17 @@ function runRelease(edition = "delivery", environment = process.env, { component
   });
   runNode("portable application build", "build-portable-release.cjs", [edition, ...(componentsOnly ? ["--components-only"] : [])], releaseEnvironment);
   if (internalUpgrade) runNode("in-place upgrade installer", "build-installer-release.cjs", ["upgrade"], releaseEnvironment);
-  return { remotionRuntimeRoot, sidecarBuildRoot };
+  } finally {
+    try { require("./artifact-retention.cjs").removeOwned(path.dirname(sidecarBuildRoot), sidecarBuildRoot); }
+    catch (error) { console.warn(`Release staging cleanup deferred: ${error.message}`); }
+  }
+  return { stagingCleaned: !fs.existsSync(sidecarBuildRoot) };
 }
 
 if (require.main === module) {
   try {
     const result = runRelease(process.argv[2] || "delivery");
-    console.log(`\nRelease staging root retained for audit: ${result.sidecarBuildRoot}`);
+    console.log(`\nRelease staging cleaned: ${result.stagingCleaned}`);
   } catch (error) {
     console.error(error);
     process.exitCode = 1;

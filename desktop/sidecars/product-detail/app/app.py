@@ -291,12 +291,16 @@ def _ensure_rembg():
     return REMBG_AVAILABLE
 
 # 仅检测是否安装，不加载模型
-try:
-    import rembg as _rembg_check
-    REMBG_AVAILABLE = True
-    print("[启动] rembg 已安装，首次抠图时加载模型")
-except ImportError:
-    print("[启动] rembg 未安装，产品图将保留原背景")
+if _DESKTOP_MODE:
+    from offline_cutout import available as _offline_cutout_available
+    REMBG_AVAILABLE = _offline_cutout_available()
+else:
+    try:
+        import rembg as _rembg_check
+        REMBG_AVAILABLE = True
+        print("[启动] rembg 已安装，首次抠图时加载模型")
+    except ImportError:
+        print("[启动] rembg 未安装，产品图将保留原背景")
 
 
 # ── 工具函数 ─────────────────────────────────────────────────────────
@@ -1235,10 +1239,19 @@ def _persist_upload(file_storage, *, auto_rembg: bool = False) -> dict:
     file_storage.save(str(save_path))
 
     final_filename = filename
+    cutout_status = "not_requested"
+    cutout_code = ""
     if auto_rembg and _DESKTOP_MODE:
-        # Desktop runtime is offline-first. rembg may download a model on first use,
-        # so the local workspace keeps the original image unless a bundled model is
-        # introduced and declared as a capability in a later release.
+        from offline_cutout import remove_background
+        try:
+            cutout_filename = f"{uid}_nobg.png"
+            cutout_status = remove_background(save_path, user_dir / cutout_filename)
+            final_filename = cutout_filename
+        except Exception as error:
+            cutout_status = "failed"
+            known_codes = {"CUTOUT_MODEL_UNAVAILABLE", "CUTOUT_MODEL_INVALID", "CUTOUT_MASK_INVALID"}
+            cutout_code = str(error) if str(error) in known_codes else "CUTOUT_PROCESSING_FAILED"
+            print(f"[cutout] {cutout_code}", flush=True)
         auto_rembg = False
     if auto_rembg:
         nobg = _remove_bg_if_needed(save_path, user_dir, uid)
@@ -1249,6 +1262,8 @@ def _persist_upload(file_storage, *, auto_rembg: bool = False) -> dict:
         "filename": final_filename,
         "url":      f"/static/uploads/{current_user.id}/{final_filename}",
         "rembg":    final_filename != filename,
+        "cutout_status": cutout_status,
+        "cutout_code": cutout_code,
     }
     if not _DESKTOP_MODE:
         result["path"] = str(user_dir / final_filename)

@@ -39,10 +39,6 @@ function main() {
   loadBuildConfig(configFile);
   assertCleanSource();
   const roots = runRelease(edition);
-  Object.assign(process.env, {
-    XIAOXI_SIDECAR_BUILD_ROOT: roots.sidecarBuildRoot,
-    XIAOXI_REMOTION_RUNTIME_ROOT: roots.remotionRuntimeRoot
-  });
   // runRelease(upgrade) already produces the in-place installer.
   const result = edition === "test" ? buildInstaller("test") : null;
   const record = { edition, ...roots, ...(result || {}) };

@@ -1396,6 +1396,9 @@ function main({ buildRoot = process.env.XIAOXI_SIDECAR_BUILD_ROOT || null } = {}
     flag: "wx"
   });
   console.log(`Content-engine sidecar built and verified: ${paths.outputExe}`);
+  for (const target of [paths.workDir, paths.specDir, paths.distDir, paths.selfCheckDataDir]) {
+    require("./artifact-retention.cjs").removeOwned(paths.buildRoot, target);
+  }
   console.log(`Manifest: ${paths.manifestFile}`);
   return manifest;
 }

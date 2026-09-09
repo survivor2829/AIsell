@@ -349,6 +349,23 @@ function replaceCanonicalFile(staged, canonical) {
   return backedUp ? backup : null;
 }
 
+function replaceCanonicalGroup(pairs) {
+  const replaced = [];
+  try {
+    for (const [staged, canonical] of pairs) replaced.push({ canonical, backup: replaceCanonicalFile(staged, canonical) });
+    return replaced.map(item => item.backup).filter(Boolean);
+  } catch (error) {
+    const failures = [error];
+    for (const item of replaced.reverse()) {
+      try {
+        fs.unlinkSync(item.canonical);
+        if (item.backup) fs.renameSync(item.backup, item.canonical);
+      } catch (restoreError) { failures.push(restoreError); }
+    }
+    throw new AggregateError(failures, "Installer group replacement failed; rollback attempted");
+  }
+}
+
 function buildInstaller(edition = "delivery", options = {}) {
   const { commit, portableCommit, portableDir, portableManifest, target, reusedInstallerOnlyPaths, releaseTrust } = assertInstallerSource(
     edition,
@@ -442,10 +459,11 @@ function buildInstaller(edition = "delivery", options = {}) {
     };
     fs.writeFileSync(stagedManifest, `${JSON.stringify(installerManifest, null, 2)}\n`, "utf8");
 
-    const retainedBackups = [
-      replaceCanonicalFile(stagedInstaller, canonicalInstaller),
-      replaceCanonicalFile(stagedManifest, canonicalManifest)
-    ].filter(Boolean);
+    const retainedBackups = replaceCanonicalGroup([
+      [stagedInstaller, canonicalInstaller],
+      [stagedManifest, canonicalManifest]
+    ]);
+    if (retainedBackups.length) require("./artifact-retention.cjs").retainArtifacts(releaseDir, `installer-${target.edition}`, retainedBackups);
     for (const backup of retainedBackups) console.warn(`installer rollback artifact retained: ${backup}`);
     console.log(`${target.edition} installer built: ${canonicalInstaller}`);
     console.log(`sha256: ${installerManifest.sha256}`);
@@ -458,6 +476,7 @@ function buildInstaller(edition = "delivery", options = {}) {
 if (require.main === module) buildInstaller(process.argv[2] || "delivery");
 
 module.exports = {
+  replaceCanonicalGroup,
   assertInstallerSource,
   assertPortableAppTreeMatchesManifest,
   assertInstallerInputMatchesPortable,

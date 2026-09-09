@@ -178,11 +178,9 @@ def detect_capabilities(
         or values.get("GPT_IMAGE_API_KEY", "").strip()
     )
     refine_base = bool(values.get("REFINE_API_BASE_URL", "").strip())
-    rembg_installed = importlib.util.find_spec("rembg") is not None
-    rembg_model_dir = Path(
-        values.get("U2NET_HOME", str(Path.home() / ".u2net"))
-    ).expanduser()
-    rembg_model = (rembg_model_dir / "isnet-general-use.onnx").is_file()
+    from offline_cutout import model_path
+    rembg_installed = importlib.util.find_spec("onnxruntime") is not None
+    rembg_model = model_path().is_file()
     return {
         "offline_workspace": True,
         "desktop_bootstrap": True,

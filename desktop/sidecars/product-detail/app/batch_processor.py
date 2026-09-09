@@ -104,7 +104,11 @@ def _cutout_main_image(src_path: Path, dst_path: Path) -> None:
     raises: ImportError / RuntimeError / IOError 由调用方决定如何处置。
     """
     # 延迟导入：避免 batch_processor 模块加载就把 app.py 整个拖起来
-    from app import _ensure_rembg
+    from app import _ensure_rembg, _DESKTOP_MODE
+    if _DESKTOP_MODE:
+        from offline_cutout import remove_background
+        remove_background(src_path, dst_path)
+        return
     if not _ensure_rembg():
         raise RuntimeError("rembg 不可用（未安装或模型加载失败）")
 

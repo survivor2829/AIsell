@@ -45,6 +45,11 @@ async function buildComponentRelease({ sourceRoot, outputDir, version, baseVersi
   const manifest = { schema: 2, appId, channel, platform: "win32", arch: "x64", version, base: baseline.base,
     minBaseVersion: baseVersion, dataSchema: 2, sequence, notes, publishedAt: new Date().toISOString(), components: {} };
   const artifacts = [];
+  const retentionOwned = [];
+  try {
+    const previous = JSON.parse(await fsp.readFile(path.join(outputDir, "unsigned-component-release.json"), "utf8"));
+    retentionOwned.push(...(previous.retentionOwned || []));
+  } catch { /* First generation has no owned artifacts. */ }
   for (const name of COMPONENTS) {
     const ownFiles = files.filter(f => f.component === name).map(({ path, size, sha256 }) => ({ path, size, sha256 }));
     if (!ownFiles.length) throw Error(`component_missing:${name}`);
@@ -72,8 +77,14 @@ async function buildComponentRelease({ sourceRoot, outputDir, version, baseVersi
       if (buffer.length > MAX_ARCHIVE) throw Error("component_archive_too_large");
       const sha256 = require("../src/shared/component-contract.cjs").digest(buffer);
       const destination = path.join(outputDir, `${sha256}.zip`);
-      await fsp.writeFile(destination, buffer);
+      try {
+        await fsp.writeFile(destination, buffer, { flag: "wx" });
+        retentionOwned.push(destination);
+      } catch (error) {
+        if (error.code !== "EEXIST" || await hashFile(destination) !== sha256) throw error;
+      }
       artifact = { name, path: destination, sha256, size: buffer.length, treeSha256 };
+      try { await fsp.access(cache); } catch { retentionOwned.push(cache); }
       await fsp.writeFile(cache, JSON.stringify(artifact));
     }
     manifest.components[name] = { name, sha256: artifact.sha256, size: artifact.size, treeSha256,
@@ -82,7 +93,7 @@ async function buildComponentRelease({ sourceRoot, outputDir, version, baseVersi
   }
   validateManifest(manifest, { appId, channel });
   const metadataFile = path.join(outputDir, "unsigned-component-release.json");
-  await fsp.writeFile(metadataFile, JSON.stringify({ manifest, baseline, artifacts, buildCommit,
+  await fsp.writeFile(metadataFile, JSON.stringify({ manifest, baseline, artifacts, buildCommit, retentionOwned: [...new Set(retentionOwned)],
     sourceManifest: { commit: sourceManifest.commit, dirty: sourceManifest.dirty, version: sourceManifest.version } }, null, 2));
   return { manifest, baseline, metadataFile, artifacts };
 }

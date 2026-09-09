@@ -25,6 +25,7 @@ function isProductDetailSourceFile(relativePath) {
   const extension = path.extname(parts.at(-1)).toLowerCase();
   if (extension === ".pyc" || extension === ".pyo") return false;
   if (parts.length === 1) {
+    if (parts[0] === "cutout_model.json") return true;
     return extension === ".py" && parts[0] !== "conftest.py";
   }
   if (parts[0] === "static" || parts[0] === "templates") return true;
