@@ -79,13 +79,23 @@ assert.match(
 );
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
-  /\$structuredMainMatches = @\(\$matches\.ToArray\(\) \| Where-Object \{ Test-WechatMainCandidate \$_ \}\)[\s\S]*\$matches\.Add\(\$structuredMainMatch\)/u,
+  /function Select-WechatMainCandidates\(\[object\[\]\]\$candidates\)[\s\S]*Test-WechatMainCandidate \$candidate[\s\S]*Test-WechatShellNavigation \$candidate[\s\S]*Where-Object \{ Test-WechatMainCandidate \$_ \}/u,
   "main-shell evidence must exclude visible auxiliary WeChat windows without requiring one render class"
 );
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
-  /\$matches = New-Object System\.Collections\.Generic\.List\[object\][\s\S]*foreach \(\$structuredMainMatch in \$structuredMainMatches\)[\s\S]*if \(\$matches\.Count -eq 0\)[\s\S]*personal_wechat_main_window_not_found/u,
-  "automatic discovery must fail closed instead of moving a visible auxiliary window when no structured main window exists"
+  /function Get-WechatWindowRecoveryCandidate\(\[object\[\]\]\$candidates\)[\s\S]*Qt\(\?:\\d\+\)\?QWindowIcon[\s\S]*window_recovery_candidate_count[\s\S]*@\(\$candidates\)\.Count -ne 1[\s\S]*\$recoverable\.Count -ne 1[\s\S]*if \(-not \$inspectOnly -and \$matches\.Count -eq 0\)[\s\S]*Test-XiaoxiUserIdle[\s\S]*window_recovery_attempted = \$true[\s\S]*Request-PersonalWechatActivation \$recoveryCandidate[\s\S]*Get-WechatWindowCandidates/u,
+  "a non-inspection path may only trigger one executable restore after idle validation and unique-candidate proof"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /Request-PersonalWechatActivation \$recoveryCandidate[\s\S]*Get-WechatWindowCandidates[\s\S]*Where-Object \{ \[int\]\$_\.pid -eq \[int\]\$recoveryCandidate\.pid \}[\s\S]*Select-WechatMainCandidates \$recoveredSamePidCandidates[\s\S]*\$recoveredMatches\.Count -eq 1/u,
+  "post-activation discovery must accept one strict main window from the same WeChat PID only"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /\$windowDiagnostic\.window_main_count = \$matches\.Count[\s\S]*if \(\$matches\.Count -eq 0\)[\s\S]*personal_wechat_main_window_not_found/u,
+  "automatic discovery must still fail closed when recovery cannot prove a main window"
 );
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
@@ -94,8 +104,8 @@ assert.match(
 );
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
-  /function Test-MatchedWechatWindowIdentity[\s\S]*if \(-not \(Test-MatchedWechatWindowIdentity \$hWnd \$matched\)\)[\s\S]*\$wasIconic = \[Win32WechatWindow\]::IsIconic\(\$hWnd\)[\s\S]*if \(\$wasIconic\) \{[\s\S]*ShowWindowAsync\(\$hWnd, 9\)[\s\S]*elseif \(-not \(Request-PersonalWechatActivation \$matched\)\)[\s\S]*for \(\$restoreAttempt = 0; \$restoreAttempt -lt 20; \$restoreAttempt\+\+\)[\s\S]*\$restoredIdentity = Test-MatchedWechatWindowIdentity \$hWnd \$matched/u,
-  "tray recovery must re-prove the exact main-window identity before and after its first UI side effect"
+  /function Test-MatchedWechatWindowIdentity[\s\S]*if \(-not \(Test-MatchedWechatWindowIdentity \$hWnd \$matched\)\)[\s\S]*\$wasIconic = \[Win32WechatWindow\]::IsIconic\(\$hWnd\)[\s\S]*if \(\$wasIconic\) \{[\s\S]*ShowWindowAsync\(\$hWnd, 9\)[\s\S]*elseif \(-not \$nativeActivationRequested\) \{[\s\S]*if \(-not \(Request-PersonalWechatActivation \$matched\)\)[\s\S]*\$nativeActivationRequested = \$true[\s\S]*for \(\$restoreAttempt = 0; \$restoreAttempt -lt 20; \$restoreAttempt\+\+\)[\s\S]*\$restoredIdentity = Test-MatchedWechatWindowIdentity \$hWnd \$matched/u,
+  "tray recovery must re-prove exact identity while waiting for an already-requested native restore instead of duplicating it"
 );
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,

@@ -206,6 +206,22 @@ async function main() {
   const persisted = JSON.parse(fs.readFileSync(path.join(root, "state.json"), "utf8"));
   assert.equal(persisted.moments_campaign.status, "completed");
 
+  const openFailureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-open-failure-"));
+  const openFailureEvents = [];
+  const openFailureController = createMomentsCampaignController({
+    baseDir: openFailureRoot,
+    coordinator: { acquire: () => ({ ok: true, lock: { owner: "open-failure" } }), release() {} },
+    logger: { event: (module, event, details) => openFailureEvents.push({ module, event, details }) },
+    openMoments: async () => ({ ok: false, reason: "personal_wechat_main_window_not_found" }),
+    scrollMoments: async () => { throw new Error("a failed open must not begin a Moments action"); }
+  });
+  assert.equal(openFailureController.start({ maxPosts: 1 }).ok, true);
+  await waitFor(() => openFailureController.status().state, (state) => state.status === "paused");
+  const openFailureEvent = openFailureEvents.find(({ event }) => event === "campaign.open_finished");
+  assert.equal(openFailureEvent.details.reason, "personal_wechat_main_window_not_found");
+  assert.equal(openFailureEvent.details.ok, false);
+  assert.equal("result" in openFailureEvent.details, false, "the diagnostic event must expose its finite reason directly rather than serialize a raw response");
+
   let readingCalls = 0;
   let readingActions = 0;
   const readingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-reading-menu-"));

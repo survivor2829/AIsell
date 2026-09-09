@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { createWechatWorkflowController } = require("./wechat-workflow.cjs");
+const { createWechatWorkflowController, workflowFailureReason } = require("./wechat-workflow.cjs");
 const { createAiExpertStore } = require("./ai-expert.cjs");
 const { EventEmitter } = require("node:events");
 const { registerWechatWorkflowIpc } = require("./wechat-workflow-ipc.cjs");
@@ -11,9 +11,10 @@ async function checkFloatingProgress() {
   const windows = [];
   const diagnosticEvents = [];
   const handlers = new Map();
+  let mainHideCount = 0;
   const mainWindow = {
     webContents: { send() {} }, isDestroyed: () => false,
-    show() {}, hide() {}, focus() {}
+    show() {}, hide() { mainHideCount += 1; }, focus() {}
   };
   class ProgressWindow extends EventEmitter {
     constructor(settings) {
@@ -47,6 +48,13 @@ async function checkFloatingProgress() {
   assert.equal(refused.ok, false);
   assert.equal(diagnosticEvents.at(-1)[2].reason, "invalid_click");
   assert.equal(diagnosticEvents.at(-1)[2].stage, "click_validation");
+  await control.deleteTasks([control.status().tasks[0].id]);
+  const noPlan = await invoke("start", { clickToken: require("node:crypto").randomUUID() });
+  assert.equal(noPlan.ok, false);
+  assert.match(noPlan.error, /没有待执行任务/);
+  assert.equal(windows.length, 0, "a start preflight failure must not hide the only error surface behind a progress window");
+  assert.equal(mainHideCount, 0, "a start preflight failure must keep the main page visible");
+  await control.addTask({ type: "interact", payload: { maxPosts: 1 } });
   const started = await invoke("start", { clickToken: require("node:crypto").randomUUID() });
   assert.equal(started.ok, true);
   assert.equal(windows.length, 1, "starting the unified workflow must automatically create its progress window");
@@ -258,6 +266,43 @@ async function main() {
   await batch.start(); await batch.tick();
   assert.equal(batch.status().phase, "needs_attention", "unfinished work must not look completed or idle");
   await batch.dispose();
+
+  const cooldownRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-cooldown-"));
+  let cooldownClock = new Date(2026, 8, 3, 12, 0, 0);
+  let touchCalls = 0;
+  let replyCalls = 0;
+  const cooldown = createWechatWorkflowController({
+    rootDir: cooldownRoot, autoReplyDir: path.join(cooldownRoot, "reply"), activeTouchDir: path.join(cooldownRoot, "touch"), momentsDir: path.join(cooldownRoot, "moments"),
+    now: () => cooldownClock, getAccount: () => "test-account", autoSchedule: false,
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => { replyCalls += 1; return { handled: false }; }
+    },
+    executors: { touch: {
+      prepareWorkflowTask: () => ({ contacts: [{ id: "a" }, { id: "b" }], script: "test" }),
+      runWorkflowStep: async () => {
+        touchCalls += 1;
+        return touchCalls === 1
+          ? { status: "pending", progress: { done: 1, total: 2 }, retryAfterMs: 10_000, waitingReason: "touch_safety_interval" }
+          : { status: "completed", progress: { done: 2, total: 2 } };
+      }
+    } }
+  });
+  await cooldown.addRecipients(["reply-contact"]);
+  await cooldown.addTask({ type: "touch", payload: { contactIds: ["a", "b"], script: "test" } });
+  await cooldown.start(); await cooldown.tick();
+  assert.equal(cooldown.status().phase, "waiting_safety_interval");
+  assert.equal(cooldown.status().nextTaskId, null, "the known contact interval must remove the task from the ready queue");
+  assert.equal(cooldown.status().waitingTaskId, cooldown.status().tasks[0].id);
+  assert.equal(cooldown.status().waitUntil, cooldownClock.getTime() + 10_000);
+  await cooldown.tick();
+  assert.equal(touchCalls, 1, "a contact must not be retried while its safety interval is still active");
+  assert.equal(replyCalls, 1, "reply checks can run during a deferred touch interval");
+  cooldownClock = new Date(cooldownClock.getTime() + 10_000);
+  await cooldown.tick();
+  assert.equal(touchCalls, 2, "the deferred task resumes when its known interval ends");
+  assert.equal(workflowFailureReason("personal_wechat_main_window_not_found"), "personal_wechat_main_window_not_found");
+  await cooldown.dispose();
 
   const retryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-retry-"));
   let retryAllowed = true;

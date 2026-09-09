@@ -2063,8 +2063,8 @@ try {
   );
   assert.match(
     normalizerSource,
-    /if \(\$wasIconic\) \{[\s\S]*ShowWindowAsync\(\$hWnd, 9\)[\s\S]*elseif \(-not \(Request-PersonalWechatActivation \$matched\)\)/u,
-    "raw Win32 restore must be limited to a genuinely minimized window"
+    /if \(\$wasIconic\) \{[\s\S]*ShowWindowAsync\(\$hWnd, 9\)[\s\S]*elseif \(-not \$nativeActivationRequested\) \{[\s\S]*if \(-not \(Request-PersonalWechatActivation \$matched\)\)/u,
+    "raw Win32 restore must be limited to a genuinely minimized window and must not duplicate native activation"
   );
   assert.match(normalizerSource, /\$restoredMainLayout = [\s\S]*IsWindowVisible\(\$hWnd\)[\s\S]*-not \[Win32WechatWindow\]::IsIconic\(\$hWnd\)[\s\S]*-ge 600[\s\S]*-ge 500/);
 

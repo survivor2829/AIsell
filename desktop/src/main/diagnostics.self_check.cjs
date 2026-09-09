@@ -259,15 +259,22 @@ try {
   assert.equal(report.details.stage, "after_send_confirmation");
   assert.doesNotMatch(JSON.stringify(traceRows), /trace-private-text/);
   const windowDetail = require("../shared/wechat-send-diagnostics.cjs").summarizeSendResult({ ok: false, reason: "powershell_timeout",
-    diagnostics: { window_stage: "enumerate", window_class_code: "mmui::MainWindow", window_compile_ms: 200,
-      window_candidate_count: 2, window_total_ms: 20001, title: "private-chat-title", stderr: "private-error-text" } });
+    diagnostics: { window_stage: "recover", window_class_code: "mmui::MainWindow", window_compile_ms: 200,
+      window_candidate_count: 2, window_recovery_candidate_count: 1, window_recovery_main_count: 0,
+      window_recovery_attempted: true, window_recovery_succeeded: false,
+      window_recover_ms: 300, window_total_ms: 20001, title: "private-chat-title", stderr: "private-error-text" } });
   traceLogger.event("active_touch", "send_stage", windowDetail, { trace: true, level: "warn" });
   const windowEntry = traceLogger.readRecent(1)[0];
   const windowReport = require("../shared/cloud-report.cjs").reportEntry(windowEntry, { installId: "12345678-1234-1234-1234-123456789012" });
-  assert.equal(windowReport.details.window_stage, "enumerate");
+  assert.equal(windowReport.details.window_stage, "recover");
   assert.equal(windowReport.details.window_class_code, "mmui::MainWindow");
   assert.equal(windowReport.details.window_compile_ms, 200);
   assert.equal(windowReport.details.window_candidate_count, 2);
+  assert.equal(windowReport.details.window_recovery_candidate_count, 1);
+  assert.equal(windowReport.details.window_recovery_main_count, 0);
+  assert.equal(windowReport.details.window_recovery_attempted, true);
+  assert.equal(windowReport.details.window_recovery_succeeded, false);
+  assert.equal(windowReport.details.window_recover_ms, 300);
   assert.doesNotMatch(JSON.stringify(windowReport), /private-chat-title|private-error-text/);
 } finally {
   fs.rmSync(root, { recursive: true, force: true });

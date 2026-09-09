@@ -25,6 +25,15 @@ function createTouchWorkflow(options = {}) {
   let activeStep = false;
   const workflowDirectory = (id) => path.join(contactsDir, "workflow-tasks", crypto.createHash("sha256").update(String(id)).digest("hex"));
 
+  function safetyInterval(nextEligibleAt) {
+    const retryAfterMs = Math.max(0, Date.parse(nextEligibleAt) - now().getTime());
+    return {
+      retryAfterMs,
+      waitingReason: "touch_safety_interval",
+      result: { nextEligibleAt }
+    };
+  }
+
   function prepareWorkflowTask(input = {}) {
     const script = String(input.script || "").trim();
     if (!script) throw new Error("请填写触达话术");
@@ -75,11 +84,11 @@ function createTouchWorkflow(options = {}) {
     const progress = () => ({ done: task?.current_index || 0, total: task?.total || contacts.length });
     const response = (status, extra = {}) => ({ status, progress: progress(), ...extra });
     const persist = () => { task = saveTaskState(taskDir, task); };
-    const attention = (error, result) => {
+    const attention = (error, result, reasonCode = "") => {
       task.status = "paused";
       task.pause_reason = error;
       persist();
-      return response("needs_attention", { error, ...(result ? { result } : {}) });
+      return response("needs_attention", { error, ...(reasonCode ? { reasonCode } : {}), ...(result ? { result } : {}) });
     };
     try {
       if (fs.existsSync(bindingFile)) {
@@ -125,7 +134,10 @@ function createTouchWorkflow(options = {}) {
         return attention("上次发送结果尚未确认，请检查微信；系统不会自动补发");
       }
       if (Date.parse(task.next_send_not_before || "") > now().getTime()) {
-        return response("pending", { result: { nextEligibleAt: task.next_send_not_before } });
+        // Propagate the persisted send interval to the unified scheduler.  Without
+        // this it immediately re-enters this branch every poll and starves reply
+        // checks, even though the contact is deliberately waiting.
+        return response("pending", safetyInterval(task.next_send_not_before));
       }
       const liveContacts = options.readContacts();
       const liveClassification = classifyContacts(liveContacts);
@@ -253,7 +265,9 @@ function createTouchWorkflow(options = {}) {
           task.completed_at = now().toISOString();
         }
         persist();
-        return response(task.status === "completed" ? "completed" : "pending", { result: { deliveryStatus: "sent_verified", contactId: current.id } });
+        return response(task.status === "completed" ? "completed" : "pending", task.status === "completed"
+          ? { result: { deliveryStatus: "sent_verified", contactId: current.id } }
+          : { ...safetyInterval(task.next_send_not_before), result: { deliveryStatus: "sent_verified", contactId: current.id, nextEligibleAt: task.next_send_not_before } });
       }
       const notAttempted = result?.send_attempted === false || result?.send_result === "not_attempted";
       if (notAttempted && !["prepared", "clicked", "outcome_unknown"].includes(current.status)) {
@@ -261,7 +275,11 @@ function createTouchWorkflow(options = {}) {
         current.retry_blocked = false;
         persist();
         if (!enabled()) return response("pending", { result: { deliveryStatus: "not_attempted" } });
-        return attention(String(result.error || result.blocked_reason || "触达未执行，请检查微信后处理任务"), { deliveryStatus: "not_attempted" });
+        return attention(
+          String(result.error || result.blocked_reason || "触达未执行，请检查微信后处理任务"),
+          { deliveryStatus: "not_attempted" },
+          String(result?.blocked_reason || result?.reason || "")
+        );
       }
       current.status = "outcome_unknown";
       current.retry_blocked = true;

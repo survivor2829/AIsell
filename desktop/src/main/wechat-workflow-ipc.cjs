@@ -13,7 +13,7 @@ function registerWechatWorkflowIpc(options) {
   let disposed = false;
   const main = () => options.getMainWindow?.();
   function viewState(state = controller.status()) {
-    const current = state.tasks.find((task) => task.id === (state.currentTaskId || state.lastTaskId));
+    const current = state.tasks.find((task) => task.id === (state.currentTaskId || state.waitingTaskId || state.lastTaskId));
     const moments = current?.type === "interact" ? options.getMomentsProgress?.(current) : null;
     const syncing = readContactProgress?.();
     return {
@@ -115,8 +115,16 @@ function registerWechatWorkflowIpc(options) {
   async function start() {
     if (contactSync?.running) throw new Error("联系人正在同步，完成后即可启动程序。");
     contactSync = null;
-    await showFloating();
-    return controller.start();
+    // Do not hide the only place that can display a start-preflight error.
+    // The floating window is still visible before any WeChat action begins.
+    const preflight = controller.preflightStart();
+    try {
+      await showFloating();
+      return await controller.start();
+    } catch (failure) {
+      if (!preflight.alreadyActive) showMain({ view: "tasks" });
+      throw failure;
+    }
   }
 
   async function runContactSync(operation, readProgress) {

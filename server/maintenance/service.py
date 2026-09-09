@@ -20,9 +20,9 @@ HEX = re.compile(r"[a-f0-9]{64}\Z")
 UUID = re.compile(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\Z")
 VERSION = re.compile(r"(?:0|[1-9]\d{0,5})(?:\.(?:0|[1-9]\d{0,5})){2}\Z")
 APP_IDS = {"test": "com.aihuoke.desktop.test", "delivery": "com.aihuoke.desktop", "smoke": "com.aihuoke.maintenance.smoke"}
-WINDOW_STAGES = ("bootstrap", "compile", "process", "enumerate", "select", "shell", "selected", "restore", "focus", "verify", "complete")
+WINDOW_STAGES = ("bootstrap", "compile", "process", "enumerate", "select", "shell", "recover", "selected", "restore", "focus", "verify", "complete")
 MOMENTS_STAGES = ("bootstrap", "window_identity", "moments_entry", "discover_entry", "first_capture", "first_surface", "first_candidates", "second_capture", "second_surface", "second_candidates", "complete")
-WINDOW_METRICS = ("elapsed_ms", "total_ms", "timeout_ms", "process_count", "native_count", "candidate_count", "main_count", "render_count", "hidden_count", "minimized_count", "rejected_layout_count") + tuple(f"{stage}_ms" for stage in WINDOW_STAGES)
+WINDOW_METRICS = ("elapsed_ms", "total_ms", "timeout_ms", "process_count", "native_count", "candidate_count", "main_count", "render_count", "hidden_count", "minimized_count", "rejected_layout_count", "recovery_candidate_count", "recovery_main_count") + tuple(f"{stage}_ms" for stage in WINDOW_STAGES)
 
 def safe_token(value):
     return value if isinstance(value, str) and TOKEN.fullmatch(value) and not re.search(r"sk-|ak-|ltai", value, re.I) else ""
@@ -64,7 +64,7 @@ def validate_report(body):
             for key in ("receipt_stage", "receipt_code", "receipt_draft_read_stage", "state", "status", "phase", "reason_code", "error_code", "stage", "wx_hook_stage", "wx_hook_error_code", "blocked_reason", "action", "task_kind", "reason", "send_status", "verification_mode", "input_read_reason", "exception_code", "wechat_version", "parent_trace_code"):
                 if safe_token(details.get(key)):
                     row["details"][key] = details[key]
-            for key in ("receipt_conversation_verified", "receipt_draft_read_ok", "receipt_draft_consumed", "receipt_input_lease_valid", "receipt_bubble_verified", "helper_configured", "wechat_exe_configured", "wechat_root_configured", "ok", "send_attempted", "send_clicked", "exact_match", "outgoing", "is_latest", "is_new", "same_window", "input_cleared", "before_exact", "input_read_ok", "input_empty", "session_verified", "composer_verified", "input_verified", "restart_requested", "had_running_process", "stop_verified", "launch_deferred", "handled", "busy", "reply_enabled"):
+            for key in ("receipt_conversation_verified", "receipt_draft_read_ok", "receipt_draft_consumed", "receipt_input_lease_valid", "receipt_bubble_verified", "helper_configured", "wechat_exe_configured", "wechat_root_configured", "ok", "send_attempted", "send_clicked", "exact_match", "outgoing", "is_latest", "is_new", "same_window", "input_cleared", "before_exact", "input_read_ok", "input_empty", "session_verified", "composer_verified", "input_verified", "restart_requested", "had_running_process", "stop_verified", "launch_deferred", "handled", "busy", "reply_enabled", "window_recovery_attempted", "window_recovery_succeeded"):
                 if type(details.get(key)) is bool:
                     row["details"][key] = details[key]
             if "send_attempted" in details and details["send_attempted"] is None:

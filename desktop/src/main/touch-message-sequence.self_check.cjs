@@ -11,18 +11,20 @@ const { main: runCli } = require("../../rpa/active_touch/active_touch_cli.cjs");
 async function checkTouchMessageSequence() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-touch-sequence-"));
   const contact = { id: "selected", name: "测试客户", nickname: "测试客户", wechatId: "test_customer", wechatAccountId: "test_account", allowed: true };
+  const secondContact = { id: "selected-two", name: "第二位测试客户", nickname: "第二位测试客户", wechatId: "test_customer_two", wechatAccountId: "test_account", allowed: true };
   const imageId = "a".repeat(64);
   const calls = [];
   let failImage = true, unknown = false, enabled = true, pauseAfterText = false;
+  const clock = new Date(2026, 8, 3, 12, 0, 0);
   const config = {
-    dataDir: root, readContacts: () => [contact],
+    dataDir: root, now: () => clock, random: () => 0, readContacts: () => [contact, secondContact],
     coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} }, drivers: {},
     mediaStore: { validateIds: ids => ids, resolve: id => ({ sha256: id, path: "isolated-image.png" }) },
     runStep: (args, options) => runCli(["node", "active_touch_cli.cjs", ...args, "--data-dir", options.dataDir]),
     execute: async (options) => {
-      const selected = await options.runStep("select-customer", ["--id", contact.id]);
+      const selected = await options.runStep("select-customer", ["--id", options.contactId]);
       assert.equal(selected.ok, true, JSON.stringify(selected));
-      assert.equal(selected.state.selected_customer.id, contact.id);
+      assert.equal(selected.state.selected_customer.id, options.contactId);
       const kind = options.image ? "image" : options.message === "https://example.com/product" ? "link" : "text";
       calls.push({ kind, baseDir: options.baseDir, attemptId: options.attemptId });
       if (kind === "image" && failImage) {
@@ -73,6 +75,14 @@ async function checkTouchMessageSequence() {
   result = await createTouchWorkflow(config).runWorkflowStep(paused, context);
   assert.equal(result.status, "completed");
   assert.deepEqual(calls.slice(pausedCount).map(call => call.kind), ["image", "link"]);
+
+  const intervalPayload = createTouchWorkflow(config).prepareWorkflowTask({ script: "这是一条间隔测试话术", contactIds: [contact.id, secondContact.id] });
+  const intervalRecord = { id: crypto.randomUUID(), payload: intervalPayload, progress: { done: 0 }, status: "running" };
+  result = await createTouchWorkflow(config).runWorkflowStep(intervalRecord, context);
+  assert.equal(result.status, "pending");
+  assert.equal(result.retryAfterMs, 8000, "a verified contact must expose its exact safety interval to the unified scheduler");
+  assert.equal(result.waitingReason, "touch_safety_interval");
+  assert.equal(result.result.nextEligibleAt, new Date(clock.getTime() + 8000).toISOString());
   assert.throws(() => normalizeTouchLink("javascript:alert(1)"));
   assert.equal(normalizeTouchLink("https://example.com/product"), "https://example.com/product");
 

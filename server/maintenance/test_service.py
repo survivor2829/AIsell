@@ -169,7 +169,7 @@ class ServiceTest(unittest.TestCase):
             try:
                 report["entries"][0]["details"].update(stage="capture_timeout_wx_hook", wx_hook_stage="init_failed", helper_configured=True, wechat_exe_configured=True, wechat_root_configured=False)
                 report["entries"][0]["details"].update(wechat_version="4.1.3.12", stop_verified=False, send_attempted=None, is_new=False, input_empty=True, elapsed_ms=1234, candidate_count=0, messageText="never-store-proof-text")
-                window_details = {"window_stage": "enumerate", "window_class_code": "mmui::MainWindow", "window_candidate_count": 2, "window_compile_ms": 200, "window_total_ms": 20001, "moments_stage": "first_candidates", "moments_elapsed_ms": 30000, "moments_timeout_ms": 30000}
+                window_details = {"window_stage": "recover", "window_class_code": "mmui::MainWindow", "window_candidate_count": 2, "window_recovery_candidate_count": 1, "window_recovery_main_count": 0, "window_compile_ms": 200, "window_recovery_attempted": True, "window_recovery_succeeded": False, "window_recover_ms": 300, "window_total_ms": 20001, "moments_stage": "first_candidates", "moments_elapsed_ms": 30000, "moments_timeout_ms": 30000}
                 report["entries"][0]["details"].update(window_details, window_title="never-store-window-title")
                 for _ in range(2):
                     request = urllib.request.Request(origin + "/v1/reports", json.dumps(report).encode(), {"Content-Type": "application/json"})

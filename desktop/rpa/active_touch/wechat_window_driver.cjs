@@ -454,7 +454,7 @@ $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = "Stop"
 $windowClock = [Diagnostics.Stopwatch]::StartNew()
 $windowStageAt = 0L
-$windowDiagnostic = @{ window_stage = "bootstrap"; window_native_count = 0; window_hidden_count = 0; window_minimized_count = 0; window_rejected_layout_count = 0 }
+$windowDiagnostic = @{ window_stage = "bootstrap"; window_native_count = 0; window_hidden_count = 0; window_minimized_count = 0; window_rejected_layout_count = 0; window_recovery_candidate_count = 0; window_recovery_main_count = 0; window_recovery_attempted = $false; window_recovery_succeeded = $false }
 $hostStartedAt = 0L
 if ([int64]::TryParse($env:XIAOXI_WINDOW_STARTED_AT, [ref]$hostStartedAt) -and $hostStartedAt -gt 0) {
   $windowDiagnostic.window_bootstrap_ms = [Math]::Max(0, [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $hostStartedAt)
@@ -765,6 +765,48 @@ function Get-WechatWindowCandidate([IntPtr]$hWnd, [bool]$exactExpectedHandle) {
   }
 }
 
+function Get-WechatWindowCandidates {
+  $candidates = New-Object System.Collections.Generic.List[object]
+  if ($wechatProcesses.Count -le 0) { return @() }
+  $processWindows = [Win32WechatWindow]::WindowsForProcesses([int[]]@($wechatProcesses.Keys))
+  $windowDiagnostic.window_native_count = @($processWindows).Count
+  foreach ($candidateHWnd in $processWindows) {
+    $candidate = Get-WechatWindowCandidate $candidateHWnd $false
+    if ($candidate) { [void]$candidates.Add($candidate) }
+  }
+  return @($candidates.ToArray())
+}
+
+function Update-WechatWindowCandidateDiagnostics([object[]]$candidates) {
+  $windowDiagnostic.window_candidate_count = @($candidates).Count
+  $windowDiagnostic.window_render_count = @($candidates | Where-Object { $_.hasMainRenderChild }).Count
+  if (@($candidates).Count -gt 0) { $windowDiagnostic.window_class_code = [string]$candidates[0].windowClass }
+}
+
+function Select-WechatMainCandidates([object[]]$candidates) {
+  foreach ($candidate in @($candidates)) {
+    if (Test-WechatMainCandidate $candidate) { continue }
+    Set-WechatWindowStage "shell"
+    $candidate.shellNavigation = Test-WechatShellNavigation $candidate
+  }
+  Set-WechatWindowStage "select"
+  return @($candidates | Where-Object { Test-WechatMainCandidate $_ })
+}
+
+function Get-WechatWindowRecoveryCandidate([object[]]$candidates) {
+  # A standalone WeChat surface is never a main-window target. It may only
+  # supply a single verified executable path for WeChat's own restore action.
+  $recoverable = @($candidates | Where-Object {
+    $_.visible -and -not $_.minimized -and -not $_.toolWindow -and [int64]$_.owner -eq 0 -and
+      [int]$_.layoutRank -gt 0 -and -not $_.hasMainRenderChild -and -not $_.shellNavigation -and
+      [string]$_.windowClass -match "(?i)^Qt(?:\\d+)?QWindowIcon$" -and
+      -not [string]::IsNullOrWhiteSpace([string]$_.processPath)
+  })
+  $windowDiagnostic.window_recovery_candidate_count = $recoverable.Count
+  if (@($candidates).Count -ne 1 -or $recoverable.Count -ne 1) { return $null }
+  return $recoverable[0]
+}
+
 function Test-MatchedWechatWindowIdentity([IntPtr]$hWnd, [object]$expected) {
   $current = Get-WechatWindowCandidate $hWnd $true
   if (-not $current) { return $false }
@@ -792,30 +834,41 @@ if ($expectedHandleIsValid) {
   }
   [void]$matches.Add($expectedCandidate)
 }
-if (-not $expectedHandleIsValid -and $wechatProcesses.Count -gt 0) {
-  $processWindows = [Win32WechatWindow]::WindowsForProcesses([int[]]@($wechatProcesses.Keys))
-  $windowDiagnostic.window_native_count = @($processWindows).Count
-  foreach ($candidateHWnd in $processWindows) {
-    $candidate = Get-WechatWindowCandidate $candidateHWnd $false
-    if ($candidate) { [void]$matches.Add($candidate) }
-  }
+$nativeActivationRequested = $false
+if (-not $expectedHandleIsValid) {
+  $matches = New-Object System.Collections.Generic.List[object]
+  foreach ($candidate in @(Get-WechatWindowCandidates)) { [void]$matches.Add($candidate) }
 }
-$windowDiagnostic.window_candidate_count = $matches.Count
-$windowDiagnostic.window_render_count = @($matches.ToArray() | Where-Object { $_.hasMainRenderChild }).Count
-if ($matches.Count -gt 0) { $windowDiagnostic.window_class_code = $matches[0].windowClass }
+$candidateMatches = @($matches.ToArray())
+Update-WechatWindowCandidateDiagnostics $candidateMatches
 Set-WechatWindowStage "select"
 if (-not $expectedHandleIsValid) {
-  foreach ($candidate in $matches.ToArray()) {
-    if (Test-WechatMainCandidate $candidate) { continue }
-    Set-WechatWindowStage "shell"
-    $candidate.shellNavigation = Test-WechatShellNavigation $candidate
+  $matches = @(Select-WechatMainCandidates $candidateMatches)
+  if (-not $inspectOnly -and $matches.Count -eq 0) {
+    $recoveryCandidate = Get-WechatWindowRecoveryCandidate $candidateMatches
+    if ($null -ne $recoveryCandidate) {
+      Set-WechatWindowStage "recover"
+      if (-not (Test-XiaoxiUserIdle)) { Stop-ForActiveUser $recoveryCandidate.pid ([IntPtr]$recoveryCandidate.hWnd); exit }
+      $windowDiagnostic.window_recovery_attempted = $true
+      if (Request-PersonalWechatActivation $recoveryCandidate) {
+        $nativeActivationRequested = $true
+        for ($recoveryAttempt = 0; $recoveryAttempt -lt 15; $recoveryAttempt++) {
+          Start-Sleep -Milliseconds 200
+          $recoveredCandidates = @(Get-WechatWindowCandidates)
+          Update-WechatWindowCandidateDiagnostics $recoveredCandidates
+          $recoveredSamePidCandidates = @($recoveredCandidates | Where-Object { [int]$_.pid -eq [int]$recoveryCandidate.pid })
+          $recoveredMatches = @(Select-WechatMainCandidates $recoveredSamePidCandidates)
+          $windowDiagnostic.window_recovery_main_count = $recoveredMatches.Count
+          if ($recoveredMatches.Count -eq 1) {
+            $matches = $recoveredMatches
+            $windowDiagnostic.window_recovery_succeeded = $true
+            break
+          }
+        }
+      }
+      Set-WechatWindowStage "select"
+    }
   }
-  Set-WechatWindowStage "select"
-}
-if (-not $expectedHandleIsValid) {
-  $structuredMainMatches = @($matches.ToArray() | Where-Object { Test-WechatMainCandidate $_ })
-  $matches = New-Object System.Collections.Generic.List[object]
-  foreach ($structuredMainMatch in $structuredMainMatches) { [void]$matches.Add($structuredMainMatch) }
 }
 $windowDiagnostic.window_main_count = $matches.Count
 Set-WechatWindowStage "selected"
@@ -885,15 +938,15 @@ if (-not (Test-MatchedWechatWindowIdentity $hWnd $matched)) {
 }
 $wasIconic = [Win32WechatWindow]::IsIconic($hWnd)
 $wasVisible = [Win32WechatWindow]::IsWindowVisible($hWnd)
-$nativeActivationRequested = $false
 if ($wasIconic -or -not $wasVisible) {
   if (-not (Test-XiaoxiUserIdle)) { Stop-ForActiveUser $matched.pid $hWnd; exit }
   if ($wasIconic) {
     [void][Win32WechatWindow]::ShowWindowAsync($hWnd, 9)
-  } elseif (-not (Request-PersonalWechatActivation $matched)) {
-    @{ ok = $false; reason = "wechat_window_not_ready"; pid = $matched.pid; hWnd = $hWnd.ToInt64() } | ConvertTo-Json -Compress
-    exit
-  } else {
+  } elseif (-not $nativeActivationRequested) {
+    if (-not (Request-PersonalWechatActivation $matched)) {
+      @{ ok = $false; reason = "wechat_window_not_ready"; pid = $matched.pid; hWnd = $hWnd.ToInt64() } | ConvertTo-Json -Compress
+      exit
+    }
     $nativeActivationRequested = $true
   }
   for ($restoreAttempt = 0; $restoreAttempt -lt 20; $restoreAttempt++) {
