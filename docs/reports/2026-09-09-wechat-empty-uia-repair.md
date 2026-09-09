@@ -21,3 +21,14 @@
 在本次创建的屏幕外 WinForms 窗口上，按实际 120 DPI 绘制导航样本后，生产 Verify 的 PrintWindow 路径通过，双图标分数均为 1。此证据只验证原生取图接线，不是实际微信验收。本机未运行微信；故障电脑 Windows 10 的真实取图、识别和后续任务仍需复验。
 
 证据：`outputs/product-detail-diagnosis-20260909/visual-main-window-replay.json`、`native-main-window-smoke.json`、此前的 `fault-pc-selection-replay.json`。1.1.10 客户公告已明确真实微信待验收，不原地替换已交付的 1.1.9。
+
+## 安装包与本机核对
+
+- 最终版本：`1.1.10 / 20260909T1347Z`，干净源码提交 `ae4e651fcb1e51a9c20912f00ed59952e5d9c557`。
+- 安装器：`release/AI获客 V1.0版本-测试版-安装程序.exe`；SHA256：`4dc9610ce5f2dfde2c10b9a2465476869f6b430810d7dee0035d6695f818c16e`。
+- 正常 `release:internal` 完整流程通过，日志 `outputs/product-detail-diagnosis-20260909/release-1.1.10.log`，没有跳过源码自检、详情图 E2E 或包内检查。
+- 本机覆盖安装退出码 0；安装后应用树、详情图运行时树和模型摘要匹配，16 个任务、9 个归档任务、授权文件保留，自动回复暂停。安装前仅备份 5 个相关文件，共 120,712 字节。
+- 从实际已安装路径导入视觉适配代码，屏幕外测试窗口 PrintWindow 验证再次通过。最终应用以正常可见窗口打开，标题确认构建 `20260909T1347Z`，未保留调试端口。
+- 安装证据：`installed-1.1.10.json`、`installed-native-main-window-smoke.json`、`normal-startup-1.1.10.json`，均在上述输出目录。远程 CI、更新频道发布和故障电脑真实微信任务没有执行。
+
+故障电脑下一步：退出旧测试版，安装本次安装器，保持微信完整主界面打开，复验此前报主窗口识别失败的步骤。若仍失败，使用应用反馈提交新版本日志；本机检查通过不代表该电脑已验收。
