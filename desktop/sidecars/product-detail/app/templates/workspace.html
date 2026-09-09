@@ -524,8 +524,9 @@
       .desktop-workspace .workspace { height: calc(100vh - 54px); overflow-y: auto; grid-auto-rows: max-content; align-content: start; }
       .desktop-workspace .layout-toggle { display: inline-flex; }
       .desktop-workspace .panel-left, .desktop-workspace .panel-right { max-height: none; overflow: visible; }
-      .desktop-workspace .panel-center { min-height: 480px; }
-      .desktop-workspace .layout-preview .panel-center { min-height: 0; }
+      .desktop-workspace .panel-center { min-height: 480px; height: calc(100vh - 86px); }
+      .desktop-workspace .layout-balance .panel-right { grid-row: 1; }
+      .desktop-workspace .layout-preview .panel-center { min-height: 0; height: auto; }
       .desktop-workspace .workspace.layout-preview { overflow: hidden; grid-template-rows: minmax(0, 1fr); align-content: stretch; }
     }
   </style>
