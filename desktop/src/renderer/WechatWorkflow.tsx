@@ -180,7 +180,9 @@ const TASK_ERROR_LABELS: Record<string, string> = {
   wechat_window_ambiguous: "检测到多个个人微信主窗口；请只保留一个可见主窗口后重试。",
   wechat_window_not_ready: "已找到微信主窗口，但当前尺寸不可操作；请展开微信窗口后重试。",
   wechat_window_identity_mismatch: "微信窗口在操作过程中发生变化；请保持当前微信窗口后重试。",
-  powershell_timeout: "微信窗口检查超时；请等待电脑空闲或检查安全软件后重试。",
+  powershell_timeout: "微信读取或识别超时，本次任务已暂停；具体阶段见诊断日志。",
+  moments_publish_outcome_unknown: "已尝试发布，但未核验到结果；请先到微信确认，勿重复发布。",
+  moments_publish_outcome_unknown_requires_resolution: "上次发布结果尚未确认；请先到微信核对，再标记是否已发布。",
   powershell_failed: "微信窗口检查未能启动；请确认 AI 获客与微信权限一致，并检查安全软件。"
 };
 
@@ -313,7 +315,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
         : next ? `下一项：${next.title}`
           : current ? "正在执行本轮已安排任务"
             : waitingForSchedule ? "到达已安排的时间后继续执行"
-              : "自动回复已开启，正在监听新消息";
+              : state.replyError || state.replyStatus || (state.replyEnabled === false ? "自动回复未开启" : "正在准备自动回复");
 
   useEffect(() => {
     if (editor) editorAnchor.current?.scrollIntoView({ behavior: "smooth", block: "start" });

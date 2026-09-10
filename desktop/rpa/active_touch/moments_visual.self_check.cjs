@@ -1137,7 +1137,7 @@ assert.deepEqual(JSON.parse(stableAnchorHarness.stdout.trim()), {
   authorOnly: "",
   anchor: "author stable fixed body line"
 });
-assert.match(probeSource, /function Get-MomentsVisualPostCandidates\(\$frame, \$viewportBounds, \[bool\]\$includeText = \$true\)/u);
+assert.match(probeSource, /function Get-MomentsVisualPostCandidates\(\$frame, \$viewportBounds, \[bool\]\$includeText = \$true, \$previousRead = \$null\)/u);
 assert.match(probeSource, /\$visibleAvatars = @\(Find-MomentsVisibleAvatars \$frame \$viewportBounds\)/u);
 assert.match(probeSource, /\$menuRead = Find-MomentsMenuDotsDetailed \$frame \$viewportBounds \$visibleAvatars/u);
 assert.match(probeSource, /\$menus = @\(\$menuRead\.menus \| Where-Object \{ Test-MomentsVisualBoundsInside \$_\.bounds \$viewportBounds \}\)/u);

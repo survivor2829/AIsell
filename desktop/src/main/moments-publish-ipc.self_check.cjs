@@ -310,7 +310,12 @@ async function main() {
         actionAttempted: true,
         verificationAttempts: 18,
         verificationElapsedMs: 12024,
-        lastVerificationReason: "moments_publish_post_not_found"
+        lastVerificationReason: "moments_publish_post_not_found",
+        verification_capture_ms: 30,
+        verification_ocr_ms: 800,
+        verification_candidates_ms: 5000,
+        verification_post_count: 1,
+        verification_anchor_present: false
       };
     }
   });
@@ -332,6 +337,9 @@ async function main() {
   );
   assert.equal(publishedResolutionUnknownEvent.fields.verification_attempts, 18);
   assert.equal(publishedResolutionUnknownEvent.fields.verification_elapsed_ms, 12024);
+  assert.equal(publishedResolutionUnknownEvent.fields.verification_candidates_ms, 5000);
+  assert.equal(publishedResolutionUnknownEvent.fields.verification_post_count, 1);
+  assert.equal(publishedResolutionUnknownEvent.fields.verification_anchor_present, false);
   assert.equal(
     publishedResolutionUnknownEvent.fields.last_verification_reason,
     "moments_publish_post_not_found"

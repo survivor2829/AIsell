@@ -1362,7 +1362,9 @@ const driver = createWechatVisualAutoReplyDriver((script, env, options) => {
 });
 
 const exactMatchOptions = { exactConversationMatch: true };
-assert.deepEqual(await driver.primeWechatSession([" A 测试客户 "], exactMatchOptions), {
+const initialPrime = await driver.primeWechatSession([" A 测试客户 "], exactMatchOptions);
+assert.equal(initialPrime.diagnostics.timings.capture_attempts, 1);
+assert.deepEqual({ ok: initialPrime.ok, primed: initialPrime.primed, pid: initialPrime.pid, hWnd: initialPrime.hWnd }, {
   ok: true,
   primed: true,
   pid: 81,
@@ -1545,7 +1547,9 @@ const primedObservationDriver = createWechatVisualAutoReplyDriver(() => ({
   sessionBaselines: [],
   sessionMessageBaselines: [{ conversation: "TestCustomer", signature: primedObservationSignature }]
 }));
-assert.deepEqual(await primedObservationDriver.scanWechatIncoming(["TestCustomer"]), {
+const { diagnostics: observationTiming, ...primedObservation } = await primedObservationDriver.scanWechatIncoming(["TestCustomer"]);
+assert.equal(observationTiming.timings.capture_attempts, 1);
+assert.deepEqual(primedObservation, {
   ok: false,
   primed: true,
   pid: 15,
@@ -1563,7 +1567,9 @@ const emptyPrimeDriver = createWechatVisualAutoReplyDriver(() => ({
   hWnd: 22,
   sessionBaselines: []
 }));
-assert.deepEqual(await emptyPrimeDriver.primeWechatSession(["A测试客户"]), {
+const { diagnostics: emptyTiming, ...emptyPrime } = await emptyPrimeDriver.primeWechatSession(["A测试客户"]);
+assert.equal(emptyTiming.timings.capture_attempts, 1);
+assert.deepEqual(emptyPrime, {
   ok: true,
   primed: true,
   pid: 21,
@@ -1893,6 +1899,7 @@ assert.equal(JSON.parse(advanceCalls[1].XIAOXI_VISUAL_MESSAGE_BASELINES)["A测�
 assert.equal(JSON.parse(advanceCalls[2].XIAOXI_VISUAL_MESSAGE_BASELINES)["A测试客户"], advancedMessageSignature);
 
 const captureFallbackCalls = [];
+let captureWindow = { pid: 101, hWnd: 102 };
 const captureFallbackEvidence = `visual:v1:${"e".repeat(64)}`;
 const captureFallbackSignature = "e".repeat(64);
 const captureFallbackDriver = createWechatVisualAutoReplyDriver((_script, env) => {
@@ -1908,14 +1915,17 @@ const captureFallbackDriver = createWechatVisualAutoReplyDriver((_script, env) =
     pid: 101, hWnd: 102, source: "unread", latestRole: "user",
     context: [{ role: "user", content: "hello", key: captureFallbackEvidence }]
   };
-});
-assert.equal((await captureFallbackDriver.primeWechatSession(["CaptureCustomer"])).ok, true, "a compositor shell whose OCR is unusable must get one forced foreground retry");
+}, () => captureWindow);
+const capturePrime = await captureFallbackDriver.primeWechatSession(["CaptureCustomer"]);
+assert.equal(capturePrime.diagnostics.timings.capture_attempts, 2);
+assert.equal(capturePrime.ok, true, "a compositor shell whose OCR is unusable must get one forced foreground retry");
 assert.equal(captureFallbackCalls[0].XIAOXI_ALLOW_FOCUS_FALLBACK, "");
 assert.equal(captureFallbackCalls[1].XIAOXI_ALLOW_FOCUS_FALLBACK, "1");
 assert.equal(captureFallbackCalls[1].XIAOXI_FORCE_SCREEN_CAPTURE, "1", "the fallback must skip a misleading compositor PrintWindow frame");
 assert.equal((await captureFallbackDriver.scanWechatIncoming(["CaptureCustomer"])).ok, true);
-assert.equal(captureFallbackCalls[2].XIAOXI_ALLOW_FOCUS_FALLBACK, "", "a successful live fallback must return the next poll to background PrintWindow");
-assert.equal(captureFallbackCalls[2].XIAOXI_FORCE_SCREEN_CAPTURE, "");
+assert.equal(captureFallbackCalls[2].XIAOXI_ALLOW_FOCUS_FALLBACK, "1", "reuse proven screen capture only for the prepared window");
+assert.equal(captureFallbackCalls[2].XIAOXI_FORCE_SCREEN_CAPTURE, "1");
+captureWindow = { pid: 101, hWnd: 103 };
 assert.equal((await captureFallbackDriver.scanWechatIncoming(["CaptureCustomer"])).ok, true);
 assert.equal(captureFallbackCalls[3].XIAOXI_ALLOW_FOCUS_FALLBACK, "", "a long stable background run must not steal foreground");
 assert.equal(captureFallbackCalls[3].XIAOXI_FORCE_SCREEN_CAPTURE, "");

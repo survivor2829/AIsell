@@ -13,6 +13,19 @@ const MOMENTS_VISUAL_WINDOW_PROBE_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = "Stop"
 [Console]::Error.WriteLine("moments_probe_stage:bootstrap")
+$script:probeClock = [Diagnostics.Stopwatch]::StartNew()
+$script:probeStage = "bootstrap"
+$script:probeStageAt = 0
+$script:probeTimings = @{}
+function Write-MomentsProbeTiming([string]$stage) {
+  $elapsed = [int]$script:probeClock.ElapsedMilliseconds
+  $script:probeTimings["moments_" + $script:probeStage + "_ms"] = $elapsed - $script:probeStageAt
+  $script:probeStage = $stage
+  $script:probeStageAt = $elapsed
+  $detail = $script:probeTimings.Clone()
+  $detail["moments_stage"] = $stage
+  [Console]::Error.WriteLine("moments_diagnostic:" + ($detail | ConvertTo-Json -Compress))
+}
 $script:momentsVisualStabilityTolerancePx = ${MOMENTS_VISUAL_STABILITY_TOLERANCE_PX.toFixed(1)}
 Add-Type -AssemblyName UIAutomationClient
 Add-Type @"
@@ -36,6 +49,7 @@ ${MOMENTS_VISUAL_READONLY_POWERSHELL}
 ${MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL}
 
 function Write-Result($value) {
+  Write-MomentsProbeTiming $(if ($value.ok) { "complete" } else { $script:probeStage })
   $value | ConvertTo-Json -Compress -Depth 10
   exit
 }
@@ -191,6 +205,7 @@ $allowBodyOnly = [string]$env:XIAOXI_MOMENTS_ALLOW_BODY_ONLY -ceq "1"
 $interactionOnly = [string]$env:XIAOXI_MOMENTS_INTERACTION_ONLY -ceq "1"
 $script:matches = @()
 [Console]::Error.WriteLine("moments_probe_stage:window_identity")
+Write-MomentsProbeTiming "window_identity"
 $callback = [Win32WechatMomentsVisualProbe+EnumWindowsProc]{
   param([IntPtr]$hWnd, [IntPtr]$lParam)
   if (-not [Win32WechatMomentsVisualProbe]::IsWindowVisible($hWnd)) { return $true }
@@ -343,10 +358,12 @@ $phaseTimings["window_lock_ms"] = [int]$probeStopwatch.ElapsedMilliseconds
 
 $phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
 [Console]::Error.WriteLine("moments_probe_stage:first_capture")
+Write-MomentsProbeTiming "first_capture"
 $firstFrame = Get-MomentsVisualFrame $hWnd $matched.rect $matched.pid $false
 if (-not $firstFrame.ok) { Close-And-Write $firstFrame }
 $phaseTimings["first_capture_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
 [Console]::Error.WriteLine("moments_probe_stage:first_surface")
+Write-MomentsProbeTiming "first_surface"
 $phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
 $firstHeader = $(if ([string]$matched.surfaceMode -ceq "integrated") { Test-IntegratedMomentsSurface $firstFrame $surfaceScanBounds $scale } else { @{ ok = $true } })
 if (-not $firstHeader.ok) { Close-And-Write $firstHeader $firstFrame }
@@ -361,18 +378,22 @@ if (-not $firstViewport.ok) { Close-And-Write $firstViewport $firstFrame }
 $phaseTimings["first_surface_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
 $phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
 [Console]::Error.WriteLine("moments_probe_stage:first_candidates")
+Write-MomentsProbeTiming "first_candidates"
 $firstRead = Get-MomentsVisualPostCandidates $firstFrame $firstViewport.bounds $false
 $phaseTimings["first_candidates_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
 $firstReading = @()
 $phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
+Write-MomentsProbeTiming "stability_wait"
 Start-Sleep -Milliseconds 180
 $phaseTimings["stability_wait_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
 $phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
 [Console]::Error.WriteLine("moments_probe_stage:second_capture")
+Write-MomentsProbeTiming "second_capture"
 $secondFrame = Get-MomentsVisualFrame $hWnd $matched.rect $matched.pid $false
 if (-not $secondFrame.ok) { Close-And-Write $secondFrame $firstFrame }
 $phaseTimings["second_capture_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
 $phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
+Write-MomentsProbeTiming "second_surface"
 $secondHeader = $(if ([string]$matched.surfaceMode -ceq "integrated") {
   $secondSurfaceAnchorHash = Get-MomentsPixelHash $secondFrame $firstHeader.selectedGreenRunBounds
   $secondGreenRatio = Get-MomentsSelectedGreenRatio $secondFrame $firstHeader.selectedGreenRunBounds
@@ -402,10 +423,11 @@ if ([Math]::Abs([double]$firstViewport.bounds.left - [double]$secondViewport.bou
 $phaseTimings["second_surface_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
 $phaseStartedAt = $probeStopwatch.ElapsedMilliseconds
 [Console]::Error.WriteLine("moments_probe_stage:second_candidates")
+Write-MomentsProbeTiming "second_candidates"
 $secondRead = $(if ($interactionOnly) {
   Get-LocalStableInteractionRead $secondFrame $secondViewport.bounds $firstRead
 } else {
-  Get-MomentsVisualPostCandidates $secondFrame $secondViewport.bounds $true
+  Get-MomentsVisualPostCandidates $secondFrame $secondViewport.bounds $true $firstRead
 })
 $phaseTimings["second_candidates_ms"] = [int]($probeStopwatch.ElapsedMilliseconds - $phaseStartedAt)
 $secondReading = @()

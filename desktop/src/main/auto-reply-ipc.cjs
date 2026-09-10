@@ -650,6 +650,8 @@ function sanitizeStructuredScanDiagnostics(value) {
   if (counts) result.counts = counts;
   const scanMs = Math.floor(Number(source.timings?.scan_ms));
   if (Number.isSafeInteger(scanMs) && scanMs >= 0 && scanMs <= 300_000) result.scan_ms = scanMs;
+  const captureAttempts = Number(source.timings?.capture_attempts);
+  if (Number.isSafeInteger(captureAttempts) && captureAttempts >= 0 && captureAttempts <= 20) result.capture_attempts = captureAttempts;
   const captureMode = diagnosticCode(source.captureMode, "");
   if (SCAN_CAPTURE_MODES.has(captureMode)) result.capture_mode = captureMode;
   // Worker diagnostics are deliberately structural only. The visual sender
@@ -1415,6 +1417,7 @@ function createAutoReplyController(options = {}) {
   const stateFile = path.join(dataDir, "auto-reply-state.json");
   const diagnosticLogFile = path.join(dataDir, "auto-reply-diagnostics.jsonl");
   const diagnosticRunId = crypto.randomBytes(8).toString("hex");
+  let scanTraceId = crypto.randomUUID();
   const diagnosticTraceSecret = crypto.randomBytes(32);
   const coordinator = options.coordinator;
   const deepSeekClient = options.deepSeekClient;
@@ -1597,7 +1600,7 @@ function createAutoReplyController(options = {}) {
 
   function setActivity(phase, details = {}) {
     const progressText = {
-      prime: "正在建立消息读取基线", scanning: "正在检查客户消息",
+      prime: "正在初始化消息读取，完成后开始监听", scanning: "正在检查客户消息",
       candidate: "已发现客户消息", generating: "正在生成客户回复",
       preparing_send: "正在定位客户输入框", sending: "正在发送客户回复",
       sent_verified: "客户回复已发送", listening: "本次未发现待回复消息"
@@ -1723,7 +1726,8 @@ function createAutoReplyController(options = {}) {
       pid: result?.pid,
       hWnd: result?.hWnd,
       captureMode: result?.captureMode,
-      messageRead: result?.messageRead
+      messageRead: result?.messageRead,
+      diagnostics: result?.diagnostics
     });
   }
 
@@ -1813,11 +1817,15 @@ function createAutoReplyController(options = {}) {
     const failedSendDiagnostic = entry.event === "reply_send_finished" && entry.code !== "sent_verified";
     diagnostics().event("auto_reply", entry.event, {
       ...entry,
+      scan_mode: entry.scan_source,
+      trigger_code: entry.scan_trigger,
       legacy_diagnostic_run_id: entry.run_id
     }, {
       level: waitingDiagnostic ? "warn" : /failed|exception|blocked/u.test(entry.event) || failedSendDiagnostic ? "error" : "info",
       code: entry.code || "",
       phase: entry.phase || "",
+      traceId: scanTraceId,
+      trace: ["scan_observation", "start_requested", "started", "prime_deferred"].includes(entry.event),
       recover: entry.event === "scan_healthy" || entry.code === "sent_verified"
     });
   }
@@ -2369,6 +2377,7 @@ function createAutoReplyController(options = {}) {
       deliveryStatus: "not_attempted",
       detailCode: "starting"
     });
+    scanTraceId = crypto.randomUUID();
     appendDiagnostic("start_requested", { phase: "prime", code: "starting" });
     save();
     try {
@@ -2467,7 +2476,7 @@ function createAutoReplyController(options = {}) {
       state.status = "running";
       state.last_event = recoveredHandoffWarning ? "handoff_manual_followup_required" : "started";
       state.last_error = recoveredHandoffWarning;
-      setActivity("listening", { detailCode: state.last_scan_reason || "started" });
+      setActivity(primeRetryNeeded ? "prime" : "listening", { detailCode: state.last_scan_reason || "started" });
       appendDiagnostic("started", { phase: "prime", code: state.last_scan_reason || "started" });
       save();
       // Let the successful start IPC reach the renderer before the first OCR
@@ -3737,7 +3746,9 @@ function createAutoReplyController(options = {}) {
         state.last_error = "";
         state.system_error = null;
         workflowStartPending = false;
-        setActivity("listening", { contactLabel: `${scope.contacts.length} 位接待联系人`, detailCode: "workflow_started" });
+        scanTraceId = crypto.randomUUID();
+        appendDiagnostic("start_requested", { phase: "prime", code: "workflow_started" });
+        setActivity(primeRetryNeeded ? "prime" : "scanning", { contactLabel: `${scope.contacts.length} 位接待联系人`, detailCode: "workflow_started" });
         save();
       }
       if (state.status !== "running") {
@@ -3750,7 +3761,9 @@ function createAutoReplyController(options = {}) {
       }
       return {
         handled: workflowHandled,
-        ...(state.consecutive_scan_failures > 0 ? {
+        ...(primeRetryNeeded ? {
+          progressText: "消息读取尚未初始化完成，正在等待重试"
+        } : state.consecutive_scan_failures > 0 ? {
           progressText: state.last_scan_reason.startsWith("wechat_chat_")
             ? `返回聊天失败，尚未读取消息（${state.consecutive_scan_failures}/3）`
             : "本次读取消息失败，尚未回复"

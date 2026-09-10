@@ -2319,6 +2319,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
   const startupMessageBoundaries = new Map();
   const retryCandidates = [];
   let primedProcess = null;
+  let preferredScreenWindow = "";
   let pendingOpenedUnread = null;
   let restoredPendingObservation = null;
   let startupBoundary = null;
@@ -2331,6 +2332,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
   let stableActiveSession = null;
 
   function shouldForceScreenCapture(result) {
+    if (result?.diagnostics?.screen_capture_requested === true) return false;
     const reason = String(result?.reason || "");
     if (reason === "visual_capture_failed") return true;
     return result?.captureMode === "hwnd_printwindow" && new Set([
@@ -2929,6 +2931,12 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
   function invoke(mode, allowed, extra = {}, matchOptions = {}) {
     const sharedWindow = typeof windowIdentityProvider === "function" ? windowIdentityProvider() : null;
     const startedAt = Date.now();
+    const expectedPid = String(extra.XIAOXI_EXPECTED_PID || sharedWindow?.pid || "");
+    const expectedHwnd = String(extra.XIAOXI_EXPECTED_HWND || sharedWindow?.hWnd || "");
+    const windowKey = expectedPid && expectedHwnd ? `${expectedPid}:${expectedHwnd}` : "";
+    const sharedWindowKey = sharedWindow?.pid && sharedWindow?.hWnd ? `${sharedWindow.pid}:${sharedWindow.hWnd}` : "";
+    if (preferredScreenWindow && (windowKey !== preferredScreenWindow || sharedWindowKey !== windowKey)) preferredScreenWindow = "";
+    const preferScreen = windowKey && sharedWindowKey === windowKey && preferredScreenWindow === windowKey;
     return Promise.resolve(powerShellRunner(AUTO_REPLY_VISUAL_SCRIPT, {
       XIAOXI_AUTO_REPLY_MODE: mode,
       XIAOXI_ALLOWED_NAMES: JSON.stringify(allowed),
@@ -2941,17 +2949,33 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       XIAOXI_AUTO_REPLY_EXACT_CONVERSATION_MATCH: matchOptions?.exactConversationMatch === true ? "1" : "",
       XIAOXI_ALLOW_FOCUS_FALLBACK: "",
       XIAOXI_FORCE_SCREEN_CAPTURE: "",
+      ...(preferScreen ? { XIAOXI_ALLOW_FOCUS_FALLBACK: "1", XIAOXI_FORCE_SCREEN_CAPTURE: "1" } : {}),
       ...extra
-    }, { ensure: false, sta: true, timeout: 45_000, diagnostics: true })).then((result) => ({
-      ...result,
-      diagnostics: {
-        ...(result?.diagnostics && typeof result.diagnostics === "object" ? result.diagnostics : {}),
-        timings: {
-          ...(result?.diagnostics?.timings && typeof result.diagnostics.timings === "object" ? result.diagnostics.timings : {}),
-          scan_ms: Date.now() - startedAt
+    }, { ensure: false, sta: true, timeout: 45_000, diagnostics: true })).then((result) => {
+      if (windowKey && sharedWindowKey === windowKey && result?.ok === true && result.captureMode === "foreground_screen"
+        && `${result.pid}:${result.hWnd}` === windowKey) preferredScreenWindow = windowKey;
+      return {
+        ...result,
+        diagnostics: {
+          ...(result?.diagnostics && typeof result.diagnostics === "object" ? result.diagnostics : {}),
+          screen_capture_requested: extra.XIAOXI_FORCE_SCREEN_CAPTURE === "1" || Boolean(preferScreen),
+          timings: {
+            ...(result?.diagnostics?.timings && typeof result.diagnostics.timings === "object" ? result.diagnostics.timings : {}),
+            scan_ms: Date.now() - startedAt,
+            capture_attempts: 1
+          }
         }
-      }
-    }));
+      };
+    });
+  }
+
+  function combineProbeDiagnostics(previous, current) {
+    const before = previous?.diagnostics?.timings || {};
+    const after = current?.diagnostics?.timings || {};
+    return { ...current, diagnostics: { ...current?.diagnostics, timings: { ...after,
+      scan_ms: (Number(before.scan_ms) || 0) + (Number(after.scan_ms) || 0),
+      capture_attempts: (Number(before.capture_attempts) || 0) + (Number(after.capture_attempts) || 0)
+    } } };
   }
 
   async function primeWechatSession(names, matchOptions = {}) {
@@ -2961,7 +2985,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
     let result = await invoke("prime", allowed, {}, matchOptions);
     if (result?.ok !== true && shouldForceScreenCapture(result)) {
-      result = await invoke("prime", allowed, { XIAOXI_ALLOW_FOCUS_FALLBACK: "1", XIAOXI_FORCE_SCREEN_CAPTURE: "1" }, matchOptions);
+      result = combineProbeDiagnostics(result, await invoke("prime", allowed, { XIAOXI_ALLOW_FOCUS_FALLBACK: "1", XIAOXI_FORCE_SCREEN_CAPTURE: "1" }, matchOptions));
     }
     if (result?.ok !== true) return result;
     const process = processIdentity(result);
@@ -3008,6 +3032,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
             && !(turnBoundaries.get(conversation)?.pending === true && unreadAtBoundary.get(conversation) === true)))
       };
       const boundaryResult = await scanWechatIncoming(names, matchOptions);
+      result = { ...result, diagnostics: combineProbeDiagnostics(result, boundaryResult).diagnostics };
       if (boundaryResult?.reason === "wechat_process_changed" || boundaryResult?.reason === "wechat_window_changed") return boundaryResult;
       if (boundaryResult?.ok === true) startupBoundaryCandidate = boundaryResult;
     }
@@ -3017,6 +3042,8 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     return {
       ok: true,
       primed: true,
+      diagnostics: result.diagnostics,
+      ...(result.captureMode ? { captureMode: result.captureMode } : {}),
       pid: process.pid,
       hWnd: process.hWnd,
       ...(observedConversation ? { conversation: observedConversation } : {}),
@@ -3058,11 +3085,11 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     };
     let result = await invoke(scanMode, allowed, scanEnvironment, matchOptions);
     if (result?.ok !== true && shouldForceScreenCapture(result)) {
-      result = await invoke(scanMode, allowed, {
+      result = combineProbeDiagnostics(result, await invoke(scanMode, allowed, {
         ...scanEnvironment,
         XIAOXI_ALLOW_FOCUS_FALLBACK: "1",
         XIAOXI_FORCE_SCREEN_CAPTURE: "1"
-      }, matchOptions);
+      }, matchOptions));
     }
     if (isBoundPrintWindowNoMessage(result)) {
       // A passive PrintWindow frame may be one compositor frame behind even when
@@ -3071,11 +3098,11 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       // session. If the screen cannot prove a candidate, retain the binding and
       // retry next poll rather than silently advancing past a read red dot.
       const binding = stableActiveSession;
-      const screenResult = await invoke(scanMode, allowed, {
+      const screenResult = combineProbeDiagnostics(result, await invoke(scanMode, allowed, {
         ...scanEnvironment,
         XIAOXI_ALLOW_FOCUS_FALLBACK: "1",
         XIAOXI_FORCE_SCREEN_CAPTURE: "1"
-      }, matchOptions);
+      }, matchOptions));
       if (String(screenResult?.reason || "") !== "no_unread_message"
         || screenRecheckConfirmsBoundIdle(screenResult, binding)) {
         result = screenResult;
@@ -3303,6 +3330,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     startupBoundary = null;
     startupBoundaryCandidate = null;
     primedProcess = null;
+    preferredScreenWindow = "";
   };
 
   return { primeWechatSession, scanWechatIncoming, verifyWechatIncoming, noteVerifiedSend, noteSendAttempted, restoreTurnBoundaries };

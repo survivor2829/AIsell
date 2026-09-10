@@ -1053,13 +1053,26 @@ function Get-MomentsPostContentText($ocr, $postRect, $avatarBounds, $menuBounds 
   return [string]::Join([Environment]::NewLine, @($lines | ForEach-Object { [string]$_.compact }))
 }
 
-function Get-MomentsVisualPostCandidates($frame, $viewportBounds, [bool]$includeText = $true) {
+function Get-MomentsVisualPostCandidates($frame, $viewportBounds, [bool]$includeText = $true, $previousRead = $null) {
   $frameBounds = @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
   if (-not (Test-MomentsVisualBoundsInside $viewportBounds $frameBounds)) {
     return @{ menus = @(); posts = @(); interactionPosts = @(); postBoundaries = @(); visibleAvatars = @() }
   }
-  $visibleAvatars = @(Find-MomentsVisibleAvatars $frame $viewportBounds)
-  $menuRead = Find-MomentsMenuDotsDetailed $frame $viewportBounds $visibleAvatars
+  $viewportHash = Get-MomentsPixelHash $frame $viewportBounds
+  $sameViewport = $previousRead -ne $null -and $viewportHash -and
+    [string]$previousRead.viewportHash -ceq $viewportHash
+  foreach ($coordinate in @("left", "top", "width", "height")) {
+    if ($previousRead -eq $null -or [double]$previousRead.viewportBounds.$coordinate -ne [double]$viewportBounds.$coordinate) { $sameViewport = $false }
+  }
+  # Reuse only geometry from a byte-identical viewport. Text is still read from
+  # the second frame; any pixel or bounds change takes the normal full scan.
+  if ($sameViewport) {
+    $visibleAvatars = @($previousRead.visibleAvatars)
+    $menuRead = @{ menus = @($previousRead.menus); diagnostics = $previousRead.menuDiagnostics }
+  } else {
+    $visibleAvatars = @(Find-MomentsVisibleAvatars $frame $viewportBounds)
+    $menuRead = Find-MomentsMenuDotsDetailed $frame $viewportBounds $visibleAvatars
+  }
   $menus = @($menuRead.menus | Where-Object { Test-MomentsVisualBoundsInside $_.bounds $viewportBounds })
   $posts = New-Object System.Collections.Generic.List[object]
   $interactionPosts = New-Object System.Collections.Generic.List[object]
@@ -1134,6 +1147,9 @@ function Get-MomentsVisualPostCandidates($frame, $viewportBounds, [bool]$include
   }
   return @{
     menus = $menus
+    viewportHash = $viewportHash
+    viewportBounds = $viewportBounds
+    geometryReused = [bool]$sameViewport
     posts = @($posts.ToArray() | Sort-Object { $_.bounds.top })
     interactionPosts = @($interactionPosts.ToArray() | Sort-Object { $_.bounds.top })
     menuDiagnostics = $menuRead.diagnostics

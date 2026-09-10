@@ -218,8 +218,10 @@ ${MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL}
 
 $script:publishActionAttempted = $false
 $script:publishStage = "initialized"
+$script:publishVerificationDiagnostic = @{}
 
 function Write-PublishResult($payload) {
+  foreach ($key in $script:publishVerificationDiagnostic.Keys) { $payload[$key] = $script:publishVerificationDiagnostic[$key] }
   $payload.stage = $script:publishStage
   $payload.actionAttempted = [bool]$script:publishActionAttempted
   $payload | ConvertTo-Json -Compress -Depth 8
@@ -657,11 +659,14 @@ function Get-PublishFullObservation(
   if ($evidenceInputTick -eq [uint32]::MaxValue) {
     return @{ ok = $false; reason = "moments_publish_input_tick_unavailable" }
   }
+  $readClock = [Diagnostics.Stopwatch]::StartNew()
   $frame = Get-MomentsVisualFrame $lock.hWnd $lock.rect $lock.pid $false $requireOwnership
+  $readDiagnostics = @{ verification_capture_ms = [int]$readClock.ElapsedMilliseconds }
   if (-not $frame.ok) { return @{ ok = $false; reason = [string]$frame.reason } }
   try {
     $rect = @{ left = 0; top = 0; width = $frame.width; height = $frame.height }
     $ocr = Get-MomentsOcrObservation $frame $rect
+    $readDiagnostics["verification_ocr_ms"] = [int]$readClock.ElapsedMilliseconds - $readDiagnostics.verification_capture_ms
     if (-not $ocr.ok) { return @{ ok = $false; reason = [string]$ocr.reason } }
     $publishButtonVisualCandidates = @()
     $viewportCompact = ""
@@ -686,6 +691,7 @@ function Get-PublishFullObservation(
       }
       $visualViewport = Get-MomentsVisualViewportBounds $relativePaneBounds $surfaceProof ([string]$lock.surfaceMode)
       if (-not $visualViewport.ok) { return @{ ok = $false; reason = [string]$visualViewport.reason } }
+      $candidateStartedAt = [int]$readClock.ElapsedMilliseconds
       $read = Get-MomentsVisualPostCandidates $frame $visualViewport.bounds
       $posts = @($read.posts)
       if ($expectedVisibleAnchor) {
@@ -693,6 +699,8 @@ function Get-PublishFullObservation(
           $post["publishAnchorMatched"] = Test-PublishPostAnchor $frame $post $expectedVisibleAnchor
         }
       }
+      $readDiagnostics["verification_candidates_ms"] = [int]$readClock.ElapsedMilliseconds - $candidateStartedAt
+      $feedOcrStartedAt = [int]$readClock.ElapsedMilliseconds
       $viewportLines = @($ocr.lines | Where-Object {
         $lineCenterX = [double]$_.bounds.left + ([double]$_.bounds.width / 2.0)
         $lineCenterY = [double]$_.bounds.top + ([double]$_.bounds.height / 2.0)
@@ -721,6 +729,11 @@ function Get-PublishFullObservation(
         }
       }
       $viewportHash = Get-MomentsPixelHash $frame $visualViewport.bounds
+      $readDiagnostics["verification_feed_ocr_ms"] = [int]$readClock.ElapsedMilliseconds - $feedOcrStartedAt
+      $readDiagnostics["verification_post_count"] = [int]$posts.Count
+      $readDiagnostics["verification_text_length"] = [int]$viewportCompact.Length
+      $readDiagnostics["verification_anchor_present"] = [bool]($expectedVisibleAnchor -and $viewportCompact.IndexOf($expectedVisibleAnchor, [StringComparison]::Ordinal) -ge 0)
+      if ($expectedVisibleAnchor) { $script:publishVerificationDiagnostic = $readDiagnostics }
     }
     return @{
       ok = $true

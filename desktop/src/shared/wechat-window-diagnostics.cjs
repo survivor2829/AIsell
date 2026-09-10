@@ -1,6 +1,6 @@
 const STAGES = new Set(["bootstrap", "compile", "process", "enumerate", "select", "shell", "visual", "recover", "selected", "restore", "focus", "verify", "complete"]);
 const MODES = new Set(["exact_hwnd", "render_child", "native_main", "shell_navigation", "visual_navigation"]);
-const MOMENTS_STAGES = new Set(["bootstrap", "window_identity", "moments_entry", "discover_entry", "first_capture", "first_surface", "first_candidates", "second_capture", "second_surface", "second_candidates", "complete"]);
+const MOMENTS_STAGES = new Set(["bootstrap", "window_identity", "moments_entry", "discover_entry", "first_capture", "first_surface", "first_candidates", "stability_wait", "second_capture", "second_surface", "second_candidates", "complete"]);
 const COUNTERS = ["elapsed_ms", "total_ms", "timeout_ms", "process_count", "native_count", "candidate_count", "main_count", "render_count", "hidden_count", "minimized_count", "rejected_layout_count", "recovery_candidate_count", "recovery_main_count",
   ...[...STAGES].map((stage) => `${stage}_ms`)];
 
@@ -8,8 +8,20 @@ const COUNTERS = ["elapsed_ms", "total_ms", "timeout_ms", "process_count", "nati
 function sanitizeWechatWindowDiagnostics(source = {}) {
   if (!source || typeof source !== "object" || Array.isArray(source)) return {};
   const detail = {};
+  const scans = Array.isArray(source.discover_scans) ? source.discover_scans : [];
+  const latestScan = scans.at(-1) || {};
+  const discover = source.discover && typeof source.discover === "object" ? source.discover : {};
+  const discoverFields = {
+    moments_discover_scan_ms: latestScan.elapsed_ms,
+    moments_discover_candidate_count: discover.candidateCount ?? latestScan.candidates,
+    moments_discover_match_count: discover.exactMatchCount ?? latestScan.matches
+  };
+  for (const [key, observed] of Object.entries(discoverFields)) {
+    const value = source[key] ?? observed;
+    if (Number.isFinite(value) && value >= 0 && value <= 86_400_000) detail[key] = Math.round(value);
+  }
   if (MOMENTS_STAGES.has(source.moments_stage)) detail.moments_stage = source.moments_stage;
-  for (const key of ["moments_elapsed_ms", "moments_timeout_ms"]) {
+  for (const key of ["moments_elapsed_ms", "moments_timeout_ms", ...[...MOMENTS_STAGES].map((stage) => `moments_${stage}_ms`)]) {
     if (Number.isFinite(source[key]) && source[key] >= 0 && source[key] <= 86_400_000) detail[key] = Math.round(source[key]);
   }
   if (STAGES.has(source.window_stage)) detail.window_stage = source.window_stage;
@@ -35,9 +47,14 @@ function readWechatWindowDiagnostics(stderr, elapsedMs, timeoutMs) {
 }
 
 function readMomentsDiagnostics(stderr, elapsedMs, timeoutMs) {
+  let detail = {};
+  for (const line of String(stderr || "").split(/\r?\n/)) {
+    if (!line.startsWith("moments_diagnostic:") || line.length > 4096) continue;
+    try { detail = { ...detail, ...sanitizeWechatWindowDiagnostics(JSON.parse(line.slice("moments_diagnostic:".length))) }; } catch {}
+  }
   const stage = Array.from(String(stderr || "").matchAll(/moments_(?:navigation|probe)_stage:([a-z_]+)/g)).at(-1)?.[1];
-  if (!MOMENTS_STAGES.has(stage)) return {};
-  return sanitizeWechatWindowDiagnostics({ moments_stage: stage, moments_elapsed_ms: elapsedMs, moments_timeout_ms: timeoutMs });
+  if (!MOMENTS_STAGES.has(stage) && !detail.moments_stage) return {};
+  return sanitizeWechatWindowDiagnostics({ ...detail, moments_stage: detail.moments_stage || stage, moments_elapsed_ms: elapsedMs, moments_timeout_ms: timeoutMs });
 }
 
 module.exports = { sanitizeWechatWindowDiagnostics, readWechatWindowDiagnostics, readMomentsDiagnostics };

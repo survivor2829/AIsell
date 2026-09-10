@@ -6,6 +6,8 @@ assert.deepEqual(readMomentsDiagnostics("private text\nmoments_navigation_stage:
   { moments_stage: "second_capture", moments_elapsed_ms: 123, moments_timeout_ms: 30000 });
 assert.deepEqual(readMomentsDiagnostics("moments_probe_stage:unknown", 1, 2), {});
 assert.deepEqual(readMomentsDiagnostics("moments_probe_stage:complete", -1, 86400001), { moments_stage: "complete" });
+assert.deepEqual(readMomentsDiagnostics('moments_probe_stage:second_candidates\nmoments_diagnostic:{"moments_stage":"second_candidates","moments_first_candidates_ms":4200,"private_text":"excluded"}', 30000, 30000),
+  { moments_stage: "second_candidates", moments_first_candidates_ms: 4200, moments_elapsed_ms: 30000, moments_timeout_ms: 30000 });
 
 const calls = [];
 const originalLoad = Module._load;

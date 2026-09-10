@@ -215,6 +215,10 @@ function lastFailureBreadcrumb(value = {}) {
 
 function normalizeVerificationDiagnostics(value = {}) {
   return {
+    ...Object.fromEntries(["verification_capture_ms", "verification_ocr_ms", "verification_candidates_ms", "verification_feed_ocr_ms", "verification_post_count", "verification_text_length"]
+      .filter((key) => Number.isFinite(value[key]) && value[key] >= 0)
+      .map((key) => [key, boundedInteger(value[key], 0, 300_000)])),
+    ...(typeof value.verification_anchor_present === "boolean" ? { verification_anchor_present: value.verification_anchor_present } : {}),
     verification_attempts: boundedInteger(
       value.verification_attempts ?? value.verificationAttempts,
       0,
