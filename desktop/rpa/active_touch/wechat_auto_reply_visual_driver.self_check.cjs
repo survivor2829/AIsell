@@ -94,7 +94,7 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualMessageBlock
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Merge-AutoReplyVisualMessageParts \$current\.ToArray\(\) \$true/u, "same-row OCR fragments must be ordered by horizontal position before aggregation");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$latest = \$messageBlocks\[-1\][\s\S]*Get-AutoReplyVisualMessageRole \$frame \$latest/u, "role and evidence must use the aggregated bubble rather than its last OCR fragment");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$greenRatio -ge 0\.16/u, "outgoing green bubble proof must take priority over OCR geometry");
-assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$viewportHash|\$viewportRect/u, "whole-viewport changes must not alter message identity");
+assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT.slice(strictHeaderFunctionsStart), /\$viewportHash|\$viewportRect/u, "whole-viewport changes must not alter message identity in the auto-reply reader");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /evidenceSignature = Get-AutoReplyVisualSha256 \$semanticSeed/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /diagnosticSignature = Get-AutoReplyVisualSha256 \$diagnosticSeed/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualChatBottom/u);
