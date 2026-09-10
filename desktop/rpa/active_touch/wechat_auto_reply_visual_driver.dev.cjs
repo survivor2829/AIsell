@@ -1014,7 +1014,7 @@ function Get-AutoReplyVisualRefinedHeaderLines($frame, [double]$sidebarRight) {
   if ($null -ne $frame.autoReplyHeaderOcr) { return $frame.autoReplyHeaderOcr }
   $left = [Math]::Floor($sidebarRight + (Scale-AutoReplyVisualMetric 8.0))
   $top = [Math]::Floor((Scale-AutoReplyVisualMetric 20.0))
-  $right = [Math]::Min([double]$frame.width - (Scale-AutoReplyVisualMetric 80.0), $sidebarRight + (Scale-AutoReplyVisualMetric 440.0))
+  $right = [double]$frame.width - (Scale-AutoReplyVisualMetric 80.0)
   $bottom = [Math]::Min([double]$frame.height, (Scale-AutoReplyVisualMetric 108.0))
   $rect = @{ left = $left; top = $top; width = $right - $left; height = $bottom - $top }
   $ocr = Get-MomentsScaledOcrObservation $frame $rect 3
