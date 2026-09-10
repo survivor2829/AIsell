@@ -2,7 +2,7 @@ const crypto = require("node:crypto");
 const path = require("node:path");
 const { momentsPostFingerprint } = require("./moments_dry_run.dev.cjs");
 const { MOMENTS_VISUAL_READONLY_POWERSHELL } = require("./moments_visual_probe.dev.cjs");
-const { validMomentsSurfaceRoot } = require("./moments_surface_profile.dev.cjs");
+const { isVisualMomentsSurface, validMomentsRenderSurface, validMomentsSurfaceRoot } = require("./moments_surface_profile.dev.cjs");
 const {
   MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL
 } = require("./moments_surface_evidence.dev.cjs");
@@ -208,7 +208,7 @@ function validVisualContext(context = {}) {
     && typeof window.className === "string"
     && Boolean(window.className.trim())
     && window.automationId === ""
-    && window.identityMode === "visual_mmui_render"
+    && isVisualMomentsSurface(window)
     && window.rootControlType === "ControlType.Window"
     && Number.isInteger(window.pid)
     && window.pid > 0
@@ -218,12 +218,7 @@ function validVisualContext(context = {}) {
     && window.feedAutomationId === ""
     && window.feedRuntimeId === ""
     && window.feedCount === 0
-    && window.renderPaneName === "MMUIRenderSubWindowHW"
-    && typeof window.renderPaneAutomationId === "string"
-    && window.renderPaneControlType === "ControlType.Pane"
-    && window.renderPaneProcessId === window.pid
-    && typeof window.renderPaneRuntimeId === "string"
-    && Boolean(window.renderPaneRuntimeId.trim())
+    && validMomentsRenderSurface(window)
     && validBounds(windowBounds, 299, 299)
     && boundsWithin(window.renderPaneBounds, windowBounds);
   const interactionAnchor = snapshot.source === "visual:interaction_anchor";
@@ -962,13 +957,11 @@ function Get-LockedVisualRoot($context) {
       [string]$expected.title -ceq "朋友圈" -and [string]$expected.rootName -ceq "朋友圈") -or
     ($surfaceMode -ceq "integrated" -and
       [string]$expected.title -ceq "微信" -and [string]$expected.rootName -ceq "微信")
-  if ($expected -eq $null -or [string]$expected.identityMode -cne "visual_mmui_render" -or
+  if ($expected -eq $null -or -not (Test-MomentsRenderSurfaceIdentity $expected) -or
     -not $surfaceIdentityValid -or [string]::IsNullOrWhiteSpace([string]$expected.className) -or
     [string]$expected.rootControlType -cne "ControlType.Window" -or [string]$expected.automationId -cne "" -or
     [string]$expected.feedAutomationId -cne "" -or [string]$expected.feedRuntimeId -cne "" -or
-    [int]$expected.feedCount -ne 0 -or [string]$expected.renderPaneName -cne "MMUIRenderSubWindowHW" -or
-    [string]$expected.renderPaneControlType -cne "ControlType.Pane" -or
-    [string]::IsNullOrWhiteSpace([string]$expected.renderPaneRuntimeId)) {
+    [int]$expected.feedCount -ne 0) {
     return @{ ok = $false; reason = "moments_visual_target_lock_invalid" }
   }
   $expectedPid = [int]$expected.pid

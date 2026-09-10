@@ -1343,7 +1343,7 @@ try {
   assert.equal(locateConversation(dir, () => ["其他窗口"]).blocked_reason, "conversation_window_not_found");
   assert.equal(locateConversation(dir, () => ["测试客户 - 企业微信"]).state.conversation_located, true);
   assert.equal(verifyWindowTitle(dir, () => ["测试客户 - 企业微信"]).state.conversation_verified, true);
-  const openNoWindow = openConversationDryRun(dir, () => ({ ok: false }), () => []);
+  const openNoWindow = openConversationDryRun(dir, () => ({ ok: false, reason: "wechat_window_not_found" }), () => []);
   assert.equal(openNoWindow.blocked_reason, "wechat_window_not_found");
   assert.equal(openNoWindow.state.conversation_located, false);
   assert.equal(openConversationDryRun(dir, () => ({ ok: false, reason: "wechat_focus_failed" }), () => []).blocked_reason, "wechat_focus_failed");
@@ -1352,7 +1352,7 @@ try {
     "customer_conversation_not_found"
   );
   assert.equal(openConversationDryRun(dir, () => ({ ok: true, title: "企业微信" }), () => ["测试客户 - 企业微信"]).ok, true);
-  assert.equal(searchConversationDryRun(dir, () => ({ ok: false }), () => []).blocked_reason, "wechat_window_not_found");
+  assert.equal(searchConversationDryRun(dir, () => ({ ok: false, reason: "wechat_window_not_found" }), () => []).blocked_reason, "wechat_window_not_found");
   let searchQuery = "";
   searchConversationDryRun(dir, (query) => {
     searchQuery = query;
@@ -1366,9 +1366,16 @@ try {
     searchConversationDryRun(dir, () => ({ ok: true, title: "企业微信" }), () => ["测试客户 - 企业微信"]).state.conversation_verified,
     true
   );
-  const clickNoWindow = clickSearchResultDryRun(dir, () => ({ ok: false }), () => []);
+  const clickNoWindow = clickSearchResultDryRun(dir, () => ({ ok: false, reason: "wechat_window_not_found" }), () => []);
   assert.equal(clickNoWindow.blocked_reason, "wechat_window_not_found");
   assert.equal(clickNoWindow.state.conversation_located, false);
+  for (const reason of ["wechat_clipboard_restore_unsupported", "powershell_output_invalid", "exact_search_result_not_found"]) {
+    const failed = clickSearchResultDryRun(dir, () => ({ ok: false, reason }), () => []);
+    assert.equal(failed.blocked_reason, reason, "non-window failures must survive the workflow boundary");
+    assert.equal(failed.state.conversation_located, false);
+  }
+  assert.equal(clickSearchResultDryRun(dir, () => ({ ok: false, reason: "untrusted private data" }), () => []).blocked_reason,
+    "wechat_operation_failed", "unknown output is neither a missing window nor safe diagnostic text");
   const clickExternalInput = clickSearchResultDryRun(
     dir,
     () => ({

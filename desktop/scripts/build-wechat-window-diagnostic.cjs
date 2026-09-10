@@ -1,19 +1,32 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { NORMALIZE_WECHAT_WINDOW_SCRIPT } = require("../rpa/active_touch/wechat_window_driver.cjs");
+const { MOMENTS_PUBLISH_POWERSHELL } = require("../rpa/active_touch/moments_publish_driver.dev.cjs");
 
 // Reuse discovery and selection from the application, stopping before any
 // activation, resizing or input. Export only technical metadata and nav labels.
 function buildDiagnostic(outputDirectory) {
   const stop = NORMALIZE_WECHAT_WINDOW_SCRIPT.indexOf("$expectedHandleWasProvided =");
   if (stop < 0) throw new Error("Window discovery boundary missing");
+  const publishStop = MOMENTS_PUBLISH_POWERSHELL.indexOf("\ntry {\n  $contextJson =");
+  if (publishStop < 0) throw new Error("Publish observation boundary missing");
   const probe = `
 $env:XIAOXI_EXPECTED_PID = ''
 $env:XIAOXI_EXPECTED_HWND = ''
 $env:XIAOXI_WECHAT_INSPECT_ONLY = '1'
 ${NORMALIZE_WECHAT_WINDOW_SCRIPT.slice(0, stop)}
+${MOMENTS_PUBLISH_POWERSHELL.slice(0, publishStop)}
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+$clipboard = @{ kind = 'unknown' }
+try {
+  # Report only the format category, never its content or file names.
+  $clipboard.kind = if ([Windows.Forms.Clipboard]::ContainsFileDropList()) { 'files' }
+    elseif ([Windows.Forms.Clipboard]::ContainsImage()) { 'image' }
+    elseif ([Windows.Forms.Clipboard]::ContainsAudio()) { 'audio' }
+    elseif ([Windows.Forms.Clipboard]::ContainsText()) { 'text' }
+    else { 'empty_or_other' }
+} catch { $clipboard.kind = 'unavailable' }
 $windows = @()
 foreach ($handle in [Win32WechatWindow]::WindowsForProcesses([int[]]@($wechatProcesses.Keys))) {
   $candidate = Get-WechatWindowCandidate $handle $true
@@ -29,10 +42,43 @@ foreach ($handle in [Win32WechatWindow]::WindowsForProcesses([int[]]@($wechatPro
     try {
       $root = [System.Windows.Automation.AutomationElement]::FromHandle($handle)
       $bounds = $root.Current.BoundingRectangle
+      $nativeBounds = New-Object Win32WechatMomentsPublish+RECT
+      if (-not [Win32WechatMomentsPublish]::GetWindowRect($handle, [ref]$nativeBounds)) { throw 'window_bounds_unavailable' }
       $row.rootControl = $root.Current.ControlType.ProgrammaticName
       $row.rootClass = $root.Current.ClassName
       $row.rootFramework = $root.Current.FrameworkId
       $row.rootSameProcess = $root.Current.ProcessId -eq $candidate.pid
+      $surface = Get-MomentsRenderPaneEvidence $root $candidate.pid
+      $row.surface = @{ ok = [bool]$surface.ok; reason = [string]$surface.reason }
+      if ($surface.ok) {
+        $row.surface.kind = [string]$surface.pane.controlType
+        $row.surface.width = $surface.pane.bounds.width
+        $row.surface.height = $surface.pane.bounds.height
+        $row.surface.relativeX = $surface.pane.bounds.left - $nativeBounds.Left
+        $row.surface.relativeY = $surface.pane.bounds.top - $nativeBounds.Top
+      }
+      # Observe the actual foreground page and camera; no navigation, clicks,
+      # input, clipboard writes, uploads or publishing entry point is executed.
+      if ($candidate.title -cin @('微信','朋友圈')) {
+        $dpi = [Win32WechatMomentsPublish]::GetDpiForWindow($handle)
+        $context = @{
+          expectedPid=$candidate.pid; expectedHWnd=[string]$handle.ToInt64()
+          expectedX=$nativeBounds.Left; expectedY=$nativeBounds.Top
+          expectedWidth=$candidate.width; expectedHeight=$candidate.height; expectedDpi=$dpi
+          expectedTitle=$candidate.title; expectedClassName=$candidate.windowClass
+          expectedSurfaceMode=$(if ($candidate.title -ceq '朋友圈') { 'standalone' } else { 'integrated' })
+        }
+        $lock = Get-PublishWindowLock $context
+        $row.moments = @{ ok=[bool]$lock.ok; reason=[string]$lock.reason }
+        if ($lock.ok) {
+          $page = Test-PublishMomentsSurface $lock
+          $row.moments = @{ ok=[bool]$page.ok; reason=[string]$page.reason }
+          if ($page.ok) {
+            $camera = Find-PublishCameraTarget $lock
+            $row.moments.camera = @{ ok=[bool]$camera.ok; reason=[string]$camera.reason }
+          }
+        }
+      }
       # Name-independent structure distinguishes renamed controls from a missing
       # accessibility tree. Do not export arbitrary descendant names or values.
       $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
@@ -59,7 +105,9 @@ foreach ($handle in [Win32WechatWindow]::WindowsForProcesses([int[]]@($wechatPro
             $box.Top -ge ($bounds.Top+$bounds.Height*0.11) -and
             $box.Bottom -le ($bounds.Top+$bounds.Height*0.60) -and $row.sidebarControls.Count -lt 20) {
           $navMetadata = $metadata.Clone()
-          $navMetadata.name = ([string]$item.Name).Substring(0,[Math]::Min(80,([string]$item.Name).Length))
+          if (@('聊天','通讯录','Chats','Contacts','微信','WeChat','联系人','通訊錄','发现','朋友圈') -ccontains ([string]$item.Name).Trim()) {
+            $navMetadata.name = ([string]$item.Name).Trim()
+          }
           $navMetadata.x = [Math]::Round($box.Left-$bounds.Left)
           $navMetadata.y = [Math]::Round($box.Top-$bounds.Top)
           $navMetadata.width = $box.Width; $navMetadata.height = $box.Height
@@ -89,10 +137,12 @@ foreach ($handle in [Win32WechatWindow]::WindowsForProcesses([int[]]@($wechatPro
   }
   $windows += $row
 }
-@{ schema=2; readOnly=$true; osVersion=[Environment]::OSVersion.Version.ToString(); windows=$windows } | ConvertTo-Json -Depth 8 -Compress
+@{ schema=3; readOnly=$true; clipboard=$clipboard; osVersion=[Environment]::OSVersion.Version.ToString(); windows=$windows } | ConvertTo-Json -Depth 8 -Compress
 `;
   const encoded = Buffer.from(probe, "utf16le").toString("base64");
   const wrapper = `$ErrorActionPreference = 'Stop'
+Write-Host 'Please switch back to WeChat. Read-only collection starts in 6 seconds.'
+Start-Sleep -Seconds 6
 $probe = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encoded}'))
 $job = Start-Job -ScriptBlock { param($code) & ([ScriptBlock]::Create($code)) } -ArgumentList $probe
 try {
@@ -100,7 +150,7 @@ try {
     $result = @(Receive-Job $job -ErrorAction SilentlyContinue | Where-Object { $_ -is [string] -and $_.StartsWith('{') }) | Select-Object -Last 1
     if (-not $result) { $result = '{"error":"diagnostic_failed"}' }
   } else { $result = '{"error":"diagnostic_timeout"}' }
-  $destination = Join-Path $PSScriptRoot 'wechat-window-diagnostic-v2.json'
+  $destination = Join-Path $PSScriptRoot ('wechat-compatibility-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')
   [IO.File]::WriteAllText($destination, $result, (New-Object Text.UTF8Encoding($false)))
   Write-Host "Saved: $destination"
 } finally { Stop-Job $job -ErrorAction SilentlyContinue; Remove-Job $job -Force -ErrorAction SilentlyContinue }

@@ -1256,7 +1256,7 @@ for (const name of ["comment", "commentOccurrenceCheck", "commentReadback", "ins
   assert.equal(result.status, "blocked");
   assert.equal(result.actionAttempted, false);
 }
-assert.match(actionSource, /identityMode === "visual_mmui_render"/u);
+assert.match(actionSource, /isVisualMomentsSurface\(window\)/u);
 assert.match(actionSource, /version: interactionAnchor \? 7 : 6/u);
 assert.match(actionSource, /visual:interaction_anchor/u);
 assert.match(actionSource, /surfaceMode: String\(window\.surfaceMode \?\? ""\)/u);
@@ -3666,4 +3666,5 @@ const commentPromiseHarness = spawnSync(process.execPath, ["-e", commentPromiseH
 });
 assert.equal(commentPromiseHarness.status, 0, commentPromiseHarness.stderr || "comment Promise normalization harness must pass");
 
+require("./wechat_render_surface.self_check.cjs");
 console.log("moments visual self-check passed");

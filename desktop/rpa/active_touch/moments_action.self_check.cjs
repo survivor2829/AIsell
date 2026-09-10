@@ -742,6 +742,24 @@ async function main() {
       [540, 200],
       "same-screen interaction anchors must be returned bottom-to-top"
     );
+    const nativeWindow = {
+      ...VISUAL_WINDOW, identityMode: "visual_win32_client", renderPaneName: "Win32ClientSurface",
+      renderPaneControlType: "Win32.Client", renderPaneRuntimeId: "win32:42:84:12345"
+    };
+    const nativeDir = path.join(root, "native-client-observe-action");
+    const nativePrepared = prepareMomentsDryRun(nativeDir, {
+      mode: "random", likeEnabled: true, commentEnabled: false, commentText: ""
+    }, () => ({ ...nativeWindow, posts: [interactionAnchorPost(420, "b")] }));
+    assert.equal(nativePrepared.ok, true, "empty-UIA surface must pass the complete observation dispatcher");
+    const nativeSnapshot = nativePrepared.post_snapshot;
+    const nativeContext = { expectedWindow: nativePrepared.window, postSnapshot: nativeSnapshot,
+      observationId: nativeSnapshot.observation_id, deadlineMs: Date.now() + 30_000 };
+    assert.equal(validVisualContext(nativeContext), true, "native identity must reach the action lock without a fake UIA pane");
+    assert.equal(validVisualContext({ ...nativeContext, expectedWindow: { ...nativePrepared.window,
+      renderPaneRuntimeId: "win32:42:85:12345" } }), false, "a different native HWND must not pass the lock");
+    const nativeInspect = await inspectMomentsMenu({ baseDir: nativeDir,
+      observationId: nativeSnapshot.observation_id, driver: verifiedDriver(nativeSnapshot.observation_id) });
+    assert.equal(nativeInspect.ok, true, "stored native observations must dispatch to the visual action driver");
     const secondAnchor = interactionAnchorDryRun.post_snapshots[1];
     assert.equal(validVisualContext({
       expectedWindow: interactionAnchorDryRun.window,

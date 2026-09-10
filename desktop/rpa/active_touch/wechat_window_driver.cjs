@@ -1,3 +1,4 @@
+const { WECHAT_RENDER_SURFACE_POWERSHELL } = require("./wechat_render_surface.cjs");
 const { spawn, spawnSync } = require("node:child_process");
 const { findWechatExecutable } = require("../contact_sync/contact_sync_cli.cjs");
 const { readWechatWindowDiagnostics, readMomentsDiagnostics } = require("../../src/shared/wechat-window-diagnostics.cjs");
@@ -1042,6 +1043,7 @@ Set-WechatWindowStage "complete"
 `;
 
 const INSPECT_WECHAT_RPA_SURFACE_SCRIPT = `
+${WECHAT_RENDER_SURFACE_POWERSHELL}
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Windows.Forms
@@ -1277,7 +1279,9 @@ $layoutMode = $targetLayoutMode
 $normalized = [Math]::Abs($rect.Left - $targetLeft) -le 3 -and [Math]::Abs($rect.Top - $targetTop) -le 3 -and
   [Math]::Abs($width - $targetWidth) -le 3 -and [Math]::Abs($height - $targetHeight) -le 3
 if ($surfaceMode -ceq "integrated") {
-  $normalized = $normalized -and [Win32WechatRpaSurfaceInspector]::HasDescendantClass($hWnd, "MMUIRenderSubWindowHW")
+  try { $surfaceRoot = [System.Windows.Automation.AutomationElement]::FromHandle($hWnd) } catch { $surfaceRoot = $null }
+  $surfaceEvidence = Get-MomentsRenderPaneEvidence $surfaceRoot $expectedPid
+  $normalized = $normalized -and [bool]$surfaceEvidence.ok
 }
 if (-not $normalized) {
   @{ ok = $false; reason = "wechat_window_not_ready"; pid = $expectedPid; hWnd = $expectedHWnd } | ConvertTo-Json -Compress
@@ -1613,7 +1617,7 @@ $callback = [Win32WechatWindowSearch+EnumWindowsProc]{
 }
 [void][Win32WechatWindowSearch]::EnumWindows($callback, [IntPtr]::Zero)
 if ($matched -eq $null) {
-  @{ ok = $false } | ConvertTo-Json -Compress
+  @{ ok = $false; reason = "wechat_window_not_found" } | ConvertTo-Json -Compress
   exit
 }
 if (-not $matched.focused) {

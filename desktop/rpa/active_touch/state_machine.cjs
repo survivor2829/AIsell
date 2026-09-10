@@ -292,10 +292,15 @@ function wechatWindowReason(result) {
     "wechat_window_ambiguous",
     "wechat_window_identity_mismatch",
     "personal_wechat_main_window_not_found",
+    "wechat_window_not_found",
+    "wechat_clipboard_restore_unsupported",
+    "wechat_window_identity_missing",
+    "exact_search_result_not_found",
+    "powershell_output_invalid",
     "powershell_timeout",
     "powershell_failed"
   ].includes(reason)) return reason;
-  return "wechat_window_not_found";
+  return "wechat_operation_failed";
 }
 
 function wechatWindowBlockText(reason) {
@@ -312,7 +317,12 @@ function wechatWindowBlockText(reason) {
   if (reason === "personal_wechat_main_window_not_found") return "已阻断：未识别到个人微信主窗口";
   if (reason === "powershell_timeout") return "已阻断：微信窗口适配程序执行超时";
   if (reason === "powershell_failed") return "已阻断：微信窗口适配程序启动失败，请检查权限或安全软件";
-  return "已阻断：未找到微信窗口";
+  if (reason === "wechat_window_not_found") return "已阻断：未找到微信窗口";
+  if (reason === "wechat_clipboard_restore_unsupported") return "已停止：剪贴板中的图片或文件暂时无法安全保留，请复制一段文字后重试";
+  if (reason === "wechat_window_identity_missing") return "已停止：缺少已确认的微信窗口身份，请重新启动任务";
+  if (reason === "exact_search_result_not_found") return "已停止：未找到指定联系人的准确搜索结果";
+  if (reason === "powershell_output_invalid") return "已停止：微信操作程序没有返回有效结果，请提交本次诊断";
+  return "已停止：微信操作失败，尚未取得具体原因，请提交本次诊断";
 }
 
 function send(baseDir = __dirname, options = {}) {

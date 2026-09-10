@@ -1,3 +1,4 @@
+const { WECHAT_RENDER_SURFACE_POWERSHELL } = require("./wechat_render_surface.cjs");
 const MOMENTS_VISUAL_READONLY_POWERSHELL = String.raw`
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
@@ -85,42 +86,7 @@ function Get-MomentsVisualRuntimeId([System.Windows.Automation.AutomationElement
   return ""
 }
 
-function Get-MomentsRenderPaneEvidence([System.Windows.Automation.AutomationElement]$root, [int]$expectedPid) {
-  $paneType = [System.Windows.Automation.PropertyCondition]::new(
-    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-    [System.Windows.Automation.ControlType]::Pane
-  )
-  $panes = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $paneType)
-  $matches = New-Object System.Collections.Generic.List[object]
-  for ($index = 0; $index -lt $panes.Count; $index++) {
-    $pane = $panes.Item($index)
-    try {
-      if ([string]$pane.Current.Name -cne "MMUIRenderSubWindowHW" -or [int]$pane.Current.ProcessId -ne $expectedPid) { continue }
-      $rect = $pane.Current.BoundingRectangle
-      $automationId = [string]$pane.Current.AutomationId
-      $controlType = [string]$pane.Current.ControlType.ProgrammaticName
-    } catch { continue }
-    $runtimeId = Get-MomentsVisualRuntimeId $pane
-    if (-not $runtimeId -or $controlType -cne "ControlType.Pane" -or $rect.Width -le 0 -or $rect.Height -le 0) { continue }
-    [void]$matches.Add(@{
-      element = $pane
-      name = "MMUIRenderSubWindowHW"
-      automationId = $automationId
-      controlType = $controlType
-      processId = $expectedPid
-      runtimeId = $runtimeId
-      bounds = @{
-        left = [double]$rect.Left
-        top = [double]$rect.Top
-        width = [double]$rect.Width
-        height = [double]$rect.Height
-      }
-    })
-  }
-  if ($matches.Count -eq 0) { return @{ ok = $false; reason = "moments_render_pane_not_found" } }
-  if ($matches.Count -ne 1) { return @{ ok = $false; reason = "moments_render_pane_ambiguous"; count = $matches.Count } }
-  return @{ ok = $true; pane = $matches[0] }
-}
+${WECHAT_RENDER_SURFACE_POWERSHELL}
 
 function Test-MomentsVisualViewportOwned($windowRect, [IntPtr]$expectedHWnd, [int]$expectedPid) {
   $width = [double]($windowRect.Right - $windowRect.Left)

@@ -248,48 +248,6 @@ function Write-MomentsOpenSuccess($window, [string]$surfaceMode, [bool]$alreadyO
   }
 }
 
-function Get-MomentsRuntimeId([System.Windows.Automation.AutomationElement]$element) {
-  try {
-    $runtimeId = $element.GetRuntimeId()
-    if ($runtimeId -and $runtimeId.Count -gt 0) { return [string]($runtimeId -join ".") }
-  } catch {}
-  return ""
-}
-
-function Get-MomentsRenderPaneEvidence([System.Windows.Automation.AutomationElement]$root, [int]$expectedPid) {
-  $paneType = [System.Windows.Automation.PropertyCondition]::new(
-    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-    [System.Windows.Automation.ControlType]::Pane
-  )
-  $panes = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $paneType)
-  $matches = New-Object System.Collections.Generic.List[object]
-  for ($index = 0; $index -lt $panes.Count; $index++) {
-    $pane = $panes.Item($index)
-    try {
-      if ([string]$pane.Current.Name -cne "MMUIRenderSubWindowHW" -or [int]$pane.Current.ProcessId -ne $expectedPid) { continue }
-      $rect = $pane.Current.BoundingRectangle
-      $runtimeId = Get-MomentsRuntimeId $pane
-      if (-not $runtimeId -or $rect.Width -le 0 -or $rect.Height -le 0) { continue }
-      [void]$matches.Add(@{
-        name = [string]$pane.Current.Name
-        automationId = [string]$pane.Current.AutomationId
-        controlType = [string]$pane.Current.ControlType.ProgrammaticName
-        processId = [int]$pane.Current.ProcessId
-        runtimeId = $runtimeId
-        bounds = @{
-          left = [double]$rect.Left
-          top = [double]$rect.Top
-          width = [double]$rect.Width
-          height = [double]$rect.Height
-        }
-      })
-    } catch {}
-  }
-  if ($matches.Count -eq 0) { return @{ ok = $false; reason = "moments_render_pane_not_found" } }
-  if ($matches.Count -ne 1) { return @{ ok = $false; reason = "moments_render_pane_ambiguous"; count = $matches.Count } }
-  return @{ ok = $true; pane = $matches[0] }
-}
-
 function Test-MomentsBoundsInside($inner, $outer) {
   if ($inner -eq $null -or $outer -eq $null) { return $false }
   return [double]$inner.left -ge [double]$outer.left -and
@@ -1059,7 +1017,7 @@ function Scroll-Moments {
   [int]$expectedWidth = 0
   [int]$expectedHeight = 0
   if ($expected -eq $null -or @("standalone", "integrated") -notcontains $surfaceMode -or
-    @("automation_id", "structural_sns_feed", "visual_mmui_render") -notcontains $identityMode -or
+    @("automation_id", "structural_sns_feed", "visual_mmui_render", "visual_win32_client") -notcontains $identityMode -or
     -not [int]::TryParse([string]$expected.pid, [ref]$expectedPid) -or $expectedPid -le 0 -or
     -not [int64]::TryParse([string]$expected.hWnd, [ref]$expectedHWnd) -or $expectedHWnd -le 0 -or
     -not [int]::TryParse([string]$expected.left, [ref]$expectedLeft) -or
@@ -1106,7 +1064,8 @@ function Scroll-Moments {
     width = [double]$window.width
     height = [double]$window.height
   }
-  if ($identityMode -ceq "visual_mmui_render") {
+  if (@("visual_mmui_render", "visual_win32_client") -ccontains $identityMode) {
+    if (-not (Test-MomentsRenderSurfaceIdentity $expected)) { Write-Result @{ ok = $false; reason = "moments_visual_target_lock_invalid" } }
     $paneEvidence = Get-MomentsRenderPaneEvidence $root $expectedPid
     if (-not $paneEvidence.ok) { Write-Result $paneEvidence }
     if ([string]$paneEvidence.pane.name -cne [string]$expected.renderPaneName -or

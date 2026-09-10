@@ -8,6 +8,8 @@ const { runPowerShell } = require("./wechat_window_driver.cjs");
 const { probeVisualWechatMomentsWindow } = require("./moments_visual_dry_run.dev.cjs");
 const {
   normalizeExpectedMomentsSurface,
+  isVisualMomentsSurface,
+  validMomentsRenderSurface,
   validMomentsSurfaceRoot
 } = require("./moments_surface_profile.dev.cjs");
 
@@ -801,16 +803,12 @@ function validMomentsWindowIdentity(windowResult) {
     width: Number(windowResult?.width),
     height: Number(windowResult?.height)
   };
-  return identityMode === "visual_mmui_render"
+  return isVisualMomentsSurface(windowResult)
     && automationId === ""
     && windowResult?.feedAutomationId === ""
     && windowResult?.feedRuntimeId === ""
     && windowResult?.feedCount === 0
-    && windowResult?.renderPaneName === "MMUIRenderSubWindowHW"
-    && typeof windowResult?.renderPaneAutomationId === "string"
-    && windowResult?.renderPaneControlType === "ControlType.Pane"
-    && Number(windowResult?.renderPaneProcessId) === Number(windowResult?.pid)
-    && Boolean(String(windowResult?.renderPaneRuntimeId ?? "").trim())
+    && validMomentsRenderSurface(windowResult)
     && boundsWithin(windowResult?.renderPaneBounds, windowBounds);
 }
 
@@ -1141,7 +1139,7 @@ function visualMomentsPostSnapshot(windowResult, verifiedWindow, options = {}) {
 }
 
 function momentsPostSnapshot(windowResult, verifiedWindow, options = {}) {
-  if (windowResult?.identityMode === "visual_mmui_render") {
+  if (isVisualMomentsSurface(windowResult)) {
     return visualMomentsPostSnapshot(windowResult, verifiedWindow, options);
   }
   const posts = Array.isArray(windowResult?.posts) ? windowResult.posts : [];
@@ -1324,7 +1322,7 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
     allowBodyOnly: payload.allowBodyOnly === true,
     targetPost
   };
-  const interactionCandidates = windowResult.identityMode === "visual_mmui_render"
+  const interactionCandidates = isVisualMomentsSurface(windowResult)
     && likeEnabled
     && !commentEnabled
     && !targetPost
@@ -1358,7 +1356,7 @@ function prepareMomentsDryRun(baseDir = __dirname, payload = {}, driver = probeW
     visible_post_count: visiblePostCount,
     target_partial_visible: snapshotResult.partialVisible === true,
     position_diagnostics: snapshotResult.diagnostics,
-    verification_level: windowResult.identityMode === "visual_mmui_render" ? "visual_post_snapshot_only" : "post_snapshot_only"
+    verification_level: isVisualMomentsSurface(windowResult) ? "visual_post_snapshot_only" : "post_snapshot_only"
   };
   const nextState = {
     ...state,
