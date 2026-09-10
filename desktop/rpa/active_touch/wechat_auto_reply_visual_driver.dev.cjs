@@ -1696,9 +1696,7 @@ foreach ($name in $excludedNames) {
 }
 try { $baselines = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_BASELINES") | ConvertFrom-Json } catch { $baselines = $null }
 try { $messageBaselines = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_MESSAGE_BASELINES") | ConvertFrom-Json } catch { $messageBaselines = $null }
-try { $startupPreviewBoundaries = [Environment]::GetEnvironmentVariable("XIAOXI_STARTUP_PREVIEWS") | ConvertFrom-Json } catch { $startupPreviewBoundaries = $null }
 try { $startupMessageBoundaries = [Environment]::GetEnvironmentVariable("XIAOXI_STARTUP_MESSAGES") | ConvertFrom-Json } catch { $startupMessageBoundaries = $null }
-try { $startupUnreadBoundaries = [Environment]::GetEnvironmentVariable("XIAOXI_STARTUP_UNREAD_BOUNDARIES") | ConvertFrom-Json } catch { $startupUnreadBoundaries = $null }
 $expectedConversation = Normalize-AutoReplyVisualText ([Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_CONVERSATION"))
 $expectedMessage = Normalize-AutoReplyVisualText ([Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_MESSAGE"))
 $expectedRuntimeId = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_RUNTIME_ID")
@@ -1933,21 +1931,12 @@ try {
 
   $candidates = New-Object System.Collections.Generic.List[object]
   $candidate = $null
-  $suppressedStartupUnread = 0
   foreach ($row in $rows) {
     # OCR-only preview changes are not an event signal: small recognition jitter
     # previously caused a click on every scan. Background sessions require a
     # geometric unread badge; the already-open session uses message-area evidence.
-    $startupPreview = Get-AutoReplyVisualBoundaryText $startupPreviewBoundaries ([string]$row.conversation) "preview"
-    $newSinceStartupBoundary = $mode -cne "prime_confirm" -or
-      ($startupPreview -and -not (Test-AutoReplyVisualMessageMatch $startupPreview ([string]$row.preview)))
-    $historicalUnreadPreview = Get-AutoReplyVisualBoundaryText $startupUnreadBoundaries ([string]$row.conversation) "preview"
-    $historicalUnreadSignature = (Get-AutoReplyVisualBoundaryText $startupUnreadBoundaries ([string]$row.conversation) "signature").ToLowerInvariant()
-    $sameHistoricalUnread = (Test-AutoReplyVisualSignature $historicalUnreadSignature) -and
-      ($historicalUnreadSignature -ceq [string]$row.signature -or
-        ($historicalUnreadPreview -and (Test-AutoReplyVisualMessageMatch $historicalUnreadPreview ([string]$row.preview))))
-    if ($row.unread -and $sameHistoricalUnread) { $suppressedStartupUnread += 1 }
-    if ($row.unread -and -not $row.draft -and $newSinceStartupBoundary -and -not $sameHistoricalUnread) {
+    # A still-unread message remains pending even if it predates startup.
+    if ($row.unread -and -not $row.draft) {
       $row | Add-Member -NotePropertyName source -NotePropertyValue "unread" -Force
       [void]$candidates.Add($row)
     }
@@ -1955,7 +1944,7 @@ try {
   # An unread dot that cannot be joined to an allowlisted row is diagnostic
   # only. It must not starve a new bubble in the already-open allowlisted chat.
   $unresolvedUnreadBadgeCount = 0
-  if ($candidates.Count -eq 0 -and $suppressedStartupUnread -eq 0) {
+  if ($candidates.Count -eq 0) {
     $badgeFallbacks = @(Get-AutoReplyVisualUnreadBadges $frame $sidebarRight)
     $unresolvedUnreadBadgeCount = $badgeFallbacks.Count
   }
@@ -2357,7 +2346,6 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
   const messageBaselines = new Map();
   const occurrenceStates = new Map();
   const turnBoundaries = new Map();
-  const startupUnreadBoundaries = new Map();
   const startupMessageBoundaries = new Map();
   const retryCandidates = [];
   let primedProcess = null;
@@ -2711,7 +2699,6 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       const conversation = compactContactName(row?.conversation);
       const signature = String(row?.signature || "").trim().toLowerCase();
       if (!allowed.includes(conversation) || !isSha256(signature)) continue;
-      if (row?.unread === false) startupUnreadBoundaries.delete(conversation);
       if (turnBoundaries.get(conversation)?.pending === true) continue;
       if (missingOnly && previewBaselines.has(conversation)) continue;
       previewBaselines.set(conversation, signature);
@@ -2985,7 +2972,6 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       XIAOXI_EXCLUDED_NAMES: JSON.stringify(["文件传输助手", "微信团队", "服务通知", "订阅号消息", "群聊"]),
       XIAOXI_VISUAL_BASELINES: JSON.stringify(Object.fromEntries(previewBaselines)),
       XIAOXI_VISUAL_MESSAGE_BASELINES: JSON.stringify(Object.fromEntries(messageBaselines)),
-      XIAOXI_STARTUP_UNREAD_BOUNDARIES: JSON.stringify(Object.fromEntries(startupUnreadBoundaries)),
       XIAOXI_EXPECTED_PID: String(sharedWindow?.pid || ""),
       XIAOXI_EXPECTED_HWND: String(sharedWindow?.hWnd || ""),
       XIAOXI_AUTO_REPLY_EXACT_CONVERSATION_MATCH: matchOptions?.exactConversationMatch === true ? "1" : "",
@@ -3042,36 +3028,23 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     if (result?.startupBoundarySupported === true) {
       const primeRows = Array.isArray(result?.sessionBaselines) ? result.sessionBaselines : [];
       const unreadAtBoundary = new Map(primeRows.map((row) => [compactContactName(row?.conversation), row?.unread === true]));
-      startupUnreadBoundaries.clear();
       startupMessageBoundaries.clear();
       for (const row of Array.isArray(result?.sessionMessageBaselines) ? result.sessionMessageBaselines : []) {
         const conversation = compactContactName(row?.conversation);
         const message = compactMessageText(row?.message);
-        if (allowed.includes(conversation) && message && String(row?.latestRole || "") === "user") {
+        if (allowed.includes(conversation) && unreadAtBoundary.get(conversation) !== true
+          && message && String(row?.latestRole || "") === "user") {
           const contextSignatures = (Array.isArray(row.context) ? row.context : [])
             .filter((item) => item?.role === "user" && compactMessageText(item?.content))
             .map(contextItemHash);
           startupMessageBoundaries.set(conversation, { message, contextSignatures });
         }
       }
-      for (const row of primeRows) {
-        const conversation = compactContactName(row?.conversation);
-        const signature = String(row?.signature || "").trim().toLowerCase();
-        const preview = compactMessageText(row?.preview);
-        if (allowed.includes(conversation) && row?.unread === true
-          && turnBoundaries.get(conversation)?.pending !== true && isSha256(signature) && preview) {
-          startupUnreadBoundaries.set(conversation, { signature, preview });
-        }
-      }
       startupBoundary = {
-        previews: Object.fromEntries(primeRows
-          .map((row) => [compactContactName(row?.conversation), { preview: compactMessageText(row?.preview) }])
-          .filter(([conversation, value]) => allowed.includes(conversation) && value.preview
-            && !(turnBoundaries.get(conversation)?.pending === true && unreadAtBoundary.get(conversation) === true))),
         messages: Object.fromEntries((Array.isArray(result?.sessionMessageBaselines) ? result.sessionMessageBaselines : [])
           .map((row) => [compactContactName(row?.conversation), { message: compactMessageText(row?.message) }])
           .filter(([conversation, value]) => allowed.includes(conversation) && value.message
-            && !(turnBoundaries.get(conversation)?.pending === true && unreadAtBoundary.get(conversation) === true)))
+            && unreadAtBoundary.get(conversation) !== true))
       };
       const boundaryResult = await scanWechatIncoming(names, matchOptions);
       result = { ...result, diagnostics: combineProbeDiagnostics(result, boundaryResult).diagnostics };
@@ -3121,7 +3094,6 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       XIAOXI_EXPECTED_PID: String(primedProcess.pid),
       XIAOXI_EXPECTED_HWND: primedProcess.hWnd,
       ...(boundary ? {
-        XIAOXI_STARTUP_PREVIEWS: JSON.stringify(boundary.previews),
         XIAOXI_STARTUP_MESSAGES: JSON.stringify(boundary.messages)
       } : {})
     };
@@ -3222,7 +3194,6 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     const predecessorSignature = messageBaselines.get(conversation) || "";
     const decorated = decorateCandidate({ ...result, discoveredConversation: false, messageDriven }, nameIdentity, predecessorSignature, matchOptions);
     rememberStableActiveSession(result, allowed);
-    startupUnreadBoundaries.delete(conversation);
     const turn = turnBoundaries.get(conversation);
     if (turn?.pending === true) turnBoundaries.set(conversation, { ...turn, pending: false });
     if (isSha256(signature)) previewBaselines.set(conversation, signature);
@@ -3333,7 +3304,6 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     const boundarySignature = turnBoundarySignature(conversation, turnEpoch);
     turnBoundaries.set(conversation, { epoch: turnEpoch, pending: true, lastAdvancedRuntimeId: runtimeId });
     occurrenceStates.set(conversation, { ...active, active: false, boundarySignature });
-    startupUnreadBoundaries.delete(conversation);
     startupMessageBoundaries.delete(conversation);
     previewBaselines.set(conversation, boundarySignature);
     messageBaselines.set(conversation, boundarySignature);
@@ -3363,7 +3333,6 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     messageBaselines.clear();
     occurrenceStates.clear();
     turnBoundaries.clear();
-    startupUnreadBoundaries.clear();
     startupMessageBoundaries.clear();
     retryCandidates.length = 0;
     pendingOpenedUnread = null;

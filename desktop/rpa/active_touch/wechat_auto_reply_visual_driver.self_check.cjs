@@ -195,7 +195,7 @@ assert.doesNotMatch(visualDriverSource, /liveScreenRefreshIntervalMs|lastLiveScr
 assert.doesNotMatch(visualDriverSource, /foregroundCaptureMode/u, "one successful fallback must not permanently force every poll to steal foreground");
 assert.match(visualDriverSource, /scanWechatIncoming\.resetBaselines[\s\S]*retryCandidates\.length = 0/u, "a restarted listener must not inherit an unsent candidate from the previous run");
 assert.doesNotMatch(visualDriverSource, /eventSequence|eventSessionId/u, "stable visual evidence must not receive a new ID on every scan");
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(\$row\.unread -and -not \$row\.draft -and \$newSinceStartupBoundary -and -not \$sameHistoricalUnread\)/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(\$row\.unread -and -not \$row\.draft\)/u, "Unread work is eligible regardless of when the reply service started");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(-not \[bool\]\$match\.exact -or -not \$unread\) \{ continue \}/u, "a missing preview may locate only an exact allowlisted unread row");
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /-not \(Test-AutoReplyVisualUnreadDot \$frame \$line\.bounds\)/u, "an arbitrary unread title must never add itself to the one-to-one whitelist");
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$row\.unread -or \$changed/u);
@@ -1969,6 +1969,41 @@ assert.equal(captureFallbackCalls[3].XIAOXI_ALLOW_FOCUS_FALLBACK, "", "a long st
 assert.equal(captureFallbackCalls[3].XIAOXI_FORCE_SCREEN_CAPTURE, "");
 
 const startupBoundaryCalls = [];
+const unreadSelectionStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("  $candidates = New-Object System.Collections.Generic.List[object]");
+const unreadSelectionEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("  # An unread dot", unreadSelectionStart);
+const startupUnreadSelection = runPowerShellJson(`
+$mode = "prime_confirm"
+$rows = @(
+  [pscustomobject]@{ conversation="UnreadCustomer"; unread=$true; draft=$false; preview="待回复问题"; signature="${"a".repeat(64)}" },
+  [pscustomobject]@{ conversation="ReadCustomer"; unread=$false; draft=$false; preview="已读历史" },
+  [pscustomobject]@{ conversation="DraftCustomer"; unread=$true; draft=$true; preview="未完成草稿" }
+)
+${AUTO_REPLY_VISUAL_SCRIPT.slice(unreadSelectionStart, unreadSelectionEnd)}
+@{ count=$candidates.Count; conversation=$candidates[0].conversation } | ConvertTo-Json -Compress
+`);
+assert.deepEqual(startupUnreadSelection, { count: 1, conversation: "UnreadCustomer" }, "Startup must select an unread row without treating read history or drafts as new work");
+
+let startupUnreadCalls = 0;
+const startupUnreadDriver = createWechatVisualAutoReplyDriver((_script, env) => {
+  if (++startupUnreadCalls === 1) return {
+    ok: true, source: "session_prime", startupBoundarySupported: true, pid: 111, hWnd: 112,
+    sessionBaselines: [{ conversation: "UnreadCustomer", signature: "a".repeat(64), preview: "第二个问题", unread: true }],
+    sessionMessageBaselines: [{ conversation: "UnreadCustomer", signature: "b".repeat(64), message: "第二个问题", latestRole: "user",
+      context: [{ role: "user", content: "第一个问题" }, { role: "user", content: "第二个问题" }] }]
+  };
+  assert.equal(JSON.parse(env.XIAOXI_STARTUP_MESSAGES).UnreadCustomer, undefined, "Unread content must not become a historical clipping boundary");
+  return {
+    ok: true, conversation: "UnreadCustomer", message: "第二个问题", runtimeId: `visual:v1:${"c".repeat(64)}`,
+    previewSignature: "a".repeat(64), messageSignature: "b".repeat(64), pid: 111, hWnd: 112,
+    source: "unread", latestRole: "user", contextKind: "incoming_batch",
+    context: [{ role: "user", content: "第一个问题" }, { role: "user", content: "第二个问题" }]
+  };
+});
+assert.equal((await startupUnreadDriver.primeWechatSession(["UnreadCustomer"])).ok, true);
+const queuedUnread = await startupUnreadDriver.scanWechatIncoming(["UnreadCustomer"]);
+assert.equal(queuedUnread.ok, true);
+assert.deepEqual(queuedUnread.context.map((item) => item.content), ["第一个问题", "第二个问题"]);
+assert.equal(startupUnreadCalls, 2, "Return the startup unread candidate without clicking the already-open row again");
 const startupOldPreview = "a".repeat(64);
 const startupOldMessage = "b".repeat(64);
 const startupNewMessage = "c".repeat(64);
