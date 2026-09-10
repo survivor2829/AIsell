@@ -21,7 +21,9 @@ class ServiceTest(unittest.TestCase):
                    "scan_ms": 530, "capture_attempts": 2, "last_verification_reason": "moments_publish_visible_anchor_missing",
                    "verification_attempts": 2, "verification_elapsed_ms": 19936, "verification_capture_ms": 32,
                    "verification_ocr_ms": 450, "verification_candidates_ms": 630, "verification_feed_ocr_ms": 150,
-                   "verification_post_count": 1, "verification_text_length": 30, "verification_anchor_present": False}
+                   "verification_post_count": 1, "verification_text_length": 30, "verification_anchor_present": False,
+                   "header_state": "unresolved", "header_candidate_count": 0,
+                   "header_recovery_attempted": True, "header_recovery_ok": False}
         client = {"schema": 1, "appId": "com.aihuoke.desktop.test", "channel": "test",
                   "installId": "12345678-1234-1234-1234-123456789012", "version": "1.1.13", "platform": "win32", "arch": "x64"}
         entry = {"id": "a" * 64, "ts": "2026-09-10T05:11:52.197Z", "level": "warn", "module": "moments",

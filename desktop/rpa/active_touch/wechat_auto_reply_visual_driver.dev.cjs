@@ -103,6 +103,7 @@ function Write-AutoReplyVisualResult($value) {
     if ($null -ne $script:AutoReplyVisualDpi) { $value["dpi"] = [int]$script:AutoReplyVisualDpi }
     if ($script:AutoReplyVisualCaptureMethod) { $value["captureMode"] = [string]$script:AutoReplyVisualCaptureMethod }
     if ($null -ne $script:AutoReplyVisualMessageRead) { $value["messageRead"] = $script:AutoReplyVisualMessageRead }
+    if ($null -ne $script:AutoReplyVisualHeaderRead) { $value["headerRead"] = $script:AutoReplyVisualHeaderRead }
   }
   $value | ConvertTo-Json -Compress -Depth 8
   exit
@@ -1007,7 +1008,47 @@ function Get-AutoReplyVisualHeaderDiagnostics($candidates) {
   return @{ headerCandidateCount = @($candidates).Count; headerCandidateHashes = $hashes }
 }
 
-function Get-AutoReplyVisualHeader($lines, [string]$conversation, [double]$sidebarRight, [double]$frameWidth, $allowedSet) {
+function Get-AutoReplyVisualRefinedHeaderLines($frame, [double]$sidebarRight) {
+  # OCR coordinates are crop-local and already unscaled by the shared reader.
+  # Cache only on this captured frame; never reuse identity across observations.
+  if ($null -ne $frame.autoReplyHeaderOcr) { return $frame.autoReplyHeaderOcr }
+  $left = [Math]::Floor($sidebarRight + (Scale-AutoReplyVisualMetric 8.0))
+  $top = [Math]::Floor((Scale-AutoReplyVisualMetric 20.0))
+  $right = [Math]::Min([double]$frame.width - (Scale-AutoReplyVisualMetric 80.0), $sidebarRight + (Scale-AutoReplyVisualMetric 440.0))
+  $bottom = [Math]::Min([double]$frame.height, (Scale-AutoReplyVisualMetric 108.0))
+  $rect = @{ left = $left; top = $top; width = $right - $left; height = $bottom - $top }
+  $ocr = Get-MomentsScaledOcrObservation $frame $rect 3
+  $lines = if ($ocr.ok) { @(Get-AutoReplyVisualLines $ocr) } else { @() }
+  foreach ($line in $lines) {
+    $line.bounds.left = [double]$line.bounds.left + $left
+    $line.bounds.top = [double]$line.bounds.top + $top
+  }
+  $frame.autoReplyHeaderOcr = @{ ok = [bool]$ocr.ok; lines = $lines }
+  return $frame.autoReplyHeaderOcr
+}
+
+function Read-AutoReplyVisualHeader($frame, $lines, [string]$conversation, [double]$sidebarRight, $allowedSet, [bool]$anyHeader) {
+  $result = if ($anyHeader) { Get-AutoReplyVisualAnyHeader $lines $sidebarRight ([double]$frame.width) } else {
+    Get-AutoReplyVisualHeader $lines $conversation $sidebarRight ([double]$frame.width) $allowedSet
+  }
+  $attempted = -not $result.ok -and [string]$result.state -ceq "unresolved"
+  if ($attempted) {
+    $refined = Get-AutoReplyVisualRefinedHeaderLines $frame $sidebarRight
+    if ($refined.ok) {
+      $result = if ($anyHeader) { Get-AutoReplyVisualAnyHeader $refined.lines $sidebarRight ([double]$frame.width) } else {
+        Get-AutoReplyVisualHeader $refined.lines $conversation $sidebarRight ([double]$frame.width) $allowedSet
+      }
+    }
+  }
+  $script:AutoReplyVisualHeaderRead = @{
+    state = [string]$result.state; candidateCount = [int]$result.headerCandidateCount
+    recoveryAttempted = [bool]$attempted; recoveryOk = [bool]($attempted -and $result.ok)
+  }
+  return $result
+}
+
+function Get-AutoReplyVisualHeader($lines, [string]$conversation, [double]$sidebarRight, [double]$frameWidth, $allowedSet, $frame = $null) {
+  if ($null -ne $frame) { return Read-AutoReplyVisualHeader $frame $lines $conversation $sidebarRight $allowedSet $false }
   $candidates = @(Get-AutoReplyVisualHeaderCandidates $lines $sidebarRight $frameWidth)
   $diagnostics = Get-AutoReplyVisualHeaderDiagnostics $candidates
   $ambiguousMatch = $false
@@ -1053,7 +1094,8 @@ function Get-AutoReplyVisualHeader($lines, [string]$conversation, [double]$sideb
   }
 }
 
-function Get-AutoReplyVisualAnyHeader($lines, [double]$sidebarRight, [double]$frameWidth) {
+function Get-AutoReplyVisualAnyHeader($lines, [double]$sidebarRight, [double]$frameWidth, $frame = $null) {
+  if ($null -ne $frame) { return Read-AutoReplyVisualHeader $frame $lines "" $sidebarRight $null $true }
   $candidates = @(Get-AutoReplyVisualHeaderCandidates $lines $sidebarRight $frameWidth)
   $diagnostics = Get-AutoReplyVisualHeaderDiagnostics $candidates
   if ($candidates.Count -ne 1) {
@@ -1601,7 +1643,7 @@ function Get-AutoReplyVisualCurrentTransitionSnapshot(
   $frame = $observation.frame
   try {
     $sidebar = Get-AutoReplyVisualSidebarRows $frame $observation.lines $allowedSet $sidebarRight
-    $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet
+    $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet $frame
     # A compositor-only WeChat window can omit its title from one OCR frame.
     # That is uncertainty, not proof that the chat changed. Only an explicitly
     # different title blocks the already-bound HWND + conversation observation.
@@ -1786,9 +1828,9 @@ try {
     if ($expectedMessageDriven) {
       $header = @{ ok = $true; state = "message_driven"; headerCandidateCount = 0; headerCandidateHashes = @() }
     } else {
-      $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet
+      $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet $frame
       if (-not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
-        Write-AutoReplyVisualResult @{ ok = $false; reason = "conversation_title_mismatch"; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = "different"; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
       }
     }
     if ($currentMessage -eq $null -or -not $currentMessage.hasMessage) {
@@ -1828,9 +1870,9 @@ try {
     if ($expectedMessageDriven) {
       $header = @{ ok = $true; state = "message_driven"; headerCandidateCount = 0; headerCandidateHashes = @() }
     } else {
-      $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet
+      $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet $frame
       if (-not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
-        Write-AutoReplyVisualResult @{ ok = $false; reason = "conversation_title_mismatch"; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = "different"; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
       }
     }
     # The sidebar and chat bubble use different font sizes. The same Chinese text
@@ -2068,7 +2110,7 @@ try {
     if (Test-AutoReplyVisualBadgeRemains $openedFrame $candidate.badgeBounds) {
       Write-AutoReplyVisualResult @{ ok = $false; reason = "no_unread_message"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
     }
-    $header = Get-AutoReplyVisualAnyHeader $openedObservation.lines $sidebarRight ([double]$openedFrame.width)
+    $header = Get-AutoReplyVisualAnyHeader $openedObservation.lines $sidebarRight ([double]$openedFrame.width) $openedFrame
     if ($script:AutoReplyVisualExactConversationMatch) {
       $strictHeader = Resolve-AutoReplyVisualStrictBadgeHeader $header $allowedSet
       if (-not $strictHeader.ok) {
@@ -2093,7 +2135,7 @@ try {
       }
     }
   } else {
-    $header = Get-AutoReplyVisualHeader $openedObservation.lines $conversation $sidebarRight ([double]$openedFrame.width) $allowedSet
+    $header = Get-AutoReplyVisualHeader $openedObservation.lines $conversation $sidebarRight ([double]$openedFrame.width) $allowedSet $openedFrame
   }
   if (-not [bool]$candidate.badgeOnly -and -not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
     Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
@@ -2162,7 +2204,7 @@ try {
     $confirmationFrame = $confirmation.frame
     try {
       if (-not [bool]$candidate.badgeOnly -or [bool]$candidate.strictConversationVerified) {
-        $confirmationHeader = Get-AutoReplyVisualHeader $confirmation.lines $conversation $sidebarRight ([double]$confirmationFrame.width) $allowedSet
+        $confirmationHeader = Get-AutoReplyVisualHeader $confirmation.lines $conversation $sidebarRight ([double]$confirmationFrame.width) $allowedSet $confirmationFrame
         if (-not $confirmationHeader.ok -and ([bool]$candidate.strictConversationVerified -or [string]$confirmationHeader.state -eq "different")) {
           Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$confirmationHeader.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$confirmationHeader.state; headerCandidateCount = [int]$confirmationHeader.headerCandidateCount; headerCandidateHashes = @($confirmationHeader.headerCandidateHashes) }
         }

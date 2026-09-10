@@ -85,6 +85,13 @@ def validate_report(body):
                     row["details"][key] = details[key]
             if type(details.get("verification_anchor_present")) is bool:
                 row["details"]["verification_anchor_present"] = details["verification_anchor_present"]
+            if details.get("header_state") in ("matched", "unresolved", "different"):
+                row["details"]["header_state"] = details["header_state"]
+            if type(details.get("header_candidate_count")) is int and 0 <= details["header_candidate_count"] <= 1000:
+                row["details"]["header_candidate_count"] = details["header_candidate_count"]
+            for key in ("header_recovery_attempted", "header_recovery_ok"):
+                if type(details.get(key)) is bool:
+                    row["details"][key] = details[key]
             if details.get("window_detection_mode") in ("exact_hwnd", "render_child", "native_main", "shell_navigation"):
                 row["details"]["window_detection_mode"] = details["window_detection_mode"]
             if safe_token(details.get("window_class_code")):

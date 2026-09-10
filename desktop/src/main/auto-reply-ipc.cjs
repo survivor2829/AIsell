@@ -589,6 +589,13 @@ function sanitizeStructuredScanDiagnostics(value) {
     if (field !== "diagnostics" && raw !== undefined) source[field] = raw;
   }
   const result = {};
+  const header = source.headerRead;
+  if (header && typeof header === "object") {
+    if (["matched", "unresolved", "different"].includes(header.state)) result.header_state = header.state;
+    if (Number.isSafeInteger(header.candidateCount) && header.candidateCount >= 0 && header.candidateCount <= 1000) result.header_candidate_count = header.candidateCount;
+    if (typeof header.recoveryAttempted === "boolean") result.header_recovery_attempted = header.recoveryAttempted;
+    if (typeof header.recoveryOk === "boolean") result.header_recovery_ok = header.recoveryOk;
+  }
   const sanitizeWindow = (rawWindow) => {
     if (!rawWindow || typeof rawWindow !== "object" || Array.isArray(rawWindow)) return null;
     const window = {};
@@ -1727,6 +1734,7 @@ function createAutoReplyController(options = {}) {
       hWnd: result?.hWnd,
       captureMode: result?.captureMode,
       messageRead: result?.messageRead,
+      headerRead: result?.headerRead,
       diagnostics: result?.diagnostics
     });
   }
@@ -1897,6 +1905,7 @@ function createAutoReplyController(options = {}) {
         window: result?.window,
         dpi: result?.dpi ?? result?.DPI ?? result?.windowDpi,
         counts: result?.counts,
+        headerRead: result?.headerRead,
         diagnostics: result?.diagnostics,
         required_idle_ms: result?.requiredIdleMs ?? result?.required_idle_ms,
         observed_idle_ms: result?.observedIdleMs ?? result?.observed_idle_ms

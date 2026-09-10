@@ -82,6 +82,44 @@ assert.deepEqual(strictHeaderResults.map((result) => ({
   { ok: false, reason: "conversation_title_unresolved", conversation: "", conversationEvidence: "", messageDriven: true, strictConversationVerified: false },
   { ok: false, reason: "conversation_title_mismatch", conversation: "", conversationEvidence: "", messageDriven: true, strictConversationVerified: false }
 ]);
+const headerRecovery = runPowerShellJson(`
+$ErrorActionPreference = "Stop"
+${AUTO_REPLY_VISUAL_SCRIPT.slice(strictHeaderFunctionsStart, AUTO_REPLY_VISUAL_SCRIPT.indexOf('$mode = [Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_MODE")'))}
+$script:AutoReplyVisualExactConversationMatch = $true
+$script:ocrCalls = 0
+function Get-MomentsScaledOcrObservation($frame, $rect, $scale) {
+  $script:ocrCalls++
+  return @{ ok = $true; lines = @(@{ text = $script:fixtureTitle; bounds = @{ left = 8; top = 8; width = 60; height = 20 } }) }
+}
+$allowed = @("张总")
+$results = @()
+foreach ($dpiScale in @(1.25, 3.0)) {
+  $script:AutoReplyVisualScale = $dpiScale
+  $script:fixtureTitle = "张总"
+  $frame = @{ width = 1200 * $dpiScale; height = 760 * $dpiScale }
+  $sidebar = 300 * $dpiScale
+  $first = Get-AutoReplyVisualHeader @() "张总" $sidebar $frame.width $allowed $frame
+  $callsBefore = $script:ocrCalls
+  $again = Get-AutoReplyVisualHeader @() "张总" $sidebar $frame.width $allowed $frame
+  $results += @{ ok = $first.ok; cached = ($script:ocrCalls -eq $callsBefore); left = $first.line.bounds.left; top = $first.line.bounds.top }
+}
+$script:fixtureTitle = "李总"
+$wrong = Get-AutoReplyVisualHeader @() "张总" 300 1200 $allowed @{ width = 1200; height = 760 }
+$script:fixtureTitle = ""
+$empty = Get-AutoReplyVisualAnyHeader @() 300 1200 @{ width = 1200; height = 760 }
+$script:AutoReplyVisualScale = 1.0
+$callsBefore = $script:ocrCalls
+$matched = Get-AutoReplyVisualHeader @(@{ compact = "张总"; bounds = @{ left = 330; top = 35; width = 60; height = 20 } }) "张总" 300 1200 $allowed @{ width = 1200; height = 760 }
+@{ results = $results; wrong = $wrong.ok; empty = $empty.ok; matched = $matched.ok; matchedWithoutOcr = ($script:ocrCalls -eq $callsBefore) } | ConvertTo-Json -Compress -Depth 6
+`);
+assert.deepEqual(headerRecovery.results, [
+  { ok: true, cached: true, left: 393, top: 33 },
+  { ok: true, cached: true, left: 932, top: 68 }
+], "Header recovery must restore crop offsets at laptop and high DPI without rescaling twice");
+assert.equal(headerRecovery.wrong, false, "Local OCR cannot authorize a different recipient");
+assert.equal(headerRecovery.empty, false);
+assert.equal(headerRecovery.matched, true);
+assert.equal(headerRecovery.matchedWithoutOcr, true);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Message-driven auto reply keeps the observed title only as diagnostic[\s\S]*\$conversation = \[string\]\$header\.conversation/u, "ordinary all-contact red dots must keep the message-driven fallback");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(-not \[bool\]\$candidate\.badgeOnly -or \[bool\]\$candidate\.strictConversationVerified\)[\s\S]*Get-AutoReplyVisualHeader \$confirmation\.lines/u, "a promoted strict red-dot path must repeat the exact title check on its confirmation frame");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(\$expectedMessageDriven\)[\s\S]*state = "message_driven"[\s\S]*Get-AutoReplyVisualHeader \$observation\.lines/u, "final incoming verification must not restore the contact-title gate");

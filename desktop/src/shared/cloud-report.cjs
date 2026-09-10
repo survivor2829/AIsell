@@ -24,6 +24,11 @@ function reportEntry(entry, context) {
     if (Number.isFinite(value) && value >= 0 && value <= 86400000) result.details[key] = Math.round(value);
   }
   if (typeof entry.details?.verification_anchor_present === "boolean") result.details.verification_anchor_present = entry.details.verification_anchor_present;
+  if (["matched", "unresolved", "different"].includes(entry.details?.header_state)) result.details.header_state = entry.details.header_state;
+  if (Number.isSafeInteger(entry.details?.header_candidate_count) && entry.details.header_candidate_count >= 0 && entry.details.header_candidate_count <= 1000) result.details.header_candidate_count = entry.details.header_candidate_count;
+  for (const key of ["header_recovery_attempted", "header_recovery_ok"]) {
+    if (typeof entry.details?.[key] === "boolean") result.details[key] = entry.details[key];
+  }
   return result;
 }
 

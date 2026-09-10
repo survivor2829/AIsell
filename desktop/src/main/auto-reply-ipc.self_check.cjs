@@ -1830,6 +1830,7 @@ async function main() {
       context: [{ role: "user", content: "visual-context-canary", key: "visual-key-canary" }],
       transitionDetail: { reason: "current_identity_invalid", detail: "nested-diagnostic-canary", action: "unresolved", phase: "scan" },
       nestedReason: "conversation_title_unresolved",
+      headerRead: { state: "unresolved", candidateCount: 0, recoveryAttempted: true, recoveryOk: false, text: "header-private-canary" },
       window: { x: -1200, y: 0, width: 1100, height: 700, title: "window-title-canary", key: "window-key-canary" },
       DPI: 120,
       counts: { bubble_count: 3, ocr_rows: 8, romanized_contact_canary: 1, message_text: "count-message-canary", runtime_key: "count-key-canary" }
@@ -1849,6 +1850,11 @@ async function main() {
   assert.match(visualDiagnosticLog, /"code":"visual_sidebar_match_ambiguous"/);
   assert.match(visualDiagnosticLog, /"transitionDetail":\{"reason":"current_identity_invalid","action":"unresolved","phase":"scan"\}/);
   assert.match(visualDiagnosticLog, /"nestedReason":"conversation_title_unresolved"/);
+  assert.match(visualDiagnosticLog, /"header_state":"unresolved"/);
+  assert.match(visualDiagnosticLog, /"header_candidate_count":0/);
+  assert.match(visualDiagnosticLog, /"header_recovery_attempted":true/);
+  assert.match(visualDiagnosticLog, /"header_recovery_ok":false/);
+  assert.doesNotMatch(visualDiagnosticLog, /header-private-canary/);
   assert.match(visualDiagnosticLog, /"window":\{"x":-1200,"y":0,"width":1100,"height":700\}/);
   assert.match(visualDiagnosticLog, /"DPI":120/);
   assert.match(visualDiagnosticLog, /"counts":\{"bubble_count":3,"ocr_rows":8\}/);
