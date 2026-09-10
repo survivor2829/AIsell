@@ -13,6 +13,26 @@ from service import Handler, Server, Store, validate_report, safe_token
 from feedback import validate_feedback
 
 class ServiceTest(unittest.TestCase):
+    def test_feedback_preserves_client_phase_diagnostics(self):
+        details = {"moments_stage": "stability_wait", "moments_first_candidates_ms": 4200,
+                   "moments_stability_wait_ms": 180, "moments_discover_scan_ms": 240,
+                   "moments_discover_candidate_count": 4, "moments_discover_match_count": 1,
+                   "capture_mode": "foreground_screen", "scan_mode": "scan_driver", "trigger_code": "poll",
+                   "scan_ms": 530, "capture_attempts": 2, "last_verification_reason": "moments_publish_visible_anchor_missing",
+                   "verification_attempts": 2, "verification_elapsed_ms": 19936, "verification_capture_ms": 32,
+                   "verification_ocr_ms": 450, "verification_candidates_ms": 630, "verification_feed_ocr_ms": 150,
+                   "verification_post_count": 1, "verification_text_length": 30, "verification_anchor_present": False}
+        client = {"schema": 1, "appId": "com.aihuoke.desktop.test", "channel": "test",
+                  "installId": "12345678-1234-1234-1234-123456789012", "version": "1.1.13", "platform": "win32", "arch": "x64"}
+        entry = {"id": "a" * 64, "ts": "2026-09-10T05:11:52.197Z", "level": "warn", "module": "moments",
+                 "event": "campaign.observation_finished", "details": {**details, "messageText": "private",
+                 "moments_unknown_ms": 7, "verification_secret": "private", "moments_second_candidates_ms": -1}}
+        body = {"schema": 2, "id": "12345678-1234-1234-1234-123456789013", "receiptToken": "b" * 64,
+                "createdAt": entry["ts"], "category": "problem", "text": "timeout", "client": client,
+                "visibility": "private", "diagnostics": [entry]}
+        clean, _ = validate_feedback(body, validate_report, safe_token)
+        self.assertEqual(clean["diagnostics"][0]["details"], details)
+
     def test_feedback_receipt_access_retention_and_admin_status(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(directory)

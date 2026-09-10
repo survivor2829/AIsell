@@ -405,19 +405,7 @@ function Get-MomentsSelectedGreenRatio($frame, $rect) {
   [int]$right = [Math]::Min([int]$frame.width, [Math]::Ceiling([double]$rect.left + [double]$rect.width))
   [int]$bottom = [Math]::Min([int]$frame.height, [Math]::Ceiling([double]$rect.top + [double]$rect.height))
   if ($right -le $left -or $bottom -le $top) { return 0.0 }
-  $selected = 0
-  $total = 0
-  for ($y = $top; $y -lt $bottom; $y += 2) {
-    for ($x = $left; $x -lt $right; $x += 2) {
-      $pixel = Get-MomentsPixel $frame $x $y
-      if (Test-MomentsSelectedGreenPixel $pixel) {
-        $selected += 1
-      }
-      $total += 1
-    }
-  }
-  if ($total -eq 0) { return 0.0 }
-  return [double]$selected / [double]$total
+  return [Win32WechatMomentsVisualReadOnly]::SelectedGreenRatio($frame.bytes, $frame.stride, $left, $top, $right, $bottom)
 }
 
 function Get-MomentsSelectedGreenRunEvidence($frame, $textBounds, $bandBounds, $relativeSurfaceBounds, [double]$scale) {
@@ -435,27 +423,13 @@ function Get-MomentsSelectedGreenRunEvidence($frame, $textBounds, $bandBounds, $
     return @{ ok = $false; reason = "moments_integrated_content_boundary_not_proven"; runs = @() }
   }
 
-  [double]$minimumColumnRatio = 0.45
   [int]$maximumGap = [Math]::Max(4, [Math]::Round(8.0 * $scale))
   [double]$minimumRunWidth = [Math]::Max(120.0 * $scale, [double]$textBounds.width + (32.0 * $scale))
   $runs = New-Object System.Collections.Generic.List[object]
   [int]$runLeft = -1
   [int]$lastGreen = -1
-  for ($x = $scanLeft; $x -le $scanRight; $x++) {
-    $green = 0
-    $total = 0
-    for ($y = $scanTop; $y -le $scanBottom; $y += 2) {
-      # This hot loop visits every column. Read the bitmap directly instead of
-      # allocating a pixel hashtable and invoking two functions per sample.
-      [int]$offset = ($y * [int]$frame.stride) + ($x * 4)
-      [int]$blue = $frame.bytes[$offset]
-      [int]$greenChannel = $frame.bytes[$offset + 1]
-      [int]$red = $frame.bytes[$offset + 2]
-      if ($greenChannel -ge 105 -and ($greenChannel - $red) -ge 30 -and ($greenChannel - $blue) -ge 12) { $green += 1 }
-      $total += 1
-    }
-    $isGreenColumn = $total -gt 0 -and ([double]$green / [double]$total) -ge $minimumColumnRatio
-    if (-not $isGreenColumn) { continue }
+  $greenColumns = [Win32WechatMomentsVisualReadOnly]::SelectedGreenColumns($frame.bytes, $frame.stride, $scanLeft, $scanTop, $scanRight, $scanBottom)
+  foreach ($x in $greenColumns) {
     if ($runLeft -lt 0) {
       $runLeft = $x
     } elseif (($x - $lastGreen - 1) -gt $maximumGap) {
@@ -518,24 +492,7 @@ function Get-MomentsStructuralSelectedBandEvidence($frame, $region, $relativeSur
     return @{ entries = @(); selectedRowCount = 0; groups = @(); rejectedRunCount = 0; rejectedBoundaryCount = 0 }
   }
 
-  $selectedRows = New-Object System.Collections.Generic.List[int]
-  for ($y = $top; $y -le $bottom; $y++) {
-    $green = 0
-    $total = 0
-    for ($x = $left; $x -le $right; $x += 4) {
-      [int]$offset = ($y * [int]$frame.stride) + ($x * 4)
-      [int]$blue = [int]$frame.bytes[$offset]
-      [int]$greenChannel = [int]$frame.bytes[$offset + 1]
-      [int]$red = [int]$frame.bytes[$offset + 2]
-      if ($greenChannel -ge 105 -and ($greenChannel - $red) -ge 30 -and ($greenChannel - $blue) -ge 12) {
-        $green += 1
-      }
-      $total += 1
-    }
-    if ($total -gt 0 -and ([double]$green / [double]$total) -ge 0.55) {
-      [void]$selectedRows.Add($y)
-    }
-  }
+  $selectedRows = @([Win32WechatMomentsVisualReadOnly]::SelectedGreenRows($frame.bytes, $frame.stride, $left, $top, $right, $bottom))
   if ($selectedRows.Count -eq 0) {
     return @{ entries = @(); selectedRowCount = 0; groups = @(); rejectedRunCount = 0; rejectedBoundaryCount = 0 }
   }

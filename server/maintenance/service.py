@@ -21,7 +21,8 @@ UUID = re.compile(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\Z")
 VERSION = re.compile(r"(?:0|[1-9]\d{0,5})(?:\.(?:0|[1-9]\d{0,5})){2}\Z")
 APP_IDS = {"test": "com.aihuoke.desktop.test", "delivery": "com.aihuoke.desktop", "smoke": "com.aihuoke.maintenance.smoke"}
 WINDOW_STAGES = ("bootstrap", "compile", "process", "enumerate", "select", "shell", "recover", "selected", "restore", "focus", "verify", "complete")
-MOMENTS_STAGES = ("bootstrap", "window_identity", "moments_entry", "discover_entry", "first_capture", "first_surface", "first_candidates", "second_capture", "second_surface", "second_candidates", "complete")
+MOMENTS_STAGES = ("bootstrap", "window_identity", "moments_entry", "discover_entry", "first_capture", "first_surface", "first_candidates", "stability_wait", "second_capture", "second_surface", "second_candidates", "complete")
+MOMENTS_METRICS = ("moments_elapsed_ms", "moments_timeout_ms", "moments_discover_scan_ms", "moments_discover_candidate_count", "moments_discover_match_count") + tuple(f"moments_{stage}_ms" for stage in MOMENTS_STAGES)
 WINDOW_METRICS = ("elapsed_ms", "total_ms", "timeout_ms", "process_count", "native_count", "candidate_count", "main_count", "render_count", "hidden_count", "minimized_count", "rejected_layout_count", "recovery_candidate_count", "recovery_main_count") + tuple(f"{stage}_ms" for stage in WINDOW_STAGES)
 
 def safe_token(value):
@@ -76,9 +77,14 @@ def validate_report(body):
                 row["details"]["window_stage"] = details["window_stage"]
             if details.get("moments_stage") in MOMENTS_STAGES:
                 row["details"]["moments_stage"] = details["moments_stage"]
-            for key in ("moments_elapsed_ms", "moments_timeout_ms"):
+            for key in MOMENTS_METRICS + ("scan_ms", "capture_attempts", "verification_attempts", "verification_elapsed_ms", "verification_capture_ms", "verification_ocr_ms", "verification_candidates_ms", "verification_feed_ocr_ms", "verification_post_count", "verification_text_length"):
                 if type(details.get(key)) is int and 0 <= details[key] <= 86400000:
                     row["details"][key] = details[key]
+            for key in ("last_verification_reason", "capture_mode", "scan_mode", "trigger_code"):
+                if safe_token(details.get(key)):
+                    row["details"][key] = details[key]
+            if type(details.get("verification_anchor_present")) is bool:
+                row["details"]["verification_anchor_present"] = details["verification_anchor_present"]
             if details.get("window_detection_mode") in ("exact_hwnd", "render_child", "native_main", "shell_navigation"):
                 row["details"]["window_detection_mode"] = details["window_detection_mode"]
             if safe_token(details.get("window_class_code")):

@@ -400,6 +400,7 @@ assert.match(integratedPageSurfaceSource, /\$evidence\.exactMatchCount -ne 1[\s\
 assert.match(surfaceEvidenceSource, /integrated_selected_moments/u);
 const integratedSurfaceProofProgram = `
 $ErrorActionPreference = "Stop"
+${MOMENTS_VISUAL_READONLY_POWERSHELL}
 function Get-MomentsPixel($frame, [int]$x, [int]$y) {
   if ($frame.ContainsKey("bytes")) {
     if ($x -lt 0 -or $y -lt 0 -or $x -ge [int]$frame.width -or $y -ge [int]$frame.height) { return $null }
@@ -444,6 +445,26 @@ function Get-MomentsScaledOcrObservation($frame, $region, [int]$scale = 3) {
   return @{ ok = $true; lines = $lines }
 }
 ${MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL}
+# Green-ratio fixtures use the same BGRA representation as the production scan.
+$script:originalGreenRatio = (Get-Command Get-MomentsSelectedGreenRatio).ScriptBlock
+function Get-MomentsSelectedGreenRatio($frame, $rect) {
+  if (-not $frame.ContainsKey("bytes")) {
+    $raster = $frame.Clone()
+    $raster.stride = [int]$frame.width * 4
+    $raster.bytes = New-Object byte[] ($raster.stride * [int]$frame.height)
+    for ($y = [Math]::Max(0,[int][Math]::Floor($rect.top)); $y -lt [Math]::Min([int]$frame.height,[int][Math]::Ceiling($rect.top + $rect.height)); $y++) {
+      for ($x = [Math]::Max(0,[int][Math]::Floor($rect.left)); $x -lt [Math]::Min([int]$frame.width,[int][Math]::Ceiling($rect.left + $rect.width)); $x++) {
+        $pixel = Get-MomentsPixel $frame $x $y
+        $offset = $y * $raster.stride + $x * 4
+        $raster.bytes[$offset] = $pixel.b
+        $raster.bytes[$offset + 1] = $pixel.g
+        $raster.bytes[$offset + 2] = $pixel.r
+      }
+    }
+    $frame = $raster
+  }
+  return & $script:originalGreenRatio $frame $rect
+}
 # The navigation detector reads production BGRA buffers, not procedural pixels.
 $script:originalDiscoverEntry = (Get-Command Get-IntegratedDiscoverEntryEvidence).ScriptBlock
 function Get-IntegratedDiscoverEntryEvidence($frame, $bounds, [double]$scale) {
