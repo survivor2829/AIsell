@@ -156,6 +156,9 @@ assert.deepEqual(
     "an idle preflight must not blame the user for every window-side observation"
   );
 
+assert.match(resultReason({ blocked_reason: "wechat_clipboard_restore_unsupported" }), /特殊格式/);
+assert.match(resultReason({ blocked_reason: "wechat_clipboard_read_failed" }), /无法读取剪贴板/);
+
 function contacts(count) {
   return Array.from({ length: count }, (_, index) => ({
     id: `wxid_batch_${index + 1}`,

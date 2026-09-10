@@ -90,6 +90,8 @@ function resultReason(result, fallback) {
     wechat_window_ambiguous: "检测到多个个人微信主窗口，请只保留一个可见主窗口后继续",
     wechat_window_identity_mismatch: "微信窗口在操作过程中发生变化，请保持当前微信窗口后继续",
     personal_wechat_main_window_not_found: "当前进程中未识别到个人微信主窗口",
+    wechat_clipboard_restore_unsupported: "剪贴板包含暂不支持保存的特殊格式，原内容未覆盖，消息未发送",
+    wechat_clipboard_read_failed: "无法读取剪贴板，可能正被其他程序占用，消息未发送；请稍后重试",
     powershell_timeout: "微信窗口适配程序执行超时，请检查电脑负载或安全软件",
     powershell_failed: "微信窗口适配程序启动失败，请确认AI获客与微信权限一致，并检查安全软件拦截",
     exact_search_result_not_found: "未找到该联系人的精确公开微信号搜索结果，已隔离并跳过当前联系人",

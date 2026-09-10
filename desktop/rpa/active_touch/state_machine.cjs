@@ -294,6 +294,7 @@ function wechatWindowReason(result) {
     "personal_wechat_main_window_not_found",
     "wechat_window_not_found",
     "wechat_clipboard_restore_unsupported",
+    "wechat_clipboard_read_failed",
     "wechat_window_identity_missing",
     "exact_search_result_not_found",
     "powershell_output_invalid",
@@ -318,7 +319,8 @@ function wechatWindowBlockText(reason) {
   if (reason === "powershell_timeout") return "已阻断：微信窗口适配程序执行超时";
   if (reason === "powershell_failed") return "已阻断：微信窗口适配程序启动失败，请检查权限或安全软件";
   if (reason === "wechat_window_not_found") return "已阻断：未找到微信窗口";
-  if (reason === "wechat_clipboard_restore_unsupported") return "已停止：剪贴板中的图片或文件暂时无法安全保留，请复制一段文字后重试";
+  if (reason === "wechat_clipboard_restore_unsupported") return "已停止：剪贴板包含暂不支持保存的特殊格式，原内容未覆盖";
+  if (reason === "wechat_clipboard_read_failed") return "已停止：无法读取剪贴板，可能正被其他程序占用，请稍后重试";
   if (reason === "wechat_window_identity_missing") return "已停止：缺少已确认的微信窗口身份，请重新启动任务";
   if (reason === "exact_search_result_not_found") return "已停止：未找到指定联系人的准确搜索结果";
   if (reason === "powershell_output_invalid") return "已停止：微信操作程序没有返回有效结果，请提交本次诊断";
@@ -1059,6 +1061,7 @@ function verifySendResultDryRun(baseDir = __dirname, titleReader = readWindowTit
 }
 
 module.exports = {
+  wechatWindowBlockText,
   calibrate,
   clickSearchResultDryRun,
   clearCustomer,

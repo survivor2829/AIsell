@@ -170,12 +170,14 @@ function Test-WechatVisualNavigation([object]$window) { return [bool]$window.vis
 ${selection}
 ${recovery}
 function Start-Sleep { param([int]$Milliseconds) }
-function Invoke-RecoveryFixture([int]$recoveredPid, [bool]$inspectOnly = $false) {
+function Invoke-RecoveryFixture([int]$recoveredPid, [bool]$inspectOnly = $false, [bool]$minimized = $false) {
   $script:fixtureReenumeration = 0
   $script:fixtureActivationCount = 0
   $windowDiagnostic = @{ window_recovery_candidate_count = 0; window_recovery_main_count = 0; window_recovery_attempted = $false; window_recovery_succeeded = $false }
   $standalone = @{ hWnd=210; processPath='C:\\Weixin\\Weixin.exe'; pid=8; visible=$true; minimized=$false; toolWindow=$false; owner=0; layoutRank=2; hasMainRenderChild=$false; shellNavigation=$false; windowClass='Qt51514QWindowIcon' }
+  $standalone.minimized = $minimized
   $main = @{ hWnd=211; processPath='C:\\Weixin\\Weixin.exe'; pid=$recoveredPid; visible=$true; minimized=$false; toolWindow=$false; owner=0; layoutRank=2; hasMainRenderChild=$true; shellNavigation=$false; windowClass='QtQWindowIcon' }
+  if ($minimized) { $main.hasMainRenderChild = $false; $main.visualNavigation = $true; $main.windowClass = "Qt51514QWindowIcon" }
   function Get-WechatWindowCandidates {
     $script:fixtureReenumeration++
     if ($script:fixtureReenumeration -eq 1) { return @($standalone) }
@@ -192,12 +194,16 @@ function Invoke-RecoveryFixture([int]$recoveredPid, [bool]$inspectOnly = $false)
   @{ activation=$script:fixtureActivationCount; hWnd=$(if ($matches.Count -eq 1) { [int64]$matches[0].hWnd } else { 0 }); recoverySucceeded=$windowDiagnostic.window_recovery_succeeded; recoveryMainCount=$windowDiagnostic.window_recovery_main_count } | ConvertTo-Json -Compress
 }
 @{
+  minimized=(Invoke-RecoveryFixture 8 $false $true | ConvertFrom-Json)
+  minimizedInspect=(Invoke-RecoveryFixture 8 $true $true | ConvertFrom-Json)
   samePid=(Invoke-RecoveryFixture 8 | ConvertFrom-Json)
   otherPid=(Invoke-RecoveryFixture 9 | ConvertFrom-Json)
   inspectOnly=(Invoke-RecoveryFixture 8 $true | ConvertFrom-Json)
 } | ConvertTo-Json -Depth 5 -Compress
 `, {}, { ensure: false, timeout: 15_000 });
 assert.ok(recoveryFlowResult?.samePid, `recovery fixture must return all scenarios: ${JSON.stringify(recoveryFlowResult)}`);
+assert.equal(recoveryFlowResult.minimized.hWnd, 211, "A minimized empty-tree window must enter recovery and require fresh main-window evidence");
+assert.equal(recoveryFlowResult.minimizedInspect.activation, 0);
 assert.equal(recoveryFlowResult.samePid.activation, 1, "a successful recovery may request native activation exactly once");
 assert.equal(recoveryFlowResult.samePid.hWnd, 211, "re-enumeration must choose the newly proven main HWND, never the standalone surface");
 assert.equal(recoveryFlowResult.samePid.recoverySucceeded, true);

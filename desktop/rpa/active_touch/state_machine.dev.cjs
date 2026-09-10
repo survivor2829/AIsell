@@ -17,7 +17,7 @@ const {
   prepareWechatRpaWindowAsync,
   verifyWechatCurrentConversationAsync: verifyWechatConversationTitleAsync
 } = require("./wechat_window_driver.cjs");
-const { appendLog, block, blockMessageBubble, blockSendGate, loadState, output, readContacts, saveState } = require("./state_machine.cjs");
+const { appendLog, block, blockMessageBubble, blockSendGate, loadState, output, readContacts, saveState, wechatWindowBlockText } = require("./state_machine.cjs");
 const { contactIdentityError, identityKey } = require("./touch_task_state.cjs");
 const { summarizeSendResult, observeSendStage } = require("../../src/shared/wechat-send-diagnostics.cjs");
 
@@ -669,7 +669,7 @@ async function executeVerifiedContactSendCore(options = {}) {
       ok: false,
       action: "prepare-wechat-window",
       blocked_reason: String(preparedWindow?.reason || "wechat_window_not_ready"),
-      error: "微信窗口未能固定到左上角并获得前台控制，本次未执行",
+      error: wechatWindowBlockText(preparedWindow?.reason || "wechat_window_not_ready"),
       send_diagnostics: preflightDiagnostics(preparedWindow, "prepare_wechat_window", windowMinIdleMs, preflightRecoveryAttempts)
     });
   }

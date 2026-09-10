@@ -1369,7 +1369,7 @@ try {
   const clickNoWindow = clickSearchResultDryRun(dir, () => ({ ok: false, reason: "wechat_window_not_found" }), () => []);
   assert.equal(clickNoWindow.blocked_reason, "wechat_window_not_found");
   assert.equal(clickNoWindow.state.conversation_located, false);
-  for (const reason of ["wechat_clipboard_restore_unsupported", "powershell_output_invalid", "exact_search_result_not_found"]) {
+  for (const reason of ["wechat_clipboard_restore_unsupported", "wechat_clipboard_read_failed", "powershell_output_invalid", "exact_search_result_not_found"]) {
     const failed = clickSearchResultDryRun(dir, () => ({ ok: false, reason }), () => []);
     assert.equal(failed.blocked_reason, reason, "non-window failures must survive the workflow boundary");
     assert.equal(failed.state.conversation_located, false);
@@ -1834,15 +1834,15 @@ try {
   assert.match(messageDraftSource, /\$currentClipboard -ceq \[string\]\$script:draftOwnedClipboardValue/);
   assert.match(messageDraftSource, /function Rebase-ExactDraftInputLease/);
   assert.match(messageDraftSource, /\$script:draftInputLeaseActive -and \[Win32WechatMessageDraft\]::GetLastInputTick\(\) -ne \$script:draftInputLeaseTick/);
-  assert.match(messageDraftSource, /ContainsImage\(\)[\s\S]*ContainsFileDropList\(\)[\s\S]*wechat_clipboard_restore_unsupported/);
-  assert.match(messageDraftSource, /draftOldClipboardKind -eq "empty"[\s\S]*Clipboard\]::Clear\(\)/);
+  assert.match(messageDraftSource, /Get-WechatClipboardSnapshot/);
+  assert.match(messageDraftSource, /Restore-WechatClipboardSnapshot \$script:draftOldClipboard/);
   assert.doesNotMatch(messageDraftSource, /try \{ Set-Clipboard -Value \$oldClipboard \} catch \{\}/);
   assert.match(searchSource, /function Restore-SearchClipboardIfOwned/);
   assert.match(searchSource, /\$currentClipboard -ceq \[string\]\$script:clipboardOwnedValue/);
   assert.match(searchSource, /function Rebase-ExactSearchInputLease/);
   assert.match(searchSource, /\$script:inputLeaseActive -and \[Win32WechatWindowSearch\]::GetLastInputTick\(\) -ne \$script:inputLeaseTick/);
-  assert.match(searchSource, /ContainsImage\(\)[\s\S]*ContainsFileDropList\(\)[\s\S]*wechat_clipboard_restore_unsupported/);
-  assert.match(searchSource, /oldClipboardKind -eq "empty"[\s\S]*Clipboard\]::Clear\(\)/);
+  assert.match(searchSource, /Get-WechatClipboardSnapshot/);
+  assert.match(searchSource, /Restore-WechatClipboardSnapshot \$script:oldClipboard/);
   assert.doesNotMatch(searchSource, /try \{ Set-Clipboard -Value \$oldClipboard \} catch \{\}/);
   assert.match(developmentDriverSource, /function clickWechatSendButton/);
   assert.match(developmentDriverSource, /atomic_conversation_changed/);
@@ -2252,3 +2252,5 @@ try {
   console.error(error);
   process.exitCode = 1;
 });
+
+require("./wechat_clipboard.self_check.cjs");

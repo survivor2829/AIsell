@@ -1,3 +1,4 @@
+const { WECHAT_CLIPBOARD_POWERSHELL } = require("./wechat_clipboard.cjs");
 const { WECHAT_RENDER_SURFACE_POWERSHELL } = require("./wechat_render_surface.cjs");
 const { spawn, spawnSync } = require("node:child_process");
 const { findWechatExecutable } = require("../contact_sync/contact_sync_cli.cjs");
@@ -807,10 +808,10 @@ function Select-WechatMainCandidates([object[]]$candidates) {
 }
 
 function Get-WechatWindowRecoveryCandidate([object[]]$candidates) {
-  # A standalone WeChat surface is never a main-window target. It may only
+  # A minimized or standalone surface is not a proven main-window target. It may only
   # supply a single verified executable path for WeChat's own restore action.
   $recoverable = @($candidates | Where-Object {
-    $_.visible -and -not $_.minimized -and -not $_.toolWindow -and [int64]$_.owner -eq 0 -and
+    $_.visible -and -not $_.toolWindow -and [int64]$_.owner -eq 0 -and
       [int]$_.layoutRank -gt 0 -and -not $_.hasMainRenderChild -and -not $_.shellNavigation -and
       [string]$_.windowClass -match "(?i)^Qt(?:\\d+)?QWindowIcon$" -and
       -not [string]::IsNullOrWhiteSpace([string]$_.processPath)
@@ -1473,6 +1474,7 @@ function focusWechatWindowAsync(context = {}, runner = runPowerShellAsync) {
 const SEARCH_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
+${WECHAT_CLIPBOARD_POWERSHELL}
 Add-Type -AssemblyName UIAutomationClient
 Add-Type @"
 using System;
@@ -1522,7 +1524,6 @@ $minimumIdleMs = [Math]::Min($minimumIdleMs, 60000)
 $processNames = @("Weixin", "WeChat")
 $script:clipboardCaptured = $false
 $script:oldClipboard = ""
-$script:oldClipboardKind = ""
 $script:clipboardOwnedValue = $null
 $script:inputLeaseActive = $false
 $script:inputLeaseTick = [uint32]::MaxValue
@@ -1538,11 +1539,7 @@ function Restore-SearchClipboardIfOwned {
         -not [System.Windows.Forms.Clipboard]::ContainsText([System.Windows.Forms.TextDataFormat]::UnicodeText)) { return }
     $currentClipboard = [System.Windows.Forms.Clipboard]::GetText([System.Windows.Forms.TextDataFormat]::UnicodeText)
     if ($currentClipboard -ceq [string]$script:clipboardOwnedValue) {
-      if ($script:oldClipboardKind -eq "text") {
-        Set-Clipboard -Value $script:oldClipboard
-      } elseif ($script:oldClipboardKind -eq "empty") {
-        [System.Windows.Forms.Clipboard]::Clear()
-      }
+      Restore-WechatClipboardSnapshot $script:oldClipboard
       $script:clipboardOwnedValue = $null
     }
   } catch {}
@@ -1639,24 +1636,10 @@ if ([Win32WechatWindowSearch]::GetForegroundWindow() -ne [IntPtr]$matched.hWnd) 
 $script:inputLeaseTick = $currentInputTick
 $script:inputLeaseActive = $exactWindowBinding
 try {
-  $oldClipboardData = [System.Windows.Forms.Clipboard]::GetDataObject()
-  $oldClipboardFormats = @($(if ($null -ne $oldClipboardData) { $oldClipboardData.GetFormats() }))
-  $oldClipboardHasText = [System.Windows.Forms.Clipboard]::ContainsText([System.Windows.Forms.TextDataFormat]::UnicodeText)
-  $oldClipboardHasUnsupportedData = [System.Windows.Forms.Clipboard]::ContainsImage() -or
-    [System.Windows.Forms.Clipboard]::ContainsFileDropList() -or
-    [System.Windows.Forms.Clipboard]::ContainsAudio() -or
-    (-not $oldClipboardHasText -and $oldClipboardFormats.Count -gt 0)
-  if ($oldClipboardHasUnsupportedData) { throw "unsupported_clipboard_format" }
-  if ($oldClipboardHasText) {
-    $script:oldClipboard = [System.Windows.Forms.Clipboard]::GetText([System.Windows.Forms.TextDataFormat]::UnicodeText)
-    $script:oldClipboardKind = "text"
-  } else {
-    $script:oldClipboard = ""
-    $script:oldClipboardKind = "empty"
-  }
+  $script:oldClipboard = Get-WechatClipboardSnapshot
   $script:clipboardCaptured = $true
 } catch {
-  @{ ok = $false; reason = "wechat_clipboard_restore_unsupported"; pid = $matched.pid; hWnd = $matched.hWnd } | ConvertTo-Json -Compress
+  @{ ok = $false; reason = $(if ($_.Exception.Message -eq "wechat_clipboard_restore_unsupported") { "wechat_clipboard_restore_unsupported" } else { "wechat_clipboard_read_failed" }); pid = $matched.pid; hWnd = $matched.hWnd } | ConvertTo-Json -Compress
   exit
 }
 Set-Clipboard -Value $query
@@ -2023,6 +2006,7 @@ function verifyWechatCurrentConversationAsync(expectedTitle, context = {}) {
 const MESSAGE_DRAFT_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
+${WECHAT_CLIPBOARD_POWERSHELL}
 Add-Type @"
 using System;
 using System.Text;
@@ -2065,7 +2049,6 @@ $script:draftInputLeaseActive = $false
 $script:draftInputLeaseTick = [uint32]::MaxValue
 $script:draftClipboardCaptured = $false
 $script:draftOldClipboard = ""
-$script:draftOldClipboardKind = ""
 $script:draftOwnedClipboardValue = $null
 
 function Restore-DraftClipboardIfOwned {
@@ -2080,11 +2063,7 @@ function Restore-DraftClipboardIfOwned {
         -not [System.Windows.Forms.Clipboard]::ContainsText([System.Windows.Forms.TextDataFormat]::UnicodeText)) { return }
     $currentClipboard = [System.Windows.Forms.Clipboard]::GetText([System.Windows.Forms.TextDataFormat]::UnicodeText)
     if ($currentClipboard -ceq [string]$script:draftOwnedClipboardValue) {
-      if ($script:draftOldClipboardKind -eq "text") {
-        Set-Clipboard -Value $script:draftOldClipboard
-      } elseif ($script:draftOldClipboardKind -eq "empty") {
-        [System.Windows.Forms.Clipboard]::Clear()
-      }
+      Restore-WechatClipboardSnapshot $script:draftOldClipboard
       $script:draftOwnedClipboardValue = $null
     }
   } catch {}
@@ -2158,23 +2137,9 @@ if ($exactWindowBinding -and $script:draftInputLeaseTick -eq [uint32]::MaxValue)
 Start-Sleep -Milliseconds 300
 Assert-ExactDraftLease
 try {
-  $oldClipboardData = [System.Windows.Forms.Clipboard]::GetDataObject()
-  $oldClipboardFormats = @($(if ($null -ne $oldClipboardData) { $oldClipboardData.GetFormats() }))
-  $oldClipboardHasText = [System.Windows.Forms.Clipboard]::ContainsText([System.Windows.Forms.TextDataFormat]::UnicodeText)
-  $oldClipboardHasUnsupportedData = [System.Windows.Forms.Clipboard]::ContainsImage() -or
-    [System.Windows.Forms.Clipboard]::ContainsFileDropList() -or
-    [System.Windows.Forms.Clipboard]::ContainsAudio() -or
-    (-not $oldClipboardHasText -and $oldClipboardFormats.Count -gt 0)
-  if ($oldClipboardHasUnsupportedData) { throw "unsupported_clipboard_format" }
-  if ($oldClipboardHasText) {
-    $oldClipboard = [System.Windows.Forms.Clipboard]::GetText([System.Windows.Forms.TextDataFormat]::UnicodeText)
-    $script:draftOldClipboardKind = "text"
-  } else {
-    $oldClipboard = ""
-    $script:draftOldClipboardKind = "empty"
-  }
+  $oldClipboard = Get-WechatClipboardSnapshot
 } catch {
-  @{ ok = $false; reason = "wechat_clipboard_restore_unsupported"; pid = $matched.pid; hWnd = $matched.hWnd.ToInt64() } | ConvertTo-Json -Compress
+  @{ ok = $false; reason = $(if ($_.Exception.Message -eq "wechat_clipboard_restore_unsupported") { "wechat_clipboard_restore_unsupported" } else { "wechat_clipboard_read_failed" }); pid = $matched.pid; hWnd = $matched.hWnd.ToInt64() } | ConvertTo-Json -Compress
   exit
 }
 $ownedClipboardValue = $null
