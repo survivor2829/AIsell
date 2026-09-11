@@ -15,7 +15,7 @@ async function checkTouchMessageSequence() {
   const secondContact = { id: "selected-two", name: "第二位测试客户", nickname: "第二位测试客户", wechatId: "test_customer_two", wechatAccountId: "test_account", allowed: true };
   const imageId = "a".repeat(64);
   const calls = [];
-  let failImage = true, unknown = false, loginRequired = false, enabled = true, pauseAfterText = false;
+  let failImage = true, unknown = false, loginRequired = false, searchUnavailable = false, atomicMismatch = false, enabled = true, pauseAfterText = false;
   const clock = new Date(2026, 8, 3, 12, 0, 0);
   const config = {
     dataDir: root, now: () => clock, random: () => 0, readContacts: () => [contact, secondContact],
@@ -30,6 +30,12 @@ async function checkTouchMessageSequence() {
       calls.push({ kind, baseDir: options.baseDir, attemptId: options.attemptId });
       if (kind === "text" && loginRequired) {
         return { ok: false, send_attempted: false, blocked_reason: "wechat_login_required", error: "微信需要重新登录" };
+      }
+      if (kind === "text" && options.contactId === contact.id && searchUnavailable) {
+        return { ok: false, send_attempted: false, blocked_reason: "exact_search_result_not_found", error: "未找到该联系人的精确公开微信号搜索结果" };
+      }
+      if (kind === "text" && options.contactId === contact.id && atomicMismatch) {
+        return { ok: false, send_attempted: false, blocked_reason: "atomic_conversation_changed", error: "当前会话身份发生变化" };
       }
       if (kind === "image" && failImage) {
         if (unknown) options.onTransition("prepared");
@@ -111,6 +117,30 @@ async function checkTouchMessageSequence() {
   result = await createTouchWorkflow(config).runWorkflowStep(textRecord, context);
   assert.equal(result.status, "completed");
   assert.equal(calls.length, beforeTextResume + 1, "resuming a text-only pre-send interruption sends exactly once");
+
+  searchUnavailable = true;
+  const skipWorkflow = createTouchWorkflow(config);
+  const skipPayload = skipWorkflow.prepareWorkflowTask({ script: "搜索结果跳过测试", contactIds: [contact.id, secondContact.id] });
+  const skipRecord = { id: crypto.randomUUID(), payload: skipPayload, progress: { done: 0 }, status: "running" };
+  result = await skipWorkflow.runWorkflowStep(skipRecord, context);
+  assert.equal(result.status, "pending", "明确的搜索无结果应跳过当前联系人并继续任务");
+  assert.equal(result.progress.done, 1);
+  assert.equal(result.result.skipped, true);
+  const skipTaskDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(skipRecord.id).digest("hex"));
+  const skippedTask = JSON.parse(fs.readFileSync(path.join(skipTaskDir, "touch_task.json"), "utf8"));
+  assert.equal(skippedTask.results[0].status, "identity_skipped");
+  searchUnavailable = false;
+  result = await createTouchWorkflow(config).runWorkflowStep(skipRecord, context);
+  assert.equal(result.status, "completed", "跳过无结果联系人后仍应完成后续联系人");
+
+  atomicMismatch = true;
+  const atomicWorkflow = createTouchWorkflow(config);
+  const atomicPayload = atomicWorkflow.prepareWorkflowTask({ script: "会话变化暂停测试", contactIds: [contact.id] });
+  const atomicRecord = { id: crypto.randomUUID(), payload: atomicPayload, progress: { done: 0 }, status: "running" };
+  result = await atomicWorkflow.runWorkflowStep(atomicRecord, context);
+  assert.equal(result.status, "needs_attention", "会话身份变化不能被误判为联系人不存在");
+  assert.equal(result.result.deliveryStatus, "not_attempted");
+  atomicMismatch = false;
 
   assert.throws(() => normalizeTouchLink("javascript:alert(1)"));
   assert.equal(normalizeTouchLink("https://example.com/product"), "https://example.com/product");

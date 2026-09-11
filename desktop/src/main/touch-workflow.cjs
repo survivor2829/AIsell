@@ -20,6 +20,12 @@ const {
 } = require("../../rpa/active_touch/touch_task_state.cjs");
 
 const UNCERTAIN_SEND_STATES = new Set(["sending", "prepared", "clicked", "outcome_unknown"]);
+const IDENTITY_SKIP_REASONS = new Set([
+  "contact_unavailable",
+  "exact_search_result_not_found",
+  "search_result_not_opened",
+  "customer_conversation_not_found"
+]);
 
 function createTouchWorkflow(options = {}) {
   const contactsDir = String(options.dataDir || "");
@@ -35,6 +41,11 @@ function createTouchWorkflow(options = {}) {
       waitingReason: "touch_safety_interval",
       result: { nextEligibleAt }
     };
+  }
+
+  function identitySkipReason(result) {
+    const code = String(result?.blocked_reason || result?.state?.blocked_reason || "");
+    return IDENTITY_SKIP_REASONS.has(code) ? code : "";
   }
 
   function prepareWorkflowTask(input = {}) {
@@ -287,6 +298,23 @@ function createTouchWorkflow(options = {}) {
       }
       const notAttempted = result?.send_attempted === false || result?.send_result === "not_attempted";
       if (notAttempted && !["prepared", "clicked", "outcome_unknown"].includes(current.status)) {
+        const reasonCode = identitySkipReason(result);
+        if (reasonCode) {
+          current.status = "identity_skipped";
+          current.reason = String(result.error || reasonCode) + "，已跳过当前联系人";
+          current.retry_blocked = true;
+          current.send_attempted = false;
+          current.updated_at = now().toISOString();
+          task.current_index = index + 1;
+          if (task.current_index >= task.total) {
+            task.status = "completed";
+            task.completed_at = now().toISOString();
+          }
+          persist();
+          return response(task.status === "completed" ? "completed" : "pending", {
+            result: { deliveryStatus: "not_attempted", skipped: true, reasonCode }
+          });
+        }
         current.status = "generated";
         current.retry_blocked = false;
         current.send_attempted = false;
