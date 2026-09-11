@@ -54,7 +54,7 @@ export function MaterialsCollectionsPage({ onCreate }: { onCreate: (ids: string[
   const [visible, setVisible] = useState(60);
   async function refresh() {
     const [library, sets] = await Promise.allSettled([
-      window.xiaoxiContent?.library.list({ includeArchived: true, limit: 500 }),
+      window.xiaoxiContent?.library.list({ limit: 500 }),
       callBatch<{ collections: Collection[] }>("collections")
     ]);
     if (library.status === "rejected" || !library.value?.ok) {
@@ -83,21 +83,6 @@ export function MaterialsCollectionsPage({ onCreate }: { onCreate: (ids: string[
       setNotice(`已从素材仓库移除 ${removed.size} 个素材，本地原文件保留。${failed.length ? `另有 ${failed.length} 个未移除：${failed[0]}` : ""}`);
     });
   }
-  async function restoreAssets(ids: string[]) {
-    await run(async () => {
-      const restored = new Set<string>();
-      const failed: string[] = [];
-      for (const assetId of [...new Set(ids)]) {
-        try {
-          const result = await window.xiaoxiContent?.library.restore({ assetId });
-          if (!result?.ok) throw new Error(result?.error || "恢复失败");
-          restored.add(assetId);
-        } catch (e) { failed.push((e as Error).message); }
-      }
-      await refresh();
-      setNotice("已恢复 " + restored.size + " 个素材" + (failed.length ? "，另有 " + failed.length + " 个失败：" + failed[0] : "。"));
-    });
-  }
   useEffect(() => { void refresh().catch((e) => setNotice(e.message)); }, []);
   async function run(action: () => Promise<void>) { setBusy(true); setNotice(""); try { await action(); } catch (e) { setNotice((e as Error).message); } finally { setBusy(false); } }
   const filtered = assets.filter((a) => (!collectionId || collections.find((c) => c.collection_id === collectionId)?.asset_ids.includes(a.assetId)) && a.displayName.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
@@ -120,9 +105,9 @@ export function MaterialsCollectionsPage({ onCreate }: { onCreate: (ids: string[
     })}>保存素材集</button><button onClick={() => setEditing(false)}>取消</button></div>
       {collection && <div className="batch-collection-members">{collection.asset_ids.map((id) => <button key={id} disabled={busy} onClick={() => void run(async () => { await callBatch("save-collection", { ...collection, asset_ids: collection.asset_ids.filter((v) => v !== id) }); await refresh(); })}>移出 {assets.find((a) => a.assetId === id)?.displayName || "素材"}</button>)}</div>}
     </section>}
-    <div className="batch-toolbar"><label><input type="checkbox" checked={filtered.filter((a) => !a.archived).length > 0 && filtered.filter((a) => !a.archived).every((a) => selected.includes(a.assetId))} onChange={(e) => { const selectable = filtered.filter((a) => !a.archived).map((a) => a.assetId); setSelected(e.target.checked ? [...new Set([...selected, ...selectable])] : selected.filter((id) => !selectable.includes(id))); }} />全选当前结果</label><span>已选 {selected.length} 个</span><button disabled={!selected.length && !collection?.asset_ids.length} className="batch-primary" onClick={() => { const ids = (selected.length ? selected : collection?.asset_ids || []).filter((id) => !assets.some((a) => a.assetId === id && a.archived)); onCreate(ids, collection); }}>用于批量创作</button></div>
+    <div className="batch-toolbar"><label><input type="checkbox" checked={filtered.length > 0 && filtered.every((a) => selected.includes(a.assetId))} onChange={(e) => setSelected(e.target.checked ? [...new Set([...selected, ...filtered.map((a) => a.assetId)])] : selected.filter((id) => !filtered.some((a) => a.assetId === id)))} />全选当前结果</label><span>已选 {selected.length} 个</span><button disabled={!selected.length && !collection?.asset_ids.length} className="batch-primary" onClick={() => onCreate(selected.length ? selected : collection?.asset_ids || [], collection)}>用于批量创作</button></div>
     <div className="batch-toolbar"><button disabled={busy || !selected.length} onClick={() => void removeAssets(selected)}>移除所选{selected.length ? `（${selected.length}）` : ""}</button><span className="batch-remove-hint">仅从素材仓库移除，不删除本地原文件。</span></div>
-    <div className="batch-asset-grid">{filtered.slice(0, visible).map((a) => <article key={a.assetId} className={`batch-asset ${selected.includes(a.assetId) ? "is-selected" : ""}${a.archived ? " is-archived" : ""}`}><button className="batch-preview-button" onClick={() => setPreview(a)} aria-label={`预览 ${a.displayName}`}><AssetThumb asset={a} /></button><label><input type="checkbox" disabled={a.archived || !a.availableLocationCount} checked={selected.includes(a.assetId)} onChange={(e) => setSelected(e.target.checked ? [...selected, a.assetId] : selected.filter((id) => id !== a.assetId))} />{a.displayName}{a.archived ? (a.availableLocationCount ? "（已归档）" : "（原文件不可用）") : ""}</label>{a.archived ? (a.availableLocationCount ? <button className="batch-remove-asset" disabled={busy} onClick={() => void restoreAssets([a.assetId])}>恢复</button> : <span className="batch-remove-hint">请重新添加原文件</span>) : <button className="batch-remove-asset" disabled={busy} aria-label={`从素材仓库移除 ${a.displayName}`} onClick={() => void removeAssets([a.assetId])}>移除</button>}</article>)}</div>
+    <div className="batch-asset-grid">{filtered.slice(0, visible).map((a) => <article key={a.assetId} className={`batch-asset ${selected.includes(a.assetId) ? "is-selected" : ""}`}><button className="batch-preview-button" onClick={() => setPreview(a)} aria-label={`预览 ${a.displayName}`}><AssetThumb asset={a} /></button><label><input type="checkbox" disabled={!a.availableLocationCount} checked={selected.includes(a.assetId)} onChange={(e) => setSelected(e.target.checked ? [...selected, a.assetId] : selected.filter((id) => id !== a.assetId))} />{a.displayName}</label><button className="batch-remove-asset" disabled={busy} aria-label={`从素材仓库移除 ${a.displayName}`} onClick={() => void removeAssets([a.assetId])}>移除</button></article>)}</div>
     {!filtered.length && <div className="batch-empty">{query ? "没有找到匹配素材。" : "添加图片或实拍视频，开始积累你的内容素材。"}</div>}
     {filtered.length > visible && <button onClick={() => setVisible(visible + 60)}>显示更多素材</button>}
     {preview && <AssetPreview asset={preview} onClose={() => setPreview(null)} />}
