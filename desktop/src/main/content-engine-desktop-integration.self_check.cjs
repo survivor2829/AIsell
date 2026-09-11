@@ -62,6 +62,7 @@ async function assertPreloadContract() {
     "list",
     "probe",
     "probePending",
+    "restore",
     "reveal",
     "updateRights"
   ]);
@@ -122,6 +123,7 @@ async function assertPreloadContract() {
     path: "C:\\bad"
   });
   api.library.archive({ assetId: "asset_one", deleteOriginal: true });
+  api.library.restore({ assetId: "asset_one" });
   api.library.reveal({ assetId: "asset_one", path: "C:\\bad" });
   api.tasks.list({ status: "paused", limit: 10 });
   api.tasks.pause({ taskId: "task_one", status: "completed" });
@@ -309,6 +311,10 @@ async function assertPreloadContract() {
     },
     {
       channel: "content-engine:archive-asset",
+      payload: { assetId: "asset_one" }
+    },
+    {
+      channel: "content-engine:restore-asset",
       payload: { assetId: "asset_one" }
     },
     {
