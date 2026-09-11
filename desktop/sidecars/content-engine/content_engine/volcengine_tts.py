@@ -26,7 +26,10 @@ from .errors import ContentEngineError
 from .provider_usage import ProviderRequest, observe_http_error
 
 
-TTS_ENDPOINT = "https://openspeech.bytedance.com/api/v3/tts/unidirectional/sse"
+TTS_ENDPOINT = os.environ.get(
+    "XIAOXI_VOLCENGINE_TTS_API_URL",
+    "https://openspeech.bytedance.com/api/v3/tts/unidirectional/sse",
+).strip() or "https://openspeech.bytedance.com/api/v3/tts/unidirectional/sse"
 SAMPLE_RATE = 24_000
 SUPPORTED_MODELS = {"seed-tts-1.0", "seed-tts-2.0"}
 MAX_AUDIO_BYTES = 64 * 1024 * 1024
@@ -189,18 +192,23 @@ class VolcengineTTSProvider:
         persona = dict(persona_private or {})
         body = self._request_body(normalized, persona)
         request_id = str(uuid.uuid4())
+        request_headers = {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            "X-Api-Key": self._api_key,
+            "X-Api-Resource-Id": persona["provider_model"],
+            "X-Api-Request-Id": request_id,
+            # Official V3 contract returns billing characters in the final SSE event.
+            "X-Control-Require-Usage-Tokens-Return": "text_words",
+        }
+        gateway_token = os.environ.get("XIAOXI_PROVIDER_GATEWAY_TOKEN", "").strip()
+        gateway_origin = os.environ.get("XIAOXI_PROVIDER_GATEWAY_ORIGIN", "").strip().rstrip("/")
+        if gateway_token and gateway_origin and TTS_ENDPOINT.startswith(f"{gateway_origin}/v1/provider-gateway/"):
+            request_headers["Authorization"] = f"Bearer {gateway_token}"
         operation = request.Request(
             TTS_ENDPOINT,
             data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "text/event-stream",
-                "X-Api-Key": self._api_key,
-                "X-Api-Resource-Id": persona["provider_model"],
-                "X-Api-Request-Id": request_id,
-                # Official V3 contract returns billing characters in the final SSE event.
-                "X-Control-Require-Usage-Tokens-Return": "text_words",
-            },
+            headers=request_headers,
             method="POST",
         )
         deadline = time.monotonic() + self.timeout_seconds

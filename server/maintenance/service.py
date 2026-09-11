@@ -13,6 +13,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
+from urllib.error import HTTPError, URLError
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+import urllib.request
 from feedback import FeedbackStoreMixin, FeedbackConflict, FeedbackUnauthorized, validate_feedback, STATES
 
 TOKEN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}\Z")
@@ -24,6 +27,18 @@ WINDOW_STAGES = ("bootstrap", "compile", "process", "enumerate", "select", "shel
 MOMENTS_STAGES = ("bootstrap", "window_identity", "moments_entry", "discover_entry", "first_capture", "first_surface", "first_candidates", "stability_wait", "second_capture", "second_surface", "second_candidates", "complete")
 MOMENTS_METRICS = ("moments_elapsed_ms", "moments_timeout_ms", "moments_discover_scan_ms", "moments_discover_candidate_count", "moments_discover_match_count") + tuple(f"moments_{stage}_ms" for stage in MOMENTS_STAGES)
 WINDOW_METRICS = ("elapsed_ms", "total_ms", "timeout_ms", "process_count", "native_count", "candidate_count", "main_count", "render_count", "hidden_count", "minimized_count", "rejected_layout_count", "recovery_candidate_count", "recovery_main_count") + tuple(f"{stage}_ms" for stage in WINDOW_STAGES)
+PROVIDER_GATEWAY_PREFIX = "/v1/provider-gateway"
+PROVIDER_GATEWAY_ORIGIN = "http://127.0.0.1:8444"
+PROVIDER_GATEWAY_MAX_REQUEST_BYTES = 32 * 1024 * 1024
+PROVIDER_GATEWAY_MAX_RESPONSE_BYTES = 96 * 1024 * 1024
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+PROVIDER_GATEWAY_OPENER = build_opener(_NoRedirect())
 
 def safe_token(value):
     return value if isinstance(value, str) and TOKEN.fullmatch(value) and not re.search(r"sk-|ak-|ltai", value, re.I) else ""
@@ -224,10 +239,71 @@ class Handler(BaseHTTPRequestHandler):
         if len(data) != length:
             raise ValueError("incomplete")
         return json.loads(data)
+
+    def proxy_provider_gateway(self, method):
+        """Forward only the fixed gateway prefix to the loopback service."""
+        self.connection.settimeout(240)
+        body = None
+        if method == "POST":
+            raw_length = self.headers.get("Content-Length", "")
+            if not re.fullmatch(r"\d{1,12}", raw_length):
+                return self.reply(400, {"error": "invalid_body"})
+            length = int(raw_length)
+            if length <= 0 or length > PROVIDER_GATEWAY_MAX_REQUEST_BYTES:
+                return self.reply(400, {"error": "invalid_body"})
+            body = self.rfile.read(length)
+            if len(body) != length:
+                return self.reply(400, {"error": "invalid_body"})
+        headers = {}
+        for name in ("Authorization", "Content-Type", "Accept", "X-Api-Resource-Id", "X-Api-Request-Id", "X-Api-Sequence", "X-Control-Require-Usage-Tokens-Return"):
+            value = self.headers.get(name)
+            if value and len(value) <= 512 and all(0x20 <= ord(char) <= 0x7e for char in value):
+                headers[name] = value
+        if body is not None:
+            headers["Content-Length"] = str(len(body))
+        target = PROVIDER_GATEWAY_ORIGIN + self.path
+        operation = Request(target, data=body, headers=headers, method=method)
+        try:
+            with PROVIDER_GATEWAY_OPENER.open(operation, timeout=240) as response:
+                status = int(getattr(response, "status", getattr(response, "code", 200)))
+                response_headers = response.headers
+                raw = response.read(PROVIDER_GATEWAY_MAX_RESPONSE_BYTES + 1)
+        except HTTPError as error:
+            status = int(error.code or 503)
+            response_headers = error.headers or {}
+            try:
+                raw = error.read(PROVIDER_GATEWAY_MAX_RESPONSE_BYTES + 1)
+            except Exception:
+                raw = b""
+        except (TimeoutError, URLError, OSError):
+            return self.reply(503, {"error": "provider_gateway_unavailable"})
+        except Exception:
+            return self.reply(503, {"error": "provider_gateway_unavailable"})
+        if not isinstance(raw, (bytes, bytearray)) or len(raw) > PROVIDER_GATEWAY_MAX_RESPONSE_BYTES:
+            return self.reply(502, {"error": "provider_gateway_response_too_large"})
+        self.send_response(status)
+        content_type = response_headers.get("Content-Type", "application/octet-stream")
+        if not isinstance(content_type, str) or len(content_type) > 512 or any(ord(char) < 0x20 or ord(char) > 0x7e for char in content_type):
+            content_type = "application/octet-stream"
+        self.send_header("Content-Type", content_type)
+        for name in ("X-Api-Status-Code", "X-Request-Id", "Retry-After", "Cache-Control"):
+            value = response_headers.get(name)
+            if isinstance(value, str) and len(value) <= 512 and all(0x20 <= ord(char) <= 0x7e for char in value):
+                self.send_header(name, value)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        try:
+            self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            pass
+
     def do_POST(self):
         try:
             if not self.server.allowed(self.client_address[0]):
                 return self.reply(429, {"error": "rate_limit"})
+            if not self.server.admin and urlsplit(self.path).path.startswith(PROVIDER_GATEWAY_PREFIX + "/"):
+                return self.proxy_provider_gateway("POST")
             if self.server.admin:
                 if not re.fullmatch(r"(?:127\.0\.0\.1|localhost):\d{1,5}", self.headers.get("Host", "")) or self.headers.get("Origin") != "http://" + self.headers.get("Host", ""):
                     return self.reply(403, {"error": "origin"})
@@ -268,6 +344,10 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(503, {"error": "unavailable"})
     def do_GET(self):
         route = urlsplit(self.path).path
+        if not self.server.admin and route.startswith(PROVIDER_GATEWAY_PREFIX + "/"):
+            if not self.server.allowed(self.client_address[0]):
+                return self.reply(429, {"error": "rate_limit"})
+            return self.proxy_provider_gateway("GET")
         if self.server.admin:
             if not re.fullmatch(r"(?:127\.0\.0\.1|localhost):\d{1,5}", self.headers.get("Host", "")):
                 return self.reply(403, {"error": "host"})

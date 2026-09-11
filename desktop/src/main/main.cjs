@@ -25,6 +25,7 @@ const { createFeedbackController } = require("./feedback-controller.cjs");
 const { createFeedbackAdmin } = require("./feedback-admin.cjs");
 const { registerFeedbackIpc } = require("./feedback-ipc.cjs");
 const { createLicenseStore, registerLicenseAuthIpc } = require("./license-auth-ipc.cjs");
+const { createProviderGatewayClient } = require("./provider-gateway-client.cjs");
 const { developmentEdition, pilotEdition, editionLabel, preloadFile, rendererDir } = require("./edition.cjs");
 const {
   createProductDetailAiSettingsStore
@@ -74,6 +75,7 @@ let quitCleanupComplete = false;
 let cloudMaintenance = null;
 let feedbackController = null;
 let feedbackAdmin = null;
+let providerGatewayClient = null;
 
 const PROVIDER_CONSUMER_RESTART_STATES = new Set(["ready", "starting", "failed"]);
 const productDetailReleaseSmokeMode = app.isPackaged
@@ -147,6 +149,11 @@ function restartImageProviderConsumers() {
     restarts.push(contentEngineController.restart());
   }
   return Promise.all(restarts.filter(Boolean));
+}
+
+function providerGatewaySupports(provider) {
+  const status = providerGatewayClient?.status();
+  return Boolean(status?.ready && status.capabilities?.[provider] === true);
 }
 
 function contentEngineRuntimeArgs() {
@@ -309,7 +316,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     mainWindow.focus();
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     let runtime;
     try {
       if (productDetailReleaseSmokeMode) {
@@ -367,14 +374,54 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       skipped_foreign_install: runtime.skippedForeignInstall
     });
     const coordinator = createRuntimeCoordinator(runtime.rootDir);
+    const maintenanceConfig = cloudConfig({ developmentEdition });
     const licenseStore = createLicenseStore({ rootDir: runtime.rootDir, safeStorage });
-    registerLicenseAuthIpc({ ipcMain, store: licenseStore });
+    providerGatewayClient = createProviderGatewayClient({
+      config: {
+        enabled: !productDetailReleaseSmokeMode && developmentEdition && maintenanceConfig.enabled === true,
+        origin: maintenanceConfig.origin,
+        caPem: maintenanceConfig.caPem
+      },
+      licenseStore,
+      appId: maintenanceConfig.appId,
+      channel: maintenanceConfig.channel,
+      version: components.businessVersion(app),
+      buildId: build.buildId || process.env.XIAOXI_BUILD_ID || "",
+      installId: (() => {
+        try { return fs.readFileSync(path.join(logger.logsDir, "install-id"), "utf8").trim(); }
+        catch { return ""; }
+      })()
+    });
+    const gatewayStatus = await providerGatewayClient.initialize();
+    logger.event("provider_gateway", "session_initialized", {
+      state: gatewayStatus.ready ? "ready" : "unavailable",
+      code: gatewayStatus.code || "",
+      deepseek: gatewayStatus.capabilities?.deepseek === true,
+      bailian: gatewayStatus.capabilities?.bailian === true,
+      volcengine_ark: gatewayStatus.capabilities?.volcengine_ark === true,
+      volcengine_tts: gatewayStatus.capabilities?.volcengine_tts === true,
+      volcengine_asr: gatewayStatus.capabilities?.volcengine_asr === true,
+      apimart: gatewayStatus.capabilities?.apimart === true
+    });
+    registerLicenseAuthIpc({
+      ipcMain,
+      store: licenseStore,
+      onChanged: async ({ action }) => {
+        if (action === "logged_out") providerGatewayClient?.invalidate();
+        else await providerGatewayClient?.initialize({ force: true });
+        logger.event("provider_gateway", action === "logged_out" ? "session_invalidated" : "session_refreshed", {
+          state: providerGatewayClient?.status().ready ? "ready" : "unavailable",
+          code: providerGatewayClient?.status().code || ""
+        });
+        await restartImageProviderConsumers();
+      }
+    });
     const deepSeekKeyStore = createDeepSeekKeyStore({ rootDir: runtime.rootDir, safeStorage });
     const bailianKeyStore = createBailianApiKeyStore({
       rootDir: path.join(app.getPath("userData"), "content-engine"),
       safeStorage
     });
-    const deepSeekClient = createDeepSeekClient({ keyStore: deepSeekKeyStore });
+    const deepSeekClient = createDeepSeekClient({ keyStore: deepSeekKeyStore, gatewayClient: providerGatewayClient });
     const volcengineTtsKeyStore = createVolcengineTtsKeyStore({ rootDir: path.join(app.getPath("userData"), "content-engine"), safeStorage });
     const volcengineArkKeyStore = createVolcengineTtsKeyStore({ rootDir: path.join(app.getPath("userData"), "content-engine"), safeStorage, filename: "volcengine-ark-api-key.bin" });
     const volcengineAsrStore = createVolcengineAsrStore({ rootDir: path.join(app.getPath("userData"), "content-engine"), safeStorage });
@@ -386,11 +433,17 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     const getProductDetailProviderEnvironment = () => {
       const providerEnvironment = { DEEPSEEK_MODEL };
-      if (deepSeekKeyStore.status().configured) {
+      if (providerGatewaySupports("deepseek")) {
+        providerEnvironment.DEEPSEEK_API_KEY = providerGatewayClient.token();
+        providerEnvironment.DEEPSEEK_API_URL = providerGatewayClient.url("/deepseek/v1/chat/completions");
+      } else if (deepSeekKeyStore.status().configured) {
         providerEnvironment.DEEPSEEK_API_KEY = deepSeekKeyStore.read();
       }
       const refineStatus = productDetailAiSettingsStore.status();
-      if (refineStatus.ready) {
+      if (providerGatewaySupports("apimart")) {
+        providerEnvironment.REFINE_API_KEY = providerGatewayClient.token();
+        providerEnvironment.REFINE_API_BASE_URL = providerGatewayClient.url("/apimart");
+      } else if (refineStatus.ready) {
         const refine = productDetailAiSettingsStore.runtimeConfig();
         providerEnvironment.REFINE_API_KEY = refine.apiKey;
         providerEnvironment.REFINE_API_BASE_URL = refine.baseUrl;
@@ -479,15 +532,51 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       ),
       getProviderEnvironment: () => {
         const providerEnvironment = {};
-        if (volcengineTtsKeyStore.status().configured) providerEnvironment.XIAOXI_VOLCENGINE_TTS_API_KEY = volcengineTtsKeyStore.read();
-        if (volcengineAsrStore.status().configured) {
+        const gatewayToken = providerGatewayClient?.token() || "";
+        if (providerGatewaySupports("bailian")) {
+          providerEnvironment.DASHSCOPE_API_KEY = gatewayToken;
+          providerEnvironment.XIAOXI_BAILIAN_API_HOST = providerGatewayClient.url("/bailian");
+        } else if (bailianKeyStore.status().configured) {
+          providerEnvironment.DASHSCOPE_API_KEY = bailianKeyStore.read();
+          const bailianStatus = bailianKeyStore.status();
+          if (bailianStatus.apiHost) providerEnvironment.XIAOXI_BAILIAN_API_HOST = bailianStatus.apiHost;
+        }
+        if (providerGatewaySupports("volcengine_tts")) {
+          providerEnvironment.XIAOXI_PROVIDER_GATEWAY_TOKEN = gatewayToken;
+          providerEnvironment.XIAOXI_PROVIDER_GATEWAY_ORIGIN = maintenanceConfig.origin;
+          providerEnvironment.XIAOXI_VOLCENGINE_TTS_GATEWAY_ENABLED = "1";
+          providerEnvironment.XIAOXI_VOLCENGINE_TTS_API_KEY = gatewayToken;
+          providerEnvironment.XIAOXI_VOLCENGINE_TTS_API_URL = providerGatewayClient.url("/volcengine/tts/sse");
+        } else if (volcengineTtsKeyStore.status().configured) {
+          providerEnvironment.XIAOXI_VOLCENGINE_TTS_API_KEY = volcengineTtsKeyStore.read();
+        }
+        if (providerGatewaySupports("volcengine_asr")) {
+          providerEnvironment.XIAOXI_PROVIDER_GATEWAY_TOKEN = gatewayToken;
+          providerEnvironment.XIAOXI_PROVIDER_GATEWAY_ORIGIN = maintenanceConfig.origin;
+          providerEnvironment.XIAOXI_VOLCENGINE_ASR_GATEWAY_ENABLED = "1";
+          providerEnvironment.XIAOXI_VOLCENGINE_ASR_API_KEY = gatewayToken;
+          providerEnvironment.XIAOXI_VOLCENGINE_ASR_ENDPOINT = providerGatewayClient.url("/volcengine/asr/recognize/flash");
+        } else if (volcengineAsrStore.status().configured) {
           const asr = volcengineAsrStore.read();
           providerEnvironment.XIAOXI_VOLCENGINE_ASR_APP_ID = asr.appId;
           providerEnvironment.XIAOXI_VOLCENGINE_ASR_ACCESS_TOKEN = asr.accessToken;
         }
         providerEnvironment.XIAOXI_CONTENT_PROVIDER = "volcengine";
-        if (volcengineArkKeyStore.status().configured) providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_KEY = volcengineArkKeyStore.read();
-        if (productDetailAiSettingsStore.status().ready) {
+        if (providerGatewaySupports("volcengine_ark")) {
+          providerEnvironment.XIAOXI_PROVIDER_GATEWAY_TOKEN = gatewayToken;
+          providerEnvironment.XIAOXI_PROVIDER_GATEWAY_ORIGIN = maintenanceConfig.origin;
+          providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_KEY = gatewayToken;
+          providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_URL = providerGatewayClient.url("/volcengine/ark/chat/completions");
+          providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_HOST = providerGatewayClient.url("/volcengine/ark");
+          providerEnvironment.XIAOXI_VOLCENGINE_ARK_COMPATIBLE_ORIGIN = providerGatewayClient.url("/volcengine/ark");
+        } else if (volcengineArkKeyStore.status().configured) {
+          providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_KEY = volcengineArkKeyStore.read();
+        }
+        if (providerGatewaySupports("apimart")) {
+          providerEnvironment.APIMART_API_KEY = gatewayToken;
+          providerEnvironment.APIMART_API_BASE_URL = providerGatewayClient.url("/apimart");
+          providerEnvironment.APIMART_IMAGE_MODEL = "gpt-image-2";
+        } else if (productDetailAiSettingsStore.status().ready) {
           const imageProvider = productDetailAiSettingsStore.runtimeConfig();
           providerEnvironment.APIMART_API_KEY = imageProvider.apiKey;
           providerEnvironment.APIMART_API_BASE_URL = imageProvider.baseUrl;
@@ -576,7 +665,6 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     createWindow();
     registerRolePreferencesIpc({ ipcMain, controller: createRolePreferences({ rootDir: runtime.rootDir }), getMainWindow: () => mainWindow });
     if (!productDetailReleaseSmokeMode) {
-      const maintenanceConfig = cloudConfig({ developmentEdition });
       feedbackController = createFeedbackController({ rootDir: runtime.rootDir, config: maintenanceConfig,
         version: components.businessVersion(app), buildId: build.buildId, logger, safeStorage });
       feedbackAdmin = createFeedbackAdmin({ config: maintenanceConfig });
@@ -661,7 +749,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         Promise.resolve(productDetailController?.dispose()),
         Promise.resolve(contentEngineController?.dispose()),
         Promise.resolve(workflowController?.dispose()),
-        Promise.resolve(momentsPublishController?.dispose())
+        Promise.resolve(momentsPublishController?.dispose()),
+        Promise.resolve(providerGatewayClient?.close())
       ]),
       cleanupTimeout
     ]).catch(() => undefined).finally(async () => {

@@ -13,8 +13,14 @@ from .errors import ContentEngineError
 from .provider_usage import ProviderRequest, usage_scope, observe_http_error
 from .volcengine_tts import VolcengineTTSProvider, _NoRedirect
 
-ARK_ENDPOINT = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
-ASR_ENDPOINT = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"
+ARK_ENDPOINT = os.environ.get(
+    "XIAOXI_VOLCENGINE_ARK_API_URL",
+    "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+).strip() or "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+ASR_ENDPOINT = os.environ.get(
+    "XIAOXI_VOLCENGINE_ASR_ENDPOINT",
+    "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash",
+).strip() or "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"
 DEFAULT_MODEL = "doubao-seed-2-1-pro-260628"
 
 
@@ -23,17 +29,29 @@ class VolcengineMediaClient(DashScopeMediaClient):
 
     def __init__(self):
         # Do not inherit a historical DashScope key, origin, or model.
-        super().__init__(api_key="unused", origin="https://ark.cn-beijing.volces.com",
-                         compatible_origin="https://ark.cn-beijing.volces.com/api/v3",
+        ark_origin = os.environ.get(
+            "XIAOXI_VOLCENGINE_ARK_API_HOST", "https://ark.cn-beijing.volces.com"
+        ).strip() or "https://ark.cn-beijing.volces.com"
+        ark_compatible_origin = os.environ.get(
+            "XIAOXI_VOLCENGINE_ARK_COMPATIBLE_ORIGIN", ""
+        ).strip() or ARK_ENDPOINT.rsplit("/chat/completions", 1)[0]
+        super().__init__(api_key="unused", origin=ark_origin,
+                         compatible_origin=ark_compatible_origin,
                          asr_model="volc.bigasr.auc_turbo", vision_model=DEFAULT_MODEL,
                          selection_model=DEFAULT_MODEL)
         self.api_key = os.environ.get("XIAOXI_VOLCENGINE_ARK_API_KEY", "").strip()
         self.selection_model = self.vision_model = os.environ.get("XIAOXI_VOLCENGINE_ARK_MODEL", DEFAULT_MODEL).strip()
-        self.speech_key = os.environ.get("XIAOXI_VOLCENGINE_TTS_API_KEY", "").strip()
+        tts_gateway = os.environ.get("XIAOXI_VOLCENGINE_TTS_GATEWAY_ENABLED", "") == "1"
+        self.speech_key = "" if tts_gateway else (
+            os.environ.get("XIAOXI_VOLCENGINE_TTS_API_KEY", "").strip()
+            or os.environ.get("XIAOXI_VOLCENGINE_ASR_API_KEY", "").strip()
+        )
         self.asr_app_id = os.environ.get("XIAOXI_VOLCENGINE_ASR_APP_ID", "").strip()
         self.asr_access_token = os.environ.get("XIAOXI_VOLCENGINE_ASR_ACCESS_TOKEN", "").strip()
 
     def _asr_auth_headers(self):
+        if os.environ.get("XIAOXI_VOLCENGINE_ASR_GATEWAY_ENABLED", "") == "1":
+            return {}
         if self.asr_app_id or self.asr_access_token:
             if not (self.asr_app_id and self.asr_access_token):
                 raise ContentEngineError("volcengine_asr_not_configured", "请保存完整的语音识别 APP ID 和 Access Token。")
@@ -43,8 +61,13 @@ class VolcengineMediaClient(DashScopeMediaClient):
         raise ContentEngineError("volcengine_asr_not_configured", "请先在语音识别设置中填写认证信息。")
 
     def _post(self, url, payload, headers, timeout, stage, *, purpose=None, requested_audio_ms=None):
+        request_headers = {"Content-Type": "application/json", **headers}
+        gateway_token = os.environ.get("XIAOXI_PROVIDER_GATEWAY_TOKEN", "").strip()
+        gateway_origin = os.environ.get("XIAOXI_PROVIDER_GATEWAY_ORIGIN", "").strip().rstrip("/")
+        if gateway_token and gateway_origin and url.startswith(f"{gateway_origin}/v1/provider-gateway/"):
+            request_headers["Authorization"] = f"Bearer {gateway_token}"
         op = request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                             headers={"Content-Type": "application/json", **headers}, method="POST")
+                             headers=request_headers, method="POST")
         meter = ProviderRequest(provider=self.provider, kind="asr" if stage == "语音识别" else "llm",
                                 model=self.asr_model if stage == "语音识别" else payload.get("model", ""),
                                 purpose=purpose or stage, request_id=headers.get("X-Api-Request-Id", ""),

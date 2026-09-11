@@ -99,7 +99,9 @@ ALLOWED_IMG = {"jpg", "jpeg", "png", "webp"}
 
 # ── DeepSeek API 配置 ─────────────────────────────────────────────────
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+DEEPSEEK_API_URL = os.environ.get(
+    "DEEPSEEK_API_URL", "https://api.deepseek.com/v1/chat/completions"
+).strip() or "https://api.deepseek.com/v1/chat/completions"
 DEEPSEEK_MODEL   = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash").strip() or "deepseek-v4-flash"
 _proxy_url = os.environ.get("HTTP_PROXY", "").strip()
 PROXY = {"http": _proxy_url, "https": _proxy_url} if _proxy_url else {}
