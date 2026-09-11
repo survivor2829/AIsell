@@ -353,6 +353,55 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
+    let inputLeaseRecoveryAttempts = 0;
+    executorBehavior = async (options) => {
+      inputLeaseRecoveryAttempts += 1;
+      if (inputLeaseRecoveryAttempts === 1) {
+        return {
+          ok: false,
+          action: "input-message-dry-run",
+          blocked_reason: "message_input_failed_wechat_user_active",
+          send_attempted: false,
+          send_result: "not_attempted",
+          safety_diagnostics: {
+            phase: "pre_input",
+            expected_input_tick: 201,
+            current_input_tick: 202,
+            expected_hWnd: 81,
+            foreground_hWnd: 81
+          }
+        };
+      }
+      options.onTransition("sent_verified", { real_send_attempt_key: "recovered-input-lease" });
+      return { ok: true, state: { real_send_status: "sent_verified", real_send_attempt_key: "recovered-input-lease" } };
+    };
+    await start({}, { script: "草稿输入占用恢复测试", clickToken: "trusted-input-lease-recovery" });
+    const recoveredInputLease = await waitFor(status, (value) => value.task?.status === "completed");
+    assert.equal(inputLeaseRecoveryAttempts, 2, "a pre-input lease block may retry after the bounded idle wait");
+    assert.equal(recoveredInputLease.task.results[0].status, "sent_verified");
+    assert.equal(recoveredInputLease.task.results[0].last_failure_context?.phase, "pre_input");
+
+    fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
+    fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
+    let unsafeInputLeaseAttempts = 0;
+    executorBehavior = async () => {
+      unsafeInputLeaseAttempts += 1;
+      return {
+        ok: false,
+        action: "input-message-dry-run",
+        blocked_reason: "message_input_failed_wechat_user_active",
+        send_attempted: false,
+        send_result: "not_attempted",
+        safety_diagnostics: { phase: "after_paste", expected_input_tick: 301, current_input_tick: 302 }
+      };
+    };
+    await start({}, { script: "草稿已触碰后不可自动覆盖", clickToken: "trusted-input-lease-no-retry" });
+    const unsafeInputLease = await waitFor(status, (value) => value.task?.status === "paused");
+    assert.equal(unsafeInputLeaseAttempts, 1, "a lease block after draft interaction must stay fail-closed");
+    assert.equal(unsafeInputLease.task.results[0].status, "blocked");
+
+    fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
+    fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
     const legacyDraft = createTask("旧版草稿任务", contacts(1), "2026-07-11T00:00:00.000Z", { executionMode: "draft_only" });
     legacyDraft.version = 2;
     legacyDraft.execution_mode = "draft_only";

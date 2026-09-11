@@ -56,6 +56,9 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /badgeOnly = \$true[\s\S]*source = "unrea
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$row\.badgeBounds\.centerX[\s\S]*\$row\.badgeBounds\.centerY/u, "the unread fallback must click WeChat's own badge geometry");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /badgeOnly = \$true[\s\S]*messageDriven = \$true/u, "a red-dot inbound event must be message-driven rather than contact-name authorized");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Resolve-AutoReplyVisualStrictBadgeHeader/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$openedSidebar = Get-AutoReplyVisualSidebarRows \$openedFrame \$openedObservation\.lines/u, "opened unread conversations must have a sidebar identity fallback");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$selectedOpenedRows\.Count -eq 1[\s\S]*state = "selected_sidebar_row"/u, "a selected allowlisted sidebar row may recover a transiently missing header OCR");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$confirmationSidebar = Get-AutoReplyVisualSidebarRows \$confirmationFrame \$confirmation\.lines/u, "confirmation must retain the selected sidebar identity fallback");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(\$script:AutoReplyVisualExactConversationMatch\)[\s\S]*\$strictHeader = Resolve-AutoReplyVisualStrictBadgeHeader \$header \$allowedSet[\s\S]*\$candidate\.messageDriven = \[bool\]\$strictHeader\.messageDriven[\s\S]*\$candidate\.strictConversationVerified = \[bool\]\$strictHeader\.strictConversationVerified/u, "a strict test-scope red dot must be promoted only through the tested exact-header decision");
 const strictHeaderFunctionsStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Normalize-AutoReplyVisualText");
 const strictHeaderFunctionsEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Scale-AutoReplyVisualMetric", strictHeaderFunctionsStart);

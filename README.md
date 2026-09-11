@@ -1,10 +1,10 @@
 # AI获客 V1.0版本
 
-Windows Electron 桌面应用。当前唯一验收目标是个人微信 `4.1.11.55`；能力是否可用、是否经过本机或异机实测，以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。正式交付优先使用 `release/AI获客 V1.0版本-安装程序.exe`；`release/AI获客 V1.0版本.zip` 只作为免安装备用包。
+Windows Electron 桌面应用。验收优先覆盖当前安装的主流个人微信，再用至少一个不同版本做兼容回归；具体实测版本、能力是否可用及是否经过本机或异机实测，以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。正式交付优先使用 `release/AI获客 V1.0版本-安装程序.exe`；`release/AI获客 V1.0版本.zip` 只作为免安装备用包。
 
 ## 本地运行
 
-环境要求：Windows 10/11 x64、Node.js、已安装并登录的个人微信 `4.1.11.55`。
+环境要求：Windows 10/11 x64、Node.js、已安装并登录的个人微信（优先使用当前主流版本；实际兼容范围按 [PROJECT_STATUS.md](PROJECT_STATUS.md) 的矩阵验收）。
 
 ```powershell
 cd desktop

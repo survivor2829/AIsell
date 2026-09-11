@@ -244,6 +244,23 @@ try {
   assert.equal(invalidClockLogger.readRecent(10).length, 0);
   const traceLogger = createDiagnosticLogger({ rootDir: path.join(root, "send-trace") });
   const tracedOperation = traceLogger.begin("active_touch", "contact_send", { action: "send" }, { trace: true });
+  const preSendEnvelope = require("../shared/wechat-send-diagnostics.cjs").summarizeSendResult({
+    ok: false,
+    action: "send",
+    send_attempted: false,
+    proofDiagnostics: { input_read_reason: "input_draft_read_failed" }
+  }, { stage: "before_send_snapshot" });
+  assert.deepEqual(preSendEnvelope, {
+    action: "send",
+    reason: "input_draft_read_failed",
+    input_read_reason: "input_draft_read_failed",
+    ok: false,
+    send_attempted: false,
+    outcome: "not_attempted",
+    side_effect: "none",
+    retryability: "safe_retry",
+    failure_stage: "before_send_snapshot"
+  });
   traceLogger.event("active_touch", "send_stage", { stage: "after_send_confirmation", is_new: false,
     input_empty: true, input_read_reason: "empty", message: "trace-private-text" }, { trace: true, traceId: tracedOperation.traceId });
   tracedOperation.end({ ok: false, reason: "message_bubble_not_new_latest_exact", send_attempted: null });
@@ -276,6 +293,18 @@ try {
   assert.equal(windowReport.details.window_recovery_succeeded, false);
   assert.equal(windowReport.details.window_recover_ms, 300);
   assert.doesNotMatch(JSON.stringify(windowReport), /private-chat-title|private-error-text/);
+  const parentLogger = createDiagnosticLogger({ rootDir: path.join(root, "parent-trace") });
+  parentLogger.event("wechat_adapter", "executor", { parent_trace_code: "not-a-trace", outcome: "not_attempted", side_effect: "none", retryability: "safe_retry", failure_stage: "before_send_snapshot" }, { level: "warn", code: "input_draft_read_failed" });
+  const parentEntry = parentLogger.readRecent(1)[0];
+  assert.equal(parentEntry.parent_trace_id, undefined, "invalid parent trace identifiers must not enter diagnostics");
+  const validParent = parentLogger.event("wechat_adapter", "executor_child", { parent_trace_id: tracedOperation.traceId, outcome: "not_attempted", side_effect: "none", retryability: "safe_retry", failure_stage: "before_send_snapshot" }, { level: "warn", code: "input_draft_read_failed" });
+  assert.equal(validParent.parent_trace_id, tracedOperation.traceId);
+  const validParentReport = require("../shared/cloud-report.cjs").reportEntry(validParent, { installId: "12345678-1234-1234-1234-123456789012" });
+  assert.equal(validParentReport.details.parent_trace_id, tracedOperation.traceId);
+  assert.equal(validParentReport.details.outcome, "not_attempted");
+  assert.equal(validParentReport.details.side_effect, "none");
+  assert.equal(validParentReport.details.retryability, "safe_retry");
+  assert.equal(validParentReport.details.failure_stage, "before_send_snapshot");
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

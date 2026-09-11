@@ -6,6 +6,7 @@ const { readContacts } = require("../../rpa/active_touch/state_machine.cjs");
 const { identityKey } = require("../../rpa/active_touch/touch_task_state.cjs");
 const { writeFileAtomic, writeJsonAtomic } = require("./atomic-file.cjs");
 const { FLOATING_PROGRESS_WINDOW, floatingProgressPosition } = require("./floating-progress-window.cjs");
+const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs");
 const {
   AUTO_REPLY_ACTIONS,
   AUTO_REPLY_REASON_CODES
@@ -591,7 +592,7 @@ function sanitizeStructuredScanDiagnostics(value) {
   const result = {};
   const header = source.headerRead;
   if (header && typeof header === "object") {
-    if (["matched", "unresolved", "different"].includes(header.state)) result.header_state = header.state;
+    if (["matched", "unresolved", "different", "selected_sidebar_row"].includes(header.state)) result.header_state = header.state;
     if (Number.isSafeInteger(header.candidateCount) && header.candidateCount >= 0 && header.candidateCount <= 1000) result.header_candidate_count = header.candidateCount;
     if (typeof header.recoveryAttempted === "boolean") result.header_recovery_attempted = header.recoveryAttempted;
     if (typeof header.recoveryOk === "boolean") result.header_recovery_ok = header.recoveryOk;
@@ -1806,10 +1807,16 @@ function createAutoReplyController(options = {}) {
     Object.assign(entry, normalizeReceiptDiagnostics(details));
     const draftStage = diagnosticCode(details.draft_stage, "");
     if (draftStage) entry.draft_stage = draftStage;
+    const inputReadReason = diagnosticCode(details.input_read_reason, "");
+    if (inputReadReason) entry.input_read_reason = inputReadReason;
     const incomingChangeKind = diagnosticCode(details.incoming_change_kind, "");
     if (new Set(["ocr_unresolved", "proven_different"]).has(incomingChangeKind)) entry.incoming_change_kind = incomingChangeKind;
     const sendResult = diagnosticCode(details.send_result, "");
     if (new Set(["not_attempted", "sent_verified", "outcome_unknown"]).has(sendResult)) entry.send_result = sendResult;
+    for (const field of ["outcome", "side_effect", "retryability", "failure_stage"]) {
+      const value = diagnosticCode(details[field], "");
+      if (value) entry[field] = value;
+    }
     const recoveryAction = diagnosticCode(details.recovery_action, "");
     if (RECOVERY_ACTIONS.has(recoveryAction)) entry.recovery_action = recoveryAction;
     const sendPhase = diagnosticCode(details.send_phase, "");
@@ -3270,6 +3277,10 @@ function createAutoReplyController(options = {}) {
         action: generated.action,
         reasonCode: generated.reasonCode,
         delivery_attempt: deliveryAttempt,
+        outcome: "not_attempted",
+        side_effect: "none",
+        retryability: "safe_retry",
+        failure_stage: "send",
         pid: candidate.pid,
         hWnd: candidate.hWnd
       });
@@ -3327,6 +3338,7 @@ function createAutoReplyController(options = {}) {
       const sendTimings = result?.send_diagnostics?.timings || {};
       const sendWorker = result?.send_diagnostics?.worker;
       const sendReceipt = normalizeReceiptDiagnostics({ receipt: result?.send_diagnostics?.receipt });
+      const sendEnvelope = summarizeSendResult(result, { stage: "send" });
       const sendDiagnostic = explicitOutcomeUnknown
         ? { code: "outcome_unknown", ref: "" }
         : sendVerified
@@ -3352,6 +3364,11 @@ function createAutoReplyController(options = {}) {
         verification_mode: result?.verification_mode || "",
         send_attempted: result?.send_attempted,
         send_result: result?.send_result,
+        input_read_reason: sendEnvelope.input_read_reason,
+        outcome: sendEnvelope.outcome,
+        side_effect: sendEnvelope.side_effect,
+        retryability: sendEnvelope.retryability,
+        failure_stage: sendEnvelope.failure_stage,
         draft_phase_started: draftPhaseStarted,
         composer_touched: result?.composer_touched,
         draft_stage: result?.draft_stage,

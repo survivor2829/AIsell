@@ -2095,11 +2095,30 @@ $openedObservation = Get-AutoReplyVisualObservation $hWnd ([int]$process.Id) $wi
 if (-not $openedObservation.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$openedObservation.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
 $openedFrame = $openedObservation.frame
 try {
+  $openedSidebar = Get-AutoReplyVisualSidebarRows $openedFrame $openedObservation.lines $allowedSet $sidebarRight
+  $selectedOpenedRows = if ($openedSidebar.ok) { @($openedSidebar.rows | Where-Object { [bool]$_.selected }) } else { @() }
   if ([bool]$candidate.badgeOnly) {
     if (Test-AutoReplyVisualBadgeRemains $openedFrame $candidate.badgeBounds) {
       Write-AutoReplyVisualResult @{ ok = $false; reason = "no_unread_message"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
     }
     $header = Get-AutoReplyVisualAnyHeader $openedObservation.lines $sidebarRight ([double]$openedFrame.width) $openedFrame
+    if (-not $header.ok -and $selectedOpenedRows.Count -eq 1) {
+      $selected = $selectedOpenedRows[0]
+      $header = @{
+        ok = $true
+        state = "selected_sidebar_row"
+        conversation = [string]$selected.conversation
+        observed = [string]$selected.conversationEvidence
+        headerCandidateCount = 0
+        headerCandidateHashes = @()
+      }
+      $script:AutoReplyVisualHeaderRead = @{
+        state = "selected_sidebar_row"
+        candidateCount = 0
+        recoveryAttempted = $true
+        recoveryOk = $true
+      }
+    }
     if ($script:AutoReplyVisualExactConversationMatch) {
       $strictHeader = Resolve-AutoReplyVisualStrictBadgeHeader $header $allowedSet
       if (-not $strictHeader.ok) {
@@ -2125,6 +2144,24 @@ try {
     }
   } else {
     $header = Get-AutoReplyVisualHeader $openedObservation.lines $conversation $sidebarRight ([double]$openedFrame.width) $allowedSet $openedFrame
+    if (-not $header.ok -and $selectedOpenedRows.Count -eq 1 -and
+        (Test-AutoReplyVisualConversationMatch $conversation ([string]$selectedOpenedRows[0].conversation))) {
+      $selected = $selectedOpenedRows[0]
+      $header = @{
+        ok = $true
+        state = "selected_sidebar_row"
+        conversation = [string]$selected.conversation
+        observed = [string]$selected.conversationEvidence
+        headerCandidateCount = 0
+        headerCandidateHashes = @()
+      }
+      $script:AutoReplyVisualHeaderRead = @{
+        state = "selected_sidebar_row"
+        candidateCount = 0
+        recoveryAttempted = $true
+        recoveryOk = $true
+      }
+    }
   }
   if (-not [bool]$candidate.badgeOnly -and -not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
     Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
@@ -2194,6 +2231,26 @@ try {
     try {
       if (-not [bool]$candidate.badgeOnly -or [bool]$candidate.strictConversationVerified) {
         $confirmationHeader = Get-AutoReplyVisualHeader $confirmation.lines $conversation $sidebarRight ([double]$confirmationFrame.width) $allowedSet $confirmationFrame
+        $confirmationSidebar = Get-AutoReplyVisualSidebarRows $confirmationFrame $confirmation.lines $allowedSet $sidebarRight
+        $selectedConfirmationRows = if ($confirmationSidebar.ok) { @($confirmationSidebar.rows | Where-Object { [bool]$_.selected }) } else { @() }
+        if (-not $confirmationHeader.ok -and $selectedConfirmationRows.Count -eq 1 -and
+            (Test-AutoReplyVisualConversationMatch $conversation ([string]$selectedConfirmationRows[0].conversation))) {
+          $selected = $selectedConfirmationRows[0]
+          $confirmationHeader = @{
+            ok = $true
+            state = "selected_sidebar_row"
+            conversation = [string]$selected.conversation
+            observed = [string]$selected.conversationEvidence
+            headerCandidateCount = 0
+            headerCandidateHashes = @()
+          }
+          $script:AutoReplyVisualHeaderRead = @{
+            state = "selected_sidebar_row"
+            candidateCount = 0
+            recoveryAttempted = $true
+            recoveryOk = $true
+          }
+        }
         if (-not $confirmationHeader.ok -and ([bool]$candidate.strictConversationVerified -or [string]$confirmationHeader.state -eq "different")) {
           Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$confirmationHeader.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$confirmationHeader.state; headerCandidateCount = [int]$confirmationHeader.headerCandidateCount; headerCandidateHashes = @($confirmationHeader.headerCandidateHashes) }
         }

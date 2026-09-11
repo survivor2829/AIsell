@@ -321,8 +321,9 @@ assert.equal(manifest.artifactType, artifactTypeForEdition(edition, process.env)
 assert.equal(manifest.product, PRODUCT_NAME);
 assert.match(manifest.buildId, /^\d{8}T\d{4}Z$/, "portable release must expose an unambiguous build id");
 assert.equal(manifest.architecture, "x64");
-assert.equal(manifest.releaseStage, "wechat-4.1.11.55-integrated-moments-adaptation");
-assert.deepEqual(manifest.targetWeixin, ["4.1.11.55"]);
+assert.equal(manifest.releaseStage, "wechat-current-mainstream-compatibility");
+assert.deepEqual(manifest.wechatCompatibility, declaredCapabilities.wechatCompatibility);
+assert.equal(manifest.targetWeixin, undefined, "portable manifest must not expose a single fixed Weixin target");
 assert.deepEqual(manifest.capabilityMatrix, declaredCapabilities.capabilities, "portable manifest must match the single source capability matrix");
 assert.equal(manifest.capabilityMatrix?.contactSync?.implementation, "implemented");
 assert.equal(manifest.capabilityMatrix?.autoReply?.localLiveVerification, "verified");
@@ -372,6 +373,8 @@ const firstUseGuide = fs.readFileSync(path.join(target, "首次使用说明.txt"
 assert.equal(firstUseGuide.includes(manifest.buildId), true);
 assert.equal(firstUseGuide.includes("不要只复制 EXE"), true);
 assert.equal(firstUseGuide.includes("重新配置 API 密钥、导入 AI 专家话术并同步联系人"), true);
+assert.equal(firstUseGuide.includes("当前安装的主流个人微信为首要验收版本"), true);
+assert.equal(firstUseGuide.includes("至少用一个不同版本做兼容回归"), true);
 assert.equal(manifest.contactHelperSha256, CONTACT_HELPER_SHA256, "manifest must pin the approved contact helper");
 assert.equal(sha256(helper), CONTACT_HELPER_SHA256, "packaged helper must match the approved hash");
 assert.equal(sha256(helper), manifest.contactHelperSha256, "packaged helper hash must match the manifest");

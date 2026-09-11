@@ -1,8 +1,10 @@
 {
-  "schemaVersion": 2,
-  "targetWeixin": [
-    "4.1.11.55"
-  ],
+  "schemaVersion": 3,
+  "wechatCompatibility": {
+    "policy": "latest-mainstream-primary",
+    "primary": "current-installed-mainstream",
+    "crossVersionRegressionRequired": true
+  },
   "capabilities": {
     "contactSync": {
       "implementation": "implemented",

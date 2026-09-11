@@ -212,7 +212,7 @@ function createWechatWorkflowController(options) {
   }
 
   function settleQueue() {
-    if (!enabled) { phase = "paused"; return; }
+    if (!enabled) { if (phase !== "needs_attention") phase = "paused"; return; }
     const pending = store.tasks.filter((task) => task.status === "pending");
     const blocked = store.tasks.filter((task) => ["needs_attention", "missed"].includes(task.status)
       || (task.status === "pending" && task.accountName && task.accountName !== getAccount()));
@@ -258,13 +258,12 @@ function createWechatWorkflowController(options) {
     reconcilePublishResults();
     for (const task of store.tasks) if (task.type === "touch" && !task.enrolled) enroll(task, readPayload(task));
     if (!enabled || mutating) return;
-    // Finite work owns the UI until it yields or completes. A continuously busy
-    // inbox must not starve scheduled work or switch pages between task steps.
     const readyTask = nextTask();
     const people = store.replyEnabled === false ? [] : accountRecipients();
-    if (readyTask) {
-      replyStatus = store.replyEnabled === false ? "自动回复未开启" : "待当前可执行任务完成后接待客户";
-    } else if (people.length && options.reply?.runWorkflowStep && !replyError) {
+    // Give the inbox one serialized observation before each finite task step.
+    // This prevents the first incoming message from waiting behind a whole
+    // touch batch while the coordinator still guarantees one WeChat operation.
+    if (people.length && options.reply?.runWorkflowStep && !replyError) {
       cycleStage = "reply_step";
       const replyStarted = Date.now();
       phase = "replying";
@@ -283,6 +282,7 @@ function createWechatWorkflowController(options) {
       lastReplyDiagnostic = replyReason;
       replyStatus = reply.error || reply.progressText || (reply.handled ? replyStatus : "本次未发现待回复消息");
       if (reply.handled || reply.busy || reply.status === "busy") return;
+      if (readyTask) replyStatus = "待当前可执行任务完成后接待客户";
     } else if (!replyError) {
       replyError = people.length ? "自动回复执行器不可用" : "";
       replyStatus = people.length ? "自动回复执行器不可用" : "暂无接待客户";
@@ -313,6 +313,10 @@ function createWechatWorkflowController(options) {
       if (task.progress.done > 0) task.startedAt ||= new Date(now()).toISOString();
       task.error = result.error || "";
       task.status = result.status;
+      if (task.status === "needs_attention") {
+        enabled = false;
+        phase = "needs_attention";
+      }
       if (task.cancelRequested && result.status !== "needs_attention") task.status = "cancelled";
       if (task.status === "completed") {
         task.completedAt = new Date(now()).toISOString();
@@ -337,6 +341,8 @@ function createWechatWorkflowController(options) {
       operation?.end?.({ task_kind: task.type, task_id: task.id, stage: cycleStage, reason: workflowFailureReason(failure), error: failure }, { ok: false, code: workflowFailureReason(failure) });
       task.status = "needs_attention";
       task.error = failure.message || "任务执行中断，请核对实际结果。";
+      enabled = false;
+      phase = "needs_attention";
     } finally {
       currentTaskId = null;
       settleQueue();

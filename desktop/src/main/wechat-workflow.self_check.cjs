@@ -117,8 +117,10 @@ async function checkWorkflowDiagnostics() {
   replyResult = { handled: false, status: "needs_attention", error: "所选联系人没有可唯一识别的会话名称" };
   await control.addTask({ type: "touch", payload: {} });
   await control.start(); await control.tick();
-  await control.tick(); // The finite task runs before the idle reply diagnostic.
-  assert(events.some((event) => event.name === "reply.result" && event.reason === "contact_identity_ambiguous"));
+  assert.equal(control.status().enabled, false, "a finite task failure pauses before auto reply can run");
+  assert.equal(control.status().phase, "needs_attention");
+  assert.equal(events.some((event) => event.name === "reply.result" && event.reason === "contact_identity_ambiguous"), true,
+    "the inbox check must be recorded before a finite task is blocked");
   assert(events.some((event) => event.name === "task_step.ended" && event.stage === "task_result" && event.reason === "task_needs_attention"));
   assert.equal(/private-customer|private-name|private-script|private-account/.test(JSON.stringify(events)), false, "diagnostics must not receive customer payloads");
   await control.dispose();
@@ -181,24 +183,25 @@ async function main() {
   assert.equal(control.status().replyStatus, "准备接待客户");
   customerWaiting = true;
   await control.tick();
-  assert.deepEqual(calls, ["due"], "due work must run even with a waiting customer reply");
-  assert.equal(control.status().replyStatus, "待当前可执行任务完成后接待客户");
+  assert.deepEqual(calls, ["reply"], "the first inbox check must not wait behind finite work");
+  assert.equal(customerWaiting, false, "the waiting reply must be handled before finite work");
+  await control.tick();
+  await control.tick();
+  await control.tick();
   await control.tick();
   await control.tick();
   customerWaiting = true;
   await control.tick();
-  await control.tick();
-  await control.tick();
-  assert.deepEqual(calls, ["due", "touch", "touch", "daily", "reply"]);
+  assert.deepEqual(calls, ["reply", "due", "touch", "touch", "daily", "reply"]);
   assert.equal(customerWaiting, false, "reply resumes after runnable work completes");
   await control.tick();
-  assert.equal(calls.length, 5, "future work and completed daily task cannot loop");
+  assert.equal(calls.length, 6, "future work and completed daily task cannot loop");
   await assert.rejects(control.updateTask({ id: daily.task.id, type: "interact", payload: { maxPosts: 2 } }), /先暂停/);
   await control.pause();
   await control.updateTask({ id: daily.task.id, type: "interact", title: "daily", repeat: "daily", payload: { maxPosts: 2, commentGuidance: "new preference" } });
   await control.start();
   await control.tick();
-  assert.equal(calls.length, 5, "editing tomorrow's daily arrangement must not repeat today's completed work");
+  assert.equal(calls.length, 6, "editing tomorrow's daily arrangement must not repeat today's completed work");
   assert.equal(control.status().phase, "scheduled");
   await control.pause();
   await control.removeRecipient("a");
@@ -297,12 +300,38 @@ async function main() {
   assert.equal(cooldown.status().waitUntil, cooldownClock.getTime() + 10_000);
   await cooldown.tick();
   assert.equal(touchCalls, 1, "a contact must not be retried while its safety interval is still active");
-  assert.equal(replyCalls, 1, "reply checks can run during a deferred touch interval");
+  assert.equal(replyCalls, 2, "reply checks can run during a deferred touch interval");
   cooldownClock = new Date(cooldownClock.getTime() + 10_000);
   await cooldown.tick();
   assert.equal(touchCalls, 2, "the deferred task resumes when its known interval ends");
   assert.equal(workflowFailureReason("personal_wechat_main_window_not_found"), "personal_wechat_main_window_not_found");
   await cooldown.dispose();
+
+  const attentionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-attention-stop-"));
+  let attentionReplyCalls = 0;
+  let attentionTaskCalls = 0;
+  const attention = createWechatWorkflowController({
+    rootDir: attentionRoot, autoReplyDir: path.join(attentionRoot, "reply"), activeTouchDir: path.join(attentionRoot, "touch"), momentsDir: path.join(attentionRoot, "moments"),
+    getAccount: () => "test-account", autoSchedule: false,
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => { attentionReplyCalls += 1; return { handled: false }; }
+    },
+    executors: { touch: {
+      prepareWorkflowTask: () => ({ contacts: [{ id: "a" }], script: "test" }),
+      runWorkflowStep: async () => { attentionTaskCalls += 1; return { status: "needs_attention", error: "preflight_failed", progress: { done: 0, total: 1 } }; }
+    } }
+  });
+  await attention.addRecipients(["reply-contact"]);
+  await attention.addTask({ type: "touch", title: "blocked", payload: {} });
+  await attention.addTask({ type: "touch", title: "must-wait", payload: {} });
+  await attention.start(); await attention.tick();
+  assert.equal(attentionTaskCalls, 1, "a blocked finite task must be recorded once");
+  assert.equal(attentionReplyCalls, 1, "the blocked finite task still gets one serialized inbox check first");
+  assert.equal(attention.status().tasks[1].status, "pending", "later finite work must remain queued");
+  assert.equal(attention.status().enabled, false, "a blocked finite task must pause the unified workflow");
+  assert.equal(attention.status().phase, "needs_attention");
+  await attention.dispose();
 
   const retryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-retry-"));
   let retryAllowed = true;

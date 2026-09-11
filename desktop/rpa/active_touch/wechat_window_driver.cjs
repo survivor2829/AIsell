@@ -457,7 +457,7 @@ $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = "Stop"
 $windowClock = [Diagnostics.Stopwatch]::StartNew()
 $windowStageAt = 0L
-$windowDiagnostic = @{ window_stage = "bootstrap"; window_native_count = 0; window_hidden_count = 0; window_minimized_count = 0; window_rejected_layout_count = 0; window_recovery_candidate_count = 0; window_recovery_main_count = 0; window_recovery_attempted = $false; window_recovery_succeeded = $false }
+$windowDiagnostic = @{ window_stage = "bootstrap"; window_native_count = 0; window_hidden_count = 0; window_minimized_count = 0; window_rejected_layout_count = 0; window_recovery_candidate_count = 0; window_recovery_main_count = 0; window_recovery_attempted = $false; window_recovery_succeeded = $false; window_discovery_attempts = 0; window_discovery_retries = 0; window_discovery_wait_ms = 0; window_discovery_launch_attempted = $false; window_discovery_launch_succeeded = $false }
 $hostStartedAt = 0L
 if ([int64]::TryParse($env:XIAOXI_WINDOW_STARTED_AT, [ref]$hostStartedAt) -and $hostStartedAt -gt 0) {
   $windowDiagnostic.window_bootstrap_ms = [Math]::Max(0, [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $hostStartedAt)
@@ -565,6 +565,7 @@ $expectedPid = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")
 $expectedHWnd = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND")
 $minimumIdleMsText = [Environment]::GetEnvironmentVariable("XIAOXI_WECHAT_MIN_IDLE_MS")
 $inspectOnly = [Environment]::GetEnvironmentVariable("XIAOXI_WECHAT_INSPECT_ONLY") -ceq "1"
+$allowDiscoveryLaunch = -not $inspectOnly -and [string]::IsNullOrWhiteSpace($expectedPid) -and [string]::IsNullOrWhiteSpace($expectedHWnd)
 $minimumIdleMs = 0
 if (-not [int]::TryParse($minimumIdleMsText, [ref]$minimumIdleMs) -or $minimumIdleMs -lt 0) { $minimumIdleMs = 0 }
 function Test-XiaoxiUserIdle {
@@ -636,11 +637,28 @@ function Request-ExactWechatForeground([IntPtr]$hWnd, [object]$window, [bool]$na
 }
 Set-WechatWindowStage "process"
 $processNames = @("Weixin", "WeChat")
-$wechatProcesses = @{}
-foreach ($wechatProcess in @(Get-Process -Name $processNames -ErrorAction SilentlyContinue)) {
-  $wechatProcesses[[int]$wechatProcess.Id] = $wechatProcess
+function Update-WechatProcessSnapshot {
+  $script:wechatProcesses = @{}
+  foreach ($wechatProcess in @(Get-Process -Name $processNames -ErrorAction SilentlyContinue)) {
+    $script:wechatProcesses[[int]$wechatProcess.Id] = $wechatProcess
+  }
+  $windowDiagnostic.window_process_count = $script:wechatProcesses.Count
 }
-$windowDiagnostic.window_process_count = $wechatProcesses.Count
+function Start-WechatForDiscovery {
+  if (-not $allowDiscoveryLaunch) { return $false }
+  $launchPath = [Environment]::GetEnvironmentVariable("XIAOXI_WECHAT_EXE")
+  if ([string]::IsNullOrWhiteSpace($launchPath) -or -not (Test-Path -LiteralPath $launchPath -PathType Leaf)) { return $false }
+  $windowDiagnostic.window_discovery_launch_attempted = $true
+  try {
+    Start-Process -FilePath $launchPath -ErrorAction Stop | Out-Null
+    $windowDiagnostic.window_discovery_launch_succeeded = $true
+    return $true
+  } catch {
+    return $false
+  }
+}
+Update-WechatProcessSnapshot
+$windowDiagnostic.window_discovery_attempts = 1
 Set-WechatWindowStage "enumerate"
 $matches = New-Object System.Collections.Generic.List[object]
 function Test-WechatMainRenderChild([IntPtr]$hWnd) {
@@ -858,6 +876,20 @@ Update-WechatWindowCandidateDiagnostics $candidateMatches
 Set-WechatWindowStage "select"
 if (-not $expectedHandleIsValid) {
   $matches = @(Select-WechatMainCandidates $candidateMatches)
+  if ($matches.Count -eq 0 -and $windowDiagnostic.window_process_count -eq 0 -and -not $inspectOnly) {
+    [void](Start-WechatForDiscovery)
+    for ($discoveryRetry = 1; $discoveryRetry -le 20 -and $matches.Count -eq 0; $discoveryRetry++) {
+      Start-Sleep -Milliseconds 500
+      $windowDiagnostic.window_discovery_attempts = 1 + $discoveryRetry
+      $windowDiagnostic.window_discovery_retries = $discoveryRetry
+      $windowDiagnostic.window_discovery_wait_ms = 500 * $discoveryRetry
+      Update-WechatProcessSnapshot
+      if ($windowDiagnostic.window_process_count -eq 0) { continue }
+      $candidateMatches = @(Get-WechatWindowCandidates)
+      Update-WechatWindowCandidateDiagnostics $candidateMatches
+      $matches = @(Select-WechatMainCandidates $candidateMatches)
+    }
+  }
   if (-not $inspectOnly -and $matches.Count -eq 0) {
     $recoveryCandidate = Get-WechatWindowRecoveryCandidate $candidateMatches
     if ($null -ne $recoveryCandidate) {
@@ -1336,12 +1368,14 @@ function normalizeWechatMainWindow(context = {}, runner = runPowerShell) {
   const minIdleMs = Number.isFinite(requestedIdleMs)
     ? Math.max(0, Math.min(60_000, Math.floor(requestedIdleMs)))
     : 0;
+  const wechatExe = process.env.XIAOXI_WECHAT_EXE || wechatExecutableForLaunch();
   // Resolve the exact WeChat host HWND once, restore it to the stable_target
   // layout, and keep the same window identity through the operation.
   return runner(NORMALIZE_WECHAT_WINDOW_SCRIPT, {
     XIAOXI_EXPECTED_PID: String(context.expectedPid ?? context.pid ?? ""),
     XIAOXI_EXPECTED_HWND: String(context.expectedHWnd ?? context.hWnd ?? ""),
-    XIAOXI_WECHAT_MIN_IDLE_MS: String(minIdleMs)
+    XIAOXI_WECHAT_MIN_IDLE_MS: String(minIdleMs),
+    XIAOXI_WECHAT_EXE: wechatExe
   }, { ensure: false, timeout: WECHAT_WINDOW_PREPARE_TIMEOUT_MS, windowDiagnostics: true, signal: context.signal });
 }
 
@@ -1474,13 +1508,19 @@ function focusWechatWindowAsync(context = {}, runner = runPowerShellAsync) {
 const SEARCH_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
-${WECHAT_CLIPBOARD_POWERSHELL}
 Add-Type -AssemblyName UIAutomationClient
 Add-Type @"
 using System;
 using System.Text;
 using System.Runtime.InteropServices;
 public static class Win32WechatWindowSearch {
+  [StructLayout(LayoutKind.Sequential)] public struct MOUSEINPUT { public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public UIntPtr extraInfo; }
+  [StructLayout(LayoutKind.Sequential)] public struct KEYBDINPUT { public ushort virtualKey; public ushort scanCode; public uint flags; public uint time; public UIntPtr extraInfo; }
+  [StructLayout(LayoutKind.Explicit)] public struct INPUT {
+    [FieldOffset(0)] public uint type;
+    [FieldOffset(8)] public MOUSEINPUT mouseInput;
+    [FieldOffset(8)] public KEYBDINPUT keyboardInput;
+  }
   [StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
@@ -1497,6 +1537,21 @@ public static class Win32WechatWindowSearch {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
   [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
+  [DllImport("user32.dll")] public static extern uint SendInput(uint count, INPUT[] inputs, int size);
+  private const uint KeyEventfKeyUp = 0x0002u;
+  private const uint KeyEventfUnicode = 0x0004u;
+  public static bool AtomicUnicodeText(string text) {
+    if (IntPtr.Size != 8 || String.IsNullOrEmpty(text) || text.Length > 500) return false;
+    INPUT[] inputs = new INPUT[text.Length * 2];
+    for (int index = 0; index < text.Length; index++) {
+      ushort codeUnit = text[index];
+      inputs[index * 2].type = 1;
+      inputs[index * 2].keyboardInput = new KEYBDINPUT { virtualKey = 0, scanCode = codeUnit, flags = KeyEventfUnicode, time = 0, extraInfo = UIntPtr.Zero };
+      inputs[index * 2 + 1].type = 1;
+      inputs[index * 2 + 1].keyboardInput = new KEYBDINPUT { virtualKey = 0, scanCode = codeUnit, flags = KeyEventfUnicode | KeyEventfKeyUp, time = 0, extraInfo = UIntPtr.Zero };
+    }
+    return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT))) == inputs.Length;
+  }
   public static uint GetLastInputTick() {
     LASTINPUTINFO info = new LASTINPUTINFO();
     info.cbSize = (uint)Marshal.SizeOf(info);
@@ -1522,50 +1577,25 @@ if (-not $exactWindowBinding) {
 if (-not [int]::TryParse([string][Environment]::GetEnvironmentVariable("XIAOXI_WECHAT_MIN_IDLE_MS"), [ref]$minimumIdleMs) -or $minimumIdleMs -lt 0) { $minimumIdleMs = 0 }
 $minimumIdleMs = [Math]::Min($minimumIdleMs, 60000)
 $processNames = @("Weixin", "WeChat")
-$script:clipboardCaptured = $false
-$script:oldClipboard = ""
-$script:clipboardOwnedValue = $null
 $script:inputLeaseActive = $false
 $script:inputLeaseTick = [uint32]::MaxValue
-function Restore-SearchClipboardIfOwned {
-  if (-not $script:clipboardCaptured -or -not $exactWindowBinding -or
-      $null -eq $script:clipboardOwnedValue -or $matched -eq $null -or
-      [Win32WechatWindowSearch]::GetForegroundWindow() -ne [IntPtr]$matched.hWnd) { return }
-  if ($script:inputLeaseActive -and [Win32WechatWindowSearch]::GetLastInputTick() -ne $script:inputLeaseTick) { return }
-  try {
-    if ([System.Windows.Forms.Clipboard]::ContainsImage() -or
-        [System.Windows.Forms.Clipboard]::ContainsFileDropList() -or
-        [System.Windows.Forms.Clipboard]::ContainsAudio() -or
-        -not [System.Windows.Forms.Clipboard]::ContainsText([System.Windows.Forms.TextDataFormat]::UnicodeText)) { return }
-    $currentClipboard = [System.Windows.Forms.Clipboard]::GetText([System.Windows.Forms.TextDataFormat]::UnicodeText)
-    if ($currentClipboard -ceq [string]$script:clipboardOwnedValue) {
-      Restore-WechatClipboardSnapshot $script:oldClipboard
-      $script:clipboardOwnedValue = $null
-    }
-  } catch {}
-}
 function Stop-SearchForActiveUser {
-  Restore-SearchClipboardIfOwned
   @{ ok = $false; reason = "wechat_user_active"; pid = $matched.pid; hWnd = $matched.hWnd; safety_diagnostics = @{ phase = "click_search_result"; required_idle_ms = [int64]$minimumIdleMs; observed_idle_ms = [int64]$idleMs; expected_hWnd = [int64]$matched.hWnd; foreground_hWnd = [int64]([Win32WechatWindowSearch]::GetForegroundWindow().ToInt64()) } } | ConvertTo-Json -Compress
   exit
 }
 function Stop-SearchForExternalInput([uint32]$expectedInputTick, [uint32]$currentInputTick) {
-  Restore-SearchClipboardIfOwned
   @{ ok = $false; reason = "wechat_external_input_detected"; pid = $matched.pid; hWnd = $matched.hWnd; safety_diagnostics = @{ phase = "click_search_result"; expected_input_tick = [uint64]$expectedInputTick; current_input_tick = [uint64]$currentInputTick; expected_hWnd = [int64]$matched.hWnd; foreground_hWnd = [int64]([Win32WechatWindowSearch]::GetForegroundWindow().ToInt64()) } } | ConvertTo-Json -Compress
   exit
 }
 function Stop-SearchForInputLeaseUnavailable {
-  Restore-SearchClipboardIfOwned
   @{ ok = $false; reason = "wechat_input_lease_unavailable"; pid = $matched.pid; hWnd = $matched.hWnd; safety_diagnostics = @{ phase = "click_search_result"; expected_hWnd = [int64]$matched.hWnd; foreground_hWnd = [int64]([Win32WechatWindowSearch]::GetForegroundWindow().ToInt64()) } } | ConvertTo-Json -Compress
   exit
 }
 function Stop-SearchForWindowNotForeground {
-  Restore-SearchClipboardIfOwned
   @{ ok = $false; reason = "wechat_window_not_foreground"; pid = $matched.pid; hWnd = $matched.hWnd; safety_diagnostics = @{ phase = "click_search_result"; expected_hWnd = [int64]$matched.hWnd; foreground_hWnd = [int64]([Win32WechatWindowSearch]::GetForegroundWindow().ToInt64()) } } | ConvertTo-Json -Compress
   exit
 }
 function Stop-SearchForTargetChanged {
-  Restore-SearchClipboardIfOwned
   @{ ok = $false; reason = "wechat_target_changed"; pid = $matched.pid; hWnd = $matched.hWnd; safety_diagnostics = @{ phase = "click_search_result"; expected_hWnd = [int64]$matched.hWnd; foreground_hWnd = [int64]([Win32WechatWindowSearch]::GetForegroundWindow().ToInt64()) } } | ConvertTo-Json -Compress
   exit
 }
@@ -1635,15 +1665,6 @@ if ($currentInputTick -ne $expectedInputTick) { Stop-SearchForExternalInput $exp
 if ([Win32WechatWindowSearch]::GetForegroundWindow() -ne [IntPtr]$matched.hWnd) { Stop-SearchForWindowNotForeground }
 $script:inputLeaseTick = $currentInputTick
 $script:inputLeaseActive = $exactWindowBinding
-try {
-  $script:oldClipboard = Get-WechatClipboardSnapshot
-  $script:clipboardCaptured = $true
-} catch {
-  @{ ok = $false; reason = $(if ($_.Exception.Message -eq "wechat_clipboard_restore_unsupported") { "wechat_clipboard_restore_unsupported" } else { "wechat_clipboard_read_failed" }); pid = $matched.pid; hWnd = $matched.hWnd } | ConvertTo-Json -Compress
-  exit
-}
-Set-Clipboard -Value $query
-$script:clipboardOwnedValue = [string]$query
 Assert-ExactSearchForeground
 [System.Windows.Forms.SendKeys]::SendWait("^f")
 Rebase-ExactSearchInputLease
@@ -1653,7 +1674,10 @@ Assert-ExactSearchForeground
 Rebase-ExactSearchInputLease
 Start-Sleep -Milliseconds 50
 Assert-ExactSearchForeground
-[System.Windows.Forms.SendKeys]::SendWait("^v")
+if (-not [Win32WechatWindowSearch]::AtomicUnicodeText($query)) {
+  @{ ok = $false; reason = "wechat_search_input_failed"; pid = $matched.pid; hWnd = $matched.hWnd } | ConvertTo-Json -Compress
+  exit
+}
 Rebase-ExactSearchInputLease
 Start-Sleep -Milliseconds 300
 Assert-ExactSearchForeground
@@ -1701,7 +1725,6 @@ if (-not [string]::IsNullOrWhiteSpace($resultAutomationId)) {
   Assert-ExactSearchForeground
   $resultOpened = $true
 }
-Restore-SearchClipboardIfOwned
 @{ ok = ([string]::IsNullOrWhiteSpace($resultAutomationId) -or $resultOpened); reason = $(if (-not [string]::IsNullOrWhiteSpace($resultAutomationId) -and -not $resultOpened) { "exact_search_result_not_found" } else { "" }); title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; exactSearchOpened = [bool]$resultOpened; searchQuery = $query; resultAutomationId = $resultAutomationId } | ConvertTo-Json -Compress
 `;
 
@@ -2050,6 +2073,11 @@ $script:draftInputLeaseTick = [uint32]::MaxValue
 $script:draftClipboardCaptured = $false
 $script:draftOldClipboard = ""
 $script:draftOwnedClipboardValue = $null
+$script:draftInputPhase = "pre_input"
+
+function Set-DraftInputPhase([string]$phase) {
+  $script:draftInputPhase = if ([string]::IsNullOrWhiteSpace($phase)) { "input_message" } else { $phase }
+}
 
 function Restore-DraftClipboardIfOwned {
   if (-not $script:draftClipboardCaptured -or -not $exactWindowBinding -or
@@ -2071,7 +2099,16 @@ function Restore-DraftClipboardIfOwned {
 
 function Stop-DraftForActiveUser {
   Restore-DraftClipboardIfOwned
-  @{ ok = $false; reason = "wechat_user_active"; pid = $matched.pid; hWnd = $matched.hWnd.ToInt64() } | ConvertTo-Json -Compress
+  $currentInputTick = [Win32WechatMessageDraft]::GetLastInputTick()
+  $foregroundHWnd = [Win32WechatMessageDraft]::GetForegroundWindow()
+  $safety = @{
+    phase = [string]$script:draftInputPhase
+    expected_input_tick = [uint64]$script:draftInputLeaseTick
+    current_input_tick = [uint64]$currentInputTick
+    expected_hWnd = [int64]$matched.hWnd.ToInt64()
+    foreground_hWnd = [int64]$foregroundHWnd.ToInt64()
+  }
+  @{ ok = $false; reason = "wechat_user_active"; pid = $matched.pid; hWnd = $matched.hWnd.ToInt64(); safety_diagnostics = $safety } | ConvertTo-Json -Compress
   exit
 }
 
@@ -2156,6 +2193,7 @@ $inputPoints = @(
 )
 for ($attempt = 1; $attempt -le $inputPoints.Count; $attempt++) {
   $attemptUsed = $attempt
+  Set-DraftInputPhase "pre_input"
   $point = $inputPoints[$attempt - 1]
   Start-Sleep -Milliseconds (200 + (150 * $attempt))
   Assert-ExactDraftLease
@@ -2201,6 +2239,7 @@ for ($attempt = 1; $attempt -le $inputPoints.Count; $attempt++) {
   Start-Sleep -Milliseconds 50
   [Win32WechatMessageDraft]::mouse_event($MOUSEEVENTF_LEFTUP, 0, 0, 0, [UIntPtr]::Zero)
   Rebase-ExactDraftInputLease
+  Set-DraftInputPhase "after_input_click"
   Start-Sleep -Milliseconds (200 + (150 * $attempt))
   Assert-ExactDraftLease
   if ([Win32WechatMessageDraft]::GetForegroundWindow() -ne $matched.hWnd) {
@@ -2209,6 +2248,7 @@ for ($attempt = 1; $attempt -le $inputPoints.Count; $attempt++) {
     continue
   }
   try {
+    Set-DraftInputPhase "typing"
     Assert-ExactDraftLease
     [System.Windows.Forms.SendKeys]::SendWait("^a")
     Rebase-ExactDraftInputLease
@@ -2221,6 +2261,7 @@ for ($attempt = 1; $attempt -le $inputPoints.Count; $attempt++) {
     Assert-ExactDraftLease
     [System.Windows.Forms.SendKeys]::SendWait("^v")
     Rebase-ExactDraftInputLease
+    Set-DraftInputPhase "after_paste"
   } catch {
     $draftCheck = "clipboard_write_or_paste_failed"
     continue
@@ -2232,6 +2273,7 @@ for ($attempt = 1; $attempt -le $inputPoints.Count; $attempt++) {
     continue
   }
   try {
+    Set-DraftInputPhase "copy_probe"
     $probe = "__XIAOXI_DRAFT_PROBE_" + [Guid]::NewGuid().ToString("N")
     Set-Clipboard -Value $probe
     $ownedClipboardValue = [string]$probe

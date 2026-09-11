@@ -50,7 +50,7 @@ function reportEntry(entry, context) {
   };
   // Finite technical counters / enums useful for RPA failure diagnosis.
   result.details = {};
-  for (const key of ["receipt_stage", "receipt_code", "receipt_draft_read_stage", "state", "status", "phase", "reason_code", "error_code", "stage", "wx_hook_stage", "wx_hook_error_code", "blocked_reason"]) {
+  for (const key of ["receipt_stage", "receipt_code", "receipt_draft_read_stage", "state", "status", "phase", "reason_code", "error_code", "stage", "wx_hook_stage", "wx_hook_error_code", "blocked_reason", "outcome", "side_effect", "retryability", "failure_stage", "parent_trace_id"]) {
     const value = token(entry.details?.[key]);
     if (value) result.details[key] = value;
   }

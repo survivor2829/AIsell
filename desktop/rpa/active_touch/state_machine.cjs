@@ -187,6 +187,9 @@ function focusWechatWindowDryRun(baseDir = __dirname, driver = focusWechatWindow
 
   const nextState = {
     ...state,
+    window_pid: Number.isFinite(Number(result.pid)) && Number(result.pid) > 0 ? Number(result.pid) : 0,
+    window_handle: String(result.hWnd ?? "").trim(),
+    window_process_name: String(result.processName ?? "").trim(),
     located_window_title: result.title ?? state.located_window_title,
     last_result: "wechat_window_focused",
     blocked_reason: ""
@@ -828,7 +831,11 @@ function inputMessageDryRun(baseDir = __dirname, message = "", inputDriver = inp
     const reason = safeDiagnostic
       ? `message_input_failed_${safeDiagnostic}${Number.isInteger(attempts) && attempts > 0 ? `_attempts_${attempts}` : ""}`
       : "message_input_failed";
-    return block(baseDir, "消息输入 dry-run", state, reason, "已阻断：未能定位微信输入框");
+    return block(baseDir, "消息输入 dry-run", state, reason, "已阻断：未能定位微信输入框", {
+      send_attempted: false,
+      send_result: "not_attempted",
+      safety_diagnostics: inputResult?.safety_diagnostics || null
+    });
   }
   const pointX = Number(inputResult.draftPoint?.xRatio);
   const pointY = Number(inputResult.draftPoint?.yRatio);
@@ -1043,7 +1050,15 @@ function verifySendResultDryRun(baseDir = __dirname, titleReader = readWindowTit
 
   const visibleTitles = titleReader().filter(Boolean);
   const titles = visibleTitles.length ? visibleTitles : [state.conversation_title, state.located_window_title].filter(Boolean);
-  if (!titles.some((item) => item.includes(customerName))) {
+  const exactIdDryRunSession = state.conversation_verified === true
+    && state.search_result_clicked === true
+    && state.message_input_done === true
+    && state.conversation_verification_mode === "exact_wechat_id_search"
+    && String(state.search_query ?? "").trim() === String(state.selected_customer?.wechatId ?? "").trim()
+    && String(state.conversation_title ?? "").includes(customerName)
+    && Number(state.window_pid) > 0
+    && Boolean(String(state.window_handle ?? "").trim());
+  if (!titles.some((item) => item.includes(customerName)) && !exactIdDryRunSession) {
     return blockPostSend(baseDir, state, "post_send_conversation_mismatch", "已阻断：发送后会话不匹配");
   }
 

@@ -1,6 +1,6 @@
 # 项目约定
 
-Windows Electron 微信客户运营与内容制作应用，微信验收目标为 `4.1.11.55`。能力和验证状态见 [PROJECT_STATUS.md](PROJECT_STATUS.md)，模块位置见 [MODULE_MAP.md](MODULE_MAP.md)。
+Windows Electron 微信客户运营与内容制作应用。微信验收以当前安装的主流版本为首要目标，并要求至少用一个不同版本做兼容回归；具体版本、能力和验证状态见 [PROJECT_STATUS.md](PROJECT_STATUS.md)，模块位置见 [MODULE_MAP.md](MODULE_MAP.md)。
 
 ## 任务范围与完成
 

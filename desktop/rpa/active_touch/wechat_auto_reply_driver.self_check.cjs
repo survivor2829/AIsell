@@ -99,6 +99,21 @@ assert.match(
 );
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /function Update-WechatProcessSnapshot[\s\S]*Get-Process -Name \$processNames[\s\S]*window_process_count[\s\S]*window_discovery_retries/u,
+  "an initially absent WeChat process must be rediscovered within a bounded retry window"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /Start-WechatForDiscovery[\s\S]*Start-Process -FilePath \$launchPath[\s\S]*window_discovery_launch_succeeded/u,
+  "normal operation may launch the configured WeChat executable once when no process exists"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /\$allowDiscoveryLaunch = -not \$inspectOnly[\s\S]*\$matches\.Count -eq 0[\s\S]*-not \$inspectOnly/u,
+  "read-only window inspection must never launch or wait for another WeChat process"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
   /if \(\$matches\.Count -gt 1\)[\s\S]*reason = "wechat_window_ambiguous"/u,
   "multiple structurally valid personal WeChat main windows must fail closed instead of being selected by area"
 );
@@ -147,6 +162,7 @@ assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /BringWindowToTop/u);
 assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /GetForegroundWindow\(\) -eq \$hWnd/u, "foreground success must be proven against the exact HWND");
 const windowDriverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.cjs"), "utf8");
 assert.doesNotMatch(windowDriverSource, /D:\\\\微信\\\\Weixin\\\\Weixin\.exe/u, "the launcher must not embed this development machine's WeChat path");
+assert.match(windowDriverSource, /const wechatExe = process\.env\.XIAOXI_WECHAT_EXE \|\| wechatExecutableForLaunch\(\)/u, "normal-window discovery must pass a resolved executable path to its bounded startup retry");
 assert.doesNotMatch(windowDriverSource, /(?:Left|Top) -gt -1000/u, "valid windows on a left-side monitor must not be rejected by coordinate magic numbers");
 await focusWechatWindowAsync({ expectedPid: 81, expectedHWnd: "91" }, layoutRunner);
 assert.equal(layoutCalls[1].script, NORMALIZE_WECHAT_WINDOW_SCRIPT, "active-touch focus must use the same maximized work-area contract");

@@ -21,7 +21,7 @@ const SECRET_LIKE_PATTERN = /(?<![a-z0-9])(?:(?:sk|ak)[-_][a-z0-9_-]{6,}|ltai[a-
 const LOCATION_PATTERN = /(?:https?:\/\/|file:\/\/|\\\\|[a-z]:[\\/]|\/(?:users|home|var|tmp|etc|opt)\/)/iu;
 const SAFE_IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9_.:-]{0,119}$/iu;
 const SAFE_DETAIL_KEY_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/iu;
-const SAFE_DETAIL_STRING_KEYS = /^(?:(?:.*_)?(?:action|arch|code|engine|extension|kind|mode|phase|platform|provider|reason|release|stage|state|status|type|version|zone))$/iu;
+const SAFE_DETAIL_STRING_KEYS = /^(?:(?:.*_)?(?:action|arch|code|engine|extension|kind|mode|outcome|parent_trace_id|phase|platform|provider|reason|release|retryability|side_effect|stage|state|status|type|version|zone))$/iu;
 const SENSITIVE_KEYS = /(?:api.?key|secret|token|password|clipboard|prompt|expert|message|content|script|draft|contact.?(?:name|id)|(?:user|account|customer).?id|phone|mobile|nickname|remark|wechat.?id|wxid|conversation(?:.?title|.?name)?|ocr.?text|raw.?text|recognized.?text|^(?:error|description|stack|url|uri|host)$)/iu;
 const PATH_KEYS = /(?:path|dir|file|cwd|executable)/iu;
 const RECEIPT_DIAGNOSTIC_FIELDS = [
@@ -41,6 +41,13 @@ function code(value, fallback = "") {
     || !SAFE_IDENTIFIER_PATTERN.test(candidate)
   ) return fallback;
   return candidate.toLowerCase();
+}
+
+function traceIdentifier(value) {
+  const candidate = String(value ?? "").trim().toLowerCase();
+  return /^(?:[a-f0-9]{24}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/u.test(candidate)
+    ? candidate
+    : "";
 }
 
 function scrubSecrets(value) {
@@ -314,6 +321,7 @@ function createDiagnosticLogger({ rootDir, appInfo = {}, clock = () => new Date(
         module,
         event: eventCode,
         trace_id: code(options?.traceId, ""),
+        parent_trace_id: traceIdentifier(options?.parentTraceId || details?.parent_trace_id || details?.parent_trace_code),
         phase: code(options?.phase || details?.phase, ""),
         code: errorCode,
         duration_ms: Number.isFinite(duration) ? Math.max(0, Math.round(duration)) : undefined,

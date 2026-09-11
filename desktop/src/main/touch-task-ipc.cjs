@@ -42,6 +42,7 @@ let currentBuildId = "";
 const consumedBatchTokens = new Set();
 const DRAFT_GENERATION_CONCURRENCY = 3;
 const PRE_DRAFT_INPUT_RECOVERY_ATTEMPTS = 3;
+const PRE_DRAFT_INPUT_RECOVERY_WAIT_MS = 15_000;
 
 function consumeBatchAuthorization(payload = {}) {
   if (executionMode !== "real_send") return true;
@@ -77,6 +78,9 @@ function resultCode(result) {
 
 function resultReason(result, fallback) {
   const code = resultCode(result);
+  if (/^message_input_failed_wechat_user_active(?:_attempts_[1-9]\d*)?$/u.test(code)) {
+    return "电脑输入状态发生变化，草稿未写入微信，正在等待后恢复";
+  }
   const labels = {
     wechat_window_not_found: "未找到微信聊天主窗口，已尝试自动拉起；若停在登录确认，请先完成微信登录",
     wechat_login_required: "微信已自动拉起，请在手机上确认登录后继续",
@@ -92,6 +96,7 @@ function resultReason(result, fallback) {
     personal_wechat_main_window_not_found: "当前进程中未识别到个人微信主窗口",
     wechat_clipboard_restore_unsupported: "剪贴板包含暂不支持保存的特殊格式，原内容未覆盖，消息未发送",
     wechat_clipboard_read_failed: "无法读取剪贴板，可能正被其他程序占用，消息未发送；请稍后重试",
+    wechat_search_input_failed: "微信搜索框输入失败，消息未发送；请确认微信窗口仍在前台",
     powershell_timeout: "微信窗口适配程序执行超时，请检查电脑负载或安全软件",
     powershell_failed: "微信窗口适配程序启动失败，请确认AI获客与微信权限一致，并检查安全软件拦截",
     exact_search_result_not_found: "未找到该联系人的精确公开微信号搜索结果，已隔离并跳过当前联系人",
@@ -99,6 +104,7 @@ function resultReason(result, fallback) {
     customer_conversation_not_found: "未定位到客户会话，已隔离并跳过当前联系人",
     contact_unavailable: "该联系人已停用，已自动跳过",
     message_input_failed: "草稿输入失败，未能定位微信输入框",
+    message_input_failed_wechat_user_active: "电脑输入状态发生变化，草稿未写入微信，正在等待后恢复",
     conversation_not_verified: "会话未验证",
     empty_message: "触达内容为空",
     message_not_input: "消息尚未写入草稿",
@@ -145,15 +151,35 @@ function isRecoverablePreDraftInputBlock(response, result) {
   if (response?.send_attempted !== false) return false;
   if (["prepared", "clicked", "outcome_unknown"].includes(String(result?.status || "")) || result?.retry_blocked === true) return false;
   const code = resultCode(response);
-  if (code !== "wechat_external_input_detected") return false;
-  return String(response?.action || "") === "click-search-result-dry-run";
+  if (code === "wechat_external_input_detected") return String(response?.action || "") === "click-search-result-dry-run";
+  const safety = response?.safety_diagnostics && typeof response.safety_diagnostics === "object"
+    ? response.safety_diagnostics
+    : {};
+  return /^message_input_failed_wechat_user_active(?:_attempts_[1-9]\d*)?$/u.test(code)
+    && String(response?.action || "") === "input-message-dry-run"
+    && String(safety.phase || "") === "pre_input";
 }
 
 function preDraftRecoveryReason(response, attempt) {
   const detail = resultCode(response) === "wechat_external_input_detected"
     ? "微信写入前检测到电脑输入状态变化"
-    : "电脑尚未达到连续空闲的安全条件";
+    : "微信草稿写入前检测到电脑输入状态变化";
   return `${detail}；消息未写入微信，文案已保留，正在等待后自动恢复（第 ${attempt} 次）`;
+}
+
+async function waitForPreDraftInputRecovery() {
+  const deadline = new Date(Date.now() + PRE_DRAFT_INPUT_RECOVERY_WAIT_MS).toISOString();
+  if (typeof waitForDelay === "function") {
+    await waitForDelay(deadline);
+    return shouldContinueRunning();
+  }
+  const deadlineMs = Date.parse(deadline);
+  while (!pauseRequested && !stopRequested) {
+    const remaining = deadlineMs - Date.now();
+    if (!Number.isFinite(remaining) || remaining <= 0) return shouldContinueRunning();
+    await new Promise((resolve) => setTimeout(resolve, Math.min(250, remaining)));
+  }
+  return false;
 }
 
 function getDevFloatingUrl() {
@@ -676,6 +702,7 @@ async function runRealContact(task, current, index) {
         ...failureContext
       }, { level: "warning", code: failureCode });
       emitTaskUpdate(waiting);
+      if (!(await waitForPreDraftInputRecovery())) return false;
       continue;
     }
 

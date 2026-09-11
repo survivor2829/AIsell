@@ -424,7 +424,13 @@ async function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWec
   };
   const before = await observeSendStage(options, "before_send_snapshot", () => bubbleVerifier(message, { ...windowContext, phase: "before" }));
   if (!hasMessageSnapshot(before)) {
-    return withSendAttempted(blockSendGate(baseDir, state, "message_snapshot_unavailable", "已阻断：无法读取发送前消息列表快照"));
+    const blocked = blockSendGate(baseDir, state, "message_snapshot_unavailable", "已阻断：无法读取发送前消息列表快照");
+    return withSendAttempted({
+      ...blocked,
+      // Keep the safe lower-level reason beside the business gate reason so a
+      // feedback report can explain both "why blocked" and "where it failed".
+      send_diagnostics: summarizeSendResult(before, { stage: "before_send_snapshot" })
+    });
   }
   const prepared = {
     ...state,

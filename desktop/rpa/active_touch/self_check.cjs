@@ -1322,6 +1322,10 @@ try {
   assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: false, reason: "powershell_timeout" })).blocked_reason, "powershell_timeout");
   assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: false, reason: "powershell_failed" })).blocked_reason, "powershell_failed");
   assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: true, title: "企业微信", processName: "WXWork" })).state.last_result, "wechat_window_focused");
+  const focusedWechat = focusWechatWindowDryRun(dir, () => ({ ok: true, title: "微信", processName: "Weixin", pid: 81, hWnd: "91" }));
+  assert.equal(focusedWechat.state.window_pid, 81, "a successful focus must persist the exact WeChat PID for the next guarded step");
+  assert.equal(focusedWechat.state.window_handle, "91", "a successful focus must persist the exact WeChat HWND for the next guarded step");
+  assert.equal(focusedWechat.state.window_process_name, "Weixin");
   assert.equal(send(dir, { dryRun: true, message: "hello" }).blocked_reason, "no_whitelist_customer");
 
   fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_internal", name: "测试客户", wxid: "wxid_internal", wechatId: "internal-test-001", wechatAccountId: "internal-account", allowed: true }]), "utf8");
@@ -1477,6 +1481,22 @@ try {
     inputMessageDryRun(dir, "hello", () => ({ ok: true, draftVerified: false, draftCheck: "wechat_focus_lost_after_paste", draftAttempts: 2 })).blocked_reason,
     "message_input_failed_wechat_focus_lost_after_paste_attempts_2"
   );
+  const inputLeaseFailure = inputMessageDryRun(dir, "hello", () => ({
+    ok: false,
+    reason: "wechat_user_active",
+    safety_diagnostics: {
+      phase: "pre_input",
+      expected_input_tick: 101,
+      current_input_tick: 102,
+      expected_hWnd: 22,
+      foreground_hWnd: 22
+    }
+  }));
+  assert.equal(inputLeaseFailure.blocked_reason, "message_input_failed_wechat_user_active");
+  assert.equal(inputLeaseFailure.send_attempted, false, "an input lease block must prove that no send was attempted");
+  assert.equal(inputLeaseFailure.send_result, "not_attempted");
+  assert.equal(inputLeaseFailure.safety_diagnostics?.phase, "pre_input");
+  assert.equal(inputLeaseFailure.safety_diagnostics?.current_input_tick, 102);
   const inputWithAdaptivePoint = inputMessageDryRun(dir, "hello", () => ({ ok: true, title: "测试客户 - 企业微信", draftVerified: true, draftPoint: { xRatio: 0.65, yRatio: 0.84 } }));
   assert.equal(inputWithAdaptivePoint.state.message_input_done, true);
   assert.deepEqual(inputWithAdaptivePoint.state.message_input_point, { xRatio: 0.65, yRatio: 0.84 });
@@ -1488,6 +1508,22 @@ try {
   assert.equal(send(dir, { dryRun: true, message: "hello" }).state.send_gate_status, "dry_run_passed");
   assert.equal(verifySendResultDryRun(dir, () => ["其他窗口"]).blocked_reason, "post_send_conversation_mismatch");
   assert.equal(verifySendResultDryRun(dir, () => ["测试客户 - 企业微信"]).state.post_send_verified, true);
+  const stateBeforeGenericWechatTitle = loadState(dir);
+  saveState(dir, {
+    ...stateBeforeGenericWechatTitle,
+    conversation_verification_mode: "exact_wechat_id_search",
+    conversation_verified: true,
+    search_result_clicked: true,
+    message_input_done: true,
+    window_pid: 11,
+    window_handle: "22"
+  });
+  assert.equal(
+    verifySendResultDryRun(dir, () => ["微信"]).state.post_send_verified,
+    true,
+    "an exact-ID dry-run session must not fail when Qt exposes only the generic WeChat window title"
+  );
+  saveState(dir, stateBeforeGenericWechatTitle);
   assert.equal((await sendReal(dir, { message: "hello" })).blocked_reason, "real_send_not_armed");
   assert.equal(send(dir, { dryRun: true, message: "hello" }).state.send_gate_status, "dry_run_passed");
   assert.equal(setRealSendArm(dir, true).blocked_reason, "real_send_session_not_verified");
@@ -1557,6 +1593,9 @@ try {
     () => ({ ok: true })
   );
   assert.equal(legacyBubbleResult.blocked_reason, "message_snapshot_unavailable");
+  assert.equal(legacyBubbleResult.send_diagnostics.outcome, "not_attempted");
+  assert.equal(legacyBubbleResult.send_diagnostics.side_effect, "none");
+  assert.equal(legacyBubbleResult.send_diagnostics.failure_stage, "before_send_snapshot");
   assert.equal(legacySendCalls, 0);
 
   const retryDir = path.join(dir, "pre-click-retry");
@@ -1833,17 +1872,20 @@ try {
   assert.match(messageDraftSource, /function Restore-DraftClipboardIfOwned/);
   assert.match(messageDraftSource, /\$currentClipboard -ceq \[string\]\$script:draftOwnedClipboardValue/);
   assert.match(messageDraftSource, /function Rebase-ExactDraftInputLease/);
+  assert.match(messageDraftSource, /function Set-DraftInputPhase[\s\S]*phase = \[string\]\$script:draftInputPhase/);
+  assert.match(messageDraftSource, /Set-DraftInputPhase "pre_input"[\s\S]*Set-DraftInputPhase "after_input_click"[\s\S]*Set-DraftInputPhase "typing"[\s\S]*Set-DraftInputPhase "after_paste"/);
+  assert.match(messageDraftSource, /safety_diagnostics = \$safety/);
   assert.match(messageDraftSource, /\$script:draftInputLeaseActive -and \[Win32WechatMessageDraft\]::GetLastInputTick\(\) -ne \$script:draftInputLeaseTick/);
   assert.match(messageDraftSource, /Get-WechatClipboardSnapshot/);
   assert.match(messageDraftSource, /Restore-WechatClipboardSnapshot \$script:draftOldClipboard/);
   assert.doesNotMatch(messageDraftSource, /try \{ Set-Clipboard -Value \$oldClipboard \} catch \{\}/);
-  assert.match(searchSource, /function Restore-SearchClipboardIfOwned/);
-  assert.match(searchSource, /\$currentClipboard -ceq \[string\]\$script:clipboardOwnedValue/);
+  assert.match(searchSource, /public static bool AtomicUnicodeText\(string text\)/);
+  assert.match(searchSource, /SendInput\(\(uint\)inputs\.Length, inputs, Marshal\.SizeOf\(typeof\(INPUT\)\)\)/);
+  assert.match(searchSource, /AtomicUnicodeText\(\$query\)/);
   assert.match(searchSource, /function Rebase-ExactSearchInputLease/);
-  assert.match(searchSource, /\$script:inputLeaseActive -and \[Win32WechatWindowSearch\]::GetLastInputTick\(\) -ne \$script:inputLeaseTick/);
-  assert.match(searchSource, /Get-WechatClipboardSnapshot/);
-  assert.match(searchSource, /Restore-WechatClipboardSnapshot \$script:oldClipboard/);
-  assert.doesNotMatch(searchSource, /try \{ Set-Clipboard -Value \$oldClipboard \} catch \{\}/);
+  assert.match(searchSource, /if \(\$script:inputLeaseActive\) \{[\s\S]*GetLastInputTick\(\)[\s\S]*Stop-SearchForExternalInput/);
+  assert.doesNotMatch(searchSource, /Get-WechatClipboardSnapshot/);
+  assert.doesNotMatch(searchSource, /Set-Clipboard -Value \$query/);
   assert.match(developmentDriverSource, /function clickWechatSendButton/);
   assert.match(developmentDriverSource, /atomic_conversation_changed/);
   assert.match(developmentDriverSource, /atomic_draft_changed/);

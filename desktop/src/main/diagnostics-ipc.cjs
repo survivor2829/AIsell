@@ -18,6 +18,11 @@ const AUTO_REPLY_VISIBLE_TOKEN_FIELDS = [
   "reason_code",
   "error_code",
   "send_result",
+  "input_read_reason",
+  "outcome",
+  "side_effect",
+  "retryability",
+  "failure_stage",
   "send_phase",
   "recovery_action",
   "verification_mode"

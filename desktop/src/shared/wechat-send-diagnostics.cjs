@@ -3,12 +3,40 @@
 const { sanitizeVisualSendReceipt } = require("./visual-send-receipt.cjs");
 const { sanitizeWechatWindowDiagnostics } = require("./wechat-window-diagnostics.cjs");
 
-function summarizeSendResult(result = {}) {
+const SAFE_SEND_STAGES = new Set([
+  "preflight", "send_session_check", "before_send_snapshot", "draft", "visual_send",
+  "send", "after_send_confirmation", "verify", "handoff", "unknown"
+]);
+
+function safeSendStage(value, fallback = "unknown") {
+  const candidate = String(value ?? "").trim().toLowerCase();
+  return SAFE_SEND_STAGES.has(candidate) ? candidate : fallback;
+}
+
+function sendOutcomeEnvelope(result = {}, detail = {}) {
+  const state = result?.state || {};
+  const attempted = result?.send_attempted ?? result?.sendAttempted;
+  const sendStatus = String(result?.send_result || state.real_send_status || "").trim().toLowerCase();
+  const verified = result?.ok === true && (sendStatus === "sent_verified" || state.real_send_status === "sent_verified");
+  const possible = attempted === true || attempted === null || sendStatus === "outcome_unknown"
+    || state.real_send_status === "prepared" || state.real_send_status === "outcome_unknown";
+  const stage = safeSendStage(
+    detail.stage || detail.phase || result?.stage || result?.phase || result?.send_diagnostics?.phase
+      || result?.diagnostics?.phase || result?.action,
+    "unknown"
+  );
+  if (verified) return { outcome: "sent_verified", side_effect: "confirmed", retryability: "not_retryable", failure_stage: stage };
+  if (possible) return { outcome: "outcome_unknown", side_effect: "possible", retryability: "manual_review", failure_stage: stage };
+  return { outcome: "not_attempted", side_effect: "none", retryability: "safe_retry", failure_stage: stage };
+}
+
+function summarizeSendResult(result = {}, context = {}) {
   const state = result?.state || {};
   const proof = result?.proofDiagnostics || result?.send_diagnostics || state.send_diagnostics || {};
   const detail = sanitizeWechatWindowDiagnostics({ ...result?.diagnostics, ...proof });
   const blocked = result?.blocked_reason || state.blocked_reason;
-  const reason = result?.primary_reason || result?.reason
+  const reason = result?.primary_reason || result?.reason || proof.reason || proof.input_read_reason
+    || result?.diagnostics?.reason
     || (blocked === "outcome_unknown" ? state.real_send_reason || blocked : blocked || state.real_send_reason);
   for (const [key, value] of Object.entries({
     action: result?.action,
@@ -19,6 +47,7 @@ function summarizeSendResult(result = {}) {
   })) {
     if (typeof value === "string" && /^[a-z][a-z0-9_.:-]{0,119}$/iu.test(value)) detail[key] = value;
   }
+  Object.assign(detail, sendOutcomeEnvelope(result, { ...detail, ...context }));
   for (const [key, value] of Object.entries({
     ok: result?.ok,
     send_attempted: result?.send_attempted ?? result?.sendAttempted,
@@ -64,7 +93,7 @@ async function observeSendStage(options, stage, action) {
   emit({ phase: "start" });
   try {
     const result = await action();
-    try { emit({ phase: "finish", elapsed_ms: Date.now() - start, ...summarizeSendResult(result) }); } catch {}
+    try { emit({ phase: "finish", elapsed_ms: Date.now() - start, ...summarizeSendResult(result, { stage }) }); } catch {}
     return result;
   } catch (error) {
     emit({ phase: "exception", ok: false, reason: "send_stage_exception", elapsed_ms: Date.now() - start,

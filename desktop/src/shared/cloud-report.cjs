@@ -6,7 +6,7 @@ const { sanitizeWechatWindowDiagnostics } = require("./wechat-window-diagnostics
 function reportEntry(entry, context) {
   const result = baseReportEntry(entry, context);
   if (!result) return null;
-  for (const key of ["action", "task_kind", "reason", "send_status", "verification_mode", "last_verification_reason", "input_read_reason", "exception_code", "wechat_version", "parent_trace_code", "capture_mode", "scan_mode", "trigger_code"]) {
+  for (const key of ["action", "task_kind", "reason", "send_status", "verification_mode", "last_verification_reason", "input_read_reason", "exception_code", "wechat_version", "parent_trace_code", "parent_trace_id", "capture_mode", "scan_mode", "trigger_code", "outcome", "side_effect", "retryability", "failure_stage"]) {
     const value = token(entry.details?.[key]);
     if (value) result.details[key] = value;
   }
