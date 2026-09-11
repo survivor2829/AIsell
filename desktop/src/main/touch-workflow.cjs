@@ -6,7 +6,7 @@ const { generateFixedScriptFallback, generatePersonalizedDraft } = require("./ai
 const { diagnostics } = require("./diagnostics.cjs");
 const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs");
 const { normalizeTouchLink } = require("./touch-media.cjs");
-const { executeMessageSequence, messageParts, canContinueSequence } = require("./touch-message-sequence.cjs");
+const { executeMessageSequence, messageParts, canContinueTouchResult } = require("./touch-message-sequence.cjs");
 const {
   classifyContacts,
   createTask,
@@ -114,10 +114,10 @@ function createTouchWorkflow(options = {}) {
       }
       if (task.integrity_error) return response("needs_attention", { error: task.pause_reason || "触达任务进度已损坏" });
       if (task.status === "paused") {
-        if (!multipart || !canContinueSequence(task.results[task.current_index])) return response("needs_attention", { error: task.pause_reason || "触达任务需要处理" });
+        if (!canContinueTouchResult(task.results[task.current_index])) return response("needs_attention", { error: task.pause_reason || "触达任务需要处理" });
         task.status = "running";
         task.pause_reason = "";
-        task.results[task.current_index].status = "generated";
+        if (multipart) task.results[task.current_index].status = "generated";
         persist();
       }
       let current = task.results[task.current_index];
@@ -130,7 +130,7 @@ function createTouchWorkflow(options = {}) {
         return response(task.status === "completed" ? "completed" : "pending");
       }
       if (!current || task.current_index >= task.total) return response("completed");
-      if ((UNCERTAIN_SEND_STATES.has(current.status) || current.retry_blocked) && !(multipart && canContinueSequence(current))) {
+      if ((UNCERTAIN_SEND_STATES.has(current.status) || current.retry_blocked) && !canContinueTouchResult(current)) {
         return attention("上次发送结果尚未确认，请检查微信；系统不会自动补发");
       }
       if (Date.parse(task.next_send_not_before || "") > now().getTime()) {
@@ -297,7 +297,7 @@ function createTouchWorkflow(options = {}) {
 
   function canRetryWorkflowTask(record) {
     const task = loadTaskState(workflowDirectory(record.id));
-    return !task.integrity_error && task.status === "paused" && canContinueSequence(task.results[task.current_index]);
+    return !task.integrity_error && task.status === "paused" && canContinueTouchResult(task.results[task.current_index]);
   }
   return { prepareWorkflowTask, runWorkflowStep, canRetryWorkflowTask,
     describeImages: (ids = []) => ids.map((id) => options.mediaStore.describe(id)),

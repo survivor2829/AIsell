@@ -14,7 +14,7 @@ async function checkTouchMessageSequence() {
   const secondContact = { id: "selected-two", name: "第二位测试客户", nickname: "第二位测试客户", wechatId: "test_customer_two", wechatAccountId: "test_account", allowed: true };
   const imageId = "a".repeat(64);
   const calls = [];
-  let failImage = true, unknown = false, enabled = true, pauseAfterText = false;
+  let failImage = true, unknown = false, loginRequired = false, enabled = true, pauseAfterText = false;
   const clock = new Date(2026, 8, 3, 12, 0, 0);
   const config = {
     dataDir: root, now: () => clock, random: () => 0, readContacts: () => [contact, secondContact],
@@ -27,6 +27,9 @@ async function checkTouchMessageSequence() {
       assert.equal(selected.state.selected_customer.id, options.contactId);
       const kind = options.image ? "image" : options.message === "https://example.com/product" ? "link" : "text";
       calls.push({ kind, baseDir: options.baseDir, attemptId: options.attemptId });
+      if (kind === "text" && loginRequired) {
+        return { ok: false, send_attempted: false, blocked_reason: "wechat_login_required", error: "微信需要重新登录" };
+      }
       if (kind === "image" && failImage) {
         if (unknown) options.onTransition("prepared");
         return { ok: false, send_attempted: unknown ? true : false, blocked_reason: "simulated_image_failure" };
@@ -83,6 +86,23 @@ async function checkTouchMessageSequence() {
   assert.equal(result.retryAfterMs, 8000, "a verified contact must expose its exact safety interval to the unified scheduler");
   assert.equal(result.waitingReason, "touch_safety_interval");
   assert.equal(result.result.nextEligibleAt, new Date(clock.getTime() + 8000).toISOString());
+
+  loginRequired = true;
+  const textWorkflow = createTouchWorkflow(config);
+  const textPayload = textWorkflow.prepareWorkflowTask({ script: "纯文字登录恢复测试", contactIds: [contact.id] });
+  const textRecord = { id: crypto.randomUUID(), payload: textPayload, progress: { done: 0 }, status: "running" };
+  const beforeLoginInterruption = calls.length;
+  result = await textWorkflow.runWorkflowStep(textRecord, context);
+  assert.equal(result.status, "needs_attention");
+  assert.equal(result.result.deliveryStatus, "not_attempted");
+  assert.equal(calls.length, beforeLoginInterruption + 1);
+  assert.equal(textWorkflow.canRetryWorkflowTask(textRecord), true, "a text-only pre-send login interruption must remain resumable");
+  loginRequired = false;
+  const beforeTextResume = calls.length;
+  result = await createTouchWorkflow(config).runWorkflowStep(textRecord, context);
+  assert.equal(result.status, "completed");
+  assert.equal(calls.length, beforeTextResume + 1, "resuming a text-only pre-send interruption sends exactly once");
+
   assert.throws(() => normalizeTouchLink("javascript:alert(1)"));
   assert.equal(normalizeTouchLink("https://example.com/product"), "https://example.com/product");
 

@@ -15,6 +15,10 @@ function canContinueSequence(row) {
   return Array.isArray(row?.message_parts) && row.message_parts.length > 0
     && row.message_parts.every((part) => ["pending", "not_attempted", "sent_verified"].includes(part.status));
 }
+function canContinueTouchResult(row) {
+  if (Array.isArray(row?.message_parts)) return canContinueSequence(row);
+  return Boolean(row && ["pending", "generated"].includes(row.status) && row.retry_blocked !== true);
+}
 
 async function executeMessageSequence({ row, parts, execute, persist, isEnabled }) {
   const signatures = parts.map(partSignature);
@@ -64,4 +68,4 @@ async function executeMessageSequence({ row, parts, execute, persist, isEnabled 
   return { ok: true, send_attempted: true, state: { real_send_status: "sent_verified" } };
 }
 
-module.exports = { executeMessageSequence, messageParts, canContinueSequence };
+module.exports = { executeMessageSequence, messageParts, canContinueSequence, canContinueTouchResult };
