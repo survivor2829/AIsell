@@ -407,23 +407,55 @@ function createWechatWorkflowController(options) {
     assertPlanEditable();
     if (!TASK_TYPES.has(input.type) || (existing && input.type !== existing.type)) throw new Error("请选择有效的任务类型。");
     const completedDaily = existing?.repeat === "daily" && existing.status === "completed";
-    if (existing && !completedDaily && (existing.status === "running" || existing.progress.done > 0 || !["pending", "missed"].includes(existing.status))) {
+    const persistedTouchState = existing?.type === "touch"
+      && typeof executors.touch?.hasStartedWorkflowTask === "function"
+      && executors.touch.hasStartedWorkflowTask(existing.id);
+    const startedTouch = existing?.type === "touch" && !completedDaily
+      && ["pending", "running"].includes(existing.status)
+      && (Number(existing.progress?.done || 0) > 0 || persistedTouchState);
+    if (existing && !completedDaily && !startedTouch && (existing.status === "running" || existing.progress.done > 0 || !["pending", "missed"].includes(existing.status))) {
       throw new Error("这项任务已经开始，请使用重复任务建立新的安排。");
     }
     const executor = executors[input.type];
     if (!executor?.prepareWorkflowTask) throw new Error("当前版本尚未连接这项任务的执行器。");
     const accountName = getAccount();
     if (!accountName) throw new Error("请先同步当前微信联系人，确认本次使用的微信账号。");
+    const taskId = existing?.id || randomUUID();
+    let payload;
+    if (startedTouch) {
+      if (existing.accountName && existing.accountName !== accountName) throw new Error("微信账号已切换，请切回原账号后再编辑这项任务。");
+      const saved = readPayload(existing);
+      const selectedIds = Array.isArray(input.payload?.contactIds) ? input.payload.contactIds.map(String) : [];
+      const savedIds = (Array.isArray(saved.contacts) ? saved.contacts : []).map((contact) => String(contact?.id || ""));
+      if (JSON.stringify(selectedIds) !== JSON.stringify(savedIds)) throw new Error("任务已经开始，只能修改话术，不能修改联系人范围。");
+      if (JSON.stringify(input.payload?.imageIds || []) !== JSON.stringify(saved.imageIds || []) || String(input.payload?.link || "") !== String(saved.link || "")) {
+        throw new Error("任务已经开始，只能修改话术；图片和网址请保持不变。");
+      }
+      if (typeof executor.updateWorkflowTask !== "function") throw new Error("当前版本不支持编辑进行中的触达任务，请重新添加任务。");
+      payload = await executor.updateWorkflowTask(existing.id, {
+        ...saved,
+        script: String(input.payload?.script || "").trim()
+      });
+    } else {
+      payload = unwrap(await executor.prepareWorkflowTask(taskId, input.payload || {}));
+    }
     const task = {
-      id: existing?.id || randomUUID(), type: input.type,
+      id: taskId, type: input.type,
       title: String(input.title || TITLES[input.type]).trim().slice(0, 100),
       createdAt: existing?.createdAt || new Date(now()).toISOString(),
       sequence: existing?.sequence ?? Math.max(0, ...store.tasks.map((entry) => entry.sequence || 0)) + 1,
       ...normalizedSchedule(input), accountName, status: "pending", error: "",
       progress: { done: 0, total: 1 }, occurrenceDate: localDate(now()), enrolled: false
     };
-    const payload = unwrap(await executor.prepareWorkflowTask(task.id, input.payload || {}));
     task.progress.total = input.type === "touch" ? payload.contacts.length : input.type === "interact" ? payload.maxPosts : 1;
+    if (startedTouch) {
+      task.status = "pending";
+      task.progress = { ...existing.progress, total: payload.contacts.length };
+      task.startedAt = existing.startedAt;
+      task.completedAt = existing.completedAt;
+      task.occurrenceDate = existing.occurrenceDate;
+      task.enrolled = existing.enrolled;
+    }
     if (!task.progress.total) throw new Error("请至少选择一位客户或一个互动目标。");
     if (completedDaily) {
       task.status = "completed";

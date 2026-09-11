@@ -126,6 +126,31 @@ async function checkWorkflowDiagnostics() {
   await control.dispose();
 }
 
+async function checkInProgressTouchEdit() {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-edit-"));
+  let updateInput;
+  let calls = 0;
+  const control = createWechatWorkflowController({
+    rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
+    autoSchedule: false, getAccount: () => "edit-account",
+    executors: { touch: {
+      prepareWorkflowTask: (_id, payload) => ({ script: payload.script, contacts: [{ id: "a", name: "a" }, { id: "b", name: "b" }] }),
+      updateWorkflowTask: async (_id, payload) => { updateInput = payload; return { ...payload, contacts: [{ id: "a", name: "a" }, { id: "b", name: "b" }] }; },
+      hasStartedWorkflowTask: () => calls > 0,
+      runWorkflowStep: async () => { calls += 1; return { status: calls === 1 ? "pending" : "completed", progress: { done: calls === 1 ? 0 : 2, total: 2 } }; }
+    } }
+  });
+  const added = await control.addTask({ type: "touch", payload: { contactIds: ["a", "b"], script: "旧话术" } });
+  await control.start();
+  await control.tick();
+  await control.pause();
+  const edited = await control.updateTask({ id: added.task.id, type: "touch", payload: { contactIds: ["a", "b"], script: "新话术", imageIds: [], link: "" } });
+  assert.equal(edited.ok, true, "a paused touch task can edit after partial progress");
+  assert.equal(edited.task.progress.done, 0, "a bound task is routed through the edit path even before aggregate progress advances");
+  assert.equal(updateInput.script, "新话术");
+  await control.dispose();
+}
+
 async function main() {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-check-"));
   let clock = new Date(2026, 8, 2, 11, 0);
@@ -387,6 +412,7 @@ async function main() {
   assert.equal(expert.conversation().messages.length, 1);
   await checkFloatingProgress();
   await checkWorkflowDiagnostics();
+  await checkInProgressTouchEdit();
   const traceRoot = path.join(rootDir, "waiting-diagnostics");
   const traceLogger = require("./diagnostics.cjs").createDiagnosticLogger({ rootDir: traceRoot });
   let waitingForNextStep = true;

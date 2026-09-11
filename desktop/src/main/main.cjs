@@ -533,6 +533,10 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       getProviderEnvironment: () => {
         const providerEnvironment = {};
         const gatewayToken = providerGatewayClient?.token() || "";
+        const gatewayStatus = providerGatewayClient?.status();
+        if (gatewayStatus?.ready && maintenanceConfig.caPem) {
+          providerEnvironment.XIAOXI_PROVIDER_GATEWAY_CA_PEM = maintenanceConfig.caPem;
+        }
         if (providerGatewaySupports("bailian")) {
           providerEnvironment.DASHSCOPE_API_KEY = gatewayToken;
           providerEnvironment.XIAOXI_BAILIAN_API_HOST = providerGatewayClient.url("/bailian");
@@ -652,6 +656,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       executors: {
         touch: {
           prepareWorkflowTask: (_id, payload) => touchTaskController.prepareWorkflowTask(payload),
+          updateWorkflowTask: touchTaskController.updateWorkflowTask,
+          hasStartedWorkflowTask: touchTaskController.hasStartedWorkflowTask,
           runWorkflowStep: touchTaskController.runWorkflowStep,
           canRetryWorkflowTask: touchTaskController.canRetryWorkflowTask,
           describeImages: touchTaskController.describeImages,

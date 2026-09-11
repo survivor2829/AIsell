@@ -97,16 +97,55 @@ function prompt({ salutation, script }) {
       role: "system",
       content: `你是微信一对一客户触达文案助手。请根据提供的基础话术，改写成一条可以直接发送给客户的完整微信消息。
 要求：
-1. 使用提供的称呼自然开场；没有明确姓名时只使用“您好”，不得编造姓名。
-2. 保留基础话术中的核心业务、优惠信息和询问目的。
-3. 不得增加基础话术中没有提供的价格、承诺、活动或客户信息。
-4. 表达自然、简洁、有礼貌，不要像群发广告，不要过度营销。
-5. 控制在50至90个汉字，以一个容易回复的问题结尾。
-6. 自然加入2至3个与语义相关的Emoji，最少2个；优先放在问候后或业务亮点处，不得连续堆叠，不使用夸张、催促类表情。
-7. 只输出最终文案，不解释、不编号、不加引号，不得输出称呼以外的联系人隐私。`
+1. 使用提供的称呼自然开场；称呼由程序根据备注、花名或昵称预先确认。没有明确可用称呼时只使用“您好”，不得编造姓名。
+2. 称呼必须原样使用，不得把姓名改成“某女士”“某总”等其他称呼；如果客户称呼为“您好”，首句必须以“您好”开头。
+3. 保留基础话术中的核心业务、优惠信息和询问目的。
+4. 不得增加基础话术中没有提供的价格、承诺、活动或客户信息。
+5. 表达自然、简洁、有礼貌，不要像群发广告，不要过度营销。
+6. 控制在50至90个汉字，以一个容易回复的问题结尾。
+7. 自然加入2至3个与语义相关的Emoji，最少2个；优先放在问候后或业务亮点处，不得连续堆叠，不使用夸张、催促类表情。
+8. 只输出最终文案，不解释、不编号、不加引号，不得输出称呼以外的联系人隐私。`
     },
     { role: "user", content: `客户称呼：${greeting}\n基础话术：${baseScript}` }
   ];
+}
+
+function salutationPrompt(contact = {}) {
+  const fields = {
+    remark: String(contact?.remark || "").replace(/\s+/g, " ").trim().slice(0, 120),
+    nickname: String(contact?.nickname || "").replace(/\s+/g, " ").trim().slice(0, 120),
+    name: String(contact?.name || "").replace(/\s+/g, " ").trim().slice(0, 120)
+  };
+  return [
+    {
+      role: "system",
+      content: `你是微信联系人称呼判定器。只判断这些字段中是否存在可以直接称呼客户的原文短称呼。
+规则：
+1. 备注优先，其次昵称，最后姓名；姓名、花名、昵称、带称谓的称呼都可以使用。
+2. 必须原样选择输入中的连续片段，不得改写、缩写、补姓、猜测或组合字段。
+3. 公司名、部门、产品、岗位、业务描述、编号、电话、群名和无法确定是人的内容，返回空字符串。
+4. 不确定时返回空字符串；只返回 JSON：{"salutation":"原文片段或空字符串","source":"remark|nickname|name|none"}。`
+    },
+    { role: "user", content: `联系人字段：${JSON.stringify(fields)}` }
+  ];
+}
+
+function parseSalutationPayload(payload) {
+  const { finishReason, content } = completionChoice(payload);
+  if (finishReason === "length") throw new DeepSeekApiError("AI_RESPONSE_TRUNCATED", "DeepSeek 称呼判断被截断", "salutation_truncated");
+  if (finishReason && finishReason !== "stop") throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 称呼判断未完整结束", "salutation_incomplete");
+  let parsed;
+  try { parsed = JSON.parse(content); } catch { throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回有效的称呼判断", "salutation_json_invalid"); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || typeof parsed.salutation !== "string") {
+    throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 称呼判断格式无效", "salutation_fields_invalid");
+  }
+  const value = parsed.salutation.replace(/\s+/g, " ").trim();
+  const source = String(parsed.source || "none").trim();
+  if (!/^(remark|nickname|name|none)$/u.test(source) || value.length > 20
+    || (source === "none" && value) || (source !== "none" && !value)) {
+    throw new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 称呼判断字段无效", "salutation_value_invalid");
+  }
+  return { value, source };
 }
 
 function replyPrompt({ context, expert, clarificationAllowed = true, recoveryMode = "", contextLimit = 12 }) {
@@ -456,6 +495,18 @@ function createDeepSeekClient({ keyStore, gatewayClient, fetchImpl = global.fetc
     throw lastError || new DeepSeekApiError("AI_RESPONSE_INVALID", "DeepSeek 未返回可用文案。");
   }
 
+  async function classifySalutationWithKey(key, { contact }) {
+    const payload = await request({
+      key,
+      messages: salutationPrompt(contact),
+      maxTokens: 120,
+      temperature: 0,
+      responseFormat: { type: "json_object" },
+      disableThinking: true
+    });
+    return { salutation: parseSalutationPayload(payload) };
+  }
+
   async function generateReplyWithKey(key, { context, expert, clarificationAllowed = true } = {}) {
     const normalizedExpert = {
       expertRules: String(expert?.expertRules || "").trim(),
@@ -603,6 +654,9 @@ function createDeepSeekClient({ keyStore, gatewayClient, fetchImpl = global.fetc
     async draft(input) {
       return generateDraftWithKey(readCredential(), input);
     },
+    async classifySalutation(input) {
+      return classifySalutationWithKey(readCredential(), input);
+    },
     async reply(input) {
       return generateReplyWithKey(readCredential(), input);
     },
@@ -642,9 +696,11 @@ module.exports = {
   isExplicitConversationClosure,
   momentsCommentPrompt,
   parseMomentsCommentPayload,
+  parseSalutationPayload,
   parsePlainPayload,
   parseReplyDecision,
   parsePlainRecoveryAnswer,
   prompt,
+  salutationPrompt,
   replyPrompt
 };

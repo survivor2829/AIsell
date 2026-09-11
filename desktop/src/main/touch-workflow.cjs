@@ -8,12 +8,15 @@ const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs")
 const { normalizeTouchLink } = require("./touch-media.cjs");
 const { executeMessageSequence, messageParts, canContinueTouchResult } = require("./touch-message-sequence.cjs");
 const {
+  authorizeTask,
   classifyContacts,
   createTask,
   identityKey,
+  isBatchAuthorized,
   loadTaskState,
   saveTaskState,
-  sendDelayMs
+  sendDelayMs,
+  taskSnapshotHash
 } = require("../../rpa/active_touch/touch_task_state.cjs");
 
 const UNCERTAIN_SEND_STATES = new Set(["sending", "prepared", "clicked", "outcome_unknown"]);
@@ -79,7 +82,7 @@ function createTouchWorkflow(options = {}) {
     const imageIds = Array.isArray(payload?.imageIds) ? payload.imageIds : [];
     const link = String(payload?.link || "");
     const multipart = imageIds.length > 0 || Boolean(link);
-    const signature = crypto.createHash("sha256").update(JSON.stringify({ script, contacts: contacts.map(identityKey), ...(multipart ? { imageIds, link } : {}) })).digest("hex");
+    const signature = workflowSignature({ script, contacts, imageIds, link });
     const bindingFile = path.join(taskDir, "workflow-binding.json");
     const progress = () => ({ done: task?.current_index || 0, total: task?.total || contacts.length });
     const response = (status, extra = {}) => ({ status, progress: progress(), ...extra });
@@ -109,12 +112,18 @@ function createTouchWorkflow(options = {}) {
           classification: { eligible: contacts, excluded: [], accountId: String(contacts[0]?.wechatAccountId || "") }
         });
         task.id = id;
+        task = authorizeTask(task, now().toISOString());
         persist();
         writeJsonAtomic(bindingFile, { taskId: id, signature });
       }
       if (task.integrity_error) return response("needs_attention", { error: task.pause_reason || "触达任务进度已损坏" });
       if (task.status === "paused") {
-        if (!canContinueTouchResult(task.results[task.current_index], multipart)) return response("needs_attention", { error: task.pause_reason || "触达任务需要处理" });
+        const resumableFreshEdit = multipart && task.phase === "preparing_batch"
+          && !Object.prototype.hasOwnProperty.call(task.results[task.current_index] || {}, "message_parts")
+          && ["pending", "generated"].includes(task.results[task.current_index]?.status)
+          && task.results[task.current_index]?.retry_blocked === false
+          && task.results[task.current_index]?.send_attempted === false;
+        if (!resumableFreshEdit && !canContinueTouchResult(task.results[task.current_index], multipart)) return response("needs_attention", { error: task.pause_reason || "触达任务需要处理" });
         task.status = "running";
         task.pause_reason = "";
         if (multipart) task.results[task.current_index].status = "generated";
@@ -130,6 +139,7 @@ function createTouchWorkflow(options = {}) {
         return response(task.status === "completed" ? "completed" : "pending");
       }
       if (!current || task.current_index >= task.total) return response("completed");
+      if (!isBatchAuthorized(task)) return attention("本次任务授权无效，已阻断真实发送", null, "batch_authorization_missing");
       if ((UNCERTAIN_SEND_STATES.has(current.status) || current.retry_blocked) && !canContinueTouchResult(current, multipart)) {
         return attention("上次发送结果尚未确认，请检查微信；系统不会自动补发");
       }
@@ -207,7 +217,7 @@ function createTouchWorkflow(options = {}) {
             ...(image ? { image } : {}),
             frozenContact: current.contact,
             attemptId: multipart ? `${current.request_id}:${partIndex}` : current.request_id,
-            authorized: true,
+            authorized: isBatchAuthorized(task),
             windowMinIdleMs: 0,
             onDiagnostic: (detail) => diagnostics().event("active_touch", "send_stage", detail, {
               trace: true, traceId: sendOperation.traceId, phase: detail.phase, level: detail.ok === false ? "warn" : "info", code: detail.reason
@@ -308,9 +318,74 @@ function createTouchWorkflow(options = {}) {
     const multipart = payload ? (Array.isArray(payload.imageIds) && payload.imageIds.length > 0 || Boolean(payload.link)) : undefined;
     return !task.integrity_error && task.status === "paused" && canContinueTouchResult(task.results[task.current_index], multipart);
   }
-  return { prepareWorkflowTask, runWorkflowStep, canRetryWorkflowTask,
+
+  function updateWorkflowTask(id, payload = {}) {
+    const taskId = String(id || "").trim();
+    const taskDir = workflowDirectory(taskId);
+    const bindingFile = path.join(taskDir, "workflow-binding.json");
+    if (!taskId || !fs.existsSync(bindingFile)) throw new Error("触达任务尚未建立可编辑的执行记录，请先暂停后重试。");
+    let task = loadTaskState(taskDir);
+    const current = task.results[task.current_index];
+    if (task.integrity_error) throw new Error("触达任务进度校验失败，暂不能编辑。");
+    if (task.current_index >= task.total || ["completed", "stopped"].includes(task.status)) throw new Error("这项触达任务已经结束，不能继续编辑。");
+    if (current && (current.status === "sent_verified" || [...UNCERTAIN_SEND_STATES].includes(current.status) || current.retry_blocked)) {
+      throw new Error("当前联系人发送结果尚未确认，请先核对微信后再编辑。");
+    }
+    const expectedIds = task.results.map((result) => String(result?.id || ""));
+    const nextContacts = Array.isArray(payload.contacts) ? payload.contacts : [];
+    if (JSON.stringify(expectedIds) !== JSON.stringify(nextContacts.map((contact) => String(contact?.id || "")))) {
+      throw new Error("任务已经开始，只能修改话术，不能修改已冻结的联系人范围。");
+    }
+    const script = String(payload.script || "").trim();
+    if (!script) throw new Error("请填写触达话术");
+    const imageIds = Array.isArray(payload.imageIds) ? payload.imageIds : [];
+    const link = String(payload.link || "");
+    for (const result of task.results.slice(task.current_index)) {
+      if (!result || !["pending", "generated", "not_attempted"].includes(result.status)
+        || result.send_attempted !== false
+        || result.retry_blocked
+        || result.message_parts?.some((part) => ["sending", "prepared", "clicked", "sent_verified", "outcome_unknown"].includes(part?.status))) {
+        throw new Error("任务中存在尚未确认的发送结果，请先核对微信后再编辑。");
+      }
+      result.status = "pending";
+      result.reason = "";
+      result.message = "";
+      result.ai_status = "";
+      result.ai_reason = "";
+      result.ai_error_code = "";
+      result.ai_attempts = 0;
+      result.awaiting_resolution = false;
+      result.retry_blocked = false;
+      result.send_attempted = false;
+      delete result.message_parts;
+      result.updated_at = now().toISOString();
+    }
+    task.script = script;
+    task.status = "paused";
+    task.phase = "preparing_batch";
+    task.pause_reason = "话术已修改，点击启动程序继续未发送联系人";
+    task.snapshot_hash = taskSnapshotHash(task);
+    task = authorizeTask(task, now().toISOString());
+    saveTaskState(taskDir, task);
+    writeJsonAtomic(bindingFile, { taskId, signature: workflowSignature({ script, contacts: task.results.map((result) => result.contact), imageIds, link }) });
+    return { script, ...(imageIds.length || link ? { imageIds, link } : {}), contacts: task.results.map((result) => result.contact), preparedAt: now().toISOString() };
+  }
+  function hasStartedWorkflowTask(id) {
+    const taskDir = workflowDirectory(String(id || "").trim());
+    return fs.existsSync(path.join(taskDir, "touch_task.json"));
+  }
+  return { prepareWorkflowTask, updateWorkflowTask, hasStartedWorkflowTask, runWorkflowStep, canRetryWorkflowTask,
     describeImages: (ids = []) => ids.map((id) => options.mediaStore.describe(id)),
     importImages: (paths) => options.mediaStore.importFiles(paths) };
+}
+
+function workflowSignature({ script, contacts, imageIds = [], link = "" }) {
+  const multipart = imageIds.length > 0 || Boolean(link);
+  return crypto.createHash("sha256").update(JSON.stringify({
+    script: String(script || "").trim(),
+    contacts: contacts.map(identityKey),
+    ...(multipart ? { imageIds, link } : {})
+  })).digest("hex");
 }
 
 module.exports = { createTouchWorkflow };

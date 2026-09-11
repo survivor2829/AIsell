@@ -347,12 +347,20 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
     }
   };
 
+  const pauseAndEdit = async (task: WorkflowTask) => {
+    if (!api) return;
+    const paused = await run(() => api.pause());
+    if (paused?.ok) await openExisting(task, false);
+  };
+
   const taskRow = (task: WorkflowTask) => {
     const Icon = TASK_ICONS[task.type];
     const isWaiting = task.id === state.waitingTaskId;
     const isCurrent = task.id === state.currentTaskId || isWaiting;
     const completedDaily = task.status === "completed" && task.repeat === "daily";
-    const canEdit = !planLocked && (completedDaily || ((task.status === "pending" || task.status === "missed") && !task.progress?.done));
+    const canEditStartedTouch = !planLocked && task.type === "touch" && task.status === "pending" && Boolean(task.progress?.done);
+    const canEdit = !planLocked && (completedDaily || canEditStartedTouch || ((task.status === "pending" || task.status === "missed") && !task.progress?.done));
+    const canPauseAndEdit = planLocked && task.type === "touch" && !["completed", "cancelled", "needs_attention"].includes(task.status);
     const canCancel = !planLocked && (completedDaily || ["pending", "missed", "needs_attention"].includes(task.status));
     return <li className={`workflow-task-row ${isCurrent ? "is-current" : ""} ${isWaiting ? "is-waiting" : ""}`} key={task.id}>
       <span className="workflow-task-icon"><Icon size={19} /></span>
@@ -369,6 +377,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
       <div className="workflow-row-actions">
         {task.canRetry && <button className="text-button" data-xiaoxi-workflow-save disabled={busy || planLocked} onClick={() => api && void run(() => api.retryTask(task.id))}><Repeat2 size={14} />重新加入</button>}
         {canEdit && <button className="text-button" disabled={busy} onClick={() => void openExisting(task, false)}><Pencil size={14} />{completedDaily ? "编辑后续安排" : "编辑"}</button>}
+        {canPauseAndEdit && <button className="text-button" disabled={busy} onClick={() => void pauseAndEdit(task)}><Pause size={14} />暂停并编辑</button>}
         {task.status === "completed" && !completedDaily && <button className="text-button" disabled={busy || planLocked} onClick={() => void openExisting(task, true)}><Repeat2 size={14} />再做一次</button>}
         {canCancel && <button className="text-button workflow-muted-action" disabled={busy} onClick={() => api && void run(() => api.cancelTask(task.id))}>{completedDaily ? "取消后续安排" : "取消"}</button>}
         {task.status !== "running" && <button type="button" className="text-button workflow-muted-action" disabled={busy || planLocked} aria-label={`删除${task.title}任务记录`} onClick={() => setDeletion({ ids: [task.id], bulk: false })}><Trash2 size={14} />删除</button>}
@@ -407,7 +416,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
       {availableTypes.map((type) => <button type="button" className="secondary-button" key={type} onClick={() => { setNotice(""); setEditor({ type }); }} disabled={busy || planLocked}><Plus size={15} />{TASK_LABELS[type]}</button>)}
     </div>
     <label className="workflow-check"><input type="checkbox" checked={state.replyEnabled !== false} disabled={busy || planLocked} onChange={(event) => api && void run(() => api.setReplyEnabled(event.target.checked))} />同时开启自动回复（监听接待范围内的新消息）</label>
-    {planLocked && <p className="workflow-small-note">运行中不能增删任务或修改接待范围，请先暂停。</p>}
+    {planLocked && <p className="workflow-small-note">运行中不能增删任务或修改接待范围；需要调整精准触达话术时，可在对应任务上点击“暂停并编辑”。</p>}
 
     <div ref={editorAnchor} className="workflow-editor-anchor">
       {editor && <WorkflowTaskEditor
@@ -466,6 +475,7 @@ function WorkflowTaskEditor({ request, workflow, contacts, syncBusy, syncError, 
   const [error, setError] = useState(task?.imageError || "");
   const { busy, state, run } = workflow;
   const locked = busy || mediaBusy || state.enabled || state.phase === "pausing";
+  const startedTouchEdit = Boolean(task && !duplicate && type === "touch" && task.progress?.done);
   const eligible = useMemo(() => contacts.filter((contact) => contact.allowed), [contacts]);
   const filtered = useMemo(() => {
     const keyword = query.trim().toLocaleLowerCase();
@@ -538,9 +548,9 @@ function WorkflowTaskEditor({ request, workflow, contacts, syncBusy, syncError, 
     {type === "touch" && <>
       <div className="workflow-field-head"><label htmlFor="workflow-contact-search">联系人 <span>已选 {selectedIds.length} 人</span></label><button type="button" className="text-button" onClick={onSync} disabled={locked || syncBusy || state.enabled}>{syncBusy ? "同步中…" : "同步联系人"}</button></div>
       {eligible.length ? <div className="workflow-contact-picker">
-        <div className="workflow-contact-toolbar"><input id="workflow-contact-search" value={query} onChange={(event) => { setQuery(event.target.value); setVisibleLimit(60); }} placeholder="搜索备注、昵称或微信号" disabled={locked} /><button type="button" className="text-button" disabled={locked} onClick={() => setSelectedIds((ids) => [...new Set([...ids, ...filtered.map((contact) => contact.id)])])}>{query ? "选中搜索结果" : "全选"}</button><button type="button" className="text-button" disabled={locked || !selectedIds.length} onClick={() => setSelectedIds([])}>清空</button></div>
+        <div className="workflow-contact-toolbar"><input id="workflow-contact-search" value={query} onChange={(event) => { setQuery(event.target.value); setVisibleLimit(60); }} placeholder="搜索备注、昵称或微信号" disabled={locked || startedTouchEdit} /><button type="button" className="text-button" disabled={locked || startedTouchEdit} onClick={() => setSelectedIds((ids) => [...new Set([...ids, ...filtered.map((contact) => contact.id)])])}>{query ? "选中搜索结果" : "全选"}</button><button type="button" className="text-button" disabled={locked || startedTouchEdit || !selectedIds.length} onClick={() => setSelectedIds([])}>清空</button></div>
         <div className="workflow-contact-list">
-          {filtered.slice(0, visibleLimit).map((contact) => <label className="workflow-contact-option" key={contact.id}><input type="checkbox" checked={selectedSet.has(contact.id)} disabled={locked} onChange={(event) => setSelectedIds((ids) => event.target.checked ? [...ids, contact.id] : ids.filter((id) => id !== contact.id))} /><span><strong>{contactLabel(contact)}</strong>{contact.wechatId && <small>{contact.wechatId}</small>}</span></label>)}
+          {filtered.slice(0, visibleLimit).map((contact) => <label className="workflow-contact-option" key={contact.id}><input type="checkbox" checked={selectedSet.has(contact.id)} disabled={locked || startedTouchEdit} onChange={(event) => setSelectedIds((ids) => event.target.checked ? [...ids, contact.id] : ids.filter((id) => id !== contact.id))} /><span><strong>{contactLabel(contact)}</strong>{contact.wechatId && <small>{contact.wechatId}</small>}</span></label>)}
           {!filtered.length && <p className="workflow-small-note">没有找到相关联系人。</p>}
           {filtered.length > visibleLimit && <button type="button" className="text-button" onClick={() => setVisibleLimit((limit) => limit + 60)}>显示更多（共 {filtered.length} 人）</button>}
         </div>
@@ -548,19 +558,19 @@ function WorkflowTaskEditor({ request, workflow, contacts, syncBusy, syncError, 
       {syncError && <p className="workflow-inline-warning" role="alert">{syncError}</p>}
       {missingCount > 0 && <p className="workflow-inline-warning">{missingCount} 位联系人已失效。<button type="button" className="text-button" onClick={() => setSelectedIds((ids) => ids.filter((id) => eligible.some((contact) => contact.id === id)))}>移除失效联系人</button></p>}
       <label className="workflow-field"><span>触达话术</span><textarea value={script} onChange={(event) => setScript(event.target.value)} disabled={locked} placeholder="写下这次想对客户说的话，可用 {称呼} 自动填入联系人称呼。" rows={4} /></label>
-      <div className="workflow-media-field"><div><strong>接着发图片 <small>选填</small></strong><span>按下方顺序逐张发送 · 最多 9 张</span></div><button type="button" data-xiaoxi-touch-images className="secondary-button" disabled={locked || images.length >= 9} onClick={() => void chooseTouchImages()}><ImagePlus size={16} />{mediaBusy ? "正在添加…" : "添加图片"}</button></div>
+      <div className="workflow-media-field"><div><strong>接着发图片 <small>选填</small></strong><span>按下方顺序逐张发送 · 最多 9 张</span></div><button type="button" data-xiaoxi-touch-images className="secondary-button" disabled={locked || startedTouchEdit || images.length >= 9} onClick={() => void chooseTouchImages()}><ImagePlus size={16} />{mediaBusy ? "正在添加…" : "添加图片"}</button></div>
       {images.length > 0 && <ol className="workflow-touch-images" aria-label="图片发送顺序">{images.map((image, index) => <li key={image.id}>
         <div className="workflow-touch-image-preview">{image.preview ? <img src={image.preview} alt={image.name} /> : <span>图片无法读取</span>}</div>
         <div className="workflow-touch-image-name"><span>{index + 1}. {image.name}</span></div>
         <div className="workflow-touch-image-actions">
-          <button type="button" className="workflow-icon-button" aria-label={`将${image.name}前移`} disabled={locked || index === 0} onClick={() => moveImage(index, -1)}><ArrowLeft size={15} /></button>
-          <button type="button" className="workflow-icon-button" aria-label={`将${image.name}后移`} disabled={locked || index === images.length - 1} onClick={() => moveImage(index, 1)}><ArrowRight size={15} /></button>
-          <button type="button" className="workflow-icon-button" aria-label={`移除${image.name}`} disabled={locked} onClick={() => setImages((current) => current.filter((entry) => entry.id !== image.id))}><X size={15} /></button>
+          <button type="button" className="workflow-icon-button" aria-label={`将${image.name}前移`} disabled={locked || startedTouchEdit || index === 0} onClick={() => moveImage(index, -1)}><ArrowLeft size={15} /></button>
+          <button type="button" className="workflow-icon-button" aria-label={`将${image.name}后移`} disabled={locked || startedTouchEdit || index === images.length - 1} onClick={() => moveImage(index, 1)}><ArrowRight size={15} /></button>
+          <button type="button" className="workflow-icon-button" aria-label={`移除${image.name}`} disabled={locked || startedTouchEdit} onClick={() => setImages((current) => current.filter((entry) => entry.id !== image.id))}><X size={15} /></button>
         </div>
       </li>)}</ol>}
-      <label className="workflow-field"><span>最后发对应网址 <small>选填</small></span><input type="url" value={link} onChange={(event) => setLink(event.target.value)} disabled={locked} maxLength={2048} placeholder="https://" /><small className="workflow-touch-link-note">网址作为一条独立消息，在文字和图片之后发送。</small></label>
+      <label className="workflow-field"><span>最后发对应网址 <small>选填</small></span><input type="url" value={link} onChange={(event) => setLink(event.target.value)} disabled={locked || startedTouchEdit} maxLength={2048} placeholder="https://" /><small className="workflow-touch-link-note">网址作为一条独立消息，在文字和图片之后发送。</small></label>
       <p className="workflow-touch-order" aria-live="polite">发送顺序：话术{images.length > 0 ? ` → ${images.length} 张图片` : ""}{link.trim() ? " → 网址" : ""}</p>
-      <p className="workflow-small-note">所选客户加入自动接待范围。本次触达完成后不会自动重发。</p>
+      <p className="workflow-small-note">{startedTouchEdit ? "本次修改只作用于尚未发送的联系人，已发送内容不会重发；联系人、图片和网址保持不变。" : "所选客户加入自动接待范围。本次触达完成后不会自动重发。"}</p>
     </>}
 
     {type === "publish" && <>

@@ -660,6 +660,7 @@ module.exports = {
   reconcileRealSendAttempt,
   saveTaskState,
   sendDelayMs,
+  taskSnapshotHash,
   taskBackupPath,
   taskPath,
   touchSearchName
