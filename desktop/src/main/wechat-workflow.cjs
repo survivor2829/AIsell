@@ -90,7 +90,10 @@ function createWechatWorkflowController(options) {
   function persist() { assertHealthy(); store.lastTaskId = lastTaskId; writeJsonAtomic(stateFile, store); }
   function canRetry(task) {
     if (task.status !== "needs_attention" || task.accountName !== getAccount()) return false;
-    try { return executors[task.type]?.canRetryWorkflowTask?.(task) === true; }
+    try {
+      const payload = task.type === "touch" ? readPayload(task) : undefined;
+      return executors[task.type]?.canRetryWorkflowTask?.(task, payload) === true;
+    }
     catch { return false; }
   }
   function taskPath(task) { return path.join(directories[task.type], "planned_tasks", `${task.id}.json`); }

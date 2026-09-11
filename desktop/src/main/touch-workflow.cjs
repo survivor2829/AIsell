@@ -114,7 +114,7 @@ function createTouchWorkflow(options = {}) {
       }
       if (task.integrity_error) return response("needs_attention", { error: task.pause_reason || "触达任务进度已损坏" });
       if (task.status === "paused") {
-        if (!canContinueTouchResult(task.results[task.current_index])) return response("needs_attention", { error: task.pause_reason || "触达任务需要处理" });
+        if (!canContinueTouchResult(task.results[task.current_index], multipart)) return response("needs_attention", { error: task.pause_reason || "触达任务需要处理" });
         task.status = "running";
         task.pause_reason = "";
         if (multipart) task.results[task.current_index].status = "generated";
@@ -130,7 +130,7 @@ function createTouchWorkflow(options = {}) {
         return response(task.status === "completed" ? "completed" : "pending");
       }
       if (!current || task.current_index >= task.total) return response("completed");
-      if ((UNCERTAIN_SEND_STATES.has(current.status) || current.retry_blocked) && !canContinueTouchResult(current)) {
+      if ((UNCERTAIN_SEND_STATES.has(current.status) || current.retry_blocked) && !canContinueTouchResult(current, multipart)) {
         return attention("上次发送结果尚未确认，请检查微信；系统不会自动补发");
       }
       if (Date.parse(task.next_send_not_before || "") > now().getTime()) {
@@ -163,6 +163,8 @@ function createTouchWorkflow(options = {}) {
         current.ai_status = draft.usedAi ? "generated" : "fixed_script";
         current.ai_reason = draft.reason || "";
         current.status = "generated";
+        current.retry_blocked = false;
+        current.send_attempted = false;
         persist();
       }
       if (!enabled()) return response("pending");
@@ -180,6 +182,7 @@ function createTouchWorkflow(options = {}) {
       } catch {}
       const drivers = options.drivers || require("../../rpa/active_touch/wechat_window_driver.dev.cjs");
       current.status = "sending";
+      current.send_attempted = null;
       persist();
       let result;
       const sendOperation = diagnostics().begin("active_touch", "workflow_contact_send", { task_id: id, current_index: index }, { trace: true });
@@ -233,6 +236,7 @@ function createTouchWorkflow(options = {}) {
               row.status = status;
               row.attempt_key = String(executionState.real_send_attempt_key || row.attempt_key || "");
               row.retry_blocked = ["prepared", "clicked", "sent_verified", "outcome_unknown"].includes(status);
+              row.send_attempted = status === "sent_verified" ? true : status === "not_attempted" ? false : null;
               row.updated_at = now().toISOString();
               persist();
             }
@@ -251,12 +255,14 @@ function createTouchWorkflow(options = {}) {
         sendOperation.fail(error, { stage: "workflow_contact_send", send_attempted: null });
         task.results[index].status = "outcome_unknown";
         task.results[index].retry_blocked = true;
+        task.results[index].send_attempted = null;
         return attention("执行器异常，发送结果无法确认；系统不会自动补发", { deliveryStatus: "outcome_unknown" });
       }
       current = task.results[index];
       if (result?.ok && result?.state?.real_send_status === "sent_verified") {
         current.status = "sent_verified";
         current.retry_blocked = true;
+        current.send_attempted = true;
         current.reason = "发送成功并已核验";
         task.current_index = index + 1;
         task.next_send_not_before = new Date(now().getTime() + sendDelayMs(options.random || Math.random)).toISOString();
@@ -273,6 +279,7 @@ function createTouchWorkflow(options = {}) {
       if (notAttempted && !["prepared", "clicked", "outcome_unknown"].includes(current.status)) {
         current.status = "generated";
         current.retry_blocked = false;
+        current.send_attempted = false;
         persist();
         if (!enabled()) return response("pending", { result: { deliveryStatus: "not_attempted" } });
         return attention(
@@ -283,6 +290,7 @@ function createTouchWorkflow(options = {}) {
       }
       current.status = "outcome_unknown";
       current.retry_blocked = true;
+      current.send_attempted = null;
       return attention(result?.error || "发送结果无法确认，请检查微信；系统不会自动补发", { deliveryStatus: "outcome_unknown" });
     } catch (error) {
       return { status: "needs_attention", progress: task ? progress() : fallback, error: String(error?.message || "触达任务读取失败") };
@@ -295,9 +303,10 @@ function createTouchWorkflow(options = {}) {
     }
   }
 
-  function canRetryWorkflowTask(record) {
+  function canRetryWorkflowTask(record, payload) {
     const task = loadTaskState(workflowDirectory(record.id));
-    return !task.integrity_error && task.status === "paused" && canContinueTouchResult(task.results[task.current_index]);
+    const multipart = payload ? (Array.isArray(payload.imageIds) && payload.imageIds.length > 0 || Boolean(payload.link)) : undefined;
+    return !task.integrity_error && task.status === "paused" && canContinueTouchResult(task.results[task.current_index], multipart);
   }
   return { prepareWorkflowTask, runWorkflowStep, canRetryWorkflowTask,
     describeImages: (ids = []) => ids.map((id) => options.mediaStore.describe(id)),

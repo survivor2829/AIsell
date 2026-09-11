@@ -207,6 +207,8 @@ function createTask(script, contacts, startedAt = nowIso(), options = {}) {
     outcome_unknown_retry_count: 0,
     outcome_unknown_attempt_keys: [],
     awaiting_resolution: false,
+    retry_blocked: false,
+    send_attempted: false,
     updated_at: startedAt
   }));
 
@@ -293,15 +295,25 @@ function normalizeTask(raw) {
   const results = Array.isArray(raw.results) ? raw.results : [];
   const total = Number.isFinite(raw.total) ? raw.total : results.length;
   const currentIndex = Math.max(0, Math.min(Number(raw.current_index ?? 0), total));
-  const normalizedResults = results.map((result, index) => ({
-    ...result,
-    request_id: result?.request_id || crypto.randomUUID(),
-    contact_index: Number.isInteger(result?.contact_index) ? result.contact_index : index,
-    ai_attempts: Math.max(0, Number(result?.ai_attempts || 0)),
-    outcome_unknown_retry_count: Math.max(0, Number(result?.outcome_unknown_retry_count || 0)),
-    outcome_unknown_attempt_keys: Array.isArray(result?.outcome_unknown_attempt_keys) ? result.outcome_unknown_attempt_keys.map(String) : [],
-    awaiting_resolution: result?.awaiting_resolution === true
-  }));
+  const normalizedResults = results.map((result, index) => {
+    // 1.1.18 persisted the explicit retry guard before the send receipt field
+    // was added. Preserve that known safe pre-send marker during this local
+    // state migration, but do not infer safety from a missing or malformed flag.
+    const legacySafeTextResume = result?.send_attempted === undefined
+      && result?.retry_blocked === false
+      && ["pending", "generated"].includes(result?.status)
+      && !Object.prototype.hasOwnProperty.call(result || {}, "message_parts");
+    return {
+      ...result,
+      request_id: result?.request_id || crypto.randomUUID(),
+      contact_index: Number.isInteger(result?.contact_index) ? result.contact_index : index,
+      ai_attempts: Math.max(0, Number(result?.ai_attempts || 0)),
+      outcome_unknown_retry_count: Math.max(0, Number(result?.outcome_unknown_retry_count || 0)),
+      outcome_unknown_attempt_keys: Array.isArray(result?.outcome_unknown_attempt_keys) ? result.outcome_unknown_attempt_keys.map(String) : [],
+      awaiting_resolution: result?.awaiting_resolution === true,
+      send_attempted: result?.send_attempted === false ? false : result?.send_attempted === true ? true : legacySafeTextResume ? false : null
+    };
+  });
   const rawVersion = Number(raw.version || 1);
   const version = rawVersion >= 3 && rawVersion <= CURRENT_TASK_VERSION ? CURRENT_TASK_VERSION : rawVersion >= 3 ? rawVersion : 2;
   const normalized = {

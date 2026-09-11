@@ -15,9 +15,12 @@ function canContinueSequence(row) {
   return Array.isArray(row?.message_parts) && row.message_parts.length > 0
     && row.message_parts.every((part) => ["pending", "not_attempted", "sent_verified"].includes(part.status));
 }
-function canContinueTouchResult(row) {
-  if (Array.isArray(row?.message_parts)) return canContinueSequence(row);
-  return Boolean(row && ["pending", "generated"].includes(row.status) && row.retry_blocked !== true);
+function canContinueTouchResult(row, multipart) {
+  if (multipart === true) return canContinueSequence(row);
+  if (multipart !== false) return Array.isArray(row?.message_parts) && canContinueSequence(row);
+  if (Object.prototype.hasOwnProperty.call(row || {}, "message_parts")) return false;
+  return Boolean(row && ["pending", "generated"].includes(row.status)
+    && row.retry_blocked === false && row.send_attempted === false);
 }
 
 async function executeMessageSequence({ row, parts, execute, persist, isEnabled }) {
