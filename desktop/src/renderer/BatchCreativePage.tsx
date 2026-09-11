@@ -160,6 +160,19 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
     if (target !== null && (!Number.isInteger(target) || target < 1 || target > 300)) throw new Error("请填写 1 到 300 的整数。");
     return { ...(batch ? { batch_id: batch.batch_id } : {}), collection_id: collectionId || null, groups, title: title.trim() || "批量创作", description, material_context: materialContext, cta, target_count: target, settings, ...(modern ? { brief_version: 1, ...brief } : {}) };
   }
+  useEffect(() => {
+    if (!dirty || busy || running || !total) return;
+    const timer = window.setTimeout(() => {
+      void run(async () => {
+        const b = await callBatch<Batch>("save", draft());
+        selectedId.current = b.batch_id;
+        setBatch(b);
+        setDirty(false);
+        await refreshBatches();
+      });
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [dirty, busy, running, total, groups, title, description, brief, materialContext, cta, count, collectionId, settings]);
   async function start(action: "recommend" | "samples" | "continue" | "scripts") {
     // The call consumes the trusted click immediately; saving the draft happens
     // in the main process before starting the task, without a renderer timer race.

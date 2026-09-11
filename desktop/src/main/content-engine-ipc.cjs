@@ -21,6 +21,7 @@ const CONTENT_ENGINE_CHANNELS = Object.freeze({
   probePending: "content-engine:probe-pending",
   updateAssetRights: "content-engine:update-asset-rights",
   archiveAsset: "content-engine:archive-asset",
+  restoreAsset: "content-engine:restore-asset",
   revealAsset: "content-engine:reveal-asset",
   listTasks: "content-engine:list-tasks",
   getTask: "content-engine:get-task",
@@ -2343,6 +2344,12 @@ function registerContentEngineIpc(options = {}) {
   });
   handle(CONTENT_ENGINE_CHANNELS.archiveAsset, async (payload) => {
     const item = await controller.archiveAsset(
+      validateId(payload.assetId, "asset")
+    );
+    return publicAsset(item);
+  });
+  handle(CONTENT_ENGINE_CHANNELS.restoreAsset, async (payload) => {
+    const item = await controller.restoreAsset(
       validateId(payload.assetId, "asset")
     );
     return publicAsset(item);

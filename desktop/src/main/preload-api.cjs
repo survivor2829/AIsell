@@ -255,6 +255,9 @@ function createContentEngineApi(ipcRenderer) {
       archive: (payload) => ipcRenderer.invoke("content-engine:archive-asset", {
         assetId: String(payload?.assetId || "")
       }),
+      restore: (payload) => ipcRenderer.invoke("content-engine:restore-asset", {
+        assetId: String(payload?.assetId || "")
+      }),
       reveal: (payload) => ipcRenderer.invoke("content-engine:reveal-asset", {
         assetId: String(payload?.assetId || "")
       })

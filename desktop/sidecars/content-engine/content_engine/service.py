@@ -1426,6 +1426,10 @@ class ContentEngineService:
         ):
             with self.database.transaction() as connection:
                 connection.execute(
+                    "UPDATE assets SET archived_at = NULL, updated_at = ? WHERE id = ?",
+                    (utc_now(), existing_location["asset_id"]),
+                )
+                connection.execute(
                     "UPDATE asset_locations SET is_available = 1, last_seen_at = ? WHERE id = ?",
                     (utc_now(), existing_location["id"]),
                 )
@@ -1480,7 +1484,8 @@ class ContentEngineService:
             else:
                 asset_id = asset_row["id"]
                 connection.execute(
-                    "UPDATE assets SET updated_at = ? WHERE id = ?", (now, asset_id)
+                    "UPDATE assets SET archived_at = NULL, updated_at = ? WHERE id = ?",
+                    (now, asset_id),
                 )
 
             location_row = connection.execute(
@@ -1854,6 +1859,29 @@ class ContentEngineService:
             raise ContentEngineError("asset_not_found", "The asset was not found.")
         item = self._get_public_asset(asset_id)
         item["archived"] = True
+        return item
+
+    def restore_asset(self, asset_id: str) -> dict[str, Any]:
+        _validate_id(asset_id, "asset_id")
+        now = utc_now()
+        with self.database.transaction() as connection:
+            available = connection.execute(
+                "SELECT 1 FROM asset_locations WHERE asset_id = ? AND is_available = 1 LIMIT 1",
+                (asset_id,),
+            ).fetchone()
+            if available is None:
+                raise ContentEngineError(
+                    "asset_unavailable",
+                    "The asset has no available source file.",
+                )
+            cursor = connection.execute(
+                "UPDATE assets SET archived_at = NULL, updated_at = ? WHERE id = ?",
+                (now, asset_id),
+            )
+        if cursor.rowcount == 0:
+            raise ContentEngineError("asset_not_found", "The asset was not found.")
+        item = self._get_public_asset(asset_id)
+        item["archived"] = False
         return item
 
     def reveal_asset(self, asset_id: str) -> dict[str, Any]:

@@ -207,6 +207,9 @@
 .batch-visual-material:has(input:disabled) label { cursor: default; }
 .batch-visual-material-image { display: block; aspect-ratio: 16 / 10; position: relative; background: #e8eaf0; overflow: hidden; }
 .batch-material-check { position: absolute; top: 9px; left: 9px; width: 22px; height: 22px; border: 1px solid #ffffffdd; border-radius: 6px; background: #19202b60; display: grid; place-items: center; color: white; }
+.batch-material-remove { position: absolute; top: 8px; right: 8px; z-index: 2; display: inline-flex; align-items: center; gap: 3px; min-height: 26px; padding: 4px 7px; border: 1px solid #ffffffcc; border-radius: 6px; background: #19202bcc; color: white; font-size: 11px; line-height: 1; }
+.batch-material-remove:hover { background: var(--brand); border-color: var(--brand); }
+.batch-material-remove:focus-visible { outline: 3px solid color-mix(in srgb, var(--brand) 45%, white); outline-offset: 2px; }
 .batch-material-kind { position: absolute; left: 8px; bottom: 8px; display: flex; align-items: center; gap: 5px; border-radius: 4px; padding: 3px 6px; font-size: 10px; color: white; background: #18202cba; }
 .batch-material-name { display: block; margin: 9px 32px 9px 9px; font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .batch-visual-material.is-selected { border-color: var(--brand); background: var(--flow-soft); }

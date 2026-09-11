@@ -1,4 +1,4 @@
-export type Asset = { assetId: string; displayName: string; mediaKind: "image" | "video"; durationMs?: number; availableLocationCount?: number };
+export type Asset = { assetId: string; displayName: string; mediaKind: "image" | "video"; durationMs?: number; availableLocationCount?: number; archived?: boolean };
 export type Collection = { collection_id: string; name: string; description: string; asset_ids: string[] };
 export type Group = "opening" | "middle" | "ending";
 export type Groups = Record<Group, string[]>;

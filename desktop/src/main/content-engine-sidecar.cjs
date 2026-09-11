@@ -636,6 +636,7 @@ function createContentEngineSidecar(options = {}) {
       throw createError("asset_preview_failed");
     },
     archiveAsset: (assetId) => request("archive_asset", { asset_id: assetId }),
+    restoreAsset: (assetId) => request("restore_asset", { asset_id: assetId }),
     calculateMixCombinations: (projectId) => request(
       "calculate_mix_combinations",
       { project_id: projectId }
