@@ -23,6 +23,7 @@ const UNCERTAIN_SEND_STATES = new Set(["sending", "prepared", "clicked", "outcom
 const IDENTITY_SKIP_REASONS = new Set([
   "contact_unavailable",
   "exact_search_result_not_found",
+  "search_result_identity_unverified",
   "search_result_not_opened",
   "customer_conversation_not_found"
 ]);

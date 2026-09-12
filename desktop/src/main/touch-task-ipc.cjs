@@ -433,6 +433,7 @@ function isIdentitySkip(result) {
   return new Set([
     "contact_unavailable",
     "exact_search_result_not_found",
+    "search_result_identity_unverified",
     "search_result_not_opened",
     "customer_conversation_not_found",
     "customer_not_allowed",
@@ -454,14 +455,10 @@ function advanceTask(task, index) {
     task.phase = "completed";
     task.completed_at = new Date().toISOString();
   } else if (task.execution_mode === "real_send" && task.current_index >= task.batch_end_index) {
-    const completedBatch = task.current_batch;
     task.current_batch = Math.floor(task.current_index / task.batch_size) + 1;
     task.batch_start_index = task.current_index;
     task.batch_end_index = Math.min(task.current_index + task.batch_size, task.total);
-    task.status = "paused";
-    task.phase = "paused";
-    task.batch_authorization = null;
-    task.pause_reason = `第 ${completedBatch} 批已完成（${task.current_index}/${task.total}），点击继续任务后处理下一批`;
+    task.phase = "preparing_batch";
   }
   return saveTaskState(activeTouchDir(), task);
 }
