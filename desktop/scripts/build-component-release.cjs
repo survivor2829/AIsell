@@ -16,7 +16,7 @@ async function inventory(root, layout) {
   async function walk(directory, prefix = "") {
     for (const entry of await fsp.readdir(directory, { withFileTypes: true })) {
       const relative = prefix + entry.name;
-      if (["component-base.json", "component-complete.json"].includes(relative)) continue;
+      if (["component-base.json", "component-complete.json", "debug.log"].includes(relative)) continue;
       safePath(relative);
       const full = path.join(directory, entry.name), stat = await fsp.lstat(full);
       if (stat.isSymbolicLink()) throw Error("component_symlink_forbidden");

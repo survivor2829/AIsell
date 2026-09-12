@@ -24,6 +24,7 @@ async function fixture(t) {
   const source = path.join(root, "base");
   const initial = {
     "electron.exe": "stable electron",
+    "debug.log": "runtime-created Chromium log",
     "resources/app/node_modules/native/index.node": "stable native",
     "resources/app/src/main/main.cjs": "application v1",
     "resources/content-engine/content-engine-worker.exe": "python owncode v1",
@@ -36,6 +37,7 @@ async function fixture(t) {
     await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, content);
   }
   const base = await buildComponentRelease({ sourceRoot: source, outputDir: path.join(root, "base-artifacts"), version: "1.1.0", ...config });
+  assert.equal(base.baseline.files.some(file => file.path === "debug.log"), false, "runtime debug logs must not change the accepted application base");
   await fs.writeFile(path.join(source, "component-base.json"), JSON.stringify(base.baseline));
   return { root, source, base };
 }
