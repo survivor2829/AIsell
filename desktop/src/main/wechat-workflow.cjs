@@ -96,6 +96,72 @@ function createWechatWorkflowController(options) {
     }
     catch { return false; }
   }
+  function unknownResolution(task) {
+    if (task.type !== "touch" || task.status !== "needs_attention" || task.accountName !== getAccount()) return null;
+    try {
+      const description = executors.touch?.describeUnknownWorkflowTask?.(task) || null;
+      return description?.required === true ? description : null;
+    }
+    catch { return null; }
+  }
+
+  function applyUnknownResolution(task, outcome) {
+    const done = Number(outcome?.progress?.done);
+    const total = Number(outcome?.progress?.total);
+    if (!outcome || !["sent", "not_sent", "skip"].includes(outcome.resolution)
+      || !/^[a-f0-9-]{36}$/u.test(String(outcome.resolutionId || ""))
+      || typeof outcome.completed !== "boolean" || !Number.isInteger(done) || !Number.isInteger(total)
+      || done < 0 || total < done) {
+      throw new Error("发送结果处理失败，请保留数据并查看日志。");
+    }
+    task.progress = { done, total };
+    task.error = "";
+    task.status = outcome.completed ? "completed" : "pending";
+    if (outcome.completed) {
+      task.completedAt = String(outcome.resolvedAt || new Date(now()).toISOString());
+      task.lastCompletedDate = localDate(task.completedAt);
+    } else delete task.completedAt;
+    delete task.notBefore;
+    delete task.waitingReason;
+    return {
+      resolution: outcome.resolution,
+      resolution_id: outcome.resolutionId,
+      part_kind: String(outcome.partKind || "text"),
+      part_index: Number.isInteger(outcome.partIndex) ? outcome.partIndex : null,
+      done, total,
+      identity_rotated: outcome.identityRotated === true
+    };
+  }
+
+  function acknowledgeUnknownResolution(task, resolutionId) {
+    try { executors.touch?.acknowledgeUnknownWorkflowResolution?.(task, resolutionId); }
+    catch (failure) {
+      log("touch.unknown_resolution_ack_failed", { resolution_id: resolutionId, reason: workflowFailureReason(failure) }, { level: "warn", code: "manual_resolution_ack_failed" });
+    }
+  }
+
+  function reconcileUnknownResolutions() {
+    const reconciled = [];
+    for (const task of store.tasks) {
+      if (task.type !== "touch" || task.status !== "needs_attention" || task.accountName !== getAccount()) continue;
+      let description;
+      try { description = executors.touch?.describeUnknownWorkflowTask?.(task); }
+      catch { continue; }
+      if (!description?.reconciliation) continue;
+      const diagnostic = applyUnknownResolution(task, description.reconciliation);
+      reconciled.push({ task, diagnostic });
+    }
+    if (!reconciled.length) return;
+    enabled = false;
+    phase = "paused";
+    error = "";
+    persist();
+    revision += 1;
+    for (const { task, diagnostic } of reconciled) {
+      acknowledgeUnknownResolution(task, diagnostic.resolution_id);
+      log("touch.unknown_resolved", { ...diagnostic, reconciled: true }, { level: "info", code: "manual_resolution_reconciled" });
+    }
+  }
   function taskPath(task) { return path.join(directories[task.type], "planned_tasks", `${task.id}.json`); }
   function readPayload(task) {
     const saved = readJson(taskPath(task), null);
@@ -116,12 +182,17 @@ function createWechatWorkflowController(options) {
   }
 
   function status() {
+    reconcileUnknownResolutions();
     const waiting = phase === "waiting_safety_interval" ? waitingSafetyTask() : null;
     return {
       enabled, phase, currentTaskId, lastTaskId, replyEnabled: store.replyEnabled !== false,
       waitingTaskId: waiting?.id || null, waitUntil: waiting?.notBefore || null,
       nextTaskId: nextTask()?.id || null, error, replyStatus, replyError, revision,
-      tasks: store.tasks.map((task) => ({ ...task, canRetry: canRetry(task), accountMismatch: Boolean(task.accountName && task.accountName !== getAccount()) })),
+      tasks: store.tasks.map((task) => {
+        const resolution = unknownResolution(task);
+        return { ...task, canRetry: canRetry(task), ...(resolution ? { unknownResolution: resolution } : {}),
+          accountMismatch: Boolean(task.accountName && task.accountName !== getAccount()) };
+      }),
       recipients: accountRecipients().map((contact) => ({ id: contact.id, label: contact.remark || contact.nickname || contact.name || contact.id }))
     };
   }
@@ -540,6 +611,26 @@ function createWechatWorkflowController(options) {
       if (task.status === "running") task.cancelRequested = true;
       else if (task.status !== "completed" || task.repeat === "daily") task.status = "cancelled";
       persist(); emit(); return { ok: true, state: status() };
+    }),
+    resolveTouchUnknown: (id, resolution) => serialize(() => {
+      assertPlanEditable();
+      const task = findTask(id);
+      if (task.type !== "touch" || task.status !== "needs_attention" || task.accountName !== getAccount()) {
+        throw new Error("这项任务当前不能处理发送结果。");
+      }
+      const resolver = executors.touch?.resolveUnknownWorkflowTask;
+      if (typeof resolver !== "function" || !unknownResolution(task)) throw new Error("这项任务没有待确认的发送结果。");
+      const resolutionId = randomUUID();
+      const outcome = resolver(task, resolution, resolutionId);
+      const diagnostic = applyUnknownResolution(task, outcome);
+      enabled = false;
+      phase = "paused";
+      error = "";
+      persist();
+      acknowledgeUnknownResolution(task, resolutionId);
+      log("touch.unknown_resolved", { ...diagnostic, reconciled: false }, { level: "info", code: "manual_resolution_recorded" });
+      emit();
+      return { ok: true, state: status() };
     }),
     deleteTasks: (ids, unsuccessfulOnly = false) => serialize(() => {
       assertHealthy();

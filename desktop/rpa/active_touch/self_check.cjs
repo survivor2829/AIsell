@@ -28,7 +28,7 @@ const {
 const { executeVerifiedContactSend, refreshRealSendSession, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession } = require("./state_machine.dev.cjs");
 const { prepareMomentsDryRun, preferredVisibleMomentsPost, probeWechatMomentsWindow } = require("./moments_dry_run.dev.cjs");
 const { openWechatSearchResult, runPowerShellAsync } = require("./wechat_window_driver.cjs");
-const { resolveWechatSearchResultObservation } = require("./wechat_search_result_resolver.cjs");
+const { isVerifiedWechatSearchResultMode, resolveWechatSearchResultObservation } = require("./wechat_search_result_resolver.cjs");
 const { normalizeAtomicSendResult } = require("./wechat_window_driver.dev.cjs");
 const {
   authorizeNextBatch,
@@ -1453,8 +1453,17 @@ try {
     { status: "selected", mode: "unique_local_uia", candidate: { automationId: "search_item_function_张三", name: "张三", x: 120, y: 180 } },
     "the display-name suffix may differ from the searched WeChat ID"
   );
+  const strictCrop = { left: 80, top: 80, right: 320, bottom: 280 };
   assert.deepEqual(
-    resolveWechatSearchResultObservation({ uiaCandidates: [], visualCandidates: [], ocrOk: true, webSearchVisible: true }, { query: "wxid_missing", expectedName: "缺失客户" }),
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [],
+      cropBounds: strictCrop,
+      visualCandidates: [],
+      webSearchCandidates: [{ text: "搜一搜 wxid_missing", left: 88, top: 224, right: 280, bottom: 250, x: 184, y: 237 }],
+      webSearchTop: 224,
+      ocrOk: true,
+      webSearchVisible: true
+    }, { query: "wxid_missing", expectedName: "缺失客户" }),
     { status: "not_found", reason: "exact_search_result_not_found" },
     "headless empty UIA plus an OCR-confirmed web-search-only row is a scoped missing contact"
   );
@@ -1464,14 +1473,179 @@ try {
     "empty UIA with unavailable OCR must pause instead of skipping"
   );
   assert.equal(
-    resolveWechatSearchResultObservation({ uiaCandidates: [], visualCandidates: [{ text: "未知客户", x: 150, y: 190 }], ocrOk: true }, { query: "wxid_unknown", expectedName: "未知客户" }).mode,
-    "identity_matched_visual",
-    "the visual fallback can authorize one name-bound local result"
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [],
+      cropBounds: strictCrop,
+      visualCandidates: [{ text: "未知客户", left: 100, top: 150, right: 200, bottom: 174, x: 150, y: 162 }],
+      webSearchCandidates: [{ text: "搜一搜 wxid_unknown", left: 90, top: 220, right: 290, bottom: 246, x: 190, y: 233 }],
+      webSearchTop: 220,
+      ocrOk: true
+    }, { query: "wxid_unknown", expectedName: "未知客户" }).status,
+    "unverified",
+    "a name-only OCR row cannot authorize a click without an exact labelled WeChat ID"
   );
   assert.equal(
     resolveWechatSearchResultObservation({ uiaCandidates: [], visualCandidates: [{ text: "wxid_unknown", x: 150, y: 190 }], ocrOk: true, webSearchVisible: true }, { query: "wxid_unknown", expectedName: "未知客户" }).status,
     "unverified",
     "a query echoed on a separate web-search OCR line must never authorize a click"
+  );
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [],
+      ocrOk: true,
+      cropBounds: strictCrop,
+      visualCandidates: [
+        { text: "测试客户", left: 92, top: 132, right: 168, bottom: 154, x: 130, y: 143 },
+        { text: "微信号：cb1668", left: 92, top: 158, right: 218, bottom: 180, x: 155, y: 169 }
+      ],
+      webSearchCandidates: [
+        { text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }
+      ],
+      webSearchTop: 224,
+      webSearchVisible: true
+    }, { query: "cb1668", expectedName: "测试客户" }),
+    {
+      status: "selected",
+      mode: "exact_wechat_id_visual",
+      candidate: { text: "微信号：cb1668", left: 92, top: 158, right: 218, bottom: 180, x: 155, y: 169 }
+    },
+    "an exact labelled WeChat ID above the web-search boundary must select the local result row"
+  );
+  assert.equal(isVerifiedWechatSearchResultMode("exact_wechat_id_visual"), true, "the strict labelled-ID visual result must be accepted by the conversation gate");
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [],
+      ocrOk: true,
+      cropBounds: strictCrop,
+      visualCandidates: [
+        { text: "微信号：cb1668", left: 92, top: 158, right: 218, bottom: 180, x: 155, y: 169 },
+        { text: "微信号：cb1668", left: 92, top: 188, right: 218, bottom: 210, x: 155, y: 199 }
+      ],
+      webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "multiple exact labelled results must remain ambiguous"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [],
+      ocrOk: true,
+      cropBounds: strictCrop,
+      visualCandidates: [{ text: "微信号：cb1668", left: 92, top: 230, right: 218, bottom: 252, x: 155, y: 241 }],
+      webSearchCandidates: [{ text: "搜一搜", left: 88, top: 224, right: 160, bottom: 250, x: 124, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "a labelled echo inside or below the web-search boundary must never authorize a click"
+  );
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [],
+      ocrOk: true,
+      cropBounds: strictCrop,
+      visualCandidates: [{ text: "cb1668", left: 92, top: 96, right: 170, bottom: 118, x: 131, y: 107 }],
+      webSearchCandidates: [{ text: "搜一搜", left: 88, top: 224, right: 160, bottom: 250, x: 124, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }),
+    { status: "unverified", reason: "search_result_identity_unverified" },
+    "a distant naked query is not proven to be part of the network-search row"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [{ text: "cb1668", x: 131, y: 107 }],
+      webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "a naked query without complete bounds must fail closed"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [{ text: "cb1668", left: 92, top: 150, right: 170, bottom: 172, x: 131, y: 161 }],
+      webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "a naked query in the local-result region must not be discarded as a search echo"
+  );
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [{ text: "cb1668", left: 162, top: 224, right: 240, bottom: 250, x: 201, y: 237 }],
+      webSearchCandidates: [{ text: "搜一搜", left: 88, top: 224, right: 154, bottom: 250, x: 121, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }),
+    { status: "not_found", reason: "exact_search_result_not_found" },
+    "a bounded query immediately composing the explicit network row may be ignored"
+  );
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [{ text: "cb1668", left: 96, top: 258, right: 174, bottom: 280, x: 135, y: 269 }],
+      webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }),
+    { status: "not_found", reason: "exact_search_result_not_found" },
+    "an exact query on the row below the verified web-search header is still a network echo"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop, visualCandidates: [],
+      webSearchCandidates: [{ text: "客户说不要搜一搜", left: 88, top: 160, right: 250, bottom: 184, x: 169, y: 172 }],
+      webSearchTop: 160
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "ordinary OCR text containing a network-search phrase is not a network boundary"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop, visualCandidates: [],
+      webSearchCandidates: [{ text: "搜一搜 other-id", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "a network-search row carrying another query must fail closed"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop, visualCandidates: [],
+      webSearchCandidates: [{ text: "搜一搜 cb1668", left: 330, top: 224, right: 480, bottom: 250, x: 405, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "a web-search boundary outside the OCR crop must fail closed"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop, visualCandidates: [],
+      webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+      webSearchTop: 210
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "a reported boundary inconsistent with its OCR row must fail closed"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [{ text: "微信号：cb1668", left: 340, top: 150, right: 460, bottom: 174, x: 400, y: 162 }],
+      webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "an exact label outside the OCR crop must never authorize a click"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true,
+      visualCandidates: [{ text: "微信号：cb1668", left: 92, top: 150, right: 218, bottom: 174, x: 155, y: 162 }],
+      webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "missing crop bounds must fail closed"
   );
   let driverStages = 0;
   const driverDisplayNameResult = openWechatSearchResult("wxid_abc123", {
@@ -1495,7 +1669,10 @@ try {
     searchIdentity: { expectedName: "缺失客户" },
     runner: () => {
       missingDriverStages += 1;
-      return { ok: true, pid: 11, hWnd: "22", inputLeaseTick: 101, searchResultObservation: { uiaCandidates: [], visualCandidates: [], ocrOk: true, webSearchVisible: true } };
+      return { ok: true, pid: 11, hWnd: "22", inputLeaseTick: 101, searchResultObservation: {
+        uiaCandidates: [], visualCandidates: [], ocrOk: true, webSearchVisible: true, webSearchTop: 224, cropBounds: strictCrop,
+        webSearchCandidates: [{ text: "搜一搜 wxid_missing", left: 88, top: 224, right: 280, bottom: 250, x: 184, y: 237 }]
+      } };
     }
   });
   assert.equal(driverMissingResult.reason, "exact_search_result_not_found");

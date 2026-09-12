@@ -678,6 +678,9 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           hasStartedWorkflowTask: touchTaskController.hasStartedWorkflowTask,
           runWorkflowStep: touchTaskController.runWorkflowStep,
           canRetryWorkflowTask: touchTaskController.canRetryWorkflowTask,
+          describeUnknownWorkflowTask: touchTaskController.describeUnknownWorkflowTask,
+          resolveUnknownWorkflowTask: touchTaskController.resolveUnknownWorkflowTask,
+          acknowledgeUnknownWorkflowResolution: touchTaskController.acknowledgeUnknownWorkflowResolution,
           describeImages: touchTaskController.describeImages,
           importImages: touchTaskController.importImages
         },

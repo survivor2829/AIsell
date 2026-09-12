@@ -1565,6 +1565,8 @@ public static class Win32WechatWindowSearch {
 }
 "@
 $query = [Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_QUERY")
+$compactQuery = [Text.RegularExpressions.Regex]::Replace(([string]$query).Normalize([Text.NormalizationForm]::FormKC), "\s+", "").ToLowerInvariant()
+$networkSearchPattern = "^(?:搜一搜|网络搜索|搜索网络|搜索网络结果)(?:" + [Text.RegularExpressions.Regex]::Escape($compactQuery) + ")?$"
 $pressEnter = [Environment]::GetEnvironmentVariable("XIAOXI_PRESS_ENTER") -eq "1"
 $resultAutomationId = [Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_RESULT_AUTOMATION_ID")
 $observeLocalResults = [Environment]::GetEnvironmentVariable("XIAOXI_OBSERVE_LOCAL_RESULTS") -eq "1"
@@ -1693,8 +1695,11 @@ Assert-ExactSearchForeground
 $resultOpened = $false
 $uiaCandidates = New-Object System.Collections.Generic.List[object]
 $visualCandidates = New-Object System.Collections.Generic.List[object]
+$webSearchCandidates = New-Object System.Collections.Generic.List[object]
 $ocrOk = $false
 $webSearchVisible = $false
+$webSearchTop = $null
+$cropBounds = $null
 if ($observeLocalResults) {
   $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$matched.hWnd)
   for ($attempt = 0; $attempt -lt 5 -and $uiaCandidates.Count -eq 0; $attempt++) {
@@ -1729,6 +1734,7 @@ if ($observeLocalResults) {
       $cropTop = [int]$matched.y + [Math]::Max(72, [Math]::Floor($matched.height * 0.09))
       $cropWidth = [Math]::Max(120, [Math]::Min(430, [Math]::Floor($matched.width * 0.38)))
       $cropHeight = [Math]::Max(160, [Math]::Min(420, [Math]::Floor($matched.height * 0.55)))
+      $cropBounds = @{ left = $cropLeft; top = $cropTop; right = $cropLeft + $cropWidth; bottom = $cropTop + $cropHeight }
       $bitmap = [System.Drawing.Bitmap]::new($cropWidth, $cropHeight, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
       $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
       $graphics.CopyFromScreen($cropLeft, $cropTop, 0, 0, [System.Drawing.Size]::new($cropWidth, $cropHeight), [System.Drawing.CopyPixelOperation]::SourceCopy)
@@ -1748,13 +1754,27 @@ if ($observeLocalResults) {
         $text = ([string]$line.Text).Normalize([Text.NormalizationForm]::FormKC).Trim()
         if (-not $text) { continue }
         $compactText = [Text.RegularExpressions.Regex]::Replace($text, "\s+", "").ToLowerInvariant()
-        if ($compactText -match "搜一搜|网络搜索|搜索网络") { $webSearchVisible = $true; continue }
         $words = @($line.Words); if ($words.Count -eq 0) { continue }
         $left = ($words | ForEach-Object { [double]$_.BoundingRect.X } | Measure-Object -Minimum).Minimum
         $top = ($words | ForEach-Object { [double]$_.BoundingRect.Y } | Measure-Object -Minimum).Minimum
         $right = ($words | ForEach-Object { [double]($_.BoundingRect.X + $_.BoundingRect.Width) } | Measure-Object -Maximum).Maximum
         $bottom = ($words | ForEach-Object { [double]($_.BoundingRect.Y + $_.BoundingRect.Height) } | Measure-Object -Maximum).Maximum
-        [void]$visualCandidates.Add(@{ text = $text; x = [int]($cropLeft + (($left + $right) / 2)); y = [int]($cropTop + (($top + $bottom) / 2)) })
+        $candidate = @{
+          text = $text
+          left = [int]($cropLeft + $left)
+          top = [int]($cropTop + $top)
+          right = [int]($cropLeft + $right)
+          bottom = [int]($cropTop + $bottom)
+          x = [int]($cropLeft + (($left + $right) / 2))
+          y = [int]($cropTop + (($top + $bottom) / 2))
+        }
+        if ([Text.RegularExpressions.Regex]::IsMatch($compactText, $networkSearchPattern)) {
+          $webSearchVisible = $true
+          [void]$webSearchCandidates.Add($candidate)
+          if ($webSearchTop -eq $null -or [int]$candidate.top -lt [int]$webSearchTop) { $webSearchTop = [int]$candidate.top }
+          continue
+        }
+        [void]$visualCandidates.Add($candidate)
       }
       $ocrOk = $true
     } catch {
@@ -1763,7 +1783,7 @@ if ($observeLocalResults) {
       if ($graphics) { $graphics.Dispose() }; if ($bitmap) { $bitmap.Dispose() }; if ($software) { $software.Dispose() }; if ($random) { $random.Dispose() }; if ($memory) { $memory.Dispose() }
     }
   }
-  @{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; searchQuery = $query; inputLeaseTick = [uint64]$script:inputLeaseTick; searchResultObservation = @{ uiaCandidates = $uiaCandidates.ToArray(); visualCandidates = $visualCandidates.ToArray(); ocrOk = $ocrOk; webSearchVisible = $webSearchVisible } } | ConvertTo-Json -Compress -Depth 6
+  @{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; searchQuery = $query; inputLeaseTick = [uint64]$script:inputLeaseTick; searchResultObservation = @{ uiaCandidates = $uiaCandidates.ToArray(); visualCandidates = $visualCandidates.ToArray(); webSearchCandidates = $webSearchCandidates.ToArray(); webSearchTop = $webSearchTop; cropBounds = $cropBounds; ocrOk = $ocrOk; webSearchVisible = $webSearchVisible } } | ConvertTo-Json -Compress -Depth 6
   exit
 } elseif (-not [string]::IsNullOrWhiteSpace($resultAutomationId)) {
   # Kept for the explicitly named File Transfer Assistant flow.

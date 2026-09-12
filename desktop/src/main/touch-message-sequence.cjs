@@ -23,6 +23,27 @@ function canContinueTouchResult(row, multipart) {
     && row.retry_blocked === false && row.send_attempted === false);
 }
 
+function unknownMessagePart(row) {
+  if (!Array.isArray(row?.message_parts)) return null;
+  const indexes = row.message_parts
+    .map((part, index) => part?.status === "outcome_unknown" ? index : -1)
+    .filter((index) => index >= 0);
+  if (indexes.length !== 1) return null;
+  const index = indexes[0];
+  return { index, part: row.message_parts[index] };
+}
+
+function resolveUnknownMessagePart(row, resolution, resolvedAt) {
+  const unknown = unknownMessagePart(row);
+  if (!unknown || !["sent", "not_sent"].includes(resolution)) return null;
+  unknown.part.status = resolution === "sent" ? "sent_verified" : "not_attempted";
+  unknown.part.manual_resolution = resolution;
+  unknown.part.manual_resolved_at = resolvedAt;
+  if (resolution === "sent") unknown.part.completedAt = resolvedAt;
+  else delete unknown.part.completedAt;
+  return { index: unknown.index, kind: String(unknown.part.kind || ""), allSent: row.message_parts.every((part) => part.status === "sent_verified") };
+}
+
 async function executeMessageSequence({ row, parts, execute, persist, isEnabled }) {
   const signatures = parts.map(partSignature);
   if (!row.message_parts) {
@@ -71,4 +92,4 @@ async function executeMessageSequence({ row, parts, execute, persist, isEnabled 
   return { ok: true, send_attempted: true, state: { real_send_status: "sent_verified" } };
 }
 
-module.exports = { executeMessageSequence, messageParts, canContinueSequence, canContinueTouchResult };
+module.exports = { executeMessageSequence, messageParts, canContinueSequence, canContinueTouchResult, unknownMessagePart, resolveUnknownMessagePart };

@@ -199,6 +199,14 @@ function registerWechatWorkflowIpc(options) {
   handle("cancel-task", (payload) => controller.cancelTask(String(payload?.id || "")));
   handle("delete-tasks", (payload) => controller.deleteTasks(payload?.ids, payload?.unsuccessfulOnly === true), true);
   handle("retry-task", (payload) => controller.retryTask(String(payload?.id || "")), true);
+  handle("resolve-touch-unknown", (payload) => {
+    const id = String(payload?.id || "");
+    const resolution = String(payload?.resolution || "");
+    if (String(payload?.clickedTaskId || "") !== id || String(payload?.clickedResolution || "") !== resolution) {
+      throw new Error("点击的处理结果与提交内容不一致，请重新点击对应按钮。");
+    }
+    return controller.resolveTouchUnknown(id, resolution);
+  }, true);
   handle("remove-recipient", (payload) => controller.removeRecipient(String(payload?.id || "")));
   handle("add-recipients", (payload) => controller.addRecipients(payload?.contactIds), true);
   handle("set-reply-enabled", (payload) => controller.setReplyEnabled(payload?.enabled));

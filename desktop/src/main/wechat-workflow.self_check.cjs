@@ -44,6 +44,15 @@ async function checkFloatingProgress() {
   const event = { sender: mainWindow.webContents };
   await control.addTask({ type: "interact", payload: { maxPosts: 1 } });
   const invoke = (name, payload) => handlers.get(`wechat-workflow:${name}`)(event, payload);
+  const refusedResolution = await invoke("resolve-touch-unknown", { id: "missing", resolution: "sent", clickToken: "invalid" });
+  assert.equal(refusedResolution.ok, false);
+  assert.equal(diagnosticEvents.at(-1)[2].reason, "invalid_click");
+  const mismatchedResolution = await invoke("resolve-touch-unknown", {
+    id: "missing", resolution: "sent", clickToken: require("node:crypto").randomUUID(),
+    clickedTaskId: "missing", clickedResolution: "skip"
+  });
+  assert.equal(mismatchedResolution.ok, false);
+  assert.match(mismatchedResolution.error, /点击的处理结果与提交内容不一致/);
   const refused = await invoke("start", { clickToken: "invalid" });
   assert.equal(refused.ok, false);
   assert.equal(diagnosticEvents.at(-1)[2].reason, "invalid_click");
@@ -148,6 +157,88 @@ async function checkInProgressTouchEdit() {
   assert.equal(edited.ok, true, "a paused touch task can edit after partial progress");
   assert.equal(edited.task.progress.done, 0, "a bound task is routed through the edit path even before aggregate progress advances");
   assert.equal(updateInput.script, "新话术");
+  await control.dispose();
+}
+
+async function checkUnknownTouchResolution() {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-resolution-"));
+  let runCalls = 0;
+  let resolutionCalls = 0;
+  const control = createWechatWorkflowController({
+    rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
+    autoSchedule: false, getAccount: () => "resolution-account",
+    executors: { touch: {
+      prepareWorkflowTask: () => ({ contacts: [{ id: "a", name: "甲" }], script: "test" }),
+      runWorkflowStep: async () => {
+        runCalls += 1;
+        return runCalls === 1
+          ? { status: "needs_attention", error: "无法确认发送结果", progress: { done: 0, total: 1 } }
+          : { status: "completed", progress: { done: 1, total: 1 } };
+      },
+      describeUnknownWorkflowTask: () => ({ required: true, contactLabel: "甲", partKind: "image" }),
+      resolveUnknownWorkflowTask: (_task, resolution, resolutionId) => {
+        resolutionCalls += 1;
+        assert.equal(resolution, "not_sent");
+        return { resolution, resolutionId, completed: false, progress: { done: 0, total: 1 }, partKind: "image", identityRotated: true };
+      }
+    } }
+  });
+  await control.setReplyEnabled(false);
+  const added = await control.addTask({ type: "touch", payload: { contactIds: ["a"], script: "test" } });
+  await control.start(); await control.tick();
+  assert.equal(control.status().tasks[0].unknownResolution.partKind, "image");
+  await control.resolveTouchUnknown(added.task.id, "not_sent");
+  assert.equal(resolutionCalls, 1);
+  assert.equal(runCalls, 1, "manual resolution must not invoke the task executor");
+  assert.equal(control.status().tasks[0].status, "pending");
+  assert.equal(control.status().enabled, false, "manual resolution must require another explicit start");
+  await control.start(); await control.tick();
+  assert.equal(runCalls, 2, "only a later explicit start may resume the task");
+  await control.dispose();
+}
+
+async function checkUnknownTouchResolutionRecovery() {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-recovery-"));
+  let durableResolution = null;
+  let runCalls = 0;
+  const events = [];
+  const touch = {
+    prepareWorkflowTask: () => ({ contacts: [{ id: "private-contact", name: "private-name" }], script: "private-script" }),
+    runWorkflowStep: async () => {
+      runCalls += 1;
+      return { status: "needs_attention", error: "无法确认发送结果", progress: { done: 0, total: 1 } };
+    },
+    describeUnknownWorkflowTask: () => durableResolution
+      ? { required: false, reconciliation: durableResolution }
+      : { required: true, contactLabel: "private-name", partKind: "text" },
+    resolveUnknownWorkflowTask: (_task, resolution, resolutionId) => {
+      durableResolution = { resolution, resolutionId, completed: true, progress: { done: 1, total: 1 }, partKind: "text", identityRotated: false };
+      return durableResolution;
+    }
+  };
+  const options = {
+    rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
+    autoSchedule: false, getAccount: () => "private-account", executors: { touch },
+    logger: { event: (_module, name, details) => events.push({ name, ...details }) }
+  };
+  let control = createWechatWorkflowController(options);
+  await control.setReplyEnabled(false);
+  const added = await control.addTask({ type: "touch", payload: { contactIds: ["private-contact"], script: "private-script" } });
+  await control.start(); await control.tick();
+  durableResolution = touch.resolveUnknownWorkflowTask(added.task, "sent", require("node:crypto").randomUUID());
+  await control.dispose();
+
+  control = createWechatWorkflowController(options);
+  const recovered = control.status().tasks[0];
+  assert.equal(recovered.status, "completed", "restart must reconcile an inner resolution saved before the outer workflow state");
+  assert.deepEqual(recovered.progress, { done: 1, total: 1 }, "last-contact reconciliation must retain completed progress");
+  assert.equal(runCalls, 1, "reconciliation must not execute the sender");
+  const resolutionEvent = events.find((entry) => entry.name === "touch.unknown_resolved");
+  assert.deepEqual({ resolution: resolutionEvent?.resolution, part_kind: resolutionEvent?.part_kind, done: resolutionEvent?.done,
+    total: resolutionEvent?.total, identity_rotated: resolutionEvent?.identity_rotated },
+  { resolution: "sent", part_kind: "text", done: 1, total: 1, identity_rotated: false });
+  assert.equal(/private-contact|private-name|private-script|private-account/.test(JSON.stringify(resolutionEvent)), false,
+    "manual-resolution diagnostics must not contain contact identity or message text");
   await control.dispose();
 }
 
@@ -413,6 +504,8 @@ async function main() {
   await checkFloatingProgress();
   await checkWorkflowDiagnostics();
   await checkInProgressTouchEdit();
+  await checkUnknownTouchResolution();
+  await checkUnknownTouchResolutionRecovery();
   const traceRoot = path.join(rootDir, "waiting-diagnostics");
   const traceLogger = require("./diagnostics.cjs").createDiagnosticLogger({ rootDir: traceRoot });
   let waitingForNextStep = true;

@@ -78,6 +78,87 @@ async function checkTouchMessageSequence() {
   const count = calls.length;
   await createTouchWorkflow(config).runWorkflowStep(uncertain, context);
   assert.equal(calls.length, count, "Unknown image sends never retry after restart");
+  assert.equal(workflow.describeUnknownWorkflowTask(uncertain)?.partKind, "image");
+  const sentResolution = workflow.resolveUnknownWorkflowTask(uncertain, "sent");
+  assert.equal(sentResolution.completed, false, "confirming one multipart segment must retain later unsent segments");
+  assert.equal(calls.length, count, "manual confirmation must not invoke the sender");
+  assert.throws(() => workflow.resolveUnknownWorkflowTask(uncertain, "sent"), /没有待确认/, "a resolved segment cannot be handled twice");
+  failImage = false; unknown = false;
+  result = await createTouchWorkflow(config).runWorkflowStep(uncertain, context);
+  assert.equal(result.status, "completed");
+  assert.deepEqual(calls.slice(count).map(call => call.kind), ["link"], "only the segment after the confirmed image may run");
+
+  failImage = true; unknown = true;
+  const notSent = { ...record, id: crypto.randomUUID() };
+  result = await createTouchWorkflow(config).runWorkflowStep(notSent, context);
+  assert.equal(result.status, "needs_attention");
+  const notSentDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(notSent.id).digest("hex"));
+  const beforeNotSent = JSON.parse(fs.readFileSync(path.join(notSentDir, "touch_task.json"), "utf8"));
+  const beforeNotSentCalls = calls.length;
+  const retryResolution = workflow.resolveUnknownWorkflowTask(notSent, "not_sent");
+  const afterNotSent = JSON.parse(fs.readFileSync(path.join(notSentDir, "touch_task.json"), "utf8"));
+  assert.equal(retryResolution.completed, false);
+  assert.notEqual(afterNotSent.results[0].request_id, beforeNotSent.results[0].request_id, "confirmed-not-sent must rotate the durable send identity");
+  assert.equal(afterNotSent.results[0].message_parts[0].status, "sent_verified", "confirmed-not-sent must retain already verified segments");
+  assert.equal(afterNotSent.results[0].message_parts[1].status, "not_attempted");
+  assert.equal(afterNotSent.results[0].message_parts[2].status, "pending");
+  assert.equal(afterNotSent.results[0].manual_resolution_history.at(-1).resolution, "not_sent");
+  assert.notEqual(afterNotSent.results[0].manual_resolution_history.at(-1).next_attempt_id, afterNotSent.results[0].manual_resolution_history.at(-1).previous_attempt_id);
+  assert.equal(calls.length, beforeNotSentCalls, "restoring retry eligibility must not execute it");
+  failImage = false; unknown = false;
+  result = await createTouchWorkflow(config).runWorkflowStep(notSent, context);
+  assert.equal(result.status, "completed");
+  assert.deepEqual(calls.slice(beforeNotSentCalls).map(call => call.kind), ["image", "link"], "a later explicit run retries only the confirmed-unsent segment and its successors");
+
+  failImage = true; unknown = true;
+  const skippedUnknownPayload = workflow.prepareWorkflowTask({ script: "未知结果跳过联系人", contactIds: [contact.id, secondContact.id], imageIds: [imageId] });
+  const skippedUnknown = { ...record, id: crypto.randomUUID(), payload: skippedUnknownPayload };
+  result = await createTouchWorkflow(config).runWorkflowStep(skippedUnknown, context);
+  assert.equal(result.status, "needs_attention");
+  const beforeSkipCalls = calls.length;
+  const skipResolution = workflow.resolveUnknownWorkflowTask(skippedUnknown, "skip");
+  assert.deepEqual(skipResolution.progress, { done: 1, total: 2 });
+  assert.equal(calls.length, beforeSkipCalls, "skipping an uncertain contact must not execute the next contact");
+  failImage = false; unknown = false;
+  result = await createTouchWorkflow(config).runWorkflowStep(skippedUnknown, context);
+  assert.equal(result.status, "completed");
+  assert.deepEqual(calls.slice(beforeSkipCalls).map(call => call.kind), ["text", "image"], "the next explicit run starts at the next contact");
+
+  const legacyCalls = [];
+  const legacyConfig = { ...config, execute: async (options) => {
+    legacyCalls.push(options.attemptId);
+    options.onTransition("clicked");
+    return { ok: false, send_attempted: true, blocked_reason: "input_draft_read_failed" };
+  } };
+  for (const resolution of ["sent", "not_sent", "skip"]) {
+    const legacyWorkflow = createTouchWorkflow(legacyConfig);
+    const legacyPayload = legacyWorkflow.prepareWorkflowTask({ script: "1.1.20 单文字未知结果", contactIds: [contact.id] });
+    const legacyRecord = { ...record, id: crypto.randomUUID(), payload: legacyPayload };
+    const legacyResult = await legacyWorkflow.runWorkflowStep(legacyRecord, context);
+    assert.equal(legacyResult.status, "needs_attention");
+    const legacyDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(legacyRecord.id).digest("hex"));
+    const legacyStateFile = path.join(legacyDir, "touch_task.json");
+    const legacyState = JSON.parse(fs.readFileSync(legacyStateFile, "utf8"));
+    legacyState.source_build_id = "20260912T0824Z";
+    delete legacyState.results[0].message_parts;
+    delete legacyState.results[0].awaiting_resolution;
+    fs.writeFileSync(legacyStateFile, JSON.stringify(legacyState, null, 2));
+    const upgradedWorkflow = createTouchWorkflow(legacyConfig);
+    assert.equal(upgradedWorkflow.describeUnknownWorkflowTask(legacyRecord)?.partKind, "text", `1.1.20 ${resolution} fixture must remain actionable`);
+    const beforeLegacyResolution = legacyCalls.length;
+    const resolutionId = crypto.randomUUID();
+    const legacyOutcome = upgradedWorkflow.resolveUnknownWorkflowTask(legacyRecord, resolution, resolutionId);
+    const resolvedLegacyState = JSON.parse(fs.readFileSync(legacyStateFile, "utf8"));
+    assert.equal(legacyCalls.length, beforeLegacyResolution, "legacy manual resolution must not invoke the sender");
+    assert.equal(resolvedLegacyState.results[0].awaiting_resolution, false, "manual resolution must clear legacy awaiting-resolution state");
+    assert.equal(resolvedLegacyState.results[0].manual_resolution_history.at(-1).resolution_id, resolutionId);
+    assert.equal(legacyOutcome.resolutionId, resolutionId);
+    if (resolution === "not_sent") {
+      assert.equal(legacyOutcome.completed, false);
+      assert.notEqual(resolvedLegacyState.results[0].request_id, legacyState.results[0].request_id);
+    } else assert.equal(legacyOutcome.completed, true);
+    assert.throws(() => upgradedWorkflow.resolveUnknownWorkflowTask(legacyRecord, resolution), /没有待确认/, "a legacy decision cannot be applied twice by the user");
+  }
 
   failImage = false; unknown = false; pauseAfterText = true;
   const paused = { ...record, id: crypto.randomUUID() };

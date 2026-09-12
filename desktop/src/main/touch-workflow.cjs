@@ -6,7 +6,7 @@ const { generateFixedScriptFallback, generatePersonalizedDraft } = require("./ai
 const { diagnostics } = require("./diagnostics.cjs");
 const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs");
 const { normalizeTouchLink } = require("./touch-media.cjs");
-const { executeMessageSequence, messageParts, canContinueTouchResult } = require("./touch-message-sequence.cjs");
+const { executeMessageSequence, messageParts, canContinueTouchResult, unknownMessagePart, resolveUnknownMessagePart } = require("./touch-message-sequence.cjs");
 const {
   authorizeTask,
   classifyContacts,
@@ -26,6 +26,11 @@ const IDENTITY_SKIP_REASONS = new Set([
   "search_result_not_opened",
   "customer_conversation_not_found"
 ]);
+const MANUAL_RESOLUTION_REASONS = {
+  sent: "用户已确认发送成功",
+  not_sent: "用户已确认未发送，等待再次启动",
+  skip: "用户无法确认发送结果，已跳过当前联系人"
+};
 
 function createTouchWorkflow(options = {}) {
   const contactsDir = String(options.dataDir || "");
@@ -128,6 +133,10 @@ function createTouchWorkflow(options = {}) {
         writeJsonAtomic(bindingFile, { taskId: id, signature });
       }
       if (task.integrity_error) return response("needs_attention", { error: task.pause_reason || "触达任务进度已损坏" });
+      if (task.manual_resolution_pending && taskRecord?.status !== "needs_attention") {
+        delete task.manual_resolution_pending;
+        persist();
+      }
       if (task.status === "paused") {
         const resumableFreshEdit = multipart && task.phase === "preparing_batch"
           && !Object.prototype.hasOwnProperty.call(task.results[task.current_index] || {}, "message_parts")
@@ -347,6 +356,121 @@ function createTouchWorkflow(options = {}) {
     return !task.integrity_error && task.status === "paused" && canContinueTouchResult(task.results[task.current_index], multipart);
   }
 
+  function describeUnknownWorkflowTask(record) {
+    const id = String(record?.id || record || "").trim();
+    if (!id) return null;
+    const task = loadTaskState(workflowDirectory(id));
+    const current = task.results?.[task.current_index];
+    if (task.integrity_error) return null;
+    if (task.status === "paused" && current?.status === "outcome_unknown") {
+      const unknown = unknownMessagePart(current);
+      if (Array.isArray(current.message_parts) && !unknown) return null;
+      return {
+        required: true,
+        contactLabel: String(current.name || current.contact?.name || current.id || "当前联系人"),
+        partKind: unknown ? String(unknown.part.kind || "") : "text"
+      };
+    }
+    if (task.manual_resolution_pending?.resolutionId) {
+      return { required: false, reconciliation: task.manual_resolution_pending };
+    }
+    return null;
+  }
+
+  function resolveUnknownWorkflowTask(record, resolution, resolutionId = crypto.randomUUID()) {
+    const id = String(record?.id || record || "").trim();
+    if (!id || !["sent", "not_sent", "skip"].includes(resolution) || !/^[a-f0-9-]{36}$/u.test(String(resolutionId))) throw new Error("请选择有效的发送结果。");
+    const taskDir = workflowDirectory(id);
+    const task = loadTaskState(taskDir);
+    if (task.manual_resolution_pending?.resolutionId === resolutionId) return task.manual_resolution_pending;
+    const current = task.results?.[task.current_index];
+    if (task.integrity_error) throw new Error("触达任务进度校验失败，暂不能处理。");
+    if (task.status !== "paused" || current?.status !== "outcome_unknown") throw new Error("这项任务没有待确认的发送结果。");
+    const unknown = unknownMessagePart(current);
+    const multipart = Array.isArray(current.message_parts);
+    if (multipart && !unknown) throw new Error("不确定的消息段记录不完整，无法安全处理。");
+
+    const resolvedAt = now().toISOString();
+    const priorRequestId = String(current.request_id || "");
+    const history = Array.isArray(current.manual_resolution_history) ? current.manual_resolution_history : [];
+    current.manual_resolution_history = [...history, {
+      resolution,
+      resolution_id: resolutionId,
+      resolved_at: resolvedAt,
+      previous_request_id: priorRequestId,
+      previous_attempt_key: String(current.attempt_key || ""),
+      previous_attempt_id: unknown ? `${priorRequestId}:${unknown.index}` : String(current.attempt_key || priorRequestId),
+      previous_status: "outcome_unknown",
+      ...(unknown ? { part_index: unknown.index, part_kind: String(unknown.part.kind || "") } : {})
+    }];
+    current.manual_resolution = resolution;
+    current.manual_resolved_at = resolvedAt;
+    current.awaiting_resolution = false;
+    current.reason = MANUAL_RESOLUTION_REASONS[resolution];
+    current.updated_at = resolvedAt;
+
+    let advance = resolution === "skip";
+    if (resolution === "skip") {
+      current.status = "outcome_unknown_skipped";
+      current.retry_blocked = true;
+      current.send_attempted = null;
+    } else if (multipart) {
+      const resolved = resolveUnknownMessagePart(current, resolution, resolvedAt);
+      advance = resolved.allSent;
+      current.status = advance ? "sent_verified" : "generated";
+      current.retry_blocked = advance;
+      current.send_attempted = advance ? true : false;
+    } else if (resolution === "sent") {
+      current.status = "sent_verified";
+      current.retry_blocked = true;
+      current.send_attempted = true;
+      advance = true;
+    } else {
+      current.status = "generated";
+      current.retry_blocked = false;
+      current.send_attempted = false;
+    }
+
+    if (resolution === "not_sent") {
+      current.request_id = crypto.randomUUID();
+      current.attempt_key = "";
+      current.manual_resolution_history.at(-1).next_request_id = current.request_id;
+      current.manual_resolution_history.at(-1).next_attempt_id = unknown ? `${current.request_id}:${unknown.index}` : current.request_id;
+    }
+    if (advance) {
+      task.current_index += 1;
+      if (resolution === "sent" && task.current_index < task.total) {
+        task.next_send_not_before = new Date(now().getTime() + sendDelayMs(options.random || Math.random)).toISOString();
+      }
+    }
+    task.status = task.current_index >= task.total ? "completed" : "paused";
+    task.phase = task.status === "completed" ? "completed" : "preparing_batch";
+    task.pause_reason = task.status === "completed" ? "" : "人工处理已保存，请再次点击启动程序继续。";
+    if (task.status === "completed") task.completed_at = resolvedAt;
+    const outcome = {
+      resolution, resolutionId, resolvedAt, completed: task.status === "completed",
+      progress: { done: task.current_index, total: task.total },
+      partKind: unknown ? String(unknown.part.kind || "") : "text",
+      partIndex: unknown ? unknown.index : null,
+      identityRotated: resolution === "not_sent"
+    };
+    current.manual_resolution_history.at(-1).outcome = outcome;
+    task.manual_resolution_pending = outcome;
+    saveTaskState(taskDir, task);
+    return outcome;
+  }
+
+  function acknowledgeUnknownWorkflowResolution(record, resolutionId) {
+    const id = String(record?.id || record || "").trim();
+    if (!id || !resolutionId) return false;
+    const taskDir = workflowDirectory(id);
+    const task = loadTaskState(taskDir);
+    if (task.manual_resolution_pending?.resolutionId !== resolutionId) return false;
+    delete task.manual_resolution_pending;
+    saveTaskState(taskDir, task);
+    return true;
+  }
+
   function updateWorkflowTask(id, payload = {}) {
     const taskId = String(id || "").trim();
     const taskDir = workflowDirectory(taskId);
@@ -402,7 +526,7 @@ function createTouchWorkflow(options = {}) {
     const taskDir = workflowDirectory(String(id || "").trim());
     return fs.existsSync(path.join(taskDir, "touch_task.json"));
   }
-  return { prepareWorkflowTask, updateWorkflowTask, hasStartedWorkflowTask, runWorkflowStep, canRetryWorkflowTask,
+  return { prepareWorkflowTask, updateWorkflowTask, hasStartedWorkflowTask, runWorkflowStep, canRetryWorkflowTask, describeUnknownWorkflowTask, resolveUnknownWorkflowTask, acknowledgeUnknownWorkflowResolution,
     describeImages: (ids = []) => ids.map((id) => options.mediaStore.describe(id)),
     importImages: (paths) => options.mediaStore.importFiles(paths) };
 }
