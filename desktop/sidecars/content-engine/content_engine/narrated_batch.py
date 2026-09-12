@@ -30,6 +30,7 @@ PLAN_PAGE = 16
 VERSION = 1
 SAFE_FAST_SPEECH_MS_PER_CHAR = 180
 VISUAL_FACTS_VERSION = 5
+VISUAL_FACT_MAX_OUTPUT_TOKENS = 8192
 CLAIM_AUDIT_VERSION = 14
 REPORTED_SPEECH_REVIEW_VERSION = 1
 CLOSING_ACTION_REVIEW_VERSION = 1
@@ -295,6 +296,25 @@ class NarratedBatchDomain:
         b["activity"] = {"message": message, "started_at": previous.get("started_at") or self.d._now(),
                          "completed": completed, "total": total}
         self._store(b)
+
+    @staticmethod
+    def _visual_fact_checkpoint_summary(b):
+        checkpoints = b.get("_visual_fact_checkpoints") or {}
+        completed = total = 0
+        for checkpoint in checkpoints.values():
+            if not isinstance(checkpoint, dict):
+                continue
+            try:
+                current_total = int(checkpoint.get("total", 0))
+                current_completed = int(checkpoint.get("completed", 0))
+            except (TypeError, ValueError):
+                continue
+            if current_total > 0:
+                total += current_total
+                completed += max(0, min(current_completed, current_total))
+        if total <= 0:
+            return None
+        return {"stage": "画面事实核对", "completed": completed, "total": total}
 
     @staticmethod
     def _spoken_char_count(text):
@@ -599,10 +619,28 @@ class NarratedBatchDomain:
             b["activity"] = {**(b.get("activity") or {}), "message": "AI 请求结果待核对，已停止重复提交。", "completed": None, "total": None}
         if b.get("status") == "insufficient_materials" and not b.get("feasible_count") and not b.get("_planning_audit"):
             b["reasons"] = ["本次未得到可用方案，不代表素材只能生成 0 条。旧版本未保存具体拒绝原因；请重新点击 AI 推荐数量获取检查详情，暂不需要补充素材。"]
+        if b.get('task_status') in {'analyzing', 'rendering'}:
+            active = next((c for c in b['candidates'] if c.get('status') == 'rendering' and c.get('_run_id')), None)
+            run = self.db.execute('SELECT status FROM auto_mix_runs_v2 WHERE id=?', (active['_run_id'],)).fetchone() if active else None
+            message = {'synthesizing': '正在配音与对齐字幕', 'selecting_music': '正在准备音频合成',
+                       'rendering': '正在渲染成片'}.get(run['status']) if run else None
+            if message:
+                b['activity'] = {**(b.get('activity') or {}), 'message': message}
         # Keep internal analysis/provider details and pinned render recipes out
         # of IPC responses. Only opaque identifiers and editorial data leave.
         public = {k: v for k, v in b.items() if not k.startswith("_")}
+        # Keep earlier operations visible when the next operation resets activity.started_at.
+        public['stage_times'] = [
+            {'action': json.loads(row['payload_json']).get('action', 'production'),
+             'started_at': row['created_at'],
+             'finished_at': None if row['status'] in {'queued', 'analyzing', 'rendering'} else row['updated_at']}
+            for row in self.db.execute(
+                "SELECT payload_json,status,created_at,updated_at FROM content_tasks "
+                "WHERE json_extract(payload_json, '$.batch_id')=? ORDER BY created_at", (batch_id,))]
         public["planning_recovery_available"] = self._planning_recovery_available(b)
+        checkpoint = self._visual_fact_checkpoint_summary(b)
+        if checkpoint:
+            public["planning_checkpoint"] = checkpoint
         public["production_retry_available"] = bool(narrated_production.retryable_planning_jobs(b))
         public["candidates"] = [{k: v for k, v in c.items() if not k.startswith("_")
                                  and not (k == "error" and c["status"] == "completed")}
@@ -781,6 +819,8 @@ class NarratedBatchDomain:
         material_context = material_context.strip()
         brief_version = request.get('brief_version', b.get('brief_version') if b else None)
         require(brief_version in (None, 1), 'invalid_narrated_settings', '创作需求版本无效。')
+        script_source = request.get('script_source', (b or {}).get('script_source', 'ideas'))
+        require(script_source in ('ideas', 'provided'), 'invalid_narrated_settings', '文案输入方式无效。')
         brief = {}
         for key, limit in narrated_brief.FIELDS.items():
             if key == 'expression' and key not in request and key not in (b or {}):
@@ -788,10 +828,12 @@ class NarratedBatchDomain:
             value = request.get(key, b.get(key, '') if b else '')
             require(isinstance(value, str) and len(value) <= limit,
                     'invalid_narrated_settings', f'{key}须为{limit}字以内的文字。')
-            brief[key] = value.strip()
+            brief[key] = value if key == 'expression' else value.strip()
         if 'expression' in request:
             # The unified text is authoritative; cleared text must not resurrect legacy claims.
             brief.update(advantages='', customer_pain_points='')
+            description = ''
+            material_context = ''
         cta = str(request.get("cta", b["cta"] if b else ""))[:300]
         settings = request.get("settings", b.get("settings", {}) if b else {})
         require(isinstance(settings, dict) and not set(settings) - {
@@ -824,24 +866,37 @@ class NarratedBatchDomain:
                             (b["project_id"], title, title, self.d._json({"workflow": "narrated_batch_v1"}), now, now))
             self.db.execute("INSERT INTO narrated_batches_v1(id,project_id,state_json,updated_at) VALUES(?,?,?,?)",
                             (b["batch_id"], b["project_id"], "{}", now))
-        changed = (b.get("_story_planning_version") != 2
+        def content_input(value):
+            primary = narrated_brief.expression(value)
+            parts = [primary, value.get('description', ''), value.get('material_context', '')]
+            return '\n\n'.join(dict.fromkeys(part for part in parts if part))
+        source_changed = b.get('groups') != groups
+        changed = (source_changed
                    or b.get('brief_version') != brief_version
-                   or any(b.get(key, '') != value for key, value in brief.items())
-                   or (b.get("settings") or {}).get("workflow_version", 1) != settings.get("workflow_version", 1)
-                   or (b.get("settings") or {}).get("minimum_duration_seconds", 0) != minimum
-                   or b.get("material_context", "") != material_context
-                   or any(b.get(k) != v for k, v in {"groups": groups, "title": title, "description": description, "cta": cta}.items()))
+                   or b.get('script_source', 'ideas') != script_source
+                   or b.get('target_audience', '') != brief.get('target_audience', '')
+                   or content_input(b) != content_input({**brief, 'description': description, 'material_context': material_context})
+                   or (b.get('settings') or {}).get('minimum_duration_seconds', 0) != minimum
+                   or b.get('cta', '') != cta)
         if changed:
             # Completed works are still present in generated_videos/history.
             previous_candidates = copy.deepcopy(b.get("candidates", []))
             confirmations = copy.deepcopy(b.get("script_confirmation_history", []))
             if b.get("script_confirmation"):
                 confirmations.append(copy.deepcopy(b["script_confirmation"]))
-            b.update(candidates=[], available_shots=[], recommended_count=0, feasible_count=0,
+            b.update(candidates=[], recommended_count=0, feasible_count=0,
                      status="draft", approved=False, task_id=None)
+            # Source evidence survives copy, voice and presentation changes. Unknown requests
+            # also survive edits: changing a form must never authorize a duplicate paid call.
+            retained = {'_analysis_key', '_snapshots', '_versions', '_analysis_provider',
+                        '_visual_fact_checkpoints', '_planning_inflight', '_planning_request',
+                        '_script_draft_audit'}
             for key in list(b):
-                if key.startswith("_"):
+                if key.startswith('_') and key not in retained:
                     b.pop(key)
+            if source_changed:
+                b['available_shots'] = []
+                b.pop('_analysis_key', None)
             if previous_candidates:
                 b["_previous_candidates"] = previous_candidates
             b.update(script_options=[], selected_script_id=None, script_confirmation=None,
@@ -861,7 +916,7 @@ class NarratedBatchDomain:
                 narrated_production.clear_selection(b)
         b.update(groups=groups, title=title, description=description, cta=cta, material_context=material_context,
                  target_count=target, collection_id=collection_id, settings=settings,
-                 brief_version=brief_version, **brief)
+                 brief_version=brief_version, script_source=script_source, **brief)
         b["_story_planning_version"] = 2
         self.db.execute("UPDATE creative_projects SET name=?,theme=?,updated_at=? WHERE id=?",
                         (title, title, self.d._now(), b["project_id"]))
@@ -880,9 +935,10 @@ class NarratedBatchDomain:
                     'narrated_audience_required', '请填写这条视频想给谁看。')
             require(script_workflow, "invalid_narrated_settings", "请使用文案确认流程创建批次。")
             require(not b.get("script_confirmation"), "narrated_script_already_confirmed", "正文已确认；修改文案后再重新选择。")
-            existing = b.get('script_options') or []
-            if not (0 < len(existing) < 3 and all(option.get('_draft_only') for option in existing)):
-                b["script_options"] = []
+            if narrated_brief.supplied(b):
+                require(0 < len(narrated_brief.expression(b).strip()) <= 2400,
+                        'invalid_narration', '完整文案须为 1 至 2400 字；请调整后使用原文。')
+            b.setdefault('script_options', [])
         elif script_workflow:
             require(bool(b.get("script_confirmation")), "narrated_script_confirmation_required", "请先选择并确认一份完整文案。")
             action = "confirmed"
@@ -966,19 +1022,35 @@ class NarratedBatchDomain:
                 and re.sub(r"\s+", "", spoken) == re.sub(r"\s+", "", confirmation["narration"]),
                 "narrated_confirmed_script_changed", "确认正文与配音稿不一致，已停止制作，请重新确认文案。")
 
+    def _admit_request(self, batch, record, *, preflight=False):
+        budget = (batch or {}).get('_planning_budget') or {}
+        if record['kind'] != 'llm' or budget.get('status') not in {'running', 'exhausted'}:
+            return
+        remaining = budget['max_elapsed_seconds'] - (time.time() - budget['started_at_epoch'])
+        if budget['cloud_calls'] >= budget['max_cloud_calls'] or remaining < 2:
+            message = f"本次已达到 {budget['max_cloud_calls']} 次实际模型请求或时间预算，已有结果已保存。"
+            budget.update(status='exhausted', reason=message)
+            batch.update(status='needs_attention', reasons=[message])
+            self._store(batch)
+            raise ContentEngineError('narrated_planning_budget_exhausted', message)
+        if not preflight:
+            budget['cloud_calls'] += 1
+            self._store(batch)
+
     def _cloud(self, payload, instruction, frames=None, validate=None, validation_error=None,
-               timeout_seconds=None, on_success=None, generation_rules=True):
+               timeout_seconds=None, on_success=None, generation_rules=True, max_tokens=None, purpose=None,
+               parse_code="cloud_response_invalid", parse_message="百炼返回了无法解析的结果。"):
         cloud = getattr(self.d.analyzer, "cloud_client", None)
         require(cloud and getattr(cloud, "configured", False), "cloud_not_configured", "请先配置当前模型平台，再分析素材与生成方案。")
         b = getattr(self, "_active_batch", None)
-        if generation_rules and b is not None and (b.get("settings") or {}).get("workflow_version") == 2:
+        if generation_rules and not frames and b is not None and (b.get("settings") or {}).get("workflow_version") == 2:
             payload = {**payload, "approved_direction": b.get("direction")}
             instruction += (
                 "生成或修改口播时优先采用顾客、使用者、游客等观众视角，直接回应具体痛点，"
                 "不写流水账或反复产品介绍；第一人称仅表达需求或选择，不能捏造真实使用经历、见证或效果。"
                 "approved_direction不为空时，续作必须保持其中受众、痛点和叙事角度，"
                 "在该方向内更换切入问题和具体内容，不得擅自换方向。复核时也检查这一点。"
-                "完整稿件必须返回audience、pain_point、angle；三份备选稿的切入方向须不同，"
+                "完整稿件必须返回audience、pain_point、angle；新增备选稿的切入方向须与已有稿件不同，"
                 "正文有实质区别，备选可以使用相同相关素材。"
                 "phrases保持自然段；能够可靠逐句对应时，在每段sentences返回{text,shot_ids}，"
                 "生成或重排phrases时，每段shot_ids必须全部来自同一个asset_id；"
@@ -987,7 +1059,7 @@ class NarratedBatchDomain:
                 "保持全文达到给定最少字数与时长；不能只缩短全文导致不足最短时长。"
                 "sentences文本按顺序拼接须与该段正文完全相同，镜头引用只用本段镜头并保持顺序；不确定就省略。"
             )
-            if narrated_brief.enabled(b):
+            if narrated_brief.enabled(b) and not narrated_brief.supplied(b):
                 payload = {**payload, 'creative_brief': narrated_brief.context(b)}
                 instruction += narrated_brief.RULES
         default_timeout = getattr(cloud, "timeout_seconds", 90)
@@ -996,20 +1068,7 @@ class NarratedBatchDomain:
             request_timeout = max(default_timeout, timeout_seconds)
         if b is not None:
             require(not b.get("_planning_inflight"), "narrated_planning_outcome_unknown", "上次 AI 方案请求结果未知，不会自动重提。")
-            budget = b.get("_planning_budget") or {}
-            if budget.get("status") == "running":
-                remaining = budget["max_elapsed_seconds"] - (time.time() - budget["started_at_epoch"])
-                if budget["cloud_calls"] >= budget["max_cloud_calls"] or remaining < 2:
-                    message = (f"本轮规划已达到 {budget['max_cloud_calls']} 次结构化调用或 "
-                               f"{budget['max_elapsed_seconds'] // 60} 分钟预算，已保留稿件和审查结果，请查看具体失败段落。")
-                    budget.update(status="exhausted", reason=message)
-                    b.update(status="needs_attention", reasons=[message])
-                    self._store(b)
-                    raise ContentEngineError("narrated_planning_budget_exhausted", message)
-                budget["cloud_calls"] += 1
-                # The batch budget limits starting new work. An admitted request
-                # keeps its normal timeout; shortening it creates unknown paid
-                # outcomes just because earlier independent scripts took time.
+            self._admit_request(b, {'kind': 'llm'}, preflight=True)
             b["_planning_inflight"] = canonical_hash(payload)
             b["_planning_request"] = {"started_at": self.d._now(),
                 "model": cloud.vision_model if frames else cloud.selection_model,
@@ -1021,11 +1080,25 @@ class NarratedBatchDomain:
             nonlocal full_validation_issue
             full_validation_issue = validation_error(item)
             return full_validation_issue
-        purpose = ("逐段事实审核" if "claim_audit_version" in payload else
+        purpose = purpose or ("逐段事实审核" if "claim_audit_version" in payload else
                    "文案与需求复核" if not generation_rules and "creative_brief" in payload else
                    "正文与镜头映射" if "confirmed_narration" in payload else
                    "画面事实提取" if frames and generation_rules else
                    "画面适配复核" if frames else "创作文案规划")
+        def retry_context(issue, item):
+            if frames:
+                return [{"role": "user", "content": (
+                    "请忽略上一次输出，重新逐张读取原始图片。只返回紧凑、完整、合法的JSON对象；"
+                    "每个数组最多4项，每项最多20个汉字；没有内容必须返回[]；"
+                    "每个输入index恰好返回一项，不要解释、不要Markdown。具体校验错误："
+                    + re.sub(r"\s+", " ", str(issue or "返回结构不符合要求。"))[:240]
+                )}]
+            if item is None:
+                return None
+            return [
+                {"role": "assistant", "content": json.dumps(item, ensure_ascii=False, separators=(",", ":"))},
+                {"role": "user", "content": "请修正具体错误并返回完整JSON：" + (full_validation_issue or issue)},
+            ]
         cloud.last_completion_requests = []
         try:
             content = self.d._json(payload)
@@ -1035,20 +1108,19 @@ class NarratedBatchDomain:
                     mime = "image/png" if frame.suffix.lower() == ".png" else "image/webp" if frame.suffix.lower() == ".webp" else "image/jpeg"
                     content.append({"type": "text", "text": f"frame index={frame_index}"})
                     content.append({"type": "image_url", "image_url": {"url": "data:" + mime + ";base64," + base64.b64encode(frame.read_bytes()).decode("ascii")}})
-            with usage_scope(getattr(self.d, "data_dir", None), batch_id=b.get("batch_id") if b else None,
+            from .provider_usage import request_budget
+            with request_budget(lambda record: self._admit_request(b, record)), usage_scope(getattr(self.d, "data_dir", None), batch_id=b.get("batch_id") if b else None,
                              task_id=b.get("task_id") if b else None, purpose=purpose):
                 result = cloud._structured_completion(
                     messages=[{"role": "system", "content": instruction},
                               {"role": "user", "content": content}],
                     model=cloud.vision_model if frames else cloud.selection_model, empty_code="narrated_plan_empty",
                     empty_message="AI 没有返回可用的组合方案。",
+                    parse_code=parse_code, parse_message=parse_message,
                     operation_label=purpose, validate=validate, timeout=request_timeout,
+                    max_tokens=max_tokens,
                     validation_error=validate_response if validation_error else None,
-                    validation_retry_context=(lambda issue, item: [
-                        {"role": "assistant", "content": json.dumps(item, ensure_ascii=False, separators=(",", ":"))},
-                        # Keep the complete correction feedback; never pay to rediscover it.
-                        {"role": "user", "content": "请修正具体错误并返回完整JSON：" + (full_validation_issue or issue)}
-                    ]) if validation_error else None)
+                    validation_retry_context=retry_context if validation_error else None)
         except ContentEngineError as error:
             if b is not None and error.code != "cloud_request_failed" and "unknown" not in error.code:
                 b.pop("_planning_inflight", None)
@@ -1075,15 +1147,32 @@ class NarratedBatchDomain:
         for index, asset_id in enumerate(ids):
             if self.d._should_stop(task_id):
                 return False
-            self._activity(b, "正在理解素材", index, len(ids))
             asset = self.d._asset_row(asset_id)
+            asset_name = str(asset["display_name"] or asset_id).strip()[:120]
+            activity = f"正在理解素材：{asset_name}" if asset_name else "正在理解素材"
+            self._activity(b, activity, index, len(ids))
             version = self.d.analyzer.analysis_version_for(asset, profile)
             cached = self.db.execute("SELECT 1 FROM media_segments WHERE asset_id=? AND analysis_version=? AND provider=? LIMIT 1",
                                      (asset_id, version, self.d.analyzer.capability['provider'])).fetchone()
             if not cached:
-                version = self.d._analyze_asset(task_id, asset_id, profile, return_analysis_version=True)
+                require(not b.get('_planning_inflight'), 'narrated_planning_outcome_unknown', '上次素材分析请求结果未知，不会自动重提。')
+                b['_planning_inflight'] = canonical_hash({'asset_id': asset_id, 'version': version})
+                b['_planning_request'] = {'started_at': self.d._now(), 'stage': activity,
+                                          'model': 'media_analysis', 'asset_id': asset_id}
+                self._store(b)
+                try:
+                    version = self.d._analyze_asset(task_id, asset_id, profile, return_analysis_version=True)
+                except ContentEngineError as error:
+                    if error.code != 'cloud_request_failed' and 'unknown' not in error.code:
+                        b.pop('_planning_inflight', None)
+                        b.pop('_planning_request', None)
+                        self._store(b)
+                    raise
+                b.pop('_planning_inflight', None)
+                b.pop('_planning_request', None)
+                self._store(b)
             versions[asset_id] = str(version or "")
-            self._activity(b, "正在理解素材", index + 1, len(ids))
+            self._activity(b, activity, index + 1, len(ids))
         key = canonical_hash({"snapshots": snapshots, "versions": versions,
                               "visual_facts": VISUAL_FACTS_VERSION})
         if b.get("_analysis_key") == key and b.get("available_shots"):
@@ -1104,7 +1193,20 @@ class NarratedBatchDomain:
                     shots.append(shot)
         b.update(candidates=[], recommended_count=0, feasible_count=0, approved=False)
         self._store(b)
-        shots = self._ground_shots(task_id, b, shots, snapshots, versions)
+        from .narrated_sources import representatives
+        selected = representatives(shots) if b.get('_preparing_scripts') else shots
+        observations = self._ground_shots(task_id, b, selected, snapshots, versions)
+        if observations is None:
+            return False
+        if b.get('_preparing_scripts'):
+            grounded_index = {shot['segment_id']: shot for shot in observations}
+            # Unsampled intervals remain available for editing, with no visual fact claim.
+            shots = [grounded_index.get(shot['segment_id'], {**shot, 'description': '',
+                      'visual_facts': {}, 'evidence_scope': 'not_observed'}) for shot in shots]
+            b['_source_summary'] = {'version': 1, 'observed_shot_ids': list(grounded_index),
+                                    'total_intervals': len(shots)}
+        else:
+            shots = observations
         if shots is None:
             return False
         b.update(available_shots=shots, _analysis_key=key, _snapshots=snapshots, _versions=versions,
@@ -1199,55 +1301,90 @@ class NarratedBatchDomain:
                 fact["unknown_observation"] = ""
             return fact
 
-        def valid_cached_facts(value, source_shots):
-            if not isinstance(value, list) or len(value) != len(source_shots):
+        def valid_fact(fact, expected_ids):
+            if not isinstance(fact, dict) or fact.get("shot_id") not in expected_ids:
+                return False
+            if type(fact.get("usable")) is not bool:
+                return False
+            if fact.get("medium") not in {"real", "animation", "mixed", "unknown"}:
+                return False
+            if fact.get("evidence_class") not in {"direct_real", "mixed_sources", "illustrative", "unknown"}:
+                return False
+            if any(not isinstance(fact.get(field), str) for field in (
+                    "observation", "direct_observation", "illustrative_observation", "unknown_observation")):
+                return False
+            if (not isinstance(fact.get("frame_timestamps_ms"), list)
+                    or any(type(timestamp) is not int for timestamp in fact["frame_timestamps_ms"])):
+                return False
+            if any(not isinstance(fact.get(field), list)
+                   or any(not isinstance(item, str) for item in fact[field])
+                   for field in ("onscreen_claims", "uncertainties")):
+                return False
+            if fact["usable"] and (not fact["observation"] or not fact["frame_timestamps_ms"]):
+                return False
+            if fact["evidence_class"] == "direct_real" and not fact["direct_observation"]:
+                return False
+            return True
+
+        def valid_partial_facts(value, source_shots):
+            if not isinstance(value, list) or len(value) > len(source_shots):
                 return False
             expected_ids = {shot["segment_id"] for shot in source_shots}
             seen = set()
             for fact in value:
-                if not isinstance(fact, dict) or fact.get("shot_id") not in expected_ids or fact["shot_id"] in seen:
+                if not valid_fact(fact, expected_ids) or fact["shot_id"] in seen:
                     return False
                 seen.add(fact["shot_id"])
-                if type(fact.get("usable")) is not bool:
-                    return False
-                if fact.get("medium") not in {"real", "animation", "mixed", "unknown"}:
-                    return False
-                if fact.get("evidence_class") not in {"direct_real", "mixed_sources", "illustrative", "unknown"}:
-                    return False
-                if any(not isinstance(fact.get(field), str) for field in (
-                        "observation", "direct_observation", "illustrative_observation", "unknown_observation")):
-                    return False
-                if (not isinstance(fact.get("frame_timestamps_ms"), list)
-                        or any(type(timestamp) is not int for timestamp in fact["frame_timestamps_ms"])):
-                    return False
-                if any(not isinstance(fact.get(field), list)
-                       or any(not isinstance(item, str) for item in fact[field])
-                       for field in ("onscreen_claims", "uncertainties")):
-                    return False
-                if fact["usable"] and (not fact["observation"] or not fact["frame_timestamps_ms"]):
-                    return False
-                if fact["evidence_class"] == "direct_real" and not fact["direct_observation"]:
-                    return False
-            return seen == expected_ids
+            return True
+
+        def valid_cached_facts(value, source_shots):
+            return (valid_partial_facts(value, source_shots)
+                    and len(value) == len(source_shots)
+                    and {fact["shot_id"] for fact in value}
+                    == {shot["segment_id"] for shot in source_shots})
 
         for ordinal, asset_id in enumerate(versions):
             if self.d._should_stop(task_id):
                 return None
             self._activity(b, "正在核对画面事实", ordinal, len(versions))
             source_shots = [s for s in shots if s["asset_id"] == asset_id]
+            if not source_shots:
+                continue
             cache_key = canonical_hash({"asset": asset_id, "snapshot": next(s for s in snapshots if s["asset_id"] == asset_id),
                                         "analysis": versions[asset_id], "version": VISUAL_FACTS_VERSION,
                                         "model": cloud.vision_model})
             cached = self.db.execute("SELECT state_json FROM narrated_visual_facts WHERE cache_key=?", (cache_key,)).fetchone()
             facts = None
+            cached_facts_valid = False
+            stored_facts = {}
+            expected_ids = {shot['segment_id'] for shot in source_shots}
             if cached:
                 try:
                     cached_facts = json.loads(cached[0])
                 except (TypeError, ValueError):
                     cached_facts = None
-                if valid_cached_facts(cached_facts, source_shots):
-                    facts = cached_facts
-            if facts is None:
+                if isinstance(cached_facts, list):
+                    stored_facts = {fact['shot_id']: fact for fact in cached_facts
+                                    if isinstance(fact, dict) and valid_fact(fact, {fact.get('shot_id')})}
+                    subset = [fact for key, fact in stored_facts.items() if key in expected_ids]
+                    if valid_partial_facts(subset, source_shots):
+                        facts = subset
+                        cached_facts_valid = valid_cached_facts(subset, source_shots)
+            checkpoints = b.setdefault("_visual_fact_checkpoints", {})
+            checkpoint = checkpoints.get(asset_id)
+            if isinstance(checkpoint, dict) and checkpoint.get('cache_key') == cache_key:
+                checkpoint = {**checkpoint, 'facts': [fact for fact in checkpoint.get('facts', [])
+                    if isinstance(fact, dict) and fact.get('shot_id') in expected_ids]}
+                if valid_partial_facts(checkpoint['facts'], source_shots):
+                    merged = {fact['shot_id']: fact for fact in (facts or []) + checkpoint['facts']}
+                    facts = list(merged.values())
+            if facts is None and isinstance(checkpoint, dict) \
+                    and checkpoint.get("cache_key") == cache_key \
+                    and valid_partial_facts(checkpoint.get("facts"), source_shots):
+                facts = checkpoint["facts"]
+            elif checkpoint is not None:
+                checkpoints.pop(asset_id, None)
+            if facts is None or not valid_cached_facts(facts, source_shots):
                 source = self.d._resolve_asset_path(asset_id)
                 directory = self.d.data_dir / "narrated-evidence" / cache_key
                 directory.mkdir(parents=True, exist_ok=True)
@@ -1264,12 +1401,17 @@ class NarratedBatchDomain:
                                 "-i", source, "-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "3", str(path)], timeout=60)
                         require(path.is_file() and path.stat().st_size > 0, "narrated_frames_missing", "无法读取素材区间画面。")
                         frames.append((timestamp, path))
-                facts = []
+                if facts is None:
+                    facts = []
                 for offset in range(0, len(source_shots), 3):
                     if self.d._should_stop(task_id):
                         return None
                     group = source_shots[offset:offset + 3]
-                    self._activity(b, f"正在核对第 {ordinal + 1} 个素材的画面", offset, len(source_shots))
+                    completed_ids = {fact["shot_id"] for fact in facts}
+                    group = [shot for shot in group if shot["segment_id"] not in completed_ids]
+                    if not group:
+                        continue
+                    self._activity(b, f"正在核对第 {ordinal + 1} 个素材的画面", len(facts), len(source_shots))
                     # Each interval has three actual observations, not an extrapolated caption.
                     selected = sorted({min(range(len(frames)), key=lambda i: abs(frames[i][0] - t))
                                        for s in group for t in (s["source_start_ms"] + (s["source_end_ms"] - s["source_start_ms"]) * f for f in (.1, .5, .9))})
@@ -1306,9 +1448,14 @@ class NarratedBatchDomain:
                         "区分real、animation、mixed和unknown。动画里出现的内容仍是动画，不能描述为真实现场事实。"
                         "画面文字必须只放visible_text并尽量逐字记录，不得复制或改写进三个直接观察字段，也不能当作已验证事实。"
                         "不确定项放uncertainties，不要用常识补全。每个输入index恰好返回一项，不发明新index。"
+                        "每个数组最多4项，每项最多20个汉字；visible_text最多4项，uncertainties最多2项；"
+                        "没有内容返回[]，不要重复同义词，不要穷举细节，不要输出解释。"
                         "返回JSON {frames:[{index:number,medium:'real'|'animation'|'mixed'|'unknown',"
                         "visible_objects:[],visible_attributes:[],spatial_relations:[],visible_text:[],uncertainties:[]}]}。",
-                        [frames[n][1] for n in selected], validation_error=frame_error)
+                        [frames[n][1] for n in selected], validation_error=frame_error,
+                        max_tokens=VISUAL_FACT_MAX_OUTPUT_TOKENS,
+                        parse_code="narrated_facts_invalid",
+                        parse_message="画面事实响应未通过结构校验")
                     issue = frame_error(result)
                     require(issue is None, "narrated_facts_invalid", issue or "画面事实格式无效。")
                     b.setdefault("_visual_audit", []).append({"asset_id": asset_id, "offset": offset, "response": result})
@@ -1349,7 +1496,34 @@ class NarratedBatchDomain:
                                       "frame_timestamps_ms": [frames[selected[i]][0] for i in refs],
                                       "onscreen_claims": [value for item in observed for value in item.get("visible_text", [])],
                                       "uncertainties": [value for item in observed for value in item.get("uncertainties", [])]})
-                self.db.execute("INSERT OR REPLACE INTO narrated_visual_facts VALUES (?,?,?)", (cache_key, self.d._json(facts), self.d._now()))
+                    by_shot = {fact["shot_id"]: fact for fact in facts}
+                    facts[:] = [by_shot[shot["segment_id"]] for shot in source_shots if shot["segment_id"] in by_shot]
+                    checkpoints[asset_id] = {
+                        "cache_key": cache_key,
+                        "facts": facts,
+                        "completed": len(facts),
+                        "total": len(source_shots),
+                        "updated_at": self.d._now(),
+                    }
+                    stored_facts.update({fact['shot_id']: fact for fact in facts})
+                    self.db.execute('INSERT OR REPLACE INTO narrated_visual_facts VALUES (?,?,?)',
+                                    (cache_key, self.d._json(list(stored_facts.values())), self.d._now()))
+                    self._store(b)
+                stored_facts.update({fact['shot_id']: fact for fact in facts})
+                self.db.execute("INSERT OR REPLACE INTO narrated_visual_facts VALUES (?,?,?)", (cache_key, self.d._json(list(stored_facts.values())), self.d._now()))
+                checkpoints.pop(asset_id, None)
+                if not checkpoints:
+                    b.pop("_visual_fact_checkpoints", None)
+                self._store(b)
+            elif b.get("_visual_fact_checkpoints"):
+                if not cached_facts_valid:
+                    stored_facts.update({fact['shot_id']: fact for fact in facts})
+                    self.db.execute("INSERT OR REPLACE INTO narrated_visual_facts VALUES (?,?,?)",
+                                    (cache_key, self.d._json(list(stored_facts.values())), self.d._now()))
+                b["_visual_fact_checkpoints"].pop(asset_id, None)
+                if not b["_visual_fact_checkpoints"]:
+                    b.pop("_visual_fact_checkpoints", None)
+                self._store(b)
             facts = [normalize_fact_provenance(fact) for fact in facts]
             index = {f["shot_id"]: f for f in facts}
             for shot in source_shots:
@@ -2883,8 +3057,11 @@ class NarratedBatchDomain:
                     break
                 r = self._visual_review(c, b, claim_review=claim_review)
                 visual_score = r.get("quality_score", 0)
-                if (r.get("accepted") is True and r.get("unsupported_claims") == []
-                        and type(visual_score) in (int, float) and .65 <= visual_score <= 1):
+                editorial_only = (isinstance(r.get('findings'), list)
+                                  and all(item.get('type') == 'editorial' for item in r['findings']))
+                if ((r.get('accepted') is True or editorial_only) and r.get('unsupported_claims') == []
+                        and type(visual_score) in (int, float) and 0 <= visual_score <= 1):
+                    c['editorial_notes'] = [item for item in r.get('findings', []) if item.get('type') == 'editorial']
                     c.update(quality_score=min(score, visual_score),
                              review_reason=str(r.get("reason") or claim_review.get("reason") or "")[:300],
                              status="planned", review_version=2)
@@ -3714,7 +3891,8 @@ class NarratedBatchDomain:
         strong = sum(c.get("quality_score", 0) >= .85 for c in candidates)
         if not b.get("_preparing_scripts"):
             b.update(feasible_count=feasible, recommended_count=strong or min(feasible, 3), count_is_exact=False)
-        b["_planning_budget"]["status"] = "completed"
+        if b["_planning_budget"].get("scope") != "production":
+            b["_planning_budget"]["status"] = "completed"
         self._activity(b, f"已找到 {feasible} 条可用方案" if feasible else "本次方案未通过内容检查，尚未制作视频")
         if not feasible:
             b["reasons"].append("本次未得到可用方案，不代表素材只能生成 0 条。请根据上述具体原因调整规划。")
@@ -4009,6 +4187,18 @@ class NarratedBatchDomain:
         self._store(b)
 
     def _refresh_provider_analysis(self, task_id, b):
+        if not b.get('available_shots'):
+            preserved = {key: copy.deepcopy(b.get(key)) for key in
+                         ('candidates', 'script_options', 'approved', 'script_confirmation',
+                          'selected_script_id', 'script_selections', 'production_jobs')}
+            b['_preparing_scripts'] = True
+            try:
+                if not self._analysis(task_id, b):
+                    return False
+            finally:
+                b.update(preserved)
+                b.pop('_preparing_scripts', None)
+                self._store(b)
         provider = self.d.analyzer.capability["provider"]
         if b.get("_analysis_provider", "bailian") == provider:
             return True
@@ -4070,20 +4260,33 @@ class NarratedBatchDomain:
         if action == "scripts":
             b["_preparing_scripts"] = True
             try:
+                if narrated_brief.supplied(b):
+                    from .narrated_script_drafts import use_supplied
+                    use_supplied(self, b)
+                    return {'batch_id': b['batch_id'], 'script_count': len(b['script_options']), 'generated_count': 0}
+                asset_count = len({asset for group in b['groups'].values() for asset in group})
+                b['_planning_budget'] = {'task_id': task_id, 'status': 'running',
+                    'started_at_epoch': time.time(), 'cloud_calls': 0,
+                    'max_cloud_calls': asset_count * 2 + 4, 'max_elapsed_seconds': 900}
                 source_identity = canonical_hash({'snapshots': b.get('_snapshots'), 'versions': b.get('_versions')})
-                if not self._analysis(task_id, b) or self.d._should_stop(task_id):
+                from .provider_usage import request_budget
+                with request_budget(lambda record: self._admit_request(b, record)):
+                    analyzed = self._analysis(task_id, b)
+                if not analyzed or self.d._should_stop(task_id):
                     return {"batch_id": b["batch_id"]}
+                # Unused analysis allowance cannot multiply generation/review retries.
+                b['_planning_budget']['max_cloud_calls'] = b['_planning_budget']['cloud_calls'] + 4
                 if source_identity != canonical_hash({'snapshots': b.get('_snapshots'), 'versions': b.get('_versions')}):
                     b['script_options'] = []
                 self._prepare_script_options(task_id, b)
                 available = len(b.get("script_options", []))
-                b["status"] = "scripts_ready" if available == 3 else "needs_attention"
-                if available < 3:
-                    b.setdefault("reasons", []).append(f"本轮完成 {available} / 3 份可用文案；尚未配音或制作视频，请查看具体拒绝原因。")
-                self._activity(b, "三个完整文案已准备好，请选择方向并确认正文" if available == 3
-                               else f"已保留 {available} 份文案，其余未通过检查")
+                b['status'] = 'scripts_ready' if available else 'needs_attention'
+                self._activity(b, f'已有 {available} 份文案，可选择并确认制作' if available
+                               else '尚未得到可用文案，请查看具体原因')
                 return {"batch_id": b["batch_id"], "script_count": available, "generated_count": 0}
             finally:
+                if (b.get('_planning_budget') or {}).get('status') == 'running':
+                    b['_planning_budget']['status'] = 'completed'
                 b.pop("_preparing_scripts", None)
                 self._store(b)
         if b.get("script_selections") and b.get("production_jobs"):
@@ -4155,7 +4358,8 @@ class NarratedBatchDomain:
         require(b["task_id"] == task_id, "narrated_task_stale", "此任务已被新操作替代。")
         action = payload["action"]
         cloud = getattr(self.d.analyzer, "cloud_client", None)
-        require(cloud and getattr(cloud, "configured", False), "cloud_not_configured", "请先配置当前模型平台。")
+        if not (action == 'scripts' and narrated_brief.supplied(b)):
+            require(cloud and getattr(cloud, "configured", False), "cloud_not_configured", "请先配置当前模型平台。")
         if (b.get("settings") or {}).get("workflow_version") == 2:
             return self._run_script_workflow(task_id, b, action)
         if not self._analysis(task_id, b) or self.d._should_stop(task_id):

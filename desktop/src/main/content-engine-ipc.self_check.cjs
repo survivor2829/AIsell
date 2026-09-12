@@ -412,6 +412,7 @@ async function main() {
   try {
     const handlers = new Map();
     const sent = [];
+    const notifications = [];
     const calls = [];
     const shown = [];
     const opened = [];
@@ -912,9 +913,23 @@ async function main() {
     const mainWindow = {
       isDestroyed: () => false,
       isFocused: () => true,
+      isMinimized: () => false,
+      restore: () => undefined,
+      show: () => undefined,
+      focus: () => undefined,
       webContents: {
         send: (channel, payload) => sent.push({ channel, payload })
       }
+    };
+    const notificationFactory = (details) => {
+      const listeners = new Map();
+      const notification = {
+        ...details,
+        on: (event, listener) => listeners.set(event, listener),
+        show: () => notifications.push(notification),
+        click: () => listeners.get("click")?.()
+      };
+      return notification;
     };
     const electron = {
       dialog: {
@@ -940,7 +955,8 @@ async function main() {
       diagnosticSessionStartedAt: Date.parse("2026-08-21T00:00:00.000Z"),
       electron,
       getMainWindow: () => mainWindow,
-      ipcMain
+      ipcMain,
+      notificationFactory
     });
     assert.deepEqual(
       [...handlers.keys()].sort(),
@@ -1167,6 +1183,10 @@ async function main() {
     );
     assert.equal(transitionEvents.length, 1, "a newly failed task must be logged exactly once");
     assert.equal(transitionEvents[0][3]?.level, "error");
+    assert.equal(notifications.length, 1, "a newly failed task must notify the user once");
+    assert.equal(notifications[0].title, "内容制作需要处理");
+    assert.equal(notifications[0].body, "新失败");
+    notifications[0].click();
     assert.equal(
       transitionEvents[0][3]?.dedupeKey,
       transitioningTaskId,
@@ -1198,6 +1218,18 @@ async function main() {
       1,
       "changing the message of the same failure must not duplicate diagnostics"
     );
+    assert.equal(notifications.length, 1, "changing the failure message must not duplicate notifications");
+    const originalListAssets = controller.listAssets;
+    controller.listAssets = async () => {
+      throw Object.assign(new Error("provider detail must not leave this process"), {
+        code: "cloud_request_failed"
+      });
+    };
+    const providerFailure = await handlers.get(CONTENT_ENGINE_CHANNELS.listAssets)({}, {});
+    controller.listAssets = originalListAssets;
+    assert.equal(providerFailure.ok, false);
+    assert.equal(notifications.length, 2, "an operational provider failure must notify the user once");
+    assert.match(notifications[1].body, /云端请求未成功/);
     listedTaskItems = [task({
       task_id: transitioningTaskId,
       status: "queued",

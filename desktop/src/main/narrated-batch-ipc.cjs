@@ -26,6 +26,7 @@ const ERRORS = {
   narrated_caption_timing_insufficient: "语音识别未返回足够细的时间，整句过长，无法清楚排成两行；请改短该段并重新确认。",
   narrated_edit_invalid: "修改后的方案无法通过质量检查，请查看批次详情。",
   cloud_not_configured: "请在火山引擎设置中配置方舟 Key，再使用 AI 分析和文案。",
+  volcengine_tts_not_configured: "当前配音服务未配置，请先在声音设置中配置火山语音 API Key，再开始制作。",
   narrated_assets_missing: "请先添加素材。",
   narrated_plan_empty: "AI 未返回可用方案，请补充素材或稍后重试。",
   narrated_candidate_invalid: "方案包含无效或重复镜头，请调整。",
@@ -48,19 +49,20 @@ const ERRORS = {
 const PUBLIC_FIELDS = new Set(("activity message started_at completed total collections collection_id name description asset_ids batches batch_id project_id title status task_id task_status target_count recommended_count feasible_count count_is_exact reasons completed_count updated_at created_at groups opening middle ending cta settings voice_persona_id brand_profile_id minimum_duration_seconds candidates candidate_id narration angle generated_video_id duration_ms revision error actual_shots shots segment_id asset_id source_start_ms source_end_ms evidence_ref evidence_facts facts subject action quality suggested_brief preferred_groups available_shots progress approved version score rationale phrases text segment_ids role planning_recovery_available").split(" "));
 for (const field of "workflow_version script_options selected_script_id script_confirmation script_id confirmed_at audience pain_point estimated_duration_ms direction music_track_ids music_selections music_track_id track_id display_name".split(" ")) PUBLIC_FIELDS.add(field);
 for (const field of "material_context script_selections count production_jobs ordinal production_index source_script_id export_ready exported_count export_error production_retry_available".split(" ")) PUBLIC_FIELDS.add(field);
-for (const field of "brief_version target_audience expression advantages customer_pain_points brief_suggestions framework summary opening_example".split(" ")) PUBLIC_FIELDS.add(field);
+for (const field of "brief_version script_source target_audience expression advantages customer_pain_points brief_suggestions framework summary opening_example".split(" ")) PUBLIC_FIELDS.add(field);
 PUBLIC_FIELDS.add("archived");
+for (const field of ['stage_times', 'action', 'finished_at']) PUBLIC_FIELDS.add(field);
 function publicBatch(value, depth = 0) {
   if (depth > 12) return null;
   if (Array.isArray(value)) return value.slice(0, 5000).map((item) => publicBatch(item, depth + 1));
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value)
     .filter(([key]) => PUBLIC_FIELDS.has(key)).map(([key, item]) => [key, publicBatch(item, depth + 1)]));
-  if (typeof value === "string") return value.slice(0, 12000)
+  if (typeof value === "string") return value.slice(0, 16000)
     .replace(/[A-Za-z]:[\\/][^\s"<>]+/g, "[本地文件]")
     .replace(/(?:sk-|Bearer\s+)[A-Za-z0-9_-]{12,}/g, "[已隐藏]");
   return value;
 }
-function registerNarratedBatchIpc({ handle, controller, validateId, validateVoicePersonaId, assertKeys, invalid, openDialog, requireTrustedAutoMixClick, shell }) {
+function registerNarratedBatchIpc({ handle, controller, validateId, validateVoicePersonaId, assertKeys, invalid, openDialog, requireTrustedAutoMixClick, shell, beforeProviderWork = async () => {} }) {
   const keys = (p, allowed) => assertKeys(p, new Set(allowed));
   const id = (value, prefix) => validateId(value, prefix);
   const text = (value, max) => {
@@ -72,7 +74,7 @@ function registerNarratedBatchIpc({ handle, controller, validateId, validateVoic
     return [...new Set(values.map((v) => id(v, "asset")))];
   };
   function draft(p) {
-    keys(p, ["batch_id", "collection_id", "groups", "title", "description", "material_context", "cta", "target_count", "settings", "brief_version", "target_audience", "expression", "advantages", "customer_pain_points"]);
+    keys(p, ["batch_id", "collection_id", "groups", "title", "description", "material_context", "cta", "target_count", "settings", "brief_version", "script_source", "target_audience", "expression", "advantages", "customer_pain_points"]);
     const result = { ...p };
     if (p.batch_id) result.batch_id = id(p.batch_id, "narrated_batch");
     if (p.collection_id) result.collection_id = id(p.collection_id, "asset_collection");
@@ -80,9 +82,10 @@ function registerNarratedBatchIpc({ handle, controller, validateId, validateVoic
     result.groups = Object.fromEntries(["opening", "middle", "ending"].map((key) => [key, ids(p.groups[key] || [])]));
     result.title = text(p.title, 100);
     result.description = text(p.description, 6000);
+    if (p.script_source !== undefined && !["ideas", "provided"].includes(p.script_source)) invalid();
     if (p.brief_version !== undefined && p.brief_version !== 1) invalid();
-    for (const [field, limit] of [["target_audience", 150], ["expression", 4000], ["advantages", 1500], ["customer_pain_points", 1500]]) {
-      if (p[field] !== undefined) result[field] = text(p[field], limit).trim();
+    for (const [field, limit] of [["target_audience", 150], ["expression", 14000], ["advantages", 1500], ["customer_pain_points", 1500]]) {
+      if (p[field] !== undefined) result[field] = text(p[field], limit);
     }
     if (p.material_context !== undefined) result.material_context = text(p.material_context, 100);
     result.cta = text(p.cta, 300);
@@ -135,12 +138,15 @@ function registerNarratedBatchIpc({ handle, controller, validateId, validateVoic
       keys(p, ["batch_id", "draft", "clickToken"]);
       requireTrustedAutoMixClick(event, p.clickToken, CHANNELS[action]);
       const batchId = p.draft ? (await controller.saveNarratedBatch(draft(p.draft))).batch_id : id(p.batch_id, "narrated_batch");
+      const provided = action === 'scripts' && (p.draft || await controller.getNarratedBatch(batchId)).script_source === 'provided';
+      if (!provided) await beforeProviderWork();
       return publicBatch(await controller[method](batchId));
     });
   }
   handle(CHANNELS.confirm, async (p, event) => {
     keys(p, ["batch_id", "script_id", "revision", "narration", "selections", "settings", "clickToken"]);
     requireTrustedAutoMixClick(event, p.clickToken, CHANNELS.confirm);
+    await beforeProviderWork();
     if (p.selections !== undefined) {
       if (p.script_id !== undefined || p.revision !== undefined || p.narration !== undefined
           || !Array.isArray(p.selections) || p.selections.length < 1 || p.selections.length > 3) invalid("invalid_narrated_selection");

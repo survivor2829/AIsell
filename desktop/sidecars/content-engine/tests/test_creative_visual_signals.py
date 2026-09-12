@@ -149,6 +149,11 @@ class CreativeVisualSignalTests(unittest.TestCase):
         self.assertEqual("h264_mf", proxy_command[proxy_command.index("-c:v") + 1])
         self.assertEqual("50", proxy_command[proxy_command.index("-quality") + 1])
         self.assertNotIn("libx264", proxy_command)
+        evidence_command = next(command for command in calls if command[-1].endswith("visual-evidence.gray"))
+        self.assertEqual(
+            str(self.root / "data" / "analysis-temp" / "task-one" / "asset-one" / "proxy.mp4"),
+            evidence_command[evidence_command.index("-i") + 1],
+        )
         for segment in outcome["segments"]:
             metadata = segment["metadata"]
             self.assertEqual(LOCAL_VISUAL_SIGNAL_VERSION, metadata["visual_signal_version"])

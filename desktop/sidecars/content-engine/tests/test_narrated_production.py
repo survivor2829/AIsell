@@ -89,6 +89,28 @@ class NarratedProductionTests(unittest.TestCase):
         self.run_selection(request)
         self.assertEqual(3, sum(kind == 'render' for kind, _ in self.events))
 
+    def test_missing_speech_credentials_stops_before_production_is_created(self):
+        with patch.object(self.domain.d, '_approved_auto_mix_voice_persona', return_value={'provider': 'volcengine'}), \
+                patch('content_engine.volcengine_tts.VolcengineTTSProvider') as provider:
+            provider.return_value.configured = False
+            with self.assertRaises(ContentEngineError) as error:
+                self.s.confirm_narrated_script(self.request())
+        self.assertEqual('volcengine_tts_not_configured', error.exception.code)
+        self.assertFalse(self.domain._load(self.batch['batch_id']).get('production_jobs'))
+        self.assertEqual([], self.events)
+
+    def test_grounding_group_order_does_not_replace_confirmed_edit_order(self):
+        state = self.domain._load(self.batch['batch_id'])
+        candidate = copy.deepcopy(state['script_options'][0])
+        candidate['shots'] = [state['available_shots'][3], state['available_shots'][0]]
+        expected = [shot['segment_id'] for shot in candidate['shots']]
+        def check_order(reviewed, batch):
+            self.assertEqual([shot['segment_id'] for shot in reviewed['shots']], expected)
+        with patch.object(self.domain, '_ground_shots', return_value=list(reversed(candidate['shots']))), \
+             patch.object(self.domain, '_review_edit', side_effect=check_order) as review:
+            review_confirmed_candidate(self.domain, state, candidate)
+        review.assert_called_once()
+
     def test_invalid_selection_is_atomic(self):
         request = self.request()
         request['selections'][1]['revision'] += 1
@@ -219,7 +241,7 @@ class NarratedProductionTests(unittest.TestCase):
             return result
         with patch.object(self.domain, '_cloud', side_effect=cloud), patch.object(self.domain, '_review') as video_review:
             narrated_script_drafts.prepare(self.domain, state['task_id'], state)
-        self.assertEqual(3, len(state['script_options']))
+        self.assertEqual(1, len(state['script_options']))
         self.assertEqual(1, calls[2]['count'])
         self.assertTrue(all(option['_draft_only'] and option['status'] == 'needs_review' for option in state['script_options']))
         video_review.assert_not_called()

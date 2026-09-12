@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import time
 from difflib import SequenceMatcher
 from pathlib import Path
 from uuid import uuid4
@@ -64,9 +65,6 @@ def confirm_selections(domain, request):
     requested = request.get('selections')
     require(not narrated_brief.enabled(b) or isinstance(requested, list) and len(requested) == 1,
             'invalid_narrated_selection', '请选择一个方案，可展开批量设置调整制作数量。')
-    if narrated_brief.enabled(b):
-        require(len(b.get('script_options', [])) == 3 and b['script_options'][0].get('framework') == narrated_brief.FRAMEWORK,
-                'narrated_brief_invalid', '请先补齐三个方案，其中第一个为问题解答。')
     require(isinstance(requested, list) and 1 <= len(requested) <= 3,
             'invalid_narrated_selection', '请选择一到三个文案方向。')
     options = {c['candidate_id']: c for c in b.get('script_options', [])}
@@ -96,6 +94,12 @@ def confirm_selections(domain, request):
     settings = request.get('settings', b['settings'])
     require(isinstance(settings, dict) and settings.get('minimum_duration_seconds', 0) == b['settings'].get('minimum_duration_seconds', 0),
             'narrated_settings_changed', '最短时长已改变，请先重新准备文案。')
+    persona = domain.d._approved_auto_mix_voice_persona(selected_id=settings.get('voice_persona_id'))
+    require(persona is not None, 'auto_mix_voice_persona_approval_required', '请先选择已试听批准的声音，再开始制作。')
+    if persona['provider'] == 'volcengine':
+        from .volcengine_tts import VolcengineTTSProvider
+        require(VolcengineTTSProvider().configured, 'volcengine_tts_not_configured',
+                '当前配音服务未配置，请先在声音设置中配置火山语音 API Key，再开始制作。')
     previous = [{k: v for k, v in item.items() if k != 'confirmed_at'} for item in b.get('script_selections', [])]
     if previous == selections:
         require(settings == b['settings'], 'narrated_settings_changed', '本批已开始制作，请新建批次使用其他声音或配乐。')
@@ -288,7 +292,7 @@ def install_preserved_mapping(candidate, prepared):
     for key in ('shots', 'phrases', '_tracks', '_timeline', 'duration_ms', 'estimated_duration_ms'):
         if key in prepared['candidate']:
             candidate[key] = copy.deepcopy(prepared['candidate'][key])
-    for key in ('_draft_only', '_edit_review_audit', '_brief_review_hash', 'review_version', 'quality_score', 'review_reason'):
+    for key in ('_draft_only', '_edit_review_audit', 'review_version', 'quality_score', 'review_reason'):
         candidate.pop(key, None)
 
 
@@ -313,6 +317,17 @@ def review_confirmed_candidate(domain, batch, candidate):
         try:
             if candidate.get('_draft_only'):
                 raise ContentEngineError('narrated_mapping_invalid', '已确认完整文案，现在为正文选择并安排真实镜头。')
+            grounded = domain._ground_shots(batch['task_id'], batch, candidate['shots'],
+                                             batch['_snapshots'], batch['_versions'])
+            if grounded is None:
+                return
+            require(len(grounded) == len(candidate['shots']), 'narrated_mapping_invalid',
+                    '所选镜头缺少可读画面，请调整镜头。')
+            index = {shot['segment_id']: shot for shot in grounded}
+            batch['available_shots'] = [index.get(shot['segment_id'], shot) for shot in batch['available_shots']]
+            # Grounding groups requests by asset. That response order is not the edit order.
+            candidate['shots'] = [index[shot['segment_id']] for shot in candidate['shots']]
+            domain._store(batch)
             domain._review_edit(candidate, batch)
             return
         except ContentEngineError as error:
@@ -334,18 +349,21 @@ def review_confirmed_candidate(domain, batch, candidate):
                 reviewed_mapping = (copy.deepcopy(candidate), error)
             if (rejections and all(item.get('stage') == 'visual_review'
                     and item.get('findings_version') and not item.get('hard_findings') for item in rejections)):
-                # A low editorial score still fails the quality gate, but has
-                # no concrete footage conflict for automatic remapping to fix.
+                # There is no concrete footage conflict for automatic remapping to fix.
                 fail(error)
             if attempt == 2:
                 fail(error)
             if domain.d._should_stop(batch['task_id']):
                 return
-            shots = [{'shot_id': f'S{number + 1}', **{key: shot[key] for key in ('asset_id', 'source_start_ms', 'source_end_ms', 'target_duration_ms', 'description')},
+            from .narrated_sources import related_shots, source_index
+            available = related_shots(domain, batch, candidate)
+            compact, _ = source_index(domain, batch, available)
+            evidence = {source['source_id']: source for source in compact}
+            shots = [{'shot_id': f'S{number + 1}', **{key: shot[key] for key in ('asset_id', 'source_start_ms', 'source_end_ms', 'target_duration_ms')},
                       'max_narration_chars': domain._max_narration_chars(batch, shot['target_duration_ms']),
-                      'source_evidence': domain._source_evidence_for(batch, shot)}
-                     for number, shot in enumerate(batch['available_shots'])]
-            shot_index = {short['shot_id']: full for short, full in zip(shots, batch['available_shots'])}
+                      'source_evidence': evidence.get(f'S{number + 1}', {})}
+                     for number, shot in enumerate(available)]
+            shot_index = {short['shot_id']: full for short, full in zip(shots, available)}
             units = confirmed_narration_units(domain, batch, candidate['narration'])
             unit_index = {unit['unit_id']: unit for unit in units}
             def mapped(result):
@@ -397,7 +415,7 @@ def review_confirmed_candidate(domain, batch, candidate):
             except ContentEngineError as repair_error:
                 fail(repair_error)
             updated.update({key: copy.deepcopy(candidate[key]) for key in
-                            ('candidate_id', 'revision', 'narration', '_confirmed_script', 'source_script_id', 'production_index') if key in candidate})
+                            ('candidate_id', 'revision', 'narration', '_confirmed_script', 'source_script_id', 'production_index', '_brief_review_hash', '_user_supplied') if key in candidate})
             updated['status'] = 'needs_review'
             if prepared['_capacity_adjustments']:
                 batch.setdefault('_capacity_adjustments', []).append({'candidate_id': candidate['candidate_id'],
@@ -420,6 +438,14 @@ def _unknown(domain, batch, candidate, error=None):
 
 
 def run_production(domain, task_id, batch):
+    if (batch.get('_planning_budget') or {}).get('task_id') != task_id:
+        asset_count = len({asset for group in batch['groups'].values() for asset in group})
+        batch['_planning_budget'] = {'task_id': task_id, 'status': 'running',
+            'scope': 'production', 'repair_attempts': 0, 'max_repair_attempts': 2 * len(batch['production_jobs']),
+            'started_at_epoch': time.time(), 'cloud_calls': 0,
+            'max_cloud_calls': asset_count * 2 + 24 * len(batch['production_jobs']),
+            'max_elapsed_seconds': 900 * len(batch['production_jobs'])}
+        domain._store(batch)
     if not domain._refresh_provider_analysis(task_id, batch):
         return {'batch_id': batch['batch_id'], 'generated_count': 0}
     domain.validate_pinned_plan({'narrated_batch_id': batch['batch_id'],
@@ -451,7 +477,6 @@ def run_production(domain, task_id, batch):
         while True:
             try:
                 if candidate is None:
-                    batch.pop('_planning_budget', None)
                     domain._plan(task_id, batch, len(batch['candidates']) + 1)
                     candidate = next((c for c in batch['candidates'] if c['candidate_id'] == job.get('candidate_id')), None)
                     require(candidate is not None, 'narrated_no_usable_candidate', '当前素材没有得到符合这个方向的新作品，已跳过本条。')
@@ -490,7 +515,8 @@ def run_production(domain, task_id, batch):
                     domain._store(batch)
                     continue
                 # Configuration/provider failures affect the whole batch, unlike bad source/copy for one item.
-                if error.code.startswith(('cloud_', 'auto_mix_voice_', 'auto_mix_music_')) and error.code != 'cloud_response_invalid':
+                if (error.code == 'narrated_planning_budget_exhausted' or
+                        error.code.startswith(('cloud_', 'auto_mix_voice_', 'auto_mix_music_')) and error.code != 'cloud_response_invalid'):
                     job.update(status='queued', error_code=error.code, error=error.message)
                     batch.update(status='needs_attention', reasons=[error.message])
                     domain._store(batch)

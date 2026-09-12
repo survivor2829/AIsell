@@ -522,6 +522,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     const contentEnginePath = contentEngineRuntimePath();
     const contentEngineDataDir = path.join(app.getPath("userData"), "content-engine");
+    let contentProviderConfiguration = "";
+    const providerConfiguration = () => JSON.stringify([providerGatewayClient?.token() || '', providerGatewayClient?.status().capabilities || {}]);
     contentEngineController = createContentEngineSidecar({
       runtimePath: contentEnginePath,
       runtimeArgs: contentEngineRuntimeArgs(),
@@ -533,6 +535,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       getProviderEnvironment: () => {
         const providerEnvironment = {};
         const gatewayToken = providerGatewayClient?.token() || "";
+        contentProviderConfiguration = providerConfiguration();
         const gatewayStatus = providerGatewayClient?.status();
         if (gatewayStatus?.ready && maintenanceConfig.caPem) {
           providerEnvironment.XIAOXI_PROVIDER_GATEWAY_CA_PEM = maintenanceConfig.caPem;
@@ -596,6 +599,21 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     contentEngineIpcRegistration = registerContentEngineIpc({
       controller: contentEngineController,
+      beforeProviderWork: async () => {
+        await providerGatewayClient?.initialize({ verify: true });
+        if (contentProviderConfiguration === providerConfiguration()) return;
+        if (contentEngineController.status().state === 'ready') {
+          const result = await contentEngineController.listTasks({ limit: 500 });
+          const active = new Set(['queued', 'analyzing', 'rendering']);
+          if ((result.items || []).some((task) => active.has(task.status))) {
+            throw Object.assign(new Error('AI 授权已更新，请等待当前制作完成或取消后继续，已有结果会保留。'),
+                                { code: 'CONTENT_ENGINE_PROVIDER_REFRESH_BUSY' });
+          }
+        }
+        const restarted = await contentEngineController.restart();
+        if (restarted.state !== 'ready') throw Object.assign(new Error('授权已更新，内容引擎尚未就绪。'),
+                                                           { code: 'CONTENT_ENGINE_PROVIDER_REFRESH_FAILED' });
+      },
       bailianKeyStore,
       volcengineTtsKeyStore,
       volcengineArkKeyStore,

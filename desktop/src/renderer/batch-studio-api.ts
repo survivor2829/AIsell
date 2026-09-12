@@ -8,7 +8,7 @@ export type ScriptSelection = { script_id: string; revision: number; count: numb
 export type ProductionJob = { script_id: string; ordinal: number; production_index: number; candidate_id?: string; status: string; error?: string };
 export type Batch = {
   archived?: boolean;
-  brief_version?: number; target_audience?: string; expression?: string; advantages?: string; customer_pain_points?: string;
+  script_source?: "ideas" | "provided"; brief_version?: number; target_audience?: string; expression?: string; advantages?: string; customer_pain_points?: string;
   brief_suggestions?: { expression?: string; advantages?: string; customer_pain_points?: string };
   batch_id: string; title: string; description: string; cta: string; collection_id?: string;
   groups: Groups; target_count: number | null; recommended_count: number; feasible_count: number;
@@ -23,7 +23,9 @@ export type Batch = {
   music_selections?: { candidate_id: string; track_id: string; display_name?: string }[];
   updated_at: string; created_at?: string;
   activity?: { message: string; started_at: string; completed: number | null; total: number | null };
+  stage_times?: { action: string; started_at: string; finished_at: string | null }[];
   planning_recovery_available?: boolean;
+  planning_checkpoint?: { stage: string; completed: number; total: number };
   suggested_brief?: { title: string; description: string; cta: string };
 };
 type Result<T> = { ok: boolean; data?: T; code?: string; error?: string };

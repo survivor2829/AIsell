@@ -8,8 +8,7 @@ export function BatchMaterialBoard({ assets, selected, onChange, onImport, onBro
 }) {
   const chosen = selected.map((id) => assets.find((asset) => asset.assetId === id)
     || { assetId: id, displayName: "素材暂不可用", mediaKind: "video" as const });
-  const visibleLimit = selected.length > 5 ? 8 : 5;
-  const visible = [...chosen, ...assets.filter((asset) => !selected.includes(asset.assetId))].slice(0, visibleLimit);
+  const visible = chosen;
   return <section className="batch-material-board" aria-label="选择创作素材">
     <header><h2>用哪些素材？</h2><span>{selected.length ? `已选 ${selected.length} 个 · 卡片右上角可移除` : "点击图片勾选"}</span></header>
     {!visible.length ? <button type="button" className="batch-upload-empty" onClick={() => onImport()}>
@@ -36,7 +35,6 @@ export function BatchMaterialBoard({ assets, selected, onChange, onImport, onBro
     </div>}
     <footer><button type="button" onClick={onBrowse}><Images size={15} />素材仓库{assets.length > 0 ? ` · ${assets.length}` : ""}</button>
       <button type="button" onClick={() => onImport(true)}><FolderPlus size={15} />导入文件夹</button>
-      {selected.length > 8 && <span>还有 {selected.length - 8} 个已选素材，可在仓库中查看</span>}
     </footer>
   </section>;
 }

@@ -1,4 +1,4 @@
-"""Volcengine TTS V3 SSE adapter; one submission, no automatic retries.
+"""Volcengine TTS V3 SSE adapter with bounded retries for explicit HTTP 429s.
 
 Protocol reference: https://www.volcengine.com/docs/6561/1598757
 Official sample: bytedance/agentkit-samples, byted-text-to-speech.
@@ -23,7 +23,15 @@ import uuid
 import wave
 
 from .errors import ContentEngineError
-from .provider_usage import ProviderRequest, observe_http_error
+from .provider_usage import (
+    ProviderRateLimitRetry,
+    ProviderRequest,
+    current_usage_context,
+    observe_http_error,
+    retry_delay_seconds,
+    usage_scope,
+)
+from .provider_tls import gateway_tls_context
 
 
 TTS_ENDPOINT = os.environ.get(
@@ -36,6 +44,8 @@ MAX_AUDIO_BYTES = 64 * 1024 * 1024
 MAX_RESPONSE_BYTES = 96 * 1024 * 1024
 MAX_EVENT_BYTES = 8 * 1024 * 1024
 MAX_TEXT_CHARACTERS = 10_000
+MAX_429_ATTEMPTS = 3
+OPAQUE_HEADER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 
 
 class _NoRedirect(request.HTTPRedirectHandler):
@@ -51,7 +61,8 @@ class VolcengineTTSProvider:
             if api_key is None
             else api_key
         ).strip()
-        self.timeout_seconds = max(10, min(120, int(timeout_seconds)))
+        self.timeout_seconds = (270 if os.environ.get("XIAOXI_VOLCENGINE_TTS_GATEWAY_ENABLED") == "1"
+                                else max(10, min(180, int(timeout_seconds))))
         self.usage_data_dir = usage_data_dir
 
     @property
@@ -192,6 +203,10 @@ class VolcengineTTSProvider:
         persona = dict(persona_private or {})
         body = self._request_body(normalized, persona)
         request_id = str(uuid.uuid4())
+        context = current_usage_context()
+        operation_id = context.get("operation_id") or request_id
+        if not OPAQUE_HEADER.fullmatch(operation_id):
+            operation_id = request_id
         request_headers = {
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
@@ -203,45 +218,97 @@ class VolcengineTTSProvider:
         }
         gateway_token = os.environ.get("XIAOXI_PROVIDER_GATEWAY_TOKEN", "").strip()
         gateway_origin = os.environ.get("XIAOXI_PROVIDER_GATEWAY_ORIGIN", "").strip().rstrip("/")
-        if gateway_token and gateway_origin and TTS_ENDPOINT.startswith(f"{gateway_origin}/v1/provider-gateway/"):
+        gateway_request = gateway_token and gateway_origin and TTS_ENDPOINT.startswith(f"{gateway_origin}/v1/provider-gateway/")
+        if gateway_request:
             request_headers["Authorization"] = f"Bearer {gateway_token}"
-        operation = request.Request(
-            TTS_ENDPOINT,
-            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-            headers=request_headers,
-            method="POST",
-        )
+            request_headers["X-Xiaoxi-Operation-Id"] = operation_id
         deadline = time.monotonic() + self.timeout_seconds
-        meter = ProviderRequest(provider="volcengine", kind="tts", model=persona["provider_model"],
-                                purpose="短语配音", request_id=request_id, requested_characters=len(normalized),
-                                data_dir=self.usage_data_dir)
-        try:
-            with meter:
-                try:
-                    # A private opener avoids changing the sidecar's global HTTP policy.
-                    opener = request.build_opener(_NoRedirect())
-                    with opener.open(operation, timeout=self.timeout_seconds) as response:
-                        meter.observe(headers=getattr(response, "headers", None), http_status=getattr(response, "status", 200))
-                        pcm = self._read_audio(response, deadline, meter.observe)
-                        meter.observe(generated_audio_ms=round(len(pcm) * 1000 / (2 * SAMPLE_RATE)))
-                except ContentEngineError:
-                    raise
-                except HTTPError as error:
-                    observe_http_error(meter, error)
-                    status = int(error.code or 0)
-                    if status in {401, 403}:
-                        message = "火山语音鉴权失败，请检查 API Key、服务开通与音色权限。"
-                    elif status == 429:
-                        message = "火山语音额度不足或请求限流，请检查用量。"
-                    elif 400 <= status < 500:
-                        message = "火山语音未接受当前参数，请检查音色与模型是否匹配。"
-                    else:
-                        message = "火山语音服务请求失败，请稍后检查服务状态。"
-                    raise ContentEngineError("cloud_request_failed", f"{message}（HTTP {status}）") from None
-                except (TimeoutError, socket.timeout, URLError, OSError, http.client.HTTPException):
-                    raise self._unknown("火山语音连接中断，提交结果无法确认") from None
-        finally:
-            self.last_request_usage = dict(meter.record)
+        last_meter = None
+        pcm = None
+        for attempt in range(1, MAX_429_ATTEMPTS + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise self._unknown("火山语音合成超时，提交结果无法确认")
+            operation = request.Request(
+                TTS_ENDPOINT,
+                data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                headers=request_headers,
+                method="POST",
+            )
+            meter = None
+            try:
+                with usage_scope(data_dir=self.usage_data_dir, operation_id=operation_id):
+                    meter = ProviderRequest(
+                        provider="volcengine",
+                        kind="tts",
+                        model=persona["provider_model"],
+                        purpose="短语配音",
+                        request_id=request_id,
+                        attempt=attempt,
+                        requested_characters=len(normalized),
+                    )
+                    last_meter = meter
+                    with meter:
+                        try:
+                            # A private opener avoids changing the sidecar's global HTTP policy.
+                            tls_context = gateway_tls_context(TTS_ENDPOINT)
+                            opener_args = [_NoRedirect()]
+                            if tls_context is not None:
+                                opener_args.append(request.HTTPSHandler(context=tls_context))
+                            opener = request.build_opener(*opener_args)
+                            with opener.open(operation, timeout=min(self.timeout_seconds, remaining)) as response:
+                                meter.observe(headers=getattr(response, "headers", None), http_status=getattr(response, "status", 200))
+                                pcm = self._read_audio(response, deadline, meter.observe)
+                                meter.observe(generated_audio_ms=round(len(pcm) * 1000 / (2 * SAMPLE_RATE)))
+                        except ContentEngineError:
+                            raise
+                        except HTTPError as error:
+                            observe_http_error(meter, error)
+                            status = int(error.code or 0)
+                            if status == 429 and attempt < MAX_429_ATTEMPTS:
+                                delay = retry_delay_seconds(getattr(error, "headers", None), attempt)
+                                if delay is not None and time.monotonic() + delay < deadline:
+                                    raise ProviderRateLimitRetry(delay) from None
+                            if status >= 500:
+                                origin = {
+                                    "gateway_transport": "网关传输",
+                                    "maintenance_transport": "维护服务传输",
+                                    "gateway_response": "网关响应",
+                                    "coalesced_timeout": "网关合并请求等待",
+                                    "upstream": "上游服务",
+                                }.get(meter.record.get("error_origin"), "来源未确认")
+                                phase = "超时" if status == 504 else "暂不可用"
+                                raise self._unknown(
+                                    f"火山语音请求{phase}（HTTP {status}，{origin}），提交结果无法确认"
+                                ) from None
+                            if status in {401, 403}:
+                                message = "火山语音鉴权失败，请检查 API Key、服务开通与音色权限。"
+                            elif status == 429:
+                                origin = {
+                                    "gateway_rate_limit": "本地网关限流",
+                                    "maintenance_rate_limit": "维护服务限流",
+                                    "upstream": "上游服务限流",
+                                }.get(meter.record.get("error_origin"), "来源未确认")
+                                message = f"火山语音请求被限流（HTTP 429，{origin}），请稍后再试。"
+                            elif 400 <= status < 500:
+                                message = "火山语音未接受当前参数，请检查音色与模型是否匹配。"
+                            else:
+                                message = "火山语音服务请求失败，请稍后检查服务状态。"
+                            raise ContentEngineError("cloud_request_failed", f"{message}（HTTP {status}）") from None
+                        except (TimeoutError, socket.timeout, URLError, OSError, http.client.HTTPException) as error:
+                            meter.observe_transport_error(error)
+                            raise self._unknown("火山语音连接中断，提交结果无法确认") from None
+            except ProviderRateLimitRetry as retry:
+                if retry.delay_seconds:
+                    time.sleep(retry.delay_seconds)
+                continue
+            finally:
+                if meter is not None:
+                    self.last_request_usage = dict(meter.record)
+            if pcm is not None:
+                break
+        if pcm is None:
+            raise self._unknown("火山语音合成未返回可用音频")
 
         frame_count = len(pcm) // 2
         wav_buffer = io.BytesIO()

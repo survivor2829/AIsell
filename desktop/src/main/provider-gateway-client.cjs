@@ -23,6 +23,12 @@ function sanitizeCapabilities(value) {
   return result;
 }
 
+function validGatewayHealth(payload) {
+  return Boolean(payload?.ok === true
+    && payload.service === "provider-gateway"
+    && payload.schema === 1);
+}
+
 function validateOrigin(value) {
   try {
     const origin = new URL(String(value || "").trim());
@@ -122,10 +128,12 @@ function createProviderGatewayClient(options = {}) {
   let initialization = null;
   let closed = false;
 
+  function sessionReady() { return Boolean(token && !closed && Date.parse(expiresAt) > Date.now() + 30_000); }
+
   function status() {
     return {
       enabled,
-      ready: Boolean(token && !closed),
+      ready: sessionReady(),
       expiresAt,
       capabilities: { ...capabilities },
       code
@@ -141,7 +149,7 @@ function createProviderGatewayClient(options = {}) {
   }
 
   function requestHeaders() {
-    if (!token || closed) throw createError("GATEWAY_SESSION_REQUIRED", "统一 AI 服务授权会话不可用。");
+    if (!sessionReady()) throw createError("GATEWAY_SESSION_REQUIRED", "统一 AI 服务授权会话不可用。");
     return { Authorization: `Bearer ${token}` };
   }
 
@@ -166,6 +174,39 @@ function createProviderGatewayClient(options = {}) {
       expiresAt = "";
       capabilities = {};
       code = "GATEWAY_LICENSE_REQUIRED";
+      return status();
+    }
+    const healthResponse = normalizeResponse(await requestImpl({
+      url: endpoint("/health"),
+      method: "GET",
+      headers: { Accept: "application/json" },
+      body: null,
+      timeoutMs: SESSION_TIMEOUT_MS,
+      maxBytes: MAX_RESPONSE_BYTES,
+      agent
+    }));
+    if (!healthResponse.ok) {
+      token = "";
+      expiresAt = "";
+      capabilities = {};
+      code = "GATEWAY_CONTRACT_MISMATCH";
+      return status();
+    }
+    let health;
+    try {
+      health = await healthResponse.json();
+    } catch {
+      token = "";
+      expiresAt = "";
+      capabilities = {};
+      code = "GATEWAY_CONTRACT_MISMATCH";
+      return status();
+    }
+    if (!validGatewayHealth(health)) {
+      token = "";
+      expiresAt = "";
+      capabilities = {};
+      code = "GATEWAY_CONTRACT_MISMATCH";
       return status();
     }
     const response = normalizeResponse(await requestImpl({
@@ -202,7 +243,7 @@ function createProviderGatewayClient(options = {}) {
       return status();
     }
     if (!payload?.ok || typeof payload.token !== "string" || !TOKEN_PATTERN.test(payload.token)
-      || typeof payload.expiresAt !== "string" || !Number.isFinite(Date.parse(payload.expiresAt))) {
+      || typeof payload.expiresAt !== "string" || (!Number.isFinite(Date.parse(payload.expiresAt)) || Date.parse(payload.expiresAt) <= Date.now() + 30_000)) {
       token = "";
       expiresAt = "";
       capabilities = {};
@@ -216,11 +257,29 @@ function createProviderGatewayClient(options = {}) {
     return status();
   }
 
-  function initialize({ force = false } = {}) {
+  function initialize({ force = false, verify = false } = {}) {
     if (closed) return Promise.resolve(status());
-    if (!force && (token || !enabled || !origin)) return Promise.resolve(status());
+    if (!force && ((!verify && sessionReady()) || !enabled || !origin)) return Promise.resolve(status());
     if (initialization) return initialization;
-    initialization = Promise.resolve().then(begin).catch(() => {
+    initialization = Promise.resolve().then(async () => {
+      if (!force && verify && sessionReady()) {
+        const response = normalizeResponse(await requestImpl({url: endpoint('/capabilities'), method: 'GET',
+          headers: {...requestHeaders(), Accept: 'application/json'}, body: null,
+          timeoutMs: SESSION_TIMEOUT_MS, maxBytes: MAX_RESPONSE_BYTES, agent}));
+        if (response.ok) {
+          const payload = await response.json();
+          if (payload?.ok !== true || !payload.capabilities) throw createError('GATEWAY_RESPONSE_INVALID');
+          capabilities = sanitizeCapabilities(payload.capabilities);
+          return status();
+        }
+        if (response.status !== 401) throw createError('GATEWAY_UNAVAILABLE');
+        // This metadata endpoint never invokes a paid provider. A rejected session can be renewed safely.
+      }
+      return begin();
+    }).catch(() => {
+      token = "";
+      expiresAt = "";
+      capabilities = {};
       code = "GATEWAY_UNAVAILABLE";
       return status();
     }).finally(() => {
@@ -240,6 +299,7 @@ function createProviderGatewayClient(options = {}) {
     for (const key of Object.keys(headers)) {
       if (key.toLowerCase() === "authorization") delete headers[key];
     }
+    await initialize();
     Object.assign(headers, requestHeaders());
     const result = await requestImpl({
       url,
@@ -277,7 +337,7 @@ function createProviderGatewayClient(options = {}) {
     invalidate,
     initialize,
     isEnabled: () => enabled,
-    isReady: () => Boolean(token && !closed),
+    isReady: () => sessionReady(),
     origin: () => origin,
     requestHeaders,
     status,
@@ -290,6 +350,7 @@ module.exports = {
   createProviderGatewayClient,
   normalizeResponse,
   sanitizeCapabilities,
+  validGatewayHealth,
   validateOrigin,
   withBodyLength
 };

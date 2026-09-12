@@ -1561,7 +1561,7 @@ def validate_formal_recipe(recipe: Any) -> dict[str, Any]:
         "正式 V2 成片必须包含已验证的 TTS 人声。",
     )
     _contract(
-        bool(recipe.get("licensed_music_relative_path")),
+        recipe.get("music_mode") == "none" or bool(recipe.get("licensed_music_relative_path")),
         "auto_mix_music_required",
         "正式 V2 成片必须包含有效授权音乐。",
     )
@@ -1573,13 +1573,13 @@ def validate_quality_report(value: Any) -> dict[str, Any]:
     try:
         integrated = float(value.get("integrated_lufs"))
         true_peak = float(value.get("true_peak_dbtp"))
-        margin = float(value.get("speech_music_margin_lu"))
+        margin = None if value.get("music_mode") == "none" else float(value.get("speech_music_margin_lu"))
     except (TypeError, ValueError) as error:
         raise AutoMixV2ContractError(
             "auto_mix_quality_invalid", "音频质量报告缺少必要指标。"
         ) from error
     _contract(
-        all(math.isfinite(item) for item in (integrated, true_peak, margin)),
+        all(math.isfinite(item) for item in (integrated, true_peak)) and (margin is None or math.isfinite(margin)),
         "auto_mix_quality_invalid",
         "音频质量指标不是有限数值。",
     )
@@ -1594,7 +1594,7 @@ def validate_quality_report(value: Any) -> dict[str, Any]:
         "成片 True Peak 高于 -1 dBTP。",
     )
     _contract(
-        8.0 <= margin <= 12.0,
+        margin is None or 8.0 <= margin <= 12.0,
         "auto_mix_voice_music_margin_failed",
         "说话窗口的人声与音乐余量未达到 8 到 12 LU。",
     )
@@ -1603,6 +1603,7 @@ def validate_quality_report(value: Any) -> dict[str, Any]:
         "integratedLufs": integrated,
         "truePeakDbtp": true_peak,
         "speechMusicMarginLu": margin,
+        "musicMode": value.get("music_mode", "licensed"),
     }
 
 

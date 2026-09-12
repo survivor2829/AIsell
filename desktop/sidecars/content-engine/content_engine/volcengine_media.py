@@ -2,7 +2,9 @@
 import base64
 import json
 import os
+import re
 import socket
+import time
 import uuid
 import wave
 from urllib import request
@@ -10,7 +12,15 @@ from urllib.error import HTTPError, URLError
 
 from .creative_analysis import DashScopeMediaClient
 from .errors import ContentEngineError
-from .provider_usage import ProviderRequest, usage_scope, observe_http_error
+from .provider_usage import (
+    ProviderRateLimitRetry,
+    ProviderRequest,
+    current_usage_context,
+    observe_http_error,
+    retry_delay_seconds,
+    usage_scope,
+)
+from .provider_tls import gateway_tls_context
 from .volcengine_tts import VolcengineTTSProvider, _NoRedirect
 
 ARK_ENDPOINT = os.environ.get(
@@ -22,6 +32,8 @@ ASR_ENDPOINT = os.environ.get(
     "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash",
 ).strip() or "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"
 DEFAULT_MODEL = "doubao-seed-2-1-pro-260628"
+MAX_429_ATTEMPTS = 3
+OPAQUE_HEADER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 
 
 class VolcengineMediaClient(DashScopeMediaClient):
@@ -41,11 +53,9 @@ class VolcengineMediaClient(DashScopeMediaClient):
                          selection_model=DEFAULT_MODEL)
         self.api_key = os.environ.get("XIAOXI_VOLCENGINE_ARK_API_KEY", "").strip()
         self.selection_model = self.vision_model = os.environ.get("XIAOXI_VOLCENGINE_ARK_MODEL", DEFAULT_MODEL).strip()
-        tts_gateway = os.environ.get("XIAOXI_VOLCENGINE_TTS_GATEWAY_ENABLED", "") == "1"
-        self.speech_key = "" if tts_gateway else (
-            os.environ.get("XIAOXI_VOLCENGINE_TTS_API_KEY", "").strip()
-            or os.environ.get("XIAOXI_VOLCENGINE_ASR_API_KEY", "").strip()
-        )
+        self.speech_key = os.environ.get('XIAOXI_VOLCENGINE_ASR_API_KEY', '').strip()
+        if '/v1/provider-gateway/' in ark_compatible_origin:
+            self.timeout_seconds = max(self.timeout_seconds, 270)
         self.asr_app_id = os.environ.get("XIAOXI_VOLCENGINE_ASR_APP_ID", "").strip()
         self.asr_access_token = os.environ.get("XIAOXI_VOLCENGINE_ASR_ACCESS_TOKEN", "").strip()
 
@@ -61,46 +71,110 @@ class VolcengineMediaClient(DashScopeMediaClient):
         raise ContentEngineError("volcengine_asr_not_configured", "请先在语音识别设置中填写认证信息。")
 
     def _post(self, url, payload, headers, timeout, stage, *, purpose=None, requested_audio_ms=None):
-        request_headers = {"Content-Type": "application/json", **headers}
+        if "/v1/provider-gateway/" in url:
+            timeout = max(timeout, 270)
+        context = current_usage_context()
+        request_id = str(headers.get("X-Api-Request-Id") or "").strip()
+        if not OPAQUE_HEADER.fullmatch(request_id):
+            request_id = str(uuid.uuid4())
+        operation_id = context.get("operation_id") or request_id
+        if not OPAQUE_HEADER.fullmatch(operation_id):
+            operation_id = request_id
+        request_headers = {"Content-Type": "application/json", **headers, "X-Api-Request-Id": request_id}
         gateway_token = os.environ.get("XIAOXI_PROVIDER_GATEWAY_TOKEN", "").strip()
         gateway_origin = os.environ.get("XIAOXI_PROVIDER_GATEWAY_ORIGIN", "").strip().rstrip("/")
-        if gateway_token and gateway_origin and url.startswith(f"{gateway_origin}/v1/provider-gateway/"):
+        gateway_request = gateway_token and gateway_origin and url.startswith(f"{gateway_origin}/v1/provider-gateway/")
+        if gateway_request:
             request_headers["Authorization"] = f"Bearer {gateway_token}"
-        op = request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                             headers=request_headers, method="POST")
-        meter = ProviderRequest(provider=self.provider, kind="asr" if stage == "语音识别" else "llm",
-                                model=self.asr_model if stage == "语音识别" else payload.get("model", ""),
-                                purpose=purpose or stage, request_id=headers.get("X-Api-Request-Id", ""),
-                                requested_audio_ms=requested_audio_ms, data_dir=getattr(self, "usage_data_dir", None))
-        try:
-            with meter:
-                try:
-                    with request.build_opener(_NoRedirect()).open(op, timeout=timeout) as response:
-                        meter.observe(headers=response.headers, http_status=getattr(response, "status", 200))
-                        status = response.headers.get("X-Api-Status-Code")
-                        if stage == "语音识别" and status not in {"20000000", "20000003"}:
-                            raise ContentEngineError("volcengine_request_rejected", f"火山语音识别未成功，服务状态 {status or '缺失'}；请检查录音文件极速版服务权限。")
-                        raw = response.read(16 * 1024 * 1024 + 1)
-                        if len(raw) > 16 * 1024 * 1024:
-                            raise ContentEngineError("cloud_response_too_large", "火山返回结果过大，已停止。")
-                        result = json.loads(raw) if raw else {}
-                        if not isinstance(result, dict):
-                            raise ValueError()
-                        meter.observe(result)
-                        if stage == "语音识别" and status == "20000003":
-                            return {**result, "result": {"text": "", "utterances": []}, "speech_status": "silent"}
-                        if result.get("error"):
-                            raise ContentEngineError("volcengine_request_rejected", "火山方舟拒绝本次请求，请检查服务权限与额度。")
-                        return result
-                except HTTPError as error:
-                    observe_http_error(meter, error)
-                    raise ContentEngineError("volcengine_request_rejected", f"火山{stage}请求被拒绝（HTTP {error.code}），请检查对应 API Key、模型及服务权限。") from None
-                except (TimeoutError, socket.timeout, URLError, OSError):
-                    raise ContentEngineError("volcengine_outcome_unknown", f"火山{stage}连接中断或超时，结果不明，未自动重提。") from None
-                except (ValueError, UnicodeError):
-                    raise ContentEngineError("volcengine_response_invalid", f"火山{stage}返回无法解析的结果，已停止。") from None
-        finally:
-            self._last_request_usage = dict(meter.record)
+            request_headers["X-Xiaoxi-Operation-Id"] = operation_id
+        last_meter = None
+        for attempt in range(1, MAX_429_ATTEMPTS + 1):
+            op = request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                                 headers=request_headers, method="POST")
+            meter = None
+            try:
+                with usage_scope(
+                    data_dir=getattr(self, "usage_data_dir", None),
+                    operation_id=operation_id,
+                ):
+                    meter = ProviderRequest(
+                        provider=self.provider,
+                        kind="asr" if stage == "语音识别" else "llm",
+                        model=self.asr_model if stage == "语音识别" else payload.get("model", ""),
+                        purpose=purpose or stage,
+                        request_id=request_id,
+                        attempt=attempt,
+                        requested_audio_ms=requested_audio_ms,
+                    )
+                    last_meter = meter
+                    with meter:
+                        try:
+                            tls_context = gateway_tls_context(url)
+                            opener_args = [_NoRedirect()]
+                            if tls_context is not None:
+                                opener_args.append(request.HTTPSHandler(context=tls_context))
+                            with request.build_opener(*opener_args).open(op, timeout=timeout) as response:
+                                meter.observe(headers=response.headers, http_status=getattr(response, "status", 200))
+                                status = response.headers.get("X-Api-Status-Code")
+                                if stage == "语音识别" and status not in {"20000000", "20000003"}:
+                                    raise ContentEngineError("volcengine_request_rejected", f"火山语音识别未成功，服务状态 {status or '缺失'}；请检查录音文件极速版服务权限。")
+                                raw = response.read(16 * 1024 * 1024 + 1)
+                                if len(raw) > 16 * 1024 * 1024:
+                                    raise ContentEngineError("cloud_response_too_large", "火山返回结果过大，已停止。")
+                                result = json.loads(raw) if raw else {}
+                                if not isinstance(result, dict):
+                                    raise ValueError()
+                                meter.observe(result)
+                                if stage == "语音识别" and status == "20000003":
+                                    return {**result, "result": {"text": "", "utterances": []}, "speech_status": "silent"}
+                                if result.get("error"):
+                                    raise ContentEngineError("volcengine_request_rejected", "火山方舟拒绝本次请求，请检查服务权限与额度。")
+                                return result
+                        except HTTPError as error:
+                            observe_http_error(meter, error)
+                            status_code = int(error.code or 0)
+                            if status_code == 429 and attempt < MAX_429_ATTEMPTS:
+                                delay = retry_delay_seconds(getattr(error, "headers", None), attempt)
+                                if delay is not None:
+                                    raise ProviderRateLimitRetry(delay) from None
+                            if status_code >= 500:
+                                origin = {
+                                    "gateway_transport": "网关传输",
+                                    "maintenance_transport": "维护服务传输",
+                                    "gateway_response": "网关响应",
+                                    "coalesced_timeout": "网关合并请求等待",
+                                    "upstream": "上游服务",
+                                }.get(meter.record.get("error_origin"), "来源未确认")
+                                phase = "超时" if status_code == 504 else "暂不可用"
+                                message = f"火山{stage}请求{phase}（HTTP {status_code}，{origin}），结果不明，未自动重提。"
+                                raise ContentEngineError("volcengine_outcome_unknown", message) from None
+                            if stage == "语音识别" and meter.record.get("provider_code") == "45000010":
+                                message = "火山语音识别授权未通过（45000010），请开通 volc.bigasr.auc_turbo，并在服务端配置 ASR 专用 API Key 或 APP ID + Access Token。"
+                            elif status_code == 429:
+                                origin = {
+                                    "gateway_rate_limit": "本地网关限流",
+                                    "maintenance_rate_limit": "维护服务限流",
+                                    "upstream": "上游服务限流",
+                                }.get(meter.record.get("error_origin"), "来源未确认")
+                                message = f"火山{stage}请求被限流（HTTP 429，{origin}），请稍后再试。"
+                            else:
+                                message = f"火山{stage}请求被拒绝（HTTP {error.code}），请检查对应 API Key、模型及服务权限。"
+                            raise ContentEngineError("volcengine_request_rejected", message) from None
+                        except (TimeoutError, socket.timeout, URLError, OSError) as error:
+                            meter.observe_transport_error(error)
+                            raise ContentEngineError("volcengine_outcome_unknown", f"火山{stage}连接中断或超时，结果不明，未自动重提。") from None
+                        except (ValueError, UnicodeError):
+                            raise ContentEngineError("volcengine_response_invalid", f"火山{stage}返回无法解析的结果，已停止。") from None
+            except ProviderRateLimitRetry as retry:
+                if retry.delay_seconds:
+                    time.sleep(retry.delay_seconds)
+                continue
+            finally:
+                if meter is not None:
+                    self._last_request_usage = dict(meter.record)
+        if last_meter is not None:
+            self._last_request_usage = dict(last_meter.record)
+        raise ContentEngineError("volcengine_request_rejected", f"火山{stage}请求被限流（HTTP 429），已达到本地重试上限，请稍后再试。")
 
     def _request_json(self, url, *, method="GET", payload=None, headers=None, timeout=None,
                       operation_label=None, retry_on_timeout=False):

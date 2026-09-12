@@ -145,6 +145,10 @@ const MAX_LIST_LIMIT = 500;
 const MAX_DIAGNOSTIC_TASK_STATES = MAX_LIST_LIMIT * 2;
 const MAX_MUSIC_AUDIO_BYTES = 512 * 1024 * 1024;
 const MAX_MUSIC_EVIDENCE_BYTES = 32 * 1024 * 1024;
+const BATCH_NOTIFICATION_STATUSES = new Set([
+  "failed", "needs_attention", "outcome_unknown", "completed_with_errors",
+  "insufficient_materials"
+]);
 
 const RIGHTS_STATUSES = new Set([
   "unknown",
@@ -2046,6 +2050,7 @@ function registerContentEngineIpc(options = {}) {
   const observedTaskStates = new Map();
   const sessionTaskIds = new Set();
   const observedOperationFailures = new Map();
+  const shownNotifications = new Set();
   const diagnosticLogger = options.diagnosticLogger || diagnostics();
   const requestedDiagnosticSessionStartedAt = Number(options.diagnosticSessionStartedAt);
   const diagnosticSessionStartedAt = Number.isFinite(requestedDiagnosticSessionStartedAt)
@@ -2054,6 +2059,103 @@ function registerContentEngineIpc(options = {}) {
   const getMainWindow = typeof options.getMainWindow === "function"
     ? options.getMainWindow
     : () => null;
+  const notificationFactory = typeof options.notificationFactory === "function"
+    ? options.notificationFactory
+    : typeof electron.Notification === "function"
+      ? (details) => new electron.Notification(details)
+      : null;
+
+  function focusMainWindow() {
+    const window = getMainWindow();
+    if (!window || window.isDestroyed()) return;
+    try {
+      if (typeof window.isMinimized === "function" && window.isMinimized()
+          && typeof window.restore === "function") window.restore();
+      if (typeof window.show === "function") window.show();
+      if (typeof window.focus === "function") window.focus();
+    } catch {
+      // Window teardown races must not affect the content engine.
+    }
+  }
+
+  function showOperationalNotification(title, body, dedupeKey) {
+    const key = safeText(dedupeKey, 240);
+    if (!notificationFactory || !key || shownNotifications.has(key)) return;
+    try {
+      if (typeof electron.Notification?.isSupported === "function"
+          && !electron.Notification.isSupported()) return;
+      const notification = notificationFactory({
+        title: safePublicText(title, 80) || "内容制作提醒",
+        body: safePublicText(body, 240) || "内容制作需要处理，请打开应用查看详情。"
+      });
+      if (!notification || typeof notification.show !== "function") return;
+      shownNotifications.add(key);
+      while (shownNotifications.size > 500) {
+        shownNotifications.delete(shownNotifications.values().next().value);
+      }
+      if (typeof notification.on === "function") notification.on("click", focusMainWindow);
+      notification.show();
+    } catch {
+      // Notifications are an auxiliary surface; IPC results remain authoritative.
+    }
+  }
+
+  function notifyTaskFailure(item, taskId, errorCode) {
+    const detail = safePublicText(item?.errorMessage, 180);
+    const code = safeText(errorCode, 64);
+    showOperationalNotification(
+      "内容制作需要处理",
+      detail || (code ? `任务已失败（${code}），请打开应用查看详情。` : "任务已失败，请打开应用查看详情。"),
+      `task-failed:${taskId}`
+    );
+  }
+
+  function notifyBatchResult(batch) {
+    const status = safeText(batch?.status, 64);
+    const batchId = safeText(batch?.batch_id || batch?.batchId, 160);
+    if (!batchId || !sessionTaskIds.has(batch.task_id) || !BATCH_NOTIFICATION_STATUSES.has(status)) return;
+    const completed = Number.isSafeInteger(batch?.completed_count)
+      ? Math.max(0, batch.completed_count)
+      : null;
+    const target = Number.isSafeInteger(batch?.target_count) && batch.target_count > 0
+      ? batch.target_count
+      : null;
+    const progress = completed !== null && target !== null ? `已完成 ${completed} / ${target} 条。` : "";
+    const message = status === "completed_with_errors"
+      ? `批量创作已部分完成。${progress}仍有作品未完成，请打开应用查看详情。`
+      : status === "insufficient_materials"
+        ? "批量创作暂未得到足够的合格作品，请打开应用补充或调整素材。"
+        : status === "outcome_unknown"
+          ? "批量创作调用结果待核对，请打开应用查看服务记录；不会自动重复提交。"
+          : `批量创作${status === "failed" ? "失败" : "需要处理"}。${progress}请打开应用查看详情。`;
+    showOperationalNotification("批量创作提醒", message, `batch:${batchId}:${batch.task_id}:${status}`);
+  }
+
+  function shouldNotifyOperationError(code) {
+    return code.startsWith("cloud_")
+      || code.startsWith("volcengine_")
+      || code.startsWith("auto_mix_voice_")
+      || code.startsWith("auto_mix_music_")
+      || code.startsWith("provider_")
+      || code.startsWith("CONTENT_ENGINE_");
+  }
+
+  async function observeReturnedResult(data, operationName) {
+    if (data && typeof data === "object") {
+      if (['batch-scripts', 'batch-confirm', 'batch-samples', 'batch-continue', 'batch-recommend'].includes(operationName) && data.task_id) {
+        sessionTaskIds.add(data.task_id);
+      }
+      notifyBatchResult(data);
+      if (operationName.startsWith("batch-") && data.batch_id
+          && !data.status && typeof controller?.getNarratedBatch === "function") {
+        try {
+          notifyBatchResult(publicBatch(await controller.getNarratedBatch(data.batch_id)));
+        } catch {
+          // The action result remains usable even when a notification-only refresh races teardown.
+        }
+      }
+    }
+  }
 
   function requireTrustedAutoMixClick(event, clickToken, operation) {
     const token = String(clickToken || "");
@@ -2208,6 +2310,7 @@ function registerContentEngineIpc(options = {}) {
         dedupeKey: taskId
       }
     );
+    notifyTaskFailure(item, taskId, errorCode);
   }
 
   function handle(channel, operation) {
@@ -2221,9 +2324,18 @@ function registerContentEngineIpc(options = {}) {
           diagnosticLogger.recover?.("content_engine");
         }
         rememberReturnedTask(data);
+        await observeReturnedResult(data, operationName);
         return { ok: true, data };
       } catch (error) {
         const errorCode = diagnosticCode(error?.code);
+        if (shouldNotifyOperationError(safeText(error?.code, 64))) {
+          const publicFailure = publicError(error);
+          showOperationalNotification(
+            "内容制作需要处理",
+            publicFailure.error,
+            `operation-failed:${operationName}:${errorCode}`
+          );
+        }
         if (errorCode === "CONTENT_DIALOG_CANCELLED") {
           if (observedOperationFailures.delete(operationName)) {
             diagnosticLogger.recover?.("content_engine");
@@ -2251,7 +2363,7 @@ function registerContentEngineIpc(options = {}) {
   }
 
   handle(CONTENT_ENGINE_CHANNELS.status, () => publicStatus(controller.status()));
-  registerNarratedBatchIpc({ handle, controller, validateId, validateVoicePersonaId, assertKeys, invalid, openDialog, requireTrustedAutoMixClick, shell });
+  registerNarratedBatchIpc({ handle, controller, validateId, validateVoicePersonaId, assertKeys, invalid, openDialog, requireTrustedAutoMixClick, shell, beforeProviderWork: options.beforeProviderWork });
   handle(CONTENT_ENGINE_CHANNELS.restart, async () => publicStatus(
     await controller.restart()
   ));
@@ -2394,7 +2506,7 @@ function registerContentEngineIpc(options = {}) {
     if (!taskId && !batchId) throw Object.assign(new Error("invalid id"), { code: "invalid_id" });
     const result = await controller.getProviderUsage({ taskId, batchId, limit: validateLimit(payload.limit, 100) });
     const metrics = ["input_tokens", "output_tokens", "cached_tokens", "total_tokens", "requested_characters", "billed_characters", "requested_audio_ms", "audio_ms", "generated_audio_ms"];
-    const fields = ["call_id", "task_id", "task_type", "project_id", "batch_id", "run_id", "session_id", "provider", "kind", "model", "requested_model", "purpose", "operation_id", "started_at", "finished_at", "elapsed_ms", "attempt", "correction_attempt", "client_request_id", "request_id", "log_id", "http_status", "provider_code", "outcome", "error_code", ...metrics];
+    const fields = ["call_id", "task_id", "task_type", "project_id", "batch_id", "run_id", "session_id", "provider", "kind", "model", "requested_model", "purpose", "operation_id", "started_at", "finished_at", "elapsed_ms", "attempt", "correction_attempt", "client_request_id", "request_id", "log_id", "http_status", "provider_code", "error_origin", "retry_after_seconds", "transport_error", "outcome", "error_code", ...metrics];
     const counters = ["calls", "llm_calls", "tts_calls", "asr_calls", "succeeded_calls", "rejected_calls", "failed_calls", "invalid_response_calls", "outcome_unknown_calls", ...metrics, ...metrics.map((key) => `unknown_${key}_calls`)];
     return {
       items: (Array.isArray(result?.items) ? result.items : []).map((row) => Object.fromEntries(fields.map((key) => [key, row[key] ?? null]))),

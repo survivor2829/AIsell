@@ -9,13 +9,16 @@ async function main() {
   const started = [];
   const resolved = [];
   const confirmed = [];
+  const notifications = [];
   const sender = {};
   const batchId = `narrated_batch_${"a".repeat(32)}`;
+  const taskId = `task_${"c".repeat(32)}`;
   const assetId = `asset_${"b".repeat(32)}`;
   const controller = {
     onUpdate: () => () => {},
     saveNarratedBatch: async (p) => { saved.push(p); return { ...p, batch_id: batchId }; },
-    generateNarratedSamples: async (id) => { started.push(id); return { batch_id: id, status: "planning" }; },
+    getNarratedBatch: async () => ({ batch_id: batchId, task_id: taskId, status: "completed_with_errors", completed_count: 2, target_count: 3 }),
+    generateNarratedSamples: async (id) => { started.push(id); return { batch_id: id, task_id: taskId, status: "planning" }; },
     prepareNarratedScripts: async (id) => ({ batch_id: id, status: "planning", script_options: [] }),
     confirmNarratedScript: async (payload) => { confirmed.push(payload); return { batch_id: payload.batch_id, script_confirmation: { script_id: payload.script_id, revision: payload.revision, narration: "用户确认正文" } }; },
     resolveNarratedPlanningOutcome: async (payload) => {
@@ -23,17 +26,44 @@ async function main() {
       return { batch_id: payload.batch_id, status: "planning", planning_recovery_available: false };
     }
   };
+  const mainWindow = {
+    isDestroyed: () => false,
+    isFocused: () => true,
+    isMinimized: () => false,
+    show: () => undefined,
+    focus: () => undefined,
+    webContents: sender
+  };
+  const notificationFactory = (details) => {
+    const listeners = new Map();
+    const notification = {
+      ...details,
+      on: (event, listener) => listeners.set(event, listener),
+      show: () => notifications.push(notification),
+      click: () => listeners.get("click")?.()
+    };
+    return notification;
+  };
   const registration = registerContentEngineIpc({
     electron: {}, ipcMain: { handle: (key, handler) => handlers.set(key, handler), removeHandler: (key) => handlers.delete(key) },
-    controller, getMainWindow: () => ({ isDestroyed: () => false, isFocused: () => true, webContents: sender }),
-    diagnosticLogger: { event() {}, recover() {} }
+    controller, getMainWindow: () => mainWindow,
+    diagnosticLogger: { event() {}, recover() {} }, notificationFactory
   });
   const draft = { groups: { opening: [assetId], middle: [], ending: [] }, title: "真实展示", description: "已确认资料", cta: "欢迎咨询", target_count: 6, settings: { voice_persona_id: "natural-life@1" } };
   const invoke = (payload) => handlers.get(CHANNELS.samples)({ sender }, payload);
+  await handlers.get(CHANNELS.get)({ sender }, { batch_id: batchId });
+  assert.equal(notifications.length, 0, '读取历史失败批次不得弹出新故障通知');
   const token = `${CHANNELS.samples}:${randomUUID()}`;
   assert.equal((await invoke({ draft, clickToken: token })).ok, true);
   assert.equal(saved[0].target_count, 6);
   assert.deepEqual(started, [batchId]);
+  const partial = await handlers.get(CHANNELS.get)({ sender }, { batch_id: batchId });
+  assert.equal(partial.ok, true);
+  assert.equal(notifications.length, 1, "a partial narrated batch must notify the user once");
+  assert.match(notifications[0].body, /部分完成/);
+  notifications[0].click();
+  await handlers.get(CHANNELS.get)({ sender }, { batch_id: batchId });
+  assert.equal(notifications.length, 1, "re-reading the same batch state must not duplicate notifications");
   assert.equal((await invoke({ draft, clickToken: token })).code, "trusted_user_click_required");
   assert.equal((await invoke({ draft: { ...draft, target_count: 301 }, clickToken: `${CHANNELS.samples}:${randomUUID()}` })).code, "invalid_narrated_count");
   assert.equal(saved.length, 1);

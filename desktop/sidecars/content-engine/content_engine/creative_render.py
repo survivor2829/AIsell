@@ -115,11 +115,12 @@ class FFmpegCreativeRenderer:
             code="auto_mix_voice_required",
             message="一键混剪 V2 缺少已验证的 TTS 人声文件。",
         )
-        self._managed_audio_path(
-            recipe.get("licensed_music_relative_path"),
-            code="auto_mix_music_required",
-            message="一键混剪 V2 缺少有效授权音乐文件。",
-        )
+        if recipe.get('music_mode') != 'none':
+            self._managed_audio_path(
+                recipe.get("licensed_music_relative_path"),
+                code="auto_mix_music_required",
+                message="一键混剪 V2 缺少有效授权音乐文件。",
+            )
         for caption in recipe.get("captions") or []:
             if (
                 not isinstance(caption, dict)
@@ -735,6 +736,8 @@ class FFmpegCreativeRenderer:
         report_path = self._auto_mix_margin_report_path(path)
         try:
             value = json.loads(report_path.read_text(encoding="utf-8"))
+            if value.get('music_mode') == 'none':
+                return {'music_mode': 'none', 'speech_music_margin_lu': None}
             margin = float(value["speech_music_margin_lu"])
             gain = float(value["music_gain_db"])
             windows = value["windows"]
@@ -1756,6 +1759,15 @@ class FFmpegCreativeRenderer:
         loudness contract.
         """
         self._validate_auto_mix_v2_recipe(recipe)
+        if recipe.get('music_mode') == 'none':
+            voice = recipe.get('voice_segment') or {}
+            duration = (int(voice.get('end_ms') or 0) - int(voice.get('start_ms') or 0)) / 1000
+            self._encode_mezzanine(['-i', str(source), '-map', '0:v:0', '-map', '0:a:0',
+                '-af', 'highpass=f=70,loudnorm=I=-15:LRA=8:TP=-1.2,alimiter=limit=0.86:attack=5:release=50:level=false',
+                '-t', f'{duration:.3f}'], output)
+            self._auto_mix_margin_report_path(output).write_text(
+                json.dumps({'music_mode': 'none', 'speech_music_margin_lu': None}), encoding='utf-8')
+            return
         music_path = self._managed_audio_path(
             recipe.get("licensed_music_relative_path"),
             code="auto_mix_music_required",
@@ -2978,7 +2990,7 @@ class HybridCreativeRenderer:
             return
         if not str(recipe.get("voice_audio_path") or "").strip():
             raise RemotionRenderError("contract", "auto_mix_voice_required")
-        if not str(recipe.get("licensed_music_relative_path") or "").strip():
+        if recipe.get("music_mode") != "none" and not str(recipe.get("licensed_music_relative_path") or "").strip():
             raise RemotionRenderError("contract", "auto_mix_music_required")
         config = cls._visual_config(recipe) or {}
         requested = cls._value(config, "requestedEngine", "requested_engine", "")
@@ -2999,7 +3011,7 @@ class HybridCreativeRenderer:
             report = {
                 "integrated_lufs": round(float(value["integrated_lufs"]), 2),
                 "true_peak_dbtp": round(float(value["true_peak_dbtp"]), 2),
-                "speech_music_margin_lu": round(
+                "speech_music_margin_lu": None if value.get('music_mode') == 'none' else round(
                     float(value["speech_music_margin_lu"]), 2
                 ),
             }
@@ -3007,10 +3019,12 @@ class HybridCreativeRenderer:
             raise RemotionRenderError(
                 "output-quality", "audio_quality_report_invalid"
             ) from error
-        if not all(math.isfinite(item) for item in report.values()):
+        if not all(math.isfinite(item) for item in report.values() if item is not None):
             raise RemotionRenderError(
                 "output-quality", "audio_quality_report_invalid"
             )
+        if value.get('music_mode') == 'none':
+            report['music_mode'] = 'none'
         raw_windows = value.get("speech_music_windows") or []
         if raw_windows:
             windows = []
