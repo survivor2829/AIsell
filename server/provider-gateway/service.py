@@ -16,6 +16,7 @@ import hashlib
 import hmac
 import json
 import os
+from pathlib import Path
 import re
 import secrets
 import socket
@@ -38,6 +39,11 @@ VERSION = re.compile(r"(?:0|[1-9]\d{0,5})(?:\.(?:0|[1-9]\d{0,5})){2}\Z")
 TOKEN = re.compile(r"[A-Za-z0-9_-]{32,128}\Z")
 LICENSE_PART = re.compile(r"[A-Za-z0-9_-]{8,4096}\Z")
 SAFE_HEADER_VALUE = re.compile(r"[\x20-\x7e]{1,512}\Z")
+OPERATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+RUNTIME_REVISION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+DEFAULT_UPSTREAM_TIMEOUT_SECONDS = 180
+MIN_UPSTREAM_TIMEOUT_SECONDS = 30
+MAX_UPSTREAM_TIMEOUT_SECONDS = 180
 
 PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsPhBY7urbSK6OeM6CkL0
@@ -122,6 +128,24 @@ def _official_origin(value: str, default: str, hostname: str) -> str:
     return f"https://{hostname}"
 
 
+def _bounded_timeout(value, default=DEFAULT_UPSTREAM_TIMEOUT_SECONDS) -> int:
+    try:
+        candidate = int(value)
+    except (TypeError, ValueError):
+        candidate = default
+    return max(MIN_UPSTREAM_TIMEOUT_SECONDS, min(MAX_UPSTREAM_TIMEOUT_SECONDS, candidate))
+
+
+def _runtime_revision(value) -> str:
+    candidate = str(value or "").strip()
+    if candidate and RUNTIME_REVISION.fullmatch(candidate):
+        return candidate
+    try:
+        return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+    except OSError:
+        return "unversioned"
+
+
 class SessionStore:
     def __init__(self, secret: str = "", ttl_seconds: int = 24 * 60 * 60):
         self.secret = str(secret or "").encode("utf-8") or secrets.token_bytes(32)
@@ -147,13 +171,17 @@ class SessionStore:
         return token, datetime.fromtimestamp(expiry, timezone.utc)
 
     def validate(self, token: str) -> bool:
+        return self.subject(token) is not None
+
+    def subject(self, token: str) -> str | None:
         if not isinstance(token, str) or not TOKEN.fullmatch(token):
-            return False
+            return None
         now = time.time()
         digest = self._digest(token)
         with self._lock:
             self._cleanup_locked(now)
-            return digest in self._sessions and self._sessions[digest][0] > now
+            entry = self._sessions.get(digest)
+            return entry[1] if entry and entry[0] > now else None
 
     def _cleanup_locked(self, now: float) -> None:
         for digest, (expires, _license_id) in list(self._sessions.items()):
@@ -173,17 +201,23 @@ class GatewayConfig:
     max_response_bytes: int = 96 * 1024 * 1024
     session_ttl_seconds: int = 24 * 60 * 60
     session_secret: str = ""
+    upstream_timeout_seconds: int = DEFAULT_UPSTREAM_TIMEOUT_SECONDS
+    runtime_revision: str = ""
 
     @classmethod
     def from_environment(cls, environ=None):
         env = os.environ if environ is None else environ
         volcengine_key = str(env.get("XIAOXI_GATEWAY_VOLCENGINE_API_KEY", "")).strip()
+        # Ark and speech are separate Volcengine products.  A generic/Ark API
+        # key must not be advertised as speech-capable. TTS requires its own API
+        # key; ASR supports its own API key or the legacy APP ID + Access Token pair.
+        volcengine_asr_key = str(env.get("XIAOXI_GATEWAY_VOLCENGINE_ASR_API_KEY", "")).strip()
         keys = {
             "deepseek": str(env.get("XIAOXI_GATEWAY_DEEPSEEK_API_KEY", "")).strip(),
             "bailian": str(env.get("XIAOXI_GATEWAY_BAILIAN_API_KEY", "")).strip(),
             "volcengine_ark": str(env.get("XIAOXI_GATEWAY_VOLCENGINE_ARK_API_KEY", "")).strip() or volcengine_key,
-            "volcengine_tts": str(env.get("XIAOXI_GATEWAY_VOLCENGINE_TTS_API_KEY", "")).strip() or volcengine_key,
-            "volcengine_asr": str(env.get("XIAOXI_GATEWAY_VOLCENGINE_ASR_API_KEY", "")).strip() or volcengine_key,
+            "volcengine_tts": str(env.get("XIAOXI_GATEWAY_VOLCENGINE_TTS_API_KEY", "")).strip(),
+            "volcengine_asr": volcengine_asr_key,
             "apimart": str(env.get("XIAOXI_GATEWAY_APIMART_API_KEY", "")).strip(),
         }
         return cls(
@@ -199,10 +233,16 @@ class GatewayConfig:
             },
             session_ttl_seconds=int(env.get("XIAOXI_GATEWAY_SESSION_TTL_SECONDS", 24 * 60 * 60)),
             session_secret=str(env.get("XIAOXI_GATEWAY_SESSION_SECRET", "")),
+            upstream_timeout_seconds=_bounded_timeout(
+                env.get("XIAOXI_GATEWAY_UPSTREAM_TIMEOUT_SECONDS", DEFAULT_UPSTREAM_TIMEOUT_SECONDS)
+            ),
+            runtime_revision=_runtime_revision(env.get("XIAOXI_GATEWAY_RUNTIME_REVISION", "")),
         )
 
     def __post_init__(self):
         self.keys = {str(key): str(value or "").strip() for key, value in (self.keys or {}).items()}
+        self.upstream_timeout_seconds = _bounded_timeout(self.upstream_timeout_seconds)
+        self.runtime_revision = _runtime_revision(self.runtime_revision)
         if self.origins is None:
             self.origins = {
                 "deepseek": "https://api.deepseek.com",
@@ -236,6 +276,8 @@ class GatewayServer(ThreadingHTTPServer):
         self.slots = threading.BoundedSemaphore(16)
         self.rate_lock = threading.Lock()
         self.rates = collections.OrderedDict()
+        self.inflight_lock = threading.Lock()
+        self.inflight = {}
 
     def process_request(self, request, address):
         if not self.slots.acquire(False):
@@ -253,19 +295,40 @@ class GatewayServer(ThreadingHTTPServer):
         finally:
             self.slots.release()
 
-    def allowed(self, address):
+    def rate_limit(self, address):
         minute = int(time.time() / 60)
+        retry_after = max(1, int((minute + 1) * 60 - time.time()))
         with self.rate_lock:
             for key, limit in (("global", 300), (address, 60)):
                 stamp, count = self.rates.get(key, (minute, 0))
-                count = count + 1 if stamp == minute else 1
-                self.rates[key] = (minute, count)
+                if stamp == minute and count >= limit:
+                    return {"allowed": False, "scope": key, "retry_after": retry_after}
+            for key, _limit in (("global", 300), (address, 60)):
+                stamp, count = self.rates.get(key, (minute, 0))
+                self.rates[key] = (minute, count + 1 if stamp == minute else 1)
                 self.rates.move_to_end(key)
-                if count > limit:
-                    return False
             while len(self.rates) > 2048:
                 self.rates.popitem(last=False)
-        return True
+        return {"allowed": True, "scope": "", "retry_after": None}
+
+    def allowed(self, address):
+        return self.rate_limit(address)["allowed"]
+
+    def acquire_inflight(self, key):
+        with self.inflight_lock:
+            entry = self.inflight.get(key)
+            if entry is not None:
+                return entry, False
+            entry = {"event": threading.Event(), "result": None}
+            self.inflight[key] = entry
+            return entry, True
+
+    def finish_inflight(self, key, entry, result):
+        with self.inflight_lock:
+            if self.inflight.get(key) is entry:
+                self.inflight.pop(key, None)
+            entry["result"] = result
+            entry["event"].set()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -273,7 +336,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def setup(self):
         super().setup()
-        self.connection.settimeout(240)
+        self.connection.settimeout(self.config.upstream_timeout_seconds + 60)
 
     def log_message(self, *_args):
         # Provider bodies, license codes and bearer tokens must never enter logs.
@@ -283,15 +346,51 @@ class Handler(BaseHTTPRequestHandler):
     def config(self) -> GatewayConfig:
         return self.server.config
 
-    def _reply_json(self, status: int, value: dict):
+    def _reply_json(self, status: int, value: dict, headers=None):
         data = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        for name, header_value in (headers or {}).items():
+            if (
+                isinstance(name, str)
+                and isinstance(header_value, str)
+                and SAFE_HEADER_VALUE.fullmatch(header_value)
+                and name in {"X-Xiaoxi-Error-Origin", "Retry-After"}
+            ):
+                self.send_header(name, header_value)
         self.end_headers()
         self.wfile.write(data)
+
+    def _json_result(self, status: int, value: dict, headers=None):
+        return {
+            "status": int(status),
+            "headers": {str(name): str(header_value) for name, header_value in (headers or {}).items()},
+            "raw": json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+        }
+
+    def _send_result(self, result):
+        status = int(result.get("status", 503))
+        raw = result.get("raw", b"")
+        headers = result.get("headers", {})
+        self.send_response(status)
+        content_type = headers.get("Content-Type", "application/octet-stream")
+        if not isinstance(content_type, str) or not SAFE_HEADER_VALUE.fullmatch(content_type):
+            content_type = "application/octet-stream"
+        self.send_header("Content-Type", content_type)
+        for name in ("X-Api-Status-Code", "X-Request-Id", "X-Xiaoxi-Error-Origin", "Retry-After", "Cache-Control"):
+            value = headers.get(name)
+            if isinstance(value, str) and SAFE_HEADER_VALUE.fullmatch(value):
+                self.send_header(name, value)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        try:
+            self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            pass
 
     def _read_body(self, maximum: int | None = None) -> bytes:
         raw_length = self.headers.get("Content-Length", "")
@@ -367,6 +466,62 @@ class Handler(BaseHTTPRequestHandler):
                 headers["X-Api-Key"] = self.config.keys[provider]
         return headers
 
+    def _proxy_upstream(self, method, provider, target, body):
+        operation = Request(target, data=body, headers=self._upstream_headers(provider), method=method)
+        response = None
+        try:
+            response = self.config.upstream_open(
+                operation,
+                timeout=self.config.upstream_timeout_seconds,
+            )
+            status = int(getattr(response, "status", getattr(response, "code", 200)))
+            response_headers = getattr(response, "headers", {}) or {}
+            raw = response.read(self.config.max_response_bytes + 1)
+        except HTTPError as error:
+            status = int(error.code or 502)
+            response_headers = error.headers or {}
+            try:
+                raw = error.read(self.config.max_response_bytes + 1)
+            except Exception:
+                raw = b""
+        except (TimeoutError, socket.timeout):
+            return self._json_result(
+                504, {"error": "provider_timeout"},
+                {"X-Xiaoxi-Error-Origin": "gateway_transport"},
+            )
+        except (URLError, OSError):
+            return self._json_result(
+                503, {"error": "provider_unavailable"},
+                {"X-Xiaoxi-Error-Origin": "gateway_transport"},
+            )
+        except Exception:
+            return self._json_result(
+                503, {"error": "provider_unavailable"},
+                {"X-Xiaoxi-Error-Origin": "gateway_transport"},
+            )
+        finally:
+            try:
+                if response is not None:
+                    response.close()
+            except (AttributeError, OSError):
+                pass
+        if not isinstance(raw, (bytes, bytearray)) or len(raw) > self.config.max_response_bytes:
+            return self._json_result(
+                502, {"error": "provider_response_too_large"},
+                {"X-Xiaoxi-Error-Origin": "gateway_response"},
+            )
+        headers = {}
+        content_type = response_headers.get("Content-Type", "application/octet-stream")
+        if isinstance(content_type, str) and SAFE_HEADER_VALUE.fullmatch(content_type):
+            headers["Content-Type"] = content_type
+        for name in ("X-Api-Status-Code", "X-Request-Id", "Retry-After", "Cache-Control"):
+            value = response_headers.get(name)
+            if isinstance(value, str) and SAFE_HEADER_VALUE.fullmatch(value):
+                headers[name] = value
+        if status < 200 or status >= 300:
+            headers["X-Xiaoxi-Error-Origin"] = "upstream"
+        return {"status": status, "headers": headers, "raw": bytes(raw)}
+
     def _proxy(self, method: str):
         route = self._route()
         if route is None:
@@ -389,52 +544,63 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._read_body()
             except (ValueError, UnicodeError):
                 return self._reply_json(400, {"error": "invalid_body"})
-        operation = Request(target, data=body, headers=self._upstream_headers(provider), method=method)
+
+        operation_id = self.headers.get("X-Xiaoxi-Operation-Id", "").strip()
+        key = None
+        entry = None
+        owner = True
+        if method == "POST" and OPERATION_ID.fullmatch(operation_id):
+            token = self.headers.get('Authorization', '').removeprefix('Bearer ').strip()
+            subject = self.config.sessions.subject(token)
+            if subject is None:
+                return self._reply_json(401, {'error': 'session_required'})
+            # Include every result-affecting header forwarded upstream. The digest keeps
+            # credentials and tenant identifiers out of the in-flight map and logs.
+            parameters = {name.lower(): value for name, value in self.headers.items()
+                          if name.lower() not in {'authorization', 'connection', 'content-length',
+                              'host', 'user-agent', 'x-request-id', 'x-xiaoxi-operation-id'}}
+            key = hashlib.sha256(json.dumps([subject, operation_id, method, provider, target,
+                parameters, hashlib.sha256(body or b'').hexdigest()], sort_keys=True).encode()).hexdigest()
+            entry, owner = self.server.acquire_inflight(key)
+            if not owner:
+                if not entry["event"].wait(self.config.upstream_timeout_seconds + 60):
+                    return self._send_result(self._json_result(
+                        504, {"error": "provider_request_coalesced_timeout"},
+                        {"X-Xiaoxi-Error-Origin": "coalesced_timeout"},
+                    ))
+                return self._send_result(entry["result"] or self._json_result(
+                    503, {"error": "provider_unavailable"},
+                    {"X-Xiaoxi-Error-Origin": "gateway_transport"},
+                ))
         try:
-            response = self.config.upstream_open(operation, timeout=180 if provider in {"volcengine_asr", "volcengine_tts"} else 60)
-            status = int(getattr(response, "status", getattr(response, "code", 200)))
-            response_headers = getattr(response, "headers", {}) or {}
-            raw = response.read(self.config.max_response_bytes + 1)
-        except HTTPError as error:
-            status = int(error.code or 502)
-            response_headers = error.headers or {}
-            try:
-                raw = error.read(self.config.max_response_bytes + 1)
-            except Exception:
-                raw = b""
-        except (TimeoutError, socket.timeout):
-            return self._reply_json(504, {"error": "provider_timeout"})
-        except (URLError, OSError):
-            return self._reply_json(503, {"error": "provider_unavailable"})
+            result = self._proxy_upstream(method, provider, target, body)
         except Exception:
-            return self._reply_json(503, {"error": "provider_unavailable"})
+            result = self._json_result(
+                503, {"error": "provider_unavailable"},
+                {"X-Xiaoxi-Error-Origin": "gateway_transport"},
+            )
         finally:
-            try:
-                response.close()
-            except (UnboundLocalError, AttributeError):
-                pass
-        if not isinstance(raw, (bytes, bytearray)) or len(raw) > self.config.max_response_bytes:
-            return self._reply_json(502, {"error": "provider_response_too_large"})
-        self.send_response(status)
-        content_type = response_headers.get("Content-Type", "application/octet-stream")
-        if not isinstance(content_type, str) or not SAFE_HEADER_VALUE.fullmatch(content_type):
-            content_type = "application/octet-stream"
-        self.send_header("Content-Type", content_type)
-        for name in ("X-Api-Status-Code", "X-Request-Id", "Retry-After", "Cache-Control"):
-            value = response_headers.get(name)
-            if isinstance(value, str) and SAFE_HEADER_VALUE.fullmatch(value):
-                self.send_header(name, value)
-        self.send_header("Content-Length", str(len(raw)))
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.end_headers()
-        self.wfile.write(raw)
+            if key is not None and entry is not None and owner:
+                self.server.finish_inflight(key, entry, result)
+        return self._send_result(result)
 
     def do_GET(self):
-        if not self.server.allowed(self.client_address[0]):
-            return self._reply_json(429, {"error": "rate_limit"})
+        limit = self.server.rate_limit(self.client_address[0])
+        if not limit["allowed"]:
+            return self._reply_json(
+                429,
+                {"error": "rate_limit", "scope": limit["scope"]},
+                {"X-Xiaoxi-Error-Origin": "gateway_rate_limit", "Retry-After": str(limit["retry_after"])},
+            )
         route = urlsplit(self.path).path
         if route == PREFIX + "/health":
-            return self._reply_json(200, {"ok": True, "service": "provider-gateway", "schema": 1})
+            return self._reply_json(200, {
+                "ok": True,
+                "service": "provider-gateway",
+                "schema": 1,
+                "runtime_revision": self.config.runtime_revision,
+                "upstream_timeout_seconds": self.config.upstream_timeout_seconds,
+            })
         if route == PREFIX + "/capabilities":
             if not self._session():
                 return self._reply_json(401, {"error": "session_required"})
@@ -444,8 +610,13 @@ class Handler(BaseHTTPRequestHandler):
         return self._reply_json(404, {"error": "not_found"})
 
     def do_POST(self):
-        if not self.server.allowed(self.client_address[0]):
-            return self._reply_json(429, {"error": "rate_limit"})
+        limit = self.server.rate_limit(self.client_address[0])
+        if not limit["allowed"]:
+            return self._reply_json(
+                429,
+                {"error": "rate_limit", "scope": limit["scope"]},
+                {"X-Xiaoxi-Error-Origin": "gateway_rate_limit", "Retry-After": str(limit["retry_after"])},
+            )
         route = urlsplit(self.path).path
         if route == PREFIX + "/session":
             try:

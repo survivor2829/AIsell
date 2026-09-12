@@ -40,6 +40,8 @@ for attempt in range(20):
         with urllib.request.urlopen("http://127.0.0.1:8444/v1/provider-gateway/health", timeout=3) as response:
             payload = json.load(response)
             assert payload.get("ok") is True
+            assert payload.get("runtime_revision") not in {None, "", "unversioned"}
+            assert 30 <= int(payload.get("upstream_timeout_seconds", 0)) <= 180
         break
     except Exception:
         if attempt == 19:

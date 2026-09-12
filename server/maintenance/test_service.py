@@ -2,6 +2,7 @@ import json
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 import time
 import hashlib
@@ -13,6 +14,27 @@ from service import Handler, Server, Store, validate_report, safe_token
 from feedback import validate_feedback
 
 class ServiceTest(unittest.TestCase):
+    def test_provider_gateway_rate_limit_identifies_maintenance_scope(self):
+        server = Server(("127.0.0.1", 0), Handler, None)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            minute = int(time.time() / 60)
+            server.rates["global"] = (minute, 300)
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{server.server_port}/v1/provider-gateway/health"
+                )
+            self.assertEqual(error.exception.code, 429)
+            self.assertEqual(
+                error.exception.headers.get("X-Xiaoxi-Error-Origin"),
+                "maintenance_rate_limit",
+            )
+            payload = json.loads(error.exception.read())
+            self.assertEqual(payload, {"error": "rate_limit", "scope": "global"})
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_feedback_preserves_client_phase_diagnostics(self):
         details = {"moments_stage": "stability_wait", "moments_first_candidates_ms": 4200,
                    "moments_stability_wait_ms": 180, "moments_discover_scan_ms": 240,

@@ -201,19 +201,24 @@ class Server(ThreadingHTTPServer):
             super().process_request_thread(request, address)
         finally:
             self.slots.release()
-    def allowed(self, address):
+    def rate_limit(self, address):
         minute = int(time.time() / 60)
+        retry_after = max(1, int((minute + 1) * 60 - time.time()))
         with self.rate_lock:
             for key, limit in (("global", 300), (address, 60)):
                 stamp, count = self.rates.get(key, (minute, 0))
-                count = count + 1 if stamp == minute else 1
-                self.rates[key] = (minute, count)
+                if stamp == minute and count >= limit:
+                    return {"allowed": False, "scope": key, "retry_after": retry_after}
+            for key, _limit in (("global", 300), (address, 60)):
+                stamp, count = self.rates.get(key, (minute, 0))
+                self.rates[key] = (minute, count + 1 if stamp == minute else 1)
                 self.rates.move_to_end(key)
-                if count > limit:
-                    return False
             while len(self.rates) > 2048:
                 self.rates.popitem(last=False)
-        return True
+        return {"allowed": True, "scope": "", "retry_after": None}
+
+    def allowed(self, address):
+        return self.rate_limit(address)["allowed"]
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "Maintenance/1"
@@ -222,13 +227,21 @@ class Handler(BaseHTTPRequestHandler):
         self.connection.settimeout(20)
     def log_message(self, *_args):
         pass  # Do not persist client IP, raw URLs, request bodies or credentials.
-    def reply(self, status, value):
+    def reply(self, status, value, headers=None):
         data = json.dumps(value, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        for name, header_value in (headers or {}).items():
+            if (
+                name in {"X-Xiaoxi-Error-Origin", "Retry-After"}
+                and isinstance(header_value, str)
+                and len(header_value) <= 512
+                and all(0x20 <= ord(char) <= 0x7e for char in header_value)
+            ):
+                self.send_header(name, header_value)
         self.end_headers()
         self.wfile.write(data)
     def body(self):
@@ -255,7 +268,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(body) != length:
                 return self.reply(400, {"error": "invalid_body"})
         headers = {}
-        for name in ("Authorization", "Content-Type", "Accept", "X-Api-Resource-Id", "X-Api-Request-Id", "X-Api-Sequence", "X-Control-Require-Usage-Tokens-Return"):
+        for name in ("Authorization", "Content-Type", "Accept", "X-Api-Resource-Id", "X-Api-Request-Id", "X-Api-Sequence", "X-Control-Require-Usage-Tokens-Return", "X-Xiaoxi-Operation-Id"):
             value = self.headers.get(name)
             if value and len(value) <= 512 and all(0x20 <= ord(char) <= 0x7e for char in value):
                 headers[name] = value
@@ -276,17 +289,17 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 raw = b""
         except (TimeoutError, URLError, OSError):
-            return self.reply(503, {"error": "provider_gateway_unavailable"})
+            return self.reply(503, {"error": "provider_gateway_unavailable"}, {"X-Xiaoxi-Error-Origin": "maintenance_transport"})
         except Exception:
-            return self.reply(503, {"error": "provider_gateway_unavailable"})
+            return self.reply(503, {"error": "provider_gateway_unavailable"}, {"X-Xiaoxi-Error-Origin": "maintenance_transport"})
         if not isinstance(raw, (bytes, bytearray)) or len(raw) > PROVIDER_GATEWAY_MAX_RESPONSE_BYTES:
-            return self.reply(502, {"error": "provider_gateway_response_too_large"})
+            return self.reply(502, {"error": "provider_gateway_response_too_large"}, {"X-Xiaoxi-Error-Origin": "maintenance_transport"})
         self.send_response(status)
         content_type = response_headers.get("Content-Type", "application/octet-stream")
         if not isinstance(content_type, str) or len(content_type) > 512 or any(ord(char) < 0x20 or ord(char) > 0x7e for char in content_type):
             content_type = "application/octet-stream"
         self.send_header("Content-Type", content_type)
-        for name in ("X-Api-Status-Code", "X-Request-Id", "Retry-After", "Cache-Control"):
+        for name in ("X-Api-Status-Code", "X-Request-Id", "X-Xiaoxi-Error-Origin", "Retry-After", "Cache-Control"):
             value = response_headers.get(name)
             if isinstance(value, str) and len(value) <= 512 and all(0x20 <= ord(char) <= 0x7e for char in value):
                 self.send_header(name, value)
@@ -300,8 +313,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            if not self.server.allowed(self.client_address[0]):
-                return self.reply(429, {"error": "rate_limit"})
+            limit = self.server.rate_limit(self.client_address[0])
+            if not limit["allowed"]:
+                return self.reply(
+                    429,
+                    {"error": "rate_limit", "scope": limit["scope"]},
+                    {"X-Xiaoxi-Error-Origin": "maintenance_rate_limit", "Retry-After": str(limit["retry_after"])},
+                )
             if not self.server.admin and urlsplit(self.path).path.startswith(PROVIDER_GATEWAY_PREFIX + "/"):
                 return self.proxy_provider_gateway("POST")
             if self.server.admin:
@@ -345,8 +363,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         route = urlsplit(self.path).path
         if not self.server.admin and route.startswith(PROVIDER_GATEWAY_PREFIX + "/"):
-            if not self.server.allowed(self.client_address[0]):
-                return self.reply(429, {"error": "rate_limit"})
+            limit = self.server.rate_limit(self.client_address[0])
+            if not limit["allowed"]:
+                return self.reply(
+                    429,
+                    {"error": "rate_limit", "scope": limit["scope"]},
+                    {"X-Xiaoxi-Error-Origin": "maintenance_rate_limit", "Retry-After": str(limit["retry_after"])},
+                )
             return self.proxy_provider_gateway("GET")
         if self.server.admin:
             if not re.fullmatch(r"(?:127\.0\.0\.1|localhost):\d{1,5}", self.headers.get("Host", "")):
@@ -375,8 +398,13 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/health":
             return self.reply(200, {"ok": True, "service": "maintenance", "schema": 1})
         if route == "/v1/feedback/public":
-            if not self.server.allowed(self.client_address[0]):
-                return self.reply(429, {"error": "rate_limit"})
+            limit = self.server.rate_limit(self.client_address[0])
+            if not limit["allowed"]:
+                return self.reply(
+                    429,
+                    {"error": "rate_limit", "scope": limit["scope"]},
+                    {"X-Xiaoxi-Error-Origin": "maintenance_rate_limit", "Retry-After": str(limit["retry_after"])},
+                )
             query = parse_qs(urlsplit(self.path).query)
             offset, limit = query.get("offset", ["0"])[0], query.get("limit", ["30"])[0]
             if not re.fullmatch(r"\d{1,9}", offset) or not re.fullmatch(r"[1-9]\d{0,8}", limit):

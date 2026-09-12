@@ -22,12 +22,15 @@ if [ ! -f "$config_file" ]; then
   {
     printf '%s\n' "XIAOXI_GATEWAY_SESSION_SECRET=$session_secret"
     printf '%s\n' 'XIAOXI_GATEWAY_SESSION_TTL_SECONDS=86400'
+    printf '%s\n' 'XIAOXI_GATEWAY_UPSTREAM_TIMEOUT_SECONDS=180'
+    printf '%s\n' '# XIAOXI_GATEWAY_RUNTIME_REVISION=release-commit-or-build-id'
     printf '%s\n' '# Add provider credentials here; never put them in the desktop package.'
     printf '%s\n' '# XIAOXI_GATEWAY_DEEPSEEK_API_KEY='
     printf '%s\n' '# XIAOXI_GATEWAY_BAILIAN_API_KEY='
     printf '%s\n' '# XIAOXI_GATEWAY_VOLCENGINE_API_KEY='
     printf '%s\n' '# XIAOXI_GATEWAY_VOLCENGINE_ARK_API_KEY='
     printf '%s\n' '# XIAOXI_GATEWAY_VOLCENGINE_TTS_API_KEY='
+    printf '%s\n' '# ASR requires its own API key, or the legacy APP ID + Access Token pair.'
     printf '%s\n' '# XIAOXI_GATEWAY_VOLCENGINE_ASR_API_KEY='
     printf '%s\n' '# XIAOXI_GATEWAY_VOLCENGINE_ASR_APP_ID='
     printf '%s\n' '# XIAOXI_GATEWAY_VOLCENGINE_ASR_ACCESS_TOKEN='
