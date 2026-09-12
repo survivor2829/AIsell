@@ -88,6 +88,19 @@ function sourceAllowed(source, edition) {
   return true;
 }
 
+function carryAcceptedRuntimeDescriptor(descriptor, buildCommit) {
+  if (!descriptor?.reuseReceipt) throw new Error("Accepted reusable runtime is missing its provenance receipt");
+  return {
+    ...descriptor,
+    buildCommit,
+    reuseReceipt: {
+      ...descriptor.reuseReceipt,
+      buildCommit,
+      verifiedAt: new Date().toISOString()
+    }
+  };
+}
+
 function resolveInstalledPackage(packageName, fromDir) {
   const parts = packageName.split("/");
   let current = path.resolve(fromDir);
@@ -297,7 +310,9 @@ function buildPortableStaging(edition, paths, sourceState) {
   const electronPackage = JSON.parse(fs.readFileSync(path.join(desktopDir, "node_modules", "electron", "package.json"), "utf8"));
   const rendererMarker = JSON.parse(fs.readFileSync(path.join(desktopDir, edition === "test" ? "dist-development" : "dist-pilot", "build-edition.json"), "utf8"));
   const capabilityMatrix = JSON.parse(fs.readFileSync(path.join(desktopDir, "release-capabilities.json"), "utf8"));
-  const contentEngineSidecar = acceptedRuntimeManifest?.contentEngineSidecar || createContentEngineReleaseDescriptor(
+  const contentEngineSidecar = acceptedRuntimeManifest
+    ? carryAcceptedRuntimeDescriptor(acceptedRuntimeManifest.contentEngineSidecar, sourceState.commit)
+    : createContentEngineReleaseDescriptor(
     sourceState.contentEngineRuntime,
     sourceState.commit,
     sourceState.artifactType
@@ -318,10 +333,9 @@ function buildPortableStaging(edition, paths, sourceState) {
     wxKeySha256: NATIVE_LIBRARY_SHA256["wx_key.dll"],
     databaseDecryptorSha256: DATABASE_DECRYPTOR_SHA256,
     nativeLibrarySha256: NATIVE_LIBRARY_SHA256,
-    productDetailSidecar: acceptedRuntimeManifest?.productDetailSidecar || createReleaseDescriptor(
-      sourceState.productDetailRuntime,
-      sourceState.commit
-    ),
+    productDetailSidecar: acceptedRuntimeManifest
+      ? carryAcceptedRuntimeDescriptor(acceptedRuntimeManifest.productDetailSidecar, sourceState.commit)
+      : createReleaseDescriptor(sourceState.productDetailRuntime, sourceState.commit),
     contentEngineSidecar,
     remotionRuntime,
     wechatCompatibility: capabilityMatrix.wechatCompatibility,
