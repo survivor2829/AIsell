@@ -27,7 +27,8 @@ const {
 } = require("./state_machine.cjs");
 const { executeVerifiedContactSend, refreshRealSendSession, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession } = require("./state_machine.dev.cjs");
 const { prepareMomentsDryRun, preferredVisibleMomentsPost, probeWechatMomentsWindow } = require("./moments_dry_run.dev.cjs");
-const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
+const { openWechatSearchResult, runPowerShellAsync } = require("./wechat_window_driver.cjs");
+const { resolveWechatSearchResultObservation } = require("./wechat_search_result_resolver.cjs");
 const { normalizeAtomicSendResult } = require("./wechat_window_driver.dev.cjs");
 const {
   authorizeNextBatch,
@@ -1373,7 +1374,7 @@ try {
   const clickNoWindow = clickSearchResultDryRun(dir, () => ({ ok: false, reason: "wechat_window_not_found" }), () => []);
   assert.equal(clickNoWindow.blocked_reason, "wechat_window_not_found");
   assert.equal(clickNoWindow.state.conversation_located, false);
-  for (const reason of ["wechat_clipboard_restore_unsupported", "wechat_clipboard_read_failed", "powershell_output_invalid", "exact_search_result_not_found"]) {
+  for (const reason of ["wechat_clipboard_restore_unsupported", "wechat_clipboard_read_failed", "powershell_output_invalid", "exact_search_result_not_found", "search_result_identity_unverified"]) {
     const failed = clickSearchResultDryRun(dir, () => ({ ok: false, reason }), () => []);
     assert.equal(failed.blocked_reason, reason, "non-window failures must survive the workflow boundary");
     assert.equal(failed.state.conversation_located, false);
@@ -1416,7 +1417,8 @@ try {
         pid: 11,
         hWnd: "22",
         exactSearchOpened: true,
-        searchQuery: "internal-test-001"
+        searchQuery: "internal-test-001",
+        searchResultMode: "unique_local_uia"
       };
     },
     () => {
@@ -1437,13 +1439,67 @@ try {
     pid: 11,
     hWnd: "22",
     minIdleMs: 0,
-    resultAutomationId: "search_item_function_internal-test-001"
-  }, "an exact WeChat-ID lookup must target the matching local result instead of pressing Enter on the web-search fallback");
+    searchIdentity: { query: "internal-test-001", expectedName: "测试客户" }
+  }, "a WeChat-ID lookup must resolve the unique local result without assuming its display-name AutomationId suffix equals the WeChat ID");
   assert.equal(exactTitleReads, 0, "an exact WeChat-ID result must not repeat title discovery");
   assert.equal(exactConversationVerifications, 0, "an exact WeChat-ID result must not repeat conversation verification");
   assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.open_result_ms), true);
   assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.title_read_ms), true);
   assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.conversation_verify_ms), true);
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [{ automationId: "search_item_function_张三", name: "张三", x: 120, y: 180 }]
+    }, { query: "wxid_abc123", expectedName: "张三" }),
+    { status: "selected", mode: "unique_local_uia", candidate: { automationId: "search_item_function_张三", name: "张三", x: 120, y: 180 } },
+    "the display-name suffix may differ from the searched WeChat ID"
+  );
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({ uiaCandidates: [], visualCandidates: [], ocrOk: true, webSearchVisible: true }, { query: "wxid_missing", expectedName: "缺失客户" }),
+    { status: "not_found", reason: "exact_search_result_not_found" },
+    "headless empty UIA plus an OCR-confirmed web-search-only row is a scoped missing contact"
+  );
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({ uiaCandidates: [], visualCandidates: [], ocrOk: false, webSearchVisible: false }, { query: "wxid_unknown", expectedName: "未知客户" }),
+    { status: "unverified", reason: "search_result_identity_unverified" },
+    "empty UIA with unavailable OCR must pause instead of skipping"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({ uiaCandidates: [], visualCandidates: [{ text: "未知客户", x: 150, y: 190 }], ocrOk: true }, { query: "wxid_unknown", expectedName: "未知客户" }).mode,
+    "identity_matched_visual",
+    "the visual fallback can authorize one name-bound local result"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({ uiaCandidates: [], visualCandidates: [{ text: "wxid_unknown", x: 150, y: 190 }], ocrOk: true, webSearchVisible: true }, { query: "wxid_unknown", expectedName: "未知客户" }).status,
+    "unverified",
+    "a query echoed on a separate web-search OCR line must never authorize a click"
+  );
+  let driverStages = 0;
+  const driverDisplayNameResult = openWechatSearchResult("wxid_abc123", {
+    pid: 11,
+    hWnd: "22",
+    searchIdentity: { expectedName: "张三" },
+    runner: () => {
+      driverStages += 1;
+      return driverStages === 1
+        ? { ok: true, processName: "Weixin", pid: 11, hWnd: "22", inputLeaseTick: 101, searchResultObservation: { uiaCandidates: [{ automationId: "search_item_function_张三", name: "张三", x: 120, y: 180 }] } }
+        : { ok: true, pid: 11, hWnd: "22", exactSearchOpened: true };
+    }
+  });
+  assert.equal(driverDisplayNameResult.ok, true);
+  assert.equal(driverDisplayNameResult.searchResultMode, "unique_local_uia");
+  assert.equal(driverStages, 2, "the real driver path must observe, resolve, then click exactly once");
+  let missingDriverStages = 0;
+  const driverMissingResult = openWechatSearchResult("wxid_missing", {
+    pid: 11,
+    hWnd: "22",
+    searchIdentity: { expectedName: "缺失客户" },
+    runner: () => {
+      missingDriverStages += 1;
+      return { ok: true, pid: 11, hWnd: "22", inputLeaseTick: 101, searchResultObservation: { uiaCandidates: [], visualCandidates: [], ocrOk: true, webSearchVisible: true } };
+    }
+  });
+  assert.equal(driverMissingResult.reason, "exact_search_result_not_found");
+  assert.equal(missingDriverStages, 1, "a confirmed missing result must not reach the click stage");
   const changedWindow = clickSearchResultDryRun(
     dir,
     () => ({ ok: true, pid: 11, hWnd: "99" }),

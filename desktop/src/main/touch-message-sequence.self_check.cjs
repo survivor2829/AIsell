@@ -15,7 +15,7 @@ async function checkTouchMessageSequence() {
   const secondContact = { id: "selected-two", name: "第二位测试客户", nickname: "第二位测试客户", wechatId: "test_customer_two", wechatAccountId: "test_account", allowed: true };
   const imageId = "a".repeat(64);
   const calls = [];
-  let failImage = true, unknown = false, loginRequired = false, searchUnavailable = false, atomicMismatch = false, enabled = true, pauseAfterText = false;
+  let failImage = true, unknown = false, loginRequired = false, searchUnavailable = false, searchIdentityUnverified = false, atomicMismatch = false, enabled = true, pauseAfterText = false;
   const clock = new Date(2026, 8, 3, 12, 0, 0);
   const config = {
     dataDir: root, now: () => clock, random: () => 0, readContacts: () => [contact, secondContact],
@@ -33,6 +33,9 @@ async function checkTouchMessageSequence() {
       }
       if (kind === "text" && options.contactId === contact.id && searchUnavailable) {
         return { ok: false, send_attempted: false, blocked_reason: "exact_search_result_not_found", error: "未找到该联系人的精确公开微信号搜索结果" };
+      }
+      if (kind === "text" && options.contactId === contact.id && searchIdentityUnverified) {
+        return { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified", error: "搜索结果身份无法唯一确认" };
       }
       if (kind === "text" && options.contactId === contact.id && atomicMismatch) {
         return { ok: false, send_attempted: false, blocked_reason: "atomic_conversation_changed", error: "当前会话身份发生变化" };
@@ -132,6 +135,19 @@ async function checkTouchMessageSequence() {
   searchUnavailable = false;
   result = await createTouchWorkflow(config).runWorkflowStep(skipRecord, context);
   assert.equal(result.status, "completed", "跳过无结果联系人后仍应完成后续联系人");
+
+  searchIdentityUnverified = true;
+  const unverifiedWorkflow = createTouchWorkflow(config);
+  const unverifiedPayload = unverifiedWorkflow.prepareWorkflowTask({ script: "搜索身份不明暂停测试", contactIds: [contact.id, secondContact.id] });
+  const unverifiedRecord = { id: crypto.randomUUID(), payload: unverifiedPayload, progress: { done: 0 }, status: "running" };
+  result = await unverifiedWorkflow.runWorkflowStep(unverifiedRecord, context);
+  assert.equal(result.status, "needs_attention", "空 UIA 且 OCR 不可用时必须暂停，不能连续跳过联系人");
+  assert.equal(result.progress.done, 0);
+  const unverifiedTaskDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(unverifiedRecord.id).digest("hex"));
+  const unverifiedTask = JSON.parse(fs.readFileSync(path.join(unverifiedTaskDir, "touch_task.json"), "utf8"));
+  assert.equal(unverifiedTask.results[0].status, "generated");
+  assert.equal(unverifiedTask.results[1].status, "pending", "后续联系人不能被连带跳过");
+  searchIdentityUnverified = false;
 
   atomicMismatch = true;
   const atomicWorkflow = createTouchWorkflow(config);

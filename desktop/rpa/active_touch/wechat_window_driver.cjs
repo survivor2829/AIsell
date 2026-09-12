@@ -4,6 +4,7 @@ const { spawn, spawnSync } = require("node:child_process");
 const { findWechatExecutable } = require("../contact_sync/contact_sync_cli.cjs");
 const { readWechatWindowDiagnostics, readMomentsDiagnostics } = require("../../src/shared/wechat-window-diagnostics.cjs");
 const { WECHAT_MAIN_WINDOW_VISUAL_SCRIPT } = require("./wechat_window_visual.cjs");
+const { resolveWechatSearchResultObservation } = require("./wechat_search_result_resolver.cjs");
 
 let cachedWechatExecutable = "";
 let cachedWechatExecutableAt = 0;
@@ -1566,6 +1567,14 @@ public static class Win32WechatWindowSearch {
 $query = [Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_QUERY")
 $pressEnter = [Environment]::GetEnvironmentVariable("XIAOXI_PRESS_ENTER") -eq "1"
 $resultAutomationId = [Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_RESULT_AUTOMATION_ID")
+$observeLocalResults = [Environment]::GetEnvironmentVariable("XIAOXI_OBSERVE_LOCAL_RESULTS") -eq "1"
+$script:searchAsTaskMethod = $null
+function Wait-SearchWinRt($operation, [Type]$resultType, [int]$timeoutMs = 1800) {
+  if ($script:searchAsTaskMethod -eq $null) { throw "windows_runtime_as_task_missing" }
+  $task = $script:searchAsTaskMethod.MakeGenericMethod($resultType).Invoke($null, @($operation))
+  if (-not $task.Wait($timeoutMs)) { throw "windows_runtime_task_timeout" }
+  return $task.Result
+}
 $expectedPid = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")
 $expectedHwnd = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND")
 $exactWindowBinding = -not [string]::IsNullOrWhiteSpace($expectedPid) -and -not [string]::IsNullOrWhiteSpace($expectedHwnd)
@@ -1637,7 +1646,7 @@ $callback = [Win32WechatWindowSearch+EnumWindowsProc]{
     $matchesExpected = ([string]::IsNullOrWhiteSpace($expectedPid) -or [string]$windowProcessId -eq $expectedPid) -and ([string]::IsNullOrWhiteSpace($expectedHwnd) -or [string]$hWnd.ToInt64() -eq $expectedHwnd)
     if ($proc -and $matchesExpected -and $processNames -contains $proc.ProcessName -and $w -ge 600 -and $h -ge 500) {
       $focused = [Win32WechatWindowSearch]::GetForegroundWindow() -eq $hWnd
-      $script:matched = @{ title = $title; focused = $focused; processName = $proc.ProcessName; pid = [int]$windowProcessId; hWnd = $hWnd.ToInt64() }
+      $script:matched = @{ title = $title; focused = $focused; processName = $proc.ProcessName; pid = [int]$windowProcessId; hWnd = $hWnd.ToInt64(); x = $rect.Left; y = $rect.Top; width = $w; height = $h }
     }
   }
   return $true
@@ -1682,40 +1691,92 @@ Rebase-ExactSearchInputLease
 Start-Sleep -Milliseconds 300
 Assert-ExactSearchForeground
 $resultOpened = $false
-if (-not [string]::IsNullOrWhiteSpace($resultAutomationId)) {
+$uiaCandidates = New-Object System.Collections.Generic.List[object]
+$visualCandidates = New-Object System.Collections.Generic.List[object]
+$ocrOk = $false
+$webSearchVisible = $false
+if ($observeLocalResults) {
   $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$matched.hWnd)
-  for ($attempt = 0; $attempt -lt 5 -and -not $resultOpened; $attempt++) {
+  for ($attempt = 0; $attempt -lt 5 -and $uiaCandidates.Count -eq 0; $attempt++) {
     Assert-ExactSearchForeground
     if ($root -ne $null) {
       $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
       for ($i = 0; $i -lt $all.Count; $i++) {
         $item = $all.Item($i)
-        if ($item.Current.AutomationId -ne $resultAutomationId -or $item.Current.IsOffscreen) { continue }
+        $automationId = [string]$item.Current.AutomationId
+        if (-not $automationId.StartsWith("search_item_function_", [StringComparison]::Ordinal) -or $item.Current.IsOffscreen) { continue }
         $itemRect = $item.Current.BoundingRectangle
         if ($itemRect.Width -le 10 -or $itemRect.Height -le 10) { continue }
-        $clickX = [int]($itemRect.Left + ($itemRect.Width / 2))
-        $clickY = [int]($itemRect.Top + ($itemRect.Height / 2))
-        Assert-ExactSearchForeground
-        [void][Win32WechatWindowSearch]::SetCursorPos($clickX, $clickY)
-        $point = New-Object Win32WechatWindowSearch+POINT
-        $point.X = $clickX
-        $point.Y = $clickY
-        $hit = [Win32WechatWindowSearch]::WindowFromPoint($point)
-        $hitRoot = [Win32WechatWindowSearch]::GetAncestor($hit, 2)
-        [uint32]$hitPid = 0
-        [void][Win32WechatWindowSearch]::GetWindowThreadProcessId($hit, [ref]$hitPid)
-        if ($hitRoot -ne [IntPtr]$matched.hWnd -or [int]$hitPid -ne [int]$matched.pid) { Stop-SearchForTargetChanged }
-        Assert-ExactSearchForeground
-        [Win32WechatWindowSearch]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-        [Win32WechatWindowSearch]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-        Rebase-ExactSearchInputLease
-        $resultOpened = $true
-        Start-Sleep -Milliseconds 500
-        Assert-ExactSearchForeground
-        break
+        [void]$uiaCandidates.Add(@{ automationId = $automationId; name = [string]$item.Current.Name; x = [int]($itemRect.Left + ($itemRect.Width / 2)); y = [int]($itemRect.Top + ($itemRect.Height / 2)) })
       }
     }
-    if (-not $resultOpened) { Start-Sleep -Milliseconds 250 }
+    if ($uiaCandidates.Count -eq 0 -and $attempt -lt 4) { Start-Sleep -Milliseconds 250 }
+  }
+  if ($uiaCandidates.Count -eq 0) {
+    $bitmap = $null; $graphics = $null; $memory = $null; $random = $null; $software = $null
+    try {
+      Add-Type -AssemblyName System.Drawing
+      Add-Type -AssemblyName System.Runtime.WindowsRuntime
+      $script:searchAsTaskMethod = [System.WindowsRuntimeSystemExtensions].GetMethods() |
+        Where-Object { $_.Name -eq "AsTask" -and $_.IsGenericMethod -and $_.GetParameters().Count -eq 1 } |
+        Select-Object -First 1
+      $null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType=WindowsRuntime]
+      $null = [Windows.Globalization.Language, Windows.Foundation, ContentType=WindowsRuntime]
+      $null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Foundation, ContentType=WindowsRuntime]
+      $null = [Windows.Storage.Streams.InMemoryRandomAccessStream, Windows.Foundation, ContentType=WindowsRuntime]
+      $null = [Windows.Storage.Streams.DataWriter, Windows.Foundation, ContentType=WindowsRuntime]
+      $cropLeft = [int]$matched.x + [Math]::Min(58, [Math]::Floor($matched.width * 0.08))
+      $cropTop = [int]$matched.y + [Math]::Max(72, [Math]::Floor($matched.height * 0.09))
+      $cropWidth = [Math]::Max(120, [Math]::Min(430, [Math]::Floor($matched.width * 0.38)))
+      $cropHeight = [Math]::Max(160, [Math]::Min(420, [Math]::Floor($matched.height * 0.55)))
+      $bitmap = [System.Drawing.Bitmap]::new($cropWidth, $cropHeight, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+      $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+      $graphics.CopyFromScreen($cropLeft, $cropTop, 0, 0, [System.Drawing.Size]::new($cropWidth, $cropHeight), [System.Drawing.CopyPixelOperation]::SourceCopy)
+      $memory = [IO.MemoryStream]::new()
+      $bitmap.Save($memory, [System.Drawing.Imaging.ImageFormat]::Png)
+      $random = [Windows.Storage.Streams.InMemoryRandomAccessStream]::new()
+      $writer = [Windows.Storage.Streams.DataWriter]::new($random)
+      $writer.WriteBytes($memory.ToArray())
+      [void](Wait-SearchWinRt ($writer.StoreAsync()) ([uint32]))
+      [void](Wait-SearchWinRt ($writer.FlushAsync()) ([bool]))
+      [void]$writer.DetachStream(); $writer.Dispose(); $random.Seek(0)
+      $decoder = Wait-SearchWinRt ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($random)) ([Windows.Graphics.Imaging.BitmapDecoder])
+      $software = Wait-SearchWinRt ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+      $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new("zh-Hans-CN")); if ($engine -eq $null) { throw "ocr_unavailable" }
+      $ocrResult = Wait-SearchWinRt ($engine.RecognizeAsync($software)) ([Windows.Media.Ocr.OcrResult]) 2200
+      foreach ($line in $ocrResult.Lines) {
+        $text = ([string]$line.Text).Normalize([Text.NormalizationForm]::FormKC).Trim()
+        if (-not $text) { continue }
+        $compactText = [Text.RegularExpressions.Regex]::Replace($text, "\s+", "").ToLowerInvariant()
+        if ($compactText -match "搜一搜|网络搜索|搜索网络") { $webSearchVisible = $true; continue }
+        $words = @($line.Words); if ($words.Count -eq 0) { continue }
+        $left = ($words | ForEach-Object { [double]$_.BoundingRect.X } | Measure-Object -Minimum).Minimum
+        $top = ($words | ForEach-Object { [double]$_.BoundingRect.Y } | Measure-Object -Minimum).Minimum
+        $right = ($words | ForEach-Object { [double]($_.BoundingRect.X + $_.BoundingRect.Width) } | Measure-Object -Maximum).Maximum
+        $bottom = ($words | ForEach-Object { [double]($_.BoundingRect.Y + $_.BoundingRect.Height) } | Measure-Object -Maximum).Maximum
+        [void]$visualCandidates.Add(@{ text = $text; x = [int]($cropLeft + (($left + $right) / 2)); y = [int]($cropTop + (($top + $bottom) / 2)) })
+      }
+      $ocrOk = $true
+    } catch {
+      $ocrOk = $false
+    } finally {
+      if ($graphics) { $graphics.Dispose() }; if ($bitmap) { $bitmap.Dispose() }; if ($software) { $software.Dispose() }; if ($random) { $random.Dispose() }; if ($memory) { $memory.Dispose() }
+    }
+  }
+  @{ ok = $true; title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; searchQuery = $query; inputLeaseTick = [uint64]$script:inputLeaseTick; searchResultObservation = @{ uiaCandidates = $uiaCandidates.ToArray(); visualCandidates = $visualCandidates.ToArray(); ocrOk = $ocrOk; webSearchVisible = $webSearchVisible } } | ConvertTo-Json -Compress -Depth 6
+  exit
+} elseif (-not [string]::IsNullOrWhiteSpace($resultAutomationId)) {
+  # Kept for the explicitly named File Transfer Assistant flow.
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$matched.hWnd)
+  if ($root -ne $null) {
+    $condition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, $resultAutomationId)
+    $item = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    if ($item -ne $null -and -not $item.Current.IsOffscreen) {
+      $itemRect = $item.Current.BoundingRectangle
+      $clickX = [int]($itemRect.Left + ($itemRect.Width / 2)); $clickY = [int]($itemRect.Top + ($itemRect.Height / 2))
+      [void][Win32WechatWindowSearch]::SetCursorPos($clickX, $clickY); [Win32WechatWindowSearch]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero); [Win32WechatWindowSearch]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
+      $resultOpened = $true; Start-Sleep -Milliseconds 500
+    }
   }
 } elseif ($pressEnter) {
   Assert-ExactSearchForeground
@@ -1726,6 +1787,44 @@ if (-not [string]::IsNullOrWhiteSpace($resultAutomationId)) {
   $resultOpened = $true
 }
 @{ ok = ([string]::IsNullOrWhiteSpace($resultAutomationId) -or $resultOpened); reason = $(if (-not [string]::IsNullOrWhiteSpace($resultAutomationId) -and -not $resultOpened) { "exact_search_result_not_found" } else { "" }); title = $matched.title; focused = $matched.focused; processName = $matched.processName; pid = $matched.pid; hWnd = $matched.hWnd; exactSearchOpened = [bool]$resultOpened; searchQuery = $query; resultAutomationId = $resultAutomationId } | ConvertTo-Json -Compress
+`;
+
+const CLICK_SEARCH_RESULT_SCRIPT = `
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class Win32WechatSearchResultClick {
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
+  [StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
+  [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+  [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
+  public static uint GetLastInputTick() { LASTINPUTINFO info = new LASTINPUTINFO(); info.cbSize = (uint)Marshal.SizeOf(info); return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue; }
+}
+"@
+$expectedHWnd = [int64][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND")
+$expectedPid = [int][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")
+$expectedInputTick = [uint64][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_INPUT_TICK")
+$clickX = [int][Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_RESULT_X")
+$clickY = [int][Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_RESULT_Y")
+$foreground = [Win32WechatSearchResultClick]::GetForegroundWindow()
+if ($foreground.ToInt64() -ne $expectedHWnd) { @{ ok=$false; reason="wechat_window_not_foreground" } | ConvertTo-Json -Compress; exit }
+$currentTick = [uint64][Win32WechatSearchResultClick]::GetLastInputTick()
+if ($currentTick -ne $expectedInputTick) { @{ ok=$false; reason="wechat_external_input_detected"; safety_diagnostics=@{ phase="click_search_result"; expected_input_tick=$expectedInputTick; current_input_tick=$currentTick; expected_hWnd=$expectedHWnd; foreground_hWnd=$foreground.ToInt64() } } | ConvertTo-Json -Compress -Depth 4; exit }
+$point = New-Object Win32WechatSearchResultClick+POINT; $point.X=$clickX; $point.Y=$clickY
+$hit = [Win32WechatSearchResultClick]::WindowFromPoint($point); $root = [Win32WechatSearchResultClick]::GetAncestor($hit, 2)
+[uint32]$hitPid=0; [void][Win32WechatSearchResultClick]::GetWindowThreadProcessId($hit, [ref]$hitPid)
+if ($root.ToInt64() -ne $expectedHWnd -or [int]$hitPid -ne $expectedPid) { @{ ok=$false; reason="wechat_target_changed" } | ConvertTo-Json -Compress; exit }
+[void][Win32WechatSearchResultClick]::SetCursorPos($clickX,$clickY)
+[Win32WechatSearchResultClick]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero); [Win32WechatSearchResultClick]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
+Start-Sleep -Milliseconds 500
+if ([Win32WechatSearchResultClick]::GetForegroundWindow().ToInt64() -ne $expectedHWnd) { @{ ok=$false; reason="wechat_window_not_foreground"; actionAttempted=$true } | ConvertTo-Json -Compress; exit }
+@{ ok=$true; pid=$expectedPid; hWnd=$expectedHWnd; exactSearchOpened=$true } | ConvertTo-Json -Compress
 `;
 
 function inputWechatSearchQuery(query, context = {}) {
@@ -1895,7 +1994,34 @@ function runPowerShellAsync(script, env = {}, options = {}) {
 
 function openWechatSearchResult(query, context = {}) {
   if (!String(query ?? "").trim()) return { ok: false };
-  return runPowerShell(SEARCH_SCRIPT, {
+  const runner = typeof context.runner === "function" ? context.runner : runPowerShell;
+  const clickRunner = typeof context.clickRunner === "function" ? context.clickRunner : runner;
+  if (context.searchIdentity) {
+    const observed = runner(SEARCH_SCRIPT, {
+      XIAOXI_SEARCH_QUERY: String(query),
+      XIAOXI_OBSERVE_LOCAL_RESULTS: "1",
+      XIAOXI_EXPECTED_PID: String(context.pid ?? ""),
+      XIAOXI_EXPECTED_HWND: String(context.hWnd ?? ""),
+      XIAOXI_WECHAT_MIN_IDLE_MS: String(context.minIdleMs ?? 0)
+    }, { ensure: false });
+    if (!observed?.ok) return observed || { ok: false, reason: "wechat_operation_failed" };
+    const resolution = resolveWechatSearchResultObservation(observed.searchResultObservation, {
+      query,
+      expectedName: context.searchIdentity.expectedName
+    });
+    if (resolution.status !== "selected") return { ...observed, ok: false, reason: resolution.reason };
+    const clicked = clickRunner(CLICK_SEARCH_RESULT_SCRIPT, {
+      XIAOXI_EXPECTED_PID: String(observed.pid ?? context.pid ?? ""),
+      XIAOXI_EXPECTED_HWND: String(observed.hWnd ?? context.hWnd ?? ""),
+      XIAOXI_EXPECTED_INPUT_TICK: String(observed.inputLeaseTick ?? ""),
+      XIAOXI_SEARCH_RESULT_X: String(resolution.candidate.x),
+      XIAOXI_SEARCH_RESULT_Y: String(resolution.candidate.y)
+    }, { ensure: false });
+    return clicked?.ok
+      ? { ...observed, ...clicked, searchQuery: String(query), searchResultMode: resolution.mode }
+      : clicked;
+  }
+  return runner(SEARCH_SCRIPT, {
     XIAOXI_SEARCH_QUERY: String(query),
     XIAOXI_PRESS_ENTER: "1",
     XIAOXI_SEARCH_RESULT_AUTOMATION_ID: String(context.resultAutomationId ?? ""),
@@ -1907,7 +2033,36 @@ function openWechatSearchResult(query, context = {}) {
 
 function openWechatSearchResultAsync(query, context = {}) {
   if (!String(query ?? "").trim()) return Promise.resolve({ ok: false });
-  return runPowerShellAsync(SEARCH_SCRIPT, {
+  const runner = typeof context.runner === "function" ? context.runner : runPowerShellAsync;
+  const clickRunner = typeof context.clickRunner === "function" ? context.clickRunner : runner;
+  if (context.searchIdentity) {
+    return (async () => {
+      const observed = await runner(SEARCH_SCRIPT, {
+        XIAOXI_SEARCH_QUERY: String(query),
+        XIAOXI_OBSERVE_LOCAL_RESULTS: "1",
+        XIAOXI_EXPECTED_PID: String(context.pid ?? ""),
+        XIAOXI_EXPECTED_HWND: String(context.hWnd ?? ""),
+        XIAOXI_WECHAT_MIN_IDLE_MS: String(context.minIdleMs ?? 0)
+      }, { ensure: false });
+      if (!observed?.ok) return observed || { ok: false, reason: "wechat_operation_failed" };
+      const resolution = resolveWechatSearchResultObservation(observed.searchResultObservation, {
+        query,
+        expectedName: context.searchIdentity.expectedName
+      });
+      if (resolution.status !== "selected") return { ...observed, ok: false, reason: resolution.reason };
+      const clicked = await clickRunner(CLICK_SEARCH_RESULT_SCRIPT, {
+        XIAOXI_EXPECTED_PID: String(observed.pid ?? context.pid ?? ""),
+        XIAOXI_EXPECTED_HWND: String(observed.hWnd ?? context.hWnd ?? ""),
+        XIAOXI_EXPECTED_INPUT_TICK: String(observed.inputLeaseTick ?? ""),
+        XIAOXI_SEARCH_RESULT_X: String(resolution.candidate.x),
+        XIAOXI_SEARCH_RESULT_Y: String(resolution.candidate.y)
+      }, { ensure: false });
+      return clicked?.ok
+        ? { ...observed, ...clicked, searchQuery: String(query), searchResultMode: resolution.mode }
+        : clicked;
+    })();
+  }
+  return runner(SEARCH_SCRIPT, {
     XIAOXI_SEARCH_QUERY: String(query),
     XIAOXI_PRESS_ENTER: "1",
     XIAOXI_SEARCH_RESULT_AUTOMATION_ID: String(context.resultAutomationId ?? ""),

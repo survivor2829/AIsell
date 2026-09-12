@@ -10,6 +10,7 @@ const {
   openWechatSearchResult,
   verifyWechatCurrentConversation
 } = require("./wechat_window_driver.cjs");
+const { isVerifiedWechatSearchResultMode } = require("./wechat_search_result_resolver.cjs");
 
 const DEFAULT_STATE = {
   version: 1,
@@ -300,6 +301,7 @@ function wechatWindowReason(result) {
     "wechat_clipboard_read_failed",
     "wechat_window_identity_missing",
     "exact_search_result_not_found",
+    "search_result_identity_unverified",
     "powershell_output_invalid",
     "powershell_timeout",
     "powershell_failed"
@@ -326,6 +328,7 @@ function wechatWindowBlockText(reason) {
   if (reason === "wechat_clipboard_read_failed") return "已停止：无法读取剪贴板，可能正被其他程序占用，请稍后重试";
   if (reason === "wechat_window_identity_missing") return "已停止：缺少已确认的微信窗口身份，请重新启动任务";
   if (reason === "exact_search_result_not_found") return "已停止：未找到指定联系人的准确搜索结果";
+  if (reason === "search_result_identity_unverified") return "已暂停：搜索结果身份无法唯一确认，本次没有点击，也不会自动跳过";
   if (reason === "powershell_output_invalid") return "已停止：微信操作程序没有返回有效结果，请提交本次诊断";
   return "已停止：微信操作失败，尚未取得具体原因，请提交本次诊断";
 }
@@ -666,14 +669,13 @@ function clickSearchResultDryRun(
 
   const openStartedAt = Date.now();
   const wechatId = String(state.selected_customer?.wechatId ?? "").trim();
-  const resultAutomationId = wechatId && searchQuery === wechatId
-    ? `search_item_function_${wechatId}`
-    : "";
   const exactWindow = {
     pid: Number(windowContext.pid) || undefined,
     hWnd: String(windowContext.hWnd || "").trim() || undefined,
     minIdleMs: Number(windowContext.minIdleMs) || 0,
-    ...(resultAutomationId ? { resultAutomationId } : {})
+    ...(wechatId && searchQuery === wechatId
+      ? { searchIdentity: { query: searchQuery, expectedName: customerName } }
+      : {})
   };
   const inputResult = openResultDriver(searchQuery, exactWindow);
   const openResultMs = Date.now() - openStartedAt;
@@ -699,6 +701,7 @@ function clickSearchResultDryRun(
     && searchQuery === wechatId
     && inputResult.exactSearchOpened === true
     && inputResult.searchQuery === searchQuery
+    && isVerifiedWechatSearchResultMode(inputResult.searchResultMode)
     && ["Weixin", "WeChat"].includes(inputResult.processName)
     && Boolean(inputResult.pid)
     && Boolean(inputResult.hWnd);
