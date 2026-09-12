@@ -230,7 +230,8 @@ function assertBuildPreconditions(edition, {
     contentEngineRuntime,
     remotionRuntime,
     sidecarBuildRoot,
-    remotionRuntimeRoot
+    remotionRuntimeRoot,
+    componentBaseRoot: String(environment.XIAOXI_COMPONENT_BASE_ROOT || "")
   };
   if (artifactType === "delivery" && !isCommercialDeliveryReady(sourceState)) {
     throw new Error("Delivery requires commercial Remotion and media-tools release evidence");
@@ -265,21 +266,43 @@ function buildPortableStaging(edition, paths, sourceState) {
     ...packagedBuildInfo,
     artifactType: sourceState.artifactType
   }, null, 2)}\n`, "utf8");
-  copyProductDetailRuntime(sourceState.productDetailRuntime, target);
-  copyContentEngineRuntime(sourceState.contentEngineRuntime, target);
-  const remotionRuntime = copyRemotionRuntime(sourceState.remotionRuntime, target);
+  let acceptedRuntimeManifest = null;
+  if (paths.componentsOnly && sourceState.componentBaseRoot) {
+    const manifestFile = path.join(sourceState.componentBaseRoot, "版本清单.json");
+    if (fs.existsSync(manifestFile)) {
+      const accepted = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+      const productDetailRoot = path.join(sourceState.componentBaseRoot, "resources", "product-detail");
+      const contentEngineRoot = path.join(sourceState.componentBaseRoot, "resources", "content-engine");
+      const remotionPackagingRoot = path.join(sourceState.componentBaseRoot, "remotion-packaging");
+      if (accepted.productDetailSidecar?.desktopSourceTreeSha256 === sourceState.productDetailRuntime.currentDesktopSourceTreeSha256
+        && accepted.contentEngineSidecar?.sourceTreeSha256 === sourceState.contentEngineRuntime.currentSourceTreeSha256
+        && accepted.remotionRuntime?.manifestSha256 === sourceState.remotionRuntime.manifestSha256
+        && treeSha256(productDetailRoot) === accepted.productDetailSidecar.treeSha256
+        && treeSha256(contentEngineRoot) === accepted.contentEngineSidecar.treeSha256) {
+        fs.cpSync(productDetailRoot, path.join(target, "resources", "product-detail"), { recursive: true, errorOnExist: true, force: false });
+        fs.cpSync(contentEngineRoot, path.join(target, "resources", "content-engine"), { recursive: true, errorOnExist: true, force: false });
+        fs.cpSync(remotionPackagingRoot, path.join(target, "remotion-packaging"), { recursive: true, errorOnExist: true, force: false });
+        acceptedRuntimeManifest = accepted;
+      }
+    }
+  }
+  if (!acceptedRuntimeManifest) {
+    copyProductDetailRuntime(sourceState.productDetailRuntime, target);
+    copyContentEngineRuntime(sourceState.contentEngineRuntime, target);
+  }
+  const remotionRuntime = acceptedRuntimeManifest?.remotionRuntime || copyRemotionRuntime(sourceState.remotionRuntime, target);
 
   const packageJson = JSON.parse(fs.readFileSync(path.join(desktopDir, "package.json"), "utf8"));
   require("../src/shared/customer-release-notes.cjs").releaseNotes(packageJson.version);
   const electronPackage = JSON.parse(fs.readFileSync(path.join(desktopDir, "node_modules", "electron", "package.json"), "utf8"));
   const rendererMarker = JSON.parse(fs.readFileSync(path.join(desktopDir, edition === "test" ? "dist-development" : "dist-pilot", "build-edition.json"), "utf8"));
   const capabilityMatrix = JSON.parse(fs.readFileSync(path.join(desktopDir, "release-capabilities.json"), "utf8"));
-  const contentEngineSidecar = createContentEngineReleaseDescriptor(
+  const contentEngineSidecar = acceptedRuntimeManifest?.contentEngineSidecar || createContentEngineReleaseDescriptor(
     sourceState.contentEngineRuntime,
     sourceState.commit,
     sourceState.artifactType
   );
-  contentEngineSidecar.treeSha256 = treeSha256(path.join(target, "resources", "content-engine"));
+  if (!acceptedRuntimeManifest) contentEngineSidecar.treeSha256 = treeSha256(path.join(target, "resources", "content-engine"));
   const manifest = {
     product: PRODUCT_NAME,
     edition,
@@ -295,7 +318,7 @@ function buildPortableStaging(edition, paths, sourceState) {
     wxKeySha256: NATIVE_LIBRARY_SHA256["wx_key.dll"],
     databaseDecryptorSha256: DATABASE_DECRYPTOR_SHA256,
     nativeLibrarySha256: NATIVE_LIBRARY_SHA256,
-    productDetailSidecar: createReleaseDescriptor(
+    productDetailSidecar: acceptedRuntimeManifest?.productDetailSidecar || createReleaseDescriptor(
       sourceState.productDetailRuntime,
       sourceState.commit
     ),
