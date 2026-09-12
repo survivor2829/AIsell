@@ -15,7 +15,7 @@ async function checkTouchMessageSequence() {
   const secondContact = { id: "selected-two", name: "第二位测试客户", nickname: "第二位测试客户", wechatId: "test_customer_two", wechatAccountId: "test_account", allowed: true };
   const imageId = "a".repeat(64);
   const calls = [];
-  let failImage = true, unknown = false, loginRequired = false, searchUnavailable = false, searchIdentityUnverified = false, atomicMismatch = false, enabled = true, pauseAfterText = false;
+  let failImage = true, unknown = false, loginRequired = false, searchUnavailable = false, searchIdentityUnverified = false, externalInputBlocks = 0, atomicMismatch = false, enabled = true, pauseAfterText = false;
   const clock = new Date(2026, 8, 3, 12, 0, 0);
   const config = {
     dataDir: root, now: () => clock, random: () => 0, readContacts: () => [contact, secondContact],
@@ -36,6 +36,10 @@ async function checkTouchMessageSequence() {
       }
       if (kind === "text" && options.contactId === contact.id && searchIdentityUnverified) {
         return { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified", error: "搜索结果身份无法唯一确认" };
+      }
+      if (kind === "text" && externalInputBlocks > 0) {
+        externalInputBlocks -= 1;
+        return { ok: false, send_attempted: false, blocked_reason: "wechat_external_input_detected", action: "click-search-result-dry-run", error: "检测到人工输入" };
       }
       if (kind === "text" && options.contactId === contact.id && atomicMismatch) {
         return { ok: false, send_attempted: false, blocked_reason: "atomic_conversation_changed", error: "当前会话身份发生变化" };
@@ -222,7 +226,13 @@ async function checkTouchMessageSequence() {
   const unverifiedPayload = unverifiedWorkflow.prepareWorkflowTask({ script: "搜索身份不明隔离测试", contactIds: [contact.id, secondContact.id] });
   const unverifiedRecord = { id: crypto.randomUUID(), payload: unverifiedPayload, progress: { done: 0 }, status: "running" };
   result = await unverifiedWorkflow.runWorkflowStep(unverifiedRecord, context);
-  assert.equal(result.status, "pending", "搜索结果身份未确认且明确未发送时应隔离当前联系人并继续任务");
+  assert.equal(result.status, "pending", "搜索结果身份未确认且明确未发送时应先恢复重试");
+  assert.equal(result.progress.done, 0, "第一次 OCR 身份波动不能立即跳过联系人");
+  assert.equal(result.waitingReason, "wechat_identity_recovery");
+  result = await unverifiedWorkflow.runWorkflowStep(unverifiedRecord, context);
+  assert.equal(result.progress.done, 0, "第二次 OCR 身份波动仍应保留当前联系人做最后一次恢复");
+  result = await unverifiedWorkflow.runWorkflowStep(unverifiedRecord, context);
+  assert.equal(result.status, "pending", "有界恢复仍失败后才隔离当前联系人并继续任务");
   assert.equal(result.progress.done, 1);
   assert.equal(result.result.skipped, true);
   const unverifiedTaskDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(unverifiedRecord.id).digest("hex"));
@@ -232,6 +242,18 @@ async function checkTouchMessageSequence() {
   searchIdentityUnverified = false;
   result = await createTouchWorkflow(config).runWorkflowStep(unverifiedRecord, context);
   assert.equal(result.status, "completed", "隔离未确认搜索结果后仍应完成后续联系人");
+
+  externalInputBlocks = 1;
+  const inputRecoveryWorkflow = createTouchWorkflow(config);
+  const inputRecoveryPayload = inputRecoveryWorkflow.prepareWorkflowTask({ script: "发送前输入占用恢复测试", contactIds: [contact.id] });
+  const inputRecoveryRecord = { id: crypto.randomUUID(), payload: inputRecoveryPayload, progress: { done: 0 }, status: "running" };
+  result = await inputRecoveryWorkflow.runWorkflowStep(inputRecoveryRecord, context);
+  assert.equal(result.status, "pending", "发送前的临时输入占用必须保持任务运行而不是全局停机");
+  assert.equal(result.retryAfterMs, 15000);
+  assert.equal(result.waitingReason, "wechat_input_recovery");
+  assert.equal(result.progress.done, 0, "临时占用不能跳过当前联系人");
+  result = await inputRecoveryWorkflow.runWorkflowStep(inputRecoveryRecord, context);
+  assert.equal(result.status, "completed", "输入恢复后应自动继续当前联系人并完成触达");
 
   atomicMismatch = true;
   const atomicWorkflow = createTouchWorkflow(config);

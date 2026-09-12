@@ -58,6 +58,63 @@ function labelledWechatId(candidate) {
   return match?.[1] || "";
 }
 
+function wechatIdLabelValue(candidate) {
+  const match = normalized(candidate?.text).match(/^(?:微信号|微信id|wechatid)[:：]?(.*)$/u);
+  return match ? match[1] : null;
+}
+
+function followsIdentityFragment(previous, candidate) {
+  const overlap = Math.min(Number(previous.bottom), Number(candidate.bottom))
+    - Math.max(Number(previous.top), Number(candidate.top));
+  const previousHeight = Number(previous.bottom) - Number(previous.top);
+  const candidateHeight = Number(candidate.bottom) - Number(candidate.top);
+  const scale = Math.max(previousHeight, candidateHeight);
+  const sameLine = overlap >= Math.min(previousHeight, candidateHeight) / 2
+    && Number(candidate.left) >= Number(previous.left)
+    && Number(candidate.left) - Number(previous.right) <= scale * 2.5;
+  const verticalGap = Number(candidate.top) - Number(previous.bottom);
+  const stacked = verticalGap >= -scale / 4
+    && verticalGap <= scale * 1.5
+    && Number(candidate.left) <= Number(previous.right) + scale * 2.5
+    && Number(candidate.right) >= Number(previous.left) - scale;
+  return sameLine || stacked;
+}
+
+function labelledWechatIdCandidates(candidates, query, webSearchTop) {
+  const target = normalized(query);
+  const labelled = candidates.filter((candidate) => wechatIdLabelValue(candidate) !== null);
+  return labelled.map((anchor) => {
+    let value = wechatIdLabelValue(anchor);
+    if (!target || value === target || !target.startsWith(value)) return anchor;
+    let previous = anchor;
+    const acceptedFragments = [];
+    const fragments = candidates
+      .filter((candidate) => candidate !== anchor
+        && wechatIdLabelValue(candidate) === null
+        && Number(candidate.bottom) <= webSearchTop
+        && (Number(candidate.top) >= Number(anchor.top) - (Number(anchor.bottom) - Number(anchor.top)) / 4))
+      .sort((left, right) => Number(left.top) - Number(right.top) || Number(left.left) - Number(right.left));
+    for (const fragment of fragments) {
+      if (!followsIdentityFragment(previous, fragment)) continue;
+      const next = value + normalized(fragment.text);
+      if (!target.startsWith(next)) continue;
+      value = next;
+      previous = fragment;
+      acceptedFragments.push(fragment);
+      if (value === target) {
+        return {
+          ...anchor,
+          text: `${anchor.text}${acceptedFragments.map((item) => item.text).join("")}`,
+          right: Math.max(Number(anchor.right), Number(fragment.right)),
+          bottom: Math.max(Number(anchor.bottom), Number(fragment.bottom)),
+          reconstructed: true
+        };
+      }
+    }
+    return anchor;
+  });
+}
+
 function isNetworkSearchLabel(candidate, query) {
   const text = normalized(candidate?.text);
   const expectedQuery = normalized(query);
@@ -121,7 +178,8 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
     || reportedWebSearchTop < cropBounds.top || reportedWebSearchTop >= cropBounds.bottom) {
     return { status: "unverified", reason: "search_result_identity_unverified" };
   }
-  const labelledCandidates = visualCandidates.filter((candidate) => labelledWechatId(candidate));
+  const labelledCandidates = labelledWechatIdCandidates(visualCandidates, query, webSearchTop)
+    .filter((candidate) => labelledWechatId(candidate));
   const exactLabelledCandidates = labelledCandidates.filter((candidate) => labelledWechatId(candidate) === normalized(query));
   const exactLocalCandidates = exactLabelledCandidates.filter((candidate) => Number(candidate.bottom) <= webSearchTop);
   if (exactLocalCandidates.length === 1 && labelledCandidates.length === 1) {

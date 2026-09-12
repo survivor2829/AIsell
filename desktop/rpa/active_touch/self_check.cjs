@@ -1512,6 +1512,36 @@ try {
     "an exact labelled WeChat ID above the web-search boundary must select the local result row"
   );
   assert.equal(isVerifiedWechatSearchResultMode("exact_wechat_id_visual"), true, "the strict labelled-ID visual result must be accepted by the conversation gate");
+  const splitWechatIdResult = resolveWechatSearchResultObservation({
+    uiaCandidates: [],
+    ocrOk: true,
+    cropBounds: strictCrop,
+    visualCandidates: [
+      { text: "测试客户", left: 92, top: 126, right: 168, bottom: 148, x: 130, y: 137 },
+      { text: "微信号：", left: 92, top: 154, right: 164, bottom: 176, x: 128, y: 165 },
+      { text: "CB", left: 170, top: 154, right: 202, bottom: 176, x: 186, y: 165 },
+      { text: " 1668 ", left: 206, top: 154, right: 266, bottom: 176, x: 236, y: 165 }
+    ],
+    webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+    webSearchTop: 224
+  }, { query: "cb1668", expectedName: "测试客户" });
+  assert.equal(splitWechatIdResult.status, "selected", "adjacent OCR fragments of the labelled WeChat ID must be reconstructed before identity rejection");
+  assert.equal(splitWechatIdResult.mode, "exact_wechat_id_visual");
+  assert.equal(splitWechatIdResult.candidate.x, 128, "the reconstructed identity must click the labelled local row, not a lower search echo");
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [
+        { text: "微信号：", left: 92, top: 154, right: 164, bottom: 176, x: 128, y: 165 },
+        { text: "CB", left: 170, top: 154, right: 202, bottom: 176, x: 186, y: 165 },
+        { text: "1669", left: 206, top: 154, right: 266, bottom: 176, x: 236, y: 165 }
+      ],
+      webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "format tolerance must not turn a different reconstructed WeChat ID into the target"
+  );
   assert.equal(
     resolveWechatSearchResultObservation({
       uiaCandidates: [],

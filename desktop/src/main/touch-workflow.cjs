@@ -20,6 +20,8 @@ const {
 } = require("../../rpa/active_touch/touch_task_state.cjs");
 
 const UNCERTAIN_SEND_STATES = new Set(["sending", "prepared", "clicked", "outcome_unknown"]);
+const PRE_SEND_INPUT_RECOVERY_WAIT_MS = 15_000;
+const IDENTITY_RECOVERY_ATTEMPTS = 2;
 const IDENTITY_SKIP_REASONS = new Set([
   "contact_unavailable",
   "exact_search_result_not_found",
@@ -52,6 +54,19 @@ function createTouchWorkflow(options = {}) {
   function identitySkipReason(result) {
     const code = String(result?.blocked_reason || result?.state?.blocked_reason || "");
     return IDENTITY_SKIP_REASONS.has(code) ? code : "";
+  }
+
+  function isRecoverablePreSendInputBlock(result) {
+    if (result?.send_attempted !== false) return false;
+    const reason = String(result?.blocked_reason || result?.reason || "");
+    const action = String(result?.action || "");
+    if (reason === "wechat_external_input_detected") return action === "click-search-result-dry-run";
+    const safety = result?.safety_diagnostics && typeof result.safety_diagnostics === "object"
+      ? result.safety_diagnostics
+      : {};
+    return /^message_input_failed_wechat_user_active(?:_attempts_[1-9]\d*)?$/u.test(reason)
+      && action === "input-message-dry-run"
+      && String(safety.phase || "") === "pre_input";
   }
 
   function prepareWorkflowTask(input = {}) {
@@ -309,6 +324,36 @@ function createTouchWorkflow(options = {}) {
       const notAttempted = result?.send_attempted === false || result?.send_result === "not_attempted";
       if (notAttempted && !["prepared", "clicked", "outcome_unknown"].includes(current.status)) {
         const reasonCode = identitySkipReason(result);
+        if (isRecoverablePreSendInputBlock(result)) {
+          current.status = "generated";
+          current.reason = "检测到人工输入，消息尚未写入微信，等待后自动恢复";
+          current.retry_blocked = false;
+          current.send_attempted = false;
+          current.updated_at = now().toISOString();
+          persist();
+          return response("pending", {
+            retryAfterMs: PRE_SEND_INPUT_RECOVERY_WAIT_MS,
+            waitingReason: "wechat_input_recovery",
+            reasonCode: String(result?.blocked_reason || result?.reason || "wechat_external_input_detected"),
+            result: { deliveryStatus: "not_attempted" }
+          });
+        }
+        if (reasonCode === "search_result_identity_unverified"
+          && Math.max(0, Number(current.identity_recovery_attempts) || 0) < IDENTITY_RECOVERY_ATTEMPTS) {
+          current.identity_recovery_attempts = Math.max(0, Number(current.identity_recovery_attempts) || 0) + 1;
+          current.status = "generated";
+          current.reason = `搜索结果识别波动，正在自动恢复（${current.identity_recovery_attempts}/${IDENTITY_RECOVERY_ATTEMPTS}）`;
+          current.retry_blocked = false;
+          current.send_attempted = false;
+          current.updated_at = now().toISOString();
+          persist();
+          return response("pending", {
+            retryAfterMs: current.identity_recovery_attempts * 2_000,
+            waitingReason: "wechat_identity_recovery",
+            reasonCode,
+            result: { deliveryStatus: "not_attempted" }
+          });
+        }
         if (reasonCode) {
           current.status = "identity_skipped";
           current.reason = String(result.error || reasonCode) + "，已跳过当前联系人";
