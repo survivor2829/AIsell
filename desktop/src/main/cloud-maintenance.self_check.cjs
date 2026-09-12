@@ -22,7 +22,9 @@ async function checkBundledAnnouncements(rootDir, config, manifest, sign) {
   assert.equal(controller.status().announcements[0].notes, releaseNotes(version));
   assert.equal(controller.status().stage, "disabled");
   const bundledVersions = bundledAnnouncements(version).map(entry => entry.version);
-  assert.ok(bundledVersions.includes("1.1.0"), "A skipped release is still explained after a full upgrade");
+  const previousVersion = Object.keys(require("../shared/customer-release-notes.json"))
+    .filter(candidate => compareVersions(candidate, version) < 0).sort((a, b) => compareVersions(b, a))[0];
+  assert.ok(previousVersion && bundledVersions.includes(previousVersion), "A skipped recent release is still explained after a full upgrade");
   assert.deepEqual(bundledAnnouncements("1.1.0").map(entry => entry.version), ["1.1.0"], "Do not show future bundled releases");
   for (const entry of controller.status().announcements) controller.markAnnouncementRead(entry.id);
   controller.stop();
