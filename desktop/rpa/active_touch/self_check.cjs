@@ -1433,7 +1433,12 @@ try {
   assert.equal(clickExactWechatIdFallback.state.conversation_verification_mode, "exact_wechat_id_search");
   assert.equal(clickExactWechatIdFallback.state.window_pid, 11);
   assert.equal(clickExactWechatIdFallback.state.window_handle, "22");
-  assert.deepEqual(exactOpenContext, { pid: 11, hWnd: "22", minIdleMs: 0 });
+  assert.deepEqual(exactOpenContext, {
+    pid: 11,
+    hWnd: "22",
+    minIdleMs: 0,
+    resultAutomationId: "search_item_function_internal-test-001"
+  }, "an exact WeChat-ID lookup must target the matching local result instead of pressing Enter on the web-search fallback");
   assert.equal(exactTitleReads, 0, "an exact WeChat-ID result must not repeat title discovery");
   assert.equal(exactConversationVerifications, 0, "an exact WeChat-ID result must not repeat conversation verification");
   assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.open_result_ms), true);
@@ -1845,6 +1850,7 @@ try {
   const searchSource = driverSource.split("const SEARCH_SCRIPT = `")[1].split("`;")[0];
   const developmentDriverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.dev.cjs"), "utf8");
   const sendMessageSource = require("./wechat_window_driver.dev.cjs").SEND_MESSAGE_SCRIPT;
+  const messageBubbleSource = developmentDriverSource.split("const MESSAGE_BUBBLE_PROOF_SCRIPT = `")[1].split("`;\n\nfunction verifyWechatMessageBubble")[0];
   const observeConversationSource = developmentDriverSource.split("const OBSERVE_CONVERSATION_SCRIPT = `")[1].split("`;")[0];
   const clickSendSource = developmentDriverSource.split("function clickWechatSendButton")[1].split("const DETECT_ACTIVE_ACCOUNT_SCRIPT")[0];
   const bubbleVerifierSource = developmentDriverSource.split("function verifyWechatMessageBubble")[1].split("module.exports")[0];
@@ -1879,6 +1885,9 @@ try {
   assert.match(messageDraftSource, /Get-WechatClipboardSnapshot/);
   assert.match(messageDraftSource, /Restore-WechatClipboardSnapshot \$script:draftOldClipboard/);
   assert.doesNotMatch(messageDraftSource, /try \{ Set-Clipboard -Value \$oldClipboard \} catch \{\}/);
+  assert.match(messageBubbleSource, /Get-WechatClipboardSnapshot/, "message proof must preserve non-text clipboard data before reading the draft");
+  assert.match(messageBubbleSource, /Restore-WechatClipboardSnapshot \$oldClipboard/, "message proof must restore the original clipboard snapshot after reading the draft");
+  assert.doesNotMatch(messageBubbleSource, /Set-Clipboard -Value \$oldClipboard/, "message proof must not collapse the original clipboard to plain text");
   assert.match(searchSource, /public static bool AtomicUnicodeText\(string text\)/);
   assert.match(searchSource, /SendInput\(\(uint\)inputs\.Length, inputs, Marshal\.SizeOf\(typeof\(INPUT\)\)\)/);
   assert.match(searchSource, /AtomicUnicodeText\(\$query\)/);

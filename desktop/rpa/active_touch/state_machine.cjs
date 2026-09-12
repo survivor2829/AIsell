@@ -665,10 +665,15 @@ function clickSearchResultDryRun(
   }
 
   const openStartedAt = Date.now();
+  const wechatId = String(state.selected_customer?.wechatId ?? "").trim();
+  const resultAutomationId = wechatId && searchQuery === wechatId
+    ? `search_item_function_${wechatId}`
+    : "";
   const exactWindow = {
     pid: Number(windowContext.pid) || undefined,
     hWnd: String(windowContext.hWnd || "").trim() || undefined,
-    minIdleMs: Number(windowContext.minIdleMs) || 0
+    minIdleMs: Number(windowContext.minIdleMs) || 0,
+    ...(resultAutomationId ? { resultAutomationId } : {})
   };
   const inputResult = openResultDriver(searchQuery, exactWindow);
   const openResultMs = Date.now() - openStartedAt;
@@ -690,7 +695,6 @@ function clickSearchResultDryRun(
     return block(baseDir, "click search result dry-run", clearConversationState(state, reason), reason, wechatWindowBlockText(reason));
   }
 
-  const wechatId = String(state.selected_customer?.wechatId ?? "").trim();
   const exactWechatIdSearch = Boolean(wechatId)
     && searchQuery === wechatId
     && inputResult.exactSearchOpened === true

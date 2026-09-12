@@ -2,6 +2,7 @@ const {
   runPowerShell,
   runPowerShellAsync
 } = require("./wechat_window_driver.cjs");
+const { WECHAT_CLIPBOARD_POWERSHELL } = require("./wechat_clipboard.cjs");
 
 const WECHAT_SEND_BUTTON_OFFSETS = { right: 64, bottom: 42 };
 // Logical pixels wholly inside the chat header; exclude the message viewport,
@@ -795,6 +796,7 @@ const MESSAGE_BUBBLE_PROOF_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName System.Windows.Forms
+${WECHAT_CLIPBOARD_POWERSHELL}
 Add-Type @"
 using System;
 using System.Text;
@@ -870,8 +872,13 @@ function Read-InputDraft {
   if (-not $sameWindow) { return @{ ok = $false; reason = "wechat_window_not_foreground"; sameWindow = $false; isEmpty = $false; text = "" } }
   $oldPoint = New-Object Win32WechatMessageProof+POINT
   [void][Win32WechatMessageProof]::GetCursorPos([ref]$oldPoint)
-  $oldClipboard = ""
-  try { $oldClipboard = Get-Clipboard -Raw -ErrorAction SilentlyContinue } catch {}
+  $oldClipboard = $null
+  try {
+    $oldClipboard = Get-WechatClipboardSnapshot
+  } catch {
+    $reason = $(if ($_.Exception.Message -eq "wechat_clipboard_restore_unsupported") { "wechat_clipboard_restore_unsupported" } else { "wechat_clipboard_read_failed" })
+    return @{ ok = $false; reason = $reason; sameWindow = $true; isEmpty = $false; text = "" }
+  }
   $clipboardOwned = $false
   $result = @{ ok = $false; reason = "input_draft_read_failed"; sameWindow = $true; isEmpty = $false; text = "" }
   try {
@@ -908,7 +915,9 @@ function Read-InputDraft {
       return @{ ok = $false; reason = "wechat_window_not_foreground"; sameWindow = $false; isEmpty = $false; text = "" }
     }
     $sentinel = "__XIAOXI_EMPTY_DRAFT_" + [Guid]::NewGuid().ToString("N")
-    Set-Clipboard -Value $sentinel
+    $sentinelData = New-Object System.Windows.Forms.DataObject
+    $sentinelData.SetText($sentinel, [System.Windows.Forms.TextDataFormat]::UnicodeText)
+    [System.Windows.Forms.Clipboard]::SetDataObject($sentinelData, $true, 5, 100)
     $clipboardOwned = $true
     if ([Win32WechatMessageProof]::GetForegroundWindow() -ne $expectedHWnd) {
       return @{ ok = $false; reason = "wechat_window_not_foreground"; sameWindow = $false; isEmpty = $false; text = "" }
@@ -923,14 +932,14 @@ function Read-InputDraft {
     if ([Win32WechatMessageProof]::GetForegroundWindow() -ne $expectedHWnd) {
       return @{ ok = $false; reason = "wechat_window_not_foreground"; sameWindow = $false; isEmpty = $false; text = "" }
     }
-    $copied = [string](Get-Clipboard -Raw -ErrorAction Stop)
+    $copied = [System.Windows.Forms.Clipboard]::GetText([System.Windows.Forms.TextDataFormat]::UnicodeText)
     $isEmpty = $copied -ceq $sentinel
     $result = @{ ok = $true; reason = ""; sameWindow = $true; isEmpty = $isEmpty; text = $(if ($isEmpty) { "" } else { $copied }) }
   } catch {
     $result = @{ ok = $false; reason = "input_draft_read_failed"; sameWindow = ([Win32WechatMessageProof]::GetForegroundWindow() -eq $expectedHWnd); isEmpty = $false; text = "" }
   } finally {
     if ([Win32WechatMessageProof]::GetForegroundWindow() -eq $expectedHWnd) {
-      if ($clipboardOwned) { try { Set-Clipboard -Value $oldClipboard } catch {} }
+      if ($clipboardOwned) { try { Restore-WechatClipboardSnapshot $oldClipboard } catch {} }
       [void][Win32WechatMessageProof]::SetCursorPos($oldPoint.X, $oldPoint.Y)
     }
   }
