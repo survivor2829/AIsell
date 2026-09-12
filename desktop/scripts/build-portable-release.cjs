@@ -509,11 +509,12 @@ function buildPortable(edition = "delivery", {
   const stagingZip = path.join(stagingRoot, `${productName}.zip`);
   const canonicalTarget = path.join(releaseDir, productName);
   const canonicalZip = path.join(releaseDir, `${productName}.zip`);
-  function recordComponentValidation() {
+  function recordComponentValidation(candidateRoot) {
     if (edition !== "test") return;
     const file = path.join(releaseDir, "components", edition, "unsigned-component-release.json");
     const metadata = JSON.parse(fs.readFileSync(file, "utf8"));
-    metadata.validation = { gate: "packaged-application", commit: metadata.buildCommit, version: metadata.manifest.version, completedAt: new Date().toISOString() };
+    metadata.validation = { gate: "packaged-application", commit: metadata.buildCommit, version: metadata.manifest.version,
+      completedAt: new Date().toISOString(), candidateRoot };
     fs.writeFileSync(file, JSON.stringify(metadata, null, 2));
     const componentRoot = path.dirname(file);
     const artifacts = Object.entries(metadata.manifest.components).flatMap(([name, value]) => [
@@ -529,9 +530,15 @@ function buildPortable(edition = "delivery", {
     const sourceState = assertBuildPreconditions(edition, { environment, sidecarBuildRoot, remotionRuntimeRoot });
     try {
     buildPortableStaging(edition, { target: stagingTarget, zip: stagingZip, archiveBaseDir: stagingRoot, componentsOnly: true }, sourceState);
+    const metadataFile = path.join(releaseDir, "components", edition, "unsigned-component-release.json");
+    const metadata = JSON.parse(fs.readFileSync(metadataFile, "utf8"));
+    require("./component-base-input.cjs").assertComponentBase(metadata, environment.XIAOXI_COMPONENT_BASE_ROOT || canonicalTarget);
     runPortableSelfCheck(edition, stagingTarget, stagingZip, true);
-    recordComponentValidation();
-    return { componentsOnly: true, stagingCleaned: true };
+    const candidateRoot = path.join(releaseDir, "components", edition, `candidate-${transactionId}`);
+    fs.renameSync(stagingTarget, candidateRoot);
+    recordComponentValidation(candidateRoot);
+    console.log(`Accepted component candidate retained for local upgrade validation: ${candidateRoot}`);
+    return { componentsOnly: true, stagingCleaned: true, candidateRoot };
     } finally {
       try { require("./artifact-retention.cjs").removeOwned(releaseDir, stagingRoot); }
       catch (error) { console.warn(`Component staging cleanup deferred: ${error.message}`); }
@@ -559,7 +566,7 @@ function buildPortable(edition = "delivery", {
   for (const warning of result.cleanupWarnings || []) {
     console.warn(`release cleanup warning: ${warning}`);
   }
-  recordComponentValidation();
+  recordComponentValidation(canonicalTarget);
   if (result.retainedBackups?.length) require("./artifact-retention.cjs").retainArtifacts(releaseDir, `portable-${edition}`, result.retainedBackups);
   for (const backup of result.retainedBackups || []) {
     console.warn(`release rollback artifact retained: ${backup}`);

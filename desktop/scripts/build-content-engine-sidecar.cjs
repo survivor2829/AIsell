@@ -1338,7 +1338,7 @@ function assertFreshOutput(paths) {
   }
 }
 
-function main({ buildRoot = process.env.XIAOXI_SIDECAR_BUILD_ROOT || null } = {}) {
+async function main({ buildRoot = process.env.XIAOXI_SIDECAR_BUILD_ROOT || null } = {}) {
   const paths = resolveBuildPaths(desktopDir, { buildRoot });
   assertBuildInputs(paths);
   fs.mkdirSync(paths.buildRoot, { recursive: true });
@@ -1370,6 +1370,13 @@ function main({ buildRoot = process.env.XIAOXI_SIDECAR_BUILD_ROOT || null } = {}
   if (!fs.existsSync(paths.pyInstallerOutputExe)) {
     throw new Error("PyInstaller did not produce content-engine-worker.exe");
   }
+
+  const referenceFile = process.env.XIAOXI_PYTHON_BASE_REFERENCE;
+  const library = await require("./python-library-archive.cjs").stabilizePythonLibrary(
+    path.join(paths.pyInstallerOutputDir, "_internal", "base_library.zip"),
+    referenceFile ? { file: referenceFile, sha256: process.env.XIAOXI_PYTHON_BASE_SHA256 } : null
+  );
+  console.log(`Python base library: ${library.reused ? "unchanged content; retained accepted archive" : "stable archive for current dependencies"}`);
 
   const session = runRuntimeSelfCheck({
     executable: paths.pyInstallerOutputExe,
@@ -1404,12 +1411,10 @@ function main({ buildRoot = process.env.XIAOXI_SIDECAR_BUILD_ROOT || null } = {}
 }
 
 if (require.main === module) {
-  try {
-    main();
-  } catch (error) {
+  main().catch(error => {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;
-  }
+  });
 }
 
 module.exports = {

@@ -30,7 +30,7 @@
     "release:internal": "node scripts/build-internal-release.cjs",
     "release:components": "node scripts/build-internal-components.cjs",
     "publish:components": "node scripts/publish-component-release.cjs",
-    "publish:internal": "node scripts/publish-cloud-release.cjs",
+    "publish:internal": "node scripts/publish-internal-release.cjs",
     "release:delivery": "node scripts/run-release.cjs delivery",
     "release:upgrade": "node scripts/run-release.cjs upgrade",
     "release:installer": "npm run check:self && npm run check:product-detail-e2e && npm run check:clean-runtime && node scripts/build-installer-release.cjs",

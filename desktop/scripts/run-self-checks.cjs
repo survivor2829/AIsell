@@ -73,6 +73,7 @@ const checks = [
   "scripts/build-content-engine-sidecar.self_check.cjs",
   "scripts/content-engine-release-runtime.self_check.cjs",
   "scripts/release-runtime-cache.self_check.cjs",
+  "scripts/internal-release.self_check.cjs",
   "scripts/portable-runtime-dependencies.self_check.cjs",
   "scripts/installer-release.self_check.cjs",
   "scripts/release-capabilities.self_check.cjs",
