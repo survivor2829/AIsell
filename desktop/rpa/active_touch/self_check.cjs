@@ -1766,6 +1766,68 @@ try {
   assert.equal(draftConsumed.state.post_send_status, "draft_consumed_verified");
   assert.equal(draftConsumed.state.message_bubble_verified, false);
   clearCustomer(dir);
+  fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_confirmation_retry", name: "确认重试客户", wxid: "wxid_confirmation_retry", wechatId: "internal-test-008", wechatAccountId: "internal-account", allowed: true }]), "utf8");
+  selectCustomer(dir, "wxid_confirmation_retry");
+  verifyConversation(dir, "确认重试客户");
+  inputMessageDryRun(dir, "retry confirmation", () => ({ ok: true, draftVerified: true }));
+  send(dir, { dryRun: true, message: "retry confirmation" });
+  verifyRealSendSession(dir, () => ({ ok: true, pid: 18, hWnd: "29", processName: "Weixin", title: "确认重试客户", accountId: "internal-account", accountVerified: true }));
+  setRealSendArm(dir, true);
+  let confirmationAttempts = 0;
+  let sendClickAttempts = 0;
+  let confirmationSessionChecks = 0;
+  const recoveredConfirmation = await sendReal(
+    dir,
+    { message: "retry confirmation", allowRealSend: true, userConfirmed: true },
+    () => {
+      sendClickAttempts += 1;
+      return { ok: true, title: "微信", conversationVerified: true, draftVerified: true, sendAttempted: true };
+    },
+    () => {
+      confirmationSessionChecks += 1;
+      return { ok: true, pid: 18, hWnd: "29", processName: "Weixin", title: "确认重试客户", accountId: "internal-account", accountVerified: true };
+    },
+    (_message, context) => {
+      if (context.phase === "before") return { ok: true, snapshot: { runtimeIds: [], exactCount: 0, draftExact: true } };
+      confirmationAttempts += 1;
+      if (confirmationAttempts === 1) return { ok: false, reason: "input_draft_read_failed", proofDiagnostics: { candidate_count: 0, input_read_ok: false } };
+      return { ok: true, title: "微信", messageText: "retry confirmation", exactMatch: true, outgoing: true, isLatest: true, isNew: true };
+    }
+  );
+  assert.equal(sendClickAttempts, 1, "post-send confirmation recovery must never click send again");
+  assert.equal(confirmationSessionChecks, 2, "a confirmation retry must revalidate the bound account, window and conversation");
+  assert.equal(confirmationAttempts, 2, "a transient post-send proof failure must trigger one read-only confirmation retry");
+  assert.equal(recoveredConfirmation.state.real_send_status, "sent_verified", "a later exact outgoing bubble must recover without another send click");
+  clearCustomer(dir);
+  fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_confirmation_failed", name: "确认失败客户", wxid: "wxid_confirmation_failed", wechatId: "internal-test-009", wechatAccountId: "internal-account", allowed: true }]), "utf8");
+  selectCustomer(dir, "wxid_confirmation_failed");
+  verifyConversation(dir, "确认失败客户");
+  inputMessageDryRun(dir, "failed confirmation", () => ({ ok: true, draftVerified: true }));
+  send(dir, { dryRun: true, message: "failed confirmation" });
+  verifyRealSendSession(dir, () => ({ ok: true, pid: 19, hWnd: "30", processName: "Weixin", title: "确认失败客户", accountId: "internal-account", accountVerified: true }));
+  setRealSendArm(dir, true);
+  let failedConfirmationAttempts = 0;
+  let failedConfirmationSendClicks = 0;
+  const exhaustedConfirmation = await sendReal(
+    dir,
+    { message: "failed confirmation", allowRealSend: true, userConfirmed: true },
+    () => {
+      failedConfirmationSendClicks += 1;
+      return { ok: true, title: "微信", conversationVerified: true, draftVerified: true, sendAttempted: true };
+    },
+    () => ({ ok: true, pid: 19, hWnd: "30", processName: "Weixin", title: "确认失败客户", accountId: "internal-account", accountVerified: true }),
+    (_message, context) => {
+      if (context.phase === "before") return { ok: true, snapshot: { runtimeIds: [], exactCount: 0, draftExact: true } };
+      failedConfirmationAttempts += 1;
+      return { ok: false, reason: "input_draft_read_failed", proofDiagnostics: { candidate_count: 0, input_read_ok: false } };
+    }
+  );
+  assert.equal(failedConfirmationAttempts, 2, "a persistent transient proof failure must exhaust the bounded confirmation retry");
+  assert.equal(failedConfirmationSendClicks, 1, "an exhausted confirmation retry must never click send twice");
+  assert.equal(exhaustedConfirmation.state.real_send_status, "outcome_unknown");
+  assert.equal(exhaustedConfirmation.state.real_send_reason, "input_draft_read_failed");
+  assert.equal(setRealSendArm(dir, true).blocked_reason, "real_send_already_attempted");
+  clearCustomer(dir);
   fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_unknown", name: "未知结果客户", wxid: "wxid_unknown", wechatId: "internal-test-002", wechatAccountId: "internal-account", allowed: true }]), "utf8");
   selectCustomer(dir, "wxid_unknown");
   verifyConversation(dir, "未知结果客户");
@@ -1774,16 +1836,21 @@ try {
   verifyRealSendSession(dir, () => ({ ok: true, pid: 12, hWnd: "23", processName: "Weixin", title: "未知结果客户", accountId: "internal-account", accountVerified: true }));
   setRealSendArm(dir, true);
   const sendTrace = [];
+  let unknownConfirmationAttempts = 0;
   const clickedUnknown = await sendReal(
     dir,
     { message: "second", allowRealSend: true, userConfirmed: true, onDiagnostic: (entry) => sendTrace.push(entry) },
     () => ({ ok: true, conversationVerified: true, draftVerified: true, sendAttempted: true }),
     () => ({ ok: true, pid: 12, hWnd: "23", processName: "Weixin", title: "未知结果客户", accountId: "internal-account", accountVerified: true }),
-    (_message, context) => context.phase === "before"
-      ? { ok: true, snapshot: { lastMessageId: "history-1" } }
-      : { ok: true, messageText: "second", exactMatch: true, outgoing: true, isLatest: true, isNew: false }
+    (_message, context) => {
+      if (context.phase === "before") return { ok: true, snapshot: { lastMessageId: "history-1" } };
+      unknownConfirmationAttempts += 1;
+      return { ok: true, reason: "message_bubble_stale", messageText: "second", exactMatch: true, outgoing: true, isLatest: true, isNew: false };
+    }
   );
+  assert.equal(unknownConfirmationAttempts, 1, "non-transient proof failures must not be retried");
   assert.equal(clickedUnknown.state.real_send_status, "outcome_unknown");
+  assert.equal(clickedUnknown.state.real_send_reason, "message_bubble_stale", "an exhausted confirmation must preserve its concrete proof failure");
   assert.equal(clickedUnknown.send_attempted, true);
   assert.equal(clickedUnknown.state.send_diagnostics.is_new, false);
   assert.equal(require("../../src/shared/wechat-send-diagnostics.cjs").summarizeSendResult(clickedUnknown).is_new, false,
@@ -2033,6 +2100,8 @@ try {
   assert.match(developmentDriverSource, /draftExact/);
   assert.match(developmentDriverSource, /draftConsumed/);
   assert.match(developmentDriverSource, /elseif \(\$draftConsumed\) \{ "draft_consumed" \}/);
+  assert.match(messageBubbleSource, /reason = \$verificationReason/,
+    "post-send proof must preserve the concrete draft or bubble verification failure");
   assert.doesNotMatch(bubbleVerifierSource, /MainWindowHandle|MainWindowTitle\s*-ne|automation_root_missing/, "post-send proof must bind the expected HWND directly and retain clipboard fallback when UIA is empty");
   assert.match(developmentDriverSource, /XIAOXI_INPUT_X_RATIO/);
   assert.match(developmentDriverSource, /XIAOXI_INPUT_Y_RATIO/);
@@ -2124,6 +2193,8 @@ try {
   const sharedTransactionSource = fs.readFileSync(path.join(__dirname, "state_machine.dev.cjs"), "utf8");
   assert.match(sharedTransactionSource, /async function executeVerifiedContactSend/);
   assert.match(sharedTransactionSource, /async function sendReal[\s\S]*clickWechatSendButtonAsync[\s\S]*verifyWechatCurrentConversationAsync[\s\S]*verifyWechatMessageBubbleAsync/);
+  assert.match(sharedTransactionSource, /post_send_session_recheck_failed/,
+    "post-send session recheck exceptions must remain distinguishable from message proof failures");
   assert.match(sharedTransactionSource, /async function executeVerifiedFileHelperSend[\s\S]*openWechatSearchResultAsync[\s\S]*inputWechatMessageDraftAsync/);
   assert.match(driverSource, /function openWechatSearchResultAsync[\s\S]*runPowerShellAsync/);
   assert.match(driverSource, /function verifyWechatCurrentConversation\([^]*?context\.expectedPid \?\? context\.pid[^]*?\{ ensure: false \}/u);

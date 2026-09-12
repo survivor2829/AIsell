@@ -1056,10 +1056,17 @@ if (-not $bubbleVerified -and $beforeSnapshot.draftExact -eq $true) {
 }
 $draftConsumed = $beforeSnapshot.draftExact -eq $true -and $draftAfter.ok -and $draftAfter.sameWindow -and $draftAfter.isEmpty
 $verificationMode = $(if ($exactMatch -and $outgoing -and $isLatest -and $isNew) { "message_bubble" } elseif ($draftConsumed) { "draft_consumed" } else { "" })
+$verificationReason = $(
+  if ($bubbleVerified -or $draftConsumed) { "" }
+  elseif ($draftAfter.reason -and $draftAfter.reason -ne "draft_read_not_needed") { [string]$draftAfter.reason }
+  elseif ($selected -eq $null) { "message_bubble_not_found" }
+  else { "message_bubble_not_new_latest_exact" }
+)
 $windowText = New-Object System.Text.StringBuilder 512
 [void][Win32WechatMessageProof]::GetWindowText($expectedHWnd, $windowText, $windowText.Capacity)
 @{
   ok = (($selected -ne $null) -or $draftConsumed)
+  reason = $verificationReason
   messageText = $(if ($selected -ne $null) { [string]$selected.normalizedText } else { "" })
   exactMatch = $exactMatch
   outgoing = $outgoing

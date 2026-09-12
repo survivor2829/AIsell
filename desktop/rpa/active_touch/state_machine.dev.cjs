@@ -19,6 +19,9 @@ const {
 } = require("./wechat_window_driver.cjs");
 const { appendLog, block, blockMessageBubble, blockSendGate, loadState, output, readContacts, saveState, wechatWindowBlockText } = require("./state_machine.cjs");
 const { contactIdentityError, identityKey } = require("./touch_task_state.cjs");
+
+const POST_SEND_CONFIRMATION_ATTEMPTS = 2;
+const RETRYABLE_POST_SEND_CONFIRMATION_REASONS = new Set(["input_draft_read_failed"]);
 const { summarizeSendResult, observeSendStage } = require("../../src/shared/wechat-send-diagnostics.cjs");
 
 const IDLE_WINDOW_RECOVERY_ATTEMPTS = 3;
@@ -144,6 +147,10 @@ function isVerifiedNewMessage(result, message, beforeSnapshot) {
     && result.draftConsumed === true
     && result.sameWindow === true
     && beforeSnapshot?.draftExact === true;
+}
+
+function shouldRetryPostSendConfirmation(result) {
+  return RETRYABLE_POST_SEND_CONFIRMATION_REASONS.has(String(result?.reason || ""));
 }
 
 function rejectRepeatedAttempt(baseDir, state, action = "send") {
@@ -468,12 +475,26 @@ async function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWec
   saveState(baseDir, clicked);
   try { notifyTransition(options.onTransition, "clicked", clicked); } catch {}
   let verified;
-  try {
-    verified = await observeSendStage(options, "after_send_confirmation", () => bubbleVerifier(message, { ...windowContext, phase: "after", beforeSnapshot: before.snapshot }));
-  } catch {
-    return persistOutcomeUnknown(baseDir, clicked, "message_bubble_verifier_failed", true, options.onTransition);
+  for (let attempt = 0; attempt < POST_SEND_CONFIRMATION_ATTEMPTS; attempt += 1) {
+    try {
+      verified = await observeSendStage(options, "after_send_confirmation", () => bubbleVerifier(message, { ...windowContext, phase: "after", beforeSnapshot: before.snapshot }));
+    } catch {
+      return persistOutcomeUnknown(baseDir, clicked, "message_bubble_verifier_failed", true, options.onTransition);
+    }
+    if (isVerifiedNewMessage(verified, message, before.snapshot)) break;
+    if (attempt + 1 >= POST_SEND_CONFIRMATION_ATTEMPTS || !shouldRetryPostSendConfirmation(verified)) break;
+    let retrySession;
+    try {
+      retrySession = await observeSendStage(options, "send_session_check", () => sessionCheckAsync(clicked, sessionDriver, baseDir));
+    } catch {
+      return persistOutcomeUnknown(baseDir, clicked, "post_send_session_recheck_failed", true, options.onTransition, verified);
+    }
+    if (!retrySession.ok || Number(retrySession.pid) !== Number(clicked.window_pid) || String(retrySession.hWnd) !== String(clicked.window_handle)) {
+      verified = { ...verified, ok: false, reason: retrySession.reason || "real_send_session_changed" };
+      break;
+    }
   }
-  if (!isVerifiedNewMessage(verified, message, before.snapshot)) return persistOutcomeUnknown(baseDir, clicked, "message_bubble_not_new_latest_exact", true, options.onTransition, verified);
+  if (!isVerifiedNewMessage(verified, message, before.snapshot)) return persistOutcomeUnknown(baseDir, clicked, verified?.reason || "message_bubble_not_new_latest_exact", true, options.onTransition, verified);
   const draftConsumed = verified.verificationMode === "draft_consumed";
   const nextState = { ...clicked, real_send_status: "sent_verified", real_send_attempts: { ...clicked.real_send_attempts, [key]: "sent_verified" }, message_bubble_verified: !draftConsumed, message_bubble_status: draftConsumed ? "not_exposed" : "verified", message_bubble_reason: draftConsumed ? "uia_message_bubble_unavailable" : "", post_send_verified: true, post_send_status: draftConsumed ? "draft_consumed_verified" : "bubble_verified", post_send_reason: "", post_send_verification_mode: draftConsumed ? "draft_consumed" : "message_bubble", located_window_title: verified.title ?? clicked.located_window_title, last_result: "sent_verified", blocked_reason: "" };
   saveState(baseDir, nextState);
