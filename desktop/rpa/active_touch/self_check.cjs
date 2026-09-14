@@ -1842,16 +1842,21 @@ try {
     "unverified",
     "a naked query without complete bounds must fail closed"
   );
-  assert.equal(
+  assert.deepEqual(
     resolveWechatSearchResultObservation({
       uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
       visualCandidates: [{ text: "cb1668", left: 92, top: 150, right: 170, bottom: 172, x: 131, y: 161 }],
       webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
       webSearchTop: 224
-    }, { query: "cb1668", expectedName: "测试客户" }).status,
-    "unverified",
-    "a naked query in the local-result region must not be discarded as a search echo"
+    }, { query: "cb1668", expectedName: "测试客户" }),
+    {
+      status: "selected",
+      mode: "exact_wechat_id_local_visual",
+      candidate: { text: "cb1668", left: 92, top: 150, right: 170, bottom: 172, x: 131, y: 161 }
+    },
+    "a unique exact WeChat ID above the verified web-search boundary must survive a missing OCR label"
   );
+  assert.equal(isVerifiedWechatSearchResultMode("exact_wechat_id_local_visual"), true, "the bounded local exact-ID fallback must reach the existing conversation verification gate");
   assert.deepEqual(
     resolveWechatSearchResultObservation({
       uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,

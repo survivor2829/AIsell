@@ -144,6 +144,16 @@ function composesNetworkEcho(candidate, webCandidate) {
   return sameLine || tightlyStacked;
 }
 
+function isNearbyLocalResult(candidate, webSearchCandidates, webSearchTop) {
+  const height = Number(candidate.bottom) - Number(candidate.top);
+  if (Number(candidate.bottom) > webSearchTop || webSearchTop - Number(candidate.bottom) > Math.max(72, height * 3)) return false;
+  return webSearchCandidates.some((webCandidate) => {
+    const overlap = Math.min(Number(candidate.right), Number(webCandidate.right))
+      - Math.max(Number(candidate.left), Number(webCandidate.left));
+    return overlap > 0;
+  });
+}
+
 function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   const query = String(identity.query ?? "").trim();
   const expectedName = String(identity.expectedName ?? "").trim();
@@ -186,6 +196,12 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
     return { status: "selected", mode: "exact_wechat_id_visual", candidate: exactLocalCandidates[0] };
   }
   const queryEcho = normalized(query);
+  const exactUnlabelledLocalCandidates = visualCandidates.filter((candidate) => normalized(candidate?.text) === queryEcho
+    && !webSearchCandidates.some((webCandidate) => composesNetworkEcho(candidate, webCandidate))
+    && isNearbyLocalResult(candidate, webSearchCandidates, webSearchTop));
+  if (labelledCandidates.length === 0 && exactUnlabelledLocalCandidates.length === 1) {
+    return { status: "selected", mode: "exact_wechat_id_local_visual", candidate: exactUnlabelledLocalCandidates[0] };
+  }
   const unexplainedCandidates = visualCandidates.filter((candidate) => normalized(candidate?.text) !== queryEcho
     || !webSearchCandidates.some((webCandidate) => composesNetworkEcho(candidate, webCandidate)));
   if (labelledCandidates.length > 0 || unexplainedCandidates.length > 0) {
@@ -195,7 +211,7 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
 }
 
 function isVerifiedWechatSearchResultMode(mode) {
-  return ["unique_local_uia", "identity_matched_uia", "exact_wechat_id_visual"].includes(mode);
+  return ["unique_local_uia", "identity_matched_uia", "exact_wechat_id_visual", "exact_wechat_id_local_visual"].includes(mode);
 }
 
 module.exports = { isVerifiedWechatSearchResultMode, resolveWechatSearchResultObservation };
