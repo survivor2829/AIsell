@@ -182,7 +182,7 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
     if (predicate(value)) return value;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  throw new Error("timed out waiting for task state");
+  throw new Error(`timed out waiting for task state: ${JSON.stringify(await read())}`);
 }
 
 (async () => {
@@ -246,6 +246,7 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
     const resume = handlers.get("touch-task:resume");
     const stop = handlers.get("touch-task:stop");
     const resolveUnknown = handlers.get("touch-task:resolve-unknown");
+    const retrySkipped = handlers.get("touch-task:retry-skipped");
     await start({}, { script: "默认触达话术", clickToken: "trusted-start" });
     assert.deepEqual(
       { width: windows[0].options.width, height: windows[0].options.height, position: windows[0].position },
@@ -312,7 +313,63 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
     assert.equal(isolatedFailure.task.results[0].status, "identity_skipped");
     assert.equal(isolatedFailure.task.results[1].status, "identity_skipped");
     assert.equal(isolatedFailure.task.results[2].status, "sent_verified");
+    assert.equal(isolatedFailure.task.sent_verified_count, 1);
+    assert.deepEqual(isolatedFailure.task.skipped_breakdown, { identity: 2, ai_failed: 0, outcome_unknown: 0 });
+    assert.equal(isolatedFailure.task.skipped_records.length, 2);
+    assert.equal(isolatedFailure.task.results[0].skip_record.reasonCode, "exact_search_result_not_found");
     assert.equal(contactScopedAttempts, 3, "contact-scoped search failures must not pause the remaining task");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const retryableTask = createTask("跳过项补发", contacts(3), "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+    retryableTask.results[0] = {
+      ...retryableTask.results[0], status: "identity_skipped", reason: "身份不唯一，已跳过", blocked_reason: "search_result_identity_unverified",
+      retry_blocked: true, send_attempted: false, message_parts: [{ kind: "text", status: "pending", message: "冻结文案" }]
+    };
+    retryableTask.results[1] = {
+      ...retryableTask.results[1], status: "outcome_unknown", reason: "发送结果未知", retry_blocked: true, send_attempted: null
+    };
+    retryableTask.results[2] = {
+      ...retryableTask.results[2], status: "sent_verified", reason: "发送成功并已核验", retry_blocked: true, send_attempted: true
+    };
+    retryableTask.current_index = retryableTask.total;
+    retryableTask.status = "completed";
+    retryableTask.phase = "completed";
+    saveTaskState(dir, retryableTask);
+
+    const protectedBefore = fs.readFileSync(path.join(dir, "touch_task.json"), "utf8");
+    const unknownRetry = await retrySkipped({}, { contactIds: [retryableTask.results[1].id] });
+    assert.equal(unknownRetry.blocked_reason, "retry_skipped_outcome_unknown_forbidden");
+    assert.equal(fs.readFileSync(path.join(dir, "touch_task.json"), "utf8"), protectedBefore, "an unknown outcome retry must not change any persisted task state");
+    const protectedRetry = await retrySkipped({}, { contactIds: [retryableTask.results[2].id] });
+    assert.equal(protectedRetry.blocked_reason, "retry_skipped_sent_verified_forbidden");
+    assert.equal(fs.readFileSync(path.join(dir, "touch_task.json"), "utf8"), protectedBefore, "a rejected retry must not change any persisted task state");
+
+    retryableTask.status = "running";
+    saveTaskState(dir, retryableTask);
+    const runningBefore = fs.readFileSync(path.join(dir, "touch_task.json"), "utf8");
+    const runningRetry = await retrySkipped({}, { contactIds: [retryableTask.results[0].id] });
+    assert.equal(runningRetry.blocked_reason, "retry_skipped_task_running");
+    assert.equal(fs.readFileSync(path.join(dir, "touch_task.json"), "utf8"), runningBefore, "a running task retry must not change persisted state");
+    retryableTask.status = "completed";
+    saveTaskState(dir, retryableTask);
+
+    let retriedContactId = "";
+    executorBehavior = async (options) => {
+      retriedContactId = options.contactId;
+      options.onTransition("sent_verified", { real_send_attempt_key: `retry-${options.contactId}` });
+      return { ok: true, state: { real_send_status: "sent_verified", real_send_attempt_key: `retry-${options.contactId}` } };
+    };
+    const retried = await retrySkipped({}, { contactIds: [retryableTask.results[0].id] });
+    assert.equal(retried.ok, true);
+    assert.equal(retried.task.current_index, 0);
+    assert.equal(retried.task.results[0].status, "generated");
+    assert.equal(retried.task.results[0].retry_blocked, false);
+    assert.equal(retried.task.results[0].send_attempted, false);
+    assert.deepEqual(retried.task.results[0].message_parts, [{ kind: "text", status: "pending", message: "冻结文案" }], "retry must preserve the frozen message parts");
+    const resumedRetry = await resume({}, { clickToken: "trusted-retry-skipped" });
+    assert.equal(resumedRetry.task?.status, "running", `retry resume failed: ${JSON.stringify(resumedRetry)}`);
+    await waitFor(status, (value) => value.task?.current_index === 1);
+    assert.equal(retriedContactId, retryableTask.results[0].id, "a reset identity skip must be selected by the task loop again");
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });

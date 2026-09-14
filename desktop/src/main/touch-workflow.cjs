@@ -14,9 +14,12 @@ const {
   identityKey,
   isBatchAuthorized,
   loadTaskState,
+  recordSkippedResult,
   recoverInterruptedTask,
+  retrySkippedResults,
   saveTaskState,
   sendDelayMs,
+  skippedTaskSummary,
   taskSnapshotHash
 } = require("../../rpa/active_touch/touch_task_state.cjs");
 
@@ -190,7 +193,7 @@ function createTouchWorkflow(options = {}) {
       let current = task.results[task.current_index];
       // A completed receipt is authoritative even if the app exited before the
       // queue received the next index. Never send that contact a second time.
-      if (current && ["sent_verified", "identity_skipped"].includes(current.status)) {
+      if (current && ["sent_verified", "identity_skipped", "ai_failed_skipped", "outcome_unknown_skipped"].includes(current.status)) {
         task.current_index += 1;
         if (task.current_index >= task.total) task.status = "completed";
         persist();
@@ -213,6 +216,11 @@ function createTouchWorkflow(options = {}) {
       if (!liveContact || identityKey(liveContact) !== current.identity_hash) {
         current.status = "identity_skipped";
         current.reason = "联系人已变化或不再允许触达，已跳过";
+        recordSkippedResult(current, task.current_index, {
+          reasonCode: "contact_snapshot_changed",
+          blockedReason: current.reason,
+          at: now().toISOString()
+        });
         task.current_index += 1;
         if (task.current_index >= task.total) task.status = "completed";
         persist();
@@ -330,6 +338,7 @@ function createTouchWorkflow(options = {}) {
         return attention("执行器异常，发送结果无法确认；系统不会自动补发", { deliveryStatus: "outcome_unknown" });
       }
       current = task.results[index];
+      current.last_trace_id = sendOperation.traceId;
       if (result?.ok && result?.state?.real_send_status === "sent_verified") {
         current.status = "sent_verified";
         current.retry_blocked = true;
@@ -385,6 +394,12 @@ function createTouchWorkflow(options = {}) {
           current.retry_blocked = true;
           current.send_attempted = false;
           current.updated_at = now().toISOString();
+          recordSkippedResult(current, index, {
+            reasonCode,
+            blockedReason: current.reason,
+            at: current.updated_at,
+            traceId: sendOperation.traceId
+          });
           task.current_index = index + 1;
           if (task.current_index >= task.total) {
             task.status = "completed";
@@ -485,6 +500,12 @@ function createTouchWorkflow(options = {}) {
       current.status = "outcome_unknown_skipped";
       current.retry_blocked = true;
       current.send_attempted = null;
+      recordSkippedResult(current, task.current_index, {
+        reasonCode: "outcome_unknown",
+        blockedReason: current.reason,
+        at: resolvedAt,
+        traceId: current.last_trace_id
+      });
     } else if (multipart) {
       const resolved = resolveUnknownMessagePart(current, resolution, resolvedAt);
       advance = resolved.allSent;
@@ -597,7 +618,28 @@ function createTouchWorkflow(options = {}) {
     const taskDir = workflowDirectory(String(id || "").trim());
     return fs.existsSync(path.join(taskDir, "touch_task.json"));
   }
+  function describeSkippedWorkflowTask(record) {
+    const id = String(record?.id || record || "").trim();
+    if (!id) return null;
+    const taskDir = workflowDirectory(id);
+    if (!fs.existsSync(path.join(taskDir, "touch_task.json"))) return null;
+    const task = loadWorkflowTask(id);
+    const summary = skippedTaskSummary(task);
+    return { skipped_breakdown: summary.breakdown, skipped_records: summary.records };
+  }
+  function retrySkippedWorkflowTask(record, contactIds) {
+    const id = String(record?.id || record || "").trim();
+    const taskDir = workflowDirectory(id);
+    if (!id || !fs.existsSync(path.join(taskDir, "touch_task.json"))) {
+      return { ok: false, blocked_reason: "retry_skipped_task_mismatch", error: "所选任务已变化，请刷新后重试" };
+    }
+    const retried = retrySkippedResults(loadWorkflowTask(id), contactIds, now().toISOString());
+    if (!retried.ok) return retried;
+    const saved = saveTaskState(taskDir, retried.task);
+    return { ok: true, task: saved, retriedCount: retried.retriedCount };
+  }
   return { prepareWorkflowTask, updateWorkflowTask, hasStartedWorkflowTask, runWorkflowStep, canRetryWorkflowTask, describeUnknownWorkflowTask, resolveUnknownWorkflowTask, acknowledgeUnknownWorkflowResolution,
+    describeSkippedWorkflowTask, retrySkippedWorkflowTask,
     describeImages: (ids = []) => ids.map((id) => options.mediaStore.describe(id)),
     importImages: (paths) => options.mediaStore.importFiles(paths) };
 }

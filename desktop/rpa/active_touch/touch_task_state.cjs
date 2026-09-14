@@ -10,6 +10,7 @@ const MAX_RUN_LOG_LINES = 500;
 const STALE_TASK_MS = 7 * 24 * 60 * 60 * 1000;
 const BATCH_SIZE = 50;
 const CURRENT_TASK_VERSION = 4;
+const RETRYABLE_SKIPPED_STATUSES = new Set(["identity_skipped", "ai_failed_skipped"]);
 
 function nowIso() {
   return new Date().toISOString();
@@ -177,6 +178,85 @@ function alignBatchWindow(task) {
   task.batch_start_index = start;
   task.batch_end_index = Math.min(start + size, Number(task?.total || 0));
   return task;
+}
+
+function skipCategory(status) {
+  return ({ identity_skipped: "identity", ai_failed_skipped: "ai_failed", outcome_unknown_skipped: "outcome_unknown" })[String(status || "")] || "";
+}
+
+function recordSkippedResult(result, index, details = {}) {
+  const at = String(details.at || nowIso());
+  result.skip_record = {
+    contactId: String(result?.id || result?.contact?.id || ""),
+    displayName: String(result?.name || contactName(result?.contact) || result?.id || ""),
+    index: Number.isInteger(index) ? index : Number(result?.contact_index || 0),
+    reasonCode: String(details.reasonCode || result?.blocked_reason || result?.ai_error_code || result?.status || ""),
+    blockedReason: String(details.blockedReason || result?.reason || ""),
+    at,
+    traceId: String(details.traceId || result?.last_trace_id || "")
+  };
+  return result;
+}
+
+function skippedTaskSummary(task) {
+  const breakdown = { identity: 0, ai_failed: 0, outcome_unknown: 0 };
+  const records = [];
+  for (const [index, result] of (task?.results || []).entries()) {
+    const category = skipCategory(result?.status);
+    if (!category) continue;
+    breakdown[category] += 1;
+    const record = result.skip_record || recordSkippedResult({ ...result }, index).skip_record;
+    records.push({ ...record, status: result.status });
+  }
+  return { breakdown, records };
+}
+
+function retrySkippedResults(task, contactIds, retriedAt = nowIso()) {
+  if (!["paused", "completed", "stopped"].includes(String(task?.status || ""))) {
+    return { ok: false, blocked_reason: "retry_skipped_task_running", error: "任务运行中，不能重试跳过联系人" };
+  }
+  const requested = contactIds === undefined
+    ? null
+    : new Set(Array.isArray(contactIds) ? contactIds.map((id) => String(id).trim()).filter(Boolean) : []);
+  if (requested && (!requested.size || requested.size !== contactIds.length)) {
+    return { ok: false, blocked_reason: "retry_skipped_selection_invalid", error: "请选择要重试的跳过联系人" };
+  }
+  const results = Array.isArray(task?.results) ? task.results : [];
+  const selected = results.map((result, index) => ({ result, index }))
+    .filter(({ result }) => requested ? requested.has(String(result?.id || "")) : RETRYABLE_SKIPPED_STATUSES.has(String(result?.status || "")));
+  if (requested && selected.length !== requested.size) {
+    return { ok: false, blocked_reason: "retry_skipped_selection_invalid", error: "所选联系人不在当前任务中" };
+  }
+  if (!selected.length) return { ok: false, blocked_reason: "retry_skipped_empty", error: "当前没有可安全重试的跳过联系人" };
+  if (selected.some(({ result }) => ["outcome_unknown", "outcome_unknown_skipped"].includes(String(result?.status || "")))) {
+    return { ok: false, blocked_reason: "retry_skipped_outcome_unknown_forbidden", error: "发送结果未知的联系人只能先人工确认，不能直接重试" };
+  }
+  if (selected.some(({ result }) => String(result?.status || "") === "sent_verified")) {
+    return { ok: false, blocked_reason: "retry_skipped_sent_verified_forbidden", error: "已核验发送的联系人不能重试" };
+  }
+  if (selected.some(({ result }) => !RETRYABLE_SKIPPED_STATUSES.has(String(result?.status || "")))) {
+    return { ok: false, blocked_reason: "retry_skipped_status_forbidden", error: "只能重试身份无法确认或文案生成失败的跳过联系人" };
+  }
+
+  for (const { result } of selected) {
+    result.status = "generated";
+    result.reason = "已重新加入，等待继续任务";
+    result.retry_blocked = false;
+    result.send_attempted = false;
+    result.awaiting_resolution = false;
+    result.identity_recovery_attempts = 0;
+    result.updated_at = retriedAt;
+    delete result.blocked_reason;
+    delete result.last_failure_context;
+  }
+  task.current_index = Math.min(...selected.map(({ index }) => index));
+  task.status = "paused";
+  task.phase = "preparing_batch";
+  task.pause_reason = "跳过联系人已重新加入，点击继续任务后处理";
+  task.completed_at = "";
+  task.next_send_not_before = "";
+  alignBatchWindow(task);
+  return { ok: true, task, retriedCount: selected.length };
 }
 
 function authorizeTask(task, authorizedAt = nowIso()) {
@@ -563,6 +643,7 @@ function resultAt(task, index) {
 
 function publicTaskState(task, options = {}) {
   const normalized = normalizeTask(task);
+  const skipped = skippedTaskSummary(normalized);
   const displayIndex = activeResultIndex(normalized);
   const current = resultAt(normalized, displayIndex);
   const next = resultAt(normalized, displayIndex + 1);
@@ -597,6 +678,9 @@ function publicTaskState(task, options = {}) {
       pause_reason: normalized.pause_reason,
       integrity_error: normalized.integrity_error || "",
       recovery_notice: normalized.recovery_notice || "",
+      sent_verified_count: normalized.results.filter((result) => result?.status === "sent_verified").length,
+      skipped_breakdown: skipped.breakdown,
+      skipped_records: skipped.records,
       current_contact: current?.contact ?? null,
       next_contact: next?.contact ?? null,
       current_result: current ?? null,
@@ -680,10 +764,13 @@ module.exports = {
   markPreviousBuildTask,
   identityKey,
   publicTaskState,
+  recordSkippedResult,
   recoverInterruptedTask,
   reconcileRealSendAttempt,
+  retrySkippedResults,
   saveTaskState,
   sendDelayMs,
+  skippedTaskSummary,
   taskSnapshotHash,
   taskBackupPath,
   taskPath,

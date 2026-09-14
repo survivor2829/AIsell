@@ -199,6 +199,7 @@ function registerWechatWorkflowIpc(options) {
   handle("cancel-task", (payload) => controller.cancelTask(String(payload?.id || "")));
   handle("delete-tasks", (payload) => controller.deleteTasks(payload?.ids, payload?.unsuccessfulOnly === true), true);
   handle("retry-task", (payload) => controller.retryTask(String(payload?.id || "")), true);
+  handle("retry-skipped", (payload) => controller.retrySkipped(String(payload?.id || ""), payload?.contactIds), true);
   handle("resolve-touch-unknown", (payload) => {
     const id = String(payload?.id || "");
     const resolution = String(payload?.resolution || "");

@@ -11,6 +11,7 @@ const { main: runCli } = require("../../rpa/active_touch/active_touch_cli.cjs");
 
 async function checkTouchMessageSequence() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-touch-sequence-"));
+  require("./diagnostics.cjs").configureDiagnostics({ rootDir: root });
   const contact = { id: "selected", name: "测试客户", nickname: "测试客户", wechatId: "test_customer", wechatAccountId: "test_account", allowed: true };
   const secondContact = { id: "selected-two", name: "第二位测试客户", nickname: "第二位测试客户", wechatId: "test_customer_two", wechatAccountId: "test_account", allowed: true };
   const imageId = "a".repeat(64);
@@ -123,6 +124,9 @@ async function checkTouchMessageSequence() {
   const skipResolution = workflow.resolveUnknownWorkflowTask(skippedUnknown, "skip");
   assert.deepEqual(skipResolution.progress, { done: 1, total: 2 });
   assert.equal(calls.length, beforeSkipCalls, "skipping an uncertain contact must not execute the next contact");
+  const skippedUnknownDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(skippedUnknown.id).digest("hex"));
+  const skippedUnknownTask = JSON.parse(fs.readFileSync(path.join(skippedUnknownDir, "touch_task.json"), "utf8"));
+  assert.equal(skippedUnknownTask.results[0].skip_record.reasonCode, "outcome_unknown");
   failImage = false; unknown = false;
   result = await createTouchWorkflow(config).runWorkflowStep(skippedUnknown, context);
   assert.equal(result.status, "completed");
@@ -217,6 +221,8 @@ async function checkTouchMessageSequence() {
   const skipTaskDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(skipRecord.id).digest("hex"));
   const skippedTask = JSON.parse(fs.readFileSync(path.join(skipTaskDir, "touch_task.json"), "utf8"));
   assert.equal(skippedTask.results[0].status, "identity_skipped");
+  assert.deepEqual(Object.keys(skippedTask.results[0].skip_record), ["contactId", "displayName", "index", "reasonCode", "blockedReason", "at", "traceId"]);
+  assert.equal(skippedTask.results[0].skip_record.reasonCode, "exact_search_result_not_found");
   searchUnavailable = false;
   result = await createTouchWorkflow(config).runWorkflowStep(skipRecord, context);
   assert.equal(result.status, "completed", "跳过无结果联系人后仍应完成后续联系人");
@@ -238,10 +244,31 @@ async function checkTouchMessageSequence() {
   const unverifiedTaskDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(unverifiedRecord.id).digest("hex"));
   const unverifiedTask = JSON.parse(fs.readFileSync(path.join(unverifiedTaskDir, "touch_task.json"), "utf8"));
   assert.equal(unverifiedTask.results[0].status, "identity_skipped");
+  assert.equal(unverifiedTask.results[0].skip_record.reasonCode, "search_result_identity_unverified");
+  assert.ok(unverifiedTask.results[0].skip_record.traceId, "workflow skips must reuse the existing contact-send diagnostic trace");
   assert.equal(unverifiedTask.results[1].status, "pending", "后续联系人不能被连带跳过");
   searchIdentityUnverified = false;
   result = await createTouchWorkflow(config).runWorkflowStep(unverifiedRecord, context);
   assert.equal(result.status, "completed", "隔离未确认搜索结果后仍应完成后续联系人");
+
+  const completedUnverified = JSON.parse(fs.readFileSync(path.join(unverifiedTaskDir, "touch_task.json"), "utf8"));
+  const completedUnverifiedBytes = fs.readFileSync(path.join(unverifiedTaskDir, "touch_task.json"), "utf8");
+  const protectedWorkflowRetry = unverifiedWorkflow.retrySkippedWorkflowTask(unverifiedRecord, [completedUnverified.results[1].id]);
+  assert.equal(protectedWorkflowRetry.ok, false, "a verified workflow row must never enter retry-skipped");
+  assert.equal(fs.readFileSync(path.join(unverifiedTaskDir, "touch_task.json"), "utf8"), completedUnverifiedBytes);
+  const workflowBinding = fs.readFileSync(path.join(unverifiedTaskDir, "workflow-binding.json"), "utf8");
+  const retriedWorkflow = unverifiedWorkflow.retrySkippedWorkflowTask(unverifiedRecord, [completedUnverified.results[0].id]);
+  assert.equal(retriedWorkflow.ok, true);
+  assert.equal(retriedWorkflow.task.current_index, 0);
+  assert.equal(retriedWorkflow.task.results[0].status, "generated");
+  assert.equal(fs.readFileSync(path.join(unverifiedTaskDir, "workflow-binding.json"), "utf8"), workflowBinding, "retrying a skipped row must preserve the frozen workflow binding");
+  const callsBeforeWorkflowRetry = calls.length;
+  result = await createTouchWorkflow(config).runWorkflowStep(unverifiedRecord, context);
+  assert.equal(result.status, "pending");
+  clock.setTime(clock.getTime() + 8000);
+  result = await createTouchWorkflow(config).runWorkflowStep(unverifiedRecord, context);
+  assert.equal(result.status, "completed");
+  assert.equal(calls.length, callsBeforeWorkflowRetry + 1, "only the explicitly reset skipped workflow row may send again");
 
   externalInputBlocks = 1;
   const inputRecoveryWorkflow = createTouchWorkflow(config);

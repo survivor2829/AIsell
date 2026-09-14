@@ -958,6 +958,7 @@ function createPreloadApis(ipcRenderer) {
       cancelTask: (id) => ipcRenderer.invoke("wechat-workflow:cancel-task", { id: String(id || "") }),
       deleteTasks: (ids, unsuccessfulOnly = false) => ipcRenderer.invoke("wechat-workflow:delete-tasks", { ids, unsuccessfulOnly, clickToken: consumeWorkflowSave() }),
       retryTask: (id) => ipcRenderer.invoke("wechat-workflow:retry-task", { id: String(id || ""), clickToken: consumeWorkflowSave() }),
+      retrySkipped: (id, contactIds) => ipcRenderer.invoke("wechat-workflow:retry-skipped", { id: String(id || ""), ...(contactIds ? { contactIds } : {}), clickToken: consumeWorkflowSave() }),
       resolveTouchUnknown: (id, resolution) => {
         const click = consumeWorkflowResolution();
         return ipcRenderer.invoke("wechat-workflow:resolve-touch-unknown", {
@@ -1096,6 +1097,7 @@ function createPreloadApis(ipcRenderer) {
     touchTask: {
       start: (payload) => ipcRenderer.invoke("touch-task:start", { ...payload, clickToken: consumeBatchClick() }),
       status: () => ipcRenderer.invoke("touch-task:status"),
+      retrySkipped: (payload = {}) => ipcRenderer.invoke("touch-task:retry-skipped", payload),
       pause: () => ipcRenderer.invoke("touch-task:pause"),
       resume: () => ipcRenderer.invoke("touch-task:resume", { clickToken: consumeBatchClick() }),
       stop: () => ipcRenderer.invoke("touch-task:stop"),

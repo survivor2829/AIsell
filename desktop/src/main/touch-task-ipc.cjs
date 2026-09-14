@@ -16,7 +16,9 @@ const {
   loadTaskState,
   markPreviousBuildTask,
   publicTaskState,
+  recordSkippedResult,
   recoverInterruptedTask,
+  retrySkippedResults,
   saveTaskState,
   sendDelayMs
 } = require("../../rpa/active_touch/touch_task_state.cjs");
@@ -383,7 +385,7 @@ function taskCommandArgs(task, result) {
   return ["--task-id", task.id, "--contact-id", result.id, "--current-index", String(task.current_index)];
 }
 
-async function runStep(task, result, command, args, blockReason) {
+async function runStep(task, result, command, args, blockReason, parentTraceId = "") {
   runtimeCoordinator?.update(runnerOwner, command);
   const commandArgs = [...args, ...taskCommandArgs(task, result)];
   const response = await runActiveTouch([command, ...commandArgs], {
@@ -392,7 +394,8 @@ async function runStep(task, result, command, args, blockReason) {
     phase: command,
     taskId: task.id,
     contactId: result.id,
-    currentIndex: task.current_index
+    currentIndex: task.current_index,
+    parentTraceId
   });
   if (!response.ok) return { ok: false, reason: resultReason(response, blockReason), result: response };
   return { ok: true, result: response };
@@ -475,7 +478,10 @@ async function prepareCurrentBatch() {
     task = loadTaskState(activeTouchDir());
     const pending = task.results
       .slice(start, Math.min(start + DRAFT_GENERATION_CONCURRENCY, task.batch_end_index))
-      .filter((result) => result && !["generated", "ai_failed_skipped", "identity_skipped", "sent_verified"].includes(result.status));
+      .filter((result) => result && ![
+        "generated", "ai_failed_skipped", "identity_skipped", "outcome_unknown_skipped",
+        "sent_verified", "sending", "prepared", "clicked", "outcome_unknown"
+      ].includes(result.status));
     const generated = await Promise.all(pending.map(async (result) => {
       const generatedResult = await draftMessageWithRetry(task, result);
       return { id: result.id, ...generatedResult };
@@ -484,7 +490,10 @@ async function prepareCurrentBatch() {
     task = loadTaskState(activeTouchDir());
     for (const generatedResult of generated) {
       const result = task.results.find((item) => item.id === generatedResult.id);
-      if (!result || ["generated", "ai_failed_skipped", "identity_skipped", "sent_verified"].includes(result.status)) continue;
+      if (!result || [
+        "generated", "ai_failed_skipped", "identity_skipped", "outcome_unknown_skipped",
+        "sent_verified", "sending", "prepared", "clicked", "outcome_unknown"
+      ].includes(result.status)) continue;
       result.ai_attempts = Number(result.ai_attempts || 0) + generatedResult.attempts;
       if (generatedResult.error) {
         const fallback = generateFixedScriptFallback({ task, result, error: generatedResult.error });
@@ -501,6 +510,11 @@ async function prepareCurrentBatch() {
           result.ai_status = "failed";
           result.ai_reason = result.reason;
           result.ai_error_code = String(generatedResult.error?.code || "AI_GENERATION_FAILED");
+          recordSkippedResult(result, task.results.indexOf(result), {
+            reasonCode: result.ai_error_code,
+            blockedReason: result.reason,
+            at: new Date().toISOString()
+          });
         }
       } else {
         result.status = "generated";
@@ -638,30 +652,46 @@ async function runRealContact(task, current, index) {
     const saved = saveTaskState(activeTouchDir(), task);
     emitTaskUpdate(saved);
 
-    const response = await realSendExecutor({
-      baseDir: activeTouchDir(),
-      contactId: current.id,
-      message: current.message,
-      frozenContact: current.contact,
-      authorized: true,
-      windowMinIdleMs: 0,
-      isExecutionAllowed,
-      runStep: async (command, args = []) => {
-        const latest = loadTaskState(activeTouchDir());
-        const latestResult = latest.results[index];
-        const step = await runStep(latest, latestResult, command, args, "微信操作未通过安全校验");
-        return step.ok ? step.result : { ...step.result, ok: false, error: step.reason };
-      },
-      onTransition: (status, executionState) => persistRealSendTransition(index, status, executionState)
-    });
+    const sendOperation = diagnostics().begin("active_touch", "task_contact_send", { task_id: task.id, current_index: index }, { trace: true });
+    let response;
+    try {
+      response = await realSendExecutor({
+        baseDir: activeTouchDir(),
+        contactId: current.id,
+        message: current.message,
+        frozenContact: current.contact,
+        authorized: true,
+        windowMinIdleMs: 0,
+        isExecutionAllowed,
+        onDiagnostic: (detail) => diagnostics().event("active_touch", "send_stage", detail, {
+          trace: true, traceId: sendOperation.traceId, phase: detail.phase, level: detail.ok === false ? "warn" : "info", code: detail.reason
+        }),
+        runStep: async (command, args = []) => {
+          const latest = loadTaskState(activeTouchDir());
+          const latestResult = latest.results[index];
+          const step = await runStep(latest, latestResult, command, args, "微信操作未通过安全校验", sendOperation.traceId);
+          return step.ok ? step.result : { ...step.result, ok: false, error: step.reason };
+        },
+        onTransition: (status, executionState) => persistRealSendTransition(index, status, executionState)
+      });
+      sendOperation.end({ ok: response?.ok === true, blocked_reason: resultCode(response), send_attempted: response?.send_attempted }, {
+        ok: response?.ok === true,
+        code: resultCode(response)
+      });
+    } catch (error) {
+      sendOperation.fail(error, { stage: "task_contact_send", send_attempted: null });
+      throw error;
+    }
 
     task = loadTaskState(activeTouchDir());
     const result = task.results[index];
     if (!result) return false;
+    result.last_trace_id = sendOperation.traceId;
     if (response?.ok && response?.state?.real_send_status === "sent_verified") {
       return finishVerifiedContact(index, response.state);
     }
     if (result.status === "outcome_unknown" || response?.state?.real_send_status === "outcome_unknown" || resultCode(response) === "outcome_unknown") {
+      saveTaskState(activeTouchDir(), task);
       const verification = await verifyUnknownOutcome(index);
       if (verification.verified) return true;
       if (verification.blocked) return false;
@@ -672,6 +702,12 @@ async function runRealContact(task, current, index) {
       result.status = "identity_skipped";
       result.reason = resultReason(response, "联系人身份无法唯一确认，已跳过");
       result.updated_at = new Date().toISOString();
+      recordSkippedResult(result, index, {
+        reasonCode: resultCode(response),
+        blockedReason: result.reason,
+        at: result.updated_at,
+        traceId: sendOperation.traceId
+      });
       const advanced = advanceTask(task, index);
       emitTaskUpdate(advanced);
       return true;
@@ -764,10 +800,15 @@ async function runTaskLoop() {
       }
 
       if (task.execution_mode === "real_send") {
-        if (current.status === "ai_failed_skipped") {
+        if (["ai_failed_skipped", "identity_skipped", "outcome_unknown_skipped", "sent_verified"].includes(current.status)) {
           advanceTask(task, index);
           emitTaskUpdate();
           continue;
+        }
+        if (current.status === "outcome_unknown") {
+          requireUnknownResolution(task, index);
+          emitTaskUpdate();
+          break;
         }
         if (current.status !== "generated") {
           pauseTask(task, "当前联系人文案尚未准备，任务已暂停", index);
@@ -1006,6 +1047,19 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
 
   ipcMain.handle("touch-task:status", () => taskPayload());
 
+  ipcMain.handle("touch-task:retry-skipped", (_event, payload = {}) => {
+    const task = loadTaskState(activeTouchDir());
+    if (payload.taskId && String(payload.taskId) !== String(task.id)) {
+      const workflowRetry = workflow.retrySkippedWorkflowTask(String(payload.taskId), payload.contactIds);
+      return workflowRetry.ok ? { ...publicTaskState(workflowRetry.task), retriedCount: workflowRetry.retriedCount } : workflowRetry;
+    }
+    const retried = retrySkippedResults(task, payload.contactIds);
+    if (!retried.ok) return retried;
+    const saved = saveTaskState(activeTouchDir(), retried.task);
+    emitTaskUpdate(saved);
+    return { ...taskPayload(saved), retriedCount: retried.retriedCount };
+  });
+
   ipcMain.handle("touch-task:pause", () => requestPause());
 
   ipcMain.handle("touch-task:resume", async (_event, payload = {}) => {
@@ -1127,6 +1181,12 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     current.awaiting_resolution = false;
     current.retry_blocked = true;
     current.updated_at = new Date().toISOString();
+    if (current.status === "outcome_unknown_skipped") recordSkippedResult(current, task.current_index, {
+      reasonCode: "outcome_unknown",
+      blockedReason: current.reason,
+      at: current.updated_at,
+      traceId: current.last_trace_id
+    });
     task.next_send_not_before = new Date(Date.now() + sendDelayMs(randomSource)).toISOString();
     let nextTask = advanceTask(task, task.current_index);
     if (nextTask.status !== "completed") {

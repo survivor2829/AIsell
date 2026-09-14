@@ -115,6 +115,11 @@ function createWechatWorkflowController(options) {
     }
     catch { return null; }
   }
+  function skippedTouchState(task) {
+    if (task.type !== "touch" || !executors.touch?.describeSkippedWorkflowTask) return null;
+    try { return executors.touch.describeSkippedWorkflowTask(task); }
+    catch { return null; }
+  }
 
   function applyUnknownResolution(task, outcome) {
     const done = Number(outcome?.progress?.done);
@@ -215,7 +220,9 @@ function createWechatWorkflowController(options) {
       nextTaskId: nextTask()?.id || null, error, replyStatus, replyError, revision,
       tasks: store.tasks.map((task) => {
         const resolution = unknownResolution(task);
+        const skipped = skippedTouchState(task);
         return { ...task, canRetry: canRetry(task), ...(resolution ? { unknownResolution: resolution } : {}),
+          ...(skipped || {}),
           accountMismatch: Boolean(task.accountName && task.accountName !== getAccount()) };
       }),
       recipients: accountRecipients().map((contact) => ({ id: contact.id, label: contact.remark || contact.nickname || contact.name || contact.id }))
@@ -700,6 +707,22 @@ function createWechatWorkflowController(options) {
       if (task.status === "running") task.cancelRequested = true;
       else if (task.status !== "completed" || task.repeat === "daily") task.status = "cancelled";
       persist(); emit(); return { ok: true, state: status() };
+    }),
+    retrySkipped: (id, contactIds) => serialize(() => {
+      assertPlanEditable();
+      const task = findTask(id);
+      if (task.type !== "touch" || typeof executors.touch?.retrySkippedWorkflowTask !== "function") throw new Error("这项任务没有可重试的跳过联系人。");
+      const retried = executors.touch.retrySkippedWorkflowTask(task, contactIds);
+      if (!retried?.ok) throw Object.assign(new Error(retried?.error || "跳过联系人未能重新加入。"), { code: retried?.blocked_reason });
+      task.progress = { done: retried.task.current_index, total: retried.task.total };
+      task.status = "pending";
+      task.error = "";
+      delete task.reasonCode;
+      delete task.completedAt;
+      delete task.lastCompletedDate;
+      delete task.notBefore;
+      delete task.waitingReason;
+      persist(); emit(); return { ok: true, state: status(), retriedCount: retried.retriedCount };
     }),
     resolveTouchUnknown: (id, resolution) => serialize(() => {
       assertPlanEditable();
