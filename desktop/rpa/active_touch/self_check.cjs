@@ -32,6 +32,7 @@ const { isVerifiedWechatSearchResultMode, resolveWechatSearchResultObservation }
 const { normalizeAtomicSendResult } = require("./wechat_window_driver.dev.cjs");
 const {
   authorizeNextBatch,
+  authorizeTask,
   classifyContacts,
   createTask,
   cleanupTaskCache,
@@ -40,12 +41,15 @@ const {
   isBatchAuthorized,
   loadTaskState,
   markPreviousBuildTask,
+  identityKey,
   publicTaskState,
   recoverInterruptedTask,
   saveTaskState,
   sendDelayMs,
   taskBackupPath
 } = require("./touch_task_state.cjs");
+const { createTouchWorkflow } = require("../../src/main/touch-workflow.cjs");
+const { canContinueSequence, unknownMessagePart } = require("../../src/main/touch-message-sequence.cjs");
 const { main: runActiveTouchCli } = require("./active_touch_cli.cjs");
 const { main: runActiveTouchDevCli } = require("./active_touch_cli.dev.cjs");
 const { runPowerShell } = require("./wechat_window_driver.cjs");
@@ -709,8 +713,252 @@ try {
   }), "utf8");
   const preparedRecovered = recoverInterruptedTask(dir);
   assert.equal(preparedRecovered.status, "paused");
-  assert.equal(preparedRecovered.results[0].status, "prepared");
+  assert.equal(preparedRecovered.phase, "awaiting_unknown_resolution");
+  assert.equal(preparedRecovered.results[0].status, "outcome_unknown");
+  assert.equal(preparedRecovered.results[0].crash_recovered_from, "prepared");
+  assert.equal(preparedRecovered.results[0].awaiting_resolution, true);
   assert.equal(preparedRecovered.results[0].retry_blocked, true);
+
+  const sendingWithoutExecutionState = createTask("sending-without-execution-state", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  sendingWithoutExecutionState.results[0].message = "崩溃窗口测试消息";
+  sendingWithoutExecutionState.results[0].status = "sending";
+  sendingWithoutExecutionState.results[0].send_attempted = null;
+  saveTaskState(dir, sendingWithoutExecutionState);
+  fs.rmSync(path.join(dir, "state.json"), { force: true });
+  const sendingWithoutExecutionStateRecovered = recoverInterruptedTask(dir);
+  assert.equal(sendingWithoutExecutionStateRecovered.status, "paused");
+  assert.equal(sendingWithoutExecutionStateRecovered.phase, "awaiting_unknown_resolution");
+  assert.equal(sendingWithoutExecutionStateRecovered.results[0].status, "outcome_unknown", "an unmatched production sending marker must enter manual resolution");
+  assert.equal(sendingWithoutExecutionStateRecovered.results[0].awaiting_resolution, true);
+  assert.equal(sendingWithoutExecutionStateRecovered.results[0].retry_blocked, true, "a sending result without matching execution state requires manual review");
+
+  const mismatchedExecutionState = createTask("sending-mismatched-execution-state", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  mismatchedExecutionState.results[0].message = "三键不匹配测试消息";
+  mismatchedExecutionState.results[0].status = "sending";
+  mismatchedExecutionState.results[0].send_attempted = null;
+  saveTaskState(dir, mismatchedExecutionState);
+  fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify({
+    task_context: { task_id: "another-task", contact_id: mismatchedExecutionState.results[0].id, current_index: 0 },
+    real_send_status: "sent_verified",
+    real_send_attempt_key: "mismatched-key",
+    real_send_attempts: { "mismatched-key": "sent_verified" }
+  }), "utf8");
+  const mismatchedExecutionStateRecovered = recoverInterruptedTask(dir);
+  assert.equal(mismatchedExecutionStateRecovered.phase, "awaiting_unknown_resolution", "a mismatched ledger context must fail closed like a missing ledger");
+  assert.equal(mismatchedExecutionStateRecovered.results[0].status, "outcome_unknown");
+  assert.equal(mismatchedExecutionStateRecovered.results[0].awaiting_resolution, true);
+
+  const multipartCrash = createTask("multipart-sending-without-execution-state", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  multipartCrash.results[0].message = "图文崩溃窗口测试消息";
+  multipartCrash.results[0].status = "sending";
+  multipartCrash.results[0].send_attempted = null;
+  multipartCrash.results[0].message_parts = [
+    { kind: "text", signature: "text", status: "sent_verified" },
+    { kind: "image", signature: "image", status: "sending" },
+    { kind: "link", signature: "link", status: "pending" }
+  ];
+  saveTaskState(dir, multipartCrash);
+  fs.rmSync(path.join(dir, "state.json"), { force: true });
+  const multipartCrashRecovered = recoverInterruptedTask(dir);
+  assert.equal(multipartCrashRecovered.phase, "awaiting_unknown_resolution");
+  assert.equal(multipartCrashRecovered.results[0].message_parts.filter((part) => part.status === "outcome_unknown").length, 1, "exactly the in-flight multipart segment must enter manual resolution");
+  assert.equal(multipartCrashRecovered.results[0].message_parts[1].status, "outcome_unknown");
+
+  async function workflowCrashRecoveryCase(rowStatus, multipart = false, settings = {}) {
+    const workflowRoot = fs.mkdtempSync(path.join(os.tmpdir(), `xiaoxi-touch-${rowStatus}-recovery-`));
+    const imageIds = multipart ? ["a".repeat(64)] : [];
+    const contacts = settings.contacts || [validContacts[0]];
+    const workflowRecord = {
+      id: crypto.randomUUID(),
+      payload: { script: `闸门层 ${rowStatus} 崩溃恢复测试`, contacts, ...(multipart ? { imageIds } : {}) },
+      progress: { done: settings.currentIndex || 0, total: contacts.length },
+      status: settings.recordStatus || "running"
+    };
+    const workflowTaskDir = path.join(workflowRoot, "workflow-tasks", crypto.createHash("sha256").update(workflowRecord.id).digest("hex"));
+    let workflowCrash = createTask(workflowRecord.payload.script, workflowRecord.payload.contacts, "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+    workflowCrash.id = workflowRecord.id;
+    workflowCrash = authorizeTask(workflowCrash, "2026-07-11T00:00:00.000Z");
+    workflowCrash.results[0].message = `闸门层 ${rowStatus} 崩溃恢复测试消息`;
+    workflowCrash.results[0].status = rowStatus;
+    workflowCrash.results[0].send_attempted = settings.sendAttempted === undefined ? null : settings.sendAttempted;
+    if (settings.retryBlocked !== undefined) workflowCrash.results[0].retry_blocked = settings.retryBlocked;
+    if (settings.retryCount !== undefined) workflowCrash.results[0].outcome_unknown_retry_count = settings.retryCount;
+    if (settings.awaitingResolution !== undefined) workflowCrash.results[0].awaiting_resolution = settings.awaitingResolution;
+    workflowCrash.status = settings.taskStatus || "running";
+    if (settings.phase) workflowCrash.phase = settings.phase;
+    if (settings.currentIndex !== undefined) workflowCrash.current_index = settings.currentIndex;
+    if (multipart) {
+      workflowCrash.results[0].message_parts = settings.messageParts || [
+        { kind: "text", signature: "text", status: "sent_verified" },
+        { kind: "image", signature: "image", status: rowStatus }
+      ];
+    }
+    saveTaskState(workflowTaskDir, workflowCrash);
+    const workflowSignature = crypto.createHash("sha256").update(JSON.stringify({
+      script: workflowRecord.payload.script,
+      contacts: workflowRecord.payload.contacts.map(identityKey),
+      ...(multipart ? { imageIds, link: "" } : {})
+    })).digest("hex");
+    fs.writeFileSync(path.join(workflowTaskDir, "workflow-binding.json"), JSON.stringify({ taskId: workflowRecord.id, signature: workflowSignature }), "utf8");
+    if (settings.matchingExecutionState) {
+      fs.writeFileSync(path.join(workflowTaskDir, "state.json"), JSON.stringify({
+        task_context: { task_id: workflowCrash.id, contact_id: workflowCrash.results[0].id, current_index: 0 },
+        real_send_status: "sent_verified"
+      }), "utf8");
+    } else {
+      fs.rmSync(path.join(workflowTaskDir, "state.json"), { force: true });
+    }
+    let executeCalls = 0;
+    const workflow = createTouchWorkflow({
+      dataDir: workflowRoot,
+      readContacts: () => workflowRecord.payload.contacts,
+      coordinator: { acquire: () => settings.lockAvailable === false
+        ? { ok: false, error: "matrix_lock_busy" }
+        : { ok: true, lock: { owner: "recovery-test" } }, release() {} },
+      execute: async () => { executeCalls += 1; return { ok: true, state: { real_send_status: "sent_verified" } }; }
+    });
+    const result = await workflow.runWorkflowStep(workflowRecord, { isEnabled: () => true });
+    return { executeCalls, result, workflow, workflowRecord, recovered: loadTaskState(workflowTaskDir) };
+  }
+
+  const sendingWorkflowRecovery = await workflowCrashRecoveryCase("sending");
+  assert.equal(sendingWorkflowRecovery.result.status, "needs_attention");
+  assert.equal(sendingWorkflowRecovery.executeCalls, 0, "the workflow gate must never execute an unmatched production sending marker");
+  assert.equal(sendingWorkflowRecovery.recovered.status, "paused");
+  assert.equal(sendingWorkflowRecovery.recovered.phase, "awaiting_unknown_resolution", "the production workflow loader must recover an interrupted send without a manual recovery call");
+  assert.equal(sendingWorkflowRecovery.recovered.results[0].awaiting_resolution, true);
+  assert.equal(sendingWorkflowRecovery.recovered.results[0].status, "outcome_unknown");
+  assert.equal(sendingWorkflowRecovery.recovered.results[0].retry_blocked, true);
+  assert.ok(sendingWorkflowRecovery.recovered.results[0].outcome_unknown_retry_count >= 1);
+  assert.equal(sendingWorkflowRecovery.workflow.describeUnknownWorkflowTask(sendingWorkflowRecovery.workflowRecord)?.required, true, "the recovered task must expose the manual resolution UI");
+
+  const generatedWorkflow = await workflowCrashRecoveryCase("generated", false, { sendAttempted: false, retryBlocked: false });
+  const generatedRow = generatedWorkflow.recovered.results[0];
+  assert.equal(generatedWorkflow.result.status, "completed", "M1 generated work must continue normally");
+  assert.equal(generatedWorkflow.executeCalls, 1);
+  assert.equal(generatedWorkflow.recovered.status, "completed");
+  assert.equal(generatedWorkflow.recovered.phase, "preparing_batch");
+  assert.equal(generatedRow.status, "sent_verified");
+  assert.equal(generatedRow.awaiting_resolution, false);
+  assert.equal(generatedRow.retry_blocked, true);
+  assert.equal(generatedRow.outcome_unknown_retry_count, 0);
+  assert.equal(generatedWorkflow.workflow.describeUnknownWorkflowTask(generatedWorkflow.workflowRecord), null);
+
+  // Production writers pause the task in the same call that records
+  // outcome_unknown. This synthetic on-disk pair is therefore unreachable,
+  // but the entry gate must still stop before execute and expose resolution.
+  const unreachableUnknown = await workflowCrashRecoveryCase("outcome_unknown", false, { retryBlocked: true, retryCount: 0 });
+  const unreachableUnknownRow = unreachableUnknown.recovered.results[0];
+  assert.equal(unreachableUnknown.result.status, "needs_attention");
+  assert.equal(unreachableUnknown.executeCalls, 0);
+  assert.equal(unreachableUnknown.recovered.status, "paused", "M5 synthetic running/outcome_unknown must not remain on disk after the production entry gate");
+  assert.equal(unreachableUnknown.recovered.phase, "preparing_batch");
+  assert.equal(unreachableUnknownRow.status, "outcome_unknown");
+  assert.equal(unreachableUnknownRow.awaiting_resolution, false);
+  assert.equal(unreachableUnknownRow.retry_blocked, true);
+  assert.equal(unreachableUnknownRow.outcome_unknown_retry_count, 0);
+  assert.equal(unreachableUnknown.workflow.describeUnknownWorkflowTask(unreachableUnknown.workflowRecord)?.required, true);
+
+  const verifiedContacts = [validContacts[0], validContacts[1]];
+  const verifiedWorkflow = await workflowCrashRecoveryCase("sent_verified", false, {
+    contacts: verifiedContacts,
+    sendAttempted: true,
+    retryBlocked: true,
+    matchingExecutionState: true
+  });
+  const verifiedRow = verifiedWorkflow.recovered.results[0];
+  assert.equal(verifiedWorkflow.result.status, "pending", "M6 verified receipt must advance to the next contact");
+  assert.equal(verifiedWorkflow.executeCalls, 0);
+  assert.equal(verifiedWorkflow.recovered.status, "running");
+  assert.equal(verifiedWorkflow.recovered.current_index, 1);
+  assert.equal(verifiedWorkflow.recovered.phase, "preparing_batch");
+  assert.equal(verifiedRow.status, "sent_verified");
+  assert.equal(verifiedRow.awaiting_resolution, false);
+  assert.equal(verifiedRow.retry_blocked, true);
+  assert.equal(verifiedRow.outcome_unknown_retry_count, 0);
+  assert.equal(verifiedWorkflow.workflow.describeUnknownWorkflowTask(verifiedWorkflow.workflowRecord), null);
+
+  const pendingMultipart = await workflowCrashRecoveryCase("sending", true, {
+    lockAvailable: false,
+    messageParts: [
+      { kind: "text", signature: "text", status: "pending" },
+      { kind: "image", signature: "image", status: "pending" }
+    ]
+  });
+  const pendingMultipartRow = pendingMultipart.recovered.results[0];
+  assert.equal(pendingMultipart.result.status, "pending", "M7 all-pending multipart work must remain safely resumable");
+  assert.equal(pendingMultipart.result.retryAfterMs, 1000, "a busy WeChat lock must yield the touch task before it can reclaim scheduler priority");
+  assert.equal(pendingMultipart.result.waitingReason, undefined, "lock contention backoff must not be labelled as a send safety interval");
+  assert.equal(pendingMultipart.executeCalls, 0);
+  assert.equal(pendingMultipart.recovered.status, "running");
+  assert.equal(pendingMultipart.recovered.phase, "preparing_batch");
+  assert.equal(pendingMultipartRow.status, "generated");
+  assert.equal(pendingMultipartRow.awaiting_resolution, false);
+  assert.equal(pendingMultipartRow.retry_blocked, false);
+  assert.equal(pendingMultipartRow.outcome_unknown_retry_count, 0);
+  assert.equal(canContinueSequence(pendingMultipartRow), true);
+  assert.equal(pendingMultipart.workflow.describeUnknownWorkflowTask(pendingMultipart.workflowRecord), null);
+
+  const pausedPrepared = await workflowCrashRecoveryCase("prepared", false, {
+    taskStatus: "paused", phase: "paused", retryBlocked: true, awaitingResolution: false
+  });
+  const pausedPreparedRow = pausedPrepared.recovered.results[0];
+  assert.equal(pausedPrepared.result.status, "needs_attention");
+  assert.equal(pausedPrepared.executeCalls, 0);
+  assert.equal(pausedPrepared.recovered.status, "paused");
+  assert.equal(pausedPrepared.recovered.phase, "paused");
+  assert.equal(pausedPreparedRow.status, "prepared");
+  assert.equal(pausedPreparedRow.awaiting_resolution, false);
+  assert.equal(pausedPreparedRow.retry_blocked, true);
+  assert.equal(pausedPreparedRow.outcome_unknown_retry_count, 0);
+  assert.equal(pausedPreparedRow.crash_recovered_from, undefined, "M9 non-running work must not pass through crash recovery");
+  assert.equal(pausedPrepared.workflow.describeUnknownWorkflowTask(pausedPrepared.workflowRecord), null);
+
+  const completedPrepared = await workflowCrashRecoveryCase("prepared", false, {
+    taskStatus: "completed", phase: "completed", currentIndex: 1, retryBlocked: true, awaitingResolution: false
+  });
+  const completedPreparedRow = completedPrepared.recovered.results[0];
+  assert.equal(completedPrepared.result.status, "completed");
+  assert.equal(completedPrepared.executeCalls, 0);
+  assert.equal(completedPrepared.recovered.status, "completed");
+  assert.equal(completedPrepared.recovered.phase, "completed");
+  assert.equal(completedPreparedRow.status, "prepared");
+  assert.equal(completedPreparedRow.awaiting_resolution, false);
+  assert.equal(completedPreparedRow.retry_blocked, true);
+  assert.equal(completedPreparedRow.outcome_unknown_retry_count, 0);
+  assert.equal(completedPreparedRow.crash_recovered_from, undefined, "M10 completed work must not pass through crash recovery");
+  assert.equal(completedPrepared.workflow.describeUnknownWorkflowTask(completedPrepared.workflowRecord), null);
+
+  for (const rowStatus of ["prepared", "clicked"]) {
+    const recovery = await workflowCrashRecoveryCase(rowStatus);
+    const row = recovery.recovered.results[0];
+    assert.equal(recovery.result.status, "needs_attention");
+    assert.equal(recovery.executeCalls, 0, `${rowStatus} crash recovery must never execute the sender`);
+    assert.equal(recovery.recovered.phase, "awaiting_unknown_resolution");
+    assert.equal(row.status, "outcome_unknown");
+    assert.equal(row.awaiting_resolution, true);
+    assert.equal(row.retry_blocked, true);
+    assert.ok(row.outcome_unknown_retry_count >= 1);
+    assert.equal(row.crash_recovered_from, rowStatus);
+    assert.equal(recovery.workflow.describeUnknownWorkflowTask(recovery.workflowRecord)?.required, true);
+    assert.equal(recovery.workflow.canRetryWorkflowTask(recovery.workflowRecord, recovery.workflowRecord.payload), false);
+  }
+
+  const multipartPreparedRecovery = await workflowCrashRecoveryCase("prepared", true);
+  const multipartPreparedRow = multipartPreparedRecovery.recovered.results[0];
+  const multipartUnknown = unknownMessagePart(multipartPreparedRow);
+  assert.equal(multipartPreparedRecovery.result.status, "needs_attention");
+  assert.equal(multipartPreparedRecovery.executeCalls, 0);
+  assert.equal(multipartPreparedRecovery.recovered.phase, "awaiting_unknown_resolution");
+  assert.equal(multipartPreparedRow.status, "outcome_unknown");
+  assert.equal(multipartPreparedRow.awaiting_resolution, true);
+  assert.equal(multipartPreparedRow.retry_blocked, true);
+  assert.ok(multipartPreparedRow.outcome_unknown_retry_count >= 1);
+  assert.equal(multipartPreparedRow.crash_recovered_from, "prepared");
+  assert.equal(multipartUnknown?.index, 1, "multipart recovery must expose exactly the interrupted segment");
+  assert.equal(multipartUnknown?.part.crash_recovered_from, "prepared");
+  assert.equal(multipartPreparedRecovery.workflow.describeUnknownWorkflowTask(multipartPreparedRecovery.workflowRecord)?.required, true);
+  assert.equal(multipartPreparedRecovery.workflow.canRetryWorkflowTask(multipartPreparedRecovery.workflowRecord, multipartPreparedRecovery.workflowRecord.payload), false);
 
   const verifiedCrash = createTask("verified", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
   verifiedCrash.results[0].status = "sending";
@@ -807,7 +1055,10 @@ try {
   fs.rmSync(path.join(dir, "state.json"), { force: true });
   const taskOnlyRecovered = recoverInterruptedTask(dir);
   assert.equal(taskOnlyRecovered.status, "paused");
-  assert.equal(taskOnlyRecovered.results[0].status, "prepared");
+  assert.equal(taskOnlyRecovered.phase, "awaiting_unknown_resolution");
+  assert.equal(taskOnlyRecovered.results[0].status, "outcome_unknown");
+  assert.equal(taskOnlyRecovered.results[0].crash_recovered_from, "prepared");
+  assert.equal(taskOnlyRecovered.results[0].awaiting_resolution, true);
   assert.equal(taskOnlyRecovered.results[0].retry_blocked, true);
 
   const tamperedSnapshot = createTask("snapshot", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });

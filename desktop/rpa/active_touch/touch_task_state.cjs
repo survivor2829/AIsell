@@ -475,6 +475,28 @@ function recoverInterruptedTask(baseDir = __dirname) {
     const beforeIndex = task.current_index;
     reconcileRealSendAttempt(task, readExecutionState(baseDir));
     const unresolved = task.results[task.current_index];
+    if (["sending", "prepared", "clicked"].includes(unresolved?.status)) {
+      const interruptedStatus = unresolved.status;
+      const interruptedParts = Array.isArray(unresolved.message_parts)
+        ? unresolved.message_parts.filter((part) => ["sending", "prepared", "clicked"].includes(part?.status))
+        : null;
+      // A multipart sequence whose parts are all still pending has not reached a
+      // sender and can resume safely. Otherwise the persisted pre-send marker is
+      // ambiguous after a crash and must be resolved by the user, never retried.
+      if (interruptedParts === null || interruptedParts.length === 1) {
+        unresolved.crash_recovered_from = interruptedStatus;
+        if (interruptedParts?.length === 1) {
+          interruptedParts[0].crash_recovered_from = interruptedParts[0].status;
+          interruptedParts[0].status = "outcome_unknown";
+        }
+        unresolved.status = "outcome_unknown";
+        unresolved.outcome_unknown_retry_count = Math.max(1, unresolved.outcome_unknown_retry_count);
+        unresolved.awaiting_resolution = true;
+        unresolved.retry_blocked = true;
+        unresolved.send_attempted = null;
+        unresolved.reason = "程序中断时发送可能已经开始，请核对微信并选择处理结果";
+      }
+    }
     if (unresolved && ["prepared", "clicked", "outcome_unknown"].includes(unresolved.status)) {
       const canRetryUnknown = unresolved.status === "outcome_unknown" && unresolved.outcome_unknown_retry_count < 1;
       unresolved.awaiting_resolution = unresolved.status === "outcome_unknown" && !canRetryUnknown;
@@ -482,7 +504,9 @@ function recoverInterruptedTask(baseDir = __dirname) {
       unresolved.reason = unresolved.reason || (canRetryUnknown ? "发送结果无法确认，继续任务时会再次核验" : "检测到可能已经执行发送点击，已永久阻断自动重试");
       task.status = "paused";
       task.phase = unresolved.awaiting_resolution ? "awaiting_unknown_resolution" : "paused";
-      task.pause_reason = unresolved.awaiting_resolution ? "补发后仍无法确认，请人工选择处理结果" : unresolved.reason;
+      task.pause_reason = unresolved.awaiting_resolution
+        ? (unresolved.reason || "发送结果无法确认，请人工选择处理结果")
+        : unresolved.reason;
       return saveTaskState(baseDir, task);
     }
     if (task.status === "completed" || task.results[task.current_index]?.retry_blocked) return saveTaskState(baseDir, task);

@@ -386,6 +386,47 @@ async function main() {
   assert.equal(batch.status().phase, "needs_attention", "unfinished work must not look completed or idle");
   await batch.dispose();
 
+  const contentionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-lock-contention-"));
+  const contentionCalls = [];
+  const contentionClock = new Date(2026, 8, 3, 11, 30);
+  const contention = createWechatWorkflowController({
+    rootDir: contentionRoot,
+    autoReplyDir: path.join(contentionRoot, "reply"),
+    activeTouchDir: path.join(contentionRoot, "touch"),
+    momentsDir: path.join(contentionRoot, "moments"),
+    now: () => contentionClock,
+    getAccount: () => "test-account",
+    autoSchedule: false,
+    executors: {
+      touch: {
+        prepareWorkflowTask: () => ({ contacts: [{ id: "a" }], script: "test" }),
+        runWorkflowStep: async (task) => {
+          contentionCalls.push("touch");
+          return { status: "pending", progress: task.progress, retryAfterMs: 1_000, result: { reason: "wechat_operation_busy" } };
+        }
+      },
+      publish: {
+        prepareWorkflowTask: (_id, payload) => payload,
+        runWorkflowStep: async (task) => {
+          contentionCalls.push("publish");
+          return { status: "completed", progress: { done: 1, total: task.progress.total } };
+        }
+      }
+    }
+  });
+  const contentionTouch = await contention.addTask({ type: "touch", payload: { contactIds: ["a"], script: "test" } });
+  const contentionPublish = await contention.addTask({ type: "publish", scheduledAt: contentionClock.toISOString(), payload: { content: "due" } });
+  await contention.start();
+  await contention.tick();
+  const contentionStatus = contention.status();
+  assert.deepEqual(contentionCalls, ["touch"]);
+  assert.equal(contentionStatus.tasks.find((task) => task.id === contentionTouch.task.id).notBefore, contentionClock.getTime() + 1_000);
+  assert.equal(contentionStatus.tasks.find((task) => task.id === contentionTouch.task.id).waitingReason, undefined, "lock contention must not masquerade as a send safety interval");
+  assert.equal(contentionStatus.nextTaskId, contentionPublish.task.id, "a lock-busy touch task must yield the next scheduler slot");
+  await contention.tick();
+  assert.deepEqual(contentionCalls, ["touch", "publish"]);
+  await contention.dispose();
+
   const cooldownRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-cooldown-"));
   let cooldownClock = new Date(2026, 8, 3, 12, 0, 0);
   let touchCalls = 0;

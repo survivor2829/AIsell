@@ -14,13 +14,16 @@ const {
   identityKey,
   isBatchAuthorized,
   loadTaskState,
+  recoverInterruptedTask,
   saveTaskState,
   sendDelayMs,
   taskSnapshotHash
 } = require("../../rpa/active_touch/touch_task_state.cjs");
 
 const UNCERTAIN_SEND_STATES = new Set(["sending", "prepared", "clicked", "outcome_unknown"]);
+const INTERRUPTED_SEND_STATES = new Set(["sending", "prepared", "clicked"]);
 const PRE_SEND_INPUT_RECOVERY_WAIT_MS = 15_000;
+const WECHAT_LOCK_RETRY_MS = 1_000;
 const IDENTITY_RECOVERY_ATTEMPTS = 2;
 const IDENTITY_SKIP_REASONS = new Set([
   "contact_unavailable",
@@ -40,7 +43,21 @@ function createTouchWorkflow(options = {}) {
   const coordinator = options.coordinator;
   const now = options.now || (() => new Date());
   let activeStep = false;
+  const recoveredTaskIds = new Set();
   const workflowDirectory = (id) => path.join(contactsDir, "workflow-tasks", crypto.createHash("sha256").update(String(id)).digest("hex"));
+  const loadWorkflowTask = (id) => {
+    const taskId = String(id);
+    const taskDir = workflowDirectory(taskId);
+    let task = loadTaskState(taskDir);
+    if (!recoveredTaskIds.has(taskId)) {
+      const current = task.results?.[task.current_index];
+      if (task.status === "running" && INTERRUPTED_SEND_STATES.has(current?.status)) {
+        task = recoverInterruptedTask(taskDir);
+      }
+      recoveredTaskIds.add(taskId);
+    }
+    return task;
+  };
 
   function safetyInterval(nextEligibleAt) {
     const retryAfterMs = Math.max(0, Date.parse(nextEligibleAt) - now().getTime());
@@ -134,7 +151,7 @@ function createTouchWorkflow(options = {}) {
         if (!fs.existsSync(path.join(taskDir, "touch_task.json"))) {
           return response("needs_attention", { error: "触达进度文件缺失，无法安全判断已发送范围" });
         }
-        task = loadTaskState(taskDir);
+        task = loadWorkflowTask(id);
       } else {
         if (fs.existsSync(path.join(taskDir, "touch_task.json"))) {
           return response("needs_attention", { error: "触达任务绑定记录缺失，无法安全重建进度" });
@@ -215,7 +232,10 @@ function createTouchWorkflow(options = {}) {
       }
       if (!enabled()) return response("pending");
       const lock = coordinator?.acquire({ state: "touching", taskId: id, account: task.wechat_account_id, phase: "workflow:touch" });
-      if (!lock?.ok || !lock.lock?.owner) return response("pending", { result: { reason: lock?.error || "wechat_operation_busy" } });
+      if (!lock?.ok || !lock.lock?.owner) return response("pending", {
+        retryAfterMs: WECHAT_LOCK_RETRY_MS,
+        result: { reason: lock?.error || "wechat_operation_busy" }
+      });
       owner = lock.lock.owner;
       const index = task.current_index;
       current = task.results[index];
@@ -397,7 +417,7 @@ function createTouchWorkflow(options = {}) {
   }
 
   function canRetryWorkflowTask(record, payload) {
-    const task = loadTaskState(workflowDirectory(record.id));
+    const task = loadWorkflowTask(record.id);
     const multipart = payload ? (Array.isArray(payload.imageIds) && payload.imageIds.length > 0 || Boolean(payload.link)) : undefined;
     return !task.integrity_error && task.status === "paused" && canContinueTouchResult(task.results[task.current_index], multipart);
   }
@@ -405,7 +425,7 @@ function createTouchWorkflow(options = {}) {
   function describeUnknownWorkflowTask(record) {
     const id = String(record?.id || record || "").trim();
     if (!id) return null;
-    const task = loadTaskState(workflowDirectory(id));
+    const task = loadWorkflowTask(id);
     const current = task.results?.[task.current_index];
     if (task.integrity_error) return null;
     if (task.status === "paused" && current?.status === "outcome_unknown") {
@@ -427,7 +447,7 @@ function createTouchWorkflow(options = {}) {
     const id = String(record?.id || record || "").trim();
     if (!id || !["sent", "not_sent", "skip"].includes(resolution) || !/^[a-f0-9-]{36}$/u.test(String(resolutionId))) throw new Error("请选择有效的发送结果。");
     const taskDir = workflowDirectory(id);
-    const task = loadTaskState(taskDir);
+    const task = loadWorkflowTask(id);
     if (task.manual_resolution_pending?.resolutionId === resolutionId) return task.manual_resolution_pending;
     const current = task.results?.[task.current_index];
     if (task.integrity_error) throw new Error("触达任务进度校验失败，暂不能处理。");
@@ -510,7 +530,7 @@ function createTouchWorkflow(options = {}) {
     const id = String(record?.id || record || "").trim();
     if (!id || !resolutionId) return false;
     const taskDir = workflowDirectory(id);
-    const task = loadTaskState(taskDir);
+    const task = loadWorkflowTask(id);
     if (task.manual_resolution_pending?.resolutionId !== resolutionId) return false;
     delete task.manual_resolution_pending;
     saveTaskState(taskDir, task);
@@ -522,7 +542,7 @@ function createTouchWorkflow(options = {}) {
     const taskDir = workflowDirectory(taskId);
     const bindingFile = path.join(taskDir, "workflow-binding.json");
     if (!taskId || !fs.existsSync(bindingFile)) throw new Error("触达任务尚未建立可编辑的执行记录，请先暂停后重试。");
-    let task = loadTaskState(taskDir);
+    let task = loadWorkflowTask(taskId);
     const current = task.results[task.current_index];
     if (task.integrity_error) throw new Error("触达任务进度校验失败，暂不能编辑。");
     if (task.current_index >= task.total || ["completed", "stopped"].includes(task.status)) throw new Error("这项触达任务已经结束，不能继续编辑。");
