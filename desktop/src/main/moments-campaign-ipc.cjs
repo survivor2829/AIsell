@@ -33,6 +33,12 @@ const DAILY_FAILURE_RETRY_MS = 30 * 60_000;
 const AUTOMATED_WINDOW_IDLE_MS = 15_000;
 const MOMENTS_PRE_ACTION_SURFACE_RETRY_MS = 350;
 const MOMENTS_EMPTY_SCAN_RETRY_MS = 30 * 60_000;
+const CONTROLLED_WORKFLOW_START_REASONS = new Set([
+  "moments_action_missing",
+  "moments_comment_ai_unavailable",
+  "runtime_coordinator_failed",
+  "moments_campaign_state_persist_failed"
+]);
 
 function readJson(file, fallback = {}) {
   try {
@@ -1140,8 +1146,8 @@ function createMomentsCampaignController(options = {}) {
         return { ok: false, reason: "moments_comment_ai_unavailable" };
       }
       return { ok: true, payload: config };
-    } catch (error) {
-      return { ok: false, reason: error?.code || "moments_workflow_config_invalid" };
+    } catch {
+      return { ok: false, reason: "moments_workflow_config_invalid" };
     }
   }
 
@@ -1149,21 +1155,27 @@ function createMomentsCampaignController(options = {}) {
     const config = prepareWorkflowTask(taskRecord.id, taskRecord.payload);
     const isEnabled = typeof runOptions.isEnabled === "function" ? runOptions.isEnabled : () => false;
     let progress = { done: Number(taskRecord.progress?.done || 0), total: config.payload?.maxPosts || 1 };
+    // Only controlled branches may set reasonCode. Executor and persisted free text
+    // stay diagnostic-only so they can never choose local versus global stopping.
     const response = (status, error = "", extra = {}) => ({ status, progress: { ...progress,
-      ...(workflowContext ? workflowProgress({ ...taskRecord, progress }) : {}) }, ...(error ? { error } : {}),
-      ...(status === "needs_attention" && error ? { reasonCode: error } : {}), ...extra });
-    if (!config.ok) return response("needs_attention", config.reason);
+      ...(workflowContext ? workflowProgress({ ...taskRecord, progress }) : {}) }, ...(error ? { error } : {}), ...extra });
+    if (!config.ok) return response("needs_attention", config.reason, { reasonCode: config.reason });
     if (!isEnabled() || loopPromise || workflowContext) return response("pending");
     try {
       const date = String(taskRecord.occurrenceDate || "once");
-      if (date !== "once" && !/^\d{4}-\d{2}-\d{2}$/u.test(date)) return response("needs_attention", "workflow_occurrence_date_invalid");
+      if (date !== "once" && !/^\d{4}-\d{2}-\d{2}$/u.test(date)) {
+        return response("needs_attention", "workflow_occurrence_date_invalid", { reasonCode: "workflow_occurrence_date_invalid" });
+      }
       const file = path.join(workflowDirectory(path.join(baseDir, "planned_runs"), taskRecord.id), `${date}.json`);
       const stored = readWorkflowJson(file, { done: 0, processed_posts: [], in_flight: null });
       progress = { ...workflowProgress(taskRecord), done: Math.max(0, Number(stored.done || 0)), total: config.payload.maxPosts };
       if (stored.in_flight || stored.outcome_unknown) {
-        return response("needs_attention", stored.outcome_unknown
-          ? (stored.last_reason || "moments_interaction_outcome_unknown")
-          : "moments_interaction_outcome_unknown");
+        const diagnosticReason = String(stored.last_reason || (stored.in_flight ? "in_flight_record_present" : ""));
+        return response("needs_attention", diagnosticReason || "moments_interaction_outcome_unknown", {
+          reasonCode: "moments_interaction_outcome_unknown",
+          diagnosticReason,
+          requiresGlobalAttention: true
+        });
       }
       if (progress.done >= progress.total) return response("completed");
       workflowContext = {
@@ -1174,12 +1186,21 @@ function createMomentsCampaignController(options = {}) {
       };
       const started = start({ ...config.payload, maxPosts: progress.total - progress.done }, { workflow: true });
       if (!started.ok) {
-        return response(started.reason === "wechat_operation_busy" ? "pending" : "needs_attention", started.reason);
+        if (started.reason === "wechat_operation_busy") return response("pending", started.reason);
+        const reasonCode = CONTROLLED_WORKFLOW_START_REASONS.has(started.reason)
+          ? started.reason
+          : "moments_workflow_failed";
+        return response("needs_attention", started.reason, { reasonCode, diagnosticReason: started.reason });
       }
       await loopPromise;
       progress = { done: workflowContext.progress.done, total: config.payload.maxPosts };
       if (workflowContext.progress.in_flight || state.outcome_unknown) {
-        return response("needs_attention", state.last_reason || "moments_interaction_outcome_unknown");
+        const diagnosticReason = String(state.last_reason || (workflowContext.progress.in_flight ? "in_flight_record_present" : ""));
+        return response("needs_attention", diagnosticReason || "moments_interaction_outcome_unknown", {
+          reasonCode: "moments_interaction_outcome_unknown",
+          diagnosticReason,
+          requiresGlobalAttention: true
+        });
       }
       if (progress.done >= progress.total) return response("completed");
       if (state.status === "completed" || ["workflow_yielded", "moments_no_new_posts"].includes(state.last_reason)) {
@@ -1190,9 +1211,15 @@ function createMomentsCampaignController(options = {}) {
           ? response("pending", "", { retryAfterMs: MOMENTS_EMPTY_SCAN_RETRY_MS })
           : response("pending");
       }
-      return response("needs_attention", state.last_reason || "moments_interaction_incomplete");
+      return response("needs_attention", state.last_reason || "moments_interaction_incomplete", {
+        reasonCode: "moments_interaction_incomplete",
+        diagnosticReason: String(state.last_reason || "")
+      });
     } catch (error) {
-      return response("needs_attention", error?.code || "moments_workflow_failed");
+      return response("needs_attention", error?.message || "moments_workflow_failed", {
+        reasonCode: "moments_workflow_failed",
+        diagnosticReason: String(error?.code || error?.message || "")
+      });
     } finally {
       workflowContext = null;
     }

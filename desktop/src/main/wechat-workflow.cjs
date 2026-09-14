@@ -365,16 +365,18 @@ function createWechatWorkflowController(options) {
     return { alreadyActive: false };
   }
 
-  function applyTaskAttention(task, reasonCode, message) {
+  function applyTaskAttention(task, reasonCode, message, requiresGlobalAttention = false) {
     task.status = "needs_attention";
     task.error = String(message || "任务需要处理，请查看任务详情。");
     task.reasonCode = reasonCode;
-    if (LOCAL_TASK_ATTENTION_REASONS.has(reasonCode)) {
+    // An explicit unknown-outcome signal always outranks the local-reason whitelist.
+    if (!requiresGlobalAttention && LOCAL_TASK_ATTENTION_REASONS.has(reasonCode)) {
       log("task.local_attention", { task_kind: task.type, task_id: task.id, stage: cycleStage, reason: reasonCode }, { level: "warn", code: reasonCode });
       return;
     }
     enabled = false;
     phase = "needs_attention";
+    clearTimeout(timer);
     log("task.global_stop", { task_kind: task.type, task_id: task.id, stage: cycleStage, reason: reasonCode || "task_attention_reason_missing" }, { level: "warn", code: reasonCode || "task_attention_reason_missing" });
   }
 
@@ -478,7 +480,7 @@ function createWechatWorkflowController(options) {
         ? workflowFailureReason(result.error, "task_needs_attention")
         : result.waitingReason === "touch_safety_interval" ? "touch_safety_interval" : "task_step_returned");
       if (task.status === "needs_attention") {
-        applyTaskAttention(task, reason, result.error);
+        applyTaskAttention(task, reason, result.error, result.requiresGlobalAttention === true);
       } else delete task.reasonCode;
       if (task.cancelRequested && result.status !== "needs_attention") task.status = "cancelled";
       if (task.status === "completed") {

@@ -1506,6 +1506,94 @@ async function main() {
   assert.equal(workflowOpenCalls, 1, "one batch must open Moments only once");
   assert.equal(workflowScrollCalls, 3, "skip the old post and keep scrolling without yielding to chat");
 
+  async function checkUnknownWorkflowStop(lastReason) {
+    const unknownRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-unknown-workflow-"));
+    const momentsDir = path.join(unknownRoot, "moments");
+    const moments = createMomentsCampaignController({
+      baseDir: momentsDir,
+      workflowManaged: true,
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "unknown-owner" } }), release: () => undefined },
+      logger: { event: () => undefined }
+    });
+    let replyCalls = 0;
+    const workflow = createWechatWorkflowController({
+      rootDir: unknownRoot,
+      autoReplyDir: path.join(unknownRoot, "reply"),
+      activeTouchDir: path.join(unknownRoot, "touch"),
+      momentsDir,
+      getAccount: () => "test-account",
+      autoSchedule: false,
+      reply: {
+        prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+        runWorkflowStep: async () => { replyCalls += 1; return { handled: false }; }
+      },
+      executors: { interact: moments }
+    });
+    await workflow.addRecipients(["reply-contact"]);
+    const payload = { maxPosts: 1, likeEnabled: true, commentEnabled: false };
+    const added = await workflow.addTask({ type: "interact", payload });
+    const progressDir = path.join(momentsDir, "planned_runs", added.task.id);
+    fs.mkdirSync(progressDir, { recursive: true });
+    fs.writeFileSync(path.join(progressDir, `${added.task.occurrenceDate}.json`), JSON.stringify({
+      done: 0,
+      processed_posts: [],
+      in_flight: null,
+      outcome_unknown: true,
+      last_reason: lastReason
+    }));
+    const rawResult = await moments.runWorkflowStep({ ...added.task, payload }, { isEnabled: () => true });
+    assert.equal(rawResult.reasonCode, "moments_interaction_outcome_unknown");
+    assert.equal(rawResult.diagnosticReason, lastReason);
+    assert.equal(rawResult.requiresGlobalAttention, true);
+    await workflow.start();
+    await workflow.tick();
+    assert.equal(workflow.status().enabled, false, "an unknown Moments outcome must stop the whole workflow regardless of diagnostic text");
+    assert.equal(replyCalls, 1);
+    await workflow.tick();
+    assert.equal(replyCalls, 1, "auto reply must remain stopped after an unknown Moments outcome");
+    await workflow.dispose();
+    moments.dispose();
+    fs.rmSync(unknownRoot, { recursive: true, force: true });
+  }
+
+  await checkUnknownWorkflowStop("moments_no_new_posts");
+  await checkUnknownWorkflowStop("executor_specific_unknown_detail");
+
+  const forcedGlobalRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-forced-global-attention-"));
+  let forcedGlobalReplyCalls = 0;
+  const forcedGlobal = createWechatWorkflowController({
+    rootDir: forcedGlobalRoot,
+    autoReplyDir: path.join(forcedGlobalRoot, "reply"),
+    activeTouchDir: path.join(forcedGlobalRoot, "touch"),
+    momentsDir: path.join(forcedGlobalRoot, "moments"),
+    getAccount: () => "test-account",
+    autoSchedule: false,
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => { forcedGlobalReplyCalls += 1; return { handled: false }; }
+    },
+    executors: { interact: {
+      prepareWorkflowTask: (_id, payload) => ({ payload }),
+      runWorkflowStep: async (task) => ({
+        status: "needs_attention",
+        reasonCode: "moments_no_new_posts",
+        error: "diagnostic text",
+        requiresGlobalAttention: true,
+        progress: task.progress
+      })
+    } }
+  });
+  await forcedGlobal.addRecipients(["reply-contact"]);
+  await forcedGlobal.addTask({ type: "interact", payload: { maxPosts: 1 } });
+  await forcedGlobal.start();
+  await forcedGlobal.tick();
+  assert.equal(forcedGlobal.status().enabled, false, "requiresGlobalAttention must override every local reason whitelist entry");
+  assert.equal(forcedGlobalReplyCalls, 1);
+  await forcedGlobal.tick();
+  assert.equal(forcedGlobalReplyCalls, 1);
+  await forcedGlobal.dispose();
+  fs.rmSync(forcedGlobalRoot, { recursive: true, force: true });
+
   const emptyScanRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-empty-scan-"));
   let emptyScanFingerprint = "e".repeat(64);
   const emptyScanController = createMomentsCampaignController({
