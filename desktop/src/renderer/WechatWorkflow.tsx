@@ -23,6 +23,7 @@ export type WorkflowMedia = {
   files: Array<{ name: string; size: number; kind: "image" | "video" }>;
 };
 type TouchImage = { id: string; name: string; size?: number; preview: string };
+type TouchSkipRecord = { contactId: string; displayName: string; index: number; reasonCode: string; blockedReason: string; at: string; traceId: string; status: string };
 export type WorkflowTaskInput = {
   type: WorkflowTaskType;
   title?: string;
@@ -46,6 +47,9 @@ export type WorkflowTask = Omit<WorkflowTaskInput, "payload"> & {
   accountMismatch?: boolean;
   canRetry?: boolean;
   unknownResolution?: { required: true; contactLabel: string; partKind: "text" | "image" | "link" | string };
+  sent_verified_count?: number;
+  skipped_breakdown?: { identity: number; ai_failed: number; outcome_unknown: number };
+  skipped_records?: TouchSkipRecord[];
 };
 export type WorkflowState = {
   enabled: boolean;
@@ -82,6 +86,7 @@ declare global {
       cancelTask: (id: string) => Promise<WorkflowResult>;
       deleteTasks: (ids: string[], unsuccessfulOnly?: boolean) => Promise<WorkflowResult>;
       retryTask: (id: string) => Promise<WorkflowResult>;
+      retrySkipped: (id: string, contactIds?: string[]) => Promise<WorkflowResult>;
       resolveTouchUnknown: (id: string, resolution: "sent" | "not_sent" | "skip") => Promise<WorkflowResult>;
       getTask: (id: string) => Promise<WorkflowResult>;
       removeRecipient: (id: string) => Promise<WorkflowResult>;
@@ -102,6 +107,11 @@ const TOUCH_RESOLUTION_NOTICES = {
   sent: "已记录为发送成功。需要继续时，请再次点击启动程序。",
   not_sent: "已记录为未发送。需要重试时，请再次点击启动程序。",
   skip: "已跳过这位联系人。需要继续时，请再次点击启动程序。"
+};
+const TOUCH_SKIP_LABELS: Record<string, string> = {
+  identity_skipped: "身份不唯一，已跳过",
+  ai_failed_skipped: "AI失败，已跳过",
+  outcome_unknown_skipped: "结果未知，已跳过"
 };
 
 export function useWechatWorkflow() {
@@ -367,6 +377,13 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
     if (result?.ok) setNotice(TOUCH_RESOLUTION_NOTICES[resolution]);
   };
 
+  const retrySkipped = async (task: WorkflowTask, contactIds?: string[]) => {
+    if (!api) return;
+    const result = await run(() => api.retrySkipped(task.id, contactIds));
+    const count = contactIds?.length || task.skipped_records?.filter((record) => ["identity_skipped", "ai_failed_skipped"].includes(record.status)).length || 0;
+    if (result?.ok) setNotice(`已重新加入 ${count} 位联系人；点击启动程序后继续。`);
+  };
+
   const taskRow = (task: WorkflowTask) => {
     const Icon = TASK_ICONS[task.type];
     const isWaiting = task.id === state.waitingTaskId;
@@ -393,6 +410,12 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
             <button type="button" className="text-button workflow-muted-action" data-xiaoxi-workflow-resolve data-xiaoxi-workflow-task-id={task.id} data-xiaoxi-workflow-resolution="skip" disabled={busy || planLocked} onClick={() => void resolveTouchUnknown(task, "skip")}>无法确认，跳过</button>
           </div>
         </div>}
+        {task.type === "touch" && Boolean(task.skipped_records?.length) && <section className="workflow-touch-skipped" aria-label={`本次跳过 ${task.skipped_records!.length} 位`}>
+          <div className="workflow-touch-skipped-head"><strong>本次跳过 {task.skipped_records!.length} 位</strong>
+            {task.skipped_records!.filter((record) => ["identity_skipped", "ai_failed_skipped"].includes(record.status)).length > 1 && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || planLocked} onClick={() => void retrySkipped(task)}>全部重试</button>}
+          </div>
+          <ul>{task.skipped_records!.map((record) => <li key={`${record.contactId}-${record.index}`}><span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span><small>{TOUCH_SKIP_LABELS[record.status] || "已跳过"}</small>{["identity_skipped", "ai_failed_skipped"].includes(record.status) && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || planLocked} onClick={() => void retrySkipped(task, [record.contactId])}>重试</button>}</li>)}</ul>
+        </section>}
         {task.accountMismatch && <p className="workflow-task-error">微信账号已切换，需切回原账号后执行。</p>}
         {task.status === "missed" && <p className="workflow-task-error">这是往日未执行的任务，请修改时间后加入，或取消。</p>}
       </div>
