@@ -574,6 +574,49 @@ async function main() {
   assert.match(brokenPayloadRow.error, new RegExp(brokenPayloadFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the task error must identify the corrupt payload file");
   await brokenPayload.dispose();
 
+  const dailyPayloadRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-daily-broken-payload-"));
+  let dailyPayloadClock = new Date(2026, 8, 3, 12, 0, 0);
+  let dailyPayloadReplyCalls = 0;
+  const dailyPayload = createWechatWorkflowController({
+    rootDir: dailyPayloadRoot,
+    autoReplyDir: path.join(dailyPayloadRoot, "reply"),
+    activeTouchDir: path.join(dailyPayloadRoot, "touch"),
+    momentsDir: path.join(dailyPayloadRoot, "moments"),
+    now: () => dailyPayloadClock,
+    getAccount: () => "test-account",
+    autoSchedule: false,
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => { dailyPayloadReplyCalls += 1; return { handled: false }; }
+    },
+    executors: { interact: {
+      prepareWorkflowTask: (_id, payload) => payload,
+      runWorkflowStep: async () => { throw new Error("a corrupt daily payload must never reach the executor"); }
+    } }
+  });
+  await dailyPayload.addRecipients(["reply-contact"]);
+  const dailyPayloadTask = await dailyPayload.addTask({
+    type: "interact",
+    repeat: "daily",
+    startTime: "23:59",
+    payload: { maxPosts: 2 }
+  });
+  await dailyPayload.start();
+  const dailyPayloadFile = path.join(dailyPayloadRoot, "moments", "planned_tasks", `${dailyPayloadTask.task.id}.json`);
+  fs.writeFileSync(dailyPayloadFile, "{invalid-json");
+  dailyPayloadClock = new Date(2026, 8, 4, 12, 0, 0);
+  await dailyPayload.tick();
+  const dailyPayloadStatus = dailyPayload.status();
+  const dailyPayloadRow = dailyPayloadStatus.tasks.find((task) => task.id === dailyPayloadTask.task.id);
+  assert.equal(dailyPayloadStatus.enabled, true, "a corrupt daily payload must stop only that task during refreshDay");
+  assert.equal(dailyPayloadRow.status, "needs_attention");
+  assert.equal(dailyPayloadRow.reasonCode, "moments_workflow_config_invalid");
+  assert.equal(dailyPayloadReplyCalls, 1, "auto reply must continue after a daily payload is isolated");
+  await dailyPayload.tick();
+  assert.equal(dailyPayloadReplyCalls, 2);
+  await dailyPayload.dispose();
+  fs.rmSync(dailyPayloadRoot, { recursive: true, force: true });
+
   const cooldownRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-cooldown-"));
   let cooldownClock = new Date(2026, 8, 3, 12, 0, 0);
   let touchCalls = 0;
