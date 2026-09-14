@@ -32,6 +32,7 @@ const DAILY_BUSY_RETRY_MS = 60_000;
 const DAILY_FAILURE_RETRY_MS = 30 * 60_000;
 const AUTOMATED_WINDOW_IDLE_MS = 15_000;
 const MOMENTS_PRE_ACTION_SURFACE_RETRY_MS = 350;
+const MOMENTS_EMPTY_SCAN_RETRY_MS = 30 * 60_000;
 
 function readJson(file, fallback = {}) {
   try {
@@ -1148,8 +1149,9 @@ function createMomentsCampaignController(options = {}) {
     const config = prepareWorkflowTask(taskRecord.id, taskRecord.payload);
     const isEnabled = typeof runOptions.isEnabled === "function" ? runOptions.isEnabled : () => false;
     let progress = { done: Number(taskRecord.progress?.done || 0), total: config.payload?.maxPosts || 1 };
-    const response = (status, error = "") => ({ status, progress: { ...progress,
-      ...(workflowContext ? workflowProgress({ ...taskRecord, progress }) : {}) }, ...(error ? { error } : {}) });
+    const response = (status, error = "", extra = {}) => ({ status, progress: { ...progress,
+      ...(workflowContext ? workflowProgress({ ...taskRecord, progress }) : {}) }, ...(error ? { error } : {}),
+      ...(status === "needs_attention" && error ? { reasonCode: error } : {}), ...extra });
     if (!config.ok) return response("needs_attention", config.reason);
     if (!isEnabled() || loopPromise || workflowContext) return response("pending");
     try {
@@ -1180,11 +1182,13 @@ function createMomentsCampaignController(options = {}) {
         return response("needs_attention", state.last_reason || "moments_interaction_outcome_unknown");
       }
       if (progress.done >= progress.total) return response("completed");
-      if (state.status === "completed" || state.last_reason === "workflow_yielded") {
+      if (state.status === "completed" || ["workflow_yielded", "moments_no_new_posts"].includes(state.last_reason)) {
         if (!isEnabled()) return response("pending");
         const emptySteps = state.processed_count > 0 ? 0 : Number(stored.empty_steps || 0) + 1;
         saveWorkflowProgress({ empty_steps: emptySteps });
-        return emptySteps >= 3 ? response("needs_attention", "moments_no_new_posts") : response("pending");
+        return emptySteps >= 3
+          ? response("pending", "", { retryAfterMs: MOMENTS_EMPTY_SCAN_RETRY_MS })
+          : response("pending");
       }
       return response("needs_attention", state.last_reason || "moments_interaction_incomplete");
     } catch (error) {

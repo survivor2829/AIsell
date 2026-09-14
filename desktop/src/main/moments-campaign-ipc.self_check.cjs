@@ -7,6 +7,7 @@ const {
   createMomentsCampaignController,
   momentsReadingSnapshotMatch
 } = require("./moments-campaign-ipc.cjs");
+const { createWechatWorkflowController } = require("./wechat-workflow.cjs");
 
 const firstReadingFrame = {
   source: "visual:windows_media_ocr",
@@ -1504,6 +1505,68 @@ async function main() {
   assert.equal(workflowYieldCommentCalls, 3, "a larger OCR crop of the completed post must not cause another comment");
   assert.equal(workflowOpenCalls, 1, "one batch must open Moments only once");
   assert.equal(workflowScrollCalls, 3, "skip the old post and keep scrolling without yielding to chat");
+
+  const emptyScanRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-empty-scan-"));
+  let emptyScanFingerprint = "e".repeat(64);
+  const emptyScanController = createMomentsCampaignController({
+    baseDir: emptyScanRoot,
+    coordinator: { acquire: () => ({ ok: true, lock: { owner: "empty-scan-owner" } }), release: () => undefined },
+    logger: { event: () => undefined },
+    openMoments: async () => STANDALONE_OPEN_RESULT,
+    scrollMoments: async () => ({ ok: true }),
+    runStep: async (args) => args[0] === "moments-dry-run"
+      ? {
+          ok: true,
+          window: STANDALONE_OPEN_RESULT,
+          post_snapshot: {
+            ...firstReadingFrame,
+            observation_id: emptyScanFingerprint,
+            post_fingerprint: emptyScanFingerprint,
+            identity_text: `empty scan ${emptyScanFingerprint[0]}`,
+            stable_anchor_text: `empty scan ${emptyScanFingerprint[0]}`
+          },
+          plan: { visible_post_count: 1 }
+        }
+      : { ok: true, status: "verified", no_op: false, real_action_attempted: true }
+  });
+  const emptyScanTask = {
+    type: "interact",
+    payload: { maxPosts: 3, likeEnabled: true, commentEnabled: false }
+  };
+  let emptyScanClock = new Date(2026, 8, 2, 12, 0, 0);
+  const emptyScanWorkflowRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-empty-scan-workflow-"));
+  const emptyScanWorkflow = createWechatWorkflowController({
+    rootDir: emptyScanWorkflowRoot,
+    autoReplyDir: path.join(emptyScanWorkflowRoot, "reply"),
+    activeTouchDir: path.join(emptyScanWorkflowRoot, "touch"),
+    momentsDir: emptyScanRoot,
+    now: () => emptyScanClock,
+    getAccount: () => "test-account",
+    autoSchedule: false,
+    executors: { interact: emptyScanController }
+  });
+  await emptyScanWorkflow.setReplyEnabled(false);
+  const emptyScanAdded = await emptyScanWorkflow.addTask(emptyScanTask);
+  await emptyScanWorkflow.start();
+  await emptyScanWorkflow.tick();
+  assert.equal(emptyScanWorkflow.status().tasks[0].status, "pending");
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    await emptyScanWorkflow.tick();
+    assert.equal(emptyScanWorkflow.status().tasks[0].status, "pending");
+  }
+  await emptyScanWorkflow.tick();
+  const backedOffEmptyScan = emptyScanWorkflow.status().tasks[0];
+  assert.equal(backedOffEmptyScan.status, "pending", "three empty scans must remain retryable instead of requiring attention");
+  assert.equal(backedOffEmptyScan.notBefore, emptyScanClock.getTime() + 30 * 60 * 1000);
+  assert.equal(backedOffEmptyScan.waitingReason, undefined, "empty-scan backoff must not masquerade as a touch safety interval");
+  const emptyScanFile = path.join(emptyScanRoot, "planned_runs", emptyScanAdded.task.id, `${emptyScanAdded.task.occurrenceDate}.json`);
+  assert.equal(JSON.parse(fs.readFileSync(emptyScanFile, "utf8")).empty_steps, 3);
+  emptyScanFingerprint = "n".repeat(64);
+  emptyScanClock = new Date(emptyScanClock.getTime() + 30 * 60 * 1000);
+  await emptyScanWorkflow.tick();
+  assert.equal(emptyScanWorkflow.status().tasks[0].status, "pending");
+  assert.equal(JSON.parse(fs.readFileSync(emptyScanFile, "utf8")).empty_steps, 0, "processing a new post must reset the persisted empty-scan counter");
+  await emptyScanWorkflow.dispose();
 
   const directInteractionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-direct-interaction-"));
   const directInteractionFingerprint = "c".repeat(64);
