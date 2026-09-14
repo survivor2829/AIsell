@@ -14,6 +14,36 @@ from service import Handler, Server, Store, validate_report, safe_token
 from feedback import validate_feedback
 
 class ServiceTest(unittest.TestCase):
+    def test_input_diagnostics_survive_report_and_feedback_without_raw_input(self):
+        details = {"input_phase": "search_query_input", "expected_input_tick": 4294967295,
+                   "current_input_tick": 4294967296, "required_idle_ms": 450,
+                   "observed_idle_ms": 600, "expected_hWnd": 9007199254740991,
+                   "foreground_hWnd": 123456789}
+        client = {"schema": 1, "appId": "com.aihuoke.desktop.test", "channel": "test",
+                  "installId": "12345678-1234-1234-1234-123456789012", "version": "1.1.27",
+                  "platform": "win32", "arch": "x64"}
+        entry = {"id": "a" * 64, "ts": "2026-09-14T14:00:00.000Z", "level": "warn",
+                 "module": "touch", "event": "workflow_contact_send.failed",
+                 "details": {**details, "query": "private", "keyCode": 65, "mouse_x": 100}}
+        report = validate_report({**client, "entries": [entry]})
+        self.assertEqual(report["entries"][0]["details"], details)
+        feedback, _ = validate_feedback({"schema": 2,
+            "id": "12345678-1234-1234-1234-123456789013", "receiptToken": "b" * 64,
+            "createdAt": entry["ts"], "category": "problem", "text": "input check",
+            "client": client, "visibility": "private", "diagnostics": [entry]}, validate_report, safe_token)
+        self.assertEqual(feedback["diagnostics"][0]["details"], details)
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            store.insert(report)
+            with store.connect() as db:
+                stored = json.loads(db.execute("SELECT body FROM reports WHERE id=?", (entry["id"],)).fetchone()[0])
+            self.assertEqual(stored["entries"][0]["details"], details)
+        for invalid in (-1, True, "123", 1.5, 9007199254740992):
+            entry["details"] = {key: invalid for key in details}
+            self.assertEqual(validate_report({**client, "entries": [entry]})["entries"][0]["details"], {})
+        entry["details"] = {"input_phase": "private_search_query"}
+        self.assertEqual(validate_report({**client, "entries": [entry]})["entries"][0]["details"], {})
+
     def test_provider_gateway_rate_limit_identifies_maintenance_scope(self):
         server = Server(("127.0.0.1", 0), Handler, None)
         threading.Thread(target=server.serve_forever, daemon=True).start()

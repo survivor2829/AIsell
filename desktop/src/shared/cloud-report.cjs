@@ -2,6 +2,7 @@
 // installed update base. The base validator still owns report identity/privacy.
 const { reportEntry: baseReportEntry, token } = require("./cloud-contract.cjs");
 const { sanitizeWechatWindowDiagnostics } = require("./wechat-window-diagnostics.cjs");
+const { sanitizeWechatInputDiagnostics } = require("./wechat-send-diagnostics.cjs");
 
 function reportEntry(entry, context) {
   const result = baseReportEntry(entry, context);
@@ -19,6 +20,7 @@ function reportEntry(entry, context) {
     if (Number.isFinite(value) && value >= 0 && value <= 86400000) result.details[key] = Math.round(value);
   }
   Object.assign(result.details, sanitizeWechatWindowDiagnostics(entry.details));
+  Object.assign(result.details, sanitizeWechatInputDiagnostics(entry.details));
   for (const key of ["verification_capture_ms", "verification_ocr_ms", "verification_candidates_ms", "verification_feed_ocr_ms", "verification_post_count", "verification_text_length"]) {
     const value = entry.details?.[key];
     if (Number.isFinite(value) && value >= 0 && value <= 86400000) result.details[key] = Math.round(value);

@@ -2895,3 +2895,5 @@ try {
 });
 
 require("./wechat_clipboard.self_check.cjs");
+require("./wechat_search_observation.self_check.cjs");
+require("./wechat_search_input.self_check.cjs");

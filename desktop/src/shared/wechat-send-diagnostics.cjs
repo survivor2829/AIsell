@@ -8,6 +8,27 @@ const SAFE_SEND_STAGES = new Set([
   "send", "after_send_confirmation", "verify", "handoff", "unknown"
 ]);
 
+const SAFE_INPUT_PHASES = new Set([
+  "preflight", "prepare_wechat_window", "click_search_result", "before_search_result_click",
+  "search_quiet_check", "search_focus", "search_select_all", "search_query_input",
+  "search_observation", "search_result_enter", "pre_input", "after_input_click",
+  "typing", "after_paste", "copy_probe"
+]);
+
+function sanitizeWechatInputDiagnostics(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result = {};
+  const phase = value.input_phase ?? value.phase;
+  if (SAFE_INPUT_PHASES.has(phase)) result.input_phase = phase;
+  for (const key of [
+    "expected_input_tick", "current_input_tick", "required_idle_ms", "observed_idle_ms",
+    "expected_hWnd", "foreground_hWnd"
+  ]) {
+    if (Number.isSafeInteger(value[key]) && value[key] >= 0) result[key] = value[key];
+  }
+  return result;
+}
+
 function safeSendStage(value, fallback = "unknown") {
   const candidate = String(value ?? "").trim().toLowerCase();
   return SAFE_SEND_STAGES.has(candidate) ? candidate : fallback;
@@ -82,6 +103,7 @@ function summarizeSendResult(result = {}, context = {}) {
   }
   const receipt = sanitizeVisualSendReceipt(result?.send_diagnostics?.receipt || result?.diagnostics?.receipt);
   if (receipt) for (const [key, value] of Object.entries(receipt)) detail[`receipt_${key}`] = value;
+  Object.assign(detail, sanitizeWechatInputDiagnostics(proof), sanitizeWechatInputDiagnostics(result?.safety_diagnostics));
   return detail;
 }
 
@@ -102,4 +124,4 @@ async function observeSendStage(options, stage, action) {
   }
 }
 
-module.exports = { summarizeSendResult, observeSendStage };
+module.exports = { summarizeSendResult, observeSendStage, sanitizeWechatInputDiagnostics };

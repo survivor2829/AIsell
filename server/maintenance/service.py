@@ -27,6 +27,12 @@ WINDOW_STAGES = ("bootstrap", "compile", "process", "enumerate", "select", "shel
 MOMENTS_STAGES = ("bootstrap", "window_identity", "moments_entry", "discover_entry", "first_capture", "first_surface", "first_candidates", "stability_wait", "second_capture", "second_surface", "second_candidates", "complete")
 MOMENTS_METRICS = ("moments_elapsed_ms", "moments_timeout_ms", "moments_discover_scan_ms", "moments_discover_candidate_count", "moments_discover_match_count") + tuple(f"moments_{stage}_ms" for stage in MOMENTS_STAGES)
 WINDOW_METRICS = ("elapsed_ms", "total_ms", "timeout_ms", "process_count", "native_count", "candidate_count", "main_count", "render_count", "hidden_count", "minimized_count", "rejected_layout_count", "recovery_candidate_count", "recovery_main_count") + tuple(f"{stage}_ms" for stage in WINDOW_STAGES)
+INPUT_PHASES = ("preflight", "prepare_wechat_window", "click_search_result", "before_search_result_click",
+                "search_quiet_check", "search_focus", "search_select_all", "search_query_input",
+                "search_observation", "search_result_enter", "pre_input", "after_input_click",
+                "typing", "after_paste", "copy_probe")
+INPUT_METRICS = ("expected_input_tick", "current_input_tick", "required_idle_ms", "observed_idle_ms",
+                 "expected_hWnd", "foreground_hWnd")
 PROVIDER_GATEWAY_PREFIX = "/v1/provider-gateway"
 PROVIDER_GATEWAY_ORIGIN = "http://127.0.0.1:8444"
 PROVIDER_GATEWAY_MAX_REQUEST_BYTES = 32 * 1024 * 1024
@@ -77,6 +83,11 @@ def validate_report(body):
         row["details"] = {}
         details = entry.get("details", {})
         if isinstance(details, dict):
+            if details.get("input_phase") in INPUT_PHASES:
+                row["details"]["input_phase"] = details["input_phase"]
+            for key in INPUT_METRICS:
+                if type(details.get(key)) is int and 0 <= details[key] <= 9007199254740991:
+                    row["details"][key] = details[key]
             for key in ("receipt_stage", "receipt_code", "receipt_draft_read_stage", "state", "status", "phase", "reason_code", "error_code", "stage", "wx_hook_stage", "wx_hook_error_code", "blocked_reason", "action", "task_kind", "reason", "send_status", "verification_mode", "input_read_reason", "exception_code", "wechat_version", "parent_trace_code"):
                 if safe_token(details.get(key)):
                     row["details"][key] = details[key]

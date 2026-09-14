@@ -293,6 +293,60 @@ try {
   assert.equal(windowReport.details.window_recovery_succeeded, false);
   assert.equal(windowReport.details.window_recover_ms, 300);
   assert.doesNotMatch(JSON.stringify(windowReport), /private-chat-title|private-error-text/);
+  const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs");
+  const inputSafety = {
+    input_phase: "click_search_result",
+    expected_input_tick: 3482965800,
+    current_input_tick: 3482965891,
+    required_idle_ms: 15000,
+    observed_idle_ms: 123,
+    expected_hWnd: 22,
+    foreground_hWnd: 22
+  };
+  const { input_phase: inputPhase, ...inputNumbers } = inputSafety;
+  const blockedInput = summarizeSendResult({
+    ok: false, reason: "wechat_external_input_detected", send_attempted: false,
+    safety_diagnostics: {
+      phase: inputPhase, ...inputNumbers,
+      searchQuery: "private-search-canary", text: "private-ocr-canary",
+      key: "private-key-canary", path: "C:\\private\\canary", x: 110, y: 210,
+      raw: { text: "private-raw-canary" }
+    }
+  });
+  assert.deepEqual(Object.fromEntries(Object.keys(inputSafety).map((key) => [key, blockedInput[key]])), inputSafety,
+    "workflow send summaries must retain only typed input phase, tick, idle and window observations");
+  assert.equal(blockedInput.outcome, "not_attempted");
+  assert.equal(blockedInput.retryability, "safe_retry");
+  assert.equal(blockedInput.safety_diagnostics, undefined);
+  assert.equal(blockedInput.x, undefined);
+  assert.equal(blockedInput.y, undefined);
+  assert.doesNotMatch(JSON.stringify(blockedInput), /private-/u);
+  traceLogger.event("active_touch", "workflow_contact_send.failed", blockedInput, { level: "warn" });
+  const inputEntry = traceLogger.readRecent(1)[0];
+  assert.deepEqual(Object.fromEntries(Object.keys(inputSafety).map((key) => [key, inputEntry.details[key]])), inputSafety,
+    "existing diagnostic persistence must preserve the input observations without a separate collection path");
+  const inputReport = require("../shared/cloud-report.cjs").reportEntry(inputEntry, { installId: "12345678-1234-1234-1234-123456789012" });
+  assert.deepEqual(Object.fromEntries(Object.keys(inputSafety).map((key) => [key, inputReport.details[key]])), inputSafety,
+    "the existing feedback report must preserve safe input metadata, including uint32 ticks larger than a day");
+  assert.doesNotMatch(JSON.stringify(inputReport), /private-/u);
+  const unsafeInput = summarizeSendResult({
+    ok: false, send_attempted: null, send_result: "outcome_unknown",
+    safety_diagnostics: {
+      phase: "private-phase-canary", expected_input_tick: "3482965800", current_input_tick: -1,
+      required_idle_ms: null, observed_idle_ms: Number.NaN,
+      expected_hWnd: {}, foreground_hWnd: Number.MAX_SAFE_INTEGER + 1
+    }
+  });
+  for (const key of Object.keys(inputSafety)) assert.equal(unsafeInput[key], undefined);
+  assert.equal(unsafeInput.outcome, "outcome_unknown");
+  assert.equal(unsafeInput.side_effect, "possible");
+  assert.equal(unsafeInput.retryability, "manual_review");
+  const unsafeInputReport = require("../shared/cloud-report.cjs").reportEntry({
+    ...inputEntry, details: { input_phase: "private-phase-canary", expected_input_tick: "3482965800",
+      current_input_tick: -1, required_idle_ms: null, observed_idle_ms: Number.NaN,
+      expected_hWnd: {}, foreground_hWnd: Number.MAX_SAFE_INTEGER + 1 }
+  }, { installId: "12345678-1234-1234-1234-123456789012" });
+  for (const key of Object.keys(inputSafety)) assert.equal(unsafeInputReport.details[key], undefined);
   const parentLogger = createDiagnosticLogger({ rootDir: path.join(root, "parent-trace") });
   parentLogger.event("wechat_adapter", "executor", { parent_trace_code: "not-a-trace", outcome: "not_attempted", side_effect: "none", retryability: "safe_retry", failure_stage: "before_send_snapshot" }, { level: "warn", code: "input_draft_read_failed" });
   const parentEntry = parentLogger.readRecent(1)[0];
