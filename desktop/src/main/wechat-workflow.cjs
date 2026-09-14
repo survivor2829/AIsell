@@ -17,6 +17,8 @@ const LOCAL_TASK_ATTENTION_REASONS = new Set(Object.values(WORKFLOW_REASON_CODES
 
 // Finite classifications keep diagnostic reasons readable without recording customer text.
 function workflowFailureReason(failure, fallback = "workflow_exception") {
+  const code = String(failure?.code || "");
+  if (/^[a-z][a-z0-9_]{1,79}$/u.test(code)) return code;
   const message = String(failure?.message || failure || "");
   // Executors return finite machine-readable reasons for pre-action blocks.
   // Keep those reasons through the workflow boundary instead of replacing them
@@ -44,7 +46,7 @@ function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); }
   catch (error) {
     if (error.code === "ENOENT") return fallback;
-    throw new Error("计划资料无法读取，请保留数据并查看日志诊断。");
+    throw new Error("计划资料无法读取，请保留数据并查看日志诊断。", { cause: error });
   }
 }
 
@@ -173,8 +175,22 @@ function createWechatWorkflowController(options) {
   }
   function taskPath(task) { return path.join(directories[task.type], "planned_tasks", `${task.id}.json`); }
   function readPayload(task) {
-    const saved = readJson(taskPath(task), null);
-    if (!saved || saved.id !== task.id || !saved.payload) throw new Error("任务资料缺失，请重新编辑并加入计划。");
+    const file = taskPath(task);
+    const reasonCode = task.type === "touch"
+      ? WORKFLOW_REASON_CODES.touchTaskPayloadIncomplete
+      : WORKFLOW_REASON_CODES.momentsWorkflowConfigInvalid;
+    let saved;
+    try { saved = readJson(file, null); }
+    catch (cause) {
+      const failure = new Error(`任务资料缺失或损坏：${file}`, { cause });
+      failure.code = reasonCode;
+      throw failure;
+    }
+    if (!saved || saved.id !== task.id || !saved.payload) {
+      const failure = new Error(`任务资料缺失或损坏：${file}`);
+      failure.code = reasonCode;
+      throw failure;
+    }
     return saved.payload;
   }
   function writePayload(task, payload) { writeJsonAtomic(taskPath(task), { id: task.id, type: task.type, payload }); }
@@ -225,20 +241,31 @@ function createWechatWorkflowController(options) {
   }
 
   function fail(failure) {
+    const reason = workflowFailureReason(failure);
     enabled = false;
     phase = "needs_attention";
     error = failure?.message || "计划执行异常，请查看任务详情。";
+    store.workflowFailureReason = reason;
     clearTimeout(timer);
     emit();
+    try { persist(); } catch {}
+    log("workflow.failed", { stage: cycleStage, reason, error: failure, cause: failure?.cause }, { level: "error", code: reason });
   }
 
-  function refreshDay() {
+  function refreshDay(onTaskFailure) {
     const today = localDate(now());
     let changed = false;
     for (const task of store.tasks) {
       if (task.repeat === "daily" && !["cancelled", "needs_attention", "running"].includes(task.status) && task.occurrenceDate !== today) {
+        let payload;
+        try { payload = readPayload(task); }
+        catch (failure) {
+          if (typeof onTaskFailure !== "function" || onTaskFailure(task, failure) !== true) throw failure;
+          changed = true;
+          continue;
+        }
         task.status = "pending";
-        task.progress = { done: 0, total: readPayload(task).maxPosts };
+        task.progress = { done: 0, total: payload.maxPosts };
         task.occurrenceDate = today;
         task.error = "";
         delete task.startedAt;
@@ -351,12 +378,34 @@ function createWechatWorkflowController(options) {
     log("task.global_stop", { task_kind: task.type, task_id: task.id, stage: cycleStage, reason: reasonCode || "task_attention_reason_missing" }, { level: "warn", code: reasonCode || "task_attention_reason_missing" });
   }
 
+  function handleQueueTaskFailure(task, failure) {
+    const reason = workflowFailureReason(failure);
+    if (!LOCAL_TASK_ATTENTION_REASONS.has(reason)) return false;
+    applyTaskAttention(task, reason, failure?.message);
+    return true;
+  }
+
   async function runCycle() {
     cycleStage = "queue_prepare";
     assertHealthy();
-    refreshDay();
-    reconcilePublishResults();
-    for (const task of store.tasks) if (task.type === "touch" && !task.enrolled) enroll(task, readPayload(task));
+    let queueChanged = false;
+    try {
+      refreshDay(handleQueueTaskFailure);
+      reconcilePublishResults();
+      for (const task of store.tasks) {
+        if (task.type !== "touch" || task.enrolled) continue;
+        try { enroll(task, readPayload(task)); }
+        catch (failure) {
+          if (!handleQueueTaskFailure(task, failure)) throw failure;
+          queueChanged = true;
+        }
+      }
+      if (queueChanged) { persist(); emit(); }
+    } catch (failure) {
+      const reason = workflowFailureReason(failure);
+      log("queue_prepare.failed", { stage: cycleStage, reason, error: failure, cause: failure?.cause }, { level: "error", code: reason });
+      throw failure;
+    }
     if (!enabled || mutating) return;
     const readyTask = nextTask();
     const people = store.replyEnabled === false ? [] : accountRecipients();
@@ -407,9 +456,17 @@ function createWechatWorkflowController(options) {
       if (!executor?.runWorkflowStep) {
         result = { status: "needs_attention", reasonCode: WORKFLOW_REASON_CODES.workflowExecutorUnavailable, error: "当前版本尚未连接这项任务的执行器。", progress: task.progress };
       } else {
-        const payload = readPayload(task);
-        cycleStage = "task_execute";
-        result = await executor.runWorkflowStep({ ...task, payload }, { isEnabled: () => enabled && !task.cancelRequested });
+        let payload;
+        try { payload = readPayload(task); }
+        catch (failure) {
+          const reason = workflowFailureReason(failure);
+          if (!LOCAL_TASK_ATTENTION_REASONS.has(reason)) throw failure;
+          result = { status: "needs_attention", reasonCode: reason, error: failure.message, progress: task.progress };
+        }
+        if (!result) {
+          cycleStage = "task_execute";
+          result = await executor.runWorkflowStep({ ...task, payload }, { isEnabled: () => enabled && !task.cancelRequested });
+        }
       }
       cycleStage = "task_result";
       if (!result || !["pending", "completed", "needs_attention"].includes(result.status)) throw new Error("任务返回结果无法确认，请查看任务详情。");
@@ -444,6 +501,7 @@ function createWechatWorkflowController(options) {
       operation?.end?.({ task_kind: task.type, task_id: task.id, stage: cycleStage, reason: workflowFailureReason(failure), error: failure }, { ok: false, code: workflowFailureReason(failure) });
       task.status = "needs_attention";
       task.error = failure.message || "任务执行中断，请核对实际结果。";
+      task.reasonCode = workflowFailureReason(failure);
       enabled = false;
       phase = "needs_attention";
     } finally {

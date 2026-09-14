@@ -542,6 +542,38 @@ async function main() {
   assert.equal(globalAttentionReplyCalls, 1, "auto reply must remain stopped while an unknown outcome awaits review");
   await globalAttention.dispose();
 
+  const brokenPayloadRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-broken-payload-"));
+  const brokenPayloadOptions = {
+    rootDir: brokenPayloadRoot, autoReplyDir: path.join(brokenPayloadRoot, "reply"), activeTouchDir: path.join(brokenPayloadRoot, "touch"), momentsDir: path.join(brokenPayloadRoot, "moments"),
+    getAccount: () => "test-account", autoSchedule: false,
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => ({ handled: false })
+    },
+    executors: { touch: {
+      prepareWorkflowTask: () => ({ contacts: [{ id: "a", name: "a" }], script: "test" }),
+      runWorkflowStep: async () => { throw new Error("an invalid payload must never reach the touch executor"); }
+    } }
+  };
+  const brokenPayloadSetup = createWechatWorkflowController(brokenPayloadOptions);
+  const brokenPayloadTask = await brokenPayloadSetup.addTask({ type: "touch", payload: { contactIds: ["a"], script: "test" } });
+  await brokenPayloadSetup.dispose();
+  const brokenPayloadStateFile = path.join(brokenPayloadRoot, "wechat_workflow", "state.json");
+  const brokenPayloadState = JSON.parse(fs.readFileSync(brokenPayloadStateFile, "utf8"));
+  brokenPayloadState.tasks[0].enrolled = false;
+  fs.writeFileSync(brokenPayloadStateFile, JSON.stringify(brokenPayloadState));
+  const brokenPayloadFile = path.join(brokenPayloadRoot, "touch", "planned_tasks", `${brokenPayloadTask.task.id}.json`);
+  fs.writeFileSync(brokenPayloadFile, "{invalid-json");
+  const brokenPayload = createWechatWorkflowController(brokenPayloadOptions);
+  await brokenPayload.start(); await brokenPayload.tick();
+  const brokenPayloadStatus = brokenPayload.status();
+  const brokenPayloadRow = brokenPayloadStatus.tasks.find((task) => task.id === brokenPayloadTask.task.id);
+  assert.equal(brokenPayloadStatus.enabled, true, "one corrupt touch payload must not stop reply observation");
+  assert.equal(brokenPayloadRow.status, "needs_attention");
+  assert.equal(brokenPayloadRow.reasonCode, "touch_task_payload_incomplete");
+  assert.match(brokenPayloadRow.error, new RegExp(brokenPayloadFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the task error must identify the corrupt payload file");
+  await brokenPayload.dispose();
+
   const cooldownRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-cooldown-"));
   let cooldownClock = new Date(2026, 8, 3, 12, 0, 0);
   let touchCalls = 0;
