@@ -644,17 +644,15 @@ export default function App() {
   const closePersonalization = () => { setPersonalizingRole(null); setRolePreview(null); };
 
   const applyContactSyncResult = (result: ContactSyncResult) => {
-    if (result.state) {
-      setContactSyncState((current) => ({ ...current, ...result.state }));
-    } else if (result.error) {
-      setContactSyncState((current) => ({
-        ...current,
-        status: "blocked",
-        last_error: result.error,
-        last_stage: result.blocked_reason || "blocked"
-      }));
+    if (result.state || result.error) {
+      setContactSyncState((current) => {
+        const next = result.state ? { ...current, ...result.state } : current;
+        return !result.ok && result.error
+          ? { ...next, status: "blocked", last_error: result.error, last_stage: result.blocked_reason || "blocked" }
+          : next;
+      });
     }
-    if (result.contacts) {
+    if (result.ok && result.contacts) {
       setContactRows(result.contacts);
     }
     setContactSyncError(result.error ?? "");
