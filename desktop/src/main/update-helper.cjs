@@ -1,4 +1,5 @@
-const fs = require("node:fs");
+// Backups and runtime copies need physical ASAR files, not Electron's virtual directories.
+const fs = process.versions.electron ? require("original-fs") : require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { execFile, spawn } = require("node:child_process");
@@ -39,12 +40,15 @@ async function waitForExit(job, onStage, timeoutMs = 120000) {
   }
 }
 async function backupUserData(userData, id) {
+  const sourceRoot = path.toNamespacedPath(path.resolve(userData));
   const destination = path.join(path.dirname(userData), path.basename(userData) + "-update-backups", id);
   fs.mkdirSync(destination, { recursive: true });
   await fs.promises.cp(userData, destination, { recursive: true, errorOnExist: true, force: false,
     filter: source => {
-      const relative = path.relative(userData, source).replaceAll("\\", "/");
-      return !relative.startsWith("data/cloud-maintenance") && !relative.startsWith("update-helper-profile");
+      // Windows cp callbacks may be namespaced even when userData is not.
+      let relative = path.relative(sourceRoot, path.toNamespacedPath(path.resolve(source))).replaceAll("\\", "/");
+      if (process.platform === "win32") relative = relative.toLowerCase();
+      return !["data/cloud-maintenance", "update-helper-profile"].some(directory => relative === directory || relative.startsWith(directory + "/"));
     } });
   writeJsonAtomic(path.join(destination, "update-backup.json"), { createdAt: new Date().toISOString(), kind: "before-full-upgrade" });
   return destination;
