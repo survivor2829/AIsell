@@ -25,6 +25,11 @@ const INTERRUPTED_SEND_STATES = new Set(["sending", "prepared", "clicked"]);
 const PRE_SEND_INPUT_RECOVERY_WAIT_MS = 15_000;
 const WECHAT_LOCK_RETRY_MS = 1_000;
 const IDENTITY_RECOVERY_ATTEMPTS = 2;
+const TOUCH_WORKFLOW_REASON_CODES = Object.freeze({
+  payloadIncomplete: "touch_task_payload_incomplete",
+  executorUnavailable: "workflow_executor_unavailable",
+  draftGenerationFailed: "touch_draft_generation_failed"
+});
 const IDENTITY_SKIP_REASONS = new Set([
   "contact_unavailable",
   "exact_search_result_not_found",
@@ -122,7 +127,7 @@ function createTouchWorkflow(options = {}) {
     const script = String(payload?.script || "").trim();
     const enabled = () => typeof context.isEnabled === "function" && context.isEnabled() === true;
     const fallback = { done: Math.max(0, Number(taskRecord?.progress?.done) || 0), total: contacts.length };
-    if (!id || !contacts.length || !script) return { status: "needs_attention", progress: fallback, error: "触达任务资料不完整，请重新添加任务" };
+    if (!id || !contacts.length || !script) return { status: "needs_attention", progress: fallback, reasonCode: TOUCH_WORKFLOW_REASON_CODES.payloadIncomplete, error: "触达任务资料不完整，请重新添加任务" };
     if (!enabled() || activeStep) return { status: "pending", progress: fallback };
     activeStep = true;
     let owner = "";
@@ -213,14 +218,14 @@ function createTouchWorkflow(options = {}) {
         persist();
         return response(task.status === "completed" ? "completed" : "pending", { result: { deliveryStatus: "not_attempted", skipped: true } });
       }
-      if (typeof options.execute !== "function") return attention("当前版本未连接触达执行器");
+      if (typeof options.execute !== "function") return attention("当前版本未连接触达执行器", null, TOUCH_WORKFLOW_REASON_CODES.executorUnavailable);
       if (!current.message) {
         let draft;
         try {
           draft = await generatePersonalizedDraft({ client: options.client, task, result: current });
         } catch (error) {
           draft = generateFixedScriptFallback({ task, result: current, error });
-          if (!draft) return attention("触达文案生成失败，请修改话术后重新添加任务");
+          if (!draft) return attention("触达文案生成失败，请修改话术后重新添加任务", null, TOUCH_WORKFLOW_REASON_CODES.draftGenerationFailed);
         }
         current.message = draft.message;
         current.ai_status = draft.usedAi ? "generated" : "fixed_script";

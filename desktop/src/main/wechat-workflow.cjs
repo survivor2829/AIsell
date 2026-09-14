@@ -5,6 +5,15 @@ const { writeJsonAtomic } = require("./atomic-file.cjs");
 
 const TASK_TYPES = new Set(["touch", "publish", "interact"]);
 const TITLES = { touch: "精准触达", publish: "发布朋友圈", interact: "朋友圈互动" };
+const WORKFLOW_REASON_CODES = Object.freeze({
+  touchTaskPayloadIncomplete: "touch_task_payload_incomplete",
+  momentsNoNewPosts: "moments_no_new_posts",
+  momentsWorkflowConfigInvalid: "moments_workflow_config_invalid",
+  workflowOccurrenceDateInvalid: "workflow_occurrence_date_invalid",
+  workflowExecutorUnavailable: "workflow_executor_unavailable",
+  touchDraftGenerationFailed: "touch_draft_generation_failed"
+});
+const LOCAL_TASK_ATTENTION_REASONS = new Set(Object.values(WORKFLOW_REASON_CODES));
 
 // Finite classifications keep diagnostic reasons readable without recording customer text.
 function workflowFailureReason(failure, fallback = "workflow_exception") {
@@ -329,6 +338,19 @@ function createWechatWorkflowController(options) {
     return { alreadyActive: false };
   }
 
+  function applyTaskAttention(task, reasonCode, message) {
+    task.status = "needs_attention";
+    task.error = String(message || "任务需要处理，请查看任务详情。");
+    task.reasonCode = reasonCode;
+    if (LOCAL_TASK_ATTENTION_REASONS.has(reasonCode)) {
+      log("task.local_attention", { task_kind: task.type, task_id: task.id, stage: cycleStage, reason: reasonCode }, { level: "warn", code: reasonCode });
+      return;
+    }
+    enabled = false;
+    phase = "needs_attention";
+    log("task.global_stop", { task_kind: task.type, task_id: task.id, stage: cycleStage, reason: reasonCode || "task_attention_reason_missing" }, { level: "warn", code: reasonCode || "task_attention_reason_missing" });
+  }
+
   async function runCycle() {
     cycleStage = "queue_prepare";
     assertHealthy();
@@ -381,20 +403,26 @@ function createWechatWorkflowController(options) {
     persist();
     emit();
     try {
-      if (!executor?.runWorkflowStep) throw new Error("当前版本尚未连接这项任务的执行器。");
-      const payload = readPayload(task);
-      cycleStage = "task_execute";
-      const result = await executor.runWorkflowStep({ ...task, payload }, { isEnabled: () => enabled && !task.cancelRequested });
+      let result;
+      if (!executor?.runWorkflowStep) {
+        result = { status: "needs_attention", reasonCode: WORKFLOW_REASON_CODES.workflowExecutorUnavailable, error: "当前版本尚未连接这项任务的执行器。", progress: task.progress };
+      } else {
+        const payload = readPayload(task);
+        cycleStage = "task_execute";
+        result = await executor.runWorkflowStep({ ...task, payload }, { isEnabled: () => enabled && !task.cancelRequested });
+      }
       cycleStage = "task_result";
       if (!result || !["pending", "completed", "needs_attention"].includes(result.status)) throw new Error("任务返回结果无法确认，请查看任务详情。");
       task.progress = result.progress || task.progress;
       if (task.progress.done > 0) task.startedAt ||= new Date(now()).toISOString();
       task.error = result.error || "";
       task.status = result.status;
+      const reason = result.reasonCode || (result.status === "needs_attention"
+        ? workflowFailureReason(result.error, "task_needs_attention")
+        : result.waitingReason === "touch_safety_interval" ? "touch_safety_interval" : "task_step_returned");
       if (task.status === "needs_attention") {
-        enabled = false;
-        phase = "needs_attention";
-      }
+        applyTaskAttention(task, reason, result.error);
+      } else delete task.reasonCode;
       if (task.cancelRequested && result.status !== "needs_attention") task.status = "cancelled";
       if (task.status === "completed") {
         task.completedAt = new Date(now()).toISOString();
@@ -409,9 +437,6 @@ function createWechatWorkflowController(options) {
         delete task.notBefore;
         delete task.waitingReason;
       }
-      const reason = result.reasonCode || (result.status === "needs_attention"
-        ? workflowFailureReason(result.error, "task_needs_attention")
-        : task.waitingReason === "touch_safety_interval" ? "touch_safety_interval" : "task_step_returned");
       const resultKey = JSON.stringify([task.id, task.status, task.progress.done, task.progress.total, reason]);
       operation?.end?.({ task_kind: task.type, task_id: task.id, stage: cycleStage, status: task.status, reason, error: result.error || "", done: task.progress.done, total: task.progress.total }, { ok: result.status !== "needs_attention", code: reason, trace: resultKey !== lastTaskResultKey });
       lastTaskResultKey = resultKey;

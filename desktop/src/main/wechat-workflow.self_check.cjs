@@ -483,6 +483,65 @@ async function main() {
   assert.deepEqual(contentionCalls, ["touch", "publish"]);
   await contention.dispose();
 
+  const localAttentionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-local-attention-"));
+  let localAttentionReplyCalls = 0;
+  const localAttentionCalls = [];
+  const localAttention = createWechatWorkflowController({
+    rootDir: localAttentionRoot, autoReplyDir: path.join(localAttentionRoot, "reply"), activeTouchDir: path.join(localAttentionRoot, "touch"), momentsDir: path.join(localAttentionRoot, "moments"),
+    getAccount: () => "test-account", autoSchedule: false,
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => { localAttentionReplyCalls += 1; return { handled: false }; }
+    },
+    executors: {
+      interact: {
+        prepareWorkflowTask: (_id, payload) => ({ payload }),
+        runWorkflowStep: async (task) => {
+          localAttentionCalls.push("interact");
+          return { status: "needs_attention", reasonCode: "moments_no_new_posts", error: "moments_no_new_posts", progress: task.progress };
+        }
+      },
+      publish: {
+        prepareWorkflowTask: (_id, payload) => payload,
+        runWorkflowStep: async () => { localAttentionCalls.push("publish"); return { status: "completed", progress: { done: 1, total: 1 } }; }
+      }
+    }
+  });
+  await localAttention.addRecipients(["reply-contact"]);
+  const localBlocked = await localAttention.addTask({ type: "interact", title: "local-block", payload: { maxPosts: 1 } });
+  const localNext = await localAttention.addTask({ type: "publish", title: "still-runnable", payload: { content: "test" } });
+  await localAttention.start(); await localAttention.tick();
+  assert.equal(localAttention.status().tasks.find((task) => task.id === localBlocked.task.id).status, "needs_attention");
+  assert.equal(localAttention.status().enabled, true, "a classified local task failure must not stop the unified workflow");
+  assert.equal(localAttention.status().nextTaskId, localNext.task.id, "later pending work must remain selectable after a local failure");
+  await localAttention.tick();
+  assert.deepEqual(localAttentionCalls, ["interact", "publish"]);
+  assert.equal(localAttentionReplyCalls, 2, "auto reply must keep observing after a local task failure");
+  await localAttention.dispose();
+
+  const globalAttentionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-global-attention-"));
+  let globalAttentionReplyCalls = 0;
+  const globalAttention = createWechatWorkflowController({
+    rootDir: globalAttentionRoot, autoReplyDir: path.join(globalAttentionRoot, "reply"), activeTouchDir: path.join(globalAttentionRoot, "touch"), momentsDir: path.join(globalAttentionRoot, "moments"),
+    getAccount: () => "test-account", autoSchedule: false,
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => { globalAttentionReplyCalls += 1; return { handled: false }; }
+    },
+    executors: { interact: {
+      prepareWorkflowTask: (_id, payload) => ({ payload }),
+      runWorkflowStep: async (task) => ({ status: "needs_attention", reasonCode: "moments_interaction_outcome_unknown", error: "moments_interaction_outcome_unknown", progress: task.progress })
+    } }
+  });
+  await globalAttention.addRecipients(["reply-contact"]);
+  await globalAttention.addTask({ type: "interact", payload: { maxPosts: 1 } });
+  await globalAttention.start(); await globalAttention.tick();
+  assert.equal(globalAttention.status().enabled, false, "an unknown interaction outcome must still stop the unified workflow");
+  assert.equal(globalAttentionReplyCalls, 1);
+  await globalAttention.tick();
+  assert.equal(globalAttentionReplyCalls, 1, "auto reply must remain stopped while an unknown outcome awaits review");
+  await globalAttention.dispose();
+
   const cooldownRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-cooldown-"));
   let cooldownClock = new Date(2026, 8, 3, 12, 0, 0);
   let touchCalls = 0;
