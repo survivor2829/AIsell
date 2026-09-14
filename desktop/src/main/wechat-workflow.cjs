@@ -278,10 +278,14 @@ function createWechatWorkflowController(options) {
     return store.tasks.filter((task) => task.status === "pending" && (!task.notBefore || task.notBefore <= time)
       && (!task.accountName || task.accountName === getAccount()) && (dueAt(task) === null || dueAt(task) <= time))
       .sort((left, right) => {
+        const leftPriority = left.type === "touch" ? 0 : 1;
+        const rightPriority = right.type === "touch" ? 0 : 1;
+        if (leftPriority !== rightPriority) return leftPriority - rightPriority;
         const a = dueAt(left); const b = dueAt(right);
         if (a !== null && b === null) return -1;
         if (a === null && b !== null) return 1;
-        return (a !== null && b !== null ? a - b : 0) || left.sequence - right.sequence;
+        if (a !== null && b !== null && a !== b) return a - b;
+        return left.sequence - right.sequence;
       })[0];
   }
 

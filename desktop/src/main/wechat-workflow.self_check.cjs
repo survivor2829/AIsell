@@ -272,6 +272,61 @@ async function main() {
       return { handled: false };
     } }
   };
+
+  async function observedReadyOrder(tasks) {
+    const remaining = [...tasks];
+    const ordered = [];
+    while (remaining.length) {
+      const orderRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-order-"));
+      const stateDir = path.join(orderRoot, "wechat_workflow");
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(path.join(stateDir, "state.json"), JSON.stringify({ version: 1, tasks: remaining }), "utf8");
+      const orderControl = createWechatWorkflowController({
+        rootDir: orderRoot,
+        autoReplyDir: path.join(orderRoot, "reply"),
+        activeTouchDir: path.join(orderRoot, "touch"),
+        momentsDir: path.join(orderRoot, "moments"),
+        now: () => clock,
+        getAccount: () => "test-account",
+        autoSchedule: false,
+        executors: {}
+      });
+      const nextId = orderControl.status().nextTaskId;
+      await orderControl.dispose();
+      const nextIndex = remaining.findIndex((task) => task.id === nextId);
+      assert.notEqual(nextIndex, -1, "every ready task must be reachable from the scheduler");
+      ordered.push(remaining[nextIndex].title);
+      remaining.splice(nextIndex, 1);
+    }
+    return ordered;
+  }
+
+  const unorderedSchedulerTasks = [
+    { id: "00000000-0000-4000-8000-000000000001", type: "publish", title: "P1-undated", status: "pending", sequence: 1, accountName: "test-account" },
+    { id: "00000000-0000-4000-8000-000000000002", type: "interact", title: "I2-due", status: "pending", sequence: 2, accountName: "test-account", repeat: "daily", startTime: "10:00" },
+    { id: "00000000-0000-4000-8000-000000000003", type: "publish", title: "P3-due", status: "pending", sequence: 3, accountName: "test-account", scheduledAt: new Date(2026, 8, 2, 10, 30).toISOString() }
+  ];
+  const schedulerPermutations = [
+    unorderedSchedulerTasks,
+    [unorderedSchedulerTasks[0], unorderedSchedulerTasks[2], unorderedSchedulerTasks[1]],
+    [unorderedSchedulerTasks[1], unorderedSchedulerTasks[0], unorderedSchedulerTasks[2]],
+    [unorderedSchedulerTasks[1], unorderedSchedulerTasks[2], unorderedSchedulerTasks[0]],
+    [unorderedSchedulerTasks[2], unorderedSchedulerTasks[0], unorderedSchedulerTasks[1]],
+    [unorderedSchedulerTasks[2], unorderedSchedulerTasks[1], unorderedSchedulerTasks[0]]
+  ];
+  const schedulerOrders = await Promise.all(schedulerPermutations.map(observedReadyOrder));
+  for (const order of schedulerOrders) {
+    assert.deepEqual(order, ["I2-due", "P3-due", "P1-undated"], "P1 scheduler order must be invariant under input permutation");
+  }
+  assert.ok(schedulerOrders.every((order) => order.indexOf("I2-due") < order.indexOf("P1-undated")), "P2 a due interact task must precede an earlier-created undated publish task");
+  const touchTask = { id: "00000000-0000-4000-8000-000000000004", type: "touch", title: "T4-touch", status: "pending", sequence: 4, accountName: "test-account" };
+  const touchFirstOrders = await Promise.all(schedulerPermutations.map((tasks, index) => {
+    const mixed = [...tasks];
+    mixed.splice(index % (mixed.length + 1), 0, touchTask);
+    return observedReadyOrder(mixed);
+  }));
+  assert.equal(touchFirstOrders.every((order) => order[0] === "T4-touch"), true, "P3 touch must remain first in every non-empty mixed ready set");
+
   const control = createWechatWorkflowController(options);
   const replyOnlyRoot = path.join(rootDir, "reply-only");
   const replyOptions = { ...options, rootDir: replyOnlyRoot, autoReplyDir: path.join(replyOnlyRoot, "reply"),
@@ -290,11 +345,12 @@ async function main() {
   await savedReply.dispose();
   const first = await control.addTask({ type: "touch", title: "touch", payload: { contactIds: ["a", "b"], script: "hello" } });
   await control.addTask({ type: "publish", title: "future", scheduledAt: new Date(2026, 8, 2, 18).toISOString(), payload: { content: "future" } });
+  await control.addTask({ type: "publish", title: "undated", payload: { content: "later than a due publish of the same type" } });
   await control.addTask({ type: "publish", title: "due", scheduledAt: new Date(2026, 8, 2, 10).toISOString(), payload: { content: "now" } });
-  const daily = await control.addTask({ type: "interact", title: "daily", repeat: "daily", payload: { maxPosts: 1 } });
+  const daily = await control.addTask({ type: "interact", title: "daily", repeat: "daily", startTime: "10:30", payload: { maxPosts: 1 } });
   assert.equal(control.status().enabled, false, "saving must not start WeChat");
   assert.equal(control.status().recipients.length, 2, "entire task audience enrolled before first send");
-  assert.equal(control.status().tasks.find((task) => task.id === control.status().nextTaskId).title, "due", "displayed next task follows scheduler priority");
+  assert.equal(control.status().tasks.find((task) => task.id === control.status().nextTaskId).title, "touch", "touch work must precede scheduled publish and interact work");
   await control.start();
   assert.equal(control.status().replyStatus, "准备接待客户");
   customerWaiting = true;
@@ -308,16 +364,16 @@ async function main() {
   await control.tick();
   customerWaiting = true;
   await control.tick();
-  assert.deepEqual(calls, ["reply", "due", "touch", "touch", "daily", "reply"]);
+  assert.deepEqual(calls, ["reply", "touch", "touch", "due", "daily", "undated", "reply"], "type priority wins first, then due time, then creation order");
   assert.equal(customerWaiting, false, "reply resumes after runnable work completes");
   await control.tick();
-  assert.equal(calls.length, 6, "future work and completed daily task cannot loop");
+  assert.equal(calls.length, 7, "future work and completed daily task cannot loop");
   await assert.rejects(control.updateTask({ id: daily.task.id, type: "interact", payload: { maxPosts: 2 } }), /先暂停/);
   await control.pause();
   await control.updateTask({ id: daily.task.id, type: "interact", title: "daily", repeat: "daily", payload: { maxPosts: 2, commentGuidance: "new preference" } });
   await control.start();
   await control.tick();
-  assert.equal(calls.length, 6, "editing tomorrow's daily arrangement must not repeat today's completed work");
+  assert.equal(calls.length, 7, "editing tomorrow's daily arrangement must not repeat today's completed work");
   assert.equal(control.status().phase, "scheduled");
   await control.pause();
   await control.removeRecipient("a");
