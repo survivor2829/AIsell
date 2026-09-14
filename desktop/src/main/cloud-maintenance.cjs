@@ -248,6 +248,9 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       state.pending = envelope; save();
       notify({ stage: "ready", progress: 100 });
     } catch (error) {
+      logger?.event?.("maintenance", "update.failed", { stage: view.stage }, {
+        level: "error", code: error?.code || error?.message || "update_failed", phase: "check"
+      });
       const message = ["cloud_disk_full", "component_disk_space_insufficient", "ENOSPC"].includes(error?.code) ? "磁盘空间不足，请释放空间后重试。"
         : error?.code === "full_upgrade_required" ? "新版需要完整升级包，当前频道尚未提供。请稍后检查更新或联系开发者获取完整安装包。"
         : error?.code === "cloud_signature_invalid" ? "更新签名校验失败，未安装此更新。请稍后重新检查。" : "更新检查或下载失败，已保留下载进度，请稍后重试。";

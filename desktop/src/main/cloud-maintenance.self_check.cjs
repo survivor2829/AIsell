@@ -243,6 +243,8 @@ async function main() {
     offline = false; latest = sign({ ...manifest, sequence: 9, version: "1.0.2" });
     await controller.check();
     assert.equal(controller.status().stage, "error", "Signed but stale release rejected");
+    assert.equal(logger.readRecent(20).some((entry) => entry.module === "maintenance" && entry.event === "update.failed" && entry.code === "cloud_release_rollback"), true,
+      "an update failure must retain its safe machine-readable cause for feedback diagnostics");
     await checkAnnouncements(dir, config, manifest, sign, bytes);
     await checkBundledAnnouncements(dir, config, manifest, sign);
     await checkReleaseSelection(dir, config, manifest, sign, bytes);

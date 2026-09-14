@@ -84,6 +84,19 @@ async function copyVerified(sourceRoot, targetRoot, file) {
     await fsp.copyFile(source, target, fs.constants.COPYFILE_EXCL);
   }
 }
+function retryableDownloadError(error) {
+  const code = String(error?.code || error?.message || "");
+  return /^(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|cloud_timeout|cloud_download_invalid|cloud_http_408|cloud_http_425|cloud_http_429|cloud_http_5\d\d)$/u.test(code);
+}
+async function downloadArchive(transport, route, options) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await transport.request(route, options); }
+    catch (error) {
+      if (attempt >= 2 || !retryableDownloadError(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+    }
+  }
+}
 async function unpack(archive, root, component) {
   if ((await fsp.stat(archive)).size !== component.size || await hashFile(archive) !== component.sha256) fail("component_archive_corrupt");
   const buffer = await fsp.readFile(archive);
@@ -190,7 +203,7 @@ function createComponentStore({ rootDir, baseRoot, config, transport, onProgress
             const partial = archive + ".part";
             try { if ((await fsp.lstat(partial)).isSymbolicLink()) fail("component_symlink_forbidden"); } catch (e) { if (e.code !== "ENOENT") throw e; }
             const before = downloadedBytes;
-            await transport.request(component.file, { destination: partial, expected: component, maxBytes: component.size, resume: true,
+            await downloadArchive(transport, component.file, { destination: partial, expected: component, maxBytes: component.size, resume: true,
               onProgress: bytes => { downloadedBytes = before + bytes; progress("download"); } });
             if ((await fsp.stat(partial)).size !== component.size || await hashFile(partial) !== component.sha256) fail("component_archive_corrupt");
             await fsp.rename(partial, archive);
