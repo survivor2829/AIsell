@@ -138,9 +138,9 @@ async function main(args = process.argv.slice(2)) {
     runChecks(group.checks);
     return;
   }
+  runChecks(serialChecks);
   console.log("\nRunning isolated active-touch, moments and auto-reply self-check groups in parallel.");
   await Promise.all(parallelCheckGroups.map(runParallelGroup));
-  runChecks(serialChecks);
   console.log("\nall source self-checks passed");
 }
 
