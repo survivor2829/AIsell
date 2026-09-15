@@ -869,7 +869,22 @@ $inputPointAvailable = [double]::TryParse($inputXText, [ref]$inputXRatio) -and [
 
 function Read-InputDraft {
   $sameWindow = [Win32WechatMessageProof]::GetForegroundWindow().ToInt64() -eq [int64]$expectedHandle
-  if (-not $sameWindow) { return @{ ok = $false; reason = "wechat_window_not_foreground"; sameWindow = $false; isEmpty = $false; text = "" } }
+  function New-InputDraftFailure([string]$reason, [string]$stage, [bool]$sameWindow) {
+    return @{
+      ok = $false
+      reason = $reason
+      sameWindow = $sameWindow
+      isEmpty = $false
+      text = ""
+      proofDiagnostics = @{
+        input_read_ok = $false
+        input_read_reason = ("{0}:{1}" -f $reason, $stage)
+        same_window = $sameWindow
+        input_empty = $false
+      }
+    }
+  }
+  if (-not $sameWindow) { return New-InputDraftFailure "wechat_window_not_foreground" "preflight" $false }
   $oldPoint = New-Object Win32WechatMessageProof+POINT
   [void][Win32WechatMessageProof]::GetCursorPos([ref]$oldPoint)
   $oldClipboard = $null
@@ -877,9 +892,10 @@ function Read-InputDraft {
     $oldClipboard = Get-WechatClipboardSnapshot
   } catch {
     $reason = $(if ($_.Exception.Message -eq "wechat_clipboard_restore_unsupported") { "wechat_clipboard_restore_unsupported" } else { "wechat_clipboard_read_failed" })
-    return @{ ok = $false; reason = $reason; sameWindow = $true; isEmpty = $false; text = "" }
+    return New-InputDraftFailure $reason "clipboard_snapshot" $true
   }
   $clipboardOwned = $false
+  $inputReadStage = "target_lookup"
   $result = @{ ok = $false; reason = "input_draft_read_failed"; sameWindow = $true; isEmpty = $false; text = "" }
   try {
     $x = [int]($windowRect.Left + ($windowWidth * $(if ($inputPointAvailable) { $inputXRatio } else { 0.65 })))
@@ -893,8 +909,9 @@ function Read-InputDraft {
     if ($targetThread -eq 0 -or [int]$targetPid -ne [int]$expectedPid -or
         [Win32WechatMessageProof]::GetAncestor($targetWindow, 2) -ne $expectedHWnd -or
         [Win32WechatMessageProof]::GetForegroundWindow() -ne $expectedHWnd) {
-      return @{ ok = $false; reason = "input_draft_target_not_owned"; sameWindow = $false; isEmpty = $false; text = "" }
+      return New-InputDraftFailure "input_draft_target_not_owned" "target_lookup" $false
     }
+    $inputReadStage = "cursor_move"
     [void][Win32WechatMessageProof]::SetCursorPos($x, $y)
     $cursorPoint = New-Object Win32WechatMessageProof+POINT
     $cursorVerified = [Win32WechatMessageProof]::GetCursorPos([ref]$cursorPoint) -and
@@ -905,38 +922,43 @@ function Read-InputDraft {
     if (-not $cursorVerified -or $cursorThread -eq 0 -or [int]$cursorPid -ne [int]$expectedPid -or
         [Win32WechatMessageProof]::GetAncestor($cursorWindow, 2) -ne $expectedHWnd -or
         [Win32WechatMessageProof]::GetForegroundWindow() -ne $expectedHWnd) {
-      return @{ ok = $false; reason = "input_draft_target_not_owned"; sameWindow = $false; isEmpty = $false; text = "" }
+      return New-InputDraftFailure "input_draft_target_not_owned" "cursor_move" $false
     }
+    $inputReadStage = "input_click"
     [Win32WechatMessageProof]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 50
     [Win32WechatMessageProof]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 120
     if ([Win32WechatMessageProof]::GetForegroundWindow() -ne $expectedHWnd) {
-      return @{ ok = $false; reason = "wechat_window_not_foreground"; sameWindow = $false; isEmpty = $false; text = "" }
+      return New-InputDraftFailure "wechat_window_not_foreground" "input_click" $false
     }
+    $inputReadStage = "clipboard_sentinel_write"
     $sentinel = "__XIAOXI_EMPTY_DRAFT_" + [Guid]::NewGuid().ToString("N")
     $sentinelData = New-Object System.Windows.Forms.DataObject
     $sentinelData.SetText($sentinel, [System.Windows.Forms.TextDataFormat]::UnicodeText)
     [System.Windows.Forms.Clipboard]::SetDataObject($sentinelData, $true, 5, 100)
     $clipboardOwned = $true
     if ([Win32WechatMessageProof]::GetForegroundWindow() -ne $expectedHWnd) {
-      return @{ ok = $false; reason = "wechat_window_not_foreground"; sameWindow = $false; isEmpty = $false; text = "" }
+      return New-InputDraftFailure "wechat_window_not_foreground" "clipboard_sentinel_write" $false
     }
+    $inputReadStage = "select_all"
     [System.Windows.Forms.SendKeys]::SendWait("^a")
     Start-Sleep -Milliseconds 50
     if ([Win32WechatMessageProof]::GetForegroundWindow() -ne $expectedHWnd) {
-      return @{ ok = $false; reason = "wechat_window_not_foreground"; sameWindow = $false; isEmpty = $false; text = "" }
+      return New-InputDraftFailure "wechat_window_not_foreground" "select_all" $false
     }
+    $inputReadStage = "copy"
     [System.Windows.Forms.SendKeys]::SendWait("^c")
     Start-Sleep -Milliseconds 180
     if ([Win32WechatMessageProof]::GetForegroundWindow() -ne $expectedHWnd) {
-      return @{ ok = $false; reason = "wechat_window_not_foreground"; sameWindow = $false; isEmpty = $false; text = "" }
+      return New-InputDraftFailure "wechat_window_not_foreground" "copy" $false
     }
+    $inputReadStage = "clipboard_read"
     $copied = [System.Windows.Forms.Clipboard]::GetText([System.Windows.Forms.TextDataFormat]::UnicodeText)
     $isEmpty = $copied -ceq $sentinel
     $result = @{ ok = $true; reason = ""; sameWindow = $true; isEmpty = $isEmpty; text = $(if ($isEmpty) { "" } else { $copied }) }
   } catch {
-    $result = @{ ok = $false; reason = "input_draft_read_failed"; sameWindow = ([Win32WechatMessageProof]::GetForegroundWindow() -eq $expectedHWnd); isEmpty = $false; text = "" }
+    $result = New-InputDraftFailure "input_draft_read_failed" $inputReadStage ([Win32WechatMessageProof]::GetForegroundWindow() -eq $expectedHWnd)
   } finally {
     if ([Win32WechatMessageProof]::GetForegroundWindow() -eq $expectedHWnd) {
       if ($clipboardOwned) { try { Restore-WechatClipboardSnapshot $oldClipboard } catch {} }
@@ -1011,7 +1033,18 @@ $snapshot = @{
 if ($phase -eq "before") {
   $draftBefore = Read-InputDraft
   if (-not $draftBefore.ok) {
-    @{ ok = $false; reason = $draftBefore.reason } | ConvertTo-Json -Compress
+    @{
+      ok = $false
+      reason = $draftBefore.reason
+      proofDiagnostics = @{
+        input_read_ok = $false
+        input_read_reason = [string]$draftBefore.proofDiagnostics.input_read_reason
+        same_window = ($draftBefore.sameWindow -eq $true)
+        input_empty = ($draftBefore.isEmpty -eq $true)
+        candidate_count = $candidates.Count
+        outgoing_exact_count = $outgoingExactBefore.Count
+      }
+    } | ConvertTo-Json -Compress -Depth 4
     exit
   }
   $snapshot.draftExact = $draftBefore.ok -and -not $draftBefore.isEmpty -and (Normalize-WechatProofText $draftBefore.text) -ceq $normalizedMessage

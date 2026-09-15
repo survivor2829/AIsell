@@ -2476,6 +2476,10 @@ try {
   assert.match(messageBubbleSource, /Get-WechatClipboardSnapshot/, "message proof must preserve non-text clipboard data before reading the draft");
   assert.match(messageBubbleSource, /Restore-WechatClipboardSnapshot \$oldClipboard/, "message proof must restore the original clipboard snapshot after reading the draft");
   assert.doesNotMatch(messageBubbleSource, /Set-Clipboard -Value \$oldClipboard/, "message proof must not collapse the original clipboard to plain text");
+  assert.match(messageBubbleSource, /function New-InputDraftFailure[\s\S]*input_read_reason = \("\{0\}:\{1\}" -f \$reason, \$stage\)/,
+    "draft-read failures must retain the precise failing substage without recording clipboard content");
+  assert.match(messageBubbleSource, /if \(-not \$draftBefore\.ok\)[\s\S]*proofDiagnostics = @\{[\s\S]*input_read_reason = \[string\]\$draftBefore\.proofDiagnostics\.input_read_reason/,
+    "before-send snapshot failures must expose the safe draft-read substage to diagnostics");
   assert.match(searchSource, /public static bool AtomicUnicodeText\(string text\)/);
   assert.match(searchSource, /SendInput\(\(uint\)inputs\.Length, inputs, Marshal\.SizeOf\(typeof\(INPUT\)\)\)/);
   assert.match(searchSource, /AtomicUnicodeText\(\$query\)/);
