@@ -297,7 +297,9 @@ function buildPortableStaging(edition, paths, sourceState) {
   const packagedBuildInfo = JSON.parse(fs.readFileSync(packagedBuildInfoFile, "utf8"));
   fs.writeFileSync(packagedBuildInfoFile, `${JSON.stringify({
     ...packagedBuildInfo,
-    artifactType: sourceState.artifactType
+    artifactType: sourceState.artifactType,
+    buildCommit: sourceState.commit,
+    sourceDirty: false
   }, null, 2)}\n`, "utf8");
   let acceptedRuntimeManifest = null;
   if (paths.componentsOnly && sourceState.componentBaseRoot) {

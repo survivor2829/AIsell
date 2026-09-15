@@ -2,6 +2,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
+const { classifyWechatFailureReason, normalizeFailureReasonCode } = require("../shared/wechat-failure-policy.cjs");
+const { createClassificationQualityLedger, THRESHOLD: UNKNOWN_REASON_TASK_THRESHOLD } = require("./classification-quality-ledger.cjs");
 
 const TASK_TYPES = new Set(["touch", "publish", "interact"]);
 const TITLES = { touch: "精准触达", publish: "发布朋友圈", interact: "朋友圈互动" };
@@ -13,7 +15,6 @@ const WORKFLOW_REASON_CODES = Object.freeze({
   workflowExecutorUnavailable: "workflow_executor_unavailable",
   touchDraftGenerationFailed: "touch_draft_generation_failed"
 });
-const LOCAL_TASK_ATTENTION_REASONS = new Set(Object.values(WORKFLOW_REASON_CODES));
 
 // Finite classifications keep diagnostic reasons readable without recording customer text.
 function workflowFailureReason(failure, fallback = "workflow_exception") {
@@ -56,6 +57,13 @@ function createWechatWorkflowController(options) {
   const stateFile = path.join(options.rootDir, "wechat_workflow", "state.json");
   const recipientsFile = path.join(options.autoReplyDir, "workflow-recipients.json");
   const directories = { touch: options.activeTouchDir, publish: options.momentsDir, interact: options.momentsDir };
+  const buildIdentity = {
+    buildVersion: String(options.appVersion || "unknown"),
+    buildId: String(options.buildId || "unknown"),
+    buildCommit: String(options.buildCommit || "unknown")
+  };
+  const buildKey = [buildIdentity.buildVersion, buildIdentity.buildId, buildIdentity.buildCommit].join("|");
+  const qualityLedger = createClassificationQualityLedger({ rootDir: options.rootDir, ...buildIdentity, now });
   let store = { version: 1, tasks: [] };
   let recipients = { version: 1, accounts: {} };
   let enabled = false;
@@ -99,6 +107,27 @@ function createWechatWorkflowController(options) {
 
   function assertHealthy() { if (loadError) throw new Error(loadError); }
   function persist() { assertHealthy(); store.lastTaskId = lastTaskId; writeJsonAtomic(stateFile, store); }
+  function qualitySummary() { return qualityLedger.summary(); }
+  function recordUnknownReason(task, reasonCode) {
+    const reason = normalizeFailureReasonCode(reasonCode || "task_attention_reason_missing");
+    const { summary } = qualityLedger.record(task, reason);
+    if (task) {
+      task.unknownReasonQuality ||= { byBuild: {} };
+      task.unknownReasonQuality.byBuild ||= {};
+      const bucket = task.unknownReasonQuality.byBuild[buildKey] || { pauseCount: 0, reasonCodes: [], needsReview: false };
+      bucket.pauseCount += 1;
+      if (!bucket.reasonCodes.includes(reason)) bucket.reasonCodes = [...bucket.reasonCodes, reason].sort();
+      bucket.needsReview = bucket.pauseCount >= UNKNOWN_REASON_TASK_THRESHOLD;
+      task.unknownReasonQuality.byBuild[buildKey] = bucket;
+      for (const key of Object.keys(task.unknownReasonQuality.byBuild).slice(0, -8)) delete task.unknownReasonQuality.byBuild[key];
+    }
+    log("classification.unknown_reason_paused", {
+      task_kind: task?.type || "workflow", task_id: task?.id || null, reason,
+      build_version: buildIdentity.buildVersion, build_id: buildIdentity.buildId,
+      build_commit: buildIdentity.buildCommit, task_unknown_pause_count: task?.unknownReasonQuality?.byBuild?.[buildKey]?.pauseCount || 0,
+      build_unknown_pause_count: summary.unknownPauseCount, build_status: summary.status
+    }, { level: "warn", code: "classification_unknown_reason" });
+  }
   function canRetry(task) {
     if (task.status !== "needs_attention" || task.accountName !== getAccount()) return false;
     try {
@@ -218,6 +247,7 @@ function createWechatWorkflowController(options) {
       enabled, phase, currentTaskId, lastTaskId, replyEnabled: store.replyEnabled !== false,
       waitingTaskId: waiting?.id || null, waitUntil: waiting?.notBefore || null,
       nextTaskId: nextTask()?.id || null, error, replyStatus, replyError, revision,
+      classificationQuality: qualitySummary(),
       tasks: store.tasks.map((task) => {
         const resolution = unknownResolution(task);
         const skipped = skippedTouchState(task);
@@ -249,6 +279,7 @@ function createWechatWorkflowController(options) {
 
   function fail(failure) {
     const reason = workflowFailureReason(failure);
+    if (!classifyWechatFailureReason(reason).known) recordUnknownReason(null, reason);
     enabled = false;
     phase = "needs_attention";
     error = failure?.message || "计划执行异常，请查看任务详情。";
@@ -373,11 +404,15 @@ function createWechatWorkflowController(options) {
   }
 
   function applyTaskAttention(task, reasonCode, message, requiresGlobalAttention = false) {
+    reasonCode = normalizeFailureReasonCode(reasonCode);
+    const policy = classifyWechatFailureReason(reasonCode);
     task.status = "needs_attention";
     task.error = String(message || "任务需要处理，请查看任务详情。");
     task.reasonCode = reasonCode;
+    task.reasonClassification = policy.classification;
+    if (!policy.known) recordUnknownReason(task, reasonCode);
     // An explicit unknown-outcome signal always outranks the local-reason whitelist.
-    if (!requiresGlobalAttention && LOCAL_TASK_ATTENTION_REASONS.has(reasonCode)) {
+    if (!requiresGlobalAttention && policy.attentionScope === "task") {
       log("task.local_attention", { task_kind: task.type, task_id: task.id, stage: cycleStage, reason: reasonCode }, { level: "warn", code: reasonCode });
       return;
     }
@@ -389,7 +424,7 @@ function createWechatWorkflowController(options) {
 
   function handleQueueTaskFailure(task, failure) {
     const reason = workflowFailureReason(failure);
-    if (!LOCAL_TASK_ATTENTION_REASONS.has(reason)) return false;
+    if (classifyWechatFailureReason(reason).attentionScope !== "task") return false;
     applyTaskAttention(task, reason, failure?.message);
     return true;
   }
@@ -469,7 +504,7 @@ function createWechatWorkflowController(options) {
         try { payload = readPayload(task); }
         catch (failure) {
           const reason = workflowFailureReason(failure);
-          if (!LOCAL_TASK_ATTENTION_REASONS.has(reason)) throw failure;
+          if (classifyWechatFailureReason(reason).attentionScope !== "task") throw failure;
           result = { status: "needs_attention", reasonCode: reason, error: failure.message, progress: task.progress };
         }
         if (!result) {
@@ -488,7 +523,7 @@ function createWechatWorkflowController(options) {
         : result.waitingReason === "touch_safety_interval" ? "touch_safety_interval" : "task_step_returned");
       if (task.status === "needs_attention") {
         applyTaskAttention(task, reason, result.error, result.requiresGlobalAttention === true);
-      } else delete task.reasonCode;
+      } else { delete task.reasonCode; delete task.reasonClassification; }
       if (task.cancelRequested && result.status !== "needs_attention") task.status = "cancelled";
       if (task.status === "completed") {
         task.completedAt = new Date(now()).toISOString();
@@ -508,11 +543,7 @@ function createWechatWorkflowController(options) {
       lastTaskResultKey = resultKey;
     } catch (failure) {
       operation?.end?.({ task_kind: task.type, task_id: task.id, stage: cycleStage, reason: workflowFailureReason(failure), error: failure }, { ok: false, code: workflowFailureReason(failure) });
-      task.status = "needs_attention";
-      task.error = failure.message || "任务执行中断，请核对实际结果。";
-      task.reasonCode = workflowFailureReason(failure);
-      enabled = false;
-      phase = "needs_attention";
+      applyTaskAttention(task, workflowFailureReason(failure), failure.message || "任务执行中断，请核对实际结果。", true);
     } finally {
       currentTaskId = null;
       settleQueue();

@@ -105,7 +105,7 @@ assert.deepEqual(
   const releasedOwners = [];
   let ownerSequence = 0;
   configureActiveTouchRuntime({
-    dataDir: "runtime-data",
+    dataDir: path.join("runtime-root", "active_touch"),
     coordinator: {
       acquire: () => ({ ok: true, lock: { owner: `owner-${++ownerSequence}` } }),
       release: (owner) => releasedOwners.push(owner)
@@ -115,7 +115,8 @@ assert.deepEqual(
   const routed = await runActiveTouchDev(["moments-dry-run", "--mode", "targeted", "--like"], { cliName: "moments_dry_run_cli.dev.cjs", timeoutMs: 100 });
   assert.equal(routed.ok, true);
   assert.equal(path.basename(spawnCalls[0].args[0]), "moments_dry_run_cli.dev.cjs");
-  assert.deepEqual(spawnCalls[0].args.slice(-2), ["--data-dir", "runtime-data"]);
+  assert.deepEqual(spawnCalls[0].args.slice(-2), ["--data-dir", path.join("runtime-root", "active_touch")]);
+  assert.equal(spawnCalls[0].options.env.XIAOXI_FAILURE_DIR, path.join("runtime-root", "failure-evidence"));
   assert.deepEqual(releasedOwners, ["owner-1"]);
 
   const isolated = await runActiveTouchDev(["moments-dry-run", "--mode", "targeted", "--like"], {
@@ -125,6 +126,11 @@ assert.deepEqual(
   });
   assert.equal(isolated.ok, true);
   assert.deepEqual(spawnCalls[1].args.slice(-2), ["--data-dir", "moments-data"]);
+  assert.equal(
+    spawnCalls[1].options.env.XIAOXI_FAILURE_DIR,
+    path.join("runtime-root", "failure-evidence"),
+    "per-task data directories must not move failure evidence outside the exported runtime root"
+  );
   assert.deepEqual(releasedOwners, ["owner-1", "owner-2"]);
 
   nextStdout = JSON.stringify({

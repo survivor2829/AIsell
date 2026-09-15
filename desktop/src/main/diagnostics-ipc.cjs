@@ -298,7 +298,8 @@ async function exportBundle(options = {}) {
   try {
     const diagnosticFiles = collectDiagnosticFiles(logger.logsDir);
     const autoReplyDiagnosticFiles = collectAutoReplyDiagnosticFiles(autoReplyDir);
-    const collectedFiles = [...diagnosticFiles, ...autoReplyDiagnosticFiles];
+    const failureFiles = require('./failure-evidence.cjs').collectFailureEvidenceFiles(path.dirname(logger.logsDir));
+    const collectedFiles = [...diagnosticFiles, ...autoReplyDiagnosticFiles, ...failureFiles];
     const includedFiles = collectedFiles.map(({ name, size_bytes, sha256: digest }) => ({
       name,
       size_bytes,

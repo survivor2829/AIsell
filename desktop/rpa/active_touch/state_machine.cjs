@@ -687,7 +687,10 @@ function clickSearchResultDryRun(
       clearConversationState(state, reason),
       reason,
       wechatWindowBlockText(reason),
-      { safety_diagnostics: inputResult?.safety_diagnostics || null }
+      {
+        diagnostics: inputResult?.diagnostics || null,
+        safety_diagnostics: inputResult?.safety_diagnostics || null
+      }
     );
   }
 

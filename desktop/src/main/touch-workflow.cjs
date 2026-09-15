@@ -6,6 +6,7 @@ const { generateFixedScriptFallback, generatePersonalizedDraft } = require("./ai
 const { diagnostics } = require("./diagnostics.cjs");
 const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs");
 const { normalizeTouchLink } = require("./touch-media.cjs");
+const { classifyWechatFailure } = require("../shared/wechat-failure-policy.cjs");
 const { executeMessageSequence, messageParts, canContinueTouchResult, unknownMessagePart, resolveUnknownMessagePart } = require("./touch-message-sequence.cjs");
 const {
   authorizeTask,
@@ -25,7 +26,10 @@ const {
 
 const UNCERTAIN_SEND_STATES = new Set(["sending", "prepared", "clicked", "outcome_unknown"]);
 const INTERRUPTED_SEND_STATES = new Set(["sending", "prepared", "clicked"]);
-const PRE_SEND_INPUT_RECOVERY_WAIT_MS = 15_000;
+const PRE_SEND_RECOVERY_ATTEMPTS = 2;
+const PRE_SEND_RECOVERY_DELAYS_MS = [5_000, 15_000];
+const ENVIRONMENT_RECOVERY_WAIT_MS = 30_000;
+const ENVIRONMENT_RECOVERY_MAX_MS = 10 * 60_000;
 const WECHAT_LOCK_RETRY_MS = 1_000;
 const IDENTITY_RECOVERY_ATTEMPTS = 2;
 const TOUCH_WORKFLOW_REASON_CODES = Object.freeze({
@@ -79,19 +83,6 @@ function createTouchWorkflow(options = {}) {
   function identitySkipReason(result) {
     const code = String(result?.blocked_reason || result?.state?.blocked_reason || "");
     return IDENTITY_SKIP_REASONS.has(code) ? code : "";
-  }
-
-  function isRecoverablePreSendInputBlock(result) {
-    if (result?.send_attempted !== false) return false;
-    const reason = String(result?.blocked_reason || result?.reason || "");
-    const action = String(result?.action || "");
-    if (reason === "wechat_external_input_detected") return action === "click-search-result-dry-run";
-    const safety = result?.safety_diagnostics && typeof result.safety_diagnostics === "object"
-      ? result.safety_diagnostics
-      : {};
-    return /^message_input_failed_wechat_user_active(?:_attempts_[1-9]\d*)?$/u.test(reason)
-      && action === "input-message-dry-run"
-      && String(safety.phase || "") === "pre_input";
   }
 
   function prepareWorkflowTask(input = {}) {
@@ -193,7 +184,7 @@ function createTouchWorkflow(options = {}) {
       let current = task.results[task.current_index];
       // A completed receipt is authoritative even if the app exited before the
       // queue received the next index. Never send that contact a second time.
-      if (current && ["sent_verified", "identity_skipped", "ai_failed_skipped", "outcome_unknown_skipped"].includes(current.status)) {
+      if (current && ["sent_verified", "identity_skipped", "ai_failed_skipped", "pre_send_skipped", "outcome_unknown_skipped"].includes(current.status)) {
         task.current_index += 1;
         if (task.current_index >= task.total) task.status = "completed";
         persist();
@@ -335,7 +326,7 @@ function createTouchWorkflow(options = {}) {
         task.results[index].status = "outcome_unknown";
         task.results[index].retry_blocked = true;
         task.results[index].send_attempted = null;
-        return attention("执行器异常，发送结果无法确认；系统不会自动补发", { deliveryStatus: "outcome_unknown" });
+        return attention("执行器异常，发送结果无法确认；系统不会自动补发", { deliveryStatus: "outcome_unknown" }, "outcome_unknown");
       }
       current = task.results[index];
       current.last_trace_id = sendOperation.traceId;
@@ -358,20 +349,7 @@ function createTouchWorkflow(options = {}) {
       const notAttempted = result?.send_attempted === false || result?.send_result === "not_attempted";
       if (notAttempted && !["prepared", "clicked", "outcome_unknown"].includes(current.status)) {
         const reasonCode = identitySkipReason(result);
-        if (isRecoverablePreSendInputBlock(result)) {
-          current.status = "generated";
-          current.reason = "检测到人工输入，消息尚未写入微信，等待后自动恢复";
-          current.retry_blocked = false;
-          current.send_attempted = false;
-          current.updated_at = now().toISOString();
-          persist();
-          return response("pending", {
-            retryAfterMs: PRE_SEND_INPUT_RECOVERY_WAIT_MS,
-            waitingReason: "wechat_input_recovery",
-            reasonCode: String(result?.blocked_reason || result?.reason || "wechat_external_input_detected"),
-            result: { deliveryStatus: "not_attempted" }
-          });
-        }
+        const failurePolicy = classifyWechatFailure(result);
         if (reasonCode === "search_result_identity_unverified"
           && Math.max(0, Number(current.identity_recovery_attempts) || 0) < IDENTITY_RECOVERY_ATTEMPTS) {
           current.identity_recovery_attempts = Math.max(0, Number(current.identity_recovery_attempts) || 0) + 1;
@@ -410,6 +388,71 @@ function createTouchWorkflow(options = {}) {
             result: { deliveryStatus: "not_attempted", skipped: true, reasonCode }
           });
         }
+        if (failurePolicy.classification === "environment") {
+          let environmentStartedAt = Date.parse(current.environment_recovery_started_at);
+          if (!Number.isFinite(environmentStartedAt)) {
+            current.environment_recovery_started_at = now().toISOString();
+            environmentStartedAt = now().getTime();
+          }
+          const environmentElapsedMs = Math.max(0, now().getTime() - environmentStartedAt);
+          if (environmentElapsedMs >= ENVIRONMENT_RECOVERY_MAX_MS) {
+            current.status = "pre_send_skipped";
+            current.reason = "运行环境持续不可用，消息未发送；等待十分钟后已加入可重试名单";
+            current.retry_blocked = true;
+            current.send_attempted = false;
+            current.updated_at = now().toISOString();
+            recordSkippedResult(current, index, { reasonCode: failurePolicy.reasonCode, blockedReason: current.reason, at: current.updated_at, traceId: sendOperation.traceId });
+            task.current_index = index + 1;
+            if (task.current_index >= task.total) { task.status = "completed"; task.completed_at = now().toISOString(); }
+            persist();
+            return response(task.status === "completed" ? "completed" : "pending", { result: { deliveryStatus: "not_attempted", skipped: true, reasonCode: failurePolicy.reasonCode, classification: failurePolicy.classification } });
+          }
+          current.status = "generated";
+          current.reason = "运行环境暂不可用，消息尚未发送，等待恢复";
+          current.retry_blocked = false;
+          current.send_attempted = false;
+          current.updated_at = now().toISOString();
+          persist();
+          return response("pending", {
+            retryAfterMs: Math.min(ENVIRONMENT_RECOVERY_WAIT_MS, ENVIRONMENT_RECOVERY_MAX_MS - environmentElapsedMs),
+            waitingReason: "wechat_environment_recovery",
+            reasonCode: failurePolicy.reasonCode,
+            result: { deliveryStatus: "not_attempted", classification: failurePolicy.classification }
+          });
+        }
+        if (failurePolicy.classification === "recoverable" && failurePolicy.known) {
+          delete current.environment_recovery_started_at;
+          current.pre_send_recovery_attempts = Math.max(0, Number(current.pre_send_recovery_attempts) || 0) + 1;
+          if (current.pre_send_recovery_attempts <= PRE_SEND_RECOVERY_ATTEMPTS) {
+            current.status = "generated";
+            current.reason = `发送前检查未通过，正在自动恢复（${current.pre_send_recovery_attempts}/${PRE_SEND_RECOVERY_ATTEMPTS}）`;
+            current.retry_blocked = false;
+            current.send_attempted = false;
+            current.updated_at = now().toISOString();
+            persist();
+            return response("pending", {
+              retryAfterMs: PRE_SEND_RECOVERY_DELAYS_MS[current.pre_send_recovery_attempts - 1],
+              waitingReason: "wechat_pre_send_recovery",
+              reasonCode: failurePolicy.reasonCode,
+              result: { deliveryStatus: "not_attempted", classification: failurePolicy.classification }
+            });
+          }
+          current.status = "pre_send_skipped";
+          current.reason = String(result.error || failurePolicy.reasonCode) + "，两次自动恢复仍失败，已跳过当前联系人";
+          current.retry_blocked = true;
+          current.send_attempted = false;
+          current.updated_at = now().toISOString();
+          recordSkippedResult(current, index, {
+            reasonCode: failurePolicy.reasonCode, blockedReason: current.reason,
+            at: current.updated_at, traceId: sendOperation.traceId
+          });
+          task.current_index = index + 1;
+          if (task.current_index >= task.total) { task.status = "completed"; task.completed_at = now().toISOString(); }
+          persist();
+          return response(task.status === "completed" ? "completed" : "pending", {
+            result: { deliveryStatus: "not_attempted", skipped: true, reasonCode: failurePolicy.reasonCode, classification: failurePolicy.classification }
+          });
+        }
         current.status = "generated";
         current.retry_blocked = false;
         current.send_attempted = false;
@@ -424,7 +467,7 @@ function createTouchWorkflow(options = {}) {
       current.status = "outcome_unknown";
       current.retry_blocked = true;
       current.send_attempted = null;
-      return attention(result?.error || "发送结果无法确认，请检查微信；系统不会自动补发", { deliveryStatus: "outcome_unknown" });
+      return attention(result?.error || "发送结果无法确认，请检查微信；系统不会自动补发", { deliveryStatus: "outcome_unknown" }, "outcome_unknown");
     } catch (error) {
       return { status: "needs_attention", progress: task ? progress() : fallback, error: String(error?.message || "触达任务读取失败") };
     } finally {

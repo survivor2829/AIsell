@@ -6,6 +6,7 @@ const { applicationPath } = require("./component-paths.cjs");
 const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs");
 
 let runtimeDataDir = "";
+let runtimeFailureEvidenceDir = "";
 let runtimeCoordinator = null;
 const EXECUTOR_STDIO_DRAIN_MS = 50;
 
@@ -48,6 +49,9 @@ function executeActiveTouch(args, options = {}) {
     const development = options.development === true;
     const timeoutMs = Number(options.timeoutMs) || 0;
     const selectedDataDir = options.dataDir === undefined ? runtimeDataDir : String(options.dataDir || "");
+    const selectedFailureEvidenceDir = options.failureEvidenceDir === undefined
+      ? runtimeFailureEvidenceDir
+      : String(options.failureEvidenceDir || "");
     const childArgs = selectedDataDir ? [...args, "--data-dir", selectedDataDir] : args;
     const executable = cliPath(development, options.cliName);
     const operation = diagnostics().begin("wechat_adapter", "executor", {
@@ -65,7 +69,9 @@ function executeActiveTouch(args, options = {}) {
     }, { trace: Boolean(options.parentTraceId) });
     const child = spawn(process.execPath, [executable, ...childArgs], {
       cwd: path.dirname(executable),
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1",
+        XIAOXI_FAILURE_TRACE: operation.traceId,
+        XIAOXI_FAILURE_DIR: selectedFailureEvidenceDir },
       windowsHide: true
     });
 
@@ -167,6 +173,7 @@ function runActiveTouchDev(args, options = {}) {
 
 function configureActiveTouchRuntime({ dataDir, coordinator } = {}) {
   runtimeDataDir = String(dataDir || "");
+  runtimeFailureEvidenceDir = runtimeDataDir ? path.join(path.dirname(runtimeDataDir), "failure-evidence") : "";
   runtimeCoordinator = coordinator;
 }
 

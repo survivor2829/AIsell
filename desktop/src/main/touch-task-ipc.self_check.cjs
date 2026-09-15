@@ -218,7 +218,9 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
       random: () => 0,
       onPause: () => { pauseCallbacks += 1; },
       realSendExecutor: (options) => executorBehavior(options),
+      appVersion: "9.8.7",
       buildId: "build-current",
+      buildCommit: "abcdef1234567890",
       verifyRealSendSession: () => {
         const result = sessionVerificationResult;
         if (result.ok && result.pid && result.hWnd) {
@@ -314,7 +316,7 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
     assert.equal(isolatedFailure.task.results[1].status, "identity_skipped");
     assert.equal(isolatedFailure.task.results[2].status, "sent_verified");
     assert.equal(isolatedFailure.task.sent_verified_count, 1);
-    assert.deepEqual(isolatedFailure.task.skipped_breakdown, { identity: 2, ai_failed: 0, outcome_unknown: 0 });
+    assert.deepEqual(isolatedFailure.task.skipped_breakdown, { identity: 2, ai_failed: 0, pre_send: 0, outcome_unknown: 0 });
     assert.equal(isolatedFailure.task.skipped_records.length, 2);
     assert.equal(isolatedFailure.task.results[0].skip_record.reasonCode, "exact_search_result_not_found");
     assert.equal(contactScopedAttempts, 3, "contact-scoped search failures must not pause the remaining task");
@@ -478,6 +480,20 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
     assert.equal(legacyStopped.task.status, "stopped");
     assert.equal(legacyStopped.task.phase, "stopped");
 
+    executorBehavior = async () => ({ ok: false, send_attempted: false, blocked_reason: "legacy_new_unknown_reason", error: "未知失败测试" });
+    const qualityBaseline = (await status()).classificationQuality.unknownPauseCount;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
+      fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
+      await start({}, { script: "未知码质量统计", clickToken: `trusted-quality-${attempt}` });
+      const pausedUnknownCode = await waitFor(status, (value) => value.task?.status === "paused");
+      assert.equal(pausedUnknownCode.classificationQuality.unknownPauseCount, qualityBaseline + attempt + 1);
+    }
+    const persistedQuality = JSON.parse(fs.readFileSync(path.join(path.dirname(dir), "wechat_failure_classification_quality.json"), "utf8"));
+    const legacyBuildQuality = persistedQuality.builds["9.8.7|build-current|abcdef1234567890"];
+    assert.equal(legacyBuildQuality.status, "needs_review");
+    assert(legacyBuildQuality.unknownReasonCodes.includes("legacy_new_unknown_reason"));
+
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
     fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify(contacts(2)), "utf8");
@@ -520,12 +536,16 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
       return { ok: true, state: { real_send_status: "sent_verified", real_send_attempt_key: attemptKey } };
     };
     const deadlinesBeforeSkip = waitedDeadlines.length;
-    await resolveUnknown({}, { taskId: unknown.task.id, contactId: unknown.task.results[0].id, resolution: "skip" });
+    const savedSkip = await resolveUnknown({}, { taskId: unknown.task.id, contactId: unknown.task.results[0].id, resolution: "skip" });
+    assert.equal(savedSkip.task.status, "paused", "manual resolution must persist without auto-continuing");
+    assert.equal(savedSkip.task.results[0].manual_resolution_history.at(-1).resolution, "skip");
+    assert.equal(sends, sendsAfterUnknown, "manual resolution must not call the executor");
+    await start({}, { script: "未知结果测试", clickToken: "trusted-after-resolution" });
     const skippedThenCompleted = await waitFor(status, (value) => value.task?.status === "completed");
     assert.equal(skippedThenCompleted.task.results[0].status, "outcome_unknown_skipped");
     assert.equal(skippedThenCompleted.task.results[1].status, "sent_verified");
     assert.equal(sends, sendsAfterUnknown + 1);
-    assert.equal(waitedDeadlines.length, deadlinesBeforeSkip + 1);
+    assert.equal(waitedDeadlines.length, deadlinesBeforeSkip, "manual skip must not add a send delay");
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });

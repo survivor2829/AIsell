@@ -355,7 +355,7 @@ declare global {
       pause: () => Promise<TouchTaskResult>;
       resume: () => Promise<TouchTaskResult>;
       stop: () => Promise<TouchTaskResult>;
-      resolveUnknown: (payload: { taskId: string; contactId: string; resolution: "sent" | "skip" }) => Promise<TouchTaskResult>;
+      resolveUnknown: (payload: { taskId: string; contactId: string; resolution: "sent" | "not_sent" | "skip" }) => Promise<TouchTaskResult>;
       showMain: () => Promise<TouchTaskResult>;
       closeFloating: () => Promise<TouchTaskResult>;
       onUpdate: (callback: (payload: TouchTaskResult) => void) => () => void;
@@ -1407,7 +1407,7 @@ function FloatingTouchWindow() {
     ? currentResult
     : null;
   const skippedRecords = touchTask.skipped_records || [];
-  const retryableSkipped = skippedRecords.filter((record) => ["identity_skipped", "ai_failed_skipped"].includes(String(record.status || "")));
+  const retryableSkipped = skippedRecords.filter((record) => ["identity_skipped", "ai_failed_skipped", "pre_send_skipped"].includes(String(record.status || "")));
   const retryAllowed = ["paused", "completed", "stopped"].includes(touchTask.status);
   const retrySkipped = (contactIds?: string[]) => callTask(() => window.xiaoxiTouchTask!.retrySkipped({ taskId: touchTask.id, ...(contactIds ? { contactIds } : {}) }));
   const endTask = () => {
@@ -1461,13 +1461,14 @@ function FloatingTouchWindow() {
           {skippedRecords.map((record) => <li key={`${record.contactId}-${record.index}`}>
             <span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span>
             <small title={record.blockedReason}>{taskResultLabel(String(record.status || "skipped"))}</small>
-            {["identity_skipped", "ai_failed_skipped"].includes(String(record.status || "")) && <button type="button" disabled={busy || !retryAllowed} onClick={() => retrySkipped([record.contactId])}>重试</button>}
+            {["identity_skipped", "ai_failed_skipped", "pre_send_skipped"].includes(String(record.status || "")) && <button type="button" disabled={busy || !retryAllowed} onClick={() => retrySkipped([record.contactId])}>重试</button>}
           </li>)}
         </ul>
       </section>}
       {unknownResult && (
         <div className="floating-resolution">
           <button onClick={() => callTask(() => window.xiaoxiTouchTask!.resolveUnknown({ taskId: touchTask.id, contactId: unknownResult.contact.id, resolution: "sent" }))} disabled={busy}>视为已发送</button>
+          <button onClick={() => callTask(() => window.xiaoxiTouchTask!.resolveUnknown({ taskId: touchTask.id, contactId: unknownResult.contact.id, resolution: "not_sent" }))} disabled={busy}>确认未发送</button>
           <button onClick={() => callTask(() => window.xiaoxiTouchTask!.resolveUnknown({ taskId: touchTask.id, contactId: unknownResult.contact.id, resolution: "skip" }))} disabled={busy}>跳过此人</button>
         </div>
       )}

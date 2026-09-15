@@ -1,12 +1,15 @@
 const { app, BrowserWindow, ipcMain, screen } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
+const { randomUUID } = require("node:crypto");
 const { generateFixedScriptFallback, generatePersonalizedDraft } = require("./ai-draft.cjs");
 const { runActiveTouch } = require("./active-touch-ipc.cjs");
 const { preloadFile, rendererDir = "dist" } = require("./edition.cjs");
 const { diagnostics } = require("./diagnostics.cjs");
 const { FLOATING_PROGRESS_WINDOW, floatingProgressPosition } = require("./floating-progress-window.cjs");
 const { createTouchWorkflow } = require("./touch-workflow.cjs");
+const { classifyWechatFailure } = require("../shared/wechat-failure-policy.cjs");
+const { createClassificationQualityLedger } = require("./classification-quality-ledger.cjs");
 const {
   authorizeTask,
   classifyContacts,
@@ -41,10 +44,14 @@ let randomSource = Math.random;
 let requestPauseRef = null;
 let lastDiagnosticTaskSignature = "";
 let currentBuildId = "";
+let currentBuildVersion = "unknown";
+let currentBuildCommit = "unknown";
 const consumedBatchTokens = new Set();
 const DRAFT_GENERATION_CONCURRENCY = 3;
-const PRE_DRAFT_INPUT_RECOVERY_ATTEMPTS = 3;
-const PRE_DRAFT_INPUT_RECOVERY_WAIT_MS = 15_000;
+const PRE_SEND_RECOVERY_ATTEMPTS = 2;
+const PRE_SEND_RECOVERY_DELAYS_MS = [5_000, 15_000];
+const ENVIRONMENT_RECOVERY_WAIT_MS = 30_000;
+const ENVIRONMENT_RECOVERY_MAX_MS = 10 * 60_000;
 
 function consumeBatchAuthorization(payload = {}) {
   if (executionMode !== "real_send") return true;
@@ -149,24 +156,8 @@ function executionFailureContext(response, recoveryAttempt = 0) {
   return context;
 }
 
-function isRecoverablePreDraftInputBlock(response, result) {
-  if (response?.send_attempted !== false) return false;
-  if (["prepared", "clicked", "outcome_unknown"].includes(String(result?.status || "")) || result?.retry_blocked === true) return false;
-  const code = resultCode(response);
-  if (code === "wechat_external_input_detected") return String(response?.action || "") === "click-search-result-dry-run";
-  return /^message_input_failed_wechat_user_active(?:_attempts_[1-9]\d*)?$/u.test(code)
-    && String(response?.action || "") === "input-message-dry-run";
-}
-
-function preDraftRecoveryReason(response, attempt) {
-  const detail = resultCode(response) === "wechat_external_input_detected"
-    ? "微信写入前检测到电脑输入状态变化"
-    : "微信发送前检测到电脑输入状态变化";
-  return `${detail}；消息尚未发送，文案已保留，正在等待后自动恢复（第 ${attempt} 次）`;
-}
-
-async function waitForPreDraftInputRecovery() {
-  const deadline = new Date(Date.now() + PRE_DRAFT_INPUT_RECOVERY_WAIT_MS).toISOString();
+async function waitForPreDraftInputRecovery(delayMs = ENVIRONMENT_RECOVERY_WAIT_MS) {
+  const deadline = new Date(Date.now() + delayMs).toISOString();
   if (typeof waitForDelay === "function") {
     await waitForDelay(deadline);
     return shouldContinueRunning();
@@ -178,6 +169,10 @@ async function waitForPreDraftInputRecovery() {
     await new Promise((resolve) => setTimeout(resolve, Math.min(250, remaining)));
   }
   return false;
+}
+
+function legacyQualityLedger() {
+  return createClassificationQualityLedger({ rootDir: path.dirname(activeTouchDir()), buildVersion: currentBuildVersion, buildId: currentBuildId, buildCommit: currentBuildCommit });
 }
 
 function getDevFloatingUrl() {
@@ -280,7 +275,7 @@ function contactPreview(task = loadTaskState(activeTouchDir())) {
 }
 
 function taskPayload(task = loadTaskState(activeTouchDir())) {
-  return { ...publicTaskState(task), preview: contactPreview(task) };
+  return { ...publicTaskState(task), preview: contactPreview(task), classificationQuality: task.classification_quality_summary || legacyQualityLedger().summary() };
 }
 
 function compactTaskPayload(task = loadTaskState(activeTouchDir())) {
@@ -710,14 +705,35 @@ async function runRealContact(task, current, index) {
     }
 
     const failureCode = resultCode(response);
-    if (isRecoverablePreDraftInputBlock(response, result) && recoveryAttempts < PRE_DRAFT_INPUT_RECOVERY_ATTEMPTS) {
-      recoveryAttempts += 1;
+    const safeNotAttempted = response?.send_attempted === false
+      && !["prepared", "clicked", "outcome_unknown"].includes(String(result.status || ""))
+      && result.retry_blocked !== true;
+    const failurePolicy = classifyWechatFailure(response);
+    if (safeNotAttempted && failurePolicy.classification === "environment") {
+      let environmentStartedAt = Date.parse(result.environment_recovery_started_at);
+      if (!Number.isFinite(environmentStartedAt)) {
+        result.environment_recovery_started_at = new Date().toISOString();
+        environmentStartedAt = Date.now();
+      }
+      const environmentElapsedMs = Math.max(0, Date.now() - environmentStartedAt);
+      if (environmentElapsedMs >= ENVIRONMENT_RECOVERY_MAX_MS) {
+        result.status = "pre_send_skipped";
+        result.reason = "运行环境持续不可用，消息未发送；等待十分钟后已加入可重试名单";
+        result.retry_blocked = true;
+        result.send_attempted = false;
+        result.updated_at = new Date().toISOString();
+        recordSkippedResult(result, index, { reasonCode: failureCode, blockedReason: result.reason, at: result.updated_at, traceId: sendOperation.traceId });
+        const advanced = advanceTask(task, index);
+        emitTaskUpdate(advanced);
+        return true;
+      }
       const failureContext = {
         ...executionFailureContext(response, recoveryAttempts),
-        recovery_action: "wait_for_idle_then_retry"
+        recovery_action: "wait_for_idle_then_retry",
+        classification: failurePolicy.classification
       };
       result.status = "generated";
-      result.reason = preDraftRecoveryReason(response, recoveryAttempts);
+      result.reason = "运行环境暂不可用，消息尚未发送，等待恢复";
       result.blocked_reason = failureCode;
       result.last_failure_context = failureContext;
       result.updated_at = new Date().toISOString();
@@ -731,11 +747,44 @@ async function runRealContact(task, current, index) {
         ...failureContext
       }, { level: "warning", code: failureCode });
       emitTaskUpdate(waiting);
-      if (!(await waitForPreDraftInputRecovery())) return false;
+      if (!(await waitForPreDraftInputRecovery(Math.min(ENVIRONMENT_RECOVERY_WAIT_MS, ENVIRONMENT_RECOVERY_MAX_MS - environmentElapsedMs)))) return false;
       continue;
+    }
+    if (safeNotAttempted && failurePolicy.classification === "recoverable" && failurePolicy.known) {
+      delete result.environment_recovery_started_at;
+      recoveryAttempts = Math.max(recoveryAttempts, Math.max(0, Number(result.pre_send_recovery_attempts) || 0)) + 1;
+      result.pre_send_recovery_attempts = recoveryAttempts;
+      if (recoveryAttempts <= PRE_SEND_RECOVERY_ATTEMPTS) {
+        const failureContext = { ...executionFailureContext(response, recoveryAttempts), recovery_action: "bounded_retry", classification: failurePolicy.classification };
+        result.status = "generated";
+        result.reason = `发送前检查未通过，正在自动恢复（${recoveryAttempts}/${PRE_SEND_RECOVERY_ATTEMPTS}）`;
+        result.blocked_reason = failureCode;
+        result.last_failure_context = failureContext;
+        result.updated_at = new Date().toISOString();
+        task.phase = "waiting_for_idle";
+        task.pause_reason = "";
+        const waiting = saveTaskState(activeTouchDir(), task);
+        emitTaskUpdate(waiting);
+        if (!(await waitForPreDraftInputRecovery(PRE_SEND_RECOVERY_DELAYS_MS[recoveryAttempts - 1]))) return false;
+        continue;
+      }
+      result.status = "pre_send_skipped";
+      result.reason = `${resultReason(response, failureCode)}；两次自动恢复仍失败，已跳过当前联系人`;
+      result.retry_blocked = true;
+      result.send_attempted = false;
+      result.updated_at = new Date().toISOString();
+      recordSkippedResult(result, index, { reasonCode: failureCode, blockedReason: result.reason, at: result.updated_at, traceId: sendOperation.traceId });
+      const advanced = advanceTask(task, index);
+      emitTaskUpdate(advanced);
+      return true;
     }
 
     const failureContext = executionFailureContext(response, recoveryAttempts);
+    if (!failurePolicy.known) {
+      const quality = legacyQualityLedger().record(task, failurePolicy.reasonCode).summary;
+      task.classification_quality_summary = quality;
+      result.blocked_reason = failurePolicy.reasonCode;
+    }
     if (failureCode) result.blocked_reason = failureCode;
     result.last_failure_context = failureContext;
     diagnostics().event("active_touch", "execution_blocked", {
@@ -974,7 +1023,7 @@ function buildRunnableTask(script, excludedContactIds = []) {
   };
 }
 
-function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekClient: client, onPause, executionMode: mode, realSendExecutor: executor, verifyRealSendSession: sessionVerifier, verifyMessageBubble: verifier, waitForDelay: wait, random, buildId = "" } = {}) {
+function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekClient: client, onPause, executionMode: mode, realSendExecutor: executor, verifyRealSendSession: sessionVerifier, verifyMessageBubble: verifier, waitForDelay: wait, random, appVersion = "unknown", buildId = "", buildCommit = "unknown" } = {}) {
   getMainWindowRef = getMainWindow;
   runtimeDataDir = String(dataDir || "");
   runtimeCoordinator = coordinator;
@@ -986,6 +1035,8 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
   waitForDelay = typeof wait === "function" ? wait : null;
   randomSource = typeof random === "function" ? random : Math.random;
   currentBuildId = String(buildId || "").trim();
+  currentBuildVersion = String(appVersion || "unknown");
+  currentBuildCommit = String(buildCommit || "unknown");
   cleanupTaskCache(activeTouchDir());
   recoverInterruptedTask(activeTouchDir());
   const previousBuild = markPreviousBuildTask(loadTaskState(activeTouchDir()), currentBuildId);
@@ -1160,7 +1211,7 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     const task = loadTaskState(activeTouchDir());
     const current = task.results[task.current_index];
     if (
-      !["sent", "skip"].includes(resolution) ||
+      !["sent", "not_sent", "skip"].includes(resolution) ||
       task.status !== "paused" ||
       task.phase !== "awaiting_unknown_resolution" ||
       task.id !== taskId ||
@@ -1171,28 +1222,36 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     const lock = runtimeCoordinator?.acquire({ state: "touching", taskId: task.id, account: "unknown", phase: "resolving_unknown" });
     if (lock && !lock.ok) return { ok: false, blocked_reason: lock.error, error: "当前正在进行其他微信操作，请稍后重试" };
     runnerOwner = lock?.lock.owner || "";
-    current.status = resolution === "sent" ? "sent_verified" : "outcome_unknown_skipped";
-    current.reason = resolution === "sent" ? "用户确认该消息已发送" : "用户选择跳过该联系人且不再补发";
+    const resolvedAt = new Date().toISOString();
+    const resolutionId = randomUUID();
+    current.manual_resolution_history = [...(Array.isArray(current.manual_resolution_history) ? current.manual_resolution_history : []), {
+      resolution, resolution_id: resolutionId, resolved_at: resolvedAt, previous_request_id: String(current.request_id || ""), previous_status: "outcome_unknown"
+    }];
+    current.status = resolution === "sent" ? "sent_verified" : resolution === "not_sent" ? "generated" : "outcome_unknown_skipped";
+    current.reason = resolution === "sent" ? "用户确认该消息已发送" : resolution === "not_sent" ? "用户确认该消息未发送，已保存为可重试" : "用户选择跳过该联系人且不再补发";
     current.manual_resolution = resolution;
     current.awaiting_resolution = false;
-    current.retry_blocked = true;
-    current.updated_at = new Date().toISOString();
+    current.retry_blocked = resolution !== "not_sent";
+    current.send_attempted = resolution === "sent" ? true : resolution === "not_sent" ? false : null;
+    current.updated_at = resolvedAt;
+    if (resolution === "not_sent") { current.request_id = randomUUID(); current.attempt_key = ""; current.manual_resolution_history.at(-1).next_request_id = current.request_id; }
     if (current.status === "outcome_unknown_skipped") recordSkippedResult(current, task.current_index, {
       reasonCode: "outcome_unknown",
       blockedReason: current.reason,
       at: current.updated_at,
       traceId: current.last_trace_id
     });
-    task.next_send_not_before = new Date(Date.now() + sendDelayMs(randomSource)).toISOString();
-    let nextTask = advanceTask(task, task.current_index);
+    if (resolution === "sent") task.next_send_not_before = new Date(Date.now() + sendDelayMs(randomSource)).toISOString();
+    let nextTask = resolution === "not_sent" ? task : advanceTask(task, task.current_index);
     if (nextTask.status !== "completed") {
-      nextTask.status = "running";
-      if (nextTask.phase !== "preparing_batch") nextTask.phase = "sending_batch";
-      nextTask.pause_reason = "";
+      nextTask.status = "paused";
+      nextTask.phase = "preparing_batch";
+      nextTask.pause_reason = "人工处理已保存，请再次点击启动程序继续。";
+      nextTask.manual_resolution_pending = { resolution, resolutionId, resolvedAt, completed: false, progress: { done: nextTask.current_index, total: nextTask.total } };
       nextTask = saveTaskState(activeTouchDir(), nextTask);
       createFloatingWindow();
-      setImmediate(() => { void runTaskLoop(); });
-    } else if (runnerOwner) {
+    }
+    if (runnerOwner) {
       runtimeCoordinator?.release(runnerOwner);
       runnerOwner = "";
     }

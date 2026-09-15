@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { replaceWithRetry, writeJsonAtomic } = require("./atomic-file.cjs");
 const { sanitizeVisualSendReceipt } = require("../shared/visual-send-receipt.cjs");
+const { sanitizeFailureDiagnostics } = require("../shared/failure-diagnostics.cjs");
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const MAX_ARCHIVES = 5;
@@ -118,6 +119,8 @@ function sanitizeValue(value, context = {}) {
   }
   if (typeof value === "object") {
     const result = {};
+    let failureFields = {};
+    try { failureFields = sanitizeFailureDiagnostics(value); } catch {}
     let acceptedKeys = 0;
     for (const childKey in value) {
       if (!Object.prototype.hasOwnProperty.call(value, childKey)) continue;
@@ -125,6 +128,9 @@ function sanitizeValue(value, context = {}) {
       // Receipt fields are finite enums/booleans/counters, never composer or
       // conversation contents. Validate this exact schema before the broad
       // draft/conversation text filter; no other sensitive field is exempt.
+      if (Object.hasOwn(failureFields, childKey)) {
+        result[childKey] = failureFields[childKey]; acceptedKeys += 1; budget.remainingNodes -= 1; continue;
+      }
       if (RECEIPT_DIAGNOSTIC_KEYS.has(childKey)) {
         try {
           const receipt = normalizeReceiptDiagnostics({ [childKey]: value[childKey] });

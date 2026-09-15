@@ -866,7 +866,7 @@ function Test-VisualReadbackPopupGeometry($popupBounds, $lockedBounds, $virtualS
 
 function Get-VisualReadbackPopupPlacement($popupBounds, $lock, [int]$anchorX, [int]$anchorY) {
   if ($lock -eq $null -or $lock.hWnd -eq [IntPtr]::Zero) {
-    return @{ ok = $false; reason = "moments_comment_readback_popup_geometry_invalid" }
+    return @{ ok = $false; reason = "moments_comment_readback_popup_geometry_invalid"; rule_id = (Write-XiaoxiFailure "wx5-r001" "moments_comment_readback_popup_geometry_invalid") }
   }
   $lockedBounds = @{
     left = [double]$lock.windowRect.Left
@@ -877,16 +877,16 @@ function Get-VisualReadbackPopupPlacement($popupBounds, $lock, [int]$anchorX, [i
   $virtualScreenBounds = Get-VisualVirtualScreenBounds
   if (-not (Test-VisualBounds $popupBounds 20 20) -or -not (Test-VisualBounds $lockedBounds 40 40) -or
     -not (Test-VisualBounds $virtualScreenBounds 40 40)) {
-    return @{ ok = $false; reason = "moments_comment_readback_popup_geometry_invalid" }
+    return @{ ok = $false; reason = "moments_comment_readback_popup_geometry_invalid"; rule_id = (Write-XiaoxiFailure "wx5-r002" "moments_comment_readback_popup_geometry_invalid") }
   }
   if (-not (Test-VisualBoundsInsideWithTolerance $popupBounds $virtualScreenBounds 3.0)) {
-    return @{ ok = $false; reason = "moments_comment_readback_popup_outside_screen" }
+    return @{ ok = $false; reason = "moments_comment_readback_popup_outside_screen"; rule_id = (Write-XiaoxiFailure "wx5-r003" "moments_comment_readback_popup_outside_screen") }
   }
   if (-not (Test-VisualPointInsideBoundsWithTolerance $anchorX $anchorY $lockedBounds 0.0)) {
-    return @{ ok = $false; reason = "moments_comment_readback_anchor_outside_window" }
+    return @{ ok = $false; reason = "moments_comment_readback_anchor_outside_window"; rule_id = (Write-XiaoxiFailure "wx5-r004" "moments_comment_readback_anchor_outside_window") }
   }
   if (-not (Test-VisualReadbackPopupGeometry $popupBounds $lockedBounds $virtualScreenBounds $anchorX $anchorY)) {
-    return @{ ok = $false; reason = "moments_comment_readback_popup_not_anchored" }
+    return @{ ok = $false; reason = "moments_comment_readback_popup_not_anchored"; rule_id = (Write-XiaoxiFailure "wx5-r005" "moments_comment_readback_popup_not_anchored") }
   }
   return @{ ok = $true; reason = "" }
 }
@@ -927,7 +927,7 @@ function Resolve-VisualMenuAnchor($menus, $expectedBounds, [double]$tolerance = 
     candidateBounds = @($distinct | ForEach-Object { $_.menu.bounds })
   }
   if ($distinct.Count -eq 0) {
-    return @{ ok = $false; reason = "moments_menu_not_found"; diagnostics = $diagnostics }
+    return @{ ok = $false; reason = "moments_menu_not_found"; rule_id = (Write-XiaoxiFailure "wx5-r006" "moments_menu_not_found"); diagnostics = $diagnostics }
   }
   return @{ ok = $true; menu = $distinct[0].menu; diagnostics = $diagnostics }
 }
@@ -962,29 +962,29 @@ function Get-LockedVisualRoot($context) {
     [string]$expected.rootControlType -cne "ControlType.Window" -or [string]$expected.automationId -cne "" -or
     [string]$expected.feedAutomationId -cne "" -or [string]$expected.feedRuntimeId -cne "" -or
     [int]$expected.feedCount -ne 0) {
-    return @{ ok = $false; reason = "moments_visual_target_lock_invalid" }
+    return @{ ok = $false; reason = "moments_visual_target_lock_invalid"; rule_id = (Write-XiaoxiFailure "wx5-r007" "moments_visual_target_lock_invalid") }
   }
   $expectedPid = [int]$expected.pid
   $expectedHandleText = [string]$expected.hWnd
   if ($expectedPid -le 0 -or $expectedHandleText -notmatch '^[1-9][0-9]*$' -or
     [int]$expected.rootProcessId -ne $expectedPid -or [int]$expected.renderPaneProcessId -ne $expectedPid) {
-    return @{ ok = $false; reason = "moments_visual_target_lock_invalid" }
+    return @{ ok = $false; reason = "moments_visual_target_lock_invalid"; rule_id = (Write-XiaoxiFailure "wx5-r008" "moments_visual_target_lock_invalid") }
   }
   $windowBounds = @{ left = [double]$expected.left; top = [double]$expected.top; width = [double]$expected.width; height = [double]$expected.height }
   if (-not (Test-VisualBounds $windowBounds 299 299) -or -not (Test-VisualBoundsInside $expected.renderPaneBounds $windowBounds)) {
-    return @{ ok = $false; reason = "moments_visual_target_lock_invalid" }
+    return @{ ok = $false; reason = "moments_visual_target_lock_invalid"; rule_id = (Write-XiaoxiFailure "wx5-r009" "moments_visual_target_lock_invalid") }
   }
 
   $hWnd = [IntPtr][int64]$expectedHandleText
   if (-not [Win32WechatMomentsVisualAction]::IsWindowVisible($hWnd) -or [Win32WechatMomentsVisualAction]::IsIconic($hWnd)) {
-    return @{ ok = $false; reason = "moments_window_not_found" }
+    return @{ ok = $false; reason = "moments_window_not_found"; rule_id = (Write-XiaoxiFailure "wx5-r010" "moments_window_not_found") }
   }
   [uint32]$actualPid = 0
   [void][Win32WechatMomentsVisualAction]::GetWindowThreadProcessId($hWnd, [ref]$actualPid)
   $process = Get-Process -Id $actualPid -ErrorAction SilentlyContinue
   if ($process -eq $null -or [int]$actualPid -ne $expectedPid -or @("Weixin", "WeChat") -notcontains $process.ProcessName -or
     [string]$process.ProcessName -cne [string]$expected.processName) {
-    return @{ ok = $false; reason = "moments_window_identity_mismatch" }
+    return @{ ok = $false; reason = "moments_window_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx5-r011" "moments_window_identity_mismatch") }
   }
   $titleText = New-Object System.Text.StringBuilder 128
   [void][Win32WechatMomentsVisualAction]::GetWindowText($hWnd, $titleText, $titleText.Capacity)
@@ -992,11 +992,11 @@ function Get-LockedVisualRoot($context) {
   [void][Win32WechatMomentsVisualAction]::GetClassName($hWnd, $classText, $classText.Capacity)
   if ($titleText.ToString().Trim() -cne [string]$expected.title -or
     $classText.ToString().Trim() -cne [string]$expected.className) {
-    return @{ ok = $false; reason = "moments_window_identity_mismatch" }
+    return @{ ok = $false; reason = "moments_window_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx5-r012" "moments_window_identity_mismatch") }
   }
   $actualRect = New-Object Win32WechatMomentsVisualAction+RECT
   if (-not [Win32WechatMomentsVisualAction]::GetWindowRect($hWnd, [ref]$actualRect)) {
-    return @{ ok = $false; reason = "moments_window_identity_mismatch" }
+    return @{ ok = $false; reason = "moments_window_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx5-r013" "moments_window_identity_mismatch") }
   }
   $actualBounds = @{
     left = [double]$actualRect.Left
@@ -1005,19 +1005,19 @@ function Get-LockedVisualRoot($context) {
     height = [double]($actualRect.Bottom - $actualRect.Top)
   }
   if (-not (Test-VisualBoundsNear $actualBounds $windowBounds 0.1)) {
-    return @{ ok = $false; reason = "moments_window_changed" }
+    return @{ ok = $false; reason = "moments_window_changed"; rule_id = (Write-XiaoxiFailure "wx5-r014" "moments_window_changed") }
   }
   try { $root = [System.Windows.Automation.AutomationElement]::FromHandle($hWnd) } catch { $root = $null }
-  if ($root -eq $null) { return @{ ok = $false; reason = "moments_window_identity_mismatch" } }
+  if ($root -eq $null) { return @{ ok = $false; reason = "moments_window_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx5-r015" "moments_window_identity_mismatch") } }
   try {
     $rootAutomationId = [string]$root.Current.AutomationId
     $rootName = [string]$root.Current.Name
     $rootControlType = [string]$root.Current.ControlType.ProgrammaticName
     $rootProcessId = [int]$root.Current.ProcessId
-  } catch { return @{ ok = $false; reason = "moments_window_identity_mismatch" } }
+  } catch { return @{ ok = $false; reason = "moments_window_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx5-r016" "moments_window_identity_mismatch") } }
   if ($rootAutomationId -cne "" -or $rootName -cne [string]$expected.rootName -or $rootControlType -cne "ControlType.Window" -or
     $rootProcessId -ne $expectedPid) {
-    return @{ ok = $false; reason = "moments_window_identity_mismatch" }
+    return @{ ok = $false; reason = "moments_window_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx5-r017" "moments_window_identity_mismatch") }
   }
   # A coexisting UIA feed is not a different target. Keep the exact window,
   # render-pane identity and bounds checks for this visual action.
@@ -1029,7 +1029,7 @@ function Get-LockedVisualRoot($context) {
     [int]$paneEvidence.pane.processId -ne [int]$expected.renderPaneProcessId -or
     [string]$paneEvidence.pane.runtimeId -cne [string]$expected.renderPaneRuntimeId -or
     -not (Test-VisualBoundsNear $paneEvidence.pane.bounds $expected.renderPaneBounds 1.5)) {
-    return @{ ok = $false; reason = "moments_render_pane_changed" }
+    return @{ ok = $false; reason = "moments_render_pane_changed"; rule_id = (Write-XiaoxiFailure "wx5-r018" "moments_render_pane_changed") }
   }
   [uint32]$dpi = 96
   try {
@@ -1101,7 +1101,7 @@ function Get-CurrentLockedVisualPost($lock, $context, [bool]$activate = $false) 
       $menuHash = Get-MomentsPixelHash $frame $resolution.menu.bounds
       if (-not $menuHash -or
         (-not [string]::IsNullOrWhiteSpace([string]$snapshot.menu_hash) -and $menuHash -cne [string]$snapshot.menu_hash)) {
-        return @{ ok = $false; reason = "moments_menu_changed"; frame = $frame }
+        return @{ ok = $false; reason = "moments_menu_changed"; rule_id = (Write-XiaoxiFailure "wx5-r019" "moments_menu_changed"); frame = $frame }
       }
       return @{
         ok = $true
@@ -1123,7 +1123,7 @@ function Get-CurrentLockedVisualPost($lock, $context, [bool]$activate = $false) 
         diagnostics = $resolution.diagnostics
       }
     } catch {
-      return @{ ok = $false; reason = "moments_visual_probe_failed"; frame = $frame }
+      return @{ ok = $false; reason = "moments_visual_probe_failed"; rule_id = (Write-XiaoxiFailure "wx5-r020" "moments_visual_probe_failed"); frame = $frame }
     }
   }
 }
@@ -1169,23 +1169,23 @@ function Test-VisualOwnedHitDetailed([IntPtr]$hit, [int]$screenX, [int]$screenY,
     popupOwnedByWindow = $false
   }
   if ($hit -eq [IntPtr]::Zero) {
-    return @{ ok = $false; reason = "moments_click_target_missing"; diagnostics = $diagnostics }
+    return @{ ok = $false; reason = "moments_click_target_missing"; rule_id = (Write-XiaoxiFailure "wx5-r021" "moments_click_target_missing"); diagnostics = $diagnostics }
   }
   [uint32]$hitPid = 0
   [void][Win32WechatMomentsVisualAction]::GetWindowThreadProcessId($hit, [ref]$hitPid)
   if ([int]$hitPid -ne [int]$lock.pid) {
-    return @{ ok = $false; reason = "moments_click_target_process_changed"; diagnostics = $diagnostics }
+    return @{ ok = $false; reason = "moments_click_target_process_changed"; rule_id = (Write-XiaoxiFailure "wx5-r022" "moments_click_target_process_changed"); diagnostics = $diagnostics }
   }
   $hitRoot = [Win32WechatMomentsVisualAction]::GetAncestor($hit, 2)
   if ($hitRoot -eq [IntPtr]::Zero -or
     -not [Win32WechatMomentsVisualAction]::IsWindowVisible($hitRoot) -or
     [Win32WechatMomentsVisualAction]::IsIconic($hitRoot)) {
-    return @{ ok = $false; reason = "moments_click_target_not_visible"; diagnostics = $diagnostics }
+    return @{ ok = $false; reason = "moments_click_target_not_visible"; rule_id = (Write-XiaoxiFailure "wx5-r023" "moments_click_target_not_visible"); diagnostics = $diagnostics }
   }
   [uint32]$rootPid = 0
   [void][Win32WechatMomentsVisualAction]::GetWindowThreadProcessId($hitRoot, [ref]$rootPid)
   if ([int]$rootPid -ne [int]$lock.pid) {
-    return @{ ok = $false; reason = "moments_click_root_process_changed"; diagnostics = $diagnostics }
+    return @{ ok = $false; reason = "moments_click_root_process_changed"; rule_id = (Write-XiaoxiFailure "wx5-r024" "moments_click_root_process_changed"); diagnostics = $diagnostics }
   }
 
   $lockedBounds = @{
@@ -1200,7 +1200,7 @@ function Test-VisualOwnedHitDetailed([IntPtr]$hit, [int]$screenX, [int]$screenY,
     $screenY -ge [double]$paneBounds.top -and $screenY -le ([double]$paneBounds.top + [double]$paneBounds.height)
   if ($allowedPopupBounds -eq $null) {
     if ($hitRoot -ne $lock.hWnd -or -not $diagnostics.pointInsidePane) {
-      return @{ ok = $false; reason = "moments_click_popup_surface_missing"; diagnostics = $diagnostics }
+      return @{ ok = $false; reason = "moments_click_popup_surface_missing"; rule_id = (Write-XiaoxiFailure "wx5-r025" "moments_click_popup_surface_missing"); diagnostics = $diagnostics }
     }
     $diagnostics.pointInsideSurface = $true
     $diagnostics.surfaceInsidePopup = $true
@@ -1220,11 +1220,11 @@ function Test-VisualOwnedHitDetailed([IntPtr]$hit, [int]$screenX, [int]$screenY,
   } else {
     $diagnostics.popupOwnedByWindow = [Win32WechatMomentsVisualAction]::GetWindow($hitRoot, 4) -eq $lock.hWnd
     if (-not $diagnostics.popupOwnedByWindow) {
-      return @{ ok = $false; reason = "moments_click_popup_owner_changed"; diagnostics = $diagnostics }
+      return @{ ok = $false; reason = "moments_click_popup_owner_changed"; rule_id = (Write-XiaoxiFailure "wx5-r026" "moments_click_popup_owner_changed"); diagnostics = $diagnostics }
     }
     $popupRect = New-Object Win32WechatMomentsVisualAction+RECT
     if (-not [Win32WechatMomentsVisualAction]::GetWindowRect($hitRoot, [ref]$popupRect)) {
-      return @{ ok = $false; reason = "moments_click_popup_bounds_unavailable"; diagnostics = $diagnostics }
+      return @{ ok = $false; reason = "moments_click_popup_bounds_unavailable"; rule_id = (Write-XiaoxiFailure "wx5-r027" "moments_click_popup_bounds_unavailable"); diagnostics = $diagnostics }
     }
     $popupBounds = @{
       left = [double]$popupRect.Left
@@ -1244,16 +1244,16 @@ function Test-VisualOwnedHitDetailed([IntPtr]$hit, [int]$screenX, [int]$screenY,
   $diagnostics.surfaceInsideWindow = Test-VisualBoundsInside $expectedSurface $lockedBounds
   $diagnostics.surfaceInsidePane = Test-VisualBoundsInside $expectedSurface $paneBounds
   if (-not $diagnostics.surfaceInsideWindow) {
-    return @{ ok = $false; reason = "moments_click_surface_outside_window"; root = $hitRoot; diagnostics = $diagnostics }
+    return @{ ok = $false; reason = "moments_click_surface_outside_window"; rule_id = (Write-XiaoxiFailure "wx5-r028" "moments_click_surface_outside_window"); root = $hitRoot; diagnostics = $diagnostics }
   }
   if (-not $diagnostics.surfaceInsidePopup) {
-    return @{ ok = $false; reason = "moments_click_surface_outside_popup"; root = $hitRoot; diagnostics = $diagnostics }
+    return @{ ok = $false; reason = "moments_click_surface_outside_popup"; rule_id = (Write-XiaoxiFailure "wx5-r029" "moments_click_surface_outside_popup"); root = $hitRoot; diagnostics = $diagnostics }
   }
   if (-not $diagnostics.pointInsideSurface) {
-    return @{ ok = $false; reason = "moments_click_point_outside_surface"; root = $hitRoot; diagnostics = $diagnostics }
+    return @{ ok = $false; reason = "moments_click_point_outside_surface"; rule_id = (Write-XiaoxiFailure "wx5-r030" "moments_click_point_outside_surface"); root = $hitRoot; diagnostics = $diagnostics }
   }
   if (-not $diagnostics.pointInsidePane -or -not $diagnostics.surfaceInsidePane) {
-    return @{ ok = $false; reason = "moments_click_surface_outside_render_pane"; root = $hitRoot; diagnostics = $diagnostics }
+    return @{ ok = $false; reason = "moments_click_surface_outside_render_pane"; rule_id = (Write-XiaoxiFailure "wx5-r031" "moments_click_surface_outside_render_pane"); root = $hitRoot; diagnostics = $diagnostics }
   }
   return @{ ok = $true; root = $hitRoot; diagnostics = $diagnostics }
 }
@@ -1412,17 +1412,17 @@ function Test-VisualOwnedKeyboardTarget($lock, $composerBounds, [uint32]$expecte
 
 function Focus-VisualCommentKeyboardTarget($lock, $composerBounds, [int64]$deadlineMs, [uint32]$expectedInputTick) {
   if ($expectedInputTick -eq [uint32]::MaxValue -or -not (Test-VisualBounds $composerBounds 40 40)) {
-    return @{ ok = $false; reason = "moments_comment_editor_changed" }
+    return @{ ok = $false; reason = "moments_comment_editor_changed"; rule_id = (Write-XiaoxiFailure "wx5-r032" "moments_comment_editor_changed") }
   }
   $focusX = [int][Math]::Round([double]$lock.windowRect.Left + [double]$composerBounds.left + ([double]$composerBounds.width * 0.22))
   $focusY = [int][Math]::Round([double]$lock.windowRect.Top + [double]$composerBounds.top + ([double]$composerBounds.height * 0.28))
   if (-not (Invoke-VisualOwnedClick $focusX $focusY $lock $deadlineMs $false $true $null $expectedInputTick)) {
-    return @{ ok = $false; reason = "moments_comment_editor_changed" }
+    return @{ ok = $false; reason = "moments_comment_editor_changed"; rule_id = (Write-XiaoxiFailure "wx5-r033" "moments_comment_editor_changed") }
   }
   Start-Sleep -Milliseconds 90
   [uint32]$focusedInputTick = [Win32WechatMomentsVisualAction]::GetLastInputTick()
   if (-not (Test-VisualOwnedKeyboardTarget $lock $composerBounds $focusedInputTick)) {
-    return @{ ok = $false; reason = "moments_comment_editor_changed" }
+    return @{ ok = $false; reason = "moments_comment_editor_changed"; rule_id = (Write-XiaoxiFailure "wx5-r034" "moments_comment_editor_changed") }
   }
   return @{ ok = $true; inputTick = $focusedInputTick }
 }
@@ -1440,7 +1440,7 @@ function Invoke-VisualOwnedKeyboardChord(
   [uint32]$verifiedClipboardSequence = $expectedClipboardSequence
   if (@([uint16]0x41, [uint16]0x43, [uint16]0x56) -notcontains $key -or
     -not (Test-VisualOwnedKeyboardTarget $lock $composerBounds $expectedInputTick)) {
-    return @{ ok = $false; reason = "moments_comment_editor_changed" }
+    return @{ ok = $false; reason = "moments_comment_editor_changed"; rule_id = (Write-XiaoxiFailure "wx5-r035" "moments_comment_editor_changed") }
   }
   if ($verifyClipboard) {
     $clipboardMatches = $false
@@ -1458,7 +1458,7 @@ function Invoke-VisualOwnedKeyboardChord(
         $expectedClipboardText,
         [ref]$currentClipboardMatches
       ) -or -not $currentClipboardMatches) {
-        return @{ ok = $false; reason = "moments_comment_clipboard_changed" }
+        return @{ ok = $false; reason = "moments_comment_clipboard_changed"; rule_id = (Write-XiaoxiFailure "wx5-r036" "moments_comment_clipboard_changed") }
       }
       $verifiedClipboardSequence = $currentClipboardSequence
     }
@@ -1493,10 +1493,10 @@ function Invoke-VisualOwnedKeyboardChord(
 function Invoke-VisualOwnedUnicodeText($lock, $composerBounds, [uint32]$expectedInputTick, [string]$text) {
   if ([string]::IsNullOrEmpty($text) -or $text.Length -gt 500 -or
     -not (Test-VisualOwnedKeyboardTarget $lock $composerBounds $expectedInputTick)) {
-    return @{ ok = $false; reason = "moments_comment_editor_changed" }
+    return @{ ok = $false; reason = "moments_comment_editor_changed"; rule_id = (Write-XiaoxiFailure "wx5-r037" "moments_comment_editor_changed") }
   }
   if (-not [Win32WechatMomentsVisualAction]::AtomicKeyboardUnicodeText($text)) {
-    return @{ ok = $false; reason = "moments_comment_keyboard_input_blocked"; inputMayHaveBeenIssued = $true }
+    return @{ ok = $false; reason = "moments_comment_keyboard_input_blocked"; rule_id = (Write-XiaoxiFailure "wx5-r038" "moments_comment_keyboard_input_blocked"); inputMayHaveBeenIssued = $true }
   }
   Start-Sleep -Milliseconds 140
   [uint32]$nextInputTick = [Win32WechatMomentsVisualAction]::GetLastInputTick()
@@ -1513,10 +1513,10 @@ function Invoke-VisualOwnedUnicodeText($lock, $composerBounds, [uint32]$expected
 
 function Invoke-VisualOwnedKeyboardBackspace($lock, $composerBounds, [uint32]$expectedInputTick) {
   if (-not (Test-VisualOwnedKeyboardTarget $lock $composerBounds $expectedInputTick)) {
-    return @{ ok = $false; reason = "moments_comment_editor_changed" }
+    return @{ ok = $false; reason = "moments_comment_editor_changed"; rule_id = (Write-XiaoxiFailure "wx5-r039" "moments_comment_editor_changed") }
   }
   if (-not [Win32WechatMomentsVisualAction]::AtomicKeyboardBackspace()) {
-    return @{ ok = $false; reason = "moments_comment_keyboard_clear_failed" }
+    return @{ ok = $false; reason = "moments_comment_keyboard_clear_failed"; rule_id = (Write-XiaoxiFailure "wx5-r040" "moments_comment_keyboard_clear_failed") }
   }
   Start-Sleep -Milliseconds 120
   [uint32]$nextInputTick = [Win32WechatMomentsVisualAction]::GetLastInputTick()
@@ -1598,13 +1598,13 @@ function Get-VisualSafeReadbackPopup($lock, $beforeHandles, [int]$anchorX, [int]
   $ownerVerified = $false
   for ($attempt = 0; $attempt -lt 14; $attempt++) {
     if (-not (Test-VisualDeadline $deadlineMs)) {
-      return @{ ok = $false; reason = "moments_comment_readback_popup_timeout"; candidates = $lastCandidates; ownerVerified = $ownerVerified; stable = $false; placementAnchored = $false }
+      return @{ ok = $false; reason = "moments_comment_readback_popup_timeout"; rule_id = (Write-XiaoxiFailure "wx5-r041" "moments_comment_readback_popup_timeout"); candidates = $lastCandidates; ownerVerified = $ownerVerified; stable = $false; placementAnchored = $false }
     }
     $after = @(Get-VisualProcessWindows $lock.pid)
     $newWindows = @($after | Where-Object { $beforeHandles -notcontains [string]$_.hWndText })
     $lastCandidates = $newWindows
     if ($newWindows.Count -gt 1) {
-      return @{ ok = $false; reason = "moments_comment_readback_popup_ambiguous"; popupCount = $newWindows.Count; candidates = $newWindows }
+      return @{ ok = $false; reason = "moments_comment_readback_popup_ambiguous"; rule_id = (Write-XiaoxiFailure "wx5-r042" "moments_comment_readback_popup_ambiguous"); popupCount = $newWindows.Count; candidates = $newWindows }
     }
     if ($newWindows.Count -eq 1) {
       $popup = $newWindows[0]
@@ -1612,7 +1612,7 @@ function Get-VisualSafeReadbackPopup($lock, $beforeHandles, [int]$anchorX, [int]
         [string]$popup.className -cne "Qt51514QWindowToolSaveBits" -or
         [string]$popup.title -cne "Weixin" -or
         $popup.owner -ne $lock.hWnd) {
-        return @{ ok = $false; reason = "moments_comment_readback_popup_not_owned"; popup = $popup; candidates = $newWindows; ownerVerified = $false; stable = $false; placementAnchored = $false }
+        return @{ ok = $false; reason = "moments_comment_readback_popup_not_owned"; rule_id = (Write-XiaoxiFailure "wx5-r043" "moments_comment_readback_popup_not_owned"); popup = $popup; candidates = $newWindows; ownerVerified = $false; stable = $false; placementAnchored = $false }
       }
       $ownerVerified = $true
       $signature = [string]$popup.hWndText + ":" + [string]$popup.bounds.left + ":" +
@@ -1632,11 +1632,11 @@ function Get-VisualSafeReadbackPopup($lock, $beforeHandles, [int]$anchorX, [int]
     }
     Start-Sleep -Milliseconds 35
   }
-  return @{ ok = $false; reason = "moments_comment_readback_popup_missing"; popupCount = $lastCandidates.Count; candidates = $lastCandidates; ownerVerified = $ownerVerified; stable = $false; placementAnchored = $false }
+  return @{ ok = $false; reason = "moments_comment_readback_popup_missing"; rule_id = (Write-XiaoxiFailure "wx5-r044" "moments_comment_readback_popup_missing"); popupCount = $lastCandidates.Count; candidates = $lastCandidates; ownerVerified = $ownerVerified; stable = $false; placementAnchored = $false }
 }
 
 function Get-VisualScreenFrame($bounds) {
-  if (-not (Test-VisualBounds $bounds 20 20)) { return @{ ok = $false; reason = "moments_comment_readback_popup_invalid" } }
+  if (-not (Test-VisualBounds $bounds 20 20)) { return @{ ok = $false; reason = "moments_comment_readback_popup_invalid"; rule_id = (Write-XiaoxiFailure "wx5-r045" "moments_comment_readback_popup_invalid") } }
   $width = [int][Math]::Round([double]$bounds.width)
   $height = [int][Math]::Round([double]$bounds.height)
   $bitmap = $null
@@ -1657,7 +1657,7 @@ function Get-VisualScreenFrame($bounds) {
     return @{ ok = $true; bitmap = $bitmap; bytes = $bytes; stride = $stride; width = $width; height = $height; screenLeft = [int]$bounds.left; screenTop = [int]$bounds.top }
   } catch {
     if ($bitmap) { $bitmap.Dispose() }
-    return @{ ok = $false; reason = "moments_comment_readback_popup_capture_failed" }
+    return @{ ok = $false; reason = "moments_comment_readback_popup_capture_failed"; rule_id = (Write-XiaoxiFailure "wx5-r046" "moments_comment_readback_popup_capture_failed") }
   } finally {
     if ($graphics) { $graphics.Dispose() }
   }
@@ -1668,7 +1668,7 @@ function Get-VisualExactCommentMenuObservation($frame) {
   $raw = Get-MomentsOcrObservation $frame $region
   $scaled = Get-MomentsScaledOcrObservation $frame $region 4
   if (-not $raw.ok -or -not $scaled.ok) {
-    return @{ ok = $false; reason = "moments_comment_readback_menu_ocr_failed" }
+    return @{ ok = $false; reason = "moments_comment_readback_menu_ocr_failed"; rule_id = (Write-XiaoxiFailure "wx5-r047" "moments_comment_readback_menu_ocr_failed") }
   }
   $entries = @{}
   foreach ($label in @("复制", "搜一搜", "删除")) {
@@ -1678,7 +1678,7 @@ function Get-VisualExactCommentMenuObservation($frame) {
       -not (Test-VisualBounds $rawMatches[0].bounds 2 2) -or
       -not (Test-VisualBounds $scaledMatches[0].bounds 2 2) -or
       -not (Test-VisualBoundsNear $rawMatches[0].bounds $scaledMatches[0].bounds 4.0)) {
-      return @{ ok = $false; reason = "moments_comment_readback_menu_labels_ambiguous" }
+      return @{ ok = $false; reason = "moments_comment_readback_menu_labels_ambiguous"; rule_id = (Write-XiaoxiFailure "wx5-r048" "moments_comment_readback_menu_labels_ambiguous") }
     }
     $entries[$label] = $scaledMatches[0]
   }
@@ -1693,7 +1693,7 @@ function Get-VisualExactCommentMenuObservation($frame) {
     $deleteCenterY -le ([double]$frame.height * 0.58) -or
     [Math]::Abs([double]$copy.bounds.left - [double]$search.bounds.left) -gt 12.0 -or
     [Math]::Abs([double]$copy.bounds.left - [double]$delete.bounds.left) -gt 12.0) {
-    return @{ ok = $false; reason = "moments_comment_readback_menu_geometry_invalid" }
+    return @{ ok = $false; reason = "moments_comment_readback_menu_geometry_invalid"; rule_id = (Write-XiaoxiFailure "wx5-r049" "moments_comment_readback_menu_geometry_invalid") }
   }
   return @{ ok = $true; copy = $copy; search = $search; delete = $delete }
 }
@@ -1719,13 +1719,13 @@ function Get-VisualExactCopyEntry($popup) {
       -not (Test-VisualBoundsNear $secondMenu.copy.bounds $firstMenu.copy.bounds 3.0) -or
       -not (Test-VisualBoundsNear $secondMenu.search.bounds $firstMenu.search.bounds 3.0) -or
       -not (Test-VisualBoundsNear $secondMenu.delete.bounds $firstMenu.delete.bounds 3.0)) {
-      return @{ ok = $false; reason = "moments_comment_readback_copy_entry_changed" }
+      return @{ ok = $false; reason = "moments_comment_readback_copy_entry_changed"; rule_id = (Write-XiaoxiFailure "wx5-r050" "moments_comment_readback_copy_entry_changed") }
     }
     $secondHash = Get-MomentsPixelHash $secondFrame $secondMenu.copy.bounds
     $secondPopupHash = Get-MomentsPixelHash $secondFrame @{ left = 0.0; top = 0.0; width = [double]$secondFrame.width; height = [double]$secondFrame.height }
     if (-not $firstHash -or -not $secondHash -or $secondHash -cne $firstHash -or
       -not $firstPopupHash -or -not $secondPopupHash -or $secondPopupHash -cne $firstPopupHash) {
-      return @{ ok = $false; reason = "moments_comment_readback_copy_entry_changed" }
+      return @{ ok = $false; reason = "moments_comment_readback_copy_entry_changed"; rule_id = (Write-XiaoxiFailure "wx5-r051" "moments_comment_readback_copy_entry_changed") }
     }
     return @{ ok = $true; bounds = $secondMenu.copy.bounds; pixelHash = $secondHash }
   } finally {
@@ -2146,7 +2146,7 @@ function Get-VisualOpenMenuBounds($frame, $menu, [string]$requestedAction = "", 
   if (-not (Test-VisualBounds $bounds $minimumSurfaceWidth (31.0 * $effectiveScale)) -or -not (Test-VisualBoundsInside $bounds $viewport) -or [double]$bounds.height -gt (82.0 * $effectiveScale) -or
     [double]$menu.centerY -lt [double]$bounds.top -or
     [double]$menu.centerY -gt ([double]$bounds.top + [double]$bounds.height)) {
-    return @{ ok = $false; reason = "moments_menu_surface_ambiguous"; bounds = $bounds; diagnostics = $diagnostics }
+    return @{ ok = $false; reason = "moments_menu_surface_ambiguous"; rule_id = (Write-XiaoxiFailure "wx5-r052" "moments_menu_surface_ambiguous"); bounds = $bounds; diagnostics = $diagnostics }
   }
   return @{
     ok = $true
@@ -2213,7 +2213,7 @@ function Get-VisualMenuLabelSignature($frame, $region) {
     }
   }
   if ($pixelCount -lt 24 -or $maximumX -lt $minimumX -or $maximumY -lt $minimumY) {
-    return @{ ok = $false; reason = "moments_menu_label_not_found" }
+    return @{ ok = $false; reason = "moments_menu_label_not_found"; rule_id = (Write-XiaoxiFailure "wx5-r053" "moments_menu_label_not_found") }
   }
   $bounds = @{
     left = [double]$minimumX
@@ -2221,7 +2221,7 @@ function Get-VisualMenuLabelSignature($frame, $region) {
     width = [double]($maximumX - $minimumX + 1)
     height = [double]($maximumY - $minimumY + 1)
   }
-  if (-not (Test-VisualBounds $bounds 7 9)) { return @{ ok = $false; reason = "moments_menu_label_not_found" } }
+  if (-not (Test-VisualBounds $bounds 7 9)) { return @{ ok = $false; reason = "moments_menu_label_not_found"; rule_id = (Write-XiaoxiFailure "wx5-r054" "moments_menu_label_not_found") } }
   return @{
     ok = $true
     pixelCount = $pixelCount
@@ -2630,7 +2630,7 @@ function Open-LockedVisualMenu($lock, $context) {
 
 function Close-And-VerifyUnchanged($lock, $context) {
   if (-not (Close-VisualMenu $lock)) {
-    return @{ ok = $false; reason = "moments_menu_close_blocked" }
+    return @{ ok = $false; reason = "moments_menu_close_blocked"; rule_id = (Write-XiaoxiFailure "wx5-r055" "moments_menu_close_blocked") }
   }
   $closed = Get-CurrentLockedVisualPost $lock $context $false
   $ok = $closed.ok
@@ -2664,7 +2664,7 @@ function Get-VisualCommentComposer($frame, $menu) {
   $scanWidth = $scanRight - $scanLeft + 1
   $scanHeight = $scanBottom - $scanTop + 1
   if ($scanWidth -lt 1 -or $scanHeight -lt 1) {
-    return @{ ok = $false; reason = "moments_comment_composer_not_found" }
+    return @{ ok = $false; reason = "moments_comment_composer_not_found"; rule_id = (Write-XiaoxiFailure "wx5-r056" "moments_comment_composer_not_found") }
   }
   $mask = New-Object bool[] ($scanWidth * $scanHeight)
   $pixelCount = 0
@@ -2682,7 +2682,7 @@ function Get-VisualCommentComposer($frame, $menu) {
     }
   }
   if ($pixelCount -lt 180) {
-    return @{ ok = $false; reason = "moments_comment_composer_not_found" }
+    return @{ ok = $false; reason = "moments_comment_composer_not_found"; rule_id = (Write-XiaoxiFailure "wx5-r057" "moments_comment_composer_not_found") }
   }
   # Reactions added after a successful like live in the same scan band as the
   # comment composer. Keep their green pixels isolated instead of merging all
@@ -2809,11 +2809,11 @@ function Get-VisualCommentComposer($frame, $menu) {
 }
 
 function Get-VisualSendButton($frame, $composer, [bool]$includeOcr = $true) {
-  if (-not $composer.ok) { return @{ ok = $false; reason = "moments_comment_composer_not_found" } }
+  if (-not $composer.ok) { return @{ ok = $false; reason = "moments_comment_composer_not_found"; rule_id = (Write-XiaoxiFailure "wx5-r058" "moments_comment_composer_not_found") } }
   $bounds = $composer.bounds
   $viewport = $script:momentsVisualViewportBounds
   if (-not (Test-VisualBounds $viewport 120 120) -or -not (Test-VisualBoundsInside $bounds $viewport)) {
-    return @{ ok = $false; reason = "moments_comment_composer_outside_render_pane" }
+    return @{ ok = $false; reason = "moments_comment_composer_outside_render_pane"; rule_id = (Write-XiaoxiFailure "wx5-r059" "moments_comment_composer_outside_render_pane") }
   }
   $scanLeft = [int][Math]::Max(0, [Math]::Floor([double]$bounds.left + ([double]$bounds.width * 0.58)))
   $scanRight = [int][Math]::Ceiling([double]$bounds.left + [double]$bounds.width - 1.0)
@@ -2822,7 +2822,7 @@ function Get-VisualSendButton($frame, $composer, [bool]$includeOcr = $true) {
   $scanWidth = $scanRight - $scanLeft + 1
   $scanHeight = $scanBottom - $scanTop + 1
   if ($scanWidth -lt 1 -or $scanHeight -lt 1) {
-    return @{ ok = $false; reason = "moments_comment_send_button_not_found"; candidateCount = 0 }
+    return @{ ok = $false; reason = "moments_comment_send_button_not_found"; rule_id = (Write-XiaoxiFailure "wx5-r060" "moments_comment_send_button_not_found"); candidateCount = 0 }
   }
   $mask = New-Object bool[] ($scanWidth * $scanHeight)
   $pixelCount = 0
@@ -2836,7 +2836,7 @@ function Get-VisualSendButton($frame, $composer, [bool]$includeOcr = $true) {
     }
   }
   if ($pixelCount -lt 80) {
-    return @{ ok = $false; reason = "moments_comment_send_button_not_found"; candidateCount = 0; componentCount = 0 }
+    return @{ ok = $false; reason = "moments_comment_send_button_not_found"; rule_id = (Write-XiaoxiFailure "wx5-r061" "moments_comment_send_button_not_found"); candidateCount = 0; componentCount = 0 }
   }
   $seen = New-Object bool[] $mask.Length
   $validCandidates = New-Object System.Collections.Generic.List[object]
@@ -3074,9 +3074,9 @@ function Find-VisualCommentCandidate(
   $nextPostTop = $null
 ) {
   $expected = Get-VisualCompactLocatorText $commentText
-  if (-not $expected) { return @{ ok = $false; reason = "moments_comment_missing" } }
+  if (-not $expected) { return @{ ok = $false; reason = "moments_comment_missing"; rule_id = (Write-XiaoxiFailure "wx5-r062" "moments_comment_missing") } }
   if (@("exact", "fuzzy") -notcontains $matchMode) {
-    return @{ ok = $false; reason = "moments_comment_match_mode_invalid"; candidateCount = 0 }
+    return @{ ok = $false; reason = "moments_comment_match_mode_invalid"; rule_id = (Write-XiaoxiFailure "wx5-r063" "moments_comment_match_mode_invalid"); candidateCount = 0 }
   }
   $region = Get-VisualCommentTextRegion $frame $postBounds $menu $nextPostTop
   if (-not (Test-VisualBounds $region 20 12)) {
@@ -3205,7 +3205,7 @@ function Find-VisualCommentCandidate(
   }
   $pixelHash = Get-MomentsPixelHash $frame $bounds
   if (-not $pixelHash) {
-    return @{ ok = $false; reason = "moments_comment_candidate_hash_failed"; candidateCount = 1; normalizedTextCount = $normalizedTextCount }
+    return @{ ok = $false; reason = "moments_comment_candidate_hash_failed"; rule_id = (Write-XiaoxiFailure "wx5-r064" "moments_comment_candidate_hash_failed"); candidateCount = 1; normalizedTextCount = $normalizedTextCount }
   }
   return @{
     ok = $true
@@ -3525,7 +3525,7 @@ function Invoke-VisualCommentReadback($lock, $context) {
 function Get-VisualCommentEditorAdapter($lock, $composerBounds, [string]$expectedRuntimeId = "", $expectedElementBounds = $null) {
   if ($lock -eq $null -or $lock.root -eq $null -or -not (Test-VisualBounds $composerBounds 40 18) -or
     [Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd) {
-    return @{ ok = $false; reason = "moments_comment_editor_targeting_unsupported" }
+    return @{ ok = $false; reason = "moments_comment_editor_targeting_unsupported"; rule_id = (Write-XiaoxiFailure "wx5-r065" "moments_comment_editor_targeting_unsupported") }
   }
   $absoluteComposer = @{
     left = [double]$lock.windowRect.Left + [double]$composerBounds.left
@@ -3615,10 +3615,10 @@ function Get-VisualCommentEditorAdapter($lock, $composerBounds, [string]$expecte
       } catch {}
     }
   } catch {
-    return @{ ok = $false; reason = "moments_comment_editor_targeting_unsupported" }
+    return @{ ok = $false; reason = "moments_comment_editor_targeting_unsupported"; rule_id = (Write-XiaoxiFailure "wx5-r066" "moments_comment_editor_targeting_unsupported") }
   }
-  if ($candidates.Count -eq 0) { return @{ ok = $false; reason = "moments_comment_editor_targeting_unsupported" } }
-  if ($candidates.Count -ne 1) { return @{ ok = $false; reason = "moments_comment_editor_ambiguous" } }
+  if ($candidates.Count -eq 0) { return @{ ok = $false; reason = "moments_comment_editor_targeting_unsupported"; rule_id = (Write-XiaoxiFailure "wx5-r067" "moments_comment_editor_targeting_unsupported") } }
+  if ($candidates.Count -ne 1) { return @{ ok = $false; reason = "moments_comment_editor_ambiguous"; rule_id = (Write-XiaoxiFailure "wx5-r068" "moments_comment_editor_ambiguous") } }
   $candidate = $candidates[0]
   return @{
     ok = $true
@@ -3646,16 +3646,16 @@ function Get-VisualCommentDraftTargeted($lock, $composerBounds, [uint32]$expecte
   if ($expectedInputTick -eq [uint32]::MaxValue -or
     [Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
     [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick) {
-    return @{ ok = $false; reason = "moments_comment_editor_changed" }
+    return @{ ok = $false; reason = "moments_comment_editor_changed"; rule_id = (Write-XiaoxiFailure "wx5-r069" "moments_comment_editor_changed") }
   }
   $adapter = Get-VisualCommentEditorAdapter $lock $composerBounds
   if (-not $adapter.ok) { return @{ ok = $false; reason = [string]$adapter.reason } }
   if ([Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
     [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick) {
-    return @{ ok = $false; reason = "moments_comment_editor_changed" }
+    return @{ ok = $false; reason = "moments_comment_editor_changed"; rule_id = (Write-XiaoxiFailure "wx5-r070" "moments_comment_editor_changed") }
   }
   $value = $adapter.value
-  if ($null -eq $value) { return @{ ok = $false; reason = "moments_comment_draft_state_unknown" } }
+  if ($null -eq $value) { return @{ ok = $false; reason = "moments_comment_draft_state_unknown"; rule_id = (Write-XiaoxiFailure "wx5-r071" "moments_comment_draft_state_unknown") } }
   return @{
     ok = $true
     empty = ([string]$value).Length -eq 0
@@ -3672,21 +3672,21 @@ function Set-VisualCommentTextTargeted($lock, $composerBounds, [string]$commentT
     $expectedInputTick -eq [uint32]::MaxValue -or
     [Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
     [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick) {
-    return @{ ok = $false; reason = "moments_comment_editor_changed"; editorRuntimeId = $editorRuntimeId; valueSetAttempted = $false }
+    return @{ ok = $false; reason = "moments_comment_editor_changed"; rule_id = (Write-XiaoxiFailure "wx5-r072" "moments_comment_editor_changed"); editorRuntimeId = $editorRuntimeId; valueSetAttempted = $false }
   }
   $adapter = Get-VisualCommentEditorAdapter $lock $composerBounds $editorRuntimeId $editorBounds
   if (-not $adapter.ok) {
     return @{ ok = $false; reason = [string]$adapter.reason; editorRuntimeId = $editorRuntimeId; valueSetAttempted = $false }
   }
   if (-not [String]::Equals([string]$adapter.value, "", [StringComparison]::Ordinal)) {
-    return @{ ok = $false; reason = "moments_comment_preexisting_draft"; editorRuntimeId = $editorRuntimeId; valueSetAttempted = $false }
+    return @{ ok = $false; reason = "moments_comment_preexisting_draft"; rule_id = (Write-XiaoxiFailure "wx5-r073" "moments_comment_preexisting_draft"); editorRuntimeId = $editorRuntimeId; valueSetAttempted = $false }
   }
   if ([Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
     [Win32WechatMomentsVisualAction]::GetLastInputTick() -ne $expectedInputTick) {
-    return @{ ok = $false; reason = "moments_comment_editor_changed"; editorRuntimeId = $editorRuntimeId; valueSetAttempted = $false }
+    return @{ ok = $false; reason = "moments_comment_editor_changed"; rule_id = (Write-XiaoxiFailure "wx5-r074" "moments_comment_editor_changed"); editorRuntimeId = $editorRuntimeId; valueSetAttempted = $false }
   }
   if (-not (Set-VisualCommentEditorAdapterValue $adapter $commentText)) {
-    return @{ ok = $false; reason = "moments_comment_editor_targeting_unsupported"; editorRuntimeId = $editorRuntimeId; valueSetAttempted = $true }
+    return @{ ok = $false; reason = "moments_comment_editor_targeting_unsupported"; rule_id = (Write-XiaoxiFailure "wx5-r075" "moments_comment_editor_targeting_unsupported"); editorRuntimeId = $editorRuntimeId; valueSetAttempted = $true }
   }
   Start-Sleep -Milliseconds 120
   $confirmed = Get-VisualCommentEditorAdapter $lock $composerBounds $editorRuntimeId $editorBounds
@@ -3694,7 +3694,7 @@ function Set-VisualCommentTextTargeted($lock, $composerBounds, [string]$commentT
     [Win32WechatMomentsVisualAction]::GetLastInputTick() -eq $expectedInputTick
   if (-not $confirmed.ok -or -not $inputUnchanged -or
     -not [String]::Equals([string]$confirmed.value, $commentText, [StringComparison]::Ordinal)) {
-    return @{ ok = $false; reason = "moments_comment_roundtrip_mismatch"; editorRuntimeId = $editorRuntimeId; valueSetAttempted = $true }
+    return @{ ok = $false; reason = "moments_comment_roundtrip_mismatch"; rule_id = (Write-XiaoxiFailure "wx5-r076" "moments_comment_roundtrip_mismatch"); editorRuntimeId = $editorRuntimeId; valueSetAttempted = $true }
   }
   return @{
     ok = $true
@@ -4058,7 +4058,7 @@ function Wait-VisualSelectedCommentDraftEmptyPair(
   [uint32]$expectedInputTick
 ) {
   if ($expectedInputTick -eq [uint32]::MaxValue) {
-    return @{ ok = $false; reason = "moments_external_input_detected"; safeToDismiss = $false; diagnostics = @{ stage = "invalid_expected_tick" } }
+    return @{ ok = $false; reason = "moments_external_input_detected"; rule_id = (Write-XiaoxiFailure "wx5-r077" "moments_external_input_detected"); safeToDismiss = $false; diagnostics = @{ stage = "invalid_expected_tick" } }
   }
 
   # GetLastInputInfo is session-wide and may expose our Backspace tick after
@@ -4071,19 +4071,19 @@ function Wait-VisualSelectedCommentDraftEmptyPair(
     [uint32]$startedTick = Get-VisualInputTick
     if ($startedTick -eq [uint32]::MaxValue -or
       ($pass -gt 0 -and $startedTick -ne $retryBaselineTick)) {
-      return @{ ok = $false; reason = "moments_external_input_detected"; safeToDismiss = $false; diagnostics = @{ stage = "quiet_pass_start"; pass = $pass; inputTickRebased = $inputTickRebased } }
+      return @{ ok = $false; reason = "moments_external_input_detected"; rule_id = (Write-XiaoxiFailure "wx5-r078" "moments_external_input_detected"); safeToDismiss = $false; diagnostics = @{ stage = "quiet_pass_start"; pass = $pass; inputTickRebased = $inputTickRebased } }
     }
     if ($pass -eq 0 -and $startedTick -ne $expectedInputTick) {
       $inputTickRebased = $true
       Start-Sleep -Milliseconds 160
       [uint32]$quietStartTick = Get-VisualInputTick
       if ($quietStartTick -eq [uint32]::MaxValue -or $quietStartTick -ne $startedTick) {
-        return @{ ok = $false; reason = "moments_external_input_detected"; safeToDismiss = $false; diagnostics = @{ stage = "initial_rebase_not_quiet"; pass = $pass; inputTickRebased = $true } }
+        return @{ ok = $false; reason = "moments_external_input_detected"; rule_id = (Write-XiaoxiFailure "wx5-r079" "moments_external_input_detected"); safeToDismiss = $false; diagnostics = @{ stage = "initial_rebase_not_quiet"; pass = $pass; inputTickRebased = $true } }
       }
       $startedTick = $quietStartTick
     }
     if (-not (Test-VisualLockedForeground $lock)) {
-      return @{ ok = $false; reason = "moments_window_not_foreground"; safeToDismiss = $false; diagnostics = @{ stage = "quiet_pass_start"; pass = $pass; inputTickRebased = $inputTickRebased } }
+      return @{ ok = $false; reason = "moments_window_not_foreground"; rule_id = (Write-XiaoxiFailure "wx5-r080" "moments_window_not_foreground"); safeToDismiss = $false; diagnostics = @{ stage = "quiet_pass_start"; pass = $pass; inputTickRebased = $inputTickRebased } }
     }
 
     $firstEmptyState = Get-LockedVisualCommentState $lock $menu $expectedComposerBounds $expectedAvatarBounds $expectedAvatarHash
@@ -4110,10 +4110,10 @@ function Wait-VisualSelectedCommentDraftEmptyPair(
       return @{ ok = $false; reason = $(if ($stateReason) { $stateReason } else { "moments_comment_draft_empty_state_unverified" }); safeToDismiss = $false; diagnostics = $diagnostics }
     }
     if (-not $firstEmpty -or -not $secondEmpty) {
-      return @{ ok = $false; reason = "moments_comment_draft_empty_state_unverified"; safeToDismiss = $false; diagnostics = $diagnostics }
+      return @{ ok = $false; reason = "moments_comment_draft_empty_state_unverified"; rule_id = (Write-XiaoxiFailure "wx5-r081" "moments_comment_draft_empty_state_unverified"); safeToDismiss = $false; diagnostics = $diagnostics }
     }
     if ($finishedTick -eq [uint32]::MaxValue -or -not (Test-VisualLockedForeground $lock)) {
-      return @{ ok = $false; reason = "moments_external_input_detected"; safeToDismiss = $false; diagnostics = $diagnostics }
+      return @{ ok = $false; reason = "moments_external_input_detected"; rule_id = (Write-XiaoxiFailure "wx5-r082" "moments_external_input_detected"); safeToDismiss = $false; diagnostics = $diagnostics }
     }
     if ($finishedTick -eq $startedTick) {
       return @{ ok = $true; inputTick = $finishedTick; checkpointPass = $pass; inputTickRebased = $inputTickRebased; safeToDismiss = $true; diagnostics = $diagnostics }
@@ -4124,9 +4124,9 @@ function Wait-VisualSelectedCommentDraftEmptyPair(
       Start-Sleep -Milliseconds 160
       continue
     }
-    return @{ ok = $false; reason = "moments_external_input_detected"; safeToDismiss = $false; diagnostics = $diagnostics }
+    return @{ ok = $false; reason = "moments_external_input_detected"; rule_id = (Write-XiaoxiFailure "wx5-r083" "moments_external_input_detected"); safeToDismiss = $false; diagnostics = $diagnostics }
   }
-  return @{ ok = $false; reason = "moments_external_input_detected"; safeToDismiss = $false; diagnostics = @{ stage = "quiet_pass_exhausted"; inputTickRebased = $inputTickRebased } }
+  return @{ ok = $false; reason = "moments_external_input_detected"; rule_id = (Write-XiaoxiFailure "wx5-r084" "moments_external_input_detected"); safeToDismiss = $false; diagnostics = @{ stage = "quiet_pass_exhausted"; inputTickRebased = $inputTickRebased } }
 }
 
 function Dismiss-VisualProvenEmptyCommentComposer(
@@ -4246,14 +4246,14 @@ function Start-VisualPostSendSettleWindow($context) {
   [int64]$nowMs = Get-VisualEpochMs
   [int64]$contextLimitMs = [int64]$context.deadlineMs - 500
   if ($contextLimitMs -le $nowMs) {
-    return @{ ok = $false; reason = "moments_comment_readback_seed_timeout" }
+    return @{ ok = $false; reason = "moments_comment_readback_seed_timeout"; rule_id = (Write-XiaoxiFailure "wx5-r085" "moments_comment_readback_seed_timeout") }
   }
   [int64]$settleDeadlineMs = [Math]::Min(
     $nowMs + [int64]$script:visualPostSendSettleMs,
     $contextLimitMs
   )
   if ($settleDeadlineMs -le $nowMs) {
-    return @{ ok = $false; reason = "moments_comment_readback_seed_timeout" }
+    return @{ ok = $false; reason = "moments_comment_readback_seed_timeout"; rule_id = (Write-XiaoxiFailure "wx5-r086" "moments_comment_readback_seed_timeout") }
   }
   # Sending is irreversible. Give its passive confirmation a fresh stage-local
   # budget instead of reusing time already spent reading and composing.
@@ -4271,12 +4271,12 @@ function Test-VisualPostSendBudget($context, [int64]$settleDeadlineMs) {
 
 function Wait-VisualPostClickInputQuiet($context, $lock) {
   if (-not (Test-VisualDeadlineMargin ([int64]$context.deadlineMs) 500)) {
-    return @{ ok = $false; reason = "moments_comment_readback_seed_timeout" }
+    return @{ ok = $false; reason = "moments_comment_readback_seed_timeout"; rule_id = (Write-XiaoxiFailure "wx5-r087" "moments_comment_readback_seed_timeout") }
   }
   if ([Win32WechatMomentsVisualAction]::GetForegroundWindow() -ne $lock.hWnd -or
     -not [Win32WechatMomentsVisualAction]::IsWindowVisible($lock.hWnd) -or
     [Win32WechatMomentsVisualAction]::IsIconic($lock.hWnd)) {
-    return @{ ok = $false; reason = "moments_window_not_foreground" }
+    return @{ ok = $false; reason = "moments_window_not_foreground"; rule_id = (Write-XiaoxiFailure "wx5-r088" "moments_window_not_foreground") }
   }
   return @{ ok = $true }
 }
@@ -4301,7 +4301,7 @@ function Wait-VisualPostSendSurfaceSettled(
           diagnostics = $deadlineConfirmation.diagnostics
         }
       }
-      return @{ ok = $false; reason = "moments_comment_readback_seed_timeout"; diagnostics = $lastState.diagnostics }
+      return @{ ok = $false; reason = "moments_comment_readback_seed_timeout"; rule_id = (Write-XiaoxiFailure "wx5-r089" "moments_comment_readback_seed_timeout"); diagnostics = $lastState.diagnostics }
     }
     if ($lastState.ok) {
       $consecutiveFrames += 1

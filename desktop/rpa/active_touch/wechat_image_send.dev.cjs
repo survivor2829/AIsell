@@ -29,6 +29,33 @@ $sendAttempted = $false
 $oldClipboard = $null
 $sourceImage = $null
 $verificationMode = ""
+$script:imageStage = "context"
+$script:imageClipboardOperation = "none"
+$script:imageClipboardWriteAttempts = 0
+$script:imageClipboardReadAttempts = 0
+
+function Set-ImageStage([string]$stage) {
+  $script:imageStage = $stage
+  [Console]::Error.WriteLine("image_send_stage:" + $stage)
+}
+function Invoke-ImageClipboardWrite([string]$operation, [scriptblock]$write) {
+  $script:imageClipboardOperation = $operation
+  [Console]::Error.WriteLine("image_clipboard_operation:" + $operation)
+  for ($attempt = 1; $attempt -le 5; $attempt++) {
+    $script:imageClipboardWriteAttempts = [Math]::Max($script:imageClipboardWriteAttempts, $attempt)
+    try { & $write; return } catch {
+      $exception = $_.Exception
+      $busy = $false
+      for ($depth = 0; $exception -and $depth -lt 6; $depth++) {
+        if (("hresult_{0:X8}" -f $exception.HResult) -ceq "hresult_800401D0") { $busy = $true; break }
+        $exception = $exception.InnerException
+      }
+      if (-not $busy -or $attempt -eq 5) { throw }
+      Start-Sleep -Milliseconds (80 * $attempt)
+      Assert-ImageLease
+    }
+  }
+}
 
 function Assert-ImageLease {
   if ([Win32WechatImage]::InputTick() -ne $script:inputTick) { throw "wechat_external_input_detected" }
@@ -80,24 +107,63 @@ function Image-Keys([string]$keys, [IntPtr]$window) {
   [System.Windows.Forms.SendKeys]::SendWait($keys)
   $script:inputTick = [Win32WechatImage]::InputTick()
 }
-function Read-ImageDraft([IntPtr]$window) {
+function Invoke-ImageClipboardRead([string]$sentinel, [IntPtr]$window) {
+  for ($readAttempt = 1; $readAttempt -le 5; $readAttempt++) {
+    $script:imageClipboardReadAttempts = [Math]::Max($script:imageClipboardReadAttempts, $readAttempt)
+    try {
+      if ([System.Windows.Forms.Clipboard]::ContainsImage()) {
+        $copiedImage = [System.Windows.Forms.Clipboard]::GetImage()
+        try { return @{ empty = $false; image = $true; fingerprint = (Image-Fingerprint $copiedImage); width = $copiedImage.Width; height = $copiedImage.Height } }
+        finally { $copiedImage.Dispose() }
+      }
+      if ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) { return @{ empty = $false; image = $false; fileDrop = $true } }
+      $copiedText = [System.Windows.Forms.Clipboard]::GetText()
+      return @{ empty = ($copiedText -ceq $sentinel -or [string]::IsNullOrEmpty($copiedText)); image = $false }
+    } catch {
+      $exception = $_.Exception
+      $busy = $false
+      for ($depth = 0; $exception -and $depth -lt 6; $depth++) {
+        if (("hresult_{0:X8}" -f $exception.HResult) -ceq "hresult_800401D0") { $busy = $true; break }
+        $exception = $exception.InnerException
+      }
+      if (-not $busy -or $readAttempt -eq 5) { throw }
+      Start-Sleep -Milliseconds (40 * $readAttempt)
+      Assert-ImageWindow $window
+    }
+  }
+}
+function Read-ImageDraft([IntPtr]$window, [bool]$expectImage = $false) {
   Assert-ImageWindow $window
   $sentinel = "xiaoxi-image-copy-" + [Guid]::NewGuid().ToString("N")
-  [System.Windows.Forms.Clipboard]::SetText($sentinel)
+  Invoke-ImageClipboardWrite "draft_sentinel_write" { [System.Windows.Forms.Clipboard]::SetText($sentinel) }
   Set-ImageClipboardOwned
   Image-Keys "^a" $window
-  Image-Keys "^c" $window
-  Start-Sleep -Milliseconds 120
-  Assert-ImageWindow $window
-  Set-ImageClipboardOwned
-  if ([System.Windows.Forms.Clipboard]::ContainsImage()) {
-    $copiedImage = [System.Windows.Forms.Clipboard]::GetImage()
-    try { return @{ empty = $false; image = $true; fingerprint = (Image-Fingerprint $copiedImage); width = $copiedImage.Width; height = $copiedImage.Height } }
-    finally { $copiedImage.Dispose() }
+  $copyLimit = $(if ($expectImage) { 5 } else { 1 })
+  $lastDraft = @{ empty = $true; image = $false }
+  for ($copyAttempt = 1; $copyAttempt -le 5; $copyAttempt++) {
+    if ($copyAttempt -gt $copyLimit) { break }
+    $script:imageClipboardReadAttempts = [Math]::Max($script:imageClipboardReadAttempts, $copyAttempt)
+    $beforeCopySequence = [Win32WechatImage]::GetClipboardSequenceNumber()
+    Image-Keys "^c" $window
+    $waitUntil = [Environment]::TickCount64 + (120 + (80 * $copyAttempt))
+    do {
+      Start-Sleep -Milliseconds 40
+      Assert-ImageWindow $window
+      $copySequence = [Win32WechatImage]::GetClipboardSequenceNumber()
+    } while ($copySequence -eq $beforeCopySequence -and [Environment]::TickCount64 -lt $waitUntil)
+    if ($copySequence -eq $beforeCopySequence) {
+      if (-not $expectImage) { return @{ empty = $true; image = $false } }
+      continue
+    }
+    Set-ImageClipboardOwned
+    $lastDraft = Invoke-ImageClipboardRead $sentinel $window
+    if ($lastDraft.image) { return $lastDraft }
+    if (-not $expectImage) { return $lastDraft }
+    Start-Sleep -Milliseconds (80 * $copyAttempt)
+    Assert-ImageWindow $window
+    Image-Keys "^a" $window
   }
-  if ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) { return @{ empty = $false; image = $false; fileDrop = $true } }
-  $copiedText = [System.Windows.Forms.Clipboard]::GetText()
-  return @{ empty = ($copiedText -ceq $sentinel -or [string]::IsNullOrEmpty($copiedText)); image = $false }
+  return $lastDraft
 }
 function Observe-ImageConversation {
   $observation = Get-ConversationObservation $mainWindow $expectedConversation $expectedConversationMode
@@ -125,11 +191,14 @@ function Image-DialogEvidence([IntPtr]$window) {
 }
 
 try {
+  Set-ImageStage "context"
   if ([string]::IsNullOrWhiteSpace($expectedConversation) -or $expectedImageHash -notmatch "^[a-f0-9]{64}$") { throw "image_context_missing" }
+  Set-ImageStage "source_file"
   $fileSha = [Security.Cryptography.SHA256]::Create()
   try { $fileHash = [BitConverter]::ToString($fileSha.ComputeHash([IO.File]::ReadAllBytes($imagePath))).Replace("-", "").ToLowerInvariant() }
   finally { $fileSha.Dispose() }
   if ($fileHash -cne $expectedImageHash) { throw "touch_image_changed" }
+  Set-ImageStage "window_binding"
   $mainWindow = [IntPtr][int64]$expectedHandle
   Assert-ImageWindow $mainWindow
   $matched = @{ pid = [int]$expectedPid; hWnd = $mainWindow.ToInt64() }
@@ -145,6 +214,7 @@ try {
   $composer = Get-ComposerObservation $initial.root $rect $inputX $inputY $initial.titleMode
   if (-not $composer.ok) { throw "atomic_composer_not_verified" }
   # Clipboard contents stay in this child process and are restored only while owned.
+  Set-ImageStage "clipboard_backup"
   $clipboard = [System.Windows.Forms.Clipboard]::GetDataObject()
   $oldClipboard = New-Object System.Windows.Forms.DataObject
   if ($clipboard) {
@@ -152,11 +222,23 @@ try {
       try { $oldClipboard.SetData($format, $false, $clipboard.GetData($format, $false)) } catch {}
     }
   }
+  Set-ImageStage "existing_draft_check"
   Click-ImagePoint $inputX $inputY $mainWindow
-  if (-not (Read-ImageDraft $mainWindow).empty) { throw "image_existing_draft" }
+  $existingDraft = Read-ImageDraft $mainWindow
+  if (-not $existingDraft.empty) {
+    # Once a real touch task owns the verified composer, any leftover text or
+    # image is stale input. Replace it only after proving the clear completed;
+    # never continue with a mixed or unknown draft.
+    Set-ImageStage "existing_draft_clear"
+    Image-Keys "^a" $mainWindow
+    Image-Keys "{BACKSPACE}" $mainWindow
+    Start-Sleep -Milliseconds 120
+    if (-not (Read-ImageDraft $mainWindow).empty) { throw "image_existing_draft_clear_failed" }
+  }
   # Windows' bitmap clipboard does not consistently preserve PNG alpha.
   # Normalize once before both copying and fingerprinting, so the two sides
   # compare the same opaque pixels rather than different alpha conversions.
+  Set-ImageStage "image_decode"
   $loadedImage = [System.Drawing.Image]::FromFile($imagePath)
   try {
     $sourceImage = New-Object System.Drawing.Bitmap($loadedImage.Width, $loadedImage.Height, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
@@ -165,15 +247,18 @@ try {
     finally { $sourceGraphics.Dispose() }
   } finally { $loadedImage.Dispose() }
   $fingerprint = Image-Fingerprint $sourceImage
-  [System.Windows.Forms.Clipboard]::SetImage($sourceImage)
+  Set-ImageStage "clipboard_image_write"
+  Invoke-ImageClipboardWrite "image_write" { [System.Windows.Forms.Clipboard]::SetImage($sourceImage) }
   Set-ImageClipboardOwned
   [void](Observe-ImageConversation)
+  Set-ImageStage "image_paste"
   Image-Keys "^v" $mainWindow
   Start-Sleep -Milliseconds 350
   Assert-ImageLease
   $sendWindow = [Win32WechatSendMessage]::GetForegroundWindow()
   $dialog = $sendWindow -ne $mainWindow
   if ($dialog) {
+    Set-ImageStage "preview_verification"
     # A freshly opened preview must belong to this WeChat conversation.
     $sendRect = $null
     for ($i = 0; $i -lt 12 -and $null -eq $sendRect; $i++) {
@@ -186,8 +271,9 @@ try {
     $sendY = [int]($sendRect.Top + $sendRect.Height / 2)
     $verificationMode = "image_preview_consumed"
   } else {
+    Set-ImageStage "inline_draft_verification"
     Click-ImagePoint $inputX $inputY $mainWindow
-    $draft = Read-ImageDraft $mainWindow
+    $draft = Read-ImageDraft $mainWindow $true
     if (-not $draft.image -or $draft.fingerprint -cne $fingerprint -or $draft.width -ne $sourceImage.Width -or $draft.height -ne $sourceImage.Height) {
       $reason = $(if ($draft.fileDrop) { "image_draft_file_list" } elseif (-not $draft.image) { "image_draft_format_unavailable" } elseif ($draft.width -ne $sourceImage.Width -or $draft.height -ne $sourceImage.Height) { "image_draft_dimensions_changed" } else { "image_draft_pixels_changed" })
       throw $reason
@@ -199,10 +285,12 @@ try {
     $sendY = [int]($current.rect.Bottom - ${WECHAT_SEND_BUTTON_OFFSETS.bottom} * $dpi / 96.0)
     $verificationMode = "image_draft_consumed"
   }
+  Set-ImageStage "send_click_guard"
   Assert-ImageWindow $sendWindow
   # Mark uncertainty before entering the only irreversible click.
   $sendAttempted = $true
   Click-ImagePoint $sendX $sendY $sendWindow
+  Set-ImageStage "post_send_confirmation"
   $confirmed = $false
   for ($i = 0; $i -lt 15 -and -not $confirmed; $i++) {
     Start-Sleep -Milliseconds 200
@@ -220,10 +308,30 @@ try {
 } catch {
   $reason = [string]$_.Exception.Message
   if ($reason -notmatch "^[a-z][a-z0-9_]{1,79}$") { $reason = "image_driver_failed" }
+  $ruleId = switch ($script:imageStage) {
+    "context" { "image-r001" }
+    "source_file" { "image-r002" }
+    "window_binding" { "image-r003" }
+    "clipboard_backup" { "image-r004" }
+    "existing_draft_check" { "image-r005" }
+    "existing_draft_clear" { "image-r013" }
+    "image_decode" { "image-r006" }
+    "clipboard_image_write" { "image-r007" }
+    "image_paste" { "image-r008" }
+    "preview_verification" { "image-r009" }
+    "inline_draft_verification" { "image-r010" }
+    "send_click_guard" { "image-r011" }
+    "post_send_confirmation" { "image-r012" }
+    default { "image-r099" }
+  }
+  [void](Write-XiaoxiFailure $ruleId $reason)
   # Keep diagnostic identifiers locally, never clipboard contents or exception text.
   $errorId = ([string]$_.FullyQualifiedErrorId -split ",")[0]
   if ($errorId -notmatch "^[A-Za-z0-9_.-]{1,120}$") { $errorId = "unknown" }
-  @{ ok = $false; reason = $reason; sendAttempted = $sendAttempted; errorLine = $_.InvocationInfo.ScriptLineNumber; errorId = $errorId } | ConvertTo-Json -Compress
+  $errorType = [string]$_.Exception.GetType().FullName
+  if ($errorType -notmatch "^[A-Za-z0-9_.-]{1,120}$") { $errorType = "unknown" }
+  $errorHResult = ('hresult_{0:X8}' -f $_.Exception.HResult)
+  @{ ok = $false; reason = $reason; sendAttempted = $sendAttempted; ruleId = $ruleId; driverStage = $script:imageStage; clipboardOperation = $script:imageClipboardOperation; clipboardWriteAttempts = $script:imageClipboardWriteAttempts; clipboardReadAttempts = $script:imageClipboardReadAttempts; errorLine = $_.InvocationInfo.ScriptLineNumber; errorId = $errorId; errorType = $errorType; errorHResult = $errorHResult } | ConvertTo-Json -Compress
 } finally {
   if ($sourceImage) { $sourceImage.Dispose() }
   if ($script:clipboardOwned -and [Win32WechatImage]::GetClipboardSequenceNumber() -eq $script:clipboardSequence) {
@@ -234,7 +342,8 @@ try {
 
 async function sendWechatImage({ baseDir, attemptId, image, context, onTransition, isExecutionAllowed, runner = runPowerShellAsync }) {
   const allowed = async () => !isExecutionAllowed || await isExecutionAllowed() === true;
-  const failure = (reason, attempted = false) => ({ ok: false, blocked_reason: reason, send_attempted: attempted,
+  const failure = (reason, attempted = false, detail = {}) => ({ ok: false, blocked_reason: reason, send_attempted: attempted,
+    ...detail,
     error: attempted === false ? "图片尚未发送，请检查微信中的草稿或图片预览。" : "图片发送结果无法确认，请查看微信；不会自动补发。" });
   if (!baseDir || !attemptId) return failure("image_attempt_context_missing");
   const receiptFile = path.join(baseDir, "image-send.json");
@@ -262,12 +371,22 @@ async function sendWechatImage({ baseDir, attemptId, image, context, onTransitio
   let result;
   try {
     result = await runner(IMAGE_SEND_SCRIPT, { ...sendMessageEnvironment(context), XIAOXI_IMAGE_PATH: image.path, XIAOXI_IMAGE_SHA256: image.sha256 },
-      { ensure: false, sta: true, timeout: 30_000, signal: controller.signal });
+      { ensure: false, sta: true, timeout: 30_000, signal: controller.signal, diagnostics: true });
   } catch { return failure("image_driver_exception", null); }
   finally { clearInterval(monitor); }
   if (result?.ok !== true || result.sendAttempted !== true || result.draftVerified !== true || result.conversationVerified !== true) {
     saveReceipt(result?.sendAttempted === false ? "not_attempted" : "outcome_unknown", result);
-    return failure(result?.reason || "image_send_not_confirmed", result?.sendAttempted === false ? false : null);
+    return failure(result?.reason || "image_send_not_confirmed", result?.sendAttempted === false ? false : null, {
+      ...(/^[a-z0-9_.-]{1,100}$/i.test(result?.ruleId || "") ? { rule_id: result.ruleId } : {}),
+      ...(/^[a-z][a-z0-9_]{1,79}$/i.test(result?.driverStage || result?.diagnostics?.image_stage || "") ? { driver_stage: result.driverStage || result.diagnostics.image_stage } : {}),
+      ...(/^[a-z][a-z0-9_]{1,79}$/i.test(result?.clipboardOperation || result?.diagnostics?.image_clipboard_operation || "") ? { clipboard_operation: result.clipboardOperation || result.diagnostics.image_clipboard_operation } : {}),
+      ...(Number.isInteger(result?.clipboardWriteAttempts) && result.clipboardWriteAttempts >= 0 ? { clipboard_write_attempts: result.clipboardWriteAttempts } : {}),
+      ...(Number.isInteger(result?.clipboardReadAttempts) && result.clipboardReadAttempts >= 0 ? { clipboard_read_attempts: result.clipboardReadAttempts } : {}),
+      ...(Number.isInteger(result?.errorLine) && result.errorLine >= 0 ? { error_line: result.errorLine } : {}),
+      ...(/^[A-Za-z0-9_.-]{1,120}$/.test(result?.errorId || "") ? { driver_error_id: result.errorId } : {}),
+      ...(/^[A-Za-z0-9_.-]{1,120}$/.test(result?.errorType || "") ? { driver_exception_type: result.errorType } : {}),
+      ...(/^hresult_[0-9A-F]{8}$/i.test(result?.errorHResult || "") ? { driver_exception_hresult: result.errorHResult } : {})
+    });
   }
   saveReceipt("sent_verified");
   onTransition?.("sent_verified");

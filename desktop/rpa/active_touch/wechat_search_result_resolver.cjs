@@ -195,6 +195,12 @@ function uniqueCompactLocalSurface(visualCandidates, webSearchTop) {
 }
 
 function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
+  const reject = (rule_id, reason = "search_result_identity_unverified") => ({
+    status: reason === "exact_search_result_not_found" ? "not_found" : "unverified", reason, rule_id,
+    diagnostics: { rule_id, candidate_count: distinctCandidates(observation.uiaCandidates).length,
+      visual_candidate_count: Array.isArray(observation.visualCandidates) ? observation.visualCandidates.length : 0,
+      ocr_ok: observation.ocrOk === true }
+  });
   const query = String(identity.query ?? "").trim();
   const expectedName = String(identity.expectedName ?? "").trim();
   const uiaCandidates = distinctCandidates(observation.uiaCandidates);
@@ -205,7 +211,7 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
     const matches = uiaCandidates.filter((candidate) => matchesIdentity(candidate, query, expectedName));
     return matches.length === 1
       ? { status: "selected", mode: "identity_matched_uia", candidate: matches[0] }
-      : { status: "unverified", reason: "search_result_identity_unverified" };
+      : reject(matches.length === 0 ? "search-r001" : "search-r002");
   }
 
   const cropBounds = validRectangle(observation.cropBounds);
@@ -215,7 +221,8 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
     : observation.webSearchCandidates && typeof observation.webSearchCandidates === "object" ? [observation.webSearchCandidates] : [];
   if (observation.ocrOk !== true || !cropBounds
     || [...visualItems, ...webItems].some((candidate) => !hasValidBounds(candidate) || !isInside(candidate, cropBounds))) {
-    return { status: "unverified", reason: "search_result_identity_unverified" };
+    return reject(observation.ocrOk !== true ? "search-r003" : !cropBounds ? "search-r004"
+      : [...visualItems, ...webItems].some(candidate => !hasValidBounds(candidate)) ? "search-r005" : "search-r006");
   }
   const visualCandidates = distinctCandidates(visualItems);
   const webSearchCandidates = distinctCandidates([
@@ -236,10 +243,10 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
     return { status: "selected", mode: "unique_local_visual", candidate: labelledAcrossCrop[0] };
   }
   if (labelledAcrossCrop.length > 1) {
-    return { status: "unverified", reason: "search_result_identity_unverified" };
+    return reject("search-r007");
   }
   if (!webSearchCandidates.length || webSearchCandidates.some((candidate) => !isNetworkSearchLabel(candidate, query))) {
-    return { status: "unverified", reason: "search_result_identity_unverified" };
+    return reject(!webSearchCandidates.length ? "search-r008" : "search-r009");
   }
   const hasReportedWebSearchTop = observation.webSearchTop !== null
     && observation.webSearchTop !== undefined
@@ -247,7 +254,8 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   const reportedWebSearchTop = Number(observation.webSearchTop);
   if ((hasReportedWebSearchTop && (!Number.isFinite(reportedWebSearchTop) || reportedWebSearchTop !== webSearchTop))
     || webSearchTop < cropBounds.top || webSearchTop >= cropBounds.bottom) {
-    return { status: "unverified", reason: "search_result_identity_unverified" };
+    return reject(hasReportedWebSearchTop && !Number.isFinite(reportedWebSearchTop) ? "search-r010"
+      : hasReportedWebSearchTop && reportedWebSearchTop !== webSearchTop ? "search-r011" : "search-r012");
   }
   const labelledCandidates = labelledWechatIdCandidates(localVisualCandidates, query, webSearchTop)
     .filter((candidate) => labelledWechatId(candidate));
@@ -276,9 +284,9 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   const unexplainedCandidates = localVisualCandidates.filter((candidate) => normalized(candidate?.text) !== queryEcho
     || !webSearchCandidates.some((webCandidate) => composesNetworkEcho(candidate, webCandidate)));
   if (labelledCandidates.length > 0 || unexplainedCandidates.length > 0) {
-    return { status: "unverified", reason: "search_result_identity_unverified" };
+    return reject(labelledCandidates.length > 0 ? "search-r013" : "search-r014");
   }
-  return { status: "not_found", reason: "exact_search_result_not_found" };
+  return reject("search-r015", "exact_search_result_not_found");
 }
 
 function isVerifiedWechatSearchResultMode(mode) {

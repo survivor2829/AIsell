@@ -1,6 +1,15 @@
 const assert = require("node:assert/strict");
 const { createHash } = require("node:crypto");
-const { spawnSync } = require("node:child_process");
+const { spawnSync: nativeSpawnSync } = require("node:child_process");
+const { FAILURE_EVIDENCE_SCRIPT } = require("./failure-evidence.cjs");
+// Extracted function replays need the same diagnostic helper as the real runner.
+// Evidence collection is disabled here; these fixtures never capture WeChat.
+function spawnSync(command, args, options) {
+  const source = Buffer.from(options.input, 'base64').toString('utf8');
+  return nativeSpawnSync(command, args, { ...options,
+    env: { ...process.env, ...options.env, XIAOXI_FAILURE_DIR: '' },
+    input: Buffer.from(FAILURE_EVIDENCE_SCRIPT + '\n' + source, 'utf8').toString('base64') });
+}
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -683,6 +692,7 @@ assert.deepEqual(cameraVisualResult.standalone, {
 });
 assert.deepEqual(cameraVisualResult.missing, {
   reason: "moments_publish_camera_not_found",
+  rule_id: "wx4-r035",
   ok: false
 });
 const surfaceSource = MOMENTS_PUBLISH_POWERSHELL.slice(

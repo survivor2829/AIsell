@@ -2,6 +2,7 @@
 // raw driver object into the diagnostic stream.
 const { sanitizeVisualSendReceipt } = require("./visual-send-receipt.cjs");
 const { sanitizeWechatWindowDiagnostics } = require("./wechat-window-diagnostics.cjs");
+const { sanitizeFailureDiagnostics } = require("./failure-diagnostics.cjs");
 
 const SAFE_SEND_STAGES = new Set([
   "preflight", "send_session_check", "before_send_snapshot", "draft", "visual_send",
@@ -43,6 +44,7 @@ function sendOutcomeEnvelope(result = {}, detail = {}) {
     || state.real_send_status === "prepared" || state.real_send_status === "outcome_unknown";
   const stage = safeSendStage(
     detail.stage || detail.phase || result?.stage || result?.phase || result?.send_diagnostics?.phase
+      || result?.send_diagnostics?.failure_stage || state.send_diagnostics?.failure_stage
       || result?.diagnostics?.phase || result?.action,
     "unknown"
   );
@@ -55,6 +57,7 @@ function summarizeSendResult(result = {}, context = {}) {
   const state = result?.state || {};
   const proof = result?.proofDiagnostics || result?.send_diagnostics || state.send_diagnostics || {};
   const detail = sanitizeWechatWindowDiagnostics({ ...result?.diagnostics, ...proof });
+  Object.assign(detail, sanitizeFailureDiagnostics({ ...result, ...result?.diagnostics, ...proof }));
   const blocked = result?.blocked_reason || state.blocked_reason;
   const reason = result?.primary_reason || result?.reason || proof.reason || proof.input_read_reason
     || result?.diagnostics?.reason
@@ -97,7 +100,8 @@ function summarizeSendResult(result = {}, context = {}) {
     candidate_count: proof.candidate_count,
     outgoing_exact_count: proof.outgoing_exact_count,
     previous_exact_count: proof.previous_exact_count,
-    new_outgoing_exact_count: proof.new_outgoing_exact_count
+    new_outgoing_exact_count: proof.new_outgoing_exact_count,
+    clipboard_write_attempts: proof.clipboard_write_attempts
   })) {
     if (Number.isFinite(value) && value >= 0) detail[key] = value;
   }

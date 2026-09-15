@@ -6,6 +6,10 @@ const requested = process.argv[2] || "delivery";
 if (!["test", "delivery"].includes(requested)) throw new Error(`Unsupported renderer edition: ${requested}`);
 const edition = requested === "test" ? "development" : "pilot";
 const buildId = process.env.XIAOXI_BUILD_ID || new Date().toISOString().replace(/[-:]/g, "").slice(0, 13) + "Z";
+const gitCommitResult = spawnSync("git", ["rev-parse", "HEAD"], { cwd: path.join(__dirname, "..", ".."), encoding: "utf8", windowsHide: true });
+const gitStatusResult = spawnSync("git", ["status", "--porcelain"], { cwd: path.join(__dirname, "..", ".."), encoding: "utf8", windowsHide: true });
+const buildCommit = String(process.env.XIAOXI_BUILD_COMMIT || gitCommitResult.stdout || "").trim();
+const sourceDirty = gitStatusResult.status !== 0 || Boolean(String(gitStatusResult.stdout || "").trim());
 const viteCli = path.join(path.dirname(require.resolve("vite")), "bin", "vite.js");
 const result = spawnSync(process.execPath, [viteCli, "build"], {
   stdio: "inherit",
@@ -24,5 +28,5 @@ if (result.status !== 0) {
 }
 
 const outputDir = path.join(__dirname, "..", edition === "development" ? "dist-development" : edition === "pilot" ? "dist-pilot" : "dist");
-fs.writeFileSync(path.join(outputDir, "build-edition.json"), `${JSON.stringify({ edition, buildId }, null, 2)}\n`);
+fs.writeFileSync(path.join(outputDir, "build-edition.json"), `${JSON.stringify({ edition, buildId, buildCommit, sourceDirty }, null, 2)}\n`);
 console.log(`${requested === "test" ? "test" : "delivery"} renderer build completed`);

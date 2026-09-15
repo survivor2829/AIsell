@@ -3,11 +3,13 @@
 const { reportEntry: baseReportEntry, token } = require("./cloud-contract.cjs");
 const { sanitizeWechatWindowDiagnostics } = require("./wechat-window-diagnostics.cjs");
 const { sanitizeWechatInputDiagnostics } = require("./wechat-send-diagnostics.cjs");
+const { sanitizeFailureDiagnostics } = require("./failure-diagnostics.cjs");
 
 function reportEntry(entry, context) {
   const result = baseReportEntry(entry, context);
   if (!result) return null;
-  for (const key of ["action", "task_kind", "reason", "send_status", "verification_mode", "last_verification_reason", "input_read_reason", "exception_code", "wechat_version", "parent_trace_code", "parent_trace_id", "capture_mode", "scan_mode", "trigger_code", "outcome", "side_effect", "retryability", "failure_stage"]) {
+  Object.assign(result.details, sanitizeFailureDiagnostics(entry.details));
+  for (const key of ["action", "task_kind", "reason", "send_status", "verification_mode", "last_verification_reason", "input_read_reason", "input_read_exception_type", "input_read_exception_id", "input_read_exception_hresult", "input_read_exception_category", "exception_code", "wechat_version", "parent_trace_code", "parent_trace_id", "capture_mode", "scan_mode", "trigger_code", "outcome", "side_effect", "retryability", "failure_stage"]) {
     const value = token(entry.details?.[key]);
     if (value) result.details[key] = value;
   }

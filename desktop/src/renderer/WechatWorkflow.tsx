@@ -48,8 +48,10 @@ export type WorkflowTask = Omit<WorkflowTaskInput, "payload"> & {
   canRetry?: boolean;
   unknownResolution?: { required: true; contactLabel: string; partKind: "text" | "image" | "link" | string };
   sent_verified_count?: number;
-  skipped_breakdown?: { identity: number; ai_failed: number; outcome_unknown: number };
+  skipped_breakdown?: { identity: number; ai_failed: number; pre_send: number; outcome_unknown: number };
   skipped_records?: TouchSkipRecord[];
+  reasonCode?: string;
+  reasonClassification?: "environment" | "recoverable" | "blocker";
 };
 export type WorkflowState = {
   enabled: boolean;
@@ -65,6 +67,7 @@ export type WorkflowState = {
   error: string;
   replyStatus: string;
   replyError?: string;
+  classificationQuality?: { buildVersion: string; buildId: string; buildCommit: string; threshold: number; unknownPauseCount: number; unknownReasonCodes: string[]; affectedTaskCount: number; status: "ok" | "needs_review" };
   contactSync?: { running: boolean; stage: string; contactCount: number; error: string } | null;
   momentsProgress?: { stage: string; scanned: number; scrolled: number; liked: number; commented: number; skipped?: number; alreadyLiked?: number; skipReason?: string } | null;
 };
@@ -111,6 +114,7 @@ const TOUCH_RESOLUTION_NOTICES = {
 const TOUCH_SKIP_LABELS: Record<string, string> = {
   identity_skipped: "身份不唯一，已跳过",
   ai_failed_skipped: "AI失败，已跳过",
+  pre_send_skipped: "明确未发送，恢复失败后已跳过",
   outcome_unknown_skipped: "结果未知，已跳过"
 };
 
@@ -203,12 +207,18 @@ const TASK_ERROR_LABELS: Record<string, string> = {
   moments_publish_outcome_unknown_requires_resolution: "上次发布结果尚未确认；请先到微信核对，再标记是否已发布。",
   powershell_failed: "微信窗口检查未能启动；请确认 AI 获客与微信权限一致，并检查安全软件。"
 };
+const CLASSIFICATION_ERROR_LABELS: Record<string, string> = {
+  environment: "当前运行环境暂不可用；程序会在安全条件恢复后继续。",
+  recoverable: "本次操作未执行成功；程序将有界恢复，仍失败时会加入未触达名单。",
+  blocker: "本次结果不能安全确认；程序已暂停，请先核对微信中的实际结果。"
+};
 
-function taskErrorText(reason: string) {
-  if (TASK_ERROR_LABELS[reason]) return TASK_ERROR_LABELS[reason];
-  const label = momentsProgressLabel(reason, reason);
+function taskErrorText(reason: string, reasonCode = "", classification = "") {
+  if (TASK_ERROR_LABELS[reasonCode] || TASK_ERROR_LABELS[reason]) return TASK_ERROR_LABELS[reasonCode] || TASK_ERROR_LABELS[reason];
+  const label = momentsProgressLabel(reasonCode, reason);
   if (label !== reason) return label;
-  return /^[a-z][a-z0-9_:-]+$/i.test(reason) ? `任务未完成，请查看日志诊断（${reason}）` : reason;
+  if (classification) return CLASSIFICATION_ERROR_LABELS[classification] || CLASSIFICATION_ERROR_LABELS.blocker;
+  return /^[a-z][a-z0-9_:-]+$/i.test(reason) ? "任务未完成，已记录诊断信息；请勿重复执行并联系技术人员。" : reason;
 }
 
 function useRemainingSeconds(waitUntil?: number | null) {
@@ -380,7 +390,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const retrySkipped = async (task: WorkflowTask, contactIds?: string[]) => {
     if (!api) return;
     const result = await run(() => api.retrySkipped(task.id, contactIds));
-    const count = contactIds?.length || task.skipped_records?.filter((record) => ["identity_skipped", "ai_failed_skipped"].includes(record.status)).length || 0;
+    const count = contactIds?.length || task.skipped_records?.filter((record) => ["identity_skipped", "ai_failed_skipped", "pre_send_skipped"].includes(record.status)).length || 0;
     if (result?.ok) setNotice(`已重新加入 ${count} 位联系人；点击启动程序后继续。`);
   };
 
@@ -400,7 +410,7 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
         <div className="workflow-task-meta"><span><Clock3 size={13} />{formatTaskTime(task)}</span>{task.progress?.total > 0 && <span>{task.progress.done}/{task.progress.total} {task.type === "touch" ? "人" : "条"}</span>}{task.repeat === "daily" && task.lastCompletedDate && <span>最近完成：{task.lastCompletedDate}</span>}</div>
         {isWaiting && <p className="workflow-small-note">{waitingDetail}</p>}
         {task.type === "interact" && task.progress.liked !== undefined && <p className="workflow-small-note">累计点赞 {task.progress.liked} · 评论 {task.progress.commented || 0} · 跳过评论 {task.progress.skipped || 0}</p>}
-        {task.error && <p className="workflow-task-error">{taskErrorText(task.error)}</p>}
+        {task.error && <p className="workflow-task-error">{taskErrorText(task.error, task.reasonCode, task.reasonClassification)}</p>}
         {task.status === "needs_attention" && <p className="workflow-small-note">{task.canRetry ? task.type === "touch" ? "可从未发送的内容继续，已发出的文字和图片不会重发。" : "尚未执行互动，可重新加入计划，再点击启动。" : "不能直接重试，请先核对微信中的实际结果。"}</p>}
         {task.unknownResolution && <div className="workflow-small-note" role="group" aria-label="处理发送结果">
           <p>请核对微信中“{task.unknownResolution.contactLabel}”的{TOUCH_PART_LABELS[task.unknownResolution.partKind] || "消息"}是否已发送。处置后不会自动执行。</p>
@@ -412,9 +422,9 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
         </div>}
         {task.type === "touch" && Boolean(task.skipped_records?.length) && <section className="workflow-touch-skipped" aria-label={`本次跳过 ${task.skipped_records!.length} 位`}>
           <div className="workflow-touch-skipped-head"><strong>本次跳过 {task.skipped_records!.length} 位</strong>
-            {task.skipped_records!.filter((record) => ["identity_skipped", "ai_failed_skipped"].includes(record.status)).length > 1 && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || planLocked} onClick={() => void retrySkipped(task)}>全部重试</button>}
+            {task.skipped_records!.filter((record) => ["identity_skipped", "ai_failed_skipped", "pre_send_skipped"].includes(record.status)).length > 1 && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || planLocked} onClick={() => void retrySkipped(task)}>全部重试</button>}
           </div>
-          <ul>{task.skipped_records!.map((record) => <li key={`${record.contactId}-${record.index}`}><span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span><small>{TOUCH_SKIP_LABELS[record.status] || "已跳过"}</small>{["identity_skipped", "ai_failed_skipped"].includes(record.status) && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || planLocked} onClick={() => void retrySkipped(task, [record.contactId])}>重试</button>}</li>)}</ul>
+          <ul>{task.skipped_records!.map((record) => <li key={`${record.contactId}-${record.index}`}><span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span><small>{TOUCH_SKIP_LABELS[record.status] || "已跳过"}</small>{["identity_skipped", "ai_failed_skipped", "pre_send_skipped"].includes(record.status) && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || planLocked} onClick={() => void retrySkipped(task, [record.contactId])}>重试</button>}</li>)}</ul>
         </section>}
         {task.accountMismatch && <p className="workflow-task-error">微信账号已切换，需切回原账号后执行。</p>}
         {task.status === "missed" && <p className="workflow-task-error">这是往日未执行的任务，请修改时间后加入，或取消。</p>}
@@ -446,6 +456,9 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
     </div>
 
     {(error || state.error) && <div className="workflow-alert" role="alert">{error || state.error}</div>}
+    {state.classificationQuality?.status === "needs_review" && <div className="workflow-alert" role="alert">
+      当前构建的失败分级表待补全：本轮已暂停 {state.classificationQuality.unknownPauseCount} 次。未知码：{state.classificationQuality.unknownReasonCodes.join("、")}。请导出诊断信息交技术人员处理。
+    </div>}
     {state.replyError && <div className="workflow-alert" role="alert">自动回复需处理：{state.replyError}</div>}
     {mode !== "touch" && <WorkflowPublishRecovery workflow={workflow} />}
     {notice && <div className="workflow-notice" role="status"><Check size={16} />{notice}</div>}
@@ -724,7 +737,7 @@ export function FloatingWorkflowWindow() {
       {!sync && state.phase !== "replying" && displayed && displayed.progress?.total > 0 && <div className="floating-progress"><div className="floating-progress-bar"><span style={{ width: `${Math.min(100, displayed.progress.done / displayed.progress.total * 100)}%` }} /></div><b>{displayed.progress.done}/{displayed.progress.total}</b></div>}
       {!sync && state.phase === "waiting_safety_interval" && <p className="workflow-floating-detail">{waitingDetail}</p>}
       {moments && <>{current && <p className="workflow-floating-detail">{momentsLabel(moments.stage, "正在处理当前帖子")}</p>}<div className="workflow-floating-counts"><strong>累计点赞 {moments.liked} · 评论 {moments.commented}</strong><span>扫描 {moments.scanned} · 跳过评论 {moments.skipped || 0} · 原已赞 {moments.alreadyLiked || 0}</span></div>{moments.skipReason && <p className="workflow-floating-detail">{momentsLabel(moments.skipReason, "本条评论未发送")}</p>}</>}
-      {!sync && <>{next && <div className="workflow-floating-next"><span>下一项</span><strong>{next.title} · {formatTaskTime(next)}</strong></div>}{!moments && <div className="workflow-floating-counts"><span>已完成 {completed} 项</span><span>未完成 {incomplete.length} 项</span></div>}{incomplete.length > 0 && <p className="workflow-floating-detail">{incomplete.length} 项未完成：{taskErrorText(incomplete[0].error || "请切回任务对应的微信账号后查看详情")}</p>}</>}
+      {!sync && <>{next && <div className="workflow-floating-next"><span>下一项</span><strong>{next.title} · {formatTaskTime(next)}</strong></div>}{!moments && <div className="workflow-floating-counts"><span>已完成 {completed} 项</span><span>未完成 {incomplete.length} 项</span></div>}{incomplete.length > 0 && <p className="workflow-floating-detail">{incomplete.length} 项未完成：{taskErrorText(incomplete[0].error || "请切回任务对应的微信账号后查看详情", incomplete[0].reasonCode, incomplete[0].reasonClassification)}</p>}</>}
       {(error || state.error || sync?.error || state.replyError) && <div className="floating-alert" role="alert">{error || state.error || sync?.error || state.replyError}</div>}
     </div>
     <footer className="floating-actions">{sync?.running ? <button disabled>同步中…</button> : <WorkflowToggle workflow={workflow} compact />}<button onClick={showMain} disabled={busy}>主页面</button></footer>

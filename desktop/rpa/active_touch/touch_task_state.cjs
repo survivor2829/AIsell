@@ -10,7 +10,7 @@ const MAX_RUN_LOG_LINES = 500;
 const STALE_TASK_MS = 7 * 24 * 60 * 60 * 1000;
 const BATCH_SIZE = 50;
 const CURRENT_TASK_VERSION = 4;
-const RETRYABLE_SKIPPED_STATUSES = new Set(["identity_skipped", "ai_failed_skipped"]);
+const RETRYABLE_SKIPPED_STATUSES = new Set(["identity_skipped", "ai_failed_skipped", "pre_send_skipped"]);
 
 function nowIso() {
   return new Date().toISOString();
@@ -181,7 +181,7 @@ function alignBatchWindow(task) {
 }
 
 function skipCategory(status) {
-  return ({ identity_skipped: "identity", ai_failed_skipped: "ai_failed", outcome_unknown_skipped: "outcome_unknown" })[String(status || "")] || "";
+  return ({ identity_skipped: "identity", ai_failed_skipped: "ai_failed", pre_send_skipped: "pre_send", outcome_unknown_skipped: "outcome_unknown" })[String(status || "")] || "";
 }
 
 function recordSkippedResult(result, index, details = {}) {
@@ -199,7 +199,7 @@ function recordSkippedResult(result, index, details = {}) {
 }
 
 function skippedTaskSummary(task) {
-  const breakdown = { identity: 0, ai_failed: 0, outcome_unknown: 0 };
+  const breakdown = { identity: 0, ai_failed: 0, pre_send: 0, outcome_unknown: 0 };
   const records = [];
   for (const [index, result] of (task?.results || []).entries()) {
     const category = skipCategory(result?.status);
@@ -235,7 +235,7 @@ function retrySkippedResults(task, contactIds, retriedAt = nowIso()) {
     return { ok: false, blocked_reason: "retry_skipped_sent_verified_forbidden", error: "已核验发送的联系人不能重试" };
   }
   if (selected.some(({ result }) => !RETRYABLE_SKIPPED_STATUSES.has(String(result?.status || "")))) {
-    return { ok: false, blocked_reason: "retry_skipped_status_forbidden", error: "只能重试身份无法确认或文案生成失败的跳过联系人" };
+    return { ok: false, blocked_reason: "retry_skipped_status_forbidden", error: "只能重试明确未发送的跳过联系人" };
   }
 
   for (const { result } of selected) {
@@ -245,6 +245,7 @@ function retrySkippedResults(task, contactIds, retriedAt = nowIso()) {
     result.send_attempted = false;
     result.awaiting_resolution = false;
     result.identity_recovery_attempts = 0;
+    result.pre_send_recovery_attempts = 0;
     result.updated_at = retriedAt;
     delete result.blocked_reason;
     delete result.last_failure_context;

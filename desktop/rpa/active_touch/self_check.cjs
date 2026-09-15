@@ -1632,6 +1632,16 @@ try {
   }
   assert.equal(clickSearchResultDryRun(dir, () => ({ ok: false, reason: "untrusted private data" }), () => []).blocked_reason,
     "wechat_operation_failed", "unknown output is neither a missing window nor safe diagnostic text");
+  const clickIdentityDiagnostics = clickSearchResultDryRun(
+    dir,
+    () => ({
+      ok: false,
+      reason: "search_result_identity_unverified",
+      diagnostics: { rule_id: "search-r003", candidate_count: 0, visual_candidate_count: 0, ocr_ok: false }
+    }),
+    () => []
+  );
+  assert.equal(clickIdentityDiagnostics.diagnostics.rule_id, "search-r003", "search rejection rule must reach the executor result");
   const clickExternalInput = clickSearchResultDryRun(
     dir,
     () => ({
@@ -1715,12 +1725,12 @@ try {
       ocrOk: true,
       webSearchVisible: true
     }, { query: "wxid_missing", expectedName: "缺失客户" }),
-    { status: "not_found", reason: "exact_search_result_not_found" },
+    { status: "not_found", reason: "exact_search_result_not_found", rule_id: "search-r015", diagnostics: { rule_id: "search-r015", candidate_count: 0, visual_candidate_count: 0, ocr_ok: true } },
     "headless empty UIA plus an OCR-confirmed web-search-only row is a scoped missing contact"
   );
   assert.deepEqual(
     resolveWechatSearchResultObservation({ uiaCandidates: [], visualCandidates: [], ocrOk: false, webSearchVisible: false }, { query: "wxid_unknown", expectedName: "未知客户" }),
-    { status: "unverified", reason: "search_result_identity_unverified" },
+    { status: "unverified", reason: "search_result_identity_unverified", rule_id: "search-r003", diagnostics: { rule_id: "search-r003", candidate_count: 0, visual_candidate_count: 0, ocr_ok: false } },
     "empty UIA with unavailable OCR must pause instead of skipping"
   );
   assert.deepEqual(
@@ -1738,6 +1748,30 @@ try {
       candidate: { text: "未知客户", left: 100, top: 150, right: 200, bottom: 174, x: 150, y: 162 }
     },
     "one compact local row may authorize a click without readable identity text"
+  );
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [],
+      cropBounds: strictCrop,
+      visualCandidates: [
+        { text: "测式客户", left: 96, top: 142, right: 178, bottom: 160, x: 137, y: 151 },
+        { text: "微倌号码 cbI668", left: 96, top: 184, right: 226, bottom: 204, x: 161, y: 194 }
+      ],
+      webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+      webSearchTop: 224,
+      ocrOk: true
+    }, { query: "cb1668", expectedName: "测试客户" }),
+    { status: "unverified", reason: "search_result_identity_unverified", rule_id: "search-r014", diagnostics: { rule_id: "search-r014", candidate_count: 0, visual_candidate_count: 2, ocr_ok: true } },
+    "widely separated OCR rows must not be merged into one clickable contact"
+  );
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [{ text: "测试客户", left: 96, top: 132, right: 178, bottom: 154, x: 137, y: 143 }],
+      webSearchCandidates: []
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "a visible name without a verified local-results boundary must never authorize a click"
   );
   assert.equal(
     resolveWechatSearchResultObservation({ uiaCandidates: [], visualCandidates: [{ text: "wxid_unknown", x: 150, y: 190 }], ocrOk: true, webSearchVisible: true }, { query: "wxid_unknown", expectedName: "未知客户" }).status,
@@ -1831,7 +1865,7 @@ try {
       webSearchCandidates: [{ text: "搜一搜", left: 88, top: 224, right: 160, bottom: 250, x: 124, y: 237 }],
       webSearchTop: 224
     }, { query: "cb1668", expectedName: "测试客户" }),
-    { status: "unverified", reason: "search_result_identity_unverified" },
+    { status: "unverified", reason: "search_result_identity_unverified", rule_id: "search-r014", diagnostics: { rule_id: "search-r014", candidate_count: 0, visual_candidate_count: 1, ocr_ok: true } },
     "a distant naked query is not proven to be part of the network-search row"
   );
   assert.equal(
@@ -1866,7 +1900,7 @@ try {
       webSearchCandidates: [{ text: "搜一搜", left: 88, top: 224, right: 154, bottom: 250, x: 121, y: 237 }],
       webSearchTop: 224
     }, { query: "cb1668", expectedName: "测试客户" }),
-    { status: "not_found", reason: "exact_search_result_not_found" },
+    { status: "not_found", reason: "exact_search_result_not_found", rule_id: "search-r015", diagnostics: { rule_id: "search-r015", candidate_count: 0, visual_candidate_count: 1, ocr_ok: true } },
     "a bounded query immediately composing the explicit network row may be ignored"
   );
   assert.deepEqual(
@@ -1876,7 +1910,7 @@ try {
       webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
       webSearchTop: 224
     }, { query: "cb1668", expectedName: "测试客户" }),
-    { status: "not_found", reason: "exact_search_result_not_found" },
+    { status: "not_found", reason: "exact_search_result_not_found", rule_id: "search-r015", diagnostics: { rule_id: "search-r015", candidate_count: 0, visual_candidate_count: 1, ocr_ok: true } },
     "an exact query on the row below the verified web-search header is still a network echo"
   );
   assert.equal(
@@ -2320,6 +2354,25 @@ try {
   assert.equal(clickedUnknown.state.send_diagnostics.is_new, false);
   assert.equal(require("../../src/shared/wechat-send-diagnostics.cjs").summarizeSendResult(clickedUnknown).is_new, false,
     "Final main-process diagnostics must preserve proof saved inside the execution state");
+  const inputReadFailure = require("../../src/shared/wechat-send-diagnostics.cjs").summarizeSendResult({
+    ok: false,
+    proofDiagnostics: {
+      input_read_reason: "input_draft_read_failed:clipboard_sentinel_write",
+      input_read_exception_type: "System.Runtime.InteropServices.ExternalException",
+      input_read_exception_id: "Clipboard.SetDataObject",
+      input_read_exception_hresult: "hresult_800401D0",
+      input_read_exception_category: "NotSpecified",
+      clipboard_write_attempts: 5
+    }
+  });
+  assert.equal(inputReadFailure.input_read_exception_hresult, "hresult_800401D0",
+    "content-free clipboard exception fingerprints must survive send-result summarization");
+  assert.equal(inputReadFailure.clipboard_write_attempts, 5);
+  const nestedFailureStage = require("../../src/shared/wechat-send-diagnostics.cjs").summarizeSendResult({
+    ok: false,
+    send_diagnostics: { failure_stage: "before_send_snapshot", reason: "input_draft_read_failed" }
+  });
+  assert.equal(nestedFailureStage.failure_stage, "before_send_snapshot", "contact-level summaries must retain the lower-level failure stage");
   const confirmation = sendTrace.find((entry) => entry.stage === "after_send_confirmation" && entry.phase === "finish");
   assert.equal(confirmation.exact_match, true);
   assert.equal(confirmation.is_new, false, "A visible old bubble must remain distinguishable from a new outgoing one");
@@ -2475,13 +2528,22 @@ try {
   assert.doesNotMatch(messageDraftSource, /try \{ Set-Clipboard -Value \$oldClipboard \} catch \{\}/);
   assert.match(messageBubbleSource, /Get-WechatClipboardSnapshot/, "message proof must preserve non-text clipboard data before reading the draft");
   assert.match(messageBubbleSource, /Restore-WechatClipboardSnapshot \$oldClipboard/, "message proof must restore the original clipboard snapshot after reading the draft");
-  assert.match(messageBubbleSource, /Set-Clipboard -Value \$sentinel[\s\S]*Get-Clipboard -Raw -ErrorAction Stop/,
-    "message proof must use the PowerShell clipboard path already proven by draft input on supported Windows hosts");
+  assert.match(developmentDriverSource, /const CLIPBOARD_TEXT_RETRY_POWERSHELL[\s\S]*Set-Clipboard -Value \$value -ErrorAction Stop/);
+  assert.match(messageBubbleSource, /\$\{CLIPBOARD_TEXT_RETRY_POWERSHELL\}[\s\S]*Set-XiaoxiClipboardTextWithRetry \$sentinel[\s\S]*Get-Clipboard -Raw -ErrorAction Stop/,
+    "message proof must use the retrying PowerShell clipboard path before reading the draft");
+  assert.match(messageBubbleSource, /Set-XiaoxiClipboardTextWithRetry \$sentinel/);
+  assert.match(developmentDriverSource, /hresult_800401D0/);
+  assert.match(sendMessageSource, /function Set-XiaoxiClipboardTextWithRetry[\s\S]*Set-XiaoxiClipboardTextWithRetry \$probe/,
+    "the final pre-click draft check must recover from the same transient clipboard contention");
+  assert.match(sendMessageSource, /try \{\s*Set-XiaoxiClipboardTextWithRetry \$probe[\s\S]*input_read_reason = "input_draft_read_failed:clipboard_sentinel_write"/,
+    "exhausted clipboard retries must still return a structured not-attempted result");
   assert.doesNotMatch(messageBubbleSource, /Clipboard\]::SetDataObject\(\$sentinelData/,
     "message proof must not switch to the incompatible WinForms sentinel writer");
   assert.doesNotMatch(messageBubbleSource, /Set-Clipboard -Value \$oldClipboard/, "message proof must not collapse the original clipboard to plain text");
   assert.match(messageBubbleSource, /function New-InputDraftFailure[\s\S]*input_read_reason = \("\{0\}:\{1\}" -f \$reason, \$stage\)/,
     "draft-read failures must retain the precise failing substage without recording clipboard content");
+  assert.match(messageBubbleSource, /input_read_exception_type[\s\S]*input_read_exception_id[\s\S]*input_read_exception_hresult[\s\S]*input_read_exception_category/,
+    "draft-read failures must retain a content-free PowerShell exception fingerprint");
   assert.match(messageBubbleSource, /if \(-not \$draftBefore\.ok\)[\s\S]*proofDiagnostics = @\{[\s\S]*input_read_reason = \[string\]\$draftBefore\.proofDiagnostics\.input_read_reason/,
     "before-send snapshot failures must expose the safe draft-read substage to diagnostics");
   assert.match(searchSource, /public static bool AtomicUnicodeText\(string text\)/);
@@ -2783,7 +2845,7 @@ try {
       return diagnosedTimeoutChild;
     }
   });
-  diagnosedTimeoutChild.stderr.emit("data", 'wechat_window_diagnostic:{"window_stage":"enumerate","window_compile_ms":120,"window_process_count":2,"message":"private-window-text","stderr":"private-path"}\n');
+  diagnosedTimeoutChild.stderr.emit("data", 'wechat_window_diagnostic:{"window_stage":"enumerate","window_compile_ms":120,"window_process_count":2,"message":"private-window-text","stderr":"private-path"}\nimage_send_stage:inline_draft_verification\nimage_clipboard_operation:draft_sentinel_write\n');
   await new Promise((resolve) => setTimeout(resolve, 30));
   diagnosedTimeoutChild.emit("close", null);
   const diagnosedTimeoutResult = await diagnosedTimeout;
@@ -2795,6 +2857,8 @@ try {
   assert.equal(diagnosedTimeoutResult.diagnostics.window_stage, "enumerate", "timeouts must retain the last completed diagnostic breadcrumb");
   assert.equal(diagnosedTimeoutResult.diagnostics.window_compile_ms, 120);
   assert.equal(diagnosedTimeoutResult.diagnostics.window_process_count, 2);
+  assert.equal(diagnosedTimeoutResult.diagnostics.image_stage, "inline_draft_verification", "image timeouts must retain the last entered driver stage");
+  assert.equal(diagnosedTimeoutResult.diagnostics.image_clipboard_operation, "draft_sentinel_write", "image timeouts must retain the last fixed clipboard operation token");
   assert.doesNotMatch(JSON.stringify(diagnosedTimeoutResult), /private-window-text|private-path/);
 
   let abortedChild;

@@ -83,6 +83,13 @@ def validate_report(body):
         row["details"] = {}
         details = entry.get("details", {})
         if isinstance(details, dict):
+            if type(details.get("ocr_ok")) is bool:
+                row["details"]["ocr_ok"] = details["ocr_ok"]
+            if type(details.get("visual_candidate_count")) is int and 0 <= details["visual_candidate_count"] <= 86400000:
+                row["details"]["visual_candidate_count"] = details["visual_candidate_count"]
+            for key in ("rule_id", "evidence_id", "capture_status", "redaction_mode", "context_exception_type", "context_exception_code", "capture_exception_type", "capture_failure_code", "input_read_exception_type", "input_read_exception_id", "input_read_exception_hresult", "input_read_exception_category", "decision_scope"):
+                if safe_token(details.get(key)):
+                    row["details"][key] = details[key]
             if details.get("input_phase") in INPUT_PHASES:
                 row["details"]["input_phase"] = details["input_phase"]
             for key in INPUT_METRICS:

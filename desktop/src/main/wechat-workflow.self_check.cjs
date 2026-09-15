@@ -242,6 +242,60 @@ async function checkUnknownTouchResolutionRecovery() {
   await control.dispose();
 }
 
+async function checkUnknownReasonQualityCounter() {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-quality-"));
+  let calls = 0;
+  const options = {
+    rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
+    appVersion: "9.8.7", buildId: "quality-test", buildCommit: "abcdef1234567890",
+    autoSchedule: false, getAccount: () => "quality-account",
+    executors: { interact: {
+      prepareWorkflowTask: (_id, payload) => ({ payload }),
+      canRetryWorkflowTask: () => true,
+      runWorkflowStep: async (task) => {
+        calls += 1;
+        return { status: "needs_attention", reasonCode: calls === 2 ? "new_reason_beta" : "new_reason_alpha",
+          error: "unknown classified failure", progress: task.progress };
+      }
+    } }
+  };
+  let control = createWechatWorkflowController(options);
+  const added = await control.addTask({ type: "interact", payload: { maxPosts: 1 } });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (attempt) await control.retryTask(added.task.id);
+    await control.start(); await control.tick();
+  }
+  const summary = control.status().classificationQuality;
+  assert.equal(summary.buildVersion, "9.8.7");
+  assert.equal(summary.buildId, "quality-test");
+  assert.equal(summary.buildCommit, "abcdef1234567890");
+  assert.equal(summary.unknownPauseCount, 3);
+  assert.deepEqual(summary.unknownReasonCodes, ["new_reason_alpha", "new_reason_beta"]);
+  assert.equal(summary.status, "needs_review", "the build must be marked once one task reaches the threshold");
+  assert.deepEqual(control.status().tasks[0].unknownReasonQuality,
+    { byBuild: { "9.8.7|quality-test|abcdef1234567890": {
+      pauseCount: 3, reasonCodes: ["new_reason_alpha", "new_reason_beta"], needsReview: true
+    } } });
+  await control.dispose();
+  control = createWechatWorkflowController(options);
+  assert.equal(control.status().classificationQuality.unknownPauseCount, 3, "the build counter must survive restart");
+  assert.equal(control.status().classificationQuality.status, "needs_review");
+  await control.dispose();
+  control = createWechatWorkflowController({ ...options, buildId: "quality-next" });
+  await control.retryTask(added.task.id);
+  await control.start(); await control.tick();
+  assert.equal(control.status().classificationQuality.unknownPauseCount, 1);
+  assert.equal(control.status().classificationQuality.status, "ok", "an older build's task counter must not mark a new build");
+  await control.dispose();
+  const qualityFile = path.join(rootDir, "wechat_failure_classification_quality.json");
+  fs.writeFileSync(qualityFile, "{broken", "utf8");
+  control = createWechatWorkflowController({ ...options, buildId: "quality-corrupt" });
+  assert.deepEqual(control.status().classificationQuality.unknownReasonCodes, ["classification_quality_ledger_unreadable"]);
+  assert.equal(control.status().classificationQuality.status, "needs_review", "a damaged quality ledger must fail closed");
+  assert.equal(fs.readFileSync(qualityFile, "utf8"), "{broken", "status reads must never overwrite a damaged ledger");
+  await control.dispose();
+}
+
 async function main() {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-check-"));
   let clock = new Date(2026, 8, 2, 11, 0);
@@ -737,6 +791,7 @@ async function main() {
   await checkInProgressTouchEdit();
   await checkUnknownTouchResolution();
   await checkUnknownTouchResolutionRecovery();
+  await checkUnknownReasonQualityCounter();
   const traceRoot = path.join(rootDir, "waiting-diagnostics");
   const traceLogger = require("./diagnostics.cjs").createDiagnosticLogger({ rootDir: traceRoot });
   let waitingForNextStep = true;

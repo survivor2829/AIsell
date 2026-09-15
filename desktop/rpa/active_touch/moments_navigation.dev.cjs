@@ -205,7 +205,7 @@ function Resolve-ExpectedMomentsHost {
     -not [int64]::TryParse([string]$expected.hWnd, [ref]$expectedHWnd) -or $expectedHWnd -le 0 -or
     [string]::IsNullOrWhiteSpace([string]$expected.title) -or
     [string]::IsNullOrWhiteSpace([string]$expected.windowClass)) {
-    return @{ ok = $false; reason = "wechat_window_not_ready" }
+    return @{ ok = $false; reason = "wechat_window_not_ready"; rule_id = (Write-XiaoxiFailure "wx3-r001" "wechat_window_not_ready") }
   }
   $matches = @(Get-WechatWindows | Where-Object {
     [int]$_.pid -eq $expectedPid -and
@@ -214,16 +214,16 @@ function Resolve-ExpectedMomentsHost {
     [string]$_.className -ceq [string]$expected.windowClass
   })
   if ($matches.Count -ne 1) {
-    return @{ ok = $false; reason = "moments_window_identity_mismatch"; count = $matches.Count }
+    return @{ ok = $false; reason = "moments_window_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx3-r002" "moments_window_identity_mismatch"); count = $matches.Count }
   }
   $window = $matches[0]
   if ([int]$window.left -ne [int]$expected.x -or [int]$window.top -ne [int]$expected.y -or
     [int]$window.width -ne [int]$expected.width -or [int]$window.height -ne [int]$expected.height -or
     [int]$window.dpi -ne [int]$expected.dpi) {
-    return @{ ok = $false; reason = "wechat_window_not_ready" }
+    return @{ ok = $false; reason = "wechat_window_not_ready"; rule_id = (Write-XiaoxiFailure "wx3-r003" "wechat_window_not_ready") }
   }
   if ([Win32WechatMomentsNavigation]::GetForegroundWindow() -ne [IntPtr]$window.hWnd) {
-    return @{ ok = $false; reason = "wechat_window_not_foreground" }
+    return @{ ok = $false; reason = "wechat_window_not_foreground"; rule_id = (Write-XiaoxiFailure "wx3-r004" "wechat_window_not_foreground") }
   }
   return @{ ok = $true; window = $window }
 }
@@ -259,19 +259,19 @@ function Test-MomentsBoundsInside($inner, $outer) {
 function Get-IntegratedMomentsEntryState($window, [bool]$requireDiscoverEvidence = $true) {
   [Console]::Error.WriteLine("moments_navigation_stage:window_identity")
   try { $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$window.hWnd) } catch { $root = $null }
-  if ($root -eq $null) { return @{ ok = $false; reason = "moments_window_identity_mismatch" } }
+  if ($root -eq $null) { return @{ ok = $false; reason = "moments_window_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx3-r005" "moments_window_identity_mismatch") } }
   try {
     if ([string]$root.Current.Name -cne "微信" -or
       [string]$root.Current.ControlType.ProgrammaticName -cne "ControlType.Window" -or
       [int]$root.Current.ProcessId -ne [int]$window.pid) {
-      return @{ ok = $false; reason = "moments_window_identity_mismatch" }
+      return @{ ok = $false; reason = "moments_window_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx3-r006" "moments_window_identity_mismatch") }
     }
-  } catch { return @{ ok = $false; reason = "moments_window_identity_mismatch" } }
+  } catch { return @{ ok = $false; reason = "moments_window_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx3-r007" "moments_window_identity_mismatch") } }
   $paneEvidence = Get-MomentsRenderPaneEvidence $root $window.pid
   if (-not $paneEvidence.ok) { return $paneEvidence }
   $windowBounds = @{ left = $window.left; top = $window.top; width = $window.width; height = $window.height }
   if (-not (Test-MomentsBoundsInside $paneEvidence.pane.bounds $windowBounds)) {
-    return @{ ok = $false; reason = "moments_render_pane_bounds_invalid" }
+    return @{ ok = $false; reason = "moments_render_pane_bounds_invalid"; rule_id = (Write-XiaoxiFailure "wx3-r008" "moments_render_pane_bounds_invalid") }
   }
   [uint32]$dpi = 96
   try {
@@ -307,7 +307,7 @@ function Get-IntegratedMomentsEntryState($window, [bool]$requireDiscoverEvidence
     # input boundary for the caller's immediate guarded navigation decision.
     [uint32]$evidenceInputTick = Get-MomentsLastInputTick
     if ($evidenceInputTick -eq [uint32]::MaxValue) {
-      return @{ ok = $false; reason = "moments_user_input_detected"; diagnostics = @{ stage = "integrated_visual_observation_lease_unavailable" } }
+      return @{ ok = $false; reason = "moments_user_input_detected"; rule_id = (Write-XiaoxiFailure "wx3-r009" "moments_user_input_detected"); diagnostics = @{ stage = "integrated_visual_observation_lease_unavailable" } }
     }
     return @{
       ok = $true
@@ -377,7 +377,7 @@ function Test-IntegratedMomentsEntryReadyToClick($entryState) {
 
 function Invoke-IntegratedMomentsEntry($window, $entryState, [uint32]$expectedInputTick) {
   if (-not $entryState.ok -or [int]$entryState.exactMatchCount -ne 1 -or @($entryState.entries).Count -ne 1) {
-    return @{ ok = $false; reason = "moments_entry_ambiguous" }
+    return @{ ok = $false; reason = "moments_entry_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r010" "moments_entry_ambiguous") }
   }
   $bounds = $entryState.entries[0].textBounds
   $x = [int][Math]::Round([double]$window.left + [double]$bounds.left + ([double]$bounds.width / 2.0))
@@ -387,7 +387,7 @@ function Invoke-IntegratedMomentsEntry($window, $entryState, [uint32]$expectedIn
   $regionTop = [double]$window.top + [double]$region.top
   if ($x -lt $regionLeft -or $x -gt ($regionLeft + [double]$region.width) -or
     $y -lt $regionTop -or $y -gt ($regionTop + [double]$region.height)) {
-    return @{ ok = $false; reason = "moments_entry_not_owned" }
+    return @{ ok = $false; reason = "moments_entry_not_owned"; rule_id = (Write-XiaoxiFailure "wx3-r011" "moments_entry_not_owned") }
   }
   $click = Invoke-MomentsGuardedClick $x $y $window "moments_entry_not_owned" $expectedInputTick
   return @{
@@ -402,7 +402,7 @@ function Invoke-IntegratedMomentsEntry($window, $entryState, [uint32]$expectedIn
 function Invoke-IntegratedDiscoverEntry($window, $entryState, [uint32]$expectedInputTick) {
   if (-not $entryState.ok -or [int]$entryState.discoverExactMatchCount -ne 1 -or
     @($entryState.discoverEntries).Count -ne 1) {
-    return @{ ok = $false; reason = "moments_discover_entry_ambiguous" }
+    return @{ ok = $false; reason = "moments_discover_entry_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r012" "moments_discover_entry_ambiguous") }
   }
   $bounds = $entryState.discoverEntries[0].bounds
   $x = [int][Math]::Round([double]$window.left + [double]$bounds.left + ([double]$bounds.width / 2.0))
@@ -412,7 +412,7 @@ function Invoke-IntegratedDiscoverEntry($window, $entryState, [uint32]$expectedI
   $regionTop = [double]$window.top + [double]$region.top
   if ($x -lt $regionLeft -or $x -gt ($regionLeft + [double]$region.width) -or
     $y -lt $regionTop -or $y -gt ($regionTop + [double]$region.height)) {
-    return @{ ok = $false; reason = "moments_discover_entry_not_owned" }
+    return @{ ok = $false; reason = "moments_discover_entry_not_owned"; rule_id = (Write-XiaoxiFailure "wx3-r013" "moments_discover_entry_not_owned") }
   }
   $click = Invoke-MomentsGuardedClick $x $y $window "moments_discover_entry_not_owned" $expectedInputTick
   return @{
@@ -521,20 +521,20 @@ function Invoke-MomentsGuardedClick(
   }
   if ($expectedInputTick -eq [uint32]::MaxValue -or
     [Win32WechatMomentsNavigation]::GetLastInputTick() -ne $expectedInputTick) {
-    return @{ ok = $false; reason = "moments_user_input_detected" }
+    return @{ ok = $false; reason = "moments_user_input_detected"; rule_id = (Write-XiaoxiFailure "wx3-r014" "moments_user_input_detected") }
   }
   if (-not (Test-MomentsWindowStable $window)) {
-    return @{ ok = $false; reason = "moments_window_changed" }
+    return @{ ok = $false; reason = "moments_window_changed"; rule_id = (Write-XiaoxiFailure "wx3-r015" "moments_window_changed") }
   }
   if (-not [Win32WechatMomentsNavigation]::GuardedClick($x, $y, $expectedInputTick)) {
-    return @{ ok = $false; reason = "moments_user_input_detected" }
+    return @{ ok = $false; reason = "moments_user_input_detected"; rule_id = (Write-XiaoxiFailure "wx3-r016" "moments_user_input_detected") }
   }
   # mouse_event can update GetLastInputInfo asynchronously. Lease the program's
   # click only after that session-wide tick settles, so our own input is not
   # reported as competing user input by the transition observer.
   [uint32]$nextInputTick = Get-MomentsSettledInputTick
   if ($nextInputTick -eq [uint32]::MaxValue) {
-    return @{ ok = $false; reason = "moments_user_input_detected" }
+    return @{ ok = $false; reason = "moments_user_input_detected"; rule_id = (Write-XiaoxiFailure "wx3-r017" "moments_user_input_detected") }
   }
   return @{ ok = $true; inputTick = [uint32]$nextInputTick }
 }
@@ -565,20 +565,20 @@ function Open-Moments {
   $main = $hostResolution.window
   [uint32]$integratedInputTick = [Win32WechatMomentsNavigation]::GetLastInputTick()
   if ($integratedInputTick -eq [uint32]::MaxValue) {
-    Write-Result @{ ok = $false; reason = "moments_user_input_detected" }
+    Write-Result @{ ok = $false; reason = "moments_user_input_detected"; rule_id = (Write-XiaoxiFailure "wx3-r018" "moments_user_input_detected") }
   }
   if (-not (Test-MomentsUserIdle (Get-MomentsMinimumIdleMs))) {
-    Write-Result @{ ok = $false; reason = "wechat_user_active" }
+    Write-Result @{ ok = $false; reason = "wechat_user_active"; rule_id = (Write-XiaoxiFailure "wx3-r019" "wechat_user_active") }
   }
   if ([string]$main.title -ceq "朋友圈") {
     Write-MomentsOpenSuccess $main "standalone" $true "already_open_exact"
   }
   if ([string]$main.title -cne "微信") {
-    Write-Result @{ ok = $false; reason = "moments_window_identity_mismatch" }
+    Write-Result @{ ok = $false; reason = "moments_window_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx3-r020" "moments_window_identity_mismatch") }
   }
 
   try { $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$main.hWnd) } catch { $root = $null }
-  if ($root -eq $null) { Write-Result @{ ok = $false; reason = "moments_entry_not_found" } }
+  if ($root -eq $null) { Write-Result @{ ok = $false; reason = "moments_entry_not_found"; rule_id = (Write-XiaoxiFailure "wx3-r021" "moments_entry_not_found") } }
 
   # WeChat 4.1 embeds Moments in the main window. The primary-rail Discover
   # compass must be uniquely proven before its secondary-menu OCR can click.
@@ -587,7 +587,7 @@ function Open-Moments {
       [int]$_.pid -eq [int]$main.pid -and [int64]$_.hWnd -ne [int64]$main.hWnd
     })
     if ($initialPopups.Count -gt 1) {
-      Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; count = $initialPopups.Count }
+      Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r022" "moments_window_ambiguous"); count = $initialPopups.Count }
     }
     if ($initialPopups.Count -eq 1) {
       [int64]$initialPopupHWnd = [int64]$initialPopups[0].hWnd
@@ -604,20 +604,20 @@ function Open-Moments {
           [int]$_.width -eq [int]$main.width -and [int]$_.height -eq [int]$main.height -and
           [int]$_.dpi -eq [int]$main.dpi
         })
-        if ($currentHosts.Count -ne 1) { Write-Result @{ ok = $false; reason = "moments_window_changed" } }
+        if ($currentHosts.Count -ne 1) { Write-Result @{ ok = $false; reason = "moments_window_changed"; rule_id = (Write-XiaoxiFailure "wx3-r023" "moments_window_changed") } }
         $currentPopups = @(Get-MomentsWindow | Where-Object {
           [int]$_.pid -eq [int]$main.pid -and [int64]$_.hWnd -ne [int64]$main.hWnd
         })
         if ($currentPopups.Count -gt 1) {
-          Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; count = $currentPopups.Count }
+          Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r024" "moments_window_ambiguous"); count = $currentPopups.Count }
         }
         if ($currentPopups.Count -eq 0) { break }
         $currentPopup = $currentPopups[0]
         if ([int64]$currentPopup.hWnd -ne $initialPopupHWnd) {
-          Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; count = 2 }
+          Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r025" "moments_window_ambiguous"); count = 2 }
         }
         if (-not (Test-MomentsWindowStable $currentPopup $false)) {
-          Write-Result @{ ok = $false; reason = "moments_window_changed" }
+          Write-Result @{ ok = $false; reason = "moments_window_changed"; rule_id = (Write-XiaoxiFailure "wx3-r026" "moments_window_changed") }
         }
         $currentPopupFingerprint = Get-MomentsWindowFingerprint $currentPopup
         if ($currentPopupFingerprint -ceq $initialPopupFingerprint) {
@@ -638,7 +638,7 @@ function Open-Moments {
           [int]$_.pid -eq [int]$main.pid -and [int64]$_.hWnd -ne [int64]$main.hWnd
         })
         if ($latePopups.Count -gt 1) {
-          Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; count = $latePopups.Count }
+          Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r027" "moments_window_ambiguous"); count = $latePopups.Count }
         }
         if ($latePopups.Count -eq 1) {
           Write-MomentsOpenSuccess $latePopups[0] "standalone" $true "already_open_exact"
@@ -648,7 +648,7 @@ function Open-Moments {
     }
     if ([uint32]$integratedEntry.inputTick -eq [uint32]::MaxValue -or
       [Win32WechatMomentsNavigation]::GetLastInputTick() -ne [uint32]$integratedEntry.inputTick) {
-      Write-Result @{ ok = $false; reason = "moments_user_input_detected"; diagnostics = @{ stage = "integrated_initial_observation_lease" } }
+      Write-Result @{ ok = $false; reason = "moments_user_input_detected"; rule_id = (Write-XiaoxiFailure "wx3-r028" "moments_user_input_detected"); diagnostics = @{ stage = "integrated_initial_observation_lease" } }
     }
     # This is still a read-only phase. The fresh frame owns a newer input lease
     # when it proved that the exact window stayed stable throughout observation.
@@ -658,7 +658,7 @@ function Open-Moments {
         [int]$_.pid -eq [int]$main.pid -and [int64]$_.hWnd -ne [int64]$main.hWnd
       })
       if ($alreadyOpenPopups.Count -gt 0) {
-        Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; count = $alreadyOpenPopups.Count }
+        Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r029" "moments_window_ambiguous"); count = $alreadyOpenPopups.Count }
       }
       Write-MomentsOpenSuccess $main "integrated" $true "already_open_selected_moments"
     }
@@ -687,11 +687,11 @@ function Open-Moments {
           [int]$_.dpi -eq [int]$main.dpi
         })
         if ($currentHosts.Count -ne 1) {
-          Write-Result @{ ok = $false; reason = "moments_window_identity_mismatch" }
+          Write-Result @{ ok = $false; reason = "moments_window_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx3-r030" "moments_window_identity_mismatch") }
         }
         $current = $currentHosts[0]
         if (-not (Test-MomentsWindowStable $current)) {
-          Write-Result @{ ok = $false; reason = "moments_window_changed" }
+          Write-Result @{ ok = $false; reason = "moments_window_changed"; rule_id = (Write-XiaoxiFailure "wx3-r031" "moments_window_changed") }
         }
         $currentEntry = Get-IntegratedMomentsEntryState $current $false
         if (-not $currentEntry.ok) {
@@ -700,7 +700,7 @@ function Open-Moments {
               [int]$_.pid -eq [int]$main.pid -and [int64]$_.hWnd -ne [int64]$main.hWnd
             })
             if ($latePopups.Count -gt 1) {
-              Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; count = $latePopups.Count }
+              Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r032" "moments_window_ambiguous"); count = $latePopups.Count }
             }
             if ($latePopups.Count -eq 1) { continue }
           }
@@ -708,7 +708,7 @@ function Open-Moments {
         }
         if ([uint32]$currentEntry.inputTick -eq [uint32]::MaxValue -or
           [Win32WechatMomentsNavigation]::GetLastInputTick() -ne [uint32]$currentEntry.inputTick) {
-          Write-Result @{ ok = $false; reason = "moments_user_input_detected"; diagnostics = @{ stage = "integrated_preflight_observation_lease" } }
+          Write-Result @{ ok = $false; reason = "moments_user_input_detected"; rule_id = (Write-XiaoxiFailure "wx3-r033" "moments_user_input_detected"); diagnostics = @{ stage = "integrated_preflight_observation_lease" } }
         }
         [uint32]$integratedInputTick = [uint32]$currentEntry.inputTick
         if (Test-IntegratedMomentsAlreadyOpen $currentEntry) {
@@ -759,18 +759,18 @@ function Open-Moments {
           [int]$_.width -eq [int]$main.width -and [int]$_.height -eq [int]$main.height -and
           [int]$_.dpi -eq [int]$main.dpi
         })
-        if ($currentHosts.Count -ne 1) { Write-Result @{ ok = $false; reason = "moments_window_changed" } }
+        if ($currentHosts.Count -ne 1) { Write-Result @{ ok = $false; reason = "moments_window_changed"; rule_id = (Write-XiaoxiFailure "wx3-r034" "moments_window_changed") } }
         $current = $currentHosts[0]
         $currentPopups = @(Get-MomentsWindow | Where-Object {
           [int]$_.pid -eq [int]$main.pid -and [int64]$_.hWnd -ne [int64]$main.hWnd
         })
         if ($currentPopups.Count -gt 1) {
-          Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; count = $currentPopups.Count }
+          Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r035" "moments_window_ambiguous"); count = $currentPopups.Count }
         }
         if ($currentPopups.Count -eq 1) {
           $currentPopup = $currentPopups[0]
           if (-not (Test-MomentsWindowStable $currentPopup)) {
-            Write-Result @{ ok = $false; reason = "moments_window_changed" }
+            Write-Result @{ ok = $false; reason = "moments_window_changed"; rule_id = (Write-XiaoxiFailure "wx3-r036" "moments_window_changed") }
           }
           $currentPopupFingerprint = Get-MomentsWindowFingerprint $currentPopup
           if ($discoverPopupHWnd -eq [int64]$currentPopup.hWnd -and
@@ -793,7 +793,7 @@ function Open-Moments {
               [int]$_.pid -eq [int]$main.pid -and [int64]$_.hWnd -ne [int64]$main.hWnd
             })
             if ($latePopups.Count -gt 1) {
-              Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; count = $latePopups.Count }
+              Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r037" "moments_window_ambiguous"); count = $latePopups.Count }
             }
             if ($latePopups.Count -eq 1) { continue }
           }
@@ -804,14 +804,14 @@ function Open-Moments {
         # lease; the next guarded click still rechecks ownership atomically.
         [uint32]$integratedInputTick = [uint32]$currentEntry.inputTick
         if (-not (Test-MomentsWindowStable $current)) {
-          Write-Result @{ ok = $false; reason = "moments_window_changed" }
+          Write-Result @{ ok = $false; reason = "moments_window_changed"; rule_id = (Write-XiaoxiFailure "wx3-r038" "moments_window_changed") }
         }
         if (Test-IntegratedMomentsAlreadyOpen $currentEntry) {
           Write-MomentsOpenSuccess $current "integrated" $false "integrated_discover_restored_moments"
         }
         $currentSelected = @($currentEntry.entries | Where-Object { [bool]$_.selected })
         if ([int]$currentEntry.exactMatchCount -gt 1 -or $currentSelected.Count -gt 1) {
-          Write-Result @{ ok = $false; reason = "moments_entry_ambiguous"; count = [int]$currentEntry.exactMatchCount }
+          Write-Result @{ ok = $false; reason = "moments_entry_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r039" "moments_entry_ambiguous"); count = [int]$currentEntry.exactMatchCount }
         }
         if (Test-IntegratedMomentsEntryReadyToClick $currentEntry) {
           $main = $current
@@ -833,7 +833,7 @@ function Open-Moments {
     }
     $selectedEntries = @($integratedEntry.entries | Where-Object { [bool]$_.selected })
     if ([int]$integratedEntry.exactMatchCount -gt 1 -or $selectedEntries.Count -gt 1) {
-      Write-Result @{ ok = $false; reason = "moments_entry_ambiguous"; count = [int]$integratedEntry.exactMatchCount }
+      Write-Result @{ ok = $false; reason = "moments_entry_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r040" "moments_entry_ambiguous"); count = [int]$integratedEntry.exactMatchCount }
     }
     if (Test-IntegratedMomentsAlreadyOpen $integratedEntry) {
       Write-MomentsOpenSuccess $main "integrated" (-not $integratedNavigationStarted) $integratedEntryMode
@@ -858,18 +858,18 @@ function Open-Moments {
           [int]$_.width -eq [int]$main.width -and [int]$_.height -eq [int]$main.height -and
           [int]$_.dpi -eq [int]$main.dpi
         })
-        if ($currentHosts.Count -ne 1) { Write-Result @{ ok = $false; reason = "moments_window_changed" } }
+        if ($currentHosts.Count -ne 1) { Write-Result @{ ok = $false; reason = "moments_window_changed"; rule_id = (Write-XiaoxiFailure "wx3-r041" "moments_window_changed") } }
         $current = $currentHosts[0]
         $currentPopups = @(Get-MomentsWindow | Where-Object {
           [int]$_.pid -eq [int]$main.pid -and [int64]$_.hWnd -ne [int64]$main.hWnd
         })
         if ($currentPopups.Count -gt 1) {
-          Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; count = $currentPopups.Count }
+          Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r042" "moments_window_ambiguous"); count = $currentPopups.Count }
         }
         if ($currentPopups.Count -eq 1) {
           $currentPopup = $currentPopups[0]
           if (-not (Test-MomentsWindowStable $currentPopup)) {
-            Write-Result @{ ok = $false; reason = "moments_window_changed" }
+            Write-Result @{ ok = $false; reason = "moments_window_changed"; rule_id = (Write-XiaoxiFailure "wx3-r043" "moments_window_changed") }
           }
           $currentPopupFingerprint = Get-MomentsWindowFingerprint $currentPopup
           if ($finalPopupHWnd -eq [int64]$currentPopup.hWnd -and
@@ -893,7 +893,7 @@ function Open-Moments {
               [int]$_.pid -eq [int]$main.pid -and [int64]$_.hWnd -ne [int64]$main.hWnd
             })
             if ($latePopups.Count -gt 1) {
-              Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; count = $latePopups.Count }
+              Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r044" "moments_window_ambiguous"); count = $latePopups.Count }
             }
             if ($latePopups.Count -eq 1) { continue }
           }
@@ -902,9 +902,9 @@ function Open-Moments {
         [uint32]$integratedInputTick = [uint32]$currentEntry.inputTick
         $currentSelected = @($currentEntry.entries | Where-Object { [bool]$_.selected })
         if ([int]$currentEntry.exactMatchCount -gt 1 -or $currentSelected.Count -gt 1) {
-          Write-Result @{ ok = $false; reason = "moments_entry_ambiguous"; count = [int]$currentEntry.exactMatchCount }
+          Write-Result @{ ok = $false; reason = "moments_entry_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r045" "moments_entry_ambiguous"); count = [int]$currentEntry.exactMatchCount }
         }
-        if (-not (Test-MomentsWindowStable $current)) { Write-Result @{ ok = $false; reason = "moments_window_changed" } }
+        if (-not (Test-MomentsWindowStable $current)) { Write-Result @{ ok = $false; reason = "moments_window_changed"; rule_id = (Write-XiaoxiFailure "wx3-r046" "moments_window_changed") } }
         if (Test-IntegratedMomentsAlreadyOpen $currentEntry) {
           $integratedStableCount += 1
           $lastIntegratedWindow = $current
@@ -916,9 +916,9 @@ function Open-Moments {
       if ($integratedStableCount -ge 2 -and $lastIntegratedWindow -ne $null) {
         Write-MomentsOpenSuccess $lastIntegratedWindow "integrated" $false $integratedEntryMode
       }
-      Write-Result @{ ok = $false; reason = "moments_window_open_timeout"; entryMode = $integratedEntryMode }
+      Write-Result @{ ok = $false; reason = "moments_window_open_timeout"; rule_id = (Write-XiaoxiFailure "wx3-r047" "moments_window_open_timeout"); entryMode = $integratedEntryMode }
     }
-    Write-Result @{ ok = $false; reason = "moments_entry_not_found" }
+    Write-Result @{ ok = $false; reason = "moments_entry_not_found"; rule_id = (Write-XiaoxiFailure "wx3-r048" "moments_entry_not_found") }
   }
 
   $nameCondition = [System.Windows.Automation.PropertyCondition]::new(
@@ -942,7 +942,7 @@ function Open-Moments {
       [void]$entries.Add(@{ element = $element; bounds = $bounds })
     } catch {}
   }
-  if ($entries.Count -gt 1) { Write-Result @{ ok = $false; reason = "moments_entry_ambiguous"; count = $entries.Count } }
+  if ($entries.Count -gt 1) { Write-Result @{ ok = $false; reason = "moments_entry_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r049" "moments_entry_ambiguous"); count = $entries.Count } }
 
   $entryMode = "uia_name"
   $invoked = $false
@@ -962,7 +962,7 @@ function Open-Moments {
         $invoked = $true
       } else { $invokeGuardFailed = $true }
     } catch {}
-    if ($invokeGuardFailed) { Write-Result @{ ok = $false; reason = "moments_user_input_detected" } }
+    if ($invokeGuardFailed) { Write-Result @{ ok = $false; reason = "moments_user_input_detected"; rule_id = (Write-XiaoxiFailure "wx3-r050" "moments_user_input_detected") } }
     if (-not $invoked) {
       $x = [int][Math]::Round($entry.bounds.Left + ($entry.bounds.Width / 2))
       $y = [int][Math]::Round($entry.bounds.Top + ($entry.bounds.Height / 2))
@@ -974,30 +974,30 @@ function Open-Moments {
     if (-not $fallback.ok) { Write-Result $fallback }
     $entryMode = "dpi_sidebar_fallback"
   } else {
-    Write-Result @{ ok = $false; reason = "moments_entry_not_found" }
+    Write-Result @{ ok = $false; reason = "moments_entry_not_found"; rule_id = (Write-XiaoxiFailure "wx3-r051" "moments_entry_not_found") }
   }
 
   for ($attempt = 0; $attempt -lt 16; $attempt++) {
     Start-Sleep -Milliseconds 250
     $opened = @(Get-MomentsWindow | Where-Object { [int]$_.pid -eq [int]$main.pid })
     if ($opened.Count -gt 1) {
-      Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; count = $opened.Count }
+      Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r052" "moments_window_ambiguous"); count = $opened.Count }
     }
     if ($opened.Count -eq 1) {
       if ([Win32WechatMomentsNavigation]::GetForegroundWindow() -ne [IntPtr]$opened[0].hWnd) {
-        Write-Result @{ ok = $false; reason = "moments_window_not_foreground" }
+        Write-Result @{ ok = $false; reason = "moments_window_not_foreground"; rule_id = (Write-XiaoxiFailure "wx3-r053" "moments_window_not_foreground") }
       }
       Write-MomentsOpenSuccess $opened[0] "standalone" $false $entryMode
     }
   }
-  Write-Result @{ ok = $false; reason = "moments_window_open_timeout"; entryMode = $entryMode }
+  Write-Result @{ ok = $false; reason = "moments_window_open_timeout"; rule_id = (Write-XiaoxiFailure "wx3-r054" "moments_window_open_timeout"); entryMode = $entryMode }
 }
 
 function Scroll-Moments {
   $scrollMode = [string]$env:XIAOXI_MOMENTS_SCROLL_MODE
   if ([string]::IsNullOrWhiteSpace($scrollMode)) { $scrollMode = "advance_feed" }
   if (@("advance_feed", "read_post_up", "seek_post_menu_down") -notcontains $scrollMode) {
-    Write-Result @{ ok = $false; reason = "moments_scroll_mode_invalid" }
+    Write-Result @{ ok = $false; reason = "moments_scroll_mode_invalid"; rule_id = (Write-XiaoxiFailure "wx3-r055" "moments_scroll_mode_invalid") }
   }
   [int]$wheelDelta = 0
   if (-not [int]::TryParse([string]$env:XIAOXI_MOMENTS_SCROLL_DELTA, [ref]$wheelDelta) -or
@@ -1005,7 +1005,7 @@ function Scroll-Moments {
     [Math]::Abs($wheelDelta) % 60 -ne 0 -or
     ($scrollMode -ceq "read_post_up" -and $wheelDelta -lt 0) -or
     ($scrollMode -ne "read_post_up" -and $wheelDelta -gt 0)) {
-    Write-Result @{ ok = $false; reason = "moments_scroll_delta_invalid" }
+    Write-Result @{ ok = $false; reason = "moments_scroll_delta_invalid"; rule_id = (Write-XiaoxiFailure "wx3-r056" "moments_scroll_delta_invalid") }
   }
   $expected = Get-ExpectedMomentsWindow
   $surfaceMode = [string]$expected.surfaceMode
@@ -1027,35 +1027,35 @@ function Scroll-Moments {
     [string]::IsNullOrWhiteSpace([string]$expected.className) -or
     ($surfaceMode -ceq "standalone" -and [string]$expected.title -cne "朋友圈") -or
     ($surfaceMode -ceq "integrated" -and [string]$expected.title -cne "微信")) {
-    Write-Result @{ ok = $false; reason = "moments_scroll_target_invalid" }
+    Write-Result @{ ok = $false; reason = "moments_scroll_target_invalid"; rule_id = (Write-XiaoxiFailure "wx3-r057" "moments_scroll_target_invalid") }
   }
   $windows = @(Get-WechatWindows | Where-Object {
     [int]$_.pid -eq $expectedPid -and [int64]$_.hWnd -eq $expectedHWnd -and
     [string]$_.title -ceq [string]$expected.title -and [string]$_.className -ceq [string]$expected.className
   })
-  if ($windows.Count -eq 0) { Write-Result @{ ok = $false; reason = "moments_window_not_found" } }
-  if ($windows.Count -ne 1) { Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; count = $windows.Count } }
+  if ($windows.Count -eq 0) { Write-Result @{ ok = $false; reason = "moments_window_not_found"; rule_id = (Write-XiaoxiFailure "wx3-r058" "moments_window_not_found") } }
+  if ($windows.Count -ne 1) { Write-Result @{ ok = $false; reason = "moments_window_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r059" "moments_window_ambiguous"); count = $windows.Count } }
   $window = $windows[0]
   if ([int]$window.left -ne $expectedLeft -or [int]$window.top -ne $expectedTop -or
     [int]$window.width -ne $expectedWidth -or [int]$window.height -ne $expectedHeight) {
-    Write-Result @{ ok = $false; reason = "moments_window_changed" }
+    Write-Result @{ ok = $false; reason = "moments_window_changed"; rule_id = (Write-XiaoxiFailure "wx3-r060" "moments_window_changed") }
   }
   if (-not (Test-MomentsUserIdle (Get-MomentsMinimumIdleMs))) {
-    Write-Result @{ ok = $false; reason = "wechat_user_active" }
+    Write-Result @{ ok = $false; reason = "wechat_user_active"; rule_id = (Write-XiaoxiFailure "wx3-r061" "wechat_user_active") }
   }
   if ([Win32WechatMomentsNavigation]::GetForegroundWindow() -ne [IntPtr]$window.hWnd) {
-    Write-Result @{ ok = $false; reason = "moments_window_not_foreground" }
+    Write-Result @{ ok = $false; reason = "moments_window_not_foreground"; rule_id = (Write-XiaoxiFailure "wx3-r062" "moments_window_not_foreground") }
   }
 
   try { $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$window.hWnd) } catch { $root = $null }
-  if ($root -eq $null) { Write-Result @{ ok = $false; reason = "moments_window_identity_mismatch" } }
+  if ($root -eq $null) { Write-Result @{ ok = $false; reason = "moments_window_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx3-r063" "moments_window_identity_mismatch") } }
   try {
     $rootName = [string]$root.Current.Name
     $rootControlType = [string]$root.Current.ControlType.ProgrammaticName
     $rootProcessId = [int]$root.Current.ProcessId
-  } catch { Write-Result @{ ok = $false; reason = "moments_window_identity_mismatch" } }
+  } catch { Write-Result @{ ok = $false; reason = "moments_window_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx3-r064" "moments_window_identity_mismatch") } }
   if ($rootName -cne [string]$expected.rootName -or $rootControlType -cne "ControlType.Window" -or $rootProcessId -ne $expectedPid) {
-    Write-Result @{ ok = $false; reason = "moments_window_identity_mismatch" }
+    Write-Result @{ ok = $false; reason = "moments_window_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx3-r065" "moments_window_identity_mismatch") }
   }
 
   $scrollBounds = @{
@@ -1065,7 +1065,7 @@ function Scroll-Moments {
     height = [double]$window.height
   }
   if (@("visual_mmui_render", "visual_win32_client") -ccontains $identityMode) {
-    if (-not (Test-MomentsRenderSurfaceIdentity $expected)) { Write-Result @{ ok = $false; reason = "moments_visual_target_lock_invalid" } }
+    if (-not (Test-MomentsRenderSurfaceIdentity $expected)) { Write-Result @{ ok = $false; reason = "moments_visual_target_lock_invalid"; rule_id = (Write-XiaoxiFailure "wx3-r066" "moments_visual_target_lock_invalid") } }
     $paneEvidence = Get-MomentsRenderPaneEvidence $root $expectedPid
     if (-not $paneEvidence.ok) { Write-Result $paneEvidence }
     if ([string]$paneEvidence.pane.name -cne [string]$expected.renderPaneName -or
@@ -1074,7 +1074,7 @@ function Scroll-Moments {
       [int]$paneEvidence.pane.processId -ne [int]$expected.renderPaneProcessId -or
       [string]$paneEvidence.pane.runtimeId -cne [string]$expected.renderPaneRuntimeId -or
       -not (Test-MomentsBoundsNear $paneEvidence.pane.bounds $expected.renderPaneBounds)) {
-      Write-Result @{ ok = $false; reason = "moments_render_pane_changed" }
+      Write-Result @{ ok = $false; reason = "moments_render_pane_changed"; rule_id = (Write-XiaoxiFailure "wx3-r067" "moments_render_pane_changed") }
     }
     $scrollBounds = $paneEvidence.pane.bounds
     if ($surfaceMode -ceq "integrated") {
@@ -1105,25 +1105,25 @@ function Scroll-Moments {
   [uint32]$hitPid = 0
   [void][Win32WechatMomentsNavigation]::GetWindowThreadProcessId($hit, [ref]$hitPid)
   if ($hitRoot -ne [IntPtr]$window.hWnd -or [int]$hitPid -ne $expectedPid) {
-    Write-Result @{ ok = $false; reason = "moments_scroll_target_not_owned" }
+    Write-Result @{ ok = $false; reason = "moments_scroll_target_not_owned"; rule_id = (Write-XiaoxiFailure "wx3-r068" "moments_scroll_target_not_owned") }
   }
   if (-not (Test-MomentsUserIdle (Get-MomentsMinimumIdleMs))) {
-    Write-Result @{ ok = $false; reason = "wechat_user_active" }
+    Write-Result @{ ok = $false; reason = "wechat_user_active"; rule_id = (Write-XiaoxiFailure "wx3-r069" "wechat_user_active") }
   }
   if ([Win32WechatMomentsNavigation]::GetForegroundWindow() -ne [IntPtr]$window.hWnd -or
       -not (Test-MomentsWindowStable $window)) {
-    Write-Result @{ ok = $false; reason = "moments_window_changed" }
+    Write-Result @{ ok = $false; reason = "moments_window_changed"; rule_id = (Write-XiaoxiFailure "wx3-r070" "moments_window_changed") }
   }
   $finalHit = [Win32WechatMomentsNavigation]::WindowFromPoint($point)
   $finalHitRoot = [Win32WechatMomentsNavigation]::GetAncestor($finalHit, 2)
   [uint32]$finalHitPid = 0
   [void][Win32WechatMomentsNavigation]::GetWindowThreadProcessId($finalHit, [ref]$finalHitPid)
   if ($finalHitRoot -ne [IntPtr]$window.hWnd -or [int]$finalHitPid -ne $expectedPid) {
-    Write-Result @{ ok = $false; reason = "moments_scroll_target_not_owned" }
+    Write-Result @{ ok = $false; reason = "moments_scroll_target_not_owned"; rule_id = (Write-XiaoxiFailure "wx3-r071" "moments_scroll_target_not_owned") }
   }
   [uint32]$expectedInputTick = [Win32WechatMomentsNavigation]::GetLastInputTick()
   if ($expectedInputTick -eq [uint32]::MaxValue -or -not (Test-MomentsWindowStable $window)) {
-    Write-Result @{ ok = $false; reason = "moments_window_changed" }
+    Write-Result @{ ok = $false; reason = "moments_window_changed"; rule_id = (Write-XiaoxiFailure "wx3-r072" "moments_window_changed") }
   }
   $beforeScroll = $null
   $afterScroll = $null
@@ -1134,11 +1134,11 @@ function Scroll-Moments {
     if (-not $beforeScroll.ok) { Write-Result $beforeScroll }
   }
   if (-not [Win32WechatMomentsNavigation]::GuardedWheel($x, $y, $wheelDelta, $expectedInputTick)) {
-    Write-Result @{ ok = $false; reason = "moments_user_input_detected" }
+    Write-Result @{ ok = $false; reason = "moments_user_input_detected"; rule_id = (Write-XiaoxiFailure "wx3-r073" "moments_user_input_detected") }
   }
   Start-Sleep -Milliseconds 550
   if ([Win32WechatMomentsNavigation]::GetForegroundWindow() -ne [IntPtr]$window.hWnd) {
-    Write-Result @{ ok = $false; reason = "moments_window_not_foreground" }
+    Write-Result @{ ok = $false; reason = "moments_window_not_foreground"; rule_id = (Write-XiaoxiFailure "wx3-r074" "moments_window_not_foreground") }
   }
   if ($beforeScroll) {
     $afterScroll = Get-MomentsVisualFrame ([IntPtr]$window.hWnd) $window.rect $expectedPid $false
@@ -1149,12 +1149,12 @@ function Scroll-Moments {
       $left = [int][Math]::Max(0, [double]$expected.feedContentBounds.left - $window.left)
       $right = [int][Math]::Min($beforeScroll.width, [double]$expected.feedContentBounds.left - $window.left + [double]$expected.feedContentBounds.width)
     }
-    if ($right - $left -lt 100) { Write-Result @{ ok = $false; reason = "moments_post_changed" } }
+    if ($right - $left -lt 100) { Write-Result @{ ok = $false; reason = "moments_post_changed"; rule_id = (Write-XiaoxiFailure "wx3-r075" "moments_post_changed") } }
     $top = [int][Math]::Max(0, $scrollBounds.top - $window.top + 80)
     $bottom = [int][Math]::Min($beforeScroll.height, $scrollBounds.top - $window.top + $scrollBounds.height - 20)
     $observedDelta = [Win32WechatMomentsNavigation]::MeasureFeedTranslation($beforeScroll.bytes, $afterScroll.bytes,
       $beforeScroll.stride, $beforeScroll.height, $left, $top, $right, $bottom, [Math]::Sign($wheelDelta))
-    if ($observedDelta -eq 0) { Write-Result @{ ok = $false; reason = "moments_post_changed" } }
+    if ($observedDelta -eq 0) { Write-Result @{ ok = $false; reason = "moments_post_changed"; rule_id = (Write-XiaoxiFailure "wx3-r076" "moments_post_changed") } }
   }
   } finally {
     Close-MomentsVisualFrame $beforeScroll
@@ -1214,7 +1214,7 @@ function Return-MomentsToChat {
       }
     } catch {}
   }
-  if ($matches.Count -gt 1) { Write-Result @{ ok = $false; reason = "wechat_chat_entry_ambiguous" } }
+  if ($matches.Count -gt 1) { Write-Result @{ ok = $false; reason = "wechat_chat_entry_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r077" "wechat_chat_entry_ambiguous") } }
   $target = $(if ($matches.Count -eq 1) { $matches[0] } else { $null })
   if ($target -eq $null) { $target = Resolve-MomentsChatRailTarget $entryState }
   if ($target -eq $null) {
@@ -1224,9 +1224,9 @@ function Return-MomentsToChat {
       [double]$_.bounds.width -ge (8.0 * $scale) -and [double]$_.bounds.width -le (48.0 * $scale) -and
       [double]$_.bounds.height -ge (8.0 * $scale) -and [double]$_.bounds.height -le (48.0 * $scale)
     } | Sort-Object { [double]$_.centerY }, { [double]$_.centerX })
-    if ($candidates.Count -gt 20) { Write-Result @{ ok = $false; reason = "wechat_chat_entry_ambiguous" } }
+    if ($candidates.Count -gt 20) { Write-Result @{ ok = $false; reason = "wechat_chat_entry_ambiguous"; rule_id = (Write-XiaoxiFailure "wx3-r078" "wechat_chat_entry_ambiguous") } }
     foreach ($candidate in $candidates) {
-      if (-not (Test-MomentsWindowStable $window)) { Write-Result @{ ok = $false; reason = "wechat_window_changed" } }
+      if (-not (Test-MomentsWindowStable $window)) { Write-Result @{ ok = $false; reason = "wechat_window_changed"; rule_id = (Write-XiaoxiFailure "wx3-r079" "wechat_window_changed") } }
       $region = @{
         left = [double]$rail.left
         top = [Math]::Max(0.0, [double]$candidate.centerY - (30.0 * $scale))
@@ -1245,18 +1245,18 @@ function Return-MomentsToChat {
       [uint32]$hitPid = 0
       [void][Win32WechatMomentsNavigation]::GetWindowThreadProcessId($hit, [ref]$hitPid)
       if ([Win32WechatMomentsNavigation]::GetAncestor($hit, 2) -ne [IntPtr]$window.hWnd -or [int]$hitPid -ne [int]$window.pid) {
-        Write-Result @{ ok = $false; reason = "wechat_chat_entry_not_owned" }
+        Write-Result @{ ok = $false; reason = "wechat_chat_entry_not_owned"; rule_id = (Write-XiaoxiFailure "wx3-r080" "wechat_chat_entry_not_owned") }
       }
       [uint32]$hoverTick = Get-MomentsLastInputTick
       if ($hoverTick -eq [uint32]::MaxValue -or -not (Test-MomentsWindowStable $window) -or
         [Win32WechatMomentsNavigation]::GetLastInputTick() -ne $hoverTick -or
         -not [Win32WechatMomentsNavigation]::SetCursorPos($x, $y)) {
-        Write-Result @{ ok = $false; reason = "moments_user_input_detected" }
+        Write-Result @{ ok = $false; reason = "moments_user_input_detected"; rule_id = (Write-XiaoxiFailure "wx3-r081" "moments_user_input_detected") }
       }
       [uint32]$settledTick = Get-MomentsSettledInputTick
       Start-Sleep -Milliseconds 700
       if ($settledTick -eq [uint32]::MaxValue -or (Get-MomentsLastInputTick) -ne $settledTick -or
-        -not (Test-MomentsWindowStable $window)) { Write-Result @{ ok = $false; reason = "moments_user_input_detected" } }
+        -not (Test-MomentsWindowStable $window)) { Write-Result @{ ok = $false; reason = "moments_user_input_detected"; rule_id = (Write-XiaoxiFailure "wx3-r082" "moments_user_input_detected") } }
       $after = Get-MomentsVisualFrame ([IntPtr]$window.hWnd) $window.rect $window.pid $false
       if (-not $after.ok) { Close-MomentsVisualFrame $after; Write-Result $after }
       try { $afterText = Get-MomentsOcrObservation $after $region } finally { Close-MomentsVisualFrame $after }
@@ -1266,9 +1266,9 @@ function Return-MomentsToChat {
       }
     }
   }
-  if ($target -eq $null) { Write-Result @{ ok = $false; reason = "wechat_chat_entry_not_found" } }
+  if ($target -eq $null) { Write-Result @{ ok = $false; reason = "wechat_chat_entry_not_found"; rule_id = (Write-XiaoxiFailure "wx3-r083" "wechat_chat_entry_not_found") } }
   $fresh = Get-IntegratedMomentsEntryState $window
-  if (-not (Test-IntegratedMomentsAlreadyOpen $fresh)) { Write-Result @{ ok = $false; reason = "wechat_chat_surface_unverified" } }
+  if (-not (Test-IntegratedMomentsAlreadyOpen $fresh)) { Write-Result @{ ok = $false; reason = "wechat_chat_surface_unverified"; rule_id = (Write-XiaoxiFailure "wx3-r084" "wechat_chat_surface_unverified") } }
   $targetX = [int][Math]::Round([double]$window.left + [double]$target.centerX)
   $targetY = [int][Math]::Round([double]$window.top + [double]$target.centerY)
   $clicked = Invoke-MomentsGuardedClick $targetX $targetY $window "wechat_chat_entry_not_owned" ([uint32]$fresh.inputTick)
@@ -1276,7 +1276,7 @@ function Return-MomentsToChat {
   for ($attempt = 0; $attempt -lt 4; $attempt++) {
     Start-Sleep -Milliseconds 250
     if (-not (Test-MomentsWindowStable $window) -or (Get-MomentsLastInputTick) -ne [uint32]$clicked.inputTick) {
-      Write-Result @{ ok = $false; reason = "wechat_window_changed" }
+      Write-Result @{ ok = $false; reason = "wechat_window_changed"; rule_id = (Write-XiaoxiFailure "wx3-r085" "wechat_window_changed") }
     }
     $afterState = Get-IntegratedMomentsEntryState $window
     $selectedTarget = @($afterState.discoverCandidateDiagnostics | Where-Object {
@@ -1288,14 +1288,14 @@ function Return-MomentsToChat {
       Write-Result @{ ok = $true; changed = $true; chatSelected = $true; pid = $window.pid; hWnd = [string]$window.hWnd }
     }
   }
-  Write-Result @{ ok = $false; reason = "wechat_chat_surface_unverified" }
+  Write-Result @{ ok = $false; reason = "wechat_chat_surface_unverified"; rule_id = (Write-XiaoxiFailure "wx3-r086" "wechat_chat_surface_unverified") }
 }
 
 $action = [string]$env:XIAOXI_MOMENTS_NAV_ACTION
 if ($action -ceq "open") { Open-Moments }
 if ($action -ceq "scroll") { Scroll-Moments }
 if ($action -ceq "return-chat") { Return-MomentsToChat }
-Write-Result @{ ok = $false; reason = "moments_navigation_action_invalid" }
+Write-Result @{ ok = $false; reason = "moments_navigation_action_invalid"; rule_id = (Write-XiaoxiFailure "wx3-r087" "moments_navigation_action_invalid") }
 `;
 
 async function returnWechatFromMomentsToChat(preparedMain, runner = runPowerShellAsync) {

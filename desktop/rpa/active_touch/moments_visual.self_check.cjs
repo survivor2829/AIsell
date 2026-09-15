@@ -147,6 +147,7 @@ assert.ok(visualMenuResolverFunction, "visual menu resolver should be extractabl
 const visualMenuResolverProgram = `${visualBoundsFunction}
 ${visualBoundsNearFunction}
 ${visualMenuResolverFunction}
+function Write-XiaoxiFailure { param($ruleId, $reason) return $ruleId }
 $expected = @{ left = 100.0; top = 200.0; width = 36.0; height = 24.0 }
 $exact = @{ centerX = 118.0; centerY = 212.0; bounds = @{ left = 100.0; top = 200.0; width = 36.0; height = 24.0 } }
 $overlap = @{ centerX = 118.8; centerY = 211.5; bounds = @{ left = 100.8; top = 199.5; width = 36.0; height = 24.0 } }
@@ -195,6 +196,7 @@ const visualGreenClassifierFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
 assert.ok(visualGreenClassifierFunction, "the production green classifier should be extractable");
 const visualSendButtonProgram = `
 $ErrorActionPreference = "Stop"
+function Write-XiaoxiFailure { param($ruleId, $reason) return $ruleId }
 ${visualGreenClassifierFunction}
 function Get-MomentsPixel($frame, [int]$x, [int]$y) {
   return $(if ($frame.green.ContainsKey("$x,$y")) { $frame.green["$x,$y"] } else { $null })
@@ -3101,6 +3103,7 @@ const postSendSettleWindowSource = actionSource.match(
 )?.[0] ?? "";
 assert.ok(postSendSettleWindowSource, "post-send verification should receive a fresh bounded settle window");
 const postSendSettleWindowProbeSource = `
+function Write-XiaoxiFailure { param($ruleId, $reason) return $ruleId }
 ${postSendSettleWindowSource}
 $script:visualPostSendSettleMs = 6000
 $script:visualWorkerSoftDeadlineMs = 90000

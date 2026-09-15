@@ -1,0 +1,2776 @@
+[
+  {
+    "id": "image-r001",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_context_or_driver_failure",
+    "line": 130,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-r002",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_source_file_failure",
+    "line": 133,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-r003",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_window_binding_failure",
+    "line": 138,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-r004",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_clipboard_backup_failure",
+    "line": 151,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-r005",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_existing_draft_check_failure",
+    "line": 161,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-r006",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_decode_failure",
+    "line": 166,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-r007",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_clipboard_write_failure",
+    "line": 178,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-r008",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_paste_failure",
+    "line": 182,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-r009",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_preview_verification_failure",
+    "line": 190,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-r010",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_inline_draft_verification_failure",
+    "line": 201,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-r011",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_send_click_guard_failure",
+    "line": 217,
+    "classification": "blocker"
+  },
+  {
+    "id": "image-r012",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_post_send_confirmation_failure",
+    "line": 223,
+    "classification": "blocker"
+  },
+  {
+    "id": "image-r013",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_existing_draft_clear_failure",
+    "line": 169,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-r099",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_unclassified_driver_failure",
+    "line": 244,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r001",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_login_required",
+    "line": 299,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r002",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_user_active",
+    "line": 586,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r003",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_identity_mismatch",
+    "line": 862,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r004",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_identity_mismatch",
+    "line": 868,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r005",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "personal_wechat_main_window_not_found",
+    "line": 926,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r006",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_ambiguous",
+    "line": 930,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r007",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_not_ready",
+    "line": 947,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r008",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_not_foreground",
+    "line": 951,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r009",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_identity_mismatch",
+    "line": 986,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r010",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_not_ready",
+    "line": 997,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r011",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_not_ready",
+    "line": 1023,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r012",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_not_ready",
+    "line": 1059,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r013",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_identity_mismatch",
+    "line": 1153,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r014",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_identity_mismatch",
+    "line": 1158,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r015",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_identity_mismatch",
+    "line": 1172,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r016",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_not_ready",
+    "line": 1181,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r017",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "moments_window_identity_mismatch",
+    "line": 1212,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r018",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_input_lease_unavailable",
+    "line": 1218,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r019",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_user_active",
+    "line": 1222,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r020",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_input_lease_unavailable",
+    "line": 1228,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r021",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_input_lease_unavailable",
+    "line": 1257,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r022",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_external_input_detected",
+    "line": 1261,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r023",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_not_foreground",
+    "line": 1266,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r024",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "moments_window_changed",
+    "line": 1308,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r025",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_not_ready",
+    "line": 1324,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r026",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_input_lease_unavailable",
+    "line": 1330,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r027",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_external_input_detected",
+    "line": 1334,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r028",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_not_foreground",
+    "line": 1339,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r029",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_not_ready",
+    "line": 1344,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r030",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_identity_missing",
+    "line": 1616,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r031",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_user_active",
+    "line": 1627,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r032",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_external_input_detected",
+    "line": 1631,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r033",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_input_lease_unavailable",
+    "line": 1635,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r034",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_not_foreground",
+    "line": 1639,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r035",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_target_changed",
+    "line": 1643,
+    "classification": "recoverable"
+  },
+  {
+    "id": "wx1-r036",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_search_input_failed",
+    "line": 1673,
+    "classification": "recoverable"
+  },
+  {
+    "id": "wx1-r037",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_not_found",
+    "line": 1701,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r038",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_not_foreground",
+    "line": 1705,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r039",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_identity_missing",
+    "line": 2187,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r040",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "window_or_expected_missing",
+    "line": 2215,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r041",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_not_foreground",
+    "line": 2219,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r042",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "contact_unavailable",
+    "line": 2249,
+    "classification": "recoverable"
+  },
+  {
+    "id": "wx1-r043",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_identity_missing",
+    "line": 2312,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r044",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_user_active",
+    "line": 2355,
+    "classification": "environment"
+  },
+  {
+    "id": "wx1-r045",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_window_not_foreground",
+    "line": 2412,
+    "classification": "environment"
+  },
+  {
+    "id": "wx2-r001",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "real_send_session_changed",
+    "line": 79,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r002",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "atomic_composer_point_invalid",
+    "line": 164,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r003",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "atomic_composer_obscured",
+    "line": 170,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r004",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "atomic_composer_not_verified",
+    "line": 210,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r005",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "atomic_composer_not_verified",
+    "line": 235,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r006",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "atomic_send_context_missing",
+    "line": 240,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r007",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "atomic_expected_window_not_found",
+    "line": 254,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r008",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "wechat_window_not_foreground",
+    "line": 262,
+    "classification": "environment"
+  },
+  {
+    "id": "wx2-r009",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "atomic_composer_point_obscured",
+    "line": 318,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r010",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "atomic_wechat_focus_changed",
+    "line": 333,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r011",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "atomic_wechat_focus_changed",
+    "line": 338,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r012",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "atomic_conversation_changed",
+    "line": 355,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r013",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "atomic_composer_changed",
+    "line": 363,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r014",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "atomic_wechat_focus_changed",
+    "line": 368,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r015",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "wechat_send_point_invalid",
+    "line": 388,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r016",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "wechat_send_cursor_mismatch",
+    "line": 395,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r017",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "wechat_send_point_obscured",
+    "line": 400,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r018",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "incoming_message_changed",
+    "line": 438,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r019",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "wechat_send_point_obscured",
+    "line": 452,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r020",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "conversation_observation_context_missing",
+    "line": 493,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r021",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "real_send_session_changed",
+    "line": 511,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r022",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "wechat_window_not_foreground",
+    "line": 516,
+    "classification": "environment"
+  },
+  {
+    "id": "wx2-r023",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "wechat_pid_missing",
+    "line": 664,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r024",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "personal_wechat_process_missing",
+    "line": 669,
+    "classification": "environment"
+  },
+  {
+    "id": "wx2-r025",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "wechat_executable_path_missing",
+    "line": 677,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r026",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "wechat_account_directory_missing",
+    "line": 710,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r027",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "wechat_account_ambiguous",
+    "line": 714,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r028",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "window_or_message_missing",
+    "line": 834,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r029",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "real_send_session_changed",
+    "line": 848,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r030",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "input_draft_read_failed",
+    "line": 906,
+    "condition": "placeholder_not_rejection",
+    "classification": "recoverable"
+  },
+  {
+    "id": "wx2-r031",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "message_verify_phase_invalid",
+    "line": 1072,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r032",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "message_snapshot_invalid",
+    "line": 1084,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx2-r033",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "draft_read_not_needed",
+    "line": 1100,
+    "condition": "placeholder_not_rejection",
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r001",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "wechat_window_not_ready",
+    "line": 208,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r002",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_identity_mismatch",
+    "line": 217,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r003",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "wechat_window_not_ready",
+    "line": 223,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r004",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "wechat_window_not_foreground",
+    "line": 226,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r005",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_identity_mismatch",
+    "line": 262,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r006",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_identity_mismatch",
+    "line": 267,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r007",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_identity_mismatch",
+    "line": 269,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r008",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_render_pane_bounds_invalid",
+    "line": 274,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r009",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_user_input_detected",
+    "line": 310,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r010",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_entry_ambiguous",
+    "line": 380,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r011",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_entry_not_owned",
+    "line": 390,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r012",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_discover_entry_ambiguous",
+    "line": 405,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r013",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_discover_entry_not_owned",
+    "line": 415,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r014",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_user_input_detected",
+    "line": 524,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r015",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_changed",
+    "line": 527,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r016",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_user_input_detected",
+    "line": 530,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r017",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_user_input_detected",
+    "line": 537,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r018",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_user_input_detected",
+    "line": 568,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r019",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "wechat_user_active",
+    "line": 571,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r020",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_identity_mismatch",
+    "line": 577,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r021",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_entry_not_found",
+    "line": 581,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r022",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_ambiguous",
+    "line": 590,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r023",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_changed",
+    "line": 607,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r024",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_ambiguous",
+    "line": 612,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r025",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_ambiguous",
+    "line": 617,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r026",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_changed",
+    "line": 620,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r027",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_ambiguous",
+    "line": 641,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r028",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_user_input_detected",
+    "line": 651,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r029",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_ambiguous",
+    "line": 661,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r030",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_identity_mismatch",
+    "line": 690,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r031",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_changed",
+    "line": 694,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r032",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_ambiguous",
+    "line": 703,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r033",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_user_input_detected",
+    "line": 711,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r034",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_changed",
+    "line": 762,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r035",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_ambiguous",
+    "line": 768,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r036",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_changed",
+    "line": 773,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r037",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_ambiguous",
+    "line": 796,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r038",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_changed",
+    "line": 807,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r039",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_entry_ambiguous",
+    "line": 814,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r040",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_entry_ambiguous",
+    "line": 836,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r041",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_changed",
+    "line": 861,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r042",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_ambiguous",
+    "line": 867,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r043",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_changed",
+    "line": 872,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r044",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_ambiguous",
+    "line": 896,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r045",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_entry_ambiguous",
+    "line": 905,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r046",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_changed",
+    "line": 907,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r047",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_open_timeout",
+    "line": 919,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r048",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_entry_not_found",
+    "line": 921,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r049",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_entry_ambiguous",
+    "line": 945,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r050",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_user_input_detected",
+    "line": 965,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r051",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_entry_not_found",
+    "line": 977,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r052",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_ambiguous",
+    "line": 984,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r053",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_not_foreground",
+    "line": 988,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r054",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_open_timeout",
+    "line": 993,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r055",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_scroll_mode_invalid",
+    "line": 1000,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r056",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_scroll_delta_invalid",
+    "line": 1008,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r057",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_scroll_target_invalid",
+    "line": 1030,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r058",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_not_found",
+    "line": 1036,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r059",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_ambiguous",
+    "line": 1037,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r060",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_changed",
+    "line": 1041,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r061",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "wechat_user_active",
+    "line": 1044,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r062",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_not_foreground",
+    "line": 1047,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r063",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_identity_mismatch",
+    "line": 1051,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r064",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_identity_mismatch",
+    "line": 1056,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r065",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_identity_mismatch",
+    "line": 1058,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r066",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_visual_target_lock_invalid",
+    "line": 1068,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r067",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_render_pane_changed",
+    "line": 1077,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r068",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_scroll_target_not_owned",
+    "line": 1108,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r069",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "wechat_user_active",
+    "line": 1111,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r070",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_changed",
+    "line": 1115,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r071",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_scroll_target_not_owned",
+    "line": 1122,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r072",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_changed",
+    "line": 1126,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r073",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_user_input_detected",
+    "line": 1137,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r074",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_window_not_foreground",
+    "line": 1141,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r075",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_post_changed",
+    "line": 1152,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r076",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_post_changed",
+    "line": 1157,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r077",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "wechat_chat_entry_ambiguous",
+    "line": 1217,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r078",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "wechat_chat_entry_ambiguous",
+    "line": 1227,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r079",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "wechat_window_changed",
+    "line": 1229,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r080",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "wechat_chat_entry_not_owned",
+    "line": 1248,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r081",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_user_input_detected",
+    "line": 1254,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r082",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_user_input_detected",
+    "line": 1259,
+    "classification": "environment"
+  },
+  {
+    "id": "wx3-r083",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "wechat_chat_entry_not_found",
+    "line": 1269,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r084",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "wechat_chat_surface_unverified",
+    "line": 1271,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r085",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "wechat_window_changed",
+    "line": 1279,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r086",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "wechat_chat_surface_unverified",
+    "line": 1291,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx3-r087",
+    "file": "desktop/rpa/active_touch/moments_navigation.dev.cjs",
+    "reason": "moments_navigation_action_invalid",
+    "line": 1298,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r001",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_manifest_invalid",
+    "line": 272,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r002",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_manifest_invalid",
+    "line": 276,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r003",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_manifest_invalid",
+    "line": 291,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r004",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_changed",
+    "line": 294,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r005",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_changed",
+    "line": 299,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r006",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_changed",
+    "line": 303,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r007",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_window_identity_invalid",
+    "line": 339,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r008",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_window_not_found",
+    "line": 345,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r009",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_window_identity_mismatch",
+    "line": 349,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r010",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_process_identity_mismatch",
+    "line": 353,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r011",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_window_identity_mismatch",
+    "line": 366,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r012",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_window_geometry_invalid",
+    "line": 371,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r013",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_window_geometry_changed",
+    "line": 376,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r014",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_window_not_foreground",
+    "line": 379,
+    "classification": "environment"
+  },
+  {
+    "id": "wx4-r015",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_uia_root_missing",
+    "line": 382,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r016",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_window_dpi_changed",
+    "line": 390,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r017",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_composer_owner_missing",
+    "line": 408,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r018",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_composer_not_foreground",
+    "line": 442,
+    "classification": "environment"
+  },
+  {
+    "id": "wx4-r019",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_composer_not_found",
+    "line": 464,
+    "condition": "placeholder_not_rejection",
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r020",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_external_input_detected",
+    "line": 505,
+    "classification": "environment"
+  },
+  {
+    "id": "wx4-r021",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_click_target_changed",
+    "line": 509,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r022",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_cursor_move_failed",
+    "line": 512,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r023",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_click_target_changed",
+    "line": 518,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r024",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_marker_failed",
+    "line": 522,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r025",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_marker_failed",
+    "line": 524,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r026",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_marker_written_target_changed",
+    "line": 532,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r027",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_marker_written_target_changed",
+    "line": 538,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r028",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_marker_written_target_changed",
+    "line": 542,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r029",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_marker_written_target_changed",
+    "line": 546,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r030",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_marker_written_target_changed",
+    "line": 552,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r031",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_click_injection_failed",
+    "line": 557,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r032",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_input_tick_unavailable",
+    "line": 562,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r033",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_input_tick_unavailable",
+    "line": 660,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r034",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_input_tick_unavailable",
+    "line": 759,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r035",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_camera_not_found",
+    "line": 919,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r036",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_input_tick_unavailable",
+    "line": 937,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r037",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_camera_ambiguous",
+    "line": 967,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r038",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_file_dialog_identity_changed",
+    "line": 984,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r039",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_file_dialog_identity_changed",
+    "line": 989,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r040",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_file_dialog_identity_changed",
+    "line": 998,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r041",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_file_dialog_not_foreground",
+    "line": 1001,
+    "classification": "environment"
+  },
+  {
+    "id": "wx4-r042",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_file_dialog_ambiguous",
+    "line": 1038,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r043",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_file_dialog_missing",
+    "line": 1039,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r044",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_open_button_missing",
+    "line": 1052,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r045",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_open_button_identity_mismatch",
+    "line": 1060,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r046",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_open_button_uia_missing",
+    "line": 1064,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r047",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_file_dialog_uia_missing",
+    "line": 1073,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r048",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_file_name_focus_failed",
+    "line": 1085,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r049",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_file_name_set_failed",
+    "line": 1092,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r050",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_open_button_failed",
+    "line": 1098,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r051",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_file_dialog_did_not_close",
+    "line": 1107,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r052",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_rejected",
+    "line": 1120,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r053",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_processing_timeout",
+    "line": 1128,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r054",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_visual_missing",
+    "line": 1151,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r055",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_visual_changed",
+    "line": 1164,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r056",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_accessibility_missing",
+    "line": 1178,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r057",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_clipboard_readback_failed",
+    "line": 1200,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r058",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_clipboard_readback_failed",
+    "line": 1223,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r059",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_composer_not_foreground",
+    "line": 1228,
+    "classification": "environment"
+  },
+  {
+    "id": "wx4-r060",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_clipboard_readback_failed",
+    "line": 1233,
+    "condition": "placeholder_not_rejection",
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r061",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_clipboard_restore_failed",
+    "line": 1279,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r062",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_composer_not_foreground",
+    "line": 1286,
+    "classification": "environment"
+  },
+  {
+    "id": "wx4-r063",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_clipboard_restore_failed",
+    "line": 1343,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r064",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_content_input_failed",
+    "line": 1345,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r065",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_editor_not_writable",
+    "line": 1352,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r066",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_editor_not_empty",
+    "line": 1357,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r067",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_content_input_failed",
+    "line": 1366,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r068",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_editor_not_empty",
+    "line": 1373,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r069",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_content_readback_mismatch",
+    "line": 1381,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r070",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_content_readback_mismatch",
+    "line": 1387,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r071",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_content_readback_mismatch",
+    "line": 1397,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r072",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_content_readback_mismatch",
+    "line": 1403,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r073",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_accessibility_missing",
+    "line": 1418,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r074",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_accessibility_missing",
+    "line": 1426,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r075",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_accessibility_count_mismatch",
+    "line": 1472,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r076",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_accessibility_aggregate",
+    "line": 1477,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r077",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_accessibility_not_one_to_one",
+    "line": 1481,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r078",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_accessibility_count_mismatch",
+    "line": 1488,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r079",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_accessibility_missing",
+    "line": 1493,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r080",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_media_accessibility_changed",
+    "line": 1499,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r081",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_editor_focus_missing",
+    "line": 1554,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r082",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_editor_focus_missing",
+    "line": 1564,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r083",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_editor_focus_missing",
+    "line": 1577,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r084",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_editor_identity_changed",
+    "line": 1586,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r085",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_button_ambiguous",
+    "line": 1653,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r086",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_button_ambiguous",
+    "line": 1664,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r087",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_button_not_found",
+    "line": 1670,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r088",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_feed_unchanged",
+    "line": 1821,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r089",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_composer_still_present",
+    "line": 1824,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r090",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_client_rejected",
+    "line": 1832,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r091",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_client_processing",
+    "line": 1835,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r092",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_feed_unchanged",
+    "line": 1853,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r093",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_manifest_not_proven",
+    "line": 1857,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r094",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_post_media_not_proven",
+    "line": 1861,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r095",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_post_media_not_proven",
+    "line": 1865,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r096",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_composer_still_present",
+    "line": 1868,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r097",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_post_ambiguous",
+    "line": 1896,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r098",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_post_not_found",
+    "line": 1904,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx4-r099",
+    "file": "desktop/rpa/active_touch/moments_publish_driver.dev.cjs",
+    "reason": "moments_publish_post_not_found",
+    "line": 1913,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r001",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_popup_geometry_invalid",
+    "line": 869,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r002",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_popup_geometry_invalid",
+    "line": 880,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r003",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_popup_outside_screen",
+    "line": 883,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r004",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_anchor_outside_window",
+    "line": 886,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r005",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_popup_not_anchored",
+    "line": 889,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r006",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_menu_not_found",
+    "line": 930,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r007",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_visual_target_lock_invalid",
+    "line": 965,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r008",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_visual_target_lock_invalid",
+    "line": 971,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r009",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_visual_target_lock_invalid",
+    "line": 975,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r010",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_window_not_found",
+    "line": 980,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r011",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_window_identity_mismatch",
+    "line": 987,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r012",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_window_identity_mismatch",
+    "line": 995,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r013",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_window_identity_mismatch",
+    "line": 999,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r014",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_window_changed",
+    "line": 1008,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r015",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_window_identity_mismatch",
+    "line": 1011,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r016",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_window_identity_mismatch",
+    "line": 1017,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r017",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_window_identity_mismatch",
+    "line": 1020,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r018",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_render_pane_changed",
+    "line": 1032,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r019",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_menu_changed",
+    "line": 1104,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r020",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_visual_probe_failed",
+    "line": 1126,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r021",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_click_target_missing",
+    "line": 1172,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r022",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_click_target_process_changed",
+    "line": 1177,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r023",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_click_target_not_visible",
+    "line": 1183,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r024",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_click_root_process_changed",
+    "line": 1188,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r025",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_click_popup_surface_missing",
+    "line": 1203,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r026",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_click_popup_owner_changed",
+    "line": 1223,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r027",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_click_popup_bounds_unavailable",
+    "line": 1227,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r028",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_click_surface_outside_window",
+    "line": 1247,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r029",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_click_surface_outside_popup",
+    "line": 1250,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r030",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_click_point_outside_surface",
+    "line": 1253,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r031",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_click_surface_outside_render_pane",
+    "line": 1256,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r032",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_editor_changed",
+    "line": 1415,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r033",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_editor_changed",
+    "line": 1420,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r034",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_editor_changed",
+    "line": 1425,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r035",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_editor_changed",
+    "line": 1443,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r036",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_clipboard_changed",
+    "line": 1461,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r037",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_editor_changed",
+    "line": 1496,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r038",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_keyboard_input_blocked",
+    "line": 1499,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r039",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_editor_changed",
+    "line": 1516,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r040",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_keyboard_clear_failed",
+    "line": 1519,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r041",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_popup_timeout",
+    "line": 1601,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r042",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_popup_ambiguous",
+    "line": 1607,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r043",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_popup_not_owned",
+    "line": 1615,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r044",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_popup_missing",
+    "line": 1635,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r045",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_popup_invalid",
+    "line": 1639,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r046",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_popup_capture_failed",
+    "line": 1660,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r047",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_menu_ocr_failed",
+    "line": 1671,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r048",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_menu_labels_ambiguous",
+    "line": 1681,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r049",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_menu_geometry_invalid",
+    "line": 1696,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r050",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_copy_entry_changed",
+    "line": 1722,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r051",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_copy_entry_changed",
+    "line": 1728,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r052",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_menu_surface_ambiguous",
+    "line": 2149,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r053",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_menu_label_not_found",
+    "line": 2216,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r054",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_menu_label_not_found",
+    "line": 2224,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r055",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_menu_close_blocked",
+    "line": 2633,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r056",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_composer_not_found",
+    "line": 2667,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r057",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_composer_not_found",
+    "line": 2685,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r058",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_composer_not_found",
+    "line": 2812,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r059",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_composer_outside_render_pane",
+    "line": 2816,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r060",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_send_button_not_found",
+    "line": 2825,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r061",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_send_button_not_found",
+    "line": 2839,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r062",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_missing",
+    "line": 3077,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r063",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_match_mode_invalid",
+    "line": 3079,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r064",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_candidate_hash_failed",
+    "line": 3208,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r065",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_editor_targeting_unsupported",
+    "line": 3528,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r066",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_editor_targeting_unsupported",
+    "line": 3618,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r067",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_editor_targeting_unsupported",
+    "line": 3620,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r068",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_editor_ambiguous",
+    "line": 3621,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r069",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_editor_changed",
+    "line": 3649,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r070",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_editor_changed",
+    "line": 3655,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r071",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_draft_state_unknown",
+    "line": 3658,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r072",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_editor_changed",
+    "line": 3675,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r073",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_preexisting_draft",
+    "line": 3682,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r074",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_editor_changed",
+    "line": 3686,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r075",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_editor_targeting_unsupported",
+    "line": 3689,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r076",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_roundtrip_mismatch",
+    "line": 3697,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r077",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_external_input_detected",
+    "line": 4061,
+    "classification": "environment"
+  },
+  {
+    "id": "wx5-r078",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_external_input_detected",
+    "line": 4074,
+    "classification": "environment"
+  },
+  {
+    "id": "wx5-r079",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_external_input_detected",
+    "line": 4081,
+    "classification": "environment"
+  },
+  {
+    "id": "wx5-r080",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_window_not_foreground",
+    "line": 4086,
+    "classification": "environment"
+  },
+  {
+    "id": "wx5-r081",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_draft_empty_state_unverified",
+    "line": 4113,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r082",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_external_input_detected",
+    "line": 4116,
+    "classification": "environment"
+  },
+  {
+    "id": "wx5-r083",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_external_input_detected",
+    "line": 4127,
+    "classification": "environment"
+  },
+  {
+    "id": "wx5-r084",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_external_input_detected",
+    "line": 4129,
+    "classification": "environment"
+  },
+  {
+    "id": "wx5-r085",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_seed_timeout",
+    "line": 4249,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r086",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_seed_timeout",
+    "line": 4256,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r087",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_seed_timeout",
+    "line": 4274,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx5-r088",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_window_not_foreground",
+    "line": 4279,
+    "classification": "environment"
+  },
+  {
+    "id": "wx5-r089",
+    "file": "desktop/rpa/active_touch/moments_visual_action_driver.dev.cjs",
+    "reason": "moments_comment_readback_seed_timeout",
+    "line": 4304,
+    "classification": "blocker"
+  },
+  {
+    "id": "search-r001",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "multiple_uia_no_match",
+    "line": 214,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r002",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "multiple_uia_identity_matches",
+    "line": 214,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r003",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "ocr_unavailable",
+    "line": 224,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r004",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "crop_invalid",
+    "line": 224,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r005",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "candidate_bounds_invalid",
+    "line": 225,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r006",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "candidate_outside_crop",
+    "line": 225,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r007",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "multiple_labelled_candidates",
+    "line": 246,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r008",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "web_boundary_missing",
+    "line": 249,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r009",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "web_boundary_label_invalid",
+    "line": 249,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r010",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "reported_boundary_invalid",
+    "line": 257,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r011",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "reported_boundary_mismatch",
+    "line": 258,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r012",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "boundary_outside_crop",
+    "line": 258,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r013",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "unresolved_labelled_candidate",
+    "line": 287,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r014",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "search_result_identity_unverified",
+    "condition": "unexplained_local_candidate",
+    "line": 287,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r015",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "exact_search_result_not_found",
+    "condition": "local_result_not_found",
+    "line": 289,
+    "classification": "recoverable"
+  },
+  {
+    "id": "draft-read.preflight",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "input_draft_failure",
+    "condition": "preflight",
+    "dynamic": true,
+    "line": 894,
+    "classification": "recoverable"
+  },
+  {
+    "id": "draft-read.clipboard_snapshot",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "input_draft_failure",
+    "condition": "clipboard_snapshot",
+    "dynamic": true,
+    "line": 902,
+    "classification": "recoverable"
+  },
+  {
+    "id": "draft-read.target_lookup",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "input_draft_failure",
+    "condition": "target_lookup",
+    "dynamic": true,
+    "line": 905,
+    "classification": "recoverable"
+  },
+  {
+    "id": "draft-read.cursor_move",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "input_draft_failure",
+    "condition": "cursor_move",
+    "dynamic": true,
+    "line": 921,
+    "classification": "recoverable"
+  },
+  {
+    "id": "draft-read.input_click",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "input_draft_failure",
+    "condition": "input_click",
+    "dynamic": true,
+    "line": 934,
+    "classification": "recoverable"
+  },
+  {
+    "id": "draft-read.clipboard_sentinel_write",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "input_draft_failure",
+    "condition": "clipboard_sentinel_write",
+    "dynamic": true,
+    "line": 942,
+    "classification": "recoverable"
+  },
+  {
+    "id": "draft-read.select_all",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "input_draft_failure",
+    "condition": "select_all",
+    "dynamic": true,
+    "line": 949,
+    "classification": "recoverable"
+  },
+  {
+    "id": "draft-read.copy",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "input_draft_failure",
+    "condition": "copy",
+    "dynamic": true,
+    "line": 955,
+    "classification": "recoverable"
+  },
+  {
+    "id": "draft-read.clipboard_read",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
+    "reason": "input_draft_failure",
+    "condition": "clipboard_read",
+    "dynamic": true,
+    "line": 961,
+    "classification": "recoverable"
+  }
+]

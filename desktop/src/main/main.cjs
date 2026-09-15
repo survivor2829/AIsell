@@ -351,6 +351,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         version: components.businessVersion(app),
         edition: developmentEdition ? "development" : pilotEdition ? "pilot" : "unknown",
         build_id: build.buildId || process.env.XIAOXI_BUILD_ID || "",
+        build_commit: build.buildCommit || process.env.XIAOXI_BUILD_COMMIT || "",
+        source_dirty: build.sourceDirty === true,
         packaged: app.isPackaged
       }
     });
@@ -652,7 +654,9 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       dataDir: runtime.activeTouchDir,
       coordinator,
       deepSeekClient,
+      appVersion: components.businessVersion(app),
       buildId: build.buildId || process.env.XIAOXI_BUILD_ID || "",
+      buildCommit: build.buildCommit || process.env.XIAOXI_BUILD_COMMIT || "",
       executionMode: "real_send",
       realSendExecutor: internalRealSend.executeVerifiedContactSend,
       verifyRealSendSession: internalRealSend.refreshRealSendSession,
@@ -662,6 +666,9 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     workflowController = registerWechatWorkflowIpc({
       ...runtime,
       logger,
+      appVersion: components.businessVersion(app),
+      buildId: build.buildId || process.env.XIAOXI_BUILD_ID || "",
+      buildCommit: build.buildCommit || process.env.XIAOXI_BUILD_COMMIT || "",
       getMomentsProgress: (task) => momentsCampaignController?.workflowProgress(task),
       getMainWindow: () => mainWindow,
       isQuitting: () => quitCleanupStarted,

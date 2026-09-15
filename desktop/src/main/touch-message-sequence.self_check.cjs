@@ -6,17 +6,27 @@ const crypto = require("node:crypto");
 const { createTouchWorkflow } = require("./touch-workflow.cjs");
 const { canContinueTouchResult } = require("./touch-message-sequence.cjs");
 const { normalizeTouchLink } = require("./touch-media.cjs");
-const { sendWechatImage } = require("../../rpa/active_touch/wechat_image_send.dev.cjs");
+const { IMAGE_SEND_SCRIPT, sendWechatImage } = require("../../rpa/active_touch/wechat_image_send.dev.cjs");
 const { main: runCli } = require("../../rpa/active_touch/active_touch_cli.cjs");
 
 async function checkTouchMessageSequence() {
+  assert.match(IMAGE_SEND_SCRIPT, /if \(-not \$existingDraft\.empty\)[\s\S]*Image-Keys "\^a" \$mainWindow[\s\S]*Image-Keys "\{BACKSPACE\}" \$mainWindow[\s\S]*Read-ImageDraft \$mainWindow\)\.empty[\s\S]*image_existing_draft_clear_failed/u,
+    "a verified image composer must replace and then prove removal of any stale draft");
+  assert.match(IMAGE_SEND_SCRIPT, /function Invoke-ImageClipboardWrite[\s\S]*hresult_800401D0[\s\S]*InnerException[\s\S]*attempt -eq 5[\s\S]*80 \* \$attempt/u,
+    "transient clipboard contention must inspect wrapped exceptions and retry with bounded backoff");
+  assert.match(IMAGE_SEND_SCRIPT, /Invoke-ImageClipboardWrite "draft_sentinel_write"[\s\S]*Invoke-ImageClipboardWrite "image_write"/u,
+    "both draft probing and image installation must use the bounded clipboard retry");
+  assert.match(IMAGE_SEND_SCRIPT, /function Read-ImageDraft[\s\S]*for \(\$copyAttempt = 1; \$copyAttempt -le 5; \$copyAttempt\+\+\)[\s\S]*\$beforeCopySequence = \[Win32WechatImage\]::GetClipboardSequenceNumber\(\)[\s\S]*80 \* \$copyAttempt/u,
+    "image draft verification must wait and retry when WeChat publishes clipboard formats asynchronously");
+  assert.match(IMAGE_SEND_SCRIPT, /function Invoke-ImageClipboardRead[\s\S]*hresult_800401D0[\s\S]*40 \* \$readAttempt/u,
+    "clipboard reads must recover when another Windows component briefly owns the clipboard");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-touch-sequence-"));
   require("./diagnostics.cjs").configureDiagnostics({ rootDir: root });
   const contact = { id: "selected", name: "测试客户", nickname: "测试客户", wechatId: "test_customer", wechatAccountId: "test_account", allowed: true };
   const secondContact = { id: "selected-two", name: "第二位测试客户", nickname: "第二位测试客户", wechatId: "test_customer_two", wechatAccountId: "test_account", allowed: true };
   const imageId = "a".repeat(64);
   const calls = [];
-  let failImage = true, unknown = false, loginRequired = false, searchUnavailable = false, searchIdentityUnverified = false, externalInputBlocks = 0, atomicMismatch = false, enabled = true, pauseAfterText = false;
+  let failImage = true, unknown = false, loginRequired = false, searchUnavailable = false, searchIdentityUnverified = false, externalInputBlocks = 0, recoverableFailures = 0, atomicMismatch = false, enabled = true, pauseAfterText = false;
   const clock = new Date(2026, 8, 3, 12, 0, 0);
   const config = {
     dataDir: root, now: () => clock, random: () => 0, readContacts: () => [contact, secondContact],
@@ -41,6 +51,10 @@ async function checkTouchMessageSequence() {
       if (kind === "text" && externalInputBlocks > 0) {
         externalInputBlocks -= 1;
         return { ok: false, send_attempted: false, blocked_reason: "wechat_external_input_detected", action: "click-search-result-dry-run", error: "检测到人工输入" };
+      }
+      if (kind === "text" && recoverableFailures > 0) {
+        recoverableFailures -= 1;
+        return { ok: false, send_attempted: false, blocked_reason: "input_draft_read_failed", error: "草稿读取失败" };
       }
       if (kind === "text" && options.contactId === contact.id && atomicMismatch) {
         return { ok: false, send_attempted: false, blocked_reason: "atomic_conversation_changed", error: "当前会话身份发生变化" };
@@ -192,10 +206,12 @@ async function checkTouchMessageSequence() {
   const textRecord = { id: crypto.randomUUID(), payload: textPayload, progress: { done: 0 }, status: "running" };
   const beforeLoginInterruption = calls.length;
   result = await textWorkflow.runWorkflowStep(textRecord, context);
-  assert.equal(result.status, "needs_attention");
+  assert.equal(result.status, "pending");
+  assert.equal(result.waitingReason, "wechat_environment_recovery");
+  assert.equal(result.retryAfterMs, 30000);
   assert.equal(result.result.deliveryStatus, "not_attempted");
   assert.equal(calls.length, beforeLoginInterruption + 1);
-  assert.equal(textWorkflow.canRetryWorkflowTask(textRecord, textPayload), true, "a text-only pre-send login interruption must remain resumable");
+  assert.equal(textWorkflow.canRetryWorkflowTask(textRecord, textPayload), false, "an environment wait stays scheduled and needs no manual retry action");
   const textTaskDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(textRecord.id).digest("hex"));
   const persistedTextTask = JSON.parse(fs.readFileSync(path.join(textTaskDir, "touch_task.json"), "utf8"));
   assert.equal(persistedTextTask.results[0].send_attempted, false, "a safe login block must persist an explicit not-attempted receipt");
@@ -209,6 +225,20 @@ async function checkTouchMessageSequence() {
   result = await createTouchWorkflow(config).runWorkflowStep(textRecord, context);
   assert.equal(result.status, "completed");
   assert.equal(calls.length, beforeTextResume + 1, "resuming a text-only pre-send interruption sends exactly once");
+
+  loginRequired = true;
+  const cappedWorkflow = createTouchWorkflow(config);
+  const cappedPayload = cappedWorkflow.prepareWorkflowTask({ script: "环境恢复上限测试", contactIds: [contact.id] });
+  const cappedRecord = { id: crypto.randomUUID(), payload: cappedPayload, progress: { done: 0 }, status: "running" };
+  result = await cappedWorkflow.runWorkflowStep(cappedRecord, context);
+  assert.equal(result.waitingReason, "wechat_environment_recovery");
+  clock.setTime(clock.getTime() + 10 * 60_000);
+  result = await cappedWorkflow.runWorkflowStep(cappedRecord, context);
+  assert.equal(result.status, "completed", "environment recovery must stop after ten minutes");
+  assert.equal(result.result.skipped, true);
+  const cappedTaskDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(cappedRecord.id).digest("hex"));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(cappedTaskDir, "touch_task.json"), "utf8")).results[0].status, "pre_send_skipped");
+  loginRequired = false;
 
   searchUnavailable = true;
   const skipWorkflow = createTouchWorkflow(config);
@@ -276,11 +306,32 @@ async function checkTouchMessageSequence() {
   const inputRecoveryRecord = { id: crypto.randomUUID(), payload: inputRecoveryPayload, progress: { done: 0 }, status: "running" };
   result = await inputRecoveryWorkflow.runWorkflowStep(inputRecoveryRecord, context);
   assert.equal(result.status, "pending", "发送前的临时输入占用必须保持任务运行而不是全局停机");
-  assert.equal(result.retryAfterMs, 15000);
-  assert.equal(result.waitingReason, "wechat_input_recovery");
+  assert.equal(result.retryAfterMs, 30000);
+  assert.equal(result.waitingReason, "wechat_environment_recovery");
   assert.equal(result.progress.done, 0, "临时占用不能跳过当前联系人");
   result = await inputRecoveryWorkflow.runWorkflowStep(inputRecoveryRecord, context);
   assert.equal(result.status, "completed", "输入恢复后应自动继续当前联系人并完成触达");
+
+  recoverableFailures = 3;
+  const boundedRecoveryWorkflow = createTouchWorkflow(config);
+  const boundedRecoveryPayload = boundedRecoveryWorkflow.prepareWorkflowTask({ script: "明确未发送有界恢复测试", contactIds: [contact.id, secondContact.id] });
+  const boundedRecoveryRecord = { id: crypto.randomUUID(), payload: boundedRecoveryPayload, progress: { done: 0 }, status: "running" };
+  result = await boundedRecoveryWorkflow.runWorkflowStep(boundedRecoveryRecord, context);
+  assert.equal(result.waitingReason, "wechat_pre_send_recovery");
+  assert.equal(result.retryAfterMs, 5000);
+  result = await boundedRecoveryWorkflow.runWorkflowStep(boundedRecoveryRecord, context);
+  assert.equal(result.retryAfterMs, 15000);
+  result = await boundedRecoveryWorkflow.runWorkflowStep(boundedRecoveryRecord, context);
+  assert.equal(result.status, "pending", "two failed recoveries must skip only the current contact");
+  assert.equal(result.progress.done, 1);
+  const boundedRecoveryDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(boundedRecoveryRecord.id).digest("hex"));
+  const boundedRecoveryState = JSON.parse(fs.readFileSync(path.join(boundedRecoveryDir, "touch_task.json"), "utf8"));
+  assert.equal(boundedRecoveryState.results[0].status, "pre_send_skipped");
+  assert.equal(boundedRecoveryWorkflow.describeSkippedWorkflowTask(boundedRecoveryRecord).skipped_breakdown.pre_send, 1);
+  result = await boundedRecoveryWorkflow.runWorkflowStep(boundedRecoveryRecord, context);
+  assert.equal(result.status, "completed", "the skipped contact must not block later contacts");
+  const boundedRetry = boundedRecoveryWorkflow.retrySkippedWorkflowTask(boundedRecoveryRecord, [contact.id]);
+  assert.equal(boundedRetry.ok, true, "a proven-not-sent skipped contact must remain available for a later run");
 
   atomicMismatch = true;
   const atomicWorkflow = createTouchWorkflow(config);
@@ -304,11 +355,33 @@ async function checkTouchMessageSequence() {
   assert.equal((await sendWechatImage(imageOptions)).ok, true);
   assert.equal((await sendWechatImage(imageOptions)).ok, true);
   assert.equal(clicks, 1, "An image receipt prevents a second native send");
-  const uncertainImage = { ...imageOptions, baseDir: path.join(root, "uncertain-receipt"), runner: async () => { clicks++; return { ok: false, reason: "powershell_timeout" }; } };
-  assert.equal((await sendWechatImage(uncertainImage)).send_attempted, null);
+  const uncertainImage = { ...imageOptions, baseDir: path.join(root, "uncertain-receipt"), runner: async (_script, _env, options) => {
+    clicks++;
+    assert.equal(options.diagnostics, true, "image send must request fixed-token timeout diagnostics");
+    return { ok: false, reason: "powershell_timeout", diagnostics: { image_stage: "post_send_confirmation", image_clipboard_operation: "image_write" } };
+  } };
+  const uncertainResult = await sendWechatImage(uncertainImage);
+  assert.equal(uncertainResult.send_attempted, null);
+  assert.equal(uncertainResult.driver_stage, "post_send_confirmation", "a killed image sender must expose its last entered stage");
+  assert.equal(uncertainResult.clipboard_operation, "image_write");
   const afterTimeout = clicks;
   await sendWechatImage(uncertainImage);
   assert.equal(clicks, afterTimeout, "A terminated native sender remains quarantined by its durable receipt");
+  const diagnosedImage = { ...imageOptions, baseDir: path.join(root, "diagnosed-image"), runner: async () => ({
+    ok: false, reason: "image_driver_failed", sendAttempted: false, ruleId: "image-r007",
+    driverStage: "clipboard_image_write", errorLine: 167, errorId: "SetImage", errorType: "System.Runtime.InteropServices.ExternalException",
+    errorHResult: "hresult_800401D0"
+  }) };
+  const diagnosedResult = await sendWechatImage(diagnosedImage);
+  assert.deepEqual({
+    rule_id: diagnosedResult.rule_id, driver_stage: diagnosedResult.driver_stage, error_line: diagnosedResult.error_line,
+    driver_error_id: diagnosedResult.driver_error_id, driver_exception_type: diagnosedResult.driver_exception_type,
+    driver_exception_hresult: diagnosedResult.driver_exception_hresult, send_attempted: diagnosedResult.send_attempted
+  }, {
+    rule_id: "image-r007", driver_stage: "clipboard_image_write", error_line: 167, driver_error_id: "SetImage",
+    driver_exception_type: "System.Runtime.InteropServices.ExternalException", driver_exception_hresult: "hresult_800401D0",
+    send_attempted: false
+  });
 }
 
 module.exports = { checkTouchMessageSequence };
