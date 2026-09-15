@@ -85,6 +85,19 @@ function validateReuseReceipt(receipt, { buildCommit, sourceCommit, sourceTreeSh
   return receipt;
 }
 
+function validateBaseStabilization(receipt, { runtimePath, sourceRuntimeTreeSha256, packagedRuntimeTreeSha256 }) {
+  const prefix = `${String(runtimePath || "").replace(/\\/gu, "/").replace(/\/$/u, "")}/`;
+  const files = receipt?.files;
+  if (receipt?.schemaVersion !== 1 || !HASH.test(receipt.sourceTreeSha256 || "")
+    || !HASH.test(receipt.packagedTreeSha256 || "") || receipt.sourceTreeSha256 !== sourceRuntimeTreeSha256
+    || receipt.packagedTreeSha256 !== packagedRuntimeTreeSha256 || !Array.isArray(files) || !files.length
+    || new Set(files).size !== files.length || files.some((file) => typeof file !== "string" || !file.startsWith(prefix))
+    || !Number.isFinite(Date.parse(receipt.verifiedAt || ""))) {
+    throw new Error("Runtime base stabilization receipt does not match the packaged runtime");
+  }
+  return receipt;
+}
+
 function readReuseReceipt(manifestFile, manifest, source) {
   const file = `${manifestFile}.reuse.json`;
   if (!fs.existsSync(file)) return null;
@@ -157,4 +170,4 @@ function cachedRuntime({ cacheRoot, kind, fingerprint, buildCommit, destination,
   return { hit: false };
 }
 
-module.exports = { cachedRuntime, digest, readReuseReceipt, runtimeFingerprint, validateReuseReceipt };
+module.exports = { cachedRuntime, digest, readReuseReceipt, runtimeFingerprint, validateBaseStabilization, validateReuseReceipt };

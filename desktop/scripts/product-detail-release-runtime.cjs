@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
-const { readReuseReceipt, validateReuseReceipt } = require("./release-runtime-cache.cjs");
+const { readReuseReceipt, validateBaseStabilization, validateReuseReceipt } = require("./release-runtime-cache.cjs");
 const {
   productDetailSourceTreeSha256,
   resolveBuildPaths
@@ -196,9 +196,17 @@ function validateReleaseDescriptor(descriptor) {
   if (descriptor.desktopSourceDirty !== false) {
     throw new Error("Portable manifest product-detail desktop source must be clean");
   }
+  const originalRuntimeTreeSha256 = descriptor.originalRuntimeTreeSha256 || descriptor.treeSha256;
+  if (descriptor.baseStabilization) {
+    validateBaseStabilization(descriptor.baseStabilization, {
+      runtimePath: descriptor.path,
+      sourceRuntimeTreeSha256: originalRuntimeTreeSha256,
+      packagedRuntimeTreeSha256: descriptor.treeSha256
+    });
+  }
   if (descriptor.reuseReceipt || descriptor.desktopSourceCommit !== descriptor.buildCommit) {
     validateReuseReceipt(descriptor.reuseReceipt, { buildCommit: descriptor.buildCommit, sourceCommit: descriptor.desktopSourceCommit,
-      sourceTreeSha256: descriptor.desktopSourceTreeSha256, runtimeTreeSha256: descriptor.treeSha256 });
+      sourceTreeSha256: descriptor.desktopSourceTreeSha256, runtimeTreeSha256: originalRuntimeTreeSha256 });
   }
   if (!SHA256_PATTERN.test(String(descriptor.desktopSourceTreeSha256 || ""))) {
     throw new Error("Portable manifest has an invalid product-detail desktop source tree hash");

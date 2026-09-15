@@ -7,6 +7,7 @@ const { parseBuildArgs, resolveAcceptedBaseRoot, recordAcceptedBaseRoot } = requ
 const { publication } = require("./publish-internal-release.cjs");
 const { stabilizePythonLibrary } = require("./python-library-archive.cjs");
 const { readComponentBase, pythonLibraryReference, assertComponentBase, stabilizeEquivalentBaseFiles } = require("./component-base-input.cjs");
+const { describeBaseStabilizedRuntime, treeSha256 } = require("./build-portable-release.cjs");
 const { digest, treeHash } = require("../src/shared/component-contract.cjs");
 
 async function main() {
@@ -82,6 +83,20 @@ async function main() {
     assert.deepEqual(stabilizeEquivalentBaseFiles(candidateRoot, textRoot), [textRelative]);
     assert.deepEqual(fs.readFileSync(path.join(candidateRoot, textRelative)), acceptedText,
       "Line-ending-only base differences retain the accepted installed bytes");
+    const runtimeRoot = path.join(candidateRoot, "resources", "product-detail");
+    fs.mkdirSync(path.join(runtimeRoot, "_internal"), { recursive: true });
+    fs.writeFileSync(path.join(runtimeRoot, "_internal", "model.json"), "{}\r\n", "utf8");
+    const sourceTreeSha256 = "1".repeat(64);
+    const descriptor = describeBaseStabilizedRuntime({
+      path: "resources/product-detail",
+      treeSha256: sourceTreeSha256,
+      reuseReceipt: { runtimeTreeSha256: sourceTreeSha256 }
+    }, candidateRoot, [textRelative, "resources/product-detail/_internal/model.json"]);
+    assert.equal(descriptor.treeSha256, treeSha256(runtimeRoot));
+    assert.equal(descriptor.reuseReceipt.runtimeTreeSha256, sourceTreeSha256);
+    assert.equal(descriptor.originalRuntimeTreeSha256, sourceTreeSha256);
+    assert.deepEqual(descriptor.baseStabilization.files, ["resources/product-detail/_internal/model.json"]);
+    assert.equal(descriptor.baseStabilization.sourceTreeSha256, sourceTreeSha256);
 
     const buildRoot = path.join(root, "build-records");
     assert.equal(resolveAcceptedBaseRoot(null, "test", buildRoot, textRoot), textRoot);

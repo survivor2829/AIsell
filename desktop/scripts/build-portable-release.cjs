@@ -101,6 +101,26 @@ function carryAcceptedRuntimeDescriptor(descriptor, buildCommit) {
   };
 }
 
+function describeBaseStabilizedRuntime(descriptor, releaseTarget, stabilizedFiles) {
+  const prefix = `${descriptor.path.replace(/\\/gu, "/").replace(/\/$/u, "")}/`;
+  const files = stabilizedFiles.filter((file) => file.startsWith(prefix));
+  if (!files.length) return descriptor;
+  const sourceTreeSha256 = descriptor.treeSha256;
+  const treeSha256AfterStabilization = treeSha256(path.join(releaseTarget, ...descriptor.path.split("/")));
+  return {
+    ...descriptor,
+    treeSha256: treeSha256AfterStabilization,
+    originalRuntimeTreeSha256: descriptor.originalRuntimeTreeSha256 || sourceTreeSha256,
+    baseStabilization: {
+      schemaVersion: 1,
+      sourceTreeSha256,
+      packagedTreeSha256: treeSha256AfterStabilization,
+      files,
+      verifiedAt: new Date().toISOString()
+    }
+  };
+}
+
 function resolveInstalledPackage(packageName, fromDir) {
   const parts = packageName.split("/");
   let current = path.resolve(fromDir);
@@ -304,17 +324,17 @@ function buildPortableStaging(edition, paths, sourceState) {
     copyContentEngineRuntime(sourceState.contentEngineRuntime, target);
   }
   const remotionRuntime = acceptedRuntimeManifest?.remotionRuntime || copyRemotionRuntime(sourceState.remotionRuntime, target);
-  if (edition === "test" && paths.componentsOnly && sourceState.componentBaseRoot) {
-    const stabilized = require("./component-base-input.cjs").stabilizeEquivalentBaseFiles(target, sourceState.componentBaseRoot);
-    if (stabilized.length) console.log(`Retained accepted bytes for ${stabilized.length} line-ending-equivalent base files.`);
-  }
+  const stabilizedBaseFiles = edition === "test" && paths.componentsOnly && sourceState.componentBaseRoot
+    ? require("./component-base-input.cjs").stabilizeEquivalentBaseFiles(target, sourceState.componentBaseRoot)
+    : [];
+  if (stabilizedBaseFiles.length) console.log(`Retained accepted bytes for ${stabilizedBaseFiles.length} line-ending-equivalent base files.`);
 
   const packageJson = JSON.parse(fs.readFileSync(path.join(desktopDir, "package.json"), "utf8"));
   require("../src/shared/customer-release-notes.cjs").releaseNotes(packageJson.version);
   const electronPackage = JSON.parse(fs.readFileSync(path.join(desktopDir, "node_modules", "electron", "package.json"), "utf8"));
   const rendererMarker = JSON.parse(fs.readFileSync(path.join(desktopDir, edition === "test" ? "dist-development" : "dist-pilot", "build-edition.json"), "utf8"));
   const capabilityMatrix = JSON.parse(fs.readFileSync(path.join(desktopDir, "release-capabilities.json"), "utf8"));
-  const contentEngineSidecar = acceptedRuntimeManifest
+  let contentEngineSidecar = acceptedRuntimeManifest
     ? carryAcceptedRuntimeDescriptor(acceptedRuntimeManifest.contentEngineSidecar, sourceState.commit)
     : createContentEngineReleaseDescriptor(
     sourceState.contentEngineRuntime,
@@ -322,6 +342,10 @@ function buildPortableStaging(edition, paths, sourceState) {
     sourceState.artifactType
   );
   if (!acceptedRuntimeManifest) contentEngineSidecar.treeSha256 = treeSha256(path.join(target, "resources", "content-engine"));
+  contentEngineSidecar = describeBaseStabilizedRuntime(contentEngineSidecar, target, stabilizedBaseFiles);
+  const productDetailSidecar = describeBaseStabilizedRuntime(acceptedRuntimeManifest
+    ? carryAcceptedRuntimeDescriptor(acceptedRuntimeManifest.productDetailSidecar, sourceState.commit)
+    : createReleaseDescriptor(sourceState.productDetailRuntime, sourceState.commit), target, stabilizedBaseFiles);
   const manifest = {
     product: PRODUCT_NAME,
     edition,
@@ -337,9 +361,7 @@ function buildPortableStaging(edition, paths, sourceState) {
     wxKeySha256: NATIVE_LIBRARY_SHA256["wx_key.dll"],
     databaseDecryptorSha256: DATABASE_DECRYPTOR_SHA256,
     nativeLibrarySha256: NATIVE_LIBRARY_SHA256,
-    productDetailSidecar: acceptedRuntimeManifest
-      ? carryAcceptedRuntimeDescriptor(acceptedRuntimeManifest.productDetailSidecar, sourceState.commit)
-      : createReleaseDescriptor(sourceState.productDetailRuntime, sourceState.commit),
+    productDetailSidecar,
     contentEngineSidecar,
     remotionRuntime,
     wechatCompatibility: capabilityMatrix.wechatCompatibility,
@@ -624,6 +646,7 @@ module.exports = {
   buildPortable,
   cleanupPaths,
   copyRuntimePackageTree,
+  describeBaseStabilizedRuntime,
   isCommercialDeliveryReady,
   publishStagedRelease,
   runTransactionalRelease,
