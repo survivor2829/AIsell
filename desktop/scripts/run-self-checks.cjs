@@ -31,6 +31,7 @@ const checks = [
   "src/main/diagnostics.self_check.cjs",
   "src/main/cloud-maintenance.self_check.cjs",
   "scripts/update-helper.electron.self_check.cjs",
+  "scripts/update-helper.e2e.cjs",
   "scripts/component-update-selftest.cjs",
   "src/main/feedback.self_check.cjs",
   "src/main/role-preferences.self_check.cjs",
