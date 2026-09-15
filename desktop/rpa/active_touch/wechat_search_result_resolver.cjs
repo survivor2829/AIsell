@@ -116,7 +116,7 @@ function labelledWechatIdCandidates(candidates, query, webSearchTop) {
 }
 
 function isNetworkSearchLabel(candidate, query) {
-  const text = normalized(candidate?.text);
+  const text = normalized(candidate?.text).replace(/^[^\p{L}\p{N}]{1,2}/u, "");
   const expectedQuery = normalized(query);
   const labels = ["搜一搜", "网络搜索", "搜索网络", "搜索网络结果"];
   for (const label of labels) {
@@ -154,6 +154,46 @@ function isNearbyLocalResult(candidate, webSearchCandidates, webSearchTop) {
   });
 }
 
+function uniqueCompactLocalSurface(visualCandidates, webSearchTop) {
+  const nearby = visualCandidates
+    .filter((candidate) => {
+      const height = Number(candidate.bottom) - Number(candidate.top);
+      return Number(candidate.bottom) <= webSearchTop
+        && webSearchTop - Number(candidate.bottom) <= Math.max(72, height * 3);
+    })
+    .sort((left, right) => Number(left.top) - Number(right.top));
+  if (!nearby.length) return null;
+
+  const groups = [];
+  for (const candidate of nearby) {
+    const current = groups.at(-1);
+    const height = Number(candidate.bottom) - Number(candidate.top);
+    const gapLimit = Math.max(10, Math.min(18, height * 0.6));
+    if (!current || Number(candidate.top) - current.bottom > gapLimit) {
+      groups.push({ items: [candidate], bottom: Number(candidate.bottom) });
+    } else {
+      current.items.push(candidate);
+      current.bottom = Math.max(current.bottom, Number(candidate.bottom));
+    }
+  }
+  if (groups.length !== 1) return null;
+
+  const items = groups[0].items;
+  const left = Math.min(...items.map((candidate) => Number(candidate.left)));
+  const top = Math.min(...items.map((candidate) => Number(candidate.top)));
+  const right = Math.max(...items.map((candidate) => Number(candidate.right)));
+  const bottom = Math.max(...items.map((candidate) => Number(candidate.bottom)));
+  return {
+    text: items.map((candidate) => String(candidate.text || "")).join(" "),
+    left,
+    top,
+    right,
+    bottom,
+    x: Math.round((left + right) / 2),
+    y: Math.round((top + bottom) / 2)
+  };
+}
+
 function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   const query = String(identity.query ?? "").trim();
   const expectedName = String(identity.expectedName ?? "").trim();
@@ -178,31 +218,62 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
     return { status: "unverified", reason: "search_result_identity_unverified" };
   }
   const visualCandidates = distinctCandidates(visualItems);
-  const webSearchCandidates = distinctCandidates(webItems);
+  const webSearchCandidates = distinctCandidates([
+    ...webItems,
+    ...visualCandidates.filter((candidate) => isNetworkSearchLabel(candidate, query))
+  ]);
+  const webSearchTop = webSearchCandidates.length
+    ? Math.min(...webSearchCandidates.map((candidate) => Number(candidate.top)))
+    : cropBounds.bottom;
+  const localVisualCandidates = visualCandidates.filter((candidate) => Number(candidate.bottom) <= webSearchTop);
+  const labelledAcrossCrop = labelledWechatIdCandidates(localVisualCandidates, query, webSearchTop)
+    .filter((candidate) => labelledWechatId(candidate));
+  const exactLabelledAcrossCrop = labelledAcrossCrop.filter((candidate) => labelledWechatId(candidate) === normalized(query));
+  if (exactLabelledAcrossCrop.length === 1) {
+    return { status: "selected", mode: "exact_wechat_id_visual", candidate: exactLabelledAcrossCrop[0] };
+  }
+  if (labelledAcrossCrop.length === 1) {
+    return { status: "selected", mode: "unique_local_visual", candidate: labelledAcrossCrop[0] };
+  }
+  if (labelledAcrossCrop.length > 1) {
+    return { status: "unverified", reason: "search_result_identity_unverified" };
+  }
   if (!webSearchCandidates.length || webSearchCandidates.some((candidate) => !isNetworkSearchLabel(candidate, query))) {
     return { status: "unverified", reason: "search_result_identity_unverified" };
   }
-  const webSearchTop = Math.min(...webSearchCandidates.map((candidate) => Number(candidate.top)));
+  const hasReportedWebSearchTop = observation.webSearchTop !== null
+    && observation.webSearchTop !== undefined
+    && observation.webSearchTop !== "";
   const reportedWebSearchTop = Number(observation.webSearchTop);
-  if (!Number.isFinite(reportedWebSearchTop) || reportedWebSearchTop !== webSearchTop
-    || reportedWebSearchTop < cropBounds.top || reportedWebSearchTop >= cropBounds.bottom) {
+  if ((hasReportedWebSearchTop && (!Number.isFinite(reportedWebSearchTop) || reportedWebSearchTop !== webSearchTop))
+    || webSearchTop < cropBounds.top || webSearchTop >= cropBounds.bottom) {
     return { status: "unverified", reason: "search_result_identity_unverified" };
   }
-  const labelledCandidates = labelledWechatIdCandidates(visualCandidates, query, webSearchTop)
+  const labelledCandidates = labelledWechatIdCandidates(localVisualCandidates, query, webSearchTop)
     .filter((candidate) => labelledWechatId(candidate));
   const exactLabelledCandidates = labelledCandidates.filter((candidate) => labelledWechatId(candidate) === normalized(query));
   const exactLocalCandidates = exactLabelledCandidates.filter((candidate) => Number(candidate.bottom) <= webSearchTop);
   if (exactLocalCandidates.length === 1 && labelledCandidates.length === 1) {
     return { status: "selected", mode: "exact_wechat_id_visual", candidate: exactLocalCandidates[0] };
   }
+  const localLabelledCandidates = labelledCandidates.filter((candidate) => Number(candidate.bottom) <= webSearchTop);
+  if (localLabelledCandidates.length === 1 && labelledCandidates.length === 1) {
+    return { status: "selected", mode: "unique_local_visual", candidate: localLabelledCandidates[0] };
+  }
   const queryEcho = normalized(query);
-  const exactUnlabelledLocalCandidates = visualCandidates.filter((candidate) => normalized(candidate?.text) === queryEcho
+  const exactUnlabelledLocalCandidates = localVisualCandidates.filter((candidate) => normalized(candidate?.text) === queryEcho
     && !webSearchCandidates.some((webCandidate) => composesNetworkEcho(candidate, webCandidate))
     && isNearbyLocalResult(candidate, webSearchCandidates, webSearchTop));
   if (labelledCandidates.length === 0 && exactUnlabelledLocalCandidates.length === 1) {
     return { status: "selected", mode: "exact_wechat_id_local_visual", candidate: exactUnlabelledLocalCandidates[0] };
   }
-  const unexplainedCandidates = visualCandidates.filter((candidate) => normalized(candidate?.text) !== queryEcho
+  const uniqueLocalSurface = labelledCandidates.length === 0
+    ? uniqueCompactLocalSurface(localVisualCandidates, webSearchTop)
+    : null;
+  if (uniqueLocalSurface) {
+    return { status: "selected", mode: "unique_local_surface_visual", candidate: uniqueLocalSurface };
+  }
+  const unexplainedCandidates = localVisualCandidates.filter((candidate) => normalized(candidate?.text) !== queryEcho
     || !webSearchCandidates.some((webCandidate) => composesNetworkEcho(candidate, webCandidate)));
   if (labelledCandidates.length > 0 || unexplainedCandidates.length > 0) {
     return { status: "unverified", reason: "search_result_identity_unverified" };
@@ -211,7 +282,7 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
 }
 
 function isVerifiedWechatSearchResultMode(mode) {
-  return ["unique_local_uia", "identity_matched_uia", "exact_wechat_id_visual", "exact_wechat_id_local_visual"].includes(mode);
+  return ["unique_local_uia", "identity_matched_uia", "exact_wechat_id_visual", "unique_local_visual", "exact_wechat_id_local_visual", "unique_local_surface_visual"].includes(mode);
 }
 
 module.exports = { isVerifiedWechatSearchResultMode, resolveWechatSearchResultObservation };

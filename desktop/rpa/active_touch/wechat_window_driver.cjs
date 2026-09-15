@@ -1595,7 +1595,8 @@ ${WECHAT_SEARCH_INPUT_GUARD_CSHARP}
 "@
 $query = [Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_QUERY")
 $compactQuery = [Text.RegularExpressions.Regex]::Replace(([string]$query).Normalize([Text.NormalizationForm]::FormKC), "\\s+", "").ToLowerInvariant()
-$networkSearchPattern = "^(?:搜一搜|网络搜索|搜索网络|搜索网络结果)(?:" + [Text.RegularExpressions.Regex]::Escape($compactQuery) + ")?$"
+$networkSearchPattern = "^[^\\p{L}\\p{Nd}]{0,2}(?:搜一搜|网络搜索|搜索网络|搜索网络结果)(?:" + [Text.RegularExpressions.Regex]::Escape($compactQuery) + ")?$"
+$ocrScale = 2
 $pressEnter = [Environment]::GetEnvironmentVariable("XIAOXI_PRESS_ENTER") -eq "1"
 $resultAutomationId = [Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_RESULT_AUTOMATION_ID")
 $observeLocalResults = [Environment]::GetEnvironmentVariable("XIAOXI_OBSERVE_LOCAL_RESULTS") -eq "1"
@@ -1763,7 +1764,7 @@ if ($observeLocalResults) {
     if ($uiaCandidates.Count -eq 0 -and $attempt -lt 4) { Start-Sleep -Milliseconds 250 }
   }
   if ($uiaCandidates.Count -eq 0) {
-    $bitmap = $null; $graphics = $null; $memory = $null; $random = $null; $software = $null
+    $bitmap = $null; $graphics = $null; $ocrBitmap = $null; $ocrGraphics = $null; $memory = $null; $random = $null; $software = $null
     try {
       Add-Type -AssemblyName System.Drawing
       Add-Type -AssemblyName System.Runtime.WindowsRuntime
@@ -1783,8 +1784,12 @@ if ($observeLocalResults) {
       $bitmap = [System.Drawing.Bitmap]::new($cropWidth, $cropHeight, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
       $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
       $graphics.CopyFromScreen($cropLeft, $cropTop, 0, 0, [System.Drawing.Size]::new($cropWidth, $cropHeight), [System.Drawing.CopyPixelOperation]::SourceCopy)
+      $ocrBitmap = [System.Drawing.Bitmap]::new($cropWidth * $ocrScale, $cropHeight * $ocrScale, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+      $ocrGraphics = [System.Drawing.Graphics]::FromImage($ocrBitmap)
+      $ocrGraphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+      $ocrGraphics.DrawImage($bitmap, 0, 0, $ocrBitmap.Width, $ocrBitmap.Height)
       $memory = [IO.MemoryStream]::new()
-      $bitmap.Save($memory, [System.Drawing.Imaging.ImageFormat]::Png)
+      $ocrBitmap.Save($memory, [System.Drawing.Imaging.ImageFormat]::Png)
       $random = [Windows.Storage.Streams.InMemoryRandomAccessStream]::new()
       $writer = [Windows.Storage.Streams.DataWriter]::new($random)
       $writer.WriteBytes($memory.ToArray())
@@ -1806,12 +1811,12 @@ if ($observeLocalResults) {
         $bottom = ($words | ForEach-Object { [double]($_.BoundingRect.Y + $_.BoundingRect.Height) } | Measure-Object -Maximum).Maximum
         $candidate = @{
           text = $text
-          left = [int]($cropLeft + $left)
-          top = [int]($cropTop + $top)
-          right = [int]($cropLeft + $right)
-          bottom = [int]($cropTop + $bottom)
-          x = [int]($cropLeft + (($left + $right) / 2))
-          y = [int]($cropTop + (($top + $bottom) / 2))
+          left = [int]($cropLeft + ($left / $ocrScale))
+          top = [int]($cropTop + ($top / $ocrScale))
+          right = [int]($cropLeft + ($right / $ocrScale))
+          bottom = [int]($cropTop + ($bottom / $ocrScale))
+          x = [int]($cropLeft + (($left + $right) / (2 * $ocrScale)))
+          y = [int]($cropTop + (($top + $bottom) / (2 * $ocrScale)))
         }
         if ([Text.RegularExpressions.Regex]::IsMatch($compactText, $networkSearchPattern)) {
           $webSearchVisible = $true
@@ -1825,7 +1830,7 @@ if ($observeLocalResults) {
     } catch {
       $ocrOk = $false
     } finally {
-      if ($graphics) { $graphics.Dispose() }; if ($bitmap) { $bitmap.Dispose() }; if ($software) { $software.Dispose() }; if ($random) { $random.Dispose() }; if ($memory) { $memory.Dispose() }
+      if ($ocrGraphics) { $ocrGraphics.Dispose() }; if ($ocrBitmap) { $ocrBitmap.Dispose() }; if ($graphics) { $graphics.Dispose() }; if ($bitmap) { $bitmap.Dispose() }; if ($software) { $software.Dispose() }; if ($random) { $random.Dispose() }; if ($memory) { $memory.Dispose() }
     }
   }
   Assert-ExactSearchForeground
@@ -1875,6 +1880,9 @@ public static class Win32WechatSearchResultClick {
   public static uint GetLastInputTick() { LASTINPUTINFO info = new LASTINPUTINFO(); info.cbSize = (uint)Marshal.SizeOf(info); return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue; }
 }
 "@
+function Test-SearchResultClickTarget([int64]$hitHWnd, [int]$hitPid, [int]$expectedPid) {
+  return $hitHWnd -ne 0 -and $hitPid -eq $expectedPid
+}
 $expectedHWnd = [int64][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND")
 $expectedPid = [int][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")
 $expectedInputTick = [uint64][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_INPUT_TICK")
@@ -1887,7 +1895,7 @@ if ($currentTick -ne $expectedInputTick) { @{ ok=$false; reason="wechat_external
 $point = New-Object Win32WechatSearchResultClick+POINT; $point.X=$clickX; $point.Y=$clickY
 $hit = [Win32WechatSearchResultClick]::WindowFromPoint($point); $root = [Win32WechatSearchResultClick]::GetAncestor($hit, 2)
 [uint32]$hitPid=0; [void][Win32WechatSearchResultClick]::GetWindowThreadProcessId($hit, [ref]$hitPid)
-if ($root.ToInt64() -ne $expectedHWnd -or [int]$hitPid -ne $expectedPid) { @{ ok=$false; reason="wechat_target_changed" } | ConvertTo-Json -Compress; exit }
+if (-not (Test-SearchResultClickTarget $hit.ToInt64() ([int]$hitPid) $expectedPid)) { @{ ok=$false; reason="wechat_target_changed"; safety_diagnostics=@{ phase="before_search_result_click"; expected_hWnd=$expectedHWnd; hit_hWnd=$hit.ToInt64(); hit_root_hWnd=$root.ToInt64(); expected_pid=$expectedPid; hit_pid=[int]$hitPid } } | ConvertTo-Json -Compress -Depth 4; exit }
 [void][Win32WechatSearchResultClick]::SetCursorPos($clickX,$clickY)
 [Win32WechatSearchResultClick]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero); [Win32WechatSearchResultClick]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
 Start-Sleep -Milliseconds 500

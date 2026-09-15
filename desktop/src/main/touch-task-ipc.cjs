@@ -81,7 +81,7 @@ function resultCode(result) {
 function resultReason(result, fallback) {
   const code = resultCode(result);
   if (/^message_input_failed_wechat_user_active(?:_attempts_[1-9]\d*)?$/u.test(code)) {
-    return "电脑输入状态发生变化，草稿未写入微信，正在等待后恢复";
+    return "电脑输入状态发生变化，消息尚未发送，正在等待后恢复";
   }
   const labels = {
     wechat_window_not_found: "未找到微信聊天主窗口，已尝试自动拉起；若停在登录确认，请先完成微信登录",
@@ -154,19 +154,15 @@ function isRecoverablePreDraftInputBlock(response, result) {
   if (["prepared", "clicked", "outcome_unknown"].includes(String(result?.status || "")) || result?.retry_blocked === true) return false;
   const code = resultCode(response);
   if (code === "wechat_external_input_detected") return String(response?.action || "") === "click-search-result-dry-run";
-  const safety = response?.safety_diagnostics && typeof response.safety_diagnostics === "object"
-    ? response.safety_diagnostics
-    : {};
   return /^message_input_failed_wechat_user_active(?:_attempts_[1-9]\d*)?$/u.test(code)
-    && String(response?.action || "") === "input-message-dry-run"
-    && String(safety.phase || "") === "pre_input";
+    && String(response?.action || "") === "input-message-dry-run";
 }
 
 function preDraftRecoveryReason(response, attempt) {
   const detail = resultCode(response) === "wechat_external_input_detected"
     ? "微信写入前检测到电脑输入状态变化"
-    : "微信草稿写入前检测到电脑输入状态变化";
-  return `${detail}；消息未写入微信，文案已保留，正在等待后自动恢复（第 ${attempt} 次）`;
+    : "微信发送前检测到电脑输入状态变化";
+  return `${detail}；消息尚未发送，文案已保留，正在等待后自动恢复（第 ${attempt} 次）`;
 }
 
 async function waitForPreDraftInputRecovery() {

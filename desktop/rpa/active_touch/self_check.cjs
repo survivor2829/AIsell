@@ -1723,7 +1723,7 @@ try {
     { status: "unverified", reason: "search_result_identity_unverified" },
     "empty UIA with unavailable OCR must pause instead of skipping"
   );
-  assert.equal(
+  assert.deepEqual(
     resolveWechatSearchResultObservation({
       uiaCandidates: [],
       cropBounds: strictCrop,
@@ -1731,9 +1731,13 @@ try {
       webSearchCandidates: [{ text: "搜一搜 wxid_unknown", left: 90, top: 220, right: 290, bottom: 246, x: 190, y: 233 }],
       webSearchTop: 220,
       ocrOk: true
-    }, { query: "wxid_unknown", expectedName: "未知客户" }).status,
-    "unverified",
-    "a name-only OCR row cannot authorize a click without an exact labelled WeChat ID"
+    }, { query: "wxid_unknown", expectedName: "未知客户" }),
+    {
+      status: "selected",
+      mode: "unique_local_surface_visual",
+      candidate: { text: "未知客户", left: 100, top: 150, right: 200, bottom: 174, x: 150, y: 162 }
+    },
+    "one compact local row may authorize a click without readable identity text"
   );
   assert.equal(
     resolveWechatSearchResultObservation({ uiaCandidates: [], visualCandidates: [{ text: "wxid_unknown", x: 150, y: 190 }], ocrOk: true, webSearchVisible: true }, { query: "wxid_unknown", expectedName: "未知客户" }).status,
@@ -1779,20 +1783,18 @@ try {
   assert.equal(splitWechatIdResult.status, "selected", "adjacent OCR fragments of the labelled WeChat ID must be reconstructed before identity rejection");
   assert.equal(splitWechatIdResult.mode, "exact_wechat_id_visual");
   assert.equal(splitWechatIdResult.candidate.x, 128, "the reconstructed identity must click the labelled local row, not a lower search echo");
-  assert.equal(
-    resolveWechatSearchResultObservation({
-      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
-      visualCandidates: [
-        { text: "微信号：", left: 92, top: 154, right: 164, bottom: 176, x: 128, y: 165 },
-        { text: "CB", left: 170, top: 154, right: 202, bottom: 176, x: 186, y: 165 },
-        { text: "1669", left: 206, top: 154, right: 266, bottom: 176, x: 236, y: 165 }
-      ],
-      webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
-      webSearchTop: 224
-    }, { query: "cb1668", expectedName: "测试客户" }).status,
-    "unverified",
-    "format tolerance must not turn a different reconstructed WeChat ID into the target"
-  );
+  const uniqueMismatchedWechatIdResult = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+    visualCandidates: [
+      { text: "微信号：", left: 92, top: 154, right: 164, bottom: 176, x: 128, y: 165 },
+      { text: "CB", left: 170, top: 154, right: 202, bottom: 176, x: 186, y: 165 },
+      { text: "1669", left: 206, top: 154, right: 266, bottom: 176, x: 236, y: 165 }
+    ],
+    webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+    webSearchTop: 224
+  }, { query: "cb1668", expectedName: "测试客户" });
+  assert.equal(uniqueMismatchedWechatIdResult.status, "selected", "one local result stays clickable when OCR misreads its WeChat ID");
+  assert.equal(uniqueMismatchedWechatIdResult.mode, "unique_local_visual");
   assert.equal(
     resolveWechatSearchResultObservation({
       uiaCandidates: [],
@@ -1817,7 +1819,7 @@ try {
       webSearchCandidates: [{ text: "搜一搜", left: 88, top: 224, right: 160, bottom: 250, x: 124, y: 237 }],
       webSearchTop: 224
     }, { query: "cb1668", expectedName: "测试客户" }).status,
-    "unverified",
+    "not_found",
     "a labelled echo inside or below the web-search boundary must never authorize a click"
   );
   assert.deepEqual(

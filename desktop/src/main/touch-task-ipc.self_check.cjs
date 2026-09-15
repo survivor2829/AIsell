@@ -438,22 +438,27 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
-    let unsafeInputLeaseAttempts = 0;
-    executorBehavior = async () => {
-      unsafeInputLeaseAttempts += 1;
-      return {
-        ok: false,
-        action: "input-message-dry-run",
-        blocked_reason: "message_input_failed_wechat_user_active",
-        send_attempted: false,
-        send_result: "not_attempted",
-        safety_diagnostics: { phase: "after_paste", expected_input_tick: 301, current_input_tick: 302 }
-      };
+    let touchedDraftRecoveryAttempts = 0;
+    executorBehavior = async (options) => {
+      touchedDraftRecoveryAttempts += 1;
+      if (touchedDraftRecoveryAttempts === 1) {
+        return {
+          ok: false,
+          action: "input-message-dry-run",
+          blocked_reason: "message_input_failed_wechat_user_active",
+          send_attempted: false,
+          send_result: "not_attempted",
+          safety_diagnostics: { phase: "copy_probe", expected_input_tick: 301, current_input_tick: 302 }
+        };
+      }
+      options.onTransition("sent_verified", { real_send_attempt_key: "recovered-touched-draft" });
+      return { ok: true, state: { real_send_status: "sent_verified", real_send_attempt_key: "recovered-touched-draft" } };
     };
-    await start({}, { script: "草稿已触碰后不可自动覆盖", clickToken: "trusted-input-lease-no-retry" });
-    const unsafeInputLease = await waitFor(status, (value) => value.task?.status === "paused");
-    assert.equal(unsafeInputLeaseAttempts, 1, "a lease block after draft interaction must stay fail-closed");
-    assert.equal(unsafeInputLease.task.results[0].status, "blocked");
+    await start({}, { script: "草稿写入后输入变化恢复", clickToken: "trusted-input-lease-retry" });
+    const recoveredTouchedDraft = await waitFor(status, (value) => value.task?.status === "completed");
+    assert.equal(touchedDraftRecoveryAttempts, 2, "an input interruption before send must retry even when a replaceable draft already exists");
+    assert.equal(recoveredTouchedDraft.task.results[0].status, "sent_verified");
+    assert.equal(recoveredTouchedDraft.task.results[0].last_failure_context?.phase, "copy_probe");
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
