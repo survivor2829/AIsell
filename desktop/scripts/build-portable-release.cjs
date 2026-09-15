@@ -362,6 +362,10 @@ function buildPortableStaging(edition, paths, sourceState) {
     `界面和版本清单中的构建编号应当都是：${manifest.buildId}`
   ].join("\n") + "\n", "utf8");
   if (edition === "test") {
+    if (paths.componentsOnly && sourceState.componentBaseRoot) {
+      const stabilized = require("./component-base-input.cjs").stabilizeEquivalentBaseFiles(target, sourceState.componentBaseRoot);
+      if (stabilized.length) console.log(`Retained accepted bytes for ${stabilized.length} line-ending-equivalent base files.`);
+    }
     const baseline = spawnSync(process.execPath, [path.join(__dirname, "write-component-baseline.cjs"), target, path.join(releaseDir, "components", edition)], { encoding: "utf8", windowsHide: true });
     if (baseline.status !== 0) throw new Error(baseline.stderr || baseline.stdout || "component baseline failed");
     console.log(baseline.stdout.trim());

@@ -27,6 +27,39 @@ function pythonLibraryReference(root, baseline, kind = "content-engine") {
   return { file, sha256: entry.sha256 };
 }
 
+const textBaseExtensions = new Set([".cjs", ".mjs", ".js", ".json", ".txt", ".crt", ".css", ".html", ".svg", ".xml", ".md"]);
+
+function normalizedText(buffer, filename) {
+  if (!textBaseExtensions.has(path.extname(filename).toLowerCase()) || buffer.includes(0)) return null;
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(buffer).replace(/\r\n?/gu, "\n");
+  } catch {
+    return null;
+  }
+}
+
+function stabilizeEquivalentBaseFiles(candidateRoot, acceptedRoot) {
+  const baseline = readComponentBase(acceptedRoot, true);
+  const stabilized = [];
+  for (const entry of baseline.files.filter(file => file.component === "base")) {
+    const acceptedFile = path.join(acceptedRoot, entry.path);
+    const candidateFile = path.join(candidateRoot, entry.path);
+    if (!fs.existsSync(acceptedFile) || !fs.existsSync(candidateFile)) continue;
+    const accepted = fs.readFileSync(acceptedFile);
+    if (accepted.length !== entry.size || digest(accepted) !== entry.sha256) {
+      throw new Error(`Accepted component base file has changed on disk: ${entry.path}`);
+    }
+    const candidate = fs.readFileSync(candidateFile);
+    if (candidate.equals(accepted)) continue;
+    const acceptedText = normalizedText(accepted, entry.path);
+    const candidateText = normalizedText(candidate, entry.path);
+    if (acceptedText === null || candidateText === null || acceptedText !== candidateText) continue;
+    fs.copyFileSync(acceptedFile, candidateFile);
+    stabilized.push(entry.path);
+  }
+  return stabilized;
+}
+
 function assertComponentBase(metadata, root) {
   const baseline = readComponentBase(root, true);
   try { assertCompatible(metadata.manifest, baseline); }
@@ -42,4 +75,4 @@ function assertComponentBase(metadata, root) {
   }
 }
 
-module.exports = { readComponentBase, pythonLibraryReference, assertComponentBase };
+module.exports = { readComponentBase, pythonLibraryReference, stabilizeEquivalentBaseFiles, assertComponentBase };

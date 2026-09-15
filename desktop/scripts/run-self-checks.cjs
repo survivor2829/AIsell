@@ -1,8 +1,9 @@
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 
 const desktopDir = path.resolve(__dirname, "..");
 const checks = [
+  "scripts/run-self-checks.self_check.cjs",
   "scripts/artifact-retention.self_check.cjs",
   "scripts/build-renderer.self_check.cjs",
   "rpa/active_touch/wechat_window_layout.self_check.cjs",
@@ -82,15 +83,66 @@ const checks = [
   "scripts/customer-edition.self_check.cjs"
 ];
 
-for (const check of checks) {
-  console.log(`\n> ${check}`);
-  const result = spawnSync(process.execPath, [path.join(desktopDir, check)], {
-    cwd: desktopDir,
-    env: process.env,
-    stdio: "inherit",
-    windowsHide: true
-  });
-  if (result.status !== 0) process.exit(result.status || 1);
+const groupDefinitions = [
+  {
+    name: "active-touch",
+    matches: check => /src\/main\/(?:active-touch(?:-dev)?-ipc|touch-task-ipc|wechat-workflow)\.self_check\.cjs$/u.test(check)
+  },
+  {
+    name: "moments",
+    matches: check => /src\/(?:main|renderer)\/moments-[^/]+\.self_check\.cjs$/u.test(check)
+  },
+  {
+    name: "auto-reply",
+    matches: check => check === "src/main/auto-reply-ipc.self_check.cjs"
+  }
+];
+const parallelCheckGroups = groupDefinitions.map(group => ({
+  name: group.name,
+  checks: checks.filter(group.matches)
+}));
+const groupedChecks = new Set(parallelCheckGroups.flatMap(group => group.checks));
+const serialChecks = checks.filter(check => !groupedChecks.has(check));
+
+function runChecks(list) {
+  for (const check of list) {
+    console.log(`\n> ${check}`);
+    const result = spawnSync(process.execPath, [path.join(desktopDir, check)], {
+      cwd: desktopDir,
+      env: process.env,
+      stdio: "inherit",
+      windowsHide: true
+    });
+    if (result.status !== 0) process.exit(result.status || 1);
+  }
 }
 
-console.log("\nall source self-checks passed");
+function runParallelGroup(group) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [__filename, `--group=${group.name}`], {
+      cwd: desktopDir,
+      env: process.env,
+      stdio: "inherit",
+      windowsHide: true
+    });
+    child.once("error", reject);
+    child.once("exit", code => code === 0 ? resolve() : reject(new Error(`${group.name} self-checks failed with status ${code}`)));
+  });
+}
+
+async function main(args = process.argv.slice(2)) {
+  const requestedGroup = args.find(arg => arg.startsWith("--group="))?.slice("--group=".length);
+  if (requestedGroup) {
+    const group = parallelCheckGroups.find(item => item.name === requestedGroup);
+    if (!group) throw new Error(`Unknown self-check group: ${requestedGroup}`);
+    runChecks(group.checks);
+    return;
+  }
+  console.log("\nRunning isolated active-touch, moments and auto-reply self-check groups in parallel.");
+  await Promise.all(parallelCheckGroups.map(runParallelGroup));
+  runChecks(serialChecks);
+  console.log("\nall source self-checks passed");
+}
+
+if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
+module.exports = { parallelCheckGroups, serialChecks };

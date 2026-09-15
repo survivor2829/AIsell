@@ -3,10 +3,10 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const JSZip = require("jszip");
-const { parseBuildArgs } = require("./build-internal-release.cjs");
+const { parseBuildArgs, resolveAcceptedBaseRoot, recordAcceptedBaseRoot } = require("./build-internal-release.cjs");
 const { publication } = require("./publish-internal-release.cjs");
 const { stabilizePythonLibrary } = require("./python-library-archive.cjs");
-const { readComponentBase, pythonLibraryReference, assertComponentBase } = require("./component-base-input.cjs");
+const { readComponentBase, pythonLibraryReference, assertComponentBase, stabilizeEquivalentBaseFiles } = require("./component-base-input.cjs");
 const { digest, treeHash } = require("../src/shared/component-contract.cjs");
 
 async function main() {
@@ -63,6 +63,31 @@ async function main() {
     await stabilizePythonLibrary(candidate); await stabilizePythonLibrary(other);
     assert.deepEqual(fs.readFileSync(candidate), fs.readFileSync(other), "First-build ordering is deterministic");
     assert.throws(() => readComponentBase(path.join(root, "missing"), true), /--full/);
+
+    const textRoot = path.join(root, "text-base");
+    const candidateRoot = path.join(root, "text-candidate");
+    const textRelative = "resources/app/src/main/bootstrap.cjs";
+    const acceptedText = Buffer.from("const first = 1;\r\nconst second = 2;\r\n", "utf8");
+    fs.mkdirSync(path.dirname(path.join(textRoot, textRelative)), { recursive: true });
+    fs.mkdirSync(path.dirname(path.join(candidateRoot, textRelative)), { recursive: true });
+    fs.writeFileSync(path.join(textRoot, textRelative), acceptedText);
+    fs.writeFileSync(path.join(candidateRoot, textRelative), "const first = 1;\nconst second = 2;\n", "utf8");
+    const textFile = { path: textRelative, size: acceptedText.length, sha256: digest(acceptedText), component: "base" };
+    fs.writeFileSync(path.join(textRoot, "component-base.json"), JSON.stringify({
+      schema: 2, dataSchema: 2,
+      base: { version: "1.1.30", fingerprint: treeHash([textFile]) },
+      files: [textFile]
+    }));
+    fs.writeFileSync(path.join(textRoot, "版本清单.json"), JSON.stringify({ version: "1.1.30" }));
+    assert.deepEqual(stabilizeEquivalentBaseFiles(candidateRoot, textRoot), [textRelative]);
+    assert.deepEqual(fs.readFileSync(path.join(candidateRoot, textRelative)), acceptedText,
+      "Line-ending-only base differences retain the accepted installed bytes");
+
+    const buildRoot = path.join(root, "build-records");
+    assert.equal(resolveAcceptedBaseRoot(null, "test", buildRoot, textRoot), textRoot);
+    recordAcceptedBaseRoot(textRoot, buildRoot);
+    assert.equal(resolveAcceptedBaseRoot(null, "test", buildRoot, path.join(root, "stale-default")), textRoot,
+      "A previously accepted full base remains the default for later incremental builds");
   } finally {
     require("./artifact-retention.cjs").removeOwned(path.dirname(root), root);
   }
