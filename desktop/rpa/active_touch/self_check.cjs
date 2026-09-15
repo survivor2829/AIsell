@@ -2475,6 +2475,10 @@ try {
   assert.doesNotMatch(messageDraftSource, /try \{ Set-Clipboard -Value \$oldClipboard \} catch \{\}/);
   assert.match(messageBubbleSource, /Get-WechatClipboardSnapshot/, "message proof must preserve non-text clipboard data before reading the draft");
   assert.match(messageBubbleSource, /Restore-WechatClipboardSnapshot \$oldClipboard/, "message proof must restore the original clipboard snapshot after reading the draft");
+  assert.match(messageBubbleSource, /Set-Clipboard -Value \$sentinel[\s\S]*Get-Clipboard -Raw -ErrorAction Stop/,
+    "message proof must use the PowerShell clipboard path already proven by draft input on supported Windows hosts");
+  assert.doesNotMatch(messageBubbleSource, /Clipboard\]::SetDataObject\(\$sentinelData/,
+    "message proof must not switch to the incompatible WinForms sentinel writer");
   assert.doesNotMatch(messageBubbleSource, /Set-Clipboard -Value \$oldClipboard/, "message proof must not collapse the original clipboard to plain text");
   assert.match(messageBubbleSource, /function New-InputDraftFailure[\s\S]*input_read_reason = \("\{0\}:\{1\}" -f \$reason, \$stage\)/,
     "draft-read failures must retain the precise failing substage without recording clipboard content");

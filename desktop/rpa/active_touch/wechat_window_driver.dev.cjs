@@ -934,9 +934,7 @@ function Read-InputDraft {
     }
     $inputReadStage = "clipboard_sentinel_write"
     $sentinel = "__XIAOXI_EMPTY_DRAFT_" + [Guid]::NewGuid().ToString("N")
-    $sentinelData = New-Object System.Windows.Forms.DataObject
-    $sentinelData.SetText($sentinel, [System.Windows.Forms.TextDataFormat]::UnicodeText)
-    [System.Windows.Forms.Clipboard]::SetDataObject($sentinelData, $true, 5, 100)
+    Set-Clipboard -Value $sentinel
     $clipboardOwned = $true
     if ([Win32WechatMessageProof]::GetForegroundWindow() -ne $expectedHWnd) {
       return New-InputDraftFailure "wechat_window_not_foreground" "clipboard_sentinel_write" $false
@@ -954,7 +952,7 @@ function Read-InputDraft {
       return New-InputDraftFailure "wechat_window_not_foreground" "copy" $false
     }
     $inputReadStage = "clipboard_read"
-    $copied = [System.Windows.Forms.Clipboard]::GetText([System.Windows.Forms.TextDataFormat]::UnicodeText)
+    $copied = [string](Get-Clipboard -Raw -ErrorAction Stop)
     $isEmpty = $copied -ceq $sentinel
     $result = @{ ok = $true; reason = ""; sameWindow = $true; isEmpty = $isEmpty; text = $(if ($isEmpty) { "" } else { $copied }) }
   } catch {
