@@ -1878,21 +1878,132 @@ try {
     "unverified",
     "a naked query without complete bounds must fail closed"
   );
-  assert.deepEqual(
+  assert.equal(
     resolveWechatSearchResultObservation({
       uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
       visualCandidates: [{ text: "cb1668", left: 92, top: 150, right: 170, bottom: 172, x: 131, y: 161 }],
       webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
       webSearchTop: 224
-    }, { query: "cb1668", expectedName: "测试客户" }),
-    {
-      status: "selected",
-      mode: "exact_wechat_id_local_visual",
-      candidate: { text: "cb1668", left: 92, top: 150, right: 170, bottom: 172, x: 131, y: 161 }
-    },
-    "a unique exact WeChat ID above the verified web-search boundary must survive a missing OCR label"
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "a bare exact ID without an independent local-contact anchor is indistinguishable from a network lookup echo"
   );
   assert.equal(isVerifiedWechatSearchResultMode("exact_wechat_id_local_visual"), true, "the bounded local exact-ID fallback must reach the existing conversation verification gate");
+  const networkLookupFixtures = [
+    {
+      label: "a complete network lookup row",
+      uiaCandidates: [],
+      visualCandidates: [
+        { text: "网络查找微信号：cb1668", left: 92, top: 150, right: 270, bottom: 174, x: 181, y: 162 }
+      ]
+    },
+    {
+      label: "a split network lookup row",
+      uiaCandidates: [],
+      visualCandidates: [
+        { text: "网络查找微信号：", left: 92, top: 150, right: 220, bottom: 174, x: 156, y: 162 },
+        { text: "cb1668", left: 224, top: 150, right: 292, bottom: 174, x: 258, y: 162 }
+      ]
+    },
+    {
+      label: "a fragmented network lookup label",
+      uiaCandidates: [],
+      visualCandidates: [
+        { text: "网络查找", left: 92, top: 150, right: 158, bottom: 174, x: 125, y: 162 },
+        { text: "微信号：", left: 162, top: 150, right: 224, bottom: 174, x: 193, y: 162 },
+        { text: "cb1668", left: 228, top: 150, right: 296, bottom: 174, x: 262, y: 162 }
+      ]
+    },
+    {
+      label: "a stacked network lookup label and WeChat ID",
+      uiaCandidates: [],
+      visualCandidates: [
+        { text: "网络查找", left: 92, top: 142, right: 176, bottom: 164, x: 134, y: 153 },
+        { text: "微信号：cb1668", left: 96, top: 168, right: 230, bottom: 192, x: 163, y: 180 }
+      ]
+    },
+    {
+      label: "a unique UIA network lookup action",
+      uiaCandidates: [{ automationId: "search_item_function_网络查找微信号_cb1668", name: "网络查找微信号：cb1668", x: 180, y: 162 }],
+      visualCandidates: []
+    },
+    {
+      label: "a bare-query UIA candidate without the expected local name",
+      uiaCandidates: [
+        { automationId: "candidate_cb1668", name: "cb1668", x: 180, y: 162 },
+        { automationId: "candidate_other", name: "其他联系人", x: 180, y: 122 }
+      ],
+      visualCandidates: []
+    },
+    {
+      label: "a bare visual query separated from an unrelated name row",
+      uiaCandidates: [],
+      visualCandidates: [
+        { text: "测试客户", left: 92, top: 82, right: 174, bottom: 104, x: 133, y: 93 },
+        { text: "cb1668", left: 92, top: 150, right: 170, bottom: 172, x: 131, y: 161 }
+      ]
+    }
+  ];
+  for (const fixture of networkLookupFixtures) {
+    const searchResultObservation = {
+      uiaCandidates: fixture.uiaCandidates,
+      ocrOk: true,
+      cropBounds: strictCrop,
+      visualCandidates: fixture.visualCandidates,
+      webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+      webSearchTop: 224
+    };
+    const resolution = resolveWechatSearchResultObservation(searchResultObservation, { query: "cb1668", expectedName: "测试客户" });
+    assert.notEqual(resolution.status, "selected", `${fixture.label} must fail closed before every click-authorizing path`);
+    let clickCount = 0;
+    const openResult = openWechatSearchResult("cb1668", {
+      pid: 11,
+      hWnd: "22",
+      searchIdentity: { expectedName: "测试客户" },
+      runner: () => ({ ok: true, processName: "Weixin", pid: 11, hWnd: "22", inputLeaseTick: 101, searchResultObservation }),
+      clickRunner: () => { clickCount += 1; return { ok: true }; }
+    });
+    assert.equal(openResult.ok, false, `${fixture.label} must be rejected by the driver`);
+    assert.equal(clickCount, 0, `${fixture.label} must cause no click`);
+  }
+  let localCandidateClicks = 0;
+  const localCandidateAmongNetworkRows = openWechatSearchResult("cb1668", {
+    pid: 11,
+    hWnd: "22",
+    searchIdentity: { expectedName: "测试客户" },
+    runner: () => ({ ok: true, processName: "Weixin", pid: 11, hWnd: "22", inputLeaseTick: 101, searchResultObservation: {
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [
+        { text: "测试客户", left: 92, top: 92, right: 174, bottom: 114, x: 133, y: 103 },
+        { text: "微信号：cb1668", left: 92, top: 120, right: 210, bottom: 144, x: 151, y: 132 },
+        { text: "网络查找微信号：", left: 92, top: 166, right: 220, bottom: 190, x: 156, y: 178 },
+        { text: "cb1668", left: 224, top: 166, right: 292, bottom: 190, x: 258, y: 178 }
+      ],
+      webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+      webSearchTop: 224
+    } }),
+    clickRunner: () => { localCandidateClicks += 1; return { ok: true, pid: 11, hWnd: "22", exactSearchOpened: true }; }
+  });
+  assert.equal(localCandidateAmongNetworkRows.ok, true, "isolating a network lookup row must preserve a separately verified local candidate");
+  assert.equal(localCandidateClicks, 1, "only the separately verified local candidate may reach the click stage");
+  const ambiguousBareId = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+    visualCandidates: [{ text: "cb1668", left: 92, top: 150, right: 170, bottom: 172, x: 131, y: 161 }],
+    webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+    webSearchTop: 224
+  }, { query: "cb1668", expectedName: "测试客户" });
+  assert.notEqual(ambiguousBareId.status, "selected", "an exact bare ID without independent local-contact evidence must fail closed");
+  const supportedBareId = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+    visualCandidates: [
+      { text: "测试客户", left: 92, top: 122, right: 174, bottom: 144, x: 133, y: 133 },
+      { text: "cb1668", left: 92, top: 150, right: 170, bottom: 172, x: 131, y: 161 }
+    ],
+    webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+    webSearchTop: 224
+  }, { query: "cb1668", expectedName: "测试客户" });
+  assert.equal(supportedBareId.status, "selected", "an exact bare ID remains usable when an independent local-contact name anchors the row");
+  assert.equal(supportedBareId.mode, "exact_wechat_id_local_visual");
   assert.deepEqual(
     resolveWechatSearchResultObservation({
       uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
@@ -1999,6 +2110,40 @@ try {
   });
   assert.equal(driverMissingResult.reason, "exact_search_result_not_found");
   assert.equal(missingDriverStages, 1, "a confirmed missing result must not reach the click stage");
+  let networkLookupClicks = 0;
+  const networkLookupResult = openWechatSearchResult("huatengcangku", {
+    pid: 11,
+    hWnd: "22",
+    searchIdentity: { expectedName: "华腾仓库" },
+    runner: () => ({ ok: true, processName: "Weixin", pid: 11, hWnd: "22", inputLeaseTick: 101, searchResultObservation: {
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [
+        { text: "网络查找微信号：", left: 92, top: 150, right: 220, bottom: 174, x: 156, y: 162 },
+        { text: "huatengcangku", left: 224, top: 150, right: 310, bottom: 174, x: 267, y: 162 }
+      ],
+      webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+      webSearchTop: 224
+    } }),
+    clickRunner: () => { networkLookupClicks += 1; return { ok: true }; }
+  });
+  assert.equal(networkLookupResult.ok, false);
+  assert.equal(networkLookupClicks, 0, "the huatengcangku network lookup fixture must be rejected without any click");
+  const recoveredLandingMisclick = clickSearchResultDryRun(
+    dir,
+    () => ({
+      ok: false,
+      reason: "wechat_search_network_lookup_misclick",
+      error: "误点网络查找入口，已关闭资料弹窗",
+      landing_recovered: true,
+      poisoned_candidate: { fingerprint: "candidate-fixture", mode: "unique_local_surface_visual" }
+    }),
+    () => [],
+    () => ({ ok: false }),
+    { pid: 11, hWnd: "22" }
+  );
+  assert.equal(recoveredLandingMisclick.blocked_reason, "wechat_search_network_lookup_misclick");
+  assert.equal(recoveredLandingMisclick.landing_recovered, true);
+  assert.equal(recoveredLandingMisclick.poisoned_candidate?.fingerprint, "candidate-fixture");
   const changedWindow = clickSearchResultDryRun(
     dir,
     () => ({ ok: true, pid: 11, hWnd: "99" }),

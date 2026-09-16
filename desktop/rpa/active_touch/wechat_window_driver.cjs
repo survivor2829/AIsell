@@ -2,6 +2,7 @@ const { WECHAT_CLIPBOARD_POWERSHELL } = require("./wechat_clipboard.cjs");
 const { FAILURE_EVIDENCE_SCRIPT, evidenceEnvironment } = require("./failure-evidence.cjs");
 const { WECHAT_RENDER_SURFACE_POWERSHELL } = require("./wechat_render_surface.cjs");
 const { spawn, spawnSync } = require("node:child_process");
+const crypto = require("node:crypto");
 const { findWechatExecutable } = require("../contact_sync/contact_sync_cli.cjs");
 const { readWechatWindowDiagnostics, readMomentsDiagnostics } = require("../../src/shared/wechat-window-diagnostics.cjs");
 const { WECHAT_MAIN_WINDOW_VISUAL_SCRIPT } = require("./wechat_window_visual.cjs");
@@ -1866,6 +1867,7 @@ if ($observeLocalResults) {
 
 const CLICK_SEARCH_RESULT_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName UIAutomationClient
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -1879,17 +1881,36 @@ public static class Win32WechatSearchResultClick {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
   [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
   public static uint GetLastInputTick() { LASTINPUTINFO info = new LASTINPUTINFO(); info.cbSize = (uint)Marshal.SizeOf(info); return GetLastInputInfo(ref info) ? info.dwTime : UInt32.MaxValue; }
 }
 "@
 function Test-SearchResultClickTarget([int64]$hitHWnd, [int]$hitPid, [int]$expectedPid) {
   return $hitHWnd -ne 0 -and $hitPid -eq $expectedPid
 }
+function Get-NetworkLookupLanding($root) {
+  $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+  $pending = [System.Collections.Generic.Stack[System.Windows.Automation.AutomationElement]]::new()
+  $pending.Push($root)
+  while ($pending.Count -gt 0) {
+    $element = $pending.Pop()
+    try {
+      if (($element.Current.Name -replace '\\s+', '') -match '查找微信用户|添加朋友|添加到通讯录') { return @{ inspected=$true; matched=$true } }
+      $children = @()
+      $child = $walker.GetFirstChild($element)
+      while ($null -ne $child) { $children += $child; $child = $walker.GetNextSibling($child) }
+      for ($index = $children.Count - 1; $index -ge 0; $index--) { $pending.Push($children[$index]) }
+    } catch { return @{ inspected=$false; matched=$false } }
+  }
+  return @{ inspected=$true; matched=$false }
+}
 $expectedHWnd = [int64][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_HWND")
 $expectedPid = [int][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_PID")
 $expectedInputTick = [uint64][Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_INPUT_TICK")
 $clickX = [int][Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_RESULT_X")
 $clickY = [int][Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_RESULT_Y")
+$candidateFingerprint = [Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_CANDIDATE_FINGERPRINT")
+$candidateMode = [Environment]::GetEnvironmentVariable("XIAOXI_SEARCH_CANDIDATE_MODE")
 $foreground = [Win32WechatSearchResultClick]::GetForegroundWindow()
 if ($foreground.ToInt64() -ne $expectedHWnd) { @{ ok=$false; reason="wechat_window_not_foreground" } | ConvertTo-Json -Compress; exit }
 $currentTick = [uint64][Win32WechatSearchResultClick]::GetLastInputTick()
@@ -1900,10 +1921,51 @@ $hit = [Win32WechatSearchResultClick]::WindowFromPoint($point); $root = [Win32We
 if (-not (Test-SearchResultClickTarget $hit.ToInt64() ([int]$hitPid) $expectedPid)) { @{ ok=$false; reason="wechat_target_changed"; safety_diagnostics=@{ phase="before_search_result_click"; expected_hWnd=$expectedHWnd; hit_hWnd=$hit.ToInt64(); hit_root_hWnd=$root.ToInt64(); expected_pid=$expectedPid; hit_pid=[int]$hitPid } } | ConvertTo-Json -Compress -Depth 4; exit }
 [void][Win32WechatSearchResultClick]::SetCursorPos($clickX,$clickY)
 [Win32WechatSearchResultClick]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero); [Win32WechatSearchResultClick]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
+$ownedInputTick = [uint64][Win32WechatSearchResultClick]::GetLastInputTick()
 Start-Sleep -Milliseconds 500
-if ([Win32WechatSearchResultClick]::GetForegroundWindow().ToInt64() -ne $expectedHWnd) { @{ ok=$false; reason="wechat_window_not_foreground"; actionAttempted=$true } | ConvertTo-Json -Compress; exit }
+$landingHWnd = [Win32WechatSearchResultClick]::GetForegroundWindow()
+[uint32]$landingPid = 0; [void][Win32WechatSearchResultClick]::GetWindowThreadProcessId($landingHWnd, [ref]$landingPid)
+if ([int]$landingPid -ne $expectedPid) { @{ ok=$false; reason="wechat_window_not_foreground"; actionAttempted=$true } | ConvertTo-Json -Compress; exit }
+$landingInspection = @{ inspected=$false; matched=$false }
+try { $landingInspection = Get-NetworkLookupLanding ([System.Windows.Automation.AutomationElement]::FromHandle($landingHWnd)) } catch {}
+if (-not $landingInspection.inspected) {
+  $ruleId = Write-XiaoxiFailure "wx1-r047" "wechat_search_result_landing_unverified"
+  @{ ok=$false; reason="wechat_search_result_landing_unverified"; rule_id=$ruleId; error="点击后无法核验落点界面，任务已暂停"; send_attempted=$false; actionAttempted=$true } | ConvertTo-Json -Compress
+  exit
+}
+if ($landingInspection.matched) {
+  $currentTick = [uint64][Win32WechatSearchResultClick]::GetLastInputTick()
+  $ruleId = Write-XiaoxiFailure "wx1-r046" "wechat_search_network_lookup_misclick"
+  if ($currentTick -ne $ownedInputTick) { @{ ok=$false; reason="wechat_search_network_lookup_misclick"; rule_id=$ruleId; error="已确认误入网络查找资料页；检测到人工输入，未自动关闭，任务已暂停"; send_attempted=$false; landing_recovered=$false; actionAttempted=$true; poisoned_candidate=@{ fingerprint=$candidateFingerprint; mode=$candidateMode }; safety_diagnostics=@{ phase="before_network_lookup_recovery"; expected_input_tick=$ownedInputTick; current_input_tick=$currentTick } } | ConvertTo-Json -Compress -Depth 4; exit }
+  [Win32WechatSearchResultClick]::keybd_event(0x1B,0,0,[UIntPtr]::Zero); [Win32WechatSearchResultClick]::keybd_event(0x1B,0,2,[UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 150
+  $recoveredHWnd = [Win32WechatSearchResultClick]::GetForegroundWindow()
+  [uint32]$recoveredPid = 0; [void][Win32WechatSearchResultClick]::GetWindowThreadProcessId($recoveredHWnd, [ref]$recoveredPid)
+  $recoveryInspection = @{ inspected=$false; matched=$true }
+  try { $recoveryInspection = Get-NetworkLookupLanding ([System.Windows.Automation.AutomationElement]::FromHandle($recoveredHWnd)) } catch {}
+  $landingRecovered = [int]$recoveredPid -eq $expectedPid -and $recoveryInspection.inspected -and -not $recoveryInspection.matched
+  $recoveryMessage = $(if ($landingRecovered) { "误点网络查找入口，已关闭资料弹窗" } else { "误点网络查找入口，资料弹窗关闭未确认" })
+  @{ ok=$false; reason="wechat_search_network_lookup_misclick"; rule_id=$ruleId; error=$recoveryMessage; send_attempted=$false; landing_recovered=$landingRecovered; actionAttempted=$true; poisoned_candidate=@{ fingerprint=$candidateFingerprint; mode=$candidateMode } } | ConvertTo-Json -Compress -Depth 4
+  exit
+}
+if ($landingHWnd.ToInt64() -ne $expectedHWnd) { @{ ok=$false; reason="wechat_window_not_foreground"; actionAttempted=$true } | ConvertTo-Json -Compress; exit }
 @{ ok=$true; pid=$expectedPid; hWnd=$expectedHWnd; exactSearchOpened=$true } | ConvertTo-Json -Compress
 `;
+
+function searchCandidateFingerprint(mode, candidate) {
+  return crypto.createHash("sha256").update(JSON.stringify({
+    mode: String(mode || ""),
+    text: String(candidate?.text || ""),
+    name: String(candidate?.name || ""),
+    automationId: String(candidate?.automationId || ""),
+    left: Number(candidate?.left) || 0,
+    top: Number(candidate?.top) || 0,
+    right: Number(candidate?.right) || 0,
+    bottom: Number(candidate?.bottom) || 0,
+    x: Number(candidate?.x) || 0,
+    y: Number(candidate?.y) || 0
+  })).digest("hex");
+}
 
 function inputWechatSearchQuery(query, context = {}) {
   if (!String(query ?? "").trim()) return { ok: false };
@@ -2101,7 +2163,9 @@ function openWechatSearchResult(query, context = {}) {
       XIAOXI_EXPECTED_HWND: String(observed.hWnd ?? context.hWnd ?? ""),
       XIAOXI_EXPECTED_INPUT_TICK: String(observed.inputLeaseTick ?? ""),
       XIAOXI_SEARCH_RESULT_X: String(resolution.candidate.x),
-      XIAOXI_SEARCH_RESULT_Y: String(resolution.candidate.y)
+      XIAOXI_SEARCH_RESULT_Y: String(resolution.candidate.y),
+      XIAOXI_SEARCH_CANDIDATE_FINGERPRINT: searchCandidateFingerprint(resolution.mode, resolution.candidate),
+      XIAOXI_SEARCH_CANDIDATE_MODE: resolution.mode
     }, { ensure: false });
     return clicked?.ok
       ? { ...observed, ...clicked, searchQuery: String(query), searchResultMode: resolution.mode }
@@ -2146,7 +2210,9 @@ function openWechatSearchResultAsync(query, context = {}) {
         XIAOXI_EXPECTED_HWND: String(observed.hWnd ?? context.hWnd ?? ""),
         XIAOXI_EXPECTED_INPUT_TICK: String(observed.inputLeaseTick ?? ""),
         XIAOXI_SEARCH_RESULT_X: String(resolution.candidate.x),
-        XIAOXI_SEARCH_RESULT_Y: String(resolution.candidate.y)
+        XIAOXI_SEARCH_RESULT_Y: String(resolution.candidate.y),
+        XIAOXI_SEARCH_CANDIDATE_FINGERPRINT: searchCandidateFingerprint(resolution.mode, resolution.candidate),
+        XIAOXI_SEARCH_CANDIDATE_MODE: resolution.mode
       }, { ensure: false });
       return clicked?.ok
         ? { ...observed, ...clicked, searchQuery: String(query), searchResultMode: resolution.mode }

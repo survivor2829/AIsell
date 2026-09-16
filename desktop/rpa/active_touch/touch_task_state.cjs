@@ -198,6 +198,17 @@ function recordSkippedResult(result, index, details = {}) {
   return result;
 }
 
+function poisonedSearchCandidate(result, at = nowIso()) {
+  const candidate = result?.poisoned_candidate || result?.state?.poisoned_candidate || {};
+  return {
+    reason_code: "wechat_search_network_lookup_misclick",
+    candidate_fingerprint: String(candidate.fingerprint || ""),
+    candidate_mode: String(candidate.mode || ""),
+    recovered: result?.landing_recovered === true || result?.state?.landing_recovered === true,
+    at: String(at)
+  };
+}
+
 function skippedTaskSummary(task) {
   const breakdown = { identity: 0, ai_failed: 0, pre_send: 0, outcome_unknown: 0 };
   const records = [];
@@ -233,6 +244,9 @@ function retrySkippedResults(task, contactIds, retriedAt = nowIso()) {
   }
   if (selected.some(({ result }) => String(result?.status || "") === "sent_verified")) {
     return { ok: false, blocked_reason: "retry_skipped_sent_verified_forbidden", error: "已核验发送的联系人不能重试" };
+  }
+  if (selected.some(({ result }) => result?.poisoned && typeof result.poisoned === "object")) {
+    return { ok: false, blocked_reason: "retry_skipped_poisoned_forbidden", error: "该联系人命中过误点止损，当前任务内禁止重试" };
   }
   if (selected.some(({ result }) => !RETRYABLE_SKIPPED_STATUSES.has(String(result?.status || "")))) {
     return { ok: false, blocked_reason: "retry_skipped_status_forbidden", error: "只能重试明确未发送的跳过联系人" };
@@ -288,6 +302,7 @@ function createTask(script, contacts, startedAt = nowIso(), options = {}) {
     outcome_unknown_retry_count: 0,
     outcome_unknown_attempt_keys: [],
     awaiting_resolution: false,
+    poisoned: null,
     retry_blocked: false,
     send_attempted: false,
     updated_at: startedAt
@@ -392,6 +407,13 @@ function normalizeTask(raw) {
       outcome_unknown_retry_count: Math.max(0, Number(result?.outcome_unknown_retry_count || 0)),
       outcome_unknown_attempt_keys: Array.isArray(result?.outcome_unknown_attempt_keys) ? result.outcome_unknown_attempt_keys.map(String) : [],
       awaiting_resolution: result?.awaiting_resolution === true,
+      poisoned: result?.poisoned && typeof result.poisoned === "object" ? {
+        reason_code: String(result.poisoned.reason_code || ""),
+        candidate_fingerprint: String(result.poisoned.candidate_fingerprint || ""),
+        candidate_mode: String(result.poisoned.candidate_mode || ""),
+        recovered: result.poisoned.recovered === true,
+        at: String(result.poisoned.at || "")
+      } : null,
       send_attempted: result?.send_attempted === false ? false : result?.send_attempted === true ? true : legacySafeTextResume ? false : null
     };
   });
@@ -765,6 +787,7 @@ module.exports = {
   markPreviousBuildTask,
   identityKey,
   publicTaskState,
+  poisonedSearchCandidate,
   recordSkippedResult,
   recoverInterruptedTask,
   reconcileRealSendAttempt,

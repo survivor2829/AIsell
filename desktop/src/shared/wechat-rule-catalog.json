@@ -413,6 +413,22 @@
     "classification": "environment"
   },
   {
+    "id": "wx1-r046",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_search_network_lookup_misclick",
+    "condition": "network_lookup_profile_landing",
+    "line": 1930,
+    "classification": "blocker"
+  },
+  {
+    "id": "wx1-r047",
+    "file": "desktop/rpa/active_touch/wechat_window_driver.cjs",
+    "reason": "wechat_search_result_landing_unverified",
+    "condition": "post_click_landing_inspection_failed",
+    "line": 1935,
+    "classification": "blocker"
+  },
+  {
     "id": "wx2-r001",
     "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
     "reason": "real_send_session_changed",

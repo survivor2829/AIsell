@@ -15,6 +15,7 @@ const {
   identityKey,
   isBatchAuthorized,
   loadTaskState,
+  poisonedSearchCandidate,
   recordSkippedResult,
   recoverInterruptedTask,
   retrySkippedResults,
@@ -39,6 +40,7 @@ const TOUCH_WORKFLOW_REASON_CODES = Object.freeze({
 });
 const IDENTITY_SKIP_REASONS = new Set([
   "contact_unavailable",
+  "wechat_search_network_lookup_misclick",
   "exact_search_result_not_found",
   "search_result_identity_unverified",
   "search_result_not_opened",
@@ -82,7 +84,14 @@ function createTouchWorkflow(options = {}) {
 
   function identitySkipReason(result) {
     const code = String(result?.blocked_reason || result?.state?.blocked_reason || "");
+    if (code === "wechat_search_network_lookup_misclick"
+      && result?.landing_recovered !== true && result?.state?.landing_recovered !== true) return "";
     return IDENTITY_SKIP_REASONS.has(code) ? code : "";
+  }
+
+  function poisonSearchCandidate(current, result) {
+    if (identitySkipReason(result) !== "wechat_search_network_lookup_misclick") return;
+    current.poisoned = poisonedSearchCandidate(result, now().toISOString());
   }
 
   function prepareWorkflowTask(input = {}) {
@@ -350,6 +359,17 @@ function createTouchWorkflow(options = {}) {
       if (notAttempted && !["prepared", "clicked", "outcome_unknown"].includes(current.status)) {
         const reasonCode = identitySkipReason(result);
         const failurePolicy = classifyWechatFailure(result);
+        const failureReason = String(result?.blocked_reason || result?.state?.blocked_reason || "");
+        if (failureReason === "wechat_search_network_lookup_misclick" && !reasonCode) {
+          current.poisoned = poisonedSearchCandidate(result, now().toISOString());
+          current.status = "generated";
+          current.reason = String(result.error || "已确认误入网络查找资料页，关闭状态未确认");
+          current.retry_blocked = true;
+          current.send_attempted = false;
+          current.updated_at = now().toISOString();
+          persist();
+          return attention(current.reason, { deliveryStatus: "not_attempted" }, failureReason);
+        }
         if (reasonCode === "search_result_identity_unverified"
           && Math.max(0, Number(current.identity_recovery_attempts) || 0) < IDENTITY_RECOVERY_ATTEMPTS) {
           current.identity_recovery_attempts = Math.max(0, Number(current.identity_recovery_attempts) || 0) + 1;
@@ -367,6 +387,7 @@ function createTouchWorkflow(options = {}) {
           });
         }
         if (reasonCode) {
+          poisonSearchCandidate(current, result);
           current.status = "identity_skipped";
           current.reason = String(result.error || reasonCode) + "，已跳过当前联系人";
           current.retry_blocked = true;

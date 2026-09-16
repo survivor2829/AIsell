@@ -300,6 +300,8 @@ function wechatWindowReason(result) {
     "wechat_clipboard_restore_unsupported",
     "wechat_clipboard_read_failed",
     "wechat_window_identity_missing",
+    "wechat_search_network_lookup_misclick",
+    "wechat_search_result_landing_unverified",
     "exact_search_result_not_found",
     "search_result_identity_unverified",
     "powershell_output_invalid",
@@ -327,6 +329,8 @@ function wechatWindowBlockText(reason) {
   if (reason === "wechat_clipboard_restore_unsupported") return "已停止：剪贴板包含暂不支持保存的特殊格式，原内容未覆盖";
   if (reason === "wechat_clipboard_read_failed") return "已停止：无法读取剪贴板，可能正被其他程序占用，请稍后重试";
   if (reason === "wechat_window_identity_missing") return "已停止：缺少已确认的微信窗口身份，请重新启动任务";
+  if (reason === "wechat_search_network_lookup_misclick") return "已停止：误点网络查找入口，资料弹窗已关闭，当前联系人已隔离";
+  if (reason === "wechat_search_result_landing_unverified") return "已暂停：点击后无法核验落点界面，不会自动重试";
   if (reason === "exact_search_result_not_found") return "已停止：未找到指定联系人的准确搜索结果";
   if (reason === "search_result_identity_unverified") return "已暂停：搜索结果身份无法唯一确认，本次没有点击，也不会自动跳过";
   if (reason === "powershell_output_invalid") return "已停止：微信操作程序没有返回有效结果，请提交本次诊断";
@@ -686,10 +690,12 @@ function clickSearchResultDryRun(
       "点击搜索结果 dry-run",
       clearConversationState(state, reason),
       reason,
-      wechatWindowBlockText(reason),
+      String(inputResult?.error || wechatWindowBlockText(reason)),
       {
         diagnostics: inputResult?.diagnostics || null,
-        safety_diagnostics: inputResult?.safety_diagnostics || null
+        safety_diagnostics: inputResult?.safety_diagnostics || null,
+        landing_recovered: inputResult?.landing_recovered === true,
+        poisoned_candidate: inputResult?.poisoned_candidate || null
       }
     );
   }

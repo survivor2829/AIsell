@@ -26,7 +26,7 @@ async function checkTouchMessageSequence() {
   const secondContact = { id: "selected-two", name: "第二位测试客户", nickname: "第二位测试客户", wechatId: "test_customer_two", wechatAccountId: "test_account", allowed: true };
   const imageId = "a".repeat(64);
   const calls = [];
-  let failImage = true, unknown = false, loginRequired = false, searchUnavailable = false, searchIdentityUnverified = false, externalInputBlocks = 0, recoverableFailures = 0, atomicMismatch = false, enabled = true, pauseAfterText = false;
+  let failImage = true, unknown = false, loginRequired = false, searchUnavailable = false, searchIdentityUnverified = false, networkLookupMisclick = false, externalInputBlocks = 0, recoverableFailures = 0, atomicMismatch = false, enabled = true, pauseAfterText = false;
   const clock = new Date(2026, 8, 3, 12, 0, 0);
   const config = {
     dataDir: root, now: () => clock, random: () => 0, readContacts: () => [contact, secondContact],
@@ -47,6 +47,16 @@ async function checkTouchMessageSequence() {
       }
       if (kind === "text" && options.contactId === contact.id && searchIdentityUnverified) {
         return { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified", error: "搜索结果身份无法唯一确认" };
+      }
+      if (kind === "text" && options.contactId === contact.id && networkLookupMisclick) {
+        return {
+          ok: false,
+          send_attempted: false,
+          blocked_reason: "wechat_search_network_lookup_misclick",
+          error: "误点网络查找入口，已关闭资料弹窗",
+          landing_recovered: true,
+          poisoned_candidate: { fingerprint: "huatengcangku-fixture", mode: "exact_wechat_id_local_visual" }
+        };
       }
       if (kind === "text" && externalInputBlocks > 0) {
         externalInputBlocks -= 1;
@@ -280,6 +290,33 @@ async function checkTouchMessageSequence() {
   searchIdentityUnverified = false;
   result = await createTouchWorkflow(config).runWorkflowStep(unverifiedRecord, context);
   assert.equal(result.status, "completed", "隔离未确认搜索结果后仍应完成后续联系人");
+
+  networkLookupMisclick = true;
+  const poisonedWorkflow = createTouchWorkflow(config);
+  const poisonedPayload = poisonedWorkflow.prepareWorkflowTask({ script: "网络查找误点止损测试", contactIds: [contact.id, secondContact.id] });
+  const poisonedRecord = { id: crypto.randomUUID(), payload: poisonedPayload, progress: { done: 0 }, status: "running" };
+  const poisonCallsBefore = calls.length;
+  result = await poisonedWorkflow.runWorkflowStep(poisonedRecord, context);
+  assert.equal(result.status, "pending", "confirmed network lookup misclick must skip only the current contact");
+  assert.equal(result.progress.done, 1);
+  assert.equal(calls.length, poisonCallsBefore + 1, "a confirmed misclick stops after its first attempt");
+  const poisonedTaskDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(poisonedRecord.id).digest("hex"));
+  const poisonedTask = JSON.parse(fs.readFileSync(path.join(poisonedTaskDir, "touch_task.json"), "utf8"));
+  assert.equal(poisonedTask.results[0].status, "identity_skipped");
+  assert.deepEqual(poisonedTask.results[0].poisoned, {
+    reason_code: "wechat_search_network_lookup_misclick",
+    candidate_fingerprint: "huatengcangku-fixture",
+    candidate_mode: "exact_wechat_id_local_visual",
+    recovered: true,
+    at: clock.toISOString()
+  });
+  assert.equal(poisonedTask.results[0].skip_record.reasonCode, "wechat_search_network_lookup_misclick");
+  networkLookupMisclick = false;
+  result = await createTouchWorkflow(config).runWorkflowStep(poisonedRecord, context);
+  assert.equal(result.status, "completed", "poisoning one candidate must not block later contacts");
+  const poisonedRetry = poisonedWorkflow.retrySkippedWorkflowTask(poisonedRecord, [contact.id]);
+  assert.equal(poisonedRetry.ok, false, "a poisoned candidate must never be retried within the same task");
+  assert.equal(poisonedRetry.blocked_reason, "retry_skipped_poisoned_forbidden");
 
   const completedUnverified = JSON.parse(fs.readFileSync(path.join(unverifiedTaskDir, "touch_task.json"), "utf8"));
   const completedUnverifiedBytes = fs.readFileSync(path.join(unverifiedTaskDir, "touch_task.json"), "utf8");

@@ -322,6 +322,59 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
     assert.equal(contactScopedAttempts, 3, "contact-scoped search failures must not pause the remaining task");
     await new Promise((resolve) => setImmediate(resolve));
 
+    fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify(contacts(2)), "utf8");
+    let poisonedAttempts = 0;
+    executorBehavior = async (options) => {
+      poisonedAttempts += 1;
+      if (options.contactId === "wxid_batch_1") {
+        return {
+          ok: false,
+          send_attempted: false,
+          blocked_reason: "wechat_search_network_lookup_misclick",
+          landing_recovered: true,
+          poisoned_candidate: { fingerprint: "legacy-ipc-fixture", mode: "unique_local_surface_visual" },
+          state: { real_send_status: "not_sent" }
+        };
+      }
+      options.onTransition("sent_verified", { real_send_attempt_key: `poison-next-${options.contactId}` });
+      return { ok: true, state: { real_send_status: "sent_verified", real_send_attempt_key: `poison-next-${options.contactId}` } };
+    };
+    await start({}, { script: "网络查找误点止损", clickToken: "trusted-poison-stop-loss" });
+    const poisonedTask = await waitFor(status, (value) => value.task?.status === "completed");
+    assert.equal(poisonedAttempts, 2, "a confirmed network lookup misclick must stop after the first attempt and continue later contacts");
+    assert.equal(poisonedTask.task.results[0].status, "identity_skipped");
+    assert.equal(poisonedTask.task.results[1].status, "sent_verified");
+    assert.deepEqual(poisonedTask.task.results[0].poisoned, {
+      reason_code: "wechat_search_network_lookup_misclick",
+      candidate_fingerprint: "legacy-ipc-fixture",
+      candidate_mode: "unique_local_surface_visual",
+      recovered: true,
+      at: poisonedTask.task.results[0].poisoned.at
+    });
+    const poisonedBeforeRetry = fs.readFileSync(path.join(dir, "touch_task.json"), "utf8");
+    const poisonedRetry = await retrySkipped({}, { contactIds: [poisonedTask.task.results[0].id] });
+    assert.equal(poisonedRetry.blocked_reason, "retry_skipped_poisoned_forbidden");
+    assert.equal(fs.readFileSync(path.join(dir, "touch_task.json"), "utf8"), poisonedBeforeRetry, "a poisoned retry rejection must not change persisted task state");
+
+    let unrecoveredPoisonAttempts = 0;
+    executorBehavior = async () => {
+      unrecoveredPoisonAttempts += 1;
+      return {
+        ok: false,
+        send_attempted: false,
+        blocked_reason: "wechat_search_network_lookup_misclick",
+        landing_recovered: false,
+        poisoned_candidate: { fingerprint: "legacy-unrecovered-fixture", mode: "unique_local_uia" },
+        state: { real_send_status: "not_sent" }
+      };
+    };
+    await start({}, { script: "网络查找关闭未确认", clickToken: "trusted-unrecovered-poison" });
+    const unrecoveredPoison = await waitFor(status, (value) => value.task?.status === "paused");
+    assert.equal(unrecoveredPoisonAttempts, 1, "an unrecovered network lookup landing must pause without bounded retry");
+    assert.equal(unrecoveredPoison.task.current_index, 0, "an unrecovered landing must not advance to the next contact");
+    assert.equal(unrecoveredPoison.task.results[0].poisoned.candidate_fingerprint, "legacy-unrecovered-fixture");
+    assert.equal(unrecoveredPoison.task.results[0].poisoned.recovered, false);
+
     const retryableTask = createTask("跳过项补发", contacts(3), "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
     retryableTask.results[0] = {
       ...retryableTask.results[0], status: "identity_skipped", reason: "身份不唯一，已跳过", blocked_reason: "search_result_identity_unverified",

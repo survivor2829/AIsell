@@ -23,7 +23,8 @@ const workflowPolicies = Object.freeze({
   application_disposing: { classification: "environment", attentionScope: "global" },
   wechat_operation_busy: { classification: "environment", attentionScope: "global" },
   touch_safety_interval: { classification: "environment", attentionScope: "global" },
-  retry_skipped_status_forbidden: { classification: "blocker", attentionScope: "global" }
+  retry_skipped_status_forbidden: { classification: "blocker", attentionScope: "global" },
+  retry_skipped_poisoned_forbidden: { classification: "blocker", attentionScope: "task" }
 });
 
 const reasonPolicies = new Map(Object.entries(workflowPolicies));

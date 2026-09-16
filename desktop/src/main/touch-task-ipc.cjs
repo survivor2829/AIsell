@@ -18,6 +18,7 @@ const {
   isBatchAuthorized,
   loadTaskState,
   markPreviousBuildTask,
+  poisonedSearchCandidate,
   publicTaskState,
   recordSkippedResult,
   recoverInterruptedTask,
@@ -109,6 +110,8 @@ function resultReason(result, fallback) {
     powershell_timeout: "微信窗口适配程序执行超时，请检查电脑负载或安全软件",
     powershell_failed: "微信窗口适配程序启动失败，请确认AI获客与微信权限一致，并检查安全软件拦截",
     exact_search_result_not_found: "未找到该联系人的精确公开微信号搜索结果，已隔离并跳过当前联系人",
+    wechat_search_network_lookup_misclick: "误点网络查找入口，资料弹窗已关闭，当前联系人已隔离且本任务内禁止重试",
+    wechat_search_result_landing_unverified: "点击后无法核验落点界面，已暂停且不会自动重试",
     search_result_not_opened: "未打开匹配联系人会话，已隔离并跳过当前联系人",
     customer_conversation_not_found: "未定位到客户会话，已隔离并跳过当前联系人",
     contact_unavailable: "该联系人已停用，已自动跳过",
@@ -424,8 +427,12 @@ function shouldContinueRunning() {
 }
 
 function isIdentitySkip(result) {
+  const reason = resultCode(result);
+  if (reason === "wechat_search_network_lookup_misclick"
+    && result?.landing_recovered !== true && result?.state?.landing_recovered !== true) return false;
   return new Set([
     "contact_unavailable",
+    "wechat_search_network_lookup_misclick",
     "exact_search_result_not_found",
     "search_result_identity_unverified",
     "search_result_not_opened",
@@ -438,7 +445,7 @@ function isIdentitySkip(result) {
     "wechat_account_identity_missing",
     "contact_name_not_unique",
     "contact_identity_not_unique"
-  ]).has(resultCode(result));
+  ]).has(reason);
 }
 
 function advanceTask(task, index) {
@@ -690,6 +697,9 @@ async function runRealContact(task, current, index) {
       return false;
     }
     if (isIdentitySkip(response)) {
+      if (resultCode(response) === "wechat_search_network_lookup_misclick") {
+        result.poisoned = poisonedSearchCandidate(response, new Date().toISOString());
+      }
       result.status = "identity_skipped";
       result.reason = resultReason(response, "联系人身份无法唯一确认，已跳过");
       result.updated_at = new Date().toISOString();
@@ -709,6 +719,11 @@ async function runRealContact(task, current, index) {
       && !["prepared", "clicked", "outcome_unknown"].includes(String(result.status || ""))
       && result.retry_blocked !== true;
     const failurePolicy = classifyWechatFailure(response);
+    if (failureCode === "wechat_search_network_lookup_misclick") {
+      result.poisoned = poisonedSearchCandidate(response, new Date().toISOString());
+      result.retry_blocked = true;
+      result.send_attempted = false;
+    }
     if (safeNotAttempted && failurePolicy.classification === "environment") {
       let environmentStartedAt = Date.parse(result.environment_recovery_started_at);
       if (!Number.isFinite(environmentStartedAt)) {

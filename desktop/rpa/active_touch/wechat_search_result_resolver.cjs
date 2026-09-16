@@ -22,6 +22,14 @@ function matchesIdentity(candidate, query, expectedName) {
   return identities.some((identity) => text.includes(identity));
 }
 
+function isNetworkLookupText(value) {
+  return normalized(value).includes("网络查找微信号");
+}
+
+function isNetworkLookupCandidate(candidate) {
+  return isNetworkLookupText(`${candidate?.name || ""} ${candidate?.automationId || ""} ${candidate?.text || ""}`);
+}
+
 function hasValidBounds(candidate) {
   const left = Number(candidate?.left);
   const top = Number(candidate?.top);
@@ -51,6 +59,44 @@ function validRectangle(value) {
 function isInside(candidate, bounds) {
   return Number(candidate.left) >= bounds.left && Number(candidate.top) >= bounds.top
     && Number(candidate.right) <= bounds.right && Number(candidate.bottom) <= bounds.bottom;
+}
+
+function sharesVisualRow(left, right) {
+  if (!hasValidBounds(left) || !hasValidBounds(right)) return false;
+  const overlap = Math.min(Number(left.bottom), Number(right.bottom)) - Math.max(Number(left.top), Number(right.top));
+  const minimumHeight = Math.min(Number(left.bottom) - Number(left.top), Number(right.bottom) - Number(right.top));
+  const horizontalGap = Math.max(0, Number(left.left) - Number(right.right), Number(right.left) - Number(left.right));
+  return overlap >= minimumHeight / 2 && horizontalGap <= Math.max(36, minimumHeight * 3);
+}
+
+function sharesCompactLocalSurface(left, right) {
+  if (!hasValidBounds(left) || !hasValidBounds(right)) return false;
+  const horizontalOverlap = Math.min(Number(left.right), Number(right.right)) - Math.max(Number(left.left), Number(right.left));
+  const minimumWidth = Math.min(Number(left.right) - Number(left.left), Number(right.right) - Number(right.left));
+  const verticalGap = Math.max(0, Number(left.top) - Number(right.bottom), Number(right.top) - Number(left.bottom));
+  const minimumHeight = Math.min(Number(left.bottom) - Number(left.top), Number(right.bottom) - Number(right.top));
+  return horizontalOverlap >= minimumWidth / 2 && verticalGap <= Math.max(18, minimumHeight);
+}
+
+function networkLookupRowCandidates(candidates, query) {
+  const sorted = [...candidates].sort((left, right) => Number(left.top) - Number(right.top) || Number(left.left) - Number(right.left));
+  const blocked = new Set();
+  const queryText = normalized(query);
+  for (const [index, anchor] of sorted.entries()) {
+    if (!normalized(anchor.text).includes("网络查找")) continue;
+    const surface = [anchor];
+    let combined = normalized(anchor.text);
+    let previous = anchor;
+    for (const candidate of sorted.slice(index + 1)) {
+      if (!sharesVisualRow(previous, candidate) && !followsIdentityFragment(previous, candidate)) break;
+      surface.push(candidate);
+      combined += normalized(candidate.text);
+      previous = candidate;
+      if (combined.includes("网络查找微信号") && (!queryText || combined.includes(queryText))) break;
+    }
+    if (combined.includes("网络查找微信号")) surface.forEach((candidate) => blocked.add(candidate));
+  }
+  return blocked;
 }
 
 function labelledWechatId(candidate) {
@@ -154,7 +200,7 @@ function isNearbyLocalResult(candidate, webSearchCandidates, webSearchTop) {
   });
 }
 
-function uniqueCompactLocalSurface(visualCandidates, webSearchTop) {
+function uniqueCompactLocalSurface(visualCandidates, webSearchTop, query, expectedName) {
   const nearby = visualCandidates
     .filter((candidate) => {
       const height = Number(candidate.bottom) - Number(candidate.top);
@@ -179,6 +225,12 @@ function uniqueCompactLocalSurface(visualCandidates, webSearchTop) {
   if (groups.length !== 1) return null;
 
   const items = groups[0].items;
+  const combinedText = items.map((candidate) => String(candidate.text || "")).join(" ");
+  if (isNetworkLookupText(combinedText)) return null;
+  const bareQueryCandidate = items.find((candidate) => normalized(candidate.text) === normalized(query));
+  if (bareQueryCandidate && !items.some((candidate) => candidate !== bareQueryCandidate
+    && matchesIdentity(candidate, "", expectedName)
+    && sharesCompactLocalSurface(candidate, bareQueryCandidate))) return null;
   const left = Math.min(...items.map((candidate) => Number(candidate.left)));
   const top = Math.min(...items.map((candidate) => Number(candidate.top)));
   const right = Math.max(...items.map((candidate) => Number(candidate.right)));
@@ -203,12 +255,14 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   });
   const query = String(identity.query ?? "").trim();
   const expectedName = String(identity.expectedName ?? "").trim();
-  const uiaCandidates = distinctCandidates(observation.uiaCandidates);
+  const uiaCandidates = distinctCandidates(observation.uiaCandidates).filter((candidate) => !isNetworkLookupCandidate(candidate));
   if (uiaCandidates.length === 1) {
-    return { status: "selected", mode: "unique_local_uia", candidate: uiaCandidates[0] };
+    return matchesIdentity(uiaCandidates[0], "", expectedName)
+      ? { status: "selected", mode: "unique_local_uia", candidate: uiaCandidates[0] }
+      : reject("search-r001");
   }
   if (uiaCandidates.length > 1) {
-    const matches = uiaCandidates.filter((candidate) => matchesIdentity(candidate, query, expectedName));
+    const matches = uiaCandidates.filter((candidate) => matchesIdentity(candidate, "", expectedName));
     return matches.length === 1
       ? { status: "selected", mode: "identity_matched_uia", candidate: matches[0] }
       : reject(matches.length === 0 ? "search-r001" : "search-r002");
@@ -224,7 +278,9 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
     return reject(observation.ocrOk !== true ? "search-r003" : !cropBounds ? "search-r004"
       : [...visualItems, ...webItems].some(candidate => !hasValidBounds(candidate)) ? "search-r005" : "search-r006");
   }
-  const visualCandidates = distinctCandidates(visualItems);
+  const observedVisualCandidates = distinctCandidates(visualItems);
+  const networkLookupCandidates = networkLookupRowCandidates(observedVisualCandidates, query);
+  const visualCandidates = observedVisualCandidates.filter((candidate) => !networkLookupCandidates.has(candidate));
   const webSearchCandidates = distinctCandidates([
     ...webItems,
     ...visualCandidates.filter((candidate) => isNetworkSearchLabel(candidate, query))
@@ -271,12 +327,16 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   const queryEcho = normalized(query);
   const exactUnlabelledLocalCandidates = localVisualCandidates.filter((candidate) => normalized(candidate?.text) === queryEcho
     && !webSearchCandidates.some((webCandidate) => composesNetworkEcho(candidate, webCandidate))
-    && isNearbyLocalResult(candidate, webSearchCandidates, webSearchTop));
+    && isNearbyLocalResult(candidate, webSearchCandidates, webSearchTop)
+    && localVisualCandidates.some((other) => other !== candidate
+      && normalized(other?.text) !== queryEcho
+      && matchesIdentity(other, "", expectedName)
+      && sharesCompactLocalSurface(other, candidate)));
   if (labelledCandidates.length === 0 && exactUnlabelledLocalCandidates.length === 1) {
     return { status: "selected", mode: "exact_wechat_id_local_visual", candidate: exactUnlabelledLocalCandidates[0] };
   }
   const uniqueLocalSurface = labelledCandidates.length === 0
-    ? uniqueCompactLocalSurface(localVisualCandidates, webSearchTop)
+    ? uniqueCompactLocalSurface(localVisualCandidates, webSearchTop, query, expectedName)
     : null;
   if (uniqueLocalSurface) {
     return { status: "selected", mode: "unique_local_surface_visual", candidate: uniqueLocalSurface };
