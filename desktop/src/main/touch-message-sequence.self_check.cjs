@@ -36,6 +36,10 @@ async function checkTouchMessageSequence() {
     "image failures must include script/source line mapping");
   assert.doesNotMatch(IMAGE_SEND_SCRIPT, /TickCount64/u,
     "PowerShell image scripts must not use .NET Core-only TickCount64");
+  const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, "../shared/wechat-rule-catalog.json"), "utf8"));
+  const literalReasons = [...IMAGE_SEND_SCRIPT.matchAll(/throw "(image_[a-z0-9_]+)"/g)].map((match) => match[1]);
+  const classifiedReasons = new Set(catalog.filter((entry) => entry?.file === "desktop/rpa/active_touch/wechat_image_send.dev.cjs" && typeof entry.reason === "string").map((entry) => entry.reason));
+  for (const reason of literalReasons) assert.equal(classifiedReasons.has(reason), true, `${reason} must be classified in wechat-rule-catalog`);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-touch-sequence-"));
   require("./diagnostics.cjs").configureDiagnostics({ rootDir: root });
   const contact = { id: "selected", name: "测试客户", nickname: "测试客户", wechatId: "test_customer", wechatAccountId: "test_account", allowed: true };

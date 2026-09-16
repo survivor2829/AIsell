@@ -208,10 +208,15 @@ function Read-ImageDraft([IntPtr]$window, [bool]$expectImage = $false) {
   Set-ImageClipboardOwned
   Set-ImageStage "read_back"
   Image-Keys "^a" $window
-  $copyLimit = $(if ($expectImage) { 5 } else { 1 })
+  $copyLimit = $(if ($expectImage) { 3 } else { 1 })
   $lastDraft = @{ empty = $true; image = $false }
   for ($copyAttempt = 1; $copyAttempt -le 5; $copyAttempt++) {
     if ($copyAttempt -gt $copyLimit) { break }
+    if ($expectImage -and $copyAttempt -gt 1) {
+      Start-Sleep -Milliseconds 1000
+      Assert-ImageWindow $window
+      Image-Keys "^a" $window
+    }
     $script:imageClipboardReadAttempts = [Math]::Max($script:imageClipboardReadAttempts, $copyAttempt)
     $beforeCopySequence = [Win32WechatImage]::GetClipboardSequenceNumber()
     Image-Keys "^c" $window
@@ -231,9 +236,7 @@ function Read-ImageDraft([IntPtr]$window, [bool]$expectImage = $false) {
     $lastDraft = Invoke-ImageClipboardRead $sentinel $window
     if ($lastDraft.image) { return $lastDraft }
     if (-not $expectImage) { return $lastDraft }
-    Start-Sleep -Milliseconds (80 * $copyAttempt)
-      Assert-ImageWindowIdentity $window
-    Image-Keys "^a" $window
+    if ($expectImage) { continue }
   }
   return $lastDraft
 }

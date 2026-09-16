@@ -2809,5 +2809,16 @@
     "dynamic": true,
     "line": 961,
     "classification": "recoverable"
-  }
+  },
+  { "id": "image-literal.click_point_changed", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_click_point_changed", "line": 1, "classification": "blocker" },
+  { "id": "image-literal.click_point_obscured", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_click_point_obscured", "line": 1, "classification": "blocker" },
+  { "id": "image-literal.clipboard_probe_failed", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_clipboard_probe_failed", "line": 1, "classification": "recoverable" },
+  { "id": "image-literal.clipboard_write_timeout", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_clipboard_write_timeout", "line": 1, "classification": "recoverable" },
+  { "id": "image-literal.context_missing", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_context_missing", "line": 1, "classification": "recoverable" },
+  { "id": "image-literal.draft_clear_failed", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_existing_draft_clear_failed", "line": 1, "classification": "recoverable" },
+  { "id": "image-literal.preview_not_verified", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_preview_not_verified", "line": 1, "classification": "recoverable" },
+  { "id": "image-literal.send_not_confirmed", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_send_not_confirmed", "line": 1, "classification": "blocker" },
+  { "id": "image-literal.stage_timeout", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_stage_timeout", "line": 1, "classification": "recoverable" },
+  { "id": "image-literal.window_changed", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_window_changed", "line": 1, "classification": "recoverable" },
+  { "id": "image-literal.draft_format_unavailable", "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs", "reason": "image_draft_format_unavailable", "line": 350, "classification": "recoverable" }
 ]
