@@ -12,6 +12,19 @@ function sanitizeFailureDiagnostics(value = {}) {
     if (Number.isSafeInteger(value?.[key]) && value[key] >= 0 && value[key] <= 86400000) result[key] = value[key];
   }
   if (typeof value?.ocr_ok === 'boolean') result.ocr_ok = value.ocr_ok;
+  if (Array.isArray(value?.image_progress)) {
+    const stages = new Set(['sentinel_write', 'image_load', 'clipboard_bitmap', 'paste', 'read_back', 'click_send', 'post_confirm']);
+    result.image_progress = value.image_progress.slice(-40).filter(entry => stages.has(entry?.stage) && ['start', 'finish'].includes(entry?.status)).map(entry => ({
+      stage: entry.stage, status: entry.status,
+      ...(Number.isSafeInteger(entry.elapsed_ms) && entry.elapsed_ms >= 0 ? { elapsed_ms: entry.elapsed_ms } : {}),
+      ...(Number.isSafeInteger(entry.observed_elapsed_ms) && entry.observed_elapsed_ms >= 0 ? { observed_elapsed_ms: entry.observed_elapsed_ms } : {}),
+      ...(Number.isSafeInteger(entry.clipboard_write_attempts) && entry.clipboard_write_attempts >= 0 ? { clipboard_write_attempts: entry.clipboard_write_attempts } : {}),
+      ...(Number.isSafeInteger(entry.clipboard_read_attempts) && entry.clipboard_read_attempts >= 0 ? { clipboard_read_attempts: entry.clipboard_read_attempts } : {}),
+      ...(Number.isSafeInteger(entry.retry_index) && entry.retry_index >= 0 ? { retry_index: entry.retry_index } : {})
+    }));
+  }
+  for (const key of ['retry_count']) if (Number.isSafeInteger(value?.[key]) && value[key] >= 0) result[key] = value[key];
+  if (typeof value?.image_progress_lost === 'boolean') result.image_progress_lost = value.image_progress_lost;
   return result;
 }
 module.exports = { sanitizeFailureDiagnostics };

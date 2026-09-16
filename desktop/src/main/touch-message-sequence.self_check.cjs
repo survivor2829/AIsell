@@ -20,6 +20,10 @@ async function checkTouchMessageSequence() {
     "image draft verification must wait and retry when WeChat publishes clipboard formats asynchronously");
   assert.match(IMAGE_SEND_SCRIPT, /function Invoke-ImageClipboardRead[\s\S]*hresult_800401D0[\s\S]*40 \* \$readAttempt/u,
     "clipboard reads must recover when another Windows component briefly owns the clipboard");
+  assert.match(IMAGE_SEND_SCRIPT, /imageStageBudgets[\s\S]*sentinel_write = 15000[\s\S]*image_load = 60000[\s\S]*clipboard_bitmap = 45000[\s\S]*paste = 30000[\s\S]*read_back = 20000[\s\S]*click_send = 30000[\s\S]*post_confirm = 30000/u,
+    "image sending must expose bounded per-stage budgets");
+  assert.match(IMAGE_SEND_SCRIPT, /WriteLine\("image_progress:" \+ \$payload\)/u,
+    "image sending must persist fixed-token stage progress diagnostics");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-touch-sequence-"));
   require("./diagnostics.cjs").configureDiagnostics({ rootDir: root });
   const contact = { id: "selected", name: "测试客户", nickname: "测试客户", wechatId: "test_customer", wechatAccountId: "test_account", allowed: true };
@@ -404,6 +408,22 @@ async function checkTouchMessageSequence() {
   const afterTimeout = clicks;
   await sendWechatImage(uncertainImage);
   assert.equal(clicks, afterTimeout, "A terminated native sender remains quarantined by its durable receipt");
+  let preClickTimeoutAttempts = 0;
+  const preClickTimeout = { ...imageOptions, baseDir: path.join(root, "pre-click-timeout"), runner: async (_script, env) => {
+    preClickTimeoutAttempts += 1;
+    const stage = preClickTimeoutAttempts === 1 ? "sentinel_write" : "read_back";
+    return { ok: false, reason: "powershell_timeout", diagnostics: { image_progress: [{ stage, status: "start", retry_index: Number(env.XIAOXI_IMAGE_RETRY_INDEX) }] } };
+  } };
+  const preClickResult = await sendWechatImage(preClickTimeout);
+  assert.equal(preClickTimeoutAttempts, 2, "a trusted pre-click timeout must run one complete retry");
+  assert.equal(preClickResult.send_attempted, false);
+  assert.equal(preClickResult.blocked_reason, "image_send_pre_click_timeout");
+  assert.equal(preClickResult.pre_send_retry_exhausted, true);
+  const postClickTimeout = { ...imageOptions, baseDir: path.join(root, "post-click-timeout"), runner: async () => ({
+    ok: false, reason: "powershell_timeout", diagnostics: { image_progress: [{ stage: "click_send", status: "start", retry_index: 0 }] }
+  }) };
+  const postClickResult = await sendWechatImage(postClickTimeout);
+  assert.equal(postClickResult.send_attempted, null, "a click-stage timeout must remain outcome_unknown");
   const diagnosedImage = { ...imageOptions, baseDir: path.join(root, "diagnosed-image"), runner: async () => ({
     ok: false, reason: "image_driver_failed", sendAttempted: false, ruleId: "image-r007",
     driverStage: "clipboard_image_write", errorLine: 167, errorId: "SetImage", errorType: "System.Runtime.InteropServices.ExternalException",

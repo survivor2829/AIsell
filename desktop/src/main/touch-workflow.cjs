@@ -360,6 +360,18 @@ function createTouchWorkflow(options = {}) {
         const reasonCode = identitySkipReason(result);
         const failurePolicy = classifyWechatFailure(result);
         const failureReason = String(result?.blocked_reason || result?.state?.blocked_reason || "");
+        if (failureReason === "image_send_pre_click_timeout" && result?.pre_send_retry_exhausted === true) {
+          current.status = "pre_send_skipped";
+          current.reason = String(result.error || "图片发送前阶段重试仍超时") + "，已跳过当前联系人";
+          current.retry_blocked = true;
+          current.send_attempted = false;
+          current.updated_at = now().toISOString();
+          recordSkippedResult(current, index, { reasonCode: failureReason, blockedReason: current.reason, at: current.updated_at, traceId: sendOperation.traceId });
+          task.current_index = index + 1;
+          if (task.current_index >= task.total) { task.status = "completed"; task.completed_at = now().toISOString(); }
+          persist();
+          return response(task.status === "completed" ? "completed" : "pending", { result: { deliveryStatus: "not_attempted", skipped: true, reasonCode: failureReason } });
+        }
         if (failureReason === "wechat_search_network_lookup_misclick" && !reasonCode) {
           current.poisoned = poisonedSearchCandidate(result, now().toISOString());
           current.status = "generated";

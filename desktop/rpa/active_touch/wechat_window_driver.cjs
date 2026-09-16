@@ -2035,6 +2035,16 @@ function runPowerShellAsync(script, env = {}, options = {}) {
     let quarantineRegistered = false;
     const discoverScans = () => Array.from(stderr.matchAll(/moments_discover_scan:elapsed_ms=(\d+),candidates=(\d+),matches=(\d+)/g))
       .slice(-12).map((match) => ({ elapsed_ms: Number(match[1]), candidates: Number(match[2]), matches: Number(match[3]) }));
+    const imageProgress = () => Array.from(stderr.matchAll(/image_progress:(\{[^\r\n]+\})/g)).slice(-40).map((match) => {
+      try {
+        const entry = JSON.parse(match[1]);
+        if (entry.status === "start" && entry.at) {
+          const started = Date.parse(entry.at);
+          if (Number.isFinite(started)) entry.observed_elapsed_ms = Math.max(0, Date.now() - started);
+        }
+        return entry;
+      } catch { return { parse_error: true }; }
+    });
     const terminationDiagnostics = (reason) => options.diagnostics === true ? {
       ...readMomentsDiagnostics(stderr, Date.now() - startedAt, timeout),
       timeout_ms: timeout,
@@ -2048,6 +2058,8 @@ function runPowerShellAsync(script, env = {}, options = {}) {
       navigation_stage: Array.from(stderr.matchAll(/moments_navigation_stage:([a-z_]+)/g)).at(-1)?.[1] || "",
       image_stage: Array.from(stderr.matchAll(/image_send_stage:([a-z_]+)/g)).at(-1)?.[1] || "",
       image_clipboard_operation: Array.from(stderr.matchAll(/image_clipboard_operation:([a-z_]+)/g)).at(-1)?.[1] || "",
+      image_progress: imageProgress(),
+      image_progress_lost: imageProgress().length === 0,
       discover_scans: discoverScans()
     } : undefined;
     const unconfirmedTermination = () => ({
@@ -2118,6 +2130,10 @@ function runPowerShellAsync(script, env = {}, options = {}) {
         const output = stdout.trim();
         if (!output) return finish({ ok: false, reason: ensureResult?.reason || "powershell_output_invalid" });
         const parsed = JSON.parse(output);
+        if (options.diagnostics === true) {
+          const progress = imageProgress();
+          parsed.diagnostics = { ...(parsed.diagnostics || {}), image_progress: progress, image_progress_lost: progress.length === 0 };
+        }
         if (options.diagnostics === true && discoverScans().length > 0) {
           parsed.diagnostics = { ...parsed.diagnostics, discover_scans: discoverScans() };
         }

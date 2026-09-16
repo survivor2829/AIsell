@@ -33,10 +33,34 @@ $script:imageStage = "context"
 $script:imageClipboardOperation = "none"
 $script:imageClipboardWriteAttempts = 0
 $script:imageClipboardReadAttempts = 0
+$script:imageStageStartedAt = [Environment]::TickCount64
+$script:imageStageBudgets = @{
+  sentinel_write = 15000; image_load = 60000; clipboard_bitmap = 45000;
+  paste = 30000; read_back = 20000; click_send = 30000; post_confirm = 30000
+}
+function Write-ImageProgress([string]$stage, [string]$status) {
+  $elapsed = [Math]::Max(0, [Environment]::TickCount64 - $script:imageStageStartedAt)
+  $retryIndex = 0; if ($env:XIAOXI_IMAGE_RETRY_INDEX) { [int]::TryParse([string]$env:XIAOXI_IMAGE_RETRY_INDEX, [ref]$retryIndex) | Out-Null }
+  $payload = @{ stage = $stage; status = $status; elapsed_ms = $elapsed; clipboard_write_attempts = $script:imageClipboardWriteAttempts; clipboard_read_attempts = $script:imageClipboardReadAttempts; retry_index = $retryIndex; at = [DateTime]::UtcNow.ToString("o") } | ConvertTo-Json -Compress
+  [Console]::Error.WriteLine("image_progress:" + $payload)
+}
+function Complete-ImageStage([string]$stage) {
+  if ([string]$script:imageStage -ne $stage) { return }
+  $elapsed = [Math]::Max(0, [Environment]::TickCount64 - $script:imageStageStartedAt)
+  Write-ImageProgress $stage "finish"
+  $budget = [int]($script:imageStageBudgets[$stage] | ForEach-Object { $_ })
+  if ($budget -gt 0 -and $elapsed -gt $budget) { throw "image_stage_timeout" }
+}
 
 function Set-ImageStage([string]$stage) {
+  $previous = [string]$script:imageStage
+  if ($previous -and $previous -ne "context") {
+    Complete-ImageStage $previous
+  }
   $script:imageStage = $stage
+  $script:imageStageStartedAt = [Environment]::TickCount64
   [Console]::Error.WriteLine("image_send_stage:" + $stage)
+  if ($script:imageStageBudgets.ContainsKey($stage)) { Write-ImageProgress $stage "start" }
 }
 function Invoke-ImageClipboardWrite([string]$operation, [scriptblock]$write) {
   $script:imageClipboardOperation = $operation
@@ -135,8 +159,10 @@ function Invoke-ImageClipboardRead([string]$sentinel, [IntPtr]$window) {
 function Read-ImageDraft([IntPtr]$window, [bool]$expectImage = $false) {
   Assert-ImageWindow $window
   $sentinel = "xiaoxi-image-copy-" + [Guid]::NewGuid().ToString("N")
+  Set-ImageStage "sentinel_write"
   Invoke-ImageClipboardWrite "draft_sentinel_write" { [System.Windows.Forms.Clipboard]::SetText($sentinel) }
   Set-ImageClipboardOwned
+  Set-ImageStage "read_back"
   Image-Keys "^a" $window
   $copyLimit = $(if ($expectImage) { 5 } else { 1 })
   $lastDraft = @{ empty = $true; image = $false }
@@ -238,7 +264,7 @@ try {
   # Windows' bitmap clipboard does not consistently preserve PNG alpha.
   # Normalize once before both copying and fingerprinting, so the two sides
   # compare the same opaque pixels rather than different alpha conversions.
-  Set-ImageStage "image_decode"
+  Set-ImageStage "image_load"
   $loadedImage = [System.Drawing.Image]::FromFile($imagePath)
   try {
     $sourceImage = New-Object System.Drawing.Bitmap($loadedImage.Width, $loadedImage.Height, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
@@ -247,11 +273,11 @@ try {
     finally { $sourceGraphics.Dispose() }
   } finally { $loadedImage.Dispose() }
   $fingerprint = Image-Fingerprint $sourceImage
-  Set-ImageStage "clipboard_image_write"
+  Set-ImageStage "clipboard_bitmap"
   Invoke-ImageClipboardWrite "image_write" { [System.Windows.Forms.Clipboard]::SetImage($sourceImage) }
   Set-ImageClipboardOwned
   [void](Observe-ImageConversation)
-  Set-ImageStage "image_paste"
+  Set-ImageStage "paste"
   Image-Keys "^v" $mainWindow
   Start-Sleep -Milliseconds 350
   Assert-ImageLease
@@ -271,7 +297,7 @@ try {
     $sendY = [int]($sendRect.Top + $sendRect.Height / 2)
     $verificationMode = "image_preview_consumed"
   } else {
-    Set-ImageStage "inline_draft_verification"
+    Set-ImageStage "read_back"
     Click-ImagePoint $inputX $inputY $mainWindow
     $draft = Read-ImageDraft $mainWindow $true
     if (-not $draft.image -or $draft.fingerprint -cne $fingerprint -or $draft.width -ne $sourceImage.Width -or $draft.height -ne $sourceImage.Height) {
@@ -285,12 +311,12 @@ try {
     $sendY = [int]($current.rect.Bottom - ${WECHAT_SEND_BUTTON_OFFSETS.bottom} * $dpi / 96.0)
     $verificationMode = "image_draft_consumed"
   }
-  Set-ImageStage "send_click_guard"
+  Set-ImageStage "click_send"
   Assert-ImageWindow $sendWindow
   # Mark uncertainty before entering the only irreversible click.
   $sendAttempted = $true
   Click-ImagePoint $sendX $sendY $sendWindow
-  Set-ImageStage "post_send_confirmation"
+  Set-ImageStage "post_confirm"
   $confirmed = $false
   for ($i = 0; $i -lt 15 -and -not $confirmed; $i++) {
     Start-Sleep -Milliseconds 200
@@ -304,10 +330,12 @@ try {
     $confirmed = (Read-ImageDraft $mainWindow).empty
   }
   if (-not $confirmed) { throw "image_send_not_confirmed" }
+  Complete-ImageStage "post_confirm"
   @{ ok = $true; sendAttempted = $true; verificationMode = $verificationMode; conversationVerified = $true; draftVerified = $true } | ConvertTo-Json -Compress
 } catch {
   $reason = [string]$_.Exception.Message
   if ($reason -notmatch "^[a-z][a-z0-9_]{1,79}$") { $reason = "image_driver_failed" }
+  try { Complete-ImageStage $script:imageStage } catch {}
   $ruleId = switch ($script:imageStage) {
     "context" { "image-r001" }
     "source_file" { "image-r002" }
@@ -315,13 +343,14 @@ try {
     "clipboard_backup" { "image-r004" }
     "existing_draft_check" { "image-r005" }
     "existing_draft_clear" { "image-r013" }
-    "image_decode" { "image-r006" }
-    "clipboard_image_write" { "image-r007" }
-    "image_paste" { "image-r008" }
+    "sentinel_write" { if ($reason -eq "image_stage_timeout") { "image-r014" } else { "image-r016" } }
+    "image_load" { "image-r006" }
+    "clipboard_bitmap" { "image-r007" }
+    "paste" { "image-r008" }
     "preview_verification" { "image-r009" }
-    "inline_draft_verification" { "image-r010" }
-    "send_click_guard" { "image-r011" }
-    "post_send_confirmation" { "image-r012" }
+    "read_back" { "image-r010" }
+    "click_send" { "image-r011" }
+    "post_confirm" { "image-r012" }
     default { "image-r099" }
   }
   [void](Write-XiaoxiFailure $ruleId $reason)
@@ -366,14 +395,50 @@ async function sendWechatImage({ baseDir, attemptId, image, context, onTransitio
   // The owning sequence persists prepared before the child can paste or click.
   saveReceipt("prepared");
   onTransition?.("prepared");
-  const controller = new AbortController();
-  const monitor = setInterval(() => { allowed().then(ok => { if (!ok) controller.abort(); }).catch(() => controller.abort()); }, 100);
-  let result;
-  try {
-    result = await runner(IMAGE_SEND_SCRIPT, { ...sendMessageEnvironment(context), XIAOXI_IMAGE_PATH: image.path, XIAOXI_IMAGE_SHA256: image.sha256 },
-      { ensure: false, sta: true, timeout: 30_000, signal: controller.signal, diagnostics: true });
-  } catch { return failure("image_driver_exception", null); }
-  finally { clearInterval(monitor); }
+  const mergeAttemptDiagnostics = (attempts) => ({
+    image_progress: attempts.flatMap(entry => Array.isArray(entry?.image_progress) ? entry.image_progress : []),
+    retry_count: Math.max(0, attempts.length - 1),
+    image_progress_lost: attempts.some(entry => !Array.isArray(entry?.image_progress) || entry.image_progress.length === 0)
+  });
+  const deadline = Date.now() + 180_000;
+  const runAttempt = async (retryIndex) => {
+    const remainingMs = Math.max(0, deadline - Date.now());
+    if (remainingMs <= 0) return { ok: false, reason: "powershell_timeout", diagnostics: { image_progress: [], image_progress_lost: true } };
+    const controller = new AbortController();
+    const monitor = setInterval(() => { allowed().then(ok => { if (!ok) controller.abort(); }).catch(() => controller.abort()); }, 100);
+    try {
+      return await runner(IMAGE_SEND_SCRIPT, {
+        ...sendMessageEnvironment(context), XIAOXI_IMAGE_PATH: image.path, XIAOXI_IMAGE_SHA256: image.sha256,
+        XIAOXI_IMAGE_RETRY_INDEX: String(retryIndex)
+      }, { ensure: false, sta: true, timeout: remainingMs, signal: controller.signal, diagnostics: true });
+    } catch { return { ok: false, reason: "image_driver_exception", diagnostics: { image_progress_lost: true } }; }
+    finally { clearInterval(monitor); }
+  };
+  const isTrustedPreClickTimeout = (candidate, retryIndex) => {
+    if (candidate?.reason !== "powershell_timeout") return false;
+    const progress = Array.isArray(candidate?.diagnostics?.image_progress)
+      ? candidate.diagnostics.image_progress.filter(entry => Number(entry?.retry_index) === retryIndex) : [];
+    const last = progress.at(-1);
+    return Boolean(last && ["sentinel_write", "image_load", "clipboard_bitmap", "paste", "read_back"].includes(last.stage)
+      && !progress.some(entry => ["click_send", "post_confirm"].includes(entry.stage)));
+  };
+  const diagnosticAttempts = [];
+  let result = await runAttempt(0);
+  diagnosticAttempts.push(result?.diagnostics || {});
+  if (isTrustedPreClickTimeout(result, 0)) {
+    if (!await allowed()) return failure("workflow_paused", false, { diagnostics: { attempts: diagnosticAttempts } });
+    await new Promise(resolve => setTimeout(resolve, 5_000));
+    if (!await allowed()) return failure("workflow_paused", false, { diagnostics: { attempts: diagnosticAttempts, retry_count: 0 } });
+    result = await runAttempt(1);
+    diagnosticAttempts.push(result?.diagnostics || {});
+    if (isTrustedPreClickTimeout(result, 1)) {
+      return failure("image_send_pre_click_timeout", false, {
+        pre_send_retry_exhausted: true,
+        diagnostics: { ...mergeAttemptDiagnostics(diagnosticAttempts), retry_exhausted: true }
+      });
+    }
+  }
+  if (diagnosticAttempts.length > 1) result = { ...result, diagnostics: { ...(result?.diagnostics || {}), ...mergeAttemptDiagnostics(diagnosticAttempts) } };
   if (result?.ok !== true || result.sendAttempted !== true || result.draftVerified !== true || result.conversationVerified !== true) {
     saveReceipt(result?.sendAttempted === false ? "not_attempted" : "outcome_unknown", result);
     return failure(result?.reason || "image_send_not_confirmed", result?.sendAttempted === false ? false : null, {

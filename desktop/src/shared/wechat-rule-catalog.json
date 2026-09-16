@@ -91,6 +91,27 @@
     "classification": "recoverable"
   },
   {
+    "id": "image-r014",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_stage_timeout",
+    "line": 38,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-r016",
+    "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
+    "reason": "image_sentinel_write_failure",
+    "line": 176,
+    "classification": "recoverable"
+  },
+  {
+    "id": "image-r015",
+    "file": "desktop/src/main/touch-workflow.cjs",
+    "reason": "image_send_pre_click_timeout",
+    "line": 369,
+    "classification": "recoverable"
+  },
+  {
     "id": "image-r099",
     "file": "desktop/rpa/active_touch/wechat_image_send.dev.cjs",
     "reason": "image_unclassified_driver_failure",
