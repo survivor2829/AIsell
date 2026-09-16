@@ -8,7 +8,7 @@ function sanitizeFailureDiagnostics(value = {}) {
     if (typeof value?.[key] === 'string' && /^[a-z0-9][a-z0-9_.:-]{0,119}$/i.test(value[key])
       && !/(?<![a-z0-9])(?:(?:sk|ak)[-_][a-z0-9_-]{6,}|ltai[a-z0-9]{8,})/i.test(value[key])) result[key] = value[key];
   }
-  for (const key of ['window_width', 'window_height', 'candidate_count', 'visual_candidate_count', 'clipboard_write_attempts', 'error_line']) {
+  for (const key of ['window_width', 'window_height', 'candidate_count', 'visual_candidate_count', 'clipboard_write_attempts', 'error_line', 'script_line', 'source_line']) {
     if (Number.isSafeInteger(value?.[key]) && value[key] >= 0 && value[key] <= 86400000) result[key] = value[key];
   }
   if (typeof value?.ocr_ok === 'boolean') result.ocr_ok = value.ocr_ok;
@@ -25,6 +25,8 @@ function sanitizeFailureDiagnostics(value = {}) {
   }
   for (const key of ['retry_count']) if (Number.isSafeInteger(value?.[key]) && value[key] >= 0) result[key] = value[key];
   if (typeof value?.image_progress_lost === 'boolean') result.image_progress_lost = value.image_progress_lost;
+  if (typeof value?.source_file === 'string' && /^[A-Za-z0-9_./-]{1,160}$/.test(value.source_file)) result.source_file = value.source_file;
+  if (Array.isArray(value?.image_preload)) result.image_preload = value.image_preload.slice(-20).filter(entry => /^[a-z_]{1,80}$/.test(entry?.marker || '')).map(entry => ({ marker: entry.marker, ...(Number.isInteger(entry.elapsed_ms) ? { elapsed_ms: entry.elapsed_ms } : {}) }));
   return result;
 }
 module.exports = { sanitizeFailureDiagnostics };

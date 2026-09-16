@@ -2045,6 +2045,8 @@ function runPowerShellAsync(script, env = {}, options = {}) {
         return entry;
       } catch { return { parse_error: true }; }
     });
+    const imagePreload = () => Array.from(stderr.matchAll(/image_preload:([a-z_]+)(?: elapsed_ms=(\d+))?/g)).slice(-20)
+      .map((match) => ({ marker: match[1], ...(match[2] ? { elapsed_ms: Number(match[2]) } : {}) }));
     const terminationDiagnostics = (reason) => options.diagnostics === true ? {
       ...readMomentsDiagnostics(stderr, Date.now() - startedAt, timeout),
       timeout_ms: timeout,
@@ -2060,6 +2062,7 @@ function runPowerShellAsync(script, env = {}, options = {}) {
       image_clipboard_operation: Array.from(stderr.matchAll(/image_clipboard_operation:([a-z_]+)/g)).at(-1)?.[1] || "",
       image_progress: imageProgress(),
       image_progress_lost: imageProgress().length === 0,
+      image_preload: imagePreload(),
       discover_scans: discoverScans()
     } : undefined;
     const unconfirmedTermination = () => ({
@@ -2122,7 +2125,7 @@ function runPowerShellAsync(script, env = {}, options = {}) {
       }
       if (status !== 0) {
         const diagnostics = options.diagnostics === true && options.windowDiagnostics !== true
-          ? { exit_code: status, stderr: stderr.trim().slice(-1200) }
+          ? { ...terminationDiagnostics("powershell_exit_nonzero"), exit_code: status, stderr: stderr.trim().slice(-5000) }
           : undefined;
         return finish({ ok: false, reason: "powershell_failed", ...(diagnostics ? { diagnostics } : {}) });
       }
@@ -2132,7 +2135,7 @@ function runPowerShellAsync(script, env = {}, options = {}) {
         const parsed = JSON.parse(output);
         if (options.diagnostics === true) {
           const progress = imageProgress();
-          parsed.diagnostics = { ...(parsed.diagnostics || {}), image_progress: progress, image_progress_lost: progress.length === 0 };
+          parsed.diagnostics = { ...(parsed.diagnostics || {}), image_progress: progress, image_progress_lost: progress.length === 0, image_preload: imagePreload() };
         }
         if (options.diagnostics === true && discoverScans().length > 0) {
           parsed.diagnostics = { ...parsed.diagnostics, discover_scans: discoverScans() };
@@ -2140,7 +2143,7 @@ function runPowerShellAsync(script, env = {}, options = {}) {
         if (!parsed.ok && !parsed.reason) return finish({ ...parsed, reason: ensureResult?.reason || "powershell_output_invalid" });
         return finish(parsed);
       } catch {
-        return finish(ensureResult?.reason ? { ok: false, reason: ensureResult.reason } : { ok: false, reason: "powershell_output_invalid" });
+        return finish(ensureResult?.reason ? { ok: false, reason: ensureResult.reason } : { ok: false, reason: "powershell_output_invalid", ...(options.diagnostics === true ? { diagnostics: { stdout: stdout.trim().slice(-3000), stderr: stderr.trim().slice(-3000) } } : {}) });
       }
     });
     child.stdin.on("error", () => undefined);

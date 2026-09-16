@@ -24,6 +24,18 @@ async function checkTouchMessageSequence() {
     "image sending must expose bounded per-stage budgets");
   assert.match(IMAGE_SEND_SCRIPT, /WriteLine\("image_progress:" \+ \$payload\)/u,
     "image sending must persist fixed-token stage progress diagnostics");
+  assert.match(IMAGE_SEND_SCRIPT, /imageLeaseSettleIntervalMs = 30[\s\S]*imageLeaseSettleSamples = 2[\s\S]*imageLeaseSettleTimeoutMs = 250/u,
+    "image lease settling must use fixed documented bounds");
+  assert.match(IMAGE_SEND_SCRIPT, /image_send_stage:script_started[\s\S]*image_preload:observation_start[\s\S]*image_preload:image_add_type_start/u,
+    "image script must emit startup and preload markers");
+  assert.match(IMAGE_SEND_SCRIPT, /imageClipboardWriteJoinTimeoutMs = 5000[\s\S]*image_clipboard_write_timeout/u,
+    "clipboard writes must have fixed timeout budget");
+  assert.match(IMAGE_SEND_SCRIPT, /Assert-ImageWindowIdentity \$window[\s\S]*\$copySequence/u,
+    "read-back polling must avoid lease assertions");
+  assert.match(IMAGE_SEND_SCRIPT, /script_line = \$scriptLine[\s\S]*source_file[\s\S]*source_line = \$sourceLine/u,
+    "image failures must include script/source line mapping");
+  assert.doesNotMatch(IMAGE_SEND_SCRIPT, /TickCount64/u,
+    "PowerShell image scripts must not use .NET Core-only TickCount64");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-touch-sequence-"));
   require("./diagnostics.cjs").configureDiagnostics({ rootDir: root });
   const contact = { id: "selected", name: "测试客户", nickname: "测试客户", wechatId: "test_customer", wechatAccountId: "test_account", allowed: true };

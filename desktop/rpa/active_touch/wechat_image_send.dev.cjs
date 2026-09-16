@@ -8,7 +8,20 @@ const { WECHAT_SEND_OBSERVATION_SCRIPT, WECHAT_SEND_BUTTON_OFFSETS, sendMessageE
 // Reuse the text sender's conversation and composer adapter. Images add only
 // clipboard image proof and WeChat's native preview/inline draft handling.
 const IMAGE_SEND_SCRIPT = `$ErrorActionPreference = "Stop"
+# Windows PowerShell 5.1/.NET Framework lacks the newer environment tick API. Use a
+# process-relative Stopwatch clock so stage deadlines stay monotonic and bounded.
+$script:imageClockStart = [System.Diagnostics.Stopwatch]::GetTimestamp()
+function Get-UptimeMs {
+  $delta = [System.Diagnostics.Stopwatch]::GetTimestamp() - $script:imageClockStart
+  $frequency = [System.Diagnostics.Stopwatch]::Frequency
+  [long](($delta / $frequency) * 1000 + (($delta % $frequency) * 1000 / $frequency))
+}
+[void]($script:imageScriptStartedAt = Get-UptimeMs)
+[Console]::Error.WriteLine("image_send_stage:script_started")
+[Console]::Error.WriteLine("image_preload:observation_start")
 ${WECHAT_SEND_OBSERVATION_SCRIPT}
+[Console]::Error.WriteLine("image_preload:observation_finish elapsed_ms=" + (Get-UptimeMs - $script:imageScriptStartedAt))
+[Console]::Error.WriteLine("image_preload:image_add_type_start")
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -16,10 +29,13 @@ public static class Win32WechatImage {
   [StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
   [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
   [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
+  [DllImport("user32.dll")] public static extern bool OpenClipboard(IntPtr hWndNewOwner);
+  [DllImport("user32.dll")] public static extern bool CloseClipboard();
   [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hWnd, uint command);
   public static uint InputTick() { var i = new LASTINPUTINFO(); i.cbSize = (uint)Marshal.SizeOf(i); if (!GetLastInputInfo(ref i)) throw new Exception("image_input_unavailable"); return i.dwTime; }
 }
 "@
+[Console]::Error.WriteLine("image_preload:image_add_type_finish elapsed_ms=" + (Get-UptimeMs - $script:imageScriptStartedAt))
 $imagePath = $env:XIAOXI_IMAGE_PATH
 $expectedImageHash = $env:XIAOXI_IMAGE_SHA256
 $script:inputTick = [Win32WechatImage]::InputTick()
@@ -33,23 +49,32 @@ $script:imageStage = "context"
 $script:imageClipboardOperation = "none"
 $script:imageClipboardWriteAttempts = 0
 $script:imageClipboardReadAttempts = 0
-$script:imageStageStartedAt = [Environment]::TickCount64
+[void]($script:imageStageStartedAt = Get-UptimeMs)
+$script:imageLeaseSettleIntervalMs = 30
+$script:imageLeaseSettleSamples = 2
+$script:imageLeaseSettleTimeoutMs = 250
+$script:imageClipboardWriteJoinTimeoutMs = 5000
 $script:imageStageBudgets = @{
   sentinel_write = 15000; image_load = 60000; clipboard_bitmap = 45000;
   paste = 30000; read_back = 20000; click_send = 30000; post_confirm = 30000
 }
 function Write-ImageProgress([string]$stage, [string]$status) {
-  $elapsed = [Math]::Max(0, [Environment]::TickCount64 - $script:imageStageStartedAt)
+  $elapsed = [Math]::Max(0, (Get-UptimeMs) - $script:imageStageStartedAt)
   $retryIndex = 0; if ($env:XIAOXI_IMAGE_RETRY_INDEX) { [int]::TryParse([string]$env:XIAOXI_IMAGE_RETRY_INDEX, [ref]$retryIndex) | Out-Null }
   $payload = @{ stage = $stage; status = $status; elapsed_ms = $elapsed; clipboard_write_attempts = $script:imageClipboardWriteAttempts; clipboard_read_attempts = $script:imageClipboardReadAttempts; retry_index = $retryIndex; at = [DateTime]::UtcNow.ToString("o") } | ConvertTo-Json -Compress
   [Console]::Error.WriteLine("image_progress:" + $payload)
 }
 function Complete-ImageStage([string]$stage) {
   if ([string]$script:imageStage -ne $stage) { return }
-  $elapsed = [Math]::Max(0, [Environment]::TickCount64 - $script:imageStageStartedAt)
+  $elapsed = [Math]::Max(0, (Get-UptimeMs) - $script:imageStageStartedAt)
   Write-ImageProgress $stage "finish"
   $budget = [int]($script:imageStageBudgets[$stage] | ForEach-Object { $_ })
   if ($budget -gt 0 -and $elapsed -gt $budget) { throw "image_stage_timeout" }
+}
+function Assert-ImageStageBudget {
+  $stage = [string]$script:imageStage
+  $budget = [int]($script:imageStageBudgets[$stage] | ForEach-Object { $_ })
+  if ($budget -gt 0 -and ((Get-UptimeMs) - $script:imageStageStartedAt) -gt $budget) { throw "image_stage_timeout" }
 }
 
 function Set-ImageStage([string]$stage) {
@@ -58,16 +83,23 @@ function Set-ImageStage([string]$stage) {
     Complete-ImageStage $previous
   }
   $script:imageStage = $stage
-  $script:imageStageStartedAt = [Environment]::TickCount64
+  [void]($script:imageStageStartedAt = Get-UptimeMs)
   [Console]::Error.WriteLine("image_send_stage:" + $stage)
   if ($script:imageStageBudgets.ContainsKey($stage)) { Write-ImageProgress $stage "start" }
 }
-function Invoke-ImageClipboardWrite([string]$operation, [scriptblock]$write) {
+function Invoke-ImageClipboardWrite([string]$operation, [scriptblock]$write, [IntPtr]$window) {
   $script:imageClipboardOperation = $operation
   [Console]::Error.WriteLine("image_clipboard_operation:" + $operation)
   for ($attempt = 1; $attempt -le 5; $attempt++) {
     $script:imageClipboardWriteAttempts = [Math]::Max($script:imageClipboardWriteAttempts, $attempt)
-    try { & $write; return } catch {
+    try {
+      if (-not [Win32WechatImage]::OpenClipboard([IntPtr]::Zero)) { throw "image_clipboard_probe_failed" }
+      [void][Win32WechatImage]::CloseClipboard()
+      $writeStarted = Get-UptimeMs
+      & $write
+      if ((Get-UptimeMs) - $writeStarted -gt $script:imageClipboardWriteJoinTimeoutMs) { throw "image_clipboard_write_timeout" }
+      return
+    } catch {
       $exception = $_.Exception
       $busy = $false
       for ($depth = 0; $exception -and $depth -lt 6; $depth++) {
@@ -76,7 +108,7 @@ function Invoke-ImageClipboardWrite([string]$operation, [scriptblock]$write) {
       }
       if (-not $busy -or $attempt -eq 5) { throw }
       Start-Sleep -Milliseconds (80 * $attempt)
-      Assert-ImageLease
+      Assert-ImageWindowIdentity $window
     }
   }
 }
@@ -84,16 +116,27 @@ function Invoke-ImageClipboardWrite([string]$operation, [scriptblock]$write) {
 function Assert-ImageLease {
   if ([Win32WechatImage]::InputTick() -ne $script:inputTick) { throw "wechat_external_input_detected" }
 }
-function Assert-ImageWindow([IntPtr]$window) {
-  Assert-ImageLease
+function Assert-ImageWindowIdentity([IntPtr]$window) {
   [uint32]$ownerPid = 0
   [void][Win32WechatSendMessage]::GetWindowThreadProcessId($window, [ref]$ownerPid)
-  if (-not [Win32WechatSendMessage]::IsWindowVisible($window) -or
-      [Win32WechatSendMessage]::GetForegroundWindow() -ne $window -or [string]$ownerPid -ne $expectedPid) { throw "image_window_changed" }
+  if (-not [Win32WechatSendMessage]::IsWindowVisible($window) -or [string]$ownerPid -ne $expectedPid) { throw "image_window_changed" }
+}
+function Assert-ImageWindow([IntPtr]$window) { Assert-ImageLease; Assert-ImageWindowIdentity $window; if ([Win32WechatSendMessage]::GetForegroundWindow() -ne $window) { throw "image_window_changed" } }
+function Settle-ImageInputLease {
+  $started = Get-UptimeMs
+  $last = [Win32WechatImage]::InputTick()
+  $stable = 0
+  do {
+    Start-Sleep -Milliseconds $script:imageLeaseSettleIntervalMs
+    $current = [Win32WechatImage]::InputTick()
+    if ($current -eq $last) { $stable++ } else { $stable = 0; $last = $current }
+    if ($stable -ge $script:imageLeaseSettleSamples) { [void]($script:inputTick = $current); return }
+  } while ((Get-UptimeMs) - $started -lt $script:imageLeaseSettleTimeoutMs)
+  [void]($script:inputTick = $last)
 }
 function Set-ImageClipboardOwned {
-  $script:clipboardOwned = $true
-  $script:clipboardSequence = [Win32WechatImage]::GetClipboardSequenceNumber()
+  [void]($script:clipboardOwned = $true)
+  [void]($script:clipboardSequence = [Win32WechatImage]::GetClipboardSequenceNumber())
 }
 function Image-Fingerprint([System.Drawing.Image]$source) {
   $bitmap = New-Object System.Drawing.Bitmap($source.Width, $source.Height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
@@ -114,7 +157,7 @@ function Image-Fingerprint([System.Drawing.Image]$source) {
 function Click-ImagePoint([int]$x, [int]$y, [IntPtr]$window) {
   Assert-ImageWindow $window
   [void][Win32WechatSendMessage]::SetCursorPos($x, $y)
-  $script:inputTick = [Win32WechatImage]::InputTick()
+  Settle-ImageInputLease
   $point = New-Object Win32WechatSendMessage+POINT
   if (-not [Win32WechatSendMessage]::GetCursorPos([ref]$point) -or [Math]::Abs($point.X-$x) -gt 1 -or [Math]::Abs($point.Y-$y) -gt 1) { throw "image_click_point_changed" }
   $pointWindow = [Win32WechatSendMessage]::WindowFromPoint($point)
@@ -129,10 +172,11 @@ function Click-ImagePoint([int]$x, [int]$y, [IntPtr]$window) {
 function Image-Keys([string]$keys, [IntPtr]$window) {
   Assert-ImageWindow $window
   [System.Windows.Forms.SendKeys]::SendWait($keys)
-  $script:inputTick = [Win32WechatImage]::InputTick()
+  Settle-ImageInputLease
 }
 function Invoke-ImageClipboardRead([string]$sentinel, [IntPtr]$window) {
   for ($readAttempt = 1; $readAttempt -le 5; $readAttempt++) {
+    Assert-ImageStageBudget
     $script:imageClipboardReadAttempts = [Math]::Max($script:imageClipboardReadAttempts, $readAttempt)
     try {
       if ([System.Windows.Forms.Clipboard]::ContainsImage()) {
@@ -152,7 +196,7 @@ function Invoke-ImageClipboardRead([string]$sentinel, [IntPtr]$window) {
       }
       if (-not $busy -or $readAttempt -eq 5) { throw }
       Start-Sleep -Milliseconds (40 * $readAttempt)
-      Assert-ImageWindow $window
+      Assert-ImageWindowIdentity $window
     }
   }
 }
@@ -160,7 +204,7 @@ function Read-ImageDraft([IntPtr]$window, [bool]$expectImage = $false) {
   Assert-ImageWindow $window
   $sentinel = "xiaoxi-image-copy-" + [Guid]::NewGuid().ToString("N")
   Set-ImageStage "sentinel_write"
-  Invoke-ImageClipboardWrite "draft_sentinel_write" { [System.Windows.Forms.Clipboard]::SetText($sentinel) }
+  Invoke-ImageClipboardWrite "draft_sentinel_write" { [System.Windows.Forms.Clipboard]::SetText($sentinel) } $window
   Set-ImageClipboardOwned
   Set-ImageStage "read_back"
   Image-Keys "^a" $window
@@ -171,22 +215,24 @@ function Read-ImageDraft([IntPtr]$window, [bool]$expectImage = $false) {
     $script:imageClipboardReadAttempts = [Math]::Max($script:imageClipboardReadAttempts, $copyAttempt)
     $beforeCopySequence = [Win32WechatImage]::GetClipboardSequenceNumber()
     Image-Keys "^c" $window
-    $waitUntil = [Environment]::TickCount64 + (120 + (80 * $copyAttempt))
-    do {
+    $waitUntil = (Get-UptimeMs) + (120 + (80 * $copyAttempt))
+  do {
+    Assert-ImageStageBudget
       Start-Sleep -Milliseconds 40
-      Assert-ImageWindow $window
+      Assert-ImageWindowIdentity $window
       $copySequence = [Win32WechatImage]::GetClipboardSequenceNumber()
-    } while ($copySequence -eq $beforeCopySequence -and [Environment]::TickCount64 -lt $waitUntil)
+    } while ($copySequence -eq $beforeCopySequence -and (Get-UptimeMs) -lt $waitUntil)
     if ($copySequence -eq $beforeCopySequence) {
       if (-not $expectImage) { return @{ empty = $true; image = $false } }
       continue
     }
     Set-ImageClipboardOwned
+    Assert-ImageWindow $window
     $lastDraft = Invoke-ImageClipboardRead $sentinel $window
     if ($lastDraft.image) { return $lastDraft }
     if (-not $expectImage) { return $lastDraft }
     Start-Sleep -Milliseconds (80 * $copyAttempt)
-    Assert-ImageWindow $window
+      Assert-ImageWindowIdentity $window
     Image-Keys "^a" $window
   }
   return $lastDraft
@@ -274,7 +320,7 @@ try {
   } finally { $loadedImage.Dispose() }
   $fingerprint = Image-Fingerprint $sourceImage
   Set-ImageStage "clipboard_bitmap"
-  Invoke-ImageClipboardWrite "image_write" { [System.Windows.Forms.Clipboard]::SetImage($sourceImage) }
+  Invoke-ImageClipboardWrite "image_write" { [System.Windows.Forms.Clipboard]::SetImage($sourceImage) } $mainWindow
   Set-ImageClipboardOwned
   [void](Observe-ImageConversation)
   Set-ImageStage "paste"
@@ -360,7 +406,9 @@ try {
   $errorType = [string]$_.Exception.GetType().FullName
   if ($errorType -notmatch "^[A-Za-z0-9_.-]{1,120}$") { $errorType = "unknown" }
   $errorHResult = ('hresult_{0:X8}' -f $_.Exception.HResult)
-  @{ ok = $false; reason = $reason; sendAttempted = $sendAttempted; ruleId = $ruleId; driverStage = $script:imageStage; clipboardOperation = $script:imageClipboardOperation; clipboardWriteAttempts = $script:imageClipboardWriteAttempts; clipboardReadAttempts = $script:imageClipboardReadAttempts; errorLine = $_.InvocationInfo.ScriptLineNumber; errorId = $errorId; errorType = $errorType; errorHResult = $errorHResult } | ConvertTo-Json -Compress
+  $scriptLine = $_.InvocationInfo.ScriptLineNumber
+  $sourceLine = if ($script:imageStage -eq "read_back" -and $reason -eq "wechat_external_input_detected") { 177 } elseif ($reason -eq "wechat_external_input_detected") { 85 } else { $null }
+  @{ ok = $false; reason = $reason; sendAttempted = $sendAttempted; ruleId = $ruleId; driverStage = $script:imageStage; clipboardOperation = $script:imageClipboardOperation; clipboardWriteAttempts = $script:imageClipboardWriteAttempts; clipboardReadAttempts = $script:imageClipboardReadAttempts; script_line = $scriptLine; source_file = "desktop/rpa/active_touch/wechat_image_send.dev.cjs"; source_line = $sourceLine; errorLine = $scriptLine; errorId = $errorId; errorType = $errorType; errorHResult = $errorHResult } | ConvertTo-Json -Compress
 } finally {
   if ($sourceImage) { $sourceImage.Dispose() }
   if ($script:clipboardOwned -and [Win32WechatImage]::GetClipboardSequenceNumber() -eq $script:clipboardSequence) {
@@ -442,6 +490,7 @@ async function sendWechatImage({ baseDir, attemptId, image, context, onTransitio
   if (result?.ok !== true || result.sendAttempted !== true || result.draftVerified !== true || result.conversationVerified !== true) {
     saveReceipt(result?.sendAttempted === false ? "not_attempted" : "outcome_unknown", result);
     return failure(result?.reason || "image_send_not_confirmed", result?.sendAttempted === false ? false : null, {
+      ...(result?.diagnostics ? { diagnostics: result.diagnostics } : {}),
       ...(/^[a-z0-9_.-]{1,100}$/i.test(result?.ruleId || "") ? { rule_id: result.ruleId } : {}),
       ...(/^[a-z][a-z0-9_]{1,79}$/i.test(result?.driverStage || result?.diagnostics?.image_stage || "") ? { driver_stage: result.driverStage || result.diagnostics.image_stage } : {}),
       ...(/^[a-z][a-z0-9_]{1,79}$/i.test(result?.clipboardOperation || result?.diagnostics?.image_clipboard_operation || "") ? { clipboard_operation: result.clipboardOperation || result.diagnostics.image_clipboard_operation } : {}),
