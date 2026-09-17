@@ -1,6 +1,6 @@
 # AI获客 V1.0版本
 
-Windows Electron 桌面应用。验收优先覆盖当前安装的主流个人微信，再用至少一个不同版本做兼容回归；具体实测版本、能力是否可用及是否经过本机或异机实测，以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。正式交付优先使用 `release/AI获客 V1.0版本-安装程序.exe`；`release/AI获客 V1.0版本.zip` 只作为免安装备用包。
+Windows Electron 桌面应用。验收优先覆盖当前安装的主流个人微信，再用至少一个不同版本做兼容回归；具体实测版本、能力是否可用及是否经过本机或异机实测，以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。客户交付只使用 `release/AI获客 V1.0版本-安装程序.exe` 及对应版本清单；便携 ZIP 不作为交付物。
 
 ## 本地运行
 
@@ -44,11 +44,10 @@ npm.cmd run build:product-detail
 npm.cmd run build:content-engine
 ```
 
-生成便携包：
+生成客户验收安装程序：
 
 ```powershell
-npm.cmd run release:test
-npm.cmd run release:delivery
+npm.cmd run release:installer
 ```
 
 交给用户覆盖旧正式安装版时使用 `release/AI获客 V1.0版本-安装程序.exe`，并同时核对 `release/AI获客 V1.0版本-安装程序-版本清单.json`。收尾后的 `release/` 只保留当前安装器和清单；需要内部便携包时从当前源码重新运行发布命令，不再长期堆放旧 ZIP 和解压目录。
@@ -65,7 +64,7 @@ npm.cmd run release:installer
 
 当前安装器尚未购买商业代码签名证书，Windows 可能显示“未知发布者”；分发前应同时提供安装器版本清单和 SHA256，验收人员核对后再运行。
 
-`release:*` 会先执行 self-check 和对应 renderer 构建，再生成目录与 ZIP 并检查包内运行依赖和隐私文件。包含内容生产入口的正式 release 还必须同时使用与当前提交对应的 `product-detail` 和 `content-engine` 固定运行时；不能拿历史 runtime 与新源码混合打包。便携包必须完整解压后运行，不能只复制 EXE。构建通过不等于实机验收通过，也不自动获得“可分发”状态。当前各能力的真实状态仍只以 `PROJECT_STATUS.md` 为准。
+`release:*` 会先执行 self-check 和对应 renderer 构建，并检查包内运行依赖和隐私文件。客户交付流程只保留安装程序和版本清单；便携 ZIP（如构建过程产生）仅为内部中间产物，不得提供给客户。包含内容生产入口的正式 release 还必须同时使用与当前提交对应的 `product-detail` 和 `content-engine` 固定运行时；不能拿历史 runtime 与新源码混合打包。构建通过不等于实机验收通过，也不自动获得“可分发”状态。当前各能力的真实状态仍只以 `PROJECT_STATUS.md` 为准。
 
 ## 本地数据目录
 
