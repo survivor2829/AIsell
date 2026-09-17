@@ -190,6 +190,15 @@ function isNetworkSearchLabel(candidate, query) {
   return false;
 }
 
+function isLocalContactSection(value) {
+  const text = normalized(value);
+  return /^最常.{0,2}用$/u.test(text) || ["联系人", "最近联系人", "好友"].includes(text);
+}
+
+function isOtherSearchSection(value) {
+  return ["群聊", "聊天记录", "公众号", "小程序", "文件", "文件传输"].includes(normalized(value));
+}
+
 function composesNetworkEcho(candidate, webCandidate) {
   const verticalOverlap = Math.min(Number(candidate.bottom), Number(webCandidate.bottom))
     - Math.max(Number(candidate.top), Number(webCandidate.top));
@@ -219,13 +228,13 @@ function isNearbyLocalResult(candidate, webSearchCandidates, webSearchTop) {
   });
 }
 
-function uniqueCompactLocalSurface(visualCandidates, webSearchTop, query, expectedName) {
-  const nearby = visualCandidates
+function uniqueCompactLocalSurface(visualCandidates, webSearchTop, query, expectedName, wechatIdSearch = false) {
+  const nearby = (wechatIdSearch ? visualCandidates : visualCandidates
     .filter((candidate) => {
       const height = Number(candidate.bottom) - Number(candidate.top);
       return Number(candidate.bottom) <= webSearchTop
         && webSearchTop - Number(candidate.bottom) <= Math.max(72, height * 3);
-    })
+    }))
     .sort((left, right) => Number(left.top) - Number(right.top));
   if (!nearby.length) return null;
 
@@ -233,7 +242,7 @@ function uniqueCompactLocalSurface(visualCandidates, webSearchTop, query, expect
   for (const candidate of nearby) {
     const current = groups.at(-1);
     const height = Number(candidate.bottom) - Number(candidate.top);
-    const gapLimit = Math.max(10, Math.min(18, height * 0.6));
+    const gapLimit = wechatIdSearch ? height * 1.5 : Math.max(10, Math.min(18, height * 0.6));
     if (!current || Number(candidate.top) - current.bottom > gapLimit) {
       groups.push({ items: [candidate], bottom: Number(candidate.bottom) });
     } else {
@@ -244,12 +253,18 @@ function uniqueCompactLocalSurface(visualCandidates, webSearchTop, query, expect
   if (groups.length !== 1) return null;
 
   const items = groups[0].items;
+  // A single friend contributes at most a name line and its smaller ID line.
+  // More OCR lines may hide another friend; do not infer uniqueness from a
+  // shared section heading or from proximity alone.
+  if (wechatIdSearch && items.length > 2) return null;
   const combinedText = items.map((candidate) => String(candidate.text || "")).join(" ");
   if (isNetworkLookupText(combinedText)) return null;
   const bareQueryCandidate = items.find((candidate) => normalized(candidate.text) === normalized(query));
-  if (bareQueryCandidate && !items.some((candidate) => candidate !== bareQueryCandidate
-    && matchesIdentity(candidate, "", expectedName)
-    && sharesCompactLocalSurface(candidate, bareQueryCandidate))) return null;
+  if (bareQueryCandidate && (wechatIdSearch
+    ? items.length < 2
+    : !items.some((candidate) => candidate !== bareQueryCandidate
+      && matchesIdentity(candidate, "", expectedName)
+      && sharesCompactLocalSurface(candidate, bareQueryCandidate)))) return null;
   const left = Math.min(...items.map((candidate) => Number(candidate.left)));
   const top = Math.min(...items.map((candidate) => Number(candidate.top)));
   const right = Math.max(...items.map((candidate) => Number(candidate.right)));
@@ -260,8 +275,8 @@ function uniqueCompactLocalSurface(visualCandidates, webSearchTop, query, expect
     top,
     right,
     bottom,
-    x: Math.round((left + right) / 2),
-    y: Math.round((top + bottom) / 2)
+    x: wechatIdSearch ? Number(items[0].x) : Math.round((left + right) / 2),
+    y: wechatIdSearch ? Number(items[0].y) : Math.round((top + bottom) / 2)
   };
 }
 
@@ -274,13 +289,16 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   });
   const query = String(identity.query ?? "").trim();
   const expectedName = String(identity.expectedName ?? "").trim();
+  const wechatIdSearch = identity.queryType === "wechat_id";
   const uiaCandidates = distinctCandidates(observation.uiaCandidates).filter((candidate) => !isNetworkLookupCandidate(candidate));
   if (uiaCandidates.length === 1) {
+    if (wechatIdSearch) return { status: "selected", mode: "unique_local_wechat_id_uia", candidate: uiaCandidates[0] };
     return matchesIdentity(uiaCandidates[0], "", expectedName) && !hasNameConflict(uiaCandidates[0], [], expectedName, query)
       ? { status: "selected", mode: "unique_local_uia", candidate: uiaCandidates[0] }
       : reject(hasNameConflict(uiaCandidates[0], [], expectedName, query) ? "search-r016" : "search-r001", hasNameConflict(uiaCandidates[0], [], expectedName, query) ? "wechat_id_name_conflict" : "search_result_identity_unverified");
   }
   if (uiaCandidates.length > 1) {
+    if (wechatIdSearch) return reject("search-r002");
     const matches = uiaCandidates.filter((candidate) => matchesIdentity(candidate, "", expectedName));
     return matches.length === 1 && !hasNameConflict(matches[0], uiaCandidates, expectedName, query)
       ? { status: "selected", mode: "identity_matched_uia", candidate: matches[0] }
@@ -308,6 +326,31 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
     ? Math.min(...webSearchCandidates.map((candidate) => Number(candidate.top)))
     : cropBounds.bottom;
   const localVisualCandidates = visualCandidates.filter((candidate) => Number(candidate.bottom) <= webSearchTop);
+  if (wechatIdSearch) {
+    const reportedTop = observation.webSearchTop;
+    if (webSearchCandidates.length && (webSearchCandidates.some((candidate) => !isNetworkSearchLabel(candidate, query))
+      || (reportedTop !== null && reportedTop !== undefined && reportedTop !== "" && Number(reportedTop) !== webSearchTop)
+      || webSearchTop < cropBounds.top || webSearchTop >= cropBounds.bottom)) return reject("search-r011");
+    if (localVisualCandidates.filter((candidate) => labelledWechatId(candidate)).length > 1) return reject("search-r007");
+    const contactHeader = localVisualCandidates.find((candidate) => isLocalContactSection(candidate.text));
+    const nextSectionTop = contactHeader ? Math.min(webSearchTop, ...[
+      ...localVisualCandidates.filter((candidate) => Number(candidate.top) > Number(contactHeader.top) && isOtherSearchSection(candidate.text)),
+      ...networkLookupCandidates
+    ].map((candidate) => Number(candidate.top))) : webSearchTop;
+    const headerHeight = contactHeader ? Number(contactHeader.bottom) - Number(contactHeader.top) : 0;
+    const sectionItems = contactHeader ? localVisualCandidates.filter((candidate) => Number(candidate.top) >= Number(contactHeader.bottom)
+      && Number(candidate.bottom) <= nextSectionTop
+      && Number(candidate.left) > Number(contactHeader.left) + headerHeight * 0.5) : [];
+    const firstItem = sectionItems[0];
+    const localSurface = firstItem && Number(firstItem.top) - Number(contactHeader.bottom) <= headerHeight * 4
+      ? uniqueCompactLocalSurface(sectionItems, nextSectionTop, query, expectedName, true) : null;
+    if (localSurface) return { status: "selected", mode: "unique_local_wechat_id_visual", candidate: localSurface };
+    if (!localVisualCandidates.length) return reject("search-r015", "exact_search_result_not_found");
+    const exactLabelled = labelledWechatIdCandidates(localVisualCandidates, query, webSearchTop)
+      .filter((candidate) => labelledWechatId(candidate) === normalized(query));
+    if (exactLabelled.length === 1) return { status: "selected", mode: "exact_wechat_id_visual", candidate: exactLabelled[0] };
+    return reject(webSearchCandidates.length ? "search-r014" : "search-r008");
+  }
   const labelledAcrossCrop = labelledWechatIdCandidates(localVisualCandidates, query, webSearchTop)
     .filter((candidate) => labelledWechatId(candidate));
   const exactLabelledAcrossCrop = labelledAcrossCrop.filter((candidate) => labelledWechatId(candidate) === normalized(query));
@@ -372,7 +415,7 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
 }
 
 function isVerifiedWechatSearchResultMode(mode) {
-  return ["unique_local_uia", "identity_matched_uia", "exact_wechat_id_visual", "unique_local_visual", "exact_wechat_id_local_visual", "unique_local_surface_visual"].includes(mode);
+  return ["unique_local_uia", "identity_matched_uia", "exact_wechat_id_visual", "unique_local_visual", "exact_wechat_id_local_visual", "unique_local_surface_visual", "unique_local_wechat_id_uia", "unique_local_wechat_id_visual"].includes(mode);
 }
 
 module.exports = { isVerifiedWechatSearchResultMode, resolveWechatSearchResultObservation };

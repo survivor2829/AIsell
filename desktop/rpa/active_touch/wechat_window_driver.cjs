@@ -1868,16 +1868,20 @@ if ($observeLocalResults) {
 const CLICK_SEARCH_RESULT_SCRIPT = `
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName System.Drawing
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 public static class Win32WechatSearchResultClick {
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
   [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
   [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
@@ -1887,6 +1891,30 @@ public static class Win32WechatSearchResultClick {
 "@
 function Test-SearchResultClickTarget([int64]$hitHWnd, [int]$hitPid, [int]$expectedPid) {
   return $hitHWnd -ne 0 -and $hitPid -eq $expectedPid
+}
+function Get-ConversationHeaderHash([int64]$hWnd) {
+  $rect = New-Object Win32WechatSearchResultClick+RECT
+  if (-not [Win32WechatSearchResultClick]::GetWindowRect([IntPtr]$hWnd, [ref]$rect)) { throw "header_rect_unavailable" }
+  $width = $rect.Right - $rect.Left
+  $dpi = [Win32WechatSearchResultClick]::GetDpiForWindow([IntPtr]$hWnd)
+  if ($width -lt 600 -or $dpi -lt 72 -or $dpi -gt 480) { throw "header_geometry_invalid" }
+  $scale = $dpi / 96.0
+  # The conversation pane starts after WeChat's navigation and chat-list panes.
+  # Use logical layout units scaled by this window's live DPI, not machine pixels.
+  $left = [int]($rect.Left + 380 * $scale)
+  $top = [int]($rect.Top + 32 * $scale)
+  $right = [int]($rect.Right - 20 * $scale)
+  $bottom = [int][Math]::Min($rect.Bottom, $rect.Top + 105 * $scale)
+  if ($right - $left -lt 120 -or $bottom - $top -lt 30) { throw "header_crop_invalid" }
+  $bitmap = [System.Drawing.Bitmap]::new($right - $left, $bottom - $top)
+  $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+  $stream = [System.IO.MemoryStream]::new()
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $graphics.CopyFromScreen($left, $top, 0, 0, $bitmap.Size)
+    $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+    return [Convert]::ToBase64String($sha.ComputeHash($stream.ToArray()))
+  } finally { $sha.Dispose(); $stream.Dispose(); $graphics.Dispose(); $bitmap.Dispose() }
 }
 function Get-NetworkLookupLanding($root) {
   $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
@@ -1919,6 +1947,13 @@ $point = New-Object Win32WechatSearchResultClick+POINT; $point.X=$clickX; $point
 $hit = [Win32WechatSearchResultClick]::WindowFromPoint($point); $root = [Win32WechatSearchResultClick]::GetAncestor($hit, 2)
 [uint32]$hitPid=0; [void][Win32WechatSearchResultClick]::GetWindowThreadProcessId($hit, [ref]$hitPid)
 if (-not (Test-SearchResultClickTarget $hit.ToInt64() ([int]$hitPid) $expectedPid)) { @{ ok=$false; reason="wechat_target_changed"; safety_diagnostics=@{ phase="before_search_result_click"; expected_hWnd=$expectedHWnd; hit_hWnd=$hit.ToInt64(); hit_root_hWnd=$root.ToInt64(); expected_pid=$expectedPid; hit_pid=[int]$hitPid } } | ConvertTo-Json -Compress -Depth 4; exit }
+$requireHeaderChange = $candidateMode -like "unique_local_wechat_id_*"
+$headerBefore = ""
+if ($requireHeaderChange) {
+  # No nickname OCR/profile gate: only prove the click did not leave the previous chat unchanged.
+  try { $headerBefore = Get-ConversationHeaderHash $expectedHWnd } catch {}
+  if (-not $headerBefore) { @{ ok=$false; reason="wechat_search_result_landing_unverified"; rule_id=(Write-XiaoxiFailure "wx1-r047" "wechat_search_result_landing_unverified"); error="无法采集点击前会话状态，任务已暂停"; send_attempted=$false; actionAttempted=$false } | ConvertTo-Json -Compress; exit }
+}
 [void][Win32WechatSearchResultClick]::SetCursorPos($clickX,$clickY)
 [Win32WechatSearchResultClick]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero); [Win32WechatSearchResultClick]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
 $ownedInputTick = [uint64][Win32WechatSearchResultClick]::GetLastInputTick()
@@ -1949,6 +1984,11 @@ if ($landingInspection.matched) {
   exit
 }
 if ($landingHWnd.ToInt64() -ne $expectedHWnd) { @{ ok=$false; reason="wechat_window_not_foreground"; actionAttempted=$true } | ConvertTo-Json -Compress; exit }
+if ($requireHeaderChange) {
+  $headerAfter = ""
+  try { $headerAfter = Get-ConversationHeaderHash $expectedHWnd } catch {}
+  if (-not $headerAfter -or $headerAfter -ceq $headerBefore) { @{ ok=$false; reason="wechat_search_result_landing_unverified"; rule_id=(Write-XiaoxiFailure "wx1-r047" "wechat_search_result_landing_unverified"); error="点击后会话区域未变化，任务已暂停以防触达上一位"; send_attempted=$false; actionAttempted=$true } | ConvertTo-Json -Compress; exit }
+}
 @{ ok=$true; pid=$expectedPid; hWnd=$expectedHWnd; exactSearchOpened=$true } | ConvertTo-Json -Compress
 `;
 
@@ -2169,7 +2209,8 @@ function openWechatSearchResult(query, context = {}) {
     if (!observed?.ok) return observed || { ok: false, reason: "wechat_operation_failed" };
     const resolution = resolveWechatSearchResultObservation(observed.searchResultObservation, {
       query,
-      expectedName: context.searchIdentity.expectedName
+      expectedName: context.searchIdentity.expectedName,
+      queryType: context.searchQueryType
     });
     const searchEvidence = {
       reason_code: String(resolution.reason || ""),
@@ -2185,7 +2226,8 @@ function openWechatSearchResult(query, context = {}) {
         query_present: Boolean(String(query || "").trim()),
         expected_name_present: Boolean(String(context.searchIdentity.expectedName || "").trim()),
         network_lookup_isolated: true,
-        identity_match: resolution.status === "selected"
+        identity_match: resolution.status === "selected" && !resolution.mode?.startsWith("unique_local_wechat_id_"),
+        local_candidate_unique: resolution.mode?.startsWith("unique_local_wechat_id_") === true
       }
     };
     if (resolution.status !== "selected") {
@@ -2233,7 +2275,8 @@ function openWechatSearchResultAsync(query, context = {}) {
       if (!observed?.ok) return observed || { ok: false, reason: "wechat_operation_failed" };
       const resolution = resolveWechatSearchResultObservation(observed.searchResultObservation, {
       query,
-      expectedName: context.searchIdentity.expectedName
+      expectedName: context.searchIdentity.expectedName,
+      queryType: context.searchQueryType
     });
       const searchEvidence = {
         reason_code: String(resolution.reason || ""),
@@ -2249,7 +2292,8 @@ function openWechatSearchResultAsync(query, context = {}) {
           query_present: Boolean(String(query || "").trim()),
           expected_name_present: Boolean(String(context.searchIdentity.expectedName || "").trim()),
           network_lookup_isolated: true,
-          identity_match: resolution.status === "selected"
+          identity_match: resolution.status === "selected" && !resolution.mode?.startsWith("unique_local_wechat_id_"),
+          local_candidate_unique: resolution.mode?.startsWith("unique_local_wechat_id_") === true
         }
       };
       if (resolution.status !== "selected") {

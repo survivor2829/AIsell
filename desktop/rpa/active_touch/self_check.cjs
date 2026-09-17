@@ -1716,10 +1716,18 @@ try {
     pid: 11,
     hWnd: "22",
     minIdleMs: 0,
+    searchQueryType: "wechat_id",
     searchIdentity: { query: "internal-test-001", expectedName: "测试客户" }
   }, "a WeChat-ID lookup must resolve the unique local result without assuming its display-name AutomationId suffix equals the WeChat ID");
   assert.equal(exactTitleReads, 0, "an exact WeChat-ID result must not repeat title discovery");
   assert.equal(exactConversationVerifications, 0, "an exact WeChat-ID result must not repeat conversation verification");
+  const idOnlyUia = resolveWechatSearchResultObservation({
+    uiaCandidates: [{ automationId: "search_item_function_模糊昵称", name: "模糊昵称", x: 120, y: 180 }]
+  }, { query: "internal-test-001", expectedName: "测试客户", queryType: "wechat_id" });
+  assert.equal(idOnlyUia.mode, "unique_local_wechat_id_uia", "a unique local WeChat-ID hit does not need OCR of its nickname or ID label");
+  assert.equal(resolveWechatSearchResultObservation({ uiaCandidates: [
+    { name: "甲", x: 120, y: 180 }, { name: "乙", x: 120, y: 240 }
+  ] }, { query: "internal-test-001", expectedName: "测试客户", queryType: "wechat_id" }).status, "unverified", "multiple local hits must not be clicked");
   assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.open_result_ms), true);
   assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.title_read_ms), true);
   assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.conversation_verify_ms), true);
@@ -1731,6 +1739,52 @@ try {
     "the display-name suffix may differ from the searched WeChat ID"
   );
   const strictCrop = { left: 80, top: 80, right: 320, bottom: 280 };
+  const idOnlyVisual = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+    visualCandidates: [
+      { text: "最常使用", left: 82, top: 100, right: 144, bottom: 118, x: 113, y: 109 },
+      { text: "测式客户", left: 96, top: 142, right: 178, bottom: 160, x: 137, y: 151 },
+      { text: "微倌号码 cbI668", left: 96, top: 184, right: 226, bottom: 204, x: 161, y: 194 }
+    ],
+    webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+    webSearchTop: 224
+  }, { query: "cb1668", expectedName: "测试客户", queryType: "wechat_id" });
+  assert.equal(idOnlyVisual.mode, "unique_local_wechat_id_visual", "one bounded local surface can be clicked despite unreadable gray ID text");
+  const sectionedIdSearch = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true,
+    cropBounds: { left: 58, top: 85, right: 488, bottom: 505 },
+    visualCandidates: [
+      { text: "最 常 便 用", left: 114, top: 104, right: 173, bottom: 117, x: 144, y: 110 },
+      { text: "A 测 试 客 户", left: 168, top: 146, right: 250, bottom: 164, x: 209, y: 155 },
+      { text: "灰字不可读", left: 169, top: 178, right: 312, bottom: 194, x: 240, y: 186 },
+      { text: "群 聊", left: 114, top: 224, right: 144, bottom: 237, x: 129, y: 230 },
+      { text: "测试群", left: 168, top: 266, right: 445, bottom: 285, x: 306, y: 275 },
+      { text: "包含 A 测 试 客 户", left: 169, top: 298, right: 426, bottom: 314, x: 297, y: 306 }
+    ],
+    webSearchCandidates: [{ text: "搜索网络结果", left: 114, top: 344, right: 236, bottom: 358, x: 175, y: 350 }],
+    webSearchTop: 344
+  }, { query: "wxid_test", expectedName: "A测试客户", queryType: "wechat_id" });
+  assert.equal(sectionedIdSearch.mode, "unique_local_wechat_id_visual", "an unreadable ID must select the friend section, never a matching group-chat excerpt");
+  assert.ok(sectionedIdSearch.candidate.y < 224, "the click must stay above the group-chat section");
+  assert.equal(resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true,
+    cropBounds: { left: 58, top: 85, right: 488, bottom: 505 },
+    visualCandidates: [
+      { text: "最常使用", left: 114, top: 104, right: 173, bottom: 117, x: 144, y: 110 },
+      { text: "第一个好友", left: 168, top: 146, right: 250, bottom: 164, x: 209, y: 155 },
+      { text: "灰字不可读", left: 169, top: 178, right: 312, bottom: 194, x: 240, y: 186 },
+      { text: "第二个好友", left: 168, top: 210, right: 250, bottom: 228, x: 209, y: 219 },
+      { text: "灰字不可读", left: 169, top: 242, right: 312, bottom: 258, x: 240, y: 250 }
+    ],
+    webSearchCandidates: [{ text: "搜索网络结果", left: 114, top: 344, right: 236, bottom: 358, x: 175, y: 350 }],
+    webSearchTop: 344
+  }, { query: "wxid_test", expectedName: "A测试客户", queryType: "wechat_id" }).status, "unverified", "two friends in the same section must never authorize the first click");
+  assert.equal(resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+    visualCandidates: [{ text: "网络查找微信号：cb1668", left: 92, top: 150, right: 270, bottom: 174, x: 181, y: 162 }],
+    webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+    webSearchTop: 224
+  }, { query: "cb1668", expectedName: "测试客户", queryType: "wechat_id" }).status, "not_found", "network lookup alone is not a local friend");
   assert.deepEqual(
     resolveWechatSearchResultObservation({
       uiaCandidates: [],
@@ -1856,7 +1910,7 @@ try {
       ],
       webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
       webSearchTop: 224
-    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    }, { query: "cb1668", expectedName: "测试客户", queryType: "wechat_id" }).status,
     "unverified",
     "multiple exact labelled results must remain ambiguous"
   );
@@ -2111,6 +2165,24 @@ try {
   assert.equal(driverDisplayNameResult.ok, true);
   assert.equal(driverDisplayNameResult.searchResultMode, "unique_local_uia");
   assert.equal(driverStages, 2, "the real driver path must observe, resolve, then click exactly once");
+  let idSearchClicks = 0;
+  const idSearchResult = openWechatSearchResult("cb1668", {
+    pid: 11, hWnd: "22", searchQueryType: "wechat_id", searchIdentity: { expectedName: "测试客户" },
+    runner: () => ({ ok: true, processName: "Weixin", pid: 11, hWnd: "22", inputLeaseTick: 101, searchResultObservation: {
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [
+        { text: "最常使用", left: 82, top: 100, right: 144, bottom: 118, x: 113, y: 109 },
+        { text: "测式客户", left: 96, top: 142, right: 178, bottom: 160, x: 137, y: 151 },
+        { text: "微倌号码 cbI668", left: 96, top: 184, right: 226, bottom: 204, x: 161, y: 194 }
+      ],
+      webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }], webSearchTop: 224
+    } }),
+    clickRunner: (script) => { idSearchClicks += 1; assert.match(script, /\$headerAfter -ceq \$headerBefore/, "clicks without a conversation change must not authorize sending to the previous chat"); return { ok: true, pid: 11, hWnd: "22", exactSearchOpened: true }; }
+  });
+  assert.equal(idSearchResult.searchResultMode, "unique_local_wechat_id_visual");
+  assert.equal(idSearchResult.searchEvidence.evidence_summary.identity_match, false, "a unique local hit is not an OCR identity match");
+  assert.equal(idSearchResult.searchEvidence.evidence_summary.local_candidate_unique, true);
+  assert.equal(idSearchClicks, 1);
   let missingDriverStages = 0;
   const driverMissingResult = openWechatSearchResult("wxid_missing", {
     pid: 11,

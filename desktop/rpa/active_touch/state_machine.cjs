@@ -698,6 +698,7 @@ function clickSearchResultDryRun(
     pid: Number(windowContext.pid) || undefined,
     hWnd: String(windowContext.hWnd || "").trim() || undefined,
     minIdleMs: Number(windowContext.minIdleMs) || 0,
+    searchQueryType: searchPlan.queryType,
     searchIdentity: { query: searchQuery, expectedName: customerName }
   };
   let inputResult = openResultDriver(searchQuery, exactWindow);
