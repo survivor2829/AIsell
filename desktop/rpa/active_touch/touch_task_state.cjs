@@ -33,7 +33,7 @@ function contactName(contact) {
 }
 
 function touchSearchName(contact) {
-  return String(contact?.remark || contact?.nickname || contact?.wechatId || contact?.name || "").trim();
+  return String(contact?.wechatId || contact?.remark || contact?.nickname || contact?.name || "").trim();
 }
 
 function fillTouchTemplate(template, contact) {

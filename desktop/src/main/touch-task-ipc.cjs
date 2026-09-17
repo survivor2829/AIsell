@@ -110,6 +110,9 @@ function resultReason(result, fallback) {
     powershell_timeout: "微信窗口适配程序执行超时，请检查电脑负载或安全软件",
     powershell_failed: "微信窗口适配程序启动失败，请确认AI获客与微信权限一致，并检查安全软件拦截",
     exact_search_result_not_found: "未找到该联系人的精确公开微信号搜索结果，已隔离并跳过当前联系人",
+    wechat_id_name_conflict: "微信号命中但候选展示名与联系人不一致，已阻断发送",
+    wechat_id_no_result: "微信号搜索无结果，已降级为名字搜索",
+    wechat_id_invalid_placeholder: "联系人微信号是无效占位值，已降级为名字搜索",
     wechat_search_network_lookup_misclick: "误点网络查找入口，资料弹窗已关闭，当前联系人已隔离且本任务内禁止重试",
     wechat_search_result_landing_unverified: "点击后无法核验落点界面，已暂停且不会自动重试",
     search_result_not_opened: "未打开匹配联系人会话，已隔离并跳过当前联系人",
@@ -391,6 +394,19 @@ async function runStep(task, result, command, args, blockReason, parentTraceId =
     currentIndex: task.current_index,
     parentTraceId
   });
+  if (command === "click-search-result-dry-run" && response?.state?.search_evidence) {
+    result.search_query = String(response.state.search_query || result.search_query || "");
+    result.search_query_type = String(response.state.search_query_type || "");
+    result.search_fallback_reason = String(response.state.search_fallback_reason || "");
+    result.resolver_mode = String(response.state.search_evidence.resolver_mode || "");
+    result.search_evidence = response.state.search_evidence;
+    saveTaskState(activeTouchDir(), task);
+    diagnostics().event("active_touch", "search_resolver", response.state.search_evidence, {
+      trace: true, traceId: parentTraceId || undefined, phase: "finish",
+      level: response.state.search_evidence.authorization_decision === "authorized" ? "info" : "warn",
+      code: response.state.search_evidence.reason_code || undefined
+    });
+  }
   if (!response.ok) return { ok: false, reason: resultReason(response, blockReason), result: response };
   return { ok: true, result: response };
 }

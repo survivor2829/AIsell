@@ -24,7 +24,10 @@ const workflowPolicies = Object.freeze({
   wechat_operation_busy: { classification: "environment", attentionScope: "global" },
   touch_safety_interval: { classification: "environment", attentionScope: "global" },
   retry_skipped_status_forbidden: { classification: "blocker", attentionScope: "global" },
-  retry_skipped_poisoned_forbidden: { classification: "blocker", attentionScope: "task" }
+  retry_skipped_poisoned_forbidden: { classification: "blocker", attentionScope: "task" },
+  wechat_id_name_conflict: { classification: "blocker", attentionScope: "task" },
+  wechat_id_no_result: { classification: "recoverable", attentionScope: "task" },
+  wechat_id_invalid_placeholder: { classification: "recoverable", attentionScope: "task" }
 });
 
 const reasonPolicies = new Map(Object.entries(workflowPolicies));

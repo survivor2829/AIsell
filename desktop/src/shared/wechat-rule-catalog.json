@@ -2730,6 +2730,30 @@
     "classification": "recoverable"
   },
   {
+    "id": "search-r016",
+    "file": "desktop/rpa/active_touch/wechat_search_result_resolver.cjs",
+    "reason": "wechat_id_name_conflict",
+    "condition": "wechat_id_candidate_name_conflict",
+    "line": 275,
+    "classification": "blocker"
+  },
+  {
+    "id": "search-r017",
+    "file": "desktop/rpa/active_touch/state_machine.cjs",
+    "reason": "wechat_id_no_result",
+    "condition": "wechat_id_search_explicit_no_result_fallback",
+    "line": 690,
+    "classification": "recoverable"
+  },
+  {
+    "id": "search-r018",
+    "file": "desktop/rpa/active_touch/state_machine.cjs",
+    "reason": "wechat_id_invalid_placeholder",
+    "condition": "wechat_id_placeholder_fallback",
+    "line": 625,
+    "classification": "recoverable"
+  },
+  {
     "id": "draft-read.preflight",
     "file": "desktop/rpa/active_touch/wechat_window_driver.dev.cjs",
     "reason": "input_draft_failure",

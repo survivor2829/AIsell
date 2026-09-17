@@ -137,6 +137,21 @@ function customerSearchQuery(customer) {
   return String(customer?.wechatId || customer?.remark || customer?.nickname || customer?.name || "").trim();
 }
 
+function isInvalidWechatIdPlaceholder(value) {
+  return /^(?:unknown|null|undefined|none|n\/a|未设置|暂无|无|-+)$/iu.test(String(value || "").trim());
+}
+
+const SEARCH_FALLBACK_RULES = Object.freeze({ noResult: "search-r017", invalidPlaceholder: "search-r018" });
+
+function customerSearchPlan(customer) {
+  const wechatId = String(customer?.wechatId || "").trim();
+  const nameQuery = String(customer?.remark || customer?.nickname || customer?.name || "").trim();
+  if (!wechatId || isInvalidWechatIdPlaceholder(wechatId)) {
+    return { query: nameQuery, queryType: "name_fallback", fallbackReason: !wechatId ? "wechat_id_empty" : "wechat_id_invalid_placeholder", fallbackRuleId: !wechatId ? "" : SEARCH_FALLBACK_RULES.invalidPlaceholder };
+  }
+  return { query: wechatId, queryType: "wechat_id", fallbackQuery: nameQuery, fallbackRuleId: SEARCH_FALLBACK_RULES.noResult };
+}
+
 function appendLog(baseDir, action, result) {
   const entry = {
     id: Date.now(),
@@ -604,7 +619,8 @@ function openConversationDryRun(baseDir = __dirname, driver = focusWechatWindow,
 function searchConversationDryRun(baseDir = __dirname, searchDriver = inputWechatSearchQuery, titleReader = readWindowTitles) {
   const state = loadState(baseDir);
   const customerName = String(state.selected_customer?.name ?? "").trim();
-  const searchQuery = customerSearchQuery(state.selected_customer);
+  const searchPlan = customerSearchPlan(state.selected_customer);
+  const searchQuery = searchPlan.query;
 
   if (!state.target_selected || !customerName || !searchQuery) {
     return block(baseDir, "搜索框输入 dry-run", state, "no_whitelist_customer", "已阻断：未选择白名单客户");
@@ -623,6 +639,8 @@ function searchConversationDryRun(baseDir = __dirname, searchDriver = inputWecha
     search_input_done: true,
     search_result_clicked: false,
     search_query: searchQuery,
+    search_query_type: searchPlan.queryType,
+    search_fallback_reason: searchPlan.fallbackReason || "",
     conversation_located: true,
     conversation_verified: true,
     conversation_title: title,
@@ -646,6 +664,8 @@ function searchConversationDryRun(baseDir = __dirname, searchDriver = inputWecha
     search_input_done: true,
     search_result_clicked: false,
     search_query: searchQuery,
+    search_query_type: searchPlan.queryType,
+    search_fallback_reason: searchPlan.fallbackReason || "",
     located_window_title: inputResult.title ?? "",
     last_result: "search_input_done",
     blocked_reason: ""
@@ -665,7 +685,8 @@ function clickSearchResultDryRun(
   const operationStartedAt = Date.now();
   const state = loadState(baseDir);
   const customerName = String(state.selected_customer?.name ?? "").trim();
-  const searchQuery = customerSearchQuery(state.selected_customer);
+  const searchPlan = customerSearchPlan(state.selected_customer);
+  const searchQuery = searchPlan.query;
 
   if (!state.target_selected || !customerName || !searchQuery) {
     return block(baseDir, "点击搜索结果 dry-run", state, "no_whitelist_customer", "已阻断：未选择白名单客户");
@@ -677,18 +698,44 @@ function clickSearchResultDryRun(
     pid: Number(windowContext.pid) || undefined,
     hWnd: String(windowContext.hWnd || "").trim() || undefined,
     minIdleMs: Number(windowContext.minIdleMs) || 0,
-    ...(wechatId && searchQuery === wechatId
-      ? { searchIdentity: { query: searchQuery, expectedName: customerName } }
-      : {})
+    searchIdentity: { query: searchQuery, expectedName: customerName },
+    searchQueryType: searchPlan.queryType,
+    ...(searchPlan.fallbackRuleId ? { searchFallbackRuleId: searchPlan.fallbackRuleId } : {}),
+    ...(searchPlan.fallbackReason ? { searchFallbackReason: searchPlan.fallbackReason } : {})
   };
-  const inputResult = openResultDriver(searchQuery, exactWindow);
+  let inputResult = openResultDriver(searchQuery, exactWindow);
+  if (!inputResult?.ok && searchPlan.queryType === "wechat_id"
+    && inputResult?.reason === "exact_search_result_not_found"
+    && searchPlan.fallbackQuery && searchPlan.fallbackQuery !== searchQuery) {
+    inputResult = openResultDriver(searchPlan.fallbackQuery, {
+      ...exactWindow,
+      searchIdentity: { query: searchPlan.fallbackQuery, expectedName: customerName },
+      searchQueryType: "name_fallback",
+      searchFallbackReason: "wechat_id_no_result",
+      searchFallbackRuleId: SEARCH_FALLBACK_RULES.noResult
+    });
+    if (inputResult?.ok) inputResult.searchFallbackReason = "wechat_id_no_result";
+  }
   const openResultMs = Date.now() - openStartedAt;
   if (!inputResult.ok) {
     const reason = wechatWindowReason(inputResult);
+    const failedState = clearConversationState(state, reason, {
+      search_query: String(inputResult?.searchQuery || searchQuery),
+      search_query_type: String(inputResult?.searchQueryType || searchPlan.queryType),
+      search_fallback_reason: String(inputResult?.searchFallbackReason || searchPlan.fallbackReason || ""),
+      search_evidence: inputResult?.searchEvidence || {
+        resolver_mode: reason === "wechat_id_name_conflict" ? "name_conflict" : "identity_unverified",
+        search_query_type: String(inputResult?.searchQueryType || searchPlan.queryType),
+        fallback_reason: String(inputResult?.searchFallbackReason || searchPlan.fallbackReason || ""),
+        authorization_decision: "denied",
+        rule_id: String(inputResult?.diagnostics?.rule_id || ""),
+        evidence_summary: { query_present: Boolean(searchQuery), expected_name_present: Boolean(customerName), network_lookup_isolated: true, identity_match: false }
+      }
+    });
     return block(
       baseDir,
       "点击搜索结果 dry-run",
-      clearConversationState(state, reason),
+      failedState,
       reason,
       String(inputResult?.error || wechatWindowBlockText(reason)),
       {
@@ -758,7 +805,10 @@ function clickSearchResultDryRun(
     const nextState = clearConversationState(state, reason, {
       search_input_done: true,
       search_result_clicked: true,
-      search_query: searchQuery,
+      search_query: String(inputResult?.searchQuery || searchQuery),
+      search_query_type: String(inputResult?.searchQueryType || searchPlan.queryType),
+      search_fallback_reason: String(inputResult?.searchFallbackReason || searchPlan.fallbackReason || ""),
+      search_evidence: inputResult?.searchEvidence || null,
       located_window_title: verifiedConversation.title ?? inputResult.title ?? ""
     });
     return block(
@@ -780,7 +830,10 @@ function clickSearchResultDryRun(
     ...state,
     search_input_done: true,
     search_result_clicked: true,
-    search_query: searchQuery,
+    search_query: String(inputResult?.searchQuery || searchQuery),
+    search_query_type: String(inputResult?.searchQueryType || searchPlan.queryType),
+    search_fallback_reason: String(inputResult?.searchFallbackReason || searchPlan.fallbackReason || ""),
+    search_evidence: inputResult?.searchEvidence || null,
     conversation_located: true,
     conversation_verified: true,
     conversation_title: title,

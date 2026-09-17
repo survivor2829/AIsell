@@ -22,6 +22,25 @@ function matchesIdentity(candidate, query, expectedName) {
   return identities.some((identity) => text.includes(identity));
 }
 
+function candidateName(candidate) {
+  const explicit = candidate?.displayName || candidate?.nickname || candidate?.name || candidate?.title;
+  return normalized(explicit || "");
+}
+
+function hasNameConflict(candidate, siblings, expectedName, query) {
+  const expected = normalized(expectedName);
+  if (!expected) return false;
+  const target = candidateName(candidate);
+  const nearby = [candidate, ...(Array.isArray(siblings) ? siblings : [])].filter((item, index, all) => all.indexOf(item) === index);
+  return nearby.some((item) => {
+    const explicit = candidateName(item);
+    if (!explicit || explicit === expected || explicit.includes(expected) || expected.includes(explicit)) return false;
+    const text = normalized(item?.text || "");
+    if (!text || text.includes(normalized(query)) || text.includes("微信号") || text.includes("wechatid")) return false;
+    return explicit === text || text.includes(explicit);
+  }) || (target && target !== expected && !target.includes(expected) && !expected.includes(target));
+}
+
 function isNetworkLookupText(value) {
   return normalized(value).includes("网络查找微信号");
 }
@@ -257,13 +276,13 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   const expectedName = String(identity.expectedName ?? "").trim();
   const uiaCandidates = distinctCandidates(observation.uiaCandidates).filter((candidate) => !isNetworkLookupCandidate(candidate));
   if (uiaCandidates.length === 1) {
-    return matchesIdentity(uiaCandidates[0], "", expectedName)
+    return matchesIdentity(uiaCandidates[0], "", expectedName) && !hasNameConflict(uiaCandidates[0], [], expectedName, query)
       ? { status: "selected", mode: "unique_local_uia", candidate: uiaCandidates[0] }
-      : reject("search-r001");
+      : reject(hasNameConflict(uiaCandidates[0], [], expectedName, query) ? "search-r016" : "search-r001", hasNameConflict(uiaCandidates[0], [], expectedName, query) ? "wechat_id_name_conflict" : "search_result_identity_unverified");
   }
   if (uiaCandidates.length > 1) {
     const matches = uiaCandidates.filter((candidate) => matchesIdentity(candidate, "", expectedName));
-    return matches.length === 1
+    return matches.length === 1 && !hasNameConflict(matches[0], uiaCandidates, expectedName, query)
       ? { status: "selected", mode: "identity_matched_uia", candidate: matches[0] }
       : reject(matches.length === 0 ? "search-r001" : "search-r002");
   }
@@ -293,6 +312,9 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
     .filter((candidate) => labelledWechatId(candidate));
   const exactLabelledAcrossCrop = labelledAcrossCrop.filter((candidate) => labelledWechatId(candidate) === normalized(query));
   if (exactLabelledAcrossCrop.length === 1) {
+    const siblings = localVisualCandidates.filter((candidate) => candidate !== exactLabelledAcrossCrop[0]
+      && (sharesVisualRow(candidate, exactLabelledAcrossCrop[0]) || sharesCompactLocalSurface(candidate, exactLabelledAcrossCrop[0])));
+    if (hasNameConflict(exactLabelledAcrossCrop[0], siblings, expectedName, query)) return reject("search-r016", "wechat_id_name_conflict");
     return { status: "selected", mode: "exact_wechat_id_visual", candidate: exactLabelledAcrossCrop[0] };
   }
   if (labelledAcrossCrop.length === 1) {

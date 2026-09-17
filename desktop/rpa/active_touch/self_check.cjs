@@ -1615,6 +1615,22 @@ try {
     return { ok: true, title: "企业微信" };
   }, () => ["企业微信"]);
   assert.equal(searchQuery, "internal-test-001");
+  let fallbackQueries = [];
+  const fallbackSearch = clickSearchResultDryRun(
+    dir,
+    (query) => {
+      fallbackQueries.push(query);
+      return fallbackQueries.length === 1
+        ? { ok: false, reason: "exact_search_result_not_found", searchQuery: query }
+        : { ok: true, searchQuery: query, pid: 11, hWnd: "22", title: "测试客户 - 企业微信" };
+    },
+    () => ["测试客户 - 企业微信"],
+    undefined,
+    { pid: 11, hWnd: "22" }
+  );
+  assert.deepEqual(fallbackQueries, ["internal-test-001", "测试客户"], "an explicit WeChat-ID no-result must downgrade to the contact name");
+  assert.equal(fallbackSearch.state.search_query_type, "name_fallback");
+  assert.equal(fallbackSearch.state.search_fallback_reason, "wechat_id_no_result");
   const searchOnly = searchConversationDryRun(dir, () => ({ ok: true, title: "企业微信" }), () => ["企业微信"]);
   assert.equal(searchOnly.state.search_input_done, true);
   assert.equal(searchOnly.state.conversation_verified, false);
