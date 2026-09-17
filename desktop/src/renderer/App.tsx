@@ -280,7 +280,7 @@ type TouchTaskState = {
   result_updates?: TouchTaskItem[];
   results: TouchTaskItem[];
   sent_verified_count?: number;
-  skipped_breakdown?: { identity: number; ai_failed: number; outcome_unknown: number };
+  skipped_breakdown?: { identity: number; ai_failed: number; pre_send?: number; outcome_unknown: number };
   skipped_records?: TouchSkipRecord[];
 };
 type TouchTaskResult = {
@@ -1457,13 +1457,14 @@ function FloatingTouchWindow() {
           <strong id="floating-skipped-title">本次跳过 {skippedRecords.length} 位</strong>
           {retryableSkipped.length > 1 && <button type="button" disabled={busy || !retryAllowed} onClick={() => retrySkipped()}>全部重试</button>}
         </div>
-        <ul>
+        <p className="floating-skipped-summary">身份不唯一 {touchTask.skipped_breakdown?.identity || 0} · AI 失败 {touchTask.skipped_breakdown?.ai_failed || 0} · 发送前失败 {touchTask.skipped_breakdown?.pre_send || 0} · 结果未知 {touchTask.skipped_breakdown?.outcome_unknown || 0}</p>
+        <details><summary>查看明细与重试</summary><ul>
           {skippedRecords.map((record) => <li key={`${record.contactId}-${record.index}`}>
             <span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span>
             <small title={record.blockedReason}>{taskResultLabel(String(record.status || "skipped"))}</small>
             {["identity_skipped", "ai_failed_skipped", "pre_send_skipped"].includes(String(record.status || "")) && <button type="button" disabled={busy || !retryAllowed} onClick={() => retrySkipped([record.contactId])}>重试</button>}
           </li>)}
-        </ul>
+        </ul></details>
       </section>}
       {unknownResult && (
         <div className="floating-resolution">

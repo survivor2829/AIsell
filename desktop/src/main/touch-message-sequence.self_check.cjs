@@ -295,8 +295,13 @@ async function checkTouchMessageSequence() {
   assert.equal(result.status, "pending", "搜索结果身份未确认且明确未发送时应先恢复重试");
   assert.equal(result.progress.done, 0, "第一次 OCR 身份波动不能立即跳过联系人");
   assert.equal(result.waitingReason, "wechat_identity_recovery");
+  assert.equal(result.retryAfterMs, 2_000, "身份恢复第一次等待应为 2 秒");
   result = await unverifiedWorkflow.runWorkflowStep(unverifiedRecord, context);
   assert.equal(result.progress.done, 0, "第二次 OCR 身份波动仍应保留当前联系人做最后一次恢复");
+  assert.equal(result.retryAfterMs, 8_000, "身份恢复第二次等待应为 8 秒");
+  result = await unverifiedWorkflow.runWorkflowStep(unverifiedRecord, context);
+  assert.equal(result.progress.done, 0, "第三次 OCR 身份波动仍应保留当前联系人做最后一次恢复");
+  assert.equal(result.retryAfterMs, 20_000, "身份恢复第三次等待应为 20 秒");
   result = await unverifiedWorkflow.runWorkflowStep(unverifiedRecord, context);
   assert.equal(result.status, "pending", "有界恢复仍失败后才隔离当前联系人并继续任务");
   assert.equal(result.progress.done, 1);

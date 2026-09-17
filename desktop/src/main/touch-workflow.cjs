@@ -32,7 +32,8 @@ const PRE_SEND_RECOVERY_DELAYS_MS = [5_000, 15_000];
 const ENVIRONMENT_RECOVERY_WAIT_MS = 30_000;
 const ENVIRONMENT_RECOVERY_MAX_MS = 10 * 60_000;
 const WECHAT_LOCK_RETRY_MS = 1_000;
-const IDENTITY_RECOVERY_ATTEMPTS = 2;
+const IDENTITY_RECOVERY_DELAYS_MS = Object.freeze([2_000, 8_000, 20_000]);
+const IDENTITY_RECOVERY_ATTEMPTS = IDENTITY_RECOVERY_DELAYS_MS.length;
 const TOUCH_WORKFLOW_REASON_CODES = Object.freeze({
   payloadIncomplete: "touch_task_payload_incomplete",
   executorUnavailable: "workflow_executor_unavailable",
@@ -392,7 +393,7 @@ function createTouchWorkflow(options = {}) {
           current.updated_at = now().toISOString();
           persist();
           return response("pending", {
-            retryAfterMs: current.identity_recovery_attempts * 2_000,
+            retryAfterMs: IDENTITY_RECOVERY_DELAYS_MS[current.identity_recovery_attempts - 1],
             waitingReason: "wechat_identity_recovery",
             reasonCode,
             result: { deliveryStatus: "not_attempted" }
