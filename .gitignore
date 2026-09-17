@@ -74,3 +74,5 @@ desktop/sidecars/product-detail/app/output/
 desktop/sidecars/product-detail/app/static/ai_refine_v2/
 desktop/sidecars/product-detail/app/static/outputs/
 desktop/sidecars/product-detail/app/static/uploads/
+Temp/
+desktop/*.zip
