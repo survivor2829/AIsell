@@ -25,6 +25,7 @@ const workflowPolicies = Object.freeze({
   touch_safety_interval: { classification: "environment", attentionScope: "global" },
   retry_skipped_status_forbidden: { classification: "blocker", attentionScope: "global" },
   retry_skipped_poisoned_forbidden: { classification: "blocker", attentionScope: "task" },
+  image_send_pre_click_timeout: { classification: "recoverable", attentionScope: "task" },
   wechat_id_name_conflict: { classification: "blocker", attentionScope: "task" },
   wechat_id_no_result: { classification: "recoverable", attentionScope: "task" },
   wechat_id_invalid_placeholder: { classification: "recoverable", attentionScope: "task" }

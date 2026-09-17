@@ -1622,7 +1622,7 @@ try {
       fallbackQueries.push(query);
       return fallbackQueries.length === 1
         ? { ok: false, reason: "exact_search_result_not_found", searchQuery: query }
-        : { ok: true, searchQuery: query, pid: 11, hWnd: "22", title: "测试客户 - 企业微信" };
+        : { ok: true, searchQuery: query, searchQueryType: "name_fallback", searchFallbackReason: "wechat_id_no_result", pid: 11, hWnd: "22", title: "测试客户 - 企业微信" };
     },
     () => ["测试客户 - 企业微信"],
     undefined,
