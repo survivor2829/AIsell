@@ -7,13 +7,16 @@ if (!process.versions.electron) {
   const path = require("node:path");
   const electronPath = require("electron");
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-product-download-electron-"));
+  const childEnv = { ...process.env, XIAOXI_PRODUCT_DOWNLOAD_TEST_ROOT: root };
+  // The WorkBuddy/CI shell may export ELECTRON_RUN_AS_NODE; the child must boot as Electron.
+  delete childEnv.ELECTRON_RUN_AS_NODE;
   let result;
   let cleanupError;
   try {
-    result = spawnSync(electronPath, [__filename, "--electron-child"], {
+    result = spawnSync(electronPath, [__filename, "--electron-child", "--no-sandbox", "--disable-gpu"], {
       cwd: path.resolve(__dirname, ".."),
       encoding: "utf8",
-      env: { ...process.env, XIAOXI_PRODUCT_DOWNLOAD_TEST_ROOT: root },
+      env: childEnv,
       timeout: 30_000,
       killSignal: "SIGKILL",
       windowsHide: true

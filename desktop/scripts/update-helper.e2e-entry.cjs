@@ -22,7 +22,7 @@ async function main() {
   }
   const { file, job } = await require("./src/main/update-helper.cjs").createUpdateJob({ userData: spec.userData,
     prepared: spec.prepared, currentVersion: app.getVersion() });
-  const helper = spawn(job.helperExecutable, ["--xiaoxi-update-job", file], { detached: true, stdio: "ignore", windowsHide: true });
+  const helper = spawn(job.helperExecutable, ["--xiaoxi-update-job", file, "--no-sandbox", "--disable-gpu"], { detached: true, stdio: "ignore", windowsHide: true });
   await new Promise((resolve, reject) => { helper.once("spawn", resolve); helper.once("error", reject); }); helper.unref();
   save("parent.json", { file, id: job.id, parentPid: process.pid, helperPid: helper.pid });
   const deadline = Date.now() + 30000;

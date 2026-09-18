@@ -82,7 +82,7 @@ class FixtureInstaller { static int Main(string[] args) {
       envelope: { payload, signature: crypto.sign(null, Buffer.from(payload), privateKey).toString("base64") } };
     await fs.writeFile(path.join(root, "spec.json"), JSON.stringify({ prepared, initialVersion, targetVersion, userData }));
     const env = { ...process.env, XIAOXI_UPDATE_E2E_ROOT: root }; delete env.ELECTRON_RUN_AS_NODE;
-    const child = spawn(path.join(installed, "UpdateFixture.exe"), [], { env, windowsHide: true, stdio: "ignore" });
+    const child = spawn(path.join(installed, "UpdateFixture.exe"), ["--no-sandbox", "--disable-gpu"], { env, windowsHide: true, stdio: "ignore" });
     children.add(child.pid);
     const parentReceipt = await waitFor(async () => {
       const error = await readJson(path.join(root, "entry-error.json")); if (error) throw Error(JSON.stringify(error));

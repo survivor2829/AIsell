@@ -10,7 +10,7 @@ if (!process.versions.electron) {
   try {
     const env = { ...process.env, XIAOXI_UPDATE_BACKUP_TEST_ROOT: root };
     delete env.ELECTRON_RUN_AS_NODE;
-    const result = spawnSync(require("electron"), [__filename], {
+    const result = spawnSync(require("electron"), [__filename, "--no-sandbox", "--disable-gpu"], {
       cwd: path.resolve(__dirname, ".."), env, encoding: "utf8", timeout: 30_000, windowsHide: true
     });
     process.stdout.write(result.stdout || "");
