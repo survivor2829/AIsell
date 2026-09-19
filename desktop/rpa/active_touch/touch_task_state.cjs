@@ -249,6 +249,9 @@ function retrySkippedResults(task, contactIds, retriedAt = nowIso()) {
   if (selected.some(({ result }) => result?.poisoned && typeof result.poisoned === "object")) {
     return { ok: false, blocked_reason: "retry_skipped_poisoned_forbidden", error: "该联系人命中过误点止损，当前任务内禁止重试" };
   }
+  if (results.some((result) => ["prepared", "clicked", "outcome_unknown"].includes(String(result?.status || "")))) {
+    return { ok: false, blocked_reason: "retry_skipped_outcome_unknown_forbidden", error: "当前任务仍有发送结果待确认，请先人工处理后再重试跳过联系人" };
+  }
   if (selected.some(({ result }) => !RETRYABLE_SKIPPED_STATUSES.has(String(result?.status || "")))) {
     return { ok: false, blocked_reason: "retry_skipped_status_forbidden", error: "只能重试明确未发送的跳过联系人" };
   }

@@ -2194,6 +2194,47 @@ function runPowerShellAsync(script, env = {}, options = {}) {
   });
 }
 
+function searchObservationEvidence(observation = {}) {
+  const bounded = (candidate = {}) => ({
+    text: String(candidate.text || candidate.name || ""),
+    automation_id: String(candidate.automationId || ""),
+    left: Number(candidate.left), top: Number(candidate.top),
+    right: Number(candidate.right), bottom: Number(candidate.bottom),
+    x: Number(candidate.x), y: Number(candidate.y)
+  });
+  const list = (value) => (Array.isArray(value) ? value : value && typeof value === "object" ? [value] : []).map(bounded);
+  return {
+    crop_bounds: observation.cropBounds || null,
+    web_search_top: Number.isFinite(Number(observation.webSearchTop)) ? Number(observation.webSearchTop) : null,
+    uia_candidates: list(observation.uiaCandidates),
+    visual_lines: list(observation.visualCandidates),
+    web_search_lines: list(observation.webSearchCandidates)
+  };
+}
+
+function buildSearchEvidence(observed, resolution, query, context) {
+  const observation = observed?.searchResultObservation || {};
+  return {
+    reason_code: String(resolution.reason || ""),
+    resolver_mode: String(resolution.mode || (resolution.reason === "wechat_id_name_conflict" ? "name_conflict" : "identity_unverified")),
+    search_query_type: String(context.searchQueryType || "unknown"),
+    fallback_reason: String(context.searchFallbackReason || ""),
+    candidate_count: Number(resolution.diagnostics?.candidate_count || 0),
+    visual_candidate_count: Number(resolution.diagnostics?.visual_candidate_count || 0),
+    ocr_ok: observation.ocrOk === true,
+    authorization_decision: resolution.status === "selected" ? "authorized" : "denied",
+    rule_id: String(resolution.rule_id || resolution.diagnostics?.rule_id || ""),
+    evidence_summary: {
+      query_present: Boolean(String(query || "").trim()),
+      expected_name_present: Boolean(String(context.searchIdentity.expectedName || "").trim()),
+      network_lookup_isolated: resolution.status === "selected" || !["search-r008", "search-r009", "search-r010", "search-r011", "search-r012"].includes(String(resolution.rule_id || "")),
+      identity_match: resolution.status === "selected" && !resolution.mode?.startsWith("unique_local_wechat_id_"),
+      local_candidate_unique: resolution.mode?.startsWith("unique_local_wechat_id_") === true
+    },
+    ocr_observation: searchObservationEvidence(observation)
+  };
+}
+
 function openWechatSearchResult(query, context = {}) {
   if (!String(query ?? "").trim()) return { ok: false };
   const runner = typeof context.runner === "function" ? context.runner : runPowerShell;
@@ -2212,24 +2253,7 @@ function openWechatSearchResult(query, context = {}) {
       expectedName: context.searchIdentity.expectedName,
       queryType: context.searchQueryType
     });
-    const searchEvidence = {
-      reason_code: String(resolution.reason || ""),
-      resolver_mode: String(resolution.mode || (resolution.reason === "wechat_id_name_conflict" ? "name_conflict" : "identity_unverified")),
-      search_query_type: String(context.searchQueryType || "unknown"),
-      fallback_reason: String(context.searchFallbackReason || ""),
-      candidate_count: Number(resolution.diagnostics?.candidate_count || 0),
-      visual_candidate_count: Number(resolution.diagnostics?.visual_candidate_count || 0),
-      ocr_ok: resolution.diagnostics?.ocr_ok === true,
-      authorization_decision: resolution.status === "selected" ? "authorized" : "denied",
-      rule_id: String(resolution.rule_id || resolution.diagnostics?.rule_id || ""),
-      evidence_summary: {
-        query_present: Boolean(String(query || "").trim()),
-        expected_name_present: Boolean(String(context.searchIdentity.expectedName || "").trim()),
-        network_lookup_isolated: true,
-        identity_match: resolution.status === "selected" && !resolution.mode?.startsWith("unique_local_wechat_id_"),
-        local_candidate_unique: resolution.mode?.startsWith("unique_local_wechat_id_") === true
-      }
-    };
+    const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
     if (resolution.status !== "selected") {
       if (!context.runner && evidenceEnvironment().XIAOXI_FAILURE_DIR) {
         try { runPowerShell(`Write-XiaoxiFailure "${resolution.rule_id}" "${resolution.reason}" | Out-Null`, {}, { ensure: false }); } catch {}
@@ -2278,24 +2302,7 @@ function openWechatSearchResultAsync(query, context = {}) {
       expectedName: context.searchIdentity.expectedName,
       queryType: context.searchQueryType
     });
-      const searchEvidence = {
-        reason_code: String(resolution.reason || ""),
-        resolver_mode: String(resolution.mode || (resolution.reason === "wechat_id_name_conflict" ? "name_conflict" : "identity_unverified")),
-        search_query_type: String(context.searchQueryType || "unknown"),
-        fallback_reason: String(context.searchFallbackReason || ""),
-        candidate_count: Number(resolution.diagnostics?.candidate_count || 0),
-        visual_candidate_count: Number(resolution.diagnostics?.visual_candidate_count || 0),
-        ocr_ok: resolution.diagnostics?.ocr_ok === true,
-        authorization_decision: resolution.status === "selected" ? "authorized" : "denied",
-        rule_id: String(resolution.rule_id || resolution.diagnostics?.rule_id || ""),
-        evidence_summary: {
-          query_present: Boolean(String(query || "").trim()),
-          expected_name_present: Boolean(String(context.searchIdentity.expectedName || "").trim()),
-          network_lookup_isolated: true,
-          identity_match: resolution.status === "selected" && !resolution.mode?.startsWith("unique_local_wechat_id_"),
-          local_candidate_unique: resolution.mode?.startsWith("unique_local_wechat_id_") === true
-        }
-      };
+      const searchEvidence = buildSearchEvidence(observed, resolution, query, context);
       if (resolution.status !== "selected") {
         if (!context.runner && evidenceEnvironment().XIAOXI_FAILURE_DIR) {
           try { await runPowerShellAsync(`Write-XiaoxiFailure "${resolution.rule_id}" "${resolution.reason}" | Out-Null`, {}, { ensure: false }); } catch {}

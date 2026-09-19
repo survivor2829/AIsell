@@ -235,13 +235,12 @@ function isNearbyLocalResult(candidate, webSearchCandidates, webSearchTop) {
   });
 }
 
-function uniqueCompactLocalSurface(visualCandidates, webSearchTop, query, expectedName, wechatIdSearch = false) {
-  const nearby = (wechatIdSearch ? visualCandidates : visualCandidates
-    .filter((candidate) => {
-      const height = Number(candidate.bottom) - Number(candidate.top);
-      return Number(candidate.bottom) <= webSearchTop
-        && webSearchTop - Number(candidate.bottom) <= Math.max(72, height * 3);
-    }))
+function uniqueCompactLocalSurface(visualCandidates, webSearchTop, query, expectedName) {
+  const nearby = visualCandidates.filter((candidate) => {
+    const height = Number(candidate.bottom) - Number(candidate.top);
+    return Number(candidate.bottom) <= webSearchTop
+      && webSearchTop - Number(candidate.bottom) <= Math.max(72, height * 3);
+  })
     .sort((left, right) => Number(left.top) - Number(right.top));
   if (!nearby.length) return null;
 
@@ -249,7 +248,7 @@ function uniqueCompactLocalSurface(visualCandidates, webSearchTop, query, expect
   for (const candidate of nearby) {
     const current = groups.at(-1);
     const height = Number(candidate.bottom) - Number(candidate.top);
-    const gapLimit = wechatIdSearch ? height * 1.5 : Math.max(10, Math.min(18, height * 0.6));
+    const gapLimit = Math.max(10, Math.min(18, height * 0.6));
     if (!current || Number(candidate.top) - current.bottom > gapLimit) {
       groups.push({ items: [candidate], bottom: Number(candidate.bottom) });
     } else {
@@ -260,18 +259,12 @@ function uniqueCompactLocalSurface(visualCandidates, webSearchTop, query, expect
   if (groups.length !== 1) return null;
 
   const items = groups[0].items;
-  // A single friend contributes at most a name line and its smaller ID line.
-  // More OCR lines may hide another friend; do not infer uniqueness from a
-  // shared section heading or from proximity alone.
-  if (wechatIdSearch && items.length > 2) return null;
   const combinedText = items.map((candidate) => String(candidate.text || "")).join(" ");
   if (isNetworkLookupText(combinedText)) return null;
   const bareQueryCandidate = items.find((candidate) => normalized(candidate.text) === normalized(query));
-  if (bareQueryCandidate && (wechatIdSearch
-    ? items.length < 2
-    : !items.some((candidate) => candidate !== bareQueryCandidate
-      && matchesIdentity(candidate, "", expectedName)
-      && sharesCompactLocalSurface(candidate, bareQueryCandidate)))) return null;
+  if (bareQueryCandidate && !items.some((candidate) => candidate !== bareQueryCandidate
+    && matchesIdentity(candidate, "", expectedName)
+    && sharesCompactLocalSurface(candidate, bareQueryCandidate))) return null;
   const left = Math.min(...items.map((candidate) => Number(candidate.left)));
   const top = Math.min(...items.map((candidate) => Number(candidate.top)));
   const right = Math.max(...items.map((candidate) => Number(candidate.right)));
@@ -282,8 +275,74 @@ function uniqueCompactLocalSurface(visualCandidates, webSearchTop, query, expect
     top,
     right,
     bottom,
-    x: wechatIdSearch ? Number(items[0].x) : Math.round((left + right) / 2),
-    y: wechatIdSearch ? Number(items[0].y) : Math.round((top + bottom) / 2)
+    x: Math.round((left + right) / 2),
+    y: Math.round((top + bottom) / 2)
+  };
+}
+
+function mergeVisualLines(candidates) {
+  const lines = [];
+  for (const candidate of [...candidates].sort((left, right) => Number(left.top) - Number(right.top) || Number(left.left) - Number(right.left))) {
+    const line = lines.find((item) => item.items.some((existing) => sharesVisualRow(existing, candidate)));
+    if (!line) {
+      lines.push({ items: [candidate] });
+      continue;
+    }
+    line.items.push(candidate);
+  }
+  return lines.map(({ items }) => {
+    const ordered = [...items].sort((left, right) => Number(left.left) - Number(right.left));
+    const left = Math.min(...ordered.map((item) => Number(item.left)));
+    const top = Math.min(...ordered.map((item) => Number(item.top)));
+    const right = Math.max(...ordered.map((item) => Number(item.right)));
+    const bottom = Math.max(...ordered.map((item) => Number(item.bottom)));
+    return {
+      text: ordered.map((item) => String(item.text || "")).join(" "),
+      left, top, right, bottom,
+      x: Math.round((left + right) / 2),
+      y: Math.round((top + bottom) / 2)
+    };
+  }).sort((left, right) => left.top - right.top || left.left - right.left);
+}
+
+function uniqueWechatIdLocalSurface(candidates, webCandidate, query) {
+  let lines = mergeVisualLines(candidates.filter((candidate) => !isLocalContactSection(candidate.text)));
+  if (!lines.length) return null;
+
+  // OCR may miss the section caption text while preserving its geometry. A
+  // caption sits on the popup's left edge and the actual contact row is
+  // indented by roughly one text height. This is DPI-relative and does not
+  // depend on a particular Windows scale or WeChat window size.
+  if (lines.length > 1) {
+    const first = lines[0];
+    const second = lines[1];
+    const firstHeight = first.bottom - first.top;
+    if (first.left <= Number(webCandidate.left) + firstHeight
+      && second.left - first.left >= firstHeight * 0.75
+      && first.right - first.left < second.right - second.left) lines = lines.slice(1);
+  }
+
+  // One friend row has at most a display-name baseline and one secondary
+  // baseline. OCR can split either baseline into many fragments; those were
+  // merged above. More than two baselines can conceal a second contact.
+  if (!lines.length || lines.length > 2) return null;
+  const queryText = normalized(query);
+  if (lines.length === 1 && normalized(lines[0].text) === queryText) return null;
+  if (lines.length === 2) {
+    const firstHeight = lines[0].bottom - lines[0].top;
+    const secondHeight = lines[1].bottom - lines[1].top;
+    const gap = lines[1].top - lines[0].bottom;
+    if (gap > Math.max(firstHeight, secondHeight) * 1.75) return null;
+  }
+  const left = Math.min(...lines.map((line) => line.left));
+  const top = Math.min(...lines.map((line) => line.top));
+  const right = Math.max(...lines.map((line) => line.right));
+  const bottom = Math.max(...lines.map((line) => line.bottom));
+  return {
+    text: lines.map((line) => line.text).join(" "),
+    left, top, right, bottom,
+    x: lines[0].x,
+    y: lines[0].y
   };
 }
 
@@ -340,25 +399,22 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
       || webSearchTop < cropBounds.top || webSearchTop >= cropBounds.bottom))) return reject("search-r011");
     if (!webSearchCandidates.length) return reject("search-r008");
     const contactHeader = localVisualCandidates.find((candidate) => isLocalContactSection(candidate.text));
-    if (localVisualCandidates.filter((candidate) => labelledWechatId(candidate)).length > 1) return reject("search-r007");
-    const nextSectionTop = contactHeader ? Math.min(webSearchTop, ...[
-      ...localVisualCandidates.filter((candidate) => Number(candidate.top) > Number(contactHeader.top) && isOtherSearchSection(candidate.text)),
+    const sectionStart = contactHeader ? Number(contactHeader.bottom) : cropBounds.top;
+    const nextSectionTop = Math.min(webSearchTop, ...[
+      ...localVisualCandidates.filter((candidate) => Number(candidate.top) > sectionStart && isOtherSearchSection(candidate.text)),
       ...networkLookupCandidates
-    ].map((candidate) => Number(candidate.top))) : webSearchTop;
-    const headerHeight = contactHeader ? Number(contactHeader.bottom) - Number(contactHeader.top) : 0;
-    const sectionCandidates = contactHeader ? localVisualCandidates.filter((candidate) => Number(candidate.top) >= Number(contactHeader.bottom)
+    ].map((candidate) => Number(candidate.top)));
+    const webCandidate = webSearchCandidates[0];
+    // Once the single network-search boundary is proven, the local popup is the
+    // vertically bounded area above it in the same visual column. This removes
+    // the old dependency on OCR reading "most used", the gray WeChat ID, or the
+    // conversation title while still excluding chat-pane text and later sections.
+    const sectionCandidates = localVisualCandidates.filter((candidate) => Number(candidate.top) >= sectionStart
       && Number(candidate.bottom) <= nextSectionTop
-      && Number(candidate.left) > Number(contactHeader.left) + headerHeight * 0.5)
-      .sort((left, right) => Number(left.top) - Number(right.top) || Number(left.left) - Number(right.left)) : [];
-    const firstItem = sectionCandidates[0];
-    // The broad OCR crop can include the conversation pane.  Keep only text in the
-    // first local row's horizontal column; this follows live geometry across DPI and
-    // window sizes without trusting gray identity text or machine-specific pixels.
-    const sectionItems = firstItem
-      ? sectionCandidates.filter((candidate) => candidate === firstItem || sharesLocalResultColumn(firstItem, candidate))
-      : [];
-    const localSurface = firstItem && Number(firstItem.top) - Number(contactHeader.bottom) <= headerHeight * 4
-      ? uniqueCompactLocalSurface(sectionItems, nextSectionTop, query, expectedName, true) : null;
+      && sharesLocalResultColumn(candidate, webCandidate)
+      && !isOtherSearchSection(candidate.text));
+    if (sectionCandidates.filter((candidate) => labelledWechatId(candidate)).length > 1) return reject("search-r007");
+    const localSurface = uniqueWechatIdLocalSurface(sectionCandidates, webCandidate, query);
     if (localSurface) return { status: "selected", mode: "unique_local_wechat_id_visual", candidate: localSurface };
     if (!localVisualCandidates.length) return reject("search-r015", "exact_search_result_not_found");
     const exactLabelled = labelledWechatIdCandidates(localVisualCandidates, query, webSearchTop)

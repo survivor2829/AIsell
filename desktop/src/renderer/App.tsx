@@ -1408,7 +1408,8 @@ function FloatingTouchWindow() {
     : null;
   const skippedRecords = touchTask.skipped_records || [];
   const retryableSkipped = skippedRecords.filter((record) => ["identity_skipped", "ai_failed_skipped", "pre_send_skipped"].includes(String(record.status || "")));
-  const retryAllowed = ["paused", "completed", "stopped"].includes(touchTask.status);
+  const retryAllowed = ["running", "paused", "completed", "stopped"].includes(touchTask.status);
+  const retryLabel = touchTask.status === "running" ? "暂停并重试" : "重试";
   const retrySkipped = (contactIds?: string[]) => callTask(() => window.xiaoxiTouchTask!.retrySkipped({ taskId: touchTask.id, ...(contactIds ? { contactIds } : {}) }));
   const endTask = () => {
     if (!window.confirm("确定结束本次任务吗？结束后不能恢复当前进度。")) return;
@@ -1455,14 +1456,14 @@ function FloatingTouchWindow() {
       {skippedRecords.length > 0 && <section className="floating-skipped" aria-labelledby="floating-skipped-title">
         <div className="floating-skipped-head">
           <strong id="floating-skipped-title">本次跳过 {skippedRecords.length} 位</strong>
-          {retryableSkipped.length > 1 && <button type="button" disabled={busy || !retryAllowed} onClick={() => retrySkipped()}>全部重试</button>}
+          {retryableSkipped.length > 1 && <button type="button" disabled={busy || !retryAllowed} onClick={() => retrySkipped()}>{touchTask.status === "running" ? "暂停并全部重试" : "全部重试"}</button>}
         </div>
         <p className="floating-skipped-summary">身份不唯一 {touchTask.skipped_breakdown?.identity || 0} · AI 失败 {touchTask.skipped_breakdown?.ai_failed || 0} · 发送前失败 {touchTask.skipped_breakdown?.pre_send || 0} · 结果未知 {touchTask.skipped_breakdown?.outcome_unknown || 0}</p>
         <details><summary>查看明细与重试</summary><ul>
           {skippedRecords.map((record) => <li key={`${record.contactId}-${record.index}`}>
             <span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span>
             <small title={record.blockedReason}>{taskResultLabel(String(record.status || "skipped"))}</small>
-            {["identity_skipped", "ai_failed_skipped", "pre_send_skipped"].includes(String(record.status || "")) && <button type="button" disabled={busy || !retryAllowed} onClick={() => retrySkipped([record.contactId])}>重试</button>}
+            {["identity_skipped", "ai_failed_skipped", "pre_send_skipped"].includes(String(record.status || "")) && <button type="button" disabled={busy || !retryAllowed} onClick={() => retrySkipped([record.contactId])}>{retryLabel}</button>}
           </li>)}
         </ul></details>
       </section>}

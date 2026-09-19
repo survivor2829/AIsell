@@ -1767,6 +1767,21 @@ try {
   assert.equal(realCustomerOcrShape.mode, "unique_local_wechat_id_visual",
     "one visible local friend must remain clickable when OCR drops the section prefix, punctuates the gray label, and reads chat-pane noise");
   assert.ok(realCustomerOcrShape.candidate.x < 350, "chat-pane OCR outside the search popup must never become the click target");
+  const noHeaderCustomerOcrShape = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true,
+    cropBounds: { left: 58, top: 72, right: 477, bottom: 485 },
+    visualCandidates: [
+      { text: "C 测 试 联 系 人 183S", left: 128, top: 118, right: 330, bottom: 132, x: 229, y: 125 },
+      { text: "微 信", left: 128, top: 142, right: 166, bottom: 155, x: 147, y: 149 },
+      { text: "号 fixture68506074", left: 170, top: 142, right: 300, bottom: 155, x: 235, y: 149 },
+      { text: "获 客 VI 版", left: 392, top: 128, right: 477, bottom: 141, x: 435, y: 135 }
+    ],
+    webSearchCandidates: [{ text: "搜 索 网 络 结 果", left: 110, top: 180, right: 182, bottom: 191, x: 146, y: 186 }],
+    webSearchTop: 180
+  }, { query: "fixture68506074", expectedName: "C测试联系人1835", queryType: "wechat_id" });
+  assert.equal(noHeaderCustomerOcrShape.mode, "unique_local_wechat_id_visual",
+    "one geometrically isolated friend row must remain clickable when the local-section header is absent and OCR splits its gray ID line");
+  assert.ok(noHeaderCustomerOcrShape.candidate.x < 350, "conversation-pane OCR must stay outside the header-free local result surface");
   const realCustomerWithoutNetworkBoundary = resolveWechatSearchResultObservation({
     uiaCandidates: [], ocrOk: true,
     cropBounds: { left: 58, top: 72, right: 477, bottom: 485 },
@@ -2226,6 +2241,10 @@ try {
   assert.equal(idSearchResult.searchResultMode, "unique_local_wechat_id_visual");
   assert.equal(idSearchResult.searchEvidence.evidence_summary.identity_match, false, "a unique local hit is not an OCR identity match");
   assert.equal(idSearchResult.searchEvidence.evidence_summary.local_candidate_unique, true);
+  assert.equal(idSearchResult.searchEvidence.ocr_observation.visual_lines[1].text, "测式客户",
+    "the task passport evidence must retain the original OCR text for successful resolutions");
+  assert.deepEqual(idSearchResult.searchEvidence.ocr_observation.crop_bounds, strictCrop,
+    "the OCR coordinates must retain their source crop for cross-DPI replay");
   assert.equal(idSearchClicks, 1);
   let missingDriverStages = 0;
   const driverMissingResult = openWechatSearchResult("wxid_missing", {
@@ -2260,6 +2279,8 @@ try {
   });
   assert.equal(networkLookupResult.ok, false);
   assert.equal(networkLookupClicks, 0, "the huatengcangku network lookup fixture must be rejected without any click");
+  assert.equal(networkLookupResult.searchEvidence.ocr_observation.visual_lines[0].text, "网络查找微信号：",
+    "denied resolutions must persist the original OCR text instead of only the final rule code");
   const recoveredLandingMisclick = clickSearchResultDryRun(
     dir,
     () => ({

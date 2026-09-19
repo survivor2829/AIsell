@@ -398,13 +398,20 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
     const protectedRetry = await retrySkipped({}, { contactIds: [retryableTask.results[2].id] });
     assert.equal(protectedRetry.blocked_reason, "retry_skipped_sent_verified_forbidden");
     assert.equal(fs.readFileSync(path.join(dir, "touch_task.json"), "utf8"), protectedBefore, "a rejected retry must not change any persisted task state");
+    const oldSkipWhileUnknown = await retrySkipped({}, { contactIds: [retryableTask.results[0].id] });
+    assert.equal(oldSkipWhileUnknown.blocked_reason, "retry_skipped_outcome_unknown_forbidden",
+      "an older skipped contact must not move the cursor ahead of an unresolved send outcome");
+    retryableTask.results[1].status = "outcome_unknown_skipped";
+    retryableTask.results[1].awaiting_resolution = false;
 
     retryableTask.status = "running";
     saveTaskState(dir, retryableTask);
-    const runningBefore = fs.readFileSync(path.join(dir, "touch_task.json"), "utf8");
     const runningRetry = await retrySkipped({}, { contactIds: [retryableTask.results[0].id] });
-    assert.equal(runningRetry.blocked_reason, "retry_skipped_task_running");
-    assert.equal(fs.readFileSync(path.join(dir, "touch_task.json"), "utf8"), runningBefore, "a running task retry must not change persisted state");
+    assert.equal(runningRetry.ok, true, "a stale running state without a live executor must self-reconcile and retry in one click");
+    assert.equal(runningRetry.task.status, "paused");
+    assert.equal(runningRetry.task.results[0].status, "generated");
+    retryableTask.results[0].status = "identity_skipped";
+    retryableTask.results[0].retry_blocked = true;
     retryableTask.status = "completed";
     saveTaskState(dir, retryableTask);
 
@@ -423,8 +430,40 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
     assert.deepEqual(retried.task.results[0].message_parts, [{ kind: "text", status: "pending", message: "冻结文案" }], "retry must preserve the frozen message parts");
     const resumedRetry = await resume({}, { clickToken: "trusted-retry-skipped" });
     assert.equal(resumedRetry.task?.status, "running", `retry resume failed: ${JSON.stringify(resumedRetry)}`);
-    await waitFor(status, (value) => value.task?.current_index === 1);
+    await waitFor(status, (value) => value.task?.current_index >= 1);
     assert.equal(retriedContactId, retryableTask.results[0].id, "a reset identity skip must be selected by the task loop again");
+    await waitFor(status, (value) => value.task?.status === "completed");
+
+    const activeRetryTask = createTask("运行中安全重试", contacts(3), "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+    activeRetryTask.results[0] = {
+      ...activeRetryTask.results[0], status: "identity_skipped", reason: "身份不唯一，已跳过",
+      blocked_reason: "search_result_identity_unverified", retry_blocked: true, send_attempted: false,
+      message_parts: [{ kind: "text", status: "pending", message: "待重试文案" }]
+    };
+    activeRetryTask.results[1] = {
+      ...activeRetryTask.results[1], status: "generated", message_parts: [{ kind: "text", status: "pending", message: "当前文案" }]
+    };
+    activeRetryTask.current_index = 1;
+    activeRetryTask.status = "paused";
+    activeRetryTask.phase = "sending_batch";
+    saveTaskState(dir, activeRetryTask);
+    let releaseActiveSend;
+    let activeSendEntered = false;
+    executorBehavior = async (options) => {
+      activeSendEntered = true;
+      await new Promise((resolve) => { releaseActiveSend = resolve; });
+      options.onTransition("sent_verified", { real_send_attempt_key: `active-${options.contactId}` });
+      return { ok: true, state: { real_send_status: "sent_verified", real_send_attempt_key: `active-${options.contactId}` } };
+    };
+    await resume({}, { clickToken: "trusted-active-retry" });
+    await waitFor(async () => ({ activeSendEntered }), (value) => value.activeSendEntered);
+    const activeRetryPromise = retrySkipped({}, { contactIds: [activeRetryTask.results[0].id] });
+    releaseActiveSend();
+    const activeRetry = await activeRetryPromise;
+    assert.equal(activeRetry.ok, true, "one click during an active task must pause at the safe boundary and requeue the skipped contact");
+    assert.equal(activeRetry.task.status, "paused");
+    assert.equal(activeRetry.task.current_index, 0);
+    assert.equal(activeRetry.task.results[0].status, "generated");
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });

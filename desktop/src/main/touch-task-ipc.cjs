@@ -29,6 +29,9 @@ const {
 
 let floatingWindow = null;
 let runnerActive = false;
+let retrySkippedPending = false;
+const runnerIdleWaiters = new Set();
+const RUNNER_IDLE_WAIT_MS = 185_000;
 let pauseRequested = false;
 let stopRequested = false;
 let getMainWindowRef = null;
@@ -1033,8 +1036,26 @@ async function runTaskLoop() {
     stopRequested = false;
     if (runnerOwner) runtimeCoordinator?.release(runnerOwner);
     runnerOwner = "";
+    for (const settle of runnerIdleWaiters) settle(true);
+    runnerIdleWaiters.clear();
     emitTaskUpdate();
   }
+}
+
+function waitForRunnerIdle(timeoutMs = RUNNER_IDLE_WAIT_MS) {
+  if (!runnerActive) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (idle) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      runnerIdleWaiters.delete(finish);
+      resolve(idle);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    runnerIdleWaiters.add(finish);
+  });
 }
 
 function buildRunnableTask(script, excludedContactIds = []) {
@@ -1169,11 +1190,34 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
 
   ipcMain.handle("touch-task:status", () => taskPayload());
 
-  ipcMain.handle("touch-task:retry-skipped", (_event, payload = {}) => {
-    const task = loadTaskState(activeTouchDir());
+  ipcMain.handle("touch-task:retry-skipped", async (_event, payload = {}) => {
+    let task = loadTaskState(activeTouchDir());
     if (payload.taskId && String(payload.taskId) !== String(task.id)) {
       const workflowRetry = workflow.retrySkippedWorkflowTask(String(payload.taskId), payload.contactIds);
       return workflowRetry.ok ? { ...publicTaskState(workflowRetry.task), retriedCount: workflowRetry.retriedCount } : workflowRetry;
+    }
+    if (retrySkippedPending) return { ok: false, blocked_reason: "retry_skipped_already_pending", error: "正在安全暂停并重新加入，请稍候" };
+    if (task.status === "running") {
+      retrySkippedPending = true;
+      try {
+        if (runnerActive) {
+          requestPause("正在完成当前安全步骤，随后重试跳过联系人");
+          if (!(await waitForRunnerIdle())) {
+            return { ok: false, blocked_reason: "retry_skipped_pause_timeout", error: "当前安全步骤仍未结束，任务已请求暂停；请稍后再次重试" };
+          }
+        } else {
+          // A persisted running state without a live runner can be left by an
+          // abnormal renderer/main-process boundary. It is safe to reconcile
+          // only because no executor exists in this process.
+          task.status = "paused";
+          task.phase = "paused";
+          task.pause_reason = "检测到任务执行器已结束，已恢复为可重试状态";
+          saveTaskState(activeTouchDir(), task);
+        }
+      } finally {
+        retrySkippedPending = false;
+      }
+      task = loadTaskState(activeTouchDir());
     }
     const retried = retrySkippedResults(task, payload.contactIds);
     if (!retried.ok) return retried;
