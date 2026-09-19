@@ -31,6 +31,9 @@ let floatingWindow = null;
 let runnerActive = false;
 let retrySkippedPending = false;
 const runnerIdleWaiters = new Set();
+// The longest authorized sender stage is capped at 180 seconds. Allow five
+// seconds for its persisted transition and runner cleanup before returning a
+// recoverable timeout to the UI.
 const RUNNER_IDLE_WAIT_MS = 185_000;
 let pauseRequested = false;
 let stopRequested = false;

@@ -2214,13 +2214,14 @@ function searchObservationEvidence(observation = {}) {
 
 function buildSearchEvidence(observed, resolution, query, context) {
   const observation = observed?.searchResultObservation || {};
+  const count = (value) => Array.isArray(value) ? value.length : value && typeof value === "object" ? 1 : 0;
   return {
     reason_code: String(resolution.reason || ""),
     resolver_mode: String(resolution.mode || (resolution.reason === "wechat_id_name_conflict" ? "name_conflict" : "identity_unverified")),
     search_query_type: String(context.searchQueryType || "unknown"),
     fallback_reason: String(context.searchFallbackReason || ""),
-    candidate_count: Number(resolution.diagnostics?.candidate_count || 0),
-    visual_candidate_count: Number(resolution.diagnostics?.visual_candidate_count || 0),
+    candidate_count: Number(resolution.diagnostics?.candidate_count ?? count(observation.uiaCandidates)),
+    visual_candidate_count: Number(resolution.diagnostics?.visual_candidate_count ?? count(observation.visualCandidates)),
     ocr_ok: observation.ocrOk === true,
     authorization_decision: resolution.status === "selected" ? "authorized" : "denied",
     rule_id: String(resolution.rule_id || resolution.diagnostics?.rule_id || ""),

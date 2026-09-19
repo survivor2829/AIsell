@@ -1829,6 +1829,18 @@ try {
     uiaCandidates: [], ocrOk: true,
     cropBounds: { left: 58, top: 85, right: 488, bottom: 505 },
     visualCandidates: [
+      { text: "群聊", left: 114, top: 224, right: 144, bottom: 237, x: 129, y: 230 },
+      { text: "测试群", left: 168, top: 266, right: 260, bottom: 285, x: 214, y: 275 },
+      { text: "微信号：wxid_test", left: 169, top: 298, right: 330, bottom: 314, x: 250, y: 306 }
+    ],
+    webSearchCandidates: [{ text: "搜索网络结果", left: 114, top: 344, right: 236, bottom: 358, x: 175, y: 350 }],
+    webSearchTop: 344
+  }, { query: "wxid_test", expectedName: "A测试客户", queryType: "wechat_id" }).status, "unverified",
+  "an exact WeChat ID rendered inside a group-chat section must not re-enter a later authorization branch");
+  assert.equal(resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true,
+    cropBounds: { left: 58, top: 85, right: 488, bottom: 505 },
+    visualCandidates: [
       { text: "最常使用", left: 114, top: 104, right: 173, bottom: 117, x: 144, y: 110 },
       { text: "第一个好友", left: 168, top: 146, right: 250, bottom: 164, x: 209, y: 155 },
       { text: "灰字不可读", left: 169, top: 178, right: 312, bottom: 194, x: 240, y: 186 },
@@ -2241,6 +2253,8 @@ try {
   assert.equal(idSearchResult.searchResultMode, "unique_local_wechat_id_visual");
   assert.equal(idSearchResult.searchEvidence.evidence_summary.identity_match, false, "a unique local hit is not an OCR identity match");
   assert.equal(idSearchResult.searchEvidence.evidence_summary.local_candidate_unique, true);
+  assert.equal(idSearchResult.searchEvidence.visual_candidate_count, 3,
+    "successful task-passport evidence must report the observed OCR candidate count");
   assert.equal(idSearchResult.searchEvidence.ocr_observation.visual_lines[1].text, "测式客户",
     "the task passport evidence must retain the original OCR text for successful resolutions");
   assert.deepEqual(idSearchResult.searchEvidence.ocr_observation.crop_bounds, strictCrop,

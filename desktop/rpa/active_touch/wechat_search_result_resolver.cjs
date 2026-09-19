@@ -417,9 +417,6 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
     const localSurface = uniqueWechatIdLocalSurface(sectionCandidates, webCandidate, query);
     if (localSurface) return { status: "selected", mode: "unique_local_wechat_id_visual", candidate: localSurface };
     if (!localVisualCandidates.length) return reject("search-r015", "exact_search_result_not_found");
-    const exactLabelled = labelledWechatIdCandidates(localVisualCandidates, query, webSearchTop)
-      .filter((candidate) => labelledWechatId(candidate) === normalized(query));
-    if (exactLabelled.length === 1) return { status: "selected", mode: "exact_wechat_id_visual", candidate: exactLabelled[0] };
     return reject(webSearchCandidates.length ? "search-r014" : "search-r008");
   }
   const labelledAcrossCrop = labelledWechatIdCandidates(localVisualCandidates, query, webSearchTop)
