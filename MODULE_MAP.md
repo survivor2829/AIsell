@@ -62,10 +62,13 @@
 | `feedback/state.json` | 反馈草稿、不可变正文/诊断快照、当前 Windows 账户加密的回执凭据、投递重试和已收到的服务端状态 |
 | `cloud-maintenance/state.json`、`cloud-maintenance/outbox.json` | 签名更新/公告缓存、已读状态、自动上报授权和独立自动诊断队列；不承担反馈状态 |
 | `runtime_archive/` | 数据拆分或迁移前的证据归档，不作为现役状态读取 |
+| `task-passports/` | 三个微信业务的阶段事件、失败三件套和批次总账单；仅运行数据，保留 30 天，不进入源码或发布包 |
 
 各业务只能读取共享联系人或适配证据，不能读取另一业务的成功账本来决定自己的动作。迁移旧状态时先归档，再拆分；不得把朋友圈字段继续写回主动触达的 `state.json`。
 
 计划正文和冻结素材保存在对应业务目录的 `planned_tasks/`、`planned_runs/`；接待范围保存在 `auto_reply/workflow-recipients.json`。统一界面仅投影各执行器返回的进度，不自行推测发送成功。
+
+三个微信业务的任务护照原因码权威枚举位于 `desktop/src/main/task-passport-reason-catalog.cjs`，字段语义及派生关系见 `docs/reviews/2026-09-19-task-passport-reason-codes.md`。底层 `rule_id` 与业务 `reason_code` 分开保存，账单优先按具体规则号归类；缺失原因使用显式 `*_failure_reason_missing`，不回退为 `unknown`。
 
 内容生产使用独立的 `product-detail/` 与 `content-engine/` 数据目录。前者保存产品详情图的数据库、上传、输出和缓存；后者保存素材索引、任务、成片登记和缓存设置。原始视频和图片只由素材索引记录位置、指纹、媒体信息与版权/使用权状态，始终留在用户原有磁盘位置。
 

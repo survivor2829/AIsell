@@ -32,6 +32,7 @@ const checks = [
   "src/main/atomic-file.self_check.cjs",
   "src/main/bootstrap.self_check.cjs",
   "src/main/diagnostics.self_check.cjs",
+  "src/main/task-passport.self_check.cjs",
   "src/main/cloud-maintenance.self_check.cjs",
   "scripts/update-helper.electron.self_check.cjs",
   "scripts/update-helper.e2e.cjs",

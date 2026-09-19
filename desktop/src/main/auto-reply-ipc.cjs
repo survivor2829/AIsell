@@ -1440,6 +1440,9 @@ function createAutoReplyController(options = {}) {
   const cancelSchedule = options.cancelSchedule || clearTimeout;
   const now = options.now || (() => new Date());
   const onStateChange = typeof options.onStateChange === "function" ? options.onStateChange : null;
+  const passport = options.passport || null;
+  const passportFailureSignatures = new Set();
+  const passportResults = new Map();
   const singleContactScopeRequired = options.singleContactScopeRequired === true;
   const rawState = readJson(stateFile, null);
   let state = migrateState(rawState, now());
@@ -1827,6 +1830,42 @@ function createAutoReplyController(options = {}) {
     Object.assign(entry, sanitizeStructuredScanDiagnostics(details));
     Object.assign(entry, require("../shared/wechat-window-diagnostics.cjs").sanitizeWechatWindowDiagnostics(details.diagnostics));
     appendDiagnosticLine(diagnosticLogFile, entry);
+    const passportTaskId = entry.trace_id || `${diagnosticRunId}-${entry.seq}`;
+    const passportReason = entry.reason_code || entry.code || "";
+    passport?.recordEvent("auto_reply", passportTaskId, {
+      stage: entry.event,
+      direction: /started$/u.test(entry.event) ? "in" : "out",
+      durationMs: entry.total_ms ?? entry.duration_ms,
+      status: entry.send_result || entry.status || "observed",
+      reasonCode: passportReason,
+      traceId: entry.trace_id || ""
+    });
+    const passportFailure = entry.event === "reply_send_finished" && entry.code !== "sent_verified"
+      || /(?:failed|exception|blocked|skipped)$/u.test(entry.event);
+    if (passportFailure) {
+      const signature = `${passportTaskId}\0${entry.event}\0${passportReason}`;
+      if (!passportFailureSignatures.has(signature)) {
+        passportFailureSignatures.add(signature);
+        const evidence = passport?.recordFailure("auto_reply", passportTaskId, {
+          stage: entry.event,
+          reasonCode: passportReason || "auto_reply_failure_reason_missing",
+          traceId: entry.trace_id || "",
+          rawReading: details,
+          expected: { send_result: "sent_verified", current_session_bound: true }
+        });
+        if (evidence?.attachments?.length) entry.passport_attachments = evidence.attachments;
+      }
+    }
+    if (entry.event === "reply_send_finished" || entry.event === "reply_send_skipped") {
+      const status = entry.send_result || (entry.event === "reply_send_skipped" ? entry.action === "handoff" ? "handoff" : "silent" : "failed");
+      passportResults.set(passportTaskId, {
+        taskId: passportTaskId,
+        status,
+        reasonCode: status === "sent_verified" ? "" : passportReason || "auto_reply_failure_reason_missing",
+        attachments: entry.passport_attachments || []
+      });
+      passport?.writeRunBill("auto_reply", diagnosticRunId, [...passportResults.values()]);
+    }
     const waitingDiagnostic = entry.code === USER_IDLE_WAIT_REASON
       || new Set(["scan_waiting", "reply_retry_enqueued", "reply_retry_waiting", "reply_manual_review_required"]).has(entry.event);
     const failedSendDiagnostic = entry.event === "reply_send_finished" && entry.code !== "sent_verified";
@@ -3381,6 +3420,10 @@ function createAutoReplyController(options = {}) {
         required_idle_ms: result?.send_diagnostics?.required_idle_ms,
         observed_idle_ms: result?.send_diagnostics?.observed_idle_ms,
         worker: sendWorker,
+        receipt_ocr_text: result?.send_diagnostics?.receipt_evidence?.observed_text || "",
+        receipt_match_mode: result?.send_diagnostics?.receipt_evidence?.match_mode || "",
+        receipt_edit_distance: result?.send_diagnostics?.receipt_evidence?.edit_distance,
+        receipt_maximum_length: result?.send_diagnostics?.receipt_evidence?.maximum_length,
         ...sendReceipt,
         pid: result?.pid || candidate.pid,
         hWnd: result?.hWnd || candidate.hWnd

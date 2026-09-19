@@ -17,6 +17,7 @@ const { DEEPSEEK_MODEL, createDeepSeekClient, createDeepSeekKeyStore } = require
 const { registerDeepSeekApiIpc } = require("./deepseek-api-ipc.cjs");
 const { configureDiagnostics, diagnostics } = require("./diagnostics.cjs");
 const { registerDiagnosticsIpc } = require("./diagnostics-ipc.cjs");
+const { createTaskPassportStore } = require("./task-passport.cjs");
 const { cloudConfig } = require("./cloud-config.cjs");
 const { createCloudMaintenance } = require("./cloud-maintenance.cjs");
 const { registerCloudMaintenanceIpc } = require("./cloud-maintenance-ipc.cjs");
@@ -76,6 +77,7 @@ let cloudMaintenance = null;
 let feedbackController = null;
 let feedbackAdmin = null;
 let providerGatewayClient = null;
+let taskPassportStore = null;
 
 const PROVIDER_CONSUMER_RESTART_STATES = new Set(["ready", "starting", "failed"]);
 const productDetailReleaseSmokeMode = app.isPackaged
@@ -356,6 +358,12 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         packaged: app.isPackaged
       }
     });
+    taskPassportStore = createTaskPassportStore({
+      rootDir: runtime.rootDir,
+      onWriteFailure: () => logger.event("task_passport", "write_failed", {}, { level: "warn", code: "task_passport_write_failed" })
+    });
+    taskPassportStore.cleanup();
+    logger.subscribe((entry) => taskPassportStore.observeDiagnostic(entry));
     process.on("uncaughtException", (error) => logger.event("app", "uncaught_exception", { error }, { level: "fatal", code: error?.code || "uncaught_exception" }));
     process.on("unhandledRejection", (error) => logger.event("app", "unhandled_rejection", { error }, { level: "error", code: error?.code || "unhandled_rejection" }));
     logger.environment({
@@ -494,7 +502,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         BrowserWindow,
         screen,
         preloadPath: path.join(__dirname, preloadFile),
-        rendererPath: path.join(__dirname, `../../${rendererDir}/index.html`)
+        rendererPath: path.join(__dirname, `../../${rendererDir}/index.html`),
+        passport: taskPassportStore
       });
     }
     if (momentsPublish) {
@@ -646,7 +655,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           owner,
           phase: `auto-reply:${command}`,
           dataDir: runtime.autoReplyDir
-        })
+        }),
+        passport: taskPassportStore
       });
     }
     touchTaskController = registerTouchTaskIpc({
@@ -661,7 +671,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       realSendExecutor: internalRealSend.executeVerifiedContactSend,
       verifyRealSendSession: internalRealSend.refreshRealSendSession,
       verifyMessageBubble: internalRealSend.verifyMessageBubble,
-      onPause: disarmRealSend || undefined
+      onPause: disarmRealSend || undefined,
+      passport: taskPassportStore
     });
     workflowController = registerWechatWorkflowIpc({
       ...runtime,

@@ -115,6 +115,7 @@ async function main() {
     code: "candidate_accepted",
     trace_id: "1123456789abcdef01234567"
   })}\n`, "utf8");
+  const passportEvent = Buffer.from('{"v":1,"stage":"search","status":"failed","result_code":"search-r014"}\n', "utf8");
   fs.mkdirSync(logsDir, { recursive: true });
   fs.mkdirSync(autoReplyDir, { recursive: true });
   fs.writeFileSync(path.join(logsDir, "diagnostics.jsonl"), current);
@@ -125,6 +126,9 @@ async function main() {
   fs.writeFileSync(path.join(autoReplyDir, "auto-reply-diagnostics.jsonl.old"), "must not be exported");
   fs.writeFileSync(path.join(autoReplyDir, "conversation-state.json"), "customer-message-must-not-be-exported");
   fs.writeFileSync(path.join(root, "auto-reply-diagnostics.jsonl"), "outside-runtime-must-not-be-exported");
+  const passportDir = path.join(root, "task-passports", "active_touch", "touch-1");
+  fs.mkdirSync(passportDir, { recursive: true });
+  fs.writeFileSync(path.join(passportDir, "events.jsonl"), passportEvent);
 
   let spawnCalls = 0;
   const ipcHandlers = new Map();
@@ -255,7 +259,11 @@ async function main() {
         "auto_reply/auto-reply-diagnostics.jsonl.1",
         "diagnostics.jsonl",
         "diagnostics.jsonl.1",
-        "summary.json"
+        "summary.json",
+        "task-passports/",
+        "task-passports/active_touch/",
+        "task-passports/active_touch/touch-1/",
+        "task-passports/active_touch/touch-1/events.jsonl"
       ],
       "diagnostic ZIP must contain only retained unified logs, safe auto-reply diagnostics, and its summary"
     );
@@ -263,6 +271,7 @@ async function main() {
     assert.deepEqual(await archive.file("diagnostics.jsonl.1").async("nodebuffer"), archived);
     assert.deepEqual(await archive.file("auto_reply/auto-reply-diagnostics.jsonl").async("nodebuffer"), autoReplyCurrent);
     assert.deepEqual(await archive.file("auto_reply/auto-reply-diagnostics.jsonl.1").async("nodebuffer"), autoReplyArchived);
+    assert.deepEqual(await archive.file("task-passports/active_touch/touch-1/events.jsonl").async("nodebuffer"), passportEvent);
     assert.equal(archive.file("auto_reply/auto-reply-diagnostics.jsonl.old"), null);
     assert.equal(archive.file("auto_reply/conversation-state.json"), null);
 
@@ -273,7 +282,8 @@ async function main() {
       { name: "diagnostics.jsonl", size_bytes: current.length, sha256: sha256(current) },
       { name: "diagnostics.jsonl.1", size_bytes: archived.length, sha256: sha256(archived) },
       { name: "auto_reply/auto-reply-diagnostics.jsonl", size_bytes: autoReplyCurrent.length, sha256: sha256(autoReplyCurrent) },
-      { name: "auto_reply/auto-reply-diagnostics.jsonl.1", size_bytes: autoReplyArchived.length, sha256: sha256(autoReplyArchived) }
+      { name: "auto_reply/auto-reply-diagnostics.jsonl.1", size_bytes: autoReplyArchived.length, sha256: sha256(autoReplyArchived) },
+      { name: "task-passports/active_touch/touch-1/events.jsonl", size_bytes: passportEvent.length, sha256: sha256(passportEvent) }
     ]);
     assert.equal("logDirectory" in summary.diagnostics, false);
     assert.equal("logFile" in summary.diagnostics, false);
@@ -300,7 +310,15 @@ async function main() {
     const missingAutoReplyArchive = await JSZip.loadAsync(fs.readFileSync(destination), { checkCRC32: true });
     assert.deepEqual(
       Object.keys(missingAutoReplyArchive.files).sort(),
-      ["diagnostics.jsonl", "diagnostics.jsonl.1", "summary.json"]
+      [
+        "diagnostics.jsonl",
+        "diagnostics.jsonl.1",
+        "summary.json",
+        "task-passports/",
+        "task-passports/active_touch/",
+        "task-passports/active_touch/touch-1/",
+        "task-passports/active_touch/touch-1/events.jsonl"
+      ]
     );
 
     const knownGood = Buffer.from("known-good-diagnostic-archive", "utf8");

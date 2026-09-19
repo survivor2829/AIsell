@@ -191,6 +191,7 @@ function recordSkippedResult(result, index, details = {}) {
     displayName: String(result?.name || contactName(result?.contact) || result?.id || ""),
     index: Number.isInteger(index) ? index : Number(result?.contact_index || 0),
     reasonCode: String(details.reasonCode || result?.blocked_reason || result?.ai_error_code || result?.status || ""),
+    ruleId: String(details.ruleId || result?.search_evidence?.rule_id || ""),
     blockedReason: String(details.blockedReason || result?.reason || ""),
     at,
     traceId: String(details.traceId || result?.last_trace_id || "")

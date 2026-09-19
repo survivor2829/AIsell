@@ -57,6 +57,8 @@ function createTouchWorkflow(options = {}) {
   const contactsDir = String(options.dataDir || "");
   const coordinator = options.coordinator;
   const now = options.now || (() => new Date());
+  const passport = options.passport || null;
+  const passportFailureSignatures = new Set();
   let activeStep = false;
   const recoveredTaskIds = new Set();
   const workflowDirectory = (id) => path.join(contactsDir, "workflow-tasks", crypto.createHash("sha256").update(String(id)).digest("hex"));
@@ -143,7 +145,34 @@ function createTouchWorkflow(options = {}) {
     const signature = workflowSignature({ script, contacts, imageIds, link });
     const bindingFile = path.join(taskDir, "workflow-binding.json");
     const progress = () => ({ done: task?.current_index || 0, total: task?.total || contacts.length });
-    const response = (status, extra = {}) => ({ status, progress: progress(), ...extra });
+    const response = (status, extra = {}) => {
+      const current = task?.results?.[task.current_index] || task?.results?.at(-1) || {};
+      const passportTaskId = `${id}-${Math.max(0, Number(current.contact_index ?? task?.current_index) || 0)}`;
+      const reasonCode = String(extra.reasonCode || extra.result?.blocked_reason || current.skip_record?.reasonCode || current.blocked_reason || "");
+      const ruleId = String(current.search_evidence?.rule_id || extra.result?.state?.search_evidence?.rule_id || "");
+      passport?.recordEvent("active_touch", passportTaskId, {
+        stage: "workflow_step", direction: "out", status, reasonCode, ruleId, traceId: current.last_trace_id || ""
+      });
+      if (status === "needs_attention") {
+        const failureSignature = `${passportTaskId}\0${reasonCode}\0${current.updated_at || ""}`;
+        if (!passportFailureSignatures.has(failureSignature)) {
+          passportFailureSignatures.add(failureSignature);
+          passport?.recordFailure("active_touch", passportTaskId, {
+            stage: "workflow_step", reasonCode: reasonCode || "touch_workflow_failure_reason_missing", ruleId,
+            traceId: current.last_trace_id || "", rawReading: extra.result || current || extra,
+            expected: { status: "sent_verified", progress: progress() }
+          });
+        }
+      }
+      if (status === "completed" && task) {
+        passport?.writeRunBill("active_touch", id, (task.results || []).map((result, index) => ({
+          taskId: `${id}-${Math.max(0, Number(result.contact_index ?? index) || 0)}`, status: result.status,
+          reasonCode: result.skip_record?.reasonCode || result.blocked_reason || result.ai_error_code || "",
+          ruleId: result.search_evidence?.rule_id || ""
+        })));
+      }
+      return { status, progress: progress(), ...extra };
+    };
     const persist = () => { task = saveTaskState(taskDir, task); };
     const attention = (error, result, reasonCode = "") => {
       task.status = "paused";
@@ -266,6 +295,11 @@ function createTouchWorkflow(options = {}) {
       persist();
       let result;
       const sendOperation = diagnostics().begin("active_touch", "workflow_contact_send", { task_id: id, current_index: index }, { trace: true });
+      const passportTaskId = `${id}-${Math.max(0, Number(current.contact_index ?? index) || 0)}`;
+      passport?.bindTrace("active_touch", sendOperation.traceId, passportTaskId);
+      passport?.recordEvent("active_touch", passportTaskId, {
+        stage: "workflow_contact_send", direction: "in", status: "started", traceId: sendOperation.traceId
+      });
       try {
         const executePart = async (part, partIndex, onPartTransition) => {
           const recipientKey = crypto.createHash("sha256").update(current.request_id).digest("hex");

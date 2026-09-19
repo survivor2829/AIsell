@@ -267,6 +267,8 @@ function createMomentsCampaignController(options = {}) {
       : null);
   const emit = typeof options.emit === "function" ? options.emit : () => undefined;
   const logger = options.logger || diagnostics();
+  const passport = options.passport || null;
+  const passportFailureSignatures = new Set();
   const now = typeof options.now === "function" ? options.now : () => new Date();
   const writeStateJson = typeof options.writeStateJson === "function"
     ? options.writeStateJson
@@ -381,6 +383,27 @@ function createMomentsCampaignController(options = {}) {
       },
       ...fields
     }, { level });
+    const taskId = String(workflowContext?.taskId || state.started_at || `moments-${now().toISOString().slice(0, 10)}`);
+    const reasonCode = String(fields.reasonCode || fields.reason || fields.code || state.last_reason || "");
+    passport?.recordEvent("moments", taskId, {
+      stage: event, direction: /started$/u.test(event) ? "in" : "out",
+      durationMs: fields.duration_ms,
+      status: level === "error" ? "failed" : state.status || "observed",
+      reasonCode
+    });
+    if (level === "error" || fields.ok === false || fields.skipped === true
+      || /(?:failed|rejected|skipped)$/u.test(event) || /^campaign\.(?:partial|paused|stopped)$/u.test(event)) {
+      const signature = `${taskId}\0${event}\0${reasonCode}\0${state.updated_at || ""}`;
+      if (!passportFailureSignatures.has(signature)) {
+        passportFailureSignatures.add(signature);
+        passport?.recordFailure("moments", taskId, {
+          stage: event,
+          reasonCode: reasonCode || "moments_failure_reason_missing",
+          rawReading: fields,
+          expected: { status: "completed", outcome_unknown: false }
+        });
+      }
+    }
   }
 
   dailyAutomation = createMomentsDailyAutomation({
@@ -410,6 +433,12 @@ function createMomentsCampaignController(options = {}) {
       outcome_unknown: finishOptions.outcomeUnknown === true
     });
     record(`campaign.${status}`, { reason }, status === "completed" ? "info" : "warn");
+    const taskId = String(workflowContext?.taskId || state.started_at || `moments-${now().toISOString().slice(0, 10)}`);
+    const rows = [];
+    for (let index = 0; index < Math.max(0, Number(state.completed_post_count || 0)); index += 1) rows.push({ taskId: `post-${index + 1}`, status: "completed" });
+    for (let index = 0; index < Math.max(0, Number(state.skipped_count || 0)); index += 1) rows.push({ taskId: `skipped-${index + 1}`, status: "skipped", reasonCode: state.last_comment_skip_reason || "moments_post_skipped" });
+    if (status !== "completed") rows.push({ taskId: "campaign", status, reasonCode: reason || "moments_failure_reason_missing" });
+    passport?.writeRunBill("moments", taskId, rows);
     if (workflowContext && finishOptions.outcomeUnknown === true) {
       saveWorkflowProgress({ outcome_unknown: true, last_reason: reason });
     }
@@ -902,6 +931,15 @@ function createMomentsCampaignController(options = {}) {
               skipped_count: state.skipped_count + itemSkipped + (!state.like_enabled && !commentedCount ? 1 : 0),
               last_reason: lastReason
             }, dailyPatch);
+            if (commentSkipped || itemSkipped > 0 || (!state.like_enabled && !commentedCount)) {
+              record("campaign.post_skipped", {
+                skipped: true,
+                reason: lastReason || "moments_post_skipped",
+                comment_skipped: commentSkipped,
+                action_skipped: itemSkipped > 0,
+                post_fingerprint: fingerprint
+              }, "warn");
+            }
             if (dailyPatch) {
               record("daily.progress", {
                 post_fingerprint: fingerprint,
@@ -1157,8 +1195,25 @@ function createMomentsCampaignController(options = {}) {
     let progress = { done: Number(taskRecord.progress?.done || 0), total: config.payload?.maxPosts || 1 };
     // Only controlled branches may set reasonCode. Executor and persisted free text
     // stay diagnostic-only so they can never choose local versus global stopping.
-    const response = (status, error = "", extra = {}) => ({ status, progress: { ...progress,
-      ...(workflowContext ? workflowProgress({ ...taskRecord, progress }) : {}) }, ...(error ? { error } : {}), ...extra });
+    const response = (status, error = "", extra = {}) => {
+      const reasonCode = String(extra.reasonCode || error || "");
+      passport?.recordEvent("moments", taskRecord.id, {
+        stage: "workflow_step", direction: "out", status, reasonCode
+      });
+      if (status === "needs_attention") {
+        const signature = `${taskRecord.id}\0workflow_step\0${reasonCode}\0${progress.done}`;
+        if (!passportFailureSignatures.has(signature)) {
+          passportFailureSignatures.add(signature);
+          passport?.recordFailure("moments", taskRecord.id, {
+            stage: "workflow_step", reasonCode: reasonCode || "moments_failure_reason_missing",
+            rawReading: { error, diagnosticReason: extra.diagnosticReason || "", progress },
+            expected: { status: "completed", progress: { done: progress.total, total: progress.total } }
+          });
+        }
+      }
+      return { status, progress: { ...progress,
+        ...(workflowContext ? workflowProgress({ ...taskRecord, progress }) : {}) }, ...(error ? { error } : {}), ...extra };
+    };
     if (!config.ok) return response("needs_attention", config.reason, { reasonCode: config.reason });
     if (!isEnabled() || loopPromise || workflowContext) return response("pending");
     try {

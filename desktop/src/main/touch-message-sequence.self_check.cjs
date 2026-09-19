@@ -281,7 +281,7 @@ async function checkTouchMessageSequence() {
   const skipTaskDir = path.join(root, "workflow-tasks", crypto.createHash("sha256").update(skipRecord.id).digest("hex"));
   const skippedTask = JSON.parse(fs.readFileSync(path.join(skipTaskDir, "touch_task.json"), "utf8"));
   assert.equal(skippedTask.results[0].status, "identity_skipped");
-  assert.deepEqual(Object.keys(skippedTask.results[0].skip_record), ["contactId", "displayName", "index", "reasonCode", "blockedReason", "at", "traceId"]);
+  assert.deepEqual(Object.keys(skippedTask.results[0].skip_record), ["contactId", "displayName", "index", "reasonCode", "ruleId", "blockedReason", "at", "traceId"]);
   assert.equal(skippedTask.results[0].skip_record.reasonCode, "exact_search_result_not_found");
   searchUnavailable = false;
   result = await createTouchWorkflow(config).runWorkflowStep(skipRecord, context);

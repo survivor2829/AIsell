@@ -47,6 +47,9 @@ let lastDiagnosticTaskSignature = "";
 let currentBuildId = "";
 let currentBuildVersion = "unknown";
 let currentBuildCommit = "unknown";
+let taskPassportStore = null;
+const taskPassportFailureSignatures = new Set();
+const taskPassportAttachments = new Map();
 const consumedBatchTokens = new Set();
 const DRAFT_GENERATION_CONCURRENCY = 3;
 const PRE_SEND_RECOVERY_ATTEMPTS = 2;
@@ -142,9 +145,9 @@ function executionFailureContext(response, recoveryAttempt = 0) {
         ? response.state.send_diagnostics
         : {};
   const context = {
-    action: String(response?.action || "unknown").slice(0, 80),
-    phase: String(source.phase || response?.action || "unknown").slice(0, 80),
-    reason_code: resultCode(response) || "unknown",
+    action: String(response?.action || "action_not_reported").slice(0, 80),
+    phase: String(source.phase || response?.action || "phase_not_reported").slice(0, 80),
+    reason_code: resultCode(response) || "task_failure_reason_missing",
     send_attempted: response?.send_attempted === true ? true : response?.send_attempted === false ? false : null
   };
   for (const [key, value] of [
@@ -319,7 +322,44 @@ function classifyTaskTransitionDiagnostic(task, current) {
 }
 
 function emitTaskUpdate(task) {
-  const payload = compactTaskPayload(task || loadTaskState(activeTouchDir()));
+  const sourceTask = task || loadTaskState(activeTouchDir());
+  const sourceResult = sourceTask.results?.[sourceTask.current_index] || sourceTask.results?.at(-1) || {};
+  const passportTaskId = `${sourceTask.id || "touch-task"}-${Math.max(0, Number(sourceResult.contact_index ?? sourceTask.current_index) || 0)}`;
+  taskPassportStore?.recordEvent("active_touch", passportTaskId, {
+    stage: sourceTask.phase || "task_transition",
+    direction: "point",
+    status: sourceResult.status || sourceTask.status || "observed",
+    reasonCode: sourceResult.skip_record?.reasonCode || sourceResult.blocked_reason || sourceResult.ai_error_code || "",
+    ruleId: sourceResult.skip_record?.ruleId || sourceResult.search_evidence?.rule_id || sourceResult.rule_id || "",
+    traceId: sourceResult.last_trace_id || ""
+  });
+  const failureReason = sourceResult.skip_record?.reasonCode || sourceResult.blocked_reason
+    || (["blocked", "outcome_unknown", "identity_skipped", "ai_failed_skipped", "pre_send_skipped"].includes(sourceResult.status) ? sourceResult.status : "");
+  if (failureReason) {
+    const failureSignature = `${passportTaskId}\0${sourceResult.status}\0${failureReason}\0${sourceResult.updated_at || ""}`;
+    if (!taskPassportFailureSignatures.has(failureSignature)) {
+      taskPassportFailureSignatures.add(failureSignature);
+      const evidence = taskPassportStore?.recordFailure("active_touch", passportTaskId, {
+        stage: sourceTask.phase || "task_transition",
+        reasonCode: failureReason,
+        ruleId: sourceResult.skip_record?.ruleId || sourceResult.search_evidence?.rule_id || sourceResult.rule_id || "",
+        traceId: sourceResult.last_trace_id || "",
+        rawReading: sourceResult.search_evidence || sourceResult.send_diagnostics || sourceResult,
+        expected: { status: "sent_verified", contact_index: sourceResult.contact_index, search_query_type: sourceResult.search_query_type || "" }
+      });
+      if (evidence?.attachments?.length) taskPassportAttachments.set(passportTaskId, evidence.attachments);
+    }
+  }
+  if (["completed", "stopped"].includes(sourceTask.status)) {
+    taskPassportStore?.writeRunBill("active_touch", sourceTask.id, (sourceTask.results || []).map((result, index) => ({
+      taskId: `${sourceTask.id}-${Math.max(0, Number(result.contact_index ?? index) || 0)}`,
+      status: result.status,
+      reasonCode: result.skip_record?.reasonCode || result.blocked_reason || result.ai_error_code || "",
+      ruleId: result.skip_record?.ruleId || result.search_evidence?.rule_id || result.rule_id || "",
+      attachments: taskPassportAttachments.get(`${sourceTask.id}-${Math.max(0, Number(result.contact_index) || 0)}`) || []
+    })));
+  }
+  const payload = compactTaskPayload(sourceTask);
   const current = payload.task?.current_result;
   const diagnosticSnapshot = {
     task_id: payload.task?.id || "",
@@ -400,6 +440,7 @@ async function runStep(task, result, command, args, blockReason, parentTraceId =
     result.search_fallback_reason = String(response.state.search_fallback_reason || "");
     result.resolver_mode = String(response.state.search_evidence.resolver_mode || "");
     result.search_evidence = response.state.search_evidence;
+    result.rule_id = String(response.state.search_evidence.rule_id || "");
     saveTaskState(activeTouchDir(), task);
     diagnostics().event("active_touch", "search_resolver", response.state.search_evidence, {
       trace: true, traceId: parentTraceId || undefined, phase: "finish",
@@ -1054,7 +1095,7 @@ function buildRunnableTask(script, excludedContactIds = []) {
   };
 }
 
-function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekClient: client, onPause, executionMode: mode, realSendExecutor: executor, verifyRealSendSession: sessionVerifier, verifyMessageBubble: verifier, waitForDelay: wait, random, appVersion = "unknown", buildId = "", buildCommit = "unknown" } = {}) {
+function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekClient: client, onPause, executionMode: mode, realSendExecutor: executor, verifyRealSendSession: sessionVerifier, verifyMessageBubble: verifier, waitForDelay: wait, random, passport, appVersion = "unknown", buildId = "", buildCommit = "unknown" } = {}) {
   getMainWindowRef = getMainWindow;
   runtimeDataDir = String(dataDir || "");
   runtimeCoordinator = coordinator;
@@ -1068,6 +1109,9 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
   currentBuildId = String(buildId || "").trim();
   currentBuildVersion = String(appVersion || "unknown");
   currentBuildCommit = String(buildCommit || "unknown");
+  taskPassportStore = passport || null;
+  taskPassportFailureSignatures.clear();
+  taskPassportAttachments.clear();
   cleanupTaskCache(activeTouchDir());
   recoverInterruptedTask(activeTouchDir());
   const previousBuild = markPreviousBuildTask(loadTaskState(activeTouchDir()), currentBuildId);
@@ -1308,7 +1352,8 @@ function registerTouchTaskIpc({ getMainWindow, dataDir, coordinator, deepSeekCli
     client: deepSeekClient,
     execute: realSendExecutor,
     runStep: runActiveTouch,
-    random: randomSource
+    random: randomSource,
+    passport: taskPassportStore
   });
   return { pause: requestPause, ...workflow };
 }

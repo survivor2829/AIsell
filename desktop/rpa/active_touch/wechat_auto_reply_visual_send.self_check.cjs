@@ -75,9 +75,10 @@ assert.match(sendClickPhase, /Get-VisualSendConversationBinding \$fresh[\s\S]*if
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Clear-VisualSendDraft[\s\S]*\{BACKSPACE\}[\s\S]*\$readback\.empty/u, "pre-click failures need a verified draft cleanup path");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Write-VisualSendDraft[\s\S]*composer_focus_failed[\s\S]*clipboard_write_failed[\s\S]*draft_paste_failed[\s\S]*draft_readback_mismatch/u, "draft diagnostics must identify the failed input stage without storing customer text");
 assert.match(sendClickPhase, /Find-VisualSendButton[\s\S]*Clear-VisualSendDraft \$lock[\s\S]*visual_send_button_not_owned[\s\S]*Clear-VisualSendDraft \$lock[\s\S]*visual_send_cursor_not_verified/u, "owned pre-click failures must not leave a stale draft behind");
-assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendOutgoingBubble[\s\S]*Get-VisualSendChatBottom \$frame \$sidebarRight[\s\S]*Test-VisualSendOutgoingLineEvidence/u, "post-send verification must inspect the dynamic bottom of the chat");
-assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendOutgoingLineEvidence[\s\S]*\$latest = \$ordered\[-1\][\s\S]*Get-VisualSendLineGreenRatio[\s\S]*Test-VisualSendGreenBridge/u, "only the latest connected green bubble may verify a send");
-assert.doesNotMatch(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Test-VisualSendOutgoingBubble[\s\S]*height = \[double\]\(\$frame\.height \* 0\.64\)/u, "post-send verification must not stop above a bottom bubble");
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendOutgoingBubbleEvidence[\s\S]*Get-VisualSendChatBottom \$frame \$sidebarRight[\s\S]*Get-VisualSendOutgoingLineEvidence/u, "post-send verification must inspect the dynamic bottom of the chat");
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendOutgoingLineEvidence[\s\S]*\$latest = \$ordered\[-1\][\s\S]*Get-VisualSendLineGreenRatio[\s\S]*Test-VisualSendGreenBridge/u, "only the latest connected green bubble may verify a send");
+assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendReplyMatchEvidence[\s\S]*\$maximumLength \* 0\.40/u, "a proven latest outgoing bubble must tolerate bounded OCR glyph drift");
+assert.doesNotMatch(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /function Get-VisualSendOutgoingBubbleEvidence[\s\S]*height = \[double\]\(\$frame\.height \* 0\.64\)/u, "post-send verification must not stop above a bottom bubble");
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /Read-VisualSendDraft[\s\S]*\^a[\s\S]*\^c/u);
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /Read-VisualSendDraft[\s\S]*Test-VisualSendOwnedPoint/u);
 assert.match(WECHAT_VISUAL_AUTO_REPLY_POWERSHELL, /Normalize-VisualSendDraftText[\s\S]*-ceq \(Normalize-VisualSendDraftText \$expectedReply\)/u);
@@ -117,10 +118,10 @@ function Get-VisualSendWindowDpi { return 96 }
 function Get-VisualSendSidebarRight { return 270 }
 function Test-VisualSendConversation { return @{ state = $script:header } }
 function Test-VisualSendSelectedSidebarConversation { return @{ ok = $false } }
-function Test-VisualSendOutgoingBubble {
+function Get-VisualSendOutgoingBubbleEvidence {
   $script:events += "bubble"
   $script:lease = $false
-  return $script:bubble
+  return @{ ok = $script:bubble; observed_text = "fixture"; match_mode = $(if ($script:bubble) { "exact" } else { "mismatch" }); edit_distance = 0; maximum_length = 7 }
 }
 function Close-MomentsVisualFrame { if ($script:cleanupFails) { throw "cleanup only" } }
 function Start-Sleep {}
@@ -207,6 +208,29 @@ const evidenceResult = JSON.parse(evidenceProbe.stdout.trim().split(/\r?\n/u).fi
 assert.equal(evidenceResult.user96, createHash("sha256").update("visual-message-semantic-v1\nbubble-ocr\nuser", "utf8").digest("hex"));
 assert.equal(evidenceResult.user144, evidenceResult.user96, "DPI reflow must not change a semantic incoming occurrence");
 assert.notEqual(evidenceResult.assistant, evidenceResult.user96, "an outgoing role must never satisfy the bound incoming evidence");
+
+const receiptMatchStart = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Normalize-VisualSendReceiptText");
+const receiptMatchEnd = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Get-VisualSendOutgoingLineEvidence", receiptMatchStart);
+assert.ok(receiptMatchStart >= 0 && receiptMatchEnd > receiptMatchStart);
+const receiptMatchProgram = `
+${WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(normalizeStart, lockStart)}
+${WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.slice(receiptMatchStart, receiptMatchEnd)}
+$expected = "您好，您这条消息我没太看明白，方便再说一下具体想咨询什么吗？比如是设备选型、配件补货，还是会员合作方面的问题，我帮您看看。"
+$ocrDrift = "1諏子,您汶条消患我没太看B.月臼,方便冉说一下体想河什么吗?囗是设备选型、配僻补货,还是会员合作方面的问题,我帮您看看"
+@{
+  exact = (Get-VisualSendReplyMatchEvidence $expected $expected)
+  customerFrame = (Get-VisualSendReplyMatchEvidence $ocrDrift $expected)
+  unrelated = (Get-VisualSendReplyMatchEvidence "这是另一条完全不同的历史回复内容并且不应被误认成刚才发送的消息" $expected)
+} | ConvertTo-Json -Compress -Depth 5
+`;
+const receiptMatchProbe = runPowerShellProgram(receiptMatchProgram, "receipt-ocr-drift");
+assert.equal(receiptMatchProbe.status, 0, receiptMatchProbe.stderr || receiptMatchProbe.stdout);
+const receiptMatches = JSON.parse(receiptMatchProbe.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1));
+assert.equal(receiptMatches.exact.ok, true);
+assert.equal(receiptMatches.exact.match_mode, "exact");
+assert.equal(receiptMatches.customerFrame.ok, true, "the customer-machine OCR drift must still verify the latest green reply bubble");
+assert.equal(receiptMatches.customerFrame.match_mode, "bounded_ocr_drift");
+assert.equal(receiptMatches.unrelated.ok, false, "bounded OCR drift must not accept an unrelated prior reply");
 
 const chatBottomStart = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Get-VisualSendRowStats");
 const chatBottomEnd = WECHAT_VISUAL_AUTO_REPLY_POWERSHELL.indexOf("function Get-VisualSendIncomingEvidenceSignature", chatBottomStart);
