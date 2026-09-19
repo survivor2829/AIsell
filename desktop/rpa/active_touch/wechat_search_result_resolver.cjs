@@ -97,6 +97,13 @@ function sharesCompactLocalSurface(left, right) {
   return horizontalOverlap >= minimumWidth / 2 && verticalGap <= Math.max(18, minimumHeight);
 }
 
+function sharesLocalResultColumn(left, right) {
+  if (!hasValidBounds(left) || !hasValidBounds(right)) return false;
+  const horizontalOverlap = Math.min(Number(left.right), Number(right.right)) - Math.max(Number(left.left), Number(right.left));
+  const minimumWidth = Math.min(Number(left.right) - Number(left.left), Number(right.right) - Number(right.left));
+  return horizontalOverlap >= minimumWidth / 2;
+}
+
 function networkLookupRowCandidates(candidates, query) {
   const sorted = [...candidates].sort((left, right) => Number(left.top) - Number(right.top) || Number(left.left) - Number(right.left));
   const blocked = new Set();
@@ -192,7 +199,7 @@ function isNetworkSearchLabel(candidate, query) {
 
 function isLocalContactSection(value) {
   const text = normalized(value);
-  return /^最常.{0,2}用$/u.test(text) || ["联系人", "最近联系人", "好友"].includes(text);
+  return /^(?:最)?常.{0,2}用$/u.test(text) || ["联系人", "最近联系人", "好友"].includes(text);
 }
 
 function isOtherSearchSection(value) {
@@ -328,20 +335,28 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   const localVisualCandidates = visualCandidates.filter((candidate) => Number(candidate.bottom) <= webSearchTop);
   if (wechatIdSearch) {
     const reportedTop = observation.webSearchTop;
-    if (webSearchCandidates.length && (webSearchCandidates.some((candidate) => !isNetworkSearchLabel(candidate, query))
+    if (webSearchCandidates.length > 1 || (webSearchCandidates.length && (webSearchCandidates.some((candidate) => !isNetworkSearchLabel(candidate, query))
       || (reportedTop !== null && reportedTop !== undefined && reportedTop !== "" && Number(reportedTop) !== webSearchTop)
-      || webSearchTop < cropBounds.top || webSearchTop >= cropBounds.bottom)) return reject("search-r011");
-    if (localVisualCandidates.filter((candidate) => labelledWechatId(candidate)).length > 1) return reject("search-r007");
+      || webSearchTop < cropBounds.top || webSearchTop >= cropBounds.bottom))) return reject("search-r011");
+    if (!webSearchCandidates.length) return reject("search-r008");
     const contactHeader = localVisualCandidates.find((candidate) => isLocalContactSection(candidate.text));
+    if (localVisualCandidates.filter((candidate) => labelledWechatId(candidate)).length > 1) return reject("search-r007");
     const nextSectionTop = contactHeader ? Math.min(webSearchTop, ...[
       ...localVisualCandidates.filter((candidate) => Number(candidate.top) > Number(contactHeader.top) && isOtherSearchSection(candidate.text)),
       ...networkLookupCandidates
     ].map((candidate) => Number(candidate.top))) : webSearchTop;
     const headerHeight = contactHeader ? Number(contactHeader.bottom) - Number(contactHeader.top) : 0;
-    const sectionItems = contactHeader ? localVisualCandidates.filter((candidate) => Number(candidate.top) >= Number(contactHeader.bottom)
+    const sectionCandidates = contactHeader ? localVisualCandidates.filter((candidate) => Number(candidate.top) >= Number(contactHeader.bottom)
       && Number(candidate.bottom) <= nextSectionTop
-      && Number(candidate.left) > Number(contactHeader.left) + headerHeight * 0.5) : [];
-    const firstItem = sectionItems[0];
+      && Number(candidate.left) > Number(contactHeader.left) + headerHeight * 0.5)
+      .sort((left, right) => Number(left.top) - Number(right.top) || Number(left.left) - Number(right.left)) : [];
+    const firstItem = sectionCandidates[0];
+    // The broad OCR crop can include the conversation pane.  Keep only text in the
+    // first local row's horizontal column; this follows live geometry across DPI and
+    // window sizes without trusting gray identity text or machine-specific pixels.
+    const sectionItems = firstItem
+      ? sectionCandidates.filter((candidate) => candidate === firstItem || sharesLocalResultColumn(firstItem, candidate))
+      : [];
     const localSurface = firstItem && Number(firstItem.top) - Number(contactHeader.bottom) <= headerHeight * 4
       ? uniqueCompactLocalSurface(sectionItems, nextSectionTop, query, expectedName, true) : null;
     if (localSurface) return { status: "selected", mode: "unique_local_wechat_id_visual", candidate: localSurface };

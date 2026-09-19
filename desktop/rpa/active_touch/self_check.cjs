@@ -1750,6 +1750,50 @@ try {
     webSearchTop: 224
   }, { query: "cb1668", expectedName: "测试客户", queryType: "wechat_id" });
   assert.equal(idOnlyVisual.mode, "unique_local_wechat_id_visual", "one bounded local surface can be clicked despite unreadable gray ID text");
+  const realCustomerOcrShape = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true,
+    cropBounds: { left: 58, top: 72, right: 477, bottom: 485 },
+    visualCandidates: [
+      { text: "常 便 用", left: 96, top: 84, right: 131, bottom: 95, x: 114, y: 90 },
+      { text: "C 测 试 联 系 人 183S", left: 128, top: 118, right: 330, bottom: 132, x: 229, y: 125 },
+      { text: "微 信 ． 号 ： fixture68506074", left: 128, top: 142, right: 234, bottom: 155, x: 181, y: 149 },
+      { text: "O", left: 360, top: 128, right: 375, bottom: 143, x: 368, y: 136 },
+      { text: "获 客 VI 版", left: 392, top: 128, right: 477, bottom: 141, x: 435, y: 135 },
+      { text: "3.0 M", left: 392, top: 172, right: 422, bottom: 179, x: 407, y: 176 }
+    ],
+    webSearchCandidates: [{ text: "搜 索 网 络 结 果", left: 110, top: 180, right: 182, bottom: 191, x: 146, y: 186 }],
+    webSearchTop: 180
+  }, { query: "fixture68506074", expectedName: "C测试联系人1835", queryType: "wechat_id" });
+  assert.equal(realCustomerOcrShape.mode, "unique_local_wechat_id_visual",
+    "one visible local friend must remain clickable when OCR drops the section prefix, punctuates the gray label, and reads chat-pane noise");
+  assert.ok(realCustomerOcrShape.candidate.x < 350, "chat-pane OCR outside the search popup must never become the click target");
+  const realCustomerWithoutNetworkBoundary = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true,
+    cropBounds: { left: 58, top: 72, right: 477, bottom: 485 },
+    visualCandidates: [
+      { text: "常 便 用", left: 96, top: 84, right: 131, bottom: 95, x: 114, y: 90 },
+      { text: "C 测 试 联 系 人 183S", left: 128, top: 118, right: 330, bottom: 132, x: 229, y: 125 },
+      { text: "微 信 ． 号 ： fixture68506074", left: 128, top: 142, right: 234, bottom: 155, x: 181, y: 149 }
+    ],
+    webSearchCandidates: [], webSearchTop: null
+  }, { query: "fixture68506074", expectedName: "C测试联系人1835", queryType: "wechat_id" });
+  assert.equal(realCustomerWithoutNetworkBoundary.status, "unverified",
+    "a visual friend row must remain non-clickable when the network-search boundary cannot be isolated");
+  const duplicatedNetworkBoundary = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true,
+    cropBounds: { left: 58, top: 72, right: 477, bottom: 485 },
+    visualCandidates: [
+      { text: "常 便 用", left: 96, top: 84, right: 131, bottom: 95, x: 114, y: 90 },
+      { text: "C 测 试 联 系 人", left: 128, top: 118, right: 260, bottom: 132, x: 194, y: 125 }
+    ],
+    webSearchCandidates: [
+      { text: "搜索网络结果", left: 110, top: 180, right: 182, bottom: 191, x: 146, y: 186 },
+      { text: "搜索网络结果", left: 110, top: 210, right: 182, bottom: 221, x: 146, y: 216 }
+    ],
+    webSearchTop: 180
+  }, { query: "fixture68506074", expectedName: "C测试联系人", queryType: "wechat_id" });
+  assert.equal(duplicatedNetworkBoundary.status, "unverified",
+    "multiple network-search boundaries are not reliably isolated and must never authorize a local click");
   const sectionedIdSearch = resolveWechatSearchResultObservation({
     uiaCandidates: [], ocrOk: true,
     cropBounds: { left: 58, top: 85, right: 488, bottom: 505 },
