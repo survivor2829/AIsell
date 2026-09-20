@@ -588,9 +588,10 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     contentEngineIpcRegistration = registerContentEngineIpc({
       controller: contentEngineController,
-      beforeProviderWork: async () => {
+      providerCapabilityStatus: providerGatewaySupports,
+      beforeProviderWork: async (capabilities = ["volcengine_ark", "volcengine_asr", "volcengine_tts"]) => {
         await providerGatewayClient?.initialize({ verify: true });
-        const requiredCapabilities = ["volcengine_ark", "volcengine_asr", "volcengine_tts"];
+        const requiredCapabilities = [...new Set(capabilities)];
         const missingCapabilities = requiredCapabilities.filter((capability) => !providerGatewaySupports(capability));
         if (missingCapabilities.length) {
           throw Object.assign(new Error(`云端智能服务暂不可用（缺少：${missingCapabilities.join("、")}），当前任务未提交。`), {

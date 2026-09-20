@@ -723,10 +723,14 @@ export default function App() {
 
   useEffect(() => {
     if (!window.xiaoxiDeepSeekApi) return;
+    if (!license?.authorized || !sessionEntered) {
+      setDeepSeekConfigured(false);
+      return;
+    }
     void window.xiaoxiDeepSeekApi.status()
       .then((result) => setDeepSeekConfigured(Boolean(result.ok && result.data?.configured)))
       .catch(() => setDeepSeekConfigured(false));
-  }, []);
+  }, [license?.authorized, sessionEntered]);
 
   useEffect(() => {
     const api = window.xiaoxiTouchTask;

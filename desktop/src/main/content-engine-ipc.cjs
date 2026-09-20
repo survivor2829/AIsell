@@ -115,6 +115,41 @@ const CONTENT_ENGINE_CHANNELS = Object.freeze({
   update: "content-engine:update"
 });
 
+const NARRATED_PROVIDER_CAPABILITIES = Object.freeze([
+  "volcengine_ark", "volcengine_asr", "volcengine_tts"
+]);
+
+function providerCapabilitiesForTask(taskType) {
+  if (taskType === "narrated_batch_v1") return NARRATED_PROVIDER_CAPABILITIES;
+  if (["creative_cover", "guided_auto_mix_supplemental_image"].includes(taskType)) {
+    return ["apimart"];
+  }
+  if (isProviderTaskType(taskType)) return NARRATED_PROVIDER_CAPABILITIES;
+  return [];
+}
+
+function managedProviderStore(store, capability, capabilityStatus) {
+  if (typeof capabilityStatus !== "function") return store;
+  return {
+    ...store,
+    status: () => {
+      const configured = capabilityStatus(capability) === true;
+      return {
+        configured,
+        secureStorageAvailable: true,
+        maskedKey: "",
+        managed: true,
+        code: configured ? "" : "PROVIDER_GATEWAY_UNAVAILABLE"
+      };
+    },
+    write: () => {
+      throw Object.assign(new Error("AI 服务由云端统一提供，客户端无需保存密钥。"), {
+        code: "PROVIDER_GATEWAY_MANAGED"
+      });
+    }
+  };
+}
+
 const PUBLIC_STATES = new Set([
   "starting",
   "ready",
@@ -2562,7 +2597,8 @@ function registerContentEngineIpc(options = {}) {
   handle(CONTENT_ENGINE_CHANNELS.resumeTask, async (payload) => {
     const taskId = validateId(payload.taskId, "task");
     const task = await controller.getTask(taskId);
-    if (isProviderTaskType(task?.task_type)) await options.beforeProviderWork?.();
+    const requiredCapabilities = providerCapabilitiesForTask(task?.task_type);
+    if (requiredCapabilities.length) await options.beforeProviderWork?.(requiredCapabilities);
     return publicTask(await controller.resumeTask(taskId));
   });
   handle(CONTENT_ENGINE_CHANNELS.listFinished, async (payload) => {
@@ -2688,9 +2724,30 @@ function registerContentEngineIpc(options = {}) {
     await controller.setSetting("cache_limit_gb", limitGb);
     return { cacheLimitGb: limitGb };
   });
-  registerVolcengineTtsSettings({ handle, store: options.volcengineTtsKeyStore, controller, assertKeys, invalid });
-  registerVolcengineTtsSettings({ handle, store: options.volcengineAsrStore, controller, assertKeys, invalid, modulusLength: 3072, channels: ASR_CHANNELS });
-  registerVolcengineTtsSettings({ handle, store: options.volcengineArkKeyStore, controller, assertKeys, invalid, channels: ARK_CHANNELS });
+  registerVolcengineTtsSettings({
+    handle,
+    store: managedProviderStore(options.volcengineTtsKeyStore, "volcengine_tts", options.providerCapabilityStatus),
+    controller,
+    assertKeys,
+    invalid
+  });
+  registerVolcengineTtsSettings({
+    handle,
+    store: managedProviderStore(options.volcengineAsrStore, "volcengine_asr", options.providerCapabilityStatus),
+    controller,
+    assertKeys,
+    invalid,
+    modulusLength: 3072,
+    channels: ASR_CHANNELS
+  });
+  registerVolcengineTtsSettings({
+    handle,
+    store: managedProviderStore(options.volcengineArkKeyStore, "volcengine_ark", options.providerCapabilityStatus),
+    controller,
+    assertKeys,
+    invalid,
+    channels: ARK_CHANNELS
+  });
   handle(CONTENT_ENGINE_CHANNELS.bailianKeyStatus, async () => {
     if (!bailianKeyStore) invalid("CONTENT_ENGINE_CAPABILITY_UNAVAILABLE");
     return publicBailianStatus(bailianKeyStore.status());
@@ -2819,6 +2876,9 @@ function registerContentEngineIpc(options = {}) {
         .has(packaging.packagingPresetId)) {
       invalid("invalid_packaging_preset");
     }
+    if (packaging.coverMode === "ai_generate") {
+      await options.beforeProviderWork?.(["apimart"]);
+    }
     const result = await controller.generateCourseCuts(
       validateId(payload.assetId, "asset"),
       {
@@ -2864,6 +2924,9 @@ function registerContentEngineIpc(options = {}) {
       && !new Set(["hook_impact", "process_rhythm", "result_close"])
         .has(packaging.packagingPresetId)) {
       invalid("invalid_packaging_preset");
+    }
+    if (packaging.coverMode === "ai_generate") {
+      await options.beforeProviderWork?.(["apimart"]);
     }
     const result = await controller.generateMixBatch(assetIds, {
       theme: validateText(payload.theme ?? "培训现场价值", 100, "invalid_params"),
@@ -3036,6 +3099,7 @@ function registerContentEngineIpc(options = {}) {
     const draftHash = String(payload.draftHash || "").toLowerCase();
     if (!/^[a-f0-9]{64}$/u.test(draftHash)) invalid("invalid_guided_auto_mix_draft_hash");
     if (payload.confirmPaidCalls !== true) invalid("guided_auto_mix_supplemental_image_confirmation_required");
+    await options.beforeProviderWork?.(["apimart"]);
     return publicGuidedAutoMixSupplementalImage(
       await controller.createGuidedAutoMixSupplementalImageV2({
         sessionId: validateId(payload.sessionId, "guided_auto_mix_session"),
@@ -3313,9 +3377,11 @@ function registerContentEngineIpc(options = {}) {
     const durationMs = Number(options.durationMs ?? 75_000);
     if (!Number.isInteger(targetCount) || targetCount < 1 || targetCount > 3) invalid("invalid_limit");
     if (!Number.isInteger(durationMs) || durationMs < 60_000 || durationMs > 90_000) invalid("invalid_product_duration");
+    const coverMode = String(options.coverMode ?? "ai_generate");
+    if (coverMode === "ai_generate") await options.beforeProviderWork?.(["apimart"]);
     const result = await controller.generateOneClickCandidates(
       validateId(payload.projectId, "creative_project"),
-      { targetCount, durationMs, coverMode: String(options.coverMode ?? "ai_generate") }
+      { targetCount, durationMs, coverMode }
     );
     return publicTask(result);
   });
@@ -3433,6 +3499,9 @@ function registerContentEngineIpc(options = {}) {
       "coverMode", "reuseCover"
     ]));
     const optionsForPackaging = validatePackagingOptions(payload, { reuseCoverDefault: true });
+    if (optionsForPackaging.coverMode === "ai_generate") {
+      await options.beforeProviderWork?.(["apimart"]);
+    }
     return publicTask(await controller.packageGeneratedVideos(
       validateGeneratedVideoIds(payload.candidateIds),
       optionsForPackaging
@@ -3444,6 +3513,9 @@ function registerContentEngineIpc(options = {}) {
       "coverMode", "reuseCover"
     ]));
     const optionsForPackaging = validatePackagingOptions(payload, { reuseCoverDefault: true });
+    if (optionsForPackaging.coverMode === "ai_generate") {
+      await options.beforeProviderWork?.(["apimart"]);
+    }
     return publicTask(await controller.repackageVideo(
       validateId(payload.candidateId, "generated_video"),
       optionsForPackaging
@@ -3467,6 +3539,7 @@ function registerContentEngineIpc(options = {}) {
   });
   handle(CONTENT_ENGINE_CHANNELS.regenerateCover, async (payload) => {
     assertKeys(payload, new Set(["candidateId"]));
+    await options.beforeProviderWork?.(["apimart"]);
     return publicTask(await controller.regenerateCover(
       validateId(payload.candidateId, "generated_video")
     ));

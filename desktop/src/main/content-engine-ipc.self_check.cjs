@@ -414,7 +414,7 @@ async function main() {
     const sent = [];
     const notifications = [];
     const calls = [];
-    let providerPreflightCalls = 0;
+    const providerPreflightCalls = [];
     const shown = [];
     const opened = [];
     const diagnosticOperations = [];
@@ -648,6 +648,18 @@ async function main() {
           answers,
           prefill: { title: "室内清洁机器人展示", answers: { productName: "清洁机器人" } },
           draft: { revision: 0 }
+        };
+      },
+      createGuidedAutoMixSupplementalImageV2: async (input) => {
+        calls.push(["createGuidedAutoMixSupplementalImageV2", input]);
+        return {
+          operation_id: "guided_auto_mix_supplemental_image_04040404040404040404040404040404",
+          session_id: input.sessionId,
+          script_revision: input.scriptRevision,
+          status: "submitted",
+          estimated_image_calls: 1,
+          provider: "apimart",
+          paid_call_performed: true
         };
       },
       getAutoMixPlanV2: async (options) => {
@@ -960,7 +972,8 @@ async function main() {
       getMainWindow: () => mainWindow,
       ipcMain,
       notificationFactory,
-      beforeProviderWork: async () => { providerPreflightCalls += 1; }
+      providerCapabilityStatus: (capability) => capability === "volcengine_ark",
+      beforeProviderWork: async (capabilities) => { providerPreflightCalls.push(capabilities); }
     });
     assert.deepEqual(
       [...handlers.keys()].sort(),
@@ -980,6 +993,17 @@ async function main() {
         code: ""
       }
     });
+    const managedArkStatus = await handlers.get(CONTENT_ENGINE_CHANNELS.volcengineArkStatus)({}, {});
+    assert.deepEqual(managedArkStatus, {
+      ok: true,
+      data: {
+        configured: true,
+        secureStorageAvailable: true,
+        maskedKey: "",
+        managed: true,
+        code: ""
+      }
+    }, "managed provider status must reflect the current gateway capability without reading a local key");
 
     const restartResult = await handlers.get(CONTENT_ENGINE_CHANNELS.restart)();
     assert.deepEqual(restartResult, statusResult);
@@ -1149,11 +1173,32 @@ async function main() {
       assert.equal(response.ok, true);
       assert.equal(response.data.status, expectedStatus);
     }
+    providerPreflightCalls.length = 0;
     const providerTaskId = task().task_id;
     listedTaskItems = [task({ task_id: providerTaskId, task_type: "narrated_batch_v1" })];
     const providerResume = await handlers.get(CONTENT_ENGINE_CHANNELS.resumeTask)({}, { taskId: providerTaskId });
     assert.equal(providerResume.ok, true);
-    assert.equal(providerPreflightCalls, 1, "provider-dependent resume must run the gateway preflight");
+    assert.deepEqual(
+      providerPreflightCalls,
+      [["volcengine_ark", "volcengine_asr", "volcengine_tts"]],
+      "narrated production must require only its Ark, ASR and TTS capabilities"
+    );
+    listedTaskItems = [task({ task_id: providerTaskId, task_type: "creative_cover" })];
+    const coverResume = await handlers.get(CONTENT_ENGINE_CHANNELS.resumeTask)({}, { taskId: providerTaskId });
+    assert.equal(coverResume.ok, true);
+    assert.deepEqual(
+      providerPreflightCalls.at(-1),
+      ["apimart"],
+      "cover resume must check APIMart instead of the narrated provider set"
+    );
+    listedTaskItems = [task({ task_id: providerTaskId, task_type: "auto_mix_v2_generation" })];
+    const autoMixResume = await handlers.get(CONTENT_ENGINE_CHANNELS.resumeTask)({}, { taskId: providerTaskId });
+    assert.equal(autoMixResume.ok, true);
+    assert.deepEqual(
+      providerPreflightCalls.at(-1),
+      ["volcengine_ark", "volcengine_asr", "volcengine_tts"],
+      "other provider-backed resumes must keep the managed gateway preflight"
+    );
 
     listedTaskItems = [task({
       task_id: "task_33333333333333333333333333333333",
@@ -1908,6 +1953,20 @@ async function main() {
         }
       }]
     );
+    const supplementalImage = await handlers.get(
+      CONTENT_ENGINE_CHANNELS.createGuidedAutoMixSupplementalImageV2
+    )({ sender: mainWindow.webContents }, {
+      sessionId: liveGuidedSessionId,
+      scriptRevision: 1,
+      draftHash: "a".repeat(64),
+      confirmPaidCalls: true,
+      clickToken: autoMixClickToken(
+        CONTENT_ENGINE_CHANNELS.createGuidedAutoMixSupplementalImageV2,
+        "34343434-3434-4434-8434-343434343434"
+      )
+    });
+    assert.equal(supplementalImage.ok, true);
+    assert.deepEqual(providerPreflightCalls.at(-1), ["apimart"], "supplemental image submission must require APIMart");
     const replayedAutoMixV2 = await handlers.get(
       CONTENT_ENGINE_CHANNELS.createAutoMixV2
     )({ sender: mainWindow.webContents }, {
@@ -2752,6 +2811,7 @@ async function main() {
       calls.find((call) => call[0] === "getPackagingCostEstimate" && call[3] === 5),
       ["getPackagingCostEstimate", [], "ai_generate", 5]
     );
+    const providerCallsBeforeLocalPackaging = providerPreflightCalls.length;
     const packaged = await handlers.get(
       CONTENT_ENGINE_CHANNELS.packageGeneratedVideos
     )({}, {
@@ -2762,6 +2822,11 @@ async function main() {
       reuseCover: true
     });
     assert.equal(packaged.data.taskId, packagingTaskId);
+    assert.equal(
+      providerPreflightCalls.length,
+      providerCallsBeforeLocalPackaging,
+      "local-frame packaging must not require a cloud image capability"
+    );
     assert.deepEqual(
       calls.find((call) => call[0] === "packageGeneratedVideos").slice(1),
       [[generatedVideoId], {
@@ -2855,6 +2920,7 @@ async function main() {
       CONTENT_ENGINE_CHANNELS.regenerateCover
     )({}, { candidateId: generatedVideoId });
     assert.equal(coverTask.data.taskId, packagingTaskId);
+    assert.deepEqual(providerPreflightCalls.at(-1), ["apimart"], "AI cover regeneration must require APIMart");
 
     for (const [channel, payload, expectedCode] of [
       [CONTENT_ENGINE_CHANNELS.listPackagingPresets, { kind: "movie" }, "invalid_packaging_kind"],

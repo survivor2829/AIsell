@@ -625,6 +625,11 @@ async function main() {
   assert.equal(preload.includes("deepseek-api:read"), false, "preload must not expose a Key read IPC");
   const renderer = fs.readFileSync(path.join(__dirname, "../renderer/App.tsx"), "utf8");
   assert.doesNotMatch(renderer, /active === "api-key"/u, "the customer shell must not expose a local key page");
+  assert.match(
+    renderer,
+    /if \(!license\?\.authorized \|\| !sessionEntered\)[\s\S]{0,400}xiaoxiDeepSeekApi\.status\(\)[\s\S]{0,400}\[license\?\.authorized, sessionEntered\]/u,
+    "managed cloud readiness must refresh after the first authorized session is entered"
+  );
   for (const relativeFile of ["../../scripts/build-portable-release.cjs", "../../scripts/portable-release.self_check.cjs", "../../scripts/check-clean-runtime.cjs"]) {
     const releaseGuard = fs.readFileSync(path.join(__dirname, relativeFile), "utf8");
     assert.match(releaseGuard, /deepseek-api-key\.bin/u, `${relativeFile} must keep the encrypted runtime Key outside portable packages`);
