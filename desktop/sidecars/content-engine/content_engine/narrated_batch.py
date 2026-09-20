@@ -31,7 +31,7 @@ VERSION = 1
 SAFE_FAST_SPEECH_MS_PER_CHAR = 180
 VISUAL_FACTS_VERSION = 5
 VISUAL_FACT_MAX_OUTPUT_TOKENS = 8192
-CLAIM_AUDIT_VERSION = 14
+CLAIM_AUDIT_VERSION = 15
 REPORTED_SPEECH_REVIEW_VERSION = 1
 CLOSING_ACTION_REVIEW_VERSION = 1
 SEMANTIC_REVIEW_VERSION = 1
@@ -404,6 +404,31 @@ class NarratedBatchDomain:
                      r"越过(?:了)?|绕过(?:了)?|避开(?:了)?", value):
             return "成功或过程结果需要结构化连续证据"
         return None
+
+    @classmethod
+    def _confirmed_user_fact_is_locally_bindable(cls, text):
+        """Allow only explicit user-owned business terms to skip claim audit."""
+        value = re.sub(r"\s+", "", str(text or ""))
+        if not value or cls._sparse_claim_risk(value):
+            return False
+        if re.search(r"认证|资质|证书|许可|国家级|官方授权|权威(?:认证|认可)|获奖", value):
+            return False
+        if re.search(
+                r"(?:画面|视频|镜头|图中|屏幕)(?:中|内|里|上)?[^，。！？；]{0,24}"
+                r"(?:正在|清洗|移动|运行|操作|演示|避障|通过|完成|到达|进入|离开)|"
+                r"(?:机器人|设备|机器)(?:正在|正)[^，。！？；]{0,24}"
+                r"(?:清洗|移动|运行|操作|演示|避障|工作)", value):
+            return False
+        business_terms = re.compile(
+            r"(?:\d{1,2}月(?:\d{1,2}日)?|\d{1,2}日|星期[一二三四五六日天]|周[一二三四五六日天]|"
+            r"第\d+期|每(?:天|周|月|年)|\d{1,2}(?::\d{2}|点)|"
+            r"\d+(?:\.\d+)?元|价格|定价|报名费|学费|费用|优惠|"
+            r"退款|退费|原路退回|复训|免费学习|不限次数|"
+            r"课程|培训|实训|报名|名额|小班|门票|"
+            r"(?:提供|包含|新增|安排|开设)[^，。！？；]{0,30}(?:服务|课程|培训|复训|实训)|"
+            r"(?:服务|课程|培训|复训|实训)(?:内容|政策|安排|期限|地点))"
+        )
+        return bool(business_terms.search(value))
 
     @classmethod
     def _advice_only_script_issue(cls, title, narration):
@@ -2473,13 +2498,14 @@ class NarratedBatchDomain:
             return str(candidate.get('narration') or '')
         return narrated_brief.expression(b) if narrated_brief.enabled(b) else ''
 
-    @staticmethod
-    def _bind_confirmed_user_statement(source, statement, fixed):
+    @classmethod
+    def _bind_confirmed_user_statement(cls, source, statement, fixed):
         quote = str(fixed.get('quote') or '')
         fact = next((item for item in source.get('facts', [])
                      if item.get('shot_id') and item.get('fact_id')), None)
         if (source.get('user_context_authority') != 'confirmed_script'
                 or statement.get('kind') != 'fact' or not quote
+                or not cls._confirmed_user_fact_is_locally_bindable(quote)
                 or quote not in source.get('user_context', '') or fact is None):
             return False
         statement.update(risk_scope='user_context', supported=True,
@@ -2887,8 +2913,12 @@ class NarratedBatchDomain:
                 confirmed_user_statement = self._bind_confirmed_user_statement(source, statement, fixed)
                 if (not confirmed_user_statement and statement.get("kind") == "fact"
                         and statement.get("supported") is True):
+                    if (statement.get("risk_scope") == "user_context"
+                            and source.get("user_context_authority") == "confirmed_script"
+                            and not self._confirmed_user_fact_is_locally_bindable(fixed["quote"])):
+                        program_reason = "该表述不能只以用户确认稿自证，须由对应素材或独立来源支持"
                     if statement.get("risk_scope") not in {"direct_observation", "recorded_speech", "source_provenance", "user_context"}:
-                        program_reason = "当前只有稀疏取证帧，不能支持" + {
+                        program_reason = program_reason or "当前只有稀疏取证帧，不能支持" + {
                             "continuity": "全称、速度或连续过程结论",
                             "absence": "未发生事件或跨时段否定结论",
                             "causal": "因果结论",

@@ -775,6 +775,29 @@ class NarratedBatchTests(unittest.TestCase):
                                 and item["evidence"][0]["user_quote"] == item["quote"]
                                 for item in statements))
 
+        risky_confirmed_claims = {
+            "capability": "这款机器人能够自动完成整层清洁。",
+            "continuity": "这款机器人始终稳定运行。",
+            "causal": "使用这款机器人，因此保洁成本下降。",
+            "outcome": "这款机器人已经成功完成整层清洁。",
+            "certification": "这款机器人已经通过国家级安全认证。",
+            "depicted_action": "画面中的机器人正在清洗地面。",
+        }
+        for label, claim in risky_confirmed_claims.items():
+            with self.subTest(confirmed_claim=label):
+                risky = {**candidate, "candidate_id": f"candidate-{label}",
+                         "title": claim, "narration": claim,
+                         "_confirmed_script": {"narration": claim},
+                         "phrases": [{"text": claim, "shot_ids": [shot["segment_id"]]}]}
+                risky_state = domain._load(self.create(1)["batch_id"])
+                domain._active_batch = risky_state
+                with patch.object(domain, "_claim_frames", return_value=([], [])), \
+                        patch.object(domain, "_cloud", side_effect=ContentEngineError(
+                            "cloud_request_failed", "高风险确认稿必须进入云端证据审核")) as risky_cloud:
+                    with self.assertRaises(ContentEngineError):
+                        domain._grounded_claim_review([risky], risky_state, {"rejections": []})
+                self.assertEqual(1, risky_cloud.call_count)
+
         generated = {key: value for key, value in candidate.items() if key != "_user_supplied"}
         generated["candidate_id"] = "candidate-generated"
         fresh_state = domain._load(self.create(1)["batch_id"])
