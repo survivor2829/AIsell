@@ -160,6 +160,64 @@ class NarratedProductionTests(unittest.TestCase):
         self.assertEqual('narrated_planning_outcome_unknown', error.exception.code)
         self.assertEqual(1, sum(kind == 'render' for kind, _ in self.events))
 
+    def test_known_voice_failure_resumes_from_accepted_review_checkpoint(self):
+        task = self.s.confirm_narrated_script(self.request(first_count=1))
+        state = self.domain._load(self.batch['batch_id'])
+        for candidate in state['candidates']:
+            candidate['status'] = 'needs_review'
+        self.domain._store(state)
+
+        reviewed = []
+        rendered = []
+        failed_candidate_id = self.options[1]['candidate_id']
+        voice_available = False
+
+        def accept_review(candidate, batch):
+            reviewed.append(candidate['candidate_id'])
+            candidate.update(review_version=2, status='planned')
+
+        def render_after_review(task_id, batch, candidate, index, total):
+            nonlocal voice_available
+            self.domain._verify_confirmed_script(batch, candidate)
+            rendered.append(candidate['candidate_id'])
+            if candidate['candidate_id'] == failed_candidate_id and not voice_available:
+                self.domain.db.execute(
+                    "UPDATE content_tasks SET status='paused',error_code=? WHERE id=?",
+                    ('auto_mix_voice_request_failed', task_id),
+                )
+                raise ContentEngineError('auto_mix_voice_request_failed', '云端配音暂时不可用')
+            candidate.update(status='completed', generated_video_id=f'fake-{index}')
+
+        with patch.object(NarratedBatchDomain, '_review_edit', side_effect=accept_review), \
+             patch.object(NarratedBatchDomain, '_render_candidate', side_effect=render_after_review):
+            self.s.run_creative_task(task['task_id'])
+            interrupted = self.domain._load(self.batch['batch_id'])
+            failed = next(c for c in interrupted['candidates'] if c['candidate_id'] == failed_candidate_id)
+            checkpoint = {
+                'candidate_id': failed['candidate_id'],
+                'review_version': failed['review_version'],
+                'shots': copy.deepcopy(failed['shots']),
+                'phrases': copy.deepcopy(failed['phrases']),
+            }
+            self.assertEqual('planned', failed['status'])
+            self.assertEqual('queued', interrupted['production_jobs'][1]['status'])
+            self.assertEqual('needs_attention', interrupted['status'])
+
+            voice_available = True
+            self.s.continue_narrated_batch(self.batch['batch_id'])
+            self.s.run_creative_task(task['task_id'])
+
+        result = self.domain._load(self.batch['batch_id'])
+        resumed = next(c for c in result['candidates'] if c['candidate_id'] == failed_candidate_id)
+        self.assertEqual('completed', result['status'])
+        self.assertEqual(checkpoint['candidate_id'], resumed['candidate_id'])
+        self.assertEqual(checkpoint['review_version'], resumed['review_version'])
+        self.assertEqual(checkpoint['shots'], resumed['shots'])
+        self.assertEqual(checkpoint['phrases'], resumed['phrases'])
+        self.assertEqual(1, reviewed.count(failed_candidate_id), '已通过的付费审核不得在续跑时重复调用。')
+        self.assertEqual(1, rendered.count(self.options[0]['candidate_id']), '已完成作品不得重复渲染。')
+        self.assertEqual(2, rendered.count(failed_candidate_id), '只应重试中断的本地/配音制作步骤。')
+
     def test_explicit_continue_retries_invalid_planning_but_not_completed_work(self):
         self.failure = 'cloud_response_invalid'
         result = self.run_selection(self.request(first_count=1))
