@@ -422,10 +422,10 @@ class NarratedProductionTests(unittest.TestCase):
                                  'evidence': [], 'reason': '画面无法证明用户提供的活动信息'}
                     source = {'user_context_authority': 'confirmed_script', 'user_context': edited_text,
                               'facts': [{'shot_id': 'shot-1', 'fact_id': 'fact-1'}]}
-                    self.assertTrue(self.domain._bind_confirmed_user_statement(
+                    self.assertFalse(self.domain._bind_confirmed_user_statement(
                         source, statement, {'quote': edited_text}))
-                    self.assertEqual('user_context', statement['risk_scope'])
-                    self.assertEqual(edited_text, statement['evidence'][0]['user_quote'])
+                    self.assertEqual('outcome', statement['risk_scope'])
+                    self.assertEqual([], statement['evidence'])
                     self.assertEqual(edited_text, ''.join(p['text'] for p in option['phrases']))
                     self.assertEqual([p['shot_ids'] for p in phrases], [p['shot_ids'] for p in option['phrases']])
                     for index in (0, 2):

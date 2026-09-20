@@ -2440,6 +2440,7 @@ class CreativeWorkbenchTests(unittest.TestCase):
             original["generated_video_id"],
             {"packaging_mode": "auto", "reuse_cover": True},
         )
+        self.assertEqual([], self.service.get_task(task["task_id"])["required_capabilities"])
         self.assertEqual("completed", self._run(task["task_id"])["status"])
         latest = self.service.connection.execute(
             """
@@ -2473,6 +2474,10 @@ class CreativeWorkbenchTests(unittest.TestCase):
                 "cover_mode": "ai_generate",
                 "reuse_cover": False,
             },
+        )
+        self.assertEqual(
+            ["apimart"],
+            self.service.get_task(packaging["task_id"])["required_capabilities"],
         )
 
         paused = self._run(packaging["task_id"])

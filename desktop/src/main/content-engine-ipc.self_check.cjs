@@ -1199,6 +1199,31 @@ async function main() {
       ["volcengine_ark", "volcengine_asr", "volcengine_tts"],
       "other provider-backed resumes must keep the managed gateway preflight"
     );
+    const providerCallsBeforeLocalPackagingResume = providerPreflightCalls.length;
+    listedTaskItems = [task({
+      task_id: providerTaskId,
+      task_type: "creative_packaging",
+      required_capabilities: []
+    })];
+    const localPackagingResume = await handlers.get(CONTENT_ENGINE_CHANNELS.resumeTask)({}, { taskId: providerTaskId });
+    assert.equal(localPackagingResume.ok, true);
+    assert.equal(
+      providerPreflightCalls.length,
+      providerCallsBeforeLocalPackagingResume,
+      "local packaging resume must remain gateway-free"
+    );
+    listedTaskItems = [task({
+      task_id: providerTaskId,
+      task_type: "creative_packaging",
+      required_capabilities: ["apimart"]
+    })];
+    const aiPackagingResume = await handlers.get(CONTENT_ENGINE_CHANNELS.resumeTask)({}, { taskId: providerTaskId });
+    assert.equal(aiPackagingResume.ok, true);
+    assert.deepEqual(
+      providerPreflightCalls.at(-1),
+      ["apimart"],
+      "AI-cover packaging resume must require APIMart only"
+    );
 
     listedTaskItems = [task({
       task_id: "task_33333333333333333333333333333333",

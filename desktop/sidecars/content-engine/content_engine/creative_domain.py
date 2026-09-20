@@ -8520,6 +8520,7 @@ class CreativeDomain:
                 "generated_video_not_ready", "Only completed videos can be repackaged."
             )
         created_ids = []
+        required_capabilities = set()
         with self.database.transaction() as connection:
             task_id = self._create_task("creative_packaging", {})["task_id"]
             now = self._now()
@@ -8555,6 +8556,11 @@ class CreativeDomain:
                     index=packaging_index,
                     options=validated,
                 )
+                if (
+                    (recipe.get("packaging") or {}).get("cover", {}).get("mode")
+                    == "ai_generate"
+                ):
+                    required_capabilities.add("apimart")
                 if reuse_cover and recipe.get("packaging"):
                     recipe["packaging"]["cover"].update(
                         {
@@ -8587,6 +8593,7 @@ class CreativeDomain:
             payload = {
                 "generated_video_ids": created_ids,
                 "source_generated_video_ids": [row["id"] for row in source_rows],
+                "required_capabilities": sorted(required_capabilities),
             }
             connection.execute(
                 "UPDATE content_tasks SET payload_json = ?, updated_at = ? WHERE id = ?",
@@ -11092,6 +11099,15 @@ class CreativeDomain:
             task_payload = {}
         if isinstance(task_payload, dict) and task_payload.get("project_id"):
             result["project_id"] = str(task_payload["project_id"])
+        if isinstance(task_payload, dict) and isinstance(
+            task_payload.get("required_capabilities"), list
+        ):
+            result["required_capabilities"] = [
+                capability
+                for capability in task_payload["required_capabilities"]
+                if capability
+                in {"apimart", "volcengine_ark", "volcengine_asr", "volcengine_tts"}
+            ]
         if (
             row["task_type"] in {
                 "auto_mix_v2_generation",

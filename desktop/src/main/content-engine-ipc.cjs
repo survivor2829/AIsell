@@ -119,11 +119,18 @@ const NARRATED_PROVIDER_CAPABILITIES = Object.freeze([
   "volcengine_ark", "volcengine_asr", "volcengine_tts"
 ]);
 
-function providerCapabilitiesForTask(taskType) {
+function providerCapabilitiesForTask(task = {}) {
+  const taskType = task?.task_type;
+  if (Array.isArray(task?.required_capabilities)) {
+    return [...new Set(task.required_capabilities.filter((capability) =>
+      ["apimart", "volcengine_ark", "volcengine_asr", "volcengine_tts"].includes(capability)
+    ))];
+  }
   if (taskType === "narrated_batch_v1") return NARRATED_PROVIDER_CAPABILITIES;
   if (["creative_cover", "guided_auto_mix_supplemental_image"].includes(taskType)) {
     return ["apimart"];
   }
+  if (taskType === "creative_packaging") return [];
   if (isProviderTaskType(taskType)) return NARRATED_PROVIDER_CAPABILITIES;
   return [];
 }
@@ -2597,7 +2604,7 @@ function registerContentEngineIpc(options = {}) {
   handle(CONTENT_ENGINE_CHANNELS.resumeTask, async (payload) => {
     const taskId = validateId(payload.taskId, "task");
     const task = await controller.getTask(taskId);
-    const requiredCapabilities = providerCapabilitiesForTask(task?.task_type);
+    const requiredCapabilities = providerCapabilitiesForTask(task);
     if (requiredCapabilities.length) await options.beforeProviderWork?.(requiredCapabilities);
     return publicTask(await controller.resumeTask(taskId));
   });
