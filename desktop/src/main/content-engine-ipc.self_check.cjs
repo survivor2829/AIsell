@@ -2983,6 +2983,22 @@ async function main() {
       error: "媒体分析组件当前不可用，请安装或恢复组件后重试。"
     });
     assert.equal(JSON.stringify(unavailableCapability).includes("must-not-leak"), false);
+    assert.deepEqual(publicError(Object.assign(
+      new Error("当前不重复可用画面约 145 秒，按每条至少 60 秒最多可制作 2 条；请减少数量或补充素材。"),
+      { code: "narrated_insufficient_unique_footage" }
+    )), {
+      ok: false,
+      code: "narrated_insufficient_unique_footage",
+      error: "当前不重复可用画面约 145 秒，按每条至少 60 秒最多可制作 2 条；请减少数量或补充素材。"
+    });
+    assert.deepEqual(publicError(Object.assign(
+      new Error("C:\\must-not-leak\\private.mp4"),
+      { code: "narrated_insufficient_unique_footage" }
+    )), {
+      ok: false,
+      code: "narrated_insufficient_unique_footage",
+      error: "不重复可用画面不足，请减少成片数量、降低最低时长或补充素材。"
+    });
     assert.deepEqual(publicError(Object.assign(new Error("private provider detail"), {
       code: "provider_gateway_unavailable"
     })), {

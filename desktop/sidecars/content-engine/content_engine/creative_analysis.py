@@ -2053,7 +2053,8 @@ class FFmpegCreativeAnalyzer:
                 output[name].append(line)
                 if sum(map(len, output[name])) > 100_000:
                     output[name] = output[name][-100:]
-                last_activity[0] = time.monotonic()
+                if name == "stdout":
+                    last_activity[0] = time.monotonic()
 
         def watch_inactivity():
             limit = max(1, float(inactivity_timeout))

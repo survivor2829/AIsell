@@ -770,6 +770,12 @@ function publicError(error) {
     let message = PUBLIC_ERRORS[suppliedCode];
     const providerMessage = typeof error?.message === "string" ? error.message : "";
     if (suppliedCode === "narrated_brief_invalid") message = safePublicText(providerMessage, 500) || message;
+    const footage = suppliedCode === "narrated_insufficient_unique_footage"
+      ? providerMessage.match(/^当前不重复可用画面约 ([0-9]{1,9}) 秒，按每条至少 ([0-9]{1,9}) 秒最多可制作 ([0-9]{1,6}) 条；请减少数量或补充素材。$/u)
+      : null;
+    if (footage && footage[0] === providerMessage) {
+      message = `当前不重复可用画面约 ${footage[1]} 秒，按每条至少 ${footage[2]} 秒最多可制作 ${footage[3]} 条；请减少数量或补充素材。`;
+    }
     // Recognize only our adapter's complete fixed messages; expose digits, never provider text.
     const businessCode = suppliedCode === "cloud_request_rejected"
       ? providerMessage.match(/^火山语音拒绝本次合成（代码 (-?[0-9]{1,10})），请检查音色权限、服务开通状态与额度。$/u)

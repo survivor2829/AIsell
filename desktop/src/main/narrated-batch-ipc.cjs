@@ -34,6 +34,7 @@ const ERRORS = {
   narrated_duplicate: "这条方案与已有作品过于相似，请更换镜头或顺序。",
   narrated_copy_too_long: "口播与可用画面时长不匹配，需要调整内容和镜头。",
   narrated_duration_too_short: "口播或相关镜头不足设定的最短时长，需要补充内容后再制作。",
+  narrated_insufficient_unique_footage: "不重复可用画面不足，请减少成片数量、降低最低时长或补充素材。",
   invalid_narrated_shots: "请选择当前分析中的有效镜头。",
   invalid_narration: "请填写 2400 字以内的解说。",
   narrated_edit_mismatch: "解说无法对应当前镜头，请缩短解说或更换镜头。",

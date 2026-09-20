@@ -62,6 +62,17 @@ class CreativeVisualSignalTests(unittest.TestCase):
         self.assertEqual("analysis_stalled", error.exception.code)
         self.assertLess(time.monotonic() - started, 5)
 
+        stderr_only = (
+            "import sys,time\n"
+            "for _ in range(12):\n"
+            " print('diagnostic', file=sys.stderr, flush=True); time.sleep(.2)\n"
+        )
+        with self.assertRaises(ContentEngineError) as stderr_error:
+            FFmpegCreativeAnalyzer._command_with_inactivity_watchdog(
+                [sys.executable, "-c", stderr_only], 1
+            )
+        self.assertEqual("analysis_stalled", stderr_error.exception.code)
+
     def test_local_frame_evidence_detects_black_blur_and_real_visual_content(self):
         black = FFmpegCreativeAnalyzer._frame_visual_evidence(bytes(64 * 64))
         blurred = FFmpegCreativeAnalyzer._frame_visual_evidence(
