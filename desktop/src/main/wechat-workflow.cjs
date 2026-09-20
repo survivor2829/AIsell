@@ -83,6 +83,8 @@ function createWechatWorkflowController(options) {
   let lastReplyDiagnostic = "";
   let lastTaskStartKey = "";
   let lastTaskResultKey = "";
+  let lastQueueTransitionKey = "";
+  let replyActivated = false;
   let cycleStage = "idle";
   const log = (name, details, metadata) => options.logger?.event?.("wechat_workflow", name, details, { ...metadata, trace: true });
   const getAccount = () => String(options.getAccount?.() || "");
@@ -375,7 +377,7 @@ function createWechatWorkflowController(options) {
       return;
     }
     if (available.length) {
-      phase = nextTask() ? "queued" : "scheduled";
+      phase = nextTask() ? "working" : "scheduled";
       return;
     }
     if (store.replyEnabled !== false && accountRecipients().length && !replyError) {
@@ -453,14 +455,17 @@ function createWechatWorkflowController(options) {
     if (!enabled || mutating) return;
     const readyTask = nextTask();
     const people = store.replyEnabled === false ? [] : accountRecipients();
-    // Give the inbox one serialized observation before each finite task step.
-    // This prevents the first incoming message from waiting behind a whole
-    // touch batch while the coordinator still guarantees one WeChat operation.
-    if (people.length && options.reply?.runWorkflowStep && !replyError) {
+    // Finite work has absolute priority. Automatic reply is checked only after
+    // every task that is due now has completed or been safely isolated.
+    if (!readyTask && people.length && options.reply?.runWorkflowStep && !replyError) {
       cycleStage = "reply_step";
       const replyStarted = Date.now();
       phase = "replying";
       replyStatus = "正在检查客户消息";
+      if (!replyActivated) {
+        replyActivated = true;
+        log("reply.activated", { stage: cycleStage, reason: "finite_tasks_drained" }, { level: "info", code: "reply_activated" });
+      }
       emit();
       const reply = await options.reply.runWorkflowStep({
         recipients: people, accountName: getAccount(), isEnabled: () => enabled,
@@ -475,8 +480,7 @@ function createWechatWorkflowController(options) {
       lastReplyDiagnostic = replyReason;
       replyStatus = reply.error || reply.progressText || (reply.handled ? replyStatus : "本次未发现待回复消息");
       if (reply.handled || reply.busy || reply.status === "busy") return;
-      if (readyTask) replyStatus = "待当前可执行任务完成后接待客户";
-    } else if (!replyError) {
+    } else if (!readyTask && !replyError) {
       replyError = people.length ? "自动回复执行器不可用" : "";
       replyStatus = people.length ? "自动回复执行器不可用" : "暂无接待客户";
       if (people.length) log("reply.blocked", { stage: "reply_step", reason: "executor_unavailable" }, { level: "warn", code: "executor_unavailable" });
@@ -484,6 +488,7 @@ function createWechatWorkflowController(options) {
     if (!enabled || mutating) return;
     const task = nextTask();
     if (!task) { currentTaskId = null; settleQueue(); emit(); return; }
+    replyActivated = false;
     const executor = executors[task.type];
     cycleStage = "task_prepare";
     const startKey = `${task.id}:${task.progress.done}`;
@@ -518,7 +523,12 @@ function createWechatWorkflowController(options) {
       if (task.progress.done > 0) task.startedAt ||= new Date(now()).toISOString();
       task.error = result.error || "";
       task.status = result.status;
-      const reason = result.reasonCode || (result.status === "needs_attention"
+      const pendingDiagnosticReason = String(result?.result?.reason || "");
+      const controlledPendingReason = result.status === "pending"
+        && (pendingDiagnosticReason === "wechat_operation_busy" || /^message_input_failed_wechat_user_active(?:_attempts_[1-9]\d*)?$/u.test(pendingDiagnosticReason))
+        ? pendingDiagnosticReason
+        : "";
+      const reason = result.reasonCode || controlledPendingReason || (result.status === "needs_attention"
         ? workflowFailureReason(result.error, "task_needs_attention")
         : result.waitingReason === "touch_safety_interval" ? "touch_safety_interval" : "task_step_returned");
       if (task.status === "needs_attention") {
@@ -529,11 +539,16 @@ function createWechatWorkflowController(options) {
         task.completedAt = new Date(now()).toISOString();
         task.lastCompletedDate = localDate(now());
       }
-      const retryAfterMs = Number(result.retryAfterMs);
+      const controlledWait = reason === "wechat_operation_busy" || /^message_input_failed_wechat_user_active(?:_attempts_[1-9]\d*)?$/u.test(reason);
+      const retryAfterMs = Number(result.retryAfterMs || (result.status === "pending" && controlledWait ? (options.pollIntervalMs ?? 2500) : 0));
       if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
         task.notBefore = new Date(now()).getTime() + retryAfterMs;
-        if (result.waitingReason === "touch_safety_interval") task.waitingReason = result.waitingReason;
+        if (result.waitingReason === "touch_safety_interval" || controlledWait) task.waitingReason = result.waitingReason || reason;
         else delete task.waitingReason;
+        if (controlledWait) log("task.recovery_wait", {
+          task_kind: task.type, task_id: task.id, stage: cycleStage, reason, retry_after_ms: retryAfterMs,
+          recovery_action: "bounded_wait_then_retry"
+        }, { level: "info", code: reason });
       } else {
         delete task.notBefore;
         delete task.waitingReason;
@@ -548,6 +563,16 @@ function createWechatWorkflowController(options) {
       currentTaskId = null;
       settleQueue();
       persist();
+      const following = nextTask();
+      const transitionKey = JSON.stringify([task.id, task.status, task.progress?.done, following?.id || ""]);
+      if (transitionKey !== lastQueueTransitionKey) {
+        lastQueueTransitionKey = transitionKey;
+        log("queue.transition", {
+          stage: "task_settled", task_kind: task.type, task_id: task.id, task_status: task.status,
+          next_task_kind: following?.type || "", next_task_id: following?.id || "",
+          continue_to_next_task: Boolean(following), reply_eligible: !following && store.replyEnabled !== false && accountRecipients().length > 0
+        }, { level: "info", code: following ? "next_finite_task_ready" : "finite_tasks_drained" });
+      }
       emit();
     }
   }
@@ -567,7 +592,7 @@ function createWechatWorkflowController(options) {
       // final timer lands on the exact known deadline rather than polling past it.
       const poll = options.pollIntervalMs ?? 2500;
       const waitDelay = waiting ? Math.max(0, Number(waiting.notBefore) - new Date(now()).getTime()) : null;
-      schedule(waitDelay === null ? poll : Math.min(poll, waitDelay));
+      schedule(nextTask() ? 0 : waitDelay === null ? poll : Math.min(poll, waitDelay));
     }
   }
 
@@ -679,6 +704,49 @@ function createWechatWorkflowController(options) {
     return task;
   }
 
+  async function pauseWorkflow() {
+    enabled = false; clearTimeout(timer);
+    phase = inFlight ? "pausing" : "paused";
+    emit();
+    await inFlight;
+    await options.reply?.pauseWorkflow?.();
+    phase = "paused"; replyStatus = "已暂停"; emit();
+    return { ok: true, state: status() };
+  }
+
+  async function retrySkipped(id, contactIds) {
+    if (enabled) {
+      if (currentTaskId || nextTask()) throw new Error("当前有限任务正在执行，请等待当前步骤结束后再重试跳过联系人。");
+      await pauseWorkflow();
+    }
+    return serialize(() => {
+      assertPlanEditable();
+      const task = findTask(id);
+      if (task.type !== "touch" || typeof executors.touch?.retrySkippedWorkflowTask !== "function") throw new Error("这项任务没有可重试的跳过联系人。");
+      const retried = executors.touch.retrySkippedWorkflowTask(task, contactIds);
+      if (!retried?.ok) throw Object.assign(new Error(retried?.error || "跳过联系人未能重新加入。"), { code: retried?.blocked_reason });
+      task.progress = { done: retried.task.current_index, total: retried.task.total };
+      task.status = "pending";
+      task.error = "";
+      delete task.reasonCode;
+      delete task.completedAt;
+      delete task.lastCompletedDate;
+      delete task.notBefore;
+      delete task.waitingReason;
+      phase = "paused";
+      persist(); emit();
+      log("touch.skipped_requeued", {
+        stage: "retry_skipped", task_kind: task.type, task_id: task.id,
+        retried_count: Number(retried.retriedCount || 0), excluded_count: Number(retried.excludedCount || 0),
+        excluded_reasons: retried.excludedReasons || {}
+      }, { level: "info", code: "retry_skipped_requeued" });
+      return {
+        ok: true, state: status(), retriedCount: Number(retried.retriedCount || 0),
+        excludedCount: Number(retried.excludedCount || 0), excludedReasons: retried.excludedReasons || {}
+      };
+    });
+  }
+
   return {
     status, tick,
     refresh: () => {
@@ -739,22 +807,7 @@ function createWechatWorkflowController(options) {
       else if (task.status !== "completed" || task.repeat === "daily") task.status = "cancelled";
       persist(); emit(); return { ok: true, state: status() };
     }),
-    retrySkipped: (id, contactIds) => serialize(() => {
-      assertPlanEditable();
-      const task = findTask(id);
-      if (task.type !== "touch" || typeof executors.touch?.retrySkippedWorkflowTask !== "function") throw new Error("这项任务没有可重试的跳过联系人。");
-      const retried = executors.touch.retrySkippedWorkflowTask(task, contactIds);
-      if (!retried?.ok) throw Object.assign(new Error(retried?.error || "跳过联系人未能重新加入。"), { code: retried?.blocked_reason });
-      task.progress = { done: retried.task.current_index, total: retried.task.total };
-      task.status = "pending";
-      task.error = "";
-      delete task.reasonCode;
-      delete task.completedAt;
-      delete task.lastCompletedDate;
-      delete task.notBefore;
-      delete task.waitingReason;
-      persist(); emit(); return { ok: true, state: status(), retriedCount: retried.retriedCount };
-    }),
+    retrySkipped,
     resolveTouchUnknown: (id, resolution) => serialize(() => {
       assertPlanEditable();
       const task = findTask(id);
@@ -818,15 +871,7 @@ function createWechatWorkflowController(options) {
         throw failure;
       }
     },
-    pause: async () => {
-      enabled = false; clearTimeout(timer);
-      phase = inFlight ? "pausing" : "paused";
-      emit();
-      await inFlight;
-      await options.reply?.pauseWorkflow?.();
-      phase = "paused"; replyStatus = "已暂停"; emit();
-      return { ok: true, state: status() };
-    },
+    pause: pauseWorkflow,
     dispose: async () => {
       enabled = false; disposed = true; clearTimeout(timer);
       await inFlight;

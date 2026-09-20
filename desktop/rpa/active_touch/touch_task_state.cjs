@@ -210,6 +210,14 @@ function poisonedSearchCandidate(result, at = nowIso()) {
   };
 }
 
+function skippedRetryBlockedReason(result) {
+  if (result?.poisoned && typeof result.poisoned === "object") return "retry_skipped_poisoned_forbidden";
+  const status = String(result?.status || "");
+  if (RETRYABLE_SKIPPED_STATUSES.has(status)) return "";
+  if (["outcome_unknown", "outcome_unknown_skipped"].includes(status)) return "retry_skipped_outcome_unknown_forbidden";
+  return "retry_skipped_status_forbidden";
+}
+
 function skippedTaskSummary(task) {
   const breakdown = { identity: 0, ai_failed: 0, pre_send: 0, outcome_unknown: 0 };
   const records = [];
@@ -218,7 +226,13 @@ function skippedTaskSummary(task) {
     if (!category) continue;
     breakdown[category] += 1;
     const record = result.skip_record || recordSkippedResult({ ...result }, index).skip_record;
-    records.push({ ...record, status: result.status });
+    const retryBlockedReason = skippedRetryBlockedReason(result);
+    records.push({
+      ...record,
+      status: result.status,
+      retryable: !retryBlockedReason,
+      retry_blocked_reason: retryBlockedReason
+    });
   }
   return { breakdown, records };
 }
@@ -234,27 +248,41 @@ function retrySkippedResults(task, contactIds, retriedAt = nowIso()) {
     return { ok: false, blocked_reason: "retry_skipped_selection_invalid", error: "请选择要重试的跳过联系人" };
   }
   const results = Array.isArray(task?.results) ? task.results : [];
-  const selected = results.map((result, index) => ({ result, index }))
-    .filter(({ result }) => requested ? requested.has(String(result?.id || "")) : RETRYABLE_SKIPPED_STATUSES.has(String(result?.status || "")));
-  if (requested && selected.length !== requested.size) {
+  const requestedRows = results.map((result, index) => ({ result, index }))
+    .filter(({ result }) => requested ? requested.has(String(result?.id || "")) : Boolean(skipCategory(result?.status)));
+  if (requested && requestedRows.length !== requested.size) {
     return { ok: false, blocked_reason: "retry_skipped_selection_invalid", error: "所选联系人不在当前任务中" };
   }
-  if (!selected.length) return { ok: false, blocked_reason: "retry_skipped_empty", error: "当前没有可安全重试的跳过联系人" };
-  if (selected.some(({ result }) => ["outcome_unknown", "outcome_unknown_skipped"].includes(String(result?.status || "")))) {
+  if (requested && requestedRows.some(({ result }) => ["outcome_unknown", "outcome_unknown_skipped"].includes(String(result?.status || "")))) {
     return { ok: false, blocked_reason: "retry_skipped_outcome_unknown_forbidden", error: "发送结果未知的联系人只能先人工确认，不能直接重试" };
   }
-  if (selected.some(({ result }) => String(result?.status || "") === "sent_verified")) {
+  if (requested && requestedRows.some(({ result }) => String(result?.status || "") === "sent_verified")) {
     return { ok: false, blocked_reason: "retry_skipped_sent_verified_forbidden", error: "已核验发送的联系人不能重试" };
   }
-  if (selected.some(({ result }) => result?.poisoned && typeof result.poisoned === "object")) {
+  if (requested && requestedRows.some(({ result }) => result?.poisoned && typeof result.poisoned === "object")) {
     return { ok: false, blocked_reason: "retry_skipped_poisoned_forbidden", error: "该联系人命中过误点止损，当前任务内禁止重试" };
   }
-  if (results.some((result) => ["prepared", "clicked", "outcome_unknown"].includes(String(result?.status || "")))) {
-    return { ok: false, blocked_reason: "retry_skipped_outcome_unknown_forbidden", error: "当前任务仍有发送结果待确认，请先人工处理后再重试跳过联系人" };
-  }
-  if (selected.some(({ result }) => !RETRYABLE_SKIPPED_STATUSES.has(String(result?.status || "")))) {
+  if (requested && requestedRows.some(({ result }) => !RETRYABLE_SKIPPED_STATUSES.has(String(result?.status || "")))) {
     return { ok: false, blocked_reason: "retry_skipped_status_forbidden", error: "只能重试明确未发送的跳过联系人" };
   }
+
+  const selected = requestedRows.filter(({ result }) => !skippedRetryBlockedReason(result));
+  const excludedReasons = {};
+  if (!requested) {
+    for (const { result } of requestedRows) {
+      const reason = skippedRetryBlockedReason(result);
+      if (reason) excludedReasons[reason] = Number(excludedReasons[reason] || 0) + 1;
+    }
+  }
+  const excludedCount = Object.values(excludedReasons).reduce((sum, count) => sum + Number(count), 0);
+  if (!selected.length) return {
+    ok: false,
+    blocked_reason: "retry_skipped_empty",
+    error: "当前没有可安全重试的跳过联系人",
+    retriedCount: 0,
+    excludedCount,
+    excludedReasons
+  };
 
   for (const { result } of selected) {
     result.status = "generated";
@@ -275,7 +303,13 @@ function retrySkippedResults(task, contactIds, retriedAt = nowIso()) {
   task.completed_at = "";
   task.next_send_not_before = "";
   alignBatchWindow(task);
-  return { ok: true, task, retriedCount: selected.length };
+  return {
+    ok: true,
+    task,
+    retriedCount: selected.length,
+    excludedCount,
+    excludedReasons
+  };
 }
 
 function authorizeTask(task, authorizedAt = nowIso()) {

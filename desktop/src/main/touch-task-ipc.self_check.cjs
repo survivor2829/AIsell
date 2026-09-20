@@ -399,8 +399,9 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
     assert.equal(protectedRetry.blocked_reason, "retry_skipped_sent_verified_forbidden");
     assert.equal(fs.readFileSync(path.join(dir, "touch_task.json"), "utf8"), protectedBefore, "a rejected retry must not change any persisted task state");
     const oldSkipWhileUnknown = await retrySkipped({}, { contactIds: [retryableTask.results[0].id] });
-    assert.equal(oldSkipWhileUnknown.blocked_reason, "retry_skipped_outcome_unknown_forbidden",
-      "an older skipped contact must not move the cursor ahead of an unresolved send outcome");
+    assert.equal(oldSkipWhileUnknown.ok, true,
+      "an unresolved outcome must stay excluded without blocking a different contact that is proven unsent");
+    assert.equal(oldSkipWhileUnknown.task.results[1].status, "outcome_unknown");
     retryableTask.results[1].status = "outcome_unknown_skipped";
     retryableTask.results[1].awaiting_resolution = false;
 

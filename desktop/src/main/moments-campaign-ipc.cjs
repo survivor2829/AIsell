@@ -1263,7 +1263,7 @@ function createMomentsCampaignController(options = {}) {
         const emptySteps = state.processed_count > 0 ? 0 : Number(stored.empty_steps || 0) + 1;
         saveWorkflowProgress({ empty_steps: emptySteps });
         return emptySteps >= 3
-          ? response("pending", "", { retryAfterMs: MOMENTS_EMPTY_SCAN_RETRY_MS })
+          ? response("completed", "", { reasonCode: "moments_no_new_posts", result: { noWork: true, emptySteps } })
           : response("pending");
       }
       return response("needs_attention", state.last_reason || "moments_interaction_incomplete", {

@@ -512,6 +512,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         coordinator,
         dialog,
         logger,
+        passport: taskPassportStore,
         getMainWindow: () => mainWindow
       });
       momentsPublishController.initialize();

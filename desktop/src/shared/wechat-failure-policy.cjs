@@ -5,6 +5,9 @@ const FAILURE_CLASSIFICATIONS = Object.freeze(["environment", "recoverable", "bl
 const workflowPolicies = Object.freeze({
   touch_task_payload_incomplete: { classification: "blocker", attentionScope: "task" },
   moments_no_new_posts: { classification: "recoverable", attentionScope: "task" },
+  moments_interaction_incomplete: { classification: "recoverable", attentionScope: "task" },
+  moments_publish_pre_action_failed: { classification: "recoverable", attentionScope: "task" },
+  moments_publish_outcome_unknown_requires_resolution: { classification: "blocker", attentionScope: "global" },
   moments_workflow_config_invalid: { classification: "blocker", attentionScope: "task" },
   workflow_occurrence_date_invalid: { classification: "blocker", attentionScope: "task" },
   workflow_executor_unavailable: { classification: "blocker", attentionScope: "task" },
@@ -26,6 +29,7 @@ const workflowPolicies = Object.freeze({
   retry_skipped_task_running: { classification: "environment", attentionScope: "task" },
   retry_skipped_already_pending: { classification: "environment", attentionScope: "task" },
   retry_skipped_pause_timeout: { classification: "environment", attentionScope: "task" },
+  retry_skipped_empty: { classification: "recoverable", attentionScope: "task" },
   retry_skipped_outcome_unknown_forbidden: { classification: "blocker", attentionScope: "task" },
   retry_skipped_status_forbidden: { classification: "blocker", attentionScope: "global" },
   retry_skipped_poisoned_forbidden: { classification: "blocker", attentionScope: "task" },
@@ -45,7 +49,7 @@ for (const row of catalog) {
   if (existing && existing.classification !== row.classification) {
     throw new Error(`Conflicting WeChat failure classification: ${row.reason}`);
   }
-  reasonPolicies.set(row.reason, { classification: row.classification, attentionScope: "global" });
+  if (!existing) reasonPolicies.set(row.reason, { classification: row.classification, attentionScope: "global" });
   rulePolicies.set(row.id, { reason: row.reason, classification: row.classification });
 }
 

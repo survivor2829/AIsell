@@ -1548,9 +1548,9 @@ async function main() {
     await workflow.start();
     await workflow.tick();
     assert.equal(workflow.status().enabled, false, "an unknown Moments outcome must stop the whole workflow regardless of diagnostic text");
-    assert.equal(replyCalls, 1);
+    assert.equal(replyCalls, 0);
     await workflow.tick();
-    assert.equal(replyCalls, 1, "auto reply must remain stopped after an unknown Moments outcome");
+    assert.equal(replyCalls, 0, "auto reply must remain stopped after an unknown Moments outcome");
     await workflow.dispose();
     moments.dispose();
     fs.rmSync(unknownRoot, { recursive: true, force: true });
@@ -1588,9 +1588,9 @@ async function main() {
   await forcedGlobal.start();
   await forcedGlobal.tick();
   assert.equal(forcedGlobal.status().enabled, false, "requiresGlobalAttention must override every local reason whitelist entry");
-  assert.equal(forcedGlobalReplyCalls, 1);
+  assert.equal(forcedGlobalReplyCalls, 0);
   await forcedGlobal.tick();
-  assert.equal(forcedGlobalReplyCalls, 1);
+  assert.equal(forcedGlobalReplyCalls, 0);
   await forcedGlobal.dispose();
   fs.rmSync(forcedGlobalRoot, { recursive: true, force: true });
 
@@ -1638,22 +1638,15 @@ async function main() {
   await emptyScanWorkflow.start();
   await emptyScanWorkflow.tick();
   assert.equal(emptyScanWorkflow.status().tasks[0].status, "pending");
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    await emptyScanWorkflow.tick();
-    assert.equal(emptyScanWorkflow.status().tasks[0].status, "pending");
-  }
-  await emptyScanWorkflow.tick();
-  const backedOffEmptyScan = emptyScanWorkflow.status().tasks[0];
-  assert.equal(backedOffEmptyScan.status, "pending", "three empty scans must remain retryable instead of requiring attention");
-  assert.equal(backedOffEmptyScan.notBefore, emptyScanClock.getTime() + 30 * 60 * 1000);
-  assert.equal(backedOffEmptyScan.waitingReason, undefined, "empty-scan backoff must not masquerade as a touch safety interval");
-  const emptyScanFile = path.join(emptyScanRoot, "planned_runs", emptyScanAdded.task.id, `${emptyScanAdded.task.occurrenceDate}.json`);
-  assert.equal(JSON.parse(fs.readFileSync(emptyScanFile, "utf8")).empty_steps, 3);
-  emptyScanFingerprint = "n".repeat(64);
-  emptyScanClock = new Date(emptyScanClock.getTime() + 30 * 60 * 1000);
   await emptyScanWorkflow.tick();
   assert.equal(emptyScanWorkflow.status().tasks[0].status, "pending");
-  assert.equal(JSON.parse(fs.readFileSync(emptyScanFile, "utf8")).empty_steps, 0, "processing a new post must reset the persisted empty-scan counter");
+  await emptyScanWorkflow.tick();
+  assert.equal(emptyScanWorkflow.status().tasks[0].status, "pending");
+  await emptyScanWorkflow.tick();
+  const completedEmptyScan = emptyScanWorkflow.status().tasks[0];
+  assert.equal(completedEmptyScan.status, "completed", "three consecutive scans without new content must finish this interaction run");
+  const emptyScanFile = path.join(emptyScanRoot, "planned_runs", emptyScanAdded.task.id, `${emptyScanAdded.task.occurrenceDate}.json`);
+  assert.equal(JSON.parse(fs.readFileSync(emptyScanFile, "utf8")).empty_steps, 3);
   await emptyScanWorkflow.dispose();
 
   const directInteractionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-direct-interaction-"));

@@ -747,7 +747,13 @@ function createTouchWorkflow(options = {}) {
     const retried = retrySkippedResults(loadWorkflowTask(id), contactIds, now().toISOString());
     if (!retried.ok) return retried;
     const saved = saveTaskState(taskDir, retried.task);
-    return { ok: true, task: saved, retriedCount: retried.retriedCount };
+    return {
+      ok: true,
+      task: saved,
+      retriedCount: retried.retriedCount,
+      excludedCount: retried.excludedCount,
+      excludedReasons: retried.excludedReasons
+    };
   }
   return { prepareWorkflowTask, updateWorkflowTask, hasStartedWorkflowTask, runWorkflowStep, canRetryWorkflowTask, describeUnknownWorkflowTask, resolveUnknownWorkflowTask, acknowledgeUnknownWorkflowResolution,
     describeSkippedWorkflowTask, retrySkippedWorkflowTask,

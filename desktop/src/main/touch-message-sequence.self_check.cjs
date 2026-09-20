@@ -8,6 +8,7 @@ const { canContinueTouchResult } = require("./touch-message-sequence.cjs");
 const { normalizeTouchLink } = require("./touch-media.cjs");
 const { IMAGE_SEND_SCRIPT, sendWechatImage } = require("../../rpa/active_touch/wechat_image_send.dev.cjs");
 const { main: runCli } = require("../../rpa/active_touch/active_touch_cli.cjs");
+const { retrySkippedResults, skippedTaskSummary } = require("../../rpa/active_touch/touch_task_state.cjs");
 
 async function checkTouchMessageSequence() {
   assert.match(IMAGE_SEND_SCRIPT, /if \(-not \$existingDraft\.empty\)[\s\S]*Image-Keys "\^a" \$mainWindow[\s\S]*Image-Keys "\{BACKSPACE\}" \$mainWindow[\s\S]*Read-ImageDraft \$mainWindow\)\.empty[\s\S]*image_existing_draft_clear_failed/u,
@@ -342,6 +343,21 @@ async function checkTouchMessageSequence() {
   const poisonedRetry = poisonedWorkflow.retrySkippedWorkflowTask(poisonedRecord, [contact.id]);
   assert.equal(poisonedRetry.ok, false, "a poisoned candidate must never be retried within the same task");
   assert.equal(poisonedRetry.blocked_reason, "retry_skipped_poisoned_forbidden");
+  const mixedRetryTask = JSON.parse(fs.readFileSync(path.join(poisonedTaskDir, "touch_task.json"), "utf8"));
+  mixedRetryTask.results[1].status = "identity_skipped";
+  mixedRetryTask.results[1].skip_record = { contactId: mixedRetryTask.results[1].id, displayName: "安全跳过", index: 1, reasonCode: "search_result_identity_unverified" };
+  mixedRetryTask.status = "completed";
+  const mixedSummary = skippedTaskSummary(mixedRetryTask);
+  assert.equal(mixedSummary.records[0].retryable, false);
+  assert.equal(mixedSummary.records[0].retry_blocked_reason, "retry_skipped_poisoned_forbidden");
+  assert.equal(mixedSummary.records[1].retryable, true);
+  const mixedRetry = retrySkippedResults(mixedRetryTask);
+  assert.equal(mixedRetry.ok, true, "bulk retry must keep safe contacts moving when a poisoned row is present");
+  assert.equal(mixedRetry.retriedCount, 1);
+  assert.equal(mixedRetry.excludedCount, 1);
+  assert.deepEqual(mixedRetry.excludedReasons, { retry_skipped_poisoned_forbidden: 1 });
+  assert.equal(mixedRetry.task.results[0].status, "identity_skipped");
+  assert.equal(mixedRetry.task.results[1].status, "generated");
 
   const completedUnverified = JSON.parse(fs.readFileSync(path.join(unverifiedTaskDir, "touch_task.json"), "utf8"));
   const completedUnverifiedBytes = fs.readFileSync(path.join(unverifiedTaskDir, "touch_task.json"), "utf8");

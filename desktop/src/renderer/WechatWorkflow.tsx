@@ -23,7 +23,7 @@ export type WorkflowMedia = {
   files: Array<{ name: string; size: number; kind: "image" | "video" }>;
 };
 type TouchImage = { id: string; name: string; size?: number; preview: string };
-type TouchSkipRecord = { contactId: string; displayName: string; index: number; reasonCode: string; blockedReason: string; at: string; traceId: string; status: string };
+type TouchSkipRecord = { contactId: string; displayName: string; index: number; reasonCode: string; blockedReason: string; at: string; traceId: string; status: string; retryable?: boolean; retry_blocked_reason?: string };
 export type WorkflowTaskInput = {
   type: WorkflowTaskType;
   title?: string;
@@ -71,7 +71,7 @@ export type WorkflowState = {
   contactSync?: { running: boolean; stage: string; contactCount: number; error: string } | null;
   momentsProgress?: { stage: string; scanned: number; scrolled: number; liked: number; commented: number; skipped?: number; alreadyLiked?: number; skipReason?: string } | null;
 };
-export type WorkflowResult = { ok: boolean; state?: WorkflowState; task?: WorkflowTask; error?: string };
+export type WorkflowResult = { ok: boolean; state?: WorkflowState; task?: WorkflowTask; error?: string; retriedCount?: number; excludedCount?: number; excludedReasons?: Record<string, number> };
 export type WorkflowContact = { id: string; name: string; remark?: string; nickname?: string; wechatId?: string; allowed: boolean };
 
 declare global {
@@ -193,7 +193,10 @@ export function workflowStatusText(state: WorkflowState) {
   if (state.phase === "listening") return state.replyStatus || "监听新消息";
   if (task) return `正在${TASK_LABELS[task.type]}`;
   if (state.phase === "scheduled") return "等待已安排的执行时间";
-  if (state.phase === "queued") return "准备执行下一项";
+  if (state.phase === "queued") {
+    const next = state.tasks.find((item) => item.id === state.nextTaskId);
+    return next ? `正在继续${TASK_LABELS[next.type]}` : "正在继续执行";
+  }
   return state.replyEnabled !== false && state.recipients.length ? "监听新消息" : "正在整理本轮结果";
 }
 
@@ -390,8 +393,10 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const retrySkipped = async (task: WorkflowTask, contactIds?: string[]) => {
     if (!api) return;
     const result = await run(() => api.retrySkipped(task.id, contactIds));
-    const count = contactIds?.length || task.skipped_records?.filter((record) => ["identity_skipped", "ai_failed_skipped", "pre_send_skipped"].includes(record.status)).length || 0;
-    if (result?.ok) setNotice(`已重新加入 ${count} 位联系人；点击启动程序后继续。`);
+    if (result?.ok) {
+      const excluded = Number(result.excludedCount || 0);
+      setNotice(`已重新加入 ${Number(result.retriedCount || 0)} 位联系人${excluded ? `，另有 ${excluded} 位因安全原因未加入` : ""}；点击启动程序后一次补跑。`);
+    }
   };
 
   const taskRow = (task: WorkflowTask) => {
@@ -399,6 +404,9 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
     const isWaiting = task.id === state.waitingTaskId;
     const isCurrent = task.id === state.currentTaskId || isWaiting;
     const completedDaily = task.status === "completed" && task.repeat === "daily";
+    const retryableSkipped = task.skipped_records?.filter((record) => record.retryable === true) || [];
+    const canRetryWhileListening = state.enabled && ["listening", "replying"].includes(state.phase) && !state.currentTaskId;
+    const retryLocked = planLocked && !canRetryWhileListening;
     const canEditStartedTouch = !planLocked && task.type === "touch" && task.status === "pending" && Boolean(task.progress?.done);
     const canEdit = !planLocked && (completedDaily || canEditStartedTouch || ((task.status === "pending" || task.status === "missed") && !task.progress?.done));
     const canPauseAndEdit = planLocked && task.type === "touch" && !["completed", "cancelled", "needs_attention"].includes(task.status);
@@ -422,10 +430,10 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
         </div>}
         {task.type === "touch" && Boolean(task.skipped_records?.length) && <section className="workflow-touch-skipped" aria-label={`本次跳过 ${task.skipped_records!.length} 位`}>
           <div className="workflow-touch-skipped-head"><strong>本次跳过 {task.skipped_records!.length} 位</strong>
-            {task.skipped_records!.filter((record) => ["identity_skipped", "ai_failed_skipped", "pre_send_skipped"].includes(record.status)).length > 1 && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || planLocked} onClick={() => void retrySkipped(task)}>全部重试</button>}
+            {retryableSkipped.length > 0 && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || retryLocked} onClick={() => void retrySkipped(task)}>{canRetryWhileListening ? "暂停自动回复并全部重试" : "全部重试"}</button>}
           </div>
           <p className="workflow-small-note">身份不唯一 {task.skipped_breakdown?.identity || 0} · AI 失败 {task.skipped_breakdown?.ai_failed || 0} · 发送前失败 {task.skipped_breakdown?.pre_send || 0} · 结果未知 {task.skipped_breakdown?.outcome_unknown || 0}</p>
-          <details><summary>查看明细与重试</summary><ul>{task.skipped_records!.map((record) => <li key={`${record.contactId}-${record.index}`}><span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span><small>{TOUCH_SKIP_LABELS[record.status] || "已跳过"}</small>{["identity_skipped", "ai_failed_skipped", "pre_send_skipped"].includes(record.status) && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || planLocked} onClick={() => void retrySkipped(task, [record.contactId])}>重试</button>}</li>)}</ul></details>
+          <details><summary>查看明细与重试</summary><ul>{task.skipped_records!.map((record) => <li key={`${record.contactId}-${record.index}`}><span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span><small>{TOUCH_SKIP_LABELS[record.status] || "已跳过"}</small>{record.retryable === true && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || retryLocked} onClick={() => void retrySkipped(task, [record.contactId])}>重试</button>}</li>)}</ul></details>
         </section>}
         {task.accountMismatch && <p className="workflow-task-error">微信账号已切换，需切回原账号后执行。</p>}
         {task.status === "missed" && <p className="workflow-task-error">这是往日未执行的任务，请修改时间后加入，或取消。</p>}
