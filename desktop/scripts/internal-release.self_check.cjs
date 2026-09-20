@@ -11,15 +11,24 @@ const { describeBaseStabilizedRuntime, treeSha256 } = require("./build-portable-
 const { digest, treeHash } = require("../src/shared/component-contract.cjs");
 
 async function main() {
+  const packageJson = require("../package.json");
+  assert.equal(packageJson.scripts["release:internal"], "node scripts/build-internal-release.cjs --default-components");
+  assert.equal(packageJson.scripts["publish:internal"], "node scripts/publish-internal-release.cjs --default-components");
   assert.equal(parseBuildArgs([]).componentsOnly, true);
+  assert.equal(parseBuildArgs(["--components"]).componentsOnly, true);
   assert.equal(parseBuildArgs(["--full"]).componentsOnly, false);
+  assert.equal(parseBuildArgs(["--default-components", "--full"]).componentsOnly, false,
+    "An explicit user --full overrides the npm entrypoint's internal default marker");
   assert.equal(parseBuildArgs(["config.json", "upgrade"]).componentsOnly, false);
   assert.equal(parseBuildArgs(["--base", "../accepted"]).baseRoot, "../accepted");
-  assert.throws(() => parseBuildArgs(["--full", "--components"]));
+  assert.throws(() => parseBuildArgs(["--components", "--full"]));
   assert.throws(() => parseBuildArgs(["--base"]));
   assert.throws(() => parseBuildArgs(["--unknown"]));
   assert.equal(publication([]).kind, "components");
+  assert.equal(publication(["--components"]).kind, "components");
   assert.equal(publication(["--full", "installer.exe", "version.json"]).kind, "full");
+  assert.equal(publication(["--default-components", "--full", "installer.exe", "version.json"]).kind, "full");
+  assert.throws(() => publication(["--components", "--full", "installer.exe", "version.json"]));
   assert.throws(() => publication(["installer.exe", "version.json"]));
   assert.throws(() => publication(["--full"]));
 

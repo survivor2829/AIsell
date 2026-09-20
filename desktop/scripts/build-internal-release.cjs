@@ -40,6 +40,7 @@ function parseBuildArgs(args) {
     const arg = args[index];
     if (arg === "--full") full = true;
     else if (arg === "--components") components = true;
+    else if (arg === "--default-components") continue;
     else if (arg === "--base") {
       baseRoot = args[++index];
       if (!baseRoot || baseRoot.startsWith("--")) throw new Error("--base requires the previously accepted application directory");
