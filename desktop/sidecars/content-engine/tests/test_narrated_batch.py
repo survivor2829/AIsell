@@ -1711,6 +1711,49 @@ class ReportedSpeechContextTests(unittest.TestCase):
         self.assertEqual(reported_speech_cache_key("base", context, rejected), fresh)
         self.assertEqual(reported_speech_cache_key("base", None, rejected), "base")
 
+    def test_compact_claim_segment_sends_only_adjacent_narrative_context(self):
+        paragraphs = ["第一段提供开场条件。", "第二段是当前需要核对的内容。",
+                      "第三段补充紧邻语义。", "第四段与当前段无关。"]
+        full_context = {"title": "完整标题", "paragraphs": paragraphs}
+
+        def compact(phrase_id, text, attribution_context=None):
+            segment_key = canonical_hash({"text": text, "narrative_context": full_context})
+            source = {"phrase_id": phrase_id, "text": text, "facts": [],
+                      "segment_key": segment_key, "narrative_context": full_context}
+            if attribution_context:
+                source["attribution_context"] = attribution_context
+            wire = compact_claim_segment(source)
+            self.assertEqual(segment_key, wire["segment_key"])
+            self.assertEqual(full_context, source["narrative_context"],
+                             "wire compaction must not alter full local cache input")
+            return wire
+
+        title = compact("title", "完整标题")
+        self.assertEqual({"after": [paragraphs[0]]}, title["narrative_context"])
+        self.assertNotIn(paragraphs[-1], json.dumps(title, ensure_ascii=False))
+
+        first = compact("phrase-1", paragraphs[0])
+        self.assertEqual({"title": "完整标题", "before": [], "after": [paragraphs[1]]},
+                         first["narrative_context"])
+        middle = compact("phrase-2", paragraphs[1])
+        self.assertEqual({"title": "完整标题", "before": [paragraphs[0]],
+                          "after": [paragraphs[2]]}, middle["narrative_context"])
+        self.assertNotIn(paragraphs[3], json.dumps(middle, ensure_ascii=False))
+        last = compact("phrase-4", paragraphs[3])
+        self.assertEqual({"title": "完整标题", "before": [paragraphs[2]], "after": []},
+                         last["narrative_context"])
+        self.assertNotIn(paragraphs[0], json.dumps(last, ensure_ascii=False))
+
+        attribution = {"intro_text": "现场讲师介绍：",
+                       "reported_text": "第二段是当前需要核对的内容。第三段补充紧邻语义。"}
+        attributed = compact("phrase-2", paragraphs[1], attribution)
+        self.assertEqual(attribution, attributed["attribution_context"])
+
+        changed_context = {"title": "完整标题", "paragraphs": paragraphs[:-1] + ["远端内容已改变。"]}
+        changed_key = canonical_hash({"text": paragraphs[1], "narrative_context": changed_context})
+        self.assertNotEqual(middle["segment_key"], changed_key,
+                            "distant original narrative must still participate in the local cache key")
+
 
 if __name__ == "__main__":
     unittest.main()
