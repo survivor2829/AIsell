@@ -83,6 +83,7 @@ LOCAL_VISUAL_SAMPLE_BYTES = LOCAL_VISUAL_SAMPLE_SIZE * LOCAL_VISUAL_SAMPLE_SIZE
 LOCAL_FREEZE_MIN_SPAN_MS = 2_000
 LOCAL_VISUAL_EVIDENCE_INTERVAL_MS = 2_000
 LOCAL_VISUAL_MAX_EVIDENCE_BYTES = 64 * 1024 * 1024
+LOCAL_VISUAL_SEEK_BATCH_SIZE = 16
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -2632,62 +2633,63 @@ class FFmpegCreativeAnalyzer:
         try:
             frames = []
             last_reported = -5
-            for index in range(expected_frames):
+
+            def seek_command(items):
+                command = [self.ffmpeg_path, "-hide_banner", "-loglevel", "error", "-y"]
+                for _index, timestamp_ms, _raw_path in items:
+                    command.extend(["-ss", f"{timestamp_ms / 1000:.3f}", "-i", str(source)])
+                for input_index, (_index, _timestamp_ms, raw_path) in enumerate(items):
+                    command.extend([
+                        "-map", f"{input_index}:v:0", "-an", "-sn", "-dn",
+                        "-frames:v", "1", "-vf",
+                        (f"scale={LOCAL_VISUAL_SAMPLE_SIZE}:"
+                         f"{LOCAL_VISUAL_SAMPLE_SIZE}:flags=area,format=gray"),
+                        "-pix_fmt", "gray", "-f", "rawvideo", str(raw_path),
+                    ])
+                return command
+
+            for batch_start in range(0, expected_frames, LOCAL_VISUAL_SEEK_BATCH_SIZE):
                 if should_stop():
                     return []
-                timestamp_ms = index * LOCAL_VISUAL_EVIDENCE_INTERVAL_MS
-                if timestamp_ms >= duration_ms:
+                batch = []
+                for index in range(batch_start, min(expected_frames, batch_start + LOCAL_VISUAL_SEEK_BATCH_SIZE)):
+                    timestamp_ms = index * LOCAL_VISUAL_EVIDENCE_INTERVAL_MS
+                    if timestamp_ms >= duration_ms:
+                        break
+                    raw_path = temp_dir / f"visual-evidence-{index:06d}.gray"
+                    raw_paths.append(raw_path)
+                    batch.append((index, timestamp_ms, raw_path))
+                if not batch:
                     break
-                raw_path = temp_dir / f"visual-evidence-{index:06d}.gray"
-                raw_paths.append(raw_path)
                 try:
-                    self._command(
-                        [
-                            self.ffmpeg_path,
-                            "-hide_banner",
-                            "-loglevel",
-                            "error",
-                            "-y",
-                            "-ss",
-                            f"{timestamp_ms / 1000:.3f}",
-                            "-i",
-                            str(source),
-                            "-an",
-                            "-sn",
-                            "-dn",
-                            "-frames:v",
-                            "1",
-                            "-vf",
-                            (
-                                f"scale={LOCAL_VISUAL_SAMPLE_SIZE}:"
-                                f"{LOCAL_VISUAL_SAMPLE_SIZE}:flags=area,format=gray"
-                            ),
-                            "-pix_fmt",
-                            "gray",
-                            "-f",
-                            "rawvideo",
-                            str(raw_path),
-                        ],
-                        timeout=180,
-                    )
-                    pixels = raw_path.read_bytes()
-                    if len(pixels) != LOCAL_VISUAL_SAMPLE_BYTES:
-                        raise ValueError("incomplete visual evidence frame")
-                    frames.append(
-                        {
-                            "timestamp_ms": timestamp_ms,
-                            "visual_evidence": self._frame_visual_evidence(pixels),
-                        }
-                    )
+                    self._command(seek_command(batch), timeout=180)
                 except ContentEngineError as error:
                     if error.code == "analysis_stalled":
                         raise
+                    for item in batch:
+                        try:
+                            self._command(seek_command([item]), timeout=180)
+                        except ContentEngineError as fallback_error:
+                            if fallback_error.code == "analysis_stalled":
+                                raise
                 except (OSError, ValueError):
                     pass
                 finally:
-                    raw_path.unlink(missing_ok=True)
-                percent = round((index + 1) * 100 / expected_frames)
-                if percent - last_reported >= 5 or index + 1 == expected_frames:
+                    for _index, timestamp_ms, raw_path in batch:
+                        try:
+                            pixels = raw_path.read_bytes()
+                            if len(pixels) == LOCAL_VISUAL_SAMPLE_BYTES:
+                                frames.append({
+                                    "timestamp_ms": timestamp_ms,
+                                    "visual_evidence": self._frame_visual_evidence(pixels),
+                                })
+                        except OSError:
+                            pass
+                        finally:
+                            raw_path.unlink(missing_ok=True)
+                completed = batch[-1][0] + 1
+                percent = round(completed * 100 / expected_frames)
+                if percent - last_reported >= 5 or completed == expected_frames:
                     report(percent)
                     last_reported = percent
             minimum_frames = max(1, math.ceil(expected_frames * 0.8))
