@@ -89,6 +89,15 @@ async function main() {
     item_index: 2, item_total: 4, item_name: "课程录像.mp4",
     heartbeat_at: "2026-09-20T10:00:00.000Z"
   });
+  assert.deepEqual(publicBatch({
+    planning_checkpoint: {
+      stage: "candidate_planning", completed: 2, total: 4,
+      provider_request_id: "private-request-id", local_path: "C:\\private\\checkpoint.json"
+    },
+    internal_planning_state: "must-not-leak"
+  }), {
+    planning_checkpoint: { stage: "candidate_planning", completed: 2, total: 4 }
+  });
   const scriptId = `narrated_candidate_${"c".repeat(32)}`;
   const confirm = (payload) => handlers.get(CHANNELS.confirm)({ sender }, payload);
   const confirmedResult = await confirm({ batch_id: batchId, script_id: scriptId, revision: 2, clickToken: `${CHANNELS.confirm}:${randomUUID()}` });

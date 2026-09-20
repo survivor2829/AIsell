@@ -55,6 +55,7 @@ for (const field of "material_context script_selections count production_jobs or
 for (const field of "brief_version script_source target_audience expression advantages customer_pain_points brief_suggestions framework summary opening_example".split(" ")) PUBLIC_FIELDS.add(field);
 PUBLIC_FIELDS.add("archived");
 for (const field of ['stage_times', 'action', 'finished_at']) PUBLIC_FIELDS.add(field);
+for (const field of ['planning_checkpoint', 'stage']) PUBLIC_FIELDS.add(field);
 function publicBatch(value, depth = 0) {
   if (depth > 12) return null;
   if (Array.isArray(value)) return value.slice(0, 5000).map((item) => publicBatch(item, depth + 1));

@@ -831,9 +831,10 @@ def _spoken_number_variants(token: str) -> tuple[str, ...]:
         if not high:
             return under_ten_thousand(low)
         bridge = "零" if 0 < low < 1_000 else ""
-        return under_ten_thousand(high) + "万" + bridge + under_ten_thousand(
-            low, omit_leading_one_ten=False
+        low_words = (
+            under_ten_thousand(low, omit_leading_one_ten=False) if low else ""
         )
+        return under_ten_thousand(high) + "万" + bridge + low_words
 
     whole, dot, fraction = number.partition(".")
     cardinal = integer_words(int(whole))
@@ -868,29 +869,47 @@ def verify_spoken_phrase(
         "auto_mix_voice_verification_invalid",
         "配音回听没有得到可核对的文字。",
     )
-    critical = {
-        _normalize_spoken_phrase_text(token)
-        for token in re.findall(r"\d+(?:\.\d+)?%?", str(expected_text or ""))
-        if _normalize_spoken_phrase_text(token)
+    expected_numeric_lexemes = tuple(dict.fromkeys(
+        re.findall(r"\d+(?:\.\d+)?%?", unicodedata.normalize(
+            "NFKC", str(expected_text or "")
+        ))
+    ))
+    recognized_numeric_lexemes = set(re.findall(
+        r"\d+(?:\.\d+)?%?", unicodedata.normalize(
+            "NFKC", str(recognized_text or "")
+        )
+    ))
+    normalized_numeric_tokens = {
+        _normalize_spoken_phrase_text(token) for token in expected_numeric_lexemes
     }
+    critical = set()
     safe_title = _normalize_spoken_phrase_text(title)
     if 2 <= len(safe_title) <= 24 and safe_title in expected:
         critical.add(safe_title)
-    critical.update(matching_spoken_critical_terms(expected_text, critical_terms))
-    numeric_tokens = {
-        _normalize_spoken_phrase_text(token): _spoken_number_variants(token)
-        for token in re.findall(r"\d+(?:\.\d+)?%?", str(expected_text or ""))
-    }
+    critical.update(
+        term for term in matching_spoken_critical_terms(
+            expected_text, critical_terms
+        ) if term not in normalized_numeric_tokens
+    )
+    numeric_tokens = tuple(
+        (token, _spoken_number_variants(token))
+        for token in expected_numeric_lexemes
+    )
     missing = sorted(
-        token for token in critical
-        if token not in recognized
-        and not any(_normalize_spoken_phrase_text(variant) in recognized
-                    for variant in numeric_tokens.get(token, ()))
+        token for token in critical if token not in recognized
+    )
+    missing.extend(
+        token for token, variants in numeric_tokens
+        if token not in recognized_numeric_lexemes
+        and not any(
+            _normalize_spoken_phrase_text(variant) in recognized
+            for variant in variants
+        )
     )
     matcher = SequenceMatcher(None, expected, recognized)
     similarity = matcher.ratio()
     spoken_expected = str(expected_text or "")
-    for token, variants in numeric_tokens.items():
+    for token, variants in numeric_tokens:
         spoken_variant = next(
             (
                 variant
@@ -900,7 +919,9 @@ def verify_spoken_phrase(
             None,
         )
         if spoken_variant:
-            spoken_expected = re.sub(re.escape(token), spoken_variant, spoken_expected)
+            spoken_expected = re.sub(
+                re.escape(token), spoken_variant, spoken_expected
+            )
     spoken_similarity = SequenceMatcher(
         None, _normalize_spoken_phrase_text(spoken_expected), recognized
     ).ratio()
@@ -924,7 +945,7 @@ def verify_spoken_phrase(
         ),
         "similarity": round(similarity, 4),
         "missingCriticalTokens": missing,
-        "criticalTokenCount": len(critical),
+        "criticalTokenCount": len(critical) + len(numeric_tokens),
     }
 
 

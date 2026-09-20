@@ -1322,6 +1322,27 @@ class AutoMixV2ContractTests(unittest.TestCase):
         self.assertTrue(verify_spoken_phrase("编号007已登记。", "编号零零七已登记。")["matched"])
         self.assertTrue(verify_spoken_phrase("累计10010人。", "累计一万零一十人。")["matched"])
 
+    def test_voice_verification_preserves_numeric_lexemes_and_mandarin_values(self):
+        cases = (
+            ("\u9ad8\u5ea63.5\u7c73\u3002", "\u9ad8\u5ea6\u4e09\u70b9\u4e94\u7c73\u3002", "\u9ad8\u5ea6\u4e09\u5341\u4e94\u7c73\u3002", "3.5"),
+            ("\u5b8c\u621050.5%\u3002", "\u5b8c\u6210\u767e\u5206\u4e4b\u4e94\u5341\u70b9\u4e94\u3002", "\u5b8c\u6210\u767e\u5206\u4e4b\u4e94\u5341\u4e94\u3002", "50.5%"),
+            ("\u7d2f\u8ba110000\u4eba\u3002", "\u7d2f\u8ba1\u4e00\u4e07\u4eba\u3002", "\u7d2f\u8ba1\u5341\u4e07\u4eba\u3002", "10000"),
+            ("\u7d2f\u8ba1100000\u4eba\u3002", "\u7d2f\u8ba1\u5341\u4e07\u4eba\u3002", "\u7d2f\u8ba1\u4e00\u4e07\u4eba\u3002", "100000"),
+        )
+        for expected, spoken, wrong, lexeme in cases:
+            with self.subTest(expected=expected):
+                matched = verify_spoken_phrase(
+                    expected, spoken, critical_terms=(lexeme,)
+                )
+                self.assertTrue(matched["matched"])
+                self.assertEqual([], matched["missingCriticalTokens"])
+
+                rejected = verify_spoken_phrase(
+                    expected, wrong, critical_terms=(lexeme,)
+                )
+                self.assertFalse(rejected["matched"])
+                self.assertIn(lexeme, rejected["missingCriticalTokens"])
+
     def test_voice_verification_does_not_treat_generic_ai_as_brand(self):
         result = verify_spoken_phrase(
             "AI会自动加大清洁力。",
