@@ -853,6 +853,16 @@ def _spoken_number_variants(token: str) -> tuple[str, ...]:
     return tuple(sorted(item for item in variants if item))
 
 
+def _spoken_numeric_lexemes(value: Any) -> set[str]:
+    """Extract complete Mandarin numeric expressions from normalized ASR text."""
+    normalized = _normalize_spoken_phrase_text(value)
+    digits_and_units = "零〇一二两三四五六七八九十百千万亿点"
+    return set(re.findall(
+        rf"百分之[{digits_and_units}]+|[{digits_and_units}]+",
+        normalized,
+    ))
+
+
 def verify_spoken_phrase(
     expected_text: Any,
     recognized_text: Any,
@@ -879,6 +889,7 @@ def verify_spoken_phrase(
             "NFKC", str(recognized_text or "")
         )
     ))
+    recognized_spoken_numeric_lexemes = _spoken_numeric_lexemes(recognized_text)
     normalized_numeric_tokens = {
         _normalize_spoken_phrase_text(token) for token in expected_numeric_lexemes
     }
@@ -902,7 +913,8 @@ def verify_spoken_phrase(
         token for token, variants in numeric_tokens
         if token not in recognized_numeric_lexemes
         and not any(
-            _normalize_spoken_phrase_text(variant) in recognized
+            _normalize_spoken_phrase_text(variant)
+            in recognized_spoken_numeric_lexemes
             for variant in variants
         )
     )
@@ -914,7 +926,8 @@ def verify_spoken_phrase(
             (
                 variant
                 for variant in variants
-                if _normalize_spoken_phrase_text(variant) in recognized
+                if _normalize_spoken_phrase_text(variant)
+                in recognized_spoken_numeric_lexemes
             ),
             None,
         )

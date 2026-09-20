@@ -1196,8 +1196,8 @@ class FakeCreativeAnalyzer:
     def capability(self):
         return {"available": True, "cloud_configured": True, "provider": "fixture"}
 
-    def analyze(self, *, asset, source_path, task_id, profile, should_stop):
-        del source_path
+    def analyze(self, *, asset, source_path, task_id, profile, should_stop, progress=None):
+        del source_path, progress
         self.analysis_profiles.append(dict(profile or {}))
         if should_stop():
             return {"stopped": True}
@@ -2501,6 +2501,65 @@ class CreativeWorkbenchTests(unittest.TestCase):
                     "SELECT status FROM cover_generation_ledger ORDER BY rowid"
                 ).fetchall()
             )
+        )
+
+    def test_legacy_packaging_tasks_recover_cover_capabilities_from_saved_recipes(self):
+        asset_id = self._insert_asset("legacy-packaging-capability.mp4", duration_ms=180_000)
+        self._run(self.service.analyze_assets([asset_id])["task_id"])
+        generated = self.service.generate_course_cuts(
+            asset_id, count=1, packaging_mode="auto", cover_mode="local_frame"
+        )
+        self.assertEqual("completed", self._run(generated["task_id"])["status"])
+        source_id = self.service.list_generated_videos(
+            project_id=generated["project_id"]
+        )["items"][0]["generated_video_id"]
+
+        local_task = self.service.repackage_video(
+            source_id, {"packaging_mode": "auto", "reuse_cover": True}
+        )
+        local_payload = json.loads(
+            self.service.connection.execute(
+                "SELECT payload_json FROM content_tasks WHERE id = ?",
+                (local_task["task_id"],),
+            ).fetchone()[0]
+        )
+        local_payload.pop("required_capabilities")
+        self.service.connection.execute(
+            "UPDATE content_tasks SET payload_json = ? WHERE id = ?",
+            (
+                json.dumps(local_payload, ensure_ascii=False, separators=(",", ":")),
+                local_task["task_id"],
+            ),
+        )
+        self.assertEqual(
+            [], self.service.get_task(local_task["task_id"])["required_capabilities"]
+        )
+
+        ai_task = self.service.repackage_video(
+            source_id,
+            {
+                "packaging_mode": "auto",
+                "cover_mode": "ai_generate",
+                "reuse_cover": False,
+            },
+        )
+        ai_payload = json.loads(
+            self.service.connection.execute(
+                "SELECT payload_json FROM content_tasks WHERE id = ?",
+                (ai_task["task_id"],),
+            ).fetchone()[0]
+        )
+        ai_payload.pop("required_capabilities")
+        self.service.connection.execute(
+            "UPDATE content_tasks SET payload_json = ? WHERE id = ?",
+            (
+                json.dumps(ai_payload, ensure_ascii=False, separators=(",", ":")),
+                ai_task["task_id"],
+            ),
+        )
+        self.assertEqual(
+            ["apimart"],
+            self.service.get_task(ai_task["task_id"])["required_capabilities"],
         )
 
     def test_packaging_cost_estimate_counts_only_explicit_ai_cover_requests(self):

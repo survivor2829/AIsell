@@ -11081,6 +11081,41 @@ class CreativeDomain:
         ).fetchall()
         return {candidate["id"]: candidate for candidate in candidates}
 
+    def _legacy_packaging_required_capabilities(self, task_payload):
+        """Recover cover requirements for packaging tasks created before metadata existed."""
+        video_ids = task_payload.get("generated_video_ids")
+        if not isinstance(video_ids, list) or not video_ids:
+            return ["apimart"]
+        for video_id in video_ids:
+            try:
+                row = self._generated_row(str(video_id))
+                recipe = json.loads(row["recipe_json"])
+            except (ContentEngineError, TypeError, ValueError):
+                return ["apimart"]
+            packaging = recipe.get("packaging")
+            if packaging is None:
+                continue
+            if not isinstance(packaging, dict):
+                return ["apimart"]
+            cover = packaging.get("cover")
+            if not isinstance(cover, dict):
+                return ["apimart"]
+            mode = str(cover.get("mode") or "")
+            if mode == "ai_generate":
+                operation = self.connection.execute(
+                    """
+                    SELECT status FROM cover_generation_ledger
+                    WHERE generated_video_id = ?
+                    ORDER BY created_at DESC, rowid DESC LIMIT 1
+                    """,
+                    (str(video_id),),
+                ).fetchone()
+                if operation is None or operation["status"] != "completed":
+                    return ["apimart"]
+            elif mode not in {"local_frame", "none", "reuse"}:
+                return ["apimart"]
+        return []
+
     def _public_task(self, row, *, capability=None, candidate_lookup=None):
         result = {
             "task_id": row["id"],
@@ -11108,6 +11143,10 @@ class CreativeDomain:
                 if capability
                 in {"apimart", "volcengine_ark", "volcengine_asr", "volcengine_tts"}
             ]
+        elif row["task_type"] == "creative_packaging" and isinstance(task_payload, dict):
+            result["required_capabilities"] = (
+                self._legacy_packaging_required_capabilities(task_payload)
+            )
         if (
             row["task_type"] in {
                 "auto_mix_v2_generation",

@@ -1343,6 +1343,20 @@ class AutoMixV2ContractTests(unittest.TestCase):
                 self.assertFalse(rejected["matched"])
                 self.assertIn(lexeme, rejected["missingCriticalTokens"])
 
+    def test_voice_verification_rejects_numeric_values_containing_expected_substrings(self):
+        cases = (
+            ("第1期课程。", "第十一期课程。", "1"),
+            ("累计10人。", "累计一百一十人。", "10"),
+            ("累计12人。", "累计一百一十二人。", "12"),
+            ("完成30次测试。", "完成三百三十次测试。", "30"),
+            ("第5期课程。", "第十五期课程。", "5"),
+        )
+        for expected, recognized, lexeme in cases:
+            with self.subTest(expected=expected, recognized=recognized):
+                result = verify_spoken_phrase(expected, recognized)
+                self.assertFalse(result["matched"])
+                self.assertIn(lexeme, result["missingCriticalTokens"])
+
     def test_voice_verification_does_not_treat_generic_ai_as_brand(self):
         result = verify_spoken_phrase(
             "AI会自动加大清洁力。",

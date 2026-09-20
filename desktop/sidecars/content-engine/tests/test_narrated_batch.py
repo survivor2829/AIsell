@@ -782,6 +782,10 @@ class NarratedBatchTests(unittest.TestCase):
             "outcome": "这款机器人已经成功完成整层清洁。",
             "certification": "这款机器人已经通过国家级安全认证。",
             "depicted_action": "画面中的机器人正在清洗地面。",
+            "registration_earnings": "报名这门课程就能月入万元。",
+            "small_class_endorsement": "30人小班由官方指定专家授课。",
+            "training_affiliation": "参加培训即可成为当地唯一授权代理。",
+            "service_guarantee": "课程包含接单服务，保证每月新增十个客户。",
         }
         for label, claim in risky_confirmed_claims.items():
             with self.subTest(confirmed_claim=label):
@@ -808,6 +812,31 @@ class NarratedBatchTests(unittest.TestCase):
             with self.assertRaises(ContentEngineError):
                 domain._grounded_claim_review([generated], fresh_state, {"rejections": []})
         self.assertEqual(1, generated_cloud.call_count)
+
+    def test_confirmed_local_binding_only_accepts_closed_business_terms(self):
+        safe_terms = [
+            "10月16日开课。",
+            "每个月一期。",
+            "9月报名费1280元。",
+            "学完觉得不值，当场退款。",
+            "学不会可以不限次数免费复训。",
+            "30人小班，三天线下实操。",
+        ]
+        unsafe_terms = [
+            "课程。",
+            "培训报名。",
+            "小班上课。",
+            "报名这门课程就能月入万元。",
+            "30人小班由官方指定专家授课。",
+            "参加培训即可成为当地唯一授权代理。",
+            "课程包含接单服务，保证每月新增十个客户。",
+        ]
+        for text in safe_terms:
+            with self.subTest(safe=text):
+                self.assertTrue(NarratedBatchDomain._confirmed_user_fact_is_locally_bindable(text))
+        for text in unsafe_terms:
+            with self.subTest(unsafe=text):
+                self.assertFalse(NarratedBatchDomain._confirmed_user_fact_is_locally_bindable(text))
 
     def test_unknown_planning_requires_audited_confirmation_before_new_task(self):
         domain = NarratedBatchDomain(self.s.creative_domain)

@@ -415,6 +415,7 @@ async function main() {
     const notifications = [];
     const calls = [];
     const providerPreflightCalls = [];
+    let providerPreflightFailure = null;
     const shown = [];
     const opened = [];
     const diagnosticOperations = [];
@@ -973,7 +974,10 @@ async function main() {
       ipcMain,
       notificationFactory,
       providerCapabilityStatus: (capability) => capability === "volcengine_ark",
-      beforeProviderWork: async (capabilities) => { providerPreflightCalls.push(capabilities); }
+      beforeProviderWork: async (capabilities) => {
+        providerPreflightCalls.push(capabilities);
+        if (providerPreflightFailure) throw providerPreflightFailure;
+      }
     });
     assert.deepEqual(
       [...handlers.keys()].sort(),
@@ -1211,6 +1215,17 @@ async function main() {
       providerPreflightCalls.length,
       providerCallsBeforeLocalPackagingResume,
       "local packaging resume must remain gateway-free"
+    );
+    listedTaskItems = [task({
+      task_id: providerTaskId,
+      task_type: "creative_packaging"
+    })];
+    const legacyPackagingResume = await handlers.get(CONTENT_ENGINE_CHANNELS.resumeTask)({}, { taskId: providerTaskId });
+    assert.equal(legacyPackagingResume.ok, true);
+    assert.deepEqual(
+      providerPreflightCalls.at(-1),
+      ["apimart"],
+      "legacy packaging without capability metadata must fail closed"
     );
     listedTaskItems = [task({
       task_id: providerTaskId,
@@ -2631,8 +2646,33 @@ async function main() {
     });
     assert.equal(productGeneration.ok, true);
     assert.deepEqual(
+      providerPreflightCalls.at(-1),
+      ["apimart"],
+      "one-click AI cover generation must use the registration-level provider preflight"
+    );
+    assert.deepEqual(
       calls.find((call) => call[0] === "generateOneClickCandidates"),
       ["generateOneClickCandidates", creativeProjectId, { targetCount: 1, durationMs: 75_000, coverMode: "ai_generate" }]
+    );
+    const generationCallsBeforeRejectedPreflight = calls.filter(
+      (call) => call[0] === "generateOneClickCandidates"
+    ).length;
+    providerPreflightFailure = Object.assign(new Error("gateway unavailable"), {
+      code: "provider_gateway_unavailable"
+    });
+    const rejectedProductGeneration = await handlers.get(
+      CONTENT_ENGINE_CHANNELS.generateOneClickCandidates
+    )({}, {
+      projectId: createdProduct.data.projectId,
+      options: { durationMs: 75_000, targetCount: 1, coverMode: "ai_generate" }
+    });
+    providerPreflightFailure = null;
+    assert.equal(rejectedProductGeneration.ok, false);
+    assert.equal(rejectedProductGeneration.code, "provider_gateway_unavailable");
+    assert.equal(
+      calls.filter((call) => call[0] === "generateOneClickCandidates").length,
+      generationCallsBeforeRejectedPreflight,
+      "failed one-click preflight must reject before task submission"
     );
     const productCandidates = await handlers.get(
       CONTENT_ENGINE_CHANNELS.listOneClickCandidates
@@ -2862,6 +2902,20 @@ async function main() {
         reuseCover: true
       }]
     );
+    const callsBeforeDefaultCoverReuse = providerPreflightCalls.length;
+    const reusedDefaultCover = await handlers.get(
+      CONTENT_ENGINE_CHANNELS.packageGeneratedVideos
+    )({}, {
+      candidateIds: [generatedVideoId],
+      packagingMode: "auto",
+      reuseCover: true
+    });
+    assert.equal(reusedDefaultCover.ok, true);
+    assert.equal(
+      providerPreflightCalls.length,
+      callsBeforeDefaultCoverReuse,
+      "default ai_generate cover mode must not require APIMart when the existing cover is reused"
+    );
     const repackaged = await handlers.get(
       CONTENT_ENGINE_CHANNELS.repackageVideo
     )({}, {
@@ -2872,6 +2926,25 @@ async function main() {
       reuseCover: true
     });
     assert.equal(repackaged.data.taskId, packagingTaskId);
+    assert.equal(
+      providerPreflightCalls.length,
+      callsBeforeDefaultCoverReuse,
+      "repackaging with a reused cover must remain local"
+    );
+    const freshAiRepackage = await handlers.get(
+      CONTENT_ENGINE_CHANNELS.repackageVideo
+    )({}, {
+      candidateId: generatedVideoId,
+      packagingMode: "auto",
+      coverMode: "ai_generate",
+      reuseCover: false
+    });
+    assert.equal(freshAiRepackage.ok, true);
+    assert.deepEqual(
+      providerPreflightCalls.at(-1),
+      ["apimart"],
+      "an explicit fresh AI cover must require APIMart"
+    );
     const preflight = await handlers.get(
       CONTENT_ENGINE_CHANNELS.preflightVisualComparison
     )({}, { candidateId: generatedVideoId });

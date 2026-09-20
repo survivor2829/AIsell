@@ -31,7 +31,7 @@ VERSION = 1
 SAFE_FAST_SPEECH_MS_PER_CHAR = 180
 VISUAL_FACTS_VERSION = 5
 VISUAL_FACT_MAX_OUTPUT_TOKENS = 8192
-CLAIM_AUDIT_VERSION = 15
+CLAIM_AUDIT_VERSION = 16
 REPORTED_SPEECH_REVIEW_VERSION = 1
 CLOSING_ACTION_REVIEW_VERSION = 1
 SEMANTIC_REVIEW_VERSION = 1
@@ -411,7 +411,18 @@ class NarratedBatchDomain:
         value = re.sub(r"\s+", "", str(text or ""))
         if not value or cls._sparse_claim_risk(value):
             return False
-        if re.search(r"认证|资质|证书|许可|国家级|官方授权|权威(?:认证|认可)|获奖", value):
+        # A deterministic term must not make a larger marketing claim trusted.
+        # In particular, words such as "课程" and "报名" describe the
+        # subject, not the truth of capabilities, affiliation, rank or earnings.
+        if re.search(
+                r"认证|资质|证书|许可|国家级|官方(?:授权|指定|认可|合作)|"
+                r"权威(?:认证|认可|推荐)|获奖|主机厂|总代理|授权代理|合作伙伴|"
+                r"(?:行业|全国|全网|当地|区域|市场|品类|同类|平台)第[一二三]|"
+                r"第[一二三](?:名|位|品牌|选择)|唯一|领先|顶级|最好|首选|"
+                r"(?:专家|讲师|品牌|厂商|厂家|客户)(?:推荐|背书|认可)|"
+                r"保证|确保|包会|必学会|必然|肯定|"
+                r"赚钱|赚到|收入|收益|利润|回报|营收|销售额|业绩|订单|月入|年入|红利|"
+                r"帮你(?:接单|获客|赚钱)|(?:可以|能够|能)(?:接单|获客|赚钱|成为|拿到)", value):
             return False
         if re.search(
                 r"(?:画面|视频|镜头|图中|屏幕)(?:中|内|里|上)?[^，。！？；]{0,24}"
@@ -421,10 +432,11 @@ class NarratedBatchDomain:
             return False
         business_terms = re.compile(
             r"(?:\d{1,2}月(?:\d{1,2}日)?|\d{1,2}日|星期[一二三四五六日天]|周[一二三四五六日天]|"
-            r"第\d+期|每(?:天|周|月|年)|\d{1,2}(?::\d{2}|点)|"
+            r"第\d+期|每(?:个)?(?:天|周|月|年)|\d{1,2}(?::\d{2}|点)|"
             r"\d+(?:\.\d+)?元|价格|定价|报名费|学费|费用|优惠|"
             r"退款|退费|原路退回|复训|免费学习|不限次数|"
-            r"课程|培训|实训|报名|名额|小班|门票|"
+            r"\d+人小班|\d+(?:个|项|款|节|天|小时)(?:服务|课程|培训|实训|真机)|"
+            r"(?:线上|线下)(?:课程|培训|实训|上课|实操)|"
             r"(?:提供|包含|新增|安排|开设)[^，。！？；]{0,30}(?:服务|课程|培训|复训|实训)|"
             r"(?:服务|课程|培训|复训|实训)(?:内容|政策|安排|期限|地点))"
         )

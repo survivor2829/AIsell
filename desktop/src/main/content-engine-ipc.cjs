@@ -130,7 +130,10 @@ function providerCapabilitiesForTask(task = {}) {
   if (["creative_cover", "guided_auto_mix_supplemental_image"].includes(taskType)) {
     return ["apimart"];
   }
-  if (taskType === "creative_packaging") return [];
+  // New sidecars persist an explicit list, including [] for fully local work.
+  // If an older sidecar omits the field, fail closed because the desktop
+  // cannot inspect its persisted candidate recipes to prove the task is local.
+  if (taskType === "creative_packaging") return ["apimart"];
   if (isProviderTaskType(taskType)) return NARRATED_PROVIDER_CAPABILITIES;
   return [];
 }
@@ -155,6 +158,10 @@ function managedProviderStore(store, capability, capabilityStatus) {
       });
     }
   };
+}
+
+function packagingNeedsAiCover(packaging = {}) {
+  return packaging.reuseCover !== true && packaging.coverMode === "ai_generate";
 }
 
 const PUBLIC_STATES = new Set([
@@ -3378,13 +3385,13 @@ function registerContentEngineIpc(options = {}) {
   });
   handle(CONTENT_ENGINE_CHANNELS.generateOneClickCandidates, async (payload) => {
     assertKeys(payload, new Set(["projectId", "options"]));
-    const options = payload.options == null ? {} : payload.options;
-    if (!options || typeof options !== "object" || Array.isArray(options)) invalid("invalid_params");
-    const targetCount = Number(options.targetCount ?? 3);
-    const durationMs = Number(options.durationMs ?? 75_000);
+    const generationOptions = payload.options == null ? {} : payload.options;
+    if (!generationOptions || typeof generationOptions !== "object" || Array.isArray(generationOptions)) invalid("invalid_params");
+    const targetCount = Number(generationOptions.targetCount ?? 3);
+    const durationMs = Number(generationOptions.durationMs ?? 75_000);
     if (!Number.isInteger(targetCount) || targetCount < 1 || targetCount > 3) invalid("invalid_limit");
     if (!Number.isInteger(durationMs) || durationMs < 60_000 || durationMs > 90_000) invalid("invalid_product_duration");
-    const coverMode = String(options.coverMode ?? "ai_generate");
+    const coverMode = String(generationOptions.coverMode ?? "ai_generate");
     if (coverMode === "ai_generate") await options.beforeProviderWork?.(["apimart"]);
     const result = await controller.generateOneClickCandidates(
       validateId(payload.projectId, "creative_project"),
@@ -3506,7 +3513,7 @@ function registerContentEngineIpc(options = {}) {
       "coverMode", "reuseCover"
     ]));
     const optionsForPackaging = validatePackagingOptions(payload, { reuseCoverDefault: true });
-    if (optionsForPackaging.coverMode === "ai_generate") {
+    if (packagingNeedsAiCover(optionsForPackaging)) {
       await options.beforeProviderWork?.(["apimart"]);
     }
     return publicTask(await controller.packageGeneratedVideos(
@@ -3520,7 +3527,7 @@ function registerContentEngineIpc(options = {}) {
       "coverMode", "reuseCover"
     ]));
     const optionsForPackaging = validatePackagingOptions(payload, { reuseCoverDefault: true });
-    if (optionsForPackaging.coverMode === "ai_generate") {
+    if (packagingNeedsAiCover(optionsForPackaging)) {
       await options.beforeProviderWork?.(["apimart"]);
     }
     return publicTask(await controller.repackageVideo(
