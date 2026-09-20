@@ -17,6 +17,7 @@ declare global {
       status(): Promise<CloudStatus>; check(): Promise<CloudStatus>; upload(): Promise<CloudStatus>;
       consent(enabled: boolean): Promise<CloudStatus>; restart(): Promise<CloudStatus>;
       announcements(): Promise<CloudStatus>; readAnnouncement(id: string | number): Promise<CloudStatus>;
+      readAnnouncements(): Promise<CloudStatus>;
       acknowledgeUpdate(): Promise<CloudStatus>;
       onUpdate(callback: (state: CloudStatus) => void): () => void;
     };

@@ -45,7 +45,9 @@ from ai_refine_v2.prompts.planner import (
 
 
 # ── 常量 ────────────────────────────────────────────────────────
-_API_URL = "https://api.deepseek.com/v1/chat/completions"
+_API_URL = os.environ.get(
+    "DEEPSEEK_API_URL", "https://api.deepseek.com/v1/chat/completions"
+).strip() or "https://api.deepseek.com/v1/chat/completions"
 _MODEL_DEFAULT = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash").strip() or "deepseek-v4-flash"
 _TIMEOUT = 120
 _TEMPERATURE = 0.1

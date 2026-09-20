@@ -62,6 +62,7 @@ function sourceAllowed(source, edition) {
     const allowed = [
       "state_machine.dev.cjs",
       "wechat_window_driver.dev.cjs",
+      "wechat_image_send.dev.cjs",
       "active_touch_cli.dev.cjs",
       "moments_visual_probe.dev.cjs",
       "moments_navigation.dev.cjs",
@@ -85,6 +86,39 @@ function sourceAllowed(source, edition) {
     return allowed.includes(name);
   }
   return true;
+}
+
+function carryAcceptedRuntimeDescriptor(descriptor, buildCommit) {
+  if (!descriptor?.reuseReceipt) throw new Error("Accepted reusable runtime is missing its provenance receipt");
+  return {
+    ...descriptor,
+    buildCommit,
+    reuseReceipt: {
+      ...descriptor.reuseReceipt,
+      buildCommit,
+      verifiedAt: new Date().toISOString()
+    }
+  };
+}
+
+function describeBaseStabilizedRuntime(descriptor, releaseTarget, stabilizedFiles) {
+  const prefix = `${descriptor.path.replace(/\\/gu, "/").replace(/\/$/u, "")}/`;
+  const files = stabilizedFiles.filter((file) => file.startsWith(prefix));
+  if (!files.length) return descriptor;
+  const sourceTreeSha256 = descriptor.treeSha256;
+  const treeSha256AfterStabilization = treeSha256(path.join(releaseTarget, ...descriptor.path.split("/")));
+  return {
+    ...descriptor,
+    treeSha256: treeSha256AfterStabilization,
+    originalRuntimeTreeSha256: descriptor.originalRuntimeTreeSha256 || sourceTreeSha256,
+    baseStabilization: {
+      schemaVersion: 1,
+      sourceTreeSha256,
+      packagedTreeSha256: treeSha256AfterStabilization,
+      files,
+      verifiedAt: new Date().toISOString()
+    }
+  };
 }
 
 function resolveInstalledPackage(packageName, fromDir) {
@@ -229,7 +263,8 @@ function assertBuildPreconditions(edition, {
     contentEngineRuntime,
     remotionRuntime,
     sidecarBuildRoot,
-    remotionRuntimeRoot
+    remotionRuntimeRoot,
+    componentBaseRoot: String(environment.XIAOXI_COMPONENT_BASE_ROOT || "")
   };
   if (artifactType === "delivery" && !isCommercialDeliveryReady(sourceState)) {
     throw new Error("Delivery requires commercial Remotion and media-tools release evidence");
@@ -262,23 +297,57 @@ function buildPortableStaging(edition, paths, sourceState) {
   const packagedBuildInfo = JSON.parse(fs.readFileSync(packagedBuildInfoFile, "utf8"));
   fs.writeFileSync(packagedBuildInfoFile, `${JSON.stringify({
     ...packagedBuildInfo,
-    artifactType: sourceState.artifactType
+    artifactType: sourceState.artifactType,
+    buildCommit: sourceState.commit,
+    sourceDirty: false
   }, null, 2)}\n`, "utf8");
-  copyProductDetailRuntime(sourceState.productDetailRuntime, target);
-  copyContentEngineRuntime(sourceState.contentEngineRuntime, target);
-  const remotionRuntime = copyRemotionRuntime(sourceState.remotionRuntime, target);
+  let acceptedRuntimeManifest = null;
+  if (paths.componentsOnly && sourceState.componentBaseRoot) {
+    const manifestFile = path.join(sourceState.componentBaseRoot, "版本清单.json");
+    if (fs.existsSync(manifestFile)) {
+      const accepted = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+      const productDetailRoot = path.join(sourceState.componentBaseRoot, "resources", "product-detail");
+      const contentEngineRoot = path.join(sourceState.componentBaseRoot, "resources", "content-engine");
+      const remotionPackagingRoot = path.join(sourceState.componentBaseRoot, "remotion-packaging");
+      if (accepted.productDetailSidecar?.desktopSourceTreeSha256 === sourceState.productDetailRuntime.currentDesktopSourceTreeSha256
+        && accepted.contentEngineSidecar?.sourceTreeSha256 === sourceState.contentEngineRuntime.currentSourceTreeSha256
+        && accepted.remotionRuntime?.manifestSha256 === sourceState.remotionRuntime.manifestSha256
+        && treeSha256(productDetailRoot) === accepted.productDetailSidecar.treeSha256
+        && treeSha256(contentEngineRoot) === accepted.contentEngineSidecar.treeSha256) {
+        fs.cpSync(productDetailRoot, path.join(target, "resources", "product-detail"), { recursive: true, errorOnExist: true, force: false });
+        fs.cpSync(contentEngineRoot, path.join(target, "resources", "content-engine"), { recursive: true, errorOnExist: true, force: false });
+        fs.cpSync(remotionPackagingRoot, path.join(target, "remotion-packaging"), { recursive: true, errorOnExist: true, force: false });
+        acceptedRuntimeManifest = accepted;
+      }
+    }
+  }
+  if (!acceptedRuntimeManifest) {
+    copyProductDetailRuntime(sourceState.productDetailRuntime, target);
+    copyContentEngineRuntime(sourceState.contentEngineRuntime, target);
+  }
+  const remotionRuntime = acceptedRuntimeManifest?.remotionRuntime || copyRemotionRuntime(sourceState.remotionRuntime, target);
+  const stabilizedBaseFiles = edition === "test" && paths.componentsOnly && sourceState.componentBaseRoot
+    ? require("./component-base-input.cjs").stabilizeEquivalentBaseFiles(target, sourceState.componentBaseRoot)
+    : [];
+  if (stabilizedBaseFiles.length) console.log(`Retained accepted bytes for ${stabilizedBaseFiles.length} line-ending-equivalent base files.`);
 
   const packageJson = JSON.parse(fs.readFileSync(path.join(desktopDir, "package.json"), "utf8"));
   require("../src/shared/customer-release-notes.cjs").releaseNotes(packageJson.version);
   const electronPackage = JSON.parse(fs.readFileSync(path.join(desktopDir, "node_modules", "electron", "package.json"), "utf8"));
   const rendererMarker = JSON.parse(fs.readFileSync(path.join(desktopDir, edition === "test" ? "dist-development" : "dist-pilot", "build-edition.json"), "utf8"));
   const capabilityMatrix = JSON.parse(fs.readFileSync(path.join(desktopDir, "release-capabilities.json"), "utf8"));
-  const contentEngineSidecar = createContentEngineReleaseDescriptor(
+  let contentEngineSidecar = acceptedRuntimeManifest
+    ? carryAcceptedRuntimeDescriptor(acceptedRuntimeManifest.contentEngineSidecar, sourceState.commit)
+    : createContentEngineReleaseDescriptor(
     sourceState.contentEngineRuntime,
     sourceState.commit,
     sourceState.artifactType
   );
-  contentEngineSidecar.treeSha256 = treeSha256(path.join(target, "resources", "content-engine"));
+  if (!acceptedRuntimeManifest) contentEngineSidecar.treeSha256 = treeSha256(path.join(target, "resources", "content-engine"));
+  contentEngineSidecar = describeBaseStabilizedRuntime(contentEngineSidecar, target, stabilizedBaseFiles);
+  const productDetailSidecar = describeBaseStabilizedRuntime(acceptedRuntimeManifest
+    ? carryAcceptedRuntimeDescriptor(acceptedRuntimeManifest.productDetailSidecar, sourceState.commit)
+    : createReleaseDescriptor(sourceState.productDetailRuntime, sourceState.commit), target, stabilizedBaseFiles);
   const manifest = {
     product: PRODUCT_NAME,
     edition,
@@ -294,15 +363,12 @@ function buildPortableStaging(edition, paths, sourceState) {
     wxKeySha256: NATIVE_LIBRARY_SHA256["wx_key.dll"],
     databaseDecryptorSha256: DATABASE_DECRYPTOR_SHA256,
     nativeLibrarySha256: NATIVE_LIBRARY_SHA256,
-    productDetailSidecar: createReleaseDescriptor(
-      sourceState.productDetailRuntime,
-      sourceState.commit
-    ),
+    productDetailSidecar,
     contentEngineSidecar,
     remotionRuntime,
-    targetWeixin: capabilityMatrix.targetWeixin,
+    wechatCompatibility: capabilityMatrix.wechatCompatibility,
     capabilityMatrix: capabilityMatrix.capabilities,
-    releaseStage: "wechat-4.1.11.55-integrated-moments-adaptation",
+    releaseStage: "wechat-current-mainstream-compatibility",
     commercialReady: isCommercialDeliveryReady(sourceState),
     builtAt: new Date().toISOString(),
     signed: false
@@ -315,7 +381,7 @@ function buildPortableStaging(edition, paths, sourceState) {
     `${PRODUCT_NAME} ${edition === "test" ? "测试版" : ""} ${manifest.buildId}`.trim(),
     "",
     "1. 使用安装程序可覆盖升级原软件并保留本地数据。若使用 ZIP，请完整解压到全新目录；不要手工覆盖旧目录，也不要只复制 EXE。",
-    "2. 当前阶段适配 Windows 10/11 x64 和个人微信 Weixin.exe 4.1.11.55；微信与本软件请使用相同权限运行。朋友圈新版内嵌布局仍需按交付清单完成实机验收。",
+    "2. 当前阶段以当前安装的主流个人微信为首要验收版本，并至少用一个不同版本做兼容回归；实际版本与能力状态以版本清单和项目状态矩阵为准。微信与本软件请使用相同权限运行。朋友圈新版内嵌布局仍需按交付清单完成实机验收。",
     "3. 每台新电脑首次使用都要重新配置 API 密钥、导入 AI 专家话术并同步联系人；这些本地数据不会写入 ZIP。",
     "4. 同步联系人时软件会重启微信，请按提示重新登录。若路径未自动识别，可在同步联系人页手动选择 Weixin.exe 和 xwechat_files。",
     "5. 演示顺序：同步联系人 -> 导入 AI 专家并配置 API 密钥 -> 自动回复 -> 主动触达 -> 朋友圈点赞评论。",
@@ -508,21 +574,40 @@ function buildPortable(edition = "delivery", {
   const stagingZip = path.join(stagingRoot, `${productName}.zip`);
   const canonicalTarget = path.join(releaseDir, productName);
   const canonicalZip = path.join(releaseDir, `${productName}.zip`);
-  function recordComponentValidation() {
+  function recordComponentValidation(candidateRoot) {
     if (edition !== "test") return;
     const file = path.join(releaseDir, "components", edition, "unsigned-component-release.json");
     const metadata = JSON.parse(fs.readFileSync(file, "utf8"));
-    metadata.validation = { gate: "packaged-application", commit: metadata.buildCommit, version: metadata.manifest.version, completedAt: new Date().toISOString() };
+    metadata.validation = { gate: "packaged-application", commit: metadata.buildCommit, version: metadata.manifest.version,
+      completedAt: new Date().toISOString(), candidateRoot };
+    fs.writeFileSync(file, JSON.stringify(metadata, null, 2));
+    const componentRoot = path.dirname(file);
+    const artifacts = Object.entries(metadata.manifest.components).flatMap(([name, value]) => [
+      path.join(componentRoot, `${value.sha256}.zip`),
+      path.join(componentRoot, `${name}-${value.treeSha256}.json`)
+    ]);
+    require("./artifact-retention.cjs").retainArtifacts(componentRoot, "validated-components", artifacts, 2, metadata.retentionOwned || []);
+    metadata.retentionOwned = (metadata.retentionOwned || []).filter(target => fs.existsSync(target));
     fs.writeFileSync(file, JSON.stringify(metadata, null, 2));
   }
   if (componentsOnly) {
     if (edition !== "test") throw new Error("Component releases currently require the internal test channel");
     const sourceState = assertBuildPreconditions(edition, { environment, sidecarBuildRoot, remotionRuntimeRoot });
-    const result = buildPortableStaging(edition, { target: stagingTarget, zip: stagingZip, archiveBaseDir: stagingRoot, componentsOnly: true }, sourceState);
+    try {
+    buildPortableStaging(edition, { target: stagingTarget, zip: stagingZip, archiveBaseDir: stagingRoot, componentsOnly: true }, sourceState);
+    const metadataFile = path.join(releaseDir, "components", edition, "unsigned-component-release.json");
+    const metadata = JSON.parse(fs.readFileSync(metadataFile, "utf8"));
+    require("./component-base-input.cjs").assertComponentBase(metadata, environment.XIAOXI_COMPONENT_BASE_ROOT || canonicalTarget);
     runPortableSelfCheck(edition, stagingTarget, stagingZip, true);
-    recordComponentValidation();
-    console.log(`Validated component application retained: ${stagingTarget}`);
-    return result;
+    const candidateRoot = path.join(releaseDir, "components", edition, `candidate-${transactionId}`);
+    fs.renameSync(stagingTarget, candidateRoot);
+    recordComponentValidation(candidateRoot);
+    console.log(`Accepted component candidate retained for local upgrade validation: ${candidateRoot}`);
+    return { componentsOnly: true, stagingCleaned: true, candidateRoot };
+    } finally {
+      try { require("./artifact-retention.cjs").removeOwned(releaseDir, stagingRoot); }
+      catch (error) { console.warn(`Component staging cleanup deferred: ${error.message}`); }
+    }
   }
   const result = runTransactionalRelease({
     releaseRoot: releaseDir,
@@ -546,7 +631,8 @@ function buildPortable(edition = "delivery", {
   for (const warning of result.cleanupWarnings || []) {
     console.warn(`release cleanup warning: ${warning}`);
   }
-  recordComponentValidation();
+  recordComponentValidation(canonicalTarget);
+  if (result.retainedBackups?.length) require("./artifact-retention.cjs").retainArtifacts(releaseDir, `portable-${edition}`, result.retainedBackups);
   for (const backup of result.retainedBackups || []) {
     console.warn(`release rollback artifact retained: ${backup}`);
   }
@@ -562,6 +648,7 @@ module.exports = {
   buildPortable,
   cleanupPaths,
   copyRuntimePackageTree,
+  describeBaseStabilizedRuntime,
   isCommercialDeliveryReady,
   publishStagedRelease,
   runTransactionalRelease,

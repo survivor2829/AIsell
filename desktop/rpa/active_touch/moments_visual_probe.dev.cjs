@@ -1,3 +1,4 @@
+const { WECHAT_RENDER_SURFACE_POWERSHELL } = require("./wechat_render_surface.cjs");
 const MOMENTS_VISUAL_READONLY_POWERSHELL = String.raw`
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
@@ -10,8 +11,154 @@ $null = [Windows.Storage.Streams.DataWriter, Windows.Foundation, ContentType=Win
 
 Add-Type @"
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 public static class Win32WechatMomentsVisualReadOnly {
+  // This scan runs thousands of times per frame. Keep the exact sampled pixels
+  // and isolation rules, but avoid interpreting the inner loops in PowerShell.
+  public static double[] MeasureAvatar(byte[] bytes, int stride, int width, int height, int left, int top, int size) {
+    if (size <= 0 || left < 0 || top < 0 || left + size > width || top + size > height)
+      return new double[] { 0, 0 };
+    int foreground = 0, total = 0;
+    for (int y = top; y < top + size; y += 4) {
+      for (int x = left; x < left + size; x += 4) {
+        int offset = y * stride + x * 4;
+        if (!(bytes[offset + 2] >= 218 && bytes[offset + 1] >= 218 && bytes[offset] >= 218)) foreground++;
+        total++;
+      }
+    }
+    if (total == 0) return new double[] { 0, 0 };
+    double foregroundRatio = (double)foreground / total;
+    if (foregroundRatio < 0.16 || foregroundRatio > 0.98) return new double[] { 0, 0 };
+    int ring = Math.Max(3, (int)Math.Round(size * 0.1));
+    int ringLight = 0, ringTotal = 0;
+    int[] sideLight = new int[4], sideTotal = new int[4];
+    for (int y = top - ring; y < top + size + ring; y += 4) {
+      for (int x = left - ring; x < left + size + ring; x += 4) {
+        if (x >= left && x < left + size && y >= top && y < top + size) continue;
+        int side = y < top ? 0 : y >= top + size ? 1 : x < left ? 2 : 3;
+        sideTotal[side]++;
+        if (x >= 0 && y >= 0 && x < width && y < height) {
+          int offset = y * stride + x * 4;
+          if (bytes[offset + 2] >= 218 && bytes[offset + 1] >= 218 && bytes[offset] >= 218) {
+            ringLight++; sideLight[side]++;
+          }
+        }
+        ringTotal++;
+      }
+    }
+    if (ringTotal == 0) return new double[] { 0, 0 };
+    double ringRatio = (double)ringLight / ringTotal;
+    bool isolated = true;
+    for (int side = 0; side < 4; side++) {
+      if (sideTotal[side] == 0 || (double)sideLight[side] / sideTotal[side] < 0.50) { isolated = false; break; }
+    }
+    return new double[] { isolated ? 1 : 0, foregroundRatio * 0.68 + ringRatio * 0.32, foregroundRatio, ringRatio };
+  }
+  private static bool SelectedGreen(byte[] bytes, int offset) {
+    int blue = bytes[offset], green = bytes[offset + 1], red = bytes[offset + 2];
+    return green >= 105 && green - red >= 30 && green - blue >= 12;
+  }
+  public static double SelectedGreenRatio(byte[] bytes, int stride, int left, int top, int right, int bottom) {
+    int selected = 0, total = 0;
+    for (int y = top; y < bottom; y += 2) {
+      for (int x = left; x < right; x += 2) {
+        if (SelectedGreen(bytes, y * stride + x * 4)) selected++;
+        total++;
+      }
+    }
+    return total == 0 ? 0.0 : (double)selected / total;
+  }
+  public static int[] SelectedGreenRows(byte[] bytes, int stride, int left, int top, int right, int bottom) {
+    var rows = new List<int>();
+    for (int y = top; y <= bottom; y++) {
+      int selected = 0, total = 0;
+      for (int x = left; x <= right; x += 4) {
+        if (SelectedGreen(bytes, y * stride + x * 4)) selected++;
+        total++;
+      }
+      if (total > 0 && (double)selected / total >= 0.55) rows.Add(y);
+    }
+    return rows.ToArray();
+  }
+  public static int[] SelectedGreenColumns(byte[] bytes, int stride, int left, int top, int right, int bottom) {
+    var columns = new List<int>();
+    for (int x = left; x <= right; x++) {
+      int selected = 0, total = 0;
+      for (int y = top; y <= bottom; y += 2) {
+        if (SelectedGreen(bytes, y * stride + x * 4)) selected++;
+        total++;
+      }
+      if (total > 0 && (double)selected / total >= 0.45) columns.Add(x);
+    }
+    return columns.ToArray();
+  }
+  public static double LightRatio(byte[] bytes, int stride, int left, int top, int right, int bottom) {
+    int light = 0, total = 0;
+    for (int y = top; y < bottom; y += 2) {
+      for (int x = left; x < right; x += 2) {
+        int offset = y * stride + x * 4;
+        if (bytes[offset + 2] >= 218 && bytes[offset + 1] >= 218 && bytes[offset] >= 218) light++;
+        total++;
+      }
+    }
+    return total == 0 ? 0.0 : (double)light / total;
+  }
+  public struct AvatarPeak { public int Left, Top; public double Score; }
+  public static AvatarPeak[] AvatarPeaks(byte[] bytes, int stride, int width, int height, int[] columns, int top, int bottom, int size) {
+    var peaks = new List<AvatarPeak>();
+    foreach (int x in columns) {
+      for (int y = top; y <= bottom; y += 4) {
+        double[] measure = MeasureAvatar(bytes, stride, width, height, x, y, size);
+        if (measure[0] == 1) peaks.Add(new AvatarPeak { Left = x, Top = y, Score = measure[1] });
+      }
+    }
+    return peaks.ToArray();
+  }
+  public struct MenuComponent { public int Left, Right, Top, Bottom, Width, Height, Count; public double CenterX, CenterY; }
+  public static MenuComponent[] MenuComponents(byte[] bytes, int stride, int left, int top, int right, int bottom, int[] bands) {
+    int width = right - left, height = bottom - top;
+    var mask = new bool[width * height];
+    // The bands and four-neighbour connectivity match the original scan exactly.
+    for (int x = 0; x < width; x++) {
+      bool inside = false;
+      for (int band = 0; band < bands.Length; band += 2) {
+        if (x + left >= bands[band] && x + left < bands[band + 1]) { inside = true; break; }
+      }
+      if (!inside) continue;
+      for (int y = 0; y < height; y++) {
+        int offset = (top + y) * stride + (left + x) * 4;
+        int blue = bytes[offset], green = bytes[offset + 1], red = bytes[offset + 2];
+        int maximum = Math.Max(red, Math.Max(green, blue)), minimum = Math.Min(red, Math.Min(green, blue));
+        mask[y * width + x] = maximum <= 205 && maximum - minimum <= 90;
+      }
+    }
+    var components = new List<MenuComponent>();
+    var queue = new Queue<int>();
+    int[] dx = { -1, 1, 0, 0 }, dy = { 0, 0, -1, 1 };
+    for (int seed = 0; seed < mask.Length; seed++) {
+      if (!mask[seed]) continue;
+      mask[seed] = false;
+      queue.Enqueue(seed);
+      int minX = seed % width, maxX = minX, minY = seed / width, maxY = minY, count = 0;
+      while (queue.Count > 0) {
+        int current = queue.Dequeue(), x = current % width, y = current / width;
+        minX = Math.Min(minX, x); maxX = Math.Max(maxX, x); minY = Math.Min(minY, y); maxY = Math.Max(maxY, y); count++;
+        for (int direction = 0; direction < 4; direction++) {
+          int nextX = x + dx[direction], nextY = y + dy[direction];
+          if (nextX < 0 || nextY < 0 || nextX >= width || nextY >= height) continue;
+          int next = nextY * width + nextX;
+          if (mask[next]) { mask[next] = false; queue.Enqueue(next); }
+        }
+      }
+      int componentWidth = maxX - minX + 1, componentHeight = maxY - minY + 1;
+      if (count >= 1 && count <= 36 && componentWidth >= 1 && componentWidth <= 7 && componentHeight >= 1 && componentHeight <= 7) {
+        components.Add(new MenuComponent { Left = left + minX, Right = left + maxX, Top = top + minY, Bottom = top + maxY,
+          Width = componentWidth, Height = componentHeight, Count = count, CenterX = left + (minX + maxX) / 2.0, CenterY = top + (minY + maxY) / 2.0 });
+      }
+    }
+    return components.ToArray();
+  }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
   [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
@@ -44,42 +191,7 @@ function Get-MomentsVisualRuntimeId([System.Windows.Automation.AutomationElement
   return ""
 }
 
-function Get-MomentsRenderPaneEvidence([System.Windows.Automation.AutomationElement]$root, [int]$expectedPid) {
-  $paneType = [System.Windows.Automation.PropertyCondition]::new(
-    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-    [System.Windows.Automation.ControlType]::Pane
-  )
-  $panes = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $paneType)
-  $matches = New-Object System.Collections.Generic.List[object]
-  for ($index = 0; $index -lt $panes.Count; $index++) {
-    $pane = $panes.Item($index)
-    try {
-      if ([string]$pane.Current.Name -cne "MMUIRenderSubWindowHW" -or [int]$pane.Current.ProcessId -ne $expectedPid) { continue }
-      $rect = $pane.Current.BoundingRectangle
-      $automationId = [string]$pane.Current.AutomationId
-      $controlType = [string]$pane.Current.ControlType.ProgrammaticName
-    } catch { continue }
-    $runtimeId = Get-MomentsVisualRuntimeId $pane
-    if (-not $runtimeId -or $controlType -cne "ControlType.Pane" -or $rect.Width -le 0 -or $rect.Height -le 0) { continue }
-    [void]$matches.Add(@{
-      element = $pane
-      name = "MMUIRenderSubWindowHW"
-      automationId = $automationId
-      controlType = $controlType
-      processId = $expectedPid
-      runtimeId = $runtimeId
-      bounds = @{
-        left = [double]$rect.Left
-        top = [double]$rect.Top
-        width = [double]$rect.Width
-        height = [double]$rect.Height
-      }
-    })
-  }
-  if ($matches.Count -eq 0) { return @{ ok = $false; reason = "moments_render_pane_not_found" } }
-  if ($matches.Count -ne 1) { return @{ ok = $false; reason = "moments_render_pane_ambiguous"; count = $matches.Count } }
-  return @{ ok = $true; pane = $matches[0] }
-}
+${WECHAT_RENDER_SURFACE_POWERSHELL}
 
 function Test-MomentsVisualViewportOwned($windowRect, [IntPtr]$expectedHWnd, [int]$expectedPid) {
   $width = [double]($windowRect.Right - $windowRect.Left)
@@ -264,21 +376,9 @@ function Test-MomentsDarkNeutralPixel($pixel) {
   return $minimum -ge 35 -and $maximum -le 180 -and ($maximum - $minimum) -le 55
 }
 
-function Test-MomentsLightPixel($pixel) {
-  return $pixel -ne $null -and $pixel.r -ge 218 -and $pixel.g -ge 218 -and $pixel.b -ge 218
-}
-
 function Get-MomentsPatchLightRatio($frame, [int]$left, [int]$top, [int]$right, [int]$bottom) {
-  $light = 0
-  $total = 0
-  for ($y = [Math]::Max(0, $top); $y -lt [Math]::Min($frame.height, $bottom); $y += 2) {
-    for ($x = [Math]::Max(0, $left); $x -lt [Math]::Min($frame.width, $right); $x += 2) {
-      if (Test-MomentsLightPixel (Get-MomentsPixel $frame $x $y)) { $light += 1 }
-      $total += 1
-    }
-  }
-  if ($total -eq 0) { return 0.0 }
-  return [double]$light / [double]$total
+  return [Win32WechatMomentsVisualReadOnly]::LightRatio($frame.bytes, $frame.stride,
+    [Math]::Max(0, $left), [Math]::Max(0, $top), [Math]::Min($frame.width, $right), [Math]::Min($frame.height, $bottom))
 }
 
 function Get-MomentsVisualFeedScanProfile($viewportBounds, $avatarCandidates = $null) {
@@ -420,73 +520,9 @@ function Find-MomentsMenuDotsDetailed($frame, $viewportBounds = $null, $avatarCa
   if ($gutterWidth -lt 12 -or $gutterHeight -lt 12) {
     return @{ menus = @(); diagnostics = @{ componentCount = 0; rawCandidateCount = 0; acceptedCandidateCount = 0; rejectedWhitespaceCount = 0; rejectedAvatarLaneCount = 0 } }
   }
-  $mask = New-Object bool[] ($gutterWidth * $gutterHeight)
-  for ($localY = 0; $localY -lt $gutterHeight; $localY++) {
-    $y = $yStart + $localY
-    for ($localX = 0; $localX -lt $gutterWidth; $localX++) {
-      $x = $xStart + $localX
-      $insideScanBand = $false
-      foreach ($band in $scanBands) {
-        if ($x -ge [int][Math]::Floor([double]$band.left) -and $x -lt [int][Math]::Ceiling([double]$band.right)) {
-          $insideScanBand = $true
-          break
-        }
-      }
-      if (-not $insideScanBand) { continue }
-      $offset = ($y * $frame.stride) + ($x * 4)
-      $blue = [int]$frame.bytes[$offset]
-      $green = [int]$frame.bytes[$offset + 1]
-      $red = [int]$frame.bytes[$offset + 2]
-      $maximum = [Math]::Max($red, [Math]::Max($green, $blue))
-      $minimum = [Math]::Min($red, [Math]::Min($green, $blue))
-      $mask[($localY * $gutterWidth) + $localX] = $maximum -le 205 -and ($maximum - $minimum) -le 90
-    }
-  }
-  $seen = New-Object bool[] $mask.Length
-  $components = New-Object System.Collections.Generic.List[object]
-  for ($seedY = 0; $seedY -lt $gutterHeight; $seedY++) {
-    for ($seedX = 0; $seedX -lt $gutterWidth; $seedX++) {
-      $seedIndex = ($seedY * $gutterWidth) + $seedX
-      if (-not $mask[$seedIndex] -or $seen[$seedIndex]) { continue }
-      $queue = New-Object System.Collections.Generic.Queue[int]
-      $queue.Enqueue($seedIndex)
-      $seen[$seedIndex] = $true
-      $minX = $seedX; $maxX = $seedX; $minY = $seedY; $maxY = $seedY; $count = 0
-      while ($queue.Count -gt 0) {
-        $current = $queue.Dequeue()
-        $currentY = [int][Math]::Floor($current / $gutterWidth)
-        $currentX = $current - ($currentY * $gutterWidth)
-        $minX = [Math]::Min($minX, $currentX); $maxX = [Math]::Max($maxX, $currentX)
-        $minY = [Math]::Min($minY, $currentY); $maxY = [Math]::Max($maxY, $currentY)
-        $count += 1
-        foreach ($delta in @(@(-1,0), @(1,0), @(0,-1), @(0,1))) {
-          $nextX = $currentX + $delta[0]; $nextY = $currentY + $delta[1]
-          if ($nextX -lt 0 -or $nextY -lt 0 -or $nextX -ge $gutterWidth -or $nextY -ge $gutterHeight) { continue }
-          $nextIndex = ($nextY * $gutterWidth) + $nextX
-          if ($mask[$nextIndex] -and -not $seen[$nextIndex]) {
-            $seen[$nextIndex] = $true
-            $queue.Enqueue($nextIndex)
-          }
-        }
-      }
-      $width = $maxX - $minX + 1
-      $height = $maxY - $minY + 1
-      if ($count -ge 1 -and $count -le 36 -and $width -ge 1 -and $width -le 7 -and $height -ge 1 -and $height -le 7) {
-        [void]$components.Add(@{
-          left = [double]($xStart + $minX)
-          right = [double]($xStart + $maxX)
-          top = [double]($yStart + $minY)
-          bottom = [double]($yStart + $maxY)
-          centerX = [double]($xStart + (($minX + $maxX) / 2.0))
-          centerY = [double]($yStart + (($minY + $maxY) / 2.0))
-          width = [int]$width
-          height = [int]$height
-          count = [int]$count
-        })
-      }
-    }
-  }
-  $ordered = @($components.ToArray() | Sort-Object { [double]$_.centerY }, { [double]$_.centerX })
+  $bands = [int[]]@($scanBands | ForEach-Object { [int][Math]::Floor([double]$_.left); [int][Math]::Ceiling([double]$_.right) })
+  $components = [Win32WechatMomentsVisualReadOnly]::MenuComponents($frame.bytes, $frame.stride, $xStart, $yStart, $xEnd, $yEnd, $bands)
+  $ordered = @($components | Sort-Object { [double]$_.centerY }, { [double]$_.centerX })
   $menus = New-Object System.Collections.Generic.List[object]
   $rawCandidateCount = 0
   $rejectedWhitespaceCount = 0
@@ -610,50 +646,6 @@ function Resolve-MomentsInteractionAnchor(
   return @{ ok = $true; reason = ""; menu = $matches[0]; avatarHash = $avatarHash; diagnostics = $diagnostics }
 }
 
-function Measure-MomentsAvatarBox($frame, [int]$left, [int]$top, [int]$size) {
-  $insideForeground = 0
-  $insideTotal = 0
-  for ($y = $top; $y -lt ($top + $size); $y += 4) {
-    for ($x = $left; $x -lt ($left + $size); $x += 4) {
-      $offset = ($y * $frame.stride) + ($x * 4)
-      $light = [int]$frame.bytes[$offset + 2] -ge 218 -and [int]$frame.bytes[$offset + 1] -ge 218 -and [int]$frame.bytes[$offset] -ge 218
-      if (-not $light) { $insideForeground += 1 }
-      $insideTotal += 1
-    }
-  }
-  if ($insideTotal -eq 0) { return @{ ok = $false; score = 0.0 } }
-  $foregroundRatio = [double]$insideForeground / [double]$insideTotal
-  if ($foregroundRatio -lt 0.16 -or $foregroundRatio -gt 0.98) { return @{ ok = $false; score = 0.0 } }
-  $ringLight = 0
-  $ringTotal = 0
-  $sideLight = @(0, 0, 0, 0)
-  $sideTotal = @(0, 0, 0, 0)
-  $ring = [Math]::Max(3, [int][Math]::Round($size * 0.1))
-  for ($y = $top - $ring; $y -lt ($top + $size + $ring); $y += 4) {
-    for ($x = $left - $ring; $x -lt ($left + $size + $ring); $x += 4) {
-      $inside = $x -ge $left -and $x -lt ($left + $size) -and $y -ge $top -and $y -lt ($top + $size)
-      if ($inside) { continue }
-      $side = if ($y -lt $top) { 0 } elseif ($y -ge ($top + $size)) { 1 } elseif ($x -lt $left) { 2 } else { 3 }
-      $sideTotal[$side] += 1
-      if ($x -ge 0 -and $y -ge 0 -and $x -lt $frame.width -and $y -lt $frame.height) {
-        $offset = ($y * $frame.stride) + ($x * 4)
-        if ([int]$frame.bytes[$offset + 2] -ge 218 -and [int]$frame.bytes[$offset + 1] -ge 218 -and [int]$frame.bytes[$offset] -ge 218) { $ringLight += 1; $sideLight[$side] += 1 }
-      }
-      $ringTotal += 1
-    }
-  }
-  if ($ringTotal -eq 0) { return @{ ok = $false; score = 0.0 } }
-  $ringLightRatio = [double]$ringLight / [double]$ringTotal
-  # A real avatar is an isolated square. A patch on a photo/text edge may
-  # have a light ring on average while still touching content on one side.
-  $isolated = $true
-  for ($side = 0; $side -lt 4; $side++) {
-    if ($sideTotal[$side] -eq 0 -or ([double]$sideLight[$side] / $sideTotal[$side]) -lt 0.50) { $isolated = $false; break }
-  }
-  $ok = $isolated
-  return @{ ok = $ok; score = (($foregroundRatio * 0.68) + ($ringLightRatio * 0.32)); foregroundRatio = $foregroundRatio; ringLightRatio = $ringLightRatio }
-}
-
 function Test-MomentsVisualBoundsInside($inner, $outer) {
   if ($inner -eq $null -or $outer -eq $null) { return $false }
   return [double]$inner.width -gt 0 -and [double]$inner.height -gt 0 -and
@@ -703,17 +695,10 @@ function Find-MomentsVisibleAvatars($frame, $viewportBounds) {
   $profile = Get-MomentsVisualFeedScanProfile $viewportBounds
   $size = [int]$profile.avatarSize
   $viewportBottom = [double]$viewportBounds.top + [double]$viewportBounds.height
-  $peaks = New-Object System.Collections.Generic.List[object]
-  foreach ($x in @($profile.avatarXPositions)) {
-    for ($y = [int][Math]::Ceiling([double]$viewportBounds.top); $y -le [int][Math]::Floor($viewportBottom - $size); $y += 4) {
-      $measure = Measure-MomentsAvatarBox $frame ([int]$x) $y $size
-      if ($measure.ok) {
-        [void]$peaks.Add(@{ left = [int]$x; top = $y; size = $size; score = [double]$measure.score })
-      }
-    }
-  }
+  $peaks = [Win32WechatMomentsVisualReadOnly]::AvatarPeaks($frame.bytes, $frame.stride, $frame.width, $frame.height,
+    [int[]]$profile.avatarXPositions, [int][Math]::Ceiling([double]$viewportBounds.top), [int][Math]::Floor($viewportBottom - $size), $size)
   $avatars = New-Object System.Collections.Generic.List[object]
-  foreach ($peak in @($peaks.ToArray() | Sort-Object @{ Expression = { [double]$_.score }; Descending = $true }, @{ Expression = { [double]$_.top }; Descending = $false })) {
+  foreach ($peak in @($peaks | Sort-Object @{ Expression = { [double]$_.score }; Descending = $true }, @{ Expression = { [double]$_.top }; Descending = $false })) {
     $duplicate = $false
     foreach ($existing in $avatars) {
       if ([Math]::Abs([double]$existing.left - [double]$peak.left) -le ($size * 0.9) -and
@@ -748,6 +733,20 @@ function Get-MomentsPixelHash($frame, $rect) {
   $sha = [Security.Cryptography.SHA256]::Create()
   try { $digest = $sha.ComputeHash($buffer) } finally { $sha.Dispose() }
   return ([BitConverter]::ToString($digest).Replace("-", "").ToLowerInvariant())
+}
+
+function Get-MomentsAvatarAnchorHashes($frame, $rect) {
+  # Keep exact interior pixels, allowing only a one-pixel detection offset.
+  $size = [Math]::Floor([Math]::Min([double]$rect.width, [double]$rect.height)) - 8
+  if ($size -lt 24) { return @() }
+  $hashes = @()
+  for ($dy = -1; $dy -le 1; $dy++) {
+    for ($dx = -1; $dx -le 1; $dx++) {
+      $crop = @{ left=([Math]::Floor([double]$rect.left)+4+$dx); top=([Math]::Floor([double]$rect.top)+4+$dy); width=$size; height=$size }
+      $hashes += Get-MomentsPixelHash $frame $crop
+    }
+  }
+  return @($hashes | Select-Object -Unique)
 }
 
 function ConvertTo-MomentsOcrBitmap($frame, $rect) {
@@ -1070,13 +1069,26 @@ function Get-MomentsPostContentText($ocr, $postRect, $avatarBounds, $menuBounds 
   return [string]::Join([Environment]::NewLine, @($lines | ForEach-Object { [string]$_.compact }))
 }
 
-function Get-MomentsVisualPostCandidates($frame, $viewportBounds, [bool]$includeText = $true) {
+function Get-MomentsVisualPostCandidates($frame, $viewportBounds, [bool]$includeText = $true, $previousRead = $null) {
   $frameBounds = @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height }
   if (-not (Test-MomentsVisualBoundsInside $viewportBounds $frameBounds)) {
     return @{ menus = @(); posts = @(); interactionPosts = @(); postBoundaries = @(); visibleAvatars = @() }
   }
-  $visibleAvatars = @(Find-MomentsVisibleAvatars $frame $viewportBounds)
-  $menuRead = Find-MomentsMenuDotsDetailed $frame $viewportBounds $visibleAvatars
+  $viewportHash = Get-MomentsPixelHash $frame $viewportBounds
+  $sameViewport = $previousRead -ne $null -and $viewportHash -and
+    [string]$previousRead.viewportHash -ceq $viewportHash
+  foreach ($coordinate in @("left", "top", "width", "height")) {
+    if ($previousRead -eq $null -or [double]$previousRead.viewportBounds.$coordinate -ne [double]$viewportBounds.$coordinate) { $sameViewport = $false }
+  }
+  # Reuse only geometry from a byte-identical viewport. Text is still read from
+  # the second frame; any pixel or bounds change takes the normal full scan.
+  if ($sameViewport) {
+    $visibleAvatars = @($previousRead.visibleAvatars)
+    $menuRead = @{ menus = @($previousRead.menus); diagnostics = $previousRead.menuDiagnostics }
+  } else {
+    $visibleAvatars = @(Find-MomentsVisibleAvatars $frame $viewportBounds)
+    $menuRead = Find-MomentsMenuDotsDetailed $frame $viewportBounds $visibleAvatars
+  }
   $menus = @($menuRead.menus | Where-Object { Test-MomentsVisualBoundsInside $_.bounds $viewportBounds })
   $posts = New-Object System.Collections.Generic.List[object]
   $interactionPosts = New-Object System.Collections.Generic.List[object]
@@ -1146,10 +1158,14 @@ function Get-MomentsVisualPostCandidates($frame, $viewportBounds, [bool]$include
       partialVisible = $unclippedPostBottom -gt $viewportBottom
       ocrLines = $ocr.lines
       contentText = Get-MomentsPostContentText $ocr $postRect $avatar.bounds $menu.bounds
+      avatarAnchorHashes = @(Get-MomentsAvatarAnchorHashes $frame $avatar.bounds)
     })
   }
   return @{
     menus = $menus
+    viewportHash = $viewportHash
+    viewportBounds = $viewportBounds
+    geometryReused = [bool]$sameViewport
     posts = @($posts.ToArray() | Sort-Object { $_.bounds.top })
     interactionPosts = @($interactionPosts.ToArray() | Sort-Object { $_.bounds.top })
     menuDiagnostics = $menuRead.diagnostics
@@ -1169,6 +1185,14 @@ function Get-MomentsVisualReadingCandidates($frame, $viewportBounds, $visibleAva
   $viewportRight = [double]$viewportBounds.left + [double]$viewportBounds.width
   $viewportBottom = [double]$viewportBounds.top + [double]$viewportBounds.height
   $readingCandidates = New-Object System.Collections.Generic.List[object]
+  # All post avatars share the leading column. Blue comment text and image
+  # details to its right can pass the coarse square detector, but are not posts.
+  if ($avatars.Count -gt 0) {
+    $leadingAvatar = @($avatars | Sort-Object { [double]$_.left })[0]
+    $avatars = @($avatars | Where-Object {
+      [Math]::Abs([double]$_.left - [double]$leadingAvatar.left) -le ([double]$leadingAvatar.width * 0.35)
+    })
+  }
   for ($index = 0; $index -lt $avatars.Count; $index++) {
     $avatar = $avatars[$index]
     # Author text beside a real avatar is not a second post on the same row.
@@ -1211,6 +1235,7 @@ function Get-MomentsVisualReadingCandidates($frame, $viewportBounds, $visibleAva
       avatarBounds = $avatar
       partialVisible = $true
       bodyOnly = $true
+      avatarAnchorHashes = @(Get-MomentsAvatarAnchorHashes $frame $avatar)
     })
   }
   return @($readingCandidates.ToArray() | Sort-Object { [double]$_.bounds.top })

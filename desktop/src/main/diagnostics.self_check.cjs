@@ -244,6 +244,23 @@ try {
   assert.equal(invalidClockLogger.readRecent(10).length, 0);
   const traceLogger = createDiagnosticLogger({ rootDir: path.join(root, "send-trace") });
   const tracedOperation = traceLogger.begin("active_touch", "contact_send", { action: "send" }, { trace: true });
+  const preSendEnvelope = require("../shared/wechat-send-diagnostics.cjs").summarizeSendResult({
+    ok: false,
+    action: "send",
+    send_attempted: false,
+    proofDiagnostics: { input_read_reason: "input_draft_read_failed" }
+  }, { stage: "before_send_snapshot" });
+  assert.deepEqual(preSendEnvelope, {
+    action: "send",
+    reason: "input_draft_read_failed",
+    input_read_reason: "input_draft_read_failed",
+    ok: false,
+    send_attempted: false,
+    outcome: "not_attempted",
+    side_effect: "none",
+    retryability: "safe_retry",
+    failure_stage: "before_send_snapshot"
+  });
   traceLogger.event("active_touch", "send_stage", { stage: "after_send_confirmation", is_new: false,
     input_empty: true, input_read_reason: "empty", message: "trace-private-text" }, { trace: true, traceId: tracedOperation.traceId });
   tracedOperation.end({ ok: false, reason: "message_bubble_not_new_latest_exact", send_attempted: null });
@@ -258,6 +275,90 @@ try {
   assert.equal(report.details.input_empty, true);
   assert.equal(report.details.stage, "after_send_confirmation");
   assert.doesNotMatch(JSON.stringify(traceRows), /trace-private-text/);
+  const windowDetail = require("../shared/wechat-send-diagnostics.cjs").summarizeSendResult({ ok: false, reason: "powershell_timeout",
+    diagnostics: { window_stage: "recover", window_class_code: "mmui::MainWindow", window_compile_ms: 200,
+      window_candidate_count: 2, window_recovery_candidate_count: 1, window_recovery_main_count: 0,
+      window_recovery_attempted: true, window_recovery_succeeded: false,
+      window_recover_ms: 300, window_total_ms: 20001, title: "private-chat-title", stderr: "private-error-text" } });
+  traceLogger.event("active_touch", "send_stage", windowDetail, { trace: true, level: "warn" });
+  const windowEntry = traceLogger.readRecent(1)[0];
+  const windowReport = require("../shared/cloud-report.cjs").reportEntry(windowEntry, { installId: "12345678-1234-1234-1234-123456789012" });
+  assert.equal(windowReport.details.window_stage, "recover");
+  assert.equal(windowReport.details.window_class_code, "mmui::MainWindow");
+  assert.equal(windowReport.details.window_compile_ms, 200);
+  assert.equal(windowReport.details.window_candidate_count, 2);
+  assert.equal(windowReport.details.window_recovery_candidate_count, 1);
+  assert.equal(windowReport.details.window_recovery_main_count, 0);
+  assert.equal(windowReport.details.window_recovery_attempted, true);
+  assert.equal(windowReport.details.window_recovery_succeeded, false);
+  assert.equal(windowReport.details.window_recover_ms, 300);
+  assert.doesNotMatch(JSON.stringify(windowReport), /private-chat-title|private-error-text/);
+  const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs");
+  const inputSafety = {
+    input_phase: "click_search_result",
+    expected_input_tick: 3482965800,
+    current_input_tick: 3482965891,
+    required_idle_ms: 15000,
+    observed_idle_ms: 123,
+    expected_hWnd: 22,
+    foreground_hWnd: 22
+  };
+  const { input_phase: inputPhase, ...inputNumbers } = inputSafety;
+  const blockedInput = summarizeSendResult({
+    ok: false, reason: "wechat_external_input_detected", send_attempted: false,
+    safety_diagnostics: {
+      phase: inputPhase, ...inputNumbers,
+      searchQuery: "private-search-canary", text: "private-ocr-canary",
+      key: "private-key-canary", path: "C:\\private\\canary", x: 110, y: 210,
+      raw: { text: "private-raw-canary" }
+    }
+  });
+  assert.deepEqual(Object.fromEntries(Object.keys(inputSafety).map((key) => [key, blockedInput[key]])), inputSafety,
+    "workflow send summaries must retain only typed input phase, tick, idle and window observations");
+  assert.equal(blockedInput.outcome, "not_attempted");
+  assert.equal(blockedInput.retryability, "safe_retry");
+  assert.equal(blockedInput.safety_diagnostics, undefined);
+  assert.equal(blockedInput.x, undefined);
+  assert.equal(blockedInput.y, undefined);
+  assert.doesNotMatch(JSON.stringify(blockedInput), /private-/u);
+  traceLogger.event("active_touch", "workflow_contact_send.failed", blockedInput, { level: "warn" });
+  const inputEntry = traceLogger.readRecent(1)[0];
+  assert.deepEqual(Object.fromEntries(Object.keys(inputSafety).map((key) => [key, inputEntry.details[key]])), inputSafety,
+    "existing diagnostic persistence must preserve the input observations without a separate collection path");
+  const inputReport = require("../shared/cloud-report.cjs").reportEntry(inputEntry, { installId: "12345678-1234-1234-1234-123456789012" });
+  assert.deepEqual(Object.fromEntries(Object.keys(inputSafety).map((key) => [key, inputReport.details[key]])), inputSafety,
+    "the existing feedback report must preserve safe input metadata, including uint32 ticks larger than a day");
+  assert.doesNotMatch(JSON.stringify(inputReport), /private-/u);
+  const unsafeInput = summarizeSendResult({
+    ok: false, send_attempted: null, send_result: "outcome_unknown",
+    safety_diagnostics: {
+      phase: "private-phase-canary", expected_input_tick: "3482965800", current_input_tick: -1,
+      required_idle_ms: null, observed_idle_ms: Number.NaN,
+      expected_hWnd: {}, foreground_hWnd: Number.MAX_SAFE_INTEGER + 1
+    }
+  });
+  for (const key of Object.keys(inputSafety)) assert.equal(unsafeInput[key], undefined);
+  assert.equal(unsafeInput.outcome, "outcome_unknown");
+  assert.equal(unsafeInput.side_effect, "possible");
+  assert.equal(unsafeInput.retryability, "manual_review");
+  const unsafeInputReport = require("../shared/cloud-report.cjs").reportEntry({
+    ...inputEntry, details: { input_phase: "private-phase-canary", expected_input_tick: "3482965800",
+      current_input_tick: -1, required_idle_ms: null, observed_idle_ms: Number.NaN,
+      expected_hWnd: {}, foreground_hWnd: Number.MAX_SAFE_INTEGER + 1 }
+  }, { installId: "12345678-1234-1234-1234-123456789012" });
+  for (const key of Object.keys(inputSafety)) assert.equal(unsafeInputReport.details[key], undefined);
+  const parentLogger = createDiagnosticLogger({ rootDir: path.join(root, "parent-trace") });
+  parentLogger.event("wechat_adapter", "executor", { parent_trace_code: "not-a-trace", outcome: "not_attempted", side_effect: "none", retryability: "safe_retry", failure_stage: "before_send_snapshot" }, { level: "warn", code: "input_draft_read_failed" });
+  const parentEntry = parentLogger.readRecent(1)[0];
+  assert.equal(parentEntry.parent_trace_id, undefined, "invalid parent trace identifiers must not enter diagnostics");
+  const validParent = parentLogger.event("wechat_adapter", "executor_child", { parent_trace_id: tracedOperation.traceId, outcome: "not_attempted", side_effect: "none", retryability: "safe_retry", failure_stage: "before_send_snapshot" }, { level: "warn", code: "input_draft_read_failed" });
+  assert.equal(validParent.parent_trace_id, tracedOperation.traceId);
+  const validParentReport = require("../shared/cloud-report.cjs").reportEntry(validParent, { installId: "12345678-1234-1234-1234-123456789012" });
+  assert.equal(validParentReport.details.parent_trace_id, tracedOperation.traceId);
+  assert.equal(validParentReport.details.outcome, "not_attempted");
+  assert.equal(validParentReport.details.side_effect, "none");
+  assert.equal(validParentReport.details.retryability, "safe_retry");
+  assert.equal(validParentReport.details.failure_stage, "before_send_snapshot");
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

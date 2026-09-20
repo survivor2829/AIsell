@@ -1,4 +1,5 @@
-const fs = require("node:fs");
+// Backups and runtime copies need physical ASAR files, not Electron's virtual directories.
+const fs = process.versions.electron ? require("original-fs") : require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { execFile, spawn } = require("node:child_process");
@@ -7,6 +8,7 @@ const { writeJsonAtomic } = require("./atomic-file.cjs");
 const { readJson, updatePaths, verifySelected, saveSelection, rollbackSelection } = require("./component-paths.cjs");
 const { verifyManifest, VERSION } = require("../shared/cloud-contract.cjs");
 const { hashFile } = require("../shared/component-contract.cjs");
+const { backupFilter, copyBytes, checkCopySpace, createOwnedDirectory, removeOwnedDirectory, updateFailure, formatUpdateFailure } = require("./update-storage.cjs");
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function processSnapshot() {
   const result = await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
@@ -39,36 +41,70 @@ async function waitForExit(job, onStage, timeoutMs = 120000) {
   }
 }
 async function backupUserData(userData, id) {
-  const destination = path.join(path.dirname(userData), path.basename(userData) + "-update-backups", id);
-  fs.mkdirSync(destination, { recursive: true });
-  await fs.promises.cp(userData, destination, { recursive: true, errorOnExist: true, force: false,
-    filter: source => {
-      const relative = path.relative(userData, source).replaceAll("\\", "/");
-      return !relative.startsWith("data/cloud-maintenance") && !relative.startsWith("update-helper-profile");
-    } });
-  writeJsonAtomic(path.join(destination, "update-backup.json"), { createdAt: new Date().toISOString(), kind: "before-full-upgrade" });
-  return destination;
+  const parent = path.join(path.dirname(userData), path.basename(userData) + "-update-backups");
+  const source = await fs.promises.realpath(userData), filter = backupFilter(source);
+  await checkCopySpace([{ path: parent, bytes: await copyBytes(source, filter) }]);
+  const owned = await createOwnedDirectory(parent, id);
+  try {
+    await fs.promises.cp(source, owned.directory, { recursive: true, errorOnExist: true, force: false, filter });
+    writeJsonAtomic(path.join(owned.directory, "update-backup.json"), { createdAt: new Date().toISOString(), kind: "before-full-upgrade" });
+    return owned.directory;
+  } catch (error) {
+    try { await removeOwnedDirectory(owned); } catch (cleanupError) { error.cleanupCode = cleanupError.code || cleanupError.message; }
+    throw error;
+  }
+}
+async function reclaimFinishedHelpers(paths, processes) {
+  const parent = path.join(paths.directory, "helper-runtime");
+  if (!fs.existsSync(parent)) return;
+  const realParent = await fs.promises.realpath(parent);
+  for (const name of await fs.promises.readdir(paths.jobs)) {
+    if (!/^[a-f0-9-]{36}\.json$/.test(name)) continue;
+    const id = name.slice(0, -5), job = readJson(path.join(paths.jobs, name));
+    const status = readJson(path.join(paths.jobs, id + ".status.json")), ready = readJson(path.join(paths.jobs, id + ".ready.json"));
+    const directory = path.join(realParent, id);
+    if (job?.helperCopyVersion !== 1 || job.id !== id || job.helperExecutable !== path.join(directory, "ai-update-helper.exe")
+        || !["error", "complete"].includes(status?.phase) || !Number.isInteger(ready?.pid) || ready.pid <= 0
+        || processes.some(row => row.pid === ready.pid)) continue;
+    // Old backups, unmarked helpers and jobs without conclusive exit evidence are never swept.
+    try { await removeOwnedDirectory({ parent: realParent, directory, identity: job.helperIdentity }); } catch { /* In use or uncertain: preserve it. */ }
+  }
 }
 async function createUpdateJob({ userData, prepared, currentVersion }) {
   const paths = updatePaths(userData); fs.mkdirSync(paths.jobs, { recursive: true });
-  const id = crypto.randomUUID(), processes = descendants(await processSnapshot(), process.pid);
+  const id = crypto.randomUUID(), snapshot = await processSnapshot(), processes = descendants(snapshot, process.pid);
   if (!processes.some(row => row.pid === process.pid)) throw Error("update_process_snapshot_failed");
+  await reclaimFinishedHelpers(paths, snapshot);
   const installedRoot = global.__xiaoxiComponents?.installedRoot || path.dirname(process.execPath);
-  const helperRoot = path.join(paths.directory, "helper-runtime", id);
-  fs.mkdirSync(helperRoot, { recursive: true });
+  const applicationRoot = global.__xiaoxiComponents?.applicationRoot || path.join(installedRoot, "resources", "app");
+  const copies = [];
   // A full installer must be free to replace the installed Electron runtime.
   // The helper uses its own executable name and files outside that directory.
   for (const entry of fs.readdirSync(installedRoot, { withFileTypes: true })) {
-    if (entry.isFile() && (!entry.name.endsWith(".exe") || entry.name === "crashpad_handler.exe")) await fs.promises.copyFile(path.join(installedRoot, entry.name), path.join(helperRoot, entry.name));
-    else if (entry.isDirectory() && entry.name === "locales") await fs.promises.cp(path.join(installedRoot, entry.name), path.join(helperRoot, entry.name), { recursive: true });
+    if ((entry.isFile() && (!entry.name.endsWith(".exe") || entry.name === "crashpad_handler.exe"))
+        || (entry.isDirectory() && entry.name === "locales")) copies.push({ source: path.join(installedRoot, entry.name), target: entry.name });
   }
-  const helperExecutable = path.join(helperRoot, "ai-update-helper.exe");
-  await fs.promises.copyFile(process.execPath, helperExecutable);
-  await fs.promises.cp(path.join(installedRoot, "resources", "app"), path.join(helperRoot, "resources", "app"), { recursive: true });
-  const job = { id, parentPid: process.pid, processes, currentVersion, targetVersion: prepared.version, prepared,
-    installedRoot, executable: process.execPath, helperExecutable };
-  const file = path.join(paths.jobs, id + ".json"); writeJsonAtomic(file, job);
-  return { file, job };
+  copies.push({ source: process.execPath, target: "ai-update-helper.exe" }, { source: applicationRoot, target: "resources/app" });
+  let helperBytes = 0;
+  for (const copy of copies) helperBytes += await copyBytes(copy.source);
+  const parent = path.join(paths.directory, "helper-runtime"), parts = [{ path: parent, bytes: helperBytes }];
+  if (prepared.kind !== "components") {
+    const source = await fs.promises.realpath(userData);
+    parts.push({ path: path.join(path.dirname(userData), path.basename(userData) + "-update-backups"), bytes: await copyBytes(source, backupFilter(source)) });
+  }
+  // Budget our own copies before the parent exits; the signed v1 manifest has no NSIS expanded size.
+  const copyBudget = await checkCopySpace(parts), owned = await createOwnedDirectory(parent, id);
+  try {
+    for (const copy of copies) await fs.promises.cp(copy.source, path.join(owned.directory, copy.target), { recursive: true, errorOnExist: true, force: false });
+    const helperExecutable = path.join(owned.directory, "ai-update-helper.exe");
+    const job = { id, parentPid: process.pid, processes, currentVersion, targetVersion: prepared.version, prepared,
+      installedRoot, executable: process.execPath, helperExecutable, helperCopyVersion: 1, helperIdentity: owned.identity, copyBudget };
+    const file = path.join(paths.jobs, id + ".json"); writeJsonAtomic(file, job);
+    return { file, job };
+  } catch (error) {
+    try { await removeOwnedDirectory(owned); } catch (cleanupError) { error.cleanupCode = cleanupError.code || cleanupError.message; }
+    throw error;
+  }
 }
 async function runHelper({ jobFile, userData }) {
   const { app, BrowserWindow } = require("electron");
@@ -83,18 +119,26 @@ async function runHelper({ jobFile, userData }) {
   const window = new BrowserWindow({ width: 560, height: 320, resizable: false, autoHideMenuBar: true, title: "AI获客 · 软件更新",
     webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, partition: "xiaoxi-update-helper" } });
   await window.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><style>body{margin:0;padding:32px;font:15px 'Microsoft YaHei',sans-serif;color:#273442;background:#fff5f7}h1{font-size:23px;margin:14px 0}p{line-height:1.7;color:#596371}small{color:#8b3454}progress{width:100%;accent-color:#e83458}</style><small>AI获客　${job.currentVersion} → ${job.targetVersion}</small><h1 id="title">正在准备更新</h1><p id="detail">更新窗口会在软件退出后继续显示进度。</p><progress id="busy"></progress></html>`));
-  let finished = false;
+  let finished = false, currentPhase = "ready";
   window.on("close", event => { if (!finished) event.preventDefault(); });
-  const stage = (phase, title, detail = "") => {
-    writeJsonAtomic(path.join(paths.jobs, job.id + ".status.json"), { phase, title, detail, updatedAt: new Date().toISOString() });
+  const stage = (phase, title, detail = "", failure) => {
+    if (phase !== "error") currentPhase = phase;
+    let persistenceError;
+    try { writeJsonAtomic(path.join(paths.jobs, job.id + ".status.json"), { phase, title, detail, failure, updatedAt: new Date().toISOString() }); }
+    catch (error) {
+      persistenceError = error;
+      detail += `\n更新记录未能保存（${updateFailure(error, currentPhase).code}），请保留此窗口的错误信息。`;
+    }
     if (!window.isDestroyed()) void window.webContents.executeJavaScript(`document.getElementById('title').textContent=${JSON.stringify(title)};document.getElementById('detail').textContent=${JSON.stringify(detail)};document.getElementById('busy').hidden=${JSON.stringify(["error", "complete"].includes(phase))}`).catch(() => {});
+    if (persistenceError && phase !== "error") throw persistenceError;
   };
-  // A ready receipt prevents the parent from quitting before its replacement UI exists.
-  writeJsonAtomic(path.join(paths.jobs, job.id + ".ready.json"), { pid: process.pid });
   const activeJobFile = path.join(paths.directory, "active-job.json");
-  writeJsonAtomic(activeJobFile, { id: job.id, pid: process.pid });
-  const config = require("./cloud-config.cjs").cloudConfig({ developmentEdition: true });
   try {
+    // Publish ready last: the parent stays open if either startup receipt cannot be written.
+    writeJsonAtomic(activeJobFile, { id: job.id, pid: process.pid });
+    writeJsonAtomic(path.join(paths.jobs, job.id + ".ready.json"), { pid: process.pid });
+    const config = require("./cloud-config.cjs").cloudConfig({ developmentEdition: true });
+    currentPhase = "waiting";
     await waitForExit(job, stage);
     const prepared = job.prepared;
     stage("verifying", "正在校验更新", "正在核对签名和完整版本文件。");
@@ -143,10 +187,12 @@ async function runHelper({ jobFile, userData }) {
     finished = true; setTimeout(() => app.quit(), 1800);
   } catch (error) {
     const messages = { update_workers_still_running: "仍有工作进程占用，更新尚未安装。退出相关任务后重新检查更新。", update_start_rolled_back: "新版本启动失败，已恢复上一版本，可重新检查更新。", update_start_failed_repair_required: "完整更新已安装，但启动未完成。请重新打开软件；仍失败时使用完整安装包修复。" };
-    stage("error", "更新未完成", messages[error.message] || `更新未安装完成，请重新打开软件后重试。（${error.code || error.message}）`);
+    const failure = updateFailure(error, currentPhase);
     finished = true;
+    stage("error", "更新未完成", messages[failure.code] || formatUpdateFailure(failure), failure);
   } finally {
-    if (readJson(activeJobFile)?.id === job.id) fs.rmSync(activeJobFile, { force: true });
+    // Failure to remove a receipt must never hide the original failure or lock its window.
+    try { if (readJson(activeJobFile)?.id === job.id) fs.rmSync(activeJobFile, { force: true }); } catch {}
   }
   app.on("window-all-closed", () => app.quit());
 }

@@ -70,7 +70,7 @@ assert.match(
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
   /\$hiddenMainRecoveryEligible = -not \$visible[\s\S]*\$hasMainRenderChild[\s\S]*QWindowIcon[\s\S]*0x00040000[\s\S]*0x00000080/u,
-  "a tray-hidden WeChat main window must require its render child plus geometry, class, owner and Win32 style evidence"
+  "a tray-hidden WeChat main window must retain geometry, class, owner and Win32 style evidence"
 );
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
@@ -79,23 +79,48 @@ assert.match(
 );
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
-  /if \(-not \$expectedHandleIsValid\)[\s\S]*\$structuredMainMatches = @\(\$matches\.ToArray\(\) \| Where-Object \{ \$_\.hasMainRenderChild \}\)[\s\S]*\$structuredMainMatches\.Count -gt 0[\s\S]*\$matches\.Add\(\$structuredMainMatch\)/u,
-  "the main render child must outrank a visible auxiliary WeChat window"
+  /function Select-WechatMainCandidates\(\[object\[\]\]\$candidates\)[\s\S]*Test-WechatMainCandidate \$candidate[\s\S]*Test-WechatShellNavigation \$candidate[\s\S]*Where-Object \{ Test-WechatMainCandidate \$_ \}/u,
+  "main-shell evidence must exclude visible auxiliary WeChat windows without requiring one render class"
 );
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
-  /if \(\$structuredMainMatches\.Count -eq 0\)[\s\S]*\$matches = New-Object System\.Collections\.Generic\.List\[object\][\s\S]*elseif \(\$structuredMainMatches\.Count -gt 0\)/u,
-  "automatic discovery must fail closed instead of moving a visible auxiliary window when no structured main window exists"
+  /function Get-WechatWindowRecoveryCandidate\(\[object\[\]\]\$candidates\)[\s\S]*Qt\(\?:\\d\+\)\?QWindowIcon[\s\S]*window_recovery_candidate_count[\s\S]*@\(\$candidates\)\.Count -ne 1[\s\S]*\$recoverable\.Count -ne 1[\s\S]*if \(-not \$inspectOnly -and \$matches\.Count -eq 0\)[\s\S]*Test-XiaoxiUserIdle[\s\S]*window_recovery_attempted = \$true[\s\S]*Request-PersonalWechatActivation \$recoveryCandidate[\s\S]*Get-WechatWindowCandidates/u,
+  "a non-inspection path may only trigger one executable restore after idle validation and unique-candidate proof"
 );
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
-  /if \(\$matches\.Count -gt 1 -and @\(\$matches\.ToArray\(\) \| Where-Object \{ \$_\.hasMainRenderChild \}\)\.Count -gt 0\)[\s\S]*reason = "wechat_window_ambiguous"/u,
+  /Request-PersonalWechatActivation \$recoveryCandidate[\s\S]*Get-WechatWindowCandidates[\s\S]*Where-Object \{ \[int\]\$_\.pid -eq \[int\]\$recoveryCandidate\.pid \}[\s\S]*Select-WechatMainCandidates \$recoveredSamePidCandidates[\s\S]*\$recoveredMatches\.Count -eq 1/u,
+  "post-activation discovery must accept one strict main window from the same WeChat PID only"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /\$windowDiagnostic\.window_main_count = \$matches\.Count[\s\S]*if \(\$matches\.Count -eq 0\)[\s\S]*personal_wechat_main_window_not_found/u,
+  "automatic discovery must still fail closed when recovery cannot prove a main window"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /function Update-WechatProcessSnapshot[\s\S]*Get-Process -Name \$processNames[\s\S]*window_process_count[\s\S]*window_discovery_retries/u,
+  "an initially absent WeChat process must be rediscovered within a bounded retry window"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /Start-WechatForDiscovery[\s\S]*Start-Process -FilePath \$launchPath[\s\S]*window_discovery_launch_succeeded/u,
+  "normal operation may launch the configured WeChat executable once when no process exists"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /\$allowDiscoveryLaunch = -not \$inspectOnly[\s\S]*\$matches\.Count -eq 0[\s\S]*-not \$inspectOnly/u,
+  "read-only window inspection must never launch or wait for another WeChat process"
+);
+assert.match(
+  NORMALIZE_WECHAT_WINDOW_SCRIPT,
+  /if \(\$matches\.Count -gt 1\)[\s\S]*reason = "wechat_window_ambiguous"/u,
   "multiple structurally valid personal WeChat main windows must fail closed instead of being selected by area"
 );
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
-  /function Test-MatchedWechatWindowIdentity[\s\S]*if \(-not \(Test-MatchedWechatWindowIdentity \$hWnd \$matched\)\)[\s\S]*\$wasIconic = \[Win32WechatWindow\]::IsIconic\(\$hWnd\)[\s\S]*if \(\$wasIconic\) \{[\s\S]*ShowWindowAsync\(\$hWnd, 9\)[\s\S]*elseif \(-not \(Request-PersonalWechatActivation \$matched\)\)[\s\S]*for \(\$restoreAttempt = 0; \$restoreAttempt -lt 20; \$restoreAttempt\+\+\)[\s\S]*\$restoredIdentity = Test-MatchedWechatWindowIdentity \$hWnd \$matched/u,
-  "tray recovery must re-prove the exact main-window identity before and after its first UI side effect"
+  /function Test-MatchedWechatWindowIdentity[\s\S]*if \(-not \(Test-MatchedWechatWindowIdentity \$hWnd \$matched\)\)[\s\S]*\$wasIconic = \[Win32WechatWindow\]::IsIconic\(\$hWnd\)[\s\S]*if \(\$wasIconic\) \{[\s\S]*ShowWindowAsync\(\$hWnd, 9\)[\s\S]*elseif \(-not \$nativeActivationRequested\) \{[\s\S]*if \(-not \(Request-PersonalWechatActivation \$matched\)\)[\s\S]*\$nativeActivationRequested = \$true[\s\S]*for \(\$restoreAttempt = 0; \$restoreAttempt -lt 20; \$restoreAttempt\+\+\)[\s\S]*\$restoredIdentity = Test-MatchedWechatWindowIdentity \$hWnd \$matched/u,
+  "tray recovery must re-prove exact identity while waiting for an already-requested native restore instead of duplicating it"
 );
 assert.match(
   NORMALIZE_WECHAT_WINDOW_SCRIPT,
@@ -137,6 +162,7 @@ assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /BringWindowToTop/u);
 assert.match(NORMALIZE_WECHAT_WINDOW_SCRIPT, /GetForegroundWindow\(\) -eq \$hWnd/u, "foreground success must be proven against the exact HWND");
 const windowDriverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.cjs"), "utf8");
 assert.doesNotMatch(windowDriverSource, /D:\\\\微信\\\\Weixin\\\\Weixin\.exe/u, "the launcher must not embed this development machine's WeChat path");
+assert.match(windowDriverSource, /const wechatExe = process\.env\.XIAOXI_WECHAT_EXE \|\| wechatExecutableForLaunch\(\)/u, "normal-window discovery must pass a resolved executable path to its bounded startup retry");
 assert.doesNotMatch(windowDriverSource, /(?:Left|Top) -gt -1000/u, "valid windows on a left-side monitor must not be rejected by coordinate magic numbers");
 await focusWechatWindowAsync({ expectedPid: 81, expectedHWnd: "91" }, layoutRunner);
 assert.equal(layoutCalls[1].script, NORMALIZE_WECHAT_WINDOW_SCRIPT, "active-touch focus must use the same maximized work-area contract");

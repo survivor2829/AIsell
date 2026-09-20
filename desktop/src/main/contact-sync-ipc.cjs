@@ -73,7 +73,8 @@ function currentWechatIdentity(state, settings, contacts = []) {
 
 function withWechatIdentity(result, settings = readPathSettings()) {
   if (!result || typeof result !== "object") return result;
-  const state = result.state && typeof result.state === "object" ? result.state : {};
+  if (!result.state || typeof result.state !== "object") return result;
+  const state = result.state;
   return { ...result, state: { ...state, wechat_identity: currentWechatIdentity(state, settings, result.contacts) } };
 }
 
@@ -160,6 +161,12 @@ function executeContactSync(args) {
     const finish = (result, exitCode = null) => {
       if (settled) return;
       settled = true;
+      const nextAccount = String(result?.state?.account_name || "").trim();
+      const accountChanged = Boolean(previousAccount && nextAccount && previousAccount !== nextAccount);
+      const finalResult = withWechatIdentity(accountChanged
+        ? { ...result, state: { ...result.state, account_changed: true } }
+        : result, settings);
+      const identity = finalResult?.state?.wechat_identity;
       operation.end({
         ok: result?.ok === true,
         action: result?.action || args[0] || "status",
@@ -178,18 +185,26 @@ function executeContactSync(args) {
           : result?.state?.wx_hook_error ? "wx_hook_error_present" : "",
         helper_configured: result?.state?.helper_configured === true,
         wechat_exe_configured: Boolean(settings.wechatExePath || result?.state?.wechat_exe_path),
+        wechat_exe_configured_exists: result?.state?.wechat_exe_configured_exists,
+        wechat_exe_candidate_available: result?.state?.wechat_exe_candidate_available,
+        wechat_exe_prepare_candidate_available: result?.state?.wechat_exe_prepare_candidate_available,
+        wechat_exe_prepare_input_exists: result?.state?.wechat_exe_prepare_input_exists,
+        wechat_exe_running_process_count: result?.state?.wechat_exe_running_process_count,
+        wechat_exe_running_path_available: result?.state?.wechat_exe_running_path_available,
+        wechat_exe_common_candidate_found: result?.state?.wechat_exe_common_candidate_found,
+        wechat_exe_registry_checked: result?.state?.wechat_exe_registry_checked,
+        wechat_exe_registry_candidate_found: result?.state?.wechat_exe_registry_candidate_found,
+        wechat_exe_discovery_mode: result?.state?.wechat_exe_discovery_mode || "",
         wechat_root_configured: Boolean(settings.wechatRoot || result?.state?.wechat_root),
+        identity_nickname_specific: !["", "微信用户"].includes(identity?.nickname || ""),
+        identity_avatar_available: Boolean(identity?.avatar_url),
         contact_count: Array.isArray(result?.contacts) ? result.contacts.length : Number(result?.state?.contact_count) || 0,
         process_pid: child.pid || 0,
         exit_code: exitCode,
         stdout_bytes: Buffer.byteLength(stdout),
         stderr_bytes: Buffer.byteLength(stderr)
       }, { ok: result?.ok === true, code: result?.blocked_reason || result?.state?.last_stage || "" });
-      const nextAccount = String(result?.state?.account_name || "").trim();
-      const accountChanged = Boolean(previousAccount && nextAccount && previousAccount !== nextAccount);
-      resolve(withWechatIdentity(accountChanged
-        ? { ...result, state: { ...result.state, account_changed: true } }
-        : result, settings));
+      resolve(finalResult);
     };
 
     child.on("error", (error) => {

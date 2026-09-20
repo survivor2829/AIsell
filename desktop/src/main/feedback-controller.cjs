@@ -107,12 +107,27 @@ function createFeedbackController({ rootDir, config, version, buildId, logger, s
     } catch { throw Object.assign(new Error("feedback_secure_storage"), { code: "feedback_secure_storage" }); }
   }
   function snapshot(input) {
-    const all = input.includeDiagnostics ? (logger?.readRecent?.(200) || []) : [];
+    const evidence = input.includeDiagnostics ? require('./failure-evidence.cjs').readFailureEvidence(rootDir)
+      .filter(entry => clock() - Date.parse(entry.ts) >= 0 && clock() - Date.parse(entry.ts) < 86400000) : [];
+    const all = input.includeDiagnostics ? [...evidence, ...(logger?.readRecent?.(200) || [])]
+      .sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts)) : [];
     const failures = all.filter((entry) => ["warn", "error", "fatal"].includes(entry.level)
       && (!input.context?.module || entry.module === input.context.module));
     const relatedTraces = new Set(failures.map(entry => entry.trace_id).filter(Boolean));
-    const diagnostics = all.filter(entry => failures.includes(entry)
-      || (entry.level === "info" && relatedTraces.has(entry.trace_id)))
+    // Empty scans can still explain a slow or missed reply. Keep a bounded
+    // sample from the latest reply run; reportEntry still strips private data.
+    const scanEvents = all.filter(entry => entry.module === "auto_reply"
+      && (!input.context?.module || input.context.module === "auto_reply")
+      && entry.level === "info"
+      && ["scan_observation", "start_requested", "started", "prime_deferred"].includes(entry.event));
+    const recentScans = scanEvents.filter(entry => entry.trace_id === scanEvents[0]?.trace_id).slice(0, 6);
+    const related = all.filter(entry => failures.includes(entry)
+      || (entry.level === "info" && relatedTraces.has(entry.trace_id)));
+    const priority = evidence.filter(entry => !input.context?.module
+      || input.context.module === 'wechat_adapter' || relatedTraces.has(entry.trace_id)).slice(0, 8);
+    const selected = new Set([...priority, ...recentScans,
+      ...related.filter(entry => !recentScans.includes(entry) && !priority.includes(entry)).slice(0, 20 - recentScans.length - priority.length)]);
+    const diagnostics = all.filter(entry => selected.has(entry))
       .map((entry) => reportEntry(entry, { installId: state.installId })).filter(Boolean).slice(0, 20);
     return { schema: 2, visibility: input.visibility, id: input.id, text: input.text, category: input.category,
       createdAt: new Date(clock()).toISOString(), context: input.context || {}, diagnostics,

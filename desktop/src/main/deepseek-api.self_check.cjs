@@ -11,11 +11,13 @@ const {
   maskApiKey,
   momentsCommentPrompt,
   parseMomentsCommentPayload,
+  parseSalutationPayload,
   parsePlainPayload,
   parsePlainRecoveryAnswer,
   parseReplyDecision,
   prompt,
-  replyPrompt
+  replyPrompt,
+  salutationPrompt
 } = require("./deepseek-api.cjs");
 const { errorCategory, registerDeepSeekApiIpc } = require("./deepseek-api-ipc.cjs");
 const { configureDiagnostics } = require("./diagnostics.cjs");
@@ -110,6 +112,16 @@ async function main() {
   assert.match(messages[0].content, /不得连续堆叠/);
   assert.equal(messages[1].content, "客户称呼：张总，您好\n基础话术：张总，您好，我们这边有清洁设备短租方案。");
   assert.equal(prompt({ salutation: "", script: "{称呼}，您好，欢迎了解。" })[1].content, "客户称呼：您好\n基础话术：您好，欢迎了解。");
+  assert.match(salutationPrompt({ remark: "老王", nickname: "设备采购" })[0].content, /姓名、花名、昵称/);
+  assert.deepEqual(parseSalutationPayload({ choices: [{ finish_reason: "stop", message: { content: '{"salutation":"老王","source":"remark"}' } }] }), { value: "老王", source: "remark" });
+  for (const payload of [
+    { choices: [{ finish_reason: "length", message: { content: "{}" } }] },
+    { choices: [{ finish_reason: "stop", message: { content: "not-json" } }] },
+    { choices: [{ finish_reason: "stop", message: { content: '{"salutation":"老王","source":"other"}' } }] },
+    { choices: [{ finish_reason: "stop", message: { content: '{"salutation":"老王","source":"none"}' } }] },
+    { choices: [{ finish_reason: "stop", message: { content: '[]' } }] },
+    { choices: [{ finish_reason: "stop", message: { content: '{"source":"remark"}' } }] }
+  ]) assert.throws(() => parseSalutationPayload(payload), (error) => error.code === "AI_RESPONSE_INVALID" || error.code === "AI_RESPONSE_TRUNCATED");
   const expert = {
     expertRules: "回答要专业、简洁；只有真实成交或售后动作才转人工。",
     businessKnowledge: "设备短租适用于临时施工；具体价格以正式报价为准。"

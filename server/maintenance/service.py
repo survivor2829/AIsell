@@ -13,6 +13,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
+from urllib.error import HTTPError, URLError
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+import urllib.request
 from feedback import FeedbackStoreMixin, FeedbackConflict, FeedbackUnauthorized, validate_feedback, STATES
 
 TOKEN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}\Z")
@@ -20,6 +23,28 @@ HEX = re.compile(r"[a-f0-9]{64}\Z")
 UUID = re.compile(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\Z")
 VERSION = re.compile(r"(?:0|[1-9]\d{0,5})(?:\.(?:0|[1-9]\d{0,5})){2}\Z")
 APP_IDS = {"test": "com.aihuoke.desktop.test", "delivery": "com.aihuoke.desktop", "smoke": "com.aihuoke.maintenance.smoke"}
+WINDOW_STAGES = ("bootstrap", "compile", "process", "enumerate", "select", "shell", "recover", "selected", "restore", "focus", "verify", "complete")
+MOMENTS_STAGES = ("bootstrap", "window_identity", "moments_entry", "discover_entry", "first_capture", "first_surface", "first_candidates", "stability_wait", "second_capture", "second_surface", "second_candidates", "complete")
+MOMENTS_METRICS = ("moments_elapsed_ms", "moments_timeout_ms", "moments_discover_scan_ms", "moments_discover_candidate_count", "moments_discover_match_count") + tuple(f"moments_{stage}_ms" for stage in MOMENTS_STAGES)
+WINDOW_METRICS = ("elapsed_ms", "total_ms", "timeout_ms", "process_count", "native_count", "candidate_count", "main_count", "render_count", "hidden_count", "minimized_count", "rejected_layout_count", "recovery_candidate_count", "recovery_main_count") + tuple(f"{stage}_ms" for stage in WINDOW_STAGES)
+INPUT_PHASES = ("preflight", "prepare_wechat_window", "click_search_result", "before_search_result_click",
+                "search_quiet_check", "search_focus", "search_select_all", "search_query_input",
+                "search_observation", "search_result_enter", "pre_input", "after_input_click",
+                "typing", "after_paste", "copy_probe")
+INPUT_METRICS = ("expected_input_tick", "current_input_tick", "required_idle_ms", "observed_idle_ms",
+                 "expected_hWnd", "foreground_hWnd")
+PROVIDER_GATEWAY_PREFIX = "/v1/provider-gateway"
+PROVIDER_GATEWAY_ORIGIN = "http://127.0.0.1:8444"
+PROVIDER_GATEWAY_MAX_REQUEST_BYTES = 32 * 1024 * 1024
+PROVIDER_GATEWAY_MAX_RESPONSE_BYTES = 96 * 1024 * 1024
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+PROVIDER_GATEWAY_OPENER = build_opener(_NoRedirect())
 
 def safe_token(value):
     return value if isinstance(value, str) and TOKEN.fullmatch(value) and not re.search(r"sk-|ak-|ltai", value, re.I) else ""
@@ -58,15 +83,54 @@ def validate_report(body):
         row["details"] = {}
         details = entry.get("details", {})
         if isinstance(details, dict):
+            if type(details.get("ocr_ok")) is bool:
+                row["details"]["ocr_ok"] = details["ocr_ok"]
+            if type(details.get("visual_candidate_count")) is int and 0 <= details["visual_candidate_count"] <= 86400000:
+                row["details"]["visual_candidate_count"] = details["visual_candidate_count"]
+            for key in ("rule_id", "evidence_id", "capture_status", "redaction_mode", "context_exception_type", "context_exception_code", "capture_exception_type", "capture_failure_code", "input_read_exception_type", "input_read_exception_id", "input_read_exception_hresult", "input_read_exception_category", "decision_scope"):
+                if safe_token(details.get(key)):
+                    row["details"][key] = details[key]
+            if details.get("input_phase") in INPUT_PHASES:
+                row["details"]["input_phase"] = details["input_phase"]
+            for key in INPUT_METRICS:
+                if type(details.get(key)) is int and 0 <= details[key] <= 9007199254740991:
+                    row["details"][key] = details[key]
             for key in ("receipt_stage", "receipt_code", "receipt_draft_read_stage", "state", "status", "phase", "reason_code", "error_code", "stage", "wx_hook_stage", "wx_hook_error_code", "blocked_reason", "action", "task_kind", "reason", "send_status", "verification_mode", "input_read_reason", "exception_code", "wechat_version", "parent_trace_code"):
                 if safe_token(details.get(key)):
                     row["details"][key] = details[key]
-            for key in ("receipt_conversation_verified", "receipt_draft_read_ok", "receipt_draft_consumed", "receipt_input_lease_valid", "receipt_bubble_verified", "helper_configured", "wechat_exe_configured", "wechat_root_configured", "ok", "send_attempted", "send_clicked", "exact_match", "outgoing", "is_latest", "is_new", "same_window", "input_cleared", "before_exact", "input_read_ok", "input_empty", "session_verified", "composer_verified", "input_verified", "restart_requested", "had_running_process", "stop_verified", "launch_deferred", "handled", "busy", "reply_enabled"):
+            for key in ("receipt_conversation_verified", "receipt_draft_read_ok", "receipt_draft_consumed", "receipt_input_lease_valid", "receipt_bubble_verified", "helper_configured", "wechat_exe_configured", "wechat_root_configured", "ok", "send_attempted", "send_clicked", "exact_match", "outgoing", "is_latest", "is_new", "same_window", "input_cleared", "before_exact", "input_read_ok", "input_empty", "session_verified", "composer_verified", "input_verified", "restart_requested", "had_running_process", "stop_verified", "launch_deferred", "handled", "busy", "reply_enabled", "window_recovery_attempted", "window_recovery_succeeded"):
                 if type(details.get(key)) is bool:
                     row["details"][key] = details[key]
             if "send_attempted" in details and details["send_attempted"] is None:
                 row["details"]["send_attempted"] = None
             for key in ("elapsed_ms", "duration_ms", "current_index", "done", "total", "pending_count", "process_count", "dpi", "window_width", "window_height", "candidate_count", "outgoing_exact_count", "previous_exact_count", "new_outgoing_exact_count", "receipt_verification_attempts"):
+                if type(details.get(key)) is int and 0 <= details[key] <= 86400000:
+                    row["details"][key] = details[key]
+            if details.get("window_stage") in WINDOW_STAGES:
+                row["details"]["window_stage"] = details["window_stage"]
+            if details.get("moments_stage") in MOMENTS_STAGES:
+                row["details"]["moments_stage"] = details["moments_stage"]
+            for key in MOMENTS_METRICS + ("scan_ms", "capture_attempts", "verification_attempts", "verification_elapsed_ms", "verification_capture_ms", "verification_ocr_ms", "verification_candidates_ms", "verification_feed_ocr_ms", "verification_post_count", "verification_text_length"):
+                if type(details.get(key)) is int and 0 <= details[key] <= 86400000:
+                    row["details"][key] = details[key]
+            for key in ("last_verification_reason", "capture_mode", "scan_mode", "trigger_code"):
+                if safe_token(details.get(key)):
+                    row["details"][key] = details[key]
+            if type(details.get("verification_anchor_present")) is bool:
+                row["details"]["verification_anchor_present"] = details["verification_anchor_present"]
+            if details.get("header_state") in ("matched", "unresolved", "different"):
+                row["details"]["header_state"] = details["header_state"]
+            if type(details.get("header_candidate_count")) is int and 0 <= details["header_candidate_count"] <= 1000:
+                row["details"]["header_candidate_count"] = details["header_candidate_count"]
+            for key in ("header_recovery_attempted", "header_recovery_ok"):
+                if type(details.get(key)) is bool:
+                    row["details"][key] = details[key]
+            if details.get("window_detection_mode") in ("exact_hwnd", "render_child", "native_main", "shell_navigation"):
+                row["details"]["window_detection_mode"] = details["window_detection_mode"]
+            if safe_token(details.get("window_class_code")):
+                row["details"]["window_class_code"] = details["window_class_code"]
+            for suffix in WINDOW_METRICS:
+                key = f"window_{suffix}"
                 if type(details.get(key)) is int and 0 <= details[key] <= 86400000:
                     row["details"][key] = details[key]
         clean["entries"].append(row)
@@ -155,19 +219,24 @@ class Server(ThreadingHTTPServer):
             super().process_request_thread(request, address)
         finally:
             self.slots.release()
-    def allowed(self, address):
+    def rate_limit(self, address):
         minute = int(time.time() / 60)
+        retry_after = max(1, int((minute + 1) * 60 - time.time()))
         with self.rate_lock:
             for key, limit in (("global", 300), (address, 60)):
                 stamp, count = self.rates.get(key, (minute, 0))
-                count = count + 1 if stamp == minute else 1
-                self.rates[key] = (minute, count)
+                if stamp == minute and count >= limit:
+                    return {"allowed": False, "scope": key, "retry_after": retry_after}
+            for key, _limit in (("global", 300), (address, 60)):
+                stamp, count = self.rates.get(key, (minute, 0))
+                self.rates[key] = (minute, count + 1 if stamp == minute else 1)
                 self.rates.move_to_end(key)
-                if count > limit:
-                    return False
             while len(self.rates) > 2048:
                 self.rates.popitem(last=False)
-        return True
+        return {"allowed": True, "scope": "", "retry_after": None}
+
+    def allowed(self, address):
+        return self.rate_limit(address)["allowed"]
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "Maintenance/1"
@@ -176,13 +245,21 @@ class Handler(BaseHTTPRequestHandler):
         self.connection.settimeout(20)
     def log_message(self, *_args):
         pass  # Do not persist client IP, raw URLs, request bodies or credentials.
-    def reply(self, status, value):
+    def reply(self, status, value, headers=None):
         data = json.dumps(value, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        for name, header_value in (headers or {}).items():
+            if (
+                name in {"X-Xiaoxi-Error-Origin", "Retry-After"}
+                and isinstance(header_value, str)
+                and len(header_value) <= 512
+                and all(0x20 <= ord(char) <= 0x7e for char in header_value)
+            ):
+                self.send_header(name, header_value)
         self.end_headers()
         self.wfile.write(data)
     def body(self):
@@ -193,10 +270,76 @@ class Handler(BaseHTTPRequestHandler):
         if len(data) != length:
             raise ValueError("incomplete")
         return json.loads(data)
+
+    def proxy_provider_gateway(self, method):
+        """Forward only the fixed gateway prefix to the loopback service."""
+        self.connection.settimeout(240)
+        body = None
+        if method == "POST":
+            raw_length = self.headers.get("Content-Length", "")
+            if not re.fullmatch(r"\d{1,12}", raw_length):
+                return self.reply(400, {"error": "invalid_body"})
+            length = int(raw_length)
+            if length <= 0 or length > PROVIDER_GATEWAY_MAX_REQUEST_BYTES:
+                return self.reply(400, {"error": "invalid_body"})
+            body = self.rfile.read(length)
+            if len(body) != length:
+                return self.reply(400, {"error": "invalid_body"})
+        headers = {}
+        for name in ("Authorization", "Content-Type", "Accept", "X-Api-Resource-Id", "X-Api-Request-Id", "X-Api-Sequence", "X-Control-Require-Usage-Tokens-Return", "X-Xiaoxi-Operation-Id"):
+            value = self.headers.get(name)
+            if value and len(value) <= 512 and all(0x20 <= ord(char) <= 0x7e for char in value):
+                headers[name] = value
+        if body is not None:
+            headers["Content-Length"] = str(len(body))
+        target = PROVIDER_GATEWAY_ORIGIN + self.path
+        operation = Request(target, data=body, headers=headers, method=method)
+        try:
+            with PROVIDER_GATEWAY_OPENER.open(operation, timeout=240) as response:
+                status = int(getattr(response, "status", getattr(response, "code", 200)))
+                response_headers = response.headers
+                raw = response.read(PROVIDER_GATEWAY_MAX_RESPONSE_BYTES + 1)
+        except HTTPError as error:
+            status = int(error.code or 503)
+            response_headers = error.headers or {}
+            try:
+                raw = error.read(PROVIDER_GATEWAY_MAX_RESPONSE_BYTES + 1)
+            except Exception:
+                raw = b""
+        except (TimeoutError, URLError, OSError):
+            return self.reply(503, {"error": "provider_gateway_unavailable"}, {"X-Xiaoxi-Error-Origin": "maintenance_transport"})
+        except Exception:
+            return self.reply(503, {"error": "provider_gateway_unavailable"}, {"X-Xiaoxi-Error-Origin": "maintenance_transport"})
+        if not isinstance(raw, (bytes, bytearray)) or len(raw) > PROVIDER_GATEWAY_MAX_RESPONSE_BYTES:
+            return self.reply(502, {"error": "provider_gateway_response_too_large"}, {"X-Xiaoxi-Error-Origin": "maintenance_transport"})
+        self.send_response(status)
+        content_type = response_headers.get("Content-Type", "application/octet-stream")
+        if not isinstance(content_type, str) or len(content_type) > 512 or any(ord(char) < 0x20 or ord(char) > 0x7e for char in content_type):
+            content_type = "application/octet-stream"
+        self.send_header("Content-Type", content_type)
+        for name in ("X-Api-Status-Code", "X-Request-Id", "X-Xiaoxi-Error-Origin", "Retry-After", "Cache-Control"):
+            value = response_headers.get(name)
+            if isinstance(value, str) and len(value) <= 512 and all(0x20 <= ord(char) <= 0x7e for char in value):
+                self.send_header(name, value)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        try:
+            self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            pass
+
     def do_POST(self):
         try:
-            if not self.server.allowed(self.client_address[0]):
-                return self.reply(429, {"error": "rate_limit"})
+            limit = self.server.rate_limit(self.client_address[0])
+            if not limit["allowed"]:
+                return self.reply(
+                    429,
+                    {"error": "rate_limit", "scope": limit["scope"]},
+                    {"X-Xiaoxi-Error-Origin": "maintenance_rate_limit", "Retry-After": str(limit["retry_after"])},
+                )
+            if not self.server.admin and urlsplit(self.path).path.startswith(PROVIDER_GATEWAY_PREFIX + "/"):
+                return self.proxy_provider_gateway("POST")
             if self.server.admin:
                 if not re.fullmatch(r"(?:127\.0\.0\.1|localhost):\d{1,5}", self.headers.get("Host", "")) or self.headers.get("Origin") != "http://" + self.headers.get("Host", ""):
                     return self.reply(403, {"error": "origin"})
@@ -237,6 +380,15 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(503, {"error": "unavailable"})
     def do_GET(self):
         route = urlsplit(self.path).path
+        if not self.server.admin and route.startswith(PROVIDER_GATEWAY_PREFIX + "/"):
+            limit = self.server.rate_limit(self.client_address[0])
+            if not limit["allowed"]:
+                return self.reply(
+                    429,
+                    {"error": "rate_limit", "scope": limit["scope"]},
+                    {"X-Xiaoxi-Error-Origin": "maintenance_rate_limit", "Retry-After": str(limit["retry_after"])},
+                )
+            return self.proxy_provider_gateway("GET")
         if self.server.admin:
             if not re.fullmatch(r"(?:127\.0\.0\.1|localhost):\d{1,5}", self.headers.get("Host", "")):
                 return self.reply(403, {"error": "host"})
@@ -264,8 +416,13 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/health":
             return self.reply(200, {"ok": True, "service": "maintenance", "schema": 1})
         if route == "/v1/feedback/public":
-            if not self.server.allowed(self.client_address[0]):
-                return self.reply(429, {"error": "rate_limit"})
+            limit = self.server.rate_limit(self.client_address[0])
+            if not limit["allowed"]:
+                return self.reply(
+                    429,
+                    {"error": "rate_limit", "scope": limit["scope"]},
+                    {"X-Xiaoxi-Error-Origin": "maintenance_rate_limit", "Retry-After": str(limit["retry_after"])},
+                )
             query = parse_qs(urlsplit(self.path).query)
             offset, limit = query.get("offset", ["0"])[0], query.get("limit", ["30"])[0]
             if not re.fullmatch(r"\d{1,9}", offset) or not re.fullmatch(r"[1-9]\d{0,8}", limit):

@@ -236,6 +236,27 @@ class AutoMixV2RendererTests(unittest.TestCase):
         self.assertEqual("auto_mix_music_required", caught.exception.code)
         self.assertNotIn(str(self.root), caught.exception.message)
 
+    def test_explicit_no_music_keeps_voice_and_quality_contract(self):
+        from content_engine.auto_mix_v2 import validate_quality_report
+        recipe = auto_mix_v2_recipe()
+        recipe.pop('licensed_music_relative_path')
+        recipe.pop('licensed_music')
+        recipe['music_mode'] = 'none'
+        renderer = CapturingV2Renderer(self.root)
+        output = self.root / 'voice-only.mp4'
+        renderer._finish_auto_mix_v2(self.root / 'source.mp4', output, recipe)
+        command = renderer.encode_calls[-1][0]
+        self.assertEqual(command.count('-i'), 1)
+        self.assertIn('0:a:0', command)
+        report = renderer.read_auto_mix_speech_music_report(output)
+        self.assertIsNone(report['speech_music_margin_lu'])
+        report.update(integrated_lufs=-15, true_peak_dbtp=-1.2)
+        normalized = HybridCreativeRenderer._normalized_audio_quality_report(report)
+        self.assertTrue(validate_quality_report(normalized)['passed'])
+        with self.assertRaises(ContentEngineError):
+            bad = {**recipe, 'voice_audio_path': ''}
+            renderer._validate_auto_mix_v2_recipe(bad)
+
     def test_v2_mezzanine_mutes_source_and_uses_separate_licensed_mix(self):
         renderer = CapturingV2Renderer(self.root)
         stage = self.root / "stage"
@@ -856,6 +877,19 @@ class AutoMixV2RendererTests(unittest.TestCase):
         self.assertLessEqual(report["integrated_lufs"], -14.0)
         self.assertLessEqual(report["true_peak_dbtp"], -1.0)
         self.assertEqual(10.0, report["speech_music_margin_lu"])
+        recipe['music_mode'] = 'none'
+        recipe.pop('licensed_music_relative_path')
+        recipe.pop('licensed_music')
+        voice_only = self.root / 'real-voice-only.mp4'
+        voice_stage = self.root / 'voice-only-stage'
+        voice_stage.mkdir()
+        renderer.render_mezzanine(recipe=recipe, output=voice_only, temp_dir=voice_stage,
+            resolve_asset_path=lambda asset_id: self.root / f'{asset_id}.mp4')
+        renderer.validate_mezzanine(voice_only, expected_duration_ms=1200)
+        report = renderer.measure_audio_quality(voice_only)
+        report.update(renderer.read_auto_mix_speech_music_report(voice_only))
+        from content_engine.auto_mix_v2 import validate_quality_report
+        self.assertTrue(validate_quality_report(report)['passed'])
 
 
 if __name__ == "__main__":

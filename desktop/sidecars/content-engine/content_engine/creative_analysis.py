@@ -382,9 +382,10 @@ class DashScopeMediaClient:
         operation_label: str | None = None,
         validate: Callable[[dict[str, Any]], bool] | None = None,
         timeout: int | None = None,
+        max_tokens: int | None = None,
         validation_error: Callable[[dict[str, Any]], str | None] | None = None,
         validation_retry_context: (
-            Callable[[str, dict[str, Any]], list[dict[str, Any]] | None] | None
+            Callable[[str, dict[str, Any] | None], list[dict[str, Any]] | None] | None
         ) = None,
     ) -> dict[str, Any]:
         """Request one JSON response, with one bounded correction retry.
@@ -421,8 +422,7 @@ class DashScopeMediaClient:
                 )
                 retry_context = (
                     validation_retry_context(previous_issue, previous_item)
-                    if previous_item is not None
-                    and validation_retry_context is not None
+                    if validation_retry_context is not None
                     else None
                 )
                 if retry_context:
@@ -442,15 +442,18 @@ class DashScopeMediaClient:
             self._last_request_usage = None
             try:
                 with usage_scope(operation_id=operation_id, correction_attempt=attempt + 1, purpose=operation_label):
+                    request_payload = {
+                        "model": model,
+                        "messages": request_messages,
+                        "temperature": 0.0 if attempt else 0.1,
+                        "response_format": {"type": "json_object"},
+                    }
+                    if max_tokens is not None:
+                        request_payload["max_tokens"] = max_tokens
                     response = self._request_json(
                         f"{self.compatible_origin}/chat/completions",
                         method="POST",
-                        payload={
-                            "model": model,
-                            "messages": request_messages,
-                            "temperature": 0.0 if attempt else 0.1,
-                            "response_format": {"type": "json_object"},
-                        },
+                        payload=request_payload,
                         operation_label=operation_label,
                         timeout=timeout,
                     )
@@ -2318,7 +2321,7 @@ class FFmpegCreativeAnalyzer:
                 )
                 evidence_frames = (
                     self._extract_visual_evidence_frames(
-                        source, temp_dir, duration_ms
+                        proxy, temp_dir, duration_ms
                     )
                     if dense_visual_signals
                     else frames

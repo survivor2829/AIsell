@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { createWechatWorkflowController } = require("./wechat-workflow.cjs");
+const { createWechatWorkflowController, workflowFailureReason } = require("./wechat-workflow.cjs");
 const { createAiExpertStore } = require("./ai-expert.cjs");
 const { EventEmitter } = require("node:events");
 const { registerWechatWorkflowIpc } = require("./wechat-workflow-ipc.cjs");
@@ -11,9 +11,10 @@ async function checkFloatingProgress() {
   const windows = [];
   const diagnosticEvents = [];
   const handlers = new Map();
+  let mainHideCount = 0;
   const mainWindow = {
     webContents: { send() {} }, isDestroyed: () => false,
-    show() {}, hide() {}, focus() {}
+    show() {}, hide() { mainHideCount += 1; }, focus() {}
   };
   class ProgressWindow extends EventEmitter {
     constructor(settings) {
@@ -43,10 +44,26 @@ async function checkFloatingProgress() {
   const event = { sender: mainWindow.webContents };
   await control.addTask({ type: "interact", payload: { maxPosts: 1 } });
   const invoke = (name, payload) => handlers.get(`wechat-workflow:${name}`)(event, payload);
+  const refusedResolution = await invoke("resolve-touch-unknown", { id: "missing", resolution: "sent", clickToken: "invalid" });
+  assert.equal(refusedResolution.ok, false);
+  assert.equal(diagnosticEvents.at(-1)[2].reason, "invalid_click");
+  const mismatchedResolution = await invoke("resolve-touch-unknown", {
+    id: "missing", resolution: "sent", clickToken: require("node:crypto").randomUUID(),
+    clickedTaskId: "missing", clickedResolution: "skip"
+  });
+  assert.equal(mismatchedResolution.ok, false);
+  assert.match(mismatchedResolution.error, /点击的处理结果与提交内容不一致/);
   const refused = await invoke("start", { clickToken: "invalid" });
   assert.equal(refused.ok, false);
   assert.equal(diagnosticEvents.at(-1)[2].reason, "invalid_click");
   assert.equal(diagnosticEvents.at(-1)[2].stage, "click_validation");
+  await control.deleteTasks([control.status().tasks[0].id]);
+  const noPlan = await invoke("start", { clickToken: require("node:crypto").randomUUID() });
+  assert.equal(noPlan.ok, false);
+  assert.match(noPlan.error, /没有待执行任务/);
+  assert.equal(windows.length, 0, "a start preflight failure must not hide the only error surface behind a progress window");
+  assert.equal(mainHideCount, 0, "a start preflight failure must keep the main page visible");
+  await control.addTask({ type: "interact", payload: { maxPosts: 1 } });
   const started = await invoke("start", { clickToken: require("node:crypto").randomUUID() });
   assert.equal(started.ok, true);
   assert.equal(windows.length, 1, "starting the unified workflow must automatically create its progress window");
@@ -100,7 +117,8 @@ async function checkWorkflowDiagnostics() {
   await control.start();
   const beforeIdle = events.length;
   await control.tick(); await control.tick();
-  assert.equal(events.length, beforeIdle, "ordinary empty reply polling must be quiet");
+  assert.equal(events.length, beforeIdle + 1, "automatic reply activation is recorded once while later empty polling stays quiet");
+  assert.equal(events.at(-1).name, "reply.activated");
   throwReply = true;
   await assert.rejects(control.tick(), /injected failure/);
   assert.equal(events.at(-1).stage, "reply_step");
@@ -109,9 +127,173 @@ async function checkWorkflowDiagnostics() {
   replyResult = { handled: false, status: "needs_attention", error: "所选联系人没有可唯一识别的会话名称" };
   await control.addTask({ type: "touch", payload: {} });
   await control.start(); await control.tick();
-  assert(events.some((event) => event.name === "reply.result" && event.reason === "contact_identity_ambiguous"));
+  assert.equal(control.status().enabled, false, "a finite task failure pauses before auto reply can run");
+  assert.equal(control.status().phase, "needs_attention");
+  assert.equal(events.some((event) => event.name === "reply.result" && event.reason === "contact_identity_ambiguous"), false,
+    "automatic reply must not run before a due finite task");
   assert(events.some((event) => event.name === "task_step.ended" && event.stage === "task_result" && event.reason === "task_needs_attention"));
   assert.equal(/private-customer|private-name|private-script|private-account/.test(JSON.stringify(events)), false, "diagnostics must not receive customer payloads");
+  await control.dispose();
+}
+
+async function checkInProgressTouchEdit() {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-edit-"));
+  let updateInput;
+  let calls = 0;
+  const control = createWechatWorkflowController({
+    rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
+    autoSchedule: false, getAccount: () => "edit-account",
+    executors: { touch: {
+      prepareWorkflowTask: (_id, payload) => ({ script: payload.script, contacts: [{ id: "a", name: "a" }, { id: "b", name: "b" }] }),
+      updateWorkflowTask: async (_id, payload) => { updateInput = payload; return { ...payload, contacts: [{ id: "a", name: "a" }, { id: "b", name: "b" }] }; },
+      hasStartedWorkflowTask: () => calls > 0,
+      runWorkflowStep: async () => { calls += 1; return { status: calls === 1 ? "pending" : "completed", progress: { done: calls === 1 ? 0 : 2, total: 2 } }; }
+    } }
+  });
+  const added = await control.addTask({ type: "touch", payload: { contactIds: ["a", "b"], script: "旧话术" } });
+  await control.start();
+  await control.tick();
+  await control.pause();
+  const edited = await control.updateTask({ id: added.task.id, type: "touch", payload: { contactIds: ["a", "b"], script: "新话术", imageIds: [], link: "" } });
+  assert.equal(edited.ok, true, "a paused touch task can edit after partial progress");
+  assert.equal(edited.task.progress.done, 0, "a bound task is routed through the edit path even before aggregate progress advances");
+  assert.equal(updateInput.script, "新话术");
+  await control.dispose();
+}
+
+async function checkUnknownTouchResolution() {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-resolution-"));
+  let runCalls = 0;
+  let resolutionCalls = 0;
+  const control = createWechatWorkflowController({
+    rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
+    autoSchedule: false, getAccount: () => "resolution-account",
+    executors: { touch: {
+      prepareWorkflowTask: () => ({ contacts: [{ id: "a", name: "甲" }], script: "test" }),
+      runWorkflowStep: async () => {
+        runCalls += 1;
+        return runCalls === 1
+          ? { status: "needs_attention", error: "无法确认发送结果", progress: { done: 0, total: 1 } }
+          : { status: "completed", progress: { done: 1, total: 1 } };
+      },
+      describeUnknownWorkflowTask: () => ({ required: true, contactLabel: "甲", partKind: "image" }),
+      resolveUnknownWorkflowTask: (_task, resolution, resolutionId) => {
+        resolutionCalls += 1;
+        assert.equal(resolution, "not_sent");
+        return { resolution, resolutionId, completed: false, progress: { done: 0, total: 1 }, partKind: "image", identityRotated: true };
+      }
+    } }
+  });
+  await control.setReplyEnabled(false);
+  const added = await control.addTask({ type: "touch", payload: { contactIds: ["a"], script: "test" } });
+  await control.start(); await control.tick();
+  assert.equal(control.status().tasks[0].unknownResolution.partKind, "image");
+  await control.resolveTouchUnknown(added.task.id, "not_sent");
+  assert.equal(resolutionCalls, 1);
+  assert.equal(runCalls, 1, "manual resolution must not invoke the task executor");
+  assert.equal(control.status().tasks[0].status, "pending");
+  assert.equal(control.status().enabled, false, "manual resolution must require another explicit start");
+  await control.start(); await control.tick();
+  assert.equal(runCalls, 2, "only a later explicit start may resume the task");
+  await control.dispose();
+}
+
+async function checkUnknownTouchResolutionRecovery() {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-recovery-"));
+  let durableResolution = null;
+  let runCalls = 0;
+  const events = [];
+  const touch = {
+    prepareWorkflowTask: () => ({ contacts: [{ id: "private-contact", name: "private-name" }], script: "private-script" }),
+    runWorkflowStep: async () => {
+      runCalls += 1;
+      return { status: "needs_attention", error: "无法确认发送结果", progress: { done: 0, total: 1 } };
+    },
+    describeUnknownWorkflowTask: () => durableResolution
+      ? { required: false, reconciliation: durableResolution }
+      : { required: true, contactLabel: "private-name", partKind: "text" },
+    resolveUnknownWorkflowTask: (_task, resolution, resolutionId) => {
+      durableResolution = { resolution, resolutionId, completed: true, progress: { done: 1, total: 1 }, partKind: "text", identityRotated: false };
+      return durableResolution;
+    }
+  };
+  const options = {
+    rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
+    autoSchedule: false, getAccount: () => "private-account", executors: { touch },
+    logger: { event: (_module, name, details) => events.push({ name, ...details }) }
+  };
+  let control = createWechatWorkflowController(options);
+  await control.setReplyEnabled(false);
+  const added = await control.addTask({ type: "touch", payload: { contactIds: ["private-contact"], script: "private-script" } });
+  await control.start(); await control.tick();
+  durableResolution = touch.resolveUnknownWorkflowTask(added.task, "sent", require("node:crypto").randomUUID());
+  await control.dispose();
+
+  control = createWechatWorkflowController(options);
+  const recovered = control.status().tasks[0];
+  assert.equal(recovered.status, "completed", "restart must reconcile an inner resolution saved before the outer workflow state");
+  assert.deepEqual(recovered.progress, { done: 1, total: 1 }, "last-contact reconciliation must retain completed progress");
+  assert.equal(runCalls, 1, "reconciliation must not execute the sender");
+  const resolutionEvent = events.find((entry) => entry.name === "touch.unknown_resolved");
+  assert.deepEqual({ resolution: resolutionEvent?.resolution, part_kind: resolutionEvent?.part_kind, done: resolutionEvent?.done,
+    total: resolutionEvent?.total, identity_rotated: resolutionEvent?.identity_rotated },
+  { resolution: "sent", part_kind: "text", done: 1, total: 1, identity_rotated: false });
+  assert.equal(/private-contact|private-name|private-script|private-account/.test(JSON.stringify(resolutionEvent)), false,
+    "manual-resolution diagnostics must not contain contact identity or message text");
+  await control.dispose();
+}
+
+async function checkUnknownReasonQualityCounter() {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-unknown-quality-"));
+  let calls = 0;
+  const options = {
+    rootDir, autoReplyDir: path.join(rootDir, "reply"), activeTouchDir: path.join(rootDir, "touch"), momentsDir: path.join(rootDir, "moments"),
+    appVersion: "9.8.7", buildId: "quality-test", buildCommit: "abcdef1234567890",
+    autoSchedule: false, getAccount: () => "quality-account",
+    executors: { interact: {
+      prepareWorkflowTask: (_id, payload) => ({ payload }),
+      canRetryWorkflowTask: () => true,
+      runWorkflowStep: async (task) => {
+        calls += 1;
+        return { status: "needs_attention", reasonCode: calls === 2 ? "new_reason_beta" : "new_reason_alpha",
+          error: "unknown classified failure", progress: task.progress };
+      }
+    } }
+  };
+  let control = createWechatWorkflowController(options);
+  const added = await control.addTask({ type: "interact", payload: { maxPosts: 1 } });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (attempt) await control.retryTask(added.task.id);
+    await control.start(); await control.tick();
+  }
+  const summary = control.status().classificationQuality;
+  assert.equal(summary.buildVersion, "9.8.7");
+  assert.equal(summary.buildId, "quality-test");
+  assert.equal(summary.buildCommit, "abcdef1234567890");
+  assert.equal(summary.unknownPauseCount, 3);
+  assert.deepEqual(summary.unknownReasonCodes, ["new_reason_alpha", "new_reason_beta"]);
+  assert.equal(summary.status, "needs_review", "the build must be marked once one task reaches the threshold");
+  assert.deepEqual(control.status().tasks[0].unknownReasonQuality,
+    { byBuild: { "9.8.7|quality-test|abcdef1234567890": {
+      pauseCount: 3, reasonCodes: ["new_reason_alpha", "new_reason_beta"], needsReview: true
+    } } });
+  await control.dispose();
+  control = createWechatWorkflowController(options);
+  assert.equal(control.status().classificationQuality.unknownPauseCount, 3, "the build counter must survive restart");
+  assert.equal(control.status().classificationQuality.status, "needs_review");
+  await control.dispose();
+  control = createWechatWorkflowController({ ...options, buildId: "quality-next" });
+  await control.retryTask(added.task.id);
+  await control.start(); await control.tick();
+  assert.equal(control.status().classificationQuality.unknownPauseCount, 1);
+  assert.equal(control.status().classificationQuality.status, "ok", "an older build's task counter must not mark a new build");
+  await control.dispose();
+  const qualityFile = path.join(rootDir, "wechat_failure_classification_quality.json");
+  fs.writeFileSync(qualityFile, "{broken", "utf8");
+  control = createWechatWorkflowController({ ...options, buildId: "quality-corrupt" });
+  assert.deepEqual(control.status().classificationQuality.unknownReasonCodes, ["classification_quality_ledger_unreadable"]);
+  assert.equal(control.status().classificationQuality.status, "needs_review", "a damaged quality ledger must fail closed");
+  assert.equal(fs.readFileSync(qualityFile, "utf8"), "{broken", "status reads must never overwrite a damaged ledger");
   await control.dispose();
 }
 
@@ -145,6 +327,61 @@ async function main() {
       return { handled: false };
     } }
   };
+
+  async function observedReadyOrder(tasks) {
+    const remaining = [...tasks];
+    const ordered = [];
+    while (remaining.length) {
+      const orderRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-order-"));
+      const stateDir = path.join(orderRoot, "wechat_workflow");
+      fs.mkdirSync(stateDir, { recursive: true });
+      fs.writeFileSync(path.join(stateDir, "state.json"), JSON.stringify({ version: 1, tasks: remaining }), "utf8");
+      const orderControl = createWechatWorkflowController({
+        rootDir: orderRoot,
+        autoReplyDir: path.join(orderRoot, "reply"),
+        activeTouchDir: path.join(orderRoot, "touch"),
+        momentsDir: path.join(orderRoot, "moments"),
+        now: () => clock,
+        getAccount: () => "test-account",
+        autoSchedule: false,
+        executors: {}
+      });
+      const nextId = orderControl.status().nextTaskId;
+      await orderControl.dispose();
+      const nextIndex = remaining.findIndex((task) => task.id === nextId);
+      assert.notEqual(nextIndex, -1, "every ready task must be reachable from the scheduler");
+      ordered.push(remaining[nextIndex].title);
+      remaining.splice(nextIndex, 1);
+    }
+    return ordered;
+  }
+
+  const unorderedSchedulerTasks = [
+    { id: "00000000-0000-4000-8000-000000000001", type: "publish", title: "P1-undated", status: "pending", sequence: 1, accountName: "test-account" },
+    { id: "00000000-0000-4000-8000-000000000002", type: "interact", title: "I2-due", status: "pending", sequence: 2, accountName: "test-account", repeat: "daily", startTime: "10:00" },
+    { id: "00000000-0000-4000-8000-000000000003", type: "publish", title: "P3-due", status: "pending", sequence: 3, accountName: "test-account", scheduledAt: new Date(2026, 8, 2, 10, 30).toISOString() }
+  ];
+  const schedulerPermutations = [
+    unorderedSchedulerTasks,
+    [unorderedSchedulerTasks[0], unorderedSchedulerTasks[2], unorderedSchedulerTasks[1]],
+    [unorderedSchedulerTasks[1], unorderedSchedulerTasks[0], unorderedSchedulerTasks[2]],
+    [unorderedSchedulerTasks[1], unorderedSchedulerTasks[2], unorderedSchedulerTasks[0]],
+    [unorderedSchedulerTasks[2], unorderedSchedulerTasks[0], unorderedSchedulerTasks[1]],
+    [unorderedSchedulerTasks[2], unorderedSchedulerTasks[1], unorderedSchedulerTasks[0]]
+  ];
+  const schedulerOrders = await Promise.all(schedulerPermutations.map(observedReadyOrder));
+  for (const order of schedulerOrders) {
+    assert.deepEqual(order, ["I2-due", "P3-due", "P1-undated"], "P1 scheduler order must be invariant under input permutation");
+  }
+  assert.ok(schedulerOrders.every((order) => order.indexOf("I2-due") < order.indexOf("P1-undated")), "P2 a due interact task must precede an earlier-created undated publish task");
+  const touchTask = { id: "00000000-0000-4000-8000-000000000004", type: "touch", title: "T4-touch", status: "pending", sequence: 4, accountName: "test-account" };
+  const touchFirstOrders = await Promise.all(schedulerPermutations.map((tasks, index) => {
+    const mixed = [...tasks];
+    mixed.splice(index % (mixed.length + 1), 0, touchTask);
+    return observedReadyOrder(mixed);
+  }));
+  assert.equal(touchFirstOrders.every((order) => order[0] === "T4-touch"), true, "P3 touch must remain first in every non-empty mixed ready set");
+
   const control = createWechatWorkflowController(options);
   const replyOnlyRoot = path.join(rootDir, "reply-only");
   const replyOptions = { ...options, rootDir: replyOnlyRoot, autoReplyDir: path.join(replyOnlyRoot, "reply"),
@@ -163,26 +400,29 @@ async function main() {
   await savedReply.dispose();
   const first = await control.addTask({ type: "touch", title: "touch", payload: { contactIds: ["a", "b"], script: "hello" } });
   await control.addTask({ type: "publish", title: "future", scheduledAt: new Date(2026, 8, 2, 18).toISOString(), payload: { content: "future" } });
+  await control.addTask({ type: "publish", title: "undated", payload: { content: "later than a due publish of the same type" } });
   await control.addTask({ type: "publish", title: "due", scheduledAt: new Date(2026, 8, 2, 10).toISOString(), payload: { content: "now" } });
-  const daily = await control.addTask({ type: "interact", title: "daily", repeat: "daily", payload: { maxPosts: 1 } });
+  const daily = await control.addTask({ type: "interact", title: "daily", repeat: "daily", startTime: "10:30", payload: { maxPosts: 1 } });
   assert.equal(control.status().enabled, false, "saving must not start WeChat");
   assert.equal(control.status().recipients.length, 2, "entire task audience enrolled before first send");
-  assert.equal(control.status().tasks.find((task) => task.id === control.status().nextTaskId).title, "due", "displayed next task follows scheduler priority");
+  assert.equal(control.status().tasks.find((task) => task.id === control.status().nextTaskId).title, "touch", "touch work must precede scheduled publish and interact work");
   await control.start();
   assert.equal(control.status().replyStatus, "准备接待客户");
   customerWaiting = true;
   await control.tick();
-  assert.deepEqual(calls, ["reply"], "customer reply wins over due publication");
-  assert.equal(control.status().replyStatus, "客户回复已发送", "workflow must forward the executor's actual progress");
-  await control.tick();
-  await control.tick();
-  customerWaiting = true;
+  assert.deepEqual(calls, ["touch"], "finite work must start before automatic reply");
+  assert.equal(customerWaiting, true, "automatic reply must stay idle while finite work is due");
   await control.tick();
   await control.tick();
   await control.tick();
-  assert.deepEqual(calls, ["reply", "due", "touch", "reply", "touch", "daily"]);
   await control.tick();
-  assert.equal(calls.length, 6, "future work and completed daily task cannot loop");
+  assert.deepEqual(calls, ["touch", "touch", "due", "daily", "undated"], "finite tasks must chain without an ordinary reply poll between them");
+  assert.equal(customerWaiting, true, "automatic reply must remain deferred until all due finite work finishes");
+  await control.tick();
+  assert.deepEqual(calls, ["touch", "touch", "due", "daily", "undated", "reply"], "automatic reply starts only after due finite work drains");
+  assert.equal(customerWaiting, false, "reply resumes after runnable work completes");
+  await control.tick();
+  assert.equal(calls.length, 6, "future work must not block automatic reply or loop early");
   await assert.rejects(control.updateTask({ id: daily.task.id, type: "interact", payload: { maxPosts: 2 } }), /先暂停/);
   await control.pause();
   await control.updateTask({ id: daily.task.id, type: "interact", title: "daily", repeat: "daily", payload: { maxPosts: 2, commentGuidance: "new preference" } });
@@ -243,6 +483,34 @@ async function main() {
   assert.equal(restored.status().tasks.find((t) => t.id === busy.task.id).status, "missed", "busy preflight cannot count as execution across dates");
   await restored.dispose();
 
+  const scheduledRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-scheduled-preemption-"));
+  let scheduledClock = new Date(2026, 8, 4, 10, 0);
+  let scheduledReplyCalls = 0;
+  let scheduledTaskCalls = 0;
+  const scheduled = createWechatWorkflowController({
+    rootDir: scheduledRoot, autoReplyDir: path.join(scheduledRoot, "reply"), activeTouchDir: path.join(scheduledRoot, "touch"), momentsDir: path.join(scheduledRoot, "moments"),
+    now: () => scheduledClock, getAccount: () => "test-account", autoSchedule: false,
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => { scheduledReplyCalls += 1; return { handled: false }; }
+    },
+    executors: { publish: {
+      prepareWorkflowTask: (_id, payload) => payload,
+      runWorkflowStep: async () => { scheduledTaskCalls += 1; return { status: "completed", progress: { done: 1, total: 1 } }; }
+    } }
+  });
+  await scheduled.addRecipients(["reply-contact"]);
+  await scheduled.addTask({ type: "publish", scheduledAt: new Date(2026, 8, 4, 11, 0).toISOString(), payload: { content: "future" } });
+  await scheduled.start(); await scheduled.tick();
+  assert.equal(scheduledReplyCalls, 1, "a future finite task must not block automatic reply");
+  scheduledClock = new Date(2026, 8, 4, 11, 0);
+  await scheduled.tick();
+  assert.equal(scheduledTaskCalls, 1, "a finite task must preempt automatic reply as soon as it becomes due");
+  assert.equal(scheduledReplyCalls, 1);
+  await scheduled.tick();
+  assert.equal(scheduledReplyCalls, 2, "automatic reply resumes after the due task completes");
+  await scheduled.dispose();
+
   const batchRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-batch-"));
   const batch = createWechatWorkflowController({ ...options, rootDir: batchRoot, autoReplyDir: path.join(batchRoot, "reply") });
   await assert.rejects(batch.start(), /没有待执行任务/);
@@ -256,6 +524,282 @@ async function main() {
   await batch.start(); await batch.tick();
   assert.equal(batch.status().phase, "needs_attention", "unfinished work must not look completed or idle");
   await batch.dispose();
+
+  const contentionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-lock-contention-"));
+  const contentionCalls = [];
+  const contentionClock = new Date(2026, 8, 3, 11, 30);
+  const contention = createWechatWorkflowController({
+    rootDir: contentionRoot,
+    autoReplyDir: path.join(contentionRoot, "reply"),
+    activeTouchDir: path.join(contentionRoot, "touch"),
+    momentsDir: path.join(contentionRoot, "moments"),
+    now: () => contentionClock,
+    getAccount: () => "test-account",
+    autoSchedule: false,
+    executors: {
+      touch: {
+        prepareWorkflowTask: () => ({ contacts: [{ id: "a" }], script: "test" }),
+        runWorkflowStep: async (task) => {
+          contentionCalls.push("touch");
+          return { status: "pending", progress: task.progress, retryAfterMs: 1_000, result: { reason: "wechat_operation_busy" } };
+        }
+      },
+      publish: {
+        prepareWorkflowTask: (_id, payload) => payload,
+        runWorkflowStep: async (task) => {
+          contentionCalls.push("publish");
+          return { status: "completed", progress: { done: 1, total: task.progress.total } };
+        }
+      }
+    }
+  });
+  const contentionTouch = await contention.addTask({ type: "touch", payload: { contactIds: ["a"], script: "test" } });
+  const contentionPublish = await contention.addTask({ type: "publish", scheduledAt: contentionClock.toISOString(), payload: { content: "due" } });
+  await contention.start();
+  await contention.tick();
+  const contentionStatus = contention.status();
+  assert.deepEqual(contentionCalls, ["touch"]);
+  assert.equal(contentionStatus.tasks.find((task) => task.id === contentionTouch.task.id).notBefore, contentionClock.getTime() + 1_000);
+  assert.equal(contentionStatus.tasks.find((task) => task.id === contentionTouch.task.id).waitingReason, "wechat_operation_busy", "lock contention must retain its bounded recovery reason");
+  assert.equal(contentionStatus.nextTaskId, contentionPublish.task.id, "a lock-busy touch task must yield the next scheduler slot");
+  await contention.tick();
+  assert.deepEqual(contentionCalls, ["touch", "publish"]);
+  await contention.dispose();
+
+  const localAttentionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-local-attention-"));
+  let localAttentionReplyCalls = 0;
+  const localAttentionCalls = [];
+  const localAttention = createWechatWorkflowController({
+    rootDir: localAttentionRoot, autoReplyDir: path.join(localAttentionRoot, "reply"), activeTouchDir: path.join(localAttentionRoot, "touch"), momentsDir: path.join(localAttentionRoot, "moments"),
+    getAccount: () => "test-account", autoSchedule: false,
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => { localAttentionReplyCalls += 1; return { handled: false }; }
+    },
+    executors: {
+      interact: {
+        prepareWorkflowTask: (_id, payload) => ({ payload }),
+        runWorkflowStep: async (task) => {
+          localAttentionCalls.push("interact");
+          return { status: "needs_attention", reasonCode: "moments_no_new_posts", error: "moments_no_new_posts", progress: task.progress };
+        }
+      },
+      publish: {
+        prepareWorkflowTask: (_id, payload) => payload,
+        runWorkflowStep: async () => { localAttentionCalls.push("publish"); return { status: "completed", progress: { done: 1, total: 1 } }; }
+      }
+    }
+  });
+  await localAttention.addRecipients(["reply-contact"]);
+  const localBlocked = await localAttention.addTask({ type: "interact", title: "local-block", payload: { maxPosts: 1 } });
+  const localNext = await localAttention.addTask({ type: "publish", title: "still-runnable", payload: { content: "test" } });
+  await localAttention.start(); await localAttention.tick();
+  assert.equal(localAttention.status().tasks.find((task) => task.id === localBlocked.task.id).status, "needs_attention");
+  assert.equal(localAttention.status().enabled, true, "a classified local task failure must not stop the unified workflow");
+  assert.equal(localAttention.status().nextTaskId, localNext.task.id, "later pending work must remain selectable after a local failure");
+  await localAttention.tick();
+  assert.deepEqual(localAttentionCalls, ["interact", "publish"]);
+  assert.equal(localAttentionReplyCalls, 0, "automatic reply must wait until later finite work finishes after a local failure");
+  await localAttention.tick();
+  assert.equal(localAttentionReplyCalls, 1, "automatic reply must resume after the remaining finite task completes");
+  await localAttention.dispose();
+
+  const globalAttentionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-global-attention-"));
+  let globalAttentionReplyCalls = 0;
+  const globalAttention = createWechatWorkflowController({
+    rootDir: globalAttentionRoot, autoReplyDir: path.join(globalAttentionRoot, "reply"), activeTouchDir: path.join(globalAttentionRoot, "touch"), momentsDir: path.join(globalAttentionRoot, "moments"),
+    getAccount: () => "test-account", autoSchedule: false,
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => { globalAttentionReplyCalls += 1; return { handled: false }; }
+    },
+    executors: { interact: {
+      prepareWorkflowTask: (_id, payload) => ({ payload }),
+      runWorkflowStep: async (task) => ({ status: "needs_attention", reasonCode: "moments_interaction_outcome_unknown", error: "moments_interaction_outcome_unknown", progress: task.progress })
+    } }
+  });
+  await globalAttention.addRecipients(["reply-contact"]);
+  await globalAttention.addTask({ type: "interact", payload: { maxPosts: 1 } });
+  await globalAttention.start(); await globalAttention.tick();
+  assert.equal(globalAttention.status().enabled, false, "an unknown interaction outcome must still stop the unified workflow");
+  assert.equal(globalAttentionReplyCalls, 0);
+  await globalAttention.tick();
+  assert.equal(globalAttentionReplyCalls, 0, "auto reply must remain stopped while an unknown outcome awaits review");
+  await globalAttention.dispose();
+
+  const brokenPayloadRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-broken-payload-"));
+  const brokenPayloadOptions = {
+    rootDir: brokenPayloadRoot, autoReplyDir: path.join(brokenPayloadRoot, "reply"), activeTouchDir: path.join(brokenPayloadRoot, "touch"), momentsDir: path.join(brokenPayloadRoot, "moments"),
+    getAccount: () => "test-account", autoSchedule: false,
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => ({ handled: false })
+    },
+    executors: { touch: {
+      prepareWorkflowTask: () => ({ contacts: [{ id: "a", name: "a" }], script: "test" }),
+      runWorkflowStep: async () => { throw new Error("an invalid payload must never reach the touch executor"); }
+    } }
+  };
+  const brokenPayloadSetup = createWechatWorkflowController(brokenPayloadOptions);
+  const brokenPayloadTask = await brokenPayloadSetup.addTask({ type: "touch", payload: { contactIds: ["a"], script: "test" } });
+  await brokenPayloadSetup.dispose();
+  const brokenPayloadStateFile = path.join(brokenPayloadRoot, "wechat_workflow", "state.json");
+  const brokenPayloadState = JSON.parse(fs.readFileSync(brokenPayloadStateFile, "utf8"));
+  brokenPayloadState.tasks[0].enrolled = false;
+  fs.writeFileSync(brokenPayloadStateFile, JSON.stringify(brokenPayloadState));
+  const brokenPayloadFile = path.join(brokenPayloadRoot, "touch", "planned_tasks", `${brokenPayloadTask.task.id}.json`);
+  fs.writeFileSync(brokenPayloadFile, "{invalid-json");
+  const brokenPayload = createWechatWorkflowController(brokenPayloadOptions);
+  await brokenPayload.start(); await brokenPayload.tick();
+  const brokenPayloadStatus = brokenPayload.status();
+  const brokenPayloadRow = brokenPayloadStatus.tasks.find((task) => task.id === brokenPayloadTask.task.id);
+  assert.equal(brokenPayloadStatus.enabled, true, "one corrupt touch payload must not stop reply observation");
+  assert.equal(brokenPayloadRow.status, "needs_attention");
+  assert.equal(brokenPayloadRow.reasonCode, "touch_task_payload_incomplete");
+  assert.match(brokenPayloadRow.error, new RegExp(brokenPayloadFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the task error must identify the corrupt payload file");
+  await brokenPayload.dispose();
+
+  const dailyPayloadRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-daily-broken-payload-"));
+  let dailyPayloadClock = new Date(2026, 8, 3, 12, 0, 0);
+  let dailyPayloadReplyCalls = 0;
+  const dailyPayload = createWechatWorkflowController({
+    rootDir: dailyPayloadRoot,
+    autoReplyDir: path.join(dailyPayloadRoot, "reply"),
+    activeTouchDir: path.join(dailyPayloadRoot, "touch"),
+    momentsDir: path.join(dailyPayloadRoot, "moments"),
+    now: () => dailyPayloadClock,
+    getAccount: () => "test-account",
+    autoSchedule: false,
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => { dailyPayloadReplyCalls += 1; return { handled: false }; }
+    },
+    executors: { interact: {
+      prepareWorkflowTask: (_id, payload) => payload,
+      runWorkflowStep: async () => { throw new Error("a corrupt daily payload must never reach the executor"); }
+    } }
+  });
+  await dailyPayload.addRecipients(["reply-contact"]);
+  const dailyPayloadTask = await dailyPayload.addTask({
+    type: "interact",
+    repeat: "daily",
+    startTime: "23:59",
+    payload: { maxPosts: 2 }
+  });
+  await dailyPayload.start();
+  const dailyPayloadFile = path.join(dailyPayloadRoot, "moments", "planned_tasks", `${dailyPayloadTask.task.id}.json`);
+  fs.writeFileSync(dailyPayloadFile, "{invalid-json");
+  dailyPayloadClock = new Date(2026, 8, 4, 12, 0, 0);
+  await dailyPayload.tick();
+  const dailyPayloadStatus = dailyPayload.status();
+  const dailyPayloadRow = dailyPayloadStatus.tasks.find((task) => task.id === dailyPayloadTask.task.id);
+  assert.equal(dailyPayloadStatus.enabled, true, "a corrupt daily payload must stop only that task during refreshDay");
+  assert.equal(dailyPayloadRow.status, "needs_attention");
+  assert.equal(dailyPayloadRow.reasonCode, "moments_workflow_config_invalid");
+  assert.equal(dailyPayloadReplyCalls, 1, "auto reply must continue after a daily payload is isolated");
+  await dailyPayload.tick();
+  assert.equal(dailyPayloadReplyCalls, 2);
+  await dailyPayload.dispose();
+  fs.rmSync(dailyPayloadRoot, { recursive: true, force: true });
+
+  const cooldownRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-cooldown-"));
+  let cooldownClock = new Date(2026, 8, 3, 12, 0, 0);
+  let touchCalls = 0;
+  let replyCalls = 0;
+  const cooldown = createWechatWorkflowController({
+    rootDir: cooldownRoot, autoReplyDir: path.join(cooldownRoot, "reply"), activeTouchDir: path.join(cooldownRoot, "touch"), momentsDir: path.join(cooldownRoot, "moments"),
+    now: () => cooldownClock, getAccount: () => "test-account", autoSchedule: false,
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => { replyCalls += 1; return { handled: false }; }
+    },
+    executors: { touch: {
+      prepareWorkflowTask: () => ({ contacts: [{ id: "a" }, { id: "b" }], script: "test" }),
+      runWorkflowStep: async () => {
+        touchCalls += 1;
+        return touchCalls === 1
+          ? { status: "pending", progress: { done: 1, total: 2 }, retryAfterMs: 10_000, waitingReason: "touch_safety_interval" }
+          : { status: "completed", progress: { done: 2, total: 2 } };
+      }
+    } }
+  });
+  await cooldown.addRecipients(["reply-contact"]);
+  await cooldown.addTask({ type: "touch", payload: { contactIds: ["a", "b"], script: "test" } });
+  await cooldown.start(); await cooldown.tick();
+  assert.equal(cooldown.status().phase, "waiting_safety_interval");
+  assert.equal(cooldown.status().nextTaskId, null, "the known contact interval must remove the task from the ready queue");
+  assert.equal(cooldown.status().waitingTaskId, cooldown.status().tasks[0].id);
+  assert.equal(cooldown.status().waitUntil, cooldownClock.getTime() + 10_000);
+  await cooldown.tick();
+  assert.equal(touchCalls, 1, "a contact must not be retried while its safety interval is still active");
+  assert.equal(replyCalls, 1, "reply checks can run during a deferred touch interval without preceding finite work");
+  cooldownClock = new Date(cooldownClock.getTime() + 10_000);
+  await cooldown.tick();
+  assert.equal(touchCalls, 2, "the deferred task resumes when its known interval ends");
+  assert.equal(workflowFailureReason("personal_wechat_main_window_not_found"), "personal_wechat_main_window_not_found");
+  await cooldown.dispose();
+
+  const attentionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-attention-stop-"));
+  let attentionReplyCalls = 0;
+  let attentionTaskCalls = 0;
+  const attention = createWechatWorkflowController({
+    rootDir: attentionRoot, autoReplyDir: path.join(attentionRoot, "reply"), activeTouchDir: path.join(attentionRoot, "touch"), momentsDir: path.join(attentionRoot, "moments"),
+    getAccount: () => "test-account", autoSchedule: false,
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => { attentionReplyCalls += 1; return { handled: false }; }
+    },
+    executors: { touch: {
+      prepareWorkflowTask: () => ({ contacts: [{ id: "a" }], script: "test" }),
+      runWorkflowStep: async () => { attentionTaskCalls += 1; return { status: "needs_attention", error: "preflight_failed", progress: { done: 0, total: 1 } }; }
+    } }
+  });
+  await attention.addRecipients(["reply-contact"]);
+  await attention.addTask({ type: "touch", title: "blocked", payload: {} });
+  await attention.addTask({ type: "touch", title: "must-wait", payload: {} });
+  await attention.start(); await attention.tick();
+  assert.equal(attentionTaskCalls, 1, "a blocked finite task must be recorded once");
+  assert.equal(attentionReplyCalls, 0, "a due finite task must block automatic reply until its outcome is settled");
+  assert.equal(attention.status().tasks[1].status, "pending", "later finite work must remain queued");
+  assert.equal(attention.status().enabled, false, "a blocked finite task must pause the unified workflow");
+  assert.equal(attention.status().phase, "needs_attention");
+  await attention.dispose();
+
+  const bulkRetryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-bulk-retry-"));
+  let replyPauseCalls = 0;
+  const bulkRetry = createWechatWorkflowController({
+    rootDir: bulkRetryRoot, autoReplyDir: path.join(bulkRetryRoot, "reply"), activeTouchDir: path.join(bulkRetryRoot, "touch"), momentsDir: path.join(bulkRetryRoot, "moments"),
+    getAccount: () => "test-account", autoSchedule: false,
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => ({ handled: false }),
+      pauseWorkflow: async () => { replyPauseCalls += 1; }
+    },
+    executors: { touch: {
+      prepareWorkflowTask: () => ({ contacts: [{ id: "safe" }, { id: "poisoned" }], script: "test" }),
+      runWorkflowStep: async () => ({ status: "completed", progress: { done: 2, total: 2 } }),
+      describeSkippedWorkflowTask: () => ({ skipped_records: [
+        { contactId: "safe", status: "identity_skipped", retryable: true, retry_blocked_reason: "" },
+        { contactId: "poisoned", status: "identity_skipped", retryable: false, retry_blocked_reason: "retry_skipped_poisoned_forbidden" }
+      ], skipped_breakdown: { identity: 2, ai_failed: 0, pre_send: 0, outcome_unknown: 0 } }),
+      retrySkippedWorkflowTask: () => ({
+        ok: true, task: { current_index: 0, total: 2 }, retriedCount: 1, excludedCount: 1,
+        excludedReasons: { retry_skipped_poisoned_forbidden: 1 }
+      })
+    } }
+  });
+  await bulkRetry.addRecipients(["reply-contact"]);
+  const bulkRetryTask = await bulkRetry.addTask({ type: "touch", payload: { contactIds: ["safe", "poisoned"], script: "test" } });
+  await bulkRetry.start(); await bulkRetry.tick(); await bulkRetry.tick();
+  assert.equal(bulkRetry.status().phase, "listening");
+  const bulkRetryResult = await bulkRetry.retrySkipped(bulkRetryTask.task.id);
+  assert.equal(replyPauseCalls, 1, "bulk retry must safely stop automatic reply before changing persisted progress");
+  assert.equal(bulkRetryResult.retriedCount, 1);
+  assert.equal(bulkRetryResult.excludedCount, 1);
+  assert.deepEqual(bulkRetryResult.excludedReasons, { retry_skipped_poisoned_forbidden: 1 });
+  assert.equal(bulkRetry.status().enabled, false, "bulk retry must wait for an explicit start");
+  assert.equal(bulkRetry.status().tasks[0].status, "pending");
+  await bulkRetry.dispose();
 
   const retryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-workflow-retry-"));
   let retryAllowed = true;
@@ -281,7 +825,27 @@ async function main() {
   await retryRestored.retryTask(retryTask.task.id);
   assert.equal(retryRestored.status().tasks[0].status, "pending");
   assert.equal(retryRestored.status().enabled, false, "requeue needs a separate explicit start");
+  await assert.rejects(retryRestored.deleteTasks([retryTask.task.id], true), /状态已变化/);
+  await retryRestored.cancelTask(retryTask.task.id);
+  const keptTask = await retryRestored.addTask({ type: "interact", payload: { maxPosts: 2 } });
+  retryOptions.executors.interact.runWorkflowStep = async () => ({ status: "completed", progress: { done: 2, total: 2 } });
+  await retryRestored.start();
+  await assert.rejects(retryRestored.deleteTasks([retryTask.task.id]), /暂停/);
+  await retryRestored.tick();
+  await assert.rejects(retryRestored.deleteTasks([retryTask.task.id, keptTask.task.id], true), /状态已变化/);
+  assert.equal(retryRestored.status().tasks.length, 2, "bulk validation is atomic");
+  await retryRestored.deleteTasks([retryTask.task.id], true);
+  assert.equal(retryRestored.status().tasks[0].id, keptTask.task.id, "cleanup preserves success");
+  assert.equal(fs.existsSync(path.join(retryOptions.momentsDir, "planned_tasks", `${retryTask.task.id}.json`)), true, "deleting a list item preserves execution data");
   await retryRestored.dispose();
+  const deletionRestored = createWechatWorkflowController(retryOptions);
+  assert.equal(deletionRestored.status().tasks.length, 1, "deleted records do not return after restart");
+  const archived = JSON.parse(fs.readFileSync(path.join(retryOptions.rootDir, "wechat_workflow", "state.json"), "utf8")).removedTasks;
+  assert.equal(archived[0].id, retryTask.task.id, "removed metadata remains available after restart");
+  assert.ok(archived[0].removedAt);
+  await deletionRestored.deleteTasks([keptTask.task.id]);
+  assert.equal(deletionRestored.status().lastTaskId, null);
+  await deletionRestored.dispose();
 
   const expert = createAiExpertStore({ rootDir });
   expert.save({ expertRules: "回答简洁，不编造", businessKnowledge: "提供设备维护" });
@@ -291,6 +855,10 @@ async function main() {
   assert.equal(expert.conversation().messages.length, 1);
   await checkFloatingProgress();
   await checkWorkflowDiagnostics();
+  await checkInProgressTouchEdit();
+  await checkUnknownTouchResolution();
+  await checkUnknownTouchResolutionRecovery();
+  await checkUnknownReasonQualityCounter();
   const traceRoot = path.join(rootDir, "waiting-diagnostics");
   const traceLogger = require("./diagnostics.cjs").createDiagnosticLogger({ rootDir: traceRoot });
   let waitingForNextStep = true;
@@ -313,6 +881,7 @@ async function main() {
   assert.equal(traceLogger.readRecent(100).some(entry => entry.event === "task_step.finished" && entry.details.status === "completed"), true,
     "Changed results must be retained even when their repeated begin was quiet");
   await waitingControl.dispose();
+  await require("./touch-message-sequence.self_check.cjs").checkTouchMessageSequence();
   process.stdout.write("Workflow checks passed: priority, continuation, daily reset, restart, audience, unknown result, pause, expert drafts.\n");
 }
 

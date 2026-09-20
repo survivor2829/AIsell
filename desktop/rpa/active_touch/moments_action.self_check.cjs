@@ -742,6 +742,24 @@ async function main() {
       [540, 200],
       "same-screen interaction anchors must be returned bottom-to-top"
     );
+    const nativeWindow = {
+      ...VISUAL_WINDOW, identityMode: "visual_win32_client", renderPaneName: "Win32ClientSurface",
+      renderPaneControlType: "Win32.Client", renderPaneRuntimeId: "win32:42:84:12345"
+    };
+    const nativeDir = path.join(root, "native-client-observe-action");
+    const nativePrepared = prepareMomentsDryRun(nativeDir, {
+      mode: "random", likeEnabled: true, commentEnabled: false, commentText: ""
+    }, () => ({ ...nativeWindow, posts: [interactionAnchorPost(420, "b")] }));
+    assert.equal(nativePrepared.ok, true, "empty-UIA surface must pass the complete observation dispatcher");
+    const nativeSnapshot = nativePrepared.post_snapshot;
+    const nativeContext = { expectedWindow: nativePrepared.window, postSnapshot: nativeSnapshot,
+      observationId: nativeSnapshot.observation_id, deadlineMs: Date.now() + 30_000 };
+    assert.equal(validVisualContext(nativeContext), true, "native identity must reach the action lock without a fake UIA pane");
+    assert.equal(validVisualContext({ ...nativeContext, expectedWindow: { ...nativePrepared.window,
+      renderPaneRuntimeId: "win32:42:85:12345" } }), false, "a different native HWND must not pass the lock");
+    const nativeInspect = await inspectMomentsMenu({ baseDir: nativeDir,
+      observationId: nativeSnapshot.observation_id, driver: verifiedDriver(nativeSnapshot.observation_id) });
+    assert.equal(nativeInspect.ok, true, "stored native observations must dispatch to the visual action driver");
     const secondAnchor = interactionAnchorDryRun.post_snapshots[1];
     assert.equal(validVisualContext({
       expectedWindow: interactionAnchorDryRun.window,
@@ -887,6 +905,43 @@ async function main() {
       posts: [centerDecoyAfterScroll, lockedPostAfterScroll]
     }));
     assert.equal(lockedPostReacquired.ok, true);
+    const wheelTarget = {
+      ...lockedPostInitial.post_snapshot,
+      expected_scroll_delta: 240,
+      expected_scroll_unit: "observed_pixels"
+    };
+    const wheelResult = prepareMomentsDryRun(path.join(root, "visual-wheel-units"), {
+      mode: "random", commentEnabled: true, commentText: COMMENT_TEXT,
+      targetPost: wheelTarget
+    }, () => ({ ...VISUAL_WINDOW, posts: [centerDecoyAfterScroll, lockedPostAfterScroll] }));
+    assert.equal(wheelResult.ok, true, "use the measured feed translation, not wheel ticks");
+    assert.equal(prepareMomentsDryRun(path.join(root, "visual-scroll-overshoot"), {
+      mode: "random", commentEnabled: true, commentText: COMMENT_TEXT,
+      targetPost: { ...wheelTarget, expected_scroll_delta: 600 }
+    }, () => ({ ...VISUAL_WINDOW, posts: [lockedPostAfterScroll] })).ok, false,
+    "a similar post moving 240 pixels cannot replace a target after a measured 600-pixel scroll");
+    const shiftedAvatar = { ...lockedPostAfterScroll, avatarHash: "b".repeat(64), avatarAnchorHashes: ["c".repeat(64)] };
+    const shiftedTarget = { ...wheelTarget, avatar_anchor_hashes: ["c".repeat(64)] };
+    assert.equal(prepareMomentsDryRun(path.join(root, "visual-wheel-avatar-crop"), {
+      mode: "random", commentEnabled: true, commentText: COMMENT_TEXT, targetPost: shiftedTarget
+    }, () => ({ ...VISUAL_WINDOW, posts: [shiftedAvatar] })).ok, true);
+    assert.equal(prepareMomentsDryRun(path.join(root, "visual-wheel-other-avatar"), {
+      mode: "random", commentEnabled: true, commentText: COMMENT_TEXT, targetPost: shiftedTarget
+    }, () => ({ ...VISUAL_WINDOW, posts: [{ ...shiftedAvatar, avatarAnchorHashes: ["d".repeat(64)] }] })).ok, false);
+    const readingBesideDecoy = prepareMomentsDryRun(path.join(root, "visual-reading-beside-decoy"), {
+      mode: "random", commentEnabled: true, commentText: COMMENT_TEXT,
+      allowBodyOnly: true, targetPost: wheelTarget
+    }, () => ({ ...VISUAL_WINDOW, posts: [centerDecoyAfterScroll], readingPosts: [{
+      ...lockedPostAfterScroll, bodyOnly: true, partialVisible: true
+    }] }));
+    assert.equal(readingBesideDecoy.ok, true);
+    assert.equal(readingBesideDecoy.post_snapshot.body_only, true,
+      "an unrelated complete post must not hide the locked reading target");
+    const wrongWheelDirection = prepareMomentsDryRun(path.join(root, "visual-wheel-wrong-direction"), {
+      mode: "random", commentEnabled: true, commentText: COMMENT_TEXT,
+      targetPost: { ...wheelTarget, expected_scroll_delta: -600 }
+    }, () => ({ ...VISUAL_WINDOW, posts: [lockedPostAfterScroll] }));
+    assert.equal(wrongWheelDirection.ok, false);
     assert.equal(
       lockedPostReacquired.post_snapshot.identity_text,
       lockedPostAfterScroll.identityText,

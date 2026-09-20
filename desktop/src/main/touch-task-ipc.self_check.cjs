@@ -156,6 +156,9 @@ assert.deepEqual(
     "an idle preflight must not blame the user for every window-side observation"
   );
 
+assert.match(resultReason({ blocked_reason: "wechat_clipboard_restore_unsupported" }), /特殊格式/);
+assert.match(resultReason({ blocked_reason: "wechat_clipboard_read_failed" }), /无法读取剪贴板/);
+
 function contacts(count) {
   return Array.from({ length: count }, (_, index) => ({
     id: `wxid_batch_${index + 1}`,
@@ -179,7 +182,7 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
     if (predicate(value)) return value;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  throw new Error("timed out waiting for task state");
+  throw new Error(`timed out waiting for task state: ${JSON.stringify(await read())}`);
 }
 
 (async () => {
@@ -215,7 +218,9 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
       random: () => 0,
       onPause: () => { pauseCallbacks += 1; },
       realSendExecutor: (options) => executorBehavior(options),
+      appVersion: "9.8.7",
       buildId: "build-current",
+      buildCommit: "abcdef1234567890",
       verifyRealSendSession: () => {
         const result = sessionVerificationResult;
         if (result.ok && result.pid && result.hWnd) {
@@ -243,6 +248,7 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
     const resume = handlers.get("touch-task:resume");
     const stop = handlers.get("touch-task:stop");
     const resolveUnknown = handlers.get("touch-task:resolve-unknown");
+    const retrySkipped = handlers.get("touch-task:retry-skipped");
     await start({}, { script: "默认触达话术", clickToken: "trusted-start" });
     assert.deepEqual(
       { width: windows[0].options.width, height: windows[0].options.height, position: windows[0].position },
@@ -256,18 +262,12 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
     assert.equal(Object.hasOwn(compactUpdate.task, "results"), false, "task events must not resend every contact result");
     assert.equal(compactUpdate.task.result_updates.length <= 50, true, "task events must stay bounded to the active batch");
     assert.equal((await start({}, { script: "默认触达话术", clickToken: "trusted-start" })).blocked_reason, "trusted_batch_click_required");
-    const firstBatchPaused = await waitFor(status, (value) => value.task?.status === "paused" && value.task?.current_index === 50);
-    assert.match(firstBatchPaused.task.pause_reason, /第 1 批已完成（50\/51）/);
-    assert.equal(firstBatchPaused.task.current_batch, 2);
-    assert.equal(firstBatchPaused.task.batch_authorization, undefined);
-    assert.equal(sends, 50, "a real-send task must pause after each 50-contact batch");
-    await resume({}, { clickToken: "trusted-second-batch" });
     const completed = await waitFor(status, (value) => value.task?.status === "completed");
     assert.equal(completed.task.version, 4);
     assert.equal(completed.task.execution_mode, "real_send");
     assert.equal(completed.task.current_index, 51);
     assert.equal(completed.task.results[1].ai_attempts, 2);
-    assert.equal(sends, 51);
+    assert.equal(sends, 51, "one frozen full-task authorization must continue across the 50-contact preparation boundary");
     assert.equal(completed.task.results.filter((result) => result.status === "sent_verified").length, 51);
     assert.ok(waitedDeadlines.length > 0);
     assert.ok(Number.isFinite(Date.parse(completed.task.next_send_not_before)));
@@ -297,12 +297,15 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
-    fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify(contacts(2)), "utf8");
+    fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify(contacts(3)), "utf8");
     let contactScopedAttempts = 0;
     executorBehavior = async (options) => {
       contactScopedAttempts += 1;
       if (options.contactId === "wxid_batch_1") {
         return { ok: false, blocked_reason: "exact_search_result_not_found", state: { real_send_status: "not_sent" } };
+      }
+      if (options.contactId === "wxid_batch_2") {
+        return { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified", state: { real_send_status: "not_sent" } };
       }
       options.onTransition("sent_verified", { real_send_attempt_key: `isolated-${options.contactId}` });
       return { ok: true, state: { real_send_status: "sent_verified", real_send_attempt_key: `isolated-${options.contactId}` } };
@@ -310,8 +313,158 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
     await start({}, { script: "联系人失败隔离", clickToken: "trusted-contact-isolation" });
     const isolatedFailure = await waitFor(status, (value) => value.task?.status === "completed");
     assert.equal(isolatedFailure.task.results[0].status, "identity_skipped");
-    assert.equal(isolatedFailure.task.results[1].status, "sent_verified");
-    assert.equal(contactScopedAttempts, 2, "one contact-scoped search failure must not pause the remaining task");
+    assert.equal(isolatedFailure.task.results[1].status, "identity_skipped");
+    assert.equal(isolatedFailure.task.results[2].status, "sent_verified");
+    assert.equal(isolatedFailure.task.sent_verified_count, 1);
+    assert.deepEqual(isolatedFailure.task.skipped_breakdown, { identity: 2, ai_failed: 0, pre_send: 0, outcome_unknown: 0 });
+    assert.equal(isolatedFailure.task.skipped_records.length, 2);
+    assert.equal(isolatedFailure.task.results[0].skip_record.reasonCode, "exact_search_result_not_found");
+    assert.equal(contactScopedAttempts, 3, "contact-scoped search failures must not pause the remaining task");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify(contacts(2)), "utf8");
+    let poisonedAttempts = 0;
+    executorBehavior = async (options) => {
+      poisonedAttempts += 1;
+      if (options.contactId === "wxid_batch_1") {
+        return {
+          ok: false,
+          send_attempted: false,
+          blocked_reason: "wechat_search_network_lookup_misclick",
+          landing_recovered: true,
+          poisoned_candidate: { fingerprint: "legacy-ipc-fixture", mode: "unique_local_surface_visual" },
+          state: { real_send_status: "not_sent" }
+        };
+      }
+      options.onTransition("sent_verified", { real_send_attempt_key: `poison-next-${options.contactId}` });
+      return { ok: true, state: { real_send_status: "sent_verified", real_send_attempt_key: `poison-next-${options.contactId}` } };
+    };
+    await start({}, { script: "网络查找误点止损", clickToken: "trusted-poison-stop-loss" });
+    const poisonedTask = await waitFor(status, (value) => value.task?.status === "completed");
+    assert.equal(poisonedAttempts, 2, "a confirmed network lookup misclick must stop after the first attempt and continue later contacts");
+    assert.equal(poisonedTask.task.results[0].status, "identity_skipped");
+    assert.equal(poisonedTask.task.results[1].status, "sent_verified");
+    assert.deepEqual(poisonedTask.task.results[0].poisoned, {
+      reason_code: "wechat_search_network_lookup_misclick",
+      candidate_fingerprint: "legacy-ipc-fixture",
+      candidate_mode: "unique_local_surface_visual",
+      recovered: true,
+      at: poisonedTask.task.results[0].poisoned.at
+    });
+    const poisonedBeforeRetry = fs.readFileSync(path.join(dir, "touch_task.json"), "utf8");
+    const poisonedRetry = await retrySkipped({}, { contactIds: [poisonedTask.task.results[0].id] });
+    assert.equal(poisonedRetry.blocked_reason, "retry_skipped_poisoned_forbidden");
+    assert.equal(fs.readFileSync(path.join(dir, "touch_task.json"), "utf8"), poisonedBeforeRetry, "a poisoned retry rejection must not change persisted task state");
+
+    let unrecoveredPoisonAttempts = 0;
+    executorBehavior = async () => {
+      unrecoveredPoisonAttempts += 1;
+      return {
+        ok: false,
+        send_attempted: false,
+        blocked_reason: "wechat_search_network_lookup_misclick",
+        landing_recovered: false,
+        poisoned_candidate: { fingerprint: "legacy-unrecovered-fixture", mode: "unique_local_uia" },
+        state: { real_send_status: "not_sent" }
+      };
+    };
+    await start({}, { script: "网络查找关闭未确认", clickToken: "trusted-unrecovered-poison" });
+    const unrecoveredPoison = await waitFor(status, (value) => value.task?.status === "paused");
+    assert.equal(unrecoveredPoisonAttempts, 1, "an unrecovered network lookup landing must pause without bounded retry");
+    assert.equal(unrecoveredPoison.task.current_index, 0, "an unrecovered landing must not advance to the next contact");
+    assert.equal(unrecoveredPoison.task.results[0].poisoned.candidate_fingerprint, "legacy-unrecovered-fixture");
+    assert.equal(unrecoveredPoison.task.results[0].poisoned.recovered, false);
+
+    const retryableTask = createTask("跳过项补发", contacts(3), "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+    retryableTask.results[0] = {
+      ...retryableTask.results[0], status: "identity_skipped", reason: "身份不唯一，已跳过", blocked_reason: "search_result_identity_unverified",
+      retry_blocked: true, send_attempted: false, message_parts: [{ kind: "text", status: "pending", message: "冻结文案" }]
+    };
+    retryableTask.results[1] = {
+      ...retryableTask.results[1], status: "outcome_unknown", reason: "发送结果未知", retry_blocked: true, send_attempted: null
+    };
+    retryableTask.results[2] = {
+      ...retryableTask.results[2], status: "sent_verified", reason: "发送成功并已核验", retry_blocked: true, send_attempted: true
+    };
+    retryableTask.current_index = retryableTask.total;
+    retryableTask.status = "completed";
+    retryableTask.phase = "completed";
+    saveTaskState(dir, retryableTask);
+
+    const protectedBefore = fs.readFileSync(path.join(dir, "touch_task.json"), "utf8");
+    const unknownRetry = await retrySkipped({}, { contactIds: [retryableTask.results[1].id] });
+    assert.equal(unknownRetry.blocked_reason, "retry_skipped_outcome_unknown_forbidden");
+    assert.equal(fs.readFileSync(path.join(dir, "touch_task.json"), "utf8"), protectedBefore, "an unknown outcome retry must not change any persisted task state");
+    const protectedRetry = await retrySkipped({}, { contactIds: [retryableTask.results[2].id] });
+    assert.equal(protectedRetry.blocked_reason, "retry_skipped_sent_verified_forbidden");
+    assert.equal(fs.readFileSync(path.join(dir, "touch_task.json"), "utf8"), protectedBefore, "a rejected retry must not change any persisted task state");
+    const oldSkipWhileUnknown = await retrySkipped({}, { contactIds: [retryableTask.results[0].id] });
+    assert.equal(oldSkipWhileUnknown.ok, true,
+      "an unresolved outcome must stay excluded without blocking a different contact that is proven unsent");
+    assert.equal(oldSkipWhileUnknown.task.results[1].status, "outcome_unknown");
+    retryableTask.results[1].status = "outcome_unknown_skipped";
+    retryableTask.results[1].awaiting_resolution = false;
+
+    retryableTask.status = "running";
+    saveTaskState(dir, retryableTask);
+    const runningRetry = await retrySkipped({}, { contactIds: [retryableTask.results[0].id] });
+    assert.equal(runningRetry.ok, true, "a stale running state without a live executor must self-reconcile and retry in one click");
+    assert.equal(runningRetry.task.status, "paused");
+    assert.equal(runningRetry.task.results[0].status, "generated");
+    retryableTask.results[0].status = "identity_skipped";
+    retryableTask.results[0].retry_blocked = true;
+    retryableTask.status = "completed";
+    saveTaskState(dir, retryableTask);
+
+    let retriedContactId = "";
+    executorBehavior = async (options) => {
+      retriedContactId = options.contactId;
+      options.onTransition("sent_verified", { real_send_attempt_key: `retry-${options.contactId}` });
+      return { ok: true, state: { real_send_status: "sent_verified", real_send_attempt_key: `retry-${options.contactId}` } };
+    };
+    const retried = await retrySkipped({}, { contactIds: [retryableTask.results[0].id] });
+    assert.equal(retried.ok, true);
+    assert.equal(retried.task.current_index, 0);
+    assert.equal(retried.task.results[0].status, "generated");
+    assert.equal(retried.task.results[0].retry_blocked, false);
+    assert.equal(retried.task.results[0].send_attempted, false);
+    assert.deepEqual(retried.task.results[0].message_parts, [{ kind: "text", status: "pending", message: "冻结文案" }], "retry must preserve the frozen message parts");
+    const resumedRetry = await resume({}, { clickToken: "trusted-retry-skipped" });
+    assert.equal(resumedRetry.task?.status, "running", `retry resume failed: ${JSON.stringify(resumedRetry)}`);
+    await waitFor(status, (value) => value.task?.current_index >= 1);
+    assert.equal(retriedContactId, retryableTask.results[0].id, "a reset identity skip must be selected by the task loop again");
+    await waitFor(status, (value) => value.task?.status === "completed");
+
+    const activeRetryTask = createTask("运行中安全重试", contacts(3), "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+    activeRetryTask.results[0] = {
+      ...activeRetryTask.results[0], status: "identity_skipped", reason: "身份不唯一，已跳过",
+      blocked_reason: "search_result_identity_unverified", retry_blocked: true, send_attempted: false,
+      message_parts: [{ kind: "text", status: "pending", message: "待重试文案" }]
+    };
+    activeRetryTask.results[1] = {
+      ...activeRetryTask.results[1], status: "generated", message_parts: [{ kind: "text", status: "pending", message: "当前文案" }]
+    };
+    activeRetryTask.current_index = 1;
+    activeRetryTask.status = "paused";
+    activeRetryTask.phase = "sending_batch";
+    saveTaskState(dir, activeRetryTask);
+    let releaseActiveSend;
+    let activeSendEntered = false;
+    executorBehavior = async (options) => {
+      activeSendEntered = true;
+      await new Promise((resolve) => { releaseActiveSend = resolve; });
+      options.onTransition("sent_verified", { real_send_attempt_key: `active-${options.contactId}` });
+      return { ok: true, state: { real_send_status: "sent_verified", real_send_attempt_key: `active-${options.contactId}` } };
+    };
+    await resume({}, { clickToken: "trusted-active-retry" });
+    await waitFor(async () => ({ activeSendEntered }), (value) => value.activeSendEntered);
+    const activeRetryPromise = retrySkipped({}, { contactIds: [activeRetryTask.results[0].id] });
+    releaseActiveSend();
+    const activeRetry = await activeRetryPromise;
+    assert.equal(activeRetry.ok, true, "one click during an active task must pause at the safe boundary and requeue the skipped contact");
+    assert.equal(activeRetry.task.status, "paused");
+    assert.equal(activeRetry.task.current_index, 0);
+    assert.equal(activeRetry.task.results[0].status, "generated");
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
@@ -350,6 +503,60 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
+    let inputLeaseRecoveryAttempts = 0;
+    executorBehavior = async (options) => {
+      inputLeaseRecoveryAttempts += 1;
+      if (inputLeaseRecoveryAttempts === 1) {
+        return {
+          ok: false,
+          action: "input-message-dry-run",
+          blocked_reason: "message_input_failed_wechat_user_active",
+          send_attempted: false,
+          send_result: "not_attempted",
+          safety_diagnostics: {
+            phase: "pre_input",
+            expected_input_tick: 201,
+            current_input_tick: 202,
+            expected_hWnd: 81,
+            foreground_hWnd: 81
+          }
+        };
+      }
+      options.onTransition("sent_verified", { real_send_attempt_key: "recovered-input-lease" });
+      return { ok: true, state: { real_send_status: "sent_verified", real_send_attempt_key: "recovered-input-lease" } };
+    };
+    await start({}, { script: "草稿输入占用恢复测试", clickToken: "trusted-input-lease-recovery" });
+    const recoveredInputLease = await waitFor(status, (value) => value.task?.status === "completed");
+    assert.equal(inputLeaseRecoveryAttempts, 2, "a pre-input lease block may retry after the bounded idle wait");
+    assert.equal(recoveredInputLease.task.results[0].status, "sent_verified");
+    assert.equal(recoveredInputLease.task.results[0].last_failure_context?.phase, "pre_input");
+
+    fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
+    fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
+    let touchedDraftRecoveryAttempts = 0;
+    executorBehavior = async (options) => {
+      touchedDraftRecoveryAttempts += 1;
+      if (touchedDraftRecoveryAttempts === 1) {
+        return {
+          ok: false,
+          action: "input-message-dry-run",
+          blocked_reason: "message_input_failed_wechat_user_active",
+          send_attempted: false,
+          send_result: "not_attempted",
+          safety_diagnostics: { phase: "copy_probe", expected_input_tick: 301, current_input_tick: 302 }
+        };
+      }
+      options.onTransition("sent_verified", { real_send_attempt_key: "recovered-touched-draft" });
+      return { ok: true, state: { real_send_status: "sent_verified", real_send_attempt_key: "recovered-touched-draft" } };
+    };
+    await start({}, { script: "草稿写入后输入变化恢复", clickToken: "trusted-input-lease-retry" });
+    const recoveredTouchedDraft = await waitFor(status, (value) => value.task?.status === "completed");
+    assert.equal(touchedDraftRecoveryAttempts, 2, "an input interruption before send must retry even when a replaceable draft already exists");
+    assert.equal(recoveredTouchedDraft.task.results[0].status, "sent_verified");
+    assert.equal(recoveredTouchedDraft.task.results[0].last_failure_context?.phase, "copy_probe");
+
+    fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
+    fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
     const legacyDraft = createTask("旧版草稿任务", contacts(1), "2026-07-11T00:00:00.000Z", { executionMode: "draft_only" });
     legacyDraft.version = 2;
     legacyDraft.execution_mode = "draft_only";
@@ -365,6 +572,20 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
     const legacyStopped = stop();
     assert.equal(legacyStopped.task.status, "stopped");
     assert.equal(legacyStopped.task.phase, "stopped");
+
+    executorBehavior = async () => ({ ok: false, send_attempted: false, blocked_reason: "legacy_new_unknown_reason", error: "未知失败测试" });
+    const qualityBaseline = (await status()).classificationQuality.unknownPauseCount;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
+      fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
+      await start({}, { script: "未知码质量统计", clickToken: `trusted-quality-${attempt}` });
+      const pausedUnknownCode = await waitFor(status, (value) => value.task?.status === "paused");
+      assert.equal(pausedUnknownCode.classificationQuality.unknownPauseCount, qualityBaseline + attempt + 1);
+    }
+    const persistedQuality = JSON.parse(fs.readFileSync(path.join(path.dirname(dir), "wechat_failure_classification_quality.json"), "utf8"));
+    const legacyBuildQuality = persistedQuality.builds["9.8.7|build-current|abcdef1234567890"];
+    assert.equal(legacyBuildQuality.status, "needs_review");
+    assert(legacyBuildQuality.unknownReasonCodes.includes("legacy_new_unknown_reason"));
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });
@@ -408,12 +629,16 @@ async function waitFor(read, predicate, timeoutMs = 60_000) {
       return { ok: true, state: { real_send_status: "sent_verified", real_send_attempt_key: attemptKey } };
     };
     const deadlinesBeforeSkip = waitedDeadlines.length;
-    await resolveUnknown({}, { taskId: unknown.task.id, contactId: unknown.task.results[0].id, resolution: "skip" });
+    const savedSkip = await resolveUnknown({}, { taskId: unknown.task.id, contactId: unknown.task.results[0].id, resolution: "skip" });
+    assert.equal(savedSkip.task.status, "paused", "manual resolution must persist without auto-continuing");
+    assert.equal(savedSkip.task.results[0].manual_resolution_history.at(-1).resolution, "skip");
+    assert.equal(sends, sendsAfterUnknown, "manual resolution must not call the executor");
+    await start({}, { script: "未知结果测试", clickToken: "trusted-after-resolution" });
     const skippedThenCompleted = await waitFor(status, (value) => value.task?.status === "completed");
     assert.equal(skippedThenCompleted.task.results[0].status, "outcome_unknown_skipped");
     assert.equal(skippedThenCompleted.task.results[1].status, "sent_verified");
     assert.equal(sends, sendsAfterUnknown + 1);
-    assert.equal(waitedDeadlines.length, deadlinesBeforeSkip + 1);
+    assert.equal(waitedDeadlines.length, deadlinesBeforeSkip, "manual skip must not add a send delay");
 
     fs.rmSync(path.join(dir, "touch_task.json"), { force: true });
     fs.rmSync(path.join(dir, "touch_task.json.bak"), { force: true });

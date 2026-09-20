@@ -22,9 +22,14 @@ async function checkBundledAnnouncements(rootDir, config, manifest, sign) {
   assert.equal(controller.status().announcements[0].notes, releaseNotes(version));
   assert.equal(controller.status().stage, "disabled");
   const bundledVersions = bundledAnnouncements(version).map(entry => entry.version);
-  assert.ok(bundledVersions.includes("1.1.0"), "A skipped release is still explained after a full upgrade");
+  const previousVersion = Object.keys(require("../shared/customer-release-notes.json"))
+    .filter(candidate => compareVersions(candidate, version) < 0).sort((a, b) => compareVersions(b, a))[0];
+  assert.ok(previousVersion && bundledVersions.includes(previousVersion), "A skipped recent release is still explained after a full upgrade");
   assert.deepEqual(bundledAnnouncements("1.1.0").map(entry => entry.version), ["1.1.0"], "Do not show future bundled releases");
-  for (const entry of controller.status().announcements) controller.markAnnouncementRead(entry.id);
+  const bundledUnread = controller.status().unreadAnnouncements;
+  assert.ok(bundledUnread > 1, "the bundled history fixture must include multiple unread versions");
+  controller.markAnnouncementsRead();
+  assert.equal(controller.status().unreadAnnouncements, 0, "opening announcements can clear every historical red dot at once");
   controller.stop();
   controller = createCloudMaintenance({ rootDir: dir, config, version, transport: {
     async request() { return sign({ ...manifest, version, notes: releaseNotes(version) }); }, close() {}
@@ -174,18 +179,110 @@ async function checkAnnouncements(rootDir, config, manifest, sign, bytes) {
   } finally { race.stop(); }
 
   const handlers = new Map(), mainFrame = {}, webContents = { mainFrame, send() {} };
-  let refreshes = 0, readSequence;
+  let refreshes = 0, readSequence, readAll = 0;
   const dispose = registerCloudMaintenanceIpc({ ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) }, getMainWindow: () => ({ webContents, isDestroyed: () => false }), restart() {},
-    controller: { onUpdate: () => () => {}, refreshAnnouncements: () => { refreshes++; return {}; }, markAnnouncementRead: (sequence) => { readSequence = sequence; return {}; } } });
+    controller: { onUpdate: () => () => {}, refreshAnnouncements: () => { refreshes++; return {}; }, markAnnouncementRead: (sequence) => { readSequence = sequence; return {}; }, markAnnouncementsRead: () => { readAll++; return {}; } } });
   await assert.rejects(handlers.get("cloud:announcements")({ sender: {}, senderFrame: mainFrame }), /sender_invalid/);
   await assert.rejects(handlers.get("cloud:announcements")({ sender: webContents, senderFrame: {} }), /sender_invalid/);
   await handlers.get("cloud:announcements")({ sender: webContents, senderFrame: mainFrame });
   await handlers.get("cloud:readAnnouncement")({ sender: webContents, senderFrame: mainFrame }, 21);
-  assert.equal(refreshes, 1); assert.equal(readSequence, 21); dispose();
+  await handlers.get("cloud:readAnnouncements")({ sender: webContents, senderFrame: mainFrame });
+  assert.equal(refreshes, 1); assert.equal(readSequence, 21); assert.equal(readAll, 1); dispose();
   const calls = [];
   const api = createPreloadApis({ invoke: (...args) => { calls.push(args); }, on() {}, removeListener() {} }).cloudMaintenance;
-  api.announcements(); api.readAnnouncement(21);
-  assert.deepEqual(calls, [["cloud:announcements"], ["cloud:readAnnouncement", 21]]);
+  api.announcements(); api.readAnnouncement(21); api.readAnnouncements();
+  assert.deepEqual(calls, [["cloud:announcements"], ["cloud:readAnnouncement", 21], ["cloud:readAnnouncements"]]);
+}
+
+async function checkInstallFailures(rootDir, config, manifest, sign, bytes) {
+  const helper = require("./update-helper.cjs"), originalCreate = helper.createUpdateJob, originalNow = Date.now;
+  const privatePath = path.join(rootDir, "private-profile", "helper-runtime"), events = [];
+  let creates = 0, launches = 0, mode, pendingHelper, loggerThrows = false;
+  const dir = path.join(rootDir, "install-failures"), cache = path.join(dir, "cloud-maintenance");
+  fs.mkdirSync(cache, { recursive: true });
+  fs.writeFileSync(path.join(cache, "state.json"), JSON.stringify({ pending: sign(manifest), sequence: manifest.sequence }));
+  const installer = path.join(cache, `${manifest.sha256}.exe`);
+  fs.writeFileSync(installer, bytes);
+  const controller = createCloudMaintenance({ rootDir: dir, userData: dir, config, version: "1.0.0", canInstall: () => true,
+    transport: { close() {} }, logger: { event(...args) { events.push(args); if (loggerThrows) throw Error("diagnostic disk write failed"); } },
+    launch() {
+      launches++;
+      const child = new EventEmitter(); child.unref = () => {};
+      queueMicrotask(() => {
+        if (mode === "launch") child.emit("error", Object.assign(Error("private launch detail"), { code: "EBUSY", path: privatePath }));
+        else {
+          if (mode === "ready") { let ticks = 0; Date.now = () => originalNow() + ticks++ * 31000; }
+          else fs.writeFileSync(path.join(cache, "fixture.ready.json"), "{}");
+          child.emit("spawn");
+        }
+      });
+      return child;
+    }
+  });
+  helper.createUpdateJob = async () => {
+    creates++;
+    if (mode instanceof Error) throw mode;
+    if (mode === "pending") await new Promise((resolve, reject) => { pendingHelper = { resolve, reject }; });
+    return { file: path.join(cache, "fixture.json"), job: { id: "fixture", helperExecutable: "never-executed.exe" } };
+  };
+  try {
+    for (const [code, phase] of [["ENOSPC", "helper"], ["update_disk_space_insufficient", "helper"], ["EACCES", "helper"], ["EBUSY", "launch"], ["update_helper_not_ready", "ready"], ["cloud_download_invalid", "prepare"]]) {
+      const beforeLaunch = launches, beforeEvents = events.length;
+      mode = phase === "launch" || phase === "ready" ? phase : Object.assign(Error("private error detail"), {
+        code, path: privatePath, syscall: "copyfile", requiredBytes: 3 * 1024 ** 3, availableBytes: 1024 ** 3
+      });
+      if (phase === "prepare") fs.writeFileSync(installer, "tampered");
+      assert.equal(await controller.beginInstall(), false, `${code} must preserve the running app instead of permitting exit`);
+      Date.now = originalNow;
+      assert.equal(controller.status().stage, "error");
+      const reason = code === "update_disk_space_insufficient" ? /预计需要 3\.00 GB，可用 1\.00 GB/
+        : code === "update_helper_not_ready" ? /更新助手未能按时就绪/ : new RegExp(code);
+      assert.match(controller.status().error, reason, "The visible failure must retain the specific reason rather than claim every update window failed to start");
+      assert.equal(events.length, beforeEvents + 1, "Install failures must produce one safe diagnostic");
+      assert.deepEqual(events.at(-1), ["maintenance", "update.failed", { stage: phase }, { level: "error", code, phase }]);
+      if (phase === "helper" || phase === "prepare") assert.equal(launches, beforeLaunch, "Pre-launch failure must never launch a helper or installer");
+      if (!["ENOSPC", "update_disk_space_insufficient"].includes(code)) assert.doesNotMatch(controller.status().error, /空间不足/, "Permission, busy, verification and handshake errors are not disk-full errors");
+      fs.writeFileSync(installer, bytes);
+    }
+    mode = Object.assign(Error(`copy failed at ${privatePath}`), { code: `ENOSPC at ${privatePath}` });
+    assert.equal(await controller.beginInstall(), false);
+    assert.equal(events.at(-1)[3].code, "update_failed", "Non-token error codes cannot leak local paths into diagnostics");
+    assert.ok(!JSON.stringify(events).includes(privatePath) && !JSON.stringify(events).includes("private error"), "Local paths and raw error messages must not enter cloud diagnostics");
+    mode = Object.assign(Error("private logger failure detail"), { code: "ENOSPC", path: privatePath }); loggerThrows = true;
+    let notified = false;
+    const unsubscribe = controller.onUpdate(state => { if (state.stage === "error" && /ENOSPC/.test(state.error)) notified = true; });
+    assert.equal(await controller.beginInstall(), false, "A logger write failure must not reject installation handling");
+    assert.equal(notified, true, "Users must still receive the actual update error when diagnostic storage fails");
+    unsubscribe(); loggerThrows = false;
+    mode = "pending";
+    const first = controller.beginInstall();
+    while (!pendingHelper) await new Promise(resolve => setImmediate(resolve));
+    const beforeCreates = creates;
+    assert.equal(await controller.beginInstall(), false, "Concurrent clicks cannot start a second update or exit the app");
+    assert.equal(creates, beforeCreates);
+    pendingHelper.reject(Object.assign(Error("copy failed"), { code: "EACCES" }));
+    assert.equal(await first, false);
+    mode = "success";
+    assert.equal(await controller.beginInstall(), true, "A failed attempt releases the lock so a later ready helper can permit exit");
+    assert.equal(controller.status().stage, "waiting");
+    assert.equal(controller.status().error, "");
+  } finally { Date.now = originalNow; helper.createUpdateJob = originalCreate; controller.stop(); }
+}
+
+async function checkFailureDiagnostics(rootDir, config) {
+  for (const loggerThrows of [false, true]) {
+    const events = [], privateDetail = "C:/private-profile/update-cache";
+    const controller = createCloudMaintenance({ rootDir: path.join(rootDir, `check-failure-${loggerThrows}`), config, version: "1.0.0",
+      transport: { async request() { throw Object.assign(Error(`failure at ${privateDetail}`), { code: `EIO at ${privateDetail}` }); }, close() {} },
+      logger: { event(...args) { events.push(args); if (loggerThrows) throw Error("diagnostic write failed"); } }
+    });
+    try {
+      await controller.check();
+      assert.equal(controller.status().stage, "error", "A failed diagnostic write must not hide a check/download failure");
+      assert.equal(events.at(-1)[3].code, "update_failed", "Check failures must also keep raw error messages and paths out of diagnostics");
+      assert.ok(!JSON.stringify(events).includes(privateDetail));
+    } finally { controller.stop(); }
+  }
 }
 
 async function main() {
@@ -241,10 +338,14 @@ async function main() {
     offline = false; latest = sign({ ...manifest, sequence: 9, version: "1.0.2" });
     await controller.check();
     assert.equal(controller.status().stage, "error", "Signed but stale release rejected");
+    assert.equal(logger.readRecent(20).some((entry) => entry.module === "maintenance" && entry.event === "update.failed" && entry.code === "cloud_release_rollback"), true,
+      "an update failure must retain its safe machine-readable cause for feedback diagnostics");
     await checkAnnouncements(dir, config, manifest, sign, bytes);
     await checkBundledAnnouncements(dir, config, manifest, sign);
     await checkReleaseSelection(dir, config, manifest, sign, bytes);
-    console.log("cloud maintenance: announcement cache/read persistence, metadata-only refresh, signatures, rollback/conflict, download race, legacy pending, IPC, consent and install boundary passed");
+    await checkInstallFailures(dir, config, manifest, sign, bytes);
+    await checkFailureDiagnostics(dir, config);
+    console.log("cloud maintenance: announcements, signatures, rollback/conflict, download race, IPC, consent, staged install failures, safe diagnostics and concurrent retry boundaries passed");
   } finally { controller.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

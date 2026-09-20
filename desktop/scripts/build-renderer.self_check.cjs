@@ -49,6 +49,8 @@ assert.equal(succeeded.exitCode, null);
 assert.equal(succeeded.writes.length, 1);
 assert.deepEqual(JSON.parse(succeeded.writes[0][1]), {
   edition: "development",
-  buildId: "regression-build"
+  buildId: "regression-build",
+  buildCommit: "",
+  sourceDirty: false
 });
 console.log("renderer build result self-check passed");

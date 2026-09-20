@@ -96,6 +96,7 @@ registerContactSyncIpc({ dataDir, activeTouchDir });
   executorFailure = true;
   const failedSelection = await chooseRoot();
   assert.equal(failedSelection.error, "executor failed", "manual validation must preserve executor errors");
+  assert.equal(failedSelection.state, undefined, "executor failures without state must remain failures instead of inheriting stale synced state");
   assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, "wechat-paths.json"), "utf8")).wechatRoot, validRoot);
 
   const failedAutoDetect = await autoDetect();

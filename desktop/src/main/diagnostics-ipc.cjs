@@ -18,6 +18,11 @@ const AUTO_REPLY_VISIBLE_TOKEN_FIELDS = [
   "reason_code",
   "error_code",
   "send_result",
+  "input_read_reason",
+  "outcome",
+  "side_effect",
+  "retryability",
+  "failure_stage",
   "send_phase",
   "recovery_action",
   "verification_mode"
@@ -293,7 +298,9 @@ async function exportBundle(options = {}) {
   try {
     const diagnosticFiles = collectDiagnosticFiles(logger.logsDir);
     const autoReplyDiagnosticFiles = collectAutoReplyDiagnosticFiles(autoReplyDir);
-    const collectedFiles = [...diagnosticFiles, ...autoReplyDiagnosticFiles];
+    const failureFiles = require('./failure-evidence.cjs').collectFailureEvidenceFiles(path.dirname(logger.logsDir));
+    const passportFiles = require('./task-passport.cjs').collectTaskPassportFiles(path.dirname(logger.logsDir));
+    const collectedFiles = [...diagnosticFiles, ...autoReplyDiagnosticFiles, ...failureFiles, ...passportFiles];
     const includedFiles = collectedFiles.map(({ name, size_bytes, sha256: digest }) => ({
       name,
       size_bytes,
@@ -304,7 +311,7 @@ async function exportBundle(options = {}) {
       build: buildInfo(appRuntime),
       diagnostics: exportableStatus(logger.status()?.data),
       included_files: includedFiles,
-      privacy: "不包含 DeepSeek Key、客户消息原文、联系人明文、AI专家资料原文。"
+      privacy: "普通结构化日志不包含 DeepSeek Key、客户消息原文、联系人明文或 AI 专家资料原文；任务护照失败附件包含本机微信原始截图和程序原始读数，可能出现屏幕可见信息，仅在用户主动导出诊断包时纳入。"
     }, null, 2)}\n`, "utf8");
     const entries = [
       ...collectedFiles.map(({ name, content }) => ({ name, content })),

@@ -496,7 +496,7 @@ export function AutoReply({ workflow, onNavigate, contacts = [] }: { workflow?: 
       <div className="page-head">
         <div>
           <h1>自动回复</h1>
-          <p>{workflow ? "客户回复优先处理；没有其他待办时，持续使用 AI 专家资料接待客户。" : "启动后监听新消息，并使用已导入的 AI 专家资料生成回复。"}</p>
+          <p>{workflow ? "先完成当前可执行的计划任务，空闲时使用 AI 专家资料接待客户。" : "启动后监听新消息，并使用已导入的 AI 专家资料生成回复。"}</p>
         </div>
         <div className="actions">
           {workflow ? <WorkflowToggle workflow={workflow} onNavigate={onNavigate} /> : running ? (

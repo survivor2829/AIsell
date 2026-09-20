@@ -1,0 +1,9 @@
+Offline product image cutout uses the IS-Net general-use model.
+Model authors: Xuebin Qin et al., Highly Accurate Dichotomous Image Segmentation.
+Source: https://github.com/xuebinqin/DIS
+ONNX distribution: https://github.com/danielgatis/rembg/releases/tag/v0.0.0
+Model identity and checksum: cutout_model.json in the runtime resource directory.
+Upstream license text is included in IS-Net-LICENSE.txt.
+Input/output normalization follows the documented IS-Net general-use inference
+contract also used by rembg. The desktop implementation uses ONNX Runtime CPU
+inference and never downloads model files at application runtime.

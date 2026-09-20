@@ -8,9 +8,11 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 import json
 import math
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 import os
 import re
+import ssl
 import threading
 import time
 import uuid
@@ -19,9 +21,28 @@ from .errors import ContentEngineError
 
 _context = ContextVar("provider_usage_context", default={})
 _write_lock = threading.Lock()
+_request_admission = ContextVar("provider_request_admission", default=None)
+
+
+@contextmanager
+def request_budget(admit):
+    """Charge every actual HTTP attempt, including rate and structure retries."""
+    marker = _request_admission.set(admit)
+    try:
+        yield
+    finally:
+        _request_admission.reset(marker)
+
 METRICS = ("input_tokens", "output_tokens", "cached_tokens", "total_tokens",
            "requested_characters", "billed_characters", "requested_audio_ms", "audio_ms", "generated_audio_ms")
 CONTEXT_KEYS = ("task_id", "task_type", "batch_id", "project_id", "run_id", "session_id", "operation_id", "purpose")
+ERROR_ORIGINS = frozenset({
+    "gateway_rate_limit", "maintenance_rate_limit", "upstream",
+    "gateway_transport", "maintenance_transport", "gateway_response",
+    "coalesced_timeout",
+})
+MAX_RETRY_AFTER_SECONDS = 3_600
+MAX_429_BACKOFF_SECONDS = 8
 
 
 def _now():
@@ -43,6 +64,64 @@ def _count(value):
 
 def _first_count(*values):
     return next((clean for value in values if (clean := _count(value)) is not None), None)
+
+
+def _header(headers, name):
+    if not hasattr(headers, "get"):
+        return ""
+    value = headers.get(name)
+    if value is None:
+        value = headers.get(name.lower())
+    return str(value or "").strip()
+
+
+def _parse_retry_after(value, now=None):
+    raw = str(value or "").strip()
+    if re.fullmatch(r"\d{1,5}", raw):
+        return min(MAX_RETRY_AFTER_SECONDS, int(raw))
+    try:
+        target = parsedate_to_datetime(raw)
+        if target.tzinfo is None:
+            return None
+        return min(MAX_RETRY_AFTER_SECONDS, max(0, math.ceil(target.timestamp() - (now or time.time()))))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def retry_delay_seconds(headers, attempt):
+    """Return a safe bounded delay, or None when Retry-After exceeds our retry budget."""
+    retry_after = _parse_retry_after(_header(headers, "Retry-After"))
+    if retry_after is not None:
+        return retry_after if retry_after <= MAX_429_BACKOFF_SECONDS else None
+    return min(MAX_429_BACKOFF_SECONDS, 2 ** max(0, int(attempt) - 1))
+
+
+def current_usage_context():
+    scope = _context.get()
+    return {key: _safe(scope.get(key)) for key in CONTEXT_KEYS}
+
+
+class ProviderRateLimitRetry(Exception):
+    def __init__(self, delay_seconds):
+        super().__init__("provider_429_retry")
+        self.code = "provider_429_retry"
+        self.delay_seconds = max(0, int(delay_seconds))
+
+
+def _transport_error_kind(error):
+    reason = getattr(error, "reason", None)
+    candidate = reason if reason is not None else error
+    if isinstance(candidate, ssl.SSLCertVerificationError):
+        return "tls_certificate"
+    if isinstance(candidate, TimeoutError):
+        return "timeout"
+    if isinstance(candidate, ConnectionResetError):
+        return "connection_reset"
+    if isinstance(candidate, ConnectionAbortedError):
+        return "connection_aborted"
+    if isinstance(candidate, ConnectionRefusedError):
+        return "connection_refused"
+    return "transport_error"
 
 
 def _append_event(root, record, event):
@@ -97,7 +176,8 @@ class ProviderRequest:
                        "started_at": _now(), "finished_at": None, "elapsed_ms": None,
                        "attempt": max(1, int(attempt)), "correction_attempt": context.get("correction_attempt", 1),
                        "client_request_id": _safe(request_id), "request_id": "", "log_id": "", "http_status": None,
-                       "provider_code": "", "outcome": "outcome_unknown", "error_code": "",
+                       "provider_code": "", "error_origin": "", "retry_after_seconds": None,
+                       "transport_error": "", "outcome": "outcome_unknown", "error_code": "",
                        **{key: _count(metrics.get(key)) for key in METRICS}}
         self.record["purpose"] = _safe(purpose) or self.record["purpose"] or self.record["kind"]
         self.record["operation_id"] = self.record["operation_id"] or self.record["call_id"]
@@ -106,6 +186,9 @@ class ProviderRequest:
         _append_event(self.root, self.record, event)
 
     def __enter__(self):
+        admit = _request_admission.get()
+        if admit is not None:
+            admit(self.record)
         self._append("request_started")
         return self
 
@@ -143,6 +226,15 @@ class ProviderRequest:
             self.record["provider_code"] = _safe(code)
         if type(http_status) is int:
             self.record["http_status"] = http_status
+        origin = _header(headers, "X-Xiaoxi-Error-Origin")
+        if origin in ERROR_ORIGINS:
+            self.record["error_origin"] = origin
+        retry_after = _parse_retry_after(_header(headers, "Retry-After"))
+        if retry_after is not None:
+            self.record["retry_after_seconds"] = retry_after
+
+    def observe_transport_error(self, error):
+        self.record["transport_error"] = _transport_error_kind(error)
 
     def __exit__(self, error_type, error, _traceback):
         if error is None:
@@ -151,7 +243,9 @@ class ProviderRequest:
             code = _safe(getattr(error, "code", "")) or _safe(error_type.__name__)
             self.record["error_code"] = code
             status = self.record["http_status"]
-            if status and status >= 500:
+            if "unknown" in code:
+                self.record["outcome"] = "outcome_unknown"
+            elif status and status >= 500:
                 self.record["outcome"] = "failed"
             elif (status and 400 <= status < 500) or "rejected" in code:
                 self.record["outcome"] = "rejected"

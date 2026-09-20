@@ -891,26 +891,60 @@ function Test-VisualSendGreenBridge($frame, $upper, $lower) {
   return $samples -gt 0 -and ([double]$green / [double]$samples) -ge 0.72
 }
 
-function Test-VisualSendOutgoingLineEvidence($frame, $lines, [string]$reply, [double]$sidebarRight) {
+function Normalize-VisualSendReceiptText([string]$value) {
+  return [Text.RegularExpressions.Regex]::Replace((Normalize-VisualSendText $value), "[^\p{L}\p{N}]+", "")
+}
+
+function Get-VisualSendReplyMatchEvidence([string]$observedText, [string]$reply) {
+  $observed = Normalize-VisualSendReceiptText $observedText
+  $wanted = Normalize-VisualSendReceiptText $reply
+  if (-not $observed -or -not $wanted) {
+    return @{ ok = $false; observed_text = $observed; match_mode = "empty"; edit_distance = -1; maximum_length = [Math]::Max($observed.Length, $wanted.Length) }
+  }
+  $maximumLength = [Math]::Max($observed.Length, $wanted.Length)
+  $distance = Get-VisualSendEditDistance $observed $wanted
+  if ($observed -ceq $wanted) {
+    return @{ ok = $true; observed_text = $observed; match_mode = "exact"; edit_distance = 0; maximum_length = $maximumLength }
+  }
+  # The exact draft, click and current conversation were already proven. OCR is
+  # receipt evidence here, so tolerate bounded glyph drift only on the latest
+  # green message block. A latest incoming block can never reach this match.
+  $lengthDelta = [Math]::Abs($observed.Length - $wanted.Length)
+  $boundedDrift = [Math]::Min($observed.Length, $wanted.Length) -ge 12 -and
+    $lengthDelta -le [Math]::Max(4, [int][Math]::Floor($maximumLength * 0.25)) -and
+    $distance -le [Math]::Max(2, [int][Math]::Floor($maximumLength * 0.40))
+  return @{
+    ok = $boundedDrift
+    observed_text = $observed
+    match_mode = $(if ($boundedDrift) { "bounded_ocr_drift" } else { "mismatch" })
+    edit_distance = $distance
+    maximum_length = $maximumLength
+  }
+}
+
+function Get-VisualSendOutgoingLineEvidence($frame, $lines, [string]$reply, [double]$sidebarRight) {
   $wanted = Normalize-VisualSendText $reply
-  if (-not $wanted) { return $false }
+  if (-not $wanted) { return @{ ok = $false; observed_text = ""; match_mode = "empty"; edit_distance = -1; maximum_length = 0 } }
   $ordered = @($lines | Sort-Object { [double]$_.top }, { [double]$_.left })
-  if ($ordered.Count -eq 0) { return $false }
+  if ($ordered.Count -eq 0) { return @{ ok = $false; observed_text = ""; match_mode = "empty"; edit_distance = -1; maximum_length = $wanted.Length } }
   $latest = $ordered[-1]
-  if ((Get-VisualSendLineGreenRatio $frame $latest $sidebarRight) -lt 0.16) { return $false }
+  if ((Get-VisualSendLineGreenRatio $frame $latest $sidebarRight) -lt 0.16) {
+    return @{ ok = $false; observed_text = (Normalize-VisualSendText ([string]$latest.text)); match_mode = "latest_not_outgoing"; edit_distance = -1; maximum_length = $wanted.Length }
+  }
   $aggregate = Normalize-VisualSendText ([string]$latest.text)
-  if ($aggregate -ceq $wanted) { return $true }
   $lower = $latest
   for ($index = $ordered.Count - 2; $index -ge 0; $index--) {
     $upper = $ordered[$index]
     if ((Get-VisualSendLineGreenRatio $frame $upper $sidebarRight) -lt 0.16) { break }
     if (-not (Test-VisualSendGreenBridge $frame $upper $lower)) { break }
     $aggregate = (Normalize-VisualSendText ([string]$upper.text)) + $aggregate
-    if ($aggregate -ceq $wanted) { return $true }
-    if ($aggregate.Length -ge $wanted.Length) { break }
     $lower = $upper
   }
-  return $false
+  return Get-VisualSendReplyMatchEvidence $aggregate $wanted
+}
+
+function Test-VisualSendOutgoingLineEvidence($frame, $lines, [string]$reply, [double]$sidebarRight) {
+  return [bool](Get-VisualSendOutgoingLineEvidence $frame $lines $reply $sidebarRight).ok
 }
 
 function Find-VisualSendGreenComponents($frame, $region) {
@@ -1187,7 +1221,12 @@ function Confirm-VisualSendReceipt {
           }
           $receipt.code = "conversation_unresolved"
           if ($receipt.conversation_verified) {
-            $receipt.bubble_verified = [bool](Test-VisualSendOutgoingBubble $verifyFrame $verifySidebarRight)
+            $bubbleEvidence = Get-VisualSendOutgoingBubbleEvidence $verifyFrame $verifySidebarRight
+            $receipt.bubble_verified = $bubbleEvidence.ok -eq $true
+            $receipt.observed_text = [string]$bubbleEvidence.observed_text
+            $receipt.match_mode = [string]$bubbleEvidence.match_mode
+            $receipt.edit_distance = [int]$bubbleEvidence.edit_distance
+            $receipt.maximum_length = [int]$bubbleEvidence.maximum_length
             $receipt.code = "bubble_unresolved"
             if ($receipt.bubble_verified) {
               $receipt.code = "bubble_verified"
@@ -1270,10 +1309,10 @@ function Clear-VisualSendDraft($lock) {
   }
 }
 
-function Test-VisualSendOutgoingBubble($frame, [double]$sidebarRight) {
+function Get-VisualSendOutgoingBubbleEvidence($frame, [double]$sidebarRight) {
   $chatBottom = Get-VisualSendChatBottom $frame $sidebarRight
   $ocr = Get-MomentsDownscaledOcrObservation $frame @{ left = 0.0; top = 0.0; width = [double]$frame.width; height = [double]$frame.height } $script:VisualSendOcrDownscale
-  if (-not $ocr.ok) { return $false }
+  if (-not $ocr.ok) { return @{ ok = $false; observed_text = ""; match_mode = "ocr_unavailable"; edit_distance = -1; maximum_length = 0 } }
   $messageLines = New-Object System.Collections.Generic.List[object]
   foreach ($line in @($ocr.lines)) {
     if ($line -eq $null -or -not (Test-VisualSendPureMessageText ([string]$line.text))) { continue }
@@ -1289,7 +1328,11 @@ function Test-VisualSendOutgoingBubble($frame, [double]$sidebarRight) {
       height = [double]$line.bounds.height
     })
   }
-  return Test-VisualSendOutgoingLineEvidence $frame @($messageLines.ToArray()) $expectedReply $sidebarRight
+  return Get-VisualSendOutgoingLineEvidence $frame @($messageLines.ToArray()) $expectedReply $sidebarRight
+}
+
+function Test-VisualSendOutgoingBubble($frame, [double]$sidebarRight) {
+  return [bool](Get-VisualSendOutgoingBubbleEvidence $frame $sidebarRight).ok
 }
 
 $lock = Get-VisualSendLock
@@ -1471,10 +1514,20 @@ function sanitizeVisualSendWorkerDiagnostics(value) {
 function createVisualSendDiagnostics(phase, timings, workerResult) {
   const worker = sanitizeVisualSendWorkerDiagnostics(workerResult?.diagnostics);
   const receipt = sanitizeVisualSendReceipt(workerResult?.receipt);
+  const observedText = typeof workerResult?.receipt?.observed_text === "string"
+    ? workerResult.receipt.observed_text.slice(0, 4_000)
+    : "";
+  const receiptEvidence = observedText ? {
+    observed_text: observedText,
+    match_mode: String(workerResult.receipt.match_mode || "").slice(0, 80),
+    edit_distance: Number.isInteger(Number(workerResult.receipt.edit_distance)) ? Number(workerResult.receipt.edit_distance) : undefined,
+    maximum_length: Number.isInteger(Number(workerResult.receipt.maximum_length)) ? Number(workerResult.receipt.maximum_length) : undefined
+  } : undefined;
   return {
     phase,
     timings,
     ...(receipt ? { receipt } : {}),
+    ...(receiptEvidence ? { receipt_evidence: receiptEvidence } : {}),
     ...(worker ? { worker } : {})
   };
 }

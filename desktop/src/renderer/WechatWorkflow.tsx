@@ -1,4 +1,4 @@
-import { CalendarClock, Check, ChevronRight, Clock3, ImagePlus, ListTodo, Maximize2, Pause, Pencil, Play, Plus, Repeat2, Send, ThumbsUp, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, CalendarClock, Check, ChevronRight, Clock3, ImagePlus, ListTodo, Maximize2, Pause, Pencil, Play, Plus, Repeat2, Send, ThumbsUp, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { momentsProgressLabel } from "./MomentsCampaignPanel";
 import "./WechatWorkflow.css";
@@ -7,6 +7,8 @@ export type WorkflowTaskType = "touch" | "publish" | "interact";
 export type WorkflowPayload = {
   contactIds?: string[];
   script?: string;
+  imageIds?: string[];
+  link?: string;
   content?: string;
   selectionId?: string;
   sourceTaskId?: string;
@@ -20,6 +22,8 @@ export type WorkflowMedia = {
   media_count: number;
   files: Array<{ name: string; size: number; kind: "image" | "video" }>;
 };
+type TouchImage = { id: string; name: string; size?: number; preview: string };
+type TouchSkipRecord = { contactId: string; displayName: string; index: number; reasonCode: string; blockedReason: string; at: string; traceId: string; status: string; retryable?: boolean; retry_blocked_reason?: string };
 export type WorkflowTaskInput = {
   type: WorkflowTaskType;
   title?: string;
@@ -37,14 +41,24 @@ export type WorkflowTask = Omit<WorkflowTaskInput, "payload"> & {
   error?: string;
   lastCompletedDate?: string;
   media?: WorkflowMedia;
+  images?: TouchImage[];
+  imageError?: string;
   payload?: WorkflowPayload;
   accountMismatch?: boolean;
   canRetry?: boolean;
+  unknownResolution?: { required: true; contactLabel: string; partKind: "text" | "image" | "link" | string };
+  sent_verified_count?: number;
+  skipped_breakdown?: { identity: number; ai_failed: number; pre_send: number; outcome_unknown: number };
+  skipped_records?: TouchSkipRecord[];
+  reasonCode?: string;
+  reasonClassification?: "environment" | "recoverable" | "blocker";
 };
 export type WorkflowState = {
   enabled: boolean;
   phase: string;
   currentTaskId: string | null;
+  waitingTaskId?: string | null;
+  waitUntil?: number | null;
   nextTaskId: string | null;
   lastTaskId?: string | null;
   replyEnabled?: boolean;
@@ -53,10 +67,11 @@ export type WorkflowState = {
   error: string;
   replyStatus: string;
   replyError?: string;
+  classificationQuality?: { buildVersion: string; buildId: string; buildCommit: string; threshold: number; unknownPauseCount: number; unknownReasonCodes: string[]; affectedTaskCount: number; status: "ok" | "needs_review" };
   contactSync?: { running: boolean; stage: string; contactCount: number; error: string } | null;
   momentsProgress?: { stage: string; scanned: number; scrolled: number; liked: number; commented: number; skipped?: number; alreadyLiked?: number; skipReason?: string } | null;
 };
-export type WorkflowResult = { ok: boolean; state?: WorkflowState; task?: WorkflowTask; error?: string };
+export type WorkflowResult = { ok: boolean; state?: WorkflowState; task?: WorkflowTask; error?: string; retriedCount?: number; excludedCount?: number; excludedReasons?: Record<string, number> };
 export type WorkflowContact = { id: string; name: string; remark?: string; nickname?: string; wechatId?: string; allowed: boolean };
 
 declare global {
@@ -65,13 +80,17 @@ declare global {
       status: () => Promise<WorkflowResult>;
       start: () => Promise<WorkflowResult>;
       pause: () => Promise<WorkflowResult>;
+      chooseTouchImages: () => Promise<{ ok: boolean; canceled?: boolean; images?: TouchImage[]; error?: string }>;
       showFloating: () => Promise<WorkflowResult>;
       showMain: (intent?: { view: WorkflowView }) => Promise<WorkflowResult>;
       onNavigate?: (callback: (intent: { view: WorkflowView }) => void) => () => void;
       addTask: (task: WorkflowTaskInput) => Promise<WorkflowResult>;
       updateTask: (task: WorkflowTaskInput & { id: string }) => Promise<WorkflowResult>;
       cancelTask: (id: string) => Promise<WorkflowResult>;
+      deleteTasks: (ids: string[], unsuccessfulOnly?: boolean) => Promise<WorkflowResult>;
       retryTask: (id: string) => Promise<WorkflowResult>;
+      retrySkipped: (id: string, contactIds?: string[]) => Promise<WorkflowResult>;
+      resolveTouchUnknown: (id: string, resolution: "sent" | "not_sent" | "skip") => Promise<WorkflowResult>;
       getTask: (id: string) => Promise<WorkflowResult>;
       removeRecipient: (id: string) => Promise<WorkflowResult>;
       addRecipients: (contactIds: string[]) => Promise<WorkflowResult>;
@@ -86,6 +105,18 @@ const TASK_LABELS: Record<WorkflowTaskType, string> = { touch: "精准触达", p
 const TASK_ICONS = { touch: Send, publish: ImagePlus, interact: ThumbsUp };
 const TASK_STATUS: Record<WorkflowTask["status"], string> = { pending: "待执行", running: "进行中", completed: "已完成", cancelled: "已取消", needs_attention: "需处理", missed: "已错过" };
 const SYNC_STAGE_LABELS: Record<string, string> = { restarting_wechat: "正在重启微信", waiting_login_window: "请在微信完成登录", waiting_weixin_process: "等待微信启动", waiting_weixin_module: "等待微信加载" };
+const TOUCH_PART_LABELS: Record<string, string> = { text: "文字", image: "图片", link: "网址" };
+const TOUCH_RESOLUTION_NOTICES = {
+  sent: "已记录为发送成功。需要继续时，请再次点击启动程序。",
+  not_sent: "已记录为未发送。需要重试时，请再次点击启动程序。",
+  skip: "已跳过这位联系人。需要继续时，请再次点击启动程序。"
+};
+const TOUCH_SKIP_LABELS: Record<string, string> = {
+  identity_skipped: "身份不唯一，已跳过",
+  ai_failed_skipped: "AI失败，已跳过",
+  pre_send_skipped: "明确未发送，恢复失败后已跳过",
+  outcome_unknown_skipped: "结果未知，已跳过"
+};
 
 export function useWechatWorkflow() {
   const [state, setState] = useState<WorkflowState>(EMPTY_WORKFLOW);
@@ -152,20 +183,63 @@ export function workflowStatusText(state: WorkflowState) {
   if (state.phase === "idle") return hasRunnablePlan(state) ? "计划已就绪，等待启动" : "本轮没有待执行任务";
   if (!state.enabled) return "已暂停";
   if (state.phase === "waiting_for_idle") return "等待电脑空闲";
+  if (state.phase === "waiting_safety_interval") {
+    const task = state.tasks.find((item) => item.id === state.waitingTaskId);
+    return task ? `${TASK_LABELS[task.type]}安全间隔` : "安全间隔后继续";
+  }
   const task = state.tasks.find((item) => item.id === state.currentTaskId);
   if (state.replyError && !task) return "自动回复需处理";
   if (state.phase === "replying") return state.replyStatus || "正在检查客户消息";
   if (state.phase === "listening") return state.replyStatus || "监听新消息";
   if (task) return `正在${TASK_LABELS[task.type]}`;
   if (state.phase === "scheduled") return "等待已安排的执行时间";
-  if (state.phase === "queued") return "准备执行下一项";
+  if (state.phase === "queued") {
+    const next = state.tasks.find((item) => item.id === state.nextTaskId);
+    return next ? `正在继续${TASK_LABELS[next.type]}` : "正在继续执行";
+  }
   return state.replyEnabled !== false && state.recipients.length ? "监听新消息" : "正在整理本轮结果";
 }
 
-function taskErrorText(reason: string) {
-  const label = momentsProgressLabel(reason, reason);
+const TASK_ERROR_LABELS: Record<string, string> = {
+  personal_wechat_main_window_not_found: "未识别到个人微信主窗口；请打开并保持个人微信聊天主界面后重试。",
+  wechat_window_ambiguous: "检测到多个个人微信主窗口；请只保留一个可见主窗口后重试。",
+  wechat_window_not_ready: "已找到微信主窗口，但当前尺寸不可操作；请展开微信窗口后重试。",
+  wechat_window_identity_mismatch: "微信窗口在操作过程中发生变化；请保持当前微信窗口后重试。",
+  powershell_timeout: "微信读取或识别超时，本次任务已暂停；具体阶段见诊断日志。",
+  moments_publish_outcome_unknown: "已尝试发布，但未核验到结果；请先到微信确认，勿重复发布。",
+  moments_publish_outcome_unknown_requires_resolution: "上次发布结果尚未确认；请先到微信核对，再标记是否已发布。",
+  powershell_failed: "微信窗口检查未能启动；请确认 AI 获客与微信权限一致，并检查安全软件。"
+};
+const CLASSIFICATION_ERROR_LABELS: Record<string, string> = {
+  environment: "当前运行环境暂不可用；程序会在安全条件恢复后继续。",
+  recoverable: "本次操作未执行成功；程序将有界恢复，仍失败时会加入未触达名单。",
+  blocker: "本次结果不能安全确认；程序已暂停，请先核对微信中的实际结果。"
+};
+
+function taskErrorText(reason: string, reasonCode = "", classification = "") {
+  if (TASK_ERROR_LABELS[reasonCode] || TASK_ERROR_LABELS[reason]) return TASK_ERROR_LABELS[reasonCode] || TASK_ERROR_LABELS[reason];
+  const label = momentsProgressLabel(reasonCode, reason);
   if (label !== reason) return label;
-  return /^[a-z][a-z0-9_:-]+$/i.test(reason) ? `任务未完成，请查看日志诊断（${reason}）` : reason;
+  if (classification) return CLASSIFICATION_ERROR_LABELS[classification] || CLASSIFICATION_ERROR_LABELS.blocker;
+  return /^[a-z][a-z0-9_:-]+$/i.test(reason) ? "任务未完成，已记录诊断信息；请勿重复执行并联系技术人员。" : reason;
+}
+
+function useRemainingSeconds(waitUntil?: number | null) {
+  const [timestamp, setTimestamp] = useState(() => Date.now());
+  useEffect(() => {
+    if (!waitUntil) return undefined;
+    setTimestamp(Date.now());
+    const timer = window.setInterval(() => setTimestamp(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [waitUntil]);
+  return waitUntil ? Math.max(0, Math.ceil((waitUntil - timestamp) / 1000)) : 0;
+}
+
+function safetyIntervalDetail(state: WorkflowState, seconds: number) {
+  const task = state.tasks.find((item) => item.id === state.waitingTaskId);
+  if (!task) return seconds > 0 ? `${seconds} 秒后继续` : "即将继续";
+  const unit = task.type === "touch" ? "位客户" : "项";
+  return `${task.title || TASK_LABELS[task.type]}：已完成 ${task.progress.done}/${task.progress.total} ${unit}，${seconds > 0 ? `${seconds} 秒后继续` : "即将继续"}`;
 }
 
 function contactLabel(contact: WorkflowContact) {
@@ -244,6 +318,8 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const [editor, setEditor] = useState<EditorRequest | null>(null);
   useEffect(() => { if (editorRequest) setEditor(editorRequest); }, [editorRequest]);
   const [notice, setNotice] = useState("");
+  const [savedTask, setSavedTask] = useState<WorkflowTask | null>(null);
+  const [deletion, setDeletion] = useState<{ ids: string[]; bulk: boolean } | null>(null);
   const editorAnchor = useRef<HTMLDivElement>(null);
   const { state, loading, busy, error, run } = workflow;
   const api = window.xiaoxiWorkflow;
@@ -251,24 +327,47 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
   const tasks = state.tasks.filter((task) => availableTypes.includes(task.type));
   const activeTasks = tasks.filter((task) => !["completed", "cancelled"].includes(task.status));
   const history = tasks.filter((task) => ["completed", "cancelled"].includes(task.status)).reverse();
-  const current = state.tasks.find((task) => task.id === state.currentTaskId);
+  const unsuccessful = tasks.filter((task) => ["needs_attention", "cancelled", "missed"].includes(task.status));
+  const current = state.tasks.find((task) => task.id === (state.currentTaskId || state.waitingTaskId));
   const next = state.tasks.find((task) => task.id === state.nextTaskId);
+  const waitingSeconds = useRemainingSeconds(state.waitUntil);
+  const waitingDetail = safetyIntervalDetail(state, waitingSeconds);
+  const attentionTasks = state.tasks.filter((task) => task.status === "needs_attention");
   const waitingForSchedule = state.tasks.some((task) => task.status === "pending" && !task.accountMismatch && (task.repeat === "daily" || Boolean(task.scheduledAt && Date.parse(task.scheduledAt) > Date.now())));
   const title = mode === "home" ? "今日计划" : mode === "touch" ? "精准触达" : "朋友圈运营";
   const planLocked = state.enabled || state.phase === "pausing";
+  const savedPlannedTask = savedTask
+    ? state.tasks.find((task) => task.id === savedTask.id && task.status === "pending" && !task.accountMismatch) || null
+    : null;
   const runningDetail = state.phase === "completed" ? "本轮已结束，可查看下方结果"
     : state.phase === "needs_attention" ? "仍有任务未完成，原因见任务详情"
+      : state.phase === "waiting_safety_interval" ? waitingDetail
       : !state.enabled ? "启动前安排好任务；运行中需先暂停再调整"
         : next ? `下一项：${next.title}`
           : current ? "正在执行本轮已安排任务"
             : waitingForSchedule ? "到达已安排的时间后继续执行"
-              : "自动回复已开启，正在监听新消息";
+              : state.replyError || state.replyStatus || (state.replyEnabled === false ? "自动回复未开启" : "正在准备自动回复");
 
   useEffect(() => {
     if (editor) editorAnchor.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [editor]);
 
-  useEffect(() => { setNotice(""); }, [state.enabled]);
+  useEffect(() => { setNotice(""); if (state.enabled) setSavedTask(null); }, [state.enabled]);
+  useEffect(() => { if (state.enabled) setDeletion(null); }, [state.enabled]);
+
+  const confirmDelete = async () => {
+    if (!api || !deletion) return;
+    const result = await run(() => api.deleteTasks(deletion.ids, deletion.bulk));
+    if (result?.ok) {
+      if (editor?.task && deletion.ids.includes(editor.task.id)) setEditor(null);
+      setNotice(`已删除 ${deletion.ids.length} 项任务记录。`);
+      setDeletion(null);
+    }
+  };
+  const deletePrompt = (bulk: boolean) => <div className="workflow-delete-prompt" role="group" aria-label="确认删除任务">
+    <div><strong>{bulk ? `删除这 ${deletion?.ids.length} 项未完成任务记录？成功记录会保留。` : "删除这项任务记录？后续安排也会停止。"}</strong><p>仅从计划列表移除，不撤回已发送内容，也不移除接待客户。</p></div>
+    <div className="workflow-row-actions"><button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || planLocked} onClick={() => void confirmDelete()}><Trash2 size={14} />确认删除</button><button type="button" className="text-button workflow-muted-action" disabled={busy} onClick={() => setDeletion(null)}>保留</button></div>
+  </div>;
 
   const openExisting = async (task: WorkflowTask, repeat: boolean) => {
     if (!api) return;
@@ -279,35 +378,81 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
     }
   };
 
+  const pauseAndEdit = async (task: WorkflowTask) => {
+    if (!api) return;
+    const paused = await run(() => api.pause());
+    if (paused?.ok) await openExisting(task, false);
+  };
+
+  const resolveTouchUnknown = async (task: WorkflowTask, resolution: "sent" | "not_sent" | "skip") => {
+    if (!api) return;
+    const result = await run(() => api.resolveTouchUnknown(task.id, resolution));
+    if (result?.ok) setNotice(TOUCH_RESOLUTION_NOTICES[resolution]);
+  };
+
+  const retrySkipped = async (task: WorkflowTask, contactIds?: string[]) => {
+    if (!api) return;
+    const result = await run(() => api.retrySkipped(task.id, contactIds));
+    if (result?.ok) {
+      const excluded = Number(result.excludedCount || 0);
+      setNotice(`已重新加入 ${Number(result.retriedCount || 0)} 位联系人${excluded ? `，另有 ${excluded} 位因安全原因未加入` : ""}；点击启动程序后一次补跑。`);
+    }
+  };
+
   const taskRow = (task: WorkflowTask) => {
     const Icon = TASK_ICONS[task.type];
-    const isCurrent = task.id === state.currentTaskId;
+    const isWaiting = task.id === state.waitingTaskId;
+    const isCurrent = task.id === state.currentTaskId || isWaiting;
     const completedDaily = task.status === "completed" && task.repeat === "daily";
-    const canEdit = !planLocked && (completedDaily || ((task.status === "pending" || task.status === "missed") && !task.progress?.done));
+    const retryableSkipped = task.skipped_records?.filter((record) => record.retryable === true) || [];
+    const canRetryWhileListening = state.enabled && ["listening", "replying"].includes(state.phase) && !state.currentTaskId;
+    const retryLocked = planLocked && !canRetryWhileListening;
+    const canEditStartedTouch = !planLocked && task.type === "touch" && task.status === "pending" && Boolean(task.progress?.done);
+    const canEdit = !planLocked && (completedDaily || canEditStartedTouch || ((task.status === "pending" || task.status === "missed") && !task.progress?.done));
+    const canPauseAndEdit = planLocked && task.type === "touch" && !["completed", "cancelled", "needs_attention"].includes(task.status);
     const canCancel = !planLocked && (completedDaily || ["pending", "missed", "needs_attention"].includes(task.status));
-    return <li className={`workflow-task-row ${isCurrent ? "is-current" : ""}`} key={task.id}>
+    return <li className={`workflow-task-row ${isCurrent ? "is-current" : ""} ${isWaiting ? "is-waiting" : ""}`} key={task.id}>
       <span className="workflow-task-icon"><Icon size={19} /></span>
       <div className="workflow-task-copy">
-        <div className="workflow-task-title"><strong>{task.title || TASK_LABELS[task.type]}</strong><span className={`workflow-task-status is-${task.status}`}>{TASK_STATUS[task.status]}</span></div>
+        <div className="workflow-task-title"><strong>{task.title || TASK_LABELS[task.type]}</strong><span className={`workflow-task-status is-${isWaiting ? "waiting" : task.status}`}>{isWaiting ? "安全间隔" : TASK_STATUS[task.status]}</span></div>
         <div className="workflow-task-meta"><span><Clock3 size={13} />{formatTaskTime(task)}</span>{task.progress?.total > 0 && <span>{task.progress.done}/{task.progress.total} {task.type === "touch" ? "人" : "条"}</span>}{task.repeat === "daily" && task.lastCompletedDate && <span>最近完成：{task.lastCompletedDate}</span>}</div>
+        {isWaiting && <p className="workflow-small-note">{waitingDetail}</p>}
         {task.type === "interact" && task.progress.liked !== undefined && <p className="workflow-small-note">累计点赞 {task.progress.liked} · 评论 {task.progress.commented || 0} · 跳过评论 {task.progress.skipped || 0}</p>}
-        {task.error && <p className="workflow-task-error">{taskErrorText(task.error)}</p>}
-        {task.status === "needs_attention" && <p className="workflow-small-note">{task.canRetry ? "尚未执行互动，可重新加入计划，再点击启动。" : "不能直接重试，请先核对微信中的实际结果。"}</p>}
+        {task.error && <p className="workflow-task-error">{taskErrorText(task.error, task.reasonCode, task.reasonClassification)}</p>}
+        {task.status === "needs_attention" && <p className="workflow-small-note">{task.canRetry ? task.type === "touch" ? "可从未发送的内容继续，已发出的文字和图片不会重发。" : "尚未执行互动，可重新加入计划，再点击启动。" : "不能直接重试，请先核对微信中的实际结果。"}</p>}
+        {task.unknownResolution && <div className="workflow-small-note" role="group" aria-label="处理发送结果">
+          <p>请核对微信中“{task.unknownResolution.contactLabel}”的{TOUCH_PART_LABELS[task.unknownResolution.partKind] || "消息"}是否已发送。处置后不会自动执行。</p>
+          <div className="workflow-row-actions">
+            <button type="button" className="text-button" data-xiaoxi-workflow-resolve data-xiaoxi-workflow-task-id={task.id} data-xiaoxi-workflow-resolution="sent" disabled={busy || planLocked} onClick={() => void resolveTouchUnknown(task, "sent")}>已确认发送</button>
+            <button type="button" className="text-button" data-xiaoxi-workflow-resolve data-xiaoxi-workflow-task-id={task.id} data-xiaoxi-workflow-resolution="not_sent" disabled={busy || planLocked} onClick={() => void resolveTouchUnknown(task, "not_sent")}>已确认未发送</button>
+            <button type="button" className="text-button workflow-muted-action" data-xiaoxi-workflow-resolve data-xiaoxi-workflow-task-id={task.id} data-xiaoxi-workflow-resolution="skip" disabled={busy || planLocked} onClick={() => void resolveTouchUnknown(task, "skip")}>无法确认，跳过</button>
+          </div>
+        </div>}
+        {task.type === "touch" && Boolean(task.skipped_records?.length) && <section className="workflow-touch-skipped" aria-label={`本次跳过 ${task.skipped_records!.length} 位`}>
+          <div className="workflow-touch-skipped-head"><strong>本次跳过 {task.skipped_records!.length} 位</strong>
+            {retryableSkipped.length > 0 && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || retryLocked} onClick={() => void retrySkipped(task)}>{canRetryWhileListening ? "暂停自动回复并全部重试" : "全部重试"}</button>}
+          </div>
+          <p className="workflow-small-note">身份不唯一 {task.skipped_breakdown?.identity || 0} · AI 失败 {task.skipped_breakdown?.ai_failed || 0} · 发送前失败 {task.skipped_breakdown?.pre_send || 0} · 结果未知 {task.skipped_breakdown?.outcome_unknown || 0}</p>
+          <details><summary>查看明细与重试</summary><ul>{task.skipped_records!.map((record) => <li key={`${record.contactId}-${record.index}`}><span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span><small>{TOUCH_SKIP_LABELS[record.status] || "已跳过"}</small>{record.retryable === true && <button type="button" className="text-button" data-xiaoxi-workflow-save disabled={busy || retryLocked} onClick={() => void retrySkipped(task, [record.contactId])}>重试</button>}</li>)}</ul></details>
+        </section>}
         {task.accountMismatch && <p className="workflow-task-error">微信账号已切换，需切回原账号后执行。</p>}
         {task.status === "missed" && <p className="workflow-task-error">这是往日未执行的任务，请修改时间后加入，或取消。</p>}
       </div>
       <div className="workflow-row-actions">
         {task.canRetry && <button className="text-button" data-xiaoxi-workflow-save disabled={busy || planLocked} onClick={() => api && void run(() => api.retryTask(task.id))}><Repeat2 size={14} />重新加入</button>}
         {canEdit && <button className="text-button" disabled={busy} onClick={() => void openExisting(task, false)}><Pencil size={14} />{completedDaily ? "编辑后续安排" : "编辑"}</button>}
+        {canPauseAndEdit && <button className="text-button" disabled={busy} onClick={() => void pauseAndEdit(task)}><Pause size={14} />暂停并编辑</button>}
         {task.status === "completed" && !completedDaily && <button className="text-button" disabled={busy || planLocked} onClick={() => void openExisting(task, true)}><Repeat2 size={14} />再做一次</button>}
         {canCancel && <button className="text-button workflow-muted-action" disabled={busy} onClick={() => api && void run(() => api.cancelTask(task.id))}>{completedDaily ? "取消后续安排" : "取消"}</button>}
+        {task.status !== "running" && <button type="button" className="text-button workflow-muted-action" disabled={busy || planLocked} aria-label={`删除${task.title}任务记录`} onClick={() => setDeletion({ ids: [task.id], bulk: false })}><Trash2 size={14} />删除</button>}
       </div>
+      {deletion && !deletion.bulk && deletion.ids[0] === task.id && deletePrompt(false)}
     </li>;
   };
 
   return <section className="page workflow-page">
     <div className="page-head workflow-page-head">
-      <div><h1>{title}</h1><p>{mode === "home" ? "安排好待办，启动一次。客户回复优先，其余任务依次完成。" : mode === "touch" ? "选好联系人和话术，加入计划后按顺序执行。" : "准备发布内容或安排互动，系统会接着完成下一项。"}</p></div>
+      <div><h1>{title}</h1><p>{mode === "home" ? "安排好待办，启动一次。先完成当前可执行任务，空闲时自动接待客户。" : mode === "touch" ? "选好联系人和话术，加入计划后按顺序执行。" : "准备发布内容或安排互动，系统会接着完成下一项。"}</p></div>
       <WorkflowToggle workflow={workflow} onNavigate={onNavigate} />
     </div>
 
@@ -315,20 +460,30 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
       <span className="workflow-state-dot" />
       <strong>{loading ? "读取计划中…" : workflowStatusText(state)}</strong>
       <span>{runningDetail}</span>
+      {state.enabled && attentionTasks.length > 0 && <span className="workflow-attention-inline">有 {attentionTasks.length} 项需处理，其他可执行任务会继续。</span>}
       {state.enabled && <button className="text-button" disabled={busy} onClick={() => api && void run(() => api.showFloating())}>查看进度<ChevronRight size={14} /></button>}
     </div>
 
     {(error || state.error) && <div className="workflow-alert" role="alert">{error || state.error}</div>}
+    {state.classificationQuality?.status === "needs_review" && <div className="workflow-alert" role="alert">
+      当前构建的失败分级表待补全：本轮已暂停 {state.classificationQuality.unknownPauseCount} 次。未知码：{state.classificationQuality.unknownReasonCodes.join("、")}。请导出诊断信息交技术人员处理。
+    </div>}
     {state.replyError && <div className="workflow-alert" role="alert">自动回复需处理：{state.replyError}</div>}
     {mode !== "touch" && <WorkflowPublishRecovery workflow={workflow} />}
     {notice && <div className="workflow-notice" role="status"><Check size={16} />{notice}</div>}
+    {savedPlannedTask && !state.enabled && <div className="workflow-ready-start" role="status">
+      <div><strong>已安排：{savedPlannedTask.title || TASK_LABELS[savedPlannedTask.type]}</strong><p>{savedPlannedTask.type === "touch"
+        ? `本项会依次触达 ${savedPlannedTask.progress.total} 位客户${state.replyEnabled !== false ? "，并继续监听接待范围内的新消息" : ""}。`
+        : `本项会执行 ${savedPlannedTask.progress.total} ${savedPlannedTask.type === "interact" ? "条互动" : "条发布"}。`} 启动后会按顺序处理当前可执行任务。</p></div>
+      <button type="button" className="primary-button" data-xiaoxi-workflow-start onClick={() => api && void run(() => api.start())} disabled={busy}>启动已安排任务<Play size={16} /></button>
+    </div>}
 
     <div className="workflow-add-row">
       <span>添加任务</span>
       {availableTypes.map((type) => <button type="button" className="secondary-button" key={type} onClick={() => { setNotice(""); setEditor({ type }); }} disabled={busy || planLocked}><Plus size={15} />{TASK_LABELS[type]}</button>)}
     </div>
     <label className="workflow-check"><input type="checkbox" checked={state.replyEnabled !== false} disabled={busy || planLocked} onChange={(event) => api && void run(() => api.setReplyEnabled(event.target.checked))} />同时开启自动回复（监听接待范围内的新消息）</label>
-    {planLocked && <p className="workflow-small-note">运行中不能增删任务或修改接待范围，请先暂停。</p>}
+    {planLocked && <p className="workflow-small-note">运行中不能增删任务或修改接待范围；需要调整精准触达话术时，可在对应任务上点击“暂停并编辑”。</p>}
 
     <div ref={editorAnchor} className="workflow-editor-anchor">
       {editor && <WorkflowTaskEditor
@@ -340,11 +495,12 @@ export function WechatWorkflowPage({ workflow, contacts, mode = "home", editorRe
         syncError={syncError}
         onSync={onSync}
         onCancel={() => setEditor(null)}
-        onSaved={() => { setEditor(null); setNotice("已加入计划。"); }}
+        onSaved={(task) => { setEditor(null); setSavedTask(task || null); setNotice(task ? "" : "已加入计划。"); }}
       />}
     </div>
 
-    <div className="workflow-list-head"><h2>{mode === "home" ? "待办任务" : "已加入计划"}</h2><span>{activeTasks.length} 项</span></div>
+    <div className="workflow-list-head"><h2>{mode === "home" ? "待办任务" : "已加入计划"}</h2><span>{activeTasks.length} 项</span>{unsuccessful.length > 0 && <button type="button" className="text-button workflow-cleanup" disabled={busy || planLocked} onClick={() => setDeletion({ ids: unsuccessful.map((task) => task.id), bulk: true })}><Trash2 size={14} />清理失败和已取消任务（{unsuccessful.length}）</button>}</div>
+    {deletion?.bulk && deletePrompt(true)}
     {loading ? <div className="workflow-loading" aria-label="正在读取任务"><span /><span /><span /></div> : activeTasks.length ? <ul className="workflow-task-list">{activeTasks.map(taskRow)}</ul> : <div className="workflow-empty"><ListTodo size={25} /><div><strong>还没有待办任务</strong><p>{state.recipients.length ? "有客户消息时继续自动回复；需要触达、发布或互动时，在上方添加。" : "从上方添加一项任务。任务结束后，系统会持续接待已加入范围的客户。"}</p></div></div>}
 
     {history.length > 0 && <details open={view === "history" ? true : undefined} className="workflow-details workflow-history"><summary>已完成与已取消 <span>{history.length} 项</span></summary><ul className="workflow-task-list">{history.map(taskRow)}</ul></details>}
@@ -361,12 +517,14 @@ function WorkflowTaskEditor({ request, workflow, contacts, syncBusy, syncError, 
   syncError?: string;
   onSync: () => void;
   onCancel: () => void;
-  onSaved: () => void;
+  onSaved: (task?: WorkflowTask) => void;
 }) {
   const { type, task, repeat: duplicate } = request;
   const payload = task?.payload || {};
   const [title, setTitle] = useState(task?.title || "");
   const [script, setScript] = useState(payload.script || "");
+  const [images, setImages] = useState<TouchImage[]>(task?.images || []);
+  const [link, setLink] = useState(payload.link || "");
   const [content, setContent] = useState(payload.content || "");
   const [selectedIds, setSelectedIds] = useState<string[]>(payload.contactIds || []);
   const [query, setQuery] = useState("");
@@ -381,9 +539,10 @@ function WorkflowTaskEditor({ request, workflow, contacts, syncBusy, syncError, 
   const [likeEnabled, setLikeEnabled] = useState(payload.likeEnabled !== false);
   const [commentEnabled, setCommentEnabled] = useState(payload.commentEnabled === true);
   const [commentGuidance, setCommentGuidance] = useState(payload.commentGuidance || "");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(task?.imageError || "");
   const { busy, state, run } = workflow;
   const locked = busy || mediaBusy || state.enabled || state.phase === "pausing";
+  const startedTouchEdit = Boolean(task && !duplicate && type === "touch" && task.progress?.done);
   const eligible = useMemo(() => contacts.filter((contact) => contact.allowed), [contacts]);
   const filtered = useMemo(() => {
     const keyword = query.trim().toLocaleLowerCase();
@@ -406,6 +565,26 @@ function WorkflowTaskEditor({ request, workflow, contacts, syncBusy, syncError, 
     finally { setMediaBusy(false); }
   };
 
+  const chooseTouchImages = async () => {
+    if (!window.xiaoxiWorkflow?.chooseTouchImages || locked) return;
+    setMediaBusy(true);
+    setError("");
+    try {
+      const result = await window.xiaoxiWorkflow.chooseTouchImages();
+      if (result.canceled) return;
+      if (!result.ok || !result.images) { setError(result.error || "图片未能添加，请重试。"); return; }
+      const combined = [...new Map([...images, ...result.images].map((image) => [image.id, image])).values()];
+      if (combined.length > 9) { setError("每项触达最多发送 9 张图片，请移除部分图片后再添加。"); return; }
+      setImages(combined);
+    } catch { setError("图片未能添加，请重试。"); }
+    finally { setMediaBusy(false); }
+  };
+  const moveImage = (index: number, offset: number) => setImages((current) => {
+    const next = [...current];
+    [next[index], next[index + offset]] = [next[index + offset], next[index]];
+    return next;
+  });
+
   const save = async (event: FormEvent) => {
     event.preventDefault();
     if (!window.xiaoxiWorkflow || locked) return;
@@ -421,12 +600,12 @@ function WorkflowTaskEditor({ request, workflow, contacts, syncBusy, syncError, 
       scheduledAt: scheduled && !daily ? new Date(scheduledAt).toISOString() : null,
       repeat: daily && type === "interact" ? "daily" : null,
       startTime: daily && scheduled ? startTime : null,
-      payload: type === "touch" ? { contactIds: selectedIds, script: script.trim() }
+      payload: type === "touch" ? { contactIds: selectedIds, script: script.trim(), imageIds: images.map((image) => image.id), link: link.trim() }
         : type === "publish" ? { content: content.trim(), ...(media?.selection_id ? { selectionId: media.selection_id } : duplicate && task ? { sourceTaskId: task.id } : {}) }
           : { maxPosts, likeEnabled, commentEnabled, commentGuidance: commentGuidance.trim() }
     };
     const result = await run(() => task && !duplicate ? window.xiaoxiWorkflow!.updateTask({ ...input, id: task.id }) : window.xiaoxiWorkflow!.addTask(input));
-    if (result?.ok) onSaved();
+    if (result?.ok) onSaved(result.task);
     else setError(result?.error || "任务未保存，请检查上方提示。");
   };
 
@@ -436,9 +615,9 @@ function WorkflowTaskEditor({ request, workflow, contacts, syncBusy, syncError, 
     {type === "touch" && <>
       <div className="workflow-field-head"><label htmlFor="workflow-contact-search">联系人 <span>已选 {selectedIds.length} 人</span></label><button type="button" className="text-button" onClick={onSync} disabled={locked || syncBusy || state.enabled}>{syncBusy ? "同步中…" : "同步联系人"}</button></div>
       {eligible.length ? <div className="workflow-contact-picker">
-        <div className="workflow-contact-toolbar"><input id="workflow-contact-search" value={query} onChange={(event) => { setQuery(event.target.value); setVisibleLimit(60); }} placeholder="搜索备注、昵称或微信号" disabled={locked} /><button type="button" className="text-button" disabled={locked} onClick={() => setSelectedIds((ids) => [...new Set([...ids, ...filtered.map((contact) => contact.id)])])}>{query ? "选中搜索结果" : "全选"}</button><button type="button" className="text-button" disabled={locked || !selectedIds.length} onClick={() => setSelectedIds([])}>清空</button></div>
+        <div className="workflow-contact-toolbar"><input id="workflow-contact-search" value={query} onChange={(event) => { setQuery(event.target.value); setVisibleLimit(60); }} placeholder="搜索备注、昵称或微信号" disabled={locked || startedTouchEdit} /><button type="button" className="text-button" disabled={locked || startedTouchEdit} onClick={() => setSelectedIds((ids) => [...new Set([...ids, ...filtered.map((contact) => contact.id)])])}>{query ? "选中搜索结果" : "全选"}</button><button type="button" className="text-button" disabled={locked || startedTouchEdit || !selectedIds.length} onClick={() => setSelectedIds([])}>清空</button></div>
         <div className="workflow-contact-list">
-          {filtered.slice(0, visibleLimit).map((contact) => <label className="workflow-contact-option" key={contact.id}><input type="checkbox" checked={selectedSet.has(contact.id)} disabled={locked} onChange={(event) => setSelectedIds((ids) => event.target.checked ? [...ids, contact.id] : ids.filter((id) => id !== contact.id))} /><span><strong>{contactLabel(contact)}</strong>{contact.wechatId && <small>{contact.wechatId}</small>}</span></label>)}
+          {filtered.slice(0, visibleLimit).map((contact) => <label className="workflow-contact-option" key={contact.id}><input type="checkbox" checked={selectedSet.has(contact.id)} disabled={locked || startedTouchEdit} onChange={(event) => setSelectedIds((ids) => event.target.checked ? [...ids, contact.id] : ids.filter((id) => id !== contact.id))} /><span><strong>{contactLabel(contact)}</strong>{contact.wechatId && <small>{contact.wechatId}</small>}</span></label>)}
           {!filtered.length && <p className="workflow-small-note">没有找到相关联系人。</p>}
           {filtered.length > visibleLimit && <button type="button" className="text-button" onClick={() => setVisibleLimit((limit) => limit + 60)}>显示更多（共 {filtered.length} 人）</button>}
         </div>
@@ -446,7 +625,19 @@ function WorkflowTaskEditor({ request, workflow, contacts, syncBusy, syncError, 
       {syncError && <p className="workflow-inline-warning" role="alert">{syncError}</p>}
       {missingCount > 0 && <p className="workflow-inline-warning">{missingCount} 位联系人已失效。<button type="button" className="text-button" onClick={() => setSelectedIds((ids) => ids.filter((id) => eligible.some((contact) => contact.id === id)))}>移除失效联系人</button></p>}
       <label className="workflow-field"><span>触达话术</span><textarea value={script} onChange={(event) => setScript(event.target.value)} disabled={locked} placeholder="写下这次想对客户说的话，可用 {称呼} 自动填入联系人称呼。" rows={4} /></label>
-      <p className="workflow-small-note">所选客户加入自动接待范围。本次触达完成后不会自动重发。</p>
+      <div className="workflow-media-field"><div><strong>接着发图片 <small>选填</small></strong><span>按下方顺序逐张发送 · 最多 9 张</span></div><button type="button" data-xiaoxi-touch-images className="secondary-button" disabled={locked || startedTouchEdit || images.length >= 9} onClick={() => void chooseTouchImages()}><ImagePlus size={16} />{mediaBusy ? "正在添加…" : "添加图片"}</button></div>
+      {images.length > 0 && <ol className="workflow-touch-images" aria-label="图片发送顺序">{images.map((image, index) => <li key={image.id}>
+        <div className="workflow-touch-image-preview">{image.preview ? <img src={image.preview} alt={image.name} /> : <span>图片无法读取</span>}</div>
+        <div className="workflow-touch-image-name"><span>{index + 1}. {image.name}</span></div>
+        <div className="workflow-touch-image-actions">
+          <button type="button" className="workflow-icon-button" aria-label={`将${image.name}前移`} disabled={locked || startedTouchEdit || index === 0} onClick={() => moveImage(index, -1)}><ArrowLeft size={15} /></button>
+          <button type="button" className="workflow-icon-button" aria-label={`将${image.name}后移`} disabled={locked || startedTouchEdit || index === images.length - 1} onClick={() => moveImage(index, 1)}><ArrowRight size={15} /></button>
+          <button type="button" className="workflow-icon-button" aria-label={`移除${image.name}`} disabled={locked || startedTouchEdit} onClick={() => setImages((current) => current.filter((entry) => entry.id !== image.id))}><X size={15} /></button>
+        </div>
+      </li>)}</ol>}
+      <label className="workflow-field"><span>最后发对应网址 <small>选填</small></span><input type="url" value={link} onChange={(event) => setLink(event.target.value)} disabled={locked || startedTouchEdit} maxLength={2048} placeholder="https://" /><small className="workflow-touch-link-note">网址作为一条独立消息，在文字和图片之后发送。</small></label>
+      <p className="workflow-touch-order" aria-live="polite">发送顺序：话术{images.length > 0 ? ` → ${images.length} 张图片` : ""}{link.trim() ? " → 网址" : ""}</p>
+      <p className="workflow-small-note">{startedTouchEdit ? "本次修改只作用于尚未发送的联系人，已发送内容不会重发；联系人、图片和网址保持不变。" : "所选客户加入自动接待范围。本次触达完成后不会自动重发。"}</p>
     </>}
 
     {type === "publish" && <>
@@ -529,13 +720,15 @@ export function WorkflowRecipients({ workflow, contacts = [] }: { workflow: Work
 export function FloatingWorkflowWindow() {
   const workflow = useWechatWorkflow();
   const { state, error, run, busy } = workflow;
-  const current = state.tasks.find((task) => task.id === state.currentTaskId);
+  const current = state.tasks.find((task) => task.id === (state.currentTaskId || state.waitingTaskId));
   const displayed = current || state.tasks.find((task) => task.id === state.lastTaskId);
   const incomplete = state.tasks.filter((task) => ["needs_attention", "missed"].includes(task.status) || (task.status === "pending" && task.accountMismatch));
   const next = state.tasks.find((task) => task.id === state.nextTaskId);
   const completed = state.tasks.filter((task) => task.status === "completed").length;
   const api = window.xiaoxiWorkflow;
   const showMain = () => api && void run(() => api.showMain());
+  const waitingSeconds = useRemainingSeconds(state.waitUntil);
+  const waitingDetail = safetyIntervalDetail(state, waitingSeconds);
   const sync = state.contactSync;
   const moments = sync || state.phase === "replying" ? null : state.momentsProgress;
   const syncLabel = !sync ? "" : !sync.running
@@ -551,8 +744,9 @@ export function FloatingWorkflowWindow() {
     <div className="workflow-floating-body">
       <div className="workflow-floating-current" role="status"><strong>{workflow.loading ? "读取进度中…" : sync ? syncLabel : workflowStatusText(state)}</strong>{sync ? <small>同步联系人</small> : current && current.title !== TASK_LABELS[current.type] && <small>{current.title}</small>}</div>
       {!sync && state.phase !== "replying" && displayed && displayed.progress?.total > 0 && <div className="floating-progress"><div className="floating-progress-bar"><span style={{ width: `${Math.min(100, displayed.progress.done / displayed.progress.total * 100)}%` }} /></div><b>{displayed.progress.done}/{displayed.progress.total}</b></div>}
+      {!sync && state.phase === "waiting_safety_interval" && <p className="workflow-floating-detail">{waitingDetail}</p>}
       {moments && <>{current && <p className="workflow-floating-detail">{momentsLabel(moments.stage, "正在处理当前帖子")}</p>}<div className="workflow-floating-counts"><strong>累计点赞 {moments.liked} · 评论 {moments.commented}</strong><span>扫描 {moments.scanned} · 跳过评论 {moments.skipped || 0} · 原已赞 {moments.alreadyLiked || 0}</span></div>{moments.skipReason && <p className="workflow-floating-detail">{momentsLabel(moments.skipReason, "本条评论未发送")}</p>}</>}
-      {!sync && <>{next && <div className="workflow-floating-next"><span>下一项</span><strong>{next.title} · {formatTaskTime(next)}</strong></div>}{!moments && <div className="workflow-floating-counts"><span>已完成 {completed} 项</span><span>未完成 {incomplete.length} 项</span></div>}{incomplete.length > 0 && <p className="workflow-floating-detail">{incomplete.length} 项未完成：{taskErrorText(incomplete[0].error || "请切回任务对应的微信账号后查看详情")}</p>}</>}
+      {!sync && <>{next && <div className="workflow-floating-next"><span>下一项</span><strong>{next.title} · {formatTaskTime(next)}</strong></div>}{!moments && <div className="workflow-floating-counts"><span>已完成 {completed} 项</span><span>未完成 {incomplete.length} 项</span></div>}{incomplete.length > 0 && <p className="workflow-floating-detail">{incomplete.length} 项未完成：{taskErrorText(incomplete[0].error || "请切回任务对应的微信账号后查看详情", incomplete[0].reasonCode, incomplete[0].reasonClassification)}</p>}</>}
       {(error || state.error || sync?.error || state.replyError) && <div className="floating-alert" role="alert">{error || state.error || sync?.error || state.replyError}</div>}
     </div>
     <footer className="floating-actions">{sync?.running ? <button disabled>同步中…</button> : <WorkflowToggle workflow={workflow} compact />}<button onClick={showMain} disabled={busy}>主页面</button></footer>

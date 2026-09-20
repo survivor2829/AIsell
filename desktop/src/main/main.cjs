@@ -17,6 +17,7 @@ const { DEEPSEEK_MODEL, createDeepSeekClient, createDeepSeekKeyStore } = require
 const { registerDeepSeekApiIpc } = require("./deepseek-api-ipc.cjs");
 const { configureDiagnostics, diagnostics } = require("./diagnostics.cjs");
 const { registerDiagnosticsIpc } = require("./diagnostics-ipc.cjs");
+const { createTaskPassportStore } = require("./task-passport.cjs");
 const { cloudConfig } = require("./cloud-config.cjs");
 const { createCloudMaintenance } = require("./cloud-maintenance.cjs");
 const { registerCloudMaintenanceIpc } = require("./cloud-maintenance-ipc.cjs");
@@ -25,6 +26,7 @@ const { createFeedbackController } = require("./feedback-controller.cjs");
 const { createFeedbackAdmin } = require("./feedback-admin.cjs");
 const { registerFeedbackIpc } = require("./feedback-ipc.cjs");
 const { createLicenseStore, registerLicenseAuthIpc } = require("./license-auth-ipc.cjs");
+const { createProviderGatewayClient } = require("./provider-gateway-client.cjs");
 const { developmentEdition, pilotEdition, editionLabel, preloadFile, rendererDir } = require("./edition.cjs");
 const {
   createProductDetailAiSettingsStore
@@ -74,6 +76,8 @@ let quitCleanupComplete = false;
 let cloudMaintenance = null;
 let feedbackController = null;
 let feedbackAdmin = null;
+let providerGatewayClient = null;
+let taskPassportStore = null;
 
 const PROVIDER_CONSUMER_RESTART_STATES = new Set(["ready", "starting", "failed"]);
 const productDetailReleaseSmokeMode = app.isPackaged
@@ -147,6 +151,11 @@ function restartImageProviderConsumers() {
     restarts.push(contentEngineController.restart());
   }
   return Promise.all(restarts.filter(Boolean));
+}
+
+function providerGatewaySupports(provider) {
+  const status = providerGatewayClient?.status();
+  return Boolean(status?.ready && status.capabilities?.[provider] === true);
 }
 
 function contentEngineRuntimeArgs() {
@@ -293,8 +302,13 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
   process.exitCode = 1;
   app.exit(1);
 } else if (!gotSingleInstanceLock) {
-  if (productDetailReleaseSmokeMode) process.exitCode = 1;
-  app.quit();
+  if (!app.isPackaged && developmentEdition) {
+    dialog.showErrorBox("内部开发版未启动", "测试版程序仍在运行，占用了同一份测试数据。请先暂停任务并完全退出旧测试版，再重新运行“启动内部开发版.cmd”。刚才显示的旧窗口没有加载本次源码修复。");
+    app.exit(1);
+  } else {
+    if (productDetailReleaseSmokeMode) process.exitCode = 1;
+    app.quit();
+  }
 } else {
   app.on("second-instance", () => {
     diagnostics().event("app", "second_instance_requested");
@@ -304,7 +318,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     mainWindow.focus();
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     let runtime;
     try {
       if (productDetailReleaseSmokeMode) {
@@ -339,9 +353,17 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         version: components.businessVersion(app),
         edition: developmentEdition ? "development" : pilotEdition ? "pilot" : "unknown",
         build_id: build.buildId || process.env.XIAOXI_BUILD_ID || "",
+        build_commit: build.buildCommit || process.env.XIAOXI_BUILD_COMMIT || "",
+        source_dirty: build.sourceDirty === true,
         packaged: app.isPackaged
       }
     });
+    taskPassportStore = createTaskPassportStore({
+      rootDir: runtime.rootDir,
+      onWriteFailure: () => logger.event("task_passport", "write_failed", {}, { level: "warn", code: "task_passport_write_failed" })
+    });
+    taskPassportStore.cleanup();
+    logger.subscribe((entry) => taskPassportStore.observeDiagnostic(entry));
     process.on("uncaughtException", (error) => logger.event("app", "uncaught_exception", { error }, { level: "fatal", code: error?.code || "uncaught_exception" }));
     process.on("unhandledRejection", (error) => logger.event("app", "unhandled_rejection", { error }, { level: "error", code: error?.code || "unhandled_rejection" }));
     logger.environment({
@@ -362,14 +384,54 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       skipped_foreign_install: runtime.skippedForeignInstall
     });
     const coordinator = createRuntimeCoordinator(runtime.rootDir);
+    const maintenanceConfig = cloudConfig({ developmentEdition });
     const licenseStore = createLicenseStore({ rootDir: runtime.rootDir, safeStorage });
-    registerLicenseAuthIpc({ ipcMain, store: licenseStore });
+    providerGatewayClient = createProviderGatewayClient({
+      config: {
+        enabled: !productDetailReleaseSmokeMode && developmentEdition && maintenanceConfig.enabled === true,
+        origin: maintenanceConfig.origin,
+        caPem: maintenanceConfig.caPem
+      },
+      licenseStore,
+      appId: maintenanceConfig.appId,
+      channel: maintenanceConfig.channel,
+      version: components.businessVersion(app),
+      buildId: build.buildId || process.env.XIAOXI_BUILD_ID || "",
+      installId: (() => {
+        try { return fs.readFileSync(path.join(logger.logsDir, "install-id"), "utf8").trim(); }
+        catch { return ""; }
+      })()
+    });
+    const gatewayStatus = await providerGatewayClient.initialize();
+    logger.event("provider_gateway", "session_initialized", {
+      state: gatewayStatus.ready ? "ready" : "unavailable",
+      code: gatewayStatus.code || "",
+      deepseek: gatewayStatus.capabilities?.deepseek === true,
+      bailian: gatewayStatus.capabilities?.bailian === true,
+      volcengine_ark: gatewayStatus.capabilities?.volcengine_ark === true,
+      volcengine_tts: gatewayStatus.capabilities?.volcengine_tts === true,
+      volcengine_asr: gatewayStatus.capabilities?.volcengine_asr === true,
+      apimart: gatewayStatus.capabilities?.apimart === true
+    });
+    registerLicenseAuthIpc({
+      ipcMain,
+      store: licenseStore,
+      onChanged: async ({ action }) => {
+        if (action === "logged_out") providerGatewayClient?.invalidate();
+        else await providerGatewayClient?.initialize({ force: true });
+        logger.event("provider_gateway", action === "logged_out" ? "session_invalidated" : "session_refreshed", {
+          state: providerGatewayClient?.status().ready ? "ready" : "unavailable",
+          code: providerGatewayClient?.status().code || ""
+        });
+        await restartImageProviderConsumers();
+      }
+    });
     const deepSeekKeyStore = createDeepSeekKeyStore({ rootDir: runtime.rootDir, safeStorage });
     const bailianKeyStore = createBailianApiKeyStore({
       rootDir: path.join(app.getPath("userData"), "content-engine"),
       safeStorage
     });
-    const deepSeekClient = createDeepSeekClient({ keyStore: deepSeekKeyStore });
+    const deepSeekClient = createDeepSeekClient({ keyStore: deepSeekKeyStore, gatewayClient: providerGatewayClient });
     const volcengineTtsKeyStore = createVolcengineTtsKeyStore({ rootDir: path.join(app.getPath("userData"), "content-engine"), safeStorage });
     const volcengineArkKeyStore = createVolcengineTtsKeyStore({ rootDir: path.join(app.getPath("userData"), "content-engine"), safeStorage, filename: "volcengine-ark-api-key.bin" });
     const volcengineAsrStore = createVolcengineAsrStore({ rootDir: path.join(app.getPath("userData"), "content-engine"), safeStorage });
@@ -381,11 +443,17 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     const getProductDetailProviderEnvironment = () => {
       const providerEnvironment = { DEEPSEEK_MODEL };
-      if (deepSeekKeyStore.status().configured) {
+      if (providerGatewaySupports("deepseek")) {
+        providerEnvironment.DEEPSEEK_API_KEY = providerGatewayClient.token();
+        providerEnvironment.DEEPSEEK_API_URL = providerGatewayClient.url("/deepseek/v1/chat/completions");
+      } else if (deepSeekKeyStore.status().configured) {
         providerEnvironment.DEEPSEEK_API_KEY = deepSeekKeyStore.read();
       }
       const refineStatus = productDetailAiSettingsStore.status();
-      if (refineStatus.ready) {
+      if (providerGatewaySupports("apimart")) {
+        providerEnvironment.REFINE_API_KEY = providerGatewayClient.token();
+        providerEnvironment.REFINE_API_BASE_URL = providerGatewayClient.url("/apimart");
+      } else if (refineStatus.ready) {
         const refine = productDetailAiSettingsStore.runtimeConfig();
         providerEnvironment.REFINE_API_KEY = refine.apiKey;
         providerEnvironment.REFINE_API_BASE_URL = refine.baseUrl;
@@ -434,7 +502,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         BrowserWindow,
         screen,
         preloadPath: path.join(__dirname, preloadFile),
-        rendererPath: path.join(__dirname, `../../${rendererDir}/index.html`)
+        rendererPath: path.join(__dirname, `../../${rendererDir}/index.html`),
+        passport: taskPassportStore
       });
     }
     if (momentsPublish) {
@@ -443,6 +512,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         coordinator,
         dialog,
         logger,
+        passport: taskPassportStore,
         getMainWindow: () => mainWindow
       });
       momentsPublishController.initialize();
@@ -464,6 +534,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     const contentEnginePath = contentEngineRuntimePath();
     const contentEngineDataDir = path.join(app.getPath("userData"), "content-engine");
+    let contentProviderConfiguration = "";
+    const providerConfiguration = () => JSON.stringify([providerGatewayClient?.token() || '', providerGatewayClient?.status().capabilities || {}]);
     contentEngineController = createContentEngineSidecar({
       runtimePath: contentEnginePath,
       runtimeArgs: contentEngineRuntimeArgs(),
@@ -474,15 +546,56 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       ),
       getProviderEnvironment: () => {
         const providerEnvironment = {};
-        if (volcengineTtsKeyStore.status().configured) providerEnvironment.XIAOXI_VOLCENGINE_TTS_API_KEY = volcengineTtsKeyStore.read();
-        if (volcengineAsrStore.status().configured) {
+        const gatewayToken = providerGatewayClient?.token() || "";
+        contentProviderConfiguration = providerConfiguration();
+        const gatewayStatus = providerGatewayClient?.status();
+        if (gatewayStatus?.ready && maintenanceConfig.caPem) {
+          providerEnvironment.XIAOXI_PROVIDER_GATEWAY_CA_PEM = maintenanceConfig.caPem;
+        }
+        if (providerGatewaySupports("bailian")) {
+          providerEnvironment.DASHSCOPE_API_KEY = gatewayToken;
+          providerEnvironment.XIAOXI_BAILIAN_API_HOST = providerGatewayClient.url("/bailian");
+        } else if (bailianKeyStore.status().configured) {
+          providerEnvironment.DASHSCOPE_API_KEY = bailianKeyStore.read();
+          const bailianStatus = bailianKeyStore.status();
+          if (bailianStatus.apiHost) providerEnvironment.XIAOXI_BAILIAN_API_HOST = bailianStatus.apiHost;
+        }
+        if (providerGatewaySupports("volcengine_tts")) {
+          providerEnvironment.XIAOXI_PROVIDER_GATEWAY_TOKEN = gatewayToken;
+          providerEnvironment.XIAOXI_PROVIDER_GATEWAY_ORIGIN = maintenanceConfig.origin;
+          providerEnvironment.XIAOXI_VOLCENGINE_TTS_GATEWAY_ENABLED = "1";
+          providerEnvironment.XIAOXI_VOLCENGINE_TTS_API_KEY = gatewayToken;
+          providerEnvironment.XIAOXI_VOLCENGINE_TTS_API_URL = providerGatewayClient.url("/volcengine/tts/sse");
+        } else if (volcengineTtsKeyStore.status().configured) {
+          providerEnvironment.XIAOXI_VOLCENGINE_TTS_API_KEY = volcengineTtsKeyStore.read();
+        }
+        if (providerGatewaySupports("volcengine_asr")) {
+          providerEnvironment.XIAOXI_PROVIDER_GATEWAY_TOKEN = gatewayToken;
+          providerEnvironment.XIAOXI_PROVIDER_GATEWAY_ORIGIN = maintenanceConfig.origin;
+          providerEnvironment.XIAOXI_VOLCENGINE_ASR_GATEWAY_ENABLED = "1";
+          providerEnvironment.XIAOXI_VOLCENGINE_ASR_API_KEY = gatewayToken;
+          providerEnvironment.XIAOXI_VOLCENGINE_ASR_ENDPOINT = providerGatewayClient.url("/volcengine/asr/recognize/flash");
+        } else if (volcengineAsrStore.status().configured) {
           const asr = volcengineAsrStore.read();
           providerEnvironment.XIAOXI_VOLCENGINE_ASR_APP_ID = asr.appId;
           providerEnvironment.XIAOXI_VOLCENGINE_ASR_ACCESS_TOKEN = asr.accessToken;
         }
         providerEnvironment.XIAOXI_CONTENT_PROVIDER = "volcengine";
-        if (volcengineArkKeyStore.status().configured) providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_KEY = volcengineArkKeyStore.read();
-        if (productDetailAiSettingsStore.status().ready) {
+        if (providerGatewaySupports("volcengine_ark")) {
+          providerEnvironment.XIAOXI_PROVIDER_GATEWAY_TOKEN = gatewayToken;
+          providerEnvironment.XIAOXI_PROVIDER_GATEWAY_ORIGIN = maintenanceConfig.origin;
+          providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_KEY = gatewayToken;
+          providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_URL = providerGatewayClient.url("/volcengine/ark/chat/completions");
+          providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_HOST = providerGatewayClient.url("/volcengine/ark");
+          providerEnvironment.XIAOXI_VOLCENGINE_ARK_COMPATIBLE_ORIGIN = providerGatewayClient.url("/volcengine/ark");
+        } else if (volcengineArkKeyStore.status().configured) {
+          providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_KEY = volcengineArkKeyStore.read();
+        }
+        if (providerGatewaySupports("apimart")) {
+          providerEnvironment.APIMART_API_KEY = gatewayToken;
+          providerEnvironment.APIMART_API_BASE_URL = providerGatewayClient.url("/apimart");
+          providerEnvironment.APIMART_IMAGE_MODEL = "gpt-image-2";
+        } else if (productDetailAiSettingsStore.status().ready) {
           const imageProvider = productDetailAiSettingsStore.runtimeConfig();
           providerEnvironment.APIMART_API_KEY = imageProvider.apiKey;
           providerEnvironment.APIMART_API_BASE_URL = imageProvider.baseUrl;
@@ -498,6 +611,21 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     contentEngineIpcRegistration = registerContentEngineIpc({
       controller: contentEngineController,
+      beforeProviderWork: async () => {
+        await providerGatewayClient?.initialize({ verify: true });
+        if (contentProviderConfiguration === providerConfiguration()) return;
+        if (contentEngineController.status().state === 'ready') {
+          const result = await contentEngineController.listTasks({ limit: 500 });
+          const active = new Set(['queued', 'analyzing', 'rendering']);
+          if ((result.items || []).some((task) => active.has(task.status))) {
+            throw Object.assign(new Error('AI 授权已更新，请等待当前制作完成或取消后继续，已有结果会保留。'),
+                                { code: 'CONTENT_ENGINE_PROVIDER_REFRESH_BUSY' });
+          }
+        }
+        const restarted = await contentEngineController.restart();
+        if (restarted.state !== 'ready') throw Object.assign(new Error('授权已更新，内容引擎尚未就绪。'),
+                                                           { code: 'CONTENT_ENGINE_PROVIDER_REFRESH_FAILED' });
+      },
       bailianKeyStore,
       volcengineTtsKeyStore,
       volcengineArkKeyStore,
@@ -528,7 +656,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           owner,
           phase: `auto-reply:${command}`,
           dataDir: runtime.autoReplyDir
-        })
+        }),
+        passport: taskPassportStore
       });
     }
     touchTaskController = registerTouchTaskIpc({
@@ -536,16 +665,22 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       dataDir: runtime.activeTouchDir,
       coordinator,
       deepSeekClient,
+      appVersion: components.businessVersion(app),
       buildId: build.buildId || process.env.XIAOXI_BUILD_ID || "",
+      buildCommit: build.buildCommit || process.env.XIAOXI_BUILD_COMMIT || "",
       executionMode: "real_send",
       realSendExecutor: internalRealSend.executeVerifiedContactSend,
       verifyRealSendSession: internalRealSend.refreshRealSendSession,
       verifyMessageBubble: internalRealSend.verifyMessageBubble,
-      onPause: disarmRealSend || undefined
+      onPause: disarmRealSend || undefined,
+      passport: taskPassportStore
     });
     workflowController = registerWechatWorkflowIpc({
       ...runtime,
       logger,
+      appVersion: components.businessVersion(app),
+      buildId: build.buildId || process.env.XIAOXI_BUILD_ID || "",
+      buildCommit: build.buildCommit || process.env.XIAOXI_BUILD_COMMIT || "",
       getMomentsProgress: (task) => momentsCampaignController?.workflowProgress(task),
       getMainWindow: () => mainWindow,
       isQuitting: () => quitCleanupStarted,
@@ -558,7 +693,17 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       executors: {
         touch: {
           prepareWorkflowTask: (_id, payload) => touchTaskController.prepareWorkflowTask(payload),
-          runWorkflowStep: touchTaskController.runWorkflowStep
+          updateWorkflowTask: touchTaskController.updateWorkflowTask,
+          hasStartedWorkflowTask: touchTaskController.hasStartedWorkflowTask,
+          runWorkflowStep: touchTaskController.runWorkflowStep,
+          canRetryWorkflowTask: touchTaskController.canRetryWorkflowTask,
+          describeUnknownWorkflowTask: touchTaskController.describeUnknownWorkflowTask,
+          resolveUnknownWorkflowTask: touchTaskController.resolveUnknownWorkflowTask,
+          acknowledgeUnknownWorkflowResolution: touchTaskController.acknowledgeUnknownWorkflowResolution,
+          describeSkippedWorkflowTask: touchTaskController.describeSkippedWorkflowTask,
+          retrySkippedWorkflowTask: touchTaskController.retrySkippedWorkflowTask,
+          describeImages: touchTaskController.describeImages,
+          importImages: touchTaskController.importImages
         },
         publish: momentsPublishController,
         interact: momentsCampaignController
@@ -568,7 +713,6 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     createWindow();
     registerRolePreferencesIpc({ ipcMain, controller: createRolePreferences({ rootDir: runtime.rootDir }), getMainWindow: () => mainWindow });
     if (!productDetailReleaseSmokeMode) {
-      const maintenanceConfig = cloudConfig({ developmentEdition });
       feedbackController = createFeedbackController({ rootDir: runtime.rootDir, config: maintenanceConfig,
         version: components.businessVersion(app), buildId: build.buildId, logger, safeStorage });
       feedbackAdmin = createFeedbackAdmin({ config: maintenanceConfig });
@@ -653,7 +797,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         Promise.resolve(productDetailController?.dispose()),
         Promise.resolve(contentEngineController?.dispose()),
         Promise.resolve(workflowController?.dispose()),
-        Promise.resolve(momentsPublishController?.dispose())
+        Promise.resolve(momentsPublishController?.dispose()),
+        Promise.resolve(providerGatewayClient?.close())
       ]),
       cleanupTimeout
     ]).catch(() => undefined).finally(async () => {

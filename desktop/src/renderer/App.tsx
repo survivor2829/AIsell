@@ -131,16 +131,16 @@ type MomentsDryRunResult = {
     title: string;
     className: string;
     automationId: string;
-    identityMode: "automation_id" | "structural_sns_feed" | "visual_mmui_render";
-    rootName: "朋友圈";
+    identityMode: "automation_id" | "structural_sns_feed" | "visual_mmui_render" | "visual_win32_client";
+    rootName: "朋友圈" | "微信";
     rootControlType: "ControlType.Window";
     rootProcessId: number;
     feedAutomationId: "sns_list" | "";
     feedRuntimeId: string;
     feedCount: 0 | 1;
-    renderPaneName?: "MMUIRenderSubWindowHW";
+    renderPaneName?: "MMUIRenderSubWindowHW" | "Win32ClientSurface";
     renderPaneAutomationId?: string;
-    renderPaneControlType?: "ControlType.Pane";
+    renderPaneControlType?: "ControlType.Pane" | "Win32.Client";
     renderPaneProcessId?: number;
     renderPaneRuntimeId?: string;
     renderPaneBounds?: { left: number; top: number; width: number; height: number };
@@ -228,6 +228,17 @@ type TouchTaskItem = {
   updated_at: string;
   outcome_unknown_retry_count?: number;
   awaiting_resolution?: boolean;
+  skip_record?: TouchSkipRecord;
+};
+type TouchSkipRecord = {
+  contactId: string;
+  displayName: string;
+  index: number;
+  reasonCode: string;
+  blockedReason: string;
+  at: string;
+  traceId: string;
+  status?: string;
 };
 type TouchTaskExcludedContact = {
   contact: ContactRow;
@@ -268,6 +279,9 @@ type TouchTaskState = {
   current_result: TouchTaskItem | null;
   result_updates?: TouchTaskItem[];
   results: TouchTaskItem[];
+  sent_verified_count?: number;
+  skipped_breakdown?: { identity: number; ai_failed: number; pre_send?: number; outcome_unknown: number };
+  skipped_records?: TouchSkipRecord[];
 };
 type TouchTaskResult = {
   ok: boolean;
@@ -337,10 +351,11 @@ declare global {
     xiaoxiTouchTask?: {
       start: (payload: { script: string; excludedContactIds: string[] }) => Promise<TouchTaskResult>;
       status: () => Promise<TouchTaskResult>;
+      retrySkipped: (payload?: { taskId?: string; contactIds?: string[] }) => Promise<TouchTaskResult>;
       pause: () => Promise<TouchTaskResult>;
       resume: () => Promise<TouchTaskResult>;
       stop: () => Promise<TouchTaskResult>;
-      resolveUnknown: (payload: { taskId: string; contactId: string; resolution: "sent" | "skip" }) => Promise<TouchTaskResult>;
+      resolveUnknown: (payload: { taskId: string; contactId: string; resolution: "sent" | "not_sent" | "skip" }) => Promise<TouchTaskResult>;
       showMain: () => Promise<TouchTaskResult>;
       closeFloating: () => Promise<TouchTaskResult>;
       onUpdate: (callback: (payload: TouchTaskResult) => void) => () => void;
@@ -629,17 +644,15 @@ export default function App() {
   const closePersonalization = () => { setPersonalizingRole(null); setRolePreview(null); };
 
   const applyContactSyncResult = (result: ContactSyncResult) => {
-    if (result.state) {
-      setContactSyncState((current) => ({ ...current, ...result.state }));
-    } else if (result.error) {
-      setContactSyncState((current) => ({
-        ...current,
-        status: "blocked",
-        last_error: result.error,
-        last_stage: result.blocked_reason || "blocked"
-      }));
+    if (result.state || result.error) {
+      setContactSyncState((current) => {
+        const next = result.state ? { ...current, ...result.state } : current;
+        return !result.ok && result.error
+          ? { ...next, status: "blocked", last_error: result.error, last_stage: result.blocked_reason || "blocked" }
+          : next;
+      });
     }
-    if (result.contacts) {
+    if (result.ok && result.contacts) {
       setContactRows(result.contacts);
     }
     setContactSyncError(result.error ?? "");
@@ -1393,6 +1406,11 @@ function FloatingTouchWindow() {
   const unknownResult = touchTask.phase === "awaiting_unknown_resolution" && currentResult?.status === "outcome_unknown" && currentResult.awaiting_resolution
     ? currentResult
     : null;
+  const skippedRecords = touchTask.skipped_records || [];
+  const retryableSkipped = skippedRecords.filter((record) => ["identity_skipped", "ai_failed_skipped", "pre_send_skipped"].includes(String(record.status || "")));
+  const retryAllowed = ["running", "paused", "completed", "stopped"].includes(touchTask.status);
+  const retryLabel = touchTask.status === "running" ? "暂停并重试" : "重试";
+  const retrySkipped = (contactIds?: string[]) => callTask(() => window.xiaoxiTouchTask!.retrySkipped({ taskId: touchTask.id, ...(contactIds ? { contactIds } : {}) }));
   const endTask = () => {
     if (!window.confirm("确定结束本次任务吗？结束后不能恢复当前进度。")) return;
     callTask(() => window.xiaoxiTouchTask!.stop());
@@ -1435,9 +1453,24 @@ function FloatingTouchWindow() {
       </div>
 
       {(touchTask.pause_reason || error) && <div className="floating-alert">{error || touchTask.pause_reason}</div>}
+      {skippedRecords.length > 0 && <section className="floating-skipped" aria-labelledby="floating-skipped-title">
+        <div className="floating-skipped-head">
+          <strong id="floating-skipped-title">本次跳过 {skippedRecords.length} 位</strong>
+          {retryableSkipped.length > 1 && <button type="button" disabled={busy || !retryAllowed} onClick={() => retrySkipped()}>{touchTask.status === "running" ? "暂停并全部重试" : "全部重试"}</button>}
+        </div>
+        <p className="floating-skipped-summary">身份不唯一 {touchTask.skipped_breakdown?.identity || 0} · AI 失败 {touchTask.skipped_breakdown?.ai_failed || 0} · 发送前失败 {touchTask.skipped_breakdown?.pre_send || 0} · 结果未知 {touchTask.skipped_breakdown?.outcome_unknown || 0}</p>
+        <details><summary>查看明细与重试</summary><ul>
+          {skippedRecords.map((record) => <li key={`${record.contactId}-${record.index}`}>
+            <span title={record.displayName}>{record.displayName || `第 ${record.index + 1} 位`}</span>
+            <small title={record.blockedReason}>{taskResultLabel(String(record.status || "skipped"))}</small>
+            {["identity_skipped", "ai_failed_skipped", "pre_send_skipped"].includes(String(record.status || "")) && <button type="button" disabled={busy || !retryAllowed} onClick={() => retrySkipped([record.contactId])}>{retryLabel}</button>}
+          </li>)}
+        </ul></details>
+      </section>}
       {unknownResult && (
         <div className="floating-resolution">
           <button onClick={() => callTask(() => window.xiaoxiTouchTask!.resolveUnknown({ taskId: touchTask.id, contactId: unknownResult.contact.id, resolution: "sent" }))} disabled={busy}>视为已发送</button>
+          <button onClick={() => callTask(() => window.xiaoxiTouchTask!.resolveUnknown({ taskId: touchTask.id, contactId: unknownResult.contact.id, resolution: "not_sent" }))} disabled={busy}>确认未发送</button>
           <button onClick={() => callTask(() => window.xiaoxiTouchTask!.resolveUnknown({ taskId: touchTask.id, contactId: unknownResult.contact.id, resolution: "skip" }))} disabled={busy}>跳过此人</button>
         </div>
       )}

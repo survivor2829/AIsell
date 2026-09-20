@@ -1,11 +1,15 @@
 // Application-owned additions keep diagnostic evolution compatible with the
 // installed update base. The base validator still owns report identity/privacy.
 const { reportEntry: baseReportEntry, token } = require("./cloud-contract.cjs");
+const { sanitizeWechatWindowDiagnostics } = require("./wechat-window-diagnostics.cjs");
+const { sanitizeWechatInputDiagnostics } = require("./wechat-send-diagnostics.cjs");
+const { sanitizeFailureDiagnostics } = require("./failure-diagnostics.cjs");
 
 function reportEntry(entry, context) {
   const result = baseReportEntry(entry, context);
   if (!result) return null;
-  for (const key of ["action", "task_kind", "reason", "send_status", "verification_mode", "input_read_reason", "exception_code", "wechat_version", "parent_trace_code"]) {
+  Object.assign(result.details, sanitizeFailureDiagnostics(entry.details));
+  for (const key of ["action", "task_kind", "reason", "send_status", "verification_mode", "last_verification_reason", "input_read_reason", "input_read_exception_type", "input_read_exception_id", "input_read_exception_hresult", "input_read_exception_category", "exception_code", "wechat_version", "parent_trace_code", "parent_trace_id", "capture_mode", "scan_mode", "trigger_code", "outcome", "side_effect", "retryability", "failure_stage"]) {
     const value = token(entry.details?.[key]);
     if (value) result.details[key] = value;
   }
@@ -13,9 +17,21 @@ function reportEntry(entry, context) {
     if (typeof entry.details?.[key] === "boolean") result.details[key] = entry.details[key];
   }
   if (entry.details?.send_attempted === null) result.details.send_attempted = null;
-  for (const key of ["elapsed_ms", "duration_ms", "current_index", "done", "total", "pending_count", "process_count", "dpi", "window_width", "window_height", "candidate_count", "outgoing_exact_count", "previous_exact_count", "new_outgoing_exact_count", "receipt_verification_attempts"]) {
+  for (const key of ["elapsed_ms", "duration_ms", "scan_ms", "capture_attempts", "verification_attempts", "verification_elapsed_ms", "current_index", "done", "total", "pending_count", "process_count", "dpi", "window_width", "window_height", "candidate_count", "outgoing_exact_count", "previous_exact_count", "new_outgoing_exact_count", "receipt_verification_attempts"]) {
     const value = entry.details?.[key];
     if (Number.isFinite(value) && value >= 0 && value <= 86400000) result.details[key] = Math.round(value);
+  }
+  Object.assign(result.details, sanitizeWechatWindowDiagnostics(entry.details));
+  Object.assign(result.details, sanitizeWechatInputDiagnostics(entry.details));
+  for (const key of ["verification_capture_ms", "verification_ocr_ms", "verification_candidates_ms", "verification_feed_ocr_ms", "verification_post_count", "verification_text_length"]) {
+    const value = entry.details?.[key];
+    if (Number.isFinite(value) && value >= 0 && value <= 86400000) result.details[key] = Math.round(value);
+  }
+  if (typeof entry.details?.verification_anchor_present === "boolean") result.details.verification_anchor_present = entry.details.verification_anchor_present;
+  if (["matched", "unresolved", "different"].includes(entry.details?.header_state)) result.details.header_state = entry.details.header_state;
+  if (Number.isSafeInteger(entry.details?.header_candidate_count) && entry.details.header_candidate_count >= 0 && entry.details.header_candidate_count <= 1000) result.details.header_candidate_count = entry.details.header_candidate_count;
+  for (const key of ["header_recovery_attempted", "header_recovery_ok"]) {
+    if (typeof entry.details?.[key] === "boolean") result.details[key] = entry.details[key];
   }
   return result;
 }

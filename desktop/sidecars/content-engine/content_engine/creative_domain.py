@@ -3466,68 +3466,74 @@ class CreativeDomain:
             private_state=private_state,
         )
 
-        music = self._reusable_auto_mix_music(
-            private_state,
-            public_plan.get("musicBrief") or {},
-            required_duration_ms=voice_bundle["duration_ms"],
-        )
-        music_reused = music is not None
-        if music is None:
-            music = self._select_auto_mix_music(
+        no_music = bool(private_state.get('narrated_batch_id')) and private_state.get('music_track_ids') == []
+        music = None
+        if no_music:
+            private_state.pop('music_track', None)
+            public_plan['music'] = {'mode': 'none', 'display_name': '无配乐'}
+        else:
+            music = self._reusable_auto_mix_music(
+                private_state,
                 public_plan.get("musicBrief") or {},
                 required_duration_ms=voice_bundle["duration_ms"],
-                excluded_id=str(private_state.get("excluded_music_track_id") or ""),
-                allowed_track_ids=private_state.get("music_track_ids"),
-                prefer_unused_track_ids=private_state.get("used_music_track_ids") or [],
             )
-        if music is None:
-            return self._pause_auto_mix(
-                task_id,
-                run_id,
-                state="needs_attention",
-                code="narrated_music_pool_empty" if private_state.get("music_track_ids") == [] else "auto_mix_licensed_music_required",
-                message="请先试听并选入至少一首可导出的配乐。" if private_state.get("music_track_ids") == [] else "选定配乐库中没有授权有效且适配本条时长的音乐。",
-                public_plan=public_plan,
-                private_state=private_state,
-            )
-        public_plan["music"] = music["public"]
-        private_state["music_track"] = {
-            "track_id": music["track_id"],
-            "managed_relative_path": music["managed_relative_path"],
-            "integrated_lufs": music.get("integrated_lufs"),
-            "true_peak_dbtp": music.get("true_peak_dbtp"),
-            "loop_start_ms": music.get("loop_start_ms"),
-            "loop_end_ms": music.get("loop_end_ms"),
-        }
-        selection_key = auto_mix_canonical_hash(
-            {
-                "stage": "music_selection",
-                "brief": public_plan.get("musicBrief") or {},
-                "required_duration_ms": voice_bundle["duration_ms"],
+            music_reused = music is not None
+            if music is None:
+                music = self._select_auto_mix_music(
+                    public_plan.get("musicBrief") or {},
+                    required_duration_ms=voice_bundle["duration_ms"],
+                    excluded_id=str(private_state.get("excluded_music_track_id") or ""),
+                    allowed_track_ids=private_state.get("music_track_ids"),
+                    prefer_unused_track_ids=private_state.get("used_music_track_ids") or [],
+                )
+            if music is None:
+                return self._pause_auto_mix(
+                    task_id,
+                    run_id,
+                    state="needs_attention",
+                    code="narrated_music_pool_empty" if private_state.get("music_track_ids") == [] else "auto_mix_licensed_music_required",
+                    message="请先试听并选入至少一首可导出的配乐。" if private_state.get("music_track_ids") == [] else "选定配乐库中没有授权有效且适配本条时长的音乐。",
+                    public_plan=public_plan,
+                    private_state=private_state,
+                )
+            public_plan["music"] = music["public"]
+            private_state["music_track"] = {
                 "track_id": music["track_id"],
+                "managed_relative_path": music["managed_relative_path"],
+                "integrated_lufs": music.get("integrated_lufs"),
+                "true_peak_dbtp": music.get("true_peak_dbtp"),
+                "loop_start_ms": music.get("loop_start_ms"),
+                "loop_end_ms": music.get("loop_end_ms"),
             }
-        )
-        self._record_auto_mix_artifact(
-            run_id,
-            "music_selection",
-            selection_key,
-            "completed",
-            public_metadata={
-                "track": music["public"],
-                "cacheHit": music_reused,
-            },
-            private_metadata={
-                "managed_relative_path": music["managed_relative_path"]
-            },
-        )
-        public_plan["cache"] = {
-            **(
-                public_plan.get("cache")
-                if isinstance(public_plan.get("cache"), dict)
-                else {}
-            ),
-            "musicReused": music_reused,
-        }
+            selection_key = auto_mix_canonical_hash(
+                {
+                    "stage": "music_selection",
+                    "brief": public_plan.get("musicBrief") or {},
+                    "required_duration_ms": voice_bundle["duration_ms"],
+                    "track_id": music["track_id"],
+                }
+            )
+            self._record_auto_mix_artifact(
+                run_id,
+                "music_selection",
+                selection_key,
+                "completed",
+                public_metadata={
+                    "track": music["public"],
+                    "cacheHit": music_reused,
+                },
+                private_metadata={
+                    "managed_relative_path": music["managed_relative_path"]
+                },
+            )
+            public_plan["cache"] = {
+                **(
+                    public_plan.get("cache")
+                    if isinstance(public_plan.get("cache"), dict)
+                    else {}
+                ),
+                "musicReused": music_reused,
+            }
         recipe = self._auto_mix_recipe(
             row,
             public_plan,
@@ -3571,7 +3577,7 @@ class CreativeDomain:
             status="rendering",
             public_plan=public_plan,
             private_state=private_state,
-            music_track_id=music["track_id"],
+            music_track_id=music["track_id"] if music else None,
             generated_video_id=generated_id,
         )
         self._set_task(task_id, "rendering", progress=0.86)
@@ -3613,7 +3619,7 @@ class CreativeDomain:
             public_plan.get("musicBrief") or {},
             required_duration_ms=voice_bundle["duration_ms"],
         )
-        if current_music is None or current_music["track_id"] != music["track_id"]:
+        if not no_music and (current_music is None or current_music["track_id"] != music["track_id"]):
             self.connection.execute(
                 """
                 UPDATE generated_videos
@@ -5065,30 +5071,31 @@ class CreativeDomain:
                 "已核验的配音发生变化，请使用 voice 声音层重做。",
             )
 
-        track_id = str(recipe.get("music_track_id") or "").strip()
-        relative_path = str(
-            recipe.get("licensed_music_relative_path") or ""
-        ).strip()
-        if not track_id or not relative_path:
-            raise ContentEngineError(
-                "auto_mix_music_authorization_changed",
-                "授权音乐已撤权、过期或摘要不一致，请使用 music 音乐层重做。",
+        if recipe.get('music_mode') != 'none':
+            track_id = str(recipe.get("music_track_id") or "").strip()
+            relative_path = str(
+                recipe.get("licensed_music_relative_path") or ""
+            ).strip()
+            if not track_id or not relative_path:
+                raise ContentEngineError(
+                    "auto_mix_music_authorization_changed",
+                    "授权音乐已撤权、过期或摘要不一致，请使用 music 音乐层重做。",
+                )
+            matching = self._music_catalog_rows(track_id=track_id)
+            current = select_licensed_music(
+                matching,
+                {"bpmRange": [0, 999]},
+                required_duration_ms=expected_duration_ms,
+                allowed_track_ids=recipe.get("music_track_ids"),
             )
-        matching = self._music_catalog_rows(track_id=track_id)
-        current = select_licensed_music(
-            matching,
-            {"bpmRange": [0, 999]},
-            required_duration_ms=expected_duration_ms,
-            allowed_track_ids=recipe.get("music_track_ids"),
-        )
-        if (
-            current is None
-            or current.get("managed_relative_path") != relative_path
-        ):
-            raise ContentEngineError(
-                "auto_mix_music_authorization_changed",
-                "授权音乐已撤权、过期或摘要不一致，请使用 music 音乐层重做。",
-            )
+            if (
+                current is None
+                or current.get("managed_relative_path") != relative_path
+            ):
+                raise ContentEngineError(
+                    "auto_mix_music_authorization_changed",
+                    "授权音乐已撤权、过期或摘要不一致，请使用 music 音乐层重做。",
+                )
         supplemental_image = recipe.get("supplemental_image")
         if supplemental_image is not None:
             if not isinstance(supplemental_image, dict):
@@ -5803,14 +5810,16 @@ class CreativeDomain:
             "audio_mode": "tts_only",
             "voice_audio_path": private_state["voice_audio_path"],
             "voice_audio_digest": private_state["voice_audio_digest"],
+            **({'music_mode': 'none'} if music is None else {
+            "music_mode": "licensed",
             "licensed_music_relative_path": music["managed_relative_path"],
             "licensed_music": {
                 "duration_ms": int(music.get("duration_ms") or 0),
                 "loop_start_ms": music.get("loop_start_ms"),
                 "loop_end_ms": music.get("loop_end_ms"),
             },
+            "music_track_id": music["track_id"]}),
             "voice_persona_id": persona["id"],
-            "music_track_id": music["track_id"],
             **({"music_track_ids": list(private_state["music_track_ids"])}
                if private_state.get("music_track_ids") is not None else {}),
             "voice_segment": {

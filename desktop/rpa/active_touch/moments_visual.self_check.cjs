@@ -147,6 +147,7 @@ assert.ok(visualMenuResolverFunction, "visual menu resolver should be extractabl
 const visualMenuResolverProgram = `${visualBoundsFunction}
 ${visualBoundsNearFunction}
 ${visualMenuResolverFunction}
+function Write-XiaoxiFailure { param($ruleId, $reason) return $ruleId }
 $expected = @{ left = 100.0; top = 200.0; width = 36.0; height = 24.0 }
 $exact = @{ centerX = 118.0; centerY = 212.0; bounds = @{ left = 100.0; top = 200.0; width = 36.0; height = 24.0 } }
 $overlap = @{ centerX = 118.8; centerY = 211.5; bounds = @{ left = 100.8; top = 199.5; width = 36.0; height = 24.0 } }
@@ -195,6 +196,7 @@ const visualGreenClassifierFunction = MOMENTS_VISUAL_ACTION_POWERSHELL.match(
 assert.ok(visualGreenClassifierFunction, "the production green classifier should be extractable");
 const visualSendButtonProgram = `
 $ErrorActionPreference = "Stop"
+function Write-XiaoxiFailure { param($ruleId, $reason) return $ruleId }
 ${visualGreenClassifierFunction}
 function Get-MomentsPixel($frame, [int]$x, [int]$y) {
   return $(if ($frame.green.ContainsKey("$x,$y")) { $frame.green["$x,$y"] } else { $null })
@@ -400,6 +402,7 @@ assert.match(integratedPageSurfaceSource, /\$evidence\.exactMatchCount -ne 1[\s\
 assert.match(surfaceEvidenceSource, /integrated_selected_moments/u);
 const integratedSurfaceProofProgram = `
 $ErrorActionPreference = "Stop"
+${MOMENTS_VISUAL_READONLY_POWERSHELL}
 function Get-MomentsPixel($frame, [int]$x, [int]$y) {
   if ($frame.ContainsKey("bytes")) {
     if ($x -lt 0 -or $y -lt 0 -or $x -ge [int]$frame.width -or $y -ge [int]$frame.height) { return $null }
@@ -444,6 +447,26 @@ function Get-MomentsScaledOcrObservation($frame, $region, [int]$scale = 3) {
   return @{ ok = $true; lines = $lines }
 }
 ${MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL}
+# Green-ratio fixtures use the same BGRA representation as the production scan.
+$script:originalGreenRatio = (Get-Command Get-MomentsSelectedGreenRatio).ScriptBlock
+function Get-MomentsSelectedGreenRatio($frame, $rect) {
+  if (-not $frame.ContainsKey("bytes")) {
+    $raster = $frame.Clone()
+    $raster.stride = [int]$frame.width * 4
+    $raster.bytes = New-Object byte[] ($raster.stride * [int]$frame.height)
+    for ($y = [Math]::Max(0,[int][Math]::Floor($rect.top)); $y -lt [Math]::Min([int]$frame.height,[int][Math]::Ceiling($rect.top + $rect.height)); $y++) {
+      for ($x = [Math]::Max(0,[int][Math]::Floor($rect.left)); $x -lt [Math]::Min([int]$frame.width,[int][Math]::Ceiling($rect.left + $rect.width)); $x++) {
+        $pixel = Get-MomentsPixel $frame $x $y
+        $offset = $y * $raster.stride + $x * 4
+        $raster.bytes[$offset] = $pixel.b
+        $raster.bytes[$offset + 1] = $pixel.g
+        $raster.bytes[$offset + 2] = $pixel.r
+      }
+    }
+    $frame = $raster
+  }
+  return & $script:originalGreenRatio $frame $rect
+}
 # The navigation detector reads production BGRA buffers, not procedural pixels.
 $script:originalDiscoverEntry = (Get-Command Get-IntegratedDiscoverEntryEvidence).ScriptBlock
 function Get-IntegratedDiscoverEntryEvidence($frame, $bounds, [double]$scale) {
@@ -1137,7 +1160,7 @@ assert.deepEqual(JSON.parse(stableAnchorHarness.stdout.trim()), {
   authorOnly: "",
   anchor: "author stable fixed body line"
 });
-assert.match(probeSource, /function Get-MomentsVisualPostCandidates\(\$frame, \$viewportBounds, \[bool\]\$includeText = \$true\)/u);
+assert.match(probeSource, /function Get-MomentsVisualPostCandidates\(\$frame, \$viewportBounds, \[bool\]\$includeText = \$true, \$previousRead = \$null\)/u);
 assert.match(probeSource, /\$visibleAvatars = @\(Find-MomentsVisibleAvatars \$frame \$viewportBounds\)/u);
 assert.match(probeSource, /\$menuRead = Find-MomentsMenuDotsDetailed \$frame \$viewportBounds \$visibleAvatars/u);
 assert.match(probeSource, /\$menus = @\(\$menuRead\.menus \| Where-Object \{ Test-MomentsVisualBoundsInside \$_\.bounds \$viewportBounds \}\)/u);
@@ -1256,7 +1279,7 @@ for (const name of ["comment", "commentOccurrenceCheck", "commentReadback", "ins
   assert.equal(result.status, "blocked");
   assert.equal(result.actionAttempted, false);
 }
-assert.match(actionSource, /identityMode === "visual_mmui_render"/u);
+assert.match(actionSource, /isVisualMomentsSurface\(window\)/u);
 assert.match(actionSource, /version: interactionAnchor \? 7 : 6/u);
 assert.match(actionSource, /visual:interaction_anchor/u);
 assert.match(actionSource, /surfaceMode: String\(window\.surfaceMode \?\? ""\)/u);
@@ -3080,6 +3103,7 @@ const postSendSettleWindowSource = actionSource.match(
 )?.[0] ?? "";
 assert.ok(postSendSettleWindowSource, "post-send verification should receive a fresh bounded settle window");
 const postSendSettleWindowProbeSource = `
+function Write-XiaoxiFailure { param($ruleId, $reason) return $ruleId }
 ${postSendSettleWindowSource}
 $script:visualPostSendSettleMs = 6000
 $script:visualWorkerSoftDeadlineMs = 90000
@@ -3666,4 +3690,5 @@ const commentPromiseHarness = spawnSync(process.execPath, ["-e", commentPromiseH
 });
 assert.equal(commentPromiseHarness.status, 0, commentPromiseHarness.stderr || "comment Promise normalization harness must pass");
 
+require("./wechat_render_surface.self_check.cjs");
 console.log("moments visual self-check passed");

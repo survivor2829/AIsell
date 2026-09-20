@@ -2270,6 +2270,68 @@ td .text-button {
   white-space: nowrap;
 }
 
+.floating-skipped {
+  min-height: 0;
+  max-height: 76px;
+  padding: 6px 8px;
+  border: 1px solid #fed7aa;
+  border-radius: 11px;
+  background: #fffaf5;
+  overflow-y: auto;
+}
+
+.floating-skipped-head,
+.floating-skipped li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.floating-skipped-head strong {
+  color: #9a3412;
+  font-size: 12px;
+}
+
+.floating-skipped ul {
+  display: grid;
+  gap: 3px;
+  margin: 5px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.floating-skipped li {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  color: #7c2d12;
+  font-size: 11px;
+}
+
+.floating-skipped li span,
+.floating-skipped li small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.floating-skipped button {
+  min-height: 24px;
+  padding: 2px 7px;
+  border: 1px solid #fdba74;
+  border-radius: 8px;
+  background: #fff;
+  color: #9a3412;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.floating-skipped button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .floating-actions {
   display: grid;
   grid-template-columns: 1fr 1fr 1.35fr;

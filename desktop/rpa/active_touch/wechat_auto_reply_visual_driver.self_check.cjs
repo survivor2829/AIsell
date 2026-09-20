@@ -56,6 +56,9 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /badgeOnly = \$true[\s\S]*source = "unrea
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$row\.badgeBounds\.centerX[\s\S]*\$row\.badgeBounds\.centerY/u, "the unread fallback must click WeChat's own badge geometry");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /badgeOnly = \$true[\s\S]*messageDriven = \$true/u, "a red-dot inbound event must be message-driven rather than contact-name authorized");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Resolve-AutoReplyVisualStrictBadgeHeader/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$openedSidebar = Get-AutoReplyVisualSidebarRows \$openedFrame \$openedObservation\.lines/u, "opened unread conversations must have a sidebar identity fallback");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$selectedOpenedRows\.Count -eq 1[\s\S]*state = "selected_sidebar_row"/u, "a selected allowlisted sidebar row may recover a transiently missing header OCR");
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$confirmationSidebar = Get-AutoReplyVisualSidebarRows \$confirmationFrame \$confirmation\.lines/u, "confirmation must retain the selected sidebar identity fallback");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(\$script:AutoReplyVisualExactConversationMatch\)[\s\S]*\$strictHeader = Resolve-AutoReplyVisualStrictBadgeHeader \$header \$allowedSet[\s\S]*\$candidate\.messageDriven = \[bool\]\$strictHeader\.messageDriven[\s\S]*\$candidate\.strictConversationVerified = \[bool\]\$strictHeader\.strictConversationVerified/u, "a strict test-scope red dot must be promoted only through the tested exact-header decision");
 const strictHeaderFunctionsStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Normalize-AutoReplyVisualText");
 const strictHeaderFunctionsEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("function Scale-AutoReplyVisualMetric", strictHeaderFunctionsStart);
@@ -82,6 +85,44 @@ assert.deepEqual(strictHeaderResults.map((result) => ({
   { ok: false, reason: "conversation_title_unresolved", conversation: "", conversationEvidence: "", messageDriven: true, strictConversationVerified: false },
   { ok: false, reason: "conversation_title_mismatch", conversation: "", conversationEvidence: "", messageDriven: true, strictConversationVerified: false }
 ]);
+const headerRecovery = runPowerShellJson(`
+$ErrorActionPreference = "Stop"
+${AUTO_REPLY_VISUAL_SCRIPT.slice(strictHeaderFunctionsStart, AUTO_REPLY_VISUAL_SCRIPT.indexOf('$mode = [Environment]::GetEnvironmentVariable("XIAOXI_AUTO_REPLY_MODE")'))}
+$script:AutoReplyVisualExactConversationMatch = $true
+$script:ocrCalls = 0
+function Get-MomentsScaledOcrObservation($frame, $rect, $scale) {
+  $script:ocrCalls++
+  return @{ ok = $true; lines = @(@{ text = $script:fixtureTitle; bounds = @{ left = 8; top = 8; width = 60; height = 20 } }) }
+}
+$allowed = @("张总")
+$results = @()
+foreach ($dpiScale in @(1.25, 3.0)) {
+  $script:AutoReplyVisualScale = $dpiScale
+  $script:fixtureTitle = "张总"
+  $frame = @{ width = 1200 * $dpiScale; height = 760 * $dpiScale }
+  $sidebar = 300 * $dpiScale
+  $first = Get-AutoReplyVisualHeader @() "张总" $sidebar $frame.width $allowed $frame
+  $callsBefore = $script:ocrCalls
+  $again = Get-AutoReplyVisualHeader @() "张总" $sidebar $frame.width $allowed $frame
+  $results += @{ ok = $first.ok; cached = ($script:ocrCalls -eq $callsBefore); left = $first.line.bounds.left; top = $first.line.bounds.top }
+}
+$script:fixtureTitle = "李总"
+$wrong = Get-AutoReplyVisualHeader @() "张总" 300 1200 $allowed @{ width = 1200; height = 760 }
+$script:fixtureTitle = ""
+$empty = Get-AutoReplyVisualAnyHeader @() 300 1200 @{ width = 1200; height = 760 }
+$script:AutoReplyVisualScale = 1.0
+$callsBefore = $script:ocrCalls
+$matched = Get-AutoReplyVisualHeader @(@{ compact = "张总"; bounds = @{ left = 330; top = 35; width = 60; height = 20 } }) "张总" 300 1200 $allowed @{ width = 1200; height = 760 }
+@{ results = $results; wrong = $wrong.ok; empty = $empty.ok; matched = $matched.ok; matchedWithoutOcr = ($script:ocrCalls -eq $callsBefore) } | ConvertTo-Json -Compress -Depth 6
+`);
+assert.deepEqual(headerRecovery.results, [
+  { ok: true, cached: true, left: 393, top: 33 },
+  { ok: true, cached: true, left: 932, top: 68 }
+], "Header recovery must restore crop offsets at laptop and high DPI without rescaling twice");
+assert.equal(headerRecovery.wrong, false, "Local OCR cannot authorize a different recipient");
+assert.equal(headerRecovery.empty, false);
+assert.equal(headerRecovery.matched, true);
+assert.equal(headerRecovery.matchedWithoutOcr, true);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Message-driven auto reply keeps the observed title only as diagnostic[\s\S]*\$conversation = \[string\]\$header\.conversation/u, "ordinary all-contact red dots must keep the message-driven fallback");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(-not \[bool\]\$candidate\.badgeOnly -or \[bool\]\$candidate\.strictConversationVerified\)[\s\S]*Get-AutoReplyVisualHeader \$confirmation\.lines/u, "a promoted strict red-dot path must repeat the exact title check on its confirmation frame");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(\$expectedMessageDriven\)[\s\S]*state = "message_driven"[\s\S]*Get-AutoReplyVisualHeader \$observation\.lines/u, "final incoming verification must not restore the contact-title gate");
@@ -94,7 +135,7 @@ assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualMessageBlock
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /Merge-AutoReplyVisualMessageParts \$current\.ToArray\(\) \$true/u, "same-row OCR fragments must be ordered by horizontal position before aggregation");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$latest = \$messageBlocks\[-1\][\s\S]*Get-AutoReplyVisualMessageRole \$frame \$latest/u, "role and evidence must use the aggregated bubble rather than its last OCR fragment");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /\$greenRatio -ge 0\.16/u, "outgoing green bubble proof must take priority over OCR geometry");
-assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$viewportHash|\$viewportRect/u, "whole-viewport changes must not alter message identity");
+assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT.slice(strictHeaderFunctionsStart), /\$viewportHash|\$viewportRect/u, "whole-viewport changes must not alter message identity in the auto-reply reader");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /evidenceSignature = Get-AutoReplyVisualSha256 \$semanticSeed/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /diagnosticSignature = Get-AutoReplyVisualSha256 \$diagnosticSeed/u);
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /function Get-AutoReplyVisualChatBottom/u);
@@ -157,7 +198,7 @@ assert.doesNotMatch(visualDriverSource, /liveScreenRefreshIntervalMs|lastLiveScr
 assert.doesNotMatch(visualDriverSource, /foregroundCaptureMode/u, "one successful fallback must not permanently force every poll to steal foreground");
 assert.match(visualDriverSource, /scanWechatIncoming\.resetBaselines[\s\S]*retryCandidates\.length = 0/u, "a restarted listener must not inherit an unsent candidate from the previous run");
 assert.doesNotMatch(visualDriverSource, /eventSequence|eventSessionId/u, "stable visual evidence must not receive a new ID on every scan");
-assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(\$row\.unread -and -not \$row\.draft -and \$newSinceStartupBoundary -and -not \$sameHistoricalUnread\)/u);
+assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(\$row\.unread -and -not \$row\.draft\)/u, "Unread work is eligible regardless of when the reply service started");
 assert.match(AUTO_REPLY_VISUAL_SCRIPT, /if \(-not \[bool\]\$match\.exact -or -not \$unread\) \{ continue \}/u, "a missing preview may locate only an exact allowlisted unread row");
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /-not \(Test-AutoReplyVisualUnreadDot \$frame \$line\.bounds\)/u, "an arbitrary unread title must never add itself to the one-to-one whitelist");
 assert.doesNotMatch(AUTO_REPLY_VISUAL_SCRIPT, /\$row\.unread -or \$changed/u);
@@ -1362,7 +1403,9 @@ const driver = createWechatVisualAutoReplyDriver((script, env, options) => {
 });
 
 const exactMatchOptions = { exactConversationMatch: true };
-assert.deepEqual(await driver.primeWechatSession([" A 测试客户 "], exactMatchOptions), {
+const initialPrime = await driver.primeWechatSession([" A 测试客户 "], exactMatchOptions);
+assert.equal(initialPrime.diagnostics.timings.capture_attempts, 1);
+assert.deepEqual({ ok: initialPrime.ok, primed: initialPrime.primed, pid: initialPrime.pid, hWnd: initialPrime.hWnd }, {
   ok: true,
   primed: true,
   pid: 81,
@@ -1545,7 +1588,9 @@ const primedObservationDriver = createWechatVisualAutoReplyDriver(() => ({
   sessionBaselines: [],
   sessionMessageBaselines: [{ conversation: "TestCustomer", signature: primedObservationSignature }]
 }));
-assert.deepEqual(await primedObservationDriver.scanWechatIncoming(["TestCustomer"]), {
+const { diagnostics: observationTiming, ...primedObservation } = await primedObservationDriver.scanWechatIncoming(["TestCustomer"]);
+assert.equal(observationTiming.timings.capture_attempts, 1);
+assert.deepEqual(primedObservation, {
   ok: false,
   primed: true,
   pid: 15,
@@ -1563,7 +1608,9 @@ const emptyPrimeDriver = createWechatVisualAutoReplyDriver(() => ({
   hWnd: 22,
   sessionBaselines: []
 }));
-assert.deepEqual(await emptyPrimeDriver.primeWechatSession(["A测试客户"]), {
+const { diagnostics: emptyTiming, ...emptyPrime } = await emptyPrimeDriver.primeWechatSession(["A测试客户"]);
+assert.equal(emptyTiming.timings.capture_attempts, 1);
+assert.deepEqual(emptyPrime, {
   ok: true,
   primed: true,
   pid: 21,
@@ -1893,6 +1940,7 @@ assert.equal(JSON.parse(advanceCalls[1].XIAOXI_VISUAL_MESSAGE_BASELINES)["A测�
 assert.equal(JSON.parse(advanceCalls[2].XIAOXI_VISUAL_MESSAGE_BASELINES)["A测试客户"], advancedMessageSignature);
 
 const captureFallbackCalls = [];
+let captureWindow = { pid: 101, hWnd: 102 };
 const captureFallbackEvidence = `visual:v1:${"e".repeat(64)}`;
 const captureFallbackSignature = "e".repeat(64);
 const captureFallbackDriver = createWechatVisualAutoReplyDriver((_script, env) => {
@@ -1908,19 +1956,57 @@ const captureFallbackDriver = createWechatVisualAutoReplyDriver((_script, env) =
     pid: 101, hWnd: 102, source: "unread", latestRole: "user",
     context: [{ role: "user", content: "hello", key: captureFallbackEvidence }]
   };
-});
-assert.equal((await captureFallbackDriver.primeWechatSession(["CaptureCustomer"])).ok, true, "a compositor shell whose OCR is unusable must get one forced foreground retry");
+}, () => captureWindow);
+const capturePrime = await captureFallbackDriver.primeWechatSession(["CaptureCustomer"]);
+assert.equal(capturePrime.diagnostics.timings.capture_attempts, 2);
+assert.equal(capturePrime.ok, true, "a compositor shell whose OCR is unusable must get one forced foreground retry");
 assert.equal(captureFallbackCalls[0].XIAOXI_ALLOW_FOCUS_FALLBACK, "");
 assert.equal(captureFallbackCalls[1].XIAOXI_ALLOW_FOCUS_FALLBACK, "1");
 assert.equal(captureFallbackCalls[1].XIAOXI_FORCE_SCREEN_CAPTURE, "1", "the fallback must skip a misleading compositor PrintWindow frame");
 assert.equal((await captureFallbackDriver.scanWechatIncoming(["CaptureCustomer"])).ok, true);
-assert.equal(captureFallbackCalls[2].XIAOXI_ALLOW_FOCUS_FALLBACK, "", "a successful live fallback must return the next poll to background PrintWindow");
-assert.equal(captureFallbackCalls[2].XIAOXI_FORCE_SCREEN_CAPTURE, "");
+assert.equal(captureFallbackCalls[2].XIAOXI_ALLOW_FOCUS_FALLBACK, "1", "reuse proven screen capture only for the prepared window");
+assert.equal(captureFallbackCalls[2].XIAOXI_FORCE_SCREEN_CAPTURE, "1");
+captureWindow = { pid: 101, hWnd: 103 };
 assert.equal((await captureFallbackDriver.scanWechatIncoming(["CaptureCustomer"])).ok, true);
 assert.equal(captureFallbackCalls[3].XIAOXI_ALLOW_FOCUS_FALLBACK, "", "a long stable background run must not steal foreground");
 assert.equal(captureFallbackCalls[3].XIAOXI_FORCE_SCREEN_CAPTURE, "");
 
 const startupBoundaryCalls = [];
+const unreadSelectionStart = AUTO_REPLY_VISUAL_SCRIPT.indexOf("  $candidates = New-Object System.Collections.Generic.List[object]");
+const unreadSelectionEnd = AUTO_REPLY_VISUAL_SCRIPT.indexOf("  # An unread dot", unreadSelectionStart);
+const startupUnreadSelection = runPowerShellJson(`
+$mode = "prime_confirm"
+$rows = @(
+  [pscustomobject]@{ conversation="UnreadCustomer"; unread=$true; draft=$false; preview="待回复问题"; signature="${"a".repeat(64)}" },
+  [pscustomobject]@{ conversation="ReadCustomer"; unread=$false; draft=$false; preview="已读历史" },
+  [pscustomobject]@{ conversation="DraftCustomer"; unread=$true; draft=$true; preview="未完成草稿" }
+)
+${AUTO_REPLY_VISUAL_SCRIPT.slice(unreadSelectionStart, unreadSelectionEnd)}
+@{ count=$candidates.Count; conversation=$candidates[0].conversation } | ConvertTo-Json -Compress
+`);
+assert.deepEqual(startupUnreadSelection, { count: 1, conversation: "UnreadCustomer" }, "Startup must select an unread row without treating read history or drafts as new work");
+
+let startupUnreadCalls = 0;
+const startupUnreadDriver = createWechatVisualAutoReplyDriver((_script, env) => {
+  if (++startupUnreadCalls === 1) return {
+    ok: true, source: "session_prime", startupBoundarySupported: true, pid: 111, hWnd: 112,
+    sessionBaselines: [{ conversation: "UnreadCustomer", signature: "a".repeat(64), preview: "第二个问题", unread: true }],
+    sessionMessageBaselines: [{ conversation: "UnreadCustomer", signature: "b".repeat(64), message: "第二个问题", latestRole: "user",
+      context: [{ role: "user", content: "第一个问题" }, { role: "user", content: "第二个问题" }] }]
+  };
+  assert.equal(JSON.parse(env.XIAOXI_STARTUP_MESSAGES).UnreadCustomer, undefined, "Unread content must not become a historical clipping boundary");
+  return {
+    ok: true, conversation: "UnreadCustomer", message: "第二个问题", runtimeId: `visual:v1:${"c".repeat(64)}`,
+    previewSignature: "a".repeat(64), messageSignature: "b".repeat(64), pid: 111, hWnd: 112,
+    source: "unread", latestRole: "user", contextKind: "incoming_batch",
+    context: [{ role: "user", content: "第一个问题" }, { role: "user", content: "第二个问题" }]
+  };
+});
+assert.equal((await startupUnreadDriver.primeWechatSession(["UnreadCustomer"])).ok, true);
+const queuedUnread = await startupUnreadDriver.scanWechatIncoming(["UnreadCustomer"]);
+assert.equal(queuedUnread.ok, true);
+assert.deepEqual(queuedUnread.context.map((item) => item.content), ["第一个问题", "第二个问题"]);
+assert.equal(startupUnreadCalls, 2, "Return the startup unread candidate without clicking the already-open row again");
 const startupOldPreview = "a".repeat(64);
 const startupOldMessage = "b".repeat(64);
 const startupNewMessage = "c".repeat(64);

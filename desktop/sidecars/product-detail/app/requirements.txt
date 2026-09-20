@@ -7,7 +7,7 @@ pdfplumber
 python-docx
 openpyxl
 rembg
-onnxruntime
+onnxruntime==1.29.0
 requests
 flask-sqlalchemy
 flask-login

@@ -44,11 +44,14 @@ class NarratedBriefTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 'narrated_audience_required')
 
     def test_expression_keeps_identity_and_clear_does_not_restore_legacy_fields(self):
+        self.domain.save({'batch_id': self.batch['batch_id'], 'description': '旧人物背景', 'material_context': '旧活动说明'})
         self.assertIn('担心地面不适用', narrated_brief.expression(self.batch))
         text = '学员小陈，来自物业保洁班组。素材中的主角是他，想介绍他认识设备部件的过程。'
         saved = self.domain.save({'batch_id': self.batch['batch_id'], 'expression': text})
         self.assertEqual(saved['expression'], text)
         self.assertEqual(saved['advantages'], '')
+        self.assertEqual(saved['description'], '')
+        self.assertEqual(saved['material_context'], '')
         self.assertEqual(narrated_brief.context(saved)['expression'], text)
         self.assertNotIn('advantages', narrated_brief.context(saved))
         candidate = self.candidate()
@@ -57,7 +60,16 @@ class NarratedBriefTests(unittest.TestCase):
         self.assertEqual(narrated_brief.expression(cleared), '')
         self.assertNotEqual(previous_hash, narrated_brief.stamp(candidate, cleared))
         with self.assertRaises(ContentEngineError):
-            self.domain.save({'batch_id': saved['batch_id'], 'expression': '长' * 4001})
+            self.domain.save({'batch_id': saved['batch_id'], 'expression': '长' * 14001})
+
+    def test_legacy_pass_reused_for_identical_words_but_not_changed_context(self):
+        candidate = self.candidate('free')
+        candidate['_brief_review_hash'] = narrated_brief.stamp(candidate, self.batch, narrated_brief._LEGACY_RULES)
+        with patch.object(self.domain, '_cloud', return_value={'accepted': True, 'reason': '符合明确方向'}) as cloud:
+            narrated_brief.review(self.domain, candidate, self.batch)
+            cloud.assert_not_called()
+            narrated_brief.review(self.domain, candidate, {**self.batch, 'expression': '新的明确方向'})
+            cloud.assert_called_once()
 
     def test_new_task_rejects_multi_selection_and_invalid_edit_without_saving(self):
         batch = self.domain._load(self.batch['batch_id'])
@@ -69,7 +81,7 @@ class NarratedBriefTests(unittest.TestCase):
                 {'script_id': f'script-{i}', 'revision': 1, 'count': 1} for i in range(2)]})
         with self.assertRaises(ContentEngineError):
             self.domain.update_candidate({'batch_id': batch['batch_id'], 'candidate_id': 'script-0',
-                                          'narration': '只介绍产品。欢迎咨询。'})
+                                          'narration': ''})
         self.assertEqual(self.domain._load(batch['batch_id'])['script_options'], batch['script_options'])
 
     def test_user_identity_review_requires_quote_and_reuses_only_unchanged_context(self):
@@ -150,9 +162,9 @@ class NarratedBriefTests(unittest.TestCase):
         with self.assertRaises(ContentEngineError):
             narrated_brief.align_ending_events([{'reason': 'cta', 'text': '评论88领取资料'}], captions)
 
-    def test_draft_retry_retains_two_angles_and_restores_problem_solution_first(self):
+    def test_default_one_draft_repairs_once_and_add_direction_preserves_existing(self):
         batch = copy.deepcopy(self.batch)
-        batch['available_shots'] = [{'description': '现场设备试用', 'target_duration_ms': 60000}]
+        batch['available_shots'] = [{'segment_id': 's1', 'asset_id': 'a1', 'source_start_ms': 0, 'source_end_ms': 60000, 'description': '现场设备试用', 'visual_facts': {'observation': '设备试用'}, 'target_duration_ms': 60000}]
         domain = self.domain
         scripts = [dict(self.candidate(narrated_brief.FRAMEWORK if i == 0 else 'free'),
             title=f'选题{i}', angle=f'切入点{i}', source_ids=['S1'],
@@ -162,7 +174,7 @@ class NarratedBriefTests(unittest.TestCase):
             if 'count' in payload:
                 counts.append(payload['count'])
                 self.assertEqual(payload['creative_brief']['target_audience'], '物业保洁负责人')
-                result = {'scripts': scripts if payload['count'] == 3 else [scripts[0]]}
+                result = {'scripts': [scripts[1] if batch.get('script_options') else scripts[0]]}
             else:
                 reviews.append(True)
                 result = {'reviews': [{'index': i, 'accepted': len(reviews) > 1 or i != 0,
@@ -173,22 +185,28 @@ class NarratedBriefTests(unittest.TestCase):
              patch.object(domain, '_source_evidence_for', return_value={}), patch.object(domain, '_cloud', side_effect=cloud), \
              patch.object(domain.d, '_should_stop', return_value=False):
             narrated_script_drafts.prepare(domain, 'test-task', batch)
-        self.assertEqual(counts, [3, 1])
-        self.assertEqual(len(batch['script_options']), 3)
-        self.assertEqual(batch['script_options'][0]['framework'], narrated_brief.FRAMEWORK)
+        self.assertEqual(counts, [1, 1])
+        self.assertEqual(len(batch['script_options']), 1)
+        first = copy.deepcopy(batch['script_options'][0])
+        with patch.object(domain, '_initialize_speech_budget'), patch.object(domain, '_minimum_spoken_chars', return_value=10), \
+             patch.object(domain, '_source_evidence_for', return_value={}), patch.object(domain, '_cloud', side_effect=cloud), \
+             patch.object(domain.d, '_should_stop', return_value=False):
+            narrated_script_drafts.prepare(domain, 'test-task', batch)
+        self.assertEqual(batch['script_options'][0], first)
+        self.assertEqual(len(batch['script_options']), 2)
+        self.assertEqual(counts, [1, 1, 1])
 
     def test_short_draft_does_not_discard_other_valid_choices(self):
         batch = copy.deepcopy(self.batch)
-        batch['available_shots'] = [{'description': '培训现场', 'target_duration_ms': 60000}]
+        batch['available_shots'] = [{'segment_id': 's1', 'asset_id': 'a1', 'source_start_ms': 0, 'source_end_ms': 60000, 'description': '培训现场', 'visual_facts': {'observation': '培训现场'}, 'target_duration_ms': 60000}]
         counts = []
         def cloud(payload, instruction, **kwargs):
             if 'count' in payload:
                 counts.append(payload['count'])
                 if len(counts) == 1:
-                    texts = ['不会用？先核对。欢迎咨询。', '联网设置。' + '对照屏幕了解入口。' * 5 + '欢迎咨询。',
-                             '部件名称。' + '对照实物了解部件。' * 5 + '欢迎咨询。']
+                    texts = ['不会用？先核对。欢迎咨询。']
                 else:
-                    self.assertEqual(len(payload['existing_choices']), 2)
+                    self.assertTrue(payload['previous_feedback'])
                     texts = [self.candidate()['narration']]
                 scripts = [dict(self.candidate(), title=f'选题{i}', angle=f'角度{i}', narration=text,
                     framework=payload['required_frameworks'][i], source_ids=['S1']) for i, text in enumerate(texts)]
@@ -202,9 +220,37 @@ class NarratedBriefTests(unittest.TestCase):
              patch.object(self.domain, '_source_evidence_for', return_value={}), patch.object(self.domain, '_cloud', side_effect=cloud), \
              patch.object(self.domain.d, '_should_stop', return_value=False):
             narrated_script_drafts.prepare(self.domain, 'test-task', batch)
-        self.assertEqual(counts, [3, 1])
-        self.assertEqual(len(batch['script_options']), 3)
+        self.assertEqual(counts, [1, 1])
+        self.assertEqual(len(batch['script_options']), 1)
         self.assertIn('正文实际', batch['_script_draft_audit'][0]['local_rejections'][0]['reason'])
+
+    def test_supplied_script_skips_paid_analysis_and_preserves_body(self):
+        body = '我自己写好的文案。\n第二段保持原来的说法。'
+        saved = self.domain.save({'batch_id': self.batch['batch_id'], 'expression': body,
+                                  'script_source': 'provided'})
+        task = self.domain.start(saved['batch_id'], 'scripts')
+        with patch.object(self.domain, '_analysis') as analysis, patch.object(self.domain, '_cloud') as cloud, \
+             patch.object(self.domain.d.analyzer.cloud_client, 'configured', False):
+            self.domain.run(task['task_id'], {'batch_id': saved['batch_id'], 'action': 'scripts'})
+            state = self.domain._load(saved['batch_id'])
+        analysis.assert_not_called()
+        cloud.assert_not_called()
+        self.assertEqual(state['script_options'][0]['narration'], body)
+        self.assertEqual(state['status'], 'scripts_ready')
+
+    def test_one_or_two_legacy_drafts_are_confirmable_without_framework_gate(self):
+        for count in (1, 2):
+            with self.subTest(count=count):
+                state = self.domain._load(self.batch['batch_id'])
+                state.update(status='draft', task_id=None, script_confirmation=None, candidates=[])
+                state.pop('script_selections', None)
+                state.pop('production_jobs', None)
+                state['script_options'] = [dict(self.candidate('free'), candidate_id=f'draft-{i}') for i in range(count)]
+                self.domain._store(state)
+                queued = self.domain.confirm_script({'batch_id': state['batch_id'], 'selections': [
+                    {'script_id': 'draft-0', 'revision': 1, 'count': 1}]})
+                self.assertTrue(queued['task_id'])
+                self.domain.db.execute("UPDATE content_tasks SET status='completed' WHERE id=?", (queued['task_id'],))
 
 
 if __name__ == '__main__':

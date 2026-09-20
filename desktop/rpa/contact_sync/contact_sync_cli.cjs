@@ -144,6 +144,16 @@ function saveState(baseDir, state) {
       stage: state.last_stage, status: state.status, wx_hook_stage: state.wx_hook_stage,
       wechat_version: state.wechat_version,
       process_count: state.process_count,
+      wechat_exe_configured_exists: state.wechat_exe_configured_exists,
+      wechat_exe_candidate_available: state.wechat_exe_candidate_available,
+      wechat_exe_prepare_candidate_available: state.wechat_exe_prepare_candidate_available,
+      wechat_exe_prepare_input_exists: state.wechat_exe_prepare_input_exists,
+      wechat_exe_running_process_count: state.wechat_exe_running_process_count,
+      wechat_exe_running_path_available: state.wechat_exe_running_path_available,
+      wechat_exe_common_candidate_found: state.wechat_exe_common_candidate_found,
+      wechat_exe_registry_checked: state.wechat_exe_registry_checked,
+      wechat_exe_registry_candidate_found: state.wechat_exe_registry_candidate_found,
+      wechat_exe_discovery_mode: state.wechat_exe_discovery_mode,
       helper_configured: state.helper_configured,
       restart_requested: state.restart_requested,
       had_running_process: state.had_running_process,
@@ -337,7 +347,7 @@ function installedWeixinExecutables(options = {}) {
   }
 }
 
-function findWechatExecutable(options = {}) {
+function directWechatExecutableCandidates(options = {}) {
   const explicit = options.wechatExePath ?? process.env.XIAOXI_WECHAT_EXE ?? "";
   const processes = Array.isArray(options.weixinProcesses) ? options.weixinProcesses : runningWeixinProcesses(options);
   const running = processes.map((processInfo) => processInfo.path).filter(Boolean);
@@ -348,10 +358,72 @@ function findWechatExecutable(options = {}) {
     path.join(process.env.LOCALAPPDATA ?? "", "Tencent", "Weixin", "Weixin.exe"),
     path.join(process.env.LOCALAPPDATA ?? "", "Programs", "Tencent", "Weixin", "Weixin.exe")
   ];
-  const candidates = [explicit, ...running, ...commonCandidates].filter(Boolean);
-  const direct = candidates.find((candidate) => fs.existsSync(candidate));
+  return { explicit, processes, running, commonCandidates };
+}
+
+function findWechatExecutableDetails(options = {}) {
+  const { explicit, processes, running, commonCandidates } = directWechatExecutableCandidates(options);
+  const directSources = [
+    ["configured", [explicit]],
+    ["running_process", running],
+    ["common", commonCandidates]
+  ];
+  const existence = new Map();
+  const exists = (candidate) => {
+    if (!candidate) return false;
+    if (!existence.has(candidate)) existence.set(candidate, fs.existsSync(candidate));
+    return existence.get(candidate);
+  };
+  let resolvedPath = "";
+  let resolvedSource = "not_found";
+  for (const [source, candidates] of directSources) {
+    resolvedPath = candidates.find(exists) ?? "";
+    if (resolvedPath) {
+      resolvedSource = source;
+      break;
+    }
+  }
+  let registryCandidates = [];
+  let registryChecked = false;
+  if (!resolvedPath) {
+    registryChecked = true;
+    registryCandidates = installedWeixinExecutables(options);
+    resolvedPath = registryCandidates.find(exists) ?? "";
+    if (resolvedPath) resolvedSource = "registry";
+  }
+  return {
+    path: resolvedPath,
+    diagnostics: {
+      configured_exists: exists(explicit),
+      running_process_count: processes.length,
+      running_path_available: running.length > 0,
+      common_candidate_found: commonCandidates.some(exists),
+      registry_checked: registryChecked,
+      registry_candidate_found: registryCandidates.some(exists),
+      resolved_source: resolvedSource
+    }
+  };
+}
+
+function findWechatExecutable(options = {}) {
+  const { explicit, running, commonCandidates } = directWechatExecutableCandidates(options);
+  const direct = [explicit, ...running, ...commonCandidates].filter(Boolean).find((candidate) => fs.existsSync(candidate));
   if (direct) return direct;
   return installedWeixinExecutables(options).find((candidate) => fs.existsSync(candidate)) ?? "";
+}
+
+function executableDiscoveryState(details) {
+  const diagnostics = details?.diagnostics || {};
+  return {
+    wechat_exe_configured_exists: diagnostics.configured_exists === true,
+    wechat_exe_candidate_available: Boolean(details?.path),
+    wechat_exe_running_process_count: Number(diagnostics.running_process_count) || 0,
+    wechat_exe_running_path_available: diagnostics.running_path_available === true,
+    wechat_exe_common_candidate_found: diagnostics.common_candidate_found === true,
+    wechat_exe_registry_checked: diagnostics.registry_checked === true,
+    wechat_exe_registry_candidate_found: diagnostics.registry_candidate_found === true,
+    wechat_exe_discovery_mode: String(diagnostics.resolved_source || "not_found")
+  };
 }
 
 const PREPARE_WECHAT_LOGIN_SCRIPT = `
@@ -370,8 +442,14 @@ foreach ($path in @(
 $command = Get-Command Weixin.exe -ErrorAction SilentlyContinue
 if ($command -and -not $paths.Contains($command.Source)) { [void]$paths.Add($command.Source) }
 $exe = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
+$discovery = @{
+  discoveryProcessCount = [int]$running.Count
+  discoveryProcessPathAvailable = [bool]($main -and $main.ExecutablePath)
+  discoveryInputExists = [bool]($env:XIAOXI_WECHAT_EXE -and (Test-Path $env:XIAOXI_WECHAT_EXE))
+  discoveryCandidateAvailable = [bool]$exe
+}
 if (-not $exe) {
-  @{ ok = $false; reason = "wechat_executable_not_found" } | ConvertTo-Json -Compress
+  @{ ok = $false; reason = "wechat_executable_not_found" } + $discovery | ConvertTo-Json -Compress
   exit
 }
 $wechatVersion = ""
@@ -390,18 +468,18 @@ if ($restarted) {
   }
 }
 if (Get-Process Weixin -ErrorAction SilentlyContinue) {
-  @{ ok = $false; reason = "wechat_stop_failed"; wechatVersion = $wechatVersion; hadRunningProcess = $restarted; stopVerified = $false } | ConvertTo-Json -Compress
+  @{ ok = $false; reason = "wechat_stop_failed"; wechatVersion = $wechatVersion; hadRunningProcess = $restarted; stopVerified = $false } + $discovery | ConvertTo-Json -Compress
   exit
 }
 try {
   if ($env:XIAOXI_STOP_ONLY -eq "1") {
-    @{ ok = $true; restarted = $restarted; wechatExePath = $exe; wechatVersion = $wechatVersion; hadRunningProcess = $restarted; stopVerified = $true; launchDeferred = $true } | ConvertTo-Json -Compress
+    @{ ok = $true; restarted = $restarted; wechatExePath = $exe; wechatVersion = $wechatVersion; hadRunningProcess = $restarted; stopVerified = $true; launchDeferred = $true } + $discovery | ConvertTo-Json -Compress
     exit
   }
   Start-Process -FilePath $exe | Out-Null
-  @{ ok = $true; restarted = $restarted; wechatExePath = $exe; wechatVersion = $wechatVersion; hadRunningProcess = $restarted; stopVerified = $true; launchDeferred = $false } | ConvertTo-Json -Compress
+  @{ ok = $true; restarted = $restarted; wechatExePath = $exe; wechatVersion = $wechatVersion; hadRunningProcess = $restarted; stopVerified = $true; launchDeferred = $false } + $discovery | ConvertTo-Json -Compress
 } catch {
-  @{ ok = $false; reason = "wechat_start_failed"; wechatVersion = $wechatVersion; hadRunningProcess = $restarted; stopVerified = $true } | ConvertTo-Json -Compress
+  @{ ok = $false; reason = "wechat_start_failed"; wechatVersion = $wechatVersion; hadRunningProcess = $restarted; stopVerified = $true } + $discovery | ConvertTo-Json -Compress
 }
 `;
 
@@ -864,12 +942,19 @@ function capture(baseDir = __dirname, options = {}) {
   }
   if (options.restartWechat) {
     saveState(baseDir, { ...loadState(baseDir), status: "capturing", last_stage: "restarting_wechat", last_error: "" });
+    const launchExecutable = findWechatExecutableDetails({ ...options, weixinProcesses: [] });
+    const executableState = executableDiscoveryState(launchExecutable);
     const loginFlow = prepareWechatLogin({
       ...options,
-      wechatExePath: findWechatExecutable({ ...options, weixinProcesses: [] }),
+      wechatExePath: launchExecutable.path,
       stopOnly: hasWxKeyReader
     });
     saveState(baseDir, { ...loadState(baseDir),
+      ...executableState,
+      wechat_exe_prepare_candidate_available: typeof loginFlow.discoveryCandidateAvailable === "boolean" ? loginFlow.discoveryCandidateAvailable : null,
+      wechat_exe_prepare_input_exists: typeof loginFlow.discoveryInputExists === "boolean" ? loginFlow.discoveryInputExists : null,
+      wechat_exe_running_process_count: Number.isFinite(Number(loginFlow.discoveryProcessCount)) ? Number(loginFlow.discoveryProcessCount) : executableState.wechat_exe_running_process_count,
+      wechat_exe_running_path_available: typeof loginFlow.discoveryProcessPathAvailable === "boolean" ? loginFlow.discoveryProcessPathAvailable : executableState.wechat_exe_running_path_available,
       wechat_version: /^\d+(?:\.\d+){1,3}$/u.test(String(loginFlow.wechatVersion || "").trim()) ? String(loginFlow.wechatVersion).trim() : "",
       had_running_process: typeof loginFlow.hadRunningProcess === "boolean" ? loginFlow.hadRunningProcess : null,
       stop_verified: typeof loginFlow.stopVerified === "boolean" ? loginFlow.stopVerified : null,
@@ -1331,6 +1416,7 @@ module.exports = {
   normalizeContacts,
   findAccount,
   findWechatExecutable,
+  findWechatExecutableDetails,
   findWechatRoot,
   capture,
   captureKeyFromWxKeyDll,

@@ -218,8 +218,10 @@ ${MOMENTS_INTEGRATED_SURFACE_EVIDENCE_POWERSHELL}
 
 $script:publishActionAttempted = $false
 $script:publishStage = "initialized"
+$script:publishVerificationDiagnostic = @{}
 
 function Write-PublishResult($payload) {
+  foreach ($key in $script:publishVerificationDiagnostic.Keys) { $payload[$key] = $script:publishVerificationDiagnostic[$key] }
   $payload.stage = $script:publishStage
   $payload.actionAttempted = [bool]$script:publishActionAttempted
   $payload | ConvertTo-Json -Compress -Depth 8
@@ -267,11 +269,11 @@ function Test-PublishMediaManifest($context) {
   if (-not [int]::TryParse([string]$context.mediaCount, [ref]$declaredCount) -or
     $declaredCount -lt 1 -or $declaredCount -gt 9 -or
     $paths.Count -ne $declaredCount -or $manifest.Count -ne $declaredCount) {
-    return @{ ok = $false; reason = "moments_publish_media_manifest_invalid" }
+    return @{ ok = $false; reason = "moments_publish_media_manifest_invalid"; rule_id = (Write-XiaoxiFailure "wx4-r001" "moments_publish_media_manifest_invalid") }
   }
   $declaredKind = ([string]$context.mediaKind).ToLowerInvariant()
   if (@("image", "video") -notcontains $declaredKind -or ($declaredKind -ceq "video" -and $declaredCount -ne 1)) {
-    return @{ ok = $false; reason = "moments_publish_media_manifest_invalid" }
+    return @{ ok = $false; reason = "moments_publish_media_manifest_invalid"; rule_id = (Write-XiaoxiFailure "wx4-r002" "moments_publish_media_manifest_invalid") }
   }
   $seenPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
   $seenNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -286,19 +288,19 @@ function Test-PublishMediaManifest($context) {
       $expectedHash -notmatch "^[a-f0-9]{64}$" -or
       -not [int64]::TryParse([string]$item.size, [ref]$expectedSize) -or $expectedSize -lt 1 -or
       (Get-PublishMediaKind $expectedExtension) -cne $declaredKind) {
-      return @{ ok = $false; reason = "moments_publish_media_manifest_invalid" }
+      return @{ ok = $false; reason = "moments_publish_media_manifest_invalid"; rule_id = (Write-XiaoxiFailure "wx4-r003" "moments_publish_media_manifest_invalid") }
     }
     $expectedName = ([string]($index + 1)).PadLeft(2, "0") + "-" + $expectedHash.Substring(0, 12) + $expectedExtension
-    try { $file = [IO.FileInfo]::new($filePath) } catch { return @{ ok = $false; reason = "moments_publish_media_changed" } }
+    try { $file = [IO.FileInfo]::new($filePath) } catch { return @{ ok = $false; reason = "moments_publish_media_changed"; rule_id = (Write-XiaoxiFailure "wx4-r004" "moments_publish_media_changed") } }
     if (-not $file.Exists -or [int64]$file.Length -ne $expectedSize -or
       ([string]$file.Extension).ToLowerInvariant() -cne $expectedExtension -or
       ([string]$file.Name).ToLowerInvariant() -cne $expectedName -or
       -not $seenPaths.Add($file.FullName) -or -not $seenNames.Add($file.Name)) {
-      return @{ ok = $false; reason = "moments_publish_media_changed" }
+      return @{ ok = $false; reason = "moments_publish_media_changed"; rule_id = (Write-XiaoxiFailure "wx4-r005" "moments_publish_media_changed") }
     }
     $actualHash = Get-PublishFileSha256 $file.FullName
     if (-not $actualHash -or $actualHash -cne $expectedHash) {
-      return @{ ok = $false; reason = "moments_publish_media_changed" }
+      return @{ ok = $false; reason = "moments_publish_media_changed"; rule_id = (Write-XiaoxiFailure "wx4-r006" "moments_publish_media_changed") }
     }
     [void]$items.Add(@{
       path = $file.FullName
@@ -334,21 +336,21 @@ function Get-PublishWindowLock($context) {
     -not [int]::TryParse([string]$context.expectedWidth, [ref]$expectedWidth) -or $expectedWidth -lt 300 -or
     -not [int]::TryParse([string]$context.expectedHeight, [ref]$expectedHeight) -or $expectedHeight -lt 300 -or
     -not [uint32]::TryParse([string]$context.expectedDpi, [ref]$expectedDpi) -or $expectedDpi -lt 72 -or $expectedDpi -gt 480) {
-    return @{ ok = $false; reason = "moments_publish_window_identity_invalid" }
+    return @{ ok = $false; reason = "moments_publish_window_identity_invalid"; rule_id = (Write-XiaoxiFailure "wx4-r007" "moments_publish_window_identity_invalid") }
   }
   $hWnd = [IntPtr]$handleValue
   if (-not [Win32WechatMomentsPublish]::IsWindow($hWnd) -or
     -not [Win32WechatMomentsPublish]::IsWindowVisible($hWnd) -or
     [Win32WechatMomentsPublish]::IsIconic($hWnd)) {
-    return @{ ok = $false; reason = "moments_window_not_found" }
+    return @{ ok = $false; reason = "moments_window_not_found"; rule_id = (Write-XiaoxiFailure "wx4-r008" "moments_window_not_found") }
   }
   [uint32]$actualPid = 0
   if ([Win32WechatMomentsPublish]::GetWindowThreadProcessId($hWnd, [ref]$actualPid) -eq 0 -or [int]$actualPid -ne $expectedPid) {
-    return @{ ok = $false; reason = "moments_publish_window_identity_mismatch" }
+    return @{ ok = $false; reason = "moments_publish_window_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx4-r009" "moments_publish_window_identity_mismatch") }
   }
   $process = Get-Process -Id $actualPid -ErrorAction SilentlyContinue
   if (-not $process -or @("Weixin", "WeChat") -notcontains $process.ProcessName) {
-    return @{ ok = $false; reason = "moments_publish_process_identity_mismatch" }
+    return @{ ok = $false; reason = "moments_publish_process_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx4-r010" "moments_publish_process_identity_mismatch") }
   }
   $titleText = New-Object System.Text.StringBuilder 128
   [void][Win32WechatMomentsPublish]::GetWindowText($hWnd, $titleText, $titleText.Capacity)
@@ -361,23 +363,23 @@ function Get-PublishWindowLock($context) {
   $surfaceMode = [string]$context.expectedSurfaceMode
   if ($title -cne $expectedTitle -or $className -cne $expectedClassName -or
     @("standalone", "integrated") -notcontains $surfaceMode) {
-    return @{ ok = $false; reason = "moments_publish_window_identity_mismatch" }
+    return @{ ok = $false; reason = "moments_publish_window_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx4-r011" "moments_publish_window_identity_mismatch") }
   }
   $rect = New-Object Win32WechatMomentsPublish+RECT
   if (-not [Win32WechatMomentsPublish]::GetWindowRect($hWnd, [ref]$rect) -or
     ($rect.Right - $rect.Left) -lt 300 -or ($rect.Bottom - $rect.Top) -lt 300) {
-    return @{ ok = $false; reason = "moments_publish_window_geometry_invalid" }
+    return @{ ok = $false; reason = "moments_publish_window_geometry_invalid"; rule_id = (Write-XiaoxiFailure "wx4-r012" "moments_publish_window_geometry_invalid") }
   }
   if ([Math]::Abs($rect.Left - $expectedX) -gt 3 -or [Math]::Abs($rect.Top - $expectedY) -gt 3 -or
       [Math]::Abs(($rect.Right - $rect.Left) - $expectedWidth) -gt 3 -or
       [Math]::Abs(($rect.Bottom - $rect.Top) - $expectedHeight) -gt 3) {
-    return @{ ok = $false; reason = "moments_publish_window_geometry_changed" }
+    return @{ ok = $false; reason = "moments_publish_window_geometry_changed"; rule_id = (Write-XiaoxiFailure "wx4-r013" "moments_publish_window_geometry_changed") }
   }
   if ([Win32WechatMomentsPublish]::GetForegroundWindow() -ne $hWnd) {
-    return @{ ok = $false; reason = "moments_window_not_foreground" }
+    return @{ ok = $false; reason = "moments_window_not_foreground"; rule_id = (Write-XiaoxiFailure "wx4-r014" "moments_window_not_foreground") }
   }
   $root = [System.Windows.Automation.AutomationElement]::FromHandle($hWnd)
-  if ($root -eq $null) { return @{ ok = $false; reason = "moments_publish_uia_root_missing" } }
+  if ($root -eq $null) { return @{ ok = $false; reason = "moments_publish_uia_root_missing"; rule_id = (Write-XiaoxiFailure "wx4-r015" "moments_publish_uia_root_missing") } }
   $renderPane = Get-MomentsRenderPaneEvidence $root $expectedPid
   if (-not $renderPane.ok) { return @{ ok = $false; reason = [string]$renderPane.reason } }
   [uint32]$dpi = 96
@@ -385,7 +387,7 @@ function Get-PublishWindowLock($context) {
     $value = [Win32WechatMomentsPublish]::GetDpiForWindow($hWnd)
     if ($value -ge 72 -and $value -le 480) { $dpi = $value }
   } catch {}
-  if ($dpi -ne $expectedDpi) { return @{ ok = $false; reason = "moments_publish_window_dpi_changed" } }
+  if ($dpi -ne $expectedDpi) { return @{ ok = $false; reason = "moments_publish_window_dpi_changed"; rule_id = (Write-XiaoxiFailure "wx4-r016" "moments_publish_window_dpi_changed") } }
   return @{
     ok = $true
     hWnd = $hWnd
@@ -403,7 +405,7 @@ function Get-PublishWindowLock($context) {
 
 function Get-PublishComposerWindowLock($context, $mainLock) {
   if (-not $mainLock.ok -or $mainLock.hWnd -eq [IntPtr]::Zero) {
-    return @{ ok = $false; reason = "moments_publish_composer_owner_missing" }
+    return @{ ok = $false; reason = "moments_publish_composer_owner_missing"; rule_id = (Write-XiaoxiFailure "wx4-r017" "moments_publish_composer_owner_missing") }
   }
   [int]$expectedPid = [int]$mainLock.pid
   $expectedOwner = [IntPtr]$mainLock.hWnd
@@ -437,7 +439,7 @@ function Get-PublishComposerWindowLock($context, $mainLock) {
   }
   $candidate = $composerCandidates[0]
   if ([Win32WechatMomentsPublish]::GetForegroundWindow() -ne [IntPtr]$candidate.hWnd) {
-    return @{ ok = $false; reason = "moments_publish_composer_not_foreground" }
+    return @{ ok = $false; reason = "moments_publish_composer_not_foreground"; rule_id = (Write-XiaoxiFailure "wx4-r018" "moments_publish_composer_not_foreground") }
   }
   [uint32]$dpi = 96
   try {
@@ -459,7 +461,7 @@ function Get-PublishComposerWindowLock($context, $mainLock) {
 }
 
 function Wait-PublishComposerWindowLock($context, $mainLock) {
-  $last = @{ ok = $false; reason = "moments_publish_composer_not_found" }
+  $last = @{ ok = $false; reason = "moments_publish_composer_not_found"; rule_id = "wx4-r019" }
   for ($attempt = 0; $attempt -lt 30; $attempt++) {
     $last = Get-PublishComposerWindowLock $context $mainLock
     if ($last.ok) {
@@ -500,26 +502,26 @@ function Invoke-PublishOwnedClick(
   [scriptblock]$afterMarkerValidation = $null
 ) {
   if ($expectedInputTick -ne [uint32]::MaxValue -and [Win32WechatMomentsPublish]::GetLastInputTick() -ne $expectedInputTick) {
-    return @{ ok = $false; reason = "moments_publish_external_input_detected" }
+    return @{ ok = $false; reason = "moments_publish_external_input_detected"; rule_id = (Write-XiaoxiFailure "wx4-r020" "moments_publish_external_input_detected") }
   }
   if ([Win32WechatMomentsPublish]::GetForegroundWindow() -ne $lock.hWnd -or
     -not (Test-PublishOwnedPoint $screenX $screenY $lock)) {
-    return @{ ok = $false; reason = "moments_publish_click_target_changed" }
+    return @{ ok = $false; reason = "moments_publish_click_target_changed"; rule_id = (Write-XiaoxiFailure "wx4-r021" "moments_publish_click_target_changed") }
   }
   if (-not [Win32WechatMomentsPublish]::SetCursorPos($screenX, $screenY)) {
-    return @{ ok = $false; reason = "moments_publish_cursor_move_failed" }
+    return @{ ok = $false; reason = "moments_publish_cursor_move_failed"; rule_id = (Write-XiaoxiFailure "wx4-r022" "moments_publish_cursor_move_failed") }
   }
   Start-Sleep -Milliseconds 25
   if ([Win32WechatMomentsPublish]::GetForegroundWindow() -ne $lock.hWnd -or
     -not (Test-PublishOwnedPoint $screenX $screenY $lock) -or
     ($expectedInputTick -ne [uint32]::MaxValue -and [Win32WechatMomentsPublish]::GetLastInputTick() -ne $expectedInputTick)) {
-    return @{ ok = $false; reason = "moments_publish_click_target_changed" }
+    return @{ ok = $false; reason = "moments_publish_click_target_changed"; rule_id = (Write-XiaoxiFailure "wx4-r023" "moments_publish_click_target_changed") }
   }
   if ($irreversible -and $beforeIrreversibleClick -ne $null) {
     try {
-      if (-not (& $beforeIrreversibleClick)) { return @{ ok = $false; reason = "moments_publish_marker_failed" } }
+      if (-not (& $beforeIrreversibleClick)) { return @{ ok = $false; reason = "moments_publish_marker_failed"; rule_id = (Write-XiaoxiFailure "wx4-r024" "moments_publish_marker_failed") } }
     } catch {
-      return @{ ok = $false; reason = "moments_publish_marker_failed" }
+      return @{ ok = $false; reason = "moments_publish_marker_failed"; rule_id = (Write-XiaoxiFailure "wx4-r025" "moments_publish_marker_failed") }
     }
   }
   if ($irreversible) {
@@ -527,37 +529,37 @@ function Invoke-PublishOwnedClick(
     if ([Win32WechatMomentsPublish]::GetForegroundWindow() -ne $lock.hWnd -or
       -not (Test-PublishOwnedPoint $screenX $screenY $lock) -or
       ($expectedInputTick -ne [uint32]::MaxValue -and [Win32WechatMomentsPublish]::GetLastInputTick() -ne $expectedInputTick)) {
-      return @{ ok = $false; reason = "moments_publish_marker_written_target_changed" }
+      return @{ ok = $false; reason = "moments_publish_marker_written_target_changed"; rule_id = (Write-XiaoxiFailure "wx4-r026" "moments_publish_marker_written_target_changed") }
     }
     if ($afterMarkerValidation -ne $null) {
       try {
         $postMarkerValidation = & $afterMarkerValidation
         if ($postMarkerValidation -eq $null -or -not [bool]$postMarkerValidation.ok) {
-          return @{ ok = $false; reason = "moments_publish_marker_written_target_changed" }
+          return @{ ok = $false; reason = "moments_publish_marker_written_target_changed"; rule_id = (Write-XiaoxiFailure "wx4-r027" "moments_publish_marker_written_target_changed") }
         }
         [uint32]$postMarkerInputTick = [uint32]$postMarkerValidation.inputTick
         if ($postMarkerInputTick -eq [uint32]::MaxValue) {
-          return @{ ok = $false; reason = "moments_publish_marker_written_target_changed" }
+          return @{ ok = $false; reason = "moments_publish_marker_written_target_changed"; rule_id = (Write-XiaoxiFailure "wx4-r028" "moments_publish_marker_written_target_changed") }
         }
         $expectedInputTick = [uint32]$postMarkerValidation.inputTick
       } catch {
-        return @{ ok = $false; reason = "moments_publish_marker_written_target_changed" }
+        return @{ ok = $false; reason = "moments_publish_marker_written_target_changed"; rule_id = (Write-XiaoxiFailure "wx4-r029" "moments_publish_marker_written_target_changed") }
       }
     }
     if ([Win32WechatMomentsPublish]::GetForegroundWindow() -ne $lock.hWnd -or
       -not (Test-PublishOwnedPoint $screenX $screenY $lock) -or
       ($expectedInputTick -ne [uint32]::MaxValue -and [Win32WechatMomentsPublish]::GetLastInputTick() -ne $expectedInputTick)) {
-      return @{ ok = $false; reason = "moments_publish_marker_written_target_changed" }
+      return @{ ok = $false; reason = "moments_publish_marker_written_target_changed"; rule_id = (Write-XiaoxiFailure "wx4-r030" "moments_publish_marker_written_target_changed") }
     }
   }
   if ($irreversible) { $script:publishActionAttempted = $true }
   if (-not [Win32WechatMomentsPublish]::AtomicMouseClick($screenX, $screenY)) {
-    return @{ ok = $false; reason = "moments_publish_click_injection_failed" }
+    return @{ ok = $false; reason = "moments_publish_click_injection_failed"; rule_id = (Write-XiaoxiFailure "wx4-r031" "moments_publish_click_injection_failed") }
   }
   Start-Sleep -Milliseconds 15
   [uint32]$inputTick = [Win32WechatMomentsPublish]::GetLastInputTick()
   if ($inputTick -eq [uint32]::MaxValue) {
-    return @{ ok = $false; reason = "moments_publish_input_tick_unavailable" }
+    return @{ ok = $false; reason = "moments_publish_input_tick_unavailable"; rule_id = (Write-XiaoxiFailure "wx4-r032" "moments_publish_input_tick_unavailable") }
   }
   return @{ ok = $true; inputTick = $inputTick }
 }
@@ -650,17 +652,21 @@ function Get-PublishFullObservation(
   $lock,
   [bool]$requireOwnership = $true,
   [bool]$includePosts = $false,
-  [bool]$includePublishButtonCandidates = $false
+  [bool]$includePublishButtonCandidates = $false,
+  [string]$expectedVisibleAnchor = ""
 ) {
   [uint32]$evidenceInputTick = [Win32WechatMomentsPublish]::GetLastInputTick()
   if ($evidenceInputTick -eq [uint32]::MaxValue) {
-    return @{ ok = $false; reason = "moments_publish_input_tick_unavailable" }
+    return @{ ok = $false; reason = "moments_publish_input_tick_unavailable"; rule_id = (Write-XiaoxiFailure "wx4-r033" "moments_publish_input_tick_unavailable") }
   }
+  $readClock = [Diagnostics.Stopwatch]::StartNew()
   $frame = Get-MomentsVisualFrame $lock.hWnd $lock.rect $lock.pid $false $requireOwnership
+  $readDiagnostics = @{ verification_capture_ms = [int]$readClock.ElapsedMilliseconds }
   if (-not $frame.ok) { return @{ ok = $false; reason = [string]$frame.reason } }
   try {
     $rect = @{ left = 0; top = 0; width = $frame.width; height = $frame.height }
     $ocr = Get-MomentsOcrObservation $frame $rect
+    $readDiagnostics["verification_ocr_ms"] = [int]$readClock.ElapsedMilliseconds - $readDiagnostics.verification_capture_ms
     if (-not $ocr.ok) { return @{ ok = $false; reason = [string]$ocr.reason } }
     $publishButtonVisualCandidates = @()
     $viewportCompact = ""
@@ -685,8 +691,16 @@ function Get-PublishFullObservation(
       }
       $visualViewport = Get-MomentsVisualViewportBounds $relativePaneBounds $surfaceProof ([string]$lock.surfaceMode)
       if (-not $visualViewport.ok) { return @{ ok = $false; reason = [string]$visualViewport.reason } }
+      $candidateStartedAt = [int]$readClock.ElapsedMilliseconds
       $read = Get-MomentsVisualPostCandidates $frame $visualViewport.bounds
       $posts = @($read.posts)
+      if ($expectedVisibleAnchor) {
+        foreach ($post in $posts) {
+          $post["publishAnchorMatched"] = Test-PublishPostAnchor $frame $post $expectedVisibleAnchor
+        }
+      }
+      $readDiagnostics["verification_candidates_ms"] = [int]$readClock.ElapsedMilliseconds - $candidateStartedAt
+      $feedOcrStartedAt = [int]$readClock.ElapsedMilliseconds
       $viewportLines = @($ocr.lines | Where-Object {
         $lineCenterX = [double]$_.bounds.left + ([double]$_.bounds.width / 2.0)
         $lineCenterY = [double]$_.bounds.top + ([double]$_.bounds.height / 2.0)
@@ -696,7 +710,30 @@ function Get-PublishFullObservation(
           $lineCenterY -le ([double]$visualViewport.bounds.top + [double]$visualViewport.bounds.height)
       } | Sort-Object { [double]$_.bounds.top }, { [double]$_.bounds.left })
       $viewportCompact = Normalize-PublishText ([string]::Join(" ", @($viewportLines | ForEach-Object { [string]$_.compact })))
+      # Whole-window OCR can join the navigation rail and feed into one line,
+      # or lose a short caption beside an image. Read the proven feed itself.
+      # Keep exact, unique matching; an OCR retry is never a fuzzy receipt.
+      if ($expectedVisibleAnchor -and $viewportCompact.IndexOf($expectedVisibleAnchor, [StringComparison]::Ordinal) -lt 0) {
+        $feedOcr = Get-MomentsOcrObservation $frame $visualViewport.bounds
+        if ($feedOcr.ok) {
+          $feedCompact = Normalize-PublishText ([string]$feedOcr.text)
+          if ($feedCompact.IndexOf($expectedVisibleAnchor, [StringComparison]::Ordinal) -ge 0) {
+            $viewportCompact = $feedCompact
+          } elseif ([Math]::Max([double]$visualViewport.bounds.width, [double]$visualViewport.bounds.height) * 2 -le [Windows.Media.Ocr.OcrEngine]::MaxImageDimension) {
+            $scaledFeedOcr = Get-MomentsScaledOcrObservation $frame $visualViewport.bounds 2
+            if ($scaledFeedOcr.ok) {
+              $scaledCompact = Normalize-PublishText ([string]$scaledFeedOcr.text)
+              if ($scaledCompact.IndexOf($expectedVisibleAnchor, [StringComparison]::Ordinal) -ge 0) { $viewportCompact = $scaledCompact }
+            }
+          }
+        }
+      }
       $viewportHash = Get-MomentsPixelHash $frame $visualViewport.bounds
+      $readDiagnostics["verification_feed_ocr_ms"] = [int]$readClock.ElapsedMilliseconds - $feedOcrStartedAt
+      $readDiagnostics["verification_post_count"] = [int]$posts.Count
+      $readDiagnostics["verification_text_length"] = [int]$viewportCompact.Length
+      $readDiagnostics["verification_anchor_present"] = [bool]($expectedVisibleAnchor -and $viewportCompact.IndexOf($expectedVisibleAnchor, [StringComparison]::Ordinal) -ge 0)
+      if ($expectedVisibleAnchor) { $script:publishVerificationDiagnostic = $readDiagnostics }
     }
     return @{
       ok = $true
@@ -719,7 +756,7 @@ function Get-PublishFullObservation(
 function Get-PublishButtonObservation($lock) {
   [uint32]$evidenceInputTick = [Win32WechatMomentsPublish]::GetLastInputTick()
   if ($evidenceInputTick -eq [uint32]::MaxValue) {
-    return @{ ok = $false; reason = "moments_publish_input_tick_unavailable" }
+    return @{ ok = $false; reason = "moments_publish_input_tick_unavailable"; rule_id = (Write-XiaoxiFailure "wx4-r034" "moments_publish_input_tick_unavailable") }
   }
   $frame = Get-MomentsVisualFrame $lock.hWnd $lock.rect $lock.pid $false $true
   if (-not $frame.ok) { return @{ ok = $false; reason = [string]$frame.reason } }
@@ -879,7 +916,7 @@ function Find-PublishVisualCameraTarget($frame, $lock, $paneBounds) {
   $lightOk = $light -ge 18 -and $lightRatio -ge 0.018 -and $lightRatio -le 0.38 -and
     @($lightQuadrants | Where-Object { $_ -ge 2 }).Count -ge 3
   if ($darkOk -eq $lightOk) {
-    return @{ ok = $false; reason = "moments_publish_camera_not_found" }
+    return @{ ok = $false; reason = "moments_publish_camera_not_found"; rule_id = (Write-XiaoxiFailure "wx4-r035" "moments_publish_camera_not_found") }
   }
   $count = $(if ($darkOk) { $dark } else { $light })
   $sumX = $(if ($darkOk) { $darkX } else { $lightX })
@@ -897,7 +934,7 @@ function Find-PublishVisualCameraTarget($frame, $lock, $paneBounds) {
 function Find-PublishCameraTarget($lock) {
   [uint32]$evidenceInputTick = [Win32WechatMomentsPublish]::GetLastInputTick()
   if ($evidenceInputTick -eq [uint32]::MaxValue) {
-    return @{ ok = $false; reason = "moments_publish_input_tick_unavailable" }
+    return @{ ok = $false; reason = "moments_publish_input_tick_unavailable"; rule_id = (Write-XiaoxiFailure "wx4-r036" "moments_publish_input_tick_unavailable") }
   }
   $uiaMatches = New-Object System.Collections.Generic.List[object]
   $paneBounds = $lock.renderPane.bounds
@@ -927,7 +964,7 @@ function Find-PublishCameraTarget($lock) {
   if ($uiaMatches.Count -eq 1) {
     return @{ ok = $true; target = $uiaMatches[0]; inputTick = [uint32]$evidenceInputTick }
   }
-  if ($uiaMatches.Count -gt 1) { return @{ ok = $false; reason = "moments_publish_camera_ambiguous" } }
+  if ($uiaMatches.Count -gt 1) { return @{ ok = $false; reason = "moments_publish_camera_ambiguous"; rule_id = (Write-XiaoxiFailure "wx4-r037" "moments_publish_camera_ambiguous") } }
 
   $frame = Get-MomentsVisualFrame $lock.hWnd $lock.rect $lock.pid $false $true
   if (-not $frame.ok) { return @{ ok = $false; reason = [string]$frame.reason } }
@@ -944,12 +981,12 @@ function Test-PublishFileDialogLease($dialog) {
   [IntPtr]$hWnd = [IntPtr]$dialog.hWnd
   if (-not [Win32WechatMomentsPublish]::IsWindow($hWnd) -or
     -not [Win32WechatMomentsPublish]::IsWindowVisible($hWnd)) {
-    return @{ ok = $false; reason = "moments_publish_file_dialog_identity_changed" }
+    return @{ ok = $false; reason = "moments_publish_file_dialog_identity_changed"; rule_id = (Write-XiaoxiFailure "wx4-r038" "moments_publish_file_dialog_identity_changed") }
   }
   [uint32]$candidatePid = 0
   if ([Win32WechatMomentsPublish]::GetWindowThreadProcessId($hWnd, [ref]$candidatePid) -eq 0 -or
     [int]$candidatePid -ne [int]$dialog.pid) {
-    return @{ ok = $false; reason = "moments_publish_file_dialog_identity_changed" }
+    return @{ ok = $false; reason = "moments_publish_file_dialog_identity_changed"; rule_id = (Write-XiaoxiFailure "wx4-r039" "moments_publish_file_dialog_identity_changed") }
   }
   $classText = New-Object System.Text.StringBuilder 128
   [void][Win32WechatMomentsPublish]::GetClassName($hWnd, $classText, $classText.Capacity)
@@ -958,10 +995,10 @@ function Test-PublishFileDialogLease($dialog) {
   if ($classText.ToString() -cne [string]$dialog.className -or
     $titleText.ToString().Trim() -cne [string]$dialog.title -or
     [Win32WechatMomentsPublish]::GetWindow($hWnd, 4) -ne [IntPtr]$dialog.owner) {
-    return @{ ok = $false; reason = "moments_publish_file_dialog_identity_changed" }
+    return @{ ok = $false; reason = "moments_publish_file_dialog_identity_changed"; rule_id = (Write-XiaoxiFailure "wx4-r040" "moments_publish_file_dialog_identity_changed") }
   }
   if ([Win32WechatMomentsPublish]::GetForegroundWindow() -ne $hWnd) {
-    return @{ ok = $false; reason = "moments_publish_file_dialog_not_foreground" }
+    return @{ ok = $false; reason = "moments_publish_file_dialog_not_foreground"; rule_id = (Write-XiaoxiFailure "wx4-r041" "moments_publish_file_dialog_not_foreground") }
   }
   return @{ ok = $true }
 }
@@ -998,8 +1035,8 @@ function Get-PublishFileDialog($lock) {
     if (-not $lease.ok) { return $lease }
     return @{ ok = $true; dialog = $dialogCandidates[0] }
   }
-  if ($dialogCandidates.Count -gt 1) { return @{ ok = $false; reason = "moments_publish_file_dialog_ambiguous" } }
-  return @{ ok = $false; reason = "moments_publish_file_dialog_missing" }
+  if ($dialogCandidates.Count -gt 1) { return @{ ok = $false; reason = "moments_publish_file_dialog_ambiguous"; rule_id = (Write-XiaoxiFailure "wx4-r042" "moments_publish_file_dialog_ambiguous") } }
+  return @{ ok = $false; reason = "moments_publish_file_dialog_missing"; rule_id = (Write-XiaoxiFailure "wx4-r043" "moments_publish_file_dialog_missing") }
 }
 
 function Get-PublishOpenButton($root, [IntPtr]$dialogHandle) {
@@ -1012,7 +1049,7 @@ function Get-PublishOpenButton($root, [IntPtr]$dialogHandle) {
     -not [Win32WechatMomentsPublish]::IsWindowVisible($buttonHandle) -or
     -not [Win32WechatMomentsPublish]::IsWindowEnabled($buttonHandle) -or
     [Win32WechatMomentsPublish]::GetDlgCtrlID($buttonHandle) -ne 1) {
-    return @{ ok = $false; reason = "moments_publish_open_button_missing" }
+    return @{ ok = $false; reason = "moments_publish_open_button_missing"; rule_id = (Write-XiaoxiFailure "wx4-r044" "moments_publish_open_button_missing") }
   }
   $classText = New-Object System.Text.StringBuilder 64
   [void][Win32WechatMomentsPublish]::GetClassName($buttonHandle, $classText, $classText.Capacity)
@@ -1020,11 +1057,11 @@ function Get-PublishOpenButton($root, [IntPtr]$dialogHandle) {
   [void][Win32WechatMomentsPublish]::GetWindowText($buttonHandle, $titleText, $titleText.Capacity)
   if ($classText.ToString() -cne "Button" -or
     $titleText.ToString().Trim() -notmatch "^(打开|Open)(?:\s*\([^)]+\))?$") {
-    return @{ ok = $false; reason = "moments_publish_open_button_identity_mismatch" }
+    return @{ ok = $false; reason = "moments_publish_open_button_identity_mismatch"; rule_id = (Write-XiaoxiFailure "wx4-r045" "moments_publish_open_button_identity_mismatch") }
   }
   $button = [System.Windows.Automation.AutomationElement]::FromHandle($buttonHandle)
   if ($button -eq $null -or $button.Current.BoundingRectangle.IsEmpty) {
-    return @{ ok = $false; reason = "moments_publish_open_button_uia_missing" }
+    return @{ ok = $false; reason = "moments_publish_open_button_uia_missing"; rule_id = (Write-XiaoxiFailure "wx4-r046" "moments_publish_open_button_uia_missing") }
   }
   return @{ ok = $true; target = @{ button = $button; handle = $buttonHandle } }
 }
@@ -1033,7 +1070,7 @@ function Set-PublishDialogFiles($dialog, $mediaPaths) {
   $lease = Test-PublishFileDialogLease $dialog
   if (-not $lease.ok) { return $lease }
   $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$dialog.hWnd)
-  if ($root -eq $null) { return @{ ok = $false; reason = "moments_publish_file_dialog_uia_missing" } }
+  if ($root -eq $null) { return @{ ok = $false; reason = "moments_publish_file_dialog_uia_missing"; rule_id = (Write-XiaoxiFailure "wx4-r047" "moments_publish_file_dialog_uia_missing") } }
   $openResult = Get-PublishOpenButton $root ([IntPtr]$dialog.hWnd)
   if (-not $openResult.ok) { return $openResult }
   $values = @($mediaPaths | ForEach-Object { [string]$_ })
@@ -1045,20 +1082,20 @@ function Set-PublishDialogFiles($dialog, $mediaPaths) {
   # path, and confirm. This mirrors the proven dt-ai-helper flow without touching
   # the user's clipboard or depending on the dialog's private descendant tree.
   if (-not [Win32WechatMomentsPublish]::AtomicKeyChord(0x12, 0x4E)) {
-    return @{ ok = $false; reason = "moments_publish_file_name_focus_failed" }
+    return @{ ok = $false; reason = "moments_publish_file_name_focus_failed"; rule_id = (Write-XiaoxiFailure "wx4-r048" "moments_publish_file_name_focus_failed") }
   }
   Start-Sleep -Milliseconds 120
   $lease = Test-PublishFileDialogLease $dialog
   if (-not $lease.ok) { return $lease }
   if (-not [Win32WechatMomentsPublish]::AtomicKeyChord(0x11, 0x41) -or
     -not [Win32WechatMomentsPublish]::AtomicUnicodeText($fileValue)) {
-    return @{ ok = $false; reason = "moments_publish_file_name_set_failed" }
+    return @{ ok = $false; reason = "moments_publish_file_name_set_failed"; rule_id = (Write-XiaoxiFailure "wx4-r049" "moments_publish_file_name_set_failed") }
   }
   Start-Sleep -Milliseconds 120
   $lease = Test-PublishFileDialogLease $dialog
   if (-not $lease.ok) { return $lease }
   if (-not [Win32WechatMomentsPublish]::AtomicVirtualKey(0x0D)) {
-    return @{ ok = $false; reason = "moments_publish_open_button_failed" }
+    return @{ ok = $false; reason = "moments_publish_open_button_failed"; rule_id = (Write-XiaoxiFailure "wx4-r050" "moments_publish_open_button_failed") }
   }
   for ($attempt = 0; $attempt -lt 20; $attempt++) {
     Start-Sleep -Milliseconds 100
@@ -1067,7 +1104,7 @@ function Set-PublishDialogFiles($dialog, $mediaPaths) {
       return @{ ok = $true }
     }
   }
-  return @{ ok = $false; reason = "moments_publish_file_dialog_did_not_close" }
+  return @{ ok = $false; reason = "moments_publish_file_dialog_did_not_close"; rule_id = (Write-XiaoxiFailure "wx4-r051" "moments_publish_file_dialog_did_not_close") }
 }
 
 function Wait-PublishMediaProcessing($lock) {
@@ -1080,7 +1117,7 @@ function Wait-PublishMediaProcessing($lock) {
     $errorLines = @($observation.ocr.lines | Where-Object {
       ([string]$_.compact) -match "^(文件过大|格式不支持|上传失败|处理失败|无法打开)$"
     })
-    if ($errorLines.Count -gt 0) { return @{ ok = $false; reason = "moments_publish_media_rejected" } }
+    if ($errorLines.Count -gt 0) { return @{ ok = $false; reason = "moments_publish_media_rejected"; rule_id = (Write-XiaoxiFailure "wx4-r052" "moments_publish_media_rejected") } }
     if ($text -match "正在处理") {
       $clearFrames = 0
       continue
@@ -1088,7 +1125,7 @@ function Wait-PublishMediaProcessing($lock) {
     $clearFrames += 1
     if ($clearFrames -ge 2) { return @{ ok = $true } }
   }
-  return @{ ok = $false; reason = "moments_publish_processing_timeout" }
+  return @{ ok = $false; reason = "moments_publish_processing_timeout"; rule_id = (Write-XiaoxiFailure "wx4-r053" "moments_publish_processing_timeout") }
 }
 
 function Get-PublishAccessibilityMetadata([System.Windows.Automation.AutomationElement]$element) {
@@ -1111,7 +1148,7 @@ function Test-PublishComposerMediaEvidence(
 ) {
   if ([string]$lock.surfaceMode -ceq "composer") {
     if (-not $manifestProof.ok) {
-      return @{ ok = $false; reason = "moments_publish_media_visual_missing" }
+      return @{ ok = $false; reason = "moments_publish_media_visual_missing"; rule_id = (Write-XiaoxiFailure "wx4-r054" "moments_publish_media_visual_missing") }
     }
     $frame = Get-MomentsVisualFrame $lock.hWnd $lock.rect $lock.pid $false $true
     if (-not $frame.ok) { return @{ ok = $false; reason = [string]$frame.reason } }
@@ -1124,7 +1161,7 @@ function Test-PublishComposerMediaEvidence(
       }
       $evidenceKey = Get-MomentsPixelHash $frame $mediaBounds
       if (-not $evidenceKey) {
-        return @{ ok = $false; reason = "moments_publish_media_visual_changed" }
+        return @{ ok = $false; reason = "moments_publish_media_visual_changed"; rule_id = (Write-XiaoxiFailure "wx4-r055" "moments_publish_media_visual_changed") }
       }
       return @{
         ok = $true
@@ -1138,7 +1175,7 @@ function Test-PublishComposerMediaEvidence(
     }
   }
   if (-not $manifestProof.ok -or $lock.renderPane.element -eq $null) {
-    return @{ ok = $false; reason = "moments_publish_media_accessibility_missing" }
+    return @{ ok = $false; reason = "moments_publish_media_accessibility_missing"; rule_id = (Write-XiaoxiFailure "wx4-r056" "moments_publish_media_accessibility_missing") }
   }
   $evidence = Get-PublishBoundMediaEvidence $lock $manifestProof $lock.renderPane.bounds
   if ($evidence.ok) { $evidence.proofMode = "uia_one_to_one" }
@@ -1160,7 +1197,7 @@ function Get-PublishClipboardUnicodeSnapshot {
     } else { "" })
     return @{ ok = $true; value = [string]$value }
   } catch {
-    return @{ ok = $false; reason = "moments_publish_clipboard_readback_failed" }
+    return @{ ok = $false; reason = "moments_publish_clipboard_readback_failed"; rule_id = (Write-XiaoxiFailure "wx4-r057" "moments_publish_clipboard_readback_failed") }
   }
 }
 
@@ -1183,17 +1220,17 @@ function Wait-PublishClipboardSelection([string]$probe, [bool]$requireNonEmpty) 
   if (-not $requireNonEmpty -and $observedReadableClipboard) {
     return @{ ok = $true; value = "" }
   }
-  return @{ ok = $false; reason = "moments_publish_clipboard_readback_failed" }
+  return @{ ok = $false; reason = "moments_publish_clipboard_readback_failed"; rule_id = (Write-XiaoxiFailure "wx4-r058" "moments_publish_clipboard_readback_failed") }
 }
 
 function Get-PublishSelectedContent($lock, [bool]$requireNonEmpty = $false) {
   if ([Win32WechatMomentsPublish]::GetForegroundWindow() -ne $lock.hWnd) {
-    return @{ ok = $false; reason = "moments_publish_composer_not_foreground" }
+    return @{ ok = $false; reason = "moments_publish_composer_not_foreground"; rule_id = (Write-XiaoxiFailure "wx4-r059" "moments_publish_composer_not_foreground") }
   }
   $backup = $null
   $backupCaptured = $false
   $clipboardReady = $false
-  $readback = @{ ok = $false; reason = "moments_publish_clipboard_readback_failed" }
+  $readback = @{ ok = $false; reason = "moments_publish_clipboard_readback_failed"; rule_id = "wx4-r060" }
   $restoreOk = $false
   $probe = "__XIAOXI_MOMENTS_SELECTION_" + [Guid]::NewGuid().ToString("N")
   try {
@@ -1239,14 +1276,14 @@ function Get-PublishSelectedContent($lock, [bool]$requireNonEmpty = $false) {
       }
     }
   }
-  if (-not $restoreOk) { return @{ ok = $false; reason = "moments_publish_clipboard_restore_failed" } }
+  if (-not $restoreOk) { return @{ ok = $false; reason = "moments_publish_clipboard_restore_failed"; rule_id = (Write-XiaoxiFailure "wx4-r061" "moments_publish_clipboard_restore_failed") } }
   if (-not $readback.ok) { return $readback }
   return @{ ok = $true; value = Normalize-PublishExactContent ([string]$readback.value) }
 }
 
 function Set-PublishComposerContentFromClipboard($lock, [string]$expectedContent) {
   if ([Win32WechatMomentsPublish]::GetForegroundWindow() -ne $lock.hWnd) {
-    return @{ ok = $false; reason = "moments_publish_composer_not_foreground" }
+    return @{ ok = $false; reason = "moments_publish_composer_not_foreground"; rule_id = (Write-XiaoxiFailure "wx4-r062" "moments_publish_composer_not_foreground") }
   }
   $backup = $null
   $backupCaptured = $false
@@ -1303,21 +1340,21 @@ function Set-PublishComposerContentFromClipboard($lock, [string]$expectedContent
       }
     }
   }
-  if (-not $restoreOk) { return @{ ok = $false; reason = "moments_publish_clipboard_restore_failed" } }
+  if (-not $restoreOk) { return @{ ok = $false; reason = "moments_publish_clipboard_restore_failed"; rule_id = (Write-XiaoxiFailure "wx4-r063" "moments_publish_clipboard_restore_failed") } }
   if (-not $clipboardReady -or -not $pasteAttempted) {
-    return @{ ok = $false; reason = "moments_publish_content_input_failed" }
+    return @{ ok = $false; reason = "moments_publish_content_input_failed"; rule_id = (Write-XiaoxiFailure "wx4-r064" "moments_publish_content_input_failed") }
   }
   return @{ ok = $true }
 }
 
 function Set-PublishComposerContent($lock, [string]$expectedContent, [string]$token) {
   if ([string]$lock.surfaceMode -cne "composer" -or [string]::IsNullOrWhiteSpace($expectedContent)) {
-    return @{ ok = $false; reason = "moments_publish_editor_not_writable" }
+    return @{ ok = $false; reason = "moments_publish_editor_not_writable"; rule_id = (Write-XiaoxiFailure "wx4-r065" "moments_publish_editor_not_writable") }
   }
   $before = Get-PublishFullObservation $lock $true
   if (-not $before.ok) { return $before }
   if (([string]$before.compact).IndexOf($token, [StringComparison]::Ordinal) -ge 0) {
-    return @{ ok = $false; reason = "moments_publish_editor_not_empty" }
+    return @{ ok = $false; reason = "moments_publish_editor_not_empty"; rule_id = (Write-XiaoxiFailure "wx4-r066" "moments_publish_editor_not_empty") }
   }
   $editorX = [int]$lock.rect.Left + [int][Math]::Round(([double]$lock.rect.Right - [double]$lock.rect.Left) * 0.10)
   $editorY = [int]$lock.rect.Top + [int][Math]::Round(([double]$lock.rect.Bottom - [double]$lock.rect.Top) * 0.085)
@@ -1326,14 +1363,14 @@ function Set-PublishComposerContent($lock, [string]$expectedContent, [string]$to
   if (-not $focusClick.ok) { return $focusClick }
   if ([Win32WechatMomentsPublish]::GetForegroundWindow() -ne $lock.hWnd -or
     -not [Win32WechatMomentsPublish]::AtomicKeyChord(0x11, 0x41)) {
-    return @{ ok = $false; reason = "moments_publish_content_input_failed" }
+    return @{ ok = $false; reason = "moments_publish_content_input_failed"; rule_id = (Write-XiaoxiFailure "wx4-r067" "moments_publish_content_input_failed") }
   }
   Start-Sleep -Milliseconds 25
   $existingContent = Get-PublishSelectedContent $lock
   if (-not $existingContent.ok) { return $existingContent }
   if ([string]$existingContent.value -and
     -not (Test-PublishExactContent ([string]$existingContent.value) $expectedContent)) {
-    return @{ ok = $false; reason = "moments_publish_editor_not_empty" }
+    return @{ ok = $false; reason = "moments_publish_editor_not_empty"; rule_id = (Write-XiaoxiFailure "wx4-r068" "moments_publish_editor_not_empty") }
   }
   if (-not (Test-PublishExactContent ([string]$existingContent.value) $expectedContent)) {
     $pasteResult = Set-PublishComposerContentFromClipboard $lock $expectedContent
@@ -1341,13 +1378,13 @@ function Set-PublishComposerContent($lock, [string]$expectedContent, [string]$to
   }
   if ([Win32WechatMomentsPublish]::GetForegroundWindow() -ne $lock.hWnd -or
     -not [Win32WechatMomentsPublish]::AtomicKeyChord(0x11, 0x41)) {
-    return @{ ok = $false; reason = "moments_publish_content_readback_mismatch" }
+    return @{ ok = $false; reason = "moments_publish_content_readback_mismatch"; rule_id = (Write-XiaoxiFailure "wx4-r069" "moments_publish_content_readback_mismatch") }
   }
   Start-Sleep -Milliseconds 25
   $exactReadback = Get-PublishSelectedContent $lock $true
   if (-not $exactReadback.ok) { return $exactReadback }
   if (-not (Test-PublishExactContent ([string]$exactReadback.value) $expectedContent)) {
-    return @{ ok = $false; reason = "moments_publish_content_readback_mismatch" }
+    return @{ ok = $false; reason = "moments_publish_content_readback_mismatch"; rule_id = (Write-XiaoxiFailure "wx4-r070" "moments_publish_content_readback_mismatch") }
   }
   [void][Win32WechatMomentsPublish]::AtomicVirtualKey(0x27)
   Start-Sleep -Milliseconds 230
@@ -1357,13 +1394,13 @@ function Set-PublishComposerContent($lock, [string]$expectedContent, [string]$to
 function Test-PublishComposerContentFinal($lock, [string]$expectedContent) {
   if ([Win32WechatMomentsPublish]::GetForegroundWindow() -ne $lock.hWnd -or
     -not [Win32WechatMomentsPublish]::AtomicKeyChord(0x11, 0x41)) {
-    return @{ ok = $false; reason = "moments_publish_content_readback_mismatch" }
+    return @{ ok = $false; reason = "moments_publish_content_readback_mismatch"; rule_id = (Write-XiaoxiFailure "wx4-r071" "moments_publish_content_readback_mismatch") }
   }
   Start-Sleep -Milliseconds 25
   $readback = Get-PublishSelectedContent $lock $true
   if (-not $readback.ok) { return $readback }
   if (-not (Test-PublishExactContent ([string]$readback.value) $expectedContent)) {
-    return @{ ok = $false; reason = "moments_publish_content_readback_mismatch" }
+    return @{ ok = $false; reason = "moments_publish_content_readback_mismatch"; rule_id = (Write-XiaoxiFailure "wx4-r072" "moments_publish_content_readback_mismatch") }
   }
   [void][Win32WechatMomentsPublish]::AtomicVirtualKey(0x27)
   return @{ ok = $true }
@@ -1378,7 +1415,7 @@ function Get-PublishBoundMediaEvidence(
 ) {
   if (-not $manifestProof.ok -or $lock.renderPane.element -eq $null -or
     -not (Test-MomentsVisualBoundsInside $containerBounds $lock.renderPane.bounds)) {
-    return @{ ok = $false; reason = "moments_publish_media_accessibility_missing" }
+    return @{ ok = $false; reason = "moments_publish_media_accessibility_missing"; rule_id = (Write-XiaoxiFailure "wx4-r073" "moments_publish_media_accessibility_missing") }
   }
   try {
     $elements = $lock.renderPane.element.FindAll(
@@ -1386,7 +1423,7 @@ function Get-PublishBoundMediaEvidence(
       [System.Windows.Automation.Condition]::TrueCondition
     )
   } catch {
-    return @{ ok = $false; reason = "moments_publish_media_accessibility_missing" }
+    return @{ ok = $false; reason = "moments_publish_media_accessibility_missing"; rule_id = (Write-XiaoxiFailure "wx4-r074" "moments_publish_media_accessibility_missing") }
   }
   $expectedNames = @($manifestProof.names | ForEach-Object { ([string]$_).ToLowerInvariant() })
   $expectedSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -1432,34 +1469,34 @@ function Get-PublishBoundMediaEvidence(
     } | Select-Object -Unique)
     foreach ($stagedName in $stagedNames) {
       if (-not $expectedSet.Contains($stagedName)) {
-        return @{ ok = $false; reason = "moments_publish_media_accessibility_count_mismatch" }
+        return @{ ok = $false; reason = "moments_publish_media_accessibility_count_mismatch"; rule_id = (Write-XiaoxiFailure "wx4-r075" "moments_publish_media_accessibility_count_mismatch") }
       }
     }
     if ($matchedExpectedNames.Count -eq 0) { continue }
     if ($matchedExpectedNames.Count -ne 1 -or $stagedNames.Count -ne 1) {
-      return @{ ok = $false; reason = "moments_publish_media_accessibility_aggregate" }
+      return @{ ok = $false; reason = "moments_publish_media_accessibility_aggregate"; rule_id = (Write-XiaoxiFailure "wx4-r076" "moments_publish_media_accessibility_aggregate") }
     }
     $matchedName = [string]$matchedExpectedNames[0]
     if ($runtimeIdByName.ContainsKey($matchedName) -or $nameByRuntimeId.ContainsKey($runtimeId)) {
-      return @{ ok = $false; reason = "moments_publish_media_accessibility_not_one_to_one" }
+      return @{ ok = $false; reason = "moments_publish_media_accessibility_not_one_to_one"; rule_id = (Write-XiaoxiFailure "wx4-r077" "moments_publish_media_accessibility_not_one_to_one") }
     }
     $runtimeIdByName[$matchedName] = $runtimeId
     $nameByRuntimeId[$runtimeId] = $matchedName
     [void]$discoveredSet.Add($matchedName)
   }
   if ($discoveredSet.Count -ne $expectedSet.Count -or $runtimeIdByName.Count -ne $expectedSet.Count) {
-    return @{ ok = $false; reason = "moments_publish_media_accessibility_count_mismatch" }
+    return @{ ok = $false; reason = "moments_publish_media_accessibility_count_mismatch"; rule_id = (Write-XiaoxiFailure "wx4-r078" "moments_publish_media_accessibility_count_mismatch") }
   }
   $parts = New-Object System.Collections.Generic.List[string]
   foreach ($name in @($expectedNames | Sort-Object)) {
     if (-not $discoveredSet.Contains($name) -or -not $runtimeIdByName.ContainsKey($name)) {
-      return @{ ok = $false; reason = "moments_publish_media_accessibility_missing" }
+      return @{ ok = $false; reason = "moments_publish_media_accessibility_missing"; rule_id = (Write-XiaoxiFailure "wx4-r079" "moments_publish_media_accessibility_missing") }
     }
     [void]$parts.Add($name + "=" + [string]$runtimeIdByName[$name])
   }
   $evidenceKey = [string]::Join("|", $parts.ToArray())
   if ($expectedEvidenceKey -and $evidenceKey -cne $expectedEvidenceKey) {
-    return @{ ok = $false; reason = "moments_publish_media_accessibility_changed" }
+    return @{ ok = $false; reason = "moments_publish_media_accessibility_changed"; rule_id = (Write-XiaoxiFailure "wx4-r080" "moments_publish_media_accessibility_changed") }
   }
   return @{
     ok = $true
@@ -1514,7 +1551,7 @@ function Get-PublishFocusedTarget($lock) {
     }
     $candidate = $candidates[0]
     if ([Win32WechatMomentsPublish]::GetForegroundWindow() -ne $lock.hWnd) {
-      return @{ ok = $false; reason = "moments_publish_editor_focus_missing" }
+      return @{ ok = $false; reason = "moments_publish_editor_focus_missing"; rule_id = (Write-XiaoxiFailure "wx4-r081" "moments_publish_editor_focus_missing") }
     }
     if (-not $candidate.element.Current.HasKeyboardFocus) {
       $candidate.element.SetFocus()
@@ -1524,7 +1561,7 @@ function Get-PublishFocusedTarget($lock) {
     if ($focused -eq $null -or
       (Get-MomentsVisualRuntimeId $focused) -cne [string]$candidate.runtimeId -or
       [Win32WechatMomentsPublish]::GetForegroundWindow() -ne $lock.hWnd) {
-      return @{ ok = $false; reason = "moments_publish_editor_focus_missing" }
+      return @{ ok = $false; reason = "moments_publish_editor_focus_missing"; rule_id = (Write-XiaoxiFailure "wx4-r082" "moments_publish_editor_focus_missing") }
     }
     return @{
       ok = $true
@@ -1537,7 +1574,7 @@ function Get-PublishFocusedTarget($lock) {
       value = [string]$candidate.value
     }
   } catch {
-    return @{ ok = $false; reason = "moments_publish_editor_focus_missing" }
+    return @{ ok = $false; reason = "moments_publish_editor_focus_missing"; rule_id = (Write-XiaoxiFailure "wx4-r083" "moments_publish_editor_focus_missing") }
   }
 }
 
@@ -1546,7 +1583,7 @@ function Get-PublishEditorObservation($lock, $expectedEditor) {
   if (-not $currentEditor.ok -or [string]$currentEditor.runtimeId -cne [string]$expectedEditor.runtimeId -or
     [string]$currentEditor.controlType -cne [string]$expectedEditor.controlType -or
     [string]$currentEditor.accessMode -cne [string]$expectedEditor.accessMode) {
-    return @{ ok = $false; reason = "moments_publish_editor_identity_changed" }
+    return @{ ok = $false; reason = "moments_publish_editor_identity_changed"; rule_id = (Write-XiaoxiFailure "wx4-r084" "moments_publish_editor_identity_changed") }
   }
   $frame = Get-MomentsVisualFrame $lock.hWnd $lock.rect $lock.pid $false $true
   if (-not $frame.ok) { return @{ ok = $false; reason = [string]$frame.reason } }
@@ -1613,7 +1650,7 @@ function Find-PublishButton($observation) {
   }
   $visualMatches = @($observation.publishButtonVisualCandidates | Where-Object { $_ -ne $null })
   if ($ocrMatches.Count -gt 1 -or $visualMatches.Count -gt 1) {
-    return @{ ok = $false; reason = "moments_publish_button_ambiguous" }
+    return @{ ok = $false; reason = "moments_publish_button_ambiguous"; rule_id = (Write-XiaoxiFailure "wx4-r085" "moments_publish_button_ambiguous") }
   }
   if ($visualMatches.Count -eq 1 -and $ocrMatches.Count -eq 1) {
     $visualBounds = $visualMatches[0].bounds
@@ -1624,13 +1661,13 @@ function Find-PublishButton($observation) {
       $labelY -ge [double]$visualBounds.top -and
       $labelY -le ([double]$visualBounds.top + [double]$visualBounds.height)
     if (-not $labelInsideVisual) {
-      return @{ ok = $false; reason = "moments_publish_button_ambiguous" }
+      return @{ ok = $false; reason = "moments_publish_button_ambiguous"; rule_id = (Write-XiaoxiFailure "wx4-r086" "moments_publish_button_ambiguous") }
     }
     return @{ ok = $true; target = $visualMatches[0] }
   }
   if ($visualMatches.Count -eq 1) { return @{ ok = $true; target = $visualMatches[0] } }
   if ($ocrMatches.Count -eq 1) { return @{ ok = $true; target = $ocrMatches[0] } }
-  return @{ ok = $false; reason = "moments_publish_button_not_found" }
+  return @{ ok = $false; reason = "moments_publish_button_not_found"; rule_id = (Write-XiaoxiFailure "wx4-r087" "moments_publish_button_not_found") }
 }
 
 function Test-PublishButtonRebound($expectedTarget, $currentTarget) {
@@ -1717,6 +1754,63 @@ function Get-PublishPostCandidateKey($post) {
   return $avatarHash + "|" + $identity + "|" + $geometry
 }
 
+function Test-PublishAnchorFragments($texts, [string]$anchor) {
+  if ($anchor.Length -lt 12) { return $false }
+  $segmentCount = $(if ($anchor.Length -ge 18) { 3 } else { 2 })
+  $segmentLength = [int][Math]::Floor($anchor.Length / $segmentCount)
+  $alignments = @()
+  for ($segment = 0; $segment -lt $segmentCount; $segment++) {
+    $start = $segment * $segmentLength
+    $length = $(if ($segment -eq $segmentCount - 1) { $anchor.Length - $start } else { $segmentLength })
+    $part = $anchor.Substring($start, $length)
+    $offsets = @()
+    foreach ($text in @($texts)) {
+      $value = Normalize-PublishText ([string]$text)
+      $first = $value.IndexOf($part, [StringComparison]::Ordinal)
+      if ($first -ge 0 -and $first -eq $value.LastIndexOf($part, [StringComparison]::Ordinal)) {
+        $offsets += $first - $start
+      }
+    }
+    if ($offsets.Count -eq 0) { return $false }
+    if ($segment -eq 0) { $alignments = @($offsets | Select-Object -Unique) }
+    else {
+      $alignments = @($alignments | Where-Object {
+        $alignment = $_
+        @($offsets | Where-Object { [Math]::Abs($_ - $alignment) -le 2 }).Count -gt 0
+      })
+    }
+    if ($alignments.Count -eq 0) { return $false }
+  }
+  return $true
+}
+
+function Test-PublishPostAnchor($frame, $post, [string]$anchor) {
+  $identity = Normalize-PublishText ([string]$post.identityText)
+  if ($identity.IndexOf($anchor, [StringComparison]::Ordinal) -ge 0) { return $true }
+  if ($anchor.Length -lt 12 -or -not $post.avatarBounds -or -not $post.menuBounds) { return $false }
+  $bodyTop = [double]$post.avatarBounds.top + [double]$post.avatarBounds.height / 2.0
+  $bodyLines = @($post.ocrLines | Where-Object {
+    $center = [double]$post.bounds.top + [double]$_.bounds.top + [double]$_.bounds.height / 2.0
+    $center -gt $bodyTop -and $center -lt [double]$post.menuBounds.top
+  } | Sort-Object { [double]$_.bounds.top }, { [double]$_.bounds.left })
+  if ($bodyLines.Count -eq 0) { return $false }
+  $line = $bodyLines[0].bounds
+  $padding = [Math]::Max(4.0, [double]$line.height / 3.0)
+  $left = [Math]::Max([double]$post.bounds.left, [double]$post.bounds.left + [double]$line.left - $padding)
+  $top = [Math]::Max($bodyTop, [double]$post.bounds.top + [double]$line.top - $padding)
+  $right = [Math]::Min([double]$frame.width, [double]$post.bounds.left + [double]$line.left + [double]$line.width + $padding)
+  $bottom = [Math]::Min([double]$post.menuBounds.top, $top + [double]$line.height * 3.0)
+  $captionBounds = @{ left=$left; top=$top; width=$right-$left; height=$bottom-$top }
+  if ($captionBounds.width -le 0 -or $captionBounds.height -le 0 -or
+    [Math]::Max($captionBounds.width, $captionBounds.height) * 3 -gt [Windows.Media.Ocr.OcrEngine]::MaxImageDimension) { return $false }
+  $scaled = Get-MomentsScaledOcrObservation $frame $captionBounds 3
+  $contrast = Get-MomentsHighContrastOcrObservation $frame $captionBounds 3
+  if (-not $scaled.ok -or -not $contrast.ok) { return $false }
+  # Every part must be read exactly, uniquely and in the same order from the
+  # same caption pixels. Never combine fragments from different posts.
+  return Test-PublishAnchorFragments @([string]$post.contentText, [string]$scaled.text, [string]$contrast.text) $anchor
+}
+
 function Test-PublishClientAccepted(
   $observation,
   $lock,
@@ -1724,10 +1818,10 @@ function Test-PublishClientAccepted(
   [string]$baselineHash
 ) {
   if (-not $observation.ok -or -not $observation.pixelHash -or $observation.pixelHash -ceq $baselineHash) {
-    return @{ ok = $false; reason = "moments_publish_feed_unchanged" }
+    return @{ ok = $false; reason = "moments_publish_feed_unchanged"; rule_id = (Write-XiaoxiFailure "wx4-r088" "moments_publish_feed_unchanged") }
   }
   if (-not (Test-PublishComposerAbsent $lock $editorRuntimeId)) {
-    return @{ ok = $false; reason = "moments_publish_composer_still_present" }
+    return @{ ok = $false; reason = "moments_publish_composer_still_present"; rule_id = (Write-XiaoxiFailure "wx4-r089" "moments_publish_composer_still_present") }
   }
   $surface = Test-PublishMomentsSurface $lock
   if (-not $surface.ok) {
@@ -1735,10 +1829,10 @@ function Test-PublishClientAccepted(
   }
   $visibleText = [string]$observation.ocr.text
   if ($visibleText -match "上传失败|发布失败|发送失败|网络异常|网络错误|请重试") {
-    return @{ ok = $false; reason = "moments_publish_client_rejected" }
+    return @{ ok = $false; reason = "moments_publish_client_rejected"; rule_id = (Write-XiaoxiFailure "wx4-r090" "moments_publish_client_rejected") }
   }
   if ($visibleText -match "正在处理") {
-    return @{ ok = $false; reason = "moments_publish_client_processing" }
+    return @{ ok = $false; reason = "moments_publish_client_processing"; rule_id = (Write-XiaoxiFailure "wx4-r091" "moments_publish_client_processing") }
   }
   return @{
     ok = $true
@@ -1756,22 +1850,22 @@ function Test-PublishVerified(
   [string]$baselineHash
 ) {
   if (-not $observation.ok -or -not $observation.pixelHash -or $observation.pixelHash -ceq $baselineHash) {
-    return @{ ok = $false; reason = "moments_publish_feed_unchanged" }
+    return @{ ok = $false; reason = "moments_publish_feed_unchanged"; rule_id = (Write-XiaoxiFailure "wx4-r092" "moments_publish_feed_unchanged") }
   }
   if (-not $manifestProof.ok -or [int]$manifestProof.count -lt 1 -or
     @("image", "video") -notcontains [string]$manifestProof.kind) {
-    return @{ ok = $false; reason = "moments_publish_manifest_not_proven" }
+    return @{ ok = $false; reason = "moments_publish_manifest_not_proven"; rule_id = (Write-XiaoxiFailure "wx4-r093" "moments_publish_manifest_not_proven") }
   }
   $preclickMediaProofMode = [string]$preclickMediaEvidence.proofMode
   if (@("uia_one_to_one", "visual_presence_only") -notcontains $preclickMediaProofMode) {
-    return @{ ok = $false; reason = "moments_publish_post_media_not_proven" }
+    return @{ ok = $false; reason = "moments_publish_post_media_not_proven"; rule_id = (Write-XiaoxiFailure "wx4-r094" "moments_publish_post_media_not_proven") }
   }
   if ($preclickMediaProofMode -ceq "visual_presence_only" -and
     [string]$preclickMediaEvidence.evidenceKey -notmatch "^[a-f0-9]{64}$") {
-    return @{ ok = $false; reason = "moments_publish_post_media_not_proven" }
+    return @{ ok = $false; reason = "moments_publish_post_media_not_proven"; rule_id = (Write-XiaoxiFailure "wx4-r095" "moments_publish_post_media_not_proven") }
   }
   if (-not (Test-PublishComposerAbsent $lock $editorRuntimeId)) {
-    return @{ ok = $false; reason = "moments_publish_composer_still_present" }
+    return @{ ok = $false; reason = "moments_publish_composer_still_present"; rule_id = (Write-XiaoxiFailure "wx4-r096" "moments_publish_composer_still_present") }
   }
   $matching = New-Object System.Collections.Generic.List[object]
   foreach ($post in @($observation.posts)) {
@@ -1779,10 +1873,15 @@ function Test-PublishVerified(
     # footer, not the entire card height, are the receipt for this publish.
     $identityCompact = Normalize-PublishText ([string]$post.identityText)
     if (-not $expectedVisibleAnchor -or
-      $identityCompact.IndexOf($expectedVisibleAnchor, [StringComparison]::Ordinal) -lt 0 -or
+      ($identityCompact.IndexOf($expectedVisibleAnchor, [StringComparison]::Ordinal) -lt 0 -and -not [bool]$post.publishAnchorMatched) -or
       [string]$post.regionHash -notmatch "^[a-f0-9]{64}$") { continue }
     $freshLines = @($post.ocrLines | Where-Object {
-      (Normalize-PublishText ([string]$_.compact)) -match "^(刚刚|1分钟前)(删除)?$"
+      $lineCenterY = [double]$post.bounds.top + [double]$_.bounds.top + [double]$_.bounds.height / 2.0
+      $menuCenterY = [double]$post.menuBounds.top + [double]$post.menuBounds.height / 2.0
+      # The trash icon beside the time can be OCR'd as an extra character.
+      # Constrain the time to the footer row rather than naming that character.
+      (Normalize-PublishText ([string]$_.compact)) -match "^(刚刚|1分钟前).{0,2}$" -and
+        [Math]::Abs($lineCenterY - $menuCenterY) -le [double]$post.menuBounds.height
     })
     if ($freshLines.Count -lt 1) { continue }
     $candidateKey = Get-PublishPostCandidateKey $post
@@ -1790,11 +1889,11 @@ function Test-PublishVerified(
     [void]$matching.Add(@{
       key = $candidateKey + "|manifest:" + [string]$manifestProof.kind + ":" + [string]$manifestProof.count
       post = $post
-      verificationMode = "unique_fresh_post_candidate"
+      verificationMode = $(if ($identityCompact.IndexOf($expectedVisibleAnchor, [StringComparison]::Ordinal) -ge 0) { "unique_fresh_post_candidate" } else { "unique_fresh_post_multi_ocr_fragments" })
     })
   }
   if ($matching.Count -gt 1) {
-    return @{ ok = $false; reason = "moments_publish_post_ambiguous" }
+    return @{ ok = $false; reason = "moments_publish_post_ambiguous"; rule_id = (Write-XiaoxiFailure "wx4-r097" "moments_publish_post_ambiguous") }
   }
   if ($matching.Count -eq 0 -and $preclickMediaProofMode -ceq "visual_presence_only") {
     $visibleReceipt = Normalize-PublishText ([string]$observation.viewportCompact)
@@ -1802,7 +1901,7 @@ function Test-PublishVerified(
     $lastAnchor = $visibleReceipt.LastIndexOf($expectedVisibleAnchor, [StringComparison]::Ordinal)
     if ($firstAnchor -lt 0 -or $firstAnchor -ne $lastAnchor -or
       [string]$observation.viewportHash -notmatch "^[a-f0-9]{64}$") {
-      return @{ ok = $false; reason = "moments_publish_post_not_found" }
+      return @{ ok = $false; reason = "moments_publish_post_not_found"; rule_id = (Write-XiaoxiFailure "wx4-r098" "moments_publish_post_not_found") }
     }
     return @{
       ok = $true
@@ -1811,7 +1910,7 @@ function Test-PublishVerified(
     }
   }
   if ($matching.Count -ne 1) {
-    return @{ ok = $false; reason = "moments_publish_post_not_found" }
+    return @{ ok = $false; reason = "moments_publish_post_not_found"; rule_id = (Write-XiaoxiFailure "wx4-r099" "moments_publish_post_not_found") }
   }
   return @{
     ok = $true
@@ -1844,9 +1943,11 @@ try {
   $script:publishStage = "baseline_observation"
   $surface = Test-PublishMomentsSurface $lock
   if (-not $surface.ok) { Write-PublishResult @{ ok = $false; status = "blocked"; reason = $surface.reason; verified = $false } }
-  $baseline = Get-PublishFullObservation $lock $true
+  $baseline = Get-PublishFullObservation $lock $true $true $false $token
   if (-not $baseline.ok) { Write-PublishResult @{ ok = $false; status = "blocked"; reason = $baseline.reason; verified = $false } }
-  if (([string]$baseline.compact).IndexOf($token, [StringComparison]::Ordinal) -ge 0) {
+  if (([string]$baseline.compact).IndexOf($token, [StringComparison]::Ordinal) -ge 0 -or
+    ([string]$baseline.viewportCompact).IndexOf($token, [StringComparison]::Ordinal) -ge 0 -or
+    @($baseline.posts | Where-Object { [bool]$_.publishAnchorMatched }).Count -gt 0) {
     Write-PublishResult @{ ok = $false; status = "blocked"; reason = "moments_publish_verification_token_not_unique"; verified = $false }
   }
 
@@ -2046,7 +2147,7 @@ try {
       if (-not $lastVerificationReason) { $lastVerificationReason = "moments_publish_window_lock_failed" }
       continue
     }
-    $after = Get-PublishFullObservation $currentLock $true $true
+    $after = Get-PublishFullObservation $currentLock $true $true $false $token
     if (-not $after.ok) {
       $lastVerificationReason = [string]$after.reason
       if (-not $lastVerificationReason) { $lastVerificationReason = "moments_publish_observation_failed" }

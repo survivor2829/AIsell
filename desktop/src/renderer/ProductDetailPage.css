@@ -10,6 +10,12 @@
   margin-bottom: 16px;
 }
 
+.product-detail-page.has-workspace { padding: 16px; }
+.has-workspace .product-detail-head { margin-bottom: 0; align-items: center; }
+.has-workspace .product-detail-head h1 { margin: 0; font-size: 22px; }
+.has-workspace .product-detail-workspace { margin-top: 12px; min-height: 0; }
+.has-workspace .product-detail-actions { flex-wrap: wrap; }
+
 .product-detail-actions {
   padding-top: 0;
 }

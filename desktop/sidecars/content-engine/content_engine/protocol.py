@@ -68,6 +68,9 @@ METHODS = {
     "archive_asset": lambda service, params: service.archive_asset(
         params.get("asset_id")
     ),
+    "restore_asset": lambda service, params: service.restore_asset(
+        params.get("asset_id")
+    ),
     "reveal_asset": lambda service, params: service.reveal_asset(
         params.get("asset_id")
     ),

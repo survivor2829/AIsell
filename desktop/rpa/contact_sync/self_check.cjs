@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
-const { candidateWechatRoots, capture, captureKeyFromWxKeyDll, decryptSqlcipher4Raw, findWechatExecutable, findWechatRoot, prepareWechatLogin, resolveHelper, runningWeixinProcesses, status, sync } = require("./contact_sync_cli.cjs");
+const { candidateWechatRoots, capture, captureKeyFromWxKeyDll, decryptSqlcipher4Raw, findWechatExecutable, findWechatExecutableDetails, findWechatRoot, prepareWechatLogin, resolveHelper, runningWeixinProcesses, status, sync } = require("./contact_sync_cli.cjs");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-contact-sync-"));
 const syncDir = path.join(root, "contact_sync");
@@ -95,6 +95,47 @@ try {
     commonWechatExeCandidates: [],
     installedExecutableProvider: () => [registryWechatExe]
   }), registryWechatExe, "the Windows uninstall registry must provide a custom Weixin install path when WeChat is closed");
+  assert.deepEqual(findWechatExecutableDetails({
+    wechatExePath: path.join(root, "missing", "Weixin.exe"),
+    processProvider: () => [{ id: 42, path: "", commandLine: "--scene=desktop" }],
+    commonWechatExeCandidates: [],
+    installedExecutableProvider: () => [registryWechatExe]
+  }).diagnostics, {
+    configured_exists: false,
+    running_process_count: 1,
+    running_path_available: false,
+    common_candidate_found: false,
+    registry_checked: true,
+    registry_candidate_found: true,
+    resolved_source: "registry"
+  }, "executable discovery diagnostics must explain the selected source without exposing a path");
+  const missingExecutableCapture = capture(path.join(root, "missing-executable-state"), {
+    activeTouchDir,
+    restartWechat: true,
+    wechatExePath: path.join(root, "missing", "Weixin.exe"),
+    commonWechatExeCandidates: [],
+    installedExecutableProvider: () => [registryWechatExe],
+    processProvider: () => [{ id: 42, path: "", commandLine: "--scene=desktop" }],
+    loginFlowDriver: () => ({
+      ok: false,
+      reason: "wechat_executable_not_found",
+      discoveryProcessCount: 1,
+      discoveryProcessPathAvailable: false,
+      discoveryInputExists: true,
+      discoveryCandidateAvailable: false
+    }),
+    wxKeyReader: () => ""
+  });
+  assert.equal(missingExecutableCapture.blocked_reason, "wechat_executable_not_found");
+  assert.equal(missingExecutableCapture.state.wechat_exe_candidate_available, true);
+  assert.equal(missingExecutableCapture.state.wechat_exe_prepare_candidate_available, false);
+  assert.equal(missingExecutableCapture.state.wechat_exe_prepare_input_exists, true);
+  assert.equal(missingExecutableCapture.state.wechat_exe_configured_exists, false);
+  assert.equal(missingExecutableCapture.state.wechat_exe_running_process_count, 1);
+  assert.equal(missingExecutableCapture.state.wechat_exe_running_path_available, false);
+  assert.equal(missingExecutableCapture.state.wechat_exe_registry_candidate_found, true);
+  assert.equal(missingExecutableCapture.state.wechat_exe_registry_checked, true);
+  assert.equal(missingExecutableCapture.state.wechat_exe_discovery_mode, "registry");
   assert.deepEqual(prepareWechatLogin({ loginFlowDriver: () => ({ ok: true, restarted: true }) }), { ok: true, restarted: true });
   assert.deepEqual(prepareWechatLogin({ loginFlowDriver: () => ({ ok: false, reason: "wechat_start_failed" }) }), {
     ok: false,

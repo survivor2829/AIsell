@@ -14,8 +14,12 @@ function deriveAggregate(values) {
   return values.every((value) => value === values[0]) ? values[0] : "partial";
 }
 
-assert.equal(matrix.schemaVersion, 2);
-assert.deepEqual(matrix.targetWeixin, ["4.1.11.55"]);
+assert.equal(matrix.schemaVersion, 3);
+assert.deepEqual(matrix.wechatCompatibility, {
+  policy: "latest-mainstream-primary",
+  primary: "current-installed-mainstream",
+  crossVersionRegressionRequired: true
+});
 assert.deepEqual(Object.keys(matrix.capabilities || {}).sort(), expectedCapabilities);
 for (const [name, capability] of Object.entries(matrix.capabilities)) {
   assert.equal(validImplementation.has(capability.implementation), true, `${name} implementation status is invalid`);

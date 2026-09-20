@@ -25,9 +25,13 @@
 
 正常入口由 `wechat-workflow.cjs` 统一安排触达、朋友圈发布／互动和客户回复优先级，`wechat-workflow-ipc.cjs` 管理统一进度浮窗。各业务执行器完成一个工作单元后交还调度权，不把业务发送账本搬进协调层。朋友圈的 `moments-daily-automation.cjs` 仅保留旧独立模式；统一工作流接管时停止其调度，避免双重执行。
 
+主动触达的 `touch-media.cjs` 在主进程校验并冻结图片；renderer 只接收不含路径的图片编号、文件名与缩略图。`touch-message-sequence.cjs` 编排话术、图片和网址，每段独立记录状态；`wechat_image_send.dev.cjs` 复用共享会话/输入框观察并处理图片草稿或预览。图片存入 `active_touch/message-images/`，逐段 CLI 状态和图片回执存入对应 `workflow-tasks/` 的 `message-parts/`，不与整体联系人完成记录混用。
+
 ## 共享微信适配边界
 
 自动回复和主动触达共享同一组底层动作语义：定位窗口、固定左上角、观察会话、验证输入框、写入草稿、发送前复核、执行发送和验证结果。UIA 与视觉识别是可替换 adapter；一次事务选定一种证据链，不在中途拼接两套会话基线。
+
+`wechat_window_driver.cjs` 统一筛选主窗口：微信 PID 归属、原生主窗口类/受约束渲染子窗口/已核实导航结构共同提供候选证据，多个主窗口保持歧义，不按面积任选。`src/shared/wechat-window-diagnostics.cjs` 只允许阶段、耗时、窗口类代码与数量进入日志和上报，禁止标题、联系人、路径及原始错误输出；后台接收白名单与客户端字段同步维护。
 
 共享层可以保存：
 
@@ -58,10 +62,13 @@
 | `feedback/state.json` | 反馈草稿、不可变正文/诊断快照、当前 Windows 账户加密的回执凭据、投递重试和已收到的服务端状态 |
 | `cloud-maintenance/state.json`、`cloud-maintenance/outbox.json` | 签名更新/公告缓存、已读状态、自动上报授权和独立自动诊断队列；不承担反馈状态 |
 | `runtime_archive/` | 数据拆分或迁移前的证据归档，不作为现役状态读取 |
+| `task-passports/` | 三个微信业务的阶段事件、失败三件套和批次总账单；仅运行数据，保留 30 天，不进入源码或发布包 |
 
 各业务只能读取共享联系人或适配证据，不能读取另一业务的成功账本来决定自己的动作。迁移旧状态时先归档，再拆分；不得把朋友圈字段继续写回主动触达的 `state.json`。
 
 计划正文和冻结素材保存在对应业务目录的 `planned_tasks/`、`planned_runs/`；接待范围保存在 `auto_reply/workflow-recipients.json`。统一界面仅投影各执行器返回的进度，不自行推测发送成功。
+
+三个微信业务的任务护照原因码权威枚举位于 `desktop/src/main/task-passport-reason-catalog.cjs`，字段语义及派生关系见 `docs/reviews/2026-09-19-task-passport-reason-codes.md`。底层 `rule_id` 与业务 `reason_code` 分开保存，账单优先按具体规则号归类；缺失原因使用显式 `*_failure_reason_missing`，不回退为 `unknown`。
 
 内容生产使用独立的 `product-detail/` 与 `content-engine/` 数据目录。前者保存产品详情图的数据库、上传、输出和缓存；后者保存素材索引、任务、成片登记和缓存设置。原始视频和图片只由素材索引记录位置、指纹、媒体信息与版权/使用权状态，始终留在用户原有磁盘位置。
 

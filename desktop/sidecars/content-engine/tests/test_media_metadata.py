@@ -176,6 +176,30 @@ class MediaMetadataServiceTests(unittest.TestCase):
         self.assertIsInstance(run.call_args.args[0], list)
         assert_public_payload(self, result, source)
 
+    def test_reimport_restores_archived_asset(self):
+        source, asset = self._import()
+        self.service.archive_asset(asset["asset_id"])
+        self.assertEqual([], self.service.list_assets()["items"])
+
+        reimported = self.service.import_files([str(source)])["items"][0]
+
+        self.assertEqual(asset["asset_id"], reimported["asset_id"])
+        self.assertFalse(reimported["archived"])
+        self.assertEqual(1, len(self.service.list_assets()["items"]))
+
+        self.service.archive_asset(asset["asset_id"])
+        restored = self.service.restore_asset(asset["asset_id"])
+        self.assertFalse(restored["archived"])
+
+        self.service.archive_asset(asset["asset_id"])
+        self.service.connection.execute(
+            "UPDATE asset_locations SET is_available = 0 WHERE asset_id = ?",
+            (asset["asset_id"],),
+        )
+        with self.assertRaises(ContentEngineError) as context:
+            self.service.restore_asset(asset["asset_id"])
+        self.assertEqual("asset_unavailable", context.exception.code)
+
     def test_capability_gate_preserves_pending_then_failures_are_bounded(self):
         source, asset = self._import()
 

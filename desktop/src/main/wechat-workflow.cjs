@@ -2,13 +2,29 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { writeJsonAtomic } = require("./atomic-file.cjs");
+const { classifyWechatFailureReason, normalizeFailureReasonCode } = require("../shared/wechat-failure-policy.cjs");
+const { createClassificationQualityLedger, THRESHOLD: UNKNOWN_REASON_TASK_THRESHOLD } = require("./classification-quality-ledger.cjs");
 
 const TASK_TYPES = new Set(["touch", "publish", "interact"]);
 const TITLES = { touch: "精准触达", publish: "发布朋友圈", interact: "朋友圈互动" };
+const WORKFLOW_REASON_CODES = Object.freeze({
+  touchTaskPayloadIncomplete: "touch_task_payload_incomplete",
+  momentsNoNewPosts: "moments_no_new_posts",
+  momentsWorkflowConfigInvalid: "moments_workflow_config_invalid",
+  workflowOccurrenceDateInvalid: "workflow_occurrence_date_invalid",
+  workflowExecutorUnavailable: "workflow_executor_unavailable",
+  touchDraftGenerationFailed: "touch_draft_generation_failed"
+});
 
 // Finite classifications keep diagnostic reasons readable without recording customer text.
 function workflowFailureReason(failure, fallback = "workflow_exception") {
+  const code = String(failure?.code || "");
+  if (/^[a-z][a-z0-9_]{1,79}$/u.test(code)) return code;
   const message = String(failure?.message || failure || "");
+  // Executors return finite machine-readable reasons for pre-action blocks.
+  // Keep those reasons through the workflow boundary instead of replacing them
+  // with a generic task_needs_attention event.
+  if (/^[a-z][a-z0-9_]{1,79}$/u.test(message)) return message;
   if (/唯一|重名/.test(message)) return "contact_identity_ambiguous";
   if (/专家规则|业务知识|AI专家/.test(message)) return "ai_expert_not_ready";
   if (/账号不一致|账号已变化/.test(message)) return "account_mismatch";
@@ -31,7 +47,7 @@ function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); }
   catch (error) {
     if (error.code === "ENOENT") return fallback;
-    throw new Error("计划资料无法读取，请保留数据并查看日志诊断。");
+    throw new Error("计划资料无法读取，请保留数据并查看日志诊断。", { cause: error });
   }
 }
 
@@ -41,6 +57,13 @@ function createWechatWorkflowController(options) {
   const stateFile = path.join(options.rootDir, "wechat_workflow", "state.json");
   const recipientsFile = path.join(options.autoReplyDir, "workflow-recipients.json");
   const directories = { touch: options.activeTouchDir, publish: options.momentsDir, interact: options.momentsDir };
+  const buildIdentity = {
+    buildVersion: String(options.appVersion || "unknown"),
+    buildId: String(options.buildId || "unknown"),
+    buildCommit: String(options.buildCommit || "unknown")
+  };
+  const buildKey = [buildIdentity.buildVersion, buildIdentity.buildId, buildIdentity.buildCommit].join("|");
+  const qualityLedger = createClassificationQualityLedger({ rootDir: options.rootDir, ...buildIdentity, now });
   let store = { version: 1, tasks: [] };
   let recipients = { version: 1, accounts: {} };
   let enabled = false;
@@ -60,6 +83,8 @@ function createWechatWorkflowController(options) {
   let lastReplyDiagnostic = "";
   let lastTaskStartKey = "";
   let lastTaskResultKey = "";
+  let lastQueueTransitionKey = "";
+  let replyActivated = false;
   let cycleStage = "idle";
   const log = (name, details, metadata) => options.logger?.event?.("wechat_workflow", name, details, { ...metadata, trace: true });
   const getAccount = () => String(options.getAccount?.() || "");
@@ -84,25 +109,154 @@ function createWechatWorkflowController(options) {
 
   function assertHealthy() { if (loadError) throw new Error(loadError); }
   function persist() { assertHealthy(); store.lastTaskId = lastTaskId; writeJsonAtomic(stateFile, store); }
+  function qualitySummary() { return qualityLedger.summary(); }
+  function recordUnknownReason(task, reasonCode) {
+    const reason = normalizeFailureReasonCode(reasonCode || "task_attention_reason_missing");
+    const { summary } = qualityLedger.record(task, reason);
+    if (task) {
+      task.unknownReasonQuality ||= { byBuild: {} };
+      task.unknownReasonQuality.byBuild ||= {};
+      const bucket = task.unknownReasonQuality.byBuild[buildKey] || { pauseCount: 0, reasonCodes: [], needsReview: false };
+      bucket.pauseCount += 1;
+      if (!bucket.reasonCodes.includes(reason)) bucket.reasonCodes = [...bucket.reasonCodes, reason].sort();
+      bucket.needsReview = bucket.pauseCount >= UNKNOWN_REASON_TASK_THRESHOLD;
+      task.unknownReasonQuality.byBuild[buildKey] = bucket;
+      for (const key of Object.keys(task.unknownReasonQuality.byBuild).slice(0, -8)) delete task.unknownReasonQuality.byBuild[key];
+    }
+    log("classification.unknown_reason_paused", {
+      task_kind: task?.type || "workflow", task_id: task?.id || null, reason,
+      build_version: buildIdentity.buildVersion, build_id: buildIdentity.buildId,
+      build_commit: buildIdentity.buildCommit, task_unknown_pause_count: task?.unknownReasonQuality?.byBuild?.[buildKey]?.pauseCount || 0,
+      build_unknown_pause_count: summary.unknownPauseCount, build_status: summary.status
+    }, { level: "warn", code: "classification_unknown_reason" });
+  }
   function canRetry(task) {
     if (task.status !== "needs_attention" || task.accountName !== getAccount()) return false;
-    try { return executors[task.type]?.canRetryWorkflowTask?.(task) === true; }
+    try {
+      const payload = task.type === "touch" ? readPayload(task) : undefined;
+      return executors[task.type]?.canRetryWorkflowTask?.(task, payload) === true;
+    }
     catch { return false; }
+  }
+  function unknownResolution(task) {
+    if (task.type !== "touch" || task.status !== "needs_attention" || task.accountName !== getAccount()) return null;
+    try {
+      const description = executors.touch?.describeUnknownWorkflowTask?.(task) || null;
+      return description?.required === true ? description : null;
+    }
+    catch { return null; }
+  }
+  function skippedTouchState(task) {
+    if (task.type !== "touch" || !executors.touch?.describeSkippedWorkflowTask) return null;
+    try { return executors.touch.describeSkippedWorkflowTask(task); }
+    catch { return null; }
+  }
+
+  function applyUnknownResolution(task, outcome) {
+    const done = Number(outcome?.progress?.done);
+    const total = Number(outcome?.progress?.total);
+    if (!outcome || !["sent", "not_sent", "skip"].includes(outcome.resolution)
+      || !/^[a-f0-9-]{36}$/u.test(String(outcome.resolutionId || ""))
+      || typeof outcome.completed !== "boolean" || !Number.isInteger(done) || !Number.isInteger(total)
+      || done < 0 || total < done) {
+      throw new Error("发送结果处理失败，请保留数据并查看日志。");
+    }
+    task.progress = { done, total };
+    task.error = "";
+    task.status = outcome.completed ? "completed" : "pending";
+    if (outcome.completed) {
+      task.completedAt = String(outcome.resolvedAt || new Date(now()).toISOString());
+      task.lastCompletedDate = localDate(task.completedAt);
+    } else delete task.completedAt;
+    delete task.notBefore;
+    delete task.waitingReason;
+    return {
+      resolution: outcome.resolution,
+      resolution_id: outcome.resolutionId,
+      part_kind: String(outcome.partKind || "text"),
+      part_index: Number.isInteger(outcome.partIndex) ? outcome.partIndex : null,
+      done, total,
+      identity_rotated: outcome.identityRotated === true
+    };
+  }
+
+  function acknowledgeUnknownResolution(task, resolutionId) {
+    try { executors.touch?.acknowledgeUnknownWorkflowResolution?.(task, resolutionId); }
+    catch (failure) {
+      log("touch.unknown_resolution_ack_failed", { resolution_id: resolutionId, reason: workflowFailureReason(failure) }, { level: "warn", code: "manual_resolution_ack_failed" });
+    }
+  }
+
+  function reconcileUnknownResolutions() {
+    const reconciled = [];
+    for (const task of store.tasks) {
+      if (task.type !== "touch" || task.status !== "needs_attention" || task.accountName !== getAccount()) continue;
+      let description;
+      try { description = executors.touch?.describeUnknownWorkflowTask?.(task); }
+      catch { continue; }
+      if (!description?.reconciliation) continue;
+      const diagnostic = applyUnknownResolution(task, description.reconciliation);
+      reconciled.push({ task, diagnostic });
+    }
+    if (!reconciled.length) return;
+    enabled = false;
+    phase = "paused";
+    error = "";
+    persist();
+    revision += 1;
+    for (const { task, diagnostic } of reconciled) {
+      acknowledgeUnknownResolution(task, diagnostic.resolution_id);
+      log("touch.unknown_resolved", { ...diagnostic, reconciled: true }, { level: "info", code: "manual_resolution_reconciled" });
+    }
   }
   function taskPath(task) { return path.join(directories[task.type], "planned_tasks", `${task.id}.json`); }
   function readPayload(task) {
-    const saved = readJson(taskPath(task), null);
-    if (!saved || saved.id !== task.id || !saved.payload) throw new Error("任务资料缺失，请重新编辑并加入计划。");
+    const file = taskPath(task);
+    const reasonCode = task.type === "touch"
+      ? WORKFLOW_REASON_CODES.touchTaskPayloadIncomplete
+      : WORKFLOW_REASON_CODES.momentsWorkflowConfigInvalid;
+    let saved;
+    try { saved = readJson(file, null); }
+    catch (cause) {
+      const failure = new Error(`任务资料缺失或损坏：${file}`, { cause });
+      failure.code = reasonCode;
+      throw failure;
+    }
+    if (!saved || saved.id !== task.id || !saved.payload) {
+      const failure = new Error(`任务资料缺失或损坏：${file}`);
+      failure.code = reasonCode;
+      throw failure;
+    }
     return saved.payload;
   }
   function writePayload(task, payload) { writeJsonAtomic(taskPath(task), { id: task.id, type: task.type, payload }); }
   function accountRecipients() { return recipients.accounts[getAccount()] || []; }
 
+  function waitingSafetyTask() {
+    const time = new Date(now()).getTime();
+    return store.tasks
+      .filter((task) => task.status === "pending"
+        && task.waitingReason === "touch_safety_interval"
+        && Number(task.notBefore) > time
+        && (!task.accountName || task.accountName === getAccount()))
+      .sort((left, right) => Number(left.notBefore) - Number(right.notBefore) || left.sequence - right.sequence)[0] || null;
+  }
+
   function status() {
+    reconcileUnknownResolutions();
+    const waiting = phase === "waiting_safety_interval" ? waitingSafetyTask() : null;
     return {
       enabled, phase, currentTaskId, lastTaskId, replyEnabled: store.replyEnabled !== false,
+      waitingTaskId: waiting?.id || null, waitUntil: waiting?.notBefore || null,
       nextTaskId: nextTask()?.id || null, error, replyStatus, replyError, revision,
-      tasks: store.tasks.map((task) => ({ ...task, canRetry: canRetry(task), accountMismatch: Boolean(task.accountName && task.accountName !== getAccount()) })),
+      classificationQuality: qualitySummary(),
+      tasks: store.tasks.map((task) => {
+        const resolution = unknownResolution(task);
+        const skipped = skippedTouchState(task);
+        return { ...task, canRetry: canRetry(task), ...(resolution ? { unknownResolution: resolution } : {}),
+          ...(skipped || {}),
+          accountMismatch: Boolean(task.accountName && task.accountName !== getAccount()) };
+      }),
       recipients: accountRecipients().map((contact) => ({ id: contact.id, label: contact.remark || contact.nickname || contact.name || contact.id }))
     };
   }
@@ -126,25 +280,38 @@ function createWechatWorkflowController(options) {
   }
 
   function fail(failure) {
+    const reason = workflowFailureReason(failure);
+    if (!classifyWechatFailureReason(reason).known) recordUnknownReason(null, reason);
     enabled = false;
     phase = "needs_attention";
     error = failure?.message || "计划执行异常，请查看任务详情。";
+    store.workflowFailureReason = reason;
     clearTimeout(timer);
     emit();
+    try { persist(); } catch {}
+    log("workflow.failed", { stage: cycleStage, reason, error: failure, cause: failure?.cause }, { level: "error", code: reason });
   }
 
-  function refreshDay() {
+  function refreshDay(onTaskFailure) {
     const today = localDate(now());
     let changed = false;
     for (const task of store.tasks) {
       if (task.repeat === "daily" && !["cancelled", "needs_attention", "running"].includes(task.status) && task.occurrenceDate !== today) {
+        let payload;
+        try { payload = readPayload(task); }
+        catch (failure) {
+          if (typeof onTaskFailure !== "function" || onTaskFailure(task, failure) !== true) throw failure;
+          changed = true;
+          continue;
+        }
         task.status = "pending";
-        task.progress = { done: 0, total: readPayload(task).maxPosts };
+        task.progress = { done: 0, total: payload.maxPosts };
         task.occurrenceDate = today;
         task.error = "";
         delete task.startedAt;
         delete task.completedAt;
         delete task.notBefore;
+        delete task.waitingReason;
         changed = true;
       }
       if (task.status === "pending" && task.scheduledAt && localDate(task.scheduledAt) < today && !task.startedAt) {
@@ -187,21 +354,30 @@ function createWechatWorkflowController(options) {
     return store.tasks.filter((task) => task.status === "pending" && (!task.notBefore || task.notBefore <= time)
       && (!task.accountName || task.accountName === getAccount()) && (dueAt(task) === null || dueAt(task) <= time))
       .sort((left, right) => {
+        const leftPriority = left.type === "touch" ? 0 : 1;
+        const rightPriority = right.type === "touch" ? 0 : 1;
+        if (leftPriority !== rightPriority) return leftPriority - rightPriority;
         const a = dueAt(left); const b = dueAt(right);
         if (a !== null && b === null) return -1;
         if (a === null && b !== null) return 1;
-        return (a !== null && b !== null ? a - b : 0) || left.sequence - right.sequence;
+        if (a !== null && b !== null && a !== b) return a - b;
+        return left.sequence - right.sequence;
       })[0];
   }
 
   function settleQueue() {
-    if (!enabled) { phase = "paused"; return; }
+    if (!enabled) { if (phase !== "needs_attention") phase = "paused"; return; }
     const pending = store.tasks.filter((task) => task.status === "pending");
     const blocked = store.tasks.filter((task) => ["needs_attention", "missed"].includes(task.status)
       || (task.status === "pending" && task.accountName && task.accountName !== getAccount()));
     const available = pending.filter((task) => !task.accountName || task.accountName === getAccount());
+    const waiting = waitingSafetyTask();
+    if (waiting && !nextTask()) {
+      phase = "waiting_safety_interval";
+      return;
+    }
     if (available.length) {
-      phase = nextTask() ? "queued" : "scheduled";
+      phase = nextTask() ? "working" : "scheduled";
       return;
     }
     if (store.replyEnabled !== false && accountRecipients().length && !replyError) {
@@ -217,19 +393,79 @@ function createWechatWorkflowController(options) {
     if (enabled || inFlight || phase === "pausing") throw new Error("请先暂停程序，再调整本轮任务。");
   }
 
+  function preflightStart() {
+    assertHealthy();
+    if (disposed) throw new Error("程序正在退出。");
+    if (enabled || inFlight || mutating) return { alreadyActive: true };
+    refreshDay();
+    if (!store.tasks.some((task) => task.status === "pending" && (!task.accountName || task.accountName === getAccount()))
+      && !(store.replyEnabled !== false && accountRecipients().length)) {
+      throw new Error("没有待执行任务。请将可重试任务重新加入计划；其他未完成任务请先核对结果。");
+    }
+    return { alreadyActive: false };
+  }
+
+  function applyTaskAttention(task, reasonCode, message, requiresGlobalAttention = false) {
+    reasonCode = normalizeFailureReasonCode(reasonCode);
+    const policy = classifyWechatFailureReason(reasonCode);
+    task.status = "needs_attention";
+    task.error = String(message || "任务需要处理，请查看任务详情。");
+    task.reasonCode = reasonCode;
+    task.reasonClassification = policy.classification;
+    if (!policy.known) recordUnknownReason(task, reasonCode);
+    // An explicit unknown-outcome signal always outranks the local-reason whitelist.
+    if (!requiresGlobalAttention && policy.attentionScope === "task") {
+      log("task.local_attention", { task_kind: task.type, task_id: task.id, stage: cycleStage, reason: reasonCode }, { level: "warn", code: reasonCode });
+      return;
+    }
+    enabled = false;
+    phase = "needs_attention";
+    clearTimeout(timer);
+    log("task.global_stop", { task_kind: task.type, task_id: task.id, stage: cycleStage, reason: reasonCode || "task_attention_reason_missing" }, { level: "warn", code: reasonCode || "task_attention_reason_missing" });
+  }
+
+  function handleQueueTaskFailure(task, failure) {
+    const reason = workflowFailureReason(failure);
+    if (classifyWechatFailureReason(reason).attentionScope !== "task") return false;
+    applyTaskAttention(task, reason, failure?.message);
+    return true;
+  }
+
   async function runCycle() {
     cycleStage = "queue_prepare";
     assertHealthy();
-    refreshDay();
-    reconcilePublishResults();
-    for (const task of store.tasks) if (task.type === "touch" && !task.enrolled) enroll(task, readPayload(task));
+    let queueChanged = false;
+    try {
+      refreshDay(handleQueueTaskFailure);
+      reconcilePublishResults();
+      for (const task of store.tasks) {
+        if (task.type !== "touch" || task.enrolled) continue;
+        try { enroll(task, readPayload(task)); }
+        catch (failure) {
+          if (!handleQueueTaskFailure(task, failure)) throw failure;
+          queueChanged = true;
+        }
+      }
+      if (queueChanged) { persist(); emit(); }
+    } catch (failure) {
+      const reason = workflowFailureReason(failure);
+      log("queue_prepare.failed", { stage: cycleStage, reason, error: failure, cause: failure?.cause }, { level: "error", code: reason });
+      throw failure;
+    }
     if (!enabled || mutating) return;
+    const readyTask = nextTask();
     const people = store.replyEnabled === false ? [] : accountRecipients();
-    if (people.length && options.reply?.runWorkflowStep && !replyError) {
+    // Finite work has absolute priority. Automatic reply is checked only after
+    // every task that is due now has completed or been safely isolated.
+    if (!readyTask && people.length && options.reply?.runWorkflowStep && !replyError) {
       cycleStage = "reply_step";
       const replyStarted = Date.now();
       phase = "replying";
       replyStatus = "正在检查客户消息";
+      if (!replyActivated) {
+        replyActivated = true;
+        log("reply.activated", { stage: cycleStage, reason: "finite_tasks_drained" }, { level: "info", code: "reply_activated" });
+      }
       emit();
       const reply = await options.reply.runWorkflowStep({
         recipients: people, accountName: getAccount(), isEnabled: () => enabled,
@@ -244,7 +480,7 @@ function createWechatWorkflowController(options) {
       lastReplyDiagnostic = replyReason;
       replyStatus = reply.error || reply.progressText || (reply.handled ? replyStatus : "本次未发现待回复消息");
       if (reply.handled || reply.busy || reply.status === "busy") return;
-    } else if (!replyError) {
+    } else if (!readyTask && !replyError) {
       replyError = people.length ? "自动回复执行器不可用" : "";
       replyStatus = people.length ? "自动回复执行器不可用" : "暂无接待客户";
       if (people.length) log("reply.blocked", { stage: "reply_step", reason: "executor_unavailable" }, { level: "warn", code: "executor_unavailable" });
@@ -252,6 +488,7 @@ function createWechatWorkflowController(options) {
     if (!enabled || mutating) return;
     const task = nextTask();
     if (!task) { currentTaskId = null; settleQueue(); emit(); return; }
+    replyActivated = false;
     const executor = executors[task.type];
     cycleStage = "task_prepare";
     const startKey = `${task.id}:${task.progress.done}`;
@@ -264,35 +501,78 @@ function createWechatWorkflowController(options) {
     persist();
     emit();
     try {
-      if (!executor?.runWorkflowStep) throw new Error("当前版本尚未连接这项任务的执行器。");
-      const payload = readPayload(task);
-      cycleStage = "task_execute";
-      const result = await executor.runWorkflowStep({ ...task, payload }, { isEnabled: () => enabled && !task.cancelRequested });
+      let result;
+      if (!executor?.runWorkflowStep) {
+        result = { status: "needs_attention", reasonCode: WORKFLOW_REASON_CODES.workflowExecutorUnavailable, error: "当前版本尚未连接这项任务的执行器。", progress: task.progress };
+      } else {
+        let payload;
+        try { payload = readPayload(task); }
+        catch (failure) {
+          const reason = workflowFailureReason(failure);
+          if (classifyWechatFailureReason(reason).attentionScope !== "task") throw failure;
+          result = { status: "needs_attention", reasonCode: reason, error: failure.message, progress: task.progress };
+        }
+        if (!result) {
+          cycleStage = "task_execute";
+          result = await executor.runWorkflowStep({ ...task, payload }, { isEnabled: () => enabled && !task.cancelRequested });
+        }
+      }
       cycleStage = "task_result";
       if (!result || !["pending", "completed", "needs_attention"].includes(result.status)) throw new Error("任务返回结果无法确认，请查看任务详情。");
       task.progress = result.progress || task.progress;
       if (task.progress.done > 0) task.startedAt ||= new Date(now()).toISOString();
       task.error = result.error || "";
       task.status = result.status;
+      const pendingDiagnosticReason = String(result?.result?.reason || "");
+      const controlledPendingReason = result.status === "pending"
+        && (pendingDiagnosticReason === "wechat_operation_busy" || /^message_input_failed_wechat_user_active(?:_attempts_[1-9]\d*)?$/u.test(pendingDiagnosticReason))
+        ? pendingDiagnosticReason
+        : "";
+      const reason = result.reasonCode || controlledPendingReason || (result.status === "needs_attention"
+        ? workflowFailureReason(result.error, "task_needs_attention")
+        : result.waitingReason === "touch_safety_interval" ? "touch_safety_interval" : "task_step_returned");
+      if (task.status === "needs_attention") {
+        applyTaskAttention(task, reason, result.error, result.requiresGlobalAttention === true);
+      } else { delete task.reasonCode; delete task.reasonClassification; }
       if (task.cancelRequested && result.status !== "needs_attention") task.status = "cancelled";
       if (task.status === "completed") {
         task.completedAt = new Date(now()).toISOString();
         task.lastCompletedDate = localDate(now());
       }
-      if (result.retryAfterMs) task.notBefore = new Date(now()).getTime() + result.retryAfterMs;
-      else delete task.notBefore;
-      const reason = result.status === "needs_attention" ? workflowFailureReason(result.error, "task_needs_attention") : "task_step_returned";
+      const controlledWait = reason === "wechat_operation_busy" || /^message_input_failed_wechat_user_active(?:_attempts_[1-9]\d*)?$/u.test(reason);
+      const retryAfterMs = Number(result.retryAfterMs || (result.status === "pending" && controlledWait ? (options.pollIntervalMs ?? 2500) : 0));
+      if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+        task.notBefore = new Date(now()).getTime() + retryAfterMs;
+        if (result.waitingReason === "touch_safety_interval" || controlledWait) task.waitingReason = result.waitingReason || reason;
+        else delete task.waitingReason;
+        if (controlledWait) log("task.recovery_wait", {
+          task_kind: task.type, task_id: task.id, stage: cycleStage, reason, retry_after_ms: retryAfterMs,
+          recovery_action: "bounded_wait_then_retry"
+        }, { level: "info", code: reason });
+      } else {
+        delete task.notBefore;
+        delete task.waitingReason;
+      }
       const resultKey = JSON.stringify([task.id, task.status, task.progress.done, task.progress.total, reason]);
       operation?.end?.({ task_kind: task.type, task_id: task.id, stage: cycleStage, status: task.status, reason, error: result.error || "", done: task.progress.done, total: task.progress.total }, { ok: result.status !== "needs_attention", code: reason, trace: resultKey !== lastTaskResultKey });
       lastTaskResultKey = resultKey;
     } catch (failure) {
       operation?.end?.({ task_kind: task.type, task_id: task.id, stage: cycleStage, reason: workflowFailureReason(failure), error: failure }, { ok: false, code: workflowFailureReason(failure) });
-      task.status = "needs_attention";
-      task.error = failure.message || "任务执行中断，请核对实际结果。";
+      applyTaskAttention(task, workflowFailureReason(failure), failure.message || "任务执行中断，请核对实际结果。", true);
     } finally {
       currentTaskId = null;
       settleQueue();
       persist();
+      const following = nextTask();
+      const transitionKey = JSON.stringify([task.id, task.status, task.progress?.done, following?.id || ""]);
+      if (transitionKey !== lastQueueTransitionKey) {
+        lastQueueTransitionKey = transitionKey;
+        log("queue.transition", {
+          stage: "task_settled", task_kind: task.type, task_id: task.id, task_status: task.status,
+          next_task_kind: following?.type || "", next_task_id: following?.id || "",
+          continue_to_next_task: Boolean(following), reply_eligible: !following && store.replyEnabled !== false && accountRecipients().length > 0
+        }, { level: "info", code: following ? "next_finite_task_ready" : "finite_tasks_drained" });
+      }
       emit();
     }
   }
@@ -305,7 +585,15 @@ function createWechatWorkflowController(options) {
       log("cycle.exception", { stage: cycleStage, error: failure, reason: workflowFailureReason(failure) }, { level: "error", code: workflowFailureReason(failure) });
       throw failure;
     }
-    finally { inFlight = null; schedule(); }
+    finally {
+      inFlight = null;
+      const waiting = waitingSafetyTask();
+      // Reply checks may continue during the short safety interval, but the
+      // final timer lands on the exact known deadline rather than polling past it.
+      const poll = options.pollIntervalMs ?? 2500;
+      const waitDelay = waiting ? Math.max(0, Number(waiting.notBefore) - new Date(now()).getTime()) : null;
+      schedule(nextTask() ? 0 : waitDelay === null ? poll : Math.min(poll, waitDelay));
+    }
   }
 
   function serialize(action) {
@@ -342,23 +630,55 @@ function createWechatWorkflowController(options) {
     assertPlanEditable();
     if (!TASK_TYPES.has(input.type) || (existing && input.type !== existing.type)) throw new Error("请选择有效的任务类型。");
     const completedDaily = existing?.repeat === "daily" && existing.status === "completed";
-    if (existing && !completedDaily && (existing.status === "running" || existing.progress.done > 0 || !["pending", "missed"].includes(existing.status))) {
+    const persistedTouchState = existing?.type === "touch"
+      && typeof executors.touch?.hasStartedWorkflowTask === "function"
+      && executors.touch.hasStartedWorkflowTask(existing.id);
+    const startedTouch = existing?.type === "touch" && !completedDaily
+      && ["pending", "running"].includes(existing.status)
+      && (Number(existing.progress?.done || 0) > 0 || persistedTouchState);
+    if (existing && !completedDaily && !startedTouch && (existing.status === "running" || existing.progress.done > 0 || !["pending", "missed"].includes(existing.status))) {
       throw new Error("这项任务已经开始，请使用重复任务建立新的安排。");
     }
     const executor = executors[input.type];
     if (!executor?.prepareWorkflowTask) throw new Error("当前版本尚未连接这项任务的执行器。");
     const accountName = getAccount();
     if (!accountName) throw new Error("请先同步当前微信联系人，确认本次使用的微信账号。");
+    const taskId = existing?.id || randomUUID();
+    let payload;
+    if (startedTouch) {
+      if (existing.accountName && existing.accountName !== accountName) throw new Error("微信账号已切换，请切回原账号后再编辑这项任务。");
+      const saved = readPayload(existing);
+      const selectedIds = Array.isArray(input.payload?.contactIds) ? input.payload.contactIds.map(String) : [];
+      const savedIds = (Array.isArray(saved.contacts) ? saved.contacts : []).map((contact) => String(contact?.id || ""));
+      if (JSON.stringify(selectedIds) !== JSON.stringify(savedIds)) throw new Error("任务已经开始，只能修改话术，不能修改联系人范围。");
+      if (JSON.stringify(input.payload?.imageIds || []) !== JSON.stringify(saved.imageIds || []) || String(input.payload?.link || "") !== String(saved.link || "")) {
+        throw new Error("任务已经开始，只能修改话术；图片和网址请保持不变。");
+      }
+      if (typeof executor.updateWorkflowTask !== "function") throw new Error("当前版本不支持编辑进行中的触达任务，请重新添加任务。");
+      payload = await executor.updateWorkflowTask(existing.id, {
+        ...saved,
+        script: String(input.payload?.script || "").trim()
+      });
+    } else {
+      payload = unwrap(await executor.prepareWorkflowTask(taskId, input.payload || {}));
+    }
     const task = {
-      id: existing?.id || randomUUID(), type: input.type,
+      id: taskId, type: input.type,
       title: String(input.title || TITLES[input.type]).trim().slice(0, 100),
       createdAt: existing?.createdAt || new Date(now()).toISOString(),
       sequence: existing?.sequence ?? Math.max(0, ...store.tasks.map((entry) => entry.sequence || 0)) + 1,
       ...normalizedSchedule(input), accountName, status: "pending", error: "",
       progress: { done: 0, total: 1 }, occurrenceDate: localDate(now()), enrolled: false
     };
-    const payload = unwrap(await executor.prepareWorkflowTask(task.id, input.payload || {}));
     task.progress.total = input.type === "touch" ? payload.contacts.length : input.type === "interact" ? payload.maxPosts : 1;
+    if (startedTouch) {
+      task.status = "pending";
+      task.progress = { ...existing.progress, total: payload.contacts.length };
+      task.startedAt = existing.startedAt;
+      task.completedAt = existing.completedAt;
+      task.occurrenceDate = existing.occurrenceDate;
+      task.enrolled = existing.enrolled;
+    }
     if (!task.progress.total) throw new Error("请至少选择一位客户或一个互动目标。");
     if (completedDaily) {
       task.status = "completed";
@@ -382,6 +702,49 @@ function createWechatWorkflowController(options) {
     const task = store.tasks.find((entry) => entry.id === id);
     if (!task) throw new Error("这项任务不存在。");
     return task;
+  }
+
+  async function pauseWorkflow() {
+    enabled = false; clearTimeout(timer);
+    phase = inFlight ? "pausing" : "paused";
+    emit();
+    await inFlight;
+    await options.reply?.pauseWorkflow?.();
+    phase = "paused"; replyStatus = "已暂停"; emit();
+    return { ok: true, state: status() };
+  }
+
+  async function retrySkipped(id, contactIds) {
+    if (enabled) {
+      if (currentTaskId || nextTask()) throw new Error("当前有限任务正在执行，请等待当前步骤结束后再重试跳过联系人。");
+      await pauseWorkflow();
+    }
+    return serialize(() => {
+      assertPlanEditable();
+      const task = findTask(id);
+      if (task.type !== "touch" || typeof executors.touch?.retrySkippedWorkflowTask !== "function") throw new Error("这项任务没有可重试的跳过联系人。");
+      const retried = executors.touch.retrySkippedWorkflowTask(task, contactIds);
+      if (!retried?.ok) throw Object.assign(new Error(retried?.error || "跳过联系人未能重新加入。"), { code: retried?.blocked_reason });
+      task.progress = { done: retried.task.current_index, total: retried.task.total };
+      task.status = "pending";
+      task.error = "";
+      delete task.reasonCode;
+      delete task.completedAt;
+      delete task.lastCompletedDate;
+      delete task.notBefore;
+      delete task.waitingReason;
+      phase = "paused";
+      persist(); emit();
+      log("touch.skipped_requeued", {
+        stage: "retry_skipped", task_kind: task.type, task_id: task.id,
+        retried_count: Number(retried.retriedCount || 0), excluded_count: Number(retried.excludedCount || 0),
+        excluded_reasons: retried.excludedReasons || {}
+      }, { level: "info", code: "retry_skipped_requeued" });
+      return {
+        ok: true, state: status(), retriedCount: Number(retried.retriedCount || 0),
+        excludedCount: Number(retried.excludedCount || 0), excludedReasons: retried.excludedReasons || {}
+      };
+    });
   }
 
   return {
@@ -417,6 +780,7 @@ function createWechatWorkflowController(options) {
       if (!canRetry(task)) throw new Error("无法确认这项任务尚未执行，请先核对微信中的实际结果，不能直接重试。");
       task.status = "pending"; task.error = "";
       delete task.notBefore;
+      delete task.waitingReason;
       phase = "paused";
       persist(); emit(); return { ok: true, state: status() };
     }),
@@ -424,11 +788,17 @@ function createWechatWorkflowController(options) {
       assertHealthy();
       const task = findTask(id);
       const saved = readPayload(task);
-      const payload = task.type === "touch" ? { script: saved.script, contactIds: saved.contacts.map((contact) => contact.id) }
+      const payload = task.type === "touch" ? { script: saved.script, contactIds: saved.contacts.map((contact) => contact.id),
+        imageIds: saved.imageIds || [], link: saved.link || "" }
         : task.type === "interact" ? { maxPosts: saved.maxPosts, likeEnabled: saved.likeEnabled, commentEnabled: saved.commentEnabled, commentGuidance: saved.commentGuidance }
           : { content: saved.content, sourceTaskId: task.id };
       const media = task.type === "publish" ? (await executors.publish.workflowDraft(task.id))?.media : undefined;
-      return { ok: true, task: { ...task, payload, ...(media ? { media } : {}) } };
+      let images = [], imageError = "";
+      if (task.type === "touch" && saved.imageIds?.length) {
+        try { images = executors.touch.describeImages(saved.imageIds); }
+        catch { imageError = "已保存的图片无法读取，请移除后重新添加。"; images = saved.imageIds.map((id) => ({ id, name: "图片无法读取", preview: "" })); }
+      }
+      return { ok: true, task: { ...task, payload, ...(media ? { media } : {}), ...(task.type === "touch" ? { images, imageError } : {}) } };
     },
     cancelTask: (id) => serialize(() => {
       assertPlanEditable();
@@ -437,24 +807,58 @@ function createWechatWorkflowController(options) {
       else if (task.status !== "completed" || task.repeat === "daily") task.status = "cancelled";
       persist(); emit(); return { ok: true, state: status() };
     }),
+    retrySkipped,
+    resolveTouchUnknown: (id, resolution) => serialize(() => {
+      assertPlanEditable();
+      const task = findTask(id);
+      if (task.type !== "touch" || task.status !== "needs_attention" || task.accountName !== getAccount()) {
+        throw new Error("这项任务当前不能处理发送结果。");
+      }
+      const resolver = executors.touch?.resolveUnknownWorkflowTask;
+      if (typeof resolver !== "function" || !unknownResolution(task)) throw new Error("这项任务没有待确认的发送结果。");
+      const resolutionId = randomUUID();
+      const outcome = resolver(task, resolution, resolutionId);
+      const diagnostic = applyUnknownResolution(task, outcome);
+      enabled = false;
+      phase = "paused";
+      error = "";
+      persist();
+      acknowledgeUnknownResolution(task, resolutionId);
+      log("touch.unknown_resolved", { ...diagnostic, reconciled: false }, { level: "info", code: "manual_resolution_recorded" });
+      emit();
+      return { ok: true, state: status() };
+    }),
+    deleteTasks: (ids, unsuccessfulOnly = false) => serialize(() => {
+      assertHealthy();
+      assertPlanEditable();
+      if (!Array.isArray(ids) || !ids.length || ids.some((id) => typeof id !== "string")) throw new Error("请选择要删除的任务。");
+      const selected = [...new Set(ids)].map(findTask);
+      if (selected.some((task) => task.status === "running" || task.id === currentTaskId)) throw new Error("请先停止正在执行的任务。");
+      if (unsuccessfulOnly && selected.some((task) => !["needs_attention", "cancelled", "missed"].includes(task.status))) {
+        throw new Error("任务状态已变化，请重新选择要清理的任务。");
+      }
+      const removed = new Set(selected.map((task) => task.id));
+      // Remove from scheduling and display, retaining payloads and receipts.
+      // Archive metadata in the same atomic write so uncertain sends stay auditable.
+      store.removedTasks = [...(store.removedTasks || []), ...selected.map((task) => ({ ...task, removedAt: new Date(now()).toISOString() }))];
+      store.tasks = store.tasks.filter((task) => !removed.has(task.id));
+      if (removed.has(lastTaskId)) lastTaskId = null;
+      error = "";
+      persist(); emit(); return { ok: true, state: status(), deletedCount: selected.length };
+    }),
     removeRecipient: (id) => serialize(() => {
       assertPlanEditable();
       const next = { ...recipients, accounts: { ...recipients.accounts, [getAccount()]: accountRecipients().filter((person) => person.id !== id) } };
       writeJsonAtomic(recipientsFile, next); recipients = next; emit(); return { ok: true, state: status() };
     }),
+    preflightStart,
     start: async () => {
       const operation = options.logger?.begin?.("wechat_workflow", "start", { stage: "start_preflight", pending_count: store.tasks.filter((task) => task.status === "pending").length, reply_enabled: store.replyEnabled !== false }, { trace: true });
       try {
-        assertHealthy();
-        if (disposed) throw new Error("程序正在退出。");
-        if (enabled || inFlight || mutating) {
+        const preflight = preflightStart();
+        if (preflight.alreadyActive) {
           operation?.end?.({ stage: "start_preflight", reason: "already_active_or_mutating" }, { ok: true });
           return { ok: true, state: status() };
-        }
-        refreshDay();
-        if (!store.tasks.some((task) => task.status === "pending" && (!task.accountName || task.accountName === getAccount()))
-          && !(store.replyEnabled !== false && accountRecipients().length)) {
-          throw new Error("没有待执行任务。请将可重试任务重新加入计划；其他未完成任务请先核对结果。");
         }
         enabled = true; error = ""; phase = "listening";
         replyError = "";
@@ -467,15 +871,7 @@ function createWechatWorkflowController(options) {
         throw failure;
       }
     },
-    pause: async () => {
-      enabled = false; clearTimeout(timer);
-      phase = inFlight ? "pausing" : "paused";
-      emit();
-      await inFlight;
-      await options.reply?.pauseWorkflow?.();
-      phase = "paused"; replyStatus = "已暂停"; emit();
-      return { ok: true, state: status() };
-    },
+    pause: pauseWorkflow,
     dispose: async () => {
       enabled = false; disposed = true; clearTimeout(timer);
       await inFlight;

@@ -215,6 +215,10 @@ function lastFailureBreadcrumb(value = {}) {
 
 function normalizeVerificationDiagnostics(value = {}) {
   return {
+    ...Object.fromEntries(["verification_capture_ms", "verification_ocr_ms", "verification_candidates_ms", "verification_feed_ocr_ms", "verification_post_count", "verification_text_length"]
+      .filter((key) => Number.isFinite(value[key]) && value[key] >= 0)
+      .map((key) => [key, boundedInteger(value[key], 0, 300_000)])),
+    ...(typeof value.verification_anchor_present === "boolean" ? { verification_anchor_present: value.verification_anchor_present } : {}),
     verification_attempts: boundedInteger(
       value.verification_attempts ?? value.verificationAttempts,
       0,
@@ -488,6 +492,9 @@ function createMomentsPublishController(options = {}) {
   const logger = options.logger && typeof options.logger.event === "function"
     ? options.logger
     : { event: () => undefined };
+  const passport = options.passport || null;
+  const passportFailureSignatures = new Set();
+  const passportBillSignatures = new Set();
   let state = normalizeState(readJson(stateFile));
   let currentSelection = null;
   let preparedDraft = null;
@@ -780,12 +787,43 @@ function createMomentsPublishController(options = {}) {
   }
 
   async function runWorkflowStep(taskRecord, runOptions = {}) {
-    const result = (status, error, extra = {}) => ({
-      status,
-      progress: { done: status === "completed" ? 1 : 0, total: 1 },
-      ...(error ? { error } : {}),
-      ...extra
-    });
+    const result = (status, error, extra = {}) => {
+      const reasonCode = String(extra.reasonCode || error || "");
+      const diagnosticReason = String(extra.diagnosticReason || "");
+      const progress = { done: status === "completed" ? 1 : 0, total: 1 };
+      passport?.recordEvent("moments", taskRecord.id, {
+        stage: "publish_workflow_step", direction: "out", status, reasonCode
+      });
+      if (status === "needs_attention") {
+        const signature = `${taskRecord.id}\0${reasonCode}\0${diagnosticReason}`;
+        if (!passportFailureSignatures.has(signature)) {
+          passportFailureSignatures.add(signature);
+          passport?.recordFailure("moments", taskRecord.id, {
+            stage: "publish_workflow_step",
+            reasonCode: reasonCode || "moments_publish_failure_reason_missing",
+            rawReading: {
+              diagnosticReason,
+              actionAttempted: extra.result?.actionAttempted === true,
+              outcomeUnknown: extra.result?.outcomeUnknown === true,
+              progress
+            },
+            expected: { status: "completed", progress: { done: 1, total: 1 } }
+          });
+        }
+      }
+      if (["completed", "needs_attention"].includes(status)) {
+        const billSignature = `${taskRecord.id}\0${status}\0${reasonCode}`;
+        if (!passportBillSignatures.has(billSignature)) {
+          passportBillSignatures.add(billSignature);
+          passport?.writeRunBill("moments", taskRecord.id, [{
+            taskId: taskRecord.id,
+            status: status === "completed" ? "completed" : "failed",
+            reasonCode: status === "completed" ? "" : reasonCode
+          }]);
+        }
+      }
+      return { status, progress, ...(error ? { error } : {}), ...extra };
+    };
     const isEnabled = typeof runOptions.isEnabled === "function" ? runOptions.isEnabled : () => false;
     if (!isEnabled()) return result("pending");
     if (inFlight || confirmationTask) return result("pending", "wechat_operation_busy");
@@ -794,7 +832,11 @@ function createMomentsPublishController(options = {}) {
         const saved = plannedSnapshot(taskRecord.id);
         if (!saved || saved.fingerprint !== taskRecord.payload?.fingerprint
           || saved.revision !== taskRecord.payload?.mediaRevision) {
-          return result("needs_attention", "moments_publish_snapshot_changed");
+          return result("needs_attention", "moments_publish_snapshot_changed", {
+            reasonCode: "moments_publish_pre_action_failed",
+            diagnosticReason: "moments_publish_snapshot_changed",
+            result: { actionAttempted: false, outcomeUnknown: false }
+          });
         }
         const completed = state.attempts.find((attempt) => attempt.workflow_task_id === String(taskRecord.id)
           && attempt.fingerprint === saved.fingerprint
@@ -802,15 +844,24 @@ function createMomentsPublishController(options = {}) {
         if (completed) return result("completed", "", { result: { verified: true, attemptId: completed.attempt_id } });
         const attempted = state.attempts.find((attempt) => attempt.workflow_task_id === String(taskRecord.id)
           && ["publishing", "outcome_unknown"].includes(attempt.status));
-        if (attempted) return result("needs_attention", "moments_publish_outcome_unknown_requires_resolution");
+        if (attempted) return result("needs_attention", "moments_publish_outcome_unknown_requires_resolution", {
+          reasonCode: "moments_publish_outcome_unknown_requires_resolution",
+          requiresGlobalAttention: true,
+          result: { actionAttempted: true, outcomeUnknown: true }
+        });
         const response = await runDraft(saved, { isCurrent: isEnabled, workflowTaskId: String(taskRecord.id) });
         if (response?.verified) {
           return result("completed", "", { result: { verified: true, attemptId: response.state?.attempt_id } });
         }
         const reason = response?.reason || "moments_publish_failed";
         const pending = ["wechat_operation_busy", "workflow_paused"].includes(reason) && response?.actionAttempted !== true;
+        const actionAttempted = response?.actionAttempted === true;
+        const outcomeUnknown = response?.state?.outcome_unknown === true || actionAttempted;
         return result(pending ? "pending" : "needs_attention", reason, {
-          result: { actionAttempted: response?.actionAttempted === true, outcomeUnknown: response?.state?.outcome_unknown === true }
+          reasonCode: pending ? reason : outcomeUnknown ? "moments_publish_outcome_unknown_requires_resolution" : "moments_publish_pre_action_failed",
+          diagnosticReason: reason,
+          requiresGlobalAttention: outcomeUnknown,
+          result: { actionAttempted, outcomeUnknown }
         });
       } catch (error) {
         return result("needs_attention", safeReason(error?.code, "moments_publish_workflow_failed"));
@@ -853,6 +904,7 @@ function createMomentsPublishController(options = {}) {
       })
     });
     record("publish.failed_before_action", {
+      ...require("../shared/wechat-window-diagnostics.cjs").sanitizeWechatWindowDiagnostics(rawBreadcrumb.diagnostics),
       attempt_id: attemptId,
       fingerprint: state.fingerprint,
       reason: state.last_reason,
@@ -886,6 +938,7 @@ function createMomentsPublishController(options = {}) {
       })
     });
     record("publish.outcome_unknown", {
+      ...require("../shared/wechat-window-diagnostics.cjs").sanitizeWechatWindowDiagnostics(rawBreadcrumb.diagnostics),
       attempt_id: attemptId,
       fingerprint,
       reason: state.last_reason,

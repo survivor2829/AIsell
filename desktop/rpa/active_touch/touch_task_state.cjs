@@ -10,6 +10,7 @@ const MAX_RUN_LOG_LINES = 500;
 const STALE_TASK_MS = 7 * 24 * 60 * 60 * 1000;
 const BATCH_SIZE = 50;
 const CURRENT_TASK_VERSION = 4;
+const RETRYABLE_SKIPPED_STATUSES = new Set(["identity_skipped", "ai_failed_skipped", "pre_send_skipped"]);
 
 function nowIso() {
   return new Date().toISOString();
@@ -32,7 +33,7 @@ function contactName(contact) {
 }
 
 function touchSearchName(contact) {
-  return String(contact?.remark || contact?.nickname || contact?.wechatId || contact?.name || "").trim();
+  return String(contact?.wechatId || contact?.remark || contact?.nickname || contact?.name || "").trim();
 }
 
 function fillTouchTemplate(template, contact) {
@@ -179,6 +180,138 @@ function alignBatchWindow(task) {
   return task;
 }
 
+function skipCategory(status) {
+  return ({ identity_skipped: "identity", ai_failed_skipped: "ai_failed", pre_send_skipped: "pre_send", outcome_unknown_skipped: "outcome_unknown" })[String(status || "")] || "";
+}
+
+function recordSkippedResult(result, index, details = {}) {
+  const at = String(details.at || nowIso());
+  result.skip_record = {
+    contactId: String(result?.id || result?.contact?.id || ""),
+    displayName: String(result?.name || contactName(result?.contact) || result?.id || ""),
+    index: Number.isInteger(index) ? index : Number(result?.contact_index || 0),
+    reasonCode: String(details.reasonCode || result?.blocked_reason || result?.ai_error_code || result?.status || ""),
+    ruleId: String(details.ruleId || result?.search_evidence?.rule_id || ""),
+    blockedReason: String(details.blockedReason || result?.reason || ""),
+    at,
+    traceId: String(details.traceId || result?.last_trace_id || "")
+  };
+  return result;
+}
+
+function poisonedSearchCandidate(result, at = nowIso()) {
+  const candidate = result?.poisoned_candidate || result?.state?.poisoned_candidate || {};
+  return {
+    reason_code: "wechat_search_network_lookup_misclick",
+    candidate_fingerprint: String(candidate.fingerprint || ""),
+    candidate_mode: String(candidate.mode || ""),
+    recovered: result?.landing_recovered === true || result?.state?.landing_recovered === true,
+    at: String(at)
+  };
+}
+
+function skippedRetryBlockedReason(result) {
+  if (result?.poisoned && typeof result.poisoned === "object") return "retry_skipped_poisoned_forbidden";
+  const status = String(result?.status || "");
+  if (RETRYABLE_SKIPPED_STATUSES.has(status)) return "";
+  if (["outcome_unknown", "outcome_unknown_skipped"].includes(status)) return "retry_skipped_outcome_unknown_forbidden";
+  return "retry_skipped_status_forbidden";
+}
+
+function skippedTaskSummary(task) {
+  const breakdown = { identity: 0, ai_failed: 0, pre_send: 0, outcome_unknown: 0 };
+  const records = [];
+  for (const [index, result] of (task?.results || []).entries()) {
+    const category = skipCategory(result?.status);
+    if (!category) continue;
+    breakdown[category] += 1;
+    const record = result.skip_record || recordSkippedResult({ ...result }, index).skip_record;
+    const retryBlockedReason = skippedRetryBlockedReason(result);
+    records.push({
+      ...record,
+      status: result.status,
+      retryable: !retryBlockedReason,
+      retry_blocked_reason: retryBlockedReason
+    });
+  }
+  return { breakdown, records };
+}
+
+function retrySkippedResults(task, contactIds, retriedAt = nowIso()) {
+  if (!["paused", "completed", "stopped"].includes(String(task?.status || ""))) {
+    return { ok: false, blocked_reason: "retry_skipped_task_running", error: "任务运行中，不能重试跳过联系人" };
+  }
+  const requested = contactIds === undefined
+    ? null
+    : new Set(Array.isArray(contactIds) ? contactIds.map((id) => String(id).trim()).filter(Boolean) : []);
+  if (requested && (!requested.size || requested.size !== contactIds.length)) {
+    return { ok: false, blocked_reason: "retry_skipped_selection_invalid", error: "请选择要重试的跳过联系人" };
+  }
+  const results = Array.isArray(task?.results) ? task.results : [];
+  const requestedRows = results.map((result, index) => ({ result, index }))
+    .filter(({ result }) => requested ? requested.has(String(result?.id || "")) : Boolean(skipCategory(result?.status)));
+  if (requested && requestedRows.length !== requested.size) {
+    return { ok: false, blocked_reason: "retry_skipped_selection_invalid", error: "所选联系人不在当前任务中" };
+  }
+  if (requested && requestedRows.some(({ result }) => ["outcome_unknown", "outcome_unknown_skipped"].includes(String(result?.status || "")))) {
+    return { ok: false, blocked_reason: "retry_skipped_outcome_unknown_forbidden", error: "发送结果未知的联系人只能先人工确认，不能直接重试" };
+  }
+  if (requested && requestedRows.some(({ result }) => String(result?.status || "") === "sent_verified")) {
+    return { ok: false, blocked_reason: "retry_skipped_sent_verified_forbidden", error: "已核验发送的联系人不能重试" };
+  }
+  if (requested && requestedRows.some(({ result }) => result?.poisoned && typeof result.poisoned === "object")) {
+    return { ok: false, blocked_reason: "retry_skipped_poisoned_forbidden", error: "该联系人命中过误点止损，当前任务内禁止重试" };
+  }
+  if (requested && requestedRows.some(({ result }) => !RETRYABLE_SKIPPED_STATUSES.has(String(result?.status || "")))) {
+    return { ok: false, blocked_reason: "retry_skipped_status_forbidden", error: "只能重试明确未发送的跳过联系人" };
+  }
+
+  const selected = requestedRows.filter(({ result }) => !skippedRetryBlockedReason(result));
+  const excludedReasons = {};
+  if (!requested) {
+    for (const { result } of requestedRows) {
+      const reason = skippedRetryBlockedReason(result);
+      if (reason) excludedReasons[reason] = Number(excludedReasons[reason] || 0) + 1;
+    }
+  }
+  const excludedCount = Object.values(excludedReasons).reduce((sum, count) => sum + Number(count), 0);
+  if (!selected.length) return {
+    ok: false,
+    blocked_reason: "retry_skipped_empty",
+    error: "当前没有可安全重试的跳过联系人",
+    retriedCount: 0,
+    excludedCount,
+    excludedReasons
+  };
+
+  for (const { result } of selected) {
+    result.status = "generated";
+    result.reason = "已重新加入，等待继续任务";
+    result.retry_blocked = false;
+    result.send_attempted = false;
+    result.awaiting_resolution = false;
+    result.identity_recovery_attempts = 0;
+    result.pre_send_recovery_attempts = 0;
+    result.updated_at = retriedAt;
+    delete result.blocked_reason;
+    delete result.last_failure_context;
+  }
+  task.current_index = Math.min(...selected.map(({ index }) => index));
+  task.status = "paused";
+  task.phase = "preparing_batch";
+  task.pause_reason = "跳过联系人已重新加入，点击继续任务后处理";
+  task.completed_at = "";
+  task.next_send_not_before = "";
+  alignBatchWindow(task);
+  return {
+    ok: true,
+    task,
+    retriedCount: selected.length,
+    excludedCount,
+    excludedReasons
+  };
+}
+
 function authorizeTask(task, authorizedAt = nowIso()) {
   const normalized = alignBatchWindow(normalizeTask(task));
   if (normalized.execution_mode === "real_send" && normalized.current_index < normalized.total) {
@@ -207,6 +340,9 @@ function createTask(script, contacts, startedAt = nowIso(), options = {}) {
     outcome_unknown_retry_count: 0,
     outcome_unknown_attempt_keys: [],
     awaiting_resolution: false,
+    poisoned: null,
+    retry_blocked: false,
+    send_attempted: false,
     updated_at: startedAt
   }));
 
@@ -293,15 +429,32 @@ function normalizeTask(raw) {
   const results = Array.isArray(raw.results) ? raw.results : [];
   const total = Number.isFinite(raw.total) ? raw.total : results.length;
   const currentIndex = Math.max(0, Math.min(Number(raw.current_index ?? 0), total));
-  const normalizedResults = results.map((result, index) => ({
-    ...result,
-    request_id: result?.request_id || crypto.randomUUID(),
-    contact_index: Number.isInteger(result?.contact_index) ? result.contact_index : index,
-    ai_attempts: Math.max(0, Number(result?.ai_attempts || 0)),
-    outcome_unknown_retry_count: Math.max(0, Number(result?.outcome_unknown_retry_count || 0)),
-    outcome_unknown_attempt_keys: Array.isArray(result?.outcome_unknown_attempt_keys) ? result.outcome_unknown_attempt_keys.map(String) : [],
-    awaiting_resolution: result?.awaiting_resolution === true
-  }));
+  const normalizedResults = results.map((result, index) => {
+    // 1.1.18 persisted the explicit retry guard before the send receipt field
+    // was added. Preserve that known safe pre-send marker during this local
+    // state migration, but do not infer safety from a missing or malformed flag.
+    const legacySafeTextResume = result?.send_attempted === undefined
+      && result?.retry_blocked === false
+      && ["pending", "generated"].includes(result?.status)
+      && !Object.prototype.hasOwnProperty.call(result || {}, "message_parts");
+    return {
+      ...result,
+      request_id: result?.request_id || crypto.randomUUID(),
+      contact_index: Number.isInteger(result?.contact_index) ? result.contact_index : index,
+      ai_attempts: Math.max(0, Number(result?.ai_attempts || 0)),
+      outcome_unknown_retry_count: Math.max(0, Number(result?.outcome_unknown_retry_count || 0)),
+      outcome_unknown_attempt_keys: Array.isArray(result?.outcome_unknown_attempt_keys) ? result.outcome_unknown_attempt_keys.map(String) : [],
+      awaiting_resolution: result?.awaiting_resolution === true,
+      poisoned: result?.poisoned && typeof result.poisoned === "object" ? {
+        reason_code: String(result.poisoned.reason_code || ""),
+        candidate_fingerprint: String(result.poisoned.candidate_fingerprint || ""),
+        candidate_mode: String(result.poisoned.candidate_mode || ""),
+        recovered: result.poisoned.recovered === true,
+        at: String(result.poisoned.at || "")
+      } : null,
+      send_attempted: result?.send_attempted === false ? false : result?.send_attempted === true ? true : legacySafeTextResume ? false : null
+    };
+  });
   const rawVersion = Number(raw.version || 1);
   const version = rawVersion >= 3 && rawVersion <= CURRENT_TASK_VERSION ? CURRENT_TASK_VERSION : rawVersion >= 3 ? rawVersion : 2;
   const normalized = {
@@ -463,6 +616,28 @@ function recoverInterruptedTask(baseDir = __dirname) {
     const beforeIndex = task.current_index;
     reconcileRealSendAttempt(task, readExecutionState(baseDir));
     const unresolved = task.results[task.current_index];
+    if (["sending", "prepared", "clicked"].includes(unresolved?.status)) {
+      const interruptedStatus = unresolved.status;
+      const interruptedParts = Array.isArray(unresolved.message_parts)
+        ? unresolved.message_parts.filter((part) => ["sending", "prepared", "clicked"].includes(part?.status))
+        : null;
+      // A multipart sequence whose parts are all still pending has not reached a
+      // sender and can resume safely. Otherwise the persisted pre-send marker is
+      // ambiguous after a crash and must be resolved by the user, never retried.
+      if (interruptedParts === null || interruptedParts.length === 1) {
+        unresolved.crash_recovered_from = interruptedStatus;
+        if (interruptedParts?.length === 1) {
+          interruptedParts[0].crash_recovered_from = interruptedParts[0].status;
+          interruptedParts[0].status = "outcome_unknown";
+        }
+        unresolved.status = "outcome_unknown";
+        unresolved.outcome_unknown_retry_count = Math.max(1, unresolved.outcome_unknown_retry_count);
+        unresolved.awaiting_resolution = true;
+        unresolved.retry_blocked = true;
+        unresolved.send_attempted = null;
+        unresolved.reason = "程序中断时发送可能已经开始，请核对微信并选择处理结果";
+      }
+    }
     if (unresolved && ["prepared", "clicked", "outcome_unknown"].includes(unresolved.status)) {
       const canRetryUnknown = unresolved.status === "outcome_unknown" && unresolved.outcome_unknown_retry_count < 1;
       unresolved.awaiting_resolution = unresolved.status === "outcome_unknown" && !canRetryUnknown;
@@ -470,7 +645,9 @@ function recoverInterruptedTask(baseDir = __dirname) {
       unresolved.reason = unresolved.reason || (canRetryUnknown ? "发送结果无法确认，继续任务时会再次核验" : "检测到可能已经执行发送点击，已永久阻断自动重试");
       task.status = "paused";
       task.phase = unresolved.awaiting_resolution ? "awaiting_unknown_resolution" : "paused";
-      task.pause_reason = unresolved.awaiting_resolution ? "补发后仍无法确认，请人工选择处理结果" : unresolved.reason;
+      task.pause_reason = unresolved.awaiting_resolution
+        ? (unresolved.reason || "发送结果无法确认，请人工选择处理结果")
+        : unresolved.reason;
       return saveTaskState(baseDir, task);
     }
     if (task.status === "completed" || task.results[task.current_index]?.retry_blocked) return saveTaskState(baseDir, task);
@@ -527,6 +704,7 @@ function resultAt(task, index) {
 
 function publicTaskState(task, options = {}) {
   const normalized = normalizeTask(task);
+  const skipped = skippedTaskSummary(normalized);
   const displayIndex = activeResultIndex(normalized);
   const current = resultAt(normalized, displayIndex);
   const next = resultAt(normalized, displayIndex + 1);
@@ -561,6 +739,9 @@ function publicTaskState(task, options = {}) {
       pause_reason: normalized.pause_reason,
       integrity_error: normalized.integrity_error || "",
       recovery_notice: normalized.recovery_notice || "",
+      sent_verified_count: normalized.results.filter((result) => result?.status === "sent_verified").length,
+      skipped_breakdown: skipped.breakdown,
+      skipped_records: skipped.records,
       current_contact: current?.contact ?? null,
       next_contact: next?.contact ?? null,
       current_result: current ?? null,
@@ -644,10 +825,15 @@ module.exports = {
   markPreviousBuildTask,
   identityKey,
   publicTaskState,
+  poisonedSearchCandidate,
+  recordSkippedResult,
   recoverInterruptedTask,
   reconcileRealSendAttempt,
+  retrySkippedResults,
   saveTaskState,
   sendDelayMs,
+  skippedTaskSummary,
+  taskSnapshotHash,
   taskBackupPath,
   taskPath,
   touchSearchName

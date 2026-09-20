@@ -180,6 +180,27 @@ async function main() {
       assert.deepEqual(after.payload, before.payload); assert.equal(after.inputHash, before.inputHash);
       assert.equal(social.status().items.length, 1, "Withdraw preserves the owner's record");
     } finally { social.stop(); }
+    let scanBody;
+    const scanFeedback = createFeedbackController({ ...options, rootDir: path.join(root, "scan-only"),
+      logger: { readRecent: () => [{ ts: new Date(now).toISOString(), run_id: crypto.randomUUID(), seq: 1,
+        trace_id: diagnosticTrace, level: "info", module: "auto_reply", event: "scan_observation",
+        code: "no_unread_message", details: { scan_ms: 12000, capture_attempts: 2, header_state: "unresolved", header_candidate_count: 0,
+          header_recovery_attempted: true, header_recovery_ok: false, message: "must-not-upload" } }] },
+      transport: { close() {}, async request(_route, { body }) {
+        scanBody = body; return { id: body.id, status: "pending", receivedAt: 1700000000, updatedAt: 1700000000 };
+      } }
+    });
+    try {
+      await scanFeedback.submit({ ...scanFeedback.status().draft, text: "读取很慢没有发现消息", context: { module: "auto_reply" } });
+      await scanFeedback.flush();
+      assert.equal(scanBody.diagnostics.length, 1, "An empty scan without errors still needs opt-in feedback evidence");
+      assert.equal(scanBody.diagnostics[0].details.scan_ms, 12000);
+      assert.equal(scanBody.diagnostics[0].details.header_state, "unresolved");
+      assert.equal(scanBody.diagnostics[0].details.header_candidate_count, 0);
+      assert.equal(scanBody.diagnostics[0].details.header_recovery_attempted, true);
+      assert.equal(scanBody.diagnostics[0].details.header_recovery_ok, false);
+      assert.equal(JSON.stringify(scanBody).includes("must-not-upload"), false);
+    } finally { scanFeedback.stop(); }
     console.log("feedback self-check passed: immutable retries, private receipts, opt-out, restart, status ordering and atomic persistence failures");
   } finally { controller.stop(); fs.rmSync(root, { recursive: true, force: true }); }
 }

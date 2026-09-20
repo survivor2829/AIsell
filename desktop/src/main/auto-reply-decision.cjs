@@ -13,6 +13,7 @@ function isAutoReplyActionReason(action, reasonCode) {
 }
 
 module.exports = {
+  ACTION_REASON_CODES,
   AUTO_REPLY_ACTIONS,
   AUTO_REPLY_REASON_CODES,
   isAutoReplyActionReason

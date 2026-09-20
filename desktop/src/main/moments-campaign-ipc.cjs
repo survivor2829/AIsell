@@ -32,6 +32,13 @@ const DAILY_BUSY_RETRY_MS = 60_000;
 const DAILY_FAILURE_RETRY_MS = 30 * 60_000;
 const AUTOMATED_WINDOW_IDLE_MS = 15_000;
 const MOMENTS_PRE_ACTION_SURFACE_RETRY_MS = 350;
+const MOMENTS_EMPTY_SCAN_RETRY_MS = 30 * 60_000;
+const CONTROLLED_WORKFLOW_START_REASONS = new Set([
+  "moments_action_missing",
+  "moments_comment_ai_unavailable",
+  "runtime_coordinator_failed",
+  "moments_campaign_state_persist_failed"
+]);
 
 function readJson(file, fallback = {}) {
   try {
@@ -260,6 +267,8 @@ function createMomentsCampaignController(options = {}) {
       : null);
   const emit = typeof options.emit === "function" ? options.emit : () => undefined;
   const logger = options.logger || diagnostics();
+  const passport = options.passport || null;
+  const passportFailureSignatures = new Set();
   const now = typeof options.now === "function" ? options.now : () => new Date();
   const writeStateJson = typeof options.writeStateJson === "function"
     ? options.writeStateJson
@@ -374,6 +383,27 @@ function createMomentsCampaignController(options = {}) {
       },
       ...fields
     }, { level });
+    const taskId = String(workflowContext?.taskId || state.started_at || `moments-${now().toISOString().slice(0, 10)}`);
+    const reasonCode = String(fields.reasonCode || fields.reason || fields.code || state.last_reason || "");
+    passport?.recordEvent("moments", taskId, {
+      stage: event, direction: /started$/u.test(event) ? "in" : "out",
+      durationMs: fields.duration_ms,
+      status: level === "error" ? "failed" : state.status || "observed",
+      reasonCode
+    });
+    if (level === "error" || fields.ok === false || fields.skipped === true
+      || /(?:failed|rejected|skipped)$/u.test(event) || /^campaign\.(?:partial|paused|stopped)$/u.test(event)) {
+      const signature = `${taskId}\0${event}\0${reasonCode}\0${state.updated_at || ""}`;
+      if (!passportFailureSignatures.has(signature)) {
+        passportFailureSignatures.add(signature);
+        passport?.recordFailure("moments", taskId, {
+          stage: event,
+          reasonCode: reasonCode || "moments_failure_reason_missing",
+          rawReading: fields,
+          expected: { status: "completed", outcome_unknown: false }
+        });
+      }
+    }
   }
 
   dailyAutomation = createMomentsDailyAutomation({
@@ -403,6 +433,12 @@ function createMomentsCampaignController(options = {}) {
       outcome_unknown: finishOptions.outcomeUnknown === true
     });
     record(`campaign.${status}`, { reason }, status === "completed" ? "info" : "warn");
+    const taskId = String(workflowContext?.taskId || state.started_at || `moments-${now().toISOString().slice(0, 10)}`);
+    const rows = [];
+    for (let index = 0; index < Math.max(0, Number(state.completed_post_count || 0)); index += 1) rows.push({ taskId: `post-${index + 1}`, status: "completed" });
+    for (let index = 0; index < Math.max(0, Number(state.skipped_count || 0)); index += 1) rows.push({ taskId: `skipped-${index + 1}`, status: "skipped", reasonCode: state.last_comment_skip_reason || "moments_post_skipped" });
+    if (status !== "completed") rows.push({ taskId: "campaign", status, reasonCode: reason || "moments_failure_reason_missing" });
+    passport?.writeRunBill("moments", taskId, rows);
     if (workflowContext && finishOptions.outcomeUnknown === true) {
       saveWorkflowProgress({ outcome_unknown: true, last_reason: reason });
     }
@@ -440,7 +476,11 @@ function createMomentsCampaignController(options = {}) {
         allowIntegrated: true,
         minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0
       });
-      record("campaign.open_finished", { result: opened }, opened?.ok ? "info" : "warn");
+      record("campaign.open_finished", {
+        ok: opened?.ok === true,
+        reason: opened?.reason || opened?.blocked_reason || "",
+        ...require("../shared/wechat-window-diagnostics.cjs").sanitizeWechatWindowDiagnostics(opened?.diagnostics)
+      }, opened?.ok ? "info" : "warn");
       if (!opened?.ok) {
         finish("paused", opened?.reason || "moments_open_failed");
         return;
@@ -551,11 +591,24 @@ function createMomentsCampaignController(options = {}) {
         }
         // Reading-only observations are not executable. Keep this post while
         // bringing its footer into view; never count it as an attempted action.
-        if (observed?.ok && observed.post_snapshot?.body_only === true) {
+        const needsMenuRoom = (result) => {
+          if (!result?.ok) return false;
+          if (result.post_snapshot?.body_only === true) return true;
+          if (!state.comment_enabled) return false;
+          const menu = result.post_snapshot?.menu_bounds;
+          const viewport = result.window?.renderPaneBounds || result.window;
+          const height = Number(viewport?.height);
+          const scale = Number(result.window?.dpi || 96) / 96;
+          return !!menu && height > 0
+            && Number(menu.top) + Number(menu.height) + 120 * scale > Number(viewport?.top || 0) + height;
+        };
+        let menuScrolls = 0;
+        while (needsMenuRoom(observed) && menuScrolls < 3) {
           const reading = observed.post_snapshot;
           persist({ last_reason: "locating_interaction_menu" });
           const scrolled = await scrollMoments({
             expectedWindow: observed.window,
+            feedContentBounds: reading.bounds,
             scrollMode: "seek_post_menu_down",
             minIdleMs: state.automated_run ? AUTOMATED_WINDOW_IDLE_MS : 0,
             shouldContinue: () => !stopRequested && !pendingPauseReason
@@ -566,7 +619,8 @@ function createMomentsCampaignController(options = {}) {
             return;
           }
           persist({ scroll_count: state.scroll_count + 1 });
-          const target = { ...reading, expected_scroll_delta: Number(scrolled.delta) || 0 };
+          menuScrolls += 1;
+          const target = { ...reading, expected_scroll_delta: Number(scrolled.observedDelta) || 0, expected_scroll_unit: "observed_pixels" };
           observed = await runObservation([
             "--target-post-base64",
             Buffer.from(JSON.stringify(target), "utf8").toString("base64")
@@ -576,7 +630,7 @@ function createMomentsCampaignController(options = {}) {
             reason: observed?.reason || observed?.blocked_reason || "",
             visual: observed?.diagnostics?.visual
           }, observed?.ok && observed.post_snapshot?.body_only !== true ? "info" : "warn");
-          if (!observed?.ok || observed.post_snapshot?.body_only === true) {
+          if (!observed?.ok) {
             finish("paused", observed?.reason || observed?.blocked_reason || "moments_menu_not_found");
             return;
           }
@@ -586,12 +640,17 @@ function createMomentsCampaignController(options = {}) {
             observed.post_snapshot.content_text = reading.content_text;
           }
         }
+        if (needsMenuRoom(observed)) {
+          finish("paused", "moments_menu_not_found");
+          return;
+        }
         const directPositionDiagnostics = sanitizeMomentsPositionDiagnostics(observed?.diagnostics);
         const positionDiagnostics = Object.keys(directPositionDiagnostics).length > 0
           ? directPositionDiagnostics
           : sanitizeMomentsPositionDiagnostics(observed?.plan?.position_diagnostics);
         if (!usingPendingSnapshot) {
           record("campaign.observation_finished", {
+            ...require("../shared/wechat-window-diagnostics.cjs").sanitizeWechatWindowDiagnostics(observed?.diagnostics),
             ok: observed?.ok === true,
             reason: observed?.blocked_reason || observed?.reason || "",
             visible_post_count: observed?.plan?.visible_post_count || 0,
@@ -872,6 +931,15 @@ function createMomentsCampaignController(options = {}) {
               skipped_count: state.skipped_count + itemSkipped + (!state.like_enabled && !commentedCount ? 1 : 0),
               last_reason: lastReason
             }, dailyPatch);
+            if (commentSkipped || itemSkipped > 0 || (!state.like_enabled && !commentedCount)) {
+              record("campaign.post_skipped", {
+                skipped: true,
+                reason: lastReason || "moments_post_skipped",
+                comment_skipped: commentSkipped,
+                action_skipped: itemSkipped > 0,
+                post_fingerprint: fingerprint
+              }, "warn");
+            }
             if (dailyPatch) {
               record("daily.progress", {
                 post_fingerprint: fingerprint,
@@ -1116,8 +1184,8 @@ function createMomentsCampaignController(options = {}) {
         return { ok: false, reason: "moments_comment_ai_unavailable" };
       }
       return { ok: true, payload: config };
-    } catch (error) {
-      return { ok: false, reason: error?.code || "moments_workflow_config_invalid" };
+    } catch {
+      return { ok: false, reason: "moments_workflow_config_invalid" };
     }
   }
 
@@ -1125,20 +1193,44 @@ function createMomentsCampaignController(options = {}) {
     const config = prepareWorkflowTask(taskRecord.id, taskRecord.payload);
     const isEnabled = typeof runOptions.isEnabled === "function" ? runOptions.isEnabled : () => false;
     let progress = { done: Number(taskRecord.progress?.done || 0), total: config.payload?.maxPosts || 1 };
-    const response = (status, error = "") => ({ status, progress: { ...progress,
-      ...(workflowContext ? workflowProgress({ ...taskRecord, progress }) : {}) }, ...(error ? { error } : {}) });
-    if (!config.ok) return response("needs_attention", config.reason);
+    // Only controlled branches may set reasonCode. Executor and persisted free text
+    // stay diagnostic-only so they can never choose local versus global stopping.
+    const response = (status, error = "", extra = {}) => {
+      const reasonCode = String(extra.reasonCode || error || "");
+      passport?.recordEvent("moments", taskRecord.id, {
+        stage: "workflow_step", direction: "out", status, reasonCode
+      });
+      if (status === "needs_attention") {
+        const signature = `${taskRecord.id}\0workflow_step\0${reasonCode}\0${progress.done}`;
+        if (!passportFailureSignatures.has(signature)) {
+          passportFailureSignatures.add(signature);
+          passport?.recordFailure("moments", taskRecord.id, {
+            stage: "workflow_step", reasonCode: reasonCode || "moments_failure_reason_missing",
+            rawReading: { error, diagnosticReason: extra.diagnosticReason || "", progress },
+            expected: { status: "completed", progress: { done: progress.total, total: progress.total } }
+          });
+        }
+      }
+      return { status, progress: { ...progress,
+        ...(workflowContext ? workflowProgress({ ...taskRecord, progress }) : {}) }, ...(error ? { error } : {}), ...extra };
+    };
+    if (!config.ok) return response("needs_attention", config.reason, { reasonCode: config.reason });
     if (!isEnabled() || loopPromise || workflowContext) return response("pending");
     try {
       const date = String(taskRecord.occurrenceDate || "once");
-      if (date !== "once" && !/^\d{4}-\d{2}-\d{2}$/u.test(date)) return response("needs_attention", "workflow_occurrence_date_invalid");
+      if (date !== "once" && !/^\d{4}-\d{2}-\d{2}$/u.test(date)) {
+        return response("needs_attention", "workflow_occurrence_date_invalid", { reasonCode: "workflow_occurrence_date_invalid" });
+      }
       const file = path.join(workflowDirectory(path.join(baseDir, "planned_runs"), taskRecord.id), `${date}.json`);
       const stored = readWorkflowJson(file, { done: 0, processed_posts: [], in_flight: null });
       progress = { ...workflowProgress(taskRecord), done: Math.max(0, Number(stored.done || 0)), total: config.payload.maxPosts };
       if (stored.in_flight || stored.outcome_unknown) {
-        return response("needs_attention", stored.outcome_unknown
-          ? (stored.last_reason || "moments_interaction_outcome_unknown")
-          : "moments_interaction_outcome_unknown");
+        const diagnosticReason = String(stored.last_reason || (stored.in_flight ? "in_flight_record_present" : ""));
+        return response("needs_attention", diagnosticReason || "moments_interaction_outcome_unknown", {
+          reasonCode: "moments_interaction_outcome_unknown",
+          diagnosticReason,
+          requiresGlobalAttention: true
+        });
       }
       if (progress.done >= progress.total) return response("completed");
       workflowContext = {
@@ -1149,23 +1241,40 @@ function createMomentsCampaignController(options = {}) {
       };
       const started = start({ ...config.payload, maxPosts: progress.total - progress.done }, { workflow: true });
       if (!started.ok) {
-        return response(started.reason === "wechat_operation_busy" ? "pending" : "needs_attention", started.reason);
+        if (started.reason === "wechat_operation_busy") return response("pending", started.reason);
+        const reasonCode = CONTROLLED_WORKFLOW_START_REASONS.has(started.reason)
+          ? started.reason
+          : "moments_workflow_failed";
+        return response("needs_attention", started.reason, { reasonCode, diagnosticReason: started.reason });
       }
       await loopPromise;
       progress = { done: workflowContext.progress.done, total: config.payload.maxPosts };
       if (workflowContext.progress.in_flight || state.outcome_unknown) {
-        return response("needs_attention", state.last_reason || "moments_interaction_outcome_unknown");
+        const diagnosticReason = String(state.last_reason || (workflowContext.progress.in_flight ? "in_flight_record_present" : ""));
+        return response("needs_attention", diagnosticReason || "moments_interaction_outcome_unknown", {
+          reasonCode: "moments_interaction_outcome_unknown",
+          diagnosticReason,
+          requiresGlobalAttention: true
+        });
       }
       if (progress.done >= progress.total) return response("completed");
-      if (state.status === "completed" || state.last_reason === "workflow_yielded") {
+      if (state.status === "completed" || ["workflow_yielded", "moments_no_new_posts"].includes(state.last_reason)) {
         if (!isEnabled()) return response("pending");
         const emptySteps = state.processed_count > 0 ? 0 : Number(stored.empty_steps || 0) + 1;
         saveWorkflowProgress({ empty_steps: emptySteps });
-        return emptySteps >= 3 ? response("needs_attention", "moments_no_new_posts") : response("pending");
+        return emptySteps >= 3
+          ? response("completed", "", { reasonCode: "moments_no_new_posts", result: { noWork: true, emptySteps } })
+          : response("pending");
       }
-      return response("needs_attention", state.last_reason || "moments_interaction_incomplete");
+      return response("needs_attention", state.last_reason || "moments_interaction_incomplete", {
+        reasonCode: "moments_interaction_incomplete",
+        diagnosticReason: String(state.last_reason || "")
+      });
     } catch (error) {
-      return response("needs_attention", error?.code || "moments_workflow_failed");
+      return response("needs_attention", error?.message || "moments_workflow_failed", {
+        reasonCode: "moments_workflow_failed",
+        diagnosticReason: String(error?.code || error?.message || "")
+      });
     } finally {
       workflowContext = null;
     }

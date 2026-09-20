@@ -82,13 +82,16 @@ function removeBuildTarget(target, buildRoot) {
 }
 
 function buildPyInstallerArgs(paths) {
+  const modelConfig = require(path.join(paths.sourceDir, "cutout_model.json"));
   const dataArgs = [
     "--add-data",
     `${paths.templatesDir}${path.delimiter}templates`,
     "--add-data",
     `${paths.staticDir}${path.delimiter}static`,
     "--add-data",
-    `${paths.screenTypesFile}${path.delimiter}ai_refine_v2`
+    `${paths.screenTypesFile}${path.delimiter}ai_refine_v2`,
+    "--add-data", `${path.join(paths.sourceDir, "cutout_model.json")}${path.delimiter}.`,
+    "--add-data", `${path.join(paths.defaultBuildRoot, "cutout-models", modelConfig.file)}${path.delimiter}models`
   ];
   return [
     "--noconfirm",
@@ -103,6 +106,9 @@ function buildPyInstallerArgs(paths) {
     "app",
     "--collect-all",
     "playwright",
+    "--hidden-import", "onnxruntime",
+    "--copy-metadata", "onnxruntime",
+    "--exclude-module", "rembg",
     ...dataArgs,
     "--distpath",
     paths.distDir,
@@ -343,9 +349,14 @@ function parseJsonOutput(result, label) {
   }
 }
 
-function main({ buildRoot = process.env.XIAOXI_SIDECAR_BUILD_ROOT || null } = {}) {
+async function main({ buildRoot = process.env.XIAOXI_SIDECAR_BUILD_ROOT || null } = {}) {
   const paths = resolveBuildPaths(desktopDir, { buildRoot });
   assertBuildInputs(paths);
+  const modelConfig = require(path.join(paths.sourceDir, "cutout_model.json"));
+  const model = path.join(paths.defaultBuildRoot, "cutout-models", modelConfig.file);
+  if (!fs.existsSync(model) || sha256(model) !== modelConfig.sha256) {
+    throw new Error("Missing or invalid offline cutout model. Run node scripts/prepare-cutout-model.cjs before building.");
+  }
   fs.mkdirSync(paths.buildRoot, { recursive: true });
   assertFreshOutput(paths);
   fs.mkdirSync(paths.specDir, { recursive: true });
@@ -375,6 +386,13 @@ function main({ buildRoot = process.env.XIAOXI_SIDECAR_BUILD_ROOT || null } = {}
     throw new Error("PyInstaller did not produce product-detail-server.exe");
   }
 
+  const referenceFile = process.env.XIAOXI_PYTHON_BASE_REFERENCE;
+  const library = await require("./python-library-archive.cjs").stabilizePythonLibrary(
+    path.join(paths.pyInstallerOutputDir, "_internal", "base_library.zip"),
+    referenceFile ? { file: referenceFile, sha256: process.env.XIAOXI_PYTHON_BASE_SHA256 } : null
+  );
+  console.log(`Python base library: ${library.reused ? "unchanged content; retained accepted archive" : "stable archive for current dependencies"}`);
+
   fs.renameSync(paths.pyInstallerOutputDir, paths.outputDir);
   fs.mkdirSync(paths.selfCheckDataDir, { recursive: true });
   const selfCheckResult = spawnSync(
@@ -395,6 +413,7 @@ function main({ buildRoot = process.env.XIAOXI_SIDECAR_BUILD_ROOT || null } = {}
   const selfCheck = validateSelfCheckPayload(
     parseJsonOutput(selfCheckResult, "Product-detail runtime self-check")
   );
+  if (selfCheck.capabilities?.rembg !== true) throw new Error("Packaged offline cutout dependencies/model are unavailable");
 
   const desktopSourceAfter = desktopSourceProvenance(paths);
   if (JSON.stringify(desktopSourceAfter) !== JSON.stringify(desktopSourceBefore)) {
@@ -409,18 +428,17 @@ function main({ buildRoot = process.env.XIAOXI_SIDECAR_BUILD_ROOT || null } = {}
     desktopSource: desktopSourceBefore
   });
   fs.writeFileSync(paths.manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  for (const target of [paths.workDir, paths.specDir, paths.distDir, paths.selfCheckDataDir]) removeBuildTarget(target, paths.buildRoot);
   console.log(`Product-detail sidecar built and verified: ${paths.outputExe}`);
   console.log(`Manifest: ${paths.manifestFile}`);
   return manifest;
 }
 
 if (require.main === module) {
-  try {
-    main();
-  } catch (error) {
+  main().catch(error => {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;
-  }
+  });
 }
 
 module.exports = {

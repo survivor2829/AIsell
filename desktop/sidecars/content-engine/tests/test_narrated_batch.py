@@ -7,13 +7,14 @@ from unittest.mock import patch
 
 import test_auto_mix_v2 as fixtures
 from content_engine.narrated_batch import (
-    NarratedBatchDomain, VISUAL_FACTS_VERSION, CLAIM_AUDIT_VERSION, canonical_hash, near_duplicate, validate_count,
+    NarratedBatchDomain, VISUAL_FACTS_VERSION, VISUAL_FACT_MAX_OUTPUT_TOKENS, CLAIM_AUDIT_VERSION, canonical_hash, near_duplicate, validate_count,
     reported_speech_context, reported_speech_cache_key, compact_claim_segment,
     closing_action_cache_key,
     compact_claim_semantics, semantic_review_cache_key,
     typed_visual_review_cache_key, visual_findings_error,
 )
 from content_engine.errors import ContentEngineError
+from content_engine.creative_analysis import DashScopeMediaClient
 
 
 ORIGINAL_GROUND_SHOTS = NarratedBatchDomain._ground_shots
@@ -173,6 +174,26 @@ class NarratedBatchTests(unittest.TestCase):
         task = self.s.run_creative_task(queued["task_id"])
         self.assertEqual("completed", task["status"], task)
         return self.s.get_narrated_batch(b["batch_id"])
+
+    def test_analysis_activity_identifies_the_current_material(self):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        batch = {
+            "batch_id": "batch-progress",
+            "groups": {"opening": ["asset-v2"], "middle": [], "ending": []},
+        }
+        activities = []
+        with patch.object(domain, "_activity", side_effect=lambda _batch, message, completed=None, total=None:
+                          activities.append((message, completed, total))), \
+                patch.object(domain.d, "_auto_mix_asset_snapshots", return_value=[]), \
+                patch.object(domain.d, "_auto_mix_v2_analysis_profile", return_value={}), \
+                patch.object(domain.d, "_asset_row", return_value={"id": "asset-v2", "display_name": "测试素材.mp4"}), \
+                patch.object(domain.d, "_analyze_asset", return_value="test-analysis-v1"), \
+                patch.object(domain.d, "_auto_mix_asset_cards", return_value=[]), \
+                patch.object(domain.d, "_should_stop", return_value=False), \
+                patch.object(domain, "_store"):
+            domain._analysis("task-progress", batch)
+        self.assertEqual(("正在理解素材：测试素材.mp4", 0, 1), activities[0])
+        self.assertEqual(("正在理解素材：测试素材.mp4", 1, 1), activities[1])
 
     def test_script_options_do_not_render_and_confirmed_first_precedes_batch_variations(self):
         events = []
@@ -1203,6 +1224,139 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertEqual("direct_real", by_shot[shots[0]["segment_id"]]["evidence_class"],
                          "真实帧与未知帧共存时，未知帧不能污染直接事实")
         self.assertEqual("real", by_shot[shots[0]["segment_id"]]["medium"])
+
+        with patch.object(domain, '_cloud', side_effect=AssertionError('cached subset must not call provider')):
+            subset = ORIGINAL_GROUND_SHOTS(domain, task['task_id'], state, [shots[0]], snapshots, versions)
+        self.assertEqual([shot['segment_id'] for shot in subset], [shots[0]['segment_id']])
+        retained = json.loads(self.s.connection.execute('SELECT state_json FROM narrated_visual_facts WHERE cache_key=?', (cache_key,)).fetchone()[0])
+        self.assertEqual(len(retained), len(shots), 'Reading a subset must preserve the full evidence cache')
+
+    def test_visual_grounding_checkpoint_resumes_after_unknown_provider_result(self):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        batch = self.create(1)
+        state = domain._load(batch["batch_id"])
+        task = domain.d._create_task("narrated_batch_v1", {"batch_id": batch["batch_id"]})
+        domain._active_batch = state
+        shots = [{"segment_id": f"shot-checkpoint-{index}", "asset_id": "asset-v2",
+                  "source_start_ms": index * 1000, "source_end_ms": (index + 1) * 1000,
+                  "target_duration_ms": 1000, "evidence_ref": f"segment-checkpoint-{index}"}
+                 for index in range(4)]
+        snapshots = [{"asset_id": "asset-v2", "fingerprint": "checkpoint-test"}]
+        versions = {"asset-v2": "test-analysis-v1"}
+        cloud = self.analyzer.cloud_client
+        cloud.vision_model = "fake-vision"
+        self.analyzer.ffmpeg_path = "fake-ffmpeg"
+        calls = []
+
+        def complete(*, messages, **kwargs):
+            del kwargs
+            payload = json.loads(messages[-1]["content"][0]["text"])
+            calls.append(payload)
+            if len(calls) == 2:
+                raise ContentEngineError("volcengine_outcome_unknown", "模拟网关超时")
+            return {"frames": [{"index": item["index"], "medium": "real",
+                                "visible_objects": ["绿色设备"],
+                                "visible_attributes": ["绿色"],
+                                "spatial_relations": ["通道内"],
+                                "visible_text": [], "uncertainties": []}
+                               for item in payload["frames"]]}
+
+        def command(args, timeout):
+            del timeout
+            output = Path(args[-1])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"checkpoint-frame")
+
+        cloud._structured_completion = complete
+        with patch.object(self.analyzer, "_command", side_effect=command, create=True):
+            with self.assertRaises(ContentEngineError) as raised:
+                ORIGINAL_GROUND_SHOTS(domain, task["task_id"], state, shots, snapshots, versions)
+        self.assertEqual("volcengine_outcome_unknown", raised.exception.code)
+        stored = domain._load(batch["batch_id"])
+        checkpoint = stored["_visual_fact_checkpoints"]["asset-v2"]
+        self.assertEqual(3, len(checkpoint["facts"]))
+        self.assertEqual(4, checkpoint["total"])
+        self.assertIn("_planning_inflight", stored)
+
+        # This is the explicit provider-log resolution step. The next run may
+        # reuse only the completed group; it must not silently resubmit it.
+        stored.pop("_planning_inflight", None)
+        stored.pop("_planning_request", None)
+        domain._store(stored)
+        domain._active_batch = stored
+        with patch.object(self.analyzer, "_command", side_effect=command, create=True):
+            grounded = ORIGINAL_GROUND_SHOTS(domain, task["task_id"], stored, shots, snapshots, versions)
+        self.assertEqual(3, len(calls))
+        self.assertEqual(4, len(grounded))
+        self.assertEqual(4, len(json.loads(self.s.connection.execute(
+            "SELECT state_json FROM narrated_visual_facts WHERE cache_key=?",
+            (canonical_hash({"asset": "asset-v2", "snapshot": snapshots[0],
+                             "analysis": versions["asset-v2"], "version": VISUAL_FACTS_VERSION,
+                             "model": cloud.vision_model}),),
+        ).fetchone()[0])))
+        self.assertNotIn("_visual_fact_checkpoints", domain._load(batch["batch_id"]))
+
+    def test_visual_grounding_keeps_request_visual_only_and_reserves_output_headroom(self):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        batch = self.create(1)
+        state = domain._load(batch["batch_id"])
+        state["settings"] = {**state.get("settings", {}), "workflow_version": 2}
+        state["direction"] = {"audience": "清洁设备渠道商", "pain_point": "现场判断", "angle": "看得见再判断"}
+        domain._active_batch = state
+        frame = self.fixture.root / "visual-contract.jpg"
+        frame.write_bytes(b"visual-contract-frame")
+        captured = {}
+
+        def complete(*, messages, **kwargs):
+            captured["messages"] = messages
+            captured["kwargs"] = kwargs
+            return {"frames": []}
+
+        cloud = self.analyzer.cloud_client
+        cloud.vision_model = "fake-vision"
+        cloud._structured_completion = complete
+        domain._cloud({"frames": [{"index": 0, "timestamp_ms": 0}]},
+                      "你是逐帧画面取证员。返回JSON。", frames=[frame],
+                      max_tokens=VISUAL_FACT_MAX_OUTPUT_TOKENS)
+
+        self.assertNotIn("完整稿件必须返回audience", captured["messages"][0]["content"])
+        request_payload = json.loads(captured["messages"][1]["content"][0]["text"])
+        self.assertNotIn("approved_direction", request_payload)
+        self.assertEqual(VISUAL_FACT_MAX_OUTPUT_TOKENS, captured["kwargs"]["max_tokens"])
+
+    def test_visual_grounding_retry_does_not_replay_the_oversized_previous_object(self):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        batch = self.create(1)
+        state = domain._load(batch["batch_id"])
+        state["settings"] = {**state.get("settings", {}), "workflow_version": 2}
+        domain._active_batch = state
+        frame = self.fixture.root / "visual-retry-contract.jpg"
+        frame.write_bytes(b"visual-retry-contract-frame")
+        responses = iter([
+            {"choices": [{"message": {"content": '{"frames":{"truncated":true}}'}}]},
+            {"choices": [{"message": {"content": '{"frames":[]}'}}]},
+        ])
+        calls = []
+
+        cloud = DashScopeMediaClient(api_key="test-key", vision_model="fake-vision")
+
+        def request_json(_url, **kwargs):
+            calls.append(kwargs["payload"]["messages"])
+            return next(responses)
+
+        cloud._request_json = request_json
+        self.analyzer.cloud_client = cloud
+        result = domain._cloud(
+            {"frames": [{"index": 0, "timestamp_ms": 0}]},
+            "你是逐帧画面取证员。返回JSON。", frames=[frame],
+            max_tokens=VISUAL_FACT_MAX_OUTPUT_TOKENS,
+            validation_error=lambda response: None if response.get("frames") == [] else "frames必须是数组。",
+        )
+
+        self.assertEqual({"frames": []}, result)
+        self.assertEqual(2, len(calls))
+        self.assertNotIn("assistant", [message["role"] for message in calls[1]])
+        self.assertIn("紧凑", calls[1][-1]["content"])
 
     def test_rejected_plans_preserve_reasons_without_recommending_zero(self):
         original = self.complete

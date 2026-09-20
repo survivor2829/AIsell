@@ -6,6 +6,7 @@ const { readContacts } = require("../../rpa/active_touch/state_machine.cjs");
 const { identityKey } = require("../../rpa/active_touch/touch_task_state.cjs");
 const { writeFileAtomic, writeJsonAtomic } = require("./atomic-file.cjs");
 const { FLOATING_PROGRESS_WINDOW, floatingProgressPosition } = require("./floating-progress-window.cjs");
+const { summarizeSendResult } = require("../shared/wechat-send-diagnostics.cjs");
 const {
   AUTO_REPLY_ACTIONS,
   AUTO_REPLY_REASON_CODES
@@ -589,6 +590,13 @@ function sanitizeStructuredScanDiagnostics(value) {
     if (field !== "diagnostics" && raw !== undefined) source[field] = raw;
   }
   const result = {};
+  const header = source.headerRead;
+  if (header && typeof header === "object") {
+    if (["matched", "unresolved", "different", "selected_sidebar_row"].includes(header.state)) result.header_state = header.state;
+    if (Number.isSafeInteger(header.candidateCount) && header.candidateCount >= 0 && header.candidateCount <= 1000) result.header_candidate_count = header.candidateCount;
+    if (typeof header.recoveryAttempted === "boolean") result.header_recovery_attempted = header.recoveryAttempted;
+    if (typeof header.recoveryOk === "boolean") result.header_recovery_ok = header.recoveryOk;
+  }
   const sanitizeWindow = (rawWindow) => {
     if (!rawWindow || typeof rawWindow !== "object" || Array.isArray(rawWindow)) return null;
     const window = {};
@@ -650,6 +658,8 @@ function sanitizeStructuredScanDiagnostics(value) {
   if (counts) result.counts = counts;
   const scanMs = Math.floor(Number(source.timings?.scan_ms));
   if (Number.isSafeInteger(scanMs) && scanMs >= 0 && scanMs <= 300_000) result.scan_ms = scanMs;
+  const captureAttempts = Number(source.timings?.capture_attempts);
+  if (Number.isSafeInteger(captureAttempts) && captureAttempts >= 0 && captureAttempts <= 20) result.capture_attempts = captureAttempts;
   const captureMode = diagnosticCode(source.captureMode, "");
   if (SCAN_CAPTURE_MODES.has(captureMode)) result.capture_mode = captureMode;
   // Worker diagnostics are deliberately structural only. The visual sender
@@ -1415,6 +1425,7 @@ function createAutoReplyController(options = {}) {
   const stateFile = path.join(dataDir, "auto-reply-state.json");
   const diagnosticLogFile = path.join(dataDir, "auto-reply-diagnostics.jsonl");
   const diagnosticRunId = crypto.randomBytes(8).toString("hex");
+  let scanTraceId = crypto.randomUUID();
   const diagnosticTraceSecret = crypto.randomBytes(32);
   const coordinator = options.coordinator;
   const deepSeekClient = options.deepSeekClient;
@@ -1429,6 +1440,9 @@ function createAutoReplyController(options = {}) {
   const cancelSchedule = options.cancelSchedule || clearTimeout;
   const now = options.now || (() => new Date());
   const onStateChange = typeof options.onStateChange === "function" ? options.onStateChange : null;
+  const passport = options.passport || null;
+  const passportFailureSignatures = new Set();
+  const passportResults = new Map();
   const singleContactScopeRequired = options.singleContactScopeRequired === true;
   const rawState = readJson(stateFile, null);
   let state = migrateState(rawState, now());
@@ -1597,7 +1611,7 @@ function createAutoReplyController(options = {}) {
 
   function setActivity(phase, details = {}) {
     const progressText = {
-      prime: "正在建立消息读取基线", scanning: "正在检查客户消息",
+      prime: "正在初始化消息读取，完成后开始监听", scanning: "正在检查客户消息",
       candidate: "已发现客户消息", generating: "正在生成客户回复",
       preparing_send: "正在定位客户输入框", sending: "正在发送客户回复",
       sent_verified: "客户回复已发送", listening: "本次未发现待回复消息"
@@ -1723,7 +1737,9 @@ function createAutoReplyController(options = {}) {
       pid: result?.pid,
       hWnd: result?.hWnd,
       captureMode: result?.captureMode,
-      messageRead: result?.messageRead
+      messageRead: result?.messageRead,
+      headerRead: result?.headerRead,
+      diagnostics: result?.diagnostics
     });
   }
 
@@ -1794,10 +1810,16 @@ function createAutoReplyController(options = {}) {
     Object.assign(entry, normalizeReceiptDiagnostics(details));
     const draftStage = diagnosticCode(details.draft_stage, "");
     if (draftStage) entry.draft_stage = draftStage;
+    const inputReadReason = diagnosticCode(details.input_read_reason, "");
+    if (inputReadReason) entry.input_read_reason = inputReadReason;
     const incomingChangeKind = diagnosticCode(details.incoming_change_kind, "");
     if (new Set(["ocr_unresolved", "proven_different"]).has(incomingChangeKind)) entry.incoming_change_kind = incomingChangeKind;
     const sendResult = diagnosticCode(details.send_result, "");
     if (new Set(["not_attempted", "sent_verified", "outcome_unknown"]).has(sendResult)) entry.send_result = sendResult;
+    for (const field of ["outcome", "side_effect", "retryability", "failure_stage"]) {
+      const value = diagnosticCode(details[field], "");
+      if (value) entry[field] = value;
+    }
     const recoveryAction = diagnosticCode(details.recovery_action, "");
     if (RECOVERY_ACTIONS.has(recoveryAction)) entry.recovery_action = recoveryAction;
     const sendPhase = diagnosticCode(details.send_phase, "");
@@ -1806,17 +1828,58 @@ function createAutoReplyController(options = {}) {
     if (verificationMode) entry.verification_mode = verificationMode;
     if (code === "session_probe_unsupported") Object.assign(entry, sanitizeSessionProbe(details.sessionProbe));
     Object.assign(entry, sanitizeStructuredScanDiagnostics(details));
+    Object.assign(entry, require("../shared/wechat-window-diagnostics.cjs").sanitizeWechatWindowDiagnostics(details.diagnostics));
     appendDiagnosticLine(diagnosticLogFile, entry);
+    const passportTaskId = entry.trace_id || `${diagnosticRunId}-${entry.seq}`;
+    const passportReason = entry.reason_code || entry.code || "";
+    passport?.recordEvent("auto_reply", passportTaskId, {
+      stage: entry.event,
+      direction: /started$/u.test(entry.event) ? "in" : "out",
+      durationMs: entry.total_ms ?? entry.duration_ms,
+      status: entry.send_result || entry.status || "observed",
+      reasonCode: passportReason,
+      traceId: entry.trace_id || ""
+    });
+    const passportFailure = entry.event === "reply_send_finished" && entry.code !== "sent_verified"
+      || /(?:failed|exception|blocked|skipped)$/u.test(entry.event);
+    if (passportFailure) {
+      const signature = `${passportTaskId}\0${entry.event}\0${passportReason}`;
+      if (!passportFailureSignatures.has(signature)) {
+        passportFailureSignatures.add(signature);
+        const evidence = passport?.recordFailure("auto_reply", passportTaskId, {
+          stage: entry.event,
+          reasonCode: passportReason || "auto_reply_failure_reason_missing",
+          traceId: entry.trace_id || "",
+          rawReading: details,
+          expected: { send_result: "sent_verified", current_session_bound: true }
+        });
+        if (evidence?.attachments?.length) entry.passport_attachments = evidence.attachments;
+      }
+    }
+    if (entry.event === "reply_send_finished" || entry.event === "reply_send_skipped") {
+      const status = entry.send_result || (entry.event === "reply_send_skipped" ? entry.action === "handoff" ? "handoff" : "silent" : "failed");
+      passportResults.set(passportTaskId, {
+        taskId: passportTaskId,
+        status,
+        reasonCode: status === "sent_verified" ? "" : passportReason || "auto_reply_failure_reason_missing",
+        attachments: entry.passport_attachments || []
+      });
+      passport?.writeRunBill("auto_reply", diagnosticRunId, [...passportResults.values()]);
+    }
     const waitingDiagnostic = entry.code === USER_IDLE_WAIT_REASON
       || new Set(["scan_waiting", "reply_retry_enqueued", "reply_retry_waiting", "reply_manual_review_required"]).has(entry.event);
     const failedSendDiagnostic = entry.event === "reply_send_finished" && entry.code !== "sent_verified";
     diagnostics().event("auto_reply", entry.event, {
       ...entry,
+      scan_mode: entry.scan_source,
+      trigger_code: entry.scan_trigger,
       legacy_diagnostic_run_id: entry.run_id
     }, {
       level: waitingDiagnostic ? "warn" : /failed|exception|blocked/u.test(entry.event) || failedSendDiagnostic ? "error" : "info",
       code: entry.code || "",
       phase: entry.phase || "",
+      traceId: scanTraceId,
+      trace: ["scan_observation", "start_requested", "started", "prime_deferred"].includes(entry.event),
       recover: entry.event === "scan_healthy" || entry.code === "sent_verified"
     });
   }
@@ -1888,6 +1951,7 @@ function createAutoReplyController(options = {}) {
         window: result?.window,
         dpi: result?.dpi ?? result?.DPI ?? result?.windowDpi,
         counts: result?.counts,
+        headerRead: result?.headerRead,
         diagnostics: result?.diagnostics,
         required_idle_ms: result?.requiredIdleMs ?? result?.required_idle_ms,
         observed_idle_ms: result?.observedIdleMs ?? result?.observed_idle_ms
@@ -2368,6 +2432,7 @@ function createAutoReplyController(options = {}) {
       deliveryStatus: "not_attempted",
       detailCode: "starting"
     });
+    scanTraceId = crypto.randomUUID();
     appendDiagnostic("start_requested", { phase: "prime", code: "starting" });
     save();
     try {
@@ -2466,7 +2531,7 @@ function createAutoReplyController(options = {}) {
       state.status = "running";
       state.last_event = recoveredHandoffWarning ? "handoff_manual_followup_required" : "started";
       state.last_error = recoveredHandoffWarning;
-      setActivity("listening", { detailCode: state.last_scan_reason || "started" });
+      setActivity(primeRetryNeeded ? "prime" : "listening", { detailCode: state.last_scan_reason || "started" });
       appendDiagnostic("started", { phase: "prime", code: state.last_scan_reason || "started" });
       save();
       // Let the successful start IPC reach the renderer before the first OCR
@@ -3251,6 +3316,10 @@ function createAutoReplyController(options = {}) {
         action: generated.action,
         reasonCode: generated.reasonCode,
         delivery_attempt: deliveryAttempt,
+        outcome: "not_attempted",
+        side_effect: "none",
+        retryability: "safe_retry",
+        failure_stage: "send",
         pid: candidate.pid,
         hWnd: candidate.hWnd
       });
@@ -3308,6 +3377,7 @@ function createAutoReplyController(options = {}) {
       const sendTimings = result?.send_diagnostics?.timings || {};
       const sendWorker = result?.send_diagnostics?.worker;
       const sendReceipt = normalizeReceiptDiagnostics({ receipt: result?.send_diagnostics?.receipt });
+      const sendEnvelope = summarizeSendResult(result, { stage: "send" });
       const sendDiagnostic = explicitOutcomeUnknown
         ? { code: "outcome_unknown", ref: "" }
         : sendVerified
@@ -3333,6 +3403,11 @@ function createAutoReplyController(options = {}) {
         verification_mode: result?.verification_mode || "",
         send_attempted: result?.send_attempted,
         send_result: result?.send_result,
+        input_read_reason: sendEnvelope.input_read_reason,
+        outcome: sendEnvelope.outcome,
+        side_effect: sendEnvelope.side_effect,
+        retryability: sendEnvelope.retryability,
+        failure_stage: sendEnvelope.failure_stage,
         draft_phase_started: draftPhaseStarted,
         composer_touched: result?.composer_touched,
         draft_stage: result?.draft_stage,
@@ -3345,6 +3420,10 @@ function createAutoReplyController(options = {}) {
         required_idle_ms: result?.send_diagnostics?.required_idle_ms,
         observed_idle_ms: result?.send_diagnostics?.observed_idle_ms,
         worker: sendWorker,
+        receipt_ocr_text: result?.send_diagnostics?.receipt_evidence?.observed_text || "",
+        receipt_match_mode: result?.send_diagnostics?.receipt_evidence?.match_mode || "",
+        receipt_edit_distance: result?.send_diagnostics?.receipt_evidence?.edit_distance,
+        receipt_maximum_length: result?.send_diagnostics?.receipt_evidence?.maximum_length,
         ...sendReceipt,
         pid: result?.pid || candidate.pid,
         hWnd: result?.hWnd || candidate.hWnd
@@ -3736,7 +3815,9 @@ function createAutoReplyController(options = {}) {
         state.last_error = "";
         state.system_error = null;
         workflowStartPending = false;
-        setActivity("listening", { contactLabel: `${scope.contacts.length} 位接待联系人`, detailCode: "workflow_started" });
+        scanTraceId = crypto.randomUUID();
+        appendDiagnostic("start_requested", { phase: "prime", code: "workflow_started" });
+        setActivity(primeRetryNeeded ? "prime" : "scanning", { contactLabel: `${scope.contacts.length} 位接待联系人`, detailCode: "workflow_started" });
         save();
       }
       if (state.status !== "running") {
@@ -3749,7 +3830,9 @@ function createAutoReplyController(options = {}) {
       }
       return {
         handled: workflowHandled,
-        ...(state.consecutive_scan_failures > 0 ? {
+        ...(primeRetryNeeded ? {
+          progressText: "消息读取尚未初始化完成，正在等待重试"
+        } : state.consecutive_scan_failures > 0 ? {
           progressText: state.last_scan_reason.startsWith("wechat_chat_")
             ? `返回聊天失败，尚未读取消息（${state.consecutive_scan_failures}/3）`
             : "本次读取消息失败，尚未回复"

@@ -103,6 +103,7 @@ function Write-AutoReplyVisualResult($value) {
     if ($null -ne $script:AutoReplyVisualDpi) { $value["dpi"] = [int]$script:AutoReplyVisualDpi }
     if ($script:AutoReplyVisualCaptureMethod) { $value["captureMode"] = [string]$script:AutoReplyVisualCaptureMethod }
     if ($null -ne $script:AutoReplyVisualMessageRead) { $value["messageRead"] = $script:AutoReplyVisualMessageRead }
+    if ($null -ne $script:AutoReplyVisualHeaderRead) { $value["headerRead"] = $script:AutoReplyVisualHeaderRead }
   }
   $value | ConvertTo-Json -Compress -Depth 8
   exit
@@ -1007,7 +1008,47 @@ function Get-AutoReplyVisualHeaderDiagnostics($candidates) {
   return @{ headerCandidateCount = @($candidates).Count; headerCandidateHashes = $hashes }
 }
 
-function Get-AutoReplyVisualHeader($lines, [string]$conversation, [double]$sidebarRight, [double]$frameWidth, $allowedSet) {
+function Get-AutoReplyVisualRefinedHeaderLines($frame, [double]$sidebarRight) {
+  # OCR coordinates are crop-local and already unscaled by the shared reader.
+  # Cache only on this captured frame; never reuse identity across observations.
+  if ($null -ne $frame.autoReplyHeaderOcr) { return $frame.autoReplyHeaderOcr }
+  $left = [Math]::Floor($sidebarRight + (Scale-AutoReplyVisualMetric 8.0))
+  $top = [Math]::Floor((Scale-AutoReplyVisualMetric 20.0))
+  $right = [double]$frame.width - (Scale-AutoReplyVisualMetric 80.0)
+  $bottom = [Math]::Min([double]$frame.height, (Scale-AutoReplyVisualMetric 108.0))
+  $rect = @{ left = $left; top = $top; width = $right - $left; height = $bottom - $top }
+  $ocr = Get-MomentsScaledOcrObservation $frame $rect 3
+  $lines = if ($ocr.ok) { @(Get-AutoReplyVisualLines $ocr) } else { @() }
+  foreach ($line in $lines) {
+    $line.bounds.left = [double]$line.bounds.left + $left
+    $line.bounds.top = [double]$line.bounds.top + $top
+  }
+  $frame.autoReplyHeaderOcr = @{ ok = [bool]$ocr.ok; lines = $lines }
+  return $frame.autoReplyHeaderOcr
+}
+
+function Read-AutoReplyVisualHeader($frame, $lines, [string]$conversation, [double]$sidebarRight, $allowedSet, [bool]$anyHeader) {
+  $result = if ($anyHeader) { Get-AutoReplyVisualAnyHeader $lines $sidebarRight ([double]$frame.width) } else {
+    Get-AutoReplyVisualHeader $lines $conversation $sidebarRight ([double]$frame.width) $allowedSet
+  }
+  $attempted = -not $result.ok -and [string]$result.state -ceq "unresolved"
+  if ($attempted) {
+    $refined = Get-AutoReplyVisualRefinedHeaderLines $frame $sidebarRight
+    if ($refined.ok) {
+      $result = if ($anyHeader) { Get-AutoReplyVisualAnyHeader $refined.lines $sidebarRight ([double]$frame.width) } else {
+        Get-AutoReplyVisualHeader $refined.lines $conversation $sidebarRight ([double]$frame.width) $allowedSet
+      }
+    }
+  }
+  $script:AutoReplyVisualHeaderRead = @{
+    state = [string]$result.state; candidateCount = [int]$result.headerCandidateCount
+    recoveryAttempted = [bool]$attempted; recoveryOk = [bool]($attempted -and $result.ok)
+  }
+  return $result
+}
+
+function Get-AutoReplyVisualHeader($lines, [string]$conversation, [double]$sidebarRight, [double]$frameWidth, $allowedSet, $frame = $null) {
+  if ($null -ne $frame) { return Read-AutoReplyVisualHeader $frame $lines $conversation $sidebarRight $allowedSet $false }
   $candidates = @(Get-AutoReplyVisualHeaderCandidates $lines $sidebarRight $frameWidth)
   $diagnostics = Get-AutoReplyVisualHeaderDiagnostics $candidates
   $ambiguousMatch = $false
@@ -1053,7 +1094,8 @@ function Get-AutoReplyVisualHeader($lines, [string]$conversation, [double]$sideb
   }
 }
 
-function Get-AutoReplyVisualAnyHeader($lines, [double]$sidebarRight, [double]$frameWidth) {
+function Get-AutoReplyVisualAnyHeader($lines, [double]$sidebarRight, [double]$frameWidth, $frame = $null) {
+  if ($null -ne $frame) { return Read-AutoReplyVisualHeader $frame $lines "" $sidebarRight $null $true }
   $candidates = @(Get-AutoReplyVisualHeaderCandidates $lines $sidebarRight $frameWidth)
   $diagnostics = Get-AutoReplyVisualHeaderDiagnostics $candidates
   if ($candidates.Count -ne 1) {
@@ -1601,7 +1643,7 @@ function Get-AutoReplyVisualCurrentTransitionSnapshot(
   $frame = $observation.frame
   try {
     $sidebar = Get-AutoReplyVisualSidebarRows $frame $observation.lines $allowedSet $sidebarRight
-    $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet
+    $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet $frame
     # A compositor-only WeChat window can omit its title from one OCR frame.
     # That is uncertainty, not proof that the chat changed. Only an explicitly
     # different title blocks the already-bound HWND + conversation observation.
@@ -1654,9 +1696,7 @@ foreach ($name in $excludedNames) {
 }
 try { $baselines = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_BASELINES") | ConvertFrom-Json } catch { $baselines = $null }
 try { $messageBaselines = [Environment]::GetEnvironmentVariable("XIAOXI_VISUAL_MESSAGE_BASELINES") | ConvertFrom-Json } catch { $messageBaselines = $null }
-try { $startupPreviewBoundaries = [Environment]::GetEnvironmentVariable("XIAOXI_STARTUP_PREVIEWS") | ConvertFrom-Json } catch { $startupPreviewBoundaries = $null }
 try { $startupMessageBoundaries = [Environment]::GetEnvironmentVariable("XIAOXI_STARTUP_MESSAGES") | ConvertFrom-Json } catch { $startupMessageBoundaries = $null }
-try { $startupUnreadBoundaries = [Environment]::GetEnvironmentVariable("XIAOXI_STARTUP_UNREAD_BOUNDARIES") | ConvertFrom-Json } catch { $startupUnreadBoundaries = $null }
 $expectedConversation = Normalize-AutoReplyVisualText ([Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_CONVERSATION"))
 $expectedMessage = Normalize-AutoReplyVisualText ([Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_MESSAGE"))
 $expectedRuntimeId = [Environment]::GetEnvironmentVariable("XIAOXI_EXPECTED_RUNTIME_ID")
@@ -1786,9 +1826,9 @@ try {
     if ($expectedMessageDriven) {
       $header = @{ ok = $true; state = "message_driven"; headerCandidateCount = 0; headerCandidateHashes = @() }
     } else {
-      $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet
+      $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet $frame
       if (-not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
-        Write-AutoReplyVisualResult @{ ok = $false; reason = "conversation_title_mismatch"; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = "different"; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
       }
     }
     if ($currentMessage -eq $null -or -not $currentMessage.hasMessage) {
@@ -1828,9 +1868,9 @@ try {
     if ($expectedMessageDriven) {
       $header = @{ ok = $true; state = "message_driven"; headerCandidateCount = 0; headerCandidateHashes = @() }
     } else {
-      $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet
+      $header = Get-AutoReplyVisualHeader $observation.lines $expectedConversation $sidebarRight ([double]$frame.width) $allowedSet $frame
       if (-not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
-        Write-AutoReplyVisualResult @{ ok = $false; reason = "conversation_title_mismatch"; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = "different"; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
+        Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
       }
     }
     # The sidebar and chat bubble use different font sizes. The same Chinese text
@@ -1891,21 +1931,12 @@ try {
 
   $candidates = New-Object System.Collections.Generic.List[object]
   $candidate = $null
-  $suppressedStartupUnread = 0
   foreach ($row in $rows) {
     # OCR-only preview changes are not an event signal: small recognition jitter
     # previously caused a click on every scan. Background sessions require a
     # geometric unread badge; the already-open session uses message-area evidence.
-    $startupPreview = Get-AutoReplyVisualBoundaryText $startupPreviewBoundaries ([string]$row.conversation) "preview"
-    $newSinceStartupBoundary = $mode -cne "prime_confirm" -or
-      ($startupPreview -and -not (Test-AutoReplyVisualMessageMatch $startupPreview ([string]$row.preview)))
-    $historicalUnreadPreview = Get-AutoReplyVisualBoundaryText $startupUnreadBoundaries ([string]$row.conversation) "preview"
-    $historicalUnreadSignature = (Get-AutoReplyVisualBoundaryText $startupUnreadBoundaries ([string]$row.conversation) "signature").ToLowerInvariant()
-    $sameHistoricalUnread = (Test-AutoReplyVisualSignature $historicalUnreadSignature) -and
-      ($historicalUnreadSignature -ceq [string]$row.signature -or
-        ($historicalUnreadPreview -and (Test-AutoReplyVisualMessageMatch $historicalUnreadPreview ([string]$row.preview))))
-    if ($row.unread -and $sameHistoricalUnread) { $suppressedStartupUnread += 1 }
-    if ($row.unread -and -not $row.draft -and $newSinceStartupBoundary -and -not $sameHistoricalUnread) {
+    # A still-unread message remains pending even if it predates startup.
+    if ($row.unread -and -not $row.draft) {
       $row | Add-Member -NotePropertyName source -NotePropertyValue "unread" -Force
       [void]$candidates.Add($row)
     }
@@ -1913,7 +1944,7 @@ try {
   # An unread dot that cannot be joined to an allowlisted row is diagnostic
   # only. It must not starve a new bubble in the already-open allowlisted chat.
   $unresolvedUnreadBadgeCount = 0
-  if ($candidates.Count -eq 0 -and $suppressedStartupUnread -eq 0) {
+  if ($candidates.Count -eq 0) {
     $badgeFallbacks = @(Get-AutoReplyVisualUnreadBadges $frame $sidebarRight)
     $unresolvedUnreadBadgeCount = $badgeFallbacks.Count
   }
@@ -2064,11 +2095,30 @@ $openedObservation = Get-AutoReplyVisualObservation $hWnd ([int]$process.Id) $wi
 if (-not $openedObservation.ok) { Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$openedObservation.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd } }
 $openedFrame = $openedObservation.frame
 try {
+  $openedSidebar = Get-AutoReplyVisualSidebarRows $openedFrame $openedObservation.lines $allowedSet $sidebarRight
+  $selectedOpenedRows = if ($openedSidebar.ok) { @($openedSidebar.rows | Where-Object { [bool]$_.selected }) } else { @() }
   if ([bool]$candidate.badgeOnly) {
     if (Test-AutoReplyVisualBadgeRemains $openedFrame $candidate.badgeBounds) {
       Write-AutoReplyVisualResult @{ ok = $false; reason = "no_unread_message"; pid = [int]$process.Id; hWnd = [int64]$hWnd }
     }
-    $header = Get-AutoReplyVisualAnyHeader $openedObservation.lines $sidebarRight ([double]$openedFrame.width)
+    $header = Get-AutoReplyVisualAnyHeader $openedObservation.lines $sidebarRight ([double]$openedFrame.width) $openedFrame
+    if (-not $header.ok -and $selectedOpenedRows.Count -eq 1) {
+      $selected = $selectedOpenedRows[0]
+      $header = @{
+        ok = $true
+        state = "selected_sidebar_row"
+        conversation = [string]$selected.conversation
+        observed = [string]$selected.conversationEvidence
+        headerCandidateCount = 0
+        headerCandidateHashes = @()
+      }
+      $script:AutoReplyVisualHeaderRead = @{
+        state = "selected_sidebar_row"
+        candidateCount = 0
+        recoveryAttempted = $true
+        recoveryOk = $true
+      }
+    }
     if ($script:AutoReplyVisualExactConversationMatch) {
       $strictHeader = Resolve-AutoReplyVisualStrictBadgeHeader $header $allowedSet
       if (-not $strictHeader.ok) {
@@ -2093,7 +2143,25 @@ try {
       }
     }
   } else {
-    $header = Get-AutoReplyVisualHeader $openedObservation.lines $conversation $sidebarRight ([double]$openedFrame.width) $allowedSet
+    $header = Get-AutoReplyVisualHeader $openedObservation.lines $conversation $sidebarRight ([double]$openedFrame.width) $allowedSet $openedFrame
+    if (-not $header.ok -and $selectedOpenedRows.Count -eq 1 -and
+        (Test-AutoReplyVisualConversationMatch $conversation ([string]$selectedOpenedRows[0].conversation))) {
+      $selected = $selectedOpenedRows[0]
+      $header = @{
+        ok = $true
+        state = "selected_sidebar_row"
+        conversation = [string]$selected.conversation
+        observed = [string]$selected.conversationEvidence
+        headerCandidateCount = 0
+        headerCandidateHashes = @()
+      }
+      $script:AutoReplyVisualHeaderRead = @{
+        state = "selected_sidebar_row"
+        candidateCount = 0
+        recoveryAttempted = $true
+        recoveryOk = $true
+      }
+    }
   }
   if (-not [bool]$candidate.badgeOnly -and -not $header.ok -and ($script:AutoReplyVisualExactConversationMatch -or [string]$header.state -eq "different")) {
     Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$header.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$header.state; headerCandidateCount = [int]$header.headerCandidateCount; headerCandidateHashes = @($header.headerCandidateHashes) }
@@ -2162,7 +2230,27 @@ try {
     $confirmationFrame = $confirmation.frame
     try {
       if (-not [bool]$candidate.badgeOnly -or [bool]$candidate.strictConversationVerified) {
-        $confirmationHeader = Get-AutoReplyVisualHeader $confirmation.lines $conversation $sidebarRight ([double]$confirmationFrame.width) $allowedSet
+        $confirmationHeader = Get-AutoReplyVisualHeader $confirmation.lines $conversation $sidebarRight ([double]$confirmationFrame.width) $allowedSet $confirmationFrame
+        $confirmationSidebar = Get-AutoReplyVisualSidebarRows $confirmationFrame $confirmation.lines $allowedSet $sidebarRight
+        $selectedConfirmationRows = if ($confirmationSidebar.ok) { @($confirmationSidebar.rows | Where-Object { [bool]$_.selected }) } else { @() }
+        if (-not $confirmationHeader.ok -and $selectedConfirmationRows.Count -eq 1 -and
+            (Test-AutoReplyVisualConversationMatch $conversation ([string]$selectedConfirmationRows[0].conversation))) {
+          $selected = $selectedConfirmationRows[0]
+          $confirmationHeader = @{
+            ok = $true
+            state = "selected_sidebar_row"
+            conversation = [string]$selected.conversation
+            observed = [string]$selected.conversationEvidence
+            headerCandidateCount = 0
+            headerCandidateHashes = @()
+          }
+          $script:AutoReplyVisualHeaderRead = @{
+            state = "selected_sidebar_row"
+            candidateCount = 0
+            recoveryAttempted = $true
+            recoveryOk = $true
+          }
+        }
         if (-not $confirmationHeader.ok -and ([bool]$candidate.strictConversationVerified -or [string]$confirmationHeader.state -eq "different")) {
           Write-AutoReplyVisualResult @{ ok = $false; reason = [string]$confirmationHeader.reason; pid = [int]$process.Id; hWnd = [int64]$hWnd; headerState = [string]$confirmationHeader.state; headerCandidateCount = [int]$confirmationHeader.headerCandidateCount; headerCandidateHashes = @($confirmationHeader.headerCandidateHashes) }
         }
@@ -2315,10 +2403,10 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
   const messageBaselines = new Map();
   const occurrenceStates = new Map();
   const turnBoundaries = new Map();
-  const startupUnreadBoundaries = new Map();
   const startupMessageBoundaries = new Map();
   const retryCandidates = [];
   let primedProcess = null;
+  let preferredScreenWindow = "";
   let pendingOpenedUnread = null;
   let restoredPendingObservation = null;
   let startupBoundary = null;
@@ -2331,6 +2419,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
   let stableActiveSession = null;
 
   function shouldForceScreenCapture(result) {
+    if (result?.diagnostics?.screen_capture_requested === true) return false;
     const reason = String(result?.reason || "");
     if (reason === "visual_capture_failed") return true;
     return result?.captureMode === "hwnd_printwindow" && new Set([
@@ -2667,7 +2756,6 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       const conversation = compactContactName(row?.conversation);
       const signature = String(row?.signature || "").trim().toLowerCase();
       if (!allowed.includes(conversation) || !isSha256(signature)) continue;
-      if (row?.unread === false) startupUnreadBoundaries.delete(conversation);
       if (turnBoundaries.get(conversation)?.pending === true) continue;
       if (missingOnly && previewBaselines.has(conversation)) continue;
       previewBaselines.set(conversation, signature);
@@ -2929,29 +3017,50 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
   function invoke(mode, allowed, extra = {}, matchOptions = {}) {
     const sharedWindow = typeof windowIdentityProvider === "function" ? windowIdentityProvider() : null;
     const startedAt = Date.now();
+    const expectedPid = String(extra.XIAOXI_EXPECTED_PID || sharedWindow?.pid || "");
+    const expectedHwnd = String(extra.XIAOXI_EXPECTED_HWND || sharedWindow?.hWnd || "");
+    const windowKey = expectedPid && expectedHwnd ? `${expectedPid}:${expectedHwnd}` : "";
+    const sharedWindowKey = sharedWindow?.pid && sharedWindow?.hWnd ? `${sharedWindow.pid}:${sharedWindow.hWnd}` : "";
+    if (preferredScreenWindow && (windowKey !== preferredScreenWindow || sharedWindowKey !== windowKey)) preferredScreenWindow = "";
+    const preferScreen = windowKey && sharedWindowKey === windowKey && preferredScreenWindow === windowKey;
     return Promise.resolve(powerShellRunner(AUTO_REPLY_VISUAL_SCRIPT, {
       XIAOXI_AUTO_REPLY_MODE: mode,
       XIAOXI_ALLOWED_NAMES: JSON.stringify(allowed),
       XIAOXI_EXCLUDED_NAMES: JSON.stringify(["文件传输助手", "微信团队", "服务通知", "订阅号消息", "群聊"]),
       XIAOXI_VISUAL_BASELINES: JSON.stringify(Object.fromEntries(previewBaselines)),
       XIAOXI_VISUAL_MESSAGE_BASELINES: JSON.stringify(Object.fromEntries(messageBaselines)),
-      XIAOXI_STARTUP_UNREAD_BOUNDARIES: JSON.stringify(Object.fromEntries(startupUnreadBoundaries)),
       XIAOXI_EXPECTED_PID: String(sharedWindow?.pid || ""),
       XIAOXI_EXPECTED_HWND: String(sharedWindow?.hWnd || ""),
       XIAOXI_AUTO_REPLY_EXACT_CONVERSATION_MATCH: matchOptions?.exactConversationMatch === true ? "1" : "",
       XIAOXI_ALLOW_FOCUS_FALLBACK: "",
       XIAOXI_FORCE_SCREEN_CAPTURE: "",
+      ...(preferScreen ? { XIAOXI_ALLOW_FOCUS_FALLBACK: "1", XIAOXI_FORCE_SCREEN_CAPTURE: "1" } : {}),
       ...extra
-    }, { ensure: false, sta: true, timeout: 45_000, diagnostics: true })).then((result) => ({
-      ...result,
-      diagnostics: {
-        ...(result?.diagnostics && typeof result.diagnostics === "object" ? result.diagnostics : {}),
-        timings: {
-          ...(result?.diagnostics?.timings && typeof result.diagnostics.timings === "object" ? result.diagnostics.timings : {}),
-          scan_ms: Date.now() - startedAt
+    }, { ensure: false, sta: true, timeout: 45_000, diagnostics: true })).then((result) => {
+      if (windowKey && sharedWindowKey === windowKey && result?.ok === true && result.captureMode === "foreground_screen"
+        && `${result.pid}:${result.hWnd}` === windowKey) preferredScreenWindow = windowKey;
+      return {
+        ...result,
+        diagnostics: {
+          ...(result?.diagnostics && typeof result.diagnostics === "object" ? result.diagnostics : {}),
+          screen_capture_requested: extra.XIAOXI_FORCE_SCREEN_CAPTURE === "1" || Boolean(preferScreen),
+          timings: {
+            ...(result?.diagnostics?.timings && typeof result.diagnostics.timings === "object" ? result.diagnostics.timings : {}),
+            scan_ms: Date.now() - startedAt,
+            capture_attempts: 1
+          }
         }
-      }
-    }));
+      };
+    });
+  }
+
+  function combineProbeDiagnostics(previous, current) {
+    const before = previous?.diagnostics?.timings || {};
+    const after = current?.diagnostics?.timings || {};
+    return { ...current, diagnostics: { ...current?.diagnostics, timings: { ...after,
+      scan_ms: (Number(before.scan_ms) || 0) + (Number(after.scan_ms) || 0),
+      capture_attempts: (Number(before.capture_attempts) || 0) + (Number(after.capture_attempts) || 0)
+    } } };
   }
 
   async function primeWechatSession(names, matchOptions = {}) {
@@ -2961,7 +3070,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     if (!allowed.length) return { ok: false, reason: "whitelist_empty" };
     let result = await invoke("prime", allowed, {}, matchOptions);
     if (result?.ok !== true && shouldForceScreenCapture(result)) {
-      result = await invoke("prime", allowed, { XIAOXI_ALLOW_FOCUS_FALLBACK: "1", XIAOXI_FORCE_SCREEN_CAPTURE: "1" }, matchOptions);
+      result = combineProbeDiagnostics(result, await invoke("prime", allowed, { XIAOXI_ALLOW_FOCUS_FALLBACK: "1", XIAOXI_FORCE_SCREEN_CAPTURE: "1" }, matchOptions));
     }
     if (result?.ok !== true) return result;
     const process = processIdentity(result);
@@ -2976,38 +3085,26 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     if (result?.startupBoundarySupported === true) {
       const primeRows = Array.isArray(result?.sessionBaselines) ? result.sessionBaselines : [];
       const unreadAtBoundary = new Map(primeRows.map((row) => [compactContactName(row?.conversation), row?.unread === true]));
-      startupUnreadBoundaries.clear();
       startupMessageBoundaries.clear();
       for (const row of Array.isArray(result?.sessionMessageBaselines) ? result.sessionMessageBaselines : []) {
         const conversation = compactContactName(row?.conversation);
         const message = compactMessageText(row?.message);
-        if (allowed.includes(conversation) && message && String(row?.latestRole || "") === "user") {
+        if (allowed.includes(conversation) && unreadAtBoundary.get(conversation) !== true
+          && message && String(row?.latestRole || "") === "user") {
           const contextSignatures = (Array.isArray(row.context) ? row.context : [])
             .filter((item) => item?.role === "user" && compactMessageText(item?.content))
             .map(contextItemHash);
           startupMessageBoundaries.set(conversation, { message, contextSignatures });
         }
       }
-      for (const row of primeRows) {
-        const conversation = compactContactName(row?.conversation);
-        const signature = String(row?.signature || "").trim().toLowerCase();
-        const preview = compactMessageText(row?.preview);
-        if (allowed.includes(conversation) && row?.unread === true
-          && turnBoundaries.get(conversation)?.pending !== true && isSha256(signature) && preview) {
-          startupUnreadBoundaries.set(conversation, { signature, preview });
-        }
-      }
       startupBoundary = {
-        previews: Object.fromEntries(primeRows
-          .map((row) => [compactContactName(row?.conversation), { preview: compactMessageText(row?.preview) }])
-          .filter(([conversation, value]) => allowed.includes(conversation) && value.preview
-            && !(turnBoundaries.get(conversation)?.pending === true && unreadAtBoundary.get(conversation) === true))),
         messages: Object.fromEntries((Array.isArray(result?.sessionMessageBaselines) ? result.sessionMessageBaselines : [])
           .map((row) => [compactContactName(row?.conversation), { message: compactMessageText(row?.message) }])
           .filter(([conversation, value]) => allowed.includes(conversation) && value.message
-            && !(turnBoundaries.get(conversation)?.pending === true && unreadAtBoundary.get(conversation) === true)))
+            && unreadAtBoundary.get(conversation) !== true))
       };
       const boundaryResult = await scanWechatIncoming(names, matchOptions);
+      result = { ...result, diagnostics: combineProbeDiagnostics(result, boundaryResult).diagnostics };
       if (boundaryResult?.reason === "wechat_process_changed" || boundaryResult?.reason === "wechat_window_changed") return boundaryResult;
       if (boundaryResult?.ok === true) startupBoundaryCandidate = boundaryResult;
     }
@@ -3017,6 +3114,8 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     return {
       ok: true,
       primed: true,
+      diagnostics: result.diagnostics,
+      ...(result.captureMode ? { captureMode: result.captureMode } : {}),
       pid: process.pid,
       hWnd: process.hWnd,
       ...(observedConversation ? { conversation: observedConversation } : {}),
@@ -3052,17 +3151,16 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       XIAOXI_EXPECTED_PID: String(primedProcess.pid),
       XIAOXI_EXPECTED_HWND: primedProcess.hWnd,
       ...(boundary ? {
-        XIAOXI_STARTUP_PREVIEWS: JSON.stringify(boundary.previews),
         XIAOXI_STARTUP_MESSAGES: JSON.stringify(boundary.messages)
       } : {})
     };
     let result = await invoke(scanMode, allowed, scanEnvironment, matchOptions);
     if (result?.ok !== true && shouldForceScreenCapture(result)) {
-      result = await invoke(scanMode, allowed, {
+      result = combineProbeDiagnostics(result, await invoke(scanMode, allowed, {
         ...scanEnvironment,
         XIAOXI_ALLOW_FOCUS_FALLBACK: "1",
         XIAOXI_FORCE_SCREEN_CAPTURE: "1"
-      }, matchOptions);
+      }, matchOptions));
     }
     if (isBoundPrintWindowNoMessage(result)) {
       // A passive PrintWindow frame may be one compositor frame behind even when
@@ -3071,11 +3169,11 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
       // session. If the screen cannot prove a candidate, retain the binding and
       // retry next poll rather than silently advancing past a read red dot.
       const binding = stableActiveSession;
-      const screenResult = await invoke(scanMode, allowed, {
+      const screenResult = combineProbeDiagnostics(result, await invoke(scanMode, allowed, {
         ...scanEnvironment,
         XIAOXI_ALLOW_FOCUS_FALLBACK: "1",
         XIAOXI_FORCE_SCREEN_CAPTURE: "1"
-      }, matchOptions);
+      }, matchOptions));
       if (String(screenResult?.reason || "") !== "no_unread_message"
         || screenRecheckConfirmsBoundIdle(screenResult, binding)) {
         result = screenResult;
@@ -3153,7 +3251,6 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     const predecessorSignature = messageBaselines.get(conversation) || "";
     const decorated = decorateCandidate({ ...result, discoveredConversation: false, messageDriven }, nameIdentity, predecessorSignature, matchOptions);
     rememberStableActiveSession(result, allowed);
-    startupUnreadBoundaries.delete(conversation);
     const turn = turnBoundaries.get(conversation);
     if (turn?.pending === true) turnBoundaries.set(conversation, { ...turn, pending: false });
     if (isSha256(signature)) previewBaselines.set(conversation, signature);
@@ -3264,7 +3361,6 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     const boundarySignature = turnBoundarySignature(conversation, turnEpoch);
     turnBoundaries.set(conversation, { epoch: turnEpoch, pending: true, lastAdvancedRuntimeId: runtimeId });
     occurrenceStates.set(conversation, { ...active, active: false, boundarySignature });
-    startupUnreadBoundaries.delete(conversation);
     startupMessageBoundaries.delete(conversation);
     previewBaselines.set(conversation, boundarySignature);
     messageBaselines.set(conversation, boundarySignature);
@@ -3294,7 +3390,6 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     messageBaselines.clear();
     occurrenceStates.clear();
     turnBoundaries.clear();
-    startupUnreadBoundaries.clear();
     startupMessageBoundaries.clear();
     retryCandidates.length = 0;
     pendingOpenedUnread = null;
@@ -3303,6 +3398,7 @@ function createWechatVisualAutoReplyDriver(powerShellRunner = runPowerShellAsync
     startupBoundary = null;
     startupBoundaryCandidate = null;
     primedProcess = null;
+    preferredScreenWindow = "";
   };
 
   return { primeWechatSession, scanWechatIncoming, verifyWechatIncoming, noteVerifiedSend, noteSendAttempted, restoreTurnBoundaries };

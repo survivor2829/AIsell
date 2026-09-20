@@ -7,6 +7,7 @@ const {
   createMomentsCampaignController,
   momentsReadingSnapshotMatch
 } = require("./moments-campaign-ipc.cjs");
+const { createWechatWorkflowController } = require("./wechat-workflow.cjs");
 
 const firstReadingFrame = {
   source: "visual:windows_media_ocr",
@@ -206,6 +207,22 @@ async function main() {
   const persisted = JSON.parse(fs.readFileSync(path.join(root, "state.json"), "utf8"));
   assert.equal(persisted.moments_campaign.status, "completed");
 
+  const openFailureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-open-failure-"));
+  const openFailureEvents = [];
+  const openFailureController = createMomentsCampaignController({
+    baseDir: openFailureRoot,
+    coordinator: { acquire: () => ({ ok: true, lock: { owner: "open-failure" } }), release() {} },
+    logger: { event: (module, event, details) => openFailureEvents.push({ module, event, details }) },
+    openMoments: async () => ({ ok: false, reason: "personal_wechat_main_window_not_found" }),
+    scrollMoments: async () => { throw new Error("a failed open must not begin a Moments action"); }
+  });
+  assert.equal(openFailureController.start({ maxPosts: 1 }).ok, true);
+  await waitFor(() => openFailureController.status().state, (state) => state.status === "paused");
+  const openFailureEvent = openFailureEvents.find(({ event }) => event === "campaign.open_finished");
+  assert.equal(openFailureEvent.details.reason, "personal_wechat_main_window_not_found");
+  assert.equal(openFailureEvent.details.ok, false);
+  assert.equal("result" in openFailureEvent.details, false, "the diagnostic event must expose its finite reason directly rather than serialize a raw response");
+
   let readingCalls = 0;
   let readingActions = 0;
   const readingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-reading-menu-"));
@@ -217,7 +234,7 @@ async function main() {
     scrollMoments: async (options) => {
       assert.equal(options.scrollMode, "seek_post_menu_down");
       assert.equal(readingActions, 0, "a body-only snapshot must never reach an action");
-      return { ok: true, delta: -240 };
+      return { ok: true, delta: -240, observedDelta: -180 };
     },
     generateComment: async ({ postText }) => {
       assert.equal(postText, "机器人培训圆满收官，现场实操收获很多。".normalize("NFKC"), "use body content, not author/footer identity");
@@ -226,17 +243,21 @@ async function main() {
     runStep: async (args) => {
       if (args[0] === "moments-dry-run") {
         readingCalls += 1;
-        if (readingCalls === 2) {
+        if (readingCalls > 1) {
           const target = JSON.parse(Buffer.from(args[args.indexOf("--target-post-base64") + 1], "base64"));
-          assert.equal(target.expected_scroll_delta, -240);
+          assert.equal(target.expected_scroll_delta, -180);
+          assert.equal(target.expected_scroll_unit, "observed_pixels");
           assert.equal(target.observation_id, "reading-only");
         }
         return {
           ok: true, window: INTEGRATED_OBSERVED_WINDOW,
           post_snapshot: {
             ...firstReadingFrame,
-            observation_id: readingCalls === 1 ? "reading-only" : "ready",
+            observation_id: readingCalls <= 2 ? "reading-only" : "ready",
             body_only: readingCalls === 1,
+            ...(readingCalls === 2 ? {
+              menu_bounds: { left: 700, top: INTEGRATED_OBSERVED_WINDOW.renderPaneBounds.top + INTEGRATED_OBSERVED_WINDOW.renderPaneBounds.height - 25, width: 40, height: 24 }
+            } : {}),
             identity_text: "作者昵称 会员超市 12小时前",
             content_text: "机器人培训圆满收官，现场实操收获很多。"
           }
@@ -249,7 +270,7 @@ async function main() {
   });
   assert.equal(readingController.start({ maxPosts: 1, commentEnabled: true }).ok, true);
   const readingFinished = await waitFor(() => readingController.status().state, (s) => s.status === "completed");
-  assert.equal(readingCalls, 2);
+  assert.equal(readingCalls, 3);
   assert.equal(readingActions, 2);
   assert.equal(readingFinished.comment_skipped_count, 0);
   assert.equal(readingFinished.commented_count, 1);
@@ -1485,6 +1506,149 @@ async function main() {
   assert.equal(workflowOpenCalls, 1, "one batch must open Moments only once");
   assert.equal(workflowScrollCalls, 3, "skip the old post and keep scrolling without yielding to chat");
 
+  async function checkUnknownWorkflowStop(lastReason) {
+    const unknownRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-unknown-workflow-"));
+    const momentsDir = path.join(unknownRoot, "moments");
+    const moments = createMomentsCampaignController({
+      baseDir: momentsDir,
+      workflowManaged: true,
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "unknown-owner" } }), release: () => undefined },
+      logger: { event: () => undefined }
+    });
+    let replyCalls = 0;
+    const workflow = createWechatWorkflowController({
+      rootDir: unknownRoot,
+      autoReplyDir: path.join(unknownRoot, "reply"),
+      activeTouchDir: path.join(unknownRoot, "touch"),
+      momentsDir,
+      getAccount: () => "test-account",
+      autoSchedule: false,
+      reply: {
+        prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+        runWorkflowStep: async () => { replyCalls += 1; return { handled: false }; }
+      },
+      executors: { interact: moments }
+    });
+    await workflow.addRecipients(["reply-contact"]);
+    const payload = { maxPosts: 1, likeEnabled: true, commentEnabled: false };
+    const added = await workflow.addTask({ type: "interact", payload });
+    const progressDir = path.join(momentsDir, "planned_runs", added.task.id);
+    fs.mkdirSync(progressDir, { recursive: true });
+    fs.writeFileSync(path.join(progressDir, `${added.task.occurrenceDate}.json`), JSON.stringify({
+      done: 0,
+      processed_posts: [],
+      in_flight: null,
+      outcome_unknown: true,
+      last_reason: lastReason
+    }));
+    const rawResult = await moments.runWorkflowStep({ ...added.task, payload }, { isEnabled: () => true });
+    assert.equal(rawResult.reasonCode, "moments_interaction_outcome_unknown");
+    assert.equal(rawResult.diagnosticReason, lastReason);
+    assert.equal(rawResult.requiresGlobalAttention, true);
+    await workflow.start();
+    await workflow.tick();
+    assert.equal(workflow.status().enabled, false, "an unknown Moments outcome must stop the whole workflow regardless of diagnostic text");
+    assert.equal(replyCalls, 0);
+    await workflow.tick();
+    assert.equal(replyCalls, 0, "auto reply must remain stopped after an unknown Moments outcome");
+    await workflow.dispose();
+    moments.dispose();
+    fs.rmSync(unknownRoot, { recursive: true, force: true });
+  }
+
+  await checkUnknownWorkflowStop("moments_no_new_posts");
+  await checkUnknownWorkflowStop("executor_specific_unknown_detail");
+
+  const forcedGlobalRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-forced-global-attention-"));
+  let forcedGlobalReplyCalls = 0;
+  const forcedGlobal = createWechatWorkflowController({
+    rootDir: forcedGlobalRoot,
+    autoReplyDir: path.join(forcedGlobalRoot, "reply"),
+    activeTouchDir: path.join(forcedGlobalRoot, "touch"),
+    momentsDir: path.join(forcedGlobalRoot, "moments"),
+    getAccount: () => "test-account",
+    autoSchedule: false,
+    reply: {
+      prepareWorkflowRecipients: async (ids) => ids.map((id) => ({ id, name: id })),
+      runWorkflowStep: async () => { forcedGlobalReplyCalls += 1; return { handled: false }; }
+    },
+    executors: { interact: {
+      prepareWorkflowTask: (_id, payload) => ({ payload }),
+      runWorkflowStep: async (task) => ({
+        status: "needs_attention",
+        reasonCode: "moments_no_new_posts",
+        error: "diagnostic text",
+        requiresGlobalAttention: true,
+        progress: task.progress
+      })
+    } }
+  });
+  await forcedGlobal.addRecipients(["reply-contact"]);
+  await forcedGlobal.addTask({ type: "interact", payload: { maxPosts: 1 } });
+  await forcedGlobal.start();
+  await forcedGlobal.tick();
+  assert.equal(forcedGlobal.status().enabled, false, "requiresGlobalAttention must override every local reason whitelist entry");
+  assert.equal(forcedGlobalReplyCalls, 0);
+  await forcedGlobal.tick();
+  assert.equal(forcedGlobalReplyCalls, 0);
+  await forcedGlobal.dispose();
+  fs.rmSync(forcedGlobalRoot, { recursive: true, force: true });
+
+  const emptyScanRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-empty-scan-"));
+  let emptyScanFingerprint = "e".repeat(64);
+  const emptyScanController = createMomentsCampaignController({
+    baseDir: emptyScanRoot,
+    coordinator: { acquire: () => ({ ok: true, lock: { owner: "empty-scan-owner" } }), release: () => undefined },
+    logger: { event: () => undefined },
+    openMoments: async () => STANDALONE_OPEN_RESULT,
+    scrollMoments: async () => ({ ok: true }),
+    runStep: async (args) => args[0] === "moments-dry-run"
+      ? {
+          ok: true,
+          window: STANDALONE_OPEN_RESULT,
+          post_snapshot: {
+            ...firstReadingFrame,
+            observation_id: emptyScanFingerprint,
+            post_fingerprint: emptyScanFingerprint,
+            identity_text: `empty scan ${emptyScanFingerprint[0]}`,
+            stable_anchor_text: `empty scan ${emptyScanFingerprint[0]}`
+          },
+          plan: { visible_post_count: 1 }
+        }
+      : { ok: true, status: "verified", no_op: false, real_action_attempted: true }
+  });
+  const emptyScanTask = {
+    type: "interact",
+    payload: { maxPosts: 3, likeEnabled: true, commentEnabled: false }
+  };
+  let emptyScanClock = new Date(2026, 8, 2, 12, 0, 0);
+  const emptyScanWorkflowRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-empty-scan-workflow-"));
+  const emptyScanWorkflow = createWechatWorkflowController({
+    rootDir: emptyScanWorkflowRoot,
+    autoReplyDir: path.join(emptyScanWorkflowRoot, "reply"),
+    activeTouchDir: path.join(emptyScanWorkflowRoot, "touch"),
+    momentsDir: emptyScanRoot,
+    now: () => emptyScanClock,
+    getAccount: () => "test-account",
+    autoSchedule: false,
+    executors: { interact: emptyScanController }
+  });
+  await emptyScanWorkflow.setReplyEnabled(false);
+  const emptyScanAdded = await emptyScanWorkflow.addTask(emptyScanTask);
+  await emptyScanWorkflow.start();
+  await emptyScanWorkflow.tick();
+  assert.equal(emptyScanWorkflow.status().tasks[0].status, "pending");
+  await emptyScanWorkflow.tick();
+  assert.equal(emptyScanWorkflow.status().tasks[0].status, "pending");
+  await emptyScanWorkflow.tick();
+  assert.equal(emptyScanWorkflow.status().tasks[0].status, "pending");
+  await emptyScanWorkflow.tick();
+  const completedEmptyScan = emptyScanWorkflow.status().tasks[0];
+  assert.equal(completedEmptyScan.status, "completed", "three consecutive scans without new content must finish this interaction run");
+  const emptyScanFile = path.join(emptyScanRoot, "planned_runs", emptyScanAdded.task.id, `${emptyScanAdded.task.occurrenceDate}.json`);
+  assert.equal(JSON.parse(fs.readFileSync(emptyScanFile, "utf8")).empty_steps, 3);
+  await emptyScanWorkflow.dispose();
+
   const directInteractionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-campaign-direct-interaction-"));
   const directInteractionFingerprint = "c".repeat(64);
   const directInteractionDryRuns = [];
@@ -1663,7 +1827,7 @@ async function main() {
       visibleTextMissingScans += 1;
       return {
         ok: true,
-        window: INTEGRATED_OBSERVED_WINDOW,
+        window: { ...INTEGRATED_OBSERVED_WINDOW, renderPaneBounds: { ...INTEGRATED_OBSERVED_WINDOW.renderPaneBounds, height: 900 } },
         post_snapshot: postSnapshot,
         plan: { visible_post_count: 1 }
       };

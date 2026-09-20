@@ -11,6 +11,7 @@ const { verifyComponentManifest, assertCompatible, hashFile: fileHash } = requir
 const { createComponentStore } = require("./component-store.cjs");
 const componentPaths = require("./component-paths.cjs");
 const { bundledAnnouncements } = require("../shared/customer-release-notes.cjs");
+const { updateFailure, formatUpdateFailure } = require("./update-storage.cjs");
 
 function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; } }
 function announcementId(manifest) { return `${manifest.schema}:${manifest.sequence}`; }
@@ -150,6 +151,23 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     }
     return status();
   }
+  function markAnnouncementsRead() {
+    const unreadVersions = status().announcements.filter((item) => !item.read).map((item) => item.version);
+    if (!unreadVersions.length) return status();
+    try {
+      const readVersions = [...new Set([...state.readAnnouncementVersions, ...unreadVersions])].slice(-100);
+      const readSet = new Set(readVersions);
+      commit({
+        readAnnouncementVersions: readVersions,
+        announcements: state.announcements.map((candidate) => {
+          const candidateVersion = JSON.parse(candidate.envelope.payload).version;
+          return readSet.has(candidateVersion) ? { ...candidate, read: true } : candidate;
+        })
+      });
+      notify({ announcementError: "" });
+    } catch { notify({ announcementError: "已读状态暂未保存，请稍后重试。" }); }
+    return status();
+  }
   function envelopeFor(entries) {
     return { schema: 1, appId: config.appId, channel: config.channel, installId: state.installId,
       version, buildId: token(buildId), platform: process.platform, arch: process.arch,
@@ -248,6 +266,9 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
       state.pending = envelope; save();
       notify({ stage: "ready", progress: 100 });
     } catch (error) {
+      try { logger?.event?.("maintenance", "update.failed", { stage: view.stage }, {
+        level: "error", code: updateFailure(error, "prepare").code, phase: "check"
+      }); } catch {}
       const message = ["cloud_disk_full", "component_disk_space_insufficient", "ENOSPC"].includes(error?.code) ? "磁盘空间不足，请释放空间后重试。"
         : error?.code === "full_upgrade_required" ? "新版需要完整升级包，当前频道尚未提供。请稍后检查更新或联系开发者获取完整安装包。"
         : error?.code === "cloud_signature_invalid" ? "更新签名校验失败，未安装此更新。请稍后重新检查。" : "更新检查或下载失败，已保留下载进度，请稍后重试。";
@@ -274,23 +295,35 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
   async function beginInstall() {
     if (updateLaunching || !userData) return false;
     updateLaunching = true;
+    let phase = "prepare";
     try {
       const prepared = await prepareInstall();
       if (!prepared) return false;
       notify({ stage: "preparing", error: "" });
+      phase = "helper";
       const { file, job } = await require("./update-helper.cjs").createUpdateJob({ userData, prepared, currentVersion: version });
+      phase = "launch";
       await new Promise((resolve, reject) => {
         // This Electron helper owns the user-visible update progress window.
         const child = launch(job.helperExecutable, ["--xiaoxi-update-job", file], { detached: true, stdio: "ignore", windowsHide: false });
         child.once("error", reject);
         child.once("spawn", () => { child.unref(); resolve(); });
       });
+      phase = "ready";
       const ready = path.join(path.dirname(file), job.id + ".ready.json"), deadline = Date.now() + 30000;
       while (!fs.existsSync(ready) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
       if (!fs.existsSync(ready)) fail("update_helper_not_ready");
       notify({ stage: "waiting", error: "" });
       return true;
-    } catch { notify({ stage: "error", error: "更新窗口未能启动，请保留当前软件并重试。" }); return false; }
+    } catch (error) {
+      const failure = updateFailure(error, phase);
+      // Diagnostics may share the failing disk. Never let their write hide the cause or permit app exit.
+      try { logger?.event?.("maintenance", "update.failed", { stage: failure.phase }, {
+        level: "error", code: failure.code, phase: failure.phase
+      }); } catch {}
+      notify({ stage: "error", error: formatUpdateFailure(failure) });
+      return false;
+    }
     finally { updateLaunching = false; }
   }
   function installOnExit() { return false; }
@@ -317,7 +350,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     uploadTimer = setInterval(() => void flush(), 15_000); uploadTimer.unref?.();
   }
   function stop() { stopped = true; clearInterval(checkTimer); clearInterval(uploadTimer); clearInterval(announcementTimer); unsubscribe?.(); network?.close(); }
-  return { status, check, refreshAnnouncements, markAnnouncementRead, flush, enqueue, setConsent, start, stop, prepareInstall, installOnExit, beginInstall, setInstallBlocked, acknowledgeUpdate, refreshLocalState: () => notify(),
+  return { status, check, refreshAnnouncements, markAnnouncementRead, markAnnouncementsRead, flush, enqueue, setConsent, start, stop, prepareInstall, installOnExit, beginInstall, setInstallBlocked, acknowledgeUpdate, refreshLocalState: () => notify(),
     onUpdate(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 }
 module.exports = { createCloudMaintenance, fileHash };

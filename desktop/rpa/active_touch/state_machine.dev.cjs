@@ -17,8 +17,11 @@ const {
   prepareWechatRpaWindowAsync,
   verifyWechatCurrentConversationAsync: verifyWechatConversationTitleAsync
 } = require("./wechat_window_driver.cjs");
-const { appendLog, block, blockMessageBubble, blockSendGate, loadState, output, readContacts, saveState } = require("./state_machine.cjs");
+const { appendLog, block, blockMessageBubble, blockSendGate, loadState, output, readContacts, saveState, wechatWindowBlockText } = require("./state_machine.cjs");
 const { contactIdentityError, identityKey } = require("./touch_task_state.cjs");
+
+const POST_SEND_CONFIRMATION_ATTEMPTS = 2;
+const RETRYABLE_POST_SEND_CONFIRMATION_REASONS = new Set(["input_draft_read_failed"]);
 const { summarizeSendResult, observeSendStage } = require("../../src/shared/wechat-send-diagnostics.cjs");
 
 const IDLE_WINDOW_RECOVERY_ATTEMPTS = 3;
@@ -146,6 +149,10 @@ function isVerifiedNewMessage(result, message, beforeSnapshot) {
     && beforeSnapshot?.draftExact === true;
 }
 
+function shouldRetryPostSendConfirmation(result) {
+  return RETRYABLE_POST_SEND_CONFIRMATION_REASONS.has(String(result?.reason || ""));
+}
+
 function rejectRepeatedAttempt(baseDir, state, action = "send") {
   const nextState = { ...state, real_send_armed: false, real_send_enabled: false };
   saveState(baseDir, nextState);
@@ -216,6 +223,7 @@ function preflightDiagnostics(result, fallbackPhase, requiredIdleMs, recoveryAtt
     ? result.safety_diagnostics
     : {};
   const diagnostic = {
+    ...require("../../src/shared/wechat-window-diagnostics.cjs").sanitizeWechatWindowDiagnostics(result?.diagnostics),
     phase: String(source.phase || fallbackPhase || "preflight").slice(0, 80),
     required_idle_ms: Math.max(0, Math.floor(Number(requiredIdleMs) || 0)),
     recovery_attempts: Math.max(0, Math.floor(Number(recoveryAttempts) || 0))
@@ -423,7 +431,13 @@ async function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWec
   };
   const before = await observeSendStage(options, "before_send_snapshot", () => bubbleVerifier(message, { ...windowContext, phase: "before" }));
   if (!hasMessageSnapshot(before)) {
-    return withSendAttempted(blockSendGate(baseDir, state, "message_snapshot_unavailable", "已阻断：无法读取发送前消息列表快照"));
+    const blocked = blockSendGate(baseDir, state, "message_snapshot_unavailable", "已阻断：无法读取发送前消息列表快照");
+    return withSendAttempted({
+      ...blocked,
+      // Keep the safe lower-level reason beside the business gate reason so a
+      // feedback report can explain both "why blocked" and "where it failed".
+      send_diagnostics: summarizeSendResult(before, { stage: "before_send_snapshot" })
+    });
   }
   const prepared = {
     ...state,
@@ -461,12 +475,26 @@ async function sendReal(baseDir = __dirname, options = {}, sendDriver = clickWec
   saveState(baseDir, clicked);
   try { notifyTransition(options.onTransition, "clicked", clicked); } catch {}
   let verified;
-  try {
-    verified = await observeSendStage(options, "after_send_confirmation", () => bubbleVerifier(message, { ...windowContext, phase: "after", beforeSnapshot: before.snapshot }));
-  } catch {
-    return persistOutcomeUnknown(baseDir, clicked, "message_bubble_verifier_failed", true, options.onTransition);
+  for (let attempt = 0; attempt < POST_SEND_CONFIRMATION_ATTEMPTS; attempt += 1) {
+    try {
+      verified = await observeSendStage(options, "after_send_confirmation", () => bubbleVerifier(message, { ...windowContext, phase: "after", beforeSnapshot: before.snapshot }));
+    } catch {
+      return persistOutcomeUnknown(baseDir, clicked, "message_bubble_verifier_failed", true, options.onTransition);
+    }
+    if (isVerifiedNewMessage(verified, message, before.snapshot)) break;
+    if (attempt + 1 >= POST_SEND_CONFIRMATION_ATTEMPTS || !shouldRetryPostSendConfirmation(verified)) break;
+    let retrySession;
+    try {
+      retrySession = await observeSendStage(options, "send_session_check", () => sessionCheckAsync(clicked, sessionDriver, baseDir));
+    } catch {
+      return persistOutcomeUnknown(baseDir, clicked, "post_send_session_recheck_failed", true, options.onTransition, verified);
+    }
+    if (!retrySession.ok || Number(retrySession.pid) !== Number(clicked.window_pid) || String(retrySession.hWnd) !== String(clicked.window_handle)) {
+      verified = { ...verified, ok: false, reason: retrySession.reason || "real_send_session_changed" };
+      break;
+    }
   }
-  if (!isVerifiedNewMessage(verified, message, before.snapshot)) return persistOutcomeUnknown(baseDir, clicked, "message_bubble_not_new_latest_exact", true, options.onTransition, verified);
+  if (!isVerifiedNewMessage(verified, message, before.snapshot)) return persistOutcomeUnknown(baseDir, clicked, verified?.reason || "message_bubble_not_new_latest_exact", true, options.onTransition, verified);
   const draftConsumed = verified.verificationMode === "draft_consumed";
   const nextState = { ...clicked, real_send_status: "sent_verified", real_send_attempts: { ...clicked.real_send_attempts, [key]: "sent_verified" }, message_bubble_verified: !draftConsumed, message_bubble_status: draftConsumed ? "not_exposed" : "verified", message_bubble_reason: draftConsumed ? "uia_message_bubble_unavailable" : "", post_send_verified: true, post_send_status: draftConsumed ? "draft_consumed_verified" : "bubble_verified", post_send_reason: "", post_send_verification_mode: draftConsumed ? "draft_consumed" : "message_bubble", located_window_title: verified.title ?? clicked.located_window_title, last_result: "sent_verified", blocked_reason: "" };
   saveState(baseDir, nextState);
@@ -668,7 +696,7 @@ async function executeVerifiedContactSendCore(options = {}) {
       ok: false,
       action: "prepare-wechat-window",
       blocked_reason: String(preparedWindow?.reason || "wechat_window_not_ready"),
-      error: "微信窗口未能固定到左上角并获得前台控制，本次未执行",
+      error: wechatWindowBlockText(preparedWindow?.reason || "wechat_window_not_ready"),
       send_diagnostics: preflightDiagnostics(preparedWindow, "prepare_wechat_window", windowMinIdleMs, preflightRecoveryAttempts)
     });
   }
@@ -695,6 +723,15 @@ async function executeVerifiedContactSendCore(options = {}) {
   const session = await observeSendStage(options, "verify_session", () => verifyRealSendSessionAsync(baseDir, options.sessionDriver || verifyWechatCurrentConversationAsync));
   if (!(await executionMayContinue(options))) return withSendAttempted(cancelVerifiedContactSend(baseDir));
   if (!session.ok) return withSendAttempted(session);
+  if (options.image) {
+    const state = loadState(baseDir);
+    return observeSendStage(options, "image_send", () => require("./wechat_image_send.dev.cjs").sendWechatImage({
+      baseDir, attemptId: options.attemptId,
+      image: options.image, onTransition: options.onTransition, isExecutionAllowed: options.isExecutionAllowed,
+      context: { pid: state.window_pid, hWnd: state.window_handle, expectedConversation: state.selected_customer?.name,
+        expectedConversationMode: state.conversation_verification_mode, expectedConversationToken: state.conversation_token }
+    }));
+  }
   if (typeof options.beforeDraft === "function") {
     let allowed = false;
     try {

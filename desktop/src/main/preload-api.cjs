@@ -40,6 +40,31 @@ function createTrustedClickGate(selector, operation = "") {
   };
 }
 
+function createTrustedClickBindingGate(selector) {
+  let trustedClick = null;
+  if (typeof window !== "undefined") {
+    window.addEventListener("click", (event) => {
+      if (!event.isTrusted) return;
+      const target = event.target?.closest?.(selector);
+      if (!target) return;
+      const binding = Object.freeze({
+        token: randomUUID(),
+        taskId: String(target.getAttribute?.("data-xiaoxi-workflow-task-id") || ""),
+        resolution: String(target.getAttribute?.("data-xiaoxi-workflow-resolution") || "")
+      });
+      trustedClick = binding;
+      setTimeout(() => {
+        if (trustedClick === binding) trustedClick = null;
+      }, 1000);
+    }, true);
+  }
+  return () => {
+    const binding = trustedClick;
+    trustedClick = null;
+    return binding;
+  };
+}
+
 function createMomentsCampaignApi(ipcRenderer) {
   const consumeStartClick = createTrustedClickGate(
     "[data-xiaoxi-moments-campaign-start], [data-xiaoxi-moments-daily-run]"
@@ -253,6 +278,9 @@ function createContentEngineApi(ipcRenderer) {
         }
       ),
       archive: (payload) => ipcRenderer.invoke("content-engine:archive-asset", {
+        assetId: String(payload?.assetId || "")
+      }),
+      restore: (payload) => ipcRenderer.invoke("content-engine:restore-asset", {
         assetId: String(payload?.assetId || "")
       }),
       reveal: (payload) => ipcRenderer.invoke("content-engine:reveal-asset", {
@@ -908,6 +936,8 @@ function createContentEngineApi(ipcRenderer) {
 function createPreloadApis(ipcRenderer) {
   const consumeWorkflowStart = createTrustedClickGate("[data-xiaoxi-workflow-start]");
   const consumeWorkflowSave = createTrustedClickGate("[data-xiaoxi-workflow-save]");
+  const consumeWorkflowResolution = createTrustedClickBindingGate("[data-xiaoxi-workflow-resolve]");
+  const consumeTouchImages = createTrustedClickGate("[data-xiaoxi-touch-images]");
   const consumeBatchClick = createTrustedClickGate("[data-xiaoxi-batch-authorize]");
   const consumeAutoReplyClick = createTrustedClickGate("[data-xiaoxi-auto-reply-start], [data-xiaoxi-auto-reply-acknowledge], [data-xiaoxi-auto-reply-resume]");
   return {
@@ -921,11 +951,21 @@ function createPreloadApis(ipcRenderer) {
       status: () => ipcRenderer.invoke("wechat-workflow:status"),
       start: () => ipcRenderer.invoke("wechat-workflow:start", { clickToken: consumeWorkflowStart() }),
       pause: () => ipcRenderer.invoke("wechat-workflow:pause"),
+      chooseTouchImages: () => ipcRenderer.invoke("wechat-workflow:choose-touch-images", { clickToken: consumeTouchImages() }),
       addTask: (payload) => ipcRenderer.invoke("wechat-workflow:add-task", { ...payload, clickToken: consumeWorkflowSave() }),
       updateTask: (payload) => ipcRenderer.invoke("wechat-workflow:update-task", { ...payload, clickToken: consumeWorkflowSave() }),
       getTask: (id) => ipcRenderer.invoke("wechat-workflow:get-task", { id: String(id || "") }),
       cancelTask: (id) => ipcRenderer.invoke("wechat-workflow:cancel-task", { id: String(id || "") }),
+      deleteTasks: (ids, unsuccessfulOnly = false) => ipcRenderer.invoke("wechat-workflow:delete-tasks", { ids, unsuccessfulOnly, clickToken: consumeWorkflowSave() }),
       retryTask: (id) => ipcRenderer.invoke("wechat-workflow:retry-task", { id: String(id || ""), clickToken: consumeWorkflowSave() }),
+      retrySkipped: (id, contactIds) => ipcRenderer.invoke("wechat-workflow:retry-skipped", { id: String(id || ""), ...(contactIds ? { contactIds } : {}), clickToken: consumeWorkflowSave() }),
+      resolveTouchUnknown: (id, resolution) => {
+        const click = consumeWorkflowResolution();
+        return ipcRenderer.invoke("wechat-workflow:resolve-touch-unknown", {
+          id: String(id || ""), resolution: String(resolution || ""), clickToken: click?.token || "",
+          clickedTaskId: click?.taskId || "", clickedResolution: click?.resolution || ""
+        });
+      },
       removeRecipient: (id) => ipcRenderer.invoke("wechat-workflow:remove-recipient", { id: String(id || "") }),
       addRecipients: (contactIds) => ipcRenderer.invoke("wechat-workflow:add-recipients", { contactIds, clickToken: consumeWorkflowSave() }),
       setReplyEnabled: (enabled) => ipcRenderer.invoke("wechat-workflow:set-reply-enabled", { enabled: enabled === true }),
@@ -1002,6 +1042,7 @@ function createPreloadApis(ipcRenderer) {
       check: () => ipcRenderer.invoke("cloud:check"),
       announcements: () => ipcRenderer.invoke("cloud:announcements"),
       readAnnouncement: (sequence) => ipcRenderer.invoke("cloud:readAnnouncement", sequence),
+      readAnnouncements: () => ipcRenderer.invoke("cloud:readAnnouncements"),
       consent: (enabled) => ipcRenderer.invoke("cloud:consent", enabled === true),
       upload: () => ipcRenderer.invoke("cloud:upload"),
       restart: () => ipcRenderer.invoke("cloud:restart"),
@@ -1057,6 +1098,7 @@ function createPreloadApis(ipcRenderer) {
     touchTask: {
       start: (payload) => ipcRenderer.invoke("touch-task:start", { ...payload, clickToken: consumeBatchClick() }),
       status: () => ipcRenderer.invoke("touch-task:status"),
+      retrySkipped: (payload = {}) => ipcRenderer.invoke("touch-task:retry-skipped", payload),
       pause: () => ipcRenderer.invoke("touch-task:pause"),
       resume: () => ipcRenderer.invoke("touch-task:resume", { clickToken: consumeBatchClick() }),
       stop: () => ipcRenderer.invoke("touch-task:stop"),

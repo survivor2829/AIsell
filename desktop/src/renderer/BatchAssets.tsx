@@ -53,11 +53,18 @@ export function MaterialsCollectionsPage({ onCreate }: { onCreate: (ids: string[
   const [preview, setPreview] = useState<Asset | null>(null);
   const [visible, setVisible] = useState(60);
   async function refresh() {
-    const [library, sets] = await Promise.all([window.xiaoxiContent?.library.list({ limit: 500 }), callBatch<{ collections: Collection[] }>("collections")]);
-    if (!library?.ok) throw new Error(library?.error || "读取素材失败");
-    const items = library.data?.items as Asset[] || [];
-    setAssets(items); setCollections(sets.collections);
+    const [library, sets] = await Promise.allSettled([
+      window.xiaoxiContent?.library.list({ limit: 500 }),
+      callBatch<{ collections: Collection[] }>("collections")
+    ]);
+    if (library.status === "rejected" || !library.value?.ok) {
+      throw new Error(library.status === "rejected" ? library.reason?.message : library.value?.error || "读取素材失败");
+    }
+    const items = library.value.data?.items as Asset[] || [];
+    setAssets(items);
     setSelected((ids) => ids.filter((id) => items.some((a) => a.assetId === id)));
+    if (sets.status === "fulfilled") setCollections(sets.value.collections);
+    else setNotice("素材已读取，但素材集暂不可用：" + (sets.reason?.message || "请稍后重试"));
   }
   async function removeAssets(ids: string[]) {
     await run(async () => {
@@ -100,7 +107,7 @@ export function MaterialsCollectionsPage({ onCreate }: { onCreate: (ids: string[
     </section>}
     <div className="batch-toolbar"><label><input type="checkbox" checked={filtered.length > 0 && filtered.every((a) => selected.includes(a.assetId))} onChange={(e) => setSelected(e.target.checked ? [...new Set([...selected, ...filtered.map((a) => a.assetId)])] : selected.filter((id) => !filtered.some((a) => a.assetId === id)))} />全选当前结果</label><span>已选 {selected.length} 个</span><button disabled={!selected.length && !collection?.asset_ids.length} className="batch-primary" onClick={() => onCreate(selected.length ? selected : collection?.asset_ids || [], collection)}>用于批量创作</button></div>
     <div className="batch-toolbar"><button disabled={busy || !selected.length} onClick={() => void removeAssets(selected)}>移除所选{selected.length ? `（${selected.length}）` : ""}</button><span className="batch-remove-hint">仅从素材仓库移除，不删除本地原文件。</span></div>
-    <div className="batch-asset-grid">{filtered.slice(0, visible).map((a) => <article key={a.assetId} className={`batch-asset ${selected.includes(a.assetId) ? "is-selected" : ""}`}><button className="batch-preview-button" onClick={() => setPreview(a)} aria-label={`预览 ${a.displayName}`}><AssetThumb asset={a} /></button><label><input type="checkbox" checked={selected.includes(a.assetId)} onChange={(e) => setSelected(e.target.checked ? [...selected, a.assetId] : selected.filter((id) => id !== a.assetId))} />{a.displayName}</label><button className="batch-remove-asset" disabled={busy} aria-label={`从素材仓库移除 ${a.displayName}`} onClick={() => void removeAssets([a.assetId])}>移除</button></article>)}</div>
+    <div className="batch-asset-grid">{filtered.slice(0, visible).map((a) => <article key={a.assetId} className={`batch-asset ${selected.includes(a.assetId) ? "is-selected" : ""}`}><button className="batch-preview-button" onClick={() => setPreview(a)} aria-label={`预览 ${a.displayName}`}><AssetThumb asset={a} /></button><label><input type="checkbox" disabled={!a.availableLocationCount} checked={selected.includes(a.assetId)} onChange={(e) => setSelected(e.target.checked ? [...selected, a.assetId] : selected.filter((id) => id !== a.assetId))} />{a.displayName}</label><button className="batch-remove-asset" disabled={busy} aria-label={`从素材仓库移除 ${a.displayName}`} onClick={() => void removeAssets([a.assetId])}>移除</button></article>)}</div>
     {!filtered.length && <div className="batch-empty">{query ? "没有找到匹配素材。" : "添加图片或实拍视频，开始积累你的内容素材。"}</div>}
     {filtered.length > visible && <button onClick={() => setVisible(visible + 60)}>显示更多素材</button>}
     {preview && <AssetPreview asset={preview} onClose={() => setPreview(null)} />}

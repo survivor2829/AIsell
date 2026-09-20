@@ -190,11 +190,11 @@ export function ProductDetailPage() {
   const canShowWorkspace = status.state === "ready" && Boolean(status.bootstrapUrl);
 
   return (
-    <section className="page product-detail-page">
+    <section className={`page product-detail-page${canShowWorkspace ? " has-workspace" : ""}`}>
       <div className="page-head product-detail-head">
         <div>
           <h1>产品详情图</h1>
-          <p>在本机完成产品图片上传、排版和导出；打开页面不会自动调用付费 API。</p>
+          {!canShowWorkspace && <p>上传产品图片，编辑资料，预览并导出详情图。</p>}
         </div>
         <div className="actions product-detail-actions">
           {status.state === "unavailable" && DEVELOPMENT_EDITION && (
@@ -236,7 +236,7 @@ export function ProductDetailPage() {
         </div>
       </div>
 
-      <div className={`product-detail-state is-${displayState}`} aria-live="polite">
+      {!canShowWorkspace && <div className={`product-detail-state is-${displayState}`} aria-live="polite">
         <div className="product-detail-state-icon">
           {displayState === "starting"
             ? <LoaderCircle className="product-detail-spinner" size={22} />
@@ -248,7 +248,7 @@ export function ProductDetailPage() {
           <strong>{copy.title}</strong>
           <p>{copy.description}</p>
         </div>
-      </div>
+      </div>}
 
       {notice && <div className="touch-notice" role="alert">{notice}</div>}
 

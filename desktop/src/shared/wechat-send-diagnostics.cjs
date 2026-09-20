@@ -1,13 +1,66 @@
 // Technical observations only. Never copy a conversation, message, snapshot or
 // raw driver object into the diagnostic stream.
 const { sanitizeVisualSendReceipt } = require("./visual-send-receipt.cjs");
+const { sanitizeWechatWindowDiagnostics } = require("./wechat-window-diagnostics.cjs");
+const { sanitizeFailureDiagnostics } = require("./failure-diagnostics.cjs");
 
-function summarizeSendResult(result = {}) {
+const SAFE_SEND_STAGES = new Set([
+  "preflight", "send_session_check", "before_send_snapshot", "draft", "visual_send",
+  "send", "after_send_confirmation", "verify", "handoff", "unknown"
+]);
+
+const SAFE_INPUT_PHASES = new Set([
+  "preflight", "prepare_wechat_window", "click_search_result", "before_search_result_click",
+  "search_quiet_check", "search_focus", "search_select_all", "search_query_input",
+  "search_observation", "search_result_enter", "pre_input", "after_input_click",
+  "typing", "after_paste", "copy_probe"
+]);
+
+function sanitizeWechatInputDiagnostics(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result = {};
+  const phase = value.input_phase ?? value.phase;
+  if (SAFE_INPUT_PHASES.has(phase)) result.input_phase = phase;
+  for (const key of [
+    "expected_input_tick", "current_input_tick", "required_idle_ms", "observed_idle_ms",
+    "expected_hWnd", "foreground_hWnd"
+  ]) {
+    if (Number.isSafeInteger(value[key]) && value[key] >= 0) result[key] = value[key];
+  }
+  return result;
+}
+
+function safeSendStage(value, fallback = "unknown") {
+  const candidate = String(value ?? "").trim().toLowerCase();
+  return SAFE_SEND_STAGES.has(candidate) ? candidate : fallback;
+}
+
+function sendOutcomeEnvelope(result = {}, detail = {}) {
+  const state = result?.state || {};
+  const attempted = result?.send_attempted ?? result?.sendAttempted;
+  const sendStatus = String(result?.send_result || state.real_send_status || "").trim().toLowerCase();
+  const verified = result?.ok === true && (sendStatus === "sent_verified" || state.real_send_status === "sent_verified");
+  const possible = attempted === true || attempted === null || sendStatus === "outcome_unknown"
+    || state.real_send_status === "prepared" || state.real_send_status === "outcome_unknown";
+  const stage = safeSendStage(
+    detail.stage || detail.phase || result?.stage || result?.phase || result?.send_diagnostics?.phase
+      || result?.send_diagnostics?.failure_stage || state.send_diagnostics?.failure_stage
+      || result?.diagnostics?.phase || result?.action,
+    "unknown"
+  );
+  if (verified) return { outcome: "sent_verified", side_effect: "confirmed", retryability: "not_retryable", failure_stage: stage };
+  if (possible) return { outcome: "outcome_unknown", side_effect: "possible", retryability: "manual_review", failure_stage: stage };
+  return { outcome: "not_attempted", side_effect: "none", retryability: "safe_retry", failure_stage: stage };
+}
+
+function summarizeSendResult(result = {}, context = {}) {
   const state = result?.state || {};
   const proof = result?.proofDiagnostics || result?.send_diagnostics || state.send_diagnostics || {};
-  const detail = {};
+  const detail = sanitizeWechatWindowDiagnostics({ ...result?.diagnostics, ...proof });
+  Object.assign(detail, sanitizeFailureDiagnostics({ ...result, ...result?.diagnostics, ...proof }));
   const blocked = result?.blocked_reason || state.blocked_reason;
-  const reason = result?.primary_reason || result?.reason
+  const reason = result?.primary_reason || result?.reason || proof.reason || proof.input_read_reason
+    || result?.diagnostics?.reason
     || (blocked === "outcome_unknown" ? state.real_send_reason || blocked : blocked || state.real_send_reason);
   for (const [key, value] of Object.entries({
     action: result?.action,
@@ -18,6 +71,7 @@ function summarizeSendResult(result = {}) {
   })) {
     if (typeof value === "string" && /^[a-z][a-z0-9_.:-]{0,119}$/iu.test(value)) detail[key] = value;
   }
+  Object.assign(detail, sendOutcomeEnvelope(result, { ...detail, ...context }));
   for (const [key, value] of Object.entries({
     ok: result?.ok,
     send_attempted: result?.send_attempted ?? result?.sendAttempted,
@@ -46,12 +100,14 @@ function summarizeSendResult(result = {}) {
     candidate_count: proof.candidate_count,
     outgoing_exact_count: proof.outgoing_exact_count,
     previous_exact_count: proof.previous_exact_count,
-    new_outgoing_exact_count: proof.new_outgoing_exact_count
+    new_outgoing_exact_count: proof.new_outgoing_exact_count,
+    clipboard_write_attempts: proof.clipboard_write_attempts
   })) {
     if (Number.isFinite(value) && value >= 0) detail[key] = value;
   }
   const receipt = sanitizeVisualSendReceipt(result?.send_diagnostics?.receipt || result?.diagnostics?.receipt);
   if (receipt) for (const [key, value] of Object.entries(receipt)) detail[`receipt_${key}`] = value;
+  Object.assign(detail, sanitizeWechatInputDiagnostics(proof), sanitizeWechatInputDiagnostics(result?.safety_diagnostics));
   return detail;
 }
 
@@ -63,7 +119,7 @@ async function observeSendStage(options, stage, action) {
   emit({ phase: "start" });
   try {
     const result = await action();
-    try { emit({ phase: "finish", elapsed_ms: Date.now() - start, ...summarizeSendResult(result) }); } catch {}
+    try { emit({ phase: "finish", elapsed_ms: Date.now() - start, ...summarizeSendResult(result, { stage }) }); } catch {}
     return result;
   } catch (error) {
     emit({ phase: "exception", ok: false, reason: "send_stage_exception", elapsed_ms: Date.now() - start,
@@ -72,4 +128,4 @@ async function observeSendStage(options, stage, action) {
   }
 }
 
-module.exports = { summarizeSendResult, observeSendStage };
+module.exports = { summarizeSendResult, observeSendStage, sanitizeWechatInputDiagnostics };

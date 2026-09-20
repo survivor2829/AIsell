@@ -8,7 +8,7 @@ const {
   momentsCommentTextContainsPrevious
 } = require("./moments_dry_run.dev.cjs");
 const { loadState, saveState } = require("./state_machine.cjs");
-const { validMomentsSurfaceRoot } = require("./moments_surface_profile.dev.cjs");
+const { isVisualMomentsSurface, validMomentsRenderSurface, validMomentsSurfaceRoot } = require("./moments_surface_profile.dev.cjs");
 const {
   COMMENT_READBACK_VERIFICATION_MODE,
   sanitizeCommentReadbackProof,
@@ -582,7 +582,7 @@ function lockedWindowIdentityKind(window) {
     width: window?.width,
     height: window?.height
   };
-  const visualIdentity = window?.identityMode === "visual_mmui_render"
+  const visualIdentity = isVisualMomentsSurface(window)
     && window?.automationId === ""
     && Number.isInteger(window?.pid)
     && window.pid > 0
@@ -591,12 +591,7 @@ function lockedWindowIdentityKind(window) {
     && window?.feedAutomationId === ""
     && window?.feedRuntimeId === ""
     && window?.feedCount === 0
-    && window?.renderPaneName === "MMUIRenderSubWindowHW"
-    && typeof window?.renderPaneAutomationId === "string"
-    && window?.renderPaneControlType === "ControlType.Pane"
-    && window?.renderPaneProcessId === window.pid
-    && typeof window?.renderPaneRuntimeId === "string"
-    && Boolean(window.renderPaneRuntimeId.trim())
+    && validMomentsRenderSurface(window)
     && validStrictBounds(visualWindowBounds, 299, 299)
     && boundsWithin(window?.renderPaneBounds, visualWindowBounds);
   return visualIdentity ? "visual" : "";
@@ -607,7 +602,7 @@ function validLockedWindowIdentity(window) {
 }
 
 function expectedObservationId(window, snapshot) {
-  if (window?.identityMode === "visual_mmui_render"
+  if (isVisualMomentsSurface(window)
     && ["visual:windows_media_ocr", "visual:interaction_anchor"].includes(snapshot?.source)) {
     const interactionAnchor = snapshot.source === "visual:interaction_anchor";
     const payload = JSON.stringify({
@@ -834,7 +829,7 @@ function resolveDriver(injectedDriver, context) {
   if (injectedDriver && typeof injectedDriver === "object") return injectedDriver;
   // The real driver is test-edition-only and is intentionally loaded only when an action reaches it.
   if (
-    context?.expectedWindow?.identityMode === "visual_mmui_render"
+    isVisualMomentsSurface(context?.expectedWindow)
     && ["visual:windows_media_ocr", "visual:interaction_anchor"].includes(context?.postSnapshot?.source)
   ) {
     return require("./moments_visual_action_driver.dev.cjs");
@@ -870,7 +865,7 @@ function driverContext(
 }
 
 function requiresVisualCommentVerification(context) {
-  return context?.expectedWindow?.identityMode === "visual_mmui_render"
+  return isVisualMomentsSurface(context?.expectedWindow)
     && context?.postSnapshot?.source === "visual:windows_media_ocr";
 }
 

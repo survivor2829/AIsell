@@ -1680,6 +1680,18 @@ class AutoMixV2ServiceTests(unittest.TestCase):
         self.assertEqual("completed", plan["state"])
         return plan, renderer
 
+    def test_explicit_no_music_retains_voice_validation_without_music_catalog(self):
+        _, renderer = self._complete_happy_v2()
+        recipe = dict(renderer.rendered_recipes[-1])
+        recipe.update(music_mode='none', music_track_id=None, licensed_music_relative_path=None)
+        domain = self.service.creative_domain
+        with mock.patch.object(domain, '_music_catalog_rows', side_effect=AssertionError('No music lookup expected')):
+            domain._validate_auto_mix_v2_runtime_resources(recipe)
+            recipe['voice_audio_digest'] = '0' * 64
+            with self.assertRaises(ContentEngineError) as error:
+                domain._validate_auto_mix_v2_runtime_resources(recipe)
+            self.assertEqual('auto_mix_voice_cache_changed', error.exception.code)
+
     def test_legacy_regeneration_rejects_v2_before_creating_state_or_rendering(self):
         plan, renderer = self._complete_happy_v2()
         task_count = self.service.connection.execute(

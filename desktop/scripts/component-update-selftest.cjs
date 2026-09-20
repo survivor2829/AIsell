@@ -24,6 +24,7 @@ async function fixture(t) {
   const source = path.join(root, "base");
   const initial = {
     "electron.exe": "stable electron",
+    "debug.log": "runtime-created Chromium log",
     "resources/app/node_modules/native/index.node": "stable native",
     "resources/app/src/main/main.cjs": "application v1",
     "resources/content-engine/content-engine-worker.exe": "python owncode v1",
@@ -36,6 +37,7 @@ async function fixture(t) {
     await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, content);
   }
   const base = await buildComponentRelease({ sourceRoot: source, outputDir: path.join(root, "base-artifacts"), version: "1.1.0", ...config });
+  assert.equal(base.baseline.files.some(file => file.path === "debug.log"), false, "runtime debug logs must not change the accepted application base");
   await fs.writeFile(path.join(source, "component-base.json"), JSON.stringify(base.baseline));
   return { root, source, base };
 }
@@ -66,18 +68,25 @@ test("full generation matches signed target, reuses base and unchanged component
   assert.equal(target.manifest.base.fingerprint, base.manifest.base.fingerprint);
   const targetAgain = await buildComponentRelease({ sourceRoot: nextSource, outputDir: path.join(root, "target-artifacts"), version: "1.1.1", ...config });
   assert.deepEqual(targetAgain.artifacts.map(a => a.sha256), target.artifacts.map(a => a.sha256));
+  let interrupted = false;
   const transport = { async request(route, options) {
     requests++;
     const archive = target.artifacts.find(a => route === `/components/${a.sha256}.zip`);
     assert.ok(archive); assert.equal(options.resume, true);
+    if (!interrupted) {
+      interrupted = true;
+      const bytes = await fs.readFile(archive.path);
+      await fs.writeFile(options.destination, bytes.subarray(0, Math.floor(bytes.length / 2)));
+      throw Object.assign(new Error("simulated connection reset"), { code: "ECONNRESET" });
+    }
     await fs.copyFile(archive.path, options.destination); options.onProgress(archive.size);
   } };
   const store = createComponentStore({ rootDir: path.join(root, "updated"), baseRoot: source, config, transport });
   const result = await store.prepare(sign(target.manifest));
-  assert.equal(requests, 2);
+  assert.equal(requests, 3);
   for (const file of target.baseline.files) assert.equal(await hashFile(path.join(result.generationRoot, file.path)), file.sha256);
   assert.equal(await fs.readFile(path.join(source, "resources/app/src/main/main.cjs"), "utf8"), "application v1");
-  const cached = await store.prepare(sign(target.manifest)); assert.equal(cached.downloadedBytes, 0); assert.equal(requests, 2);
+  const cached = await store.prepare(sign(target.manifest)); assert.equal(cached.downloadedBytes, 0); assert.equal(requests, 3);
   await fs.writeFile(path.join(result.generationRoot, "unexpected.js"), "unknown");
   await assert.rejects(store.prepare(sign(target.manifest)), /generation_invalid/);
   const corrupt = createComponentStore({ rootDir: path.join(root, "corrupt"), baseRoot: source, config,

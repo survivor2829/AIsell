@@ -1106,7 +1106,7 @@ async function main() {
       host_url: createEmbedHost({ dataDir, bootstrapUrl: server.bootstrapUrl, phase: "produce" }),
       viewport: { width: 1440, height: 900 },
       expected_frame_width: 1090,
-      expected_layout: "preview",
+      expected_layout: "edit",
       minimum_preview_scale: 0.68,
       fixture_path: fixturePath,
       download_path: downloadPath,
@@ -1131,7 +1131,7 @@ async function main() {
       host_url: createEmbedHost({ dataDir, bootstrapUrl: server.bootstrapUrl, phase: "restore" }),
       viewport: { width: 1920, height: 1080 },
       expected_frame_width: 1570,
-      expected_layout: "preview",
+      expected_layout: "edit",
       minimum_preview_scale: 0.99
     });
     await stopSidecar(server);
@@ -1161,7 +1161,7 @@ async function main() {
       host_url: createEmbedHost({ dataDir, bootstrapUrl: server.bootstrapUrl, phase: "ai-direct" }),
       viewport: { width: 1440, height: 900 },
       expected_frame_width: 1090,
-      expected_layout: "preview",
+      expected_layout: "edit",
       fixture_path: fixturePath,
       ai_download_path: aiDownloadPath
     });

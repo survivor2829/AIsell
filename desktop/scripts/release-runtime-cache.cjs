@@ -54,7 +54,8 @@ function runtimeFingerprint(desktopDir, kind, artifactType, inputs, environment 
     const python = builder.findBuildPython(paths, environment);
     state.python = pythonInputs(python, environment);
     state.pythonEnvironment = Object.fromEntries(["PYTHONPATH", "PYTHONHOME", "PYTHONHASHSEED", "SOURCE_DATE_EPOCH"].map((key) => [key, environment[key] || null]));
-    scripts.push(`scripts/build-${kind}-sidecar.cjs`);
+    scripts.push(`scripts/build-${kind}-sidecar.cjs`, "scripts/python-library-archive.cjs");
+    state.pythonBaseArchive = environment.XIAOXI_PYTHON_BASE_SHA256 || null;
     if (kind === "product-detail") {
       scripts.push("src/main/product-detail-source-scope.cjs");
       state.sourceTreeSha256 = product.productDetailSourceTreeSha256(paths);
@@ -80,6 +81,19 @@ function validateReuseReceipt(receipt, { buildCommit, sourceCommit, sourceTreeSh
     || (manifestSha256 && receipt.manifestSha256 !== manifestSha256)
     || !Number.isFinite(Date.parse(receipt.verifiedAt || ""))) {
     throw new Error("Runtime cache reuse receipt does not match verified source/runtime provenance");
+  }
+  return receipt;
+}
+
+function validateBaseStabilization(receipt, { runtimePath, sourceRuntimeTreeSha256, packagedRuntimeTreeSha256 }) {
+  const prefix = `${String(runtimePath || "").replace(/\\/gu, "/").replace(/\/$/u, "")}/`;
+  const files = receipt?.files;
+  if (receipt?.schemaVersion !== 1 || !HASH.test(receipt.sourceTreeSha256 || "")
+    || !HASH.test(receipt.packagedTreeSha256 || "") || receipt.sourceTreeSha256 !== sourceRuntimeTreeSha256
+    || receipt.packagedTreeSha256 !== packagedRuntimeTreeSha256 || !Array.isArray(files) || !files.length
+    || new Set(files).size !== files.length || files.some((file) => typeof file !== "string" || !file.startsWith(prefix))
+    || !Number.isFinite(Date.parse(receipt.verifiedAt || ""))) {
+    throw new Error("Runtime base stabilization receipt does not match the packaged runtime");
   }
   return receipt;
 }
@@ -139,6 +153,7 @@ function cachedRuntime({ cacheRoot, kind, fingerprint, buildCommit, destination,
   if (sourceOf && sourceOf(verified).dirty) throw new Error("Cannot cache runtime built from dirty source");
   const root = path.join(bucket, crypto.randomBytes(8).toString("hex"));
   fs.mkdirSync(root, { recursive: true });
+  try {
   for (const relative of artifacts) {
     const target = path.join(root, relative);
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -146,7 +161,13 @@ function cachedRuntime({ cacheRoot, kind, fingerprint, buildCommit, destination,
   }
   const saved = resolve(root);
   fs.writeFileSync(path.join(root, "cache.json"), JSON.stringify({ kind, fingerprint, manifestSha256: sha256(saved.manifestFile) }), { flag: "wx" });
+  require("./artifact-retention.cjs").retainArtifacts(cacheRoot, `runtime-${kind}`, [root], 2);
+  } catch (error) {
+    try { require("./artifact-retention.cjs").removeOwned(cacheRoot, root); }
+    catch (cleanupError) { log(`Incomplete cache cleanup deferred: ${cleanupError.message}`); }
+    throw error;
+  }
   return { hit: false };
 }
 
-module.exports = { cachedRuntime, digest, readReuseReceipt, runtimeFingerprint, validateReuseReceipt };
+module.exports = { cachedRuntime, digest, readReuseReceipt, runtimeFingerprint, validateBaseStabilization, validateReuseReceipt };

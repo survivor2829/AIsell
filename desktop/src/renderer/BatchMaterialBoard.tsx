@@ -1,4 +1,4 @@
-import { Check, Eye, Film, FolderPlus, Images, Plus } from "lucide-react";
+import { Check, Eye, Film, FolderPlus, Images, Plus, X } from "lucide-react";
 import { AssetThumb } from "./BatchAssets";
 import type { Asset } from "./batch-studio-api";
 
@@ -8,10 +8,9 @@ export function BatchMaterialBoard({ assets, selected, onChange, onImport, onBro
 }) {
   const chosen = selected.map((id) => assets.find((asset) => asset.assetId === id)
     || { assetId: id, displayName: "素材暂不可用", mediaKind: "video" as const });
-  const visibleLimit = selected.length > 5 ? 8 : 5;
-  const visible = [...chosen, ...assets.filter((asset) => !selected.includes(asset.assetId))].slice(0, visibleLimit);
+  const visible = chosen;
   return <section className="batch-material-board" aria-label="选择创作素材">
-    <header><h2>用哪些素材？</h2><span>{selected.length ? `已选 ${selected.length} 个` : "点击图片勾选"}</span></header>
+    <header><h2>用哪些素材？</h2><span>{selected.length ? `已选 ${selected.length} 个 · 卡片右上角可移除` : "点击图片勾选"}</span></header>
     {!visible.length ? <button type="button" className="batch-upload-empty" onClick={() => onImport()}>
       <Images size={56} strokeWidth={1.25} aria-hidden="true" /><strong>添加视频或图片</strong><span>从电脑选择素材</span>
     </button> : <div className="batch-visual-material-grid">
@@ -28,6 +27,7 @@ export function BatchMaterialBoard({ assets, selected, onChange, onImport, onBro
             </span>
             <span className="batch-material-name" title={asset.displayName}>{asset.displayName}</span>
           </label>
+          {checked && <button className="batch-material-remove" type="button" aria-label={`从本次创作移除 ${asset.displayName}`} title="仅从本次创作移除，不删除素材仓库原文件" onClick={() => onChange(selected.filter((id) => id !== asset.assetId))}><X size={14} aria-hidden="true" /><span>移除</span></button>}
           <button className="batch-material-preview" type="button" aria-label={`预览 ${asset.displayName}`} onClick={() => onPreview(asset)}><Eye size={15} /></button>
         </article>;
       })}
@@ -35,7 +35,6 @@ export function BatchMaterialBoard({ assets, selected, onChange, onImport, onBro
     </div>}
     <footer><button type="button" onClick={onBrowse}><Images size={15} />素材仓库{assets.length > 0 ? ` · ${assets.length}` : ""}</button>
       <button type="button" onClick={() => onImport(true)}><FolderPlus size={15} />导入文件夹</button>
-      {selected.length > 8 && <span>还有 {selected.length - 8} 个已选素材，可在仓库中查看</span>}
     </footer>
   </section>;
 }

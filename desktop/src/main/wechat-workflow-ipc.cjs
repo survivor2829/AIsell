@@ -13,7 +13,7 @@ function registerWechatWorkflowIpc(options) {
   let disposed = false;
   const main = () => options.getMainWindow?.();
   function viewState(state = controller.status()) {
-    const current = state.tasks.find((task) => task.id === (state.currentTaskId || state.lastTaskId));
+    const current = state.tasks.find((task) => task.id === (state.currentTaskId || state.waitingTaskId || state.lastTaskId));
     const moments = current?.type === "interact" ? options.getMomentsProgress?.(current) : null;
     const syncing = readContactProgress?.();
     return {
@@ -115,8 +115,16 @@ function registerWechatWorkflowIpc(options) {
   async function start() {
     if (contactSync?.running) throw new Error("联系人正在同步，完成后即可启动程序。");
     contactSync = null;
-    await showFloating();
-    return controller.start();
+    // Do not hide the only place that can display a start-preflight error.
+    // The floating window is still visible before any WeChat action begins.
+    const preflight = controller.preflightStart();
+    try {
+      await showFloating();
+      return await controller.start();
+    } catch (failure) {
+      if (!preflight.alreadyActive) showMain({ view: "tasks" });
+      throw failure;
+    }
   }
 
   async function runContactSync(operation, readProgress) {
@@ -173,11 +181,33 @@ function registerWechatWorkflowIpc(options) {
   handle("status", () => controller.refresh());
   handle("start", start, true);
   handle("pause", () => controller.pause());
+  handle("choose-touch-images", async () => {
+    if (active()) throw new Error("请先暂停微信拓客，再添加图片。");
+    const { dialog } = options.electron || require("electron");
+    const selection = await dialog.showOpenDialog(main(), {
+      title: "选择要在话术后发送的图片", properties: ["openFile", "multiSelections"],
+      filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg"] }]
+    });
+    if (selection.canceled || !selection.filePaths.length) return { ok: true, canceled: true };
+    if (active()) throw new Error("微信任务已启动，请先暂停后再添加图片。");
+    try { return { ok: true, images: options.executors.touch.importImages(selection.filePaths) }; }
+    catch (error) { throw new Error(/^(请|每次|单张|图片|已保存)/.test(error.message) ? error.message : "图片无法读取，请检查文件后重新添加。"); }
+  }, true);
   handle("add-task", (payload) => controller.addTask(payload), true);
   handle("update-task", (payload) => controller.updateTask(payload), true);
   handle("get-task", (payload) => controller.getTask(String(payload?.id || "")));
   handle("cancel-task", (payload) => controller.cancelTask(String(payload?.id || "")));
+  handle("delete-tasks", (payload) => controller.deleteTasks(payload?.ids, payload?.unsuccessfulOnly === true), true);
   handle("retry-task", (payload) => controller.retryTask(String(payload?.id || "")), true);
+  handle("retry-skipped", (payload) => controller.retrySkipped(String(payload?.id || ""), payload?.contactIds), true);
+  handle("resolve-touch-unknown", (payload) => {
+    const id = String(payload?.id || "");
+    const resolution = String(payload?.resolution || "");
+    if (String(payload?.clickedTaskId || "") !== id || String(payload?.clickedResolution || "") !== resolution) {
+      throw new Error("点击的处理结果与提交内容不一致，请重新点击对应按钮。");
+    }
+    return controller.resolveTouchUnknown(id, resolution);
+  }, true);
   handle("remove-recipient", (payload) => controller.removeRecipient(String(payload?.id || "")));
   handle("add-recipients", (payload) => controller.addRecipients(payload?.contactIds), true);
   handle("set-reply-enabled", (payload) => controller.setReplyEnabled(payload?.enabled));

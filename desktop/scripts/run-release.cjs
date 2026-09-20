@@ -73,7 +73,7 @@ function preflightReleaseInputs(edition, environment = process.env) {
   return { artifactType, mediaTools, remotion };
 }
 
-function runRelease(edition = "delivery", environment = process.env, { componentsOnly = false } = {}) {
+function runRelease(edition = "delivery", environment = process.env, { componentsOnly = false, componentBaseRoot = null } = {}) {
   if (componentsOnly && edition !== "test") throw new Error("Component releases require the internal test channel");
   const internalUpgrade = edition === "upgrade";
   if (!internalUpgrade && environment.XIAOXI_INTERNAL_UPGRADE) {
@@ -84,16 +84,23 @@ function runRelease(edition = "delivery", environment = process.env, { component
     environment = { ...environment, XIAOXI_INTERNAL_UPGRADE: "1" };
   }
   if (!["test", "delivery"].includes(edition)) throw new Error(`Unsupported release edition: ${edition}`);
+  const baseRoot = path.resolve(componentBaseRoot || path.join(desktopDir, "../release",
+    require("../product-brand.json").displayName + (edition === "test" ? "-测试版" : "")));
+  const { readComponentBase, pythonLibraryReference } = require("./component-base-input.cjs");
+  const baseline = readComponentBase(baseRoot, componentsOnly);
+  const pythonBases = Object.fromEntries(["content-engine", "product-detail"].map(kind => [kind, pythonLibraryReference(baseRoot, baseline, kind)]));
   const inputs = preflightReleaseInputs(edition, environment);
   const { artifactType: remotionArtifactType, remotion } = inputs;
   const sidecarBuildRoot = createBuildRoot();
   const remotionRuntimeRoot = path.join(sidecarBuildRoot, "r");
   const releaseEnvironment = {
     ...environment,
+    XIAOXI_COMPONENT_BASE_ROOT: baseline ? baseRoot : "",
     XIAOXI_PRODUCT_DETAIL_BROWSER_PATH: remotion.resolvedBrowser,
     XIAOXI_SIDECAR_BUILD_ROOT: sidecarBuildRoot,
     XIAOXI_REMOTION_RUNTIME_ROOT: remotionRuntimeRoot
   };
+  try {
   runNode("source self-check", "run-self-checks.cjs", [], releaseEnvironment);
   runNode("product-detail local E2E", "product-detail-local-e2e.cjs", ["--cleanup-on-success"], releaseEnvironment);
   runNode("clean runtime gate", "check-clean-runtime.cjs", [], releaseEnvironment);
@@ -106,12 +113,15 @@ function runRelease(edition = "delivery", environment = process.env, { component
     ["product-detail", resolveProductDetailBuild, (value) => value.manifest.desktopSource],
     ["content-engine", resolveContentEngineBuild, (value) => value.manifest.source]
   ]) {
+    const pythonBase = pythonBases[kind];
+    const buildEnvironment = { ...releaseEnvironment,
+      XIAOXI_PYTHON_BASE_REFERENCE: pythonBase?.file || "", XIAOXI_PYTHON_BASE_SHA256: pythonBase?.sha256 || "" };
     cachedRuntime({
       cacheRoot, kind, buildCommit, destination: sidecarBuildRoot, sourceOf,
-      fingerprint: runtimeFingerprint(desktopDir, kind, remotionArtifactType, inputs, releaseEnvironment),
+      fingerprint: runtimeFingerprint(desktopDir, kind, remotionArtifactType, inputs, buildEnvironment),
       resolve: (buildRoot) => resolver(desktopDir, { buildRoot }),
       artifacts: [`${kind}-runtime`, `${kind}-runtime.manifest.json`],
-      build: () => runNode(`${kind} sidecar build`, `build-${kind}-sidecar.cjs`, [], releaseEnvironment)
+      build: () => runNode(`${kind} sidecar build`, `build-${kind}-sidecar.cjs`, [], buildEnvironment)
     });
   }
   const remotionRelative = path.join("r", remotionArtifactType);
@@ -124,13 +134,19 @@ function runRelease(edition = "delivery", environment = process.env, { component
   });
   runNode("portable application build", "build-portable-release.cjs", [edition, ...(componentsOnly ? ["--components-only"] : [])], releaseEnvironment);
   if (internalUpgrade) runNode("in-place upgrade installer", "build-installer-release.cjs", ["upgrade"], releaseEnvironment);
-  return { remotionRuntimeRoot, sidecarBuildRoot };
+  } finally {
+    try { require("./artifact-retention.cjs").removeOwned(path.dirname(sidecarBuildRoot), sidecarBuildRoot); }
+    catch (error) { console.warn(`Release staging cleanup deferred: ${error.message}`); }
+  }
+  const candidateRoot = componentsOnly ? JSON.parse(fs.readFileSync(path.join(desktopDir,
+    "../release/components/test/unsigned-component-release.json"), "utf8")).validation.candidateRoot : null;
+  return { stagingCleaned: !fs.existsSync(sidecarBuildRoot), ...(candidateRoot ? { candidateRoot } : {}) };
 }
 
 if (require.main === module) {
   try {
     const result = runRelease(process.argv[2] || "delivery");
-    console.log(`\nRelease staging root retained for audit: ${result.sidecarBuildRoot}`);
+    console.log(`\nRelease staging cleaned: ${result.stagingCleaned}`);
   } catch (error) {
     console.error(error);
     process.exitCode = 1;

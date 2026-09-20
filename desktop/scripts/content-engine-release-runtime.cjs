@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { sha256, treeSha256 } = require("./release-tree-hash.cjs");
-const { readReuseReceipt, validateReuseReceipt } = require("./release-runtime-cache.cjs");
+const { readReuseReceipt, validateBaseStabilization, validateReuseReceipt } = require("./release-runtime-cache.cjs");
 const {
   resolveContentEngineMediaToolsEnvironment
 } = require("../src/main/content-engine-media-tools.cjs");
@@ -220,6 +220,13 @@ function validateReleaseDescriptor(descriptor) {
   const reused = Boolean(descriptor.reuseReceipt || descriptor.sourceCommit !== descriptor.buildCommit);
   if ((reused || descriptor.originalRuntimeTreeSha256 !== undefined) && !SHA256_PATTERN.test(String(descriptor.originalRuntimeTreeSha256 || ""))) {
     throw new Error("Portable manifest has an invalid original content-engine runtime tree hash");
+  }
+  if (descriptor.baseStabilization) {
+    validateBaseStabilization(descriptor.baseStabilization, {
+      runtimePath: descriptor.path,
+      sourceRuntimeTreeSha256: descriptor.originalRuntimeTreeSha256,
+      packagedRuntimeTreeSha256: descriptor.treeSha256
+    });
   }
   if (reused) {
     validateReuseReceipt(descriptor.reuseReceipt, { buildCommit: descriptor.buildCommit, sourceCommit: descriptor.sourceCommit,

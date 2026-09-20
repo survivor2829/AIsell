@@ -1,0 +1,8 @@
+{
+  "name": "isnet-general-use",
+  "file": "isnet-general-use.onnx",
+  "url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx",
+  "sha256": "60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a",
+  "source": "https://github.com/xuebinqin/DIS",
+  "inputSize": 1024
+}

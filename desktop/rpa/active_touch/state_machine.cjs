@@ -10,6 +10,7 @@ const {
   openWechatSearchResult,
   verifyWechatCurrentConversation
 } = require("./wechat_window_driver.cjs");
+const { isVerifiedWechatSearchResultMode } = require("./wechat_search_result_resolver.cjs");
 
 const DEFAULT_STATE = {
   version: 1,
@@ -136,6 +137,21 @@ function customerSearchQuery(customer) {
   return String(customer?.wechatId || customer?.remark || customer?.nickname || customer?.name || "").trim();
 }
 
+function isInvalidWechatIdPlaceholder(value) {
+  return /^(?:unknown|null|undefined|none|n\/a|未设置|暂无|无|-+)$/iu.test(String(value || "").trim());
+}
+
+const SEARCH_FALLBACK_RULES = Object.freeze({ noResult: "search-r017", invalidPlaceholder: "search-r018" });
+
+function customerSearchPlan(customer) {
+  const wechatId = String(customer?.wechatId || "").trim();
+  const nameQuery = String(customer?.remark || customer?.nickname || customer?.name || "").trim();
+  if (!wechatId || isInvalidWechatIdPlaceholder(wechatId)) {
+    return { query: nameQuery, queryType: "name_fallback", fallbackReason: !wechatId ? "wechat_id_empty" : "wechat_id_invalid_placeholder", fallbackRuleId: !wechatId ? "" : SEARCH_FALLBACK_RULES.invalidPlaceholder };
+  }
+  return { query: wechatId, queryType: "wechat_id", fallbackQuery: nameQuery, fallbackRuleId: SEARCH_FALLBACK_RULES.noResult };
+}
+
 function appendLog(baseDir, action, result) {
   const entry = {
     id: Date.now(),
@@ -187,6 +203,9 @@ function focusWechatWindowDryRun(baseDir = __dirname, driver = focusWechatWindow
 
   const nextState = {
     ...state,
+    window_pid: Number.isFinite(Number(result.pid)) && Number(result.pid) > 0 ? Number(result.pid) : 0,
+    window_handle: String(result.hWnd ?? "").trim(),
+    window_process_name: String(result.processName ?? "").trim(),
     located_window_title: result.title ?? state.located_window_title,
     last_result: "wechat_window_focused",
     blocked_reason: ""
@@ -292,10 +311,19 @@ function wechatWindowReason(result) {
     "wechat_window_ambiguous",
     "wechat_window_identity_mismatch",
     "personal_wechat_main_window_not_found",
+    "wechat_window_not_found",
+    "wechat_clipboard_restore_unsupported",
+    "wechat_clipboard_read_failed",
+    "wechat_window_identity_missing",
+    "wechat_search_network_lookup_misclick",
+    "wechat_search_result_landing_unverified",
+    "exact_search_result_not_found",
+    "search_result_identity_unverified",
+    "powershell_output_invalid",
     "powershell_timeout",
     "powershell_failed"
   ].includes(reason)) return reason;
-  return "wechat_window_not_found";
+  return "wechat_operation_failed";
 }
 
 function wechatWindowBlockText(reason) {
@@ -312,7 +340,16 @@ function wechatWindowBlockText(reason) {
   if (reason === "personal_wechat_main_window_not_found") return "已阻断：未识别到个人微信主窗口";
   if (reason === "powershell_timeout") return "已阻断：微信窗口适配程序执行超时";
   if (reason === "powershell_failed") return "已阻断：微信窗口适配程序启动失败，请检查权限或安全软件";
-  return "已阻断：未找到微信窗口";
+  if (reason === "wechat_window_not_found") return "已阻断：未找到微信窗口";
+  if (reason === "wechat_clipboard_restore_unsupported") return "已停止：剪贴板包含暂不支持保存的特殊格式，原内容未覆盖";
+  if (reason === "wechat_clipboard_read_failed") return "已停止：无法读取剪贴板，可能正被其他程序占用，请稍后重试";
+  if (reason === "wechat_window_identity_missing") return "已停止：缺少已确认的微信窗口身份，请重新启动任务";
+  if (reason === "wechat_search_network_lookup_misclick") return "已停止：误点网络查找入口，资料弹窗已关闭，当前联系人已隔离";
+  if (reason === "wechat_search_result_landing_unverified") return "已暂停：点击后无法核验落点界面，不会自动重试";
+  if (reason === "exact_search_result_not_found") return "已停止：未找到指定联系人的准确搜索结果";
+  if (reason === "search_result_identity_unverified") return "已暂停：搜索结果身份无法唯一确认，本次没有点击，也不会自动跳过";
+  if (reason === "powershell_output_invalid") return "已停止：微信操作程序没有返回有效结果，请提交本次诊断";
+  return "已停止：微信操作失败，尚未取得具体原因，请提交本次诊断";
 }
 
 function send(baseDir = __dirname, options = {}) {
@@ -582,7 +619,8 @@ function openConversationDryRun(baseDir = __dirname, driver = focusWechatWindow,
 function searchConversationDryRun(baseDir = __dirname, searchDriver = inputWechatSearchQuery, titleReader = readWindowTitles) {
   const state = loadState(baseDir);
   const customerName = String(state.selected_customer?.name ?? "").trim();
-  const searchQuery = customerSearchQuery(state.selected_customer);
+  const searchPlan = customerSearchPlan(state.selected_customer);
+  const searchQuery = searchPlan.query;
 
   if (!state.target_selected || !customerName || !searchQuery) {
     return block(baseDir, "搜索框输入 dry-run", state, "no_whitelist_customer", "已阻断：未选择白名单客户");
@@ -601,6 +639,8 @@ function searchConversationDryRun(baseDir = __dirname, searchDriver = inputWecha
     search_input_done: true,
     search_result_clicked: false,
     search_query: searchQuery,
+    search_query_type: searchPlan.queryType,
+    search_fallback_reason: searchPlan.fallbackReason || "",
     conversation_located: true,
     conversation_verified: true,
     conversation_title: title,
@@ -624,6 +664,8 @@ function searchConversationDryRun(baseDir = __dirname, searchDriver = inputWecha
     search_input_done: true,
     search_result_clicked: false,
     search_query: searchQuery,
+    search_query_type: searchPlan.queryType,
+    search_fallback_reason: searchPlan.fallbackReason || "",
     located_window_title: inputResult.title ?? "",
     last_result: "search_input_done",
     blocked_reason: ""
@@ -643,29 +685,71 @@ function clickSearchResultDryRun(
   const operationStartedAt = Date.now();
   const state = loadState(baseDir);
   const customerName = String(state.selected_customer?.name ?? "").trim();
-  const searchQuery = customerSearchQuery(state.selected_customer);
+  const searchPlan = customerSearchPlan(state.selected_customer);
+  const searchQuery = searchPlan.query;
 
   if (!state.target_selected || !customerName || !searchQuery) {
     return block(baseDir, "点击搜索结果 dry-run", state, "no_whitelist_customer", "已阻断：未选择白名单客户");
   }
 
   const openStartedAt = Date.now();
+  const wechatId = String(state.selected_customer?.wechatId ?? "").trim();
   const exactWindow = {
     pid: Number(windowContext.pid) || undefined,
     hWnd: String(windowContext.hWnd || "").trim() || undefined,
-    minIdleMs: Number(windowContext.minIdleMs) || 0
+    minIdleMs: Number(windowContext.minIdleMs) || 0,
+    searchQueryType: searchPlan.queryType,
+    searchIdentity: { query: searchQuery, expectedName: customerName }
   };
-  const inputResult = openResultDriver(searchQuery, exactWindow);
+  let inputResult = openResultDriver(searchQuery, exactWindow);
+  if (!inputResult?.ok && searchPlan.queryType === "wechat_id"
+    && inputResult?.reason === "exact_search_result_not_found"
+    && searchPlan.fallbackQuery && searchPlan.fallbackQuery !== searchQuery) {
+    inputResult = openResultDriver(searchPlan.fallbackQuery, {
+      ...exactWindow,
+      searchIdentity: { query: searchPlan.fallbackQuery, expectedName: customerName },
+      searchQueryType: "name_fallback",
+      searchFallbackReason: "wechat_id_no_result",
+      searchFallbackRuleId: SEARCH_FALLBACK_RULES.noResult
+    });
+    if (inputResult?.ok) inputResult.searchFallbackReason = "wechat_id_no_result";
+  }
+  if (inputResult?.ok) {
+    inputResult.searchQueryType ||= searchPlan.queryType;
+    inputResult.searchFallbackReason ||= searchPlan.fallbackReason || "";
+    if (inputResult.searchEvidence) {
+      inputResult.searchEvidence.search_query_type = inputResult.searchQueryType;
+      inputResult.searchEvidence.fallback_reason = inputResult.searchFallbackReason;
+    }
+  }
   const openResultMs = Date.now() - openStartedAt;
   if (!inputResult.ok) {
     const reason = wechatWindowReason(inputResult);
+    const failedState = clearConversationState(state, reason, {
+      search_query: String(inputResult?.searchQuery || searchQuery),
+      search_query_type: String(inputResult?.searchQueryType || searchPlan.queryType),
+      search_fallback_reason: String(inputResult?.searchFallbackReason || searchPlan.fallbackReason || ""),
+      search_evidence: inputResult?.searchEvidence || {
+        resolver_mode: reason === "wechat_id_name_conflict" ? "name_conflict" : "identity_unverified",
+        search_query_type: String(inputResult?.searchQueryType || searchPlan.queryType),
+        fallback_reason: String(inputResult?.searchFallbackReason || searchPlan.fallbackReason || ""),
+        authorization_decision: "denied",
+        rule_id: String(inputResult?.diagnostics?.rule_id || ""),
+        evidence_summary: { query_present: Boolean(searchQuery), expected_name_present: Boolean(customerName), network_lookup_isolated: true, identity_match: false }
+      }
+    });
     return block(
       baseDir,
       "点击搜索结果 dry-run",
-      clearConversationState(state, reason),
+      failedState,
       reason,
-      wechatWindowBlockText(reason),
-      { safety_diagnostics: inputResult?.safety_diagnostics || null }
+      String(inputResult?.error || wechatWindowBlockText(reason)),
+      {
+        diagnostics: inputResult?.diagnostics || null,
+        safety_diagnostics: inputResult?.safety_diagnostics || null,
+        landing_recovered: inputResult?.landing_recovered === true,
+        poisoned_candidate: inputResult?.poisoned_candidate || null
+      }
     );
   }
 
@@ -675,11 +759,11 @@ function clickSearchResultDryRun(
     return block(baseDir, "click search result dry-run", clearConversationState(state, reason), reason, wechatWindowBlockText(reason));
   }
 
-  const wechatId = String(state.selected_customer?.wechatId ?? "").trim();
   const exactWechatIdSearch = Boolean(wechatId)
     && searchQuery === wechatId
     && inputResult.exactSearchOpened === true
     && inputResult.searchQuery === searchQuery
+    && isVerifiedWechatSearchResultMode(inputResult.searchResultMode)
     && ["Weixin", "WeChat"].includes(inputResult.processName)
     && Boolean(inputResult.pid)
     && Boolean(inputResult.hWnd);
@@ -727,7 +811,10 @@ function clickSearchResultDryRun(
     const nextState = clearConversationState(state, reason, {
       search_input_done: true,
       search_result_clicked: true,
-      search_query: searchQuery,
+      search_query: String(inputResult?.searchQuery || searchQuery),
+      search_query_type: String(inputResult?.searchQueryType || searchPlan.queryType),
+      search_fallback_reason: String(inputResult?.searchFallbackReason || searchPlan.fallbackReason || ""),
+      search_evidence: inputResult?.searchEvidence || null,
       located_window_title: verifiedConversation.title ?? inputResult.title ?? ""
     });
     return block(
@@ -749,7 +836,10 @@ function clickSearchResultDryRun(
     ...state,
     search_input_done: true,
     search_result_clicked: true,
-    search_query: searchQuery,
+    search_query: String(inputResult?.searchQuery || searchQuery),
+    search_query_type: String(inputResult?.searchQueryType || searchPlan.queryType),
+    search_fallback_reason: String(inputResult?.searchFallbackReason || searchPlan.fallbackReason || ""),
+    search_evidence: inputResult?.searchEvidence || null,
     conversation_located: true,
     conversation_verified: true,
     conversation_title: title,
@@ -816,7 +906,11 @@ function inputMessageDryRun(baseDir = __dirname, message = "", inputDriver = inp
     const reason = safeDiagnostic
       ? `message_input_failed_${safeDiagnostic}${Number.isInteger(attempts) && attempts > 0 ? `_attempts_${attempts}` : ""}`
       : "message_input_failed";
-    return block(baseDir, "消息输入 dry-run", state, reason, "已阻断：未能定位微信输入框");
+    return block(baseDir, "消息输入 dry-run", state, reason, "已阻断：未能定位微信输入框", {
+      send_attempted: false,
+      send_result: "not_attempted",
+      safety_diagnostics: inputResult?.safety_diagnostics || null
+    });
   }
   const pointX = Number(inputResult.draftPoint?.xRatio);
   const pointY = Number(inputResult.draftPoint?.yRatio);
@@ -1031,7 +1125,15 @@ function verifySendResultDryRun(baseDir = __dirname, titleReader = readWindowTit
 
   const visibleTitles = titleReader().filter(Boolean);
   const titles = visibleTitles.length ? visibleTitles : [state.conversation_title, state.located_window_title].filter(Boolean);
-  if (!titles.some((item) => item.includes(customerName))) {
+  const exactIdDryRunSession = state.conversation_verified === true
+    && state.search_result_clicked === true
+    && state.message_input_done === true
+    && state.conversation_verification_mode === "exact_wechat_id_search"
+    && String(state.search_query ?? "").trim() === String(state.selected_customer?.wechatId ?? "").trim()
+    && String(state.conversation_title ?? "").includes(customerName)
+    && Number(state.window_pid) > 0
+    && Boolean(String(state.window_handle ?? "").trim());
+  if (!titles.some((item) => item.includes(customerName)) && !exactIdDryRunSession) {
     return blockPostSend(baseDir, state, "post_send_conversation_mismatch", "已阻断：发送后会话不匹配");
   }
 
@@ -1049,6 +1151,7 @@ function verifySendResultDryRun(baseDir = __dirname, titleReader = readWindowTit
 }
 
 module.exports = {
+  wechatWindowBlockText,
   calibrate,
   clickSearchResultDryRun,
   clearCustomer,

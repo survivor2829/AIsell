@@ -2,11 +2,11 @@ import { Check, Film } from "lucide-react";
 import { AssetThumb } from "./BatchAssets";
 import type { Asset, Batch, Candidate } from "./batch-studio-api";
 
-export type CreativeBrief = { target_audience: string; expression: string };
-export const emptyCreativeBrief = (): CreativeBrief => ({ target_audience: "", expression: "" });
-export function expressionText(value?: { expression?: string; advantages?: string; customer_pain_points?: string }): string {
-  if (value?.expression !== undefined) return value.expression;
-  return [value?.advantages && `产品／服务优势：${value.advantages}`, value?.customer_pain_points && `客户痛点：${value.customer_pain_points}`].filter(Boolean).join("\n\n");
+export type CreativeBrief = { target_audience: string; expression: string; script_source: "ideas" | "provided" };
+export const emptyCreativeBrief = (): CreativeBrief => ({ target_audience: "", expression: "", script_source: "ideas" });
+export function expressionText(value?: { expression?: string; advantages?: string; customer_pain_points?: string; description?: string; material_context?: string }): string {
+  const expression = value?.expression !== undefined ? value.expression : [value?.advantages && `产品／服务优势：${value.advantages}`, value?.customer_pain_points && `客户痛点：${value.customer_pain_points}`].filter(Boolean).join("\n\n");
+  return [expression, value?.description, value?.material_context].filter((text, index, all) => text && all.indexOf(text) === index).join("\n\n");
 }
 
 export function BatchCreativeBrief({ value, onChange, cta, onCtaChange, suggestions }: {
@@ -16,20 +16,23 @@ export function BatchCreativeBrief({ value, onChange, cta, onCtaChange, suggesti
   return <section className="batch-creative-brief" aria-label="创作需求">
     <label><span>给谁看？ <span className="batch-field-note">必填</span></span>
       <input required aria-label="目标客户群体" value={value.target_audience} maxLength={150}
-        placeholder="例如：物业保洁负责人"
+        placeholder="例如：物业保洁负责人、清洁设备经销商" aria-describedby="batch-audience-help"
         onChange={(event) => onChange({ ...value, target_audience: event.target.value })} />
+      <small id="batch-audience-help" className="batch-hint">写具体的人群，以及他们关心的问题，帮助文案贴近观众。</small>
     </label>
     <div className="batch-brief-field"><label><span>想讲什么？ <span className="batch-field-note">选填</span></span>
-      <textarea aria-label="你想表达什么" aria-describedby="batch-expression-help" value={value.expression} maxLength={4000} rows={4}
-        placeholder="写下你的重点、故事或真实经历"
+      <textarea aria-label="你想表达什么" aria-describedby="batch-expression-help" value={value.expression} maxLength={14000} rows={4}
+        placeholder="可以直接粘贴完整文案，也可以写零碎想法、口语要点或真实经历"
         onChange={(event) => onChange({ ...value, expression: event.target.value })} /></label>
-      <p id="batch-expression-help" className="batch-hint">涉及人物或经历，请写明对应素材。</p>
+      <p id="batch-expression-help" className="batch-hint">已有完整文案，勾选下方选项后保留原文；零碎想法会按你的方向整理。涉及人物或经历，请注明对应素材。</p>
+      <label className="batch-provided-script"><input type="checkbox" checked={value.script_source === "provided"} onChange={(event) => onChange({ ...value, script_source: event.target.checked ? "provided" : "ideas" })} /><span>这是完整文案，保留原文</span></label>
+      {value.script_source === "provided" && <small className="batch-hint">直接进入文案确认，不调用 AI 写稿。当前支持 2400 字以内；制作前仍会核对素材与实际时长。</small>}
       {!value.expression.trim() && expressionText(suggestions) && <details className="batch-inline-suggestion"><summary>查看 AI 建议</summary>
         <p>{expressionText(suggestions)}</p><button type="button" onClick={() => onChange({ ...value, expression: expressionText(suggestions) })}>采用并修改</button>
         <small>采用后重新生成选题，也可以跳过。</small>
       </details>}
     </div>
-    <details className="batch-brief-optional"><summary>结尾引导{cta ? " · 已填写" : " · 选填"}</summary>
+    <details className="batch-brief-optional" hidden={value.script_source === "provided"}><summary>结尾引导{cta ? " · 已填写" : " · 选填"}</summary>
       <label><span>希望观众做什么？</span><input aria-label="结尾引导" value={cta} maxLength={300} placeholder="例如：留言聊聊你关心的问题"
         onChange={(event) => onCtaChange(event.target.value)} />
     </label></details>

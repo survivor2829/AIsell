@@ -310,7 +310,12 @@ async function main() {
         actionAttempted: true,
         verificationAttempts: 18,
         verificationElapsedMs: 12024,
-        lastVerificationReason: "moments_publish_post_not_found"
+        lastVerificationReason: "moments_publish_post_not_found",
+        verification_capture_ms: 30,
+        verification_ocr_ms: 800,
+        verification_candidates_ms: 5000,
+        verification_post_count: 1,
+        verification_anchor_present: false
       };
     }
   });
@@ -332,6 +337,9 @@ async function main() {
   );
   assert.equal(publishedResolutionUnknownEvent.fields.verification_attempts, 18);
   assert.equal(publishedResolutionUnknownEvent.fields.verification_elapsed_ms, 12024);
+  assert.equal(publishedResolutionUnknownEvent.fields.verification_candidates_ms, 5000);
+  assert.equal(publishedResolutionUnknownEvent.fields.verification_post_count, 1);
+  assert.equal(publishedResolutionUnknownEvent.fields.verification_anchor_present, false);
   assert.equal(
     publishedResolutionUnknownEvent.fields.last_verification_reason,
     "moments_publish_post_not_found"
@@ -500,6 +508,34 @@ async function main() {
   assert.equal(changed.reason, "moments_publish_media_changed");
   assert.equal(changedDriverCalls, 0);
   assert.equal(changedLock.calls.acquire, 0);
+
+  const passportRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-publish-passport-"));
+  const passportEvents = [];
+  const passportFailures = [];
+  const passportBills = [];
+  const passportController = createMomentsPublishController({
+    baseDir: passportRoot,
+    coordinator: makeCoordinator("passport-owner").coordinator,
+    now: createClock(),
+    passport: {
+      recordEvent: (...args) => passportEvents.push(args),
+      recordFailure: (...args) => passportFailures.push(args),
+      writeRunBill: (...args) => passportBills.push(args)
+    }
+  });
+  const passportTaskId = crypto.randomUUID();
+  const passportResult = await passportController.runWorkflowStep({
+    id: passportTaskId,
+    payload: { fingerprint: "missing", mediaRevision: "missing" },
+    progress: { done: 0, total: 1 }
+  }, { isEnabled: () => true });
+  assert.equal(passportResult.reasonCode, "moments_publish_pre_action_failed");
+  assert.equal(passportResult.requiresGlobalAttention, undefined);
+  assert.equal(passportEvents[0][1], passportTaskId);
+  assert.equal(passportFailures[0][2].rawReading.actionAttempted, false);
+  assert.deepEqual(passportFailures[0][2].expected.progress, { done: 1, total: 1 });
+  assert.equal(passportBills[0][2][0].status, "failed");
+  await passportController.dispose();
 
   const persistFailureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moments-publish-persist-failure-"));
   const persistFailureImage = writeMedia(persistFailureRoot, "persist.jpg", Buffer.from("persist-image"));
@@ -707,6 +743,7 @@ async function main() {
     safeFailureRoot,
     breadcrumbRoot,
     changedRoot,
+    passportRoot,
     persistFailureRoot,
     restartNoMarkerRoot,
     restartMarkerRoot,

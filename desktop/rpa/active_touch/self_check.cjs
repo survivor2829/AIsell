@@ -27,10 +27,12 @@ const {
 } = require("./state_machine.cjs");
 const { executeVerifiedContactSend, refreshRealSendSession, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession } = require("./state_machine.dev.cjs");
 const { prepareMomentsDryRun, preferredVisibleMomentsPost, probeWechatMomentsWindow } = require("./moments_dry_run.dev.cjs");
-const { runPowerShellAsync } = require("./wechat_window_driver.cjs");
+const { openWechatSearchResult, runPowerShellAsync } = require("./wechat_window_driver.cjs");
+const { isVerifiedWechatSearchResultMode, resolveWechatSearchResultObservation } = require("./wechat_search_result_resolver.cjs");
 const { normalizeAtomicSendResult } = require("./wechat_window_driver.dev.cjs");
 const {
   authorizeNextBatch,
+  authorizeTask,
   classifyContacts,
   createTask,
   cleanupTaskCache,
@@ -39,12 +41,15 @@ const {
   isBatchAuthorized,
   loadTaskState,
   markPreviousBuildTask,
+  identityKey,
   publicTaskState,
   recoverInterruptedTask,
   saveTaskState,
   sendDelayMs,
   taskBackupPath
 } = require("./touch_task_state.cjs");
+const { createTouchWorkflow } = require("../../src/main/touch-workflow.cjs");
+const { canContinueSequence, unknownMessagePart } = require("../../src/main/touch-message-sequence.cjs");
 const { main: runActiveTouchCli } = require("./active_touch_cli.cjs");
 const { main: runActiveTouchDevCli } = require("./active_touch_cli.dev.cjs");
 const { runPowerShell } = require("./wechat_window_driver.cjs");
@@ -708,8 +713,252 @@ try {
   }), "utf8");
   const preparedRecovered = recoverInterruptedTask(dir);
   assert.equal(preparedRecovered.status, "paused");
-  assert.equal(preparedRecovered.results[0].status, "prepared");
+  assert.equal(preparedRecovered.phase, "awaiting_unknown_resolution");
+  assert.equal(preparedRecovered.results[0].status, "outcome_unknown");
+  assert.equal(preparedRecovered.results[0].crash_recovered_from, "prepared");
+  assert.equal(preparedRecovered.results[0].awaiting_resolution, true);
   assert.equal(preparedRecovered.results[0].retry_blocked, true);
+
+  const sendingWithoutExecutionState = createTask("sending-without-execution-state", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  sendingWithoutExecutionState.results[0].message = "崩溃窗口测试消息";
+  sendingWithoutExecutionState.results[0].status = "sending";
+  sendingWithoutExecutionState.results[0].send_attempted = null;
+  saveTaskState(dir, sendingWithoutExecutionState);
+  fs.rmSync(path.join(dir, "state.json"), { force: true });
+  const sendingWithoutExecutionStateRecovered = recoverInterruptedTask(dir);
+  assert.equal(sendingWithoutExecutionStateRecovered.status, "paused");
+  assert.equal(sendingWithoutExecutionStateRecovered.phase, "awaiting_unknown_resolution");
+  assert.equal(sendingWithoutExecutionStateRecovered.results[0].status, "outcome_unknown", "an unmatched production sending marker must enter manual resolution");
+  assert.equal(sendingWithoutExecutionStateRecovered.results[0].awaiting_resolution, true);
+  assert.equal(sendingWithoutExecutionStateRecovered.results[0].retry_blocked, true, "a sending result without matching execution state requires manual review");
+
+  const mismatchedExecutionState = createTask("sending-mismatched-execution-state", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  mismatchedExecutionState.results[0].message = "三键不匹配测试消息";
+  mismatchedExecutionState.results[0].status = "sending";
+  mismatchedExecutionState.results[0].send_attempted = null;
+  saveTaskState(dir, mismatchedExecutionState);
+  fs.writeFileSync(path.join(dir, "state.json"), JSON.stringify({
+    task_context: { task_id: "another-task", contact_id: mismatchedExecutionState.results[0].id, current_index: 0 },
+    real_send_status: "sent_verified",
+    real_send_attempt_key: "mismatched-key",
+    real_send_attempts: { "mismatched-key": "sent_verified" }
+  }), "utf8");
+  const mismatchedExecutionStateRecovered = recoverInterruptedTask(dir);
+  assert.equal(mismatchedExecutionStateRecovered.phase, "awaiting_unknown_resolution", "a mismatched ledger context must fail closed like a missing ledger");
+  assert.equal(mismatchedExecutionStateRecovered.results[0].status, "outcome_unknown");
+  assert.equal(mismatchedExecutionStateRecovered.results[0].awaiting_resolution, true);
+
+  const multipartCrash = createTask("multipart-sending-without-execution-state", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+  multipartCrash.results[0].message = "图文崩溃窗口测试消息";
+  multipartCrash.results[0].status = "sending";
+  multipartCrash.results[0].send_attempted = null;
+  multipartCrash.results[0].message_parts = [
+    { kind: "text", signature: "text", status: "sent_verified" },
+    { kind: "image", signature: "image", status: "sending" },
+    { kind: "link", signature: "link", status: "pending" }
+  ];
+  saveTaskState(dir, multipartCrash);
+  fs.rmSync(path.join(dir, "state.json"), { force: true });
+  const multipartCrashRecovered = recoverInterruptedTask(dir);
+  assert.equal(multipartCrashRecovered.phase, "awaiting_unknown_resolution");
+  assert.equal(multipartCrashRecovered.results[0].message_parts.filter((part) => part.status === "outcome_unknown").length, 1, "exactly the in-flight multipart segment must enter manual resolution");
+  assert.equal(multipartCrashRecovered.results[0].message_parts[1].status, "outcome_unknown");
+
+  async function workflowCrashRecoveryCase(rowStatus, multipart = false, settings = {}) {
+    const workflowRoot = fs.mkdtempSync(path.join(os.tmpdir(), `xiaoxi-touch-${rowStatus}-recovery-`));
+    const imageIds = multipart ? ["a".repeat(64)] : [];
+    const contacts = settings.contacts || [validContacts[0]];
+    const workflowRecord = {
+      id: crypto.randomUUID(),
+      payload: { script: `闸门层 ${rowStatus} 崩溃恢复测试`, contacts, ...(multipart ? { imageIds } : {}) },
+      progress: { done: settings.currentIndex || 0, total: contacts.length },
+      status: settings.recordStatus || "running"
+    };
+    const workflowTaskDir = path.join(workflowRoot, "workflow-tasks", crypto.createHash("sha256").update(workflowRecord.id).digest("hex"));
+    let workflowCrash = createTask(workflowRecord.payload.script, workflowRecord.payload.contacts, "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
+    workflowCrash.id = workflowRecord.id;
+    workflowCrash = authorizeTask(workflowCrash, "2026-07-11T00:00:00.000Z");
+    workflowCrash.results[0].message = `闸门层 ${rowStatus} 崩溃恢复测试消息`;
+    workflowCrash.results[0].status = rowStatus;
+    workflowCrash.results[0].send_attempted = settings.sendAttempted === undefined ? null : settings.sendAttempted;
+    if (settings.retryBlocked !== undefined) workflowCrash.results[0].retry_blocked = settings.retryBlocked;
+    if (settings.retryCount !== undefined) workflowCrash.results[0].outcome_unknown_retry_count = settings.retryCount;
+    if (settings.awaitingResolution !== undefined) workflowCrash.results[0].awaiting_resolution = settings.awaitingResolution;
+    workflowCrash.status = settings.taskStatus || "running";
+    if (settings.phase) workflowCrash.phase = settings.phase;
+    if (settings.currentIndex !== undefined) workflowCrash.current_index = settings.currentIndex;
+    if (multipart) {
+      workflowCrash.results[0].message_parts = settings.messageParts || [
+        { kind: "text", signature: "text", status: "sent_verified" },
+        { kind: "image", signature: "image", status: rowStatus }
+      ];
+    }
+    saveTaskState(workflowTaskDir, workflowCrash);
+    const workflowSignature = crypto.createHash("sha256").update(JSON.stringify({
+      script: workflowRecord.payload.script,
+      contacts: workflowRecord.payload.contacts.map(identityKey),
+      ...(multipart ? { imageIds, link: "" } : {})
+    })).digest("hex");
+    fs.writeFileSync(path.join(workflowTaskDir, "workflow-binding.json"), JSON.stringify({ taskId: workflowRecord.id, signature: workflowSignature }), "utf8");
+    if (settings.matchingExecutionState) {
+      fs.writeFileSync(path.join(workflowTaskDir, "state.json"), JSON.stringify({
+        task_context: { task_id: workflowCrash.id, contact_id: workflowCrash.results[0].id, current_index: 0 },
+        real_send_status: "sent_verified"
+      }), "utf8");
+    } else {
+      fs.rmSync(path.join(workflowTaskDir, "state.json"), { force: true });
+    }
+    let executeCalls = 0;
+    const workflow = createTouchWorkflow({
+      dataDir: workflowRoot,
+      readContacts: () => workflowRecord.payload.contacts,
+      coordinator: { acquire: () => settings.lockAvailable === false
+        ? { ok: false, error: "matrix_lock_busy" }
+        : { ok: true, lock: { owner: "recovery-test" } }, release() {} },
+      execute: async () => { executeCalls += 1; return { ok: true, state: { real_send_status: "sent_verified" } }; }
+    });
+    const result = await workflow.runWorkflowStep(workflowRecord, { isEnabled: () => true });
+    return { executeCalls, result, workflow, workflowRecord, recovered: loadTaskState(workflowTaskDir) };
+  }
+
+  const sendingWorkflowRecovery = await workflowCrashRecoveryCase("sending");
+  assert.equal(sendingWorkflowRecovery.result.status, "needs_attention");
+  assert.equal(sendingWorkflowRecovery.executeCalls, 0, "the workflow gate must never execute an unmatched production sending marker");
+  assert.equal(sendingWorkflowRecovery.recovered.status, "paused");
+  assert.equal(sendingWorkflowRecovery.recovered.phase, "awaiting_unknown_resolution", "the production workflow loader must recover an interrupted send without a manual recovery call");
+  assert.equal(sendingWorkflowRecovery.recovered.results[0].awaiting_resolution, true);
+  assert.equal(sendingWorkflowRecovery.recovered.results[0].status, "outcome_unknown");
+  assert.equal(sendingWorkflowRecovery.recovered.results[0].retry_blocked, true);
+  assert.ok(sendingWorkflowRecovery.recovered.results[0].outcome_unknown_retry_count >= 1);
+  assert.equal(sendingWorkflowRecovery.workflow.describeUnknownWorkflowTask(sendingWorkflowRecovery.workflowRecord)?.required, true, "the recovered task must expose the manual resolution UI");
+
+  const generatedWorkflow = await workflowCrashRecoveryCase("generated", false, { sendAttempted: false, retryBlocked: false });
+  const generatedRow = generatedWorkflow.recovered.results[0];
+  assert.equal(generatedWorkflow.result.status, "completed", "M1 generated work must continue normally");
+  assert.equal(generatedWorkflow.executeCalls, 1);
+  assert.equal(generatedWorkflow.recovered.status, "completed");
+  assert.equal(generatedWorkflow.recovered.phase, "preparing_batch");
+  assert.equal(generatedRow.status, "sent_verified");
+  assert.equal(generatedRow.awaiting_resolution, false);
+  assert.equal(generatedRow.retry_blocked, true);
+  assert.equal(generatedRow.outcome_unknown_retry_count, 0);
+  assert.equal(generatedWorkflow.workflow.describeUnknownWorkflowTask(generatedWorkflow.workflowRecord), null);
+
+  // Production writers pause the task in the same call that records
+  // outcome_unknown. This synthetic on-disk pair is therefore unreachable,
+  // but the entry gate must still stop before execute and expose resolution.
+  const unreachableUnknown = await workflowCrashRecoveryCase("outcome_unknown", false, { retryBlocked: true, retryCount: 0 });
+  const unreachableUnknownRow = unreachableUnknown.recovered.results[0];
+  assert.equal(unreachableUnknown.result.status, "needs_attention");
+  assert.equal(unreachableUnknown.executeCalls, 0);
+  assert.equal(unreachableUnknown.recovered.status, "paused", "M5 synthetic running/outcome_unknown must not remain on disk after the production entry gate");
+  assert.equal(unreachableUnknown.recovered.phase, "preparing_batch");
+  assert.equal(unreachableUnknownRow.status, "outcome_unknown");
+  assert.equal(unreachableUnknownRow.awaiting_resolution, false);
+  assert.equal(unreachableUnknownRow.retry_blocked, true);
+  assert.equal(unreachableUnknownRow.outcome_unknown_retry_count, 0);
+  assert.equal(unreachableUnknown.workflow.describeUnknownWorkflowTask(unreachableUnknown.workflowRecord)?.required, true);
+
+  const verifiedContacts = [validContacts[0], validContacts[1]];
+  const verifiedWorkflow = await workflowCrashRecoveryCase("sent_verified", false, {
+    contacts: verifiedContacts,
+    sendAttempted: true,
+    retryBlocked: true,
+    matchingExecutionState: true
+  });
+  const verifiedRow = verifiedWorkflow.recovered.results[0];
+  assert.equal(verifiedWorkflow.result.status, "pending", "M6 verified receipt must advance to the next contact");
+  assert.equal(verifiedWorkflow.executeCalls, 0);
+  assert.equal(verifiedWorkflow.recovered.status, "running");
+  assert.equal(verifiedWorkflow.recovered.current_index, 1);
+  assert.equal(verifiedWorkflow.recovered.phase, "preparing_batch");
+  assert.equal(verifiedRow.status, "sent_verified");
+  assert.equal(verifiedRow.awaiting_resolution, false);
+  assert.equal(verifiedRow.retry_blocked, true);
+  assert.equal(verifiedRow.outcome_unknown_retry_count, 0);
+  assert.equal(verifiedWorkflow.workflow.describeUnknownWorkflowTask(verifiedWorkflow.workflowRecord), null);
+
+  const pendingMultipart = await workflowCrashRecoveryCase("sending", true, {
+    lockAvailable: false,
+    messageParts: [
+      { kind: "text", signature: "text", status: "pending" },
+      { kind: "image", signature: "image", status: "pending" }
+    ]
+  });
+  const pendingMultipartRow = pendingMultipart.recovered.results[0];
+  assert.equal(pendingMultipart.result.status, "pending", "M7 all-pending multipart work must remain safely resumable");
+  assert.equal(pendingMultipart.result.retryAfterMs, 1000, "a busy WeChat lock must yield the touch task before it can reclaim scheduler priority");
+  assert.equal(pendingMultipart.result.waitingReason, undefined, "lock contention backoff must not be labelled as a send safety interval");
+  assert.equal(pendingMultipart.executeCalls, 0);
+  assert.equal(pendingMultipart.recovered.status, "running");
+  assert.equal(pendingMultipart.recovered.phase, "preparing_batch");
+  assert.equal(pendingMultipartRow.status, "generated");
+  assert.equal(pendingMultipartRow.awaiting_resolution, false);
+  assert.equal(pendingMultipartRow.retry_blocked, false);
+  assert.equal(pendingMultipartRow.outcome_unknown_retry_count, 0);
+  assert.equal(canContinueSequence(pendingMultipartRow), true);
+  assert.equal(pendingMultipart.workflow.describeUnknownWorkflowTask(pendingMultipart.workflowRecord), null);
+
+  const pausedPrepared = await workflowCrashRecoveryCase("prepared", false, {
+    taskStatus: "paused", phase: "paused", retryBlocked: true, awaitingResolution: false
+  });
+  const pausedPreparedRow = pausedPrepared.recovered.results[0];
+  assert.equal(pausedPrepared.result.status, "needs_attention");
+  assert.equal(pausedPrepared.executeCalls, 0);
+  assert.equal(pausedPrepared.recovered.status, "paused");
+  assert.equal(pausedPrepared.recovered.phase, "paused");
+  assert.equal(pausedPreparedRow.status, "prepared");
+  assert.equal(pausedPreparedRow.awaiting_resolution, false);
+  assert.equal(pausedPreparedRow.retry_blocked, true);
+  assert.equal(pausedPreparedRow.outcome_unknown_retry_count, 0);
+  assert.equal(pausedPreparedRow.crash_recovered_from, undefined, "M9 non-running work must not pass through crash recovery");
+  assert.equal(pausedPrepared.workflow.describeUnknownWorkflowTask(pausedPrepared.workflowRecord), null);
+
+  const completedPrepared = await workflowCrashRecoveryCase("prepared", false, {
+    taskStatus: "completed", phase: "completed", currentIndex: 1, retryBlocked: true, awaitingResolution: false
+  });
+  const completedPreparedRow = completedPrepared.recovered.results[0];
+  assert.equal(completedPrepared.result.status, "completed");
+  assert.equal(completedPrepared.executeCalls, 0);
+  assert.equal(completedPrepared.recovered.status, "completed");
+  assert.equal(completedPrepared.recovered.phase, "completed");
+  assert.equal(completedPreparedRow.status, "prepared");
+  assert.equal(completedPreparedRow.awaiting_resolution, false);
+  assert.equal(completedPreparedRow.retry_blocked, true);
+  assert.equal(completedPreparedRow.outcome_unknown_retry_count, 0);
+  assert.equal(completedPreparedRow.crash_recovered_from, undefined, "M10 completed work must not pass through crash recovery");
+  assert.equal(completedPrepared.workflow.describeUnknownWorkflowTask(completedPrepared.workflowRecord), null);
+
+  for (const rowStatus of ["prepared", "clicked"]) {
+    const recovery = await workflowCrashRecoveryCase(rowStatus);
+    const row = recovery.recovered.results[0];
+    assert.equal(recovery.result.status, "needs_attention");
+    assert.equal(recovery.executeCalls, 0, `${rowStatus} crash recovery must never execute the sender`);
+    assert.equal(recovery.recovered.phase, "awaiting_unknown_resolution");
+    assert.equal(row.status, "outcome_unknown");
+    assert.equal(row.awaiting_resolution, true);
+    assert.equal(row.retry_blocked, true);
+    assert.ok(row.outcome_unknown_retry_count >= 1);
+    assert.equal(row.crash_recovered_from, rowStatus);
+    assert.equal(recovery.workflow.describeUnknownWorkflowTask(recovery.workflowRecord)?.required, true);
+    assert.equal(recovery.workflow.canRetryWorkflowTask(recovery.workflowRecord, recovery.workflowRecord.payload), false);
+  }
+
+  const multipartPreparedRecovery = await workflowCrashRecoveryCase("prepared", true);
+  const multipartPreparedRow = multipartPreparedRecovery.recovered.results[0];
+  const multipartUnknown = unknownMessagePart(multipartPreparedRow);
+  assert.equal(multipartPreparedRecovery.result.status, "needs_attention");
+  assert.equal(multipartPreparedRecovery.executeCalls, 0);
+  assert.equal(multipartPreparedRecovery.recovered.phase, "awaiting_unknown_resolution");
+  assert.equal(multipartPreparedRow.status, "outcome_unknown");
+  assert.equal(multipartPreparedRow.awaiting_resolution, true);
+  assert.equal(multipartPreparedRow.retry_blocked, true);
+  assert.ok(multipartPreparedRow.outcome_unknown_retry_count >= 1);
+  assert.equal(multipartPreparedRow.crash_recovered_from, "prepared");
+  assert.equal(multipartUnknown?.index, 1, "multipart recovery must expose exactly the interrupted segment");
+  assert.equal(multipartUnknown?.part.crash_recovered_from, "prepared");
+  assert.equal(multipartPreparedRecovery.workflow.describeUnknownWorkflowTask(multipartPreparedRecovery.workflowRecord)?.required, true);
+  assert.equal(multipartPreparedRecovery.workflow.canRetryWorkflowTask(multipartPreparedRecovery.workflowRecord, multipartPreparedRecovery.workflowRecord.payload), false);
 
   const verifiedCrash = createTask("verified", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
   verifiedCrash.results[0].status = "sending";
@@ -806,7 +1055,10 @@ try {
   fs.rmSync(path.join(dir, "state.json"), { force: true });
   const taskOnlyRecovered = recoverInterruptedTask(dir);
   assert.equal(taskOnlyRecovered.status, "paused");
-  assert.equal(taskOnlyRecovered.results[0].status, "prepared");
+  assert.equal(taskOnlyRecovered.phase, "awaiting_unknown_resolution");
+  assert.equal(taskOnlyRecovered.results[0].status, "outcome_unknown");
+  assert.equal(taskOnlyRecovered.results[0].crash_recovered_from, "prepared");
+  assert.equal(taskOnlyRecovered.results[0].awaiting_resolution, true);
   assert.equal(taskOnlyRecovered.results[0].retry_blocked, true);
 
   const tamperedSnapshot = createTask("snapshot", [validContacts[0]], "2026-07-11T00:00:00.000Z", { executionMode: "real_send" });
@@ -1322,6 +1574,10 @@ try {
   assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: false, reason: "powershell_timeout" })).blocked_reason, "powershell_timeout");
   assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: false, reason: "powershell_failed" })).blocked_reason, "powershell_failed");
   assert.equal(focusWechatWindowDryRun(dir, () => ({ ok: true, title: "企业微信", processName: "WXWork" })).state.last_result, "wechat_window_focused");
+  const focusedWechat = focusWechatWindowDryRun(dir, () => ({ ok: true, title: "微信", processName: "Weixin", pid: 81, hWnd: "91" }));
+  assert.equal(focusedWechat.state.window_pid, 81, "a successful focus must persist the exact WeChat PID for the next guarded step");
+  assert.equal(focusedWechat.state.window_handle, "91", "a successful focus must persist the exact WeChat HWND for the next guarded step");
+  assert.equal(focusedWechat.state.window_process_name, "Weixin");
   assert.equal(send(dir, { dryRun: true, message: "hello" }).blocked_reason, "no_whitelist_customer");
 
   fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_internal", name: "测试客户", wxid: "wxid_internal", wechatId: "internal-test-001", wechatAccountId: "internal-account", allowed: true }]), "utf8");
@@ -1343,7 +1599,7 @@ try {
   assert.equal(locateConversation(dir, () => ["其他窗口"]).blocked_reason, "conversation_window_not_found");
   assert.equal(locateConversation(dir, () => ["测试客户 - 企业微信"]).state.conversation_located, true);
   assert.equal(verifyWindowTitle(dir, () => ["测试客户 - 企业微信"]).state.conversation_verified, true);
-  const openNoWindow = openConversationDryRun(dir, () => ({ ok: false }), () => []);
+  const openNoWindow = openConversationDryRun(dir, () => ({ ok: false, reason: "wechat_window_not_found" }), () => []);
   assert.equal(openNoWindow.blocked_reason, "wechat_window_not_found");
   assert.equal(openNoWindow.state.conversation_located, false);
   assert.equal(openConversationDryRun(dir, () => ({ ok: false, reason: "wechat_focus_failed" }), () => []).blocked_reason, "wechat_focus_failed");
@@ -1352,13 +1608,29 @@ try {
     "customer_conversation_not_found"
   );
   assert.equal(openConversationDryRun(dir, () => ({ ok: true, title: "企业微信" }), () => ["测试客户 - 企业微信"]).ok, true);
-  assert.equal(searchConversationDryRun(dir, () => ({ ok: false }), () => []).blocked_reason, "wechat_window_not_found");
+  assert.equal(searchConversationDryRun(dir, () => ({ ok: false, reason: "wechat_window_not_found" }), () => []).blocked_reason, "wechat_window_not_found");
   let searchQuery = "";
   searchConversationDryRun(dir, (query) => {
     searchQuery = query;
     return { ok: true, title: "企业微信" };
   }, () => ["企业微信"]);
   assert.equal(searchQuery, "internal-test-001");
+  let fallbackQueries = [];
+  const fallbackSearch = clickSearchResultDryRun(
+    dir,
+    (query) => {
+      fallbackQueries.push(query);
+      return fallbackQueries.length === 1
+        ? { ok: false, reason: "exact_search_result_not_found", searchQuery: query }
+        : { ok: true, searchQuery: query, searchQueryType: "name_fallback", searchFallbackReason: "wechat_id_no_result", pid: 11, hWnd: "22", title: "测试客户 - 企业微信" };
+    },
+    () => ["测试客户 - 企业微信"],
+    undefined,
+    { pid: 11, hWnd: "22" }
+  );
+  assert.deepEqual(fallbackQueries, ["internal-test-001", "测试客户"], "an explicit WeChat-ID no-result must downgrade to the contact name");
+  assert.equal(fallbackSearch.state.search_query_type, "name_fallback");
+  assert.equal(fallbackSearch.state.search_fallback_reason, "wechat_id_no_result");
   const searchOnly = searchConversationDryRun(dir, () => ({ ok: true, title: "企业微信" }), () => ["企业微信"]);
   assert.equal(searchOnly.state.search_input_done, true);
   assert.equal(searchOnly.state.conversation_verified, false);
@@ -1366,9 +1638,26 @@ try {
     searchConversationDryRun(dir, () => ({ ok: true, title: "企业微信" }), () => ["测试客户 - 企业微信"]).state.conversation_verified,
     true
   );
-  const clickNoWindow = clickSearchResultDryRun(dir, () => ({ ok: false }), () => []);
+  const clickNoWindow = clickSearchResultDryRun(dir, () => ({ ok: false, reason: "wechat_window_not_found" }), () => []);
   assert.equal(clickNoWindow.blocked_reason, "wechat_window_not_found");
   assert.equal(clickNoWindow.state.conversation_located, false);
+  for (const reason of ["wechat_clipboard_restore_unsupported", "wechat_clipboard_read_failed", "powershell_output_invalid", "exact_search_result_not_found", "search_result_identity_unverified"]) {
+    const failed = clickSearchResultDryRun(dir, () => ({ ok: false, reason }), () => []);
+    assert.equal(failed.blocked_reason, reason, "non-window failures must survive the workflow boundary");
+    assert.equal(failed.state.conversation_located, false);
+  }
+  assert.equal(clickSearchResultDryRun(dir, () => ({ ok: false, reason: "untrusted private data" }), () => []).blocked_reason,
+    "wechat_operation_failed", "unknown output is neither a missing window nor safe diagnostic text");
+  const clickIdentityDiagnostics = clickSearchResultDryRun(
+    dir,
+    () => ({
+      ok: false,
+      reason: "search_result_identity_unverified",
+      diagnostics: { rule_id: "search-r003", candidate_count: 0, visual_candidate_count: 0, ocr_ok: false }
+    }),
+    () => []
+  );
+  assert.equal(clickIdentityDiagnostics.diagnostics.rule_id, "search-r003", "search rejection rule must reach the executor result");
   const clickExternalInput = clickSearchResultDryRun(
     dir,
     () => ({
@@ -1405,7 +1694,8 @@ try {
         pid: 11,
         hWnd: "22",
         exactSearchOpened: true,
-        searchQuery: "internal-test-001"
+        searchQuery: "internal-test-001",
+        searchResultMode: "unique_local_uia"
       };
     },
     () => {
@@ -1422,12 +1712,605 @@ try {
   assert.equal(clickExactWechatIdFallback.state.conversation_verification_mode, "exact_wechat_id_search");
   assert.equal(clickExactWechatIdFallback.state.window_pid, 11);
   assert.equal(clickExactWechatIdFallback.state.window_handle, "22");
-  assert.deepEqual(exactOpenContext, { pid: 11, hWnd: "22", minIdleMs: 0 });
+  assert.deepEqual(exactOpenContext, {
+    pid: 11,
+    hWnd: "22",
+    minIdleMs: 0,
+    searchQueryType: "wechat_id",
+    searchIdentity: { query: "internal-test-001", expectedName: "测试客户" }
+  }, "a WeChat-ID lookup must resolve the unique local result without assuming its display-name AutomationId suffix equals the WeChat ID");
   assert.equal(exactTitleReads, 0, "an exact WeChat-ID result must not repeat title discovery");
   assert.equal(exactConversationVerifications, 0, "an exact WeChat-ID result must not repeat conversation verification");
+  const idOnlyUia = resolveWechatSearchResultObservation({
+    uiaCandidates: [{ automationId: "search_item_function_模糊昵称", name: "模糊昵称", x: 120, y: 180 }]
+  }, { query: "internal-test-001", expectedName: "测试客户", queryType: "wechat_id" });
+  assert.equal(idOnlyUia.mode, "unique_local_wechat_id_uia", "a unique local WeChat-ID hit does not need OCR of its nickname or ID label");
+  assert.equal(resolveWechatSearchResultObservation({ uiaCandidates: [
+    { name: "甲", x: 120, y: 180 }, { name: "乙", x: 120, y: 240 }
+  ] }, { query: "internal-test-001", expectedName: "测试客户", queryType: "wechat_id" }).status, "unverified", "multiple local hits must not be clicked");
   assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.open_result_ms), true);
   assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.title_read_ms), true);
   assert.equal(Number.isFinite(clickExactWechatIdFallback.diagnostics.timings.conversation_verify_ms), true);
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [{ automationId: "search_item_function_张三", name: "张三", x: 120, y: 180 }]
+    }, { query: "wxid_abc123", expectedName: "张三" }),
+    { status: "selected", mode: "unique_local_uia", candidate: { automationId: "search_item_function_张三", name: "张三", x: 120, y: 180 } },
+    "the display-name suffix may differ from the searched WeChat ID"
+  );
+  const strictCrop = { left: 80, top: 80, right: 320, bottom: 280 };
+  const idOnlyVisual = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+    visualCandidates: [
+      { text: "最常使用", left: 82, top: 100, right: 144, bottom: 118, x: 113, y: 109 },
+      { text: "测式客户", left: 96, top: 142, right: 178, bottom: 160, x: 137, y: 151 },
+      { text: "微倌号码 cbI668", left: 96, top: 184, right: 226, bottom: 204, x: 161, y: 194 }
+    ],
+    webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+    webSearchTop: 224
+  }, { query: "cb1668", expectedName: "测试客户", queryType: "wechat_id" });
+  assert.equal(idOnlyVisual.mode, "unique_local_wechat_id_visual", "one bounded local surface can be clicked despite unreadable gray ID text");
+  const realCustomerOcrShape = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true,
+    cropBounds: { left: 58, top: 72, right: 477, bottom: 485 },
+    visualCandidates: [
+      { text: "常 便 用", left: 96, top: 84, right: 131, bottom: 95, x: 114, y: 90 },
+      { text: "C 测 试 联 系 人 183S", left: 128, top: 118, right: 330, bottom: 132, x: 229, y: 125 },
+      { text: "微 信 ． 号 ： fixture68506074", left: 128, top: 142, right: 234, bottom: 155, x: 181, y: 149 },
+      { text: "O", left: 360, top: 128, right: 375, bottom: 143, x: 368, y: 136 },
+      { text: "获 客 VI 版", left: 392, top: 128, right: 477, bottom: 141, x: 435, y: 135 },
+      { text: "3.0 M", left: 392, top: 172, right: 422, bottom: 179, x: 407, y: 176 }
+    ],
+    webSearchCandidates: [{ text: "搜 索 网 络 结 果", left: 110, top: 180, right: 182, bottom: 191, x: 146, y: 186 }],
+    webSearchTop: 180
+  }, { query: "fixture68506074", expectedName: "C测试联系人1835", queryType: "wechat_id" });
+  assert.equal(realCustomerOcrShape.mode, "unique_local_wechat_id_visual",
+    "one visible local friend must remain clickable when OCR drops the section prefix, punctuates the gray label, and reads chat-pane noise");
+  assert.ok(realCustomerOcrShape.candidate.x < 350, "chat-pane OCR outside the search popup must never become the click target");
+  const noHeaderCustomerOcrShape = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true,
+    cropBounds: { left: 58, top: 72, right: 477, bottom: 485 },
+    visualCandidates: [
+      { text: "C 测 试 联 系 人 183S", left: 128, top: 118, right: 330, bottom: 132, x: 229, y: 125 },
+      { text: "微 信", left: 128, top: 142, right: 166, bottom: 155, x: 147, y: 149 },
+      { text: "号 fixture68506074", left: 170, top: 142, right: 300, bottom: 155, x: 235, y: 149 },
+      { text: "获 客 VI 版", left: 392, top: 128, right: 477, bottom: 141, x: 435, y: 135 }
+    ],
+    webSearchCandidates: [{ text: "搜 索 网 络 结 果", left: 110, top: 180, right: 182, bottom: 191, x: 146, y: 186 }],
+    webSearchTop: 180
+  }, { query: "fixture68506074", expectedName: "C测试联系人1835", queryType: "wechat_id" });
+  assert.equal(noHeaderCustomerOcrShape.mode, "unique_local_wechat_id_visual",
+    "one geometrically isolated friend row must remain clickable when the local-section header is absent and OCR splits its gray ID line");
+  assert.ok(noHeaderCustomerOcrShape.candidate.x < 350, "conversation-pane OCR must stay outside the header-free local result surface");
+  const realCustomerWithoutNetworkBoundary = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true,
+    cropBounds: { left: 58, top: 72, right: 477, bottom: 485 },
+    visualCandidates: [
+      { text: "常 便 用", left: 96, top: 84, right: 131, bottom: 95, x: 114, y: 90 },
+      { text: "C 测 试 联 系 人 183S", left: 128, top: 118, right: 330, bottom: 132, x: 229, y: 125 },
+      { text: "微 信 ． 号 ： fixture68506074", left: 128, top: 142, right: 234, bottom: 155, x: 181, y: 149 }
+    ],
+    webSearchCandidates: [], webSearchTop: null
+  }, { query: "fixture68506074", expectedName: "C测试联系人1835", queryType: "wechat_id" });
+  assert.equal(realCustomerWithoutNetworkBoundary.status, "unverified",
+    "a visual friend row must remain non-clickable when the network-search boundary cannot be isolated");
+  const duplicatedNetworkBoundary = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true,
+    cropBounds: { left: 58, top: 72, right: 477, bottom: 485 },
+    visualCandidates: [
+      { text: "常 便 用", left: 96, top: 84, right: 131, bottom: 95, x: 114, y: 90 },
+      { text: "C 测 试 联 系 人", left: 128, top: 118, right: 260, bottom: 132, x: 194, y: 125 }
+    ],
+    webSearchCandidates: [
+      { text: "搜索网络结果", left: 110, top: 180, right: 182, bottom: 191, x: 146, y: 186 },
+      { text: "搜索网络结果", left: 110, top: 210, right: 182, bottom: 221, x: 146, y: 216 }
+    ],
+    webSearchTop: 180
+  }, { query: "fixture68506074", expectedName: "C测试联系人", queryType: "wechat_id" });
+  assert.equal(duplicatedNetworkBoundary.status, "unverified",
+    "multiple network-search boundaries are not reliably isolated and must never authorize a local click");
+  const sectionedIdSearch = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true,
+    cropBounds: { left: 58, top: 85, right: 488, bottom: 505 },
+    visualCandidates: [
+      { text: "最 常 便 用", left: 114, top: 104, right: 173, bottom: 117, x: 144, y: 110 },
+      { text: "A 测 试 客 户", left: 168, top: 146, right: 250, bottom: 164, x: 209, y: 155 },
+      { text: "灰字不可读", left: 169, top: 178, right: 312, bottom: 194, x: 240, y: 186 },
+      { text: "群 聊", left: 114, top: 224, right: 144, bottom: 237, x: 129, y: 230 },
+      { text: "测试群", left: 168, top: 266, right: 445, bottom: 285, x: 306, y: 275 },
+      { text: "包含 A 测 试 客 户", left: 169, top: 298, right: 426, bottom: 314, x: 297, y: 306 }
+    ],
+    webSearchCandidates: [{ text: "搜索网络结果", left: 114, top: 344, right: 236, bottom: 358, x: 175, y: 350 }],
+    webSearchTop: 344
+  }, { query: "wxid_test", expectedName: "A测试客户", queryType: "wechat_id" });
+  assert.equal(sectionedIdSearch.mode, "unique_local_wechat_id_visual", "an unreadable ID must select the friend section, never a matching group-chat excerpt");
+  assert.ok(sectionedIdSearch.candidate.y < 224, "the click must stay above the group-chat section");
+  assert.equal(resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true,
+    cropBounds: { left: 58, top: 85, right: 488, bottom: 505 },
+    visualCandidates: [
+      { text: "群聊", left: 114, top: 224, right: 144, bottom: 237, x: 129, y: 230 },
+      { text: "测试群", left: 168, top: 266, right: 260, bottom: 285, x: 214, y: 275 },
+      { text: "微信号：wxid_test", left: 169, top: 298, right: 330, bottom: 314, x: 250, y: 306 }
+    ],
+    webSearchCandidates: [{ text: "搜索网络结果", left: 114, top: 344, right: 236, bottom: 358, x: 175, y: 350 }],
+    webSearchTop: 344
+  }, { query: "wxid_test", expectedName: "A测试客户", queryType: "wechat_id" }).status, "unverified",
+  "an exact WeChat ID rendered inside a group-chat section must not re-enter a later authorization branch");
+  assert.equal(resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true,
+    cropBounds: { left: 58, top: 85, right: 488, bottom: 505 },
+    visualCandidates: [
+      { text: "最常使用", left: 114, top: 104, right: 173, bottom: 117, x: 144, y: 110 },
+      { text: "第一个好友", left: 168, top: 146, right: 250, bottom: 164, x: 209, y: 155 },
+      { text: "灰字不可读", left: 169, top: 178, right: 312, bottom: 194, x: 240, y: 186 },
+      { text: "第二个好友", left: 168, top: 210, right: 250, bottom: 228, x: 209, y: 219 },
+      { text: "灰字不可读", left: 169, top: 242, right: 312, bottom: 258, x: 240, y: 250 }
+    ],
+    webSearchCandidates: [{ text: "搜索网络结果", left: 114, top: 344, right: 236, bottom: 358, x: 175, y: 350 }],
+    webSearchTop: 344
+  }, { query: "wxid_test", expectedName: "A测试客户", queryType: "wechat_id" }).status, "unverified", "two friends in the same section must never authorize the first click");
+  assert.equal(resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+    visualCandidates: [{ text: "网络查找微信号：cb1668", left: 92, top: 150, right: 270, bottom: 174, x: 181, y: 162 }],
+    webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+    webSearchTop: 224
+  }, { query: "cb1668", expectedName: "测试客户", queryType: "wechat_id" }).status, "not_found", "network lookup alone is not a local friend");
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [],
+      cropBounds: strictCrop,
+      visualCandidates: [],
+      webSearchCandidates: [{ text: "搜一搜 wxid_missing", left: 88, top: 224, right: 280, bottom: 250, x: 184, y: 237 }],
+      webSearchTop: 224,
+      ocrOk: true,
+      webSearchVisible: true
+    }, { query: "wxid_missing", expectedName: "缺失客户" }),
+    { status: "not_found", reason: "exact_search_result_not_found", rule_id: "search-r015", diagnostics: { rule_id: "search-r015", candidate_count: 0, visual_candidate_count: 0, ocr_ok: true } },
+    "headless empty UIA plus an OCR-confirmed web-search-only row is a scoped missing contact"
+  );
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({ uiaCandidates: [], visualCandidates: [], ocrOk: false, webSearchVisible: false }, { query: "wxid_unknown", expectedName: "未知客户" }),
+    { status: "unverified", reason: "search_result_identity_unverified", rule_id: "search-r003", diagnostics: { rule_id: "search-r003", candidate_count: 0, visual_candidate_count: 0, ocr_ok: false } },
+    "empty UIA with unavailable OCR must pause instead of skipping"
+  );
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [],
+      cropBounds: strictCrop,
+      visualCandidates: [{ text: "未知客户", left: 100, top: 150, right: 200, bottom: 174, x: 150, y: 162 }],
+      webSearchCandidates: [{ text: "搜一搜 wxid_unknown", left: 90, top: 220, right: 290, bottom: 246, x: 190, y: 233 }],
+      webSearchTop: 220,
+      ocrOk: true
+    }, { query: "wxid_unknown", expectedName: "未知客户" }),
+    {
+      status: "selected",
+      mode: "unique_local_surface_visual",
+      candidate: { text: "未知客户", left: 100, top: 150, right: 200, bottom: 174, x: 150, y: 162 }
+    },
+    "one compact local row may authorize a click without readable identity text"
+  );
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [],
+      cropBounds: strictCrop,
+      visualCandidates: [
+        { text: "测式客户", left: 96, top: 142, right: 178, bottom: 160, x: 137, y: 151 },
+        { text: "微倌号码 cbI668", left: 96, top: 184, right: 226, bottom: 204, x: 161, y: 194 }
+      ],
+      webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+      webSearchTop: 224,
+      ocrOk: true
+    }, { query: "cb1668", expectedName: "测试客户" }),
+    { status: "unverified", reason: "search_result_identity_unverified", rule_id: "search-r014", diagnostics: { rule_id: "search-r014", candidate_count: 0, visual_candidate_count: 2, ocr_ok: true } },
+    "widely separated OCR rows must not be merged into one clickable contact"
+  );
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [{ text: "测试客户", left: 96, top: 132, right: 178, bottom: 154, x: 137, y: 143 }],
+      webSearchCandidates: []
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "a visible name without a verified local-results boundary must never authorize a click"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({ uiaCandidates: [], visualCandidates: [{ text: "wxid_unknown", x: 150, y: 190 }], ocrOk: true, webSearchVisible: true }, { query: "wxid_unknown", expectedName: "未知客户" }).status,
+    "unverified",
+    "a query echoed on a separate web-search OCR line must never authorize a click"
+  );
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [],
+      ocrOk: true,
+      cropBounds: strictCrop,
+      visualCandidates: [
+        { text: "测试客户", left: 92, top: 132, right: 168, bottom: 154, x: 130, y: 143 },
+        { text: "微信号：cb1668", left: 92, top: 158, right: 218, bottom: 180, x: 155, y: 169 }
+      ],
+      webSearchCandidates: [
+        { text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }
+      ],
+      webSearchTop: 224,
+      webSearchVisible: true
+    }, { query: "cb1668", expectedName: "测试客户" }),
+    {
+      status: "selected",
+      mode: "exact_wechat_id_visual",
+      candidate: { text: "微信号：cb1668", left: 92, top: 158, right: 218, bottom: 180, x: 155, y: 169 }
+    },
+    "an exact labelled WeChat ID above the web-search boundary must select the local result row"
+  );
+  assert.equal(isVerifiedWechatSearchResultMode("exact_wechat_id_visual"), true, "the strict labelled-ID visual result must be accepted by the conversation gate");
+  const splitWechatIdResult = resolveWechatSearchResultObservation({
+    uiaCandidates: [],
+    ocrOk: true,
+    cropBounds: strictCrop,
+    visualCandidates: [
+      { text: "测试客户", left: 92, top: 126, right: 168, bottom: 148, x: 130, y: 137 },
+      { text: "微信号：", left: 92, top: 154, right: 164, bottom: 176, x: 128, y: 165 },
+      { text: "CB", left: 170, top: 154, right: 202, bottom: 176, x: 186, y: 165 },
+      { text: " 1668 ", left: 206, top: 154, right: 266, bottom: 176, x: 236, y: 165 }
+    ],
+    webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+    webSearchTop: 224
+  }, { query: "cb1668", expectedName: "测试客户" });
+  assert.equal(splitWechatIdResult.status, "selected", "adjacent OCR fragments of the labelled WeChat ID must be reconstructed before identity rejection");
+  assert.equal(splitWechatIdResult.mode, "exact_wechat_id_visual");
+  assert.equal(splitWechatIdResult.candidate.x, 128, "the reconstructed identity must click the labelled local row, not a lower search echo");
+  const uniqueMismatchedWechatIdResult = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+    visualCandidates: [
+      { text: "微信号：", left: 92, top: 154, right: 164, bottom: 176, x: 128, y: 165 },
+      { text: "CB", left: 170, top: 154, right: 202, bottom: 176, x: 186, y: 165 },
+      { text: "1669", left: 206, top: 154, right: 266, bottom: 176, x: 236, y: 165 }
+    ],
+    webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+    webSearchTop: 224
+  }, { query: "cb1668", expectedName: "测试客户" });
+  assert.equal(uniqueMismatchedWechatIdResult.status, "selected", "one local result stays clickable when OCR misreads its WeChat ID");
+  assert.equal(uniqueMismatchedWechatIdResult.mode, "unique_local_visual");
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [],
+      ocrOk: true,
+      cropBounds: strictCrop,
+      visualCandidates: [
+        { text: "微信号：cb1668", left: 92, top: 158, right: 218, bottom: 180, x: 155, y: 169 },
+        { text: "微信号：cb1668", left: 92, top: 188, right: 218, bottom: 210, x: 155, y: 199 }
+      ],
+      webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户", queryType: "wechat_id" }).status,
+    "unverified",
+    "multiple exact labelled results must remain ambiguous"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [],
+      ocrOk: true,
+      cropBounds: strictCrop,
+      visualCandidates: [{ text: "微信号：cb1668", left: 92, top: 230, right: 218, bottom: 252, x: 155, y: 241 }],
+      webSearchCandidates: [{ text: "搜一搜", left: 88, top: 224, right: 160, bottom: 250, x: 124, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "not_found",
+    "a labelled echo inside or below the web-search boundary must never authorize a click"
+  );
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [],
+      ocrOk: true,
+      cropBounds: strictCrop,
+      visualCandidates: [{ text: "cb1668", left: 92, top: 96, right: 170, bottom: 118, x: 131, y: 107 }],
+      webSearchCandidates: [{ text: "搜一搜", left: 88, top: 224, right: 160, bottom: 250, x: 124, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }),
+    { status: "unverified", reason: "search_result_identity_unverified", rule_id: "search-r014", diagnostics: { rule_id: "search-r014", candidate_count: 0, visual_candidate_count: 1, ocr_ok: true } },
+    "a distant naked query is not proven to be part of the network-search row"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [{ text: "cb1668", x: 131, y: 107 }],
+      webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "a naked query without complete bounds must fail closed"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [{ text: "cb1668", left: 92, top: 150, right: 170, bottom: 172, x: 131, y: 161 }],
+      webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "a bare exact ID without an independent local-contact anchor is indistinguishable from a network lookup echo"
+  );
+  assert.equal(isVerifiedWechatSearchResultMode("exact_wechat_id_local_visual"), true, "the bounded local exact-ID fallback must reach the existing conversation verification gate");
+  const networkLookupFixtures = [
+    {
+      label: "a complete network lookup row",
+      uiaCandidates: [],
+      visualCandidates: [
+        { text: "网络查找微信号：cb1668", left: 92, top: 150, right: 270, bottom: 174, x: 181, y: 162 }
+      ]
+    },
+    {
+      label: "a split network lookup row",
+      uiaCandidates: [],
+      visualCandidates: [
+        { text: "网络查找微信号：", left: 92, top: 150, right: 220, bottom: 174, x: 156, y: 162 },
+        { text: "cb1668", left: 224, top: 150, right: 292, bottom: 174, x: 258, y: 162 }
+      ]
+    },
+    {
+      label: "a fragmented network lookup label",
+      uiaCandidates: [],
+      visualCandidates: [
+        { text: "网络查找", left: 92, top: 150, right: 158, bottom: 174, x: 125, y: 162 },
+        { text: "微信号：", left: 162, top: 150, right: 224, bottom: 174, x: 193, y: 162 },
+        { text: "cb1668", left: 228, top: 150, right: 296, bottom: 174, x: 262, y: 162 }
+      ]
+    },
+    {
+      label: "a stacked network lookup label and WeChat ID",
+      uiaCandidates: [],
+      visualCandidates: [
+        { text: "网络查找", left: 92, top: 142, right: 176, bottom: 164, x: 134, y: 153 },
+        { text: "微信号：cb1668", left: 96, top: 168, right: 230, bottom: 192, x: 163, y: 180 }
+      ]
+    },
+    {
+      label: "a unique UIA network lookup action",
+      uiaCandidates: [{ automationId: "search_item_function_网络查找微信号_cb1668", name: "网络查找微信号：cb1668", x: 180, y: 162 }],
+      visualCandidates: []
+    },
+    {
+      label: "a bare-query UIA candidate without the expected local name",
+      uiaCandidates: [
+        { automationId: "candidate_cb1668", name: "cb1668", x: 180, y: 162 },
+        { automationId: "candidate_other", name: "其他联系人", x: 180, y: 122 }
+      ],
+      visualCandidates: []
+    },
+    {
+      label: "a bare visual query separated from an unrelated name row",
+      uiaCandidates: [],
+      visualCandidates: [
+        { text: "测试客户", left: 92, top: 82, right: 174, bottom: 104, x: 133, y: 93 },
+        { text: "cb1668", left: 92, top: 150, right: 170, bottom: 172, x: 131, y: 161 }
+      ]
+    }
+  ];
+  for (const fixture of networkLookupFixtures) {
+    const searchResultObservation = {
+      uiaCandidates: fixture.uiaCandidates,
+      ocrOk: true,
+      cropBounds: strictCrop,
+      visualCandidates: fixture.visualCandidates,
+      webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+      webSearchTop: 224
+    };
+    const resolution = resolveWechatSearchResultObservation(searchResultObservation, { query: "cb1668", expectedName: "测试客户" });
+    assert.notEqual(resolution.status, "selected", `${fixture.label} must fail closed before every click-authorizing path`);
+    let clickCount = 0;
+    const openResult = openWechatSearchResult("cb1668", {
+      pid: 11,
+      hWnd: "22",
+      searchIdentity: { expectedName: "测试客户" },
+      runner: () => ({ ok: true, processName: "Weixin", pid: 11, hWnd: "22", inputLeaseTick: 101, searchResultObservation }),
+      clickRunner: () => { clickCount += 1; return { ok: true }; }
+    });
+    assert.equal(openResult.ok, false, `${fixture.label} must be rejected by the driver`);
+    assert.equal(clickCount, 0, `${fixture.label} must cause no click`);
+  }
+  let localCandidateClicks = 0;
+  const localCandidateAmongNetworkRows = openWechatSearchResult("cb1668", {
+    pid: 11,
+    hWnd: "22",
+    searchIdentity: { expectedName: "测试客户" },
+    runner: () => ({ ok: true, processName: "Weixin", pid: 11, hWnd: "22", inputLeaseTick: 101, searchResultObservation: {
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [
+        { text: "测试客户", left: 92, top: 92, right: 174, bottom: 114, x: 133, y: 103 },
+        { text: "微信号：cb1668", left: 92, top: 120, right: 210, bottom: 144, x: 151, y: 132 },
+        { text: "网络查找微信号：", left: 92, top: 166, right: 220, bottom: 190, x: 156, y: 178 },
+        { text: "cb1668", left: 224, top: 166, right: 292, bottom: 190, x: 258, y: 178 }
+      ],
+      webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+      webSearchTop: 224
+    } }),
+    clickRunner: () => { localCandidateClicks += 1; return { ok: true, pid: 11, hWnd: "22", exactSearchOpened: true }; }
+  });
+  assert.equal(localCandidateAmongNetworkRows.ok, true, "isolating a network lookup row must preserve a separately verified local candidate");
+  assert.equal(localCandidateClicks, 1, "only the separately verified local candidate may reach the click stage");
+  const ambiguousBareId = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+    visualCandidates: [{ text: "cb1668", left: 92, top: 150, right: 170, bottom: 172, x: 131, y: 161 }],
+    webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+    webSearchTop: 224
+  }, { query: "cb1668", expectedName: "测试客户" });
+  assert.notEqual(ambiguousBareId.status, "selected", "an exact bare ID without independent local-contact evidence must fail closed");
+  const supportedBareId = resolveWechatSearchResultObservation({
+    uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+    visualCandidates: [
+      { text: "测试客户", left: 92, top: 122, right: 174, bottom: 144, x: 133, y: 133 },
+      { text: "cb1668", left: 92, top: 150, right: 170, bottom: 172, x: 131, y: 161 }
+    ],
+    webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+    webSearchTop: 224
+  }, { query: "cb1668", expectedName: "测试客户" });
+  assert.equal(supportedBareId.status, "selected", "an exact bare ID remains usable when an independent local-contact name anchors the row");
+  assert.equal(supportedBareId.mode, "exact_wechat_id_local_visual");
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [{ text: "cb1668", left: 162, top: 224, right: 240, bottom: 250, x: 201, y: 237 }],
+      webSearchCandidates: [{ text: "搜一搜", left: 88, top: 224, right: 154, bottom: 250, x: 121, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }),
+    { status: "not_found", reason: "exact_search_result_not_found", rule_id: "search-r015", diagnostics: { rule_id: "search-r015", candidate_count: 0, visual_candidate_count: 1, ocr_ok: true } },
+    "a bounded query immediately composing the explicit network row may be ignored"
+  );
+  assert.deepEqual(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [{ text: "cb1668", left: 96, top: 258, right: 174, bottom: 280, x: 135, y: 269 }],
+      webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }),
+    { status: "not_found", reason: "exact_search_result_not_found", rule_id: "search-r015", diagnostics: { rule_id: "search-r015", candidate_count: 0, visual_candidate_count: 1, ocr_ok: true } },
+    "an exact query on the row below the verified web-search header is still a network echo"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop, visualCandidates: [],
+      webSearchCandidates: [{ text: "客户说不要搜一搜", left: 88, top: 160, right: 250, bottom: 184, x: 169, y: 172 }],
+      webSearchTop: 160
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "ordinary OCR text containing a network-search phrase is not a network boundary"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop, visualCandidates: [],
+      webSearchCandidates: [{ text: "搜一搜 other-id", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "a network-search row carrying another query must fail closed"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop, visualCandidates: [],
+      webSearchCandidates: [{ text: "搜一搜 cb1668", left: 330, top: 224, right: 480, bottom: 250, x: 405, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "a web-search boundary outside the OCR crop must fail closed"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop, visualCandidates: [],
+      webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+      webSearchTop: 210
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "a reported boundary inconsistent with its OCR row must fail closed"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [{ text: "微信号：cb1668", left: 340, top: 150, right: 460, bottom: 174, x: 400, y: 162 }],
+      webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "an exact label outside the OCR crop must never authorize a click"
+  );
+  assert.equal(
+    resolveWechatSearchResultObservation({
+      uiaCandidates: [], ocrOk: true,
+      visualCandidates: [{ text: "微信号：cb1668", left: 92, top: 150, right: 218, bottom: 174, x: 155, y: 162 }],
+      webSearchCandidates: [{ text: "搜一搜 cb1668", left: 88, top: 224, right: 250, bottom: 250, x: 169, y: 237 }],
+      webSearchTop: 224
+    }, { query: "cb1668", expectedName: "测试客户" }).status,
+    "unverified",
+    "missing crop bounds must fail closed"
+  );
+  let driverStages = 0;
+  const driverDisplayNameResult = openWechatSearchResult("wxid_abc123", {
+    pid: 11,
+    hWnd: "22",
+    searchIdentity: { expectedName: "张三" },
+    runner: () => {
+      driverStages += 1;
+      return driverStages === 1
+        ? { ok: true, processName: "Weixin", pid: 11, hWnd: "22", inputLeaseTick: 101, searchResultObservation: { uiaCandidates: [{ automationId: "search_item_function_张三", name: "张三", x: 120, y: 180 }] } }
+        : { ok: true, pid: 11, hWnd: "22", exactSearchOpened: true };
+    }
+  });
+  assert.equal(driverDisplayNameResult.ok, true);
+  assert.equal(driverDisplayNameResult.searchResultMode, "unique_local_uia");
+  assert.equal(driverStages, 2, "the real driver path must observe, resolve, then click exactly once");
+  let idSearchClicks = 0;
+  const idSearchResult = openWechatSearchResult("cb1668", {
+    pid: 11, hWnd: "22", searchQueryType: "wechat_id", searchIdentity: { expectedName: "测试客户" },
+    runner: () => ({ ok: true, processName: "Weixin", pid: 11, hWnd: "22", inputLeaseTick: 101, searchResultObservation: {
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [
+        { text: "最常使用", left: 82, top: 100, right: 144, bottom: 118, x: 113, y: 109 },
+        { text: "测式客户", left: 96, top: 142, right: 178, bottom: 160, x: 137, y: 151 },
+        { text: "微倌号码 cbI668", left: 96, top: 184, right: 226, bottom: 204, x: 161, y: 194 }
+      ],
+      webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }], webSearchTop: 224
+    } }),
+    clickRunner: (script) => { idSearchClicks += 1; assert.match(script, /\$headerAfter -ceq \$headerBefore/, "clicks without a conversation change must not authorize sending to the previous chat"); return { ok: true, pid: 11, hWnd: "22", exactSearchOpened: true }; }
+  });
+  assert.equal(idSearchResult.searchResultMode, "unique_local_wechat_id_visual");
+  assert.equal(idSearchResult.searchEvidence.evidence_summary.identity_match, false, "a unique local hit is not an OCR identity match");
+  assert.equal(idSearchResult.searchEvidence.evidence_summary.local_candidate_unique, true);
+  assert.equal(idSearchResult.searchEvidence.visual_candidate_count, 3,
+    "successful task-passport evidence must report the observed OCR candidate count");
+  assert.equal(idSearchResult.searchEvidence.ocr_observation.visual_lines[1].text, "测式客户",
+    "the task passport evidence must retain the original OCR text for successful resolutions");
+  assert.deepEqual(idSearchResult.searchEvidence.ocr_observation.crop_bounds, strictCrop,
+    "the OCR coordinates must retain their source crop for cross-DPI replay");
+  assert.equal(idSearchClicks, 1);
+  let missingDriverStages = 0;
+  const driverMissingResult = openWechatSearchResult("wxid_missing", {
+    pid: 11,
+    hWnd: "22",
+    searchIdentity: { expectedName: "缺失客户" },
+    runner: () => {
+      missingDriverStages += 1;
+      return { ok: true, pid: 11, hWnd: "22", inputLeaseTick: 101, searchResultObservation: {
+        uiaCandidates: [], visualCandidates: [], ocrOk: true, webSearchVisible: true, webSearchTop: 224, cropBounds: strictCrop,
+        webSearchCandidates: [{ text: "搜一搜 wxid_missing", left: 88, top: 224, right: 280, bottom: 250, x: 184, y: 237 }]
+      } };
+    }
+  });
+  assert.equal(driverMissingResult.reason, "exact_search_result_not_found");
+  assert.equal(missingDriverStages, 1, "a confirmed missing result must not reach the click stage");
+  let networkLookupClicks = 0;
+  const networkLookupResult = openWechatSearchResult("huatengcangku", {
+    pid: 11,
+    hWnd: "22",
+    searchIdentity: { expectedName: "华腾仓库" },
+    runner: () => ({ ok: true, processName: "Weixin", pid: 11, hWnd: "22", inputLeaseTick: 101, searchResultObservation: {
+      uiaCandidates: [], ocrOk: true, cropBounds: strictCrop,
+      visualCandidates: [
+        { text: "网络查找微信号：", left: 92, top: 150, right: 220, bottom: 174, x: 156, y: 162 },
+        { text: "huatengcangku", left: 224, top: 150, right: 310, bottom: 174, x: 267, y: 162 }
+      ],
+      webSearchCandidates: [{ text: "搜索网络结果", left: 88, top: 224, right: 220, bottom: 246, x: 154, y: 235 }],
+      webSearchTop: 224
+    } }),
+    clickRunner: () => { networkLookupClicks += 1; return { ok: true }; }
+  });
+  assert.equal(networkLookupResult.ok, false);
+  assert.equal(networkLookupClicks, 0, "the huatengcangku network lookup fixture must be rejected without any click");
+  assert.equal(networkLookupResult.searchEvidence.ocr_observation.visual_lines[0].text, "网络查找微信号：",
+    "denied resolutions must persist the original OCR text instead of only the final rule code");
+  const recoveredLandingMisclick = clickSearchResultDryRun(
+    dir,
+    () => ({
+      ok: false,
+      reason: "wechat_search_network_lookup_misclick",
+      error: "误点网络查找入口，已关闭资料弹窗",
+      landing_recovered: true,
+      poisoned_candidate: { fingerprint: "candidate-fixture", mode: "unique_local_surface_visual" }
+    }),
+    () => [],
+    () => ({ ok: false }),
+    { pid: 11, hWnd: "22" }
+  );
+  assert.equal(recoveredLandingMisclick.blocked_reason, "wechat_search_network_lookup_misclick");
+  assert.equal(recoveredLandingMisclick.landing_recovered, true);
+  assert.equal(recoveredLandingMisclick.poisoned_candidate?.fingerprint, "candidate-fixture");
   const changedWindow = clickSearchResultDryRun(
     dir,
     () => ({ ok: true, pid: 11, hWnd: "99" }),
@@ -1470,6 +2353,22 @@ try {
     inputMessageDryRun(dir, "hello", () => ({ ok: true, draftVerified: false, draftCheck: "wechat_focus_lost_after_paste", draftAttempts: 2 })).blocked_reason,
     "message_input_failed_wechat_focus_lost_after_paste_attempts_2"
   );
+  const inputLeaseFailure = inputMessageDryRun(dir, "hello", () => ({
+    ok: false,
+    reason: "wechat_user_active",
+    safety_diagnostics: {
+      phase: "pre_input",
+      expected_input_tick: 101,
+      current_input_tick: 102,
+      expected_hWnd: 22,
+      foreground_hWnd: 22
+    }
+  }));
+  assert.equal(inputLeaseFailure.blocked_reason, "message_input_failed_wechat_user_active");
+  assert.equal(inputLeaseFailure.send_attempted, false, "an input lease block must prove that no send was attempted");
+  assert.equal(inputLeaseFailure.send_result, "not_attempted");
+  assert.equal(inputLeaseFailure.safety_diagnostics?.phase, "pre_input");
+  assert.equal(inputLeaseFailure.safety_diagnostics?.current_input_tick, 102);
   const inputWithAdaptivePoint = inputMessageDryRun(dir, "hello", () => ({ ok: true, title: "测试客户 - 企业微信", draftVerified: true, draftPoint: { xRatio: 0.65, yRatio: 0.84 } }));
   assert.equal(inputWithAdaptivePoint.state.message_input_done, true);
   assert.deepEqual(inputWithAdaptivePoint.state.message_input_point, { xRatio: 0.65, yRatio: 0.84 });
@@ -1481,6 +2380,22 @@ try {
   assert.equal(send(dir, { dryRun: true, message: "hello" }).state.send_gate_status, "dry_run_passed");
   assert.equal(verifySendResultDryRun(dir, () => ["其他窗口"]).blocked_reason, "post_send_conversation_mismatch");
   assert.equal(verifySendResultDryRun(dir, () => ["测试客户 - 企业微信"]).state.post_send_verified, true);
+  const stateBeforeGenericWechatTitle = loadState(dir);
+  saveState(dir, {
+    ...stateBeforeGenericWechatTitle,
+    conversation_verification_mode: "exact_wechat_id_search",
+    conversation_verified: true,
+    search_result_clicked: true,
+    message_input_done: true,
+    window_pid: 11,
+    window_handle: "22"
+  });
+  assert.equal(
+    verifySendResultDryRun(dir, () => ["微信"]).state.post_send_verified,
+    true,
+    "an exact-ID dry-run session must not fail when Qt exposes only the generic WeChat window title"
+  );
+  saveState(dir, stateBeforeGenericWechatTitle);
   assert.equal((await sendReal(dir, { message: "hello" })).blocked_reason, "real_send_not_armed");
   assert.equal(send(dir, { dryRun: true, message: "hello" }).state.send_gate_status, "dry_run_passed");
   assert.equal(setRealSendArm(dir, true).blocked_reason, "real_send_session_not_verified");
@@ -1550,6 +2465,9 @@ try {
     () => ({ ok: true })
   );
   assert.equal(legacyBubbleResult.blocked_reason, "message_snapshot_unavailable");
+  assert.equal(legacyBubbleResult.send_diagnostics.outcome, "not_attempted");
+  assert.equal(legacyBubbleResult.send_diagnostics.side_effect, "none");
+  assert.equal(legacyBubbleResult.send_diagnostics.failure_stage, "before_send_snapshot");
   assert.equal(legacySendCalls, 0);
 
   const retryDir = path.join(dir, "pre-click-retry");
@@ -1659,6 +2577,68 @@ try {
   assert.equal(draftConsumed.state.post_send_status, "draft_consumed_verified");
   assert.equal(draftConsumed.state.message_bubble_verified, false);
   clearCustomer(dir);
+  fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_confirmation_retry", name: "确认重试客户", wxid: "wxid_confirmation_retry", wechatId: "internal-test-008", wechatAccountId: "internal-account", allowed: true }]), "utf8");
+  selectCustomer(dir, "wxid_confirmation_retry");
+  verifyConversation(dir, "确认重试客户");
+  inputMessageDryRun(dir, "retry confirmation", () => ({ ok: true, draftVerified: true }));
+  send(dir, { dryRun: true, message: "retry confirmation" });
+  verifyRealSendSession(dir, () => ({ ok: true, pid: 18, hWnd: "29", processName: "Weixin", title: "确认重试客户", accountId: "internal-account", accountVerified: true }));
+  setRealSendArm(dir, true);
+  let confirmationAttempts = 0;
+  let sendClickAttempts = 0;
+  let confirmationSessionChecks = 0;
+  const recoveredConfirmation = await sendReal(
+    dir,
+    { message: "retry confirmation", allowRealSend: true, userConfirmed: true },
+    () => {
+      sendClickAttempts += 1;
+      return { ok: true, title: "微信", conversationVerified: true, draftVerified: true, sendAttempted: true };
+    },
+    () => {
+      confirmationSessionChecks += 1;
+      return { ok: true, pid: 18, hWnd: "29", processName: "Weixin", title: "确认重试客户", accountId: "internal-account", accountVerified: true };
+    },
+    (_message, context) => {
+      if (context.phase === "before") return { ok: true, snapshot: { runtimeIds: [], exactCount: 0, draftExact: true } };
+      confirmationAttempts += 1;
+      if (confirmationAttempts === 1) return { ok: false, reason: "input_draft_read_failed", proofDiagnostics: { candidate_count: 0, input_read_ok: false } };
+      return { ok: true, title: "微信", messageText: "retry confirmation", exactMatch: true, outgoing: true, isLatest: true, isNew: true };
+    }
+  );
+  assert.equal(sendClickAttempts, 1, "post-send confirmation recovery must never click send again");
+  assert.equal(confirmationSessionChecks, 2, "a confirmation retry must revalidate the bound account, window and conversation");
+  assert.equal(confirmationAttempts, 2, "a transient post-send proof failure must trigger one read-only confirmation retry");
+  assert.equal(recoveredConfirmation.state.real_send_status, "sent_verified", "a later exact outgoing bubble must recover without another send click");
+  clearCustomer(dir);
+  fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_confirmation_failed", name: "确认失败客户", wxid: "wxid_confirmation_failed", wechatId: "internal-test-009", wechatAccountId: "internal-account", allowed: true }]), "utf8");
+  selectCustomer(dir, "wxid_confirmation_failed");
+  verifyConversation(dir, "确认失败客户");
+  inputMessageDryRun(dir, "failed confirmation", () => ({ ok: true, draftVerified: true }));
+  send(dir, { dryRun: true, message: "failed confirmation" });
+  verifyRealSendSession(dir, () => ({ ok: true, pid: 19, hWnd: "30", processName: "Weixin", title: "确认失败客户", accountId: "internal-account", accountVerified: true }));
+  setRealSendArm(dir, true);
+  let failedConfirmationAttempts = 0;
+  let failedConfirmationSendClicks = 0;
+  const exhaustedConfirmation = await sendReal(
+    dir,
+    { message: "failed confirmation", allowRealSend: true, userConfirmed: true },
+    () => {
+      failedConfirmationSendClicks += 1;
+      return { ok: true, title: "微信", conversationVerified: true, draftVerified: true, sendAttempted: true };
+    },
+    () => ({ ok: true, pid: 19, hWnd: "30", processName: "Weixin", title: "确认失败客户", accountId: "internal-account", accountVerified: true }),
+    (_message, context) => {
+      if (context.phase === "before") return { ok: true, snapshot: { runtimeIds: [], exactCount: 0, draftExact: true } };
+      failedConfirmationAttempts += 1;
+      return { ok: false, reason: "input_draft_read_failed", proofDiagnostics: { candidate_count: 0, input_read_ok: false } };
+    }
+  );
+  assert.equal(failedConfirmationAttempts, 2, "a persistent transient proof failure must exhaust the bounded confirmation retry");
+  assert.equal(failedConfirmationSendClicks, 1, "an exhausted confirmation retry must never click send twice");
+  assert.equal(exhaustedConfirmation.state.real_send_status, "outcome_unknown");
+  assert.equal(exhaustedConfirmation.state.real_send_reason, "input_draft_read_failed");
+  assert.equal(setRealSendArm(dir, true).blocked_reason, "real_send_already_attempted");
+  clearCustomer(dir);
   fs.writeFileSync(path.join(dir, "contacts.json"), JSON.stringify([{ id: "wxid_unknown", name: "未知结果客户", wxid: "wxid_unknown", wechatId: "internal-test-002", wechatAccountId: "internal-account", allowed: true }]), "utf8");
   selectCustomer(dir, "wxid_unknown");
   verifyConversation(dir, "未知结果客户");
@@ -1667,20 +2647,44 @@ try {
   verifyRealSendSession(dir, () => ({ ok: true, pid: 12, hWnd: "23", processName: "Weixin", title: "未知结果客户", accountId: "internal-account", accountVerified: true }));
   setRealSendArm(dir, true);
   const sendTrace = [];
+  let unknownConfirmationAttempts = 0;
   const clickedUnknown = await sendReal(
     dir,
     { message: "second", allowRealSend: true, userConfirmed: true, onDiagnostic: (entry) => sendTrace.push(entry) },
     () => ({ ok: true, conversationVerified: true, draftVerified: true, sendAttempted: true }),
     () => ({ ok: true, pid: 12, hWnd: "23", processName: "Weixin", title: "未知结果客户", accountId: "internal-account", accountVerified: true }),
-    (_message, context) => context.phase === "before"
-      ? { ok: true, snapshot: { lastMessageId: "history-1" } }
-      : { ok: true, messageText: "second", exactMatch: true, outgoing: true, isLatest: true, isNew: false }
+    (_message, context) => {
+      if (context.phase === "before") return { ok: true, snapshot: { lastMessageId: "history-1" } };
+      unknownConfirmationAttempts += 1;
+      return { ok: true, reason: "message_bubble_stale", messageText: "second", exactMatch: true, outgoing: true, isLatest: true, isNew: false };
+    }
   );
+  assert.equal(unknownConfirmationAttempts, 1, "non-transient proof failures must not be retried");
   assert.equal(clickedUnknown.state.real_send_status, "outcome_unknown");
+  assert.equal(clickedUnknown.state.real_send_reason, "message_bubble_stale", "an exhausted confirmation must preserve its concrete proof failure");
   assert.equal(clickedUnknown.send_attempted, true);
   assert.equal(clickedUnknown.state.send_diagnostics.is_new, false);
   assert.equal(require("../../src/shared/wechat-send-diagnostics.cjs").summarizeSendResult(clickedUnknown).is_new, false,
     "Final main-process diagnostics must preserve proof saved inside the execution state");
+  const inputReadFailure = require("../../src/shared/wechat-send-diagnostics.cjs").summarizeSendResult({
+    ok: false,
+    proofDiagnostics: {
+      input_read_reason: "input_draft_read_failed:clipboard_sentinel_write",
+      input_read_exception_type: "System.Runtime.InteropServices.ExternalException",
+      input_read_exception_id: "Clipboard.SetDataObject",
+      input_read_exception_hresult: "hresult_800401D0",
+      input_read_exception_category: "NotSpecified",
+      clipboard_write_attempts: 5
+    }
+  });
+  assert.equal(inputReadFailure.input_read_exception_hresult, "hresult_800401D0",
+    "content-free clipboard exception fingerprints must survive send-result summarization");
+  assert.equal(inputReadFailure.clipboard_write_attempts, 5);
+  const nestedFailureStage = require("../../src/shared/wechat-send-diagnostics.cjs").summarizeSendResult({
+    ok: false,
+    send_diagnostics: { failure_stage: "before_send_snapshot", reason: "input_draft_read_failed" }
+  });
+  assert.equal(nestedFailureStage.failure_stage, "before_send_snapshot", "contact-level summaries must retain the lower-level failure stage");
   const confirmation = sendTrace.find((entry) => entry.stage === "after_send_confirmation" && entry.phase === "finish");
   assert.equal(confirmation.exact_match, true);
   assert.equal(confirmation.is_new, false, "A visible old bubble must remain distinguishable from a new outgoing one");
@@ -1798,7 +2802,8 @@ try {
   const messageDraftSource = driverSource.split("const MESSAGE_DRAFT_SCRIPT = `")[1].split("`;")[0];
   const searchSource = driverSource.split("const SEARCH_SCRIPT = `")[1].split("`;")[0];
   const developmentDriverSource = fs.readFileSync(path.join(__dirname, "wechat_window_driver.dev.cjs"), "utf8");
-  const sendMessageSource = developmentDriverSource.split("const SEND_MESSAGE_SCRIPT = `")[1].split("`;")[0];
+  const sendMessageSource = require("./wechat_window_driver.dev.cjs").SEND_MESSAGE_SCRIPT;
+  const messageBubbleSource = developmentDriverSource.split("const MESSAGE_BUBBLE_PROOF_SCRIPT = `")[1].split("`;\n\nfunction verifyWechatMessageBubble")[0];
   const observeConversationSource = developmentDriverSource.split("const OBSERVE_CONVERSATION_SCRIPT = `")[1].split("`;")[0];
   const clickSendSource = developmentDriverSource.split("function clickWechatSendButton")[1].split("const DETECT_ACTIVE_ACCOUNT_SCRIPT")[0];
   const bubbleVerifierSource = developmentDriverSource.split("function verifyWechatMessageBubble")[1].split("module.exports")[0];
@@ -1826,17 +2831,40 @@ try {
   assert.match(messageDraftSource, /function Restore-DraftClipboardIfOwned/);
   assert.match(messageDraftSource, /\$currentClipboard -ceq \[string\]\$script:draftOwnedClipboardValue/);
   assert.match(messageDraftSource, /function Rebase-ExactDraftInputLease/);
+  assert.match(messageDraftSource, /function Set-DraftInputPhase[\s\S]*phase = \[string\]\$script:draftInputPhase/);
+  assert.match(messageDraftSource, /Set-DraftInputPhase "pre_input"[\s\S]*Set-DraftInputPhase "after_input_click"[\s\S]*Set-DraftInputPhase "typing"[\s\S]*Set-DraftInputPhase "after_paste"/);
+  assert.match(messageDraftSource, /safety_diagnostics = \$safety/);
   assert.match(messageDraftSource, /\$script:draftInputLeaseActive -and \[Win32WechatMessageDraft\]::GetLastInputTick\(\) -ne \$script:draftInputLeaseTick/);
-  assert.match(messageDraftSource, /ContainsImage\(\)[\s\S]*ContainsFileDropList\(\)[\s\S]*wechat_clipboard_restore_unsupported/);
-  assert.match(messageDraftSource, /draftOldClipboardKind -eq "empty"[\s\S]*Clipboard\]::Clear\(\)/);
+  assert.match(messageDraftSource, /Get-WechatClipboardSnapshot/);
+  assert.match(messageDraftSource, /Restore-WechatClipboardSnapshot \$script:draftOldClipboard/);
   assert.doesNotMatch(messageDraftSource, /try \{ Set-Clipboard -Value \$oldClipboard \} catch \{\}/);
-  assert.match(searchSource, /function Restore-SearchClipboardIfOwned/);
-  assert.match(searchSource, /\$currentClipboard -ceq \[string\]\$script:clipboardOwnedValue/);
+  assert.match(messageBubbleSource, /Get-WechatClipboardSnapshot/, "message proof must preserve non-text clipboard data before reading the draft");
+  assert.match(messageBubbleSource, /Restore-WechatClipboardSnapshot \$oldClipboard/, "message proof must restore the original clipboard snapshot after reading the draft");
+  assert.match(developmentDriverSource, /const CLIPBOARD_TEXT_RETRY_POWERSHELL[\s\S]*Set-Clipboard -Value \$value -ErrorAction Stop/);
+  assert.match(messageBubbleSource, /\$\{CLIPBOARD_TEXT_RETRY_POWERSHELL\}[\s\S]*Set-XiaoxiClipboardTextWithRetry \$sentinel[\s\S]*Get-Clipboard -Raw -ErrorAction Stop/,
+    "message proof must use the retrying PowerShell clipboard path before reading the draft");
+  assert.match(messageBubbleSource, /Set-XiaoxiClipboardTextWithRetry \$sentinel/);
+  assert.match(developmentDriverSource, /hresult_800401D0/);
+  assert.match(sendMessageSource, /function Set-XiaoxiClipboardTextWithRetry[\s\S]*Set-XiaoxiClipboardTextWithRetry \$probe/,
+    "the final pre-click draft check must recover from the same transient clipboard contention");
+  assert.match(sendMessageSource, /try \{\s*Set-XiaoxiClipboardTextWithRetry \$probe[\s\S]*input_read_reason = "input_draft_read_failed:clipboard_sentinel_write"/,
+    "exhausted clipboard retries must still return a structured not-attempted result");
+  assert.doesNotMatch(messageBubbleSource, /Clipboard\]::SetDataObject\(\$sentinelData/,
+    "message proof must not switch to the incompatible WinForms sentinel writer");
+  assert.doesNotMatch(messageBubbleSource, /Set-Clipboard -Value \$oldClipboard/, "message proof must not collapse the original clipboard to plain text");
+  assert.match(messageBubbleSource, /function New-InputDraftFailure[\s\S]*input_read_reason = \("\{0\}:\{1\}" -f \$reason, \$stage\)/,
+    "draft-read failures must retain the precise failing substage without recording clipboard content");
+  assert.match(messageBubbleSource, /input_read_exception_type[\s\S]*input_read_exception_id[\s\S]*input_read_exception_hresult[\s\S]*input_read_exception_category/,
+    "draft-read failures must retain a content-free PowerShell exception fingerprint");
+  assert.match(messageBubbleSource, /if \(-not \$draftBefore\.ok\)[\s\S]*proofDiagnostics = @\{[\s\S]*input_read_reason = \[string\]\$draftBefore\.proofDiagnostics\.input_read_reason/,
+    "before-send snapshot failures must expose the safe draft-read substage to diagnostics");
+  assert.match(searchSource, /public static bool AtomicUnicodeText\(string text\)/);
+  assert.match(searchSource, /SendInput\(\(uint\)inputs\.Length, inputs, Marshal\.SizeOf\(typeof\(INPUT\)\)\)/);
+  assert.match(searchSource, /AtomicUnicodeText\(\$query\)/);
   assert.match(searchSource, /function Rebase-ExactSearchInputLease/);
-  assert.match(searchSource, /\$script:inputLeaseActive -and \[Win32WechatWindowSearch\]::GetLastInputTick\(\) -ne \$script:inputLeaseTick/);
-  assert.match(searchSource, /ContainsImage\(\)[\s\S]*ContainsFileDropList\(\)[\s\S]*wechat_clipboard_restore_unsupported/);
-  assert.match(searchSource, /oldClipboardKind -eq "empty"[\s\S]*Clipboard\]::Clear\(\)/);
-  assert.doesNotMatch(searchSource, /try \{ Set-Clipboard -Value \$oldClipboard \} catch \{\}/);
+  assert.match(searchSource, /if \(\$script:inputLeaseActive\) \{[\s\S]*GetLastInputTick\(\)[\s\S]*Stop-SearchForExternalInput/);
+  assert.doesNotMatch(searchSource, /Get-WechatClipboardSnapshot/);
+  assert.doesNotMatch(searchSource, /Set-Clipboard -Value \$query/);
   assert.match(developmentDriverSource, /function clickWechatSendButton/);
   assert.match(developmentDriverSource, /atomic_conversation_changed/);
   assert.match(developmentDriverSource, /atomic_draft_changed/);
@@ -1870,7 +2898,7 @@ try {
   assert.match(sendMessageSource, /Get-ComposerObservation[\s\S]*atomic_composer_not_verified[\s\S]*\$composerAfterDraft = Get-ComposerObservation/);
   assert.match(sendMessageSource, /GetClassName\(\$pointWindow[\s\S]*MMUIRender[\s\S]*visual_render_composer/, "visual-header sends must prove the composer through the owned MMUI render child when UIA exposes no editor node");
   assert.match(sendMessageSource, /StartsWith\("Qt"[\s\S]*EndsWith\("QWindowIcon"[\s\S]*visual_qt_root_composer/, "current WeChat Qt roots must be accepted without a cross-language regex escape hazard");
-  assert.match(sendMessageSource, /composer:v1:win32:\\\$\{pointClassName\}:/, "PowerShell variables followed by a colon must use braced interpolation without triggering JavaScript interpolation");
+  assert.match(sendMessageSource, /composer:v1:win32:\$\{pointClassName\}:/, "The rendered PowerShell must preserve braced variables before a colon");
   assert.equal((sendMessageSource.match(/\$headerLeft = .*Width \* 0\.36/g) || []).length, 1, "the atomic-send observation must exclude the mutable session-list draft preview");
   assert.equal((developmentDriverSource.match(/\$headerLeft = .*Width \* 0\.36/g) || []).length, 2, "both visual conversation observations must use the stable chat-header region");
   assert.match(observeConversationSource, /IsWindow\(\$expectedHWnd\)[\s\S]*IsWindowVisible\(\$expectedHWnd\)[\s\S]*GetWindowThreadProcessId\(\$expectedHWnd/, "session refresh must validate the exact visible HWND and owning PID");
@@ -1919,6 +2947,8 @@ try {
   assert.match(developmentDriverSource, /draftExact/);
   assert.match(developmentDriverSource, /draftConsumed/);
   assert.match(developmentDriverSource, /elseif \(\$draftConsumed\) \{ "draft_consumed" \}/);
+  assert.match(messageBubbleSource, /reason = \$verificationReason/,
+    "post-send proof must preserve the concrete draft or bubble verification failure");
   assert.doesNotMatch(bubbleVerifierSource, /MainWindowHandle|MainWindowTitle\s*-ne|automation_root_missing/, "post-send proof must bind the expected HWND directly and retain clipboard fallback when UIA is empty");
   assert.match(developmentDriverSource, /XIAOXI_INPUT_X_RATIO/);
   assert.match(developmentDriverSource, /XIAOXI_INPUT_Y_RATIO/);
@@ -2010,6 +3040,8 @@ try {
   const sharedTransactionSource = fs.readFileSync(path.join(__dirname, "state_machine.dev.cjs"), "utf8");
   assert.match(sharedTransactionSource, /async function executeVerifiedContactSend/);
   assert.match(sharedTransactionSource, /async function sendReal[\s\S]*clickWechatSendButtonAsync[\s\S]*verifyWechatCurrentConversationAsync[\s\S]*verifyWechatMessageBubbleAsync/);
+  assert.match(sharedTransactionSource, /post_send_session_recheck_failed/,
+    "post-send session recheck exceptions must remain distinguishable from message proof failures");
   assert.match(sharedTransactionSource, /async function executeVerifiedFileHelperSend[\s\S]*openWechatSearchResultAsync[\s\S]*inputWechatMessageDraftAsync/);
   assert.match(driverSource, /function openWechatSearchResultAsync[\s\S]*runPowerShellAsync/);
   assert.match(driverSource, /function verifyWechatCurrentConversation\([^]*?context\.expectedPid \?\? context\.pid[^]*?\{ ensure: false \}/u);
@@ -2047,8 +3079,9 @@ try {
   assert.match(normalizerSource, /\$classRank = if \(\$className -ieq "mmui::MainWindow"\)/);
   assert.match(normalizerSource, /\$layoutRank = if \(\$w -ge 720[\s\S]*\$aspectRatio -ge 1\.15\)/);
   assert.match(normalizerSource, /\$styleRank = 0[\s\S]*0x00040000[\s\S]*0x00080000[\s\S]*0x00000080/);
-  assert.match(normalizerSource, /Sort-Object -Property \$sortRules/);
-  assert.match(normalizerSource, /\$_.classRank -eq \$best.classRank[\s\S]*\$_.layoutRank -eq \$best.layoutRank[\s\S]*\$_.styleRank -eq \$best.styleRank[\s\S]*\$_.area -eq \[int64\]\$best.area/);
+  assert.match(normalizerSource, /Test-WechatMainCandidate \$_/, "candidate selection must use main-shell evidence");
+  assert.doesNotMatch(normalizerSource, /Sort-Object -Property \$sortRules/, "multiple main candidates remain ambiguous rather than winning by window size");
+  assert.doesNotMatch(normalizerSource, /Get-Process -Id \$windowProcessId/, "desktop window enumeration must reuse the WeChat PID snapshot");
   assert.doesNotMatch(normalizerSource, /Sort-Object area -Descending/, "area alone must not select among unrelated WeChat top-level windows");
   assert.doesNotMatch(normalizerSource, /reason = "wechat_focus_failed"/, "successful window identity and layout must not fail merely because Windows refused foreground activation");
   assert.match(normalizerSource, /focused = \[bool\]\$focused/);
@@ -2062,8 +3095,8 @@ try {
   );
   assert.match(
     normalizerSource,
-    /if \(\$wasIconic\) \{[\s\S]*ShowWindowAsync\(\$hWnd, 9\)[\s\S]*elseif \(-not \(Request-PersonalWechatActivation \$matched\)\)/u,
-    "raw Win32 restore must be limited to a genuinely minimized window"
+    /if \(\$wasIconic\) \{[\s\S]*ShowWindowAsync\(\$hWnd, 9\)[\s\S]*elseif \(-not \$nativeActivationRequested\) \{[\s\S]*if \(-not \(Request-PersonalWechatActivation \$matched\)\)/u,
+    "raw Win32 restore must be limited to a genuinely minimized window and must not duplicate native activation"
   );
   assert.match(normalizerSource, /\$restoredMainLayout = [\s\S]*IsWindowVisible\(\$hWnd\)[\s\S]*-not \[Win32WechatWindow\]::IsIconic\(\$hWnd\)[\s\S]*-ge 600[\s\S]*-ge 500/);
 
@@ -2118,11 +3151,13 @@ try {
     timeout: 10,
     terminationGraceMs: 250,
     diagnostics: true,
+    windowDiagnostics: true,
     spawnProcess: () => {
       diagnosedTimeoutChild = fakePowerShellChild();
       return diagnosedTimeoutChild;
     }
   });
+  diagnosedTimeoutChild.stderr.emit("data", 'wechat_window_diagnostic:{"window_stage":"enumerate","window_compile_ms":120,"window_process_count":2,"message":"private-window-text","stderr":"private-path"}\nimage_send_stage:inline_draft_verification\nimage_clipboard_operation:draft_sentinel_write\n');
   await new Promise((resolve) => setTimeout(resolve, 30));
   diagnosedTimeoutChild.emit("close", null);
   const diagnosedTimeoutResult = await diagnosedTimeout;
@@ -2131,6 +3166,12 @@ try {
   assert.equal(diagnosedTimeoutResult.diagnostics.termination_reason, "powershell_timeout");
   assert.equal(diagnosedTimeoutResult.diagnostics.kill_accepted, true);
   assert.equal(diagnosedTimeoutResult.diagnostics.elapsed_ms >= 10, true);
+  assert.equal(diagnosedTimeoutResult.diagnostics.window_stage, "enumerate", "timeouts must retain the last completed diagnostic breadcrumb");
+  assert.equal(diagnosedTimeoutResult.diagnostics.window_compile_ms, 120);
+  assert.equal(diagnosedTimeoutResult.diagnostics.window_process_count, 2);
+  assert.equal(diagnosedTimeoutResult.diagnostics.image_stage, "inline_draft_verification", "image timeouts must retain the last entered driver stage");
+  assert.equal(diagnosedTimeoutResult.diagnostics.image_clipboard_operation, "draft_sentinel_write", "image timeouts must retain the last fixed clipboard operation token");
+  assert.doesNotMatch(JSON.stringify(diagnosedTimeoutResult), /private-window-text|private-path/);
 
   let abortedChild;
   let abortedSettled = false;
@@ -2238,3 +3279,7 @@ try {
   console.error(error);
   process.exitCode = 1;
 });
+
+require("./wechat_clipboard.self_check.cjs");
+require("./wechat_search_observation.self_check.cjs");
+require("./wechat_search_input.self_check.cjs");

@@ -2,6 +2,7 @@ import json
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 import time
 import hashlib
@@ -13,6 +14,79 @@ from service import Handler, Server, Store, validate_report, safe_token
 from feedback import validate_feedback
 
 class ServiceTest(unittest.TestCase):
+    def test_input_diagnostics_survive_report_and_feedback_without_raw_input(self):
+        details = {"input_phase": "search_query_input", "expected_input_tick": 4294967295,
+                   "current_input_tick": 4294967296, "required_idle_ms": 450,
+                   "observed_idle_ms": 600, "expected_hWnd": 9007199254740991,
+                   "foreground_hWnd": 123456789}
+        client = {"schema": 1, "appId": "com.aihuoke.desktop.test", "channel": "test",
+                  "installId": "12345678-1234-1234-1234-123456789012", "version": "1.1.27",
+                  "platform": "win32", "arch": "x64"}
+        entry = {"id": "a" * 64, "ts": "2026-09-14T14:00:00.000Z", "level": "warn",
+                 "module": "touch", "event": "workflow_contact_send.failed",
+                 "details": {**details, "query": "private", "keyCode": 65, "mouse_x": 100}}
+        report = validate_report({**client, "entries": [entry]})
+        self.assertEqual(report["entries"][0]["details"], details)
+        feedback, _ = validate_feedback({"schema": 2,
+            "id": "12345678-1234-1234-1234-123456789013", "receiptToken": "b" * 64,
+            "createdAt": entry["ts"], "category": "problem", "text": "input check",
+            "client": client, "visibility": "private", "diagnostics": [entry]}, validate_report, safe_token)
+        self.assertEqual(feedback["diagnostics"][0]["details"], details)
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            store.insert(report)
+            with store.connect() as db:
+                stored = json.loads(db.execute("SELECT body FROM reports WHERE id=?", (entry["id"],)).fetchone()[0])
+            self.assertEqual(stored["entries"][0]["details"], details)
+        for invalid in (-1, True, "123", 1.5, 9007199254740992):
+            entry["details"] = {key: invalid for key in details}
+            self.assertEqual(validate_report({**client, "entries": [entry]})["entries"][0]["details"], {})
+        entry["details"] = {"input_phase": "private_search_query"}
+        self.assertEqual(validate_report({**client, "entries": [entry]})["entries"][0]["details"], {})
+
+    def test_provider_gateway_rate_limit_identifies_maintenance_scope(self):
+        server = Server(("127.0.0.1", 0), Handler, None)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            minute = int(time.time() / 60)
+            server.rates["global"] = (minute, 300)
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{server.server_port}/v1/provider-gateway/health"
+                )
+            self.assertEqual(error.exception.code, 429)
+            self.assertEqual(
+                error.exception.headers.get("X-Xiaoxi-Error-Origin"),
+                "maintenance_rate_limit",
+            )
+            payload = json.loads(error.exception.read())
+            self.assertEqual(payload, {"error": "rate_limit", "scope": "global"})
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_feedback_preserves_client_phase_diagnostics(self):
+        details = {"moments_stage": "stability_wait", "moments_first_candidates_ms": 4200,
+                   "moments_stability_wait_ms": 180, "moments_discover_scan_ms": 240,
+                   "moments_discover_candidate_count": 4, "moments_discover_match_count": 1,
+                   "capture_mode": "foreground_screen", "scan_mode": "scan_driver", "trigger_code": "poll",
+                   "scan_ms": 530, "capture_attempts": 2, "last_verification_reason": "moments_publish_visible_anchor_missing",
+                   "verification_attempts": 2, "verification_elapsed_ms": 19936, "verification_capture_ms": 32,
+                   "verification_ocr_ms": 450, "verification_candidates_ms": 630, "verification_feed_ocr_ms": 150,
+                   "verification_post_count": 1, "verification_text_length": 30, "verification_anchor_present": False,
+                   "header_state": "unresolved", "header_candidate_count": 0,
+                   "header_recovery_attempted": True, "header_recovery_ok": False}
+        client = {"schema": 1, "appId": "com.aihuoke.desktop.test", "channel": "test",
+                  "installId": "12345678-1234-1234-1234-123456789012", "version": "1.1.13", "platform": "win32", "arch": "x64"}
+        entry = {"id": "a" * 64, "ts": "2026-09-10T05:11:52.197Z", "level": "warn", "module": "moments",
+                 "event": "campaign.observation_finished", "details": {**details, "messageText": "private",
+                 "moments_unknown_ms": 7, "verification_secret": "private", "moments_second_candidates_ms": -1}}
+        body = {"schema": 2, "id": "12345678-1234-1234-1234-123456789013", "receiptToken": "b" * 64,
+                "createdAt": entry["ts"], "category": "problem", "text": "timeout", "client": client,
+                "visibility": "private", "diagnostics": [entry]}
+        clean, _ = validate_feedback(body, validate_report, safe_token)
+        self.assertEqual(clean["diagnostics"][0]["details"], details)
+
     def test_feedback_receipt_access_retention_and_admin_status(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(directory)
@@ -169,6 +243,8 @@ class ServiceTest(unittest.TestCase):
             try:
                 report["entries"][0]["details"].update(stage="capture_timeout_wx_hook", wx_hook_stage="init_failed", helper_configured=True, wechat_exe_configured=True, wechat_root_configured=False)
                 report["entries"][0]["details"].update(wechat_version="4.1.3.12", stop_verified=False, send_attempted=None, is_new=False, input_empty=True, elapsed_ms=1234, candidate_count=0, messageText="never-store-proof-text")
+                window_details = {"window_stage": "recover", "window_class_code": "mmui::MainWindow", "window_candidate_count": 2, "window_recovery_candidate_count": 1, "window_recovery_main_count": 0, "window_compile_ms": 200, "window_recovery_attempted": True, "window_recovery_succeeded": False, "window_recover_ms": 300, "window_total_ms": 20001, "moments_stage": "first_candidates", "moments_elapsed_ms": 30000, "moments_timeout_ms": 30000}
+                report["entries"][0]["details"].update(window_details, window_title="never-store-window-title")
                 for _ in range(2):
                     request = urllib.request.Request(origin + "/v1/reports", json.dumps(report).encode(), {"Content-Type": "application/json"})
                     with urllib.request.urlopen(request) as response:
@@ -177,7 +253,7 @@ class ServiceTest(unittest.TestCase):
                 self.assertEqual(len(overview["reports"]), 1)
                 self.assertNotIn("never-store", json.dumps(overview))
                 self.assertNotIn("customer content", json.dumps(overview))
-                self.assertEqual(overview["reports"][0]["entries"][0]["details"], {"stage": "capture_timeout_wx_hook", "wx_hook_stage": "init_failed", "helper_configured": True, "wechat_exe_configured": True, "wechat_root_configured": False, "wechat_version": "4.1.3.12", "stop_verified": False, "send_attempted": None, "is_new": False, "input_empty": True, "elapsed_ms": 1234, "candidate_count": 0})
+                self.assertEqual(overview["reports"][0]["entries"][0]["details"], {"stage": "capture_timeout_wx_hook", "wx_hook_stage": "init_failed", "helper_configured": True, "wechat_exe_configured": True, "wechat_root_configured": False, "wechat_version": "4.1.3.12", "stop_verified": False, "send_attempted": None, "is_new": False, "input_empty": True, "elapsed_ms": 1234, "candidate_count": 0, **window_details})
                 self.assertNotIn("never-store-proof-text", json.dumps(overview))
                 self.assertEqual(overview["issues"][0]["occurrences"], 1)
                 issue_id = overview["issues"][0]["id"]
