@@ -24,8 +24,18 @@ function gitDiff(base) {
   const paths = ["desktop/rpa/active_touch", "desktop/src/main", "desktop/src/shared", ":(exclude)**/*.self_check.cjs"];
   const cwd = require("node:path").resolve(__dirname, "../..");
   const run = (args) => {
-    const result = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true });
-    if (result.status !== 0) throw new Error(result.stderr || "git diff failed");
+    // A pull request against an older base can legitimately produce more than
+    // Node's 1 MiB spawnSync default. Keep the policy gate intact for that full
+    // diff instead of failing before the added reason codes can be inspected.
+    const result = spawnSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      windowsHide: true,
+      maxBuffer: 16 * 1024 * 1024
+    });
+    if (result.status !== 0) {
+      throw new Error(result.stderr || result.error?.message || `git ${args.join(" ")} exited with status ${result.status}`);
+    }
     return result.stdout;
   };
   if (base) return run(["diff", base, "--", ...paths]);
