@@ -22,7 +22,13 @@ export type Batch = {
   direction?: { audience?: string; pain_point?: string; angle?: string };
   music_selections?: { candidate_id: string; track_id: string; display_name?: string }[];
   updated_at: string; created_at?: string;
-  activity?: { message: string; started_at: string; completed: number | null; total: number | null };
+  activity?: {
+    message: string; started_at: string; completed: number | null; total: number | null;
+    phase?: "analysis" | "script" | "production" | "finalizing" | "complete" | "working";
+    phase_label?: string; overall_percent?: number | null; phase_percent?: number | null;
+    item_index?: number | null; item_total?: number | null; item_name?: string | null;
+    heartbeat_at?: string;
+  };
   stage_times?: { action: string; started_at: string; finished_at: string | null }[];
   planning_recovery_available?: boolean;
   planning_checkpoint?: { stage: string; completed: number; total: number };

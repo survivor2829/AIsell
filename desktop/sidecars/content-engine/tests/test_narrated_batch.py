@@ -11,7 +11,7 @@ from content_engine.narrated_batch import (
     reported_speech_context, reported_speech_cache_key, compact_claim_segment,
     closing_action_cache_key,
     compact_claim_semantics, semantic_review_cache_key,
-    typed_visual_review_cache_key, visual_findings_error,
+    typed_visual_review_cache_key, visual_findings_error, normalize_confirmed_user_visual_findings,
 )
 from content_engine.errors import ContentEngineError
 from content_engine.creative_analysis import DashScopeMediaClient
@@ -182,18 +182,32 @@ class NarratedBatchTests(unittest.TestCase):
             "groups": {"opening": ["asset-v2"], "middle": [], "ending": []},
         }
         activities = []
-        with patch.object(domain, "_activity", side_effect=lambda _batch, message, completed=None, total=None:
-                          activities.append((message, completed, total))), \
+
+        def analyze(_task_id, _asset_id, _profile, *, progress_callback=None, **_kwargs):
+            self.assertIn("_analysis_inflight", batch)
+            self.assertNotIn("_planning_inflight", batch)
+            progress_callback("正在检查画面质量", 50)
+            self.assertNotIn("_planning_inflight", batch)
+            progress_callback("正在识别原声", 78)
+            self.assertIn("_planning_inflight", batch)
+            return "test-analysis-v1"
+
+        with patch.object(domain, "_activity", side_effect=lambda _batch, message, completed=None, total=None, **details:
+                          activities.append((message, completed, total, details))), \
                 patch.object(domain.d, "_auto_mix_asset_snapshots", return_value=[]), \
                 patch.object(domain.d, "_auto_mix_v2_analysis_profile", return_value={}), \
                 patch.object(domain.d, "_asset_row", return_value={"id": "asset-v2", "display_name": "测试素材.mp4"}), \
-                patch.object(domain.d, "_analyze_asset", return_value="test-analysis-v1"), \
+                patch.object(domain.d, "_analyze_asset", side_effect=analyze), \
                 patch.object(domain.d, "_auto_mix_asset_cards", return_value=[]), \
                 patch.object(domain.d, "_should_stop", return_value=False), \
                 patch.object(domain, "_store"):
             domain._analysis("task-progress", batch)
-        self.assertEqual(("正在理解素材：测试素材.mp4", 0, 1), activities[0])
-        self.assertEqual(("正在理解素材：测试素材.mp4", 1, 1), activities[1])
+        self.assertEqual(("正在理解素材：测试素材.mp4", 0, 1), activities[0][:3])
+        self.assertEqual("analysis", activities[0][3]["phase"])
+        self.assertEqual(0, activities[0][3]["overall_percent"])
+        self.assertEqual(1, activities[0][3]["item_index"])
+        self.assertEqual(("正在理解素材：测试素材.mp4", 1, 1), activities[-1][:3])
+        self.assertEqual(45, activities[-1][3]["overall_percent"])
 
     def test_script_options_do_not_render_and_confirmed_first_precedes_batch_variations(self):
         events = []
@@ -668,8 +682,10 @@ class NarratedBatchTests(unittest.TestCase):
                          "已知失败清除在途标记时不能残留旧请求说明")
         known_state["_planning_budget"] = {"status": "running", "started_at_epoch": 0,
             "max_elapsed_seconds": 1200, "cloud_calls": 0, "max_cloud_calls": 24}
+        domain._admit_request(known_state, {"kind": "llm"}, preflight=True)
+        known_state["_planning_budget"]["cloud_calls"] = 24
         with self.assertRaises(ContentEngineError) as exhausted:
-            domain._cloud({"expired_budget": True}, "不应发起预算外调用")
+            domain._admit_request(known_state, {"kind": "llm"}, preflight=True)
         self.assertEqual("narrated_planning_budget_exhausted", exhausted.exception.code)
         self.assertEqual("needs_attention", domain._load(known_batch["batch_id"])["status"])
         self.assertNotIn("_planning_inflight", known_state)
@@ -1567,6 +1583,32 @@ class NarratedBatchTests(unittest.TestCase):
 
 
 class ReportedSpeechContextTests(unittest.TestCase):
+    def test_confirmed_user_business_facts_need_relevant_visuals_not_pixel_proof(self):
+        candidate = {'candidate_id': 'candidate', '_user_supplied': True, 'title': '机器人实训',
+            'shots': [{'segment_id': 'shot-1'}],
+            'phrases': [{'text': '10月1日起报名费是1380元。', 'shot_ids': ['shot-1']}]}
+        response = {'accepted': False, 'quality_score': .8,
+            'unsupported_claims': ['10月1日起报名费是1380元。'],
+            'findings': [{'type': 'unsupported_fact', 'quote': '10月1日起报名费是1380元。',
+                'fact_quote': '不是原句里的逐字片段', 'shot_ids': ['shot-1'],
+                'source': 'missing_source', 'reason': '画面没有显示价格。'}]}
+        normalized = normalize_confirmed_user_visual_findings(candidate, response)
+        self.assertIsNone(visual_findings_error(candidate, normalized))
+        self.assertTrue(normalized['accepted'])
+        self.assertEqual([], normalized['unsupported_claims'])
+        self.assertEqual('editorial', normalized['findings'][0]['type'])
+        self.assertNotIn('fact_quote', normalized['findings'][0])
+        self.assertFalse(response['accepted'])
+
+        contradiction = {'accepted': False, 'quality_score': .8,
+            'unsupported_claims': ['10月1日起报名费是1380元。'],
+            'findings': [{'type': 'visual_contradiction', 'quote': '10月1日起报名费是1380元。',
+                'fact_quote': '报名费是1380元', 'shot_ids': ['shot-1'], 'source': 'frames',
+                'reason': '画面明确显示另一价格。'}]}
+        normalized = normalize_confirmed_user_visual_findings(candidate, contradiction)
+        self.assertIsNone(visual_findings_error(candidate, normalized))
+        self.assertFalse(normalized['accepted'])
+
     def test_typed_visual_findings_preserve_embedded_facts_and_separate_editorial_notes(self):
         import copy
         candidate = {'candidate_id': 'candidate', 'title': '设备培训',

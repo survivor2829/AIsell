@@ -551,12 +551,12 @@ export function CreativeStudioPage({
             <div className={`studio-system-row ${bailianReady ? "is-ready" : "is-warning"}`}>
               <span className="studio-system-icon">{bailianReady ? <CircleCheck size={18} /> : <KeyRound size={18} />}</span>
               <div>
-                <strong>火山方舟 · 画面与文案</strong>
+                <strong>云端智能服务 · 画面与文案</strong>
                 <p>{bailianError || (bailianReady
-                  ? `已配置 ${bailianStatus?.maskedKey || "API Key"}`
+                  ? "服务可用，客户无需配置密钥。"
                   : bailianStatus?.configured
-                    ? "API Key 已配置，但 Windows 安全存储当前不可用。"
-                    : "未配置：文案和语义分析暂不可用，本地素材仍可管理。")}</p>
+                    ? "云端服务暂不可用，文案和语义分析会保留当前进度。"
+                    : "云端服务暂不可用，本地素材仍可管理。")}</p>
               </div>
             </div>
           </div>

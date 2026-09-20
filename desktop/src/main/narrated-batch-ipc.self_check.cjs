@@ -80,6 +80,15 @@ async function main() {
   })).code, "narrated_planning_confirmation_required");
   const result = publicBatch({ batch_id: batchId, absolute_path: "C:\\private\\input.mp4", candidates: [{ title: "video", _tracks: {}, shots: [{ asset_id: assetId, source_path: "C:\\private\\input.mp4" }] }] });
   assert.equal(JSON.stringify(result).includes("private"), false);
+  assert.deepEqual(publicBatch({ activity: {
+    phase: "analysis", phase_label: "素材理解", overall_percent: 23, phase_percent: 51,
+    item_index: 2, item_total: 4, item_name: "课程录像.mp4",
+    heartbeat_at: "2026-09-20T10:00:00.000Z", private_detail: "must-not-leak"
+  } }).activity, {
+    phase: "analysis", phase_label: "素材理解", overall_percent: 23, phase_percent: 51,
+    item_index: 2, item_total: 4, item_name: "课程录像.mp4",
+    heartbeat_at: "2026-09-20T10:00:00.000Z"
+  });
   const scriptId = `narrated_candidate_${"c".repeat(32)}`;
   const confirm = (payload) => handlers.get(CHANNELS.confirm)({ sender }, payload);
   const confirmedResult = await confirm({ batch_id: batchId, script_id: scriptId, revision: 2, clickToken: `${CHANNELS.confirm}:${randomUUID()}` });

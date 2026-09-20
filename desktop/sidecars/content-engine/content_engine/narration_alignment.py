@@ -209,6 +209,49 @@ def sentence_shot_budgets(phrase, audio, segments, pause_ms):
     return result if cursor == len(segments) else None
 
 
+def _caption_width(text):
+    return sum(0.55 if ord(char) < 128 else 1 for char in text if not char.isspace())
+
+
+def _audio_proportional_caption_units(text, start_ms, end_ms, max_width):
+    """Split long copy while keeping the measured phrase audio boundaries."""
+    clauses = re.findall(r"[^，。！？；,!?;]+[，。！？；,!?;]*", str(text or ""))
+    chunks, current = [], ""
+    for clause in clauses:
+        if current and _caption_width(current + clause) > max_width:
+            chunks.append(current)
+            current = ""
+        while _caption_width(clause) > max_width:
+            take, width = 0, 0.0
+            for index, char in enumerate(clause):
+                next_width = width + (0 if char.isspace() else 0.55 if ord(char) < 128 else 1)
+                if index and next_width > max_width:
+                    break
+                take, width = index + 1, next_width
+            chunks.append(clause[:take])
+            clause = clause[take:]
+        current += clause
+    if current:
+        chunks.append(current)
+    if not chunks or "".join(chunks) != text:
+        return []
+    start_ms, end_ms = int(start_ms), int(end_ms)
+    duration = end_ms - start_ms
+    if duration < len(chunks):
+        return []
+    weights = [max(1, len(spoken_key(chunk))) for chunk in chunks]
+    total, consumed, previous = sum(weights), 0, start_ms
+    units = []
+    for index, (chunk, weight) in enumerate(zip(chunks, weights)):
+        consumed += weight
+        boundary = end_ms if index == len(chunks) - 1 else round(start_ms + duration * consumed / total)
+        boundary = max(previous + 1, min(boundary, end_ms - (len(chunks) - index - 1)))
+        units.append({"text": chunk, "start_ms": previous, "end_ms": boundary,
+                      "timing_source": "audio_measured_proportional"})
+        previous = boundary
+    return units
+
+
 def reference_caption_cues(captions, base=0, max_width=26):
     """Pages change at observed word/sentence boundaries, never guessed fractions."""
     cues = []
@@ -253,8 +296,19 @@ def reference_caption_cues(captions, base=0, max_width=26):
         else:
             units = [{**unit, "timing_source": alignment.get("source") or "phrase"}
                      for unit in alignment.get("sentences") or [caption]]
+            if any(_caption_width(unit["text"]) > 42 for unit in units):
+                split_units = []
+                for unit in units:
+                    if _caption_width(unit["text"]) <= 42:
+                        split_units.append(unit)
+                        continue
+                    split_units.extend(_audio_proportional_caption_units(
+                        unit["text"], unit["start_ms"], unit["end_ms"], max_width))
+                if split_units and "".join(unit["text"] for unit in split_units) == "".join(
+                        unit["text"] for unit in units):
+                    units = split_units
         for unit in units:
-            width = sum(0.55 if ord(char) < 128 else 1 for char in unit["text"] if not char.isspace())
+            width = _caption_width(unit["text"])
             if width > 42:
                 raise ContentEngineError("narrated_caption_timing_insufficient",
                     "语音识别没有给出足够细的字幕时间，这句话过长，无法清楚排成两行。请将该段改短后重新确认，正文未被自动修改。")

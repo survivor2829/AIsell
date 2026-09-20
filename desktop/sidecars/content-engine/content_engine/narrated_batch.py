@@ -275,6 +275,35 @@ def visual_findings_error(candidate, result):
     return None
 
 
+def normalize_confirmed_user_visual_findings(candidate, result):
+    """Keep user-provided business facts out of pixel-evidence failures.
+
+    The visual pass still blocks concrete contradictions. Missing on-screen proof
+    for an exact, user-confirmed script is an editorial note, not a reason to
+    rewrite or reject that script.
+    """
+    if not candidate.get('_user_supplied') or not isinstance(result, dict):
+        return result
+    normalized = copy.deepcopy(result)
+    findings = normalized.get('findings')
+    if not isinstance(findings, list):
+        return normalized
+    for finding in findings:
+        if not isinstance(finding, dict) or finding.get('type') != 'unsupported_fact':
+            continue
+        finding['type'] = 'editorial'
+        finding.pop('fact_quote', None)
+        finding.pop('source', None)
+        finding.pop('shot_ids', None)
+    hard_quotes = {
+        finding.get('quote') for finding in findings
+        if isinstance(finding, dict) and finding.get('type') in {'unsupported_fact', 'visual_contradiction'}
+    }
+    normalized['unsupported_claims'] = sorted(quote for quote in hard_quotes if isinstance(quote, str))
+    normalized['accepted'] = not hard_quotes
+    return normalized
+
+
 
 class NarratedBatchDomain:
     def __init__(self, domain):
@@ -291,10 +320,30 @@ class NarratedBatchDomain:
         self.db.execute("UPDATE narrated_batches_v1 SET state_json = ?, updated_at = ? WHERE id = ?",
                         (self.d._json(batch), batch["updated_at"], batch["batch_id"]))
 
-    def _activity(self, b, message, completed=None, total=None):
+    def _activity(self, b, message, completed=None, total=None, *, phase=None,
+                  phase_label=None, overall_percent=None, phase_percent=None,
+                  item_index=None, item_total=None, item_name=None):
         previous = b.get("activity") or {}
-        b["activity"] = {"message": message, "started_at": previous.get("started_at") or self.d._now(),
-                         "completed": completed, "total": total}
+        now = self.d._now()
+        previous_overall = previous.get("overall_percent")
+        if isinstance(previous_overall, (int, float)):
+            overall_percent = max(previous_overall, overall_percent) if isinstance(overall_percent, (int, float)) else previous_overall
+        if isinstance(overall_percent, (int, float)):
+            overall_percent = max(0, min(100, round(overall_percent)))
+        b["activity"] = {
+            "message": message,
+            "started_at": previous.get("started_at") or now,
+            "completed": completed,
+            "total": total,
+            "phase": phase or previous.get("phase") or "working",
+            "phase_label": phase_label or previous.get("phase_label") or "正在处理",
+            "overall_percent": overall_percent,
+            "phase_percent": phase_percent,
+            "item_index": item_index,
+            "item_total": item_total,
+            "item_name": item_name,
+            "heartbeat_at": now,
+        }
         self._store(b)
 
     @staticmethod
@@ -1026,9 +1075,8 @@ class NarratedBatchDomain:
         budget = (batch or {}).get('_planning_budget') or {}
         if record['kind'] != 'llm' or budget.get('status') not in {'running', 'exhausted'}:
             return
-        remaining = budget['max_elapsed_seconds'] - (time.time() - budget['started_at_epoch'])
-        if budget['cloud_calls'] >= budget['max_cloud_calls'] or remaining < 2:
-            message = f"本次已达到 {budget['max_cloud_calls']} 次实际模型请求或时间预算，已有结果已保存。"
+        if budget['cloud_calls'] >= budget['max_cloud_calls']:
+            message = f"本次已达到 {budget['max_cloud_calls']} 次实际模型请求，已有结果已保存。"
             budget.update(status='exhausted', reason=message)
             batch.update(status='needs_attention', reasons=[message])
             self._store(batch)
@@ -1041,7 +1089,7 @@ class NarratedBatchDomain:
                timeout_seconds=None, on_success=None, generation_rules=True, max_tokens=None, purpose=None,
                parse_code="cloud_response_invalid", parse_message="百炼返回了无法解析的结果。"):
         cloud = getattr(self.d.analyzer, "cloud_client", None)
-        require(cloud and getattr(cloud, "configured", False), "cloud_not_configured", "请先配置当前模型平台，再分析素材与生成方案。")
+        require(cloud and getattr(cloud, "configured", False), "provider_gateway_unavailable", "云端素材理解服务暂不可用；当前进度已保留，请稍后重试。")
         b = getattr(self, "_active_batch", None)
         if generation_rules and not frames and b is not None and (b.get("settings") or {}).get("workflow_version") == 2:
             payload = {**payload, "approved_direction": b.get("direction")}
@@ -1144,35 +1192,68 @@ class NarratedBatchDomain:
         snapshots = self.d._auto_mix_asset_snapshots(ids)
         profile = self.d._auto_mix_v2_analysis_profile()
         versions = {}
+        assets = [self.d._asset_row(asset_id) for asset_id in ids]
+        weights = [max(1, int((asset.get("duration_ms") if hasattr(asset, "get") else asset["duration_ms"]) or 0))
+                   for asset in assets]
+        total_weight = max(1, sum(weights))
+        completed_weight = 0
         for index, asset_id in enumerate(ids):
             if self.d._should_stop(task_id):
                 return False
-            asset = self.d._asset_row(asset_id)
+            asset = assets[index]
             asset_name = str(asset["display_name"] or asset_id).strip()[:120]
             activity = f"正在理解素材：{asset_name}" if asset_name else "正在理解素材"
-            self._activity(b, activity, index, len(ids))
+            phase_percent = round(completed_weight * 100 / total_weight)
+            self._activity(b, activity, index, len(ids), phase="analysis", phase_label="素材理解",
+                           overall_percent=round(45 * phase_percent / 100), phase_percent=phase_percent,
+                           item_index=index + 1, item_total=len(ids), item_name=asset_name)
             version = self.d.analyzer.analysis_version_for(asset, profile)
             cached = self.db.execute("SELECT 1 FROM media_segments WHERE asset_id=? AND analysis_version=? AND provider=? LIMIT 1",
                                      (asset_id, version, self.d.analyzer.capability['provider'])).fetchone()
             if not cached:
                 require(not b.get('_planning_inflight'), 'narrated_planning_outcome_unknown', '上次素材分析请求结果未知，不会自动重提。')
-                b['_planning_inflight'] = canonical_hash({'asset_id': asset_id, 'version': version})
-                b['_planning_request'] = {'started_at': self.d._now(), 'stage': activity,
-                                          'model': 'media_analysis', 'asset_id': asset_id}
+                b['_analysis_inflight'] = canonical_hash({'asset_id': asset_id, 'version': version})
                 self._store(b)
                 try:
-                    version = self.d._analyze_asset(task_id, asset_id, profile, return_analysis_version=True)
+                    def report(stage, asset_percent):
+                        if stage in {'正在识别原声', '正在理解代表画面'} and not b.get('_planning_inflight'):
+                            b['_planning_inflight'] = canonical_hash({
+                                'asset_id': asset_id, 'version': version, 'stage': stage,
+                            })
+                            b['_planning_request'] = {
+                                'started_at': self.d._now(), 'stage': stage,
+                                'model': 'media_analysis', 'asset_id': asset_id,
+                            }
+                        current = completed_weight + weights[index] * max(0, min(100, asset_percent)) / 100
+                        analysis_percent = round(current * 100 / total_weight)
+                        self._activity(
+                            b, f"{stage}：{asset_name}", index, len(ids),
+                            phase="analysis", phase_label="素材理解",
+                            overall_percent=round(45 * analysis_percent / 100),
+                            phase_percent=analysis_percent, item_index=index + 1,
+                            item_total=len(ids), item_name=asset_name,
+                        )
+                    version = self.d._analyze_asset(
+                        task_id, asset_id, profile, return_analysis_version=True,
+                        progress_callback=report,
+                    )
                 except ContentEngineError as error:
                     if error.code != 'cloud_request_failed' and 'unknown' not in error.code:
                         b.pop('_planning_inflight', None)
                         b.pop('_planning_request', None)
-                        self._store(b)
+                    b.pop('_analysis_inflight', None)
+                    self._store(b)
                     raise
                 b.pop('_planning_inflight', None)
                 b.pop('_planning_request', None)
+                b.pop('_analysis_inflight', None)
                 self._store(b)
             versions[asset_id] = str(version or "")
-            self._activity(b, activity, index + 1, len(ids))
+            completed_weight += weights[index]
+            phase_percent = round(completed_weight * 100 / total_weight)
+            self._activity(b, activity, index + 1, len(ids), phase="analysis", phase_label="素材理解",
+                           overall_percent=round(45 * phase_percent / 100), phase_percent=phase_percent,
+                           item_index=index + 1, item_total=len(ids), item_name=asset_name)
         key = canonical_hash({"snapshots": snapshots, "versions": versions,
                               "visual_facts": VISUAL_FACTS_VERSION})
         if b.get("_analysis_key") == key and b.get("available_shots"):
@@ -2375,6 +2456,27 @@ class NarratedBatchDomain:
         assets = {shot.get("asset_id") for shot in shots} - {None}
         return [item for item in context if isinstance(item, dict) and item.get("asset_id") in assets]
 
+    @staticmethod
+    def _candidate_user_context(b, candidate):
+        if candidate.get('_user_supplied'):
+            return str(candidate.get('narration') or '')
+        return narrated_brief.expression(b) if narrated_brief.enabled(b) else ''
+
+    @staticmethod
+    def _bind_confirmed_user_statement(source, statement, fixed):
+        quote = str(fixed.get('quote') or '')
+        fact = next((item for item in source.get('facts', [])
+                     if item.get('shot_id') and item.get('fact_id')), None)
+        if (source.get('user_context_authority') != 'confirmed_script'
+                or statement.get('kind') != 'fact' or not quote
+                or quote not in source.get('user_context', '') or fact is None):
+            return False
+        statement.update(risk_scope='user_context', supported=True,
+                         reason='该表述逐字来自用户确认稿，作为用户提供信息使用，未由画面独立核实。',
+                         evidence=[{'shot_id': fact['shot_id'], 'fact_id': fact['fact_id'],
+                                    'source': 'user_context', 'user_quote': quote}])
+        return True
+
     def _source_evidence_for(self, b, shot, speech_rows=None):
         """Keep recorded speech and user-confirmed provenance separate from pixels."""
         asset_id = shot.get("asset_id")
@@ -2500,6 +2602,13 @@ class NarratedBatchDomain:
             frames.append(path)
             labels.append({"shot_id": shot["segment_id"], "position": shot_index, "source_ms": timestamp})
         require(frames, "narrated_frames_missing", "缺少实际画面，无法复核口播。")
+        def normalize_visual_response(response):
+            normalized = normalize_confirmed_user_visual_findings(candidate, response)
+            if normalized is not response and isinstance(response, dict):
+                response.clear()
+                response.update(normalized)
+            return visual_findings_error(candidate, response)
+
         result = self._cloud({"title": candidate["title"], "phrases": candidate["phrases"],
                               "material_context": material_context,
                               "source_evidence": source_evidence,
@@ -2559,7 +2668,8 @@ class NarratedBatchDomain:
                              "返回JSON {accepted:boolean,quality_score:0到1,visible_summary:string,unsupported_claims:[],reason:string,"
                              "findings:[{type,quote,fact_quote,shot_ids:[],source,reason}]}。",
                              frames=frames, generation_rules=False,
-                             validation_error=lambda response: visual_findings_error(candidate, response))
+                             validation_error=normalize_visual_response)
+        result = normalize_confirmed_user_visual_findings(candidate, result)
         issue = visual_findings_error(candidate, result)
         require(issue is None, 'cloud_response_invalid', issue or '整片审核结果格式无效。')
         b.setdefault("_visual_reviews", []).append({"candidate_id": candidate["candidate_id"],
@@ -2619,8 +2729,11 @@ class NarratedBatchDomain:
                     "title": candidate["title"],
                     "paragraphs": [str(phrase.get("text") or "") for phrase in candidate["phrases"]],
                 }
-                if narrated_brief.enabled(b):
-                    segment['user_context'] = narrated_brief.expression(b)
+                user_context = self._candidate_user_context(b, candidate)
+                if user_context:
+                    segment['user_context'] = user_context
+                    if candidate.get('_user_supplied'):
+                        segment['user_context_authority'] = 'confirmed_script'
                 segment["segment_key"] = canonical_hash({
                     "claim_audit_version": CLAIM_AUDIT_VERSION,
                     "role": "title" if segment["phrase_id"] == "title" else "narration",
@@ -2628,6 +2741,7 @@ class NarratedBatchDomain:
                     "narrative_context": segment["narrative_context"],
                     "material_context": segment["material_context"],
                     "user_context": segment.get('user_context', ''),
+                    "user_context_authority": segment.get('user_context_authority', ''),
                     "shot_ranges": [{key: shot_index[shot_id].get(key) for key in (
                         "asset_id", "source_start_ms", "source_end_ms", "content_signature")}
                         for shot_id in segment["shot_ids"] if shot_id in shot_index],
@@ -2759,7 +2873,9 @@ class NarratedBatchDomain:
             for statement, fixed in zip(response["phrase_review"]["statements"], source["statements"]):
                 statement["quote"] = fixed["quote"]
                 program_reason = None
-                if statement.get("kind") == "fact" and statement.get("supported") is True:
+                confirmed_user_statement = self._bind_confirmed_user_statement(source, statement, fixed)
+                if (not confirmed_user_statement and statement.get("kind") == "fact"
+                        and statement.get("supported") is True):
                     if statement.get("risk_scope") not in {"direct_observation", "recorded_speech", "source_provenance", "user_context"}:
                         program_reason = "当前只有稀疏取证帧，不能支持" + {
                             "continuity": "全称、速度或连续过程结论",
@@ -2899,10 +3015,10 @@ class NarratedBatchDomain:
             "只有口头指令而无对应操作画面不能认定已执行；普通菜单操作不等于联网成功、设置生效或功能验证。"
             "recorded_speech类别只能引用对应镜头recorded_speech，证明现场问过或说过某事，不能证明所说的能力、政策或效果属实；"
             "source_provenance类别只能引用对应镜头source_provenance，证明记录中明确的活动类别，不能证明人物身份、课程成效或不同片段的连续性。"
-            "segment.user_context为用户自己填写的表达资料，是独立于画面的来源；其中明确的人物姓名、身份、经历背景可以按fact、user_context引用，"
+            "segment.user_context为用户自己填写并确认的表达资料，是独立于画面的来源；其中明确的人物姓名、身份、经历背景、商业安排、日期、价格、品牌范围、服务内容、退款条款和用户明确陈述的业务现状可以按fact、user_context引用，"
             "evidence的source填user_context，并在user_quote逐字引用用户原文。结合facts.material_name及用户说明核对人物与素材对应关系；"
             "对应不明时supported=false并说明缺少谁与哪份素材的对应信息，不能要求用户已明确的人物姓名必须由图片证明。"
-            "user_context不能证明用户未提供的信息，也不能将期望写成既成经历、将个案推广为普遍效果，或证明性能、收益、培训成效及连续过程。"
+            "user_context只证明这些表述由用户明确提供，不代表程序独立核实；不得补写用户未提供的信息，也不能把期望改写成既成经历。"
             "同一句同时声称人物身份与现场动作时，分别需要用户原文和画面证据；不能仅靠人物背景证明动作发生。"
             "活动性质须核对来源，不应要求纯图片证明；上述两类信息均为独立来源，不能由文案、常识或material_context补造。"
             "illustration只能引用illustrative_observation，onscreen_attribution只能引用onscreen_claims。"
@@ -3920,6 +4036,7 @@ class NarratedBatchDomain:
                 require(isinstance(request["narration"], str) and 0 < len(request["narration"].strip()) <= 2400,
                         "invalid_narration", "请填写2400字以内的正文。")
                 edited["narration"] = request["narration"].strip()
+                edited['_user_supplied'] = True
             if "title" in request:
                 edited["title"] = str(request["title"]).strip()[:100] or b["title"]
             error = narrated_brief.issue(edited, b)
@@ -4034,6 +4151,8 @@ class NarratedBatchDomain:
                                             [x["shots"] for x in b["candidates"] if x["candidate_id"] != c["candidate_id"]])
         if c.get('_brief_review_hash'):
             updated['_brief_review_hash'] = c['_brief_review_hash']
+        if c.get('_user_supplied'):
+            updated['_user_supplied'] = True
         audit = {"rejections": []}
         reviewed = self._review([updated], b, audit)
         c["_edit_review_audit"] = audit
@@ -4125,7 +4244,12 @@ class NarratedBatchDomain:
         require(not c.get('_draft_only'), 'narrated_script_needs_mapping',
                 '确认稿尚未完成镜头安排和审查，不能开始配音制作。')
         self._verify_confirmed_script(b, c)
-        self._activity(b, f"正在制作第 {index + 1} / {total} 条作品", index, total)
+        production_percent = round(index * 100 / max(1, total))
+        self._activity(b, f"正在制作第 {index + 1} / {total} 条作品", index, total,
+                       phase="production", phase_label="配音与剪辑",
+                       overall_percent=60 + round(production_percent * 0.35),
+                       phase_percent=production_percent, item_index=index + 1,
+                       item_total=total, item_name=c.get("title") or f"第 {index + 1} 条作品")
         run_id = c.get("_run_id") or self._create_run(task_id, b, c)
         self.db.execute("UPDATE auto_mix_runs_v2 SET task_id=? WHERE id=?", (task_id, run_id))
         existing_run = self.d._auto_mix_run_row(run_id=run_id)
@@ -4169,6 +4293,12 @@ class NarratedBatchDomain:
                 if run["selected_voice_persona_id"]:
                     b["settings"]["voice_persona_id"] = run["selected_voice_persona_id"]
                 self.d._register_finished_for_project(b["project_id"], task_id)
+                production_percent = round((index + 1) * 100 / max(1, total))
+                self._activity(b, f"第 {index + 1} / {total} 条作品制作完成", index + 1, total,
+                               phase="production", phase_label="配音与剪辑",
+                               overall_percent=60 + round(production_percent * 0.35),
+                               phase_percent=production_percent, item_index=index + 1,
+                               item_total=total, item_name=c.get("title") or f"第 {index + 1} 条作品")
             elif run["status"] in {"outcome_unknown", "needs_attention"}:
                 public = self.d._json_object(run["public_plan_json"])
                 c["error"] = (public.get("attention") or {}).get("message", "这条作品需要处理后继续。")
@@ -4274,6 +4404,8 @@ class NarratedBatchDomain:
                     analyzed = self._analysis(task_id, b)
                 if not analyzed or self.d._should_stop(task_id):
                     return {"batch_id": b["batch_id"]}
+                self._activity(b, "正在整理素材理解结果并起草文案", phase="script",
+                               phase_label="文案规划", overall_percent=45, phase_percent=0)
                 # Unused analysis allowance cannot multiply generation/review retries.
                 b['_planning_budget']['max_cloud_calls'] = b['_planning_budget']['cloud_calls'] + 4
                 if source_identity != canonical_hash({'snapshots': b.get('_snapshots'), 'versions': b.get('_versions')}):
@@ -4282,7 +4414,8 @@ class NarratedBatchDomain:
                 available = len(b.get("script_options", []))
                 b['status'] = 'scripts_ready' if available else 'needs_attention'
                 self._activity(b, f'已有 {available} 份文案，可选择并确认制作' if available
-                               else '尚未得到可用文案，请查看具体原因')
+                               else '尚未得到可用文案，请查看具体原因', phase="script",
+                               phase_label="文案规划", overall_percent=60, phase_percent=100)
                 return {"batch_id": b["batch_id"], "script_count": available, "generated_count": 0}
             finally:
                 if (b.get('_planning_budget') or {}).get('status') == 'running':
@@ -4347,7 +4480,11 @@ class NarratedBatchDomain:
         completed = sum(c.get("status") == "completed" for c in b["candidates"][:requested])
         if completed == requested:
             b["status"] = "completed"
-        self._activity(b, f"本批已完成 {completed} / {requested} 条作品", completed, requested)
+        self._activity(b, f"本批已完成 {completed} / {requested} 条作品", completed, requested,
+                       phase="complete" if completed == requested else "production",
+                       phase_label="制作完成" if completed == requested else "视频制作",
+                       overall_percent=100 if completed == requested else None,
+                       phase_percent=100 if completed == requested else None)
         self._store(b)
         return {"batch_id": b["batch_id"], "generated_count": completed}
 
@@ -4359,7 +4496,7 @@ class NarratedBatchDomain:
         action = payload["action"]
         cloud = getattr(self.d.analyzer, "cloud_client", None)
         if not (action == 'scripts' and narrated_brief.supplied(b)):
-            require(cloud and getattr(cloud, "configured", False), "cloud_not_configured", "请先配置当前模型平台。")
+            require(cloud and getattr(cloud, "configured", False), "provider_gateway_unavailable", "云端素材理解服务暂不可用；当前进度已保留，请稍后重试。")
         if (b.get("settings") or {}).get("workflow_version") == 2:
             return self._run_script_workflow(task_id, b, action)
         if not self._analysis(task_id, b) or self.d._should_stop(task_id):

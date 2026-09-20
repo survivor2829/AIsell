@@ -414,6 +414,7 @@ async function main() {
     const sent = [];
     const notifications = [];
     const calls = [];
+    let providerPreflightCalls = 0;
     const shown = [];
     const opened = [];
     const diagnosticOperations = [];
@@ -534,6 +535,8 @@ async function main() {
         calls.push(["listTasks", payload]);
         return { items: listedTaskItems };
       },
+      getTask: async (taskId) => listedTaskItems.find((item) => item.task_id === taskId)
+        || task({ task_id: taskId }),
       pauseTask: async (taskId) => task({ task_id: taskId }),
       resumeTask: async (taskId) => task({
         task_id: taskId,
@@ -956,7 +959,8 @@ async function main() {
       electron,
       getMainWindow: () => mainWindow,
       ipcMain,
-      notificationFactory
+      notificationFactory,
+      beforeProviderWork: async () => { providerPreflightCalls += 1; }
     });
     assert.deepEqual(
       [...handlers.keys()].sort(),
@@ -1145,6 +1149,11 @@ async function main() {
       assert.equal(response.ok, true);
       assert.equal(response.data.status, expectedStatus);
     }
+    const providerTaskId = task().task_id;
+    listedTaskItems = [task({ task_id: providerTaskId, task_type: "narrated_batch_v1" })];
+    const providerResume = await handlers.get(CONTENT_ENGINE_CHANNELS.resumeTask)({}, { taskId: providerTaskId });
+    assert.equal(providerResume.ok, true);
+    assert.equal(providerPreflightCalls, 1, "provider-dependent resume must run the gateway preflight");
 
     listedTaskItems = [task({
       task_id: "task_33333333333333333333333333333333",
@@ -2974,6 +2983,13 @@ async function main() {
       error: "媒体分析组件当前不可用，请安装或恢复组件后重试。"
     });
     assert.equal(JSON.stringify(unavailableCapability).includes("must-not-leak"), false);
+    assert.deepEqual(publicError(Object.assign(new Error("private provider detail"), {
+      code: "provider_gateway_unavailable"
+    })), {
+      ok: false,
+      code: "provider_gateway_unavailable",
+      error: "云端智能服务暂不可用，当前进度已保留，请稍后重试。"
+    });
 
     const metadataPending = publicError(Object.assign(
       new Error("Analyze media metadata first."),

@@ -1144,7 +1144,7 @@ class CreativeDomain:
         if persona["provider"] == "volcengine":
             from .volcengine_tts import VolcengineTTSProvider
             if not VolcengineTTSProvider().configured:
-                raise ContentEngineError("volcengine_tts_not_configured", "请先在声音设置中配置火山语音 API Key。")
+                raise ContentEngineError("provider_gateway_unavailable", "云端配音服务暂不可用；当前进度已保留，请稍后重试。")
             normalize_executable = voice_preview_ffmpeg()
         reuse_generated = bool(previous is not None and previous["cache_key"] == cache_key
                                and previous["status"] == "failed"
@@ -2215,7 +2215,7 @@ class CreativeDomain:
             )
         if self.cover_client is None or not getattr(self.cover_client, "configured", False):
             raise ContentEngineError(
-                "apimart_not_configured", "请先配置 AI 图片服务后再生成补图。"
+                "provider_gateway_unavailable", "云端图片服务暂不可用；当前进度已保留，请稍后重试。"
             )
         session, draft, digest = self._validated_guided_auto_mix_supplemental_context(
             session_id,
@@ -2411,7 +2411,7 @@ class CreativeDomain:
             )
         if self.cover_client is None or not getattr(self.cover_client, "configured", False):
             raise ContentEngineError(
-                "apimart_not_configured", "请先配置 AI 图片服务后再生成补图。"
+                "provider_gateway_unavailable", "云端图片服务暂不可用；当前进度已保留，请稍后重试。"
             )
         if operation["status"] == "planned":
             try:
@@ -7347,7 +7347,8 @@ class CreativeDomain:
         }
 
     def _analyze_asset(
-        self, task_id, asset_id, profile=None, *, return_analysis_version=False
+        self, task_id, asset_id, profile=None, *, return_analysis_version=False,
+        progress_callback=None,
     ):
         asset = self._asset_row(asset_id)
         source = self._resolve_asset_path(asset_id)
@@ -7363,6 +7364,7 @@ class CreativeDomain:
             task_id=task_id,
             profile=effective_profile,
             should_stop=lambda: self._should_stop(task_id),
+            progress=progress_callback,
         )
         if outcome.get("stopped") or self._should_stop(task_id):
             return "" if return_analysis_version else False

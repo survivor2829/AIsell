@@ -8,7 +8,7 @@ import test_narrated_batch as batch_fixtures
 from content_engine.errors import ContentEngineError
 from content_engine.narrated_batch import NarratedBatchDomain
 from content_engine import narrated_script_drafts
-from content_engine.narrated_production import bind_planned_candidate, export_completed, output_folder, review_confirmed_candidate, complete_mapping_capacity, confirmed_narration_units, normalize_preserved_mapping, confirm_selections
+from content_engine.narrated_production import bind_planned_candidate, export_completed, output_folder, review_confirmed_candidate, cohere_mapping_sources, complete_mapping_capacity, confirmed_narration_units, normalize_preserved_mapping, confirm_selections
 
 
 class NarratedProductionTests(unittest.TestCase):
@@ -80,6 +80,7 @@ class NarratedProductionTests(unittest.TestCase):
         result = self.run_selection(request)
         self.assertEqual('completed', result['status'])
         self.assertEqual(3, result['target_count'])
+        self.assertTrue(result['count_is_exact'])
         self.assertEqual([2, 1], [item['count'] for item in result['script_selections']])
         for option in self.options[:2]:
             candidate = next(c for c in result['candidates'] if c['candidate_id'] == option['candidate_id'])
@@ -98,6 +99,21 @@ class NarratedProductionTests(unittest.TestCase):
         self.assertEqual('volcengine_tts_not_configured', error.exception.code)
         self.assertFalse(self.domain._load(self.batch['batch_id']).get('production_jobs'))
         self.assertEqual([], self.events)
+
+    def test_insufficient_unique_footage_stops_before_production_is_created(self):
+        state = self.domain._load(self.batch['batch_id'])
+        state['settings']['minimum_duration_seconds'] = 30
+        state['available_shots'] = [{
+            'segment_id': 'short-only', 'asset_id': self.fixture.ids[0],
+            'source_start_ms': 0, 'source_end_ms': 5_000,
+            'target_duration_ms': 5_000,
+        }]
+        self.domain._store(state)
+        with self.assertRaises(ContentEngineError) as error:
+            self.s.confirm_narrated_script(self.request(first_count=1))
+        self.assertEqual('narrated_insufficient_unique_footage', error.exception.code)
+        self.assertIn('最多可制作 0 条', error.exception.message)
+        self.assertFalse(self.domain._load(self.batch['batch_id']).get('production_jobs'))
 
     def test_grounding_group_order_does_not_replace_confirmed_edit_order(self):
         state = self.domain._load(self.batch['batch_id'])
@@ -342,6 +358,16 @@ class NarratedProductionTests(unittest.TestCase):
                     saved = self.domain._load(state['batch_id'])
                     option = saved['script_options'][0]
                     self.assertFalse(option.get('_draft_only'))
+                    self.assertTrue(option.get('_user_supplied'))
+                    self.assertEqual(edited_text, self.domain._candidate_user_context(saved, option))
+                    statement = {'kind': 'fact', 'risk_scope': 'outcome', 'supported': False,
+                                 'evidence': [], 'reason': '画面无法证明用户提供的活动信息'}
+                    source = {'user_context_authority': 'confirmed_script', 'user_context': edited_text,
+                              'facts': [{'shot_id': 'shot-1', 'fact_id': 'fact-1'}]}
+                    self.assertTrue(self.domain._bind_confirmed_user_statement(
+                        source, statement, {'quote': edited_text}))
+                    self.assertEqual('user_context', statement['risk_scope'])
+                    self.assertEqual(edited_text, statement['evidence'][0]['user_quote'])
                     self.assertEqual(edited_text, ''.join(p['text'] for p in option['phrases']))
                     self.assertEqual([p['shot_ids'] for p in phrases], [p['shot_ids'] for p in option['phrases']])
                     for index in (0, 2):
@@ -353,8 +379,12 @@ class NarratedProductionTests(unittest.TestCase):
                     seed = confirmed['candidates'][0]
                     self.assertEqual(option['phrases'], seed['phrases'])
                     self.assertEqual(edited_text, seed['_confirmed_script']['narration'])
-                    with patch.object(self.domain, '_review', side_effect=lambda candidates, batch, audit: candidates) as review:
+                    def review_candidates(candidates, batch, audit):
+                        self.assertTrue(candidates[0].get('_user_supplied'))
+                        return candidates
+                    with patch.object(self.domain, '_review', side_effect=review_candidates) as review:
                         self.domain._review_edit(seed, confirmed)
+                    self.assertTrue(seed.get('_user_supplied'))
                     review.assert_called_once()
                     cloud.assert_not_called()
 
@@ -545,6 +575,29 @@ class NarratedProductionTests(unittest.TestCase):
         for source in ({}, {'source_provenance': {'activity_label': None}}):
             with patch.object(self.domain, '_source_evidence_for', return_value=source), self.assertRaises(ContentEngineError):
                 self.domain._repack_duration_candidate(raw, state, state['available_shots'], allow_same_activity_cuts=True)
+
+    def test_mapping_repair_keeps_one_source_when_activity_identity_is_unverified(self):
+        state = self.domain._load(self.batch['batch_id'])
+        state['available_shots'] = [
+            {'segment_id': 'A1', 'asset_id': 'source-a', 'source_start_ms': 0,
+             'source_end_ms': 5000, 'target_duration_ms': 5000},
+            {'segment_id': 'A2', 'asset_id': 'source-a', 'source_start_ms': 5000,
+             'source_end_ms': 10000, 'target_duration_ms': 5000},
+            {'segment_id': 'B1', 'asset_id': 'source-b', 'source_start_ms': 0,
+             'source_end_ms': 5000, 'target_duration_ms': 5000},
+        ]
+        phrases = [{'text': '现场可以结合真机了解部署步骤，再逐项核对地图、网络、路线和清洁参数。',
+                    'shot_ids': ['A1', 'B1']}]
+        with patch.object(self.domain, '_source_evidence_for', return_value={}):
+            coherent, source_changes = cohere_mapping_sources(self.domain, state, phrases)
+            completed, _ = complete_mapping_capacity(self.domain, state, coherent)
+            result = self.domain._repack_duration_candidate(
+                {'title': '部署学习', 'phrases': completed}, state,
+                state['available_shots'], allow_same_activity_cuts=True)
+        self.assertEqual(phrases[0]['text'], result['phrases'][0]['text'])
+        self.assertEqual(['A1', 'A2'], result['phrases'][0]['shot_ids'])
+        self.assertEqual('B1', source_changes[0]['removed_shot_ids'][0])
+        self.assertEqual(['A1', 'B1'], phrases[0]['shot_ids'])
 
     def test_capacity_fill_reserves_unused_footage_without_changing_copy_or_other_groups(self):
         state = self.domain._load(self.batch['batch_id'])

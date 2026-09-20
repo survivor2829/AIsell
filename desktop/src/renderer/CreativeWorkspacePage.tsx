@@ -4,7 +4,6 @@ import {
   Clapperboard,
   FileVideo2,
   FolderOpen,
-  KeyRound,
   Layers3,
   LoaderCircle,
   Pause,
@@ -492,7 +491,6 @@ export function CreativeWorkspacePage({ onBackToProduct, initialTaskId, initialP
   const [taskActionBusy, setTaskActionBusy] = useState(false);
   const [notice, setNotice] = useState<{ tone: "error" | "success" | "info"; text: string } | null>(null);
   const [keyStatus, setKeyStatus] = useState<BailianStatus | null>(null);
-  const [keyInput, setKeyInput] = useState("");
   const taskMutationRef = useRef<string>("");
   const taskGenerationRef = useRef(0);
   const activeTaskIdRef = useRef("");
@@ -986,7 +984,7 @@ export function CreativeWorkspacePage({ onBackToProduct, initialTaskId, initialP
       setGenerationCostEstimate(estimate.data);
       if (estimate.data.bailianCalls > 0 && !estimate.data.bailianProviderConfigured) {
         releaseTaskMutation();
-        setNotice({ tone: "error", text: "火山方舟尚未配置，本次没有提交云端任务。请先保存方舟 API Key。" });
+        setNotice({ tone: "error", text: "云端素材理解服务暂不可用，本次没有提交云端任务。当前进度已保留，请稍后重试。" });
         return;
       }
       if (estimate.data.confirmationRequired) {
@@ -1010,7 +1008,7 @@ export function CreativeWorkspacePage({ onBackToProduct, initialTaskId, initialP
         releaseTaskMutation();
         setNotice({
           tone: "error",
-          text: "APIMart 尚未启用。请先在 API 密钥中保存 APIMart Key。"
+          text: "云端图片服务暂不可用，本次没有提交付费任务。当前进度已保留，请稍后重试。"
         });
         return;
       }
@@ -1223,23 +1221,6 @@ export function CreativeWorkspacePage({ onBackToProduct, initialTaskId, initialP
         setTaskActionBusy(false);
         releaseTaskMutation(mutationKey);
       }
-    }
-  }
-
-  async function saveKey() {
-    const api = apiForWindow();
-    if (!api || !keyInput.trim()) return;
-    setBusy("key");
-    const result = await api.settings.saveVolcengineArkKey({
-      apiKey: keyInput.trim()
-    });
-    setBusy("");
-    if (result.ok && result.data) {
-      setKeyStatus(result.data);
-      setKeyInput("");
-      setNotice({ tone: "success", text: "方舟 Key 已用当前 Windows 账户加密保存，内容引擎已重启。" });
-    } else {
-      setNotice({ tone: "error", text: failure(result, "方舟 Key 保存失败。") });
     }
   }
 
@@ -1807,10 +1788,8 @@ export function CreativeWorkspacePage({ onBackToProduct, initialTaskId, initialP
 
         <aside className="workspace-sidebar">
           <section className="workspace-panel workspace-key-panel">
-            <div className="workspace-sidebar-title"><KeyRound size={18} /><div><strong>火山方舟 · 素材理解</strong><span>{keyStatus?.configured ? `已配置 ${keyStatus.maskedKey}` : "尚未配置"}</span></div></div>
-            <input type="password" value={keyInput} placeholder="火山方舟 API Key" autoComplete="off" onChange={(event) => setKeyInput(event.target.value)} />
-            <button className="workspace-button is-primary" onClick={() => void saveKey()} disabled={!keyInput.trim() || Boolean(busy)}>{busy === "key" ? <LoaderCircle className="is-spinning" size={15} /> : <KeyRound size={15} />}加密保存</button>
-            <p>方舟负责素材理解与文案；只上传压缩音频和抽取关键帧，原始视频留在本机。Key 不进入日志、数据库或导出包。</p>
+            <div className="workspace-sidebar-title">{keyStatus?.configured ? <Check size={18} /> : <CircleAlert size={18} />}<div><strong>云端智能服务 · 素材理解</strong><span>{keyStatus?.configured ? "服务可用" : "暂不可用"}</span></div></div>
+            <p>客户无需配置密钥。素材理解只上传压缩音频和抽取关键帧，原始视频留在本机；服务暂不可用时会保留当前进度。</p>
           </section>
           <section className="workspace-panel workspace-brand-panel">
             <div className="workspace-sidebar-title"><Sparkles size={18} /><div><strong>品牌包</strong><span>可选；不选则使用中性模板</span></div></div>

@@ -446,17 +446,10 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       if (providerGatewaySupports("deepseek")) {
         providerEnvironment.DEEPSEEK_API_KEY = providerGatewayClient.token();
         providerEnvironment.DEEPSEEK_API_URL = providerGatewayClient.url("/deepseek/v1/chat/completions");
-      } else if (deepSeekKeyStore.status().configured) {
-        providerEnvironment.DEEPSEEK_API_KEY = deepSeekKeyStore.read();
       }
-      const refineStatus = productDetailAiSettingsStore.status();
       if (providerGatewaySupports("apimart")) {
         providerEnvironment.REFINE_API_KEY = providerGatewayClient.token();
         providerEnvironment.REFINE_API_BASE_URL = providerGatewayClient.url("/apimart");
-      } else if (refineStatus.ready) {
-        const refine = productDetailAiSettingsStore.runtimeConfig();
-        providerEnvironment.REFINE_API_KEY = refine.apiKey;
-        providerEnvironment.REFINE_API_BASE_URL = refine.baseUrl;
       }
       return providerEnvironment;
     };
@@ -530,6 +523,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     registerProductDetailAiSettingsIpc({
       store: productDetailAiSettingsStore,
+      managed: true,
       onChanged: restartImageProviderConsumers
     });
     const contentEnginePath = contentEngineRuntimePath();
@@ -555,10 +549,6 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         if (providerGatewaySupports("bailian")) {
           providerEnvironment.DASHSCOPE_API_KEY = gatewayToken;
           providerEnvironment.XIAOXI_BAILIAN_API_HOST = providerGatewayClient.url("/bailian");
-        } else if (bailianKeyStore.status().configured) {
-          providerEnvironment.DASHSCOPE_API_KEY = bailianKeyStore.read();
-          const bailianStatus = bailianKeyStore.status();
-          if (bailianStatus.apiHost) providerEnvironment.XIAOXI_BAILIAN_API_HOST = bailianStatus.apiHost;
         }
         if (providerGatewaySupports("volcengine_tts")) {
           providerEnvironment.XIAOXI_PROVIDER_GATEWAY_TOKEN = gatewayToken;
@@ -566,8 +556,6 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           providerEnvironment.XIAOXI_VOLCENGINE_TTS_GATEWAY_ENABLED = "1";
           providerEnvironment.XIAOXI_VOLCENGINE_TTS_API_KEY = gatewayToken;
           providerEnvironment.XIAOXI_VOLCENGINE_TTS_API_URL = providerGatewayClient.url("/volcengine/tts/sse");
-        } else if (volcengineTtsKeyStore.status().configured) {
-          providerEnvironment.XIAOXI_VOLCENGINE_TTS_API_KEY = volcengineTtsKeyStore.read();
         }
         if (providerGatewaySupports("volcengine_asr")) {
           providerEnvironment.XIAOXI_PROVIDER_GATEWAY_TOKEN = gatewayToken;
@@ -575,10 +563,6 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           providerEnvironment.XIAOXI_VOLCENGINE_ASR_GATEWAY_ENABLED = "1";
           providerEnvironment.XIAOXI_VOLCENGINE_ASR_API_KEY = gatewayToken;
           providerEnvironment.XIAOXI_VOLCENGINE_ASR_ENDPOINT = providerGatewayClient.url("/volcengine/asr/recognize/flash");
-        } else if (volcengineAsrStore.status().configured) {
-          const asr = volcengineAsrStore.read();
-          providerEnvironment.XIAOXI_VOLCENGINE_ASR_APP_ID = asr.appId;
-          providerEnvironment.XIAOXI_VOLCENGINE_ASR_ACCESS_TOKEN = asr.accessToken;
         }
         providerEnvironment.XIAOXI_CONTENT_PROVIDER = "volcengine";
         if (providerGatewaySupports("volcengine_ark")) {
@@ -588,18 +572,11 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_URL = providerGatewayClient.url("/volcengine/ark/chat/completions");
           providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_HOST = providerGatewayClient.url("/volcengine/ark");
           providerEnvironment.XIAOXI_VOLCENGINE_ARK_COMPATIBLE_ORIGIN = providerGatewayClient.url("/volcengine/ark");
-        } else if (volcengineArkKeyStore.status().configured) {
-          providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_KEY = volcengineArkKeyStore.read();
         }
         if (providerGatewaySupports("apimart")) {
           providerEnvironment.APIMART_API_KEY = gatewayToken;
           providerEnvironment.APIMART_API_BASE_URL = providerGatewayClient.url("/apimart");
           providerEnvironment.APIMART_IMAGE_MODEL = "gpt-image-2";
-        } else if (productDetailAiSettingsStore.status().ready) {
-          const imageProvider = productDetailAiSettingsStore.runtimeConfig();
-          providerEnvironment.APIMART_API_KEY = imageProvider.apiKey;
-          providerEnvironment.APIMART_API_BASE_URL = imageProvider.baseUrl;
-          providerEnvironment.APIMART_IMAGE_MODEL = imageProvider.model;
         }
         return providerEnvironment;
       }
@@ -613,6 +590,14 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       controller: contentEngineController,
       beforeProviderWork: async () => {
         await providerGatewayClient?.initialize({ verify: true });
+        const requiredCapabilities = ["volcengine_ark", "volcengine_asr", "volcengine_tts"];
+        const missingCapabilities = requiredCapabilities.filter((capability) => !providerGatewaySupports(capability));
+        if (missingCapabilities.length) {
+          throw Object.assign(new Error(`云端智能服务暂不可用（缺少：${missingCapabilities.join("、")}），当前任务未提交。`), {
+            code: "PROVIDER_GATEWAY_UNAVAILABLE",
+            requiredCapabilities: missingCapabilities
+          });
+        }
         if (contentProviderConfiguration === providerConfiguration()) return;
         if (contentEngineController.status().state === 'ready') {
           const result = await contentEngineController.listTasks({ limit: 500 });
@@ -626,10 +611,6 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         if (restarted.state !== 'ready') throw Object.assign(new Error('授权已更新，内容引擎尚未就绪。'),
                                                            { code: 'CONTENT_ENGINE_PROVIDER_REFRESH_FAILED' });
       },
-      bailianKeyStore,
-      volcengineTtsKeyStore,
-      volcengineArkKeyStore,
-      volcengineAsrStore,
       dialog,
       shell,
       getMainWindow: () => mainWindow

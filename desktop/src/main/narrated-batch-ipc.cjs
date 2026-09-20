@@ -25,8 +25,9 @@ const ERRORS = {
   narrated_music_pool_empty: "请先试听并选入至少一首可用配乐。",
   narrated_caption_timing_insufficient: "语音识别未返回足够细的时间，整句过长，无法清楚排成两行；请改短该段并重新确认。",
   narrated_edit_invalid: "修改后的方案无法通过质量检查，请查看批次详情。",
-  cloud_not_configured: "请在火山引擎设置中配置方舟 Key，再使用 AI 分析和文案。",
-  volcengine_tts_not_configured: "当前配音服务未配置，请先在声音设置中配置火山语音 API Key，再开始制作。",
+  cloud_not_configured: "云端素材理解服务暂不可用，当前任务未提交，请稍后重试。",
+  volcengine_tts_not_configured: "云端配音服务暂不可用，当前任务未提交，请稍后重试。",
+  PROVIDER_GATEWAY_UNAVAILABLE: "云端智能服务暂不可用，当前任务未提交，请稍后重试。",
   narrated_assets_missing: "请先添加素材。",
   narrated_plan_empty: "AI 未返回可用方案，请补充素材或稍后重试。",
   narrated_candidate_invalid: "方案包含无效或重复镜头，请调整。",
@@ -47,6 +48,7 @@ const ERRORS = {
   narrated_planning_recovery_not_available: "当前批次没有可人工确认并重试的未知请求。"
 };
 const PUBLIC_FIELDS = new Set(("activity message started_at completed total collections collection_id name description asset_ids batches batch_id project_id title status task_id task_status target_count recommended_count feasible_count count_is_exact reasons completed_count updated_at created_at groups opening middle ending cta settings voice_persona_id brand_profile_id minimum_duration_seconds candidates candidate_id narration angle generated_video_id duration_ms revision error actual_shots shots segment_id asset_id source_start_ms source_end_ms evidence_ref evidence_facts facts subject action quality suggested_brief preferred_groups available_shots progress approved version score rationale phrases text segment_ids role planning_recovery_available").split(" "));
+for (const field of "phase phase_label overall_percent phase_percent item_index item_total item_name heartbeat_at".split(" ")) PUBLIC_FIELDS.add(field);
 for (const field of "workflow_version script_options selected_script_id script_confirmation script_id confirmed_at audience pain_point estimated_duration_ms direction music_track_ids music_selections music_track_id track_id display_name".split(" ")) PUBLIC_FIELDS.add(field);
 for (const field of "material_context script_selections count production_jobs ordinal production_index source_script_id export_ready exported_count export_error production_retry_available".split(" ")) PUBLIC_FIELDS.add(field);
 for (const field of "brief_version script_source target_audience expression advantages customer_pain_points brief_suggestions framework summary opening_example".split(" ")) PUBLIC_FIELDS.add(field);

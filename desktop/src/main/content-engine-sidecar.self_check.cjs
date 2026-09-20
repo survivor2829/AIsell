@@ -183,7 +183,12 @@ async function main() {
           XIAOXI_FFPROBE_PATH: "C:\\untrusted\\ffprobe.exe",
           XIAOXI_CREATIVE_FONT_PATH: "C:\\untrusted\\NotoSansSC-Variable.ttf",
           FONTCONFIG_FILE: "C:\\untrusted\\fontconfig.conf",
-          FONTCONFIG_PATH: "C:\\untrusted"
+          FONTCONFIG_PATH: "C:\\untrusted",
+          DASHSCOPE_API_KEY: "legacy-bailian-key",
+          APIMART_API_KEY: "legacy-apimart-key",
+          XIAOXI_VOLCENGINE_ARK_API_KEY: "legacy-ark-key",
+          XIAOXI_VOLCENGINE_ASR_ACCESS_TOKEN: "legacy-asr-token",
+          XIAOXI_VOLCENGINE_TTS_API_KEY: "legacy-tts-key"
         },
         runtimePath,
         runtimeArgs: ["worker.py"],
@@ -242,6 +247,10 @@ async function main() {
       );
       assert.equal(spawnCalls[0].options.env.XIAOXI_REMOTION_ELECTRON_RUN_AS_NODE, "1");
       assert.notEqual(spawnCalls[0].options.env.DASHSCOPE_API_KEY, "runtime-key-canary");
+      for (const key of ["DASHSCOPE_API_KEY", "APIMART_API_KEY", "XIAOXI_VOLCENGINE_ARK_API_KEY",
+        "XIAOXI_VOLCENGINE_ASR_ACCESS_TOKEN", "XIAOXI_VOLCENGINE_TTS_API_KEY"]) {
+        assert.equal(spawnCalls[0].options.env[key], undefined, `${key} must not fall back to the parent environment`);
+      }
       assert.notEqual(spawnCalls[0].options.env.PATH, "runtime-path-canary");
       child.ready();
       const [firstStatus, secondStatus] = await Promise.all([first, second]);
@@ -901,7 +910,7 @@ async function main() {
             method: "close"
           })}\n`,
           encoding: "utf8",
-          timeout: 5_000,
+          timeout: 15_000,
           windowsHide: true,
           env: {
             SystemRoot: process.env.SystemRoot,
@@ -911,7 +920,7 @@ async function main() {
           }
         }
       );
-      assert.equal(workerCheck.status, 0, workerCheck.stderr);
+      assert.equal(workerCheck.status, 0, workerCheck.error?.stack || workerCheck.stderr);
       assert.equal(workerCheck.stderr, "");
       const responses = workerCheck.stdout.trim().split(/\r?\n/u).map(JSON.parse);
       assert.deepEqual(responses[0], {

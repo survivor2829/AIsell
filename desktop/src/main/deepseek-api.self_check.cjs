@@ -68,6 +68,64 @@ async function main() {
     { action: "saved", configured: true },
     { action: "deleted", configured: false }
   ]);
+  let managedKeyReads = 0;
+  let managedDirectCalls = 0;
+  const managedClient = createDeepSeekClient({
+    keyStore: { read: () => { managedKeyReads += 1; return "must-not-be-used"; }, status: () => ({ configured: true }) },
+    gatewayClient: {
+      isReady: () => false,
+      status: () => ({ ready: false, capabilities: {} }),
+      fetch: async () => { managedDirectCalls += 1; throw new Error("must not call"); }
+    },
+    fetchImpl: async () => { managedDirectCalls += 1; throw new Error("must not call"); }
+  });
+  await assert.rejects(() => managedClient.test(), (error) => error.code === "PROVIDER_GATEWAY_UNAVAILABLE");
+  assert.equal(managedKeyReads, 0, "managed mode must never read the retained local key");
+  assert.equal(managedDirectCalls, 0, "an unavailable gateway must fail before any provider request");
+  const managedRequests = [];
+  const managedReadyClient = createDeepSeekClient({
+    keyStore: { read: () => { managedKeyReads += 1; return "must-not-be-used"; }, status: () => ({ configured: true }) },
+    gatewayClient: {
+      isReady: () => true,
+      status: () => ({ ready: true, capabilities: { deepseek: true } }),
+      url: (pathname) => `https://gateway.test${pathname}`,
+      requestHeaders: () => ({ authorization: "Bearer managed-session" }),
+      fetch: async (url, request) => {
+        const body = JSON.parse(request.body);
+        managedRequests.push({ url, request, body });
+        const content = body.response_format?.type === "json_object"
+          ? JSON.stringify({ action: "answer", reply: "测试服务可以正常使用。", reasonCode: "business_knowledge" })
+          : body.max_tokens === 120
+            ? "新店安装顺利，现场很专业！"
+            : "您好，云端服务连接正常。";
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ choices: [{ finish_reason: "stop", message: { content } }] })
+        };
+      }
+    },
+    fetchImpl: async () => { managedDirectCalls += 1; throw new Error("must not call direct provider"); }
+  });
+  const managedCapability = await managedReadyClient.test();
+  assert.equal(managedCapability.provider, "deepseek");
+  assert.equal(managedRequests.length, 3);
+  assert.equal(managedRequests.every(({ url }) => url === "https://gateway.test/deepseek/chat/completions"), true);
+  assert.equal(managedRequests.every(({ request }) => request.headers.authorization === "Bearer managed-session"), true);
+  assert.equal(managedKeyReads, 0, "a ready managed gateway must not read the retained local key");
+  assert.equal(managedDirectCalls, 0, "managed mode must not call the provider directly");
+  const managedIpcHandlers = new Map();
+  registerDeepSeekApiIpc({
+    ipcMain: { handle: (channel, handler) => managedIpcHandlers.set(channel, handler) },
+    keyStore: {
+      status: () => { throw new Error("must not read local status"); },
+      write: () => { throw new Error("must not write local key"); },
+      clear: () => { throw new Error("must not delete retained key"); }
+    },
+    client: { isManaged: () => true, status: () => ({ configured: false, managed: true, code: "PROVIDER_GATEWAY_UNAVAILABLE" }) }
+  });
+  assert.equal((await managedIpcHandlers.get("deepseek-api:save")(null, { apiKey: ipcSecret })).code, "PROVIDER_GATEWAY_MANAGED");
+  assert.equal((await managedIpcHandlers.get("deepseek-api:delete")()).code, "PROVIDER_GATEWAY_MANAGED");
   const ipcSource = fs.readFileSync(path.join(__dirname, "deepseek-api-ipc.cjs"), "utf8");
   assert.match(ipcSource, /key_save[\s\S]*supplied_key/u);
   assert.doesNotMatch(ipcSource, /key_save[^\n]*apiKey/u);
@@ -566,8 +624,7 @@ async function main() {
   const preload = fs.readFileSync(path.join(__dirname, "preload-api.cjs"), "utf8");
   assert.equal(preload.includes("deepseek-api:read"), false, "preload must not expose a Key read IPC");
   const renderer = fs.readFileSync(path.join(__dirname, "../renderer/App.tsx"), "utf8");
-  const saveAndTestBlock = renderer.slice(renderer.indexOf("const saveAndTest"), renderer.indexOf("return (", renderer.indexOf("const saveAndTest")));
-  assert.ok(saveAndTestBlock.indexOf(".test({ apiKey: value })") < saveAndTestBlock.indexOf(".save({ apiKey: value })"), "a replacement Key must pass the production capability test before it can replace the saved Key");
+  assert.doesNotMatch(renderer, /active === "api-key"/u, "the customer shell must not expose a local key page");
   for (const relativeFile of ["../../scripts/build-portable-release.cjs", "../../scripts/portable-release.self_check.cjs", "../../scripts/check-clean-runtime.cjs"]) {
     const releaseGuard = fs.readFileSync(path.join(__dirname, relativeFile), "utf8");
     assert.match(releaseGuard, /deepseek-api-key\.bin/u, `${relativeFile} must keep the encrypted runtime Key outside portable packages`);

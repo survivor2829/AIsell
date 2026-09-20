@@ -181,7 +181,7 @@ class VolcengineMediaClient(DashScopeMediaClient):
         if url != ARK_ENDPOINT or method != "POST":
             raise ContentEngineError("volcengine_operation_unsupported", "当前功能尚未适配火山接口，不会调用百炼。")
         if not self.api_key:
-            raise ContentEngineError("volcengine_ark_not_configured", "请在火山引擎设置中保存方舟 API Key。")
+            raise ContentEngineError("provider_gateway_unavailable", "云端素材理解服务暂不可用；当前进度已保留，请稍后重试。")
         body = {**payload, "thinking": {"type": "disabled"}}
         result = self._post(url, body, {"Authorization": f"Bearer {self.api_key}"}, timeout or self.timeout_seconds, "方舟", purpose=operation_label)
         return result

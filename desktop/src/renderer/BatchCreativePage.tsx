@@ -8,11 +8,20 @@ import { BatchMaterialBoard } from "./BatchMaterialBoard";
 import { ProviderUsageDetails } from "./ProviderUsageDetails";
 import { createDraftQueue, waitForDraftWrites } from "./batch-draft-queue";
 import { Images, LayoutTemplate, FileCheck, Clapperboard, ArrowLeft, ArrowRight } from "lucide-react";
+import creativeThinking from "./assets/creative-thinking.webp";
+import creativeThinkingStill from "./assets/creative-thinking-still.webp";
+import creativeMaking from "./assets/creative-making.webp";
+import creativeMakingStill from "./assets/creative-making-still.webp";
 
 type Props = { initial?: { assetIds?: string[]; collection?: Collection; batchId?: string }; onOpenProduct: () => void; onOpenLegacy: () => void; onOpenHistory: () => void; onOpenMaterials: () => void; onOpenDiagnostics?: (context?: { module: string; taskId?: string }) => void };
 const emptyGroups = (): Groups => ({ opening: [], middle: [], ending: [] });
 const activeStatuses = new Set(["queued", "analyzing", "rendering", "ready_for_review"]);
 const preferredVoiceStorageKey = "batch-studio-preferred-voice";
+const developerStories = [
+  "我原来学土木，后来转进 AI。做这个工具，是想让更多普通人也能享受到这一轮技术红利。",
+  "素材大一点没关系，我们正在一段一段认真看，已经完成的结果会保留。",
+  "AI 可以帮你提建议，最后决定讲什么、给谁看的人仍然是你。",
+];
 function preferredVoice(fallback?: string) {
   try {
     const saved = localStorage.getItem(preferredVoiceStorageKey);
@@ -63,6 +72,7 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
   const [recoveryChecked, setRecoveryChecked] = useState(false);
   const [recoveryNote, setRecoveryNote] = useState("");
   const [visibleCandidates, setVisibleCandidates] = useState(12);
+  const [storyIndex, setStoryIndex] = useState(0);
   const [selectedCounts, setSelectedCounts] = useState<Record<string, string>>({});
   const [flowView, setFlowView] = useState<number | null>(null);
   const manualCount = useRef(false);
@@ -115,6 +125,12 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
   const elapsed = batch?.activity?.started_at ? Math.max(0, Math.floor(((running ? now : new Date(batch.updated_at).getTime()) - new Date(batch.activity.started_at).getTime()) / 1000)) : 0;
   const totalElapsed = Math.floor((batch?.stage_times || []).reduce((sum, stage) => sum + Math.max(0,
     (stage.finished_at ? Date.parse(stage.finished_at) : now) - Date.parse(stage.started_at)), 0) / 1000);
+  useEffect(() => {
+    if (!running) return;
+    setStoryIndex((current) => (current + 1) % developerStories.length);
+    const timer = window.setInterval(() => setStoryIndex((current) => (current + 1) % developerStories.length), 25_000);
+    return () => window.clearInterval(timer);
+  }, [running, batch?.activity?.phase]);
 
   async function refreshAssets() {
     const r = await window.xiaoxiContent?.library.list({ limit: 500 });
@@ -300,6 +316,15 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
     { step: 3, label: "制作与成片", icon: Clapperboard, enabled: Boolean(batch?.script_confirmation || shownCandidates.length || batch?.archived) },
   ];
   const showResults = !visualFlow || flowStep === 3;
+  const activity = batch?.activity;
+  const legacyPercent = activity?.total ? Math.round(((activity.completed || 0) / activity.total) * 100) : null;
+  const progressPercent = submitting ? 1 : typeof activity?.overall_percent === "number"
+    ? Math.max(0, Math.min(100, Math.round(activity.overall_percent))) : legacyPercent;
+  const makingPhase = activity?.phase === "production" || activity?.phase === "finalizing" || activity?.phase === "complete";
+  const activityArt = makingPhase ? creativeMaking : creativeThinking;
+  const activityStill = makingPhase ? creativeMakingStill : creativeThinkingStill;
+  const heartbeatAge = activity?.heartbeat_at ? Math.max(0, Math.floor((now - Date.parse(activity.heartbeat_at)) / 1000)) : null;
+  const failedState = Boolean(batch && ["failed", "needs_attention", "outcome_unknown", "insufficient_materials", "completed_with_errors"].includes(batch.status));
   return <div className={`page batch-page${visualFlow ? " is-visual-flow" : ""}`}>
     <header className="batch-page-header"><div><h1>内容创作</h1><p>{visualFlow ? "把你的素材，做成一条好视频。" : "上传素材 → 填写需求 → 选定方案 → 确认文案 → 制作视频"}</p></div><button disabled={busy || saving || running || paused} onClick={() => void run(async () => { await draftQueue.flush(); draftOwner.current += 1; localStorage.removeItem("batch-studio-draft-id"); setFlowView(null); selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setBrief(emptyCreativeBrief()); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setDirty(false); setSoundDirty(false); setSelectedCounts({}); setSettings({ ...settings, voice_persona_id: preferredVoice(settings.voice_persona_id), workflow_version: 2, music_track_ids: settings.music_track_ids || [] }); manualCount.current = false; })}>新建视频</button></header>
     {visualFlow && <nav className="batch-flow-steps" aria-label="视频创作步骤">{flowSteps.map(({ step, label, icon: Icon, enabled }, index) => <button key={label} type="button" aria-current={(flowStep === 1 ? 2 : flowStep) === step ? "step" : undefined} disabled={!enabled || submitting} onClick={() => setFlowView(step)}><span className="batch-flow-icon"><Icon size={21} strokeWidth={1.7} /></span><span><small>0{index + 1}</small>{label}</span></button>)}</nav>}
@@ -315,12 +340,21 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
     {notice && <p className="batch-notice" role="alert">{notice}</p>}
     {batch?.archived && <p className="batch-notice" role="status">这是已归档的批次，可查看记录、预览与导出已有成片。</p>}
     {submitting && !batch && <section className="batch-progress" role="status">正在提交素材并启动任务…</section>}
-    {batch && (!visualFlow || running || paused || submitting || ["failed", "needs_attention", "outcome_unknown", "insufficient_materials", "completed_with_errors"].includes(batch.status)) && <section className="batch-progress" aria-live="polite"><strong>{submitting ? "正在提交任务" : running ? "正在处理" : batchStatus[batch.status] || "处理中"}</strong><span>{scriptFlow && !batch.script_confirmation ? `已有 ${options.length} 份文案` : `已完成 ${completed} / ${batch.target_count || "待定"} 条`}</span>
-      {(submitting || batch.activity) && <div className="batch-live-progress" role="status"><span>{submitting ? "正在保存素材与启动任务…" : batch.activity?.message}</span>
-        {!submitting && !!batch.activity?.total && <><progress aria-label={batch.activity.message} value={batch.activity.completed || 0} max={batch.activity.total} /><span>{batch.activity.completed || 0}/{batch.activity.total}</span></>}
-        {running && !batch.activity?.total && <progress aria-label="正在等待 AI 返回结果" />}
-        {!submitting && batch.activity && <span>{totalElapsed > 0 && <>累计 {Math.floor(totalElapsed / 60)} 分 {totalElapsed % 60} 秒 · </>}{running ? "本次已用时" : "本次用时"} {Math.floor(elapsed / 60)} 分 {elapsed % 60} 秒{running ? " · 正在自动更新" : ""}</span>}
-      </div>}
+    {batch && (!visualFlow || running || paused || submitting || failedState) && <section className={`batch-progress${failedState ? " is-attention" : ""}`}>
+      <div className="batch-progress-illustration" aria-hidden="true"><img className="batch-progress-motion" src={activityArt} alt="" /><img className="batch-progress-still" src={activityStill} alt="" /></div>
+      <div className="batch-progress-content">
+        <div className="batch-progress-heading"><div><strong>{submitting ? "正在提交任务" : activity?.phase_label || (running ? "正在处理" : batchStatus[batch.status] || "处理中")}</strong><span>{scriptFlow && !batch.script_confirmation ? `已有 ${options.length} 份文案` : `已完成 ${completed} / ${batch.target_count || "待定"} 条`}</span></div>{progressPercent !== null && <b>{progressPercent}%</b>}</div>
+        {(submitting || activity) && <div className="batch-live-progress">
+          <p className="batch-progress-message" role="status" aria-live="polite" aria-atomic="true">{submitting ? "正在保存素材并启动任务…" : activity?.message}</p>
+          <div className="batch-progress-track">{progressPercent !== null ? <progress aria-label={activity?.message || "任务进度"} value={progressPercent} max={100} /> : <progress aria-label="正在等待服务返回结果" />}</div>
+          <div className="batch-progress-meta">
+            {activity?.item_total ? <span>正在处理第 {activity.item_index || 1}/{activity.item_total} {makingPhase ? "条作品" : "个素材"}{activity.item_name ? ` · ${activity.item_name}` : ""}</span> : activity?.total ? <span>{activity.completed || 0}/{activity.total}</span> : <span>当前阶段会保留已完成结果</span>}
+            {!submitting && activity && <span>{totalElapsed > 0 && <>累计 {Math.floor(totalElapsed / 60)} 分 {totalElapsed % 60} 秒 · </>}{running ? "本次已用时" : "本次用时"} {Math.floor(elapsed / 60)} 分 {elapsed % 60} 秒{running && heartbeatAge !== null ? ` · ${heartbeatAge < 15 ? "刚刚更新" : `${heartbeatAge} 秒前更新`}` : ""}</span>}
+          </div>
+        </div>}
+        {failedState && batch.reasons?.[0] && <p className="batch-progress-error" role="alert">{batch.reasons[0]}</p>}
+        {running && <aside className="batch-developer-note"><span>开发者手记</span><p>{developerStories[storyIndex]}</p></aside>}
+      </div>
       {onOpenDiagnostics && ["failed", "needs_attention", "outcome_unknown", "insufficient_materials", "completed_with_errors"].includes(batch.status) && <button type="button" onClick={() => onOpenDiagnostics({ module: "content_engine", taskId: batch.task_id || batch.batch_id })}>反馈这个问题</button>}
       {batch.status === "outcome_unknown" && batch.planning_recovery_available && <div className="batch-planning-recovery">
         <span>上次 AI 请求结果无法确认，系统没有自动重提。请先核对对应平台的服务记录。{batch.planning_checkpoint ? ` 已保留${batch.planning_checkpoint.stage} ${batch.planning_checkpoint.completed}/${batch.planning_checkpoint.total}，确认后只继续未完成部分。` : ""}</span>

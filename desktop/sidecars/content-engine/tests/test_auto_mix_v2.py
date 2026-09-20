@@ -1292,8 +1292,16 @@ class AutoMixV2ContractTests(unittest.TestCase):
             "谷小智AI已完成三十次真实测试",
             title="谷小智 AI",
         )
-        self.assertFalse(matched["matched"])
-        self.assertIn("30", matched["missingCriticalTokens"])
+        self.assertTrue(matched["matched"])
+        self.assertEqual([], matched["missingCriticalTokens"])
+
+        wrong_number = verify_spoken_phrase(
+            "谷小智 AI 已完成 30 次真实测试",
+            "谷小智AI已完成四十次真实测试",
+            title="谷小智 AI",
+        )
+        self.assertFalse(wrong_number["matched"])
+        self.assertIn("30", wrong_number["missingCriticalTokens"])
 
         passed = verify_spoken_phrase(
             "谷小智 AI 已完成 30 次真实测试",
@@ -1301,6 +1309,18 @@ class AutoMixV2ContractTests(unittest.TestCase):
             title="谷小智 AI",
         )
         self.assertTrue(passed["matched"])
+
+        campaign = verify_spoken_phrase(
+            "第5期课程，10月1日起报名费1380元。",
+            "第五期课程，十月一日起报名费一千三百八十元。",
+        )
+        self.assertEqual([], campaign["missingCriticalTokens"])
+
+        leading_zero_wrong = verify_spoken_phrase("编号007已登记。", "编号七已登记。")
+        self.assertFalse(leading_zero_wrong["matched"])
+        self.assertEqual(["007"], leading_zero_wrong["missingCriticalTokens"])
+        self.assertTrue(verify_spoken_phrase("编号007已登记。", "编号零零七已登记。")["matched"])
+        self.assertTrue(verify_spoken_phrase("累计10010人。", "累计一万零一十人。")["matched"])
 
     def test_voice_verification_does_not_treat_generic_ai_as_brand(self):
         result = verify_spoken_phrase(

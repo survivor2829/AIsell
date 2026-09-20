@@ -9,18 +9,15 @@ import {
   Folder,
   Images,
   ListTodo,
-  Lock,
   LogOut,
   MessageCircle,
   MonitorPlay,
   Pause,
   Play,
   RefreshCw,
-  Save,
   Send,
   Square,
   ThumbsUp,
-  Trash2,
   UserRound,
   UserX,
   UsersRound,
@@ -52,7 +49,7 @@ import { FloatingWorkflowWindow, useWechatWorkflow, WechatWorkflowPage, Workflow
 import { WechatGettingStarted } from "./WechatGettingStarted";
 import { AGENT_ROLE_IDENTITIES, AgentHome, type AgentHomeTarget, type AgentRoleKey } from "./AgentHome";
 
-type ModuleKey = AgentRoleKey | AgentHomeTarget | "api-key" | "diagnostics";
+type ModuleKey = AgentRoleKey | AgentHomeTarget | "diagnostics";
 type GroupKey = AgentRoleKey;
 type NavItem = { key: ModuleKey; label: string; icon: ComponentType<{ size?: number; strokeWidth?: number }> };
 type NavGroup = NavItem & { key: GroupKey; persona: string; children: NavItem[] };
@@ -419,9 +416,8 @@ const navGroups: NavGroup[] = [
   { key: "operations", persona: AGENT_ROLE_IDENTITIES.operations.name, label: AGENT_ROLE_IDENTITIES.operations.responsibility, icon: BarChart3, children: operationsChildren }
 ];
 
-const apiKeyNavItem: NavItem = { key: "api-key", label: "API密钥", icon: Lock };
 const diagnosticsNavItem: NavItem = { key: "diagnostics", label: "吐槽中心", icon: MessageCircle };
-const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), apiKeyNavItem, diagnosticsNavItem];
+const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), diagnosticsNavItem];
 
 function nowTime() {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -493,7 +489,7 @@ function taskStatusLabel(status: string) {
 
 
 function moduleIsAvailable(key: ModuleKey) {
-  return ["agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "materials", "workspace", "finished", "api-key", "diagnostics"].includes(key);
+  return ["agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "materials", "workspace", "finished", "diagnostics"].includes(key);
 }
 
 function touchTaskStatusLabel(task: TouchTaskState) {
@@ -814,10 +810,6 @@ export default function App() {
             <diagnosticsNavItem.icon size={20} strokeWidth={2.7} />
             <span>{diagnosticsNavItem.label}</span>
           </button>
-          <button className={`nav-item sidebar-api-key ${active === apiKeyNavItem.key ? "active" : ""}`} onClick={() => setActive(apiKeyNavItem.key)}>
-            <apiKeyNavItem.icon size={20} strokeWidth={2.7} />
-            <span>{apiKeyNavItem.label}</span>
-          </button>
         </div>
       </aside>
 
@@ -837,7 +829,7 @@ export default function App() {
               <button role="menuitem" onClick={() => { setSessionEntered(false); setAccountMenuOpen(false); }}><LogOut size={16} />退出登录</button>
             </div>}
           </div>
-          <CustomerTools onNavigate={(target) => { if (target === "diagnostics") openFeedback(); else if (target === "api-key") setActive(target); else openAgentTarget(target); }} />
+          <CustomerTools onNavigate={(target) => { if (target === "diagnostics") openFeedback(); else openAgentTarget(target); }} />
         </header>
 
         {personalizingRole && <RoleAppearancePanel key={personalizingRole} role={personalizingRole} value={rolePreferences.preferences[personalizingRole]}
@@ -847,9 +839,9 @@ export default function App() {
         <div className="content-card">
           {active !== "diagnostics" && <CloudMaintenance compact />}
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
-          {guideOpen && ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "api-key"].includes(active) && <WechatGettingStarted active={active}
+          {guideOpen && ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active) && <WechatGettingStarted active={active}
             connected={Boolean(contactSyncState.wechat_identity?.account_id && !contactSyncState.account_changed)} aiConfigured={deepSeekConfigured} workflow={workflow}
-            onOpen={setActive} onClose={() => setGuideOpen(false)}
+            onOpen={(target) => target === "diagnostics" ? openFeedback() : setActive(target)} onClose={() => setGuideOpen(false)}
             onEditor={(type) => { setWorkflowEditor({ type }); setWorkflowView("tasks"); setActive(type === "touch" ? "touch" : "moments"); }} />}
           {activeRole && (
             <AgentHome
@@ -930,7 +922,6 @@ export default function App() {
           {active === "finished" && <FinishedVideoCenterPage onOpenProductions={() => {
             setLegacyWorkspace(false); setCreativeView("history"); setActive("workspace");
           }} />}
-          {active === "api-key" && <ApiKeyPage onConfiguredChange={setDeepSeekConfigured} />}
           {active === "diagnostics" && <FeedbackCenter appVersion={packageInfo.version} edition={EDITION_LABEL || "正式版"} buildId={BUILD_ID} context={feedbackContext} />}
           {active === "touch" && DevelopmentAcceptance && (
             <details className="workflow-details page"><summary>内部测试工具</summary><Suspense fallback={null}>
@@ -1102,263 +1093,6 @@ function AccountManagement() {
         ))}
       </div>
     </section>
-  );
-}
-
-
-function ApiKeyPage({ onConfiguredChange }: { onConfiguredChange: (configured: boolean) => void }) {
-  return (
-    <section className="page api-key-page">
-      <div className="page-head">
-        <div>
-          <h1>API密钥</h1>
-          <p>配置 AI 服务所需的 API Key，密钥仅在当前 Windows 用户下加密保存。</p>
-        </div>
-      </div>
-      <div className="api-settings-grid">
-        <DeepSeekApiSettings onConfiguredChange={onConfiguredChange} />
-        <ApiMartSettings />
-      </div>
-    </section>
-  );
-}
-
-function DeepSeekApiSettings({
-  onConfiguredChange
-}: {
-  onConfiguredChange?: (configured: boolean) => void;
-} = {}) {
-  const [apiKey, setApiKey] = useState("");
-  const [maskedKey, setMaskedKey] = useState("");
-  const [status, setStatus] = useState("正在读取已保存的设置…");
-  const [statusTone, setStatusTone] = useState<"neutral" | "success" | "error">("neutral");
-  const [busy, setBusy] = useState(false);
-  const refresh = () => {
-    if (!window.xiaoxiDeepSeekApi) {
-      setStatusTone("error");
-      onConfiguredChange?.(false);
-      return setStatus("当前环境未连接 DeepSeek 设置。");
-    }
-    void window.xiaoxiDeepSeekApi.status().then((result) => {
-      const configured = Boolean(result.ok && result.data?.configured);
-      setMaskedKey(configured ? result.data?.maskedKey || "" : "");
-      onConfiguredChange?.(configured);
-      const statusError = result.data?.error || result.error;
-      setStatusTone(statusError ? "error" : "neutral");
-      setStatus(configured ? "已保存，可测试连接。" : statusError || "尚未保存 API Key。");
-    }).catch(() => {
-      setStatusTone("error");
-      onConfiguredChange?.(false);
-      setStatus("读取 DeepSeek 设置失败。");
-    });
-  };
-  useEffect(refresh, []);
-
-  const run = (operation: () => Promise<DeepSeekApiResult>, success: string, clearInput = false) => {
-    setBusy(true);
-    void operation().then((result) => {
-      if (typeof result.data?.configured === "boolean") {
-        const configured = result.data.configured;
-        setMaskedKey(configured ? result.data.maskedKey || "" : "");
-        onConfiguredChange?.(configured);
-      }
-      if (!result.ok) {
-        setStatusTone("error");
-        return setStatus(result.error || "操作失败，请稍后重试。");
-      }
-      if (clearInput) setApiKey("");
-      setStatusTone("success");
-      setStatus(success);
-    }).catch(() => {
-      setStatusTone("error");
-      setStatus("操作失败，请稍后重试。");
-    }).finally(() => setBusy(false));
-  };
-
-  const saveAndTest = async (): Promise<DeepSeekApiResult> => {
-    const value = apiKey.trim();
-    if (!value) return window.xiaoxiDeepSeekApi!.test();
-    const tested = await window.xiaoxiDeepSeekApi!.test({ apiKey: value });
-    if (!tested.ok) return tested;
-    return window.xiaoxiDeepSeekApi!.save({ apiKey: value });
-  };
-
-  return (
-    <div className="table-panel deepseek-settings">
-      <div className="deepseek-settings-head">
-        <div>
-          <div className="deepseek-title">DeepSeek API</div>
-          <p>用于产品资料分析、脚本和模块文案，也供现有自动回复等功能使用。</p>
-        </div>
-        <div className="deepseek-head-actions">
-          <span className={`deepseek-config-state ${maskedKey ? "is-configured" : ""}`}>
-            <span className="deepseek-state-dot" />
-            {maskedKey ? "已配置" : "未配置"}
-          </span>
-        </div>
-      </div>
-      <div className="deepseek-settings-body">
-        <label className="field deepseek-key-field">
-          <span>{maskedKey ? `当前 Key：${maskedKey}` : "DeepSeek API Key"}</span>
-          <div className="deepseek-key-row">
-            <input type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={maskedKey ? "填写新 Key 以替换" : "请输入您的 DeepSeek API Key"} />
-            <button className="primary-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.save({ apiKey }), "已安全保存，请测试连接确认可用。", true)} disabled={busy || !apiKey.trim()}>
-              <Save size={16} />
-              保存{maskedKey ? "并替换" : ""}
-            </button>
-          </div>
-        </label>
-        <div className="deepseek-settings-footer">
-          <div className={`deepseek-status is-${statusTone}`} aria-live="polite">{status}</div>
-          <div className="actions deepseek-actions">
-            <button className="secondary-button" onClick={() => run(saveAndTest, apiKey.trim() ? "DeepSeek 生产文案预检正常，当前 Key 已保存。" : "DeepSeek 生产文案预检正常。", Boolean(apiKey.trim()))} disabled={busy || (!apiKey.trim() && !maskedKey)}>
-              <RefreshCw size={16} />
-              测试连接
-            </button>
-            <button className="danger-button" onClick={() => run(() => window.xiaoxiDeepSeekApi!.remove(), "已删除 DeepSeek API Key，AI 文案调用已停止。", true)} disabled={busy || !maskedKey}>
-              <Trash2 size={16} />
-              删除
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const APIMART_BASE_URL = "https://api.apimart.ai/v1";
-const APIMART_MODEL = "gpt-image-2";
-
-function ApiMartSettings() {
-  const [apiKey, setApiKey] = useState("");
-  const [configured, setConfigured] = useState(false);
-  const [baseUrl, setBaseUrl] = useState(APIMART_BASE_URL);
-  const [model, setModel] = useState(APIMART_MODEL);
-  const [status, setStatus] = useState("正在读取已保存的设置…");
-  const [statusTone, setStatusTone] = useState<"neutral" | "success" | "error">("neutral");
-  const [busy, setBusy] = useState(false);
-
-  const applyConfiguration = (result: ProductDetailAiSettingsResult) => {
-    if (result.data?.baseUrl) setBaseUrl(result.data.baseUrl);
-    if (result.data?.model) setModel(result.data.model);
-    if (typeof result.data?.configured === "boolean") {
-      setConfigured(result.data.configured);
-    }
-  };
-
-  const refresh = () => {
-    const api = window.xiaoxiProductDetailAiSettings;
-    if (!api) {
-      setStatusTone("error");
-      return setStatus("当前环境未连接产品详情图 AI 设置。");
-    }
-    void api.status().then((result) => {
-      applyConfiguration(result);
-      const statusError = result.data?.error || result.error;
-      if (statusError) {
-        setStatusTone("error");
-        return setStatus(statusError);
-      }
-      if (result.data?.secureStorageAvailable === false) {
-        setStatusTone("error");
-        return setStatus("当前 Windows 用户无法使用加密存储，请检查系统后重试。");
-      }
-      if (result.data?.ready) {
-        setStatusTone("success");
-        return setStatus("已保存并启用，产品详情图 AI 精修可以读取此配置。");
-      }
-      setStatusTone("neutral");
-      return setStatus("尚未保存 APIMart API Key。");
-    }).catch(() => {
-      setStatusTone("error");
-      setStatus("读取 APIMart 设置失败。");
-    });
-  };
-  useEffect(refresh, []);
-
-  const run = (
-    operation: () => Promise<ProductDetailAiSettingsResult>,
-    success: string,
-    options: { clearInput?: boolean; updateConfiguration?: boolean } = {}
-  ) => {
-    setBusy(true);
-    void operation().then((result) => {
-      if (options.updateConfiguration !== false) applyConfiguration(result);
-      if (!result.ok) {
-        setStatusTone("error");
-        return setStatus(result.error || "操作失败，请稍后重试。");
-      }
-      if (options.clearInput) setApiKey("");
-      setStatusTone("success");
-      setStatus(success);
-    }).catch(() => {
-      setStatusTone("error");
-      setStatus("操作失败，请稍后重试。");
-    }).finally(() => setBusy(false));
-  };
-
-  const validateAndSave = async (): Promise<ProductDetailAiSettingsResult> => {
-    const api = window.xiaoxiProductDetailAiSettings!;
-    const value = apiKey.trim();
-    const checked = await api.validate({ apiKey: value });
-    if (!checked.ok) return checked;
-    if (checked.data?.paidCallPerformed !== false) {
-      return { ok: false, error: "配置检查结果异常，已取消保存。" };
-    }
-    return api.save({ apiKey: value });
-  };
-
-  const validateOnly = () => {
-    const api = window.xiaoxiProductDetailAiSettings!;
-    const value = apiKey.trim();
-    return value ? api.validate({ apiKey: value }) : api.validate();
-  };
-
-  return (
-    <div className="table-panel deepseek-settings provider-settings-card">
-      <div className="deepseek-settings-head">
-        <div>
-          <div className="deepseek-title">APIMart 生图 API</div>
-          <p>用于产品详情图的 AI 精修；API 地址和模型已内置，您只需要填写 Key。</p>
-        </div>
-        <div className="deepseek-head-actions">
-          <span className={`deepseek-config-state ${configured ? "is-configured" : ""}`}>
-            <span className="deepseek-state-dot" />
-            {configured ? "已配置" : "未配置"}
-          </span>
-        </div>
-      </div>
-      <div className="deepseek-settings-body">
-        <div className="provider-readonly-grid" aria-label="APIMart 固定配置">
-          <div><span>API 地址</span><strong>{baseUrl}</strong></div>
-          <div><span>生图模型</span><strong>{model}</strong></div>
-        </div>
-        <label className="field deepseek-key-field">
-          <span>{configured ? "APIMart API Key（已安全保存）" : "APIMart API Key"}</span>
-          <div className="deepseek-key-row">
-            <input type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={configured ? "填写新 Key 以替换" : "请输入您的 APIMart API Key"} />
-            <button className="primary-button" onClick={() => run(validateAndSave, "已安全保存并启用。配置检查未联网、未产生费用。", { clearInput: true })} disabled={busy || !apiKey.trim()}>
-              <Save size={16} />
-              保存并启用
-            </button>
-          </div>
-        </label>
-        <div className="provider-cost-note">“检查配置”只检查本地格式和加密存储，不连接 APIMart，也不会生成图片或产生费用。</div>
-        <div className="deepseek-settings-footer">
-          <div className={`deepseek-status is-${statusTone}`} aria-live="polite">{status}</div>
-          <div className="actions deepseek-actions">
-            <button className="secondary-button" onClick={() => run(validateOnly, "配置检查通过：未联网、未产生费用。", { updateConfiguration: false })} disabled={busy || (!apiKey.trim() && !configured)}>
-              <RefreshCw size={16} />
-              检查配置
-            </button>
-            <button className="danger-button" onClick={() => run(() => window.xiaoxiProductDetailAiSettings!.delete(), "已删除 APIMart API Key，AI 精修已关闭。", { clearInput: true })} disabled={busy || !configured}>
-              <Trash2 size={16} />
-              删除
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
   );
 }
 

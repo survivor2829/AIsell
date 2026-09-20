@@ -9,6 +9,7 @@ const {
 const { diagnostics } = require("./diagnostics.cjs");
 const { CHANNELS: BATCH_CHANNELS, ERRORS: BATCH_ERRORS, registerNarratedBatchIpc } = require("./narrated-batch-ipc.cjs");
 const { CHANNELS: VOLCENGINE_TTS_CHANNELS, ARK_CHANNELS, ASR_CHANNELS, registerVolcengineTtsSettings } = require("./volcengine-tts-settings.cjs");
+const { isProviderTaskType } = require("./content-engine-sidecar.cjs");
 
 const CONTENT_ENGINE_CHANNELS = Object.freeze({
   ...Object.fromEntries(Object.entries(BATCH_CHANNELS).map(([name, channel]) => [`batch_${name}`, channel])),
@@ -312,16 +313,16 @@ const PUBLIC_ERRORS = Object.freeze({
   render_timeout: "成片渲染超时，请检查素材后重试。",
   render_failed: "成片渲染失败，请检查素材后重试。",
   task_not_completed: "只有已完成的任务才能登记成片。",
-  BAILIAN_API_KEY_MISSING: "请先保存百炼 API Key。",
-  VOLCENGINE_TTS_KEY_INVALID: "火山语音 API Key 格式无效，请复制控制台中的 API Key。",
-  VOLCENGINE_TTS_KEY_UNAVAILABLE: "请在声音设置中保存火山引擎语音 API Key。",
+  BAILIAN_API_KEY_MISSING: "云端智能服务暂不可用，请稍后重试。",
+  VOLCENGINE_TTS_KEY_INVALID: "云端配音服务暂不可用，请稍后重试。",
+  VOLCENGINE_TTS_KEY_UNAVAILABLE: "云端配音服务暂不可用，请稍后重试。",
   VOLCENGINE_TTS_KEY_ENCRYPTION_INVALID: "火山语音 Key 安全传输失败，请重试。",
   VOLCENGINE_TTS_RESTART_REQUIRED: "密钥已保存，但内容引擎尚未就绪，请重新启动应用后再试听。",
-  volcengine_tts_not_configured: "请先在声音设置中配置火山引擎语音 API Key。",
-  VOLCENGINE_ASR_INVALID: "请填写正确的 APP ID 和 Access Token，不需要 Secret Key。",
-  volcengine_asr_not_configured: "请保存完整的语音识别 APP ID 和 Access Token。",
-  volcengine_ark_not_configured: "请在火山引擎设置中保存方舟 API Key。",
-  volcengine_request_rejected: "火山接口拒绝了请求，请检查对应服务的密钥与开通权限。",
+  volcengine_tts_not_configured: "云端配音服务暂不可用，请稍后重试。",
+  VOLCENGINE_ASR_INVALID: "云端语音识别服务暂不可用，请稍后重试。",
+  volcengine_asr_not_configured: "云端语音识别服务暂不可用，请稍后重试。",
+  volcengine_ark_not_configured: "云端素材理解服务暂不可用，请稍后重试。",
+  volcengine_request_rejected: "云端智能服务未接受本次请求，请稍后重试。",
   volcengine_outcome_unknown: "火山请求中断或超时，结果不明，已停止自动重提。",
   volcengine_response_invalid: "火山返回结果无法解析，已停止本次任务。",
   volcengine_operation_unsupported: "该操作尚未适配火山接口，未调用百炼。",
@@ -335,11 +336,13 @@ const PUBLIC_ERRORS = Object.freeze({
   auto_mix_voice_write_failed: "配音已返回，但本地保存失败；请检查缓存目录权限与磁盘空间，不要重复合成。",
   auto_mix_voice_unavailable: "当前内容引擎不支持声音试听，请检查配音组件配置。",
   auto_mix_voice_persona_invalid: "音色或模型配置无效，请检查当前声音设置。",
-  cloud_request_failed: "云端请求未成功，请检查网络、API Key、服务权限与账户额度；请勿连续重复提交。",
+  cloud_request_failed: "云端请求未成功，请检查网络后稍后重试；请勿连续重复提交。",
   cloud_request_rejected: "云端未接受本次请求，请检查模型或音色权限、请求参数和账户额度。",
-  BAILIAN_API_KEY_INVALID: "百炼 API Key 格式无效。",
+  BAILIAN_API_KEY_INVALID: "云端智能服务暂不可用，请稍后重试。",
   BAILIAN_API_HOST_INVALID: "百炼 API Host 必须是官方 HTTPS 地址。",
-  BAILIAN_API_KEY_UNREADABLE: "已保存的百炼 API Key 无法读取，请重新保存。",
+  BAILIAN_API_KEY_UNREADABLE: "云端智能服务暂不可用，请稍后重试。",
+  PROVIDER_GATEWAY_UNAVAILABLE: "云端智能服务暂不可用，当前任务未提交，请稍后重试。",
+  provider_gateway_unavailable: "云端智能服务暂不可用，当前进度已保留，请稍后重试。",
   SECURE_STORAGE_UNAVAILABLE: "无法启用 Windows 账户加密存储。",
   BAILIAN_KEY_ENCRYPTION_INVALID: "百炼 Key 的安全传输会话无效，请重试。",
   creative_project_not_found: "没有找到这条创作项目。",
@@ -455,7 +458,7 @@ const PUBLIC_ERRORS = Object.freeze({
   invalid_reuse_cover: "封面复用参数无效。",
   cover_generation_unavailable: "APIMart AI 封面能力暂不可用，请稍后恢复任务。",
   cover_outcome_unknown: "封面提交结果未知，为避免重复扣费不会自动重提。",
-  apimart_not_configured: "请先在 API 密钥中启用并保存 APIMart Key。",
+  apimart_not_configured: "云端图片服务暂不可用，请稍后恢复任务。",
   cover_submit_failed: "APIMart 拒绝了封面请求，本次不会自动重提。",
   cover_provider_failed: "APIMart 封面任务失败，本次不会自动重提。",
   cover_poll_failed: "APIMart 封面状态查询失败，请稍后恢复任务。",
@@ -778,11 +781,11 @@ function publicError(error) {
     if (businessCode && businessCode[0] === providerMessage) {
       message = `火山语音拒绝本次合成（代码 ${businessCode[1]}），请检查音色权限、服务开通状态与额度。`;
     } else if (httpStatus && httpStatus[0] === providerMessage) {
-      message = `火山语音请求未成功（HTTP ${httpStatus[1]}），请检查 API Key、服务权限与账户额度；请勿连续重复提交。`;
+      message = `云端配音请求未成功（HTTP ${httpStatus[1]}），请稍后重试；请勿连续重复提交。`;
     }
     const volcStatus = suppliedCode === "volcengine_request_rejected"
       ? providerMessage.match(/^火山(方舟|语音识别)请求被拒绝（HTTP ([1-5][0-9]{2})），请检查对应 API Key、模型及服务权限。$/u) : null;
-    if (volcStatus && volcStatus[0] === providerMessage) message = `火山${volcStatus[1]}请求被拒绝（HTTP ${volcStatus[2]}），请检查对应 API Key、模型及服务权限。`;
+    if (volcStatus && volcStatus[0] === providerMessage) message = `云端智能服务请求被拒绝（HTTP ${volcStatus[2]}），请稍后重试。`;
     return {
       ok: false,
       code: suppliedCode,
@@ -2544,13 +2547,18 @@ function registerContentEngineIpc(options = {}) {
   });
   for (const [channel, method] of [
     [CONTENT_ENGINE_CHANNELS.pauseTask, "pauseTask"],
-    [CONTENT_ENGINE_CHANNELS.resumeTask, "resumeTask"],
     [CONTENT_ENGINE_CHANNELS.cancelTask, "cancelTask"]
   ]) {
     handle(channel, async (payload) => publicTask(
       await controller[method](validateId(payload.taskId, "task"))
     ));
   }
+  handle(CONTENT_ENGINE_CHANNELS.resumeTask, async (payload) => {
+    const taskId = validateId(payload.taskId, "task");
+    const task = await controller.getTask(taskId);
+    if (isProviderTaskType(task?.task_type)) await options.beforeProviderWork?.();
+    return publicTask(await controller.resumeTask(taskId));
+  });
   handle(CONTENT_ENGINE_CHANNELS.listFinished, async (payload) => {
     const result = await controller.listFinished(validateLimit(payload.limit));
     return { items: (result?.items || []).map(publicFinished) };

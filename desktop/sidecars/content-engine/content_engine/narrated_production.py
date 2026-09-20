@@ -57,6 +57,28 @@ def retry_failed_planning(batch):
                 item.pop('error_code', None)
 
 
+def _available_unique_duration_ms(batch):
+    by_asset = {}
+    for shot in batch.get('available_shots', []):
+        if not isinstance(shot, dict) or shot.get('usable') is False:
+            continue
+        asset_id = str(shot.get('asset_id') or '')
+        start = int(shot.get('source_start_ms') or 0)
+        end = int(shot.get('source_end_ms') or 0)
+        if asset_id and end > start:
+            by_asset.setdefault(asset_id, []).append((start, end))
+    total = 0
+    for intervals in by_asset.values():
+        merged = []
+        for start, end in sorted(intervals):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        total += sum(end - start for start, end in merged)
+    return total
+
+
 def confirm_selections(domain, request):
     b = domain._load(request.get('batch_id'))
     domain._idle(b)
@@ -94,12 +116,18 @@ def confirm_selections(domain, request):
     settings = request.get('settings', b['settings'])
     require(isinstance(settings, dict) and settings.get('minimum_duration_seconds', 0) == b['settings'].get('minimum_duration_seconds', 0),
             'narrated_settings_changed', '最短时长已改变，请先重新准备文案。')
+    minimum_seconds = int(settings.get('minimum_duration_seconds') or 0)
+    if minimum_seconds > 0:
+        available_ms = _available_unique_duration_ms(b)
+        maximum_count = available_ms // (minimum_seconds * 1000)
+        require(total <= maximum_count, 'narrated_insufficient_unique_footage',
+                f'当前不重复可用画面约 {available_ms // 1000} 秒，按每条至少 {minimum_seconds} 秒最多可制作 {maximum_count} 条；请减少数量或补充素材。')
     persona = domain.d._approved_auto_mix_voice_persona(selected_id=settings.get('voice_persona_id'))
     require(persona is not None, 'auto_mix_voice_persona_approval_required', '请先选择已试听批准的声音，再开始制作。')
     if persona['provider'] == 'volcengine':
         from .volcengine_tts import VolcengineTTSProvider
         require(VolcengineTTSProvider().configured, 'volcengine_tts_not_configured',
-                '当前配音服务未配置，请先在声音设置中配置火山语音 API Key，再开始制作。')
+                '云端配音服务暂不可用；当前进度已保留，请稍后重试。')
     previous = [{k: v for k, v in item.items() if k != 'confirmed_at'} for item in b.get('script_selections', [])]
     if previous == selections:
         require(settings == b['settings'], 'narrated_settings_changed', '本批已开始制作，请新建批次使用其他声音或配乐。')
@@ -128,7 +156,8 @@ def confirm_selections(domain, request):
     b.update(script_selections=selections, production_jobs=jobs, candidates=candidates,
              selected_script_id=selections[0]['script_id'], script_confirmation=copy.deepcopy(candidates[0]['_confirmed_script']),
              direction=copy.deepcopy(selections[0]['direction']), target_count=total,
-             recommended_count=total, feasible_count=len(candidates), approved=True, reasons=[])
+             recommended_count=total, feasible_count=len(candidates), count_is_exact=True,
+             approved=True, reasons=[])
     domain._store(b)
     return domain.start(b['batch_id'], 'confirmed')
 
@@ -174,6 +203,34 @@ def confirmed_narration_units(domain, batch, narration):
     return [{'unit_id': f'U{number + 1}', 'text': text,
              'required_ms': domain._phrase_budget_ms(batch, text)}
             for number, text in enumerate(units)]
+
+
+def cohere_mapping_sources(domain, batch, phrases):
+    """Keep an unverified edit segment inside one source before filling capacity."""
+    index = {shot['segment_id']: shot for shot in batch['available_shots']}
+    phrases = copy.deepcopy(phrases)
+    changes = []
+    for phrase in phrases:
+        refs = phrase['shot_ids']
+        if len({index[ref]['asset_id'] for ref in refs}) <= 1:
+            continue
+        activities = [(domain._source_evidence_for(batch, index[ref]).get('source_provenance') or {}).get('activity_label')
+                      for ref in refs]
+        if all(activities) and len(set(activities)) == 1:
+            continue
+        groups = {}
+        for position, ref in enumerate(refs):
+            group = groups.setdefault(index[ref]['asset_id'], {'refs': [], 'first': position, 'capacity': 0})
+            group['refs'].append(ref)
+            group['capacity'] += index[ref]['target_duration_ms']
+        required = domain._phrase_budget_ms(batch, phrase['text'])
+        selected = min(groups.values(), key=lambda group: (
+            0 if group['capacity'] >= required else 1, -group['capacity'], group['first']))
+        removed = [ref for ref in refs if ref not in selected['refs']]
+        phrase['shot_ids'] = selected['refs']
+        changes.append({'kept_asset_id': index[selected['refs'][0]]['asset_id'],
+                        'removed_shot_ids': removed, 'reason': 'unverified_cross_source_activity'})
+    return phrases, changes
 
 
 def complete_mapping_capacity(domain, batch, phrases, *, changed_phrase=None, allow_donors=True):
@@ -381,10 +438,11 @@ def review_confirmed_candidate(domain, batch, candidate):
                     require(isinstance(refs, list) and refs and all(isinstance(ref, str) and ref in shot_index for ref in refs),
                             'narrated_mapping_invalid', f"{unit_label}的shot_ids必须使用所给S编号。")
                     phrases.append({'text': text, 'shot_ids': [shot_index[ref]['segment_id'] for ref in refs]})
+                phrases, source_changes = cohere_mapping_sources(domain, batch, phrases)
                 phrases, changes = complete_mapping_capacity(domain, batch, phrases)
                 prepared = domain._repack_duration_candidate({'title': candidate['title'], 'phrases': phrases}, batch,
                                                              batch['available_shots'], allow_same_activity_cuts=True)
-                return {**prepared, '_capacity_adjustments': changes}
+                return {**prepared, '_capacity_adjustments': source_changes + changes}
             def validate(result):
                 try:
                     domain._normalize_candidate(mapped(result), batch, domain._history(batch['batch_id']))
@@ -536,7 +594,11 @@ def run_production(domain, task_id, batch):
     if not unfinished:
         batch['status'] = 'completed' if completed == len(jobs) else 'completed_with_errors'
         domain._export_completed_candidates(batch)
-    domain._activity(batch, f'已完成 {completed} / {len(jobs)} 条作品', completed, len(jobs))
+    domain._activity(batch, f'已完成 {completed} / {len(jobs)} 条作品', completed, len(jobs),
+                     phase='complete' if completed == len(jobs) else 'production',
+                     phase_label='制作完成' if completed == len(jobs) else '视频制作',
+                     overall_percent=100 if completed == len(jobs) else None,
+                     phase_percent=100 if completed == len(jobs) else None)
     domain._store(batch)
     return {'batch_id': batch['batch_id'], 'generated_count': completed}
 

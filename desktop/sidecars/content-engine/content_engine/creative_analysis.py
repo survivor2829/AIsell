@@ -14,6 +14,7 @@ import shutil
 import socket
 import sqlite3
 import subprocess
+import threading
 import time
 from typing import Any, Callable
 from urllib import parse, request
@@ -41,7 +42,7 @@ from .product_pipeline import normalize_product_context
 from .render_mix import discover_media_executable, _windows_process_options
 
 
-DEFAULT_ANALYSIS_VERSION = "creative-v5-bulk-visual-evidence"
+DEFAULT_ANALYSIS_VERSION = "creative-v6-sparse-visual-evidence"
 DEFAULT_ASR_MODEL = "paraformer-v2"
 DEFAULT_VISION_MODEL = "qwen-vl-plus"
 DEFAULT_SELECTION_MODEL = "qwen-plus"
@@ -2002,9 +2003,16 @@ class FFmpegCreativeAnalyzer:
     def _command(self, args, timeout=2 * 60 * 60):
         if not self.ffmpeg_path:
             raise ContentEngineError("media_tools_unavailable", "FFmpeg is required for analysis.")
+        command = list(args)
+        if self._run_process is subprocess.run:
+            # FFmpeg's progress protocol gives us a real liveness signal even
+            # when normal logging is disabled.  The timeout below is therefore
+            # an inactivity watchdog, not a wall-clock limit on large media.
+            command[1:1] = ["-progress", "pipe:1", "-nostats"]
+            return self._command_with_inactivity_watchdog(command, timeout)
         try:
             result = self._run_process(
-                list(args),
+                command,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -2020,6 +2028,66 @@ class FFmpegCreativeAnalyzer:
             raise ContentEngineError("analysis_timeout", "素材分析超时。") from error
         if result.returncode != 0:
             raise ContentEngineError("analysis_failed", (result.stderr or "FFmpeg failed")[-2_000:])
+
+    @staticmethod
+    def _command_with_inactivity_watchdog(args, inactivity_timeout):
+        process = subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            shell=False,
+            bufsize=1,
+            **_windows_process_options(),
+        )
+        output = {"stdout": [], "stderr": []}
+        last_activity = [time.monotonic()]
+        finished = threading.Event()
+        stalled = threading.Event()
+
+        def read_stream(name, stream):
+            for line in iter(stream.readline, ""):
+                output[name].append(line)
+                if sum(map(len, output[name])) > 100_000:
+                    output[name] = output[name][-100:]
+                last_activity[0] = time.monotonic()
+
+        def watch_inactivity():
+            limit = max(1, float(inactivity_timeout))
+            while not finished.wait(timeout=min(1, limit)):
+                if time.monotonic() - last_activity[0] < limit:
+                    continue
+                stalled.set()
+                process.kill()
+                return
+
+        stderr_reader = threading.Thread(
+            target=read_stream, args=("stderr", process.stderr), daemon=True
+        )
+        watchdog = threading.Thread(target=watch_inactivity, daemon=True)
+        stderr_reader.start()
+        watchdog.start()
+        try:
+            read_stream("stdout", process.stdout)
+            process.wait(timeout=10)
+        finally:
+            finished.set()
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+            stderr_reader.join(timeout=2)
+            watchdog.join(timeout=2)
+        if stalled.is_set():
+            seconds = max(1, round(float(inactivity_timeout)))
+            raise ContentEngineError(
+                "analysis_stalled", f"素材分析连续 {seconds} 秒没有进度，已安全停止。"
+            )
+        stderr = "".join(output["stderr"])
+        if process.returncode != 0:
+            raise ContentEngineError("analysis_failed", (stderr or "FFmpeg failed")[-2_000:])
 
     def rank_course_windows(self, windows, theme, *, experiment_mode=None):
         candidates = []
@@ -2245,7 +2313,7 @@ class FFmpegCreativeAnalyzer:
         for item in measured:
             item["visual_evidence"].pop("pixel_digest", None)
 
-    def analyze(self, *, asset, source_path, task_id, profile, should_stop):
+    def analyze(self, *, asset, source_path, task_id, profile, should_stop, progress=None):
         if not self.capability["available"]:
             raise ContentEngineError("media_tools_unavailable", "FFmpeg is required for analysis.")
         source = Path(source_path)
@@ -2265,35 +2333,39 @@ class FFmpegCreativeAnalyzer:
                 return {"stopped": True}
             duration_ms = int(asset["duration_ms"] or 0)
             dense_visual_signals = profile.get("workflow") == "auto_mix_v2"
+            report = progress if callable(progress) else lambda *_args, **_kwargs: None
+            report("正在准备素材", 0)
             derivatives = []
             if asset["media_kind"] == "video":
-                proxy = temp_dir / "proxy.mp4"
-                self._command(
-                    [
-                        self.ffmpeg_path,
-                        "-y",
-                        "-i",
-                        str(source),
-                        "-vf",
-                        "fps=30,scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280",
-                        "-an",
-                        "-c:v",
-                        "h264_mf",
-                        "-rate_control",
-                        "quality",
-                        "-quality",
-                        "50",
-                        "-scenario",
-                        "archive",
-                        "-pix_fmt",
-                        "yuv420p",
-                        "-movflags",
-                        "+faststart",
-                        str(proxy),
-                    ]
-                )
-                derivatives.append(self._derivative("proxy", proxy))
+                if not dense_visual_signals:
+                    proxy = temp_dir / "proxy.mp4"
+                    self._command(
+                        [
+                            self.ffmpeg_path,
+                            "-y",
+                            "-i",
+                            str(source),
+                            "-vf",
+                            "fps=30,scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280",
+                            "-an",
+                            "-c:v",
+                            "h264_mf",
+                            "-rate_control",
+                            "quality",
+                            "-quality",
+                            "50",
+                            "-scenario",
+                            "archive",
+                            "-pix_fmt",
+                            "yuv420p",
+                            "-movflags",
+                            "+faststart",
+                            str(proxy),
+                        ]
+                    )
+                    derivatives.append(self._derivative("proxy", proxy))
                 if asset["has_audio"]:
+                    report("正在提取原声", 10)
                     audio = temp_dir / "speech.wav"
                     self._command(
                         [
@@ -2309,9 +2381,11 @@ class FFmpegCreativeAnalyzer:
                             "-c:a",
                             "pcm_s16le",
                             str(audio),
-                        ]
+                        ],
+                        timeout=180,
                     )
                     derivatives.append(self._derivative("audio", audio))
+                report("正在提取代表画面", 25)
                 frames = self._extract_frames(
                     source,
                     temp_dir,
@@ -2321,7 +2395,9 @@ class FFmpegCreativeAnalyzer:
                 )
                 evidence_frames = (
                     self._extract_visual_evidence_frames(
-                        proxy, temp_dir, duration_ms
+                        source, temp_dir, duration_ms,
+                        should_stop=should_stop,
+                        progress=lambda percent: report("正在检查画面质量", 30 + round(percent * 0.45)),
                     )
                     if dense_visual_signals
                     else frames
@@ -2359,6 +2435,7 @@ class FFmpegCreativeAnalyzer:
                 duration_ms = 3_000
             if should_stop():
                 return {"stopped": True}
+            report("正在识别原声", 78)
             sentences = []
             audio_path = temp_dir / "speech.wav"
             has_audio = bool(
@@ -2410,6 +2487,7 @@ class FFmpegCreativeAnalyzer:
             elif audio_path.is_file():
                 audio_info["speech_status"] = "not_requested"
             if self.cloud_client.configured:
+                report("正在理解代表画面", 88)
                 vision_frames = self._representative_frames(frames, limit=12)
                 product_context = profile.get("product_context")
                 if isinstance(product_context, dict) and product_context:
@@ -2456,6 +2534,7 @@ class FFmpegCreativeAnalyzer:
                 raise ContentEngineError(
                     "analysis_failed", "Analysis cache manifest is invalid."
                 )
+            report("素材理解完成", 100)
             return completed
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -2532,8 +2611,10 @@ class FFmpegCreativeAnalyzer:
             self._mark_temporal_freeze(frames)
         return frames
 
-    def _extract_visual_evidence_frames(self, source, temp_dir, duration_ms):
-        """Decode V2 quality evidence in one bounded FFmpeg invocation."""
+    def _extract_visual_evidence_frames(
+        self, source, temp_dir, duration_ms, *, should_stop=lambda: False, progress=None
+    ):
+        """Read bounded V2 evidence with timestamp seeks instead of a full transcode."""
 
         duration_ms = max(0, int(duration_ms or 0))
         if duration_ms <= 0:
@@ -2544,67 +2625,79 @@ class FFmpegCreativeAnalyzer:
         maximum_frames = LOCAL_VISUAL_MAX_EVIDENCE_BYTES // LOCAL_VISUAL_SAMPLE_BYTES
         if expected_frames > maximum_frames:
             return []
-        raw_path = temp_dir / "visual-evidence.gray"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        report = progress if callable(progress) else lambda *_args, **_kwargs: None
+        raw_paths = []
         try:
-            self._command(
-                [
-                    self.ffmpeg_path,
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-y",
-                    "-i",
-                    str(source),
-                    "-an",
-                    "-sn",
-                    "-dn",
-                    "-vf",
-                    (
-                        "fps=fps=1/2:start_time=0,"
-                        f"scale={LOCAL_VISUAL_SAMPLE_SIZE}:"
-                        f"{LOCAL_VISUAL_SAMPLE_SIZE}:flags=area,format=gray"
-                    ),
-                    "-frames:v",
-                    str(expected_frames),
-                    "-pix_fmt",
-                    "gray",
-                    "-f",
-                    "rawvideo",
-                    str(raw_path),
-                ]
-            )
-            size = raw_path.stat().st_size
-            if (
-                size <= 0
-                or size > LOCAL_VISUAL_MAX_EVIDENCE_BYTES
-                or size % LOCAL_VISUAL_SAMPLE_BYTES
-                or size // LOCAL_VISUAL_SAMPLE_BYTES > expected_frames
-            ):
-                return []
             frames = []
-            with raw_path.open("rb") as stream:
-                for index in range(size // LOCAL_VISUAL_SAMPLE_BYTES):
-                    pixels = stream.read(LOCAL_VISUAL_SAMPLE_BYTES)
+            last_reported = -5
+            for index in range(expected_frames):
+                if should_stop():
+                    return []
+                timestamp_ms = index * LOCAL_VISUAL_EVIDENCE_INTERVAL_MS
+                if timestamp_ms >= duration_ms:
+                    break
+                raw_path = temp_dir / f"visual-evidence-{index:06d}.gray"
+                raw_paths.append(raw_path)
+                try:
+                    self._command(
+                        [
+                            self.ffmpeg_path,
+                            "-hide_banner",
+                            "-loglevel",
+                            "error",
+                            "-y",
+                            "-ss",
+                            f"{timestamp_ms / 1000:.3f}",
+                            "-i",
+                            str(source),
+                            "-an",
+                            "-sn",
+                            "-dn",
+                            "-frames:v",
+                            "1",
+                            "-vf",
+                            (
+                                f"scale={LOCAL_VISUAL_SAMPLE_SIZE}:"
+                                f"{LOCAL_VISUAL_SAMPLE_SIZE}:flags=area,format=gray"
+                            ),
+                            "-pix_fmt",
+                            "gray",
+                            "-f",
+                            "rawvideo",
+                            str(raw_path),
+                        ],
+                        timeout=180,
+                    )
+                    pixels = raw_path.read_bytes()
                     if len(pixels) != LOCAL_VISUAL_SAMPLE_BYTES:
-                        return []
-                    timestamp_ms = index * LOCAL_VISUAL_EVIDENCE_INTERVAL_MS
-                    if timestamp_ms >= duration_ms:
-                        break
+                        raise ValueError("incomplete visual evidence frame")
                     frames.append(
                         {
                             "timestamp_ms": timestamp_ms,
                             "visual_evidence": self._frame_visual_evidence(pixels),
                         }
                     )
-                if stream.read(1):
-                    return []
+                except ContentEngineError as error:
+                    if error.code == "analysis_stalled":
+                        raise
+                except (OSError, ValueError):
+                    pass
+                finally:
+                    raw_path.unlink(missing_ok=True)
+                percent = round((index + 1) * 100 / expected_frames)
+                if percent - last_reported >= 5 or index + 1 == expected_frames:
+                    report(percent)
+                    last_reported = percent
+            minimum_frames = max(1, math.ceil(expected_frames * 0.8))
+            if len(frames) < minimum_frames:
+                return []
             self._mark_temporal_freeze(frames)
             return frames
-        except (ContentEngineError, OSError, ValueError):
-            return []
         finally:
             try:
-                raw_path.unlink(missing_ok=True)
+                for raw_path in raw_paths:
+                    raw_path.unlink(missing_ok=True)
             except OSError:
                 pass
 

@@ -4,11 +4,11 @@ import { CustomerPanel } from "./CustomerPanel";
 import { CloudMaintenance, type CloudStatus } from "./CloudMaintenance";
 import type { AgentHomeTarget } from "./AgentHome";
 
-type TutorialTarget = AgentHomeTarget | "api-key" | "diagnostics";
+type TutorialTarget = AgentHomeTarget | "diagnostics";
 const GUIDES: { title: string; heading: string; intro: string; steps: string[]; links: { title: string; target: TutorialTarget }[]; note: string }[] = [
   { title: "快速开始", heading: "先完成一件小事", intro: "从你今天最想完成的事情开始：联系客户，或做出一条视频。",
-    steps: ["使用授权信息登录软件，在「API密钥」配置已开通的 AI 服务。", "要运营微信客户，先同步联系人；要制作内容，先把真实图片和视频加入素材仓库。", "进入对应工作台，确认客户范围或创作要求后再开始。进度和需要确认的内容会留在任务里。"],
-    links: [{ title: "配置 AI 服务", target: "api-key" }, { title: "打开素材仓库", target: "materials" }], note: "角色主页的「形象与名字」可以更换伙伴外观和称呼，下次打开仍会保留。" },
+    steps: ["使用授权信息登录软件，云端智能服务会由系统统一提供，不需要另配密钥。", "要运营微信客户，先同步联系人；要制作内容，先把真实图片和视频加入素材仓库。", "进入对应工作台，确认客户范围或创作要求后再开始。进度和需要确认的内容会留在任务里。"],
+    links: [{ title: "打开素材仓库", target: "materials" }], note: "角色主页的「形象与名字」可以更换伙伴外观和称呼，下次打开仍会保留。" },
   { title: "微信客户运营", heading: "让客户运营有计划", intro: "先确认当前登录的微信和客户范围，再安排每天要做的事情。",
     steps: ["打开「同步联系人」，按提示确认微信账号并完成同步。首次同步可能需要重新登录微信。", "在「今日计划」选择要执行的触达或朋友圈任务，确认对象、内容和时间。", "需要客户接待时进入「自动回复」，检查资料和接待范围后开启。", "出现「需要处理」时打开对应任务查看原因；发送结果不确定时，先在微信核对再操作。"],
     links: [{ title: "同步联系人", target: "contact-sync" }, { title: "查看今日计划", target: "workflow" }], note: "微信任务运行时尽量保持窗口可用，避免同时手动切换会话或修改正在发送的内容。" },
@@ -19,8 +19,8 @@ const GUIDES: { title: string; heading: string; intro: string; steps: string[]; 
     steps: ["将同一活动或同一商品的素材整理到素材集，并补充必要的事实说明。", "原文件留在原来的磁盘位置。移动或删除原文件后，需要重新定位才能继续使用。", "首页「待处理制作」按业务批次统计，分析和审核等处理步骤可在详情查看。", "旧制作可在历史记录中查看；归档批次会退出待处理列表，素材和已有成片继续保留。"],
     links: [{ title: "管理素材", target: "materials" }, { title: "打开成片中心", target: "finished" }], note: "成片仍需要完整播放检查。后台某个步骤完成，不代表整条视频已经制作成功。" },
   { title: "常见问题", heading: "遇到问题，直接告诉我们", intro: "不必理解错误码，也可以把问题说清楚。",
-    steps: ["AI 服务提示额度、余额或权限问题时，核对对应服务账户和配置，保留当前制作进度。", "制作提示资料不足时，补充真实素材或调整表达，不必反复点击重新生成。", "打开「吐槽中心」，描述刚才做了什么、哪里不好用。可随本次反馈附带脱敏诊断。", "在「我的反馈」查看待处理、处理中或已解决状态；需要人工协助时，可展开底部日志诊断导出诊断包。"],
-    links: [{ title: "前往吐槽中心", target: "diagnostics" }, { title: "检查 AI 配置", target: "api-key" }], note: "渠道发布、线索回流等标注为未开放的功能尚不能执行；教程会随实际功能一起更新。" }
+    steps: ["云端智能服务暂不可用时，当前制作进度会保留；稍后重试，或在吐槽中心附带脱敏诊断。", "制作提示资料不足时，补充真实素材或调整表达，不必反复点击重新生成。", "打开「吐槽中心」，描述刚才做了什么、哪里不好用。可随本次反馈附带脱敏诊断。", "在「我的反馈」查看待处理、处理中或已解决状态；需要人工协助时，可展开底部日志诊断导出诊断包。"],
+    links: [{ title: "前往吐槽中心", target: "diagnostics" }], note: "渠道发布、线索回流等标注为未开放的功能尚不能执行；教程会随实际功能一起更新。" }
 ];
 
 export function CustomerTools({ onNavigate }: { onNavigate: (target: TutorialTarget) => void }) {
