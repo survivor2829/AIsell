@@ -51,6 +51,8 @@
 .topbar-unread { position: absolute; width: 6px; height: 6px; top: 5px; right: 5px; border-radius: 50%; background: var(--brand-red); }
 .announcement-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 18px; color: #6b7280; font-size: 12px; }
 .announcement-list { display: flex; flex-direction: column; }
+.announcement-version-picker { display: grid; gap: 8px; margin-bottom: 20px; color: #606777; font-size: 12px; }
+.announcement-version-picker select { width: 100%; padding: 10px 12px; border: 1px solid #ced3de; border-radius: 8px; color: #344055; background: white; font-size: 14px; }
 .announcement-entry { padding: 19px 0; border-bottom: 1px solid #e5e7ed; }
 .announcement-entry:first-child { padding-top: 0; }
 .announcement-entry h3 { margin: 0; font-size: 16px; display: flex; align-items: center; gap: 9px; }

@@ -6,6 +6,7 @@ function registerCloudMaintenanceIpc({ ipcMain, controller, getMainWindow, resta
   for (const [name, action] of Object.entries({
     status: () => controller.status(), check: () => controller.check(),
     announcements: () => controller.refreshAnnouncements(), readAnnouncement: (sequence) => controller.markAnnouncementRead(sequence),
+    readAnnouncements: () => controller.markAnnouncementsRead(),
     consent: (value) => controller.setConsent(value === true),
     upload: () => controller.flush(), restart: () => restart(), acknowledgeUpdate: () => controller.acknowledgeUpdate()
   })) {

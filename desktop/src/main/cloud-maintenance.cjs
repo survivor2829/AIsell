@@ -151,6 +151,23 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     }
     return status();
   }
+  function markAnnouncementsRead() {
+    const unreadVersions = status().announcements.filter((item) => !item.read).map((item) => item.version);
+    if (!unreadVersions.length) return status();
+    try {
+      const readVersions = [...new Set([...state.readAnnouncementVersions, ...unreadVersions])].slice(-100);
+      const readSet = new Set(readVersions);
+      commit({
+        readAnnouncementVersions: readVersions,
+        announcements: state.announcements.map((candidate) => {
+          const candidateVersion = JSON.parse(candidate.envelope.payload).version;
+          return readSet.has(candidateVersion) ? { ...candidate, read: true } : candidate;
+        })
+      });
+      notify({ announcementError: "" });
+    } catch { notify({ announcementError: "已读状态暂未保存，请稍后重试。" }); }
+    return status();
+  }
   function envelopeFor(entries) {
     return { schema: 1, appId: config.appId, channel: config.channel, installId: state.installId,
       version, buildId: token(buildId), platform: process.platform, arch: process.arch,
@@ -333,7 +350,7 @@ function createCloudMaintenance({ rootDir, config, version, buildId, logger, can
     uploadTimer = setInterval(() => void flush(), 15_000); uploadTimer.unref?.();
   }
   function stop() { stopped = true; clearInterval(checkTimer); clearInterval(uploadTimer); clearInterval(announcementTimer); unsubscribe?.(); network?.close(); }
-  return { status, check, refreshAnnouncements, markAnnouncementRead, flush, enqueue, setConsent, start, stop, prepareInstall, installOnExit, beginInstall, setInstallBlocked, acknowledgeUpdate, refreshLocalState: () => notify(),
+  return { status, check, refreshAnnouncements, markAnnouncementRead, markAnnouncementsRead, flush, enqueue, setConsent, start, stop, prepareInstall, installOnExit, beginInstall, setInstallBlocked, acknowledgeUpdate, refreshLocalState: () => notify(),
     onUpdate(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
 }
 module.exports = { createCloudMaintenance, fileHash };

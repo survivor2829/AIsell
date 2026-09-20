@@ -26,7 +26,10 @@ async function checkBundledAnnouncements(rootDir, config, manifest, sign) {
     .filter(candidate => compareVersions(candidate, version) < 0).sort((a, b) => compareVersions(b, a))[0];
   assert.ok(previousVersion && bundledVersions.includes(previousVersion), "A skipped recent release is still explained after a full upgrade");
   assert.deepEqual(bundledAnnouncements("1.1.0").map(entry => entry.version), ["1.1.0"], "Do not show future bundled releases");
-  for (const entry of controller.status().announcements) controller.markAnnouncementRead(entry.id);
+  const bundledUnread = controller.status().unreadAnnouncements;
+  assert.ok(bundledUnread > 1, "the bundled history fixture must include multiple unread versions");
+  controller.markAnnouncementsRead();
+  assert.equal(controller.status().unreadAnnouncements, 0, "opening announcements can clear every historical red dot at once");
   controller.stop();
   controller = createCloudMaintenance({ rootDir: dir, config, version, transport: {
     async request() { return sign({ ...manifest, version, notes: releaseNotes(version) }); }, close() {}
@@ -176,18 +179,19 @@ async function checkAnnouncements(rootDir, config, manifest, sign, bytes) {
   } finally { race.stop(); }
 
   const handlers = new Map(), mainFrame = {}, webContents = { mainFrame, send() {} };
-  let refreshes = 0, readSequence;
+  let refreshes = 0, readSequence, readAll = 0;
   const dispose = registerCloudMaintenanceIpc({ ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) }, getMainWindow: () => ({ webContents, isDestroyed: () => false }), restart() {},
-    controller: { onUpdate: () => () => {}, refreshAnnouncements: () => { refreshes++; return {}; }, markAnnouncementRead: (sequence) => { readSequence = sequence; return {}; } } });
+    controller: { onUpdate: () => () => {}, refreshAnnouncements: () => { refreshes++; return {}; }, markAnnouncementRead: (sequence) => { readSequence = sequence; return {}; }, markAnnouncementsRead: () => { readAll++; return {}; } } });
   await assert.rejects(handlers.get("cloud:announcements")({ sender: {}, senderFrame: mainFrame }), /sender_invalid/);
   await assert.rejects(handlers.get("cloud:announcements")({ sender: webContents, senderFrame: {} }), /sender_invalid/);
   await handlers.get("cloud:announcements")({ sender: webContents, senderFrame: mainFrame });
   await handlers.get("cloud:readAnnouncement")({ sender: webContents, senderFrame: mainFrame }, 21);
-  assert.equal(refreshes, 1); assert.equal(readSequence, 21); dispose();
+  await handlers.get("cloud:readAnnouncements")({ sender: webContents, senderFrame: mainFrame });
+  assert.equal(refreshes, 1); assert.equal(readSequence, 21); assert.equal(readAll, 1); dispose();
   const calls = [];
   const api = createPreloadApis({ invoke: (...args) => { calls.push(args); }, on() {}, removeListener() {} }).cloudMaintenance;
-  api.announcements(); api.readAnnouncement(21);
-  assert.deepEqual(calls, [["cloud:announcements"], ["cloud:readAnnouncement", 21]]);
+  api.announcements(); api.readAnnouncement(21); api.readAnnouncements();
+  assert.deepEqual(calls, [["cloud:announcements"], ["cloud:readAnnouncement", 21], ["cloud:readAnnouncements"]]);
 }
 
 async function checkInstallFailures(rootDir, config, manifest, sign, bytes) {
