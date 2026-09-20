@@ -1808,6 +1808,12 @@ class ReportedSpeechContextTests(unittest.TestCase):
         attributed = compact("phrase-2", paragraphs[1], attribution)
         self.assertEqual(attribution, attributed["attribution_context"])
 
+        malformed = compact_claim_segment({"phrase_id": "phrase-2", "text": paragraphs[1],
+            "facts": [], "narrative_context": {"title": "完整标题", "paragraphs": "".join(paragraphs)}})
+        self.assertEqual({"title": "完整标题"}, malformed["narrative_context"],
+                         "malformed context must never fall back to the full narration")
+        self.assertNotIn(paragraphs[1], json.dumps(malformed["narrative_context"], ensure_ascii=False))
+
         changed_context = {"title": "完整标题", "paragraphs": paragraphs[:-1] + ["远端内容已改变。"]}
         changed_key = canonical_hash({"text": paragraphs[1], "narrative_context": changed_context})
         self.assertNotEqual(middle["segment_key"], changed_key,

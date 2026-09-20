@@ -130,6 +130,7 @@ legitimately span more than the adjacent paragraph.
     result = {**source, "facts": [{key: value for key, value in fact.items() if key != "evidence_key"}
                                    for fact in source.get("facts", [])]}
     context = source.get("narrative_context") or {}
+    result["narrative_context"] = {"title": context.get("title")}
     paragraphs = context.get("paragraphs")
     if isinstance(paragraphs, list):
         if source.get("phrase_id") == "title" and context.get("title") == source.get("text"):
@@ -2931,17 +2932,20 @@ class NarratedBatchDomain:
             """Bind verbatim confirmed copy locally; the whole-video visual gate still runs."""
             user_context = source.get("user_context")
             confirmation = candidate.get("_confirmed_script")
-            facts = [item for item in source.get("facts", [])
-                     if item.get("shot_id") and item.get("fact_id")]
             if (not candidate.get("_user_supplied") or not isinstance(confirmation, dict)
                     or confirmation.get("narration") != candidate.get("narration")
                     or source.get("user_context_authority") != "confirmed_script"
                     or not isinstance(user_context, str) or not source.get("text")
-                    or source["text"] not in user_context or not facts
+                    or source["text"] not in user_context
                     or any(not item.get("quote") or item["quote"] not in user_context
                            for item in source["statements"])):
                 return None
-            fact = facts[0]
+            statements = []
+            for item in source["statements"]:
+                statement = {"statement_id": item["statement_id"], "kind": "fact"}
+                if not self._bind_confirmed_user_statement(source, statement, item):
+                    return None
+                statements.append(statement)
             return {
                 "candidate_id": candidate["candidate_id"],
                 "segment_key": source["segment_key"],
@@ -2949,15 +2953,7 @@ class NarratedBatchDomain:
                 "reason": "该段逐字来自用户确认稿，已绑定为用户提供信息。",
                 "phrase_review": {
                     "phrase_id": source["phrase_id"],
-                    "statements": [{
-                        "statement_id": item["statement_id"],
-                        "kind": "fact",
-                        "risk_scope": "user_context",
-                        "supported": True,
-                        "evidence": [{"shot_id": fact["shot_id"], "fact_id": fact["fact_id"],
-                                      "source": "user_context", "user_quote": item["quote"]}],
-                        "reason": "该表述逐字来自用户确认稿，作为用户提供信息使用，未由画面独立核实。",
-                    } for item in source["statements"]],
+                    "statements": statements,
                 },
             }
 
