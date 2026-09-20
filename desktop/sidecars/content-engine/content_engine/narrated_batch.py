@@ -443,6 +443,14 @@ class NarratedBatchDomain:
         return bool(business_terms.search(value))
 
     @classmethod
+    def _confirmed_user_claim_requires_visual_audit(cls, text):
+        """Keep media assertions grounded while treating business copy as user-owned input."""
+        value = re.sub(r"\s+", "", str(text or ""))
+        if re.search(r"画面|视频|镜头|图中|屏幕|取证帧|截图|照片", value):
+            return True
+        return bool(re.search(r"机器人|设备|机器", value) and cls._sparse_claim_risk(value))
+
+    @classmethod
     def _advice_only_script_issue(cls, title, narration):
         """Reject sparse-frame copy that still asserts an observed outcome.
 
@@ -1518,9 +1526,12 @@ class NarratedBatchDomain:
                 directory = self.d.data_dir / "narrated-evidence" / cache_key
                 directory.mkdir(parents=True, exist_ok=True)
                 frames = []
+                supplied_script = narrated_brief.supplied(b)
+                fractions = (.25, .75) if supplied_script else (.1, .5, .9)
+                group_size = 4 if supplied_script else 3
                 for shot in source_shots:
                     start, end = shot["source_start_ms"], shot["source_end_ms"]
-                    for fraction in (.1, .5, .9):
+                    for fraction in fractions:
                         if self.d._should_stop(task_id):
                             return None
                         timestamp = int(start + (end - start) * fraction)
@@ -1532,10 +1543,10 @@ class NarratedBatchDomain:
                         frames.append((timestamp, path))
                 if facts is None:
                     facts = []
-                for offset in range(0, len(source_shots), 3):
+                for offset in range(0, len(source_shots), group_size):
                     if self.d._should_stop(task_id):
                         return None
-                    group = source_shots[offset:offset + 3]
+                    group = source_shots[offset:offset + group_size]
                     completed_ids = {fact["shot_id"] for fact in facts}
                     group = [shot for shot in group if shot["segment_id"] not in completed_ids]
                     if not group:
@@ -1543,7 +1554,7 @@ class NarratedBatchDomain:
                     self._activity(b, f"正在核对第 {ordinal + 1} 个素材的画面", len(facts), len(source_shots))
                     # Each interval has three actual observations, not an extrapolated caption.
                     selected = sorted({min(range(len(frames)), key=lambda i: abs(frames[i][0] - t))
-                                       for s in group for t in (s["source_start_ms"] + (s["source_end_ms"] - s["source_start_ms"]) * f for f in (.1, .5, .9))})
+                                       for s in group for t in (s["source_start_ms"] + (s["source_end_ms"] - s["source_start_ms"]) * f for f in fractions)})
                     payload = {"frames": [{"index": i, "timestamp_ms": frames[n][0]} for i, n in enumerate(selected)]}
                     def frame_error(response):
                         normalization_issue = normalize_frame_response(response)
@@ -2517,7 +2528,8 @@ class NarratedBatchDomain:
                      if item.get('shot_id') and item.get('fact_id')), None)
         if (source.get('user_context_authority') != 'confirmed_script'
                 or statement.get('kind') != 'fact' or not quote
-                or not cls._confirmed_user_fact_is_locally_bindable(quote)
+                or (not cls._confirmed_user_fact_is_locally_bindable(quote)
+                    and cls._confirmed_user_claim_requires_visual_audit(quote))
                 or quote not in source.get('user_context', '') or fact is None):
             return False
         statement.update(risk_scope='user_context', supported=True,
@@ -3144,9 +3156,11 @@ class NarratedBatchDomain:
                 progress.update(current_candidate_id=candidate["candidate_id"],
                                 current_phrase_id=source["phrase_id"],
                                 current_segment_key=source["segment_key"])
+                claim_percent = round(completed_segments * 100 / max(1, total_segments))
                 self._activity(b,
                     f"正在核对第 {completed_segments + 1} / {total_segments} 段事实声明，单次最多等待 {claim_timeout} 秒",
-                    completed_segments, total_segments)
+                    completed_segments, total_segments, phase="script", phase_label="文案与画面核对",
+                    overall_percent=45 + round(claim_percent * .15), phase_percent=claim_percent)
                 def current_error(result, candidate_id=candidate["candidate_id"], expected=source):
                     return segment_error(result, candidate_id, expected)
                 def persist_segment(response, candidate_id=candidate["candidate_id"], expected=source):
@@ -3161,12 +3175,12 @@ class NarratedBatchDomain:
                     b["_claim_review_segments"][expected["segment_key"]] = saved
                     progress["completed"] = completed_segments
                     progress["results"].append(saved)
-                    previous = b.get("activity") or {}
-                    b["activity"] = {
-                        "message": f"已核对 {completed_segments} / {total_segments} 段事实声明",
-                        "started_at": previous.get("started_at") or self.d._now(),
-                        "completed": completed_segments, "total": total_segments,
-                    }
+                    claim_percent = round(completed_segments * 100 / max(1, total_segments))
+                    self._activity(b, f"已核对 {completed_segments} / {total_segments} 段事实声明",
+                                   completed_segments, total_segments, phase="script",
+                                   phase_label="文案与画面核对",
+                                   overall_percent=45 + round(claim_percent * .15),
+                                   phase_percent=claim_percent)
                 response = confirmed_user_response(candidate, source)
                 if response is not None:
                     issue = current_error(response)
@@ -3230,7 +3244,8 @@ class NarratedBatchDomain:
         progress.update(status="completed", current_candidate_id=None, current_phrase_id=None,
                         current_segment_key=None)
         self._activity(b, f"事实声明核对完成，共 {completed_segments} / {total_segments} 段",
-                       completed_segments, total_segments)
+                       completed_segments, total_segments, phase="script", phase_label="文案与画面核对",
+                       overall_percent=60, phase_percent=100)
         self._store(b)
         return accepted
 

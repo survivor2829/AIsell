@@ -41,7 +41,8 @@ def retryable_planning_jobs(batch):
     candidates = {c['candidate_id']: c for c in batch.get('candidates', [])}
     return [job for job in batch.get('production_jobs', [])
             if job.get('status') == 'skipped' and job.get('error_code') in MAPPING_ERRORS | {'cloud_response_invalid', 'narrated_brief_invalid', 'volcengine_request_rejected'}
-            and not candidates.get(job.get('candidate_id'), {}).get('_run_id')]
+            and (not candidates.get(job.get('candidate_id'), {}).get('_run_id')
+                 or job.get('error_code') == 'narrated_copy_too_long')]
 
 
 def retry_failed_planning(batch):
@@ -50,7 +51,7 @@ def retry_failed_planning(batch):
         job.update(status='queued', format_retries=0)
         candidate = next((c for c in batch['candidates'] if c['candidate_id'] == job.get('candidate_id')), None)
         if candidate:
-            candidate['status'] = 'needs_review'
+            candidate['status'] = 'planned' if candidate.get('_run_id') else 'needs_review'
         for item in (job, candidate):
             if item:
                 item.pop('error', None)
@@ -77,6 +78,16 @@ def _available_unique_duration_ms(batch):
                 merged.append((start, end))
         total += sum(end - start for start, end in merged)
     return total
+
+
+def _require_unique_footage_capacity(batch, requested_count):
+    minimum_seconds = int(batch.get('settings', {}).get('minimum_duration_seconds') or 0)
+    if minimum_seconds <= 0:
+        return
+    available_ms = _available_unique_duration_ms(batch)
+    maximum_count = available_ms // (minimum_seconds * 1000)
+    require(requested_count <= maximum_count, 'narrated_insufficient_unique_footage',
+            f'当前不重复可用画面约 {available_ms // 1000} 秒，按每条至少 {minimum_seconds} 秒最多可制作 {maximum_count} 条；请减少数量或补充素材。')
 
 
 def confirm_selections(domain, request):
@@ -116,12 +127,12 @@ def confirm_selections(domain, request):
     settings = request.get('settings', b['settings'])
     require(isinstance(settings, dict) and settings.get('minimum_duration_seconds', 0) == b['settings'].get('minimum_duration_seconds', 0),
             'narrated_settings_changed', '最短时长已改变，请先重新准备文案。')
-    minimum_seconds = int(settings.get('minimum_duration_seconds') or 0)
-    if minimum_seconds > 0:
-        available_ms = _available_unique_duration_ms(b)
-        maximum_count = available_ms // (minimum_seconds * 1000)
-        require(total <= maximum_count, 'narrated_insufficient_unique_footage',
-                f'当前不重复可用画面约 {available_ms // 1000} 秒，按每条至少 {minimum_seconds} 秒最多可制作 {maximum_count} 条；请减少数量或补充素材。')
+    # User-supplied copy intentionally reaches confirmation before paid material
+    # analysis. Enforce the same capacity gate here when evidence already exists;
+    # otherwise run_production applies it immediately after analysis and before
+    # planning, voice generation or rendering.
+    if b.get('available_shots'):
+        _require_unique_footage_capacity({**b, 'settings': settings}, total)
     persona = domain.d._approved_auto_mix_voice_persona(selected_id=settings.get('voice_persona_id'))
     require(persona is not None, 'auto_mix_voice_persona_approval_required', '请先选择已试听批准的声音，再开始制作。')
     if persona['provider'] == 'volcengine':
@@ -508,6 +519,7 @@ def run_production(domain, task_id, batch):
         return {'batch_id': batch['batch_id'], 'generated_count': 0}
     domain.validate_pinned_plan({'narrated_batch_id': batch['batch_id'],
                                 'narrated_snapshots': batch['_snapshots'], 'narrated_versions': batch['_versions']})
+    _require_unique_footage_capacity(batch, len(batch['production_jobs']))
     domain._initialize_speech_budget(batch)
     selections = {item['script_id']: item for item in batch['script_selections']}
     jobs = batch['production_jobs']

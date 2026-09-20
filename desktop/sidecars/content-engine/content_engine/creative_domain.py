@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import heapq
+import inspect
 import itertools
 import json
 import math
@@ -126,6 +127,60 @@ SKIPPABLE_ANALYSIS_ERRORS = frozenset(
         "analysis_timeout",
     }
 )
+
+
+def rebalance_narrated_phrase_refs(phrases, phrase_audio, segments, *, pause_ms=160):
+    """Move only phrase boundaries so measured speech fits the ordered shots."""
+    if not phrases or len(phrases) != len(phrase_audio) or len(segments) < len(phrases):
+        raise ContentEngineError("narrated_voice_mapping", "口播与镜头数量不匹配。")
+    segment_refs = [segment["evidence_ref"] for segment in segments]
+    original_refs = [list(phrase.get("evidenceRefs") or []) for phrase in phrases]
+    if any(not refs for refs in original_refs) or list(itertools.chain.from_iterable(original_refs)) != segment_refs:
+        raise ContentEngineError("narrated_voice_mapping", "口播与镜头顺序不匹配。")
+
+    durations = [int(segment["target_duration_ms"]) for segment in segments]
+    prefix = [0]
+    for duration in durations:
+        prefix.append(prefix[-1] + duration)
+    required = [
+        int(item["duration_ms"]) + (pause_ms if index < len(phrases) - 1 else 0)
+        for index, item in enumerate(phrase_audio)
+    ]
+    original_ends = list(itertools.accumulate(len(refs) for refs in original_refs))
+    # Each state stores (moved boundaries, unused milliseconds, boundaries).
+    states = {0: (0, 0, [])}
+    phrase_count = len(phrases)
+    segment_count = len(segments)
+    for phrase_index, need in enumerate(required):
+        next_states = {}
+        remaining_phrases = phrase_count - phrase_index - 1
+        for start, (moved, unused, boundaries) in states.items():
+            minimum_end = start + 1
+            maximum_end = segment_count - remaining_phrases
+            for end in range(minimum_end, maximum_end + 1):
+                available = prefix[end] - prefix[start]
+                if available < need:
+                    continue
+                if phrase_index == phrase_count - 1 and end != segment_count:
+                    continue
+                boundary_move = 0 if end == segment_count else abs(end - original_ends[phrase_index])
+                score = (moved + boundary_move, unused + available - need, boundaries + [end])
+                previous = next_states.get(end)
+                if previous is None or score[:2] < previous[:2]:
+                    next_states[end] = score
+        states = next_states
+        if not states:
+            raise ContentEngineError("narrated_copy_too_long", "实际配音超过全部画面的可用时长。")
+
+    boundaries = states[segment_count][2]
+    start = 0
+    for phrase, previous_refs, end in zip(phrases, original_refs, boundaries):
+        refs = segment_refs[start:end]
+        phrase["evidenceRefs"] = refs
+        if refs != previous_refs:
+            phrase.pop("sentenceBindings", None)
+        start = end
+    return phrases
 # Product one-click is deliberately more forgiving only after the provider
 # request has exhausted its bounded timeout. Course/mix workflows keep the
 # stricter contract so a missing voice backbone cannot silently become a
@@ -3581,7 +3636,34 @@ class CreativeDomain:
             generated_video_id=generated_id,
         )
         self._set_task(task_id, "rendering", progress=0.86)
-        rendered = self._render_generated(generated_id, task_id=task_id)
+        def render_progress(stage, percent):
+            if not private_state.get("narrated_batch_id"):
+                return
+            try:
+                from .narrated_batch import NarratedBatchDomain
+                narrated = NarratedBatchDomain(self)
+                batch = narrated._load(private_state["narrated_batch_id"])
+                job = batch.get("_active_production_job") or {}
+                total = max(1, len(batch.get("production_jobs") or []))
+                index = max(0, int(job.get("production_index") or 1) - 1)
+                item = next((candidate for candidate in batch.get("candidates") or []
+                             if candidate.get("candidate_id") == job.get("candidate_id")), {})
+                production_percent = round((index + max(0, min(100, percent)) / 100) * 100 / total)
+                narrated._activity(
+                    batch, stage, index, total,
+                    phase="production", phase_label="配音与剪辑",
+                    overall_percent=60 + round(production_percent * 0.35),
+                    phase_percent=production_percent,
+                    item_index=index + 1, item_total=total,
+                    item_name=item.get("title") or f"第 {index + 1} 条作品",
+                )
+            except Exception:
+                # Progress reporting must never invalidate a completed local render.
+                return
+
+        rendered = self._render_generated(
+            generated_id, task_id=task_id, progress_callback=render_progress
+        )
         if not rendered:
             return public_auto_mix_plan(
                 self._auto_mix_run_value(self._auto_mix_run_row(run_id=run_id))
@@ -4400,6 +4482,7 @@ class CreativeDomain:
         preserve_shots = bool(private_state.get("narrated_preserve_shot_duration"))
         def full_shot_timeline(phrases, audio):
             segments = [dict(s) for s in analysis_timeline["selected_segments"]]
+            rebalance_narrated_phrase_refs(phrases, audio, segments)
             cursor = 0
             position = 0
             for index, (phrase, item) in enumerate(zip(phrases, audio)):
@@ -10531,7 +10614,7 @@ class CreativeDomain:
             (request_key,),
         ).fetchone()
 
-    def _render_generated(self, video_id, *, task_id=None):
+    def _render_generated(self, video_id, *, task_id=None, progress_callback=None):
         row = self._generated_row(video_id)
         if row["status"] == "rejected":
             return False
@@ -10553,12 +10636,19 @@ class CreativeDomain:
             output_dir = self.data_dir / "generated" / row["project_id"] / video_id
             recipe = json.loads(row["recipe_json"])
             self._validate_auto_mix_v2_runtime_resources(recipe)
-            rendered = self.renderer.render(
+            render_args = dict(
                 video_id=video_id,
                 recipe=recipe,
                 output_dir=output_dir,
                 resolve_asset_path=self._resolve_render_asset_path,
             )
+            parameters = inspect.signature(self.renderer.render).parameters.values()
+            if progress_callback is not None and any(
+                parameter.name == "progress_callback" or parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            ):
+                render_args["progress_callback"] = progress_callback
+            rendered = self.renderer.render(**render_args)
             cover = (recipe.get("packaging") or {}).get("cover") or {}
             if cover.get("mode") == "reuse":
                 source_id = str(cover.get("source_generated_video_id") or "")

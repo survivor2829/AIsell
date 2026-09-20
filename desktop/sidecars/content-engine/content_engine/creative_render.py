@@ -271,7 +271,10 @@ class FFmpegCreativeRenderer:
         recipe: dict[str, Any],
         output_dir: Path,
         resolve_asset_path: Callable[[str], str | Path],
+        progress_callback=None,
     ) -> dict[str, Path]:
+        if progress_callback is not None:
+            progress_callback("正在合成画面", 10)
         if self._is_auto_mix_v2(recipe):
             self._validate_auto_mix_v2_recipe(recipe)
             raise ContentEngineError(
@@ -336,10 +339,13 @@ class FFmpegCreativeRenderer:
             if output_dir.exists():
                 raise ContentEngineError("render_target_exists", "The render target already exists.")
             temp_dir.replace(output_dir)
-            return {
+            result = {
                 "video_path": output_dir / "video.mp4",
                 "thumbnail_path": output_dir / "cover.jpg",
             }
+            if progress_callback is not None:
+                progress_callback("成片渲染完成", 100)
+            return result
         except Exception:
             shutil.rmtree(temp_dir, ignore_errors=True)
             raise
@@ -3456,18 +3462,26 @@ class HybridCreativeRenderer:
         recipe: dict[str, Any],
         output_dir: Path,
         resolve_asset_path: Callable[[str], str | Path],
+        progress_callback=None,
     ) -> dict[str, Any]:
+        def report(stage, percent):
+            if progress_callback is not None:
+                progress_callback(stage, percent)
+
         if not self._SAFE_CANDIDATE_ID.fullmatch(str(video_id or "")):
             raise RemotionRenderError("security", "candidate_id_invalid")
         auto_mix_v2 = self._is_auto_mix_v2(recipe)
         self._validate_auto_mix_v2_boundary(recipe)
         if not self._requests_remotion(recipe):
-            return self.ffmpeg_renderer.render(
+            report("正在合成画面", 10)
+            rendered = self.ffmpeg_renderer.render(
                 video_id=video_id,
                 recipe=recipe,
                 output_dir=output_dir,
                 resolve_asset_path=resolve_asset_path,
             )
+            report("正在校验成片", 100)
+            return rendered
         output_dir = Path(output_dir).resolve()
         config = self._visual_config(recipe)
         recipe_hash = self._recipe_hash(recipe)
@@ -3503,6 +3517,7 @@ class HybridCreativeRenderer:
                 config["actualEngine"] = manifest["actualEngine"]
                 config["actualStyleVersion"] = manifest.get("actualStyleVersion")
                 config["fallbackCode"] = manifest.get("fallbackCode")
+                report("已复用完成的本地成片", 100)
                 return paths
             raise RemotionRenderError("output-quality", "installed_candidate_mismatch")
         # Keep the transient tree short. A mix fallback nests legacy/visuals
@@ -3543,6 +3558,7 @@ class HybridCreativeRenderer:
                 raise RemotionRenderError("contract", "runtime_hash_invalid")
             mezzanine = staging / "mezzanine.mp4"
             duration_ms = self._duration_ms(recipe)
+            report("正在整理原始镜头", 10)
             self.ffmpeg_renderer.render_mezzanine(
                 recipe=recipe,
                 output=mezzanine,
@@ -3553,6 +3569,7 @@ class HybridCreativeRenderer:
             mezzanine_info = self.ffmpeg_renderer.validate_mezzanine(
                 mezzanine, expected_duration_ms=duration_ms
             )
+            report("正在渲染字幕与动效", 40)
             self._raise_if_cancelled()
             visual_output = staging / "visual-only.mp4"
             worker_args = {
@@ -3561,6 +3578,8 @@ class HybridCreativeRenderer:
                 "public_props": self._public_props(recipe, config),
                 "expected_runtime_hash": expected_runtime_hash,
             }
+            if isinstance(self.worker_client, RemotionWorkerClient):
+                worker_args["heartbeat"] = lambda: report("正在渲染字幕与动效", 40)
             try:
                 worker_result = self.worker_client.render(**worker_args)
             except RemotionRenderError as first_error:
@@ -3576,6 +3595,7 @@ class HybridCreativeRenderer:
             if worker_result.get("runtime_hash") != expected_runtime_hash:
                 raise RemotionRenderError("contract", "runtime_hash_mismatch")
             final_video = staging / "video.mp4"
+            report("正在合成人声与配乐", 85)
             self.ffmpeg_renderer.mux_visual_with_mezzanine_audio(
                 visual_output, mezzanine, final_video
             )
@@ -3585,6 +3605,7 @@ class HybridCreativeRenderer:
                 expected_duration_ms=duration_ms,
                 expected_audio_digest=mezzanine_info["audio_digest"],
             )
+            report("正在校验成片", 95)
             audio_quality_report = None
             if auto_mix_v2:
                 measure_audio_quality = getattr(
@@ -3634,6 +3655,7 @@ class HybridCreativeRenderer:
             mezzanine.unlink(missing_ok=True)
             Path(f"{mezzanine}.speech-music.json").unlink(missing_ok=True)
             visual_output.unlink(missing_ok=True)
+            report("成片渲染完成", 100)
             return self._install(
                 staging,
                 output_dir,

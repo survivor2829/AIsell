@@ -775,19 +775,21 @@ class NarratedBatchTests(unittest.TestCase):
                                 and item["evidence"][0]["user_quote"] == item["quote"]
                                 for item in statements))
 
-        risky_confirmed_claims = {
+        visual_risk_claims = {
             "capability": "这款机器人能够自动完成整层清洁。",
             "continuity": "这款机器人始终稳定运行。",
             "causal": "使用这款机器人，因此保洁成本下降。",
             "outcome": "这款机器人已经成功完成整层清洁。",
-            "certification": "这款机器人已经通过国家级安全认证。",
             "depicted_action": "画面中的机器人正在清洗地面。",
+        }
+        user_owned_business_claims = {
+            "certification": "这款机器人已经通过国家级安全认证。",
             "registration_earnings": "报名这门课程就能月入万元。",
             "small_class_endorsement": "30人小班由官方指定专家授课。",
             "training_affiliation": "参加培训即可成为当地唯一授权代理。",
             "service_guarantee": "课程包含接单服务，保证每月新增十个客户。",
         }
-        for label, claim in risky_confirmed_claims.items():
+        for label, claim in visual_risk_claims.items():
             with self.subTest(confirmed_claim=label):
                 risky = {**candidate, "candidate_id": f"candidate-{label}",
                          "title": claim, "narration": claim,
@@ -801,6 +803,20 @@ class NarratedBatchTests(unittest.TestCase):
                     with self.assertRaises(ContentEngineError):
                         domain._grounded_claim_review([risky], risky_state, {"rejections": []})
                 self.assertEqual(1, risky_cloud.call_count)
+
+        for label, claim in user_owned_business_claims.items():
+            with self.subTest(confirmed_business_claim=label):
+                supplied = {**candidate, "candidate_id": f"candidate-{label}",
+                            "title": claim, "narration": claim,
+                            "_confirmed_script": {"narration": claim},
+                            "phrases": [{"text": claim, "shot_ids": [shot["segment_id"]]}]}
+                supplied_state = domain._load(self.create(1)["batch_id"])
+                domain._active_batch = supplied_state
+                with patch.object(domain, "_cloud", side_effect=AssertionError(
+                        "confirmed business copy should bind to user context locally")) as supplied_cloud:
+                    accepted = domain._grounded_claim_review([supplied], supplied_state, {"rejections": []})
+                self.assertEqual(0, supplied_cloud.call_count)
+                self.assertEqual([supplied["candidate_id"]], [item[0]["candidate_id"] for item in accepted])
 
         generated = {key: value for key, value in candidate.items() if key != "_user_supplied"}
         generated["candidate_id"] = "candidate-generated"

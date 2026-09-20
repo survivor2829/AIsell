@@ -6,9 +6,81 @@ from unittest.mock import patch
 
 import test_narrated_batch as batch_fixtures
 from content_engine.errors import ContentEngineError
+from content_engine.creative_domain import rebalance_narrated_phrase_refs
 from content_engine.narrated_batch import NarratedBatchDomain
 from content_engine import narrated_script_drafts
 from content_engine.narrated_production import bind_planned_candidate, export_completed, output_folder, review_confirmed_candidate, cohere_mapping_sources, complete_mapping_capacity, confirmed_narration_units, normalize_preserved_mapping, confirm_selections
+
+
+class NarratedTimelineTests(unittest.TestCase):
+    def test_rebalances_ordered_shots_for_measured_phrase_audio(self):
+        phrases = [
+            {'evidenceRefs': ['s1'], 'sentenceBindings': [{'evidenceRefs': ['s1']}]},
+            {'evidenceRefs': ['s2', 's3']},
+        ]
+        audio = [{'duration_ms': 5_500}, {'duration_ms': 2_000}]
+        segments = [
+            {'evidence_ref': 's1', 'target_duration_ms': 3_000},
+            {'evidence_ref': 's2', 'target_duration_ms': 3_000},
+            {'evidence_ref': 's3', 'target_duration_ms': 3_000},
+        ]
+
+        rebalance_narrated_phrase_refs(phrases, audio, segments)
+
+        self.assertEqual([['s1', 's2'], ['s3']], [p['evidenceRefs'] for p in phrases])
+        self.assertNotIn('sentenceBindings', phrases[0])
+
+    def test_rebalancing_rejects_insufficient_total_duration(self):
+        phrases = [{'evidenceRefs': ['s1']}, {'evidenceRefs': ['s2']}]
+        audio = [{'duration_ms': 4_000}, {'duration_ms': 4_000}]
+        segments = [
+            {'evidence_ref': 's1', 'target_duration_ms': 3_000},
+            {'evidence_ref': 's2', 'target_duration_ms': 3_000},
+        ]
+
+        with self.assertRaisesRegex(ContentEngineError, '全部画面'):
+            rebalance_narrated_phrase_refs(phrases, audio, segments)
+
+    def test_same_material_accepts_different_copy_shapes(self):
+        segments = [
+            {'evidence_ref': f's{index}', 'target_duration_ms': 3_000}
+            for index in range(1, 7)
+        ]
+        cases = [
+            (
+                [
+                    {'text': '短开场', 'evidenceRefs': ['s1', 's2']},
+                    {'text': '较长的主体内容', 'evidenceRefs': ['s3', 's4']},
+                    {'text': '简短收尾', 'evidenceRefs': ['s5', 's6']},
+                ],
+                [{'duration_ms': 1_500}, {'duration_ms': 5_200}, {'duration_ms': 2_500}],
+            ),
+            (
+                [
+                    {'text': '换一种开场', 'evidenceRefs': ['s1']},
+                    {'text': '换成两段主体中的第一段', 'evidenceRefs': ['s2', 's3']},
+                    {'text': '换成两段主体中的第二段', 'evidenceRefs': ['s4']},
+                    {'text': '新的结尾', 'evidenceRefs': ['s5', 's6']},
+                ],
+                [
+                    {'duration_ms': 2_200},
+                    {'duration_ms': 4_000},
+                    {'duration_ms': 1_800},
+                    {'duration_ms': 2_500},
+                ],
+            ),
+        ]
+
+        for phrases, audio in cases:
+            with self.subTest(phrase_count=len(phrases)):
+                rebalance_narrated_phrase_refs(phrases, audio, segments)
+                refs = [ref for phrase in phrases for ref in phrase['evidenceRefs']]
+                self.assertEqual([f's{index}' for index in range(1, 7)], refs)
+                durations = {segment['evidence_ref']: segment['target_duration_ms'] for segment in segments}
+                for index, (phrase, voice) in enumerate(zip(phrases, audio)):
+                    required = voice['duration_ms'] + (160 if index < len(phrases) - 1 else 0)
+                    available = sum(durations[ref] for ref in phrase['evidenceRefs'])
+                    self.assertGreaterEqual(available, required)
 
 
 class NarratedProductionTests(unittest.TestCase):
@@ -114,6 +186,16 @@ class NarratedProductionTests(unittest.TestCase):
         self.assertEqual('narrated_insufficient_unique_footage', error.exception.code)
         self.assertIn('最多可制作 0 条', error.exception.message)
         self.assertFalse(self.domain._load(self.batch['batch_id']).get('production_jobs'))
+
+    def test_missing_analysis_defers_unique_footage_gate_until_production(self):
+        state = self.domain._load(self.batch['batch_id'])
+        state['settings']['minimum_duration_seconds'] = 30
+        state['available_shots'] = []
+        self.domain._store(state)
+        task = self.s.confirm_narrated_script(self.request(first_count=1))
+        saved = self.domain._load(self.batch['batch_id'])
+        self.assertEqual(task['task_id'], saved['task_id'])
+        self.assertEqual(2, len(saved['production_jobs']))
 
     def test_grounding_group_order_does_not_replace_confirmed_edit_order(self):
         state = self.domain._load(self.batch['batch_id'])

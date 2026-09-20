@@ -267,6 +267,13 @@ class ProviderUsageTests(unittest.TestCase):
         self.assertEqual(batch["production_jobs"][0]["status"], "queued")
         self.assertEqual(batch["candidates"][0]["status"], "needs_review")
 
+        batch = {"candidates": [{"candidate_id": "c2", "status": "failed", "_run_id": "run-cached"}],
+                 "production_jobs": [{"candidate_id": "c2", "status": "skipped", "error_code": "narrated_copy_too_long"}]}
+        self.assertEqual(len(retryable_planning_jobs(batch)), 1)
+        retry_failed_planning(batch)
+        self.assertEqual(batch["production_jobs"][0]["status"], "queued")
+        self.assertEqual(batch["candidates"][0]["status"], "planned")
+
 
 if __name__ == "__main__":
     unittest.main()

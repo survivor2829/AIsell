@@ -463,11 +463,12 @@ class RemotionWorkerClient:
             raise RemotionRenderError("transient-local", code) from error
         return process, responses
 
-    def _request_result(self, envelope: dict[str, Any]) -> dict[str, Any]:
+    def _request_result(self, envelope: dict[str, Any], heartbeat=None) -> dict[str, Any]:
         request_id = str(envelope.get("id") or "")
         with self._request_lock:
             process, responses = self._send(envelope)
             deadline = time.monotonic() + self._timeout
+            next_heartbeat = time.monotonic() + 10
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -483,6 +484,9 @@ class RemotionWorkerClient:
                             reason="worker_exited", expected_process=process
                         )
                         raise RemotionRenderError("transient-local", "worker_exited")
+                    if heartbeat is not None and time.monotonic() >= next_heartbeat:
+                        heartbeat()
+                        next_heartbeat = time.monotonic() + 10
                     continue
                 if response is None:
                     if self._cancel_requested.is_set():
@@ -513,6 +517,7 @@ class RemotionWorkerClient:
         output_path: Path,
         public_props: dict[str, Any],
         expected_runtime_hash: str | None = None,
+        heartbeat=None,
     ):
         source = Path(source_path).resolve(strict=True)
         output_candidate = Path(output_path)
@@ -545,7 +550,7 @@ class RemotionWorkerClient:
             },
             "publicProps": public_props,
         }
-        result = self._request_result(envelope)
+        result = self._request_result(envelope, heartbeat=heartbeat)
         if not output.is_file():
             raise RemotionRenderError("output-quality", "worker_output_missing")
         if str(result.get("runtime_hash") or "") != expected_runtime_hash:
