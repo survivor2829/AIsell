@@ -308,6 +308,9 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
   const shownCandidates = [...(batch?.candidates || [])].sort((a, b) => (a.production_index || 0) - (b.production_index || 0)).slice(0, batch?.target_count || batch?.recommended_count || 3);
   const completed = shownCandidates.filter((c) => c.status === "completed").length;
   const pendingJobs = batch?.production_retry_available || (batch?.production_jobs ? batch.production_jobs.some((job) => ["queued", "processing"].includes(job.status)) : completed < (batch?.target_count || 1));
+  const continueHint = batch?.production_retry_available
+    ? "继续会重新安排未完成作品的镜头并复核画面；已完成作品会保留。"
+    : "继续会从未完成的步骤接着做；已完成的分析、审核和成片会保留。";
   const skippedJobs = batch?.production_jobs?.filter((job) => job.status === "skipped") || [];
   const flowStep = flowView ?? (dirty ? 0 : batch?.archived || batch?.script_confirmation || shownCandidates.length ? 3 : options.length ? 2 : running ? 1 : 0);
   const flowSteps = [
@@ -450,7 +453,7 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
       {soundDirty && <p className="batch-hint">声音设置会随本次制作保存，下次可直接沿用。</p>}
       <div className="batch-script-confirm"><div><p>{chosen.length ? modern ? `制作 ${chosenTotal} 条视频` : `已选 ${chosen.length} 个方向，合计 ${chosenTotal} 条` : modern ? "请先选定一个方案。" : "勾选想做的方向，并填写各自的数量。"}</p><p className="batch-hint">完成后自动保存到成片文件夹。</p>{chosen.length > 0 && !countsValid && <p className="batch-notice" role="alert">每个方向至少 1 条，合计不能超过 300 条。</p>}</div>
         {!batch?.script_confirmation && <button className="batch-primary" data-batch-action="confirm" disabled={locked || saving || dirty || !countsValid || !settings.voice_persona_id} onClick={() => void confirmScript()}>{submitting ? "正在提交…" : `确认文案，开始制作${countsValid ? ` ${chosenTotal} 条` : ""}`}</button>}
-        {batch?.script_confirmation && pendingJobs && batch.status !== "outcome_unknown" && <button data-batch-action="continue" disabled={locked || dirty} onClick={() => void start("continue")}>继续未完成作品</button>}
+        {batch?.script_confirmation && pendingJobs && batch.status !== "outcome_unknown" && <div><p className="batch-hint" role="status">{continueHint}</p><button data-batch-action="continue" disabled={locked || dirty} onClick={() => void start("continue")}>继续未完成作品</button></div>}
       </div>{!settings.voice_persona_id && <p className="batch-hint">开始制作前，请在上方选定已批准的声音；配乐可以不选。</p>}
       </>}
     </section>}
@@ -463,7 +466,7 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
         })}>导出视频</button>}</div></article>)}</div>{shownCandidates.length > visibleCandidates && <button onClick={() => setVisibleCandidates(visibleCandidates + 12)}>显示更多作品</button>}
     </section>}
     {visualFlow && flowStep === 3 && !shownCandidates.length && <section className="batch-flow-empty"><Clapperboard size={44} strokeWidth={1.3} /><h2>{batch?.archived ? "这个批次还没有成片" : running ? "视频正在制作中" : "暂时没有成片"}</h2><p>{batch?.archived ? "点击上方“新建视频”开始新的创作。" : "制作完成后，就可以在这里播放和保存。"}</p></section>}
-    {visualFlow && flowStep === 3 && batch?.script_confirmation && pendingJobs && batch.status !== "outcome_unknown" && !batch.archived && <button data-batch-action="continue" disabled={locked || dirty} onClick={() => void start("continue")}>继续未完成作品</button>}
+    {visualFlow && flowStep === 3 && batch?.script_confirmation && pendingJobs && batch.status !== "outcome_unknown" && !batch.archived && <div><p className="batch-hint" role="status">{continueHint}</p><button data-batch-action="continue" disabled={locked || dirty} onClick={() => void start("continue")}>继续未完成作品</button></div>}
     {batch && <details className="batch-advanced"><summary>项目详情</summary>{!visualFlow && <><p>流程：理解素材 → 规划与筛选 → 数量校验 → 样片 → 批量制作</p><p>任务状态：{batch.task_status || "尚未开始"}；已保存方案 {batch.candidates.length} 条。</p><p>数量来自有界搜索；未遍历全部空间时，不代表素材的绝对容量。</p></>}{batch.reasons?.map((reason, i) => <p key={i}>{reason}</p>)}</details>}
     {!visualFlow && !total && <button className="batch-text-button" onClick={onOpenMaterials}>前往素材仓库整理素材集 →</button>}
     {picker && <AssetPicker assets={assets} selected={scriptFlow ? materialIds : groups[picker]} onChange={(ids) => changeGroups(scriptFlow ? { opening: [], middle: ids, ending: [] } : { ...groups, [picker]: ids })} onClose={() => setPicker(null)} />}
