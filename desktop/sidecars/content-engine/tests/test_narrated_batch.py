@@ -727,6 +727,65 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertIn("_planning_inflight", stored)
         self.assertIn("_planning_request", stored)
 
+    def test_confirmed_script_uses_local_claim_bindings_but_keeps_visual_contradiction_gate(self):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        batch = self.create(1)
+        state = domain._load(batch["batch_id"])
+        domain._active_batch = state
+        first = "10月1日起报名费是1380元。"
+        second = "学不会，可以不限次数免费复训。"
+        shot = {"segment_id": "shot-confirmed", "fact_id": "fact-confirmed",
+                "source_start_ms": 0, "source_end_ms": 5000,
+                "description": "培训现场",
+                "visual_facts": {"direct_observation": "画面可见培训现场。",
+                                 "illustrative_observation": "", "evidence_class": "direct_real",
+                                 "frame_timestamps_ms": [0], "uncertainties": [], "onscreen_claims": []}}
+        candidate = {"candidate_id": "candidate-confirmed", "_user_supplied": True,
+                     "_confirmed_script": {"narration": first + second},
+                     "title": first, "narration": first + second, "shots": [shot],
+                     "phrases": [{"text": first, "shot_ids": [shot["segment_id"]]},
+                                 {"text": second, "shot_ids": [shot["segment_id"]]}]}
+        contradiction = {"accepted": False, "quality_score": .8,
+                         "unsupported_claims": [first],
+                         "findings": [{"type": "visual_contradiction", "quote": first,
+                                       "fact_quote": "报名费是1380元", "shot_ids": [shot["segment_id"]],
+                                       "source": "frames", "reason": "画面明确显示另一价格。"}],
+                         "reason": "画面与确认稿存在明确冲突。"}
+        visual_calls = []
+        audit = {"rejections": []}
+        with patch.object(domain, "_cloud", side_effect=AssertionError("确认稿逐字段审核不应调用云端")) as cloud, \
+                patch.object(domain, "_claim_frames", side_effect=AssertionError("本地绑定不需要逐段抽帧")), \
+                patch.object(domain, "_visual_review", side_effect=lambda current, _state, claim_review=None: (
+                    visual_calls.append(claim_review) or
+                    normalize_confirmed_user_visual_findings(current, contradiction))):
+            accepted = domain._review([candidate], state, audit)
+
+        self.assertEqual(0, cloud.call_count)
+        self.assertEqual([], accepted)
+        self.assertEqual(1, len(visual_calls), "整片画面复核必须继续执行")
+        self.assertEqual("visual_review", audit["rejections"][-1]["stage"])
+        self.assertEqual("visual_contradiction", audit["rejections"][-1]["hard_findings"][0]["type"])
+        stored_segments = state["_claim_review_segments"]
+        self.assertEqual(3, len(stored_segments))
+        for saved in stored_segments.values():
+            statements = saved["response"]["phrase_review"]["statements"]
+            self.assertTrue(statements)
+            self.assertTrue(all(item["supported"] and item["risk_scope"] == "user_context"
+                                and item["evidence"][0]["source"] == "user_context"
+                                and item["evidence"][0]["user_quote"] == item["quote"]
+                                for item in statements))
+
+        generated = {key: value for key, value in candidate.items() if key != "_user_supplied"}
+        generated["candidate_id"] = "candidate-generated"
+        fresh_state = domain._load(self.create(1)["batch_id"])
+        domain._active_batch = fresh_state
+        with patch.object(domain, "_claim_frames", return_value=([], [])), \
+                patch.object(domain, "_cloud", side_effect=ContentEngineError(
+                    "cloud_request_failed", "证明普通生成稿仍走云端审核")) as generated_cloud:
+            with self.assertRaises(ContentEngineError):
+                domain._grounded_claim_review([generated], fresh_state, {"rejections": []})
+        self.assertEqual(1, generated_cloud.call_count)
+
     def test_unknown_planning_requires_audited_confirmation_before_new_task(self):
         domain = NarratedBatchDomain(self.s.creative_domain)
         batch = self.create(1)

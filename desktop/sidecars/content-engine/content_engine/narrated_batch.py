@@ -2927,6 +2927,40 @@ class NarratedBatchDomain:
             )
             return response
 
+        def confirmed_user_response(candidate, source):
+            """Bind verbatim confirmed copy locally; the whole-video visual gate still runs."""
+            user_context = source.get("user_context")
+            confirmation = candidate.get("_confirmed_script")
+            facts = [item for item in source.get("facts", [])
+                     if item.get("shot_id") and item.get("fact_id")]
+            if (not candidate.get("_user_supplied") or not isinstance(confirmation, dict)
+                    or confirmation.get("narration") != candidate.get("narration")
+                    or source.get("user_context_authority") != "confirmed_script"
+                    or not isinstance(user_context, str) or not source.get("text")
+                    or source["text"] not in user_context or not facts
+                    or any(not item.get("quote") or item["quote"] not in user_context
+                           for item in source["statements"])):
+                return None
+            fact = facts[0]
+            return {
+                "candidate_id": candidate["candidate_id"],
+                "segment_key": source["segment_key"],
+                "quality_score": 1.0,
+                "reason": "该段逐字来自用户确认稿，已绑定为用户提供信息。",
+                "phrase_review": {
+                    "phrase_id": source["phrase_id"],
+                    "statements": [{
+                        "statement_id": item["statement_id"],
+                        "kind": "fact",
+                        "risk_scope": "user_context",
+                        "supported": True,
+                        "evidence": [{"shot_id": fact["shot_id"], "fact_id": fact["fact_id"],
+                                      "source": "user_context", "user_quote": item["quote"]}],
+                        "reason": "该表述逐字来自用户确认稿，作为用户提供信息使用，未由画面独立核实。",
+                    } for item in source["statements"]],
+                },
+            }
+
         claim_timeout = max(getattr(self.d.analyzer.cloud_client, "timeout_seconds", 90), 180)
         total_segments = sum(len(segments) for _, segments in prepared_candidates)
         completed_segments = 0
@@ -3095,6 +3129,12 @@ class NarratedBatchDomain:
                         "started_at": previous.get("started_at") or self.d._now(),
                         "completed": completed_segments, "total": total_segments,
                     }
+                response = confirmed_user_response(candidate, source)
+                if response is not None:
+                    issue = current_error(response)
+                    require(issue is None, "narrated_claim_review_invalid", issue or "确认稿事实绑定结果格式无效。")
+                    persist_segment(response)
+                    continue
                 frames, frame_labels = self._claim_frames(b, candidate, source)
                 source["frames"] = frame_labels
                 response = self._cloud(
