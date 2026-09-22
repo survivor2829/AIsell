@@ -3,7 +3,7 @@ const path = require("node:path");
 const { constants } = require("node:fs");
 
 const CHANNELS = Object.freeze(Object.fromEntries([
-  "collections", "save-collection", "list", "get", "status", "save", "recommend", "scripts", "confirm", "music-preview", "resolve", "samples", "continue", "edit", "export", "open-output", "archive"
+  "collections", "save-collection", "list", "get", "status", "save", "recommend", "scripts", "confirm", "music-preview", "resolve", "voice-resolve", "samples", "continue", "edit", "export", "open-output", "archive"
 ].map((name) => [name, `content-engine:batch-${name}`])));
 const ERRORS = {
   narrated_audience_required: "请填写这条视频想给谁看。",
@@ -23,16 +23,21 @@ const ERRORS = {
   narrated_script_confirmation_required: "请先选择并确认本批文案。",
   narrated_confirmed_script_changed: "确认稿需要调整，已停止制作。请检查原因并重新确认正文。",
   narrated_music_pool_empty: "请先试听并选入至少一首可用配乐。",
+  auto_mix_licensed_music_required: "授权曲库中没有适配这条口播的配乐，请补充曲目或明确选择无配乐。",
+  remotion_runtime_unavailable: "本机正式渲染组件暂不可用，已停止制作，未生成配音；请检查 Remotion 运行时后重试。",
+  media_encoder_unavailable: "本机视频编码器暂不可用，已停止制作，未生成配音；请检查 FFmpeg 编码组件后重试。",
   narrated_caption_timing_insufficient: "语音识别未返回足够细的时间，整句过长，无法清楚排成两行；请改短该段并重新确认。",
   narrated_edit_invalid: "修改后的方案无法通过质量检查，请查看批次详情。",
-  cloud_not_configured: "请在火山引擎设置中配置方舟 Key，再使用 AI 分析和文案。",
-  volcengine_tts_not_configured: "当前配音服务未配置，请先在声音设置中配置火山语音 API Key，再开始制作。",
+  cloud_not_configured: "云端素材理解服务暂不可用，当前任务未提交，请稍后重试。",
+  volcengine_tts_not_configured: "云端配音服务暂不可用，当前任务未提交，请稍后重试。",
+  PROVIDER_GATEWAY_UNAVAILABLE: "云端智能服务暂不可用，当前任务未提交，请稍后重试。",
   narrated_assets_missing: "请先添加素材。",
   narrated_plan_empty: "AI 未返回可用方案，请补充素材或稍后重试。",
   narrated_candidate_invalid: "方案包含无效或重复镜头，请调整。",
   narrated_duplicate: "这条方案与已有作品过于相似，请更换镜头或顺序。",
   narrated_copy_too_long: "口播与可用画面时长不匹配，需要调整内容和镜头。",
   narrated_duration_too_short: "口播或相关镜头不足设定的最短时长，需要补充内容后再制作。",
+  narrated_insufficient_unique_footage: "不重复可用画面不足，请减少成片数量、降低最低时长或补充素材。",
   invalid_narrated_shots: "请选择当前分析中的有效镜头。",
   invalid_narration: "请填写 2400 字以内的解说。",
   narrated_edit_mismatch: "解说无法对应当前镜头，请缩短解说或更换镜头。",
@@ -44,14 +49,21 @@ const ERRORS = {
   narrated_planning_confirmation_required: "请先核对对应平台的服务记录，并勾选确认。",
   narrated_planning_note_required: "请填写本次核对依据（1000 字以内）。",
   invalid_narrated_planning_resolution: "本次核对操作无效，请刷新后重试。",
-  narrated_planning_recovery_not_available: "当前批次没有可人工确认并重试的未知请求。"
+  narrated_planning_recovery_not_available: "当前批次没有可人工确认并重试的未知请求。",
+  narrated_voice_confirmation_required: "请先核对配音服务记录，并勾选确认。",
+  narrated_voice_note_required: "请填写本次配音核对依据。",
+  narrated_voice_recovery_not_available: "当前批次没有可人工确认并重试的未完成配音。",
+  invalid_narrated_voice_resolution: "本次配音核对操作无效，请刷新后重试。"
 };
-const PUBLIC_FIELDS = new Set(("activity message started_at completed total collections collection_id name description asset_ids batches batch_id project_id title status task_id task_status target_count recommended_count feasible_count count_is_exact reasons completed_count updated_at created_at groups opening middle ending cta settings voice_persona_id brand_profile_id minimum_duration_seconds candidates candidate_id narration angle generated_video_id duration_ms revision error actual_shots shots segment_id asset_id source_start_ms source_end_ms evidence_ref evidence_facts facts subject action quality suggested_brief preferred_groups available_shots progress approved version score rationale phrases text segment_ids role planning_recovery_available").split(" "));
-for (const field of "workflow_version script_options selected_script_id script_confirmation script_id confirmed_at audience pain_point estimated_duration_ms direction music_track_ids music_selections music_track_id track_id display_name".split(" ")) PUBLIC_FIELDS.add(field);
+const PUBLIC_FIELDS = new Set(("activity message started_at completed total collections collection_id name description asset_ids batches batch_id project_id title status task_id task_status target_count recommended_count feasible_count count_is_exact reasons completed_count updated_at created_at groups opening middle ending cta settings voice_persona_id brand_profile_id minimum_duration_seconds candidates candidate_id narration angle generated_video_id duration_ms revision error actual_shots shots segment_id asset_id source_start_ms source_end_ms evidence_ref evidence_facts facts subject action quality suggested_brief preferred_groups available_shots progress approved version score rationale phrases text segment_ids role planning_recovery_available voice_recovery_available").split(" "));
+for (const field of "phase phase_label overall_percent phase_percent item_index item_total item_name heartbeat_at".split(" ")) PUBLIC_FIELDS.add(field);
+for (const field of "workflow_version music_mode script_options selected_script_id script_confirmation script_id confirmed_at audience pain_point estimated_duration_ms direction music_track_ids music_selections music_track_id track_id display_name".split(" ")) PUBLIC_FIELDS.add(field);
 for (const field of "material_context script_selections count production_jobs ordinal production_index source_script_id export_ready exported_count export_error production_retry_available".split(" ")) PUBLIC_FIELDS.add(field);
 for (const field of "brief_version script_source target_audience expression advantages customer_pain_points brief_suggestions framework summary opening_example".split(" ")) PUBLIC_FIELDS.add(field);
 PUBLIC_FIELDS.add("archived");
+PUBLIC_FIELDS.add("video_template");
 for (const field of ['stage_times', 'action', 'finished_at']) PUBLIC_FIELDS.add(field);
+for (const field of ['planning_checkpoint', 'stage']) PUBLIC_FIELDS.add(field);
 function publicBatch(value, depth = 0) {
   if (depth > 12) return null;
   if (Array.isArray(value)) return value.slice(0, 5000).map((item) => publicBatch(item, depth + 1));
@@ -94,12 +106,14 @@ function registerNarratedBatchIpc({ handle, controller, validateId, validateVoic
     return result;
   }
   function soundSettings(value) {
-    keys(value, ["voice_persona_id", "brand_profile_id", "minimum_duration_seconds", "workflow_version", "music_track_ids"]);
+    keys(value, ["voice_persona_id", "brand_profile_id", "minimum_duration_seconds", "workflow_version", "music_mode", "music_track_ids", "video_template"]);
+    if (value.video_template != null && !["topic_fixed", "key_points"].includes(value.video_template)) invalid("invalid_narrated_settings");
     const result = { settings: { ...value } };
     if (result.settings.minimum_duration_seconds != null && (!Number.isSafeInteger(result.settings.minimum_duration_seconds) || result.settings.minimum_duration_seconds < 0)) invalid("invalid_narrated_settings");
     if (result.settings.voice_persona_id) validateVoicePersonaId(result.settings.voice_persona_id);
     if (result.settings.brand_profile_id) id(result.settings.brand_profile_id, "brand_profile");
     if (result.settings.workflow_version != null && result.settings.workflow_version !== 2) invalid("invalid_narrated_settings");
+    if (result.settings.music_mode != null && !["auto", "none", "selected"].includes(result.settings.music_mode)) invalid("invalid_narrated_settings");
     if (result.settings.music_track_ids != null) {
       if (!Array.isArray(result.settings.music_track_ids) || result.settings.music_track_ids.length > 20) invalid("invalid_narrated_settings");
       result.settings = { ...result.settings, music_track_ids: [...new Set(result.settings.music_track_ids.map((value) => id(value, "music_track")))] };
@@ -120,16 +134,33 @@ function registerNarratedBatchIpc({ handle, controller, validateId, validateVoic
   handle(CHANNELS.status, async (p) => { keys(p, ["batch_id"]); return publicBatch(await controller.getNarratedBatchStatus(id(p.batch_id, "narrated_batch"))); });
   handle(CHANNELS.save, async (p) => publicBatch(await controller.saveNarratedBatch(draft(p))));
   handle(CHANNELS.resolve, async (p, event) => {
-    keys(p, ["batch_id", "provider_log_checked", "resolution", "note", "clickToken"]);
+    keys(p, ["batch_id", "provider_log_checked", "user_confirmed_retry", "resolution", "note", "clickToken"]);
     requireTrustedAutoMixClick(event, p.clickToken, CHANNELS.resolve);
-    if (p.provider_log_checked !== true) invalid("narrated_planning_confirmation_required");
+    if (p.provider_log_checked !== true && p.user_confirmed_retry !== true) invalid("narrated_planning_confirmation_required");
     if (p.resolution !== "retry_planning") invalid("invalid_narrated_planning_resolution");
-    const note = text(p.note, 1000).trim();
+    const note = text(p.note || (p.user_confirmed_retry ? "用户确认重试未完成规划" : ""), 1000).trim();
     if (!note) invalid("narrated_planning_note_required");
     return publicBatch(await controller.resolveNarratedPlanningOutcome({
       batch_id: id(p.batch_id, "narrated_batch"),
-      provider_log_checked: true,
+      provider_log_checked: p.provider_log_checked === true,
+      user_confirmed_retry: p.user_confirmed_retry === true,
       resolution: "retry_planning",
+      note
+    }));
+  });
+  handle(CHANNELS["voice-resolve"], async (p, event) => {
+    keys(p, ["batch_id", "provider_log_checked", "user_confirmed_retry", "resolution", "note", "clickToken"]);
+    requireTrustedAutoMixClick(event, p.clickToken, CHANNELS["voice-resolve"]);
+    if (p.provider_log_checked !== true && p.user_confirmed_retry !== true) invalid("narrated_voice_confirmation_required");
+    if (p.resolution !== "retry_voice") invalid("invalid_narrated_voice_resolution");
+    const note = text(p.note || (p.user_confirmed_retry ? "用户确认重试未完成配音" : ""), 1000).trim();
+    if (!note) invalid("narrated_voice_note_required");
+    await beforeProviderWork(["volcengine_tts", "volcengine_asr"]);
+    return publicBatch(await controller.resolveNarratedVoiceOutcome({
+      batch_id: id(p.batch_id, "narrated_batch"),
+      provider_log_checked: p.provider_log_checked === true,
+      user_confirmed_retry: p.user_confirmed_retry === true,
+      resolution: "retry_voice",
       note
     }));
   });

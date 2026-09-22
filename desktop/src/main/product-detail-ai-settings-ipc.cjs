@@ -14,6 +14,7 @@ const PUBLIC_ERRORS = Object.freeze({
   APIMART_BASE_URL_HTTPS_REQUIRED: "APIMart API 地址必须使用 HTTPS。",
   APIMART_BASE_URL_INVALID: "APIMart API 地址无效，请检查后重试。",
   APIMART_BASE_URL_MISSING: "请输入 APIMart API 地址。",
+  PROVIDER_GATEWAY_MANAGED: "AI 服务由云端统一提供，客户端无需配置密钥。",
   SECURE_STORAGE_UNAVAILABLE: "无法启用 Windows 账户加密存储，请检查当前 Windows 用户后重试。"
 });
 
@@ -60,6 +61,7 @@ function publicPayload(payload = {}) {
 function registerProductDetailAiSettingsIpc(options = {}) {
   const ipcMain = options.ipcMain || require("electron").ipcMain;
   const store = options.store;
+  const managed = options.managed === true;
   const onChanged = typeof options.onChanged === "function"
     ? options.onChanged
     : () => undefined;
@@ -89,10 +91,16 @@ function registerProductDetailAiSettingsIpc(options = {}) {
     };
   }
 
-  ipcMain.handle(PRODUCT_DETAIL_AI_SETTINGS_CHANNELS.status, invoke("status"));
-  ipcMain.handle(PRODUCT_DETAIL_AI_SETTINGS_CHANNELS.save, invoke("save", true, "saved"));
-  ipcMain.handle(PRODUCT_DETAIL_AI_SETTINGS_CHANNELS.delete, invoke("clear", false, "deleted"));
-  ipcMain.handle(PRODUCT_DETAIL_AI_SETTINGS_CHANNELS.validate, invoke("validate", true));
+  function rejectManaged() {
+    return publicError(Object.assign(new Error(PUBLIC_ERRORS.PROVIDER_GATEWAY_MANAGED), { code: "PROVIDER_GATEWAY_MANAGED" }));
+  }
+
+  ipcMain.handle(PRODUCT_DETAIL_AI_SETTINGS_CHANNELS.status, managed
+    ? async () => ({ ok: true, data: { provider: "apimart", enabled: true, configured: true, ready: true, managed: true } })
+    : invoke("status"));
+  ipcMain.handle(PRODUCT_DETAIL_AI_SETTINGS_CHANNELS.save, managed ? rejectManaged : invoke("save", true, "saved"));
+  ipcMain.handle(PRODUCT_DETAIL_AI_SETTINGS_CHANNELS.delete, managed ? rejectManaged : invoke("clear", false, "deleted"));
+  ipcMain.handle(PRODUCT_DETAIL_AI_SETTINGS_CHANNELS.validate, managed ? rejectManaged : invoke("validate", true));
 }
 
 module.exports = {

@@ -6,7 +6,6 @@ import {
   Clock3,
   Clapperboard,
   Folder,
-  Images,
   Link2,
   ListTodo,
   MessageCircle,
@@ -50,6 +49,7 @@ export type AgentHomeTarget =
   | "workspace"
   | "finished"
   | "ai-video"
+  | "keyword-acquisition"
   | "publish"
   | "ai-check"
   | "leads"
@@ -86,7 +86,6 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
       { key: "expert", label: "你的AI专家", description: "协助判断下一步获客动作", icon: Bot },
       { key: "workflow", label: "今日计划", description: "查看和安排今天的任务", icon: ListTodo },
       { key: "reply", label: "自动回复", description: "管理微信回复状态", icon: MessageCircle },
-      { key: "contact-sync", label: "同步联系人", description: "同步当前微信通讯录", icon: UsersRound },
       { key: "touch", label: "精准触达", description: "按计划触达目标客户", icon: Send },
       { key: "moments", label: "朋友圈运营", description: "执行朋友圈发布与互动", icon: ThumbsUp }
     ]
@@ -99,11 +98,10 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
     primaryLabel: "开始内容创作",
     primaryTarget: "workspace",
     capabilities: [
-      { key: "product-detail", label: "产品详情图", description: "生成商品展示内容", icon: Images },
       { key: "materials", label: "素材仓库", description: "管理图片与视频素材", icon: Folder },
       { key: "workspace", label: "创作工作台", description: "开始一项内容制作", icon: Clapperboard },
       { key: "finished", label: "成片中心", description: "查看已经完成的作品", icon: Video },
-      { key: "ai-video", label: "AI 生成视频", description: "生成式视频能力正在建设", icon: MonitorPlay, available: false }
+      { key: "ai-video", label: "AI 生成视频", description: "用本人形象和产品制作数字人视频", icon: MonitorPlay }
     ]
   },
   operations: {

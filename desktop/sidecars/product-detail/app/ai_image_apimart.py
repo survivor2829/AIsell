@@ -28,6 +28,7 @@ import time
 import uuid
 import urllib.error
 import urllib.request
+from provider_transport import build_provider_opener
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -132,14 +133,14 @@ def _resolve_api_key(api_key: str = "") -> str:
 
 # ── HTTP 工具 ──────────────────────────────────────────────────
 
-def _build_apimart_opener(*, direct: bool = False):
+def _build_apimart_opener(url: str, *, direct: bool = False):
     """Create an isolated APIMart transport without inheriting global opener state."""
     proxy_settings = {} if direct else _APIMART_PROXY_SETTINGS
-    return urllib.request.build_opener(urllib.request.ProxyHandler(proxy_settings))
+    return build_provider_opener(url, proxies=proxy_settings)
 
 
 def _open_apimart(request: urllib.request.Request, *, timeout: int, direct: bool = False):
-    return _build_apimart_opener(direct=direct).open(request, timeout=timeout)
+    return _build_apimart_opener(request.full_url, direct=direct).open(request, timeout=timeout)
 
 
 def _remember_result_route(url: str, direct: bool) -> None:

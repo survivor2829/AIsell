@@ -33,6 +33,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+from provider_transport import build_provider_opener
 from collections import Counter
 from typing import Callable, Optional
 
@@ -125,7 +126,7 @@ def _http_post_deepseek(body: dict, api_key: str) -> dict:
     关代理是必须的: 国内 API 被 Clash 代理会静默超时或 502.
     参考 MEMORY: feedback_proxy_deepseek.md + app.py:2639.
     """
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    opener = build_provider_opener(_API_URL, proxies={})
     req = urllib.request.Request(
         _API_URL,
         method="POST",

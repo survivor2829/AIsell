@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, screen, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, nativeImage, net, protocol, safeStorage, screen, session, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 const components = require("./component-paths.cjs");
@@ -43,6 +43,8 @@ const { registerProductDetailIpc } = require("./product-detail-ipc.cjs");
 const { runProductDetailReleaseSmoke } = require("./product-detail-release-smoke.cjs");
 const { createContentEngineSidecar } = require("./content-engine-sidecar.cjs");
 const { registerContentEngineIpc } = require("./content-engine-ipc.cjs");
+const { registerKeywordAcquisitionIpc } = require("./keyword-acquisition-ipc.cjs");
+const { registerDigitalHumanIpc } = require("./digital-human-ipc.cjs");
 const { createBailianApiKeyStore } = require("./bailian-api-key.cjs");
 const { createVolcengineTtsKeyStore, createVolcengineAsrStore } = require("./volcengine-tts-settings.cjs");
 const {
@@ -50,7 +52,8 @@ const {
   registerContentMediaScheme
 } = require("./content-media-protocol.cjs");
 const {
-  resolveDefaultDevelopmentSidecarRuntime
+  resolveDefaultDevelopmentSidecarRuntime,
+  resolveDevelopmentContentEngineLaunch
 } = require("./development-sidecar-runtime.cjs");
 const {
   resolveRemotionRuntimeEnvironment
@@ -71,6 +74,8 @@ let productDetailIpcRegistration = null;
 let productDetailDownloadRegistration = null;
 let contentEngineController = null;
 let contentEngineIpcRegistration = null;
+let keywordAcquisitionRegistration = null;
+let digitalHumanRegistration = null;
 let quitCleanupStarted = false;
 let quitCleanupComplete = false;
 let cloudMaintenance = null;
@@ -78,6 +83,7 @@ let feedbackController = null;
 let feedbackAdmin = null;
 let providerGatewayClient = null;
 let taskPassportStore = null;
+let developmentContentEngineLaunch = null;
 
 const PROVIDER_CONSUMER_RESTART_STATES = new Set(["ready", "starting", "failed"]);
 const productDetailReleaseSmokeMode = app.isPackaged
@@ -123,9 +129,8 @@ function contentEngineRuntimePath() {
       "content-engine-worker.exe"
     );
   }
-  const configuredPath = String(process.env.XIAOXI_CONTENT_ENGINE_SIDECAR || "").trim();
-  if (configuredPath) return configuredPath;
-  return resolveDefaultDevelopmentSidecarRuntime("content-engine");
+  developmentContentEngineLaunch ||= resolveDevelopmentContentEngineLaunch();
+  return developmentContentEngineLaunch.runtimePath;
 }
 
 function productDetailRuntimeEnvironment() {
@@ -160,8 +165,8 @@ function providerGatewaySupports(provider) {
 
 function contentEngineRuntimeArgs() {
   if (app.isPackaged) return [];
-  const entryPath = String(process.env.XIAOXI_CONTENT_ENGINE_SIDECAR_ENTRY || "").trim();
-  return entryPath ? [entryPath] : [];
+  developmentContentEngineLaunch ||= resolveDevelopmentContentEngineLaunch();
+  return developmentContentEngineLaunch.runtimeArgs;
 }
 
 function remotionRuntimeEnvironment() {
@@ -219,6 +224,11 @@ function productDetailWebPreferences() {
   };
 }
 
+ipcMain.on("window-chrome:set-mode", (event, mode) => {
+  if (event.sender !== mainWindow?.webContents || !["login", "workspace"].includes(mode)) return;
+  mainWindow.setTitleBarOverlay({ color: mode === "login" ? "#241a1e" : "#c91739", symbolColor: "#ffffff", height: 36 });
+});
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     x: 0,
@@ -229,6 +239,8 @@ function createWindow() {
     minHeight: 760,
     autoHideMenuBar: true,
     backgroundColor: "#f8d9df",
+    titleBarStyle: "hidden",
+    titleBarOverlay: { color: "#241a1e", symbolColor: "#ffffff", height: 36 },
     icon: path.join(__dirname, `../../${rendererDir}/app-icon.ico`),
     title: [productBrand.displayName, editionLabel].filter(Boolean).join(" "),
     webPreferences: productDetailWebPreferences()
@@ -254,6 +266,7 @@ function createWindow() {
   mainWindow.on("responsive", () => diagnostics().event("renderer", "responsive"));
   mainWindow.on("close", () => {
     diagnostics().event("app", "window_closing");
+    void keywordAcquisitionRegistration?.dispose().catch(() => undefined);
     autoReplyController?.pause("app_closed");
     touchTaskController?.pause("应用窗口已关闭，任务已暂停");
     momentsCampaignController?.pauseForAppClose();
@@ -443,20 +456,17 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     const getProductDetailProviderEnvironment = () => {
       const providerEnvironment = { DEEPSEEK_MODEL };
+      if (providerGatewayClient?.status().ready && maintenanceConfig.caPem) {
+        providerEnvironment.XIAOXI_PROVIDER_GATEWAY_ORIGIN = maintenanceConfig.origin;
+        providerEnvironment.XIAOXI_PROVIDER_GATEWAY_CA_PEM = maintenanceConfig.caPem;
+      }
       if (providerGatewaySupports("deepseek")) {
         providerEnvironment.DEEPSEEK_API_KEY = providerGatewayClient.token();
         providerEnvironment.DEEPSEEK_API_URL = providerGatewayClient.url("/deepseek/v1/chat/completions");
-      } else if (deepSeekKeyStore.status().configured) {
-        providerEnvironment.DEEPSEEK_API_KEY = deepSeekKeyStore.read();
       }
-      const refineStatus = productDetailAiSettingsStore.status();
       if (providerGatewaySupports("apimart")) {
         providerEnvironment.REFINE_API_KEY = providerGatewayClient.token();
         providerEnvironment.REFINE_API_BASE_URL = providerGatewayClient.url("/apimart");
-      } else if (refineStatus.ready) {
-        const refine = productDetailAiSettingsStore.runtimeConfig();
-        providerEnvironment.REFINE_API_KEY = refine.apiKey;
-        providerEnvironment.REFINE_API_BASE_URL = refine.baseUrl;
       }
       return providerEnvironment;
     };
@@ -530,6 +540,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     registerProductDetailAiSettingsIpc({
       store: productDetailAiSettingsStore,
+      managed: true,
       onChanged: restartImageProviderConsumers
     });
     const contentEnginePath = contentEngineRuntimePath();
@@ -555,10 +566,6 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         if (providerGatewaySupports("bailian")) {
           providerEnvironment.DASHSCOPE_API_KEY = gatewayToken;
           providerEnvironment.XIAOXI_BAILIAN_API_HOST = providerGatewayClient.url("/bailian");
-        } else if (bailianKeyStore.status().configured) {
-          providerEnvironment.DASHSCOPE_API_KEY = bailianKeyStore.read();
-          const bailianStatus = bailianKeyStore.status();
-          if (bailianStatus.apiHost) providerEnvironment.XIAOXI_BAILIAN_API_HOST = bailianStatus.apiHost;
         }
         if (providerGatewaySupports("volcengine_tts")) {
           providerEnvironment.XIAOXI_PROVIDER_GATEWAY_TOKEN = gatewayToken;
@@ -566,8 +573,6 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           providerEnvironment.XIAOXI_VOLCENGINE_TTS_GATEWAY_ENABLED = "1";
           providerEnvironment.XIAOXI_VOLCENGINE_TTS_API_KEY = gatewayToken;
           providerEnvironment.XIAOXI_VOLCENGINE_TTS_API_URL = providerGatewayClient.url("/volcengine/tts/sse");
-        } else if (volcengineTtsKeyStore.status().configured) {
-          providerEnvironment.XIAOXI_VOLCENGINE_TTS_API_KEY = volcengineTtsKeyStore.read();
         }
         if (providerGatewaySupports("volcengine_asr")) {
           providerEnvironment.XIAOXI_PROVIDER_GATEWAY_TOKEN = gatewayToken;
@@ -575,10 +580,6 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           providerEnvironment.XIAOXI_VOLCENGINE_ASR_GATEWAY_ENABLED = "1";
           providerEnvironment.XIAOXI_VOLCENGINE_ASR_API_KEY = gatewayToken;
           providerEnvironment.XIAOXI_VOLCENGINE_ASR_ENDPOINT = providerGatewayClient.url("/volcengine/asr/recognize/flash");
-        } else if (volcengineAsrStore.status().configured) {
-          const asr = volcengineAsrStore.read();
-          providerEnvironment.XIAOXI_VOLCENGINE_ASR_APP_ID = asr.appId;
-          providerEnvironment.XIAOXI_VOLCENGINE_ASR_ACCESS_TOKEN = asr.accessToken;
         }
         providerEnvironment.XIAOXI_CONTENT_PROVIDER = "volcengine";
         if (providerGatewaySupports("volcengine_ark")) {
@@ -588,18 +589,12 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
           providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_URL = providerGatewayClient.url("/volcengine/ark/chat/completions");
           providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_HOST = providerGatewayClient.url("/volcengine/ark");
           providerEnvironment.XIAOXI_VOLCENGINE_ARK_COMPATIBLE_ORIGIN = providerGatewayClient.url("/volcengine/ark");
-        } else if (volcengineArkKeyStore.status().configured) {
-          providerEnvironment.XIAOXI_VOLCENGINE_ARK_API_KEY = volcengineArkKeyStore.read();
         }
         if (providerGatewaySupports("apimart")) {
+          providerEnvironment.XIAOXI_PROVIDER_GATEWAY_ORIGIN = maintenanceConfig.origin;
           providerEnvironment.APIMART_API_KEY = gatewayToken;
           providerEnvironment.APIMART_API_BASE_URL = providerGatewayClient.url("/apimart");
           providerEnvironment.APIMART_IMAGE_MODEL = "gpt-image-2";
-        } else if (productDetailAiSettingsStore.status().ready) {
-          const imageProvider = productDetailAiSettingsStore.runtimeConfig();
-          providerEnvironment.APIMART_API_KEY = imageProvider.apiKey;
-          providerEnvironment.APIMART_API_BASE_URL = imageProvider.baseUrl;
-          providerEnvironment.APIMART_IMAGE_MODEL = imageProvider.model;
         }
         return providerEnvironment;
       }
@@ -609,10 +604,16 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       net,
       controller: contentEngineController
     });
-    contentEngineIpcRegistration = registerContentEngineIpc({
-      controller: contentEngineController,
-      beforeProviderWork: async () => {
+    const beforeContentProviderWork = async (capabilities = ["volcengine_ark", "volcengine_asr", "volcengine_tts"]) => {
         await providerGatewayClient?.initialize({ verify: true });
+        const requiredCapabilities = [...new Set(capabilities)];
+        const missingCapabilities = requiredCapabilities.filter((capability) => !providerGatewaySupports(capability));
+        if (missingCapabilities.length) {
+          throw Object.assign(new Error(`云端智能服务暂不可用（缺少：${missingCapabilities.join("、")}），当前任务未提交。`), {
+            code: "PROVIDER_GATEWAY_UNAVAILABLE",
+            requiredCapabilities: missingCapabilities
+          });
+        }
         if (contentProviderConfiguration === providerConfiguration()) return;
         if (contentEngineController.status().state === 'ready') {
           const result = await contentEngineController.listTasks({ limit: 500 });
@@ -625,16 +626,48 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         const restarted = await contentEngineController.restart();
         if (restarted.state !== 'ready') throw Object.assign(new Error('授权已更新，内容引擎尚未就绪。'),
                                                            { code: 'CONTENT_ENGINE_PROVIDER_REFRESH_FAILED' });
-      },
-      bailianKeyStore,
-      volcengineTtsKeyStore,
-      volcengineArkKeyStore,
-      volcengineAsrStore,
+      };
+    contentEngineIpcRegistration = registerContentEngineIpc({
+      controller: contentEngineController,
+      providerCapabilityStatus: providerGatewaySupports,
+      beforeProviderWork: beforeContentProviderWork,
       dialog,
       shell,
       getMainWindow: () => mainWindow
     });
     contentEngineController.start().catch(() => undefined);
+    keywordAcquisitionRegistration = registerKeywordAcquisitionIpc({
+      ipcMain, BrowserWindow, session, getMainWindow: () => mainWindow,
+      dataDir: path.join(runtime.rootDir, "keyword_acquisition"),
+      expertStore: aiExpertStore, deepSeekClient
+    });
+    const usedDigitalHumanClicks = new Set();
+    digitalHumanRegistration = registerDigitalHumanIpc({
+      ipcMain, dialog, getMainWindow: () => mainWindow,
+      rootDir: path.join(runtime.rootDir, "digital_human"),
+      gatewayClient: providerGatewayClient,
+      imageSize: (bytes) => nativeImage.createFromBuffer(bytes).getSize(),
+      imageThumbnail: (bytes) => nativeImage.createFromBuffer(bytes).resize({ width: 320 }).toDataURL(),
+      requireTrustedClick: (event, payload, action) => {
+        const token = String(payload?.clickToken || "");
+        const prefix = `digital-human:${action}:`;
+        const uuid = token.startsWith(prefix) ? token.slice(prefix.length) : "";
+        if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(uuid)
+            || usedDigitalHumanClicks.has(token) || !mainWindow || mainWindow.isDestroyed()
+            || event.sender !== mainWindow.webContents || !mainWindow.isFocused()) {
+          throw Object.assign(new Error("请点击页面按钮开始制作。"), { code: "trusted_user_click_required" });
+        }
+        usedDigitalHumanClicks.add(token);
+        if (usedDigitalHumanClicks.size > 200) usedDigitalHumanClicks.delete(usedDigitalHumanClicks.values().next().value);
+      },
+      packageVideo: async (payload) => {
+        // Cover generation is independently recoverable; a missing image
+        // provider must not prevent a verified video entering the library.
+        await beforeContentProviderWork(["volcengine_asr", "volcengine_ark"]);
+        return contentEngineController.importBaseVideo(payload);
+      },
+      queryPackaging: (id) => contentEngineController.getTask(id)
+    });
     registerAiExpertIpc({ store: aiExpertStore, deepSeekClient, isAutoReplyRunning: () => ["starting", "running"].includes(autoReplyController?.status().status) });
     if (internalRealSend) {
       autoReplyController = registerAutoReplyIpc({
@@ -794,6 +827,8 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
     });
     Promise.race([
       Promise.allSettled([
+        Promise.resolve(keywordAcquisitionRegistration?.dispose()),
+        Promise.resolve(digitalHumanRegistration?.close()),
         Promise.resolve(productDetailController?.dispose()),
         Promise.resolve(contentEngineController?.dispose()),
         Promise.resolve(workflowController?.dispose()),

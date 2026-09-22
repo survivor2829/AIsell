@@ -65,6 +65,18 @@ def ending(text):
     return parts[-1] if parts else ''
 
 
+def ending_overlay(text):
+    """Only a complete short final sentence can be shown as an ending card."""
+    last = ending(text)
+    return last if 0 < len(last) <= 48 else ''
+
+
+def renderable_visual_items(items):
+    """Older runs may contain an overlong ending that the renderer would truncate."""
+    return [item for item in items or []
+            if item.get('type') != 'cta' or 0 < len(str(item.get('text') or '')) <= 48]
+
+
 def issue(candidate, batch):
     if not enabled(batch) or supplied(batch):
         return None

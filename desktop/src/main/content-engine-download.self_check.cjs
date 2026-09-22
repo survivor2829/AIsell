@@ -11,7 +11,10 @@ async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-content-download-"));
   const source = path.join(root, "candidate.mp4");
   const target = path.join(root, "saved.mp4");
+  const cover = path.join(root, "cover.jpg");
+  let saveTarget = target;
   fs.writeFileSync(source, "candidate-video");
+  fs.writeFileSync(cover, "candidate-cover");
 
   try {
     const handlers = new Map();
@@ -25,7 +28,7 @@ async function main() {
         calls.push(["resolveGeneratedVideoPath", candidateId, variant]);
         return {
           generated_video_id: candidateId,
-          absolute_path: source,
+          absolute_path: variant === "thumbnail" ? cover : source,
           available: true
         };
       },
@@ -47,9 +50,10 @@ async function main() {
         }
       },
       dialog: {
-        showSaveDialog: async (_window, options) => {
+        showSaveDialog: async (...args) => {
+          const options = args.at(-1);
           calls.push(["showSaveDialog", options]);
-          return { canceled: false, filePath: target };
+          return { canceled: false, filePath: saveTarget };
         }
       },
       shell: {
@@ -105,6 +109,14 @@ async function main() {
         "showSaveDialog"
       ]
     );
+    saveTarget = path.join(root, "我的封面");
+    const coverResult = await handlers.get(channel)(null, {
+      candidateId: "generated_video_99999999999999999999999999999999", variant: "thumbnail"
+    });
+    assert.equal(coverResult.ok, true);
+    assert.equal(coverResult.data.filename, "我的封面.jpg");
+    assert.equal(fs.readFileSync(`${saveTarget}.jpg`, "utf8"), "candidate-cover");
+    assert.deepEqual(calls.at(-1)[1].filters, [{ name: "封面图片", extensions: ["jpg"] }]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

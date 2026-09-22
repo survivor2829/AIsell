@@ -30,6 +30,7 @@ from content_engine.apimart_cover import (
     ProviderResponseTooLarge,
     ProviderUrlError,
     _ProviderRedirectHandler,
+    provider_urlopen,
     public_https_get,
     validate_public_https_url,
 )
@@ -93,6 +94,19 @@ def provider_test_directory(prefix):
 
 
 class ProviderOriginSecurityTests(unittest.TestCase):
+    def test_private_gateway_uses_its_verified_tls_context(self):
+        request = urllib.request.Request("https://gateway.example/v1/provider-gateway/apimart/uploads/images")
+        context = object()
+        with mock.patch("content_engine.apimart_cover.gateway_tls_context", return_value=context) as tls, mock.patch(
+            "content_engine.apimart_cover.urllib.request.build_opener"
+        ) as build:
+            build.return_value.open.return_value = "gateway-response"
+            self.assertEqual("gateway-response", provider_urlopen(request, timeout=30))
+            tls.assert_called_once_with(request.full_url)
+            self.assertIsInstance(build.call_args.args[0], _ProviderRedirectHandler)
+            self.assertIs(build.call_args.args[1]._context, context)
+            build.return_value.open.assert_called_once_with(request, timeout=30)
+
     def test_dashscope_ignores_inherited_origin_overrides(self):
         with mock.patch.dict(
             os.environ,

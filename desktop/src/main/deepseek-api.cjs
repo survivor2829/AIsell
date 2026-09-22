@@ -398,18 +398,32 @@ async function responseError(response) {
 }
 
 function createDeepSeekClient({ keyStore, gatewayClient, fetchImpl = global.fetch, requestTimeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+  const managedGateway = Boolean(gatewayClient);
+  const effectiveRequestTimeoutMs = managedGateway ? Math.max(requestTimeoutMs, 270_000) : requestTimeoutMs;
   const gatewayReady = () => Boolean(
     gatewayClient
     && typeof gatewayClient.isReady === "function"
     && gatewayClient.isReady()
     && typeof gatewayClient.fetch === "function"
+    && gatewayClient.status?.().capabilities?.deepseek === true
   );
-  const readCredential = () => gatewayReady() ? "" : keyStore.read();
+  const gatewayUnavailable = () => new DeepSeekApiError(
+    "PROVIDER_GATEWAY_UNAVAILABLE",
+    "云端智能服务暂不可用，已保留当前任务；请稍后重试或反馈问题。"
+  );
+  const readCredential = () => {
+    if (managedGateway) {
+      if (!gatewayReady()) throw gatewayUnavailable();
+      return "";
+    }
+    return keyStore.read();
+  };
 
   async function request({ key, messages, maxTokens = 180, responseFormat, disableThinking = false, temperature = 0.4 }) {
+    if (managedGateway && !gatewayReady()) throw gatewayUnavailable();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
-    const useGateway = gatewayReady() && !String(key || "").trim();
+    const timer = setTimeout(() => controller.abort(), effectiveRequestTimeoutMs);
+    const useGateway = managedGateway;
     const requestUrl = useGateway
       ? gatewayClient.url("/deepseek/chat/completions")
       : `${DEEPSEEK_ORIGIN}/chat/completions`;
@@ -426,13 +440,14 @@ function createDeepSeekClient({ keyStore, gatewayClient, fetchImpl = global.fetc
       temperature,
       response_format: responseFormat?.type || "plain",
       thinking_disabled: disableThinking,
-      timeout_ms: requestTimeoutMs
+      timeout_ms: effectiveRequestTimeoutMs
     });
     try {
       const response = await requestFetch(requestUrl, {
         method: "POST",
         redirect: "error",
         signal: controller.signal,
+        ...(useGateway ? { timeoutMs: effectiveRequestTimeoutMs } : {}),
         headers: { "content-type": "application/json", ...requestHeaders },
         body: JSON.stringify({
           model: DEEPSEEK_MODEL,
@@ -624,9 +639,19 @@ function createDeepSeekClient({ keyStore, gatewayClient, fetchImpl = global.fetc
   }
 
   return {
-    assertAvailable: () => gatewayReady() ? true : keyStore.read(),
+    isManaged: () => managedGateway,
+    status: () => managedGateway
+      ? { configured: gatewayReady(), managed: true, code: gatewayReady() ? "" : "PROVIDER_GATEWAY_UNAVAILABLE" }
+      : keyStore.status(),
+    assertAvailable: () => {
+      if (managedGateway) {
+        if (!gatewayReady()) throw gatewayUnavailable();
+        return true;
+      }
+      return keyStore.read();
+    },
     async test(value) {
-      const key = String(value || "").trim() || readCredential();
+      const key = managedGateway ? readCredential() : String(value || "").trim() || readCredential();
       const draft = await generateDraftWithKey(key, {
         task: { script: "您好，这是 DeepSeek 文案能力测试，请用一句自然问候回复。" },
         result: { salutation: { type: "person", value: "测试客户" } }

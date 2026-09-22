@@ -410,9 +410,10 @@ function sanitizeSystemError(error) {
   const code = normalizeAiWarningCode(error?.code) || "AI_REQUEST_FAILED";
   const detailCode = diagnosticCode(error?.diagnosticCode, "");
   const messages = {
-    API_KEY_MISSING: "DeepSeek API Key 未配置，请保存后重新启动自动回复。",
-    API_KEY_UNREADABLE: "DeepSeek API Key 无法读取，请重新保存后启动。",
-    API_KEY_INVALID: "DeepSeek API Key 无效或已失效，请检查后重新启动。",
+    API_KEY_MISSING: "云端智能服务暂不可用，请稍后重新启动自动回复。",
+    API_KEY_UNREADABLE: "云端智能服务暂不可用，请稍后重新启动自动回复。",
+    API_KEY_INVALID: "云端智能服务暂不可用，请稍后重新启动自动回复。",
+    PROVIDER_GATEWAY_UNAVAILABLE: "云端智能服务暂不可用，自动回复未启动，请稍后重试。",
     SECURE_STORAGE_UNAVAILABLE: "当前 Windows 加密存储不可用，请修复后重新启动。",
     AI_NETWORK_ERROR: "无法连接 DeepSeek，请检查网络后重新启动自动回复。",
     AI_REQUEST_TIMEOUT: "DeepSeek 请求超时，请检查网络后重新启动自动回复。",

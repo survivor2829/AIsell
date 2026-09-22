@@ -191,7 +191,7 @@ class VolcengineTTSProvider:
     ) -> dict[str, Any]:
         if not self.configured:
             raise ContentEngineError(
-                "volcengine_tts_not_configured", "请先在声音设置中配置火山语音 API Key。"
+                "provider_gateway_unavailable", "云端配音服务暂不可用；当前进度已保留，请稍后重试。"
             )
         normalized = re.sub(r"\s+", " ", str(text or "")).strip()
         if (

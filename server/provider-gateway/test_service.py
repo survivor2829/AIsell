@@ -1,12 +1,16 @@
 import base64
 import json
+import os
 import socket
+import ssl
+import tempfile
 import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from service import GatewayConfig, GatewayServer, Handler
 
@@ -30,6 +34,7 @@ class FakeResponse:
 
 class GatewayTest(unittest.TestCase):
     def setUp(self):
+        self.receipt_dir = tempfile.TemporaryDirectory(dir=os.path.dirname(__file__))
         self.upstream_requests = []
         self.config = GatewayConfig.from_environment({
             "XIAOXI_GATEWAY_DEEPSEEK_API_KEY": "deepseek-server-secret",
@@ -37,6 +42,7 @@ class GatewayTest(unittest.TestCase):
             "XIAOXI_GATEWAY_VOLCENGINE_TTS_API_KEY": "tts-server-secret",
             "XIAOXI_GATEWAY_VOLCENGINE_ASR_API_KEY": "asr-server-secret",
             "XIAOXI_GATEWAY_APIMART_API_KEY": "apimart-server-secret",
+            "XIAOXI_GATEWAY_SESSION_SECRET": "stable-test-secret",
         })
         self.config.license_validator = lambda _code: {
             "license_id": "license-test-001",
@@ -50,6 +56,7 @@ class GatewayTest(unittest.TestCase):
             )
 
         self.config.upstream_open = upstream_open
+        self.config.receipt_db_path = self.receipt_dir.name + "/receipts.sqlite3"
         self.server = GatewayServer(("127.0.0.1", 0), Handler, self.config)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -58,6 +65,62 @@ class GatewayTest(unittest.TestCase):
     def tearDown(self):
         self.server.shutdown()
         self.server.server_close()
+        self.receipt_dir.cleanup()
+
+    def test_completed_operation_can_be_read_after_disconnect_and_restart_without_reposting(self):
+        token = self.session()
+        route = "/v1/provider-gateway/deepseek/chat/completions"
+        headers = {"Authorization": f"Bearer {token}", "X-Xiaoxi-Operation-Id": "receipt-1"}
+        with self.post_json(route, {"model": "deepseek-v4-flash", "messages": []}, headers) as response:
+            expected = response.read()
+        self.assertEqual(len(self.upstream_requests), 1)
+        self.server.shutdown()
+        self.server.server_close()
+        self.config = GatewayConfig.from_environment({
+            "XIAOXI_GATEWAY_DEEPSEEK_API_KEY": "deepseek-server-secret",
+            "XIAOXI_GATEWAY_SESSION_SECRET": "stable-test-secret",
+        })
+        def upstream_after_restart(operation, timeout):
+            self.upstream_requests.append((operation, timeout))
+            return FakeResponse(body=b'{"choices":[{"message":{"content":"ok"}}]}')
+        self.config.upstream_open = upstream_after_restart
+        self.config.receipt_db_path = self.receipt_dir.name + "/receipts.sqlite3"
+        self.server = GatewayServer(("127.0.0.1", 0), Handler, self.config)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.origin = f"http://127.0.0.1:{self.server.server_port}"
+        receipt = urllib.request.Request(self.origin + "/v1/provider-gateway/operations/receipt-1",
+                                         headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(receipt) as response:
+            self.assertEqual(response.read(), expected)
+        with self.post_json(route, {"model": "deepseek-v4-flash", "messages": []}, headers) as response:
+            self.assertEqual(response.read(), expected)
+        self.assertEqual(len(self.upstream_requests), 1)
+        with self.post_json(route, {"model": "different", "messages": []}, headers) as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(len(self.upstream_requests), 2)
+        with self.assertRaises(urllib.error.HTTPError) as ambiguous:
+            urllib.request.urlopen(receipt)
+        self.assertEqual(ambiguous.exception.code, 409)
+
+    def test_rate_limit_allows_same_operation_to_retry(self):
+        token = self.session()
+        calls = []
+
+        def upstream(_operation, timeout):
+            calls.append(1)
+            return FakeResponse(status=429 if len(calls) == 1 else 200,
+                                body=b'{"error":"rate_limited"}' if len(calls) == 1 else b'{"ok":true}')
+
+        self.config.upstream_open = upstream
+        route = "/v1/provider-gateway/deepseek/chat/completions"
+        headers = {"Authorization": f"Bearer {token}", "X-Xiaoxi-Operation-Id": "rate-limit-retry"}
+        with self.assertRaises(urllib.error.HTTPError) as limited:
+            self.post_json(route, {"model": "deepseek-v4-flash", "messages": []}, headers)
+        self.assertEqual(limited.exception.code, 429)
+        with self.post_json(route, {"model": "deepseek-v4-flash", "messages": []}, headers) as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(len(calls), 2)
 
     def post_json(self, route, body, headers=None):
         request = urllib.request.Request(
@@ -176,6 +239,67 @@ class GatewayTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(request)
         self.assertEqual(error.exception.code, 404)
+
+    def test_apimart_proxy_is_isolated_verified_and_does_not_inherit_bypass(self):
+        proxy_calls = []
+
+        def proxy_open(operation, timeout):
+            proxy_calls.append((operation, timeout))
+            return FakeResponse(body=b'{"data":[{"task_id":"proxy-task"}]}')
+
+        with mock.patch("service.build_opener") as build:
+            build.return_value.open = proxy_open
+            configured = GatewayConfig.from_environment({
+                "XIAOXI_GATEWAY_APIMART_PROXY_URL": "http://user:fixture-password@proxy.invalid:8080",
+            })
+        self.config.apimart_open = configured.apimart_open
+        proxy, tls, redirect = build.call_args.args
+        self.assertTrue(tls._context.check_hostname)
+        self.assertEqual(tls._context.verify_mode, ssl.CERT_REQUIRED)
+        probe = urllib.request.Request("https://api.apimart.ai/v1/tasks/example")
+        with mock.patch("urllib.request.proxy_bypass", return_value=True):
+            proxy.proxy_open(probe, "unused", "https")
+        self.assertEqual(probe.host, "proxy.invalid:8080")
+        self.assertEqual(probe._tunnel_host, "api.apimart.ai")
+        with self.assertRaises(urllib.error.URLError):
+            redirect.redirect_request(probe, None, 302, "redirect", {}, "https://other.invalid/")
+
+        token = self.session()
+        for route in ("apimart/images/generations", "deepseek/chat/completions", "volcengine/tts/sse"):
+            with self.post_json("/v1/provider-gateway/" + route, {}, {"Authorization": f"Bearer {token}"}) as response:
+                self.assertEqual(response.status, 200)
+        self.assertEqual(len(proxy_calls), 1)
+        self.assertEqual(proxy_calls[0][0].full_url, "https://api.apimart.ai/v1/images/generations")
+        self.assertEqual(proxy_calls[0][0].get_header("Authorization"), "Bearer apimart-server-secret")
+        self.assertEqual(len(self.upstream_requests), 2)
+        self.assertIsNone(GatewayConfig.from_environment({}).apimart_open)
+
+    def test_apimart_proxy_failure_never_falls_back_or_reposts(self):
+        calls = []
+
+        def failed_proxy(operation, timeout):
+            calls.append(operation)
+            raise urllib.error.URLError("http://user:fixture-password@proxy.invalid")
+
+        self.config.apimart_open = failed_proxy
+        token = self.session()
+        headers = {"Authorization": f"Bearer {token}", "X-Xiaoxi-Operation-Id": "apimart-proxy-failure"}
+        for _ in range(2):
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.post_json("/v1/provider-gateway/apimart/images/generations", {}, headers)
+            self.assertEqual(error.exception.code, 503)
+            self.assertEqual(json.load(error.exception), {"error": "provider_unavailable"})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.upstream_requests, [])
+
+    def test_invalid_apimart_proxy_configuration_does_not_echo_the_url(self):
+        for value in ("https://user:fixture-password@proxy.invalid", "socks5://proxy.invalid:1080",
+                      "http://user:fixture-password@proxy.invalid:invalid", "http://proxy.invalid/path",
+                      "http://proxy.invalid/?secret=fixture-password", "http://proxy.invalid\nsecret"):
+            with self.subTest(value=value.split(":", 1)[0]):
+                with self.assertRaises(ValueError) as error:
+                    GatewayConfig.from_environment({"XIAOXI_GATEWAY_APIMART_PROXY_URL": value})
+                self.assertEqual(str(error.exception), "apimart_proxy_config_invalid")
 
     def test_provider_without_server_key_fails_before_upstream(self):
         self.config.keys["deepseek"] = ""

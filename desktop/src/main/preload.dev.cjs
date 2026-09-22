@@ -7,7 +7,10 @@ const {
 } = require("./preload-api.cjs");
 
 const apis = createPreloadApis(ipcRenderer);
+contextBridge.exposeInMainWorld("xiaoxiDigitalHuman", require("./digital-human-preload.cjs").createDigitalHumanApi(ipcRenderer));
+contextBridge.exposeInMainWorld("xiaoxiKeywordAcquisition", require("./keyword-acquisition-preload.cjs").createKeywordAcquisitionApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiLicenseAuth", apis.licenseAuth);
+contextBridge.exposeInMainWorld("xiaoxiWindowChrome", { setMode: (mode) => ipcRenderer.send("window-chrome:set-mode", mode) });
 contextBridge.exposeInMainWorld("xiaoxiWorkflow", apis.workflow);
 const consumeRealSendClick = createTrustedClickGate("[data-xiaoxi-real-send]");
 const consumeMomentsInspectClick = createTrustedClickGate("[data-xiaoxi-moments-inspect]");

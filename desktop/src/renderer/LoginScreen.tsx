@@ -1,7 +1,5 @@
-import { ArrowRight, Eye, EyeOff, KeyRound, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowRight, Eye, EyeOff, KeyRound, ShieldCheck } from "lucide-react";
 import { useState, type FormEvent } from "react";
-import productBrand from "../../product-brand.json";
-import { LoginStarfield } from "./LoginStarfield";
 import "./LoginScreen.css";
 
 type LicenseStatus = { authorized: boolean; licenseId?: string; expiresAt?: string; code?: string; error?: string };
@@ -34,14 +32,12 @@ export function LoginScreen({ license, onLogin }: { license: LicenseStatus | nul
   }
 
   return <main className="signin-scene">
-    <LoginStarfield />
     <div className="signin-layout">
-      <header className="signin-masthead"><Sparkles className="signin-brand-icon" aria-hidden="true" />{productBrand.displayName}</header>
+      <header className="signin-masthead" aria-label="玺联惠">玺联惠<sup>®</sup></header>
       <div className="signin-center">
         <section className="signin-panel" aria-labelledby="signin-title">
-          <div className="signin-emblem" aria-hidden="true"><Sparkles strokeWidth={1.25} /></div>
-          <h1 id="signin-title" className="signin-heading">让灵感，即刻启程</h1>
-          <p className="signin-description">登录 AI 获客，开启今天的工作</p>
+          <h1 id="signin-title" className="signin-heading">授权码登录</h1>
+          <div className="signin-heading-rule" aria-hidden="true" />
           {!license ? <p className="signin-loading" role="status">正在读取授权信息…</p> : <form className="signin-form" onSubmit={submit}>
             <label className="signin-field" htmlFor="signin-license">
               <span>{saved ? "已保存的授权" : "软件授权码"}</span>
@@ -61,9 +57,10 @@ export function LoginScreen({ license, onLogin }: { license: LicenseStatus | nul
             <button className="signin-submit" type="submit" disabled={busy} aria-busy={busy}>{busy ? "正在验证…" : "登录"}{!busy && <ArrowRight size={18} aria-hidden="true" />}</button>
           </form>}
           <p className="signin-help">如需获取或续期授权码，请联系管理员</p>
+          <p className="signin-made-by">玺联惠公司出品</p>
         </section>
       </div>
-      <footer className="signin-footer"><span>移动鼠标，轻拨这片星云</span><span><ShieldCheck size={14} aria-hidden="true" />授权信息在本机加密保存</span></footer>
+      <footer className="signin-footer"><ShieldCheck size={14} aria-hidden="true" />授权信息在本机加密保存</footer>
     </div>
   </main>;
 }

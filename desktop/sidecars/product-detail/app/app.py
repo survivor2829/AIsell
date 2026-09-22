@@ -33,6 +33,7 @@ import batch_queue as batch_queue_mod
 import batch_processor as batch_processor_mod
 import batch_pubsub as batch_pubsub_mod
 from browser_runtime import launch_chromium
+from provider_transport import post_provider_json
 
 RESOURCE_DIR = Path(
     os.environ.get("XIAOXI_PRODUCT_DETAIL_RESOURCE_DIR", Path(__file__).parent)
@@ -3166,16 +3167,15 @@ def _build_category_prompt(product_type: str, raw_text: str) -> str:
 
 def _call_deepseek_parse(raw_text: str, product_type: str = "设备类", api_key: str = "") -> dict:
     """调用 DeepSeek API，一次完成：解析产品参数 + 生成营销文案"""
-    import requests as req
     use_key = api_key or DEEPSEEK_API_KEY
     if not use_key:
         raise ValueError("未配置 API Key，无法调用 AI 服务")
     prompt = _build_category_prompt(product_type, raw_text)
     print(f"[DeepSeek] 发送请求，文本长度={len(raw_text)}...")
-    resp = req.post(
+    response = post_provider_json(
         DEEPSEEK_API_URL,
         headers={"Authorization": f"Bearer {use_key}"},
-        json={
+        payload={
             "model": DEEPSEEK_MODEL,
             "messages": [
                 {"role": "system", "content": "你是清洁设备营销文案专家。解析产品参数并生成营销文案。只返回JSON。"},
@@ -3186,11 +3186,9 @@ def _call_deepseek_parse(raw_text: str, product_type: str = "设备类", api_key
             "thinking": {"type": "disabled"},
             "response_format": {"type": "json_object"},
         },
-        proxies={"http": None, "https": None},  # DeepSeek 国内API，不走代理
         timeout=180,
     )
-    resp.raise_for_status()
-    msg = resp.json()["choices"][0]["message"]
+    msg = response["choices"][0]["message"]
     raw = (msg.get("content") or "").strip()
 
     print(f"[DeepSeek] 原始响应长度={len(raw)}")
@@ -5726,16 +5724,15 @@ def regenerate_block_api(product_type):
         f"返回JSON格式，只包含该模块需要的字段。\n"
     )
 
-    import requests as req
     use_key = api_key or DEEPSEEK_API_KEY
     if not use_key:
         return jsonify({"error": "未配置 API Key"}), 400
 
     try:
-        resp = req.post(
+        response = post_provider_json(
             DEEPSEEK_API_URL,
             headers={"Authorization": f"Bearer {use_key}"},
-            json={
+            payload={
                 "model": DEEPSEEK_MODEL,
                 "messages": [
                     {"role": "system", "content": "你是清洁设备营销文案专家。只返回JSON。"},
@@ -5746,8 +5743,7 @@ def regenerate_block_api(product_type):
             },
             timeout=30,
         )
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
+        content = response["choices"][0]["message"]["content"]
         regen_data = _extract_json_object(content)
         if not isinstance(regen_data, dict):
             return jsonify({"error": "AI返回数据解析失败"}), 500

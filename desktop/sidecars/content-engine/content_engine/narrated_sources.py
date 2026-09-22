@@ -57,6 +57,7 @@ def related_shots(domain, batch, candidate):
         return (shot['segment_id'] in cited, sum(token in text for token in tokens))
     # Bound mapping to duration, with spare footage for a repair, rather than every interval.
     seconds = max((candidate.get('estimated_duration_ms') or 0) / 1000,
+                  domain._phrase_budget_ms(batch, narration) / 1000 if narration else 0,
                   (batch.get('settings') or {}).get('minimum_duration_seconds', 30))
     limit = min(40, max(12, math.ceil(seconds / 3) * 2))
     selected = sorted(all_shots, key=relevance, reverse=True)[:limit]

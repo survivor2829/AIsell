@@ -3787,11 +3787,11 @@ async function main() {
   assert.equal(aiConfigFailureController.status().reply_count, 0);
   assert.equal(aiConfigFailureController.status().status, "paused");
   assert.equal(aiConfigFailureController.status().last_event, "system_error_paused");
-  assert.match(aiConfigFailureController.status().last_error, /API Key 无效/);
+  assert.match(aiConfigFailureController.status().last_error, /云端智能服务暂不可用/);
   assert.deepEqual(aiConfigFailureController.status().system_error, {
     code: "API_KEY_INVALID",
     category: "configuration",
-    message: "DeepSeek API Key 无效或已失效，请检查后重新启动。"
+    message: "云端智能服务暂不可用，请稍后重新启动自动回复。"
   });
   assert.doesNotMatch(JSON.stringify(aiConfigFailureController.status()), /secret-bearing upstream/);
   const aiFailureDiagnosticText = fs.readFileSync(path.join(aiConfigFailureDir, "auto-reply-diagnostics.jsonl"), "utf8");

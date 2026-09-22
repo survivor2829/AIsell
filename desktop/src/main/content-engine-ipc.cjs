@@ -9,6 +9,7 @@ const {
 const { diagnostics } = require("./diagnostics.cjs");
 const { CHANNELS: BATCH_CHANNELS, ERRORS: BATCH_ERRORS, registerNarratedBatchIpc } = require("./narrated-batch-ipc.cjs");
 const { CHANNELS: VOLCENGINE_TTS_CHANNELS, ARK_CHANNELS, ASR_CHANNELS, registerVolcengineTtsSettings } = require("./volcengine-tts-settings.cjs");
+const { isProviderTaskType } = require("./content-engine-sidecar.cjs");
 
 const CONTENT_ENGINE_CHANNELS = Object.freeze({
   ...Object.fromEntries(Object.entries(BATCH_CHANNELS).map(([name, channel]) => [`batch_${name}`, channel])),
@@ -87,8 +88,10 @@ const CONTENT_ENGINE_CHANNELS = Object.freeze({
   preflightVisualComparison: "content-engine:preflight-visual-comparison",
   createVisualComparisonTask: "content-engine:create-visual-comparison-task",
   regenerateCover: "content-engine:regenerate-cover",
+  updateCoverTitle: "content-engine:update-cover-title",
   getCreativeProject: "content-engine:get-creative-project",
   listGeneratedVideos: "content-engine:list-generated-videos",
+  getGeneratedVideo: "content-engine:get-generated-video",
   regenerateVideo: "content-engine:regenerate-video",
   rejectGeneratedVideo: "content-engine:reject-generated-video",
   queueGeneratedVideos: "content-engine:queue-generated-videos",
@@ -113,6 +116,55 @@ const CONTENT_ENGINE_CHANNELS = Object.freeze({
   revealExportPackage: "content-engine:reveal-export-package",
   update: "content-engine:update"
 });
+
+const NARRATED_PROVIDER_CAPABILITIES = Object.freeze([
+  "volcengine_ark", "volcengine_asr", "volcengine_tts"
+]);
+
+function providerCapabilitiesForTask(task = {}) {
+  const taskType = task?.task_type;
+  if (Array.isArray(task?.required_capabilities)) {
+    return [...new Set(task.required_capabilities.filter((capability) =>
+      ["apimart", "volcengine_ark", "volcengine_asr", "volcengine_tts"].includes(capability)
+    ))];
+  }
+  if (taskType === "narrated_batch_v1") return NARRATED_PROVIDER_CAPABILITIES;
+  if (["creative_cover", "guided_auto_mix_supplemental_image"].includes(taskType)) {
+    return ["apimart"];
+  }
+  // New sidecars persist an explicit list, including [] for fully local work.
+  // If an older sidecar omits the field, fail closed because the desktop
+  // cannot inspect its persisted candidate recipes to prove the task is local.
+  if (taskType === "creative_packaging") return ["apimart"];
+  if (isProviderTaskType(taskType)) return NARRATED_PROVIDER_CAPABILITIES;
+  return [];
+}
+
+function managedProviderStore(store, capability, capabilityStatus) {
+  if (typeof capabilityStatus !== "function") return store;
+  return {
+    ...store,
+    status: () => {
+      const configured = capabilityStatus(capability) === true;
+      return {
+        configured,
+        secureStorageAvailable: true,
+        maskedKey: "",
+        managed: true,
+        code: configured ? "" : "PROVIDER_GATEWAY_UNAVAILABLE"
+      };
+    },
+    write: () => {
+      throw Object.assign(new Error("AI 服务由云端统一提供，客户端无需保存密钥。"), {
+        code: "PROVIDER_GATEWAY_MANAGED"
+      });
+    }
+  };
+}
+
+function packagingNeedsAiCover(packaging = {}) {
+  return packaging.reuseCover !== true && packaging.coverMode === "ai_generate";
+}
 
 const PUBLIC_STATES = new Set([
   "starting",
@@ -220,7 +272,7 @@ const MUSIC_IMPORT_FIELDS = new Set([
 
 const PUBLIC_ERRORS = Object.freeze({
   ...BATCH_ERRORS,
-  CONTENT_ENGINE_RUNTIME_UNAVAILABLE: "内容引擎尚未安装或未配置。",
+  CONTENT_ENGINE_RUNTIME_UNAVAILABLE: "未找到可用的内容引擎，请重启应用；若仍无法使用，请通过吐槽中心反馈。",
   CONTENT_ENGINE_DATA_DIR_INVALID: "内容引擎数据目录配置无效。",
   CONTENT_ENGINE_DATA_DIR_FAILED: "内容引擎数据目录无法创建。",
   CONTENT_ENGINE_SPAWN_FAILED: "内容引擎启动失败，请重试。",
@@ -312,16 +364,16 @@ const PUBLIC_ERRORS = Object.freeze({
   render_timeout: "成片渲染超时，请检查素材后重试。",
   render_failed: "成片渲染失败，请检查素材后重试。",
   task_not_completed: "只有已完成的任务才能登记成片。",
-  BAILIAN_API_KEY_MISSING: "请先保存百炼 API Key。",
-  VOLCENGINE_TTS_KEY_INVALID: "火山语音 API Key 格式无效，请复制控制台中的 API Key。",
-  VOLCENGINE_TTS_KEY_UNAVAILABLE: "请在声音设置中保存火山引擎语音 API Key。",
+  BAILIAN_API_KEY_MISSING: "云端智能服务暂不可用，请稍后重试。",
+  VOLCENGINE_TTS_KEY_INVALID: "云端配音服务暂不可用，请稍后重试。",
+  VOLCENGINE_TTS_KEY_UNAVAILABLE: "云端配音服务暂不可用，请稍后重试。",
   VOLCENGINE_TTS_KEY_ENCRYPTION_INVALID: "火山语音 Key 安全传输失败，请重试。",
   VOLCENGINE_TTS_RESTART_REQUIRED: "密钥已保存，但内容引擎尚未就绪，请重新启动应用后再试听。",
-  volcengine_tts_not_configured: "请先在声音设置中配置火山引擎语音 API Key。",
-  VOLCENGINE_ASR_INVALID: "请填写正确的 APP ID 和 Access Token，不需要 Secret Key。",
-  volcengine_asr_not_configured: "请保存完整的语音识别 APP ID 和 Access Token。",
-  volcengine_ark_not_configured: "请在火山引擎设置中保存方舟 API Key。",
-  volcengine_request_rejected: "火山接口拒绝了请求，请检查对应服务的密钥与开通权限。",
+  volcengine_tts_not_configured: "云端配音服务暂不可用，请稍后重试。",
+  VOLCENGINE_ASR_INVALID: "云端语音识别服务暂不可用，请稍后重试。",
+  volcengine_asr_not_configured: "云端语音识别服务暂不可用，请稍后重试。",
+  volcengine_ark_not_configured: "云端素材理解服务暂不可用，请稍后重试。",
+  volcengine_request_rejected: "云端智能服务未接受本次请求，请稍后重试。",
   volcengine_outcome_unknown: "火山请求中断或超时，结果不明，已停止自动重提。",
   volcengine_response_invalid: "火山返回结果无法解析，已停止本次任务。",
   volcengine_operation_unsupported: "该操作尚未适配火山接口，未调用百炼。",
@@ -335,11 +387,13 @@ const PUBLIC_ERRORS = Object.freeze({
   auto_mix_voice_write_failed: "配音已返回，但本地保存失败；请检查缓存目录权限与磁盘空间，不要重复合成。",
   auto_mix_voice_unavailable: "当前内容引擎不支持声音试听，请检查配音组件配置。",
   auto_mix_voice_persona_invalid: "音色或模型配置无效，请检查当前声音设置。",
-  cloud_request_failed: "云端请求未成功，请检查网络、API Key、服务权限与账户额度；请勿连续重复提交。",
+  cloud_request_failed: "云端请求未成功，请检查网络后稍后重试；请勿连续重复提交。",
   cloud_request_rejected: "云端未接受本次请求，请检查模型或音色权限、请求参数和账户额度。",
-  BAILIAN_API_KEY_INVALID: "百炼 API Key 格式无效。",
+  BAILIAN_API_KEY_INVALID: "云端智能服务暂不可用，请稍后重试。",
   BAILIAN_API_HOST_INVALID: "百炼 API Host 必须是官方 HTTPS 地址。",
-  BAILIAN_API_KEY_UNREADABLE: "已保存的百炼 API Key 无法读取，请重新保存。",
+  BAILIAN_API_KEY_UNREADABLE: "云端智能服务暂不可用，请稍后重试。",
+  PROVIDER_GATEWAY_UNAVAILABLE: "云端智能服务暂不可用，当前任务未提交，请稍后重试。",
+  provider_gateway_unavailable: "云端智能服务暂不可用，当前进度已保留，请稍后重试。",
   SECURE_STORAGE_UNAVAILABLE: "无法启用 Windows 账户加密存储。",
   BAILIAN_KEY_ENCRYPTION_INVALID: "百炼 Key 的安全传输会话无效，请重试。",
   creative_project_not_found: "没有找到这条创作项目。",
@@ -455,7 +509,7 @@ const PUBLIC_ERRORS = Object.freeze({
   invalid_reuse_cover: "封面复用参数无效。",
   cover_generation_unavailable: "APIMart AI 封面能力暂不可用，请稍后恢复任务。",
   cover_outcome_unknown: "封面提交结果未知，为避免重复扣费不会自动重提。",
-  apimart_not_configured: "请先在 API 密钥中启用并保存 APIMart Key。",
+  apimart_not_configured: "云端图片服务暂不可用，请稍后恢复任务。",
   cover_submit_failed: "APIMart 拒绝了封面请求，本次不会自动重提。",
   cover_provider_failed: "APIMart 封面任务失败，本次不会自动重提。",
   cover_poll_failed: "APIMart 封面状态查询失败，请稍后恢复任务。",
@@ -767,6 +821,12 @@ function publicError(error) {
     let message = PUBLIC_ERRORS[suppliedCode];
     const providerMessage = typeof error?.message === "string" ? error.message : "";
     if (suppliedCode === "narrated_brief_invalid") message = safePublicText(providerMessage, 500) || message;
+    const footage = suppliedCode === "narrated_insufficient_unique_footage"
+      ? providerMessage.match(/^当前不重复可用画面约 ([0-9]{1,9}) 秒，按每条至少 ([0-9]{1,9}) 秒最多可制作 ([0-9]{1,6}) 条；请减少数量或补充素材。$/u)
+      : null;
+    if (footage && footage[0] === providerMessage) {
+      message = `当前不重复可用画面约 ${footage[1]} 秒，按每条至少 ${footage[2]} 秒最多可制作 ${footage[3]} 条；请减少数量或补充素材。`;
+    }
     // Recognize only our adapter's complete fixed messages; expose digits, never provider text.
     const businessCode = suppliedCode === "cloud_request_rejected"
       ? providerMessage.match(/^火山语音拒绝本次合成（代码 (-?[0-9]{1,10})），请检查音色权限、服务开通状态与额度。$/u)
@@ -778,11 +838,11 @@ function publicError(error) {
     if (businessCode && businessCode[0] === providerMessage) {
       message = `火山语音拒绝本次合成（代码 ${businessCode[1]}），请检查音色权限、服务开通状态与额度。`;
     } else if (httpStatus && httpStatus[0] === providerMessage) {
-      message = `火山语音请求未成功（HTTP ${httpStatus[1]}），请检查 API Key、服务权限与账户额度；请勿连续重复提交。`;
+      message = `云端配音请求未成功（HTTP ${httpStatus[1]}），请稍后重试；请勿连续重复提交。`;
     }
     const volcStatus = suppliedCode === "volcengine_request_rejected"
       ? providerMessage.match(/^火山(方舟|语音识别)请求被拒绝（HTTP ([1-5][0-9]{2})），请检查对应 API Key、模型及服务权限。$/u) : null;
-    if (volcStatus && volcStatus[0] === providerMessage) message = `火山${volcStatus[1]}请求被拒绝（HTTP ${volcStatus[2]}），请检查对应 API Key、模型及服务权限。`;
+    if (volcStatus && volcStatus[0] === providerMessage) message = `云端智能服务请求被拒绝（HTTP ${volcStatus[2]}），请稍后重试。`;
     return {
       ok: false,
       code: suppliedCode,
@@ -1323,6 +1383,11 @@ function publicGeneratedVideo(value = {}) {
     cover_phase: publicCoverPhase(value.cover_phase),
     cover_network_submitted: value.cover_network_submitted === true,
     cover_issue_code: publicCode(value.cover_issue_code),
+    cover_issue_message: safePublicText(value.cover_issue_message, 240),
+    cover_headline_lines: Array.isArray(value.cover_headline_lines)
+      ? value.cover_headline_lines.slice(0, 2).map((line) => safePublicText(line, 12)) : [],
+    cover_title_editable: value.cover_title_editable === true,
+    cover_style: ["talking_head", "product_demo"].includes(value.cover_style) ? value.cover_style : null,
     phone_review: value.phone_review ? publicMediaReview(value.phone_review) : null,
     motion_director_provider: value.motion_director_provider,
     motion_event_count: value.motion_event_count,
@@ -2131,7 +2196,13 @@ function registerContentEngineIpc(options = {}) {
     showOperationalNotification("批量创作提醒", message, `batch:${batchId}:${batch.task_id}:${status}`);
   }
 
-  function shouldNotifyOperationError(code) {
+  function shouldNotifyOperationError(code, operationName) {
+    // Background list refreshes report their error to the page. Only work the
+    // user started, or an actual task failure, should interrupt the desktop.
+    if (code === "CONTENT_ENGINE_RUNTIME_UNAVAILABLE"
+        || /^(list-|get-)/u.test(operationName)
+        || /(?:^|-)status$/u.test(operationName)
+        || ["production-summary", "provider-usage", "generated-media-url"].includes(operationName)) return false;
     return code.startsWith("cloud_")
       || code.startsWith("volcengine_")
       || code.startsWith("auto_mix_voice_")
@@ -2328,7 +2399,7 @@ function registerContentEngineIpc(options = {}) {
         return { ok: true, data };
       } catch (error) {
         const errorCode = diagnosticCode(error?.code);
-        if (shouldNotifyOperationError(safeText(error?.code, 64))) {
+        if (shouldNotifyOperationError(safeText(error?.code, 64), operationName)) {
           const publicFailure = publicError(error);
           showOperationalNotification(
             "内容制作需要处理",
@@ -2544,13 +2615,19 @@ function registerContentEngineIpc(options = {}) {
   });
   for (const [channel, method] of [
     [CONTENT_ENGINE_CHANNELS.pauseTask, "pauseTask"],
-    [CONTENT_ENGINE_CHANNELS.resumeTask, "resumeTask"],
     [CONTENT_ENGINE_CHANNELS.cancelTask, "cancelTask"]
   ]) {
     handle(channel, async (payload) => publicTask(
       await controller[method](validateId(payload.taskId, "task"))
     ));
   }
+  handle(CONTENT_ENGINE_CHANNELS.resumeTask, async (payload) => {
+    const taskId = validateId(payload.taskId, "task");
+    const task = await controller.getTask(taskId);
+    const requiredCapabilities = providerCapabilitiesForTask(task);
+    if (requiredCapabilities.length) await options.beforeProviderWork?.(requiredCapabilities);
+    return publicTask(await controller.resumeTask(taskId));
+  });
   handle(CONTENT_ENGINE_CHANNELS.listFinished, async (payload) => {
     const result = await controller.listFinished(validateLimit(payload.limit));
     return { items: (result?.items || []).map(publicFinished) };
@@ -2674,9 +2751,30 @@ function registerContentEngineIpc(options = {}) {
     await controller.setSetting("cache_limit_gb", limitGb);
     return { cacheLimitGb: limitGb };
   });
-  registerVolcengineTtsSettings({ handle, store: options.volcengineTtsKeyStore, controller, assertKeys, invalid });
-  registerVolcengineTtsSettings({ handle, store: options.volcengineAsrStore, controller, assertKeys, invalid, modulusLength: 3072, channels: ASR_CHANNELS });
-  registerVolcengineTtsSettings({ handle, store: options.volcengineArkKeyStore, controller, assertKeys, invalid, channels: ARK_CHANNELS });
+  registerVolcengineTtsSettings({
+    handle,
+    store: managedProviderStore(options.volcengineTtsKeyStore, "volcengine_tts", options.providerCapabilityStatus),
+    controller,
+    assertKeys,
+    invalid
+  });
+  registerVolcengineTtsSettings({
+    handle,
+    store: managedProviderStore(options.volcengineAsrStore, "volcengine_asr", options.providerCapabilityStatus),
+    controller,
+    assertKeys,
+    invalid,
+    modulusLength: 3072,
+    channels: ASR_CHANNELS
+  });
+  registerVolcengineTtsSettings({
+    handle,
+    store: managedProviderStore(options.volcengineArkKeyStore, "volcengine_ark", options.providerCapabilityStatus),
+    controller,
+    assertKeys,
+    invalid,
+    channels: ARK_CHANNELS
+  });
   handle(CONTENT_ENGINE_CHANNELS.bailianKeyStatus, async () => {
     if (!bailianKeyStore) invalid("CONTENT_ENGINE_CAPABILITY_UNAVAILABLE");
     return publicBailianStatus(bailianKeyStore.status());
@@ -2805,6 +2903,9 @@ function registerContentEngineIpc(options = {}) {
         .has(packaging.packagingPresetId)) {
       invalid("invalid_packaging_preset");
     }
+    if (packaging.coverMode === "ai_generate") {
+      await options.beforeProviderWork?.(["apimart"]);
+    }
     const result = await controller.generateCourseCuts(
       validateId(payload.assetId, "asset"),
       {
@@ -2850,6 +2951,9 @@ function registerContentEngineIpc(options = {}) {
       && !new Set(["hook_impact", "process_rhythm", "result_close"])
         .has(packaging.packagingPresetId)) {
       invalid("invalid_packaging_preset");
+    }
+    if (packaging.coverMode === "ai_generate") {
+      await options.beforeProviderWork?.(["apimart"]);
     }
     const result = await controller.generateMixBatch(assetIds, {
       theme: validateText(payload.theme ?? "培训现场价值", 100, "invalid_params"),
@@ -3022,6 +3126,7 @@ function registerContentEngineIpc(options = {}) {
     const draftHash = String(payload.draftHash || "").toLowerCase();
     if (!/^[a-f0-9]{64}$/u.test(draftHash)) invalid("invalid_guided_auto_mix_draft_hash");
     if (payload.confirmPaidCalls !== true) invalid("guided_auto_mix_supplemental_image_confirmation_required");
+    await options.beforeProviderWork?.(["apimart"]);
     return publicGuidedAutoMixSupplementalImage(
       await controller.createGuidedAutoMixSupplementalImageV2({
         sessionId: validateId(payload.sessionId, "guided_auto_mix_session"),
@@ -3293,15 +3398,17 @@ function registerContentEngineIpc(options = {}) {
   });
   handle(CONTENT_ENGINE_CHANNELS.generateOneClickCandidates, async (payload) => {
     assertKeys(payload, new Set(["projectId", "options"]));
-    const options = payload.options == null ? {} : payload.options;
-    if (!options || typeof options !== "object" || Array.isArray(options)) invalid("invalid_params");
-    const targetCount = Number(options.targetCount ?? 3);
-    const durationMs = Number(options.durationMs ?? 75_000);
+    const generationOptions = payload.options == null ? {} : payload.options;
+    if (!generationOptions || typeof generationOptions !== "object" || Array.isArray(generationOptions)) invalid("invalid_params");
+    const targetCount = Number(generationOptions.targetCount ?? 3);
+    const durationMs = Number(generationOptions.durationMs ?? 75_000);
     if (!Number.isInteger(targetCount) || targetCount < 1 || targetCount > 3) invalid("invalid_limit");
     if (!Number.isInteger(durationMs) || durationMs < 60_000 || durationMs > 90_000) invalid("invalid_product_duration");
+    const coverMode = String(generationOptions.coverMode ?? "ai_generate");
+    if (coverMode === "ai_generate") await options.beforeProviderWork?.(["apimart"]);
     const result = await controller.generateOneClickCandidates(
       validateId(payload.projectId, "creative_project"),
-      { targetCount, durationMs, coverMode: String(options.coverMode ?? "ai_generate") }
+      { targetCount, durationMs, coverMode }
     );
     return publicTask(result);
   });
@@ -3419,6 +3526,9 @@ function registerContentEngineIpc(options = {}) {
       "coverMode", "reuseCover"
     ]));
     const optionsForPackaging = validatePackagingOptions(payload, { reuseCoverDefault: true });
+    if (packagingNeedsAiCover(optionsForPackaging)) {
+      await options.beforeProviderWork?.(["apimart"]);
+    }
     return publicTask(await controller.packageGeneratedVideos(
       validateGeneratedVideoIds(payload.candidateIds),
       optionsForPackaging
@@ -3430,6 +3540,9 @@ function registerContentEngineIpc(options = {}) {
       "coverMode", "reuseCover"
     ]));
     const optionsForPackaging = validatePackagingOptions(payload, { reuseCoverDefault: true });
+    if (packagingNeedsAiCover(optionsForPackaging)) {
+      await options.beforeProviderWork?.(["apimart"]);
+    }
     return publicTask(await controller.repackageVideo(
       validateId(payload.candidateId, "generated_video"),
       optionsForPackaging
@@ -3453,8 +3566,19 @@ function registerContentEngineIpc(options = {}) {
   });
   handle(CONTENT_ENGINE_CHANNELS.regenerateCover, async (payload) => {
     assertKeys(payload, new Set(["candidateId"]));
+    await options.beforeProviderWork?.(["apimart"]);
     return publicTask(await controller.regenerateCover(
       validateId(payload.candidateId, "generated_video")
+    ));
+  });
+  handle(CONTENT_ENGINE_CHANNELS.updateCoverTitle, async (payload) => {
+    assertKeys(payload, new Set(["candidateId", "headlineLines"]));
+    if (!Array.isArray(payload.headlineLines) || payload.headlineLines.length < 1 || payload.headlineLines.length > 2) {
+      throw Object.assign(new Error("封面标题需要一至两行。"), { code: "invalid_params" });
+    }
+    const lines = payload.headlineLines.map((line) => validateText(line, 12));
+    return publicGeneratedVideo(await controller.updateCoverTitle(
+      validateId(payload.candidateId, "generated_video"), lines
     ));
   });
   handle(CONTENT_ENGINE_CHANNELS.getCreativeProject, async (payload) => {
@@ -3474,6 +3598,10 @@ function registerContentEngineIpc(options = {}) {
       limit: validateLimit(payload.limit, 500)
     });
     return { items: (result?.items || []).map(publicGeneratedVideo) };
+  });
+  handle(CONTENT_ENGINE_CHANNELS.getGeneratedVideo, async (payload) => {
+    assertKeys(payload, new Set(["candidateId"]));
+    return publicGeneratedVideo(await controller.getGeneratedVideo(validateId(payload.candidateId, "generated_video")));
   });
   handle(CONTENT_ENGINE_CHANNELS.regenerateVideo, async (payload) => {
     assertKeys(payload, new Set(["candidateId"]));
@@ -3529,35 +3657,41 @@ function registerContentEngineIpc(options = {}) {
       });
     }
     handle(CONTENT_ENGINE_CHANNELS.downloadCandidate, async (payload) => {
-      assertKeys(payload, new Set(["candidateId"]));
+      assertKeys(payload, new Set(["candidateId", "variant"]));
+      if (payload.variant != null && !["video", "thumbnail"].includes(payload.variant)) invalid("invalid_media_variant");
       const candidateId = validateId(payload.candidateId, "generated_video");
-      const result = await controller.resolveGeneratedVideoPath(candidateId, "video");
+      const variant = payload.variant === "thumbnail" ? "thumbnail" : "video";
+      const result = await controller.resolveGeneratedVideoPath(candidateId, variant);
       if (result?.generated_video_id !== candidateId) invalid("CONTENT_ENGINE_RESPONSE_INVALID");
       const trustedPath = resolvedAbsolutePath(result);
       return {
         candidateId,
-        ...(await saveVideoToChosenLocation(trustedPath))
+        ...(await saveVideoToChosenLocation(trustedPath, variant))
       };
     });
 
-  async function saveVideoToChosenLocation(trustedPath) {
+  async function saveVideoToChosenLocation(trustedPath, variant = "video") {
+    const image = variant === "thumbnail";
+    const extension = image ? path.extname(trustedPath).toLowerCase() : ".mp4";
+    if (image && ![".jpg", ".jpeg", ".png", ".webp"].includes(extension)) invalid("CONTENT_ENGINE_RESPONSE_INVALID");
+    const filename = image ? `视频封面${extension}` : safeVideoFilename(path.basename(trustedPath));
     const downloadsDirectory = typeof app?.getPath === "function"
       ? app.getPath("downloads")
       : undefined;
     const defaultPath = downloadsDirectory
-      ? path.join(downloadsDirectory, safeVideoFilename(path.basename(trustedPath)))
-      : safeVideoFilename(path.basename(trustedPath));
+      ? path.join(downloadsDirectory, filename)
+      : filename;
     const selected = await saveDialog(
       defaultPath,
-      [{ name: "MP4 视频", extensions: ["mp4"] }],
-      "保存成片"
+      [{ name: image ? "封面图片" : "MP4 视频", extensions: [extension.slice(1)] }],
+      image ? "保存封面" : "保存成片"
     );
     if (selected?.canceled || !selected?.filePath) {
       return { canceled: true };
     }
     let destination = String(selected.filePath);
     if (!path.isAbsolute(destination)) invalid("CONTENT_ENGINE_DOWNLOAD_PATH_INVALID");
-    if (!destination.toLowerCase().endsWith(".mp4")) destination += ".mp4";
+    if (!destination.toLowerCase().endsWith(extension)) destination += extension;
     if (path.resolve(destination).toLowerCase() === trustedPath.toLowerCase()) {
       invalid("CONTENT_ENGINE_DOWNLOAD_SOURCE");
     }

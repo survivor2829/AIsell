@@ -1292,8 +1292,16 @@ class AutoMixV2ContractTests(unittest.TestCase):
             "谷小智AI已完成三十次真实测试",
             title="谷小智 AI",
         )
-        self.assertFalse(matched["matched"])
-        self.assertIn("30", matched["missingCriticalTokens"])
+        self.assertTrue(matched["matched"])
+        self.assertEqual([], matched["missingCriticalTokens"])
+
+        wrong_number = verify_spoken_phrase(
+            "谷小智 AI 已完成 30 次真实测试",
+            "谷小智AI已完成四十次真实测试",
+            title="谷小智 AI",
+        )
+        self.assertFalse(wrong_number["matched"])
+        self.assertIn("30", wrong_number["missingCriticalTokens"])
 
         passed = verify_spoken_phrase(
             "谷小智 AI 已完成 30 次真实测试",
@@ -1301,6 +1309,53 @@ class AutoMixV2ContractTests(unittest.TestCase):
             title="谷小智 AI",
         )
         self.assertTrue(passed["matched"])
+
+        campaign = verify_spoken_phrase(
+            "第5期课程，10月1日起报名费1380元。",
+            "第五期课程，十月一日起报名费一千三百八十元。",
+        )
+        self.assertEqual([], campaign["missingCriticalTokens"])
+
+        leading_zero_wrong = verify_spoken_phrase("编号007已登记。", "编号七已登记。")
+        self.assertFalse(leading_zero_wrong["matched"])
+        self.assertEqual(["007"], leading_zero_wrong["missingCriticalTokens"])
+        self.assertTrue(verify_spoken_phrase("编号007已登记。", "编号零零七已登记。")["matched"])
+        self.assertTrue(verify_spoken_phrase("累计10010人。", "累计一万零一十人。")["matched"])
+
+    def test_voice_verification_preserves_numeric_lexemes_and_mandarin_values(self):
+        cases = (
+            ("\u9ad8\u5ea63.5\u7c73\u3002", "\u9ad8\u5ea6\u4e09\u70b9\u4e94\u7c73\u3002", "\u9ad8\u5ea6\u4e09\u5341\u4e94\u7c73\u3002", "3.5"),
+            ("\u5b8c\u621050.5%\u3002", "\u5b8c\u6210\u767e\u5206\u4e4b\u4e94\u5341\u70b9\u4e94\u3002", "\u5b8c\u6210\u767e\u5206\u4e4b\u4e94\u5341\u4e94\u3002", "50.5%"),
+            ("\u7d2f\u8ba110000\u4eba\u3002", "\u7d2f\u8ba1\u4e00\u4e07\u4eba\u3002", "\u7d2f\u8ba1\u5341\u4e07\u4eba\u3002", "10000"),
+            ("\u7d2f\u8ba1100000\u4eba\u3002", "\u7d2f\u8ba1\u5341\u4e07\u4eba\u3002", "\u7d2f\u8ba1\u4e00\u4e07\u4eba\u3002", "100000"),
+        )
+        for expected, spoken, wrong, lexeme in cases:
+            with self.subTest(expected=expected):
+                matched = verify_spoken_phrase(
+                    expected, spoken, critical_terms=(lexeme,)
+                )
+                self.assertTrue(matched["matched"])
+                self.assertEqual([], matched["missingCriticalTokens"])
+
+                rejected = verify_spoken_phrase(
+                    expected, wrong, critical_terms=(lexeme,)
+                )
+                self.assertFalse(rejected["matched"])
+                self.assertIn(lexeme, rejected["missingCriticalTokens"])
+
+    def test_voice_verification_rejects_numeric_values_containing_expected_substrings(self):
+        cases = (
+            ("第1期课程。", "第十一期课程。", "1"),
+            ("累计10人。", "累计一百一十人。", "10"),
+            ("累计12人。", "累计一百一十二人。", "12"),
+            ("完成30次测试。", "完成三百三十次测试。", "30"),
+            ("第5期课程。", "第十五期课程。", "5"),
+        )
+        for expected, recognized, lexeme in cases:
+            with self.subTest(expected=expected, recognized=recognized):
+                result = verify_spoken_phrase(expected, recognized)
+                self.assertFalse(result["matched"])
+                self.assertIn(lexeme, result["missingCriticalTokens"])
 
     def test_voice_verification_does_not_treat_generic_ai_as_brand(self):
         result = verify_spoken_phrase(

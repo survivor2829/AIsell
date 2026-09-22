@@ -351,6 +351,38 @@ button:focus-visible {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
+.desktop-window { height: 100vh; padding-top: 36px; }
+.desktop-window .app-shell { height: 100%; }
+.desktop-window .sidebar, .desktop-window .workspace { height: 100%; }
+.desktop-window .topbar { top: 36px; }
+.desktop-window .content-card { height: calc(100vh - 104px); }
+.desktop-window-login { background: #241a1e; }
+.desktop-window-workspace { background: #c91739; }
+.window-chrome {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 160px 0 12px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-app-region: drag;
+}
+.window-chrome img { width: 18px; height: 18px; border-radius: 4px; }
+
+.nav-group > .nav-item.active {
+  background: rgba(255, 255, 255, .25);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .28), 0 8px 18px rgba(12, 16, 38, .2);
+}
+
+.nav-standalone { margin: 16px 0 0; padding-left: 18px; }
+.topbar-current-module { color: #2f3447; font-size: 17px; font-weight: 800; }
+
 .nav-chevron {
   display: inline-flex;
   align-items: center;

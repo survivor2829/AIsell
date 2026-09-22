@@ -168,7 +168,7 @@ function createContentEngineApi(ipcRenderer) {
   }
 
   const batchChannels = require("./narrated-batch-ipc.cjs").CHANNELS;
-  const batchClicks = Object.fromEntries(["recommend", "scripts", "confirm", "resolve", "samples", "continue"].map((action) => [
+  const batchClicks = Object.fromEntries(["recommend", "scripts", "confirm", "resolve", "voice-resolve", "samples", "continue"].map((action) => [
     action, createTrustedClickGate(`[data-batch-action="${action}"]`, batchChannels[action])
   ]));
   const consumeAutoMixCreateClick = createTrustedClickGate(
@@ -754,10 +754,15 @@ function createContentEngineApi(ipcRenderer) {
         "content-engine:regenerate-cover",
         { candidateId: String(payload?.candidateId || "") }
       ),
+      updateCoverTitle: (payload) => ipcRenderer.invoke(
+        "content-engine:update-cover-title",
+        { candidateId: String(payload?.candidateId || ""), headlineLines: payload?.headlineLines }
+      ),
       getProject: (payload) => ipcRenderer.invoke(
         "content-engine:get-creative-project",
         { projectId: String(payload?.projectId || "") }
       ),
+      getGenerated: (payload) => ipcRenderer.invoke(CONTENT_ENGINE_CHANNELS.getGeneratedVideo, payload),
       listGenerated: (payload) => ipcRenderer.invoke(
         "content-engine:list-generated-videos",
         {
@@ -803,7 +808,7 @@ function createContentEngineApi(ipcRenderer) {
       ),
       downloadCandidate: (payload) => ipcRenderer.invoke(
         "content-engine:download-candidate",
-        { candidateId: String(payload?.candidateId || "") }
+        { candidateId: String(payload?.candidateId || ""), ...(payload?.variant != null ? { variant: payload.variant } : {}) }
       ),
       reveal: (payload) => ipcRenderer.invoke(
         "content-engine:reveal-generated-video",

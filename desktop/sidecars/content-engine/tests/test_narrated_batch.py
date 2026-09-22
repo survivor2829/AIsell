@@ -4,6 +4,7 @@ import json
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 import test_auto_mix_v2 as fixtures
 from content_engine.narrated_batch import (
@@ -11,7 +12,7 @@ from content_engine.narrated_batch import (
     reported_speech_context, reported_speech_cache_key, compact_claim_segment,
     closing_action_cache_key,
     compact_claim_semantics, semantic_review_cache_key,
-    typed_visual_review_cache_key, visual_findings_error,
+    typed_visual_review_cache_key, visual_findings_error, normalize_confirmed_user_visual_findings,
 )
 from content_engine.errors import ContentEngineError
 from content_engine.creative_analysis import DashScopeMediaClient
@@ -175,6 +176,37 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertEqual("completed", task["status"], task)
         return self.s.get_narrated_batch(b["batch_id"])
 
+    def test_auto_music_mode_selects_a_licensed_track_when_pool_is_empty(self):
+        batch = self.s.save_narrated_batch({
+            "groups": {"opening": self.ids[:2], "middle": self.ids[2:4], "ending": self.ids[4:]},
+            "title": "自动配乐回归",
+            "target_count": 1,
+            "settings": {"voice_persona_id": "natural-life@1", "music_mode": "auto", "music_track_ids": []},
+        })
+        result = self.run_samples(batch)
+        video_id = result["candidates"][0]["generated_video_id"]
+        recipe = json.loads(self.s.connection.execute(
+            "SELECT recipe_json FROM generated_videos WHERE id=?", (video_id,)
+        ).fetchone()[0])
+        self.assertEqual("licensed", recipe["music_mode"])
+        self.assertTrue(recipe.get("music_track_id"))
+        self.assertTrue(recipe.get("licensed_music_relative_path"))
+
+    def test_explicit_none_music_mode_remains_voice_only(self):
+        batch = self.s.save_narrated_batch({
+            "groups": {"opening": self.ids[:2], "middle": self.ids[2:4], "ending": self.ids[4:]},
+            "title": "明确无配乐回归",
+            "target_count": 1,
+            "settings": {"voice_persona_id": "natural-life@1", "music_mode": "none", "music_track_ids": []},
+        })
+        result = self.run_samples(batch)
+        video_id = result["candidates"][0]["generated_video_id"]
+        recipe = json.loads(self.s.connection.execute(
+            "SELECT recipe_json FROM generated_videos WHERE id=?", (video_id,)
+        ).fetchone()[0])
+        self.assertEqual("none", recipe["music_mode"])
+        self.assertNotIn("licensed_music_relative_path", recipe)
+
     def test_analysis_activity_identifies_the_current_material(self):
         domain = NarratedBatchDomain(self.s.creative_domain)
         batch = {
@@ -182,18 +214,32 @@ class NarratedBatchTests(unittest.TestCase):
             "groups": {"opening": ["asset-v2"], "middle": [], "ending": []},
         }
         activities = []
-        with patch.object(domain, "_activity", side_effect=lambda _batch, message, completed=None, total=None:
-                          activities.append((message, completed, total))), \
+
+        def analyze(_task_id, _asset_id, _profile, *, progress_callback=None, **_kwargs):
+            self.assertIn("_analysis_inflight", batch)
+            self.assertNotIn("_planning_inflight", batch)
+            progress_callback("正在检查画面质量", 50)
+            self.assertNotIn("_planning_inflight", batch)
+            progress_callback("正在识别原声", 78)
+            self.assertIn("_planning_inflight", batch)
+            return "test-analysis-v1"
+
+        with patch.object(domain, "_activity", side_effect=lambda _batch, message, completed=None, total=None, **details:
+                          activities.append((message, completed, total, details))), \
                 patch.object(domain.d, "_auto_mix_asset_snapshots", return_value=[]), \
                 patch.object(domain.d, "_auto_mix_v2_analysis_profile", return_value={}), \
                 patch.object(domain.d, "_asset_row", return_value={"id": "asset-v2", "display_name": "测试素材.mp4"}), \
-                patch.object(domain.d, "_analyze_asset", return_value="test-analysis-v1"), \
+                patch.object(domain.d, "_analyze_asset", side_effect=analyze), \
                 patch.object(domain.d, "_auto_mix_asset_cards", return_value=[]), \
                 patch.object(domain.d, "_should_stop", return_value=False), \
                 patch.object(domain, "_store"):
             domain._analysis("task-progress", batch)
-        self.assertEqual(("正在理解素材：测试素材.mp4", 0, 1), activities[0])
-        self.assertEqual(("正在理解素材：测试素材.mp4", 1, 1), activities[1])
+        self.assertEqual(("正在理解素材：测试素材.mp4", 0, 1), activities[0][:3])
+        self.assertEqual("analysis", activities[0][3]["phase"])
+        self.assertEqual(0, activities[0][3]["overall_percent"])
+        self.assertEqual(1, activities[0][3]["item_index"])
+        self.assertEqual(("正在理解素材：测试素材.mp4", 1, 1), activities[-1][:3])
+        self.assertEqual(45, activities[-1][3]["overall_percent"])
 
     def test_script_options_do_not_render_and_confirmed_first_precedes_batch_variations(self):
         events = []
@@ -320,6 +366,7 @@ class NarratedBatchTests(unittest.TestCase):
                                       "quality_score": .9, "reason": "结构完整"}
                                      for item in payload["candidates"]]}
             assets = payload["available_asset_ids"]
+            self.assertIn('candidates', kwargs['validation_error']({'text': '不完整的剪辑方案', 'shot_ids': []}))
             sequences = (assets, assets[1:] + assets[:1], assets[2:] + assets[:2])
             by_asset = {asset: [shot for shot in payload["shots"] if shot["asset_id"] == asset]
                         for asset in assets}
@@ -668,8 +715,10 @@ class NarratedBatchTests(unittest.TestCase):
                          "已知失败清除在途标记时不能残留旧请求说明")
         known_state["_planning_budget"] = {"status": "running", "started_at_epoch": 0,
             "max_elapsed_seconds": 1200, "cloud_calls": 0, "max_cloud_calls": 24}
+        domain._admit_request(known_state, {"kind": "llm"}, preflight=True)
+        known_state["_planning_budget"]["cloud_calls"] = 24
         with self.assertRaises(ContentEngineError) as exhausted:
-            domain._cloud({"expired_budget": True}, "不应发起预算外调用")
+            domain._admit_request(known_state, {"kind": "llm"}, preflight=True)
         self.assertEqual("narrated_planning_budget_exhausted", exhausted.exception.code)
         self.assertEqual("needs_attention", domain._load(known_batch["batch_id"])["status"])
         self.assertNotIn("_planning_inflight", known_state)
@@ -711,6 +760,195 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertIn("_planning_inflight", stored)
         self.assertIn("_planning_request", stored)
 
+    def test_rejected_cloud_request_clears_unknown_marker(self):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        batch = self.create(1)
+        state = domain._load(batch['batch_id'])
+        domain._active_batch = state
+        original = self.analyzer.cloud_client._structured_completion
+
+        def rejected(**_kwargs):
+            raise ContentEngineError('cloud_request_failed', '请求被拒绝') from HTTPError(
+                'https://example.invalid', 401, 'Unauthorized', {}, None)
+
+        self.analyzer.cloud_client._structured_completion = rejected
+        try:
+            with self.assertRaises(ContentEngineError):
+                domain._cloud({'probe': True}, '测试规划')
+        finally:
+            self.analyzer.cloud_client._structured_completion = original
+        saved = domain._load(batch['batch_id'])
+        self.assertNotIn('_planning_inflight', saved)
+        self.assertNotIn('_planning_request', saved)
+        self.assertFalse(saved['activity']['provider_waiting'])
+
+    def test_confirmed_script_uses_local_claim_bindings_but_keeps_visual_contradiction_gate(self):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        batch = self.create(1)
+        state = domain._load(batch["batch_id"])
+        domain._active_batch = state
+        first = "10月1日起报名费是1380元。"
+        second = "学不会，可以不限次数免费复训。"
+        shot = {"segment_id": "shot-confirmed", "fact_id": "fact-confirmed",
+                "source_start_ms": 0, "source_end_ms": 5000,
+                "description": "培训现场",
+                "visual_facts": {"direct_observation": "画面可见培训现场。",
+                                 "illustrative_observation": "", "evidence_class": "direct_real",
+                                 "frame_timestamps_ms": [0], "uncertainties": [], "onscreen_claims": []}}
+        candidate = {"candidate_id": "candidate-confirmed", "_user_supplied": True,
+                     "_confirmed_script": {"narration": first + second},
+                     "title": first, "narration": first + second, "shots": [shot],
+                     "phrases": [{"text": first, "shot_ids": [shot["segment_id"]]},
+                                 {"text": second, "shot_ids": [shot["segment_id"]]}]}
+        contradiction = {"accepted": False, "quality_score": .8,
+                         "unsupported_claims": [first],
+                         "findings": [{"type": "visual_contradiction", "quote": first,
+                                       "fact_quote": "报名费是1380元", "shot_ids": [shot["segment_id"]],
+                                       "source": "frames", "reason": "画面明确显示另一价格。"}],
+                         "reason": "画面与确认稿存在明确冲突。"}
+        visual_calls = []
+        audit = {"rejections": []}
+        with patch.object(domain, "_cloud", side_effect=AssertionError("确认稿逐字段审核不应调用云端")) as cloud, \
+                patch.object(domain, "_claim_frames", side_effect=AssertionError("本地绑定不需要逐段抽帧")), \
+                patch.object(domain, "_visual_review", side_effect=lambda current, _state, claim_review=None: (
+                    visual_calls.append(claim_review) or
+                    normalize_confirmed_user_visual_findings(current, contradiction))):
+            accepted = domain._review([candidate], state, audit)
+
+        self.assertEqual(0, cloud.call_count)
+        self.assertEqual([], accepted)
+        self.assertEqual(1, len(visual_calls), "整片画面复核必须继续执行")
+        self.assertEqual("visual_review", audit["rejections"][-1]["stage"])
+        self.assertEqual("visual_contradiction", audit["rejections"][-1]["hard_findings"][0]["type"])
+        stored_segments = state["_claim_review_segments"]
+        self.assertEqual(3, len(stored_segments))
+        for saved in stored_segments.values():
+            statements = saved["response"]["phrase_review"]["statements"]
+            self.assertTrue(statements)
+            self.assertTrue(all(item["supported"] and item["risk_scope"] == "user_context"
+                                and item["evidence"][0]["source"] == "user_context"
+                                and item["evidence"][0]["user_quote"] == item["quote"]
+                                for item in statements))
+
+        # A previous run may have cached an unsupported cloud verdict for the
+        # same text and shots before the user-confirmed authority was preserved.
+        # That verdict must not override the confirmed source on resume.
+        for saved in stored_segments.values():
+            for item in saved["response"]["phrase_review"]["statements"]:
+                item.update(supported=False, evidence=[], reason="旧审核误判")
+        with patch.object(domain, "_cloud", side_effect=AssertionError("不应重复付费审核")), \
+                patch.object(domain, "_visual_review", return_value={
+                    "accepted": True, "quality_score": .9,
+                    "unsupported_claims": [], "findings": [], "reason": "画面无冲突。"}):
+            self.assertEqual([candidate], domain._review([candidate], state, {"rejections": []}))
+
+        visual_risk_claims = {
+            "capability": "这款机器人能够自动完成整层清洁。",
+            "continuity": "这款机器人始终稳定运行。",
+            "causal": "使用这款机器人，因此保洁成本下降。",
+            "outcome": "这款机器人已经成功完成整层清洁。",
+            "depicted_action": "画面中的机器人正在清洗地面。",
+        }
+        user_owned_business_claims = {
+            "market_pain_point": "咨询清洁机器人的越来越多了，有询盘却转化不了，缺部署、操作、演示能力。",
+            "landing_plan": "分享机器人如何真正落到场景里，卖、租、运维都可以。",
+            "certification": "这款机器人已经通过国家级安全认证。",
+            "registration_earnings": "报名这门课程就能月入万元。",
+            "small_class_endorsement": "30人小班由官方指定专家授课。",
+            "training_affiliation": "参加培训即可成为当地唯一授权代理。",
+            "service_guarantee": "课程包含接单服务，保证每月新增十个客户。",
+        }
+        for label, claim in visual_risk_claims.items():
+            with self.subTest(confirmed_claim=label):
+                risky = {**candidate, "candidate_id": f"candidate-{label}",
+                         "title": claim, "narration": claim,
+                         "_confirmed_script": {"narration": claim},
+                         "phrases": [{"text": claim, "shot_ids": [shot["segment_id"]]}]}
+                risky_state = domain._load(self.create(1)["batch_id"])
+                domain._active_batch = risky_state
+                with patch.object(domain, "_claim_frames", return_value=([], [])), \
+                        patch.object(domain, "_cloud", side_effect=ContentEngineError(
+                            "cloud_request_failed", "高风险确认稿必须进入云端证据审核")) as risky_cloud:
+                    with self.assertRaises(ContentEngineError):
+                        domain._grounded_claim_review([risky], risky_state, {"rejections": []})
+                self.assertEqual(1, risky_cloud.call_count)
+
+        for label, claim in user_owned_business_claims.items():
+            with self.subTest(confirmed_business_claim=label):
+                supplied = {**candidate, "candidate_id": f"candidate-{label}",
+                            "title": claim, "narration": claim,
+                            "_confirmed_script": {"narration": claim},
+                            "phrases": [{"text": claim, "shot_ids": [shot["segment_id"]]}]}
+                supplied_state = domain._load(self.create(1)["batch_id"])
+                domain._active_batch = supplied_state
+                with patch.object(domain, "_cloud", side_effect=AssertionError(
+                        "confirmed business copy should bind to user context locally")) as supplied_cloud:
+                    accepted = domain._grounded_claim_review([supplied], supplied_state, {"rejections": []})
+                self.assertEqual(0, supplied_cloud.call_count)
+                self.assertEqual([supplied["candidate_id"]], [item[0]["candidate_id"] for item in accepted])
+
+        generated = {key: value for key, value in candidate.items() if key != "_user_supplied"}
+        generated["candidate_id"] = "candidate-generated"
+        fresh_state = domain._load(self.create(1)["batch_id"])
+        domain._active_batch = fresh_state
+        with patch.object(domain, "_claim_frames", return_value=([], [])), \
+                patch.object(domain, "_cloud", side_effect=ContentEngineError(
+                    "cloud_request_failed", "证明普通生成稿仍走云端审核")) as generated_cloud:
+            with self.assertRaises(ContentEngineError):
+                domain._grounded_claim_review([generated], fresh_state, {"rejections": []})
+        self.assertEqual(1, generated_cloud.call_count)
+
+    def test_review_edit_preserves_confirmed_script_before_review(self):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        batch = self.create(1)
+        state = domain._load(batch["batch_id"])
+        state["_story_planning_version"] = 2
+        text = "客户问完价转头就走，说明你没让他看明白能省多少钱。"
+        shot = {"segment_id": "shot-1"}
+        candidate = {"candidate_id": "candidate-1", "revision": 1, "title": "渠道商困境",
+                     "narration": text, "shots": [shot],
+                     "phrases": [{"text": text, "shot_ids": ["shot-1"]}],
+                     "_user_supplied": True, "_confirmed_script": {"narration": text}}
+        normalized = {key: value for key, value in candidate.items()
+                      if key not in {"_user_supplied", "_confirmed_script"}}
+        normalized["candidate_id"] = "temporary-candidate"
+
+        def review(candidates, _state, _audit):
+            self.assertTrue(candidates[0].get("_user_supplied"))
+            self.assertEqual({"narration": text}, candidates[0].get("_confirmed_script"))
+            return candidates
+
+        with patch.object(domain, "_normalize_candidate", return_value=normalized), \
+                patch.object(domain, "_review", side_effect=review), \
+                patch.object(domain, "_history", return_value=[]):
+            domain._review_edit(candidate, state)
+        self.assertEqual("candidate-1", candidate["candidate_id"])
+
+    def test_confirmed_local_binding_only_accepts_closed_business_terms(self):
+        safe_terms = [
+            "10月16日开课。",
+            "每个月一期。",
+            "9月报名费1280元。",
+            "学完觉得不值，当场退款。",
+            "学不会可以不限次数免费复训。",
+            "30人小班，三天线下实操。",
+        ]
+        unsafe_terms = [
+            "课程。",
+            "培训报名。",
+            "小班上课。",
+            "报名这门课程就能月入万元。",
+            "30人小班由官方指定专家授课。",
+            "参加培训即可成为当地唯一授权代理。",
+            "课程包含接单服务，保证每月新增十个客户。",
+        ]
+        for text in safe_terms:
+            with self.subTest(safe=text):
+                self.assertTrue(NarratedBatchDomain._confirmed_user_fact_is_locally_bindable(text))
+        for text in unsafe_terms:
+            with self.subTest(unsafe=text):
+                self.assertFalse(NarratedBatchDomain._confirmed_user_fact_is_locally_bindable(text))
+
     def test_unknown_planning_requires_audited_confirmation_before_new_task(self):
         domain = NarratedBatchDomain(self.s.creative_domain)
         batch = self.create(1)
@@ -728,6 +966,8 @@ class NarratedBatchTests(unittest.TestCase):
         pending = self.s.get_narrated_batch(batch["batch_id"])
         self.assertEqual("outcome_unknown", pending["status"])
         self.assertTrue(pending["planning_recovery_available"])
+        self.assertFalse(pending["activity"].get("provider_waiting", False))
+        self.assertIn("已保留最后进度", pending["activity"]["message"])
         with self.assertRaises(ContentEngineError) as unchecked:
             self.s.resolve_narrated_planning_outcome({
                 "batch_id": batch["batch_id"], "provider_log_checked": False,
@@ -1016,6 +1256,7 @@ class NarratedBatchTests(unittest.TestCase):
 
         self.analyzer.cloud_client._structured_completion = complete
         with patch.object(domain, "_speech_ms_per_char", return_value=193.0), \
+             patch.object(domain, "_capacity_ms_per_char", return_value=260.0), \
              patch.object(domain, "_review", side_effect=lambda candidates, *_args: candidates):
             repaired = domain._repair_reviewed(
                 task["task_id"], [rejected], [], state, shots, [], audit)
@@ -1567,6 +1808,32 @@ class NarratedBatchTests(unittest.TestCase):
 
 
 class ReportedSpeechContextTests(unittest.TestCase):
+    def test_confirmed_user_business_facts_need_relevant_visuals_not_pixel_proof(self):
+        candidate = {'candidate_id': 'candidate', '_user_supplied': True, 'title': '机器人实训',
+            'shots': [{'segment_id': 'shot-1'}],
+            'phrases': [{'text': '10月1日起报名费是1380元。', 'shot_ids': ['shot-1']}]}
+        response = {'accepted': False, 'quality_score': .8,
+            'unsupported_claims': ['10月1日起报名费是1380元。'],
+            'findings': [{'type': 'unsupported_fact', 'quote': '10月1日起报名费是1380元。',
+                'fact_quote': '不是原句里的逐字片段', 'shot_ids': ['shot-1'],
+                'source': 'missing_source', 'reason': '画面没有显示价格。'}]}
+        normalized = normalize_confirmed_user_visual_findings(candidate, response)
+        self.assertIsNone(visual_findings_error(candidate, normalized))
+        self.assertTrue(normalized['accepted'])
+        self.assertEqual([], normalized['unsupported_claims'])
+        self.assertEqual('editorial', normalized['findings'][0]['type'])
+        self.assertNotIn('fact_quote', normalized['findings'][0])
+        self.assertFalse(response['accepted'])
+
+        contradiction = {'accepted': False, 'quality_score': .8,
+            'unsupported_claims': ['10月1日起报名费是1380元。'],
+            'findings': [{'type': 'visual_contradiction', 'quote': '10月1日起报名费是1380元。',
+                'fact_quote': '报名费是1380元', 'shot_ids': ['shot-1'], 'source': 'frames',
+                'reason': '画面明确显示另一价格。'}]}
+        normalized = normalize_confirmed_user_visual_findings(candidate, contradiction)
+        self.assertIsNone(visual_findings_error(candidate, normalized))
+        self.assertFalse(normalized['accepted'])
+
     def test_typed_visual_findings_preserve_embedded_facts_and_separate_editorial_notes(self):
         import copy
         candidate = {'candidate_id': 'candidate', 'title': '设备培训',
@@ -1668,6 +1935,55 @@ class ReportedSpeechContextTests(unittest.TestCase):
         rejected[fresh] = {"response": {"accepted": False}}
         self.assertEqual(reported_speech_cache_key("base", context, rejected), fresh)
         self.assertEqual(reported_speech_cache_key("base", None, rejected), "base")
+
+    def test_compact_claim_segment_sends_only_adjacent_narrative_context(self):
+        paragraphs = ["第一段提供开场条件。", "第二段是当前需要核对的内容。",
+                      "第三段补充紧邻语义。", "第四段与当前段无关。"]
+        full_context = {"title": "完整标题", "paragraphs": paragraphs}
+
+        def compact(phrase_id, text, attribution_context=None):
+            segment_key = canonical_hash({"text": text, "narrative_context": full_context})
+            source = {"phrase_id": phrase_id, "text": text, "facts": [],
+                      "segment_key": segment_key, "narrative_context": full_context}
+            if attribution_context:
+                source["attribution_context"] = attribution_context
+            wire = compact_claim_segment(source)
+            self.assertEqual(segment_key, wire["segment_key"])
+            self.assertEqual(full_context, source["narrative_context"],
+                             "wire compaction must not alter full local cache input")
+            return wire
+
+        title = compact("title", "完整标题")
+        self.assertEqual({"after": [paragraphs[0]]}, title["narrative_context"])
+        self.assertNotIn(paragraphs[-1], json.dumps(title, ensure_ascii=False))
+
+        first = compact("phrase-1", paragraphs[0])
+        self.assertEqual({"title": "完整标题", "before": [], "after": [paragraphs[1]]},
+                         first["narrative_context"])
+        middle = compact("phrase-2", paragraphs[1])
+        self.assertEqual({"title": "完整标题", "before": [paragraphs[0]],
+                          "after": [paragraphs[2]]}, middle["narrative_context"])
+        self.assertNotIn(paragraphs[3], json.dumps(middle, ensure_ascii=False))
+        last = compact("phrase-4", paragraphs[3])
+        self.assertEqual({"title": "完整标题", "before": [paragraphs[2]], "after": []},
+                         last["narrative_context"])
+        self.assertNotIn(paragraphs[0], json.dumps(last, ensure_ascii=False))
+
+        attribution = {"intro_text": "现场讲师介绍：",
+                       "reported_text": "第二段是当前需要核对的内容。第三段补充紧邻语义。"}
+        attributed = compact("phrase-2", paragraphs[1], attribution)
+        self.assertEqual(attribution, attributed["attribution_context"])
+
+        malformed = compact_claim_segment({"phrase_id": "phrase-2", "text": paragraphs[1],
+            "facts": [], "narrative_context": {"title": "完整标题", "paragraphs": "".join(paragraphs)}})
+        self.assertEqual({"title": "完整标题"}, malformed["narrative_context"],
+                         "malformed context must never fall back to the full narration")
+        self.assertNotIn(paragraphs[1], json.dumps(malformed["narrative_context"], ensure_ascii=False))
+
+        changed_context = {"title": "完整标题", "paragraphs": paragraphs[:-1] + ["远端内容已改变。"]}
+        changed_key = canonical_hash({"text": paragraphs[1], "narrative_context": changed_context})
+        self.assertNotEqual(middle["segment_key"], changed_key,
+                            "distant original narrative must still participate in the local cache key")
 
 
 if __name__ == "__main__":

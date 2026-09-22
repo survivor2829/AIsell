@@ -9,7 +9,7 @@ const launcher = fs.readFileSync(
 
 assert.match(launcher, /dist-development\\index\.html/u);
 assert.match(launcher, /node_modules\\electron\\dist\\electron\.exe/u);
-assert.match(launcher, /electron\.exe" \.\s*$/mu);
+assert.match(launcher, /node\.exe "%CD%\\scripts\\launch-internal-development\.cjs"/u);
 assert.doesNotMatch(
   launcher,
   /resolveDefaultDevelopmentSidecarRuntime|Product detail or materials runtime/u,
