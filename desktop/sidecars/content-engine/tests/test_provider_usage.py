@@ -272,7 +272,8 @@ class ProviderUsageTests(unittest.TestCase):
         self.assertEqual(len(retryable_planning_jobs(batch)), 1)
         retry_failed_planning(batch)
         self.assertEqual(batch["production_jobs"][0]["status"], "queued")
-        self.assertEqual(batch["candidates"][0]["status"], "planned")
+        self.assertEqual(batch["candidates"][0]["status"], "needs_review")
+        self.assertTrue(batch["candidates"][0]["_voice_capacity_retry"])
 
 
 if __name__ == "__main__":

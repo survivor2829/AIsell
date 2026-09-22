@@ -405,6 +405,11 @@ class DashScopeMediaClient:
 
         previous_issue = ""
         previous_item: dict[str, Any] | None = None
+        # A correction is another attempt at the same logical provider
+        # operation. Keep one durable operation id so usage accounting and a
+        # gateway replay can associate every bounded correction with the
+        # original request.
+        operation_id = str(uuid.uuid4())
         self.last_completion_requests = []
         def record_validation(result_status):
             if not self._last_request_usage:
@@ -414,7 +419,6 @@ class DashScopeMediaClient:
                 self.last_completion_requests[-1].update(self._last_request_usage)
             self.last_completion_metadata.update(self._last_request_usage)
         for attempt in range(3):
-            operation_id = str(uuid.uuid4())
             if attempt:
                 time.sleep(0.5 * 2 ** (attempt - 1))
             request_messages = [dict(message) for message in messages]
