@@ -36,8 +36,51 @@ MAX_429_ATTEMPTS = 3
 OPAQUE_HEADER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 
 
+class GatewayReplayRetry(Exception):
+    """Replay the identical operation ID through the durable gateway ledger."""
+
+
 class VolcengineMediaClient(DashScopeMediaClient):
     provider = "volcengine"
+
+    @staticmethod
+    def _read_response(response, meter, stage):
+        meter.observe(headers=response.headers, http_status=getattr(response, "status", 200))
+        status = response.headers.get("X-Api-Status-Code")
+        if stage == "语音识别" and status not in {"20000000", "20000003"}:
+            raise ContentEngineError("volcengine_request_rejected", f"火山语音识别未成功，服务状态 {status or '缺失'}；请检查录音文件极速版服务权限。")
+        raw = response.read(16 * 1024 * 1024 + 1)
+        if len(raw) > 16 * 1024 * 1024:
+            raise ContentEngineError("cloud_response_too_large", "火山返回结果过大，已停止。")
+        result = json.loads(raw) if raw else {}
+        if not isinstance(result, dict):
+            raise ValueError()
+        meter.observe(result)
+        if stage == "语音识别" and status == "20000003":
+            return {**result, "result": {"text": "", "utterances": []}, "speech_status": "silent"}
+        if result.get("error"):
+            raise ContentEngineError("volcengine_request_rejected", "火山方舟拒绝本次请求，请检查服务权限与额度。")
+        return result
+
+    def _recover_gateway_receipt(self, origin, token, operation_id, meter, stage):
+        """Read the original result after a disconnect before same-ID gateway replay."""
+        receipt_url = f"{origin}/v1/provider-gateway/operations/{operation_id}"
+        deadline = time.monotonic() + 90
+        while True:
+            tls_context = gateway_tls_context(receipt_url)
+            opener_args = [_NoRedirect()]
+            if tls_context is not None:
+                opener_args.append(request.HTTPSHandler(context=tls_context))
+            receipt = request.Request(receipt_url, headers={"Authorization": f"Bearer {token}"}, method="GET")
+            try:
+                with request.build_opener(*opener_args).open(receipt, timeout=15) as response:
+                    if response.status != 202:
+                        return self._read_response(response, meter, stage)
+            except (HTTPError, TimeoutError, socket.timeout, URLError, OSError):
+                return None
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(2)
 
     def __init__(self):
         # Do not inherit a historical DashScope key, origin, or model.
@@ -114,22 +157,7 @@ class VolcengineMediaClient(DashScopeMediaClient):
                             if tls_context is not None:
                                 opener_args.append(request.HTTPSHandler(context=tls_context))
                             with request.build_opener(*opener_args).open(op, timeout=timeout) as response:
-                                meter.observe(headers=response.headers, http_status=getattr(response, "status", 200))
-                                status = response.headers.get("X-Api-Status-Code")
-                                if stage == "语音识别" and status not in {"20000000", "20000003"}:
-                                    raise ContentEngineError("volcengine_request_rejected", f"火山语音识别未成功，服务状态 {status or '缺失'}；请检查录音文件极速版服务权限。")
-                                raw = response.read(16 * 1024 * 1024 + 1)
-                                if len(raw) > 16 * 1024 * 1024:
-                                    raise ContentEngineError("cloud_response_too_large", "火山返回结果过大，已停止。")
-                                result = json.loads(raw) if raw else {}
-                                if not isinstance(result, dict):
-                                    raise ValueError()
-                                meter.observe(result)
-                                if stage == "语音识别" and status == "20000003":
-                                    return {**result, "result": {"text": "", "utterances": []}, "speech_status": "silent"}
-                                if result.get("error"):
-                                    raise ContentEngineError("volcengine_request_rejected", "火山方舟拒绝本次请求，请检查服务权限与额度。")
-                                return result
+                                return self._read_response(response, meter, stage)
                         except HTTPError as error:
                             observe_http_error(meter, error)
                             status_code = int(error.code or 0)
@@ -137,7 +165,17 @@ class VolcengineMediaClient(DashScopeMediaClient):
                                 delay = retry_delay_seconds(getattr(error, "headers", None), attempt)
                                 if delay is not None:
                                     raise ProviderRateLimitRetry(delay) from None
+                            if gateway_request and status_code == 409:
+                                raise ContentEngineError("volcengine_outcome_unknown",
+                                                         f"火山{stage}原操作仍无法确认，未自动创建新请求。") from None
                             if status_code >= 500:
+                                if gateway_request:
+                                    recovered = self._recover_gateway_receipt(
+                                        gateway_origin, gateway_token, operation_id, meter, stage)
+                                    if recovered is not None:
+                                        return recovered
+                                    if attempt < MAX_429_ATTEMPTS:
+                                        raise GatewayReplayRetry() from None
                                 origin = {
                                     "gateway_transport": "网关传输",
                                     "maintenance_transport": "维护服务传输",
@@ -162,12 +200,22 @@ class VolcengineMediaClient(DashScopeMediaClient):
                             raise ContentEngineError("volcengine_request_rejected", message) from None
                         except (TimeoutError, socket.timeout, URLError, OSError) as error:
                             meter.observe_transport_error(error)
+                            if gateway_request:
+                                recovered = self._recover_gateway_receipt(
+                                    gateway_origin, gateway_token, operation_id, meter, stage)
+                                if recovered is not None:
+                                    return recovered
+                                if attempt < MAX_429_ATTEMPTS:
+                                    raise GatewayReplayRetry() from None
                             raise ContentEngineError("volcengine_outcome_unknown", f"火山{stage}连接中断或超时，结果不明，未自动重提。") from None
                         except (ValueError, UnicodeError):
                             raise ContentEngineError("volcengine_response_invalid", f"火山{stage}返回无法解析的结果，已停止。") from None
             except ProviderRateLimitRetry as retry:
                 if retry.delay_seconds:
                     time.sleep(retry.delay_seconds)
+                continue
+            except GatewayReplayRetry:
+                time.sleep(0.5 * 2 ** (attempt - 1))
                 continue
             finally:
                 if meter is not None:
@@ -196,7 +244,7 @@ class VolcengineMediaClient(DashScopeMediaClient):
 
     def synthesize_auto_mix_phrase(self, text, output_path, persona_private):
         if persona_private.get("provider") != "volcengine":
-            raise ContentEngineError("auto_mix_voice_invalid", "请选用已批准的火山音色，例如小何 2.0。")
+            raise ContentEngineError("auto_mix_voice_invalid", "当前选择的声音不是已批准的火山音色，请重新选择已批准的声音。")
         return VolcengineTTSProvider(timeout_seconds=self.timeout_seconds, usage_data_dir=getattr(self, "usage_data_dir", None)).synthesize_auto_mix_phrase(text, output_path, persona_private)
 
     @staticmethod

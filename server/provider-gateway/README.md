@@ -8,7 +8,8 @@
 
 - `GET /v1/provider-gateway/health`：不需要授权，返回服务存活状态、运行时版本标识和上游超时契约。
 - `POST /v1/provider-gateway/session`：提交当前软件的已签名授权码和安装元数据，
-  返回短期会话令牌及能力布尔值。授权码只在内存中校验，不写日志或数据库。
+  返回短期会话令牌及能力布尔值。授权码只在内存中校验，不写日志或数据库；
+  为跨重启读取回执，仅保存会话令牌摘要、过期时间和授权主体，不保存令牌原文。
 - `GET /v1/provider-gateway/capabilities`：需要会话令牌，只返回能力布尔值。
 - 需要会话令牌的固定供应商路由：
   - DeepSeek：`/deepseek/chat/completions`、`/deepseek/v1/chat/completions`
@@ -22,15 +23,19 @@
 网关只接受上述固定路径，绝不把客户端提供的 URL 当作上游地址。客户端的
 `Authorization`、`X-Api-Key` 等凭据不会转发；服务端从
 `/etc/ai-maintenance/provider-gateway.env` 注入供应商凭据。请求体、授权码和
-供应商响应不写入服务日志，响应大小和并发均有上限。
+供应商响应不写入服务日志，响应大小和并发均有上限。带 operation ID 的
+POST 响应会短期保存在仅网关服务账号可读的本地回执库中，用于断线恢复；
+响应正文最多保留 24 小时，之后只保留防重复提交的标记至第 90 天。
 
 所有上游供应商共用 `XIAOXI_GATEWAY_UPSTREAM_TIMEOUT_SECONDS`，默认 180 秒，
 允许配置 30～180 秒；维护转发等待 240 秒，桌面供应商请求等待 270 秒，避免客户端先放弃仍在处理的请求。
 health 默认返回运行文件的摘要标识，也可通过 `XIAOXI_GATEWAY_RUNTIME_REVISION` 指定发布标识；
 标识和超时元数据用于诊断，不能替代能力声明或导致兼容客户端关闭全部 AI 功能。
 
-相同 operation ID 只在同一认证主体、目标、请求正文及相关请求头都一致时合并当前正在执行的请求。
-这不提供跨重启去重，也不证明无回执的请求没有执行；结果未知时仍需核对已有服务记录，禁止自动重提。
+相同 operation ID 只在同一认证主体、目标、请求正文及相关请求头都一致时
+共用持久回执；`GET /v1/provider-gateway/operations/<operation-id>` 可在断线后
+查询原结果（处理中返回 202）。没有回执或回执状态不明时仍禁止自动重提；
+网关升级前发生的请求无法追溯。已确认的 429 限流不保留回执，允许原有的有界重试。
 
 火山方舟和火山语音的鉴权凭据不能按名称混用。`XIAOXI_GATEWAY_VOLCENGINE_API_KEY`
 仅作为 Ark 的默认 Key；TTS 必须配置 `XIAOXI_GATEWAY_VOLCENGINE_TTS_API_KEY`，不借用 Ark Key。ASR 必须使用

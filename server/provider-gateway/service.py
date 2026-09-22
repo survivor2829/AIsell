@@ -20,6 +20,7 @@ from pathlib import Path
 import re
 import secrets
 import socket
+import sqlite3
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -44,6 +45,9 @@ RUNTIME_REVISION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 DEFAULT_UPSTREAM_TIMEOUT_SECONDS = 180
 MIN_UPSTREAM_TIMEOUT_SECONDS = 30
 MAX_UPSTREAM_TIMEOUT_SECONDS = 180
+RECEIPT_MAX_BYTES = 4 * 1024 * 1024
+RECEIPT_RETENTION_SECONDS = 24 * 60 * 60
+RECEIPT_TOMBSTONE_SECONDS = 90 * 24 * 60 * 60
 
 PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsPhBY7urbSK6OeM6CkL0
@@ -152,6 +156,7 @@ class SessionStore:
         self.ttl_seconds = max(300, min(7 * 24 * 60 * 60, int(ttl_seconds)))
         self._sessions: dict[bytes, tuple[float, str]] = {}
         self._lock = threading.Lock()
+        self.receipts = None
 
     def _digest(self, token: str) -> bytes:
         return hmac.new(self.secret, token.encode("utf-8"), hashlib.sha256).digest()
@@ -168,6 +173,8 @@ class SessionStore:
             if len(self._sessions) >= 4096:
                 self._sessions.pop(next(iter(self._sessions)))
             self._sessions[digest] = (expiry, license_id)
+            if self.receipts is not None:
+                self.receipts.store_session(digest, expiry, license_id)
         return token, datetime.fromtimestamp(expiry, timezone.utc)
 
     def validate(self, token: str) -> bool:
@@ -181,7 +188,9 @@ class SessionStore:
         with self._lock:
             self._cleanup_locked(now)
             entry = self._sessions.get(digest)
-            return entry[1] if entry and entry[0] > now else None
+            if entry and entry[0] > now:
+                return entry[1]
+            return self.receipts.lookup_session(digest, now) if self.receipts is not None else None
 
     def _cleanup_locked(self, now: float) -> None:
         for digest, (expires, _license_id) in list(self._sessions.items()):
@@ -203,6 +212,7 @@ class GatewayConfig:
     session_secret: str = ""
     upstream_timeout_seconds: int = DEFAULT_UPSTREAM_TIMEOUT_SECONDS
     runtime_revision: str = ""
+    receipt_db_path: str = ""
 
     @classmethod
     def from_environment(cls, environ=None):
@@ -267,6 +277,112 @@ class GatewayConfig:
         return self.capabilities().get(provider, False)
 
 
+class ReceiptStore:
+    """Bounded, subject-scoped result receipts; never persists request bodies."""
+
+    def __init__(self, path, secret):
+        self.lock = threading.Lock()
+        self.secret = secret
+        self.db = sqlite3.connect(path, check_same_thread=False)
+        self.db.execute("""CREATE TABLE IF NOT EXISTS operation_receipts (
+            subject_hash TEXT NOT NULL, operation_id TEXT NOT NULL,
+            fingerprint TEXT NOT NULL, state TEXT NOT NULL,
+            response_status INTEGER, headers_json TEXT, raw BLOB,
+            created_at REAL NOT NULL, updated_at REAL NOT NULL,
+            PRIMARY KEY(subject_hash, operation_id, fingerprint))""")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS gateway_sessions (
+            token_digest BLOB PRIMARY KEY, expires_at REAL NOT NULL,
+            subject TEXT NOT NULL)""")
+        self.db.commit()
+
+    def store_session(self, digest, expiry, subject):
+        with self.lock:
+            self.db.execute("DELETE FROM gateway_sessions WHERE expires_at<=?", (time.time(),))
+            self.db.execute("""INSERT OR REPLACE INTO gateway_sessions
+                (token_digest, expires_at, subject) VALUES (?,?,?)""", (digest, expiry, subject))
+            self.db.commit()
+
+    def lookup_session(self, digest, now):
+        with self.lock:
+            row = self.db.execute("""SELECT subject FROM gateway_sessions
+                WHERE token_digest=? AND expires_at>?""", (digest, now)).fetchone()
+            return row[0] if row else None
+
+    def close(self):
+        with self.lock:
+            self.db.close()
+
+    def _subject(self, subject):
+        return hmac.new(self.secret, subject.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    @staticmethod
+    def _result(row):
+        if row[0] != "completed":
+            return None
+        return {"status": row[1], "headers": json.loads(row[2] or "{}"), "raw": row[3] or b""}
+
+    def _expire(self, now):
+        self.db.execute("""UPDATE operation_receipts
+            SET state='expired', raw=NULL, headers_json=NULL, updated_at=?
+            WHERE state='completed' AND created_at<?""",
+            (now, now - RECEIPT_RETENTION_SECONDS))
+        self.db.execute("DELETE FROM operation_receipts WHERE created_at<?",
+                        (now - RECEIPT_TOMBSTONE_SECONDS,))
+
+    def begin(self, subject, operation_id, fingerprint):
+        now = time.time()
+        subject_hash = self._subject(subject)
+        with self.lock:
+            self._expire(now)
+            row = self.db.execute("""SELECT fingerprint,state,response_status,headers_json,raw
+                FROM operation_receipts WHERE subject_hash=? AND operation_id=? AND fingerprint=?""",
+                (subject_hash, operation_id, fingerprint)).fetchone()
+            if row:
+                self.db.commit()
+                return row[1], self._result(row[1:])
+            self.db.execute("""INSERT INTO operation_receipts
+                (subject_hash,operation_id,fingerprint,state,created_at,updated_at)
+                VALUES (?,?,?,'pending',?,?)""",
+                (subject_hash, operation_id, fingerprint, now, now))
+            self.db.commit()
+            return "new", None
+
+    def finish(self, subject, operation_id, fingerprint, result):
+        raw = result.get("raw", b"")
+        state = "completed" if isinstance(raw, bytes) and len(raw) <= RECEIPT_MAX_BYTES else "unrecoverable"
+        now = time.time()
+        with self.lock:
+            if int(result.get("status", 503)) == 429:
+                # A rate limit is a known rejection, not a billable unknown outcome.
+                # Keep the existing bounded retry contract for the same operation.
+                self.db.execute("""DELETE FROM operation_receipts WHERE subject_hash=?
+                    AND operation_id=? AND fingerprint=? AND state='pending'""",
+                    (self._subject(subject), operation_id, fingerprint))
+                self.db.commit()
+                return
+            self.db.execute("""UPDATE operation_receipts SET state=?,response_status=?,
+                headers_json=?,raw=?,updated_at=? WHERE subject_hash=? AND operation_id=?
+                AND fingerprint=? AND state='pending'""",
+                (state, int(result.get("status", 503)),
+                 json.dumps(result.get("headers", {})) if state == "completed" else None,
+                 raw if state == "completed" else None, now,
+                 self._subject(subject), operation_id, fingerprint))
+            self.db.commit()
+
+    def lookup(self, subject, operation_id):
+        now = time.time()
+        with self.lock:
+            self._expire(now)
+            rows = self.db.execute("""SELECT fingerprint,state,response_status,headers_json,raw
+                FROM operation_receipts WHERE subject_hash=? AND operation_id=? LIMIT 2""",
+                (self._subject(subject), operation_id)).fetchall()
+            self.db.commit()
+        if len(rows) > 1:
+            return "ambiguous", None, None
+        row = rows[0] if rows else None
+        return (row[1], self._result(row[1:]), row[0]) if row else ("missing", None, None)
+
+
 class GatewayServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -278,6 +394,23 @@ class GatewayServer(ThreadingHTTPServer):
         self.rates = collections.OrderedDict()
         self.inflight_lock = threading.Lock()
         self.inflight = {}
+        self.receipts = ReceiptStore(config.receipt_db_path or ":memory:", config.sessions.secret)
+        config.sessions.receipts = self.receipts
+
+    def server_close(self):
+        try:
+            self.receipts.close()
+        finally:
+            super().server_close()
+
+    def begin_operation(self, subject, operation_id, fingerprint):
+        with self.inflight_lock:
+            state, result = self.receipts.begin(subject, operation_id, fingerprint)
+            if state == "new":
+                entry = {"event": threading.Event(), "result": None}
+                self.inflight[fingerprint] = entry
+                return state, entry, None
+            return state, self.inflight.get(fingerprint), result
 
     def process_request(self, request, address):
         if not self.slots.acquire(False):
@@ -549,6 +682,7 @@ class Handler(BaseHTTPRequestHandler):
         key = None
         entry = None
         owner = True
+        subject = None
         if method == "POST" and OPERATION_ID.fullmatch(operation_id):
             token = self.headers.get('Authorization', '').removeprefix('Bearer ').strip()
             subject = self.config.sessions.subject(token)
@@ -561,7 +695,12 @@ class Handler(BaseHTTPRequestHandler):
                               'host', 'user-agent', 'x-request-id', 'x-xiaoxi-operation-id'}}
             key = hashlib.sha256(json.dumps([subject, operation_id, method, provider, target,
                 parameters, hashlib.sha256(body or b'').hexdigest()], sort_keys=True).encode()).hexdigest()
-            entry, owner = self.server.acquire_inflight(key)
+            state, entry, stored = self.server.begin_operation(subject, operation_id, key)
+            if state == "completed":
+                return self._send_result(stored)
+            if state in {"expired", "unrecoverable"} or state == "pending" and entry is None:
+                return self._reply_json(409, {"error": "operation_outcome_unknown"})
+            owner = state == "new"
             if not owner:
                 if not entry["event"].wait(self.config.upstream_timeout_seconds + 60):
                     return self._send_result(self._json_result(
@@ -581,7 +720,10 @@ class Handler(BaseHTTPRequestHandler):
             )
         finally:
             if key is not None and entry is not None and owner:
-                self.server.finish_inflight(key, entry, result)
+                try:
+                    self.server.receipts.finish(subject, operation_id, key, result)
+                finally:
+                    self.server.finish_inflight(key, entry, result)
         return self._send_result(result)
 
     def do_GET(self):
@@ -605,6 +747,24 @@ class Handler(BaseHTTPRequestHandler):
             if not self._session():
                 return self._reply_json(401, {"error": "session_required"})
             return self._reply_json(200, {"ok": True, "schema": 1, "capabilities": self.config.capabilities()})
+        operation = route.removeprefix(PREFIX + "/operations/") if route.startswith(PREFIX + "/operations/") else ""
+        if operation:
+            if not OPERATION_ID.fullmatch(operation):
+                return self._reply_json(404, {"error": "not_found"})
+            token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            subject = self.config.sessions.subject(token)
+            if subject is None:
+                return self._reply_json(401, {"error": "session_required"})
+            state, result, fingerprint = self.server.receipts.lookup(subject, operation)
+            if state == "completed":
+                return self._send_result(result)
+            if state == "pending":
+                with self.server.inflight_lock:
+                    active = fingerprint in self.server.inflight
+                return self._reply_json(202 if active else 409,
+                                        {"status": "pending"} if active else {"error": "operation_outcome_unknown"})
+            return self._reply_json(404 if state == "missing" else 409,
+                                    {"error": "receipt_not_found" if state == "missing" else "operation_outcome_unknown"})
         if route.startswith(PREFIX + "/"):
             return self._proxy("GET")
         return self._reply_json(404, {"error": "not_found"})
@@ -665,6 +825,7 @@ def main():
     if args.host not in {"127.0.0.1", "::1", "localhost"}:
         raise SystemExit("provider gateway must bind to loopback")
     config = GatewayConfig.from_environment()
+    config.receipt_db_path = "/var/lib/ai-provider-gateway/operation-receipts.sqlite3"
     server = GatewayServer((args.host, args.port), Handler, config)
     server.serve_forever()
 

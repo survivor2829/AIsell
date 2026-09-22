@@ -4,6 +4,7 @@ import json
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 import test_auto_mix_v2 as fixtures
 from content_engine.narrated_batch import (
@@ -175,6 +176,37 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertEqual("completed", task["status"], task)
         return self.s.get_narrated_batch(b["batch_id"])
 
+    def test_auto_music_mode_selects_a_licensed_track_when_pool_is_empty(self):
+        batch = self.s.save_narrated_batch({
+            "groups": {"opening": self.ids[:2], "middle": self.ids[2:4], "ending": self.ids[4:]},
+            "title": "自动配乐回归",
+            "target_count": 1,
+            "settings": {"voice_persona_id": "natural-life@1", "music_mode": "auto", "music_track_ids": []},
+        })
+        result = self.run_samples(batch)
+        video_id = result["candidates"][0]["generated_video_id"]
+        recipe = json.loads(self.s.connection.execute(
+            "SELECT recipe_json FROM generated_videos WHERE id=?", (video_id,)
+        ).fetchone()[0])
+        self.assertEqual("licensed", recipe["music_mode"])
+        self.assertTrue(recipe.get("music_track_id"))
+        self.assertTrue(recipe.get("licensed_music_relative_path"))
+
+    def test_explicit_none_music_mode_remains_voice_only(self):
+        batch = self.s.save_narrated_batch({
+            "groups": {"opening": self.ids[:2], "middle": self.ids[2:4], "ending": self.ids[4:]},
+            "title": "明确无配乐回归",
+            "target_count": 1,
+            "settings": {"voice_persona_id": "natural-life@1", "music_mode": "none", "music_track_ids": []},
+        })
+        result = self.run_samples(batch)
+        video_id = result["candidates"][0]["generated_video_id"]
+        recipe = json.loads(self.s.connection.execute(
+            "SELECT recipe_json FROM generated_videos WHERE id=?", (video_id,)
+        ).fetchone()[0])
+        self.assertEqual("none", recipe["music_mode"])
+        self.assertNotIn("licensed_music_relative_path", recipe)
+
     def test_analysis_activity_identifies_the_current_material(self):
         domain = NarratedBatchDomain(self.s.creative_domain)
         batch = {
@@ -334,6 +366,7 @@ class NarratedBatchTests(unittest.TestCase):
                                       "quality_score": .9, "reason": "结构完整"}
                                      for item in payload["candidates"]]}
             assets = payload["available_asset_ids"]
+            self.assertIn('candidates', kwargs['validation_error']({'text': '不完整的剪辑方案', 'shot_ids': []}))
             sequences = (assets, assets[1:] + assets[:1], assets[2:] + assets[:2])
             by_asset = {asset: [shot for shot in payload["shots"] if shot["asset_id"] == asset]
                         for asset in assets}
@@ -727,6 +760,28 @@ class NarratedBatchTests(unittest.TestCase):
         self.assertIn("_planning_inflight", stored)
         self.assertIn("_planning_request", stored)
 
+    def test_rejected_cloud_request_clears_unknown_marker(self):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        batch = self.create(1)
+        state = domain._load(batch['batch_id'])
+        domain._active_batch = state
+        original = self.analyzer.cloud_client._structured_completion
+
+        def rejected(**_kwargs):
+            raise ContentEngineError('cloud_request_failed', '请求被拒绝') from HTTPError(
+                'https://example.invalid', 401, 'Unauthorized', {}, None)
+
+        self.analyzer.cloud_client._structured_completion = rejected
+        try:
+            with self.assertRaises(ContentEngineError):
+                domain._cloud({'probe': True}, '测试规划')
+        finally:
+            self.analyzer.cloud_client._structured_completion = original
+        saved = domain._load(batch['batch_id'])
+        self.assertNotIn('_planning_inflight', saved)
+        self.assertNotIn('_planning_request', saved)
+        self.assertFalse(saved['activity']['provider_waiting'])
+
     def test_confirmed_script_uses_local_claim_bindings_but_keeps_visual_contradiction_gate(self):
         domain = NarratedBatchDomain(self.s.creative_domain)
         batch = self.create(1)
@@ -775,6 +830,18 @@ class NarratedBatchTests(unittest.TestCase):
                                 and item["evidence"][0]["user_quote"] == item["quote"]
                                 for item in statements))
 
+        # A previous run may have cached an unsupported cloud verdict for the
+        # same text and shots before the user-confirmed authority was preserved.
+        # That verdict must not override the confirmed source on resume.
+        for saved in stored_segments.values():
+            for item in saved["response"]["phrase_review"]["statements"]:
+                item.update(supported=False, evidence=[], reason="旧审核误判")
+        with patch.object(domain, "_cloud", side_effect=AssertionError("不应重复付费审核")), \
+                patch.object(domain, "_visual_review", return_value={
+                    "accepted": True, "quality_score": .9,
+                    "unsupported_claims": [], "findings": [], "reason": "画面无冲突。"}):
+            self.assertEqual([candidate], domain._review([candidate], state, {"rejections": []}))
+
         visual_risk_claims = {
             "capability": "这款机器人能够自动完成整层清洁。",
             "continuity": "这款机器人始终稳定运行。",
@@ -783,6 +850,8 @@ class NarratedBatchTests(unittest.TestCase):
             "depicted_action": "画面中的机器人正在清洗地面。",
         }
         user_owned_business_claims = {
+            "market_pain_point": "咨询清洁机器人的越来越多了，有询盘却转化不了，缺部署、操作、演示能力。",
+            "landing_plan": "分享机器人如何真正落到场景里，卖、租、运维都可以。",
             "certification": "这款机器人已经通过国家级安全认证。",
             "registration_earnings": "报名这门课程就能月入万元。",
             "small_class_endorsement": "30人小班由官方指定专家授课。",
@@ -829,6 +898,32 @@ class NarratedBatchTests(unittest.TestCase):
                 domain._grounded_claim_review([generated], fresh_state, {"rejections": []})
         self.assertEqual(1, generated_cloud.call_count)
 
+    def test_review_edit_preserves_confirmed_script_before_review(self):
+        domain = NarratedBatchDomain(self.s.creative_domain)
+        batch = self.create(1)
+        state = domain._load(batch["batch_id"])
+        state["_story_planning_version"] = 2
+        text = "客户问完价转头就走，说明你没让他看明白能省多少钱。"
+        shot = {"segment_id": "shot-1"}
+        candidate = {"candidate_id": "candidate-1", "revision": 1, "title": "渠道商困境",
+                     "narration": text, "shots": [shot],
+                     "phrases": [{"text": text, "shot_ids": ["shot-1"]}],
+                     "_user_supplied": True, "_confirmed_script": {"narration": text}}
+        normalized = {key: value for key, value in candidate.items()
+                      if key not in {"_user_supplied", "_confirmed_script"}}
+        normalized["candidate_id"] = "temporary-candidate"
+
+        def review(candidates, _state, _audit):
+            self.assertTrue(candidates[0].get("_user_supplied"))
+            self.assertEqual({"narration": text}, candidates[0].get("_confirmed_script"))
+            return candidates
+
+        with patch.object(domain, "_normalize_candidate", return_value=normalized), \
+                patch.object(domain, "_review", side_effect=review), \
+                patch.object(domain, "_history", return_value=[]):
+            domain._review_edit(candidate, state)
+        self.assertEqual("candidate-1", candidate["candidate_id"])
+
     def test_confirmed_local_binding_only_accepts_closed_business_terms(self):
         safe_terms = [
             "10月16日开课。",
@@ -871,6 +966,8 @@ class NarratedBatchTests(unittest.TestCase):
         pending = self.s.get_narrated_batch(batch["batch_id"])
         self.assertEqual("outcome_unknown", pending["status"])
         self.assertTrue(pending["planning_recovery_available"])
+        self.assertFalse(pending["activity"].get("provider_waiting", False))
+        self.assertIn("已保留最后进度", pending["activity"]["message"])
         with self.assertRaises(ContentEngineError) as unchecked:
             self.s.resolve_narrated_planning_outcome({
                 "batch_id": batch["batch_id"], "provider_log_checked": False,
@@ -1159,6 +1256,7 @@ class NarratedBatchTests(unittest.TestCase):
 
         self.analyzer.cloud_client._structured_completion = complete
         with patch.object(domain, "_speech_ms_per_char", return_value=193.0), \
+             patch.object(domain, "_capacity_ms_per_char", return_value=260.0), \
              patch.object(domain, "_review", side_effect=lambda candidates, *_args: candidates):
             repaired = domain._repair_reviewed(
                 task["task_id"], [rejected], [], state, shots, [], audit)

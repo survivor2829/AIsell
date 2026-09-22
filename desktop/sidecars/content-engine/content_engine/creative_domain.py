@@ -3338,6 +3338,64 @@ class CreativeDomain:
             return "text"
         return None
 
+    def _complete_auto_mix_quality_check(self, task_id, row, public_plan, private_state):
+        """Finish a locally rendered V2 video without rendering it again.
+
+        This is used after an application restart or a renderer-version fix
+        when the durable run is already at ``quality_check`` and the generated
+        file passed the local render step.  It never submits provider work.
+        """
+        generated_id = str(row["generated_video_id"] or "")
+        try:
+            generated = self._generated_row(generated_id)
+            if generated["status"] != "completed" or not generated["output_path"]:
+                raise ContentEngineError(
+                    "auto_mix_quality_invalid",
+                    "成片文件尚未通过本地输出校验。",
+                )
+            persisted_recipe = self._json_object(generated["recipe_json"])
+            validate_formal_recipe(persisted_recipe)
+            raw_quality = persisted_recipe.get("audio_quality_report")
+            quality_input = (
+                dict(raw_quality)
+                if isinstance(raw_quality, dict)
+                else self._json_object(raw_quality)
+            )
+            quality_input.setdefault(
+                "music_mode", persisted_recipe.get("music_mode", "licensed")
+            )
+            quality_report = validate_quality_report(quality_input)
+        except ContentEngineError as error:
+            return self._pause_auto_mix(
+                task_id,
+                row["id"],
+                state="needs_attention",
+                code=error.code,
+                message=error.message,
+                public_plan=public_plan,
+                private_state=private_state,
+            )
+        public_plan["qualityReport"] = quality_report
+        public_plan.pop("attention", None)
+        public_plan["cache"] = {
+            **(
+                public_plan.get("cache")
+                if isinstance(public_plan.get("cache"), dict)
+                else {}
+            ),
+            "analysisReused": bool(private_state.get("analysis_reused")),
+            "ttsPhraseCount": len(private_state.get("phrase_audio") or []),
+        }
+        self._save_auto_mix_run(
+            row["id"],
+            status="completed",
+            public_plan=public_plan,
+            private_state=private_state,
+        )
+        return public_auto_mix_plan(
+            self._auto_mix_run_value(self._auto_mix_run_row(run_id=row["id"]))
+        )
+
     def _run_auto_mix_v2(self, task_id, payload):
         run_id = str(payload.get("run_id") or "")
         row = self._auto_mix_run_row(run_id=run_id)
@@ -3349,6 +3407,10 @@ class CreativeDomain:
         private_state = self._json_object(row["private_state_json"])
         if row["status"] == "completed":
             return public_auto_mix_plan(self._auto_mix_run_value(row))
+        if row["status"] == "quality_check" and row["generated_video_id"]:
+            return self._complete_auto_mix_quality_check(
+                task_id, row, public_plan, private_state
+            )
         if row["status"] == "outcome_unknown":
             previous_attention = public_plan.get("attention")
             previous_code = (
@@ -3373,7 +3435,11 @@ class CreativeDomain:
             )
 
         public_plan, private_state = self._ensure_auto_mix_planned(
-            task_id, row, public_plan, private_state
+            task_id,
+            row,
+            public_plan,
+            private_state,
+            skip_pinned_validation=payload.get("regeneration_layer") == "music",
         )
         if not self._auto_mix_analysis_timeline(public_plan, private_state):
             return self._pause_auto_mix(
@@ -3521,7 +3587,16 @@ class CreativeDomain:
             private_state=private_state,
         )
 
-        no_music = bool(private_state.get('narrated_batch_id')) and private_state.get('music_track_ids') == []
+        music_mode = private_state.get("music_mode")
+        # Before music_mode existed, an empty list meant "no music". Keep that
+        # legacy meaning for persisted runs while new batches use explicit auto/none.
+        legacy_no_music = (
+            bool(private_state.get("narrated_batch_id"))
+            and music_mode is None
+            and private_state.get("music_track_ids") == []
+        )
+        no_music = music_mode == "none" or legacy_no_music
+        allowed_track_ids = None if music_mode == "auto" else private_state.get("music_track_ids")
         music = None
         if no_music:
             private_state.pop('music_track', None)
@@ -3538,16 +3613,17 @@ class CreativeDomain:
                     public_plan.get("musicBrief") or {},
                     required_duration_ms=voice_bundle["duration_ms"],
                     excluded_id=str(private_state.get("excluded_music_track_id") or ""),
-                    allowed_track_ids=private_state.get("music_track_ids"),
+                    allowed_track_ids=allowed_track_ids,
                     prefer_unused_track_ids=private_state.get("used_music_track_ids") or [],
                 )
             if music is None:
+                selected_pool_empty = music_mode == "selected" and not private_state.get("music_track_ids")
                 return self._pause_auto_mix(
                     task_id,
                     run_id,
                     state="needs_attention",
-                    code="narrated_music_pool_empty" if private_state.get("music_track_ids") == [] else "auto_mix_licensed_music_required",
-                    message="请先试听并选入至少一首可导出的配乐。" if private_state.get("music_track_ids") == [] else "选定配乐库中没有授权有效且适配本条时长的音乐。",
+                    code="narrated_music_pool_empty" if selected_pool_empty else "auto_mix_licensed_music_required",
+                    message="请先试听并选入至少一首可导出的配乐。" if selected_pool_empty else "授权曲库中没有适配本条时长的音乐，请稍后重试或明确选择无配乐。",
                     public_plan=public_plan,
                     private_state=private_state,
                 )
@@ -3727,9 +3803,18 @@ class CreativeDomain:
         generated = self._generated_row(generated_id)
         persisted_recipe = self._json_object(generated["recipe_json"])
         validate_formal_recipe(persisted_recipe)
-        quality_report = validate_quality_report(
-            persisted_recipe.get("audio_quality_report")
+        raw_quality = persisted_recipe.get("audio_quality_report")
+        quality_input = (
+            dict(raw_quality)
+            if isinstance(raw_quality, dict)
+            else self._json_object(raw_quality)
         )
+        if "music_mode" not in quality_input:
+            # Older renderers wrote the probe beside the mezzanine without
+            # repeating the recipe mode.  Reuse the authoritative recipe so a
+            # voice-only video is not rejected for a margin it never needed.
+            quality_input["music_mode"] = persisted_recipe.get("music_mode", "licensed")
+        quality_report = validate_quality_report(quality_input)
         public_plan["qualityReport"] = quality_report
         public_plan.pop("attention", None)
         public_plan["cache"] = {
@@ -3815,11 +3900,15 @@ class CreativeDomain:
         public_plan["cache"] = cache
 
     def _ensure_auto_mix_planned(
-        self, task_id, row, public_plan, private_state
+        self, task_id, row, public_plan, private_state, *, skip_pinned_validation=False
     ):
         if private_state.get("narrated_batch_v1"):
             from .narrated_batch import NarratedBatchDomain
-            NarratedBatchDomain(self).validate_pinned_plan(private_state)
+            # Music-only regeneration reuses the pinned timeline, voice and
+            # captions. Do not block this local soundtrack fix on an analysis
+            # version bump when no visual evidence is being changed.
+            if not skip_pinned_validation:
+                NarratedBatchDomain(self).validate_pinned_plan(private_state)
             return public_plan, private_state
         warnings = list(public_plan.get("qualityWarnings") or [])
         asset_ids = json.loads(row["asset_ids_json"] or "[]")
@@ -5640,7 +5729,7 @@ class CreativeDomain:
         if not isinstance(previous, dict):
             return None
         track_id = str(previous.get("track_id") or "")
-        allowed_ids = private_state.get("music_track_ids")
+        allowed_ids = None if private_state.get("music_mode") == "auto" else private_state.get("music_track_ids")
         if (not track_id or private_state.get("excluded_music_track_id") == track_id
                 or (allowed_ids is not None and track_id not in allowed_ids)):
             return None
@@ -5856,8 +5945,12 @@ class CreativeDomain:
             private_state.get("guided_supplemental_image"),
             duration_ms,
         )
+        visual_items = public_plan.get("visualTextItems") or []
+        if private_state.get('narrated_brief_version') == 1:
+            from .narrated_brief import renderable_visual_items
+            visual_items = renderable_visual_items(visual_items)
         visual_events = self._auto_mix_visual_events(
-            public_plan.get("visualTextItems") or [],
+            visual_items,
             duration_ms,
             timeline=timeline,
         )
@@ -5904,7 +5997,8 @@ class CreativeDomain:
             "music_track_id": music["track_id"]}),
             "voice_persona_id": persona["id"],
             **({"music_track_ids": list(private_state["music_track_ids"])}
-               if private_state.get("music_track_ids") is not None else {}),
+               if private_state.get("music_mode") != "auto"
+               and private_state.get("music_track_ids") is not None else {}),
             "voice_segment": {
                 "asset_id": visual_segments[0]["asset_id"],
                 "start_ms": 0,
@@ -5915,7 +6009,11 @@ class CreativeDomain:
             **({"caption_presentation": "reference_narration"}
                if private_state.get("narrated_reference_captions") else {}),
             "subtitle_style": {
-                "preset": "dynamic_clean",
+                # The V2 Remotion package renders a restrained social style:
+                # white captions with a yellow active word and sparse emoji
+                # decorations.  Keep this explicit in the recipe so fallback
+                # inspection and later re-renders use the same intent.
+                "preset": "social_pop",
                 "font_size": 52,
                 "margin_bottom": 220,
                 "max_chars": 14,
@@ -5924,7 +6022,7 @@ class CreativeDomain:
                 "mode": "auto",
                 "preset_id": "auto_mix_v2",
                 "subtitle": {
-                    "preset": "dynamic_clean",
+                    "preset": "social_pop",
                     "font_size": 52,
                     "margin_bottom": 220,
                     "max_chars": 14,
@@ -6649,6 +6747,9 @@ class CreativeDomain:
                 result = self._run_regeneration(task_id, payload)
             state = self._task_status(task_id)
             if state in {"paused", "cancelled"}:
+                if task["task_type"] == "narrated_batch_v1":
+                    from .narrated_batch import NarratedBatchDomain
+                    NarratedBatchDomain(self).mark_task_stopped(payload.get("batch_id"), task_id, None)
                 self._sync_stopped_project(payload.get("project_id"), state)
                 return self._public_task(self._task_row(task_id))
             if not self._set_task(task_id, "completed", progress=1, result=result):
@@ -6669,6 +6770,19 @@ class CreativeDomain:
                 "auto_mix_v2_regeneration",
             }:
                 self._fail_auto_mix_run(payload.get("run_id"), error.code)
+            if (
+                task["task_type"] == "narrated_batch_v1"
+                and error.code == "provider_gateway_unavailable"
+                and state not in {"paused", "cancelled", "completed", "failed"}
+            ):
+                # A gateway outage is a local, retryable interruption. Keep the
+                # task resumable and preserve the narrated batch instead of
+                # turning a preflight failure into a terminal task failure.
+                self._pause_task_for_local_recovery(task_id, error)
+                from .narrated_batch import NarratedBatchDomain
+                NarratedBatchDomain(self).mark_task_stopped(payload.get('batch_id'), task_id, error)
+                self._sync_stopped_project(payload.get("project_id"), "paused")
+                return self._public_task(self._task_row(task_id))
             elif task["task_type"] in {
                 "guided_auto_mix_analysis",
                 "guided_auto_mix_draft",
@@ -6737,6 +6851,9 @@ class CreativeDomain:
                     )
             else:
                 self._sync_stopped_project(payload.get("project_id"), state)
+            if task["task_type"] == "narrated_batch_v1":
+                from .narrated_batch import NarratedBatchDomain
+                NarratedBatchDomain(self).mark_task_stopped(payload.get("batch_id"), task_id, error)
             return self._public_task(self._task_row(task_id))
         except Exception as error:
             state = self._task_status(task_id)
@@ -6776,6 +6893,11 @@ class CreativeDomain:
                     )
             else:
                 self._sync_stopped_project(payload.get("project_id"), state)
+            if task["task_type"] == "narrated_batch_v1":
+                from .narrated_batch import NarratedBatchDomain
+                NarratedBatchDomain(self).mark_task_stopped(
+                    payload.get("batch_id"), task_id,
+                    ContentEngineError("creative_task_failed", redact_text(str(error))[:500]))
             return self._public_task(self._task_row(task_id))
 
     def _run_visual_comparison(self, task_id, payload):
@@ -10644,8 +10766,7 @@ class CreativeDomain:
             )
             parameters = inspect.signature(self.renderer.render).parameters.values()
             if progress_callback is not None and any(
-                parameter.name == "progress_callback" or parameter.kind == inspect.Parameter.VAR_KEYWORD
-                for parameter in parameters
+                parameter.name == "progress_callback" for parameter in parameters
             ):
                 render_args["progress_callback"] = progress_callback
             rendered = self.renderer.render(**render_args)
@@ -10671,6 +10792,9 @@ class CreativeDomain:
                     "integrated_lufs": report["integratedLufs"],
                     "true_peak_dbtp": report["truePeakDbtp"],
                     "speech_music_margin_lu": report["speechMusicMarginLu"],
+                    "music_mode": report.get(
+                        "musicMode", recipe.get("music_mode", "licensed")
+                    ),
                 }
                 validate_formal_recipe(recipe)
             persisted_recipe = self._json(recipe)

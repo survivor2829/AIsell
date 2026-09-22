@@ -14,9 +14,9 @@ export type Batch = {
   groups: Groups; target_count: number | null; recommended_count: number; feasible_count: number;
   count_is_exact: boolean; reasons: string[]; status: string; task_id?: string; task_status?: string;
   progress: number; candidates: Candidate[]; available_shots: Shot[]; completed_count?: number;
-  settings: { voice_persona_id?: string; brand_profile_id?: string; minimum_duration_seconds?: number; workflow_version?: number; music_track_ids?: string[] }; approved: boolean;
+  settings: { voice_persona_id?: string; brand_profile_id?: string; minimum_duration_seconds?: number; workflow_version?: number; music_mode?: "auto" | "none" | "selected"; music_track_ids?: string[] }; approved: boolean;
   script_options?: Candidate[]; selected_script_id?: string;
-  script_selections?: ScriptSelection[]; production_jobs?: ProductionJob[]; production_retry_available?: boolean;
+  script_selections?: ScriptSelection[]; production_jobs?: ProductionJob[]; production_retry_available?: boolean; voice_recovery_available?: boolean;
   material_context?: string; export_ready?: boolean; exported_count?: number; export_error?: string;
   script_confirmation?: { script_id: string; revision: number; narration: string; confirmed_at: string } | null;
   direction?: { audience?: string; pain_point?: string; angle?: string };
@@ -28,6 +28,9 @@ export type Batch = {
     phase_label?: string; overall_percent?: number | null; phase_percent?: number | null;
     item_index?: number | null; item_total?: number | null; item_name?: string | null;
     heartbeat_at?: string;
+    provider_waiting?: boolean;
+    provider_purpose?: string | null;
+    provider_started_at?: string | null;
   };
   stage_times?: { action: string; started_at: string; finished_at: string | null }[];
   planning_recovery_available?: boolean;

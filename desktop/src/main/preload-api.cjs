@@ -168,7 +168,7 @@ function createContentEngineApi(ipcRenderer) {
   }
 
   const batchChannels = require("./narrated-batch-ipc.cjs").CHANNELS;
-  const batchClicks = Object.fromEntries(["recommend", "scripts", "confirm", "resolve", "samples", "continue"].map((action) => [
+  const batchClicks = Object.fromEntries(["recommend", "scripts", "confirm", "resolve", "voice-resolve", "samples", "continue"].map((action) => [
     action, createTrustedClickGate(`[data-batch-action="${action}"]`, batchChannels[action])
   ]));
   const consumeAutoMixCreateClick = createTrustedClickGate(

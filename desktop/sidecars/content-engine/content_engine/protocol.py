@@ -38,6 +38,7 @@ METHODS = {
     "get_narrated_output_directory": lambda service, params: service.get_narrated_output_directory(params["batch_id"]),
     "preview_music_catalog_track": lambda service, params: service.preview_music_catalog_track(params.get("track_id")),
     "resolve_narrated_planning_outcome": lambda service, params: service.resolve_narrated_planning_outcome(params),
+    "resolve_narrated_voice_outcome": lambda service, params: service.resolve_narrated_voice_outcome(params),
     "generate_narrated_samples": lambda service, params: service.generate_narrated_samples(params.get("batch_id")),
     "continue_narrated_batch": lambda service, params: service.continue_narrated_batch(params.get("batch_id")),
     "update_narrated_candidate": lambda service, params: service.update_narrated_candidate(params),

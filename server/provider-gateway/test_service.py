@@ -1,6 +1,8 @@
 import base64
 import json
+import os
 import socket
+import tempfile
 import threading
 import time
 import unittest
@@ -30,6 +32,7 @@ class FakeResponse:
 
 class GatewayTest(unittest.TestCase):
     def setUp(self):
+        self.receipt_dir = tempfile.TemporaryDirectory(dir=os.path.dirname(__file__))
         self.upstream_requests = []
         self.config = GatewayConfig.from_environment({
             "XIAOXI_GATEWAY_DEEPSEEK_API_KEY": "deepseek-server-secret",
@@ -37,6 +40,7 @@ class GatewayTest(unittest.TestCase):
             "XIAOXI_GATEWAY_VOLCENGINE_TTS_API_KEY": "tts-server-secret",
             "XIAOXI_GATEWAY_VOLCENGINE_ASR_API_KEY": "asr-server-secret",
             "XIAOXI_GATEWAY_APIMART_API_KEY": "apimart-server-secret",
+            "XIAOXI_GATEWAY_SESSION_SECRET": "stable-test-secret",
         })
         self.config.license_validator = lambda _code: {
             "license_id": "license-test-001",
@@ -50,6 +54,7 @@ class GatewayTest(unittest.TestCase):
             )
 
         self.config.upstream_open = upstream_open
+        self.config.receipt_db_path = self.receipt_dir.name + "/receipts.sqlite3"
         self.server = GatewayServer(("127.0.0.1", 0), Handler, self.config)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -58,6 +63,62 @@ class GatewayTest(unittest.TestCase):
     def tearDown(self):
         self.server.shutdown()
         self.server.server_close()
+        self.receipt_dir.cleanup()
+
+    def test_completed_operation_can_be_read_after_disconnect_and_restart_without_reposting(self):
+        token = self.session()
+        route = "/v1/provider-gateway/deepseek/chat/completions"
+        headers = {"Authorization": f"Bearer {token}", "X-Xiaoxi-Operation-Id": "receipt-1"}
+        with self.post_json(route, {"model": "deepseek-v4-flash", "messages": []}, headers) as response:
+            expected = response.read()
+        self.assertEqual(len(self.upstream_requests), 1)
+        self.server.shutdown()
+        self.server.server_close()
+        self.config = GatewayConfig.from_environment({
+            "XIAOXI_GATEWAY_DEEPSEEK_API_KEY": "deepseek-server-secret",
+            "XIAOXI_GATEWAY_SESSION_SECRET": "stable-test-secret",
+        })
+        def upstream_after_restart(operation, timeout):
+            self.upstream_requests.append((operation, timeout))
+            return FakeResponse(body=b'{"choices":[{"message":{"content":"ok"}}]}')
+        self.config.upstream_open = upstream_after_restart
+        self.config.receipt_db_path = self.receipt_dir.name + "/receipts.sqlite3"
+        self.server = GatewayServer(("127.0.0.1", 0), Handler, self.config)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.origin = f"http://127.0.0.1:{self.server.server_port}"
+        receipt = urllib.request.Request(self.origin + "/v1/provider-gateway/operations/receipt-1",
+                                         headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(receipt) as response:
+            self.assertEqual(response.read(), expected)
+        with self.post_json(route, {"model": "deepseek-v4-flash", "messages": []}, headers) as response:
+            self.assertEqual(response.read(), expected)
+        self.assertEqual(len(self.upstream_requests), 1)
+        with self.post_json(route, {"model": "different", "messages": []}, headers) as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(len(self.upstream_requests), 2)
+        with self.assertRaises(urllib.error.HTTPError) as ambiguous:
+            urllib.request.urlopen(receipt)
+        self.assertEqual(ambiguous.exception.code, 409)
+
+    def test_rate_limit_allows_same_operation_to_retry(self):
+        token = self.session()
+        calls = []
+
+        def upstream(_operation, timeout):
+            calls.append(1)
+            return FakeResponse(status=429 if len(calls) == 1 else 200,
+                                body=b'{"error":"rate_limited"}' if len(calls) == 1 else b'{"ok":true}')
+
+        self.config.upstream_open = upstream
+        route = "/v1/provider-gateway/deepseek/chat/completions"
+        headers = {"Authorization": f"Bearer {token}", "X-Xiaoxi-Operation-Id": "rate-limit-retry"}
+        with self.assertRaises(urllib.error.HTTPError) as limited:
+            self.post_json(route, {"model": "deepseek-v4-flash", "messages": []}, headers)
+        self.assertEqual(limited.exception.code, 429)
+        with self.post_json(route, {"model": "deepseek-v4-flash", "messages": []}, headers) as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(len(calls), 2)
 
     def post_json(self, route, body, headers=None):
         request = urllib.request.Request(

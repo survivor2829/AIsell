@@ -680,6 +680,45 @@ class ContentEngineService:
         self._enqueue_creative_task({"task_id": result["task_id"]})
         return result
 
+    def resolve_narrated_voice_outcome(self, request):
+        domain = self._narrated_batches()
+        result = domain.resolve_voice_outcome(request)
+        # A provider outage is a local, retryable interruption rather than an
+        # unknown provider submission.  Older builds could leave this task in
+        # failed after the recovery click raced a worker without gateway
+        # credentials; normalize that narrow state before resuming the same
+        # task.  No new planning or production task is created.
+        task = self._get_public_task(result["task_id"])
+        if (
+            task["task_type"] == "narrated_batch_v1"
+            and task["status"] == "failed"
+            and task.get("error_code") == "provider_gateway_unavailable"
+        ):
+            now = utc_now()
+            with self.database.transaction() as connection:
+                updated = connection.execute(
+                    """
+                    UPDATE content_tasks
+                    SET resume_from_status = 'analyzing', status = 'paused',
+                        error_code = 'provider_gateway_unavailable',
+                        error_message = '云端智能服务暂不可用；当前进度已保留，请稍后重试。',
+                        updated_at = ?
+                    WHERE id = ? AND task_type = 'narrated_batch_v1'
+                      AND status = 'failed' AND error_code = 'provider_gateway_unavailable'
+                    """,
+                    (now, task["task_id"]),
+                ).rowcount
+                project_id = task.get("project_id")
+                if updated and project_id:
+                    connection.execute(
+                        "UPDATE creative_projects SET status = 'paused', updated_at = ? WHERE id = ?",
+                        (now, project_id),
+                    )
+        # This is the same paused task after an explicit provider-log check;
+        # resume it without creating a second planning or production task.
+        self.resume_creative_task(result["task_id"])
+        return domain.get(result["batch_id"])
+
     def generate_narrated_samples(self, batch_id):
         return self._start_narrated_batch(batch_id, "samples")
 
@@ -976,6 +1015,36 @@ class ContentEngineService:
         task = self._get_public_task(task_id)
         if task["task_type"] not in CREATIVE_TASK_TYPES:
             raise ContentEngineError("invalid_task_type", "This is not a creative task.")
+        requeued_provider_failure = False
+        if (
+            task["task_type"] == "narrated_batch_v1"
+            and task["status"] == "failed"
+            and task.get("error_code") == "provider_gateway_unavailable"
+        ):
+            # A preflight outage never crossed a provider boundary.  Requeue
+            # this same task so an application with a healthy gateway can
+            # continue the preserved batch without creating a duplicate.
+            now = utc_now()
+            with self.database.transaction() as connection:
+                updated = connection.execute(
+                    """
+                    UPDATE content_tasks
+                    SET status = 'queued', resume_from_status = NULL,
+                        error_code = NULL, error_message = NULL, updated_at = ?
+                    WHERE id = ? AND task_type = 'narrated_batch_v1'
+                      AND status = 'failed' AND error_code = 'provider_gateway_unavailable'
+                    """,
+                    (now, task["task_id"]),
+                ).rowcount
+                if updated and task.get("project_id"):
+                    connection.execute(
+                        "UPDATE creative_projects SET status = 'queued', updated_at = ? WHERE id = ?",
+                        (now, task["project_id"]),
+                    )
+            task = self._get_public_task(task_id)
+            requeued_provider_failure = True
+        if requeued_provider_failure:
+            return self._enqueue_creative_task(task)
         if task["status"] != "paused":
             raise ContentEngineError("invalid_transition", "Only paused tasks can resume.")
         if task["task_type"] in {

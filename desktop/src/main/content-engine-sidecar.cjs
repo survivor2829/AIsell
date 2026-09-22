@@ -657,6 +657,7 @@ function createContentEngineSidecar(options = {}) {
     getNarratedOutputDirectory: (batchId) => request("get_narrated_output_directory", { batch_id: batchId }),
     previewMusicCatalogTrack: (trackId) => request("preview_music_catalog_track", { track_id: trackId }),
     resolveNarratedPlanningOutcome: (payload) => request("resolve_narrated_planning_outcome", payload),
+    resolveNarratedVoiceOutcome: (payload) => request("resolve_narrated_voice_outcome", payload),
     generateNarratedSamples: (batchId) => request("generate_narrated_samples", { batch_id: batchId }),
     continueNarratedBatch: (batchId) => request("continue_narrated_batch", { batch_id: batchId }),
     updateNarratedCandidate: (payload) => request("update_narrated_candidate", payload),

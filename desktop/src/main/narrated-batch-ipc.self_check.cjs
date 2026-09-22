@@ -75,6 +75,12 @@ async function main() {
   })).ok, true);
   assert.equal(resolved[0].note, "百炼记录中未见成功返回");
   assert.equal((await resolve({
+    batch_id: batchId, user_confirmed_retry: true, resolution: "retry_planning",
+    clickToken: `${CHANNELS.resolve}:${randomUUID()}`
+  })).ok, true);
+  assert.equal(resolved[1].provider_log_checked, false);
+  assert.equal(resolved[1].user_confirmed_retry, true);
+  assert.equal((await resolve({
     batch_id: batchId, provider_log_checked: false, resolution: "retry_planning",
     note: "已核对", clickToken: `${CHANNELS.resolve}:${randomUUID()}`
   })).code, "narrated_planning_confirmation_required");
@@ -119,7 +125,7 @@ async function main() {
   assert.equal(multiPublic.export_ready, true);
   assert.equal(multiPublic._exported_candidates, undefined);
   const brief = { brief_version: 1, target_audience: "物业保洁负责人", expression: "这位学员是小陈，想介绍他在现场认识设备部件的学习过程。", advantages: "提供现场试用", customer_pain_points: "担心地面不适用" };
-  const scriptsResult = await handlers.get(CHANNELS.scripts)({ sender }, { draft: { ...draft, ...brief, settings: { workflow_version: 2, music_track_ids: [] } }, clickToken: `${CHANNELS.scripts}:${randomUUID()}` });
+  const scriptsResult = await handlers.get(CHANNELS.scripts)({ sender }, { draft: { ...draft, ...brief, settings: { workflow_version: 2, music_mode: "auto", music_track_ids: [] } }, clickToken: `${CHANNELS.scripts}:${randomUUID()}` });
   assert.equal(scriptsResult.ok, true);
   assert.deepEqual(scriptsResult.data.script_options, []);
   for (const [key, value] of Object.entries(brief)) assert.equal(saved.at(-1)[key], value);

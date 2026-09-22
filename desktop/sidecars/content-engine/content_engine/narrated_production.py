@@ -40,9 +40,9 @@ def retryable_planning_jobs(batch):
         return []
     candidates = {c['candidate_id']: c for c in batch.get('candidates', [])}
     return [job for job in batch.get('production_jobs', [])
-            if job.get('status') == 'skipped' and job.get('error_code') in MAPPING_ERRORS | {'cloud_response_invalid', 'narrated_brief_invalid', 'volcengine_request_rejected'}
+             if job.get('status') == 'skipped' and job.get('error_code') in MAPPING_ERRORS | {'cloud_response_invalid', 'narrated_brief_invalid', 'volcengine_request_rejected', 'narrated_no_usable_candidate', 'narrated_cta_timing_missing'}
             and (not candidates.get(job.get('candidate_id'), {}).get('_run_id')
-                 or job.get('error_code') == 'narrated_copy_too_long')]
+                 or job.get('error_code') in {'narrated_copy_too_long', 'narrated_cta_timing_missing'})]
 
 
 def retry_failed_planning(batch):
@@ -51,6 +51,12 @@ def retry_failed_planning(batch):
         job.update(status='queued', format_retries=0)
         candidate = next((c for c in batch['candidates'] if c['candidate_id'] == job.get('candidate_id')), None)
         if candidate:
+            if job.get('error_code') == 'narrated_copy_too_long' and candidate.get('_run_id'):
+                # A measured voice overflow needs a new reviewed shot plan.
+                # Keep the old run and its completed TTS/ASR artifacts in place;
+                # the new run can reuse those artifacts by cache key.
+                candidate.pop('_run_id')
+                candidate['_voice_capacity_retry'] = True
             candidate['status'] = 'planned' if candidate.get('_run_id') else 'needs_review'
         for item in (job, candidate):
             if item:
@@ -88,6 +94,83 @@ def _require_unique_footage_capacity(batch, requested_count):
     maximum_count = available_ms // (minimum_seconds * 1000)
     require(requested_count <= maximum_count, 'narrated_insufficient_unique_footage',
             f'当前不重复可用画面约 {available_ms // 1000} 秒，按每条至少 {minimum_seconds} 秒最多可制作 {maximum_count} 条；请减少数量或补充素材。')
+
+
+def _require_source_duration_upper_bound(domain, batch, requested_count):
+    """Reject a video-only batch when even its raw duration cannot cover the target."""
+    minimum_seconds = int(batch.get('settings', {}).get('minimum_duration_seconds') or 0)
+    ids = set(asset for group in batch['groups'].values() for asset in group)
+    if not minimum_seconds or not ids:
+        return
+    rows = [domain.d._asset_row(asset_id) for asset_id in ids]
+    if any(row['media_kind'] != 'video' or not row['duration_ms'] for row in rows):
+        return
+    raw_ms = sum(int(row['duration_ms']) for row in rows)
+    require(raw_ms >= requested_count * minimum_seconds * 1000,
+            'narrated_insufficient_unique_footage',
+            f'全部原视频合计仅约 {raw_ms // 1000} 秒，无法制作 {requested_count} 条每条至少 '
+            f'{minimum_seconds} 秒且不重复画面的作品；请减少数量或补充素材。')
+
+
+def _validate_music_capacity(domain, batch, settings, narrations):
+    """Reject an unusable music policy before any paid voice request starts."""
+    mode = settings.get('music_mode')
+    # Batches created before explicit music modes existed used an empty track
+    # list to mean voice-only. Preserve that persisted meaning; new batches
+    # always write ``music_mode: auto`` when automatic music is desired.
+    if mode is None:
+        if not settings.get('music_track_ids'):
+            return
+        mode = 'selected'
+    if mode == 'none':
+        return
+    track_ids = list(settings.get('music_track_ids') or [])
+    allowed = track_ids if mode == 'selected' else None
+    estimated_ms = max(
+        (domain._estimated_speech_duration_ms(batch, [text]) for text in narrations),
+        default=1,
+    )
+    selected = domain.d._select_auto_mix_music(
+        {},
+        required_duration_ms=estimated_ms,
+        allowed_track_ids=allowed,
+    )
+    if selected is not None:
+        return
+    if mode == 'selected':
+        raise ContentEngineError(
+            'narrated_music_pool_empty',
+            '已选配乐当前不可用、授权证据缺失或时长不足，请更换曲目后再开始制作。',
+        )
+    raise ContentEngineError(
+        'auto_mix_licensed_music_required',
+        '授权曲库中没有能覆盖这条口播的可用配乐，请补充曲目或明确选择无配乐。',
+    )
+
+
+def _validate_render_capacity(domain):
+    """Fail locally before TTS when the formal renderer cannot run.
+
+    Test doubles and older renderers may not expose a capability contract, so
+    the check is intentionally additive.  The production renderer does expose
+    the Remotion capability; a missing worker/runtime is a deterministic local
+    failure and must not consume a paid voice request first.
+    """
+    renderer = getattr(domain.d, 'renderer', None)
+    capability = getattr(renderer, 'capability', None)
+    if not isinstance(capability, dict):
+        return
+    if capability.get('available') is False:
+        raise ContentEngineError(
+            capability.get('code') or 'media_tools_unavailable',
+            '本机视频渲染组件暂不可用，已停止制作，未生成配音；请检查 FFmpeg 与编码器后重试。',
+        )
+    remotion = capability.get('remotion')
+    if isinstance(remotion, dict) and remotion.get('available') is not True:
+        raise ContentEngineError(
+            'remotion_runtime_unavailable',
+            '本机正式渲染组件暂不可用，已停止制作，未生成配音；请检查 Remotion 运行时后重试。',
+        )
 
 
 def confirm_selections(domain, request):
@@ -133,12 +216,32 @@ def confirm_selections(domain, request):
     # planning, voice generation or rendering.
     if b.get('available_shots'):
         _require_unique_footage_capacity({**b, 'settings': settings}, total)
+    else:
+        _require_source_duration_upper_bound(domain, {**b, 'settings': settings}, total)
+    minimum_seconds = int(settings.get('minimum_duration_seconds') or 0)
+    if minimum_seconds:
+        probe = {**b, 'settings': settings}
+        probe.pop('_speech_budget', None)
+        for selected in selections:
+            estimated_ms = domain._estimated_speech_duration_ms(probe, [selected['narration']])
+            require(estimated_ms >= minimum_seconds * 1000 + 100,
+                    'narrated_duration_too_short',
+                    f'《{selected["title"]}》预计口播约 {estimated_ms / 1000:.1f} 秒，'
+                    f'不足要求的 {minimum_seconds} 秒；请补充内容后重新确认。')
+    _validate_music_capacity(
+        domain,
+        {**b, 'settings': settings},
+        settings,
+        [item['narration'] for item in selections],
+    )
     persona = domain.d._approved_auto_mix_voice_persona(selected_id=settings.get('voice_persona_id'))
     require(persona is not None, 'auto_mix_voice_persona_approval_required', '请先选择已试听批准的声音，再开始制作。')
-    if persona['provider'] == 'volcengine':
-        from .volcengine_tts import VolcengineTTSProvider
-        require(VolcengineTTSProvider().configured, 'volcengine_tts_not_configured',
-                '云端配音服务暂不可用；当前进度已保留，请稍后重试。')
+    require(persona['provider'] == 'volcengine', 'auto_mix_voice_persona_invalid',
+            '当前声音不支持火山配音，请重新选择已批准的火山音色。')
+    from .volcengine_tts import VolcengineTTSProvider
+    require(VolcengineTTSProvider().configured, 'volcengine_tts_not_configured',
+            '云端配音服务暂不可用；当前进度已保留，请稍后重试。')
+    _validate_render_capacity(domain)
     previous = [{k: v for k, v in item.items() if k != 'confirmed_at'} for item in b.get('script_selections', [])]
     if previous == selections:
         require(settings == b['settings'], 'narrated_settings_changed', '本批已开始制作，请新建批次使用其他声音或配乐。')
@@ -201,12 +304,20 @@ def resolve_planning_job(batch):
 
 def confirmed_narration_units(domain, batch, narration):
     """Keep the approved words local and give the editor measured sentence budgets."""
+    durations = sorted(int(shot.get('target_duration_ms') or 0)
+                       for shot in batch.get('available_shots', [])
+                       if int(shot.get('target_duration_ms') or 0) > 0)
+    max_chars = 80
+    if durations:
+        typical_shot_ms = durations[len(durations) // 2]
+        max_chars = min(80, max(20, domain._max_narration_chars(
+            batch, max(9000, typical_shot_ms * 3))))
     pieces = re.findall(r'.*?[。！？；!?;](?:[”’\"])?|.+$', narration, re.S)
     units = []
     for sentence in pieces:
-        while len(sentence) > 80:
-            boundary = max(sentence.rfind(mark, 0, 80) for mark in '，、：, ')
-            end = boundary + 1 if boundary > 0 else 80
+        while len(sentence) > max_chars:
+            boundary = max(sentence.rfind(mark, 0, max_chars) for mark in '，、：, ')
+            end = boundary + 1 if boundary > 0 else max_chars
             units.append(sentence[:end])
             sentence = sentence[end:]
         if sentence:
@@ -249,7 +360,13 @@ def complete_mapping_capacity(domain, batch, phrases, *, changed_phrase=None, al
     index = {shot['segment_id']: shot for shot in batch['available_shots']}
     phrases = copy.deepcopy(phrases)
     used = {ref for phrase in phrases for ref in phrase['shot_ids']}
-    activities = {ref: (domain._source_evidence_for(batch, shot).get('source_provenance') or {}).get('activity_label')
+    # The material context is an explicit user confirmation that the selected
+    # files belong to one shoot. Use it as a safe fallback when an old cached
+    # analysis has no private provenance record yet; the evidence layer still
+    # validates any persisted provenance before exposing it to the model.
+    confirmed_activity = str(batch.get('material_context') or '').strip() or None
+    activities = {ref: ((domain._source_evidence_for(batch, shot).get('source_provenance') or {}).get('activity_label')
+                        or confirmed_activity)
                   for ref, shot in index.items()}
     changes = []
     for number, phrase in enumerate(phrases):
@@ -296,6 +413,68 @@ def complete_mapping_capacity(domain, batch, phrases, *, changed_phrase=None, al
             capacity += extra['target_duration_ms']
             changes.append({'added_shot_id': extra['segment_id'], 'required_ms': required, 'reserved_ms': capacity})
     return phrases, changes
+
+
+def remap_units_with_source_capacity(domain, batch, units, assignments, shot_index):
+    """Last-resort mapping: move whole short units, never splice unverified sources."""
+    shots = list(shot_index.values())
+    by_asset = {}
+    for shot in shots:
+        by_asset.setdefault(shot['asset_id'], []).append(shot)
+    for rows in by_asset.values():
+        rows.sort(key=lambda shot: (shot['source_start_ms'], shot['segment_id']))
+    preferred = {unit['unit_id']: set() for unit in units}
+    preferred_refs = {unit['unit_id']: set() for unit in units}
+    for assignment in assignments:
+        assets = {shot_index[ref]['asset_id'] for ref in assignment.get('shot_ids', []) if ref in shot_index}
+        for unit_id in assignment['unit_ids']:
+            preferred[unit_id].update(assets)
+            preferred_refs[unit_id].update(ref for ref in assignment.get('shot_ids', []) if ref in shot_index)
+
+    # A search over source choices is cheap here (at most 40 shots), and avoids
+    # stranding a later phrase in the small source chosen by the model.
+    attempts = 0
+    def arrange(number, used, result):
+        nonlocal attempts
+        attempts += 1
+        if attempts > 5000:
+            return None
+        if number == len(units):
+            return result
+        unit = units[number]
+        required = domain._phrase_budget_ms(batch, unit['text'])
+        choices = []
+        for asset_id, rows in by_asset.items():
+            free = [shot for shot in rows if shot['segment_id'] not in used]
+            if sum(shot['target_duration_ms'] for shot in free) < required:
+                continue
+            choices.append((asset_id, free))
+        choices.sort(key=lambda item: (
+            item[0] not in preferred[unit['unit_id']],
+            -sum(shot['target_duration_ms'] for shot in item[1]), item[0]))
+        for asset_id, free in choices:
+            anchors = [shot for shot in free if shot['segment_id'] in preferred_refs[unit['unit_id']]]
+            if anchors:
+                free.sort(key=lambda shot: (
+                    shot['segment_id'] not in preferred_refs[unit['unit_id']],
+                    min(abs(shot['source_start_ms'] - anchor['source_start_ms']) for anchor in anchors),
+                    shot['source_start_ms']))
+            chosen, capacity = [], 0
+            for shot in free:
+                chosen.append(shot)
+                capacity += shot['target_duration_ms']
+                if capacity >= required:
+                    break
+            refs = [shot['segment_id'] for shot in sorted(chosen, key=lambda shot: shot['source_start_ms'])]
+            found = arrange(number + 1, used.union(refs), result + [{'text': unit['text'], 'shot_ids': refs}])
+            if found is not None:
+                return found
+        return None
+
+    phrases = arrange(0, set(), [])
+    require(phrases is not None, 'narrated_copy_too_long',
+            '现有镜头无法在不重复、不混接未确认场次的条件下覆盖全部口播；请增加相关素材。')
+    return phrases
 
 
 def normalize_preserved_mapping(domain, batch, baseline, narration, title):
@@ -366,6 +545,14 @@ def install_preserved_mapping(candidate, prepared):
 
 def review_confirmed_candidate(domain, batch, candidate):
     """Repair scene selection only; the user's confirmed words remain immutable."""
+    if candidate.get('_user_supplied'):
+        minimum_seconds = int((batch.get('settings') or {}).get('minimum_duration_seconds') or 0)
+        if minimum_seconds:
+            estimated_ms = domain._estimated_speech_duration_ms(batch, [candidate.get('narration', '')])
+            require(estimated_ms >= minimum_seconds * 1000 + 100,
+                    'narrated_duration_too_short',
+                    f'确认稿预计口播约 {estimated_ms / 1000:.1f} 秒，不足要求的 {minimum_seconds} 秒；'
+                    '请补充有用内容，或把最低时长调到与原文匹配后重新准备。')
     reviewed_mapping = None
 
     def fail(error):
@@ -383,6 +570,25 @@ def review_confirmed_candidate(domain, batch, candidate):
     for attempt in range(3):
         previous_audit = candidate.get('_edit_review_audit')
         try:
+            if candidate.get('_voice_capacity_retry'):
+                phrases = [{'text': phrase['text'], 'shot_ids': list(phrase['shot_ids'])}
+                           for phrase in candidate['phrases']]
+                require(''.join(phrase['text'] for phrase in phrases) == candidate['narration'],
+                        'narrated_confirmed_script_changed', '确认稿与原镜头安排不一致，请重新确认文案。')
+                phrases, changes = complete_mapping_capacity(domain, batch, phrases)
+                prepared = domain._normalize_candidate({
+                    'title': candidate['title'],
+                    'shot_ids': [ref for phrase in phrases for ref in phrase['shot_ids']],
+                    'phrases': phrases,
+                    **{key: candidate.get(key, '') for key in
+                       ('audience', 'pain_point', 'angle', 'framework', 'summary')},
+                }, batch, domain._history(batch['batch_id']))
+                install_preserved_mapping(candidate, {'candidate': prepared})
+                candidate.pop('_voice_capacity_retry')
+                if changes:
+                    batch.setdefault('_capacity_adjustments', []).append({
+                        'candidate_id': candidate['candidate_id'], 'changes': changes})
+                domain._store(batch)
             if candidate.get('_draft_only'):
                 raise ContentEngineError('narrated_mapping_invalid', '已确认完整文案，现在为正文选择并安排真实镜头。')
             grounded = domain._ground_shots(batch['task_id'], batch, candidate['shots'],
@@ -450,7 +656,13 @@ def review_confirmed_candidate(domain, batch, candidate):
                             'narrated_mapping_invalid', f"{unit_label}的shot_ids必须使用所给S编号。")
                     phrases.append({'text': text, 'shot_ids': [shot_index[ref]['segment_id'] for ref in refs]})
                 phrases, source_changes = cohere_mapping_sources(domain, batch, phrases)
-                phrases, changes = complete_mapping_capacity(domain, batch, phrases)
+                try:
+                    phrases, changes = complete_mapping_capacity(domain, batch, phrases)
+                except ContentEngineError as capacity_error:
+                    if capacity_error.code != 'narrated_copy_too_long':
+                        raise
+                    phrases = remap_units_with_source_capacity(domain, batch, units, assignments, shot_index)
+                    changes = [{'reason': 'source_capacity_remap'}]
                 prepared = domain._repack_duration_candidate({'title': candidate['title'], 'phrases': phrases}, batch,
                                                              batch['available_shots'], allow_same_activity_cuts=True)
                 return {**prepared, '_capacity_adjustments': source_changes + changes}
@@ -590,6 +802,13 @@ def run_production(domain, task_id, batch):
                     job.update(status='queued', error_code=error.code, error=error.message)
                     batch.update(status='needs_attention', reasons=[error.message])
                     domain._store(batch)
+                    return {'batch_id': batch['batch_id']}
+                if error.code in {'narrated_copy_too_long', 'narrated_duration_too_short', 'narrated_cta_timing_missing',
+                                  'narrated_no_usable_candidate', 'narrated_insufficient_unique_footage'}:
+                    job.update(status='queued', error_code=error.code, error=error.message)
+                    batch.update(status='needs_attention', reasons=[f"第{job['production_index']}条：{error.message}"])
+                    domain._activity(batch, f"第{job['production_index']}条需要调整，已停止后续制作",
+                                     phase='production', phase_label='需要处理')
                     return {'batch_id': batch['batch_id']}
                 job.update(status='skipped', error_code=error.code, error=error.message)
                 domain.db.execute("UPDATE content_tasks SET status='analyzing',error_code=NULL,error_message=NULL "

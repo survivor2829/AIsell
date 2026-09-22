@@ -390,11 +390,11 @@ class DashScopeMediaClient:
             Callable[[str, dict[str, Any] | None], list[dict[str, Any]] | None] | None
         ) = None,
     ) -> dict[str, Any]:
-        """Request one JSON response, with one bounded correction retry.
+        """Request one JSON response, with two bounded correction retries.
 
         Provider/network/authentication failures are raised by _request_json and
         are never retried here. Only an empty choices array, malformed model
-        text, or an explicit schema validation failure gets the second request,
+        text, or an explicit schema validation failure gets another request,
         avoiding an unbounded paid retry loop.
         """
         def failure_message(message: str, issue: str) -> str:
@@ -405,7 +405,6 @@ class DashScopeMediaClient:
 
         previous_issue = ""
         previous_item: dict[str, Any] | None = None
-        operation_id = str(uuid.uuid4())
         self.last_completion_requests = []
         def record_validation(result_status):
             if not self._last_request_usage:
@@ -414,7 +413,10 @@ class DashScopeMediaClient:
             if self.last_completion_requests:
                 self.last_completion_requests[-1].update(self._last_request_usage)
             self.last_completion_metadata.update(self._last_request_usage)
-        for attempt in range(2):
+        for attempt in range(3):
+            operation_id = str(uuid.uuid4())
+            if attempt:
+                time.sleep(0.5 * 2 ** (attempt - 1))
             request_messages = [dict(message) for message in messages]
             if attempt:
                 retry_instruction = (
@@ -472,7 +474,7 @@ class DashScopeMediaClient:
             if not choices:
                 record_validation("empty_response")
                 previous_issue = "没有返回可用结果。"
-                if attempt == 0:
+                if attempt < 2:
                     continue
                 raise ContentEngineError(
                     empty_code, failure_message(empty_message, previous_issue)
@@ -484,7 +486,7 @@ class DashScopeMediaClient:
                 if error.code == "cloud_response_invalid":
                     record_validation("invalid_json")
                     previous_issue = "返回内容不是可解析的 JSON 对象。"
-                    if attempt == 0:
+                    if attempt < 2:
                         continue
                 raise ContentEngineError(
                     parse_code, failure_message(parse_message, previous_issue)
@@ -497,7 +499,7 @@ class DashScopeMediaClient:
                     previous_item = parsed
                     if not previous_issue:
                         previous_issue = "返回内容不符合预期字段或内容要求。"
-                    if attempt == 0:
+                    if attempt < 2:
                         continue
                     raise ContentEngineError(
                         parse_code, failure_message(parse_message, previous_issue)
@@ -506,7 +508,7 @@ class DashScopeMediaClient:
                 record_validation("invalid_schema")
                 previous_issue = "返回内容不符合预期字段或内容要求。"
                 previous_item = parsed
-                if attempt == 0:
+                if attempt < 2:
                     continue
                 raise ContentEngineError(
                     parse_code, failure_message(parse_message, previous_issue)
