@@ -2729,6 +2729,14 @@ class FFmpegCreativeRenderer:
             margin_bottom = max(120, min(260, int(style.get("margin_bottom") or 145)))
             primary, secondary = "&H00FFFFFF", "&H00FFE45C"
             border_style, outline, shadow = 1, 5, 2
+        elif preset == "social_pop":
+            # Keep the ordinary renderer in step with the Remotion social
+            # pack: white text, a warm yellow emphasis colour, and a soft
+            # bubble that remains legible over busy source footage.
+            font_size = max(40, min(60, int(style.get("font_size") or 52)))
+            margin_bottom = max(140, min(300, int(style.get("margin_bottom") or 220)))
+            primary, secondary = "&H00FFFFFF", "&H004DD8FF"
+            border_style, outline, shadow = 3, 3, 1
         else:
             font_size = max(36, min(64, int(style.get("font_size") or 48)))
             margin_bottom = max(120, min(360, int(style.get("margin_bottom") or 170)))
@@ -2771,7 +2779,12 @@ class FFmpegCreativeRenderer:
                     else r"{\fad(70,60)\fscx102\fscy102\t(0,130,\fscx100\fscy100)}"
                 )
             else:
-                text = cls._ass_emphasis(cue["text"])
+                emoji = cls._caption_emoji(cue["text"]) if preset == "social_pop" else ""
+                text = cls._ass_emphasis(
+                    cue["text"],
+                    accent="&H004DD8FF" if preset == "social_pop" else "&H005CDBFF",
+                )
+                text = f"{emoji} {text}" if emoji else text
                 animation = r"{\fad(70,60)\fscx104\fscy104\t(0,120,\fscx100\fscy100)}"
             events.append(
                 "Dialogue: 0,"
@@ -2799,9 +2812,12 @@ class FFmpegCreativeRenderer:
     @staticmethod
     def _caption_emoji(text):
         mappings = (
-            (("注意", "不能", "错误", "避免"), "⚠"),
-            (("关键", "核心", "重点"), "💡"),
+            (("注意", "不能", "错误", "避免", "难", "痛点", "没量", "拿不到", "不成交"), "⚠"),
+            (("关键", "核心", "重点", "底价", "利润", "回本", "优惠"), "💡"),
             (("方法", "步骤"), "✓"),
+            (("整合", "共享", "一起"), "🤝"),
+            (("评论区", "777", "发您"), "👇"),
+            (("培训", "训练营", "现场"), "🎯"),
             (("结果", "完成", "成功"), "✨"),
         )
         value = str(text)
@@ -2815,12 +2831,15 @@ class FFmpegCreativeRenderer:
         return str(text).replace("\\", "／").replace("{", "（").replace("}", "）")
 
     @staticmethod
-    def _ass_emphasis(text):
+    def _ass_emphasis(text, *, accent="&H005CDBFF"):
         safe = FFmpegCreativeRenderer._ass_safe_text(text)
         pattern = re.compile(
-            r"(\d+(?:\.\d+)?%?|不是|而是|关键|核心|一定|不能|必须|最重要)"
+            r"(\d+(?:\.\d+)?%?|不是|而是|关键|核心|一定|不能|必须|最重要|底价|利润|回本|优惠|资源|培训)"
         )
-        accent = r"{\c&H005CDBFF&}"
+        accent = str(accent)
+        if not accent.endswith("&"):
+            accent += "&"
+        accent = r"{\c" + accent + r"}"
         normal = r"{\c&H00FFFFFF&}"
         return pattern.sub(lambda match: f"{accent}{match.group(0)}{normal}", safe)
 
@@ -3626,6 +3645,11 @@ class HybridCreativeRenderer:
                     )
                 measured = measure_audio_quality(final_video)
                 measured.update(read_margin_report(mezzanine))
+                # The speech/music probe is stored beside the mezzanine and
+                # intentionally does not repeat the recipe. Carry the recipe
+                # mode into the durable report so voice-only renders do not
+                # require a nonexistent music margin.
+                measured["music_mode"] = recipe.get("music_mode", measured.get("music_mode", "licensed"))
                 audio_quality_report = self._normalized_audio_quality_report(measured)
             cover = staging / "cover.jpg"
             self._render_candidate_cover(

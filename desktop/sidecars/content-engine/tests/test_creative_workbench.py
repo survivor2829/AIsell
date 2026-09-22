@@ -442,6 +442,20 @@ class CreativeRendererRecipeTests(unittest.TestCase):
         self.assertIn(",140,1", content)
         self.assertIn(r"{\c&H005CDBFF&}不是", content)
 
+    def test_social_pop_caption_style_keeps_white_text_yellow_emphasis_and_sparse_emoji(self):
+        recipe = {
+            "voice_segment": {"start_ms": 0},
+            "subtitle_style": {"preset": "social_pop", "font_size": 52, "margin_bottom": 220},
+        }
+        captions = [{"start_ms": 0, "end_ms": 2_000, "text": "拿不到底价，评论区扣777。"}]
+
+        subtitle = self.renderer._write_ass(self.root / "social-pop.ass", captions, recipe)
+        content = subtitle.read_text(encoding="utf-8")
+
+        self.assertIn("Style: Dynamic,Microsoft YaHei,52", content)
+        self.assertIn(r"{\c&H004DD8FF&}底价", content)
+        self.assertIn("👇", content)
+
     def test_supoclip_recipe_keeps_real_word_timestamps_and_filters_invalid_words(self):
         domain = object.__new__(CreativeDomain)
         window = {
