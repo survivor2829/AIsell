@@ -14,6 +14,8 @@ import urllib.parse
 import urllib.request
 import uuid
 
+from .provider_tls import gateway_tls_context
+
 
 DEFAULT_BASE_URL = "https://api.apimart.ai/v1"
 DEFAULT_MODEL = "gpt-image-2"
@@ -178,6 +180,13 @@ def provider_urlopen(operation, *, timeout):
     # Reassert the sidecar-wide policy in case another dependency replaced the
     # process opener after this module was imported.
     urllib.request.install_opener(_PROVIDER_OPENER)
+    url = operation.full_url if isinstance(operation, urllib.request.Request) else str(operation)
+    context = gateway_tls_context(url)
+    if context is not None:
+        opener = urllib.request.build_opener(
+            _ProviderRedirectHandler(), urllib.request.HTTPSHandler(context=context)
+        )
+        return opener.open(operation, timeout=timeout)
     return urllib.request.urlopen(operation, timeout=timeout)
 
 

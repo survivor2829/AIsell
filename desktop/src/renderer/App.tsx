@@ -15,6 +15,7 @@ import {
   Pause,
   Play,
   RefreshCw,
+  Search,
   Send,
   Square,
   ThumbsUp,
@@ -43,6 +44,8 @@ import { CreativeWorkspacePage } from "./CreativeWorkspacePage";
 import { CreativeStudioPage } from "./CreativeStudioPage";
 import { BatchCreativePage } from "./BatchCreativePage";
 import { MaterialsCollectionsPage } from "./BatchAssets";
+import { KeywordAcquisitionPage } from "./KeywordAcquisitionPage";
+import { DigitalHumanPage } from "./DigitalHumanPage";
 import type { Collection } from "./batch-studio-api";
 import { ProductOneClickPage } from "./ProductOneClickPage";
 import { FloatingWorkflowWindow, useWechatWorkflow, WechatWorkflowPage, WorkflowLauncher, type WorkflowView, type EditorRequest } from "./WechatWorkflow";
@@ -308,6 +311,7 @@ type ProductDetailAiSettingsResult = {
 
 declare global {
   interface Window {
+    xiaoxiWindowChrome?: { setMode: (mode: "login" | "workspace") => void };
     xiaoxiLicenseAuth?: {
       status: () => Promise<LicenseStatus>;
       activate: (code: string) => Promise<LicenseStatus>;
@@ -378,7 +382,7 @@ const BUILD_ID = import.meta.env.VITE_XIAOXI_BUILD_ID || "";
 const DEVELOPMENT_EDITION = XIAOXI_EDITION === "development";
 const PILOT_EDITION = XIAOXI_EDITION === "pilot";
 const REAL_SEND_EDITION = DEVELOPMENT_EDITION || PILOT_EDITION;
-const DEFAULT_ACTIVE_MODULE: ModuleKey = "workflow";
+const DEFAULT_ACTIVE_MODULE: ModuleKey = "production";
 const EDITION_LABEL = DEVELOPMENT_EDITION ? "测试版" : "";
 const DEFAULT_TOUCH_MESSAGE = DEVELOPMENT_EDITION
   ? "{称呼}，您好，我们这边有清洁设备短租和会员特惠方案，想了解一下您近期是否需要降本增效？"
@@ -389,13 +393,11 @@ const agentChildren: NavItem[] = [
   { key: "expert", label: "你的AI专家", icon: Bot },
   { key: "workflow", label: "今日计划", icon: ListTodo },
   { key: "reply", label: "自动回复", icon: MessageCircle },
-  { key: "contact-sync", label: "同步联系人", icon: UsersRound },
   { key: "touch", label: "精准触达", icon: Send },
   { key: "moments", label: "朋友圈运营", icon: ThumbsUp }
 ];
 
 const productionChildren: NavItem[] = [
-  { key: "product-detail", label: "产品详情图", icon: Images },
   { key: "materials", label: "素材仓库", icon: Folder },
   { key: "workspace", label: "创作工作台", icon: Clapperboard },
   { key: "finished", label: "成片中心", icon: Video },
@@ -411,13 +413,15 @@ const operationsChildren: NavItem[] = [
 ];
 
 const navGroups: NavGroup[] = [
-  { key: "agent", persona: AGENT_ROLE_IDENTITIES.agent.name, label: AGENT_ROLE_IDENTITIES.agent.responsibility, icon: UsersRound, children: agentChildren },
   { key: "production", persona: AGENT_ROLE_IDENTITIES.production.name, label: AGENT_ROLE_IDENTITIES.production.responsibility, icon: Video, children: productionChildren },
+  { key: "agent", persona: AGENT_ROLE_IDENTITIES.agent.name, label: AGENT_ROLE_IDENTITIES.agent.responsibility, icon: UsersRound, children: agentChildren },
   { key: "operations", persona: AGENT_ROLE_IDENTITIES.operations.name, label: AGENT_ROLE_IDENTITIES.operations.responsibility, icon: BarChart3, children: operationsChildren }
 ];
 
+const productDetailNavItem: NavItem = { key: "product-detail", label: "产品详情图", icon: Images };
+const keywordNavItem: NavItem = { key: "keyword-acquisition", label: "关键词获客", icon: Search };
 const diagnosticsNavItem: NavItem = { key: "diagnostics", label: "吐槽中心", icon: MessageCircle };
-const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), diagnosticsNavItem];
+const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), keywordNavItem, productDetailNavItem, diagnosticsNavItem];
 
 function nowTime() {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -489,7 +493,7 @@ function taskStatusLabel(status: string) {
 
 
 function moduleIsAvailable(key: ModuleKey) {
-  return ["agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "materials", "workspace", "finished", "diagnostics"].includes(key);
+  return ["agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "materials", "workspace", "finished", "ai-video", "keyword-acquisition", "diagnostics"].includes(key);
 }
 
 function touchTaskStatusLabel(task: TouchTaskState) {
@@ -537,6 +541,7 @@ export default function App() {
 
   const [license, setLicense] = useState<LicenseStatus | null>(null);
   const [sessionEntered, setSessionEntered] = useState(false);
+  useEffect(() => window.xiaoxiWindowChrome?.setMode(license?.authorized && sessionEntered ? "workspace" : "login"), [license?.authorized, sessionEntered]);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const rolePreferences = useRolePreferences();
   const [personalizingRole, setPersonalizingRole] = useState<AgentRoleKey | null>(null);
@@ -559,7 +564,13 @@ export default function App() {
     taskId: string;
     projectId?: string | null;
   } | null>(null);
-  const [openGroups, setOpenGroups] = useState<Record<GroupKey, boolean>>({ agent: true, production: true, operations: true });
+  const [openGroups, setOpenGroups] = useState<Record<GroupKey, boolean>>({ agent: false, production: true, operations: false });
+  useEffect(() => {
+    const group = navGroups.find((item) => item.key === active || item.children.some((child) => child.key === active) || active === "contact-sync" && item.key === "agent");
+    if (!group) return;
+    setOpenGroups((current) => current[group.key] && Object.entries(current).every(([key, open]) => key === group.key || !open)
+      ? current : { agent: group.key === "agent", production: group.key === "production", operations: group.key === "operations" });
+  }, [active]);
   const [contactRows, setContactRows] = useState<ContactRow[]>([]);
   const [contactSyncBusy, setContactSyncBusy] = useState(false);
   const contactSyncInFlight = useRef(false);
@@ -592,15 +603,12 @@ export default function App() {
   const activeTitle = useMemo(() => navItems.find((item) => item.key === active)?.label ?? "自动回复", [active]);
 
   const selectGroup = (groupKey: GroupKey) => {
-    setOpenGroups((current) => {
-      if (active === groupKey) return { ...current, [groupKey]: !current[groupKey] };
-      return current[groupKey] ? current : { ...current, [groupKey]: true };
-    });
+    setOpenGroups({ agent: groupKey === "agent", production: groupKey === "production", operations: groupKey === "operations" });
     setActive(groupKey);
   };
 
   const selectChild = (groupKey: GroupKey, key: ModuleKey) => {
-    setOpenGroups((current) => ({ ...current, [groupKey]: true }));
+    setOpenGroups({ agent: groupKey === "agent", production: groupKey === "production", operations: groupKey === "operations" });
     if (key === "workspace") {
       setLegacyWorkspace(false);
       setCreativeView("studio");
@@ -755,18 +763,18 @@ export default function App() {
 
 
 
-  if (!license?.authorized || !sessionEntered) return <LoginScreen license={license} onLogin={(status) => { setLicense(status); setSessionEntered(true); }} />;
+  if (!license?.authorized || !sessionEntered) return <div className="desktop-window desktop-window-login"><WindowChrome /><LoginScreen license={license} onLogin={(status) => { setLicense(status); setSessionEntered(true); }} /></div>;
   const identity = contactSyncState.wechat_identity;
   const identityName = identity?.nickname || "未同步微信";
   const identityInitial = identityName === "未同步微信" ? "微" : (identityName.match(/[\u4e00-\u9fff]/)?.[0] || identityName.slice(0, 1)).toUpperCase();
   const activeGroup = navGroups.find(
-    (group) => group.key === active || group.children.some((item) => item.key === active)
+    (group) => group.key === active || group.children.some((item) => item.key === active) || active === "contact-sync" && group.key === "agent"
   );
   const activeRole = activeGroup?.key === active ? activeGroup.key : undefined;
   const roleThemeClass = activeGroup ? ` role-theme-${activeGroup.key}` : "";
 
   return (
-    <main className="app-shell">
+    <div className="desktop-window desktop-window-workspace"><WindowChrome /><main className="app-shell">
       <aside className="sidebar">
         <div className="brand">
           <img className="brand-mark" src="./app-icon.png" alt="" />
@@ -808,6 +816,12 @@ export default function App() {
               </div>
             );
           })}
+          <button className={`nav-item nav-standalone ${active === keywordNavItem.key ? "active" : ""}`} onClick={() => { setOpenGroups({ agent: false, production: false, operations: false }); setActive(keywordNavItem.key); }}>
+            <Search size={19} strokeWidth={2.4} /><span>关键词获客</span>
+          </button>
+          <button className={`nav-item nav-standalone ${active === productDetailNavItem.key ? "active" : ""}`} onClick={() => { setOpenGroups({ agent: false, production: false, operations: false }); setActive(productDetailNavItem.key); }}>
+            <Images size={19} strokeWidth={2.4} /><span>产品详情图</span>
+          </button>
         </nav>
         <div className="sidebar-system-nav">
           <button className={`nav-item ${active === diagnosticsNavItem.key ? "active" : ""}`} onClick={() => openFeedback()}>
@@ -819,7 +833,7 @@ export default function App() {
 
       <section className={`workspace${roleThemeClass}`} style={activeGroup ? appearanceStyle(appearanceFor(activeGroup.key, visiblePreference(activeGroup.key).appearanceId)) : undefined}>
         <header className="topbar">
-          <div />
+          <div className="topbar-current-module" aria-label="当前模块">{activeGroup?.label || navItems.find((item) => item.key === active)?.label || ""}</div>
           <div className="top-actions account-menu-wrap">
             <button className="account-trigger" aria-haspopup="menu" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((open) => !open)}>
               <span className="avatar">{identityInitial}{identity?.avatar_url && <img src={identity.avatar_url} alt="" onError={(event) => { event.currentTarget.hidden = true; }} />}</span>
@@ -889,6 +903,8 @@ export default function App() {
           {active === "expert" && <AiExpert />}
           {active === "accounts" && <AccountManagement />}
           {active === "product-detail" && <ProductDetailPage />}
+          {active === "keyword-acquisition" && <KeywordAcquisitionPage />}
+          {active === "ai-video" && <DigitalHumanPage />}
           {active === "materials" && <MaterialsCollectionsPage onCreate={(assetIds, collection) => {
             setBatchInitial({ assetIds, collection }); setLegacyWorkspace(false); setCreativeView("studio"); setActive("workspace");
           }} />}
@@ -919,8 +935,7 @@ export default function App() {
                 onOpenFinished={() => setActive("finished")}
                 onOpenDiagnostics={openFeedback}
               /></> : <BatchCreativePage initial={batchInitial}
-                onOpenProduct={() => { setCreativeResumeTarget(null); setCreativeView("product"); }}
-                onOpenLegacy={() => openLegacy()} onOpenHistory={() => setCreativeView("history")}
+                onOpenHistory={() => setCreativeView("history")}
                 onOpenDiagnostics={openFeedback}
                 onOpenMaterials={() => setActive("materials")} />)}
           {active === "finished" && <FinishedVideoCenterPage onOpenProductions={() => {
@@ -937,8 +952,12 @@ export default function App() {
 
         {(["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active) || workflow.state.enabled || workflow.state.contactSync?.running || workflow.state.phase === "pausing") && <WorkflowLauncher workflow={workflow} onNavigate={navigateWorkflow} />}
       </section>
-    </main>
+    </main></div>
   );
+}
+
+function WindowChrome() {
+  return <div className="window-chrome" aria-label="玺联惠 AI获客 窗口标题栏"><img src="./app-icon.png" alt="" /><span>玺联惠 · AI获客</span></div>;
 }
 
 function ContactSyncPage({

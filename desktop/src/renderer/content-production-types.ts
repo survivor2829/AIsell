@@ -49,8 +49,16 @@ export type ProductionList = {
   summary: ProductionSummary;
 };
 export type ProductionResult<T> = { ok: boolean; data?: T; code?: string; error?: string };
+export type ProviderUsageCall = {
+  call_id: string; purpose: string; kind: string; model: string; outcome: string;
+  started_at: string; attempt: number; correction_attempt: number; elapsed_ms: number | null;
+  request_id: string; client_request_id: string; log_id: string;
+  input_tokens: number | null; output_tokens: number | null; cached_tokens: number | null;
+  billed_characters: number | null; requested_characters: number | null; audio_ms: number | null;
+};
+export type ProviderUsage = { items: ProviderUsageCall[]; totals: Record<string, number | null>; truncated: boolean; amount: null };
 export type ProductionsApi = {
-  usage: (payload: { taskId?: string; batchId?: string; limit?: number }) => Promise<ProductionResult<import("./ProviderUsageDetails").ProviderUsage>>;
+  usage: (payload: { taskId?: string; batchId?: string; limit?: number }) => Promise<ProductionResult<ProviderUsage>>;
   summary: () => Promise<ProductionResult<ProductionSummary>>;
   list: (payload?: { view?: ProductionView; offset?: number; limit?: number }) => Promise<ProductionResult<ProductionList>>;
 };

@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const os = require("node:os");
 const { spawnSync } = require("node:child_process");
 const {
   productDetailChangedSourceFiles
@@ -97,8 +98,37 @@ function resolveDefaultDevelopmentSidecarRuntime(kind, options = {}) {
   }
 }
 
+// Source launches must use the current worker, including when Electron is
+// started directly rather than through scripts/dev-electron.cjs.
+function resolveDevelopmentContentEngineLaunch(options = {}) {
+  const environment = options.environment || process.env;
+  const desktopDir = path.resolve(options.desktopDir || path.join(__dirname, "../.."));
+  const fsImpl = options.fsImpl || fs;
+  const run = options.spawnSyncImpl || spawnSync;
+  const configured = String(environment.XIAOXI_CONTENT_ENGINE_SIDECAR || "").trim();
+  const entry = String(environment.XIAOXI_CONTENT_ENGINE_SIDECAR_ENTRY || "").trim();
+  if (configured) return { runtimePath: configured, runtimeArgs: entry ? [entry] : [] };
+  const worker = path.join(desktopDir, "sidecars", "content-engine", "worker.py");
+  if (isFile(fsImpl, worker)) {
+    const candidates = [
+      environment.XIAOXI_CONTENT_ENGINE_DEV_PYTHON,
+      path.join(desktopDir, ".build", "product-detail-venv", "Scripts", "python.exe"),
+      path.join(options.userHome || os.homedir(), ".cache", "codex-runtimes", "codex-primary-runtime", "dependencies", "python", "python.exe")
+    ];
+    for (const candidate of candidates.map((value) => String(value || "").trim()).filter(Boolean)) {
+      if (!isFile(fsImpl, candidate)) continue;
+      const check = run(candidate, ["-c", "import sys; assert sys.version_info >= (3, 10)"], {
+        encoding: "utf8", windowsHide: true, timeout: 5000
+      });
+      if (!check.error && check.status === 0) return { runtimePath: candidate, runtimeArgs: [worker] };
+    }
+  }
+  return { runtimePath: resolveDefaultDevelopmentSidecarRuntime("content-engine", options), runtimeArgs: [] };
+}
+
 module.exports = {
   RUNTIME_SPECS,
   gitText,
-  resolveDefaultDevelopmentSidecarRuntime
+  resolveDefaultDevelopmentSidecarRuntime,
+  resolveDevelopmentContentEngineLaunch
 };

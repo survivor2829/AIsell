@@ -18,7 +18,10 @@
   - 火山语音识别：`/volcengine/asr/recognize/flash`
   - 火山语音合成：`/volcengine/tts/sse`
   - APIMart：`/apimart/uploads/images`、`/apimart/images/generations`、
-    `/apimart/tasks/<task-id>`
+    `/apimart/tasks/<task-id>`、`/apimart/videos/generations`、
+    `/apimart/seedance2/private-avatar/assets`（人物素材登记与列表，按授权主体隔离）
+
+`apimart_video` 与 `apimart_avatar_assets` 能力表示路由及服务端凭据已配置，不代表上游网络、模型权限、人物审核或真实生成已验收。视频入口只接受 POST；人物素材入口只接受 GET/POST，GET 仅允许当前授权主体下的 `group=dh_<任务 UUID>` 定向查询，POST 拒绝查询参数及不符合约定的登记数据。
 
 网关只接受上述固定路径，绝不把客户端提供的 URL 当作上游地址。客户端的
 `Authorization`、`X-Api-Key` 等凭据不会转发；服务端从
@@ -31,6 +34,20 @@ POST 响应会短期保存在仅网关服务账号可读的本地回执库中，
 允许配置 30～180 秒；维护转发等待 240 秒，桌面供应商请求等待 270 秒，避免客户端先放弃仍在处理的请求。
 health 默认返回运行文件的摘要标识，也可通过 `XIAOXI_GATEWAY_RUNTIME_REVISION` 指定发布标识；
 标识和超时元数据用于诊断，不能替代能力声明或导致兼容客户端关闭全部 AI 功能。
+
+### APIMart 专用出站
+
+可在上述受保护的服务端环境文件中配置 `XIAOXI_GATEWAY_APIMART_PROXY_URL`，
+让 APIMart 固定路由通过受控 HTTP CONNECT 代理出站。未配置时沿用原出站路径；
+配置后不会被系统 `NO_PROXY` 绕过，不影响 DeepSeek、火山或其他供应商。
+目标始终是官方 `https://api.apimart.ai`，证书和主机名校验保持开启；专用出站
+禁止所有重定向，连接失败也不换路重发，原 operation 回执及未知结果停止规则保留。
+
+当前标准库实现只接受 `http://` 代理地址（可含代理认证，凭据同样只存受保护配置），
+APIMart 请求内容仍在 CONNECT 内通过 TLS 加密。`https://` 代理需要额外的代理层 TLS，
+当前实现明确拒绝，避免静默降级；无效配置只报 `apimart_proxy_config_invalid`，不回显地址。
+不要将工作站临时 SSH 转发或诊断 IP 配置为长期服务依赖。部署此代码不会自动启用代理，
+需先确认长期可用的受控出站，再通过免费只读请求验收；不得以付费重试测试网络。
 
 相同 operation ID 只在同一认证主体、目标、请求正文及相关请求头都一致时
 共用持久回执；`GET /v1/provider-gateway/operations/<operation-id>` 可在断线后

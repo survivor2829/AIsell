@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import base64
 import collections
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import hmac
@@ -20,13 +20,14 @@ from pathlib import Path
 import re
 import secrets
 import socket
+import ssl
 import sqlite3
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlsplit
-from urllib.request import Request, urlopen
+from urllib.parse import parse_qs, quote, unquote, urlsplit
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener, urlopen
 
 
 PREFIX = "/v1/provider-gateway"
@@ -140,6 +141,48 @@ def _bounded_timeout(value, default=DEFAULT_UPSTREAM_TIMEOUT_SECONDS) -> int:
     return max(MIN_UPSTREAM_TIMEOUT_SECONDS, min(MAX_UPSTREAM_TIMEOUT_SECONDS, candidate))
 
 
+class _NoProviderRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise URLError("provider_redirect_rejected")
+
+
+class _FixedApimartProxy(ProxyHandler):
+    def __init__(self, proxy_url, parsed):
+        super().__init__({"https": proxy_url})
+        self._proxy_host = parsed.netloc.rsplit("@", 1)[-1]
+        self._proxy_auth = ""
+        if parsed.username is not None:
+            credentials = f"{unquote(parsed.username)}:{unquote(parsed.password or '')}"
+            self._proxy_auth = "Basic " + base64.b64encode(credentials.encode()).decode("ascii")
+
+    def proxy_open(self, req, proxy, type):
+        # An explicit route must not silently fall back through NO_PROXY or
+        # the system proxy settings. HTTPSConnection keeps verified TLS inside CONNECT.
+        if self._proxy_auth:
+            req.add_unredirected_header("Proxy-Authorization", self._proxy_auth)
+        req.set_proxy(self._proxy_host, "http")
+        return None
+
+
+def _apimart_proxy_open(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlsplit(raw)
+        # urllib does not provide TLS-to-proxy for an https:// proxy URL.
+        # Reject it instead of silently sending proxy credentials over plaintext.
+        if (len(raw) > 4096 or re.search(r"[\x00-\x20\x7f]", raw)
+                or parsed.scheme != "http" or not parsed.hostname or "%" in parsed.hostname
+                or parsed.port == 0 or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
+            raise ValueError()
+        return build_opener(_FixedApimartProxy(raw, parsed),
+                            HTTPSHandler(context=ssl.create_default_context()),
+                            _NoProviderRedirect()).open
+    except (ValueError, TypeError):
+        raise ValueError("apimart_proxy_config_invalid") from None
+
+
 def _runtime_revision(value) -> str:
     candidate = str(value or "").strip()
     if candidate and RUNTIME_REVISION.fullmatch(candidate):
@@ -206,6 +249,7 @@ class GatewayConfig:
     origins: dict[str, str] | None = None
     license_validator: object = validate_license
     upstream_open: object = urlopen
+    apimart_open: object = field(default=None, repr=False)
     max_request_bytes: int = 32 * 1024 * 1024
     max_response_bytes: int = 96 * 1024 * 1024
     session_ttl_seconds: int = 24 * 60 * 60
@@ -247,6 +291,7 @@ class GatewayConfig:
                 env.get("XIAOXI_GATEWAY_UPSTREAM_TIMEOUT_SECONDS", DEFAULT_UPSTREAM_TIMEOUT_SECONDS)
             ),
             runtime_revision=_runtime_revision(env.get("XIAOXI_GATEWAY_RUNTIME_REVISION", "")),
+            apimart_open=_apimart_proxy_open(env.get("XIAOXI_GATEWAY_APIMART_PROXY_URL", "")),
         )
 
     def __post_init__(self):
@@ -271,6 +316,10 @@ class GatewayConfig:
             "volcengine_tts": bool(self.keys.get("volcengine_tts")),
             "volcengine_asr": bool(self.keys.get("volcengine_asr") or (self.asr_app_id and self.asr_access_token)),
             "apimart": bool(self.keys.get("apimart")),
+            # These advertise installed fixed routes, not a guarantee that an
+            # upstream account/model or an individual face has been approved.
+            "apimart_video": bool(self.keys.get("apimart")),
+            "apimart_avatar_assets": bool(self.keys.get("apimart")),
         }
 
     def configured(self, provider: str) -> bool:
@@ -572,6 +621,9 @@ class Handler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"/apimart/(uploads/images|images/generations|tasks/[A-Za-z0-9._-]{1,255})", suffix)
         if match:
             return "apimart", self.config.origins["apimart"] + "/v1/" + match.group(1)
+        match = re.fullmatch(r"/apimart/(videos/generations|seedance2/private-avatar/assets)", suffix)
+        if match:
+            return "apimart", self.config.origins["apimart"] + "/v1/" + match.group(1)
         return None
 
     def _upstream_headers(self, provider: str) -> dict[str, str]:
@@ -603,7 +655,10 @@ class Handler(BaseHTTPRequestHandler):
         operation = Request(target, data=body, headers=self._upstream_headers(provider), method=method)
         response = None
         try:
-            response = self.config.upstream_open(
+            upstream_open = self.config.upstream_open
+            if provider == "apimart" and self.config.apimart_open is not None:
+                upstream_open = self.config.apimart_open
+            response = upstream_open(
                 operation,
                 timeout=self.config.upstream_timeout_seconds,
             )
@@ -666,6 +721,29 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply_json(503, {"error": "provider_not_configured", "provider": provider})
         parsed = urlsplit(self.path)
         query = parse_qs(parsed.query, keep_blank_values=True)
+        avatar_library = provider == "apimart" and parsed.path.endswith("/seedance2/private-avatar/assets")
+        avatar_prefix = None
+        avatar_group = None
+        if avatar_library:
+            token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            subject = self.config.sessions.subject(token)
+            if subject is None:
+                return self._reply_json(401, {"error": "session_required"})
+            # The upstream key is shared. Bind submitted names to this license,
+            # then strip the prefix only after filtering its own library rows.
+            avatar_prefix = "xh_" + self.server.receipts._subject(subject)[:24] + "_"
+            if method == "GET" and query:
+                groups = query.get("group") if set(query) == {"group"} else None
+                if not groups or len(groups) != 1 or not re.fullmatch(r"dh_(?:[a-f0-9]{24}|[a-f0-9-]{36})", groups[0]):
+                    return self._reply_json(400, {"error": "invalid_query"})
+                avatar_group = avatar_prefix + groups[0]
+        if provider == "apimart" and ("/videos/" in parsed.path or "/private-avatar/" in parsed.path):
+            is_video = parsed.path.endswith("/videos/generations")
+            is_asset_collection = parsed.path.endswith("/private-avatar/assets")
+            if query and avatar_group is None:
+                return self._reply_json(400, {"error": "invalid_query"})
+            if (is_video and method != "POST") or (not is_video and method not in ({"GET", "POST"} if is_asset_collection else {"GET"})):
+                return self._reply_json(405, {"error": "method_not_allowed"})
         if provider == "apimart" and "/tasks/" in parsed.path:
             if any(key != "language" for key in query) or any(value != ["en"] for value in query.values()):
                 return self._reply_json(400, {"error": "invalid_query"})
@@ -677,6 +755,34 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._read_body()
             except (ValueError, UnicodeError):
                 return self._reply_json(400, {"error": "invalid_body"})
+            if avatar_library:
+                try:
+                    payload = json.loads(body)
+                    if not isinstance(payload, dict) or set(payload) - {"model", "group", "asset_type", "assets"}:
+                        raise ValueError("fields")
+                    assets = payload.get("assets")
+                    group = payload.get("group")
+                    if payload.get("model") != "seedance-2.5" or payload.get("asset_type") != "Image" or not isinstance(assets, list) or not 1 <= len(assets) <= 20:
+                        raise ValueError("assets")
+                    if (not isinstance(group, dict) or set(group) != {"name"}
+                            or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", str(group["name"]))
+                            or len(avatar_prefix + group["name"]) > 64):
+                        raise ValueError("group")
+                    group["name"] = avatar_prefix + group["name"]
+                    for asset in assets:
+                        if (not isinstance(asset, dict) or set(asset) != {"url", "name"}
+                                or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", str(asset["name"]))
+                                or len(avatar_prefix + asset["name"]) > 64):
+                            raise ValueError("asset")
+                        if not isinstance(asset["url"], str):
+                            raise ValueError("asset_url")
+                        source = urlsplit(asset["url"])
+                        if source.scheme != "https" or not source.hostname or source.username or source.password:
+                            raise ValueError("asset_url")
+                        asset["name"] = avatar_prefix + asset["name"]
+                    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                except (ValueError, TypeError, KeyError, UnicodeError):
+                    return self._reply_json(400, {"error": "invalid_avatar_submission"})
 
         operation_id = self.headers.get("X-Xiaoxi-Operation-Id", "").strip()
         key = None
@@ -712,7 +818,56 @@ class Handler(BaseHTTPRequestHandler):
                     {"X-Xiaoxi-Error-Origin": "gateway_transport"},
                 ))
         try:
+            if avatar_group:
+                group_target = self.config.origins["apimart"] + "/v1/seedance2/private-avatar/groups?name=" + quote(avatar_group, safe="")
+                group_result = self._proxy_upstream("GET", "apimart", group_target, None)
+                if not 200 <= group_result["status"] < 300:
+                    return self._reply_json(502, {"error": "avatar_group_lookup_failed"})
+                try:
+                    groups_payload = json.loads(group_result["raw"])
+                    groups_data = groups_payload.get("Result", groups_payload.get("data", groups_payload))
+                    groups_rows = groups_data.get("Items", groups_data.get("items"))
+                    if not isinstance(groups_rows, list):
+                        raise ValueError("unsupported_group_response")
+                    owned_groups = [row for row in groups_rows if isinstance(row, dict)
+                                    and row.get("Name", row.get("name")) == avatar_group]
+                    if not owned_groups:
+                        return self._reply_json(200, {"data": {"items": []}})
+                    if len(owned_groups) != 1:
+                        raise ValueError("ambiguous_group")
+                    group_id = owned_groups[0].get("Id", owned_groups[0].get("id"))
+                    if not isinstance(group_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,255}", group_id):
+                        raise ValueError("invalid_group_id")
+                    target += "?group_id=" + quote(group_id, safe="")
+                except (ValueError, TypeError, AttributeError):
+                    return self._reply_json(502, {"error": "avatar_group_response_invalid"})
             result = self._proxy_upstream(method, provider, target, body)
+            if avatar_library and method == "GET" and 200 <= result["status"] < 300:
+                try:
+                    payload = json.loads(result["raw"])
+                    if not isinstance(payload, dict):
+                        raise ValueError("unsupported_library_response")
+                    data = payload.get("Result", payload.get("data", payload))
+                    rows = data if isinstance(data, list) else data.get("Items", data.get("items", data.get("assets", data.get("list"))))
+                    if not isinstance(rows, list):
+                        raise ValueError("unsupported_library_response")
+                    owned = []
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        name = str(row.get("Name", row.get("name", row.get("asset_name", ""))))
+                        if name.startswith(avatar_prefix):
+                            item = {
+                                "id": row.get("Id", row.get("id", row.get("asset_id"))),
+                                "status": row.get("Status", row.get("status", row.get("moderation_status"))),
+                            }
+                            if not isinstance(item["id"], str) or not isinstance(item["status"], str):
+                                continue
+                            item["name"] = name[len(avatar_prefix):]
+                            owned.append(item)
+                    result = self._json_result(200, {"data": {"items": owned}}, {"Content-Type": "application/json"})
+                except (ValueError, TypeError, AttributeError):
+                    result = self._json_result(502, {"error": "avatar_library_response_invalid"})
         except Exception:
             result = self._json_result(
                 503, {"error": "provider_unavailable"},

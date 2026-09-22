@@ -94,6 +94,8 @@ async function main() {
           DEEPSEEK_MODEL: "must-not-leak",
           REFINE_API_KEY: "must-not-leak",
           REFINE_API_BASE_URL: "https://paid.invalid/v1",
+          XIAOXI_PROVIDER_GATEWAY_ORIGIN: "https://inherited.invalid",
+          XIAOXI_PROVIDER_GATEWAY_CA_PEM: "inherited-certificate",
           GPT_IMAGE_API_KEY: "must-not-leak",
           ARK_API_KEY: "must-not-leak",
           DASHSCOPE_API_KEY: "must-not-leak",
@@ -126,6 +128,8 @@ async function main() {
         "DEEPSEEK_MODEL",
         "REFINE_API_KEY",
         "REFINE_API_BASE_URL",
+        "XIAOXI_PROVIDER_GATEWAY_ORIGIN",
+        "XIAOXI_PROVIDER_GATEWAY_CA_PEM",
         "GPT_IMAGE_API_KEY",
         "ARK_API_KEY",
         "DASHSCOPE_API_KEY",
@@ -185,6 +189,8 @@ async function main() {
             DEEPSEEK_MODEL: " deepseek-v4-flash ",
             REFINE_API_KEY: " desktop-apimart-key ",
             REFINE_API_BASE_URL: " https://api.apimart.ai/v1 ",
+            XIAOXI_PROVIDER_GATEWAY_ORIGIN: " https://gateway.invalid ",
+            XIAOXI_PROVIDER_GATEWAY_CA_PEM: " trusted-gateway-certificate ",
             ARK_API_KEY: "must-be-ignored",
             PATH: "must-be-ignored"
           };
@@ -211,6 +217,8 @@ async function main() {
       assert.equal(spawnOptions.env.DEEPSEEK_MODEL, "deepseek-v4-flash");
       assert.equal(spawnOptions.env.REFINE_API_KEY, "desktop-apimart-key");
       assert.equal(spawnOptions.env.REFINE_API_BASE_URL, "https://api.apimart.ai/v1");
+      assert.equal(spawnOptions.env.XIAOXI_PROVIDER_GATEWAY_ORIGIN, "https://gateway.invalid");
+      assert.equal(spawnOptions.env.XIAOXI_PROVIDER_GATEWAY_CA_PEM, "trusted-gateway-certificate");
       assert.equal(spawnOptions.env.ARK_API_KEY, "");
       assert.equal(spawnOptions.env.GPT_IMAGE_API_KEY, "");
       assert.notEqual(spawnOptions.env.PATH, "must-be-ignored");

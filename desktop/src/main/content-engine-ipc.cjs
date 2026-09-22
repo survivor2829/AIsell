@@ -88,8 +88,10 @@ const CONTENT_ENGINE_CHANNELS = Object.freeze({
   preflightVisualComparison: "content-engine:preflight-visual-comparison",
   createVisualComparisonTask: "content-engine:create-visual-comparison-task",
   regenerateCover: "content-engine:regenerate-cover",
+  updateCoverTitle: "content-engine:update-cover-title",
   getCreativeProject: "content-engine:get-creative-project",
   listGeneratedVideos: "content-engine:list-generated-videos",
+  getGeneratedVideo: "content-engine:get-generated-video",
   regenerateVideo: "content-engine:regenerate-video",
   rejectGeneratedVideo: "content-engine:reject-generated-video",
   queueGeneratedVideos: "content-engine:queue-generated-videos",
@@ -270,7 +272,7 @@ const MUSIC_IMPORT_FIELDS = new Set([
 
 const PUBLIC_ERRORS = Object.freeze({
   ...BATCH_ERRORS,
-  CONTENT_ENGINE_RUNTIME_UNAVAILABLE: "内容引擎尚未安装或未配置。",
+  CONTENT_ENGINE_RUNTIME_UNAVAILABLE: "未找到可用的内容引擎，请重启应用；若仍无法使用，请通过吐槽中心反馈。",
   CONTENT_ENGINE_DATA_DIR_INVALID: "内容引擎数据目录配置无效。",
   CONTENT_ENGINE_DATA_DIR_FAILED: "内容引擎数据目录无法创建。",
   CONTENT_ENGINE_SPAWN_FAILED: "内容引擎启动失败，请重试。",
@@ -1381,6 +1383,11 @@ function publicGeneratedVideo(value = {}) {
     cover_phase: publicCoverPhase(value.cover_phase),
     cover_network_submitted: value.cover_network_submitted === true,
     cover_issue_code: publicCode(value.cover_issue_code),
+    cover_issue_message: safePublicText(value.cover_issue_message, 240),
+    cover_headline_lines: Array.isArray(value.cover_headline_lines)
+      ? value.cover_headline_lines.slice(0, 2).map((line) => safePublicText(line, 12)) : [],
+    cover_title_editable: value.cover_title_editable === true,
+    cover_style: ["talking_head", "product_demo"].includes(value.cover_style) ? value.cover_style : null,
     phone_review: value.phone_review ? publicMediaReview(value.phone_review) : null,
     motion_director_provider: value.motion_director_provider,
     motion_event_count: value.motion_event_count,
@@ -2189,7 +2196,13 @@ function registerContentEngineIpc(options = {}) {
     showOperationalNotification("批量创作提醒", message, `batch:${batchId}:${batch.task_id}:${status}`);
   }
 
-  function shouldNotifyOperationError(code) {
+  function shouldNotifyOperationError(code, operationName) {
+    // Background list refreshes report their error to the page. Only work the
+    // user started, or an actual task failure, should interrupt the desktop.
+    if (code === "CONTENT_ENGINE_RUNTIME_UNAVAILABLE"
+        || /^(list-|get-)/u.test(operationName)
+        || /(?:^|-)status$/u.test(operationName)
+        || ["production-summary", "provider-usage", "generated-media-url"].includes(operationName)) return false;
     return code.startsWith("cloud_")
       || code.startsWith("volcengine_")
       || code.startsWith("auto_mix_voice_")
@@ -2386,7 +2399,7 @@ function registerContentEngineIpc(options = {}) {
         return { ok: true, data };
       } catch (error) {
         const errorCode = diagnosticCode(error?.code);
-        if (shouldNotifyOperationError(safeText(error?.code, 64))) {
+        if (shouldNotifyOperationError(safeText(error?.code, 64), operationName)) {
           const publicFailure = publicError(error);
           showOperationalNotification(
             "内容制作需要处理",
@@ -3558,6 +3571,16 @@ function registerContentEngineIpc(options = {}) {
       validateId(payload.candidateId, "generated_video")
     ));
   });
+  handle(CONTENT_ENGINE_CHANNELS.updateCoverTitle, async (payload) => {
+    assertKeys(payload, new Set(["candidateId", "headlineLines"]));
+    if (!Array.isArray(payload.headlineLines) || payload.headlineLines.length < 1 || payload.headlineLines.length > 2) {
+      throw Object.assign(new Error("封面标题需要一至两行。"), { code: "invalid_params" });
+    }
+    const lines = payload.headlineLines.map((line) => validateText(line, 12));
+    return publicGeneratedVideo(await controller.updateCoverTitle(
+      validateId(payload.candidateId, "generated_video"), lines
+    ));
+  });
   handle(CONTENT_ENGINE_CHANNELS.getCreativeProject, async (payload) => {
     assertKeys(payload, new Set(["projectId"]));
     return publicCreativeProject(await controller.getCreativeProject(
@@ -3575,6 +3598,10 @@ function registerContentEngineIpc(options = {}) {
       limit: validateLimit(payload.limit, 500)
     });
     return { items: (result?.items || []).map(publicGeneratedVideo) };
+  });
+  handle(CONTENT_ENGINE_CHANNELS.getGeneratedVideo, async (payload) => {
+    assertKeys(payload, new Set(["candidateId"]));
+    return publicGeneratedVideo(await controller.getGeneratedVideo(validateId(payload.candidateId, "generated_video")));
   });
   handle(CONTENT_ENGINE_CHANNELS.regenerateVideo, async (payload) => {
     assertKeys(payload, new Set(["candidateId"]));
@@ -3630,35 +3657,41 @@ function registerContentEngineIpc(options = {}) {
       });
     }
     handle(CONTENT_ENGINE_CHANNELS.downloadCandidate, async (payload) => {
-      assertKeys(payload, new Set(["candidateId"]));
+      assertKeys(payload, new Set(["candidateId", "variant"]));
+      if (payload.variant != null && !["video", "thumbnail"].includes(payload.variant)) invalid("invalid_media_variant");
       const candidateId = validateId(payload.candidateId, "generated_video");
-      const result = await controller.resolveGeneratedVideoPath(candidateId, "video");
+      const variant = payload.variant === "thumbnail" ? "thumbnail" : "video";
+      const result = await controller.resolveGeneratedVideoPath(candidateId, variant);
       if (result?.generated_video_id !== candidateId) invalid("CONTENT_ENGINE_RESPONSE_INVALID");
       const trustedPath = resolvedAbsolutePath(result);
       return {
         candidateId,
-        ...(await saveVideoToChosenLocation(trustedPath))
+        ...(await saveVideoToChosenLocation(trustedPath, variant))
       };
     });
 
-  async function saveVideoToChosenLocation(trustedPath) {
+  async function saveVideoToChosenLocation(trustedPath, variant = "video") {
+    const image = variant === "thumbnail";
+    const extension = image ? path.extname(trustedPath).toLowerCase() : ".mp4";
+    if (image && ![".jpg", ".jpeg", ".png", ".webp"].includes(extension)) invalid("CONTENT_ENGINE_RESPONSE_INVALID");
+    const filename = image ? `视频封面${extension}` : safeVideoFilename(path.basename(trustedPath));
     const downloadsDirectory = typeof app?.getPath === "function"
       ? app.getPath("downloads")
       : undefined;
     const defaultPath = downloadsDirectory
-      ? path.join(downloadsDirectory, safeVideoFilename(path.basename(trustedPath)))
-      : safeVideoFilename(path.basename(trustedPath));
+      ? path.join(downloadsDirectory, filename)
+      : filename;
     const selected = await saveDialog(
       defaultPath,
-      [{ name: "MP4 视频", extensions: ["mp4"] }],
-      "保存成片"
+      [{ name: image ? "封面图片" : "MP4 视频", extensions: [extension.slice(1)] }],
+      image ? "保存封面" : "保存成片"
     );
     if (selected?.canceled || !selected?.filePath) {
       return { canceled: true };
     }
     let destination = String(selected.filePath);
     if (!path.isAbsolute(destination)) invalid("CONTENT_ENGINE_DOWNLOAD_PATH_INVALID");
-    if (!destination.toLowerCase().endsWith(".mp4")) destination += ".mp4";
+    if (!destination.toLowerCase().endsWith(extension)) destination += extension;
     if (path.resolve(destination).toLowerCase() === trustedPath.toLowerCase()) {
       invalid("CONTENT_ENGINE_DOWNLOAD_SOURCE");
     }

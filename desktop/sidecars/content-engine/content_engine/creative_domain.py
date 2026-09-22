@@ -104,6 +104,7 @@ CREATIVE_TASK_TYPES = frozenset(
         "guided_auto_mix_draft",
         "guided_auto_mix_supplemental_image",
         "narrated_batch_v1",
+        "import_base_video",
     }
 )
 AUTO_MIX_REUSE_SELECTED_VOICE_RECOVERY_CODES = frozenset(
@@ -396,6 +397,57 @@ class CreativeDomain:
             "creative_analysis",
             {"asset_ids": safe_ids, "profile": sanitize_public_value(safe_profile)},
         )
+
+    def import_base_video(self, request):
+        from .video_presentation import TEMPLATES
+        if not isinstance(request, dict):
+            raise ContentEngineError("invalid_video_import", "视频导入参数无效。")
+        source_id = str(request.get("source_id") or "")
+        if not re.fullmatch(r"digital_human_[a-f0-9-]{32,36}", source_id):
+            raise ContentEngineError("invalid_video_import", "数字人任务编号无效。")
+        template = request.get("template_id", "topic_fixed")
+        if template not in TEMPLATES or request.get("cover_mode", "apimart") not in {"apimart", "local_frame"}:
+            raise ContentEngineError("invalid_video_import", "视频模板或封面方式无效。")
+        title = self._validate_text(request.get("title"), "title", 100)
+        script = self._validate_text(request.get("confirmed_script"), "confirmed_script", 5000)
+        source = Path(str(request.get("input_video_path") or ""))
+        if not source.is_absolute() or not source.is_file() or source.is_symlink() or source.suffix.lower() != ".mp4":
+            raise ContentEngineError("invalid_video_import", "找不到可用的数字人视频文件。")
+        if source.stat().st_size > 500 * 1024 * 1024:
+            raise ContentEngineError("invalid_video_import", "视频超过500MB，请缩短后再试。")
+        # Admission is internal IPC only. Copy once into the engine-owned tree;
+        # subsequent task execution never follows a renderer-controlled path.
+        existing = self.connection.execute("SELECT id, payload_json FROM content_tasks WHERE task_type='import_base_video' ORDER BY created_at DESC").fetchall()
+        for row in existing:
+            saved = json.loads(row["payload_json"])
+            if saved.get("source_id") == source_id:
+                self.connection.execute("UPDATE content_tasks SET status='queued',error_code=NULL,error_message=NULL,resume_from_status=NULL,updated_at=? WHERE id=? AND status IN ('failed','paused','cancelled')", (self._now(), row["id"]))
+                return {**self._public_task(self._task_row(row["id"])), "project_id": saved["project_id"]}
+        project_id = self._new_id("creative_project")
+        managed = self.data_dir / "video-imports" / source_id / "base.mp4"
+        managed.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, managed)
+        now = self._now()
+        self.connection.execute("INSERT INTO creative_projects(id,mode,name,theme,settings_json,created_at,updated_at) VALUES (?,'course',?,?,?, ?,?)",
+            (project_id, title, title, self._json({"workflow": "digital_human", "internal_only": False}), now, now))
+        payload = {"source_id": source_id, "project_id": project_id, "managed_path": str(managed), "title": title,
+                   "confirmed_script": script, "template_id": template, "cover_mode": request.get("cover_mode", "apimart"),
+                   "music_track_id": str(request.get("music_track_id") or "")}
+        return {**self._create_task("import_base_video", payload), "project_id": project_id}
+
+    def update_cover_title(self, generated_video_id, headline_lines):
+        from .video_presentation import validate_headlines
+        lines = validate_headlines(headline_lines)
+        row = self._generated_row(generated_video_id)
+        recipe = json.loads(row["recipe_json"])
+        cover = (recipe.get("packaging") or {}).get("cover") or {}
+        if row["status"] != "completed" or not cover.get("background_path"):
+            raise ContentEngineError("cover_background_unavailable", "请先生成封面底图，再调整标题。")
+        background = self._validate_generated_path(cover["background_path"])
+        cover.setdefault("plan", {})["headline_lines"] = lines
+        self.renderer.compose_cover(background, self._validate_generated_path(row["thumbnail_path"]), recipe["packaging"], resolve_asset_path=self._resolve_asset_path)
+        self.connection.execute("UPDATE generated_videos SET recipe_json=?,updated_at=? WHERE id=?", (self._json(recipe), self._now(), row["id"]))
+        return self._public_generated(self._generated_row(row["id"]))
 
     def create_course_task(
         self,
@@ -6053,6 +6105,12 @@ class CreativeDomain:
         if private_state.get("narrated_brand"):
             recipe["packaging"]["brand"] = private_state["narrated_brand"]
             recipe["packaging"]["brand_profile_id"] = private_state["narrated_brand"].get("brand_profile_id")
+        if private_state.get("narrated_reference_captions"):
+            from .video_presentation import presentation
+            recipe["presentation"] = presentation(recipe["captions"],
+                run["title"],
+                private_state.get("video_template") or "topic_fixed")
+            recipe["packaging"]["cover"]["auto_generate"] = True
         if supplemental_image is not None:
             recipe["supplemental_image"] = supplemental_image
         recipe["skeleton_id"] = self._skeleton_id(recipe)
@@ -6707,7 +6765,10 @@ class CreativeDomain:
         ):
             return self._public_task(self._task_row(task_id))
         try:
-            if task["task_type"] == "narrated_batch_v1":
+            if task["task_type"] == "import_base_video":
+                from .video_presentation import run_imported_video
+                result = run_imported_video(self, task_id, payload)
+            elif task["task_type"] == "narrated_batch_v1":
                 from .narrated_batch import NarratedBatchDomain
                 result = NarratedBatchDomain(self).run(task_id, payload)
             elif task["task_type"] == "creative_analysis":
@@ -8942,6 +9003,9 @@ class CreativeDomain:
                 "generated_video_not_ready", "Only completed videos can request a new cover."
             )
         recipe = json.loads(row["recipe_json"])
+        latest = self.connection.execute("SELECT status FROM cover_generation_ledger WHERE generated_video_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (row["id"],)).fetchone()
+        if latest is not None and latest["status"] == "outcome_unknown":
+            raise ContentEngineError("cover_outcome_unknown", "上次封面请求结果尚未确认，请先核对该请求，暂不重复提交。")
         reused_operation = False
         with self.database.transaction() as connection:
             operation = connection.execute(
@@ -9129,6 +9193,9 @@ class CreativeDomain:
         ).fetchone()
         if operation is None or operation["status"] == "completed":
             return None
+        recipe = json.loads(self._generated_row(video_id)["recipe_json"])
+        if ((recipe.get("packaging") or {}).get("cover") or {}).get("auto_generate"):
+            return self._public_cover_operation(operation)
         return self._execute_cover_operation(
             operation["id"],
             should_stop=(lambda: self._should_stop(task_id)) if task_id else None,
@@ -9151,7 +9218,7 @@ class CreativeDomain:
             )
         if self.cover_client is None or not self.cover_client.configured:
             raise ContentEngineError(
-                "apimart_not_configured", "Configure the APIMart cover service first."
+                "apimart_not_configured", "网感封面服务尚未配置，视频已保留，可稍后单独重试封面。"
             )
         video_row = self._generated_row(operation["generated_video_id"])
         recipe = json.loads(video_row["recipe_json"])
@@ -9160,7 +9227,8 @@ class CreativeDomain:
                 raise APIMartPollingStopped(
                     "APIMart cover submission was stopped before admission."
                 )
-            reference_path = self._cover_reference_path(recipe)
+            from .video_presentation import prepare_cover
+            reference_path = prepare_cover(self, video_row, recipe, should_stop)
             # Freeze the opaque reference selection before the one-way paid
             # admission. A restart can then resume without silently switching
             # to a different source frame.
@@ -9247,7 +9315,7 @@ class CreativeDomain:
             )
             raise ContentEngineError("cover_poll_failed", str(error)) from error
         target = self._validate_generated_path(video_row["thumbnail_path"])
-        background = target.with_name(f".{target.stem}.ai-background")
+        background = target.with_name("cover-background.png")
         try:
             try:
                 self.cover_client.download(image_url, background)
@@ -9260,8 +9328,10 @@ class CreativeDomain:
                 )
                 raise ContentEngineError(
                     "cover_download_failed",
-                    "The completed APIMart cover could not be downloaded locally.",
+                    "封面已生成，但下载未完成。视频已保留，继续处理封面即可。",
                 ) from error
+            recipe["packaging"]["cover"]["background_path"] = str(background)
+            self.connection.execute("UPDATE generated_videos SET recipe_json=?,updated_at=? WHERE id=?", (self._json(recipe), self._now(), video_row["id"]))
             try:
                 self.renderer.compose_cover(
                     background,
@@ -9278,7 +9348,7 @@ class CreativeDomain:
                 )
                 raise ContentEngineError(
                     "cover_composition_failed",
-                    "The AI cover could not be composed locally.",
+                    "封面底图已保存，但标题合成未完成。视频已保留，可以单独重试封面。",
                 ) from error
         except ContentEngineError:
             raise
@@ -9286,8 +9356,6 @@ class CreativeDomain:
             raise ContentEngineError(
                 "cover_composition_failed", "The AI cover could not be composed locally."
             ) from error
-        finally:
-            background.unlink(missing_ok=True)
         return self.update_cover_operation(
             operation["id"],
             "completed",
@@ -9297,6 +9365,15 @@ class CreativeDomain:
     @staticmethod
     def _cover_prompt(video_row, recipe):
         packaging = recipe.get("packaging") or {}
+        plan = (packaging.get("cover") or {}).get("plan") or {}
+        if plan.get("source") == "finished_video":
+            composition = ("Keep the product clear in the lower two thirds, with clean upper space for a title."
+                           if plan.get("style") == "product_demo" else
+                           "Keep the actual speaker prominent toward the lower right, with clean space in the upper left.")
+            return ("Create a polished editorial vertical 9:16 short-video cover BACKGROUND ONLY from this actual finished-video frame. "
+                    "Preserve the real face, age, product shape, packaging and all physical details. Improve lighting and separation. "
+                    "Remove overlaid captions from the reference. Do not add people, products, logos, comparison panels, claims or results. "
+                    "Do not generate any text, Chinese characters, letters, numbers, labels, badges or watermark. " + composition)
         brand = packaging.get("brand") or {}
         title = str(video_row["title"] or packaging.get("title") or "")[:80]
         primary = str(brand.get("primary_color") or "neutral violet")[:16]
@@ -9685,6 +9762,9 @@ class CreativeDomain:
                 for row in rows
             ]
         }
+
+    def get_generated_video(self, candidate_id):
+        return self._public_generated(self._generated_row(candidate_id))
 
     def _latest_cover_operations(self, generated_video_ids):
         latest = {}
@@ -10832,6 +10912,16 @@ class CreativeDomain:
                     video_id,
                 ),
             )
+            # Cover has its own task and failure state. A finished MP4 stays
+            # completed even when analysis, provider or local cover composition fails.
+            if cover.get("auto_generate"):
+                try:
+                    cover_task = self.regenerate_cover(video_id)
+                    self.run_task(cover_task["task_id"])
+                except Exception as cover_error:
+                    cover["status"] = "failed"
+                    cover["issue_message"] = redact_text(str(cover_error))[:300]
+                    self.connection.execute("UPDATE generated_videos SET recipe_json=?,updated_at=? WHERE id=?", (self._json(recipe), self._now(), video_id))
             return True
         except Exception as error:
             code = error.code if isinstance(error, ContentEngineError) else "render_failed"
@@ -11073,6 +11163,8 @@ class CreativeDomain:
             if cover_operation is not None
             else None
         )
+        cover_task = (self.connection.execute("SELECT error_message FROM content_tasks WHERE id=?", (_stable_id("task_cover", cover_operation["id"]),)).fetchone()
+                      if cover_operation is not None else None)
         return {
             "generated_video_id": row["id"],
             "project_id": row["project_id"],
@@ -11091,6 +11183,11 @@ class CreativeDomain:
             "packaging_version": packaging.get("version"),
             "brand_profile_id": packaging.get("brand_profile_id"),
             "cover_status": cover_status,
+            "cover_headline_lines": (cover.get("plan") or {}).get("headline_lines") or [],
+            "cover_title_editable": bool(cover.get("background_path") and Path(cover["background_path"]).is_file()
+                                         and cover_status not in {"planned", "submitted"}),
+            "cover_style": (cover.get("plan") or {}).get("style"),
+            "cover_issue_message": redact_text(cover_task["error_message"] or "") if cover_task else cover.get("issue_message"),
             "cover_phase": (
                 public_cover["phase"]
                 if public_cover is not None
@@ -11392,6 +11489,14 @@ class CreativeDomain:
                     ),
                 }
         if row["task_type"] != "creative_visual_comparison":
+            if row["task_type"] == "import_base_video":
+                try:
+                    imported_result = json.loads(row["result_json"] or "{}")
+                except (TypeError, ValueError):
+                    imported_result = {}
+                generated_id = imported_result.get("generated_video_id") if isinstance(imported_result, dict) else None
+                if isinstance(generated_id, str) and re.fullmatch(r"generated_video_[a-f0-9]{32}", generated_id):
+                    result["generated_video_id"] = generated_id
             return result
         payload = task_payload
         if not isinstance(payload, dict):

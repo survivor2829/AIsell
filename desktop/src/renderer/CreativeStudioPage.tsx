@@ -3,20 +3,17 @@ import {
   CircleAlert,
   CircleCheck,
   Film,
-  FolderOpen,
   KeyRound,
   LoaderCircle,
   Pause,
   Play,
   RefreshCw,
-  Sparkles,
   Square,
   Video
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ContentProduction, ProductionsApi, ProductionSummary, ProductionView } from "./content-production-types";
 import "./CreativeStudioPage.css";
-import { ProviderUsageDetails } from "./ProviderUsageDetails";
 
 type ContentResult<T> = {
   ok: boolean;
@@ -224,7 +221,6 @@ function TaskRow({
             {step.errorMessage && <p>{step.errorMessage}</p>}
           </li>)}</ol>
         </details>}
-        {(task.taskId || task.batchId) && <ProviderUsageDetails key={task.batchId || task.taskId} taskId={task.taskId} batchId={task.batchId} />}
       </div>
 
       <div className="studio-task-progress">
@@ -431,8 +427,7 @@ export function CreativeStudioPage({
     <section className="creative-studio-page">
       <header className="studio-header">
         <div>
-          <h1>视频创作中心</h1>
-          <p>开始新任务、查看真实进度，失败时直接找到原因。</p>
+          <h1>制作记录</h1>
         </div>
         <div className="studio-header-actions">
           <button className="studio-button is-quiet" type="button" onClick={onOpenFinished}>
@@ -443,32 +438,6 @@ export function CreativeStudioPage({
           </button>
         </div>
       </header>
-
-      <section className="studio-launch-panel" aria-labelledby="studio-launch-title">
-        <div className="studio-section-heading">
-          <div>
-            <h2 id="studio-launch-title">开始创作</h2>
-            <p>选择最接近你当前目标的入口。</p>
-          </div>
-        </div>
-        <div className="studio-launch-list">
-          <div className="studio-launch-row">
-            <span className="studio-launch-icon"><Sparkles size={20} aria-hidden="true" /></span>
-            <div><strong>商品一键成片</strong><p>用图片和视频生成商品展示短片。</p></div>
-            <button className="studio-button is-primary" type="button" onClick={onOpenProduct}>新建任务<ArrowRight size={15} aria-hidden="true" /></button>
-          </div>
-          <div className="studio-launch-row">
-            <span className="studio-launch-icon"><Video size={20} aria-hidden="true" /></span>
-            <div><strong>课程精剪 / 批量混剪</strong><p>从长素材中选段，或组合多条现场素材。</p></div>
-            <button className="studio-button is-secondary" type="button" onClick={() => onOpenLegacy()}>打开工作台<ArrowRight size={15} aria-hidden="true" /></button>
-          </div>
-          <div className="studio-launch-row">
-            <span className="studio-launch-icon"><FolderOpen size={20} aria-hidden="true" /></span>
-            <div><strong>素材仓库</strong><p>添加、分析和整理本地图片与视频。</p></div>
-            <button className="studio-button is-secondary" type="button" onClick={onOpenMaterials}>管理素材<ArrowRight size={15} aria-hidden="true" /></button>
-          </div>
-        </div>
-      </section>
 
       <div className="studio-dashboard-grid">
         <main className="studio-task-panel" aria-busy={loading || refreshing}>
@@ -518,7 +487,6 @@ export function CreativeStudioPage({
               <Video size={24} aria-hidden="true" />
               <strong>{view === "pending" ? "当前没有待处理的制作" : "这个分类下暂时没有制作记录"}</strong>
               <p>同一次制作的分析、脚本和审核记录收在详情中；素材和成片可在对应入口查看。</p>
-              <button className="studio-button is-primary" type="button" onClick={onOpenProduct}>新建商品成片</button>
             </div>
           ) : (
             <>

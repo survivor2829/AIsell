@@ -5,10 +5,26 @@ const path = require("node:path");
 
 const {
   RUNTIME_SPECS,
-  resolveDefaultDevelopmentSidecarRuntime
+  resolveDefaultDevelopmentSidecarRuntime,
+  resolveDevelopmentContentEngineLaunch
 } = require("./development-sidecar-runtime.cjs");
 
 const HEAD = "a".repeat(40);
+
+{
+  const desktopDir = path.resolve("source-worker-fixture");
+  const python = path.join(desktopDir, ".build", "product-detail-venv", "Scripts", "python.exe");
+  const worker = path.join(desktopDir, "sidecars", "content-engine", "worker.py");
+  const sourceLaunch = resolveDevelopmentContentEngineLaunch({
+    desktopDir, environment: {},
+    fsImpl: { existsSync: (file) => [python, worker].includes(file), statSync: () => ({ isFile: () => true }) },
+    spawnSyncImpl: () => ({ status: 0 })
+  });
+  assert.deepEqual(sourceLaunch, { runtimePath: python, runtimeArgs: [worker] }, "direct Electron launch must use current source worker");
+  assert.deepEqual(resolveDevelopmentContentEngineLaunch({ environment: {
+    XIAOXI_CONTENT_ENGINE_SIDECAR: python, XIAOXI_CONTENT_ENGINE_SIDECAR_ENTRY: worker
+  } }), sourceLaunch, "explicit developer configuration remains authoritative");
+}
 
 function createFixture(name, kind, provenance) {
   const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), `xiaoxi-runtime-gate-${name}-`));
@@ -256,6 +272,11 @@ function assertMainBoundary(functionName, nextFunctionName, environmentName, kin
   assert.notEqual(end, -1);
   const block = source.slice(start, end);
   const packagedIndex = block.indexOf("app.isPackaged");
+  if (kind === "content-engine") {
+    assert.equal(packagedIndex >= 0, true);
+    assert.equal(block.indexOf("resolveDevelopmentContentEngineLaunch()") > packagedIndex, true);
+    return;
+  }
   const overrideIndex = block.indexOf(environmentName);
   const defaultIndex = block.indexOf(
     `resolveDefaultDevelopmentSidecarRuntime("${kind}")`

@@ -129,6 +129,10 @@ type GeneratedVideo = {
   packagingVersion: number | null;
   brandProfileId: string | null;
   coverStatus: string | null;
+  coverHeadlineLines?: string[];
+  coverTitleEditable?: boolean;
+  coverStyle?: "talking_head" | "product_demo" | null;
+  coverIssueMessage?: string | null;
   phoneReview: MediaReview | null;
   motionDirectorProvider: string | null;
   motionEventCount: number;
@@ -313,6 +317,8 @@ type CreativeApi = {
     preflightVisualComparison: (payload: { candidateId: string }) => Promise<ContentResult<VisualComparisonPreflight>>;
     createVisualComparisonTask: (payload: { candidateId: string }) => Promise<ContentResult<Task>>;
     regenerateCover: (payload: { candidateId: string }) => Promise<ContentResult<Task>>;
+    updateCoverTitle: (payload: { candidateId: string; headlineLines: string[] }) => Promise<ContentResult<GeneratedVideo>>;
+    getGenerated: (payload: { candidateId: string }) => Promise<ContentResult<GeneratedVideo>>;
     getProject: (payload: { projectId: string }) => Promise<ContentResult<CreativeProject>>;
     listGenerated: (payload?: { projectId?: string; taskId?: string; limit?: number }) => Promise<ContentResult<{ items: GeneratedVideo[] }>>;
     regenerate: (payload: { candidateId: string }) => Promise<ContentResult<{

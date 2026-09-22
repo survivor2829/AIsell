@@ -1167,8 +1167,9 @@ class NarratedBatchDomain:
         cta = str(request.get("cta", b["cta"] if b else ""))[:300]
         settings = request.get("settings", b.get("settings", {}) if b else {})
         require(isinstance(settings, dict) and not set(settings) - {
-            "voice_persona_id", "brand_profile_id", "minimum_duration_seconds", "workflow_version", "music_mode", "music_track_ids"},
+            "voice_persona_id", "brand_profile_id", "minimum_duration_seconds", "workflow_version", "music_mode", "music_track_ids", "video_template"},
                 "invalid_narrated_settings", "批量创作设置格式无效。")
+        require(settings.get("video_template", "topic_fixed") in {"topic_fixed", "key_points"}, "invalid_narrated_settings", "视频模板无效。")
         require(settings.get("workflow_version", 1) in {1, 2}, "invalid_narrated_settings", "创作流程版本无效。")
         music_ids = settings.get("music_track_ids", [])
         require(isinstance(music_ids, list) and len(music_ids) <= 50
@@ -4660,6 +4661,7 @@ class NarratedBatchDomain:
         state = {"narrated_batch_v1": True, "narrated_batch_id": b["batch_id"],
                  'narrated_brief_version': b.get('brief_version'),
                  "narrated_reference_captions": (b.get("settings") or {}).get("workflow_version") == 2,
+                 "video_template": (b.get("settings") or {}).get("video_template") or "topic_fixed",
                  "used_music_track_ids": [item["music_track_id"] for item in b["candidates"]
                                           if item.get("status") == "completed" and item.get("music_track_id")],
                  "narrated_minimum_duration_ms": b.get("settings", {}).get("minimum_duration_seconds", 0) * 1000,

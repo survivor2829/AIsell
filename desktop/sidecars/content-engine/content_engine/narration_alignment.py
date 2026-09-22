@@ -292,7 +292,7 @@ def reference_caption_cues(captions, base=0, max_width=26):
             groups = balanced
             units = [{"text": "".join(word["text"] for word in group),
                       "start_ms": group[0]["start_ms"], "end_ms": group[-1]["end_ms"],
-                      "timing_source": "asr_words"} for group in groups]
+                      "timing_source": "asr_words", "words": group} for group in groups]
         else:
             units = [{**unit, "timing_source": alignment.get("source") or "phrase"}
                      for unit in alignment.get("sentences") or [caption]]
@@ -314,5 +314,9 @@ def reference_caption_cues(captions, base=0, max_width=26):
                     "语音识别没有给出足够细的字幕时间，这句话过长，无法清楚排成两行。请将该段改短后重新确认，正文未被自动修改。")
             cues.append({"text": unit["text"], "start_ms": max(0, int(unit["start_ms"]) - base),
                          "end_ms": max(1, int(unit["end_ms"]) - base),
-                         "timing_source": unit["timing_source"]})
+                         "timing_source": unit["timing_source"],
+                         **({"words": [{**word,
+                            "start_ms": max(0, int(word["start_ms"]) - base),
+                            "end_ms": max(1, int(word["end_ms"]) - base)}
+                            for word in unit["words"]]} if unit.get("words") else {})})
     return cues

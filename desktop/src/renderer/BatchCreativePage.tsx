@@ -4,8 +4,8 @@ import { Asset, Batch, Candidate, Collection, Group, Groups, batchStatus, callBa
 import "./BatchCreativePage.css";
 import { BatchCreativeBrief, BatchTopicChoices, emptyCreativeBrief, expressionText } from "./BatchCreativeBrief";
 import { BatchSoundSettings } from "./BatchSoundSettings";
+import { VideoTemplatePicker, VideoCoverDetails } from "./VideoPresentation";
 import { BatchMaterialBoard } from "./BatchMaterialBoard";
-import { ProviderUsageDetails } from "./ProviderUsageDetails";
 import { createDraftQueue, waitForDraftWrites } from "./batch-draft-queue";
 import { Images, LayoutTemplate, FileCheck, Clapperboard, ArrowLeft, ArrowRight } from "lucide-react";
 import creativeThinking from "./assets/creative-thinking.webp";
@@ -13,15 +13,10 @@ import creativeThinkingStill from "./assets/creative-thinking-still.webp";
 import creativeMaking from "./assets/creative-making.webp";
 import creativeMakingStill from "./assets/creative-making-still.webp";
 
-type Props = { initial?: { assetIds?: string[]; collection?: Collection; batchId?: string }; onOpenProduct: () => void; onOpenLegacy: () => void; onOpenHistory: () => void; onOpenMaterials: () => void; onOpenDiagnostics?: (context?: { module: string; taskId?: string }) => void };
+type Props = { initial?: { assetIds?: string[]; collection?: Collection; batchId?: string }; onOpenHistory: () => void; onOpenMaterials: () => void; onOpenDiagnostics?: (context?: { module: string; taskId?: string }) => void };
 const emptyGroups = (): Groups => ({ opening: [], middle: [], ending: [] });
 const activeStatuses = new Set(["queued", "analyzing", "rendering", "ready_for_review"]);
 const preferredVoiceStorageKey = "batch-studio-preferred-voice";
-const developerStories = [
-  "我原来学土木，后来转进 AI。做这个工具，是想让更多普通人也能享受到这一轮技术红利。",
-  "素材大一点没关系，我们正在一段一段认真看，已经完成的结果会保留。",
-  "AI 可以帮你提建议，最后决定讲什么、给谁看的人仍然是你。",
-];
 function preferredVoice(fallback?: string) {
   try {
     const saved = localStorage.getItem(preferredVoiceStorageKey);
@@ -39,7 +34,7 @@ function scriptBody(candidate: Candidate) {
 }
 
 
-export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpenHistory, onOpenMaterials, onOpenDiagnostics }: Props) {
+export function BatchCreativePage({ initial, onOpenHistory, onOpenMaterials, onOpenDiagnostics }: Props) {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -70,7 +65,6 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
   const [dirty, setDirty] = useState(false);
   const [soundDirty, setSoundDirty] = useState(false);
   const [visibleCandidates, setVisibleCandidates] = useState(12);
-  const [storyIndex, setStoryIndex] = useState(0);
   const [selectedCounts, setSelectedCounts] = useState<Record<string, string>>({});
   const [flowView, setFlowView] = useState<number | null>(null);
   const manualCount = useRef(false);
@@ -123,12 +117,6 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
   const elapsed = batch?.activity?.started_at ? Math.max(0, Math.floor(((running ? now : new Date(batch.updated_at).getTime()) - new Date(batch.activity.started_at).getTime()) / 1000)) : 0;
   const totalElapsed = Math.floor((batch?.stage_times || []).reduce((sum, stage) => sum + Math.max(0,
     (stage.finished_at ? Date.parse(stage.finished_at) : now) - Date.parse(stage.started_at)), 0) / 1000);
-  useEffect(() => {
-    if (!running) return;
-    setStoryIndex((current) => (current + 1) % developerStories.length);
-    const timer = window.setInterval(() => setStoryIndex((current) => (current + 1) % developerStories.length), 25_000);
-    return () => window.clearInterval(timer);
-  }, [running, batch?.activity?.phase]);
 
   async function refreshAssets() {
     const r = await window.xiaoxiContent?.library.list({ limit: 500 });
@@ -369,15 +357,14 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
     : null;
   const failedState = Boolean(batch && ["failed", "needs_attention", "outcome_unknown", "insufficient_materials", "completed_with_errors"].includes(batch.status));
   return <div className={`page batch-page${visualFlow ? " is-visual-flow" : ""}`}>
-    <header className="batch-page-header"><div><h1>内容创作</h1><p>{visualFlow ? "把你的素材，做成一条好视频。" : "上传素材 → 填写需求 → 选定方案 → 确认文案 → 制作视频"}</p></div><button disabled={busy || saving || running || paused} onClick={() => void run(async () => { await draftQueue.flush(); draftOwner.current += 1; localStorage.removeItem("batch-studio-draft-id"); setFlowView(null); selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setBrief(emptyCreativeBrief()); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setDirty(false); setSoundDirty(false); setSelectedCounts({}); setSettings({ ...settings, voice_persona_id: voices.find((voice) => voice.voicePersonaId === preferredVoice(settings.voice_persona_id))?.voicePersonaId, workflow_version: 2, music_mode: "auto", music_track_ids: [] }); manualCount.current = false; })}>新建视频</button></header>
+    <header className="batch-page-header"><div><h1>创作工作台</h1></div><div className="batch-header-actions"><button type="button" onClick={onOpenHistory}>制作记录</button><button disabled={busy || saving || running || paused} onClick={() => void run(async () => { await draftQueue.flush(); draftOwner.current += 1; localStorage.removeItem("batch-studio-draft-id"); setFlowView(null); selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setBrief(emptyCreativeBrief()); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setDirty(false); setSoundDirty(false); setSelectedCounts({}); setSettings({ ...settings, voice_persona_id: voices.find((voice) => voice.voicePersonaId === preferredVoice(settings.voice_persona_id))?.voicePersonaId, workflow_version: 2, music_mode: "auto", music_track_ids: [] }); manualCount.current = false; })}>新建视频</button></div></header>
     {visualFlow && <nav className="batch-flow-steps" aria-label="视频创作步骤">{flowSteps.map(({ step, label, icon: Icon, enabled }, index) => <button key={label} type="button" aria-current={(flowStep === 1 ? 2 : flowStep) === step ? "step" : undefined} disabled={!enabled || submitting} onClick={() => setFlowView(step)}><span className="batch-flow-icon"><Icon size={21} strokeWidth={1.7} /></span><span><small>0{index + 1}</small>{label}</span></button>)}</nav>}
-    <details className="batch-workspace-tools"><summary>制作记录与工具</summary><div className="batch-toolbar"><label>当前批次<select aria-label="当前批次" value={batch?.batch_id || ""} disabled={busy || saving} onChange={(e) => { const id = e.target.value; if (id) void run(async () => { await draftQueue.flush(); load(await callBatch<Batch>("get", { batch_id: id })); }); }}><option value="">新批次</option>{batch?.archived && <option value={batch.batch_id}>{batchLabel(batch)} · 已归档</option>}{batches.map((b) => <option value={b.batch_id} key={b.batch_id}>{batchLabel(b)} · {batchStatus[b.status] || b.status} · {b.completed_count || 0}/{b.target_count || "—"}</option>)}</select></label>
+    <details className="batch-workspace-tools"><summary>当前任务</summary><div className="batch-toolbar"><label>选择任务<select aria-label="当前批次" value={batch?.batch_id || ""} disabled={busy || saving} onChange={(e) => { const id = e.target.value; if (id) void run(async () => { await draftQueue.flush(); load(await callBatch<Batch>("get", { batch_id: id })); }); }}><option value="">新任务</option>{batch?.archived && <option value={batch.batch_id}>{batchLabel(batch)} · 已归档</option>}{batches.map((b) => <option value={b.batch_id} key={b.batch_id}>{batchLabel(b)} · {batchStatus[b.status] || b.status} · {b.completed_count || 0}/{b.target_count || "—"}</option>)}</select></label>
       {batch && !batch.archived && <button disabled={locked || batch.status === "outcome_unknown"} title="仅从批次列表移除，保留本地素材和成片" onClick={() => void run(async () => {
         await callBatch("archive", { batch_id: batch.batch_id });
         setFlowView(null); selectedId.current = null; setBatch(null); setGroups(emptyGroups()); setTitle(""); setDescription(""); setBrief(emptyCreativeBrief()); setMaterialContext(""); setCta(""); setCount(""); setCollectionId(""); setSelectedCounts({}); setSoundDirty(false); setDirty(false); setSettings({ ...settings, workflow_version: 2, minimum_duration_seconds: Math.max(30, settings.minimum_duration_seconds || 30) }); manualCount.current = false;
         await refreshBatches(); setNotice("批次已归档，可在制作任务的已归档分类查看。本地素材和成片文件保留。");
       })}>归档批次</button>}
-      <details className="batch-other"><summary>其他创作方式</summary><button onClick={onOpenProduct}>商品单片与声音／音乐资源</button><button onClick={onOpenLegacy}>课程与旧版工具</button><button onClick={onOpenHistory}>历史项目</button></details>
     </div>
     </details>
     {notice && <p className="batch-notice" role="alert">{notice}</p>}
@@ -398,7 +385,6 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
         </div>}
         {failedState && batch.reasons?.[0] && <p className="batch-progress-error" role="alert">{batch.reasons[0]}</p>}
         {batch.status === "outcome_unknown" && <p className="batch-provider-final" role="status">软件已停止继续等待，不会自动重复扣费；最后一次真实进度为 {progressPercent === null ? "未量化" : `${progressPercent}%`}。核对云端记录后，只从这里继续未完成步骤。</p>}
-        {running && <aside className="batch-developer-note"><span>开发者手记</span><p>{developerStories[storyIndex]}</p></aside>}
       </div>
       {onOpenDiagnostics && ["failed", "needs_attention", "outcome_unknown", "insufficient_materials", "completed_with_errors"].includes(batch.status) && <button type="button" onClick={() => onOpenDiagnostics({ module: "content_engine", taskId: batch.task_id || batch.batch_id })}>反馈这个问题</button>}
       {batch.status === "outcome_unknown" && batch.planning_recovery_available && <div className="batch-planning-recovery">
@@ -416,7 +402,6 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
       })}>{paused ? "恢复任务" : "暂停"}</button><button disabled={busy} onClick={() => void run(async () => { const r = await window.xiaoxiContent?.tasks.cancel({ taskId: batch.task_id! }); if (!r?.ok) throw new Error(r?.error); setBatch(await callBatch<Batch>("get", { batch_id: batch.batch_id })); })}>取消本批任务</button></>}
       {completed > 0 && <button disabled={busy} onClick={() => void run(async () => { const r = await callBatch<{ canceled: boolean; filename: string; count: number; incomplete: boolean }>("export", { batch_id: batch.batch_id }); if (!r.canceled) setNotice(`已导出 ${r.count} 条至 ${r.filename}${r.incomplete ? "，部分文件不可用，请查看批次清单。" : "，包含视频、封面及发布文案。"}`); })}>导出已完成作品</button>}
     </section>}
-    {batch?.task_id && <ProviderUsageDetails key={batch.batch_id} taskId={batch.task_id} batchId={batch.batch_id} />}
     {visualFlow && flowStep === 0 && <fieldset disabled={locked} className="batch-form batch-visual-start">
       <div className="batch-start-layout">
         <div><details className="batch-collection-picker"><summary>使用素材集</summary><select aria-label="从素材集选材" value={collectionId} onChange={(event) => { const collection = collections.find((item) => item.collection_id === event.target.value); setCollectionId(event.target.value); if (collection) { changeGroups({ opening: [], middle: collection.asset_ids, ending: [] }); setBrief({ ...brief, expression: brief.expression || collection.description }); } }}><option value="">自由选材</option>{collections.map((item) => <option key={item.collection_id} value={item.collection_id}>{item.name}</option>)}</select></details>
@@ -461,7 +446,7 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
       {modern && <BatchCreativeBrief value={brief} onChange={(value) => { setBrief(value); setDirty(true); }} cta={cta} onCtaChange={(value) => { setCta(value); setDirty(true); }} suggestions={batch?.brief_suggestions} />}
       <p className="batch-hint">已选 {total} 个素材。AI 先理解画面，再从观众关心的问题出发，准备一份完整文案。</p>
       {!scriptFlow && batch && batch.feasible_count > 0 && <div className="batch-recommendation"><strong>建议生成 {batch.recommended_count} 条</strong><span>{batch.count_is_exact ? "可用方案" : "已找到可用方案"} {batch.feasible_count} 条。推荐值不是最大数量。</span><button disabled={!batch.recommended_count} onClick={() => { setCount(String(batch.recommended_count)); manualCount.current = false; setDirty(true); }}>一键采用推荐</button></div>}
-      {batch?.status === "insufficient_materials" && <p className="batch-notice" role="status">素材已读取，但本次剪辑方案未通过检查，尚未开始制作。具体原因可在“项目详情”查看。</p>}
+      {batch?.status === "insufficient_materials" && <p className="batch-notice" role="status">素材已读取，但未能完成剪辑方案。{batch.reasons?.[0] || "请补充可用素材后重试。"}</p>}
       {batch?.suggested_brief && <details className="batch-advanced"><summary>AI 从素材提取的主题与资料建议</summary><div className="batch-panel"><strong>{batch.suggested_brief.title}</strong><p>{batch.suggested_brief.description}</p><p>建议引导：{batch.suggested_brief.cta}</p><button onClick={() => {
         const suggestion = batch.suggested_brief!; setTitle(suggestion.title || title); setDescription(suggestion.description || description); setCta(suggestion.cta || cta); setDirty(true); setNotice("建议已填入主题资料，可继续修改；确认后再生成样片。");
       }}>采用建议，继续修改</button>{collectionId && <button onClick={() => void run(async () => {
@@ -494,9 +479,9 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
       {modern && chosen.length === 1 && <details className="batch-advanced"><summary>批量制作 · {chosenTotal || 1} 条</summary><label className="batch-direction-count">这个方向做几条<input aria-label="这个方向做几条" type="number" min={1} max={300} value={selectedCounts[chosen[0].candidate_id]} disabled={locked || !!batch?.script_confirmation || dirty} onChange={(event) => setSelectedCounts({ [chosen[0].candidate_id]: event.target.value })} />条</label><p className="batch-hint">第一条使用确认正文，其余沿用这个方向创作不同内容，最多300条。</p></details>}
       <details className="batch-advanced" open={!settings.voice_persona_id || undefined}><summary>声音与配乐 · {settings.voice_persona_id ? settings.music_mode === "none" ? "无配乐" : settings.music_mode === "selected" && settings.music_track_ids?.length ? `已选 ${settings.music_track_ids.length} 首` : "自动配乐" : "请选择声音"}</summary><BatchSoundSettings settings={settings} locked={locked || !!batch?.script_confirmation} resourceLocked={locked} onChange={changeSoundSettings} /><label>品牌<select value={settings.brand_profile_id || ""} disabled={locked || !!batch?.script_confirmation} onChange={(event) => changeSoundSettings({ ...settings, brand_profile_id: event.target.value || undefined })}><option value="">默认品牌</option>{brands.map((brand) => <option key={brand.brandProfileId} value={brand.brandProfileId}>{brand.name}</option>)}</select></label></details>
       {!visualFlow && <p className="batch-hint">先确认完整文案；制作时自动安排并检查镜头，再配音生成视频。</p>}
-      {soundDirty && <p className="batch-hint">声音设置会随本次制作保存，下次可直接沿用。</p>}
+      <VideoTemplatePicker value={settings.video_template || "topic_fixed"} disabled={locked || !!batch?.script_confirmation} onChange={(video_template) => changeSoundSettings({ ...settings, video_template })} />
+      {soundDirty && <p className="batch-hint">制作设置已更新。</p>}
       <div className="batch-script-confirm"><div><p>{chosen.length ? modern ? `制作 ${chosenTotal} 条视频` : `已选 ${chosen.length} 个方向，合计 ${chosenTotal} 条` : modern ? "请先选定一个方案。" : "勾选想做的方向，并填写各自的数量。"}</p><p className="batch-hint">完成后自动保存到成片文件夹。</p>{chosen.length > 0 && !countsValid && <p className="batch-notice" role="alert">每个方向至少 1 条，合计不能超过 300 条。</p>}</div>
-        {chosen.length > 0 && <div className="batch-hint" role="status">{chosen.map((option) => <p key={option.candidate_id}>《{option.title}》：确认稿预计 {Math.round((option.estimated_duration_ms || option.duration_ms || 0) / 1000)} 秒，要求每条至少 {settings.minimum_duration_seconds || 0} 秒；本方向 {selectedCounts[option.candidate_id] || 0} 条。后续新稿和实际配音仍需逐条核验。</p>)}</div>}
         {!batch?.script_confirmation && <button className="batch-primary" data-batch-action="confirm" disabled={locked || saving || dirty || !countsValid || !settings.voice_persona_id} onClick={() => void confirmScript()}>{submitting ? "正在提交…" : `确认文案，开始制作${countsValid ? ` ${chosenTotal} 条` : ""}`}</button>}
         {continueAction}
       </div>{!settings.voice_persona_id && <p className="batch-hint">开始制作前，请在上方选定已批准的声音；配乐默认自动选择，也可以明确关闭。</p>}
@@ -508,11 +493,10 @@ export function BatchCreativePage({ initial, onOpenProduct, onOpenLegacy, onOpen
       <div className="batch-result-grid">{shownCandidates.slice(0, visibleCandidates).map((c, index) => <article className="batch-result" key={c.candidate_id}>{c.generated_video_id ? <video controls preload="none" poster={videoUrl(c.generated_video_id, "thumbnail")} src={videoUrl(c.generated_video_id)} /> : <div className="batch-result-placeholder"><span>{String(index + 1).padStart(2, "0")}</span><p>{batchStatus[c.status] || "待制作"}</p></div>}<div className="batch-result-body"><h3>{c.title}</h3><p>{c.angle}</p><small>使用 {new Set((c.actual_shots || c.shots).map((s) => s.asset_id)).size} 个原素材 · {(c.actual_shots || c.shots).length} 个镜头 · {c.generated_video_id ? "成片" : "预计"} {((c.duration_ms || c.shots.reduce((n, s) => n + s.source_end_ms - s.source_start_ms, 0)) / 1000).toFixed(1)} 秒</small>{c.music_track_id && <p>配乐：{batch?.music_selections?.find((item) => item.candidate_id === c.candidate_id)?.display_name || "本批已选曲目"}</p>}{c.error && c.status !== "rendering" && <p className="batch-notice">{c.error}</p>}<details open={!visualFlow && !c.generated_video_id}><summary>完整口播与镜头安排</summary><p>{c.narration}</p><ol>{(c.actual_shots || c.shots).map((s) => <li key={s.segment_id}>{s.description}（{(s.source_start_ms / 1000).toFixed(1)}–{(s.source_end_ms / 1000).toFixed(1)} 秒）</li>)}</ol></details>{!scriptFlow && <button disabled={locked} onClick={() => setEditing(c)}>调整这一条</button>}{c.generated_video_id && <button onClick={() => void run(async () => {
           const creative = (window.xiaoxiContent as unknown as { creative: { downloadCandidate: (p: { candidateId: string }) => Promise<{ ok: boolean; error?: string }> } }).creative;
           const r = await creative.downloadCandidate({ candidateId: c.generated_video_id! }); if (!r.ok) throw new Error(r.error);
-        })}>导出视频</button>}</div></article>)}</div>{shownCandidates.length > visibleCandidates && <button onClick={() => setVisibleCandidates(visibleCandidates + 12)}>显示更多作品</button>}
+        })}>导出视频</button>}{c.generated_video_id && <VideoCoverDetails generatedId={c.generated_video_id} />}</div></article>)}</div>{shownCandidates.length > visibleCandidates && <button onClick={() => setVisibleCandidates(visibleCandidates + 12)}>显示更多作品</button>}
     </section>}
     {visualFlow && flowStep === 3 && !shownCandidates.length && <section className="batch-flow-empty"><Clapperboard size={44} strokeWidth={1.3} /><h2>{batch?.archived ? "这个批次还没有成片" : running ? "视频正在制作中" : "暂时没有成片"}</h2><p>{batch?.archived ? "点击上方“新建视频”开始新的创作。" : "制作完成后，就可以在这里播放和保存。"}</p></section>}
     {visualFlow && flowStep === 3 && !batch?.archived && continueAction}
-    {batch && <details className="batch-advanced"><summary>项目详情</summary>{!visualFlow && <><p>流程：理解素材 → 规划与筛选 → 数量校验 → 样片 → 批量制作</p><p>任务状态：{batch.task_status || "尚未开始"}；已保存方案 {batch.candidates.length} 条。</p><p>数量来自有界搜索；未遍历全部空间时，不代表素材的绝对容量。</p></>}{batch.reasons?.map((reason, i) => <p key={i}>{reason}</p>)}</details>}
     {!visualFlow && !total && <button className="batch-text-button" onClick={onOpenMaterials}>前往素材仓库整理素材集 →</button>}
     {picker && <AssetPicker assets={assets} selected={scriptFlow ? materialIds : groups[picker]} onChange={(ids) => changeGroups(scriptFlow ? { opening: [], middle: ids, ending: [] } : { ...groups, [picker]: ids })} onClose={() => setPicker(null)} />}
     {preview && <AssetPreview asset={preview} onClose={() => setPreview(null)} />}

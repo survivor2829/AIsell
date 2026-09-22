@@ -48,7 +48,7 @@ const PROVIDER_TASK_TYPES = new Set([
   "creative_packaging", "creative_cover", "creative_visual_comparison", "product_asset_analysis",
   "product_copy", "product_voice", "product_generation", "auto_mix_v2_generation",
   "auto_mix_v2_regeneration", "guided_auto_mix_analysis", "guided_auto_mix_draft",
-  "guided_auto_mix_supplemental_image", "narrated_batch_v1"
+  "guided_auto_mix_supplemental_image", "narrated_batch_v1", "import_base_video"
 ]);
 
 function isProviderTaskType(value) {
@@ -912,6 +912,7 @@ function createContentEngineSidecar(options = {}) {
       limit: optionsForList.limit
     }),
     listFinished: (limit) => request("list_finished", { limit }),
+    getGeneratedVideo: (candidateId) => request("get_generated_video", { generated_video_id: candidateId }),
     listGeneratedVideos: (optionsForList = {}) => request(
       "list_generated_videos",
       {
@@ -988,6 +989,11 @@ function createContentEngineSidecar(options = {}) {
     regenerateCover: (candidateId) => request("regenerate_cover", {
       candidate_id: candidateId
     }),
+    updateCoverTitle: (candidateId, headlineLines) => request("update_cover_title", {
+      candidate_id: candidateId, headline_lines: headlineLines
+    }),
+    // Internal main-process integration only: paths are never accepted from renderer IPC.
+    importBaseVideo: (payload) => request("import_base_video", payload, { timeoutMs: renderTimeoutMs }),
     listMediaSegments: (optionsForList = {}) => request(
       "list_media_segments",
       {

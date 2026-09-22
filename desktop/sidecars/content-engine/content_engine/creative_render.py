@@ -362,6 +362,21 @@ class FFmpegCreativeRenderer:
         self._validate_auto_mix_v2_recipe(recipe)
         output = Path(output)
         temp_dir = Path(temp_dir)
+        if recipe.get("imported_base_video"):
+            source = self._managed_audio_path(recipe["imported_base_video"], code="imported_video_missing", message="数字人基础视频已不可用。")
+            video_filter = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30"
+            args = ["-i", str(source)]
+            if recipe.get("imported_music_path"):
+                music = self._managed_audio_path(recipe["imported_music_path"], code="imported_music_missing", message="所选配乐文件已不可用。")
+                args += ["-stream_loop", "-1", "-i", str(music), "-filter_complex",
+                         f"[0:v]{video_filter}[v];[0:a]asplit=2[voice][side];[1:a]volume=0.15[music];"
+                         "[music][side]sidechaincompress=threshold=0.04:ratio=8:attack=15:release=250[duck];"
+                         "[voice][duck]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[a]",
+                         "-map", "[v]", "-map", "[a]"]
+            else:
+                args += ["-map", "0:v:0", "-map", "0:a:0", "-vf", video_filter]
+            self._encode_mezzanine([*args, "-b:v", "8M"], output)
+            return output
         kind = recipe.get("kind")
         packaging = recipe.get("packaging") or {}
         base_output = (
@@ -2317,6 +2332,26 @@ class FFmpegCreativeRenderer:
         accent = self._ffmpeg_color(brand.get("accent_color") or "#FFE45C")
         title = self._ffmpeg_cover_text(packaging.get("title") or "课程现场价值")
         font = self._drawtext_font_option(packaging)
+        plan = (packaging.get("cover") or {}).get("plan") or {}
+        lines = plan.get("headline_lines") or []
+        if lines:
+            filters = [base, "drawbox=x=0:y=100:w=1080:h=430:color=black@0.16:t=fill"]
+            bold_font = Path(os.environ.get("WINDIR") or "C:/Windows") / "Fonts" / "msyhbd.ttc"
+            if bold_font.is_file():
+                escaped_font = str(bold_font).replace("\\", "/").replace(":", "\\:")
+                font = f"fontfile='{escaped_font}'"
+            font_size = min(112, int(912 / max(1, max(len(line) for line in lines))))
+            for index, line in enumerate(lines[:2]):
+                safe = self._ffmpeg_cover_text(line)
+                color = "white" if index == 0 else "0xFFE24A"
+                filters.append(f"drawtext={font}:text='{safe}':fontcolor={color}:fontsize={font_size}:"
+                               f"x=78:y={176 + index * (font_size + 24)}:borderw=7:bordercolor=black:shadowcolor=black@0.65:shadowx=4:shadowy=5")
+                if not bold_font.is_file():
+                    # The bundled variable font's default face can be thin in
+                    # FreeType. Thicken its fill without adding a new font asset.
+                    filters.append(f"drawtext={font}:text='{safe}':fontcolor={color}:fontsize={font_size}:"
+                                   f"x=78:y={176 + index * (font_size + 24)}:borderw=3:bordercolor={color}")
+            return ",".join(filters)
         return ",".join(
             (
                 base,
@@ -2511,7 +2546,7 @@ class FFmpegCreativeRenderer:
         if style.get("preset") == "none":
             return []
         if recipe.get("caption_presentation") == "reference_narration":
-            return cls._single_caption_lane(reference_caption_cues(captions, base))
+            return cls._single_caption_lane(reference_caption_cues(captions, base, max_width=22 if recipe.get("presentation") else 26))
         max_chars = max(8, min(18, int(style.get("max_chars") or 12)))
         word_timed = (
             (
@@ -2719,6 +2754,9 @@ class FFmpegCreativeRenderer:
             font_size, margin_bottom = 64, 470
             primary, secondary = "&H00FFFFFF", "&H00FFFFFF"
             border_style, outline, shadow = 1, 4, 1
+            if recipe.get("presentation"):
+                font_size, outline = 72, 6
+                primary, secondary = "&H004AE2FF", "&H00FFFFFF"
         elif preset == "knowledge_course" and is_supoclip:
             font_size = max(36, min(48, int(style.get("font_size") or 44)))
             margin_bottom = max(120, min(260, int(style.get("margin_bottom") or 150)))
@@ -2767,8 +2805,9 @@ class FFmpegCreativeRenderer:
         events = []
         for cue in cues:
             if is_reference:
-                text = cls._ass_safe_text(cue["text"])
-                animation = r"{\an5\pos(540,1421)\q0}"
+                text = cls._ass_karaoke(cue) if recipe.get("presentation") and cue.get("words") else cls._ass_safe_text(cue["text"])
+                animation = (r"{\an5\pos(540,1382)\q0\fscx104\fscy104\t(0,140,\fscx100\fscy100)}"
+                             if recipe.get("presentation") else r"{\an5\pos(540,1421)\q0}")
             elif is_supoclip and cue.get("words"):
                 text = cls._ass_karaoke(cue)
                 emoji = cls._caption_emoji(cue["text"]) if preset == "energetic_talking" else ""
@@ -3162,7 +3201,8 @@ class HybridCreativeRenderer:
         for cue in FFmpegCreativeRenderer._caption_cues(
             recipe.get("captions") or [], recipe
         ):
-            timed_items = cue.get("words") or [cue]
+            timed_items = ([cue] if recipe.get("caption_presentation") == "reference_narration"
+                           else cue.get("words") or [cue])
             for item in timed_items:
                 text = str(item.get("text") or "").strip()
                 start = max(0, int(item.get("start_ms") or 0))
@@ -3172,7 +3212,10 @@ class HybridCreativeRenderer:
                 )
                 if text and end > start:
                     captions.append(
-                        {"text": text, "startMs": start, "endMs": end}
+                        {"text": text, "startMs": start, "endMs": end,
+                         **({"words": [{"text": word["text"], "startMs": int(word["start_ms"]),
+                                        "endMs": int(word["end_ms"])} for word in item["words"]]}
+                            if recipe.get("presentation") and item.get("words") else {})}
                     )
         events = []
         for index, item in enumerate(packaging.get("events") or []):
@@ -3287,6 +3330,7 @@ class HybridCreativeRenderer:
                 "model": str(director.get("model") or "")[:64] or None,
             },
             "captions": captions,
+            **({"presentation": recipe["presentation"]} if recipe.get("presentation") else {}),
             **({"captionPresentation": "reference_narration"}
                if recipe.get("caption_presentation") == "reference_narration" else {}),
             "events": events,

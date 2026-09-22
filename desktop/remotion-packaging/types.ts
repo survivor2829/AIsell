@@ -42,6 +42,7 @@ export type TimedWord = {
   text: string;
   startMs: number;
   endMs: number;
+  words?: TimedWord[];
 };
 
 export type MotionEvent = {
@@ -94,6 +95,7 @@ export type MotionManifest = {
   };
   captions: TimedWord[];
   captionPresentation?: "reference_narration";
+  presentation?: { templateId: "topic_fixed" | "key_points"; topic: string; points: TimedWord[] };
   events: MotionEvent[];
   focusRects: FocusRect[];
   protectedRects: ProtectedRect[];

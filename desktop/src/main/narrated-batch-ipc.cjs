@@ -61,6 +61,7 @@ for (const field of "workflow_version music_mode script_options selected_script_
 for (const field of "material_context script_selections count production_jobs ordinal production_index source_script_id export_ready exported_count export_error production_retry_available".split(" ")) PUBLIC_FIELDS.add(field);
 for (const field of "brief_version script_source target_audience expression advantages customer_pain_points brief_suggestions framework summary opening_example".split(" ")) PUBLIC_FIELDS.add(field);
 PUBLIC_FIELDS.add("archived");
+PUBLIC_FIELDS.add("video_template");
 for (const field of ['stage_times', 'action', 'finished_at']) PUBLIC_FIELDS.add(field);
 for (const field of ['planning_checkpoint', 'stage']) PUBLIC_FIELDS.add(field);
 function publicBatch(value, depth = 0) {
@@ -105,7 +106,8 @@ function registerNarratedBatchIpc({ handle, controller, validateId, validateVoic
     return result;
   }
   function soundSettings(value) {
-    keys(value, ["voice_persona_id", "brand_profile_id", "minimum_duration_seconds", "workflow_version", "music_mode", "music_track_ids"]);
+    keys(value, ["voice_persona_id", "brand_profile_id", "minimum_duration_seconds", "workflow_version", "music_mode", "music_track_ids", "video_template"]);
+    if (value.video_template != null && !["topic_fixed", "key_points"].includes(value.video_template)) invalid("invalid_narrated_settings");
     const result = { settings: { ...value } };
     if (result.settings.minimum_duration_seconds != null && (!Number.isSafeInteger(result.settings.minimum_duration_seconds) || result.settings.minimum_duration_seconds < 0)) invalid("invalid_narrated_settings");
     if (result.settings.voice_persona_id) validateVoicePersonaId(result.settings.voice_persona_id);

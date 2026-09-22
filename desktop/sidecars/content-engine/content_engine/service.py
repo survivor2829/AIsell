@@ -990,6 +990,15 @@ class ContentEngineService:
             self.creative_domain.regenerate_cover(candidate_id)
         )
 
+    def import_base_video(self, request) -> dict[str, Any]:
+        return self._enqueue_creative_task(self.creative_domain.import_base_video(request))
+
+    def update_cover_title(self, candidate_id: str, headline_lines) -> dict[str, Any]:
+        return self.creative_domain.update_cover_title(candidate_id, headline_lines)
+
+    def get_generated_video(self, candidate_id: str) -> dict[str, Any]:
+        return self.creative_domain.get_generated_video(candidate_id)
+
     def update_cover_operation(
         self,
         operation_id: str,

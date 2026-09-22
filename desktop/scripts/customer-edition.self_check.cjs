@@ -74,7 +74,7 @@ function assertStageWorkflowContract() {
   const source = read(path.join(desktopDir, "src", "renderer", "App.tsx"));
   const workflow = read(path.join(desktopDir, "src", "renderer", "WechatWorkflow.tsx"));
   const preload = read(path.join(desktopDir, "src", "main", "preload-api.cjs"));
-  assert.match(source, /DEFAULT_ACTIVE_MODULE: ModuleKey = "workflow"/, "the app must open on today's unified plan");
+  assert.match(source, /DEFAULT_ACTIVE_MODULE: ModuleKey = "production"/, "the app must open on content creation");
   const momentsNavEntries = source.match(/\{ key: "moments", label: "[^"]+", icon: [A-Za-z]+ \}/g) ?? [];
   assert.equal(momentsNavEntries.length, 1, "moments publishing and engagement must share exactly one sidebar entry");
   assert.equal(momentsNavEntries[0], "{ key: \"moments\", label: \"朋友圈运营\", icon: ThumbsUp }", "the unified moments entry must use the product name");
@@ -87,7 +87,7 @@ function assertStageWorkflowContract() {
   assert.equal(source.includes("小玺AI员工"), false, "the retired app name must not remain in the UI");
   assert.match(source, /productBrand\.displayName/, "the app brand must use the shared V1.0 product name");
   assert.equal(source.includes('name: "2829347524"'), false, "packaged editions must not expose a developer account identifier as the default profile");
-  assert.match(source, /if \(!license\?\.authorized \|\| !sessionEntered\) return <LoginScreen/u, "packaged editions must require an explicit login before entering the workspace");
+  assert.match(source, /if \(!license\?\.authorized \|\| !sessionEntered\) return <div[\s\S]*?<LoginScreen/u, "packaged editions must require an explicit login before entering the workspace");
   assert.match(source, /identity\?\.nickname \|\| "未同步微信"/u, "unsynchronized accounts must not show an invented customer identity");
   assert.match(source, /DEFAULT_TOUCH_MESSAGE = DEVELOPMENT_EDITION\s*\?/u, "business-specific outreach copy must be limited to the development edition");
   assert.equal(source.includes('<button className="guide">'), false, "the shell must not expose a non-functional onboarding button");

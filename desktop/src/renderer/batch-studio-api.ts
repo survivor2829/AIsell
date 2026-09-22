@@ -14,7 +14,7 @@ export type Batch = {
   groups: Groups; target_count: number | null; recommended_count: number; feasible_count: number;
   count_is_exact: boolean; reasons: string[]; status: string; task_id?: string; task_status?: string;
   progress: number; candidates: Candidate[]; available_shots: Shot[]; completed_count?: number;
-  settings: { voice_persona_id?: string; brand_profile_id?: string; minimum_duration_seconds?: number; workflow_version?: number; music_mode?: "auto" | "none" | "selected"; music_track_ids?: string[] }; approved: boolean;
+  settings: { voice_persona_id?: string; brand_profile_id?: string; minimum_duration_seconds?: number; workflow_version?: number; music_mode?: "auto" | "none" | "selected"; music_track_ids?: string[]; video_template?: "topic_fixed" | "key_points" }; approved: boolean;
   script_options?: Candidate[]; selected_script_id?: string;
   script_selections?: ScriptSelection[]; production_jobs?: ProductionJob[]; production_retry_available?: boolean; voice_recovery_available?: boolean;
   material_context?: string; export_ready?: boolean; exported_count?: number; export_error?: string;

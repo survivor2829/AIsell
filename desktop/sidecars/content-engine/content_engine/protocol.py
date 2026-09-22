@@ -25,6 +25,10 @@ def _validate_json_numbers(value):
 
 
 METHODS = {
+    "import_base_video": lambda service, params: service.import_base_video(params),
+    "update_cover_title": lambda service, params: service.update_cover_title(
+        params.get("candidate_id"), params.get("headline_lines")
+    ),
     "list_asset_collections": lambda service, params: service.list_asset_collections(),
     "save_asset_collection": lambda service, params: service.save_asset_collection(params),
     "list_narrated_batches": lambda service, params: service.list_narrated_batches(),
@@ -269,6 +273,7 @@ METHODS = {
     "get_creative_project": lambda service, params: service.get_creative_project(
         params.get("project_id")
     ),
+    "get_generated_video": lambda service, params: service.get_generated_video(params.get("generated_video_id")),
     "list_generated_videos": lambda service, params: service.list_generated_videos(
         project_id=params.get("project_id"),
         task_id=params.get("task_id"),

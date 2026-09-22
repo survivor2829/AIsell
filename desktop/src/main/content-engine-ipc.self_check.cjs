@@ -881,6 +881,14 @@ async function main() {
         calls.push(["listGeneratedVideos", options]);
         return { items: [generatedVideo()] };
       },
+      getGeneratedVideo: async (candidateId) => {
+        calls.push(["getGeneratedVideo", candidateId]);
+        return generatedVideo({ cover_headline_lines: ["看清细节"], cover_title_editable: true });
+      },
+      updateCoverTitle: async (candidateId, headlineLines) => {
+        calls.push(["updateCoverTitle", candidateId, headlineLines]);
+        return generatedVideo({ cover_headline_lines: headlineLines, cover_title_editable: true });
+      },
       regenerateCover: async (candidateId) => {
         calls.push(["regenerateCover", candidateId]);
         return task({ task_id: packagingTaskId, task_type: "creative_cover", status: "queued" });
@@ -1322,8 +1330,15 @@ async function main() {
     const providerFailure = await handlers.get(CONTENT_ENGINE_CHANNELS.listAssets)({}, {});
     controller.listAssets = originalListAssets;
     assert.equal(providerFailure.ok, false);
-    assert.equal(notifications.length, 2, "an operational provider failure must notify the user once");
-    assert.match(notifications[1].body, /云端请求未成功/);
+    assert.equal(notifications.length, 1, "background queries report provider errors inline without desktop notifications");
+    controller.listAssets = async () => {
+      throw Object.assign(new Error("runtime missing"), { code: "CONTENT_ENGINE_RUNTIME_UNAVAILABLE" });
+    };
+    const runtimeFailure = await handlers.get(CONTENT_ENGINE_CHANNELS.listAssets)({}, {});
+    await handlers.get(CONTENT_ENGINE_CHANNELS.listAssets)({}, {});
+    controller.listAssets = originalListAssets;
+    assert.equal(runtimeFailure.code, "CONTENT_ENGINE_RUNTIME_UNAVAILABLE");
+    assert.equal(notifications.length, 1, "repeated unavailable-engine queries must not produce desktop notifications");
     listedTaskItems = [task({
       task_id: transitioningTaskId,
       status: "queued",
@@ -3014,6 +3029,14 @@ async function main() {
     assert.equal(generated.data.items[0].shotCount, 6);
     assert.equal(generated.data.items[0].captionSource, "tts_voiceover");
     assert.equal(JSON.stringify(generated).includes("must-not-leak"), false);
+    const exactVideo = await handlers.get(CONTENT_ENGINE_CHANNELS.getGeneratedVideo)({}, { candidateId: generatedVideoId });
+    assert.deepEqual(exactVideo.data.coverHeadlineLines, ["看清细节"]);
+    assert.equal(exactVideo.data.coverTitleEditable, true);
+    assert.equal(JSON.stringify(exactVideo).includes("must-not-leak"), false);
+    const preflightsBeforeTitle = providerPreflightCalls.length;
+    const editedTitle = await handlers.get(CONTENT_ENGINE_CHANNELS.updateCoverTitle)({}, { candidateId: generatedVideoId, headlineLines: ["真实产品", "看清细节"] });
+    assert.deepEqual(editedTitle.data.coverHeadlineLines, ["真实产品", "看清细节"]);
+    assert.equal(providerPreflightCalls.length, preflightsBeforeTitle, "Editing a saved cover title must not request a provider");
     const coverTask = await handlers.get(
       CONTENT_ENGINE_CHANNELS.regenerateCover
     )({}, { candidateId: generatedVideoId });
