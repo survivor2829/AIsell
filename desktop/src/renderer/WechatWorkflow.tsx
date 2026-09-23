@@ -624,7 +624,7 @@ function WorkflowTaskEditor({ request, workflow, contacts, syncBusy, syncError, 
       </div> : <p className="workflow-small-note">先同步微信联系人，就可以选择本次触达对象。{state.enabled ? "请先暂停程序再同步。" : ""}</p>}
       {syncError && <p className="workflow-inline-warning" role="alert">{syncError}</p>}
       {missingCount > 0 && <p className="workflow-inline-warning">{missingCount} 位联系人已失效。<button type="button" className="text-button" onClick={() => setSelectedIds((ids) => ids.filter((id) => eligible.some((contact) => contact.id === id)))}>移除失效联系人</button></p>}
-      <label className="workflow-field"><span>触达话术</span><textarea value={script} onChange={(event) => setScript(event.target.value)} disabled={locked} placeholder="写下这次想对客户说的话，可用 {称呼} 自动填入联系人称呼。" rows={4} /></label>
+      <label className="workflow-field"><span>触达话术</span><textarea value={script} onChange={(event) => setScript(event.target.value)} disabled={locked} placeholder="写下这次想对客户说的话；{称呼} 会填入礼貌问候，不会直呼姓名。" rows={4} /></label>
       <div className="workflow-media-field"><div><strong>接着发图片 <small>选填</small></strong><span>按下方顺序逐张发送 · 最多 9 张</span></div><button type="button" data-xiaoxi-touch-images className="secondary-button" disabled={locked || startedTouchEdit || images.length >= 9} onClick={() => void chooseTouchImages()}><ImagePlus size={16} />{mediaBusy ? "正在添加…" : "添加图片"}</button></div>
       {images.length > 0 && <ol className="workflow-touch-images" aria-label="图片发送顺序">{images.map((image, index) => <li key={image.id}>
         <div className="workflow-touch-image-preview">{image.preview ? <img src={image.preview} alt={image.name} /> : <span>图片无法读取</span>}</div>

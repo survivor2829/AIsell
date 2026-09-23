@@ -168,8 +168,8 @@ async function main() {
   assert.match(messages[0].content, /自然加入2至3个/);
   assert.match(messages[0].content, /最少2个/);
   assert.match(messages[0].content, /不得连续堆叠/);
-  assert.equal(messages[1].content, "客户称呼：张总，您好\n基础话术：张总，您好，我们这边有清洁设备短租方案。");
-  assert.equal(prompt({ salutation: "", script: "{称呼}，您好，欢迎了解。" })[1].content, "客户称呼：您好\n基础话术：您好，欢迎了解。");
+  assert.equal(messages[1].content, "首句问候语：张总，您好\n基础话术：我们这边有清洁设备短租方案。");
+  assert.equal(prompt({ salutation: "", script: "{称呼}，您好，欢迎了解。" })[1].content, "首句问候语：您好\n基础话术：欢迎了解。");
   assert.match(salutationPrompt({ remark: "老王", nickname: "设备采购" })[0].content, /姓名、花名、昵称/);
   assert.deepEqual(parseSalutationPayload({ choices: [{ finish_reason: "stop", message: { content: '{"salutation":"老王","source":"remark"}' } }] }), { value: "老王", source: "remark" });
   for (const payload of [

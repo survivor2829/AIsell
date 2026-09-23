@@ -539,8 +539,8 @@ try {
   );
   assert.equal(task.total, 2);
   assert.equal(task.results[0].contact.source, "微信通讯录");
-  assert.equal(fillTouchTemplate(task.script, task.results[0].contact), "备注名，您好");
-  assert.equal(fillTouchTemplate(task.script, task.results[1].contact), "昵称客户，您好");
+  assert.match(fillTouchTemplate(task.script, task.results[0].contact), /^(您好|早上好|中午好|下午好|晚上好)，$/u);
+  assert.match(fillTouchTemplate(task.script, task.results[1].contact), /^(您好|早上好|中午好|下午好|晚上好)，$/u);
   task.status = "paused";
   task.results[0].status = "blocked";
   assert.equal(hasUnfinishedPausedTask(task, "{称呼}，您好"), true);
@@ -3054,7 +3054,7 @@ try {
   const developmentUiSource = fs.readFileSync(path.join(__dirname, "../../src/renderer/DevelopmentAcceptance.tsx"), "utf8");
   assert.match(developmentUiSource, /sendSelectedContact/);
   assert.match(developmentUiSource, /data-xiaoxi-real-send/);
-  assert.match(developmentUiSource, /replaceAll\("\{称呼\}"/);
+  assert.match(developmentUiSource, /const resolvedMessage = selected \? message\.replace\(/);
   assert.match(developmentUiSource, /setStatus\("开发执行器未连接"\)/);
   assert.match(developmentUiSource, /const exactReason = result\.state\?\.real_send_reason;[\s\S]*`发送结果无法确认：\$\{exactReason\}`[\s\S]*result\.blocked_reason/);
   assert.match(developmentUiSource, /<Send size=\{17\} \/>直接发送<\/button>/);

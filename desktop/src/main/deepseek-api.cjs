@@ -89,16 +89,17 @@ function createDeepSeekKeyStore({ rootDir, safeStorage }) {
   };
 }
 
-function prompt({ salutation, script }) {
-  const greeting = salutation ? `${salutation}，您好` : "您好";
-  const baseScript = String(script || "").replaceAll("{称呼}", salutation || "").replace(/^，/, "");
+function prompt({ salutation, greeting, script }) {
+  const opening = String(greeting || (salutation ? `${salutation}，您好` : "您好"));
+  const baseScript = String(script || "").replace(/\{称呼\}[，,、\s]*(?:您好|你好|早上好|中午好|下午好|晚上好)?/gu, "")
+    .replace(/^[，,、\s]+/u, "").trim();
   return [
     {
       role: "system",
       content: `你是微信一对一客户触达文案助手。请根据提供的基础话术，改写成一条可以直接发送给客户的完整微信消息。
 要求：
-1. 使用提供的称呼自然开场；称呼由程序根据备注、花名或昵称预先确认。没有明确可用称呼时只使用“您好”，不得编造姓名。
-2. 称呼必须原样使用，不得把姓名改成“某女士”“某总”等其他称呼；如果客户称呼为“您好”，首句必须以“您好”开头。
+1. 首句必须原样使用给定问候语。只有备注或昵称明确带职务时才使用尊称，不得直呼客户全名或猜测性别和职务。
+2. 基础话术里的旧问候不要重复写；没有明确尊称时直接使用给定时间问候语或“您好”。
 3. 保留基础话术中的核心业务、优惠信息和询问目的。
 4. 不得增加基础话术中没有提供的价格、承诺、活动或客户信息。
 5. 表达自然、简洁、有礼貌，不要像群发广告，不要过度营销。
@@ -106,7 +107,7 @@ function prompt({ salutation, script }) {
 7. 自然加入2至3个与语义相关的Emoji，最少2个；优先放在问候后或业务亮点处，不得连续堆叠，不使用夸张、催促类表情。
 8. 只输出最终文案，不解释、不编号、不加引号，不得输出称呼以外的联系人隐私。`
     },
-    { role: "user", content: `客户称呼：${greeting}\n基础话术：${baseScript}` }
+    { role: "user", content: `首句问候语：${opening}\n基础话术：${baseScript}` }
   ];
 }
 
@@ -495,8 +496,8 @@ function createDeepSeekClient({ keyStore, gatewayClient, fetchImpl = global.fetc
   }
 
   async function generateDraftWithKey(key, { task, result }) {
-    const salutation = result?.salutation?.type === "person" ? result.salutation.value : "";
-    const messages = prompt({ salutation, script: String(task?.script || "").trim() });
+    const salutation = result?.salutation?.type === "title" ? result.salutation.value : "";
+    const messages = prompt({ salutation, greeting: result?.greeting, script: String(task?.script || "").trim() });
     let lastError;
     for (const maxTokens of [300, 600]) {
       try {

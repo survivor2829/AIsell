@@ -12,6 +12,8 @@ const workflowPolicies = Object.freeze({
   workflow_occurrence_date_invalid: { classification: "blocker", attentionScope: "task" },
   workflow_executor_unavailable: { classification: "blocker", attentionScope: "task" },
   touch_draft_generation_failed: { classification: "recoverable", attentionScope: "task" },
+  wechat_search_panel_unavailable: { classification: "blocker", attentionScope: "global" },
+  task_context_mismatch: { classification: "blocker", attentionScope: "global" },
   moments_interaction_outcome_unknown: { classification: "blocker", attentionScope: "global" },
   outcome_unknown: { classification: "blocker", attentionScope: "global" },
   contact_identity_ambiguous: { classification: "blocker", attentionScope: "global" },

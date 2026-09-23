@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { fillRespectfulTemplate } = require("../../src/main/ai-draft.cjs");
 
 const TASK_FILE = "touch_task.json";
 const TASK_BACKUP_FILE = "touch_task.json.bak";
@@ -37,8 +38,7 @@ function touchSearchName(contact) {
 }
 
 function fillTouchTemplate(template, contact) {
-  const name = contactName(contact) || "客户";
-  return String(template ?? "").replace(/\{称呼\}/g, name);
+  return fillRespectfulTemplate(template, contact);
 }
 
 function publicContact(contact) {

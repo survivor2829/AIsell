@@ -82,7 +82,7 @@ function validateTaskContext(command, baseDir, args) {
     !current ||
     String(current.id) !== context.contactId
   ) {
-    return { error: contextError(command, "task_context_mismatch", "任务当前联系人已变化，已阻断执行器") };
+    return { error: contextError(command, "task_context_mismatch", "任务状态或当前联系人已变化，发送前已安全停止；请检查任务进度后继续") };
   }
   return { context };
 }

@@ -418,6 +418,16 @@ function createTouchWorkflow(options = {}) {
           return attention(current.reason, { deliveryStatus: "not_attempted" }, failureReason);
         }
         if (reasonCode === "search_result_identity_unverified"
+          && String(result?.diagnostics?.rule_id || result?.rule_id || "") === "search-r008") {
+          current.status = "generated";
+          current.reason = "微信搜索框已有输入，但搜索结果面板未出现。请检查微信窗口，恢复后从当前联系人继续。";
+          current.retry_blocked = false;
+          current.send_attempted = false;
+          current.updated_at = now().toISOString();
+          persist();
+          return attention(current.reason, { deliveryStatus: "not_attempted", diagnosticReason: "search-r008" }, "wechat_search_panel_unavailable");
+        }
+        if (reasonCode === "search_result_identity_unverified"
           && Math.max(0, Number(current.identity_recovery_attempts) || 0) < IDENTITY_RECOVERY_ATTEMPTS) {
           current.identity_recovery_attempts = Math.max(0, Number(current.identity_recovery_attempts) || 0) + 1;
           current.status = "generated";

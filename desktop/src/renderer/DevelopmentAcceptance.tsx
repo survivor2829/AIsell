@@ -25,7 +25,9 @@ export default function DevelopmentAcceptance({ contacts, message }: { contacts:
   const selected = contacts.find((contact) => contact.id === selectedId) ?? null;
   const eligibleContacts = contacts.filter((contact) => contact.allowed && contact.wechatId && contacts.filter((other) => other.name === contact.name).length === 1 && contacts.filter((other) => other.wechatId === contact.wechatId).length === 1);
   const identityReady = Boolean(selected?.wechatId && selected.name && contacts.filter((contact) => contact.name === selected.name).length === 1 && contacts.filter((contact) => contact.wechatId === selected.wechatId).length === 1);
-  const resolvedMessage = selected ? message.replaceAll("{称呼}", selected.remark?.trim() || selected.nickname?.trim() || selected.name) : message;
+  // The internal send tool must not expand a raw contact name. Production
+  // personalization goes through the main-process greeting policy.
+  const resolvedMessage = selected ? message.replace(/\{称呼\}[，,、\s]*(?:您好|你好)?/gu, "您好") : message;
 
   const run = async (action: () => Promise<Result>, success: string) => {
     if (!window.xiaoxiActiveTouch) {
