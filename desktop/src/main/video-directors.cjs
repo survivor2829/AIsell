@@ -33,7 +33,7 @@ function selected(rows, id, field) {
 }
 
 function planVideo(input) {
-  if (!["product", "social"].includes(input.mode) || !OUTPUT_SECONDS.has(input.durationSeconds)) {
+  if (input.mode !== "product" || !OUTPUT_SECONDS.has(input.durationSeconds)) {
     throw Object.assign(new Error("请选择视频类型和 30、45 或 60 秒时长。"), { code: "product_video_invalid_option" });
   }
   const scene = selected(SCENES, input.sceneId, "场景");
@@ -57,32 +57,21 @@ function planVideo(input) {
     ["细节", "用近景展示参考图片清晰可辨的真实细节，不展示清洁效果。"],
     ["收束", "产品与场景同框，留出后期添加销售沟通文字的空间。"]
   ];
-  const socialShots = [
-    ["开头问题", `以${scene.name}中${surface.name}地面的真实管理场景开头，用画面提出问题，不做未经证实的功效承诺。`],
-    ["产品亮相", "参考图中的清洁设备进入画面，展示真实外观和体量，不出现真人。"],
-    ["有据可讲", facts ? `仅用已提供的事实表现产品细节：${facts}` : "用可见的产品外观细节维持兴趣，不演示未经证实的效果。"],
-    ["咨询引导", "产品与场景同框，留白供后期加入适用需求和咨询引导文字。"]
-  ];
-  const beats = input.mode === "product" ? productShots : socialShots;
   const chosenBeats = count === 2
-    ? [beats[0], [`${beats[1][0]}与咨询`, `${beats[1][1]} ${beats[3][1]}`]]
-    : count === 3 ? [beats[0], beats[1], beats[3]] : beats;
+    ? [productShots[0], [`${productShots[1][0]}与咨询`, `${productShots[1][1]} ${productShots[3][1]}`]]
+    : count === 3 ? [productShots[0], productShots[1], productShots[3]] : productShots;
   const shots = Array.from({ length: count }, (_, index) => {
     const [title, direction] = chosenBeats[index];
     const closing = index === count - 1;
-    const narration = input.mode === "product"
-      ? closing ? "如果您有现场需求，可以把场景发来一起看看。" : [`先看看${scene.name}的现场环境。`, "这款设备的外观和结构，可以从不同角度看清。", facts ? `关于产品，我们已确认：${facts.slice(0, 42)}。` : "具体性能和作业效果，请以产品资料和现场演示为准。"][index]
-      : closing ? "您的现场是什么材质？欢迎留言交流。" : [`在${scene.name}管理清洁现场，您会先关注什么？`, "先看设备的真实外观和体量。", facts ? `已确认的产品信息是：${facts.slice(0, 38)}。` : "作业方式与效果，需要结合真实产品资料核对。"][index];
+    const narration = closing ? "如果您有现场需求，可以把场景发来一起看看。" : [`先看看${scene.name}的现场环境。`, "这款设备的外观和结构，可以从不同角度看清。", facts ? `关于产品，我们已确认：${facts.slice(0, 42)}。` : "具体性能和作业效果，请以产品资料和现场演示为准。"][index];
     return { index, seconds: 15, startSecond: index * 15, endSecond: (index + 1) * 15,
       title, narration, camera: index === 0 ? '中景建立现场' : closing ? '稳定全景收束' : '中近景缓慢推进',
       action: direction, sound: brief.sound,
       prompt: `${base}镜头${index + 1}：${direction}${expression ? `客户补充观点：${expression}；仅当它与已提供事实一致时表达。` : ""} 镜头运动自然，产品外观稳定，单镜头15秒。同一位自然、清晰的成年普通话旁白说：${narration}。不让画面中的人说话，不添加其他台词。` };
   });
-  const sendText = input.mode === "product"
-    ? `这是产品在${scene.name}、${surface.name}场景下的展示视频。您目前更关注哪类现场需求？`
-    : `在${scene.name}管理清洁设备时，您最想解决哪一步？欢迎告诉我现场情况。`;
+  const sendText = `这是产品在${scene.name}、${surface.name}场景下的展示视频。您目前更关注哪类现场需求？`;
   return {
-    version: DIRECTOR_VERSION, director: input.mode === "product" ? "叶镜川" : "叶映声",
+    version: DIRECTOR_VERSION, director: "叶镜川",
     scene: scene.name, surface: surface.name, dirt: dirt.name, goal: goal.name,
     evidenceStatus: facts ? "user_supplied_unverified" : "appearance_only",
     concept: brief.concept, personReference: '无真人出镜', photography: brief.photography,
