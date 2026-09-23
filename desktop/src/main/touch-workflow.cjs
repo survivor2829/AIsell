@@ -549,6 +549,7 @@ function createTouchWorkflow(options = {}) {
       current.send_attempted = null;
       return attention(result?.error || "发送结果无法确认，请检查微信；系统不会自动补发", { deliveryStatus: "outcome_unknown" }, "outcome_unknown");
     } catch (error) {
+      if (INTERRUPTED_SEND_STATES.has(task?.results?.[task.current_index]?.status)) recoveredTaskIds.delete(id);
       return { status: "needs_attention", progress: task ? progress() : fallback, error: String(error?.message || "触达任务读取失败") };
     } finally {
       try {

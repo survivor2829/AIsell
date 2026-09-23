@@ -32,7 +32,10 @@ async function checkTouchStatusDoesNotRecoverActiveSend() {
     const running = workflow.runWorkflowStep(taskRecord, { isEnabled: () => true });
     for (let attempt = 0; !release && attempt < 100; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
     assert.ok(release, `the fake sender must hold the persisted sending state: ${JSON.stringify(release ? null : await running)}`);
-    for (let poll = 0; poll < 3; poll += 1) workflow.describeSkippedWorkflowTask(taskRecord);
+    for (let poll = 0; poll < 3; poll += 1) {
+      workflow.describeSkippedWorkflowTask(taskRecord);
+      assert.equal(workflow.canRetryWorkflowTask(taskRecord, payload), false);
+    }
     const duringSend = loadTaskState(taskDir);
     assert.equal(duringSend.status, "running", "status polling must not recover a live task");
     assert.equal(duringSend.results[0].status, "sending");
@@ -53,6 +56,44 @@ async function checkTouchStatusDoesNotRecoverActiveSend() {
     const completed = await running;
     assert.equal(completed.status, "completed");
     assert.equal(loadTaskState(taskDir).results[0].status, "sent_verified");
+  }
+}
+
+async function checkInterruptedSendRecoveryInSameProcess() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-touch-send-fault-"));
+  const dataDir = path.join(root, "touch");
+  const contact = { id: "customer-1", name: "张经理", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+  let sends = 0;
+  let firstAttention = null;
+  const touch = createTouchWorkflow({
+    dataDir, readContacts: () => [contact],
+    coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+    passport: { bindTrace() { throw Object.assign(new Error("injected post-persist fault"), { code: "ENOSPC" }); } },
+    execute: async () => { sends += 1; throw new Error("the uncertain send must not be repeated"); }
+  });
+  const controller = createWechatWorkflowController({
+    rootDir: root, activeTouchDir: dataDir, autoReplyDir: path.join(root, "reply"), momentsDir: path.join(root, "moments"),
+    autoSchedule: false, getAccount: () => "test-account",
+    onUpdate: (snapshot) => {
+      if (!firstAttention && snapshot.tasks.some((task) => task.status === "needs_attention")) firstAttention = snapshot;
+    },
+    executors: { touch: { ...touch, prepareWorkflowTask: (_id, input) => touch.prepareWorkflowTask(input) } }
+  });
+  try {
+    const added = await controller.addTask({ type: "touch", payload: { script: "您好，想了解您的设备需求。", contactIds: [contact.id] } });
+    await controller.start();
+    await controller.tick();
+    assert.equal(firstAttention?.tasks[0]?.status, "needs_attention");
+    assert.equal(firstAttention.tasks[0].canRetry, false);
+    assert.equal(firstAttention.tasks[0].unknownResolution?.required, true,
+      "the first attention snapshot must show manual confirmation after recovery");
+    const taskDir = path.join(dataDir, "workflow-tasks", require("node:crypto").createHash("sha256").update(added.task.id).digest("hex"));
+    const recovered = loadTaskState(taskDir);
+    assert.equal(recovered.status, "paused");
+    assert.equal(recovered.results[0].status, "outcome_unknown");
+    assert.equal(sends, 0, "recovery must not automatically send again");
+  } finally {
+    await controller.dispose();
   }
 }
 
@@ -904,6 +945,7 @@ async function main() {
   assert.equal(expert.conversation().messages.length, 1);
   await checkFloatingProgress();
   await checkTouchStatusDoesNotRecoverActiveSend();
+  await checkInterruptedSendRecoveryInSameProcess();
   await checkWorkflowDiagnostics();
   await checkInProgressTouchEdit();
   await checkUnknownTouchResolution();
