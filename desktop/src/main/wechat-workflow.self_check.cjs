@@ -6,6 +6,55 @@ const { createWechatWorkflowController, workflowFailureReason } = require("./wec
 const { createAiExpertStore } = require("./ai-expert.cjs");
 const { EventEmitter } = require("node:events");
 const { registerWechatWorkflowIpc } = require("./wechat-workflow-ipc.cjs");
+const { createTouchWorkflow } = require("./touch-workflow.cjs");
+const { loadTaskState } = require("../../rpa/active_touch/touch_task_state.cjs");
+
+async function checkTouchStatusDoesNotRecoverActiveSend() {
+  for (const multipart of [false, true]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-touch-status-race-"));
+    const dataDir = path.join(root, "touch");
+    const id = multipart ? "multipart" : "text";
+    const contact = { id: "customer-1", name: "张经理", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+    const payload = { script: "您好，想了解您的设备需求。", contacts: [contact], ...(multipart ? { imageIds: ["image-1"] } : {}) };
+    const taskRecord = { id, payload };
+    const taskDir = path.join(dataDir, "workflow-tasks", require("node:crypto").createHash("sha256").update(id).digest("hex"));
+    let release;
+    const workflowOptions = {
+      dataDir, readContacts: () => [contact],
+      coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+      mediaStore: { resolve: () => ({ path: "image-1" }) },
+      execute: async () => {
+        if (!release) await new Promise((resolve) => { release = resolve; });
+        return { ok: true, state: { real_send_status: "sent_verified" } };
+      }
+    };
+    const workflow = createTouchWorkflow(workflowOptions);
+    const running = workflow.runWorkflowStep(taskRecord, { isEnabled: () => true });
+    for (let attempt = 0; !release && attempt < 100; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(release, `the fake sender must hold the persisted sending state: ${JSON.stringify(release ? null : await running)}`);
+    for (let poll = 0; poll < 3; poll += 1) workflow.describeSkippedWorkflowTask(taskRecord);
+    const duringSend = loadTaskState(taskDir);
+    assert.equal(duringSend.status, "running", "status polling must not recover a live task");
+    assert.equal(duringSend.results[0].status, "sending");
+
+    const restartRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-touch-restart-"));
+    const restartDir = path.join(restartRoot, "touch", "workflow-tasks", path.basename(taskDir));
+    fs.mkdirSync(path.dirname(restartDir), { recursive: true });
+    fs.cpSync(taskDir, restartDir, { recursive: true });
+    const restarted = createTouchWorkflow({ ...workflowOptions, dataDir: path.join(restartRoot, "touch"),
+      execute: async () => { throw new Error("interrupted sends must not be repeated"); } });
+    const restartResult = await restarted.runWorkflowStep(taskRecord, { isEnabled: () => true });
+    const recovered = loadTaskState(restartDir);
+    assert.equal(restartResult.status, "needs_attention");
+    assert.equal(recovered.status, "paused", "a real restart must still recover an interrupted send");
+    if (!multipart) assert.equal(recovered.results[0].status, "outcome_unknown");
+
+    release();
+    const completed = await running;
+    assert.equal(completed.status, "completed");
+    assert.equal(loadTaskState(taskDir).results[0].status, "sent_verified");
+  }
+}
 
 async function checkFloatingProgress() {
   const windows = [];
@@ -854,6 +903,7 @@ async function main() {
   assert.deepEqual(expert.read(), before, "interview drafts cannot silently replace live expert");
   assert.equal(expert.conversation().messages.length, 1);
   await checkFloatingProgress();
+  await checkTouchStatusDoesNotRecoverActiveSend();
   await checkWorkflowDiagnostics();
   await checkInProgressTouchEdit();
   await checkUnknownTouchResolution();

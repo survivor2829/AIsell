@@ -62,6 +62,7 @@ function createTouchWorkflow(options = {}) {
   let activeStep = false;
   const recoveredTaskIds = new Set();
   const workflowDirectory = (id) => path.join(contactsDir, "workflow-tasks", crypto.createHash("sha256").update(String(id)).digest("hex"));
+  const readWorkflowTask = (id) => loadTaskState(workflowDirectory(String(id)));
   const loadWorkflowTask = (id) => {
     const taskId = String(id);
     const taskDir = workflowDirectory(taskId);
@@ -202,6 +203,7 @@ function createTouchWorkflow(options = {}) {
         task = authorizeTask(task, now().toISOString());
         persist();
         writeJsonAtomic(bindingFile, { taskId: id, signature });
+        recoveredTaskIds.add(id);
       }
       if (task.integrity_error) return response("needs_attention", { error: task.pause_reason || "触达任务进度已损坏" });
       if (task.manual_resolution_pending && taskRecord?.status !== "needs_attention") {
@@ -566,7 +568,7 @@ function createTouchWorkflow(options = {}) {
   function describeUnknownWorkflowTask(record) {
     const id = String(record?.id || record || "").trim();
     if (!id) return null;
-    const task = loadWorkflowTask(id);
+    const task = readWorkflowTask(id);
     const current = task.results?.[task.current_index];
     if (task.integrity_error) return null;
     if (task.status === "paused" && current?.status === "outcome_unknown") {
@@ -744,7 +746,7 @@ function createTouchWorkflow(options = {}) {
     if (!id) return null;
     const taskDir = workflowDirectory(id);
     if (!fs.existsSync(path.join(taskDir, "touch_task.json"))) return null;
-    const task = loadWorkflowTask(id);
+    const task = readWorkflowTask(id);
     const summary = skippedTaskSummary(task);
     return { skipped_breakdown: summary.breakdown, skipped_records: summary.records };
   }
