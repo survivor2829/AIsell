@@ -9,6 +9,7 @@ export type DigitalHumanTask = DigitalHumanDraft & {
   id: string; title: string; status: string; statusLabel: string; createdAt: string; updatedAt: string;
   previewReady: boolean; previewRevision: string; progress: number; error: string; errorCode: string;
   generatedVideoId: string; packagingTaskId: string; canResume: boolean; canRefresh: boolean;
+  videoResolution?: string; outputQuality?: string; directorSkillVersion?: string;
 };
 export type DigitalHumanCapabilities = {
   ready: boolean; code: string; message: string; scenes: { id: string; name: string }[]; voices: { id: string; name: string }[];

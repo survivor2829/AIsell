@@ -15,7 +15,7 @@ async function unwrap<T>(result: Promise<DigitalHumanResult<T>>): Promise<T> {
   return value.data;
 }
 const EMPTY: DigitalHumanDraft = { personAssetId: '', productAssetId: '', sceneId: 'studio', voiceStyle: 'natural_female', durationSeconds: 12, script: '' };
-const ACTIVE = new Set(['preview_preparing', 'preview_generating', 'registering', 'reviewing', 'video_submitting', 'video_generating', 'packaging']);
+const ACTIVE = new Set(['preview_preparing', 'preview_generating', 'registering', 'reviewing', 'video_submitting', 'video_generating', 'enhancing', 'packaging']);
 const SCENE_IMAGES: Record<string, string> = Object.fromEntries(['studio', 'store', 'display'].map((id) => [id, `${import.meta.env.BASE_URL}digital-human-scenes/${id}.png`]));
 
 export function DigitalHumanPage() {
@@ -131,8 +131,8 @@ export function DigitalHumanPage() {
     : !draft.script.trim() ? '写下想讲的话，再生成人物预览。' : '生成人物预览后，确认形象与产品再制作视频。';
 
   return <div className="digital-human-page">
-    <header className="dh-header"><div><h1>数字人视频</h1><p>上传形象和产品，选择出镜场景。</p></div>
-      <button className="dh-button" onClick={newSample} disabled={!!busy}><Plus size={16} />新建样片</button></header>
+    <header className="dh-header"><div className="dh-heading"><h1>数字人视频</h1><p>上传形象和产品，选择出镜场景。</p><p className="dh-quality">新样片默认以 480p 生成，再本地放大为 1080p 尺寸。</p>
+      <button className="dh-button" onClick={newSample} disabled={!!busy}><Plus size={16} />新建样片</button></div></header>
     {notice && <div className={`dh-message is-${notice.kind}`} role={notice.kind === 'success' ? 'status' : 'alert'}>
       {notice.kind === 'success' ? <Check size={17} /> : <CircleAlert size={17} />}<span>{notice.message}</span></div>}
     <div className="dh-workspace">
@@ -173,6 +173,7 @@ export function DigitalHumanPage() {
           {selected?.canRefresh && <button className="dh-button" disabled={!!busy} onClick={() => void perform('refresh', async () => apply(await unwrap(api().refresh({ id: selected.id }))))}><RefreshCw size={15} />刷新进度</button>}
           {videoUrl && <button className="dh-button is-primary" disabled={!!busy} onClick={() => void download()}><Download size={16} />保存成片</button>}
         </div>
+        {selected && <p className="dh-quality">{selected.outputQuality || '沿用原任务画质'}；请核对肤色、口型和产品细节。</p>}
         {videoUrl && <div className="dh-cover"><VideoCoverDetails generatedId={selected!.generatedVideoId} /></div>}
       </section>
     </div>

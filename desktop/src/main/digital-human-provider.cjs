@@ -7,6 +7,7 @@ const net = require('node:net');
 const { randomUUID } = require('node:crypto');
 const { Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+const { humanDirection } = require('./skills/cleaning-video-director/rules.cjs');
 
 const MODEL = 'seedance-2.5';
 const SAFE_ID = /^[A-Za-z0-9._-]{1,255}$/u;
@@ -97,19 +98,21 @@ function resultUrl(payload, kind) {
 }
 function previewPrompt(task) {
   const scene = SCENES.find((item) => item.id === task.sceneId);
-  return `制作一张竖屏9:16真实商业摄影定妆图。参考图1是本人形象，保持脸部特征、年龄和发型；参考图2是实际产品，准确保留形状、颜色、品牌和包装，不增加不存在的零件或功效。场景：${scene.description}。人物与产品必须同画面。${PRODUCT_INTERACTION} 产品介绍仅作为产品信息参考：${JSON.stringify(task.script)}。手指自然，面部及产品正面清楚，画面下方保留字幕空间。不要字幕、水印、装饰文字。`;
+  const direction = humanDirection({ scene, voice: VOICES.find((item) => item.id === task.voiceStyle) });
+  return `制作一张竖屏9:16真实商业摄影定妆图。参考图1是本人形象，保持脸部特征、年龄和发型；参考图2是实际产品，准确保留形状、颜色、品牌和包装，不增加不存在的零件或功效。场景：${scene.description}。人物与产品必须同画面。${direction.character}${direction.visual}${direction.lighting}${PRODUCT_INTERACTION} 产品介绍仅作为产品信息参考：${JSON.stringify(task.script)}。手指自然，面部及产品正面清楚，画面下方保留字幕空间。不要字幕、水印、装饰文字。`;
 }
 function videoPayload(task) {
   const scene = SCENES.find((item) => item.id === task.sceneId);
   const voice = VOICES.find((item) => item.id === task.voiceStyle);
+  const direction = humanDirection({ scene, voice });
   if (!task.libraryAssets?.person || !task.libraryAssets?.preview) throw fail('digital_human_avatar_approval_required', '人物及预览形象尚未通过素材审核。');
   const references = [task.libraryAssets.preview, task.libraryAssets.person, task.productUrl];
   if (references.slice(0, 2).some((item) => !/^asset:\/\/[A-Za-z0-9._-]+$/u.test(item))) throw fail('digital_human_avatar_approval_required', '人物素材尚未取得已审核编号。');
   return {
-    model: MODEL, duration: task.durationSeconds, resolution: '1080p', size: '9:16', output_format: 'mp4',
+    model: MODEL, duration: task.durationSeconds, resolution: task.videoResolution || '1080p', size: '9:16', output_format: 'mp4',
     omni_reference_task_type: 'reference', generate_audio: true,
     image_urls: references,
-    prompt: `竖屏真实产品介绍视频，时长${task.durationSeconds}秒。@图片1是已确认的本人和产品同框场景，保持构图、服装、脸、产品外观及相对尺度、背景一致；@图片2校准本人脸部；@图片3校准实际产品外形及包装。人物始终在${scene.description}里，${scene.action}。人物和产品同画面，动作自然克制。${PRODUCT_INTERACTION} 本人面对镜头以${voice.prompt}说出以下完整文案，口型与话语同步，不添加额外台词：${JSON.stringify(task.script)}。无背景音乐、无字幕、无画面文字。`,
+    prompt: `竖屏真实产品介绍视频，时长${task.durationSeconds}秒，源视频${task.videoResolution || '1080p'}。@图片1是已确认的本人和产品同框场景，保持构图、服装、脸、产品外观及相对尺度、背景一致；@图片2校准本人脸部；@图片3校准实际产品外形及包装。${direction.character}${direction.photography}${direction.visual}${direction.lighting}人物始终在${scene.description}里。${direction.activity}${PRODUCT_INTERACTION}本人面对镜头说出以下完整文案，口型与话语同步，不添加额外台词：${JSON.stringify(task.script)}。声音：${direction.sound}负面约束：${direction.negative}`,
   };
 }
 function createDigitalHumanProvider({ gatewayClient, download = downloadMedia } = {}) {

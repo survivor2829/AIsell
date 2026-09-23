@@ -3,15 +3,17 @@ const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { writeJsonAtomic } = require('./atomic-file.cjs');
 const { createDigitalHumanProvider, fail, cleanMessage, remoteUrl, SCENES, VOICES, SAFE_ID } = require('./digital-human-provider.cjs');
+const { VERSION: DIRECTOR_SKILL_VERSION } = require('./skills/cleaning-video-director/rules.cjs');
+const { upscaleTo1080Size } = require('./video-upscale.cjs');
 
 const ID = /^dh_[a-f0-9-]{36}$/u;
 const ASSET_ID = /^dha_[a-f0-9-]{36}$/u;
-const POLLING_STATES = new Set(['preview_preparing', 'preview_generating', 'registering', 'reviewing', 'video_submitting', 'video_generating', 'packaging']);
+const POLLING_STATES = new Set(['preview_preparing', 'preview_generating', 'registering', 'reviewing', 'video_submitting', 'video_generating', 'enhancing', 'packaging']);
 const RESUMABLE_PACKAGING_STATES = new Set(['failed', 'paused', 'cancelled']);
 const LABELS = {
   draft: '待生成预览', preview_preparing: '准备形象与产品', preview_generating: '生成场景预览', preview_ready: '待确认预览',
   registering: '登记人物素材', reviewing: '等待形象审核', video_submitting: '提交视频', video_generating: '生成样片',
-  packaging: '制作字幕与封面', completed: '成片已就绪', needs_attention: '需要处理', outcome_unknown: '请求待核对',
+  enhancing: '本地放大画面', packaging: '制作字幕与封面', completed: '成片已就绪', needs_attention: '需要处理', outcome_unknown: '请求待核对',
 };
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 // The gateway adds a per-license prefix. Keep the complete upstream asset name
@@ -64,6 +66,8 @@ function createDigitalHumanService(options = {}) {
       progress: Math.max(0, Math.min(100, Number(task.progress) || 0)),
       error: cleanMessage(task.error || ''), errorCode: String(task.errorCode || '').slice(0, 100),
       generatedVideoId: task.generatedVideoId || '', packagingTaskId: task.packagingTaskId || '',
+      videoResolution: task.videoResolution || '1080p', directorSkillVersion: task.directorSkillVersion || '1',
+      outputQuality: task.videoResolution === '480p' ? '1080p尺寸·本地放大' : '原生1080p',
       canResume: task.status === 'needs_attention' && Boolean(task.resumeStatus), canRefresh: task.status !== 'completed',
     };
   }
@@ -211,7 +215,15 @@ function createDigitalHumanService(options = {}) {
         if (head.toString('ascii', 4, 8) !== 'ftyp') throw fail('digital_human_video_invalid', '下载结果不是有效MP4，云端任务已保留。');
         task.baseVideoFile = relative; save(task);
       }
-      update(task, 'packaging', { progress: 0 });
+      update(task, task.videoResolution === '480p' ? 'enhancing' : 'packaging', { progress: 0 });
+    }
+    if (task.status === 'enhancing') {
+      const source = contained(root, task.baseVideoFile);
+      const destination = contained(root, `${task.id}/enhanced-1080-size.mp4`);
+      await (options.enhanceVideo || upscaleTo1080Size)({ source, destination,
+        ffmpegPath: options.ffmpegPath || process.env.XIAOXI_FFMPEG_PATH || 'ffmpeg' });
+      if (!fs.existsSync(destination) || fs.statSync(destination).size < 1024) throw fail('digital_human_enhance_failed', '本地放大未完成，480p 原片已保留，可以继续处理。');
+      update(task, 'packaging', { baseVideoFile: `${task.id}/enhanced-1080-size.mp4`, enhancement: 'lanczos_resize' });
     }
     if (task.status === 'packaging') {
       if (!options.packageVideo || !options.queryPackaging) throw fail('digital_human_packaging_unavailable', '样片已保存，字幕与封面制作服务尚未接通。');
@@ -282,6 +294,7 @@ function createDigitalHumanService(options = {}) {
     const previous = input.id ? read(input.id) : null;
     if (previous && previous.status !== 'draft') throw fail('digital_human_draft_locked', '这条样片已开始制作，请调整后新建。');
     const task = { ...input, script, title: String(input.title || script.slice(0, 20) || '未命名样片').trim().slice(0, 80),
+      videoResolution: previous?.videoResolution || '480p', directorSkillVersion: DIRECTOR_SKILL_VERSION,
       version: 1, id: previous?.id || `dh_${randomUUID()}`, status: 'draft', createdAt: previous?.createdAt || new Date().toISOString(), operations: {} };
     save(task); return publicTask(task);
   }

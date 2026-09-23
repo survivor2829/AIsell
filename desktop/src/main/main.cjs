@@ -45,6 +45,7 @@ const { createContentEngineSidecar } = require("./content-engine-sidecar.cjs");
 const { registerContentEngineIpc } = require("./content-engine-ipc.cjs");
 const { registerKeywordAcquisitionIpc } = require("./keyword-acquisition-ipc.cjs");
 const { registerDigitalHumanIpc } = require("./digital-human-ipc.cjs");
+const { registerProductVideoIpc } = require("./product-video-ipc.cjs");
 const { createBailianApiKeyStore } = require("./bailian-api-key.cjs");
 const { createVolcengineTtsKeyStore, createVolcengineAsrStore } = require("./volcengine-tts-settings.cjs");
 const {
@@ -76,6 +77,7 @@ let contentEngineController = null;
 let contentEngineIpcRegistration = null;
 let keywordAcquisitionRegistration = null;
 let digitalHumanRegistration = null;
+let productVideoRegistration = null;
 let quitCleanupStarted = false;
 let quitCleanupComplete = false;
 let cloudMaintenance = null;
@@ -646,6 +648,9 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       ipcMain, dialog, getMainWindow: () => mainWindow,
       rootDir: path.join(runtime.rootDir, "digital_human"),
       gatewayClient: providerGatewayClient,
+      ffmpegPath: app.isPackaged
+        ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe")
+        : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg",
       imageSize: (bytes) => nativeImage.createFromBuffer(bytes).getSize(),
       imageThumbnail: (bytes) => nativeImage.createFromBuffer(bytes).resize({ width: 320 }).toDataURL(),
       requireTrustedClick: (event, payload, action) => {
@@ -667,6 +672,29 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
         return contentEngineController.importBaseVideo(payload);
       },
       queryPackaging: (id) => contentEngineController.getTask(id)
+    });
+    const usedProductVideoClicks = new Set();
+    productVideoRegistration = registerProductVideoIpc({
+      ipcMain, dialog, getMainWindow: () => mainWindow,
+      rootDir: path.join(runtime.rootDir, "product_video"),
+      defaultExportDir: app.getPath("downloads"),
+      gatewayClient: providerGatewayClient,
+      ffmpegPath: app.isPackaged
+        ? path.join(path.dirname(contentEngineRuntimePath()), "media-tools", "ffmpeg.exe")
+        : process.env.XIAOXI_FFMPEG_PATH || "ffmpeg",
+      imageThumbnail: (bytes) => nativeImage.createFromBuffer(bytes).resize({ width: 320 }).toDataURL(),
+      requireTrustedClick: (event, payload, action) => {
+        const token = String(payload?.clickToken || "");
+        const prefix = `product-video:${action}:`;
+        const uuid = token.startsWith(prefix) ? token.slice(prefix.length) : "";
+        if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(uuid)
+            || usedProductVideoClicks.has(token) || !mainWindow || mainWindow.isDestroyed()
+            || event.sender !== mainWindow.webContents || !mainWindow.isFocused()) {
+          throw Object.assign(new Error("请点击页面按钮开始制作。"), { code: "trusted_user_click_required" });
+        }
+        usedProductVideoClicks.add(token);
+        if (usedProductVideoClicks.size > 200) usedProductVideoClicks.delete(usedProductVideoClicks.values().next().value);
+      }
     });
     registerAiExpertIpc({ store: aiExpertStore, deepSeekClient, isAutoReplyRunning: () => ["starting", "running"].includes(autoReplyController?.status().status) });
     if (internalRealSend) {
@@ -829,6 +857,7 @@ if (!productDetailReleaseSmokeDataDirIsValid) {
       Promise.allSettled([
         Promise.resolve(keywordAcquisitionRegistration?.dispose()),
         Promise.resolve(digitalHumanRegistration?.close()),
+        Promise.resolve(productVideoRegistration?.close()),
         Promise.resolve(productDetailController?.dispose()),
         Promise.resolve(contentEngineController?.dispose()),
         Promise.resolve(workflowController?.dispose()),

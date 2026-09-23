@@ -7,6 +7,7 @@ const {
 
 const apis = createPreloadApis(ipcRenderer);
 contextBridge.exposeInMainWorld("xiaoxiDigitalHuman", require("./digital-human-preload.cjs").createDigitalHumanApi(ipcRenderer));
+contextBridge.exposeInMainWorld("xiaoxiProductVideo", require("./product-video-preload.cjs").createProductVideoApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiKeywordAcquisition", require("./keyword-acquisition-preload.cjs").createKeywordAcquisitionApi(ipcRenderer));
 contextBridge.exposeInMainWorld("xiaoxiLicenseAuth", apis.licenseAuth);
 contextBridge.exposeInMainWorld("xiaoxiWindowChrome", { setMode: (mode) => ipcRenderer.send("window-chrome:set-mode", mode) });

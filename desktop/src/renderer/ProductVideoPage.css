@@ -1,0 +1,24 @@
+.product-video-page{max-width:1380px;margin:0 auto;padding:28px 32px 52px;color:#29243a}
+.pv-header{display:flex;justify-content:space-between;gap:24px;align-items:center;padding:24px 28px;border-radius:24px;background:linear-gradient(120deg,#f7efff,#fff8f7);color:#67328c}
+.pv-header>div:first-child{min-width:0;flex:1}.pv-header .pv-quality{margin-top:12px;color:#6f3b8a;font-size:12px;font-weight:700}
+.pv-header h1{font-size:28px;line-height:1.25;margin:0 0 10px}.pv-header p{margin:0;color:#665b70}
+.pv-layout{display:grid;grid-template-columns:minmax(320px,1fr) minmax(360px,1.08fr);gap:18px;margin-top:20px}
+.pv-panel,.pv-history{background:#fff;border:1px solid #e9e1ef;border-radius:22px;padding:24px;box-shadow:0 10px 30px #4423600a}
+.pv-panel h2,.pv-history h2{font-size:18px;margin:0 0 18px}.pv-scene-grid{display:flex;flex-wrap:wrap;gap:9px;margin-bottom:18px}
+.pv-scene-grid button,.pv-secondary{border:1px solid #ded2e8;background:#fff;border-radius:12px;padding:10px 14px;color:#4c3b5b;cursor:pointer}
+.pv-scene-grid button.is-selected{background:#f0e1fb;border-color:#a855f7;color:#7131b7;font-weight:700}
+.pv-upload{width:100%;min-height:108px;display:flex;align-items:center;gap:18px;text-align:left;border:1px dashed #b998d0;border-radius:15px;background:#fcf9ff;padding:15px;color:#734794;cursor:pointer}
+.pv-upload img{width:78px;height:78px;object-fit:contain;border-radius:10px;background:#fff}.pv-upload span{display:flex;flex-direction:column;font-weight:700;gap:6px}.pv-upload small,.pv-estimate small{color:#766d7c;font-weight:400}
+.pv-details{border-top:1px solid #efe8f3;margin:18px 0;padding-top:14px}.pv-details summary{cursor:pointer;color:#7131b7;font-weight:700}
+.pv-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:15px 0}.pv-fields label,.pv-text-label{display:flex;flex-direction:column;gap:7px;font-size:13px;font-weight:700;color:#51465d}
+.pv-fields select,.pv-text-label textarea{width:100%;box-sizing:border-box;border:1px solid #ded4e6;border-radius:10px;background:#fff;padding:10px;color:#29243a;font:inherit}
+.pv-text-label{margin:16px 0}.pv-text-label textarea{font-weight:400;resize:vertical;line-height:1.55}
+.pv-estimate{display:flex;flex-direction:column;gap:5px;background:#f9f4fc;border-radius:12px;padding:13px;margin:18px 0}.pv-estimate strong{color:#633486}
+.pv-primary{display:inline-flex;align-items:center;justify-content:center;gap:9px;border:0;border-radius:12px;background:#8241b8;color:#fff;padding:12px 17px;font-weight:700;cursor:pointer}.pv-primary:disabled{opacity:.55;cursor:not-allowed}.pv-secondary{display:inline-flex;align-items:center;gap:7px;margin:8px 8px 8px 0}
+.pv-note,.pv-evidence{color:#6b6174;font-size:13px;line-height:1.5}.pv-error{color:#a12238;background:#fff0f1;padding:10px;border-radius:10px}.pv-empty{color:#756b7d}
+.pv-task-head{display:flex;justify-content:space-between;gap:12px;align-items:center}.pv-task-head span{border-radius:99px;background:#f0e3f7;padding:5px 10px;color:#7131b7;font-size:12px}
+.pv-shots{display:grid;gap:9px;padding-left:22px;max-height:440px;overflow:auto}.pv-shots li{line-height:1.5;padding:8px}.pv-shots strong,.pv-shots span{display:block}.pv-shots span{font-size:12px;color:#6a6070;margin-top:5px}
+.pv-shots details,.pv-director-brief details{margin-top:7px;color:#665b70;font-size:12px}.pv-shots summary,.pv-director-brief summary{cursor:pointer;color:#7131b7}.pv-shots details p{overflow-wrap:anywhere}.pv-director-brief{padding:12px;border-radius:12px;background:#f9f5fb;font-size:12px;line-height:1.5}.pv-director-brief p{margin:5px 0}.pv-director-brief small{color:#6a6070}
+.pv-progress{font-size:13px;color:#665b70}.pv-output video{width:100%;max-height:430px;border-radius:12px;margin:12px 0;background:#1b1520}.pv-send-text{background:#f8f4fa;border-radius:12px;padding:13px;margin-top:12px}.pv-send-text p{margin:7px 0 0;line-height:1.55}
+.pv-history{margin-top:18px}.pv-history>div{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}.pv-history button{display:flex;flex-direction:column;align-items:start;gap:4px;padding:11px;border:1px solid #ece4ef;border-radius:10px;background:#fff;cursor:pointer}.pv-history small{color:#756b7d}
+@media(max-width:1100px){.pv-header{flex-direction:column;align-items:stretch}.pv-layout{grid-template-columns:1fr}.product-video-page{padding:16px}.pv-header h1{font-size:23px}}

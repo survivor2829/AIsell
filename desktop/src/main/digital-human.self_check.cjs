@@ -60,7 +60,7 @@ async function main() {
     const provider = {
       capabilities: async () => ({ ready: true }), nodeOf, taskIdOf, resultUrl, videoPayload,
       previewPayload: () => ({ model: 'gpt-image-2' }), imageUploadBody: () => ({ body: Buffer.from('fixture'), headers: {} }),
-      download: async (_url, target) => { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, target.endsWith('.mp4') ? Buffer.from('0000ftypisom') : image); },
+      download: async (_url, target) => { fs.mkdirSync(path.dirname(target), { recursive: true }); const clip = Buffer.alloc(2048); clip.write('ftyp', 4, 'ascii'); fs.writeFileSync(target, target.endsWith('.mp4') ? clip : image); },
       request: async (route, request = {}) => {
         if (route.startsWith('/operations/')) return receipts.get(route.split('/').pop());
         if (request.method === 'POST') {
@@ -88,6 +88,7 @@ async function main() {
     let packaging, packagingStatus = 'completed', packagingErrorCode = '';
     const packagingAdmissions = new Map();
     const options = { rootDir: path.join(directory, 'data'), provider,
+      enhanceVideo: async ({ source, destination }) => fs.copyFileSync(source, destination),
       packageVideo: async (payload) => {
         packaging = payload;
         const count = (packagingAdmissions.get(payload.source_id) || 0) + 1;
@@ -131,6 +132,8 @@ async function main() {
     const video = posts.find((p) => p.route.endsWith('videos/generations')).body;
     assert.deepEqual(video.image_urls.slice(0, 2), ['asset://asset_fixture_1', 'asset://asset_fixture_0']);
     assert.equal(video.duration, 12); assert.equal(video.generate_audio, true);
+    assert.equal(video.resolution, '480p');
+    assert.equal(service.get(task.id).outputQuality, '1080p尺寸·本地放大');
     assert.equal(packaging.template_id, 'key_points'); assert.equal(packaging.music_track_id, 'music_track_fixture');
     assert.match(packaging.source_id, /^digital_human_[a-f0-9-]{36}$/u);
     assert.equal(packaging.confirmed_script, draft.script); assert.ok(fs.existsSync(packaging.input_video_path));
