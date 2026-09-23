@@ -36,7 +36,7 @@ import { FeedbackCenter, type FeedbackContext } from "./FeedbackCenter";
 import { CloudMaintenance } from "./CloudMaintenance";
 import { CustomerTools } from "./CustomerTools";
 import { RoleAppearancePanel } from "./RoleAppearancePanel";
-import { appearanceFor, appearanceStyle, useRolePreferences, type RolePreference } from "./role-appearance";
+import { appearanceFor, appearanceStyle, characterAsset, useRolePreferences, type RolePreference } from "./role-appearance";
 import type { ContentProduction } from "./content-production-types";
 import { ProductDetailPage } from "./ProductDetailPage";
 import { FinishedVideoCenterPage } from "./ContentFoundationPage";
@@ -46,13 +46,15 @@ import { BatchCreativePage } from "./BatchCreativePage";
 import { MaterialsCollectionsPage } from "./BatchAssets";
 import { KeywordAcquisitionPage } from "./KeywordAcquisitionPage";
 import { DigitalHumanPage } from "./DigitalHumanPage";
+import { ProductVideoPage } from "./ProductVideoPage";
 import type { Collection } from "./batch-studio-api";
 import { ProductOneClickPage } from "./ProductOneClickPage";
-import { FloatingWorkflowWindow, useWechatWorkflow, WechatWorkflowPage, WorkflowLauncher, type WorkflowView, type EditorRequest } from "./WechatWorkflow";
+import { FloatingWorkflowWindow, useWechatWorkflow, WechatWorkflowPage, WorkflowLauncher, type WorkflowView, type EditorRequest, type WorkflowController } from "./WechatWorkflow";
 import { WechatGettingStarted } from "./WechatGettingStarted";
 import { AGENT_ROLE_IDENTITIES, AgentHome, type AgentHomeTarget, type AgentRoleKey } from "./AgentHome";
+import { AgentOverview } from "./AgentOverview";
 
-type ModuleKey = AgentRoleKey | AgentHomeTarget | "diagnostics";
+type ModuleKey = AgentRoleKey | AgentHomeTarget | "diagnostics" | "overview";
 type GroupKey = AgentRoleKey;
 type NavItem = { key: ModuleKey; label: string; icon: ComponentType<{ size?: number; strokeWidth?: number }> };
 type NavGroup = NavItem & { key: GroupKey; persona: string; children: NavItem[] };
@@ -382,46 +384,47 @@ const BUILD_ID = import.meta.env.VITE_XIAOXI_BUILD_ID || "";
 const DEVELOPMENT_EDITION = XIAOXI_EDITION === "development";
 const PILOT_EDITION = XIAOXI_EDITION === "pilot";
 const REAL_SEND_EDITION = DEVELOPMENT_EDITION || PILOT_EDITION;
-const DEFAULT_ACTIVE_MODULE: ModuleKey = "production";
+const DEFAULT_ACTIVE_MODULE: ModuleKey = "overview";
 const EDITION_LABEL = DEVELOPMENT_EDITION ? "测试版" : "";
 const DEFAULT_TOUCH_MESSAGE = DEVELOPMENT_EDITION
-  ? "{称呼}，您好，我们这边有清洁设备短租和会员特惠方案，想了解一下您近期是否需要降本增效？"
+  ? "{称呼}，我们这边有清洁设备短租和会员特惠方案，想了解一下您近期是否需要降本增效？"
   : "";
 const DevelopmentAcceptance = DEVELOPMENT_EDITION ? lazy(() => import("./DevelopmentAcceptance")) : null;
 
 const agentChildren: NavItem[] = [
-  { key: "expert", label: "你的AI专家", icon: Bot },
-  { key: "workflow", label: "今日计划", icon: ListTodo },
-  { key: "reply", label: "自动回复", icon: MessageCircle },
   { key: "touch", label: "精准触达", icon: Send },
+  { key: "reply", label: "自动回复", icon: MessageCircle },
   { key: "moments", label: "朋友圈运营", icon: ThumbsUp }
 ];
 
+const agentSecondary: NavItem[] = [
+  { key: "workflow", label: "今日计划", icon: ListTodo },
+  { key: "contact-sync", label: "联系人同步", icon: UsersRound },
+  { key: "expert", label: "AI 专家", icon: Bot }
+];
+
 const productionChildren: NavItem[] = [
-  { key: "materials", label: "素材仓库", icon: Folder },
   { key: "workspace", label: "创作工作台", icon: Clapperboard },
+  { key: "product-video", label: "产品效果视频", icon: Video },
+  { key: "social-video", label: "社媒短片", icon: MonitorPlay },
   { key: "finished", label: "成片中心", icon: Video },
-  { key: "ai-video", label: "AI生成视频", icon: MonitorPlay }
+  { key: "ai-video", label: "数字人视频", icon: UserRound }
 ];
 
 const operationsChildren: NavItem[] = [
-  { key: "accounts", label: "学员与账号", icon: UserRound },
-  { key: "publish", label: "发布任务", icon: Clapperboard },
-  { key: "ai-check", label: "AI检查", icon: CircleHelp },
-  { key: "leads", label: "线索回流", icon: RefreshCw },
-  { key: "data", label: "数据复盘", icon: BarChart3 }
+  { key: "keyword-acquisition", label: "关键词获客", icon: Search },
+  { key: "product-detail", label: "产品详情图", icon: Images }
 ];
 
 const navGroups: NavGroup[] = [
+  { key: "operations", persona: AGENT_ROLE_IDENTITIES.operations.name, label: AGENT_ROLE_IDENTITIES.operations.responsibility, icon: Search, children: operationsChildren },
   { key: "production", persona: AGENT_ROLE_IDENTITIES.production.name, label: AGENT_ROLE_IDENTITIES.production.responsibility, icon: Video, children: productionChildren },
-  { key: "agent", persona: AGENT_ROLE_IDENTITIES.agent.name, label: AGENT_ROLE_IDENTITIES.agent.responsibility, icon: UsersRound, children: agentChildren },
-  { key: "operations", persona: AGENT_ROLE_IDENTITIES.operations.name, label: AGENT_ROLE_IDENTITIES.operations.responsibility, icon: BarChart3, children: operationsChildren }
+  { key: "agent", persona: AGENT_ROLE_IDENTITIES.agent.name, label: AGENT_ROLE_IDENTITIES.agent.responsibility, icon: UsersRound, children: agentChildren }
 ];
 
-const productDetailNavItem: NavItem = { key: "product-detail", label: "产品详情图", icon: Images };
-const keywordNavItem: NavItem = { key: "keyword-acquisition", label: "关键词获客", icon: Search };
 const diagnosticsNavItem: NavItem = { key: "diagnostics", label: "吐槽中心", icon: MessageCircle };
-const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), keywordNavItem, productDetailNavItem, diagnosticsNavItem];
+const materialsNavItem: NavItem = { key: "materials", label: "素材仓库", icon: Folder };
+const navItems = [...navGroups.flatMap((group) => [group, ...group.children]), materialsNavItem, ...agentSecondary, diagnosticsNavItem];
 
 function nowTime() {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -493,7 +496,7 @@ function taskStatusLabel(status: string) {
 
 
 function moduleIsAvailable(key: ModuleKey) {
-  return ["agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "materials", "workspace", "finished", "ai-video", "keyword-acquisition", "diagnostics"].includes(key);
+  return ["overview", "agent", "production", "operations", "workflow", "reply", "expert", "contact-sync", "touch", "moments", "accounts", "product-detail", "materials", "workspace", "finished", "ai-video", "product-video", "social-video", "keyword-acquisition", "diagnostics"].includes(key);
 }
 
 function touchTaskStatusLabel(task: TouchTaskState) {
@@ -564,9 +567,9 @@ export default function App() {
     taskId: string;
     projectId?: string | null;
   } | null>(null);
-  const [openGroups, setOpenGroups] = useState<Record<GroupKey, boolean>>({ agent: false, production: true, operations: false });
+  const [openGroups, setOpenGroups] = useState<Record<GroupKey, boolean>>({ agent: false, production: false, operations: false });
   useEffect(() => {
-    const group = navGroups.find((item) => item.key === active || item.children.some((child) => child.key === active) || active === "contact-sync" && item.key === "agent");
+    const group = navGroups.find((item) => item.key === active || item.children.some((child) => child.key === active) || item.key === "agent" && agentSecondary.some((child) => child.key === active));
     if (!group) return;
     setOpenGroups((current) => current[group.key] && Object.entries(current).every(([key, open]) => key === group.key || !open)
       ? current : { agent: group.key === "agent", production: group.key === "production", operations: group.key === "operations" });
@@ -618,7 +621,7 @@ export default function App() {
   };
 
   const openAgentTarget = (key: AgentHomeTarget) => {
-    const group = navGroups.find((candidate) => candidate.children.some((item) => item.key === key));
+    const group = navGroups.find((candidate) => candidate.children.some((item) => item.key === key) || candidate.key === "agent" && agentSecondary.some((item) => item.key === key));
     if (group) selectChild(group.key, key);
     else setActive(key);
   };
@@ -768,7 +771,7 @@ export default function App() {
   const identityName = identity?.nickname || "未同步微信";
   const identityInitial = identityName === "未同步微信" ? "微" : (identityName.match(/[\u4e00-\u9fff]/)?.[0] || identityName.slice(0, 1)).toUpperCase();
   const activeGroup = navGroups.find(
-    (group) => group.key === active || group.children.some((item) => item.key === active) || active === "contact-sync" && group.key === "agent"
+    (group) => group.key === active || group.children.some((item) => item.key === active) || group.key === "agent" && agentSecondary.some((item) => item.key === active)
   );
   const activeRole = activeGroup?.key === active ? activeGroup.key : undefined;
   const roleThemeClass = activeGroup ? ` role-theme-${activeGroup.key}` : "";
@@ -776,22 +779,23 @@ export default function App() {
   return (
     <div className="desktop-window desktop-window-workspace"><WindowChrome /><main className="app-shell">
       <aside className="sidebar">
-        <div className="brand">
+        <button className="brand brand-home" type="button" onClick={() => setActive("overview")} aria-label="打开AI获客首页">
           <img className="brand-mark" src="./app-icon.png" alt="" />
           <div className="brand-copy">
             <span>{productBrand.displayName}</span>
+            <small>找客户 · 做内容 · 接咨询</small>
           </div>
-        </div>
+        </button>
         <nav className="nav-list">
           {navGroups.map((group) => {
-            const GroupIcon = group.icon;
             const expanded = openGroups[group.key];
             const groupActive = activeGroup?.key === group.key;
+            const appearance = appearanceFor(group.key, visiblePreference(group.key).appearanceId);
 
             return (
               <div className="nav-group" key={group.key}>
                 <button className={`nav-item ${groupActive ? "active" : ""}`} onClick={() => selectGroup(group.key)}>
-                  <span className={`nav-role-avatar is-${group.key}`} style={{ color: appearanceFor(group.key, visiblePreference(group.key).appearanceId).strong, background: appearanceFor(group.key, visiblePreference(group.key).appearanceId).surface }} aria-hidden="true"><GroupIcon size={17} strokeWidth={2.5} /></span>
+                  <span className={`nav-role-avatar is-${group.key}`} style={{ background: appearance.surface }} aria-hidden="true"><img src={characterAsset(`${appearance.portraitKey}-idle.png`)} alt="" /></span>
                   <span className="nav-role-copy"><strong>{group.label}</strong><small title={visiblePreference(group.key).name}>{visiblePreference(group.key).name}</small></span>
                   <span className="nav-chevron">{expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
                 </button>
@@ -805,8 +809,8 @@ export default function App() {
                           className={`sub-nav-item ${active === item.key ? "active" : ""}`}
                           onClick={() => selectChild(group.key, item.key)}
                         >
-                           <ChildIcon size={17} strokeWidth={2.5} />
-                           <span className="sub-nav-label">{item.label}</span>
+                           <span className="sub-agent-avatar" aria-hidden="true"><ChildIcon size={17} strokeWidth={2.5} /></span>
+                           <span className="sub-nav-label"><strong>{item.label}</strong></span>
                            {!moduleIsAvailable(item.key) && <span className="nav-stage-badge">下一阶段</span>}
                         </button>
                       );
@@ -816,11 +820,9 @@ export default function App() {
               </div>
             );
           })}
-          <button className={`nav-item nav-standalone ${active === keywordNavItem.key ? "active" : ""}`} onClick={() => { setOpenGroups({ agent: false, production: false, operations: false }); setActive(keywordNavItem.key); }}>
-            <Search size={19} strokeWidth={2.4} /><span>关键词获客</span>
-          </button>
-          <button className={`nav-item nav-standalone ${active === productDetailNavItem.key ? "active" : ""}`} onClick={() => { setOpenGroups({ agent: false, production: false, operations: false }); setActive(productDetailNavItem.key); }}>
-            <Images size={19} strokeWidth={2.4} /><span>产品详情图</span>
+          <button className={`nav-item ${active === materialsNavItem.key ? "active" : ""}`} onClick={() => setActive("materials")}>
+            <Folder size={20} strokeWidth={2.5} />
+            <span>{materialsNavItem.label}</span>
           </button>
         </nav>
         <div className="sidebar-system-nav">
@@ -833,7 +835,7 @@ export default function App() {
 
       <section className={`workspace${roleThemeClass}`} style={activeGroup ? appearanceStyle(appearanceFor(activeGroup.key, visiblePreference(activeGroup.key).appearanceId)) : undefined}>
         <header className="topbar">
-          <div className="topbar-current-module" aria-label="当前模块">{activeGroup?.label || navItems.find((item) => item.key === active)?.label || ""}</div>
+          <div className="topbar-current-module" aria-label="当前模块">{active === "overview" ? "AI获客" : activeGroup?.key === active ? activeGroup.label : navItems.find((item) => item.key === active)?.label || ""}</div>
           <div className="top-actions account-menu-wrap">
             <button className="account-trigger" aria-haspopup="menu" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((open) => !open)}>
               <span className="avatar">{identityInitial}{identity?.avatar_url && <img src={identity.avatar_url} alt="" onError={(event) => { event.currentTarget.hidden = true; }} />}</span>
@@ -857,6 +859,7 @@ export default function App() {
         <div className="content-card">
           {active !== "diagnostics" && <CloudMaintenance compact />}
           {rolePreferences.error && <p className="touch-notice" role="alert">{rolePreferences.error}</p>}
+          {active === "overview" && <AgentOverview preferences={rolePreferences.preferences} onOpenRole={selectGroup} onOpenModule={openAgentTarget} />}
           {guideOpen && ["agent", "workflow", "reply", "expert", "contact-sync", "touch", "moments"].includes(active) && <WechatGettingStarted active={active}
             connected={Boolean(contactSyncState.wechat_identity?.account_id && !contactSyncState.account_changed)} aiConfigured={deepSeekConfigured} workflow={workflow}
             onOpen={(target) => target === "diagnostics" ? openFeedback() : setActive(target)} onClose={() => setGuideOpen(false)}
@@ -905,6 +908,8 @@ export default function App() {
           {active === "product-detail" && <ProductDetailPage />}
           {active === "keyword-acquisition" && <KeywordAcquisitionPage />}
           {active === "ai-video" && <DigitalHumanPage />}
+          {active === "product-video" && <ProductVideoPage mode="product" />}
+          {active === "social-video" && <ProductVideoPage mode="social" />}
           {active === "materials" && <MaterialsCollectionsPage onCreate={(assetIds, collection) => {
             setBatchInitial({ assetIds, collection }); setLegacyWorkspace(false); setCreativeView("studio"); setActive("workspace");
           }} />}

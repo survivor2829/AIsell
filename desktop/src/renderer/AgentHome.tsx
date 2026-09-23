@@ -1,19 +1,16 @@
 import {
   ArrowRight,
-  BarChart3,
   Bot,
   CheckCircle2,
   Clock3,
   Clapperboard,
   Folder,
-  Link2,
   ListTodo,
   MessageCircle,
   MonitorPlay,
   Palette,
   RadioTower,
   Send,
-  Smartphone,
   Sparkles,
   ThumbsUp,
   UserRound,
@@ -49,6 +46,8 @@ export type AgentHomeTarget =
   | "workspace"
   | "finished"
   | "ai-video"
+  | "product-video"
+  | "social-video"
   | "keyword-acquisition"
   | "publish"
   | "ai-check"
@@ -79,44 +78,43 @@ const ROLE_DEFINITIONS: Record<AgentRoleKey, RoleDefinition> = {
     key: "agent",
     ...AGENT_ROLE_IDENTITIES.agent,
     portraitKey: "xiaoxi-integrated",
-    intro: "我负责把微信联系人、每日计划和客户触达串起来，让你一眼看清今天该做什么。",
-    primaryLabel: "查看今日计划",
-    primaryTarget: "workflow",
+    intro: "联系已确认的客户，回复微信咨询；需要你判断时会提醒你。",
+    primaryLabel: "联系客户",
+    primaryTarget: "touch",
     capabilities: [
-      { key: "expert", label: "你的AI专家", description: "协助判断下一步获客动作", icon: Bot },
-      { key: "workflow", label: "今日计划", description: "查看和安排今天的任务", icon: ListTodo },
-      { key: "reply", label: "自动回复", description: "管理微信回复状态", icon: MessageCircle },
-      { key: "touch", label: "精准触达", description: "按计划触达目标客户", icon: Send },
-      { key: "moments", label: "朋友圈运营", description: "执行朋友圈发布与互动", icon: ThumbsUp }
+      { key: "touch", label: "精准触达", description: "核对联系人后，发送合适的消息", icon: Send },
+      { key: "reply", label: "自动回复", description: "查看客户回复，必要时自己接手", icon: MessageCircle },
+      { key: "moments", label: "朋友圈运营", description: "发朋友圈，查看互动任务", icon: ThumbsUp },
+      { key: "workflow", label: "今日计划", description: "查看今天要做的事", icon: ListTodo },
+      { key: "contact-sync", label: "联系人同步", description: "更新本机微信联系人", icon: UsersRound },
+      { key: "expert", label: "AI 专家", description: "填写你的产品和客户信息", icon: Bot }
     ]
   },
   production: {
     key: "production",
     ...AGENT_ROLE_IDENTITIES.production,
     portraitKey: "xiaohui-integrated",
-    intro: "我负责整理素材、发起制作任务并沉淀成片，把分散内容变成可以交付的作品。",
-    primaryLabel: "开始内容创作",
+    intro: "上传产品图片或视频，做成可以发给客户的短片。",
+    primaryLabel: "制作短视频",
     primaryTarget: "workspace",
     capabilities: [
-      { key: "materials", label: "素材仓库", description: "管理图片与视频素材", icon: Folder },
-      { key: "workspace", label: "创作工作台", description: "开始一项内容制作", icon: Clapperboard },
-      { key: "finished", label: "成片中心", description: "查看已经完成的作品", icon: Video },
-      { key: "ai-video", label: "AI 生成视频", description: "用本人形象和产品制作数字人视频", icon: MonitorPlay }
+      { key: "workspace", label: "创作工作台", description: "用现有素材制作视频", icon: Clapperboard },
+      { key: "product-video", label: "产品效果视频", description: "展示设备在场景中的样子", icon: Video },
+      { key: "social-video", label: "社媒短片", description: "做一条不出镜的获客短片", icon: MonitorPlay },
+      { key: "finished", label: "成片中心", description: "查看成片，导出给客户", icon: Folder },
+      { key: "ai-video", label: "数字人视频", description: "制作本人出镜的数字人视频", icon: UserRound }
     ]
   },
   operations: {
     key: "operations",
     ...AGENT_ROLE_IDENTITIES.operations,
     portraitKey: "xiaolian-integrated",
-    intro: "我负责连接渠道账号、组织发布任务并回收运营结果；未接通的平台会明确标注状态。",
-    primaryLabel: "管理渠道账号",
-    primaryTarget: "accounts",
+    intro: "先找客户在问什么，再准备能回答问题的产品图片。",
+    primaryLabel: "查找客户需求",
+    primaryTarget: "keyword-acquisition",
     capabilities: [
-      { key: "accounts", label: "学员与账号", description: "查看账号与渠道连接入口", icon: UserRound },
-      { key: "publish", label: "发布任务", description: "渠道发布能力尚未连接", icon: Send, available: false },
-      { key: "ai-check", label: "AI 检查", description: "内容检查能力尚未连接", icon: CheckCircle2, available: false },
-      { key: "leads", label: "线索回流", description: "渠道线索能力尚未连接", icon: RadioTower, available: false },
-      { key: "data", label: "数据复盘", description: "渠道数据能力尚未连接", icon: BarChart3, available: false }
+      { key: "keyword-acquisition", label: "关键词获客", description: "查看客户在搜索什么", icon: Sparkles },
+      { key: "product-detail", label: "产品详情图", description: "制作可以发给客户的产品图片", icon: Sparkles }
     ]
   }
 };
@@ -414,7 +412,7 @@ function AgentPortrait({ definition }: { definition: RoleDefinition }) {
 
 function MetricStrip({ metrics }: { metrics: Metric[] }) {
   return (
-    <section className="agent-metric-strip" aria-label="业务概览">
+    <section className={`agent-metric-strip${metrics.length === 2 ? " is-two" : ""}`} aria-label="业务概览">
       {metrics.map((metric) => {
         const Icon = metric.icon;
         return (
@@ -451,7 +449,7 @@ function roleStatus(
     if (production.hasOpenTasks) return "有内容任务待处理";
     return "在线待命";
   }
-  return "等待渠道连接";
+  return "在线待命";
 }
 
 function buildWechatView(
@@ -486,7 +484,7 @@ function buildWechatView(
     }
     : {
       title: "今天还没有安排任务",
-      detail: "可以先在今日计划中添加联系人触达、朋友圈发布或互动任务。",
+      detail: "到今日计划里安排给客户发消息或发朋友圈。",
       status: "待安排",
       target: "workflow",
       action: "安排今日任务"
@@ -499,7 +497,7 @@ function buildProductionView(snapshot: ProductionSnapshot) {
   const value = (count: string | null) => snapshot.loading ? "—" : count === null ? "—" : count;
   const metrics: Metric[] = [
     { label: "素材仓库", value: value(snapshot.assets), unit: snapshot.assets === null ? undefined : "份", detail: "当前可用图片与视频素材", icon: Folder },
-    { label: "待处理制作", value: value(snapshot.tasks), unit: snapshot.tasks === null ? undefined : "项", detail: snapshot.openTasks === null ? "尚未读取制作状态" : `${snapshot.openTasks} 项需要确认或处理 · 按制作批次统计`, icon: Clapperboard },
+    { label: "待完成视频", value: value(snapshot.tasks), unit: snapshot.tasks === null ? undefined : "项", detail: snapshot.openTasks === null ? "尚未读取制作状态" : `${snapshot.openTasks} 项需要你确认或处理`, icon: Clapperboard },
     { label: "可用成片", value: value(snapshot.finished), unit: snapshot.finished === null ? undefined : "条", detail: "本地文件仍可访问的成片", icon: Video }
   ];
   const latest = snapshot.latestTask;
@@ -521,18 +519,17 @@ function buildProductionView(snapshot: ProductionSnapshot) {
   return { metrics, importantTask };
 }
 
-function buildOperationsView(name: string) {
+function buildOperationsView() {
   const metrics: Metric[] = [
-    { label: "账号管理", value: "可使用", detail: "可进入账号管理页面", icon: UserRound },
-    { label: "渠道发布", value: "待连接", detail: "当前没有已接通发布渠道", icon: Send },
-    { label: "数据回流", value: "待连接", detail: "当前没有可读取渠道数据", icon: BarChart3 }
+    { label: "关键词获客", value: "可进入", detail: "打开现有关键词任务", icon: Sparkles },
+    { label: "产品详情图", value: "可进入", detail: "打开现有详情图制作", icon: Sparkles }
   ];
   const importantTask: ImportantTask = {
-    title: "连接第一个渠道账号",
-    detail: `完成账号连接后，${name}才能承接发布、检查与数据复盘任务。`,
-    status: "待连接",
-    target: "accounts",
-    action: "前往账号管理"
+    title: "从客户需求开始",
+    detail: "先看看客户在找什么，再准备适合的产品图片。",
+    status: "待开始",
+    target: "keyword-acquisition",
+    action: "查看关键词获客"
   };
   return { metrics, importantTask };
 }
@@ -562,7 +559,7 @@ export function AgentHome({
   const view = useMemo(() => {
     if (role === "agent") return buildWechatView(workflowState, workflowLoading, contactCount);
     if (role === "production") return buildProductionView(snapshot);
-    return buildOperationsView(preference.name);
+    return buildOperationsView();
   }, [contactCount, role, snapshot, workflowLoading, workflowState, preference.name]);
   const status = roleStatus(role, workflowState, workflowLoading, snapshot);
   const RoleIcon = role === "agent" ? UsersRound : role === "production" ? Sparkles : RadioTower;
@@ -579,8 +576,8 @@ export function AgentHome({
             <span aria-hidden="true" />
             {status}
           </div>
-          <h1>你好，我是{definition.name}</h1>
-          <h2>{definition.responsibility}，交给我来协助</h2>
+          <h1>我是{definition.name}</h1>
+          <h2>{definition.responsibility}</h2>
           <p>{definition.intro}</p>
           <button type="button" className="agent-primary-action" onClick={() => onOpen(definition.primaryTarget)}>
             <RoleIcon size={18} strokeWidth={2.4} />
@@ -589,51 +586,14 @@ export function AgentHome({
           </button>
         </div>
 
-        <aside className="agent-phone-connect" aria-label="手机连接状态">
-          <div className="agent-phone-heading">
-            <Smartphone size={22} strokeWidth={2.2} />
-            <div><strong>手机连接</strong><span>开发中</span></div>
-          </div>
-          <div className="agent-phone-visual" aria-hidden="true">
-            <Smartphone size={34} strokeWidth={1.8} />
-            <span><Link2 size={16} strokeWidth={2.2} /></span>
-          </div>
-          <p>正式开放后，可在这里绑定手机微信并向数字员工下达任务。</p>
-        </aside>
       </section>
 
-      <MetricStrip metrics={view.metrics} />
-
-      <div className="agent-work-grid">
-        <section className="agent-important-task">
-          <div className="agent-section-heading">
-            <div><ListTodo size={20} strokeWidth={2.3} /><h2>当前最重要任务</h2></div>
-            <span>{view.importantTask.status}</span>
-          </div>
-          <h3>{view.importantTask.title}</h3>
-          <p>{view.importantTask.detail}</p>
-          {role === "agent" && (
-            <div className="agent-development-note">
-              <span>客户价值分析</span>
-              <strong>开发中</strong>
-              <small>后续将综合互动频率、最近互动、客户回应与任务结果。</small>
-            </div>
-          )}
-          {role === "production" && snapshot.error && (
-            <button type="button" className="agent-text-action" onClick={() => void refresh()}>重新读取内容数据</button>
-          )}
-          <button type="button" className="agent-task-action" onClick={() => role === "production" && snapshot.latestTask ? onOpenProduction(snapshot.latestTask) : onOpen(view.importantTask.target)}>
-            {view.importantTask.action}<ArrowRight size={16} strokeWidth={2.4} />
-          </button>
-        </section>
-
-        <section className="agent-capabilities">
-          <div className="agent-section-heading">
-            <div><Sparkles size={20} strokeWidth={2.3} /><h2>{definition.name}的工作台</h2></div>
-            <span>{definition.capabilities.filter((item) => item.available !== false).length} 项可用</span>
-          </div>
-          <div className="agent-capability-list">
-            {definition.capabilities.map((capability) => {
+      <section className="agent-capabilities">
+        <div className="agent-section-heading">
+          <div><Sparkles size={20} strokeWidth={2.3} /><h2>这里可以做什么</h2></div>
+        </div>
+        <div className="agent-capability-list">
+          {definition.capabilities.map((capability) => {
               const Icon = capability.icon;
               const available = capability.available !== false;
               return (
@@ -648,9 +608,26 @@ export function AgentHome({
                   {available ? <ArrowRight size={16} strokeWidth={2.3} /> : <em>待连接</em>}
                 </button>
               );
-            })}
+          })}
+        </div>
+      </section>
+
+      <div className="agent-work-grid">
+        <section className="agent-important-task">
+          <div className="agent-section-heading">
+            <div><ListTodo size={20} strokeWidth={2.3} /><h2>接下来做什么</h2></div>
+            <span>{view.importantTask.status}</span>
           </div>
+          <h3>{view.importantTask.title}</h3>
+          <p>{view.importantTask.detail}</p>
+          {role === "production" && snapshot.error && (
+            <button type="button" className="agent-text-action" onClick={() => void refresh()}>重新读取内容数据</button>
+          )}
+          <button type="button" className="agent-task-action" onClick={() => role === "production" && snapshot.latestTask ? onOpenProduction(snapshot.latestTask) : onOpen(view.importantTask.target)}>
+            {view.importantTask.action}<ArrowRight size={16} strokeWidth={2.4} />
+          </button>
         </section>
+        <MetricStrip metrics={view.metrics} />
       </div>
     </div>
   );

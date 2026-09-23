@@ -51,7 +51,14 @@ export function useRolePreferences() {
     let updated = false;
     const receive = (result: PreferenceResult) => {
       if (disposed) return;
-      if (result.ok && result.data) { setPreferences(result.data); setError(""); }
+      if (result.ok && result.data) {
+        const legacyNames: Partial<Record<AgentRoleKey, string>> = { agent: "小玺", production: "小惠", operations: "小联" };
+        setPreferences(Object.fromEntries(Object.entries(result.data).map(([key, value]) => [key, {
+          ...value,
+          name: value.name === legacyNames[key as AgentRoleKey] ? ROLE_CATALOG[key as AgentRoleKey].name : value.name
+        }])) as RolePreferences);
+        setError("");
+      }
       else setError(result.error || "暂时无法读取角色设置");
     };
     const unsubscribe = api.onUpdate((result) => { updated = true; receive(result); });
