@@ -7,6 +7,15 @@ const {
 async function main() {
   assert.deepEqual(contactSalutation({ remark: "张总" }), { type: "title", value: "张总" });
   assert.deepEqual(contactSalutation({ remark: "李经理" }), { type: "title", value: "李经理" });
+  for (const [remark, expected] of [
+    ["刘国强总", "刘总"], ["王建国经理", "王经理"], ["李白老师", "李老师"],
+    ["物业管理公司总经理", ""], ["华东区域经理", ""],
+    ["张伟经理", "张经理"], ["保洁部陈主任", "陈主任"], ["王总", "王总"],
+    ["小李", ""], ["张三", ""]
+  ]) {
+    assert.deepEqual(contactSalutation({ remark }), expected
+      ? { type: "title", value: expected } : { type: "generic", value: "" }, remark);
+  }
   for (const contact of [
     { name: "黄佳佳" }, { remark: "欧阳娜娜" },
     { nickname: "产品服务顾问森妮19101706971" }, { remark: "上海星辰科技13800138000" }

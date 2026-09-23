@@ -1,17 +1,22 @@
 const COMMON_SURNAMES = "赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜谢邹喻柏水窦章云苏潘葛奚范彭郎鲁韦昌马苗凤花方俞任袁柳鲍史唐费廉岑薛雷贺倪汤滕殷罗毕郝邬安常乐于时傅皮卞齐康伍余元卜顾孟平黄和穆萧尹姚邵湛汪祁毛禹狄米贝明臧计伏成戴谈宋庞熊纪舒屈项祝董梁杜阮蓝闵席季麻强贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田胡凌霍虞万支柯昝管卢莫经房裘缪干解应宗丁宣邓郁单杭洪包诸左石崔吉龚程邢裴陆荣翁荀羊於惠甄曲家封芮羿储靳汲邴糜松井段富巫乌焦巴弓牧隗山谷车侯宓蓬全郗班仰秋仲伊宫宁仇栾暴甘钭厉戎祖武符刘景詹束龙叶幸司韶郜黎蓟薄印宿白怀蒲邰从鄂索咸籍赖卓蔺屠蒙池乔阴郁胥能苍双闻莘党翟谭贡劳逄姬申扶堵冉宰雍桑寿通燕浦尚农温别庄晏柴瞿阎充慕连茹习宦艾鱼容向古易慎戈廖庾终暨居衡步都耿满弘匡国文寇广禄阙东欧殳沃利蔚越夔隆师巩厍聂晁";
 const PERSON_TITLE_RE = /^[\u4e00-\u9fa5]{1,6}(总|姐|哥|老师|老板|经理|先生|女士|总监|主任)$/;
 const COMPOUND_SURNAMES = /^(欧阳|司马|上官|诸葛|夏侯|东方|皇甫|尉迟|公孙|慕容|长孙|宇文|令狐|独孤|南宫|闻人|轩辕|澹台)/;
-const GENERIC_ENTITY_SUFFIX_RE = /(公司|集团|科技|商贸|实业|中心|工作室|门店|店铺|工厂|部门|团队)$/;
+const GENERIC_ENTITY_SUFFIX_RE = /公司|集团|科技|商贸|实业|中心|工作室|门店|店铺|工厂|部门|团队|区域|部/gu;
 
 function contactSalutation(contact) {
   for (const value of [contact?.remark, contact?.nickname]) {
     const text = String(value || "").normalize("NFKC");
-    const match = text.match(/([\u4e00-\u9fa5]{1,6})(总|经理|总监|主任|老师|老板)(?=$|[\s,，、;；:_-]|\d{6,})/u);
+    const match = text.match(/(?:^|[\s,，、;；:：_—-])([\u4e00-\u9fa5]{1,20})(总|经理|总监|主任|老师|老板)(?=$|[\s,，、;；:：_—-]|\d{6,})/u);
     if (!match) continue;
     const prefix = match[1];
-    const compound = COMPOUND_SURNAMES.test(prefix) ? prefix.match(COMPOUND_SURNAMES)?.[0] : "";
-    const surname = compound || [...prefix].reverse().find((char) => COMMON_SURNAMES.includes(char));
-    if (surname && !GENERIC_ENTITY_SUFFIX_RE.test(prefix)) return { type: "title", value: surname + match[2] };
+    const boundaries = [...prefix.matchAll(GENERIC_ENTITY_SUFFIX_RE)];
+    const lastBoundary = boundaries.at(-1);
+    const name = lastBoundary ? prefix.slice(lastBoundary.index + lastBoundary[0].length) : prefix;
+    const compound = name.match(COMPOUND_SURNAMES)?.[0] || "";
+    if (name.length >= 1 && name.length <= (compound ? 4 : 3)) {
+      const surname = compound || (COMMON_SURNAMES.includes(name[0]) ? name[0] : "");
+      if (surname) return { type: "title", value: surname + match[2] };
+    }
   }
   return { type: "generic", value: "" };
 }
