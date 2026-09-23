@@ -1,24 +1,34 @@
 const COMMON_SURNAMES = "赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜谢邹喻柏水窦章云苏潘葛奚范彭郎鲁韦昌马苗凤花方俞任袁柳鲍史唐费廉岑薛雷贺倪汤滕殷罗毕郝邬安常乐于时傅皮卞齐康伍余元卜顾孟平黄和穆萧尹姚邵湛汪祁毛禹狄米贝明臧计伏成戴谈宋庞熊纪舒屈项祝董梁杜阮蓝闵席季麻强贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田胡凌霍虞万支柯昝管卢莫经房裘缪干解应宗丁宣邓郁单杭洪包诸左石崔吉龚程邢裴陆荣翁荀羊於惠甄曲家封芮羿储靳汲邴糜松井段富巫乌焦巴弓牧隗山谷车侯宓蓬全郗班仰秋仲伊宫宁仇栾暴甘钭厉戎祖武符刘景詹束龙叶幸司韶郜黎蓟薄印宿白怀蒲邰从鄂索咸籍赖卓蔺屠蒙池乔阴郁胥能苍双闻莘党翟谭贡劳逄姬申扶堵冉宰雍桑寿通燕浦尚农温别庄晏柴瞿阎充慕连茹习宦艾鱼容向古易慎戈廖庾终暨居衡步都耿满弘匡国文寇广禄阙东欧殳沃利蔚越夔隆师巩厍聂晁";
+const TOP_SURNAMES = new Set("王李张刘陈杨黄赵吴周徐孙马朱胡郭何高林罗郑梁谢宋唐许韩冯邓曹彭曾肖田董袁潘于蒋蔡余杜叶程苏魏吕丁任沈姚卢姜崔钟谭陆汪范金石廖贾夏韦付方白邹孟熊秦邱江尹薛闫段雷侯龙史陶黎贺顾毛郝龚邵万钱严覃武戴莫孔向汤");
+const SURNAMES = new Set([...COMMON_SURNAMES, ...TOP_SURNAMES]);
+const TWO_CHAR_STOPWORDS = new Set("高级 高中 高一 高二 高三 高管 高工 高端 金牌 金店 金融 白金 黄金 石油 石材 林业 龙头 韩语 马上 周末 江湖 钱包 方案 程序 田园 何时 汤锅 孔雀".split(" "));
 const PERSON_TITLE_RE = /^[\u4e00-\u9fa5]{1,6}(总|姐|哥|老师|老板|经理|先生|女士|总监|主任)$/;
 const COMPOUND_SURNAMES = /^(欧阳|司马|上官|诸葛|夏侯|东方|皇甫|尉迟|公孙|慕容|长孙|宇文|令狐|独孤|南宫|闻人|轩辕|澹台)/;
-const GENERIC_ENTITY_SUFFIX_RE = /公司|集团|科技|商贸|实业|中心|工作室|门店|店铺|工厂|部门|团队|区域|部/gu;
+const ENTITY_BOUNDARY_RE = /公司|集团|科技|商贸|实业|中心|工作室|门店|店铺|工厂|部门|团队|区域|部|省|市|县|区/gu;
+const RELATION_RE = /助理|秘书|司机|老公|老婆|爱人|太太|夫人|家属|儿子|女儿|介绍|推荐|朋友|同事|亲戚|的/u;
 
 function contactSalutation(contact) {
-  for (const value of [contact?.remark, contact?.nickname]) {
-    const text = String(value || "").normalize("NFKC");
-    const match = text.match(/(?:^|[\s,，、;；:：_—-])([\u4e00-\u9fa5]{1,20})(总|经理|总监|主任|老师|老板)(?=$|[\s,，、;；:：_—-]|\d{6,})/u);
-    if (!match) continue;
-    const prefix = match[1];
-    const boundaries = [...prefix.matchAll(GENERIC_ENTITY_SUFFIX_RE)];
-    const lastBoundary = boundaries.at(-1);
-    const name = lastBoundary ? prefix.slice(lastBoundary.index + lastBoundary[0].length) : prefix;
-    const compound = name.match(COMPOUND_SURNAMES)?.[0] || "";
-    if (name.length >= 1 && name.length <= (compound ? 4 : 3)) {
-      const surname = compound || (COMMON_SURNAMES.includes(name[0]) ? name[0] : "");
-      if (surname) return { type: "title", value: surname + match[2] };
-    }
+  const remark = String(contact?.remark || "").normalize("NFKC").trim();
+  const text = remark || String(contact?.nickname || "").normalize("NFKC").trim();
+  const generic = { type: "generic", value: "" };
+  if (!text || RELATION_RE.test(text)) return generic;
+  const match = text.match(/(?:^|[\s,，、;；:：_·/|\p{Pd}−])([\u4e00-\u9fa5]{1,20}?)(总经理|总监|总|经理|主任|老师|老板)(?=$|[\s,，、;；:：_·/|\p{Pd}−]|\d{6,})/u);
+  if (!match) return generic;
+  const prefix = match[1];
+  const boundary = [...prefix.matchAll(ENTITY_BOUNDARY_RE)].at(-1);
+  const name = boundary ? prefix.slice(boundary.index + boundary[0].length) : prefix;
+  let surname = "";
+  const compound = name.match(COMPOUND_SURNAMES)?.[0] || "";
+  if (compound && name.length <= 4) surname = compound;
+  else if (name.length === 1 && SURNAMES.has(name)) surname = name;
+  else if (name.length === 2) {
+    if ("小老阿".includes(name[0]) && SURNAMES.has(name[1])) surname = name[1];
+    else if (TOP_SURNAMES.has(name[0]) && !TOP_SURNAMES.has(name[1]) && !TWO_CHAR_STOPWORDS.has(name)) surname = name[0];
+  } else if (name.length === 3) {
+    if (TOP_SURNAMES.has(name[0]) && !TOP_SURNAMES.has(name[2])) surname = name[0];
+    else if (!SURNAMES.has(name[0]) && TOP_SURNAMES.has(name[2])) surname = name[2];
   }
-  return { type: "generic", value: "" };
+  return surname ? { type: "title", value: surname + (match[2] === "总经理" ? "总" : match[2]) } : generic;
 }
 
 function timeGreeting(at = new Date()) {
