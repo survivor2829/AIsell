@@ -147,3 +147,10 @@
 **T10a 变基时注意**：T10a 把 `popup_candidate_count` 放在 `searchEvidence.ocr_observation` 里，而 `finiteSearchEvidence` 只读顶层字段，真实运行时这个字段取不到。T10a 变基时，把它提到 `searchEvidence` 顶层（只放数字）。
 
 **自测**：`C:\Users\Scott\AppData\Local\Temp\xiaoxi-rv5\scratch\t5r4\probe-r008-plaintext-leak.cjs`，用法 `node probe-r008-plaintext-leak.cjs <你的工作区>`，三项都必须输出 false。变异用同目录的 `mutate.cjs mutations-r4.json`，并用环境变量 `WT=<你的工作区>` 指定工作区，M5g、M5b、M5f 都必须被发现。
+
+## 六审（b35b45a）：通过，已合并（2026-09-24，合并提交 `fe37554`）
+
+- 隐私回归已修：r008 和 r014 两种情况下，任务行、passport、熔断诊断里都查不到联系人姓名原文。把旧写法（整体展开）放回去，新测试会失败（M5i）。
+- 变异 26 个，抓到 23 个。M4d、M4f 与原代码行为等价，不算问题。唯一的缺口是 M5j：非 r008 分支如果也改成整体展开，测试发现不了。这是只缺测试，已由 Claude 在基线上补上：隐私用例对 r014 也跑一遍，补上后 M5j 能被发现。
+- 独立工作树 `check:self` 和 `build:test` 都通过。与 T9a 合并后的版本 `check:self` 87 项、`build:test` 也都通过。
+- 下一步：T10a 基于本次合并变基，并按三审修改；同时把 `popup_candidate_count` 提到 `searchEvidence` 顶层（见五审"T10a 变基时注意"）。
