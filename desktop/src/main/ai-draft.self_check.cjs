@@ -33,12 +33,16 @@ async function main() {
     "关小龙总", "白酒老板", "高校老师", "万达经理", "李总-财务小刘", "王总 媳妇",
     "东方证券经理", "项目经理", "车间主任", "班主任", "居委会主任", "常务副总",
     "大老板", "Tony王总", "王总(华东)", "介绍人：王总", "王总的助理", "李副总",
-    "小王总", "欧阳总"
+    "小王总", "欧阳总", "付总", "XX公司 付总经理", `王总${" ".repeat(65)}`
   ];
   for (const remark of strictGeneric) {
     assert.deepEqual(contactSalutation({ remark }), { type: "generic", value: "" }, remark);
   }
-  for (const contact of [{ remark: "", nickname: "王总" }, { remark: "客户A", nickname: "王总" }]) {
+  for (const contact of [
+    { remark: "", nickname: "王总" }, { remark: "客户A", nickname: "王总" },
+    { name: "黄佳佳" }, { remark: "欧阳娜娜" },
+    { nickname: "产品服务顾问森妮19101706971" }, { remark: "上海星辰科技13800138000" }
+  ]) {
     assert.deepEqual(contactSalutation(contact), { type: "generic", value: "" });
   }
   for (const [hour, expected] of [[4, "您好"], [8, "早上好"], [12, "中午好"], [16, "下午好"], [20, "晚上好"], [23, "您好"]]) {

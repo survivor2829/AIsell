@@ -1,4 +1,4 @@
-const TOP_SURNAMES = new Set("王李张刘陈杨黄赵吴周徐孙马朱胡郭何高林罗郑梁谢宋唐许韩冯邓曹彭曾肖田董袁潘于蒋蔡余杜叶程苏魏吕丁任沈姚卢姜崔钟谭陆汪范金石廖贾夏韦付方白邹孟熊秦邱江尹薛闫段雷侯龙史陶黎贺顾毛郝龚邵万钱严覃武戴莫孔向汤");
+const TOP_SURNAMES = new Set("王李张刘陈杨黄赵吴周徐孙马朱胡郭何高林罗郑梁谢宋唐许韩冯邓曹彭曾肖田董袁潘于蒋蔡余杜叶程苏魏吕丁任沈姚卢姜崔钟谭陆汪范金石廖贾夏韦方白邹孟熊秦邱江尹薛闫段雷侯龙史陶黎贺顾毛郝龚邵万钱严覃武戴莫孔向汤");
 const PERSON_TITLE_RE = /^[\u4e00-\u9fa5]{1,6}(总|姐|哥|老师|老板|经理|先生|女士|总监|主任)$/;
 const SEP = String.raw`[\s,，、;；:：_·/|\p{Pd}−]`;
 const ORG_END_RE = /(?:公司|集团|科技|商贸|实业|中心|工作室|门店|店铺|工厂|厂|店|部门|部|团队|物业|酒店|医院|学校|大厦|广场|有限|股份|超市|商场|银行|小区|园区|分公司|总部|办事处|事业部|项目部)$/u;
@@ -7,7 +7,9 @@ const SALUTATION_RE = new RegExp(String.raw`^(?:([一-龥A-Za-z0-9]+)${SEP}+)?([
 
 function contactSalutation(contact) {
   const generic = { type: "generic", value: "" };
-  const remark = String(contact?.remark || "").replace(/[\u3200-\u32ff\u2460-\u24ff]/gu, "").normalize("NFKC").trim();
+  const rawRemark = String(contact?.remark || "");
+  if (rawRemark.length > 64) return generic;
+  const remark = rawRemark.replace(/[\u3200-\u32ff\u2460-\u24ff]/gu, "").normalize("NFKC").trim();
   if (!remark || RELATION_RE.test(remark)) return generic;
   const match = remark.match(SALUTATION_RE);
   if (!match) return generic;
