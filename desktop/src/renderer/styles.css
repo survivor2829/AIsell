@@ -453,6 +453,12 @@ button:focus-visible {
   white-space: nowrap;
 }
 
+.sub-nav-label .nav-stage-badge {
+  justify-self: start;
+  margin-left: 0;
+  padding: 1px 5px;
+}
+
 .sub-nav-item.active,
 .sub-nav-item:hover {
   background: rgba(255, 255, 255, 0.17);

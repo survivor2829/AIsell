@@ -810,8 +810,7 @@ export default function App() {
                           onClick={() => selectChild(group.key, item.key)}
                         >
                            <span className="sub-agent-avatar" aria-hidden="true"><ChildIcon size={17} strokeWidth={2.5} /></span>
-                           <span className="sub-nav-label"><strong>{item.label}</strong></span>
-                           {!moduleIsAvailable(item.key) && <span className="nav-stage-badge">下一阶段</span>}
+                           <span className="sub-nav-label"><strong>{item.label}</strong>{!moduleIsAvailable(item.key) && <span className="nav-stage-badge">下一阶段</span>}</span>
                         </button>
                       );
                     })}
@@ -1275,7 +1274,7 @@ function Placeholder({ title }: { title: string }) {
       <Bot size={36} />
       <h1>{title}</h1>
       <span className="placeholder-stage">下一阶段开放</span>
-      <p>当前阶段可先使用同步联系人和主动触达。</p>
+      <p>这个功能正在规划中，开放后会在更新公告里通知。</p>
     </section>
   );
 }
