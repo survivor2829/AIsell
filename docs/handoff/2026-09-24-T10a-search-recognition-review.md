@@ -182,3 +182,37 @@
 5. **UIA 路径**：微信 4.1 实测不暴露 UIA 候选（30 次都是 0 个）。结果文件里写明 UIA 路径保持基线行为；把那条测试改成生产环境真实会出现的输入形状。
 6. **历史里不能留真实备注**：5d1b4e6 的 9-20 夹具里有一个和本机联系人备注完全相同的名字。分支还没推送，请把本分支整理成从 9d77c2d 起步的提交，确保历史里任何一个提交都不含这个名字。那个夹具如果已经没用了，就直接删掉。
 7. **合并顺序**：T5 先合，本分支再变基到合并后的基线。resolver 冲突时，保留 T5 的证据输出。
+
+## 三审（51a7063）：最后一轮小修（同一分支；T5 合并后变基）
+
+**已做对**：
+- 20 个攻击场景和 G8 一次都没点，日志和参考实现逐字节相同；
+- 32 条样例全部正确，非好友都返回 r015；
+- 随机压力测试点错 0 次；
+- 新测试在基线上都会失败；
+- 历史已经整理干净。
+
+**必须修**
+1. **【按名字搜索时会点错人】** 加固 (a) 只在按微信号搜索时生效（返回 r011）。按名字搜索时，不可信的"搜索网络结果"行仍然被当作分界，把下面第二个人的"微信号"行截掉，原本应该判 r007 的歧义变成了"唯一"。后面的会话标题核对会拦住，不会真的发错，但必须修。
+   - 修法：弹窗路径里，任何查询类型只要出现 `untrusted_network_boundary`，就在跑基线逻辑之前直接返回 r011。
+   - 补一条按名字搜索的用例。
+2. **加固 (b) 要做到"只会更严"**：可疑行检查要同时查原始行和合并后的行。合并时排除头像列的碎片（弹窗第 60 列以内、在名字列左边），以免"头像乱码 + 微信号"被误判成可疑行，导致好友认不出来。
+3. **证据**：
+   - `search_columns` 也要包括已经被 PowerShell 移进 `webSearchCandidates` 的行。现在 16 条弹窗样例里有 15 条是空的。
+   - 没找到弹窗时，resolver 也要输出 `capture_source` 和 `popup_candidate_count`。
+   - 测试要覆盖 DPI 换算。
+4. **PowerShell 回放要跑到真实代码**：
+   - 回放从 `$popup = Find-SearchPopup` 开始，一直到生产环境的输出行。
+   - 把 Find-SearchPopup 替换成返回假弹窗（例如 left=300、top=200、dpi=120），断言：词位置按弹窗左边换算，`popupBounds`、`popupDpi`、`captureSource`、`popupCandidateCount` 都正确。
+   - 再跑一次让它返回 `$null`，断言得到 `formula_crop`，且 `popupBounds` 为 null。
+5. **测试要用生产环境的输入形状**：样例和测试矩阵里的每一行，先经过 PS 匹配器（或 `isNetworkSearchLabel`）分进 `webSearchCandidates`，再断言 28 位好友、4 个非好友的结果仍然成立。变异 R9d（合并时漏掉 `webSearchCandidates`）必须被测试发现。
+6. 小项：Find-SearchPopup 的离线测试补齐类名过滤、6 个位置边界、高度和 DPI 值。
+
+**自测**：提交前，先用审查脚本跑一遍：
+- 目录：`C:\Users\Scott\AppData\Local\Temp\xiaoxi-rv5\scratch\t10a-r3-safety\`，含 `fuzz_diff.cjs` 和 `res_fix.cjs`（第 1、2 条修法的验证）；
+- 目录：`C:\Users\Scott\AppData\Local\Temp\xiaoxi-rv5\scratch\t10a-safety\`，含 `attacks.cjs`、`replay_fixture.cjs`、`fuzz_wrongrow.cjs`，设 `RV_TREE` 指向你自己的工作区（lib.cjs 里的根路径要改成你的）。
+
+要求：
+- 攻击场景 0 次点击；
+- 28/4 全部正确；
+- `fuzz_diff` 里的 tOnly = 0。
