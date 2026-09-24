@@ -216,11 +216,12 @@ function labelledWechatIdCandidates(candidates, query, webSearchTop) {
   });
 }
 
+const NETWORK_SEARCH_LABELS = Object.freeze(["搜一搜", "网络搜索", "搜索网络", "搜索网络结果"]);
+
 function isNetworkSearchLabel(candidate, query) {
   const text = normalized(candidate?.text).replace(/^[^\p{L}\p{N}]{1,2}/u, "");
   const expectedQuery = normalized(query);
-  const labels = ["搜一搜", "网络搜索", "搜索网络", "搜索网络结果"];
-  for (const label of labels) {
+  for (const label of NETWORK_SEARCH_LABELS) {
     if (text === label || (expectedQuery && text === `${label}${expectedQuery}`)) return true;
   }
   return false;
@@ -375,7 +376,7 @@ function uniqueWechatIdLocalSurface(candidates, webCandidate, query) {
   };
 }
 
-function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
+function resolveBaselineObservation(observation = {}, identity = {}) {
   const reject = (rule_id, reason = "search_result_identity_unverified") => ({
     status: reason === "exact_search_result_not_found" ? "not_found" : "unverified", reason, rule_id,
     diagnostics: { rule_id, candidate_count: distinctCandidates(observation.uiaCandidates).length,
@@ -511,8 +512,83 @@ function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
   return reject("search-r015", "exact_search_result_not_found");
 }
 
+const POPUP_NETWORK_LABEL = "搜索网络结果";
+const isUnsafeVisualText = (value) => normalized(value).includes("查找")
+  || (normalized(value).includes("微信号") && !normalized(value).startsWith("微信号"));
+const foldedWechatId = (value) => normalized(value).replace(/[|il1]/gu, "1").replace(/[o0]/gu, "0");
+
+function resolveWechatSearchResultObservation(observation = {}, identity = {}) {
+  const reject = (rule_id, reason = "search_result_identity_unverified") => ({
+    status: reason === "exact_search_result_not_found" ? "not_found" : "unverified", reason, rule_id,
+    diagnostics: { rule_id, candidate_count: 0,
+      visual_candidate_count: (observation.visualCandidates || []).length, ocr_ok: observation.ocrOk === true }
+  });
+  const superstringVeto = (obs, result) => {
+    if (result.status !== "selected" || identity.queryType !== "wechat_id") return result;
+    const query = foldedWechatId(identity.query);
+    const longerId = (obs.visualCandidates || []).some((line) => {
+      const match = normalized(line.text).match(/^微信号[:：]?(.+)$/u);
+      return match && foldedWechatId(match[1]).includes(query) && foldedWechatId(match[1]).length > query.length;
+    });
+    return longerId ? reject("search-r014") : result;
+  };
+  const popup = validRectangle(observation.popupBounds);
+  const dpi = Number(observation.popupDpi);
+  if (!popup || !(dpi > 0)) return superstringVeto(observation, resolveBaselineObservation(observation, identity));
+
+  const column = (left) => (Number(left) - popup.left) / (dpi / 96);
+  const all = [...(observation.visualCandidates || []), ...(observation.webSearchCandidates || [])];
+  const visual = [];
+  const web = [];
+  const searchColumns = [];
+  for (const line of all) {
+    const words = Array.isArray(line.words) ? line.words : [];
+    const wordIndex = words.findIndex((_, index) => words.slice(index, index + 6)
+      .map((word) => normalized(word.text)).join("") === POPUP_NETWORK_LABEL);
+    if (wordIndex >= 0) searchColumns.push(column(words[wordIndex].left));
+    const text = normalized(line.text);
+    if (text.endsWith(POPUP_NETWORK_LABEL)) {
+      if ([...text.slice(0, -POPUP_NETWORK_LABEL.length)].length <= 4
+        && wordIndex >= 0 && Math.abs(column(words[wordIndex].left) - 62) <= 8) {
+        web.push({ ...line, text: POPUP_NETWORK_LABEL, left: words[wordIndex].left });
+      } else web.push({ ...line, text: "untrusted_network_boundary" });
+    } else visual.push(line);
+  }
+  const classified = { ...observation, visualCandidates: visual, webSearchCandidates: web,
+    webSearchTop: web.length ? Math.min(...web.map((line) => Number(line.top))) : null };
+  const result = resolveBaselineObservation(classified, identity);
+  const withEvidence = (decision) => ({ ...decision, diagnostics: { ...decision.diagnostics,
+    capture_source: String(observation.captureSource || "formula_crop"),
+    popup_bounds: popup, popup_dpi: dpi, search_columns: searchColumns } });
+
+  const headers = visual.filter((line) => isLocalContactSection(line.text) && column(line.left) >= 30 && column(line.left) <= 56);
+  if (!headers.length) {
+    if (result.status === "selected" || (web.length && result.rule_id === "search-r014")) {
+      return withEvidence(reject("search-r015", "exact_search_result_not_found"));
+    }
+    return withEvidence(result);
+  }
+  if (result.status !== "selected") return withEvidence(result);
+  const candidate = result.candidate;
+  const header = headers.filter((line) => Number(line.bottom) <= Number(candidate.top) + 2)
+    .sort((left, right) => Number(right.top) - Number(left.top))[0];
+  if (!header) return withEvidence(reject("search-r014"));
+  if (visual.some((line) => isOtherSearchSection(line.text)
+    && Number(line.top) >= Number(header.bottom) - 2 && Number(line.bottom) <= Number(candidate.top) + 2)) {
+    return withEvidence(reject("search-r014"));
+  }
+  const sectionEnd = Math.min(classified.webSearchTop ?? Infinity,
+    ...visual.filter((line) => isOtherSearchSection(line.text) && Number(line.top) >= Number(header.bottom) - 2)
+      .map((line) => Number(line.top)));
+  if (mergeVisualLines(visual).some((line) => isUnsafeVisualText(line.text)
+    && Number(line.top) >= Number(header.bottom) - 2 && Number(line.bottom) <= sectionEnd)) {
+    return withEvidence(reject("search-r014"));
+  }
+  return withEvidence(superstringVeto(classified, result));
+}
+
 function isVerifiedWechatSearchResultMode(mode) {
   return ["unique_local_uia", "identity_matched_uia", "exact_wechat_id_visual", "unique_local_visual", "exact_wechat_id_local_visual", "unique_local_surface_visual", "unique_local_wechat_id_uia", "unique_local_wechat_id_visual"].includes(mode);
 }
 
-module.exports = { isVerifiedWechatSearchResultMode, resolveWechatSearchResultObservation };
+module.exports = { NETWORK_SEARCH_LABELS, isNetworkSearchLabel, isVerifiedWechatSearchResultMode, resolveWechatSearchResultObservation };

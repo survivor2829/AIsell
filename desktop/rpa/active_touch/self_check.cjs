@@ -28,7 +28,7 @@ const {
 const { executeVerifiedContactSend, refreshRealSendSession, sendReal, setRealSendArm, verifyMessageBubble, verifyRealSendSession } = require("./state_machine.dev.cjs");
 const { prepareMomentsDryRun, preferredVisibleMomentsPost, probeWechatMomentsWindow } = require("./moments_dry_run.dev.cjs");
 const { openWechatSearchResult, runPowerShellAsync } = require("./wechat_window_driver.cjs");
-const { isVerifiedWechatSearchResultMode, resolveWechatSearchResultObservation } = require("./wechat_search_result_resolver.cjs");
+const { isNetworkSearchLabel, isVerifiedWechatSearchResultMode, resolveWechatSearchResultObservation } = require("./wechat_search_result_resolver.cjs");
 const { normalizeAtomicSendResult } = require("./wechat_window_driver.dev.cjs");
 const {
   authorizeNextBatch,
@@ -103,7 +103,225 @@ function preparedWechatWindow(pid = 81, hWnd = 91) {
   };
 }
 
+function checkSearchRecognitionMatrix() {
+  const fixture = require("./fixtures/2026-09-24-T10a-dryrun-fixture.json").cases;
+  const make = (sample) => ({
+    uiaCandidates: [], ocrOk: true, cropBounds: sample.cropBounds,
+    popupBounds: { left: sample.popup.left, top: sample.popup.top,
+      right: sample.popup.left + sample.popup.width, bottom: sample.popup.top + sample.popup.height },
+    popupDpi: sample.dpi, captureSource: sample.source,
+    visualCandidates: sample.lines.map((line) => ({ ...structuredClone(line),
+      x: Math.round((line.left + line.right) / 2), y: Math.round((line.top + line.bottom) / 2) })),
+    webSearchCandidates: [], webSearchTop: null
+  });
+  const friend = fixture.find((sample) => sample.id === "dpi100-friend0-popup-23");
+  const friend125 = fixture.find((sample) => sample.id === "dpi125-friend0-popup-16");
+  const exactId = fixture.find((sample) => sample.id === "dpi125-friend0-popup-16");
+  const identity = (sample) => ({ query: sample.query, expectedName: sample.expectedName, queryType: "wechat_id" });
+  const rejectMutation = (label, sample, mutate) => {
+    const observation = make(sample);
+    mutate(observation);
+    assert.notEqual(resolveWechatSearchResultObservation(observation, identity(sample)).status, "selected", label);
+  };
+  for (const sample of [friend, friend125]) {
+    for (const avatarText of ["群聊", "群聊龘"]) {
+      rejectMutation(`group only ${sample.id} ${avatarText}`, sample, (o) => { o.visualCandidates[0].text = avatarText; });
+    }
+  }
+  rejectMutation("network lookup with chat history section", friend, (o) => {
+    o.visualCandidates[0].text = "聊天记录";
+    o.visualCandidates[1].text = "网络过找微信号.";
+  });
+  rejectMutation("two name rows without secondary lines", friend, (o) => {
+    o.visualCandidates[2].text = "好友乙";
+    o.visualCandidates[2].top = 160;
+    o.visualCandidates[2].bottom = 174;
+    o.visualCandidates[2].y = 167;
+  });
+  rejectMutation("A name and nickname before B", friend, (o) => {
+    const name = o.visualCandidates[1];
+    o.visualCandidates.splice(2, 0, { ...name, text: "昵称甲", top: name.bottom + 2, bottom: name.bottom + 14,
+      y: name.bottom + 8 });
+  });
+  rejectMutation("group section between contact header and identity row", friend125, (o) => {
+    o.visualCandidates[3].top = 130;
+    o.visualCandidates[3].bottom = 140;
+    o.visualCandidates[3].y = 135;
+    o.uiaCandidates = [{ ...o.visualCandidates[1], name: friend125.expectedName }];
+  });
+  rejectMutation("contact heading below the candidate", friend125, (o) => {
+    o.visualCandidates[0].top = 200; o.visualCandidates[0].bottom = 214; o.visualCandidates[0].y = 207;
+    o.uiaCandidates = [{ ...o.visualCandidates[1], name: friend125.expectedName }];
+  });
+  rejectMutation("lookup line shifted below unreadable icon", friend, (o) => {
+    o.visualCandidates[0].text = "群聊";
+    o.visualCandidates[1].text = "网络过找微信号.";
+    o.visualCandidates.push({ ...o.visualCandidates[0], text: "龘", top: 103, bottom: 114, y: 108 });
+  });
+  const suspiciousNameSearch = make(friend);
+  const sameRow = suspiciousNameSearch.visualCandidates[1];
+  suspiciousNameSearch.visualCandidates.push({ ...sameRow, text: "网络查找", left: sameRow.right + 2,
+    right: sameRow.right + 62, x: sameRow.right + 32 });
+  assert.notEqual(resolveWechatSearchResultObservation(suspiciousNameSearch,
+    { query: friend.expectedName, expectedName: friend.expectedName, queryType: "name" }).status, "selected",
+  "name search must reject a suspicious fragment on the candidate row");
+  rejectMutation("search word outside 62 +/- 8", friend, (o) => {
+    o.visualCandidates.find((line) => line.text.includes("搜 索 网 络 结 果")).words.find((word) => word.text === "搜").left += 9;
+  });
+  rejectMutation("long icon prefix", friend, (o) => {
+    o.visualCandidates.find((line) => line.text.includes("搜 索 网 络 结 果")).text = "abcde搜索网络结果";
+  });
+  rejectMutation("local heading required", friend, (o) => { o.visualCandidates.shift(); });
+  const noHeadingObservation = make(friend);
+  noHeadingObservation.visualCandidates.shift();
+  assert.deepEqual(noHeadingObservation.uiaCandidates, [], "the production WeChat 4.1 observation has no UIA candidates");
+  assert.notEqual(resolveWechatSearchResultObservation(noHeadingObservation, identity(friend)).status, "selected");
+  rejectMutation("extra readable WeChat ID characters", exactId, (o) => {
+    o.visualCandidates[2].text = `微信号：${exactId.query}x`;
+  });
+  const longerWithoutPopup = make(exactId);
+  longerWithoutPopup.popupBounds = null;
+  longerWithoutPopup.visualCandidates[2].text = `微信号：${exactId.query}x`;
+  assert.notEqual(resolveWechatSearchResultObservation(longerWithoutPopup, identity(exactId)).status, "selected",
+    "readable longer WeChat ID veto applies without popup geometry");
+  rejectMutation("unsafe fragments on one visual row", friend, (o) => {
+    const name = o.visualCandidates[1];
+    name.text = "网络查我"; name.right = name.left + 35;
+    o.visualCandidates.push({ text: `微信号：${friend.query}`, left: name.right + 2,
+      right: name.right + 130, top: name.top, bottom: name.bottom, x: name.right + 66, y: name.y });
+  });
+  const noisyFormula = fixture.find((sample) => sample.id === "dpi100-friend0-formula_crop-7");
+  const noPopup = make(noisyFormula);
+  noPopup.popupBounds = null;
+  noPopup.popupCandidateCount = 2;
+  assert.equal(resolveWechatSearchResultObservation(noPopup, identity(noisyFormula)).rule_id, "search-r008",
+    "without popup geometry, noisy long labels must use baseline exact matching");
+  const exactFormula = fixture.find((sample) => sample.id === "dpi125-friend0-formula_crop-0");
+  const exactWithoutPopup = make(exactFormula);
+  exactWithoutPopup.popupBounds = null;
+  assert.equal(resolveWechatSearchResultObservation(exactWithoutPopup, identity(exactFormula)).status, "selected",
+    "without popup geometry, baseline exact boundary still works");
+  const fallbackResult = openWechatSearchResult(noisyFormula.query, { pid: 11, hWnd: "22",
+    searchIdentity: identity(noisyFormula), searchQueryType: "wechat_id",
+    runner: () => ({ ok: true, pid: 11, hWnd: "22", searchResultObservation: noPopup }) });
+  assert.equal(fallbackResult.searchEvidence.capture_source, "formula_crop");
+  assert.equal(fallbackResult.searchEvidence.ocr_observation.popup_candidate_count, 2);
+  const popupEvidence = openWechatSearchResult(friend.query, { pid: 11, hWnd: "22",
+    searchIdentity: identity(friend), searchQueryType: "wechat_id",
+    runner: () => ({ ok: true, pid: 11, hWnd: "22", searchResultObservation: { ...make(friend), popupCandidateCount: 1 } }),
+    clickRunner: () => ({ ok: true, exactSearchOpened: true }) });
+  assert.equal(popupEvidence.searchEvidence.ocr_observation.capture_source, friend.source);
+  assert.equal(popupEvidence.searchEvidence.ocr_observation.popup_dpi, friend.dpi);
+  assert.equal(popupEvidence.searchEvidence.ocr_observation.popup_candidate_count, 1);
+  assert.deepEqual(popupEvidence.searchEvidence.ocr_observation.popup_bounds, make(friend).popupBounds);
+  assert.ok(popupEvidence.searchEvidence.ocr_observation.search_columns.some((column) => Math.abs(column - 62) <= 8));
+  assert.equal(isNetworkSearchLabel({ text: "〕搜索网络结果" }, friend.query), true);
+  assert.equal(isNetworkSearchLabel({ text: "-js̄搜索网络结果" }, friend.query), false);
+  assert.equal(isNetworkSearchLabel({ text: "搜一搜" }, friend.query), true);
+  assert.equal(isNetworkSearchLabel({ text: "口搜一搜" }, friend.query), false);
+  const resolverSource = fs.readFileSync(require.resolve("./wechat_search_result_resolver.cjs"), "utf8");
+  const mutatedResolve = (needle, replacement) => {
+    assert.ok(resolverSource.includes(needle), `mutation target exists: ${needle}`);
+    const variant = new Module(require.resolve("./wechat_search_result_resolver.cjs"), module);
+    variant.filename = require.resolve("./wechat_search_result_resolver.cjs");
+    variant.paths = module.paths;
+    variant._compile(resolverSource.replace(needle, replacement), variant.filename);
+    return variant.exports.resolveWechatSearchResultObservation;
+  };
+  const mutationClicks = (label, needle, replacement, sample, mutate) => {
+    const observation = make(sample);
+    mutate(observation);
+    assert.equal(mutatedResolve(needle, replacement)(observation, identity(sample)).status, "selected",
+      `${label} removal must make its attack case click`);
+  };
+  mutationClicks("column", "Math.abs(column(words[wordIndex].left) - 62) <= 8", "true", friend, (o) => {
+    o.visualCandidates.find((line) => line.text.includes("搜 索 网 络 结 果")).words.find((word) => word.text === "搜").left += 9;
+  });
+  mutationClicks("prefix length", "[...text.slice(0, -POPUP_NETWORK_LABEL.length)].length <= 4", "true", friend, (o) => {
+    o.visualCandidates.find((line) => line.text.includes("搜 索 网 络 结 果")).text = "abcde搜索网络结果";
+  });
+  mutationClicks("contact header", "if (!headers.length) {", "if (!headers.length) return withEvidence(result); if (false) {", friend,
+    (o) => { o.visualCandidates.shift(); });
+  mutationClicks("other section", "if (visual.some((line) => isOtherSearchSection(line.text)",
+    "if (false && visual.some((line) => isOtherSearchSection(line.text)", friend125, (o) => {
+      o.visualCandidates[3].top = 130; o.visualCandidates[3].bottom = 140; o.visualCandidates[3].y = 135;
+      o.uiaCandidates = [{ ...o.visualCandidates[1], name: friend125.expectedName }];
+    });
+  mutationClicks("nearest heading", "if (!header) return withEvidence(reject(\"search-r014\"));",
+    "if (!header) return withEvidence(result);", friend125, (o) => {
+      o.visualCandidates[0].top = 200; o.visualCandidates[0].bottom = 214; o.visualCandidates[0].y = 207;
+      o.uiaCandidates = [{ ...o.visualCandidates[1], name: friend125.expectedName }];
+    });
+  mutationClicks("visual row", "if (mergeVisualLines(visual).some((line) => isUnsafeVisualText(line.text)",
+    "if (false && mergeVisualLines(visual).some((line) => isUnsafeVisualText(line.text)", friend, (o) => {
+      const name = o.visualCandidates[1];
+      name.text = "网络查我"; name.right = name.left + 35;
+      o.visualCandidates.push({ text: `微信号：${friend.query}`, left: name.right + 2,
+        right: name.right + 130, top: name.top, bottom: name.bottom, x: name.right + 66, y: name.y });
+    });
+  mutationClicks("longer WeChat ID", "return longerId ? reject(\"search-r014\") : result;", "return result;", exactId,
+    (o) => { o.visualCandidates[2].text = `微信号：${exactId.query}x`; });
+  mutationClicks("missing popup fallback", "validRectangle(observation.popupBounds);",
+    "validRectangle(observation.popupBounds || observation.cropBounds);", noisyFormula,
+    (o) => { o.popupBounds = null; });
+  if (process.platform === "win32") {
+    let searchScript = "";
+    openWechatSearchResult(friend.query, { pid: 11, hWnd: "22", searchIdentity: identity(friend),
+      runner: (script) => { searchScript = script; return { ok: false, reason: "workflow_paused" }; } });
+    assert.match(searchScript, /function Find-SearchPopup/u);
+    assert.match(searchScript, /GetDpiForWindow/u);
+    assert.match(searchScript, /words = @\(\$words/u);
+    assert.doesNotMatch(searchScript, /Test-LocalRowsAgree|Read-SearchOcr|recognitionRecoveryCount/u);
+    const matcherStart = searchScript.indexOf("function Test-NetworkSearchLabel");
+    const matcherEnd = searchScript.indexOf("$headers = @(", matcherStart);
+    assert.ok(matcherStart > 0 && matcherEnd > matcherStart);
+    const initialization = searchScript.split(/\r?\n/u).filter((line) =>
+      line.startsWith("$compactQuery =") || line.startsWith("$networkSearchPattern =")).join("\n");
+    const cases = ["搜索网络结果", "〕搜索网络结果", "0搜索网络结果", "Q搜索网络结果",
+      "-js̄搜索网络结果", "搜索网络结杲", "搜索网络结果甲", "搜一搜", "口搜一搜",
+      "𐐀搜索网络结果", "𐒠搜索网络结果", "İ搜索网络结果", "İ搜一搜"];
+    const input = Buffer.from(JSON.stringify(cases), "utf8").toString("base64");
+    const replay = `$ErrorActionPreference='Stop'\n$query='${friend.query}'\n${initialization}\n`
+      + `${searchScript.slice(matcherStart, matcherEnd)}\n`
+      + `$cases=ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${input}')))\n`
+      + `@($cases | ForEach-Object { [bool](Test-NetworkSearchLabel @{text=[string]$_} @()) }) | ConvertTo-Json -Compress`;
+    const replayed = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+      Buffer.from(replay, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, timeout: 10000 });
+    assert.equal(replayed.status, 0, replayed.stderr || replayed.error?.message);
+    assert.deepEqual(JSON.parse(replayed.stdout.trim().replace(/^\uFEFF/u, "")),
+      cases.map((value) => isNetworkSearchLabel({ text: value }, friend.query)),
+      "JavaScript and PowerShell exact matchers must agree on special Unicode prefixes");
+  }
+}
+function checkSearchDryRunFixture() {
+  const cases = require("./fixtures/2026-09-24-T10a-dryrun-fixture.json").cases;
+  assert.equal(cases.length, 32);
+  for (const sample of cases) {
+    const observation = {
+      uiaCandidates: [], ocrOk: true, cropBounds: sample.cropBounds,
+      popupBounds: { left: sample.popup.left, top: sample.popup.top,
+        right: sample.popup.left + sample.popup.width, bottom: sample.popup.top + sample.popup.height },
+      popupDpi: sample.dpi, captureSource: sample.source,
+      visualCandidates: sample.lines.map((line) => ({ ...line,
+        x: Math.round((line.left + line.right) / 2), y: Math.round((line.top + line.bottom) / 2) })),
+      webSearchCandidates: [], webSearchTop: null
+    };
+    const resolution = resolveWechatSearchResultObservation(observation,
+      { query: sample.query, expectedName: sample.expectedName, queryType: "wechat_id" });
+    if (sample.expected.decision === "no_click") {
+      assert.notEqual(resolution.status, "selected", sample.id);
+      assert.equal(resolution.rule_id, "search-r015", `${sample.id} should remain eligible for name fallback`);
+    } else {
+      const target = sample.lines[sample.expected.rowIndex];
+      assert.equal(resolution.status, "selected", sample.id);
+      assert.equal(resolution.candidate.y, Math.round((target.top + target.bottom) / 2), sample.id);
+    }
+  }
+}
+
 (async () => {
+  checkSearchDryRunFixture();
+  checkSearchRecognitionMatrix();
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-active-touch-"));
 
 try {
