@@ -2,6 +2,8 @@
 
 分支：`codex/fix-search-recognition`，从最新的 `codex/fix-apimart-gateway-transport` 拉出。T5 返工与本卡都会改 `wechat_search_result_resolver.cjs`：T5 只加证据输出，本卡只改判定逻辑。两者谁后合并谁负责变基。
 
+> **2026-09-24 审查后修订，以 `-review.md` 为准**：取消 F3；F2 的容错分界只划定本地区范围，不能单独授权点击；新增一条规则：读得出的微信号不等于查询就不点；F4、F5 收紧。
+
 ## 根因（Claude 组织的只读排查已确认，约 95%）
 
 - 用户看到的现象：搜索微信号后，下拉框里明明有这个联系人，程序却显示"正在准备执行下一步"，过一会儿就跳过。
