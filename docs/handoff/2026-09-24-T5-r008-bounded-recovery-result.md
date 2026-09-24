@@ -20,6 +20,18 @@
 
 审查意见第 5 条所述未加盐文本哈希由 T10b 处理；本次未改变 resolver 的判定与证据设计。`candidate_set_hash` 在本机状态和诊断中保存，比较指纹使用它；按原任务卡要求，最终失败记录仍包含这个哈希。若“仅用于本机比较”意指不得进入本地 passport，便与原卡“failure-evidence / passport 增加候选集合哈希”冲突，需在 T10b 统一调整。
 
+## 二审返工（基线 9d77c2d）
+
+- r008 的 `workflow_contact_send` 诊断改为 warn；真实 diagnostics 订阅 passport 的自检确认 2/8/20 秒重试不截图，最终跳过才截 1 次。
+- 熔断写盘前直接清掉当前行的重试次数、旧指纹和任务连续数。测试在熔断后重新加入另一位联系人，回到原熔断联系人时仍先等待 2 秒。
+- 重新加入测试在连续数为 2 时执行，确认清零后两位 r008 不会继承旧熔断计数；熔断后首次读取保留相同哈希。熔断码的 `attention(...)` 调用改为同一行，断言策略 `known=true`、`attentionScope=global`。
+- 人工核对为“已发送”和会话已核验后的发送前跳过均清空连续身份失败计数。非身份跳过清除旧 `rule_id`，防止 run-bill 误计 r008。
+- 图文任务的文字段已发送、图片段 r008 时，保留文字段 `sent_verified`，最终跳过行的原因、响应 `deliveryStatus` 和 run-bill 原因均标为“部分已发送”；后续重试不会重发文字。新完成的消息段会清除旧指纹。
+
+**范围异议与未完成项**：二审第 6 条要求界面列表不显示通用“身份不唯一，已跳过”，但该文案写在 `desktop/src/renderer/WechatWorkflow.tsx`，不在 T5 任务卡的允许文件内。本分支已在 `skip_record.blockedReason` 写明“部分内容已发送”，并在 run-bill 标记，但列表的固定状态标签仍待任务卡扩充文件范围后修改。真实微信发送、异机空跑、发布包均未验证。
+
+二审验证：`node src/main/wechat-workflow.self_check.cjs` 退出码 0，输出 `Workflow checks passed: priority, continuation, daily reset, restart, audience, unknown result, pause, expert drafts.`；`npm.cmd run check:self` 退出码 0，末行 `all source self-checks passed`，其中策略门禁输出 `WeChat failure policy review passed: every added literal reason is classified`；`git diff --check` 退出码 0（仅 LF/CRLF 提示）。
+
 ## 改动
 
 - 第 0 步：最外层异常捕获无条件清理 `recoveredTaskIds`。新增 clicked 后 `attention()` 写盘首次抛 ENOSPC 的故障注入回归。旧代码下首次 `needs_attention` 快照的 `unknownResolution.required` 为 `undefined`；修复后为 `true`，发送次数仍为 1。

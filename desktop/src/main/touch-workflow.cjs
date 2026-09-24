@@ -168,7 +168,9 @@ function createTouchWorkflow(options = {}) {
       if (status === "completed" && task) {
         passport?.writeRunBill("active_touch", id, (task.results || []).map((result, index) => ({
           taskId: `${id}-${Math.max(0, Number(result.contact_index ?? index) || 0)}`, status: result.status,
-          reasonCode: result.skip_record?.reasonCode || result.blocked_reason || result.ai_error_code || "",
+          reasonCode: result.status === "identity_skipped" && result.message_parts?.some((part) => part.status === "sent_verified")
+            ? `partial_sent_${result.skip_record?.reasonCode || "search_result_identity_unverified"}`
+            : result.skip_record?.reasonCode || result.blocked_reason || result.ai_error_code || "",
           ruleId: result.status === "sent_verified" ? "" : result.search_evidence?.rule_id || ""
         })));
       }
@@ -219,13 +221,6 @@ function createTouchWorkflow(options = {}) {
         if (!resumableFreshEdit && !canContinueTouchResult(task.results[task.current_index], multipart)) return response("needs_attention", { error: task.pause_reason || "触达任务需要处理" });
         task.status = "running";
         task.pause_reason = "";
-        if (task.identity_circuit_open === true) {
-          delete task.identity_circuit_open;
-          delete task.identity_skip_streak;
-          const resumed = task.results[task.current_index];
-          resumed.identity_recovery_attempts = 0;
-          if (resumed.search_evidence) delete resumed.search_evidence.fingerprint;
-        }
         if (multipart) task.results[task.current_index].status = "generated";
         persist();
       }
@@ -303,6 +298,7 @@ function createTouchWorkflow(options = {}) {
       current.send_attempted = null;
       persist();
       let result;
+      const verifiedPartsBefore = new Set(current.message_parts?.flatMap((part, partIndex) => part.status === "sent_verified" ? [partIndex] : []) || []);
       const sendOperation = diagnostics().begin("active_touch", "workflow_contact_send", { task_id: id, current_index: index }, { trace: true });
       const passportTaskId = `${id}-${Math.max(0, Number(current.contact_index ?? index) || 0)}`;
       passport?.bindTrace("active_touch", sendOperation.traceId, passportTaskId);
@@ -373,7 +369,8 @@ function createTouchWorkflow(options = {}) {
           });
         } else result = await executePart({ kind: "text", message: current.message }, 0);
         const detail = summarizeSendResult(result);
-        sendOperation.end(detail, { ok: result?.ok === true, code: detail.reason });
+        sendOperation.end(detail, { ok: result?.ok === true, code: detail.reason,
+          ...(identitySkipReason(result) === "search_result_identity_unverified" ? { level: "warn" } : {}) });
       } catch (error) {
         sendOperation.fail(error, { stage: "workflow_contact_send", send_attempted: null });
         task.results[index].status = "outcome_unknown";
@@ -403,6 +400,13 @@ function createTouchWorkflow(options = {}) {
       const notAttempted = result?.send_attempted === false || result?.send_result === "not_attempted";
       if (notAttempted && !["prepared", "clicked", "outcome_unknown"].includes(current.status)) {
         const reasonCode = identitySkipReason(result);
+        const partialSent = current.message_parts?.some((part) => part.status === "sent_verified") === true;
+        const newlyVerifiedPart = current.message_parts?.some((part, partIndex) => part.status === "sent_verified" && !verifiedPartsBefore.has(partIndex)) === true;
+        if (result?.state?.conversation_verified === true || newlyVerifiedPart) {
+          delete task.identity_skip_streak;
+          if (current.search_evidence) delete current.search_evidence.fingerprint;
+        }
+        if (!reasonCode && current.search_evidence) delete current.search_evidence.rule_id;
         const failurePolicy = classifyWechatFailure(result);
         const failureReason = String(result?.blocked_reason || result?.state?.blocked_reason || "");
         const searchDiagnostics = result?.diagnostics || {};
@@ -462,17 +466,19 @@ function createTouchWorkflow(options = {}) {
             current.retry_blocked = false;
             current.send_attempted = false;
             current.updated_at = now().toISOString();
-            task.identity_circuit_open = true;
+            current.identity_recovery_attempts = 0;
+            if (current.search_evidence) delete current.search_evidence.fingerprint;
+            delete task.identity_skip_streak;
             persist();
-            return attention(current.reason, { deliveryStatus: "not_attempted", diagnosticReason: ruleId,
-              diagnostics: current.search_evidence }, "wechat_search_identity_circuit_open");
+            return attention(current.reason, { deliveryStatus: partialSent ? "partial_sent" : "not_attempted", diagnosticReason: ruleId, diagnostics: current.search_evidence }, "wechat_search_identity_circuit_open");
           }
           if (countIdentityFailure) task.identity_skip_streak = { rule_id: ruleId, count: nextStreak };
           poisonSearchCandidate(current, result);
           current.status = "identity_skipped";
-          current.reason = String(result.error || reasonCode) + "，已跳过当前联系人";
+          current.reason = partialSent ? "部分内容已发送，后续内容因搜索结果身份无法确认而跳过；已发送内容不会重发"
+            : String(result.error || reasonCode) + "，已跳过当前联系人";
           current.retry_blocked = true;
-          current.send_attempted = false;
+          current.send_attempted = partialSent;
           current.updated_at = now().toISOString();
           recordSkippedResult(current, index, {
             reasonCode,
@@ -491,7 +497,7 @@ function createTouchWorkflow(options = {}) {
             rawReading: { diagnostics: current.search_evidence }, expected: { identity: "verified_before_click" }
           });
           return response(task.status === "completed" ? "completed" : "pending", {
-            result: { deliveryStatus: "not_attempted", skipped: true, reasonCode }
+            result: { deliveryStatus: partialSent ? "partial_sent" : "not_attempted", skipped: true, reasonCode }
           });
         }
         if (failurePolicy.classification === "environment") {
@@ -640,6 +646,7 @@ function createTouchWorkflow(options = {}) {
       ...(unknown ? { part_index: unknown.index, part_kind: String(unknown.part.kind || "") } : {})
     }];
     current.manual_resolution = resolution;
+    if (resolution === "sent") delete task.identity_skip_streak;
     current.manual_resolved_at = resolvedAt;
     current.awaiting_resolution = false;
     current.reason = MANUAL_RESOLUTION_REASONS[resolution];
