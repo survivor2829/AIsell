@@ -1,6 +1,15 @@
 # T5【P0】search-r008：从"第一次就全局停"改回有界恢复，加熔断和证据
 
-分支：`codex/fix-r008-bounded-recovery`（在 T4 合并后开始，两者都改 `touch-workflow.cjs`）
+分支：`codex/fix-r008-bounded-recovery`，从已合并 T4 的 `codex/fix-apimart-gateway-transport` 拉出（2026-09-24 已合并，合并提交 `1eee65e`）。
+
+## 第 0 步：T4 二审遗留的一行修复（先做）
+
+- **问题**：`touch-workflow.cjs` 最外层 catch 里的 `recoveredTaskIds.delete(id)` 只在内存行处于 `INTERRUPTED_SEND_STATES` 时才执行。但在"发送已 clicked、随后 `attention()` 或成功分支的 `persist()` 抛出 ENOSPC/EPERM"这类场景里，persist 之前内存行已经被改成 `outcome_unknown` 或 `sent_verified`，条件不成立，id 仍留在集合里。结果是：磁盘停在 running+clicked，store 是 needs_attention，本进程内既没有重试按钮也没有人工核对面板，只能重启。
+- **修法**：改为无条件执行 `recoveredTaskIds.delete(id)`。这样做是安全的，理由有三：
+  - 能走到最外层 catch，说明本次 step 已经结束（execute 已 await 完毕）；
+  - `activeStep` 互斥，保证同一时间只有一个 step；
+  - `loadWorkflowTask` 只会恢复磁盘上处于 running 且当前行为 INTERRUPTED 状态的任务，这与"崩溃后重启"完全等价。
+- **验收**：新增一个故障注入用例。发送结果为 clicked 之后，让 `attention()` 的 persist 第一次抛 ENOSPC。断言：本进程内第一个 needs_attention 快照中 `unknownResolution.required === true`，且发送次数不增加。删掉这行修复后，用例必须失败。
 
 ## 背景
 
