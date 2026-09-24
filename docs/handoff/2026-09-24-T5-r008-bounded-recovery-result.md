@@ -1,5 +1,19 @@
 # T5 实施结果：search-r008 有界恢复
 
+## 三审返工（基线 300e918）
+
+已在原分支变基到 `300e918`，按三审五项追加修复：
+
+- 最终身份无法确认的跳过统一写一次 passport 失败记录，涵盖 r008、r014 等；r015 继续走原有 error 级别诊断。真实 diagnostics 订阅和 passport 截图计数自检分别确认每人恰好一张。
+- 新发出的图文消息段清除旧指纹和身份恢复次数。文字先遇 r008，随后成功发送，图片又遇相同哈希时，图片仍从 2/8/20 秒完整重试；文字只发出一次。
+- 联系人快照变化、图片点击前超时、身份跳过、熔断及其他最终跳过统一识别已有成功段，标出部分已发送，设置 `send_attempted` 和响应 `deliveryStatus`；完成时 run-bill 以 `partial_sent_` 记录跳过原因。
+- run-bill 仅在跳过原因属于搜索身份类时写 `ruleId`。定向用例验证快照变化与人工结果不明后选择跳过均不继承旧 r008。
+- 跳过明细中，部分已发送的固定标签改为“部分已发送（后续内容未发）”，仅修改审查明确允许的这一处界面文字。
+
+验证命令与实际输出：`node desktop/src/main/wechat-workflow.self_check.cjs` 退出码 0，输出 `Workflow checks passed: priority, continuation, daily reset, restart, audience, unknown result, pause, expert drafts.`；在 `desktop/` 执行 `npm.cmd run check:self` 退出码 0，末行 `all source self-checks passed`，策略门禁输出 `WeChat failure policy review passed: every added literal reason is classified`；`npm.cmd run build:test` 退出码 0，输出 `test renderer build completed`；`git diff --check` 退出码 0（仅 LF/CRLF 提示）。
+
+未验证：真实微信发送、异机运行、安装包与发布。三审允许的 UI 文件范围已落实；对本轮任务卡无新增异议。前文二审的 UI 范围异议已由三审第 5 项解决。
+
 分支：`codex/fix-r008-bounded-recovery`，基于 `codex/fix-apimart-gateway-transport` 的 `dd6a97a`（包含 T4 合并提交 `1eee65e`）。未合并、未推送、未发布。
 
 ## 2026-09-24 审查返工

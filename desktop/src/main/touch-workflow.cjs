@@ -53,6 +53,15 @@ const MANUAL_RESOLUTION_REASONS = {
   skip: "用户无法确认发送结果，已跳过当前联系人"
 };
 
+function skippedDelivery(row) {
+  const partial = row.message_parts?.some((part) => part.status === "sent_verified") === true;
+  if (partial) {
+    if (!row.reason.startsWith("部分内容已发送")) row.reason = `部分内容已发送，${row.reason}；已发送内容不会重发`;
+    row.send_attempted = true;
+  } else row.send_attempted = false;
+  return partial ? "partial_sent" : "not_attempted";
+}
+
 function createTouchWorkflow(options = {}) {
   const contactsDir = String(options.dataDir || "");
   const coordinator = options.coordinator;
@@ -168,10 +177,10 @@ function createTouchWorkflow(options = {}) {
       if (status === "completed" && task) {
         passport?.writeRunBill("active_touch", id, (task.results || []).map((result, index) => ({
           taskId: `${id}-${Math.max(0, Number(result.contact_index ?? index) || 0)}`, status: result.status,
-          reasonCode: result.status === "identity_skipped" && result.message_parts?.some((part) => part.status === "sent_verified")
-            ? `partial_sent_${result.skip_record?.reasonCode || "search_result_identity_unverified"}`
-            : result.skip_record?.reasonCode || result.blocked_reason || result.ai_error_code || "",
-          ruleId: result.status === "sent_verified" ? "" : result.search_evidence?.rule_id || ""
+           reasonCode: result.skip_record && result.message_parts?.some((part) => part.status === "sent_verified")
+             ? `partial_sent_${result.skip_record?.reasonCode || "search_result_identity_unverified"}`
+             : result.skip_record?.reasonCode || result.blocked_reason || result.ai_error_code || "",
+           ruleId: IDENTITY_SKIP_REASONS.has(result.skip_record?.reasonCode) ? result.search_evidence?.rule_id || "" : ""
         })));
       }
       return { status, progress: progress(), ...extra };
@@ -250,6 +259,7 @@ function createTouchWorkflow(options = {}) {
       if (!liveContact || identityKey(liveContact) !== current.identity_hash) {
         current.status = "identity_skipped";
         current.reason = "联系人已变化或不再允许触达，已跳过";
+        const deliveryStatus = skippedDelivery(current);
         recordSkippedResult(current, task.current_index, {
           reasonCode: "contact_snapshot_changed",
           blockedReason: current.reason,
@@ -258,7 +268,7 @@ function createTouchWorkflow(options = {}) {
         task.current_index += 1;
         if (task.current_index >= task.total) task.status = "completed";
         persist();
-        return response(task.status === "completed" ? "completed" : "pending", { result: { deliveryStatus: "not_attempted", skipped: true } });
+        return response(task.status === "completed" ? "completed" : "pending", { result: { deliveryStatus, skipped: true } });
       }
       if (typeof options.execute !== "function") return attention("当前版本未连接触达执行器", null, TOUCH_WORKFLOW_REASON_CODES.executorUnavailable);
       if (!current.message) {
@@ -400,11 +410,11 @@ function createTouchWorkflow(options = {}) {
       const notAttempted = result?.send_attempted === false || result?.send_result === "not_attempted";
       if (notAttempted && !["prepared", "clicked", "outcome_unknown"].includes(current.status)) {
         const reasonCode = identitySkipReason(result);
-        const partialSent = current.message_parts?.some((part) => part.status === "sent_verified") === true;
         const newlyVerifiedPart = current.message_parts?.some((part, partIndex) => part.status === "sent_verified" && !verifiedPartsBefore.has(partIndex)) === true;
         if (result?.state?.conversation_verified === true || newlyVerifiedPart) {
           delete task.identity_skip_streak;
           if (current.search_evidence) delete current.search_evidence.fingerprint;
+          if (newlyVerifiedPart) current.identity_recovery_attempts = 0;
         }
         if (!reasonCode && current.search_evidence) delete current.search_evidence.rule_id;
         const failurePolicy = classifyWechatFailure(result);
@@ -421,13 +431,13 @@ function createTouchWorkflow(options = {}) {
           current.status = "pre_send_skipped";
           current.reason = String(result.error || "图片发送前阶段重试仍超时") + "，已跳过当前联系人";
           current.retry_blocked = true;
-          current.send_attempted = false;
+          const deliveryStatus = skippedDelivery(current);
           current.updated_at = now().toISOString();
           recordSkippedResult(current, index, { reasonCode: failureReason, blockedReason: current.reason, at: current.updated_at, traceId: sendOperation.traceId });
           task.current_index = index + 1;
           if (task.current_index >= task.total) { task.status = "completed"; task.completed_at = now().toISOString(); }
           persist();
-          return response(task.status === "completed" ? "completed" : "pending", { result: { deliveryStatus: "not_attempted", skipped: true, reasonCode: failureReason } });
+          return response(task.status === "completed" ? "completed" : "pending", { result: { deliveryStatus, skipped: true, reasonCode: failureReason } });
         }
         if (failureReason === "wechat_search_network_lookup_misclick" && !reasonCode) {
           current.poisoned = poisonedSearchCandidate(result, now().toISOString());
@@ -464,21 +474,20 @@ function createTouchWorkflow(options = {}) {
             current.status = "generated";
             current.reason = "连续多位联系人的搜索结果无法确认身份，请检查微信搜索窗口";
             current.retry_blocked = false;
-            current.send_attempted = false;
+            const deliveryStatus = skippedDelivery(current);
             current.updated_at = now().toISOString();
             current.identity_recovery_attempts = 0;
             if (current.search_evidence) delete current.search_evidence.fingerprint;
             delete task.identity_skip_streak;
             persist();
-            return attention(current.reason, { deliveryStatus: partialSent ? "partial_sent" : "not_attempted", diagnosticReason: ruleId, diagnostics: current.search_evidence }, "wechat_search_identity_circuit_open");
+            return attention(current.reason, { deliveryStatus, diagnosticReason: ruleId, diagnostics: current.search_evidence }, "wechat_search_identity_circuit_open");
           }
           if (countIdentityFailure) task.identity_skip_streak = { rule_id: ruleId, count: nextStreak };
           poisonSearchCandidate(current, result);
           current.status = "identity_skipped";
-          current.reason = partialSent ? "部分内容已发送，后续内容因搜索结果身份无法确认而跳过；已发送内容不会重发"
-            : String(result.error || reasonCode) + "，已跳过当前联系人";
+          current.reason = String(result.error || reasonCode) + "，已跳过当前联系人";
           current.retry_blocked = true;
-          current.send_attempted = partialSent;
+          const deliveryStatus = skippedDelivery(current);
           current.updated_at = now().toISOString();
           recordSkippedResult(current, index, {
             reasonCode,
@@ -492,12 +501,12 @@ function createTouchWorkflow(options = {}) {
             task.completed_at = now().toISOString();
           }
           persist();
-          if (ruleId === "search-r008") passport?.recordFailure("active_touch", passportTaskId, {
+          if (reasonCode === "search_result_identity_unverified") passport?.recordFailure("active_touch", passportTaskId, {
             stage: "search_identity", reasonCode, ruleId, traceId: sendOperation.traceId,
             rawReading: { diagnostics: current.search_evidence }, expected: { identity: "verified_before_click" }
           });
           return response(task.status === "completed" ? "completed" : "pending", {
-            result: { deliveryStatus: partialSent ? "partial_sent" : "not_attempted", skipped: true, reasonCode }
+            result: { deliveryStatus, skipped: true, reasonCode }
           });
         }
         if (failurePolicy.classification === "environment") {
@@ -511,13 +520,13 @@ function createTouchWorkflow(options = {}) {
             current.status = "pre_send_skipped";
             current.reason = "运行环境持续不可用，消息未发送；等待十分钟后已加入可重试名单";
             current.retry_blocked = true;
-            current.send_attempted = false;
+            const deliveryStatus = skippedDelivery(current);
             current.updated_at = now().toISOString();
             recordSkippedResult(current, index, { reasonCode: failurePolicy.reasonCode, blockedReason: current.reason, at: current.updated_at, traceId: sendOperation.traceId });
             task.current_index = index + 1;
             if (task.current_index >= task.total) { task.status = "completed"; task.completed_at = now().toISOString(); }
             persist();
-            return response(task.status === "completed" ? "completed" : "pending", { result: { deliveryStatus: "not_attempted", skipped: true, reasonCode: failurePolicy.reasonCode, classification: failurePolicy.classification } });
+            return response(task.status === "completed" ? "completed" : "pending", { result: { deliveryStatus, skipped: true, reasonCode: failurePolicy.reasonCode, classification: failurePolicy.classification } });
           }
           current.status = "generated";
           current.reason = "运行环境暂不可用，消息尚未发送，等待恢复";
@@ -552,7 +561,7 @@ function createTouchWorkflow(options = {}) {
           current.status = "pre_send_skipped";
           current.reason = String(result.error || failurePolicy.reasonCode) + "，两次自动恢复仍失败，已跳过当前联系人";
           current.retry_blocked = true;
-          current.send_attempted = false;
+          const deliveryStatus = skippedDelivery(current);
           current.updated_at = now().toISOString();
           recordSkippedResult(current, index, {
             reasonCode: failurePolicy.reasonCode, blockedReason: current.reason,
@@ -562,7 +571,7 @@ function createTouchWorkflow(options = {}) {
           if (task.current_index >= task.total) { task.status = "completed"; task.completed_at = now().toISOString(); }
           persist();
           return response(task.status === "completed" ? "completed" : "pending", {
-            result: { deliveryStatus: "not_attempted", skipped: true, reasonCode: failurePolicy.reasonCode, classification: failurePolicy.classification }
+            result: { deliveryStatus, skipped: true, reasonCode: failurePolicy.reasonCode, classification: failurePolicy.classification }
           });
         }
         current.status = "generated";
@@ -657,6 +666,7 @@ function createTouchWorkflow(options = {}) {
       current.status = "outcome_unknown_skipped";
       current.retry_blocked = true;
       current.send_attempted = null;
+      if (current.message_parts?.some((part) => part.status === "sent_verified")) skippedDelivery(current);
       recordSkippedResult(current, task.current_index, {
         reasonCode: "outcome_unknown",
         blockedReason: current.reason,

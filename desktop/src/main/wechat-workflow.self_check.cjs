@@ -248,6 +248,11 @@ async function checkR008BoundedRecovery() {
 }
 
 async function checkR008PassportAttachmentCount() {
+  for (const [ruleId, reasonCode, expectedScreenshots] of [
+    ["search-r008", "search_result_identity_unverified", 1],
+    ["search-r014", "search_result_identity_unverified", 1],
+    ["search-r015", "exact_search_result_not_found", 1]
+  ]) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "xiaoxi-r008-passport-"));
   try {
     let screenshots = 0;
@@ -262,24 +267,25 @@ async function checkR008PassportAttachmentCount() {
       const workflow = createTouchWorkflow({
         dataDir: path.join(root, "touch"), now: () => new Date(clock), readContacts: () => [contact], passport,
         coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
-        execute: async () => ({ ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
-          diagnostics: { rule_id: "search-r008", candidate_set_hash: `read-${++reads}` } })
+        execute: async () => ({ ok: false, send_attempted: false, blocked_reason: reasonCode,
+          diagnostics: { rule_id: ruleId, candidate_set_hash: `read-${++reads}` } })
       });
       const payload = workflow.prepareWorkflowTask({ script: "您好，想了解您的设备需求。", contactIds: [contact.id] });
-      const record = { id: "r008-passport-count", payload };
-      for (const delay of [2000, 8000, 20000]) {
+      const record = { id: `passport-count-${ruleId}`, payload };
+      for (const delay of reasonCode === "search_result_identity_unverified" ? [2000, 8000, 20000] : []) {
         clock += 60 * 60 * 1000;
         assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).retryAfterMs, delay);
         assert.equal(screenshots, 0, "bounded retries must not consume passport attachments");
       }
       clock += 60 * 60 * 1000;
       assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).status, "completed");
-      assert.equal(screenshots, 1, "one skipped r008 contact captures one screenshot with the real diagnostics subscriber");
+      assert.equal(screenshots, expectedScreenshots, `${ruleId} must have one final failure with the real diagnostics subscriber`);
     } finally {
       unsubscribe();
     }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
   }
 }
 
@@ -288,6 +294,7 @@ async function checkR008PartialSend() {
   try {
     let clock = Date.parse("2026-09-24T00:00:00.000Z");
     let textSends = 0;
+    let textReads = 0;
     let imageReads = 0;
     const bills = [];
     const billStore = createTaskPassportStore({ rootDir: path.join(root, "passport") });
@@ -300,21 +307,31 @@ async function checkR008PartialSend() {
         writeRunBill: (moduleName, id, rows) => bills.push(billStore.writeRunBill(moduleName, id, rows)) },
       execute: async ({ message }) => {
         if (!message.startsWith("[图片:")) {
+          textReads += 1;
+          if (textReads === 1) return { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+            diagnostics: { rule_id: "search-r008", candidate_set_hash: "same-search-result" } };
           textSends += 1;
           return { ok: true, state: { real_send_status: "sent_verified" } };
         }
         imageReads += 1;
         return { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
-          diagnostics: { rule_id: "search-r008", candidate_set_hash: `image-read-${imageReads}` } };
+          diagnostics: { rule_id: "search-r008", candidate_set_hash: imageReads === 1 ? "same-search-result" : `image-read-${imageReads}` } };
       }
     });
     const payload = workflow.prepareWorkflowTask({ script: "您好，想了解您的设备需求。", contactIds: [contact.id], imageIds: ["image-1"] });
     const record = { id: "r008-partial", payload };
     let result;
+    clock += 60 * 60 * 1000;
+    result = await workflow.runWorkflowStep(record, { isEnabled: () => true });
+    assert.equal(result.retryAfterMs, 2000, "text identity failure gets its first recovery delay");
     for (const delay of [2000, 8000, 20000]) {
       clock += 60 * 60 * 1000;
       result = await workflow.runWorkflowStep(record, { isEnabled: () => true });
       assert.equal(result.retryAfterMs, delay);
+      const taskDir = path.join(root, "workflow-tasks", require("node:crypto").createHash("sha256").update(record.id).digest("hex"));
+      assert.equal(loadTaskState(taskDir).results[0].identity_recovery_attempts, [1, 2, 3][[2000, 8000, 20000].indexOf(delay)],
+        "the successful text part resets recovery attempts before the image retry");
+      if (delay === 2000) assert.equal(loadTaskState(taskDir).identity_skip_streak, undefined);
     }
     clock += 60 * 60 * 1000;
     result = await workflow.runWorkflowStep(record, { isEnabled: () => true });
@@ -325,6 +342,8 @@ async function checkR008PartialSend() {
     const row = loadTaskState(taskDir).results[0];
     assert.equal(row.message_parts[0].status, "sent_verified");
     assert.equal(row.status, "identity_skipped");
+    assert.equal(row.send_attempted, true);
+    assert.equal(row.identity_recovery_attempts, 3);
     assert.match(row.skip_record.blockedReason, /部分内容已发送/u);
     assert.equal(bills.at(-1).reason_counts.partial_sent_search_result_identity_unverified, 1);
   } finally {
@@ -398,6 +417,37 @@ async function checkNonIdentitySkipDropsOldSearchRule() {
     assert.equal(bills.at(-1).rule_counts["search-r008"], undefined);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function checkOldSearchRuleDoesNotEnterOtherSkipBills() {
+  for (const exit of ["snapshot", "manual"]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `xiaoxi-old-rule-${exit}-`));
+    try {
+      let calls = 0;
+      let changed = false;
+      const contact = { id: "customer-1", name: "客户一", wechatId: "wxid_customer_1", wechatAccountId: "test-account" };
+      const bills = [];
+      const workflow = createTouchWorkflow({
+        dataDir: root, readContacts: () => changed ? [{ ...contact, name: "客户二" }] : [contact],
+        coordinator: { acquire: () => ({ ok: true, lock: { owner: "test" } }), release() {} },
+        passport: { bindTrace() {}, recordEvent() {}, recordFailure() {}, writeRunBill: (_module, _id, rows) => bills.push(rows) },
+        execute: async () => ++calls === 1
+          ? { ok: false, send_attempted: false, blocked_reason: "search_result_identity_unverified",
+            diagnostics: { rule_id: "search-r008", candidate_set_hash: "old" } }
+          : { ok: false, send_attempted: null, blocked_reason: "outcome_unknown" }
+      });
+      const payload = workflow.prepareWorkflowTask({ script: "您好", contactIds: [contact.id] });
+      const record = { id: `old-rule-${exit}`, payload };
+      assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).retryAfterMs, 2000);
+      if (exit === "snapshot") changed = true;
+      else {
+        assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).status, "needs_attention");
+        workflow.resolveUnknownWorkflowTask(record, "skip", require("node:crypto").randomUUID());
+      }
+      assert.equal((await workflow.runWorkflowStep(record, { isEnabled: () => true })).status, "completed");
+      assert.equal(bills.at(-1)[0].ruleId, "", `${exit} skip must not inherit r008 rule`);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
   }
 }
 
@@ -1352,6 +1402,7 @@ async function main() {
   await checkR008PartialSend();
   await checkCircuitRejoinKeepsThirdContactRecovery();
   await checkNonIdentitySkipDropsOldSearchRule();
+  await checkOldSearchRuleDoesNotEnterOtherSkipBills();
   await checkIdentityStreakClearsAfterManualOrVerifiedContact();
   await checkRejoinedIdentityStreakStartsEmpty();
   await checkMissingSearchResultsDoNotTripCircuit();
